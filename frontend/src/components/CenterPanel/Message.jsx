@@ -63,6 +63,20 @@ export default function Message({ message }) {
               style={{ maxWidth: '512px', maxHeight: '400px', objectFit: 'contain' }}
             />
           )}
+          {message.attachment && message.attachment.type === 'image' && message.attachment.base64 && (
+            <img
+              src={message.attachment.base64}
+              alt={message.attachment.filename || 'adjunto'}
+              className="rounded-md mb-2"
+              style={{ maxWidth: '400px', maxHeight: '400px', objectFit: 'contain' }}
+            />
+          )}
+          {message.attachment && message.attachment.type !== 'image' && (
+            <div className="flex items-center gap-2 text-xs text-slate-400 mb-2 p-2 rounded bg-slate-800 border border-slate-700">
+              <span>📎</span>
+              <span>{message.attachment.filename}</span>
+            </div>
+          )}
           <ReactMarkdown>{message.content}</ReactMarkdown>
         </div>
       </div>
