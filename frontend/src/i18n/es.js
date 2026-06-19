@@ -1,0 +1,213 @@
+export default {
+  // Top bar
+  logout: 'Salir',
+
+  // Left panel
+  facets: 'Facetas',
+  alive: 'vivo',
+  down: 'caído',
+
+  // FacetCard status
+  statusIdle: 'En reposo',
+  statusThinking: 'Pensando…',
+  statusError: 'Error',
+  statusOffline: 'Offline',
+
+  // Right panel
+  tabDirectorJacobs: 'Director Jacobs',
+  tabAudit: 'Audit',
+  stepsLabel: 'pasos',
+  noPipelinesActive: 'Sin pipelines activos',
+  pipelinesAdditional: (n) => `+${n} pipeline(s) adicional(es)`,
+  approve: '✓ Aprobar',
+  cancelling: 'Cancelando…',
+  cancelPipeline: 'Cancelar pipeline',
+
+  // Audit log
+  auditLog: 'Audit Log',
+  loading: 'Cargando…',
+  noEventsYet: 'Sin eventos aún',
+
+  // Step card
+  clickToSeeResult: 'Click para ver resultado en chat',
+
+  // Bottom bar — modes
+  modeChat: 'Chat',
+  modeComando: 'Comando',
+  modePipeline: 'Pipeline',
+  modeImagen: 'Imagen',
+  placeholderChat: (label) => `Mensaje a ${label}… Enter para enviar, Shift+Enter para nueva línea`,
+  placeholderComando: () => 'Describe la tarea para Hyde… (autónomo)',
+  placeholderPipeline: () => 'Describe el objetivo del pipeline…',
+  placeholderImagen: () => 'Describe la imagen que querés generar…',
+  hydeHint: 'Hyde ejecutará la tarea de forma autónoma en background',
+  jacobsHint: 'Jacobs orquestará múltiples facetas en pipeline',
+  imagenHint: 'DALL-E 3 generará la imagen a partir de tu descripción',
+  errorImagen: 'No se pudo generar la imagen.',
+  generatingImage: 'Generando…',
+  configure: 'Configurar',
+  send: 'Enviar',
+  errorFacet: 'No se pudo conectar con la faceta.',
+  taskInitializing: '_Iniciando tarea autónoma…_',
+  taskStarted: (id) => `_Tarea iniciada — \`${id}\`_\n\nHyde está ejecutando en background…`,
+  errorTask: 'No se pudo iniciar la tarea.',
+  pipelineStarted: (id, mode, steps) =>
+    `Pipeline iniciado — \`${id}\`\nModo: **${mode}** · ${steps} steps\n\nSiguiendo progreso en panel derecho…`,
+  errorPipeline: 'No se pudo crear el pipeline.',
+
+  // Kill switch
+  killSwitchActive: 'KILL SWITCH ACTIVO',
+  killConfirm: '¿Confirmar?',
+  killConfirmYes: 'SÍ, DETENER TODO',
+  cancel: 'Cancelar',
+  killTitle: 'Kill Switch — detiene todos los procesos',
+
+  // Pipeline modal
+  newPipelineTitle: 'Nuevo Pipeline · Jacobs',
+  objectiveLabel: 'Objetivo',
+  modeLabel: 'Modo',
+  facetsLabel: 'Facetas',
+  starting: 'Iniciando…',
+  planAndExecute: 'Planificar y ejecutar',
+  descJaxLocal: 'Razonamiento local (Qwen3)',
+  descHipatia: 'Investigación web',
+  descJekyll: 'Análisis reflexivo',
+  descThot: 'Auditoría crítica',
+  descKimi: 'Implementación técnica',
+  descAda: 'Síntesis final',
+
+  // Center panel
+  platformLabel: 'AXIOMA V0.2',
+  inMemoryOf: 'En memoria de Jairo Urbina.',
+  inHonorOf: 'En honor al Prof. Raúl Jacobs.',
+
+  // Login
+  loginTitle: 'Axioma',
+  loginTagline: 'En memoria de Jairo Urbina',
+  emailLabel: 'Email',
+  passwordLabel: 'Contraseña',
+  loginError: 'Error al iniciar sesión',
+  loggingIn: 'Iniciando…',
+  loginButton: 'Entrar a Axioma',
+
+  // Message
+  userLabel: 'Usuario',
+
+  // Theme / language
+  lightMode: 'Modo claro',
+  darkMode: 'Modo oscuro',
+
+  // File attachments
+  attachFile: 'Adjuntar archivo',
+  attachTooltip: 'Adjuntar imagen, PDF o texto',
+  attachRemove: 'Quitar adjunto',
+  attachUploading: 'Subiendo…',
+  attachError: 'Error al subir archivo',
+  attachTooLarge: 'Archivo demasiado grande (máx 10MB)',
+  attachTypes: 'Imágenes, PDF, texto, código',
+  attachedFile: (name) => `Adjunto: ${name}`,
+
+  // Admin module
+  adminTitle: 'Administración',
+  adminNav: 'Admin',
+  adminDashboard: 'Dashboard',
+  adminApiKeys: 'API Keys',
+  adminUsers: 'Usuarios',
+  adminRepo: 'Repositorio',
+  adminSettings: 'Configuración',
+  adminCosts: 'Costos',
+  adminBack: 'Volver a Axioma',
+
+  // Admin dashboard
+  adminServicesTitle: 'Estado de Servicios',
+  adminStatsTitle: 'Estadísticas de Hoy',
+  adminEventsTitle: 'Últimos Eventos',
+  serviceAlive: 'activo',
+  serviceDown: 'caído',
+  serviceConnected: 'conectado',
+  serviceError: 'error',
+  statMessages: 'Mensajes',
+  statPipelines: 'Pipelines',
+  statImages: 'Imágenes',
+
+  // Admin API keys
+  adminKeyProvider: 'Proveedor',
+  adminKeyModel: 'Modelo',
+  adminKeyFacet: 'Faceta',
+  adminKeyValue: 'Key',
+  adminKeyStatus: 'Estado',
+  adminKeyTest: 'Probar',
+  adminKeyRotate: 'Rotar key',
+  adminKeyTesting: 'Probando…',
+  adminKeyOk: 'OK',
+  adminKeyFail: 'Error',
+  adminKeyMissing: 'Sin key',
+  adminKeyNewValue: 'Nueva API key',
+  adminKeySave: 'Guardar',
+  adminKeyEnter: 'Ingresá la nueva key para',
+  adminKeyLatency: (ms) => `${ms}ms`,
+
+  // Admin users
+  adminUsersTitle: 'Gestión de Usuarios',
+  adminUserCreate: 'Nuevo usuario',
+  adminUserEmail: 'Email',
+  adminUserRole: 'Rol',
+  adminUserStatus: 'Estado',
+  adminUserLastLogin: 'Último acceso',
+  adminUserActions: 'Acciones',
+  adminUserActive: 'activo',
+  adminUserInactive: 'inactivo',
+  adminUserDisable: 'Desactivar',
+  adminUserEnable: 'Activar',
+  adminUserDelete: 'Eliminar',
+  adminUserResetPwd: 'Reset pwd',
+  adminUserChangeRole: 'Cambiar rol',
+  adminCreateTitle: 'Crear Usuario',
+  adminCreatePassword: 'Contraseña temporal',
+  adminCreateSubmit: 'Crear',
+  adminCreateCancel: 'Cancelar',
+  adminDeleteConfirm: (email) => `¿Eliminar usuario ${email}?`,
+
+  // Admin repository
+  adminRepoTitle: 'Repositorio de Artefactos',
+  adminRepoMissions: 'Misiones',
+  adminRepoPipelines: 'Pipelines',
+  adminRepoDocuments: 'Documentos',
+  adminRepoImages: 'Imágenes',
+  adminRepoEmpty: 'Sin archivos',
+  adminRepoDelete: 'Eliminar',
+  adminRepoDownload: 'Descargar',
+  adminRepoPreview: 'Preview',
+  adminRepoDeleteConfirm: (name) => `¿Eliminar ${name}?`,
+  adminRepoSize: (bytes) => bytes < 1024 ? `${bytes}B` : bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`,
+
+  // Admin settings
+  adminSettingsTitle: 'Configuración del Sistema',
+  adminSettingsSave: 'Guardar',
+  adminSettingsSaved: 'Guardado',
+  adminSettingsLang: 'Idioma por defecto',
+  adminSettingsTheme: 'Tema por defecto',
+  adminSettingsTimeout: 'Timeout sesión (min)',
+  adminSettingsMaxPipelines: 'Max pipelines simultáneos',
+  adminSettingsRetention: 'Retención web-tasks (días)',
+  adminSettingsSystemName: 'Nombre del sistema',
+  adminSettingsWsNotif: 'Notificaciones WS',
+  adminSettingsDark: 'Oscuro',
+  adminSettingsLight: 'Claro',
+
+  // Admin costs
+  adminCostsTitle: 'Monitor de Costos',
+  adminCostsFacet: 'Faceta',
+  adminCostsModel: 'Modelo',
+  adminCostsTokensIn: 'Tokens entrada',
+  adminCostsTokensOut: 'Tokens salida',
+  adminCostsCost: 'Costo USD',
+  adminCostsRequests: 'Requests',
+  adminCostsPeriod: 'Período',
+  adminCostsDay: 'Hoy',
+  adminCostsWeek: 'Semana',
+  adminCostsMonth: 'Mes',
+  adminCostsTotal: 'Total',
+  adminCostsChart: 'Requests por faceta (últimos 7 días)',
+  adminCostsNoData: 'Sin datos aún',
+}

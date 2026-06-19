@@ -1,0 +1,55 @@
+.hal-eye-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.hal-eye-svg {
+  filter: drop-shadow(0 0 20px var(--eye-color, #3b82f6));
+  transition: filter 0.5s ease;
+}
+
+.hal-iris {
+  transition: fill 0.5s ease;
+}
+
+.hal-glow-ring {
+  transition: stroke 0.5s ease, opacity 0.5s ease;
+}
+
+@keyframes hal-pulse-slow {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(0.97); }
+}
+
+@keyframes hal-pulse-fast {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.93); }
+}
+
+@keyframes hal-blink {
+  0%, 49%, 100% { opacity: 1; }
+  50%, 99% { opacity: 0.15; }
+}
+
+@keyframes hal-none {
+  0%, 100% { opacity: 0.4; }
+}
+
+.hal-anim-pulse-slow {
+  animation: hal-pulse-slow 3s ease-in-out infinite;
+}
+
+.hal-anim-pulse-fast {
+  animation: hal-pulse-fast 0.8s ease-in-out infinite;
+}
+
+.hal-anim-blink {
+  animation: hal-blink 1s step-end infinite;
+}
+
+.hal-anim-none {
+  animation: hal-none 4s ease-in-out infinite;
+  filter: grayscale(1);
+}
