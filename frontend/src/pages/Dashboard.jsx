@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { useJaxStore } from '../store/useJaxStore'
 import { useWebSocket } from '../store/useWebSocket'
 import { useTheme } from '../store/useTheme'
@@ -23,6 +24,14 @@ export default function Dashboard() {
           <span className="text-xs font-bold text-blue-400 uppercase tracking-widest">JAX</span>
           <span className="text-xs text-slate-600">|</span>
           <span className="text-xs text-slate-500">Platform v0.1</span>
+          {user?.role === 'superadmin' && (
+            <Link
+              to="/admin"
+              className="text-xs text-purple-400 hover:text-purple-300 transition-colors font-semibold"
+            >
+              {t.adminNav}
+            </Link>
+          )}
         </div>
         <div className="flex items-center gap-3">
           {/* Language selector */}
