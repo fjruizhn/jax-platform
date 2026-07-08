@@ -54,6 +54,11 @@ export default {
   pipelineStarted: (id, mode, steps) =>
     `Pipeline started — \`${id}\`\nMode: **${mode}** · ${steps} steps\n\nTracking progress in right panel…`,
   errorPipeline: 'Could not create the pipeline.',
+  pipelineStepHeader: (facet, capability) => `● **${facet}** — ${capability}`,
+  pipelineCompleted: (done, total, secs) =>
+    `**Pipeline completed** — ${done} of ${total} steps${secs ? `, ${Math.round(secs)}s total` : ''}`,
+  pipelineSources: 'Sources',
+  pipelineNoResult: '_(no result)_',
 
   // Kill switch
   killSwitchActive: 'KILL SWITCH ACTIVE',
@@ -74,7 +79,7 @@ export default {
   descJekyll: 'Reflective analysis',
   descThot: 'Critical audit',
   descKimi: 'Technical implementation',
-  descAda: 'Final synthesis',
+  descAda: 'Analysis & rigor',
 
   // Center panel
   platformLabel: 'AXIOMA V0.2',

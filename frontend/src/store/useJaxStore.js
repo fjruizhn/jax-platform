@@ -158,14 +158,18 @@ export const useJaxStore = create((set, get) => ({
         const completedSteps = allSteps.filter((s) => s.status === 'completed')
         const ts = new Date().toISOString()
         for (const step of completedSteps) {
-          const result = step.result || '_(sin resultado)_'
-          const preview = result.length > 800
-            ? result.slice(0, 800) + '\n\n_[… texto completo disponible]_'
-            : result
+          const header = `● **${step.facet}** — ${step.capability}`
+          const body = step.result || '_(sin resultado)_'
+          const sourceParts = (step.sources || []).map(
+            (s) => `- [${s.title || s.url}](${s.url})`
+          )
+          const sourcesBlock = sourceParts.length
+            ? `\n\n**Fuentes**\n${sourceParts.join('\n')}`
+            : ''
           get().addMessage({
             id: `pipeline-${pipeline_id}-step-${step.step_index}`,
             facet: step.facet,
-            content: preview,
+            content: `${header}\n\n${body}${sourcesBlock}`,
             timestamp: ts,
           })
         }

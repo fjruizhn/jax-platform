@@ -1,7 +1,7 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -42,6 +42,15 @@ async def lifespan(app: FastAPI):
     await run_seed()
     engine_state.start_background_tasks()
     yield
+    # Cerrar conversaciones web abiertas -> el worker de facts las destila.
+    try:
+        from api.chat import flush_open_conversations
+        n = await flush_open_conversations()
+        if n:
+            # flush=True: sin esto el print se pierde por buffering al salir el proceso.
+            print(f"[memoria] {n} conversación(es) web cerradas en shutdown", flush=True)
+    except Exception:
+        pass
     await close_pool()
 
 
@@ -85,16 +94,41 @@ app.include_router(usage_router)
 async def websocket_endpoint(
     websocket: WebSocket,
     user_id: str,
-    token: str = Query(...),
 ):
+    await websocket.accept()
+
     try:
+        auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+        if auth_msg.get("type") != "auth":
+            await websocket.close(code=4001)
+            return
+
+        token = auth_msg.get("token")
         payload = decode_token(token)
+
+        if str(payload.get("user_id")) != str(user_id):
+            await websocket.close(code=4001)
+            return
+
+    except WebSocketDisconnect:
+        return
+    except asyncio.TimeoutError:
+        try:
+            await websocket.close(code=4001)
+        except RuntimeError:
+            pass
+        return
     except Exception:
-        await websocket.close(code=4001)
+        try:
+            await websocket.close(code=4001)
+        except RuntimeError:
+            pass
         return
 
     tenant_id = str(payload["tenant_id"])
     role = payload["role"]
+
+    await websocket.send_json({"type": "auth_ok"})
 
     await ws_hub.connect(user_id, websocket)
     engine_state.register_user(user_id, tenant_id, role)

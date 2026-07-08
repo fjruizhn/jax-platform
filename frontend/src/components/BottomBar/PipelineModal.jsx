@@ -8,7 +8,7 @@ function getFacetOptions(t) {
     { id: 'jekyll',    label: 'Jekyll',    color: '#6366f1', capability: 'analysis',         desc: t.descJekyll },
     { id: 'thot',      label: 'Thot',      color: '#f59e0b', capability: 'critique',         desc: t.descThot },
     { id: 'kimi',      label: 'Kimi',      color: '#06b6d4', capability: 'implementation',   desc: t.descKimi },
-    { id: 'ada',       label: 'Ada',       color: '#7c3aed', capability: 'synthesis',        desc: t.descAda },
+    { id: 'ada',       label: 'Ada',       color: '#7c3aed', capability: 'analysis',         desc: t.descAda },
   ]
 }
 
