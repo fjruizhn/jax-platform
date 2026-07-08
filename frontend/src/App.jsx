@@ -4,6 +4,7 @@ import { useJaxStore } from './store/useJaxStore'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Admin from './pages/Admin'
+import ResetPassword from './pages/ResetPassword'
 
 function RequireAuth({ children }) {
   const { token } = useJaxStore()
@@ -28,6 +29,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route
           path="/"
           element={

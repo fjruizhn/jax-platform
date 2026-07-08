@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS jax_users (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
-
 CREATE_AXIOMA_CONFIG = """
 CREATE TABLE IF NOT EXISTS axioma_config (
   config_key VARCHAR(100) PRIMARY KEY,
@@ -60,21 +59,89 @@ CREATE TABLE IF NOT EXISTS axioma_artifacts (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
-ADD_LAST_LOGIN = """
-ALTER TABLE jax_users ADD COLUMN IF NOT EXISTS last_login TIMESTAMP NULL
+CREATE_PASSWORD_RESET_TOKENS = """
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  token VARCHAR(36) NOT NULL UNIQUE,
+  expires_at DATETIME NOT NULL,
+  used BOOLEAN DEFAULT FALSE,
+  created_at DATETIME DEFAULT NOW(),
+  ip_address VARCHAR(45),
+  FOREIGN KEY (user_id) REFERENCES jax_users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
+
+CREATE_USER_API_KEYS = """
+CREATE TABLE IF NOT EXISTS user_api_keys (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL DEFAULT 1,
+  provider_id VARCHAR(50) NOT NULL,
+  env_key VARCHAR(100) NOT NULL,
+  encrypted_value TEXT NOT NULL,
+  created_at DATETIME DEFAULT NOW(),
+  updated_at DATETIME DEFAULT NOW() ON UPDATE NOW(),
+  UNIQUE KEY uk_user_provider (user_id, provider_id),
+  FOREIGN KEY (user_id) REFERENCES jax_users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+_TABLES = [
+    ("jax_tenants", CREATE_TENANTS),
+    ("jax_users", CREATE_USERS),
+    ("axioma_config", CREATE_AXIOMA_CONFIG),
+    ("axioma_usage", CREATE_AXIOMA_USAGE),
+    ("axioma_artifacts", CREATE_AXIOMA_ARTIFACTS),
+    ("password_reset_tokens", CREATE_PASSWORD_RESET_TOKENS),
+    ("user_api_keys", CREATE_USER_API_KEYS),
+]
+
+_COLUMNS = [
+    ("jax_users", "last_login", "ALTER TABLE jax_users ADD COLUMN last_login TIMESTAMP NULL"),
+    ("jax_users", "failed_attempts", "ALTER TABLE jax_users ADD COLUMN failed_attempts INT DEFAULT 0"),
+    ("jax_users", "locked_until", "ALTER TABLE jax_users ADD COLUMN locked_until DATETIME NULL"),
+]
+
+
+async def _table_exists(cur, table_name: str) -> bool:
+    await cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+        """,
+        (table_name,),
+    )
+    row = await cur.fetchone()
+    return bool(row and row[0] > 0)
+
+
+async def _column_exists(cur, table_name: str, column_name: str) -> bool:
+    await cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND COLUMN_NAME = %s
+        """,
+        (table_name, column_name),
+    )
+    row = await cur.fetchone()
+    return bool(row and row[0] > 0)
 
 
 async def run_migrations():
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(CREATE_TENANTS)
-            await cur.execute(CREATE_USERS)
-            await cur.execute(CREATE_AXIOMA_CONFIG)
-            await cur.execute(CREATE_AXIOMA_USAGE)
-            await cur.execute(CREATE_AXIOMA_ARTIFACTS)
-            try:
-                await cur.execute(ADD_LAST_LOGIN)
-            except Exception:
-                pass  # column may already exist
+            for table_name, ddl in _TABLES:
+                if not await _table_exists(cur, table_name):
+                    await cur.execute(ddl)
+
+            for table_name, column_name, ddl in _COLUMNS:
+                if not await _column_exists(cur, table_name, column_name):
+                    await cur.execute(ddl)
+
+        await conn.commit()
