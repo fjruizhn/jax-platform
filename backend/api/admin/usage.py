@@ -12,7 +12,7 @@ MODEL_PRICES = {
     "deepseek-v4-flash": {"in": 0.14,  "out": 0.28},
     "gemini-2.5-flash":  {"in": 0.15,  "out": 0.60},
     "kimi-k2.7-code":    {"in": 0.95,  "out": 4.00},
-    "glm-4-flash":       {"in": 0.00,  "out": 0.00},
+    "glm-5.2":           {"in": 1.40,  "out": 4.40},
 }
 
 

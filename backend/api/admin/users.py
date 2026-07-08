@@ -19,10 +19,13 @@ def _hash(plain: str) -> str:
 @router.get("/users")
 async def list_users(user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
+    now = datetime.utcnow()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT user_id, email, role, status, created_at, last_login FROM jax_users ORDER BY user_id"
+                "SELECT user_id, email, role, status, created_at, last_login, "
+                "failed_attempts, locked_until "
+                "FROM jax_users ORDER BY user_id"
             )
             rows = await cur.fetchall()
     return {
@@ -34,6 +37,9 @@ async def list_users(user: AuthUser = Depends(require_superadmin)):
                 "status": r[3],
                 "created_at": r[4].isoformat() if r[4] else None,
                 "last_login": r[5].isoformat() if r[5] else None,
+                "failed_attempts": r[6] or 0,
+                "locked_until": r[7].isoformat() if r[7] else None,
+                "is_locked": bool(r[7] and r[7] > now),
             }
             for r in rows
         ]
@@ -92,6 +98,18 @@ async def update_user(
             if req.password:
                 ph = _hash(req.password)
                 await cur.execute("UPDATE jax_users SET password_hash = %s WHERE user_id = %s", (ph, user_id))
+    return {"ok": True}
+
+
+@router.post("/users/{user_id}/unlock")
+async def unlock_user(user_id: int, user: AuthUser = Depends(require_superadmin)):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
+                (user_id,),
+            )
     return {"ok": True}
 
 
