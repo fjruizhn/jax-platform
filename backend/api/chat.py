@@ -1,5 +1,9 @@
+import logging
 import os
+import re
+import sys
 import tomllib
+import unicodedata
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -30,36 +34,259 @@ def _load_jax_env():
 
 _load_jax_env()
 
+# --- Memoria semántica COMPARTIDA con el REPL (MISMA MariaDB jax_memory) ----
+# Reutiliza la clase MemoryDB del núcleo (~/jax) — no duplica memoria ni lógica.
+# Degrada elegante: si no carga o la base cae, el chat sigue SIN memoria.
+sys.path.insert(0, os.path.expanduser("~/jax"))
+try:
+    from jax.memory.db import MemoryDB
+except Exception:
+    MemoryDB = None
+
+_memory = None              # instancia única (lazy)
+_memory_ready = False
+_conv_uuids: dict[str, str] = {}   # "user_id:project_id" -> conversation_uuid
+
+
+async def _ensure_memory() -> bool:
+    """Conecta (lazy) a la MISMA jax_memory del REPL. False si falla (no rompe)."""
+    global _memory, _memory_ready
+    if MemoryDB is None:
+        return False
+    if _memory_ready and _memory and _memory.is_connected:
+        return True
+    if _memory is None:
+        _memory = MemoryDB()
+    try:
+        _memory_ready = await _memory.connect(
+            host=os.getenv("JAX_DB_HOST", "localhost"),
+            user=os.getenv("JAX_DB_USER", ""),
+            password=os.getenv("JAX_DB_PASSWORD", ""),
+            database=os.getenv("JAX_DB_NAME", "jax_memory"),
+        )
+    except Exception:
+        _memory_ready = False
+    return _memory_ready
+
+
+async def _get_conv_uuid(user_id: int, tenant_id, project_id) -> str | None:
+    """Conversación por (usuario, proyecto). Lazy. None si la memoria está caída.
+    project_id NOT NULL -> memoria de proyecto (compartida); NULL -> individual."""
+    if not await _ensure_memory():
+        return None
+    key = f"{user_id}:{project_id}"
+    u = _conv_uuids.get(key)
+    if u:
+        return u
+    source = "axioma-web-proyecto" if project_id is not None else "axioma-web"
+    u = await _memory.start_conversation(source=source, user_id=user_id,
+                                         tenant_id=tenant_id, project_id=project_id)
+    if u:
+        _conv_uuids[key] = u
+    return u
+
+
+async def _semantic_context(user_text: str, user_id: int, project_id) -> list[dict]:
+    """Recupera contexto de sesiones pasadas (replica jax/core/main.py:514-533)
+    con scope de dos niveles: memoria del proyecto + memoria individual del user."""
+    if not await _ensure_memory():
+        return []
+    try:
+        similares = await _memory.search_similar_messages(
+            user_text, limit=5, user_id=user_id, project_id=project_id)
+    except Exception:
+        return []
+    relevantes = [r for r in similares if r["distancia"] < 0.8]
+    if not relevantes:
+        return []
+    lineas = []
+    for r in relevantes:
+        fecha = r["started_at"].strftime("%Y-%m-%d") if r.get("started_at") else "?"
+        rol = "user" if r["role"] == "user" else "jax"
+        lineas.append(f"[{fecha}] {rol}: {r['content']}")
+    contexto = ("Conversaciones relevantes de sesiones anteriores:\n" + "\n".join(lineas))
+    return [
+        {"role": "user", "content": "[memoria de sesiones anteriores]"},
+        {"role": "assistant", "content": contexto},
+    ]
+
+
+async def flush_open_conversations() -> int:
+    """Cierra (end_conversation) las conversaciones web abiertas para que el
+    worker de facts las destile. Se llama en el shutdown de la app. Best-effort:
+    nunca lanza. Devuelve cuántas cerró."""
+    global _memory_ready
+    if not (_memory and _memory_ready):
+        return 0
+    n = 0
+    for uuid_ in list(_conv_uuids.values()):
+        try:
+            await _memory.end_conversation(uuid_)
+            n += 1
+        except Exception:
+            pass
+    _conv_uuids.clear()
+    try:
+        await _memory.close()
+    except Exception:
+        pass
+    _memory_ready = False
+    return n
+# ---------------------------------------------------------------------------
+
 # Historial de conversación en memoria: user_id → lista de {role, content}
 _conversations: dict[str, list[dict]] = {}
 MAX_TURNS = 20  # 20 turnos = 40 mensajes (user+assistant)
 
-# Router automático: conjunto de palabras clave → faceta
-_AUTO_ROUTER = [
-    ({"bash", "servidor", "servidores", "ssh", "docker", "deploy", "git", "linux", "red", "puerto", "daemon"}, "hyde"),
-    ({"busca", "investiga", "investigar", "buscar", "noticias", "noticia", "fuentes", "fuente", "qué es", "que es"}, "hipatia"),
-    ({"poesía", "poesia", "filosofía", "filosofia", "arte", "barroco", "literatura", "música", "musica", "historia"}, "jekyll"),
-    ({"critica", "crítica", "auditoría", "auditoria", "riesgo", "falla", "fallo", "debilidad", "vulnerabilidad"}, "thot"),
-    ({"refactor", "construir", "implementar", "implementa", "prueba", "test", "función", "funcion", "clase"}, "kimi"),
-]
+logger = logging.getLogger(__name__)
+
+
+def _sin_tildes(s: str) -> str:
+    nfkd = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+# Keywords por faceta — misma lógica que router.py de consola.
+# Hyde NO es destino del auto-routing: es ejecutor, no conversador.
+_KIMI_KW = frozenset((
+    "codigo", "programar", "programa", "script", "funcion", "clase", "metodo",
+    "modulo", "libreria", "api", "endpoint", "backend", "frontend",
+    "implementar", "implementa", "construir", "refactor", "refactorizar",
+    "refactoriza", "debug", "depurar", "bug", "traceback", "excepcion",
+    "compilar", "test", "tests", "pytest", "variable", "bucle", "array",
+    "regex", "fastapi", "react", "typescript", "javascript", "python", "sql",
+    "docker", "nginx", "commit", "branch", "merge",
+))
+_KIMI_STRONG = frozenset((
+    "refactor", "refactoriza", "implementar", "debug", "depurar", "pytest",
+    "fastapi", "docker", "nginx", "endpoint",
+))
+
+_HIPATIA_KW = frozenset((
+    "busca", "buscar", "investiga", "investigar", "verifica", "verificar",
+    "fuentes", "fuente", "citas", "referencias", "noticias", "noticia",
+    "actualidad", "reciente", "ultima", "ultimo", "vigente", "precio",
+    "precios", "cotizacion", "mercado", "ley", "regulacion", "normativa",
+    "paper", "papers", "estudio", "informe", "estadistica", "lanzamiento",
+    "version actual", "quien es",
+))
+_HIPATIA_STRONG = frozenset((
+    "busca", "buscar", "investiga", "investigar", "noticias", "fuentes",
+    "version actual",
+))
+
+_JEKYLL_KW = frozenset((
+    "poesia", "poema", "cuento", "novela", "literatura", "ensayo", "arte",
+    "pintura", "musica", "filosofia", "etica", "estetica", "humanidades",
+    "barroco", "renacimiento", "romanticismo", "mito", "mitologia", "simbolo",
+    "simbolismo", "metafora", "narrativa", "personaje", "estilo",
+    "interpretacion", "sentido", "significado", "reflexion", "reflexiona",
+    "contempla", "humanista", "cultura", "historia del arte", "historia cultural",
+))
+_JEKYLL_STRONG = frozenset((
+    "poema", "poesia", "filosofia", "literatura", "mitologia",
+    "historia del arte", "barroco",
+))
+
+_THOT_KW = frozenset((
+    "audita", "auditar", "auditoria", "critica", "criticar", "criticamente",
+    "cuestiona", "cuestionar", "adversarial", "abogado del diablo", "riesgo",
+    "riesgos", "falla", "fallas", "debilidad", "debilidades", "vulnerabilidad",
+    "vulnerabilidades", "amenaza", "amenazas", "threat model",
+    "modelo de amenazas", "ataque", "donde se rompe", "punto ciego",
+    "supuesto", "supuestos", "contraargumento", "refuta", "refutar",
+    "no-go", "revisa criticamente",
+))
+_THOT_STRONG = frozenset((
+    "audita", "auditar", "auditoria", "vulnerabilidad", "vulnerabilidades",
+    "threat model", "adversarial", "refuta",
+))
+
+_ADA_KW = frozenset((
+    "formaliza", "formalizar", "formalizacion", "modelo formal", "pseudocodigo",
+    "logica", "demuestra", "demostrar", "demostracion", "prueba formal",
+    "teorema", "lema", "corolario", "axioma", "proposicion", "invariante",
+    "invariantes", "precondicion", "postcondicion", "maquina de estados",
+    "automata", "complejidad", "big o", "o(n)", "estructura de datos",
+    "grafo", "arbol", "matriz", "vector", "ecuacion", "optimizacion",
+    "funcion objetivo", "matematica", "calculo", "algebra", "probabilidad",
+    "determinista", "induccion", "algoritmo",
+))
+_ADA_STRONG = frozenset((
+    "formaliza", "formalizar", "demuestra", "demostrar", "teorema",
+    "invariante", "invariantes", "precondicion", "postcondicion",
+    "complejidad", "maquina de estados",
+))
+
+_WEB_KW_SETS = {
+    "kimi":    (_KIMI_KW,    _KIMI_STRONG),
+    "hipatia": (_HIPATIA_KW, _HIPATIA_STRONG),
+    "jekyll":  (_JEKYLL_KW,  _JEKYLL_STRONG),
+    "thot":    (_THOT_KW,    _THOT_STRONG),
+    "ada":     (_ADA_KW,     _ADA_STRONG),
+}
+_WEB_TIEBREAK = ("hipatia", "thot", "ada", "kimi", "jekyll")
 
 
 def _auto_route(message: str) -> str:
-    lower = message.lower()
-    words = set(lower.split())
-    for keywords, facet in _AUTO_ROUTER:
-        if words & keywords:
-            return facet
-        # También chequear frases dentro del mensaje
-        for kw in keywords:
-            if " " in kw and kw in lower:
-                return facet
-    return "jax_local"
+    """Scoring multi-keyword con umbral. Sin clasificador LLM (fase 1).
+
+    Regla:
+    - score[f] = n° de keywords de f que matchean.
+    - top = faceta con mayor score (desempate: _WEB_TIEBREAK).
+    - score >= 2 → enrutar a top.
+    - score == 1 y keyword STRONG → enrutar a top.
+    - else → jax_local (fallback; en fase 2 se evaluará clasificador LLM).
+    """
+    text = _sin_tildes(message.lower().strip())
+    scores: dict[str, int] = {}
+    hit_strong: dict[str, bool] = {}
+
+    for faceta, (kws, strong) in _WEB_KW_SETS.items():
+        score = 0
+        is_strong = False
+        for kw in kws:
+            if " " in kw:
+                hit = kw in text
+            else:
+                hit = bool(re.search(rf"\b{re.escape(kw)}\b", text))
+            if hit:
+                score += 1
+                if kw in strong:
+                    is_strong = True
+        scores[faceta] = score
+        hit_strong[faceta] = is_strong
+
+    max_score = max(scores.values())
+    faceta_elegida = "jax_local"
+    via = "default"
+
+    if max_score > 0:
+        top: str | None = None
+        for f in _WEB_TIEBREAK:
+            if scores[f] == max_score:
+                top = f
+                break
+
+        if top is not None:
+            if max_score >= 2:
+                faceta_elegida = top
+                via = "keyword_score"
+            elif max_score == 1 and hit_strong[top]:
+                faceta_elegida = top
+                via = "keyword_strong"
+
+    logger.info(
+        "auto_route | msg=%.80s | faceta=%s | score=%d | via=%s",
+        message, faceta_elegida, max_score, via,
+    )
+    return faceta_elegida
 
 
 class ChatRequest(BaseModel):
     message: str
     facet: str | None = None
+    project_id: int | None = None   # None = memoria individual; set = memoria de proyecto
 
 
 class ChatResponse(BaseModel):
@@ -85,7 +312,7 @@ async def _call_ollama(system_prompt: str, history: list[dict], message: str, co
     model = config["personalities"]["jax_local"]["model_default"]
     messages = _build_messages(system_prompt, history, message)
     async with httpx.AsyncClient(timeout=180.0) as client:
-        r = await client.post(url, json={"model": model, "messages": messages, "stream": False})
+        r = await client.post(url, json={"model": model, "messages": messages, "stream": False, "keep_alive": -1})
         r.raise_for_status()
         return r.json()["message"]["content"]
 
@@ -129,9 +356,13 @@ async def _call_gemini(
 
 
 async def _invoke_facet(
-    facet: str, config: dict, user_id: str, message: str
+    facet: str, config: dict, user_id: str, message: str,
+    semantic_context: list[dict] | None = None,
 ) -> str:
     history = _conversations.get(user_id, [])
+    if semantic_context:
+        # Contexto de sesiones pasadas SOLO para este turno (no entra al hilo RAM).
+        history = semantic_context + history
     personality = config["personalities"].get(facet, config["personalities"]["jax_local"])
     system_prompt = personality.get("system_prompt", "Sos JAX.")
 
@@ -172,6 +403,16 @@ async def _invoke_facet(
             system_prompt, history, message,
         )
 
+    if facet == "ada":
+        api_url = personality.get("api_url", "https://api.z.ai/api/paas/v4/chat/completions")
+        base_url = api_url[:-len("/chat/completions")] if api_url.endswith("/chat/completions") else api_url
+        return await _call_openai_compat(
+            base_url,
+            os.getenv("ZAI_API_KEY", ""),
+            personality.get("model_default", "glm-5.2"),
+            system_prompt, history, message,
+        )
+
     # fallback
     return await _call_ollama(system_prompt, history, message, config)
 
@@ -194,22 +435,37 @@ async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
     user_id = user.user_id
     timestamp = datetime.utcnow().isoformat() + "Z"
 
+    # --- Memoria semántica (misma jax_memory que el REPL) — best-effort -----
+    # user_id/tenant_id vienen del JWT; project_id del request (None=individual).
+    try:
+        mem_uid = int(user_id)
+        mem_tid = int(tenant_id)
+    except (TypeError, ValueError):
+        mem_uid = mem_tid = None
+    mem_pid = req.project_id
+    conv_uuid = None
+    if mem_uid is not None:
+        conv_uuid = await _get_conv_uuid(mem_uid, mem_tid, mem_pid)
+        if conv_uuid:
+            _memory.save_message(conv_uuid, "user", req.message)  # fire-and-forget
+    # -----------------------------------------------------------------------
+
     # Respuestas especiales (sin llamada a LLM)
     if facet == "hyde":
         resp = "Hyde opera en modo tarea autónoma — usá el modo Comando para ejecutar tareas técnicas."
         await _fire_completed(facet, tenant_id, user_id, resp)
         return ChatResponse(facet=facet, response=resp, timestamp=timestamp)
 
-    if facet == "ada":
-        resp = "Ada está pendiente — su key Z.ai estará disponible en la semana del 22-jun."
-        await _fire_completed(facet, tenant_id, user_id, resp)
-        return ChatResponse(facet=facet, response=resp, timestamp=timestamp)
-
     # Señal: faceta pensando
     await engine_state.set_facet_status(facet, "thinking", tenant_id, user_id, req.message[:100])
 
+    # Retrieval semántico ANTES del LLM (scope: proyecto + individual del user).
+    semantic_context: list[dict] = []
+    if mem_uid is not None:
+        semantic_context = await _semantic_context(req.message, mem_uid, mem_pid)
+
     try:
-        response_text = await _invoke_facet(facet, config, user_id, req.message)
+        response_text = await _invoke_facet(facet, config, user_id, req.message, semantic_context)
     except httpx.HTTPStatusError as e:
         detail = f"Error HTTP {e.response.status_code} en {facet}: {e.response.text[:200]}"
         await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail[:100])
@@ -227,6 +483,11 @@ async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
     personality = config["personalities"].get(facet, {})
     model_name = personality.get("model_default", facet)
     await record_usage(user_id, tenant_id, facet, model_name, 0, 0, "chat")
+
+    # Guardar la respuesta de la faceta en la MISMA memoria (fire-and-forget).
+    if conv_uuid:
+        _memory.save_message(conv_uuid, facet, response_text,
+                             facet=facet, model=model_name)
 
     await _fire_completed(facet, tenant_id, user_id, response_text)
     await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
