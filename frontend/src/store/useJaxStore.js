@@ -25,8 +25,8 @@ const DEFAULT_FACETS = Object.keys(FACET_COLORS).reduce((acc, name) => {
 }, {})
 
 export const useJaxStore = create((set, get) => ({
-  token: null,
-  user: null,
+  token: localStorage.getItem('jax_token') || null,
+  user: JSON.parse(localStorage.getItem('jax_user') || 'null'),
   facets: DEFAULT_FACETS,
   activePipelines: {},
   lasManos: false,
