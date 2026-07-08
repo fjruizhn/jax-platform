@@ -39,3 +39,30 @@ NO es AteneaERP. NO mezclar. Son productos independientes.
 - LAS MANOS: http://127.0.0.1:7777
 - Jacobs: http://127.0.0.1:7777/jacobs/
 - Motor Registry: http://127.0.0.1:7777/motor/
+
+## Lecciones operativas (sesión 2026-06-22)
+
+1. DEPLOY FRONTEND: requiere rsync EXPLÍCITO de hall9000 a la VM dev.
+   `npm run build` solo genera el bundle en /home/fruiz/jax-platform/frontend/dist/
+   en hall9000 — NO actualiza producción. El público sirve estático desde
+   /www/wwwroot/axioma-ia.io/ en la VM dev (172.16.20.11).
+   Procedimiento: rsync dist a /tmp/axioma-deploy/ en la VM, luego
+   `sudo rsync -a --delete --chown=www:www /tmp/axioma-deploy/ /www/wwwroot/axioma-ia.io/`.
+
+2. ARQUITECTURA REAL: nginx/aaPanel vive en la VM dev (172.16.20.11), NO en
+   hall9000. El vhost axioma-ia.io sirve estático desde wwwroot y proxya /api
+   y /ws a http://172.16.20.5:8080 (hall9000) con upgrade headers para WS.
+
+3. ROTACIÓN JWT: rotar JAX_JWT_SECRET invalida TODAS las sesiones activas.
+   Requiere re-login + limpieza de localStorage/cookies en cada navegador.
+   Síntoma de token huérfano: 401 en /api/state con "Authorization: Bearer"
+   presente en el request.
+
+4. MOTOR jax_local: ollama local con qwen3:14b en GPU (RX 9060 XT). El
+   keep_alive:-1 está embebido en _call_ollama (backend/api/chat.py) para
+   evitar recarga en frío (~50s de carga de 14GB a VRAM). Si reaparece
+   lentitud de ~60s, verificar con `ollama ps` que UNTIL no expire pronto.
+
+5. DIAGNÓSTICO POR EVIDENCIA: verificar vhost/hashes/procesos antes de ejecutar
+   planes. En esta sesión, 2 de 3 causas raíz diagnosticadas por suposición
+   resultaron falsas. "El que supone se equivoca."
