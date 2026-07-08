@@ -37,6 +37,11 @@ export default function AdminUsers() {
     load()
   }
 
+  async function handleUnlock(u) {
+    await api.post(`/admin/users/${u.user_id}/unlock`).catch(() => {})
+    load()
+  }
+
   async function handleDelete(u) {
     if (!window.confirm(t.adminDeleteConfirm(u.email))) return
     await api.delete(`/admin/users/${u.user_id}`).catch(() => {})
@@ -46,6 +51,12 @@ export default function AdminUsers() {
   async function handleRoleChange(u, role) {
     await api.put(`/admin/users/${u.user_id}`, { role }).catch(() => {})
     load()
+  }
+
+  function statusBadge(u) {
+    if (u.is_locked) return <span className="text-xs font-semibold text-orange-400">{t.adminUserLocked}</span>
+    if (u.status === 'active') return <span className="text-xs font-semibold text-green-400">{t.adminUserActive}</span>
+    return <span className="text-xs font-semibold text-slate-500">{t.adminUserInactive}</span>
   }
 
   return (
@@ -71,7 +82,7 @@ export default function AdminUsers() {
           </thead>
           <tbody className="divide-y divide-slate-800/50">
             {users.map(u => (
-              <tr key={u.user_id} className="bg-slate-900/50 hover:bg-slate-800/30 transition-colors">
+              <tr key={u.user_id} className={`hover:bg-slate-800/30 transition-colors ${u.is_locked ? 'bg-orange-950/10' : 'bg-slate-900/50'}`}>
                 <td className="px-4 py-3 text-slate-200">{u.email}</td>
                 <td className="px-4 py-3">
                   <select
@@ -83,15 +94,24 @@ export default function AdminUsers() {
                   </select>
                 </td>
                 <td className="px-4 py-3">
-                  <span className={`text-xs font-semibold ${u.status === 'active' ? 'text-green-400' : 'text-slate-500'}`}>
-                    {u.status === 'active' ? t.adminUserActive : t.adminUserInactive}
-                  </span>
+                  {statusBadge(u)}
+                  {u.failed_attempts > 0 && !u.is_locked && (
+                    <span className="ml-2 text-xs text-slate-600">({u.failed_attempts} intentos)</span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-xs text-slate-500">
                   {u.last_login ? new Date(u.last_login).toLocaleString('es-HN') : '—'}
                 </td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {u.is_locked && (
+                      <button
+                        onClick={() => handleUnlock(u)}
+                        className="text-xs px-2 py-0.5 rounded bg-orange-900/40 hover:bg-orange-900/60 text-orange-400 transition-colors"
+                      >
+                        {t.adminUserUnlock}
+                      </button>
+                    )}
                     <button
                       onClick={() => handleStatusToggle(u)}
                       className="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
@@ -114,7 +134,6 @@ export default function AdminUsers() {
         </table>
       </div>
 
-      {/* Modal crear usuario */}
       {showCreate && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
           <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-md shadow-2xl">

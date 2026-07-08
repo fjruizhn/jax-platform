@@ -151,6 +151,10 @@ export default {
   statMessages: 'Mensajes',
   statPipelines: 'Pipelines',
   statImages: 'Imágenes',
+  statUsersActive: 'Usuarios activos',
+  statUsersLocked: 'Bloqueados',
+  statApiKeys: (c, t) => `API Keys: ${c}/${t}`,
+  statRam: (pct) => `RAM: ${pct}%`,
 
   // Admin API keys
   adminKeyProvider: 'Proveedor',
@@ -179,8 +183,10 @@ export default {
   adminUserActions: 'Acciones',
   adminUserActive: 'activo',
   adminUserInactive: 'inactivo',
+  adminUserLocked: 'bloqueado',
   adminUserDisable: 'Desactivar',
   adminUserEnable: 'Activar',
+  adminUserUnlock: 'Desbloquear',
   adminUserDelete: 'Eliminar',
   adminUserResetPwd: 'Reset pwd',
   adminUserChangeRole: 'Cambiar rol',
