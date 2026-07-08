@@ -1,0 +1,6 @@
+# NUNCA versionar datos ni secretos del paquete de migración
+*.enc
+*.sql
+*.sql.gz
+*.bundle
+*.dump

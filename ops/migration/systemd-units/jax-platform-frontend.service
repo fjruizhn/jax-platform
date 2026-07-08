@@ -1,0 +1,19 @@
+[Unit]
+Description=JAX Platform Frontend (Vite)
+After=network.target jax-platform.service
+Wants=jax-platform.service
+
+[Service]
+Type=simple
+User=fruiz
+WorkingDirectory=/home/fruiz/jax-platform/frontend
+Environment="PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/fruiz/.nvm/versions/node/v24.16.0/bin/node /home/fruiz/jax-platform/frontend/node_modules/.bin/vite dev --host 0.0.0.0 --port 5173
+Restart=on-failure
+RestartSec=5
+SuccessExitStatus=143
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
