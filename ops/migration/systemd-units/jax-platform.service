@@ -1,0 +1,17 @@
+[Unit]
+Description=JAX Platform Backend
+After=network.target jax-las-manos.service
+Wants=jax-las-manos.service
+
+[Service]
+Environment="PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/home/fruiz/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Type=simple
+User=fruiz
+WorkingDirectory=/home/fruiz/jax-platform/backend
+EnvironmentFile=/etc/jax/.env
+ExecStart=/home/fruiz/jax-platform/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080 --no-access-log --log-level warning
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
