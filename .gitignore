@@ -6,3 +6,22 @@ backend/.venv/
 *.pyc
 *.pyo
 .env
+
+# Herramientas / runtime local (ruflo, claude, mcp) — no compartir
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
+ruvector.db
+*.rvf
+*.rvf.lock
+agentdb.rvf*
+
+# Backups locales — nunca al repo
+private-backups/
+backups-security/
+bitacoras/
+*.backup
+*.backup-*
+*.bak
+*.bak.*
