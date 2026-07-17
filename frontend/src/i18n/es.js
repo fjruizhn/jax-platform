@@ -177,6 +177,17 @@ export default {
   adminKeySave: 'Guardar',
   adminKeyEnter: 'Ingresá la nueva key para',
   adminKeyLatency: (ms) => `${ms}ms`,
+  adminKeyAddModel: 'Agregar modelo',
+  adminKeyModelProvider: 'Provider ID',
+  adminKeyModelName: 'Nombre del modelo',
+  adminKeyModelAdd: 'Agregar',
+  adminKeyModelDelete: 'Eliminar modelo',
+  adminKeyModelDeleteActive: 'No se puede eliminar el modelo activo',
+  adminKeyModelDeleteConfirmTitle: (name) => `Confirmá la eliminación de "${name}"`,
+  adminKeyModelDeleteConfirmSum: (a, b) => `Resolvé ${a} + ${b} = ? para confirmar`,
+  adminKeyModelDeleteConfirmPlaceholder: 'Resultado',
+  adminKeyModelDeleteConfirmButton: 'Eliminar',
+  adminKeyModelDeleteConfirmWrong: 'Resultado incorrecto',
 
   // Admin users
   adminUsersTitle: 'Gestión de Usuarios',

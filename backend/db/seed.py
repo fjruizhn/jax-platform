@@ -36,3 +36,29 @@ async def run_seed():
                     "VALUES (1, 1, 'fernando@rich-hn.com', %s, 'superadmin', 'active')",
                     (hashed,),
                 )
+
+            await cur.execute("SELECT COUNT(*) FROM facet_models")
+            (count,) = await cur.fetchone()
+            if count == 0:
+                await cur.execute(
+                    "INSERT INTO facet_models "
+                    "(facet, provider_id, model_name, is_active) VALUES "
+                    "('thot', 'openai', 'gpt-5.5', TRUE), "
+                    "('thot', 'openai', 'gpt-5.6-sol', FALSE), "
+                    "('thot', 'openai', 'gpt-5.6-terra', FALSE), "
+                    "('thot', 'openai', 'gpt-5.6-luna', FALSE), "
+                    "('jekyll', 'deepseek', 'deepseek-v4-flash', TRUE), "
+                    "('jekyll', 'deepseek', 'deepseek-v4-pro', FALSE), "
+                    "('hipatia', 'gemini', 'gemini-2.5-flash', TRUE), "
+                    "('hipatia', 'gemini', 'gemini-3.1-pro', FALSE), "
+                    "('hipatia', 'gemini', 'gemini-3.5-flash', FALSE), "
+                    "('kimi', 'moonshot', 'kimi-k2.7-code', TRUE), "
+                    "('ada', 'zhipu', 'glm-5.2', TRUE), "
+                    "('jax_local', 'ollama', 'qwen3:14b', TRUE), "
+                    "('jax_local', 'ollama', 'qwen3-coder:30b', FALSE), "
+                    "('jax_local', 'ollama', 'qwen2.5:7b', FALSE), "
+                    "('jax_local', 'ollama', 'llama3.2:3b', FALSE), "
+                    "('hyde', 'anthropic', 'sonnet', TRUE), "
+                    "('hyde', 'anthropic', 'opus', FALSE), "
+                    "('hyde', 'anthropic', 'haiku', FALSE)"
+                )

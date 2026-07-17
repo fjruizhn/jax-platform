@@ -96,6 +96,17 @@ async def _get_db_key(pool, user_id: int, provider_id: str) -> str:
     return _decrypt(row[0])
 
 
+async def _get_active_model(pool, facet: str, fallback: str) -> str:
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT model_name FROM facet_models WHERE facet = %s AND is_active = TRUE",
+                (facet,),
+            )
+            row = await cur.fetchone()
+    return row[0] if row else fallback
+
+
 @router.get("/keys")
 async def list_keys(user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
@@ -104,11 +115,12 @@ async def list_keys(user: AuthUser = Depends(require_superadmin)):
     result = []
     for p in PROVIDERS:
         raw = await _get_db_key(pool, user_id=1, provider_id=p["id"])
+        model = await _get_active_model(pool, p["facet"], fallback=p["model"])
         result.append({
             "id": p["id"],
             "name": p["name"],
             "facet": p["facet"],
-            "model": p["model"],
+            "model": model,
             "key_last4": raw[-4:] if len(raw) >= 4 else ("****" if raw else ""),
             "has_key": bool(raw),
             "status": "active" if raw else "missing",
