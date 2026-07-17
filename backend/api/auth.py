@@ -67,7 +67,6 @@ async def login(req: LoginRequest, request: Request, response: Response):
                     (new_attempts, new_locked_until, user_id),
                 )
 
-        remaining_attempts = max(0, MAX_ATTEMPTS - new_attempts)
         if new_locked_until:
             raise HTTPException(
                 status_code=status.HTTP_423_LOCKED,
@@ -76,7 +75,6 @@ async def login(req: LoginRequest, request: Request, response: Response):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Usuario o contraseña incorrectos",
-            headers={"X-Attempts-Remaining": str(remaining_attempts)},
         )
 
     async with pool.acquire() as conn:

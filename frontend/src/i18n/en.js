@@ -96,7 +96,6 @@ export default {
   loginButton: 'Enter Axioma',
   showPassword: 'Show password',
   hidePassword: 'Hide password',
-  attemptsRemaining: (n) => `${n} attempt(s) remaining`,
   accountLocked: 'Account locked. Check your email.',
   accountLockedMinutes: (min) => `Account locked. Try again in ${min} minute(s).`,
   forgotPassword: 'Forgot your password?',
