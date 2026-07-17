@@ -7,7 +7,8 @@ import Admin from './pages/Admin'
 import ResetPassword from './pages/ResetPassword'
 
 function RequireAuth({ children }) {
-  const { token } = useJaxStore()
+  const { token, sessionRestoring } = useJaxStore()
+  if (sessionRestoring) return null
   if (!token) return <Navigate to="/login" replace />
   return children
 }

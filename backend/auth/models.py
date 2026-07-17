@@ -28,6 +28,13 @@ class RefreshResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class MeResponse(BaseModel):
+    user_id: int
+    tenant_id: int
+    role: str
+    email: str
+
+
 class AuthUser(BaseModel):
     user_id: str
     tenant_id: str
