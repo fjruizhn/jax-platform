@@ -3,7 +3,9 @@ import time
 from jose import jwt, JWTError
 from fastapi import HTTPException, status
 
-SECRET = os.getenv("JAX_JWT_SECRET", "changeme-in-production")
+SECRET = os.getenv("JAX_JWT_SECRET", "")
+if not SECRET:
+    raise RuntimeError("JAX_JWT_SECRET no configurada en /etc/jax/.env")
 ALGORITHM = "HS256"
 ACCESS_EXPIRE_SECONDS = 15 * 60
 REFRESH_EXPIRE_SECONDS = 7 * 24 * 3600

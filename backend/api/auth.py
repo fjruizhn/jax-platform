@@ -170,7 +170,7 @@ async def forgot_password(req: ForgotPasswordRequest, request: Request):
 def _send_reset_email(to_email: str, reset_link: str):
     smtp_host = os.getenv("SMTP_HOST", "")
     if not smtp_host:
-        logger.info("RESET PASSWORD LINK (no SMTP): %s → %s", to_email, reset_link)
+        logger.warning("SMTP_HOST no configurado: no se pudo enviar el correo de recuperación")
         return
 
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
