@@ -12,7 +12,6 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [showPwd, setShowPwd] = useState(false)
   const [error, setError] = useState('')
-  const [attemptsLeft, setAttemptsLeft] = useState(null)
   const [loading, setLoading] = useState(false)
 
   // Forgot password state
@@ -24,7 +23,6 @@ export default function Login() {
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
-    setAttemptsLeft(null)
     setLoading(true)
     try {
       await login(email, password)
@@ -39,12 +37,6 @@ export default function Login() {
         if (match) setError(t.accountLockedMinutes(match[1]))
       } else {
         setError(t.loginError)
-        const remaining = err.response?.headers?.['x-attempts-remaining']
-        if (remaining !== undefined) {
-          const n = parseInt(remaining, 10)
-          if (!isNaN(n) && n > 0) setAttemptsLeft(n)
-          else if (n === 0) setError(t.accountLocked)
-        }
       }
     } finally {
       setLoading(false)
@@ -198,11 +190,6 @@ export default function Login() {
           {error && (
             <div className="text-sm text-red-400 bg-red-900/30 border border-red-800 rounded-lg px-3 py-2">
               {error}
-              {attemptsLeft !== null && attemptsLeft > 0 && (
-                <div className="text-xs mt-1 text-orange-400 font-semibold">
-                  {t.attemptsRemaining(attemptsLeft)}
-                </div>
-              )}
             </div>
           )}
 

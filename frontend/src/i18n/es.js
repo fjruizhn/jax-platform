@@ -96,7 +96,6 @@ export default {
   loginButton: 'Entrar a Axioma',
   showPassword: 'Mostrar contraseña',
   hidePassword: 'Ocultar contraseña',
-  attemptsRemaining: (n) => `Te quedan ${n} intento(s)`,
   accountLocked: 'Cuenta bloqueada. Revisa tu correo.',
   accountLockedMinutes: (min) => `Cuenta bloqueada. Intenta de nuevo en ${min} minuto(s).`,
   forgotPassword: '¿Olvidaste tu contraseña?',
