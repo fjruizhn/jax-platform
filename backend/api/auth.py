@@ -6,11 +6,12 @@ from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-from fastapi import APIRouter, HTTPException, Request, Response, Cookie, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, Cookie, status
 from pydantic import BaseModel
 
-from auth.models import LoginRequest, LoginResponse, RefreshResponse
+from auth.models import AuthUser, LoginRequest, LoginResponse, MeResponse, RefreshResponse
 from auth.jwt import create_access_token, create_refresh_token, decode_token
+from auth.middleware import get_current_user
 from db.connection import get_pool
 from db.seed import verify_password, _hash
 
@@ -121,6 +122,34 @@ async def refresh(refresh_token: str = Cookie(None)):
         payload["role"],
     )
     return RefreshResponse(access_token=access)
+
+
+@router.get("/me", response_model=MeResponse)
+async def me(user: AuthUser = Depends(get_current_user)):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT email FROM jax_users WHERE user_id = %s",
+                (user.user_id,),
+            )
+            row = await cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
+
+    return MeResponse(
+        user_id=int(user.user_id),
+        tenant_id=int(user.tenant_id),
+        role=user.role,
+        email=row[0],
+    )
+
+
+@router.post("/logout")
+async def logout(response: Response):
+    response.delete_cookie(key="refresh_token", samesite="lax")
+    return {"ok": True}
 
 
 class ForgotPasswordRequest(BaseModel):

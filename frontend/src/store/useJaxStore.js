@@ -24,9 +24,15 @@ const DEFAULT_FACETS = Object.keys(FACET_COLORS).reduce((acc, name) => {
   return acc
 }, {})
 
+// Migración: el JWT y los datos de usuario vivían en localStorage (legible por XSS).
+// Se purgan los restos de sesiones previas a este cambio.
+localStorage.removeItem('jax_token')
+localStorage.removeItem('jax_user')
+
 export const useJaxStore = create((set, get) => ({
-  token: localStorage.getItem('jax_token') || null,
-  user: JSON.parse(localStorage.getItem('jax_user') || 'null'),
+  token: null,
+  user: null,
+  sessionRestoring: true,
   facets: DEFAULT_FACETS,
   activePipelines: {},
   lasManos: false,
@@ -38,31 +44,31 @@ export const useJaxStore = create((set, get) => ({
   generatingImage: false,
   _pipelineCompletedShown: new Set(),
 
-  restoreSession: () => {
-    const token = localStorage.getItem('jax_token')
-    const user = JSON.parse(localStorage.getItem('jax_user') || 'null')
-    if (token && user) {
-      set({ token, user })
+  restoreSession: async () => {
+    try {
+      const { data: refreshData } = await api.post('/auth/refresh')
+      const { data: user } = await api.get('/auth/me', {
+        headers: { Authorization: `Bearer ${refreshData.access_token}` },
+      })
+      set({ token: refreshData.access_token, user })
+    } catch {
+      set({ token: null, user: null })
+    } finally {
+      set({ sessionRestoring: false })
     }
   },
 
   login: async (email, password) => {
     const { data } = await api.post('/auth/login', { email, password })
-    localStorage.setItem('jax_token', data.access_token)
-    localStorage.setItem('jax_user', JSON.stringify({
-      user_id: data.user_id,
-      tenant_id: data.tenant_id,
-      role: data.role,
-      email: data.email,
-    }))
     set({ token: data.access_token, user: data })
     return data
   },
 
   logout: () => {
-    localStorage.removeItem('jax_token')
-    localStorage.removeItem('jax_user')
     set({ token: null, user: null, messages: [] })
+    api.post('/auth/logout').catch(() => {
+      // best-effort: la sesión local ya quedó limpia
+    })
   },
 
   setWsStatus: (wsStatus) => set({ wsStatus }),
