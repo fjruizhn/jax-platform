@@ -177,6 +177,17 @@ export default {
   adminKeySave: 'Save',
   adminKeyEnter: 'Enter the new key for',
   adminKeyLatency: (ms) => `${ms}ms`,
+  adminKeyAddModel: 'Add model',
+  adminKeyModelProvider: 'Provider ID',
+  adminKeyModelName: 'Model name',
+  adminKeyModelAdd: 'Add',
+  adminKeyModelDelete: 'Delete model',
+  adminKeyModelDeleteActive: "Can't delete the active model",
+  adminKeyModelDeleteConfirmTitle: (name) => `Confirm deletion of "${name}"`,
+  adminKeyModelDeleteConfirmSum: (a, b) => `Solve ${a} + ${b} = ? to confirm`,
+  adminKeyModelDeleteConfirmPlaceholder: 'Result',
+  adminKeyModelDeleteConfirmButton: 'Delete',
+  adminKeyModelDeleteConfirmWrong: 'Wrong result',
 
   // Admin users
   adminUsersTitle: 'User Management',

@@ -86,6 +86,23 @@ CREATE TABLE IF NOT EXISTS user_api_keys (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# NOTA: la exclusividad de is_active (un solo modelo activo por faceta) NO se
+# aplica con un trigger — MariaDB rechaza (ERROR 1442) que un trigger
+# modifique la misma tabla que lo disparó. Se aplica a nivel de aplicación
+# en api/admin/facet_models.py (transacción con 2 UPDATE).
+CREATE_FACET_MODELS = """
+CREATE TABLE IF NOT EXISTS facet_models (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  facet VARCHAR(50) NOT NULL,
+  provider_id VARCHAR(50) NOT NULL,
+  model_name VARCHAR(100) NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT FALSE,
+  added_by VARCHAR(100) DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_facet_model (facet, model_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
@@ -94,6 +111,7 @@ _TABLES = [
     ("axioma_artifacts", CREATE_AXIOMA_ARTIFACTS),
     ("password_reset_tokens", CREATE_PASSWORD_RESET_TOKENS),
     ("user_api_keys", CREATE_USER_API_KEYS),
+    ("facet_models", CREATE_FACET_MODELS),
 ]
 
 _COLUMNS = [

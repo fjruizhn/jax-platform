@@ -32,6 +32,7 @@ from api.admin import (
     repository_router,
     config_router,
     usage_router,
+    facet_models_router,
 )
 
 
@@ -88,6 +89,7 @@ app.include_router(users_router)
 app.include_router(repository_router)
 app.include_router(config_router)
 app.include_router(usage_router)
+app.include_router(facet_models_router)
 
 
 @app.websocket("/ws/{user_id}")
