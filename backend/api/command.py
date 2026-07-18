@@ -10,7 +10,6 @@ from auth.models import AuthUser
 from jax_engine.events import event_bus
 from jax_engine.schemas import JAXEvent
 from jax_engine.state import engine_state
-from jax_engine.websocket_hub import ws_hub
 
 router = APIRouter(prefix="/api")
 
@@ -42,7 +41,6 @@ async def create_command(req: CommandRequest, user: AuthUser = Depends(get_curre
         payload={"task_id": task_id, "command_preview": req.command[:100]},
     )
     await event_bus.publish(start_event)
-    await ws_hub.broadcast_to_tenant(tenant_id, start_event, engine_state._user_tenant_map)
 
     await engine_state.set_facet_status("hyde", "thinking", tenant_id, user_id, req.command[:100])
 
@@ -106,7 +104,6 @@ async def _run_command(
             },
         )
         await event_bus.publish(done_event)
-        await ws_hub.broadcast_to_tenant(tenant_id, done_event, engine_state._user_tenant_map)
         await engine_state.set_facet_status("hyde", "idle", tenant_id, user_id)
 
     except Exception as e:
@@ -124,5 +121,4 @@ async def _run_command(
             },
         )
         await event_bus.publish(fail_event)
-        await ws_hub.broadcast_to_tenant(tenant_id, fail_event, engine_state._user_tenant_map)
         await engine_state.set_facet_status("hyde", "idle", tenant_id, user_id)

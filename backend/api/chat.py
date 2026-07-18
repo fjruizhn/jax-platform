@@ -13,7 +13,6 @@ from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
 from jax_engine.events import event_bus
 from jax_engine.state import engine_state
-from jax_engine.websocket_hub import ws_hub
 from api.admin.usage import record_usage
 
 router = APIRouter(prefix="/api")
@@ -507,5 +506,3 @@ async def _fire_completed(facet: str, tenant_id: str, user_id: str, response_tex
         },
     )
     await event_bus.publish(event)
-    user_tenant_map = engine_state._user_tenant_map
-    await ws_hub.broadcast_to_tenant(tenant_id, event, user_tenant_map)

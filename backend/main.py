@@ -140,7 +140,7 @@ async def websocket_endpoint(
 
     await websocket.send_json({"type": "auth_ok"})
 
-    await ws_hub.connect(user_id, websocket)
+    connection_id = await ws_hub.connect(user_id, websocket)
     engine_state.register_user(user_id, tenant_id, role)
 
     async def event_callback(event: JAXEvent):
@@ -159,9 +159,12 @@ async def websocket_endpoint(
         pass
     finally:
         heartbeat_task.cancel()
-        await event_bus.unsubscribe(user_id)
-        await ws_hub.disconnect(user_id)
-        engine_state.unregister_user(user_id)
+        await ws_hub.disconnect(user_id, connection_id)
+        # Only tear down the per-user subscription/presence once this user has
+        # no connections left — otherwise closing one tab silences the others.
+        if not await ws_hub.has_connections(user_id):
+            await event_bus.unsubscribe(user_id)
+            engine_state.unregister_user(user_id)
 
 
 async def _heartbeat(user_id: str, tenant_id: str):
