@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth.middleware import get_current_user
@@ -58,6 +58,11 @@ async def create_command(req: CommandRequest, user: AuthUser = Depends(get_curre
 
 @router.get("/command/{task_id}")
 async def get_command_result(task_id: str, user: AuthUser = Depends(get_current_user)):
+    try:
+        uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="task_id inválido")
+
     result_file = MISSIONS_DIR / f"web-task-{task_id}_result.md"
     if result_file.exists():
         return {"status": "completed", "result": result_file.read_text()}
