@@ -86,7 +86,11 @@ def test_multi_tab_second_connection_survives_first_close(client):
 
         # Check the buffer before receiving: on the buggy code nothing is
         # delivered to sock2, so a blind receive_json() would hang forever.
-        assert _buffered(sock2) >= 1, "surviving tab received no event after sibling closed"
+        # Exactly 1 (not >=1): guards against a regression to a per-connection
+        # EventBus callback structure, which would deliver this event twice.
+        assert _buffered(sock2) == 1, (
+            f"expected exactly 1 event delivered to surviving tab, got {_buffered(sock2)}"
+        )
         got = sock2.receive_json()
         assert got["event_id"] == event.event_id
     finally:
