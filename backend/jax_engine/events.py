@@ -22,14 +22,18 @@ class EventBus:
                 tenant_subscribers.pop(user_id, None)
 
     async def publish(self, event: JAXEvent):
+        # WS canal por usuario — nunca por tenant: route only to the subscriber
+        # that owns this event's user_id, not every user in the tenant.
         tenant_id = str(event.tenant_id)
+        user_id = str(event.user_id)
         async with self._lock:
-            callbacks = list(self._subscribers.get(tenant_id, {}).values())
-        for cb in callbacks:
-            try:
-                await cb(event)
-            except Exception:
-                pass
+            cb = self._subscribers.get(tenant_id, {}).get(user_id)
+        if cb is None:
+            return
+        try:
+            await cb(event)
+        except Exception:
+            pass
 
 
 event_bus = EventBus()

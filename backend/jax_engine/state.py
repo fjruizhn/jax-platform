@@ -7,7 +7,6 @@ from .schemas import (
     EcosystemState, FacetState, PipelineState, PipelineStep, UserSession, JAXEvent
 )
 from .events import event_bus
-from .websocket_hub import ws_hub
 
 FACET_COLORS = {
     "jax_local": "#3b82f6",
@@ -92,7 +91,6 @@ class JAXEngineState:
             payload={"facet": facet, "status": status, "message": message},
         )
         await event_bus.publish(event)
-        await ws_hub.broadcast_to_tenant(tenant_id, event, self._user_tenant_map)
 
     async def upsert_pipeline(self, pipeline: PipelineState, tenant_id: str, user_id: str):
         self._state.active_pipelines[pipeline.pipeline_id] = pipeline
@@ -103,7 +101,6 @@ class JAXEngineState:
             payload=pipeline.model_dump(),
         )
         await event_bus.publish(event)
-        await ws_hub.broadcast_to_tenant(tenant_id, event, self._user_tenant_map)
 
     def remove_pipeline(self, pipeline_id: str):
         self._state.active_pipelines.pop(pipeline_id, None)
@@ -172,7 +169,6 @@ class JAXEngineState:
                         payload={"alive": alive},
                     )
                     await event_bus.publish(event)
-                    await ws_hub.broadcast_to_tenant("1", event, self._user_tenant_map)
 
                 await asyncio.sleep(30)
 
@@ -208,9 +204,6 @@ class JAXEngineState:
                                 },
                             )
                             await event_bus.publish(gate_event)
-                            await ws_hub.broadcast_to_tenant(
-                                pipeline.tenant_id, gate_event, self._user_tenant_map
-                            )
 
                         if updated.status in ("completed", "failed"):
                             self.remove_pipeline(pid)
