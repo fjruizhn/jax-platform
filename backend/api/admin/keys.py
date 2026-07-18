@@ -2,11 +2,11 @@ import os
 import time
 import logging
 import httpx
-from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
+from crypto_secrets import encrypt_secret, decrypt_secret, decrypt_db_secret
 from db.connection import get_pool
 
 logger = logging.getLogger(__name__)
@@ -25,24 +25,6 @@ PROVIDERS = [
 _PROVIDER_MAP = {p["id"]: p for p in PROVIDERS}
 
 
-def _get_fernet() -> Fernet:
-    key = os.getenv("FERNET_KEY", "")
-    if not key:
-        raise RuntimeError("FERNET_KEY no configurada en /etc/jax/.env")
-    return Fernet(key.encode())
-
-
-def _encrypt(value: str) -> str:
-    return _get_fernet().encrypt(value.encode()).decode()
-
-
-def _decrypt(token: str) -> str:
-    try:
-        return _get_fernet().decrypt(token.encode()).decode()
-    except (InvalidToken, Exception):
-        return ""
-
-
 def _load_env() -> dict:
     env = {}
     try:
@@ -59,7 +41,9 @@ def _load_env() -> dict:
 
 def _write_env_key(env_key: str, value: str):
     env = _load_env()
-    env[env_key] = value
+    # En disco siempre cifrado (o vacío al borrar); en memoria queda el
+    # valor plano para que el proceso actual siga funcionando sin reinicio.
+    env[env_key] = encrypt_secret(value) if value else value
     lines = [f"{k}={v}\n" for k, v in env.items()]
     with open(ENV_PATH, "w") as f:
         f.writelines(lines)
@@ -74,7 +58,9 @@ async def _seed_keys_from_env(pool, user_id: int = 1):
                 raw = env.get(p["env_key"], "")
                 if not raw:
                     continue
-                encrypted = _encrypt(raw)
+                # raw puede venir cifrado (post-migración) o en texto plano
+                # (legacy, aún no migrado) — decrypt_secret soporta ambos.
+                encrypted = encrypt_secret(decrypt_secret(raw))
                 await cur.execute(
                     "INSERT INTO user_api_keys (user_id, provider_id, env_key, encrypted_value) "
                     "VALUES (%s, %s, %s, %s) "
@@ -93,7 +79,7 @@ async def _get_db_key(pool, user_id: int, provider_id: str) -> str:
             row = await cur.fetchone()
     if not row:
         return ""
-    return _decrypt(row[0])
+    return decrypt_db_secret(row[0])
 
 
 async def _get_active_model(pool, facet: str, fallback: str) -> str:
@@ -176,7 +162,7 @@ async def update_key(
     if not prov:
         raise HTTPException(status_code=404, detail="Provider no encontrado")
 
-    encrypted = _encrypt(req.api_key)
+    encrypted = encrypt_secret(req.api_key)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
