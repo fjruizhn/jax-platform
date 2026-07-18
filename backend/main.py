@@ -100,6 +100,42 @@ app.include_router(usage_router)
 app.include_router(facet_models_router)
 
 
+# ws_hub and event_bus each guard their own state with their own lock, so a
+# disconnecting tab's disconnect+maybe-unsubscribe sequence can interleave
+# with a reconnecting tab's connect+subscribe sequence for the same user
+# (e.g. a browser tab reconnecting right as the old tab closes): the
+# reconnect's subscribe can land in the gap between the disconnecting tab's
+# "any connections left?" check and its unsubscribe call, and then get wiped
+# out by that unsubscribe. This lock serializes the two sequences per the
+# whole app (connect/disconnect is not a hot path — no I/O happens under it)
+# so that can no longer happen.
+_ws_lifecycle_lock = asyncio.Lock()
+
+
+async def _ws_connect_and_subscribe(
+    user_id: str, tenant_id: str, role: str, websocket: WebSocket
+) -> str:
+    async with _ws_lifecycle_lock:
+        connection_id = await ws_hub.connect(user_id, websocket)
+        engine_state.register_user(user_id, tenant_id, role)
+
+        async def event_callback(event: JAXEvent):
+            await ws_hub.send_to_user(user_id, event)
+
+        await event_bus.subscribe(tenant_id, user_id, event_callback)
+    return connection_id
+
+
+async def _ws_disconnect_and_maybe_unsubscribe(user_id: str, connection_id: str):
+    async with _ws_lifecycle_lock:
+        await ws_hub.disconnect(user_id, connection_id)
+        # Only tear down the per-user subscription/presence once this user has
+        # no connections left — otherwise closing one tab silences the others.
+        if not await ws_hub.has_connections(user_id):
+            await event_bus.unsubscribe(user_id)
+            engine_state.unregister_user(user_id)
+
+
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(
     websocket: WebSocket,
@@ -140,13 +176,7 @@ async def websocket_endpoint(
 
     await websocket.send_json({"type": "auth_ok"})
 
-    connection_id = await ws_hub.connect(user_id, websocket)
-    engine_state.register_user(user_id, tenant_id, role)
-
-    async def event_callback(event: JAXEvent):
-        await ws_hub.send_to_user(user_id, event)
-
-    await event_bus.subscribe(tenant_id, user_id, event_callback)
+    connection_id = await _ws_connect_and_subscribe(user_id, tenant_id, role, websocket)
 
     heartbeat_task = asyncio.create_task(_heartbeat(user_id, tenant_id))
 
@@ -159,12 +189,7 @@ async def websocket_endpoint(
         pass
     finally:
         heartbeat_task.cancel()
-        await ws_hub.disconnect(user_id, connection_id)
-        # Only tear down the per-user subscription/presence once this user has
-        # no connections left — otherwise closing one tab silences the others.
-        if not await ws_hub.has_connections(user_id):
-            await event_bus.unsubscribe(user_id)
-            engine_state.unregister_user(user_id)
+        await _ws_disconnect_and_maybe_unsubscribe(user_id, connection_id)
 
 
 async def _heartbeat(user_id: str, tenant_id: str):
