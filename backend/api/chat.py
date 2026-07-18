@@ -14,6 +14,7 @@ from jax_engine.schemas import JAXEvent
 from jax_engine.events import event_bus
 from jax_engine.state import engine_state
 from api.admin.usage import record_usage
+from db.connection import get_pool
 
 router = APIRouter(prefix="/api")
 
@@ -299,6 +300,23 @@ def _load_config() -> dict:
         return tomllib.load(f)
 
 
+async def _resolve_active_model(facet: str, fallback: str) -> str:
+    """Modelo activo de la faceta segun la tabla facet_models (fuente de verdad
+    editada desde el panel admin). Cae a `fallback` (el model_default de
+    config.toml) si la faceta no tiene fila activa, para que el chat nunca se
+    rompa si la tabla queda vacia para esa faceta."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT model_name FROM facet_models "
+                "WHERE facet = %s AND is_active = TRUE LIMIT 1",
+                (facet,),
+            )
+            row = await cur.fetchone()
+    return row[0] if row else fallback
+
+
 def _build_messages(system_prompt: str, history: list[dict], message: str) -> list[dict]:
     msgs = [{"role": "system", "content": system_prompt}]
     msgs.extend(history)
@@ -306,9 +324,8 @@ def _build_messages(system_prompt: str, history: list[dict], message: str) -> li
     return msgs
 
 
-async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict) -> str:
+async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str) -> str:
     url = config["personalities"]["jax_local"]["api_url"]
-    model = config["personalities"]["jax_local"]["model_default"]
     messages = _build_messages(system_prompt, history, message)
     async with httpx.AsyncClient(timeout=180.0) as client:
         r = await client.post(url, json={"model": model, "messages": messages, "stream": False, "keep_alive": -1})
@@ -366,20 +383,30 @@ async def _invoke_facet(
     system_prompt = personality.get("system_prompt", "Sos JAX.")
 
     if facet == "jax_local":
-        return await _call_ollama(system_prompt, history, message, config)
+        model = await _resolve_active_model(
+            "jax_local", personality.get("model_default", "qwen3:14b"))
+        # Bug 3: jax_local no sabia con que modelo corre y confabulaba su
+        # identidad. Le damos el dato real (el resuelto desde la DB) como
+        # contexto informativo, no como algo que deba soltar sin que le pregunten.
+        ident = (
+            f"\n\nDato tecnico (para tu propia referencia, no lo repitas sin que "
+            f"te pregunten): el modelo que te ejecuta en este momento es "
+            f"'{model}', via Ollama local en hall9000."
+        )
+        return await _call_ollama(system_prompt + ident, history, message, config, model)
 
     if facet == "jekyll":
         return await _call_openai_compat(
             "https://api.deepseek.com/v1",
             os.getenv("DEEPSEEK_API_KEY", ""),
-            personality.get("model_default", "deepseek-v4-flash"),
+            await _resolve_active_model("jekyll", personality.get("model_default", "deepseek-v4-flash")),
             system_prompt, history, message,
         )
 
     if facet == "hipatia":
         return await _call_gemini(
             os.getenv("GEMINI_API_KEY", ""),
-            personality.get("model_default", "gemini-2.5-flash"),
+            await _resolve_active_model("hipatia", personality.get("model_default", "gemini-2.5-flash")),
             system_prompt, history, message,
         )
 
@@ -387,7 +414,7 @@ async def _invoke_facet(
         return await _call_openai_compat(
             "https://api.openai.com/v1",
             os.getenv("OPENAI_API_KEY", ""),
-            personality.get("model_default", "gpt-4o"),
+            await _resolve_active_model("thot", personality.get("model_default", "gpt-4o")),
             system_prompt, history, message,
         )
 
@@ -398,7 +425,7 @@ async def _invoke_facet(
         return await _call_openai_compat(
             base_url,
             os.getenv("KIMI_API_KEY", ""),
-            personality.get("model_default", "kimi-k2.7-code"),
+            await _resolve_active_model("kimi", personality.get("model_default", "kimi-k2.7-code")),
             system_prompt, history, message,
         )
 
@@ -408,12 +435,13 @@ async def _invoke_facet(
         return await _call_openai_compat(
             base_url,
             os.getenv("ZAI_API_KEY", ""),
-            personality.get("model_default", "glm-5.2"),
+            await _resolve_active_model("ada", personality.get("model_default", "glm-5.2")),
             system_prompt, history, message,
         )
 
     # fallback
-    return await _call_ollama(system_prompt, history, message, config)
+    model = await _resolve_active_model(facet, personality.get("model_default", "qwen3:14b"))
+    return await _call_ollama(system_prompt, history, message, config, model)
 
 
 def _update_history(user_id: str, user_msg: str, assistant_msg: str):
