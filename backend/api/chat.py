@@ -374,6 +374,45 @@ async def _call_gemini(
         return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
+_MODEL_IDENTITY_WORDS = ("modelo", "model")
+_MODEL_IDENTITY_SELF_REF = (
+    "sos", "eres", "estas", "corres", "corriendo", "ejecuta", "ejecutas",
+    "usas", "tenes", "tienes", "corre", "corriste",
+    "are", "running", "use", "using",
+)
+
+
+def _is_model_identity_question(message: str) -> bool:
+    """Detecta preguntas sobre que modelo ejecuta a la faceta ('que modelo
+    sos', 'con que modelo estas corriendo'). Estas se resuelven con el dato
+    real de _resolve_active_model, nunca con la respuesta del LLM: el modelo
+    confabula su propia identidad incluso cuando el dato correcto ya esta en
+    su contexto (REGLA DE EVIDENCIA — ver config.toml)."""
+    text = _sin_tildes(message.lower().strip())
+    has_model_word = any(re.search(rf"\b{kw}\b", text) for kw in _MODEL_IDENTITY_WORDS)
+    if not has_model_word:
+        return False
+    return any(re.search(rf"\b{v}\b", text) for v in _MODEL_IDENTITY_SELF_REF)
+
+
+_MODEL_IDENTITY_HOSTING = {
+    "jax_local": "vía Ollama local en hall9000",
+    "jekyll": "vía la API de DeepSeek",
+    "hipatia": "vía la API de Gemini (Google)",
+    "thot": "vía la API de OpenAI",
+    "kimi": "vía la API de Moonshot",
+    "ada": "vía la API de Zhipu (GLM)",
+}
+
+
+def _model_identity_reply(model: str, facet: str) -> str:
+    hosting = _MODEL_IDENTITY_HOSTING.get(facet, "vía la API configurada para esta faceta")
+    return (
+        f"Corro con '{model}' {hosting} — dato leído en vivo del selector de "
+        f"modelos activo, no de memoria."
+    )
+
+
 async def _invoke_facet(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
@@ -388,6 +427,10 @@ async def _invoke_facet(
     if facet == "jax_local":
         model = await _resolve_active_model(
             "jax_local", personality.get("model_default", "qwen3:14b"))
+
+        if _is_model_identity_question(message):
+            return _model_identity_reply(model, facet)
+
         # Bug 3: jax_local no sabia con que modelo corre y confabulaba su
         # identidad. Le damos el dato real (el resuelto desde la DB) como
         # contexto informativo, no como algo que deba soltar sin que le pregunten.
@@ -399,51 +442,58 @@ async def _invoke_facet(
         return await _call_ollama(system_prompt + ident, history, message, config, model)
 
     if facet == "jekyll":
+        model = await _resolve_active_model("jekyll", personality.get("model_default", "deepseek-v4-flash"))
+        if _is_model_identity_question(message):
+            return _model_identity_reply(model, facet)
         return await _call_openai_compat(
             "https://api.deepseek.com/v1",
             os.getenv("DEEPSEEK_API_KEY", ""),
-            await _resolve_active_model("jekyll", personality.get("model_default", "deepseek-v4-flash")),
-            system_prompt, history, message,
+            model, system_prompt, history, message,
         )
 
     if facet == "hipatia":
+        model = await _resolve_active_model("hipatia", personality.get("model_default", "gemini-2.5-flash"))
+        if _is_model_identity_question(message):
+            return _model_identity_reply(model, facet)
         return await _call_gemini(
-            os.getenv("GEMINI_API_KEY", ""),
-            await _resolve_active_model("hipatia", personality.get("model_default", "gemini-2.5-flash")),
-            system_prompt, history, message,
+            os.getenv("GEMINI_API_KEY", ""), model, system_prompt, history, message,
         )
 
     if facet == "thot":
+        model = await _resolve_active_model("thot", personality.get("model_default", "gpt-4o"))
+        if _is_model_identity_question(message):
+            return _model_identity_reply(model, facet)
         return await _call_openai_compat(
             "https://api.openai.com/v1",
             os.getenv("OPENAI_API_KEY", ""),
-            await _resolve_active_model("thot", personality.get("model_default", "gpt-4o")),
-            system_prompt, history, message,
+            model, system_prompt, history, message,
         )
 
     if facet == "kimi":
         api_url = personality.get("api_url", "https://api.moonshot.ai/v1/chat/completions")
         # Normalizar a base URL sin /chat/completions
         base_url = api_url[:-len("/chat/completions")] if api_url.endswith("/chat/completions") else api_url
+        model = await _resolve_active_model("kimi", personality.get("model_default", "kimi-k2.7-code"))
+        if _is_model_identity_question(message):
+            return _model_identity_reply(model, facet)
         return await _call_openai_compat(
-            base_url,
-            os.getenv("KIMI_API_KEY", ""),
-            await _resolve_active_model("kimi", personality.get("model_default", "kimi-k2.7-code")),
-            system_prompt, history, message,
+            base_url, os.getenv("KIMI_API_KEY", ""), model, system_prompt, history, message,
         )
 
     if facet == "ada":
         api_url = personality.get("api_url", "https://api.z.ai/api/paas/v4/chat/completions")
         base_url = api_url[:-len("/chat/completions")] if api_url.endswith("/chat/completions") else api_url
+        model = await _resolve_active_model("ada", personality.get("model_default", "glm-5.2"))
+        if _is_model_identity_question(message):
+            return _model_identity_reply(model, facet)
         return await _call_openai_compat(
-            base_url,
-            os.getenv("ZAI_API_KEY", ""),
-            await _resolve_active_model("ada", personality.get("model_default", "glm-5.2")),
-            system_prompt, history, message,
+            base_url, os.getenv("ZAI_API_KEY", ""), model, system_prompt, history, message,
         )
 
     # fallback
     model = await _resolve_active_model(facet, personality.get("model_default", "qwen3:14b"))
+    if _is_model_identity_question(message):
+        return _model_identity_reply(model, facet)
     return await _call_ollama(system_prompt, history, message, config, model)
 
 
