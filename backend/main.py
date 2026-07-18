@@ -5,6 +5,14 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+# Debe correr antes de importar cualquier router: systemd carga
+# /etc/jax/.env vía EnvironmentFile con las API keys de proveedor ya
+# cifradas (ver crypto_secrets.py); esto las deja en texto plano en
+# os.environ para que api/chat.py y api/image.py sigan leyendo
+# os.getenv(...) exactamente igual que antes.
+from crypto_secrets import decrypt_provider_keys_in_env
+decrypt_provider_keys_in_env()
+
 from db.connection import get_pool, close_pool
 from db.migrations import run_migrations
 from db.seed import run_seed
