@@ -303,17 +303,20 @@ def _load_config() -> dict:
 async def _resolve_active_model(facet: str, fallback: str) -> str:
     """Modelo activo de la faceta segun la tabla facet_models (fuente de verdad
     editada desde el panel admin). Cae a `fallback` (el model_default de
-    config.toml) si la faceta no tiene fila activa, para que el chat nunca se
-    rompa si la tabla queda vacia para esa faceta."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT model_name FROM facet_models "
-                "WHERE facet = %s AND is_active = TRUE LIMIT 1",
-                (facet,),
-            )
-            row = await cur.fetchone()
+    config.toml) si la faceta no tiene fila activa o si la DB no responde,
+    para que el chat nunca se rompa si la tabla queda vacia o la DB esta caida."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT model_name FROM facet_models "
+                    "WHERE facet = %s AND is_active = TRUE LIMIT 1",
+                    (facet,),
+                )
+                row = await cur.fetchone()
+    except Exception:
+        return fallback
     return row[0] if row else fallback
 
 
