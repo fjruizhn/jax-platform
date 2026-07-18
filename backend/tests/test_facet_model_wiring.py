@@ -128,6 +128,28 @@ def test_falls_back_to_config_when_no_active_row(client):
             )
 
 
+def test_falls_back_to_config_when_db_query_raises(client):
+    """If the facet_models query raises (e.g. MariaDB down/unreachable), chat
+    must still fall back to config.toml's model_default rather than 502ing.
+    jax_local is the local/offline-resilient facet — the rest of the chat
+    path already degrades gracefully on DB failure (see _ensure_memory)."""
+    mock_post = AsyncMock(return_value=_ollama_response())
+    with patch("api.chat.get_pool", AsyncMock(side_effect=RuntimeError("DB down"))), \
+         patch.object(httpx.AsyncClient, "post", mock_post):
+        resp = client.post(
+            "/api/chat",
+            json={"message": "que modelo sos", "facet": "jax_local"},
+            headers=_auth_headers(),
+        )
+    assert resp.status_code == 200, resp.text
+    assert mock_post.call_count == 1, f"expected one Ollama call, got {mock_post.call_count}"
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["model"] == CONFIG_FALLBACK_MODEL, (
+        f"expected config fallback '{CONFIG_FALLBACK_MODEL}' when the DB query raises, "
+        f"got '{payload['model']}'"
+    )
+
+
 def test_jax_local_system_prompt_states_resolved_model(client):
     """jax_local's system prompt must name the actually-resolved (DB-active)
     model, so it stops confabulating its identity (Bug 3)."""
