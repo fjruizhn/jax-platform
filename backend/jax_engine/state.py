@@ -151,26 +151,29 @@ class JAXEngineState:
             updated_at=datetime.utcnow().isoformat() + "Z",
         )
 
+    async def _check_las_manos_health(self, client: httpx.AsyncClient):
+        try:
+            r = await client.get(f"{LAS_MANOS_URL}/health")
+            alive = r.status_code == 200
+        except Exception:
+            alive = False
+
+        if alive != self._state.las_manos_alive:
+            self._state.las_manos_alive = alive
+            self._state.last_health_check = datetime.utcnow().isoformat() + "Z"
+            for user_id, session in list(self._state.connected_users.items()):
+                event = JAXEvent(
+                    event_type="las_manos_health_changed",
+                    tenant_id=session.tenant_id,
+                    user_id=user_id,
+                    payload={"alive": alive},
+                )
+                await event_bus.publish(event)
+
     async def _poll_las_manos(self):
         async with httpx.AsyncClient(timeout=5.0) as client:
             while True:
-                try:
-                    r = await client.get(f"{LAS_MANOS_URL}/health")
-                    alive = r.status_code == 200
-                except Exception:
-                    alive = False
-
-                if alive != self._state.las_manos_alive:
-                    self._state.las_manos_alive = alive
-                    self._state.last_health_check = datetime.utcnow().isoformat() + "Z"
-                    event = JAXEvent(
-                        event_type="las_manos_health_changed",
-                        tenant_id="1",
-                        user_id="1",
-                        payload={"alive": alive},
-                    )
-                    await event_bus.publish(event)
-
+                await self._check_las_manos_health(client)
                 await asyncio.sleep(30)
 
     async def _poll_pipelines(self):
