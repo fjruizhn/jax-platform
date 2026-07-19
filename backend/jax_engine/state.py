@@ -143,6 +143,7 @@ class JAXEngineState:
         return PipelineState(
             pipeline_id=pid,
             tenant_id=existing.tenant_id,
+            user_id=existing.user_id,
             name=p.get("name", existing.name),
             status=mapped_status,
             steps=steps,
@@ -178,40 +179,43 @@ class JAXEngineState:
                 for pid, pipeline in list(self._state.active_pipelines.items()):
                     if pipeline.status not in ("running", "waiting_gate"):
                         continue
-                    try:
-                        r = await client.get(f"{LAS_MANOS_URL}/jacobs/pipeline/{pid}")
-                        if r.status_code != 200:
-                            continue
-                        data = r.json()
-                        updated = self._parse_jacobs_pipeline(pid, pipeline, data)
-
-                        old_fp = _steps_fingerprint(pipeline.steps)
-                        new_fp = _steps_fingerprint(updated.steps)
-                        if updated.status == pipeline.status and old_fp == new_fp:
-                            continue
-
-                        prev_status = pipeline.status
-                        await self.upsert_pipeline(updated, pipeline.tenant_id, "1")
-
-                        if updated.status == "waiting_gate" and prev_status != "waiting_gate":
-                            gate_event = JAXEvent(
-                                event_type="human_gate_requested",
-                                tenant_id=pipeline.tenant_id,
-                                user_id="1",
-                                payload={
-                                    "pipeline_id": pid,
-                                    "message": "Jacobs espera aprobación para continuar",
-                                },
-                            )
-                            await event_bus.publish(gate_event)
-
-                        if updated.status in ("completed", "failed"):
-                            self.remove_pipeline(pid)
-
-                    except Exception:
-                        pass
+                    await self._poll_one_pipeline(client, pid, pipeline)
 
                 await asyncio.sleep(5)
+
+    async def _poll_one_pipeline(self, client: httpx.AsyncClient, pid: str, pipeline: PipelineState):
+        try:
+            r = await client.get(f"{LAS_MANOS_URL}/jacobs/pipeline/{pid}")
+            if r.status_code != 200:
+                return
+            data = r.json()
+            updated = self._parse_jacobs_pipeline(pid, pipeline, data)
+
+            old_fp = _steps_fingerprint(pipeline.steps)
+            new_fp = _steps_fingerprint(updated.steps)
+            if updated.status == pipeline.status and old_fp == new_fp:
+                return
+
+            prev_status = pipeline.status
+            await self.upsert_pipeline(updated, pipeline.tenant_id, updated.user_id)
+
+            if updated.status == "waiting_gate" and prev_status != "waiting_gate":
+                gate_event = JAXEvent(
+                    event_type="human_gate_requested",
+                    tenant_id=pipeline.tenant_id,
+                    user_id=updated.user_id,
+                    payload={
+                        "pipeline_id": pid,
+                        "message": "Jacobs espera aprobación para continuar",
+                    },
+                )
+                await event_bus.publish(gate_event)
+
+            if updated.status in ("completed", "failed"):
+                self.remove_pipeline(pid)
+
+        except Exception:
+            pass
 
     def start_background_tasks(self):
         loop = asyncio.get_event_loop()
