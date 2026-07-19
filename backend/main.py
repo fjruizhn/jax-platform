@@ -19,6 +19,7 @@ from db.seed import run_seed
 from jax_engine.state import engine_state
 from jax_engine.events import event_bus
 from jax_engine.websocket_hub import ws_hub
+from jax_engine.lifecycle import lifecycle_lock, sse_connections
 from jax_engine.schemas import JAXEvent
 from auth.jwt import decode_token
 
@@ -106,16 +107,18 @@ app.include_router(facet_models_router)
 # (e.g. a browser tab reconnecting right as the old tab closes): the
 # reconnect's subscribe can land in the gap between the disconnecting tab's
 # "any connections left?" check and its unsubscribe call, and then get wiped
-# out by that unsubscribe. This lock serializes the two sequences per the
-# whole app (connect/disconnect is not a hot path — no I/O happens under it)
-# so that can no longer happen.
-_ws_lifecycle_lock = asyncio.Lock()
+# out by that unsubscribe. lifecycle_lock (jax_engine/lifecycle.py) serializes
+# the connect+subscribe / disconnect+maybe-unsubscribe sequences of BOTH the
+# WS endpoint and the SSE endpoint against each other (connect/disconnect is
+# not a hot path — no I/O happens under it) so that can no longer happen
+# same-channel OR cross-channel (a WS tab and an SSE connection for the same
+# user share the same event_bus subscription slot).
 
 
 async def _ws_connect_and_subscribe(
     user_id: str, tenant_id: str, role: str, websocket: WebSocket
 ) -> str:
-    async with _ws_lifecycle_lock:
+    async with lifecycle_lock:
         connection_id = await ws_hub.connect(user_id, websocket)
         engine_state.register_user(user_id, tenant_id, role)
 
@@ -127,11 +130,12 @@ async def _ws_connect_and_subscribe(
 
 
 async def _ws_disconnect_and_maybe_unsubscribe(user_id: str, connection_id: str):
-    async with _ws_lifecycle_lock:
+    async with lifecycle_lock:
         await ws_hub.disconnect(user_id, connection_id)
         # Only tear down the per-user subscription/presence once this user has
-        # no connections left — otherwise closing one tab silences the others.
-        if not await ws_hub.has_connections(user_id):
+        # no connections left on EITHER channel — otherwise closing one WS tab
+        # silences a sibling WS tab, or an SSE connection for the same user.
+        if not await ws_hub.has_connections(user_id) and not sse_connections.has_connections(user_id):
             await event_bus.unsubscribe(user_id)
             engine_state.unregister_user(user_id)
 
