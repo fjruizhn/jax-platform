@@ -27,7 +27,6 @@ function BottomBar() {
   const [uploading, setUploading] = useState(false)
   const addMessage = useJaxStore((s) => s.addMessage)
   const updateMessage = useJaxStore((s) => s.updateMessage)
-  const wsStatus = useJaxStore((s) => s.wsStatus)
   const activeFacet = useJaxStore((s) => s.activeFacet)
   const setActiveFacet = useJaxStore((s) => s.setActiveFacet)
   const addToast = useJaxStore((s) => s.addToast)

@@ -73,3 +73,65 @@ Resultado: 3/3 tests temporales pasaron. Evidencia reproducible: cualquiera pued
 
 - No pude medir el "% de re-renders innecesarios" en producción real (requeriría React DevTools Profiler contra la app corriendo en el navegador, fuera de alcance de este entorno de agente sin sesión de browser activa). La evidencia que junté es sobre el mecanismo (selector vs no-selector, memo vs no-memo) aplicado directamente al código real, no sobre una sesión de usuario en vivo — considero que es evidencia suficiente del efecto, pero no es un "80% → X%" medido end-to-end.
 - No toqué `frontend/node_modules/.package-lock.json` (aparecía modificado en el git status inicial, previo a mi trabajo) — lo dejé como estaba, no es parte de este sub-tarea.
+
+---
+
+## 8. Fix-up post-review (2026-07-19)
+
+El reviewer encontró 3 "Important" (0 "Critical"). Los tres eran reales; corregidos en un commit adicional (ver Status al final).
+
+### 8.1. Hallazgo 1 — `App.jsx` no estaba convertido (mi grep de reconocimiento tenía un hueco)
+
+Mi grep original de la sección 1 estaba scopeado a `frontend/src/components` y `frontend/src/pages` — **excluyó silenciosamente `frontend/src/App.jsx`**, que vive en la raíz de `src/`. Eso significa que mi afirmación de "10/10 call sites, 100% convertido" era falsa: había 3 call sites más ahí (`RequireAuth`, `RequireSuperadmin`, `App()`), y `App()` es la raíz del árbol de render — se re-renderizaba en cada mutación del store.
+
+Corrección: reconocimiento repetido con `grep -rn "useJaxStore()" src --include="*.js" --include="*.jsx"` (sin restringir a subcarpetas esta vez) — confirmó que estos 3 en `App.jsx` eran los únicos que faltaban. Convertidos los 3 al mismo patrón (un `useJaxStore(s => s.campo)` por campo):
+- `RequireAuth`: `token`, `sessionRestoring`.
+- `RequireSuperadmin`: `user`.
+- `App()`: `restoreSession`.
+
+No añadí `React.memo` a estos tres — son wrappers de ruteo (`RequireAuth`/`RequireSuperadmin` envuelven `children` vía prop, que cambia con cada navegación; `App` es la raíz, no tiene padre que la re-renderice con props estables) — memo no aportaría nada ahí.
+
+### 8.2. Hallazgo 2 — `useWebSocket.js` seguía subscrito al store completo
+
+`useWebSocket()` (invocado desde `Dashboard.jsx:14`) hacía `const { token, user, handleEvent, setWsStatus, loadState, checkPendingTasks, restorePendingTasks } = useJaxStore()` — un destructuring del store completo *dentro del hook*. El reviewer señaló correctamente que esto anulaba el selector angosto que agregué en `Dashboard.jsx` (líneas 15-16): aunque `Dashboard` sólo seleccionaba `user`/`logout`, el hook `useWebSocket()` que también se ejecuta ahí seguía trayendo una suscripción completa, así que `Dashboard` en la práctica seguía re-renderizando en cada `set()` de cualquier campo del store.
+
+Corrección: mismo patrón, 7 selectores individuales, uno por campo (`token`, `user`, `handleEvent`, `setWsStatus`, `loadState`, `checkPendingTasks`, `restorePendingTasks`). El `useEffect` interno sigue dependiendo de `[token, user?.user_id]` — sin cambios ahí, ya estaba bien.
+
+### 8.3. Hallazgo 3 — el memo de `StepCard` no entregaba el beneficio dicho para su caso principal
+
+Diagnóstico del reviewer correcto: `handleEvent()` en `useJaxStore.js` reemplazaba `activePipelines[pipeline_id]` completo con el `payload` crudo del WS en cada evento `pipeline_step_changed` — y ese payload es un `pipeline.model_dump()` fresco del backend (confirmado en `backend/jax_engine/state.py:95-103`, método `upsert_pipeline`) que se dispara por CUALQUIER cambio de un step, no sólo el que cambió. Es decir: `activePipeline.steps` era un array nuevo de objetos step nuevos en cada evento durante un pipeline activo — no sólo cuando el step en cuestión cambiaba. El memo de `StepCard` (comparación por referencia de `step`) no evitaba nada en ese caso; sólo ayudaba en el caso secundario que documenté (`cancelling` local de `RightPanel`).
+
+Decisión: opción (a) — arreglar la causa raíz en el store, en vez de corregir sólo el texto del reporte. Evalué el alcance: es un cambio contenido enteramente en el handler `pipeline_step_changed` de `useJaxStore.js`, no toca otros archivos, y entrega exactamente el beneficio que ya había afirmado (incorrectamente) que el memo lograba. Lo consideré razonable dentro del alcance de este sub-tarea porque:
+- El schema del backend (`backend/jax_engine/schemas.py:41-47`, `PipelineStep`) confirma que los steps tienen `step_id` estable y sólo 6 campos, todos primitivos (`step_id`, `name`, `status`, `facet`, `duration_ms`, `output`) — exactamente lo que `StepCard.jsx` lee. Eso hace que una comparación shallow clave-por-clave sea **exacta**, no sólo conservadora (no hay arrays/objetos anidados que puedan dar falsos negativos).
+- Los steps de un pipeline son una lista fija una vez creado el pipeline (no se agregan/quitan steps dinámicamente a mitad de ejecución) — matchear por `step_id` entre el array previo y el nuevo es seguro.
+
+Implementación en `frontend/src/store/useJaxStore.js`:
+- `_stepsEqual(a, b)`: comparación shallow clave-por-clave.
+- `_reconcileSteps(prevSteps, nextSteps)`: arma el array nuevo de steps, pero para cada step del payload nuevo, si existe un step previo con el mismo `step_id` y es `_stepsEqual`, reusa la referencia **previa** en vez de la nueva.
+- El handler de `pipeline_step_changed` ahora hace `{ ...payload, steps: _reconcileSteps(prevPipeline?.steps, payload.steps || []) }` en vez de usar `payload` tal cual.
+
+Con esto, cuando llega un evento porque cambió el step B, el step A (sin cambios) conserva su referencia de objeto — y `StepCard` (memo) efectivamente NO re-renderiza para A, que es exactamente el caso principal que el reviewer señaló como no cubierto.
+
+**Verificación** (mismo método que la sección 4 — contador temporal, vitest + RTL + `Profiler`, archivo borrado antes de commitear):
+1. Prueba directa sobre `_reconcileSteps` vía `handleEvent()` real: dos eventos `pipeline_step_changed` consecutivos para el mismo pipeline donde sólo el step `s2` cambia de contenido — `activePipelines[pid].steps[0]` (step `s1`, sin cambios) es **la misma referencia** (`toBe`) entre el primer y el segundo evento; `steps[1]` (`s2`) refleja el contenido nuevo.
+2. Prueba de componente real: `StepCard` (memoizado) montado con un selector Zustand sobre `steps[0]`, envuelto en `<Profiler>` para contar commits reales. Al disparar un `pipeline_step_changed` donde sólo `s2` cambia, el `Profiler` de `StepCard` para `s1` registra **0 commits adicionales** — antes de este fix habría re-renderizado igual (nueva referencia de `step` en cada evento), que era justo el hallazgo del reviewer.
+
+Ambas pruebas pasaron (2/2), se corrieron, y el archivo temporal se borró antes de commitear — igual que en la ronda anterior.
+
+### 8.4. Extra (menor, opcional): `wsStatus` muerto en `BottomBar.jsx`
+
+Lo saqué — era una sola línea (`const wsStatus = useJaxStore((s) => s.wsStatus)`) que ya estaba sin uso antes de mi cambio original y seguía sin uso; eliminarla no es un drive-by fix de lógica, es limpieza directamente pedida por el reviewer como opcional. Confirmé con grep que no se usa en ningún otro lado del archivo.
+
+### 8.5. Tests después del fix-up
+
+- `npm run test -- --run`: **3/3 passed** (suite existente, sin cambios).
+- `npm run build`: compila sin errores, 291 módulos.
+- `grep -rn "useJaxStore()" src --include="*.js" --include="*.jsx"`: **sin resultados** — confirmado, cero call sites de store completo en todo `src/` (no sólo `components`/`pages` como en la primera pasada).
+
+### 8.6. Auto-revisión del fix-up
+
+- ¿Los 3 hallazgos "Important" quedaron resueltos, no sólo parcheados? Sí — los 3 tienen causa raíz corregida (no until unos workarounds superficiales).
+- ¿El fix de `StepCard`/store se verificó con evidencia, no sólo argumentado? Sí — sección 8.3, 2 tests temporales, ambos con resultado numérico concreto.
+- ¿Repetí el error de scope del grep original? No — esta vez corrí el grep sobre `src` completo, no sólo `components`/`pages`.
+- ¿Introduje el patrón de selector-objeto-nuevo en algún lado del fix-up? No — mismo patrón de selector-por-campo en `App.jsx` y `useWebSocket.js`; `_reconcileSteps` no es un selector de Zustand, es lógica interna del store que se ejecuta dentro de `set()`, no expone objetos nuevos en cada render.
+- ¿Tests pasando? Sí, 3/3 + build limpio.
