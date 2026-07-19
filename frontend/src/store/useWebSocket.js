@@ -3,7 +3,13 @@ import { useJaxStore } from './useJaxStore'
 import { createWebSocket } from '../api/websocket'
 
 export function useWebSocket() {
-  const { token, user, handleEvent, setWsStatus, loadState, checkPendingTasks, restorePendingTasks } = useJaxStore()
+  const token = useJaxStore((s) => s.token)
+  const user = useJaxStore((s) => s.user)
+  const handleEvent = useJaxStore((s) => s.handleEvent)
+  const setWsStatus = useJaxStore((s) => s.setWsStatus)
+  const loadState = useJaxStore((s) => s.loadState)
+  const checkPendingTasks = useJaxStore((s) => s.checkPendingTasks)
+  const restorePendingTasks = useJaxStore((s) => s.restorePendingTasks)
   const wsRef = useRef(null)
   const everConnectedRef = useRef(false)
 

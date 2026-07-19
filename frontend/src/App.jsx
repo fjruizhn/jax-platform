@@ -7,20 +7,21 @@ import Admin from './pages/Admin'
 import ResetPassword from './pages/ResetPassword'
 
 function RequireAuth({ children }) {
-  const { token, sessionRestoring } = useJaxStore()
+  const token = useJaxStore((s) => s.token)
+  const sessionRestoring = useJaxStore((s) => s.sessionRestoring)
   if (sessionRestoring) return null
   if (!token) return <Navigate to="/login" replace />
   return children
 }
 
 function RequireSuperadmin({ children }) {
-  const { user } = useJaxStore()
+  const user = useJaxStore((s) => s.user)
   if (!user || user.role !== 'superadmin') return <Navigate to="/" replace />
   return children
 }
 
 export default function App() {
-  const { restoreSession } = useJaxStore()
+  const restoreSession = useJaxStore((s) => s.restoreSession)
 
   useEffect(() => {
     restoreSession()

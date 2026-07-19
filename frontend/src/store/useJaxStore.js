@@ -8,6 +8,24 @@ function _savePendingIds(ids) {
   localStorage.setItem('jax_pending_cmds', JSON.stringify(ids))
 }
 
+function _stepsEqual(a, b) {
+  const keys = Object.keys(a)
+  if (keys.length !== Object.keys(b).length) return false
+  return keys.every((k) => a[k] === b[k])
+}
+
+// El WS reenvía el pipeline COMPLETO en cada pipeline_step_changed (payload
+// fresco de pydantic .model_dump()), aunque sólo haya cambiado un step. Sin
+// esto, cada step object sería una referencia nueva en cada evento — inútil
+// para React.memo en StepCard, que compara `step` por referencia.
+function _reconcileSteps(prevSteps, nextSteps) {
+  const prevById = new Map((prevSteps || []).map((s) => [s.step_id, s]))
+  return nextSteps.map((step) => {
+    const prev = prevById.get(step.step_id)
+    return prev && _stepsEqual(prev, step) ? prev : step
+  })
+}
+
 const FACET_COLORS = {
   jax_local: '#3b82f6',
   jekyll:    '#6366f1',
@@ -100,12 +118,16 @@ export const useJaxStore = create((set, get) => ({
     }
 
     if (event_type === 'pipeline_step_changed') {
-      set((s) => ({
-        activePipelines: {
-          ...s.activePipelines,
-          [payload.pipeline_id]: payload,
-        },
-      }))
+      set((s) => {
+        const prevPipeline = s.activePipelines[payload.pipeline_id]
+        const steps = _reconcileSteps(prevPipeline?.steps, payload.steps || [])
+        return {
+          activePipelines: {
+            ...s.activePipelines,
+            [payload.pipeline_id]: { ...payload, steps },
+          },
+        }
+      })
     }
 
     if (event_type === 'las_manos_health_changed') {
