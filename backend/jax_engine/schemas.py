@@ -50,6 +50,7 @@ class PipelineStep(BaseModel):
 class PipelineState(BaseModel):
     pipeline_id: str
     tenant_id: str
+    user_id: str = ""
     name: str
     status: PipelineStatus = "pending"
     steps: list[PipelineStep] = Field(default_factory=list)

@@ -41,6 +41,7 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
                     initial = PipelineState(
                         pipeline_id=pipeline_id,
                         tenant_id=user.tenant_id,
+                        user_id=user.user_id,
                         name=body.get("name", "Pipeline"),
                         status="running",
                     )
