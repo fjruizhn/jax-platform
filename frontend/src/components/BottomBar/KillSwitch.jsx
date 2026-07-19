@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 
-export default function KillSwitch() {
-  const { killSwitchActive, activateKillSwitch } = useJaxStore()
+function KillSwitch() {
+  const killSwitchActive = useJaxStore((s) => s.killSwitchActive)
+  const activateKillSwitch = useJaxStore((s) => s.activateKillSwitch)
   const { t } = useI18n()
   const [confirming, setConfirming] = useState(false)
 
@@ -47,3 +48,5 @@ export default function KillSwitch() {
     </button>
   )
 }
+
+export default memo(KillSwitch)

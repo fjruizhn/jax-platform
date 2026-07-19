@@ -1,11 +1,14 @@
+import { memo } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 import FacetCard from './FacetCard'
 
 const FACET_ORDER = ['jax_local', 'jekyll', 'hyde', 'hipatia', 'thot', 'kimi', 'ada']
 
-export default function LeftPanel() {
-  const { facets, lasManos, wsStatus } = useJaxStore()
+function LeftPanel() {
+  const facets = useJaxStore((s) => s.facets)
+  const lasManos = useJaxStore((s) => s.lasManos)
+  const wsStatus = useJaxStore((s) => s.wsStatus)
   const { t } = useI18n()
 
   return (
@@ -49,3 +52,5 @@ export default function LeftPanel() {
     </div>
   )
 }
+
+export default memo(LeftPanel)

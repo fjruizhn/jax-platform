@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 
 const STATUS_DOT = {
@@ -7,7 +8,7 @@ const STATUS_DOT = {
   offline: 'bg-gray-700',
 }
 
-export default function FacetCard({ facet, active }) {
+function FacetCard({ facet, active }) {
   const { t } = useI18n()
 
   const STATUS_LABELS = {
@@ -54,3 +55,5 @@ export default function FacetCard({ facet, active }) {
     </div>
   )
 }
+
+export default memo(FacetCard)

@@ -1,11 +1,11 @@
-import { useRef, useEffect } from 'react'
+import { memo, useRef, useEffect } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 import HalEye from '../HalEye/HalEye'
 import Message from './Message'
 
-export default function CenterPanel() {
-  const { messages } = useJaxStore()
+function CenterPanel() {
+  const messages = useJaxStore((s) => s.messages)
   const { t } = useI18n()
   const bottomRef = useRef(null)
 
@@ -38,3 +38,5 @@ export default function CenterPanel() {
     </div>
   )
 }
+
+export default memo(CenterPanel)
