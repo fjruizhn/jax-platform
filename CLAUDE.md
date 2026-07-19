@@ -58,10 +58,15 @@ NO es AteneaERP. NO mezclar. Son productos independientes.
    Síntoma de token huérfano: 401 en /api/state con "Authorization: Bearer"
    presente en el request.
 
-4. MOTOR jax_local: ollama local con qwen3:14b en GPU (RX 9060 XT). El
-   keep_alive:-1 está embebido en _call_ollama (backend/api/chat.py) para
-   evitar recarga en frío (~50s de carga de 14GB a VRAM). Si reaparece
-   lentitud de ~60s, verificar con `ollama ps` que UNTIL no expire pronto.
+4. MOTOR jax_local: ollama local en GPU AMD Radeon AI PRO R9700 32GB ROCm
+   (antes RX 9060 XT 16GB Vulkan, migrada jul-2026). El modelo activo lo
+   define la tabla `facet_models` (is_active), NO `config.toml` — ver
+   [[facet-models-stale-active-flag-jax-local]] en memoria: si se cambia el
+   modelo a mano en Ollama sin actualizar esa fila, la próxima request lo
+   revierte. Actualmente qwen3-coder:30b (~21GB). El keep_alive:-1 está
+   embebido en _call_ollama (backend/api/chat.py) para evitar recarga en frío.
+   Si reaparece lentitud de ~60s, verificar con `ollama ps` que UNTIL no
+   expire pronto y que el modelo cargado coincida con la fila activa de DB.
 
 5. DIAGNÓSTICO POR EVIDENCIA: verificar vhost/hashes/procesos antes de ejecutar
    planes. En esta sesión, 2 de 3 causas raíz diagnosticadas por suposición
