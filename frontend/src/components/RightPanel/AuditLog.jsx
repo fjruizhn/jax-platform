@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 
@@ -18,7 +18,7 @@ function eventColor(event) {
   return 'text-slate-400'
 }
 
-export default function AuditLog() {
+function AuditLog() {
   const { t } = useI18n()
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
@@ -79,3 +79,5 @@ export default function AuditLog() {
     </div>
   )
 }
+
+export default memo(AuditLog)

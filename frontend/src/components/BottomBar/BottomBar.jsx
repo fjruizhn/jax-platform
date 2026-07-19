@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { memo, useState, useRef } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 import KillSwitch from './KillSwitch'
@@ -17,7 +17,7 @@ const FACETS = [
   { id: 'ada',      label: 'Ada',     color: '#7c3aed' },
 ]
 
-export default function BottomBar() {
+function BottomBar() {
   const [input, setInput] = useState('')
   const [mode, setMode] = useState('chat')
   const [sending, setSending] = useState(false)
@@ -25,7 +25,14 @@ export default function BottomBar() {
   const [pipelineObjective, setPipelineObjective] = useState('')
   const [attachment, setAttachment] = useState(null)
   const [uploading, setUploading] = useState(false)
-  const { addMessage, updateMessage, wsStatus, activeFacet, setActiveFacet, addToast, registerPendingCommand, setGeneratingImage } = useJaxStore()
+  const addMessage = useJaxStore((s) => s.addMessage)
+  const updateMessage = useJaxStore((s) => s.updateMessage)
+  const wsStatus = useJaxStore((s) => s.wsStatus)
+  const activeFacet = useJaxStore((s) => s.activeFacet)
+  const setActiveFacet = useJaxStore((s) => s.setActiveFacet)
+  const addToast = useJaxStore((s) => s.addToast)
+  const registerPendingCommand = useJaxStore((s) => s.registerPendingCommand)
+  const setGeneratingImage = useJaxStore((s) => s.setGeneratingImage)
   const { t } = useI18n()
   const textareaRef = useRef(null)
 
@@ -352,3 +359,5 @@ export default function BottomBar() {
     </>
   )
 }
+
+export default memo(BottomBar)

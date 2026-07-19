@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 
 const TYPE_STYLES = {
@@ -7,8 +8,9 @@ const TYPE_STYLES = {
   success: 'bg-green-900 border-green-600 text-green-200',
 }
 
-export default function Toast() {
-  const { toasts, dismissToast } = useJaxStore()
+function Toast() {
+  const toasts = useJaxStore((s) => s.toasts)
+  const dismissToast = useJaxStore((s) => s.dismissToast)
 
   if (toasts.length === 0) return null
 
@@ -33,3 +35,5 @@ export default function Toast() {
     </div>
   )
 }
+
+export default memo(Toast)

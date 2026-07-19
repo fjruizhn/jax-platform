@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 import StepCard from './StepCard'
@@ -25,8 +25,8 @@ function ProgressBar({ steps, t }) {
   )
 }
 
-export default function RightPanel() {
-  const { activePipelines } = useJaxStore()
+function RightPanel() {
+  const activePipelines = useJaxStore((s) => s.activePipelines)
   const { t } = useI18n()
   const [tab, setTab] = useState('pipelines')
   const [cancelling, setCancelling] = useState(false)
@@ -145,3 +145,5 @@ export default function RightPanel() {
     </div>
   )
 }
+
+export default memo(RightPanel)

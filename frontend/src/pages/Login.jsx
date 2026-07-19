@@ -5,7 +5,7 @@ import { useI18n } from '../i18n/index.jsx'
 import api from '../api/client'
 
 export default function Login() {
-  const { login } = useJaxStore()
+  const login = useJaxStore((s) => s.login)
   const { lang, setLang, t } = useI18n()
   const navigate = useNavigate()
   const [email, setEmail] = useState('')

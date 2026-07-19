@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 
@@ -17,8 +18,8 @@ const STATUS_ICON = {
   failed:   '✗',
 }
 
-export default function StepCard({ step, pipelineId }) {
-  const { addMessage } = useJaxStore()
+function StepCard({ step, pipelineId }) {
+  const addMessage = useJaxStore((s) => s.addMessage)
   const { t } = useI18n()
   const colorClass = STATUS_COLORS[step.status] || 'text-slate-400'
   const icon = STATUS_ICON[step.status] || '○'
@@ -62,3 +63,5 @@ export default function StepCard({ step, pipelineId }) {
     </div>
   )
 }
+
+export default memo(StepCard)

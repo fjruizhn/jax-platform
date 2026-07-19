@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { useI18n } from '../../i18n/index.jsx'
 
@@ -23,7 +24,7 @@ function Spinner({ color }) {
   )
 }
 
-export default function Message({ message }) {
+function Message({ message }) {
   const { t } = useI18n()
   const color = FACET_COLORS[message.facet] || '#94a3b8'
   const isUser = message.facet === 'user'
@@ -83,3 +84,5 @@ export default function Message({ message }) {
     </div>
   )
 }
+
+export default memo(Message)

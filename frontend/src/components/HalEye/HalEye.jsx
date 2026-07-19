@@ -1,8 +1,13 @@
+import { memo } from 'react'
 import './HalEye.css'
 import { useJaxStore, getEyeState } from '../../store/useJaxStore'
 
-export default function HalEye({ size = 220 }) {
-  const { facets, activePipelines, lasManos, killSwitchActive, generatingImage } = useJaxStore()
+function HalEye({ size = 220 }) {
+  const facets = useJaxStore((s) => s.facets)
+  const activePipelines = useJaxStore((s) => s.activePipelines)
+  const lasManos = useJaxStore((s) => s.lasManos)
+  const killSwitchActive = useJaxStore((s) => s.killSwitchActive)
+  const generatingImage = useJaxStore((s) => s.generatingImage)
   const eye = getEyeState(facets, activePipelines, lasManos, killSwitchActive, generatingImage)
 
   const r = size / 2
@@ -94,3 +99,5 @@ export default function HalEye({ size = 220 }) {
     </div>
   )
 }
+
+export default memo(HalEye)

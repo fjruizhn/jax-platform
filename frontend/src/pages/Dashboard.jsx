@@ -12,7 +12,8 @@ import Toast from '../components/Notifications/Toast'
 
 export default function Dashboard() {
   useWebSocket()
-  const { user, logout } = useJaxStore()
+  const user = useJaxStore((s) => s.user)
+  const logout = useJaxStore((s) => s.logout)
   const { theme, toggleTheme } = useTheme()
   const { lang, setLang, t } = useI18n()
 
