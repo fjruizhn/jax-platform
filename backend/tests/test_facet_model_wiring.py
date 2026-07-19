@@ -69,12 +69,18 @@ def _active_jax_local_id(client):
 
 
 def _post_chat(client):
-    """Force facet=jax_local, capture the model sent to Ollama."""
+    """Force facet=jax_local, capture the model sent to Ollama.
+
+    Message is deliberately NOT a model-identity question ("que modelo sos")
+    — that phrasing is now intercepted by chat.py's anti-confabulation
+    short-circuit (backend/api/chat.py:_is_model_identity_question) before
+    Ollama is ever called, which would make this fixture assert on the wrong
+    code path entirely."""
     mock_post = AsyncMock(return_value=_ollama_response())
     with patch.object(httpx.AsyncClient, "post", mock_post):
         resp = client.post(
             "/api/chat",
-            json={"message": "que modelo sos", "facet": "jax_local"},
+            json={"message": "hola, como estas", "facet": "jax_local"},
             headers=_auth_headers(),
         )
     assert resp.status_code == 200, resp.text
@@ -138,7 +144,7 @@ def test_falls_back_to_config_when_db_query_raises(client):
          patch.object(httpx.AsyncClient, "post", mock_post):
         resp = client.post(
             "/api/chat",
-            json={"message": "que modelo sos", "facet": "jax_local"},
+            json={"message": "hola, como estas", "facet": "jax_local"},
             headers=_auth_headers(),
         )
     assert resp.status_code == 200, resp.text
@@ -167,6 +173,47 @@ def test_jax_local_system_prompt_states_resolved_model(client):
         assert system_msg["role"] == "system"
         assert SENTINEL_MODEL in system_msg["content"], (
             "jax_local system prompt does not state the resolved model name"
+        )
+    finally:
+        client.portal.call(
+            _db_exec, "DELETE FROM facet_models WHERE facet='jax_local' AND model_name=%s",
+            (SENTINEL_MODEL,),
+        )
+        if prev_active is not None:
+            client.portal.call(
+                _db_exec, "UPDATE facet_models SET is_active=TRUE WHERE id=%s", (prev_active,)
+            )
+
+
+def test_model_identity_question_short_circuits_before_ollama(client):
+    """'que modelo sos' must be answered deterministically from the resolved
+    DB model, without ever calling Ollama — the LLM confabulates its own
+    identity even when handed the correct model as context, so this class of
+    question is intercepted before _call_ollama (see
+    _is_model_identity_question in chat.py)."""
+    prev_active = _active_jax_local_id(client)
+    client.portal.call(_db_exec, "UPDATE facet_models SET is_active=FALSE WHERE facet='jax_local'")
+    client.portal.call(
+        _db_exec,
+        "INSERT INTO facet_models (facet, provider_id, model_name, is_active) "
+        "VALUES ('jax_local','ollama',%s,TRUE)",
+        (SENTINEL_MODEL,),
+    )
+    try:
+        mock_post = AsyncMock(return_value=_ollama_response())
+        with patch.object(httpx.AsyncClient, "post", mock_post):
+            resp = client.post(
+                "/api/chat",
+                json={"message": "que modelo sos", "facet": "jax_local"},
+                headers=_auth_headers(),
+            )
+        assert resp.status_code == 200, resp.text
+        assert mock_post.call_count == 0, (
+            f"model-identity question must short-circuit before Ollama, "
+            f"got {mock_post.call_count} call(s)"
+        )
+        assert SENTINEL_MODEL in resp.json()["response"], (
+            "short-circuit reply does not name the resolved DB-active model"
         )
     finally:
         client.portal.call(
