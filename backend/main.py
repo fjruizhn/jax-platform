@@ -132,12 +132,18 @@ async def _ws_connect_and_subscribe(
 async def _ws_disconnect_and_maybe_unsubscribe(user_id: str, connection_id: str):
     async with lifecycle_lock:
         await ws_hub.disconnect(user_id, connection_id)
-        # Only tear down the per-user subscription/presence once this user has
-        # no connections left on EITHER channel — otherwise closing one WS tab
-        # silences a sibling WS tab, or an SSE connection for the same user.
-        if not await ws_hub.has_connections(user_id) and not sse_connections.has_connections(user_id):
-            await event_bus.unsubscribe(user_id)
+        no_ws_left = not await ws_hub.has_connections(user_id)
+        # register_user/unregister_user is WS-only presence bookkeeping — SSE
+        # never calls either — so it must be gated on WS state alone, not on
+        # whether an SSE connection is still around for this user.
+        if no_ws_left:
             engine_state.unregister_user(user_id)
+        # The event_bus subscription, in contrast, IS shared cross-channel:
+        # only tear it down once no connection is left on EITHER channel,
+        # otherwise closing this WS tab would silence a live SSE connection
+        # for the same user.
+        if no_ws_left and not sse_connections.has_connections(user_id):
+            await event_bus.unsubscribe(user_id)
 
 
 @app.websocket("/ws/{user_id}")

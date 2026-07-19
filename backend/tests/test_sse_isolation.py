@@ -26,6 +26,7 @@ import main as main_module
 from api.events import _sse_connect_and_subscribe, _sse_disconnect_and_maybe_unsubscribe
 from jax_engine.events import event_bus
 from jax_engine.schemas import JAXEvent
+from jax_engine.state import engine_state
 from jax_engine.websocket_hub import ws_hub
 
 TENANT = "1"
@@ -140,5 +141,54 @@ async def test_cross_channel_race_ws_disconnect_does_not_lose_sse_subscription(m
     )
     got = await sse_queue.get()
     assert got.event_id == event.event_id
+
+    await _sse_disconnect_and_maybe_unsubscribe(user_id)
+
+
+async def test_ws_disconnect_unregisters_presence_even_with_sse_still_open():
+    """Regression: engine_state.register_user/unregister_user is WS-only
+    presence bookkeeping (SSE never calls either) -- it must NOT be gated on
+    SSE connection state the way the event_bus subscription teardown is.
+
+    api/health.py reports len(state.connected_users) as a live metric. If
+    unregister_user is (wrongly) gated on "no SSE connections either", a
+    user with a WS tab AND an SSE connection who closes just the WS tab
+    stays stuck in connected_users/_user_tenant_map forever: nothing ever
+    calls unregister_user for them afterwards, since SSE's own disconnect
+    path never calls register_user/unregister_user at all.
+    """
+    user_id = "presence-leak-user"
+
+    wsA = _FakeWebSocket()
+    connA = await main_module._ws_connect_and_subscribe(user_id, TENANT, "operator", wsA)
+    assert user_id in engine_state._state.connected_users
+
+    sse_queue: asyncio.Queue = asyncio.Queue()
+    await _sse_connect_and_subscribe(user_id, TENANT, sse_queue.put)
+
+    # The WS tab closes; the SSE connection stays open.
+    await main_module._ws_disconnect_and_maybe_unsubscribe(user_id, connA)
+
+    assert user_id not in engine_state._state.connected_users, (
+        "WS presence was never unregistered after the WS tab closed, "
+        "because unregister_user was wrongly gated on SSE connection state "
+        "-- this leaks a stale entry into api/health.py's connected_users "
+        "count until process restart"
+    )
+    assert user_id not in engine_state._user_tenant_map
+
+    # The event_bus subscription itself must still be alive for SSE though
+    # -- that gate IS supposed to be cross-channel, unlike presence.
+    event = JAXEvent(
+        event_type="facet_status_changed",
+        tenant_id=TENANT,
+        user_id=user_id,
+        payload={"facet": "jax_local", "status": "idle"},
+    )
+    await event_bus.publish(event)
+    assert not sse_queue.empty(), (
+        "SSE subscription was lost even though only WS disconnected"
+    )
+    await sse_queue.get()
 
     await _sse_disconnect_and_maybe_unsubscribe(user_id)
