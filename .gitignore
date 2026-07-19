@@ -13,6 +13,7 @@ backend/.venv/
 .swarm/
 .mcp.json
 ruvector.db
+.superpowers/
 *.rvf
 *.rvf.lock
 agentdb.rvf*
