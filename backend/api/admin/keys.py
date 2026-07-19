@@ -52,21 +52,29 @@ def _write_env_key(env_key: str, value: str):
 
 async def _seed_keys_from_env(pool, user_id: int = 1):
     env = _load_env()
+    rows = []
+    for p in PROVIDERS:
+        raw = env.get(p["env_key"], "")
+        if not raw:
+            continue
+        # raw puede venir cifrado (post-migración) o en texto plano
+        # (legacy, aún no migrado) — decrypt_secret soporta ambos.
+        encrypted = encrypt_secret(decrypt_secret(raw))
+        rows.append((user_id, p["id"], p["env_key"], encrypted))
+
+    if not rows:
+        return
+
+    placeholders = ", ".join(["(%s, %s, %s, %s)"] * len(rows))
+    params = [v for row in rows for v in row]
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            for p in PROVIDERS:
-                raw = env.get(p["env_key"], "")
-                if not raw:
-                    continue
-                # raw puede venir cifrado (post-migración) o en texto plano
-                # (legacy, aún no migrado) — decrypt_secret soporta ambos.
-                encrypted = encrypt_secret(decrypt_secret(raw))
-                await cur.execute(
-                    "INSERT INTO user_api_keys (user_id, provider_id, env_key, encrypted_value) "
-                    "VALUES (%s, %s, %s, %s) "
-                    "ON DUPLICATE KEY UPDATE encrypted_value = VALUES(encrypted_value)",
-                    (user_id, p["id"], p["env_key"], encrypted),
-                )
+            await cur.execute(
+                "INSERT INTO user_api_keys (user_id, provider_id, env_key, encrypted_value) "
+                f"VALUES {placeholders} "
+                "ON DUPLICATE KEY UPDATE encrypted_value = VALUES(encrypted_value)",
+                params,
+            )
 
 
 async def _get_db_key(pool, user_id: int, provider_id: str) -> str:
@@ -82,15 +90,34 @@ async def _get_db_key(pool, user_id: int, provider_id: str) -> str:
     return decrypt_db_secret(row[0])
 
 
-async def _get_active_model(pool, facet: str, fallback: str) -> str:
+async def _get_db_keys_batch(pool, user_id: int, provider_ids: list) -> dict:
+    if not provider_ids:
+        return {}
+    placeholders = ", ".join(["%s"] * len(provider_ids))
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT model_name FROM facet_models WHERE facet = %s AND is_active = TRUE",
-                (facet,),
+                "SELECT provider_id, encrypted_value FROM user_api_keys "
+                f"WHERE user_id = %s AND provider_id IN ({placeholders})",
+                (user_id, *provider_ids),
             )
-            row = await cur.fetchone()
-    return row[0] if row else fallback
+            rows = await cur.fetchall()
+    return {provider_id: decrypt_db_secret(encrypted) for provider_id, encrypted in rows}
+
+
+async def _get_active_models_batch(pool, facets: list) -> dict:
+    if not facets:
+        return {}
+    placeholders = ", ".join(["%s"] * len(facets))
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT facet, model_name FROM facet_models "
+                f"WHERE facet IN ({placeholders}) AND is_active = TRUE",
+                tuple(facets),
+            )
+            rows = await cur.fetchall()
+    return {facet: model_name for facet, model_name in rows}
 
 
 @router.get("/keys")
@@ -98,10 +125,13 @@ async def list_keys(user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
     await _seed_keys_from_env(pool, user_id=1)
 
+    keys_by_provider = await _get_db_keys_batch(pool, user_id=1, provider_ids=[p["id"] for p in PROVIDERS])
+    models_by_facet = await _get_active_models_batch(pool, facets=[p["facet"] for p in PROVIDERS])
+
     result = []
     for p in PROVIDERS:
-        raw = await _get_db_key(pool, user_id=1, provider_id=p["id"])
-        model = await _get_active_model(pool, p["facet"], fallback=p["model"])
+        raw = keys_by_provider.get(p["id"], "")
+        model = models_by_facet.get(p["facet"], p["model"])
         result.append({
             "id": p["id"],
             "name": p["name"],
