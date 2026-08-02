@@ -33,40 +33,41 @@ NO es AteneaERP. NO mezclar. Son productos independientes.
 4. Kill switch siempre visible en la UI
 5. Panel derecho = "Director Jacobs" (no "Jacobs")
 6. Jacobs NO aparece en el panel de facetas izquierdo
-7. El público (axioma-ia.io) sirve el Vite DEV server de hall9000 vía proxy
-   (ver Lecciones operativas #1/#2) — un cambio en frontend/src ya es visible
-   en vivo sin build ni deploy. `npm run build` + rsync a wwwroot NO tiene
-   efecto hoy (nadie sirve ese estático); no lo tomes como paso obligatorio.
+7. Rebuild + deploy frontend después de cada cambio (restaurado 2026-08-02,
+   ver Lecciones operativas #1): cd frontend && npm run build, luego rsync
+   del build a la VM dev. Un cambio en frontend/src NO se ve en vivo hasta
+   hacer esto — el público sirve estático, no el dev server.
 
 ## SERVICIOS RELACIONADOS
 - LAS MANOS: http://127.0.0.1:7777
 - Jacobs: http://127.0.0.1:7777/jacobs/
 - Motor Registry: http://127.0.0.1:7777/motor/
 
-1. DEPLOY FRONTEND — CORREGIDO 2026-08-02 (ver #1-bis abajo): esta entrada
-   original decía que había que rsyncear un build estático a la VM dev y que
-   eso era lo que servía el público. Verificado con evidencia (curl + cat del
-   vhost real) que es FALSO desde al menos 2026-08-02: el vhost nginx proxya
-   TODO `location /` al Vite dev server de hall9000:5173, así que el rsync
-   a wwwroot queda muerto (nadie lo sirve). Se deja el procedimiento por si
-   se revierte a static hosting en el futuro:
-   `npm run build` genera /home/fruiz/jax-platform/frontend/dist/ en hall9000;
-   rsync a /tmp/axioma-deploy/ en la VM, luego
-   `sudo rsync -a --delete --chown=www:www /tmp/axioma-deploy/ /www/wwwroot/axioma-ia.io/`.
-   Antes de asumir que este procedimiento aplica, releer #1-bis y confirmar
-   con `sudo cat /www/server/panel/vhost/nginx/axioma-ia.io.conf` en la VM.
+## Lecciones operativas (sesión 2026-06-22, corregida 2026-08-02)
 
-1-bis. ARQUITECTURA REAL (verificada 2026-08-02): nginx/aaPanel vive en la VM
-   dev (172.16.20.11:58291 SSH, user fruiz). El vhost axioma-ia.io tiene
-   `location /` con `proxy_pass http://172.16.20.5:5173` — proxya TODO al
-   Vite DEV server que corre en hall9000 como systemd `jax-platform-frontend`
-   (`vite dev --host 0.0.0.0 --port 5173`). `location /api` y `location /ws`
-   sí proxyan a http://172.16.20.5:8080 (hall9000) como documentado.
-   Consecuencia: `/www/wwwroot/axioma-ia.io/` (el estático) existe en disco
-   pero NO está en la ruta de servicio — un cambio en frontend/src ya se ve
-   en vivo vía HMR del dev server, sin build ni deploy. No confundir "dev"
-   en el nombre del dominio con un ambiente real de dev separado del código
-   fuente: es literalmente el dev server expuesto al público.
+1. DEPLOY FRONTEND: requiere rsync EXPLÍCITO de hall9000 a la VM dev.
+   `npm run build` solo genera el bundle en /home/fruiz/jax-platform/frontend/dist/
+   en hall9000 — NO actualiza producción. El público sirve estático desde
+   /www/wwwroot/axioma-ia.io/ en la VM dev (172.16.20.11:58291 SSH, user fruiz).
+   Procedimiento: rsync dist a /tmp/axioma-deploy/ en la VM, luego
+   `sudo rsync -a --delete --chown=www:www /tmp/axioma-deploy/ /www/wwwroot/axioma-ia.io/`.
+
+1-bis. ARQUITECTURA REAL (verificada y restaurada 2026-08-02): nginx/aaPanel
+   vive en la VM dev. El vhost axioma-ia.io (`/www/server/panel/vhost/nginx/axioma-ia.io.conf`)
+   tiene `root /www/wwwroot/axioma-ia.io` + `location / { try_files $uri $uri/ /index.html; }`
+   (fallback SPA para react-router) y `location /assets/` con cache 1y
+   immutable. `location /api` y `location /ws` proxyan a
+   http://172.16.20.5:8080 (hall9000) con upgrade headers para WS.
+
+   HISTORIAL: entre una fecha desconocida y 2026-08-02, `location /` estuvo
+   apuntando por error a `proxy_pass http://172.16.20.5:5173` (el Vite DEV
+   server de hall9000, systemd `jax-platform-frontend`), dejando el estático
+   de wwwroot sin servir — el público veía el dev server con HMR en vivo.
+   Detectado por evidencia (curl mostraba scripts @vite/client) y corregido
+   el mismo día. Backup del vhost roto: `axioma-ia.io.conf.backup-20260802061023`.
+   Si algo vuelve a andar raro en prod, confirmar con
+   `sudo cat /www/server/panel/vhost/nginx/axioma-ia.io.conf` en la VM antes
+   de asumir que el deploy estático sigue vigente — "el que supone se equivoca".
 
 3. ROTACIÓN JWT: rotar JAX_JWT_SECRET invalida TODAS las sesiones activas.
    Requiere re-login + limpieza de localStorage/cookies en cada navegador.
