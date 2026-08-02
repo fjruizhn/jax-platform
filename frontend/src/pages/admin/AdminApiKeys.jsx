@@ -1,11 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
-
-const FACET_COLORS = {
-  thot: '#f59e0b', jekyll: '#6366f1', hipatia: '#10b981',
-  kimi: '#06b6d4', ada: '#7c3aed',
-}
+import { FACET_COLORS } from '../../store/useJaxStore'
 
 export default function AdminApiKeys() {
   const { t } = useI18n()
