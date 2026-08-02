@@ -26,7 +26,7 @@ function _reconcileSteps(prevSteps, nextSteps) {
   })
 }
 
-const FACET_COLORS = {
+export const FACET_COLORS = {
   jax_local: '#3b82f6',
   jekyll:    '#6366f1',
   hyde:      '#f97316',

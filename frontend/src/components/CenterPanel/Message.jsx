@@ -1,18 +1,13 @@
 import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { useI18n } from '../../i18n/index.jsx'
+import { FACET_COLORS as FACET_COLORS_BASE } from '../../store/useJaxStore'
 
+// dalle/user no son facetas (ver useJaxStore.js) — extensión local para el chat
 const FACET_COLORS = {
-  jax_local: '#3b82f6',
-  jekyll:    '#6366f1',
-  hyde:      '#f97316',
-  hipatia:   '#10b981',
-  thot:      '#f59e0b',
-  kimi:      '#06b6d4',
-  ada:       '#7c3aed',
-  jacobs:    '#ffffff',
-  dalle:     '#7c3aed',
-  user:      '#94a3b8',
+  ...FACET_COLORS_BASE,
+  dalle: '#7c3aed',
+  user:  '#94a3b8',
 }
 
 function Spinner({ color }) {

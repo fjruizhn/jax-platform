@@ -1,11 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
-
-const FACET_COLORS = {
-  jax_local: '#3b82f6', jekyll: '#6366f1', hyde: '#f97316',
-  hipatia: '#10b981', thot: '#f59e0b', kimi: '#06b6d4', ada: '#7c3aed',
-}
+import { FACET_COLORS } from '../../store/useJaxStore'
 
 function SimpleBarChart({ labels, datasets }) {
   const facets = Object.keys(datasets)
