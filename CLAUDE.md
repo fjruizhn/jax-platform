@@ -33,25 +33,40 @@ NO es AteneaERP. NO mezclar. Son productos independientes.
 4. Kill switch siempre visible en la UI
 5. Panel derecho = "Director Jacobs" (no "Jacobs")
 6. Jacobs NO aparece en el panel de facetas izquierdo
-7. Rebuild frontend después de cada cambio: cd frontend && npm run build
+7. El público (axioma-ia.io) sirve el Vite DEV server de hall9000 vía proxy
+   (ver Lecciones operativas #1/#2) — un cambio en frontend/src ya es visible
+   en vivo sin build ni deploy. `npm run build` + rsync a wwwroot NO tiene
+   efecto hoy (nadie sirve ese estático); no lo tomes como paso obligatorio.
 
 ## SERVICIOS RELACIONADOS
 - LAS MANOS: http://127.0.0.1:7777
 - Jacobs: http://127.0.0.1:7777/jacobs/
 - Motor Registry: http://127.0.0.1:7777/motor/
 
-## Lecciones operativas (sesión 2026-06-22)
-
-1. DEPLOY FRONTEND: requiere rsync EXPLÍCITO de hall9000 a la VM dev.
-   `npm run build` solo genera el bundle en /home/fruiz/jax-platform/frontend/dist/
-   en hall9000 — NO actualiza producción. El público sirve estático desde
-   /www/wwwroot/axioma-ia.io/ en la VM dev (172.16.20.11).
-   Procedimiento: rsync dist a /tmp/axioma-deploy/ en la VM, luego
+1. DEPLOY FRONTEND — CORREGIDO 2026-08-02 (ver #1-bis abajo): esta entrada
+   original decía que había que rsyncear un build estático a la VM dev y que
+   eso era lo que servía el público. Verificado con evidencia (curl + cat del
+   vhost real) que es FALSO desde al menos 2026-08-02: el vhost nginx proxya
+   TODO `location /` al Vite dev server de hall9000:5173, así que el rsync
+   a wwwroot queda muerto (nadie lo sirve). Se deja el procedimiento por si
+   se revierte a static hosting en el futuro:
+   `npm run build` genera /home/fruiz/jax-platform/frontend/dist/ en hall9000;
+   rsync a /tmp/axioma-deploy/ en la VM, luego
    `sudo rsync -a --delete --chown=www:www /tmp/axioma-deploy/ /www/wwwroot/axioma-ia.io/`.
+   Antes de asumir que este procedimiento aplica, releer #1-bis y confirmar
+   con `sudo cat /www/server/panel/vhost/nginx/axioma-ia.io.conf` en la VM.
 
-2. ARQUITECTURA REAL: nginx/aaPanel vive en la VM dev (172.16.20.11), NO en
-   hall9000. El vhost axioma-ia.io sirve estático desde wwwroot y proxya /api
-   y /ws a http://172.16.20.5:8080 (hall9000) con upgrade headers para WS.
+1-bis. ARQUITECTURA REAL (verificada 2026-08-02): nginx/aaPanel vive en la VM
+   dev (172.16.20.11:58291 SSH, user fruiz). El vhost axioma-ia.io tiene
+   `location /` con `proxy_pass http://172.16.20.5:5173` — proxya TODO al
+   Vite DEV server que corre en hall9000 como systemd `jax-platform-frontend`
+   (`vite dev --host 0.0.0.0 --port 5173`). `location /api` y `location /ws`
+   sí proxyan a http://172.16.20.5:8080 (hall9000) como documentado.
+   Consecuencia: `/www/wwwroot/axioma-ia.io/` (el estático) existe en disco
+   pero NO está en la ruta de servicio — un cambio en frontend/src ya se ve
+   en vivo vía HMR del dev server, sin build ni deploy. No confundir "dev"
+   en el nombre del dominio con un ambiente real de dev separado del código
+   fuente: es literalmente el dev server expuesto al público.
 
 3. ROTACIÓN JWT: rotar JAX_JWT_SECRET invalida TODAS las sesiones activas.
    Requiere re-login + limpieza de localStorage/cookies en cada navegador.
