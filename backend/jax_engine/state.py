@@ -172,14 +172,14 @@ class JAXEngineState:
                 await event_bus.publish(event)
 
     async def _poll_las_manos(self):
-        client = await get_http_client()
         while True:
+            client = await get_http_client()
             await self._check_las_manos_health(client)
             await asyncio.sleep(30)
 
     async def _poll_pipelines(self):
-        client = await get_http_client()
         while True:
+            client = await get_http_client()
             for pid, pipeline in list(self._state.active_pipelines.items()):
                 if pipeline.status not in ("running", "waiting_gate"):
                     continue
