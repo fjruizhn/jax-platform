@@ -14,6 +14,7 @@ from crypto_secrets import decrypt_provider_keys_in_env
 decrypt_provider_keys_in_env()
 
 from db.connection import get_pool, close_pool
+from http_client import get_http_client, close_http_client
 from db.migrations import run_migrations
 from db.seed import run_seed
 from jax_engine.state import engine_state
@@ -48,6 +49,7 @@ from api.admin import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await get_pool()
+    await get_http_client()
     await run_migrations()
     await run_seed()
     engine_state.start_background_tasks()
@@ -61,6 +63,7 @@ async def lifespan(app: FastAPI):
             print(f"[memoria] {n} conversación(es) web cerradas en shutdown", flush=True)
     except Exception:
         pass
+    await close_http_client()
     await close_pool()
 
 
