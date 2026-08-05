@@ -1,13 +1,13 @@
 import os
 import time
 import logging
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from crypto_secrets import encrypt_secret, decrypt_secret, decrypt_db_secret
 from db.connection import get_pool
+from http_client import get_http_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin")
@@ -160,8 +160,8 @@ async def test_key(provider_id: str, user: AuthUser = Depends(require_superadmin
             url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
             try:
                 t0 = time.time()
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    r = await client.get(url)
+                client = await get_http_client()
+                r = await client.get(url, timeout=10.0)
                 ms = int((time.time() - t0) * 1000)
                 return {"ok": r.status_code == 200, "latency_ms": ms, "error": None if r.status_code == 200 else r.text[:100]}
             except Exception as e:
@@ -170,8 +170,8 @@ async def test_key(provider_id: str, user: AuthUser = Depends(require_superadmin
 
     try:
         t0 = time.time()
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get(prov["test_url"], headers={"Authorization": f"Bearer {api_key}"})
+        client = await get_http_client()
+        r = await client.get(prov["test_url"], headers={"Authorization": f"Bearer {api_key}"}, timeout=10.0)
         ms = int((time.time() - t0) * 1000)
         return {"ok": r.status_code < 400, "latency_ms": ms, "error": None if r.status_code < 400 else r.text[:100]}
     except Exception as e:
