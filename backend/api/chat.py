@@ -8,6 +8,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import httpx
+from http_client import get_http_client
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
@@ -330,10 +331,14 @@ def _build_messages(system_prompt: str, history: list[dict], message: str) -> li
 async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str) -> str:
     url = config["personalities"]["jax_local"]["api_url"]
     messages = _build_messages(system_prompt, history, message)
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        r = await client.post(url, json={"model": model, "messages": messages, "stream": False, "keep_alive": -1})
-        r.raise_for_status()
-        return r.json()["message"]["content"]
+    client = await get_http_client()
+    r = await client.post(
+        url,
+        json={"model": model, "messages": messages, "stream": False, "keep_alive": -1},
+        timeout=180.0,
+    )
+    r.raise_for_status()
+    return r.json()["message"]["content"]
 
 
 async def _call_openai_compat(
@@ -342,14 +347,15 @@ async def _call_openai_compat(
 ) -> str:
     messages = _build_messages(system_prompt, history, message)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        r = await client.post(
-            f"{base_url}/chat/completions",
-            headers=headers,
-            json={"model": model, "messages": messages},
-        )
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+    client = await get_http_client()
+    r = await client.post(
+        f"{base_url}/chat/completions",
+        headers=headers,
+        json={"model": model, "messages": messages},
+        timeout=120.0,
+    )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
 
 
 async def _call_gemini(
@@ -367,11 +373,11 @@ async def _call_gemini(
         "contents": contents,
         "tools": [{"googleSearch": {}}],
     }
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        r = await client.post(url, json=body)
-        r.raise_for_status()
-        data = r.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+    client = await get_http_client()
+    r = await client.post(url, json=body, timeout=120.0)
+    r.raise_for_status()
+    data = r.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 _MODEL_IDENTITY_WORDS = ("modelo", "model")
