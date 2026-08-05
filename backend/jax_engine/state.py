@@ -3,6 +3,7 @@ import json
 import os
 from datetime import datetime
 import httpx
+from http_client import get_http_client
 from .schemas import (
     EcosystemState, FacetState, PipelineState, PipelineStep, UserSession, JAXEvent
 )
@@ -153,7 +154,7 @@ class JAXEngineState:
 
     async def _check_las_manos_health(self, client: httpx.AsyncClient):
         try:
-            r = await client.get(f"{LAS_MANOS_URL}/health")
+            r = await client.get(f"{LAS_MANOS_URL}/health", timeout=5.0)
             alive = r.status_code == 200
         except Exception:
             alive = False
@@ -171,24 +172,24 @@ class JAXEngineState:
                 await event_bus.publish(event)
 
     async def _poll_las_manos(self):
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            while True:
-                await self._check_las_manos_health(client)
-                await asyncio.sleep(30)
+        client = await get_http_client()
+        while True:
+            await self._check_las_manos_health(client)
+            await asyncio.sleep(30)
 
     async def _poll_pipelines(self):
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            while True:
-                for pid, pipeline in list(self._state.active_pipelines.items()):
-                    if pipeline.status not in ("running", "waiting_gate"):
-                        continue
-                    await self._poll_one_pipeline(client, pid, pipeline)
+        client = await get_http_client()
+        while True:
+            for pid, pipeline in list(self._state.active_pipelines.items()):
+                if pipeline.status not in ("running", "waiting_gate"):
+                    continue
+                await self._poll_one_pipeline(client, pid, pipeline)
 
-                await asyncio.sleep(5)
+            await asyncio.sleep(5)
 
     async def _poll_one_pipeline(self, client: httpx.AsyncClient, pid: str, pipeline: PipelineState):
         try:
-            r = await client.get(f"{LAS_MANOS_URL}/jacobs/pipeline/{pid}")
+            r = await client.get(f"{LAS_MANOS_URL}/jacobs/pipeline/{pid}", timeout=5.0)
             if r.status_code != 200:
                 return
             data = r.json()
