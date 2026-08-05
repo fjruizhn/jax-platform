@@ -1,11 +1,11 @@
 import os
-import httpx
 import psutil
 from datetime import datetime, date
 from fastapi import APIRouter, Depends
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
+from http_client import get_http_client
 
 router = APIRouter(prefix="/api/admin")
 
@@ -20,11 +20,11 @@ _PROVIDERS_KEYS = [
 
 async def _check_http(url: str) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            t0 = datetime.utcnow()
-            r = await client.get(url)
-            ms = int((datetime.utcnow() - t0).total_seconds() * 1000)
-            return {"status": "alive" if r.status_code < 500 else "down", "latency_ms": ms}
+        client = await get_http_client()
+        t0 = datetime.utcnow()
+        r = await client.get(url, timeout=3.0)
+        ms = int((datetime.utcnow() - t0).total_seconds() * 1000)
+        return {"status": "alive" if r.status_code < 500 else "down", "latency_ms": ms}
     except Exception:
         return {"status": "down", "latency_ms": None}
 
