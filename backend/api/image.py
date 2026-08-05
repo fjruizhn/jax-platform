@@ -7,6 +7,7 @@ from auth.middleware import get_current_user
 from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
 from jax_engine.events import event_bus
+from http_client import get_http_client
 
 router = APIRouter(prefix="/api")
 
@@ -41,30 +42,31 @@ async def generate_image(req: ImageRequest, user: AuthUser = Depends(get_current
     if not api_key:
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY no configurado")
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        try:
-            r = await client.post(
-                "https://api.openai.com/v1/images/generations",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "gpt-image-1",
-                    "prompt": req.prompt,
-                    "size": "1024x1024",
-                    "quality": "medium",
-                    "n": 1,
-                },
-            )
-            r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Image API error {e.response.status_code}: {e.response.text[:200]}",
-            )
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Error generando imagen: {str(e)[:200]}")
+    client = await get_http_client()
+    try:
+        r = await client.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-image-1",
+                "prompt": req.prompt,
+                "size": "1024x1024",
+                "quality": "medium",
+                "n": 1,
+            },
+            timeout=120.0,
+        )
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Image API error {e.response.status_code}: {e.response.text[:200]}",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Error generando imagen: {str(e)[:200]}")
 
     data = r.json()
     item = data["data"][0]
