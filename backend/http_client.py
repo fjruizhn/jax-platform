@@ -10,7 +10,7 @@ async def get_http_client() -> httpx.AsyncClient:
     return _client
 
 
-async def close_http_client():
+async def close_http_client() -> None:
     global _client
     if _client:
         await _client.aclose()
