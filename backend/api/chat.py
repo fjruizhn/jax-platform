@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import httpx
 from http_client import get_http_client
+from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
@@ -485,9 +486,13 @@ async def _invoke_facet(
         model = await _resolve_active_model("jekyll", personality.get("model_default", "deepseek-v4-flash"))
         if _is_model_identity_question(message):
             return _model_identity_reply(model, facet)
+        try:
+            api_key = await resolve_credential_instrumented("deepseek")
+        except CredentialUnavailableError:
+            return "⚠️ Jekyll no está disponible: sin credencial válida configurada para deepseek."
         return await _call_openai_compat(
             "https://api.deepseek.com/v1",
-            os.getenv("DEEPSEEK_API_KEY", ""),
+            api_key,
             model, system_prompt, history, message,
         )
 
@@ -495,17 +500,25 @@ async def _invoke_facet(
         model = await _resolve_active_model("hipatia", personality.get("model_default", "gemini-2.5-flash"))
         if _is_model_identity_question(message):
             return _model_identity_reply(model, facet)
+        try:
+            api_key = await resolve_credential_instrumented("gemini")
+        except CredentialUnavailableError:
+            return "⚠️ Hipatia no está disponible: sin credencial válida configurada para gemini."
         return await _call_gemini(
-            os.getenv("GEMINI_API_KEY", ""), model, system_prompt, history, message,
+            api_key, model, system_prompt, history, message,
         )
 
     if facet == "thot":
         model = await _resolve_active_model("thot", personality.get("model_default", "gpt-4o"))
         if _is_model_identity_question(message):
             return _model_identity_reply(model, facet)
+        try:
+            api_key = await resolve_credential_instrumented("openai")
+        except CredentialUnavailableError:
+            return "⚠️ Thot no está disponible: sin credencial válida configurada para openai."
         return await _call_openai_compat(
             "https://api.openai.com/v1",
-            os.getenv("OPENAI_API_KEY", ""),
+            api_key,
             model, system_prompt, history, message,
         )
 
@@ -516,8 +529,12 @@ async def _invoke_facet(
         model = await _resolve_active_model("kimi", personality.get("model_default", "kimi-k2.7-code"))
         if _is_model_identity_question(message):
             return _model_identity_reply(model, facet)
+        try:
+            api_key = await resolve_credential_instrumented("moonshot")
+        except CredentialUnavailableError:
+            return "⚠️ Kimi no está disponible: sin credencial válida configurada para moonshot."
         return await _call_openai_compat(
-            base_url, os.getenv("KIMI_API_KEY", ""), model, system_prompt, history, message,
+            base_url, api_key, model, system_prompt, history, message,
         )
 
     if facet == "ada":
@@ -526,8 +543,12 @@ async def _invoke_facet(
         model = await _resolve_active_model("ada", personality.get("model_default", "glm-5.2"))
         if _is_model_identity_question(message):
             return _model_identity_reply(model, facet)
+        try:
+            api_key = await resolve_credential_instrumented("zhipu")
+        except CredentialUnavailableError:
+            return "⚠️ Ada no está disponible: sin credencial válida configurada para zhipu."
         return await _call_openai_compat(
-            base_url, os.getenv("ZAI_API_KEY", ""), model, system_prompt, history, message,
+            base_url, api_key, model, system_prompt, history, message,
         )
 
     # fallback
