@@ -214,11 +214,21 @@ export const useJaxStore = create((set, get) => ({
         })
 
         set((s) => {
-          const existingIds = new Set(s.messages.map((m) => m.id))
-          const toAppend = newMessages.filter((m) => !existingIds.has(m.id))
+          const seenIds = new Set(s.messages.map((m) => m.id))
+          const toAppend = newMessages.filter((m) => !seenIds.has(m.id) && (seenIds.add(m.id), true))
           return toAppend.length ? { messages: [...s.messages, ...toAppend] } : s
         })
-      }).catch(() => {})
+      }).catch(() => {
+        set((s) => {
+          const next = new Set(s._pipelineCompletedShown)
+          next.delete(pipeline_id)
+          return { _pipelineCompletedShown: next }
+        })
+        get().addToast({
+          type: 'error',
+          message: `No se pudieron cargar los resultados del pipeline ${pipeline_id.slice(0, 8)}`,
+        })
+      })
     }
   },
 
