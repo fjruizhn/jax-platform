@@ -75,11 +75,13 @@ async def test_path_traversal_does_not_leak_file_outside_missions_dir(outside_se
     assert SENTINEL not in result.get("result", "")
 
 
-async def test_normal_flow_unknown_uuid_still_reports_running(client):
+async def test_truly_unknown_uuid_404s_instead_of_claiming_running(client):
+    """Un task_id que nunca se creó (sin owner file) ya no reporta "running"
+    para siempre -- ver test_ownership.py para el caso real: un task propio
+    reporta running normalmente antes de completarse."""
     token = create_access_token("real-user", "1", "operator")
     headers = {"Authorization": f"Bearer {token}"}
 
     resp = client.get(f"/api/command/{uuid.uuid4()}", headers=headers)
 
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "running"}
+    assert resp.status_code == 404

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 from pathlib import Path
 
@@ -17,6 +18,10 @@ MISSIONS_DIR = Path.home() / "jax" / "missions"
 JAX_BIN = Path.home() / ".local" / "bin" / "jax"
 
 
+def _owner_file(task_id: str) -> Path:
+    return MISSIONS_DIR / f"web-task-{task_id}_owner.json"
+
+
 class CommandRequest(BaseModel):
     command: str
     mode: str = "execute"
@@ -33,6 +38,11 @@ async def create_command(req: CommandRequest, user: AuthUser = Depends(get_curre
 
     tenant_id = user.tenant_id
     user_id = user.user_id
+    # Registro de dueño en disco (no sólo en memoria): GET /command/{task_id}
+    # no tenía NINGÚN chequeo de autorización — cualquier usuario autenticado
+    # que conociera (o adivinara/leyera del localStorage de otro) un task_id
+    # ajeno podía leer su resultado completo. Ver ese endpoint más abajo.
+    _owner_file(task_id).write_text(json.dumps({"tenant_id": tenant_id, "user_id": user_id}))
 
     start_event = JAXEvent(
         event_type="command_started",
@@ -62,6 +72,16 @@ async def get_command_result(task_id: str, user: AuthUser = Depends(get_current_
         uuid.UUID(task_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="task_id inválido")
+
+    # 404 (no 403) para no confirmarle a un no-dueño que el task_id existe.
+    # Tareas creadas antes de este cambio no tienen owner file y también
+    # devuelven 404 — costo único de la migración, no un bug.
+    try:
+        owner = json.loads(_owner_file(task_id).read_text())
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    if owner.get("user_id") != user.user_id or owner.get("tenant_id") != user.tenant_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
 
     result_file = MISSIONS_DIR / f"web-task-{task_id}_result.md"
     if result_file.exists():
