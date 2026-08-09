@@ -201,6 +201,61 @@ CREATE TABLE IF NOT EXISTS facet_binding (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# Fase 2 (Bloque D) — catalogo de modelos. Ver
+# jax-platform/docs/fase2-facetas-diseno.md D1.1. facet_binding.model_id
+# (texto libre, Bloque C) se respalda con facet_binding.model_ref (FK aqui
+# abajo) durante una ventana de cutover — no se dropea en esta corrida.
+CREATE_MODEL = """
+CREATE TABLE IF NOT EXISTS model (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  provider_id VARCHAR(50) NOT NULL,
+  model_id VARCHAR(100) NOT NULL,
+  is_alias BOOLEAN NOT NULL DEFAULT FALSE,
+  context_window INT NULL,
+  supports_tool_use BOOLEAN NOT NULL DEFAULT FALSE,
+  supports_structured_output BOOLEAN NOT NULL DEFAULT FALSE,
+  input_modalities SET('text','image','audio','video') NOT NULL DEFAULT 'text',
+  price_input_per_1m_usd DECIMAL(10,4) NULL,
+  price_output_per_1m_usd DECIMAL(10,4) NULL,
+  price_cache_per_1m_usd DECIMAL(10,4) NULL,
+  release_date DATE NULL,
+  deprecation_date DATE NULL,
+  status ENUM('available','degraded','deprecated','gone') NOT NULL DEFAULT 'available',
+  -- 'observed': descubierto en vivo por record_resolved_version (D1.2) --
+  -- no es una de las 3 fuentes planeadas de D1.3, es una 4ta fuente real
+  -- que el diseno original no prevía explicitamente (una version resuelta
+  -- que aparece en una invocacion real y todavia no esta en el catalogo).
+  source ENUM('provider_api','models_dev','manual','observed') NOT NULL,
+  source_checked_at DATETIME NOT NULL,
+  consecutive_misses INT NOT NULL DEFAULT 0,  -- D1.4: ausente en N syncs seguidos de /v1/models -> degraded/deprecated. Nunca dispara 'gone' (confirmacion manual).
+  created_at DATETIME DEFAULT NOW(),
+  FOREIGN KEY (provider_id) REFERENCES provider(id),
+  UNIQUE KEY uk_provider_model (provider_id, model_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+# Regla de oro (D1.3): el catalogo (`model`) se escribe solo via sync; un
+# cambio a `facet_binding` (produccion) pasa SIEMPRE por una fila aqui
+# aprobada desde el admin — el sync job jamas hace UPDATE directo a
+# facet_binding.
+CREATE_MODEL_BINDING_PROPOSAL = """
+CREATE TABLE IF NOT EXISTS model_binding_proposal (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  facet_key VARCHAR(50) NOT NULL,
+  current_model_ref INT NULL,
+  proposed_model_ref INT NOT NULL,
+  reason ENUM('new_model_available','drift_detected','deprecation_warning') NOT NULL,
+  detail TEXT NULL,
+  status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+  decided_by INT NULL,
+  decided_at DATETIME NULL,
+  created_at DATETIME DEFAULT NOW(),
+  FOREIGN KEY (facet_key) REFERENCES facet(`key`),
+  FOREIGN KEY (proposed_model_ref) REFERENCES model(id),
+  FOREIGN KEY (decided_by) REFERENCES jax_users(user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
@@ -210,11 +265,13 @@ _TABLES = [
     ("password_reset_tokens", CREATE_PASSWORD_RESET_TOKENS),
     ("user_api_keys", CREATE_USER_API_KEYS),
     ("facet_models", CREATE_FACET_MODELS),
-    ("provider", CREATE_PROVIDER),          # antes de credential (FK)
+    ("provider", CREATE_PROVIDER),          # antes de credential y model (FK)
     ("credential", CREATE_CREDENTIAL),      # antes de credential_audit (FK)
     ("credential_audit", CREATE_CREDENTIAL_AUDIT),
-    ("facet", CREATE_FACET),                # antes de facet_binding (FK)
+    ("model", CREATE_MODEL),                # antes de model_binding_proposal (FK)
+    ("facet", CREATE_FACET),                # antes de facet_binding y model_binding_proposal (FK)
     ("facet_binding", CREATE_FACET_BINDING),
+    ("model_binding_proposal", CREATE_MODEL_BINDING_PROPOSAL),
 ]
 
 # transport, requires_tool_use, auto_selectable — valores actuales reales
@@ -309,6 +366,58 @@ async def _seed_providers(cur) -> None:
         )
 
 
+# provider_id -> (api_key_transport, models_list_url). Solo los 4 OpenAI-
+# compatibles + Gemini (query_param, ya visto en api/admin/keys.py:159-166);
+# ollama/anthropic quedan NULL a proposito (D1.1: sin catalogo remoto propio
+# todavia). Mismas URLs que PROVIDERS.test_url en admin/keys.py, no
+# inventadas.
+_PROVIDER_SYNC_SEED = [
+    ("openai",   "header_bearer", "https://api.openai.com/v1/models"),
+    ("deepseek", "header_bearer", "https://api.deepseek.com/v1/models"),
+    ("moonshot", "header_bearer", "https://api.moonshot.ai/v1/models"),
+    ("zhipu",    "header_bearer", "https://api.z.ai/api/paas/v4/models"),
+    ("gemini",   "query_param",   "https://generativelanguage.googleapis.com/v1beta/models"),
+]
+
+
+async def _seed_provider_sync_config(cur) -> None:
+    """Idempotente pero NO 'set once + nunca tocar': el guard es
+    models_list_url IS NULL, para no pisar un valor editado a mano despues
+    (D1.5 no expone edicion de esta columna en la UI todavia, pero el guard
+    ya queda correcto para cuando exista)."""
+    for provider_id, transport, url in _PROVIDER_SYNC_SEED:
+        await cur.execute(
+            "UPDATE provider SET api_key_transport=%s, models_list_url=%s "
+            "WHERE id=%s AND models_list_url IS NULL",
+            (transport, url, provider_id),
+        )
+
+
+async def _seed_models_and_backfill(cur) -> None:
+    """D1.1 — deriva el catalogo inicial de los bindings YA migrados en
+    Bloque C (_seed_facets), no de una lista nueva inventada. source='manual'
+    a proposito: todavia no corrio ningun sync real contra el proveedor
+    (eso es D1.3/model_catalog.py, deliberadamente separado del arranque).
+    is_alias=False: ninguno de los 7 bindings actuales usa un puntero movil
+    (serian estilo 'deepseek-chat'); todos son versiones fijadas verificadas
+    en Bloque C0. INSERT IGNORE + UPDATE...WHERE model_ref IS NULL: seguro
+    de re-correr, nunca duplica ni pisa un binding ya resuelto a mano."""
+    await cur.execute("SELECT DISTINCT provider_id, model_id FROM facet_binding")
+    pairs = await cur.fetchall()
+    for provider_id, model_id in pairs:
+        await cur.execute(
+            "INSERT IGNORE INTO model (provider_id, model_id, is_alias, status, source, source_checked_at) "
+            "VALUES (%s, %s, FALSE, 'available', 'manual', NOW())",
+            (provider_id, model_id),
+        )
+    await cur.execute(
+        "UPDATE facet_binding b "
+        "JOIN model m ON m.provider_id = b.provider_id AND m.model_id = b.model_id "
+        "SET b.model_ref = m.id "
+        "WHERE b.model_ref IS NULL"
+    )
+
+
 async def _migrate_user_api_keys_to_credential(cur) -> None:
     """Migracion de datos, una sola vez: si credential ya tiene filas, no
     vuelve a correr (evita duplicar en cada arranque del proceso o cada
@@ -334,6 +443,24 @@ _COLUMNS = [
     ("jax_users", "last_login", "ALTER TABLE jax_users ADD COLUMN last_login TIMESTAMP NULL"),
     ("jax_users", "failed_attempts", "ALTER TABLE jax_users ADD COLUMN failed_attempts INT DEFAULT 0"),
     ("jax_users", "locked_until", "ALTER TABLE jax_users ADD COLUMN locked_until DATETIME NULL"),
+    # Bloque D (D1.1/D1.3) — divergencia real ya presente en
+    # api/admin/keys.py:158-169 (Gemini usa ?key=, los otros 4 Authorization:
+    # Bearer). models_list_url NULL = sin sync automatico de capa (a)
+    # todavia para ese provider (ollama/anthropic).
+    ("provider", "api_key_transport", "ALTER TABLE provider ADD COLUMN api_key_transport ENUM('header_bearer','query_param') NOT NULL DEFAULT 'header_bearer'"),
+    ("provider", "models_list_url", "ALTER TABLE provider ADD COLUMN models_list_url VARCHAR(255) NULL"),
+    # Bloque D (D1.1) — FK real contra `model`; `model_id` (texto libre,
+    # Bloque C) se conserva de solo-lectura durante el cutover, no se dropea
+    # en esta corrida.
+    ("facet_binding", "model_ref", "ALTER TABLE facet_binding ADD COLUMN model_ref INT NULL, ADD CONSTRAINT fk_facet_binding_model_ref FOREIGN KEY (model_ref) REFERENCES model(id)"),
+    # Bloque D (D1.2) — detector de drift: lo que el proveedor confirma
+    # haber ejecutado, capturado del campo `model` de la respuesta.
+    ("facet_binding", "resolved_version", "ALTER TABLE facet_binding ADD COLUMN resolved_version VARCHAR(100) NULL"),
+    ("facet_binding", "resolved_version_checked_at", "ALTER TABLE facet_binding ADD COLUMN resolved_version_checked_at DATETIME NULL"),
+    # Cubre entornos donde `model` ya se creo antes de agregar esta columna
+    # al DDL de arriba (ej. esta misma corrida de verificacion) — mismo
+    # patron que jax_users.last_login.
+    ("model", "consecutive_misses", "ALTER TABLE model ADD COLUMN consecutive_misses INT NOT NULL DEFAULT 0"),
 ]
 
 
@@ -366,6 +493,30 @@ async def _column_exists(cur, table_name: str, column_name: str) -> bool:
     return bool(row and row[0] > 0)
 
 
+async def _enum_has_value(cur, table_name: str, column_name: str, value: str) -> bool:
+    await cur.execute(
+        """
+        SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
+        """,
+        (table_name, column_name),
+    )
+    row = await cur.fetchone()
+    return bool(row) and f"'{value}'" in row[0]
+
+
+# (tabla, columna, valor nuevo, ALTER MODIFY completo) — ensancha un ENUM
+# existente sin tocar los valores ya presentes. Ver 'observed' en D1.2:
+# fuente real que el diseno original de D1.3 no preveia.
+_ENUM_EXTENSIONS = [
+    (
+        "model", "source", "observed",
+        "ALTER TABLE model MODIFY COLUMN source "
+        "ENUM('provider_api','models_dev','manual','observed') NOT NULL",
+    ),
+]
+
+
 async def run_migrations():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -378,8 +529,14 @@ async def run_migrations():
                 if not await _column_exists(cur, table_name, column_name):
                     await cur.execute(ddl)
 
+            for table_name, column_name, value, ddl in _ENUM_EXTENSIONS:
+                if not await _enum_has_value(cur, table_name, column_name, value):
+                    await cur.execute(ddl)
+
             await _seed_providers(cur)
             await _migrate_user_api_keys_to_credential(cur)
             await _seed_facets(cur)
+            await _seed_provider_sync_config(cur)
+            await _seed_models_and_backfill(cur)
 
         await conn.commit()
