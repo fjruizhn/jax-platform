@@ -45,6 +45,8 @@ from api.admin import (
     config_router,
     usage_router,
     facet_models_router,
+    models_router,
+    facet_bindings_router,
 )
 
 
@@ -106,6 +108,8 @@ app.include_router(repository_router)
 app.include_router(config_router)
 app.include_router(usage_router)
 app.include_router(facet_models_router)
+app.include_router(models_router)
+app.include_router(facet_bindings_router)
 
 
 # ws_hub and event_bus each guard their own state with their own lock, so a

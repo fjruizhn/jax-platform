@@ -120,6 +120,27 @@ async def _get_active_models_batch(pool, facets: list) -> dict:
     return {facet: model_name for facet, model_name in rows}
 
 
+async def _get_binding_models_batch(pool, facets: list) -> dict:
+    """Bloque D (D0/D1.5) — fuente real post-Bloque-C: facet_binding/model,
+    la MISMA que usan REPL/Mesa web/Jacobs via facet_resolver.py. Cierra el
+    bug de admin/keys.py:18 (PROVIDERS['model']='gpt-4o' hardcodeado para
+    thot, real gpt-5.5): esta consulta gana sobre facet_models (legacy) y
+    sobre el literal, sin tocar ninguna de las dos."""
+    if not facets:
+        return {}
+    placeholders = ", ".join(["%s"] * len(facets))
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT b.facet_key, m.model_id FROM facet_binding b "
+                "JOIN model m ON m.id = b.model_ref "
+                f"WHERE b.facet_key IN ({placeholders}) AND b.role = 'primary'",
+                tuple(facets),
+            )
+            rows = await cur.fetchall()
+    return {facet_key: model_id for facet_key, model_id in rows}
+
+
 @router.get("/keys")
 async def list_keys(user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
@@ -127,11 +148,19 @@ async def list_keys(user: AuthUser = Depends(require_superadmin)):
 
     keys_by_provider = await _get_db_keys_batch(pool, user_id=1, provider_ids=[p["id"] for p in PROVIDERS])
     models_by_facet = await _get_active_models_batch(pool, facets=[p["facet"] for p in PROVIDERS])
+    binding_models_by_facet = await _get_binding_models_batch(pool, facets=[p["facet"] for p in PROVIDERS])
 
     result = []
     for p in PROVIDERS:
         raw = keys_by_provider.get(p["id"], "")
-        model = models_by_facet.get(p["facet"], p["model"])
+        # Orden de preferencia: facet_binding (Bloque C/D, fuente real y
+        # actual) > facet_models (legacy) > literal hardcodeado (ultimo
+        # recurso, sabido stale — ver D0).
+        model = (
+            binding_models_by_facet.get(p["facet"])
+            or models_by_facet.get(p["facet"])
+            or p["model"]
+        )
         result.append({
             "id": p["id"],
             "name": p["name"],
