@@ -13,13 +13,6 @@ function _t() {
 const RESULTS_FETCH_MAX_ATTEMPTS = 2
 const RESULTS_FETCH_RETRY_DELAY_MS = 2000
 
-function _loadPendingIds() {
-  try { return JSON.parse(localStorage.getItem('jax_pending_cmds') || '[]') } catch { return [] }
-}
-function _savePendingIds(ids) {
-  localStorage.setItem('jax_pending_cmds', JSON.stringify(ids))
-}
-
 // Cotas de memoria para sesiones largas — sin esto, `messages` y
 // `activePipelines` crecen sin límite durante toda la vida de la pestaña.
 const MAX_MESSAGES = 200
@@ -107,6 +100,23 @@ export const useJaxStore = create((set, get) => {
   const bumpSessionEpoch = () => set((s) => ({ _sessionEpoch: s._sessionEpoch + 1 }))
   const isSameSession = (epoch) => get()._sessionEpoch === epoch && !!get().token
 
+  // jax_pending_cmds está scopeado por dueño (user_id), no sólo limpiado en
+  // logout(): la sesión también puede terminar por un refresh silencioso
+  // que falla (api/client.js) o por restoreSession() al cargar la página, y
+  // perseguir cada uno de esos puntos es frágil. Con el owner embebido, un
+  // login de OTRO usuario en el mismo browser simplemente no matchea y lee
+  // vacío — sin importar por dónde terminó la sesión anterior.
+  const _loadPendingIds = () => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('jax_pending_cmds') || 'null')
+      if (!raw || raw.owner !== (get().user?.user_id ?? null) || !Array.isArray(raw.ids)) return []
+      return raw.ids
+    } catch { return [] }
+  }
+  const _savePendingIds = (ids) => {
+    localStorage.setItem('jax_pending_cmds', JSON.stringify({ owner: get().user?.user_id ?? null, ids }))
+  }
+
   return {
   token: null,
   user: null,
@@ -149,11 +159,10 @@ export const useJaxStore = create((set, get) => {
   logout: () => {
     set({ token: null, user: null, messages: [], _pipelineCompletedShown: new Set() })
     bumpSessionEpoch()
-    // jax_pending_cmds no está scopeado por usuario — si no se limpia acá,
-    // el próximo login en este mismo browser (mismo u otro usuario) hereda
-    // los ids de comandos pendientes de esta sesión y checkPendingTasks los
-    // pollea con el token de la sesión nueva.
-    _savePendingIds([])
+    // No hace falta limpiar jax_pending_cmds acá a mano: está scopeado por
+    // owner (ver _loadPendingIds arriba), así que un login de otro usuario
+    // ya lo lee vacío solo. Borrarlo acá de más perdería, sin necesidad, los
+    // comandos pendientes propios de ESTE usuario si vuelve a loguearse.
     api.post('/auth/logout').catch(() => {
       // best-effort: la sesión local ya quedó limpia
     })
