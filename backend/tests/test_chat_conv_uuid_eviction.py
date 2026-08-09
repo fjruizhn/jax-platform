@@ -1,3 +1,5 @@
+import asyncio
+
 import api.chat as chat
 
 
@@ -43,6 +45,34 @@ async def test_evicts_the_least_recently_used_conversation_past_the_cap(monkeypa
 
         # la conversación de user 2 se cerró en la DB antes de descartarla -- no queda abandonada
         assert fake.ended == ["conv-2"]
+    finally:
+        _reset()
+
+
+async def test_concurrent_evictions_do_not_double_close_the_same_conversation(monkeypatch):
+    _reset()
+    fake = _FakeMemory()
+
+    async def slow_end_conversation(uuid_):
+        await asyncio.sleep(0)  # fuerza un punto de yield real -> interleaving genuino
+        fake.ended.append(uuid_)
+
+    fake.end_conversation = slow_end_conversation
+    monkeypatch.setattr(chat, "_memory", fake)
+    monkeypatch.setattr(chat, "_memory_ready", True)
+    monkeypatch.setattr(chat, "MAX_TRACKED_CONVERSATIONS", 3)
+    try:
+        for i in range(5):
+            chat._conv_uuids[f"k{i}"] = f"conv-k{i}"
+
+        await asyncio.gather(
+            chat._evict_oldest_conversation_if_over_cap(),
+            chat._evict_oldest_conversation_if_over_cap(),
+        )
+
+        assert len(chat._conv_uuids) == 3  # bajó al cap, no se quedó pegado en 4
+        assert len(fake.ended) == 2
+        assert set(fake.ended) == {"conv-k0", "conv-k1"}  # dos distintas, ninguna repetida
     finally:
         _reset()
 

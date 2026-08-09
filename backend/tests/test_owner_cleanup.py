@@ -43,6 +43,22 @@ def test_does_not_reap_if_only_the_result_survives(tmp_path):
     assert (tmp_path / f"web-task-{task_id}_owner.json").exists()
 
 
+def test_reaps_a_command_owner_file_past_the_age_cutoff_even_if_siblings_survive(tmp_path):
+    # el script externo de retención no tiene scheduler propio hoy -- este
+    # fallback por edad hace que el reaper no dependa de que corra.
+    task_id = "dddd"
+    owner_file = tmp_path / f"web-task-{task_id}_owner.json"
+    owner_file.write_text(json.dumps({"tenant_id": "1", "user_id": "u"}))
+    old_time = time.time() - 3600
+    os.utime(owner_file, (old_time, old_time))
+    (tmp_path / f"web-task-{task_id}_result.md").write_text("result")
+
+    reaped = reap_orphaned_command_owner_files(tmp_path, max_age_seconds=1800)
+
+    assert reaped == 1
+    assert not owner_file.exists()
+
+
 def test_reaps_a_pipeline_owner_file_older_than_the_cutoff(tmp_path):
     old_file = tmp_path / "pid-old_owner.json"
     old_file.write_text(json.dumps({"tenant_id": "1", "user_id": "u"}))
