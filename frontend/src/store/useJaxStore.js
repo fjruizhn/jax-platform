@@ -179,6 +179,7 @@ export const useJaxStore = create((set, get) => ({
       const { pipeline_id } = payload
       const shown = get()._pipelineCompletedShown
       if (shown.has(pipeline_id)) return
+      set((s) => ({ _pipelineCompletedShown: new Set([...s._pipelineCompletedShown, pipeline_id]) }))
 
       api.get(`/pipelines/${pipeline_id}/results`).then(({ data }) => {
         const allSteps = data.steps || []
@@ -213,13 +214,9 @@ export const useJaxStore = create((set, get) => ({
         })
 
         set((s) => {
-          if (s._pipelineCompletedShown.has(pipeline_id)) return s
           const existingIds = new Set(s.messages.map((m) => m.id))
           const toAppend = newMessages.filter((m) => !existingIds.has(m.id))
-          return {
-            _pipelineCompletedShown: new Set([...s._pipelineCompletedShown, pipeline_id]),
-            ...(toAppend.length ? { messages: [...s.messages, ...toAppend] } : {}),
-          }
+          return toAppend.length ? { messages: [...s.messages, ...toAppend] } : s
         })
       }).catch(() => {})
     }
