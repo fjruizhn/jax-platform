@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from auth.middleware import get_current_user
@@ -33,6 +34,10 @@ def _require_pipeline_owner(pipeline_id: str, user: AuthUser):
     # 404 (no 403) para no confirmarle a un no-dueño que el pipeline_id
     # existe. Pipelines creadas antes de este cambio no tienen owner file y
     # también devuelven 404 -- costo único de la migración, no un bug.
+    try:
+        uuid.UUID(pipeline_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="pipeline_id inválido")
     try:
         owner = json.loads(_pipeline_owner_file(pipeline_id).read_text())
     except (OSError, ValueError):
@@ -70,6 +75,11 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
         if r.status_code == 200:
             pipeline_id = data.get("pipeline_id")
             if pipeline_id:
+                # Antes de admitir el recurso o publicar el evento de WS
+                # (que ya revela pipeline_id al dueño) — así un fallo acá
+                # aborta limpio, sin slot de tenant huérfano ni owner file
+                # faltante para un id que el cliente ya recibió.
+                _record_pipeline_owner(pipeline_id, user.tenant_id, user.user_id)
                 await resource_manager.admit_pipeline(user.tenant_id, pipeline_id)
                 initial = PipelineState(
                     pipeline_id=pipeline_id,
@@ -79,7 +89,6 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
                     status="running",
                 )
                 await engine_state.upsert_pipeline(initial, user.tenant_id, user.user_id)
-                _record_pipeline_owner(pipeline_id, user.tenant_id, user.user_id)
         return data
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
