@@ -137,39 +137,66 @@ describe('pipeline_step_changed completion batching', () => {
     const ids = messages.map((m) => m.id)
     expect(ids).toEqual(['pipeline-pid-4-step-0', 'pipeline-pid-4-done'])
     expect(messages[0].content).toContain('r0-first')
+    // El total también se dedupea — si no, el resumen diría "1 de 2 steps"
+    // para un solo step duplicado en el payload.
+    expect(messages[1].content).toContain('1 de 1 steps')
   })
 
-  it('shows an error toast and allows a retry when the results fetch fails', async () => {
-    api.get.mockRejectedValue(new Error('network down'))
+  it('recovers automatically if the results fetch fails once and the retry succeeds', async () => {
+    vi.useFakeTimers()
+    try {
+      api.get
+        .mockRejectedValueOnce(new Error('network down'))
+        .mockResolvedValueOnce({
+          data: {
+            steps: [{ step_index: 0, facet: 'jekyll', capability: 'research', status: 'completed', result: 'r0' }],
+            total_duration_seconds: 1,
+          },
+        })
 
-    useJaxStore.getState().handleEvent({
-      event_type: 'pipeline_step_changed',
-      payload: { pipeline_id: 'pid-5', status: 'completed' },
-    })
-    await new Promise((resolve) => setTimeout(resolve, 0))
+      useJaxStore.getState().handleEvent({
+        event_type: 'pipeline_step_changed',
+        payload: { pipeline_id: 'pid-5', status: 'completed' },
+      })
 
-    const { toasts, _pipelineCompletedShown, messages } = useJaxStore.getState()
-    expect(toasts.some((t) => t.type === 'error')).toBe(true)
-    expect(_pipelineCompletedShown.has('pid-5')).toBe(false)
-    expect(messages).toHaveLength(0)
+      // deja que la primera llamada (rechazada) programe el reintento, y
+      // avanza el temporizador para que se dispare.
+      await vi.advanceTimersByTimeAsync(2000)
 
-    // Un evento posterior para el mismo pipeline puede reintentar el fetch.
-    api.get.mockResolvedValue({
-      data: {
-        steps: [{ step_index: 0, facet: 'jekyll', capability: 'research', status: 'completed', result: 'r0' }],
-        total_duration_seconds: 1,
-      },
-    })
-    useJaxStore.getState().handleEvent({
-      event_type: 'pipeline_step_changed',
-      payload: { pipeline_id: 'pid-5', status: 'completed' },
-    })
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    expect(api.get).toHaveBeenCalledTimes(2)
-    expect(useJaxStore.getState().messages.map((m) => m.id)).toEqual([
-      'pipeline-pid-5-step-0',
-      'pipeline-pid-5-done',
-    ])
+      expect(api.get).toHaveBeenCalledTimes(2)
+      const { messages, toasts, _pipelineCompletedShown } = useJaxStore.getState()
+      expect(messages.map((m) => m.id)).toEqual([
+        'pipeline-pid-5-step-0',
+        'pipeline-pid-5-done',
+      ])
+      expect(toasts.some((t) => t.type === 'error')).toBe(false)
+      // Éxito en el reintento: el mark queda puesto, no hace falta liberarlo.
+      expect(_pipelineCompletedShown.has('pid-5')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
+
+  it('shows an error toast and releases the mark after every retry attempt fails', async () => {
+    vi.useFakeTimers()
+    try {
+      api.get.mockRejectedValue(new Error('network down'))
+
+      useJaxStore.getState().handleEvent({
+        event_type: 'pipeline_step_changed',
+        payload: { pipeline_id: 'pid-6', status: 'completed' },
+      })
+
+      await vi.advanceTimersByTimeAsync(2000)
+
+      expect(api.get).toHaveBeenCalledTimes(2)
+      const { toasts, _pipelineCompletedShown, messages } = useJaxStore.getState()
+      expect(toasts.some((t) => t.type === 'error')).toBe(true)
+      expect(_pipelineCompletedShown.has('pid-6')).toBe(false)
+      expect(messages).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
 })

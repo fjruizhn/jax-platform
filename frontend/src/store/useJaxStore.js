@@ -1,5 +1,15 @@
 import { create } from 'zustand'
 import api from '../api/client'
+import es from '../i18n/es.js'
+import en from '../i18n/en.js'
+
+// Este módulo no es un componente — no puede usar el hook useI18n(). Lee la
+// misma fuente que I18nProvider (localStorage 'jax_lang') para los mensajes
+// que se generan acá (eventos de WS), fuera de cualquier árbol de React.
+const I18N_LANGS = { es, en }
+function _t() {
+  return I18N_LANGS[localStorage.getItem('jax_lang')] || I18N_LANGS.es
+}
 
 function _loadPendingIds() {
   try { return JSON.parse(localStorage.getItem('jax_pending_cmds') || '[]') } catch { return [] }
@@ -136,11 +146,11 @@ export const useJaxStore = create((set, get) => ({
 
     if (event_type === 'kill_switch_activated') {
       set({ killSwitchActive: true })
-      get().addToast({ type: 'error', message: 'KILL SWITCH ACTIVADO' })
+      get().addToast({ type: 'error', message: _t().killSwitchToast })
     }
 
     if (event_type === 'human_gate_requested') {
-      get().addToast({ type: 'warning', message: `Jacobs espera aprobación — pipeline ${payload.pipeline_id?.slice(0, 8)}` })
+      get().addToast({ type: 'warning', message: _t().humanGateRequestedToast(payload.pipeline_id?.slice(0, 8)) })
     }
 
     if (event_type === 'facet_response_completed') {
@@ -181,54 +191,73 @@ export const useJaxStore = create((set, get) => ({
       if (shown.has(pipeline_id)) return
       set((s) => ({ _pipelineCompletedShown: new Set([...s._pipelineCompletedShown, pipeline_id]) }))
 
-      api.get(`/pipelines/${pipeline_id}/results`).then(({ data }) => {
-        const allSteps = data.steps || []
-        const completedSteps = allSteps.filter((s) => s.status === 'completed')
-        const ts = new Date().toISOString()
+      // El backend emite este evento una sola vez y descarta el pipeline
+      // (jax_engine/state.py remove_pipeline) — no hay un segundo evento que
+      // permita reintentar más tarde. Por eso el fetch se reintenta acá mismo
+      // antes de rendirse; el mark sólo se libera (para permitir un reintento
+      // manual futuro, si alguna vez existe un disparador) tras agotar los intentos.
+      const RESULTS_FETCH_MAX_ATTEMPTS = 2
+      const RESULTS_FETCH_RETRY_DELAY_MS = 2000
 
-        const newMessages = completedSteps.map((step) => {
-          const header = `● **${step.facet}** — ${step.capability}`
-          const body = step.result || '_(sin resultado)_'
-          const sourceParts = (step.sources || []).map(
-            (s) => `- [${s.title || s.url}](${s.url})`
-          )
-          const sourcesBlock = sourceParts.length
-            ? `\n\n**Fuentes**\n${sourceParts.join('\n')}`
-            : ''
-          return {
-            id: `pipeline-${pipeline_id}-step-${step.step_index}`,
-            facet: step.facet,
-            content: `${header}\n\n${body}${sourcesBlock}`,
+      const fetchResults = (attempt) => {
+        api.get(`/pipelines/${pipeline_id}/results`).then(({ data }) => {
+          const seenStepIndexes = new Set()
+          const allSteps = (data.steps || []).filter((step) => {
+            if (seenStepIndexes.has(step.step_index)) return false
+            seenStepIndexes.add(step.step_index)
+            return true
+          })
+          const completedSteps = allSteps.filter((s) => s.status === 'completed')
+          const ts = new Date().toISOString()
+
+          const t = _t()
+          const newMessages = completedSteps.map((step) => {
+            const header = t.pipelineStepHeader(step.facet, step.capability)
+            const body = step.result || t.pipelineNoResult
+            const sourceParts = (step.sources || []).map(
+              (s) => `- [${s.title || s.url}](${s.url})`
+            )
+            const sourcesBlock = sourceParts.length
+              ? `\n\n**${t.pipelineSources}**\n${sourceParts.join('\n')}`
+              : ''
+            return {
+              id: `pipeline-${pipeline_id}-step-${step.step_index}`,
+              facet: step.facet,
+              content: `${header}\n\n${body}${sourcesBlock}`,
+              timestamp: ts,
+            }
+          })
+
+          newMessages.push({
+            id: `pipeline-${pipeline_id}-done`,
+            facet: 'jacobs',
+            content: t.pipelineCompleted(completedSteps.length, allSteps.length, data.total_duration_seconds),
             timestamp: ts,
+          })
+
+          set((s) => {
+            const existingIds = new Set(s.messages.map((m) => m.id))
+            const toAppend = newMessages.filter((m) => !existingIds.has(m.id))
+            return toAppend.length ? { messages: [...s.messages, ...toAppend] } : s
+          })
+        }, () => {
+          if (attempt < RESULTS_FETCH_MAX_ATTEMPTS) {
+            setTimeout(() => fetchResults(attempt + 1), RESULTS_FETCH_RETRY_DELAY_MS)
+            return
           }
+          set((s) => {
+            const next = new Set(s._pipelineCompletedShown)
+            next.delete(pipeline_id)
+            return { _pipelineCompletedShown: next }
+          })
+          get().addToast({
+            type: 'error',
+            message: _t().pipelineResultsError(pipeline_id?.slice(0, 8)),
+          })
         })
+      }
 
-        const secs = data.total_duration_seconds
-          ? `, ${Math.round(data.total_duration_seconds)}s totales`
-          : ''
-        newMessages.push({
-          id: `pipeline-${pipeline_id}-done`,
-          facet: 'jacobs',
-          content: `**Pipeline completado** — ${completedSteps.length} de ${allSteps.length} steps${secs}`,
-          timestamp: ts,
-        })
-
-        set((s) => {
-          const seenIds = new Set(s.messages.map((m) => m.id))
-          const toAppend = newMessages.filter((m) => !seenIds.has(m.id) && (seenIds.add(m.id), true))
-          return toAppend.length ? { messages: [...s.messages, ...toAppend] } : s
-        })
-      }).catch(() => {
-        set((s) => {
-          const next = new Set(s._pipelineCompletedShown)
-          next.delete(pipeline_id)
-          return { _pipelineCompletedShown: next }
-        })
-        get().addToast({
-          type: 'error',
-          message: `No se pudieron cargar los resultados del pipeline ${pipeline_id.slice(0, 8)}`,
-        })
-      })
+      fetchResults(1)
     }
   },
 
@@ -309,7 +338,7 @@ export const useJaxStore = create((set, get) => ({
     try {
       await api.post('/kill-switch')
     } catch {}
-    get().addToast({ type: 'error', message: 'KILL SWITCH ACTIVADO — todos los procesos detenidos' })
+    get().addToast({ type: 'error', message: _t().killSwitchStoppedToast })
   },
 
   loadState: async () => {
