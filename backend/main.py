@@ -39,6 +39,7 @@ from api.upload import router as upload_router
 from api.admin import (
     dashboard_router,
     keys_router,
+    credentials_router,
     users_router,
     repository_router,
     config_router,
@@ -99,6 +100,7 @@ app.include_router(image_router)
 app.include_router(upload_router)
 app.include_router(dashboard_router)
 app.include_router(keys_router)
+app.include_router(credentials_router)
 app.include_router(users_router)
 app.include_router(repository_router)
 app.include_router(config_router)

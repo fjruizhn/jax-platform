@@ -6,9 +6,12 @@ import { FACET_COLORS } from '../../store/useJaxStore'
 export default function AdminApiKeys() {
   const { t } = useI18n()
   const [providers, setProviders] = useState([])
+  const [credentialsById, setCredentialsById] = useState({})
   const [testing, setTesting] = useState({})
   const [testResult, setTestResult] = useState({})
   const [rotating, setRotating] = useState(null)
+  const [revoking, setRevoking] = useState(null)
+  const [revokeConfirm, setRevokeConfirm] = useState(null)
   const [newKey, setNewKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [modelsByFacet, setModelsByFacet] = useState({})
@@ -25,7 +28,16 @@ export default function AdminApiKeys() {
       setProviders(r.data.providers)
       r.data.providers.forEach(p => loadModels(p.facet))
     }).catch(() => {})
+    loadCredentials()
   }, [])
+
+  function loadCredentials() {
+    api.get('/admin/credentials').then(r => {
+      const byId = {}
+      r.data.providers.forEach(p => { byId[p.id] = p })
+      setCredentialsById(byId)
+    }).catch(() => {})
+  }
 
   function loadModels(facet) {
     api.get(`/admin/facet-models/${facet}`)
@@ -89,8 +101,9 @@ export default function AdminApiKeys() {
     setTesting(p => ({ ...p, [id]: true }))
     setTestResult(p => ({ ...p, [id]: null }))
     try {
-      const { data } = await api.post(`/admin/keys/${id}/test`)
+      const { data } = await api.post(`/admin/credentials/${id}/test`)
       setTestResult(p => ({ ...p, [id]: data }))
+      loadCredentials()  // salud persistida — refleja lo que quedó en DB
     } catch {
       setTestResult(p => ({ ...p, [id]: { ok: false, error: 'Error' } }))
     } finally {
@@ -102,14 +115,32 @@ export default function AdminApiKeys() {
     if (!newKey.trim()) return
     setSaving(true)
     try {
-      await api.put(`/admin/keys/${id}`, { api_key: newKey.trim() })
+      // Rotar = agregar una credencial nueva activa, sin tocar la anterior
+      // (solapamiento con gracia) — antes esto sobreescribía sin aviso.
+      await api.post(`/admin/credentials/${id}/rotate`, { api_key: newKey.trim() })
       setRotating(null)
       setNewKey('')
       const { data } = await api.get('/admin/keys')
       setProviders(data.providers)
+      loadCredentials()
     } catch {
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handleRevoke(id) {
+    setRevoking(id)
+    try {
+      // Revocar = corte inmediato de TODAS las credenciales activas, sin
+      // gracia — acción separada de rotar, antes un solo botón hacía mal
+      // las dos cosas a la vez.
+      await api.post(`/admin/credentials/${id}/revoke`)
+      setRevokeConfirm(null)
+      loadCredentials()
+    } catch {
+    } finally {
+      setRevoking(null)
     }
   }
 
@@ -237,15 +268,32 @@ export default function AdminApiKeys() {
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    {res ? (
-                      <span className={`text-xs font-semibold ${res.ok ? 'text-green-400' : 'text-red-400'}`}>
-                        {res.ok ? `${t.adminKeyOk} ${res.latency_ms ? t.adminKeyLatency(res.latency_ms) : ''}` : `${t.adminKeyFail}: ${res.error || ''}`}
-                      </span>
-                    ) : (
-                      <span className={`text-xs ${p.has_key ? 'text-green-400' : 'text-slate-500'}`}>
-                        {p.has_key ? '●' : '○'} {p.status}
-                      </span>
-                    )}
+                    {(() => {
+                      const cred = credentialsById[p.id]
+                      const activeCreds = (cred?.credentials || []).filter(c => c.state === 'active')
+                      const mostRecent = activeCreds[0]
+                      if (res) {
+                        return (
+                          <span className={`text-xs font-semibold ${res.ok ? 'text-green-400' : 'text-red-400'}`}>
+                            {res.ok ? `${t.adminKeyOk} ${res.latency_ms ? t.adminKeyLatency(res.latency_ms) : ''}` : `${t.adminKeyFail}: ${res.error || ''}`}
+                          </span>
+                        )
+                      }
+                      if (!activeCreds.length) {
+                        return <span className="text-xs text-slate-500">○ {t.adminKeyNoActive}</span>
+                      }
+                      return (
+                        <div className="flex flex-col gap-0.5">
+                          <span className={`text-xs ${mostRecent.last_health_status === 'ok' ? 'text-green-400' : mostRecent.last_health_status === 'failed' ? 'text-red-400' : 'text-slate-400'}`}>
+                            ● {t.adminKeyActiveCount(activeCreds.length)}
+                            {mostRecent.last_health_status !== 'unknown' && ` · ${mostRecent.last_health_status}`}
+                          </span>
+                          {mostRecent.last_verified_at && (
+                            <span className="text-[10px] text-slate-600">{t.adminKeyLastVerified}: {mostRecent.last_verified_at}</span>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
@@ -261,6 +309,13 @@ export default function AdminApiKeys() {
                         className="text-xs px-2 py-1 rounded bg-purple-900/50 hover:bg-purple-800/50 text-purple-300 transition-colors"
                       >
                         {t.adminKeyRotate}
+                      </button>
+                      <button
+                        onClick={() => setRevokeConfirm(p.id)}
+                        disabled={revoking === p.id || !(credentialsById[p.id]?.credentials || []).some(c => c.state === 'active')}
+                        className="text-xs px-2 py-1 rounded bg-red-900/40 hover:bg-red-800/50 text-red-300 disabled:opacity-30 transition-colors"
+                      >
+                        {revoking === p.id ? t.adminKeyRevoking : t.adminKeyRevoke}
                       </button>
                     </div>
                   </td>
@@ -293,6 +348,26 @@ export default function AdminApiKeys() {
                 className="px-4 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold disabled:opacity-50 transition-colors"
               >
                 {saving ? t.attachUploading : t.adminKeySave}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal confirmación de revocación — corte inmediato, sin gracia */}
+      {revokeConfirm && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-md shadow-2xl">
+            <h2 className="text-sm font-semibold text-red-300 mb-2">{t.adminKeyRevokeConfirmTitle}</h2>
+            <p className="text-xs text-slate-400 mb-4">{t.adminKeyRevokeConfirmBody}</p>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setRevokeConfirm(null)} className="px-3 py-1.5 rounded-lg text-sm text-slate-400 hover:text-slate-200 transition-colors">{t.adminCreateCancel}</button>
+              <button
+                onClick={() => handleRevoke(revokeConfirm)}
+                disabled={revoking === revokeConfirm}
+                className="px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-semibold disabled:opacity-50 transition-colors"
+              >
+                {t.adminKeyRevoke}
               </button>
             </div>
           </div>

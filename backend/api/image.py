@@ -6,6 +6,7 @@ import httpx
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
+from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from jax_engine.events import event_bus
 from http_client import get_http_client
 
@@ -38,9 +39,10 @@ class ImageResponse(BaseModel):
 
 @router.post("/image/generate", response_model=ImageResponse)
 async def generate_image(req: ImageRequest, user: AuthUser = Depends(get_current_user)):
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="OPENAI_API_KEY no configurado")
+    try:
+        api_key = await resolve_credential_instrumented("openai")
+    except CredentialUnavailableError:
+        raise HTTPException(status_code=503, detail="Sin credencial válida configurada para openai")
 
     client = await get_http_client()
     try:
