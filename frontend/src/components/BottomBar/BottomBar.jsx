@@ -7,17 +7,17 @@ import AttachButton from '../chat/AttachButton'
 import FileAttachment from '../chat/FileAttachment'
 import api from '../../api/client'
 
-const FACETS = [
-  { id: 'jax_local', label: 'JAX',     color: '#3b82f6' },
-  { id: 'jekyll',    label: 'Jekyll',  color: '#6366f1' },
-  { id: 'hipatia',  label: 'Hipatia', color: '#10b981' },
-  { id: 'thot',     label: 'Thot',    color: '#f59e0b' },
-  { id: 'kimi',     label: 'Kimi',    color: '#06b6d4' },
-  { id: 'hyde',     label: 'Hyde',    color: '#f97316' },
-  { id: 'ada',      label: 'Ada',     color: '#7c3aed' },
-]
+// Solo orden de despliegue — label/color vienen de /api/facets (tabla
+// `facet`, Bloque C) via el store, no se duplican aca.
+const FACET_ORDER = ['jax_local', 'jekyll', 'hipatia', 'thot', 'kimi', 'hyde', 'ada']
 
 function BottomBar() {
+  const facetsState = useJaxStore((s) => s.facets)
+  const FACETS = FACET_ORDER.map((id) => ({
+    id,
+    label: facetsState[id]?.display_name || facetsState[id]?.name || id,
+    color: facetsState[id]?.color || '#94a3b8',
+  }))
   const [input, setInput] = useState('')
   const [mode, setMode] = useState('chat')
   const [sending, setSending] = useState(false)
