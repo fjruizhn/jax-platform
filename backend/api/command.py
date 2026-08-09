@@ -80,7 +80,11 @@ async def get_command_result(task_id: str, user: AuthUser = Depends(get_current_
         owner = json.loads(_owner_file(task_id).read_text())
     except (OSError, ValueError):
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
-    if owner.get("user_id") != user.user_id or owner.get("tenant_id") != user.tenant_id:
+    if (
+        not isinstance(owner, dict)
+        or owner.get("user_id") != user.user_id
+        or owner.get("tenant_id") != user.tenant_id
+    ):
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
 
     result_file = MISSIONS_DIR / f"web-task-{task_id}_result.md"

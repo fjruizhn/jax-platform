@@ -77,8 +77,8 @@ async def test_path_traversal_does_not_leak_file_outside_missions_dir(outside_se
 
 async def test_truly_unknown_uuid_404s_instead_of_claiming_running(client):
     """Un task_id que nunca se creó (sin owner file) ya no reporta "running"
-    para siempre -- ver test_ownership.py para el caso real: un task propio
-    reporta running normalmente antes de completarse."""
+    para siempre -- ver test_command_ownership.py para el caso real: un task
+    propio reporta running normalmente antes de completarse."""
     token = create_access_token("real-user", "1", "operator")
     headers = {"Authorization": f"Bearer {token}"}
 
