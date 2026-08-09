@@ -444,7 +444,7 @@ export const useJaxStore = create((set, get) => {
         .map((taskId) => ({
           id: `cmd-${taskId}`,
           facet: 'hyde',
-          content: `_Tarea \`${taskId.slice(0, 8)}\` — verificando estado…_`,
+          content: _t().taskRestoring(taskId.slice(0, 8)),
           status: 'running',
           timestamp: ts,
         }))
@@ -494,7 +494,7 @@ export const useJaxStore = create((set, get) => {
   }
 })
 
-export function getEyeState(facets, activePipelines, lasManos, killSwitchActive, generatingImage = false) {
+export function getEyeState(facets, activePipelines, lasManos, killSwitchActive, generatingImage = false, idleLabel = 'reposo') {
   if (killSwitchActive) return { color: '#ef4444', animation: 'none', label: 'KILL SWITCH' }
 
   if (generatingImage) return { color: '#7c3aed', animation: 'pulse-fast', label: 'DALL-E 3' }
@@ -515,5 +515,5 @@ export function getEyeState(facets, activePipelines, lasManos, killSwitchActive,
   const hasRunning = Object.values(activePipelines).some(p => p.status === 'running')
   if (hasRunning) return { color: '#ffffff', animation: 'pulse-slow', label: 'Jacobs' }
 
-  return { color: '#3b82f6', animation: 'pulse-slow', label: 'reposo' }
+  return { color: '#3b82f6', animation: 'pulse-slow', label: idleLabel }
 }

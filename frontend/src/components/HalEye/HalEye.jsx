@@ -1,6 +1,7 @@
 import { memo } from 'react'
 import './HalEye.css'
 import { useJaxStore, getEyeState } from '../../store/useJaxStore'
+import { useI18n } from '../../i18n/index.jsx'
 
 function HalEye({ size = 220 }) {
   const facets = useJaxStore((s) => s.facets)
@@ -8,7 +9,8 @@ function HalEye({ size = 220 }) {
   const lasManos = useJaxStore((s) => s.lasManos)
   const killSwitchActive = useJaxStore((s) => s.killSwitchActive)
   const generatingImage = useJaxStore((s) => s.generatingImage)
-  const eye = getEyeState(facets, activePipelines, lasManos, killSwitchActive, generatingImage)
+  const { t } = useI18n()
+  const eye = getEyeState(facets, activePipelines, lasManos, killSwitchActive, generatingImage, t.eyeIdle)
 
   const r = size / 2
   const outerR = r * 0.92
@@ -24,7 +26,7 @@ function HalEye({ size = 220 }) {
           height={size}
           viewBox={`0 0 ${size} ${size}`}
           className="hal-eye-svg"
-          aria-label={`Ojo HAL — ${eye.label}`}
+          aria-label={t.halEyeAriaLabel(eye.label)}
         >
           {/* Outer housing */}
           <circle cx={r} cy={r} r={outerR} fill="#0f172a" stroke="#1e293b" strokeWidth="3" />

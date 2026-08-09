@@ -8,6 +8,7 @@ from .schemas import (
     EcosystemState, FacetState, PipelineState, PipelineStep, UserSession, JAXEvent
 )
 from .events import event_bus
+from .resource_manager import resource_manager
 
 FACET_COLORS = {
     "jax_local": "#3b82f6",
@@ -217,6 +218,11 @@ class JAXEngineState:
 
             if updated.status in ("completed", "failed"):
                 self.remove_pipeline(pid)
+                # cancel_pipeline() ya liberaba el slot del tenant; una
+                # pipeline que termina SOLA (no cancelada) nunca lo hacía,
+                # así que cada una consumía uno de los 3 cupos concurrentes
+                # para siempre.
+                await resource_manager.release_pipeline(pipeline.tenant_id, pid)
 
         except Exception:
             pass

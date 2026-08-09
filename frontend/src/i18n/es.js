@@ -263,4 +263,11 @@ export default {
   adminCostsTotal: 'Total',
   adminCostsChart: 'Requests por faceta (últimos 7 días)',
   adminCostsNoData: 'Sin datos aún',
+
+  // HAL Eye
+  eyeIdle: 'reposo',
+  halEyeAriaLabel: (label) => `Ojo HAL — ${label}`,
+
+  // Restaurar tareas pendientes (useJaxStore.js)
+  taskRestoring: (id) => `_Tarea \`${id}\` — verificando estado…_`,
 }
