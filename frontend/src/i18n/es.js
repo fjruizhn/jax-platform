@@ -51,6 +51,7 @@ export default {
   taskInitializing: '_Iniciando tarea autónoma…_',
   taskStarted: (id) => `_Tarea iniciada — \`${id}\`_\n\nHyde está ejecutando en background…`,
   errorTask: 'No se pudo iniciar la tarea.',
+  commandNoResult: '(sin resultado)',
   pipelineStarted: (id, mode, steps) =>
     `Pipeline iniciado — \`${id}\`\nModo: **${mode}** · ${steps} steps\n\nSiguiendo progreso en panel derecho…`,
   errorPipeline: 'No se pudo crear el pipeline.',
@@ -66,6 +67,9 @@ export default {
   killConfirmYes: 'SÍ, DETENER TODO',
   cancel: 'Cancelar',
   killTitle: 'Kill Switch — detiene todos los procesos',
+  // killSwitchActive: badge persistente en la UI. killSwitchToast: toast al
+  // recibir el evento de WS (otro usuario/proceso lo activó). killSwitchStoppedToast:
+  // toast tras activarlo uno mismo desde este cliente (activateKillSwitch).
   killSwitchToast: 'KILL SWITCH ACTIVADO',
   killSwitchStoppedToast: 'KILL SWITCH ACTIVADO — todos los procesos detenidos',
 

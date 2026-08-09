@@ -6,10 +6,12 @@ import en from '../i18n/en.js'
 // Este módulo no es un componente — no puede usar el hook useI18n(). Lee la
 // misma fuente que I18nProvider (localStorage 'jax_lang') para los mensajes
 // que se generan acá (eventos de WS), fuera de cualquier árbol de React.
-const I18N_LANGS = { es, en }
 function _t() {
-  return I18N_LANGS[localStorage.getItem('jax_lang')] || I18N_LANGS.es
+  return localStorage.getItem('jax_lang') === 'en' ? en : es
 }
+
+const RESULTS_FETCH_MAX_ATTEMPTS = 2
+const RESULTS_FETCH_RETRY_DELAY_MS = 2000
 
 function _loadPendingIds() {
   try { return JSON.parse(localStorage.getItem('jax_pending_cmds') || '[]') } catch { return [] }
@@ -161,6 +163,7 @@ export const useJaxStore = create((set, get) => ({
       const { task_id, result, result_preview, status } = payload
       const msgId = `cmd-${task_id}`
       const msgStatus = status === 'failed' ? 'failed' : 'completed'
+      const noResult = _t().commandNoResult
 
       const applyResult = (content) => {
         set((s) => ({
@@ -174,14 +177,16 @@ export const useJaxStore = create((set, get) => ({
       if (result) {
         applyResult(result)
       } else if (task_id) {
-        // resultado completo en archivo — pedir al backend
-        api.get(`/command/${task_id}`).then(({ data }) => {
-          applyResult(data.result || result_preview || '(sin resultado)')
-        }).catch(() => {
-          applyResult(result_preview || '(sin resultado)')
-        })
+        // resultado completo en archivo — pedir al backend. Los dos
+        // argumentos de .then() separan "el fetch falló" (usar el preview)
+        // de "el fetch anduvo pero applyResult tiró" (bug real, no debe
+        // aplicar el preview como si fuera un resultado válido).
+        api.get(`/command/${task_id}`).then(
+          ({ data }) => applyResult(data.result || result_preview || noResult),
+          () => applyResult(result_preview || noResult)
+        ).catch((err) => console.error('command result render failed', err))
       } else {
-        applyResult(result_preview || '(sin resultado)')
+        applyResult(result_preview || noResult)
       }
     }
 
@@ -196,17 +201,48 @@ export const useJaxStore = create((set, get) => ({
       // permita reintentar más tarde. Por eso el fetch se reintenta acá mismo
       // antes de rendirse; el mark sólo se libera (para permitir un reintento
       // manual futuro, si alguna vez existe un disparador) tras agotar los intentos.
-      const RESULTS_FETCH_MAX_ATTEMPTS = 2
-      const RESULTS_FETCH_RETRY_DELAY_MS = 2000
+      const onFetchFailure = (attempt) => {
+        if (attempt < RESULTS_FETCH_MAX_ATTEMPTS) {
+          setTimeout(() => fetchResults(attempt + 1), RESULTS_FETCH_RETRY_DELAY_MS)
+          return
+        }
+        set((s) => {
+          const next = new Set(s._pipelineCompletedShown)
+          next.delete(pipeline_id)
+          return { _pipelineCompletedShown: next }
+        })
+        get().addToast({
+          type: 'error',
+          message: _t().pipelineResultsError(pipeline_id?.slice(0, 8)),
+        })
+      }
 
       const fetchResults = (attempt) => {
+        // La sesión pudo cerrarse mientras este reintento estaba pendiente
+        // (setTimeout sobrevive al logout) — no reanudar con un fetch sin
+        // token ni escribir mensajes/toasts de una sesión ya terminada.
+        if (!get().token) return
+
         api.get(`/pipelines/${pipeline_id}/results`).then(({ data }) => {
-          const seenStepIndexes = new Set()
-          const allSteps = (data.steps || []).filter((step) => {
-            if (seenStepIndexes.has(step.step_index)) return false
-            seenStepIndexes.add(step.step_index)
-            return true
-          })
+          // Payload 200 pero sin forma válida (p.ej. LAS MANOS devuelve un
+          // error con status 200) — se trata como fallo de fetch, no como
+          // bug de renderizado.
+          if (!Array.isArray(data?.steps)) {
+            onFetchFailure(attempt)
+            return
+          }
+
+          // Si un step_index viene repetido (payload malformado/duplicado),
+          // se prefiere la copia 'completed' sobre cualquier otra —
+          // descartar el resultado real sería peor que el duplicado.
+          const byStepIndex = new Map()
+          for (const step of data.steps) {
+            const existing = byStepIndex.get(step.step_index)
+            if (!existing || (existing.status !== 'completed' && step.status === 'completed')) {
+              byStepIndex.set(step.step_index, step)
+            }
+          }
+          const allSteps = [...byStepIndex.values()]
           const completedSteps = allSteps.filter((s) => s.status === 'completed')
           const ts = new Date().toISOString()
 
@@ -240,21 +276,12 @@ export const useJaxStore = create((set, get) => ({
             const toAppend = newMessages.filter((m) => !existingIds.has(m.id))
             return toAppend.length ? { messages: [...s.messages, ...toAppend] } : s
           })
-        }, () => {
-          if (attempt < RESULTS_FETCH_MAX_ATTEMPTS) {
-            setTimeout(() => fetchResults(attempt + 1), RESULTS_FETCH_RETRY_DELAY_MS)
-            return
-          }
-          set((s) => {
-            const next = new Set(s._pipelineCompletedShown)
-            next.delete(pipeline_id)
-            return { _pipelineCompletedShown: next }
-          })
-          get().addToast({
-            type: 'error',
-            message: _t().pipelineResultsError(pipeline_id?.slice(0, 8)),
-          })
-        })
+        }, () => onFetchFailure(attempt))
+          // Cubre sólo bugs reales al construir los mensajes (no el fetch
+          // en sí, ya manejado arriba) — se loguea y no se reintenta: un
+          // toast de "resultados" sería engañoso para un bug de render, y
+          // reintentar no lo arregla.
+          .catch((err) => console.error('pipeline results render failed', err))
       }
 
       fetchResults(1)
