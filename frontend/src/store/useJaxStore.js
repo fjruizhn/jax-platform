@@ -405,7 +405,13 @@ export const useJaxStore = create((set, get) => {
     }
   },
 
-  registerPendingCommand: (taskId) => {
+  // sessionEpoch: capturado por el llamador ANTES de lanzar el POST que
+  // produjo este taskId (ver BottomBar.jsx) — si la sesión cambió mientras
+  // ese POST estaba en vuelo, no hay que registrar el id bajo la sesión
+  // nueva (owner-scoping en _savePendingIds ya evita que otro usuario lo
+  // lea, pero esto además evita pisarle a la sesión nueva su propia lista).
+  registerPendingCommand: (taskId, sessionEpoch) => {
+    if (!isSameSession(sessionEpoch)) return
     const ids = _loadPendingIds()
     if (!ids.includes(taskId)) _savePendingIds([...ids, taskId])
   },

@@ -123,7 +123,7 @@ describe('logout() does not leak session state into the next login', () => {
 
   it('a different user logging in on the same browser does not inherit the previous user\'s pending commands', () => {
     // user 1 tiene un comando pendiente
-    useJaxStore.getState().registerPendingCommand('task-from-user-1')
+    useJaxStore.getState().registerPendingCommand('task-from-user-1', useJaxStore.getState()._sessionEpoch)
     useJaxStore.getState().logout()
 
     // user 2 se loguea en el mismo browser (sin pasar por login() real —
@@ -137,7 +137,7 @@ describe('logout() does not leak session state into the next login', () => {
   })
 
   it('the SAME user logging back in still sees their own pending commands (owner-scoping is not a blanket wipe)', () => {
-    useJaxStore.getState().registerPendingCommand('task-from-user-1')
+    useJaxStore.getState().registerPendingCommand('task-from-user-1', useJaxStore.getState()._sessionEpoch)
     useJaxStore.getState().logout()
 
     // user 1 vuelve a loguearse
@@ -146,6 +146,28 @@ describe('logout() does not leak session state into the next login', () => {
     useJaxStore.getState().restorePendingTasks()
 
     expect(useJaxStore.getState().messages.some((m) => m.id === 'cmd-task-from-user-1')).toBe(true)
+  })
+
+  it('registerPendingCommand ignores a stale epoch (POST that started before a logout+relogin resolves after)', () => {
+    // captura el epoch ANTES del logout+relogin, como hace BottomBar.jsx
+    // antes de lanzar el POST /command
+    const staleEpoch = useJaxStore.getState()._sessionEpoch
+
+    useJaxStore.getState().logout()
+    useJaxStore.setState((s) => ({
+      token: 'token-user-2',
+      user: { user_id: 2 },
+      _sessionEpoch: s._sessionEpoch + 1,
+    }))
+
+    // el POST "resuelve" ahora, ya con user 2 logueado
+    useJaxStore.getState().registerPendingCommand('leaked-task', staleEpoch)
+
+    // no quedó registrado bajo NINGÚN usuario — ni user 2 (a quien no
+    // pertenece) ni user 1 (que ya cerró sesión y no debería recibir un
+    // resultado ajeno tampoco al volver a entrar)
+    useJaxStore.getState().restorePendingTasks()
+    expect(useJaxStore.getState().messages).toHaveLength(0)
   })
 
   it('bumps the session epoch so a stale pipeline-results retry does not write into a session that logs back in', async () => {
