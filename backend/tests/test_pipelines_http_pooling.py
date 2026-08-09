@@ -38,16 +38,20 @@ def test_pipeline_endpoints_do_not_create_a_new_client_per_request(client):
     """LAS MANOS is not running in the test environment, so every call
     degrades gracefully (connection refused -> caught Exception branch) —
     this only pins that no NEW httpx.AsyncClient() is instantiated per
-    request now that all 6 sites share the app-startup client."""
+    request now that all 6 sites share the app-startup client.
+
+    "fake-id" has no ownership record, so the by-id endpoints now 404
+    before ever reaching the shared client (see the pipeline-ownership
+    check) — still 0 new client instantiations, just earlier."""
     with _ClientInstantiationCounter() as counter:
         resp = client.get("/api/pipelines", headers=_headers())
         assert resp.status_code == 200
 
         resp = client.get("/api/pipelines/fake-id", headers=_headers())
-        assert resp.status_code in (200, 502)
+        assert resp.status_code == 404
 
         resp = client.get("/api/pipelines/fake-id/results", headers=_headers())
-        assert resp.status_code in (200, 502)
+        assert resp.status_code == 404
 
     assert counter.count == 0, (
         f"expected 0 new httpx.AsyncClient() instantiations across 3 pipeline "
