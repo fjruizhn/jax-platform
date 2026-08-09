@@ -19,10 +19,9 @@ def test_update_history_caps_turns_per_user():
         _reset()
 
 
-def test_update_history_evicts_the_least_recently_active_user_past_the_cap():
+def test_update_history_evicts_the_least_recently_active_user_past_the_cap(monkeypatch):
     _reset()
-    original_cap = chat.MAX_TRACKED_USERS
-    chat.MAX_TRACKED_USERS = 3
+    monkeypatch.setattr(chat, "MAX_TRACKED_USERS", 3)
     try:
         chat._update_history("user-a", "hi", "hola")
         chat._update_history("user-b", "hi", "hola")
@@ -39,5 +38,4 @@ def test_update_history_evicts_the_least_recently_active_user_past_the_cap():
         assert list(chat._conversations.keys()) == ["user-c", "user-a", "user-d"]
         assert len(chat._conversations) == 3
     finally:
-        chat.MAX_TRACKED_USERS = original_cap
         _reset()

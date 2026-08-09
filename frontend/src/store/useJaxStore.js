@@ -25,8 +25,20 @@ function _savePendingIds(ids) {
 const MAX_MESSAGES = 200
 const MAX_TRACKED_PIPELINES = 50
 
+// Nunca descarta un mensaje 'running' (comando/tarea todavía en curso en el
+// backend) aunque sea el más viejo — perderlo acá pierde el resultado para
+// siempre (ver applyResult, que sólo lo escribe si el placeholder sigue en
+// `messages`). Sólo recorta entre los mensajes ya resueltos.
 function _capMessages(messages) {
-  return messages.length > MAX_MESSAGES ? messages.slice(messages.length - MAX_MESSAGES) : messages
+  if (messages.length <= MAX_MESSAGES) return messages
+  let toDrop = messages.length - MAX_MESSAGES
+  return messages.filter((m) => {
+    if (toDrop > 0 && m.status !== 'running') {
+      toDrop--
+      return false
+    }
+    return true
+  })
 }
 
 // Descarta las pipelines más viejas que ya terminaron (nunca una corriendo
@@ -86,11 +98,14 @@ localStorage.removeItem('jax_user')
 export const useJaxStore = create((set, get) => {
   // Varios escritores async (fetch de resultados de pipeline, polling de
   // comandos pendientes) programan su propio setTimeout/then() que puede
-  // resolver después de logout() — sin este check, esos callbacks pueden
-  // escribir mensajes/toasts de una sesión que ya terminó en el store recién
-  // limpiado (o, peor, en el de una sesión nueva si el usuario vuelve a
-  // loguearse rápido).
-  const isAuthenticated = () => !!get().token
+  // resolver bien después de logout(), bien después de que OTRO usuario se
+  // loguee en el mismo browser — un simple "¿hay token?" no distingue esos
+  // dos casos, porque el nuevo login también deja un token truthy. Cada
+  // cambio de sesión (login/logout/restoreSession) incrementa
+  // `_sessionEpoch`; los escritores capturan el epoch vigente al programar
+  // su trabajo y sólo escriben si sigue siendo el mismo al resolver.
+  const bumpSessionEpoch = () => set((s) => ({ _sessionEpoch: s._sessionEpoch + 1 }))
+  const isSameSession = (epoch) => get()._sessionEpoch === epoch && !!get().token
 
   return {
   token: null,
@@ -106,6 +121,7 @@ export const useJaxStore = create((set, get) => {
   activeFacet: 'jax_local',
   generatingImage: false,
   _pipelineCompletedShown: new Set(),
+  _sessionEpoch: 0,
 
   restoreSession: async () => {
     try {
@@ -114,8 +130,10 @@ export const useJaxStore = create((set, get) => {
         headers: { Authorization: `Bearer ${refreshData.access_token}` },
       })
       set({ token: refreshData.access_token, user })
+      bumpSessionEpoch()
     } catch {
       set({ token: null, user: null })
+      bumpSessionEpoch()
     } finally {
       set({ sessionRestoring: false })
     }
@@ -124,11 +142,18 @@ export const useJaxStore = create((set, get) => {
   login: async (email, password) => {
     const { data } = await api.post('/auth/login', { email, password })
     set({ token: data.access_token, user: data })
+    bumpSessionEpoch()
     return data
   },
 
   logout: () => {
-    set({ token: null, user: null, messages: [] })
+    set({ token: null, user: null, messages: [], _pipelineCompletedShown: new Set() })
+    bumpSessionEpoch()
+    // jax_pending_cmds no está scopeado por usuario — si no se limpia acá,
+    // el próximo login en este mismo browser (mismo u otro usuario) hereda
+    // los ids de comandos pendientes de esta sesión y checkPendingTasks los
+    // pollea con el token de la sesión nueva.
+    _savePendingIds([])
     api.post('/auth/logout').catch(() => {
       // best-effort: la sesión local ya quedó limpia
     })
@@ -166,12 +191,14 @@ export const useJaxStore = create((set, get) => {
       set((s) => {
         const prevPipeline = s.activePipelines[payload.pipeline_id]
         const steps = _reconcileSteps(prevPipeline?.steps, payload.steps || [])
-        return {
-          activePipelines: _evictOldFinishedPipelines({
-            ...s.activePipelines,
-            [payload.pipeline_id]: { ...payload, steps },
-          }),
-        }
+        // delete + set (no sólo sobreescribir) para que la key pase al final
+        // del orden de inserción — _evictOldFinishedPipelines lee ese orden
+        // como "más vieja primero", y una key existente reasignada in-place
+        // NO se mueve de posición en JS.
+        const activePipelines = { ...s.activePipelines }
+        delete activePipelines[payload.pipeline_id]
+        activePipelines[payload.pipeline_id] = { ...payload, steps }
+        return { activePipelines: _evictOldFinishedPipelines(activePipelines) }
       })
     }
 
@@ -197,9 +224,15 @@ export const useJaxStore = create((set, get) => {
       const msgId = `cmd-${task_id}`
       const msgStatus = status === 'failed' ? 'failed' : 'completed'
       const noResult = _t().commandNoResult
+      const sessionEpoch = get()._sessionEpoch
 
       const applyResult = (content) => {
-        if (!isAuthenticated()) return
+        if (!isSameSession(sessionEpoch)) return
+        // El placeholder pudo ser evictado por _capMessages (sesión muy
+        // larga) — no purgar el id pendiente en ese caso: así
+        // restorePendingTasks lo recupera en el próximo reload en vez de
+        // perder el resultado para siempre.
+        if (!get().messages.some((m) => m.id === msgId)) return
         set((s) => ({
           messages: s.messages.map((m) =>
             m.id === msgId ? { ...m, content, status: msgStatus } : m
@@ -229,6 +262,7 @@ export const useJaxStore = create((set, get) => {
       const shown = get()._pipelineCompletedShown
       if (shown.has(pipeline_id)) return
       set((s) => ({ _pipelineCompletedShown: new Set([...s._pipelineCompletedShown, pipeline_id]) }))
+      const sessionEpoch = get()._sessionEpoch
 
       // El backend emite este evento una sola vez y descarta el pipeline
       // (jax_engine/state.py remove_pipeline) — no hay un segundo evento que
@@ -236,7 +270,7 @@ export const useJaxStore = create((set, get) => {
       // antes de rendirse; el mark sólo se libera (para permitir un reintento
       // manual futuro, si alguna vez existe un disparador) tras agotar los intentos.
       const onFetchFailure = (attempt) => {
-        if (!isAuthenticated()) return
+        if (!isSameSession(sessionEpoch)) return
         if (attempt < RESULTS_FETCH_MAX_ATTEMPTS) {
           setTimeout(() => fetchResults(attempt + 1), RESULTS_FETCH_RETRY_DELAY_MS)
           return
@@ -253,10 +287,10 @@ export const useJaxStore = create((set, get) => {
       }
 
       const fetchResults = (attempt) => {
-        // La sesión pudo cerrarse mientras este reintento estaba pendiente
-        // (setTimeout sobrevive al logout) — no reanudar con un fetch sin
-        // token ni escribir mensajes/toasts de una sesión ya terminada.
-        if (!isAuthenticated()) return
+        // La sesión pudo cerrarse (o cambiar a otro login) mientras este
+        // reintento estaba pendiente (setTimeout sobrevive al logout) — no
+        // reanudar con un fetch de una sesión que ya no es la vigente.
+        if (!isSameSession(sessionEpoch)) return
 
         api.get(`/pipelines/${pipeline_id}/results`).then(({ data }) => {
           // Payload 200 pero sin forma válida (p.ej. LAS MANOS devuelve un
@@ -306,9 +340,9 @@ export const useJaxStore = create((set, get) => {
             timestamp: ts,
           })
 
-          // Re-chequeo tras el await: la sesión pudo cerrarse mientras el
-          // fetch estaba en vuelo.
-          if (!isAuthenticated()) return
+          // Re-chequeo tras el await: la sesión pudo cerrarse (o cambiar)
+          // mientras el fetch estaba en vuelo.
+          if (!isSameSession(sessionEpoch)) return
 
           set((s) => {
             const existingIds = new Set(s.messages.map((m) => m.id))
@@ -328,17 +362,18 @@ export const useJaxStore = create((set, get) => {
   },
 
   checkPendingTasks: async () => {
-    if (!isAuthenticated()) return
+    const sessionEpoch = get()._sessionEpoch
+    if (!isSameSession(sessionEpoch)) return
     const running = get().messages.filter(
       (m) => m.status === 'running' && m.id.startsWith('cmd-')
     )
     let stillRunning = 0
     for (const msg of running) {
-      if (!isAuthenticated()) return
+      if (!isSameSession(sessionEpoch)) return
       const taskId = msg.id.slice(4)
       try {
         const { data } = await api.get(`/command/${taskId}`)
-        if (!isAuthenticated()) return
+        if (!isSameSession(sessionEpoch)) return
         if (data.status === 'completed' && data.result) {
           set((s) => ({
             messages: s.messages.map((m) =>
@@ -351,9 +386,12 @@ export const useJaxStore = create((set, get) => {
         }
       } catch {}
     }
-    // si quedan tareas en curso, reintentar en 5s para capturar el resultado
-    // (sólo si la sesión sigue activa — este setTimeout también sobrevive a un logout)
-    if (stillRunning > 0 && isAuthenticated()) {
+    // si quedan tareas en curso, reintentar en 5s para capturar el resultado.
+    // No hace falta re-chequear la sesión acá: no hubo ningún await desde el
+    // último chequeo dentro del loop, así que sigue siendo válida en este
+    // mismo tick — y la llamada reprogramada vuelve a capturar y validar su
+    // propio epoch al entrar, cubriendo un logout que ocurra en esos 5s.
+    if (stillRunning > 0) {
       setTimeout(() => get().checkPendingTasks(), 5000)
     }
   },
@@ -416,7 +454,7 @@ export const useJaxStore = create((set, get) => {
       const { data } = await api.get('/state')
       set({
         facets: { ...DEFAULT_FACETS, ...data.facets },
-        activePipelines: data.active_pipelines || {},
+        activePipelines: _evictOldFinishedPipelines(data.active_pipelines || {}),
         lasManos: data.las_manos_alive,
       })
     } catch {}
