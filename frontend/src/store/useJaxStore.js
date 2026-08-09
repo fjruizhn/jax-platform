@@ -393,7 +393,24 @@ export const useJaxStore = create((set, get) => {
         } else {
           stillRunning++
         }
-      } catch {}
+      } catch (err) {
+        const httpStatus = err.response?.status
+        if (httpStatus === 404 || httpStatus === 400) {
+          // El backend ya no reconoce este task_id como propio (ownership
+          // check del endpoint, tarea muy vieja ya limpiada, etc.) — sin
+          // esto, restorePendingTasks() lo recrea como placeholder
+          // "verificando estado…" para siempre en cada reload, un zombie
+          // que nunca se resuelve. Se resuelve acá y se saca de la lista.
+          set((s) => ({
+            messages: s.messages.map((m) =>
+              m.id === msg.id ? { ...m, content: _t().commandNoResult, status: 'completed' } : m
+            ),
+          }))
+          _savePendingIds(_loadPendingIds().filter(id => id !== taskId))
+        } else {
+          stillRunning++ // error transitorio (red, 5xx) — reintentar en el próximo ciclo
+        }
+      }
     }
     // si quedan tareas en curso, reintentar en 5s para capturar el resultado.
     // No hace falta re-chequear la sesión acá: no hubo ningún await desde el
