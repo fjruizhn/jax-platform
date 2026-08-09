@@ -66,6 +66,12 @@ export default {
   killConfirmYes: 'SÍ, DETENER TODO',
   cancel: 'Cancelar',
   killTitle: 'Kill Switch — detiene todos los procesos',
+  killSwitchToast: 'KILL SWITCH ACTIVADO',
+  killSwitchStoppedToast: 'KILL SWITCH ACTIVADO — todos los procesos detenidos',
+
+  // Store event toasts (WS handleEvent)
+  humanGateRequestedToast: (id) => `Jacobs espera aprobación — pipeline ${id}`,
+  pipelineResultsError: (id) => `No se pudieron cargar los resultados del pipeline ${id}`,
 
   // Pipeline modal
   newPipelineTitle: 'Nuevo Pipeline · Jacobs',
