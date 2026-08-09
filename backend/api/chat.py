@@ -12,6 +12,7 @@ from pydantic import BaseModel
 import httpx
 from http_client import get_http_client
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
+from facet_resolver import resolve_facet, FacetUnavailableError
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
@@ -465,97 +466,38 @@ async def _invoke_facet(
     personality = config["personalities"].get(facet, config["personalities"]["jax_local"])
     system_prompt = personality.get("system_prompt", "Sos JAX.")
 
-    if facet == "jax_local":
-        model = await _resolve_active_model(
-            "jax_local", personality.get("model_default", "qwen3:14b"))
+    # Bloque C: resolve_facet() reemplaza _resolve_active_model +
+    # resolve_credential_instrumented sueltos — mismo resolver que usa
+    # Jacobs (facet_resolver.py), garantiza que Mesa web y Jacobs resuelvan
+    # la MISMA faceta al MISMO modelo. FAIL-CLOSED: sin binding activo,
+    # mensaje de degradacion explicito, nunca una llamada con modelo vacio.
+    try:
+        f = await resolve_facet(facet)
+    except FacetUnavailableError:
+        return f"⚠️ {facet} no está disponible: sin binding activo configurado."
 
-        if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet)
-
-        # Bug 3: jax_local no sabia con que modelo corre y confabulaba su
-        # identidad. Le damos el dato real (el resuelto desde la DB) como
-        # contexto informativo, no como algo que deba soltar sin que le pregunten.
-        ident = (
-            f"\n\nDato tecnico (para tu propia referencia, no lo repitas sin que "
-            f"te pregunten): el modelo que te ejecuta en este momento es "
-            f"'{model}', via Ollama local en hall9000."
-        )
-        return await _call_ollama(system_prompt + ident, history, message, config, model)
-
-    if facet == "jekyll":
-        model = await _resolve_active_model("jekyll", personality.get("model_default", "deepseek-v4-flash"))
-        if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet)
-        try:
-            api_key = await resolve_credential_instrumented("deepseek")
-        except CredentialUnavailableError:
-            return "⚠️ Jekyll no está disponible: sin credencial válida configurada para deepseek."
-        return await _call_openai_compat(
-            "https://api.deepseek.com/v1",
-            api_key,
-            model, system_prompt, history, message,
-        )
-
-    if facet == "hipatia":
-        model = await _resolve_active_model("hipatia", personality.get("model_default", "gemini-2.5-flash"))
-        if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet)
-        try:
-            api_key = await resolve_credential_instrumented("gemini")
-        except CredentialUnavailableError:
-            return "⚠️ Hipatia no está disponible: sin credencial válida configurada para gemini."
-        return await _call_gemini(
-            api_key, model, system_prompt, history, message,
-        )
-
-    if facet == "thot":
-        model = await _resolve_active_model("thot", personality.get("model_default", "gpt-4o"))
-        if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet)
-        try:
-            api_key = await resolve_credential_instrumented("openai")
-        except CredentialUnavailableError:
-            return "⚠️ Thot no está disponible: sin credencial válida configurada para openai."
-        return await _call_openai_compat(
-            "https://api.openai.com/v1",
-            api_key,
-            model, system_prompt, history, message,
-        )
-
-    if facet == "kimi":
-        api_url = personality.get("api_url", "https://api.moonshot.ai/v1/chat/completions")
-        # Normalizar a base URL sin /chat/completions
-        base_url = api_url[:-len("/chat/completions")] if api_url.endswith("/chat/completions") else api_url
-        model = await _resolve_active_model("kimi", personality.get("model_default", "kimi-k2.7-code"))
-        if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet)
-        try:
-            api_key = await resolve_credential_instrumented("moonshot")
-        except CredentialUnavailableError:
-            return "⚠️ Kimi no está disponible: sin credencial válida configurada para moonshot."
-        return await _call_openai_compat(
-            base_url, api_key, model, system_prompt, history, message,
-        )
-
-    if facet == "ada":
-        api_url = personality.get("api_url", "https://api.z.ai/api/paas/v4/chat/completions")
-        base_url = api_url[:-len("/chat/completions")] if api_url.endswith("/chat/completions") else api_url
-        model = await _resolve_active_model("ada", personality.get("model_default", "glm-5.2"))
-        if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet)
-        try:
-            api_key = await resolve_credential_instrumented("zhipu")
-        except CredentialUnavailableError:
-            return "⚠️ Ada no está disponible: sin credencial válida configurada para zhipu."
-        return await _call_openai_compat(
-            base_url, api_key, model, system_prompt, history, message,
-        )
-
-    # fallback
-    model = await _resolve_active_model(facet, personality.get("model_default", "qwen3:14b"))
     if _is_model_identity_question(message):
-        return _model_identity_reply(model, facet)
-    return await _call_ollama(system_prompt, history, message, config, model)
+        return _model_identity_reply(f.model, facet)
+
+    if f.transport == "ollama":
+        if facet == "jax_local":
+            # Bug 3: jax_local no sabia con que modelo corre y confabulaba su
+            # identidad. Le damos el dato real como contexto informativo.
+            ident = (
+                f"\n\nDato tecnico (para tu propia referencia, no lo repitas sin que "
+                f"te pregunten): el modelo que te ejecuta en este momento es "
+                f"'{f.model}', via Ollama local en hall9000."
+            )
+            return await _call_ollama(system_prompt + ident, history, message, config, f.model)
+        return await _call_ollama(system_prompt, history, message, config, f.model)
+
+    if f.transport == "http_gemini":
+        return await _call_gemini(f.credential, f.model, system_prompt, history, message)
+
+    if f.transport == "http_openai_compat":
+        return await _call_openai_compat(f.base_url, f.credential, f.model, system_prompt, history, message)
+
+    return f"⚠️ {facet} no está disponible: transporte '{f.transport}' no soportado en la Mesa web."
 
 
 def _update_history(user_id: str, user_msg: str, assistant_msg: str):
