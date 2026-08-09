@@ -160,6 +160,47 @@ CREATE TABLE IF NOT EXISTS credential_audit (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# Fase 2 (Bloque C) — facet/facet_binding como fuente unica faceta->modelo.
+# Ver jax-platform/docs/fase2-facetas-diseno.md. facet_models NO se toca
+# (tabla legacy, se deja de LEER desde el codigo nuevo, mismo patron que
+# user_api_keys en Fase 1).
+CREATE_FACET = """
+CREATE TABLE IF NOT EXISTS facet (
+  `key` VARCHAR(50) NOT NULL PRIMARY KEY,
+  display_name VARCHAR(100) NOT NULL,
+  icon VARCHAR(10) NULL,
+  color_hex VARCHAR(7) NULL,
+  persona TEXT NULL,
+  transport ENUM('http_openai_compat','http_gemini','motor_registry','ollama','subprocess') NOT NULL,
+  requires_tool_use BOOLEAN NOT NULL DEFAULT FALSE,
+  requires_structured_output BOOLEAN NOT NULL DEFAULT FALSE,
+  min_context_tokens INT NOT NULL DEFAULT 0,
+  max_latency_ms INT NULL,
+  max_cost_per_1k_usd DECIMAL(10,6) NULL,
+  auto_selectable BOOLEAN NOT NULL DEFAULT TRUE,
+  status ENUM('active','degraded','disabled') NOT NULL DEFAULT 'active',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+CREATE_FACET_BINDING = """
+CREATE TABLE IF NOT EXISTS facet_binding (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  facet_key VARCHAR(50) NOT NULL,
+  provider_id VARCHAR(50) NOT NULL,
+  model_id VARCHAR(100) NOT NULL,
+  role ENUM('primary','fallback_1','fallback_2','disabled') NOT NULL DEFAULT 'primary',
+  params JSON NULL,
+  approved_by INT NULL,
+  approved_at DATETIME NULL,
+  created_at DATETIME DEFAULT NOW(),
+  FOREIGN KEY (facet_key) REFERENCES facet(`key`),
+  FOREIGN KEY (provider_id) REFERENCES provider(id),
+  FOREIGN KEY (approved_by) REFERENCES jax_users(user_id),
+  UNIQUE KEY uk_facet_role (facet_key, role)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
@@ -172,7 +213,75 @@ _TABLES = [
     ("provider", CREATE_PROVIDER),          # antes de credential (FK)
     ("credential", CREATE_CREDENTIAL),      # antes de credential_audit (FK)
     ("credential_audit", CREATE_CREDENTIAL_AUDIT),
+    ("facet", CREATE_FACET),                # antes de facet_binding (FK)
+    ("facet_binding", CREATE_FACET_BINDING),
 ]
+
+# transport, requires_tool_use, auto_selectable — valores actuales reales
+# (auditoria + C0), no supuestos.
+_FACET_SEED = [
+    # key,       display_name, icon, color,     transport,             auto_sel
+    ("jax_local", "JAX Local", "🏠", "#22c55e", "ollama",              True),
+    ("hyde",      "Mr. Hyde",  "🔧", "#f97316", "subprocess",          False),
+    ("jekyll",    "Jekyll",    "🧪", "#6366f1", "http_openai_compat",  True),
+    ("hipatia",   "Hipatia",   "📚", "#10b981", "http_gemini",         True),
+    ("thot",      "Thot",      "⚖️", "#eab308", "http_openai_compat",  True),
+    ("kimi",      "Kimi",      "⚡", "#06b6d4", "motor_registry",      True),
+    ("ada",       "Ada",       "🏗️", "#ec4899", "http_openai_compat",  True),
+]
+
+# facet_key -> (provider_id, model_id) — modelos hoy hardcodeados en
+# jacobs/executor.py (C0.2), migrados como binding role='primary' inicial.
+_FACET_BINDING_SEED = [
+    ("jax_local", "ollama",   "qwen3-coder:30b"),
+    ("hyde",      "anthropic", "sonnet"),
+    ("jekyll",    "deepseek", "deepseek-v4-flash"),
+    ("hipatia",   "gemini",   "gemini-2.5-flash"),
+    ("thot",      "openai",   "gpt-5.5"),
+    ("kimi",      "moonshot", "kimi-k3"),
+    ("ada",       "zhipu",    "glm-5.2"),
+]
+
+
+# Personas reales, extraidas tal cual de jacobs/executor.py (no inventadas).
+# hipatia/jax_local/hyde no tienen persona estatica hoy (Gemini usa
+# "contents" sin system role separado; jax_local compone su prompt con el
+# nombre del modelo real inline; hyde es Claude Code, prompt propio) — NULL.
+_FACET_PERSONAS = {
+    "jekyll": (
+        "Eres Jekyll, un analista con sensibilidad humanista. "
+        "Reflexionas sobre las implicaciones humanas y sociales de los temas. "
+        "Eres profundo, poético cuando es apropiado, pero siempre concreto."
+    ),
+    "thot": (
+        "Eres Thot, el crítico de JAX. Tu trabajo es cuestionar, "
+        "identificar supuestos peligrosos, riesgos ocultos y fallas de razonamiento. "
+        "Sé preciso, incisivo y honesto. No seas condescendiente."
+    ),
+    "ada": (
+        "Eres Ada, arquitecta de sistemas. "
+        "Diseñas soluciones técnicas elegantes con rigor matemático."
+    ),
+}
+
+
+async def _seed_facets(cur) -> None:
+    for key, display_name, icon, color, transport, auto_sel in _FACET_SEED:
+        await cur.execute(
+            "INSERT IGNORE INTO facet (`key`, display_name, icon, color_hex, persona, transport, auto_selectable) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (key, display_name, icon, color, _FACET_PERSONAS.get(key), transport, auto_sel),
+        )
+    await cur.execute("SELECT COUNT(*) FROM facet_binding")
+    (n,) = await cur.fetchone()
+    if n > 0:
+        return  # ya migrado — no reinsertar (idempotente fuerte, igual que credential)
+    for facet_key, provider_id, model_id in _FACET_BINDING_SEED:
+        await cur.execute(
+            "INSERT INTO facet_binding (facet_key, provider_id, model_id, role) "
+            "VALUES (%s, %s, %s, 'primary')",
+            (facet_key, provider_id, model_id),
+        )
 
 # Catalogo de proveedores — reemplaza el hardcodeo de PROVIDERS en
 # api/admin/keys.py:17-23. jax_local (ollama) y hyde (anthropic) se
@@ -271,5 +380,6 @@ async def run_migrations():
 
             await _seed_providers(cur)
             await _migrate_user_api_keys_to_credential(cur)
+            await _seed_facets(cur)
 
         await conn.commit()
