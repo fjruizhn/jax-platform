@@ -139,6 +139,10 @@ function BottomBar() {
 
   async function handleComando(text) {
     const msgId = `cmd-placeholder-${Date.now()}`
+    // capturado ANTES del POST: si la sesión cambia mientras está en vuelo
+    // (logout+login en el mismo browser), registerPendingCommand no debe
+    // registrar este taskId bajo la sesión nueva.
+    const sessionEpoch = useJaxStore.getState()._sessionEpoch
     addMessage({
       id: msgId,
       facet: 'hyde',
@@ -156,7 +160,7 @@ function BottomBar() {
         content: t.taskStarted(taskId.slice(0, 8)),
         status: 'running',
       })
-      registerPendingCommand(taskId)
+      registerPendingCommand(taskId, sessionEpoch)
     } catch (err) {
       const detail = err.response?.data?.detail || t.errorTask
       updateMessage(msgId, {
