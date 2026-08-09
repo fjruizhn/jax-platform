@@ -13,7 +13,7 @@ const INITIAL_STATE = useJaxStore.getState()
 
 describe('unbounded growth caps (long-session memory leaks)', () => {
   beforeEach(() => {
-    useJaxStore.setState({ ...INITIAL_STATE, token: 'test-token' }, true)
+    useJaxStore.setState({ ...INITIAL_STATE, token: 'test-token', user: { user_id: 1 } }, true)
     vi.clearAllMocks()
   })
 
@@ -35,7 +35,7 @@ describe('unbounded growth caps (long-session memory leaks)', () => {
     useJaxStore.setState({
       messages: Array.from({ length: 199 }, (_, i) => ({ id: `old-${i}`, facet: 'hyde', content: 'x', timestamp: 't' })),
     })
-    localStorage.setItem('jax_pending_cmds', JSON.stringify(['a', 'b', 'c']))
+    localStorage.setItem('jax_pending_cmds', JSON.stringify({ owner: 1, ids: ['a', 'b', 'c'] }))
 
     useJaxStore.getState().restorePendingTasks()
 

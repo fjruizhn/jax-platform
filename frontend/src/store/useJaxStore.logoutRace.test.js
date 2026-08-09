@@ -112,7 +112,7 @@ describe('async writers do not resurrect a logged-out session', () => {
 
 describe('logout() does not leak session state into the next login', () => {
   beforeEach(() => {
-    useJaxStore.setState({ ...INITIAL_STATE, token: 'test-token' }, true)
+    useJaxStore.setState({ ...INITIAL_STATE, token: 'test-token', user: { user_id: 1 } }, true)
     vi.clearAllMocks()
     api.post.mockResolvedValue({})
   })
@@ -121,12 +121,31 @@ describe('logout() does not leak session state into the next login', () => {
     localStorage.removeItem('jax_pending_cmds')
   })
 
-  it('clears jax_pending_cmds so a fresh login does not inherit a previous session\'s pending commands', () => {
-    localStorage.setItem('jax_pending_cmds', JSON.stringify(['leaked-task-id']))
-
+  it('a different user logging in on the same browser does not inherit the previous user\'s pending commands', () => {
+    // user 1 tiene un comando pendiente
+    useJaxStore.getState().registerPendingCommand('task-from-user-1')
     useJaxStore.getState().logout()
 
-    expect(JSON.parse(localStorage.getItem('jax_pending_cmds'))).toEqual([])
+    // user 2 se loguea en el mismo browser (sin pasar por login() real —
+    // sólo lo que le importa a jax_pending_cmds: token + user)
+    useJaxStore.setState({ token: 'token-user-2', user: { user_id: 2 } })
+
+    useJaxStore.getState().restorePendingTasks()
+
+    // no debe aparecer ningún placeholder para el task de user 1
+    expect(useJaxStore.getState().messages).toHaveLength(0)
+  })
+
+  it('the SAME user logging back in still sees their own pending commands (owner-scoping is not a blanket wipe)', () => {
+    useJaxStore.getState().registerPendingCommand('task-from-user-1')
+    useJaxStore.getState().logout()
+
+    // user 1 vuelve a loguearse
+    useJaxStore.setState({ token: 'token-user-1-again', user: { user_id: 1 } })
+
+    useJaxStore.getState().restorePendingTasks()
+
+    expect(useJaxStore.getState().messages.some((m) => m.id === 'cmd-task-from-user-1')).toBe(true)
   })
 
   it('bumps the session epoch so a stale pipeline-results retry does not write into a session that logs back in', async () => {
