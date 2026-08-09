@@ -16,9 +16,16 @@ services:
       # datadir. Bajo /var (133GB libres); / está al 91%, descartado.
       - /var/lib/mariadb-12.3-docker/data:/var/lib/mysql
       - /var/lib/mariadb-12.3-docker/conf.d:/etc/mysql/conf.d:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     environment:
       MARIADB_ROOT_PASSWORD_FILE: /run/secrets/mariadb_root_password
       MARIADB_AUTO_UPGRADE: "1"
+      # Docker no hereda la timezone del host por default (corre en UTC) —
+      # detectado en A4: los timestamps CURRENT_TIMESTAMP quedaban 6h
+      # adelantados respecto a los datos migrados de 11.8 (CST). Explícito
+      # + bind mount de /etc/localtime, no solo uno de los dos.
+      TZ: America/Tegucigalpa
     secrets:
       - mariadb_root_password
     networks:
