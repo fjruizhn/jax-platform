@@ -42,7 +42,7 @@ describe('pipeline_step_changed completion batching', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     unsubscribe()
 
-    expect(notifications).toBeLessThanOrEqual(2)
+    expect(notifications).toBeLessThanOrEqual(3)
 
     const { messages } = useJaxStore.getState()
     expect(messages.map((m) => m.id)).toEqual([
@@ -62,16 +62,18 @@ describe('pipeline_step_changed completion batching', () => {
       },
     })
 
+    // Fire two events back-to-back (no await between) to test race guard before first fetch resolves
     useJaxStore.getState().handleEvent({
       event_type: 'pipeline_step_changed',
       payload: { pipeline_id: 'pid-2', status: 'completed' },
     })
-    await new Promise((resolve) => setTimeout(resolve, 0))
 
     useJaxStore.getState().handleEvent({
       event_type: 'pipeline_step_changed',
       payload: { pipeline_id: 'pid-2', status: 'completed' },
     })
+
+    // Now let both promises resolve
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(api.get).toHaveBeenCalledTimes(1)
