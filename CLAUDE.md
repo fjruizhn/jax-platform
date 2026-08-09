@@ -87,3 +87,9 @@ NO es AteneaERP. NO mezclar. Son productos independientes.
 5. DIAGNÓSTICO POR EVIDENCIA: verificar vhost/hashes/procesos antes de ejecutar
    planes. En esta sesión, 2 de 3 causas raíz diagnosticadas por suposición
    resultaron falsas. "El que supone se equivoca."
+
+6. CONFIG.TOML CACHEADO (2026-08-08): `_load_config()` en backend/api/chat.py
+   ahora usa `@lru_cache(maxsize=1)` — se lee una sola vez por proceso, no en
+   cada request de chat. Un cambio manual en config.toml NO se refleja hasta
+   `systemctl restart jax-platform`. Mismo comportamiento que
+   jacobs/executor.py, que ya cargaba config.toml una sola vez al importar.
