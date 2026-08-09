@@ -13,6 +13,7 @@ import httpx
 from http_client import get_http_client
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from facet_resolver import resolve_facet, FacetUnavailableError
+import model_catalog
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
@@ -380,6 +381,7 @@ async def _call_ollama(system_prompt: str, history: list[dict], message: str, co
 async def _call_openai_compat(
     base_url: str, api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
+    on_response=None,
 ) -> str:
     messages = _build_messages(system_prompt, history, message)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -391,12 +393,16 @@ async def _call_openai_compat(
         timeout=120.0,
     )
     r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+    data = r.json()
+    if on_response:
+        await on_response(data)
+    return data["choices"][0]["message"]["content"]
 
 
 async def _call_gemini(
     api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
+    on_response=None,
 ) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     contents = []
@@ -413,6 +419,8 @@ async def _call_gemini(
     r = await client.post(url, json=body, timeout=120.0)
     r.raise_for_status()
     data = r.json()
+    if on_response:
+        await on_response(data)
     return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
@@ -455,6 +463,20 @@ def _model_identity_reply(model: str, facet: str) -> str:
     )
 
 
+async def _record_resolved_version_from_response(facet_key: str, data: dict) -> None:
+    """Bloque D (D1.2) — best-effort real: la excepcion se atrapa aca, nunca
+    sube a _invoke_facet. resolved_version viene del campo que cada API usa
+    para confirmar lo que de verdad ejecuto: OpenAI-compatible => 'model',
+    Gemini => 'modelVersion' (ninguno de los dos es el alias que se pidio)."""
+    resolved = data.get("model") or data.get("modelVersion")
+    if not resolved:
+        return
+    try:
+        await model_catalog.record_resolved_version(facet_key, resolved)
+    except Exception as e:
+        logger.warning(f"resolved_version capture failed facet={facet_key} reason={type(e).__name__}")
+
+
 async def _invoke_facet(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
@@ -491,11 +513,14 @@ async def _invoke_facet(
             return await _call_ollama(system_prompt + ident, history, message, config, f.model)
         return await _call_ollama(system_prompt, history, message, config, f.model)
 
+    async def _on_response(data: dict) -> None:
+        await _record_resolved_version_from_response(facet, data)
+
     if f.transport == "http_gemini":
-        return await _call_gemini(f.credential, f.model, system_prompt, history, message)
+        return await _call_gemini(f.credential, f.model, system_prompt, history, message, on_response=_on_response)
 
     if f.transport == "http_openai_compat":
-        return await _call_openai_compat(f.base_url, f.credential, f.model, system_prompt, history, message)
+        return await _call_openai_compat(f.base_url, f.credential, f.model, system_prompt, history, message, on_response=_on_response)
 
     return f"⚠️ {facet} no está disponible: transporte '{f.transport}' no soportado en la Mesa web."
 
