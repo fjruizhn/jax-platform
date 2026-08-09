@@ -20,6 +20,30 @@ function _savePendingIds(ids) {
   localStorage.setItem('jax_pending_cmds', JSON.stringify(ids))
 }
 
+// Cotas de memoria para sesiones largas — sin esto, `messages` y
+// `activePipelines` crecen sin límite durante toda la vida de la pestaña.
+const MAX_MESSAGES = 200
+const MAX_TRACKED_PIPELINES = 50
+
+function _capMessages(messages) {
+  return messages.length > MAX_MESSAGES ? messages.slice(messages.length - MAX_MESSAGES) : messages
+}
+
+// Descarta las pipelines más viejas que ya terminaron (nunca una corriendo
+// o esperando aprobación) cuando se supera la cota — el backend limita a 3
+// pipelines concurrentes por tenant, así que esto nunca compite con una
+// pipeline activa real.
+function _evictOldFinishedPipelines(pipelines) {
+  const ids = Object.keys(pipelines)
+  if (ids.length <= MAX_TRACKED_PIPELINES) return pipelines
+  const finishedIds = ids.filter((id) => !['running', 'waiting_gate'].includes(pipelines[id].status))
+  const toEvict = finishedIds.slice(0, ids.length - MAX_TRACKED_PIPELINES)
+  if (!toEvict.length) return pipelines
+  const next = { ...pipelines }
+  for (const id of toEvict) delete next[id]
+  return next
+}
+
 function _stepsEqual(a, b) {
   const keys = Object.keys(a)
   if (keys.length !== Object.keys(b).length) return false
@@ -59,7 +83,16 @@ const DEFAULT_FACETS = Object.keys(FACET_COLORS).reduce((acc, name) => {
 localStorage.removeItem('jax_token')
 localStorage.removeItem('jax_user')
 
-export const useJaxStore = create((set, get) => ({
+export const useJaxStore = create((set, get) => {
+  // Varios escritores async (fetch de resultados de pipeline, polling de
+  // comandos pendientes) programan su propio setTimeout/then() que puede
+  // resolver después de logout() — sin este check, esos callbacks pueden
+  // escribir mensajes/toasts de una sesión que ya terminó en el store recién
+  // limpiado (o, peor, en el de una sesión nueva si el usuario vuelve a
+  // loguearse rápido).
+  const isAuthenticated = () => !!get().token
+
+  return {
   token: null,
   user: null,
   sessionRestoring: true,
@@ -134,10 +167,10 @@ export const useJaxStore = create((set, get) => ({
         const prevPipeline = s.activePipelines[payload.pipeline_id]
         const steps = _reconcileSteps(prevPipeline?.steps, payload.steps || [])
         return {
-          activePipelines: {
+          activePipelines: _evictOldFinishedPipelines({
             ...s.activePipelines,
             [payload.pipeline_id]: { ...payload, steps },
-          },
+          }),
         }
       })
     }
@@ -166,6 +199,7 @@ export const useJaxStore = create((set, get) => ({
       const noResult = _t().commandNoResult
 
       const applyResult = (content) => {
+        if (!isAuthenticated()) return
         set((s) => ({
           messages: s.messages.map((m) =>
             m.id === msgId ? { ...m, content, status: msgStatus } : m
@@ -202,6 +236,7 @@ export const useJaxStore = create((set, get) => ({
       // antes de rendirse; el mark sólo se libera (para permitir un reintento
       // manual futuro, si alguna vez existe un disparador) tras agotar los intentos.
       const onFetchFailure = (attempt) => {
+        if (!isAuthenticated()) return
         if (attempt < RESULTS_FETCH_MAX_ATTEMPTS) {
           setTimeout(() => fetchResults(attempt + 1), RESULTS_FETCH_RETRY_DELAY_MS)
           return
@@ -221,7 +256,7 @@ export const useJaxStore = create((set, get) => ({
         // La sesión pudo cerrarse mientras este reintento estaba pendiente
         // (setTimeout sobrevive al logout) — no reanudar con un fetch sin
         // token ni escribir mensajes/toasts de una sesión ya terminada.
-        if (!get().token) return
+        if (!isAuthenticated()) return
 
         api.get(`/pipelines/${pipeline_id}/results`).then(({ data }) => {
           // Payload 200 pero sin forma válida (p.ej. LAS MANOS devuelve un
@@ -271,10 +306,14 @@ export const useJaxStore = create((set, get) => ({
             timestamp: ts,
           })
 
+          // Re-chequeo tras el await: la sesión pudo cerrarse mientras el
+          // fetch estaba en vuelo.
+          if (!isAuthenticated()) return
+
           set((s) => {
             const existingIds = new Set(s.messages.map((m) => m.id))
             const toAppend = newMessages.filter((m) => !existingIds.has(m.id))
-            return toAppend.length ? { messages: [...s.messages, ...toAppend] } : s
+            return toAppend.length ? { messages: _capMessages([...s.messages, ...toAppend]) } : s
           })
         }, () => onFetchFailure(attempt))
           // Cubre sólo bugs reales al construir los mensajes (no el fetch
@@ -289,14 +328,17 @@ export const useJaxStore = create((set, get) => ({
   },
 
   checkPendingTasks: async () => {
+    if (!isAuthenticated()) return
     const running = get().messages.filter(
       (m) => m.status === 'running' && m.id.startsWith('cmd-')
     )
     let stillRunning = 0
     for (const msg of running) {
+      if (!isAuthenticated()) return
       const taskId = msg.id.slice(4)
       try {
         const { data } = await api.get(`/command/${taskId}`)
+        if (!isAuthenticated()) return
         if (data.status === 'completed' && data.result) {
           set((s) => ({
             messages: s.messages.map((m) =>
@@ -310,7 +352,8 @@ export const useJaxStore = create((set, get) => ({
       } catch {}
     }
     // si quedan tareas en curso, reintentar en 5s para capturar el resultado
-    if (stillRunning > 0) {
+    // (sólo si la sesión sigue activa — este setTimeout también sobrevive a un logout)
+    if (stillRunning > 0 && isAuthenticated()) {
       setTimeout(() => get().checkPendingTasks(), 5000)
     }
   },
@@ -335,7 +378,7 @@ export const useJaxStore = create((set, get) => ({
           status: 'running',
           timestamp: ts,
         }))
-      return added.length ? { messages: [...s.messages, ...added] } : s
+      return added.length ? { messages: _capMessages([...s.messages, ...added]) } : s
     })
     get().checkPendingTasks()
   },
@@ -343,7 +386,7 @@ export const useJaxStore = create((set, get) => ({
   addMessage: (msg) => set((s) =>
     s.messages.some((m) => m.id === msg.id)
       ? s
-      : { messages: [...s.messages, msg] }
+      : { messages: _capMessages([...s.messages, msg]) }
   ),
 
   updateMessage: (id, changes) => set((s) => ({
@@ -378,7 +421,8 @@ export const useJaxStore = create((set, get) => ({
       })
     } catch {}
   },
-}))
+  }
+})
 
 export function getEyeState(facets, activePipelines, lasManos, killSwitchActive, generatingImage = false) {
   if (killSwitchActive) return { color: '#ef4444', animation: 'none', label: 'KILL SWITCH' }
