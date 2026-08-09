@@ -4,6 +4,8 @@ import re
 import sys
 import tomllib
 import unicodedata
+from collections import OrderedDict
+from functools import lru_cache
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -135,9 +137,13 @@ async def flush_open_conversations() -> int:
     return n
 # ---------------------------------------------------------------------------
 
-# Historial de conversación en memoria: user_id → lista de {role, content}
-_conversations: dict[str, list[dict]] = {}
-MAX_TURNS = 20  # 20 turnos = 40 mensajes (user+assistant)
+# Historial de conversación en memoria: user_id → lista de {role, content}.
+# OrderedDict como LRU: el usuario más recientemente activo queda al final;
+# al superar MAX_TRACKED_USERS se descarta el más antiguo — si no, cada
+# user_id que alguna vez chateó queda en memoria para siempre.
+_conversations: OrderedDict[str, list[dict]] = OrderedDict()
+MAX_TURNS = 20  # 20 turnos = 40 mensajes (user+assistant) por usuario
+MAX_TRACKED_USERS = 500  # usuarios distintos en memoria simultáneamente
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +302,11 @@ class ChatResponse(BaseModel):
     timestamp: str
 
 
+@lru_cache(maxsize=1)
 def _load_config() -> dict:
+    # config.toml no tiene ningún escritor en runtime (el modelo activo vive
+    # en la tabla facet_models, no acá — ver CLAUDE.md) — seguro cachear por
+    # el ciclo de vida del proceso en vez de releerlo en cada request de chat.
     with open(CONFIG_PATH, "rb") as f:
         return tomllib.load(f)
 
@@ -511,6 +521,9 @@ def _update_history(user_id: str, user_msg: str, assistant_msg: str):
     if len(history) > MAX_TURNS * 2:
         history = history[-(MAX_TURNS * 2):]
     _conversations[user_id] = history
+    _conversations.move_to_end(user_id)
+    if len(_conversations) > MAX_TRACKED_USERS:
+        _conversations.popitem(last=False)
 
 
 @router.post("/chat", response_model=ChatResponse)
