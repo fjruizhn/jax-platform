@@ -179,13 +179,13 @@ export const useJaxStore = create((set, get) => ({
       const { pipeline_id } = payload
       const shown = get()._pipelineCompletedShown
       if (shown.has(pipeline_id)) return
-      set((s) => ({ _pipelineCompletedShown: new Set([...s._pipelineCompletedShown, pipeline_id]) }))
 
       api.get(`/pipelines/${pipeline_id}/results`).then(({ data }) => {
         const allSteps = data.steps || []
         const completedSteps = allSteps.filter((s) => s.status === 'completed')
         const ts = new Date().toISOString()
-        for (const step of completedSteps) {
+
+        const newMessages = completedSteps.map((step) => {
           const header = `● **${step.facet}** — ${step.capability}`
           const body = step.result || '_(sin resultado)_'
           const sourceParts = (step.sources || []).map(
@@ -194,21 +194,32 @@ export const useJaxStore = create((set, get) => ({
           const sourcesBlock = sourceParts.length
             ? `\n\n**Fuentes**\n${sourceParts.join('\n')}`
             : ''
-          get().addMessage({
+          return {
             id: `pipeline-${pipeline_id}-step-${step.step_index}`,
             facet: step.facet,
             content: `${header}\n\n${body}${sourcesBlock}`,
             timestamp: ts,
-          })
-        }
+          }
+        })
+
         const secs = data.total_duration_seconds
           ? `, ${Math.round(data.total_duration_seconds)}s totales`
           : ''
-        get().addMessage({
+        newMessages.push({
           id: `pipeline-${pipeline_id}-done`,
           facet: 'jacobs',
           content: `**Pipeline completado** — ${completedSteps.length} de ${allSteps.length} steps${secs}`,
           timestamp: ts,
+        })
+
+        set((s) => {
+          if (s._pipelineCompletedShown.has(pipeline_id)) return s
+          const existingIds = new Set(s.messages.map((m) => m.id))
+          const toAppend = newMessages.filter((m) => !existingIds.has(m.id))
+          return {
+            _pipelineCompletedShown: new Set([...s._pipelineCompletedShown, pipeline_id]),
+            ...(toAppend.length ? { messages: [...s.messages, ...toAppend] } : {}),
+          }
         })
       }).catch(() => {})
     }
