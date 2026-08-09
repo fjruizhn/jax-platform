@@ -48,7 +48,13 @@ except Exception:
 
 _memory = None              # instancia única (lazy)
 _memory_ready = False
-_conv_uuids: dict[str, str] = {}   # "user_id:project_id" -> conversation_uuid
+# "user_id:project_id" -> conversation_uuid. OrderedDict como LRU: sin cota,
+# cada par (usuario, proyecto) que alguna vez chateó quedaba abierto acá para
+# siempre. Al superar MAX_TRACKED_CONVERSATIONS se cierra (end_conversation)
+# la conversación menos recientemente activa antes de sacarla del dict —
+# nunca se abandona una conversación abierta sin cerrarla en la DB.
+_conv_uuids: OrderedDict[str, str] = OrderedDict()
+MAX_TRACKED_CONVERSATIONS = 500
 
 
 async def _ensure_memory() -> bool:
@@ -72,6 +78,17 @@ async def _ensure_memory() -> bool:
     return _memory_ready
 
 
+async def _evict_oldest_conversation_if_over_cap():
+    if len(_conv_uuids) <= MAX_TRACKED_CONVERSATIONS:
+        return
+    oldest_key, oldest_uuid = next(iter(_conv_uuids.items()))
+    try:
+        await _memory.end_conversation(oldest_uuid)
+    except Exception:
+        pass  # best-effort: igual la sacamos del dict, no se puede reintentar sin la key
+    _conv_uuids.pop(oldest_key, None)
+
+
 async def _get_conv_uuid(user_id: int, tenant_id, project_id) -> str | None:
     """Conversación por (usuario, proyecto). Lazy. None si la memoria está caída.
     project_id NOT NULL -> memoria de proyecto (compartida); NULL -> individual."""
@@ -80,12 +97,14 @@ async def _get_conv_uuid(user_id: int, tenant_id, project_id) -> str | None:
     key = f"{user_id}:{project_id}"
     u = _conv_uuids.get(key)
     if u:
+        _conv_uuids.move_to_end(key)
         return u
     source = "axioma-web-proyecto" if project_id is not None else "axioma-web"
     u = await _memory.start_conversation(source=source, user_id=user_id,
                                          tenant_id=tenant_id, project_id=project_id)
     if u:
         _conv_uuids[key] = u
+        await _evict_oldest_conversation_if_over_cap()
     return u
 
 
