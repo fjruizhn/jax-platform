@@ -81,12 +81,17 @@ async def _ensure_memory() -> bool:
 async def _evict_oldest_conversation_if_over_cap():
     if len(_conv_uuids) <= MAX_TRACKED_CONVERSATIONS:
         return
-    oldest_key, oldest_uuid = next(iter(_conv_uuids.items()))
+    # popitem() ANTES del await: dos evicciones concurrentes (dos conversaciones
+    # nuevas distintas empujando el cap al mismo tiempo) no deben leer la misma
+    # "más vieja" y cerrarla dos veces en la DB dejando el cap sin bajar nunca
+    # — popitem() saca la entrada del dict de forma síncrona (sin punto de
+    # yield), así que la segunda llamada concurrente ve el dict ya reducido y
+    # saca la SIGUIENTE más vieja, no la misma.
+    oldest_key, oldest_uuid = _conv_uuids.popitem(last=False)
     try:
         await _memory.end_conversation(oldest_uuid)
     except Exception:
-        pass  # best-effort: igual la sacamos del dict, no se puede reintentar sin la key
-    _conv_uuids.pop(oldest_key, None)
+        pass  # best-effort: queda abierta en la DB, pero ya no se trackea acá
 
 
 async def _get_conv_uuid(user_id: int, tenant_id, project_id) -> str | None:
