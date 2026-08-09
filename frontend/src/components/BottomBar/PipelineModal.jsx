@@ -1,15 +1,23 @@
 import { useState } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
+import { useJaxStore } from '../../store/useJaxStore'
 
-function getFacetOptions(t) {
+// capability/desc son de otro sistema (las_manos/config.toml [capabilities.*],
+// fuera de alcance de Bloque C) — label/color vienen de facetsState
+// (/api/facets, tabla `facet`), ya no hardcodeados aca.
+function getFacetOptions(t, facetsState) {
   return [
-    { id: 'jax_local', label: 'JAX Local', color: '#3b82f6', capability: 'reasoning',       desc: t.descJaxLocal },
-    { id: 'hipatia',   label: 'Hipatia',   color: '#10b981', capability: 'research',         desc: t.descHipatia },
-    { id: 'jekyll',    label: 'Jekyll',    color: '#6366f1', capability: 'analysis',         desc: t.descJekyll },
-    { id: 'thot',      label: 'Thot',      color: '#f59e0b', capability: 'critique',         desc: t.descThot },
-    { id: 'kimi',      label: 'Kimi',      color: '#06b6d4', capability: 'implementation',   desc: t.descKimi },
-    { id: 'ada',       label: 'Ada',       color: '#7c3aed', capability: 'analysis',         desc: t.descAda },
-  ]
+    { id: 'jax_local', capability: 'reasoning',       desc: t.descJaxLocal },
+    { id: 'hipatia',   capability: 'research',         desc: t.descHipatia },
+    { id: 'jekyll',    capability: 'analysis',         desc: t.descJekyll },
+    { id: 'thot',      capability: 'critique',         desc: t.descThot },
+    { id: 'kimi',      capability: 'implementation',   desc: t.descKimi },
+    { id: 'ada',       capability: 'analysis',         desc: t.descAda },
+  ].map(f => ({
+    ...f,
+    label: facetsState[f.id]?.display_name || facetsState[f.id]?.name || f.id,
+    color: facetsState[f.id]?.color || '#94a3b8',
+  }))
 }
 
 function buildSteps(selectedFacets, objective, facetOptions) {
@@ -26,7 +34,8 @@ function buildSteps(selectedFacets, objective, facetOptions) {
 
 export default function PipelineModal({ objective, onClose, onSubmit }) {
   const { t } = useI18n()
-  const FACET_OPTIONS = getFacetOptions(t)
+  const facetsState = useJaxStore((s) => s.facets)
+  const FACET_OPTIONS = getFacetOptions(t, facetsState)
 
   const [mode, setMode] = useState('supervised')
   const [selected, setSelected] = useState(['hipatia', 'jekyll', 'thot'])
