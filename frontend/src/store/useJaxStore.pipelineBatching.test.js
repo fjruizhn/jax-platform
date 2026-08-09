@@ -14,7 +14,10 @@ const INITIAL_STATE = useJaxStore.getState()
 
 describe('pipeline_step_changed completion batching', () => {
   beforeEach(() => {
-    useJaxStore.setState(INITIAL_STATE, true)
+    // token: la sesión debe estar autenticada para que fetchResults corra
+    // (ver guard post-logout en useJaxStore.js) — en producción el WS sólo
+    // entrega eventos con sesión activa.
+    useJaxStore.setState({ ...INITIAL_STATE, token: 'test-token' }, true)
     vi.clearAllMocks()
   })
 
@@ -199,4 +202,77 @@ describe('pipeline_step_changed completion batching', () => {
     }
   })
 
+  it('treats a 200 response with a malformed payload as a fetch failure, not a crash', async () => {
+    vi.useFakeTimers()
+    try {
+      // LAS MANOS puede devolver 200 con un body de error si el pipeline
+      // ya no existe — sin `steps` en absoluto, no un array vacío.
+      api.get.mockResolvedValue({ data: { detail: 'pipeline not found' } })
+
+      useJaxStore.getState().handleEvent({
+        event_type: 'pipeline_step_changed',
+        payload: { pipeline_id: 'pid-8', status: 'completed' },
+      })
+
+      await vi.advanceTimersByTimeAsync(2000)
+
+      expect(api.get).toHaveBeenCalledTimes(2)
+      const { toasts, messages } = useJaxStore.getState()
+      expect(toasts.some((t) => t.type === 'error')).toBe(true)
+      expect(messages).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('logs and does not toast or retry when building messages throws a real bug', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      // steps es un array (pasa la validación de forma) pero con una
+      // entrada nula — un bug real al leer step.step_index, no un payload
+      // "esperablemente" malo.
+      api.get.mockResolvedValue({ data: { steps: [null] } })
+
+      useJaxStore.getState().handleEvent({
+        event_type: 'pipeline_step_changed',
+        payload: { pipeline_id: 'pid-9', status: 'completed' },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(api.get).toHaveBeenCalledTimes(1)
+      const { toasts, messages } = useJaxStore.getState()
+      expect(toasts.some((t) => t.type === 'error')).toBe(false)
+      expect(messages).toHaveLength(0)
+      expect(errorSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('does not fire a pending retry after the session has logged out', async () => {
+    vi.useFakeTimers()
+    try {
+      api.get.mockRejectedValue(new Error('network down'))
+
+      useJaxStore.getState().handleEvent({
+        event_type: 'pipeline_step_changed',
+        payload: { pipeline_id: 'pid-10', status: 'completed' },
+      })
+      // deja que la primera llamada (rechazada) programe el reintento.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(api.get).toHaveBeenCalledTimes(1)
+
+      // Simula el efecto de logout() sobre el token sin depender del mock
+      // de api.post('/auth/logout') (best-effort, no relevante acá).
+      useJaxStore.setState({ token: null })
+
+      // avanza más allá del delay de reintento: no debería haber una
+      // segunda llamada a un endpoint sin sesión.
+      await vi.advanceTimersByTimeAsync(2000)
+
+      expect(api.get).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

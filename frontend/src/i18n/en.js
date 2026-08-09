@@ -51,6 +51,7 @@ export default {
   taskInitializing: '_Starting autonomous task…_',
   taskStarted: (id) => `_Task started — \`${id}\`_\n\nHyde is running in background…`,
   errorTask: 'Could not start the task.',
+  commandNoResult: '(no result)',
   pipelineStarted: (id, mode, steps) =>
     `Pipeline started — \`${id}\`\nMode: **${mode}** · ${steps} steps\n\nTracking progress in right panel…`,
   errorPipeline: 'Could not create the pipeline.',
