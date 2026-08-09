@@ -2,9 +2,18 @@ import { useState, useEffect } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { FACET_COLORS } from '../../store/useJaxStore'
+import AdminModelCatalog from './AdminModelCatalog'
+import AdminFacetBindings from './AdminFacetBindings'
+
+const TABS = [
+  { key: 'providers', labelKey: 'adminTabProviders' },
+  { key: 'models', labelKey: 'adminTabModels' },
+  { key: 'bindings', labelKey: 'adminTabBindings' },
+]
 
 export default function AdminApiKeys() {
   const { t } = useI18n()
+  const [activeTab, setActiveTab] = useState('providers')
   const [providers, setProviders] = useState([])
   const [credentialsById, setCredentialsById] = useState({})
   const [testing, setTesting] = useState({})
@@ -148,6 +157,26 @@ export default function AdminApiKeys() {
     <div>
       <h1 className="text-xl font-bold text-slate-100 mb-6">{t.adminApiKeys}</h1>
 
+      <div className="flex gap-1 border-b border-slate-800 mb-6">
+        {TABS.map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              activeTab === tab.key
+                ? 'border-purple-500 text-purple-300'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            {t[tab.labelKey]}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'models' && <AdminModelCatalog />}
+      {activeTab === 'bindings' && <AdminFacetBindings />}
+
+      {activeTab === 'providers' && (
       <div className="rounded-lg border border-slate-800 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-slate-900 border-b border-slate-800">
@@ -325,6 +354,7 @@ export default function AdminApiKeys() {
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Modal rotación */}
       {rotating && (
