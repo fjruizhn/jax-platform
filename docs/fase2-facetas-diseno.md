@@ -1,6 +1,6 @@
 # Fase 2 — Consolidación faceta→modelo (Bloque C) + Catálogo (Bloque D, diseño)
 
-**Fecha:** 2026-08-09 · **Rama:** `infra/facetas-consolidacion` (desde `infra/mariadb-12.3-migration`) · **Estado:** C1 — diseño en papel.
+**Fecha:** 2026-08-09 · **Rama:** `infra/facetas-consolidacion` (desde `infra/mariadb-12.3-migration`; Bloque D en sub-rama `infra/facetas-bloque-d`) · **Estado:** Bloque C COMPLETO y verificado (C1.7 en verde; commits `f7ebe64`/`18a5789` en jax, `447d3ec`/`130d426` en jax-platform). Bloque D — **D1 diseño en papel, sin implementar (PARADA 1)**.
 **Base:** `docs/auditoria-api-keys-2026-08-09.md`, `docs/fase1-credenciales-diseno.md`, C0 de esta corrida.
 **Fuera de alcance** (anotado, no implementado): `axioma_usage`/costos (roto, `tokens_in/out`=0, `cost_usd`=0.00 en 100% de las filas — el precio de models.dev no sirve hasta que se capturen tokens reales), retención R2, `_director_patch/`, capa de credenciales de Fase 1 (solo se consume).
 
@@ -177,10 +177,142 @@ Secuencia: (1) migrar `facet`+`facet_binding` desde los valores hardcodeados act
 
 ---
 
-## Nota para Bloque D (no se ejecuta todavía)
-
-`model.model_id` distingue **alias** (puntero móvil, ej. `deepseek-chat`) de **versión fijada** (ej. `deepseek-v4-flash`) con un campo `is_alias BOOLEAN`. `facet_binding.model_id` pasa a FK contra `model` recién en D1.1 — hasta entonces sigue siendo texto libre en Bloque C, documentado arriba. `resolved_version` (lo que el proveedor confirma haber ejecutado, capturado del campo `model` de la respuesta) es el detector de drift que la auditoría (P5e) señaló como ausente. `models.dev` es enriquecimiento, nunca verdad de producción para costo — eso se verifica contra el proveedor real.
+**Bloque C — cierre real (corrige la nota "PARADA 2" que quedó escrita arriba y ya no es cierta):** C2 se aprobó y se ejecutó. Los 3 despachadores (REPL, Mesa web, Jacobs) resuelven la misma faceta al mismo modelo contra `facet_binding`, verificado con evidencia (`facet_resolver.py`, ver D0 abajo). C1.7 en verde. `facet_models` (legacy) sigue viva sin tocar, tal como decía C1.6.
 
 ---
 
-**PARADA 2.** Nada ejecutado — sin `CREATE TABLE`, sin tocar `executor.py`. Espero aprobación explícita antes de C2.
+## Bloque D — Catálogo de modelos y sincronización
+
+**Estado: D1 — diseño en papel, nada implementado.** Base de esta sección: lectura directa de código real en `jax-platform` al momento de escribir esto (no supuesto), citada punto por punto abajo.
+
+## D0 — Evidencia de partida (por qué esto hace falta, con archivo y línea)
+
+- **`backend/api/admin/keys.py:18`** — `PROVIDERS` sigue hardcodeado en Python, con `"model": "gpt-4o"` para `thot`. La realidad operativa (`jacobs/executor.py`, confirmado en Bloque C) es `gpt-5.5`. Este es el bug concreto que P5e de la auditoría señaló — no una hipótesis; sigue vivo hoy porque el ítem #10 de la tabla C1.4 ("`admin/keys.py PROVIDERS` → ELIMINAR") quedó *planeado* en Bloque C pero no se ejecutó ahí (Bloque C solo tocó el despacho de Jacobs/REPL/Mesa web, no la pantalla de admin). D2 lo cierra de una vez.
+- **`backend/facet_resolver.py:67-71`** — el JOIN real hoy: `facet_binding.model_id` es `VARCHAR(100)` de texto libre, sin FK. Confirma literalmente lo que C1.2 ya dejó dicho: la FK contra `model` se agrega recién aquí, en D1.1.
+- **`docs/fase1-credenciales-diseno.md` (`CREATE TABLE provider`)** — ya trae `base_url`, `auth_type`, `is_local`, `status`. D1.1 reutiliza esa tabla tal cual, sin duplicarla.
+- **`backend/credential_resolver.py`** — el patrón TTL 30s / stale 300s / fail-closed / dual-read instrumentado ya probado en producción (Fase 1). D1.3 lo espeja para sincronización, no lo reinventa.
+- **`backend/api/admin/keys.py:158-169`** (`test_key`) — Gemini es la excepción real ya presente en el código: usa `?key=` en query string, no `Authorization: Bearer`. Los otros 4 proveedores son OpenAI-compatible. Esta divergencia real es la razón concreta de la columna `provider.api_key_transport` en D1.1 — sin ella, D1.3 reproduciría el mismo if/else disperso que se está eliminando.
+- **`backend/api/facets.py`** — hoy es **solo lectura pública** (`GET /api/facets`, `POST /{facet}/status`). No existe ningún endpoint admin para editar `facet_binding`. D1.5/D2 tienen que crearlo desde cero, no es un refactor de algo existente.
+
+## D1.1 — DDL de `model` (catálogo)
+
+```sql
+CREATE TABLE model (
+  id                          INT AUTO_INCREMENT PRIMARY KEY,
+  provider_id                 VARCHAR(50)   NOT NULL,
+  model_id                    VARCHAR(100)  NOT NULL,   -- string exacto que el proveedor espera en el request
+  is_alias                    BOOLEAN       NOT NULL DEFAULT FALSE,  -- TRUE = puntero móvil (ej. "deepseek-chat"); FALSE = versión fijada (ej. "deepseek-v4-flash", "gpt-5.5")
+  context_window               INT          NULL,
+  supports_tool_use            BOOLEAN      NOT NULL DEFAULT FALSE,
+  supports_structured_output   BOOLEAN      NOT NULL DEFAULT FALSE,
+  input_modalities             SET('text','image','audio','video') NOT NULL DEFAULT 'text',
+  price_input_per_1m_usd       DECIMAL(10,4) NULL,
+  price_output_per_1m_usd      DECIMAL(10,4) NULL,
+  price_cache_per_1m_usd       DECIMAL(10,4) NULL,
+  release_date                 DATE         NULL,
+  deprecation_date             DATE         NULL,       -- aviso temprano de models.dev — ver D1.4
+  status                       ENUM('available','degraded','deprecated','gone') NOT NULL DEFAULT 'available',
+  source                       ENUM('provider_api','models_dev','manual') NOT NULL,  -- procedencia del dato — nunca implícita
+  source_checked_at            DATETIME     NOT NULL,   -- última vez que ESTA fila se confirmó contra su fuente
+  created_at                   DATETIME     DEFAULT NOW(),
+  FOREIGN KEY (provider_id) REFERENCES provider(id),
+  UNIQUE KEY uk_provider_model (provider_id, model_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+**Decisión explícita — sin columna `alias_of`:** se consideró un puntero `alias_of INT` (alias → versión fijada que resuelve hoy). Se descarta: `facet_binding.resolved_version` (D1.2) más el historial de `model_binding_proposal` (D1.3) ya cubren "a qué apunta un alias ahora mismo" — una columna aparte sería una segunda fuente de lo mismo, exactamente el patrón que Bloque C eliminó 11 veces (C1.4). Un alias puede resolver distinto según la cuenta/región; lo único verificable es lo que YA se observó en una invocación real, no lo que se supone que apunta hoy.
+
+**Extensión necesaria a `provider` (Fase 1), justificada por D0:**
+```sql
+ALTER TABLE provider
+  ADD COLUMN api_key_transport ENUM('header_bearer','query_param') NOT NULL DEFAULT 'header_bearer',
+  ADD COLUMN models_list_url   VARCHAR(255) NULL;   -- endpoint real de /v1/models o equivalente; NULL = sin sync automático de capa (a) para este proveedor todavía
+```
+`gemini` queda con `api_key_transport='query_param'`; los otros 4, default. Sin esto, D1.3 termina reproduciendo el `if provider_id == "gemini"` de `admin/keys.py:159` en un archivo nuevo.
+
+**Migración de `facet_binding.model_id` (texto libre) a FK real** — 4 pasos, reversibles, mismo criterio de Fase 1 (parity check antes de cortar):
+1. Poblar `model` desde los valores hoy hardcodeados (executor.py, `admin/keys.py PROVIDERS`, config.toml) — idempotente, mismo patrón que `_seed_providers`.
+2. `ALTER TABLE facet_binding ADD COLUMN model_ref INT NULL, ADD FOREIGN KEY (model_ref) REFERENCES model(id);`
+3. Backfill: `UPDATE facet_binding b JOIN model m ON m.provider_id=b.provider_id AND m.model_id=b.model_id SET b.model_ref=m.id;`
+4. Verificar **cero filas con `model_ref IS NULL`** antes de tocar código de lectura. Solo entonces `facet_resolver.py` cambia su JOIN para leer `model_ref` en vez de comparar texto. La columna vieja `facet_binding.model_id` se conserva de solo-lectura un ciclo de cutover (mismo criterio que `user_api_keys` en B1.4) antes de dropearla en una corrida aparte — no en esta.
+
+## D1.2 — Captura de `resolved_version` (detector de drift)
+
+```sql
+ALTER TABLE facet_binding
+  ADD COLUMN resolved_version           VARCHAR(100) NULL,  -- último valor confirmado por el proveedor (campo `model` de la respuesta)
+  ADD COLUMN resolved_version_checked_at DATETIME    NULL;
+```
+
+Captura **best-effort, fire-and-forget** — mismo patrón que la escritura de `messages` en `jax_memory` (CONTEXT.md §5): nunca bloquea ni hace fallar la respuesta al usuario. En cada invocación exitosa, el despachador por transporte (`_invoke_http_openai_compat`/`_invoke_http_gemini`, ya colapsados en Bloque C1.5) compara el `model` devuelto contra el `resolved_version` cacheado en proceso (mismo `_cache` de `facet_resolver.py`, TTL 30s — no una query nueva por mensaje). Si cambió: (a) escribe la nueva fila en `facet_binding`, (b) crea un `model_binding_proposal` con `reason='drift_detected'` (D1.3) — la alerta ES la proposal pendiente, no una tabla de log aparte. Sin esto habría dos estructuras para lo mismo (ver decisión de D1.1).
+
+## D1.3 — Sincronización en tres capas + regla de oro
+
+**a) `/v1/models` del proveedor** (`provider.models_list_url`, credencial vía `resolve_credential_instrumented` — Fase 1, sin reimplementar). Única verdad de disponibilidad para esta cuenta. Upsert en `model` con `source='provider_api'`.
+
+**b) `models.dev`** (`https://models.dev/api.json`) — enriquecimiento: precio, contexto, tool_use, modalidades, `deprecation_date`. Match por `provider_id`+`model_id` normalizado (minúsculas, sin espacios); sin match → los campos de metadata quedan `NULL`, **nunca bloquea el upsert de (a)**. Todo campo que llegue de aquí se guarda con `source='models_dev'` — si (a) ya trajo el mismo dato con `source='provider_api'`, (a) gana siempre. `axioma_usage`/costo real quedan **fuera de alcance** (ver abajo): esta tabla no alimenta ninguna decisión de costo todavía, solo se muestra como referencia con su procedencia visible.
+
+**c) Verificación empírica** — el health check de Fase 1 (`POST /api/admin/keys/{provider}/test`), reutilizado tal cual como tercera señal de vida, no reimplementado.
+
+**REGLA DE ORO (mecanismo concreto, no solo principio):**
+```sql
+CREATE TABLE model_binding_proposal (
+  id                  INT AUTO_INCREMENT PRIMARY KEY,
+  facet_key           VARCHAR(50) NOT NULL,
+  current_model_ref   INT NULL,      -- lo que hoy tiene facet_binding.model_ref (NULL si el binding no existe aún)
+  proposed_model_ref  INT NOT NULL,
+  reason              ENUM('new_model_available','drift_detected','deprecation_warning') NOT NULL,
+  detail              TEXT NULL,
+  status              ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+  decided_by           INT NULL,
+  decided_at           DATETIME NULL,
+  created_at           DATETIME DEFAULT NOW(),
+  FOREIGN KEY (facet_key) REFERENCES facet(`key`),
+  FOREIGN KEY (proposed_model_ref) REFERENCES model(id),
+  FOREIGN KEY (decided_by) REFERENCES jax_users(user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+- Escritura automática sobre `model` (catálogo): **permitida**, sin gate.
+- Escritura sobre `facet_binding` (producción): **solo** vía `UPDATE facet_binding SET model_ref=proposed_model_ref ...` disparado por el endpoint de aprobación, nunca por el job de sync. Rechazar = marcar `status='rejected'`, cero escritura a `facet_binding`.
+
+## D1.4 — Deprecación y recall
+
+- Un `model_id` que **desaparece** de `/v1/models` (capa a) en N sincronizaciones consecutivas (configurable, default 3 — evita marcar por un solo fallo de red del proveedor) pasa `model.status` de `available` → `degraded` → `deprecated`. **Nunca** se borra la fila ni se pasa a `gone` automáticamente; `gone` es un estado de confirmación manual (el operador certifica que el proveedor lo retiró de verdad).
+- Un `403`/`404` **súbito** en una invocación real (no en el sync) sobre un `model_ref` que veía funcionando: el despachador marca `model.status='degraded'` de inmediato con nota "posible revocación/recall — reintentable, no es bug de código" — mismo criterio que ya usa LAS MANOS para distinguir kill switch de error real (CONTEXT.md §9, 14-jun).
+- `deprecation_date` de `models.dev` (capa b) se muestra como aviso temprano en la UI (D1.5, tab 2) — nunca dispara una transición de `status` por sí sola, es solo la fuente de enriquecimiento, no la fuente de disponibilidad real (esa es siempre la capa a).
+
+## D1.5 — Rediseño de la pantalla en tres pestañas
+
+**Tab 1 — Proveedores y Credenciales.** Ya existe (`AdminApiKeys.jsx` + `backend/api/admin/keys.py`), se reubica sin romper Fase 1: rotar/revocar, audit log, salud persistida (`credential.last_health_status`). Cambio real de alcance de D2 (no repetición de C2): `admin/keys.py` deja de leer `PROVIDERS` hardcodeado y lee `provider` — esto es lo que cierra el bug `gpt-4o` citado en D0.
+
+**Tab 2 — Catálogo de modelos** (nueva). Endpoints nuevos:
+- `GET /api/admin/models?provider=&status=` — lista con `is_alias`, precio, `deprecation_date`, `source`/`source_checked_at` visibles (procedencia siempre a la vista, nunca implícita — mismo principio de "origen de autoridad" del §7 de CONTEXT.md).
+- `POST /api/admin/models/sync` — dispara D1.3, solo escribe `model`.
+- `GET /api/admin/models/proposals?status=pending` / `POST /api/admin/models/proposals/{id}/approve|reject` — la UI de la regla de oro.
+
+**Tab 3 — Facetas y Bindings** (nueva, sobre superficie que hoy no existe — ver D0 sobre `facets.py`). CRUD de `facet_binding` (hoy inexistente en admin), validación de contrato de capabilities **recién real** (`facet.requires_tool_use`/`min_context_tokens` contra `model.supports_tool_use`/`context_window` — el check que C1.2 dejó explícitamente marcado `unknown` porque el catálogo no existía todavía), cadena de fallback (`role='fallback_1'`/`'fallback_2'`), botón "probar faceta end-to-end" (reusa `resolve_facet` + un prompt corto de smoke test, mismo principio que `test_key` pero pasando por el resolver real en vez del array `PROVIDERS`).
+
+Aplica la paleta y componentes ya existentes del proyecto (dark/light por CSS variables, i18n en `es.js`/`en.js` — ninguna etiqueta nueva de UI se hardcodea, política de CLAUDE.md).
+
+## D1.6 — Plan de pruebas (diseño; se ejecuta en D2 con evidencia real, no resumen)
+
+- [ ] El botón de sincronizar trae modelos nuevos al catálogo y **no** cambia ningún `facet_binding` por su cuenta.
+- [ ] Un modelo retirado del proveedor se marca `degraded`→`deprecated` tras 3 syncs consecutivos sin aparecer — no se borra la fila.
+- [ ] `resolved_version` se captura y difiere visiblemente del `model_id` solicitado cuando el binding es un alias (`is_alias=TRUE`).
+- [ ] Un `model_binding_proposal` se puede aprobar (escribe `facet_binding.model_ref`) o rechazar (no escribe nada) desde la UI.
+- [ ] Un binding contra un `model_ref` que no existe en el catálogo es rechazado por la FK, con motivo visible en la respuesta del endpoint.
+- [ ] Gemini sincroniza vía `api_key_transport='query_param'` sin ningún `if provider_id == "gemini"` nuevo en el código de sync.
+- [ ] `admin/keys.py` deja de mostrar `gpt-4o` para thot — el bug de D0 queda cerrado con evidencia (captura de pantalla o response JSON del endpoint).
+
+---
+
+## FUERA DE ALCANCE (anotado, no implementado en D1/D2)
+
+- **`axioma_usage`/costos** — roto: `tokens_in`/`tokens_out` siempre en 0, `cost_usd` 0.00 en el 100% de las filas. El precio de `models.dev` (D1.3-b) no sirve para decisiones de costo hasta que se capturen tokens reales. Se muestra en el catálogo solo como referencia con su `source` visible, nunca como base de cálculo.
+- **Retención de backups en R2** (forget+prune fallando en R2) — sin relación con este bloque, no se toca.
+- **Código muerto en `jax/_director_patch/`** — no se toca.
+- **Capa de credenciales de Fase 1** — D1.3 solo la **consume** (`resolve_credential_instrumented`), no se modifica `credential_resolver.py` ni las tablas `provider`/`credential` salvo la extensión aditiva de D1.1 (`api_key_transport`, `models_list_url`), que no cambia semántica existente ni rompe consumidores actuales.
+
+---
+
+**PARADA 1.** Nada ejecutado — sin `CREATE TABLE`, sin `ALTER TABLE`, sin tocar `executor.py`/`facet_resolver.py`/frontend. Espero aprobación explícita antes de D2.
