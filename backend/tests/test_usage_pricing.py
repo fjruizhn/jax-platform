@@ -34,7 +34,7 @@ def test_record_usage_calcula_costo_desde_tabla_model(client):
     client.portal.call(_seed_priced_model, "deepseek", "deepseek-v4-flash", 0.14, 0.28)
     client.portal.call(
         record_usage,
-        1, 1, "jekyll", "deepseek", "deepseek-v4-flash", 1000, 500, "chat", None,
+        "1", "1", "jekyll", "deepseek", "deepseek-v4-flash", 1000, 500, "chat", None,
     )
     row = client.portal.call(_fetch_last_usage_row)
     tokens_in, tokens_out, cost_usd, model, facet = row
@@ -47,7 +47,7 @@ def test_record_usage_calcula_costo_desde_tabla_model(client):
 def test_record_usage_modelo_sin_catalogo_da_costo_null(client):
     client.portal.call(
         record_usage,
-        1, 1, "jekyll", "deepseek", "modelo-que-no-existe-nunca", 100, 50, "chat", None,
+        "1", "1", "jekyll", "deepseek", "modelo-que-no-existe-nunca", 100, 50, "chat", None,
     )
     row = client.portal.call(_fetch_last_usage_row)
     _tokens_in, _tokens_out, cost_usd, _model, _facet = row
@@ -57,7 +57,7 @@ def test_record_usage_modelo_sin_catalogo_da_costo_null(client):
 def test_record_usage_cost_usd_override_ignora_tabla_model(client):
     client.portal.call(
         record_usage,
-        1, 1, "thot_image", "openai", "gpt-image-1", 0, 0, "imagen", 0.04,
+        "1", "1", "thot_image", "openai", "gpt-image-1", 0, 0, "imagen", 0.04,
     )
     row = client.portal.call(_fetch_last_usage_row)
     _tokens_in, _tokens_out, cost_usd, _model, _facet = row
