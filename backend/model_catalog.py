@@ -12,6 +12,7 @@ mutar fuera de sus columnas resolved_version/resolved_version_checked_at
 import json
 import logging
 import os
+import re
 import time
 
 from credential_resolver import resolve_credential_instrumented
@@ -68,6 +69,19 @@ _MODELS_DEV_PROVIDER_MAP = {
 }
 
 _VALID_MODALITIES = ("text", "image", "audio", "video")
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _valid_date(value):
+    """models.dev a veces devuelve 'YYYY-MM' (sin dia) — MySQL DATE bajo
+    STRICT_TRANS_TABLES rechaza eso y abortaba todo el loop de enrich
+    (bug real 2026-08-10, dejaba sin re-sincronizar el precio de todo lo
+    que venia despues en la iteracion). Una fecha mal formada se trata
+    como ausente, nunca se fabrica un dia."""
+    if value and _DATE_RE.match(value):
+        return value
+    return None
 
 
 def _extract_model_ids(provider_id: str, payload: dict) -> list[str]:
@@ -283,8 +297,8 @@ async def enrich_from_models_dev() -> dict:
                         "WHERE provider_id=%s AND model_id=%s",
                         (
                             limit.get("context"), cost.get("input"), cost.get("output"),
-                            cost.get("cache_read"), dev_model.get("release_date"),
-                            dev_model.get("deprecation_date"), dev_model.get("tool_call"),
+                            cost.get("cache_read"), _valid_date(dev_model.get("release_date")),
+                            _valid_date(dev_model.get("deprecation_date")), dev_model.get("tool_call"),
                             dev_model.get("structured_output"), modalities_set,
                             provider_id, model_id,
                         ),
