@@ -332,30 +332,11 @@ class ChatResponse(BaseModel):
 @lru_cache(maxsize=1)
 def _load_config() -> dict:
     # config.toml no tiene ningún escritor en runtime (el modelo activo vive
-    # en la tabla facet_models, no acá — ver CLAUDE.md) — seguro cachear por
-    # el ciclo de vida del proceso en vez de releerlo en cada request de chat.
+    # en facet_binding desde Bloque C, resuelto vía resolve_facet() — ver
+    # _invoke_facet) — seguro cachear por el ciclo de vida del proceso en
+    # vez de releerlo en cada request de chat.
     with open(CONFIG_PATH, "rb") as f:
         return tomllib.load(f)
-
-
-async def _resolve_active_model(facet: str, fallback: str) -> str:
-    """Modelo activo de la faceta segun la tabla facet_models (fuente de verdad
-    editada desde el panel admin). Cae a `fallback` (el model_default de
-    config.toml) si la faceta no tiene fila activa o si la DB no responde,
-    para que el chat nunca se rompa si la tabla queda vacia o la DB esta caida."""
-    try:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "SELECT model_name FROM facet_models "
-                    "WHERE facet = %s AND is_active = TRUE LIMIT 1",
-                    (facet,),
-                )
-                row = await cur.fetchone()
-    except Exception:
-        return fallback
-    return row[0] if row else fallback
 
 
 def _build_messages(system_prompt: str, history: list[dict], message: str) -> list[dict]:
@@ -435,9 +416,9 @@ _MODEL_IDENTITY_SELF_REF = (
 def _is_model_identity_question(message: str) -> bool:
     """Detecta preguntas sobre que modelo ejecuta a la faceta ('que modelo
     sos', 'con que modelo estas corriendo'). Estas se resuelven con el dato
-    real de _resolve_active_model, nunca con la respuesta del LLM: el modelo
-    confabula su propia identidad incluso cuando el dato correcto ya esta en
-    su contexto (REGLA DE EVIDENCIA — ver config.toml)."""
+    real de resolve_facet() (facet_binding), nunca con la respuesta del
+    LLM: el modelo confabula su propia identidad incluso cuando el dato
+    correcto ya esta en su contexto (REGLA DE EVIDENCIA — ver config.toml)."""
     text = _sin_tildes(message.lower().strip())
     has_model_word = any(re.search(rf"\b{kw}\b", text) for kw in _MODEL_IDENTITY_WORDS)
     if not has_model_word:
