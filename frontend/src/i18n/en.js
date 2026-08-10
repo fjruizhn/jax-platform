@@ -325,6 +325,9 @@ export default {
   adminCostsTotal: 'Total',
   adminCostsChart: 'Requests by facet (last 7 days)',
   adminCostsNoData: 'No data yet',
+  adminCostsNoPricing: 'No pricing',
+  adminCostsPartialMarker: '*',
+  adminCostsPartialNote: '* Partial total — some models have no price loaded in the catalog and are not included in the sum.',
 
   // HAL Eye
   eyeIdle: 'idle',

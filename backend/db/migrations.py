@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS axioma_usage (
   tenant_id INT DEFAULT 1,
   user_id INT DEFAULT 1,
   facet VARCHAR(30) NOT NULL,
-  model VARCHAR(50) NOT NULL,
+  model VARCHAR(100) NOT NULL,
   tokens_in INT DEFAULT 0,
   tokens_out INT DEFAULT 0,
   cost_usd DECIMAL(10,6) DEFAULT 0,
@@ -564,6 +564,34 @@ _ENUM_EXTENSIONS = [
 ]
 
 
+async def _column_too_narrow(cur, table_name: str, column_name: str, min_length: int) -> bool:
+    await cur.execute(
+        """
+        SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
+        """,
+        (table_name, column_name),
+    )
+    row = await cur.fetchone()
+    return bool(row) and row[0] is not None and row[0] < min_length
+
+
+# (tabla, columna, longitud minima requerida, ALTER MODIFY completo) —
+# ensancha una columna VARCHAR existente sin perder datos. Instalaciones
+# nuevas ya nacen con el ancho correcto via CREATE TABLE; esto cubre las
+# que ya tenian la tabla creada con el ancho viejo.
+# axioma_usage.model era VARCHAR(50) pero model.model_id (el valor real
+# insertado desde Tarea 2/3) es VARCHAR(100) — riesgo de "Data too long"
+# bajo STRICT_TRANS_TABLES, silenciado hasta ahora por el bare except de
+# record_usage (ver I1).
+_COLUMN_WIDENS = [
+    (
+        "axioma_usage", "model", 100,
+        "ALTER TABLE axioma_usage MODIFY COLUMN model VARCHAR(100) NOT NULL",
+    ),
+]
+
+
 async def run_migrations():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -578,6 +606,10 @@ async def run_migrations():
 
             for table_name, column_name, value, ddl in _ENUM_EXTENSIONS:
                 if not await _enum_has_value(cur, table_name, column_name, value):
+                    await cur.execute(ddl)
+
+            for table_name, column_name, min_length, ddl in _COLUMN_WIDENS:
+                if await _column_too_narrow(cur, table_name, column_name, min_length):
                     await cur.execute(ddl)
 
             await _seed_providers(cur)
