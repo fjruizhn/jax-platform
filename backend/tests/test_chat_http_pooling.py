@@ -28,7 +28,7 @@ async def test_call_ollama_uses_the_shared_client():
     original = http_client._client
     http_client._client = fake
     try:
-        result = await _call_ollama(
+        result, _tin, _tout = await _call_ollama(
             "system prompt", [], "hola",
             {"personalities": {"jax_local": {"api_url": "http://127.0.0.1:11434/api/chat"}}},
             "qwen3-coder:30b",
@@ -49,7 +49,7 @@ async def test_call_openai_compat_uses_the_shared_client():
     original = http_client._client
     http_client._client = fake
     try:
-        result = await _call_openai_compat(
+        result, _tin, _tout = await _call_openai_compat(
             "https://api.deepseek.com/v1", "sk-test", "deepseek-v4-flash",
             "system prompt", [], "hola",
         )
@@ -70,7 +70,7 @@ async def test_call_gemini_uses_the_shared_client():
     original = http_client._client
     http_client._client = fake
     try:
-        result = await _call_gemini("test-key", "gemini-2.5-flash", "system prompt", [], "hola")
+        result, _tin, _tout = await _call_gemini("test-key", "gemini-2.5-flash", "system prompt", [], "hola")
     finally:
         http_client._client = original
 

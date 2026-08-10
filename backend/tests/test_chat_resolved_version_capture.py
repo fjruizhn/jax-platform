@@ -41,7 +41,7 @@ async def test_call_openai_compat_invokes_on_response_with_raw_json():
         captured["data"] = data
 
     try:
-        content = await _call_openai_compat(
+        content, _tin, _tout = await _call_openai_compat(
             "https://api.deepseek.com/v1", "sk-x", "deepseek-chat",
             "system", [], "hola", on_response=capture,
         )
@@ -58,7 +58,7 @@ async def test_call_openai_compat_without_on_response_still_works():
     original = http_client._client
     http_client._client = fake
     try:
-        content = await _call_openai_compat("https://x", "k", "m", "s", [], "hola")
+        content, _tin, _tout = await _call_openai_compat("https://x", "k", "m", "s", [], "hola")
     finally:
         http_client._client = original
     assert content == "ok"
@@ -77,7 +77,7 @@ async def test_call_gemini_invokes_on_response_with_raw_json():
         captured["data"] = data
 
     try:
-        content = await _call_gemini("k", "gemini-2.5-flash", "system", [], "hola", on_response=capture)
+        content, _tin, _tout = await _call_gemini("k", "gemini-2.5-flash", "system", [], "hola", on_response=capture)
     finally:
         http_client._client = original
 
@@ -113,7 +113,7 @@ def test_invoke_facet_records_resolved_version_for_openai_compat_facet(client, m
         return await _invoke_facet("jekyll", config, "test-user-resolved-version", "hola")
 
     try:
-        result = client.portal.call(run)
+        result, _usage = client.portal.call(run)
     finally:
         http_client._client = original
 
@@ -144,7 +144,7 @@ def test_invoke_facet_survives_record_resolved_version_failure(client, monkeypat
         return await _invoke_facet("jekyll", config, "test-user-resolved-version-2", "hola")
 
     try:
-        result = client.portal.call(run)
+        result, _usage = client.portal.call(run)
     finally:
         http_client._client = original
 
