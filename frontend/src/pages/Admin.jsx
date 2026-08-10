@@ -12,7 +12,7 @@ export default function Admin() {
   const { t } = useI18n()
 
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-200">
+    <div className="flex h-dvh bg-slate-950 text-slate-200">
       <AdminSidebar />
       <main className="flex-1 overflow-y-auto p-6">
         <Routes>
