@@ -7,6 +7,7 @@ import unicodedata
 from collections import OrderedDict
 from functools import lru_cache
 from datetime import datetime
+from typing import NamedTuple
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import httpx
@@ -339,6 +340,13 @@ def _load_config() -> dict:
         return tomllib.load(f)
 
 
+class UsageInfo(NamedTuple):
+    provider_id: str
+    model: str
+    tokens_in: int
+    tokens_out: int
+
+
 def _build_messages(system_prompt: str, history: list[dict], message: str) -> list[dict]:
     msgs = [{"role": "system", "content": system_prompt}]
     msgs.extend(history)
@@ -346,7 +354,7 @@ def _build_messages(system_prompt: str, history: list[dict], message: str) -> li
     return msgs
 
 
-async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str) -> str:
+async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str) -> tuple[str, int, int]:
     url = config["personalities"]["jax_local"]["api_url"]
     messages = _build_messages(system_prompt, history, message)
     client = await get_http_client()
@@ -356,14 +364,15 @@ async def _call_ollama(system_prompt: str, history: list[dict], message: str, co
         timeout=180.0,
     )
     r.raise_for_status()
-    return r.json()["message"]["content"]
+    data = r.json()
+    return data["message"]["content"], data.get("prompt_eval_count", 0), data.get("eval_count", 0)
 
 
 async def _call_openai_compat(
     base_url: str, api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
     on_response=None,
-) -> str:
+) -> tuple[str, int, int]:
     messages = _build_messages(system_prompt, history, message)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     client = await get_http_client()
@@ -377,14 +386,15 @@ async def _call_openai_compat(
     data = r.json()
     if on_response:
         await on_response(data)
-    return data["choices"][0]["message"]["content"]
+    usage = data.get("usage") or {}
+    return data["choices"][0]["message"]["content"], usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
 
 
 async def _call_gemini(
     api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
     on_response=None,
-) -> str:
+) -> tuple[str, int, int]:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     contents = []
     for h in history:
@@ -402,7 +412,12 @@ async def _call_gemini(
     data = r.json()
     if on_response:
         await on_response(data)
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    usage = data.get("usageMetadata") or {}
+    return (
+        data["candidates"][0]["content"]["parts"][0]["text"],
+        usage.get("promptTokenCount", 0),
+        usage.get("candidatesTokenCount", 0),
+    )
 
 
 _MODEL_IDENTITY_WORDS = ("modelo", "model")
@@ -461,7 +476,7 @@ async def _record_resolved_version_from_response(facet_key: str, data: dict) -> 
 async def _invoke_facet(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
-) -> str:
+) -> tuple[str, UsageInfo | None]:
     history = _conversations.get(user_id, [])
     if semantic_context:
         # Contexto de sesiones pasadas SOLO para este turno (no entra al hilo RAM).
@@ -477,10 +492,10 @@ async def _invoke_facet(
     try:
         f = await resolve_facet(facet)
     except FacetUnavailableError:
-        return f"⚠️ {facet} no está disponible: sin binding activo configurado."
+        return f"⚠️ {facet} no está disponible: sin binding activo configurado.", None
 
     if _is_model_identity_question(message):
-        return _model_identity_reply(f.model, facet)
+        return _model_identity_reply(f.model, facet), None
 
     if f.transport == "ollama":
         if facet == "jax_local":
@@ -491,19 +506,23 @@ async def _invoke_facet(
                 f"te pregunten): el modelo que te ejecuta en este momento es "
                 f"'{f.model}', via Ollama local en hall9000."
             )
-            return await _call_ollama(system_prompt + ident, history, message, config, f.model)
-        return await _call_ollama(system_prompt, history, message, config, f.model)
+            text, tin, tout = await _call_ollama(system_prompt + ident, history, message, config, f.model)
+        else:
+            text, tin, tout = await _call_ollama(system_prompt, history, message, config, f.model)
+        return text, UsageInfo(f.provider_id, f.model, tin, tout)
 
     async def _on_response(data: dict) -> None:
         await _record_resolved_version_from_response(facet, data)
 
     if f.transport == "http_gemini":
-        return await _call_gemini(f.credential, f.model, system_prompt, history, message, on_response=_on_response)
+        text, tin, tout = await _call_gemini(f.credential, f.model, system_prompt, history, message, on_response=_on_response)
+        return text, UsageInfo(f.provider_id, f.model, tin, tout)
 
     if f.transport == "http_openai_compat":
-        return await _call_openai_compat(f.base_url, f.credential, f.model, system_prompt, history, message, on_response=_on_response)
+        text, tin, tout = await _call_openai_compat(f.base_url, f.credential, f.model, system_prompt, history, message, on_response=_on_response)
+        return text, UsageInfo(f.provider_id, f.model, tin, tout)
 
-    return f"⚠️ {facet} no está disponible: transporte '{f.transport}' no soportado en la Mesa web."
+    return f"⚠️ {facet} no está disponible: transporte '{f.transport}' no soportado en la Mesa web.", None
 
 
 def _update_history(user_id: str, user_msg: str, assistant_msg: str):
@@ -557,7 +576,7 @@ async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
         semantic_context = await _semantic_context(req.message, mem_uid, mem_pid)
 
     try:
-        response_text = await _invoke_facet(facet, config, user_id, req.message, semantic_context)
+        response_text, usage = await _invoke_facet(facet, config, user_id, req.message, semantic_context)
     except httpx.HTTPStatusError as e:
         detail = f"Error HTTP {e.response.status_code} en {facet}: {e.response.text[:200]}"
         await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail[:100])
@@ -574,7 +593,8 @@ async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
     # Registrar uso (best-effort)
     personality = config["personalities"].get(facet, {})
     model_name = personality.get("model_default", facet)
-    await record_usage(user_id, tenant_id, facet, model_name, 0, 0, "chat")
+    if usage is not None:
+        await record_usage(user_id, tenant_id, facet, usage.provider_id, usage.model, usage.tokens_in, usage.tokens_out, "chat")
 
     # Guardar la respuesta de la faceta en la MISMA memoria (fire-and-forget).
     if conv_uuid:
