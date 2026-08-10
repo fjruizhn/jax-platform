@@ -595,6 +595,7 @@ async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
     model_name = personality.get("model_default", facet)
     if usage is not None:
         await record_usage(user_id, tenant_id, facet, usage.provider_id, usage.model, usage.tokens_in, usage.tokens_out, "chat")
+        model_name = usage.model  # modelo real resuelto, no el stale de config.toml
 
     # Guardar la respuesta de la faceta en la MISMA memoria (fire-and-forget).
     if conv_uuid:

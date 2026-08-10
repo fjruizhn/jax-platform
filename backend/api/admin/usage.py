@@ -1,8 +1,11 @@
+import logging
 from datetime import date, timedelta
 from fastapi import APIRouter, Depends, Query
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
+
+logger = logging.getLogger("admin.usage")
 
 router = APIRouter(prefix="/api/admin")
 
@@ -58,8 +61,9 @@ async def record_usage(
                     (int(tenant_id), int(user_id), facet, model, tokens_in, tokens_out, cost, request_type),
                 )
             await conn.commit()
-    except Exception:
-        pass  # usage tracking is best-effort
+    except Exception as e:
+        logger.warning(f"record_usage failed facet={facet} model={model} reason={type(e).__name__}: {e}")
+        # usage tracking is best-effort — no re-raise, pero el fallo queda visible en logs
 
 
 @router.get("/usage")
@@ -75,7 +79,8 @@ async def get_usage(
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT facet, model, SUM(tokens_in), SUM(tokens_out), SUM(cost_usd), COUNT(*), request_type
+                SELECT facet, model, SUM(tokens_in), SUM(tokens_out), SUM(cost_usd), COUNT(*), request_type,
+                       SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced_requests
                 FROM axioma_usage
                 WHERE DATE(created_at) >= %s
                 GROUP BY facet, model, request_type
@@ -106,6 +111,7 @@ async def get_usage(
             "cost_usd": float(r[4]) if r[4] is not None else None,
             "requests": int(r[5] or 0),
             "request_type": r[6],
+            "unpriced_requests": int(r[7] or 0),
         }
         for r in rows
     ]
