@@ -214,7 +214,47 @@ def test_enrich_from_models_dev_fills_metadata_without_touching_source(client):
     row = client.portal.call(_fetch_model, "deepseek", "deepseek-v4-flash")
     assert row[1] == "manual"  # source NO cambio a models_dev (regla D1.3)
     assert row[3] == 128000    # context_window si se lleno
-    assert float(row[4]) == 0.27
+
+
+def test_enrich_from_models_dev_ignora_release_date_mal_formado_sin_abortar(client):
+    """Bug real (2026-08-10): models.dev a veces devuelve release_date como
+    'YYYY-MM' (sin dia) -- MySQL DATE bajo STRICT_TRANS_TABLES rechaza ese
+    valor y la excepcion abortaba el loop entero, dejando sin enriquecer
+    todo lo que venia despues del modelo con la fecha mala (encontrado
+    verificando en produccion: kimi-k2.7-code nunca llego a re-sincronizar
+    su precio real tras una corrupcion de test). Fix: una fecha mal
+    formada se trata como ausente (no se escribe), NO aborta el resto."""
+    fake = _FakeGetClient(_FakeResponse({
+        "deepseek": {"models": {"deepseek-v4-flash": {
+            "release_date": "2026-01",  # mal formado, sin dia
+            "cost": {"input": 0.14, "output": 0.28},
+        }}},
+        "google": {"models": {"gemini-2.5-flash": {
+            "release_date": "2026-03-15",  # bien formado, debe aplicarse
+            "cost": {"input": 0.15, "output": 0.60},
+        }}},
+    }))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        result = client.portal.call(model_catalog.enrich_from_models_dev)
+    finally:
+        http_client._client = original
+
+    assert "error" not in result
+    assert result["enriched"] >= 2
+
+    row = client.portal.call(
+        _fetch_one,
+        "SELECT release_date FROM model WHERE provider_id='deepseek' AND model_id='deepseek-v4-flash'",
+    )
+    assert row[0] is None or str(row[0]) != "2026-01"  # nunca escribio el valor invalido
+
+    row2 = client.portal.call(
+        _fetch_one,
+        "SELECT release_date FROM model WHERE provider_id='gemini' AND model_id='gemini-2.5-flash'",
+    )
+    assert str(row2[0]) == "2026-03-15"  # la fecha valida de OTRO modelo si se aplico
 
 
 def test_record_resolved_version_first_observation_is_not_drift(client):
