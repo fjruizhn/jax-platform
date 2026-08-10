@@ -17,9 +17,11 @@ from db.connection import get_pool
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/models")
 
-# Proveedores con catalogo remoto propio hoy (D1.1: models_list_url NULL
-# para ollama/anthropic — sin sync automatico de capa (a) todavia).
-_SYNCABLE_PROVIDERS = ["openai", "deepseek", "gemini", "moonshot", "zhipu"]
+# Proveedores con catalogo real hoy. anthropic (2026-08-10): sync contra
+# /v1/models, credencial via OAuth local de Claude Code, no `credential` DB.
+# ollama (2026-08-10): sync local contra /api/tags, sin ninguna credencial
+# (provider.auth_type='none') — ver ramas explicitas en model_catalog.py.
+_SYNCABLE_PROVIDERS = ["openai", "deepseek", "gemini", "moonshot", "zhipu", "anthropic", "ollama"]
 
 _MODEL_COLUMNS = (
     "id, provider_id, model_id, is_alias, context_window, supports_tool_use, "

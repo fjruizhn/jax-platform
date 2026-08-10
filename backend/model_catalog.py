@@ -9,7 +9,10 @@ en `model_binding_proposal` + aprobacion explicita desde el admin
 mutar fuera de sus columnas resolved_version/resolved_version_checked_at
 (D1.2), que son observacion, no produccion.
 """
+import json
 import logging
+import os
+import time
 
 from credential_resolver import resolve_credential_instrumented
 from db.connection import get_pool
@@ -19,6 +22,39 @@ logger = logging.getLogger("model_catalog")
 
 MODELS_DEV_URL = "https://models.dev/api.json"
 DEPRECATION_MISS_THRESHOLD = 3  # D1.4: 3 syncs consecutivos ausente -> deprecated. Nunca 'gone' automatico.
+
+# anthropic no tiene fila en `credential` (Hyde no gestiona API key via
+# admin/keys.py — ver provider.auth_type='subprocess'). El sync usa en su
+# lugar el token OAuth que el propio `claude` CLI ya deja fresco en este
+# archivo cada vez que Hyde corre. Decision 2026-08-10 (conversacion con
+# Fernando): leer en caliente, sin refresh OAuth propio — un bug ahi
+# arriesgaria la sesion en vivo de Hyde por una ganancia menor (el sync
+# reintenta solo en la proxima corrida). Ver CONTEXT.md 2026-08-10.
+_ANTHROPIC_CREDENTIALS_PATH = os.path.expanduser("~/.claude/.credentials.json")
+_ANTHROPIC_API_VERSION = "2023-06-01"  # requerido por /v1/models, verificado con curl real
+
+
+class AnthropicOAuthUnavailableError(Exception):
+    """Fail-soft: sin token OAuth local utilizable (archivo ausente, JSON
+    invalido, o vencido). El llamador debe saltar el sync de este provider
+    con motivo explicito, nunca reintentar con un valor viejo/vacio."""
+
+
+def _read_anthropic_oauth_token() -> str:
+    try:
+        with open(_ANTHROPIC_CREDENTIALS_PATH) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise AnthropicOAuthUnavailableError(f"credentials file unreadable: {type(e).__name__}") from e
+
+    oauth = data.get("claudeAiOauth") or {}
+    token = oauth.get("accessToken")
+    expires_at = oauth.get("expiresAt")
+    if not token or not expires_at:
+        raise AnthropicOAuthUnavailableError("credentials file missing accessToken/expiresAt")
+    if expires_at / 1000 <= time.time():
+        raise AnthropicOAuthUnavailableError("access token expired, esperando que Hyde lo renueve")
+    return token
 
 # provider_id (nuestro, en `provider`) -> clave real en models.dev/api.json.
 # Verificado contra la API real con curl (2026-08-09), no supuesto: gemini,
@@ -59,12 +95,26 @@ async def sync_provider_models(provider_id: str) -> dict:
         return {"provider_id": provider_id, "fetched": 0, "skipped": "sin models_list_url"}
     transport, url = row
 
-    credential = await resolve_credential_instrumented(provider_id)
+    if provider_id == "ollama":
+        return await _sync_ollama_models(url)
+
+    if provider_id == "anthropic":
+        try:
+            credential = _read_anthropic_oauth_token()
+        except AnthropicOAuthUnavailableError as e:
+            logger.warning(f"model_catalog sync provider=anthropic oauth_unavailable reason={e}")
+            return {"provider_id": provider_id, "fetched": 0, "skipped": f"oauth local no disponible: {e}"}
+    else:
+        credential = await resolve_credential_instrumented(provider_id)
+
     client = await get_http_client()
     if transport == "query_param":
         resp = await client.get(f"{url}?key={credential}", timeout=15.0)
     else:
-        resp = await client.get(url, headers={"Authorization": f"Bearer {credential}"}, timeout=15.0)
+        headers = {"Authorization": f"Bearer {credential}"}
+        if provider_id == "anthropic":
+            headers["anthropic-version"] = _ANTHROPIC_API_VERSION
+        resp = await client.get(url, headers=headers, timeout=15.0)
     resp.raise_for_status()
     seen_ids = set(_extract_model_ids(provider_id, resp.json()))
 
@@ -87,6 +137,13 @@ async def sync_provider_models(provider_id: str) -> dict:
             for row_id, model_id, misses in await cur.fetchall():
                 if model_id in seen_ids:
                     continue
+                if provider_id == "anthropic" and not model_id.startswith("claude-"):
+                    # Alias de tier suelto (ej. 'sonnet') -- GET /v1/models
+                    # real de Anthropic jamas lo lista, solo los IDs
+                    # fechados/fijados detras del alias (verificado con curl,
+                    # 2026-08-10). Ausencia estructural, no una senal real de
+                    # que el alias dejo de existir -- no cuenta como miss.
+                    continue
                 new_misses = misses + 1
                 new_status = "deprecated" if new_misses >= DEPRECATION_MISS_THRESHOLD else "degraded"
                 await cur.execute(
@@ -96,6 +153,78 @@ async def sync_provider_models(provider_id: str) -> dict:
         await conn.commit()
 
     return {"provider_id": provider_id, "fetched": len(seen_ids)}
+
+
+async def _sync_ollama_models(url: str) -> dict:
+    """Ollama es local, sin API key (provider.auth_type='none') — /api/tags
+    no lleva ningun header, a diferencia de todos los demas providers.
+    Shape real distinto (verificado con curl, 2026-08-10):
+    {'models':[{'model':<tag>, 'digest':<sha>, ...}]}, no {'data':[...]}
+    ni el {'models':[{'name':'models/<id>'}]} de Gemini.
+
+    Captura ademas `digest`: un tag de Ollama es un puntero LOCAL (no un
+    alias del lado del proveedor) — puede re-pullearse con pesos distintos
+    sin que el tag cambie, algo que ningun otro transporte puede detectar.
+    `digest_changed_at` queda NULL en la primera observacion (no hay 'antes'
+    con que comparar) y se pobla solo cuando el digest cambia de verdad
+    entre dos syncs — logueado como warning, sin generar
+    model_binding_proposal (el tag sigue siendo el mismo, no hay un
+    model_ref nuevo al que proponer cambiar)."""
+    client = await get_http_client()
+    try:
+        resp = await client.get(url, timeout=15.0)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning(f"model_catalog sync provider=ollama unreachable reason={type(e).__name__}: {e}")
+        return {"provider_id": "ollama", "fetched": 0, "skipped": f"ollama no alcanzable: {type(e).__name__}"}
+
+    entries = resp.json().get("models", [])
+    seen = {m["model"]: m.get("digest") for m in entries}
+    seen_ids = set(seen.keys())
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for model_id, digest in seen.items():
+                await cur.execute(
+                    "SELECT digest FROM model WHERE provider_id='ollama' AND model_id=%s",
+                    (model_id,),
+                )
+                prev_row = await cur.fetchone()
+                prev_digest = prev_row[0] if prev_row else None
+                digest_changed = prev_digest is not None and digest is not None and prev_digest != digest
+                if digest_changed:
+                    logger.warning(
+                        f"model_catalog ollama digest changed model={model_id} "
+                        f"from={prev_digest[:12]} to={digest[:12]}"
+                    )
+
+                await cur.execute(
+                    "INSERT INTO model (provider_id, model_id, status, source, source_checked_at, "
+                    "consecutive_misses, digest, digest_changed_at) "
+                    "VALUES ('ollama', %s, 'available', 'provider_api', NOW(), 0, %s, NULL) "
+                    "ON DUPLICATE KEY UPDATE status='available', source='provider_api', "
+                    "source_checked_at=NOW(), consecutive_misses=0, digest=VALUES(digest)"
+                    + (", digest_changed_at=NOW()" if digest_changed else ""),
+                    (model_id, digest),
+                )
+
+            await cur.execute(
+                "SELECT id, model_id, consecutive_misses FROM model "
+                "WHERE provider_id='ollama' AND status != 'gone'"
+            )
+            for row_id, model_id, misses in await cur.fetchall():
+                if model_id in seen_ids:
+                    continue
+                new_misses = misses + 1
+                new_status = "deprecated" if new_misses >= DEPRECATION_MISS_THRESHOLD else "degraded"
+                await cur.execute(
+                    "UPDATE model SET consecutive_misses=%s, status=%s WHERE id=%s",
+                    (new_misses, new_status, row_id),
+                )
+        await conn.commit()
+
+    return {"provider_id": "ollama", "fetched": len(seen_ids)}
 
 
 async def enrich_from_models_dev() -> dict:
