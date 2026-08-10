@@ -9,6 +9,7 @@ from jax_engine.schemas import JAXEvent
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from jax_engine.events import event_bus
 from http_client import get_http_client
+from api.admin.usage import record_usage
 
 router = APIRouter(prefix="/api")
 
@@ -91,5 +92,10 @@ async def generate_image(req: ImageRequest, user: AuthUser = Depends(get_current
         payload={"prompt": req.prompt},
     )
     await event_bus.publish(event)
+
+    await record_usage(
+        user.user_id, user.tenant_id, "thot_image", "openai", "gpt-image-1",
+        0, 0, "imagen", cost_usd_override=0.04,
+    )
 
     return ImageResponse(url=url, revised_prompt=revised_prompt)
