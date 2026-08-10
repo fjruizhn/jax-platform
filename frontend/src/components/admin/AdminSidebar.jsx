@@ -3,7 +3,7 @@ import { useI18n } from '../../i18n/index.jsx'
 
 const NAV_ITEMS = [
   { path: 'dashboard', labelKey: 'adminDashboard', icon: '◈' },
-  { path: 'keys',      labelKey: 'adminApiKeys',   icon: '🔑' },
+  { path: 'keys',      labelKey: 'adminFacetsModels', icon: '🧠' },
   { path: 'users',     labelKey: 'adminUsers',     icon: '👤' },
   { path: 'repo',      labelKey: 'adminRepo',      icon: '📁' },
   { path: 'settings',  labelKey: 'adminSettings',  icon: '⚙' },

@@ -10,7 +10,7 @@ const TABS = [
   { key: 'bindings', labelKey: 'adminTabBindings' },
 ]
 
-export default function AdminApiKeys() {
+export default function AdminFacetsModels() {
   const { t } = useI18n()
   const [activeTab, setActiveTab] = useState('providers')
   const [providers, setProviders] = useState([])
@@ -85,7 +85,7 @@ export default function AdminApiKeys() {
 
   return (
     <div>
-      <h1 className="text-xl font-bold text-slate-100 mb-6">{t.adminApiKeys}</h1>
+      <h1 className="text-xl font-bold text-slate-100 mb-6">{t.adminFacetsModels}</h1>
 
       <div className="flex gap-1 border-b border-slate-800 mb-6">
         {TABS.map(tab => (
