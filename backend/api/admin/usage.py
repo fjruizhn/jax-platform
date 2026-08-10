@@ -23,8 +23,8 @@ async def _lookup_model_price(provider_id: str, model: str) -> tuple[float | Non
 
 
 async def record_usage(
-    user_id: int,
-    tenant_id: int,
+    user_id: str,
+    tenant_id: str,
     facet: str,
     provider_id: str,
     model: str,
@@ -39,23 +39,23 @@ async def record_usage(
     visible en el propio dato (nunca un numero inventado). cost_usd_override
     es para pricing plano-por-request que no encaja en precio-por-token
     (ej. generacion de imagenes)."""
-    if cost_usd_override is not None:
-        cost = cost_usd_override
-    else:
-        price_in, price_out = await _lookup_model_price(provider_id, model)
-        if price_in is None or price_out is None:
-            cost = None
-        else:
-            cost = (tokens_in * float(price_in) + tokens_out * float(price_out)) / 1_000_000
-
     try:
+        if cost_usd_override is not None:
+            cost = cost_usd_override
+        else:
+            price_in, price_out = await _lookup_model_price(provider_id, model)
+            if price_in is None or price_out is None:
+                cost = None
+            else:
+                cost = (tokens_in * float(price_in) + tokens_out * float(price_out)) / 1_000_000
+
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "INSERT INTO axioma_usage (tenant_id, user_id, facet, model, tokens_in, tokens_out, cost_usd, request_type) "
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                    (tenant_id, user_id, facet, model, tokens_in, tokens_out, cost, request_type),
+                    (int(tenant_id), int(user_id), facet, model, tokens_in, tokens_out, cost, request_type),
                 )
             await conn.commit()
     except Exception:
