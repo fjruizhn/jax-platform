@@ -144,7 +144,7 @@ export default {
   adminTitle: 'Administration',
   adminNav: 'Admin',
   adminDashboard: 'Dashboard',
-  adminApiKeys: 'API Keys',
+  adminFacetsModels: 'Facets & Models',
   adminUsers: 'Users',
   adminRepo: 'Repository',
   adminSettings: 'Settings',
