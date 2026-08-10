@@ -44,7 +44,6 @@ from api.admin import (
     repository_router,
     config_router,
     usage_router,
-    facet_models_router,
     models_router,
     facet_bindings_router,
 )
@@ -107,7 +106,7 @@ app.include_router(users_router)
 app.include_router(repository_router)
 app.include_router(config_router)
 app.include_router(usage_router)
-app.include_router(facet_models_router)
+# facet_models_router desregistrado — ver api/admin/__init__.py
 app.include_router(models_router)
 app.include_router(facet_bindings_router)
 
