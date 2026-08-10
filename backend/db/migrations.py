@@ -366,17 +366,28 @@ async def _seed_providers(cur) -> None:
         )
 
 
-# provider_id -> (api_key_transport, models_list_url). Solo los 4 OpenAI-
-# compatibles + Gemini (query_param, ya visto en api/admin/keys.py:159-166);
-# ollama/anthropic quedan NULL a proposito (D1.1: sin catalogo remoto propio
-# todavia). Mismas URLs que PROVIDERS.test_url en admin/keys.py, no
-# inventadas.
+# provider_id -> (api_key_transport, models_list_url). Los 4 OpenAI-
+# compatibles + Gemini (query_param, ya visto en api/admin/keys.py:159-166)
+# usan `credential` DB via el transport indicado. anthropic Y ollama tienen
+# sync real pero NINGUNO de los dos usa `credential`/transport de esta
+# tabla — model_catalog.py los resuelve aparte, ver sus ramas explicitas en
+# sync_provider_models: anthropic via el token OAuth local de Claude Code
+# (~/.claude/.credentials.json, decision explicita de no implementar refresh
+# OAuth propio — riesgo de romper la sesion en vivo de Hyde, ver CONTEXT.md
+# 2026-08-10), ollama sin ninguna auth (provider.auth_type='none', local).
+# Ambas URLs verificadas con curl real (2026-08-10), no inventadas.
 _PROVIDER_SYNC_SEED = [
-    ("openai",   "header_bearer", "https://api.openai.com/v1/models"),
-    ("deepseek", "header_bearer", "https://api.deepseek.com/v1/models"),
-    ("moonshot", "header_bearer", "https://api.moonshot.ai/v1/models"),
-    ("zhipu",    "header_bearer", "https://api.z.ai/api/paas/v4/models"),
-    ("gemini",   "query_param",   "https://generativelanguage.googleapis.com/v1beta/models"),
+    ("openai",    "header_bearer", "https://api.openai.com/v1/models"),
+    ("deepseek",  "header_bearer", "https://api.deepseek.com/v1/models"),
+    ("moonshot",  "header_bearer", "https://api.moonshot.ai/v1/models"),
+    ("zhipu",     "header_bearer", "https://api.z.ai/api/paas/v4/models"),
+    ("gemini",    "query_param",   "https://generativelanguage.googleapis.com/v1beta/models"),
+    ("anthropic", "header_bearer", "https://api.anthropic.com/v1/models"),
+    # ollama: local, sin API key (provider.auth_type='none') — transport
+    # queda en el default inerte, model_catalog.py nunca lo lee para este
+    # provider (bypassa credencial/headers por completo). URL real
+    # verificada con curl (2026-08-10): GET /api/tags, sin auth.
+    ("ollama",    "header_bearer", "http://localhost:11434/api/tags"),
 ]
 
 
@@ -415,6 +426,33 @@ async def _seed_models_and_backfill(cur) -> None:
         "JOIN model m ON m.provider_id = b.provider_id AND m.model_id = b.model_id "
         "SET b.model_ref = m.id "
         "WHERE b.model_ref IS NULL"
+    )
+
+
+async def _fix_anthropic_sonnet_alias(cur) -> None:
+    """Correccion puntual (2026-08-10): _seed_models_and_backfill sembro
+    anthropic/sonnet con is_alias=FALSE junto a los otros 6 bindings de
+    Bloque C0, pero 'sonnet' es un alias de tier (no una version fijada
+    tipo 'claude-sonnet-4-5-20250929') — confirmado contra el catalogo real
+    de GET /v1/models (curl, 2026-08-10). Guard is_alias=FALSE: corrige una
+    vez, no pisa una edicion manual futura.
+
+    Ademas repara el efecto colateral real del primer sync de anthropic
+    (mismo dia, mismo hallazgo): /v1/models jamas lista 'sonnet' suelto —
+    solo los IDs fechados detras del alias — asi que ese primer sync lo
+    marco 'degraded' (consecutive_misses=1) por una ausencia estructural,
+    no una senal real. model_catalog.sync_provider_models ya excluye los
+    alias de tier de anthropic del conteo de misses desde este fix — esto
+    solo repara el estado que quedo mal ANTES de que ese fix existiera.
+    Guard status='degraded': no pisa un 'deprecated'/'gone' real posterior
+    de otra causa."""
+    await cur.execute(
+        "UPDATE model SET is_alias=TRUE "
+        "WHERE provider_id='anthropic' AND model_id='sonnet' AND is_alias=FALSE"
+    )
+    await cur.execute(
+        "UPDATE model SET status='available', consecutive_misses=0 "
+        "WHERE provider_id='anthropic' AND model_id='sonnet' AND status='degraded'"
     )
 
 
@@ -461,6 +499,15 @@ _COLUMNS = [
     # al DDL de arriba (ej. esta misma corrida de verificacion) — mismo
     # patron que jax_users.last_login.
     ("model", "consecutive_misses", "ALTER TABLE model ADD COLUMN consecutive_misses INT NOT NULL DEFAULT 0"),
+    # Ollama local sync (2026-08-10): un tag (`qwen3-coder:30b`) es un
+    # puntero LOCAL, no un alias del proveedor — puede re-pullearse con
+    # pesos distintos sin que el tag cambie, algo que los otros transportes
+    # no tienen forma de detectar. `digest` (de /api/tags, verificado con
+    # curl real) es la unica senal de eso. digest_changed_at queda NULL
+    # hasta la primera vez que se observa un cambio real (nunca en la
+    # primera vez que se ve el modelo -- no hay "antes" con que comparar).
+    ("model", "digest", "ALTER TABLE model ADD COLUMN digest VARCHAR(80) NULL"),
+    ("model", "digest_changed_at", "ALTER TABLE model ADD COLUMN digest_changed_at DATETIME NULL"),
 ]
 
 
@@ -538,5 +585,6 @@ async def run_migrations():
             await _seed_facets(cur)
             await _seed_provider_sync_config(cur)
             await _seed_models_and_backfill(cur)
+            await _fix_anthropic_sonnet_alias(cur)
 
         await conn.commit()

@@ -55,7 +55,7 @@ def test_sync_endpoint_only_touches_model_never_facet_binding(client, monkeypatc
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["ok"] is True
-    assert set(calls["providers"]) == {"openai", "deepseek", "gemini", "moonshot", "zhipu"}
+    assert set(calls["providers"]) == {"openai", "deepseek", "gemini", "moonshot", "zhipu", "anthropic", "ollama"}
     assert calls["enrich"] == 1
 
 

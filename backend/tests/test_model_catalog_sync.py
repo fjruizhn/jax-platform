@@ -229,6 +229,218 @@ def test_record_resolved_version_first_observation_is_not_drift(client):
     assert resolved == "gpt-5.5"
 
 
+def _write_anthropic_credentials(tmp_path, expires_in_seconds):
+    import json
+    import time
+
+    path = tmp_path / "credentials.json"
+    path.write_text(json.dumps({
+        "claudeAiOauth": {
+            "accessToken": "sk-ant-oat01-fake",
+            "expiresAt": int((time.time() + expires_in_seconds) * 1000),
+        }
+    }))
+    return str(path)
+
+
+def test_sync_provider_models_anthropic_uses_local_oauth_token(client, monkeypatch, tmp_path):
+    """anthropic no tiene credencial en DB (ver credential_resolver.py) —
+    usa el token OAuth que Claude Code ya deja en ~/.claude/.credentials.json
+    (decision 2026-08-10: opcion 1, leer en caliente, sin refresh propio).
+    Verifica tambien que va el header anthropic-version, requerido por la
+    API real (confirmado con curl contra api.anthropic.com el 2026-08-10)."""
+    path = _write_anthropic_credentials(tmp_path, expires_in_seconds=3600)
+    monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", path)
+
+    fake = _FakeGetClient(_FakeResponse({"data": [
+        {"id": "claude-opus-5"},
+        {"id": "claude-fable-5"},
+    ]}))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        result = client.portal.call(model_catalog.sync_provider_models, "anthropic")
+    finally:
+        http_client._client = original
+
+    assert result["provider_id"] == "anthropic"
+    assert result["fetched"] == 2
+
+    url, kwargs = fake.calls[0]
+    assert kwargs["headers"]["Authorization"] == "Bearer sk-ant-oat01-fake"
+    assert kwargs["headers"]["anthropic-version"]
+
+    row = client.portal.call(_fetch_model, "anthropic", "claude-fable-5")
+    assert row is not None
+    assert row[1] == "provider_api"
+
+
+def test_sync_provider_models_anthropic_skips_when_token_file_missing(client, monkeypatch, tmp_path):
+    """Fail-soft (opcion 1): sin archivo de credenciales local, el sync no
+    revienta — se salta con motivo explicito, igual que 'sin models_list_url'
+    para otros providers sin config."""
+    monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", str(tmp_path / "no-existe.json"))
+
+    fake = _FakeGetClient(_FakeResponse({"data": []}))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        result = client.portal.call(model_catalog.sync_provider_models, "anthropic")
+    finally:
+        http_client._client = original
+
+    assert result["provider_id"] == "anthropic"
+    assert result["fetched"] == 0
+    assert "skipped" in result
+    assert fake.calls == []  # nunca deberia llegar a hacer la request HTTP
+
+
+def test_sync_provider_models_anthropic_skips_when_token_expired(client, monkeypatch, tmp_path):
+    """Token OAuth vencido (vida corta, ver decision 2026-08-10) -> skip
+    explicito, nunca una llamada con credencial vieja a la API real."""
+    path = _write_anthropic_credentials(tmp_path, expires_in_seconds=-60)
+    monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", path)
+
+    fake = _FakeGetClient(_FakeResponse({"data": []}))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        result = client.portal.call(model_catalog.sync_provider_models, "anthropic")
+    finally:
+        http_client._client = original
+
+    assert result["fetched"] == 0
+    assert "skipped" in result
+    assert fake.calls == []
+
+
+class _FakeRaisingClient:
+    async def get(self, url, **kwargs):
+        raise ConnectionError("refused")
+
+
+async def _fetch_model_digest(provider_id, model_id):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT digest, digest_changed_at FROM model WHERE provider_id=%s AND model_id=%s",
+                (provider_id, model_id),
+            )
+            return await cur.fetchone()
+
+
+def test_sync_provider_models_ollama_uses_local_tags_without_auth(client):
+    """Ollama es local, sin API key (provider.auth_type='none') -- /api/tags
+    no debe llevar Authorization ni ningun otro header. Shape real distinto
+    a los demas (verificado con curl, 2026-08-10): {'models':[{'model':<tag>,
+    'digest':<sha>}]}."""
+    fake = _FakeGetClient(_FakeResponse({"models": [
+        {"model": "qwen3-coder:30b", "digest": "sha-aaa"},
+        {"model": "llama3.2:3b", "digest": "sha-bbb"},
+    ]}))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        result = client.portal.call(model_catalog.sync_provider_models, "ollama")
+    finally:
+        http_client._client = original
+
+    assert result["provider_id"] == "ollama"
+    assert result["fetched"] == 2
+
+    url, kwargs = fake.calls[0]
+    assert not kwargs.get("headers")  # sin auth, a proposito
+
+    row = client.portal.call(_fetch_model, "ollama", "llama3.2:3b")
+    assert row is not None
+    assert row[1] == "provider_api"
+
+
+async def _reset_model_digest(provider_id, model_id):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE model SET digest=NULL, digest_changed_at=NULL "
+                "WHERE provider_id=%s AND model_id=%s",
+                (provider_id, model_id),
+            )
+        await conn.commit()
+
+
+def test_sync_provider_models_ollama_captures_digest_change(client):
+    """El tag es un puntero LOCAL -- puede re-pullearse con pesos distintos
+    sin que el tag cambie. digest_changed_at debe quedar NULL la primera vez
+    (no hay 'antes' con que comparar) y poblarse solo cuando el digest
+    realmente cambia entre dos syncs. jax_memory_test es persistente entre
+    corridas (ver docstring del archivo) -- arranca de un baseline explicito
+    en vez de asumir digest=NULL, para no depender de lo que haya dejado
+    una corrida anterior de este mismo test."""
+    client.portal.call(_reset_model_digest, "ollama", "qwen2.5:7b")
+    original = http_client._client
+    try:
+        http_client._client = _FakeGetClient(_FakeResponse({"models": [
+            {"model": "qwen2.5:7b", "digest": "sha-original"},
+        ]}))
+        client.portal.call(model_catalog.sync_provider_models, "ollama")
+        first = client.portal.call(_fetch_model_digest, "ollama", "qwen2.5:7b")
+        assert first[0] == "sha-original"
+        assert first[1] is None  # primera observacion, no es un cambio
+
+        http_client._client = _FakeGetClient(_FakeResponse({"models": [
+            {"model": "qwen2.5:7b", "digest": "sha-repulled"},
+        ]}))
+        client.portal.call(model_catalog.sync_provider_models, "ollama")
+        second = client.portal.call(_fetch_model_digest, "ollama", "qwen2.5:7b")
+        assert second[0] == "sha-repulled"
+        assert second[1] is not None  # cambio real detectado
+    finally:
+        http_client._client = original
+
+
+def test_sync_provider_models_ollama_skips_when_unreachable(client):
+    """Ollama caido/GPU semaphore ocupado -> skip explicito, nunca una
+    excepcion que tumbe el resto del sync (openai/anthropic/etc siguen)."""
+    original = http_client._client
+    http_client._client = _FakeRaisingClient()
+    try:
+        result = client.portal.call(model_catalog.sync_provider_models, "ollama")
+    finally:
+        http_client._client = original
+
+    assert result["provider_id"] == "ollama"
+    assert result["fetched"] == 0
+    assert "skipped" in result
+
+
+def test_sync_provider_models_anthropic_never_deprecates_bare_alias(client, monkeypatch, tmp_path):
+    """Bug real encontrado verificando en produccion (2026-08-10): Anthropic
+    /v1/models jamas lista un alias de tier suelto ('sonnet') -- solo IDs
+    fechados/fijados detras del alias (confirmado con curl real). Sin esta
+    excepcion, la fila a la que Hyde esta bindeado cae a 'deprecated' en 3
+    syncs seguidos aunque el alias siga siendo perfectamente valido -- una
+    senal falsa de 'esto se esta yendo' en el catalogo."""
+    path = _write_anthropic_credentials(tmp_path, expires_in_seconds=3600)
+    monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", path)
+    client.portal.call(_reset_model_baseline, "anthropic", "sonnet")
+
+    fake = _FakeGetClient(_FakeResponse({"data": [{"id": "claude-sonnet-5"}]}))  # 'sonnet' suelto nunca aparece
+    original = http_client._client
+    try:
+        for _ in range(3):
+            http_client._client = fake
+            client.portal.call(model_catalog.sync_provider_models, "anthropic")
+    finally:
+        http_client._client = original
+
+    row = client.portal.call(_fetch_model, "anthropic", "sonnet")
+    assert row[0] == "available"  # nunca degradado ni deprecated
+    assert row[2] == 0  # consecutive_misses nunca sube
+
+
 def test_record_resolved_version_change_creates_pending_proposal(client):
     client.portal.call(model_catalog.record_resolved_version, "ada", "glm-5.2")  # baseline
     result = client.portal.call(model_catalog.record_resolved_version, "ada", "glm-5.2-preview")  # drift
