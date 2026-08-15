@@ -1,7 +1,9 @@
 [Unit]
+StartLimitIntervalSec=300
+StartLimitBurst=5
 Description=JAX — LAS MANOS (Sistema de capacidades)
-After=network.target mariadb.service
-Wants=mariadb.service
+After=network.target docker.service
+Wants=docker.service
 
 [Service]
 Type=simple
