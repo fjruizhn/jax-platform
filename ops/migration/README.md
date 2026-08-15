@@ -33,7 +33,7 @@ sudo -v && bash verify-hall9000.sh
 | `jax-platform-full.bundle` | Historia git completa de jax-platform (fallback si no hay acceso a GitHub). |
 | `jax_memory-20260708.sql.gz` | Dump de la base de datos MariaDB (33 tablas). |
 | `jax.env.enc` | `/etc/jax/.env` cifrado (openssl AES-256). Necesita tu passphrase. |
-| `systemd-units/` | Los 5 units systemd. |
+| `systemd-units/` | Los 7 units systemd. |
 
 ## Requisitos en hall9000 (ya preparados)
 Git · MariaDB 11.8 · Ollama (ROCm) · Node v24.16.0 (nvm) · usuario `fruiz` · SSH key registrada en GitHub (cuenta `fjruizhn`).
