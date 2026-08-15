@@ -46,9 +46,11 @@ _load_jax_env()
 # Degrada elegante: si no carga o la base cae, el chat sigue SIN memoria.
 sys.path.insert(0, os.path.expanduser("~/jax"))
 try:
-    from jax.memory.db import MemoryDB
+    from jax.memory.db import MemoryDB, detect_completeness_intent
 except Exception:
     MemoryDB = None
+    def detect_completeness_intent(text: str) -> str | None:
+        return None
 
 _memory = None              # instancia única (lazy)
 _memory_ready = False
@@ -117,28 +119,57 @@ async def _get_conv_uuid(user_id: int, tenant_id, project_id) -> str | None:
     return u
 
 
-async def _semantic_context(user_text: str, user_id: int, project_id) -> list[dict]:
+async def _semantic_context(user_text: str, user_id: int, project_id,
+                            recent_history: list[dict] | None = None) -> list[dict]:
     """Recupera contexto de sesiones pasadas (replica jax/core/main.py:514-533)
-    con scope de dos niveles: memoria del proyecto + memoria individual del user."""
+    con scope de dos niveles: memoria del proyecto + memoria individual del user.
+    recent_history (opcional): ultimos turnos de ESTA conversacion, para que la
+    busqueda semantica no dependa solo de la ultima frase (ver db.py:_blend_query).
+
+    Si user_text es una pregunta de completeness ("que proyectos tenes
+    activos?"), suma ADEMAS todos los facts de esa categoria via get_facts()
+    — la similitud vectorial contra un solo fact no basta para "dame todo
+    lo que sepas de X" (item #4 del roadmap)."""
     if not await _ensure_memory():
         return []
+
+    bloques = []
+
+    tipo_completeness = detect_completeness_intent(user_text)
+    if tipo_completeness:
+        try:
+            facts = await _memory.get_facts(
+                only_unverified=False, fact_type=tipo_completeness, limit=20,
+                user_id=user_id, project_id=project_id)
+        except Exception:
+            facts = None
+        if facts:
+            lineas_facts = [f"- {f['fact_text']}" for f in facts]
+            bloques.append(
+                f"Todos los hechos guardados de tipo '{tipo_completeness}':\n"
+                + "\n".join(lineas_facts)
+            )
+
     try:
         similares = await _memory.search_similar_messages(
-            user_text, limit=5, user_id=user_id, project_id=project_id)
+            user_text, limit=5, user_id=user_id, project_id=project_id,
+            recent_history=recent_history)
     except Exception:
-        return []
+        similares = []
     relevantes = [r for r in similares if r["distancia"] < 0.8]
-    if not relevantes:
+    if relevantes:
+        lineas = []
+        for r in relevantes:
+            fecha = r["started_at"].strftime("%Y-%m-%d") if r.get("started_at") else "?"
+            rol = "user" if r["role"] == "user" else "jax"
+            lineas.append(f"[{fecha}] {rol}: {r['content']}")
+        bloques.append("Conversaciones relevantes de sesiones anteriores:\n" + "\n".join(lineas))
+
+    if not bloques:
         return []
-    lineas = []
-    for r in relevantes:
-        fecha = r["started_at"].strftime("%Y-%m-%d") if r.get("started_at") else "?"
-        rol = "user" if r["role"] == "user" else "jax"
-        lineas.append(f"[{fecha}] {rol}: {r['content']}")
-    contexto = ("Conversaciones relevantes de sesiones anteriores:\n" + "\n".join(lineas))
     return [
         {"role": "user", "content": "[memoria de sesiones anteriores]"},
-        {"role": "assistant", "content": contexto},
+        {"role": "assistant", "content": "\n\n".join(bloques)},
     ]
 
 
@@ -573,7 +604,8 @@ async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
     # Retrieval semántico ANTES del LLM (scope: proyecto + individual del user).
     semantic_context: list[dict] = []
     if mem_uid is not None:
-        semantic_context = await _semantic_context(req.message, mem_uid, mem_pid)
+        semantic_context = await _semantic_context(
+            req.message, mem_uid, mem_pid, recent_history=_conversations.get(user_id, []))
 
     try:
         response_text, usage = await _invoke_facet(facet, config, user_id, req.message, semantic_context)
