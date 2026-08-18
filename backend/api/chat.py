@@ -75,6 +75,7 @@ async def _ensure_memory() -> bool:
             user=os.getenv("JAX_DB_USER", ""),
             password=os.getenv("JAX_DB_PASSWORD", ""),
             database=os.getenv("JAX_DB_NAME", "jax_memory"),
+            port=int(os.getenv("JAX_DB_PORT", "3306")),
         )
     except Exception:
         _memory_ready = False
