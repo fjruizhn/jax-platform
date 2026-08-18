@@ -414,6 +414,17 @@ def _parse_contract_response(raw_text: str) -> ContractResult:
             return _degraded(raw_text, f"claim mal formado: {item!r}")
         if not isinstance(item["predicate"], str) or not isinstance(item["args"], dict):
             return _degraded(raw_text, f"claim con tipos inválidos: {item!r}")
+        # predicate se escribe en shadow_claim_verdicts.predicate VARCHAR(50)
+        # (backend/db/migrations.py). Un predicate más largo hacía que el
+        # INSERT lanzara "Data too long" a mitad del loop de claims,
+        # abortando el resto de claims/vocab hits de ESE mensaje — pérdida
+        # sesgada hacia los modelos peor comportados (finding 2 de la
+        # revisión final). El modelo no está siguiendo el shape
+        # {predicate, args} de dos campos: es, en espíritu, la misma
+        # violación de contrato que los otros casos mal formados de este
+        # loop, así que se degrada acá con el mismo helper.
+        if len(item["predicate"]) > 50:
+            return _degraded(raw_text, f"predicate excede 50 caracteres: {item['predicate'][:50]!r}...")
         parsed_claims.append({"predicate": item["predicate"], "args": item["args"]})
 
     analysis = data["analysis"]
@@ -670,6 +681,14 @@ def _update_history(user_id: str, user_msg: str, assistant_msg: str):
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUser = Depends(get_current_user)):
     config = _load_config()
+    # req.facet es input de usuario sin validar: si no está en la whitelist
+    # de config["personalities"], hoy _invoke_facet caía en silencio al
+    # fallback de jax_local (ver bloque "# fallback" ahí) en vez de
+    # rechazar el request — y el valor crudo llegaba igual a
+    # shadow_messages.facet VARCHAR(30) (finding 1 de la revisión final).
+    # Rechazar acá, antes de cualquier otro efecto secundario.
+    if req.facet is not None and req.facet not in config["personalities"]:
+        raise HTTPException(status_code=400, detail=f"faceta desconocida: {req.facet!r}")
     facet = req.facet if req.facet else _auto_route(req.message)
     tenant_id = user.tenant_id
     user_id = user.user_id
@@ -747,8 +766,19 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     await _fire_completed(facet, tenant_id, user_id, display_text)
     await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
 
-    from shadow_validation import run_shadow_validation
-    background_tasks.add_task(run_shadow_validation, conv_uuid, shadow_message_id, facet, contract)
+    # Encolar shadow validation es un efecto secundario de medición, no
+    # debe poder tumbar un turno de chat que YA respondió al usuario (el
+    # mensaje del asistente ya se guardó y se transmitió por WebSocket
+    # arriba). Si el import diferido o add_task fallan (p.ej. import cycle
+    # roto, shadow_validation.py con un error de sintaxis introducido
+    # después), lo logueamos y seguimos — finding 4 de la revisión final.
+    # Los errores DENTRO de run_shadow_validation (el fail-closed logging
+    # de la Task 5) no pasan por acá, ese try/except es de shadow_validation.py.
+    try:
+        from shadow_validation import run_shadow_validation
+        background_tasks.add_task(run_shadow_validation, conv_uuid, shadow_message_id, facet, contract)
+    except Exception:
+        logger.exception("no se pudo encolar shadow validation")
 
     return ChatResponse(
         facet=facet, response=display_text, timestamp=timestamp,

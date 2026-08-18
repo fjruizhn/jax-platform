@@ -257,6 +257,31 @@ def test_shadow_validation_leaves_validated_at_null_when_context_load_fails_befo
     assert row[-1] is None  # validated_at — nunca se completó
 
 
+def test_shadow_validation_clamps_overlong_facet_so_insert_succeeds(client):
+    # Defensa en profundidad del finding 1 de la revisión final: api/chat.py
+    # ya rechaza facets desconocidas con 400 antes de llegar acá, pero
+    # run_shadow_validation es invocable por cualquier otro caller futuro.
+    # shadow_messages.facet es VARCHAR(30) (db/migrations.py) — sin el
+    # clamp en _insert_shadow_message, este INSERT (el primero de la
+    # función, antes de tocar la config de gobernanza) lanzaría
+    # "Data too long" y la fila de la garantía fail-closed nunca se
+    # crearía: cero fila, no una fila con validated_at NULL.
+    from shadow_validation import run_shadow_validation
+    smid = str(uuid.uuid4())
+    overlong_facet = "x" * 100
+    contract = ContractResult(
+        contract_parsed=True, claims=[], analysis="x", judgment=None,
+        degradation_reason=None, raw_text="x",
+    )
+    client.portal.call(
+        run_shadow_validation, "conv-fake-uuid-overlong-facet", smid, overlong_facet, contract,
+    )
+    row = client.portal.call(_fetch_shadow_message, smid)
+    assert row is not None
+    assert row[1] == overlong_facet[:30]
+    assert row[-1] is not None  # validated_at — el worker corrió completo
+
+
 def test_shadow_validation_skips_when_conv_uuid_is_none(client):
     from shadow_validation import run_shadow_validation
     smid = str(uuid.uuid4())
@@ -308,3 +333,43 @@ def test_chat_endpoint_does_not_break_when_shadow_validation_is_enqueued(client)
         http_client._client = original
     assert resp.status_code == 200
     assert resp.json()["contract_degraded"] is False
+
+
+def test_chat_endpoint_survives_shadow_validation_import_failure(client):
+    # Finding 4 de la revisión final: el import diferido de
+    # shadow_validation (agregado en Task 5 para evitar un ciclo de
+    # imports) corre DESPUÉS de que el turno de chat ya tuvo éxito — el
+    # mensaje del asistente ya se guardó y se transmitió por WebSocket.
+    # Un subsistema de solo-medición nunca debe poder tumbar una respuesta
+    # que ya se completó. Acá simulamos ese fallo forzando a que el
+    # import de shadow_validation lance (sys.modules[nombre] = None hace
+    # que Python levante ImportError al importarlo) y confirmamos que el
+    # endpoint igual responde 200 con el cuerpo correcto.
+    import sys
+    from unittest.mock import patch
+
+    import http_client
+    from auth.jwt import create_access_token
+    from tests.test_chat_contract_wrapper import _FakePostClient, _FakeResponse
+
+    token = create_access_token("test-shadow-import-fail-user", "test-shadow-import-fail-tenant", "operator")
+    fake = _FakePostClient(_FakeResponse({
+        "choices": [{"message": {"content":
+            '{"claim": [], "analysis": "sobrevivio al fallo de encolado", "judgment": null}'}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        with patch.dict(sys.modules, {"shadow_validation": None}):
+            resp = client.post(
+                "/api/chat",
+                json={"message": "hola shadow import fail", "facet": "jekyll"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    finally:
+        http_client._client = original
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["contract_degraded"] is False
+    assert "sobrevivio al fallo de encolado" in body["response"]
