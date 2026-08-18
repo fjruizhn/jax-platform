@@ -14,26 +14,16 @@ declara el modelo (ver spec, sección 1a: P08 aplicado a metadata).
 Resultado esperado: 100% AUTHORITY_INVALID esta ronda, porque chat.py no
 tiene grounding cableado al mecanismo de claims. No es un bug.
 
-NOTA DE ALCANCE — bridge de term_categories (verificado 2026-08-18):
-El plan de este sub-proyecto agrega `ClosedVocabulary.term_categories` y
-una nueva firma de `sweep()` (`sweep(text, term_categories) ->
-list[tuple[str, frozenset[str]]]`) como su propia Tarea 1, EN EL REPO
-`jax`. Esa tarea está commiteada en la rama `reformas-fase2-sp2-
-integracion-real` del repo `jax` (commit 5428d62), pero esa rama todavía
-NO está mergeada a `jax` master — `~/jax` (el checkout que usa este
-mismo patrón de sys.path que ya usaba api/chat.py) sigue en master, con
-la firma vieja: `ClosedVocabulary` sin `term_categories`, `sweep(text,
-vocabulary: frozenset[str]) -> list[str]`. Verificado con `git log`/`git
-diff` contra `~/jax/.worktrees/reformas-fase2-sp2-integracion-real`
-antes de escribir este módulo — no es una suposición.
-
-Hardcodear un sys.path hacia ese worktree sería más frágil que este
-bridge (el worktree es un artefacto de desarrollo, se borra al mergear;
-`~/jax` es la ruta estable). `_load_term_categories()` abajo relee
-closed_vocabulary.yaml con el mismo algoritmo aditivo que esa Tarea 1
-todavía no mergeada — cuando esa rama llegue a `jax` master, borrar este
-helper y usar `governance_loaders.load_vocabulary().term_categories`
-directo, igual que ya hace `_validation_context()` con `.flattened`.
+`ClosedVocabulary.term_categories` y la firma de `sweep(text,
+term_categories) -> list[tuple[str, frozenset[str]]]` vienen de la Tarea
+1 de este mismo plan (repo `jax`, commit 5428d62), mergeada a `jax`
+master en `ed25258` (2026-08-18). Antes de ese merge este módulo traía
+un bridge local que releía closed_vocabulary.yaml a mano para no
+depender de una rama sin mergear — duplicaba lógica que `loaders.py`
+existe específicamente para poseer (hash fail-closed contra
+policy/VERSION, única fuente de verdad de la estructura de categorías).
+Con el merge hecho, se removió: `loaders.load_vocabulary()` es ahora la
+única fuente de `term_categories`, sin duplicación.
 """
 from __future__ import annotations
 
@@ -58,29 +48,6 @@ from api.chat import ContractResult  # noqa: E402
 from db.connection import get_pool  # noqa: E402
 
 
-def _load_term_categories() -> dict[str, frozenset[str]]:
-    """Bridge temporal — ver nota de alcance arriba. Relee
-    closed_vocabulary.yaml (misma fuente que governance_loaders.py) para
-    reconstruir término → categorías, porque la ClosedVocabulary de
-    ~/jax (master) todavía no trae ese campo."""
-    import yaml
-
-    data = yaml.safe_load(governance_loaders.VOCABULARY_FILE.read_text(encoding="utf-8"))
-    term_categories: dict[str, set[str]] = {}
-    for key, value in data.items():
-        if key == "config_paths":
-            continue
-        if isinstance(value, dict):
-            terms = value.keys()
-        elif isinstance(value, list):
-            terms = value
-        else:
-            continue
-        for term in terms:
-            term_categories.setdefault(term, set()).add(key)
-    return {t: frozenset(cats) for t, cats in term_categories.items()}
-
-
 @lru_cache(maxsize=1)
 def _validation_context():
     # Config estática cacheada por proceso — mismo criterio que
@@ -91,8 +58,7 @@ def _validation_context():
         JAX_REPO, vocabulary.config_paths
     )
     predicates = governance_loaders.load_predicates()
-    term_categories = _load_term_categories()
-    return ctx, predicates, vocabulary.flattened, term_categories
+    return ctx, predicates, vocabulary.term_categories
 
 
 async def _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract):
@@ -144,7 +110,7 @@ async def run_shadow_validation(
     if conv_uuid is None or contract is None:
         return
 
-    ctx, predicates, vocabulary_flattened, term_categories = _validation_context()
+    ctx, predicates, term_categories = _validation_context()
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -174,9 +140,9 @@ async def run_shadow_validation(
             for channel, text in (("analysis", contract.analysis), ("judgment", contract.judgment)):
                 if not text:
                     continue
-                hits = governance_vocab_sweep.sweep(text, vocabulary_flattened)
-                for term in hits:
-                    for category in sorted(term_categories.get(term, frozenset())):
+                hits = governance_vocab_sweep.sweep(text, term_categories)
+                for term, categories in hits:
+                    for category in sorted(categories):
                         await _insert_vocab_hit(
                             cur, conv_uuid, shadow_message_id, channel, term, category
                         )
