@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -7,6 +8,7 @@ import unicodedata
 from collections import OrderedDict
 from functools import lru_cache
 from datetime import datetime
+from typing import NamedTuple
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import httpx
@@ -324,6 +326,12 @@ class ChatResponse(BaseModel):
     facet: str
     response: str
     timestamp: str
+    # Siempre False por ahora — el endpoint chat() todavía no arma
+    # ContractResult ni lo propaga acá (SP2 Task 3 quedó bloqueado en el
+    # wiring del endpoint, ver task-3-report.md). Se agrega el campo ahora
+    # porque Task 6 (frontend) depende de que exista en el shape de
+    # respuesta; el valor real lo empezará a poner una tarea posterior.
+    contract_degraded: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -353,6 +361,111 @@ async def _resolve_active_model(facet: str, fallback: str) -> str:
     except Exception:
         return fallback
     return row[0] if row else fallback
+
+
+class ContractResult(NamedTuple):
+    contract_parsed: bool
+    claims: list[dict]
+    analysis: str
+    judgment: str | None
+    degradation_reason: str | None
+    raw_text: str
+
+
+def _strip_markdown_fence(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
+
+def _degraded(raw_text: str, reason: str) -> ContractResult:
+    return ContractResult(
+        contract_parsed=False, claims=[], analysis=raw_text, judgment=None,
+        degradation_reason=reason, raw_text=raw_text,
+    )
+
+
+def _parse_contract_response(raw_text: str) -> ContractResult:
+    candidate = _strip_markdown_fence(raw_text)
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError as e:
+        return _degraded(raw_text, f"JSON no parsea: {e}")
+
+    if not isinstance(data, dict):
+        return _degraded(raw_text, f"JSON parseado no es un objeto (es {type(data).__name__})")
+
+    if "analysis" not in data:
+        return _degraded(raw_text, "falta la clave 'analysis' en el JSON")
+
+    raw_claims = data.get("claim", [])
+    if not isinstance(raw_claims, list):
+        return _degraded(raw_text, f"'claim' no es una lista (es {type(raw_claims).__name__})")
+
+    parsed_claims = []
+    for item in raw_claims:
+        if not isinstance(item, dict) or "predicate" not in item or "args" not in item:
+            return _degraded(raw_text, f"claim mal formado: {item!r}")
+        if not isinstance(item["predicate"], str) or not isinstance(item["args"], dict):
+            return _degraded(raw_text, f"claim con tipos inválidos: {item!r}")
+        parsed_claims.append({"predicate": item["predicate"], "args": item["args"]})
+
+    analysis = data["analysis"]
+    if not isinstance(analysis, str):
+        return _degraded(raw_text, f"'analysis' no es string (es {type(analysis).__name__})")
+
+    judgment = data.get("judgment")
+    if judgment is not None and not isinstance(judgment, str):
+        return _degraded(raw_text, f"'judgment' no es string ni null (es {type(judgment).__name__})")
+
+    return ContractResult(
+        contract_parsed=True, claims=parsed_claims, analysis=analysis,
+        judgment=judgment, degradation_reason=None, raw_text=raw_text,
+    )
+
+
+def _build_display_response(contract: ContractResult) -> tuple[str, bool]:
+    if not contract.contract_parsed:
+        return contract.raw_text, True
+    if contract.judgment:
+        return f"{contract.analysis}\n\n**{contract.judgment}**", False
+    return contract.analysis, False
+
+
+# NOTA DE ALCANCE (SP2 Task 3, ver task-3-report.md): esta constante está
+# definida y testeada en aislamiento (test_contract_prompt_suffix_mentions_the_three_keys)
+# pero A PROPÓSITO NO está conectada todavía a ningún system_prompt real
+# dentro de _invoke_facet. El brief de este task asume que _invoke_facet ya
+# devuelve tuple[str, UsageInfo | None] y que "usage is None" distingue
+# respuesta enlatada de llamada real al LLM — esa señal solo existe en la
+# rama infra/facetas-bloque-d (commit 448a707 "fix(chat): capturar tokens
+# reales por transporte en vez de hardcodear 0,0"), que NO es ancestro de
+# esta rama (SP2 está basada en master, donde _invoke_facet devuelve un str
+# simple sin ese distingo). Conectar este sufijo al system_prompt de
+# _invoke_facet SIN esa señal rompería en producción los canned replies de
+# _model_identity_reply (se marcarían como "degraded" por error) y volvería
+# crudo el JSON de contrato en pantalla para toda faceta real hasta que el
+# endpoint lo parseara — por eso el wiring del endpoint (chat(), Step 13 del
+# brief) también quedó sin tocar. Requiere una decisión arquitectónica
+# (¿cherry-pick de 448a707? ¿rebasear SP2 sobre infra/facetas-bloque-d? ¿un
+# distingo nuevo más chico?) antes de continuar — ver reporte.
+_CONTRACT_PROMPT_SUFFIX = """
+
+FORMATO DE RESPUESTA OBLIGATORIO — respondé ÚNICAMENTE con un objeto JSON, sin texto antes ni después, sin fences de markdown:
+
+{"claim": [{"predicate": "NOMBRE", "args": {"clave": "valor"}}], "analysis": "tu razonamiento en texto libre", "judgment": "tu conclusión, o null si no aplica"}
+
+- "claim": lista de afirmaciones verificables (puede ir vacía: []). Cada una es {"predicate": "...", "args": {...}} — SOLO estos dos campos, nada más.
+- "analysis": tu análisis en texto libre. Obligatorio, aunque sea corto.
+- "judgment": tu conclusión o recomendación, o null si no aplica.
+
+No incluyas ningún otro campo. No expliques el formato, solo respondé el JSON."""
 
 
 def _build_messages(system_prompt: str, history: list[dict], message: str) -> list[dict]:
