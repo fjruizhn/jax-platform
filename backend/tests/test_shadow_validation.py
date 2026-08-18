@@ -25,6 +25,18 @@ texto del brief original, verificados contra el código real de ~/jax
    registro de comandos" — así que ese término no existe en el
    vocabulario real y ningún sweep correcto lo encontraría. Se sustituye
    por "hyde", término real presente en `facets_las_manos`/`facets_jax`.
+
+NOTA DE ALCANCE (review de la tarea, ver el addendum de review en
+task-5-report.md): se agregó
+`test_shadow_validation_leaves_validated_at_null_when_context_load_fails_before_the_insert`
+(crash simulado ANTES del insert, en la carga de config de gobernanza —
+distinto del crash ya cubierto dentro de la región protegida) y se
+renombró `test_chat_endpoint_enqueues_shadow_validation` a
+`test_chat_endpoint_does_not_break_when_shadow_validation_is_enqueued`
+porque el nombre original implicaba que ejercitaba el camino de
+escritura a DB, cosa que no puede: el `user_id` no numérico del token
+hace que `conv_uuid` quede `None` de forma estructural (ver el
+docstring del test).
 """
 import json
 import uuid
@@ -207,6 +219,44 @@ def test_shadow_validation_leaves_validated_at_null_when_worker_dies_mid_run(cli
     assert row[-1] is None  # validated_at — nunca se completó
 
 
+def test_shadow_validation_leaves_validated_at_null_when_context_load_fails_before_the_insert(client):
+    # Distinto del test de arriba: acá el crash simulado está en
+    # _validation_context() (carga de config estática de gobernanza:
+    # load_vocabulary()/load_predicates()/load_validation_context(), que
+    # pueden lanzar por YAML mal formado, el guard fail-closed propio de
+    # loaders.py, o config.toml de las_manos ilegible). Si esa llamada
+    # ocurriera ANTES del insert a shadow_messages, un crash acá dejaría
+    # CERO fila, no una fila con validated_at NULL — la pérdida
+    # completamente invisible que este mecanismo existe para prevenir. El
+    # test de arriba (sweep de vocabulario) no puede detectar esta clase
+    # de falla porque su punto de patch ya está DENTRO de la región
+    # protegida (después del insert) — este necesita su propio punto de
+    # patch, antes.
+    import shadow_validation
+    from unittest.mock import patch
+
+    smid = str(uuid.uuid4())
+    contract = ContractResult(
+        contract_parsed=True, claims=[], analysis="texto cualquiera",
+        judgment=None, degradation_reason=None, raw_text="...",
+    )
+    with patch.object(
+        shadow_validation, "_validation_context",
+        side_effect=RuntimeError("carga de config de gobernanza murió acá, simulado"),
+    ):
+        try:
+            client.portal.call(
+                shadow_validation.run_shadow_validation,
+                "conv-fake-uuid-6", smid, "jekyll", contract,
+            )
+        except RuntimeError:
+            pass  # esperado — lo que importa es el estado que quedó en DB
+
+    row = client.portal.call(_fetch_shadow_message, smid)
+    assert row is not None  # la fila SÍ se insertó — el insert corre ANTES de _validation_context()
+    assert row[-1] is None  # validated_at — nunca se completó
+
+
 def test_shadow_validation_skips_when_conv_uuid_is_none(client):
     from shadow_validation import run_shadow_validation
     smid = str(uuid.uuid4())
@@ -219,7 +269,23 @@ def test_shadow_validation_skips_when_conv_uuid_is_none(client):
     assert row is None  # sin conv_uuid no hay a qué mensaje navegar, no se encola
 
 
-def test_chat_endpoint_enqueues_shadow_validation(client):
+def test_chat_endpoint_does_not_break_when_shadow_validation_is_enqueued(client):
+    # OJO — esto NO prueba que la fila de shadow_messages se haya escrito.
+    # El user_id del token es no numérico a propósito (mismo patrón que
+    # test_chat_contract_wrapper.py: "así aislamos el único llamado
+    # saliente que nos importa"), lo que hace que `int(user_id)` falle en
+    # chat(), `conv_uuid` quede None, y run_shadow_validation() retorne
+    # de inmediato sin tocar la DB (ver
+    # test_shadow_validation_skips_when_conv_uuid_is_none) —
+    # estructuralmente no puede ejercitar el camino de escritura, con
+    # cualquier timing. Lo que este test sí prueba: que agregar
+    # `background_tasks.add_task(run_shadow_validation, ...)` al handler
+    # no rompe el endpoint (200, contrato no degradado). El camino de
+    # escritura real (insert + validación + validated_at) ya está cubierto
+    # de punta a punta por test_shadow_validation_writes_message_row_and_sets_validated_at,
+    # que llama a run_shadow_validation() directo — sin depender del
+    # timing de BackgroundTasks dentro de TestClient, que no es
+    # determinístico (ver nota original más abajo).
     import http_client
     from auth.jwt import create_access_token
     from tests.test_chat_contract_wrapper import _FakePostClient, _FakeResponse
