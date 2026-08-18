@@ -10,7 +10,7 @@ from collections import OrderedDict
 from functools import lru_cache
 from datetime import datetime
 from typing import NamedTuple
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import httpx
 from http_client import get_http_client
@@ -668,7 +668,7 @@ def _update_history(user_id: str, user_msg: str, assistant_msg: str):
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
+async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUser = Depends(get_current_user)):
     config = _load_config()
     facet = req.facet if req.facet else _auto_route(req.message)
     tenant_id = user.tenant_id
@@ -718,8 +718,9 @@ async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
         await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
         raise HTTPException(status_code=502, detail=detail)
 
-    # shadow_message_id: calculado acá pero no persistido todavía — lo
-    # consume Task 5 (queda sin usar a propósito, ver task-3-report.md).
+    # shadow_message_id: id propio de shadow validation, nunca un id de
+    # `messages` (que no existe — _memory.save_message() es fire-and-forget).
+    # Encolado al final vía BackgroundTasks (Task 5, run_shadow_validation).
     shadow_message_id = str(uuid.uuid4())
 
     # Contrato {claim/analysis/judgment}: solo se intenta parsear cuando
@@ -745,6 +746,9 @@ async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
 
     await _fire_completed(facet, tenant_id, user_id, display_text)
     await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
+
+    from shadow_validation import run_shadow_validation
+    background_tasks.add_task(run_shadow_validation, conv_uuid, shadow_message_id, facet, contract)
 
     return ChatResponse(
         facet=facet, response=display_text, timestamp=timestamp,
