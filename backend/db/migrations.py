@@ -103,6 +103,54 @@ CREATE TABLE IF NOT EXISTS facet_models (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+CREATE_SHADOW_MESSAGES = """
+CREATE TABLE IF NOT EXISTS shadow_messages (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  conv_uuid VARCHAR(36) NOT NULL,
+  shadow_message_id CHAR(36) NOT NULL UNIQUE,
+  facet VARCHAR(30) NOT NULL,
+  contract_parsed BOOLEAN DEFAULT NULL,
+  degradation_reason TEXT,
+  has_claim BOOLEAN DEFAULT NULL,
+  has_analysis BOOLEAN DEFAULT NULL,
+  has_judgment BOOLEAN DEFAULT NULL,
+  queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  validated_at TIMESTAMP NULL DEFAULT NULL,
+  INDEX idx_shadow_messages_facet (facet),
+  INDEX idx_shadow_messages_conv_uuid (conv_uuid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+CREATE_SHADOW_CLAIM_VERDICTS = """
+CREATE TABLE IF NOT EXISTS shadow_claim_verdicts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  conv_uuid VARCHAR(36) NOT NULL,
+  shadow_message_id CHAR(36) NOT NULL,
+  predicate VARCHAR(50) NOT NULL,
+  status VARCHAR(30) NOT NULL,
+  detail TEXT,
+  args JSON,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_shadow_claims_conv_uuid (conv_uuid),
+  INDEX idx_shadow_claims_shadow_message_id (shadow_message_id),
+  INDEX idx_shadow_claims_predicate (predicate)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+CREATE_SHADOW_VOCAB_HITS = """
+CREATE TABLE IF NOT EXISTS shadow_vocab_hits (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  conv_uuid VARCHAR(36) NOT NULL,
+  shadow_message_id CHAR(36) NOT NULL,
+  channel VARCHAR(20) NOT NULL,
+  term VARCHAR(100) NOT NULL,
+  category VARCHAR(50) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_shadow_vocab_conv_uuid (conv_uuid),
+  INDEX idx_shadow_vocab_category (category)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
@@ -112,6 +160,9 @@ _TABLES = [
     ("password_reset_tokens", CREATE_PASSWORD_RESET_TOKENS),
     ("user_api_keys", CREATE_USER_API_KEYS),
     ("facet_models", CREATE_FACET_MODELS),
+    ("shadow_messages", CREATE_SHADOW_MESSAGES),
+    ("shadow_claim_verdicts", CREATE_SHADOW_CLAIM_VERDICTS),
+    ("shadow_vocab_hits", CREATE_SHADOW_VOCAB_HITS),
 ]
 
 _COLUMNS = [
