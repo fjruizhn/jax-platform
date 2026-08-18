@@ -74,6 +74,11 @@ function Message({ message }) {
             </div>
           )}
           <ReactMarkdown>{message.content}</ReactMarkdown>
+          {message.contract_degraded && (
+            <div className="text-xs text-slate-500 mt-2 italic">
+              {t.contractDegradedNote}
+            </div>
+          )}
         </div>
       </div>
     </div>
