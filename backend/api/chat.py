@@ -5,6 +5,7 @@ import re
 import sys
 import tomllib
 import unicodedata
+import uuid
 from collections import OrderedDict
 from functools import lru_cache
 from datetime import datetime
@@ -326,11 +327,10 @@ class ChatResponse(BaseModel):
     facet: str
     response: str
     timestamp: str
-    # Siempre False por ahora — el endpoint chat() todavía no arma
-    # ContractResult ni lo propaga acá (SP2 Task 3 quedó bloqueado en el
-    # wiring del endpoint, ver task-3-report.md). Se agrega el campo ahora
-    # porque Task 6 (frontend) depende de que exista en el shape de
-    # respuesta; el valor real lo empezará a poner una tarea posterior.
+    # True cuando _parse_contract_response no pudo parsear el JSON de
+    # contrato de una respuesta real de LLM (degradación auditada) — False
+    # para respuestas enlatadas (is_canned) y para el intercept de hyde,
+    # que nunca pasan por el parseo de contrato.
     contract_degraded: bool = False
 
 
@@ -438,23 +438,18 @@ def _build_display_response(contract: ContractResult) -> tuple[str, bool]:
     return contract.analysis, False
 
 
-# NOTA DE ALCANCE (SP2 Task 3, ver task-3-report.md): esta constante está
-# definida y testeada en aislamiento (test_contract_prompt_suffix_mentions_the_three_keys)
-# pero A PROPÓSITO NO está conectada todavía a ningún system_prompt real
-# dentro de _invoke_facet. El brief de este task asume que _invoke_facet ya
-# devuelve tuple[str, UsageInfo | None] y que "usage is None" distingue
-# respuesta enlatada de llamada real al LLM — esa señal solo existe en la
-# rama infra/facetas-bloque-d (commit 448a707 "fix(chat): capturar tokens
-# reales por transporte en vez de hardcodear 0,0"), que NO es ancestro de
-# esta rama (SP2 está basada en master, donde _invoke_facet devuelve un str
-# simple sin ese distingo). Conectar este sufijo al system_prompt de
-# _invoke_facet SIN esa señal rompería en producción los canned replies de
-# _model_identity_reply (se marcarían como "degraded" por error) y volvería
-# crudo el JSON de contrato en pantalla para toda faceta real hasta que el
-# endpoint lo parseara — por eso el wiring del endpoint (chat(), Step 13 del
-# brief) también quedó sin tocar. Requiere una decisión arquitectónica
-# (¿cherry-pick de 448a707? ¿rebasear SP2 sobre infra/facetas-bloque-d? ¿un
-# distingo nuevo más chico?) antes de continuar — ver reporte.
+# NOTA DE ALCANCE (SP2 Task 3, ver task-3-report.md): el brief original
+# asume que _invoke_facet ya devuelve tuple[str, UsageInfo | None] y que
+# "usage is None" distingue respuesta enlatada de llamada real al LLM —
+# esa señal solo existe en infra/facetas-bloque-d (commit 448a707), que
+# NO es ancestro de esta rama (SP2 está basada en master). Por ruling del
+# coordinador, se sustituyó esa señal por un flag posicional explícito
+# (is_canned, devuelto por _invoke_facet) en vez de comparar response_text
+# contra los strings enlatados conocidos — evita que un futuro edit de esos
+# strings rompa la señal en silencio. _CONTRACT_PROMPT_SUFFIX SÍ está
+# conectado al system_prompt real dentro de _invoke_facet (ver esa función).
+# Cuando infra/facetas-bloque-d se mergee, is_canned se reemplaza por
+# "usage is None" — swap de flag, no heurística a desandar.
 _CONTRACT_PROMPT_SUFFIX = """
 
 FORMATO DE RESPUESTA OBLIGATORIO — respondé ÚNICAMENTE con un objeto JSON, sin texto antes ni después, sin fences de markdown:
@@ -569,20 +564,29 @@ def _model_identity_reply(model: str, facet: str) -> str:
 async def _invoke_facet(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
-) -> str:
+) -> tuple[str, bool]:
+    """Devuelve (texto, is_canned). is_canned=True en cada punto que
+    responde sin llamar a un transporte real (hoy: solo las respuestas
+    enlatadas de _model_identity_reply) — señal posicional sustituta de
+    la UsageInfo-based ("usage is None") que asume el brief de SP2 Task 3,
+    porque _invoke_facet en esta rama (base master) no tiene esa
+    infraestructura (vive en infra/facetas-bloque-d, no mergeada acá; ver
+    task-3-report.md). Cuando ese branch se mergee, is_canned se
+    reemplaza por "usage is None" — swap de flag, no hay que desandar
+    esta heurística."""
     history = _conversations.get(user_id, [])
     if semantic_context:
         # Contexto de sesiones pasadas SOLO para este turno (no entra al hilo RAM).
         history = semantic_context + history
     personality = config["personalities"].get(facet, config["personalities"]["jax_local"])
-    system_prompt = personality.get("system_prompt", "Sos JAX.")
+    system_prompt = personality.get("system_prompt", "Sos JAX.") + _CONTRACT_PROMPT_SUFFIX
 
     if facet == "jax_local":
         model = await _resolve_active_model(
             "jax_local", personality.get("model_default", "qwen3:14b"))
 
         if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet)
+            return _model_identity_reply(model, facet), True
 
         # Bug 3: jax_local no sabia con que modelo corre y confabulaba su
         # identidad. Le damos el dato real (el resuelto desde la DB) como
@@ -592,35 +596,35 @@ async def _invoke_facet(
             f"te pregunten): el modelo que te ejecuta en este momento es "
             f"'{model}', via Ollama local en hall9000."
         )
-        return await _call_ollama(system_prompt + ident, history, message, config, model)
+        return await _call_ollama(system_prompt + ident, history, message, config, model), False
 
     if facet == "jekyll":
         model = await _resolve_active_model("jekyll", personality.get("model_default", "deepseek-v4-flash"))
         if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet)
+            return _model_identity_reply(model, facet), True
         return await _call_openai_compat(
             "https://api.deepseek.com/v1",
             os.getenv("DEEPSEEK_API_KEY", ""),
             model, system_prompt, history, message,
-        )
+        ), False
 
     if facet == "hipatia":
         model = await _resolve_active_model("hipatia", personality.get("model_default", "gemini-2.5-flash"))
         if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet)
+            return _model_identity_reply(model, facet), True
         return await _call_gemini(
             os.getenv("GEMINI_API_KEY", ""), model, system_prompt, history, message,
-        )
+        ), False
 
     if facet == "thot":
         model = await _resolve_active_model("thot", personality.get("model_default", "gpt-4o"))
         if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet)
+            return _model_identity_reply(model, facet), True
         return await _call_openai_compat(
             "https://api.openai.com/v1",
             os.getenv("OPENAI_API_KEY", ""),
             model, system_prompt, history, message,
-        )
+        ), False
 
     if facet == "kimi":
         api_url = personality.get("api_url", "https://api.moonshot.ai/v1/chat/completions")
@@ -628,26 +632,26 @@ async def _invoke_facet(
         base_url = api_url[:-len("/chat/completions")] if api_url.endswith("/chat/completions") else api_url
         model = await _resolve_active_model("kimi", personality.get("model_default", "kimi-k2.7-code"))
         if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet)
+            return _model_identity_reply(model, facet), True
         return await _call_openai_compat(
             base_url, os.getenv("KIMI_API_KEY", ""), model, system_prompt, history, message,
-        )
+        ), False
 
     if facet == "ada":
         api_url = personality.get("api_url", "https://api.z.ai/api/paas/v4/chat/completions")
         base_url = api_url[:-len("/chat/completions")] if api_url.endswith("/chat/completions") else api_url
         model = await _resolve_active_model("ada", personality.get("model_default", "glm-5.2"))
         if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet)
+            return _model_identity_reply(model, facet), True
         return await _call_openai_compat(
             base_url, os.getenv("ZAI_API_KEY", ""), model, system_prompt, history, message,
-        )
+        ), False
 
     # fallback
     model = await _resolve_active_model(facet, personality.get("model_default", "qwen3:14b"))
     if _is_model_identity_question(message):
-        return _model_identity_reply(model, facet)
-    return await _call_ollama(system_prompt, history, message, config, model)
+        return _model_identity_reply(model, facet), True
+    return await _call_ollama(system_prompt, history, message, config, model), False
 
 
 def _update_history(user_id: str, user_msg: str, assistant_msg: str):
@@ -686,11 +690,12 @@ async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
             _memory.save_message(conv_uuid, "user", req.message)  # fire-and-forget
     # -----------------------------------------------------------------------
 
-    # Respuestas especiales (sin llamada a LLM)
+    # Respuestas especiales (sin llamada a LLM) — nunca pasan por el parseo
+    # de contrato, igual que is_canned=True dentro de _invoke_facet.
     if facet == "hyde":
         resp = "Hyde opera en modo tarea autónoma — usá el modo Comando para ejecutar tareas técnicas."
         await _fire_completed(facet, tenant_id, user_id, resp)
-        return ChatResponse(facet=facet, response=resp, timestamp=timestamp)
+        return ChatResponse(facet=facet, response=resp, timestamp=timestamp, contract_degraded=False)
 
     # Señal: faceta pensando
     await engine_state.set_facet_status(facet, "thinking", tenant_id, user_id, req.message[:100])
@@ -701,7 +706,7 @@ async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
         semantic_context = await _semantic_context(req.message, mem_uid, mem_pid)
 
     try:
-        response_text = await _invoke_facet(facet, config, user_id, req.message, semantic_context)
+        response_text, is_canned = await _invoke_facet(facet, config, user_id, req.message, semantic_context)
     except httpx.HTTPStatusError as e:
         detail = f"Error HTTP {e.response.status_code} en {facet}: {e.response.text[:200]}"
         await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail[:100])
@@ -713,7 +718,20 @@ async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
         await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
         raise HTTPException(status_code=502, detail=detail)
 
-    _update_history(user_id, req.message, response_text)
+    # shadow_message_id: calculado acá pero no persistido todavía — lo
+    # consume Task 5 (queda sin usar a propósito, ver task-3-report.md).
+    shadow_message_id = str(uuid.uuid4())
+
+    # Contrato {claim/analysis/judgment}: solo se intenta parsear cuando
+    # hubo una llamada real al LLM (not is_canned) — is_canned es la señal
+    # posicional sustituta de "usage is None" (ver nota en _invoke_facet).
+    contract = _parse_contract_response(response_text) if not is_canned else None
+    if contract is not None:
+        display_text, contract_degraded = _build_display_response(contract)
+    else:
+        display_text, contract_degraded = response_text, False
+
+    _update_history(user_id, req.message, display_text)
 
     # Registrar uso (best-effort)
     personality = config["personalities"].get(facet, {})
@@ -722,13 +740,16 @@ async def chat(req: ChatRequest, user: AuthUser = Depends(get_current_user)):
 
     # Guardar la respuesta de la faceta en la MISMA memoria (fire-and-forget).
     if conv_uuid:
-        _memory.save_message(conv_uuid, facet, response_text,
+        _memory.save_message(conv_uuid, facet, display_text,
                              facet=facet, model=model_name)
 
-    await _fire_completed(facet, tenant_id, user_id, response_text)
+    await _fire_completed(facet, tenant_id, user_id, display_text)
     await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
 
-    return ChatResponse(facet=facet, response=response_text, timestamp=timestamp)
+    return ChatResponse(
+        facet=facet, response=display_text, timestamp=timestamp,
+        contract_degraded=contract_degraded,
+    )
 
 
 async def _fire_completed(facet: str, tenant_id: str, user_id: str, response_text: str):
