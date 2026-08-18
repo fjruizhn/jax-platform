@@ -121,6 +121,7 @@ function BottomBar() {
         facet: data.facet,
         content: data.response,
         timestamp: data.timestamp,
+        contract_degraded: data.contract_degraded ?? false,
       })
       setAttachment(null)
     } catch (err) {
