@@ -125,6 +125,7 @@ export default {
 
   // Message
   userLabel: 'User',
+  contractDegradedNote: 'The response did not meet the expected format.',
 
   // Theme / language
   lightMode: 'Light mode',
