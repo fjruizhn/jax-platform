@@ -4,15 +4,16 @@ Fase 2 Sub-proyecto 2). _parse_contract_response es puro — sin red, sin
 DB — se testea con texto crudo simulando lo que devolvería cada
 faceta, incluido el truncamiento real de Kimi (488 bytes).
 
-NOTA DE ALCANCE (ver task-3-report.md): este task quedó BLOQUEADO en el
-Step 13 (wiring del endpoint chat()) porque el brief asume que
-_invoke_facet ya devuelve tuple[str, UsageInfo | None] — esa firma
-existe solo en la rama infra/facetas-bloque-d (commit 448a707), que NO
-es ancestro de esta rama (SP2 está basada en master). Este archivo solo
-cubre las piezas puras que no dependen de esa señal faltante:
-_parse_contract_response y _build_display_response. No hay test de
-_CONTRACT_PROMPT_SUFFIX conectado al system_prompt real (no wireado) ni
-test de integración del endpoint (Step 14) — ver reporte para detalle.
+NOTA DE ALCANCE (ver task-3-report.md): el brief original asume que
+_invoke_facet ya devuelve tuple[str, UsageInfo | None] — esa firma solo
+existe en la rama infra/facetas-bloque-d (commit 448a707), que NO es
+ancestro de esta rama (SP2 está basada en master). Por ruling del
+coordinador, se sustituyó "usage is None" por un flag posicional
+explícito (is_canned, devuelto por _invoke_facet) en vez de comparar
+response_text contra los strings enlatados conocidos. El wiring del
+endpoint (Step 13) y la conexión de _CONTRACT_PROMPT_SUFFIX al
+system_prompt real (Step 7b) SÍ están hechos — ver
+test_chat_endpoint_marks_contract_degraded_on_truncated_json más abajo.
 """
 from api.chat import _parse_contract_response
 
@@ -83,10 +84,12 @@ def test_parse_contract_plain_text_not_json_degrades():
 
 
 def test_contract_prompt_suffix_mentions_the_three_keys():
-    # Solo verifica el contenido de la constante en aislamiento. NO
-    # verifica que esté conectada a ningún system_prompt real — esa
-    # conexión (Step 7b del brief) está bloqueada, ver nota de alcance
-    # arriba y task-3-report.md.
+    # Verifica el contenido de la constante en aislamiento. La conexión
+    # real al system_prompt dentro de _invoke_facet se cubre por
+    # test_jax_local_system_prompt_states_resolved_model (ya existente en
+    # test_facet_model_wiring.py, sigue pasando tras el wiring) y por
+    # test_chat_endpoint_marks_contract_degraded_on_truncated_json más
+    # abajo, que ejercita el endpoint completo.
     from api.chat import _CONTRACT_PROMPT_SUFFIX
     assert "claim" in _CONTRACT_PROMPT_SUFFIX
     assert "analysis" in _CONTRACT_PROMPT_SUFFIX
@@ -128,3 +131,110 @@ def test_build_display_response_degraded_shows_raw_text():
     text, degraded = _build_display_response(contract)
     assert text == "texto crudo truncado"
     assert degraded is True
+
+
+import http_client
+from unittest.mock import AsyncMock, patch
+
+
+class _FakeResponse:
+    def __init__(self, json_data):
+        self._json_data = json_data
+
+    def json(self):
+        return self._json_data
+
+    def raise_for_status(self):
+        pass
+
+
+class _FakePostClient:
+    def __init__(self, response):
+        self._response = response
+
+    async def post(self, url, **kwargs):
+        return self._response
+
+
+def test_chat_endpoint_marks_contract_degraded_on_truncated_json(client):
+    from auth.jwt import create_access_token
+    # ids no numéricos a propósito (mismo patrón que test_facet_model_wiring.py):
+    # chat.py solo toca el camino de memoria semántica cuando user_id/tenant_id
+    # parsean a int — así aislamos el único llamado saliente que nos importa.
+    token = create_access_token("test-contract-user", "test-contract-tenant", "operator")
+    fake = _FakePostClient(_FakeResponse({
+        "choices": [{"message": {"content": '{"claim": [{"predicate": "CAPABILITY_AVAI'}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        resp = client.post(
+            "/api/chat",
+            json={"message": "hola", "facet": "jekyll"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        http_client._client = original
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["contract_degraded"] is True
+    assert body["response"].startswith('{"claim"')
+
+
+def test_chat_endpoint_contract_not_degraded_on_valid_json(client):
+    """Complemento del test de arriba: cuando la faceta SÍ devuelve el
+    contrato bien formado, contract_degraded debe ser False y la respuesta
+    mostrada es analysis (+judgment), no el JSON crudo — prueba que
+    is_canned=False (llamada real) efectivamente dispara el parseo, y que
+    el parseo exitoso no degrada."""
+    from auth.jwt import create_access_token
+    token = create_access_token("test-contract-user-2", "test-contract-tenant-2", "operator")
+    fake = _FakePostClient(_FakeResponse({
+        "choices": [{"message": {"content": (
+            '{"claim": [], "analysis": "mi analisis real", "judgment": "mi conclusion real"}'
+        )}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        resp = client.post(
+            "/api/chat",
+            json={"message": "hola", "facet": "jekyll"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        http_client._client = original
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["contract_degraded"] is False
+    assert "mi analisis real" in body["response"]
+    assert "mi conclusion real" in body["response"]
+
+
+async def _call_invoke_facet_jax_local_identity_question():
+    from api.chat import _invoke_facet
+    config = {"personalities": {"jax_local": {"system_prompt": "Sos JAX."}}}
+    return await _invoke_facet("jax_local", config, "some-user", "que modelo sos", None)
+
+
+def test_invoke_facet_identity_question_returns_is_canned_true(client):
+    """Camino is_canned=True (pregunta de identidad de modelo): la señal
+    posicional debe ser True para que el endpoint nunca llame a
+    _parse_contract_response sobre una respuesta enlatada que no es JSON.
+
+    _invoke_facet hace una consulta real a facet_models (get_pool()), así
+    que corre via client.portal.call — mismo patrón que
+    test_facet_model_wiring.py — para compartir el loop/pool de la sesión
+    del fixture `client` en vez de abrir uno propio (un event loop propio
+    deja el pool de aiomysql atado a un loop que se cierra al terminar el
+    test, envenenando la conexión para el resto de la suite)."""
+    from api.chat import _parse_contract_response
+
+    text, is_canned = client.portal.call(_call_invoke_facet_jax_local_identity_question)
+    assert is_canned is True
+    # Confirma que, aplicando la regla del endpoint (parsear solo si
+    # not is_canned), esta respuesta jamás pasaría por el parser.
+    contract = _parse_contract_response(text) if not is_canned else None
+    assert contract is None
