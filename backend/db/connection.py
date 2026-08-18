@@ -9,7 +9,7 @@ async def get_pool() -> aiomysql.Pool:
     if _pool is None:
         _pool = await aiomysql.create_pool(
             host=os.getenv("JAX_DB_HOST", "localhost"),
-            port=3306,
+            port=int(os.getenv("JAX_DB_PORT", "3306")),
             user=os.getenv("JAX_DB_USER", "jax_user"),
             password=os.getenv("JAX_DB_PASSWORD", ""),
             db=os.getenv("JAX_DB_NAME", "jax_memory"),
