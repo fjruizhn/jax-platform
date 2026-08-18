@@ -28,10 +28,13 @@ Con el merge hecho, se removió: `loaders.load_vocabulary()` es ahora la
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from functools import lru_cache
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 JAX_REPO = Path(os.path.expanduser("~/jax"))
 if str(JAX_REPO) not in sys.path:
@@ -110,42 +113,63 @@ async def run_shadow_validation(
     if conv_uuid is None or contract is None:
         return
 
-    ctx, predicates, term_categories = _validation_context()
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            # La fila se inserta PRIMERO — antes de tocar el validador de
-            # claims o el barrido de vocabulario. El pool corre con
-            # autocommit=True (db/connection.py), así que este INSERT ya
-            # quedó durablemente escrito en cuanto el `await` retorna: si
-            # el proceso muere en cualquier punto de acá en adelante,
-            # queda una fila con validated_at NULL — visible, no
-            # silenciosa (garantía fail-closed, ver spec sección 3).
-            await _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract)
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                # La fila se inserta PRIMERO — antes de tocar el validador de
+                # claims, el barrido de vocabulario, O SIQUIERA CARGAR la
+                # config estática de gobernanza (_validation_context() abajo).
+                # load_vocabulary()/load_predicates()/load_validation_context()
+                # pueden lanzar (YAML mal formado, guard fail-closed propio de
+                # loaders.py, config.toml de las_manos ilegible) — si eso
+                # pasara ANTES de este insert, la función saldría sin haber
+                # tocado shadow_messages: cero fila, no una fila con
+                # validated_at NULL. Eso es exactamente la pérdida silenciosa
+                # que esta tabla existe para volver visible. El pool corre con
+                # autocommit=True (db/connection.py), así que este INSERT ya
+                # quedó durablemente escrito en cuanto el `await` retorna: si
+                # el proceso muere en cualquier punto de acá en adelante,
+                # queda una fila con validated_at NULL — visible, no
+                # silenciosa (garantía fail-closed, ver spec sección 3).
+                await _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract)
 
-            for raw_claim in contract.claims:
-                claim = governance_claims.Claim(
-                    predicate=raw_claim["predicate"],
-                    args={k: str(v) for k, v in raw_claim["args"].items()},
-                    authority="INFERIDO",
-                    provenance_ref=facet,
-                    evidence_pointer=f"{conv_uuid}:{shadow_message_id}",
-                    scope="mesa_web",
-                )
-                verdict = governance_validator.validate(claim, predicates, ctx)
-                await _insert_claim_verdict(
-                    cur, conv_uuid, shadow_message_id, verdict, raw_claim["args"]
-                )
+                ctx, predicates, term_categories = _validation_context()
 
-            for channel, text in (("analysis", contract.analysis), ("judgment", contract.judgment)):
-                if not text:
-                    continue
-                hits = governance_vocab_sweep.sweep(text, term_categories)
-                for term, categories in hits:
-                    for category in sorted(categories):
-                        await _insert_vocab_hit(
-                            cur, conv_uuid, shadow_message_id, channel, term, category
-                        )
+                for raw_claim in contract.claims:
+                    claim = governance_claims.Claim(
+                        predicate=raw_claim["predicate"],
+                        args={k: str(v) for k, v in raw_claim["args"].items()},
+                        authority="INFERIDO",
+                        provenance_ref=facet,
+                        evidence_pointer=f"{conv_uuid}:{shadow_message_id}",
+                        scope="mesa_web",
+                    )
+                    verdict = governance_validator.validate(claim, predicates, ctx)
+                    await _insert_claim_verdict(
+                        cur, conv_uuid, shadow_message_id, verdict, raw_claim["args"]
+                    )
 
-            await _mark_validated(cur, shadow_message_id)
-        await conn.commit()
+                for channel, text in (("analysis", contract.analysis), ("judgment", contract.judgment)):
+                    if not text:
+                        continue
+                    hits = governance_vocab_sweep.sweep(text, term_categories)
+                    for term, categories in hits:
+                        for category in sorted(categories):
+                            await _insert_vocab_hit(
+                                cur, conv_uuid, shadow_message_id, channel, term, category
+                            )
+
+                await _mark_validated(cur, shadow_message_id)
+            await conn.commit()
+    except Exception:
+        # validated_at IS NULL ya dice QUE se perdió una corrida — esto deja
+        # registrado POR QUÉ, con los tres identificadores para poder
+        # correlacionar la fila en shadow_messages. No se traga la excepción
+        # (BackgroundTasks de Starlette debe verla) — logging.exception y
+        # luego re-raise, nunca uno sin el otro.
+        logger.exception(
+            "shadow validation falló para shadow_message_id=%s conv_uuid=%s facet=%s",
+            shadow_message_id, conv_uuid, facet,
+        )
+        raise
