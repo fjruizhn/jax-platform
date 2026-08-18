@@ -76,6 +76,42 @@ def test_parse_contract_malformed_claim_entry_degrades():
     assert result.contract_parsed is False
 
 
+def test_parse_contract_overlong_predicate_degrades():
+    # Finding 2 de la revisión final: predicate se escribe en
+    # shadow_claim_verdicts.predicate VARCHAR(50) (db/migrations.py). Sin
+    # este chequeo, un predicate más largo hacía que el INSERT lanzara
+    # "Data too long" a mitad del loop de claims dentro de
+    # run_shadow_validation, abortando el resto de claims Y los vocab
+    # hits de ESE mensaje — una pérdida sesgada hacia los modelos que
+    # peor siguen el contrato (justo lo que el spec prohíbe). La solución
+    # correcta es tratarlo como el resto de los casos de claim mal
+    # formado de esta función: degradar el mensaje completo acá, ANTES de
+    # que llegue a shadow_validation.py.
+    overlong_predicate = "P" * 51
+    raw = (
+        '{"claim": [{"predicate": "' + overlong_predicate + '", "args": {}}], '
+        '"analysis": "ok", "judgment": null}'
+    )
+    result = _parse_contract_response(raw)
+    assert result.contract_parsed is False
+    assert result.claims == []
+    assert result.degradation_reason is not None
+    assert "50" in result.degradation_reason
+
+
+def test_parse_contract_predicate_at_exactly_50_chars_is_accepted():
+    # Caso límite: 50 caracteres exactos calzan en VARCHAR(50), no debe
+    # degradar.
+    predicate_50 = "P" * 50
+    raw = (
+        '{"claim": [{"predicate": "' + predicate_50 + '", "args": {}}], '
+        '"analysis": "ok", "judgment": null}'
+    )
+    result = _parse_contract_response(raw)
+    assert result.contract_parsed is True
+    assert result.claims == [{"predicate": predicate_50, "args": {}}]
+
+
 def test_parse_contract_plain_text_not_json_degrades():
     raw = "esto no es json en absoluto, es texto libre normal"
     result = _parse_contract_response(raw)

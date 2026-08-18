@@ -65,13 +65,21 @@ def _validation_context():
 
 
 async def _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract):
+    # Defensa en profundidad (finding 1 de la revisión final): api/chat.py
+    # ya valida facet contra la whitelist de config["personalities"] antes
+    # de llegar acá, pero este módulo es importable/invocable por
+    # cualquier otro caller de run_shadow_validation — clampear a 30
+    # caracteres acá asegura que este INSERT (el primero de la función,
+    # ver comentario en run_shadow_validation) nunca falle con
+    # "Data too long" por esta columna específicamente, sin importar quién
+    # llame. shadow_messages.facet es VARCHAR(30) (db/migrations.py).
     await cur.execute(
         "INSERT INTO shadow_messages "
         "(conv_uuid, shadow_message_id, facet, contract_parsed, degradation_reason, "
         "has_claim, has_analysis, has_judgment) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
         (
-            conv_uuid, shadow_message_id, facet, contract.contract_parsed,
+            conv_uuid, shadow_message_id, facet[:30], contract.contract_parsed,
             contract.degradation_reason,
             bool(contract.claims), bool(contract.analysis), bool(contract.judgment),
         ),
