@@ -1,0 +1,54 @@
+services:
+  mariadb-12.3:
+    image: mariadb:12.3.2
+    container_name: mariadb-12-3-jax
+    restart: unless-stopped
+    ports:
+      # Bind explícito a loopback. NUNCA "3308:3306" a secas — Docker inserta
+      # sus reglas DNAT antes que las de UFW, incluida la cadena FORWARD, y
+      # un puerto sin prefijo de IP queda alcanzable desde la red pese al
+      # default deny (incoming/routed) del host. Los 4 consumidores JAX
+      # corren en hall9000, loopback alcanza sin abrir nada en UFW.
+      - "127.0.0.1:3308:3306"
+    volumes:
+      # Bind mount a ruta real en disco, NO volumen anónimo gestionado por
+      # Docker — se puede inspeccionar/respaldar directo como cualquier
+      # datadir. Bajo /var (133GB libres); / está al 91%, descartado.
+      - /var/lib/mariadb-12.3-docker/data:/var/lib/mysql
+      - /var/lib/mariadb-12.3-docker/conf.d:/etc/mysql/conf.d:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    environment:
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/mariadb_root_password
+      MARIADB_AUTO_UPGRADE: "1"
+      # Docker no hereda la timezone del host por default (corre en UTC) —
+      # detectado en A4: los timestamps CURRENT_TIMESTAMP quedaban 6h
+      # adelantados respecto a los datos migrados de 11.8 (CST). Explícito
+      # + bind mount de /etc/localtime, no solo uno de los dos.
+      TZ: America/Tegucigalpa
+    secrets:
+      - mariadb_root_password
+    networks:
+      jax-db-net:
+        ipv4_address: 172.30.5.2
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_uca1400_ai_ci
+      # Preserva compatibilidad de aislamiento con lo probado en A0.9/A2 —
+      # NO cambiar sin repetir la prueba de concurrencia del toggle is_active.
+      - --transaction-isolation=REPEATABLE-READ
+
+networks:
+  jax-db-net:
+    driver: bridge
+    ipam:
+      config:
+        # Subred FIJA y documentada — necesaria para que los grants de
+        # usuario ('jax_user'@'172.30.5.%') sean deterministas. Sin esto,
+        # Docker asigna un rango dinámico que puede cambiar si se agregan
+        # más contenedores, rompiendo los grants en silencio.
+        - subnet: 172.30.5.0/24
+
+secrets:
+  mariadb_root_password:
+    file: /var/lib/mariadb-12.3-docker/secrets/root_password.txt

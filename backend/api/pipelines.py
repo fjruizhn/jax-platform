@@ -68,6 +68,8 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
             detail="Límite de 3 pipelines concurrentes alcanzado",
         )
     body = await request.json()
+    body["user_id"] = user.user_id
+    body["tenant_id"] = user.tenant_id
     client = await get_http_client()
     try:
         r = await client.post(f"{JACOBS_URL}/pipeline", json=body, timeout=10.0)
@@ -126,7 +128,7 @@ async def resume_pipeline(
     try:
         r = await client.post(
             f"{JACOBS_URL}/pipeline/{pipeline_id}/resume",
-            json={"invoked_by": "Fernando"},
+            json={"invoked_by": "Fernando", "user_id": user.user_id, "tenant_id": user.tenant_id},
             timeout=10.0,
         )
         return r.json()

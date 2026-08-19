@@ -66,7 +66,7 @@ async def get_dashboard(user: AuthUser = Depends(require_superadmin)):
     services = [
         {"name": "LAS MANOS", "port": 7777, **las_manos},
         {"name": "JAX Engine", "port": 8080, **jax_engine},
-        {"name": "MariaDB", "port": 3306, **db_status},
+        {"name": "MariaDB", "port": int(os.getenv("JAX_DB_PORT", "3306")), **db_status},
     ]
 
     pool = await get_pool()

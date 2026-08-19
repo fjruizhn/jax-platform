@@ -59,7 +59,13 @@ export default function AdminCosts() {
     api.get(`/admin/usage?period=${period}`).then(r => setData(r.data)).catch(() => {})
   }, [period])
 
-  const totalCost = data?.by_facet.reduce((s, r) => s + r.cost_usd, 0) || 0
+  // cost_usd es null cuando el modelo no tiene precio en el catálogo (ver
+  // record_usage en backend/api/admin/usage.py) — sumarlo como si fuera $0
+  // maquillaría el total, así que se excluye de la suma y se marca como
+  // parcial (unpriced_requests > 0 en algún grupo, o cost_usd null en
+  // alguno) para que quede visible que el total no cubre todo el período.
+  const totalCost = data?.by_facet.reduce((s, r) => s + (r.cost_usd || 0), 0) || 0
+  const hasPartialTotal = data?.by_facet.some(r => r.cost_usd === null || r.unpriced_requests > 0) || false
 
   return (
     <div>
@@ -98,7 +104,18 @@ export default function AdminCosts() {
                     <td className="px-4 py-3 text-xs text-slate-400 font-mono">{r.model}</td>
                     <td className="px-4 py-3 text-xs text-slate-300">{r.tokens_in.toLocaleString()}</td>
                     <td className="px-4 py-3 text-xs text-slate-300">{r.tokens_out.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-xs text-green-400 font-mono">${r.cost_usd.toFixed(6)}</td>
+                    <td className="px-4 py-3 text-xs text-green-400 font-mono">
+                      {r.cost_usd === null ? (
+                        <span className="text-slate-600" title={t.adminCostsNoPricing}>{t.adminCostsNoPricing}</span>
+                      ) : (
+                        <>
+                          ${r.cost_usd.toFixed(6)}
+                          {r.unpriced_requests > 0 && (
+                            <span title={t.adminCostsPartialNote}>{t.adminCostsPartialMarker}</span>
+                          )}
+                        </>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-xs text-slate-300">{r.requests}</td>
                   </tr>
                 ))}
@@ -106,12 +123,17 @@ export default function AdminCosts() {
               <tfoot className="bg-slate-900/80 border-t border-slate-800">
                 <tr>
                   <td colSpan={4} className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase">{t.adminCostsTotal}</td>
-                  <td className="px-4 py-3 text-sm font-bold text-green-400 font-mono">${totalCost.toFixed(6)}</td>
+                  <td className="px-4 py-3 text-sm font-bold text-green-400 font-mono" title={hasPartialTotal ? t.adminCostsPartialNote : undefined}>
+                    {hasPartialTotal ? '~' : ''}${totalCost.toFixed(6)}{hasPartialTotal ? t.adminCostsPartialMarker : ''}
+                  </td>
                   <td className="px-4 py-3 text-xs text-slate-300">{data.by_facet.reduce((s, r) => s + r.requests, 0)}</td>
                 </tr>
               </tfoot>
             </table>
           </div>
+          {hasPartialTotal && (
+            <p className="text-xs text-slate-600 -mt-4 mb-6">{t.adminCostsPartialNote}</p>
+          )}
 
           {data.chart_data && (
             <div className="rounded-lg border border-slate-800 p-4 bg-slate-900/50">

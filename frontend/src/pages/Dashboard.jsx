@@ -18,7 +18,7 @@ export default function Dashboard() {
   const { lang, setLang, t } = useI18n()
 
   return (
-    <div className="flex flex-col h-screen bg-hal-bg text-hal-text overflow-hidden">
+    <div className="flex flex-col h-dvh bg-hal-bg text-hal-text overflow-hidden">
       {/* Top bar */}
       <div className="flex-shrink-0 flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-700">
         <div className="flex items-center gap-3">

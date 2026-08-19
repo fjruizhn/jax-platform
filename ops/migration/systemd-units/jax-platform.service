@@ -1,7 +1,9 @@
 [Unit]
+StartLimitIntervalSec=300
+StartLimitBurst=5
 Description=JAX Platform Backend
-After=network.target jax-las-manos.service
-Wants=jax-las-manos.service
+After=network.target docker.service jax-las-manos.service
+Wants=docker.service jax-las-manos.service
 
 [Service]
 Environment="PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/home/fruiz/.local/bin:/usr/local/bin:/usr/bin:/bin"
