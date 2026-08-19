@@ -1,3 +1,4 @@
+import json
 from .connection import get_pool
 
 CREATE_TENANTS = """
@@ -304,6 +305,60 @@ CREATE TABLE IF NOT EXISTS model_binding_proposal (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# R4 — motor desacoplado de faceta. Tres ejes separados: capability (que
+# sabe hacer), transport (como se le habla, mismo enum que facet.transport),
+# auth (via provider.auth_type, ya existente — ollama='none' ya sembrado).
+# model_ref reusa la tabla `model` (context_window, pricing, deprecacion)
+# en vez de duplicar esos campos por motor, mismo patron que
+# facet_binding.model_ref.
+CREATE_MOTOR = """
+CREATE TABLE IF NOT EXISTS motor (
+  `key` VARCHAR(50) NOT NULL PRIMARY KEY,
+  model_ref INT NOT NULL,
+  transport ENUM('http_openai_compat','http_gemini','motor_registry','ollama','subprocess') NOT NULL,
+  max_tokens INT NULL,
+  default_timeout_seconds INT NOT NULL DEFAULT 600,
+  supports_reasoning BOOLEAN NOT NULL DEFAULT FALSE,
+  reasoning_default_visibility ENUM('audit_only','visible') NOT NULL DEFAULT 'audit_only',
+  sandbox_only BOOLEAN NOT NULL DEFAULT TRUE,
+  status ENUM('active','disabled') NOT NULL DEFAULT 'active',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (model_ref) REFERENCES model(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+# priority reemplaza el orden implicito de la lista allowed_motors de TOML.
+# Convencion: menor priority gana primero (0 = primer intento) -- mismo
+# sentido que "el primero de la lista" que _resolve_motor() ya usa.
+CREATE_CAPABILITY = """
+CREATE TABLE IF NOT EXISTS capability (
+  `key` VARCHAR(50) NOT NULL PRIMARY KEY,
+  risk_level ENUM('low','medium','high') NOT NULL,
+  sandbox_only BOOLEAN NOT NULL DEFAULT TRUE,
+  requires_human_gate BOOLEAN NOT NULL DEFAULT FALSE,
+  max_execution_minutes INT NOT NULL,
+  max_recursion_depth INT NOT NULL DEFAULT 0,
+  output_schema VARCHAR(100) NULL,
+  fallback_motor VARCHAR(50) NULL,
+  fallback_mode ENUM('manual_only','auto') NULL,
+  allowed_callers LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(allowed_callers)),
+  forbidden_paths LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (forbidden_paths IS NULL OR json_valid(forbidden_paths)),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (fallback_motor) REFERENCES motor(`key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+CREATE_CAPABILITY_MOTOR = """
+CREATE TABLE IF NOT EXISTS capability_motor (
+  capability_key VARCHAR(50) NOT NULL,
+  motor_key VARCHAR(50) NOT NULL,
+  priority INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (capability_key, motor_key),
+  FOREIGN KEY (capability_key) REFERENCES capability(`key`),
+  FOREIGN KEY (motor_key) REFERENCES motor(`key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
@@ -323,6 +378,9 @@ _TABLES = [
     ("facet", CREATE_FACET),                # antes de facet_binding y model_binding_proposal (FK)
     ("facet_binding", CREATE_FACET_BINDING),
     ("model_binding_proposal", CREATE_MODEL_BINDING_PROPOSAL),
+    ("motor", CREATE_MOTOR),                          # antes de capability (FK fallback_motor)
+    ("capability", CREATE_CAPABILITY),                # antes de capability_motor (FK)
+    ("capability_motor", CREATE_CAPABILITY_MOTOR),
 ]
 
 # transport, requires_tool_use, auto_selectable — valores actuales reales
@@ -371,6 +429,112 @@ _FACET_PERSONAS = {
         "Diseñas soluciones técnicas elegantes con rigor matemático."
     ),
 }
+
+# Portado de ~/jax/las_manos/config.toml [motors.*] (2026-08-18). model_ref
+# se resuelve por SELECT en vez de hardcodear el id -- el AUTO_INCREMENT de
+# `model` no es estable entre instalaciones.
+_MOTOR_SEED = [
+    # key,   provider_id, model_id,   transport,             max_tokens, timeout, reasoning, visibility,    sandbox
+    ("kimi", "moonshot", "kimi-k3",   "http_openai_compat",  8000,       600,     True,      "audit_only",  True),
+    ("ada",  "zhipu",    "glm-5.2",   "http_openai_compat",  8000,       600,     True,      "audit_only",  True),
+]
+
+# key, risk_level, sandbox_only, requires_human_gate, max_exec_min, max_recursion,
+# output_schema, fallback_motor, fallback_mode, allowed_callers, forbidden_paths
+_CAPABILITY_SEED = [
+    ("code_swarm", "high", True, True, 30, 1, "code_swarm.v1", "ada", "manual_only",
+     ["hyde", "ada", "kimi", "jacobs"], [".env", "secrets/", "private_keys/", "credentials/"]),
+    ("refactor", "medium", True, False, 10, 0, "code_patch.v1", None, None,
+     ["hyde", "ada", "jacobs"], None),
+    ("architecture_review", "medium", True, False, 5, 0, "architecture_review.v1", None, None,
+     ["hyde", "jacobs"], None),
+    ("bug_hunt", "high", True, True, 15, 0, "bug_hunt.v1", None, None,
+     ["hyde", "ada", "jacobs"], None),
+    ("pipeline_analysis", "low", True, False, 15, 0, "analysis.v1", None, None,
+     ["jacobs", "hyde"], None),
+    ("implementation", "medium", True, False, 30, 0, "code_patch.v1", None, None,
+     ["jacobs", "hyde"], [".env", "secrets/", "private_keys/", "credentials/"]),
+    ("generate", "low", True, False, 15, 0, "generate.v1", None, None,
+     ["jacobs", "hyde", "ada"], None),
+    ("reason", "low", True, False, 15, 0, "reason.v1", None, None,
+     ["jacobs", "hyde", "ada", "thot"], None),
+    ("design", "low", True, False, 15, 0, "design.v1", None, None,
+     ["jacobs", "hyde", "ada"], None),
+    ("validate_consistency", "low", True, False, 15, 0, "validation.v1", None, None,
+     ["jacobs", "hyde", "thot"], None),
+    ("reconcile", "low", True, False, 15, 0, "reconcile.v1", None, None,
+     ["jacobs", "hyde", "ada"], None),
+    ("critique", "low", True, False, 15, 0, "critique.v1", None, None,
+     ["jacobs", "hyde", "thot"], None),
+]
+
+# (capability_key, [motor_key, ...] en orden de prioridad). "thot" queda
+# excluido a proposito de validate_consistency/critique -- no existe como
+# motor todavia (Task 8 lo crea junto con esas 2 filas via INSERT directo,
+# el criterio de aceptacion #4). Sin esto, la FK de capability_motor
+# rompe el seed.
+_CAPABILITY_MOTOR_SEED = [
+    ("code_swarm", ["kimi"]),
+    ("refactor", ["kimi"]),
+    ("architecture_review", ["ada"]),
+    ("bug_hunt", ["kimi"]),
+    ("pipeline_analysis", ["kimi"]),
+    ("implementation", ["kimi"]),
+    ("generate", ["kimi", "ada"]),
+    ("reason", ["ada", "kimi"]),
+    ("design", ["ada", "kimi"]),
+    ("validate_consistency", ["ada"]),  # "thot" excluido, ver nota arriba
+    ("reconcile", ["ada", "kimi"]),
+    ("critique", ["ada"]),              # "thot" excluido, ver nota arriba
+]
+
+
+async def _seed_motors_and_capabilities(cur) -> None:
+    for key, provider_id, model_id, transport, max_tokens, timeout, reasoning, visibility, sandbox in _MOTOR_SEED:
+        await cur.execute(
+            "SELECT id FROM model WHERE provider_id=%s AND model_id=%s",
+            (provider_id, model_id),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            # model no sembrado todavia (orden de _seed_models_and_backfill) --
+            # no romper el seed completo por un motor que se puede agregar despues.
+            continue
+        model_ref = row[0]
+        await cur.execute(
+            "INSERT IGNORE INTO motor "
+            "(`key`, model_ref, transport, max_tokens, default_timeout_seconds, "
+            " supports_reasoning, reasoning_default_visibility, sandbox_only) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (key, model_ref, transport, max_tokens, timeout, reasoning, visibility, sandbox),
+        )
+
+    for (key, risk_level, sandbox_only, gate, max_exec, max_rec, schema,
+         fallback_motor, fallback_mode, callers, forbidden) in _CAPABILITY_SEED:
+        await cur.execute(
+            "INSERT IGNORE INTO capability "
+            "(`key`, risk_level, sandbox_only, requires_human_gate, max_execution_minutes, "
+            " max_recursion_depth, output_schema, fallback_motor, fallback_mode, "
+            " allowed_callers, forbidden_paths) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (key, risk_level, sandbox_only, gate, max_exec, max_rec, schema,
+             fallback_motor, fallback_mode, json.dumps(callers),
+             json.dumps(forbidden) if forbidden is not None else None),
+        )
+
+    for capability_key, motor_keys in _CAPABILITY_MOTOR_SEED:
+        for priority, motor_key in enumerate(motor_keys):
+            await cur.execute(
+                "SELECT 1 FROM motor WHERE `key`=%s",
+                (motor_key,),
+            )
+            if await cur.fetchone() is None:
+                continue  # motor no existe todavia -- no romper el seed (ver nota _CAPABILITY_MOTOR_SEED)
+            await cur.execute(
+                "INSERT IGNORE INTO capability_motor (capability_key, motor_key, priority) "
+                "VALUES (%s, %s, %s)",
+                (capability_key, motor_key, priority),
+            )
 
 
 async def _seed_facets(cur) -> None:
@@ -669,5 +833,6 @@ async def run_migrations():
             await _seed_provider_sync_config(cur)
             await _seed_models_and_backfill(cur)
             await _fix_anthropic_sonnet_alias(cur)
+            await _seed_motors_and_capabilities(cur)
 
         await conn.commit()
