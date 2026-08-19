@@ -14,6 +14,15 @@ router = APIRouter(prefix="/api/pipelines")
 
 JACOBS_URL = os.getenv("JACOBS_URL", "http://127.0.0.1:7777/jacobs")
 
+# _plan_builder.build() en Jacobs llama a un LLM real para armar el plan,
+# incluso en dry_run (ver T1.c). Medido 2026-08-19: 17s, 23.4s, 27.6s,
+# 29.6s en 4 corridas — la latencia de un cliente HTTP externo (probable
+# grounding/web de hipatia) no tiene cota firme. 10s cortaba conexiones
+# legítimas: jax-platform devolvía 502 mientras Jacobs seguía corriendo y
+# persistía el pipeline sin que el cliente se enterara del pipeline_id
+# (huérfano confirmado, sonda T1.a). Margen ~2x sobre el máximo medido.
+JACOBS_PIPELINE_TIMEOUT = float(os.getenv("JACOBS_PIPELINE_TIMEOUT", "60.0"))
+
 # engine_state.active_pipelines (memoria) se descarta apenas la pipeline
 # termina -- justo cuando normalmente se pide /results. Este registro en
 # disco es la única fuente de ownership que sobrevive a eso; mismo patrón
@@ -72,26 +81,32 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
     body["tenant_id"] = user.tenant_id
     client = await get_http_client()
     try:
-        r = await client.post(f"{JACOBS_URL}/pipeline", json=body, timeout=10.0)
+        r = await client.post(f"{JACOBS_URL}/pipeline", json=body, timeout=JACOBS_PIPELINE_TIMEOUT)
         data = r.json()
-        if r.status_code == 200:
-            pipeline_id = data.get("pipeline_id")
-            if pipeline_id:
-                # Antes de admitir el recurso o publicar el evento de WS
-                # (que ya revela pipeline_id al dueño) — así un fallo acá
-                # aborta limpio, sin slot de tenant huérfano ni owner file
-                # faltante para un id que el cliente ya recibió.
-                _record_pipeline_owner(pipeline_id, user.tenant_id, user.user_id)
-                await resource_manager.admit_pipeline(user.tenant_id, pipeline_id)
-                initial = PipelineState(
-                    pipeline_id=pipeline_id,
-                    tenant_id=user.tenant_id,
-                    user_id=user.user_id,
-                    name=body.get("name", "Pipeline"),
-                    status="running",
-                )
-                await engine_state.upsert_pipeline(initial, user.tenant_id, user.user_id)
+        if r.status_code != 200:
+            # Jacobs rechazó el pipeline (ej. 422 límite de concurrentes,
+            # 423 kill switch) — propagar el error real en vez de
+            # reenviarlo como 200 con el body de error de Jacobs.
+            raise HTTPException(status_code=r.status_code, detail=data.get("detail", "Error de Jacobs"))
+        pipeline_id = data.get("pipeline_id")
+        if pipeline_id:
+            # Antes de admitir el recurso o publicar el evento de WS
+            # (que ya revela pipeline_id al dueño) — así un fallo acá
+            # aborta limpio, sin slot de tenant huérfano ni owner file
+            # faltante para un id que el cliente ya recibió.
+            _record_pipeline_owner(pipeline_id, user.tenant_id, user.user_id)
+            await resource_manager.admit_pipeline(user.tenant_id, pipeline_id)
+            initial = PipelineState(
+                pipeline_id=pipeline_id,
+                tenant_id=user.tenant_id,
+                user_id=user.user_id,
+                name=body.get("name", "Pipeline"),
+                status="running",
+            )
+            await engine_state.upsert_pipeline(initial, user.tenant_id, user.user_id)
         return data
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
