@@ -24,7 +24,20 @@ decrypt_provider_keys_in_env()
 # DB — ausencia de fallas no es evidencia de éxito (mismo principio que
 # C3 del doc de reformas, aplicado a logging en vez de a claims del
 # modelo). Sube SOLO este logger — el nivel global sigue en warning.
-logging.getLogger("credential_resolver").setLevel(logging.INFO)
+#
+# setLevel(INFO) solo no alcanza: uvicorn con --log-level warning no deja
+# un handler en el logger raíz, así que un registro que pasa el check de
+# nivel de este logger cae igual en logging.lastResort (WARNING por
+# default) y se pierde antes de journald. Hace falta un handler propio,
+# sin propagar al raíz (evita duplicar la línea si algo más adelante le
+# agrega un handler al raíz).
+_cred_logger = logging.getLogger("credential_resolver")
+_cred_logger.setLevel(logging.INFO)
+_cred_handler = logging.StreamHandler()
+_cred_handler.setLevel(logging.INFO)
+_cred_handler.setFormatter(logging.Formatter("%(levelname)s credential_resolver: %(message)s"))
+_cred_logger.addHandler(_cred_handler)
+_cred_logger.propagate = False
 
 from db.connection import get_pool, close_pool
 from http_client import get_http_client, close_http_client

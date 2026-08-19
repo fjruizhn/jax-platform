@@ -46,11 +46,21 @@ _load_jax_env()
 # --- Memoria semántica COMPARTIDA con el REPL (MISMA MariaDB jax_memory) ----
 # Reutiliza la clase MemoryDB del núcleo (~/jax) — no duplica memoria ni lógica.
 # Degrada elegante: si no carga o la base cae, el chat sigue SIN memoria.
+# Imports separados a propósito: ~/jax es un repo aparte con su propio ciclo
+# de reconciliación (ver infra/facetas-bloque-d de ese repo, pendiente de
+# mergear a su master). Si ese repo todavía no tiene detect_completeness_intent
+# pero SÍ tiene MemoryDB, un solo try/except combinado tumbaba MemoryDB entero
+# por un ImportError de la función auxiliar — degradando TODA la memoria
+# semántica (y con ella shadow validation, que no encola sin conv_uuid) en
+# vez de degradar solo el bypass de completeness. Cada import falla solo.
 sys.path.insert(0, os.path.expanduser("~/jax"))
 try:
-    from jax.memory.db import MemoryDB, detect_completeness_intent
+    from jax.memory.db import MemoryDB
 except Exception:
     MemoryDB = None
+try:
+    from jax.memory.db import detect_completeness_intent
+except Exception:
     def detect_completeness_intent(text: str) -> str | None:
         return None
 
