@@ -571,6 +571,42 @@ async def _seed_jax_local_motor(cur) -> None:
         )
 
 
+async def _seed_thot_motor(cur) -> None:
+    """R4 -- criterio de aceptacion decisivo del spec: motor nuevo dado de
+    alta SOLO por dato (INSERT), sin tocar worker.py/catalog.py (ya
+    generalizados por transport en Tasks 2-3). openai/credential ya estan
+    activos -- los usa Thot del lado de la Mesa, cero setup nuevo.
+    validate_consistency/critique referenciaban 'thot' en config.toml
+    (allowed_motors) pero Task 1 excluyo esas 2 filas porque el motor no
+    existia -- se completan aca."""
+    await cur.execute(
+        "SELECT id FROM model WHERE provider_id='openai' AND model_id='gpt-5.5'"
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return
+    await cur.execute(
+        "INSERT IGNORE INTO motor "
+        "(`key`, model_ref, transport, max_tokens, default_timeout_seconds, "
+        " supports_reasoning, reasoning_default_visibility, sandbox_only) "
+        "VALUES ('thot', %s, 'http_openai_compat', 0, 300, FALSE, 'audit_only', TRUE)",
+        (row[0],),
+    )
+    for capability_key in ("validate_consistency", "critique"):
+        await cur.execute(
+            "INSERT IGNORE INTO capability_motor (capability_key, motor_key, priority) "
+            "VALUES (%s, 'thot', 0)",
+            (capability_key,),
+        )
+        # ada ya tenia priority=0 (Task 1) -- bajarla a 1 para no empatar
+        # con thot, sin tocar la fila de thot recien insertada.
+        await cur.execute(
+            "UPDATE capability_motor SET priority=1 "
+            "WHERE capability_key=%s AND motor_key='ada' AND priority=0",
+            (capability_key,),
+        )
+
+
 async def _seed_facets(cur) -> None:
     for key, display_name, icon, color, transport, auto_sel in _FACET_SEED:
         await cur.execute(
@@ -869,5 +905,6 @@ async def run_migrations():
             await _fix_anthropic_sonnet_alias(cur)
             await _seed_motors_and_capabilities(cur)
             await _seed_jax_local_motor(cur)
+            await _seed_thot_motor(cur)
 
         await conn.commit()

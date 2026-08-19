@@ -24,8 +24,13 @@ def test_capabilities_incluye_generate_con_kimi_y_ada_en_orden(client):
     assert by_key["generate"]["allowed_motors"] == ["kimi", "ada", "jax_local"]
 
 
-def test_capabilities_critique_no_incluye_thot(client):
+def test_capabilities_critique_incluye_thot_y_ada_en_orden(client):
+    """R4 Task 8: thot se da de alta como motor real via INSERT
+    (_seed_thot_motor) y completa validate_consistency/critique, que
+    Task 1 habia dejado sin su referencia a "thot" porque el motor
+    todavia no existia -- confirmado contra jax_memory real, no solo
+    jax_memory_test."""
     resp = client.get("/api/motors/capabilities", headers=_auth_headers())
     body = resp.json()
     by_key = {c["key"]: c for c in body["capabilities"]}
-    assert "thot" not in by_key["critique"]["allowed_motors"]
+    assert by_key["critique"]["allowed_motors"] == ["thot", "ada"]

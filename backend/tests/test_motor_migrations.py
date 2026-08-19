@@ -67,15 +67,24 @@ def test_seed_kimi_y_ada_como_motor(client):
     assert by_key["ada"][1] == "http_openai_compat"
 
 
-def test_seed_capability_motor_no_referencia_motores_inexistentes(client):
-    """thot no es motor todavia (Task 8 lo crea) -- las filas de
-    validate_consistency/critique que en config.toml apuntaban a "thot"
-    deben quedar excluidas del seed, no romper la FK."""
+def test_thot_existe_como_motor_y_completa_las_capabilities_pendientes(client):
+    """R4 Task 8 -- criterio de aceptacion decisivo: thot se da de alta
+    solo por dato (INSERT en _seed_thot_motor), completando las 2 filas de
+    capability_motor que Task 1 dejo excluidas a proposito porque el motor
+    todavia no existia."""
     rows = client.portal.call(
-        _fetch_all,
-        "SELECT capability_key, motor_key FROM capability_motor WHERE motor_key = 'thot'",
+        _fetch_all, "SELECT transport FROM motor WHERE `key`='thot'",
     )
-    assert len(rows) == 0
+    assert len(rows) == 1, rows
+    assert rows[0][0] == "http_openai_compat"
+
+    for cap in ("validate_consistency", "critique"):
+        rows = client.portal.call(
+            _fetch_all,
+            "SELECT motor_key FROM capability_motor WHERE capability_key=%s ORDER BY priority",
+            (cap,),
+        )
+        assert [r[0] for r in rows] == ["thot", "ada"], (cap, rows)
 
 
 def test_seed_code_swarm_apunta_a_kimi_con_fallback_ada(client):
@@ -113,15 +122,19 @@ async def _count_capability_motor():
             return row[0]
 
 
-def test_capability_motor_seed_count_is_20(client):
-    """Verify the _CAPABILITY_MOTOR_SEED + Task 4 produces exactly 20 rows:
-    8 capabilities with 1 motor + 4 capabilities with 3 motors = 20 total.
+def test_capability_motor_seed_count_is_22(client):
+    """Verify the _CAPABILITY_MOTOR_SEED + Task 4 (jax_local) + Task 8
+    (thot) produces exactly 22 rows:
+    6 capabilities with 1 motor + 2 capabilities with 2 motors (Task 8
+    agregó thot a validate_consistency/critique, antes 1 motor cada una)
+    + 4 capabilities with 3 motors = 6 + 4 + 12 = 22 total.
     Capabilities with 1 motor: code_swarm, refactor, architecture_review,
-    bug_hunt, pipeline_analysis, implementation, validate_consistency, critique.
+    bug_hunt, pipeline_analysis, implementation.
+    Capabilities with 2 motors: validate_consistency, critique (thot, ada).
     Capabilities with 3 motors (Task 4 agregó jax_local con priority 2):
     generate, reason, design, reconcile."""
     count = client.portal.call(_count_capability_motor)
-    assert count == 20, f"Expected 20 capability_motor rows, got {count}"
+    assert count == 22, f"Expected 22 capability_motor rows, got {count}"
 
 
 def test_seed_jax_local_como_motor_ollama(client):
