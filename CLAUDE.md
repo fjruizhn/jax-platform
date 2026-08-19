@@ -75,14 +75,35 @@ NO es AteneaERP. NO mezclar. Son productos independientes.
    presente en el request.
 
 4. MOTOR jax_local: ollama local en GPU AMD Radeon AI PRO R9700 32GB ROCm
-   (antes RX 9060 XT 16GB Vulkan, migrada jul-2026). El modelo activo lo
-   define la tabla `facet_models` (is_active), NO `config.toml` — ver
-   [[facet-models-stale-active-flag-jax-local]] en memoria: si se cambia el
-   modelo a mano en Ollama sin actualizar esa fila, la próxima request lo
-   revierte. Actualmente qwen3-coder:30b (~21GB). El keep_alive:-1 está
-   embebido en _call_ollama (backend/api/chat.py) para evitar recarga en frío.
-   Si reaparece lentitud de ~60s, verificar con `ollama ps` que UNTIL no
-   expire pronto y que el modelo cargado coincida con la fila activa de DB.
+   (antes RX 9060 XT 16GB Vulkan, migrada jul-2026). CORREGIDO 2026-08-19 —
+   esta nota decía que el modelo activo lo define `facet_models` (is_active);
+   eso quedó obsoleto con el refactor Bloque C del 2026-08-09
+   (facet_resolver.py). El modelo real lo define `facet_binding` (role=
+   'primary', columna model_ref), resuelto en vivo por `resolve_facet()` —
+   ver facet_resolver.py, usado tanto por backend/api/chat.py como por
+   jacobs/executor.py y jacobs/plan.py. `facet_models` es una tabla catálogo
+   distinta (opciones disponibles para UI), no la fuente de verdad — no
+   confundirlas.
+   Cambiar el modelo NUNCA es un UPDATE a mano: el único endpoint que escribe
+   facet_binding es `POST /admin/models/proposals/{id}/approve` (backend/api/
+   admin/models.py, requiere superadmin) — "regla de oro" explícita en el
+   código: nunca el sync, siempre una aprobación humana. Flujo: `ollama pull`
+   el modelo nuevo → `POST /admin/models/sync` lo registra en la tabla
+   `model` → se crea un `model_binding_proposal` (pending) → se aprueba desde
+   el panel admin de Axioma Platform.
+   Upgrade en curso 2026-08-19: qwen3.6:35b-a3b-q4_K_M pulleado, proposal
+   creada para reemplazar qwen3-coder:30b — pendiente de aprobación en el
+   panel admin (ver model_binding_proposal). NO asumir que ya está activo
+   sin confirmar `facet_binding.model_ref` — "el que supone se equivoca".
+   Los modelos de Ollama ahora viven en
+   `/srv/jax-data/ollama-models` (antes en `/`, que llegó a 86% de uso
+   compartiendo disco con MariaDB — deuda de infraestructura resuelta ese
+   mismo día, ver Environment=OLLAMA_MODELS en el drop-in
+   `/etc/systemd/system/ollama.service.d/override.conf`).
+   El keep_alive:-1 sigue embebido en _call_ollama (backend/api/chat.py) para
+   evitar recarga en frío. Si reaparece lentitud de ~60s, verificar con
+   `ollama ps` que UNTIL no expire pronto y que el modelo cargado coincida
+   con `facet_binding.model_ref` para jax_local (no con `facet_models`).
 
 5. DIAGNÓSTICO POR EVIDENCIA: verificar vhost/hashes/procesos antes de ejecutar
    planes. En esta sesión, 2 de 3 causas raíz diagnosticadas por suposición
