@@ -50,7 +50,14 @@ async def record_usage(
             if price_in is None or price_out is None:
                 cost = None
             else:
-                cost = (tokens_in * float(price_in) + tokens_out * float(price_out)) / 1_000_000
+                # round(): la división en float casi siempre produce más
+                # decimales de los que cost_usd DECIMAL(10,6) puede guardar
+                # exactos -- sin esto MariaDB redondea igual al insertar
+                # pero emite "Data truncated for column 'cost_usd'" en cada
+                # request (no es perdida de magnitud, el valor guardado ya
+                # era correcto; ensanchar la columna no lo evita, cualquier
+                # float sigue excediendo una precision fija en algun punto).
+                cost = round((tokens_in * float(price_in) + tokens_out * float(price_out)) / 1_000_000, 6)
 
         pool = await get_pool()
         async with pool.acquire() as conn:
