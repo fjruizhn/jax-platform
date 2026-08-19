@@ -73,6 +73,7 @@ from api.admin import (
     usage_router,
     models_router,
     facet_bindings_router,
+    admin_motors_router,
 )
 
 
@@ -137,6 +138,7 @@ app.include_router(usage_router)
 # facet_models_router desregistrado — ver api/admin/__init__.py
 app.include_router(models_router)
 app.include_router(facet_bindings_router)
+app.include_router(admin_motors_router)
 
 
 # ws_hub and event_bus each guard their own state with their own lock, so a
