@@ -87,6 +87,7 @@ export default {
   descThot: 'Critical audit',
   descKimi: 'Technical implementation',
   descAda: 'Analysis & rigor',
+  autoMotor: 'Auto (by competence)',
 
   // Center panel
   platformLabel: 'AXIOMA V0.2',
