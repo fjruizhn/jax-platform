@@ -34,7 +34,7 @@ def _load_env() -> dict:
                 if line and not line.startswith("#") and "=" in line:
                     k, _, v = line.partition("=")
                     env[k.strip()] = v.strip()
-    except FileNotFoundError:
+    except FileNotFoundError:  # fail-soft: mismo patron que chat.py/image.py: FileNotFoundError acotado a 'no existe .env todavia', no oculta otros errores de lectura
         pass
     return env
 

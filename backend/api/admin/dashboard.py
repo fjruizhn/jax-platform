@@ -50,7 +50,15 @@ def _count_configured_keys() -> dict:
                 if line and not line.startswith("#") and "=" in line:
                     k, _, v = line.partition("=")
                     env[k.strip()] = v.strip()
-    except Exception:
+    # Corregido en triage de P10 (2026-08-19): esto era `except Exception: pass`
+    # — un error de lectura real (permisos, encoding) quedaba indistinguible
+    # de ".env no existe todavía", y el dashboard mostraba "0 de N
+    # configuradas" como si fuera un hecho verificado en vez de un fallo
+    # silencioso — el superadmin que lo mira actúa creyendo que no hay keys,
+    # cuando puede ser que la lectura falló. Acotado a FileNotFoundError,
+    # mismo patrón que chat.py/image.py/admin/keys.py; cualquier otro error
+    # ahora se propaga de verdad en vez de mentir con un 0.
+    except FileNotFoundError:  # fail-soft: acotado a "no existe .env todavía", no oculta otros errores de lectura (ver comentario arriba)
         pass
 
     configured = sum(1 for k in _PROVIDERS_KEYS if env.get(k))

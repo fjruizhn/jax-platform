@@ -22,7 +22,7 @@ def _load_jax_env():
                 if line and not line.startswith("#") and "=" in line:
                     k, _, v = line.partition("=")
                     os.environ.setdefault(k.strip(), v.strip())
-    except FileNotFoundError:
+    except FileNotFoundError:  # fail-soft: mismo patron que chat.py: FileNotFoundError acotado, no oculta otros errores, defaults explicitos aguas abajo
         pass
 
 

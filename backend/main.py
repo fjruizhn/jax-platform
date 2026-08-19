@@ -93,7 +93,7 @@ async def lifespan(app: FastAPI):
         if n:
             # flush=True: sin esto el print se pierde por buffering al salir el proceso.
             print(f"[memoria] {n} conversación(es) web cerradas en shutdown", flush=True)
-    except Exception:
+    except Exception:  # fail-soft: flush de conversaciones en shutdown, best-effort documentado — el proceso ya esta cerrando, nada depende de este resultado
         pass
     await close_http_client()
     await close_pool()
@@ -211,13 +211,13 @@ async def websocket_endpoint(
     except asyncio.TimeoutError:
         try:
             await websocket.close(code=4001)
-        except RuntimeError:
+        except RuntimeError:  # fail-soft: best-effort close() tras un error ya manejado arriba; el except externo ya hace return
             pass
         return
     except Exception:
         try:
             await websocket.close(code=4001)
-        except RuntimeError:
+        except RuntimeError:  # fail-soft: mismo best-effort close() que la rama anterior, el except externo ya hace return
             pass
         return
 
@@ -235,7 +235,7 @@ async def websocket_endpoint(
             data = await websocket.receive_json()
             if data.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
-    except WebSocketDisconnect:
+    except WebSocketDisconnect:  # fail-soft: WebSocketDisconnect es el cierre normal del cliente, no un error
         pass
     finally:
         heartbeat_task.cancel()

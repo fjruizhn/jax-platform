@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 from datetime import datetime
 import httpx
@@ -9,6 +10,8 @@ from .schemas import (
 )
 from .events import event_bus
 from .resource_manager import resource_manager
+
+logger = logging.getLogger(__name__)
 
 FACET_COLORS = {
     "jax_local": "#3b82f6",
@@ -130,7 +133,7 @@ class JAXEngineState:
                     ref_data = json.loads(output_ref[7:])
                     raw = ref_data.get("result") or ref_data.get("text") or ""
                     output_preview = str(raw)[:200]
-                except Exception:
+                except Exception:  # fail-soft: preview cosmetico de un output_ref para mostrar en UI; si no parsea queda string vacio, nada depende de este valor
                     pass
 
             steps.append(PipelineStep(
@@ -222,9 +225,26 @@ class JAXEngineState:
                 # pipeline que termina SOLA (no cancelada) nunca lo hacía,
                 # así que cada una consumía uno de los 3 cupos concurrentes
                 # para siempre.
-                await resource_manager.release_pipeline(pipeline.tenant_id, pid)
+                try:
+                    await resource_manager.release_pipeline(pipeline.tenant_id, pid)
+                except Exception:
+                    # fail-open real (encontrado en triage de P10, 2026-08-19):
+                    # remove_pipeline() ya sacó esta pipeline de active_pipelines,
+                    # así que si release_pipeline() falla acá, nada la va a
+                    # reintentar — es exactamente el leak de cupo que el
+                    # comentario de arriba documenta, reproducido por esta
+                    # excepción en vez de por el bug original. Logueado con
+                    # el contexto completo para que se pueda liberar a mano;
+                    # no se re-lanza porque tumbaría el polling del resto de
+                    # las pipelines activas en este mismo ciclo.
+                    logger.error(
+                        "release_pipeline falló tras completar pipeline %s "
+                        "(tenant=%s) — el cupo concurrente puede haber "
+                        "quedado leakeado, requiere intervención manual",
+                        pid, pipeline.tenant_id, exc_info=True,
+                    )
 
-        except Exception:
+        except Exception:  # fail-soft: cubre fetch/parse HTTP de UNA pipeline en _poll_one_pipeline; un fallo transitorio no debe tumbar el polling de las demás pipelines activas en este ciclo — la liberación de cupo, que sí es crítica, ya tiene su propio manejo explícito arriba
             pass
 
     def start_background_tasks(self):

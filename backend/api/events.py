@@ -43,7 +43,7 @@ async def sse_events(user: AuthUser = Depends(get_current_user)):
             while True:
                 event = await queue.get()
                 yield f"data: {json.dumps(event.model_dump())}\n\n"
-        except asyncio.CancelledError:
+        except asyncio.CancelledError:  # fail-soft: CancelledError es la forma normal de terminar el generador SSE al desconectar el cliente
             pass
         finally:
             await _sse_disconnect_and_maybe_unsubscribe(user.user_id)

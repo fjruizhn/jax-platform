@@ -38,7 +38,7 @@ def _load_jax_env():
                 if line and not line.startswith("#") and "=" in line:
                     k, _, v = line.partition("=")
                     os.environ.setdefault(k.strip(), v.strip())
-    except FileNotFoundError:
+    except FileNotFoundError:  # fail-soft: FileNotFoundError acotado a 'no existe .env' — no oculta otros errores de lectura, y cada os.getenv() de abajo ya trae su propio default explicito
         pass
 
 _load_jax_env()
@@ -109,7 +109,7 @@ async def _evict_oldest_conversation_if_over_cap():
     oldest_key, oldest_uuid = _conv_uuids.popitem(last=False)
     try:
         await _memory.end_conversation(oldest_uuid)
-    except Exception:
+    except Exception:  # fail-soft: best-effort documentado en el comentario de arriba: la conversacion queda abierta en DB pero deja de trackearse aca, no hay falso exito
         pass  # best-effort: queda abierta en la DB, pero ya no se trackea acá
 
 
@@ -198,12 +198,12 @@ async def flush_open_conversations() -> int:
         try:
             await _memory.end_conversation(uuid_)
             n += 1
-        except Exception:
+        except Exception:  # fail-soft: shutdown flush best-effort documentado en el docstring de la funcion ('nunca lanza'); el conteo n de exitos reales es lo que se reporta
             pass
     _conv_uuids.clear()
     try:
         await _memory.close()
-    except Exception:
+    except Exception:  # fail-soft: cierre de memoria en shutdown, best-effort documentado; el proceso ya esta terminando
         pass
     _memory_ready = False
     return n
