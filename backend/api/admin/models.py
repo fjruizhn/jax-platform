@@ -137,7 +137,17 @@ async def _fetch_proposal(cur, proposal_id: int):
 @router.post("/proposals/{proposal_id}/approve")
 async def approve_proposal(proposal_id: int, user: AuthUser = Depends(require_superadmin)):
     """UNICO endpoint de este router que escribe facet_binding — regla de
-    oro: siempre una aprobacion explicita de un superadmin, nunca el sync."""
+    oro: siempre una aprobacion explicita de un superadmin, nunca el sync.
+
+    Tambien sincroniza `motor.model_ref` cuando existe una fila con el mismo
+    `key` que la faceta (jax_local/ada/thot hoy) — R4 desacoplo la SELECCION
+    de motor por capability del nombre de faceta (design.md:11-20), pero
+    nunca discutio que un motor homonimo de una faceta representa el mismo
+    recurso fisico (mismo provider, misma credencial): sin este UPDATE,
+    facet_binding y motor divergen en la primera aprobacion, como paso el
+    2026-08-19 con qwen3.6 (facet quedo actualizada, Motores en Admin no).
+    Motores sin faceta homonima (no hay hoy) simplemente no matchean el
+    WHERE y el UPDATE no toca nada — no hace falta un SELECT previo."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -153,6 +163,10 @@ async def approve_proposal(proposal_id: int, user: AuthUser = Depends(require_su
                 "UPDATE facet_binding SET model_ref=%s, approved_by=%s, approved_at=NOW() "
                 "WHERE facet_key=%s AND role='primary'",
                 (proposed_model_ref, decided_by, facet_key),
+            )
+            await cur.execute(
+                "UPDATE motor SET model_ref=%s WHERE `key`=%s",
+                (proposed_model_ref, facet_key),
             )
             await cur.execute(
                 "UPDATE model_binding_proposal SET status='approved', decided_by=%s, decided_at=NOW() "
