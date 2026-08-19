@@ -58,7 +58,7 @@ export default function Login() {
 
   if (showForgot) {
     return (
-      <div className="min-h-screen bg-hal-bg flex items-center justify-center p-4">
+      <div className="min-h-dvh bg-hal-bg flex items-center justify-center p-4">
         <div className="w-full max-w-md">
           <div className="flex justify-end gap-1 mb-4">
             {['es', 'en'].map((l) => (
@@ -114,7 +114,7 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-hal-bg flex items-center justify-center p-4">
+    <div className="min-h-dvh bg-hal-bg flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="flex justify-end gap-1 mb-4">
           {['es', 'en'].map((l) => (

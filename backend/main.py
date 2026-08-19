@@ -39,11 +39,13 @@ from api.upload import router as upload_router
 from api.admin import (
     dashboard_router,
     keys_router,
+    credentials_router,
     users_router,
     repository_router,
     config_router,
     usage_router,
-    facet_models_router,
+    models_router,
+    facet_bindings_router,
 )
 
 
@@ -99,11 +101,14 @@ app.include_router(image_router)
 app.include_router(upload_router)
 app.include_router(dashboard_router)
 app.include_router(keys_router)
+app.include_router(credentials_router)
 app.include_router(users_router)
 app.include_router(repository_router)
 app.include_router(config_router)
 app.include_router(usage_router)
-app.include_router(facet_models_router)
+# facet_models_router desregistrado — ver api/admin/__init__.py
+app.include_router(models_router)
+app.include_router(facet_bindings_router)
 
 
 # ws_hub and event_bus each guard their own state with their own lock, so a

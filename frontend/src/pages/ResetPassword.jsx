@@ -18,7 +18,7 @@ export default function ResetPassword() {
 
   if (!token) {
     return (
-      <div className="min-h-screen bg-hal-bg flex items-center justify-center p-4">
+      <div className="min-h-dvh bg-hal-bg flex items-center justify-center p-4">
         <div className="w-full max-w-md text-center">
           <p className="text-red-400 text-sm mb-4">{t.resetPasswordInvalid}</p>
           <Link to="/login" className="text-xs text-blue-400 hover:text-blue-300">← {t.backToLogin}</Link>
@@ -47,7 +47,7 @@ export default function ResetPassword() {
   }
 
   return (
-    <div className="min-h-screen bg-hal-bg flex items-center justify-center p-4">
+    <div className="min-h-dvh bg-hal-bg flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="flex justify-end gap-1 mb-4">
           {['es', 'en'].map((l) => (

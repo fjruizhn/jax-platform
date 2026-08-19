@@ -1,47 +1,69 @@
+import logging
 from datetime import date, timedelta
 from fastapi import APIRouter, Depends, Query
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
 
+logger = logging.getLogger("admin.usage")
+
 router = APIRouter(prefix="/api/admin")
 
-MODEL_PRICES = {
-    "gpt-4o":            {"in": 5.00,  "out": 30.00},
-    "gpt-image-1":       {"in": 0.00,  "out": 0.00, "per_image": 0.04},
-    "deepseek-v4-flash": {"in": 0.14,  "out": 0.28},
-    "gemini-2.5-flash":  {"in": 0.15,  "out": 0.60},
-    "kimi-k2.7-code":    {"in": 0.95,  "out": 4.00},
-    "glm-5.2":           {"in": 1.40,  "out": 4.40},
-}
+
+async def _lookup_model_price(provider_id: str, model: str) -> tuple[float | None, float | None]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT price_input_per_1m_usd, price_output_per_1m_usd "
+                "FROM model WHERE provider_id=%s AND model_id=%s",
+                (provider_id, model),
+            )
+            row = await cur.fetchone()
+    if not row:
+        return None, None
+    return row[0], row[1]
 
 
 async def record_usage(
     user_id: str,
     tenant_id: str,
     facet: str,
+    provider_id: str,
     model: str,
     tokens_in: int,
     tokens_out: int,
     request_type: str = "chat",
+    cost_usd_override: float | None = None,
 ):
-    """Llamar desde chat.py y image.py para registrar uso."""
-    prices = MODEL_PRICES.get(model, {"in": 0, "out": 0})
-    cost = (tokens_in * prices["in"] + tokens_out * prices["out"]) / 1_000_000
-    if request_type == "imagen" and "per_image" in prices:
-        cost = prices["per_image"]
-
+    """Llamar desde chat.py e image.py para registrar uso. Costo real desde
+    `model` (Bloque D) — nunca un dict hardcodeado. Si el modelo no esta en
+    el catalogo (nunca corrio un sync), cost_usd queda NULL con el motivo
+    visible en el propio dato (nunca un numero inventado). cost_usd_override
+    es para pricing plano-por-request que no encaja en precio-por-token
+    (ej. generacion de imagenes)."""
     try:
+        if cost_usd_override is not None:
+            cost = cost_usd_override
+        else:
+            price_in, price_out = await _lookup_model_price(provider_id, model)
+            if price_in is None or price_out is None:
+                cost = None
+            else:
+                cost = (tokens_in * float(price_in) + tokens_out * float(price_out)) / 1_000_000
+
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "INSERT INTO axioma_usage (tenant_id, user_id, facet, model, tokens_in, tokens_out, cost_usd, request_type) "
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                    (tenant_id, user_id, facet, model, tokens_in, tokens_out, cost, request_type),
+                    (int(tenant_id), int(user_id), facet, model, tokens_in, tokens_out, cost, request_type),
                 )
-    except Exception:
-        pass  # usage tracking is best-effort
+            await conn.commit()
+    except Exception as e:
+        logger.warning(f"record_usage failed facet={facet} model={model} reason={type(e).__name__}: {e}")
+        # usage tracking is best-effort — no re-raise, pero el fallo queda visible en logs
 
 
 @router.get("/usage")
@@ -57,7 +79,8 @@ async def get_usage(
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT facet, model, SUM(tokens_in), SUM(tokens_out), SUM(cost_usd), COUNT(*), request_type
+                SELECT facet, model, SUM(tokens_in), SUM(tokens_out), SUM(cost_usd), COUNT(*), request_type,
+                       SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced_requests
                 FROM axioma_usage
                 WHERE DATE(created_at) >= %s
                 GROUP BY facet, model, request_type
@@ -67,7 +90,6 @@ async def get_usage(
             )
             rows = await cur.fetchall()
 
-            # Chart data: requests per facet per day (last 7 days)
             labels = [(date.today() - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
             await cur.execute(
                 """
@@ -86,9 +108,10 @@ async def get_usage(
             "model": r[1],
             "tokens_in": int(r[2] or 0),
             "tokens_out": int(r[3] or 0),
-            "cost_usd": float(r[4] or 0),
+            "cost_usd": float(r[4]) if r[4] is not None else None,
             "requests": int(r[5] or 0),
             "request_type": r[6],
+            "unpriced_requests": int(r[7] or 0),
         }
         for r in rows
     ]

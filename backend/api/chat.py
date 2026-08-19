@@ -14,6 +14,9 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import httpx
 from http_client import get_http_client
+from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
+from facet_resolver import resolve_facet, FacetUnavailableError
+import model_catalog
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
@@ -45,9 +48,11 @@ _load_jax_env()
 # Degrada elegante: si no carga o la base cae, el chat sigue SIN memoria.
 sys.path.insert(0, os.path.expanduser("~/jax"))
 try:
-    from jax.memory.db import MemoryDB
+    from jax.memory.db import MemoryDB, detect_completeness_intent
 except Exception:
     MemoryDB = None
+    def detect_completeness_intent(text: str) -> str | None:
+        return None
 
 _memory = None              # instancia única (lazy)
 _memory_ready = False
@@ -117,28 +122,57 @@ async def _get_conv_uuid(user_id: int, tenant_id, project_id) -> str | None:
     return u
 
 
-async def _semantic_context(user_text: str, user_id: int, project_id) -> list[dict]:
+async def _semantic_context(user_text: str, user_id: int, project_id,
+                            recent_history: list[dict] | None = None) -> list[dict]:
     """Recupera contexto de sesiones pasadas (replica jax/core/main.py:514-533)
-    con scope de dos niveles: memoria del proyecto + memoria individual del user."""
+    con scope de dos niveles: memoria del proyecto + memoria individual del user.
+    recent_history (opcional): ultimos turnos de ESTA conversacion, para que la
+    busqueda semantica no dependa solo de la ultima frase (ver db.py:_blend_query).
+
+    Si user_text es una pregunta de completeness ("que proyectos tenes
+    activos?"), suma ADEMAS todos los facts de esa categoria via get_facts()
+    — la similitud vectorial contra un solo fact no basta para "dame todo
+    lo que sepas de X" (item #4 del roadmap)."""
     if not await _ensure_memory():
         return []
+
+    bloques = []
+
+    tipo_completeness = detect_completeness_intent(user_text)
+    if tipo_completeness:
+        try:
+            facts = await _memory.get_facts(
+                only_unverified=False, fact_type=tipo_completeness, limit=20,
+                user_id=user_id, project_id=project_id)
+        except Exception:
+            facts = None
+        if facts:
+            lineas_facts = [f"- {f['fact_text']}" for f in facts]
+            bloques.append(
+                f"Todos los hechos guardados de tipo '{tipo_completeness}':\n"
+                + "\n".join(lineas_facts)
+            )
+
     try:
         similares = await _memory.search_similar_messages(
-            user_text, limit=5, user_id=user_id, project_id=project_id)
+            user_text, limit=5, user_id=user_id, project_id=project_id,
+            recent_history=recent_history)
     except Exception:
-        return []
+        similares = []
     relevantes = [r for r in similares if r["distancia"] < 0.8]
-    if not relevantes:
+    if relevantes:
+        lineas = []
+        for r in relevantes:
+            fecha = r["started_at"].strftime("%Y-%m-%d") if r.get("started_at") else "?"
+            rol = "user" if r["role"] == "user" else "jax"
+            lineas.append(f"[{fecha}] {rol}: {r['content']}")
+        bloques.append("Conversaciones relevantes de sesiones anteriores:\n" + "\n".join(lineas))
+
+    if not bloques:
         return []
-    lineas = []
-    for r in relevantes:
-        fecha = r["started_at"].strftime("%Y-%m-%d") if r.get("started_at") else "?"
-        rol = "user" if r["role"] == "user" else "jax"
-        lineas.append(f"[{fecha}] {rol}: {r['content']}")
-    contexto = ("Conversaciones relevantes de sesiones anteriores:\n" + "\n".join(lineas))
     return [
         {"role": "user", "content": "[memoria de sesiones anteriores]"},
-        {"role": "assistant", "content": contexto},
+        {"role": "assistant", "content": "\n\n".join(bloques)},
     ]
 
 
@@ -330,7 +364,7 @@ class ChatResponse(BaseModel):
     timestamp: str
     # True cuando _parse_contract_response no pudo parsear el JSON de
     # contrato de una respuesta real de LLM (degradación auditada) — False
-    # para respuestas enlatadas (is_canned) y para el intercept de hyde,
+    # para respuestas enlatadas (usage is None) y para el intercept de hyde,
     # que nunca pasan por el parseo de contrato.
     contract_degraded: bool = False
 
@@ -338,30 +372,18 @@ class ChatResponse(BaseModel):
 @lru_cache(maxsize=1)
 def _load_config() -> dict:
     # config.toml no tiene ningún escritor en runtime (el modelo activo vive
-    # en la tabla facet_models, no acá — ver CLAUDE.md) — seguro cachear por
-    # el ciclo de vida del proceso en vez de releerlo en cada request de chat.
+    # en facet_binding desde Bloque C, resuelto vía resolve_facet() — ver
+    # _invoke_facet) — seguro cachear por el ciclo de vida del proceso en
+    # vez de releerlo en cada request de chat.
     with open(CONFIG_PATH, "rb") as f:
         return tomllib.load(f)
 
 
-async def _resolve_active_model(facet: str, fallback: str) -> str:
-    """Modelo activo de la faceta segun la tabla facet_models (fuente de verdad
-    editada desde el panel admin). Cae a `fallback` (el model_default de
-    config.toml) si la faceta no tiene fila activa o si la DB no responde,
-    para que el chat nunca se rompa si la tabla queda vacia o la DB esta caida."""
-    try:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "SELECT model_name FROM facet_models "
-                    "WHERE facet = %s AND is_active = TRUE LIMIT 1",
-                    (facet,),
-                )
-                row = await cur.fetchone()
-    except Exception:
-        return fallback
-    return row[0] if row else fallback
+class UsageInfo(NamedTuple):
+    provider_id: str
+    model: str
+    tokens_in: int
+    tokens_out: int
 
 
 class ContractResult(NamedTuple):
@@ -450,18 +472,12 @@ def _build_display_response(contract: ContractResult) -> tuple[str, bool]:
     return contract.analysis, False
 
 
-# NOTA DE ALCANCE (SP2 Task 3, ver task-3-report.md): el brief original
-# asume que _invoke_facet ya devuelve tuple[str, UsageInfo | None] y que
-# "usage is None" distingue respuesta enlatada de llamada real al LLM —
-# esa señal solo existe en infra/facetas-bloque-d (commit 448a707), que
-# NO es ancestro de esta rama (SP2 está basada en master). Por ruling del
-# coordinador, se sustituyó esa señal por un flag posicional explícito
-# (is_canned, devuelto por _invoke_facet) en vez de comparar response_text
-# contra los strings enlatados conocidos — evita que un futuro edit de esos
-# strings rompa la señal en silencio. _CONTRACT_PROMPT_SUFFIX SÍ está
-# conectado al system_prompt real dentro de _invoke_facet (ver esa función).
-# Cuando infra/facetas-bloque-d se mergee, is_canned se reemplaza por
-# "usage is None" — swap de flag, no heurística a desandar.
+# _invoke_facet devuelve tuple[str, UsageInfo | None]; "usage is None"
+# distingue respuesta enlatada (is_canned, derivado en el call site) de
+# llamada real al LLM, en vez de comparar response_text contra los strings
+# enlatados conocidos — evita que un futuro edit de esos strings rompa la
+# señal en silencio. _CONTRACT_PROMPT_SUFFIX está conectado al system_prompt
+# real dentro de _invoke_facet (ver esa función).
 _CONTRACT_PROMPT_SUFFIX = """
 
 FORMATO DE RESPUESTA OBLIGATORIO — respondé ÚNICAMENTE con un objeto JSON, sin texto antes ni después, sin fences de markdown:
@@ -482,7 +498,7 @@ def _build_messages(system_prompt: str, history: list[dict], message: str) -> li
     return msgs
 
 
-async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str) -> str:
+async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str) -> tuple[str, int, int]:
     url = config["personalities"]["jax_local"]["api_url"]
     messages = _build_messages(system_prompt, history, message)
     client = await get_http_client()
@@ -492,13 +508,15 @@ async def _call_ollama(system_prompt: str, history: list[dict], message: str, co
         timeout=180.0,
     )
     r.raise_for_status()
-    return r.json()["message"]["content"]
+    data = r.json()
+    return data["message"]["content"], data.get("prompt_eval_count", 0), data.get("eval_count", 0)
 
 
 async def _call_openai_compat(
     base_url: str, api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
-) -> str:
+    on_response=None,
+) -> tuple[str, int, int]:
     messages = _build_messages(system_prompt, history, message)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     client = await get_http_client()
@@ -509,13 +527,18 @@ async def _call_openai_compat(
         timeout=120.0,
     )
     r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+    data = r.json()
+    if on_response:
+        await on_response(data)
+    usage = data.get("usage") or {}
+    return data["choices"][0]["message"]["content"], usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
 
 
 async def _call_gemini(
     api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
-) -> str:
+    on_response=None,
+) -> tuple[str, int, int]:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     contents = []
     for h in history:
@@ -531,7 +554,14 @@ async def _call_gemini(
     r = await client.post(url, json=body, timeout=120.0)
     r.raise_for_status()
     data = r.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    if on_response:
+        await on_response(data)
+    usage = data.get("usageMetadata") or {}
+    return (
+        data["candidates"][0]["content"]["parts"][0]["text"],
+        usage.get("promptTokenCount", 0),
+        usage.get("candidatesTokenCount", 0),
+    )
 
 
 _MODEL_IDENTITY_WORDS = ("modelo", "model")
@@ -545,9 +575,9 @@ _MODEL_IDENTITY_SELF_REF = (
 def _is_model_identity_question(message: str) -> bool:
     """Detecta preguntas sobre que modelo ejecuta a la faceta ('que modelo
     sos', 'con que modelo estas corriendo'). Estas se resuelven con el dato
-    real de _resolve_active_model, nunca con la respuesta del LLM: el modelo
-    confabula su propia identidad incluso cuando el dato correcto ya esta en
-    su contexto (REGLA DE EVIDENCIA — ver config.toml)."""
+    real de resolve_facet() (facet_binding), nunca con la respuesta del
+    LLM: el modelo confabula su propia identidad incluso cuando el dato
+    correcto ya esta en su contexto (REGLA DE EVIDENCIA — ver config.toml)."""
     text = _sin_tildes(message.lower().strip())
     has_model_word = any(re.search(rf"\b{kw}\b", text) for kw in _MODEL_IDENTITY_WORDS)
     if not has_model_word:
@@ -573,19 +603,24 @@ def _model_identity_reply(model: str, facet: str) -> str:
     )
 
 
+async def _record_resolved_version_from_response(facet_key: str, data: dict) -> None:
+    """Bloque D (D1.2) — best-effort real: la excepcion se atrapa aca, nunca
+    sube a _invoke_facet. resolved_version viene del campo que cada API usa
+    para confirmar lo que de verdad ejecuto: OpenAI-compatible => 'model',
+    Gemini => 'modelVersion' (ninguno de los dos es el alias que se pidio)."""
+    resolved = data.get("model") or data.get("modelVersion")
+    if not resolved:
+        return
+    try:
+        await model_catalog.record_resolved_version(facet_key, resolved)
+    except Exception as e:
+        logger.warning(f"resolved_version capture failed facet={facet_key} reason={type(e).__name__}")
+
+
 async def _invoke_facet(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
-) -> tuple[str, bool]:
-    """Devuelve (texto, is_canned). is_canned=True en cada punto que
-    responde sin llamar a un transporte real (hoy: solo las respuestas
-    enlatadas de _model_identity_reply) — señal posicional sustituta de
-    la UsageInfo-based ("usage is None") que asume el brief de SP2 Task 3,
-    porque _invoke_facet en esta rama (base master) no tiene esa
-    infraestructura (vive en infra/facetas-bloque-d, no mergeada acá; ver
-    task-3-report.md). Cuando ese branch se mergee, is_canned se
-    reemplaza por "usage is None" — swap de flag, no hay que desandar
-    esta heurística."""
+) -> tuple[str, UsageInfo | None]:
     history = _conversations.get(user_id, [])
     if semantic_context:
         # Contexto de sesiones pasadas SOLO para este turno (no entra al hilo RAM).
@@ -593,77 +628,45 @@ async def _invoke_facet(
     personality = config["personalities"].get(facet, config["personalities"]["jax_local"])
     system_prompt = personality.get("system_prompt", "Sos JAX.") + _CONTRACT_PROMPT_SUFFIX
 
-    if facet == "jax_local":
-        model = await _resolve_active_model(
-            "jax_local", personality.get("model_default", "qwen3:14b"))
+    # Bloque C: resolve_facet() reemplaza _resolve_active_model +
+    # resolve_credential_instrumented sueltos — mismo resolver que usa
+    # Jacobs (facet_resolver.py), garantiza que Mesa web y Jacobs resuelvan
+    # la MISMA faceta al MISMO modelo. FAIL-CLOSED: sin binding activo,
+    # mensaje de degradacion explicito, nunca una llamada con modelo vacio.
+    try:
+        f = await resolve_facet(facet)
+    except FacetUnavailableError:
+        return f"⚠️ {facet} no está disponible: sin binding activo configurado.", None
 
-        if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet), True
-
-        # Bug 3: jax_local no sabia con que modelo corre y confabulaba su
-        # identidad. Le damos el dato real (el resuelto desde la DB) como
-        # contexto informativo, no como algo que deba soltar sin que le pregunten.
-        ident = (
-            f"\n\nDato tecnico (para tu propia referencia, no lo repitas sin que "
-            f"te pregunten): el modelo que te ejecuta en este momento es "
-            f"'{model}', via Ollama local en hall9000."
-        )
-        return await _call_ollama(system_prompt + ident, history, message, config, model), False
-
-    if facet == "jekyll":
-        model = await _resolve_active_model("jekyll", personality.get("model_default", "deepseek-v4-flash"))
-        if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet), True
-        return await _call_openai_compat(
-            "https://api.deepseek.com/v1",
-            os.getenv("DEEPSEEK_API_KEY", ""),
-            model, system_prompt, history, message,
-        ), False
-
-    if facet == "hipatia":
-        model = await _resolve_active_model("hipatia", personality.get("model_default", "gemini-2.5-flash"))
-        if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet), True
-        return await _call_gemini(
-            os.getenv("GEMINI_API_KEY", ""), model, system_prompt, history, message,
-        ), False
-
-    if facet == "thot":
-        model = await _resolve_active_model("thot", personality.get("model_default", "gpt-4o"))
-        if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet), True
-        return await _call_openai_compat(
-            "https://api.openai.com/v1",
-            os.getenv("OPENAI_API_KEY", ""),
-            model, system_prompt, history, message,
-        ), False
-
-    if facet == "kimi":
-        api_url = personality.get("api_url", "https://api.moonshot.ai/v1/chat/completions")
-        # Normalizar a base URL sin /chat/completions
-        base_url = api_url[:-len("/chat/completions")] if api_url.endswith("/chat/completions") else api_url
-        model = await _resolve_active_model("kimi", personality.get("model_default", "kimi-k2.7-code"))
-        if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet), True
-        return await _call_openai_compat(
-            base_url, os.getenv("KIMI_API_KEY", ""), model, system_prompt, history, message,
-        ), False
-
-    if facet == "ada":
-        api_url = personality.get("api_url", "https://api.z.ai/api/paas/v4/chat/completions")
-        base_url = api_url[:-len("/chat/completions")] if api_url.endswith("/chat/completions") else api_url
-        model = await _resolve_active_model("ada", personality.get("model_default", "glm-5.2"))
-        if _is_model_identity_question(message):
-            return _model_identity_reply(model, facet), True
-        return await _call_openai_compat(
-            base_url, os.getenv("ZAI_API_KEY", ""), model, system_prompt, history, message,
-        ), False
-
-    # fallback
-    model = await _resolve_active_model(facet, personality.get("model_default", "qwen3:14b"))
     if _is_model_identity_question(message):
-        return _model_identity_reply(model, facet), True
-    return await _call_ollama(system_prompt, history, message, config, model), False
+        return _model_identity_reply(f.model, facet), None
+
+    if f.transport == "ollama":
+        if facet == "jax_local":
+            # Bug 3: jax_local no sabia con que modelo corre y confabulaba su
+            # identidad. Le damos el dato real como contexto informativo.
+            ident = (
+                f"\n\nDato tecnico (para tu propia referencia, no lo repitas sin que "
+                f"te pregunten): el modelo que te ejecuta en este momento es "
+                f"'{f.model}', via Ollama local en hall9000."
+            )
+            text, tin, tout = await _call_ollama(system_prompt + ident, history, message, config, f.model)
+        else:
+            text, tin, tout = await _call_ollama(system_prompt, history, message, config, f.model)
+        return text, UsageInfo(f.provider_id, f.model, tin, tout)
+
+    async def _on_response(data: dict) -> None:
+        await _record_resolved_version_from_response(facet, data)
+
+    if f.transport == "http_gemini":
+        text, tin, tout = await _call_gemini(f.credential, f.model, system_prompt, history, message, on_response=_on_response)
+        return text, UsageInfo(f.provider_id, f.model, tin, tout)
+
+    if f.transport == "http_openai_compat":
+        text, tin, tout = await _call_openai_compat(f.base_url, f.credential, f.model, system_prompt, history, message, on_response=_on_response)
+        return text, UsageInfo(f.provider_id, f.model, tin, tout)
+
+    return f"⚠️ {facet} no está disponible: transporte '{f.transport}' no soportado en la Mesa web.", None
 
 
 def _update_history(user_id: str, user_msg: str, assistant_msg: str):
@@ -711,7 +714,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # -----------------------------------------------------------------------
 
     # Respuestas especiales (sin llamada a LLM) — nunca pasan por el parseo
-    # de contrato, igual que is_canned=True dentro de _invoke_facet.
+    # de contrato, igual que usage=None (is_canned=True) dentro de _invoke_facet.
     if facet == "hyde":
         resp = "Hyde opera en modo tarea autónoma — usá el modo Comando para ejecutar tareas técnicas."
         await _fire_completed(facet, tenant_id, user_id, resp)
@@ -723,10 +726,12 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # Retrieval semántico ANTES del LLM (scope: proyecto + individual del user).
     semantic_context: list[dict] = []
     if mem_uid is not None:
-        semantic_context = await _semantic_context(req.message, mem_uid, mem_pid)
+        semantic_context = await _semantic_context(
+            req.message, mem_uid, mem_pid, recent_history=_conversations.get(user_id, []))
 
     try:
-        response_text, is_canned = await _invoke_facet(facet, config, user_id, req.message, semantic_context)
+        response_text, usage = await _invoke_facet(facet, config, user_id, req.message, semantic_context)
+        is_canned = usage is None
     except httpx.HTTPStatusError as e:
         detail = f"Error HTTP {e.response.status_code} en {facet}: {e.response.text[:200]}"
         await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail[:100])
@@ -744,8 +749,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     shadow_message_id = str(uuid.uuid4())
 
     # Contrato {claim/analysis/judgment}: solo se intenta parsear cuando
-    # hubo una llamada real al LLM (not is_canned) — is_canned es la señal
-    # posicional sustituta de "usage is None" (ver nota en _invoke_facet).
+    # hubo una llamada real al LLM (usage is not None, ver nota en _invoke_facet).
     contract = _parse_contract_response(response_text) if not is_canned else None
     if contract is not None:
         display_text, contract_degraded = _build_display_response(contract)
@@ -757,7 +761,9 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # Registrar uso (best-effort)
     personality = config["personalities"].get(facet, {})
     model_name = personality.get("model_default", facet)
-    await record_usage(user_id, tenant_id, facet, model_name, 0, 0, "chat")
+    if usage is not None:
+        await record_usage(user_id, tenant_id, facet, usage.provider_id, usage.model, usage.tokens_in, usage.tokens_out, "chat")
+        model_name = usage.model  # modelo real resuelto, no el stale de config.toml
 
     # Guardar la respuesta de la faceta en la MISMA memoria (fire-and-forget).
     if conv_uuid:

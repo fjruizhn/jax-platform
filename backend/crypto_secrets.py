@@ -1,5 +1,28 @@
 import os
+from abc import ABC, abstractmethod
 from cryptography.fernet import Fernet, InvalidToken
+
+
+class KeyProvider(ABC):
+    """Interfaz para obtener la llave maestra de cifrado. El dia que se
+    mueva a un KMS/Vault, se cambia la implementacion instanciada en
+    _key_provider — ningun otro modulo vuelve a leer FERNET_KEY directo.
+    Ver jax-platform/docs/fase1-credenciales-diseno.md (B1.3)."""
+
+    @abstractmethod
+    def get_master_key(self) -> bytes: ...
+
+
+class EnvKeyProvider(KeyProvider):
+    """Unica implementacion de esta fase. NO resuelve R2 (FERNET_KEY
+    co-ubicada con lo que cifra en /etc/jax/.env) — deuda abierta,
+    declarada explicitamente en el diseño de Fase 1."""
+
+    def get_master_key(self) -> bytes:
+        return os.environ.get("FERNET_KEY", "").encode()
+
+
+_key_provider: KeyProvider = EnvKeyProvider()
 
 PROVIDER_ENV_KEYS = [
     "OPENAI_API_KEY",
@@ -11,10 +34,10 @@ PROVIDER_ENV_KEYS = [
 
 
 def _get_fernet() -> Fernet | None:
-    key = os.getenv("FERNET_KEY", "")
+    key = _key_provider.get_master_key()
     if not key:
         return None
-    return Fernet(key.encode())
+    return Fernet(key)
 
 
 def encrypt_secret(value: str) -> str:

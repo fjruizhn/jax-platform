@@ -1,4 +1,6 @@
 [Unit]
+StartLimitIntervalSec=300
+StartLimitBurst=5
 Description=JAX Platform Frontend (Vite)
 After=network.target jax-platform.service
 Wants=jax-platform.service
