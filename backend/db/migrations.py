@@ -320,6 +320,7 @@ CREATE TABLE IF NOT EXISTS motor (
   default_timeout_seconds INT NOT NULL DEFAULT 600,
   supports_reasoning BOOLEAN NOT NULL DEFAULT FALSE,
   reasoning_default_visibility ENUM('audit_only','visible') NOT NULL DEFAULT 'audit_only',
+  disable_reasoning BOOLEAN NOT NULL DEFAULT TRUE,
   sandbox_only BOOLEAN NOT NULL DEFAULT TRUE,
   status ENUM('active','disabled') NOT NULL DEFAULT 'active',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -804,6 +805,20 @@ _COLUMNS = [
     # primera vez que se ve el modelo -- no hay "antes" con que comparar).
     ("model", "digest", "ALTER TABLE model ADD COLUMN digest VARCHAR(80) NULL"),
     ("model", "digest_changed_at", "ALTER TABLE model ADD COLUMN digest_changed_at DATETIME NULL"),
+    # T2 (2026-08-19, jax/las_manos/motor_registry/worker.py): "disable
+    # reasoning por defecto" NO es aplicable parejo entre proveedores --
+    # verificado real contra las 3 APIs: Ollama acepta reasoning_effort=none
+    # (funciona), Moonshot/Kimi lo RECHAZA con 400 ("only type=enabled is
+    # allowed for this model" -- kimi-k2.7-code no permite desactivar su
+    # razonamiento), Zhipu/Ada lo ignora en silencio (200 pero
+    # reasoning_content sigue poblado -- necesitaria su propio parametro,
+    # no verificado, no wireado esta ronda). Por eso vive en `motor`, no un
+    # flag global: es una propiedad de que API tiene detras cada motor, no
+    # una politica pareja. DEFAULT TRUE = off salvo que el motor declare lo
+    # contrario; el dispatch solo emite la senal real cuando
+    # transport='ollama' (unico camino verificado) -- para los demas el
+    # valor de esta columna no tiene efecto todavia, documentado en worker.py.
+    ("motor", "disable_reasoning", "ALTER TABLE motor ADD COLUMN disable_reasoning BOOLEAN NOT NULL DEFAULT TRUE"),
 ]
 
 
