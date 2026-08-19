@@ -1,12 +1,24 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
+
+// R4 -- el picker de motor (kimi/jax_local) se puebla desde
+// GET /api/motors/capabilities via la instancia axios de src/api/client.js
+// (no fetch() crudo) -- es la unica forma en que el interceptor inyecta
+// Authorization: Bearer <token> desde el store (el JWT vive solo en
+// memoria, nunca en cookie -- ver useJaxStore.js). Mockear la instancia
+// real en vez de global.fetch es deliberado: un mock de fetch no habria
+// detectado que el componente usaba el camino sin auth.
+vi.mock('../../api/client', () => ({
+  default: {
+    get: vi.fn(),
+  },
+}))
+
+import api from '../../api/client'
 import PipelineModal from './PipelineModal'
 import { I18nProvider } from '../../i18n/index.jsx'
 
-// R4 -- el picker de motor (kimi/jax_local) se puebla desde
-// GET /api/motors/capabilities. Sin datos aun cargados (o si el fetch
-// falla) el <select> simplemente no aparece -- no debe romper el modal.
 function renderModal(props = {}) {
   return render(
     <I18nProvider>
@@ -21,24 +33,23 @@ function renderModal(props = {}) {
 }
 
 beforeEach(() => {
-  vi.stubGlobal('fetch', vi.fn(() =>
-    Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve({
-        capabilities: [
-          { key: 'implementation', allowed_motors: ['kimi'] },
-          { key: 'generate', allowed_motors: ['kimi', 'ada', 'jax_local'] },
-        ],
-      }),
-    })
-  ))
-})
-
-afterEach(() => {
-  vi.unstubAllGlobals()
+  vi.clearAllMocks()
+  api.get.mockResolvedValue({
+    data: {
+      capabilities: [
+        { key: 'implementation', allowed_motors: ['kimi'] },
+        { key: 'generate', allowed_motors: ['kimi', 'ada', 'jax_local'] },
+      ],
+    },
+  })
 })
 
 describe('PipelineModal -- picker de motor (R4)', () => {
+  it('pide el catalogo por la instancia axios autenticada, no fetch crudo', async () => {
+    renderModal()
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/motors/capabilities'))
+  })
+
   it('muestra el <select> de motor para Kimi tras seleccionarlo, poblado desde /api/motors/capabilities', async () => {
     renderModal()
 
@@ -58,8 +69,18 @@ describe('PipelineModal -- picker de motor (R4)', () => {
     // Selección inicial (hipatia/jekyll/thot) no incluye ninguna faceta
     // gobernada -- ningun <select> debe aparecer aunque el catalogo ya
     // haya cargado.
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/motors/capabilities', { credentials: 'include' }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/motors/capabilities'))
 
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+  })
+
+  it('no rompe el modal si el catalogo falla (401/red) -- fail closed, sin select', async () => {
+    api.get.mockRejectedValue(new Error('401'))
+    renderModal()
+
+    fireEvent.click(screen.getByText(/Implementación técnica/i))
+
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
   })
 
