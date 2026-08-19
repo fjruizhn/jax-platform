@@ -64,7 +64,7 @@ def test_sync_endpoint_requires_superadmin(client):
     assert resp.status_code in (401, 403)
 
 
-async def _make_pending_proposal(facet_key="jekyll"):
+async def _make_pending_proposal(facet_key="jekyll", proposed_ref=None):
     from db.connection import get_pool
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -74,11 +74,12 @@ async def _make_pending_proposal(facet_key="jekyll"):
                 (facet_key,),
             )
             (current_ref,) = await cur.fetchone()
+            target_ref = proposed_ref if proposed_ref is not None else current_ref
             await cur.execute(
                 "INSERT INTO model_binding_proposal "
                 "(facet_key, current_model_ref, proposed_model_ref, reason, detail) "
                 "VALUES (%s, %s, %s, 'new_model_available', 'test')",
-                (facet_key, current_ref, current_ref),
+                (facet_key, current_ref, target_ref),
             )
             proposal_id = cur.lastrowid
         await conn.commit()
@@ -96,6 +97,16 @@ async def _fetch_binding_model_ref(facet_key):
             )
             (ref,) = await cur.fetchone()
             return ref
+
+
+async def _fetch_motor_model_ref(motor_key):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT model_ref FROM motor WHERE `key`=%s", (motor_key,))
+            row = await cur.fetchone()
+            return row[0] if row else None
 
 
 async def _fetch_proposal_status(proposal_id):
@@ -140,3 +151,31 @@ def test_reject_proposal_never_writes_facet_binding(client):
 def test_approve_nonexistent_proposal_404s(client):
     resp = client.post("/api/admin/models/proposals/999999/approve", headers=_superadmin_headers())
     assert resp.status_code == 404
+
+
+def test_approve_proposal_also_syncs_homonymous_motor_row(client):
+    """R4 reintrodujo facet_binding.model_ref / motor.model_ref como dos
+    punteros independientes al mismo recurso para motores homonimos de una
+    faceta (jax_local/ada/thot) -- divergieron en horas el 2026-08-19 (qwen
+    3.6) porque nada los sincronizaba. approve_proposal debe ser la unica
+    escritura que mantiene ambos en sync, no otro UPDATE manual/paliativo."""
+    original_ref = client.portal.call(_fetch_binding_model_ref, "jax_local")
+    assert client.portal.call(_fetch_motor_model_ref, "jax_local") == original_ref  # precondicion
+
+    other_ref = 2 if original_ref != 2 else 3  # cualquier model.id valido distinto del actual
+
+    proposal_id, _ = client.portal.call(_make_pending_proposal, "jax_local", other_ref)
+    resp = client.post(f"/api/admin/models/proposals/{proposal_id}/approve", headers=_superadmin_headers())
+    assert resp.status_code == 200, resp.text
+
+    assert client.portal.call(_fetch_binding_model_ref, "jax_local") == other_ref
+    assert client.portal.call(_fetch_motor_model_ref, "jax_local") == other_ref, (
+        "motor.model_ref no siguio a facet_binding.model_ref tras la aprobacion"
+    )
+
+    # revertir al valor original para no dejar estado cruzado a otros tests
+    revert_id, _ = client.portal.call(_make_pending_proposal, "jax_local", original_ref)
+    resp = client.post(f"/api/admin/models/proposals/{revert_id}/approve", headers=_superadmin_headers())
+    assert resp.status_code == 200, resp.text
+    assert client.portal.call(_fetch_binding_model_ref, "jax_local") == original_ref
+    assert client.portal.call(_fetch_motor_model_ref, "jax_local") == original_ref
