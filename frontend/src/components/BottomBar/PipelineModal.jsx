@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import { useJaxStore } from '../../store/useJaxStore'
+import api from '../../api/client'
 
 // capability/desc son de otro sistema (las_manos, tablas motor/capability/
 // capability_motor -- R4) -- label/color vienen de facetsState (/api/facets).
@@ -55,9 +56,12 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   const [motorChoices, setMotorChoices] = useState({})  // {facet_id: motor_key | ''}
 
   useEffect(() => {
-    fetch('/api/motors/capabilities', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : { capabilities: [] })
-      .then(data => {
+    // api.get (no fetch crudo) -- el interceptor de src/api/client.js inyecta
+    // Authorization: Bearer <token> desde el store; el JWT vive solo en
+    // memoria (nunca en cookie), asi que fetch() con credentials:'include'
+    // nunca autentica esta llamada.
+    api.get('/motors/capabilities')
+      .then(({ data }) => {
         const byKey = {}
         for (const c of data.capabilities) byKey[c.key] = c.allowed_motors
         setCapabilities(byKey)
