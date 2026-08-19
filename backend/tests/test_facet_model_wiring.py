@@ -8,8 +8,17 @@ que usan Jacobs y el REPL) y NUNCA se actualizaron estos tests — quedaron
 mutando `facet_models` mientras el codigo real ya leia `facet_binding`,
 dando 3/5 tests en rojo con una premisa obsoleta (no una regresion real).
 `_resolve_active_model` se borro por muerta (Bloque D) — ver commit del
-mismo dia. Estos tests ahora mutan `facet_binding.model_id`, la fuente
-real, para no repetir el mismo patron de "dos superficies, una mentira".
+mismo dia.
+
+SEGUNDA VUELTA (2026-08-19, D1.1 paso 4): `facet_binding.model_id`
+(texto libre) tampoco es ya la fuente real — `resolve_facet()` ahora lee
+via `model_ref -> model.model_id` (ver facet_resolver.py::_query_facet),
+porque `model_id` quedaba desincronizado de las aprobaciones de
+`model_binding_proposal` (que solo escriben `model_ref`). Mismo patron de
+"dos superficies, una mentira" reaparecido un nivel mas profundo. Estos
+helpers mutan `model_ref` (con upsert en `model` para el sentinel, que no
+preexiste en el catalogo), no `facet_binding.model_id` — esa columna sigue
+NOT NULL por el ciclo de cutover pero ya no la lee nadie.
 
 El `client` fixture (conftest.py) entra TestClient como context manager, asi
 que el pool de aiomysql de la app vive en el loop del portal de esa sesion.
@@ -66,15 +75,30 @@ async def _db_exec(sql, params=()):
 def _current_jax_local_model_id(client):
     rows = client.portal.call(
         _db_fetch,
-        "SELECT model_id FROM facet_binding WHERE facet_key='jax_local' AND role='primary'",
+        "SELECT m.model_id FROM facet_binding b JOIN model m ON m.id = b.model_ref "
+        "WHERE b.facet_key='jax_local' AND b.role='primary'",
     )
     return rows[0][0] if rows else None
 
 
 def _set_jax_local_model_id(client, model_id):
+    """Upsert en `model` + repunta facet_binding.model_ref — el sentinel no
+    preexiste en el catalogo, y model_ref es NOT NULL (no se puede apuntar
+    a nada que no exista). Simétrico para setup y para el restore del
+    finally: repuntar a un model_id que ya existe (ej. 'qwen3-coder:30b')
+    solo actualiza status en el ON DUPLICATE KEY, sin crear un duplicado."""
     client.portal.call(
         _db_exec,
-        "UPDATE facet_binding SET model_id=%s WHERE facet_key='jax_local' AND role='primary'",
+        "INSERT INTO model (provider_id, model_id, status, source, source_checked_at) "
+        "VALUES ('ollama', %s, 'available', 'manual', NOW()) "
+        "ON DUPLICATE KEY UPDATE status='available'",
+        (model_id,),
+    )
+    client.portal.call(
+        _db_exec,
+        "UPDATE facet_binding b JOIN model m ON m.provider_id='ollama' AND m.model_id=%s "
+        "SET b.model_ref = m.id "
+        "WHERE b.facet_key='jax_local' AND b.role='primary'",
         (model_id,),
     )
     # resolve_facet() cachea 30s (FACET_CACHE_TTL_SECONDS) — producción lo

@@ -2,9 +2,11 @@
 Admin. Mismo patron de auth/estructura que api/admin/models.py y
 api/admin/facet_bindings.py (require_superadmin, pool via get_pool()).
 
-Alcance minimo, igual que la referencia de Bloque D (provider/model): crear
-+ listar. Editar/borrar quedan fuera — ninguno de los dos routers de
-referencia los tiene tampoco.
+Alcance original: crear + listar. Editar (PATCH /{key}) se agrego
+2026-08-19 — hueco real: un motor sin faceta homonima (jax_local/ada/thot
+tienen faceta y ya se sincronizan solos via approve_proposal, ver
+api/admin/models.py) no tenia forma de cambiar de modelo sin SQL a mano.
+Borrar sigue fuera de alcance.
 
 Cablea el mismo mecanismo ya probado por INSERT directo en Task 4/8 (motor
 kimi/ada/jax_local/thot, ver db/migrations.py): una fila en `motor` + N
@@ -182,3 +184,108 @@ async def create_motor(req: CreateMotorRequest, user: AuthUser = Depends(require
         "key": req.key,
         "dispatchable": req.transport in _DISPATCHABLE_TRANSPORTS,
     }
+
+
+class UpdateMotorRequest(BaseModel):
+    provider_id: str | None = None
+    model_id: str | None = None
+    transport: str | None = None
+    max_tokens: int | None = None
+    default_timeout_seconds: int | None = None
+    supports_reasoning: bool | None = None
+    reasoning_default_visibility: str | None = None
+    sandbox_only: bool | None = None
+    status: str | None = None
+
+
+@router.patch("/{key}")
+async def update_motor(key: str, req: UpdateMotorRequest, user: AuthUser = Depends(require_superadmin)):
+    """Actualizacion parcial de una fila existente de `motor` — solo los
+    campos presentes en el body se tocan. provider_id/model_id van juntos
+    (o ninguno): hacen falta ambos para resolver un model_ref valido,
+    igual que create_motor.
+
+    GUARDA (2026-08-19): si `key` coincide con una faceta existente
+    (jax_local/ada/thot hoy), este endpoint RECHAZA un cambio de modelo —
+    ese caso ya tiene su propio camino gobernado (proposal + aprobacion en
+    api/admin/models.py::approve_proposal, que sincroniza facet_binding Y
+    motor en una sola transaccion). Permitir el cambio aca tambien
+    reintroduciria en horas la misma divergencia motor/facet_binding que
+    se encontro y corrigio el mismo dia (ver
+    project_jax_local_model_governance en memoria). Los demas campos
+    (transport/timeout/etc) si se pueden editar aca sin restriccion --
+    no los rastrea facet_binding."""
+    if (req.provider_id is None) != (req.model_id is None):
+        raise HTTPException(
+            status_code=422,
+            detail="provider_id y model_id van juntos, o ninguno de los dos",
+        )
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT 1 FROM motor WHERE `key`=%s", (key,))
+            if not await cur.fetchone():
+                raise HTTPException(status_code=404, detail=f"Motor '{key}' no encontrado")
+
+            if req.model_id is not None:
+                await cur.execute("SELECT 1 FROM facet WHERE `key`=%s", (key,))
+                if await cur.fetchone():
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"'{key}' tiene una faceta homonima — cambiar el modelo aca "
+                            "desincronizaria motor.model_ref de facet_binding.model_ref. "
+                            "Usar POST /api/admin/models/proposals + "
+                            "POST /api/admin/models/proposals/{id}/approve, que actualiza "
+                            "ambas tablas juntas."
+                        ),
+                    )
+
+            sets: list[str] = []
+            params: list = []
+
+            if req.model_id is not None:
+                await cur.execute(
+                    "SELECT id FROM model WHERE provider_id=%s AND model_id=%s",
+                    (req.provider_id, req.model_id),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"No existe el modelo '{req.model_id}' para el provider "
+                            f"'{req.provider_id}' en el catalogo (tabla `model`) — sincronizar "
+                            "o elegir otro modelo."
+                        ),
+                    )
+                sets.append("model_ref=%s")
+                params.append(row[0])
+
+            for field in (
+                "transport", "max_tokens", "default_timeout_seconds", "supports_reasoning",
+                "reasoning_default_visibility", "sandbox_only", "status",
+            ):
+                value = getattr(req, field)
+                if value is not None:
+                    sets.append(f"{field}=%s")
+                    params.append(value)
+
+            if not sets:
+                raise HTTPException(status_code=422, detail="Nada para actualizar")
+
+            params.append(key)
+            try:
+                await cur.execute(f"UPDATE motor SET {', '.join(sets)} WHERE `key`=%s", params)
+            except aiomysql.DataError as e:
+                await conn.rollback()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Dato invalido para motor '{key}' (transport/status fuera del ENUM?): {e}",
+                )
+
+            await cur.execute("SELECT transport FROM motor WHERE `key`=%s", (key,))
+            (final_transport,) = await cur.fetchone()
+        await conn.commit()
+    return {"ok": True, "key": key, "dispatchable": final_transport in _DISPATCHABLE_TRANSPORTS}
