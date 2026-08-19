@@ -284,7 +284,7 @@ export default {
   adminMotorsDispatchableNo: '⚠ No dispatcher yet',
   adminMotorsNoCapabilities: 'No capability assigned',
   adminMotorsEmpty: 'No motors registered yet.',
-  adminMotorsLimitationNote: 'Known limitation: today only the "http_openai_compat" and "ollama" transports have a dispatcher implemented in las_manos/motor_registry/worker.py. A motor with a different transport (http_gemini, subprocess, motor_registry) gets registered fine but a real job will fail until its dispatcher is added — named debt, not blocking.',
+  adminMotorsLimitationNote: 'Known limitation: today only the "http_openai_compat" and "ollama" transports have a dispatcher implemented in las_manos/motor_registry/worker.py. A motor with a different transport (http_gemini, subprocess, motor_registry) gets registered fine but a real job will fail until its dispatcher is added — named debt, not blocking. Also: a newly registered motor is written to the DB immediately, but is not dispatchable via jax-las-manos.service until that service is restarted — it loads its motor catalog once at startup.',
 
   // Admin users
   adminUsersTitle: 'User Management',

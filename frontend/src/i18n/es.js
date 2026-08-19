@@ -287,7 +287,7 @@ export default {
   adminMotorsDispatchableNo: '⚠ Sin dispatcher aún',
   adminMotorsNoCapabilities: 'Sin capability asignada',
   adminMotorsEmpty: 'No hay motores dados de alta todavía.',
-  adminMotorsLimitationNote: 'Limitación conocida: hoy solo los transportes "http_openai_compat" y "ollama" tienen dispatcher implementado en las_manos/motor_registry/worker.py. Un motor con otro transporte (http_gemini, subprocess, motor_registry) queda dado de alta pero un job real fallará hasta sumar su dispatcher — deuda con nombre, no bloqueante.',
+  adminMotorsLimitationNote: 'Limitación conocida: hoy solo los transportes "http_openai_compat" y "ollama" tienen dispatcher implementado en las_manos/motor_registry/worker.py. Un motor con otro transporte (http_gemini, subprocess, motor_registry) queda dado de alta pero un job real fallará hasta sumar su dispatcher — deuda con nombre, no bloqueante. Además: un motor recién dado de alta se escribe en la DB de inmediato, pero no es despachable vía jax-las-manos.service hasta que ese servicio se reinicie — carga su catálogo de motores una sola vez al arrancar.',
 
   // Admin users
   adminUsersTitle: 'Gestión de Usuarios',
