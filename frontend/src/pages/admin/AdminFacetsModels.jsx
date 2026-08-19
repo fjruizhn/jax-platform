@@ -3,11 +3,13 @@ import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import AdminModelCatalog from './AdminModelCatalog'
 import AdminFacetBindings from './AdminFacetBindings'
+import AdminMotors from './AdminMotors'
 
 const TABS = [
   { key: 'providers', labelKey: 'adminTabProviders' },
   { key: 'models', labelKey: 'adminTabModels' },
   { key: 'bindings', labelKey: 'adminTabBindings' },
+  { key: 'motors', labelKey: 'adminTabMotors' },
 ]
 
 export default function AdminFacetsModels() {
@@ -105,6 +107,7 @@ export default function AdminFacetsModels() {
 
       {activeTab === 'models' && <AdminModelCatalog />}
       {activeTab === 'bindings' && <AdminFacetBindings />}
+      {activeTab === 'motors' && <AdminMotors />}
 
       {activeTab === 'providers' && (
       <div className="rounded-lg border border-slate-800 overflow-hidden">

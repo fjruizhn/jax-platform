@@ -7,6 +7,7 @@ from .config_admin import router as config_router
 from .usage import router as usage_router
 from .models import router as models_router
 from .facet_bindings import router as facet_bindings_router
+from .motors import router as admin_motors_router
 
 # facet_models_router (legacy, tabla `facet_models`) DESREGISTRADO
 # (2026-08-10): dejo de tener ningun consumidor real desde que Bloque C
@@ -35,4 +36,5 @@ __all__ = [
     "usage_router",
     "models_router",
     "facet_bindings_router",
+    "admin_motors_router",
 ]
