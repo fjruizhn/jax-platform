@@ -583,6 +583,65 @@ async def _seed_jax_local_motor(cur) -> None:
         )
 
 
+async def _seed_file_tools_capabilities(cur) -> None:
+    """GAP2 Fase2 (2026-08-19, jax/las_manos/motor_registry/tool_authority.py):
+    capabilities dedicadas para read_file/write_file -- ninguna de las 12
+    capabilities existentes mapea honestamente a "leer/escribir un archivo"
+    (verificado real, SELECT contra jax_memory: solo code_swarm/
+    implementation tienen forbidden_paths poblado, y ninguna de las dos
+    lista jax_local en capability_motor; generate/reason/design/reconcile
+    SI listan jax_local pero tienen forbidden_paths=NULL -- reusarlas
+    hubiera dejado read_file sin proteccion real de .env/secrets/).
+
+    Ajustado por Fernando antes de aprobar el seed: file_read en
+    risk_level='medium' (no 'low') -- leer archivos arbitrarios del
+    workspace es acceso a datos que el modelo no tenia, forbidden_paths
+    cubre lo conocido, no lo que todavia no esta en la lista.
+
+    max_execution_minutes=1 en ambas: verificado con grep (motor_registry/
+    catalog.py) que este campo se CARGA pero no lo CONSUME ningun timeout
+    real hoy -- ni de la operacion ni del step (5ta instancia del patron
+    "schema/comentario afirma una garantia que el codigo no cumple", ver
+    T6 de la sesion anterior). El valor no cambia comportamiento hoy; se
+    deja en 1 (honesto para cuando se cablee) sin riesgo de cortar nada
+    en produccion porque nada lo lee todavia.
+
+    forbidden_paths reutiliza EXACTO el mismo array ya usado por
+    code_swarm/implementation -- no una lista nueva paralela.
+    allowed_callers=['jacobs']: unico caller real (GAP2 Fase1, gate
+    literal de motor=='jax_local' en worker.py, siempre despachado como
+    caller='jacobs')."""
+    file_capabilities = [
+        # key, risk_level, sandbox_only, requires_human_gate, max_execution_minutes,
+        # max_recursion_depth, output_schema, fallback_motor, fallback_mode, callers, forbidden
+        ("file_read", "medium", True, False, 1, 0, "", None, None,
+         ["jacobs"], [".env", "secrets/", "private_keys/", "credentials/"]),
+        ("file_write", "medium", True, True, 1, 0, "", None, None,
+         ["jacobs"], [".env", "secrets/", "private_keys/", "credentials/"]),
+    ]
+    for (key, risk_level, sandbox_only, gate, max_exec, max_rec, schema,
+         fallback_motor, fallback_mode, callers, forbidden) in file_capabilities:
+        await cur.execute(
+            "INSERT IGNORE INTO capability "
+            "(`key`, risk_level, sandbox_only, requires_human_gate, max_execution_minutes, "
+            " max_recursion_depth, output_schema, fallback_motor, fallback_mode, "
+            " allowed_callers, forbidden_paths) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (key, risk_level, sandbox_only, gate, max_exec, max_rec, schema,
+             fallback_motor, fallback_mode, json.dumps(callers), json.dumps(forbidden)),
+        )
+
+    await cur.execute("SELECT 1 FROM motor WHERE `key`='jax_local'")
+    if await cur.fetchone() is None:
+        return  # motor no existe todavia -- no romper el seed (mismo guard que _seed_jax_local_motor)
+    for capability_key in ("file_read", "file_write"):
+        await cur.execute(
+            "INSERT IGNORE INTO capability_motor (capability_key, motor_key, priority) "
+            "VALUES (%s, 'jax_local', 0)",
+            (capability_key,),
+        )
+
+
 async def _seed_thot_motor(cur) -> None:
     """R4 -- criterio de aceptacion decisivo del spec: motor nuevo dado de
     alta SOLO por dato (INSERT), sin tocar worker.py/catalog.py (ya
@@ -932,5 +991,6 @@ async def run_migrations():
             await _seed_motors_and_capabilities(cur)
             await _seed_jax_local_motor(cur)
             await _seed_thot_motor(cur)
+            await _seed_file_tools_capabilities(cur)
 
         await conn.commit()
