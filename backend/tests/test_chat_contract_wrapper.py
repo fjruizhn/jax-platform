@@ -4,15 +4,9 @@ Fase 2 Sub-proyecto 2). _parse_contract_response es puro — sin red, sin
 DB — se testea con texto crudo simulando lo que devolvería cada
 faceta, incluido el truncamiento real de Kimi (488 bytes).
 
-NOTA DE ALCANCE (ver task-3-report.md): el brief original asume que
-_invoke_facet ya devuelve tuple[str, UsageInfo | None] — esa firma solo
-existe en la rama infra/facetas-bloque-d (commit 448a707), que NO es
-ancestro de esta rama (SP2 está basada en master). Por ruling del
-coordinador, se sustituyó "usage is None" por un flag posicional
-explícito (is_canned, devuelto por _invoke_facet) en vez de comparar
-response_text contra los strings enlatados conocidos. El wiring del
-endpoint (Step 13) y la conexión de _CONTRACT_PROMPT_SUFFIX al
-system_prompt real (Step 7b) SÍ están hechos — ver
+_invoke_facet devuelve tuple[str, UsageInfo | None] (firma de
+infra/facetas-bloque-d, ya mergeada a master). is_canned se deriva en
+el call site del endpoint como "usage is None" — ver
 test_chat_endpoint_marks_contract_degraded_on_truncated_json más abajo.
 """
 from api.chat import _parse_contract_response
@@ -255,9 +249,11 @@ async def _call_invoke_facet_jax_local_identity_question():
     return await _invoke_facet("jax_local", config, "some-user", "que modelo sos", None)
 
 
-def test_invoke_facet_identity_question_returns_is_canned_true(client):
-    """Camino is_canned=True (pregunta de identidad de modelo): la señal
-    posicional debe ser True para que el endpoint nunca llame a
+def test_invoke_facet_identity_question_returns_usage_none(client):
+    """Camino usage=None (pregunta de identidad de modelo): la respuesta
+    enlatada de _model_identity_reply nunca pasa por un transporte real,
+    así que _invoke_facet debe devolver usage=None — la señal que el
+    endpoint usa (is_canned = usage is None) para nunca llamar a
     _parse_contract_response sobre una respuesta enlatada que no es JSON.
 
     _invoke_facet hace una consulta real a facet_models (get_pool()), así
@@ -268,8 +264,9 @@ def test_invoke_facet_identity_question_returns_is_canned_true(client):
     test, envenenando la conexión para el resto de la suite)."""
     from api.chat import _parse_contract_response
 
-    text, is_canned = client.portal.call(_call_invoke_facet_jax_local_identity_question)
-    assert is_canned is True
+    text, usage = client.portal.call(_call_invoke_facet_jax_local_identity_question)
+    assert usage is None
+    is_canned = usage is None
     # Confirma que, aplicando la regla del endpoint (parsear solo si
     # not is_canned), esta respuesta jamás pasaría por el parser.
     contract = _parse_contract_response(text) if not is_canned else None

@@ -77,6 +77,14 @@ def _set_jax_local_model_id(client, model_id):
         "UPDATE facet_binding SET model_id=%s WHERE facet_key='jax_local' AND role='primary'",
         (model_id,),
     )
+    # resolve_facet() cachea 30s (FACET_CACHE_TTL_SECONDS) — producción lo
+    # quiere así para no pegarle a la DB en cada mensaje de chat, pero en
+    # una suite que corre en <1s dos tests que tocan jax_local pueden caer
+    # dentro de la misma ventana y el segundo lee el valor cacheado del
+    # primero en vez del UPDATE recién hecho. Invalidar acá evita ese
+    # falso negativo sin tocar el cache real de producción.
+    import facet_resolver
+    facet_resolver._cache.pop("jax_local", None)
 
 
 def _post_chat(client):
