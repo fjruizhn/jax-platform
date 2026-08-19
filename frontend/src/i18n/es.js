@@ -90,6 +90,7 @@ export default {
   descThot: 'Auditoría crítica',
   descKimi: 'Implementación técnica',
   descAda: 'Análisis y rigor',
+  autoMotor: 'Auto (por competencia)',
 
   // Center panel
   platformLabel: 'AXIOMA V0.2',

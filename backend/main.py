@@ -62,6 +62,7 @@ from api.command import router as command_router
 from api.audit import router as audit_router
 from api.image import router as image_router
 from api.upload import router as upload_router
+from api.motors import router as motors_router
 from api.admin import (
     dashboard_router,
     keys_router,
@@ -125,6 +126,7 @@ app.include_router(command_router)
 app.include_router(audit_router)
 app.include_router(image_router)
 app.include_router(upload_router)
+app.include_router(motors_router)
 app.include_router(dashboard_router)
 app.include_router(keys_router)
 app.include_router(credentials_router)
