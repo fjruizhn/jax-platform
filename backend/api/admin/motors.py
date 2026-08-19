@@ -116,7 +116,14 @@ async def create_motor(req: CreateMotorRequest, user: AuthUser = Depends(require
     sync/seed) + N filas en `capability_motor` (a que capabilities queda
     asignado, y con que prioridad). Sin esto ultimo el motor existe pero
     MotorPolicy._resolve_motor() nunca lo elige — ninguna capability lo
-    listaria en su allowed_motors."""
+    listaria en su allowed_motors.
+
+    NOTA: esta fila se escribe en la DB de inmediato, pero el motor no
+    queda dispatchable via jax-las-manos.service hasta que ESE servicio
+    (proceso separado) se reinicie — carga su catalogo de motores una
+    sola vez al arrancar (Task 2). No hay forma de forzar un reload en
+    caliente desde aqui; el operador debe reiniciar jax-las-manos.service
+    para que el motor recien dado de alta quede activo."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:

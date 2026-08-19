@@ -511,6 +511,17 @@ async def _seed_motors_and_capabilities(cur) -> None:
 
     for (key, risk_level, sandbox_only, gate, max_exec, max_rec, schema,
          fallback_motor, fallback_mode, callers, forbidden) in _CAPABILITY_SEED:
+        effective_fallback_motor = fallback_motor
+        if fallback_motor is not None:
+            await cur.execute(
+                "SELECT 1 FROM motor WHERE `key`=%s",
+                (fallback_motor,),
+            )
+            if await cur.fetchone() is None:
+                # motor de fallback no existe todavia -- no romper el seed
+                # completo por una FK (mismo criterio que el guard de
+                # capability_motor mas abajo).
+                effective_fallback_motor = None
         await cur.execute(
             "INSERT IGNORE INTO capability "
             "(`key`, risk_level, sandbox_only, requires_human_gate, max_execution_minutes, "
@@ -518,7 +529,7 @@ async def _seed_motors_and_capabilities(cur) -> None:
             " allowed_callers, forbidden_paths) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (key, risk_level, sandbox_only, gate, max_exec, max_rec, schema,
-             fallback_motor, fallback_mode, json.dumps(callers),
+             effective_fallback_motor, fallback_mode, json.dumps(callers),
              json.dumps(forbidden) if forbidden is not None else None),
         )
 
@@ -548,7 +559,7 @@ async def _seed_jax_local_motor(cur) -> None:
     ajustable despues sin tocar codigo."""
     await cur.execute(
         "UPDATE provider SET base_url='http://localhost:11434/v1' "
-        "WHERE id='ollama' AND base_url != 'http://localhost:11434/v1'"
+        "WHERE id='ollama' AND (base_url IS NULL OR base_url = '')"
     )
     await cur.execute(
         "SELECT id FROM model WHERE provider_id='ollama' AND model_id='qwen3-coder:30b'"
