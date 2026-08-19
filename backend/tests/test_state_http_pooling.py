@@ -29,7 +29,7 @@ async def test_poll_las_manos_uses_the_shared_client():
         task.cancel()
         try:
             await task
-        except asyncio.CancelledError:
+        except asyncio.CancelledError:  # fail-soft: patron estandar de teardown asyncio: await de una task cancelada lanza CancelledError, se espera
             pass
     finally:
         http_client._client = original
@@ -53,7 +53,7 @@ async def test_poll_pipelines_uses_the_shared_client():
         task.cancel()
         try:
             await task
-        except asyncio.CancelledError:
+        except asyncio.CancelledError:  # fail-soft: mismo patron estandar de teardown asyncio que el test anterior
             pass
     finally:
         http_client._client = original

@@ -39,7 +39,7 @@ def reap_orphaned_command_owner_files(missions_dir: Path, max_age_seconds: float
             if siblings_gone or too_old:
                 owner_file.unlink()
                 reaped += 1
-        except OSError:
+        except OSError:  # fail-soft: unlink en reaper con carrera TOCTOU benigna (el archivo ya pudo desaparecer); el proximo ciclo reintenta
             pass
     return reaped
 
@@ -54,7 +54,7 @@ def reap_old_pipeline_owner_files(pipelines_dir: Path, max_age_seconds: float = 
             if owner_file.stat().st_mtime < cutoff:
                 owner_file.unlink()
                 reaped += 1
-        except OSError:
+        except OSError:  # fail-soft: mismo patron de reaper que la funcion anterior, TOCTOU benigna
             pass
     return reaped
 
@@ -71,6 +71,6 @@ async def start_owner_file_cleanup():
         try:
             await asyncio.to_thread(reap_orphaned_command_owner_files, MISSIONS_DIR)
             await asyncio.to_thread(reap_old_pipeline_owner_files, PIPELINES_DIR)
-        except Exception:
+        except Exception:  # fail-soft: loop de limpieza en background, reintenta cada intervalo; documentado como best-effort explicito
             pass  # best-effort: nunca debe tumbar el proceso
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)

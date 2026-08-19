@@ -32,7 +32,7 @@ class EventBus:
             return
         try:
             await cb(event)
-        except Exception:
+        except Exception:  # fail-soft: aislar el fallo de un subscriber de WS del resto del event bus; los demas subscribers no deben verse afectados por uno roto
             pass
 
 

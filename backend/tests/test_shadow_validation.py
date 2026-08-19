@@ -211,7 +211,7 @@ def test_shadow_validation_leaves_validated_at_null_when_worker_dies_mid_run(cli
                 shadow_validation.run_shadow_validation,
                 "conv-fake-uuid-5", smid, "jekyll", contract,
             )
-        except RuntimeError:
+        except RuntimeError:  # fail-soft: captura el RuntimeError inyectado a proposito por el test (side_effect) para poder inspeccionar el estado post-crash; tipo acotado, no bare except
             pass  # esperado — lo que importa es el estado que quedó en DB
 
     row = client.portal.call(_fetch_shadow_message, smid)
@@ -249,7 +249,7 @@ def test_shadow_validation_leaves_validated_at_null_when_context_load_fails_befo
                 shadow_validation.run_shadow_validation,
                 "conv-fake-uuid-6", smid, "jekyll", contract,
             )
-        except RuntimeError:
+        except RuntimeError:  # fail-soft: mismo patron: captura el RuntimeError inyectado a proposito para inspeccionar el estado post-crash
             pass  # esperado — lo que importa es el estado que quedó en DB
 
     row = client.portal.call(_fetch_shadow_message, smid)
