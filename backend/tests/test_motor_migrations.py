@@ -94,12 +94,13 @@ def test_seed_code_swarm_apunta_a_kimi_con_fallback_ada(client):
 def test_seed_generate_tiene_dos_motores_en_orden_kimi_luego_ada(client):
     """[capabilities.generate].allowed_motors = ["kimi", "ada"] en config.toml
     -- el orden es el criterio de _resolve_motor() (el primero habilitado
-    gana), portado a priority 0/1."""
+    gana), portado a priority 0/1. Task 4: jax_local agregado con priority 2
+    (tercer intento, despues de kimi/ada)."""
     rows = client.portal.call(
         _fetch_all,
         "SELECT motor_key, priority FROM capability_motor WHERE capability_key = 'generate' ORDER BY priority",
     )
-    assert [r[0] for r in rows] == ["kimi", "ada"]
+    assert [r[0] for r in rows] == ["kimi", "ada", "jax_local"]
 
 
 async def _count_capability_motor():
@@ -112,11 +113,42 @@ async def _count_capability_motor():
             return row[0]
 
 
-def test_capability_motor_seed_count_is_16(client):
-    """Verify the _CAPABILITY_MOTOR_SEED produces exactly 16 rows:
-    8 capabilities with 1 motor + 4 capabilities with 2 motors = 16 total.
+def test_capability_motor_seed_count_is_20(client):
+    """Verify the _CAPABILITY_MOTOR_SEED + Task 4 produces exactly 20 rows:
+    8 capabilities with 1 motor + 4 capabilities with 3 motors = 20 total.
     Capabilities with 1 motor: code_swarm, refactor, architecture_review,
     bug_hunt, pipeline_analysis, implementation, validate_consistency, critique.
-    Capabilities with 2 motors: generate, reason, design, reconcile."""
+    Capabilities with 3 motors (Task 4 agregó jax_local con priority 2):
+    generate, reason, design, reconcile."""
     count = client.portal.call(_count_capability_motor)
-    assert count == 16, f"Expected 16 capability_motor rows, got {count}"
+    assert count == 20, f"Expected 20 capability_motor rows, got {count}"
+
+
+def test_seed_jax_local_como_motor_ollama(client):
+    rows = client.portal.call(
+        _fetch_all,
+        "SELECT transport, max_tokens FROM motor WHERE `key`='jax_local'",
+    )
+    assert len(rows) == 1, rows
+    assert rows[0][0] == "ollama"
+
+
+def test_seed_provider_ollama_base_url_incluye_v1(client):
+    """Ollama expone /v1/chat/completions (OpenAI-compatible) -- confirmado
+    en vivo. provider.base_url tenía 'http://localhost:11434' sin /v1
+    (ningún código lo consumía todavía); ahora sí, worker.py lo usa."""
+    rows = client.portal.call(
+        _fetch_all, "SELECT base_url FROM provider WHERE id='ollama'",
+    )
+    assert rows[0][0] == "http://localhost:11434/v1", rows
+
+
+def test_seed_code_swarm_no_incluye_jax_local(client):
+    """jax_local compite por capabilities de razonamiento/generación
+    (Task 4), no por code_swarm (alto riesgo, gateado humano) -- decisión
+    de dato, documentada en el spec §7, no de código."""
+    rows = client.portal.call(
+        _fetch_all,
+        "SELECT motor_key FROM capability_motor WHERE capability_key='code_swarm'",
+    )
+    assert "jax_local" not in [r[0] for r in rows], rows

@@ -537,6 +537,40 @@ async def _seed_motors_and_capabilities(cur) -> None:
             )
 
 
+async def _seed_jax_local_motor(cur) -> None:
+    """R4 Task 4: Qwen (jax_local) como motor real, no atado a la faceta
+    conversacional. provider.base_url de ollama se corrige a incluir /v1 --
+    ningun codigo lo consumia hasta ahora (chat.py::_call_ollama usa el
+    formato nativo de Ollama, no este base_url), asi que es seguro.
+    Compite por capabilities de razonamiento/generacion (generate, reason,
+    design, reconcile), no por code_swarm/refactor/bug_hunt/implementation
+    (agentico de alto riesgo, hoy exclusivo de Kimi) -- decision de dato,
+    ajustable despues sin tocar codigo."""
+    await cur.execute(
+        "UPDATE provider SET base_url='http://localhost:11434/v1' "
+        "WHERE id='ollama' AND base_url != 'http://localhost:11434/v1'"
+    )
+    await cur.execute(
+        "SELECT id FROM model WHERE provider_id='ollama' AND model_id='qwen3-coder:30b'"
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return
+    await cur.execute(
+        "INSERT IGNORE INTO motor "
+        "(`key`, model_ref, transport, max_tokens, default_timeout_seconds, "
+        " supports_reasoning, reasoning_default_visibility, sandbox_only) "
+        "VALUES ('jax_local', %s, 'ollama', 0, 300, FALSE, 'audit_only', TRUE)",
+        (row[0],),
+    )
+    for capability_key, priority in [("generate", 2), ("reason", 2), ("design", 2), ("reconcile", 2)]:
+        await cur.execute(
+            "INSERT IGNORE INTO capability_motor (capability_key, motor_key, priority) "
+            "VALUES (%s, 'jax_local', %s)",
+            (capability_key, priority),
+        )
+
+
 async def _seed_facets(cur) -> None:
     for key, display_name, icon, color, transport, auto_sel in _FACET_SEED:
         await cur.execute(
@@ -834,5 +868,6 @@ async def run_migrations():
             await _seed_models_and_backfill(cur)
             await _fix_anthropic_sonnet_alias(cur)
             await _seed_motors_and_capabilities(cur)
+            await _seed_jax_local_motor(cur)
 
         await conn.commit()
