@@ -100,3 +100,23 @@ def test_seed_generate_tiene_dos_motores_en_orden_kimi_luego_ada(client):
         "SELECT motor_key, priority FROM capability_motor WHERE capability_key = 'generate' ORDER BY priority",
     )
     assert [r[0] for r in rows] == ["kimi", "ada"]
+
+
+async def _count_capability_motor():
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT COUNT(*) FROM capability_motor")
+            row = await cur.fetchone()
+            return row[0]
+
+
+def test_capability_motor_seed_count_is_16(client):
+    """Verify the _CAPABILITY_MOTOR_SEED produces exactly 16 rows:
+    8 capabilities with 1 motor + 4 capabilities with 2 motors = 16 total.
+    Capabilities with 1 motor: code_swarm, refactor, architecture_review,
+    bug_hunt, pipeline_analysis, implementation, validate_consistency, critique.
+    Capabilities with 2 motors: generate, reason, design, reconcile."""
+    count = client.portal.call(_count_capability_motor)
+    assert count == 16, f"Expected 16 capability_motor rows, got {count}"
