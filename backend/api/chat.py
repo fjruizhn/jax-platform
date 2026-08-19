@@ -533,7 +533,12 @@ async def _call_openai_compat(
     r = await client.post(
         f"{base_url}/chat/completions",
         headers=headers,
-        json={"model": model, "messages": messages},
+        # max_tokens explícito: sin esto, un modelo de razonamiento (reasoning_content
+        # compitiendo por el mismo budget que content) puede agotarlo y cortar la
+        # respuesta antes de escribirla — mismo bug ya diagnosticado y corregido en
+        # motor_registry/worker.py::_call_kimi (017ba2f, 2026-08-10). Mismo valor que
+        # jax/muscles/base.py usa para el mismo propósito.
+        json={"model": model, "messages": messages, "max_tokens": 131072},
         timeout=120.0,
     )
     r.raise_for_status()
