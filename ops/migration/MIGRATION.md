@@ -1,6 +1,6 @@
 # Runbook de migración — Ecosistema JAX / Axioma → máquina nueva
 
-Generado: 2026-07-08 · Origen: hall9000 (172.16.20.5)
+Generado: 2026-07-08 · Origen: hall9000 (<IP interna, ver /etc/jax/.env>)
 
 Este documento lista TODO lo necesario para levantar el ecosistema en una máquina nueva.
 Lo que está en git ya está seguro; lo que NO está en git hay que copiarlo a mano (marcado ⚠).
@@ -142,7 +142,7 @@ Antes de que login/reset funcione en la máquina nueva:
 1. Correr migración DB → crea `password_reset_tokens` + columnas failed_attempts/locked_until/last_login.
 2. Setear en `/etc/jax/.env`: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `FRONTEND_ORIGIN`.
    (Sin SMTP el reset solo loguea el link, no envía email.)
-3. Deploy frontend: `npm run build` NO actualiza prod — requiere rsync a la VM dev (172.16.20.11).
+3. Deploy frontend: `npm run build` NO actualiza prod — requiere rsync a la VM dev (<IP interna, ver /etc/jax/.env>).
    Ver "Lecciones operativas" en ~/jax-platform/CLAUDE.md.
 4. Deuda ADN pendiente: Login + ResetPassword usan colores dark-only (no theme-aware).
 

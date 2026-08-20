@@ -152,7 +152,7 @@ ss -tlnp:
   0.0.0.0:8080      jax-platform      ← incluye el admin de API Keys
   0.0.0.0:5173      jax-platform-frontend
 ```
-No hay reverse proxy corriendo como servicio systemd en este host. **No pude verificar `ufw status`** — requiere sudo interactivo con tty, no disponible en esta sesión (mismo límite encontrado en el fix de hoy). Interfaces de red del host: `172.16.20.5/24` (LAN, `br0`) y `192.168.122.1/24` (red virtual libvirt/KVM, no enrutable). **No confirmado** si hay NAT/port-forward en el router de `172.16.20.0/24` hacia internet.
+No hay reverse proxy corriendo como servicio systemd en este host. **No pude verificar `ufw status`** — requiere sudo interactivo con tty, no disponible en esta sesión (mismo límite encontrado en el fix de hoy). Interfaces de red del host: `<IP interna, ver /etc/jax/.env>` (LAN, `br0`) y `192.168.122.1/24` (red virtual libvirt/KVM, no enrutable). **No confirmado** si hay NAT/port-forward en el router de `<IP interna, ver /etc/jax/.env>` hacia internet.
 
 **P6e — Autenticación del admin:** JWT (según CLAUDE.md global: access 15min / refresh 7 días HttpOnly). La pantalla de API Keys específicamente exige rol `superadmin` (`require_superadmin`, `auth/middleware.py:22-25`) en los 8 endpoints de `keys.py`/`facet_models.py` — más estricto que una sesión válida genérica.
 
@@ -166,11 +166,11 @@ No hay reverse proxy corriendo como servicio systemd en este host. **No pude ver
 
 ```mermaid
 flowchart TB
-    subgraph LAN["LAN 172.16.20.0/24"]
+    subgraph LAN["LAN <IP interna, ver /etc/jax/.env>"]
         FR["Fernando (browser)"]
     end
 
-    subgraph HOST["hall9000 — 172.16.20.5 (usuario: fruiz)"]
+    subgraph HOST["hall9000 — <IP interna, ver /etc/jax/.env> (usuario: fruiz)"]
         subgraph PUB["Bind 0.0.0.0 — todas las interfaces"]
             PLAT["jax-platform :8080\nFastAPI · Axioma backend\nadmin API Keys aquí"]
             FE["jax-platform-frontend :5173\nVite dev · React"]
@@ -216,7 +216,7 @@ flowchart TB
 
 ## 4. Incertidumbres declaradas
 
-1. **[CRÍTICA] Estado real de UFW / accesibilidad de `:8080` desde fuera de la LAN.** No se pudo verificar — `sudo ufw status` requiere terminal interactiva, no disponible en esta sesión ni delegable a los sub-agentes. Confirmado solo que el proceso bindea a `0.0.0.0` (no que sea alcanzable desde fuera; eso depende del firewall y de si hay NAT/port-forward en el router de `172.16.20.0/24`, tampoco verificado). **Acción pendiente: correr `sudo ufw status verbose` desde tu propia terminal.**
+1. **[CRÍTICA] Estado real de UFW / accesibilidad de `:8080` desde fuera de la LAN.** No se pudo verificar — `sudo ufw status` requiere terminal interactiva, no disponible en esta sesión ni delegable a los sub-agentes. Confirmado solo que el proceso bindea a `0.0.0.0` (no que sea alcanzable desde fuera; eso depende del firewall y de si hay NAT/port-forward en el router de `<IP interna, ver /etc/jax/.env>`, tampoco verificado). **Acción pendiente: correr `sudo ufw status verbose` desde tu propia terminal.**
 2. Contenido exacto de `config/config.toml` no fue leído línea por línea por el sub-agente de P5 — infirió su estructura por el código que lo consume (`chat.py`). Sí fue confirmado directamente por el orquestador para la sección `[personalities.jax_local]` (P6f).
 3. Dónde vive la key de Hyde/Anthropic (aparece en `facet_models` con modelos `sonnet/opus/haiku` pero no en `PROVIDERS` de `keys.py` ni en `user_api_keys`) — no se rastreó, cae fuera del alcance literal de "pantalla de API Keys" tal como está implementada hoy.
 4. **Corrección a una incertidumbre reportada por el sub-agente de P1**: marcó `jax-memory-worker.service` como "inactive/dead" al consultar `systemctl list-units`. Esto es un falso negativo — el servicio es `Type=oneshot` disparado por `jax-memory-worker.timer` (`enabled`, corre cada ~20 min); aparece `inactive` entre corridas porque termina y sale, no porque esté deshabilitado. Confirmado directamente por el orquestador: corrió exitosamente hoy a las 02:10:19. Su relación con el problema de P4c (divergencia post-rotación) es la misma que la de `jax-las-manos`: lee `/etc/jax/.env` una vez por invocación (nueva cada vez, dado que es oneshot), así que si rota una key SÍ la recoge en su siguiente corrida (a diferencia de `jax-las-manos`, que es de vida larga) — no fue verificado en vivo, es inferencia de código.

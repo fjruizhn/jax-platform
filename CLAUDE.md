@@ -48,7 +48,7 @@ NO es AteneaERP. NO mezclar. Son productos independientes.
 1. DEPLOY FRONTEND: requiere rsync EXPLÍCITO de hall9000 a la VM dev.
    `npm run build` solo genera el bundle en /home/fruiz/jax-platform/frontend/dist/
    en hall9000 — NO actualiza producción. El público sirve estático desde
-   /www/wwwroot/axioma-ia.io/ en la VM dev (172.16.20.11:58291 SSH, user fruiz).
+   /www/wwwroot/axioma-ia.io/ en la VM dev (<IP interna, ver /etc/jax/.env>:<puerto, ver /etc/jax/.env> SSH, user fruiz).
    Procedimiento: rsync dist a /tmp/axioma-deploy/ en la VM, luego
    `sudo rsync -a --delete --chown=www:www /tmp/axioma-deploy/ /www/wwwroot/axioma-ia.io/`.
 
@@ -57,10 +57,10 @@ NO es AteneaERP. NO mezclar. Son productos independientes.
    tiene `root /www/wwwroot/axioma-ia.io` + `location / { try_files $uri $uri/ /index.html; }`
    (fallback SPA para react-router) y `location /assets/` con cache 1y
    immutable. `location /api` y `location /ws` proxyan a
-   http://172.16.20.5:8080 (hall9000) con upgrade headers para WS.
+   http://<IP interna, ver /etc/jax/.env>:8080 (hall9000) con upgrade headers para WS.
 
    HISTORIAL: entre una fecha desconocida y 2026-08-02, `location /` estuvo
-   apuntando por error a `proxy_pass http://172.16.20.5:5173` (el Vite DEV
+   apuntando por error a `proxy_pass http://<IP interna, ver /etc/jax/.env>:5173` (el Vite DEV
    server de hall9000, systemd `jax-platform-frontend`), dejando el estático
    de wwwroot sin servir — el público veía el dev server con HMR en vivo.
    Detectado por evidencia (curl mostraba scripts @vite/client) y corregido
