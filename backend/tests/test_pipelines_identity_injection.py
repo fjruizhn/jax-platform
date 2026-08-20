@@ -71,9 +71,12 @@ def test_resume_pipeline_inyecta_identidad_real(client, monkeypatch):
     async def _fake_get_http_client():
         return _FakeClient()
 
+    async def _fake_require_pipeline_owner(pid, user):
+        return None
+
     import api.pipelines as pipelines_module
     monkeypatch.setattr(pipelines_module, "get_http_client", _fake_get_http_client)
-    monkeypatch.setattr(pipelines_module, "_require_pipeline_owner", lambda pid, user: None)
+    monkeypatch.setattr(pipelines_module, "_require_pipeline_owner", _fake_require_pipeline_owner)
 
     client.post(
         "/api/pipelines/00000000-0000-0000-0000-000000000000/resume",

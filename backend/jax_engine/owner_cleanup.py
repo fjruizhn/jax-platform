@@ -1,7 +1,6 @@
-"""Periodic reaper for the ownership sidecar files api/command.py and
-api/pipelines.py write (web-task-{id}_owner.json / {pipeline_id}_owner.json).
-Neither had any cleanup, so both directories grew forever, one small file
-per task/pipeline ever created.
+"""Periodic reaper for the ownership sidecar files api/command.py writes
+(web-task-{id}_owner.json). Had no cleanup, so the directory grew forever,
+one small file per task ever created.
 
 Commands: reaped as soon as BOTH the mission and result files are gone (an
 external retention script, ~/jax/scripts/cleanup.sh, prunes those -- when
@@ -11,16 +10,18 @@ make this reaper a no-op in practice -- COMMAND_OWNER_MAX_AGE_SECONDS is a
 self-sufficient fallback: an owner file is also reaped once it's simply old
 enough, regardless of whether its mission/result siblings were ever cleaned.
 
-Pipelines: there is no local mission/result file to key off (results live
-in the separate LAS MANOS/Jacobs service) -- so pipeline owner files are
-reaped by age only.
+Pipelines: ronda 5 (2026-08-20, T1) movió el ownership de un sidecar file
+(pipelines_dir/{id}_owner.json) a la columna owner_ack_at en
+jacobs_pipelines (DB compartida con Jacobs) -- ver api/pipelines.py. Ya no
+hay archivo que este reaper limpie para pipelines; la funcion
+reap_old_pipeline_owner_files() y su uso abajo se eliminaron con el mismo
+commit que migro el escritor/lector.
 """
 import asyncio
 import time
 from pathlib import Path
 
 COMMAND_OWNER_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 días
-PIPELINE_OWNER_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 días
 CLEANUP_INTERVAL_SECONDS = 6 * 3600  # cada 6 horas
 
 
@@ -44,33 +45,16 @@ def reap_orphaned_command_owner_files(missions_dir: Path, max_age_seconds: float
     return reaped
 
 
-def reap_old_pipeline_owner_files(pipelines_dir: Path, max_age_seconds: float = PIPELINE_OWNER_MAX_AGE_SECONDS) -> int:
-    if not pipelines_dir.exists():
-        return 0
-    cutoff = time.time() - max_age_seconds
-    reaped = 0
-    for owner_file in pipelines_dir.glob("*_owner.json"):
-        try:
-            if owner_file.stat().st_mtime < cutoff:
-                owner_file.unlink()
-                reaped += 1
-        except OSError:  # fail-soft: mismo patron de reaper que la funcion anterior, TOCTOU benigna
-            pass
-    return reaped
-
-
 async def start_owner_file_cleanup():
     # Import diferido: no hay ciclo real (jax_engine.state sólo importa
     # .schemas/.events/.resource_manager/http_client), pero mantiene este
-    # módulo sin depender de que api.command/api.pipelines ya estén
-    # cargados en el momento en que jax_engine.owner_cleanup se importa.
+    # módulo sin depender de que api.command ya esté cargado en el momento
+    # en que jax_engine.owner_cleanup se importa.
     from api.command import MISSIONS_DIR
-    from api.pipelines import PIPELINES_DIR
 
     while True:
         try:
             await asyncio.to_thread(reap_orphaned_command_owner_files, MISSIONS_DIR)
-            await asyncio.to_thread(reap_old_pipeline_owner_files, PIPELINES_DIR)
         except Exception:  # fail-soft: loop de limpieza en background, reintenta cada intervalo; documentado como best-effort explicito
             pass  # best-effort: nunca debe tumbar el proceso
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
