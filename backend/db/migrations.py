@@ -442,30 +442,51 @@ _MOTOR_SEED = [
 
 # key, risk_level, sandbox_only, requires_human_gate, max_exec_min, max_recursion,
 # output_schema, fallback_motor, fallback_mode, allowed_callers, forbidden_paths
+# max_execution_minutes realineado 2026-08-20 (pago de deuda, ronda 3, T1
+# paso 1/3): el campo se carga (catalog.py) pero ningun timeout real lo
+# consume todavia (ni MotorPolicy.check() ni el executor de Jacobs -- ver
+# CONTEXT.md) -- este cambio es solo dato, cero riesgo de produccion hoy.
+# Valores puestos a 5 (300s, el default real que ya corre en produccion via
+# jacobs/plan.py::_DEFAULT_TIMEOUT_SECONDS) donde la evidencia real (jacobs_
+# steps.started_at/finished_at + las_manos/logs/motor_jobs.jsonl, 2026-08-20)
+# no respalda un valor mayor -- code_swarm/bug_hunt/pipeline_analysis: CERO
+# corridas reales encontradas (ni en Jacobs ni en Motor Registry), sin
+# evidencia para 30/15/15; refactor: 4 corridas reales (motor_jobs.jsonl),
+# max 34.5s, muy por debajo de 300s; implementation/generate/
+# validate_consistency/critique: corridas reales en jacobs_steps, max
+# observado 215.3s/8.5s/107.5s/124.1s respectivamente, ninguna cerca de
+# 300s. design/reason quedan en 15 (900s) SIN CAMBIO -- evidencia real de
+# 2 fallos genuinos exactos en el techo de 300s (jacobs_steps: 1 step
+# 'design' y 1 'reconcile' 'reason' failed a dur=300.0s=timeout_seconds),
+# mismo patron que el incidente que ya justifico subir 'reconcile' a 900s.
+# reconcile sin cambio (ya validado, ver tests/test_jacobs_timeout_by_
+# capability.py). architecture_review sin cambio (ya en 5, cero evidencia
+# en contra). Enforcer sigue sin cablear -- este commit NO cambia
+# comportamiento de produccion, solo hace que el dato deje de mentir.
 _CAPABILITY_SEED = [
-    ("code_swarm", "high", True, True, 30, 1, "code_swarm.v1", "ada", "manual_only",
+    ("code_swarm", "high", True, True, 5, 1, "code_swarm.v1", "ada", "manual_only",
      ["hyde", "ada", "kimi", "jacobs"], [".env", "secrets/", "private_keys/", "credentials/"]),
-    ("refactor", "medium", True, False, 10, 0, "code_patch.v1", None, None,
+    ("refactor", "medium", True, False, 5, 0, "code_patch.v1", None, None,
      ["hyde", "ada", "jacobs"], None),
     ("architecture_review", "medium", True, False, 5, 0, "architecture_review.v1", None, None,
      ["hyde", "jacobs"], None),
-    ("bug_hunt", "high", True, True, 15, 0, "bug_hunt.v1", None, None,
+    ("bug_hunt", "high", True, True, 5, 0, "bug_hunt.v1", None, None,
      ["hyde", "ada", "jacobs"], None),
-    ("pipeline_analysis", "low", True, False, 15, 0, "analysis.v1", None, None,
+    ("pipeline_analysis", "low", True, False, 5, 0, "analysis.v1", None, None,
      ["jacobs", "hyde"], None),
-    ("implementation", "medium", True, False, 30, 0, "code_patch.v1", None, None,
+    ("implementation", "medium", True, False, 5, 0, "code_patch.v1", None, None,
      ["jacobs", "hyde"], [".env", "secrets/", "private_keys/", "credentials/"]),
-    ("generate", "low", True, False, 15, 0, "generate.v1", None, None,
+    ("generate", "low", True, False, 5, 0, "generate.v1", None, None,
      ["jacobs", "hyde", "ada"], None),
     ("reason", "low", True, False, 15, 0, "reason.v1", None, None,
      ["jacobs", "hyde", "ada", "thot"], None),
     ("design", "low", True, False, 15, 0, "design.v1", None, None,
      ["jacobs", "hyde", "ada"], None),
-    ("validate_consistency", "low", True, False, 15, 0, "validation.v1", None, None,
+    ("validate_consistency", "low", True, False, 5, 0, "validation.v1", None, None,
      ["jacobs", "hyde", "thot"], None),
     ("reconcile", "low", True, False, 15, 0, "reconcile.v1", None, None,
      ["jacobs", "hyde", "ada"], None),
-    ("critique", "low", True, False, 15, 0, "critique.v1", None, None,
+    ("critique", "low", True, False, 5, 0, "critique.v1", None, None,
      ["jacobs", "hyde", "thot"], None),
 ]
 
@@ -598,13 +619,14 @@ async def _seed_file_tools_capabilities(cur) -> None:
     workspace es acceso a datos que el modelo no tenia, forbidden_paths
     cubre lo conocido, no lo que todavia no esta en la lista.
 
-    max_execution_minutes=1 en ambas: verificado con grep (motor_registry/
-    catalog.py) que este campo se CARGA pero no lo CONSUME ningun timeout
-    real hoy -- ni de la operacion ni del step (5ta instancia del patron
-    "schema/comentario afirma una garantia que el codigo no cumple", ver
-    T6 de la sesion anterior). El valor no cambia comportamiento hoy; se
-    deja en 1 (honesto para cuando se cablee) sin riesgo de cortar nada
-    en produccion porque nada lo lee todavia.
+    max_execution_minutes=1 en ambas originalmente (2026-08-19): placeholder
+    deliberado, honesto para cuando se cablee, sin riesgo porque nada lo
+    lee. Recalibrado a 5 (300s) el 2026-08-20 (pago de deuda ronda 3, T1
+    paso 1/3) por instrucción directa de Fernando -- alinear con el default
+    real que ya corre en produccion (jacobs/plan.py::_DEFAULT_TIMEOUT_
+    SECONDS=300) en vez de con un placeholder sin evidencia. Sigue sin
+    consumir ningun timeout real hoy (enforcer sin cablear, ver
+    CONTEXT.md) -- este cambio tampoco altera comportamiento de produccion.
 
     forbidden_paths reutiliza EXACTO el mismo array ya usado por
     code_swarm/implementation -- no una lista nueva paralela.
@@ -614,13 +636,13 @@ async def _seed_file_tools_capabilities(cur) -> None:
     file_capabilities = [
         # key, risk_level, sandbox_only, requires_human_gate, max_execution_minutes,
         # max_recursion_depth, output_schema, fallback_motor, fallback_mode, callers, forbidden
-        ("file_read", "medium", True, False, 1, 0, "", None, None,
+        ("file_read", "medium", True, False, 5, 0, "", None, None,
          ["jacobs"], [".env", "secrets/", "private_keys/", "credentials/"]),
         # T3 (Fase4, 2026-08-19): requires_human_gate False -- ver
         # _fix_file_write_no_human_gate() abajo, que ademas actualiza la
         # fila si ya existia sembrada con True (produccion real, sembrada
         # en Fase2 antes de esta decision).
-        ("file_write", "medium", True, False, 1, 0, "", None, None,
+        ("file_write", "medium", True, False, 5, 0, "", None, None,
          ["jacobs"], [".env", "secrets/", "private_keys/", "credentials/"]),
     ]
     for (key, risk_level, sandbox_only, gate, max_exec, max_rec, schema,
