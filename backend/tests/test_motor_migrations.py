@@ -122,27 +122,30 @@ async def _count_capability_motor():
             return row[0]
 
 
-def test_capability_motor_seed_count_is_24(client):
+def test_capability_motor_seed_count_is_26(client):
     """Verify the _CAPABILITY_MOTOR_SEED + Task 4 (jax_local) + Task 8
-    (thot) + GAP2 Fase2 (file_read/file_write) produces exactly 24 rows.
+    (thot) + GAP2 Fase2 (file_read/file_write) + ronda 7 T4.b (kimi en
+    file_read/file_write) produce exactamente 26 filas.
 
-    Actualizado ronda 4 (2026-08-20, T4): el conteo esperado era 22, la DB
-    real tenia 24 -- verificado que la divergencia es GAP2 Fase2
-    (2026-08-19, _seed_file_tools_capabilities en migrations.py) agregando
-    file_read y file_write, cada una con 1 motor (jax_local, priority 0) --
-    2 capabilities nuevas, 1 motor cada una = +2 filas. 24-22=2, coincide
-    exacto. No es divergencia de otra causa: confirmado que la unica
-    diferencia entre el _CAPABILITY_MOTOR_SEED de cuando se escribio este
-    test y hoy es exactamente esas 2 filas.
+    Actualizado ronda 7 (2026-08-20, T4.b): kimi agregado como motor
+    alternativo (priority 1) de file_read/file_write -- dato seguro,
+    aditivo, precedente antes de migrar ada/thot (ver auditoria T4.a en
+    CONTEXT.md, que SI encontro jobs reales que romperian con los checks
+    nuevos: 'ada'/'analysis' y 'thot'/'review' usan capabilities que no
+    existen en el catalogo). 24+2=26.
 
-    8 capabilities with 1 motor: code_swarm, refactor, architecture_review,
-    bug_hunt, pipeline_analysis, implementation, file_read, file_write.
-    Capabilities with 2 motors: validate_consistency, critique (thot, ada).
+    Historial: ronda 4 corrigio 22->24 (file_read/file_write con
+    jax_local). Ronda 7 agrega file_read/file_write con kimi tambien.
+
+    6 capabilities with 1 motor: code_swarm, refactor, architecture_review,
+    bug_hunt, pipeline_analysis, implementation.
+    Capabilities with 2 motors: validate_consistency, critique (thot, ada),
+    file_read, file_write (jax_local, kimi).
     Capabilities with 3 motors (Task 4 agregó jax_local con priority 2):
     generate, reason, design, reconcile.
-    8 + 2*2 + 4*3 = 8 + 4 + 12 = 24 total."""
+    6 + 2*4 + 4*3 = 6 + 8 + 12 = 26 total."""
     count = client.portal.call(_count_capability_motor)
-    assert count == 24, f"Expected 24 capability_motor rows, got {count}"
+    assert count == 26, f"Expected 26 capability_motor rows, got {count}"
 
 
 def test_seed_jax_local_como_motor_ollama(client):
