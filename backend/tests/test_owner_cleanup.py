@@ -2,10 +2,7 @@ import json
 import os
 import time
 
-from jax_engine.owner_cleanup import (
-    reap_old_pipeline_owner_files,
-    reap_orphaned_command_owner_files,
-)
+from jax_engine.owner_cleanup import reap_orphaned_command_owner_files
 
 
 def test_reaps_a_command_owner_file_only_when_both_mission_and_result_are_gone(tmp_path):
@@ -59,24 +56,12 @@ def test_reaps_a_command_owner_file_past_the_age_cutoff_even_if_siblings_survive
     assert not owner_file.exists()
 
 
-def test_reaps_a_pipeline_owner_file_older_than_the_cutoff(tmp_path):
-    old_file = tmp_path / "pid-old_owner.json"
-    old_file.write_text(json.dumps({"tenant_id": "1", "user_id": "u"}))
-    old_time = time.time() - 3600  # 1h en el pasado
-    os.utime(old_file, (old_time, old_time))
-
-    new_file = tmp_path / "pid-new_owner.json"
-    new_file.write_text(json.dumps({"tenant_id": "1", "user_id": "u"}))
-
-    reaped = reap_old_pipeline_owner_files(tmp_path, max_age_seconds=1800)  # cutoff: 30min
-
-    assert reaped == 1
-    assert not old_file.exists()
-    assert new_file.exists()
+# Ronda 5 (2026-08-20, T1): reap_old_pipeline_owner_files() se eliminó --
+# el ownership de pipelines ya no vive en sidecar files, ver
+# test_pipeline_ownership.py y api/pipelines.py.
 
 
 def test_reap_functions_are_no_ops_on_a_missing_directory(tmp_path):
     missing = tmp_path / "does-not-exist"
 
     assert reap_orphaned_command_owner_files(missing) == 0
-    assert reap_old_pipeline_owner_files(missing) == 0

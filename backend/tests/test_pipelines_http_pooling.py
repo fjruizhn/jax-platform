@@ -1,10 +1,11 @@
-import json
+import time
 import uuid
 
 import httpx
 import pytest
 
 from auth.jwt import create_access_token
+from db.connection import get_pool
 
 USER_ID = "test-pipelines-pooling-user"
 TENANT_ID = "test-pipelines-pooling-tenant"
@@ -15,20 +16,32 @@ def _headers():
     return {"Authorization": f"Bearer {token}"}
 
 
-@pytest.fixture(autouse=True)
-def _isolated_pipelines_dir(monkeypatch, tmp_path):
-    monkeypatch.setattr("api.pipelines.PIPELINES_DIR", tmp_path)
+async def _insert_owned_row(pipeline_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO jacobs_pipelines "
+                "(pipeline_id, name, invoked_by, mode, status, created_at, updated_at, "
+                " user_id, tenant_id, owner_ack_at) "
+                "VALUES (%s, 'test', 'hyde', 'supervised', 'running', %s, %s, %s, %s, %s)",
+                (pipeline_id, time.time(), time.time(), USER_ID, TENANT_ID, time.time()),
+            )
+
+
+async def _delete_row(pipeline_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM jacobs_pipelines WHERE pipeline_id=%s", (pipeline_id,))
 
 
 @pytest.fixture
-def owned_pipeline_id(_isolated_pipelines_dir):
-    from api.pipelines import _pipeline_owner_file
-
+def owned_pipeline_id(client):
     pipeline_id = str(uuid.uuid4())
-    _pipeline_owner_file(pipeline_id).write_text(
-        json.dumps({"tenant_id": TENANT_ID, "user_id": USER_ID})
-    )
-    return pipeline_id
+    client.portal.call(_insert_owned_row, pipeline_id)
+    yield pipeline_id
+    client.portal.call(_delete_row, pipeline_id)
 
 
 class _ClientInstantiationCounter:
@@ -60,9 +73,9 @@ def test_pipeline_endpoints_do_not_create_a_new_client_per_request(client, owned
     this only pins that no NEW httpx.AsyncClient() is instantiated per
     request now that all 6 sites share the app-startup client.
 
-    Uses a real owner file for this test's own identity so the by-id
-    requests actually reach the shared client (past the ownership check)
-    instead of short-circuiting at a 404."""
+    Uses a real owner row (owner_ack_at populated) for this test's own
+    identity so the by-id requests actually reach the shared client (past
+    the ownership check) instead of short-circuiting at a 404."""
     with _ClientInstantiationCounter() as counter:
         resp = client.get("/api/pipelines", headers=_headers())
         assert resp.status_code == 200
