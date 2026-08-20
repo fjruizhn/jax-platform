@@ -1,0 +1,35 @@
+name: policy
+
+# P10 (REFORMAS-v3.1.md, Apéndice C-bis, jax/six-impossible-things.html):
+# ningún validador/gate falla abierto ante excepción sin capturar.
+#
+# Copia de jax/.github/workflows/policy.yml (ronda 4, 2026-08-20, T3).
+# jax-platform y jax son repos GitHub privados separados -- un checkout
+# cruzado en un solo job requeriría un PAT/secret nuevo, decisión de
+# infraestructura no tomada esta sesión. Cada repo corre su PROPIA copia
+# del scanner (backend/tests/test_no_fail_open_except.py) contra su propio
+# árbol -- cobertura real por repo, sin credenciales compartidas.
+#
+# Corrida manual el 2026-08-20 contra este árbol: 88 archivos .py
+# escaneados, 0 violaciones (verificado, no supuesto -- ver CONTEXT.md
+# de jax).
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  no-fail-open-except:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      - run: python -m pytest tests/test_no_fail_open_except.py -v
