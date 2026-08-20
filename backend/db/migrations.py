@@ -616,7 +616,11 @@ async def _seed_file_tools_capabilities(cur) -> None:
         # max_recursion_depth, output_schema, fallback_motor, fallback_mode, callers, forbidden
         ("file_read", "medium", True, False, 1, 0, "", None, None,
          ["jacobs"], [".env", "secrets/", "private_keys/", "credentials/"]),
-        ("file_write", "medium", True, True, 1, 0, "", None, None,
+        # T3 (Fase4, 2026-08-19): requires_human_gate False -- ver
+        # _fix_file_write_no_human_gate() abajo, que ademas actualiza la
+        # fila si ya existia sembrada con True (produccion real, sembrada
+        # en Fase2 antes de esta decision).
+        ("file_write", "medium", True, False, 1, 0, "", None, None,
          ["jacobs"], [".env", "secrets/", "private_keys/", "credentials/"]),
     ]
     for (key, risk_level, sandbox_only, gate, max_exec, max_rec, schema,
@@ -785,6 +789,39 @@ async def _seed_models_and_backfill(cur) -> None:
     )
 
 
+async def _fix_file_write_gate_and_auditor(cur) -> None:
+    """GAP2 Fase4 (2026-08-19): file_write se sembro en Fase2 con
+    requires_human_gate=True. T3 de esta sesion lo cambia a False --
+    reencuadre de diseno: el gate no desaparece, se mueve de "aprobacion
+    previa" a "jail + forbidden_paths + git (rollback exacto) + auditoria
+    posterior por otra faceta" (ver tool_authority.py, worker.py, CONTEXT.md).
+
+    Verificado ANTES de tocar la columna que ningun caller real dispatcha
+    con capability='file_write' como capability de TOPE (grep sobre
+    jacobs/*.py y las_manos/**/*.py, cero resultados fuera de
+    tool_authority.py/tests) -- el segundo consumidor real de
+    requires_human_gate (motor_registry/policy.py::MotorPolicy.check(),
+    gate de DISPATCH top-level, distinto del gate de tool_authority.py
+    sobre cada tool_call) existe pero nunca se ejercita para esta
+    capability en el codigo real: tool_authority.py resuelve autoridad por
+    tool_name de forma independiente, sin confiar en la capability top-level
+    del job. Guard UPDATE ... WHERE requires_human_gate=TRUE: corrige una
+    vez, no pisa una reversion manual futura a True si alguien la quisiera.
+
+    auditor_motor='thot': default (T4) -- GPT-5.5, transporte/proveedor
+    distinto de jax_local (el unico productor de tool_calls hoy), evita
+    auto-revision. Guard WHERE auditor_motor IS NULL: no pisa una
+    configuracion manual posterior."""
+    await cur.execute(
+        "UPDATE capability SET requires_human_gate=FALSE "
+        "WHERE `key`='file_write' AND requires_human_gate=TRUE"
+    )
+    await cur.execute(
+        "UPDATE capability SET auditor_motor='thot' "
+        "WHERE `key`='file_write' AND auditor_motor IS NULL"
+    )
+
+
 async def _fix_anthropic_sonnet_alias(cur) -> None:
     """Correccion puntual (2026-08-10): _seed_models_and_backfill sembro
     anthropic/sonnet con is_alias=FALSE junto a los otros 6 bindings de
@@ -878,6 +915,14 @@ _COLUMNS = [
     # transport='ollama' (unico camino verificado) -- para los demas el
     # valor de esta columna no tiene efecto todavia, documentado en worker.py.
     ("motor", "disable_reasoning", "ALTER TABLE motor ADD COLUMN disable_reasoning BOOLEAN NOT NULL DEFAULT TRUE"),
+    # GAP2 Fase4 (2026-08-19, tool_authority.py write_file): "quien audita"
+    # es propiedad de la CAPABILITY (mismo eje que risk_level/
+    # requires_human_gate -- gobernanza de la operacion, no del motor que la
+    # ejecuto), no del motor ni de una tabla nueva. NULL = auditoria
+    # desactivada para esa capability (default explicito, no implicito).
+    # Override real por request via context={"auditor": "<motor>"|false},
+    # resuelto en worker.py -- esta columna es solo el default.
+    ("capability", "auditor_motor", "ALTER TABLE capability ADD COLUMN auditor_motor VARCHAR(50) NULL"),
 ]
 
 
@@ -992,5 +1037,6 @@ async def run_migrations():
             await _seed_jax_local_motor(cur)
             await _seed_thot_motor(cur)
             await _seed_file_tools_capabilities(cur)
+            await _fix_file_write_gate_and_auditor(cur)
 
         await conn.commit()
