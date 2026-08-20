@@ -666,6 +666,21 @@ async def _seed_file_tools_capabilities(cur) -> None:
             "VALUES (%s, 'jax_local', 0)",
             (capability_key,),
         )
+    # Ronda 7 (2026-08-20, T4.b): kimi agregado como motor alternativo
+    # (priority 1, detras de jax_local) -- kimi ya esta en _MOTOR_FACETS
+    # (jacobs/executor.py), ya tiene fila completa en `motor` (sandbox_only,
+    # transport http_openai_compat), y es el motor agentico designado para
+    # tareas de codigo (comentario existente: code_swarm/refactor/bug_hunt/
+    # implementation son "hoy exclusivo de Kimi"). Aditivo puro: no quita el
+    # binding de jax_local, no toca executor.py, no afecta a ada/thot.
+    await cur.execute("SELECT 1 FROM motor WHERE `key`='kimi'")
+    if await cur.fetchone() is not None:
+        for capability_key in ("file_read", "file_write"):
+            await cur.execute(
+                "INSERT IGNORE INTO capability_motor (capability_key, motor_key, priority) "
+                "VALUES (%s, 'kimi', 1)",
+                (capability_key,),
+            )
 
 
 async def _seed_thot_motor(cur) -> None:
