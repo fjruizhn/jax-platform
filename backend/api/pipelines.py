@@ -1,10 +1,10 @@
-import json
 import os
+import time
 import uuid
-from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from auth.middleware import get_current_user
 from auth.models import AuthUser
+from db.connection import get_pool
 from http_client import get_http_client
 from jax_engine.resource_manager import resource_manager
 from jax_engine.state import engine_state
@@ -24,37 +24,52 @@ JACOBS_URL = os.getenv("JACOBS_URL", "http://127.0.0.1:7777/jacobs")
 JACOBS_PIPELINE_TIMEOUT = float(os.getenv("JACOBS_PIPELINE_TIMEOUT", "60.0"))
 
 # engine_state.active_pipelines (memoria) se descarta apenas la pipeline
-# termina -- justo cuando normalmente se pide /results. Este registro en
-# disco es la única fuente de ownership que sobrevive a eso; mismo patrón
-# que web-task-{id}_owner.json en api/command.py.
-PIPELINES_DIR = Path.home() / "jax" / "pipelines"
+# termina -- justo cuando normalmente se pide /results. owner_ack_at en
+# jacobs_pipelines (misma DB fisica jax_memory que ya comparten ambos
+# servicios) es la fuente de ownership que sobrevive a eso.
+#
+# Ronda 5 (2026-08-20, T1): reemplaza el owner file en
+# ~/jax/pipelines/{id}_owner.json (deuda con dientes documentada en
+# jacobs/reaper.py de jax -- el reaper cruzaba de repo leyendo ese
+# archivo). UPDATE/SELECT directos contra jacobs_pipelines, mismo pool
+# de DB que ya usa este servicio para capability/motor -- no un
+# request HTTP a Jacobs por cada chequeo de ownership (eso hubiera
+# agregado un salto de red a cada GET/resume/cancel, y de cualquier
+# forma esas rutas ya dependen de que Jacobs este arriba para el
+# reenvio real).
+async def _record_pipeline_owner(pipeline_id: str, tenant_id: str, user_id: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE jacobs_pipelines SET owner_ack_at=%s "
+                "WHERE pipeline_id=%s AND user_id=%s AND tenant_id=%s",
+                (time.time(), pipeline_id, user_id, tenant_id),
+            )
 
 
-def _pipeline_owner_file(pipeline_id: str) -> Path:
-    return PIPELINES_DIR / f"{pipeline_id}_owner.json"
-
-
-def _record_pipeline_owner(pipeline_id: str, tenant_id: str, user_id: str):
-    PIPELINES_DIR.mkdir(parents=True, exist_ok=True)
-    _pipeline_owner_file(pipeline_id).write_text(json.dumps({"tenant_id": tenant_id, "user_id": user_id}))
-
-
-def _require_pipeline_owner(pipeline_id: str, user: AuthUser):
+async def _require_pipeline_owner(pipeline_id: str, user: AuthUser):
     # 404 (no 403) para no confirmarle a un no-dueño que el pipeline_id
-    # existe. Pipelines creadas antes de este cambio no tienen owner file y
-    # también devuelven 404 -- costo único de la migración, no un bug.
+    # existe. Pipelines creadas antes de esta migración no tienen
+    # owner_ack_at poblado y también devuelven 404 -- costo único de la
+    # migración, no un bug (mismo criterio que regia con el owner file).
     try:
         uuid.UUID(pipeline_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="pipeline_id inválido")
-    try:
-        owner = json.loads(_pipeline_owner_file(pipeline_id).read_text())
-    except (OSError, ValueError):
-        raise HTTPException(status_code=404, detail="Pipeline no encontrado")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT user_id, tenant_id, owner_ack_at FROM jacobs_pipelines WHERE pipeline_id=%s",
+                (pipeline_id,),
+            )
+            row = await cur.fetchone()
     if (
-        not isinstance(owner, dict)
-        or owner.get("user_id") != user.user_id
-        or owner.get("tenant_id") != user.tenant_id
+        row is None
+        or row[2] is None
+        or row[0] != user.user_id
+        or row[1] != user.tenant_id
     ):
         raise HTTPException(status_code=404, detail="Pipeline no encontrado")
 
@@ -94,7 +109,7 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
             # (que ya revela pipeline_id al dueño) — así un fallo acá
             # aborta limpio, sin slot de tenant huérfano ni owner file
             # faltante para un id que el cliente ya recibió.
-            _record_pipeline_owner(pipeline_id, user.tenant_id, user.user_id)
+            await _record_pipeline_owner(pipeline_id, user.tenant_id, user.user_id)
             await resource_manager.admit_pipeline(user.tenant_id, pipeline_id)
             initial = PipelineState(
                 pipeline_id=pipeline_id,
@@ -113,7 +128,7 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
 
 @router.get("/{pipeline_id}/results")
 async def get_pipeline_results(pipeline_id: str, user: AuthUser = Depends(get_current_user)):
-    _require_pipeline_owner(pipeline_id, user)
+    await _require_pipeline_owner(pipeline_id, user)
     client = await get_http_client()
     try:
         r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}/results", timeout=10.0)
@@ -124,7 +139,7 @@ async def get_pipeline_results(pipeline_id: str, user: AuthUser = Depends(get_cu
 
 @router.get("/{pipeline_id}")
 async def get_pipeline(pipeline_id: str, user: AuthUser = Depends(get_current_user)):
-    _require_pipeline_owner(pipeline_id, user)
+    await _require_pipeline_owner(pipeline_id, user)
     client = await get_http_client()
     try:
         r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}", timeout=5.0)
@@ -138,7 +153,7 @@ async def resume_pipeline(
     pipeline_id: str,
     user: AuthUser = Depends(get_current_user),
 ):
-    _require_pipeline_owner(pipeline_id, user)
+    await _require_pipeline_owner(pipeline_id, user)
     client = await get_http_client()
     try:
         r = await client.post(
@@ -156,7 +171,7 @@ async def cancel_pipeline(
     pipeline_id: str,
     user: AuthUser = Depends(get_current_user),
 ):
-    _require_pipeline_owner(pipeline_id, user)
+    await _require_pipeline_owner(pipeline_id, user)
     client = await get_http_client()
     try:
         r = await client.post(f"{JACOBS_URL}/pipeline/{pipeline_id}/cancel", timeout=10.0)
