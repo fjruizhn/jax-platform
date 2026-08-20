@@ -1,5 +1,11 @@
+import logging
+import os
+import secrets
+
 import bcrypt
 from .connection import get_pool
+
+logger = logging.getLogger("db.seed")
 
 
 def _hash(plain: str) -> str:
@@ -8,6 +14,25 @@ def _hash(plain: str) -> str:
 
 async def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
+
+
+def _resolve_seed_admin_password() -> str:
+    """JAX_SEED_ADMIN_PASSWORD (mismo prefijo JAX_ que el resto de config de
+    infra, ver /etc/jax/.env) fija la contraseña del seed. Sin ella, se
+    genera una aleatoria y se loguea UNA sola vez al arranque -- nunca a un
+    archivo -- para que quien siembre la DB la capture del log. Nunca cae a
+    un default fijo: eso era exactamente el bug (contraseña commiteada) que
+    esto reemplaza."""
+    env_value = os.getenv("JAX_SEED_ADMIN_PASSWORD")
+    if env_value:
+        return env_value
+    generated = secrets.token_urlsafe(18)
+    logger.warning(
+        "db.seed: JAX_SEED_ADMIN_PASSWORD no seteada -- generada contraseña "
+        f"aleatoria para user_id=1 (fernando@rich-hn.com): {generated} "
+        "-- anotarla ahora, no se vuelve a mostrar"
+    )
+    return generated
 
 
 async def run_seed():
@@ -29,7 +54,7 @@ async def run_seed():
             )
             (count,) = await cur.fetchone()
             if count == 0:
-                hashed = _hash("***REMOVED-SEE-JAX-RONDA9-2026-08-20***")
+                hashed = _hash(_resolve_seed_admin_password())
                 await cur.execute(
                     "INSERT INTO jax_users "
                     "(user_id, tenant_id, email, password_hash, role, status) "
