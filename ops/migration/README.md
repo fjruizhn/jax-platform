@@ -4,8 +4,8 @@ Restaura el ecosistema en la máquina nueva. **Corre los scripts en este orden:*
 
 ```bash
 # 0. (desde el origen) transferir el paquete
-rsync -avz -e "ssh -p 58291" /home/fruiz/migration-20260708/ \
-  fruiz@172.16.20.5:/home/fruiz/migration-20260708/
+rsync -avz -e "ssh -p <puerto, ver /etc/jax/.env>" /home/fruiz/migration-20260708/ \
+  fruiz@<IP interna, ver /etc/jax/.env>:/home/fruiz/migration-20260708/
 
 # — ya en hall9000, como usuario fruiz —
 cd /home/fruiz/migration-20260708

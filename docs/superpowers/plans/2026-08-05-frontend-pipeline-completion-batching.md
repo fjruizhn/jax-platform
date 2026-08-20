@@ -256,4 +256,4 @@ git add frontend/src/store/useJaxStore.js frontend/src/store/useJaxStore.pipelin
 git commit -m "perf(frontend): batch pipeline-completion messages into one set() call"
 ```
 
-**Remember (per `CLAUDE.md`):** this change alone does not reach production — it still needs the explicit rsync deploy step to the dev VM (`172.16.20.11`) documented in `CLAUDE.md` under "DEPLOY FRONTEND" before it's live at axioma-ia.io. Do not run that deploy as part of this plan without the user's explicit go-ahead.
+**Remember (per `CLAUDE.md`):** this change alone does not reach production — it still needs the explicit rsync deploy step to the dev VM (`<IP interna, ver /etc/jax/.env>`) documented in `CLAUDE.md` under "DEPLOY FRONTEND" before it's live at axioma-ia.io. Do not run that deploy as part of this plan without the user's explicit go-ahead.

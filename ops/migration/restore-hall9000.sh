@@ -482,8 +482,8 @@ Verificar salud tras arrancar:
     journalctl -u jax-platform -n 50 --no-pager
 
 Deploy del frontend a producción (NO lo hace este script):
-    Requiere build + rsync a la VM dev (172.16.20.11). Ver "Lecciones operativas"
-    en ~/jax-platform/CLAUDE.md.
+    Requiere build + rsync a la VM dev (ver /etc/jax/.env para el host).
+    Ver "Lecciones operativas" en ~/jax-platform/CLAUDE.md.
 CHECKLIST
 
 ok "Fin. Revisa el checklist antes de arrancar servicios."
