@@ -122,19 +122,27 @@ async def _count_capability_motor():
             return row[0]
 
 
-def test_capability_motor_seed_count_is_22(client):
+def test_capability_motor_seed_count_is_24(client):
     """Verify the _CAPABILITY_MOTOR_SEED + Task 4 (jax_local) + Task 8
-    (thot) produces exactly 22 rows:
-    6 capabilities with 1 motor + 2 capabilities with 2 motors (Task 8
-    agregó thot a validate_consistency/critique, antes 1 motor cada una)
-    + 4 capabilities with 3 motors = 6 + 4 + 12 = 22 total.
-    Capabilities with 1 motor: code_swarm, refactor, architecture_review,
-    bug_hunt, pipeline_analysis, implementation.
+    (thot) + GAP2 Fase2 (file_read/file_write) produces exactly 24 rows.
+
+    Actualizado ronda 4 (2026-08-20, T4): el conteo esperado era 22, la DB
+    real tenia 24 -- verificado que la divergencia es GAP2 Fase2
+    (2026-08-19, _seed_file_tools_capabilities en migrations.py) agregando
+    file_read y file_write, cada una con 1 motor (jax_local, priority 0) --
+    2 capabilities nuevas, 1 motor cada una = +2 filas. 24-22=2, coincide
+    exacto. No es divergencia de otra causa: confirmado que la unica
+    diferencia entre el _CAPABILITY_MOTOR_SEED de cuando se escribio este
+    test y hoy es exactamente esas 2 filas.
+
+    8 capabilities with 1 motor: code_swarm, refactor, architecture_review,
+    bug_hunt, pipeline_analysis, implementation, file_read, file_write.
     Capabilities with 2 motors: validate_consistency, critique (thot, ada).
     Capabilities with 3 motors (Task 4 agregó jax_local con priority 2):
-    generate, reason, design, reconcile."""
+    generate, reason, design, reconcile.
+    8 + 2*2 + 4*3 = 8 + 4 + 12 = 24 total."""
     count = client.portal.call(_count_capability_motor)
-    assert count == 22, f"Expected 22 capability_motor rows, got {count}"
+    assert count == 24, f"Expected 24 capability_motor rows, got {count}"
 
 
 def test_seed_jax_local_como_motor_ollama(client):
