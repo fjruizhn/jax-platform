@@ -23,4 +23,15 @@ async def list_capabilities(user: AuthUser = Depends(get_current_user)):
             by_cap: dict[str, list[str]] = {}
             for capability_key, motor_key in await cur.fetchall():
                 by_cap.setdefault(capability_key, []).append(motor_key)
-    return {"capabilities": [{"key": k, "allowed_motors": by_cap.get(k, [])} for k in keys]}
+            # T1 (2026-08-21, diagnostico pipeline 19ad2c42-cdf): has_tool_access
+            # vivia solo como un `if` literal en worker.py:488 -- el frontend
+            # pedia este endpoint y no tenia de donde leer esa senal, asi que
+            # armaba el plan con un mapa hardcodeado (causa raiz). single
+            # source of truth: columna `motor.has_tool_access`, la misma que
+            # worker.py consulta ahora (ver catalog.py MotorEntry).
+            await cur.execute("SELECT `key`, has_tool_access FROM motor ORDER BY `key`")
+            motors = [{"key": k, "has_tool_access": bool(has_tools)} for k, has_tools in await cur.fetchall()]
+    return {
+        "capabilities": [{"key": k, "allowed_motors": by_cap.get(k, [])} for k in keys],
+        "motors": motors,
+    }
