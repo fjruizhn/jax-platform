@@ -47,18 +47,24 @@ CREATE TABLE IF NOT EXISTS axioma_usage (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
-CREATE_AXIOMA_ARTIFACTS = """
-CREATE TABLE IF NOT EXISTS axioma_artifacts (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  tenant_id INT DEFAULT 1,
-  user_id INT DEFAULT 1,
-  name VARCHAR(200) NOT NULL,
-  artifact_type VARCHAR(30) NOT NULL,
-  file_path TEXT NOT NULL,
-  size_bytes INT DEFAULT 0,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-"""
+# axioma_artifacts DROPEADA (Bloque 2, 2026-08-21): tabla mas vieja del
+# repo (commit ed7719a7d4, 2026-06-19), 0 filas, 0 writers, 0 readers en
+# ambos repos, confirmado contra CONTEXT.md:340 y la DB real. La feature
+# que la motivaba (scoping multi-tenant de artifacts) se resolvio por otro
+# camino: AdminRepository.jsx escanea el filesystem en vivo (REPO_BASE=
+# ~/jax/repo, os.stat()), no necesita esta tabla. DDL original preservada
+# aca por si la decision se revierte -- ver _drop_axioma_artifacts() abajo:
+#
+# CREATE TABLE IF NOT EXISTS axioma_artifacts (
+#   id INT AUTO_INCREMENT PRIMARY KEY,
+#   tenant_id INT DEFAULT 1,
+#   user_id INT DEFAULT 1,
+#   name VARCHAR(200) NOT NULL,
+#   artifact_type VARCHAR(30) NOT NULL,
+#   file_path TEXT NOT NULL,
+#   size_bytes INT DEFAULT 0,
+#   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+# ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE_PASSWORD_RESET_TOKENS = """
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
@@ -365,7 +371,6 @@ _TABLES = [
     ("jax_users", CREATE_USERS),
     ("axioma_config", CREATE_AXIOMA_CONFIG),
     ("axioma_usage", CREATE_AXIOMA_USAGE),
-    ("axioma_artifacts", CREATE_AXIOMA_ARTIFACTS),
     ("password_reset_tokens", CREATE_PASSWORD_RESET_TOKENS),
     ("user_api_keys", CREATE_USER_API_KEYS),
     ("facet_models", CREATE_FACET_MODELS),
@@ -895,6 +900,15 @@ async def _fix_anthropic_sonnet_alias(cur) -> None:
     )
 
 
+async def _drop_axioma_artifacts(cur) -> None:
+    """Bloque 2 (2026-08-21): axioma_artifacts confirmada huerfana -- 0
+    filas, 0 writers, 0 readers en ambos repos (ver comentario junto al
+    DDL preservado, arriba de CREATE_PASSWORD_RESET_TOKENS). Idempotente:
+    no falla en instalaciones que ya la dropearon o que nunca la crearon."""
+    if await _table_exists(cur, "axioma_artifacts"):
+        await cur.execute("DROP TABLE axioma_artifacts")
+
+
 async def _migrate_user_api_keys_to_credential(cur) -> None:
     """Migracion de datos, una sola vez: si credential ya tiene filas, no
     vuelve a correr (evita duplicar en cada arranque del proceso o cada
@@ -1100,6 +1114,7 @@ async def run_migrations():
                 if await _column_too_narrow(cur, table_name, column_name, min_length):
                     await cur.execute(ddl)
 
+            await _drop_axioma_artifacts(cur)
             await _seed_providers(cur)
             await _migrate_user_api_keys_to_credential(cur)
             await _seed_facets(cur)
