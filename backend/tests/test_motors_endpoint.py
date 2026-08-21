@@ -34,3 +34,25 @@ def test_capabilities_critique_incluye_thot_y_ada_en_orden(client):
     body = resp.json()
     by_key = {c["key"]: c for c in body["capabilities"]}
     assert by_key["critique"]["allowed_motors"] == ["thot", "ada"]
+
+
+def test_capabilities_expone_has_tool_access_por_motor(client):
+    """T1 (diagnostico pipeline 19ad2c42-cdf): has_tool_access vivia solo
+    como un `if motor == "jax_local"` literal en worker.py:488 -- nada podia
+    preguntarle al sistema que motores ejecutan tools. Ahora es columna en
+    `motor` (single source of truth), y este endpoint la expone para que el
+    picker del frontend (PipelineModal.jsx) pueda consultarla en vez de
+    usar el mapa hardcodeado GOVERNED_FACET_CAPABILITY que causo el
+    incidente. jax_local es el unico motor con tools hoy (worker.py:488,
+    GAP2 Fase1) -- kimi tiene filas en capability_motor para file_write pero
+    NO recibe el catalogo de tools, exactamente la contradiccion diagnosticada
+    en T2 de la sesion anterior."""
+    resp = client.get("/api/motors/capabilities", headers=_auth_headers())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "motors" in body, "el endpoint debe exponer una lista 'motors' con has_tool_access"
+    by_key = {m["key"]: m for m in body["motors"]}
+    assert "jax_local" in by_key, by_key
+    assert by_key["jax_local"]["has_tool_access"] is True, by_key["jax_local"]
+    assert "kimi" in by_key, by_key
+    assert by_key["kimi"]["has_tool_access"] is False, by_key["kimi"]

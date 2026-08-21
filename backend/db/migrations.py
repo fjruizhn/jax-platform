@@ -604,6 +604,15 @@ async def _seed_jax_local_motor(cur) -> None:
         )
 
 
+async def _seed_jax_local_has_tool_access(cur) -> None:
+    """T1 (2026-08-21): backfill idempotente de has_tool_access para
+    instalaciones donde la fila `motor` de jax_local ya existia antes de
+    que la columna se agregara (ALTER ... DEFAULT FALSE no la marca sola).
+    UPDATE sin condicion de "solo si NULL" a proposito: correr esto de
+    nuevo con jax_local ya en TRUE es un no-op idempotente, no un riesgo."""
+    await cur.execute("UPDATE motor SET has_tool_access=TRUE WHERE `key`='jax_local'")
+
+
 async def _seed_file_tools_capabilities(cur) -> None:
     """GAP2 Fase2 (2026-08-19, jax/las_manos/motor_registry/tool_authority.py):
     capabilities dedicadas para read_file/write_file -- ninguna de las 12
@@ -960,6 +969,19 @@ _COLUMNS = [
     # Override real por request via context={"auditor": "<motor>"|false},
     # resuelto en worker.py -- esta columna es solo el default.
     ("capability", "auditor_motor", "ALTER TABLE capability ADD COLUMN auditor_motor VARCHAR(50) NULL"),
+    # T1 (2026-08-21, diagnostico pipeline 19ad2c42-cdf): has_tool_access
+    # vivia SOLO como `if motor == "jax_local"` en worker.py:488 -- nada
+    # podia preguntarle al sistema que motor ejecuta tools, y el frontend
+    # (PipelineModal.jsx) pedia /motors/capabilities y lo descartaba,
+    # armando el plan con un mapa hardcodeado en su lugar (causa raiz del
+    # incidente). Va en `motor`, no en `capability_motor`: es propiedad de
+    # que API/gobernanza hay detras de cada motor (mismo eje que
+    # sandbox_only/disable_reasoning, no de que capability se ejecuta --
+    # capability_motor ya goberna ESO por separado, y kimi tiene filas ahi
+    # para file_write pese a no tener tools). DEFAULT FALSE preserva el
+    # comportamiento actual para todo motor existente sin tocar codigo --
+    # jax_local se marca TRUE explicitamente en _seed_jax_local_has_tool_access.
+    ("motor", "has_tool_access", "ALTER TABLE motor ADD COLUMN has_tool_access BOOLEAN NOT NULL DEFAULT FALSE"),
 ]
 
 
@@ -1072,6 +1094,7 @@ async def run_migrations():
             await _fix_anthropic_sonnet_alias(cur)
             await _seed_motors_and_capabilities(cur)
             await _seed_jax_local_motor(cur)
+            await _seed_jax_local_has_tool_access(cur)
             await _seed_thot_motor(cur)
             await _seed_file_tools_capabilities(cur)
             await _fix_file_write_gate_and_auditor(cur)
