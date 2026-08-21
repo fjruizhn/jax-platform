@@ -91,6 +91,9 @@ export default {
   descKimi: 'Implementación técnica',
   descAda: 'Análisis y rigor',
   autoMotor: 'Auto (por competencia)',
+  facetUngoverned: 'Sin gobernanza de Motor Registry — no se valida contra capabilities reales.',
+  catalogLoadingHint: 'Cargando catálogo de motores…',
+  catalogFailedHint: 'No se pudo cargar el catálogo de motores — no se puede planificar hasta que cargue.',
 
   // Center panel
   platformLabel: 'AXIOMA V0.2',

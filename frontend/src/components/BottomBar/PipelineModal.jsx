@@ -20,25 +20,66 @@ function getFacetOptions(t, facetsState) {
   }))
 }
 
-// facet -> capability real de las_manos (las que sí llegan a Motor
-// Registry hoy: kimi y jax_local, tras Task 5). El resto de facetas del
-// picker (hipatia/jekyll/thot/ada directas) no pasan por acá -- su
-// "capability" es solo etiqueta descriptiva, sin motor que elegir.
-const GOVERNED_FACET_CAPABILITY = { kimi: 'implementation', jax_local: 'generate' }
+// T5 (2026-08-22, diagnóstico pipeline 19ad2c42-cdf): antes esto era un mapa
+// hardcodeado (GOVERNED_FACET_CAPABILITY) que decidía capability sin mirar
+// el catálogo real -- exactamente la causa raíz del incidente.
+//
+// "Gobernado" NO es "tiene fila en `motorsByKey`" -- ada/thot SÍ tienen fila
+// en `motor` (transport http_openai_compat, has_tool_access=false) pero
+// despachan por HTTP directo (jacobs/executor.py::_HTTP_FACETS), fuera del
+// alcance de T2 (_validate_plan_capabilities solo cubre jacobs.models.
+// MOTOR_FACETS). Confundir las dos cosas fue un bug real de esta misma
+// ronda -- encontrado por un test que esperaba 1 <select> y encontró 2
+// (kimi Y thot, porque thot SÍ tiene fila en `motor`). GOVERNED_FACETS
+// replica MOTOR_FACETS del backend (jax/jacobs/models.py) a mano -- no hay
+// endpoint que exponga la partición HTTP-directo/Motor-Registry todavía
+// (viven en repos distintos, jax vs jax-platform). Deuda declarada, no
+// resuelta: si MOTOR_FACETS cambia en jacobs/models.py, este array queda
+// desactualizado sin que nada lo avise.
+const GOVERNED_FACETS = ['jax_local', 'kimi']
 
-function buildSteps(selectedFacets, objective, facetOptions, motorChoices) {
+// La capability que se pide para un facet gobernado depende de
+// has_tool_access (dato real, T1), no de una tabla fija: 'implementation'
+// (output_schema=code_patch.v1) es un callejón sin salida en este picker --
+// no hay forma de armar un step reconcile/assemble downstream que aplique
+// el patch (buildSteps no tiene noción de depends_on). 'file_write' es
+// autocontenida (el motor ejecuta la tool dentro del job, sin consumidor)
+// -- se pide SOLO si el motor puede ejecutarla; si no, 'generate' (texto
+// libre, nunca promete escribir nada que el motor no puede).
+function _capabilityFor(facetId, motorsByKey) {
+  if (!GOVERNED_FACETS.includes(facetId)) return null  // no gobernado por T2
+  const entry = motorsByKey[facetId]
+  if (!entry) return null  // el catálogo no trajo fila para este motor -- no arriesgar
+  return entry.has_tool_access ? 'file_write' : 'generate'
+}
+
+function buildSteps(selectedFacets, objective, facetOptions, motorChoices, motorsByKey) {
   return facetOptions
     .filter(f => selectedFacets.includes(f.id))
     .map(f => {
+      const governedCapability = _capabilityFor(f.id, motorsByKey)
       const step = {
         facet: f.id,
-        capability: GOVERNED_FACET_CAPABILITY[f.id] || f.capability,
+        capability: governedCapability || f.capability,
         prompt: `${f.desc}: ${objective}`,
         timeout_seconds: 300,
         skip_on_fail: false,
       }
-      if (GOVERNED_FACET_CAPABILITY[f.id] && motorChoices[f.id]) {
-        step.motor = motorChoices[f.id]  // vacío/no seteado = None, auto por competencia
+      if (governedCapability) {
+        // T5: motor SIEMPRE fijado para facets gobernados, salvo que el
+        // usuario elija explícitamente "Auto" en el <select> (motorChoices
+        // guarda '' en ese caso -- una elección real, no una ausencia).
+        // Antes quedaba sin setear por default y MotorPolicy._resolve_motor
+        // (None, cap) resolvía por prioridad GLOBAL de capability_motor,
+        // ignorando el facet -- confirmado en vivo: un step etiquetado
+        // "jax_local" se ejecutó contra kimi. El checkbox debe garantizar
+        // el motor que dice.
+        const choice = motorChoices[f.id]
+        if (choice === undefined) {
+          step.motor = f.id
+        } else if (choice !== '') {
+          step.motor = choice
+        }
       }
       return step
     })
@@ -53,6 +94,11 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   const [selected, setSelected] = useState(['hipatia', 'jekyll', 'thot'])
   const [submitting, setSubmitting] = useState(false)
   const [capabilities, setCapabilities] = useState({})  // {capability_key: [motor_key, ...]}
+  // T5: null = catálogo todavía no resolvió (fail-closed mientras carga);
+  // {} tras un fetch exitoso (aunque vacío) es un estado válido, distinto
+  // de "no cargó todavía" -- por eso null, no {}, como valor inicial.
+  const [motorsByKey, setMotorsByKey] = useState(null)  // {motor_key: {has_tool_access}}
+  const [catalogFailed, setCatalogFailed] = useState(false)
   const [motorChoices, setMotorChoices] = useState({})  // {facet_id: motor_key | ''}
 
   useEffect(() => {
@@ -62,12 +108,24 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
     // nunca autentica esta llamada.
     api.get('/motors/capabilities')
       .then(({ data }) => {
-        const byKey = {}
-        for (const c of data.capabilities) byKey[c.key] = c.allowed_motors
-        setCapabilities(byKey)
+        const byCap = {}
+        for (const c of data.capabilities) byCap[c.key] = c.allowed_motors
+        setCapabilities(byCap)
+        const byMotor = {}
+        for (const m of data.motors || []) byMotor[m.key] = m
+        setMotorsByKey(byMotor)
       })
-      .catch(() => setCapabilities({}))
+      // T5: fail-closed -- si el catálogo falla, motorsByKey queda null
+      // para siempre (catalogReady abajo nunca se pone true). No hay
+      // fallback a un mapa hardcodeado: eso es exactamente el bug que
+      // causó el incidente (pedir el dato real y decidir con otra cosa).
+      .catch(() => setCatalogFailed(true))
   }, [])
+
+  // catalogReady: false mientras carga (motorsByKey===null) Y false si
+  // falló -- las dos son la misma señal para el usuario ("no arranques
+  // todavía"), aunque la causa sea distinta.
+  const catalogReady = motorsByKey !== null && !catalogFailed
 
   function toggleFacet(id) {
     setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id])
@@ -78,9 +136,9 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   }
 
   async function handleSubmit() {
-    if (selected.length === 0) return
+    if (selected.length === 0 || !catalogReady) return
     setSubmitting(true)
-    const steps = buildSteps(selected, objective, FACET_OPTIONS, motorChoices)
+    const steps = buildSteps(selected, objective, FACET_OPTIONS, motorChoices, motorsByKey)
     await onSubmit({
       name: `Pipeline: ${objective.slice(0, 50)}`,
       objective,
@@ -144,7 +202,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
           </p>
           <div className="space-y-1.5">
             {FACET_OPTIONS.map(f => {
-              const cap = GOVERNED_FACET_CAPABILITY[f.id]
+              const cap = motorsByKey ? _capabilityFor(f.id, motorsByKey) : null
               const motorOptions = cap ? (capabilities[cap] || []) : []
               return (
                 <div key={f.id}>
@@ -179,20 +237,37 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
                     <span className="text-xs text-slate-500">{f.desc}</span>
                   </label>
                   {selected.includes(f.id) && motorOptions.length > 0 && (
+                    // T5: default = f.id (el motor que el checkbox dice),
+                    // no '' (auto) -- '' sigue disponible como elección
+                    // EXPLÍCITA del usuario, ya no como default silencioso.
                     <select
                       className="ml-7 mt-1 text-xs bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-300"
-                      value={motorChoices[f.id] || ''}
+                      value={motorChoices[f.id] !== undefined ? motorChoices[f.id] : f.id}
                       onChange={(e) => setMotorFor(f.id, e.target.value)}
                     >
                       <option value="">{t.autoMotor}</option>
                       {motorOptions.map(m => <option key={m} value={m}>{m}</option>)}
                     </select>
                   )}
+                  {selected.includes(f.id) && motorsByKey && !cap && (
+                    <p className="ml-7 mt-1 text-[11px] text-amber-500/80">
+                      {t.facetUngoverned}
+                    </p>
+                  )}
                 </div>
               )
             })}
           </div>
         </div>
+
+        {/* T5: fail-closed -- sin catálogo real (cargando o falló), no se
+            arma ningún plan. Nada de fallback silencioso. */}
+        {catalogFailed && (
+          <p className="mb-2 text-[11px] text-red-400">{t.catalogFailedHint}</p>
+        )}
+        {!catalogFailed && !catalogReady && (
+          <p className="mb-2 text-[11px] text-slate-500">{t.catalogLoadingHint}</p>
+        )}
 
         {/* Botones */}
         <div className="flex gap-2">
@@ -204,7 +279,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
           </button>
           <button
             onClick={handleSubmit}
-            disabled={submitting || selected.length === 0}
+            disabled={submitting || selected.length === 0 || !catalogReady}
             className="flex-1 py-2 rounded-lg text-xs font-bold text-white transition-colors disabled:opacity-40"
             style={{ backgroundColor: '#3b82f6' }}
           >

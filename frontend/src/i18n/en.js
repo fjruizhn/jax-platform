@@ -88,6 +88,9 @@ export default {
   descKimi: 'Technical implementation',
   descAda: 'Analysis & rigor',
   autoMotor: 'Auto (by competence)',
+  facetUngoverned: 'No Motor Registry governance — not validated against real capabilities.',
+  catalogLoadingHint: 'Loading motor catalog…',
+  catalogFailedHint: 'Could not load the motor catalog — planning is blocked until it loads.',
 
   // Center panel
   platformLabel: 'AXIOMA V0.2',
