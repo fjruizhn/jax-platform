@@ -982,6 +982,20 @@ _COLUMNS = [
     # comportamiento actual para todo motor existente sin tocar codigo --
     # jax_local se marca TRUE explicitamente en _seed_jax_local_has_tool_access.
     ("motor", "has_tool_access", "ALTER TABLE motor ADD COLUMN has_tool_access BOOLEAN NOT NULL DEFAULT FALSE"),
+    # P0 (2026-08-22, auditoria usage_writer): record_motor_usage()/
+    # record_direct_usage() solo corrian en la rama de EXITO -- un job que
+    # fallaba (timeout, error de schema, cualquier cosa) nunca escribia fila,
+    # aunque gasto tokens reales contra una API paga (confirmado: 7/9 jobs
+    # reales de Motor Registry en la ventana auditada, sin fila). `status`
+    # distingue el desenlace -- un token gastado en un fallo es tan real como
+    # uno en un exito, pero importa saber cual fue para diagnosticar. NULL
+    # para filas viejas (nunca tuvieron este dato, no hay como reconstruirlo).
+    ("axioma_usage", "status", "ALTER TABLE axioma_usage ADD COLUMN status VARCHAR(20) NULL"),
+    # job_id: sin esto, reconciliar axioma_usage contra motor_jobs.jsonl
+    # (la fuente de verdad de LAS MANOS) exige matchear por timestamp+facet,
+    # aproximado. Con job_id, el join es exacto -- lo que T3 (chequeo de
+    # reconciliacion) necesita para no dar falsos positivos.
+    ("axioma_usage", "job_id", "ALTER TABLE axioma_usage ADD COLUMN job_id VARCHAR(36) NULL"),
 ]
 
 
