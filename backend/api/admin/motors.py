@@ -129,10 +129,37 @@ async def create_motor(req: CreateMotorRequest, user: AuthUser = Depends(require
     (proceso separado) se reinicie — carga su catalogo de motores una
     sola vez al arrancar (Task 2). No hay forma de forzar un reload en
     caliente desde aqui; el operador debe reiniciar jax-las-manos.service
-    para que el motor recien dado de alta quede activo."""
+    para que el motor recien dado de alta quede activo.
+
+    GUARDA (2026-08-24): si `key` coincide con una faceta existente,
+    este endpoint RECHAZA la creacion -- mismo criterio que el guard de
+    update_motor(). No hay motores homonimos hoy sin faceta (LEFT JOIN
+    verificado, 0 filas), asi que este chequeo no bloquea ningun caso
+    real. Confirmado en vivo (Paso 3, 2026-08-24) que sin este guard el
+    hueco era real: create_motor('hipatia', modelo distinto al de
+    facet_binding) devolvia 200 y sembraba motor.model_ref divergente --
+    inofensivo para la RESOLUCION (motor_resolved lo ignora, list_motors
+    seguia mostrando el modelo correcto), pero dejaba una fila con un
+    valor mentiroso en la tabla cruda, sin que nada avisara. Igual que en
+    update_motor(), esto es defensa en profundidad -- la divergencia ya
+    es estructuralmente inobservable, este guard evita ademas que la
+    columna cruda quede con basura."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            await cur.execute("SELECT 1 FROM facet WHERE `key`=%s", (req.key,))
+            if await cur.fetchone():
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"'{req.key}' coincide con una faceta existente — dar de alta un motor "
+                        "homonimo aca dejaria motor.model_ref con un valor propio que "
+                        "motor_resolved ignora (facet_binding gana siempre para esa clave). "
+                        "Usar POST /api/admin/facet-bindings/{key} para gobernar el modelo de "
+                        "esa faceta; este endpoint es solo para motores sin faceta homonima."
+                    ),
+                )
+
             await cur.execute(
                 "SELECT id FROM model WHERE provider_id=%s AND model_id=%s",
                 (req.provider_id, req.model_id),

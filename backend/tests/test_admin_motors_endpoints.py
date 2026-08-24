@@ -193,6 +193,32 @@ def test_create_motor_rejects_unknown_model(client):
     assert "catalogo" in resp.json()["detail"] or "catálogo" in resp.json()["detail"]
 
 
+def test_create_motor_rejects_key_that_collides_with_existing_facet(client):
+    """2026-08-24: create_motor() no tenia ningun chequeo de colision con
+    facetas existentes -- confirmado en vivo (Paso 3 de la verificacion)
+    que sin este guard, dar de alta 'hipatia' con un modelo DISTINTO al
+    de su facet_binding devolvia 200 y sembraba motor.model_ref
+    divergente (inofensivo para motor_resolved, que lo ignora, pero deja
+    una fila mentirosa en la columna cruda). Mismo criterio que el guard
+    ya existente en update_motor(). hipatia hoy no tiene fila en motor
+    (LEFT JOIN verificado en produccion, 0 filas) -- si alguna vez la
+    tiene, este test empieza a fallar por 'ya existe' (409 distinto,
+    duplicate key) antes que por colision de faceta, señal de que hay que
+    revisar el escenario, no un falso positivo silencioso."""
+    resp = client.post(
+        "/api/admin/motors",
+        json={"key": "hipatia", "provider_id": "gemini", "model_id": "gemini-2.5-pro",
+              "transport": "http_gemini"},
+        headers=_superadmin_headers(),
+    )
+    assert resp.status_code == 409, resp.text
+    assert "faceta existente" in resp.json()["detail"]
+
+    # confirmar que de verdad no se creo nada -- el rechazo es antes del INSERT
+    row = client.portal.call(_fetch_motor_row, "hipatia")
+    assert row is None
+
+
 def test_update_motor_requires_superadmin(client):
     resp = client.patch("/api/admin/motors/kimi", json={"max_tokens": 1})
     assert resp.status_code in (401, 403)
