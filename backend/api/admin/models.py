@@ -139,15 +139,19 @@ async def approve_proposal(proposal_id: int, user: AuthUser = Depends(require_su
     """UNICO endpoint de este router que escribe facet_binding — regla de
     oro: siempre una aprobacion explicita de un superadmin, nunca el sync.
 
-    Tambien sincroniza `motor.model_ref` cuando existe una fila con el mismo
-    `key` que la faceta (jax_local/ada/thot hoy) — R4 desacoplo la SELECCION
-    de motor por capability del nombre de faceta (design.md:11-20), pero
-    nunca discutio que un motor homonimo de una faceta representa el mismo
-    recurso fisico (mismo provider, misma credencial): sin este UPDATE,
-    facet_binding y motor divergen en la primera aprobacion, como paso el
-    2026-08-19 con qwen3.6 (facet quedo actualizada, Motores en Admin no).
-    Motores sin faceta homonima (no hay hoy) simplemente no matchean el
-    WHERE y el UPDATE no toca nada — no hace falta un SELECT previo."""
+    2026-08-19 a 2026-08-24: este endpoint sincronizaba tambien
+    `motor.model_ref` con un segundo UPDATE en la misma transaccion --
+    ese sync se agrego el 2026-08-19 tras un incidente de divergencia con
+    qwen3.6, y volvio a fallar 5 dias despues porque PUT
+    /api/admin/facet-bindings/{key} (facet_bindings.py) escribia
+    facet_binding sin pasar por aca, y nada sincronizaba motor para ese
+    camino. El UPDATE motor se elimino (no se reemplaza por otro sync):
+    motor.model_ref ya no es una fuente independiente para una clave con
+    faceta homonima, la vista `motor_resolved` resuelve siempre por
+    facet_binding.model_ref para esos casos -- ver
+    _eliminate_motor_model_ref_denormalization en migrations.py. Ya no
+    hace falta que ESTE endpoint (ni ningun otro futuro) se acuerde de
+    tocar motor."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -163,10 +167,6 @@ async def approve_proposal(proposal_id: int, user: AuthUser = Depends(require_su
                 "UPDATE facet_binding SET model_ref=%s, approved_by=%s, approved_at=NOW() "
                 "WHERE facet_key=%s AND role='primary'",
                 (proposed_model_ref, decided_by, facet_key),
-            )
-            await cur.execute(
-                "UPDATE motor SET model_ref=%s WHERE `key`=%s",
-                (proposed_model_ref, facet_key),
             )
             await cur.execute(
                 "UPDATE model_binding_proposal SET status='approved', decided_by=%s, decided_at=NOW() "

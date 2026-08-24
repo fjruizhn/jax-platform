@@ -52,10 +52,14 @@ async def list_motors(user: AuthUser = Depends(require_superadmin)):
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
+                # motor_resolved (no motor): para una clave con faceta homonima
+                # (ada/jax_local/kimi/thot hoy) resuelve el modelo real por
+                # facet_binding, no por motor.model_ref -- ver
+                # _eliminate_motor_model_ref_denormalization en migrations.py.
                 "SELECT m.`key`, mo.provider_id, mo.model_id, m.transport, m.max_tokens, "
                 "m.default_timeout_seconds, m.supports_reasoning, m.reasoning_default_visibility, "
                 "m.sandbox_only, m.status "
-                "FROM motor m "
+                "FROM motor_resolved m "
                 "JOIN model mo ON mo.id = m.model_ref "
                 "ORDER BY m.`key`"
             )
@@ -205,15 +209,18 @@ async def update_motor(key: str, req: UpdateMotorRequest, user: AuthUser = Depen
     (o ninguno): hacen falta ambos para resolver un model_ref valido,
     igual que create_motor.
 
-    GUARDA (2026-08-19): si `key` coincide con una faceta existente
-    (jax_local/ada/thot hoy), este endpoint RECHAZA un cambio de modelo —
-    ese caso ya tiene su propio camino gobernado (proposal + aprobacion en
-    api/admin/models.py::approve_proposal, que sincroniza facet_binding Y
-    motor en una sola transaccion). Permitir el cambio aca tambien
-    reintroduciria en horas la misma divergencia motor/facet_binding que
-    se encontro y corrigio el mismo dia (ver
-    project_jax_local_model_governance en memoria). Los demas campos
-    (transport/timeout/etc) si se pueden editar aca sin restriccion --
+    GUARDA (2026-08-19, actualizado 2026-08-24): si `key` coincide con una
+    faceta existente (jax_local/ada/thot/kimi hoy), este endpoint RECHAZA
+    un cambio de modelo -- pero desde 2026-08-24 esto es defensa en
+    profundidad (evita que un admin crea que cambio algo y no pasa nada),
+    NO el mecanismo que impide la divergencia: motor.model_ref ya no es
+    fuente de identidad para una clave con faceta homonima, la vista
+    `motor_resolved` (migrations.py) resuelve siempre por
+    facet_binding.model_ref para esos casos. Aunque este guard se
+    borrara manana, un UPDATE motor SET model_ref=... para 'ada' seguiria
+    sin producir divergencia observable -- la vista jamas lo lee para esa
+    fila. Los demas campos (transport/timeout/etc) si se pueden editar aca
+    sin restriccion --
     no los rastrea facet_binding."""
     if (req.provider_id is None) != (req.model_id is None):
         raise HTTPException(

@@ -1094,6 +1094,82 @@ _COLUMN_WIDENS = [
 ]
 
 
+async def _eliminate_motor_model_ref_denormalization(cur) -> None:
+    """2026-08-24 -- el bug de divergencia motor/facet_binding (ada glm-5.2
+    vs glm-5.3, thot gpt-5.5 vs gpt-5.6-terra en produccion) volvio a
+    aparecer 5 dias despues de que el incidente de 2026-08-19 se "cerro"
+    con sync de dos escrituras en approve_proposal() (models.py) + un
+    guard de rechazo en update_motor() (motors.py). Auditoria completa de
+    la superficie de escritura (todo UPDATE/INSERT sobre ambas tablas en
+    jax + jax-platform, incluyendo scripts/migraciones/tests) encontro que
+    ninguno de esos dos mecanismos cubria PUT /api/admin/facet-bindings/
+    {key} (facet_bindings.py::update_facet_binding) -- el camino que de
+    hecho se uso para ada (2026-08-22) y thot (2026-08-24): cero filas en
+    model_binding_proposal para ninguno de los dos, así que nunca pasaron
+    por el sync. Se encontro ademas un CUARTO camino sin guardar
+    (create_motor() podia sembrar un motor homonimo de una faceta con su
+    propio model_ref, sin chequeo de colision).
+
+    Fix real, no un guard mas por endpoint: motor.model_ref deja de ser
+    una fuente independiente de identidad para las claves de motor que
+    tienen una faceta homonima (hoy: ada/jax_local/kimi/thot -- el 100%
+    de las filas de `motor` existentes; ver auditoria, 0 motores sin
+    faceta homonima). La vista motor_resolved resuelve SIEMPRE por
+    facet_binding.model_ref cuando existe un binding role='primary' para
+    esa clave (via COALESCE, facet_binding gana), y cae a motor.model_ref
+    (ahora NULLABLE) solo para un motor genuinamente independiente --
+    ninguno existe hoy, pero create_motor()/update_motor() lo siguen
+    contemplando sin cambios. Todo lector de identidad de modelo (list_motors
+    en jax-platform, MotorCatalog.from_db() en las_manos) pasa a leer esta
+    vista, no la tabla motor cruda.
+
+    Por que esto sí es "impossible by construction" y el fix de 2026-08-19
+    no lo era: un escritor futuro (un 5o camino, uno que ni sabemos que va
+    a existir) puede seguir escribiendo motor.model_ref para 'ada' sin que
+    nada se lo impida -- pero ese valor queda en una columna que la vista
+    JAMAS lee para esa fila. No hace falta que el escritor "se entere" de
+    facet_binding, ni que alguien le agregue un guard cuando se escriba.
+    La divergencia deja de ser observable por construccion, no por
+    disciplina de cada endpoint.
+
+    kimi tiene approved_by/approved_at NULL (nunca paso por el flujo de
+    aprobacion humana, se sembro directo en Bloque D1.1 2026-08-09) -- es
+    metadata de procedencia, no afecta la resolucion: la vista usa
+    facet_binding.model_ref sin mirar approved_at.
+
+    hipatia/jekyll/hyde tienen fila en facet_binding pero NINGUNA fila en
+    motor hoy (confirmado con LEFT JOIN, 0 filas) -- el LEFT JOIN de la
+    vista no rompe para ellos, simplemente no producen fila en
+    motor_resolved (no tienen motor que resolver). Si algun dia se les da
+    de alta un motor homonimo (decision pendiente del item _HTTP_FACETS de
+    DEUDA.md, no parte de este fix), la vista ya los cubre sin cambios."""
+    await cur.execute("ALTER TABLE motor MODIFY model_ref INT NULL")
+    await cur.execute(
+        "UPDATE motor m "
+        "JOIN facet_binding fb ON fb.facet_key = m.`key` AND fb.role = 'primary' "
+        "SET m.model_ref = NULL "
+        "WHERE m.model_ref IS NOT NULL"
+    )
+    await cur.execute("""
+        CREATE OR REPLACE VIEW motor_resolved AS
+        SELECT
+            mo.`key`,
+            COALESCE(fb.model_ref, mo.model_ref) AS model_ref,
+            mo.transport,
+            mo.max_tokens,
+            mo.default_timeout_seconds,
+            mo.supports_reasoning,
+            mo.reasoning_default_visibility,
+            mo.sandbox_only,
+            mo.status,
+            mo.created_at,
+            mo.disable_reasoning,
+            mo.has_tool_access
+        FROM motor mo
+        LEFT JOIN facet_binding fb ON fb.facet_key = mo.`key` AND fb.role = 'primary'
+    """)
+
+
 async def run_migrations():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1127,5 +1203,6 @@ async def run_migrations():
             await _seed_thot_motor(cur)
             await _seed_file_tools_capabilities(cur)
             await _fix_file_write_gate_and_auditor(cur)
+            await _eliminate_motor_model_ref_denormalization(cur)
 
         await conn.commit()
