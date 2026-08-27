@@ -24,7 +24,16 @@ from jax_engine.events import event_bus
 from jax_engine.state import engine_state, LAS_MANOS_URL
 from api.admin.usage import record_usage
 from db.connection import get_pool
-from facet_health import record_facet_health
+from facet_health import (
+    record_facet_health,
+    OUTCOME_OK,
+    OUTCOME_PROVIDER_ERROR,
+    OUTCOME_CONFIG_ERROR,
+    OUTCOME_GATE_DENIED,
+    OUTCOME_GATE_UNREACHABLE,
+    OUTCOME_UNBOUND,
+    OUTCOME_UNSUPPORTED_TRANSPORT,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -798,14 +807,14 @@ async def _invoke_facet_dispatch(
     try:
         f = await resolve_facet(facet)
     except FacetUnavailableError:
-        return f"⚠️ {facet} no está disponible: sin binding activo configurado.", None, "unbound"
+        return f"⚠️ {facet} no está disponible: sin binding activo configurado.", None, OUTCOME_UNBOUND
 
     # El gate va DESPUÉS de resolve_facet() a propósito: es ahí donde
     # `f.transport` existe, y el transporte es lo mismo que decide el
     # dispatch real unas líneas más abajo -- una sola fuente de verdad.
     if f.transport in _GOVERNED_TRANSPORTS:
         allowed = False
-        gate_outcome = "gate_denied"      # las_manos respondió "no"
+        gate_outcome = OUTCOME_GATE_DENIED      # las_manos respondió "no"
         try:
             hc = await get_http_client()
             resp = await hc.post(
@@ -831,7 +840,7 @@ async def _invoke_facet_dispatch(
             # arriba: "las_manos no respondió" no es lo mismo que "las_manos
             # respondió que no", y un operador necesita distinguirlos.
             allowed = False
-            gate_outcome = "gate_unreachable"   # las_manos no respondió
+            gate_outcome = OUTCOME_GATE_UNREACHABLE   # las_manos no respondió
             logger.warning(
                 f"authorize-facet unreachable facet={facet} caller={_JAX_PLATFORM_CHAT_CALLER} "
                 f"error={type(e).__name__}: {e} -- denegado fail-closed"
@@ -840,7 +849,7 @@ async def _invoke_facet_dispatch(
             return f"⚠️ {facet} no está disponible: acceso no autorizado.", None, gate_outcome
 
     if _is_model_identity_question(message):
-        return _model_identity_reply(f.model, facet), None, "ok"
+        return _model_identity_reply(f.model, facet), None, OUTCOME_OK
 
     if f.transport == "ollama":
         if facet == "jax_local":
@@ -854,14 +863,14 @@ async def _invoke_facet_dispatch(
             text, tin, tout = await _call_ollama(system_prompt + ident, history, message, config, f.model)
         else:
             text, tin, tout = await _call_ollama(system_prompt, history, message, config, f.model)
-        return text, UsageInfo(f.provider_id, f.model, tin, tout), "ok"
+        return text, UsageInfo(f.provider_id, f.model, tin, tout), OUTCOME_OK
 
     async def _on_response(data: dict) -> None:
         await _record_resolved_version_from_response(facet, data)
 
     if f.transport == "http_gemini":
         text, tin, tout = await _call_gemini(f.credential, f.model, system_prompt, history, message, on_response=_on_response)
-        return text, UsageInfo(f.provider_id, f.model, tin, tout), "ok"
+        return text, UsageInfo(f.provider_id, f.model, tin, tout), OUTCOME_OK
 
     if f.transport == "http_openai_compat":
         # f.max_tokens_param y f.max_output_tokens vienen de la MISMA fila de
@@ -875,9 +884,9 @@ async def _invoke_facet_dispatch(
             f.base_url, f.credential, f.model, system_prompt, history, message,
             f.max_tokens_param, f.max_output_tokens, on_response=_on_response,
         )
-        return text, UsageInfo(f.provider_id, f.model, tin, tout), "ok"
+        return text, UsageInfo(f.provider_id, f.model, tin, tout), OUTCOME_OK
 
-    return f"⚠️ {facet} no está disponible: transporte '{f.transport}' no soportado en la Mesa web.", None, "unsupported_transport"
+    return f"⚠️ {facet} no está disponible: transporte '{f.transport}' no soportado en la Mesa web.", None, OUTCOME_UNSUPPORTED_TRANSPORT
 
 
 async def _invoke_facet(
@@ -898,9 +907,18 @@ async def _invoke_facet(
     try:
         texto, usage, outcome = await _invoke_facet_dispatch(
             facet, config, user_id, message, semantic_context)
+    except ModelDispatchConfigError as e:
+        # ModelDispatchConfigError hereda de RuntimeError: este except TIENE
+        # que ir antes del `except Exception` genérico, o éste se lo come.
+        # Es NUESTRA (fila del catálogo `model` mal sembrada), no una caída
+        # real del proveedor -- por eso config_error es un outcome propio,
+        # no provider_error.
+        await record_facet_health(
+            facet, OUTCOME_CONFIG_ERROR, source, f"{type(e).__name__}: {e}")
+        raise            # SIEMPRE re-lanza: no puede volverse fail-open
     except Exception as e:
         await record_facet_health(
-            facet, "provider_error", source, f"{type(e).__name__}: {e}")
+            facet, OUTCOME_PROVIDER_ERROR, source, f"{type(e).__name__}: {e}")
         raise            # SIEMPRE re-lanza: no puede volverse fail-open
     await record_facet_health(facet, outcome, source)
     return texto, usage

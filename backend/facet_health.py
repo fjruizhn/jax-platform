@@ -9,9 +9,19 @@ from db.connection import get_pool
 
 logger = logging.getLogger(__name__)
 
+OUTCOME_OK = "ok"
+OUTCOME_PROVIDER_ERROR = "provider_error"
+OUTCOME_CONFIG_ERROR = "config_error"
+OUTCOME_GATE_DENIED = "gate_denied"
+OUTCOME_GATE_UNREACHABLE = "gate_unreachable"
+OUTCOME_UNBOUND = "unbound"
+OUTCOME_UNSUPPORTED_TRANSPORT = "unsupported_transport"
+OUTCOME_PROBE_ERROR = "probe_error"
+
 OUTCOMES = frozenset({
-    "ok", "provider_error", "gate_denied", "gate_unreachable",
-    "unbound", "unsupported_transport", "probe_error",
+    OUTCOME_OK, OUTCOME_PROVIDER_ERROR, OUTCOME_CONFIG_ERROR,
+    OUTCOME_GATE_DENIED, OUTCOME_GATE_UNREACHABLE, OUTCOME_UNBOUND,
+    OUTCOME_UNSUPPORTED_TRANSPORT, OUTCOME_PROBE_ERROR,
 })
 SOURCES = frozenset({"chat", "canary_periodic", "canary_rebind"})
 

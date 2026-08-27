@@ -429,7 +429,8 @@ CREATE TABLE IF NOT EXISTS facet_health_event (
     id      BIGINT AUTO_INCREMENT PRIMARY KEY,
     facet   VARCHAR(50) NOT NULL,
     outcome ENUM('ok','provider_error','gate_denied','gate_unreachable',
-                 'unbound','unsupported_transport','probe_error') NOT NULL,
+                 'unbound','unsupported_transport','probe_error',
+                 'config_error') NOT NULL,
     source  ENUM('chat','canary_periodic','canary_rebind') NOT NULL,
     detail  VARCHAR(255) NULL,
     ts      DOUBLE NOT NULL,
@@ -1225,6 +1226,12 @@ _ENUM_EXTENSIONS = [
         "model", "source", "observed",
         "ALTER TABLE model MODIFY COLUMN source "
         "ENUM('provider_api','models_dev','manual','observed') NOT NULL",
+    ),
+    (
+        "facet_health_event", "outcome", "config_error",
+        "ALTER TABLE facet_health_event MODIFY COLUMN outcome "
+        "ENUM('ok','provider_error','gate_denied','gate_unreachable',"
+        "'unbound','unsupported_transport','probe_error','config_error') NOT NULL",
     ),
 ]
 
