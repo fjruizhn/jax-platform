@@ -147,3 +147,30 @@ def test_los_dos_estados_del_gate_NO_colapsan_entre_si(monkeypatch):
     assert texto_a == texto_b                    # el usuario ve lo mismo
     assert got[0]["outcome"] != got[1]["outcome"]  # el operador NO
     assert [g["outcome"] for g in got] == ["gate_denied", "gate_unreachable"]
+
+
+# --- Ronda 2 de correccion, Pedido 2 -------------------------------------
+# El fixture autouse _stub_facet_health_writer_sin_db en conftest.py debe
+# aplicarse SOLO bajo JAX_CI_NO_DB=1. Si algun dia alguien setea esa
+# variable por defecto en un entorno local, el parche se volveria
+# universal en silencio y se perderia cobertura real de
+# facet_health.get_pool sin que nada avise -- un comentario en conftest.py
+# no impide eso, un test si. Ejercita la logica extraida a
+# conftest._apply_facet_health_writer_stub directo, sin depender del
+# valor real de la variable de entorno del proceso que corre este test.
+
+def test_stub_sin_db_solo_aplica_bajo_JAX_CI_NO_DB(monkeypatch):
+    import conftest as conftest_mod
+    import facet_health
+
+    original_get_pool = facet_health.get_pool
+
+    applied_off = conftest_mod._apply_facet_health_writer_stub(
+        monkeypatch, ci_no_db=False)
+    assert applied_off is False
+    assert facet_health.get_pool is original_get_pool
+
+    applied_on = conftest_mod._apply_facet_health_writer_stub(
+        monkeypatch, ci_no_db=True)
+    assert applied_on is True
+    assert facet_health.get_pool is not original_get_pool
