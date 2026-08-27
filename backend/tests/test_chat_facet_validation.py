@@ -64,11 +64,14 @@ def test_chat_endpoint_accepts_known_facet_and_round_trips_it(client):
         "test-facet-validation-known-tenant",
         "operator",
     )
-    fake = _FakePostClient(_FakeResponse({
-        "choices": [{"message": {"content":
-            '{"claim": [], "analysis": "faceta real, sin problema", "judgment": null}'}}],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-    }))
+    fake = _FakePostClient(
+        _FakeResponse({
+            "choices": [{"message": {"content":
+                '{"claim": [], "analysis": "faceta real, sin problema", "judgment": null}'}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }),
+        authorize_response=_FakeResponse({"allowed": True, "reason": "OK"}),
+    )
     original = http_client._client
     http_client._client = fake
     try:
@@ -115,3 +118,84 @@ def test_chat_endpoint_accepts_none_facet_and_auto_routes(client):
     finally:
         http_client._client = original
     assert resp.status_code == 200, resp.text
+
+
+import httpx
+from tests.test_chat_contract_wrapper import _FakePostClient, _FakeResponse
+
+
+class _FakeFailingPostClient:
+    """Simula las_manos caido de verdad -- conexion rechazada, no un
+    mock que devuelve un error prolijo. Es el test que prueba que el
+    gate gatea cuando mas importa (Requisito 3 del spec)."""
+    async def post(self, url, **kwargs):
+        raise httpx.ConnectError("Connection refused", request=None)
+
+
+def test_chat_endpoint_denies_hipatia_when_authorize_facet_returns_false(client):
+    token = create_access_token("test-authz-denied-user", "test-authz-denied-tenant", "operator")
+    fake = _FakePostClient(_FakeResponse({"allowed": False, "reason": "caller no autorizado"}))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        resp = client.post(
+            "/api/chat",
+            json={"message": "hola", "facet": "hipatia"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        http_client._client = original
+    assert resp.status_code == 200
+    assert "no autorizado" in resp.json()["response"] or "no disponible" in resp.json()["response"]
+
+
+def test_chat_endpoint_denies_hipatia_when_las_manos_is_down(client):
+    """El caso critico: las_manos no responde en absoluto (ConnectError,
+    no un 4xx/5xx prolijo). Fail-closed exige que esto tambien deniegue,
+    no que se despache igual porque "no se pudo verificar"."""
+    token = create_access_token("test-authz-down-user", "test-authz-down-tenant", "operator")
+    original = http_client._client
+    http_client._client = _FakeFailingPostClient()
+    try:
+        resp = client.post(
+            "/api/chat",
+            json={"message": "hola", "facet": "hipatia"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        http_client._client = original
+    assert resp.status_code == 200
+    body = resp.json()["response"]
+    assert "no autorizado" in body or "no disponible" in body
+
+
+def test_chat_endpoint_allows_hipatia_when_authorize_facet_returns_true(client):
+    token = create_access_token("test-authz-allowed-user", "test-authz-allowed-tenant", "operator")
+
+    class _SequencedFakeClient:
+        """Primera llamada = /motor/authorize-facet (allowed=True), segunda
+        = la llamada real al proveedor del facet -- shape confirmado
+        contra _call_gemini() (chat.py:552-579)."""
+        def __init__(self):
+            self._calls = 0
+
+        async def post(self, url, **kwargs):
+            self._calls += 1
+            if "/motor/authorize-facet" in url:
+                return _FakeResponse({"allowed": True, "reason": "OK"})
+            return _FakeResponse({
+                "candidates": [{"content": {"parts": [{"text": "hola desde hipatia"}]}}],
+                "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 3},
+            })
+
+    original = http_client._client
+    http_client._client = _SequencedFakeClient()
+    try:
+        resp = client.post(
+            "/api/chat",
+            json={"message": "hola", "facet": "hipatia"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        http_client._client = original
+    assert resp.status_code == 200

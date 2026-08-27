@@ -353,11 +353,14 @@ def test_chat_endpoint_survives_shadow_validation_import_failure(client):
     from tests.test_chat_contract_wrapper import _FakePostClient, _FakeResponse
 
     token = create_access_token("test-shadow-import-fail-user", "test-shadow-import-fail-tenant", "operator")
-    fake = _FakePostClient(_FakeResponse({
-        "choices": [{"message": {"content":
-            '{"claim": [], "analysis": "sobrevivio al fallo de encolado", "judgment": null}'}}],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-    }))
+    fake = _FakePostClient(
+        _FakeResponse({
+            "choices": [{"message": {"content":
+                '{"claim": [], "analysis": "sobrevivio al fallo de encolado", "judgment": null}'}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }),
+        authorize_response=_FakeResponse({"allowed": True, "reason": "OK"}),
+    )
     original = http_client._client
     http_client._client = fake
     try:

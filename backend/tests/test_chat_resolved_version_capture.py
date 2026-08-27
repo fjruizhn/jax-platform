@@ -21,10 +21,20 @@ class _FakeResponse:
 
 
 class _FakeClient:
-    def __init__(self, response):
+    def __init__(self, response, authorize_response=None):
+        # authorize_response is opt-in and defaults to None so the
+        # direct _call_openai_compat/_call_gemini tests (single outbound
+        # call, no facet-governance gate involved) keep returning
+        # `response` to every .post() unchanged. Pass it explicitly for
+        # calls that go through _invoke_facet on a governed facet
+        # (hipatia/jekyll/thot/ada), which now calls
+        # /motor/authorize-facet before the real provider call.
         self._response = response
+        self._authorize_response = authorize_response
 
     async def post(self, url, **kwargs):
+        if self._authorize_response is not None and "/motor/authorize-facet" in url:
+            return self._authorize_response
         return self._response
 
 
@@ -98,10 +108,13 @@ def test_invoke_facet_records_resolved_version_for_openai_compat_facet(client, m
 
     monkeypatch.setattr(model_catalog, "record_resolved_version", fake_record)
 
-    fake = _FakeClient(_FakeResponse({
-        "model": "deepseek-v4-flash",
-        "choices": [{"message": {"content": "hola desde jekyll"}}],
-    }))
+    fake = _FakeClient(
+        _FakeResponse({
+            "model": "deepseek-v4-flash",
+            "choices": [{"message": {"content": "hola desde jekyll"}}],
+        }),
+        authorize_response=_FakeResponse({"allowed": True, "reason": "OK"}),
+    )
     original = http_client._client
     http_client._client = fake
 
@@ -129,10 +142,13 @@ def test_invoke_facet_survives_record_resolved_version_failure(client, monkeypat
 
     monkeypatch.setattr(model_catalog, "record_resolved_version", boom)
 
-    fake = _FakeClient(_FakeResponse({
-        "model": "deepseek-v4-flash",
-        "choices": [{"message": {"content": "sigo viva"}}],
-    }))
+    fake = _FakeClient(
+        _FakeResponse({
+            "model": "deepseek-v4-flash",
+            "choices": [{"message": {"content": "sigo viva"}}],
+        }),
+        authorize_response=_FakeResponse({"allowed": True, "reason": "OK"}),
+    )
     original = http_client._client
     http_client._client = fake
 

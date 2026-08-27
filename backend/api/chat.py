@@ -17,6 +17,9 @@ from http_client import get_http_client
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from facet_resolver import resolve_facet, FacetUnavailableError
 import model_catalog
+
+_GOVERNED_HTTP_FACETS = frozenset({"hipatia", "jekyll", "thot", "ada"})
+_JAX_PLATFORM_CHAT_CALLER = "jax_platform_chat"
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
@@ -652,6 +655,25 @@ async def _invoke_facet(
         f = await resolve_facet(facet)
     except FacetUnavailableError:
         return f"⚠️ {facet} no está disponible: sin binding activo configurado.", None
+
+    if facet in _GOVERNED_HTTP_FACETS:
+        allowed = False
+        try:
+            hc = await get_http_client()
+            resp = await hc.post(
+                "http://127.0.0.1:7777/motor/authorize-facet",
+                json={"caller": _JAX_PLATFORM_CHAT_CALLER, "facet": facet},
+                timeout=5.0,
+            )
+            resp.raise_for_status()
+            allowed = resp.json().get("allowed", False)
+        except Exception:
+            # Fail-closed (P10): cualquier falla -- timeout, conexión
+            # rechazada, respuesta inesperada -- deniega. Nunca "no pude
+            # verificar, sigo igual".
+            allowed = False
+        if not allowed:
+            return f"⚠️ {facet} no está disponible: caller '{_JAX_PLATFORM_CHAT_CALLER}' no autorizado.", None
 
     if _is_model_identity_question(message):
         return _model_identity_reply(f.model, facet), None
