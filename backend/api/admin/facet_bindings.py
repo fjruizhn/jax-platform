@@ -6,7 +6,7 @@ Contrato de capabilities: en Bloque C (C1.2) quedaba explicitamente marcado
 (Bloque D) ya es un chequeo real.
 """
 import aiomysql
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth.middleware import require_superadmin
@@ -88,6 +88,7 @@ class UpdateBindingRequest(BaseModel):
 async def update_facet_binding(
     facet_key: str,
     req: UpdateBindingRequest,
+    background_tasks: BackgroundTasks,
     user: AuthUser = Depends(require_superadmin),
 ):
     """Escritura directa autorizada por un superadmin (approved_by/approved_at
@@ -120,4 +121,14 @@ async def update_facet_binding(
                     detail=f"model_ref {req.model_ref} no existe en el catalogo (o provider_id invalido): {e}",
                 )
         await conn.commit()
+
+    # DESPUES del commit a proposito: la sonda solo tiene sentido sobre un
+    # binding ya aprobado. Encolada, no await inline -- un await colgaria
+    # la request del admin de una llamada a un proveedor externo. Import
+    # diferido: mismo motivo que en api/admin/models.py::approve_proposal,
+    # el otro escritor de facet_binding -- ver el COMENTARIO de ese import
+    # (no el docstring del endpoint) para la cadena real y verificada.
+    from jax_engine.facet_canary import probe_after_rebind
+    background_tasks.add_task(probe_after_rebind, facet_key)
+
     return {"ok": True, "facet_key": facet_key, "model_ref": req.model_ref, "role": req.role}

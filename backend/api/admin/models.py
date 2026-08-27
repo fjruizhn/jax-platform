@@ -7,7 +7,7 @@ facet_binding — nunca un UPDATE directo disparado por el sync.
 """
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 import model_catalog
 from auth.middleware import require_superadmin
@@ -146,7 +146,11 @@ async def _fetch_proposal(cur, proposal_id: int):
 
 
 @router.post("/proposals/{proposal_id}/approve")
-async def approve_proposal(proposal_id: int, user: AuthUser = Depends(require_superadmin)):
+async def approve_proposal(
+    proposal_id: int,
+    background_tasks: BackgroundTasks,
+    user: AuthUser = Depends(require_superadmin),
+):
     """UNICO endpoint de este router que escribe facet_binding — regla de
     oro: siempre una aprobacion explicita de un superadmin, nunca el sync.
 
@@ -185,6 +189,19 @@ async def approve_proposal(proposal_id: int, user: AuthUser = Depends(require_su
                 (decided_by, proposal_id),
             )
         await conn.commit()
+
+    # DESPUES del commit a proposito: la sonda solo tiene sentido sobre un
+    # binding ya aprobado. Encolada, no await inline -- un await colgaria
+    # la request del admin de una llamada a un proveedor externo.
+    #
+    # Import diferido: api/admin/__init__.py importa ansiosamente .models y
+    # .facet_bindings, asi que api.chat -> api.admin.usage arrastra ESTE
+    # modulo. A nivel de modulo el ciclo cierra de verdad (main.py:49 importa
+    # facet_canary antes que api.chat) y el servicio no arranca: ImportError
+    # sobre facet_canary parcialmente inicializado. Verificado, no supuesto.
+    from jax_engine.facet_canary import probe_after_rebind
+    background_tasks.add_task(probe_after_rebind, facet_key)
+
     return {"ok": True, "proposal_id": proposal_id, "status": "approved"}
 
 

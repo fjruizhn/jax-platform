@@ -121,7 +121,23 @@ jobs:
       # Subido de 96 a 97 en la Ronda de corrección 2 de Task 4 (mismo día):
       # 1 test nuevo (default de `source` en _invoke_facet pertenece a
       # facet_health.SOURCES, hallazgo 6).
-      JAX_CI_MIN_PASSED: "97"
+      # Subido de 97 a 100 en Task 5 (sonda por rebinding, 2026-08-27):
+      # backend/tests/test_facet_canary_rebind.py agrega 3 tests sin DB,
+      # medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q antes/después
+      # (97 passed / 151 skipped -> 100 passed / 151 skipped, skip count sin
+      # cambios).
+      # Subido de 100 a 108 en la Ronda de corrección 1 de Task 5 (mismo día):
+      # 8 tests nuevos en test_facet_canary_rebind.py -- comportamiento real
+      # de invalidate_facet_cache (Hallazgo 2, 2 tests), kill switch gatea
+      # solo el sondeo y nunca la invalidación (Hallazgo 3, 2 tests), un
+      # fallo en CUALQUIER punto de probe_after_rebind antes de completar el
+      # sondeo -- _load_config() o el propio invalidate_facet_cache --
+      # registra probe_error en vez de propagar solo al journal (Hallazgo 4,
+      # 2 tests), y que approve_proposal/update_facet_binding encolan
+      # probe_after_rebind de verdad y no solo aceptan el parámetro
+      # (Hallazgo 5, 2 tests) -- medido antes/después, skip count sin
+      # cambios (151).
+      JAX_CI_MIN_PASSED: "108"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
