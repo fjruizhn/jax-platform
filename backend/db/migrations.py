@@ -233,6 +233,27 @@ CREATE TABLE IF NOT EXISTS facet (
   max_latency_ms INT NULL,
   max_cost_per_1k_usd DECIMAL(10,6) NULL,
   auto_selectable BOOLEAN NOT NULL DEFAULT TRUE,
+  -- allowed_callers: ALCANCE ACOTADO, leer antes de editar esta columna.
+  -- Gobierna SOLO a los callers que no tienen concepto de `capability`.
+  -- Hoy eso es exactamente uno: 'jax_platform_chat' (Mesa web,
+  -- backend/api/chat.py::_invoke_facet -> POST /motor/authorize-facet ->
+  -- check_facet_admission(), repo jax, las_manos/motor_registry/
+  -- facet_policy.py).
+  --
+  -- JACOBS NO SE GOBIERNA ACÁ. Jacobs pasa por
+  -- `capability.allowed_callers` vía MotorPolicy.check_capability_admission()
+  -- (repo jax, las_manos/motor_registry/policy.py), invocado desde
+  -- jacobs/executor.py::validate_capability(). Consecuencia práctica, y la
+  -- razón por la que este comentario existe: SACAR "jacobs" DE ESTA COLUMNA
+  -- NO RESTRINGE A JACOBS -- va a seguir despachando igual, sin error ni
+  -- aviso. Para cortarle el acceso hay que editar
+  -- `capability.allowed_callers` de las capabilities involucradas.
+  -- El "jacobs" sembrado abajo (_seed_http_facet_allowed_callers) es
+  -- descriptivo (refleja el acceso que ya existía de hecho), no ejecutivo.
+  -- Follow-up candidato registrado en DEUDA.md: hacer que Jacobs también
+  -- consulte check_facet_admission(), para que esta columna pase a ser el
+  -- gate real de nivel facet para AMBOS caminos y deje de enseñar un
+  -- modelo mental equivocado.
   allowed_callers LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (allowed_callers IS NULL OR json_valid(allowed_callers)),
   status ENUM('active','degraded','disabled') NOT NULL DEFAULT 'active',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

@@ -228,3 +228,113 @@ def test_chat_endpoint_allows_hipatia_when_authorize_facet_returns_true(client):
     # Sin este assert, el test pasaria igual aunque la respuesta del
     # proveedor nunca llegara a dispararse.
     assert fake._calls == 2
+
+
+class _UrlRecordingClient:
+    """Registra cada URL a la que se hace POST y devuelve `response`.
+
+    Sirve para el assert que ningun otro fake de este archivo permite: que
+    una llamada NO ocurrio. `_FakePostClient` le responde a todo el mundo,
+    asi que un test escrito con el no puede distinguir "no se llamo a
+    authorize-facet" de "se llamo y devolvio lo mismo".
+    """
+
+    def __init__(self, response):
+        self._response = response
+        self.urls: list[str] = []
+
+    async def post(self, url, **kwargs):
+        self.urls.append(url)
+        return self._response
+
+
+def test_chat_endpoint_does_not_authorize_a_non_governed_facet(client):
+    """jax_local (transport='ollama') NO debe disparar /motor/authorize-facet.
+
+    Hasta ahora esto solo estaba cubierto de forma indirecta: los tests de
+    facets gobernados pasaban y se asumia que los no-gobernados quedaban
+    afuera. Asumir no es verificar -- si el gate se ensanchara por error a
+    todo facet, la Mesa web pasaria a depender de que las_manos este
+    arriba para responder con el modelo LOCAL, que es justo el camino que
+    tiene que seguir funcionando cuando el resto no.
+    """
+    token = create_access_token(
+        "test-nogov-user", "test-nogov-tenant", "operator",
+    )
+    fake = _UrlRecordingClient(_FakeResponse({
+        "message": {"content":
+            '{"claim": [], "analysis": "local, sin gate", "judgment": null}'},
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+    }))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        resp = client.post(
+            "/api/chat",
+            json={"message": "hola", "facet": "jax_local"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        http_client._client = original
+    assert resp.status_code == 200, resp.text
+    assert fake.urls, "el facet no llego a despachar; el test no probaria nada"
+    assert not any("/motor/authorize-facet" in u for u in fake.urls), fake.urls
+
+
+def test_a_new_http_transport_facet_is_governed_even_if_unnamed(monkeypatch):
+    """El gate se llavea por TRANSPORTE, no por nombre de facet.
+
+    Con el frozenset de nombres viejo ({"hipatia","jekyll","thot","ada"}),
+    agregar una quinta fila a `facet` con transport='http_openai_compat'
+    la dejaba despachar sin pasar por ninguna de las dos gobernanzas --
+    fail-open por omision, el mismo patron de "dos fuentes de verdad que
+    divergen" que esta feature existe para cerrar. Este test agrega
+    exactamente esa fila (en memoria, via resolve_facet mockeado -- la
+    tabla real no se toca) y exige que igual se pida autorizacion, y que
+    una denegacion corte el dispatch antes del proveedor.
+
+    Verificado 2026-08-27 contra `facet` en jax_memory: los unicos
+    transportes http_* hoy son ada/hipatia/jekyll/thot, o sea que este
+    facet todavia no existe -- el test cubre el futuro, no el presente, y
+    por eso el cambio de nombres a transportes es preservador de
+    comportamiento hoy.
+    """
+    import asyncio
+
+    import api.chat as chat_mod
+    from facet_resolver import ResolvedFacet
+
+    nuevo = ResolvedFacet(
+        key="facet_http_nuevo",
+        provider_id="algun_provider",
+        base_url="https://ejemplo.invalid/v1",
+        model="modelo-x",
+        credential="cred-falsa",
+        transport="http_openai_compat",
+        persona=None,
+        params=None,
+    )
+
+    async def _fake_resolve(_key):
+        return nuevo
+
+    monkeypatch.setattr(chat_mod, "resolve_facet", _fake_resolve)
+
+    fake = _UrlRecordingClient(_FakeResponse({"allowed": False, "reason": "no sembrado"}))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        texto, usage = asyncio.run(chat_mod._invoke_facet(
+            "facet_http_nuevo",
+            {"personalities": {"jax_local": {"system_prompt": "x"}}},
+            "test-transport-gate-user",
+            "hola",
+        ))
+    finally:
+        http_client._client = original
+
+    assert any("/motor/authorize-facet" in u for u in fake.urls), fake.urls
+    # Denegado => ni una sola llamada al proveedor real.
+    assert len(fake.urls) == 1, fake.urls
+    assert usage is None
+    assert "no autorizado" in texto or "no disponible" in texto
