@@ -171,8 +171,22 @@ def _facet_canary_no_real_dispatch(monkeypatch):
     _invoke_facet lo parchean ellos mismos dentro del test cuerpo, vía el
     mismo `monkeypatch` (fixture de function-scope, una sola instancia por
     test) -- ese setattr posterior pisa a este autouse sin conflicto: el
-    undo de monkeypatch es una pila, se deshace en orden inverso."""
-    from jax_engine import facet_canary
+    undo de monkeypatch es una pila, se deshace en orden inverso.
+
+    EL IMPORT VA GUARDADO, y no es fail-open. El job `no-fail-open-except`
+    del CI instala SOLO pytest a proposito (es un scanner estatico que no
+    debe arrastrar las dependencias de la app), asi que ahi `facet_canary`
+    -> `api.chat` -> `fastapi` no es importable. Sin este guard, este
+    autouse rompia la COLECCION de ese job: rojo en CI, verde en local,
+    porque el venv del proyecto si tiene fastapi.
+    No hay nada que proteger en ese entorno: si `facet_canary` no se puede
+    importar, NINGUN test puede llamar a probe_facet/probe_all, asi que no
+    existe llamada paga que prevenir. La proteccion se salta exactamente
+    cuando es imposible que haga falta."""
+    try:
+        from jax_engine import facet_canary
+    except ImportError:
+        return
 
     async def _sin_parchear(*args, **kwargs):
         raise RuntimeError(
