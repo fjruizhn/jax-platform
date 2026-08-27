@@ -373,7 +373,7 @@ CREATE TABLE IF NOT EXISTS motor (
 # priority reemplaza el orden implicito de la lista allowed_motors de TOML.
 # Convencion: menor priority gana primero (0 = primer intento) -- mismo
 # sentido que "el primero de la lista" que _resolve_motor() ya usa.
-CREATE_CAPABILITY = """
+CREATE_CAPABILITY = r"""
 CREATE TABLE IF NOT EXISTS capability (
   `key` VARCHAR(50) NOT NULL PRIMARY KEY,
   risk_level ENUM('low','medium','high') NOT NULL,
