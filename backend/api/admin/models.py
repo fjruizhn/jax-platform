@@ -192,10 +192,13 @@ async def approve_proposal(
 
     # DESPUES del commit a proposito: la sonda solo tiene sentido sobre un
     # binding ya aprobado. Encolada, no await inline -- un await colgaria
-    # la request del admin de una llamada a un proveedor externo. Import
-    # diferido: facet_canary encadena api.chat -> api.admin.usage, y este
-    # modulo es importado por api.admin.usage; a nivel de modulo cerraria
-    # un ciclo que rompe el arranque del servicio en import time.
+    # la request del admin de una llamada a un proveedor externo.
+    #
+    # Import diferido: api/admin/__init__.py importa ansiosamente .models y
+    # .facet_bindings, asi que api.chat -> api.admin.usage arrastra ESTE
+    # modulo. A nivel de modulo el ciclo cierra de verdad (main.py:49 importa
+    # facet_canary antes que api.chat) y el servicio no arranca: ImportError
+    # sobre facet_canary parcialmente inicializado. Verificado, no supuesto.
     from jax_engine.facet_canary import probe_after_rebind
     background_tasks.add_task(probe_after_rebind, facet_key)
 

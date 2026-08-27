@@ -115,20 +115,64 @@ async def probe_after_rebind(facet_key: str) -> str | None:
     que "primero aprobado, despues sondeado" queda garantizado por
     construccion, no por convencion.
 
-    ANTES de sondear, no despues: invalida la entrada cacheada del facet.
-    resolve_facet() cachea por FACET_CACHE_TTL_SECONDS (30s default) y
-    ningun escritor de facet_binding invalidaba esa cache -- esta sonda
-    dispara DENTRO de esa ventana, justo despues de aprobar. Sin este
-    invalidate, resolveria el modelo VIEJO, lo llamaria, recibiria 200 y
-    reportaria `ok` sobre el rebinding que la sonda existe para vigilar
-    -- el escenario del 2026-08-24, reproducido por la herramienta que
-    viene a cerrarlo.
+    ANTES de sondear, no despues, y SIEMPRE (incluso con el kill switch
+    abajo apagado): invalida la entrada cacheada del facet. resolve_facet()
+    cachea por FACET_CACHE_TTL_SECONDS (30s default) y ningun escritor de
+    facet_binding invalidaba esa cache -- esta sonda dispara DENTRO de esa
+    ventana, justo despues de aprobar. Sin este invalidate, resolveria el
+    modelo VIEJO, lo llamaria, recibiria 200 y reportaria `ok` sobre el
+    rebinding que la sonda existe para vigilar -- el escenario del
+    2026-08-24, reproducido por la herramienta que viene a cerrarlo. La
+    invalidacion NO es parte de la sonda -- es una correccion de frescura
+    para el proximo turno de chat -- asi que el kill switch de abajo no la
+    apaga: apagar la sonda no debe dejar la cache sucia despues de un
+    rebind.
 
     Su resultado se alerta en el barrido siguiente del reaper (<=300s), no
-    en la corrida horaria: por eso el lector evalua en CADA barrido."""
-    invalidate_facet_cache(facet_key)
-    config = _load_config()
-    return await probe_facet(facet_key, config, SOURCE_CANARY_REBIND)
+    en la corrida horaria: por eso el lector evalua en CADA barrido.
+
+    TODO el cuerpo va adentro del try, invalidate_facet_cache incluido:
+    esto corre dentro de una BackgroundTask, y verificado empiricamente
+    contra el FastAPI de este venv (TestClient real, no supuesto) una
+    excepcion ACA no la traga Starlette -- propaga. Bajo uvicorn la
+    respuesta ya se emitio (el admin ve 200), asi que el traceback
+    quedaria SOLO en el journal -- y el journal no es donde mira el
+    reaper, que lee la tabla `facet_health_event`. Un fallo que solo deja
+    rastro en journalctl es exactamente el modo de falla que esta ronda
+    vino a eliminar, agravado porque el camino por rebinding es el que
+    baja la deteccion de tres dias a minutos. Ademas -- mismo experimento
+    -- una BackgroundTask que lanza aborta las que esten encoladas
+    DESPUES en la misma request (verificado: una segunda tarea encolada a
+    continuacion nunca corrio). Hoy cada escritor encola una sola tarea,
+    asi que no hay victima colateral todavia, pero es una propiedad real
+    del mecanismo de BackgroundTasks de Starlette/FastAPI, no un detalle
+    de esta funcion -- relevante si algun dia se encola una segunda tarea
+    despues de esta (api/chat.py ya encola run_shadow_validation con el
+    mismo mecanismo, para otro endpoint)."""
+    try:
+        invalidate_facet_cache(facet_key)
+
+        if CANARY_INTERVAL_SECONDS <= 0:
+            # Mismo kill switch que start_facet_canary (Hallazgo 4, ronda
+            # de correccion 1 de Task 4): start_facet_canary lo consulta
+            # antes de arrancar el loop, pero esta sonda no pasa por ese
+            # loop -- dispara directo desde un escritor. Sin este
+            # chequeo, un operador que apaga la sonda para cortar
+            # llamadas pagas seguiria pagando una por cada approve y por
+            # cada PUT a facet-bindings.
+            logger.warning(
+                "facet_canary: sonda por rebinding deshabilitada "
+                "(CANARY_INTERVAL_SECONDS=%s <= 0), facet=%s",
+                CANARY_INTERVAL_SECONDS, facet_key)
+            return None
+
+        config = _load_config()
+        return await probe_facet(facet_key, config, SOURCE_CANARY_REBIND)
+    except Exception as e:  # fail-soft: corre en una BackgroundTask ya con la respuesta emitida -- re-lanzar solo dejaria rastro en journalctl (el reaper lee facet_health_event, no el journal) y ademas abortaria cualquier BackgroundTask encolada despues de esta en la misma request. El evento en la tabla, no la excepcion, es el detector real.
+        await record_facet_health(
+            facet_key, OUTCOME_PROBE_ERROR, SOURCE_CANARY_REBIND,
+            f"{type(e).__name__}: {e}")
+        return OUTCOME_PROBE_ERROR
 
 
 async def start_facet_canary() -> None:

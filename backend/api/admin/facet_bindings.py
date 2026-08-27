@@ -126,7 +126,8 @@ async def update_facet_binding(
     # binding ya aprobado. Encolada, no await inline -- un await colgaria
     # la request del admin de una llamada a un proveedor externo. Import
     # diferido: mismo motivo que en api/admin/models.py::approve_proposal,
-    # el otro escritor de facet_binding -- ver docstring de ese endpoint.
+    # el otro escritor de facet_binding -- ver el COMENTARIO de ese import
+    # (no el docstring del endpoint) para la cadena real y verificada.
     from jax_engine.facet_canary import probe_after_rebind
     background_tasks.add_task(probe_after_rebind, facet_key)
 
