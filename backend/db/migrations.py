@@ -424,6 +424,41 @@ CREATE TABLE IF NOT EXISTS capability_motor (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+CREATE_FACET_HEALTH_EVENT = """
+CREATE TABLE facet_health_event (
+    id      BIGINT AUTO_INCREMENT PRIMARY KEY,
+    facet   VARCHAR(50) NOT NULL,
+    outcome ENUM('ok','provider_error','gate_denied','gate_unreachable',
+                 'unbound','unsupported_transport','probe_error') NOT NULL,
+    source  ENUM('chat','canary_periodic','canary_rebind') NOT NULL,
+    detail  VARCHAR(255) NULL,
+    ts      DOUBLE NOT NULL,
+    KEY idx_facet_ts (facet, ts),
+    KEY idx_ts (ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+# `ts` es epoch DOUBLE, no TIMESTAMP: misma decision y misma razon que
+# jacobs_events.ts -- inmune a la timezone de sesion. La limpieza de
+# axioma_usage del 2026-08-21 perdio 90 de 106 filas comparando un
+# TIMESTAMP contra un string de fecha.
+
+CREATE_FACET_HEALTH_ALERT = """
+CREATE TABLE facet_health_alert (
+    facet         VARCHAR(50) PRIMARY KEY,
+    state         ENUM('ok','down','unknown') NOT NULL,
+    first_seen_ts DOUBLE NOT NULL,
+    notified_ts   DOUBLE NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+# facet_health_alert NO es una segunda fuente de verdad de salud: es el
+# registro de que ya se aviso. La salud se calcula exclusivamente desde
+# facet_health_event. La clave centinela '__system__' guarda el estado de
+# la alerta agregada (sonda entera caida) para que pase por la MISMA
+# supresion que las de facet -- sin eso, una sonda muerta un viernes
+# produce un mensaje por barrido, 288 el sabado.
+
 _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
@@ -445,6 +480,8 @@ _TABLES = [
     ("motor", CREATE_MOTOR),                          # antes de capability (FK fallback_motor)
     ("capability", CREATE_CAPABILITY),                # antes de capability_motor (FK)
     ("capability_motor", CREATE_CAPABILITY_MOTOR),
+    ("facet_health_event", CREATE_FACET_HEALTH_EVENT),
+    ("facet_health_alert", CREATE_FACET_HEALTH_ALERT),
 ]
 
 # transport, requires_tool_use, auto_selectable — valores actuales reales
