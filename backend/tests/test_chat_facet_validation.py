@@ -313,6 +313,11 @@ def test_a_new_http_transport_facet_is_governed_even_if_unnamed(monkeypatch):
         transport="http_openai_compat",
         persona=None,
         params=None,
+        # Irrelevante para este test: el gate deniega ANTES del dispatch, asi
+        # que _call_openai_compat (el unico lector de este campo) no llega a
+        # correr. Se pone un valor valido igual para que el test no dependa de
+        # cual de las dos fallas corta el camino.
+        max_tokens_param="max_tokens",
     )
 
     async def _fake_resolve(_key):

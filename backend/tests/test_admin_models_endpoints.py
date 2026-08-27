@@ -23,6 +23,12 @@ def test_list_models_returns_the_seeded_catalog(client):
     thot_row = next(m for m in models if m["provider_id"] == "openai" and m["model_id"] == "gpt-5.5")
     assert thot_row["status"] == "available"
     assert "source" in thot_row and "source_checked_at" in thot_row  # procedencia siempre visible
+    # max_tokens_param siempre visible: NULL es el estado que hace fallar el
+    # dispatch de esa fila (incidente thot 2026-08-24), el superadmin tiene que
+    # poder verlo en el catalogo antes de que una faceta se caiga.
+    assert "max_tokens_param" in thot_row
+    seeded = next(m for m in models if m["model_id"] == "deepseek-v4-flash")
+    assert seeded["max_tokens_param"] == "max_tokens"
 
 
 def test_list_models_filters_by_provider_and_status(client):

@@ -27,7 +27,13 @@ _MODEL_COLUMNS = (
     "id, provider_id, model_id, is_alias, context_window, supports_tool_use, "
     "supports_structured_output, input_modalities, price_input_per_1m_usd, "
     "price_output_per_1m_usd, price_cache_per_1m_usd, release_date, "
-    "deprecation_date, status, source, source_checked_at, consecutive_misses"
+    "deprecation_date, status, source, source_checked_at, consecutive_misses, "
+    # max_tokens_param (2026-08-27, incidente thot): visible para el superadmin
+    # porque NULL es el estado que rompe el dispatch de esa fila
+    # (api/chat.py::_max_tokens_field falla ruidoso) — un operador tiene que
+    # poder VER cual modelo del catalogo le falta el dato, no solo enterarse
+    # cuando una faceta se cae.
+    "max_tokens_param"
 )
 _MODEL_FIELDS = [c.strip() for c in _MODEL_COLUMNS.split(",")]
 

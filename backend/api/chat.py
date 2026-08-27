@@ -540,23 +540,90 @@ async def _call_ollama(system_prompt: str, history: list[dict], message: str, co
     return data["message"]["content"], data.get("prompt_eval_count", 0), data.get("eval_count", 0)
 
 
+class ModelDispatchConfigError(RuntimeError):
+    """El catálogo (`model`) no declara un dato que el dispatch NECESITA para
+    armar el request. FAIL-CLOSED y RUIDOSO: nunca se asume un valor por
+    defecto — un default silencioso es exactamente lo que convierte el
+    próximo modelo nuevo en un incidente sin síntoma."""
+
+
+# Nombres válidos del parámetro de límite de salida. Es el mismo conjunto que
+# el ENUM de model.max_tokens_param (db/migrations.py) — se replica acá para
+# que un valor imposible en la DB (ej. una migración a mano que se saltó el
+# ENUM) no termine armando una clave arbitraria en el JSON que va a la API.
+_MAX_TOKENS_PARAM_NAMES = ("max_tokens", "max_completion_tokens")
+
+# max_tokens explícito: sin esto, un modelo de razonamiento (reasoning_content
+# compitiendo por el mismo budget que content) puede agotarlo y cortar la
+# respuesta antes de escribirla — mismo bug ya diagnosticado y corregido en
+# motor_registry/worker.py::_call_kimi (017ba2f, 2026-08-10). Mismo valor que
+# jax/muscles/base.py usa para el mismo propósito.
+_MAX_OUTPUT_TOKENS = 131072
+
+
+def _max_tokens_field(model: str, max_tokens_param: str | None) -> str:
+    """Devuelve el NOMBRE del parámetro de límite de salida que exige la API de
+    `model`, tal como lo declara el catálogo (`model.max_tokens_param`).
+
+    Por qué es un dato del catálogo y no una constante: 'max_tokens' fue el
+    nombre único durante años, pero OpenAI lo rechaza con HTTP 400
+    ("Unsupported parameter: 'max_tokens' is not supported with this model.
+    Use 'max_completion_tokens' instead") en su generación nueva — el que tumbó
+    a thot/gpt-5.6-terra por 3 días (2026-08-24). Cambiar la constante al
+    nombre nuevo arregla la instancia y rompe la clase: deepseek-v4-flash
+    (jekyll) y glm-5.3 (ada) siguen exigiendo el viejo. Es una propiedad
+    estable POR MODELO, del mismo eje que supports_tool_use /
+    supports_structured_output / context_window, y vive en la misma fila.
+
+    NULL falla ruidoso a propósito (decisión del dueño, 2026-08-27): si el
+    default fuera el parámetro viejo, el próximo modelo nuevo se rompería igual
+    que thot pero en silencio y sin nadie mirando. Preferimos que un modelo sin
+    valor falle con un mensaje que un operador pueda ejecutar."""
+    if max_tokens_param is None:
+        # ERROR en el log ADEMÁS de la excepción: el 502 que ve el usuario
+        # trunca a 200 chars (ver el handler del endpoint), el operador
+        # necesita el UPDATE completo.
+        logger.error(
+            f"dispatch abortado: model_id={model!r} sin max_tokens_param en la "
+            f"tabla `model`. Sembrar: UPDATE model SET "
+            f"max_tokens_param='max_tokens'|'max_completion_tokens' "
+            f"WHERE model_id='{model}';"
+        )
+        raise ModelDispatchConfigError(
+            f"modelo '{model}': la fila de `model` no declara max_tokens_param, "
+            f"así que no se sabe si su API exige 'max_tokens' o "
+            f"'max_completion_tokens' y NO se asume ninguno. Sembrala: "
+            f"UPDATE model SET max_tokens_param='max_tokens' "  # o 'max_completion_tokens'
+            f"WHERE model_id='{model}';  -- agregá AND provider_id='<provider>' "
+            f"si ese model_id existe para más de un proveedor. Usá "
+            f"'max_completion_tokens' para los modelos que rechazan el viejo "
+            f"con HTTP 400 (generación nueva de OpenAI), 'max_tokens' para el resto."
+        )
+    if max_tokens_param not in _MAX_TOKENS_PARAM_NAMES:
+        raise ModelDispatchConfigError(
+            f"modelo '{model}': max_tokens_param={max_tokens_param!r} no es un "
+            f"nombre de parámetro conocido {_MAX_TOKENS_PARAM_NAMES}. Corregí la "
+            f"fila de `model` — no se manda una clave arbitraria a la API."
+        )
+    return max_tokens_param
+
+
 async def _call_openai_compat(
     base_url: str, api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
+    max_tokens_param: str | None,
     on_response=None,
 ) -> tuple[str, int, int]:
+    # max_tokens_param NO tiene default: un llamador que lo olvide falla al
+    # llamar (TypeError), no manda un request mudo con un nombre asumido.
+    field = _max_tokens_field(model, max_tokens_param)
     messages = _build_messages(system_prompt, history, message)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     client = await get_http_client()
     r = await client.post(
         f"{base_url}/chat/completions",
         headers=headers,
-        # max_tokens explícito: sin esto, un modelo de razonamiento (reasoning_content
-        # compitiendo por el mismo budget que content) puede agotarlo y cortar la
-        # respuesta antes de escribirla — mismo bug ya diagnosticado y corregido en
-        # motor_registry/worker.py::_call_kimi (017ba2f, 2026-08-10). Mismo valor que
-        # jax/muscles/base.py usa para el mismo propósito.
-        json={"model": model, "messages": messages, "max_tokens": 131072},
+        json={"model": model, "messages": messages, field: _MAX_OUTPUT_TOKENS},
         timeout=120.0,
     )
     r.raise_for_status()
@@ -733,7 +800,16 @@ async def _invoke_facet(
         return text, UsageInfo(f.provider_id, f.model, tin, tout)
 
     if f.transport == "http_openai_compat":
-        text, tin, tout = await _call_openai_compat(f.base_url, f.credential, f.model, system_prompt, history, message, on_response=_on_response)
+        # f.max_tokens_param viene de model.max_tokens_param via el JOIN de
+        # facet_resolver._query_facet — el mismo lugar del que ya salen
+        # f.model/f.base_url, no una segunda fuente de verdad. NULL sube como
+        # ModelDispatchConfigError desde _call_openai_compat: no se atrapa acá
+        # a propósito (el handler del endpoint lo convierte en 502 + facet en
+        # estado 'error'), para que un modelo sin sembrar sea visible.
+        text, tin, tout = await _call_openai_compat(
+            f.base_url, f.credential, f.model, system_prompt, history, message,
+            f.max_tokens_param, on_response=_on_response,
+        )
         return text, UsageInfo(f.provider_id, f.model, tin, tout)
 
     return f"⚠️ {facet} no está disponible: transporte '{f.transport}' no soportado en la Mesa web.", None
