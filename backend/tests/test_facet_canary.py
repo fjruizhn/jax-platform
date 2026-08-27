@@ -5,6 +5,7 @@ _invoke_facet esta parcheado en todos. Ver "Riesgo de costo" en el plan
 -- el 2026-08-24, correr pytest disparo 11 dispatches reales a produccion
 por un archivo con codigo a nivel de modulo y nombre descubrible."""
 import asyncio
+import logging
 import pytest
 from jax_engine import facet_canary
 from api import chat as chat_mod
@@ -76,9 +77,20 @@ def test_la_sonda_distingue_config_error_de_provider_error(monkeypatch):
     otro sale por simetria: si la clasificacion se rompiera en una sola
     direccion -- por ejemplo un `except Exception` puesto antes del
     especifico, que se lo come -- un test que solo cubra un lado pasa
-    verde con el bug vivo."""
+    verde con el bug vivo.
+
+    Ronda de correccion 1 (Hallazgo 1): las aserciones de abajo comparan
+    contra el LITERAL ("config_error"/"provider_error"), no contra la
+    constante (fh.OUTCOME_CONFIG_ERROR/fh.OUTCOME_PROVIDER_ERROR). La
+    guarda mecanica de la Task 3.5 compara CONJUNTOS (OUTCOMES), y un
+    conjunto es invariante bajo permutacion: si alguien transpone los
+    VALORES de dos constantes (p.ej. OUTCOME_CONFIG_ERROR = "unsupported_transport"
+    por error de copy-paste), el frozenset queda identico, esa guarda pasa
+    verde, y un assert contra la constante tambien pasaria verde porque
+    compara constante contra constante -- el test cuya razon de existir es
+    que dos valores no se confundan quedaria ciego a que se confundieran.
+    Contra el literal, ese mismo bug lo detecta."""
     from api.chat import ModelDispatchConfigError
-    import facet_health as fh
 
     recorded = []
     async def fake_record(facet, outcome, source, detail=None):
@@ -92,7 +104,7 @@ def test_la_sonda_distingue_config_error_de_provider_error(monkeypatch):
     with pytest.raises(ModelDispatchConfigError):
         asyncio.run(chat_mod._invoke_facet("thot", _config(), "u", "h",
                                            source="canary_rebind"))
-    assert recorded == [fh.OUTCOME_CONFIG_ERROR]
+    assert recorded == ["config_error"]
 
     # Caso 2: falla DEL PROVEEDOR -- misma forma, outcome distinto.
     recorded.clear()
@@ -102,7 +114,37 @@ def test_la_sonda_distingue_config_error_de_provider_error(monkeypatch):
     with pytest.raises(RuntimeError):
         asyncio.run(chat_mod._invoke_facet("thot", _config(), "u", "h",
                                            source="canary_rebind"))
-    assert recorded == [fh.OUTCOME_PROVIDER_ERROR]
+    assert recorded == ["provider_error"]
+
+
+def test_outcome_unsupported_transport_no_se_confunde_con_config_error(monkeypatch):
+    """Ronda de correccion 1, Hallazgo 1 (pin adicional): la unica
+    permutacion que sobrevive a la guarda de conjuntos de la Task 3.5 es
+    intercambiar los VALORES de dos constantes -- 'unsupported_transport'
+    no aparecia en ningun literal de esta suite hasta ahora, asi que un
+    copy-paste que lo pusiera donde va 'config_error' (o viceversa) no lo
+    habria detectado nada. Este test fija el otro extremo de esa
+    permutacion con su propio literal."""
+    import facet_health as fh
+    assert fh.OUTCOME_UNSUPPORTED_TRANSPORT == "unsupported_transport"
+    assert fh.OUTCOME_CONFIG_ERROR == "config_error"
+    assert fh.OUTCOME_UNSUPPORTED_TRANSPORT != fh.OUTCOME_CONFIG_ERROR
+
+
+def test_source_constants_pertenecen_a_SOURCES_con_literales(monkeypatch):
+    """Hallazgo 3: 'canary_periodic' era un literal suelto en
+    facet_canary.py, sin constante ni guarda que lo atara a
+    facet_health.SOURCES -- el mismo problema que la Task 3.5 cerro para
+    `outcome`, un casillero al lado sin cerrar. Si SOURCE_CANARY_PERIODIC
+    divergiera del valor real en SOURCES, record_facet_health lanzaria
+    ValueError DESDE ADENTRO del except de probe_facet, abortando el
+    barrido entero en vez de degradar una fila."""
+    import facet_health as fh
+    assert fh.SOURCE_CHAT == "chat"
+    assert fh.SOURCE_CANARY_PERIODIC == "canary_periodic"
+    assert fh.SOURCE_CANARY_REBIND == "canary_rebind"
+    assert fh.SOURCES == {"chat", "canary_periodic", "canary_rebind"}
+    assert facet_canary.SOURCE_CANARY_PERIODIC in fh.SOURCES
 
 
 def test_probe_facet_registra_probe_error_si_falla_antes_de_invocar(monkeypatch):
@@ -152,3 +194,36 @@ def test_running_under_pytest_detecta_el_entorno():
     quede claro cual de los dos prueba que -- si este pasa y el otro falla,
     el guard existe pero no se esta aplicando."""
     assert facet_canary._running_under_pytest() is True
+
+
+def test_intervalo_no_positivo_deshabilita_la_sonda_sin_silencio(monkeypatch, caplog):
+    """Hallazgo 4: CANARY_INTERVAL_SECONDS <= 0 es un kill switch (mismo
+    patron que FACET_CACHE_TTL_SECONDS en facet_resolver.py) -- tiene que
+    apagar la sonda, y tiene que dejar rastro, no apagarse en silencio.
+
+    El guard anti-pytest se prueba aparte (test_el_loop_NO_EJECUTA...) y
+    corta ANTES de llegar a este chequeo bajo pytest real -- por eso acá
+    se parchea _running_under_pytest para poder ejercitar la rama de
+    abajo sin que el guard de arriba la tape. probe_all sigue espiado
+    (y con timeout) por si el apagado no funcionara y el loop entrara
+    igual: que este test falle legible, no que se cuelgue."""
+    monkeypatch.setattr(facet_canary, "_running_under_pytest", lambda: False)
+    monkeypatch.setattr(facet_canary, "CANARY_INTERVAL_SECONDS", 0)
+
+    llamadas = []
+    async def espia(source=facet_canary.SOURCE_CANARY_PERIODIC):
+        llamadas.append(source)
+        return []
+    monkeypatch.setattr(facet_canary, "probe_all", espia)
+
+    async def _run():
+        await asyncio.wait_for(facet_canary.start_facet_canary(), timeout=5)
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(_run())
+
+    assert llamadas == [], "CANARY_INTERVAL_SECONDS<=0 no deshabilito la sonda"
+    assert any(
+        "CANARY_INTERVAL_SECONDS" in r.getMessage() and "deshabilitada" in r.getMessage()
+        for r in caplog.records
+    ), "el apagado no dejo rastro en el log -- se apago en silencio"

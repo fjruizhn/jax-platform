@@ -15,11 +15,39 @@ import os
 import sys
 
 from api.chat import _invoke_facet, _load_config
-from facet_health import record_facet_health, OUTCOME_PROBE_ERROR
+from facet_health import (
+    record_facet_health,
+    OUTCOME_PROBE_ERROR,
+    SOURCE_CANARY_PERIODIC,
+)
 
 logger = logging.getLogger(__name__)
 
-CANARY_INTERVAL_SECONDS = 3600
+# Mismo patron que FACET_CACHE_TTL_SECONDS en facet_resolver.py:18 -- kill
+# switch sin deploy. Ronda de correccion 1 de Task 4, Hallazgo 4: un valor
+# <= 0 apaga la sonda (chequeado en start_facet_canary, con warning
+# explicito -- nunca en silencio).
+CANARY_INTERVAL_SECONDS = int(os.getenv("CANARY_INTERVAL_SECONDS", "3600"))
+
+# Hallazgo 2 de la misma ronda: resolve_facet() -> aiomysql.connect() no
+# tiene connect_timeout, y el cur.execute() tampoco tiene timeout propio.
+# Los timeouts HTTP de _invoke_facet_dispatch SI existen (gate 5s, ollama
+# 180s, openai_compat/gemini 120s) -- el agujero es solo la DB. Sin un
+# timeout ACA, una MariaDB que acepta la conexion y no contesta cuelga
+# probe_all() para siempre: el `while True` nunca llega al sleep, y la
+# sonda muere sin log, sin fila y sin evento.
+#
+# N=900 (15 min), elegido con este calculo: el peor caso LEGITIMO de un
+# barrido completo (canary_facets ordena alfabetico: ada, hipatia,
+# jax_local, jekyll, kimi, thot) es 4 facets gobernados (ada/hipatia/
+# jekyll/thot, cada uno gate 5s + hasta 120s de proveedor = 125s) + 180s
+# de jax_local (ollama, no gobernado, timeout mas alto del repo) + kimi
+# (unsupported_transport, retorno inmediato sin red) = 4*125 + 180 = 680s.
+# 900s deja ~32% de margen sobre ese peor caso legitimo y sigue siendo un
+# cuarto del intervalo por defecto (3600s), asi que un barrido colgado no
+# se come el proximo ciclo.
+CANARY_SWEEP_TIMEOUT_SECONDS = 900
+
 CANARY_USER_ID = "__canary__"
 # NO puede parecer una pregunta de identidad de modelo: _is_model_identity_question()
 # cortocircuitea antes del dispatch y devolveria una respuesta enlatada, o
@@ -72,7 +100,7 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
         return OUTCOME_PROBE_ERROR
 
 
-async def probe_all(source: str = "canary_periodic") -> list[str | None]:
+async def probe_all(source: str = SOURCE_CANARY_PERIODIC) -> list[str | None]:
     config = _load_config()
     return [await probe_facet(f, config, source) for f in canary_facets(config)]
 
@@ -81,9 +109,23 @@ async def start_facet_canary() -> None:
     if _running_under_pytest():
         logger.warning("facet_canary: no arranca bajo pytest (llamadas pagas)")
         return
+    if CANARY_INTERVAL_SECONDS <= 0:
+        # Kill switch (Hallazgo 4): apagado explicito y RUIDOSO, no un loop
+        # que nunca arranca en silencio -- un operador que mire logs tiene
+        # que poder confirmar que la sonda esta apagada a proposito.
+        logger.warning(
+            "facet_canary: deshabilitada (CANARY_INTERVAL_SECONDS=%s <= 0)",
+            CANARY_INTERVAL_SECONDS)
+        return
     while True:
         try:
-            await probe_all("canary_periodic")
-        except Exception:  # fail-soft: loop en background, mismo patron que owner_cleanup.py -- nunca debe tumbar el proceso, el proximo ciclo reintenta
+            # Hallazgo 2: sin este timeout, un colgado en resolve_facet()
+            # (aiomysql sin connect_timeout) mata el barrido en silencio --
+            # el while True nunca llega al sleep, y thot (ultimo en el orden
+            # alfabetico de canary_facets) es el mas expuesto a quedar sin
+            # sondear si algo anterior en la lista cuelga.
+            async with asyncio.timeout(CANARY_SWEEP_TIMEOUT_SECONDS):
+                await probe_all(SOURCE_CANARY_PERIODIC)
+        except Exception:  # fail-soft: loop en background, mismo patron que owner_cleanup.py -- nunca debe tumbar el proceso, el proximo ciclo reintenta. Incluye TimeoutError del asyncio.timeout de arriba.
             logger.warning("facet_canary: barrido fallo", exc_info=True)
         await asyncio.sleep(CANARY_INTERVAL_SECONDS)
