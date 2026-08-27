@@ -46,6 +46,7 @@ from db.seed import run_seed
 from jax_engine.state import engine_state
 from jax_engine.events import event_bus
 from jax_engine.owner_cleanup import start_owner_file_cleanup
+from jax_engine.facet_canary import start_facet_canary
 from jax_engine.websocket_hub import ws_hub
 from jax_engine.lifecycle import lifecycle_lock, sse_connections
 from jax_engine.schemas import JAXEvent
@@ -85,6 +86,7 @@ async def lifespan(app: FastAPI):
     await run_seed()
     engine_state.start_background_tasks()
     asyncio.create_task(start_owner_file_cleanup())
+    asyncio.create_task(start_facet_canary())
     yield
     # Cerrar conversaciones web abiertas -> el worker de facts las destila.
     try:

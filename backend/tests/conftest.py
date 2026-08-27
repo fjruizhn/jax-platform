@@ -150,6 +150,40 @@ def _apply_facet_health_writer_stub(monkeypatch, ci_no_db: bool) -> bool:
 
 
 @pytest.fixture(autouse=True)
+def _facet_canary_no_real_dispatch(monkeypatch):
+    """Ronda de correccion 1 de Task 4 (2026-08-27), Hallazgo 5: el guard
+    _running_under_pytest() de facet_canary.py solo cubre un punto de
+    entrada de tres -- start_facet_canary(). probe_all() y probe_facet()
+    son importables directo y hacen llamadas PAGAS sin ningun guard propio.
+    El accidente real del 2026-08-24 (11 dispatches reales) no paso por
+    NINGUN loop -- fue un script con codigo a nivel de modulo y nombre
+    descubierto por pytest -- asi que un guard puesto solo en el loop no
+    lo habria frenado.
+
+    Autouse global: parchea facet_canary._invoke_facet para que CUALQUIER
+    test que llegue a probe_facet/probe_all sin parchearlo el mismo
+    explote con un RuntimeError ruidoso, en vez de completar una llamada
+    real. La Task 5 va a escribir tests nuevos alrededor de probe_facet;
+    si alguno se olvida de parchear _invoke_facet, esto lo hace fallar en
+    vez de gastar plata.
+
+    Los tests de tests/test_facet_canary.py que SI necesitan controlar
+    _invoke_facet lo parchean ellos mismos dentro del test cuerpo, vía el
+    mismo `monkeypatch` (fixture de function-scope, una sola instancia por
+    test) -- ese setattr posterior pisa a este autouse sin conflicto: el
+    undo de monkeypatch es una pila, se deshace en orden inverso."""
+    from jax_engine import facet_canary
+
+    async def _sin_parchear(*args, **kwargs):
+        raise RuntimeError(
+            "facet_canary._invoke_facet sin parchear en este test -- "
+            "esto dispararia una llamada PAGA a un proveedor real "
+            "(ver Hallazgo 5, ronda de correccion 1 de Task 4)")
+
+    monkeypatch.setattr(facet_canary, "_invoke_facet", _sin_parchear)
+
+
+@pytest.fixture(autouse=True)
 def _stub_facet_health_writer_sin_db(monkeypatch):
     """Autouse: bajo JAX_CI_NO_DB=1, hace que `facet_health.get_pool` se
     comporte como se comporta en PRODUCCION sin DB (una excepcion normal

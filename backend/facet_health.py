@@ -23,7 +23,18 @@ OUTCOMES = frozenset({
     OUTCOME_GATE_DENIED, OUTCOME_GATE_UNREACHABLE, OUTCOME_UNBOUND,
     OUTCOME_UNSUPPORTED_TRANSPORT, OUTCOME_PROBE_ERROR,
 })
-SOURCES = frozenset({"chat", "canary_periodic", "canary_rebind"})
+
+SOURCE_CHAT = "chat"
+SOURCE_CANARY_PERIODIC = "canary_periodic"
+SOURCE_CANARY_REBIND = "canary_rebind"
+
+# Ronda de corrección 1 de Task 4 (2026-08-27), Hallazgo 3: "canary_periodic"
+# vivía como literal suelto en facet_canary.py, sin constante ni guarda que
+# lo atara a este frozenset -- exactamente el problema que la Task 3.5 ya
+# había cerrado para `outcome`, un casillero al lado sin cerrar. Si diverge,
+# record_facet_health lanza ValueError, y lo hace DESDE ADENTRO del except
+# de probe_facet: en vez de degradar, aborta el barrido entero.
+SOURCES = frozenset({SOURCE_CHAT, SOURCE_CANARY_PERIODIC, SOURCE_CANARY_REBIND})
 
 _DETAIL_MAX = 255
 
