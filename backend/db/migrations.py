@@ -425,7 +425,7 @@ CREATE TABLE IF NOT EXISTS capability_motor (
 """
 
 CREATE_FACET_HEALTH_EVENT = """
-CREATE TABLE facet_health_event (
+CREATE TABLE IF NOT EXISTS facet_health_event (
     id      BIGINT AUTO_INCREMENT PRIMARY KEY,
     facet   VARCHAR(50) NOT NULL,
     outcome ENUM('ok','provider_error','gate_denied','gate_unreachable',
@@ -435,7 +435,7 @@ CREATE TABLE facet_health_event (
     ts      DOUBLE NOT NULL,
     KEY idx_facet_ts (facet, ts),
     KEY idx_ts (ts)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 # `ts` es epoch DOUBLE, no TIMESTAMP: misma decision y misma razon que
@@ -444,12 +444,12 @@ CREATE TABLE facet_health_event (
 # TIMESTAMP contra un string de fecha.
 
 CREATE_FACET_HEALTH_ALERT = """
-CREATE TABLE facet_health_alert (
+CREATE TABLE IF NOT EXISTS facet_health_alert (
     facet         VARCHAR(50) PRIMARY KEY,
     state         ENUM('ok','down','unknown') NOT NULL,
     first_seen_ts DOUBLE NOT NULL,
     notified_ts   DOUBLE NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 # facet_health_alert NO es una segunda fuente de verdad de salud: es el
