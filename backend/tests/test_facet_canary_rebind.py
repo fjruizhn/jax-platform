@@ -63,7 +63,9 @@ def test_probe_after_rebind_invalida_la_cache_ANTES_de_sondear(monkeypatch):
 def test_invalidate_facet_cache_saca_la_clave_que_usa_resolve_facet(monkeypatch):
     """No monkeypatchea invalidate_facet_cache -- ejercita la función real
     contra la MISMA clave (facet_key) que resolve_facet() usa para poblar
-    _cache (facet_resolver.py:153: `_cache[facet_key] = ...`)."""
+    _cache (ver la asignación `_cache[facet_key] = ...` dentro de
+    resolve_facet() en facet_resolver.py -- sin número de línea a
+    propósito, no se desactualiza cuando alguien inserta líneas arriba)."""
     cache = {}
     monkeypatch.setattr(facet_resolver, "_cache", cache)
     cache["thot"] = facet_resolver._CacheEntry(value=object(), fetched_at=0.0)
