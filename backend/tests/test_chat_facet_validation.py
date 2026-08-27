@@ -14,6 +14,7 @@ validated_at NULL. Ver también shadow_validation.py::_insert_shadow_message
 run_shadow_validation).
 """
 import http_client
+import httpx
 from auth.jwt import create_access_token
 from tests.test_chat_contract_wrapper import _FakePostClient, _FakeResponse
 
@@ -120,10 +121,6 @@ def test_chat_endpoint_accepts_none_facet_and_auto_routes(client):
     assert resp.status_code == 200, resp.text
 
 
-import httpx
-from tests.test_chat_contract_wrapper import _FakePostClient, _FakeResponse
-
-
 class _FakeFailingPostClient:
     """Simula las_manos caido de verdad -- conexion rechazada, no un
     mock que devuelve un error prolijo. Es el test que prueba que el
@@ -147,6 +144,32 @@ def test_chat_endpoint_denies_hipatia_when_authorize_facet_returns_false(client)
         http_client._client = original
     assert resp.status_code == 200
     assert "no autorizado" in resp.json()["response"] or "no disponible" in resp.json()["response"]
+
+
+def test_chat_endpoint_denies_hipatia_logs_the_reason_from_authorize_facet(client, caplog):
+    # Review finding (Important): el except fail-closed no logueaba nada, y
+    # el 'reason' que trae /motor/authorize-facet se leia en ningun lado --
+    # justo el dato que existe para que la denegacion sea explicable. Este
+    # test prueba que una denegacion LIMPIA (las_manos respondio, dijo que
+    # no) deja ese reason en los logs, no solo el mensaje generico al
+    # usuario. Ver tambien test_chat_endpoint_denies_hipatia_when_las_manos_is_down
+    # para el caso "las_manos no respondio en absoluto" -- son casos
+    # distintos y el fix los loguea distinto a proposito.
+    token = create_access_token("test-authz-logs-user", "test-authz-logs-tenant", "operator")
+    fake = _FakePostClient(_FakeResponse({"allowed": False, "reason": "caller no autorizado"}))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        with caplog.at_level("WARNING", logger="api.chat"):
+            resp = client.post(
+                "/api/chat",
+                json={"message": "hola", "facet": "hipatia"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    finally:
+        http_client._client = original
+    assert resp.status_code == 200
+    assert any("caller no autorizado" in record.message for record in caplog.records)
 
 
 def test_chat_endpoint_denies_hipatia_when_las_manos_is_down(client):
@@ -188,8 +211,9 @@ def test_chat_endpoint_allows_hipatia_when_authorize_facet_returns_true(client):
                 "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 3},
             })
 
+    fake = _SequencedFakeClient()
     original = http_client._client
-    http_client._client = _SequencedFakeClient()
+    http_client._client = fake
     try:
         resp = client.post(
             "/api/chat",
@@ -199,3 +223,8 @@ def test_chat_endpoint_allows_hipatia_when_authorize_facet_returns_true(client):
     finally:
         http_client._client = original
     assert resp.status_code == 200
+    assert "hola desde hipatia" in resp.json()["response"]
+    # Exactamente dos llamadas: authorize-facet, despues el proveedor real.
+    # Sin este assert, el test pasaria igual aunque la respuesta del
+    # proveedor nunca llegara a dispararse.
+    assert fake._calls == 2

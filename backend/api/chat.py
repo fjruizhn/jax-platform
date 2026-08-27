@@ -17,9 +17,6 @@ from http_client import get_http_client
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from facet_resolver import resolve_facet, FacetUnavailableError
 import model_catalog
-
-_GOVERNED_HTTP_FACETS = frozenset({"hipatia", "jekyll", "thot", "ada"})
-_JAX_PLATFORM_CHAT_CALLER = "jax_platform_chat"
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
@@ -29,6 +26,9 @@ from api.admin.usage import record_usage
 from db.connection import get_pool
 
 router = APIRouter(prefix="/api")
+
+_GOVERNED_HTTP_FACETS = frozenset({"hipatia", "jekyll", "thot", "ada"})
+_JAX_PLATFORM_CHAT_CALLER = "jax_platform_chat"
 
 CONFIG_PATH = os.path.expanduser("~/jax/config/config.toml")
 
@@ -666,14 +666,29 @@ async def _invoke_facet(
                 timeout=5.0,
             )
             resp.raise_for_status()
-            allowed = resp.json().get("allowed", False)
-        except Exception:
+            body = resp.json()
+            allowed = body.get("allowed", False)
+            if not allowed:
+                # Denegación limpia: las_manos respondió, la decisión es
+                # "no". Logueamos el 'reason' que trae la respuesta -- es
+                # precisamente para esto que existe ese campo.
+                logger.warning(
+                    f"authorize-facet denied facet={facet} caller={_JAX_PLATFORM_CHAT_CALLER} "
+                    f"reason={body.get('reason')!r}"
+                )
+        except Exception as e:
             # Fail-closed (P10): cualquier falla -- timeout, conexión
             # rechazada, respuesta inesperada -- deniega. Nunca "no pude
-            # verificar, sigo igual".
+            # verificar, sigo igual". Logueado por separado del caso de
+            # arriba: "las_manos no respondió" no es lo mismo que "las_manos
+            # respondió que no", y un operador necesita distinguirlos.
             allowed = False
+            logger.warning(
+                f"authorize-facet unreachable facet={facet} caller={_JAX_PLATFORM_CHAT_CALLER} "
+                f"error={type(e).__name__}: {e} -- denegado fail-closed"
+            )
         if not allowed:
-            return f"⚠️ {facet} no está disponible: caller '{_JAX_PLATFORM_CHAT_CALLER}' no autorizado.", None
+            return f"⚠️ {facet} no está disponible: acceso no autorizado.", None
 
     if _is_model_identity_question(message):
         return _model_identity_reply(f.model, facet), None
