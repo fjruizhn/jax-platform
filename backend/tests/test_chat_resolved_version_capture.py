@@ -53,7 +53,7 @@ async def test_call_openai_compat_invokes_on_response_with_raw_json():
     try:
         content, _tin, _tout = await _call_openai_compat(
             "https://api.deepseek.com/v1", "sk-x", "deepseek-chat",
-            "system", [], "hola", on_response=capture,
+            "system", [], "hola", "max_tokens", on_response=capture,
         )
     finally:
         http_client._client = original
@@ -68,7 +68,7 @@ async def test_call_openai_compat_without_on_response_still_works():
     original = http_client._client
     http_client._client = fake
     try:
-        content, _tin, _tout = await _call_openai_compat("https://x", "k", "m", "s", [], "hola")
+        content, _tin, _tout = await _call_openai_compat("https://x", "k", "m", "s", [], "hola", "max_tokens")
     finally:
         http_client._client = original
     assert content == "ok"

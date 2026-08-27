@@ -34,6 +34,29 @@ class ResolvedFacet:
     transport: str
     persona: str | None
     params: dict | None
+    # max_tokens_param: DIVERGENCIA DELIBERADA DE LOS ESPEJOS — leer antes de
+    # "sincronizar" este archivo. facet_resolver.py es un espejo minimo
+    # replicado en 3 codebases (jax-platform, jax/core, las_manos); este campo
+    # existe SOLO en la copia de jax-platform y su ausencia en las otras dos NO
+    # es drift accidental.
+    #
+    # Por que: es el nombre del parametro de limite de salida que exige la API
+    # de cada modelo ('max_tokens' historico vs 'max_completion_tokens', que
+    # OpenAI empezo a exigir y rechaza el viejo con HTTP 400). Lo consume
+    # api/chat.py::_call_openai_compat, que es codigo de jax-platform y de
+    # nadie mas. Los otros dos consumidores no lo necesitan hoy: el REPL
+    # despacha por jax/muscles/base.py (no pasa por este resolver para armar el
+    # body) y Jacobs no manda ningun parametro de limite de salida.
+    #
+    # Si algun dia otro espejo necesita el dato, la columna model.max_tokens_param
+    # ya esta en la DB compartida: agregarlo alla es sumar la columna a su propio
+    # SELECT, no inventar una fuente nueva.
+    #
+    # NULL = el catalogo no declara el dato para ese modelo. NO se asume un
+    # default aca: el dispatch falla ruidoso (ver _max_tokens_field() en
+    # api/chat.py). Un default silencioso reproduciria el incidente de thot
+    # (2026-08-24) en el proximo modelo nuevo, esta vez sin sintoma visible.
+    max_tokens_param: str | None
 
 
 class _CacheEntry:
@@ -69,7 +92,8 @@ async def _query_facet(facet_key: str) -> ResolvedFacet:
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT f.transport, f.persona, p.base_url, b.provider_id, m.model_id, b.params "
+                "SELECT f.transport, f.persona, p.base_url, b.provider_id, m.model_id, b.params, "
+                "m.max_tokens_param "
                 "FROM facet f "
                 "JOIN facet_binding b ON b.facet_key = f.`key` AND b.role = 'primary' "
                 "JOIN provider p ON p.id = b.provider_id "
@@ -82,7 +106,7 @@ async def _query_facet(facet_key: str) -> ResolvedFacet:
         conn.close()
     if not row:
         raise FacetUnavailableError(f"sin binding activo para facet '{facet_key}'")
-    transport, persona, base_url, provider_id, model_id, params = row
+    transport, persona, base_url, provider_id, model_id, params, max_tokens_param = row
 
     credential = ""
     if transport not in ("ollama", "subprocess"):  # ollama/subprocess no usan credencial de proveedor gestionada aqui
@@ -94,6 +118,7 @@ async def _query_facet(facet_key: str) -> ResolvedFacet:
     return ResolvedFacet(
         key=facet_key, provider_id=provider_id, base_url=base_url, model=model_id,
         credential=credential, transport=transport, persona=persona, params=params,
+        max_tokens_param=max_tokens_param,
     )
 
 

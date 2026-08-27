@@ -291,6 +291,12 @@ CREATE TABLE IF NOT EXISTS model (
   context_window INT NULL,
   supports_tool_use BOOLEAN NOT NULL DEFAULT FALSE,
   supports_structured_output BOOLEAN NOT NULL DEFAULT FALSE,
+  -- max_tokens_param: nombre del parametro de limite de salida que exige la
+  -- API de ESTE modelo. Otro descriptor del contrato por modelo, mismo eje que
+  -- supports_tool_use / supports_structured_output / context_window. NULL a
+  -- proposito (sin DEFAULT): ver _seed_model_max_tokens_param() y el comentario
+  -- de _COLUMNS mas abajo.
+  max_tokens_param ENUM('max_tokens','max_completion_tokens') NULL,
   input_modalities SET('text','image','audio','video') NOT NULL DEFAULT 'text',
   price_input_per_1m_usd DECIMAL(10,4) NULL,
   price_output_per_1m_usd DECIMAL(10,4) NULL,
@@ -1021,6 +1027,31 @@ _COLUMNS = [
     # curl real) es la unica senal de eso. digest_changed_at queda NULL
     # hasta la primera vez que se observa un cambio real (nunca en la
     # primera vez que se ve el modelo -- no hay "antes" con que comparar).
+    # 2026-08-27 (incidente thot, 3 dias caido en la Mesa web): la API de
+    # gpt-5.6-terra rechaza con HTTP 400 el parametro que _call_openai_compat
+    # mandaba fijo -- "Unsupported parameter: 'max_tokens' is not supported with
+    # this model. Use 'max_completion_tokens' instead". El nombre del parametro
+    # de limite de salida dejo de ser universal: es una propiedad estable POR
+    # MODELO, del mismo eje que supports_tool_use/context_window, y por eso vive
+    # en `model` y no en una constante del despachador (cambiar la constante al
+    # nombre nuevo arregla thot y rompe jekyll/deepseek-v4-flash y ada/glm-5.3,
+    # que siguen exigiendo el viejo).
+    #
+    # Se descarto explicitamente el fallback por error de la API (reintentar con
+    # el otro nombre al ver el 400): gasta una llamada fallida cada vez para
+    # descubrir algo que es una propiedad estable del modelo, y su modo de falla
+    # se confunde con un error real de la API.
+    #
+    # NULL, sin DEFAULT, es la decision deliberada: un modelo sin valor FALLA
+    # RUIDOSO en el dispatch (api/chat.py::_max_tokens_field) en vez de asumir.
+    # Si el default fuera el parametro viejo, el proximo modelo nuevo se romperia
+    # igual que thot pero en silencio. Nace con lector (_max_tokens_field, via
+    # facet_resolver.ResolvedFacet.max_tokens_param) y con test
+    # (tests/test_model_max_tokens_param.py) -- no repite el destino de
+    # capability.sandbox_only, declarada vestigial el mismo dia por no haber
+    # tenido lector nunca.
+    ("model", "max_tokens_param",
+     "ALTER TABLE model ADD COLUMN max_tokens_param ENUM('max_tokens','max_completion_tokens') NULL"),
     ("model", "digest", "ALTER TABLE model ADD COLUMN digest VARCHAR(80) NULL"),
     ("model", "digest_changed_at", "ALTER TABLE model ADD COLUMN digest_changed_at DATETIME NULL"),
     # T2 (2026-08-19, jax/las_manos/motor_registry/worker.py): "disable
@@ -1232,6 +1263,50 @@ async def _eliminate_motor_model_ref_denormalization(cur) -> None:
     """)
 
 
+# (provider_id, model_id, max_tokens_param) — verificado contra la DB en vivo
+# (jax_memory, 2026-08-27), no supuesto:
+#   - gpt-5.6-terra  (thot,   provider openai)   -> RECHAZA 'max_tokens' con
+#     HTTP 400, exige 'max_completion_tokens'. Es el modelo del incidente.
+#   - deepseek-v4-flash (jekyll, provider deepseek) -> 'max_tokens', funcionando
+#     hoy en produccion.
+#   - glm-5.3        (ada,    provider zhipu)    -> 'max_tokens', funcionando
+#     hoy en produccion.
+# Los tres pasan HOY por _call_openai_compat: sembrar solo el de thot tumbaria
+# jekyll y ada (que no estan rotos) en cuanto NULL empiece a fallar ruidoso.
+#   - kimi-k3        (motor kimi, provider moonshot) -> 'max_tokens'. NO pasa por
+#     _call_openai_compat: despacha por las_manos/motor_registry/worker.py, otro
+#     repo, que hoy manda 'max_tokens' fijo. Se siembra por completitud del
+#     catalogo (la columna describe el modelo, no el despachador que lo usa);
+#     ese repo queda intacto y no lee la columna todavia.
+_MODEL_MAX_TOKENS_PARAM_SEED = [
+    ("openai",   "gpt-5.6-terra",      "max_completion_tokens"),
+    ("deepseek", "deepseek-v4-flash",  "max_tokens"),
+    ("zhipu",    "glm-5.3",            "max_tokens"),
+    ("moonshot", "kimi-k3",            "max_tokens"),
+]
+
+
+async def _seed_model_max_tokens_param(cur) -> None:
+    """Siembra model.max_tokens_param para los modelos cuyo contrato esta
+    verificado (ver _MODEL_MAX_TOKENS_PARAM_SEED).
+
+    Deliberadamente NO siembra el resto del catalogo: un valor adivinado por
+    proveedor es exactamente la suposicion que esta columna existe para
+    eliminar. Un modelo que no esta en esta lista queda NULL y hace fallar el
+    dispatch con un mensaje que dice que fila sembrar
+    (api/chat.py::_max_tokens_field) -- ruidoso por diseno.
+
+    Guard WHERE max_tokens_param IS NULL: idempotente y no pisa un valor puesto
+    a mano si un operador ya sembro algo distinto (mismo patron que
+    _seed_http_facet_allowed_callers)."""
+    for provider_id, model_id, param in _MODEL_MAX_TOKENS_PARAM_SEED:
+        await cur.execute(
+            "UPDATE model SET max_tokens_param = %s "
+            "WHERE provider_id = %s AND model_id = %s AND max_tokens_param IS NULL",
+            (param, provider_id, model_id),
+        )
+
+
 async def _seed_http_facet_allowed_callers(cur) -> None:
     """Gobernanza de _HTTP_FACETS (docs/superpowers/specs/2026-08-27-
     http-facets-motor-policy-governance-design.md): hipatia/jekyll/thot/
@@ -1285,5 +1360,8 @@ async def run_migrations():
             await _fix_file_write_gate_and_auditor(cur)
             await _eliminate_motor_model_ref_denormalization(cur)
             await _seed_http_facet_allowed_callers(cur)
+            # Despues de _seed_models_and_backfill: las filas de `model` tienen
+            # que existir para poder actualizarlas.
+            await _seed_model_max_tokens_param(cur)
 
         await conn.commit()
