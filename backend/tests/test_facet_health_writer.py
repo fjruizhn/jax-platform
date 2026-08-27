@@ -4,6 +4,7 @@ archivo NUNCA toca la DB real ni la red. Ver "Riesgo de costo" en el plan
 produccion disparados por correr pytest)."""
 import pytest
 import facet_health
+import api.health as health_module
 
 
 class _FakeCursor:
@@ -99,3 +100,41 @@ def test_escritura_exitosa_no_incrementa_el_contador(monkeypatch):
     asyncio.run(facet_health.record_facet_health("thot", "ok", "chat"))
 
     assert facet_health.write_failure_stats()["write_failures"] == 0
+
+
+def test_health_endpoint_expone_facet_health_writer_sin_db(monkeypatch):
+    """Correccion ronda 1: el endpoint GET /api/health quedaba modificado
+    sin ningun test que corra en CI (el unico que lo tocaba, test_health.py,
+    usa el fixture `client` y se saltea bajo JAX_CI_NO_DB=1 -- CI real corre
+    justamente en ese modo, backend-tests-no-db). Este test llama la
+    funcion de ruta directo, sin `client` y sin MariaDB: parchea
+    engine_state y ws_hub con dobles minimos, nunca abre un pool real."""
+    facet_health.reset_write_failures()
+
+    class _FakeState:
+        las_manos_alive = True
+        connected_users = {"u1": object()}
+        active_pipelines = {}
+
+    class _FakeEngineState:
+        def get_state(self):
+            return _FakeState()
+
+    class _FakeWsHub:
+        async def connected_user_ids(self):
+            return ["u1"]
+
+    monkeypatch.setattr(health_module, "engine_state", _FakeEngineState())
+    monkeypatch.setattr(health_module, "ws_hub", _FakeWsHub())
+
+    import asyncio
+    body = asyncio.run(health_module.health())
+
+    assert body["facet_health_writer"] == facet_health.write_failure_stats()
+    assert "write_failures" in body["facet_health_writer"]
+    assert "last_error" in body["facet_health_writer"]
+    for key in (
+        "service", "status", "las_manos",
+        "connected_users", "ws_connected_users", "active_pipelines",
+    ):
+        assert key in body
