@@ -22,11 +22,17 @@ import pytest
 
 from api.chat import (
     ModelDispatchConfigError,
-    _MAX_OUTPUT_TOKENS,
     _call_openai_compat,
     _max_tokens_field,
 )
 from db.migrations import _MODEL_MAX_TOKENS_PARAM_SEED, _seed_model_max_tokens_param
+
+# El VALOR del limite dejo de ser la constante _MAX_OUTPUT_TOKENS de api/chat.py
+# (2026-08-27, segunda mitad del incidente: gpt-5.6-terra tambien rechazo el
+# valor, no solo el nombre — ver tests/test_model_max_output_tokens.py). Esta
+# suite es sobre el NOMBRE del parametro, asi que el valor pasa a ser un fixture
+# local cualquiera: lo unico que se afirma aca es bajo QUE CLAVE viaja.
+_LIMITE_DE_PRUEBA = 131072
 
 
 # --------------------------------------------------------------------------
@@ -99,7 +105,7 @@ def _dispatch(client, max_tokens_param):
     try:
         client.portal.call(
             _call_openai_compat, "https://api.example.com/v1", "sk-fake", "modelo-x",
-            "system", [], "hola", max_tokens_param, None,
+            "system", [], "hola", max_tokens_param, _LIMITE_DE_PRUEBA, None,
         )
     finally:
         http_client._client = original
@@ -109,7 +115,7 @@ def _dispatch(client, max_tokens_param):
 def test_dispatch_sends_max_completion_tokens_and_not_max_tokens(client):
     fake = _dispatch(client, "max_completion_tokens")
     body = fake.calls[0][1]["json"]
-    assert body["max_completion_tokens"] == _MAX_OUTPUT_TOKENS
+    assert body["max_completion_tokens"] == _LIMITE_DE_PRUEBA
     assert "max_tokens" not in body, (
         "mandar tambien el nombre viejo reproduce el HTTP 400 que tumbo a thot"
     )
@@ -118,7 +124,7 @@ def test_dispatch_sends_max_completion_tokens_and_not_max_tokens(client):
 def test_dispatch_sends_max_tokens_for_models_that_still_require_it(client):
     fake = _dispatch(client, "max_tokens")
     body = fake.calls[0][1]["json"]
-    assert body["max_tokens"] == _MAX_OUTPUT_TOKENS
+    assert body["max_tokens"] == _LIMITE_DE_PRUEBA
     assert "max_completion_tokens" not in body
 
 
@@ -133,7 +139,8 @@ def test_dispatch_with_null_never_reaches_the_provider(client):
         with pytest.raises(ModelDispatchConfigError):
             client.portal.call(
                 _call_openai_compat, "https://api.example.com/v1", "sk-fake",
-                "modelo-sin-sembrar", "system", [], "hola", None, None,
+                "modelo-sin-sembrar", "system", [], "hola", None,
+                _LIMITE_DE_PRUEBA, None,
             )
     finally:
         http_client._client = original

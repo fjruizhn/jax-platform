@@ -35,7 +35,7 @@ def test_call_openai_compat_devuelve_tokens_reales(client):
     try:
         text, tokens_in, tokens_out = client.portal.call(
             _call_openai_compat, "https://api.example.com/v1", "sk-fake", "modelo-x",
-            "system", [], "hola", "max_tokens", None,
+            "system", [], "hola", "max_tokens", 131072, None,
         )
     finally:
         http_client._client = original

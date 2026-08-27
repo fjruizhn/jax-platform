@@ -297,6 +297,14 @@ CREATE TABLE IF NOT EXISTS model (
   -- proposito (sin DEFAULT): ver _seed_model_max_tokens_param() y el comentario
   -- de _COLUMNS mas abajo.
   max_tokens_param ENUM('max_tokens','max_completion_tokens') NULL,
+  -- max_output_tokens: cuantos tokens de SALIDA acepta como maximo la API de
+  -- ESTE modelo. Par del campo de arriba: max_tokens_param dice COMO se llama
+  -- el parametro, max_output_tokens dice QUE VALOR admite. Hecho distinto de
+  -- context_window (que es la ventana TOTAL, entrada+salida): gpt-5.6-terra
+  -- tiene context_window=1050000 y un tope de completion de 128000, asi que el
+  -- segundo NO se deriva del primero. NULL a proposito (sin DEFAULT): ver
+  -- _seed_model_max_output_tokens() y el comentario de _COLUMNS mas abajo.
+  max_output_tokens INT NULL,
   input_modalities SET('text','image','audio','video') NOT NULL DEFAULT 'text',
   price_input_per_1m_usd DECIMAL(10,4) NULL,
   price_output_per_1m_usd DECIMAL(10,4) NULL,
@@ -1052,6 +1060,31 @@ _COLUMNS = [
     # tenido lector nunca.
     ("model", "max_tokens_param",
      "ALTER TABLE model ADD COLUMN max_tokens_param ENUM('max_tokens','max_completion_tokens') NULL"),
+    # 2026-08-27, segunda mitad del mismo incidente: arreglado el NOMBRE del
+    # parametro, la API de gpt-5.6-terra rechazo el VALOR --
+    # HTTP 400 "max_tokens is too large: 131072. This model supports at most
+    # 128000 completion tokens, whereas you provided 131072". _call_openai_compat
+    # mandaba 131072 fijo (constante _MAX_OUTPUT_TOKENS), que era universal
+    # mientras todos los modelos del camino openai-compat lo aceptaran; dejo de
+    # serlo. Es la misma clase de hecho que max_tokens_param: una propiedad
+    # estable POR MODELO, no una constante del despachador.
+    #
+    # NO se deriva de context_window (verificado contra la DB en vivo, no
+    # supuesto): gpt-5.6-terra tiene context_window=1050000 -- la ventana TOTAL,
+    # entrada+salida -- contra un tope de COMPLETION de 128000. Son dos hechos
+    # distintos y el segundo no existia en el catalogo hasta esta columna.
+    #
+    # NULL, sin DEFAULT, es la misma decision deliberada de max_tokens_param: un
+    # modelo sin valor FALLA RUIDOSO en el dispatch
+    # (api/chat.py::_max_output_tokens_value) en vez de asumir. Un default de
+    # 131072 volveria a romper en silencio contra el proximo modelo con tope mas
+    # bajo; uno "conservador" (ej. 4096) truncaria respuestas de modelos de
+    # razonamiento sin que nadie se entere, que es el bug que la constante
+    # explicita existia para prevenir (017ba2f). Nace con lector
+    # (_max_output_tokens_value, via facet_resolver.ResolvedFacet.max_output_tokens)
+    # y con test (tests/test_model_max_output_tokens.py).
+    ("model", "max_output_tokens",
+     "ALTER TABLE model ADD COLUMN max_output_tokens INT NULL"),
     ("model", "digest", "ALTER TABLE model ADD COLUMN digest VARCHAR(80) NULL"),
     ("model", "digest_changed_at", "ALTER TABLE model ADD COLUMN digest_changed_at DATETIME NULL"),
     # T2 (2026-08-19, jax/las_manos/motor_registry/worker.py): "disable
@@ -1307,6 +1340,50 @@ async def _seed_model_max_tokens_param(cur) -> None:
         )
 
 
+# (provider_id, model_id, max_output_tokens) — mismos 4 modelos del camino
+# openai-compat que _MODEL_MAX_TOKENS_PARAM_SEED, con el tope de tokens de
+# SALIDA que cada API acepta:
+#   - gpt-5.6-terra (thot, provider openai) -> 128000. Lo dijo la propia API en
+#     el HTTP 400 del incidente: "max_tokens is too large: 131072. This model
+#     supports at most 128000 completion tokens, whereas you provided 131072".
+#     No es una estimacion nuestra ni se derivo de context_window (que para este
+#     modelo es 1050000, la ventana TOTAL — otro hecho).
+#   - deepseek-v4-flash (jekyll), glm-5.3 (ada), kimi-k3 -> 131072.
+# Los ultimos tres van con 131072 A PROPOSITO: es exactamente el valor que el
+# codigo mandaba fijo (_MAX_OUTPUT_TOKENS) y con el que funcionan hoy en
+# produccion, asi que sembrarlo es cambio de comportamiento CERO para jekyll y
+# ada. Sembrar solo el de thot los tumbaria: NULL -> fallo ruidoso.
+_MODEL_MAX_OUTPUT_TOKENS_SEED = [
+    ("openai",   "gpt-5.6-terra",      128000),
+    ("deepseek", "deepseek-v4-flash",  131072),
+    ("zhipu",    "glm-5.3",            131072),
+    ("moonshot", "kimi-k3",            131072),
+]
+
+
+async def _seed_model_max_output_tokens(cur) -> None:
+    """Siembra model.max_output_tokens para los modelos cuyo tope esta
+    verificado (ver _MODEL_MAX_OUTPUT_TOKENS_SEED).
+
+    Deliberadamente NO siembra el resto del catalogo, ni lo deriva de
+    context_window: la ventana total y el tope de completion son hechos
+    distintos (gpt-5.6-terra: 1050000 vs 128000), y derivar uno del otro es
+    exactamente la suposicion que esta columna existe para eliminar. Un modelo
+    fuera de esta lista queda NULL y hace fallar el dispatch con un mensaje que
+    dice que fila sembrar (api/chat.py::_max_output_tokens_value) — ruidoso por
+    diseno.
+
+    Guard WHERE max_output_tokens IS NULL: idempotente y no pisa un valor puesto
+    a mano si un operador ya sembro algo distinto (mismo patron que
+    _seed_model_max_tokens_param / _seed_http_facet_allowed_callers)."""
+    for provider_id, model_id, limit in _MODEL_MAX_OUTPUT_TOKENS_SEED:
+        await cur.execute(
+            "UPDATE model SET max_output_tokens = %s "
+            "WHERE provider_id = %s AND model_id = %s AND max_output_tokens IS NULL",
+            (limit, provider_id, model_id),
+        )
+
+
 async def _seed_http_facet_allowed_callers(cur) -> None:
     """Gobernanza de _HTTP_FACETS (docs/superpowers/specs/2026-08-27-
     http-facets-motor-policy-governance-design.md): hipatia/jekyll/thot/
@@ -1363,5 +1440,6 @@ async def run_migrations():
             # Despues de _seed_models_and_backfill: las filas de `model` tienen
             # que existir para poder actualizarlas.
             await _seed_model_max_tokens_param(cur)
+            await _seed_model_max_output_tokens(cur)
 
         await conn.commit()
