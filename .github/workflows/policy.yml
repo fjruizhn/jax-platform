@@ -112,7 +112,10 @@ jobs:
       JAX_JWT_SECRET: ci-dummy-not-a-real-secret
       JAX_CI_NO_DB: "1"
       # Piso de cobertura. Si baja de acá, el job falla (ver el paso final).
-      JAX_CI_MIN_PASSED: "85"
+      # Subido de 85 a 93 en Task 4 (sonda activa de facets, 2026-08-27):
+      # backend/tests/test_facet_canary.py agrega 8 tests sin DB, medido
+      # con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q antes/después.
+      JAX_CI_MIN_PASSED: "93"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
