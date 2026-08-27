@@ -233,6 +233,7 @@ CREATE TABLE IF NOT EXISTS facet (
   max_latency_ms INT NULL,
   max_cost_per_1k_usd DECIMAL(10,6) NULL,
   auto_selectable BOOLEAN NOT NULL DEFAULT TRUE,
+  allowed_callers LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (allowed_callers IS NULL OR json_valid(allowed_callers)),
   status ENUM('active','degraded','disabled') NOT NULL DEFAULT 'active',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -341,6 +342,10 @@ CREATE_CAPABILITY = """
 CREATE TABLE IF NOT EXISTS capability (
   `key` VARCHAR(50) NOT NULL PRIMARY KEY,
   risk_level ENUM('low','medium','high') NOT NULL,
+  -- VESTIGIAL (verificado 2026-08-27, ver DEUDA.md): ningun lector en el
+  -- codigo real compara este valor contra nada. El sandbox_only que SI se
+  -- enforce es motor.sandbox_only (columna distinta, tabla motor). No
+  -- confiar en este valor -- pendiente decidir lector real o drop.
   sandbox_only BOOLEAN NOT NULL DEFAULT TRUE,
   requires_human_gate BOOLEAN NOT NULL DEFAULT FALSE,
   max_execution_minutes INT NOT NULL,
@@ -940,6 +945,13 @@ _COLUMNS = [
     # todavia para ese provider (ollama/anthropic).
     ("provider", "api_key_transport", "ALTER TABLE provider ADD COLUMN api_key_transport ENUM('header_bearer','query_param') NOT NULL DEFAULT 'header_bearer'"),
     ("provider", "models_list_url", "ALTER TABLE provider ADD COLUMN models_list_url VARCHAR(255) NULL"),
+    # Gobernanza de _HTTP_FACETS (docs/superpowers/specs/2026-08-27-
+    # http-facets-motor-policy-governance-design.md): hipatia/jekyll/thot/ada
+    # quedan con allowed_callers poblado, kimi/jax_local/hyde quedan NULL.
+    # Consumida por check_facet_admission() (repo jax, Task 4).
+    ("facet", "allowed_callers",
+     "ALTER TABLE facet ADD COLUMN allowed_callers LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL "
+     "CHECK (allowed_callers IS NULL OR json_valid(allowed_callers))"),
     # Bloque D (D1.1) — FK real contra `model`; `model_id` (texto libre,
     # Bloque C) se conserva de solo-lectura durante el cutover, no se dropea
     # en esta corrida.
@@ -1170,6 +1182,24 @@ async def _eliminate_motor_model_ref_denormalization(cur) -> None:
     """)
 
 
+async def _seed_http_facet_allowed_callers(cur) -> None:
+    """Gobernanza de _HTTP_FACETS (docs/superpowers/specs/2026-08-27-
+    http-facets-motor-policy-governance-design.md): hipatia/jekyll/thot/
+    ada quedan con allowed_callers=["jacobs","jax_platform_chat"] --
+    mismo acceso que ya existia informalmente (ninguno de los dos estaba
+    bloqueado antes de esta ronda), ahora explicito. kimi/jax_local/hyde
+    quedan NULL a proposito -- fuera de alcance esta ronda, fail-closed
+    por diseno (ver facet_policy.py::check_facet_admission en el repo jax).
+
+    Guard WHERE allowed_callers IS NULL: no pisa un valor manual futuro
+    si alguien ya lo configuro distinto."""
+    await cur.execute(
+        "UPDATE facet SET allowed_callers = %s "
+        "WHERE `key` IN ('hipatia','jekyll','thot','ada') AND allowed_callers IS NULL",
+        (json.dumps(["jacobs", "jax_platform_chat"]),),
+    )
+
+
 async def run_migrations():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1204,5 +1234,6 @@ async def run_migrations():
             await _seed_file_tools_capabilities(cur)
             await _fix_file_write_gate_and_auditor(cur)
             await _eliminate_motor_model_ref_denormalization(cur)
+            await _seed_http_facet_allowed_callers(cur)
 
         await conn.commit()
