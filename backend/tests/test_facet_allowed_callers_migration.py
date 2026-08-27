@@ -26,22 +26,27 @@ async def test_seed_sets_allowed_callers_for_the_4_http_facets():
 @pytest.mark.asyncio
 async def test_seed_does_not_overwrite_manual_value():
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE facet SET allowed_callers = %s WHERE `key` = 'hipatia'",
-                (json.dumps(["solo_jacobs"]),),
-            )
-            await conn.commit()
+    try:
+        # Set hipatia to a different value to test idempotent guard
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE facet SET allowed_callers = %s WHERE `key` = 'hipatia'",
+                    (json.dumps(["solo_jacobs"]),),
+                )
 
-    # Run the seed in a new connection to ensure isolation
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await _seed_http_facet_allowed_callers(cur)
-            await cur.execute("SELECT allowed_callers FROM facet WHERE `key` = 'hipatia'")
-            (val,) = await cur.fetchone()
-            assert json.loads(val) == ["solo_jacobs"]
-            await conn.commit()
+        # Run the seed in a new connection to ensure isolation
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await _seed_http_facet_allowed_callers(cur)
+                await cur.execute("SELECT allowed_callers FROM facet WHERE `key` = 'hipatia'")
+                (val,) = await cur.fetchone()
+                assert json.loads(val) == ["solo_jacobs"]
+    finally:
+        # Cleanup: restore hipatia to NULL to prevent test pollution
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("UPDATE facet SET allowed_callers = NULL WHERE `key` = 'hipatia'")
 
 
 @pytest.mark.asyncio
@@ -55,4 +60,3 @@ async def test_seed_leaves_out_of_scope_facets_null():
             )
             for (val,) in await cur.fetchall():
                 assert val is None
-            await conn.commit()
