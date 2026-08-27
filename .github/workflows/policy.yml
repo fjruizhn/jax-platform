@@ -6,19 +6,55 @@ name: policy
 # Copia de jax/.github/workflows/policy.yml (ronda 4, 2026-08-20, T3).
 # jax-platform y jax son repos GitHub privados separados -- un checkout
 # cruzado en un solo job requeriría un PAT/secret nuevo, decisión de
-# infraestructura no tomada esta sesión. Cada repo corre su PROPIA copia
+# infraestructura no tomada esa sesión. Cada repo corre su PROPIA copia
 # del scanner (backend/tests/test_no_fail_open_except.py) contra su propio
 # árbol -- cobertura real por repo, sin credenciales compartidas.
 #
 # Corrida manual el 2026-08-20 contra este árbol: 88 archivos .py
 # escaneados, 0 violaciones (verificado, no supuesto -- ver CONTEXT.md
 # de jax).
+#
+# ---------------------------------------------------------------------------
+# QUÉ CUBRE Y QUÉ NO CUBRE ESTE CI (2026-08-27) -- leer antes de confiar en el
+# check verde. Escrito con la misma honestidad que el de jax, que declara su
+# alcance real en vez de dejarlo implícito.
+#
+# CUBRE:
+#   - no-fail-open-except: el scanner P10 sobre el árbol de ESTE repo.
+#   - backend-tests-no-db: los 70 tests del backend que NO necesitan MariaDB.
+#     Medido, no supuesto (ver más abajo).
+#
+# NO CUBRE -- y esto es la parte importante:
+#   - Los 151 tests que SÍ necesitan MariaDB. En el runner no hay DB, así que
+#     se saltan. Son ~68% de la suite: todo lo que pasa por el fixture
+#     `client` (endpoints admin, motores, pipelines, shadow validation,
+#     migraciones, seed, usage/pricing...). Se saltan con motivo visible y
+#     `-rs` los lista uno por uno en el log: nadie puede leer "verde" acá
+#     creyendo que corrió la suite entera.
+#   - El frontend. No hay ningún job de frontend en este repo todavía.
+#   - Cualquier cosa que dependa de credenciales reales (/etc/jax/.env no
+#     existe en el runner; el job inyecta un JAX_JWT_SECRET dummy).
+# ---------------------------------------------------------------------------
 
 on:
   push:
-    branches: [master]
+    branches: ["**"]
   pull_request:
-    branches: [master]
+    branches: ["**"]
+    types: [opened, synchronize, reopened, edited]
+
+# Portado de jax (ronda de pago de deuda 2026-08-25): `branches: [master]`
+# dejaba a CUALQUIER PR de una cadena apilada (rama cuya base NO es master)
+# sin CI -- descubierto en vivo con PR jax#27 (0 runs hasta retargetear a
+# master a mano). `branches: ["**"]` cubre cualquier base, no solo master.
+# `types` agrega `edited` porque GitHub NO dispara pull_request con los tipos
+# default (opened/synchronize/reopened) cuando se retarget-ea un PR existente
+# -- sin esto, el propio retarget que resuelve el problema de arriba tampoco
+# dispara una corrida sola.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   no-fail-open-except:
@@ -33,3 +69,97 @@ jobs:
           python-version: "3.12"
       - run: pip install pytest
       - run: python -m pytest tests/test_no_fail_open_except.py -v
+
+  # --------------------------------------------------------------------------
+  # Suite del backend, modo "sin base de datos".
+  #
+  # POR QUÉ ASÍ (medido el 2026-08-27 contra master 6800a32, no supuesto):
+  #
+  #   - Suite tal cual, CON MariaDB local:  12 failed / 208 passed / 1 error.
+  #     Ese número NO es estable: la misma corrida sobre el mismo árbol dio 10
+  #     y más tarde 12, porque la suite comparte una DB mutable (jax_memory_test)
+  #     y arrastra estado entre corridas. Causa raíz conocida y fuera de alcance:
+  #     un pool de aiomysql reusado entre event loops distintos.
+  #   - Suite tal cual, SIN MariaDB (lo que pasaría en el runner):
+  #     3 failed / 61 passed / 138 errors. Inservible como señal.
+  #   - Los 138 errores salen de UN solo punto: el fixture `client`, que levanta
+  #     el lifespan de la app y ahí abre el pool. Los otros 3 llegan al pool
+  #     directo. Dos caminos, un mismo hecho: "este test necesita la DB".
+  #
+  # Por eso el modo JAX_CI_NO_DB=1 (implementado en backend/tests/conftest.py)
+  # NO es una lista de tests deseleccionados a mano -- eso institucionalizaría
+  # "la suite siempre está un poco roja, ignorala". Son dos reglas
+  # ESTRUCTURALES que se mantienen solas: un test nuevo que no toca la DB queda
+  # cubierto por CI automáticamente, sin que nadie lo agregue a ninguna lista.
+  #
+  # Resultado verificado, determinista en 7 corridas: 70 passed / 151 skipped /
+  # 0 failed / 0 errors -- idéntico con la DB apagada y con la DB encendida, o
+  # sea que el estado de la DB no puede cambiar el veredicto de este job.
+  #
+  # Verificado además que NO miente: quitando a mano el guard `uuid.UUID(task_id)`
+  # de api/command.py (el que frena el path traversal), este job se pone en rojo
+  # con 1 failed. Detecta regresión real, no es un no-op como lo fue el scanner
+  # P10 en jax hasta la ronda 4.
+  backend-tests-no-db:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      # Sin esto la suite NO COLECTA: auth/jwt.py falla cerrado en import time
+      # (28 errores de colección). Valor dummy a propósito -- este job no toca
+      # nada real y no debe necesitar ningún secret del repo.
+      JAX_JWT_SECRET: ci-dummy-not-a-real-secret
+      JAX_CI_NO_DB: "1"
+      # Piso de cobertura. Si baja de acá, el job falla (ver el paso final).
+      JAX_CI_MIN_PASSED: "70"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # 3.14 = la versión real de backend/.venv, que es la que corre en
+          # producción (systemd jax-platform arranca backend/.venv/bin/uvicorn).
+          # Es también la única sobre la que se verificó esta suite.
+          python-version: "3.14"
+      - name: Instalar dependencias
+        # pytest-asyncio NO está en requirements.txt aunque pytest.ini lo
+        # necesita (asyncio_mode = auto). Se instala explícito acá; declararlo
+        # en un requirements-dev.txt queda como deuda anotada.
+        run: pip install -r requirements.txt pytest pytest-asyncio
+
+      - name: Suite backend (sin DB) -- -rs lista cada skip con su motivo
+        run: python -m pytest -v -rs --junitxml=junit.xml
+
+      - name: Piso de cobertura -- que "verde" nunca signifique "no corrió nada"
+        # El scanner P10 de jax estuvo verde meses reportando "1 passed" sobre
+        # CERO archivos escaneados. Este paso existe para que eso no se pueda
+        # repetir acá: si el conftest se rompe y todo termina saltado, o si
+        # alguien convierte tests sin DB en tests con DB, el número de passed
+        # baja y el job se pone en rojo en vez de mentir en verde.
+        run: |
+          python - <<'PY'
+          import os, sys, xml.etree.ElementTree as ET
+
+          root = ET.parse("junit.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else list(root)
+          total = sum(int(s.get("tests", 0)) for s in suites)
+          fail = sum(int(s.get("failures", 0)) for s in suites)
+          err = sum(int(s.get("errors", 0)) for s in suites)
+          skip = sum(int(s.get("skipped", 0)) for s in suites)
+          passed = total - fail - err - skip
+          floor = int(os.environ["JAX_CI_MIN_PASSED"])
+
+          print(f"colectados={total} passed={passed} skipped={skip} "
+                f"failed={fail} errors={err} piso={floor}")
+          print(f"{skip} tests saltados porque requieren MariaDB "
+                f"(no hay DB en este runner) -- ver la lista '-rs' de arriba.")
+
+          if passed < floor:
+              sys.exit(
+                  f"PISO ROTO: {passed} passed < {floor} esperados. "
+                  "O se rompió el modo sin-DB, o tests que antes no "
+                  "necesitaban la DB ahora la necesitan. Verificar antes "
+                  "de bajar JAX_CI_MIN_PASSED."
+              )
+          print("OK: piso de cobertura respetado.")
+          PY
