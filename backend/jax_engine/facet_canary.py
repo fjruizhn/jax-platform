@@ -19,7 +19,9 @@ from facet_health import (
     record_facet_health,
     OUTCOME_PROBE_ERROR,
     SOURCE_CANARY_PERIODIC,
+    SOURCE_CANARY_REBIND,
 )
+from facet_resolver import invalidate_facet_cache
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,30 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
 async def probe_all(source: str = SOURCE_CANARY_PERIODIC) -> list[str | None]:
     config = _load_config()
     return [await probe_facet(f, config, source) for f in canary_facets(config)]
+
+
+async def probe_after_rebind(facet_key: str) -> str | None:
+    """Sonda disparada por un cambio de binding.
+
+    Se encola con BackgroundTasks DESPUES del conn.commit() del escritor:
+    FastAPI corre las background tasks despues de emitir la respuesta, asi
+    que "primero aprobado, despues sondeado" queda garantizado por
+    construccion, no por convencion.
+
+    ANTES de sondear, no despues: invalida la entrada cacheada del facet.
+    resolve_facet() cachea por FACET_CACHE_TTL_SECONDS (30s default) y
+    ningun escritor de facet_binding invalidaba esa cache -- esta sonda
+    dispara DENTRO de esa ventana, justo despues de aprobar. Sin este
+    invalidate, resolveria el modelo VIEJO, lo llamaria, recibiria 200 y
+    reportaria `ok` sobre el rebinding que la sonda existe para vigilar
+    -- el escenario del 2026-08-24, reproducido por la herramienta que
+    viene a cerrarlo.
+
+    Su resultado se alerta en el barrido siguiente del reaper (<=300s), no
+    en la corrida horaria: por eso el lector evalua en CADA barrido."""
+    invalidate_facet_cache(facet_key)
+    config = _load_config()
+    return await probe_facet(facet_key, config, SOURCE_CANARY_REBIND)
 
 
 async def start_facet_canary() -> None:

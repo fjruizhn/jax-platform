@@ -90,6 +90,18 @@ class _CacheEntry:
 _cache: dict[str, _CacheEntry] = {}
 
 
+def invalidate_facet_cache(facet_key: str) -> bool:
+    """Borra la entrada cacheada de un facet. Devuelve True si habia algo.
+
+    Existe porque `_cache` tiene TTL de 30s y NINGUN escritor de
+    facet_binding la invalidaba: durante esos 30s post-aprobacion,
+    resolve_facet() sigue devolviendo el modelo VIEJO. Para un turno de
+    chat es un retardo tolerable; para la sonda por rebinding -- que
+    dispara dentro de esa misma ventana -- significa validar el binding
+    anterior y reportar `ok` sobre el nuevo sin haberlo tocado."""
+    return _cache.pop(facet_key, None) is not None
+
+
 async def _db_conn() -> aiomysql.Connection:
     return await aiomysql.connect(
         host=os.getenv("JAX_DB_HOST", "localhost"),

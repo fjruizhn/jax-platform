@@ -121,7 +121,12 @@ jobs:
       # Subido de 96 a 97 en la Ronda de corrección 2 de Task 4 (mismo día):
       # 1 test nuevo (default de `source` en _invoke_facet pertenece a
       # facet_health.SOURCES, hallazgo 6).
-      JAX_CI_MIN_PASSED: "97"
+      # Subido de 97 a 100 en Task 5 (sonda por rebinding, 2026-08-27):
+      # backend/tests/test_facet_canary_rebind.py agrega 3 tests sin DB,
+      # medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q antes/después
+      # (97 passed / 151 skipped -> 100 passed / 151 skipped, skip count sin
+      # cambios).
+      JAX_CI_MIN_PASSED: "100"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
