@@ -33,6 +33,7 @@ from facet_health import (
     OUTCOME_GATE_UNREACHABLE,
     OUTCOME_UNBOUND,
     OUTCOME_UNSUPPORTED_TRANSPORT,
+    SOURCE_CHAT,
 )
 
 router = APIRouter(prefix="/api")
@@ -892,7 +893,7 @@ async def _invoke_facet_dispatch(
 async def _invoke_facet(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
-    *, source: str = "chat",
+    *, source: str = SOURCE_CHAT,
 ) -> tuple[str, UsageInfo | None]:
     """Envoltorio instrumentado. La particion existe para que el
     `outcome` sea un literal tipado en cada punto de retorno de

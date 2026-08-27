@@ -5,6 +5,7 @@ _invoke_facet esta parcheado en todos. Ver "Riesgo de costo" en el plan
 -- el 2026-08-24, correr pytest disparo 11 dispatches reales a produccion
 por un archivo con codigo a nivel de modulo y nombre descubrible."""
 import asyncio
+import inspect
 import logging
 import pytest
 from jax_engine import facet_canary
@@ -145,6 +146,27 @@ def test_source_constants_pertenecen_a_SOURCES_con_literales(monkeypatch):
     assert fh.SOURCE_CANARY_REBIND == "canary_rebind"
     assert fh.SOURCES == {"chat", "canary_periodic", "canary_rebind"}
     assert facet_canary.SOURCE_CANARY_PERIODIC in fh.SOURCES
+
+
+def test_invoke_facet_default_source_pertenece_a_SOURCES():
+    """Hallazgo 6, ronda de corrección 2: `_invoke_facet` (api/chat.py)
+    tenía `source: str = "chat"` como literal suelto, sin atar al
+    `SOURCE_CHAT` de facet_health.py -- mismo problema que el hallazgo 3,
+    un escalón más grave: si `SOURCE_CHAT` divergiera del default de
+    chat.py, `record_facet_health` lanzaría `ValueError` FUERA del `try`
+    del envoltorio (ver líneas 907-924 de api/chat.py), así que sube al
+    endpoint como HTTP 502 en CADA turno de chat real -- con el LLM ya
+    generado y pagado, y sin fila en axioma_usage. El hallazgo 3 solo
+    abortaba un barrido de la sonda; este rompe el chat real.
+
+    inspect.signature() lee el default REAL en runtime (no una copia a
+    mano del valor esperado), y la aserción usa el literal "chat" (mismo
+    criterio del hallazgo 1: literal en la aserción, no la constante)."""
+    import facet_health as fh
+    sig = inspect.signature(chat_mod._invoke_facet)
+    default_source = sig.parameters["source"].default
+    assert default_source == "chat"
+    assert default_source in fh.SOURCES
 
 
 def test_probe_facet_registra_probe_error_si_falla_antes_de_invocar(monkeypatch):

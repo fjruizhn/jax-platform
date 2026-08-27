@@ -118,7 +118,10 @@ jobs:
       # Subido de 93 a 96 en la Ronda de corrección 1 de Task 4 (mismo día):
       # 3 tests nuevos (pin de unsupported_transport, pertenencia de
       # SOURCE_* a SOURCES, kill switch CANARY_INTERVAL_SECONDS<=0).
-      JAX_CI_MIN_PASSED: "96"
+      # Subido de 96 a 97 en la Ronda de corrección 2 de Task 4 (mismo día):
+      # 1 test nuevo (default de `source` en _invoke_facet pertenece a
+      # facet_health.SOURCES, hallazgo 6).
+      JAX_CI_MIN_PASSED: "97"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
