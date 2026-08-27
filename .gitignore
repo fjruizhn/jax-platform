@@ -27,3 +27,6 @@ bitacoras/
 *.backup-*
 *.bak
 *.bak.*
+
+# Reporte JUnit que genera el job backend-tests-no-db (CI y corridas locales)
+junit.xml
