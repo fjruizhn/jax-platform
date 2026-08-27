@@ -24,6 +24,7 @@ from jax_engine.events import event_bus
 from jax_engine.state import engine_state, LAS_MANOS_URL
 from api.admin.usage import record_usage
 from db.connection import get_pool
+from facet_health import record_facet_health
 
 router = APIRouter(prefix="/api")
 
@@ -778,10 +779,10 @@ async def _record_resolved_version_from_response(facet_key: str, data: dict) -> 
         logger.warning(f"resolved_version capture failed facet={facet_key} reason={type(e).__name__}")
 
 
-async def _invoke_facet(
+async def _invoke_facet_dispatch(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
-) -> tuple[str, UsageInfo | None]:
+) -> tuple[str, UsageInfo | None, str]:
     history = _conversations.get(user_id, [])
     if semantic_context:
         # Contexto de sesiones pasadas SOLO para este turno (no entra al hilo RAM).
@@ -797,13 +798,14 @@ async def _invoke_facet(
     try:
         f = await resolve_facet(facet)
     except FacetUnavailableError:
-        return f"⚠️ {facet} no está disponible: sin binding activo configurado.", None
+        return f"⚠️ {facet} no está disponible: sin binding activo configurado.", None, "unbound"
 
     # El gate va DESPUÉS de resolve_facet() a propósito: es ahí donde
     # `f.transport` existe, y el transporte es lo mismo que decide el
     # dispatch real unas líneas más abajo -- una sola fuente de verdad.
     if f.transport in _GOVERNED_TRANSPORTS:
         allowed = False
+        gate_outcome = "gate_denied"      # las_manos respondió "no"
         try:
             hc = await get_http_client()
             resp = await hc.post(
@@ -829,15 +831,16 @@ async def _invoke_facet(
             # arriba: "las_manos no respondió" no es lo mismo que "las_manos
             # respondió que no", y un operador necesita distinguirlos.
             allowed = False
+            gate_outcome = "gate_unreachable"   # las_manos no respondió
             logger.warning(
                 f"authorize-facet unreachable facet={facet} caller={_JAX_PLATFORM_CHAT_CALLER} "
                 f"error={type(e).__name__}: {e} -- denegado fail-closed"
             )
         if not allowed:
-            return f"⚠️ {facet} no está disponible: acceso no autorizado.", None
+            return f"⚠️ {facet} no está disponible: acceso no autorizado.", None, gate_outcome
 
     if _is_model_identity_question(message):
-        return _model_identity_reply(f.model, facet), None
+        return _model_identity_reply(f.model, facet), None, "ok"
 
     if f.transport == "ollama":
         if facet == "jax_local":
@@ -851,14 +854,14 @@ async def _invoke_facet(
             text, tin, tout = await _call_ollama(system_prompt + ident, history, message, config, f.model)
         else:
             text, tin, tout = await _call_ollama(system_prompt, history, message, config, f.model)
-        return text, UsageInfo(f.provider_id, f.model, tin, tout)
+        return text, UsageInfo(f.provider_id, f.model, tin, tout), "ok"
 
     async def _on_response(data: dict) -> None:
         await _record_resolved_version_from_response(facet, data)
 
     if f.transport == "http_gemini":
         text, tin, tout = await _call_gemini(f.credential, f.model, system_prompt, history, message, on_response=_on_response)
-        return text, UsageInfo(f.provider_id, f.model, tin, tout)
+        return text, UsageInfo(f.provider_id, f.model, tin, tout), "ok"
 
     if f.transport == "http_openai_compat":
         # f.max_tokens_param y f.max_output_tokens vienen de la MISMA fila de
@@ -872,9 +875,35 @@ async def _invoke_facet(
             f.base_url, f.credential, f.model, system_prompt, history, message,
             f.max_tokens_param, f.max_output_tokens, on_response=_on_response,
         )
-        return text, UsageInfo(f.provider_id, f.model, tin, tout)
+        return text, UsageInfo(f.provider_id, f.model, tin, tout), "ok"
 
-    return f"⚠️ {facet} no está disponible: transporte '{f.transport}' no soportado en la Mesa web.", None
+    return f"⚠️ {facet} no está disponible: transporte '{f.transport}' no soportado en la Mesa web.", None, "unsupported_transport"
+
+
+async def _invoke_facet(
+    facet: str, config: dict, user_id: str, message: str,
+    semantic_context: list[dict] | None = None,
+    *, source: str = "chat",
+) -> tuple[str, UsageInfo | None]:
+    """Envoltorio instrumentado. La particion existe para que el
+    `outcome` sea un literal tipado en cada punto de retorno de
+    _invoke_facet_dispatch, en vez de deducirse del texto de la respuesta.
+
+    La firma publica es la de antes mas `source` keyword-only con default:
+    los llamadores y tests existentes no cambian.
+
+    Instrumentado ACA y no en un envoltorio que el llamador tenga que
+    acordarse de usar: asi el chat real y la sonda quedan cubiertos por
+    construccion, sin una segunda ruta que pueda divergir."""
+    try:
+        texto, usage, outcome = await _invoke_facet_dispatch(
+            facet, config, user_id, message, semantic_context)
+    except Exception as e:
+        await record_facet_health(
+            facet, "provider_error", source, f"{type(e).__name__}: {e}")
+        raise            # SIEMPRE re-lanza: no puede volverse fail-open
+    await record_facet_health(facet, outcome, source)
+    return texto, usage
 
 
 def _update_history(user_id: str, user_msg: str, assistant_msg: str):
