@@ -33,7 +33,12 @@ _MODEL_COLUMNS = (
     # (api/chat.py::_max_tokens_field falla ruidoso) — un operador tiene que
     # poder VER cual modelo del catalogo le falta el dato, no solo enterarse
     # cuando una faceta se cae.
-    "max_tokens_param"
+    # max_output_tokens (2026-08-27, segunda mitad del mismo incidente): igual
+    # que max_tokens_param, NULL es el estado que rompe el dispatch de esa fila
+    # (api/chat.py::_max_output_tokens_value falla ruidoso). Se muestra al lado
+    # del anterior a proposito: son un par (como se llama el parametro / que
+    # valor admite) y un operador tiene que poder ver los dos huecos de una.
+    "max_tokens_param, max_output_tokens"
 )
 _MODEL_FIELDS = [c.strip() for c in _MODEL_COLUMNS.split(",")]
 

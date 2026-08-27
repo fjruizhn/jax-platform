@@ -553,12 +553,15 @@ class ModelDispatchConfigError(RuntimeError):
 # ENUM) no termine armando una clave arbitraria en el JSON que va a la API.
 _MAX_TOKENS_PARAM_NAMES = ("max_tokens", "max_completion_tokens")
 
-# max_tokens explícito: sin esto, un modelo de razonamiento (reasoning_content
-# compitiendo por el mismo budget que content) puede agotarlo y cortar la
-# respuesta antes de escribirla — mismo bug ya diagnosticado y corregido en
-# motor_registry/worker.py::_call_kimi (017ba2f, 2026-08-10). Mismo valor que
-# jax/muscles/base.py usa para el mismo propósito.
-_MAX_OUTPUT_TOKENS = 131072
+# El límite de salida se manda SIEMPRE explícito: sin él, un modelo de
+# razonamiento (reasoning_content compitiendo por el mismo budget que content)
+# puede agotarlo y cortar la respuesta antes de escribirla — mismo bug ya
+# diagnosticado y corregido en motor_registry/worker.py::_call_kimi (017ba2f,
+# 2026-08-10). Lo que dejó de ser universal es el VALOR: acá vivía la constante
+# 131072 (la misma que jax/muscles/base.py) hasta que gpt-5.6-terra la rechazó
+# con HTTP 400 ("max_tokens is too large: 131072. This model supports at most
+# 128000 completion tokens"). Ahora sale de model.max_output_tokens, fila por
+# fila. Ver _max_output_tokens_value().
 
 
 def _max_tokens_field(model: str, max_tokens_param: str | None) -> str:
@@ -608,22 +611,80 @@ def _max_tokens_field(model: str, max_tokens_param: str | None) -> str:
     return max_tokens_param
 
 
+def _max_output_tokens_value(model: str, max_output_tokens: int | None) -> int:
+    """Devuelve el VALOR del límite de tokens de salida que acepta la API de
+    `model`, tal como lo declara el catálogo (`model.max_output_tokens`).
+
+    Par de _max_tokens_field(): aquel resuelve CÓMO se llama el parámetro, éste
+    QUÉ VALOR admite. Arreglado el nombre (2026-08-27), la misma API contestó
+    HTTP 400 por el valor: "max_tokens is too large: 131072. This model supports
+    at most 128000 completion tokens, whereas you provided 131072". La constante
+    131072 era universal mientras todos los modelos del camino la aceptaran;
+    dejó de serlo, y el tope es una propiedad estable POR MODELO.
+
+    NO se deriva de context_window: aquella es la ventana TOTAL (entrada+salida)
+    y ésta el tope de completion. gpt-5.6-terra tiene context_window=1050000
+    contra un tope de 128000 — verificado, no supuesto. Derivar uno del otro
+    sería inventar el dato.
+
+    NULL falla ruidoso a propósito (decisión del dueño, textual: "prefiero que
+    un modelo sin valor falle ruidoso a que asuma"). Un default de 131072
+    reproduciría este incidente contra el próximo modelo con tope más bajo; uno
+    "conservador" truncaría respuestas de modelos de razonamiento en silencio,
+    que es justo el bug que el límite explícito existe para prevenir."""
+    if max_output_tokens is None:
+        # ERROR en el log ADEMÁS de la excepción: el 502 que ve el usuario
+        # trunca a 200 chars (ver el handler del endpoint), el operador
+        # necesita el UPDATE completo.
+        logger.error(
+            f"dispatch abortado: model_id={model!r} sin max_output_tokens en la "
+            f"tabla `model`. Sembrar: UPDATE model SET "
+            f"max_output_tokens=<tope de completion del modelo> "
+            f"WHERE model_id='{model}';"
+        )
+        raise ModelDispatchConfigError(
+            f"modelo '{model}': la fila de `model` no declara max_output_tokens, "
+            f"así que no se sabe cuántos tokens de salida acepta su API y NO se "
+            f"asume ninguno. Sembrala: "
+            f"UPDATE model SET max_output_tokens=<tope de completion> "
+            f"WHERE model_id='{model}';  -- agregá AND provider_id='<provider>' "
+            f"si ese model_id existe para más de un proveedor. El tope sale de la "
+            f"doc del proveedor o del propio HTTP 400 ('This model supports at "
+            f"most N completion tokens'); NO es context_window, que es la ventana "
+            f"total entrada+salida y suele ser mucho mayor."
+        )
+    if not isinstance(max_output_tokens, int) or isinstance(max_output_tokens, bool) or max_output_tokens <= 0:
+        # Defensa en profundidad contra un valor imposible en la DB (una
+        # migración a mano, un 0 heredado de un backfill): un límite <= 0 haría
+        # que la API devuelva vacío o un 400, con un modo de falla que se
+        # confunde con un error real del proveedor.
+        raise ModelDispatchConfigError(
+            f"modelo '{model}': max_output_tokens={max_output_tokens!r} no es un "
+            f"entero positivo. Corregí la fila de `model` — no se manda un límite "
+            f"inválido a la API."
+        )
+    return max_output_tokens
+
+
 async def _call_openai_compat(
     base_url: str, api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
-    max_tokens_param: str | None,
+    max_tokens_param: str | None, max_output_tokens: int | None,
     on_response=None,
 ) -> tuple[str, int, int]:
-    # max_tokens_param NO tiene default: un llamador que lo olvide falla al
-    # llamar (TypeError), no manda un request mudo con un nombre asumido.
+    # Ninguno de los dos tiene default: un llamador que los olvide falla al
+    # llamar (TypeError), no manda un request mudo con un nombre ni un valor
+    # asumidos. Se resuelven ANTES de armar nada — un modelo sin sembrar no
+    # gasta una llamada saliente para descubrir lo que el catálogo debería decir.
     field = _max_tokens_field(model, max_tokens_param)
+    limit = _max_output_tokens_value(model, max_output_tokens)
     messages = _build_messages(system_prompt, history, message)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     client = await get_http_client()
     r = await client.post(
         f"{base_url}/chat/completions",
         headers=headers,
-        json={"model": model, "messages": messages, field: _MAX_OUTPUT_TOKENS},
+        json={"model": model, "messages": messages, field: limit},
         timeout=120.0,
     )
     r.raise_for_status()
@@ -800,15 +861,16 @@ async def _invoke_facet(
         return text, UsageInfo(f.provider_id, f.model, tin, tout)
 
     if f.transport == "http_openai_compat":
-        # f.max_tokens_param viene de model.max_tokens_param via el JOIN de
-        # facet_resolver._query_facet — el mismo lugar del que ya salen
-        # f.model/f.base_url, no una segunda fuente de verdad. NULL sube como
-        # ModelDispatchConfigError desde _call_openai_compat: no se atrapa acá
-        # a propósito (el handler del endpoint lo convierte en 502 + facet en
-        # estado 'error'), para que un modelo sin sembrar sea visible.
+        # f.max_tokens_param y f.max_output_tokens vienen de la MISMA fila de
+        # `model` via el JOIN de facet_resolver._query_facet — el mismo lugar del
+        # que ya salen f.model/f.base_url, no una segunda fuente de verdad. NULL
+        # en cualquiera de los dos sube como ModelDispatchConfigError desde
+        # _call_openai_compat: no se atrapa acá a propósito (el handler del
+        # endpoint lo convierte en 502 + facet en estado 'error'), para que un
+        # modelo sin sembrar sea visible.
         text, tin, tout = await _call_openai_compat(
             f.base_url, f.credential, f.model, system_prompt, history, message,
-            f.max_tokens_param, on_response=_on_response,
+            f.max_tokens_param, f.max_output_tokens, on_response=_on_response,
         )
         return text, UsageInfo(f.provider_id, f.model, tin, tout)
 

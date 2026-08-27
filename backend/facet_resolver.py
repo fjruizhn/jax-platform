@@ -57,6 +57,26 @@ class ResolvedFacet:
     # api/chat.py). Un default silencioso reproduciria el incidente de thot
     # (2026-08-24) en el proximo modelo nuevo, esta vez sin sintoma visible.
     max_tokens_param: str | None
+    # max_output_tokens: MISMA DIVERGENCIA DELIBERADA que el campo de arriba —
+    # existe solo en la copia de jax-platform de este espejo, por el mismo
+    # motivo (su unico consumidor es api/chat.py::_call_openai_compat) y con el
+    # mismo remedio si otro espejo lo necesitara (sumar la columna a su SELECT,
+    # no inventar una fuente nueva).
+    #
+    # Es el par de max_tokens_param: aquel dice COMO se llama el parametro de
+    # limite de salida, este dice QUE VALOR admite la API de ese modelo. El
+    # codigo mandaba 131072 fijo y gpt-5.6-terra lo rechaza con HTTP 400
+    # ("max_tokens is too large: 131072. This model supports at most 128000
+    # completion tokens") — arreglado el nombre, aparecio el valor.
+    #
+    # NO es context_window: aquella es la ventana TOTAL (entrada+salida) y esta
+    # el tope de completion. gpt-5.6-terra: 1050000 vs 128000. Derivar uno del
+    # otro seria inventar el dato.
+    #
+    # NULL = el catalogo no declara el dato para ese modelo. NO se asume un
+    # default aca: el dispatch falla ruidoso (ver _max_output_tokens_value() en
+    # api/chat.py).
+    max_output_tokens: int | None
 
 
 class _CacheEntry:
@@ -93,7 +113,7 @@ async def _query_facet(facet_key: str) -> ResolvedFacet:
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT f.transport, f.persona, p.base_url, b.provider_id, m.model_id, b.params, "
-                "m.max_tokens_param "
+                "m.max_tokens_param, m.max_output_tokens "
                 "FROM facet f "
                 "JOIN facet_binding b ON b.facet_key = f.`key` AND b.role = 'primary' "
                 "JOIN provider p ON p.id = b.provider_id "
@@ -106,7 +126,8 @@ async def _query_facet(facet_key: str) -> ResolvedFacet:
         conn.close()
     if not row:
         raise FacetUnavailableError(f"sin binding activo para facet '{facet_key}'")
-    transport, persona, base_url, provider_id, model_id, params, max_tokens_param = row
+    (transport, persona, base_url, provider_id, model_id, params,
+     max_tokens_param, max_output_tokens) = row
 
     credential = ""
     if transport not in ("ollama", "subprocess"):  # ollama/subprocess no usan credencial de proveedor gestionada aqui
@@ -118,7 +139,7 @@ async def _query_facet(facet_key: str) -> ResolvedFacet:
     return ResolvedFacet(
         key=facet_key, provider_id=provider_id, base_url=base_url, model=model_id,
         credential=credential, transport=transport, persona=persona, params=params,
-        max_tokens_param=max_tokens_param,
+        max_tokens_param=max_tokens_param, max_output_tokens=max_output_tokens,
     )
 
 

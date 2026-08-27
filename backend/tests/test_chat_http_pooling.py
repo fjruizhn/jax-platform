@@ -51,7 +51,7 @@ async def test_call_openai_compat_uses_the_shared_client():
     try:
         result, _tin, _tout = await _call_openai_compat(
             "https://api.deepseek.com/v1", "sk-test", "deepseek-v4-flash",
-            "system prompt", [], "hola", "max_tokens",
+            "system prompt", [], "hola", "max_tokens", 131072,
         )
     finally:
         http_client._client = original

@@ -27,8 +27,11 @@ def test_list_models_returns_the_seeded_catalog(client):
     # dispatch de esa fila (incidente thot 2026-08-24), el superadmin tiene que
     # poder verlo en el catalogo antes de que una faceta se caiga.
     assert "max_tokens_param" in thot_row
+    # max_output_tokens (par del anterior): mismo motivo, mismo estado roto.
+    assert "max_output_tokens" in thot_row
     seeded = next(m for m in models if m["model_id"] == "deepseek-v4-flash")
     assert seeded["max_tokens_param"] == "max_tokens"
+    assert seeded["max_output_tokens"] == 131072
 
 
 def test_list_models_filters_by_provider_and_status(client):
