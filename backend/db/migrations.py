@@ -498,6 +498,17 @@ _CAPABILITY_SEED = [
      ["jacobs", "hyde", "ada"], None),
     ("critique", "low", True, False, 5, 0, "critique.v1", None, None,
      ["jacobs", "hyde", "thot"], None),
+    # research, analysis, review were hand-seeded into production jax_memory at
+    # some point but never added to the idempotent migration list (same pattern
+    # as the 'depends_on' column bug documented in DEUDA.md). Fresh databases
+    # (test, dev, disaster recovery) never received them. These are HTTP-direct
+    # capabilities (no Motor Registry entries) dispatched to hipatia/jekyll/thot/ada.
+    ("research", "low", True, False, 5, 0, None, None, None,
+     ["jacobs"], None),
+    ("analysis", "low", True, False, 5, 0, None, None, None,
+     ["jacobs"], None),
+    ("review", "medium", True, False, 5, 0, None, None, None,
+     ["jacobs"], None),
 ]
 
 # (capability_key, [motor_key, ...] en orden de prioridad). "thot" queda
