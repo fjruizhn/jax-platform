@@ -4,6 +4,7 @@ TODO el I/O esta parcheado. Ningun test de este archivo llama a un
 proveedor real -- ver "Riesgo de costo" en el plan."""
 import asyncio
 import pytest
+import facet_health
 from api import chat as chat_mod
 
 
@@ -144,6 +145,12 @@ def test_los_dos_estados_del_gate_NO_colapsan_entre_si(monkeypatch):
     monkeypatch.setattr(chat_mod, "get_http_client", no_responde)
     texto_b, _ = asyncio.run(chat_mod._invoke_facet("thot", _config(), "u1", "h"))
 
+    # Esta asercion protege que el gate sea INVISIBLE al usuario: hoy los dos
+    # estados muestran el mismo mensaje a proposito. Si manana se decide
+    # diferenciarlos -- una mejora legitima -- este test cambia POR DECISION,
+    # no por regresion. No lo "arregles" si lo ves rojo: primero averigua si
+    # alguien cambio el mensaje a proposito. La asercion que NO se toca es la
+    # de la linea siguiente: los outcome tienen que seguir difiriendo.
     assert texto_a == texto_b                    # el usuario ve lo mismo
     assert got[0]["outcome"] != got[1]["outcome"]  # el operador NO
     assert [g["outcome"] for g in got] == ["gate_denied", "gate_unreachable"]
@@ -174,3 +181,19 @@ def test_stub_sin_db_solo_aplica_bajo_JAX_CI_NO_DB(monkeypatch):
         monkeypatch, ci_no_db=True)
     assert applied_on is True
     assert facet_health.get_pool is not original_get_pool
+
+
+# --- Task 3.5 -- config_error separado de provider_error -----------------
+# El ENUM de la DB no se puede derivar en import time (el CI no tiene DB),
+# asi que la coincidencia se verifica leyendo el DDL como texto.
+
+def test_el_ENUM_de_la_DB_coincide_exacto_con_OUTCOMES():
+    """Cuarta fuente de verdad cerrada mecanicamente. El ENUM y el frozenset
+    no se pueden derivar uno del otro sin una DB, asi que se comparan."""
+    import re, db.migrations as m
+    valores = set(re.findall(r"'([a-z_]+)'",
+        re.search(r"outcome ENUM\(([^)]+)\)", m.CREATE_FACET_HEALTH_EVENT).group(1)))
+    for _t, _c, valor, _ddl in m._ENUM_EXTENSIONS:
+        if _t == "facet_health_event" and _c == "outcome":
+            valores.add(valor)
+    assert valores == facet_health.OUTCOMES
