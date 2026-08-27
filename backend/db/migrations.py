@@ -363,10 +363,28 @@ CREATE_CAPABILITY = """
 CREATE TABLE IF NOT EXISTS capability (
   `key` VARCHAR(50) NOT NULL PRIMARY KEY,
   risk_level ENUM('low','medium','high') NOT NULL,
-  -- VESTIGIAL (verificado 2026-08-27, ver DEUDA.md): ningun lector en el
-  -- codigo real compara este valor contra nada. El sandbox_only que SI se
-  -- enforce es motor.sandbox_only (columna distinta, tabla motor). No
-  -- confiar en este valor -- pendiente decidir lector real o drop.
+  -- VESTIGIAL (ver DEUDA.md). Ningun lector en el codigo real compara este
+  -- valor contra nada. El sandbox_only que SI se enforce es
+  -- motor.sandbox_only -- columna DISTINTA, tabla motor, chequeada en
+  -- las_manos/motor_registry/policy.py (check 7 de MotorPolicy.check()).
+  --
+  -- QUE SE VERIFICO, EXACTAMENTE (2026-08-27, repos jax + jax-platform):
+  --   grep -rn "cap\.sandbox_only|capability\.sandbox_only|
+  --             entry\[.sandbox_only.\]|entry\.get\(.sandbox_only"
+  --   --include="*.py"   ->  0 resultados.
+  -- La columna SI se carga desde la DB (jacobs/store.py y
+  -- motor_registry/catalog.py la leen hacia CapabilityEntry.sandbox_only),
+  -- pero ese atributo nunca se compara ni se ramifica en ningun lado.
+  -- Al momento de verificar, las 5 filas relevantes (research, analysis,
+  -- design, reconcile, validate_consistency) tenian el valor 1.
+  --
+  -- QUE **NO** SE VERIFICO: por que existe, que se penso que significara,
+  -- ni si algun consumidor externo a estos dos repos la lee. No se le
+  -- invento semantica a proposito -- el candidato obvio (acotar egress de
+  -- red) es un item de deuda diferido aparte, no una decision que este
+  -- cierre podia tomar. Si la encontras dentro de dos años: lo probado es
+  -- que ningun codigo Python de estos dos repos la consultaba en esa
+  -- fecha, nada mas. Pendiente: darle lector real o dropearla.
   sandbox_only BOOLEAN NOT NULL DEFAULT TRUE,
   requires_human_gate BOOLEAN NOT NULL DEFAULT FALSE,
   max_execution_minutes INT NOT NULL,
