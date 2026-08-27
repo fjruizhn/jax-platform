@@ -21,11 +21,29 @@ from auth.middleware import get_current_user
 from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
 from jax_engine.events import event_bus
-from jax_engine.state import engine_state
+from jax_engine.state import engine_state, LAS_MANOS_URL
 from api.admin.usage import record_usage
 from db.connection import get_pool
 
 router = APIRouter(prefix="/api")
+
+# El gate de gobernanza se llavea por TRANSPORTE, no por nombre de facet.
+# Antes era un frozenset de nombres ({"hipatia","jekyll","thot","ada"}) --
+# una segunda fuente de verdad al lado de la que realmente decide el
+# dispatch, que es `facet.transport` (ver el ruteo por f.transport más
+# abajo en _invoke_facet). Agregar una quinta fila a `facet` con
+# transport='http_openai_compat' habría hecho que se despachara SIN pasar
+# por ninguna de las dos gobernanzas: fail-open por omisión, exactamente
+# el patrón de "dos fuentes de verdad que divergen" que esta feature
+# existe para cerrar. Llaveado por transporte, un facet HTTP nuevo nace
+# gobernado.
+#
+# Verificado 2026-08-27 contra la tabla `facet` de jax_memory (prod): los
+# únicos transportes http_* son ada/hipatia/jekyll/thot -- exactamente los
+# 4 de la lista vieja. El cambio es preservador de comportamiento HOY y
+# fail-closed para cualquier facet HTTP futuro.
+_GOVERNED_TRANSPORTS = frozenset({"http_gemini", "http_openai_compat"})
+_JAX_PLATFORM_CHAT_CALLER = "jax_platform_chat"
 
 CONFIG_PATH = os.path.expanduser("~/jax/config/config.toml")
 
@@ -652,6 +670,43 @@ async def _invoke_facet(
         f = await resolve_facet(facet)
     except FacetUnavailableError:
         return f"⚠️ {facet} no está disponible: sin binding activo configurado.", None
+
+    # El gate va DESPUÉS de resolve_facet() a propósito: es ahí donde
+    # `f.transport` existe, y el transporte es lo mismo que decide el
+    # dispatch real unas líneas más abajo -- una sola fuente de verdad.
+    if f.transport in _GOVERNED_TRANSPORTS:
+        allowed = False
+        try:
+            hc = await get_http_client()
+            resp = await hc.post(
+                f"{LAS_MANOS_URL}/motor/authorize-facet",
+                json={"caller": _JAX_PLATFORM_CHAT_CALLER, "facet": facet},
+                timeout=5.0,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            allowed = body.get("allowed", False)
+            if not allowed:
+                # Denegación limpia: las_manos respondió, la decisión es
+                # "no". Logueamos el 'reason' que trae la respuesta -- es
+                # precisamente para esto que existe ese campo.
+                logger.warning(
+                    f"authorize-facet denied facet={facet} caller={_JAX_PLATFORM_CHAT_CALLER} "
+                    f"reason={body.get('reason')!r}"
+                )
+        except Exception as e:
+            # Fail-closed (P10): cualquier falla -- timeout, conexión
+            # rechazada, respuesta inesperada -- deniega. Nunca "no pude
+            # verificar, sigo igual". Logueado por separado del caso de
+            # arriba: "las_manos no respondió" no es lo mismo que "las_manos
+            # respondió que no", y un operador necesita distinguirlos.
+            allowed = False
+            logger.warning(
+                f"authorize-facet unreachable facet={facet} caller={_JAX_PLATFORM_CHAT_CALLER} "
+                f"error={type(e).__name__}: {e} -- denegado fail-closed"
+            )
+        if not allowed:
+            return f"⚠️ {facet} no está disponible: acceso no autorizado.", None
 
     if _is_model_identity_question(message):
         return _model_identity_reply(f.model, facet), None

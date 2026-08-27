@@ -233,6 +233,28 @@ CREATE TABLE IF NOT EXISTS facet (
   max_latency_ms INT NULL,
   max_cost_per_1k_usd DECIMAL(10,6) NULL,
   auto_selectable BOOLEAN NOT NULL DEFAULT TRUE,
+  -- allowed_callers: ALCANCE ACOTADO, leer antes de editar esta columna.
+  -- Gobierna SOLO a los callers que no tienen concepto de `capability`.
+  -- Hoy eso es exactamente uno: 'jax_platform_chat' (Mesa web,
+  -- backend/api/chat.py::_invoke_facet -> POST /motor/authorize-facet ->
+  -- check_facet_admission(), repo jax, las_manos/motor_registry/
+  -- facet_policy.py).
+  --
+  -- JACOBS NO SE GOBIERNA ACÁ. Jacobs pasa por
+  -- `capability.allowed_callers` vía MotorPolicy.check_capability_admission()
+  -- (repo jax, las_manos/motor_registry/policy.py), invocado desde
+  -- jacobs/executor.py::validate_capability(). Consecuencia práctica, y la
+  -- razón por la que este comentario existe: SACAR "jacobs" DE ESTA COLUMNA
+  -- NO RESTRINGE A JACOBS -- va a seguir despachando igual, sin error ni
+  -- aviso. Para cortarle el acceso hay que editar
+  -- `capability.allowed_callers` de las capabilities involucradas.
+  -- El "jacobs" sembrado abajo (_seed_http_facet_allowed_callers) es
+  -- descriptivo (refleja el acceso que ya existía de hecho), no ejecutivo.
+  -- Follow-up candidato registrado en DEUDA.md: hacer que Jacobs también
+  -- consulte check_facet_admission(), para que esta columna pase a ser el
+  -- gate real de nivel facet para AMBOS caminos y deje de enseñar un
+  -- modelo mental equivocado.
+  allowed_callers LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (allowed_callers IS NULL OR json_valid(allowed_callers)),
   status ENUM('active','degraded','disabled') NOT NULL DEFAULT 'active',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -341,6 +363,28 @@ CREATE_CAPABILITY = """
 CREATE TABLE IF NOT EXISTS capability (
   `key` VARCHAR(50) NOT NULL PRIMARY KEY,
   risk_level ENUM('low','medium','high') NOT NULL,
+  -- VESTIGIAL (ver DEUDA.md). Ningun lector en el codigo real compara este
+  -- valor contra nada. El sandbox_only que SI se enforce es
+  -- motor.sandbox_only -- columna DISTINTA, tabla motor, chequeada en
+  -- las_manos/motor_registry/policy.py (check 7 de MotorPolicy.check()).
+  --
+  -- QUE SE VERIFICO, EXACTAMENTE (2026-08-27, repos jax + jax-platform):
+  --   grep -rn "cap\.sandbox_only|capability\.sandbox_only|
+  --             entry\[.sandbox_only.\]|entry\.get\(.sandbox_only"
+  --   --include="*.py"   ->  0 resultados.
+  -- La columna SI se carga desde la DB (jacobs/store.py y
+  -- motor_registry/catalog.py la leen hacia CapabilityEntry.sandbox_only),
+  -- pero ese atributo nunca se compara ni se ramifica en ningun lado.
+  -- Al momento de verificar, las 5 filas relevantes (research, analysis,
+  -- design, reconcile, validate_consistency) tenian el valor 1.
+  --
+  -- QUE **NO** SE VERIFICO: por que existe, que se penso que significara,
+  -- ni si algun consumidor externo a estos dos repos la lee. No se le
+  -- invento semantica a proposito -- el candidato obvio (acotar egress de
+  -- red) es un item de deuda diferido aparte, no una decision que este
+  -- cierre podia tomar. Si la encontras dentro de dos años: lo probado es
+  -- que ningun codigo Python de estos dos repos la consultaba en esa
+  -- fecha, nada mas. Pendiente: darle lector real o dropearla.
   sandbox_only BOOLEAN NOT NULL DEFAULT TRUE,
   requires_human_gate BOOLEAN NOT NULL DEFAULT FALSE,
   max_execution_minutes INT NOT NULL,
@@ -493,6 +537,17 @@ _CAPABILITY_SEED = [
      ["jacobs", "hyde", "ada"], None),
     ("critique", "low", True, False, 5, 0, "critique.v1", None, None,
      ["jacobs", "hyde", "thot"], None),
+    # research, analysis, review were hand-seeded into production jax_memory at
+    # some point but never added to the idempotent migration list (same pattern
+    # as the 'depends_on' column bug documented in DEUDA.md). Fresh databases
+    # (test, dev, disaster recovery) never received them. These are HTTP-direct
+    # capabilities (no Motor Registry entries) dispatched to hipatia/jekyll/thot/ada.
+    ("research", "low", True, False, 5, 0, None, None, None,
+     ["jacobs"], None),
+    ("analysis", "low", True, False, 5, 0, None, None, None,
+     ["jacobs"], None),
+    ("review", "medium", True, False, 5, 0, None, None, None,
+     ["jacobs"], None),
 ]
 
 # (capability_key, [motor_key, ...] en orden de prioridad). "thot" queda
@@ -940,6 +995,13 @@ _COLUMNS = [
     # todavia para ese provider (ollama/anthropic).
     ("provider", "api_key_transport", "ALTER TABLE provider ADD COLUMN api_key_transport ENUM('header_bearer','query_param') NOT NULL DEFAULT 'header_bearer'"),
     ("provider", "models_list_url", "ALTER TABLE provider ADD COLUMN models_list_url VARCHAR(255) NULL"),
+    # Gobernanza de _HTTP_FACETS (docs/superpowers/specs/2026-08-27-
+    # http-facets-motor-policy-governance-design.md): hipatia/jekyll/thot/ada
+    # quedan con allowed_callers poblado, kimi/jax_local/hyde quedan NULL.
+    # Consumida por check_facet_admission() (repo jax, Task 4).
+    ("facet", "allowed_callers",
+     "ALTER TABLE facet ADD COLUMN allowed_callers LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL "
+     "CHECK (allowed_callers IS NULL OR json_valid(allowed_callers))"),
     # Bloque D (D1.1) — FK real contra `model`; `model_id` (texto libre,
     # Bloque C) se conserva de solo-lectura durante el cutover, no se dropea
     # en esta corrida.
@@ -1170,6 +1232,24 @@ async def _eliminate_motor_model_ref_denormalization(cur) -> None:
     """)
 
 
+async def _seed_http_facet_allowed_callers(cur) -> None:
+    """Gobernanza de _HTTP_FACETS (docs/superpowers/specs/2026-08-27-
+    http-facets-motor-policy-governance-design.md): hipatia/jekyll/thot/
+    ada quedan con allowed_callers=["jacobs","jax_platform_chat"] --
+    mismo acceso que ya existia informalmente (ninguno de los dos estaba
+    bloqueado antes de esta ronda), ahora explicito. kimi/jax_local/hyde
+    quedan NULL a proposito -- fuera de alcance esta ronda, fail-closed
+    por diseno (ver facet_policy.py::check_facet_admission en el repo jax).
+
+    Guard WHERE allowed_callers IS NULL: no pisa un valor manual futuro
+    si alguien ya lo configuro distinto."""
+    await cur.execute(
+        "UPDATE facet SET allowed_callers = %s "
+        "WHERE `key` IN ('hipatia','jekyll','thot','ada') AND allowed_callers IS NULL",
+        (json.dumps(["jacobs", "jax_platform_chat"]),),
+    )
+
+
 async def run_migrations():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1204,5 +1284,6 @@ async def run_migrations():
             await _seed_file_tools_capabilities(cur)
             await _fix_file_write_gate_and_auditor(cur)
             await _eliminate_motor_model_ref_denormalization(cur)
+            await _seed_http_facet_allowed_callers(cur)
 
         await conn.commit()

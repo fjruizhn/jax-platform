@@ -179,10 +179,20 @@ class _FakeResponse:
 
 
 class _FakePostClient:
-    def __init__(self, response):
+    def __init__(self, response, authorize_response=None):
+        # authorize_response is opt-in and defaults to None so every
+        # pre-existing caller of this fake (single outbound call, no
+        # facet-governance gate involved) keeps returning `response` to
+        # every .post() unchanged. Pass it explicitly when the call under
+        # test goes through _invoke_facet for a governed facet
+        # (hipatia/jekyll/thot/ada), which now makes a first call to
+        # /motor/authorize-facet before the real provider call.
         self._response = response
+        self._authorize_response = authorize_response
 
     async def post(self, url, **kwargs):
+        if self._authorize_response is not None and "/motor/authorize-facet" in url:
+            return self._authorize_response
         return self._response
 
 
@@ -192,10 +202,13 @@ def test_chat_endpoint_marks_contract_degraded_on_truncated_json(client):
     # chat.py solo toca el camino de memoria semántica cuando user_id/tenant_id
     # parsean a int — así aislamos el único llamado saliente que nos importa.
     token = create_access_token("test-contract-user", "test-contract-tenant", "operator")
-    fake = _FakePostClient(_FakeResponse({
-        "choices": [{"message": {"content": '{"claim": [{"predicate": "CAPABILITY_AVAI'}}],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-    }))
+    fake = _FakePostClient(
+        _FakeResponse({
+            "choices": [{"message": {"content": '{"claim": [{"predicate": "CAPABILITY_AVAI'}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }),
+        authorize_response=_FakeResponse({"allowed": True, "reason": "OK"}),
+    )
     original = http_client._client
     http_client._client = fake
     try:
@@ -220,12 +233,15 @@ def test_chat_endpoint_contract_not_degraded_on_valid_json(client):
     el parseo exitoso no degrada."""
     from auth.jwt import create_access_token
     token = create_access_token("test-contract-user-2", "test-contract-tenant-2", "operator")
-    fake = _FakePostClient(_FakeResponse({
-        "choices": [{"message": {"content": (
-            '{"claim": [], "analysis": "mi analisis real", "judgment": "mi conclusion real"}'
-        )}}],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-    }))
+    fake = _FakePostClient(
+        _FakeResponse({
+            "choices": [{"message": {"content": (
+                '{"claim": [], "analysis": "mi analisis real", "judgment": "mi conclusion real"}'
+            )}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }),
+        authorize_response=_FakeResponse({"allowed": True, "reason": "OK"}),
+    )
     original = http_client._client
     http_client._client = fake
     try:
