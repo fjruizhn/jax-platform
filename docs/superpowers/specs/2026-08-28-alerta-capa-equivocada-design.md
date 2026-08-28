@@ -217,6 +217,30 @@ sí. El test falla y dice por qué.
 - No depende de cuántos llamadores tenga `_invoke_facet` — la propiedad es
   de la función, no de sus llamadores. Si mañana aparece un tercer
   llamador, el diseño no cambia.
+- **No cubre la mutación del namespace en runtime.**
+  `globals()["_invoke_facet"] = otra`, `setattr(sys.modules[__name__], ...)`,
+  `exec(...)`, o —el caso realista— `api.chat._invoke_facet = otra` desde
+  otro módulo, dejan el guard en verde con la propiedad rota. Verificado en
+  runtime, no supuesto. **Es un límite estructural declarado, no un
+  pendiente**, y la razón NO es que no se pueda detectar: buscar esos
+  deletreos dentro de `chat.py` es trivial. Son dos razones distintas:
+  **(1) sería enumeración sin oráculo.** El scoping estático se chequea sin
+  enumerar constructos porque `symtable` ES el compilador respondiendo. Para
+  la mutación dinámica no hay a quién preguntarle, y la lista (`globals`,
+  `vars`, `setattr`, `sys.modules`, `__dict__`, `exec`, `importlib`) es
+  abierta: repetiría el error que la Ronda de corrección 3 ya juzgó, esta
+  vez sin la salida que aquella tuvo.
+  **(2) el vector principal vive en otro archivo.**
+  `api.chat._invoke_facet = otra` es literalmente lo que hace
+  `monkeypatch.setattr` en los tests. Un guard que lee un solo archivo no lo
+  puede ver nunca, y cerrar el deletreo raro dejando abierto el común daría
+  la impresión contraria a la verdadera.
+  **Qué sí lo cubre, para el sujeto:** `test_facet_health_outcomes.py`
+  resuelve `chat_mod._invoke_facet` como atributo del módulo en cada
+  llamada, así que una sustitución en runtime pone rojos esos tests.
+  **Para el registro no lo cubre nada** — `_capture` monkeypatchea
+  `chat_mod.record_facet_health` y pisa la re-ligadura — y por eso la
+  re-ligadura del registro se cierra estáticamente (Ronda de corrección 6).
 
 **Criterio de cierre (octava lección de método):** el test corre en un job
 de CI, y eso se verifica **rompiéndolo con el job real**, no localmente.

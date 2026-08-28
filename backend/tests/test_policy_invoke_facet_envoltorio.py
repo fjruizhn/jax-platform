@@ -31,7 +31,16 @@ medida:
    `record_facet_health` o un `raise` que EXISTIAN en el codigo pero nunca
    se ejecutaban de verdad.
 3. Sustitucion de identidad -- el control esta y CORRE, pero el nombre no
-   resuelve a la funcion real. Detectada NO enumerando constructos del
+   resuelve a lo que parece. Aplica a los TRES terminos que el analizador
+   compara por nombre, y son todos los que hay: el REGISTRO
+   (`record_facet_health`), el SUJETO (`_invoke_facet`, ver familia 5) y
+   la CLASE DEL HANDLER GENERICO (`Exception`). Los tres, en los DOS
+   scopes que resuelven un nombre: el de la funcion y el del modulo. La
+   Ronda de correccion 6 existe porque el guard preguntaba por el scope
+   del modulo solo para el sujeto: `record_facet_health = lambda *a, **k:
+   None` a nivel de modulo, o `Exception = ValueError` (que deja al
+   `except Exception` sin capturar todo), pasaban en verde con la
+   propiedad rota en runtime. Detectada NO enumerando constructos del
    lenguaje, sino PREGUNTANDOLE AL COMPILADOR: `symtable` es la propia
    tabla de simbolos que arma CPython, y responde si `record_facet_health`
    es local al scope de `_invoke_facet`. Ese cambio es el punto: la
@@ -50,15 +59,6 @@ medida:
    funcion segun las reglas de CPython, asi que la llamada real -- que es
    directa e incondicional -- revienta con `UnboundLocalError`. No es
    inalcanzabilidad del control: es identidad rota ANTES de la llamada.
-5. Ambiguedad del sujeto -- el codigo esta bien, pero el guard audita
-   OTRA funcion. Aparece de dos formas, las dos verificadas: un homonimo
-   anidado que se lleva la busqueda del scope (`ast` mira una,
-   `symtable` otra), y dos `_invoke_facet` de nivel superior (las dos
-   miran la primera; en runtime queda la ultima). Por eso hay una sola
-   fuente de verdad -- el nodo AST -- y mas de una definicion es de por
-   si una violacion. Es la familia que solo se ve atacando AL GUARD, no
-   al codigo: las tres anteriores se descubrieron mutando `chat.py`,
-   esta mutando el archivo alrededor de el.
 4. Argumentos incorrectos -- registra de verdad, con la funcion real, pero
    con el outcome equivocado (ej. `ModelDispatchConfigError` escribe `ok`
    en vez de `config_error`). FUERA POR DISEÑO, no un descuido: eso es
@@ -66,8 +66,24 @@ medida:
    y los tests de la sonda, que SI conocen el significado de cada outcome.
    Un guard estatico que tambien intentara verificar argumentos terminaria
    reimplementando esos tests, peor.
+5. Ambiguedad del sujeto -- el guard y el runtime discrepan sobre CUAL
+   es la funcion auditada. Aparece de TRES formas, las tres verificadas:
+   un homonimo anidado que se lleva la busqueda del scope (`ast` mira una
+   y `symtable` otra); dos `_invoke_facet` de nivel superior (las dos
+   miran la primera, en runtime queda la ultima); y la RE-LIGADURA del
+   sujeto -- `_invoke_facet = lambda ...` o `import ... as` despues de la
+   definicion real, donde hay UNA sola `def` y el nombre resuelve a otra
+   cosa. Por eso hay una sola fuente de verdad -- el nodo AST, al que el
+   scope de symtable se ata por lineno -- y mas de una sentencia que ligue
+   el nombre es de por si una violacion.
+   Es la unica familia que solo se ve atacando AL GUARD: las otras se
+   descubrieron mutando `chat.py`, esta mutando el archivo alrededor de
+   el. Ojo con la primera frase: en dos de sus casos el codigo NO esta
+   bien -- hay un impostor corriendo. La linea divisoria con la familia 3
+   no es "el codigo esta bien", es el EJE: la 3 es identidad del registro
+   y del handler, la 5 es identidad del sujeto.
 
-Las 23 mutaciones de abajo son la cobertura ACTUAL de las familias 1-3
+Las 30 mutaciones de abajo son la cobertura ACTUAL de las familias 1-3
 y 5.
 Dos de ellas (quitar el handler generico, y un archivo que no parsea)
 salieron de atacar ESTE TEST, no el codigo: la primera version las dejaba
@@ -89,6 +105,28 @@ Tampoco verifica que cada handler registre el outcome CORRECTO (que
 ModelDispatchConfigError escriba config_error y no ok); eso es
 comportamiento y lo cubren los tests de outcomes.
 
+Y NO cubre la mutacion del namespace en runtime (`globals()[...] = ...`,
+`setattr(sys.modules[__name__], ...)`, `exec(...)`, o la re-ligadura del
+atributo desde OTRO modulo). Es un limite DECLARADO, no un descuido ni un
+pendiente. Dos razones, y ninguna es "no se puede detectar" -- detectar
+esos deletreos DENTRO de este archivo es trivial:
+  (1) seria enumeracion SIN ORACULO. El scoping estatico se puede chequear
+      sin enumerar porque `symtable` ES el compilador respondiendo; para la
+      mutacion dinamica no hay nadie a quien preguntarle, y la lista
+      (`globals`, `vars`, `setattr`, `sys.modules`, `__dict__`, `exec`,
+      `importlib`) es abierta. Es el error que la Ronda de correccion 3 ya
+      juzgo, esta vez sin la salida que aquella tuvo.
+  (2) el vector realista vive en OTRO archivo: `api.chat._invoke_facet =
+      otra` es literalmente lo que hace `monkeypatch.setattr` en los tests.
+      Un guard que lee un solo archivo no lo puede ver nunca, y cerrar el
+      deletreo raro dejando abierto el comun da la impresion CONTRARIA a la
+      verdadera.
+Que si lo compensa, para el SUJETO: `test_facet_health_outcomes.py` resuelve
+`chat_mod._invoke_facet` como atributo del modulo EN CADA LLAMADA, asi que
+una sustitucion en runtime pone rojos esos tests. Para el REGISTRO no lo
+compensa nada -- `_capture` monkeypatchea `chat_mod.record_facet_health` y
+PISA la re-ligadura -- y por eso el registro se cierra estaticamente aca.
+
 Ver docs/superpowers/specs/2026-08-28-alerta-capa-equivocada-design.md
 """
 from __future__ import annotations
@@ -97,13 +135,33 @@ import ast
 import symtable
 from pathlib import Path
 
+# Los TRES terminos del analisis que dependen de que un nombre resuelva a
+# lo que parece. Enumerados a proposito, y son TODOS: el analizador compara
+# nombres en exactamente tres lugares (el sujeto que audita, la llamada que
+# cuenta como registro, y la clase del handler generico). Los tres se
+# verifican contra la tabla de simbolos; ver la familia 3 del docstring.
 FUNCION = "_invoke_facet"
 REGISTRO = "record_facet_health"
+EXCEPCION = "Exception"
 ARCHIVO = Path(__file__).resolve().parents[1] / "api" / "chat.py"
 
 
 def _nombre_llamada(call: ast.Call) -> str | None:
-    return getattr(call.func, "id", getattr(call.func, "attr", None))
+    """Solo un nombre SUELTO (`ast.Name`).
+
+    A proposito NO acepta `ast.Attribute`: `_fake.record_facet_health(...)`
+    satisfacia el matcheo por nombre sin llamar a la funcion real, y sobre
+    un atributo symtable no puede verificar identidad -- el objeto de la
+    izquierda puede ser cualquier cosa. Restringir a `ast.Name` es lo que
+    hace TOTAL la garantia de identidad: el nombre suelto lo audita
+    `_ligado_localmente` y el chequeo de ligaduras de modulo.
+
+    Verificado: el `api/chat.py` real llama a `record_facet_health` como
+    nombre suelto en las tres (lineas 917, 921, 924), cero por atributo. Si
+    maniana pasara a `import facet_health` + llamada calificada, esto da un
+    falso positivo VISIBLE ("handler NO registra"), el lado barato del
+    error."""
+    return call.func.id if isinstance(call.func, ast.Name) else None
 
 
 def _es_llamada_directa(stmt: ast.stmt, nombre: str) -> bool:
@@ -195,9 +253,11 @@ def _ligado_localmente(scope: symtable.SymbolTable, nombre: str) -> bool:
     return s.is_local() or s.is_assigned()
 
 
-def _ligaduras_de_modulo(arbol: ast.Module, nombre: str) -> list[int]:
-    """Lineas de las sentencias de nivel superior que LIGAN `nombre` en el
-    scope del modulo. Lanza SyntaxError si alguna no se puede analizar.
+def _ligaduras_de_modulo(arbol: ast.Module,
+                         nombre: str) -> list[tuple[int, bool]]:
+    """`(linea, es_import)` de las sentencias de nivel superior que LIGAN
+    `nombre` en el scope del modulo. Lanza SyntaxError si alguna no se
+    puede analizar.
 
     Le pregunta al compilador sentencia por sentencia -- misma leccion que
     `_ligado_localmente`, aplicada al sujeto en vez de al registro.
@@ -212,15 +272,22 @@ def _ligaduras_de_modulo(arbol: ast.Module, nombre: str) -> list[int]:
     definicion real deja UNA sola `def` en el arbol, asi que el guard
     auditaba la funcion limpia mientras en runtime el nombre resolvia a
     otra cosa. Es la misma familia 5 por una via distinta."""
-    lineas: list[int] = []
+    lineas: list[tuple[int, bool]] = []
     for s in arbol.body:
         tabla = symtable.symtable(ast.unparse(s), "<sentencia>", "exec")
         try:
             simbolo = tabla.lookup(nombre)
         except KeyError:
             continue                       # la sentencia ni lo menciona
-        if simbolo.is_assigned() or simbolo.is_imported():
-            lineas.append(s.lineno)
+        # `is_declared_global` es la tercera pregunta y NO es opcional: un
+        # instalador (`def _i(): global X; X = otra` + `_i()`) liga el
+        # nombre del MODULO desde el scope hijo, asi que al analizar la
+        # sentencia aislada `is_assigned` da False. symtable igual lo
+        # delata, pero hay que preguntarselo. Encontrado atacando el propio
+        # fix de la ronda 6.
+        if (simbolo.is_assigned() or simbolo.is_imported()
+                or simbolo.is_declared_global()):
+            lineas.append((s.lineno, simbolo.is_imported()))
     return lineas
 
 
@@ -230,7 +297,7 @@ def violaciones(codigo: str) -> list[str]:
         arbol = ast.parse(codigo)
         tabla = symtable.symtable(codigo, "<policy>", "exec")
     except SyntaxError as e:
-        return [f"el archivo no parsea ({e.msg}, linea {e.lineno}): "
+        return [f"el archivo no compila ({e.msg}, linea {e.lineno}): "
                 f"el test no puede verificar nada"]
 
     candidatos = sorted(
@@ -242,7 +309,9 @@ def violaciones(codigo: str) -> list[str]:
         return [f"{FUNCION} no existe (renombrada?): la politica no aplica "
                 f"a nada y eso ya es una violacion"]
     def _ambiguo(lineas: list[int]) -> list[str]:
-        return [f"hay {len(lineas)} definiciones de {FUNCION} (lineas "
+        # "sentencias que ligan", no "definiciones": este mismo mensaje
+        # cubre el `import ... as`, que liga el nombre sin definir nada.
+        return [f"hay {len(lineas)} sentencias que ligan {FUNCION} (lineas "
                 f"{', '.join(str(l) for l in lineas)}) disputandose el "
                 f"mismo nombre: el guard no puede saber cual protege. En "
                 f"Python queda en efecto la ULTIMA, asi que auditar la "
@@ -257,7 +326,7 @@ def violaciones(codigo: str) -> list[str]:
                 f"({e.msg}): el guard no puede afirmar que {FUNCION} sea "
                 f"el nombre que corre, asi que falla cerrado"]
     if len(ligaduras) > 1:
-        return _ambiguo(ligaduras)
+        return _ambiguo([l for l, _ in ligaduras])
 
     # Un homonimo ANIDADO no compite por este nombre -- no se puede llamar
     # desde afuera -- asi que no es ambiguedad: es el caso que el chequeo
@@ -286,6 +355,37 @@ def violaciones(codigo: str) -> list[str]:
                 f"chequeo que no corre no protege nada"]
 
     v: list[str] = []
+
+    # TERMINO 2 -- el registro, a nivel de MODULO. `_ligado_localmente`
+    # solo mira el scope de la funcion; re-ligar el nombre en el modulo da
+    # el MISMO efecto (la llamada resuelve a un impostor) sin tocar el
+    # cuerpo de _invoke_facet. La unica forma legitima de que este nombre
+    # exista en chat.py es UN import.
+    lig_reg = _ligaduras_de_modulo(arbol, REGISTRO)
+    if len(lig_reg) > 1 or any(not es_import for _, es_import in lig_reg):
+        v.append(f"`{REGISTRO}` se liga {len(lig_reg)} vez/veces a nivel de "
+                 f"modulo (lineas "
+                 f"{', '.join(str(l) for l, _ in lig_reg)}): la unica forma "
+                 f"legitima es UN import; re-ligarlo en el modulo anula el "
+                 f"registro real sin tocar {FUNCION}")
+
+    # TERMINO 3 -- la clase del handler generico. El guard exige
+    # `except Exception` como ULTIMO handler comparando el nombre contra el
+    # string "Exception". Si ese nombre se re-liga (`Exception = ValueError`),
+    # el handler deja de capturar todo y una excepcion no prevista escapa
+    # SIN registrar -- exactamente la propiedad protegida -- con el guard en
+    # verde. Es un builtin: cualquier ligadura, en el modulo o en la
+    # funcion, es una violacion.
+    lig_exc = _ligaduras_de_modulo(arbol, EXCEPCION)
+    if lig_exc:
+        v.append(f"`{EXCEPCION}` se liga a nivel de modulo (lineas "
+                 f"{', '.join(str(l) for l, _ in lig_exc)}): el "
+                 f"`except {EXCEPCION}` dejaria de capturar todo y una "
+                 f"excepcion no prevista escaparia sin registrar")
+    if _ligado_localmente(scope, EXCEPCION):
+        v.append(f"`{EXCEPCION}` queda ligado localmente en el scope de "
+                 f"{FUNCION}: el handler generico dejaria de capturar todo")
+
     if _ligado_localmente(scope, REGISTRO):
         v.append(f"`{REGISTRO}` queda ligado localmente en el scope de "
                  f"{FUNCION} (segun symtable): la llamada matchea por "
@@ -331,7 +431,7 @@ def violaciones(codigo: str) -> list[str]:
 
     ultimo = t.handlers[-1] if t.handlers else None
     generico = ultimo is not None and (
-        ultimo.type is None or getattr(ultimo.type, "id", None) == "Exception")
+        ultimo.type is None or getattr(ultimo.type, "id", None) == EXCEPCION)
     if not generico:
         v.append("no hay `except Exception` (ni bare) como ULTIMO handler: "
                  "una excepcion no prevista escaparia sin registrar")
@@ -347,7 +447,7 @@ def test_el_codigo_real_cumple_la_politica():
 
 
 # --------------------------------------------------------------------------
-# Auto-verificacion: las 23 mutaciones de las familias 1-3 y 5 (ver docstring
+# Auto-verificacion: las 30 mutaciones de las familias 1-3 y 5 (ver docstring
 # del modulo) tienen que ser DETECTADAS.
 # Sin estos tests, `violaciones()` podria devolver [] siempre y el guard
 # seria un no-op verde -- el patron exacto del scanner P10 verde sobre cero
@@ -433,8 +533,16 @@ def test_detecta_falta_del_except_generico():
     assert any("ULTIMO handler" in x for x in violaciones(m))
 
 
-def test_detecta_archivo_que_no_parsea():
-    assert any("no parsea" in x for x in violaciones("def roto(:\n"))
+def test_detecta_archivo_que_no_compila():
+    """El mensaje dice "no compila", no "no parsea": el `except` cubre las
+    dos ramas y en una de ellas `ast.parse` SI acepta y el que rechaza es
+    `symtable` (`nonlocal` sin binding). Verificado que `compile()` falla
+    exactamente donde falla `symtable`, con el mismo msg -- o sea que "no
+    compila" es cierto en las dos, y "no parsea" era falso en una."""
+    assert any("no compila" in x for x in violaciones("def roto(:\n"))
+    semantico = "def f():\n    def g():\n        nonlocal z\n        z = 1\n"
+    ast.parse(semantico)                   # parsea: si dijera "no parsea" mentiria
+    assert any("no compila" in x for x in violaciones(semantico))
 
 
 def test_detecta_funcion_renombrada_o_ausente():
@@ -635,7 +743,7 @@ def test_detecta_definicion_duplicada_de_la_funcion():
     CERRADO ante la ambiguedad: si hay mas de una, el guard no puede saber
     cual protege."""
     m = _BASE + _ATAQUE_SHADOWING
-    assert any("definiciones" in x for x in violaciones(m)), (
+    assert any("sentencias que ligan" in x for x in violaciones(m)), (
         "dos definiciones homonimas de nivel superior: el guard audito la "
         "primera y dejo pasar la que realmente corre"
     )
@@ -670,3 +778,100 @@ def test_no_marca_homonimo_anidado_sobre_codigo_limpio():
     que uno que dice [] siempre; solo se rompe distinto."""
     assert violaciones(_DECOY_ANIDADO + _BASE) == []
     assert violaciones(_BASE + _DECOY_ANIDADO) == []
+
+
+# --------------------------------------------------------------------------
+# Los TRES terminos del analisis (ronda de correccion 6). El guard consultaba
+# el scope del modulo para el SUJETO y para nadie mas; el registro y la clase
+# del handler generico se auditaban solo dentro de la funcion, o no se
+# auditaban. Misma familia 3, los otros dos terminos.
+# --------------------------------------------------------------------------
+
+def test_detecta_religadura_del_registro_a_nivel_de_modulo():
+    """Bypass real (re-review de la ronda 5, hallado por los DOS revisores
+    por caminos distintos): re-ligar el registro en el MODULO da el mismo
+    efecto que re-ligarlo dentro de la funcion -- la llamada resuelve a un
+    impostor -- y no toca el cuerpo de _invoke_facet.
+
+    La variante grave no es exotica, es un feature flag:
+        _real = record_facet_health
+        async def record_facet_health(*a, **k):
+            if _HEALTH_OFF: return None
+    Verificado en runtime: _invoke_facet lanza y no registra nada.
+
+    No lo tapa ningun test de comportamiento: `_capture` en
+    test_facet_health_outcomes.py monkeypatchea chat_mod.record_facet_health
+    y PISA la re-ligadura. El arnes oculta esta clase de fallo por
+    construccion, asi que hay que cerrarla estaticamente."""
+    m = _BASE + "\nrecord_facet_health = lambda *a, **k: None\n"
+    assert any("se liga" in x for x in violaciones(m))
+
+
+def test_detecta_def_homonima_del_registro_a_nivel_de_modulo():
+    """Misma re-ligadura del registro por `def` en vez de por asignacion."""
+    m = _BASE + "\nasync def record_facet_health(*a, **k):\n    return None\n"
+    assert any("se liga" in x for x in violaciones(m))
+
+
+def test_detecta_religadura_del_registro_por_import_as():
+    """Sobre el ARCHIVO REAL a proposito: ahi el import legitimo ya existe,
+    asi que lo que delata el ataque es el SEGUNDO binding. Con `_BASE`, que
+    no importa nada, un solo `import as` es indistinguible del import
+    legitimo -- y por eso la regla es "UN import", no "ningun binding"."""
+    m = ARCHIVO.read_text() + "\nfrom _falso import nada as record_facet_health\n"
+    assert any("se liga" in x for x in violaciones(m))
+
+
+def test_detecta_exception_religado_a_nivel_de_modulo():
+    """TERCER TERMINO, encontrado enumerando por pedido de Fernando antes
+    de implementar la ronda 6, no atacando a ciegas.
+
+    El guard exige `except Exception` como ULTIMO handler comparando el
+    nombre contra el string "Exception". Con `Exception = ValueError` a
+    nivel de modulo ese handler deja de capturar todo, una excepcion no
+    prevista escapa SIN registrar -- exactamente la propiedad protegida --
+    y el guard daba verde. Verificado en runtime antes de escribir el fix:
+    lanzo=True, registros=[]."""
+    m = _BASE + "\nException = ValueError\n"
+    assert any("dejaria de capturar todo" in x for x in violaciones(m))
+
+
+def test_detecta_exception_ligado_localmente():
+    """El mismo tercer termino dentro de la funcion."""
+    m = _BASE.replace("    try:", "    Exception = ValueError\n    try:")
+    assert any("ligado localmente" in x for x in violaciones(m))
+
+
+def test_detecta_registro_por_atributo_de_un_impostor():
+    """Deferred de la ronda 4, cerrado en la 6: el matcheo por nombre
+    aceptaba `.attr`, asi que un objeto impostor satisfacia "registra" sin
+    llamar a la funcion real. Verificado que rompe la propiedad en runtime,
+    y que el chat.py real llama al registro como nombre suelto en las tres
+    (lineas 917, 921, 924) -- restringir a ast.Name no da falso positivo."""
+    m = _con_handler('''    except Exception as e:
+        await _fake.record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        raise
+''')
+    assert any("NO registra" in x for x in violaciones(m))
+
+
+def test_detecta_religadura_por_global_e_instalador():
+    """Encontrado atacando el propio fix de la ronda 6, y la razon por la
+    que se ataca el arreglo y no solo el codigo: la verificacion PREVIA de
+    esta via habia dado "detectado" por el motivo equivocado -- el arnes de
+    prueba ligaba el nombre por otro lado y tapaba el hueco real.
+
+    `def _i(): global X; X = impostor` + `_i()` liga el nombre del MODULO
+    desde un scope hijo. Al analizar la sentencia aislada, `is_assigned` da
+    False: la asignacion vive en el hijo. Hay que preguntarle a symtable la
+    TERCERA pregunta, `is_declared_global`.
+
+    Se fija para los tres terminos porque la via es la misma para los
+    tres."""
+    instalador = "\ndef _i():\n    global {0}\n    {0} = _impostor\n_i()\n"
+    for termino in (REGISTRO, EXCEPCION):
+        m = _BASE + instalador.format(termino)
+        assert violaciones(m), f"{termino} re-ligado por global+instalador paso en verde"
+    m = _BASE + "\nasync def _impostor(*a, **k):\n    raise RuntimeError()\n" \
+        + instalador.format(FUNCION)
+    assert violaciones(m), f"{FUNCION} re-ligado por global+instalador paso en verde"
