@@ -70,6 +70,28 @@ jobs:
       - run: pip install pytest
       - run: python -m pytest tests/test_no_fail_open_except.py -v
 
+  # La opcion B del diseno 2026-08-28 (probe_facet deja de escribir
+  # probe_error) depende de que _invoke_facet sea un envoltorio total:
+  # cuando lanza, YA registro. Sin este job esa propiedad seria tacita, y
+  # una garantia tacita es peor que la duplicacion que reemplaza -- cuando
+  # se rompe, no avisa. El test se auto-verifica por MUTACION, clasificada
+  # por familia de ataque -- la taxonomia vive en el docstring del propio
+  # archivo, que es donde se puede verificar. A proposito NO se repite aca el
+  # numero de mutaciones: es una consecuencia, no una medida, y un conteo en
+  # un comentario de YAML no lo verifica nadie (ya estuvo mal dos veces).
+  invoke-facet-envoltorio:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      - run: python -m pytest tests/test_policy_invoke_facet_envoltorio.py -v
+
   # --------------------------------------------------------------------------
   # Suite del backend, modo "sin base de datos".
   #
@@ -137,7 +159,49 @@ jobs:
       # probe_after_rebind de verdad y no solo aceptan el parámetro
       # (Hallazgo 5, 2 tests) -- medido antes/después, skip count sin
       # cambios (151).
-      JAX_CI_MIN_PASSED: "108"
+      # Subido de 108 a 120 en Task 1 del plan de la alerta que afirma la
+      # capa equivocada (2026-08-28): backend/tests/test_policy_invoke_facet_envoltorio.py
+      # agrega 12 tests sin DB (1 del codigo real, 1 de la base del arnes,
+      # 10 de deteccion de mutaciones), medido con
+      # JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q antes/despues --
+      # skip count sin cambios (151).
+      # Subido de 120 a 122 en la Ronda de correccion 1 de Task 1 (mismo
+      # dia): el guard tenia un bypass real -- _registra()/el chequeo del
+      # raise usaban ast.walk() sobre todo el subarbol del handler, asi que
+      # un record_facet_health() o un raise en una rama muerta (adentro de
+      # un `if` que nunca corre) pasaban en verde. Se endurecio a chequear
+      # sentencias DIRECTAS del nivel superior del handler, y se agregaron
+      # 2 tests de mutacion nuevos para los dos bypasses encontrados,
+      # medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q
+      # antes/despues -- skip count sin cambios (151).
+      # Subido de 122 a 124 en la Ronda de correccion 3 de Task 1 (mismo
+      # dia): otro bypass real, de una familia DISTINTA a la anterior --
+      # el guard matcheaba `record_facet_health` por NOMBRE, nunca por
+      # identidad, asi que una reasignacion local o una funcion anidada
+      # homonima anulaban el registro real sin que violaciones() lo
+      # detectara. Se agrego _nombre_ligado_localmente() (SI recorre todo
+      # el subarbol de la funcion, a proposito -- alcance distinto del
+      # chequeo de sentencias directas) y 2 tests de mutacion nuevos,
+      # medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q
+      # antes/despues -- skip count sin cambios (151).
+      # Subido de 124 a 129 en la Ronda de correccion 4 de Task 1 (mismo
+      # dia): la deteccion de la familia 3 (sustitucion de identidad)
+      # ENUMERABA tipos de nodo AST, y esa enumeracion es por construccion
+      # un subconjunto de las reglas de scoping de Python -- se le
+      # escapaban el desempaquetado de tupla y la corrupcion de alcance
+      # por rama muerta (`del`, target de `for`, `with ... as`, captura de
+      # `match/case` dentro de un `if False:`), que vuelven el nombre
+      # local a TODA la funcion y hacen que la llamada real reviente con
+      # UnboundLocalError. Se reemplazo la enumeracion por el modulo
+      # `symtable` de la stdlib (el propio compilador respondiendo que
+      # nombres son locales), asi un constructo nuevo del lenguaje queda
+      # cubierto sin tocar el guard, y se agregaron 5 tests de mutacion
+      # nuevos, medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q
+      # antes/despues -- skip count sin cambios (151).
+      # +1 (141 -> 142): test_detecta_star_import_a_nivel_de_modulo, el
+      # unico test agregado en el cierre de M-1. Identificado por nombre,
+      # no cuadrado: skip count sin cambios (151).
+      JAX_CI_MIN_PASSED: "142"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
