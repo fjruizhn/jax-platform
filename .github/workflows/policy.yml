@@ -74,7 +74,7 @@ jobs:
   # probe_error) depende de que _invoke_facet sea un envoltorio total:
   # cuando lanza, YA registro. Sin este job esa propiedad seria tacita, y
   # una garantia tacita es peor que la duplicacion que reemplaza -- cuando
-  # se rompe, no avisa. El test se auto-verifica con 19 mutaciones (ver
+  # se rompe, no avisa. El test se auto-verifica con 23 mutaciones (ver
   # la taxonomia de familias de ataque en el docstring del propio archivo).
   invoke-facet-envoltorio:
     runs-on: ubuntu-latest
@@ -195,7 +195,7 @@ jobs:
       # cubierto sin tocar el guard, y se agregaron 5 tests de mutacion
       # nuevos, medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q
       # antes/despues -- skip count sin cambios (151).
-      JAX_CI_MIN_PASSED: "129"
+      JAX_CI_MIN_PASSED: "134"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
