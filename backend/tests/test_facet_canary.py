@@ -169,8 +169,23 @@ def test_invoke_facet_default_source_pertenece_a_SOURCES():
     assert default_source in fh.SOURCES
 
 
-def test_probe_facet_registra_probe_error_si_falla_antes_de_invocar(monkeypatch):
-    async def boom(*a, **k): raise RuntimeError("no pude leer config")
+def test_probe_facet_NO_registra_cuando_invoke_facet_lanza(monkeypatch):
+    """El corazon de la opcion B (diseno 2026-08-28).
+
+    Cuando _invoke_facet lanza, YA registro el evento clasificado
+    (provider_error / config_error / ...) antes de re-lanzar -- es un
+    envoltorio total, propiedad protegida por
+    tests/test_policy_invoke_facet_envoltorio.py. Un probe_error de
+    probe_facet seria una SEGUNDA fila para la misma causa, ~800us mas
+    nueva, y el lector (jacobs/facet_health.py, repo jax) toma MAX(ts):
+    ganaria la generica y la alerta diria "la sonda fallo" en vez de la
+    causa accionable.
+
+    El valor de retorno NO cambia: probe_facet sigue devolviendo
+    'probe_error' para que probe_all pueda contar sondeos fallidos sin
+    tocar la DB."""
+    async def boom(*a, **k):
+        raise RuntimeError("el proveedor devolvio 502")
     monkeypatch.setattr(facet_canary, "_invoke_facet", boom)
     recorded = []
     async def fake_record(facet, outcome, source, detail=None):
@@ -179,7 +194,29 @@ def test_probe_facet_registra_probe_error_si_falla_antes_de_invocar(monkeypatch)
 
     out = asyncio.run(facet_canary.probe_facet("thot", _config(), "canary_periodic"))
     assert out == "probe_error"
-    assert recorded == [("thot", "probe_error")]
+    assert recorded == [], f"probe_facet escribio de mas: {recorded}"
+
+
+def test_probe_after_rebind_SI_registra_cuando_falla_antes_de_invocar(monkeypatch):
+    """La otra mitad: aca probe_error SI es el unico evento.
+
+    probe_after_rebind puede fallar ANTES de llegar a _invoke_facet
+    (invalidate_facet_cache, _load_config), y en ese camino nadie mas
+    escribio. Sin este registro el fallo quedaria solo en el journal.
+    Este test existe para que la Task 2 no se lleve puesta esa mitad."""
+    def explota():
+        raise RuntimeError("config.toml ilegible")
+    monkeypatch.setattr(facet_canary, "_load_config", explota)
+    monkeypatch.setattr(facet_canary, "invalidate_facet_cache", lambda k: True)
+    monkeypatch.setattr(facet_canary, "CANARY_INTERVAL_SECONDS", 3600)
+    recorded = []
+    async def fake_record(facet, outcome, source, detail=None):
+        recorded.append((facet, outcome, source)); return True
+    monkeypatch.setattr(facet_canary, "record_facet_health", fake_record)
+
+    out = asyncio.run(facet_canary.probe_after_rebind("thot"))
+    assert out == "probe_error"
+    assert recorded == [("thot", "probe_error", "canary_rebind")]
 
 
 def test_el_loop_NO_EJECUTA_NINGUNA_SONDA_bajo_pytest(monkeypatch):

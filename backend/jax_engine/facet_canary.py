@@ -89,16 +89,40 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
     La sonda pasa por el gate igual que el chat real, porque invoca la
     MISMA funcion: los estados gate_denied y gate_unreachable solo ocurren
     DENTRO del gate. Una sonda que resolviera el facet por su cuenta y
-    llamara al proveedor directo seria ciega a los dos."""
+    llamara al proveedor directo seria ciega a los dos.
+
+    Cuando la invocacion falla, NO escribe: la capa de abajo ya registro el
+    evento clasificado. Devuelve 'probe_error' igual, como valor de
+    retorno, para que probe_all pueda contar sondeos fallidos sin consultar
+    la DB."""
     try:
         await _invoke_facet(facet, config, CANARY_USER_ID, CANARY_MESSAGE,
                             source=source)
         return None
-    except Exception as e:
-        # La sonda no llego a completar la invocacion. Un detector que falla
-        # produce un evento, no un silencio.
-        await record_facet_health(
-            facet, OUTCOME_PROBE_ERROR, source, f"{type(e).__name__}: {e}")
+    except Exception:
+        # NO se registra aca -- decision de diseno, no un olvido.
+        #
+        # `_invoke_facet` es un envoltorio TOTAL: cuando lanza, ya escribio
+        # el evento clasificado (provider_error / config_error / ...) antes
+        # de re-lanzar. Un `probe_error` aca seria una SEGUNDA fila para la
+        # misma causa, ~800us mas nueva; el lector (jacobs/facet_health.py,
+        # repo jax) toma MAX(ts) por facet, asi que ganaria la generica y la
+        # alerta diria "la sonda fallo" en vez de nombrar la causa
+        # accionable. Evidencia real del 2026-08-27:
+        #
+        #   ada  probe_error   canary_rebind  ModelDispatchConfigError: ...  18:02:45.443634
+        #   ada  config_error  canary_rebind  ModelDispatchConfigError: ...  18:02:45.442861
+        #
+        # La propiedad de la que esto depende no es una suposicion: la
+        # protege tests/test_policy_invoke_facet_envoltorio.py, que corre en
+        # CI y se verifico rompiendolo.
+        #
+        # Esto NO es fail-open: el evento existe, lo escribio la capa de
+        # abajo con mas informacion. El caso en que NADIE escribio --
+        # fallar antes de llegar a _invoke_facet -- lo cubre el `except` de
+        # probe_after_rebind, que sigue registrando.
+        #
+        # Ver docs/superpowers/specs/2026-08-28-alerta-capa-equivocada-design.md
         return OUTCOME_PROBE_ERROR
 
 
