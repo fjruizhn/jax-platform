@@ -161,7 +161,16 @@ jobs:
       # 10 de deteccion de mutaciones), medido con
       # JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q antes/despues --
       # skip count sin cambios (151).
-      JAX_CI_MIN_PASSED: "120"
+      # Subido de 120 a 122 en la Ronda de correccion 1 de Task 1 (mismo
+      # dia): el guard tenia un bypass real -- _registra()/el chequeo del
+      # raise usaban ast.walk() sobre todo el subarbol del handler, asi que
+      # un record_facet_health() o un raise en una rama muerta (adentro de
+      # un `if` que nunca corre) pasaban en verde. Se endurecio a chequear
+      # sentencias DIRECTAS del nivel superior del handler, y se agregaron
+      # 2 tests de mutacion nuevos para los dos bypasses encontrados,
+      # medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q
+      # antes/despues -- skip count sin cambios (151).
+      JAX_CI_MIN_PASSED: "122"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

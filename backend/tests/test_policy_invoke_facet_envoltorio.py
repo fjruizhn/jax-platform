@@ -15,13 +15,18 @@ en silencio el dia que alguien agregue una linea fuera del `try`, un
 decorador, o quite el `except Exception` generico.
 
 No verifica que hoy este bien: DETECTA LA MUTACION. Los tests de abajo
-mutan el codigo a proposito de 9 formas y exigen que cada una sea
-detectada. Dos de esas 9 (quitar el handler generico, y un archivo que no
+mutan el codigo a proposito de 12 formas y exigen que cada una sea
+detectada. Dos de esas 12 (quitar el handler generico, y un archivo que no
 parsea) salieron de atacar ESTE TEST, no el codigo: la primera version las
-dejaba pasar en verde. Por eso el handler generico como ULTIMO handler es
-un requisito del diseno y no una preferencia de estilo -- sin el, una
-excepcion no prevista escapa sin registrar, que es exactamente la
-propiedad que este archivo existe para proteger.
+dejaba pasar en verde. Otras dos (registro seguido de un `raise` en una
+rama muerta, y un registro adentro de un `if` que nunca se activa)
+salieron de la Ronda de correccion 1: `ast.walk()` sobre el subarbol
+completo del handler dejaba pasar en verde un `record_facet_health` y un
+`raise` que EXISTIAN en el codigo pero nunca se ejecutaban de verdad. Por
+eso el handler generico como ULTIMO handler es un requisito del diseno y
+no una preferencia de estilo -- sin el, una excepcion no prevista escapa
+sin registrar, que es exactamente la propiedad que este archivo existe
+para proteger.
 
 Que NO cubre (limite declarado, no se amplia a proposito)
 --------------------------------------------------------
@@ -52,9 +57,41 @@ def _nombre_llamada(call: ast.Call) -> str | None:
     return getattr(call.func, "id", getattr(call.func, "attr", None))
 
 
-def _registra(nodo: ast.AST) -> bool:
-    return any(isinstance(c, ast.Call) and _nombre_llamada(c) == REGISTRO
-               for c in ast.walk(nodo))
+def _es_llamada_directa(stmt: ast.stmt, nombre: str) -> bool:
+    """True si `stmt` ES (no CONTIENE) una llamada directa a `nombre`,
+    opcionalmente envuelta en `await`.
+
+    A proposito NO usa ast.walk ni baja a subarboles: una llamada dentro
+    de un `if`, un `try` anidado, un `while`, un `with` o una funcion
+    anidada puede estar en el codigo fuente sin ejecutarse nunca de
+    verdad. Bypass real encontrado en la Ronda de correccion 1: un
+    `except Exception` con `if algo_que_nunca_es_true(): await
+    record_facet_health(...)` pasaba en verde porque `ast.walk(h)`
+    encontraba la llamada en cualquier parte del subarbol del handler."""
+    if not isinstance(stmt, ast.Expr):
+        return False
+    val = stmt.value
+    if isinstance(val, ast.Await):
+        val = val.value
+    return isinstance(val, ast.Call) and _nombre_llamada(val) == nombre
+
+
+def _registra_directo(cuerpo: list[ast.stmt]) -> bool:
+    """True si alguna sentencia DIRECTA (nivel superior) de `cuerpo` es
+    una llamada incondicional a REGISTRO."""
+    return any(_es_llamada_directa(s, REGISTRO) for s in cuerpo)
+
+
+def _relanza_directo(cuerpo: list[ast.stmt]) -> bool:
+    """True si alguna sentencia DIRECTA (nivel superior) de `cuerpo` es
+    un `raise` incondicional.
+
+    A proposito NO usa ast.walk: un `raise` dentro de un `if False:`
+    esta en el subarbol del handler pero nunca se ejecuta -- ese es el
+    otro bypass real de la Ronda de correccion 1 (registra y despues
+    TRAGA la excepcion con un `raise` en una rama muerta seguido de un
+    `return`)."""
+    return any(isinstance(s, ast.Raise) for s in cuerpo)
 
 
 def violaciones(codigo: str) -> list[str]:
@@ -96,17 +133,17 @@ def violaciones(codigo: str) -> list[str]:
                  f"registrar")
 
     for s in cuerpo[i + 1:]:
-        if not (isinstance(s, ast.Return) or _registra(s)):
+        if not (isinstance(s, ast.Return) or _es_llamada_directa(s, REGISTRO)):
             v.append(f"sentencia en linea {s.lineno} DESPUES del try que no "
                      f"registra ni es return")
 
     for h in t.handlers:
         etiq = (getattr(h.type, "id", getattr(h.type, "attr", "?"))
                 if h.type else "bare")
-        if not _registra(h):
+        if not _registra_directo(h.body):
             v.append(f"handler {etiq} (linea {h.lineno}) NO registra antes "
                      f"de propagar")
-        if not any(isinstance(c, ast.Raise) for c in ast.walk(h)):
+        if not _relanza_directo(h.body):
             v.append(f"handler {etiq} (linea {h.lineno}) NO re-lanza: seria "
                      f"fail-open")
 
@@ -128,7 +165,7 @@ def test_el_codigo_real_cumple_la_politica():
 
 
 # --------------------------------------------------------------------------
-# Auto-verificacion: las 9 mutaciones tienen que ser DETECTADAS.
+# Auto-verificacion: las 12 mutaciones tienen que ser DETECTADAS.
 # Sin estos tests, `violaciones()` podria devolver [] siempre y el guard
 # seria un no-op verde -- el patron exacto del scanner P10 verde sobre cero
 # archivos (CONTEXT.md, primera leccion de metodo).
@@ -219,3 +256,36 @@ def test_detecta_archivo_que_no_parsea():
 
 def test_detecta_funcion_renombrada_o_ausente():
     assert any("no existe" in x for x in violaciones("def otra_cosa():\n    pass\n"))
+
+
+def test_detecta_raise_en_rama_muerta():
+    """Bypass real (Ronda de correccion 1): registra y despues TRAGA la
+    excepcion -- el `raise` esta en el subarbol del handler (adentro de
+    un `if False:`) pero nunca se ejecuta. `ast.walk(h)` lo encontraba y
+    daba `[]` (verde); el chequeo directo sobre `h.body` no."""
+    m = _BASE.replace('''    except Exception as e:
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        raise
+''', '''    except Exception as e:
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        if False:
+            raise
+        return "", None
+''')
+    assert any("NO re-lanza" in x for x in violaciones(m))
+
+
+def test_detecta_registro_condicional_que_nunca_corre():
+    """Bypass real (Ronda de correccion 1): el registro esta en el
+    subarbol del handler, pero adentro de un `if` que nunca se activa --
+    nunca corre de verdad. `ast.walk(h)` lo encontraba y daba `[]`
+    (verde); el chequeo directo sobre `h.body` no."""
+    m = _BASE.replace('''    except Exception as e:
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        raise
+''', '''    except Exception as e:
+        if os.environ.get("FLAG_QUE_NUNCA_SE_ACTIVA"):
+            await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        raise
+''')
+    assert any("NO registra" in x for x in violaciones(m))
