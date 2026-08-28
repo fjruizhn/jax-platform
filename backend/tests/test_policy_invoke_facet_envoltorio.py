@@ -92,6 +92,17 @@ requisito del diseno y no una preferencia de estilo -- sin el, una
 excepcion no prevista escapa sin registrar, que es exactamente la
 propiedad que este archivo existe para proteger.
 
+   `from x import *` entra aca y esta CERRADO: liga cualquiera de los tres
+   terminos por la unica via que symtable no reporta (sobre esa sentencia
+   `get_identifiers()` devuelve [], verificado; propiedad rota en runtime,
+   tambien verificada). Se falla CERRADO ante el star import en vez de
+   adivinar que trae el modulo -- unica excepcion legitima a la regla de no
+   enumerar constructos, porque es donde la fuente de verdad declara que no
+   sabe. No se dejo como limite declarado por el criterio que fijo el
+   alcance: un hallazgo lateral que es un BYPASS de la propiedad que la
+   ronda esta cerrando es parte del alcance; una PROPIEDAD DISTINTA seria
+   ampliarlo.
+
 Que NO cubre (limite declarado, no se amplia a proposito)
 --------------------------------------------------------
 Es estatico sobre `_invoke_facet` y solo sobre ella. NO verifica que
@@ -299,6 +310,24 @@ def violaciones(codigo: str) -> list[str]:
     except SyntaxError as e:
         return [f"el archivo no compila ({e.msg}, linea {e.lineno}): "
                 f"el test no puede verificar nada"]
+
+    # `from x import *` liga nombres que NINGUNA de las tres preguntas de
+    # `_ligaduras_de_modulo` puede ver: sobre esa sentencia symtable no
+    # reporta identificador alguno (`get_identifiers()` -> []), asi que
+    # cualquiera de los TRES terminos se re-liga en verde. Es el unico
+    # punto donde enumerar un constructo es legitimo -- no es suplir a la
+    # fuente de verdad, es leer donde ella declara que no sabe -- y se
+    # resuelve fallando CERRADO, no intentando adivinar que trae el modulo.
+    # `ast.walk` y no `arbol.body`: el star import es ilegal dentro de una
+    # funcion (SyntaxError, verificado) pero SI es legal anidado en un `if`
+    # de nivel de modulo, donde liga igual en el namespace del modulo y el
+    # barrido del nivel superior no lo ve.
+    if any(isinstance(s, ast.ImportFrom) and s.names[0].name == "*"
+           for s in ast.walk(arbol)):
+        return ["hay un `from ... import *` de nivel superior: la tabla de "
+                "simbolos no reporta que nombres liga, asi que el guard no "
+                "puede afirmar que ninguno de los tres terminos resuelva a "
+                "lo que parece. Falla cerrado"]
 
     candidatos = sorted(
         (n for n in ast.walk(arbol)
@@ -875,3 +904,41 @@ def test_detecta_religadura_por_global_e_instalador():
     m = _BASE + "\nasync def _impostor(*a, **k):\n    raise RuntimeError()\n" \
         + instalador.format(FUNCION)
     assert violaciones(m), f"{FUNCION} re-ligado por global+instalador paso en verde"
+
+
+def test_detecta_star_import_a_nivel_de_modulo():
+    """`from x import *` re-liga CUALQUIERA de los tres terminos por una via
+    que `symtable` no reporta: sobre la sentencia aislada
+    `get_identifiers()` devuelve `[]` (verificado), asi que las tres
+    preguntas de `_ligaduras_de_modulo` -- `is_assigned`, `is_imported`,
+    `is_declared_global` -- se hacen sobre un nombre que la tabla ni
+    menciona, y el guard aprueba.
+
+    Propiedad ROTA en runtime, verificada antes de escribir el fix: con
+    `from _otro import *` despues de la definicion real del registro, una
+    excepcion del dispatch se propaga y el escritor REAL no registro nada
+    (`REGISTROS == []`) -- el impostor del otro modulo se comio la llamada.
+    Es exactamente el fallo que este archivo existe para impedir.
+
+    No es una familia nueva: es la MISMA re-ligadura del sujeto y del
+    registro (familias 3 y 5) por otra via. Se cierra FALLANDO CERRADO,
+    sin enumerar: el star import es el punto exacto donde la fuente de
+    verdad declara que no sabe, y esa es la unica excepcion legitima a la
+    regla de no enumerar constructos."""
+    for termino in (FUNCION, REGISTRO, EXCEPCION):
+        m = _BASE + f"\nfrom _otro import *  # re-liga {termino}\n"
+        assert any("import *" in x for x in violaciones(m)), (
+            f"star import que puede re-ligar {termino} paso en verde")
+    # Anidado en un `if` de nivel de modulo liga exactamente igual, y un
+    # barrido de `arbol.body` no lo ve (bypass real de la primera version
+    # de este fix, encontrado atacandolo). Dentro de una FUNCION no hace
+    # falta cubrirlo: el lenguaje lo prohibe (SyntaxError, verificado), y
+    # ese caso ya cae en "el archivo no compila".
+    m = _BASE + "\nif _flag:\n    pass\nelse:\n    from _otro import *\n"
+    assert any("import *" in x for x in violaciones(m)), (
+        "star import anidado en un if de nivel de modulo paso en verde")
+
+    # Y el mensaje tiene que nombrar la CAUSA (la tabla de simbolos no
+    # reporta nada), no la capa donde se detecto.
+    assert any("tabla de simbolos" in x
+               for x in violaciones(_BASE + "\nfrom _otro import *\n"))

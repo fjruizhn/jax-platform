@@ -242,6 +242,26 @@ sí. El test falla y dice por qué.
   `chat_mod.record_facet_health` y pisa la re-ligadura — y por eso la
   re-ligadura del registro se cierra estáticamente (Ronda de corrección 6).
 
+- **`from x import *` — CERRADO, y la razón por la que no quedó como
+  límite.** Un star import de nivel de módulo re-liga cualquiera de los tres
+  términos por una vía que `symtable` no reporta (`get_identifiers()` sobre
+  esa sentencia devuelve `[]`, verificado), así que las tres preguntas de
+  `_ligaduras_de_modulo` se hacen sobre un nombre que la tabla ni menciona.
+  Verificado en runtime antes del fix: el escritor real no registró nada
+  (`REGISTROS == []`) mientras la excepción se propagaba. Se cierra
+  **fallando cerrado** ante `ast.ImportFrom` con `names[0].name == "*"` —
+  la única excepción legítima a la regla de no enumerar constructos, porque
+  es el punto exacto donde la fuente de verdad declara que no sabe. Barrido
+  con `ast.walk` y no sobre el nivel superior: anidado en un `if` de módulo
+  liga igual (bypass encontrado atacando este mismo fix); dentro de una
+  función el lenguaje lo prohíbe.
+  **Criterio que fijó el alcance, y vale para futuras rondas acotadas:** un
+  hallazgo lateral que es un **bypass de la propiedad que la ronda está
+  cerrando** no es ampliación de alcance, es parte del alcance. Si es una
+  **propiedad distinta**, sí lo es. Dejarlo abierto contradecía el criterio
+  que gobierna la sub-ronda entera: la Task 2 elimina una escritura
+  apoyándose en este guard.
+
 **Criterio de cierre (octava lección de método):** el test corre en un job
 de CI, y eso se verifica **rompiéndolo con el job real**, no localmente.
 Que aparezca en `policy.yml` y salga verde no alcanza.

@@ -198,7 +198,10 @@ jobs:
       # cubierto sin tocar el guard, y se agregaron 5 tests de mutacion
       # nuevos, medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q
       # antes/despues -- skip count sin cambios (151).
-      JAX_CI_MIN_PASSED: "141"
+      # +1 (141 -> 142): test_detecta_star_import_a_nivel_de_modulo, el
+      # unico test agregado en el cierre de M-1. Identificado por nombre,
+      # no cuadrado: skip count sin cambios (151).
+      JAX_CI_MIN_PASSED: "142"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
