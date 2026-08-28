@@ -31,11 +31,25 @@ medida:
    `record_facet_health` o un `raise` que EXISTIAN en el codigo pero nunca
    se ejecutaban de verdad.
 3. Sustitucion de identidad -- el control esta y CORRE, pero el nombre no
-   resuelve a la funcion real: reasignacion local (`record_facet_health =
-   lambda ...`), funcion anidada homonima, `import ... as`, un parametro
-   con el mismo nombre. Cubierta desde la Ronda de correccion 3, que
-   encontro que el matcheo por NOMBRE (no por identidad) dejaba pasar en
-   verde un homonimo local que anulaba la llamada real.
+   resuelve a la funcion real. Detectada NO enumerando constructos del
+   lenguaje, sino PREGUNTANDOLE AL COMPILADOR: `symtable` es la propia
+   tabla de simbolos que arma CPython, y responde si `record_facet_health`
+   es local al scope de `_invoke_facet`. Ese cambio es el punto: la
+   enumeracion de nodos AST (`Assign`, `FunctionDef`, `NamedExpr`,
+   `import ... as`, ...) era un SUBCONJUNTO de las reglas de scoping de
+   Python y siempre lo iba a ser -- se le escapaban el desempaquetado de
+   tupla, `del`, el target de un `for`, `with ... as`, la captura de
+   `match/case`. Con `symtable`, un constructo NUEVO del lenguaje queda
+   cubierto sin tocar el guard: era exactamente el techo del enfoque
+   anterior (`match/case` llego en 3.10 y este backend corre 3.14 -- la
+   lista enumerada nunca iba a estar completa).
+
+   La CORRUPCION DE ALCANCE POR RAMA MUERTA entra aca y NO en la familia
+   2: un `del record_facet_health` (o un `for`, un `with ... as`, un
+   `case`) dentro de un `if False:` vuelve el nombre LOCAL para TODA la
+   funcion segun las reglas de CPython, asi que la llamada real -- que es
+   directa e incondicional -- revienta con `UnboundLocalError`. No es
+   inalcanzabilidad del control: es identidad rota ANTES de la llamada.
 4. Argumentos incorrectos -- registra de verdad, con la funcion real, pero
    con el outcome equivocado (ej. `ModelDispatchConfigError` escribe `ok`
    en vez de `config_error`). FUERA POR DISEÑO, no un descuido: eso es
@@ -44,7 +58,7 @@ medida:
    Un guard estatico que tambien intentara verificar argumentos terminaria
    reimplementando esos tests, peor.
 
-Las 14 mutaciones de abajo son la cobertura ACTUAL de las familias 1-3.
+Las 19 mutaciones de abajo son la cobertura ACTUAL de las familias 1-3.
 Dos de ellas (quitar el handler generico, y un archivo que no parsea)
 salieron de atacar ESTE TEST, no el codigo: la primera version las dejaba
 pasar en verde. Por eso el handler generico como ULTIMO handler es un
@@ -70,6 +84,7 @@ Ver docs/superpowers/specs/2026-08-28-alerta-capa-equivocada-design.md
 from __future__ import annotations
 
 import ast
+import symtable
 from pathlib import Path
 
 FUNCION = "_invoke_facet"
@@ -118,62 +133,51 @@ def _relanza_directo(cuerpo: list[ast.stmt]) -> bool:
     return any(isinstance(s, ast.Raise) for s in cuerpo)
 
 
-def _nombre_ligado_localmente(fn: ast.AST, nombre: str) -> int | None:
-    """Devuelve la linea donde `nombre` queda ligado LOCALMENTE en
-    cualquier parte de `fn` (parametro, `Assign`, `AnnAssign`,
-    `AugAssign`, `FunctionDef`/`AsyncFunctionDef`, `NamedExpr` (`:=`), o
-    `import ... as`), o None si no se liga en ningun lado.
+def _scope_de_funcion(scope: symtable.SymbolTable, funcion: str):
+    """Busca RECURSIVAMENTE el scope de `funcion` entre los hijos de
+    `scope`, o None si no aparece.
 
-    A proposito SI recorre TODO el subarbol de la funcion (ast.walk): una
-    ligadura local en CUALQUIER parte del cuerpo contamina el scope
-    entero, a diferencia de `_registra_directo`/`_relanza_directo`, que
-    son deliberadamente de nivel superior. Son dos criterios con alcances
-    distintos A PROPOSITO -- no unificar: uno pregunta "esta sentencia
-    corre sin condiciones", el otro pregunta "el nombre significa lo que
-    parece en TODA la funcion".
-
-    Bypass real (Ronda de correccion 3): `violaciones()` matcheaba la
-    llamada por NOMBRE (`_nombre_llamada`), nunca por identidad. Una
-    reasignacion local (`record_facet_health = lambda *a, **k: None`) o
-    una funcion anidada homonima hacen que `await record_facet_health(...)`
-    siga pareciendo un registro real para el analizador, sin serlo."""
-    args = fn.args
-    parametros = (
-        list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs)
-        + ([args.vararg] if args.vararg else [])
-        + ([args.kwarg] if args.kwarg else [])
-    )
-    for a in parametros:
-        if a.arg == nombre:
-            return a.lineno
-
-    for nodo in ast.walk(fn):
-        if nodo is fn:
-            continue
-        if (isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and nodo.name == nombre):
-            return nodo.lineno
-        if isinstance(nodo, ast.Assign):
-            for t in nodo.targets:
-                if isinstance(t, ast.Name) and t.id == nombre:
-                    return nodo.lineno
-        if isinstance(nodo, (ast.AnnAssign, ast.AugAssign)):
-            if isinstance(nodo.target, ast.Name) and nodo.target.id == nombre:
-                return nodo.lineno
-        if isinstance(nodo, ast.NamedExpr):
-            if isinstance(nodo.target, ast.Name) and nodo.target.id == nombre:
-                return nodo.lineno
-        if isinstance(nodo, (ast.Import, ast.ImportFrom)):
-            for alias in nodo.names:
-                if (alias.asname or alias.name) == nombre:
-                    return nodo.lineno
+    Recursivo a proposito: hoy `_invoke_facet` es de nivel superior, pero
+    el guard no deberia depender de eso -- si maniana queda anidada en un
+    `if TYPE_CHECKING:`, en una clase o en otra funcion, la politica
+    tiene que seguir aplicandose."""
+    for hijo in scope.get_children():
+        if hijo.get_type() == "function" and hijo.get_name() == funcion:
+            return hijo
+        encontrado = _scope_de_funcion(hijo, funcion)
+        if encontrado is not None:
+            return encontrado
     return None
+
+
+def _ligado_localmente(scope: symtable.SymbolTable, nombre: str) -> bool:
+    """True si `nombre` es LOCAL al scope de la funcion, segun la tabla de
+    simbolos que arma el propio compilador de CPython.
+
+    No enumera constructos: le PREGUNTA al compilador. La version anterior
+    (Ronda de correccion 3) listaba tipos de nodo AST -- `Assign`,
+    `AnnAssign`, `FunctionDef`, `NamedExpr`, `import ... as`, parametros --
+    y esa lista es por construccion un subconjunto de las reglas de
+    scoping de Python. Bypasses reales que la atravesaban en verde:
+    desempaquetado de tupla, y corrupcion de alcance por rama muerta
+    (`del`, target de `for`, `with ... as`, captura de `match/case` dentro
+    de un `if False:`), que vuelven el nombre local para TODA la funcion y
+    hacen que la llamada real reviente con `UnboundLocalError`.
+
+    `symtable` cubre todos esos, y tambien los que el lenguaje agregue
+    despues, sin tocar este archivo."""
+    try:
+        s = scope.lookup(nombre)
+    except KeyError:
+        return False
+    return s.is_local() or s.is_assigned()
 
 
 def violaciones(codigo: str) -> list[str]:
     """Devuelve [] si _invoke_facet es un envoltorio total; motivos si no."""
     try:
         arbol = ast.parse(codigo)
+        tabla = symtable.symtable(codigo, "<policy>", "exec")
     except SyntaxError as e:
         return [f"el archivo no parsea ({e.msg}, linea {e.lineno}): "
                 f"el test no puede verificar nada"]
@@ -185,12 +189,19 @@ def violaciones(codigo: str) -> list[str]:
         return [f"{FUNCION} no existe (renombrada?): la politica no aplica "
                 f"a nada y eso ya es una violacion"]
 
+    scope = _scope_de_funcion(tabla, FUNCION)
+    if scope is None:
+        return [f"{FUNCION} no aparece en la tabla de simbolos "
+                f"(renombrada?): la politica no aplica a nada y eso ya es "
+                f"una violacion"]
+
     v: list[str] = []
-    lig = _nombre_ligado_localmente(fn, REGISTRO)
-    if lig is not None:
-        v.append(f"`{REGISTRO}` queda ligado localmente en la linea {lig}: "
-                 f"la llamada matchea por nombre, no por identidad -- un "
-                 f"homonimo local anula el registro real")
+    if _ligado_localmente(scope, REGISTRO):
+        v.append(f"`{REGISTRO}` queda ligado localmente en el scope de "
+                 f"{FUNCION} (segun symtable): la llamada matchea por "
+                 f"nombre, no por identidad -- un homonimo local, o una "
+                 f"corrupcion de alcance en una rama muerta, anula el "
+                 f"registro real")
     if fn.decorator_list:
         v.append(f"tiene {len(fn.decorator_list)} decorador(es): pueden "
                  f"lanzar antes de que el cuerpo corra, sin registrar")
@@ -246,7 +257,7 @@ def test_el_codigo_real_cumple_la_politica():
 
 
 # --------------------------------------------------------------------------
-# Auto-verificacion: las 14 mutaciones de las familias 1-3 (ver docstring
+# Auto-verificacion: las 19 mutaciones de las familias 1-3 (ver docstring
 # del modulo) tienen que ser DETECTADAS.
 # Sin estos tests, `violaciones()` podria devolver [] siempre y el guard
 # seria un no-op verde -- el patron exacto del scanner P10 verde sobre cero
@@ -400,6 +411,81 @@ def test_detecta_funcion_anidada_homonima():
         async def record_facet_health(*a, **k):
             return None
         await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        raise
+''')
+    assert any("queda ligado localmente" in x for x in violaciones(m))
+
+
+def _con_handler(nuevo_handler: str) -> str:
+    """Reemplaza el `except Exception` de la base por `nuevo_handler`."""
+    return _BASE.replace('''    except Exception as e:
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        raise
+''', nuevo_handler)
+
+
+def test_detecta_desempaquetado_de_tupla():
+    """Variante trivial de la reasignacion que la Ronda de correccion 3
+    creia haber cerrado: la enumeracion de nodos miraba `Assign` con
+    target `Name`, pero un target `Tuple` liga igual. symtable no ve la
+    diferencia porque no mira la forma del target: mira el scope."""
+    m = _con_handler('''    except Exception as e:
+        record_facet_health, _basura = (lambda *a, **k: None), None
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        raise
+''')
+    assert any("queda ligado localmente" in x for x in violaciones(m))
+
+
+def test_detecta_del_en_rama_muerta():
+    """Corrupcion de alcance: `del` en una rama que NUNCA corre vuelve el
+    nombre local para TODA la funcion. La llamada real, directa e
+    incondicional, revienta con UnboundLocalError -- no registra nada."""
+    m = _con_handler('''    except Exception as e:
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        if False:
+            del record_facet_health
+        raise
+''')
+    assert any("queda ligado localmente" in x for x in violaciones(m))
+
+
+def test_detecta_target_de_for_en_rama_muerta():
+    """Misma corrupcion de alcance, via el target de un `for`."""
+    m = _con_handler('''    except Exception as e:
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        if False:
+            for record_facet_health in []:
+                pass
+        raise
+''')
+    assert any("queda ligado localmente" in x for x in violaciones(m))
+
+
+def test_detecta_with_as_en_rama_muerta():
+    """Misma corrupcion de alcance, via `with ... as`."""
+    m = _con_handler('''    except Exception as e:
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        if False:
+            with _algo() as record_facet_health:
+                pass
+        raise
+''')
+    assert any("queda ligado localmente" in x for x in violaciones(m))
+
+
+def test_detecta_captura_de_match_case_en_rama_muerta():
+    """Misma corrupcion de alcance, via la captura de un `case`.
+
+    `match/case` llego en Python 3.10: es el ejemplo canonico de por que
+    enumerar constructos era un techo -- el guard anterior se escribio sin
+    conocerlo y no habia forma de que lo cubriera."""
+    m = _con_handler('''    except Exception as e:
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        if False:
+            match e:
+                case record_facet_health:
+                    pass
         raise
 ''')
     assert any("queda ligado localmente" in x for x in violaciones(m))

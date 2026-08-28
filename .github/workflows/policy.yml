@@ -74,7 +74,7 @@ jobs:
   # probe_error) depende de que _invoke_facet sea un envoltorio total:
   # cuando lanza, YA registro. Sin este job esa propiedad seria tacita, y
   # una garantia tacita es peor que la duplicacion que reemplaza -- cuando
-  # se rompe, no avisa. El test se auto-verifica con 14 mutaciones (ver
+  # se rompe, no avisa. El test se auto-verifica con 19 mutaciones (ver
   # la taxonomia de familias de ataque en el docstring del propio archivo).
   invoke-facet-envoltorio:
     runs-on: ubuntu-latest
@@ -181,7 +181,21 @@ jobs:
       # chequeo de sentencias directas) y 2 tests de mutacion nuevos,
       # medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q
       # antes/despues -- skip count sin cambios (151).
-      JAX_CI_MIN_PASSED: "124"
+      # Subido de 124 a 129 en la Ronda de correccion 4 de Task 1 (mismo
+      # dia): la deteccion de la familia 3 (sustitucion de identidad)
+      # ENUMERABA tipos de nodo AST, y esa enumeracion es por construccion
+      # un subconjunto de las reglas de scoping de Python -- se le
+      # escapaban el desempaquetado de tupla y la corrupcion de alcance
+      # por rama muerta (`del`, target de `for`, `with ... as`, captura de
+      # `match/case` dentro de un `if False:`), que vuelven el nombre
+      # local a TODA la funcion y hacen que la llamada real reviente con
+      # UnboundLocalError. Se reemplazo la enumeracion por el modulo
+      # `symtable` de la stdlib (el propio compilador respondiendo que
+      # nombres son locales), asi un constructo nuevo del lenguaje queda
+      # cubierto sin tocar el guard, y se agregaron 5 tests de mutacion
+      # nuevos, medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q
+      # antes/despues -- skip count sin cambios (151).
+      JAX_CI_MIN_PASSED: "129"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
