@@ -14,19 +14,43 @@ que la duplicacion que reemplaza: cuando se rompe, no avisa. Se romperia
 en silencio el dia que alguien agregue una linea fuera del `try`, un
 decorador, o quite el `except Exception` generico.
 
-No verifica que hoy este bien: DETECTA LA MUTACION. Los tests de abajo
-mutan el codigo a proposito de 12 formas y exigen que cada una sea
-detectada. Dos de esas 12 (quitar el handler generico, y un archivo que no
-parsea) salieron de atacar ESTE TEST, no el codigo: la primera version las
-dejaba pasar en verde. Otras dos (registro seguido de un `raise` en una
-rama muerta, y un registro adentro de un `if` que nunca se activa)
-salieron de la Ronda de correccion 1: `ast.walk()` sobre el subarbol
-completo del handler dejaba pasar en verde un `record_facet_health` y un
-`raise` que EXISTIAN en el codigo pero nunca se ejecutaban de verdad. Por
-eso el handler generico como ULTIMO handler es un requisito del diseno y
-no una preferencia de estilo -- sin el, una excepcion no prevista escapa
-sin registrar, que es exactamente la propiedad que este archivo existe
-para proteger.
+No verifica que hoy este bien: DETECTA LA MUTACION -- clasificada por
+FAMILIA DE ATAQUE, NO por conteo. Un numero de tests con 100% de deteccion
+puede tapar una familia entera sin tocar: paso DOS VECES en esta misma
+task (Rondas de correccion 1 y 3). Por eso lo que se mantiene aca es esta
+lista de familias, no un numero -- si aparece una familia nueva, se agrega
+un item aca, y el numero de tests que resulta es una CONSECUENCIA, no la
+medida:
+
+1. Ausencia -- el control no esta: se quito el `raise`, el registro, o el
+   `except` generico. Cubierta desde el diseno original.
+2. Inalcanzabilidad -- el control esta ESCRITO pero no corre: `if False:`,
+   un flag que nunca se activa, cualquier rama condicional muerta.
+   Cubierta desde la Ronda de correccion 1, que encontro que `ast.walk()`
+   sobre el subarbol completo del handler dejaba pasar en verde un
+   `record_facet_health` o un `raise` que EXISTIAN en el codigo pero nunca
+   se ejecutaban de verdad.
+3. Sustitucion de identidad -- el control esta y CORRE, pero el nombre no
+   resuelve a la funcion real: reasignacion local (`record_facet_health =
+   lambda ...`), funcion anidada homonima, `import ... as`, un parametro
+   con el mismo nombre. Cubierta desde la Ronda de correccion 3, que
+   encontro que el matcheo por NOMBRE (no por identidad) dejaba pasar en
+   verde un homonimo local que anulaba la llamada real.
+4. Argumentos incorrectos -- registra de verdad, con la funcion real, pero
+   con el outcome equivocado (ej. `ModelDispatchConfigError` escribe `ok`
+   en vez de `config_error`). FUERA POR DISEÑO, no un descuido: eso es
+   comportamiento, no estructura, y lo cubren `test_facet_health_outcomes.py`
+   y los tests de la sonda, que SI conocen el significado de cada outcome.
+   Un guard estatico que tambien intentara verificar argumentos terminaria
+   reimplementando esos tests, peor.
+
+Las 14 mutaciones de abajo son la cobertura ACTUAL de las familias 1-3.
+Dos de ellas (quitar el handler generico, y un archivo que no parsea)
+salieron de atacar ESTE TEST, no el codigo: la primera version las dejaba
+pasar en verde. Por eso el handler generico como ULTIMO handler es un
+requisito del diseno y no una preferencia de estilo -- sin el, una
+excepcion no prevista escapa sin registrar, que es exactamente la
+propiedad que este archivo existe para proteger.
 
 Que NO cubre (limite declarado, no se amplia a proposito)
 --------------------------------------------------------
@@ -94,6 +118,58 @@ def _relanza_directo(cuerpo: list[ast.stmt]) -> bool:
     return any(isinstance(s, ast.Raise) for s in cuerpo)
 
 
+def _nombre_ligado_localmente(fn: ast.AST, nombre: str) -> int | None:
+    """Devuelve la linea donde `nombre` queda ligado LOCALMENTE en
+    cualquier parte de `fn` (parametro, `Assign`, `AnnAssign`,
+    `AugAssign`, `FunctionDef`/`AsyncFunctionDef`, `NamedExpr` (`:=`), o
+    `import ... as`), o None si no se liga en ningun lado.
+
+    A proposito SI recorre TODO el subarbol de la funcion (ast.walk): una
+    ligadura local en CUALQUIER parte del cuerpo contamina el scope
+    entero, a diferencia de `_registra_directo`/`_relanza_directo`, que
+    son deliberadamente de nivel superior. Son dos criterios con alcances
+    distintos A PROPOSITO -- no unificar: uno pregunta "esta sentencia
+    corre sin condiciones", el otro pregunta "el nombre significa lo que
+    parece en TODA la funcion".
+
+    Bypass real (Ronda de correccion 3): `violaciones()` matcheaba la
+    llamada por NOMBRE (`_nombre_llamada`), nunca por identidad. Una
+    reasignacion local (`record_facet_health = lambda *a, **k: None`) o
+    una funcion anidada homonima hacen que `await record_facet_health(...)`
+    siga pareciendo un registro real para el analizador, sin serlo."""
+    args = fn.args
+    parametros = (
+        list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs)
+        + ([args.vararg] if args.vararg else [])
+        + ([args.kwarg] if args.kwarg else [])
+    )
+    for a in parametros:
+        if a.arg == nombre:
+            return a.lineno
+
+    for nodo in ast.walk(fn):
+        if nodo is fn:
+            continue
+        if (isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and nodo.name == nombre):
+            return nodo.lineno
+        if isinstance(nodo, ast.Assign):
+            for t in nodo.targets:
+                if isinstance(t, ast.Name) and t.id == nombre:
+                    return nodo.lineno
+        if isinstance(nodo, (ast.AnnAssign, ast.AugAssign)):
+            if isinstance(nodo.target, ast.Name) and nodo.target.id == nombre:
+                return nodo.lineno
+        if isinstance(nodo, ast.NamedExpr):
+            if isinstance(nodo.target, ast.Name) and nodo.target.id == nombre:
+                return nodo.lineno
+        if isinstance(nodo, (ast.Import, ast.ImportFrom)):
+            for alias in nodo.names:
+                if (alias.asname or alias.name) == nombre:
+                    return nodo.lineno
+    return None
+
+
 def violaciones(codigo: str) -> list[str]:
     """Devuelve [] si _invoke_facet es un envoltorio total; motivos si no."""
     try:
@@ -110,6 +186,11 @@ def violaciones(codigo: str) -> list[str]:
                 f"a nada y eso ya es una violacion"]
 
     v: list[str] = []
+    lig = _nombre_ligado_localmente(fn, REGISTRO)
+    if lig is not None:
+        v.append(f"`{REGISTRO}` queda ligado localmente en la linea {lig}: "
+                 f"la llamada matchea por nombre, no por identidad -- un "
+                 f"homonimo local anula el registro real")
     if fn.decorator_list:
         v.append(f"tiene {len(fn.decorator_list)} decorador(es): pueden "
                  f"lanzar antes de que el cuerpo corra, sin registrar")
@@ -165,7 +246,8 @@ def test_el_codigo_real_cumple_la_politica():
 
 
 # --------------------------------------------------------------------------
-# Auto-verificacion: las 12 mutaciones tienen que ser DETECTADAS.
+# Auto-verificacion: las 14 mutaciones de las familias 1-3 (ver docstring
+# del modulo) tienen que ser DETECTADAS.
 # Sin estos tests, `violaciones()` podria devolver [] siempre y el guard
 # seria un no-op verde -- el patron exacto del scanner P10 verde sobre cero
 # archivos (CONTEXT.md, primera leccion de metodo).
@@ -289,3 +371,35 @@ def test_detecta_registro_condicional_que_nunca_corre():
         raise
 ''')
     assert any("NO registra" in x for x in violaciones(m))
+
+
+def test_detecta_reasignacion_local_del_registro():
+    """Bypass real (Ronda de correccion 3): una reasignacion local anula
+    la llamada real -- el guard matcheaba por NOMBRE, nunca por identidad.
+    `record_facet_health = lambda *a, **k: None` deja que la llamada
+    siguiente siga pareciendo un registro real."""
+    m = _BASE.replace('''    except Exception as e:
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        raise
+''', '''    except Exception as e:
+        record_facet_health = lambda *a, **k: None
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        raise
+''')
+    assert any("queda ligado localmente" in x for x in violaciones(m))
+
+
+def test_detecta_funcion_anidada_homonima():
+    """Bypass real (Ronda de correccion 3): una funcion anidada con el
+    mismo nombre que REGISTRO no hace nada -- mismo problema de identidad
+    que la reasignacion, otra via de llegar al mismo hueco."""
+    m = _BASE.replace('''    except Exception as e:
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        raise
+''', '''    except Exception as e:
+        async def record_facet_health(*a, **k):
+            return None
+        await record_facet_health(facet, OUTCOME_PROVIDER_ERROR, source, str(e))
+        raise
+''')
+    assert any("queda ligado localmente" in x for x in violaciones(m))

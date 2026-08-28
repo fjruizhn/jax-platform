@@ -74,7 +74,8 @@ jobs:
   # probe_error) depende de que _invoke_facet sea un envoltorio total:
   # cuando lanza, YA registro. Sin este job esa propiedad seria tacita, y
   # una garantia tacita es peor que la duplicacion que reemplaza -- cuando
-  # se rompe, no avisa. El test se auto-verifica con 12 mutaciones.
+  # se rompe, no avisa. El test se auto-verifica con 14 mutaciones (ver
+  # la taxonomia de familias de ataque en el docstring del propio archivo).
   invoke-facet-envoltorio:
     runs-on: ubuntu-latest
     defaults:
@@ -170,7 +171,17 @@ jobs:
       # 2 tests de mutacion nuevos para los dos bypasses encontrados,
       # medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q
       # antes/despues -- skip count sin cambios (151).
-      JAX_CI_MIN_PASSED: "122"
+      # Subido de 122 a 124 en la Ronda de correccion 3 de Task 1 (mismo
+      # dia): otro bypass real, de una familia DISTINTA a la anterior --
+      # el guard matcheaba `record_facet_health` por NOMBRE, nunca por
+      # identidad, asi que una reasignacion local o una funcion anidada
+      # homonima anulaban el registro real sin que violaciones() lo
+      # detectara. Se agrego _nombre_ligado_localmente() (SI recorre todo
+      # el subarbol de la funcion, a proposito -- alcance distinto del
+      # chequeo de sentencias directas) y 2 tests de mutacion nuevos,
+      # medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q
+      # antes/despues -- skip count sin cambios (151).
+      JAX_CI_MIN_PASSED: "124"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
