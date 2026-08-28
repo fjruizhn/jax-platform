@@ -70,6 +70,24 @@ jobs:
       - run: pip install pytest
       - run: python -m pytest tests/test_no_fail_open_except.py -v
 
+  # La opcion B del diseno 2026-08-28 (probe_facet deja de escribir
+  # probe_error) depende de que _invoke_facet sea un envoltorio total:
+  # cuando lanza, YA registro. Sin este job esa propiedad seria tacita, y
+  # una garantia tacita es peor que la duplicacion que reemplaza -- cuando
+  # se rompe, no avisa. El test se auto-verifica con 9 mutaciones.
+  invoke-facet-envoltorio:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      - run: python -m pytest tests/test_policy_invoke_facet_envoltorio.py -v
+
   # --------------------------------------------------------------------------
   # Suite del backend, modo "sin base de datos".
   #
@@ -137,7 +155,13 @@ jobs:
       # probe_after_rebind de verdad y no solo aceptan el parámetro
       # (Hallazgo 5, 2 tests) -- medido antes/después, skip count sin
       # cambios (151).
-      JAX_CI_MIN_PASSED: "108"
+      # Subido de 108 a 120 en Task 1 del plan de la alerta que afirma la
+      # capa equivocada (2026-08-28): backend/tests/test_policy_invoke_facet_envoltorio.py
+      # agrega 12 tests sin DB (1 del codigo real, 1 de la base del arnes,
+      # 10 de deteccion de mutaciones), medido con
+      # JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q antes/despues --
+      # skip count sin cambios (151).
+      JAX_CI_MIN_PASSED: "120"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
