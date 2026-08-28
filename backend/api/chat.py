@@ -905,7 +905,6 @@ async def _invoke_facet(
     Instrumentado ACA y no en un envoltorio que el llamador tenga que
     acordarse de usar: asi el chat real y la sonda quedan cubiertos por
     construccion, sin una segunda ruta que pueda divergir."""
-    _ = await _algo_que_puede_lanzar(facet)
     try:
         texto, usage, outcome = await _invoke_facet_dispatch(
             facet, config, user_id, message, semantic_context)
