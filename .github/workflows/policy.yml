@@ -201,7 +201,12 @@ jobs:
       # +1 (141 -> 142): test_detecta_star_import_a_nivel_de_modulo, el
       # unico test agregado en el cierre de M-1. Identificado por nombre,
       # no cuadrado: skip count sin cambios (151).
-      JAX_CI_MIN_PASSED: "142"
+      # +1 (142 -> 143) en Task 2 (2026-08-28): el test que afirmaba que
+      # probe_facet REGISTRA probe_error se reemplaza por uno que afirma que
+      # NO registra (neto 0), y se agrega uno que fija la otra mitad --
+      # probe_after_rebind SI registra cuando falla antes de invocar (+1).
+      # Skip count sin cambios (151).
+      JAX_CI_MIN_PASSED: "143"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
