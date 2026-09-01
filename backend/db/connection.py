@@ -37,9 +37,25 @@ async def get_pool() -> aiomysql.Pool:
     # deja la entrada cerrada, y el siguiente test del mismo loop tiene que
     # recibir un pool nuevo y no uno muerto.
     if pool is None or pool.closed:
+        # FAIL-CLOSED, no default silencioso. `localhost:3306` no es un default
+        # razonable: esa instancia de MariaDB NO EXISTE en hall9000 (la real
+        # escucha en :3308, ver memoria jax-dual-mariadb-instances), asi que el
+        # default convertia "falta configuracion" en "conecta a una instancia
+        # muerta". Este es el pool PRINCIPAL del backend -- lo usan 22 modulos.
+        # Mismo guard que jax/core, portado a mano: repos separados, sin
+        # paquete compartido (patron declarado).
+        host = os.environ.get("JAX_DB_HOST")
+        port = os.environ.get("JAX_DB_PORT")
+        if not host or not port:
+            raise RuntimeError(
+                "JAX_DB_HOST/JAX_DB_PORT no están seteados -- sin default "
+                "silencioso a localhost:3306 (esa instancia está muerta, ver "
+                "memoria jax-dual-mariadb-instances). Sourceá /etc/jax/.env o "
+                "exportalos a mano antes de conectar."
+            )
         pool = await aiomysql.create_pool(
-            host=os.getenv("JAX_DB_HOST", "localhost"),
-            port=int(os.getenv("JAX_DB_PORT", "3306")),
+            host=host,
+            port=int(port),
             user=os.getenv("JAX_DB_USER", "jax_user"),
             password=os.getenv("JAX_DB_PASSWORD", ""),
             db=os.getenv("JAX_DB_NAME", "jax_memory"),
