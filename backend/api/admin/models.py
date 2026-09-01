@@ -199,8 +199,9 @@ async def approve_proposal(
     # modulo. A nivel de modulo el ciclo cierra de verdad (main.py:49 importa
     # facet_canary antes que api.chat) y el servicio no arranca: ImportError
     # sobre facet_canary parcialmente inicializado. Verificado, no supuesto.
+    from jax_engine.background import add_safe_task
     from jax_engine.facet_canary import probe_after_rebind
-    background_tasks.add_task(probe_after_rebind, facet_key)
+    add_safe_task(background_tasks, probe_after_rebind, facet_key)
 
     return {"ok": True, "proposal_id": proposal_id, "status": "approved"}
 

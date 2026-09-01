@@ -128,7 +128,8 @@ async def update_facet_binding(
     # diferido: mismo motivo que en api/admin/models.py::approve_proposal,
     # el otro escritor de facet_binding -- ver el COMENTARIO de ese import
     # (no el docstring del endpoint) para la cadena real y verificada.
+    from jax_engine.background import add_safe_task
     from jax_engine.facet_canary import probe_after_rebind
-    background_tasks.add_task(probe_after_rebind, facet_key)
+    add_safe_task(background_tasks, probe_after_rebind, facet_key)
 
     return {"ok": True, "facet_key": facet_key, "model_ref": req.model_ref, "role": req.role}
