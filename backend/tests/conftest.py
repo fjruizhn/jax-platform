@@ -97,7 +97,17 @@ def _sello_de_facets_aislado(tmp_path, monkeypatch):
     JAX_CI_NO_DB: un test nuevo que llame al escritor queda aislado solo, sin
     que nadie lo tenga que agregar a ningun lado.
     """
-    import facet_resolver
+    try:
+        import facet_resolver
+    except ImportError:
+        # Si `facet_resolver` no se puede importar en este entorno, NINGUN test
+        # puede llamar al escritor tampoco: no hay sello real que proteger. No
+        # es una excepcion a la regla ni un fail-open -- es exactamente la
+        # misma condicion. Pasa de verdad en CI: los jobs `no-fail-open-except`
+        # e `invoke-facet-envoltorio` instalan solo pytest, sin aiomysql, y con
+        # un import duro esta fixture los rompia enteros (verificado en la
+        # primera corrida de este PR, 26 ERROR de fixture).
+        return
 
     monkeypatch.setattr(
         facet_resolver, "FACET_SEAL_PATH", str(tmp_path / "facet-cache-seal"))
