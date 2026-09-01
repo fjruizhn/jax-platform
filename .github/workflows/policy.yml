@@ -206,7 +206,15 @@ jobs:
       # NO registra (neto 0), y se agrega uno que fija la otra mitad --
       # probe_after_rebind SI registra cuando falla antes de invocar (+1).
       # Skip count sin cambios (151).
-      JAX_CI_MIN_PASSED: "143"
+      # Subido de 143 a 158 en Q3 (sello de invalidacion cross-proceso del
+      # cache de facet_resolver, 2026-09-01):
+      # backend/tests/test_facet_resolver_seal.py agrega 11 tests sin DB.
+      # Medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q: 147 passed
+      # sin ese archivo (--ignore) y 158 con el, skip count sin cambios (151).
+      # El piso estaba en 143 con 147 reales -- se cierra esa holgura de paso:
+      # un piso por debajo de lo medido deja pasar en verde la perdida de
+      # tests que nadie declaro.
+      JAX_CI_MIN_PASSED: "158"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
