@@ -82,6 +82,37 @@ def _skip_on_db_access(monkeypatch):
     monkeypatch.setattr(aiomysql, "create_pool", _skip)
 
 
+@pytest.fixture(autouse=True)
+def _sello_de_facets_aislado(tmp_path, monkeypatch):
+    """Ningun test toca el sello REAL de facet_resolver.
+
+    `invalidate_facet_cache()` escribe FACET_SEAL_PATH (default
+    /srv/jax-data/facet-cache-seal, 2026-09-01): es el archivo compartido con
+    Jacobs y el REPL en hall9000, asi que sin este aislamiento correr la suite
+    en la maquina de desarrollo invalidaria la cache de los TRES procesos de
+    produccion -- un efecto de lado fuera del arbol, invisible desde el log de
+    pytest.
+
+    Estructural y no una lista, mismo criterio que las dos reglas de
+    JAX_CI_NO_DB: un test nuevo que llame al escritor queda aislado solo, sin
+    que nadie lo tenga que agregar a ningun lado.
+    """
+    try:
+        import facet_resolver
+    except ImportError:
+        # Si `facet_resolver` no se puede importar en este entorno, NINGUN test
+        # puede llamar al escritor tampoco: no hay sello real que proteger. No
+        # es una excepcion a la regla ni un fail-open -- es exactamente la
+        # misma condicion. Pasa de verdad en CI: los jobs `no-fail-open-except`
+        # e `invoke-facet-envoltorio` instalan solo pytest, sin aiomysql, y con
+        # un import duro esta fixture los rompia enteros (verificado en la
+        # primera corrida de este PR, 26 ERROR de fixture).
+        return
+
+    monkeypatch.setattr(
+        facet_resolver, "FACET_SEAL_PATH", str(tmp_path / "facet-cache-seal"))
+
+
 def _apply_facet_health_writer_stub(monkeypatch, ci_no_db: bool) -> bool:
     """Logica de `_stub_facet_health_writer_sin_db`, extraida a funcion
     plana para que un test pueda ejercitar la condicion `ci_no_db` sin

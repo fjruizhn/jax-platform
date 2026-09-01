@@ -68,7 +68,12 @@ def test_invalidate_facet_cache_saca_la_clave_que_usa_resolve_facet(monkeypatch)
     propósito, no se desactualiza cuando alguien inserta líneas arriba)."""
     cache = {}
     monkeypatch.setattr(facet_resolver, "_cache", cache)
-    cache["thot"] = facet_resolver._CacheEntry(value=object(), fetched_at=0.0)
+    # fetched_at_wall: agregado con el sello de invalidacion cross-proceso
+    # (Q3, 2026-09-01). Es obligatorio a proposito y no tiene default --
+    # omitirlo silenciosamente dejaria una entrada sin reloj de pared, que
+    # es justo lo que el sello necesita para comparar contra el mtime.
+    cache["thot"] = facet_resolver._CacheEntry(
+        value=object(), fetched_at=0.0, fetched_at_wall=0.0)
 
     assert facet_resolver.invalidate_facet_cache("thot") is True
     assert "thot" not in cache
