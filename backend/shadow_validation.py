@@ -36,7 +36,14 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-JAX_REPO = Path(os.path.expanduser("~/jax"))
+# Ruta al repo `jax` (repo vecino, de donde salen policy/governance/). Igual
+# que CONFIG_PATH en api/chat.py: configurable por entorno, con el MISMO
+# default de siempre. Era `~/jax` y nada mas -- una ruta hardcodeada a otro
+# repo, relativa al $HOME del usuario, que hacia imposible correr esta parte
+# de la suite fuera de la maquina de Fernando (9 tests con
+# ModuleNotFoundError: No module named 'claims', medido en un contenedor
+# limpio el 2026-09-01).
+JAX_REPO = Path(os.getenv("JAX_REPO_PATH", os.path.expanduser("~/jax")))
 if str(JAX_REPO) not in sys.path:
     sys.path.insert(0, str(JAX_REPO))
 if str(JAX_REPO / "policy" / "governance") not in sys.path:

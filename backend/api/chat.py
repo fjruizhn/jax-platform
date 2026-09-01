@@ -56,7 +56,16 @@ router = APIRouter(prefix="/api")
 _GOVERNED_TRANSPORTS = frozenset({"http_gemini", "http_openai_compat"})
 _JAX_PLATFORM_CHAT_CALLER = "jax_platform_chat"
 
-CONFIG_PATH = os.path.expanduser("~/jax/config/config.toml")
+# Ruta al config.toml del repo `jax` (repo vecino). Configurable por entorno,
+# con el mismo default de siempre -- antes era `~/jax/config/config.toml` y
+# nada mas, una ruta hardcodeada a otro repo relativa al $HOME del usuario.
+# Eso hacia IMPOSIBLE correr la suite fuera de la maquina de Fernando: en un
+# runner limpio el archivo no existe y 30 tests caen con FileNotFoundError
+# (medido en CI el 2026-09-01, no supuesto). El default se conserva para no
+# cambiar el comportamiento de produccion, que es donde esa ruta si existe.
+CONFIG_PATH = os.getenv(
+    "JAX_CONFIG_PATH", os.path.expanduser("~/jax/config/config.toml")
+)
 
 # Carga el .env de JAX una vez al importar el módulo
 def _load_jax_env():
