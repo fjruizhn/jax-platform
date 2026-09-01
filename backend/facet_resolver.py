@@ -124,7 +124,17 @@ async def _db_conn() -> aiomysql.Connection:
 
 
 async def _query_facet(facet_key: str) -> ResolvedFacet:
-    """D1.1 paso 4 (fase2-facetas-diseno.md:233-237), completado 2026-08-19:
+    """DIVERGENCIA DELIBERADA DE LOS ESPEJOS -- leer antes de "sincronizar".
+    Esta copia selecciona ademas m.max_tokens_param y m.max_output_tokens y
+    los pasa a ResolvedFacet; las copias de jax/core y las_manos NO, porque
+    ese campo solo lo consume el envoltorio HTTP de jax-platform (ver el
+    comentario homonimo en ResolvedFacet). La ausencia en las otras dos NO es
+    drift accidental. `scripts/check_facet_resolver_sync.py` reconoce este
+    marcador y no reporta esta funcion como drift; si el dia de manana la
+    divergencia deja de ser deliberada, se borra el marcador y el checker
+    vuelve a gritar.
+
+    D1.1 paso 4 (fase2-facetas-diseno.md:233-237), completado 2026-08-19:
     lee el modelo via model_ref -> model.model_id, no b.model_id (texto
     libre, quedaba desincronizado de las aprobaciones de
     model_binding_proposal). facet_binding.model_id se conserva de
