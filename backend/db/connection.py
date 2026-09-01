@@ -1,13 +1,43 @@
+import asyncio
 import os
+import weakref
+
 import aiomysql
 
-_pool: aiomysql.Pool | None = None
+# UN POOL POR EVENT LOOP, no un global unico.
+#
+# POR QUE: un pool de aiomysql queda ATADO al loop que lo creo -- sus futuros
+# internos (Pool._wakeup) viven en ese loop. Un global unico funciona en
+# produccion, donde uvicorn corre un solo loop para siempre, pero en la suite
+# hay dos: el del portal de `TestClient` (que levanta el lifespan de la app y
+# ahi crea el pool) y el de pytest-asyncio. El primero en pedirlo lo creaba, y
+# el otro se lo encontraba prestado:
+#
+#   RuntimeError: Task <...> got Future <Task pending coro=<Pool._wakeup()>>
+#   attached to a different loop
+#
+# Eso rompia 3 tests y ademas el TEARDOWN del fixture `client`
+# ("Packet sequence number wrong - got 2 expected 1", que es la misma
+# corrupcion vista desde el otro lado: dos loops usando el mismo socket).
+#
+# El diccionario NO crece en produccion: un solo loop, una sola entrada, mismo
+# comportamiento que antes byte a byte. Crece una entrada por loop en tests,
+# que es exactamente lo correcto -- cada loop necesita el suyo. Es
+# WeakKeyDictionary a proposito: cuando un loop de test muere, su entrada se
+# va sola y no queda un pool colgado del diccionario para siempre.
+_pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, aiomysql.Pool]" = (
+    weakref.WeakKeyDictionary()
+)
 
 
 async def get_pool() -> aiomysql.Pool:
-    global _pool
-    if _pool is None:
-        _pool = await aiomysql.create_pool(
+    loop = asyncio.get_running_loop()
+    pool = _pools.get(loop)
+    # `pool.closed` ademas de None: close_pool() en el lifespan de un TestClient
+    # deja la entrada cerrada, y el siguiente test del mismo loop tiene que
+    # recibir un pool nuevo y no uno muerto.
+    if pool is None or pool.closed:
+        pool = await aiomysql.create_pool(
             host=os.getenv("JAX_DB_HOST", "localhost"),
             port=int(os.getenv("JAX_DB_PORT", "3306")),
             user=os.getenv("JAX_DB_USER", "jax_user"),
@@ -18,12 +48,19 @@ async def get_pool() -> aiomysql.Pool:
             minsize=1,
             maxsize=10,
         )
-    return _pool
+        _pools[loop] = pool
+    return pool
 
 
 async def close_pool():
-    global _pool
-    if _pool:
-        _pool.close()
-        await _pool.wait_closed()
-        _pool = None
+    """Cierra el pool DE ESTE loop, que es el unico que este loop puede esperar.
+
+    `wait_closed()` sobre un pool de otro loop volveria a cruzar loops, que es
+    el defecto que este modulo acaba de cerrar. En produccion no hay
+    diferencia: hay un solo loop y un solo pool.
+    """
+    loop = asyncio.get_running_loop()
+    pool = _pools.pop(loop, None)
+    if pool is not None:
+        pool.close()
+        await pool.wait_closed()

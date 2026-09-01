@@ -691,9 +691,15 @@ async def _seed_jax_local_motor(cur) -> None:
     design, reconcile), no por code_swarm/refactor/bug_hunt/implementation
     (agentico de alto riesgo, hoy exclusivo de Kimi) -- decision de dato,
     ajustable despues sin tocar codigo."""
+    # Repara tambien el valor LEGACY sin /v1, no solo NULL/''. La condicion
+    # original no podia dispararse en una instalacion nueva porque
+    # _seed_providers ya habia insertado un valor no vacio -- ver el
+    # comentario en _PROVIDER_SEED. Se conserva la migracion (ademas del seed
+    # corregido) porque las DB que ya existen no vuelven a pasar por el INSERT.
     await cur.execute(
         "UPDATE provider SET base_url='http://localhost:11434/v1' "
-        "WHERE id='ollama' AND (base_url IS NULL OR base_url = '')"
+        "WHERE id='ollama' AND (base_url IS NULL OR base_url = '' "
+        "                       OR base_url = 'http://localhost:11434')"
     )
     await cur.execute(
         "SELECT id FROM model WHERE provider_id='ollama' AND model_id='qwen3-coder:30b'"
@@ -868,7 +874,14 @@ _PROVIDER_SEED = [
     ("gemini",   "Gemini (Hipatia)",  "https://generativelanguage.googleapis.com/v1beta",   "api_key",    False),
     ("moonshot", "Moonshot (Kimi)",   "https://api.moonshot.ai/v1",                          "api_key",    False),
     ("zhipu",    "Z.ai (Ada)",        "https://api.z.ai/api/paas/v4",                        "api_key",    False),
-    ("ollama",   "Ollama (jax_local)", "http://localhost:11434",                             "none",       True),
+    # /v1 EN EL SEED, no solo en la migracion correctiva de mas abajo. Hasta
+    # 2026-09-01 el seed insertaba sin /v1 y _seed_jax_local_motor lo corregia
+    # solo `WHERE base_url IS NULL OR base_url = ''` -- condicion que este
+    # mismo INSERT vuelve falsa. Resultado: en la DB de Fernando quedo bien
+    # (la fila existia vacia cuando la migracion corrio por primera vez) y en
+    # cualquier INSTALACION NUEVA quedaba mal para siempre. Medido el
+    # 2026-09-01 contra un mariadb:11.8 vacio: 'http://localhost:11434'.
+    ("ollama",   "Ollama (jax_local)", "http://localhost:11434/v1",                          "none",       True),
     ("anthropic", "Claude Code (Hyde)", None,                                                "subprocess", False),
 ]
 
