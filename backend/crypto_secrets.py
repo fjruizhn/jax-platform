@@ -30,6 +30,7 @@ PROVIDER_ENV_KEYS = [
     "GEMINI_API_KEY",
     "KIMI_API_KEY",
     "ZAI_API_KEY",
+    "ZHIPU_API_KEY",
 ]
 
 
@@ -75,12 +76,12 @@ def decrypt_db_secret(value: str) -> str:
         return ""
 
 
-def decrypt_provider_keys_in_env():
+def decrypt_provider_keys_in_env() -> None:
     """Descifra en memoria (os.environ) las API keys de proveedor que
     systemd cargó desde /etc/jax/.env vía EnvironmentFile. Debe llamarse
-    antes de que cualquier módulo lea os.getenv() para estas variables —
-    por eso se invoca al principio de main.py, antes de importar los
-    routers. No modifica el archivo en disco."""
+    antes de que cualquier módulo lea os.getenv()/os.environ para estas
+    variables — en cada proceso, lo más temprano posible en su arranque.
+    No modifica el archivo en disco."""
     for env_key in PROVIDER_ENV_KEYS:
         raw = os.environ.get(env_key, "")
         if raw:
