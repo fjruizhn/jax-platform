@@ -209,22 +209,26 @@ jobs:
           skip = sum(int(s.get("skipped", 0)) for s in suites)
           passed = total - fail - err - skip
 
-          # Medido el 2026-09-01 en una reproduccion FIEL del runner: contenedor
-          # limpio, sin /etc/jax/.env y sin ~/jax, contra un mariadb:11.8
-          # virgen. 306 passed / 3 skipped / 0 failed.
+          # MEDIDO EN ESTE JOB, no en otro entorno: 309 colectados, 308 passed,
+          # 1 skipped, 0 failed, 0 errors (corrida real del 2026-09-01).
           #
-          # Por que 306 y no 308: dos tests de test_facet_resolver_seal.py se
-          # saltan solos cuando el proceso corre como root (ningun permiso
-          # bloquea a root, asi que los casos de sello ilegible / no escribible
-          # no son reproducibles). El contenedor de la reproduccion corre como
-          # root; el runner de GitHub corre como `runner` y esos dos SI corren.
-          # El piso se fija en el numero de la reproduccion, que es el mas bajo
-          # de los dos entornos -- un piso mas alto que el minimo real seria
-          # rojo intermitente.
+          # El piso es EXACTO a proposito. La primera version puso 306 porque la
+          # reproduccion local corria en un contenedor como root, y como root se
+          # saltan solos los dos tests de test_facet_resolver_seal.py que
+          # dependen de que un permiso bloquee (a root no lo bloquea nada). El
+          # runner de GitHub corre como `runner`, no como root, asi que esos dos
+          # SI corren aca. Dejar 306 habria dejado 2 tests de holgura: espacio
+          # para perder tests sin que nadie se entere, que es exactamente el
+          # agujero que este trabajo vino a cerrar.
           #
-          # El tercer skip es de dato: gpt-5.6-terra no existe en una DB nueva.
-          PISO_PASSED = 306
-          MAX_SKIPS = 3
+          # Si algun dia este job pasara a correr como root, el piso se pondria
+          # rojo. Eso es lo correcto: un rojo que se investiga, no un verde que
+          # esconde.
+          #
+          # El unico skip permitido es de dato: gpt-5.6-terra no existe en una
+          # DB nueva.
+          PISO_PASSED = 308
+          MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
                 f"failed={fail} errors={err}")
