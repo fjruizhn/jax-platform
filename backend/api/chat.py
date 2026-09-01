@@ -122,13 +122,27 @@ async def _ensure_memory() -> bool:
         return True
     if _memory is None:
         _memory = MemoryDB()
+    # El guard va AFUERA del try a proposito: el `except` de abajo deja
+    # _memory_ready en False, asi que un raise adentro se traduciria en
+    # "memoria silenciosamente desactivada" -- que es el mismo fallo mudo que
+    # este guard viene a eliminar, con otra cara. Una configuracion ausente
+    # tiene que ser ruidosa; una DB caida sigue siendo fail-soft.
+    host = os.environ.get("JAX_DB_HOST")
+    port = os.environ.get("JAX_DB_PORT")
+    if not host or not port:
+        raise RuntimeError(
+            "JAX_DB_HOST/JAX_DB_PORT no están seteados -- sin default "
+            "silencioso a localhost:3306 (esa instancia está muerta, ver "
+            "memoria jax-dual-mariadb-instances). Sourceá /etc/jax/.env o "
+            "exportalos a mano antes de conectar."
+        )
     try:
         _memory_ready = await _memory.connect(
-            host=os.getenv("JAX_DB_HOST", "localhost"),
+            host=host,
             user=os.getenv("JAX_DB_USER", ""),
             password=os.getenv("JAX_DB_PASSWORD", ""),
             database=os.getenv("JAX_DB_NAME", "jax_memory"),
-            port=int(os.getenv("JAX_DB_PORT", "3306")),
+            port=int(port),
         )
     except Exception:
         _memory_ready = False

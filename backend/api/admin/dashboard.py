@@ -74,7 +74,10 @@ async def get_dashboard(user: AuthUser = Depends(require_superadmin)):
     services = [
         {"name": "LAS MANOS", "port": 7777, **las_manos},
         {"name": "JAX Engine", "port": 8080, **jax_engine},
-        {"name": "MariaDB", "port": int(os.getenv("JAX_DB_PORT", "3306")), **db_status},
+        # Sin default: este panel MUESTRA el puerto, no conecta. Un "3306"
+        # inventado no rompe nada -- miente, y en un tablero de estado eso es
+        # peor: la instancia :3306 esta muerta y la real es :3308.
+        {"name": "MariaDB", "port": os.environ.get("JAX_DB_PORT"), **db_status},
     ]
 
     pool = await get_pool()
