@@ -93,6 +93,118 @@ jobs:
       - run: python -m pytest tests/test_policy_invoke_facet_envoltorio.py -v
 
   # --------------------------------------------------------------------------
+  # Suite del backend, modo "CON base de datos" -- los 150 tests que el job de
+  # abajo saltea.
+  #
+  # POR QUE EXISTE (2026-09-01). Hasta hoy CI corria 158 tests y salteaba 151:
+  # el 68% de la suite no se ejecutaba en ningun lado automatico, y DEUDA.md lo
+  # daba por irrecuperable ("el numero no es estable: 10 o 12 failures sobre el
+  # mismo arbol limpio"). Esa premisa estaba VENCIDA. Medido el 2026-09-01
+  # contra master 461a089: 5 failures + 1 error, los MISMOS por nombre en 3
+  # corridas seguidas -- deterministico, no inestable.
+  #
+  # Y las 6 salian de UNA causa: `db/connection.py` guardaba UN pool global
+  # para todos los event loops. Un pool de aiomysql queda atado al loop que lo
+  # creo, y en la suite hay dos (el portal de TestClient y el de
+  # pytest-asyncio). Arreglado ahi -- ver el comentario del modulo. Con eso:
+  # 308 passed / 1 skipped / 0 failed / 0 errors, identico en 5 corridas.
+  #
+  # ESQUEMA DE JACOBS. `jacobs_pipelines` la crea `jacobs/store.py::init_tables()`
+  # en el repo `jax`; jax-platform la LEE (api/pipelines.py,
+  # jax_engine/owner_cleanup.py) y nunca la crea. En la DB de desarrollo existe
+  # porque Jacobs la creo alguna vez; en un runner limpio no, y sin ella caen
+  # los 14 tests de propiedad de pipeline -- justo los que cubren el IDOR
+  # cerrado en agosto. Este job clona `jax` y ejecuta SU init_tables(), en vez
+  # de copiar el DDL: una copia del esquema seria una segunda fuente de verdad
+  # que se desincroniza sola, que es el defecto que este codebase viene
+  # cerrando (capabilities, motor.model_ref, facet_resolver).
+  #
+  # VERIFICADO CONTRA UNA BASE VIRGEN, no contra la DB de Fernando: mariadb:11.8
+  # recien creado, 0 tablas, secuencia completa -> 308 passed. Ese experimento
+  # ademas destapo un bug real de producto que la DB de desarrollo escondia
+  # (provider.base_url de ollama sin /v1 en toda instalacion nueva), arreglado
+  # en db/migrations.py en este mismo PR.
+  backend-tests-con-db:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MARIADB_ROOT_PASSWORD: ci
+          MARIADB_DATABASE: jax_memory_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      JAX_JWT_SECRET: ci-dummy-not-a-real-secret
+      JAX_DB_HOST: 127.0.0.1
+      JAX_DB_PORT: "3306"
+      JAX_DB_USER: root
+      JAX_DB_PASSWORD: ci
+      # tests/conftest.py fuerza JAX_DB_NAME=jax_memory_test igual; se declara
+      # aca tambien para que el paso del esquema de Jacobs (que no pasa por
+      # conftest) apunte a la misma base y no a `jax_memory`.
+      JAX_DB_NAME: jax_memory_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # 3.14 = la version real de backend/.venv, la que corre en produccion.
+          python-version: "3.14"
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt pytest pytest-asyncio
+
+      - name: Traer el repo jax (fuente de verdad del esquema de Jacobs)
+        working-directory: .
+        run: git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
+
+      - name: Crear el esquema de Jacobs con SU propio init_tables()
+        working-directory: .
+        # pydantic ademas de aiomysql: jacobs.store importa jacobs.models.
+        run: |
+          pip install aiomysql pydantic
+          PYTHONPATH=/tmp/jax python -c "import asyncio; from jacobs import store; asyncio.run(store.init_tables())"
+
+      - name: Suite backend (con DB)
+        run: python -m pytest -q -rs --junitxml=junit-db.xml
+
+      - name: Piso -- que "verde" no signifique "se salteo todo"
+        # Dos exigencias, no una: el piso de passed, y que el numero de SKIPS
+        # siga siendo 1. Sin lo segundo, una DB que no arranca convertiria los
+        # 150 tests en skips y el job seguiria verde con el piso del otro modo.
+        run: |
+          python - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+
+          root = ET.parse("junit-db.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else list(root)
+          total = sum(int(s.get("tests", 0)) for s in suites)
+          fail = sum(int(s.get("failures", 0)) for s in suites)
+          err = sum(int(s.get("errors", 0)) for s in suites)
+          skip = sum(int(s.get("skipped", 0)) for s in suites)
+          passed = total - fail - err - skip
+
+          PISO_PASSED = 308   # medido contra un mariadb:11.8 virgen, 2026-09-01
+          MAX_SKIPS = 1       # el unico skip legitimo de la suite con DB
+
+          print(f"colectados={total} passed={passed} skipped={skip} "
+                f"failed={fail} errors={err}")
+          if passed < PISO_PASSED:
+              sys.exit(f"PISO ROTO: {passed} passed < {PISO_PASSED}.")
+          if skip > MAX_SKIPS:
+              sys.exit(
+                  f"{skip} skips (max {MAX_SKIPS}). La DB no esta siendo usada: "
+                  "los tests que la necesitan se estan salteando y este job "
+                  "estaria verde sin haber probado nada de lo que vino a probar."
+              )
+          print("OK: piso y tope de skips respetados.")
+          PY
+
+  # --------------------------------------------------------------------------
   # Suite del backend, modo "sin base de datos".
   #
   # POR QUÉ ASÍ (medido el 2026-08-27 contra master 6800a32, no supuesto):
