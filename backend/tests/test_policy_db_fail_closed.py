@@ -91,12 +91,29 @@ async def test_credential_resolver_falla_cerrado(sin_endpoint):
     assert "JAX_DB_HOST" in str(e.value)
 
 
-async def test_la_memoria_del_chat_falla_cerrado(sin_endpoint):
+async def test_la_memoria_del_chat_falla_cerrado(sin_endpoint, monkeypatch):
     """`_ensure_memory` envuelve la conexion en un `except Exception` que la
     deja en False: sin un guard ANTES de ese try, una configuracion ausente no
     produce error sino memoria silenciosamente desactivada. El guard va afuera
     del try a proposito."""
     from api import chat
+
+    # `MemoryDB` sale de `from jax.memory.db import MemoryDB`, con un
+    # `except: MemoryDB = None` alrededor -- y en un runner el paquete `jax` no
+    # es importable, asi que _ensure_memory sale por `if MemoryDB is None:
+    # return False` ANTES de llegar al guard. El test pasaba en hall9000 y
+    # fallaba en CI con "DID NOT RAISE". Se parchea con un doble para ejercitar
+    # NUESTRO guard, que es lo que este test afirma, y no la importabilidad del
+    # repo vecino.
+    class _MemoriaDoble:
+        is_connected = False
+
+        async def connect(self, **kwargs):  # pragma: no cover -- no debe llegar aca
+            raise AssertionError("el guard tenia que haber cortado antes de conectar")
+
+    monkeypatch.setattr(chat, "MemoryDB", _MemoriaDoble)
+    monkeypatch.setattr(chat, "_memory", None)
+    monkeypatch.setattr(chat, "_memory_ready", False)
 
     with pytest.raises(RuntimeError) as e:
         await chat._ensure_memory()

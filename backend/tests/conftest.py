@@ -56,6 +56,18 @@ def client():
 # que SI la toca se salta solo, y aparece contado como skip en el log.
 _CI_NO_DB = os.getenv("JAX_CI_NO_DB") == "1"
 
+# El modo sin-DB simula "configurado, pero la DB no responde" -- NO "sin
+# configurar". Desde que get_pool()/_db_conn fallan cerrado ante
+# JAX_DB_HOST/JAX_DB_PORT ausentes (2026-09-01), sin esto los tests que tocan
+# la DB revientan con RuntimeError en vez de saltarse por la Regla 2, y el modo
+# entero deja de funcionar en un runner (donde no hay /etc/jax/.env). El valor
+# es un placeholder: nada escucha ahi, y `aiomysql.create_pool` esta parcheado
+# para saltar antes de intentarlo. Se usa 3308 y no 3306 a proposito -- 3306 es
+# la instancia MUERTA y no debe aparecer como valor en ningun lado.
+if _CI_NO_DB:
+    os.environ.setdefault("JAX_DB_HOST", "127.0.0.1")
+    os.environ.setdefault("JAX_DB_PORT", "3308")
+
 _NO_DB_REASON = "requiere MariaDB; este runner no tiene DB (JAX_CI_NO_DB=1)"
 
 
