@@ -10,9 +10,41 @@ ambos repos viven en el mismo host, y validator.py ya asume ese layout
 (sus propios imports insertan REPO_ROOT en sys.path).
 
 authority de todo claim es SIEMPRE "INFERIDO", fijado acá — nunca lo
-declara el modelo (ver spec, sección 1a: P08 aplicado a metadata).
-Resultado esperado: 100% AUTHORITY_INVALID esta ronda, porque chat.py no
-tiene grounding cableado al mecanismo de claims. No es un bug.
+declara el modelo (ver spec, sección 1a: P08 aplicado a metadata). Como
+predicates.yaml §3.1.4 prohíbe INFERIDO en el canal claim, todo claim que
+llegue va a dar AUTHORITY_INVALID mientras chat.py no tenga grounding
+cableado. Eso es lo esperado, no un bug.
+
+Lo que este docstring afirmaba hasta el 2026-09-01 —"Resultado esperado:
+100% AUTHORITY_INVALID esta ronda"— describía un estado previsto que
+nunca ocurrió, y se leyó como si fuera el medido. Lo medido contra la
+MariaDB real ese día, catorce días después del despliegue: 22 de 22
+mensajes en `shadow_messages` con `has_claim = 0`, en 5 facetas, y
+`shadow_claim_verdicts` con CERO filas. No hubo un 100% de nada: no hubo
+claims. El cuello de botella estaba un paso antes —la emisión, no la
+autoridad— y la causa era que `_CONTRACT_PROMPT_SUFFIX` no nombraba
+ninguno de los ocho predicados del vocabulario cerrado. Corregido en
+api/chat.py: el prompt se genera desde predicates.yaml.
+
+Verificado en vivo el mismo día, contra el servicio corriendo y las cinco
+facetas que producen tráfico (jax_local, jekyll, hipatia, ada, thot):
+
+- Con el prompt nuevo, pedido explícito de claims: 2 de 3 facetas
+  probadas emitieron claims válidos del vocabulario cerrado
+  (FACET_EXISTS, CAPABILITY_AVAILABLE) con los args exactos, ninguno
+  inventado. `shadow_claim_verdicts` pasó de 0 filas a 4, todas
+  AUTHORITY_INVALID por §3.1.4 — la predicción de arriba, medida por
+  primera vez en lugar de supuesta.
+- Con una pregunta orgánica sobre el estado del sistema: las 5 facetas
+  siguieron devolviendo []. No es el prompt: sus personas se niegan
+  —correctamente— a afirmar sin evidencia, y no hay grounding cableado
+  que se las dé. thot mantuvo esa negativa incluso ante el pedido
+  explícito.
+
+O sea: nombrar el vocabulario era NECESARIO y no es SUFICIENTE. El
+bloqueo que queda es el grounding, que es exactamente el objeto de
+Sub-proyecto 3 — y ahora tiene su primer dato medido en vez de una
+predicción.
 
 `ClosedVocabulary.term_categories` y la firma de `sweep(text,
 term_categories) -> list[tuple[str, frozenset[str]]]` vienen de la Tarea

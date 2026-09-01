@@ -233,7 +233,10 @@ jobs:
           # Subido de 320 a 336 (2026-09-01): los 16 tests de
           # tests/test_policy_db_fail_closed.py. Medido con la DB de desarrollo
           # antes/despues (320 -> 336), skip count sin cambios (1).
-          PISO_PASSED = 336
+          # Subido de 336 a 340 (2026-09-01): los 4 tests de
+          # tests/test_chat_contract_prompt.py. Medido con la DB de desarrollo
+          # antes/despues (336 -> 340), skip count sin cambios (1).
+          PISO_PASSED = 340
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -290,6 +293,13 @@ jobs:
       # nada real y no debe necesitar ningún secret del repo.
       JAX_JWT_SECRET: ci-dummy-not-a-real-secret
       JAX_CI_NO_DB: "1"
+      # api/chat.py carga el vocabulario cerrado de predicados desde el repo
+      # `jax` (policy/vocabulary/predicates.yaml) para GENERAR el prompt de
+      # contrato, y lo hace fail-closed: sin el repo no hay import de chat.py
+      # y la suite entera deja de colectar (17 errores de coleccion, medido).
+      # Este job no clonaba `jax` -- el de DB si. Apunta al clon del paso de
+      # mas abajo.
+      JAX_REPO_PATH: /tmp/jax
       # Piso de cobertura. Si baja de acá, el job falla (ver el paso final).
       # Subido de 85 a 93 en Task 4 (sonda activa de facets, 2026-08-27):
       # backend/tests/test_facet_canary.py agrega 8 tests sin DB, medido
@@ -377,7 +387,10 @@ jobs:
       # Subido de 170 a 186 (2026-09-01, get_pool fail-closed):
       # tests/test_policy_db_fail_closed.py agrega 16 tests sin DB. Medido con
       # JAX_CI_NO_DB=1 antes/despues, skip count sin cambios (151).
-      JAX_CI_MIN_PASSED: "186"
+      # Subido de 186 a 190 (2026-09-01, el prompt de contrato nombra los
+      # predicados): tests/test_chat_contract_prompt.py agrega 4 tests sin DB.
+      # Medido con JAX_CI_NO_DB=1 antes/despues, skip count sin cambios (151).
+      JAX_CI_MIN_PASSED: "190"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -391,6 +404,10 @@ jobs:
         # necesita (asyncio_mode = auto). Se instala explícito acá; declararlo
         # en un requirements-dev.txt queda como deuda anotada.
         run: pip install -r requirements.txt pytest pytest-asyncio
+
+      - name: Traer el repo jax (vocabulario cerrado de predicados)
+        working-directory: .
+        run: git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
 
       - name: Suite backend (sin DB) -- -rs lista cada skip con su motivo
         run: python -m pytest -v -rs --junitxml=junit.xml
