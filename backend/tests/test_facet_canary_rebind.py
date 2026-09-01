@@ -250,8 +250,12 @@ def test_approve_proposal_encola_probe_after_rebind(monkeypatch):
 
     assert len(bg.tasks) == 1
     func, args, kwargs = bg.tasks[0]
-    assert func is facet_canary.probe_after_rebind
-    assert args == ("thot",)
+    # Desde 2026-09-01 lo encolado es el envoltorio de
+    # jax_engine.background.add_safe_task (aislamiento entre tareas), no la
+    # funcion pelada. La afirmacion sigue siendo POR IDENTIDAD -- que es la
+    # que vale -- solo que a traves de `tarea_original`.
+    assert func.tarea_original is facet_canary.probe_after_rebind
+    assert func.tarea_args == ("thot",)
 
 
 def test_update_facet_binding_encola_probe_after_rebind(monkeypatch):
@@ -268,5 +272,9 @@ def test_update_facet_binding_encola_probe_after_rebind(monkeypatch):
 
     assert len(bg.tasks) == 1
     func, args, kwargs = bg.tasks[0]
-    assert func is facet_canary.probe_after_rebind
-    assert args == ("thot",)
+    # Desde 2026-09-01 lo encolado es el envoltorio de
+    # jax_engine.background.add_safe_task (aislamiento entre tareas), no la
+    # funcion pelada. La afirmacion sigue siendo POR IDENTIDAD -- que es la
+    # que vale -- solo que a traves de `tarea_original`.
+    assert func.tarea_original is facet_canary.probe_after_rebind
+    assert func.tarea_args == ("thot",)

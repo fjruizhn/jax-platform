@@ -227,7 +227,10 @@ jobs:
           #
           # El unico skip permitido es de dato: gpt-5.6-terra no existe en una
           # DB nueva.
-          PISO_PASSED = 308
+          # Subido de 308 a 320 (2026-09-01): los 12 tests de
+          # tests/test_policy_background_tasks.py. Medido con la DB de
+          # desarrollo antes/despues (308 -> 320), skip count sin cambios (1).
+          PISO_PASSED = 320
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -365,7 +368,10 @@ jobs:
       # El piso estaba en 143 con 147 reales -- se cierra esa holgura de paso:
       # un piso por debajo de lo medido deja pasar en verde la perdida de
       # tests que nadie declaro.
-      JAX_CI_MIN_PASSED: "158"
+      # Subido de 158 a 170 (2026-09-01, aislamiento de BackgroundTasks):
+      # tests/test_policy_background_tasks.py agrega 12 tests sin DB. Medido
+      # con JAX_CI_NO_DB=1 antes/despues, skip count sin cambios (151).
+      JAX_CI_MIN_PASSED: "170"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

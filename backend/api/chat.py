@@ -1048,7 +1048,8 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # de la Task 5) no pasan por acá, ese try/except es de shadow_validation.py.
     try:
         from shadow_validation import run_shadow_validation
-        background_tasks.add_task(run_shadow_validation, conv_uuid, shadow_message_id, facet, contract)
+        from jax_engine.background import add_safe_task
+        add_safe_task(background_tasks, run_shadow_validation, conv_uuid, shadow_message_id, facet, contract)
     except Exception:
         logger.exception("no se pudo encolar shadow validation")
 
