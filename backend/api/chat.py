@@ -540,17 +540,57 @@ def _build_display_response(contract: ContractResult) -> tuple[str, bool]:
 # enlatados conocidos — evita que un futuro edit de esos strings rompa la
 # señal en silencio. _CONTRACT_PROMPT_SUFFIX está conectado al system_prompt
 # real dentro de _invoke_facet (ver esa función).
-_CONTRACT_PROMPT_SUFFIX = """
+# El vocabulario de predicados es CERRADO y vive en el repo `jax`
+# (policy/vocabulary/predicates.yaml). El prompt lo GENERA desde ahí con la
+# misma loaders.load_predicates() que usa shadow_validation.py para validar
+# los claims que vuelven: una sola fuente, no dos listas que se van
+# separando. Si el vocabulario gana un predicado, el prompt lo sigue solo
+# (tests/test_chat_contract_prompt.py se pone rojo si divergen).
+#
+# Ruta configurable por JAX_REPO_PATH, igual que shadow_validation.py — no
+# el `~/jax` hardcodeado del import de MemoryDB de más arriba. Y a
+# diferencia de aquel, este NO degrada: si el vocabulario no carga, el
+# proceso no arranca. Un prompt sin predicados es invisible desde afuera
+# —el chat responde igual, el contrato parsea igual, y el canal de claims
+# queda mudo— y es exactamente el estado que produjo 22 de 22 mensajes sin
+# un solo claim entre el 2026-08-18 y el 2026-09-01. Tiene que ser un
+# fallo ruidoso al arrancar, no uno silencioso en producción.
+_GOVERNANCE_DIR = os.path.join(
+    os.getenv("JAX_REPO_PATH", os.path.expanduser("~/jax")), "policy", "governance"
+)
+if _GOVERNANCE_DIR not in sys.path:
+    sys.path.insert(0, _GOVERNANCE_DIR)
+import loaders as governance_loaders  # noqa: E402
+
+
+_CONTRACT_SUFFIX_TEMPLATE = """
 
 FORMATO DE RESPUESTA OBLIGATORIO — respondé ÚNICAMENTE con un objeto JSON, sin texto antes ni después, sin fences de markdown:
 
 {"claim": [{"predicate": "NOMBRE", "args": {"clave": "valor"}}], "analysis": "tu razonamiento en texto libre", "judgment": "tu conclusión, o null si no aplica"}
 
-- "claim": lista de afirmaciones verificables (puede ir vacía: []). Cada una es {"predicate": "...", "args": {...}} — SOLO estos dos campos, nada más.
+- "claim": toda afirmación verificable sobre el estado del sistema que hagas en "analysis" o "judgment" va también acá como claim. Usá SOLO los predicados de esta lista, con ese nombre exacto y esos args — el vocabulario es cerrado: un nombre inventado se descarta entero.
+
+__PREDICADOS__
+
+  Cada claim es {"predicate": "...", "args": {...}} — SOLO esos dos campos, nada más. Poné [] únicamente si tu respuesta no afirma nada sobre el estado del sistema.
 - "analysis": tu análisis en texto libre. Obligatorio, aunque sea corto.
 - "judgment": tu conclusión o recomendación, o null si no aplica.
 
 No incluyas ningún otro campo. No expliques el formato, solo respondé el JSON."""
+
+
+def _render_contract_suffix(predicates: dict) -> str:
+    """Arma el sufijo del prompt desde el vocabulario cerrado. Puro: recibe
+    el dict {nombre: PredicateSpec} de loaders.load_predicates()."""
+    lineas = "\n".join(
+        f'  - {spec.name}(args: {", ".join(spec.args)}) — se verifica contra: {spec.source_of_truth}'
+        for spec in predicates.values()
+    )
+    return _CONTRACT_SUFFIX_TEMPLATE.replace("__PREDICADOS__", lineas)
+
+
+_CONTRACT_PROMPT_SUFFIX = _render_contract_suffix(governance_loaders.load_predicates())
 
 
 def _build_messages(system_prompt: str, history: list[dict], message: str) -> list[dict]:

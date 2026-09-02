@@ -8,3 +8,8 @@ aiomysql>=0.2
 python-multipart>=0.0.9
 psutil>=5.9
 aiosmtplib>=3.0
+# Lo arrastraba uvicorn[standard] como dependencia transitiva y nadie lo
+# declaraba. api/chat.py y shadow_validation.py importan policy/governance/
+# del repo `jax`, que lee YAML: si un dia uvicorn deja de traerlo, el backend
+# no arranca por una dependencia que nunca dijimos que necesitabamos.
+PyYAML>=6.0
