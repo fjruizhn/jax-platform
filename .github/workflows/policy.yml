@@ -236,7 +236,11 @@ jobs:
           # Subido de 336 a 340 (2026-09-01): los 4 tests de
           # tests/test_chat_contract_prompt.py. Medido con la DB de desarrollo
           # antes/despues (336 -> 340), skip count sin cambios (1).
-          PISO_PASSED = 340
+          # Subido de 340 a 359 (2026-09-03, SP3 grounding): tests de
+          # tests/test_shadow_validation_grounding.py, tests/test_chat_grounding_wiring.py
+          # y tests/test_chat_contract_prompt.py. Medido con la DB de desarrollo
+          # antes/despues (340 -> 359), skip count sin cambios (1).
+          PISO_PASSED = 359
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -390,7 +394,13 @@ jobs:
       # Subido de 186 a 190 (2026-09-01, el prompt de contrato nombra los
       # predicados): tests/test_chat_contract_prompt.py agrega 4 tests sin DB.
       # Medido con JAX_CI_NO_DB=1 antes/despues, skip count sin cambios (151).
-      JAX_CI_MIN_PASSED: "190"
+      # Subido de 190 a 193 (2026-09-03, SP3 grounding): tests de
+      # tests/test_shadow_validation_grounding.py, tests/test_chat_grounding_wiring.py
+      # y tests/test_chat_contract_prompt.py. Medido con JAX_CI_NO_DB=1
+      # antes/despues (190 -> 193). Skip count aumento de 151 a 167: los 19 tests
+      # nuevos de test_shadow_validation_grounding.py, test_chat_grounding_wiring.py
+      # y test_shadow_migrations.py que requieren DB se cuentan como skip aqui.
+      JAX_CI_MIN_PASSED: "193"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
