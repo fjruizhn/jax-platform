@@ -62,7 +62,7 @@ def test_same_snapshot_object_reaches_prompt_and_background_task(client):
     assert grounding_obj.sha256 not in system_prompt
 
 
-def test_snapshot_build_failure_is_marked_not_hidden(client):
+def test_snapshot_build_failure_is_marked_not_hidden(client, caplog):
     import grounding as governance_grounding
     from auth.jwt import create_access_token
     import api.chat as chat
@@ -80,7 +80,8 @@ def test_snapshot_build_failure_is_marked_not_hidden(client):
     http_client._client = fake
     try:
         with patch.object(chat, "_build_snapshot_or_raise", side_effect=boom), \
-             patch("jax_engine.background.add_safe_task", side_effect=spy_add_safe_task):
+             patch("jax_engine.background.add_safe_task", side_effect=spy_add_safe_task), \
+             caplog.at_level("ERROR", logger="api.chat"):
             resp = client.post("/api/chat", json={"message": "hola", "facet": "jekyll"},
                                headers={"Authorization": f"Bearer {token}"})
     finally:
@@ -97,3 +98,9 @@ def test_snapshot_build_failure_is_marked_not_hidden(client):
     empty = governance_grounding.Snapshot(entries=(), canonical_json="{}", sha256="0" * 64)
     heading = governance_grounding.render(empty).splitlines()[0]
     assert heading not in fake.payloads[0]["messages"][0]["content"]
+    # y la mitad "ruidosa" del contrato: el fallo quedó LOGUEADO con traceback,
+    # no tragado en silencio (mismo criterio que el resto del módulo).
+    records = [r for r in caplog.records if r.name == "api.chat"
+               and "no se pudo construir el snapshot" in r.message]
+    assert len(records) == 1
+    assert records[0].exc_info is not None

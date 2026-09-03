@@ -135,6 +135,8 @@ async def _mark_validated(cur, shadow_message_id):
 
 
 _POINTER_COLUMN_WIDTH = 100  # shadow_claim_verdicts.evidence_pointer VARCHAR(100)
+_DETAIL_COLUMN_WIDTH = 60000  # shadow_claim_verdicts.detail es TEXT (65535 bytes);
+# margen bajo el límite real para dejar espacio a caracteres multibyte.
 
 
 async def _insert_claim_verdict(cur, conv_uuid, shadow_message_id, verdict, raw_claim, accreditation):
@@ -146,6 +148,8 @@ async def _insert_claim_verdict(cur, conv_uuid, shadow_message_id, verdict, raw_
         detail += f" | el modelo declaró authority={declared!r} (ignorado: la autoridad la deriva el servidor)."
     # evidence_pointer: tal como se recibió, truncado al ancho de la columna;
     # si se truncó, el original completo va al detail (spec §9.1b).
+    # accreditation.detail puede ya traer el puntero (preview de 120 o completo);
+    # acá se garantiza el original íntegro sin depender de qué rama lo produjo.
     pointer = accreditation.evidence_pointer_raw
     pointer_db = None
     if pointer is not None:
@@ -153,6 +157,10 @@ async def _insert_claim_verdict(cur, conv_uuid, shadow_message_id, verdict, raw_
         pointer_db = as_text[:_POINTER_COLUMN_WIDTH]
         if len(as_text) > _POINTER_COLUMN_WIDTH:
             detail += f" | evidence_pointer truncado a {_POINTER_COLUMN_WIDTH}; original: {as_text}"
+    # defensa en profundidad (mismo argumento que el clamp de `facet`): con
+    # sql_mode=STRICT_TRANS_TABLES un detail que exceda la columna hace que el
+    # INSERT falle a mitad del loop y se pierdan los claims restantes del turno.
+    detail = detail[:_DETAIL_COLUMN_WIDTH]
     await cur.execute(
         "INSERT INTO shadow_claim_verdicts "
         "(conv_uuid, shadow_message_id, predicate, status, detail, args, authority, evidence_pointer) "

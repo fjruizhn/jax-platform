@@ -167,6 +167,20 @@ def test_9_1b_300_char_pointer_is_truncated_to_100_with_original_in_detail(clien
     assert long in detail
 
 
+def test_9_1b_70000_char_pointer_clamps_detail_to_60000_without_data_too_long(client):
+    huge = "/capabilities/" + "9" * 69986
+    assert len(huge) == 70000
+    smid = _run(client, _contract([{"predicate": "CAPABILITY_AVAILABLE",
+                                    "args": {"name": "write_file", "mode": "mutating"},
+                                    "evidence_pointer": huge}]), _snapshot())
+    (_, status, _, pointer, detail, _), = client.portal.call(_fetch_verdicts, smid)
+    assert status == "PROVENANCE_MISMATCH"
+    assert pointer == huge[:100]
+    assert len(detail) <= 60000
+    _, _, validated_at = client.portal.call(_fetch_message_grounding, smid)
+    assert validated_at is not None
+
+
 def test_model_declared_authority_never_enters_the_authority_column(client):
     snap = _snapshot()
     smid = _run(client, _contract([{"predicate": "CAPABILITY_AVAILABLE",
