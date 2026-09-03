@@ -167,7 +167,7 @@ def test_9_1b_300_char_pointer_is_truncated_to_100_with_original_in_detail(clien
     assert long in detail
 
 
-def test_9_1b_70000_char_pointer_clamps_detail_to_60000_without_data_too_long(client):
+def test_9_1b_70000_char_ascii_pointer_clamps_detail_to_65000_bytes_without_data_too_long(client):
     huge = "/capabilities/" + "9" * 69986
     assert len(huge) == 70000
     smid = _run(client, _contract([{"predicate": "CAPABILITY_AVAILABLE",
@@ -176,7 +176,31 @@ def test_9_1b_70000_char_pointer_clamps_detail_to_60000_without_data_too_long(cl
     (_, status, _, pointer, detail, _), = client.portal.call(_fetch_verdicts, smid)
     assert status == "PROVENANCE_MISMATCH"
     assert pointer == huge[:100]
-    assert len(detail) <= 60000
+    assert len(detail.encode("utf-8")) <= 65000
+    _, _, validated_at = client.portal.call(_fetch_message_grounding, smid)
+    assert validated_at is not None
+
+
+def test_9_1b_multibyte_pointer_clamps_detail_by_bytes_not_chars(client):
+    # "ñ" son 2 bytes en utf8mb4: 35000 de ellos son ~70 KB en solo ~35.014
+    # caracteres. Un clamp por CARACTERES (60000) NO toca esta cadena (35.014
+    # << 60000) -- y aun así el INSERT revienta por bytes (TEXT = 65535
+    # bytes, no caracteres: 70014 bytes solo del puntero). Medido antes de
+    # este test: con 30000 "ñ" (~60014 bytes) el total queda por debajo de
+    # 65535 y NO reproduce el bug (falso negativo) -- 35000 sí lo cruza con
+    # margen. Este es el caso que el clamp char-based no cubría.
+    huge = "/capabilities/" + "ñ" * 35000
+    assert len(huge) == 35014
+    smid = _run(client, _contract([{"predicate": "CAPABILITY_AVAILABLE",
+                                    "args": {"name": "write_file", "mode": "mutating"},
+                                    "evidence_pointer": huge}]), _snapshot())
+    (_, status, _, pointer, detail, _), = client.portal.call(_fetch_verdicts, smid)
+    assert status == "PROVENANCE_MISMATCH"
+    assert pointer == huge[:100]
+    encoded = detail.encode("utf-8")
+    assert len(encoded) <= 65000
+    # sin punto de código partido a la mitad -- decode debe volver a andar.
+    assert encoded.decode("utf-8") == detail
     _, _, validated_at = client.portal.call(_fetch_message_grounding, smid)
     assert validated_at is not None
 

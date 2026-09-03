@@ -135,8 +135,8 @@ async def _mark_validated(cur, shadow_message_id):
 
 
 _POINTER_COLUMN_WIDTH = 100  # shadow_claim_verdicts.evidence_pointer VARCHAR(100)
-_DETAIL_COLUMN_WIDTH = 60000  # shadow_claim_verdicts.detail es TEXT (65535 bytes);
-# margen bajo el límite real para dejar espacio a caracteres multibyte.
+_DETAIL_COLUMN_BYTES = 65000  # shadow_claim_verdicts.detail es TEXT: 65535 BYTES,
+# no caracteres; utf8mb4 usa hasta 4 bytes/char, por eso se corta sobre el encode.
 
 
 async def _insert_claim_verdict(cur, conv_uuid, shadow_message_id, verdict, raw_claim, accreditation):
@@ -160,7 +160,11 @@ async def _insert_claim_verdict(cur, conv_uuid, shadow_message_id, verdict, raw_
     # defensa en profundidad (mismo argumento que el clamp de `facet`): con
     # sql_mode=STRICT_TRANS_TABLES un detail que exceda la columna hace que el
     # INSERT falle a mitad del loop y se pierdan los claims restantes del turno.
-    detail = detail[:_DETAIL_COLUMN_WIDTH]
+    # Corte por BYTES, no por caracteres: TEXT son 65535 bytes y utf8mb4 usa
+    # hasta 4 bytes por caracter, asi que un [:N] por caracteres puede seguir
+    # excediendo el limite real de la columna. decode(..., "ignore") descarta
+    # el ultimo punto de codigo si el corte cae a la mitad de su codificacion.
+    detail = detail.encode("utf-8")[:_DETAIL_COLUMN_BYTES].decode("utf-8", "ignore")
     await cur.execute(
         "INSERT INTO shadow_claim_verdicts "
         "(conv_uuid, shadow_message_id, predicate, status, detail, args, authority, evidence_pointer) "

@@ -236,12 +236,13 @@ jobs:
           # Subido de 336 a 340 (2026-09-01): los 4 tests de
           # tests/test_chat_contract_prompt.py. Medido con la DB de desarrollo
           # antes/despues (336 -> 340), skip count sin cambios (1).
-          # Subido de 340 a 360 (2026-09-03, SP3 grounding): 15 tests en
+          # Subido de 340 a 361 (2026-09-03, SP3 grounding, incluye la ronda 2
+          # del clamp por bytes de `detail`): 16 tests en
           # tests/test_shadow_validation_grounding.py (contando los 4
           # parametrizados) + 2 en tests/test_chat_grounding_wiring.py + 3 en
-          # tests/test_chat_contract_prompt.py = 20. Medido con la DB de
-          # desarrollo antes/despues (340 -> 360), skip count sin cambios (1).
-          PISO_PASSED = 360
+          # tests/test_chat_contract_prompt.py = 21. Medido con la DB de
+          # desarrollo antes/despues (340 -> 361), skip count sin cambios (1).
+          PISO_PASSED = 361
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -398,7 +399,8 @@ jobs:
       # Subido de 190 a 193 (2026-09-03, SP3 grounding): los 3 tests de
       # tests/test_chat_contract_prompt.py corren sin DB (+3 al piso). Medido
       # con JAX_CI_NO_DB=1 antes/despues (190 -> 193). Skip count aumento de
-      # 151 a 168: los 17 tests nuevos que piden `client` (15 en
+      # 151 a 169 (incluye la ronda 2 del clamp por bytes de `detail`): los 18
+      # tests nuevos que piden `client` (16 en
       # tests/test_shadow_validation_grounding.py, contando los 4
       # parametrizados, y 2 en tests/test_chat_grounding_wiring.py) se cuentan
       # como skip aqui; test_shadow_migrations.py no cambia en esta rama.
