@@ -125,6 +125,14 @@ CREATE TABLE IF NOT EXISTS shadow_messages (
   validated_at TIMESTAMP NULL DEFAULT NULL,
   grounding_snapshot LONGTEXT NULL,
   grounding_snapshot_sha256 CHAR(64) NULL,
+  -- 2026-09-03: texto CRUDO tal como lo emitió el modelo, acotado por bytes
+  -- (shadow_validation.py::_RAW_COLUMN_BYTES). Es el ÚNICO lugar donde queda
+  -- el bloque `analysis` -- donde el modelo explica por qué eligió el
+  -- puntero que eligió -- que hasta hoy no se persiste en ningún lado. Sin
+  -- eso no se puede auditar una citación equivocada (POINTER_MISMATCH /
+  -- FACT_NOT_IN_SNAPSHOT, ver _reclassify_provenance_mismatch mas abajo):
+  -- se ve QUE se equivocó, pero no el razonamiento con el que se equivocó.
+  contract_raw LONGTEXT NULL,
   INDEX idx_shadow_messages_facet (facet),
   INDEX idx_shadow_messages_conv_uuid (conv_uuid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -1206,6 +1214,14 @@ _COLUMNS = [
      "ALTER TABLE shadow_claim_verdicts ADD COLUMN authority VARCHAR(12) NULL"),
     ("shadow_claim_verdicts", "evidence_pointer",
      "ALTER TABLE shadow_claim_verdicts ADD COLUMN evidence_pointer VARCHAR(100) NULL"),
+    # 2026-09-03: texto CRUDO tal como lo emitió el modelo, acotado por bytes
+    # (shadow_validation.py::_RAW_COLUMN_BYTES). Es el ÚNICO lugar donde
+    # queda el bloque `analysis` -- donde el modelo explica por qué eligió
+    # el puntero que eligió -- que hasta hoy no se persiste en ningún lado.
+    # Sin eso no se puede auditar una citación equivocada (POINTER_MISMATCH
+    # / FACT_NOT_IN_SNAPSHOT, ver _reclassify_provenance_mismatch mas abajo).
+    ("shadow_messages", "contract_raw",
+     "ALTER TABLE shadow_messages ADD COLUMN contract_raw LONGTEXT NULL"),
 ]
 
 
@@ -1478,6 +1494,62 @@ async def _seed_http_facet_allowed_callers(cur) -> None:
     )
 
 
+async def _reclassify_provenance_mismatch(cur) -> None:
+    """2026-09-03: PROVENANCE_MISMATCH se partió en dos estados en el repo
+    `jax` (policy/governance/grounding.py + validator.py, commit 4617df6):
+    POINTER_MISMATCH (el hecho afirmado SÍ está en el snapshot, el modelo
+    citó otro puntero) y FACT_NOT_IN_SNAPSHOT (ninguna entrada del snapshot
+    respalda el hecho afirmado). Esta función reclasifica las filas viejas
+    de `shadow_claim_verdicts` que quedaron con el status ya retirado.
+
+    RECLASIFICA, NO BORRA: cada fila conserva su predicate/detail/args/
+    authority/evidence_pointer originales, solo cambia `status`.
+
+    La condición es la MISMA condición mecánica que aplica el código nuevo
+    (shadow_validation.py vía grounding.accredit()/mismatch(), repo jax):
+    con los args del claim (cv.args, ya como se guardaron -- ver
+    _insert_claim_verdict, son los args crudos del claim, valores siempre
+    string en los predicados con resolver hoy) ¿existe alguna entrada del
+    snapshot de ESE turno con el mismo predicado y los mismos args?
+    JSON_CONTAINS(array, valor) compara SEMÁNTICAMENTE -- el orden de las
+    claves del objeto no importa, a diferencia de una comparación de string
+    -- así que no hace falta normalizar el objeto antes de comparar.
+    JSON_EXTRACT(sm.grounding_snapshot, '$.capabilities') saca el array de
+    entradas del snapshot (build_snapshot() en grounding.py solo produce la
+    sección "capabilities" hoy -- SECTION_PREDICATE tiene una sola entrada);
+    si existe -> POINTER_MISMATCH (citó mal algo verdadero), si no ->
+    FACT_NOT_IN_SNAPSHOT (inventó el hecho, mas grave).
+
+    IDEMPOTENTE: el WHERE filtra por status='PROVENANCE_MISMATCH', que esta
+    UPDATE elimina en la primera corrida -- una segunda corrida no encuentra
+    filas que tocar y no cambia nada (ver
+    test_reclassify_provenance_mismatch.py::test_second_run_is_a_no_op).
+
+    Filas con grounding_snapshot NULL (turno anterior a SP3) o
+    grounding_snapshot_sha256='ERROR' (el snapshot falló al construirse en
+    su turno) se dejan INTACTAS a propósito: no hay snapshot contra el cual
+    recomputar la condición mecánica para esas filas -- no es que se
+    ignoren por descuido, es que no hay con qué. Medido contra la DB real
+    (jax_memory) el 2026-09-03: hoy no existe ninguna fila
+    PROVENANCE_MISMATCH con grounding_snapshot NULL o 'ERROR' -- la
+    columna se agregó junto con SP3 (grounding), así que toda fila
+    PROVENANCE_MISMATCH anterior a SP3 tiene grounding_snapshot NULL por
+    definición y ya no puede existir en el momento en que este fix se
+    escribió (SP3 se desplegó y las verdicts PROVENANCE_MISMATCH post-SP3
+    ya traen snapshot). Se deja el guard igual, explícito, para no asumir
+    ese hecho como invariante permanente."""
+    await cur.execute(
+        "UPDATE shadow_claim_verdicts cv "
+        "JOIN shadow_messages sm USING (shadow_message_id) "
+        "SET cv.status = CASE "
+        "WHEN JSON_CONTAINS(JSON_EXTRACT(sm.grounding_snapshot, '$.capabilities'), cv.args) "
+        "THEN 'POINTER_MISMATCH' ELSE 'FACT_NOT_IN_SNAPSHOT' END "
+        "WHERE cv.status = 'PROVENANCE_MISMATCH' "
+        "AND sm.grounding_snapshot IS NOT NULL "
+        "AND sm.grounding_snapshot_sha256 <> 'ERROR'"
+    )
+
+
 async def run_migrations():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1517,5 +1589,9 @@ async def run_migrations():
             # que existir para poder actualizarlas.
             await _seed_model_max_tokens_param(cur)
             await _seed_model_max_output_tokens(cur)
+            # Requiere la columna contract_raw/grounding_snapshot ya creadas
+            # arriba (bucle de _COLUMNS): idempotente, así que el orden solo
+            # importa para que la columna exista, no para el contenido.
+            await _reclassify_provenance_mismatch(cur)
 
         await conn.commit()

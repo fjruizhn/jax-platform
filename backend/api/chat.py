@@ -513,8 +513,10 @@ def _parse_contract_response(raw_text: str) -> ContractResult:
         parsed = {"predicate": item["predicate"], "args": item["args"]}
         # SP3: evidence_pointer es lo ÚNICO que el modelo puede aportar a la
         # acreditación (spec §5.1). Se conserva tal cual, sin validar tipo:
-        # un puntero raro es PROVENANCE_MISMATCH en shadow validation, no un
-        # contrato roto. authority se conserva SOLO para dejar constancia en
+        # un puntero raro cae en POINTER_MISMATCH o FACT_NOT_IN_SNAPSHOT en
+        # shadow validation (repo jax, 2026-09-03; antes un solo estado
+        # PROVENANCE_MISMATCH), no un contrato roto. authority se conserva
+        # SOLO para dejar constancia en
         # `detail` de que el modelo intentó declararla -- nunca entra en la
         # columna authority (spec §9.1).
         for passthrough in ("evidence_pointer", "authority"):
