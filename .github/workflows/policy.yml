@@ -247,7 +247,30 @@ jobs:
           # tests/test_grounding_config_revalidation.py -- 3 puros y 1 que pide
           # `client`. Medido con la DB de desarrollo antes/despues (361 -> 365),
           # skip count sin cambios (1).
-          PISO_PASSED = 365
+          #
+          # Subido de 365 a 372 (2026-09-03, partir PROVENANCE_MISMATCH en
+          # POINTER_MISMATCH / FACT_NOT_IN_SNAPSHOT -- lado jax-platform del
+          # cambio de jax commit 4617df6). Medido con
+          # JAX_REPO_PATH=<worktree de jax con el cambio> .venv/bin/python -m
+          # pytest -q -rs contra la DB de desarrollo, antes/despues: 357
+          # passed / 8 failed / 1 skipped (366 colectados) -> 372 passed / 0
+          # failed / 1 skipped (373 colectados). Los 8 que fallaban ANTES de
+          # este cambio son 5 aserciones (una parametrizada x4) de
+          # test_shadow_validation_grounding.py que TODAVIA esperaban el
+          # status viejo PROVENANCE_MISMATCH contra un jax que, con el
+          # JAX_REPO_PATH de la rama, ya solo emite los dos nuevos --
+          # arreglar el lado jax-platform (persistir contract_raw + la
+          # migracion de reclasificacion) las actualiza y las pone en verde,
+          # sin agregar tests por si solo. +7 tests nuevos de este cambio: en
+          # tests/test_shadow_validation_grounding.py, 1 (columna
+          # contract_raw), 2 (POINTER_MISMATCH y FACT_NOT_IN_SNAPSHOT de
+          # punta a punta contra la DB, ademas de los 5 casos existentes
+          # reclasificados in-place) y 2 (contract_raw persistido +
+          # truncado por bytes) = 5; en
+          # tests/test_reclassify_provenance_mismatch.py (archivo nuevo), 2
+          # (reclasifica las dos clases + segunda corrida no-op). 357+8+7=372.
+          # Skip count sin cambios (1: gpt-5.6-terra).
+          PISO_PASSED = 372
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -413,6 +436,16 @@ jobs:
       # de tests/test_grounding_config_revalidation.py, 3 son puros y corren sin
       # DB (+3 al piso) y el cuarto pide `client` (+1 skip: 169 -> 170). Medido
       # con JAX_CI_NO_DB=1 antes/despues (193 -> 196).
+      #
+      # Sin cambios en el piso (2026-09-03, partir PROVENANCE_MISMATCH en
+      # POINTER_MISMATCH / FACT_NOT_IN_SNAPSHOT): los 7 tests nuevos de este
+      # cambio (5 en tests/test_shadow_validation_grounding.py, 2 en
+      # tests/test_reclassify_provenance_mismatch.py, archivo nuevo) piden
+      # `client` -- ninguno corre sin DB, asi que el piso se queda en 196.
+      # El conteo de SKIPS SI cambia -- 170 -> 177 (+7, uno por cada test
+      # nuevo) -- pero este job no lo gatea (a diferencia del de con-DB, que
+      # tiene MAX_SKIPS): solo lo imprime. Medido con JAX_CI_NO_DB=1
+      # antes/despues (196 -> 196 passed, 170 -> 177 skipped).
       JAX_CI_MIN_PASSED: "196"
     steps:
       - uses: actions/checkout@v4

@@ -103,6 +103,36 @@ def _grounding_columns(grounding_result) -> tuple[str, str]:
     return grounding_result.canonical_json, grounding_result.sha256
 
 
+_RAW_COLUMN_BYTES = 65000  # shadow_messages.contract_raw es LONGTEXT: admite
+# muchísimo más que esto. El tope acá es control de tamaño de fila (no volcar
+# decenas de MB de texto crudo por mensaje), no un límite real de la columna
+# -- mismo argumento y mismo patrón que _DETAIL_COLUMN_BYTES mas abajo.
+
+
+def _clamp_contract_raw(raw_text: str) -> str:
+    """contract.raw_text tal como lo emitió el modelo, acotado por BYTES
+    (no caracteres: utf8mb4 usa hasta 4 bytes/char). Corte sobre
+    encode("utf-8")[:N].decode("utf-8", "ignore") -- mismo patrón que el
+    clamp de `detail` en _insert_claim_verdict. Si se truncó, se anexa un
+    marcador explícito que dice cuántos bytes tenía el original: sin eso,
+    quien lea la fila no tiene forma de saber que falta contenido ni
+    cuánto -- exactamente la auditabilidad que esta columna existe para dar
+    (es el único lugar donde queda el bloque `analysis` del modelo)."""
+    raw_bytes = raw_text.encode("utf-8")
+    if len(raw_bytes) <= _RAW_COLUMN_BYTES:
+        return raw_text
+    # El marcador se descuenta del presupuesto ANTES de cortar, no se anexa
+    # después: si se anexara, el resultado pasaría el tope que la constante
+    # declara (medido en la revisión: 65043 bytes con un tope de 65000). Una
+    # cota que el propio código incumple es peor que no tenerla, porque
+    # quien la lee cree que vale. Mismo orden que el clamp de `detail`, donde
+    # el corte por bytes es la ÚLTIMA operación antes del INSERT.
+    marcador = f"\n[TRUNCADO: el original tenía {len(raw_bytes)} bytes]"
+    presupuesto = _RAW_COLUMN_BYTES - len(marcador.encode("utf-8"))
+    truncated = raw_bytes[:presupuesto].decode("utf-8", "ignore")
+    return truncated + marcador
+
+
 async def _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract, grounding_result):
     # Defensa en profundidad (finding 1 de la revisión final): api/chat.py
     # ya valida facet contra la whitelist de config["personalities"] antes
@@ -116,13 +146,14 @@ async def _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contr
     await cur.execute(
         "INSERT INTO shadow_messages "
         "(conv_uuid, shadow_message_id, facet, contract_parsed, degradation_reason, "
-        "has_claim, has_analysis, has_judgment, grounding_snapshot, grounding_snapshot_sha256) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        "has_claim, has_analysis, has_judgment, grounding_snapshot, grounding_snapshot_sha256, "
+        "contract_raw) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (
             conv_uuid, shadow_message_id, facet[:30], contract.contract_parsed,
             contract.degradation_reason,
             bool(contract.claims), bool(contract.analysis), bool(contract.judgment),
-            snapshot_json, sha,
+            snapshot_json, sha, _clamp_contract_raw(contract.raw_text),
         ),
     )
 

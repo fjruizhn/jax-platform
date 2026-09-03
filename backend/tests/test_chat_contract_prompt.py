@@ -100,8 +100,9 @@ def test_parser_keeps_evidence_pointer_and_model_declared_authority():
 
 
 def test_parser_keeps_non_string_evidence_pointer_for_accredit_to_reject():
-    # No se degrada el contrato por un puntero raro: eso es PROVENANCE_MISMATCH
-    # en shadow validation (spec §9.1b), no un contrato roto.
+    # No se degrada el contrato por un puntero raro: eso es POINTER_MISMATCH
+    # o FACT_NOT_IN_SNAPSHOT en shadow validation (spec §9.1b; repo jax,
+    # 2026-09-03), no un contrato roto.
     from api.chat import _parse_contract_response
     raw = '{"claim": [{"predicate": "P", "args": {}, "evidence_pointer": 7}], "analysis": "a"}'
     r = _parse_contract_response(raw)
