@@ -9,11 +9,10 @@ que api/chat.py ya usa para jax.memory.db.MemoryDB. No hay puente HTTP:
 ambos repos viven en el mismo host, y validator.py ya asume ese layout
 (sus propios imports insertan REPO_ROOT en sys.path).
 
-authority de todo claim es SIEMPRE "INFERIDO", fijado acá — nunca lo
-declara el modelo (ver spec, sección 1a: P08 aplicado a metadata). Como
-predicates.yaml §3.1.4 prohíbe INFERIDO en el canal claim, todo claim que
-llegue va a dar AUTHORITY_INVALID mientras chat.py no tenga grounding
-cableado. Eso es lo esperado, no un bug.
+authority de todo claim la DERIVA EL SERVIDOR acreditando el claim contra el
+snapshot que se inyectó en ese turno (grounding.py, SP3, 2026-09-03): OBSERVADO
+si citó una línea del snapshot y los args coinciden, INFERIDO en cualquier
+otro caso. Nunca lo declara el modelo (P08).
 
 Lo que este docstring afirmaba hasta el 2026-09-01 —"Resultado esperado:
 100% AUTHORITY_INVALID esta ronda"— describía un estado previsto que
@@ -63,7 +62,6 @@ import json
 import logging
 import os
 import sys
-from functools import lru_cache
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -82,7 +80,7 @@ if str(JAX_REPO / "policy" / "governance") not in sys.path:
     sys.path.insert(0, str(JAX_REPO / "policy" / "governance"))
 
 import claims as governance_claims  # noqa: E402
-import loaders as governance_loaders  # noqa: E402
+import grounding as governance_grounding  # noqa: E402
 import validator as governance_validator  # noqa: E402
 import vocab_sweep as governance_vocab_sweep  # noqa: E402
 
@@ -95,7 +93,17 @@ from db.connection import get_pool  # noqa: E402
 from governance_context import validation_context as _validation_context  # noqa: E402
 
 
-async def _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract):
+def _grounding_columns(grounding_result) -> tuple[str, str]:
+    """(grounding_snapshot, grounding_snapshot_sha256). Tres estados a
+    propósito (spec §5.4): 'ERROR' con el motivo cuando el snapshot falló;
+    64 hex con el JSON canónico cuando existe. NULL no sale de acá nunca:
+    NULL = fila anterior a SP3."""
+    if isinstance(grounding_result, governance_grounding.SnapshotError):
+        return json.dumps({"error": grounding_result.reason}, ensure_ascii=False), "ERROR"
+    return grounding_result.canonical_json, grounding_result.sha256
+
+
+async def _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract, grounding_result):
     # Defensa en profundidad (finding 1 de la revisión final): api/chat.py
     # ya valida facet contra la whitelist de config["personalities"] antes
     # de llegar acá, pero este módulo es importable/invocable por
@@ -104,15 +112,17 @@ async def _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contr
     # ver comentario en run_shadow_validation) nunca falle con
     # "Data too long" por esta columna específicamente, sin importar quién
     # llame. shadow_messages.facet es VARCHAR(30) (db/migrations.py).
+    snapshot_json, sha = _grounding_columns(grounding_result)
     await cur.execute(
         "INSERT INTO shadow_messages "
         "(conv_uuid, shadow_message_id, facet, contract_parsed, degradation_reason, "
-        "has_claim, has_analysis, has_judgment) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        "has_claim, has_analysis, has_judgment, grounding_snapshot, grounding_snapshot_sha256) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (
             conv_uuid, shadow_message_id, facet[:30], contract.contract_parsed,
             contract.degradation_reason,
             bool(contract.claims), bool(contract.analysis), bool(contract.judgment),
+            snapshot_json, sha,
         ),
     )
 
@@ -124,13 +134,31 @@ async def _mark_validated(cur, shadow_message_id):
     )
 
 
-async def _insert_claim_verdict(cur, conv_uuid, shadow_message_id, verdict, args):
+_POINTER_COLUMN_WIDTH = 100  # shadow_claim_verdicts.evidence_pointer VARCHAR(100)
+
+
+async def _insert_claim_verdict(cur, conv_uuid, shadow_message_id, verdict, raw_claim, accreditation):
+    # authority: SIEMPRE la derivada por el servidor (spec §9.1). Si el
+    # modelo mandó un campo authority, no entra acá: va al detail.
+    detail = verdict.detail
+    declared = raw_claim.get("authority")
+    if declared is not None:
+        detail += f" | el modelo declaró authority={declared!r} (ignorado: la autoridad la deriva el servidor)."
+    # evidence_pointer: tal como se recibió, truncado al ancho de la columna;
+    # si se truncó, el original completo va al detail (spec §9.1b).
+    pointer = accreditation.evidence_pointer_raw
+    pointer_db = None
+    if pointer is not None:
+        as_text = pointer if isinstance(pointer, str) else repr(pointer)
+        pointer_db = as_text[:_POINTER_COLUMN_WIDTH]
+        if len(as_text) > _POINTER_COLUMN_WIDTH:
+            detail += f" | evidence_pointer truncado a {_POINTER_COLUMN_WIDTH}; original: {as_text}"
     await cur.execute(
         "INSERT INTO shadow_claim_verdicts "
-        "(conv_uuid, shadow_message_id, predicate, status, detail, args) "
-        "VALUES (%s, %s, %s, %s, %s, %s)",
-        (conv_uuid, shadow_message_id, verdict.predicate, verdict.status, verdict.detail,
-         json.dumps(args)),
+        "(conv_uuid, shadow_message_id, predicate, status, detail, args, authority, evidence_pointer) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (conv_uuid, shadow_message_id, verdict.predicate, verdict.status, detail,
+         json.dumps(raw_claim["args"]), accreditation.authority, pointer_db),
     )
 
 
@@ -148,7 +176,12 @@ async def run_shadow_validation(
     shadow_message_id: str,
     facet: str,
     contract: "ContractResult | None",
+    grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError",
 ) -> None:
+    """`grounding` es OBLIGATORIO y sin default a propósito (spec §9.2): es
+    lo que garantiza que ninguna fila nueva de shadow_messages quede con
+    grounding_snapshot_sha256 NULL. Un caller que lo omita falla al llamar,
+    no produce una fila ambigua."""
     if conv_uuid is None or contract is None:
         return
 
@@ -171,22 +204,29 @@ async def run_shadow_validation(
                 # el proceso muere en cualquier punto de acá en adelante,
                 # queda una fila con validated_at NULL — visible, no
                 # silenciosa (garantía fail-closed, ver spec sección 3).
-                await _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract)
+                await _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract, grounding)
 
                 ctx, predicates, term_categories = _validation_context()
 
                 for raw_claim in contract.claims:
+                    # 1) acreditar contra el snapshot del turno (grounding.py,
+                    #    puro): de acá salen authority y provenance_ref.
+                    accreditation = governance_grounding.accredit(raw_claim, grounding)
                     claim = governance_claims.Claim(
                         predicate=raw_claim["predicate"],
-                        args={k: str(v) for k, v in raw_claim["args"].items()},
-                        authority="INFERIDO",
-                        provenance_ref=facet,
-                        evidence_pointer=f"{conv_uuid}:{shadow_message_id}",
+                        args=governance_grounding.normalize_args(raw_claim["args"]),
+                        authority=accreditation.authority,
+                        provenance_ref=accreditation.provenance_ref,
+                        evidence_pointer=(
+                            accreditation.evidence_pointer_raw
+                            if isinstance(accreditation.evidence_pointer_raw, str) else ""
+                        ),
                         scope="mesa_web",
                     )
-                    verdict = governance_validator.validate(claim, predicates, ctx)
+                    # 2) veredicto en el orden normativo del spec §4.1.
+                    verdict = governance_validator.validate(claim, predicates, ctx, accreditation=accreditation)
                     await _insert_claim_verdict(
-                        cur, conv_uuid, shadow_message_id, verdict, raw_claim["args"]
+                        cur, conv_uuid, shadow_message_id, verdict, raw_claim, accreditation
                     )
 
                 for channel, text in (("analysis", contract.analysis), ("judgment", contract.judgment)):
