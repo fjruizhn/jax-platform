@@ -106,7 +106,7 @@ function BottomBar() {
 
     // Modo chat
     try {
-      const chatBody = { message: text, facet: activeFacet }
+      const chatBody = { message: text, facet: activeFacet, origin: 'web' }
       if (attachment) {
         if (attachment.type === 'image') {
           chatBody.image_base64 = attachment.base64

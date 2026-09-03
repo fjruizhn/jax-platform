@@ -147,7 +147,7 @@ def test_turno_completo_con_config_rota_en_caliente_queda_ERROR_y_sin_veredictos
     ).splitlines()[0]
     assert encabezado not in fake.payloads[0]["messages"][0]["content"]
     # 3. lo que viaja al validador es la marca, no un snapshot que miente
-    conv_uuid, smid, facet, contract, grounding = capturado["args"]
+    conv_uuid, smid, facet, contract, grounding, origin = capturado["args"]
     assert isinstance(grounding, governance_grounding.SnapshotError)
 
     # 4. la fila queda marcada ERROR y sin veredictos: la task muere fail-closed
@@ -155,7 +155,7 @@ def test_turno_completo_con_config_rota_en_caliente_queda_ERROR_y_sin_veredictos
     import tomllib
     with pytest.raises(tomllib.TOMLDecodeError):
         client.portal.call(run_shadow_validation, conv_uuid or "conv-revalidacion",
-                           smid, facet, contract, grounding)
+                           smid, facet, contract, grounding, origin)
     (sha, validated_at), veredictos = client.portal.call(
         _fila, smid)
     assert sha == "ERROR"

@@ -133,7 +133,7 @@ def _clamp_contract_raw(raw_text: str) -> str:
     return truncated + marcador
 
 
-async def _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract, grounding_result):
+async def _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract, grounding_result, origin):
     # Defensa en profundidad (finding 1 de la revisión final): api/chat.py
     # ya valida facet contra la whitelist de config["personalities"] antes
     # de llegar acá, pero este módulo es importable/invocable por
@@ -142,18 +142,24 @@ async def _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contr
     # ver comentario en run_shadow_validation) nunca falle con
     # "Data too long" por esta columna específicamente, sin importar quién
     # llame. shadow_messages.facet es VARCHAR(30) (db/migrations.py).
+    #
+    # Mismo criterio para origin: api/chat.py ya lo valida contra el
+    # vocabulario cerrado de ChatRequest.origin antes de llegar acá, pero
+    # este módulo es invocable por cualquier otro caller -- clampear a 20
+    # caracteres (shadow_messages.origin es VARCHAR(20)) asegura que este
+    # INSERT nunca falle por esta columna, sin importar quién llame.
     snapshot_json, sha = _grounding_columns(grounding_result)
     await cur.execute(
         "INSERT INTO shadow_messages "
         "(conv_uuid, shadow_message_id, facet, contract_parsed, degradation_reason, "
         "has_claim, has_analysis, has_judgment, grounding_snapshot, grounding_snapshot_sha256, "
-        "contract_raw) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        "contract_raw, origin) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (
             conv_uuid, shadow_message_id, facet[:30], contract.contract_parsed,
             contract.degradation_reason,
             bool(contract.claims), bool(contract.analysis), bool(contract.judgment),
-            snapshot_json, sha, _clamp_contract_raw(contract.raw_text),
+            snapshot_json, sha, _clamp_contract_raw(contract.raw_text), origin[:20],
         ),
     )
 
@@ -220,11 +226,19 @@ async def run_shadow_validation(
     facet: str,
     contract: "ContractResult | None",
     grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError",
+    origin: str,
 ) -> None:
     """`grounding` es OBLIGATORIO y sin default a propósito (spec §9.2): es
     lo que garantiza que ninguna fila nueva de shadow_messages quede con
     grounding_snapshot_sha256 NULL. Un caller que lo omita falla al llamar,
-    no produce una fila ambigua."""
+    no produce una fila ambigua.
+
+    `origin` (2026-09-03) tiene el MISMO criterio: sexto argumento
+    obligatorio y sin default. Sin esto, un caller que lo omitiera
+    produciría una fila con origin=NULL o con un default silencioso -- y
+    el punto entero de esta columna es que la ausencia de declaración
+    nunca se confunda con tráfico real. Un caller que lo omite falla al
+    llamar, no produce una fila ambigua."""
     if conv_uuid is None or contract is None:
         return
 
@@ -247,7 +261,7 @@ async def run_shadow_validation(
                 # el proceso muere en cualquier punto de acá en adelante,
                 # queda una fila con validated_at NULL — visible, no
                 # silenciosa (garantía fail-closed, ver spec sección 3).
-                await _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract, grounding)
+                await _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract, grounding, origin)
 
                 ctx, predicates, term_categories = _validation_context()
 

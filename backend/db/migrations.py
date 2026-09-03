@@ -133,6 +133,20 @@ CREATE TABLE IF NOT EXISTS shadow_messages (
   -- FACT_NOT_IN_SNAPSHOT, ver _reclassify_provenance_mismatch mas abajo):
   -- se ve QUE se equivocó, pero no el razonamiento con el que se equivocó.
   contract_raw LONGTEXT NULL,
+  -- 2026-09-03: origen declarado por quien LLAMA (web/probe/test), nunca
+  -- inferido. El grano es el TURNO, no la conversación -- una conversación
+  -- es de larga vida y puede mezclar orígenes (una sonda y un uso real en
+  -- la misma hebra), un turno no: cada POST /chat es un origen y solo uno.
+  -- Default 'unattributed' DELIBERADO: la ausencia de declaración no es
+  -- evidencia de uso orgánico. Un llamador que no declara su origen se
+  -- cuenta como no atribuido, nunca como real -- lo contrario sería
+  -- fail-open (una sonda que se olvida de marcarse contaminaría la
+  -- muestra haciéndose pasar por tráfico real). Medido el mismo día: sin
+  -- esta columna, una fila de sonda y una de uso real eran idénticas en
+  -- la base (mismo source, user_id, project_id, request_type) y solo se
+  -- podían distinguir por un hecho de la sesión (la hora en que se corrió
+  -- la sonda), no de la base.
+  origin VARCHAR(20) NOT NULL DEFAULT 'unattributed',
   INDEX idx_shadow_messages_facet (facet),
   INDEX idx_shadow_messages_conv_uuid (conv_uuid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -1222,6 +1236,14 @@ _COLUMNS = [
     # / FACT_NOT_IN_SNAPSHOT, ver _reclassify_provenance_mismatch mas abajo).
     ("shadow_messages", "contract_raw",
      "ALTER TABLE shadow_messages ADD COLUMN contract_raw LONGTEXT NULL"),
+    # 2026-09-03: origen declarado por quien llama (web/probe/test), grano
+    # TURNO. Ver el comentario completo junto a CREATE_SHADOW_MESSAGES
+    # arriba -- el default 'unattributed' es deliberado (fail-closed: la
+    # ausencia de declaración no es evidencia de uso orgánico) y se repite
+    # acá porque un ADD COLUMN sin DEFAULT explícito no hereda el default
+    # del CREATE TABLE para las filas ya existentes de una base vieja.
+    ("shadow_messages", "origin",
+     "ALTER TABLE shadow_messages ADD COLUMN origin VARCHAR(20) NOT NULL DEFAULT 'unattributed'"),
 ]
 
 

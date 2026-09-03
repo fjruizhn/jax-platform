@@ -98,7 +98,7 @@ def test_shadow_validation_writes_message_row_and_sets_validated_at(client):
         contract_parsed=True, claims=[], analysis="sin nada verificable",
         judgment=None, degradation_reason=None, raw_text="...",
     )
-    client.portal.call(run_shadow_validation, "conv-fake-uuid", smid, "jekyll", contract, _grounding())
+    client.portal.call(run_shadow_validation, "conv-fake-uuid", smid, "jekyll", contract, _grounding(), "test")
 
     row = client.portal.call(_fetch_shadow_message, smid)
     assert row is not None
@@ -124,7 +124,7 @@ def test_shadow_validation_claim_produces_authority_invalid_verdict(client):
         analysis="revisé el catálogo", judgment=None,
         degradation_reason=None, raw_text="...",
     )
-    client.portal.call(run_shadow_validation, "conv-fake-uuid-2", smid, "jekyll", contract, _grounding())
+    client.portal.call(run_shadow_validation, "conv-fake-uuid-2", smid, "jekyll", contract, _grounding(), "test")
 
     verdicts = client.portal.call(_fetch_claim_verdicts, smid)
     assert len(verdicts) == 1
@@ -147,7 +147,7 @@ def test_shadow_validation_sweeps_analysis_and_judgment_for_vocab_hits(client):
         judgment="y también invocamos a hyde en el judgment",
         degradation_reason=None, raw_text="...",
     )
-    client.portal.call(run_shadow_validation, "conv-fake-uuid-3", smid, "jax_local", contract, _grounding())
+    client.portal.call(run_shadow_validation, "conv-fake-uuid-3", smid, "jax_local", contract, _grounding(), "test")
 
     hits = client.portal.call(_fetch_vocab_hits, smid)
     channels_terms = {(h[0], h[1]) for h in hits}
@@ -167,7 +167,7 @@ def test_shadow_validation_navigable_without_messages_row(client):
         contract_parsed=True, claims=[], analysis="x", judgment=None,
         degradation_reason=None, raw_text="x",
     )
-    client.portal.call(run_shadow_validation, fake_conv_uuid, smid, "jekyll", contract, _grounding())
+    client.portal.call(run_shadow_validation, fake_conv_uuid, smid, "jekyll", contract, _grounding(), "test")
     row = client.portal.call(_fetch_shadow_message, smid)
     assert row is not None
     assert row[0] == fake_conv_uuid  # navegable por conv_uuid, sin depender de `messages`
@@ -182,7 +182,7 @@ def test_shadow_validation_degraded_message_still_gets_row(client):
         contract_parsed=False, claims=[], analysis="texto truncado sin nada reconocible",
         judgment=None, degradation_reason="JSON no parsea", raw_text="texto truncado sin nada reconocible",
     )
-    client.portal.call(run_shadow_validation, "conv-fake-uuid-4", smid, "kimi", contract, _grounding())
+    client.portal.call(run_shadow_validation, "conv-fake-uuid-4", smid, "kimi", contract, _grounding(), "test")
 
     row = client.portal.call(_fetch_shadow_message, smid)
     assert row is not None
@@ -216,7 +216,7 @@ def test_shadow_validation_leaves_validated_at_null_when_worker_dies_mid_run(cli
         try:
             client.portal.call(
                 shadow_validation.run_shadow_validation,
-                "conv-fake-uuid-5", smid, "jekyll", contract, _grounding(),
+                "conv-fake-uuid-5", smid, "jekyll", contract, _grounding(), "test",
             )
         except RuntimeError:  # fail-soft: captura el RuntimeError inyectado a proposito por el test (side_effect) para poder inspeccionar el estado post-crash; tipo acotado, no bare except
             pass  # esperado — lo que importa es el estado que quedó en DB
@@ -254,7 +254,7 @@ def test_shadow_validation_leaves_validated_at_null_when_context_load_fails_befo
         try:
             client.portal.call(
                 shadow_validation.run_shadow_validation,
-                "conv-fake-uuid-6", smid, "jekyll", contract, _grounding(),
+                "conv-fake-uuid-6", smid, "jekyll", contract, _grounding(), "test",
             )
         except RuntimeError:  # fail-soft: mismo patron: captura el RuntimeError inyectado a proposito para inspeccionar el estado post-crash
             pass  # esperado — lo que importa es el estado que quedó en DB
@@ -281,7 +281,7 @@ def test_shadow_validation_clamps_overlong_facet_so_insert_succeeds(client):
         degradation_reason=None, raw_text="x",
     )
     client.portal.call(
-        run_shadow_validation, "conv-fake-uuid-overlong-facet", smid, overlong_facet, contract, _grounding(),
+        run_shadow_validation, "conv-fake-uuid-overlong-facet", smid, overlong_facet, contract, _grounding(), "test",
     )
     row = client.portal.call(_fetch_shadow_message, smid)
     assert row is not None
@@ -296,7 +296,7 @@ def test_shadow_validation_skips_when_conv_uuid_is_none(client):
         contract_parsed=True, claims=[], analysis="x", judgment=None,
         degradation_reason=None, raw_text="x",
     )
-    client.portal.call(run_shadow_validation, None, smid, "jekyll", contract, _grounding())
+    client.portal.call(run_shadow_validation, None, smid, "jekyll", contract, _grounding(), "test")
     row = client.portal.call(_fetch_shadow_message, smid)
     assert row is None  # sin conv_uuid no hay a qué mensaje navegar, no se encola
 

@@ -101,10 +101,10 @@ def _contract(claims, raw_text="..."):
     )
 
 
-def _run(client, contract, grounding_result, smid=None):
+def _run(client, contract, grounding_result, smid=None, origin="test"):
     from shadow_validation import run_shadow_validation
     smid = smid or str(uuid.uuid4())
-    client.portal.call(run_shadow_validation, "conv-sp3", smid, "jekyll", contract, grounding_result)
+    client.portal.call(run_shadow_validation, "conv-sp3", smid, "jekyll", contract, grounding_result, origin)
     return smid
 
 
