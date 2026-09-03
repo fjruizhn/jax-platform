@@ -123,6 +123,8 @@ CREATE TABLE IF NOT EXISTS shadow_messages (
   has_judgment BOOLEAN DEFAULT NULL,
   queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   validated_at TIMESTAMP NULL DEFAULT NULL,
+  grounding_snapshot LONGTEXT NULL,
+  grounding_snapshot_sha256 CHAR(64) NULL,
   INDEX idx_shadow_messages_facet (facet),
   INDEX idx_shadow_messages_conv_uuid (conv_uuid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -137,6 +139,8 @@ CREATE TABLE IF NOT EXISTS shadow_claim_verdicts (
   status VARCHAR(30) NOT NULL,
   detail TEXT,
   args JSON,
+  authority VARCHAR(12) NULL,
+  evidence_pointer VARCHAR(100) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_shadow_claims_conv_uuid (conv_uuid),
   INDEX idx_shadow_claims_shadow_message_id (shadow_message_id),
@@ -1187,6 +1191,21 @@ _COLUMNS = [
     # aproximado. Con job_id, el join es exacto -- lo que T3 (chequeo de
     # reconciliacion) necesita para no dar falsos positivos.
     ("axioma_usage", "job_id", "ALTER TABLE axioma_usage ADD COLUMN job_id VARCHAR(36) NULL"),
+    # SP3 grounding (2026-09-03). shadow_messages: qué vio el modelo y su
+    # hash. Tres estados distinguibles a propósito (spec §5.4): NULL = turno
+    # anterior a esta migración; 'ERROR' = el snapshot falló al construirse;
+    # 64 hex = snapshot real. shadow_claim_verdicts: authority SIEMPRE
+    # derivada por el servidor, nunca lo que mandó el modelo (spec §9.1);
+    # evidence_pointer tal como se recibió, truncado a 100 (el original va a
+    # `detail` si excede).
+    ("shadow_messages", "grounding_snapshot",
+     "ALTER TABLE shadow_messages ADD COLUMN grounding_snapshot LONGTEXT NULL"),
+    ("shadow_messages", "grounding_snapshot_sha256",
+     "ALTER TABLE shadow_messages ADD COLUMN grounding_snapshot_sha256 CHAR(64) NULL"),
+    ("shadow_claim_verdicts", "authority",
+     "ALTER TABLE shadow_claim_verdicts ADD COLUMN authority VARCHAR(12) NULL"),
+    ("shadow_claim_verdicts", "evidence_pointer",
+     "ALTER TABLE shadow_claim_verdicts ADD COLUMN evidence_pointer VARCHAR(100) NULL"),
 ]
 
 

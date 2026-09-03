@@ -89,18 +89,10 @@ import vocab_sweep as governance_vocab_sweep  # noqa: E402
 from api.chat import ContractResult  # noqa: E402
 from db.connection import get_pool  # noqa: E402
 
-
-@lru_cache(maxsize=1)
-def _validation_context():
-    # Config estática cacheada por proceso — mismo criterio que
-    # _load_config() en chat.py (Lección operativa #6, jax-platform/CLAUDE.md):
-    # un cambio real requiere reiniciar el proceso, no releer en cada request.
-    vocabulary = governance_loaders.load_vocabulary()
-    ctx = governance_validator.load_validation_context(
-        JAX_REPO, vocabulary.config_paths
-    )
-    predicates = governance_loaders.load_predicates()
-    return ctx, predicates, vocabulary.term_categories
+# El contexto vive en governance_context.py desde SP3 (lo comparte chat.py).
+# Se conserva el nombre _validation_context en este módulo a propósito:
+# tests/test_shadow_validation.py lo parchea por nombre.
+from governance_context import validation_context as _validation_context  # noqa: E402
 
 
 async def _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract):
