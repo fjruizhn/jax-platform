@@ -306,6 +306,11 @@ def test_contract_raw_truncated_by_bytes_with_marker_naming_original_size(client
     # sin esto quien lea la fila no sabe que falta contenido ni cuánto.
     assert str(original_bytes) in persisted
     assert "TRUNC" in persisted.upper()
+    # y el resultado RESPETA el tope que declara la constante, marcador
+    # incluido: el marcador se descuenta del presupuesto antes de cortar.
+    # Sin esta aserción la cota era nominal (medido: 65043 > 65000).
+    from shadow_validation import _RAW_COLUMN_BYTES
+    assert len(persisted.encode("utf-8")) <= _RAW_COLUMN_BYTES
 
 
 def test_model_declared_authority_never_enters_the_authority_column(client):

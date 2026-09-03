@@ -121,8 +121,16 @@ def _clamp_contract_raw(raw_text: str) -> str:
     raw_bytes = raw_text.encode("utf-8")
     if len(raw_bytes) <= _RAW_COLUMN_BYTES:
         return raw_text
-    truncated = raw_bytes[:_RAW_COLUMN_BYTES].decode("utf-8", "ignore")
-    return truncated + f"\n[TRUNCADO: el original tenía {len(raw_bytes)} bytes]"
+    # El marcador se descuenta del presupuesto ANTES de cortar, no se anexa
+    # después: si se anexara, el resultado pasaría el tope que la constante
+    # declara (medido en la revisión: 65043 bytes con un tope de 65000). Una
+    # cota que el propio código incumple es peor que no tenerla, porque
+    # quien la lee cree que vale. Mismo orden que el clamp de `detail`, donde
+    # el corte por bytes es la ÚLTIMA operación antes del INSERT.
+    marcador = f"\n[TRUNCADO: el original tenía {len(raw_bytes)} bytes]"
+    presupuesto = _RAW_COLUMN_BYTES - len(marcador.encode("utf-8"))
+    truncated = raw_bytes[:presupuesto].decode("utf-8", "ignore")
+    return truncated + marcador
 
 
 async def _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract, grounding_result):

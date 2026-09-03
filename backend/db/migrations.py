@@ -1509,7 +1509,12 @@ async def _reclassify_provenance_mismatch(cur) -> None:
     (shadow_validation.py vía grounding.accredit()/mismatch(), repo jax):
     con los args del claim (cv.args, ya como se guardaron -- ver
     _insert_claim_verdict, son los args crudos del claim, valores siempre
-    string en los predicados con resolver hoy) ¿existe alguna entrada del
+    string en los predicados con resolver hoy -- ASUMIDO y medido, no
+    garantizado por el tipo de la columna: `cv.args` se guarda con
+    json.dumps() sin pasar por normalize_args(), asi que si algun
+    predicado futuro aceptara args no-string, esta migracion los
+    clasificaria como FACT_NOT_IN_SNAPSHOT donde el runtime, que si
+    normaliza, diria POINTER_MISMATCH) ¿existe alguna entrada del
     snapshot de ESE turno con el mismo predicado y los mismos args?
     JSON_CONTAINS(array, valor) compara SEMÁNTICAMENTE -- el orden de las
     claves del objeto no importa, a diferencia de una comparación de string
