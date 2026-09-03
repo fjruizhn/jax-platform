@@ -75,3 +75,35 @@ def test_contract_suffix_no_ofrece_la_lista_vacia_como_default():
     claims es peor que no emitirlos -- pero deja de ser lo que el prompt
     ofrece primero."""
     assert "puede ir vacía: []" not in _CONTRACT_PROMPT_SUFFIX
+
+
+def test_contract_suffix_admits_evidence_pointer_and_no_longer_forbids_it():
+    # Regresión (spec §6.3 / §9.3): hasta SP3 el sufijo decía "SOLO esos dos
+    # campos, nada más" y "No incluyas ningún otro campo" -- el modelo NO
+    # PODÍA citar. Restaurar cualquiera de las dos frases pone rojo.
+    assert "SOLO esos dos campos" not in _CONTRACT_PROMPT_SUFFIX
+    assert "No incluyas ningún otro campo" not in _CONTRACT_PROMPT_SUFFIX
+    assert '"evidence_pointer"' in _CONTRACT_PROMPT_SUFFIX
+
+
+def test_parser_keeps_evidence_pointer_and_model_declared_authority():
+    from api.chat import _parse_contract_response
+    raw = ('{"claim": [{"predicate": "CAPABILITY_AVAILABLE", "args": {"name": "x", "mode": "read_only"}, '
+           '"evidence_pointer": "/capabilities/3", "authority": "EJECUTADO", "otro": 1}], '
+           '"analysis": "a", "judgment": null}')
+    r = _parse_contract_response(raw)
+    assert r.contract_parsed is True
+    assert r.claims == [{
+        "predicate": "CAPABILITY_AVAILABLE", "args": {"name": "x", "mode": "read_only"},
+        "evidence_pointer": "/capabilities/3", "authority": "EJECUTADO",
+    }]  # "otro" se descarta; evidence_pointer y authority se conservan (spec §9.1)
+
+
+def test_parser_keeps_non_string_evidence_pointer_for_accredit_to_reject():
+    # No se degrada el contrato por un puntero raro: eso es PROVENANCE_MISMATCH
+    # en shadow validation (spec §9.1b), no un contrato roto.
+    from api.chat import _parse_contract_response
+    raw = '{"claim": [{"predicate": "P", "args": {}, "evidence_pointer": 7}], "analysis": "a"}'
+    r = _parse_contract_response(raw)
+    assert r.contract_parsed is True
+    assert r.claims[0]["evidence_pointer"] == 7

@@ -510,7 +510,17 @@ def _parse_contract_response(raw_text: str) -> ContractResult:
         # loop, así que se degrada acá con el mismo helper.
         if len(item["predicate"]) > 50:
             return _degraded(raw_text, f"predicate excede 50 caracteres: {item['predicate'][:50]!r}...")
-        parsed_claims.append({"predicate": item["predicate"], "args": item["args"]})
+        parsed = {"predicate": item["predicate"], "args": item["args"]}
+        # SP3: evidence_pointer es lo ÚNICO que el modelo puede aportar a la
+        # acreditación (spec §5.1). Se conserva tal cual, sin validar tipo:
+        # un puntero raro es PROVENANCE_MISMATCH en shadow validation, no un
+        # contrato roto. authority se conserva SOLO para dejar constancia en
+        # `detail` de que el modelo intentó declararla -- nunca entra en la
+        # columna authority (spec §9.1).
+        for passthrough in ("evidence_pointer", "authority"):
+            if passthrough in item:
+                parsed[passthrough] = item[passthrough]
+        parsed_claims.append(parsed)
 
     analysis = data["analysis"]
     if not isinstance(analysis, str):
@@ -567,17 +577,17 @@ _CONTRACT_SUFFIX_TEMPLATE = """
 
 FORMATO DE RESPUESTA OBLIGATORIO — respondé ÚNICAMENTE con un objeto JSON, sin texto antes ni después, sin fences de markdown:
 
-{"claim": [{"predicate": "NOMBRE", "args": {"clave": "valor"}}], "analysis": "tu razonamiento en texto libre", "judgment": "tu conclusión, o null si no aplica"}
+{"claim": [{"predicate": "NOMBRE", "args": {"clave": "valor"}, "evidence_pointer": "/capabilities/0"}], "analysis": "tu razonamiento en texto libre", "judgment": "tu conclusión, o null si no aplica"}
 
 - "claim": toda afirmación verificable sobre el estado del sistema que hagas en "analysis" o "judgment" va también acá como claim. Usá SOLO los predicados de esta lista, con ese nombre exacto y esos args — el vocabulario es cerrado: un nombre inventado se descarta entero.
 
 __PREDICADOS__
 
-  Cada claim es {"predicate": "...", "args": {...}} — SOLO esos dos campos, nada más. Poné [] únicamente si tu respuesta no afirma nada sobre el estado del sistema.
+  Cada claim es {"predicate": "...", "args": {...}, "evidence_pointer": "/<lista>/<n>"}. El evidence_pointer es la línea de HECHOS VERIFICADOS que respalda el claim; si no hay una línea que lo respalde, no lo emitas como claim. Poné [] únicamente si tu respuesta no afirma nada sobre el estado del sistema.
 - "analysis": tu análisis en texto libre. Obligatorio, aunque sea corto.
 - "judgment": tu conclusión o recomendación, o null si no aplica.
 
-No incluyas ningún otro campo. No expliques el formato, solo respondé el JSON."""
+No expliques el formato, solo respondé el JSON."""
 
 
 def _render_contract_suffix(predicates: dict) -> str:
@@ -591,6 +601,32 @@ def _render_contract_suffix(predicates: dict) -> str:
 
 
 _CONTRACT_PROMPT_SUFFIX = _render_contract_suffix(governance_loaders.load_predicates())
+
+
+# --- Grounding por snapshot (REFORMAS Fase 2 SP3, spec §5) -------------------
+import grounding as governance_grounding  # noqa: E402  (mismo sys.path que loaders)
+from governance_context import validation_context as _governance_context  # noqa: E402
+
+
+def _build_snapshot_or_raise() -> "governance_grounding.Snapshot":
+    """Separado de _build_grounding para poder parchearlo en tests."""
+    ctx, _, _ = _governance_context()
+    return governance_grounding.build_snapshot(ctx)
+
+
+def _build_grounding() -> "governance_grounding.Snapshot | governance_grounding.SnapshotError":
+    """Nunca lanza. build_snapshot() sí lanza (P10) -- acá se captura, se
+    LOGUEA con traceback, y se convierte en la marca SnapshotError que
+    viaja al validador y termina como grounding_snapshot_sha256='ERROR'
+    (spec §5.4). El turno de chat responde igual: el grounding es medición
+    y no puede tumbar un chat, mismo criterio que el encolado de shadow
+    validation más abajo. Lo que NO se hace: devolver un snapshot vacío,
+    que sería indistinguible de "no hay capabilities"."""
+    try:
+        return _build_snapshot_or_raise()
+    except Exception as e:
+        logger.exception("no se pudo construir el snapshot de grounding")
+        return governance_grounding.SnapshotError(f"{type(e).__name__}: {e}")
 
 
 def _build_messages(system_prompt: str, history: list[dict], message: str) -> list[dict]:
@@ -855,6 +891,7 @@ async def _record_resolved_version_from_response(facet_key: str, data: dict) -> 
 async def _invoke_facet_dispatch(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
+    grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError | None" = None,
 ) -> tuple[str, UsageInfo | None, str]:
     history = _conversations.get(user_id, [])
     if semantic_context:
@@ -862,6 +899,12 @@ async def _invoke_facet_dispatch(
         history = semantic_context + history
     personality = config["personalities"].get(facet, config["personalities"]["jax_local"])
     system_prompt = personality.get("system_prompt", "Sos JAX.") + _CONTRACT_PROMPT_SUFFIX
+    # SP3: el bloque de hechos va DESPUÉS del sufijo de contrato, sin el
+    # hash (spec §5.1). Con SnapshotError no se anexa nada -- el modelo no
+    # tiene con qué citar y el validador lo sabe por la marca. Con None
+    # (la sonda de facet_canary) tampoco: la sonda no corre shadow validation.
+    if isinstance(grounding, governance_grounding.Snapshot):
+        system_prompt += "\n\n" + governance_grounding.render(grounding)
 
     # Bloque C: resolve_facet() reemplaza _resolve_active_model +
     # resolve_credential_instrumented sueltos — mismo resolver que usa
@@ -957,6 +1000,7 @@ async def _invoke_facet(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
     *, source: str = SOURCE_CHAT,
+    grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError | None" = None,
 ) -> tuple[str, UsageInfo | None]:
     """Envoltorio instrumentado. La particion existe para que el
     `outcome` sea un literal tipado en cada punto de retorno de
@@ -970,7 +1014,7 @@ async def _invoke_facet(
     construccion, sin una segunda ruta que pueda divergir."""
     try:
         texto, usage, outcome = await _invoke_facet_dispatch(
-            facet, config, user_id, message, semantic_context)
+            facet, config, user_id, message, semantic_context, grounding=grounding)
     except ModelDispatchConfigError as e:
         # ModelDispatchConfigError hereda de RuntimeError: este except TIENE
         # que ir antes del `except Exception` genérico, o éste se lo come.
@@ -1048,8 +1092,13 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         semantic_context = await _semantic_context(
             req.message, mem_uid, mem_pid, recent_history=_conversations.get(user_id, []))
 
+    # SP3: UN snapshot por turno, construido acá y pasado a sus dos
+    # consumidores (el prompt y el background task) -- spec §9.3.
+    grounding = _build_grounding()
+
     try:
-        response_text, usage = await _invoke_facet(facet, config, user_id, req.message, semantic_context)
+        response_text, usage = await _invoke_facet(
+            facet, config, user_id, req.message, semantic_context, grounding=grounding)
         is_canned = usage is None
     except httpx.HTTPStatusError as e:
         detail = f"Error HTTP {e.response.status_code} en {facet}: {e.response.text[:200]}"
@@ -1103,7 +1152,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     try:
         from shadow_validation import run_shadow_validation
         from jax_engine.background import add_safe_task
-        add_safe_task(background_tasks, run_shadow_validation, conv_uuid, shadow_message_id, facet, contract)
+        add_safe_task(background_tasks, run_shadow_validation, conv_uuid, shadow_message_id, facet, contract, grounding)
     except Exception:
         logger.exception("no se pudo encolar shadow validation")
 
