@@ -270,7 +270,20 @@ jobs:
           # tests/test_reclassify_provenance_mismatch.py (archivo nuevo), 2
           # (reclasifica las dos clases + segunda corrida no-op). 357+8+7=372.
           # Skip count sin cambios (1: gpt-5.6-terra).
-          PISO_PASSED = 372
+          #
+          # Subido de 372 a 379 (2026-09-03, columna de ORIGEN declarada por
+          # quien llama): tests/test_shadow_origin.py, archivo nuevo, agrega 7
+          # tests -- persistencia de `origin` (default 'unattributed' cuando
+          # el cuerpo no lo declara, NUNCA 'web'; 'probe' cuando se declara),
+          # 422 con cero fila fuera del vocabulario cerrado, el sexto
+          # argumento obligatorio de run_shadow_validation (inspect.signature,
+          # mismo patron que el de `grounding`), el clamp a 20 caracteres, y
+          # la columna con tipo/NOT NULL/default correctos tras la migracion.
+          # Medido con JAX_REPO_PATH=/home/fruiz/jax
+          # backend/.venv/bin/python -m pytest -q -rs contra la DB de
+          # desarrollo, antes/despues: 372 passed / 1 skipped -> 379 passed /
+          # 1 skipped. Skip count sin cambios (1: gpt-5.6-terra).
+          PISO_PASSED = 379
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -446,6 +459,18 @@ jobs:
       # nuevo) -- pero este job no lo gatea (a diferencia del de con-DB, que
       # tiene MAX_SKIPS): solo lo imprime. Medido con JAX_CI_NO_DB=1
       # antes/despues (196 -> 196 passed, 170 -> 177 skipped).
+      #
+      # Sin cambios en el piso (2026-09-03, columna de ORIGEN declarada por
+      # quien llama -- tests/test_shadow_origin.py, archivo nuevo): los 7
+      # tests nuevos (persistencia de `origin`, 422 fuera del vocabulario
+      # cerrado, el sexto argumento obligatorio de run_shadow_validation, el
+      # clamp a 20 caracteres, la columna de la migracion) piden TODOS
+      # `client` -- ninguno corre sin DB, el piso se queda en 196. El conteo
+      # de SKIPS SI cambia -- 177 -> 184 (+7, uno por cada test nuevo) --
+      # este job no lo gatea, solo lo imprime. Medido con JAX_CI_NO_DB=1
+      # JAX_REPO_PATH=/home/fruiz/jax backend/.venv/bin/python -m pytest -q
+      # -rs antes/despues contra este arbol (196 -> 196 passed, 177 -> 184
+      # skipped).
       JAX_CI_MIN_PASSED: "196"
     steps:
       - uses: actions/checkout@v4

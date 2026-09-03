@@ -9,7 +9,7 @@ import uuid
 from collections import OrderedDict
 from functools import lru_cache
 from datetime import datetime
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import httpx
@@ -418,6 +418,14 @@ class ChatRequest(BaseModel):
     message: str
     facet: str | None = None
     project_id: int | None = None   # None = memoria individual; set = memoria de proyecto
+    # Origen declarado por quien LLAMA -- vocabulario CERRADO (2026-09-03):
+    # un valor fuera de {web, probe, test} lo rechaza pydantic con 422 en
+    # el borde, fail-closed a propósito. Ausente (None) se persiste como
+    # 'unattributed' -- nunca 'web': la ausencia de declaración no es
+    # evidencia de uso orgánico (ver shadow_messages.origin en
+    # db/migrations.py). Ningún llamador puede hacerse pasar por tráfico
+    # real con solo omitir el campo.
+    origin: Literal["web", "probe", "test"] | None = None
 
 
 class ChatResponse(BaseModel):
@@ -1154,7 +1162,13 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     try:
         from shadow_validation import run_shadow_validation
         from jax_engine.background import add_safe_task
-        add_safe_task(background_tasks, run_shadow_validation, conv_uuid, shadow_message_id, facet, contract, grounding)
+        # req.origin ausente (None) se declara 'unattributed' ACÁ, en el
+        # borde -- no en el default de la columna solamente -- para que el
+        # sexto argumento de run_shadow_validation nunca sea None: un
+        # llamador de ese módulo que reciba None por descuido escribiría
+        # la palabra "None", no el valor fail-closed real.
+        origin = req.origin or "unattributed"
+        add_safe_task(background_tasks, run_shadow_validation, conv_uuid, shadow_message_id, facet, contract, grounding, origin)
     except Exception:
         logger.exception("no se pudo encolar shadow validation")
 

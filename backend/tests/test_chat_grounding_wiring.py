@@ -50,9 +50,11 @@ def test_same_snapshot_object_reaches_prompt_and_background_task(client):
     assert resp.status_code == 200, resp.text
 
     # consumidor 2: el background task recibió el snapshot como 5º argumento
-    conv_uuid, smid, facet, contract, grounding_obj = captured["args"]
+    # (el 6º, origin, es de la ronda de la columna de origen, 2026-09-03)
+    conv_uuid, smid, facet, contract, grounding_obj, origin = captured["args"]
     assert isinstance(grounding_obj, governance_grounding.Snapshot)
     assert len(grounding_obj.sha256) == 64
+    assert origin == "unattributed"  # el body no declaró origin
 
     # consumidor 1: el system prompt que salió contiene render() de ESE objeto
     assert len(fake.payloads) == 1
