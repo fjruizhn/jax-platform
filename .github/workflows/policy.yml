@@ -283,7 +283,10 @@ jobs:
           # backend/.venv/bin/python -m pytest -q -rs contra la DB de
           # desarrollo, antes/despues: 372 passed / 1 skipped -> 379 passed /
           # 1 skipped. Skip count sin cambios (1: gpt-5.6-terra).
-          PISO_PASSED = 379
+          # Subido de 379 a 380 (2026-09-03): un test en
+          # tests/test_facet_resolver_seal.py que fuerza el empate de mtime.
+          # Medido con la DB de desarrollo (379 -> 380), skips sin cambios (1).
+          PISO_PASSED = 380
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -471,7 +474,10 @@ jobs:
       # JAX_REPO_PATH=/home/fruiz/jax backend/.venv/bin/python -m pytest -q
       # -rs antes/despues contra este arbol (196 -> 196 passed, 177 -> 184
       # skipped).
-      JAX_CI_MIN_PASSED: "196"
+      # Subido de 196 a 197 (2026-09-03): el test nuevo del sello es puro y
+      # corre sin DB. Medido con JAX_CI_NO_DB=1 (196 -> 197), skips sin
+      # cambios (184).
+      JAX_CI_MIN_PASSED: "197"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
