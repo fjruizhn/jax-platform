@@ -520,7 +520,7 @@ _FACET_SEED = [
     ("jekyll",    "Jekyll",    "🧪", "#6366f1", "http_openai_compat",  True),
     ("hipatia",   "Hipatia",   "📚", "#10b981", "http_gemini",         True),
     ("thot",      "Thot",      "⚖️", "#eab308", "http_openai_compat",  True),
-    ("kimi",      "Kimi",      "⚡", "#06b6d4", "motor_registry",      True),
+    ("kimi",      "Kimi",      "⚡", "#06b6d4", "http_openai_compat",  True),
     ("ada",       "Ada",       "🏗️", "#ec4899", "http_openai_compat",  True),
 ]
 
@@ -1498,20 +1498,46 @@ async def _seed_model_max_output_tokens(cur) -> None:
         )
 
 
+async def _migrate_kimi_chat_transport(cur) -> None:
+    """2026-09-11: kimi pasa de transport='motor_registry' a
+    'http_openai_compat' en `facet`, igual que ada.
+
+    'motor_registry' era una etiqueta sin lector. facet.transport lo leen
+    el chat (api/chat.py::_invoke_facet_dispatch) y Jacobs
+    (jacobs/executor.py, repo jax), y ninguno despachaba ese valor: Jacobs
+    manda a kimi por _MOTOR_FACETS ANTES de mirar facet.transport, y el
+    worker de Motor Registry usa `motor.transport`, que para kimi ya es
+    'http_openai_compat'. En el chat caia en `unsupported_transport`:
+    medido, cada barrido de la sonda desde 2026-08-20 y cero turnos
+    servidos desde 2026-08-18, con la API de Moonshot sana.
+
+    Guard WHERE transport='motor_registry': corrige SOLO el valor viejo
+    conocido; un transporte puesto a mano despues no se revierte. Tiene
+    que correr antes de _seed_http_facet_allowed_callers, que le da a
+    kimi el acceso al gate authorize-facet que el transporte nuevo exige."""
+    await cur.execute(
+        "UPDATE facet SET transport = 'http_openai_compat' "
+        "WHERE `key` = 'kimi' AND transport = 'motor_registry'"
+    )
+
+
 async def _seed_http_facet_allowed_callers(cur) -> None:
     """Gobernanza de _HTTP_FACETS (docs/superpowers/specs/2026-08-27-
     http-facets-motor-policy-governance-design.md): hipatia/jekyll/thot/
     ada quedan con allowed_callers=["jacobs","jax_platform_chat"] --
     mismo acceso que ya existia informalmente (ninguno de los dos estaba
-    bloqueado antes de esta ronda), ahora explicito. kimi/jax_local/hyde
-    quedan NULL a proposito -- fuera de alcance esta ronda, fail-closed
-    por diseno (ver facet_policy.py::check_facet_admission en el repo jax).
+    bloqueado antes de esta ronda), ahora explicito. kimi se suma el
+    2026-09-11, cuando pasa a despacharse por http_openai_compat en el chat
+    (ver _migrate_kimi_chat_transport): sin esta fila el gate la denegaria
+    fail-closed. jax_local/hyde quedan NULL a proposito -- no pasan por el
+    gate (transportes ollama/subprocess), fail-closed por diseno (ver
+    facet_policy.py::check_facet_admission en el repo jax).
 
     Guard WHERE allowed_callers IS NULL: no pisa un valor manual futuro
     si alguien ya lo configuro distinto."""
     await cur.execute(
         "UPDATE facet SET allowed_callers = %s "
-        "WHERE `key` IN ('hipatia','jekyll','thot','ada') AND allowed_callers IS NULL",
+        "WHERE `key` IN ('hipatia','jekyll','thot','ada','kimi') AND allowed_callers IS NULL",
         (json.dumps(["jacobs", "jax_platform_chat"]),),
     )
 
@@ -1611,6 +1637,9 @@ async def run_migrations():
             await _seed_file_tools_capabilities(cur)
             await _fix_file_write_gate_and_auditor(cur)
             await _eliminate_motor_model_ref_denormalization(cur)
+            # Antes del seed de allowed_callers: kimi necesita el transporte
+            # http_* para que tener acceso al gate tenga sentido.
+            await _migrate_kimi_chat_transport(cur)
             await _seed_http_facet_allowed_callers(cur)
             # Despues de _seed_models_and_backfill: las filas de `model` tienen
             # que existir para poder actualizarlas.
