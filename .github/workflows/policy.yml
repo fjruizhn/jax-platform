@@ -295,7 +295,12 @@ jobs:
           # origin/master (380 passed / 1 skipped) y en la rama (388 / 1),
           # con la fila kimi de jax_memory_test devuelta a su estado previo
           # antes de medir master. Skips sin cambios (1: gpt-5.6-terra).
-          PISO_PASSED = 388
+          # Subido de 388 a 390 (2026-09-11, _semantic_context fail-soft al
+          # consumir): tests/test_semantic_context_fail_soft.py agrega 2 tests
+          # puros (corren en los dos modos). Medido contra la DB de desarrollo
+          # en master 1b47717 (388 / 1) y en la rama (390 / 1). Skips sin
+          # cambios (1).
+          PISO_PASSED = 390
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -491,7 +496,11 @@ jobs:
       # puros y corren sin DB (+6); los 2 de la migracion piden la DB (+2
       # skips: 184 -> 186). Medido con JAX_CI_NO_DB=1 en un worktree de
       # origin/master (197 passed / 184 skipped) y en la rama (203 / 186).
-      JAX_CI_MIN_PASSED: "203"
+      # Subido de 203 a 205 (2026-09-11, _semantic_context fail-soft al
+      # consumir): los 2 tests de tests/test_semantic_context_fail_soft.py
+      # son puros y corren sin DB. Medido con JAX_CI_NO_DB=1 en master
+      # 1b47717 (203 / 186) y en la rama (205 / 186), skips sin cambios.
+      JAX_CI_MIN_PASSED: "205"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

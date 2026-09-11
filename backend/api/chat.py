@@ -221,7 +221,15 @@ async def _semantic_context(user_text: str, user_id: int, project_id,
             recent_history=recent_history)
     except Exception:
         similares = []
-    relevantes = [r for r in similares if r["distancia"] < 0.8]
+    # Fail-soft tambien al CONSUMIR, no solo al consultar: una fila con
+    # distancia inutilizable (None o NaN -- embeddings "vector cero", ver
+    # jax/memory/db.py::_nonzero_embedding_sql en el repo jax) cuesta un
+    # candidato, no el turno. El 2026-09-11 `None < 0.8` tumbo el chat entero
+    # del scope individual con un 500. NaN < 0.8 ya es False y se descarta solo.
+    relevantes = [
+        r for r in similares
+        if isinstance(r.get("distancia"), (int, float)) and r["distancia"] < 0.8
+    ]
     if relevantes:
         lineas = []
         for r in relevantes:
