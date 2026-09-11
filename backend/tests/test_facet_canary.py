@@ -21,8 +21,10 @@ def _config():
 def test_canary_facets_excluye_hyde_y_no_filtra_por_transporte():
     facets = facet_canary.canary_facets(_config())
     assert "hyde" not in facets          # chat() lo corta antes del dispatch
-    assert "kimi" in facets              # DEBE sondearse: reporta
-                                         # unsupported_transport, no invisible
+    assert "kimi" in facets              # DEBE sondearse: el conjunto no se
+                                         # filtra por transporte (kimi estuvo
+                                         # un mes en unsupported_transport y
+                                         # esto es lo que lo hizo visible)
     assert set(facets) == {"jax_local", "jekyll", "hipatia",
                            "thot", "ada", "kimi"}
 

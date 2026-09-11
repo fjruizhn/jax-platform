@@ -39,16 +39,22 @@ CANARY_INTERVAL_SECONDS = int(os.getenv("CANARY_INTERVAL_SECONDS", "3600"))
 # probe_all() para siempre: el `while True` nunca llega al sleep, y la
 # sonda muere sin log, sin fila y sin evento.
 #
-# N=900 (15 min), elegido con este calculo: el peor caso LEGITIMO de un
+# N=1080 (18 min), elegido con este calculo: el peor caso LEGITIMO de un
 # barrido completo (canary_facets ordena alfabetico: ada, hipatia,
-# jax_local, jekyll, kimi, thot) es 4 facets gobernados (ada/hipatia/
-# jekyll/thot, cada uno gate 5s + hasta 120s de proveedor = 125s) + 180s
-# de jax_local (ollama, no gobernado, timeout mas alto del repo) + kimi
-# (unsupported_transport, retorno inmediato sin red) = 4*125 + 180 = 680s.
-# 900s deja ~32% de margen sobre ese peor caso legitimo y sigue siendo un
-# cuarto del intervalo por defecto (3600s), asi que un barrido colgado no
-# se come el proximo ciclo.
-CANARY_SWEEP_TIMEOUT_SECONDS = 900
+# jax_local, jekyll, kimi, thot) es 5 facets gobernados (ada/hipatia/
+# jekyll/kimi/thot, cada uno gate 5s + hasta 120s de proveedor = 125s) +
+# 180s de jax_local (ollama, no gobernado, timeout mas alto del repo) =
+# 5*125 + 180 = 805s. 1080s deja ~34% de margen sobre ese peor caso
+# legitimo y sigue por debajo de un tercio del intervalo por defecto
+# (3600s), asi que un barrido colgado no se come el proximo ciclo.
+#
+# Era 900 hasta 2026-09-11, calculado cuando kimi (motor_registry) volvia
+# en el acto con unsupported_transport, sin red: 4*125 + 180 = 680s. Al
+# pasar kimi a http_openai_compat entra al gate y al proveedor como las
+# otras cuatro, y con 900 el margen caia de ~32% a ~11% sin que nadie lo
+# decidiera. Si cambia el conjunto de facets o un timeout de
+# _invoke_facet_dispatch, este numero se recalcula.
+CANARY_SWEEP_TIMEOUT_SECONDS = 1080
 
 CANARY_USER_ID = "__canary__"
 # NO puede parecer una pregunta de identidad de modelo: _is_model_identity_question()
@@ -70,9 +76,11 @@ def canary_facets(config: dict) -> list[str]:
     (api/chat.py:902), o sea exactamente lo que un usuario puede elegir.
 
     NO se filtra por transporte a proposito: si se filtrara a "transportes
-    despachables", kimi (transport=motor_registry) quedaria fuera y su
-    caida seria invisible por diseno -- que es justo la clase de falla que
-    esta feature existe para detectar."""
+    despachables", un facet con un transporte que el chat no despacha
+    quedaria fuera y su caida seria invisible por diseno -- que es justo la
+    clase de falla que esta feature existe para detectar. Caso real: kimi
+    tuvo transport=motor_registry hasta 2026-09-11 y fue esta sonda la que
+    la mantuvo en `unsupported_transport` a la vista durante un mes."""
     return sorted(set(config["personalities"]) - _NOT_DISPATCHED)
 
 

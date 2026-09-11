@@ -1,5 +1,6 @@
-"""facet.allowed_callers se siembra para los 4 facets HTTP-directos,
-idempotente (correr dos veces no duplica ni pisa un valor manual)."""
+"""facet.allowed_callers se siembra para los 5 facets HTTP-directos del
+chat (hipatia/jekyll/thot/ada + kimi desde 2026-09-11), idempotente (correr
+dos veces no duplica ni pisa un valor manual)."""
 import json
 
 import pytest
@@ -7,19 +8,22 @@ import pytest
 from db.connection import get_pool
 from db.migrations import _seed_http_facet_allowed_callers
 
+_HTTP_CHAT_FACETS = ("ada", "hipatia", "jekyll", "kimi", "thot")
+
 
 @pytest.mark.asyncio
-async def test_seed_sets_allowed_callers_for_the_4_http_facets():
+async def test_seed_sets_allowed_callers_for_the_http_chat_facets():
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await _seed_http_facet_allowed_callers(cur)
             await cur.execute(
                 "SELECT `key`, allowed_callers FROM facet WHERE `key` IN "
-                "('hipatia','jekyll','thot','ada') ORDER BY `key`"
+                "('ada','hipatia','jekyll','kimi','thot') ORDER BY `key`"
             )
             rows = {key: json.loads(val) for key, val in await cur.fetchall()}
-            for facet_key in ("hipatia", "jekyll", "thot", "ada"):
+            assert set(rows) == set(_HTTP_CHAT_FACETS)
+            for facet_key in _HTTP_CHAT_FACETS:
                 assert rows[facet_key] == ["jacobs", "jax_platform_chat"]
 
 
@@ -56,7 +60,9 @@ async def test_seed_leaves_out_of_scope_facets_null():
         async with conn.cursor() as cur:
             await _seed_http_facet_allowed_callers(cur)
             await cur.execute(
-                "SELECT allowed_callers FROM facet WHERE `key` IN ('kimi','jax_local','hyde')"
+                "SELECT allowed_callers FROM facet WHERE `key` IN ('jax_local','hyde')"
             )
-            for (val,) in await cur.fetchall():
+            rows = await cur.fetchall()
+            assert len(rows) == 2
+            for (val,) in rows:
                 assert val is None
