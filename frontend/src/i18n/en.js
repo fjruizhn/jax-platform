@@ -91,6 +91,51 @@ export default {
   facetUngoverned: 'No Motor Registry governance — not validated against real capabilities.',
   catalogLoadingHint: 'Loading motor catalog…',
   catalogFailedHint: 'Could not load the motor catalog — planning is blocked until it loads.',
+  errorPipelinePrefix: 'Pipeline error',
+  layoutLabel: 'Shape',
+  layoutChain: 'Chained',
+  layoutParallel: 'In parallel',
+  chainLabel: 'Chain',
+  chainHint: 'Each step receives the output of the earlier steps it needs. If one fails, the chain stops.',
+  chainRoles: {
+    research: 'Research',
+    plan: 'Sketch and plan',
+    critique: 'Critique the plan',
+    unify: 'Merge plan and critique',
+    produce: 'Produce',
+    audit: 'Audit',
+  },
+  chainCleanroomWarning: (role, facet, depRole) =>
+    `${role}: ${facet} cannot audit what it produced in “${depRole}”. Pick another facet.`,
+  chainInvalidFacet: (role) => `${role}: the selected facet is not allowed for this step by the catalog.`,
+  // Instructions each model receives. They follow the interface language.
+  chainInstructions: {
+    research:
+      'Role: researcher. Research the objective thoroughly with verifiable sources and cite each one. ' +
+      'Separate verified facts from assumptions and state explicitly what you could not verify.',
+    plan:
+      'Role: architect. Using the research you received, sketch and plan: structure, modules, build order ' +
+      'and why to start there. Every fact you use must come from the research; declare anything missing as ' +
+      'an unknown instead of assuming it.',
+    critique:
+      'Role: critic. Critique the plan against the research: gaps, risks, unsupported assumptions and wrong ' +
+      'ordering. Number each finding, say which part of the plan it refers to and with what evidence. ' +
+      'Do not rewrite the plan.',
+    unify:
+      'Role: merger. Produce the final plan incorporating the critique. For each numbered finding of the ' +
+      'critique, say whether you accept it and what changes, or reject it and why.',
+    produce:
+      'Role: producer. Using the merged plan, produce the complete deliverable. Follow it; if you deviate, ' +
+      'say where and why.',
+    audit:
+      'Role: independent auditor. Your only source of truth is the research and the objective: do not accept ' +
+      'the plan or the product as sources. ' +
+      '1) Mark as NOT VERIFIED every claim in the product that the research does not support, and every ' +
+      'quote that does not appear in it. ' +
+      '2) Point out contradictions between the product and the merged plan. ' +
+      '3) Measurement: based on what the merged plan says it accepted from the critique, list which critique ' +
+      'findings reached the product. If none did, say so explicitly.',
+  },
 
   // Center panel
   platformLabel: 'AXIOMA V0.2',

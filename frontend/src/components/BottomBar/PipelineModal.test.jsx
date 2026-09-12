@@ -19,8 +19,10 @@ import api from '../../api/client'
 import PipelineModal from './PipelineModal'
 import { I18nProvider } from '../../i18n/index.jsx'
 
-function renderModal(props = {}) {
-  return render(
+// La cadena es la forma por defecto desde 2026-09-12. Los tests del picker
+// en paralelo (los de abajo) cambian de forma explícitamente al renderizar.
+function renderModal(props = {}, { layout = 'parallel' } = {}) {
+  const result = render(
     <I18nProvider>
       <PipelineModal
         objective="probar el picker de motor"
@@ -30,7 +32,52 @@ function renderModal(props = {}) {
       />
     </I18nProvider>
   )
+  if (layout === 'parallel') fireEvent.click(screen.getByText(/En paralelo/i))
+  return result
 }
+
+describe('PipelineModal -- cadena en línea', () => {
+  it('la cadena es la forma por defecto y manda 6 pasos encadenados por depends_on', async () => {
+    let submitted = null
+    renderModal({ onSubmit: (p) => { submitted = p; return Promise.resolve() } }, { layout: 'chain' })
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+
+    await waitFor(() => expect(submitted).not.toBeNull())
+    expect(submitted.steps.map(s => s.capability)).toEqual([
+      'research', 'design', 'critique', 'reconcile', 'generate', 'validate_consistency',
+    ])
+    expect(submitted.steps.map(s => s.depends_on)).toEqual([[], [0], [0, 1], [1, 2], [3], [0, 3, 4]])
+    expect(submitted.max_steps).toBe(6)
+    expect(submitted.steps[4]).toMatchObject({ facet: 'kimi', motor: 'kimi' })
+    submitted.steps.forEach(s => expect(s).not.toHaveProperty('timeout_seconds'))
+  })
+
+  it('si el auditor coincide con quien produjo, avisa y no deja enviar', async () => {
+    renderModal({}, { layout: 'chain' })
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+
+    fireEvent.change(screen.getByLabelText('Producir'), { target: { value: 'thot' } })
+
+    expect(screen.getByText(/no puede auditar lo que produjo/i)).toBeInTheDocument()
+    expect(screen.getByText(/Planificar y ejecutar/i)).toBeDisabled()
+  })
+
+  it('ofrece un motor en un paso solo si capability_motor lo permite', async () => {
+    renderModal({}, { layout: 'chain' })
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+
+    const research = screen.getByLabelText('Investigar')
+    const produce = screen.getByLabelText('Producir')
+    const values = (sel) => Array.from(sel.querySelectorAll('option')).map(o => o.value)
+    expect(values(research)).not.toContain('kimi')
+    expect(values(produce)).toContain('kimi')
+  })
+})
 
 // T5 (2026-08-22, diagnóstico pipeline 19ad2c42-cdf): el mock ahora incluye
 // "motors" -- el endpoint real (T1) lo agrega junto a "capabilities". kimi

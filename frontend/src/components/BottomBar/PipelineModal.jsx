@@ -2,6 +2,14 @@ import { useState, useEffect } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import { useJaxStore } from '../../store/useJaxStore'
 import api from '../../api/client'
+import {
+  GOVERNED_FACETS,
+  CHAIN_ROLES,
+  facetOptionsFor,
+  buildChainSteps,
+  cleanroomViolations,
+  defaultFacetsByRole,
+} from './pipelineChain'
 
 // capability/desc son de otro sistema (las_manos, tablas motor/capability/
 // capability_motor -- R4) -- label/color vienen de facetsState (/api/facets).
@@ -35,8 +43,8 @@ function getFacetOptions(t, facetsState) {
 // endpoint que exponga la partición HTTP-directo/Motor-Registry todavía
 // (viven en repos distintos, jax vs jax-platform). Deuda declarada, no
 // resuelta: si MOTOR_FACETS cambia en jacobs/models.py, este array queda
-// desactualizado sin que nada lo avise.
-const GOVERNED_FACETS = ['jax_local', 'kimi']
+// desactualizado sin que nada lo avise. (Vive en pipelineChain.js desde
+// 2026-09-12: una sola copia, compartida con la cadena.)
 
 // La capability que se pide para un facet gobernado depende de
 // has_tool_access (dato real, T1), no de una tabla fija: 'implementation'
@@ -93,6 +101,10 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   const FACET_OPTIONS = getFacetOptions(t, facetsState)
 
   const [mode, setMode] = useState('supervised')
+  // Cadena por defecto: es el uso que pidió Fernando (2026-09-12). Paralelo
+  // sigue a un clic.
+  const [layout, setLayout] = useState('chain')
+  const [chainFacets, setChainFacets] = useState(defaultFacetsByRole)
   const [selected, setSelected] = useState(['hipatia', 'jekyll', 'thot'])
   const [submitting, setSubmitting] = useState(false)
   const [capabilities, setCapabilities] = useState({})  // {capability_key: [motor_key, ...]}
@@ -137,8 +149,34 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
     setMotorChoices(m => ({ ...m, [facetId]: motorKey }))
   }
 
+  const facetLabel = (id) => FACET_OPTIONS.find(f => f.id === id)?.label || id
+  const violations = cleanroomViolations(chainFacets)
+  // Solo con el catálogo cargado: antes, las opciones de motor no existen y
+  // todo parecería inválido.
+  const invalidRoles = catalogReady
+    ? CHAIN_ROLES.filter(r => !facetOptionsFor(r, capabilities).includes(chainFacets[r.id]))
+    : []
+  const chainBlocked = violations.length > 0 || invalidRoles.length > 0
+
   async function handleSubmit() {
-    if (selected.length === 0 || !catalogReady) return
+    if (!catalogReady) return
+    if (layout === 'chain') {
+      if (chainBlocked) return
+      setSubmitting(true)
+      const steps = buildChainSteps(objective, chainFacets, t.chainInstructions)
+      await onSubmit({
+        name: `Pipeline: ${objective.slice(0, 50)}`,
+        objective,
+        invoked_by: 'Fernando',
+        mode,
+        max_steps: steps.length,
+        steps,
+      })
+      setSubmitting(false)
+      onClose()
+      return
+    }
+    if (selected.length === 0) return
     setSubmitting(true)
     const steps = buildSteps(selected, objective, FACET_OPTIONS, motorChoices, motorsByKey)
     await onSubmit({
@@ -197,7 +235,67 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
           </div>
         </div>
 
-        {/* Facetas */}
+        {/* Forma: en cadena (depends_on) o en paralelo (lista plana) */}
+        <div className="mb-4">
+          <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">{t.layoutLabel}</p>
+          <div className="flex gap-2">
+            {[['chain', t.layoutChain], ['parallel', t.layoutParallel]].map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setLayout(id)}
+                aria-pressed={layout === id}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                  layout === id
+                    ? 'border-blue-500 bg-blue-500/20 text-blue-300'
+                    : 'border-slate-700 bg-slate-800 text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {layout === 'chain' && (
+          <div className="mb-5">
+            <p className="text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">{t.chainLabel}</p>
+            <p className="text-[11px] text-slate-500 mb-2">{t.chainHint}</p>
+            <ol className="space-y-1.5">
+              {CHAIN_ROLES.map((role, i) => (
+                <li
+                  key={role.id}
+                  className="flex items-center gap-2 p-2 rounded-lg border border-slate-800 bg-slate-800/50"
+                >
+                  <span className="text-xs font-semibold text-slate-500 w-4">{i + 1}.</span>
+                  <span className="text-xs text-slate-300 flex-1">{t.chainRoles[role.id]}</span>
+                  <select
+                    aria-label={t.chainRoles[role.id]}
+                    className="text-xs bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-300"
+                    value={chainFacets[role.id]}
+                    onChange={(e) => setChainFacets(f => ({ ...f, [role.id]: e.target.value }))}
+                  >
+                    {facetOptionsFor(role, capabilities).map(fid => (
+                      <option key={fid} value={fid}>{facetLabel(fid)}</option>
+                    ))}
+                  </select>
+                </li>
+              ))}
+            </ol>
+            {violations.map(v => (
+              <p key={`${v.role}-${v.dependsOnRole}`} className="mt-2 text-[11px] text-red-400">
+                {t.chainCleanroomWarning(t.chainRoles[v.role], facetLabel(v.facet), t.chainRoles[v.dependsOnRole])}
+              </p>
+            ))}
+            {invalidRoles.map(r => (
+              <p key={`invalid-${r.id}`} className="mt-2 text-[11px] text-red-400">
+                {t.chainInvalidFacet(t.chainRoles[r.id])}
+              </p>
+            ))}
+          </div>
+        )}
+
+        {/* Facetas (en paralelo) */}
+        {layout === 'parallel' && (
         <div className="mb-5">
           <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">
             {t.facetsLabel}
@@ -261,6 +359,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
             })}
           </div>
         </div>
+        )}
 
         {/* T5: fail-closed -- sin catálogo real (cargando o falló), no se
             arma ningún plan. Nada de fallback silencioso. */}
@@ -281,7 +380,10 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
           </button>
           <button
             onClick={handleSubmit}
-            disabled={submitting || selected.length === 0 || !catalogReady}
+            disabled={
+              submitting || !catalogReady
+              || (layout === 'chain' ? chainBlocked : selected.length === 0)
+            }
             className="flex-1 py-2 rounded-lg text-xs font-bold text-white transition-colors disabled:opacity-40"
             style={{ backgroundColor: '#3b82f6' }}
           >
