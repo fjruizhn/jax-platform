@@ -104,6 +104,25 @@ describe('PipelineModal -- picker de motor (R4 + T5)', () => {
     expect(jaxLocalStep.motor).toBe('jax_local')
   })
 
+  // Pipeline b8f80733 (2026-09-12): cada step viajaba con
+  // timeout_seconds=300 fijo desde acá, pisando el techo por capability de
+  // la DB (capability.max_execution_minutes) -- la fuente única decidida el
+  // 2026-09-01. Sin la clave, Jacobs aplica el valor de la DB.
+  it('no fija timeout_seconds: el techo por capability lo pone la DB', async () => {
+    let submitted = null
+    renderModal({ onSubmit: (payload) => { submitted = payload; return Promise.resolve() } })
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByText(/Implementación técnica/i))
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+
+    await waitFor(() => expect(submitted).not.toBeNull())
+    expect(submitted.steps.length).toBeGreaterThan(0)
+    for (const step of submitted.steps) {
+      expect(step).not.toHaveProperty('timeout_seconds')
+    }
+  })
+
   it('el select de motor, si el usuario elige explícito, sigue pisando el default', async () => {
     let submitted = null
     renderModal({ onSubmit: (payload) => { submitted = payload; return Promise.resolve() } })
