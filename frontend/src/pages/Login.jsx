@@ -35,6 +35,11 @@ export default function Login() {
         setError(t.accountLocked)
         const match = detail.match(/(\d+)\s*minuto/)
         if (match) setError(t.accountLockedMinutes(match[1]))
+      } else if (status === 429) {
+        // Límite de intentos por IP/email (2026-09-12): no es un error de
+        // credenciales, es "esperá". El backend manda Retry-After en segundos.
+        const seconds = parseInt(err.response?.headers?.['retry-after'], 10)
+        setError(Number.isFinite(seconds) ? t.tooManyAttemptsSeconds(seconds) : t.tooManyAttempts)
       } else {
         setError(t.loginError)
       }
