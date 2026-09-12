@@ -325,7 +325,10 @@ jobs:
           # de sesion `client` corria run_migrations antes del aislamiento por
           # funcion y estampo /srv/jax-data/facet-cache-seal en hall9000.
           # Medido en la rama: 403 / 1.
-          PISO_PASSED = 403
+          # Subido de 403 a 415 (2026-09-12, limite de intentos de login por IP y
+          # por email): tests/test_login_rate_limit.py agrega 12 (8 puros de
+          # auth/rate_limit.py + 4 del endpoint). Medido en la rama: 415 / 1.
+          PISO_PASSED = 415
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -542,7 +545,10 @@ jobs:
       # Subido de 207 a 209 (mismo dia): los 2 tests de
       # tests/test_sello_aislado_en_sesion.py son puros y corren sin DB.
       # Medido con JAX_CI_NO_DB=1: 209 / 195.
-      JAX_CI_MIN_PASSED: "209"
+      # Subido de 209 a 217 (mismo dia): los 8 tests puros de
+      # tests/test_login_rate_limit.py corren sin DB; los 4 del endpoint piden
+      # `client`. Medido con JAX_CI_NO_DB=1: 217 / 199.
+      JAX_CI_MIN_PASSED: "217"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

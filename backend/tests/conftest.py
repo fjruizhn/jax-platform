@@ -263,3 +263,23 @@ def _stub_facet_health_writer_sin_db(monkeypatch):
     dejarlo correr). Ver el docstring de `_apply_facet_health_writer_stub`
     para el detalle completo, incluida la garantia de la que depende."""
     _apply_facet_health_writer_stub(monkeypatch, _CI_NO_DB)
+
+
+@pytest.fixture(autouse=True)
+def _limites_de_login_limpios():
+    """Cada test arranca con los limitadores de login vacíos (2026-09-12).
+
+    auth/rate_limit.py guarda sus contadores en memoria del proceso: sin esto,
+    los logins de TODA la sesión suman en el mismo balde de la IP "testclient"
+    y un test cualquiera recibe 429 según cuántos corrieron antes. Estructural,
+    igual que el aislamiento del sello: un test nuevo que haga login queda
+    cubierto solo.
+    """
+    try:
+        from auth import rate_limit
+    except ImportError:  # fail-soft: jobs de CI que solo instalan pytest (sin fastapi) no pueden importar el login ni llamarlo; no hay contador que limpiar
+        yield
+        return
+    rate_limit.reset_login_limiters()
+    yield
+    rate_limit.reset_login_limiters()

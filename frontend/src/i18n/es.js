@@ -158,6 +158,8 @@ export default {
   hidePassword: 'Ocultar contraseña',
   accountLocked: 'Cuenta bloqueada. Revisa tu correo.',
   accountLockedMinutes: (min) => `Cuenta bloqueada. Intenta de nuevo en ${min} minuto(s).`,
+  tooManyAttempts: 'Demasiados intentos. Espera un momento y vuelve a intentarlo.',
+  tooManyAttemptsSeconds: (s) => `Demasiados intentos. Vuelve a intentarlo en ${s} segundo(s).`,
   forgotPassword: '¿Olvidaste tu contraseña?',
   forgotPasswordTitle: 'Recuperar contraseña',
   forgotPasswordDesc: 'Ingresá tu correo y te enviaremos las instrucciones.',

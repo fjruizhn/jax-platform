@@ -155,6 +155,8 @@ export default {
   hidePassword: 'Hide password',
   accountLocked: 'Account locked. Check your email.',
   accountLockedMinutes: (min) => `Account locked. Try again in ${min} minute(s).`,
+  tooManyAttempts: 'Too many attempts. Wait a moment and try again.',
+  tooManyAttemptsSeconds: (s) => `Too many attempts. Try again in ${s} second(s).`,
   forgotPassword: 'Forgot your password?',
   forgotPasswordTitle: 'Password recovery',
   forgotPasswordDesc: 'Enter your email and we will send you instructions.',

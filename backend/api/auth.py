@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from auth.models import AuthUser, LoginRequest, LoginResponse, MeResponse, RefreshResponse
 from auth.jwt import create_access_token, create_refresh_token, decode_token
 from auth.middleware import get_current_user
+from auth import rate_limit
 from db.connection import get_pool
 from db.seed import verify_password, _hash
 
@@ -40,6 +41,9 @@ def _credenciales_invalidas() -> HTTPException:
 
 @router.post("/login", response_model=LoginResponse)
 async def login(req: LoginRequest, request: Request, response: Response):
+    # Antes de la DB y del bcrypt: sin límite, cada intento (exista o no el
+    # email) le cuesta ~155 ms de CPU al servidor. Ver auth/rate_limit.py.
+    rate_limit.check_login_rate(request, req.email)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
