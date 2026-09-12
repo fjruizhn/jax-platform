@@ -33,6 +33,10 @@ from pydantic import BaseModel, Field
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
+# Sello de la instalación (mtime de un archivo): LAS MANOS recarga su
+# catálogo de motores al verlo más nuevo que su carga. Privado de
+# facet_resolver a propósito: es el MISMO sello, no uno nuevo.
+from facet_resolver import _tocar_sello
 
 router = APIRouter(prefix="/api/admin/motors")
 
@@ -210,6 +214,10 @@ async def create_motor(req: CreateMotorRequest, user: AuthUser = Depends(require
                     (cap.capability_key, req.key, cap.priority),
                 )
         await conn.commit()
+    # Sin esto LAS MANOS no ve el motor nuevo/editado hasta reiniciarse
+    # (2026-09-12). Después del commit: un sello antes del commit haría
+    # que LAS MANOS recargue el catálogo VIEJO y crea que está al día.
+    _tocar_sello()
     return {
         "ok": True,
         "key": req.key,
@@ -322,4 +330,8 @@ async def update_motor(key: str, req: UpdateMotorRequest, user: AuthUser = Depen
             await cur.execute("SELECT transport FROM motor WHERE `key`=%s", (key,))
             (final_transport,) = await cur.fetchone()
         await conn.commit()
+    # Sin esto LAS MANOS no ve el motor nuevo/editado hasta reiniciarse
+    # (2026-09-12). Después del commit: un sello antes del commit haría
+    # que LAS MANOS recargue el catálogo VIEJO y crea que está al día.
+    _tocar_sello()
     return {"ok": True, "key": key, "dispatchable": final_transport in _DISPATCHABLE_TRANSPORTS}

@@ -315,7 +315,12 @@ jobs:
           # cuentas): tests/test_login_sin_enumeracion.py agrega 5 tests.
           # Medido contra la DB de desarrollo en la rama, sin el archivo
           # (--ignore, 393 / 1) y con el (398 / 1). Skips sin cambios (1).
-          PISO_PASSED = 398
+          # Subido de 398 a 401 (2026-09-12, sello del catálogo de motores):
+          # +2 en tests/test_admin_motors_endpoints.py (crear y editar motor
+          # estampan el sello) y +1 en tests/test_motor_migrations.py
+          # (run_migrations lo estampa). Los tres piden `client`. La rama del
+          # sello partia de 393 (396); se junto al rebasar sobre el login.
+          PISO_PASSED = 401
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -526,6 +531,9 @@ jobs:
       # otros 4 piden `client` (+4 skips: 188 -> 192). Medido con
       # JAX_CI_NO_DB=1 en la rama, sin el archivo (--ignore, 206 / 188) y
       # con el (207 / 192).
+      # Sin cambios en el piso por el sello del catalogo de motores (mismo
+      # dia): sus 3 tests piden `client` -- ninguno corre sin DB (+3 skips,
+      # que este job no gatea).
       JAX_CI_MIN_PASSED: "207"
     steps:
       - uses: actions/checkout@v4
