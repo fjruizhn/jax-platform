@@ -34,8 +34,12 @@ describe('pipelineChain -- la cadena en línea', () => {
   it('cada paso depende solo de lo que necesita, y siempre de pasos anteriores', () => {
     // Contexto mínimo: cada dependencia reenvía hasta 60.000 caracteres al
     // modelo, y eso es dinero en cada llamada.
+    // La auditoría recibe también la crítica (paso 2) desde 2026-09-12: sin
+    // ella medía contra lo que el plan DECLARABA haber aceptado, no contra lo
+    // que la crítica dijo (E2E b2d87971: "no se proporcionó el texto de la
+    // crítica original").
     expect(CHAIN_ROLES.map(r => r.dependsOn)).toEqual([
-      [], [0], [0, 1], [1, 2], [3], [0, 3, 4],
+      [], [0], [0, 1], [1, 2], [3], [0, 2, 3, 4],
     ])
     CHAIN_ROLES.forEach((r, i) => r.dependsOn.forEach(d => expect(d).toBeLessThan(i)))
   })
@@ -82,6 +86,19 @@ describe('pipelineChain -- la cadena en línea', () => {
     expect(v).toEqual([{ role: 'audit', facet: 'thot', dependsOnRole: 'produce' }])
   })
 
+  it('por defecto critica jekyll y audita thot: el auditor ya no puede ser quien criticó', () => {
+    // Al depender de la crítica, crítica y auditoría no pueden compartir
+    // faceta (auditoría independiente). thot queda de auditor.
+    const d = defaultFacetsByRole()
+    expect(d.critique).toBe('jekyll')
+    expect(d.audit).toBe('thot')
+  })
+
+  it('si crítica y auditoría son la misma faceta, avisa', () => {
+    const v = cleanroomViolations({ ...defaultFacetsByRole(), critique: 'thot' })
+    expect(v).toEqual([{ role: 'audit', facet: 'thot', dependsOnRole: 'critique' }])
+  })
+
   it('las instrucciones existen en los dos idiomas para cada rol', () => {
     for (const dict of [es, en]) {
       for (const role of CHAIN_ROLES) {
@@ -100,5 +117,8 @@ describe('pipelineChain -- la cadena en línea', () => {
     expect(es.chainInstructions.audit).toMatch(/crítica/i)
     expect(en.chainInstructions.audit).toMatch(/research/i)
     expect(en.chainInstructions.audit).toMatch(/critique/i)
+    // Mide contra la crítica misma, no contra lo que el plan dice de ella.
+    expect(es.chainInstructions.audit).toMatch(/crítica original/i)
+    expect(en.chainInstructions.audit).toMatch(/original critique/i)
   })
 })

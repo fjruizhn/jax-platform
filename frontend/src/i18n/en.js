@@ -129,12 +129,13 @@ export default {
       'say where and why.',
     audit:
       'Role: independent auditor. Your only source of truth is the research and the objective: do not accept ' +
-      'the plan or the product as sources. ' +
+      'the plan, the critique or the product as sources. ' +
       '1) Mark as NOT VERIFIED every claim in the product that the research does not support, and every ' +
       'quote that does not appear in it. ' +
       '2) Point out contradictions between the product and the merged plan. ' +
-      '3) Measurement: based on what the merged plan says it accepted from the critique, list which critique ' +
-      'findings reached the product. If none did, say so explicitly.',
+      '3) Measurement against the original critique (not against what the plan says about it): for each ' +
+      'numbered critique finding, say whether it reached the product, whether the merged plan rejected it ' +
+      'with a reason, or whether it was lost without explanation. Close with the count of each case.',
   },
 
   // Center panel
