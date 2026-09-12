@@ -216,7 +216,7 @@ function BottomBar() {
       addMessage({
         id: `pipeline-err-${Date.now()}`,
         facet: 'jacobs',
-        content: `**Error pipeline:** ${detail}`,
+        content: `**${t.errorPipelinePrefix}:** ${detail}`,
         timestamp: new Date().toISOString(),
       })
     }

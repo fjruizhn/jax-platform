@@ -94,6 +94,51 @@ export default {
   facetUngoverned: 'Sin gobernanza de Motor Registry — no se valida contra capabilities reales.',
   catalogLoadingHint: 'Cargando catálogo de motores…',
   catalogFailedHint: 'No se pudo cargar el catálogo de motores — no se puede planificar hasta que cargue.',
+  errorPipelinePrefix: 'Error pipeline',
+  layoutLabel: 'Forma',
+  layoutChain: 'En cadena',
+  layoutParallel: 'En paralelo',
+  chainLabel: 'Cadena',
+  chainHint: 'Cada paso recibe la salida de los pasos anteriores que necesita. Si uno falla, la cadena se detiene.',
+  chainRoles: {
+    research: 'Investigar',
+    plan: 'Maquetar y planificar',
+    critique: 'Criticar el plan',
+    unify: 'Unificar plan y crítica',
+    produce: 'Producir',
+    audit: 'Auditar',
+  },
+  chainCleanroomWarning: (role, facet, depRole) =>
+    `${role}: ${facet} no puede auditar lo que produjo en «${depRole}». Elige otra faceta.`,
+  chainInvalidFacet: (role) => `${role}: la faceta elegida no está permitida para este paso según el catálogo.`,
+  // Instrucciones que recibe cada modelo. Van en el idioma de la interfaz.
+  chainInstructions: {
+    research:
+      'Rol: investigador. Investiga a fondo el objetivo con fuentes verificables y cita cada una. ' +
+      'Separa los hechos verificados de los supuestos y declara explícitamente lo que no pudiste verificar.',
+    plan:
+      'Rol: arquitecto. Con la investigación recibida, maqueta y planifica: estructura, módulos, ' +
+      'orden de construcción y por qué empezar por ahí. Todo dato que uses debe venir de la investigación; ' +
+      'lo que falte, decláralo como incógnita en vez de suponerlo.',
+    critique:
+      'Rol: crítico. Critica el plan contra la investigación: huecos, riesgos, supuestos sin respaldo ' +
+      'y orden equivocado. Numera cada hallazgo, indica a qué parte del plan se refiere y con qué evidencia. ' +
+      'No reescribas el plan.',
+    unify:
+      'Rol: unificador. Produce el plan final incorporando la crítica. Para cada hallazgo numerado de la ' +
+      'crítica, di si lo aceptas y qué cambia, o si lo rechazas y por qué.',
+    produce:
+      'Rol: productor. Con el plan unificado, produce el entregable completo. Síguelo; si te apartas de él, ' +
+      'di dónde y por qué.',
+    audit:
+      'Rol: auditor independiente. Tu única fuente de verdad es la investigación y el objetivo: no aceptes ' +
+      'como fuente el plan ni el producto. ' +
+      '1) Marca como NO VERIFICADA toda afirmación del producto que no esté respaldada por la investigación, ' +
+      'y toda cita que no aparezca en ella. ' +
+      '2) Señala las contradicciones entre el producto y el plan unificado. ' +
+      '3) Medición: según lo que el plan unificado declara haber aceptado de la crítica, lista qué hallazgos ' +
+      'de la crítica llegaron al producto. Si ninguno llegó, dilo explícitamente.',
+  },
 
   // Center panel
   platformLabel: 'AXIOMA V0.2',
