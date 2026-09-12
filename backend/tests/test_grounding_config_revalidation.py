@@ -113,9 +113,33 @@ async def _fila(shadow_message_id):
             return mensaje, (await cur.fetchone())[0]
 
 
-def test_turno_completo_con_config_rota_en_caliente_queda_ERROR_y_sin_veredictos(client, repo_copia):
+async def _estados_de_veredicto(shadow_message_id):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT status FROM shadow_claim_verdicts WHERE shadow_message_id = %s "
+                "ORDER BY id", (shadow_message_id,))
+            return [f[0] for f in await cur.fetchall()]
+
+
+def test_turno_completo_con_config_rota_deja_los_veredictos_GROUNDING_UNAVAILABLE(client, repo_copia):
     """La provocación del 2026-09-03, ahora como test: proceso caliente, se rompe
-    la config, se dispara el endpoint real. Esperado = el régimen de caché fría."""
+    la config, se dispara el endpoint real.
+
+    QUÉ CAMBIÓ (2026-09-12). Este test fijaba el defecto: la task moría releyendo
+    la misma config rota y la fila quedaba con `validated_at NULL` y CERO
+    veredictos. Visible —esa era la garantía fail-closed— pero incompleto: el
+    paso 0 del spec §4.2 dice que un snapshot en ERROR hace que TODO claim del
+    turno sea `GROUNDING_UNAVAILABLE`, y ese veredicto no necesita ni contexto ni
+    predicados para emitirse. O sea que la medición existía y se perdía por el
+    ORDEN del código, no por falta de información.
+
+    Ahora se cortocircuita antes de cargar la config: se escriben los veredictos
+    y la fila se marca validada. Lo que sí se salta es el barrido de vocabulario,
+    que sin `term_categories` no se puede hacer — y eso es una pérdida declarada,
+    no un olvido."""
     import grounding as governance_grounding
     from auth.jwt import create_access_token
     from shadow_validation import run_shadow_validation
@@ -150,14 +174,18 @@ def test_turno_completo_con_config_rota_en_caliente_queda_ERROR_y_sin_veredictos
     conv_uuid, smid, facet, contract, grounding, origin = capturado["args"]
     assert isinstance(grounding, governance_grounding.SnapshotError)
 
-    # 4. la fila queda marcada ERROR y sin veredictos: la task muere fail-closed
-    #    releyendo la misma config rota, igual que con la caché fría.
-    import tomllib
-    with pytest.raises(tomllib.TOMLDecodeError):
-        client.portal.call(run_shadow_validation, conv_uuid or "conv-revalidacion",
-                           smid, facet, contract, grounding, origin)
-    (sha, validated_at), veredictos = client.portal.call(
-        _fila, smid)
-    assert sha == "ERROR"
-    assert validated_at is None
-    assert veredictos == 0
+    # 4. la task ya NO muere releyendo la config rota: emite el veredicto del paso 0
+    #    para cada claim y marca la fila como validada.
+    client.portal.call(run_shadow_validation, conv_uuid or "conv-revalidacion",
+                       smid, facet, contract, grounding, origin)
+    (sha, validated_at), veredictos = client.portal.call(_fila, smid)
+    assert sha == "ERROR", "la marca del snapshot roto no cambia"
+    assert validated_at is not None, (
+        "la fila sigue sin marcarse validada: el turno se midió a medias y no hay "
+        "forma de distinguirlo de una task que murió")
+    assert veredictos == len(contract.claims), (
+        f"se esperaba un veredicto por claim ({len(contract.claims)}), hay {veredictos}")
+
+    estados = client.portal.call(_estados_de_veredicto, smid)
+    assert estados == ["GROUNDING_UNAVAILABLE"] * len(contract.claims), (
+        f"sin snapshot, todo claim es GROUNDING_UNAVAILABLE (spec §4.2 paso 0); hay {estados}")

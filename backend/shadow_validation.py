@@ -263,6 +263,55 @@ async def run_shadow_validation(
                 # silenciosa (garantía fail-closed, ver spec sección 3).
                 await _insert_shadow_message(cur, conv_uuid, shadow_message_id, facet, contract, grounding, origin)
 
+                # CORTOCIRCUITO DEL PASO 0 (spec §4.2), y va ANTES de
+                # _validation_context() a propósito.
+                #
+                # Cuando el snapshot del turno no se construyó, todo claim es
+                # GROUNDING_UNAVAILABLE y ese veredicto no necesita ni `ctx` ni
+                # `predicates`. Cargar la config estática igual sería pedir
+                # permiso para escribir algo que ya se sabe: la MISMA config
+                # ilegible que produjo el SnapshotError hace explotar a
+                # `_validation_context()`, y hasta hoy el turno se quedaba con
+                # `validated_at NULL` y CERO veredictos (medido el 2026-09-03
+                # provocándolo, no razonado). La medición existía y se perdía
+                # por el ORDEN del código.
+                #
+                # Lo que SÍ se pierde acá es el barrido de vocabulario, que sin
+                # `term_categories` no se puede hacer. Es una pérdida declarada:
+                # sin config no hay categorías que barrer, y es preferible a no
+                # escribir ningún veredicto.
+                if isinstance(grounding, governance_grounding.SnapshotError):
+                    for raw_claim in contract.claims:
+                        accreditation = governance_grounding.accredit(raw_claim, grounding)
+                        claim = governance_claims.Claim(
+                            predicate=raw_claim["predicate"],
+                            args=governance_grounding.normalize_args(raw_claim["args"]),
+                            authority=accreditation.authority,
+                            provenance_ref=accreditation.provenance_ref,
+                            evidence_pointer=(
+                                accreditation.evidence_pointer_raw
+                                if isinstance(accreditation.evidence_pointer_raw, str) else ""
+                            ),
+                            scope="mesa_web",
+                        )
+                        # La MISMA función que usa validate() en su paso 0: una
+                        # sola definición de cuándo se emite este veredicto.
+                        verdict = governance_validator.verdict_sin_grounding(claim, accreditation)
+                        if verdict is None:
+                            # accredit() sobre un SnapshotError siempre da
+                            # UNAVAILABLE. Si algún día dejara de hacerlo, este
+                            # camino escribiría filas mudas: mejor que se note.
+                            raise RuntimeError(
+                                "grounding es SnapshotError pero accredit() no dio UNAVAILABLE: "
+                                f"outcome={accreditation.outcome!r}"
+                            )
+                        await _insert_claim_verdict(
+                            cur, conv_uuid, shadow_message_id, verdict, raw_claim, accreditation
+                        )
+                    await _mark_validated(cur, shadow_message_id)
+                    await conn.commit()
+                    return
+
                 ctx, predicates, term_categories = _validation_context()
 
                 for raw_claim in contract.claims:
