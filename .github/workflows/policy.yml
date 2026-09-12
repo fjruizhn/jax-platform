@@ -300,7 +300,13 @@ jobs:
           # puros (corren en los dos modos). Medido contra la DB de desarrollo
           # en master 1b47717 (388 / 1) y en la rama (390 / 1). Skips sin
           # cambios (1).
-          PISO_PASSED = 390
+          # Subido de 390 a 391 (2026-09-11, el sello se estampa con
+          # `time.time()` y no con `None`): el test nuevo de
+          # tests/test_facet_resolver_seal.py es puro y corre en los dos
+          # modos. Medido contra la DB de desarrollo, mismo arbol,
+          # deseleccionando solo ese test (390 / 1) y con el (391 / 1).
+          # Skips sin cambios (1).
+          PISO_PASSED = 391
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -500,7 +506,12 @@ jobs:
       # consumir): los 2 tests de tests/test_semantic_context_fail_soft.py
       # son puros y corren sin DB. Medido con JAX_CI_NO_DB=1 en master
       # 1b47717 (203 / 186) y en la rama (205 / 186), skips sin cambios.
-      JAX_CI_MIN_PASSED: "205"
+      # Subido de 205 a 206 (2026-09-11, el sello se estampa con `time.time()`
+      # y no con `None`): el test nuevo de tests/test_facet_resolver_seal.py es
+      # puro y corre sin DB. Medido con JAX_CI_NO_DB=1 en este arbol,
+      # deseleccionando solo ese test (205 / 186) y con el (206 / 186): skips
+      # sin cambios.
+      JAX_CI_MIN_PASSED: "206"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
