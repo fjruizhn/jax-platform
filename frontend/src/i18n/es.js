@@ -132,12 +132,13 @@ export default {
       'di dónde y por qué.',
     audit:
       'Rol: auditor independiente. Tu única fuente de verdad es la investigación y el objetivo: no aceptes ' +
-      'como fuente el plan ni el producto. ' +
+      'como fuente el plan, la crítica ni el producto. ' +
       '1) Marca como NO VERIFICADA toda afirmación del producto que no esté respaldada por la investigación, ' +
       'y toda cita que no aparezca en ella. ' +
       '2) Señala las contradicciones entre el producto y el plan unificado. ' +
-      '3) Medición: según lo que el plan unificado declara haber aceptado de la crítica, lista qué hallazgos ' +
-      'de la crítica llegaron al producto. Si ninguno llegó, dilo explícitamente.',
+      '3) Medición contra la crítica original (no contra lo que el plan dice de ella): para cada hallazgo ' +
+      'numerado de la crítica, di si llegó al producto, si el plan unificado lo rechazó con una razón, o si se ' +
+      'perdió sin explicación. Cierra con el conteo de cada caso.',
   },
 
   // Center panel

@@ -23,14 +23,20 @@ const AUDIT_CAPABILITIES = new Set(['critique', 'validate_consistency'])
 // dependsOn es el contexto MÍNIMO de cada paso: cada dependencia reenvía su
 // salida entera al modelo, y eso se paga en cada llamada (blueprint de
 // Ricardo §9/§11). La auditoría recibe la investigación (su única fuente de
-// verdad), el plan unificado y el producto -- no la crítica ni el borrador.
+// verdad), la crítica, el plan unificado y el producto -- no el borrador.
+//
+// La crítica entra a la auditoría desde 2026-09-12 (decisión de Fernando):
+// sin ella el auditor medía contra lo que el plan DECLARABA haber aceptado,
+// no contra lo que la crítica dijo (E2E b2d87971). Consecuencia: crítica y
+// auditoría ya no pueden ser la misma faceta (auditoría independiente), así
+// que por defecto critica jekyll y audita thot.
 export const CHAIN_ROLES = [
   { id: 'research', capability: 'research',             defaultFacet: 'hipatia', dependsOn: [] },
   { id: 'plan',     capability: 'design',               defaultFacet: 'ada',     dependsOn: [0] },
-  { id: 'critique', capability: 'critique',             defaultFacet: 'thot',    dependsOn: [0, 1] },
+  { id: 'critique', capability: 'critique',             defaultFacet: 'jekyll',  dependsOn: [0, 1] },
   { id: 'unify',    capability: 'reconcile',            defaultFacet: 'ada',     dependsOn: [1, 2] },
   { id: 'produce',  capability: 'generate',             defaultFacet: 'kimi',    dependsOn: [3] },
-  { id: 'audit',    capability: 'validate_consistency', defaultFacet: 'thot',    dependsOn: [0, 3, 4] },
+  { id: 'audit',    capability: 'validate_consistency', defaultFacet: 'thot',    dependsOn: [0, 2, 3, 4] },
 ]
 
 // Modo por defecto según la forma (decisión de Fernando, 2026-09-12). En

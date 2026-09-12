@@ -49,7 +49,7 @@ describe('PipelineModal -- cadena en línea', () => {
     expect(submitted.steps.map(s => s.capability)).toEqual([
       'research', 'design', 'critique', 'reconcile', 'generate', 'validate_consistency',
     ])
-    expect(submitted.steps.map(s => s.depends_on)).toEqual([[], [0], [0, 1], [1, 2], [3], [0, 3, 4]])
+    expect(submitted.steps.map(s => s.depends_on)).toEqual([[], [0], [0, 1], [1, 2], [3], [0, 2, 3, 4]])
     expect(submitted.max_steps).toBe(6)
     expect(submitted.steps[4]).toMatchObject({ facet: 'kimi', motor: 'kimi' })
     submitted.steps.forEach(s => expect(s).not.toHaveProperty('timeout_seconds'))
