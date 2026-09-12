@@ -1,5 +1,6 @@
 import uuid
 import logging
+import secrets
 import smtplib
 import os
 from datetime import datetime, timedelta
@@ -22,6 +23,20 @@ router = APIRouter(prefix="/api/auth")
 MAX_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
 
+# Sin la contraseña correcta, el login responde SIEMPRE esto (2026-09-12).
+# Antes delataba qué cuentas existen: email inexistente -> 401 sin bcrypt
+# (0,25 ms contra ~150 ms de uno real, medido), y `403 inactivo` / `423
+# bloqueada` salían antes de verificar la contraseña.
+_CREDENCIALES_INVALIDAS = "Usuario o contraseña incorrectos"
+# Hash de relleno para emails inexistentes: mismo costo que los reales
+# (_hash usa el gensalt por defecto, 12 -- igual que los de jax_users).
+# Una vez al importar, no por request.
+_HASH_DE_RELLENO = _hash(secrets.token_urlsafe(18))
+
+
+def _credenciales_invalidas() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_CREDENCIALES_INVALIDAS)
+
 
 @router.post("/login", response_model=LoginResponse)
 async def login(req: LoginRequest, request: Request, response: Response):
@@ -37,44 +52,43 @@ async def login(req: LoginRequest, request: Request, response: Response):
             row = await cur.fetchone()
 
     if not row:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail="Usuario o contraseña incorrectos")
+        # El mismo bcrypt que pagaría una cuenta real: sin esto, el tiempo de
+        # respuesta dice si el email existe.
+        await verify_password(req.password, _HASH_DE_RELLENO)
+        raise _credenciales_invalidas()
 
     user_id, tenant_id, email, password_hash, role, user_status, failed_attempts, locked_until = row
+    now = datetime.utcnow()
+    bloqueada = bool(locked_until and locked_until > now)
 
+    if not await verify_password(req.password, password_hash):
+        # El contador y el bloqueo siguen como antes, y solo para cuentas que
+        # antes llegaban a este punto (activas y sin bloqueo vigente): un
+        # intento durante el bloqueo no lo extiende. Lo que cambia es la
+        # respuesta -- la misma para todos, incluido el intento que bloquea.
+        if user_status == "active" and not bloqueada:
+            new_attempts = (failed_attempts or 0) + 1
+            new_locked_until = None
+            if new_attempts >= MAX_ATTEMPTS:
+                new_locked_until = now + timedelta(minutes=LOCKOUT_MINUTES)
+
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "UPDATE jax_users SET failed_attempts = %s, locked_until = %s WHERE user_id = %s",
+                        (new_attempts, new_locked_until, user_id),
+                    )
+        raise _credenciales_invalidas()
+
+    # Contraseña correcta: quien ya probó ser el dueño sí ve el estado.
     if user_status != "active":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
 
-    now = datetime.utcnow()
-
-    if locked_until and locked_until > now:
+    if bloqueada:
         remaining = int((locked_until - now).total_seconds() / 60) + 1
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
             detail=f"Cuenta bloqueada. Intenta de nuevo en {remaining} minuto(s).",
-        )
-
-    if not await verify_password(req.password, password_hash):
-        new_attempts = (failed_attempts or 0) + 1
-        new_locked_until = None
-        if new_attempts >= MAX_ATTEMPTS:
-            new_locked_until = now + timedelta(minutes=LOCKOUT_MINUTES)
-
-        async with pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "UPDATE jax_users SET failed_attempts = %s, locked_until = %s WHERE user_id = %s",
-                    (new_attempts, new_locked_until, user_id),
-                )
-
-        if new_locked_until:
-            raise HTTPException(
-                status_code=status.HTTP_423_LOCKED,
-                detail=f"Cuenta bloqueada por {LOCKOUT_MINUTES} minutos.",
-            )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Usuario o contraseña incorrectos",
         )
 
     async with pool.acquire() as conn:

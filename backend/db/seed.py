@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import secrets
@@ -13,7 +14,11 @@ def _hash(plain: str) -> str:
 
 
 async def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
+    # bcrypt de costo 12 son ~150 ms de CPU (medido 2026-09-12): en el hilo
+    # del event loop congela todos los requests mientras dura. Desde que el
+    # login verifica también los emails inexistentes (contra un hash de
+    # relleno), cada intento lo paga -- va a un hilo.
+    return await asyncio.to_thread(bcrypt.checkpw, plain.encode(), hashed.encode())
 
 
 def _resolve_seed_admin_password() -> str:
