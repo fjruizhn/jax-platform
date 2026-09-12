@@ -306,7 +306,12 @@ jobs:
           # modos. Medido contra la DB de desarrollo, mismo arbol,
           # deseleccionando solo ese test (390 / 1) y con el (391 / 1).
           # Skips sin cambios (1).
-          PISO_PASSED = 391
+          # Subido de 391 a 393 (2026-09-12, pipeline b8f80733: techo de
+          # `generate` 5 -> 15 min): tests/test_motor_migrations.py agrega 2
+          # tests que piden `client` -- el valor sembrado y que la migracion
+          # no pise un ajuste manual. Medido contra la DB de desarrollo en la
+          # rama (393 / 1). Skips sin cambios (1).
+          PISO_PASSED = 393
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

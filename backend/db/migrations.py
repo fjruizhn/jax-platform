@@ -603,7 +603,8 @@ _CAPABILITY_SEED = [
      ["jacobs", "hyde"], None),
     ("implementation", "medium", True, False, 5, 0, "code_patch.v1", None, None,
      ["jacobs", "hyde"], [".env", "secrets/", "private_keys/", "credentials/"]),
-    ("generate", "low", True, False, 5, 0, "generate.v1", None, None,
+    # generate 5 -> 15 min el 2026-09-12: ver _raise_generate_execution_ceiling.
+    ("generate", "low", True, False, 15, 0, "generate.v1", None, None,
      ["jacobs", "hyde", "ada"], None),
     ("reason", "low", True, False, 15, 0, "reason.v1", None, None,
      ["jacobs", "hyde", "ada", "thot"], None),
@@ -1016,6 +1017,24 @@ async def _fix_file_write_gate_and_auditor(cur) -> None:
     await cur.execute(
         "UPDATE capability SET auditor_motor='thot' "
         "WHERE `key`='file_write' AND auditor_motor IS NULL"
+    )
+
+
+async def _raise_generate_execution_ceiling(cur) -> None:
+    """generate: techo de ejecución 5 -> 15 min (2026-09-12, GO de Fernando).
+
+    Pipeline b8f80733: kimi (motor de razonamiento) generó 8000 tokens en
+    ~274 s -- una llamada más el reintento de schema no caben en 5 min, el
+    paso venció y abortó el pipeline entero. 15 es el techo que ya tienen
+    design/reason/reconcile, las otras capabilities de trabajo largo.
+
+    El seed usa INSERT IGNORE, así que cambiar la tupla solo alcanza a bases
+    nuevas; esto corrige las existentes. Guard WHERE =5: corrige el valor
+    viejo una vez y no pisa un ajuste manual posterior (mismo criterio que
+    _fix_file_write_gate_and_auditor)."""
+    await cur.execute(
+        "UPDATE capability SET max_execution_minutes=15 "
+        "WHERE `key`='generate' AND max_execution_minutes=5"
     )
 
 
@@ -1636,6 +1655,7 @@ async def run_migrations():
             await _seed_thot_motor(cur)
             await _seed_file_tools_capabilities(cur)
             await _fix_file_write_gate_and_auditor(cur)
+            await _raise_generate_execution_ceiling(cur)
             await _eliminate_motor_model_ref_denormalization(cur)
             # Antes del seed de allowed_callers: kimi necesita el transporte
             # http_* para que tener acceso al gate tenga sentido.

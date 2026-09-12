@@ -62,7 +62,9 @@ function buildSteps(selectedFacets, objective, facetOptions, motorChoices, motor
         facet: f.id,
         capability: governedCapability || f.capability,
         prompt: `${f.desc}: ${objective}`,
-        timeout_seconds: 300,
+        // Sin timeout_seconds a propósito: el techo por capability lo pone
+        // la DB (capability.max_execution_minutes). Un 300 fijo acá lo
+        // pisaba y abortó el pipeline b8f80733 (2026-09-12).
         skip_on_fail: false,
       }
       if (governedCapability) {

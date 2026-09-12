@@ -176,3 +176,40 @@ def test_seed_code_swarm_no_incluye_jax_local(client):
         "SELECT motor_key FROM capability_motor WHERE capability_key='code_swarm'",
     )
     assert "jax_local" not in [r[0] for r in rows], rows
+
+
+def test_generate_tiene_techo_de_15_minutos(client):
+    """Pipeline b8f80733 (2026-09-12): kimi generó 8000 tokens en ~274 s;
+    una llamada más su reintento no caben en 5 min y el paso venció. generate
+    queda con el mismo techo que design/reason/reconcile (15 min)."""
+    rows = client.portal.call(
+        _fetch_all,
+        "SELECT max_execution_minutes FROM capability WHERE `key`='generate'",
+    )
+    assert rows == ((15,),), rows
+
+
+def test_subida_de_generate_no_pisa_un_ajuste_manual(client):
+    """La migración corrige el 5 viejo, nada más: un valor que alguien fijó
+    a mano después (ni 5 ni 15) sobrevive a la siguiente corrida."""
+    from db.migrations import _raise_generate_execution_ceiling
+
+    async def _check():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("UPDATE capability SET max_execution_minutes=20 WHERE `key`='generate'")
+                await _raise_generate_execution_ceiling(cur)
+                await cur.execute("SELECT max_execution_minutes FROM capability WHERE `key`='generate'")
+                after_manual = await cur.fetchone()
+                await cur.execute("UPDATE capability SET max_execution_minutes=5 WHERE `key`='generate'")
+                await _raise_generate_execution_ceiling(cur)
+                await cur.execute("SELECT max_execution_minutes FROM capability WHERE `key`='generate'")
+                after_old = await cur.fetchone()
+            await conn.commit()
+        return after_manual, after_old
+
+    after_manual, after_old = client.portal.call(_check)
+    assert after_manual == (20,), after_manual
+    assert after_old == (15,), after_old
