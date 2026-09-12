@@ -311,7 +311,11 @@ jobs:
           # tests que piden `client` -- el valor sembrado y que la migracion
           # no pise un ajuste manual. Medido contra la DB de desarrollo en la
           # rama (393 / 1). Skips sin cambios (1).
-          PISO_PASSED = 393
+          # Subido de 393 a 398 (2026-09-12, login sin enumeracion de
+          # cuentas): tests/test_login_sin_enumeracion.py agrega 5 tests.
+          # Medido contra la DB de desarrollo en la rama, sin el archivo
+          # (--ignore, 393 / 1) y con el (398 / 1). Skips sin cambios (1).
+          PISO_PASSED = 398
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -516,7 +520,13 @@ jobs:
       # puro y corre sin DB. Medido con JAX_CI_NO_DB=1 en este arbol,
       # deseleccionando solo ese test (205 / 186) y con el (206 / 186): skips
       # sin cambios.
-      JAX_CI_MIN_PASSED: "206"
+      # Subido de 206 a 207 (2026-09-12, login sin enumeracion de cuentas):
+      # de los 5 tests de tests/test_login_sin_enumeracion.py, el de
+      # verify_password fuera del event loop es puro y corre sin DB (+1); los
+      # otros 4 piden `client` (+4 skips: 188 -> 192). Medido con
+      # JAX_CI_NO_DB=1 en la rama, sin el archivo (--ignore, 206 / 188) y
+      # con el (207 / 192).
+      JAX_CI_MIN_PASSED: "207"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
