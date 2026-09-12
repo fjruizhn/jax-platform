@@ -349,3 +349,63 @@ def test_create_motor_rejects_unknown_capability(client):
         assert client.portal.call(_fetch_motor_row, key) is None
     finally:
         client.portal.call(_cleanup_motor, key)
+
+
+# 2026-09-12: el catálogo de LAS MANOS se cargaba una vez al arrancar y un
+# motor dado de alta o editado acá no se veía hasta reiniciar. Todo escritor
+# de `motor`/`capability_motor` estampa el sello de facet_resolver después de
+# commitear; LAS MANOS recarga al ver el sello más nuevo que su carga.
+def _seal_mtime_or_none():
+    import os
+    import facet_resolver
+    try:
+        return os.stat(facet_resolver.FACET_SEAL_PATH).st_mtime
+    except OSError:
+        return None
+
+
+def test_create_motor_estampa_el_sello_del_catalogo(client):
+    import time
+    key = "deepseek_seal_test"
+    try:
+        client.portal.call(_cleanup_motor, key)
+        assert _seal_mtime_or_none() is None  # sello aislado por test (conftest)
+        t0 = time.time()
+        resp = client.post(
+            "/api/admin/motors",
+            json={"key": key, "provider_id": "deepseek", "model_id": "deepseek-v4-flash",
+                  "transport": "http_openai_compat"},
+            headers=_superadmin_headers(),
+        )
+        assert resp.status_code == 200, resp.text
+        mtime = _seal_mtime_or_none()
+        assert mtime is not None, "crear un motor no estampó el sello"
+        assert mtime >= t0 - 0.01
+    finally:
+        client.portal.call(_cleanup_motor, key)
+
+
+def test_update_motor_estampa_el_sello_del_catalogo(client):
+    import os
+    import time
+    import facet_resolver
+    key = "deepseek_seal_test"
+    try:
+        client.portal.call(_cleanup_motor, key)
+        client.post(
+            "/api/admin/motors",
+            json={"key": key, "provider_id": "deepseek", "model_id": "deepseek-v4-flash",
+                  "transport": "http_openai_compat"},
+            headers=_superadmin_headers(),
+        )
+        if os.path.exists(facet_resolver.FACET_SEAL_PATH):
+            os.remove(facet_resolver.FACET_SEAL_PATH)  # aislar el PATCH del POST
+        t0 = time.time()
+        resp = client.patch(f"/api/admin/motors/{key}", json={"max_tokens": 999},
+                            headers=_superadmin_headers())
+        assert resp.status_code == 200, resp.text
+        mtime = _seal_mtime_or_none()
+        assert mtime is not None, "editar un motor no estampó el sello"
+        assert mtime >= t0 - 0.01
+    finally:
+        client.portal.call(_cleanup_motor, key)

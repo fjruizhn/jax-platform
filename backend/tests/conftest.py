@@ -24,6 +24,18 @@ for _k, _v in _load_env().items():
 
 os.environ["JAX_DB_NAME"] = "jax_memory_test"
 
+# Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
+# aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture
+# `client` es de sesión y arranca la app -- y con ella run_migrations, que
+# estampa el sello -- ANTES que cualquier fixture por función: sin esto, correr
+# la suite en hall9000 estampó /srv/jax-data/facet-cache-seal (14:37:46), el
+# archivo que vigilan Jacobs, el REPL y LAS MANOS. facet_resolver lee la ruta
+# al importarse, así que tiene que quedar fijada acá, antes de cualquier import.
+import tempfile  # noqa: E402
+
+os.environ["JAX_FACET_SEAL_PATH"] = os.path.join(
+    tempfile.mkdtemp(prefix="jax-test-sello-"), "facet-cache-seal")
+
 
 @pytest.fixture(scope="session")
 def client():

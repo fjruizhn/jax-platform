@@ -1671,3 +1671,9 @@ async def run_migrations():
             await _reclassify_provenance_mismatch(cur)
 
         await conn.commit()
+    # Regresión del 2026-09-12 (13:03-13:29): la migración `generate` 5 -> 15
+    # corrió acá al arrancar jax-platform y LAS MANOS siguió con su catálogo
+    # en memoria (techo 300 s) hasta que alguien lo reinició. El sello de
+    # facet_resolver es la señal que LAS MANOS vigila; va DESPUÉS del commit.
+    from facet_resolver import _tocar_sello
+    _tocar_sello()

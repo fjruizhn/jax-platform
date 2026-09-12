@@ -213,3 +213,19 @@ def test_subida_de_generate_no_pisa_un_ajuste_manual(client):
     after_manual, after_old = client.portal.call(_check)
     assert after_manual == (20,), after_manual
     assert after_old == (15,), after_old
+
+
+def test_run_migrations_estampa_el_sello_del_catalogo(client):
+    """2026-09-12, regresión de 26 min: la migración `generate` 5 -> 15 corrió
+    al arrancar jax-platform y LAS MANOS siguió con su catálogo viejo. Tras
+    commitear, run_migrations estampa el sello que LAS MANOS vigila."""
+    import os
+    import time
+    import facet_resolver
+    from db.migrations import run_migrations
+
+    assert not os.path.exists(facet_resolver.FACET_SEAL_PATH)  # aislado (conftest)
+    t0 = time.time()
+    client.portal.call(run_migrations)
+    assert os.path.exists(facet_resolver.FACET_SEAL_PATH), "run_migrations no estampó el sello"
+    assert os.stat(facet_resolver.FACET_SEAL_PATH).st_mtime >= t0 - 0.01

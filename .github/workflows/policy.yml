@@ -315,7 +315,17 @@ jobs:
           # cuentas): tests/test_login_sin_enumeracion.py agrega 5 tests.
           # Medido contra la DB de desarrollo en la rama, sin el archivo
           # (--ignore, 393 / 1) y con el (398 / 1). Skips sin cambios (1).
-          PISO_PASSED = 398
+          # Subido de 398 a 401 (2026-09-12, sello del catálogo de motores):
+          # +2 en tests/test_admin_motors_endpoints.py (crear y editar motor
+          # estampan el sello) y +1 en tests/test_motor_migrations.py
+          # (run_migrations lo estampa). Los tres piden `client`. La rama del
+          # sello partia de 393 (396); se junto al rebasar sobre el login.
+          # Subido de 401 a 403 (mismo dia): tests/test_sello_aislado_en_sesion.py
+          # (+2 puros) -- la sesion de tests nunca apunta al sello REAL; el fixture
+          # de sesion `client` corria run_migrations antes del aislamiento por
+          # funcion y estampo /srv/jax-data/facet-cache-seal en hall9000.
+          # Medido en la rama: 403 / 1.
+          PISO_PASSED = 403
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -526,7 +536,13 @@ jobs:
       # otros 4 piden `client` (+4 skips: 188 -> 192). Medido con
       # JAX_CI_NO_DB=1 en la rama, sin el archivo (--ignore, 206 / 188) y
       # con el (207 / 192).
-      JAX_CI_MIN_PASSED: "207"
+      # Sin cambios en el piso por el sello del catalogo de motores (mismo
+      # dia): sus 3 tests piden `client` -- ninguno corre sin DB (+3 skips,
+      # que este job no gatea).
+      # Subido de 207 a 209 (mismo dia): los 2 tests de
+      # tests/test_sello_aislado_en_sesion.py son puros y corren sin DB.
+      # Medido con JAX_CI_NO_DB=1: 209 / 195.
+      JAX_CI_MIN_PASSED: "209"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
