@@ -55,6 +55,38 @@ describe('PipelineModal -- cadena en línea', () => {
     submitted.steps.forEach(s => expect(s).not.toHaveProperty('timeout_seconds'))
   })
 
+  it('la cadena corre en autonomous por defecto; paralelo conserva supervised', async () => {
+    let chain = null
+    const r1 = renderModal({ onSubmit: (p) => { chain = p; return Promise.resolve() } }, { layout: 'chain' })
+    await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    await waitFor(() => expect(chain).not.toBeNull())
+    expect(chain.mode).toBe('autonomous')
+    r1.unmount()
+
+    let parallel = null
+    renderModal({ onSubmit: (p) => { parallel = p; return Promise.resolve() } })  // cambia a paralelo
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    fireEvent.click(screen.getByText(/Razonamiento local/i))
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    await waitFor(() => expect(parallel).not.toBeNull())
+    expect(parallel.mode).toBe('supervised')
+  })
+
+  it('si el usuario elige un modo, cambiar de forma no se lo pisa', async () => {
+    let submitted = null
+    renderModal({ onSubmit: (p) => { submitted = p; return Promise.resolve() } }, { layout: 'chain' })
+    await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+
+    fireEvent.click(screen.getByText(/Supervised/))
+    fireEvent.click(screen.getByText(/En paralelo/i))
+    fireEvent.click(screen.getByText(/En cadena/i))
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+
+    await waitFor(() => expect(submitted).not.toBeNull())
+    expect(submitted.mode).toBe('supervised')
+  })
+
   it('si el auditor coincide con quien produjo, avisa y no deja enviar', async () => {
     renderModal({}, { layout: 'chain' })
     await waitFor(() => expect(api.get).toHaveBeenCalled())

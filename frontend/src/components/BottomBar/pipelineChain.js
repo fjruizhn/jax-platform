@@ -33,6 +33,12 @@ export const CHAIN_ROLES = [
   { id: 'audit',    capability: 'validate_consistency', defaultFacet: 'thot',    dependsOn: [0, 3, 4] },
 ]
 
+// Modo por defecto según la forma (decisión de Fernando, 2026-09-12). En
+// `supervised` Jacobs corre UNA ola y pausa (executor.py): en paralelo eso es
+// una pausa, en cadena una por paso -- cinco aprobaciones por corrida. La
+// cadena corre sola de punta a punta; paralelo conserva supervised.
+export const DEFAULT_MODE_BY_LAYOUT = { chain: 'autonomous', parallel: 'supervised' }
+
 export function defaultFacetsByRole() {
   return Object.fromEntries(CHAIN_ROLES.map(r => [r.id, r.defaultFacet]))
 }

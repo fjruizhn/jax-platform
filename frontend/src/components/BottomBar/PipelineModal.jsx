@@ -9,6 +9,7 @@ import {
   buildChainSteps,
   cleanroomViolations,
   defaultFacetsByRole,
+  DEFAULT_MODE_BY_LAYOUT,
 } from './pipelineChain'
 
 // capability/desc son de otro sistema (las_manos, tablas motor/capability/
@@ -100,10 +101,11 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   const facetsState = useJaxStore((s) => s.facets)
   const FACET_OPTIONS = getFacetOptions(t, facetsState)
 
-  const [mode, setMode] = useState('supervised')
   // Cadena por defecto: es el uso que pidió Fernando (2026-09-12). Paralelo
-  // sigue a un clic.
+  // sigue a un clic. El modo sigue a la forma hasta que el usuario elige uno.
   const [layout, setLayout] = useState('chain')
+  const [mode, setMode] = useState(DEFAULT_MODE_BY_LAYOUT.chain)
+  const [modeTouched, setModeTouched] = useState(false)
   const [chainFacets, setChainFacets] = useState(defaultFacetsByRole)
   const [selected, setSelected] = useState(['hipatia', 'jekyll', 'thot'])
   const [submitting, setSubmitting] = useState(false)
@@ -220,7 +222,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
             {PIPELINE_MODES.map(({ id: m, label }) => (
               <button
                 key={m}
-                onClick={() => setMode(m)}
+                onClick={() => { setMode(m); setModeTouched(true) }}
                 className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                   mode === m
                     ? m === 'autonomous'
@@ -242,7 +244,10 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
             {[['chain', t.layoutChain], ['parallel', t.layoutParallel]].map(([id, label]) => (
               <button
                 key={id}
-                onClick={() => setLayout(id)}
+                onClick={() => {
+                  setLayout(id)
+                  if (!modeTouched) setMode(DEFAULT_MODE_BY_LAYOUT[id])
+                }}
                 aria-pressed={layout === id}
                 className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                   layout === id
