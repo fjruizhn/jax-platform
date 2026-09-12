@@ -1,6 +1,9 @@
 services:
   mariadb-12.3:
-    image: mariadb:12.3.2
+    # 12.3.3 = última estable (LTS hasta 2029-06-12) al 2026-09-12. JAX es vectorial:
+    # Fernando pidió la versión más nueva. Antes de subir se probó que el volcado de
+    # jax_memory se restaura en 12.3.3 (34 tablas, 2 índices VECTOR) — ficha #55.
+    image: mariadb:12.3.3
     container_name: mariadb-12-3-jax
     restart: unless-stopped
     ports:
