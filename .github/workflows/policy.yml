@@ -380,7 +380,10 @@ jobs:
           # de reset). Medido en la rama: 427 / 1.
           # Subido de 427 a 446 (2026-09-12, administración de usuarios etapa 1,
           # SMTP desde Admin): 19 puros de test_smtp_config.py. Medido: 446 / 1.
-          PISO_PASSED = 446
+          # Subido de 446 a 462 (2026-09-12/13, administración de usuarios etapa 1,
+          # endpoints de Admin para SMTP): tests/test_smtp_endpoints.py agrega 16
+          # con `client`. Medido en la rama: 462 / 1.
+          PISO_PASSED = 462
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
