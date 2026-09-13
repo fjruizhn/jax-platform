@@ -67,6 +67,7 @@ jobs:
   # versión con la que se construye el frontend en hall9000. Piso exacto:
   # medido con `npm ci` limpio fuera de hall9000, 69 tests. Validado
   # rompiendo un test a propósito y viendo este job en rojo sobre el sha real.
+  # Gate por conteo del reporter JSON (ver el paso), no por texto.
   frontend-tests:
     runs-on: ubuntu-latest
     defaults:
@@ -80,11 +81,20 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      # El piso se lee del reporter JSON, no de la salida de texto: en el
+      # runner vitest imprime con colores ANSI y un grep sobre el texto
+      # ("Tests 69 passed") no matcheaba con los 69 en verde -- medido en la
+      # primera corrida de este job. El conteo no puede depender del formato.
       - name: Piso exacto de tests CORRIDOS
         run: |
-          npx vitest run 2>&1 | tee /tmp/out
-          grep -qE "Tests +69 passed" /tmp/out || {
-            echo "PISO ROTO: se esperaban 69 tests de vitest CORRIDOS."; exit 1; }
+          npx vitest run --reporter=default --reporter=json --outputFile=/tmp/vitest.json
+          node -e '
+            const r = require("/tmp/vitest.json");
+            console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} total=${r.numTotalTests}`);
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 69) {
+              console.error("PISO ROTO: se esperaban 69 tests de vitest CORRIDOS y 0 fallidos.");
+              process.exit(1);
+            }'
 
   no-fail-open-except:
     runs-on: ubuntu-latest
