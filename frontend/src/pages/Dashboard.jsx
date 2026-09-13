@@ -9,6 +9,7 @@ import CenterPanel from '../components/CenterPanel/CenterPanel'
 import RightPanel from '../components/RightPanel/RightPanel'
 import BottomBar from '../components/BottomBar/BottomBar'
 import Toast from '../components/Notifications/Toast'
+import LogoAxioma from '../components/LogoAxioma'
 
 export default function Dashboard() {
   useWebSocket()
@@ -22,9 +23,7 @@ export default function Dashboard() {
       {/* Top bar */}
       <div className="flex-shrink-0 flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-700">
         <div className="flex items-center gap-3">
-          <span className="text-xs font-bold text-blue-400 uppercase tracking-widest">JAX</span>
-          <span className="text-xs text-slate-600">|</span>
-          <span className="text-xs text-slate-500">Platform v0.1</span>
+          <LogoAxioma />
           {user?.role === 'superadmin' && (
             <Link
               to="/admin"

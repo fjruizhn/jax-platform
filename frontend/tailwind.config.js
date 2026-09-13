@@ -3,7 +3,17 @@ export default {
   content: ['./index.html', './src/**/*.{js,jsx}'],
   theme: {
     extend: {
+      // Marca Axioma (2026-09-12): la misma tipografía y los mismos dorados de
+      // la portada de Six Impossible Things (--gold, --gold-light, --gold-dark).
+      fontFamily: {
+        marca: ['"IBM Plex Serif"', 'Georgia', 'serif'],
+      },
       colors: {
+        oro: {
+          DEFAULT: '#c9a84c',
+          claro: '#e8d5a3',
+          oscuro: '#8a6d2f',
+        },
         hal: {
           bg: '#0f172a',
           panel: '#1e293b',
