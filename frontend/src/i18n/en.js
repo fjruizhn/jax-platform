@@ -187,6 +187,8 @@ export default {
   // Theme / language
   lightMode: 'Light mode',
   darkMode: 'Dark mode',
+  switchLanguage: (idioma) => `Switch language to ${idioma}`,
+  adminPanel: 'Administration',
 
   // File attachments
   attachFile: 'Attach file',
