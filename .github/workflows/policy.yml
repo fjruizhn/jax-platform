@@ -383,7 +383,11 @@ jobs:
           # Subido de 446 a 462 (2026-09-12/13, administración de usuarios etapa 1,
           # endpoints de Admin para SMTP): tests/test_smtp_endpoints.py agrega 16
           # con `client`. Medido en la rama: 462 / 1.
-          PISO_PASSED = 462
+          # Subido de 462 a 463 (2026-09-13, administración de usuarios etapa 1,
+          # recuperación de contraseña con SMTP de la base): +1:
+          # test_recuperacion_sin_smtp_configurado_no_crea_token_ni_envia.
+          # Medido en la rama: 463 / 1.
+          PISO_PASSED = 463
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
