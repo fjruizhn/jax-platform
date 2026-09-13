@@ -77,3 +77,9 @@ html.light-mode .placeholder-slate-600::placeholder { color: #94a3b8; }
 
 /* Focus border */
 html.light-mode .focus\:border-blue-500:focus { border-color: #3b82f6; }
+
+/* Marca Axioma en modo claro (2026-09-12): #c9a84c sobre blanco no se lee;
+   se usa el dorado oscuro de la marca y uno más profundo para el nombre. */
+html.light-mode .text-oro { color: #7a5f24; }
+html.light-mode .text-oro-claro { color: #8a6d2f; }
+html.light-mode .text-oro-oscuro { color: #a08a55; }

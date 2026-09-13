@@ -68,7 +68,8 @@ jobs:
   # medido con `npm ci` limpio fuera de hall9000, 69 tests; 73 desde el
   # PasswordInput (+4: ojito que muestra/oculta, no envía el form, cada caja
   # independiente, props al input); 79 desde el ojo HAL en la esquina y la
-  # caja que crece (+4 alturaInput, +2 ubicación del ojo). Validado
+  # caja que crece (+4 alturaInput, +2 ubicación del ojo); 82 desde el
+  # logotipo de texto Axioma (+3: marca y lema en es, lema en en, punto decorativo). Validado
   # rompiendo un test a propósito y viendo este job en rojo sobre el sha real.
   # Gate por conteo del reporter JSON (ver el paso), no por texto.
   frontend-tests:
@@ -94,8 +95,8 @@ jobs:
           node -e '
             const r = require("/tmp/vitest.json");
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} total=${r.numTotalTests}`);
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 79) {
-              console.error("PISO ROTO: se esperaban 79 tests de vitest CORRIDOS y 0 fallidos.");
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 82) {
+              console.error("PISO ROTO: se esperaban 82 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

@@ -147,6 +147,8 @@ export default {
   inHonorOf: 'En honor al Prof. Raúl Jacobs.',
 
   // Login
+  brandName: 'Axioma',
+  brandTagline: 'Infraestructura Cognitiva Personal',
   loginTitle: 'Axioma',
   loginTagline: 'En memoria de Jairo Urbina',
   emailLabel: 'Email',
