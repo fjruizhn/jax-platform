@@ -500,3 +500,65 @@ def test_config_generico_no_lista_claves_legadas_que_la_collation_iguala_a_smtp(
         assert clave not in claves
     finally:
         client.portal.call(_sql, "DELETE FROM axioma_config WHERE config_key = %s", (clave,))
+
+
+# ------------------------------------------- items H (2026-09-13)
+
+def _cambios_nuevos():
+    return _config(host="nuevo.example.test", password="otra-clave")
+
+
+def test_guardar_filas_fallido_deshace_y_restaura_el_autocommit(client, monkeypatch):
+    import aiomysql
+    assert _guardar(client).status_code == 200
+    antes = client.portal.call(_filas_smtp)
+    original = aiomysql.Cursor.execute
+    conexiones = []
+    rollback_original = aiomysql.Connection.rollback
+
+    async def falla_en_la_contrasena(self, query, args=None):
+        if args and args[0] == smtp_config.CLAVE_SECRETA:
+            raise aiomysql.OperationalError(2013, "Lost connection (simulada)")
+        return await original(self, query, args)
+
+    async def espia_rollback(self):
+        conexiones.append(self)
+        return await rollback_original(self)
+
+    monkeypatch.setattr(aiomysql.Cursor, "execute", falla_en_la_contrasena)
+    monkeypatch.setattr(aiomysql.Connection, "rollback", espia_rollback)
+    with pytest.raises(aiomysql.OperationalError):
+        client.portal.call(smtp_config.guardar_filas, smtp_config.filas_a_guardar(antes, _cambios_nuevos()))
+    monkeypatch.setattr(aiomysql.Cursor, "execute", original)
+    (conn,) = conexiones
+    assert not conn.closed and conn.get_autocommit() is True  # vuelve al pool como estaba
+    assert client.portal.call(_filas_smtp) == antes
+
+
+def test_guardar_filas_con_rollback_que_falla_propaga_el_error_original(client, monkeypatch):
+    # Si el rollback también falla, no puede tapar el error original ni dejar
+    # en el pool una conexión sin autocommit: se cierra y el pool la descarta
+    # (el servidor deshace lo no confirmado al cortarse la conexión).
+    import aiomysql
+    assert _guardar(client).status_code == 200
+    antes = client.portal.call(_filas_smtp)
+    original = aiomysql.Cursor.execute
+    conexiones = []
+
+    async def falla_en_la_contrasena(self, query, args=None):
+        if args and args[0] == smtp_config.CLAVE_SECRETA:
+            raise aiomysql.OperationalError(2013, "Lost connection (simulada)")
+        return await original(self, query, args)
+
+    async def rollback_roto(self):
+        conexiones.append(self)
+        raise RuntimeError("rollback roto (simulado)")
+
+    monkeypatch.setattr(aiomysql.Cursor, "execute", falla_en_la_contrasena)
+    monkeypatch.setattr(aiomysql.Connection, "rollback", rollback_roto)
+    with pytest.raises(aiomysql.OperationalError):
+        client.portal.call(smtp_config.guardar_filas, smtp_config.filas_a_guardar(antes, _cambios_nuevos()))
+    monkeypatch.undo()
+    (conn,) = conexiones
+    assert conn.closed
+    assert client.portal.call(_filas_smtp) == antes

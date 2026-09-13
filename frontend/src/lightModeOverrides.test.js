@@ -1,12 +1,12 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 
 // Por fs y no con `?raw`: vitest excluye el CSS del pipeline y el import
-// llega vacío (medido: el test fallaba con los overrides ya escritos). En
-// jsdom import.meta.url no es file:, así que se resuelve desde la raíz de
-// vitest (frontend/, igual que el job de CI).
-const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8')
+// llega vacío (medido: el test fallaba con los overrides ya escritos).
+// Entorno node (este test no usa el DOM): import.meta.url es file: y la ruta
+// sale relativa a ESTE archivo, no al directorio desde el que se corre.
+const css = readFileSync(new URL('./index.css', import.meta.url), 'utf8')
 
 // Modo claro (2026-09-13, fix de la revisión final): los rojos y verdes
 // "tintados" del modo oscuro (texto 200-500, fondos 900/950 translúcidos,

@@ -24,6 +24,7 @@ asyncio.to_thread.
 """
 from __future__ import annotations
 
+import logging
 import smtplib
 import ssl
 from dataclasses import dataclass, field
@@ -33,6 +34,8 @@ from email.utils import formataddr, formatdate, make_msgid
 from crypto_secrets import decrypt_db_secret, encrypt_secret
 from db.connection import get_pool
 from validacion import tiene_caracteres_de_control
+
+logger = logging.getLogger(__name__)
 
 CLAVES = (
     "smtp.host", "smtp.port", "smtp.encryption", "smtp.user",
@@ -230,7 +233,6 @@ async def guardar_filas(filas: dict[str, str]) -> None:
     async with pool.acquire() as conn:
         autocommit_previo = conn.get_autocommit()
         await conn.autocommit(False)
-        confirmado = False
         try:
             async with conn.cursor() as cur:
                 for clave, valor in filas.items():
@@ -240,13 +242,32 @@ async def guardar_filas(filas: dict[str, str]) -> None:
                         (clave, valor),
                     )
             await conn.commit()
-            confirmado = True
+        except BaseException:
+            # _deshacer no lanza: el error que se propaga es SIEMPRE el original.
+            await _deshacer(conn)
+            raise
         finally:
-            # Sin except: el error sigue su camino; acá solo se deshace y se
-            # devuelve la conexión al pool como estaba.
-            if not confirmado:
-                await conn.rollback()
-            await conn.autocommit(autocommit_previo)
+            # Tampoco lanza: la conexión vuelve al pool como estaba, o cerrada
+            # (el pool descarta las cerradas: aiomysql Pool.release).
+            await _restaurar_autocommit(conn, autocommit_previo)
+
+
+async def _deshacer(conn) -> None:
+    try:
+        await conn.rollback()
+    except Exception:  # fail-soft: un rollback que falla no puede tapar el error original, que ya se está propagando; se cierra la conexión y el servidor deshace lo no confirmado al cortarse
+        logger.warning("SMTP: el rollback del guardado falló; se cierra la conexión", exc_info=True)
+        conn.close()
+
+
+async def _restaurar_autocommit(conn, autocommit_previo: bool) -> None:
+    if conn.closed:
+        return
+    try:
+        await conn.autocommit(autocommit_previo)
+    except Exception:  # fail-soft: sin poder restaurar el autocommit la conexión no puede volver al pool; se cierra (el pool la descarta) y no se tapa el resultado del guardado
+        logger.warning("SMTP: no se pudo restaurar el autocommit; se cierra la conexión", exc_info=True)
+        conn.close()
 
 
 async def cargar_settings() -> SmtpSettings:

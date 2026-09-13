@@ -412,3 +412,15 @@ def test_enviar_con_host_idna_invalido_lanza_oserror(monkeypatch):
     s = smtp_config.interpretar(_filas(**{"smtp.host": "a..b"}))
     with pytest.raises(OSError):
         smtp_config.enviar(s, smtp_config.construir_mensaje(s, "d@example.test", "a", "t", "<p>h</p>"))
+
+
+def test_decrypt_db_secret_con_clave_malformada_avisa_en_el_log(monkeypatch, caplog):
+    # Item H (2026-09-13): "" en silencio escondía una FERNET_KEY rota también
+    # para keys.py y credentials.py. Sigue devolviendo "", pero avisa, sin la clave.
+    cifrada = smtp_config.encrypt_secret("x")
+    monkeypatch.setenv("FERNET_KEY", "no-es-una-clave-fernet")
+    with caplog.at_level("WARNING", logger="crypto_secrets"):
+        assert smtp_config.decrypt_db_secret(cifrada) == ""
+    avisos = [r.getMessage() for r in caplog.records if r.name == "crypto_secrets"]
+    assert avisos and "FERNET_KEY" in avisos[0]
+    assert not [m for m in avisos if "no-es-una-clave-fernet" in m or cifrada in m]

@@ -469,7 +469,7 @@ export default {
     smtp_reescribir_contrasena_al_cambiar_servidor: 'You changed server, port, encryption or username: type the password again (the stored one is not sent to another server).',
     smtp_password_no_ascii: 'The password can only contain ASCII characters (no accents): SMTP does not allow others.',
     smtp_usuario_no_ascii: 'The username can only contain ASCII characters (no accents): SMTP does not allow others.',
-    smtp_campo_invalido: 'Server, username or sender name contain characters that are not allowed (line breaks or control characters).',
+    smtp_campo_invalido: 'Server, username, sender name or sender email contain characters that are not allowed (line breaks or control characters).',
   },
 
   // Restoring pending tasks (useJaxStore.js)

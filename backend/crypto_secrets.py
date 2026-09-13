@@ -1,6 +1,9 @@
+import logging
 import os
 from abc import ABC, abstractmethod
 from cryptography.fernet import Fernet, InvalidToken
+
+logger = logging.getLogger(__name__)
 
 
 class KeyProvider(ABC):
@@ -83,7 +86,9 @@ def decrypt_db_secret(value: str) -> str:
         return ""
     try:
         fernet = _get_fernet()
-    except ValueError:  # fail-soft: FERNET_KEY malformada == sin key; quien llama ya trata "" como "no hay secreto utilizable"
+    except ValueError:  # fail-soft: FERNET_KEY malformada == sin key; quien llama ya trata "" como "no hay secreto utilizable", y queda el aviso en el log
+        # Sin material de clave en el mensaje: ni la clave ni el valor cifrado.
+        logger.warning("FERNET_KEY malformada: no se puede descifrar un secreto guardado (se trata como sin clave)")
         return ""
     if not fernet:
         return ""

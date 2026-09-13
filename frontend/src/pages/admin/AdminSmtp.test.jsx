@@ -119,5 +119,10 @@ describe('AdminSmtp', () => {
       expect(typeof t.smtpEncNoneWarning).toBe('string')
       expect(t.smtpCorruptBanner('x')).toContain('x')
     }
+    // smtp_campo_invalido también salta por el correo del remitente (item H).
+    expect(es.smtpErrors.smtp_campo_invalido).toMatch(/correo del remitente/)
+    expect(en.smtpErrors.smtp_campo_invalido).toMatch(/sender email/)
+    {
+    }
   })
 })
