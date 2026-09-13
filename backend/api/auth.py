@@ -1,4 +1,5 @@
 import asyncio
+import html as html_lib
 import uuid
 import logging
 import secrets
@@ -217,7 +218,9 @@ async def _procesar_recuperacion(email: str, client_ip: str) -> None:
         try:
             settings = await smtp_config.cargar_settings()
         except smtp_config.SmtpNoDisponible as exc:
-            logger.error("Recuperación de contraseña: correo deshabilitado (%s); no se creó el token", exc.codigo)
+            # El motivo es un código estable (p. ej. "password_ilegible"), sin secretos.
+            logger.error("Recuperación de contraseña: correo deshabilitado (%s, motivo: %s); no se creó el token",
+                         exc.codigo, getattr(exc, "motivo", "-"))
             return
 
         token = str(uuid.uuid4())
@@ -256,9 +259,12 @@ def _send_reset_email(settings: smtp_config.SmtpSettings, to_email: str, reset_l
         f"Para restablecer tu contraseña, accede al siguiente enlace:\n\n{reset_link}\n\n"
         "Este enlace expira en 1 hora."
     )
+    # El enlace va escapado en el HTML (href y texto): FRONTEND_ORIGIN o el
+    # token podrían traer comillas o "<". El texto plano va tal cual.
+    enlace = html_lib.escape(reset_link, quote=True)
     html = (
         "<p>Para restablecer tu contraseña, haz clic en el siguiente enlace:</p>"
-        f'<p><a href="{reset_link}">{reset_link}</a></p>'
+        f'<p><a href="{enlace}">{enlace}</a></p>'
         "<p>Este enlace expira en 1 hora. Si no solicitaste este cambio, ignora este correo.</p>"
     )
     mensaje = smtp_config.construir_mensaje(settings, to_email, ASUNTO_RECUPERACION, texto, html)

@@ -53,6 +53,7 @@ def entorno(client, monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP_SSL", _SinRed)
     import api.admin.smtp as smtp_mod
     monkeypatch.setattr(smtp_mod, "SMTP_TEST_LIMITER", SlidingWindowLimiter(100, 300, 1000))
+    monkeypatch.setattr(smtp_mod, "SMTP_CONN_LIMITER", SlidingWindowLimiter(100, 300, 1000))
     client.portal.call(_borrar_smtp)
     yield
     client.portal.call(_borrar_smtp)
@@ -91,9 +92,11 @@ def test_guardar_cifra_la_contrasena_y_el_get_solo_muestra_la_mascara(client):
 def test_guardar_con_la_mascara_conserva_la_contrasena(client):
     assert _guardar(client).status_code == 200
     antes = client.portal.call(_filas_smtp)["smtp.password"]
-    assert _guardar(client, password=smtp_config.MASCARA, host="otro.example.test").status_code == 200
+    # Cambia from_name, no el servidor: con otro host la máscara ya NO
+    # conserva la contraseña (revisión final, 2026-09-13; ver abajo).
+    assert _guardar(client, password=smtp_config.MASCARA, from_name="Axioma Mail").status_code == 200
     despues = client.portal.call(_filas_smtp)
-    assert despues["smtp.password"] == antes and despues["smtp.host"] == "otro.example.test"
+    assert despues["smtp.password"] == antes and despues["smtp.from_name"] == "Axioma Mail"
 
 
 def test_la_primera_vez_exige_contrasena(client):
@@ -233,3 +236,134 @@ def test_config_generico_rechaza_escribir_smtp(client):
                    headers=_admin())
     assert (r.status_code, r.json()["detail"]) == (400, "config_clave_reservada")
     assert client.portal.call(_filas_smtp) == antes
+
+
+# -------------------- fix wave de la revisión final (2026-09-13)
+
+CAMBIOS_DE_SERVIDOR = [("host", "atacante.example.test"), ("port", 2525),
+                       ("encryption", "ssl"), ("user", "otro@example.test")]
+
+
+def _conexion(**cambios):
+    return {k: v for k, v in _config(**cambios).items() if k not in ("from_name", "from_email")}
+
+
+@pytest.mark.parametrize("campo,valor", CAMBIOS_DE_SERVIDOR)
+def test_guardar_con_mascara_y_otro_servidor_exige_reescribir_la_contrasena(client, campo, valor):
+    # CRÍTICO: si no, /smtp/test mandaría la contraseña guardada al host nuevo.
+    assert _guardar(client).status_code == 200
+    antes = client.portal.call(_filas_smtp)
+    r = _guardar(client, password=smtp_config.MASCARA, **{campo: valor})
+    assert (r.status_code, r.json()["detail"]) == (422, "smtp_reescribir_contrasena_al_cambiar_servidor")
+    assert client.portal.call(_filas_smtp) == antes
+
+
+@pytest.mark.parametrize("password", [smtp_config.MASCARA, "", None])
+@pytest.mark.parametrize("campo,valor", CAMBIOS_DE_SERVIDOR)
+def test_probar_conexion_no_manda_la_guardada_a_otro_servidor(client, monkeypatch, campo, valor, password):
+    assert _guardar(client).status_code == 200
+    vistos = []
+    monkeypatch.setattr(smtp_config, "probar_conexion", lambda *a: vistos.append(a))
+    r = client.post("/api/admin/smtp/test-connection", json=_conexion(password=password, **{campo: valor}),
+                    headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (422, "smtp_reescribir_contrasena_al_cambiar_servidor")
+    assert vistos == []
+
+
+@pytest.mark.parametrize("password", [smtp_config.MASCARA, ""])
+def test_probar_conexion_sin_nada_guardado_y_sin_contrasena(client, monkeypatch, password):
+    vistos = []
+    monkeypatch.setattr(smtp_config, "probar_conexion", lambda *a: vistos.append(a))
+    r = client.post("/api/admin/smtp/test-connection", json=_conexion(password=password), headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (422, "smtp_sin_contrasena")
+    assert vistos == []
+
+
+def test_contrasena_no_ascii_es_422_al_guardar_y_al_probar(client, monkeypatch):
+    vistos = []
+    monkeypatch.setattr(smtp_config, "probar_conexion", lambda *a: vistos.append(a))
+    r = _guardar(client, password="contraseña")
+    assert (r.status_code, r.json()["detail"]) == (422, "smtp_password_no_ascii")
+    assert client.portal.call(_filas_smtp) == {}
+    r = client.post("/api/admin/smtp/test-connection", json=_conexion(password="contraseña"), headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (422, "smtp_password_no_ascii")
+    assert vistos == []
+
+
+def test_prueba_con_contrasena_guardada_no_ascii_no_es_500(client, monkeypatch):
+    # Defensa en profundidad para filas viejas: smtplib lanza UnicodeEncodeError.
+    def no_ascii(s, msg):
+        "contraseña".encode("ascii")
+
+    monkeypatch.setattr(smtp_config, "enviar", no_ascii)
+    assert _guardar(client).status_code == 200
+    r = client.post("/api/admin/smtp/test", headers=_admin())
+    assert r.status_code == 502
+    assert r.json()["detail"] == {"code": "smtp_password_no_ascii", "server": ""}
+
+
+@pytest.mark.parametrize("campo", ["host", "user", "from_name"])
+@pytest.mark.parametrize("malo", ["a\r\nBcc: x@y.io", "a\tb", "a\x00b", "a\x7fb"])
+def test_caracteres_de_control_son_400_al_guardar(client, campo, malo):
+    r = _guardar(client, **{campo: malo})
+    assert (r.status_code, r.json()["detail"]) == (400, "smtp_campo_invalido")
+    assert client.portal.call(_filas_smtp) == {}
+
+
+@pytest.mark.parametrize("campo", ["host", "user"])
+def test_caracteres_de_control_son_400_al_probar(client, monkeypatch, campo):
+    vistos = []
+    monkeypatch.setattr(smtp_config, "probar_conexion", lambda *a: vistos.append(a))
+    r = client.post("/api/admin/smtp/test-connection", json=_conexion(**{campo: "a\nb"}), headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (400, "smtp_campo_invalido")
+    assert vistos == []
+
+
+def test_prueba_con_mensaje_imposible_de_armar_no_es_500(client, monkeypatch):
+    def invalido(*a):
+        raise ValueError("Header values may not contain linefeed or carriage return characters")
+
+    monkeypatch.setattr(smtp_config, "construir_mensaje", invalido)
+    monkeypatch.setattr(smtp_config, "enviar", lambda s, msg: None)
+    assert _guardar(client).status_code == 200
+    r = client.post("/api/admin/smtp/test", headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (503, "smtp_config_corrupta")
+
+
+def test_probar_conexion_tiene_limite_de_intentos(client, monkeypatch):
+    import api.admin.smtp as smtp_mod
+    monkeypatch.setattr(smtp_mod, "SMTP_CONN_LIMITER", SlidingWindowLimiter(2, 300, 1000))
+    monkeypatch.setattr(smtp_config, "probar_conexion", lambda *a: None)
+    for _ in range(2):
+        r = client.post("/api/admin/smtp/test-connection", json=_conexion(), headers=_admin())
+        assert r.status_code == 200, r.text
+    r = client.post("/api/admin/smtp/test-connection", json=_conexion(), headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (429, "smtp_demasiadas_pruebas")
+    assert int(r.headers["Retry-After"]) >= 1
+
+
+@pytest.mark.parametrize("fernet_key", [None, "no-es-una-clave-fernet"])
+def test_sin_clave_de_cifrado_utilizable_es_503_y_no_escribe(client, monkeypatch, fernet_key):
+    if fernet_key is None:
+        monkeypatch.delenv("FERNET_KEY", raising=False)
+    else:
+        monkeypatch.setenv("FERNET_KEY", fernet_key)
+    r = _guardar(client)
+    assert (r.status_code, r.json()["detail"]) == (503, "smtp_sin_clave_de_cifrado")
+    assert client.portal.call(_filas_smtp) == {}
+
+
+@pytest.mark.parametrize("clave", ["SMTP.password", " smtp.password", "Smtp.Host"])
+def test_config_generico_rechaza_smtp_con_mayusculas_o_espacios(client, clave):
+    # config_key es utf8mb4_uca1400_ai_ci: "SMTP.password" ES la fila de smtp.password.
+    assert _guardar(client).status_code == 200
+    antes = client.portal.call(_filas_smtp)
+    r = client.put("/api/admin/config", json=[{"key": clave, "value": "en-claro"}], headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (400, "config_clave_reservada")
+    assert client.portal.call(_filas_smtp) == antes
+
+
+def test_config_generico_no_lista_smtp_con_mayusculas(client):
+    client.portal.call(_sql, "INSERT INTO axioma_config (config_key, config_value) VALUES ('SMTP.Otra', 'x')")
+    claves = [i["key"] for i in client.get("/api/admin/config", headers=_admin()).json()["config"]]
+    assert claves and not [c for c in claves if c.lower().startswith("smtp.")]

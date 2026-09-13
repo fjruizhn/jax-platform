@@ -12,11 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 import smtp_config
+from crypto_secrets import clave_de_cifrado_utilizable
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from auth.rate_limit import SlidingWindowLimiter, parse_rate
 from db.connection import get_pool
-from validacion import EMAIL_MAX, email_valido
+from validacion import EMAIL_MAX, email_valido, tiene_caracteres_de_control
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin")
@@ -25,6 +26,10 @@ router = APIRouter(prefix="/api/admin")
 # robado) podría usar el servidor para inundar un buzón. 5 cada 5 minutos por
 # usuario alcanza para probar, corregir y volver a probar.
 SMTP_TEST_LIMITER = SlidingWindowLimiter(*parse_rate(os.getenv("JAX_SMTP_TEST_RATE", "5/300")))
+# Probar conexión no envía nada, pero cada llamada ocupa un hilo del executor
+# hasta TIMEOUT_S y devuelve el banner del host pedido (sirve para sondear la
+# red interna). 10 cada 5 minutos por usuario (revisión final, 2026-09-13).
+SMTP_CONN_LIMITER = SlidingWindowLimiter(*parse_rate(os.getenv("JAX_SMTP_CONN_RATE", "10/300")))
 
 ASUNTO_PRUEBA = "Axioma — Prueba de SMTP"
 TEXTO_PRUEBA = (
@@ -56,20 +61,41 @@ async def ver_smtp(user: AuthUser = Depends(require_superadmin)):
     return smtp_config.estado_para_pantalla(await smtp_config.leer_filas())
 
 
+def _limitar(limitador: SlidingWindowLimiter, user: AuthUser) -> None:
+    retry = limitador.hit(str(user.user_id))
+    if retry is not None:
+        raise HTTPException(status_code=429, detail="smtp_demasiadas_pruebas",
+                            headers={"Retry-After": str(max(1, math.ceil(retry)))})
+
+
+def _validar_entrada(req: SmtpConexion) -> None:
+    """Lo que Pydantic no ve. Un salto de línea en host/usuario/remitente
+    inyecta una línea SMTP o un encabezado (y un remitente así rompía TODOS
+    los correos de recuperación); smtplib codifica el AUTH en ascii, así que
+    una contraseña nueva no ASCII terminaba en 500."""
+    campos = [req.host, req.user] + ([req.from_name] if isinstance(req, SmtpUpdate) else [])
+    if any(tiene_caracteres_de_control(c) for c in campos):
+        raise HTTPException(status_code=400, detail="smtp_campo_invalido")
+    if smtp_config.trae_contrasena_nueva(req.model_dump()) and not req.password.isascii():
+        raise HTTPException(status_code=422, detail="smtp_password_no_ascii")
+
+
 @router.put("/smtp")
 async def guardar_smtp(req: SmtpUpdate, user: AuthUser = Depends(require_superadmin)):
+    # Antes de leer o cifrar nada: sin FERNET_KEY (o con una malformada) no se
+    # puede ni verificar la guardada ni cifrar una nueva -- nunca en claro.
+    if not clave_de_cifrado_utilizable():
+        raise HTTPException(status_code=503, detail="smtp_sin_clave_de_cifrado")
+    _validar_entrada(req)
     if not email_valido(req.from_email):
         raise HTTPException(status_code=400, detail="smtp_from_email_invalido")
     actuales = await smtp_config.leer_filas()
     motivo_previo = smtp_config.motivo_de_corrupcion(actuales)
     try:
         filas = smtp_config.filas_a_guardar(actuales, req.model_dump())
-    except smtp_config.SmtpExigeContrasena as exc:
+    except (smtp_config.SmtpExigeContrasena, smtp_config.SmtpReescribirContrasena) as exc:
         # 422 y no 500: quien opera lo resuelve volviendo a escribir la contraseña.
         raise HTTPException(status_code=422, detail=exc.codigo) from exc
-    except RuntimeError as exc:
-        # encrypt_secret sin FERNET_KEY: nunca se guarda en claro.
-        raise HTTPException(status_code=503, detail="smtp_sin_clave_de_cifrado") from exc
     await smtp_config.guardar_filas(filas)
     if motivo_previo is not None:
         logger.warning("SMTP reconfigurado sobre un estado corrupto (motivo anterior: %s) por user_id=%s",
@@ -77,16 +103,22 @@ async def guardar_smtp(req: SmtpUpdate, user: AuthUser = Depends(require_superad
     return {"ok": True}
 
 
+# Motivo de SmtpExigeContrasena -> código de la prueba de conexión.
+_SIN_CONTRASENA_PARA_PROBAR = {"sin_contrasena": "smtp_sin_contrasena", "password_ilegible": "smtp_password_ilegible"}
+
+
 @router.post("/smtp/test-connection")
 async def probar_conexion_smtp(req: SmtpConexion, user: AuthUser = Depends(require_superadmin)):
+    _limitar(SMTP_CONN_LIMITER, user)
+    _validar_entrada(req)
     password = req.password or ""
-    if password in ("", smtp_config.MASCARA):
-        guardada = (await smtp_config.leer_filas()).get(smtp_config.CLAVE_SECRETA, "")
-        password = smtp_config.decrypt_db_secret(guardada) if guardada else ""
-        if guardada and not password:
-            raise HTTPException(status_code=422, detail="smtp_password_ilegible")
-        if not password:
-            raise HTTPException(status_code=422, detail="smtp_sin_contrasena")
+    if not smtp_config.trae_contrasena_nueva(req.model_dump()):
+        try:
+            password = smtp_config.contrasena_para_reusar(await smtp_config.leer_filas(), req.model_dump())
+        except smtp_config.SmtpExigeContrasena as exc:
+            raise HTTPException(status_code=422, detail=_SIN_CONTRASENA_PARA_PROBAR[exc.motivo]) from exc
+        except smtp_config.SmtpReescribirContrasena as exc:
+            raise HTTPException(status_code=422, detail=exc.codigo) from exc
     try:
         await asyncio.to_thread(smtp_config.probar_conexion, req.host, req.port, req.encryption, req.user, password)
     except smtp_config.SmtpPasoFallido as exc:
@@ -107,20 +139,29 @@ async def _email_de(user_id: int) -> str:
 
 @router.post("/smtp/test")
 async def enviar_prueba_smtp(user: AuthUser = Depends(require_superadmin)):
-    retry = SMTP_TEST_LIMITER.hit(str(user.user_id))
-    if retry is not None:
-        raise HTTPException(status_code=429, detail="smtp_demasiadas_pruebas",
-                            headers={"Retry-After": str(max(1, math.ceil(retry)))})
+    _limitar(SMTP_TEST_LIMITER, user)
     try:
         settings = await smtp_config.cargar_settings()
     except smtp_config.SmtpNoDisponible as exc:
         raise HTTPException(status_code=503, detail=exc.codigo) from exc
     destinatario = await _email_de(int(user.user_id))
-    mensaje = smtp_config.construir_mensaje(settings, destinatario, ASUNTO_PRUEBA, TEXTO_PRUEBA, HTML_PRUEBA)
+    try:
+        mensaje = smtp_config.construir_mensaje(settings, destinatario, ASUNTO_PRUEBA, TEXTO_PRUEBA, HTML_PRUEBA)
+    except ValueError as exc:
+        # EmailMessage rechaza encabezados con caracteres de control. Las
+        # filas nuevas no los pueden traer (_validar_entrada) y las viejas ya
+        # son estado corrupto (motivo_de_corrupcion): esto es la última red.
+        logger.warning("Correo de prueba SMTP: no se pudo armar el mensaje: %s", exc)
+        raise HTTPException(status_code=503, detail="smtp_config_corrupta") from exc
     try:
         # La prueba se ESPERA a propósito (quien la pide quiere el veredicto),
         # pero en un hilo: smtplib no toca el event loop.
         await asyncio.to_thread(smtp_config.enviar, settings, mensaje)
+    except UnicodeEncodeError as exc:
+        # smtplib codifica el AUTH en ascii: una contraseña guardada no ASCII
+        # (fila anterior a la validación) daba 500. Mismo formato que el 502
+        # de abajo, sin respuesta del servidor porque no la hubo.
+        raise HTTPException(status_code=502, detail={"code": "smtp_password_no_ascii", "server": ""}) from exc
     except (OSError, smtplib.SMTPException) as exc:
         logger.warning("Correo de prueba SMTP a %s falló: %s", destinatario, exc)
         raise HTTPException(status_code=502, detail={"code": "smtp_envio_fallido", "server": str(exc)}) from exc

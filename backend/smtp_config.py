@@ -26,12 +26,13 @@ from __future__ import annotations
 
 import smtplib
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 
 from crypto_secrets import decrypt_db_secret, encrypt_secret
 from db.connection import get_pool
+from validacion import tiene_caracteres_de_control
 
 CLAVES = (
     "smtp.host", "smtp.port", "smtp.encryption", "smtp.user",
@@ -41,6 +42,11 @@ CLAVE_SECRETA = "smtp.password"
 MASCARA = "••••••••"
 CIFRADOS = ("tls", "ssl", "none")
 TIMEOUT_S = 10
+# Los que definen A QUIÉN se le entrega la contraseña guardada (ver
+# contrasena_para_reusar), y los que no pueden llevar caracteres de control
+# (un salto de línea en un encabezado rompe el correo o inyecta otro).
+CAMPOS_DE_SERVIDOR = ("host", "port", "encryption", "user")
+CAMPOS_DE_TEXTO_PLANO = ("smtp.host", "smtp.user", "smtp.from_name")
 
 
 class SmtpNoDisponible(Exception):
@@ -67,6 +73,12 @@ class SmtpExigeContrasena(Exception):
         self.motivo = motivo
 
 
+class SmtpReescribirContrasena(Exception):
+    """Se pidió reusar la contraseña guardada contra otro servidor (host,
+    puerto, cifrado o usuario distinto del guardado)."""
+    codigo = "smtp_reescribir_contrasena_al_cambiar_servidor"
+
+
 class SmtpPasoFallido(Exception):
     def __init__(self, codigo: str, servidor: str = ""):
         super().__init__(f"{codigo}: {servidor}")
@@ -80,7 +92,7 @@ class SmtpSettings:
     port: int
     encryption: str
     user: str
-    password: str
+    password: str = field(repr=False)  # nunca en un log ni en un traceback
     from_name: str
     from_email: str
 
@@ -97,10 +109,13 @@ def motivo_de_corrupcion(filas: dict[str, str]) -> str | None:
             return f"clave_ausente:{clave}"
     if not decrypt_db_secret(filas[CLAVE_SECRETA]):
         return "password_ilegible"
-    if not filas["smtp.port"].isdigit():
+    if not filas["smtp.port"].isdigit() or not 1 <= int(filas["smtp.port"]) <= 65535:
         return "valor_invalido:smtp.port"
     if filas["smtp.encryption"] not in CIFRADOS:
         return "valor_invalido:smtp.encryption"
+    for clave in CAMPOS_DE_TEXTO_PLANO:
+        if tiene_caracteres_de_control(filas[clave]):
+            return f"valor_invalido:{clave}"
     return None
 
 
@@ -133,7 +148,9 @@ def estado_para_pantalla(filas: dict[str, str]) -> dict:
         "port": int(puerto) if puerto.isdigit() else 587,
         "encryption": cifrado if cifrado in CIFRADOS else "tls",
         "user": filas.get("smtp.user", ""),
-        "password": MASCARA if motivo is None and filas.get(CLAVE_SECRETA) else "",
+        # Máscara solo si la guardada DESCIFRA: sin smtp.host, motivo es None
+        # aunque sobre una fila smtp.password ilegible.
+        "password": MASCARA if motivo is None and decrypt_db_secret(filas.get(CLAVE_SECRETA, "")) else "",
         "from_name": filas.get("smtp.from_name", ""),
         "from_email": filas.get("smtp.from_email", ""),
         "configurado": bool(filas.get("smtp.host")),
@@ -142,19 +159,42 @@ def estado_para_pantalla(filas: dict[str, str]) -> dict:
     }
 
 
+def trae_contrasena_nueva(datos: dict) -> bool:
+    return (datos.get("password") or "") not in ("", MASCARA)
+
+
+def contrasena_para_reusar(filas_actuales: dict[str, str], datos: dict) -> str:
+    """LA regla de "¿se puede reusar la contraseña guardada?" -- la usan el
+    guardado y la prueba de conexión. Devuelve la guardada, descifrada, solo
+    si host, puerto, cifrado y usuario pedidos son los MISMOS que los
+    guardados: si no, la contraseña viajaría a un servidor elegido por quien
+    llama (revisión final, 2026-09-13). Lanza SmtpExigeContrasena si no hay
+    una guardada utilizable y SmtpReescribirContrasena si cambió el servidor."""
+    guardada = filas_actuales.get(CLAVE_SECRETA, "")
+    if not guardada:
+        raise SmtpExigeContrasena("sin_contrasena")
+    password = decrypt_db_secret(guardada)
+    if not password:
+        raise SmtpExigeContrasena("password_ilegible")
+    pedido = (str(datos["host"]), str(int(datos["port"])), str(datos["encryption"]), str(datos["user"]))
+    actual = tuple(filas_actuales.get(f"smtp.{campo}", "") for campo in CAMPOS_DE_SERVIDOR)
+    if pedido != actual:
+        raise SmtpReescribirContrasena()
+    return password
+
+
 def filas_a_guardar(filas_actuales: dict[str, str], datos: dict) -> dict[str, str]:
     """Filas a escribir. La contraseña solo se reemplaza si llega una nueva
-    distinta de la máscara. Con el estado corrupto se PUEDE reconfigurar
-    (bloquearlo dejaría como salida la cirugía en la base), pero exigiendo
-    volver a escribir la contraseña -- igual que AteneaERP."""
-    nueva = datos.get("password") or ""
-    trae_nueva = nueva not in ("", MASCARA)
-    motivo = motivo_de_corrupcion(filas_actuales)
+    distinta de la máscara; sin nueva, se conserva la guardada solo si
+    contrasena_para_reusar lo permite. Con el estado corrupto se PUEDE
+    reconfigurar (bloquearlo dejaría como salida la cirugía en la base), pero
+    exigiendo volver a escribir la contraseña -- igual que AteneaERP."""
+    trae_nueva = trae_contrasena_nueva(datos)
     if not trae_nueva:
+        motivo = motivo_de_corrupcion(filas_actuales)
         if motivo is not None:
             raise SmtpExigeContrasena(motivo)
-        if not filas_actuales.get(CLAVE_SECRETA):
-            raise SmtpExigeContrasena("sin_contrasena")
+        contrasena_para_reusar(filas_actuales, datos)
     filas = {
         "smtp.host": datos["host"],
         "smtp.port": str(int(datos["port"])),
@@ -164,7 +204,7 @@ def filas_a_guardar(filas_actuales: dict[str, str], datos: dict) -> dict[str, st
         "smtp.from_email": datos["from_email"],
     }
     if trae_nueva:
-        filas[CLAVE_SECRETA] = encrypt_secret(nueva)
+        filas[CLAVE_SECRETA] = encrypt_secret(datos["password"])
     return filas
 
 
@@ -285,6 +325,10 @@ def probar_conexion(host: str, port: int, encryption: str, user: str, password: 
             raise SmtpPasoFallido("smtp_auth_rechazada", _texto(exc)) from exc
         except smtplib.SMTPNotSupportedError as exc:
             raise SmtpPasoFallido("smtp_auth_no_soportada", str(exc)) from exc
+        except UnicodeEncodeError as exc:
+            # smtplib codifica el AUTH en ascii. El endpoint ya rechaza una
+            # contraseña nueva no ASCII; esto cubre filas viejas.
+            raise SmtpPasoFallido("smtp_password_no_ascii") from exc
     except SmtpPasoFallido:
         raise
     except (OSError, smtplib.SMTPException) as exc:

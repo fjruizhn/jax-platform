@@ -267,3 +267,110 @@ def test_email_valido():
     assert email_valido("no-reply@axioma-ia.io")
     for malo in ("", "sin-arroba", "a@b", "a b@c.io", "@c.io", "a@.io", "a@" + "b" * 250 + ".io"):
         assert not email_valido(malo), malo
+
+
+# ------------------------- fix wave de la revisión final (2026-09-13)
+
+@pytest.mark.parametrize("campo,valor", [
+    ("host", "atacante.example.test"), ("port", 2525), ("encryption", "ssl"), ("user", "otro@example.test"),
+])
+def test_la_contrasena_guardada_no_se_reusa_contra_otro_servidor(campo, valor):
+    # CRÍTICO de la revisión final: con la máscara y un host (o puerto,
+    # cifrado, usuario) distinto, la contraseña guardada viajaría a un
+    # servidor elegido por quien llama. Solo se reusa contra el MISMO.
+    datos = _datos(password=smtp_config.MASCARA, **{campo: valor})
+    with pytest.raises(smtp_config.SmtpReescribirContrasena) as exc:
+        smtp_config.filas_a_guardar(_filas(), datos)
+    assert exc.value.codigo == "smtp_reescribir_contrasena_al_cambiar_servidor"
+    with pytest.raises(smtp_config.SmtpReescribirContrasena):
+        smtp_config.contrasena_para_reusar(_filas(), datos)
+
+
+def test_la_contrasena_guardada_se_reusa_contra_el_mismo_servidor():
+    datos = _datos(password=smtp_config.MASCARA, from_name="Otro nombre")
+    assert smtp_config.contrasena_para_reusar(_filas(), datos) == "clave-smtp-de-prueba"
+    filas = smtp_config.filas_a_guardar(_filas(), datos)
+    assert smtp_config.CLAVE_SECRETA not in filas and filas["smtp.from_name"] == "Otro nombre"
+
+
+def test_con_contrasena_nueva_se_puede_cambiar_de_servidor():
+    filas = smtp_config.filas_a_guardar(_filas(), _datos(password="nueva", host="otro.example.test"))
+    assert filas["smtp.host"] == "otro.example.test"
+    assert smtp_config.decrypt_db_secret(filas[smtp_config.CLAVE_SECRETA]) == "nueva"
+
+
+def test_contrasena_para_reusar_sin_guardada_o_ilegible():
+    with pytest.raises(smtp_config.SmtpExigeContrasena) as exc:
+        smtp_config.contrasena_para_reusar({}, _datos())
+    assert exc.value.motivo == "sin_contrasena"
+    ajena = Fernet(Fernet.generate_key()).encrypt(b"otra").decode()
+    with pytest.raises(smtp_config.SmtpExigeContrasena) as exc:
+        smtp_config.contrasena_para_reusar(_filas(**{"smtp.password": ajena}), _datos())
+    assert exc.value.motivo == "password_ilegible"
+
+
+def test_el_repr_de_los_settings_no_muestra_la_contrasena():
+    s = smtp_config.interpretar(_filas())
+    assert "clave-smtp-de-prueba" not in repr(s)
+
+
+def test_pantalla_sin_host_no_muestra_mascara_de_una_contrasena_que_no_descifra():
+    ajena = Fernet(Fernet.generate_key()).encrypt(b"otra").decode()
+    assert smtp_config.estado_para_pantalla({"smtp.password": ajena})["password"] == ""
+    sobrante = smtp_config.encrypt_secret("sobrante")
+    assert smtp_config.estado_para_pantalla({"smtp.password": sobrante})["password"] == smtp_config.MASCARA
+
+
+@pytest.mark.parametrize("puerto", ["0", "65536", "99999"])
+def test_puerto_fuera_de_rango_es_corrupto(puerto):
+    assert smtp_config.motivo_de_corrupcion(_filas(**{"smtp.port": puerto})) == "valor_invalido:smtp.port"
+
+
+@pytest.mark.parametrize("clave", ["smtp.host", "smtp.user", "smtp.from_name"])
+def test_caracteres_de_control_guardados_son_corruptos(clave):
+    # Una fila vieja con un salto de línea en el remitente rompía TODOS los
+    # correos (EmailMessage lanza ValueError): se nombra como estado corrupto.
+    assert smtp_config.motivo_de_corrupcion(_filas(**{clave: "a\r\nBcc: x@y"})) == f"valor_invalido:{clave}"
+
+
+def test_caracteres_de_control():
+    from validacion import tiene_caracteres_de_control
+    for malo in ("a\nb", "a\rb", "a\tb", "a\x00b", "a\x1fb", "a\x7fb"):
+        assert tiene_caracteres_de_control(malo), repr(malo)
+    assert not tiene_caracteres_de_control("Axioma · Infraestructura ñ")
+
+
+def test_clave_de_cifrado_utilizable(monkeypatch):
+    from crypto_secrets import clave_de_cifrado_utilizable
+    assert clave_de_cifrado_utilizable()
+    monkeypatch.setenv("FERNET_KEY", "no-es-una-clave-fernet")
+    assert not clave_de_cifrado_utilizable()
+    monkeypatch.delenv("FERNET_KEY")
+    assert not clave_de_cifrado_utilizable()
+
+
+def test_enviar_sin_cifrado_no_hace_starttls_pero_si_login(monkeypatch):
+    registro = []
+    monkeypatch.setattr(smtplib, "SMTP", _smtp_falso(registro))
+    s = smtp_config.interpretar(_filas(**{"smtp.encryption": "none", "smtp.port": "25"}))
+    smtp_config.enviar(s, smtp_config.construir_mensaje(s, "d@example.test", "a", "t", "<p>h</p>"))
+    (srv,) = registro
+    assert "starttls" not in srv.llamadas
+    assert ("login", "no-reply@example.test", "clave-smtp-de-prueba") in srv.llamadas
+
+
+def test_probar_conexion_sin_cifrado_no_hace_starttls_pero_si_login(monkeypatch):
+    registro = []
+    monkeypatch.setattr(smtplib, "SMTP", _smtp_falso(registro))
+    smtp_config.probar_conexion("mail.example.test", 25, "none", "u", "p")
+    (srv,) = registro
+    assert "starttls" not in srv.llamadas and ("login", "u", "p") in srv.llamadas
+
+
+def test_probar_conexion_con_contrasena_no_ascii_da_codigo_estable(monkeypatch):
+    # smtplib codifica el AUTH en ascii: sin esto, UnicodeEncodeError -> 500.
+    error = UnicodeEncodeError("ascii", "clavé", 4, 5, "ordinal not in range(128)")
+    monkeypatch.setattr(smtplib, "SMTP", _smtp_falso([], login_error=error))
+    with pytest.raises(smtp_config.SmtpPasoFallido) as exc:
+        smtp_config.probar_conexion("mail.example.test", 587, "tls", "u", "clavé")
+    assert exc.value.codigo == "smtp_password_no_ascii"

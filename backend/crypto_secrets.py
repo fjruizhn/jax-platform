@@ -41,6 +41,16 @@ def _get_fernet() -> Fernet | None:
     return Fernet(key)
 
 
+def clave_de_cifrado_utilizable() -> bool:
+    """True si FERNET_KEY existe Y es una clave Fernet válida. Para chequear
+    ANTES de cifrar: Fernet() con una clave malformada lanza ValueError y
+    encrypt_secret sin clave lanza RuntimeError."""
+    try:
+        return _get_fernet() is not None
+    except ValueError:  # fail-soft: clave malformada (binascii.Error es ValueError) == no hay clave utilizable
+        return False
+
+
 def encrypt_secret(value: str) -> str:
     fernet = _get_fernet()
     if not fernet:

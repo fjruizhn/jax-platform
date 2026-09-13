@@ -29,7 +29,11 @@ async def _ensure_defaults(conn):
 
 # smtp.* tiene su propia pantalla (api/admin/smtp.py): la contraseña va
 # cifrada. Por acá el PUT la guardaría en claro y el GET devolvería el texto
-# cifrado (spec §3.1). Se excluye por prefijo, no por lista.
+# cifrado (spec §3.1). Se excluye por prefijo, no por lista. config_key usa
+# collation utf8mb4_uca1400_ai_ci: "SMTP.password" ES la fila smtp.password
+# (el ON DUPLICATE KEY la pisaría en claro), así que el PUT compara en
+# minúsculas y sin espacios; el NOT LIKE del GET ya es insensible por la
+# collation (verificado en test_config_generico_no_lista_smtp_con_mayusculas).
 PREFIJO_RESERVADO = "smtp."
 
 
@@ -56,7 +60,7 @@ class ConfigItem(BaseModel):
 @router.put("/config")
 async def update_config(items: List[ConfigItem], user: AuthUser = Depends(require_superadmin)):
     # Antes de escribir NADA: un lote con una clave reservada no se aplica a medias.
-    if any(item.key.startswith(PREFIJO_RESERVADO) for item in items):
+    if any(item.key.strip().lower().startswith(PREFIJO_RESERVADO) for item in items):
         raise HTTPException(status_code=400, detail="config_clave_reservada")
     pool = await get_pool()
     async with pool.acquire() as conn:

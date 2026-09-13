@@ -14,3 +14,12 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 
 def email_valido(valor: str) -> bool:
     return bool(valor) and len(valor) <= EMAIL_MAX and _EMAIL.match(valor) is not None
+
+
+# Caracteres de control C0 (\x00-\x1f, incluye \t \r \n) y DEL. En un
+# encabezado de correo o una línea SMTP, un salto de línea es una inyección.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def tiene_caracteres_de_control(valor: str) -> bool:
+    return _CONTROL.search(valor) is not None
