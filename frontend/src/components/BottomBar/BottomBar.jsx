@@ -1,4 +1,4 @@
-import { memo, useState, useRef } from 'react'
+import { memo, useState, useRef, useLayoutEffect } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 import KillSwitch from './KillSwitch'
@@ -6,6 +6,7 @@ import PipelineModal from './PipelineModal'
 import AttachButton from '../chat/AttachButton'
 import FileAttachment from '../chat/FileAttachment'
 import api from '../../api/client'
+import { alturaInput } from './alturaInput'
 
 // Solo orden de despliegue — label/color vienen de /api/facets (tabla
 // `facet`, Bloque C) via el store, no se duplican aca.
@@ -34,6 +35,26 @@ function BottomBar() {
   const setGeneratingImage = useJaxStore((s) => s.setGeneratingImage)
   const { t } = useI18n()
   const textareaRef = useRef(null)
+
+  // La caja crece con el texto hasta MAX_LINEAS_INPUT y recién ahí hace scroll
+  // (2026-09-12): antes quedaba en una línea y un prompt largo no se leía.
+  // Mide lo real del textarea (altura de línea, padding, borde) en vez de
+  // suponer píxeles; al enviar, `input` vuelve a '' y la caja a una línea.
+  useLayoutEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    const cs = getComputedStyle(el)
+    const px = (v) => parseFloat(v) || 0
+    const { altoPx, conScroll } = alturaInput({
+      scrollHeight: el.scrollHeight,
+      lineHeight: px(cs.lineHeight) || 20,
+      paddingY: px(cs.paddingTop) + px(cs.paddingBottom),
+      bordeY: px(cs.borderTopWidth) + px(cs.borderBottomWidth),
+    })
+    el.style.height = `${altoPx}px`
+    el.style.overflowY = conScroll ? 'auto' : 'hidden'
+  }, [input])
 
   const MODES = [
     { id: 'chat',     label: t.modeChat },
@@ -331,7 +352,6 @@ function BottomBar() {
             disabled={sending}
             className="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 resize-none focus:outline-none focus:border-blue-500 disabled:opacity-50"
             style={{
-              maxHeight: '120px',
               minHeight: '38px',
               borderColor: mode === 'comando' ? '#f97316' + '80'
                 : mode === 'pipeline' ? '#ffffff40'
