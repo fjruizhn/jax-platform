@@ -76,7 +76,9 @@ jobs:
   # guardado con recarga fallida, banner corrupto en una frase i18n, aviso de
   # cifrado "none", códigos nuevos en es y en). Fix wave 2 (2026-09-13): sin
   # cambio en el conteo, 96 medido (solo se amplió la lista de códigos de un
-  # test existente con smtp_usuario_no_ascii). Validado
+  # test existente con smtp_usuario_no_ascii); 97 desde el 2026-09-13 (item F:
+  # src/lightModeOverrides.test.js exige override de modo claro para cada
+  # rojo/verde tintado usado en src, +1). Validado
   # rompiendo un test a propósito y viendo este job en rojo sobre el sha real.
   # Gate por conteo del reporter JSON (ver el paso), no por texto.
   frontend-tests:
@@ -102,8 +104,8 @@ jobs:
           node -e '
             const r = require("/tmp/vitest.json");
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} total=${r.numTotalTests}`);
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 96) {
-              console.error("PISO ROTO: se esperaban 96 tests de vitest CORRIDOS y 0 fallidos.");
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 97) {
+              console.error("PISO ROTO: se esperaban 97 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
