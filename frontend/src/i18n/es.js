@@ -444,8 +444,9 @@ export default {
   smtpSendTest: 'Enviar correo de prueba',
   smtpSending: 'Enviando…',
   smtpTestSent: (to) => `Correo de prueba enviado a ${to}.`,
-  smtpCorruptTitle: 'La configuración guardada está dañada',
-  smtpCorruptDesc: 'El envío de correos está deshabilitado. Volvé a escribir la contraseña y guardá.',
+  smtpCorruptBanner: (motivo) => `La configuración guardada está dañada: ${motivo}. El envío de correos está deshabilitado. Volvé a escribir la contraseña y guardá.`,
+  smtpReloadFailed: 'No se pudo volver a cargar la configuración: recargá la página para verla.',
+  smtpEncNoneWarning: 'Sin cifrado, la contraseña y los correos viajan en claro por la red. Usalo solo en una red de confianza.',
   smtpMotivoPasswordIlegible: 'la contraseña guardada no se puede descifrar (¿cambió FERNET_KEY?)',
   smtpMotivoClaveAusente: (clave) => `falta el valor ${clave}`,
   smtpMotivoValorInvalido: (clave) => `el valor ${clave} no es válido`,
@@ -468,6 +469,9 @@ export default {
     smtp_tls_fallido: 'Falló la negociación TLS (certificado inválido o nombre que no coincide).',
     smtp_auth_rechazada: 'El servidor rechazó el usuario o la contraseña.',
     smtp_auth_no_soportada: 'El servidor no admite autenticación en esa conexión.',
+    smtp_reescribir_contrasena_al_cambiar_servidor: 'Cambiaste servidor, puerto, cifrado o usuario: volvé a escribir la contraseña (la guardada no se envía a otro servidor).',
+    smtp_password_no_ascii: 'La contraseña solo puede tener caracteres ASCII (sin tildes ni ñ): el protocolo SMTP no admite otros.',
+    smtp_campo_invalido: 'Servidor, usuario o nombre del remitente tienen caracteres no permitidos (saltos de línea o de control).',
   },
 
   // Restaurar tareas pendientes (useJaxStore.js)

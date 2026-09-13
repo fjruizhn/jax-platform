@@ -71,7 +71,10 @@ jobs:
   # caja que crece (+4 alturaInput, +2 ubicación del ojo); 82 desde el
   # logotipo de texto Axioma (+3: marca y lema en es, lema en en, punto decorativo);
   # 87 desde la barra de usuario con íconos (+5); 92 desde el 2026-09-12
-  # (admin usuarios etapa 1: AdminSmtp.test.jsx agrega 5). Validado
+  # (admin usuarios etapa 1: AdminSmtp.test.jsx agrega 5); 96 desde el
+  # 2026-09-13 (fix wave de la revisión final: AdminSmtp.test.jsx agrega 4 --
+  # guardado con recarga fallida, banner corrupto en una frase i18n, aviso de
+  # cifrado "none", códigos nuevos en es y en). Validado
   # rompiendo un test a propósito y viendo este job en rojo sobre el sha real.
   # Gate por conteo del reporter JSON (ver el paso), no por texto.
   frontend-tests:
@@ -97,8 +100,8 @@ jobs:
           node -e '
             const r = require("/tmp/vitest.json");
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} total=${r.numTotalTests}`);
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 92) {
-              console.error("PISO ROTO: se esperaban 92 tests de vitest CORRIDOS y 0 fallidos.");
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 96) {
+              console.error("PISO ROTO: se esperaban 96 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -388,7 +391,17 @@ jobs:
           # recuperación de contraseña con SMTP de la base): +1:
           # test_recuperacion_sin_smtp_configurado_no_crea_token_ni_envia.
           # Medido en la rama: 463 / 1.
-          PISO_PASSED = 463
+          # Subido de 463 a 527 (2026-09-13, fix wave de la revisión final de la
+          # etapa 1): +20 puros en test_smtp_config.py (contraseña guardada solo
+          # contra el mismo servidor, repr sin contraseña, máscara que descifra,
+          # puerto fuera de rango, caracteres de control, clave Fernet
+          # utilizable, cifrado "none", AUTH no ASCII), +42 con `client` en
+          # test_smtp_endpoints.py (servidor distinto con máscara en PUT y en
+          # test-connection, no ASCII, control, límite de test-connection,
+          # FERNET_KEY ausente/malformada, /config con mayúsculas) y +2 en
+          # test_login_residuos.py (motivo en el log, enlace escapado).
+          # Medido en la rama: 527 / 1.
+          PISO_PASSED = 527
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -615,7 +628,12 @@ jobs:
       # SMTP desde Admin): los 19 tests de tests/test_smtp_config.py son puros
       # (dominio SMTP con smtplib reemplazado por dobles) y corren sin DB.
       # Medido con JAX_CI_NO_DB=1: 240 / 207.
-      JAX_CI_MIN_PASSED: "240"
+      # Subido de 240 a 261 (2026-09-13, fix wave de la revisión final de la
+      # etapa 1): los 20 tests nuevos de tests/test_smtp_config.py son puros y
+      # test_correo_de_recuperacion_escapa_el_enlace_en_el_html (en
+      # test_login_residuos.py) no pide `client`: +21. Los 44 nuevos con
+      # `client` se saltean sin DB. Medido con JAX_CI_NO_DB=1: 261 / 267.
+      JAX_CI_MIN_PASSED: "261"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

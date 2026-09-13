@@ -441,8 +441,9 @@ export default {
   smtpSendTest: 'Send test email',
   smtpSending: 'Sending…',
   smtpTestSent: (to) => `Test email sent to ${to}.`,
-  smtpCorruptTitle: 'The stored settings are damaged',
-  smtpCorruptDesc: 'Sending email is disabled. Type the password again and save.',
+  smtpCorruptBanner: (motivo) => `The stored settings are damaged: ${motivo}. Sending email is disabled. Type the password again and save.`,
+  smtpReloadFailed: 'The settings could not be reloaded: refresh the page to see them.',
+  smtpEncNoneWarning: 'Without encryption, the password and the emails travel in clear text over the network. Use it only on a trusted network.',
   smtpMotivoPasswordIlegible: 'the stored password cannot be decrypted (did FERNET_KEY change?)',
   smtpMotivoClaveAusente: (clave) => `the value ${clave} is missing`,
   smtpMotivoValorInvalido: (clave) => `the value ${clave} is not valid`,
@@ -465,6 +466,9 @@ export default {
     smtp_tls_fallido: 'TLS negotiation failed (invalid certificate or name mismatch).',
     smtp_auth_rechazada: 'The server rejected the username or password.',
     smtp_auth_no_soportada: 'The server does not allow authentication on that connection.',
+    smtp_reescribir_contrasena_al_cambiar_servidor: 'You changed server, port, encryption or username: type the password again (the stored one is not sent to another server).',
+    smtp_password_no_ascii: 'The password can only contain ASCII characters (no accents): SMTP does not allow others.',
+    smtp_campo_invalido: 'Server, username or sender name contain characters that are not allowed (line breaks or control characters).',
   },
 
   // Restoring pending tasks (useJaxStore.js)

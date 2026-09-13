@@ -75,10 +75,16 @@ export default function AdminSmtp() {
   function guardar(e) {
     e.preventDefault()
     accion('guardar', async () => {
-      const r = await api.put('/admin/smtp', { ...form, port: Number(form.port) })
-      await cargar()
-      return r
-    }, () => t.smtpSaved)
+      await api.put('/admin/smtp', { ...form, port: Number(form.port) })
+      // Ya se guardó: si la recarga falla, el guardado sigue siendo un éxito
+      // y se avisa aparte (antes se mostraba como error).
+      try {
+        await cargar()
+        return { data: { recargado: true } }
+      } catch {
+        return { data: { recargado: false } }
+      }
+    }, (data) => (data.recargado ? t.smtpSaved : `${t.smtpSaved} ${t.smtpReloadFailed}`))
   }
 
   function probarConexion() {
@@ -98,7 +104,7 @@ export default function AdminSmtp() {
 
       {estado.corrupta && (
         <div role="alert" className="max-w-lg mb-4 text-sm text-red-400 bg-red-900/30 border border-red-800 rounded-lg px-3 py-2">
-          <strong>{t.smtpCorruptTitle}:</strong> {motivoLegible(estado.motivo)}. {t.smtpCorruptDesc}
+          {t.smtpCorruptBanner(motivoLegible(estado.motivo))}
         </div>
       )}
 
@@ -120,6 +126,9 @@ export default function AdminSmtp() {
             <option value="ssl">{t.smtpEncSsl}</option>
             <option value="none">{t.smtpEncNone}</option>
           </select>
+          {form.encryption === 'none' && (
+            <p className="mt-1 text-xs text-red-400 bg-red-900/30 border border-red-800 rounded-lg px-3 py-2">{t.smtpEncNoneWarning}</p>
+          )}
         </div>
         <div>
           <label className={LABEL} htmlFor="smtp-user">{t.smtpUser}</label>

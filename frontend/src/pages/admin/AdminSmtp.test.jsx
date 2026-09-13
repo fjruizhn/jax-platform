@@ -10,6 +10,8 @@ vi.mock('../../api/client', () => ({ default: { get: vi.fn(), put: vi.fn(), post
 import api from '../../api/client'
 import AdminSmtp from './AdminSmtp'
 import { I18nProvider } from '../../i18n/index.jsx'
+import es from '../../i18n/es.js'
+import en from '../../i18n/en.js'
 
 const MASCARA = '••••••••'
 const GUARDADA = {
@@ -77,5 +79,45 @@ describe('AdminSmtp', () => {
     expect(await screen.findByText('El correo saliente no está configurado.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Enviar correo de prueba' }))
     expect(await screen.findByText('Correo de prueba enviado a fernando@rich-hn.com.')).toBeInTheDocument()
+  })
+
+  // ---------------- fix wave de la revisión final (2026-09-13)
+
+  it('guardado bien y recarga fallida: dice que se guardó y avisa que no se pudo recargar', async () => {
+    api.get.mockResolvedValueOnce({ data: GUARDADA }).mockRejectedValueOnce({ response: { status: 500 } })
+    api.put.mockResolvedValue({ data: { ok: true } })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar' }))
+    const estado = await screen.findByRole('status')
+    await waitFor(() => expect(estado).toHaveTextContent(es.smtpSaved))
+    expect(estado).toHaveTextContent(es.smtpReloadFailed)
+    expect(estado.className).toContain('text-green-400')
+  })
+
+  it('el banner de estado corrupto es una sola frase de i18n, sin puntuación agregada', async () => {
+    api.get.mockResolvedValue({ data: { ...GUARDADA, password: '', corrupta: true, motivo: 'password_ilegible' } })
+    renderSmtp()
+    const alerta = await screen.findByRole('alert')
+    expect(alerta.textContent).toBe(es.smtpCorruptBanner(es.smtpMotivoPasswordIlegible))
+  })
+
+  it('con cifrado "none" advierte que la contraseña viaja sin cifrar', async () => {
+    api.get.mockResolvedValue({ data: GUARDADA })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    expect(screen.queryByText(es.smtpEncNoneWarning)).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(es.smtpEncryption), { target: { value: 'none' } })
+    expect(screen.getByText(es.smtpEncNoneWarning)).toBeInTheDocument()
+  })
+
+  it('los códigos nuevos del backend tienen texto en es y en', () => {
+    const nuevos = ['smtp_reescribir_contrasena_al_cambiar_servidor', 'smtp_password_no_ascii', 'smtp_campo_invalido']
+    for (const t of [es, en]) {
+      for (const code of nuevos) expect(typeof t.smtpErrors[code]).toBe('string')
+      expect(typeof t.smtpReloadFailed).toBe('string')
+      expect(typeof t.smtpEncNoneWarning).toBe('string')
+      expect(t.smtpCorruptBanner('x')).toContain('x')
+    }
   })
 })
