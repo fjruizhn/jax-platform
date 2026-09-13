@@ -19,6 +19,7 @@ export default function Login() {
   const [forgotEmail, setForgotEmail] = useState('')
   const [forgotSending, setForgotSending] = useState(false)
   const [forgotSent, setForgotSent] = useState(false)
+  const [forgotError, setForgotError] = useState('')
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -50,12 +51,20 @@ export default function Login() {
 
   async function handleForgot(e) {
     e.preventDefault()
+    setForgotError('')
     setForgotSending(true)
     try {
       await api.post('/auth/forgot-password', { email: forgotEmail })
       setForgotSent(true)
-    } catch {
-      setForgotSent(true)
+    } catch (err) {
+      // 429 (2026-09-12): la recuperación comparte el límite del login. Decir
+      // "si el correo existe, te llegará" sería mentir: no se procesó nada.
+      if (err.response?.status === 429) {
+        const seconds = parseInt(err.response?.headers?.['retry-after'], 10)
+        setForgotError(Number.isFinite(seconds) ? t.tooManyAttemptsSeconds(seconds) : t.tooManyAttempts)
+      } else {
+        setForgotSent(true)
+      }
     } finally {
       setForgotSending(false)
     }
@@ -97,6 +106,11 @@ export default function Login() {
                     autoFocus
                   />
                 </div>
+                {forgotError && (
+                  <div className="text-sm text-red-400 bg-red-900/30 border border-red-800 rounded-lg px-3 py-2">
+                    {forgotError}
+                  </div>
+                )}
                 <button
                   type="submit"
                   disabled={forgotSending}

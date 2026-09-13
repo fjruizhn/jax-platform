@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 import logging
 import secrets
@@ -7,15 +8,16 @@ from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, Cookie, status
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, Cookie, status
+from pydantic import BaseModel, Field
 
 from auth.models import AuthUser, LoginRequest, LoginResponse, MeResponse, RefreshResponse
 from auth.jwt import create_access_token, create_refresh_token, decode_token
 from auth.middleware import get_current_user
 from auth import rate_limit
 from db.connection import get_pool
-from db.seed import verify_password, _hash
+from db.seed import BCRYPT_MAX_BYTES, verify_password, _hash
+from jax_engine.background import add_safe_task
 
 logger = logging.getLogger(__name__)
 
@@ -169,47 +171,68 @@ async def logout(response: Response):
 
 
 class ForgotPasswordRequest(BaseModel):
-    email: str
+    # 254 = máximo de RFC 5321. Sin tope, el email (hasta 50 MB por nginx)
+    # queda como clave del limitador hasta que el LRU lo expulsa.
+    email: str = Field(max_length=254)
+
+
+_MENSAJE_RECUPERACION = "Si el correo existe, recibirás las instrucciones."
 
 
 @router.post("/forgot-password")
-async def forgot_password(req: ForgotPasswordRequest, request: Request):
-    pool = await get_pool()
-    client_ip = request.client.host if request.client else "unknown"
+async def forgot_password(req: ForgotPasswordRequest, request: Request, background_tasks: BackgroundTasks):
+    # 2026-09-12. La respuesta NO puede depender de si la cuenta existe: antes,
+    # con una real se hacía DELETE + INSERT + SMTP síncrono (hasta 10 s, y
+    # bloqueando el event loop) y con una inexistente se respondía al
+    # instante -- el tiempo delataba la cuenta, lo mismo que se cerró en el
+    # login (#57). Ahora el request no consulta nada: la búsqueda, el token y
+    # el correo van en segundo plano, y la respuesta es siempre la misma.
+    # Tampoco tenía límite (se podía inundar de correos a una víctima): comparte
+    # el del login, por IP y por email.
+    email = req.email.strip()
+    rate_limit.check_login_rate(request, email)
+    ip = rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES)
+    add_safe_task(background_tasks, _procesar_recuperacion, email, ip)
+    return {"ok": True, "message": _MENSAJE_RECUPERACION}
 
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT user_id FROM jax_users WHERE email = %s AND status = 'active'",
-                (req.email,),
-            )
-            row = await cur.fetchone()
 
-    if not row:
-        return {"ok": True, "message": "Si el correo existe, recibirás las instrucciones."}
+async def _procesar_recuperacion(email: str, client_ip: str) -> None:
+    """Crea el token y manda el correo, fuera del request. El correo va al
+    email GUARDADO, no al que mandó el cliente."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT user_id, email FROM jax_users WHERE email = %s AND status = 'active'",
+                    (email,),
+                )
+                row = await cur.fetchone()
+        if not row:
+            return
 
-    user_id = row[0]
-    token = str(uuid.uuid4())
-    expires_at = datetime.utcnow() + timedelta(hours=1)
+        user_id, email_guardado = row
+        token = str(uuid.uuid4())
+        expires_at = datetime.utcnow() + timedelta(hours=1)
 
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE",
-                (user_id,),
-            )
-            await cur.execute(
-                "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
-                "VALUES (%s, %s, %s, %s)",
-                (user_id, token, expires_at, client_ip),
-            )
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE",
+                    (user_id,),
+                )
+                await cur.execute(
+                    "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (user_id, token, expires_at, client_ip),
+                )
 
-    frontend_origin = os.getenv("FRONTEND_ORIGIN", "https://axioma-ia.io")
-    reset_link = f"{frontend_origin}/reset-password?token={token}"
-
-    _send_reset_email(req.email, reset_link)
-
-    return {"ok": True, "message": "Si el correo existe, recibirás las instrucciones."}
+        frontend_origin = os.getenv("FRONTEND_ORIGIN", "https://axioma-ia.io")
+        reset_link = f"{frontend_origin}/reset-password?token={token}"
+        # smtplib es bloqueante: a un hilo, nunca en el event loop.
+        await asyncio.to_thread(_send_reset_email, email_guardado, reset_link)
+    except Exception:  # fail-soft: corre después de responder; no hay a quién devolverle el error, queda en el log
+        logger.exception("Recuperación de contraseña: falló el procesamiento en segundo plano")
 
 
 def _send_reset_email(to_email: str, reset_link: str):
@@ -253,8 +276,13 @@ class ResetPasswordRequest(BaseModel):
 
 @router.post("/reset-password")
 async def reset_password(req: ResetPasswordRequest):
+    # Códigos estables (2026-09-12): el frontend los traduce con i18n. Antes
+    # mostraba este `detail` tal cual, en español aunque la UI estuviera en inglés.
     if len(req.password) < 8:
-        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
+        raise HTTPException(status_code=400, detail="reset_password_corta")
+    # bcrypt 5 lanza ValueError con más de 72 bytes: era un 500.
+    if len(req.password.encode()) > BCRYPT_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="reset_password_larga")
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -266,15 +294,15 @@ async def reset_password(req: ResetPasswordRequest):
             row = await cur.fetchone()
 
     if not row:
-        raise HTTPException(status_code=400, detail="Token inválido o expirado")
+        raise HTTPException(status_code=400, detail="reset_token_invalido")
 
     token_id, user_id, expires_at, used = row
 
     if used:
-        raise HTTPException(status_code=400, detail="Este enlace ya fue utilizado")
+        raise HTTPException(status_code=400, detail="reset_token_usado")
 
     if expires_at < datetime.utcnow():
-        raise HTTPException(status_code=400, detail="Token expirado. Solicita uno nuevo.")
+        raise HTTPException(status_code=400, detail="reset_token_expirado")
 
     new_hash = _hash(req.password)
 

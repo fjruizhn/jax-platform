@@ -23,6 +23,9 @@ name: policy
 #   - no-fail-open-except: el scanner P10 sobre el árbol de ESTE repo.
 #   - backend-tests-no-db: los 70 tests del backend que NO necesitan MariaDB.
 #     Medido, no supuesto (ver más abajo).
+#   - frontend-tests: los tests de vitest del frontend (2026-09-12). Hasta
+#     entonces NINGÚN job los corría -- Login.test.jsx existía y era una
+#     hipótesis de cobertura, no cobertura.
 #
 # NO CUBRE -- y esto es la parte importante:
 #   - Los 151 tests que SÍ necesitan MariaDB. En el runner no hay DB, así que
@@ -31,7 +34,8 @@ name: policy
 #     migraciones, seed, usage/pricing...). Se saltan con motivo visible y
 #     `-rs` los lista uno por uno en el log: nadie puede leer "verde" acá
 #     creyendo que corrió la suite entera.
-#   - El frontend. No hay ningún job de frontend en este repo todavía.
+#   - El build de producción del frontend ni su despliegue (se hacen a mano,
+#     ver CLAUDE.md del repo).
 #   - Cualquier cosa que dependa de credenciales reales (/etc/jax/.env no
 #     existe en el runner; el job inyecta un JAX_JWT_SECRET dummy).
 # ---------------------------------------------------------------------------
@@ -57,6 +61,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Tests del frontend (vitest). Agregado 2026-09-12 al cerrar los residuos del
+  # login: Login.test.jsx y ResetPassword.test.jsx fijan el 429 de la
+  # recuperación y los códigos de reset traducidos por i18n. Node 24 = la
+  # versión con la que se construye el frontend en hall9000. Piso exacto:
+  # medido con `npm ci` limpio fuera de hall9000, 69 tests. Validado
+  # rompiendo un test a propósito y viendo este job en rojo sobre el sha real.
+  # Gate por conteo del reporter JSON (ver el paso), no por texto.
+  frontend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      # El piso se lee del reporter JSON, no de la salida de texto: en el
+      # runner vitest imprime con colores ANSI y un grep sobre el texto
+      # ("Tests 69 passed") no matcheaba con los 69 en verde -- medido en la
+      # primera corrida de este job. El conteo no puede depender del formato.
+      - name: Piso exacto de tests CORRIDOS
+        run: |
+          npx vitest run --reporter=default --reporter=json --outputFile=/tmp/vitest.json
+          node -e '
+            const r = require("/tmp/vitest.json");
+            console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} total=${r.numTotalTests}`);
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 69) {
+              console.error("PISO ROTO: se esperaban 69 tests de vitest CORRIDOS y 0 fallidos.");
+              process.exit(1);
+            }'
+
   no-fail-open-except:
     runs-on: ubuntu-latest
     defaults:
@@ -328,7 +367,13 @@ jobs:
           # Subido de 403 a 415 (2026-09-12, limite de intentos de login por IP y
           # por email): tests/test_login_rate_limit.py agrega 12 (8 puros de
           # auth/rate_limit.py + 4 del endpoint). Medido en la rama: 415 / 1.
-          PISO_PASSED = 415
+          # Subido de 415 a 427 (mismo dia, "termina el login"):
+          # tests/test_login_residuos.py agrega 12 -- 4 puros (email con tope de
+          # RFC, bcrypt que trunca a 72 bytes, un solo proceso) + 8 con `client`
+          # (password larga sin 500, cuenta legada, forgot-password sin DB en el
+          # request, su limite, el procesamiento en segundo plano, y los codigos
+          # de reset). Medido en la rama: 427 / 1.
+          PISO_PASSED = 427
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -548,7 +593,10 @@ jobs:
       # Subido de 209 a 217 (mismo dia): los 8 tests puros de
       # tests/test_login_rate_limit.py corren sin DB; los 4 del endpoint piden
       # `client`. Medido con JAX_CI_NO_DB=1: 217 / 199.
-      JAX_CI_MIN_PASSED: "217"
+      # Subido de 217 a 221 (mismo dia, "termina el login"): los 4 tests puros
+      # de tests/test_login_residuos.py corren sin DB; los 8 con `client` no.
+      # Medido con JAX_CI_NO_DB=1: 221 / 207.
+      JAX_CI_MIN_PASSED: "221"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

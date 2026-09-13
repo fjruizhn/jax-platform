@@ -9,8 +9,17 @@ from .connection import get_pool
 logger = logging.getLogger("db.seed")
 
 
+# bcrypt usa solo los primeros 72 bytes de la contraseña. Hasta bcrypt 4 el
+# resto se ignoraba en silencio; bcrypt 5 (el instalado, medido 2026-09-12)
+# LANZA ValueError -- login y reset-password respondían 500.
+BCRYPT_MAX_BYTES = 72
+
+
 def _hash(plain: str) -> str:
-    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+    datos = plain.encode()
+    if len(datos) > BCRYPT_MAX_BYTES:
+        raise ValueError(f"contraseña de {len(datos)} bytes: bcrypt admite hasta {BCRYPT_MAX_BYTES}")
+    return bcrypt.hashpw(datos, bcrypt.gensalt()).decode()
 
 
 async def verify_password(plain: str, hashed: str) -> bool:
@@ -18,7 +27,10 @@ async def verify_password(plain: str, hashed: str) -> bool:
     # del event loop congela todos los requests mientras dura. Desde que el
     # login verifica también los emails inexistentes (contra un hash de
     # relleno), cada intento lo paga -- va a un hilo.
-    return await asyncio.to_thread(bcrypt.checkpw, plain.encode(), hashed.encode())
+    # Se trunca a 72 bytes: es exactamente lo que hacía el bcrypt viejo, así
+    # que un hash hecho con él a partir de una contraseña larga sigue
+    # verificando, y una contraseña larga no tumba el login.
+    return await asyncio.to_thread(bcrypt.checkpw, plain.encode()[:BCRYPT_MAX_BYTES], hashed.encode())
 
 
 def _resolve_seed_admin_password() -> str:

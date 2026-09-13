@@ -3,6 +3,10 @@ import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { useI18n } from '../i18n/index.jsx'
 import api from '../api/client'
 
+// Límite del algoritmo bcrypt, no configuración: usa solo los primeros 72
+// bytes, y el backend rechaza más (bcrypt 5 lanza error en vez de truncar).
+const BCRYPT_MAX_BYTES = 72
+
 export default function ResetPassword() {
   const { lang, setLang, t } = useI18n()
   const navigate = useNavigate()
@@ -27,10 +31,22 @@ export default function ResetPassword() {
     )
   }
 
+  // El backend responde un código estable (2026-09-12); el texto lo pone i18n.
+  // Antes se mostraba su `detail` tal cual: en español aunque la UI esté en inglés.
+  const MENSAJES_RESET = {
+    reset_token_invalido: t.resetPasswordInvalid,
+    reset_token_usado: t.resetPasswordUsed,
+    reset_token_expirado: t.resetPasswordExpired,
+    reset_password_corta: t.resetPasswordShort,
+    reset_password_larga: t.resetPasswordLong,
+  }
+
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
     if (password.length < 8) { setError(t.resetPasswordShort); return }
+    // bcrypt no admite más de 72 BYTES (no caracteres: una ñ ocupa 2).
+    if (new TextEncoder().encode(password).length > BCRYPT_MAX_BYTES) { setError(t.resetPasswordLong); return }
     if (password !== confirm) { setError(t.resetPasswordMismatch); return }
 
     setSubmitting(true)
@@ -39,8 +55,7 @@ export default function ResetPassword() {
       setSuccess(true)
       setTimeout(() => navigate('/login'), 3000)
     } catch (err) {
-      const detail = err.response?.data?.detail || t.resetPasswordInvalid
-      setError(detail)
+      setError(MENSAJES_RESET[err.response?.data?.detail] || t.resetPasswordInvalid)
     } finally {
       setSubmitting(false)
     }

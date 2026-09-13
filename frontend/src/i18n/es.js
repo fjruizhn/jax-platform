@@ -177,6 +177,9 @@ export default {
   resetPasswordSubmit: 'Cambiar contraseña',
   resetPasswordSubmitting: 'Guardando…',
   resetPasswordInvalid: 'El enlace es inválido o ya fue usado.',
+  resetPasswordUsed: 'Este enlace ya fue usado. Solicitá uno nuevo.',
+  resetPasswordExpired: 'El enlace expiró. Solicitá uno nuevo.',
+  resetPasswordLong: 'La contraseña es demasiado larga (máximo 72 bytes; los acentos ocupan 2).',
 
   // Message
   userLabel: 'Usuario',
