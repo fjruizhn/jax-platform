@@ -378,7 +378,9 @@ jobs:
           # (password larga sin 500, cuenta legada, forgot-password sin DB en el
           # request, su limite, el procesamiento en segundo plano, y los codigos
           # de reset). Medido en la rama: 427 / 1.
-          PISO_PASSED = 427
+          # Subido de 427 a 446 (2026-09-12, administración de usuarios etapa 1,
+          # SMTP desde Admin): 19 puros de test_smtp_config.py. Medido: 446 / 1.
+          PISO_PASSED = 446
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -601,7 +603,11 @@ jobs:
       # Subido de 217 a 221 (mismo dia, "termina el login"): los 4 tests puros
       # de tests/test_login_residuos.py corren sin DB; los 8 con `client` no.
       # Medido con JAX_CI_NO_DB=1: 221 / 207.
-      JAX_CI_MIN_PASSED: "221"
+      # Subido de 221 a 240 (2026-09-12, administración de usuarios etapa 1,
+      # SMTP desde Admin): los 19 tests de tests/test_smtp_config.py son puros
+      # (dominio SMTP con smtplib reemplazado por dobles) y corren sin DB.
+      # Medido con JAX_CI_NO_DB=1: 240 / 207.
+      JAX_CI_MIN_PASSED: "240"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
