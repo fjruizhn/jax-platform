@@ -222,15 +222,31 @@ async def leer_filas() -> dict[str, str]:
 
 
 async def guardar_filas(filas: dict[str, str]) -> None:
+    """Todas las filas en UNA transacción. Con el autocommit del pool, un
+    INSERT por fila dejaba unos ms el host nuevo con la contraseña vieja
+    (smtp.password va última): un envío en esa ventana autenticaba contra el
+    host nuevo con la contraseña vieja (revisión final, 2026-09-13)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            for clave, valor in filas.items():
-                await cur.execute(
-                    "INSERT INTO axioma_config (config_key, config_value) VALUES (%s, %s) "
-                    "ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)",
-                    (clave, valor),
-                )
+        autocommit_previo = conn.get_autocommit()
+        await conn.autocommit(False)
+        confirmado = False
+        try:
+            async with conn.cursor() as cur:
+                for clave, valor in filas.items():
+                    await cur.execute(
+                        "INSERT INTO axioma_config (config_key, config_value) VALUES (%s, %s) "
+                        "ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)",
+                        (clave, valor),
+                    )
+            await conn.commit()
+            confirmado = True
+        finally:
+            # Sin except: el error sigue su camino; acá solo se deshace y se
+            # devuelve la conexión al pool como estaba.
+            if not confirmado:
+                await conn.rollback()
+            await conn.autocommit(autocommit_previo)
 
 
 async def cargar_settings() -> SmtpSettings:
@@ -258,9 +274,16 @@ def _contexto_tls() -> ssl.SSLContext:
 
 
 def _abrir(host: str, port: int, encryption: str, contexto: ssl.SSLContext):
-    if encryption == "ssl":
-        return smtplib.SMTP_SSL(host, port, timeout=TIMEOUT_S, context=contexto)
-    return smtplib.SMTP(host, port, timeout=TIMEOUT_S)
+    try:
+        if encryption == "ssl":
+            return smtplib.SMTP_SSL(host, port, timeout=TIMEOUT_S, context=contexto)
+        return smtplib.SMTP(host, port, timeout=TIMEOUT_S)
+    except UnicodeError as exc:
+        # getaddrinfo codifica el host en IDNA: una etiqueta de más de 63
+        # caracteres o "a..b" lanza UnicodeEncodeError, no OSError (medido
+        # 2026-09-13). Es un host que no se puede resolver: OSError, que es lo
+        # que maneja quien llama -- y no se confunde con el AUTH no ASCII.
+        raise OSError(f"host inválido: {exc}") from exc
 
 
 def enviar(settings: SmtpSettings, mensaje: EmailMessage) -> None:

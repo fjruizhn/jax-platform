@@ -74,7 +74,9 @@ jobs:
   # (admin usuarios etapa 1: AdminSmtp.test.jsx agrega 5); 96 desde el
   # 2026-09-13 (fix wave de la revisión final: AdminSmtp.test.jsx agrega 4 --
   # guardado con recarga fallida, banner corrupto en una frase i18n, aviso de
-  # cifrado "none", códigos nuevos en es y en). Validado
+  # cifrado "none", códigos nuevos en es y en). Fix wave 2 (2026-09-13): sin
+  # cambio en el conteo, 96 medido (solo se amplió la lista de códigos de un
+  # test existente con smtp_usuario_no_ascii). Validado
   # rompiendo un test a propósito y viendo este job en rojo sobre el sha real.
   # Gate por conteo del reporter JSON (ver el paso), no por texto.
   frontend-tests:
@@ -401,7 +403,15 @@ jobs:
           # FERNET_KEY ausente/malformada, /config con mayúsculas) y +2 en
           # test_login_residuos.py (motivo en el log, enlace escapado).
           # Medido en la rama: 527 / 1.
-          PISO_PASSED = 527
+          # Subido de 527 a 544 (2026-09-13, fix wave 2 de la revisión final):
+          # +3 puros en test_smtp_config.py (decrypt_db_secret con clave
+          # malformada, host IDNA inválido en probar_conexion y en enviar) y
+          # +14 con `client` en test_smtp_endpoints.py (5 claves que la
+          # collation iguala a smtp.password, clave normal aceptada, guardado
+          # atómico, autocommit devuelto, usuario no ASCII, GET con clave
+          # malformada, host IDNA en test-connection y /smtp/test, remitente
+          # con caracteres de control x2). Medido en la rama: 544 / 1.
+          PISO_PASSED = 544
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -633,7 +643,10 @@ jobs:
       # test_correo_de_recuperacion_escapa_el_enlace_en_el_html (en
       # test_login_residuos.py) no pide `client`: +21. Los 44 nuevos con
       # `client` se saltean sin DB. Medido con JAX_CI_NO_DB=1: 261 / 267.
-      JAX_CI_MIN_PASSED: "261"
+      # Subido de 261 a 264 (2026-09-13, fix wave 2): los 3 tests nuevos de
+      # tests/test_smtp_config.py son puros; los 14 con `client` se saltean.
+      # Medido con JAX_CI_NO_DB=1: 264 / 281.
+      JAX_CI_MIN_PASSED: "264"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

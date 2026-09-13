@@ -374,3 +374,41 @@ def test_probar_conexion_con_contrasena_no_ascii_da_codigo_estable(monkeypatch):
     with pytest.raises(smtp_config.SmtpPasoFallido) as exc:
         smtp_config.probar_conexion("mail.example.test", 587, "tls", "u", "clavé")
     assert exc.value.codigo == "smtp_password_no_ascii"
+
+
+# ------------------------------- fix wave 2 de la revisión final (2026-09-13)
+
+def test_decrypt_db_secret_con_clave_malformada_es_vacio(monkeypatch):
+    # "Clave malformada" == "sin clave", como dice su docstring: nunca un 500.
+    cifrada = smtp_config.encrypt_secret("x")
+    monkeypatch.setenv("FERNET_KEY", "no-es-una-clave-fernet")
+    assert smtp_config.decrypt_db_secret(cifrada) == ""
+    assert smtp_config.decrypt_db_secret("") == ""
+
+
+def _error_idna(host):
+    try:
+        host.encode("idna")
+    except UnicodeError as exc:
+        return exc
+    raise AssertionError(f"{host!r} codificó bien en IDNA")
+
+
+def test_probar_conexion_con_host_idna_invalido_es_conexion_fallida(monkeypatch):
+    # getaddrinfo codifica el host en IDNA: una etiqueta de >63 caracteres o
+    # "a..b" lanza UnicodeError (no OSError) desde smtplib.SMTP().
+    error = _error_idna("a" * 64 + ".example.test")
+    assert isinstance(error, UnicodeEncodeError)  # la real, medida 2026-09-13
+    monkeypatch.setattr(smtplib, "SMTP", _smtp_falso([], connect_error=error))
+    with pytest.raises(smtp_config.SmtpPasoFallido) as exc:
+        smtp_config.probar_conexion("a" * 64 + ".example.test", 587, "tls", "u", "p")
+    assert exc.value.codigo == "smtp_conexion_fallida"
+
+
+def test_enviar_con_host_idna_invalido_lanza_oserror(monkeypatch):
+    # Quien llama a enviar maneja OSError/SMTPException: el UnicodeError del
+    # host no puede escaparse (en /smtp/test sería un 500).
+    monkeypatch.setattr(smtplib, "SMTP", _smtp_falso([], connect_error=_error_idna("a..b")))
+    s = smtp_config.interpretar(_filas(**{"smtp.host": "a..b"}))
+    with pytest.raises(OSError):
+        smtp_config.enviar(s, smtp_config.construir_mensaje(s, "d@example.test", "a", "t", "<p>h</p>"))

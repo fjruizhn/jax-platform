@@ -71,11 +71,16 @@ def _limitar(limitador: SlidingWindowLimiter, user: AuthUser) -> None:
 def _validar_entrada(req: SmtpConexion) -> None:
     """Lo que Pydantic no ve. Un salto de línea en host/usuario/remitente
     inyecta una línea SMTP o un encabezado (y un remitente así rompía TODOS
-    los correos de recuperación); smtplib codifica el AUTH en ascii, así que
-    una contraseña nueva no ASCII terminaba en 500."""
-    campos = [req.host, req.user] + ([req.from_name] if isinstance(req, SmtpUpdate) else [])
+    los correos de recuperación); smtplib codifica el AUTH (usuario y
+    contraseña) en ascii, así que uno no ASCII terminaba en 500."""
+    campos = [req.host, req.user]
+    if isinstance(req, SmtpUpdate):
+        campos += [req.from_name, req.from_email]
     if any(tiene_caracteres_de_control(c) for c in campos):
         raise HTTPException(status_code=400, detail="smtp_campo_invalido")
+    if not req.user.isascii():
+        # El AUTH lleva el usuario, también codificado en ascii por smtplib.
+        raise HTTPException(status_code=422, detail="smtp_usuario_no_ascii")
     if smtp_config.trae_contrasena_nueva(req.model_dump()) and not req.password.isascii():
         raise HTTPException(status_code=422, detail="smtp_password_no_ascii")
 

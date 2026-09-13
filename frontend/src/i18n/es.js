@@ -471,6 +471,7 @@ export default {
     smtp_auth_no_soportada: 'El servidor no admite autenticación en esa conexión.',
     smtp_reescribir_contrasena_al_cambiar_servidor: 'Cambiaste servidor, puerto, cifrado o usuario: volvé a escribir la contraseña (la guardada no se envía a otro servidor).',
     smtp_password_no_ascii: 'La contraseña solo puede tener caracteres ASCII (sin tildes ni ñ): el protocolo SMTP no admite otros.',
+    smtp_usuario_no_ascii: 'El usuario solo puede tener caracteres ASCII (sin tildes ni ñ): el protocolo SMTP no admite otros.',
     smtp_campo_invalido: 'Servidor, usuario o nombre del remitente tienen caracteres no permitidos (saltos de línea o de control).',
   },
 

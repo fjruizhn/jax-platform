@@ -76,9 +76,16 @@ def decrypt_db_secret(value: str) -> str:
     user_api_keys, escrito únicamente por encrypt_secret). A diferencia de
     decrypt_secret, no hay caso legacy en texto plano que tolerar — un
     fallo real (ej. rotación de FERNET_KEY) debe tratarse como "sin key",
-    no devolver el ciphertext crudo como si fuera la key."""
-    fernet = _get_fernet()
-    if not fernet or not value:
+    no devolver el ciphertext crudo como si fuera la key. Una FERNET_KEY
+    malformada también es "sin key" (2026-09-13): antes Fernet() lanzaba
+    ValueError y GET /api/admin/smtp respondía 500."""
+    if not value:
+        return ""
+    try:
+        fernet = _get_fernet()
+    except ValueError:  # fail-soft: FERNET_KEY malformada == sin key; quien llama ya trata "" como "no hay secreto utilizable"
+        return ""
+    if not fernet:
         return ""
     try:
         return fernet.decrypt(value.encode()).decode()

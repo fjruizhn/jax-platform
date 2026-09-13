@@ -112,7 +112,7 @@ describe('AdminSmtp', () => {
   })
 
   it('los códigos nuevos del backend tienen texto en es y en', () => {
-    const nuevos = ['smtp_reescribir_contrasena_al_cambiar_servidor', 'smtp_password_no_ascii', 'smtp_campo_invalido']
+    const nuevos = ['smtp_reescribir_contrasena_al_cambiar_servidor', 'smtp_password_no_ascii', 'smtp_campo_invalido', 'smtp_usuario_no_ascii']
     for (const t of [es, en]) {
       for (const code of nuevos) expect(typeof t.smtpErrors[code]).toBe('string')
       expect(typeof t.smtpReloadFailed).toBe('string')

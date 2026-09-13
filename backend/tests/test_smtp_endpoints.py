@@ -367,3 +367,121 @@ def test_config_generico_no_lista_smtp_con_mayusculas(client):
     client.portal.call(_sql, "INSERT INTO axioma_config (config_key, config_value) VALUES ('SMTP.Otra', 'x')")
     claves = [i["key"] for i in client.get("/api/admin/config", headers=_admin()).json()["config"]]
     assert claves and not [c for c in claves if c.lower().startswith("smtp.")]
+
+
+
+# ------------------------------ fix wave 2 de la revisión final (2026-09-13)
+
+# Claves que la collation de config_key (utf8mb4_uca1400_ai_ci: insensible a
+# acentos, ancho y caracteres ignorables) considera IGUALES a smtp.password.
+# Medido contra jax_memory_test el 2026-09-13: todas pasaban strip().lower().
+CLAVES_EQUIVALENTES = ["\u015bmtp.password", "\uff33\uff2d\uff34\uff30.password",
+                       "\u200bsmtp.password", "\u017fmtp.password", "\uff53\uff4d\uff54\uff50\uff0epassword"]
+
+
+@pytest.mark.parametrize("clave", CLAVES_EQUIVALENTES)
+def test_config_generico_rechaza_claves_que_la_collation_iguala_a_smtp(client, clave):
+    assert _guardar(client).status_code == 200
+    antes = client.portal.call(_filas_smtp)
+    r = client.put("/api/admin/config", json=[{"key": "system_name", "value": "Axioma"},
+                                               {"key": clave, "value": "en-claro"}], headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (400, "config_clave_reservada")
+    assert client.portal.call(_filas_smtp) == antes
+
+
+def test_config_generico_sigue_aceptando_claves_normales(client):
+    r = client.put("/api/admin/config", json=[{"key": "system_name", "value": "Axioma"}], headers=_admin())
+    assert r.status_code == 200, r.text
+
+
+def test_guardar_filas_es_atomico(client, monkeypatch):
+    # Con autocommit, un INSERT por fila dejaba unos ms el host nuevo con la
+    # contraseña vieja (smtp.password se escribe última): un envío en esa
+    # ventana autenticaba contra el host nuevo con la contraseña vieja.
+    assert _guardar(client).status_code == 200
+    antes = client.portal.call(_filas_smtp)
+    import aiomysql
+
+    original = aiomysql.Cursor.execute
+
+    async def falla_en_la_contrasena(self, query, args=None):
+        if args and args[0] == smtp_config.CLAVE_SECRETA:
+            raise aiomysql.OperationalError(2013, "Lost connection (simulada)")
+        return await original(self, query, args)
+
+    monkeypatch.setattr(aiomysql.Cursor, "execute", falla_en_la_contrasena)
+    with pytest.raises(aiomysql.OperationalError):
+        client.portal.call(smtp_config.guardar_filas, smtp_config.filas_a_guardar(
+            antes, _config(host="nuevo.example.test", password="otra-clave")))
+    monkeypatch.setattr(aiomysql.Cursor, "execute", original)
+    assert client.portal.call(_filas_smtp) == antes
+
+
+def test_guardar_filas_devuelve_la_conexion_en_autocommit(client):
+    assert _guardar(client).status_code == 200
+
+    async def autocommit_de_una_conexion():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return conn.get_autocommit()
+
+    # pool de minsize 1 en tests: la conexión que usó guardar_filas vuelve al pool.
+    assert client.portal.call(autocommit_de_una_conexion) is True
+
+
+def test_usuario_no_ascii_es_422_al_guardar_y_al_probar(client, monkeypatch):
+    vistos = []
+    monkeypatch.setattr(smtp_config, "probar_conexion", lambda *a: vistos.append(a))
+    r = _guardar(client, user="usuário@example.test")
+    assert (r.status_code, r.json()["detail"]) == (422, "smtp_usuario_no_ascii")
+    assert client.portal.call(_filas_smtp) == {}
+    r = client.post("/api/admin/smtp/test-connection", json=_conexion(user="usuário"), headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (422, "smtp_usuario_no_ascii")
+    assert vistos == []
+
+
+@pytest.mark.parametrize("fernet_key", ["no-es-una-clave-fernet"])
+def test_ver_smtp_con_clave_malformada_no_es_500(client, monkeypatch, fernet_key):
+    monkeypatch.setenv("FERNET_KEY", fernet_key)
+    r = client.get("/api/admin/smtp", headers=_admin())
+    assert r.status_code == 200, r.text
+    assert (r.json()["configurado"], r.json()["password"]) == (False, "")
+    monkeypatch.setenv("FERNET_KEY", Fernet.generate_key().decode())
+    assert _guardar(client).status_code == 200
+    monkeypatch.setenv("FERNET_KEY", fernet_key)
+    cuerpo = client.get("/api/admin/smtp", headers=_admin()).json()
+    assert (cuerpo["corrupta"], cuerpo["motivo"], cuerpo["password"]) == (True, "password_ilegible", "")
+
+
+def _smtp_idna_invalido(host, *a, **k):
+    # Lo que hace getaddrinfo dentro de smtplib.SMTP(): codificar el host en
+    # IDNA. Lanza UnicodeEncodeError (medido 2026-09-13), la misma clase que
+    # /smtp/test mapeaba a smtp_password_no_ascii.
+    host.encode("idna")
+    raise AssertionError("se esperaba un host IDNA inválido")
+
+
+def test_probar_conexion_con_host_idna_invalido_no_es_500(client, monkeypatch):
+    import smtplib
+    monkeypatch.setattr(smtplib, "SMTP", _smtp_idna_invalido)
+    r = client.post("/api/admin/smtp/test-connection",
+                    json=_conexion(host="a" * 64 + ".example.test", password="nueva"), headers=_admin())
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "smtp_conexion_fallida"
+
+
+def test_prueba_con_host_idna_invalido_no_es_500(client, monkeypatch):
+    import smtplib
+    assert _guardar(client, host="a..b").status_code == 200
+    monkeypatch.setattr(smtplib, "SMTP", _smtp_idna_invalido)
+    r = client.post("/api/admin/smtp/test", headers=_admin())
+    assert r.status_code == 502, r.text
+    assert r.json()["detail"]["code"] == "smtp_envio_fallido"
+
+
+@pytest.mark.parametrize("malo", ["no-reply@example.test\x00", "no-reply@example.test\x7f"])
+def test_remitente_con_caracteres_de_control_es_400(client, malo):
+    r = _guardar(client, from_email=malo)
+    assert (r.status_code, r.json()["detail"]) == (400, "smtp_campo_invalido")
+    assert client.portal.call(_filas_smtp) == {}
