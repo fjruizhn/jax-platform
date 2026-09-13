@@ -485,3 +485,18 @@ def test_remitente_con_caracteres_de_control_es_400(client, malo):
     r = _guardar(client, from_email=malo)
     assert (r.status_code, r.json()["detail"]) == (400, "smtp_campo_invalido")
     assert client.portal.call(_filas_smtp) == {}
+
+
+# ------------------------------------------- item G (2026-09-13)
+
+def test_config_generico_no_lista_claves_legadas_que_la_collation_iguala_a_smtp(client):
+    # Una fila escrita ANTES del fix del PUT con un ignorable delante:
+    # NOT LIKE 'smtp.%' compara carácter a carácter y la dejaba pasar (medido).
+    clave = "​smtp.password-legado"
+    client.portal.call(_sql, "INSERT INTO axioma_config (config_key, config_value) VALUES (%s, 'x')", (clave,))
+    try:
+        claves = [i["key"] for i in client.get("/api/admin/config", headers=_admin()).json()["config"]]
+        assert claves and "system_name" in claves
+        assert clave not in claves
+    finally:
+        client.portal.call(_sql, "DELETE FROM axioma_config WHERE config_key = %s", (clave,))

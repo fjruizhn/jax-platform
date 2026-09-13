@@ -413,7 +413,11 @@ jobs:
           # atómico, autocommit devuelto, usuario no ASCII, GET con clave
           # malformada, host IDNA en test-connection y /smtp/test, remitente
           # con caracteres de control x2). Medido en la rama: 544 / 1.
-          PISO_PASSED = 544
+          # Subido de 544 a 545 (2026-09-13, item G): el GET de /api/admin/config
+          # excluye smtp.* con la misma regla de la base que el PUT;
+          # test_config_generico_no_lista_claves_legadas_que_la_collation_iguala_a_smtp
+          # (con `client`, sin cambio en el piso sin DB). Medido en la rama: 545 / 1.
+          PISO_PASSED = 545
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
