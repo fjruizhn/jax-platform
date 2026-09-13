@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 
@@ -10,7 +10,10 @@ class TokenPayload(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: str
+    # 254 = máximo de RFC 5321 (2026-09-12). Sin tope, cada email distinto --
+    # nginx acepta cuerpos de 50 MB -- quedaba como clave del limitador de
+    # login hasta que el LRU la expulsaba: memoria que decide el atacante.
+    email: str = Field(max_length=254)
     password: str
 
 

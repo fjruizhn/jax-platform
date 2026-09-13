@@ -9,7 +9,10 @@ aplica ANTES de la DB y ANTES del bcrypt: lo que se protege es el bcrypt.
 En memoria, sin Redis: jax-platform corre UN proceso uvicorn (sin --workers,
 medido en el ExecStart de la unidad). Si algún día corre varios, cada uno
 tendría su propio contador y el límite efectivo se multiplicaría -- ahí sí
-haría falta un almacén compartido.
+haría falta un almacén compartido. Ese supuesto se HACE CUMPLIR al importar
+(exigir_un_solo_proceso, 2026-09-12): uvicorn 0.51 toma `--workers` de
+WEB_CONCURRENCY, así que bastaba una línea en /etc/jax/.env para romperlo en
+silencio. Con más de un worker el servicio no arranca.
 
 LA IP DEL CLIENTE. El público entra por nginx en la VM dev, que fija
 `X-Real-IP $remote_addr` (sobrescribe lo que mande el cliente). Sin mirar ese
@@ -40,12 +43,36 @@ from __future__ import annotations
 import logging
 import math
 import os
+import sys
 import time
 from collections import OrderedDict, deque
+from typing import Mapping, Sequence
 
 from fastapi import HTTPException, Request, status
 
 logger = logging.getLogger(__name__)
+
+
+def exigir_un_solo_proceso(env: Mapping[str, str], argv: Sequence[str]) -> None:
+    """Falla si uvicorn va a correr más de un worker: con varios, cada uno
+    tendría su propio contador y el límite se multiplicaría sin que nada lo
+    avise. Mira las dos formas en que uvicorn los recibe: `--workers` en la
+    línea de comandos (gana) y WEB_CONCURRENCY (su default)."""
+    workers = env.get("WEB_CONCURRENCY")
+    for i, arg in enumerate(argv):
+        if arg == "--workers" and i + 1 < len(argv):
+            workers = argv[i + 1]
+        elif arg.startswith("--workers="):
+            workers = arg.split("=", 1)[1]
+    if workers is not None and workers.strip() and int(workers) > 1:
+        raise RuntimeError(
+            f"{workers} workers de uvicorn: el límite de login vive en memoria de UN "
+            "proceso y se multiplicaría. Correr un solo worker, o pasar el limitador "
+            "a un almacén compartido antes de subirlos (auth/rate_limit.py)."
+        )
+
+
+exigir_un_solo_proceso(os.environ, sys.argv)
 
 DEMASIADOS_INTENTOS = "Demasiados intentos. Espera y vuelve a intentarlo."
 

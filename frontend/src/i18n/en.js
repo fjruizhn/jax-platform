@@ -174,6 +174,9 @@ export default {
   resetPasswordSubmit: 'Change password',
   resetPasswordSubmitting: 'Saving…',
   resetPasswordInvalid: 'The link is invalid or has already been used.',
+  resetPasswordUsed: 'This link has already been used. Request a new one.',
+  resetPasswordExpired: 'The link has expired. Request a new one.',
+  resetPasswordLong: 'The password is too long (maximum 72 bytes; accented letters take 2).',
 
   // Message
   userLabel: 'User',
