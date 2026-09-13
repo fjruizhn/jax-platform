@@ -1,22 +1,14 @@
-import { useEffect } from 'react'
-import { Link } from 'react-router-dom'
-import { useJaxStore } from '../store/useJaxStore'
 import { useWebSocket } from '../store/useWebSocket'
-import { useTheme } from '../store/useTheme'
-import { useI18n } from '../i18n/index.jsx'
 import LeftPanel from '../components/LeftPanel/LeftPanel'
 import CenterPanel from '../components/CenterPanel/CenterPanel'
 import RightPanel from '../components/RightPanel/RightPanel'
 import BottomBar from '../components/BottomBar/BottomBar'
 import Toast from '../components/Notifications/Toast'
 import LogoAxioma from '../components/LogoAxioma'
+import BarraUsuario from '../components/BarraUsuario'
 
 export default function Dashboard() {
   useWebSocket()
-  const user = useJaxStore((s) => s.user)
-  const logout = useJaxStore((s) => s.logout)
-  const { theme, toggleTheme } = useTheme()
-  const { lang, setLang, t } = useI18n()
 
   return (
     <div className="flex flex-col h-dvh bg-hal-bg text-hal-text overflow-hidden">
@@ -24,50 +16,8 @@ export default function Dashboard() {
       <div className="flex-shrink-0 flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-700">
         <div className="flex items-center gap-3">
           <LogoAxioma />
-          {user?.role === 'superadmin' && (
-            <Link
-              to="/admin"
-              className="text-xs text-purple-400 hover:text-purple-300 transition-colors font-semibold"
-            >
-              {t.adminNav}
-            </Link>
-          )}
         </div>
-        <div className="flex items-center gap-3">
-          {/* Language selector */}
-          <div className="flex gap-1">
-            {['es', 'en'].map((l) => (
-              <button
-                key={l}
-                onClick={() => setLang(l)}
-                className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${
-                  lang === l
-                    ? 'bg-blue-600 text-white'
-                    : 'text-slate-500 hover:text-slate-300'
-                }`}
-              >
-                {l}
-              </button>
-            ))}
-          </div>
-
-          {/* Theme toggle */}
-          <button
-            onClick={toggleTheme}
-            title={theme === 'dark' ? t.lightMode : t.darkMode}
-            className="text-slate-500 hover:text-slate-300 transition-colors text-base leading-none"
-          >
-            {theme === 'dark' ? '☀' : '☾'}
-          </button>
-
-          <span className="text-xs text-slate-500">{user?.email}</span>
-          <button
-            onClick={logout}
-            className="text-xs text-slate-600 hover:text-slate-400 transition-colors"
-          >
-            {t.logout}
-          </button>
-        </div>
+        <BarraUsuario />
       </div>
 
       {/* Main layout: 3 paneles */}

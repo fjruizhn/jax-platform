@@ -190,6 +190,8 @@ export default {
   // Theme / language
   lightMode: 'Modo claro',
   darkMode: 'Modo oscuro',
+  switchLanguage: (idioma) => `Cambiar idioma a ${idioma}`,
+  adminPanel: 'Administración',
 
   // File attachments
   attachFile: 'Adjuntar archivo',
