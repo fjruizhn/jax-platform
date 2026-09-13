@@ -65,7 +65,9 @@ jobs:
   # login: Login.test.jsx y ResetPassword.test.jsx fijan el 429 de la
   # recuperación y los códigos de reset traducidos por i18n. Node 24 = la
   # versión con la que se construye el frontend en hall9000. Piso exacto:
-  # medido con `npm ci` limpio fuera de hall9000, 69 tests. Validado
+  # medido con `npm ci` limpio fuera de hall9000, 69 tests; 73 desde el
+  # PasswordInput (+4: ojito que muestra/oculta, no envía el form, cada caja
+  # independiente, props al input). Validado
   # rompiendo un test a propósito y viendo este job en rojo sobre el sha real.
   # Gate por conteo del reporter JSON (ver el paso), no por texto.
   frontend-tests:
@@ -91,8 +93,8 @@ jobs:
           node -e '
             const r = require("/tmp/vitest.json");
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} total=${r.numTotalTests}`);
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 69) {
-              console.error("PISO ROTO: se esperaban 69 tests de vitest CORRIDOS y 0 fallidos.");
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 73) {
+              console.error("PISO ROTO: se esperaban 73 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

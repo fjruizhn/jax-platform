@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
+import PasswordInput from '../../components/PasswordInput'
 
 const ROLES = ['superadmin', 'operator', 'viewer']
 
@@ -154,8 +155,7 @@ export default function AdminUsers() {
               >
                 {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
-              <input
-                type="password"
+              <PasswordInput
                 placeholder={t.adminCreatePassword}
                 value={form.password}
                 onChange={e => setForm(f => ({ ...f, password: e.target.value }))}

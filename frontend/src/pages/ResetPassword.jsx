@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { useI18n } from '../i18n/index.jsx'
 import api from '../api/client'
+import PasswordInput from '../components/PasswordInput'
 
 // Límite del algoritmo bcrypt, no configuración: usa solo los primeros 72
 // bytes, y el backend rechaza más (bcrypt 5 lanza error en vez de truncar).
@@ -15,7 +16,6 @@ export default function ResetPassword() {
 
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
-  const [showPwd, setShowPwd] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -87,28 +87,20 @@ export default function ResetPassword() {
                 <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider">
                   {t.resetPasswordLabel}
                 </label>
-                <div className="relative">
-                  <input
-                    type={showPwd ? 'text' : 'password'}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 pr-10 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
-                    required
-                    autoFocus
-                  />
-                  <button type="button" onClick={() => setShowPwd(v => !v)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
-                    {showPwd ? '👁' : '👁‍🗨'}
-                  </button>
-                </div>
+                <PasswordInput
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+                  required
+                  autoFocus
+                />
               </div>
 
               <div>
                 <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider">
                   {t.resetPasswordConfirm}
                 </label>
-                <input
-                  type={showPwd ? 'text' : 'password'}
+                <PasswordInput
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"

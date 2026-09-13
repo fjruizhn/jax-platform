@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom'
 import { useJaxStore } from '../store/useJaxStore'
 import { useI18n } from '../i18n/index.jsx'
 import api from '../api/client'
+import PasswordInput from '../components/PasswordInput'
 
 export default function Login() {
   const login = useJaxStore((s) => s.login)
@@ -10,7 +11,6 @@ export default function Login() {
   const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [showPwd, setShowPwd] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -178,32 +178,13 @@ export default function Login() {
             <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider">
               {t.passwordLabel}
             </label>
-            <div className="relative">
-              <input
-                type={showPwd ? 'text' : 'password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 pr-10 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
-                placeholder="••••••••"
-                required
-              />
-              <button
-                type="button"
-                onClick={() => setShowPwd(v => !v)}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
-                title={showPwd ? t.hidePassword : t.showPassword}
-              >
-                {showPwd ? (
-                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M10 3C5 3 1.73 7.11 1 10c.73 2.89 4 7 9 7s8.27-4.11 9-7c-.73-2.89-4-7-9-7zm0 12a5 5 0 110-10 5 5 0 010 10zm0-8a3 3 0 100 6 3 3 0 000-6z" />
-                  </svg>
-                ) : (
-                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M3.28 2.22a.75.75 0 00-1.06 1.06l14.5 14.5a.75.75 0 101.06-1.06l-1.745-1.745a11.806 11.806 0 002.908-3.97C17.547 8.383 14.476 5 10 5a10.966 10.966 0 00-4.31.858L3.28 2.22zM5.94 7.16l1.39 1.39a3 3 0 004.12 4.12l1.39 1.39A5 5 0 015.94 7.16zM10 15c-1.42 0-2.737-.37-3.874-1.02l1.568-1.567A3 3 0 0010 13a3 3 0 003-3 3 3 0 00-.413-1.507l1.568-1.567A8.03 8.03 0 0118 10c-.973 2.6-4.027 5-8 5z" clipRule="evenodd" />
-                  </svg>
-                )}
-              </button>
-            </div>
+            <PasswordInput
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+              placeholder="••••••••"
+              required
+            />
           </div>
 
           {error && (
