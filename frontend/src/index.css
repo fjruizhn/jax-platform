@@ -61,6 +61,7 @@ html.light-mode .border-slate-800 { border-color: #e2e8f0; }
 
 /* Text */
 html.light-mode .text-hal-text { color: #0f172a; }
+html.light-mode .text-slate-100 { color: #0f172a; }
 html.light-mode .text-slate-200 { color: #1e293b; }
 html.light-mode .text-slate-300 { color: #334155; }
 html.light-mode .text-slate-400 { color: #475569; }

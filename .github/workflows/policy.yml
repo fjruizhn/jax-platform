@@ -70,7 +70,8 @@ jobs:
   # independiente, props al input); 79 desde el ojo HAL en la esquina y la
   # caja que crece (+4 alturaInput, +2 ubicación del ojo); 82 desde el
   # logotipo de texto Axioma (+3: marca y lema en es, lema en en, punto decorativo);
-  # 87 desde la barra de usuario con íconos (+5). Validado
+  # 87 desde la barra de usuario con íconos (+5); 92 desde el 2026-09-12
+  # (admin usuarios etapa 1: AdminSmtp.test.jsx agrega 5). Validado
   # rompiendo un test a propósito y viendo este job en rojo sobre el sha real.
   # Gate por conteo del reporter JSON (ver el paso), no por texto.
   frontend-tests:
@@ -96,8 +97,8 @@ jobs:
           node -e '
             const r = require("/tmp/vitest.json");
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} total=${r.numTotalTests}`);
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 87) {
-              console.error("PISO ROTO: se esperaban 87 tests de vitest CORRIDOS y 0 fallidos.");
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 92) {
+              console.error("PISO ROTO: se esperaban 92 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
