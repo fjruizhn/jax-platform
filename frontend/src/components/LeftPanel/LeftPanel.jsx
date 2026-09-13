@@ -2,6 +2,7 @@ import { memo } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 import FacetCard from './FacetCard'
+import HalEye from '../HalEye/HalEye'
 
 const FACET_ORDER = ['jax_local', 'jekyll', 'hyde', 'hipatia', 'thot', 'kimi', 'ada']
 
@@ -13,6 +14,16 @@ function LeftPanel() {
 
   return (
     <div className="flex flex-col h-full bg-slate-900 border-r border-slate-700">
+      {/* Ojo HAL en la esquina (2026-09-12, pedido de Fernando): antes ocupaba
+          ~270 px arriba del centro; ahí el centro queda para la conversación.
+          `relative`: la etiqueta de estado del ojo se posiciona contra esto. */}
+      <div className="flex-shrink-0 flex flex-col items-center justify-center py-4 relative border-b border-slate-700">
+        <HalEye size={150} />
+        <div className="mt-1 text-xs font-mono text-slate-600 tracking-widest uppercase">
+          {t.platformLabel}
+        </div>
+      </div>
+
       <div className="px-4 py-3 border-b border-slate-700">
         <h2 className="text-xs font-bold uppercase tracking-widest text-slate-400">
           {t.facets}

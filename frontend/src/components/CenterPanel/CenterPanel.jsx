@@ -1,7 +1,6 @@
 import { memo, useRef, useEffect } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
-import HalEye from '../HalEye/HalEye'
 import Message from './Message'
 
 function CenterPanel() {
@@ -15,15 +14,8 @@ function CenterPanel() {
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-hal-bg">
-      {/* Ojo HAL */}
-      <div className="flex-shrink-0 flex flex-col items-center justify-center py-6 relative">
-        <HalEye size={200} />
-        <div className="mt-2 text-xs font-mono text-slate-600 tracking-widest uppercase">
-          {t.platformLabel}
-        </div>
-      </div>
-
-      {/* Conversación */}
+      {/* Conversación: todo el alto del centro. El ojo HAL vive en el panel
+          izquierdo desde el 2026-09-12. */}
       <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-4">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-slate-700 text-sm">
