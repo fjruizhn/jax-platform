@@ -40,7 +40,7 @@ describe('ResetPassword', () => {
     api.post.mockRejectedValue({ response: { status: 400, data: { detail: 'reset_token_expirado' } } })
     const { container } = renderReset()
     enviar(container, 'una-clave-valida')
-    await waitFor(() => expect(screen.getByText(/El enlace expiró/i)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/CANARIO-TEXTO-QUE-NO-EXISTE/i)).toBeInTheDocument())
     expect(screen.queryByText('reset_token_expirado')).not.toBeInTheDocument()
   })
 
