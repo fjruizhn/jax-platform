@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -18,6 +18,7 @@ const GUARDADA = {
   host: 'mail.axioma-ia.io', port: 587, encryption: 'tls', user: 'no-reply@axioma-ia.io',
   password: MASCARA, from_name: 'Axioma', from_email: 'no-reply@axioma-ia.io',
   configurado: true, corrupta: false, motivo: null,
+  test_to: '', email_sesion: 'fernando@rich-hn.com',
 }
 
 function renderSmtp() {
@@ -76,9 +77,12 @@ describe('AdminSmtp', () => {
     renderSmtp()
     await screen.findByDisplayValue('mail.axioma-ia.io')
     fireEvent.click(screen.getByRole('button', { name: 'Enviar correo de prueba' }))
-    expect(await screen.findByText('El correo saliente no está configurado.')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Enviar correo de prueba' }))
+    const dialogo = await screen.findByRole('dialog')
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.smtpTestSendButton }))
+    expect(await within(dialogo).findByText('El correo saliente no está configurado.')).toBeInTheDocument()
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.smtpTestSendButton }))
     expect(await screen.findByText('Correo de prueba enviado a fernando@rich-hn.com.')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   // ---------------- fix wave de la revisión final (2026-09-13)
@@ -122,5 +126,146 @@ describe('AdminSmtp', () => {
     // smtp_campo_invalido también salta por el correo del remitente (item H).
     expect(es.smtpErrors.smtp_campo_invalido).toMatch(/correo del remitente/)
     expect(en.smtpErrors.smtp_campo_invalido).toMatch(/sender email/)
+  })
+
+  // ------- puerto por cifrado y destinatario de la prueba (2026-09-13)
+
+  it('cambiar el cifrado pone el puerto de ese cifrado: none 25, tls 587, ssl 465', async () => {
+    api.get.mockResolvedValue({ data: GUARDADA })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    const puerto = screen.getByLabelText(es.smtpPort)
+    for (const [cifrado, esperado] of [['none', 25], ['ssl', 465], ['tls', 587]]) {
+      fireEvent.change(screen.getByLabelText(es.smtpEncryption), { target: { value: cifrado } })
+      expect(puerto).toHaveValue(esperado)
+    }
+  })
+
+  it('un puerto personalizado se conserva hasta que se cambia el cifrado', async () => {
+    api.get.mockResolvedValue({ data: GUARDADA })
+    api.put.mockResolvedValue({ data: { ok: true } })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    const puerto = screen.getByLabelText(es.smtpPort)
+    fireEvent.change(puerto, { target: { value: '2525' } })
+    fireEvent.change(screen.getByLabelText(es.smtpUser), { target: { value: 'otro@axioma-ia.io' } })
+    expect(puerto).toHaveValue(2525)
+    fireEvent.change(screen.getByLabelText(es.smtpEncryption), { target: { value: 'ssl' } })
+    expect(puerto).toHaveValue(465)
+    fireEvent.change(puerto, { target: { value: '8465' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar' }))
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/smtp', expect.objectContaining({ port: 8465, encryption: 'ssl' })))
+  })
+
+  it('al cargar no toca el puerto guardado (2525 con STARTTLS se ve 2525)', async () => {
+    api.get.mockResolvedValue({ data: { ...GUARDADA, port: 2525, encryption: 'tls' } })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    expect(screen.getByLabelText(es.smtpPort)).toHaveValue(2525)
+  })
+
+  it('el destinatario por defecto es opcional y se guarda con Guardar', async () => {
+    api.get.mockResolvedValue({ data: { ...GUARDADA, test_to: 'pruebas@rich-hn.com' } })
+    api.put.mockResolvedValue({ data: { ok: true } })
+    renderSmtp()
+    const campo = await screen.findByLabelText(es.smtpTestToDefault)
+    expect(campo).toHaveValue('pruebas@rich-hn.com')
+    expect(campo).toHaveAttribute('type', 'email')
+    expect(campo).not.toBeRequired()
+    expect(screen.getByText(es.smtpTestToHint)).toBeInTheDocument()
+    fireEvent.change(campo, { target: { value: 'otro@rich-hn.com' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar' }))
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/smtp', expect.objectContaining({ test_to: 'otro@rich-hn.com' })))
+  })
+
+  it('el botón abre un diálogo prellenado con el destinatario por defecto', async () => {
+    api.get.mockResolvedValue({ data: { ...GUARDADA, test_to: 'pruebas@rich-hn.com' } })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: es.smtpSendTest }))
+    const dialogo = await screen.findByRole('dialog')
+    expect(dialogo).toHaveAttribute('aria-modal', 'true')
+    expect(dialogo).toHaveAccessibleName(es.smtpTestModalTitle)
+    expect(within(dialogo).getByLabelText(es.smtpTestRecipient)).toHaveValue('pruebas@rich-hn.com')
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('sin destinatario por defecto, el diálogo se prellena con el correo de la sesión', async () => {
+    api.get.mockResolvedValue({ data: GUARDADA })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: es.smtpSendTest }))
+    const dialogo = await screen.findByRole('dialog')
+    expect(within(dialogo).getByLabelText(es.smtpTestRecipient)).toHaveValue('fernando@rich-hn.com')
+  })
+
+  it('Enviar manda el destinatario escrito y, con éxito, cierra y dice a quién', async () => {
+    api.get.mockResolvedValue({ data: GUARDADA })
+    api.post.mockResolvedValue({ data: { ok: true, to: 'otra@rich-hn.com' } })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: es.smtpSendTest }))
+    const dialogo = await screen.findByRole('dialog')
+    fireEvent.change(within(dialogo).getByLabelText(es.smtpTestRecipient), { target: { value: 'otra@rich-hn.com' } })
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.smtpTestSendButton }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/smtp/test', { to: 'otra@rich-hn.com' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('status')).toHaveTextContent(es.smtpTestSent('otra@rich-hn.com'))
+  })
+
+  it('un error se muestra DENTRO del diálogo, que sigue abierto con el destinatario', async () => {
+    api.get.mockResolvedValue({ data: GUARDADA })
+    api.post.mockRejectedValue({ response: { status: 502, data: { detail: { code: 'smtp_envio_fallido', server: '550 5.1.1 User unknown' } } } })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: es.smtpSendTest }))
+    const dialogo = await screen.findByRole('dialog')
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.smtpTestSendButton }))
+    const alerta = await within(dialogo).findByRole('alert')
+    expect(alerta).toHaveTextContent(es.smtpErrors.smtp_envio_fallido)
+    expect(alerta).toHaveTextContent(es.smtpServerSaid('550 5.1.1 User unknown'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(within(dialogo).getByLabelText(es.smtpTestRecipient)).toHaveValue('fernando@rich-hn.com')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('Cancelar y Escape cierran el diálogo sin enviar', async () => {
+    api.get.mockResolvedValue({ data: GUARDADA })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: es.smtpSendTest }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: es.smtpCancel }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: es.smtpSendTest }))
+    fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('los textos nuevos del destinatario tienen es y en', () => {
+    for (const t of [es, en]) {
+      for (const k of ['smtpTestToDefault', 'smtpTestToHint', 'smtpTestModalTitle', 'smtpTestRecipient', 'smtpTestSendButton', 'smtpCancel']) {
+        expect(typeof t[k]).toBe('string')
+      }
+      expect(typeof t.smtpErrors.smtp_destinatario_invalido).toBe('string')
+    }
+  })
+
+  it('al cerrar el diálogo (Cancelar, Escape o envío exitoso) el foco vuelve al botón que lo abrió', async () => {
+    api.get.mockResolvedValue({ data: GUARDADA })
+    api.post.mockResolvedValue({ data: { ok: true, to: 'fernando@rich-hn.com' } })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    const disparador = screen.getByRole('button', { name: es.smtpSendTest })
+    fireEvent.click(disparador)
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: es.smtpCancel }))
+    expect(disparador).toHaveFocus()
+    fireEvent.click(disparador)
+    fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Escape' })
+    expect(disparador).toHaveFocus()
+    fireEvent.click(disparador)
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: es.smtpTestSendButton }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(disparador).toHaveFocus())
   })
 })

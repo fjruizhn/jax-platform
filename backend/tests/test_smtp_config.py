@@ -424,3 +424,93 @@ def test_decrypt_db_secret_con_clave_malformada_avisa_en_el_log(monkeypatch, cap
     avisos = [r.getMessage() for r in caplog.records if r.name == "crypto_secrets"]
     assert avisos and "FERNET_KEY" in avisos[0]
     assert not [m for m in avisos if "no-es-una-clave-fernet" in m or cifrada in m]
+
+
+# ------------------- destinatario de la prueba (2026-09-13, decisión de Fernando)
+
+def test_destino_de_prueba_ausente_o_invalido_no_corrompe_el_envio():
+    # smtp.test_to es opcional: su ausencia nunca vuelve corrupta la config, y
+    # guardada inválida solo afecta al default de la prueba, no al envío.
+    assert smtp_config.CLAVE_DESTINO_PRUEBA not in smtp_config.CLAVES
+    assert smtp_config.CLAVE_DESTINO_PRUEBA in smtp_config.CLAVES_OPCIONALES
+    assert smtp_config.motivo_de_corrupcion(_filas()) is None
+    rota = _filas(**{"smtp.test_to": "basura\r\nBcc: x@y.io"})
+    assert smtp_config.motivo_de_corrupcion(rota) is None
+    assert smtp_config.interpretar(rota).host == "mail.example.test"
+
+
+def test_pantalla_expone_test_to():
+    assert smtp_config.estado_para_pantalla({})["test_to"] == ""
+    assert smtp_config.estado_para_pantalla(_filas())["test_to"] == ""
+    estado = smtp_config.estado_para_pantalla(_filas(**{"smtp.test_to": "prueba@example.test"}))
+    assert estado["test_to"] == "prueba@example.test"
+
+
+@pytest.mark.parametrize("valor,guardado", [(" prueba@example.test ", "prueba@example.test"),
+                                            ("", ""), ("   ", ""), (None, "")])
+def test_filas_a_guardar_con_test_to(valor, guardado):
+    filas = smtp_config.filas_a_guardar(_filas(), _datos(password="nueva", test_to=valor))
+    assert filas[smtp_config.CLAVE_DESTINO_PRUEBA] == guardado
+
+
+def test_filas_a_guardar_sin_test_to_no_toca_la_fila():
+    filas = smtp_config.filas_a_guardar(_filas(), _datos(password="nueva"))
+    assert smtp_config.CLAVE_DESTINO_PRUEBA not in filas
+
+
+@pytest.mark.parametrize("malo", ["no-es-un-correo", "a@example.test\r\nBcc: x@y.io", "a@example.test\x00"])
+def test_filas_a_guardar_rechaza_test_to_invalido(malo):
+    with pytest.raises(smtp_config.SmtpDestinatarioInvalido) as exc:
+        smtp_config.filas_a_guardar(_filas(), _datos(password="nueva", test_to=malo))
+    assert exc.value.codigo == "smtp_destinatario_invalido"
+
+
+def test_destinatario_de_prueba_resuelve_pedido_guardado_o_sesion():
+    guardado = _filas(**{"smtp.test_to": "guardado@example.test"})
+    elegir = smtp_config.destinatario_de_prueba
+    # 1) el pedido (strip) gana; 2) si no, el guardado; 3) si no, None = la sesión.
+    assert elegir(" pedido@example.test ", guardado) == "pedido@example.test"
+    for vacio in (None, "", "   "):
+        assert elegir(vacio, guardado) == "guardado@example.test"
+        assert elegir(vacio, _filas()) is None
+        assert elegir(vacio, _filas(**{"smtp.test_to": ""})) is None
+
+
+@pytest.mark.parametrize("malo", ["no-es-un-correo", "a@example.test\r\nBcc: x@y.io", "a@example.test\x7f"])
+def test_destinatario_de_prueba_invalido_pedido_o_guardado(malo):
+    with pytest.raises(smtp_config.SmtpDestinatarioInvalido):
+        smtp_config.destinatario_de_prueba(malo, _filas())
+    with pytest.raises(smtp_config.SmtpDestinatarioInvalido):
+        smtp_config.destinatario_de_prueba(None, _filas(**{"smtp.test_to": malo}))
+
+
+# ------------- un solo destinatario (revisión, 2026-09-13)
+# email_valido deja pasar , ; < > " ( ): "postmaster,a@b.io" se volvía DOS
+# destinatarios en el To y "x;y@b.io" se truncaba a "x" (medido por el revisor).
+
+VARIAS_O_RARAS = ["postmaster,a@b.io", "x;y@b.io", '"a"@b.io', "<a@b.io>", "a@b.io,", "a(b)@c.io",
+                  "a\\b@c.io", "a[b]@c.io"]
+UNICAS = ["fernando@rich-hn.com", "a.b+c@sub.example.test", "no-reply@axioma-ia.io"]
+
+
+@pytest.mark.parametrize("malo", VARIAS_O_RARAS)
+def test_direccion_unica_valida_rechaza_listas_y_caracteres_de_encabezado(malo):
+    import validacion
+    assert validacion.email_valido(malo)  # email_valido NO cambia (lo usa el login)
+    assert validacion.direccion_unica_valida(malo) is False
+
+
+@pytest.mark.parametrize("bueno", UNICAS)
+def test_direccion_unica_valida_acepta_una_direccion(bueno):
+    import validacion
+    assert validacion.direccion_unica_valida(bueno) is True
+
+
+@pytest.mark.parametrize("malo", VARIAS_O_RARAS)
+def test_destinatario_de_prueba_rechaza_varias_direcciones(malo):
+    with pytest.raises(smtp_config.SmtpDestinatarioInvalido):
+        smtp_config.destinatario_de_prueba(malo, _filas())
+    with pytest.raises(smtp_config.SmtpDestinatarioInvalido):
+        smtp_config.destinatario_de_prueba(None, _filas(**{"smtp.test_to": malo}))
+    with pytest.raises(smtp_config.SmtpDestinatarioInvalido):
+        smtp_config.filas_a_guardar(_filas(), _datos(password="nueva", test_to=malo))

@@ -444,6 +444,12 @@ export default {
   smtpSendTest: 'Enviar correo de prueba',
   smtpSending: 'Enviando…',
   smtpTestSent: (to) => `Correo de prueba enviado a ${to}.`,
+  smtpTestToDefault: 'Destinatario de prueba por defecto',
+  smtpTestToHint: 'Opcional. Si lo dejás vacío, la prueba se envía a tu correo.',
+  smtpTestModalTitle: 'Enviar correo de prueba',
+  smtpTestRecipient: 'Destinatario',
+  smtpTestSendButton: 'Enviar',
+  smtpCancel: 'Cancelar',
   smtpCorruptBanner: (motivo) => `La configuración guardada está dañada: ${motivo}. El envío de correos está deshabilitado. Volvé a escribir la contraseña y guardá.`,
   smtpReloadFailed: 'No se pudo volver a cargar la configuración: recargá la página para verla.',
   smtpEncNoneWarning: 'Sin cifrado, la contraseña y los correos viajan en claro por la red. Usalo solo en una red de confianza.',
@@ -473,6 +479,7 @@ export default {
     smtp_password_no_ascii: 'La contraseña solo puede tener caracteres ASCII (sin tildes ni ñ): el protocolo SMTP no admite otros.',
     smtp_usuario_no_ascii: 'El usuario solo puede tener caracteres ASCII (sin tildes ni ñ): el protocolo SMTP no admite otros.',
     smtp_campo_invalido: 'Servidor, usuario, nombre o correo del remitente tienen caracteres no permitidos (saltos de línea o de control).',
+    smtp_destinatario_invalido: 'El destinatario no es un correo válido.',
   },
 
   // Restaurar tareas pendientes (useJaxStore.js)

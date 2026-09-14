@@ -17,7 +17,7 @@ from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from auth.rate_limit import SlidingWindowLimiter, parse_rate
 from db.connection import get_pool
-from validacion import EMAIL_MAX, email_valido, tiene_caracteres_de_control
+from validacion import EMAIL_MAX, direccion_unica_valida, tiene_caracteres_de_control
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin")
@@ -54,11 +54,25 @@ class SmtpConexion(BaseModel):
 class SmtpUpdate(SmtpConexion):
     from_name: str = Field(min_length=1, max_length=255)
     from_email: str = Field(min_length=3, max_length=EMAIL_MAX)
+    # Destinatario por defecto del correo de prueba (2026-09-13). Ausente en
+    # el body = no se toca la fila (clientes viejos); null o "" la vacían.
+    # Sin max_length: el tope de 254 lo aplica normalizar_destinatario y sale
+    # como smtp_destinatario_invalido, no como un 422 sin traducir (revisión).
+    test_to: Optional[str] = None
+
+
+class SmtpPrueba(BaseModel):
+    # Sin tope propio: uno demasiado largo no pasa la validación y sale como
+    # smtp_destinatario_invalido, el mismo código que cualquier otro inválido.
+    to: Optional[str] = None
 
 
 @router.get("/smtp")
 async def ver_smtp(user: AuthUser = Depends(require_superadmin)):
-    return smtp_config.estado_para_pantalla(await smtp_config.leer_filas())
+    # email_sesion: para prellenar el destinatario de la prueba sin depender
+    # del store de auth del frontend.
+    return {**smtp_config.estado_para_pantalla(await smtp_config.leer_filas()),
+            "email_sesion": await _email_de(int(user.user_id))}
 
 
 def _limitar(limitador: SlidingWindowLimiter, user: AuthUser) -> None:
@@ -92,12 +106,18 @@ async def guardar_smtp(req: SmtpUpdate, user: AuthUser = Depends(require_superad
     if not clave_de_cifrado_utilizable():
         raise HTTPException(status_code=503, detail="smtp_sin_clave_de_cifrado")
     _validar_entrada(req)
-    if not email_valido(req.from_email):
+    # Una sola dirección: el remitente va al encabezado From (revisión).
+    if not direccion_unica_valida(req.from_email):
         raise HTTPException(status_code=400, detail="smtp_from_email_invalido")
+    datos = req.model_dump()
+    if "test_to" not in req.model_fields_set:
+        del datos["test_to"]  # ausente = no se toca smtp.test_to
     actuales = await smtp_config.leer_filas()
     motivo_previo = smtp_config.motivo_de_corrupcion(actuales)
     try:
-        filas = smtp_config.filas_a_guardar(actuales, req.model_dump())
+        filas = smtp_config.filas_a_guardar(actuales, datos)
+    except smtp_config.SmtpDestinatarioInvalido as exc:
+        raise HTTPException(status_code=400, detail=exc.codigo) from exc
     except (smtp_config.SmtpExigeContrasena, smtp_config.SmtpReescribirContrasena) as exc:
         # 422 y no 500: quien opera lo resuelve volviendo a escribir la contraseña.
         raise HTTPException(status_code=422, detail=exc.codigo) from exc
@@ -143,13 +163,22 @@ async def _email_de(user_id: int) -> str:
 
 
 @router.post("/smtp/test")
-async def enviar_prueba_smtp(user: AuthUser = Depends(require_superadmin)):
+async def enviar_prueba_smtp(req: Optional[SmtpPrueba] = None,
+                             user: AuthUser = Depends(require_superadmin)):
+    # El límite va PRIMERO: ni un destino inválido se valida con el cupo agotado.
     _limitar(SMTP_TEST_LIMITER, user)
+    filas = await smtp_config.leer_filas()
     try:
-        settings = await smtp_config.cargar_settings()
+        settings = smtp_config.interpretar(filas)
     except smtp_config.SmtpNoDisponible as exc:
         raise HTTPException(status_code=503, detail=exc.codigo) from exc
-    destinatario = await _email_de(int(user.user_id))
+    # Destino: el pedido, si no smtp.test_to guardado, si no el de la sesión
+    # (la regla vive en smtp_config.destinatario_de_prueba).
+    try:
+        elegido = smtp_config.destinatario_de_prueba(req.to if req else None, filas)
+    except smtp_config.SmtpDestinatarioInvalido as exc:
+        raise HTTPException(status_code=400, detail=exc.codigo) from exc
+    destinatario = elegido or await _email_de(int(user.user_id))
     try:
         mensaje = smtp_config.construir_mensaje(settings, destinatario, ASUNTO_PRUEBA, TEXTO_PRUEBA, HTML_PRUEBA)
     except ValueError as exc:

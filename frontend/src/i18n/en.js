@@ -441,6 +441,12 @@ export default {
   smtpSendTest: 'Send test email',
   smtpSending: 'Sending…',
   smtpTestSent: (to) => `Test email sent to ${to}.`,
+  smtpTestToDefault: 'Default test recipient',
+  smtpTestToHint: 'Optional. If left empty, the test is sent to your email.',
+  smtpTestModalTitle: 'Send test email',
+  smtpTestRecipient: 'Recipient',
+  smtpTestSendButton: 'Send',
+  smtpCancel: 'Cancel',
   smtpCorruptBanner: (motivo) => `The stored settings are damaged: ${motivo}. Sending email is disabled. Type the password again and save.`,
   smtpReloadFailed: 'The settings could not be reloaded: refresh the page to see them.',
   smtpEncNoneWarning: 'Without encryption, the password and the emails travel in clear text over the network. Use it only on a trusted network.',
@@ -470,6 +476,7 @@ export default {
     smtp_password_no_ascii: 'The password can only contain ASCII characters (no accents): SMTP does not allow others.',
     smtp_usuario_no_ascii: 'The username can only contain ASCII characters (no accents): SMTP does not allow others.',
     smtp_campo_invalido: 'Server, username, sender name or sender email contain characters that are not allowed (line breaks or control characters).',
+    smtp_destinatario_invalido: 'The recipient is not a valid email address.',
   },
 
   // Restoring pending tasks (useJaxStore.js)
