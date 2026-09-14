@@ -39,6 +39,7 @@ hace que `conv_uuid` quede `None` de forma estructural (ver el
 docstring del test).
 """
 from tests.identidades import token_de
+import asyncio
 import json
 import uuid
 
@@ -48,7 +49,7 @@ from api.chat import ContractResult
 def _grounding():
     import governance_context
     import grounding as governance_grounding
-    ctx, _, _ = governance_context.validation_context()
+    ctx, _, _ = asyncio.run(governance_context.validation_context())
     return governance_grounding.build_snapshot(ctx)
 
 

@@ -626,13 +626,13 @@ import grounding as governance_grounding  # noqa: E402  (mismo sys.path que load
 from governance_context import validation_context as _governance_context  # noqa: E402
 
 
-def _build_snapshot_or_raise() -> "governance_grounding.Snapshot":
+async def _build_snapshot_or_raise() -> "governance_grounding.Snapshot":
     """Separado de _build_grounding para poder parchearlo en tests."""
-    ctx, _, _ = _governance_context()
+    ctx, _, _ = await _governance_context()
     return governance_grounding.build_snapshot(ctx)
 
 
-def _build_grounding() -> "governance_grounding.Snapshot | governance_grounding.SnapshotError":
+async def _build_grounding() -> "governance_grounding.Snapshot | governance_grounding.SnapshotError":
     """Nunca lanza. build_snapshot() sí lanza (P10) -- acá se captura, se
     LOGUEA con traceback, y se convierte en la marca SnapshotError que
     viaja al validador y termina como grounding_snapshot_sha256='ERROR'
@@ -641,7 +641,7 @@ def _build_grounding() -> "governance_grounding.Snapshot | governance_grounding.
     validation más abajo. Lo que NO se hace: devolver un snapshot vacío,
     que sería indistinguible de "no hay capabilities"."""
     try:
-        return _build_snapshot_or_raise()
+        return await _build_snapshot_or_raise()
     except Exception as e:
         logger.exception("no se pudo construir el snapshot de grounding")
         return governance_grounding.SnapshotError(f"{type(e).__name__}: {e}")
@@ -1112,7 +1112,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
 
     # SP3: UN snapshot por turno, construido acá y pasado a sus dos
     # consumidores (el prompt y el background task) -- spec §9.3.
-    grounding = _build_grounding()
+    grounding = await _build_grounding()
 
     try:
         response_text, usage = await _invoke_facet(

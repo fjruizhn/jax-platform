@@ -46,12 +46,48 @@ turno (donde se arma el snapshot) y la background task (donde se resuelve), el
 claim acreditado contra el snapshot viejo se resuelve contra el contexto nuevo
 y sale FACT_MISMATCH. Eso es exactamente lo que el spec §4.3 quiere de las dos
 capas: que sean independientes.
+
+Catálogo de la DB (tanda A v2, 2026-09-14). Desde el Bloque 3 las
+capabilities viven en la DB; hasta hoy este contexto las armaba del TOML
+vacío. Ahora:
+
+  * `validation_context()` es ASYNC: el catálogo sale de
+    `await MotorCatalog.from_db()` (aiomysql), con capability.mode. Los
+    YAML/TOML se leen en `asyncio.to_thread`: nada bloqueante en el turno.
+  * El MISMO contexto alimenta el snapshot del prompt (api/chat.py) y la
+    validación en sombra (shadow_validation.py): lo que se inyecta es lo que
+    se verifica.
+  * CLAVE DE CACHÉ = mtimes de los tres archivos + mtime del sello de
+    facet_resolver (`_seal_mtime()`). INVALIDACIÓN DECLARADA: el sello, que
+    estampan tras commitear las migraciones y el admin de motores/
+    capabilities (y los rebinds de facets). Si la clave cambió, recarga; si
+    no, el mismo objeto. La clave se toma ANTES de consultar: un sello
+    estampado con la consulta en vuelo deja la clave guardada vieja y el
+    próximo turno recarga (mismo criterio que LAS MANOS,
+    motor_registry/routes.py::_load_catalog).
+  * Sello ausente o ilegible: `_seal_mtime()` da None = "sin señal", nunca
+    "invalidar" (contrato de facet_resolver). La clave queda estable y los
+    cambios del catálogo entran al reiniciar. En hall9000 el sello existe
+    (/srv/jax-data/facet-cache-seal, verificado 2026-09-14); el despliegue lo
+    vuelve a verificar.
+  * UNA recarga a la vez (`asyncio.Lock` con doble chequeo).
+  * FALLA VISIBLE: si from_db() lanza, la excepción sube y la caché queda
+    como estaba (no se sirve: la clave ya no coincide). En el chat,
+    `_build_grounding` la convierte en SnapshotError
+    (grounding_snapshot_sha256='ERROR'); la validación en sombra no escribe
+    veredictos. Servir un catálogo vacío o viejo repetiría el falso negativo
+    en silencio, o daría VALID a una capability revocada (P10).
+  * Costo: un stat más por turno; la recarga solo cuando cambió algo.
+    Latencia medida antes/después: DEUDA.md de jax.
+  * Si la DB cuelga en vez de rechazar, la recarga espera lo que espere
+    aiomysql.connect -- igual que el resto del turno, que ya depende de la
+    misma DB por el pool.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
-from functools import lru_cache
 from pathlib import Path
 
 JAX_REPO = Path(os.getenv("JAX_REPO_PATH", os.path.expanduser("~/jax")))
@@ -60,11 +96,15 @@ if str(JAX_REPO) not in sys.path:
 if str(JAX_REPO / "policy" / "governance") not in sys.path:
     sys.path.insert(0, str(JAX_REPO / "policy" / "governance"))
 
+import facet_resolver  # noqa: E402  (su sello invalida también este caché)
 import loaders as governance_loaders  # noqa: E402
 import validator as governance_validator  # noqa: E402
 
+_FileStamp = tuple[tuple[str, int | None], ...]
+_Stamp = tuple[_FileStamp, float | None]
 
-def _source_stamp() -> tuple[tuple[str, int | None], ...]:
+
+def _source_stamp() -> _FileStamp:
     """(ruta, mtime_ns) de los tres archivos fuente. Solo stat(): no abre nada.
 
     Un archivo que no se puede statear entra como None -- también invalida, y
@@ -86,21 +126,52 @@ def _source_stamp() -> tuple[tuple[str, int | None], ...]:
     return tuple(marca)
 
 
-@lru_cache(maxsize=1)
-def _build(stamp: tuple[tuple[str, int | None], ...]):
-    """La marca de mtimes es la clave de caché: misma marca, mismo objeto;
-    marca distinta, reconstrucción. `stamp` no se usa adentro a propósito."""
+def _stamp() -> _Stamp:
+    return (_source_stamp(), facet_resolver._seal_mtime())
+
+
+_cache: tuple[_Stamp, tuple] | None = None
+_lock = asyncio.Lock()
+
+
+def _build_static(catalog):
+    """La parte de disco (YAML/TOML): corre en un hilo, no en el loop."""
     vocabulary = governance_loaders.load_vocabulary()
-    ctx = governance_validator.load_validation_context(JAX_REPO, vocabulary.config_paths)
+    ctx = governance_validator.load_validation_context(JAX_REPO, vocabulary.config_paths, catalog)
     predicates = governance_loaders.load_predicates()
     return ctx, predicates, vocabulary.term_categories
 
 
-def validation_context():
+async def _build():
+    catalog = await governance_validator.MotorCatalog.from_db()
+    return await asyncio.to_thread(_build_static, catalog)
+
+
+async def validation_context():
     """(ValidationContext, predicates, term_categories) de gobernanza."""
-    return _build(_source_stamp())
+    global _cache
+    stamp = _stamp()
+    cached = _cache
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    async with _lock:
+        stamp = _stamp()  # otro turno pudo recargar mientras esperábamos
+        cached = _cache
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        value = await _build()
+        _cache = (stamp, value)
+        return value
+
+
+def _cache_clear() -> None:
+    """Vacía la caché y crea un lock nuevo: un test que usó el lock en su
+    propio loop no se lo deja atado al siguiente."""
+    global _cache, _lock
+    _cache = None
+    _lock = asyncio.Lock()
 
 
 # Compatibilidad: quien tenía `validation_context.cache_clear()` lo sigue
 # teniendo (lo usan los tests para forzar una reconstrucción).
-validation_context.cache_clear = _build.cache_clear
+validation_context.cache_clear = _cache_clear

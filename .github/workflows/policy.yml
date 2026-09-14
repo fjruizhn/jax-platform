@@ -507,46 +507,14 @@ jobs:
           # del `ADD CONSTRAINT`. Rojo visto antes del arreglo; mutación
           # (d) ahora cae también en este test y en el de la base vieja
           # (Minor 1). Medido: 646 / 1.
-          # Subido de 646 a 656 (2026-09-14, tanda A, Tarea 1b, PR-A --
-          # espejo de connect_timeout de aiomysql): 10 puros nuevos, los dos
-          # sin `client` -- test_aiomysql_connect_timeout_tripwire.py (5,
-          # tripwire AST sobre backend/ + control de mutación: detecta
-          # `aiomysql.connect(`/`create_pool(` sin connect_timeout, no
-          # confunde un docstring/comentario con una llamada real, acepta el
-          # kwarg explícito) y test_db_connect_config.py (5, el helper
-          # puro: default 10s, valor válido por env, no numérico/cero/
-          # negativo -> RuntimeError). Medido contra jax master (fb8a8a1,
-          # el mismo que clona el paso "Traer el repo jax" de este job) para
-          # no confundir con el gap de integración de PR-C (gobernanza-
-          # catálogo, todavía sin rebasar a esta rama): con
-          # JAX_REPO_PATH apuntando a un checkout de jax que YA tiene el
-          # `catalog` nuevo en `load_validation_context()` sin que
-          # `backend/governance_context.py` de esta rama lo pase todavía,
-          # los tests de grounding/shadow_validation fallan con
-          # `TypeError: load_validation_context() missing 1 required
-          # positional argument: 'catalog'` -- 33 fallos, ninguno tocado por
-          # esta tarea (diff de la Tarea 1b: solo
-          # facet_resolver.py/credential_resolver.py/db/connection.py/
-          # db_connect_config.py, ninguno importa governance_context). No es
-          # una regresión de esta tarea; es el mismo gap que el controller
-          # ya declaró pendiente de rebase. Medido contra jax master: 656 / 1.
-          # Subido de 656 a 665 (2026-09-14, ronda de arreglo 1 sobre la
-          # re-revisión de la Tarea 1b -- 2 Important del tripwire propio):
-          # +9 puros en test_aiomysql_connect_timeout_tripwire.py, alineado
-          # con el tripwire final de jax @5d60679 ("Ronda de arreglo 3") --
-          # resolución de alias por archivo (from-import con/sin alias,
-          # `import aiomysql as X`, `aiomysql.pool.create_pool`, `import
-          # aiomysql.pool as X`, control positivo de las 3 formas CON
-          # connect_timeout) y fail-closed ante un archivo que no parsea
-          # (`_NO_PARSEA` vacío -- backend/ no tiene ninguno, medido -- con
-          # un test sintético que declara y retira una entrada TEMPORAL para
-          # ejercitar el mecanismo, más el control de que uno NO declarado
-          # hace fallar el tripwire). Los dos huecos vistos en rojo con el
-          # detector anterior antes del arreglo (confirmado corriendo
-          # `_hallazgos_en()` de bb1e144 contra las 3 formas de alias y
-          # contra un archivo roto: `[]` en los 4 casos -- MISSED). Medido
-          # contra jax master: 665 / 1.
-          PISO_PASSED = 665
+          # Subido de 646 a 657 (2026-09-14, tanda A v2, catálogo de la DB):
+          # test_governance_context_catalogo.py -- 10 puros (catálogo de la DB, hit sin
+          # recarga, recarga por sello, DB caída en frío y en caliente, una recarga con
+          # 20 turnos, la Mesa acredita y valida una capability de la DB + CONTROL,
+          # catálogo cambiado entre snapshot y validación -> FACT_MISMATCH,
+          # SnapshotError) y 1 con `client` (from_db real con capability.mode). Vistos
+          # en rojo antes del arreglo; mutaciones en el PR. Medido: 657 / 1.
+          PISO_PASSED = 657
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -820,21 +788,11 @@ jobs:
       # 305 -> 305 (2026-09-14, ronda de arreglo 1 sobre la revisión de
       # PR-A): sin cambio. El test nuevo (Minor 4, modo inválido sin CHECK)
       # pide `client` y se saltea. Medido con JAX_CI_NO_DB=1: 305 / 342.
-      # Subido de 305 a 315 (2026-09-14, tanda A, Tarea 1b, PR-A -- espejo
-      # de connect_timeout de aiomysql): los 10 tests nuevos son puros (ni
-      # `client` ni DB) y corren igual con JAX_CI_NO_DB=1 --
-      # test_aiomysql_connect_timeout_tripwire.py (5) y
-      # test_db_connect_config.py (5), ver el comentario del piso con DB
-      # arriba para el detalle. Medido contra jax master (mismo repo que
-      # clona el paso "Traer el repo jax" de este job, no el checkout local
-      # de la gobernanza-catálogo todavía sin rebasar) con JAX_CI_NO_DB=1:
-      # 315 / 342.
-      # Subido de 315 a 324 (2026-09-14, ronda de arreglo 1 sobre la
-      # re-revisión de la Tarea 1b): los 9 tests nuevos del tripwire son
-      # puros (ni `client` ni DB) y corren igual con JAX_CI_NO_DB=1 -- ver
-      # el comentario del piso con DB arriba para el detalle. Medido contra
-      # jax master con JAX_CI_NO_DB=1: 324 / 342.
-      JAX_CI_MIN_PASSED: "324"
+      # Subido de 305 a 315 (2026-09-14, tanda A v2, catálogo de la DB): +10
+      # puros de test_governance_context_catalogo.py (from_db parcheado) corren
+      # sin DB; el de from_db real pide `client` y se saltea. Vistos en rojo
+      # antes del arreglo. Medido con JAX_CI_NO_DB=1: 315 / 343.
+      JAX_CI_MIN_PASSED: "315"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

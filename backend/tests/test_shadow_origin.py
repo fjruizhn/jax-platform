@@ -126,7 +126,7 @@ def test_run_shadow_validation_persists_the_origin_it_received(client):
     from shadow_validation import run_shadow_validation
     from api.chat import ContractResult
 
-    ctx, _, _ = validation_context()
+    ctx, _, _ = client.portal.call(validation_context)
     snapshot = governance_grounding.build_snapshot(ctx)
     contract = ContractResult(
         contract_parsed=True, claims=[], analysis=None, judgment=None,
@@ -174,7 +174,7 @@ def test_run_shadow_validation_clamps_origin_to_20_chars(client):
     from shadow_validation import run_shadow_validation
     from api.chat import ContractResult
 
-    ctx, _, _ = validation_context()
+    ctx, _, _ = client.portal.call(validation_context)
     snapshot = governance_grounding.build_snapshot(ctx)
     contract = ContractResult(
         contract_parsed=True, claims=[], analysis=None, judgment=None,

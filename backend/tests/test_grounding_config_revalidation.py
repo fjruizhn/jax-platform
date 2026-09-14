@@ -18,10 +18,11 @@ silencio.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -35,7 +36,7 @@ CLAIM = ('{"claim": [{"predicate": "CAPABILITY_AVAILABLE", "args": {"name": "wri
 
 
 @pytest.fixture
-def repo_copia(tmp_path):
+def repo_copia(tmp_path, monkeypatch):
     """Copia de los archivos que sigue JAX_REPO, para romperlos SIN tocar el
     repo real. Deja el módulo como estaba al salir."""
     destino = tmp_path / "jax"
@@ -44,6 +45,10 @@ def repo_copia(tmp_path):
                 destino / "las_manos" / "config.toml")
     anterior = governance_context.JAX_REPO
     governance_context.JAX_REPO = destino
+    # Catálogo vacío y en memoria: acá se prueba la revalidación por mtime de
+    # los archivos, no la DB (y en el job sin DB from_db abriría una conexión).
+    monkeypatch.setattr(governance_context.governance_validator.MotorCatalog, "from_db",
+                        AsyncMock(side_effect=lambda: governance_context.governance_validator.MotorCatalog({})))
     governance_context.validation_context.cache_clear()
     try:
         yield destino
@@ -62,26 +67,30 @@ def _romper(config: Path) -> None:
 
 
 def test_sin_cambios_en_disco_el_contexto_no_se_reconstruye(repo_copia):
-    primero = governance_context.validation_context()
-    assert governance_context.validation_context() is primero
+    async def _dos():
+        return (await governance_context.validation_context(),
+                await governance_context.validation_context())
+
+    primero, segundo = asyncio.run(_dos())
+    assert segundo is primero
 
 
 def test_config_rota_en_caliente_invalida_el_cache_y_falla_ruidoso(repo_copia):
-    governance_context.validation_context()          # caliente, con la config buena
+    asyncio.run(governance_context.validation_context())          # caliente, con la config buena
     _romper(repo_copia / "las_manos" / "config.toml")
     import tomllib
     with pytest.raises(tomllib.TOMLDecodeError):     # antes del fix: devolvía el contexto viejo
-        governance_context.validation_context()
+        asyncio.run(governance_context.validation_context())
 
 
 def test_config_rota_en_caliente_da_SnapshotError_no_un_snapshot_que_miente(repo_copia):
     import api.chat as chat
     import grounding as governance_grounding
 
-    governance_context.validation_context()
-    assert isinstance(chat._build_grounding(), governance_grounding.Snapshot)
+    asyncio.run(governance_context.validation_context())
+    assert isinstance(asyncio.run(chat._build_grounding()), governance_grounding.Snapshot)
     _romper(repo_copia / "las_manos" / "config.toml")
-    resultado = chat._build_grounding()
+    resultado = asyncio.run(chat._build_grounding())
     assert isinstance(resultado, governance_grounding.SnapshotError)
     assert "TOMLDecodeError" in resultado.reason
 
@@ -144,7 +153,7 @@ def test_turno_completo_con_config_rota_deja_los_veredictos_GROUNDING_UNAVAILABL
     from auth.jwt import create_access_token
     from shadow_validation import run_shadow_validation
 
-    governance_context.validation_context()          # caliente y sana
+    asyncio.run(governance_context.validation_context())          # caliente y sana
     _romper(repo_copia / "las_manos" / "config.toml")
 
     token = create_access_token("1", "1", "operator")

@@ -312,7 +312,7 @@ async def run_shadow_validation(
                     await conn.commit()
                     return
 
-                ctx, predicates, term_categories = _validation_context()
+                ctx, predicates, term_categories = await _validation_context()
 
                 for raw_claim in contract.claims:
                     # 1) acreditar contra el snapshot del turno (grounding.py,
