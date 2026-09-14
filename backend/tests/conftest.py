@@ -60,7 +60,25 @@ def _envolver_portal_call(portal_call):
     aserción va afuera -- este envoltorio es la red de seguridad para
     cuando ese patrón no se respeta (aquí o en cualquier test futuro).
     Test: tests/test_arnes_portal.py. Mutación: sacar este envoltorio pone
-    ese test en rojo."""
+    ese test en rojo.
+
+    ALCANCE, importante (fix round 1, Minor 7 de la revisión): esto NO
+    envuelve solo las llamadas que un test hace explícitamente con
+    `client.portal.call(...)`. `starlette.testclient.TestClient` usa el
+    MISMO objeto `self.portal` para sus propias llamadas internas --
+    `_portal_factory` en `starlette/testclient.py` lo comparte -- así que
+    cada request HTTP (`client.get(...)`, `client.post(...)`, ...), el
+    arranque/apagado del lifespan de la app, y cada mensaje de un
+    `websocket_connect(...)` pasan también por `envuelto` sin que el test
+    lo pida. Es intencional y no cambia nada para el camino feliz: con una
+    `Exception` normal (lo único que esos caminos internos producen en la
+    práctica), `envuelto` la captura y la relanza IDÉNTICA, así que el
+    comportamiento es indistinguible de no tener el envoltorio -- la suite
+    entera lo confirma (645/0/0 con DB, sin cambios de conducta). Solo
+    importa si algún día una `BaseException` (un `pytest.fail`/`skip`, por
+    ejemplo) escapara desde DENTRO de uno de esos caminos internos: ahí
+    también quedaría protegida, no solo en los tests que llaman al portal
+    a mano."""
     import functools
     import inspect
 

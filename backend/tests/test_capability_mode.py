@@ -33,7 +33,6 @@ que el fixture `client` (conftest.py) captura y relanza cualquier
 from __future__ import annotations
 
 import pymysql
-import pytest
 
 from db import migrations
 
@@ -136,15 +135,39 @@ def test_control_un_insert_con_modo_invalido_falla(client):
 def test_una_base_vieja_queda_rellenada_y_not_null(client):
     """Producción hoy (base sin columna, CI, bases viejas): run_migrations()
     la agrega NULL sin CHECK, rellena desde _CAPABILITY_MODE, la pasa a
-    VARCHAR(16) NOT NULL y agrega el CHECK."""
+    VARCHAR(16) NOT NULL y agrega el CHECK (se afirma también acá: la
+    mutación (d) -- quitar el paso que agrega el CHECK -- tiene que caer
+    en ESTE test, no solo en el de la columna ENUM de abajo).
+
+    El `DROP CONSTRAINT` antes del `DROP COLUMN` es explícito a propósito:
+    verificado (2026-09-14, MariaDB 12.3.3, `jax_memory_test`) que
+    `DROP COLUMN mode` por sí solo YA arrastra el CHECK que lo referencia
+    -- no hace falta soltarlo antes para que el DDL no falle. Se deja
+    explícito para no depender de ese comportamiento implícito (el brief
+    pedía declarar el porqué si el DROP chocaba; acá no choca, pero
+    dejarlo así documenta la intención real: reproducir una base vieja SIN
+    columna Y SIN CHECK, no confiar en un efecto colateral del motor)."""
     async def correr():
         await _sql("ALTER TABLE capability DROP CONSTRAINT chk_capability_mode")
         await _sql("ALTER TABLE capability DROP COLUMN mode")
-        await migrations.run_migrations()
-        return await _sql(_INFO_MODE), dict(await _sql("SELECT `key`, mode FROM capability"))
+        try:
+            await migrations.run_migrations()
+            return (
+                await _sql(_INFO_MODE),
+                await _sql(_INFO_CHECK),
+                dict(await _sql("SELECT `key`, mode FROM capability")),
+            )
+        finally:
+            # Si algo de arriba (incluido run_migrations()) falla a mitad de
+            # camino, la base de la SESIÓN quedaría con la columna a medio
+            # reponer para el resto de los tests. run_migrations() es
+            # idempotente: repetirla acá no hace daño si ya salió bien, y
+            # repara si no.
+            await migrations.run_migrations()
 
-    info, filas = client.portal.call(correr)
+    info, check, filas = client.portal.call(correr)
     assert info == (("NO", None, "varchar(16)"),)
+    assert len(check) == 1
     assert {k: filas.get(k) for k in migrations._CAPABILITY_MODE} == migrations._CAPABILITY_MODE
 
 
@@ -153,16 +176,30 @@ def test_la_columna_enum_de_produccion_queda_convertida(client):
     v3): la columna quedó como ENUM('read_only','mutating') NOT NULL, SIN
     CHECK. run_migrations() la deja varchar(16)/NOT NULL, con el CHECK y
     los 17 valores intactos (un MODIFY de ENUM a VARCHAR conserva los
-    valores)."""
+    valores).
+
+    El `DROP CONSTRAINT` antes del `MODIFY` es necesario acá por una razón
+    distinta a la del test de arriba: verificado que el `MODIFY COLUMN ...
+    ENUM(...) NOT NULL` NO choca con el CHECK si se lo deja puesto (conviven
+    sin error). Pero el incidente real que este test reproduce (spec §0)
+    dejó la columna SIN CHECK -- si no se lo sacara acá, seguiría presente
+    al entrar a `run_migrations()` y el test no ejercitaría el paso (c)
+    (agregar el CHECK que falta): la aserción `len(check) == 1` de abajo
+    sería un no-op, verde incluso si el paso (c) estuviera roto."""
     async def correr():
         await _sql("ALTER TABLE capability DROP CONSTRAINT chk_capability_mode")
         await _sql("ALTER TABLE capability MODIFY COLUMN mode ENUM('read_only','mutating') NOT NULL")
-        await migrations.run_migrations()
-        return (
-            await _sql(_INFO_MODE),
-            await _sql(_INFO_CHECK),
-            dict(await _sql("SELECT `key`, mode FROM capability")),
-        )
+        try:
+            await migrations.run_migrations()
+            return (
+                await _sql(_INFO_MODE),
+                await _sql(_INFO_CHECK),
+                dict(await _sql("SELECT `key`, mode FROM capability")),
+            )
+        finally:
+            # Misma razón que en test_una_base_vieja_...: dejar la base de
+            # la sesión reparada aunque algo de arriba falle a mitad.
+            await migrations.run_migrations()
 
     info, check, filas = client.portal.call(correr)
     assert info == (("NO", None, "varchar(16)"),)
@@ -193,3 +230,32 @@ def test_una_capability_no_sembrada_sin_modo_frena_la_migracion(client):
     resultado, info = client.portal.call(correr)
     assert resultado is not None and "zz_huerfana" in resultado
     assert info == (("NO", None, "varchar(16)"),)
+
+
+def test_un_modo_invalido_sin_check_frena_la_migracion_con_su_nombre(client):
+    """Si el CHECK todavía no existe (una base a medio migrar) y una fila
+    tiene un `mode` fuera de {'read_only','mutating'} metido a mano en la
+    columna VARCHAR (que sin CHECK no rechaza nada), el `ADD CONSTRAINT`
+    fallaría con el error 4025 SIN decir cuál fila. `_asegurar_forma_de_
+    capability_mode` la revisa antes y declara su nombre (mismo criterio
+    que la fila huérfana del paso (a))."""
+    async def correr():
+        await _sql("ALTER TABLE capability DROP CONSTRAINT chk_capability_mode")
+        await _sql(
+            "INSERT INTO capability (`key`, risk_level, max_execution_minutes, allowed_callers, mode) "
+            "VALUES ('zz_modo_raro', 'low', 5, '[]', 'escritura')"
+        )
+        try:
+            await migrations.run_migrations()
+        except RuntimeError as error:
+            resultado = str(error)
+        else:
+            resultado = None
+        finally:
+            await _sql("DELETE FROM capability WHERE `key` = 'zz_modo_raro'")
+            await migrations.run_migrations()
+        return resultado, await _sql(_INFO_CHECK)
+
+    resultado, check = client.portal.call(correr)
+    assert resultado is not None and "zz_modo_raro" in resultado
+    assert len(check) == 1

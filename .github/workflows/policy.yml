@@ -498,7 +498,16 @@ jobs:
           # matar el `BlockingPortal` de sesión; hallazgo de esta misma
           # tarea, ver conftest.py::_envolver_portal_call). Vistos en rojo
           # antes del arreglo; mutaciones en el PR. Medido: 645 / 1.
-          PISO_PASSED = 645
+          # Subido de 645 a 646 (2026-09-14, ronda de arreglo 1 sobre la
+          # revisión de PR-A, Minor 4): test_capability_mode.py suma
+          # test_un_modo_invalido_sin_check_frena_la_migracion_con_su_nombre
+          # -- si el CHECK todavía no existe y una fila tiene un `mode`
+          # fuera de {'read_only','mutating'} metida a mano, la migración
+          # la declara por nombre en vez de reventar con el 4025 anónimo
+          # del `ADD CONSTRAINT`. Rojo visto antes del arreglo; mutación
+          # (d) ahora cae también en este test y en el de la base vieja
+          # (Minor 1). Medido: 646 / 1.
+          PISO_PASSED = 646
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -769,6 +778,9 @@ jobs:
       # sembrados, los dos CONTROL, base vieja, columna ENUM del incidente,
       # fila huérfana); el nuevo con `client` de test_arnes_portal.py
       # también se saltea. Medido con JAX_CI_NO_DB=1: 305 / 341.
+      # 305 -> 305 (2026-09-14, ronda de arreglo 1 sobre la revisión de
+      # PR-A): sin cambio. El test nuevo (Minor 4, modo inválido sin CHECK)
+      # pide `client` y se saltea. Medido con JAX_CI_NO_DB=1: 305 / 342.
       JAX_CI_MIN_PASSED: "305"
     steps:
       - uses: actions/checkout@v4

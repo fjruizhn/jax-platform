@@ -1721,7 +1721,12 @@ async def _asegurar_forma_de_capability_mode(cur) -> None:
     (c) si no existe un CHECK llamado `chk_capability_mode` para
         `capability` (se consulta `information_schema.CHECK_CONSTRAINTS`
         antes de agregarlo: repetir el `ADD CONSTRAINT` da el error 1826),
-        se agrega.
+        se agrega -- pero antes se revisa a mano si queda una fila con un
+        `mode` fuera de {'read_only','mutating'} (una columna VARCHAR sin
+        CHECK todavía no rechaza nada) y, si la hay, la migración FALLA con
+        su nombre (mismo criterio que el paso (a)): sin esa revisión, el
+        propio `ADD CONSTRAINT` fallaría con el error 4025, que MariaDB no
+        acompaña con la fila responsable -- ruidoso pero anónimo.
 
     Nombre anterior: `_enforce_capability_mode_not_null` (v2, solo ENUM);
     renombrada al pasar a la forma completa de v3."""
@@ -1752,6 +1757,19 @@ async def _asegurar_forma_de_capability_mode(cur) -> None:
         "AND CONSTRAINT_NAME = 'chk_capability_mode'"
     )
     if await cur.fetchone() is None:
+        await cur.execute(
+            "SELECT `key` FROM capability WHERE mode NOT IN ('read_only','mutating') "
+            "ORDER BY `key`"
+        )
+        modo_invalido = [fila[0] for fila in await cur.fetchall()]
+        if modo_invalido:
+            raise RuntimeError(
+                f"capability con mode invalido (ni 'read_only' ni 'mutating'): "
+                f"{modo_invalido}. Corregir el valor a mano (UPDATE capability SET "
+                "mode=... WHERE `key`=...) antes de reintentar la migración -- sin "
+                "esta revisión, el ADD CONSTRAINT de abajo fallaría con el error "
+                "4025 sin decir cuál fila."
+            )
         await cur.execute(
             "ALTER TABLE capability ADD CONSTRAINT chk_capability_mode "
             "CHECK (mode IN ('read_only','mutating'))"
