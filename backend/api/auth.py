@@ -148,23 +148,15 @@ async def refresh(refresh_token: str = Cookie(None)):
 
 @router.get("/me", response_model=MeResponse)
 async def me(user: AuthUser = Depends(get_current_user)):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT email FROM jax_users WHERE user_id = %s",
-                (user.user_id,),
-            )
-            row = await cur.fetchone()
-
-    if not row:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
-
+    # get_current_user ya pasó por verificar_sesion (una SELECT por PK que
+    # trae status/role/token_version/email): no hace falta un segundo SELECT
+    # acá. Si el usuario no existiera, verificar_sesion ya habría cortado con
+    # 401 (fail-closed) antes de llegar a este punto (code review, M-3).
     return MeResponse(
         user_id=int(user.user_id),
         tenant_id=int(user.tenant_id),
         role=user.role,
-        email=row[0],
+        email=user.email,
     )
 
 

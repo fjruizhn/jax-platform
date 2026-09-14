@@ -201,7 +201,22 @@ async def websocket_endpoint(
     await websocket.accept()
 
     try:
-        auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+        # El wait_for va en su propio try: SÓLO el timeout de ESTE receive()
+        # (la persona no manda el mensaje de auth a tiempo) es un 4001
+        # silencioso. Si queda en el try grande de abajo, un TimeoutError de
+        # cualquier otra cosa (p.ej. verificar_sesion/pool.acquire, si algún
+        # día tuviera su propio timeout) caería en la misma rama silenciosa
+        # -- indistinguible de esto, sin loguear el fallo real (M-2, code
+        # review de esta ronda).
+        try:
+            auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+        except asyncio.TimeoutError:
+            try:
+                await websocket.close(code=4001)
+            except RuntimeError:  # fail-soft: best-effort close() tras un error ya manejado arriba; el except externo ya hace return
+                pass
+            return
+
         if auth_msg.get("type") != "auth":
             await websocket.close(code=4001)
             return
@@ -217,17 +232,12 @@ async def websocket_endpoint(
         # 2): usuario existente, `active` y con la versión de token vigente.
         # Un HTTPException (sesión inválida) cae en el `except HTTPException`
         # de abajo -> 4001 sin log; cualquier otra excepción (pool agotado,
-        # MariaDB caída) cae en el `except Exception` -> 4001 CON log
-        # (code review de esta ronda).
+        # MariaDB caída, o un TimeoutError que no sea el del receive() de
+        # arriba) cae en el `except Exception` -> 4001 CON log (code review
+        # de esta ronda).
         sesion = await verificar_sesion(payload, "access")
 
     except WebSocketDisconnect:
-        return
-    except asyncio.TimeoutError:
-        try:
-            await websocket.close(code=4001)
-        except RuntimeError:  # fail-soft: best-effort close() tras un error ya manejado arriba; el except externo ya hace return
-            pass
         return
     except (HTTPException, ValueError, TypeError, AttributeError, KeyError):
         # Caso esperado del handshake, no un fallo de infraestructura: token

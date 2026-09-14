@@ -9,6 +9,16 @@ import { codigoDe } from './errores'
 // día, el contrato es el propio string "sesion_invalida" en el JSON.
 const SESION_INVALIDA = 'sesion_invalida'
 
+// I-1 (revisión final, 2026-09-14): un 401 de estos endpoints NO es "la
+// sesión se cayó a mitad de camino" -- es la propia respuesta de auth. Antes
+// el interceptor los trataba igual que cualquier otro 401: un visitante sin
+// cookie (restoreSession -> /auth/refresh -> 401) disparaba un SEGUNDO
+// refresh que también fallaba, y terminaba con avisoSesion = 'sesion_expirada'
+// sin haber tenido nunca una sesión; una contraseña equivocada (/auth/login
+// -> 401) hacía lo mismo y sumaba una segunda caja roja encima del error de
+// credenciales. Estos tres nunca deben reintentar ni tocar el store acá.
+const ENDPOINTS_DE_AUTH_SIN_REINTENTO = ['/auth/login', '/auth/refresh', '/auth/logout']
+
 const api = axios.create({
   baseURL: '/api',
   withCredentials: true,
@@ -25,7 +35,8 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
-    if (err.response?.status === 401 && !err.config?._retried) {
+    const esAuthSinReintento = ENDPOINTS_DE_AUTH_SIN_REINTENTO.includes(err.config?.url)
+    if (err.response?.status === 401 && !err.config?._retried && !esAuthSinReintento) {
       try {
         const { data } = await axios.post('/api/auth/refresh', {}, { withCredentials: true })
         useJaxStore.setState({ token: data.access_token })

@@ -132,6 +132,46 @@ def test_la_consulta_del_middleware_va_por_primary(client):
     assert (plan["type"], plan["key"]) == ("const", "PRIMARY"), plan
 
 
+# Hallazgo de code review (M-3, revisión final): /me hacía DOS consultas por
+# PK -- verificar_sesion (status/role/token_version) y después un SELECT
+# email aparte en el propio handler. Con el email ya en la fila que lee el
+# middleware, /me no necesita su propio SELECT.
+def test_me_hace_una_sola_consulta_a_jax_users(client, usuarios):
+    import aiomysql
+
+    user_id, email = usuarios()
+
+    class _Contador:
+        def __init__(self):
+            self.selects = 0
+            self._original = aiomysql.cursors.Cursor.execute
+
+        def __enter__(self):
+            original = self._original
+            contador = self
+
+            async def wrapped(cursor_self, query, args=None):
+                normalizada = " ".join(query.split())
+                if normalizada.strip().upper().startswith("SELECT") and "FROM jax_users" in normalizada:
+                    contador.selects += 1
+                return await original(cursor_self, query, args)
+
+            aiomysql.cursors.Cursor.execute = wrapped
+            return self
+
+        def __exit__(self, *exc):
+            aiomysql.cursors.Cursor.execute = self._original
+
+    with _Contador() as contador:
+        r = _me(client, token_para(user_id))
+
+    assert r.status_code == 200, r.text
+    assert r.json()["email"] == email
+    assert contador.selects == 1, (
+        f"esperaba una sola SELECT contra jax_users en /me, hubo {contador.selects}"
+    )
+
+
 # --------------------------------------------------------------- refresh
 
 def _refresh(client, token):
@@ -240,3 +280,35 @@ def test_ws_de_sesion_invalida_no_deja_log_de_error(client, usuarios, caplog):
         resultado = _ws_auth(client, user_id, token_para(user_id))
     assert resultado == 4001
     assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+
+
+# --------------------------------------- M-2: TimeoutError fuera del receive()
+#
+# Hallazgo de code review (M-2, revisión final): el único `except
+# asyncio.TimeoutError` del handshake envolvía TODO el bloque -- el
+# `wait_for(receive_json(), timeout=5)` Y `verificar_sesion` (un round-trip a
+# la base). Hoy `pool.acquire()` no tiene timeout propio, así que en la
+# práctica sólo el receive() dispara ese TimeoutError. Pero si algún día
+# `verificar_sesion` (o lo que sea que corra ahí) lanza un TimeoutError por
+# otra razón (pool agotado con timeout, por ejemplo), quedaría indistinguible
+# del timeout del receive -- 4001 en silencio, sin loguear el fallo real.
+
+
+def test_ws_timeout_fuera_del_receive_se_loguea(client, usuarios, monkeypatch, caplog):
+    import asyncio as asyncio_mod
+
+    import main
+
+    async def _timeout_en_verificar_sesion(*_a, **_k):
+        raise asyncio_mod.TimeoutError()
+
+    user_id, _ = usuarios()
+    monkeypatch.setattr(main, "verificar_sesion", _timeout_en_verificar_sesion)
+    with caplog.at_level(logging.ERROR):
+        resultado = _ws_auth(client, user_id, token_para(user_id))
+    assert resultado == 4001
+    assert any(r.levelno >= logging.ERROR for r in caplog.records), (
+        "un TimeoutError que NO es el del receive() del mensaje de auth "
+        "(p.ej. verificar_sesion/pool.acquire) debe quedar en el log, no "
+        "desaparecer en el 4001 silencioso reservado para el timeout de auth"
+    )

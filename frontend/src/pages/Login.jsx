@@ -27,10 +27,15 @@ export default function Login() {
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
+    // Se limpia al ENVIAR, no sólo al tener éxito (2026-09-14, I-1 de la
+    // revisión final): si quedaba un aviso viejo (p.ej. "te desactivaron")
+    // y esta persona escribe mal la contraseña, el aviso viejo ya no
+    // convive con "Usuario o contraseña incorrectos" -- dos cajas rojas
+    // para un solo intento.
+    clearAvisoSesion()
     setLoading(true)
     try {
       await login(email, password)
-      clearAvisoSesion()
       navigate('/')
     } catch (err) {
       const status = err.response?.status

@@ -92,6 +92,20 @@ describe('Login -- aviso de cierre de sesión', () => {
     await waitFor(() => expect(clearAvisoSesionMock).toHaveBeenCalled())
   })
 
+  // I-1 (revisión final, 2026-09-14): antes clearAvisoSesion() sólo corría
+  // DESPUÉS de un login exitoso -- si quedaba un aviso viejo y esta persona
+  // escribía mal la contraseña, el aviso ("Tu sesión venció") seguía en
+  // pantalla junto con "Usuario o contraseña incorrectos": dos cajas rojas.
+  // Ahora se limpia al ENVIAR el formulario, no al tener éxito.
+  it('un login fallido (contraseña equivocada) también borra el aviso previo', async () => {
+    avisoSesion = 'sesion_invalida'
+    loginMock.mockRejectedValue({ response: { status: 401, headers: {}, data: {} } })
+    renderLogin()
+    enviar()
+    await waitFor(() => expect(screen.getByText(/Usuario o contraseña incorrectos/i)).toBeInTheDocument())
+    expect(clearAvisoSesionMock).toHaveBeenCalled()
+  })
+
   it('las claves sesion_invalida y sesion_expirada existen en es y en', async () => {
     const { default: es } = await import('../i18n/es.js')
     const { default: en } = await import('../i18n/en.js')

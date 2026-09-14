@@ -23,7 +23,7 @@ from .models import AuthUser
 bearer = HTTPBearer(auto_error=True)
 
 SESION_INVALIDA = "sesion_invalida"
-SQL_ESTADO_DE_SESION = "SELECT status, role, token_version FROM jax_users WHERE user_id = %s"
+SQL_ESTADO_DE_SESION = "SELECT status, role, token_version, email FROM jax_users WHERE user_id = %s"
 
 
 def _rechazo() -> HTTPException:
@@ -47,13 +47,14 @@ async def verificar_sesion(payload: dict, tipo: str) -> AuthUser:
             fila = await cur.fetchone()
     if fila is None:
         raise _rechazo()
-    estado, rol, tv_base = fila
+    estado, rol, tv_base, email = fila
     if estado != "active" or tv_token != int(tv_base):
         raise _rechazo()
     return AuthUser(
         user_id=str(user_id),
         tenant_id=str(payload.get("tenant_id", "")),
         role=rol,
+        email=email,
         token_version=int(tv_base),
     )
 
