@@ -250,4 +250,22 @@ describe('AdminSmtp', () => {
       expect(typeof t.smtpErrors.smtp_destinatario_invalido).toBe('string')
     }
   })
+
+  it('al cerrar el diálogo (Cancelar, Escape o envío exitoso) el foco vuelve al botón que lo abrió', async () => {
+    api.get.mockResolvedValue({ data: GUARDADA })
+    api.post.mockResolvedValue({ data: { ok: true, to: 'fernando@rich-hn.com' } })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    const disparador = screen.getByRole('button', { name: es.smtpSendTest })
+    fireEvent.click(disparador)
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: es.smtpCancel }))
+    expect(disparador).toHaveFocus()
+    fireEvent.click(disparador)
+    fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Escape' })
+    expect(disparador).toHaveFocus()
+    fireEvent.click(disparador)
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: es.smtpTestSendButton }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(disparador).toHaveFocus())
+  })
 })

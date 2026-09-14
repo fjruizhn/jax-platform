@@ -33,7 +33,7 @@ from email.utils import formataddr, formatdate, make_msgid
 
 from crypto_secrets import decrypt_db_secret, encrypt_secret
 from db.connection import get_pool
-from validacion import email_valido, tiene_caracteres_de_control
+from validacion import direccion_unica_valida, tiene_caracteres_de_control
 
 logger = logging.getLogger(__name__)
 
@@ -178,10 +178,11 @@ def estado_para_pantalla(filas: dict[str, str]) -> dict:
 def normalizar_destinatario(valor: str | None) -> str:
     """LA regla del destinatario de prueba -- la usan el guardado de
     smtp.test_to y la resolución de /smtp/test. "" si viene vacío (o None);
-    si no, sin espacios alrededor, un correo válido y sin caracteres de
-    control, o SmtpDestinatarioInvalido."""
+    si no, sin espacios alrededor, UNA sola dirección válida
+    (direccion_unica_valida) y sin caracteres de control, o
+    SmtpDestinatarioInvalido."""
     limpio = (valor or "").strip()
-    if limpio and (tiene_caracteres_de_control(limpio) or not email_valido(limpio)):
+    if limpio and (tiene_caracteres_de_control(limpio) or not direccion_unica_valida(limpio)):
         raise SmtpDestinatarioInvalido(limpio)
     return limpio
 

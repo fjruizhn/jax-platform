@@ -482,3 +482,35 @@ def test_destinatario_de_prueba_invalido_pedido_o_guardado(malo):
         smtp_config.destinatario_de_prueba(malo, _filas())
     with pytest.raises(smtp_config.SmtpDestinatarioInvalido):
         smtp_config.destinatario_de_prueba(None, _filas(**{"smtp.test_to": malo}))
+
+
+# ------------- un solo destinatario (revisión, 2026-09-13)
+# email_valido deja pasar , ; < > " ( ): "postmaster,a@b.io" se volvía DOS
+# destinatarios en el To y "x;y@b.io" se truncaba a "x" (medido por el revisor).
+
+VARIAS_O_RARAS = ["postmaster,a@b.io", "x;y@b.io", '"a"@b.io', "<a@b.io>", "a@b.io,", "a(b)@c.io",
+                  "a\\b@c.io", "a[b]@c.io"]
+UNICAS = ["fernando@rich-hn.com", "a.b+c@sub.example.test", "no-reply@axioma-ia.io"]
+
+
+@pytest.mark.parametrize("malo", VARIAS_O_RARAS)
+def test_direccion_unica_valida_rechaza_listas_y_caracteres_de_encabezado(malo):
+    import validacion
+    assert validacion.email_valido(malo)  # email_valido NO cambia (lo usa el login)
+    assert validacion.direccion_unica_valida(malo) is False
+
+
+@pytest.mark.parametrize("bueno", UNICAS)
+def test_direccion_unica_valida_acepta_una_direccion(bueno):
+    import validacion
+    assert validacion.direccion_unica_valida(bueno) is True
+
+
+@pytest.mark.parametrize("malo", VARIAS_O_RARAS)
+def test_destinatario_de_prueba_rechaza_varias_direcciones(malo):
+    with pytest.raises(smtp_config.SmtpDestinatarioInvalido):
+        smtp_config.destinatario_de_prueba(malo, _filas())
+    with pytest.raises(smtp_config.SmtpDestinatarioInvalido):
+        smtp_config.destinatario_de_prueba(None, _filas(**{"smtp.test_to": malo}))
+    with pytest.raises(smtp_config.SmtpDestinatarioInvalido):
+        smtp_config.filas_a_guardar(_filas(), _datos(password="nueva", test_to=malo))

@@ -7,6 +7,7 @@ espacios y con un punto en el dominio. Lo que decide si la dirección existe es
 el servidor de correo, no esta función.
 """
 import re
+from email.utils import getaddresses
 
 EMAIL_MAX = 254
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
@@ -14,6 +15,22 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 
 def email_valido(valor: str) -> bool:
     return bool(valor) and len(valor) <= EMAIL_MAX and _EMAIL.match(valor) is not None
+
+
+# Caracteres con significado en un encabezado de direcciones (RFC 5322):
+# separadores de lista, nombre visible, comentarios, comillas y escape.
+_ESPECIALES_DE_ENCABEZADO = frozenset(',;<>()[]"\\')
+
+
+def direccion_unica_valida(valor: str) -> bool:
+    """email_valido y además UNA sola dirección al ponerla en un encabezado
+    (To, From). email_valido deja pasar , ; < > " ( ): "postmaster,a@b.io"
+    se volvía dos destinatarios y "x;y@b.io" se truncaba a "x" (revisión,
+    2026-09-13). email_valido no cambia: lo usa el login y endurecerlo podría
+    dejar afuera a usuarios existentes."""
+    return (email_valido(valor)
+            and not _ESPECIALES_DE_ENCABEZADO.intersection(valor)
+            and getaddresses([valor]) == [("", valor)])
 
 
 # Caracteres de control C0 (\x00-\x1f, incluye \t \r \n) y DEL. En un

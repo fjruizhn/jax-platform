@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import PasswordInput from '../../components/PasswordInput'
@@ -33,6 +33,8 @@ export default function AdminSmtp() {
   const [resultado, setResultado] = useState(null)
   const [emailSesion, setEmailSesion] = useState('')
   const [dialogo, setDialogo] = useState(DIALOGO_CERRADO)
+  // Al cerrar el diálogo el foco vuelve al botón que lo abrió (revisión).
+  const disparadorPrueba = useRef(null)
 
   function mensaje(err) {
     const code = codigoDe(err)
@@ -116,22 +118,28 @@ export default function AdminSmtp() {
   function cerrarDialogo() {
     if (ocupado === 'prueba') return
     setDialogo(DIALOGO_CERRADO)
+    disparadorPrueba.current?.focus()
   }
 
   async function enviarPrueba(e) {
     e.preventDefault()
+    let enviado = false
     setOcupado('prueba')
     setDialogo((d) => ({ ...d, error: null }))
     try {
       const { data } = await api.post('/admin/smtp/test', { to: dialogo.to })
       setDialogo(DIALOGO_CERRADO)
       setResultado({ ok: true, texto: t.smtpTestSent(data?.to) })
+      enviado = true
     } catch (err) {
       // Dentro del diálogo: el destinatario sigue a la vista y se puede corregir.
       setDialogo((d) => ({ ...d, error: mensaje(err) }))
     } finally {
       setOcupado(null)
     }
+    // Después del finally: mientras ocupado el botón está deshabilitado y no
+    // toma el foco; se enfoca en el render siguiente, ya habilitado.
+    if (enviado) setTimeout(() => disparadorPrueba.current?.focus(), 0)
   }
 
   return (
@@ -205,7 +213,7 @@ export default function AdminSmtp() {
           <button type="button" onClick={probarConexion} disabled={ocupado !== null} className={`${BOTON} bg-slate-700 hover:bg-slate-600 text-slate-300`}>
             {ocupado === 'conexion' ? t.smtpTesting : t.smtpTestConnection}
           </button>
-          <button type="button" onClick={abrirDialogo} disabled={ocupado !== null} className={`${BOTON} bg-slate-700 hover:bg-slate-600 text-slate-300`}>
+          <button type="button" ref={disparadorPrueba} onClick={abrirDialogo} disabled={ocupado !== null} className={`${BOTON} bg-slate-700 hover:bg-slate-600 text-slate-300`}>
             {t.smtpSendTest}
           </button>
         </div>

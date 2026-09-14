@@ -604,9 +604,8 @@ def test_put_rechaza_test_to_invalido_y_no_escribe(client, malo):
     assert _guardar(client).status_code == 200
     antes = client.portal.call(_filas_smtp)
     r = _guardar(client, password=smtp_config.MASCARA, from_name="Otro", test_to=malo)
-    assert r.status_code in (400, 422)
-    if r.status_code == 400:
-        assert r.json()["detail"] == "smtp_destinatario_invalido"
+    # Exactamente 400 con código propio, también el de más de 254 (revisión).
+    assert (r.status_code, r.json()["detail"]) == (400, "smtp_destinatario_invalido")
     assert client.portal.call(_filas_smtp) == antes
 
 
@@ -688,3 +687,28 @@ def test_config_generico_rechaza_y_no_lista_smtp_test_to(client):
     assert client.portal.call(_filas_smtp) == antes
     claves = [i["key"] for i in client.get("/api/admin/config", headers=_admin()).json()["config"]]
     assert claves and "smtp.test_to" not in claves
+
+
+# ------------- un solo destinatario (revisión, 2026-09-13)
+
+@pytest.mark.parametrize("malo", ["postmaster,a@b.io", "x;y@b.io"])
+def test_prueba_con_to_de_varias_direcciones_es_400_y_no_envia(client, monkeypatch, malo):
+    enviados = _espiar_envios(monkeypatch)
+    assert _guardar(client).status_code == 200
+    r = client.post("/api/admin/smtp/test", json={"to": malo}, headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (400, "smtp_destinatario_invalido")
+    assert enviados == []
+
+
+@pytest.mark.parametrize("malo", ["postmaster,a@b.io", "x;y@b.io"])
+def test_put_con_test_to_de_varias_direcciones_es_400_y_no_escribe(client, malo):
+    r = _guardar(client, test_to=malo)
+    assert (r.status_code, r.json()["detail"]) == (400, "smtp_destinatario_invalido")
+    assert client.portal.call(_filas_smtp) == {}
+
+
+@pytest.mark.parametrize("malo", ["a@b.io,c@d.io", "postmaster,a@b.io"])
+def test_put_con_from_email_de_varias_direcciones_es_400(client, malo):
+    r = _guardar(client, from_email=malo)
+    assert (r.status_code, r.json()["detail"]) == (400, "smtp_from_email_invalido")
+    assert client.portal.call(_filas_smtp) == {}

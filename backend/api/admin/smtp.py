@@ -17,7 +17,7 @@ from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from auth.rate_limit import SlidingWindowLimiter, parse_rate
 from db.connection import get_pool
-from validacion import EMAIL_MAX, email_valido, tiene_caracteres_de_control
+from validacion import EMAIL_MAX, direccion_unica_valida, tiene_caracteres_de_control
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin")
@@ -56,11 +56,13 @@ class SmtpUpdate(SmtpConexion):
     from_email: str = Field(min_length=3, max_length=EMAIL_MAX)
     # Destinatario por defecto del correo de prueba (2026-09-13). Ausente en
     # el body = no se toca la fila (clientes viejos); null o "" la vacían.
-    test_to: Optional[str] = Field(default=None, max_length=EMAIL_MAX)
+    # Sin max_length: el tope de 254 lo aplica normalizar_destinatario y sale
+    # como smtp_destinatario_invalido, no como un 422 sin traducir (revisión).
+    test_to: Optional[str] = None
 
 
 class SmtpPrueba(BaseModel):
-    # Sin tope propio: uno demasiado largo no pasa email_valido y sale como
+    # Sin tope propio: uno demasiado largo no pasa la validación y sale como
     # smtp_destinatario_invalido, el mismo código que cualquier otro inválido.
     to: Optional[str] = None
 
@@ -104,7 +106,8 @@ async def guardar_smtp(req: SmtpUpdate, user: AuthUser = Depends(require_superad
     if not clave_de_cifrado_utilizable():
         raise HTTPException(status_code=503, detail="smtp_sin_clave_de_cifrado")
     _validar_entrada(req)
-    if not email_valido(req.from_email):
+    # Una sola dirección: el remitente va al encabezado From (revisión).
+    if not direccion_unica_valida(req.from_email):
         raise HTTPException(status_code=400, detail="smtp_from_email_invalido")
     datos = req.model_dump()
     if "test_to" not in req.model_fields_set:
