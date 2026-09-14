@@ -175,3 +175,33 @@ def test_login_emite_la_version_actual(client, usuarios):
     client.cookies.clear()
     assert r.status_code == 200, r.text
     assert decode_token(r.json()["access_token"])["tv"] == 4
+
+
+# ------------------------------------------------------------- WebSocket
+
+from starlette.websockets import WebSocketDisconnect  # noqa: E402
+
+
+def _ws_auth(client, user_id, token):
+    with client.websocket_connect(f"/ws/{user_id}") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        try:
+            return ws.receive_json()
+        except WebSocketDisconnect as exc:
+            return exc.code
+
+
+def test_ws_de_usuario_desactivado_se_cierra_con_4001(client, usuarios):
+    user_id, _ = usuarios(status="inactive")
+    assert _ws_auth(client, user_id, token_para(user_id)) == 4001
+
+
+def test_ws_con_version_vieja_se_cierra_con_4001(client, usuarios):
+    user_id, _ = usuarios(token_version=1)
+    assert _ws_auth(client, user_id, token_para(user_id, tv=0)) == 4001
+
+
+def test_ws_de_usuario_real_activo_autentica(client, usuarios):
+    # CONTROL: ya pasa hoy.
+    user_id, _ = usuarios()
+    assert _ws_auth(client, user_id, token_para(user_id)) == {"type": "auth_ok"}

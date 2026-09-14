@@ -51,6 +51,7 @@ from jax_engine.websocket_hub import ws_hub
 from jax_engine.lifecycle import lifecycle_lock, sse_connections
 from jax_engine.schemas import JAXEvent
 from auth.jwt import decode_token
+from auth.middleware import verificar_sesion
 
 from api.health import router as health_router
 from api.auth import router as auth_router
@@ -210,6 +211,11 @@ async def websocket_endpoint(
             await websocket.close(code=4001)
             return
 
+        # La misma verificación que cada request HTTP (admin usuarios etapa
+        # 2): usuario existente, `active` y con la versión de token vigente.
+        # Un HTTPException cae en el `except Exception` de abajo -> 4001.
+        sesion = await verificar_sesion(payload, "access")
+
     except WebSocketDisconnect:
         return
     except asyncio.TimeoutError:
@@ -225,8 +231,8 @@ async def websocket_endpoint(
             pass
         return
 
-    tenant_id = str(payload["tenant_id"])
-    role = payload["role"]
+    tenant_id = sesion.tenant_id
+    role = sesion.role  # de la base, no del token
 
     await websocket.send_json({"type": "auth_ok"})
 

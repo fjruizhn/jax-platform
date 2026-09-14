@@ -461,7 +461,9 @@ jobs:
           # crea jax_users.token_version en jax_memory_test). Medido: 614 / 1.
           # Subido de 614 a 628 (2026-09-14, admin usuarios etapa 2, Task 3):
           # 14 de middleware/refresh/login/EXPLAIN. Medido: 628 / 1.
-          PISO_PASSED = 628
+          # Subido de 628 a 631 (2026-09-14, admin usuarios etapa 2, Task 4):
+          # 3 del handshake WS. Medido: 631 / 1.
+          PISO_PASSED = 631
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -717,6 +719,10 @@ jobs:
       # Los 14 tests nuevos de middleware/refresh/login piden `client`
       # (verifican status/role/token_version contra la base): se saltean
       # los 14, no suman a `passed`. Medido con JAX_CI_NO_DB=1: 303 / 326.
+      # 303 -> 303 (2026-09-14, admin usuarios etapa 2, Task 4): sin cambio.
+      # Los 3 tests nuevos del handshake WS piden `client` (websocket_connect
+      # sobre la app real) y se saltean, no suman a `passed`.
+      # Medido con JAX_CI_NO_DB=1: 303 / 329.
       JAX_CI_MIN_PASSED: "303"
     steps:
       - uses: actions/checkout@v4
