@@ -526,7 +526,11 @@ jobs:
           # SnapshotError en el chat, y turnos cancelados sobre una recarga
           # que falla -> UNA línea ERROR de shield y los demás reciben la
           # excepción (opción a). Rojo visto antes del arreglo. Medido: 668 / 1.
-          PISO_PASSED = 668
+          # +4 (2026-09-14, tanda A v2): test_catalogo_db_en_la_mesa.py -- la Mesa de
+          # punta a punta (VALID/OBSERVADO; modo equivocado FACT_NOT_IN_SNAPSHOT),
+          # TRIPWIRE ops∩DB vacío y su CONTROL. Rojos por mutación y contra el jax de
+          # producción.
+          PISO_PASSED = 672
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -811,6 +815,9 @@ jobs:
       # +9 puros (timeout de recarga: default, leído en cada recarga, 5
       # inválidos, SnapshotError en el chat; log único de shield, opción a).
       # Medido con JAX_CI_NO_DB=1: 326 / 343.
+      # 326 -> 326 (2026-09-14, tanda A v2): sin cambio en passed. skipped +4
+      # (test_catalogo_db_en_la_mesa.py, los 4 con client). Medido con
+      # JAX_CI_NO_DB=1: 326 / 347.
       JAX_CI_MIN_PASSED: "326"
     steps:
       - uses: actions/checkout@v4
