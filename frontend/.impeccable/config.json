@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "createdAt": "2026-09-14T01:17:16.029Z",
+        "reason": "Fernando confirmed (2026-09-13, chat): Inter es la fuente de la plataforma desde v0.2 (5e28e9e, 2026-06-19); se mantiene por coherencia visual"
+      }
+    ]
+  }
+}
