@@ -10,6 +10,7 @@ Ahora: access y refresh llevan `tv`; cada request lee status, role y
 token_version por clave primaria; el rol sale de la base. Un token de antes
 del despliegue (sin `tv`) vale como tv=0.
 """
+import logging
 import time
 
 from jose import jwt
@@ -205,3 +206,37 @@ def test_ws_de_usuario_real_activo_autentica(client, usuarios):
     # CONTROL: ya pasa hoy.
     user_id, _ = usuarios()
     assert _ws_auth(client, user_id, token_para(user_id)) == {"type": "auth_ok"}
+
+
+# --------------------------------------------------- fallo 4001 sin log (round 1)
+#
+# Hallazgo de code review: `verificar_sesion` (un round-trip real a la base)
+# corre dentro del mismo `try` cuyo único manejador era `except Exception:
+# close(4001)` sin loguear nada. Una sesión inválida (HTTPException 401) y un
+# fallo de infraestructura (pool agotado, MariaDB caída) terminaban IGUAL en
+# 4001, indistinguibles y sin rastro en logs.
+
+
+def test_ws_con_fallo_de_infraestructura_se_cierra_con_4001_y_lo_loguea(client, usuarios, monkeypatch, caplog):
+    import main
+
+    async def _pool_caido(*_a, **_k):
+        raise RuntimeError("pool caído")
+
+    user_id, _ = usuarios()
+    monkeypatch.setattr(main, "verificar_sesion", _pool_caido)
+    with caplog.at_level(logging.ERROR):
+        resultado = _ws_auth(client, user_id, token_para(user_id))
+    assert resultado == 4001
+    assert any(r.levelno >= logging.ERROR for r in caplog.records), (
+        "un fallo real (pool caído) debe quedar en el log, no desaparecer en el 4001"
+    )
+
+
+def test_ws_de_sesion_invalida_no_deja_log_de_error(client, usuarios, caplog):
+    # Caso esperado (usuario desactivado): 4001 sin ensuciar el log de errores.
+    user_id, _ = usuarios(status="inactive")
+    with caplog.at_level(logging.ERROR):
+        resultado = _ws_auth(client, user_id, token_para(user_id))
+    assert resultado == 4001
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)

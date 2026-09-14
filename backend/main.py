@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -78,6 +78,8 @@ from api.admin import (
     admin_motors_router,
     smtp_router,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -213,7 +215,10 @@ async def websocket_endpoint(
 
         # La misma verificación que cada request HTTP (admin usuarios etapa
         # 2): usuario existente, `active` y con la versión de token vigente.
-        # Un HTTPException cae en el `except Exception` de abajo -> 4001.
+        # Un HTTPException (sesión inválida) cae en el `except HTTPException`
+        # de abajo -> 4001 sin log; cualquier otra excepción (pool agotado,
+        # MariaDB caída) cae en el `except Exception` -> 4001 CON log
+        # (code review de esta ronda).
         sesion = await verificar_sesion(payload, "access")
 
     except WebSocketDisconnect:
@@ -224,7 +229,20 @@ async def websocket_endpoint(
         except RuntimeError:  # fail-soft: best-effort close() tras un error ya manejado arriba; el except externo ya hace return
             pass
         return
-    except Exception:
+    except (HTTPException, ValueError, TypeError, AttributeError, KeyError):
+        # Caso esperado del handshake, no un fallo de infraestructura: token
+        # invalido/expirado o sesion invalida -- inactiva, rol cambiado,
+        # token_version vieja (HTTPException de decode_token/verificar_sesion,
+        # code review de esta ronda), o el mensaje de auth malformado (JSON
+        # invalido, no es un dict, faltan campos -- el comportamiento de
+        # antes de esta ronda). No se loguea como error.
+        try:
+            await websocket.close(code=4001)
+        except RuntimeError:  # fail-soft: mismo best-effort close() que la rama anterior, el except externo ya hace return
+            pass
+        return
+    except Exception:  # fail-soft: fallo real de infraestructura (pool agotado, MariaDB caida, timeout de la consulta) -- cierra 4001 igual que arriba, pero primero deja rastro en el log; sin esto es indistinguible de una sesion invalida (code review de esta ronda)
+        logger.exception("Fallo inesperado en el handshake WebSocket")
         try:
             await websocket.close(code=4001)
         except RuntimeError:  # fail-soft: mismo best-effort close() que la rama anterior, el except externo ya hace return
