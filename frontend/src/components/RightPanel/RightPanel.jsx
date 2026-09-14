@@ -4,6 +4,7 @@ import { useI18n } from '../../i18n/index.jsx'
 import StepCard from './StepCard'
 import AuditLog from './AuditLog'
 import api from '../../api/client'
+import AlertaError from '../AlertaError'
 
 function ProgressBar({ steps, t }) {
   if (!steps || steps.length === 0) return null
@@ -30,29 +31,45 @@ function RightPanel() {
   const { t } = useI18n()
   const [tab, setTab] = useState('pipelines')
   const [cancelling, setCancelling] = useState(false)
+  // Último fallo de Aprobar/Cancelar (2026-09-14): antes solo iba a
+  // console.error y en la interfaz no pasaba nada. Guarda la clave de i18n
+  // (no el texto, para que un cambio de idioma lo traduzca) y el pipeline al
+  // que pertenece: sobre otro pipeline no significa nada.
+  const [aviso, setAviso] = useState(null)
 
   const pipelines = Object.values(activePipelines)
   const activePipeline = pipelines.find(p => ['running', 'waiting_gate'].includes(p.status))
     || pipelines[0]
 
   async function handleResume(pipelineId) {
+    setAviso(null)
     try {
       await api.post(`/pipelines/${pipelineId}/resume`)
     } catch (e) {
       console.error('resume failed', e)
+      setAviso({ pipelineId, clave: 'approveError' })
     }
   }
 
   async function handleCancel(pipelineId) {
+    setAviso(null)
     setCancelling(true)
     try {
       await api.post(`/pipelines/${pipelineId}/cancel`)
     } catch (e) {
       console.error('cancel failed', e)
+      setAviso({ pipelineId, clave: 'cancelError' })
     } finally {
       setCancelling(false)
     }
   }
+
+  // El aviso de Aprobar deja de aplicar si el pipeline ya no espera aprobación.
+  const avisoVigente = aviso
+    && activePipeline
+    && aviso.pipelineId === activePipeline.pipeline_id
+    && (aviso.clave !== 'approveError' || activePipeline.status === 'waiting_gate')
+    ? aviso : null
 
   const TABS = [
     { id: 'pipelines', label: t.tabDirectorJacobs },
@@ -128,6 +145,12 @@ function RightPanel() {
               >
                 {cancelling ? t.cancelling : t.cancelPipeline}
               </button>
+
+              {avisoVigente && (
+                <AlertaError className="mt-2 text-xs">
+                  {t[avisoVigente.clave] ?? t.statusError}
+                </AlertaError>
+              )}
 
               {pipelines.length > 1 && (
                 <div className="mt-3 text-xs text-slate-600">

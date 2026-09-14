@@ -1,19 +1,37 @@
 import { useState, useEffect } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
+import { codigoDe } from '../../api/errores'
+import AlertaError from '../../components/AlertaError'
+
+// Códigos con los que PUT /admin/config rechaza (backend/api/admin/config_admin.py).
+// Cada uno tiene su texto; cualquier otro cae en el genérico, nunca en silencio
+// (2026-09-14: el catch estaba vacío y quien guardaba no veía por qué no se guardó).
+const CODIGOS_CONOCIDOS = new Set(['config_clave_reservada', 'config_collation_desconocida'])
+
+function claveDeError(err) {
+  const codigo = codigoDe(err)
+  return CODIGOS_CONOCIDOS.has(codigo) ? codigo : 'adminSettingsSaveError'
+}
 
 export default function AdminSettings() {
   const { t } = useI18n()
   const [config, setConfig] = useState({})
+  // Sin una carga buena no se guarda: los campos mostrarían valores por
+  // defecto y "Guardar" enviaría una lista vacía que el backend acepta.
+  const [cargado, setCargado] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  // Clave de i18n del error vigente: se traduce al renderizar.
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     api.get('/admin/config').then(r => {
       const map = {}
       r.data.config.forEach(({ key, value }) => { map[key] = value })
       setConfig(map)
-    }).catch(() => {})
+      setCargado(true)
+    }).catch(() => setError('adminSettingsLoadError'))
   }, [])
 
   function set(key, value) {
@@ -22,12 +40,16 @@ export default function AdminSettings() {
 
   async function handleSave() {
     setSaving(true)
+    setError(null)
     try {
       const items = Object.entries(config).map(([key, value]) => ({ key, value: String(value) }))
       await api.put('/admin/config', items)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
-    } catch {
+    } catch (err) {
+      // Un "Guardado" de un intento anterior no puede convivir con este error.
+      setSaved(false)
+      setError(claveDeError(err))
     } finally {
       setSaving(false)
     }
@@ -73,10 +95,14 @@ export default function AdminSettings() {
           <input type="number" min="1" max="365" value={config.web_task_retention_days || '7'} onChange={e => set('web_task_retention_days', e.target.value)} className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-purple-500" />
         </div>
 
+        {error && (
+          <AlertaError className="text-sm">{t[error] ?? t.adminSettingsSaveError}</AlertaError>
+        )}
+
         <div className="pt-2">
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !cargado}
             className="px-5 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold disabled:opacity-50 transition-colors"
           >
             {saved ? `✓ ${t.adminSettingsSaved}` : saving ? t.attachUploading : t.adminSettingsSave}

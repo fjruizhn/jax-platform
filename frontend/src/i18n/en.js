@@ -22,6 +22,10 @@ export default {
   approve: '✓ Approve',
   cancelling: 'Cancelling…',
   cancelPipeline: 'Cancel pipeline',
+  approveError: 'The step could not be approved. Try again.',
+  cancelError: 'The pipeline could not be cancelled. Try again.',
+  // Nombre guardado del pipeline: el objetivo, recortado a 50 caracteres.
+  pipelineName: (objetivo) => `Pipeline: ${objetivo.slice(0, 50)}`,
 
   // Audit log
   auditLog: 'Audit Log',
@@ -384,6 +388,10 @@ export default {
   adminSettingsTitle: 'System Configuration',
   adminSettingsSave: 'Save',
   adminSettingsSaved: 'Saved',
+  adminSettingsSaveError: 'The configuration could not be saved.',
+  adminSettingsLoadError: 'The configuration could not be loaded.',
+  config_clave_reservada: 'One of the keys is reserved and cannot be changed from this screen. Nothing was saved.',
+  config_collation_desconocida: 'The database could not verify the reserved keys, so nothing was saved.',
   adminSettingsLang: 'Default language',
   adminSettingsTheme: 'Default theme',
   adminSettingsTimeout: 'Session timeout (min)',

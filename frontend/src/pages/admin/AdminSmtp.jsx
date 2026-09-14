@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
+import { codigoDe } from '../../api/errores'
 import PasswordInput from '../../components/PasswordInput'
 
 // Correo saliente (2026-09-12, etapa 1 de administración de usuarios): copia
@@ -19,11 +20,6 @@ const DIALOGO_CERRADO = { abierto: false, to: '', error: null }
 const INPUT = 'w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500'
 const LABEL = 'block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider'
 const BOTON = 'px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50'
-
-function codigoDe(err) {
-  const detail = err?.response?.data?.detail
-  return typeof detail === 'string' ? detail : detail?.code
-}
 
 export default function AdminSmtp() {
   const { t } = useI18n()

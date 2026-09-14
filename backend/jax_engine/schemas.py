@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Any, Literal
-from datetime import datetime
+from tiempo import utc_ahora
 import uuid
 
 EventType = Literal[
@@ -27,14 +27,14 @@ class JAXEvent(BaseModel):
     tenant_id: str
     user_id: str
     payload: dict[str, Any] = Field(default_factory=dict)
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    timestamp: str = Field(default_factory=lambda: utc_ahora().isoformat() + "Z")
 
 
 class FacetState(BaseModel):
     name: str
     status: FacetStatus = "idle"
     last_message: str = ""
-    last_update: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    last_update: str = Field(default_factory=lambda: utc_ahora().isoformat() + "Z")
     color: str = "#3b82f6"
 
 
@@ -54,15 +54,15 @@ class PipelineState(BaseModel):
     name: str
     status: PipelineStatus = "pending"
     steps: list[PipelineStep] = Field(default_factory=list)
-    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
-    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    created_at: str = Field(default_factory=lambda: utc_ahora().isoformat() + "Z")
+    updated_at: str = Field(default_factory=lambda: utc_ahora().isoformat() + "Z")
 
 
 class UserSession(BaseModel):
     user_id: str
     tenant_id: str
     role: str
-    connected_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    connected_at: str = Field(default_factory=lambda: utc_ahora().isoformat() + "Z")
 
 
 class EcosystemState(BaseModel):

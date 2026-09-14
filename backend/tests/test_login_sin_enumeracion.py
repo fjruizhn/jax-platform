@@ -21,7 +21,8 @@ email único y lo borra al terminar.
 import asyncio
 import threading
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
+from tiempo import utc_ahora
 from unittest.mock import patch
 
 GENERICO = (401, "Usuario o contraseña incorrectos")
@@ -98,7 +99,7 @@ def test_cuenta_inactiva_sin_contrasena_correcta_no_se_revela(client):
 
 def test_cuenta_bloqueada_sin_contrasena_correcta_no_se_revela(client):
     email = _email()
-    client.portal.call(_crear, email, "active", 5, datetime.utcnow() + timedelta(minutes=10))
+    client.portal.call(_crear, email, "active", 5, utc_ahora() + timedelta(minutes=10))
     try:
         assert _login(client, email, "mala") == GENERICO
         status, detail = _login(client, email, CLAVE)

@@ -8,7 +8,7 @@ import unicodedata
 import uuid
 from collections import OrderedDict
 from functools import lru_cache
-from datetime import datetime
+from tiempo import utc_ahora
 from typing import Literal, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -1077,7 +1077,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     facet = req.facet if req.facet else _auto_route(req.message)
     tenant_id = user.tenant_id
     user_id = user.user_id
-    timestamp = datetime.utcnow().isoformat() + "Z"
+    timestamp = utc_ahora().isoformat() + "Z"
 
     # --- Memoria semántica (misma jax_memory que el REPL) — best-effort -----
     # user_id/tenant_id vienen del JWT; project_id del request (None=individual).

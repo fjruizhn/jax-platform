@@ -167,7 +167,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
       setSubmitting(true)
       const steps = buildChainSteps(objective, chainFacets, t.chainInstructions)
       await onSubmit({
-        name: `Pipeline: ${objective.slice(0, 50)}`,
+        name: t.pipelineName(objective),
         objective,
         invoked_by: 'Fernando',
         mode,
@@ -182,7 +182,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
     setSubmitting(true)
     const steps = buildSteps(selected, objective, FACET_OPTIONS, motorChoices, motorsByKey)
     await onSubmit({
-      name: `Pipeline: ${objective.slice(0, 50)}`,
+      name: t.pipelineName(objective),
       objective,
       invoked_by: 'Fernando',
       mode,

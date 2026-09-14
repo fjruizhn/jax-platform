@@ -18,6 +18,8 @@ vi.mock('../../api/client', () => ({
 import api from '../../api/client'
 import PipelineModal from './PipelineModal'
 import { I18nProvider } from '../../i18n/index.jsx'
+import es from '../../i18n/es.js'
+import en from '../../i18n/en.js'
 
 // La cadena es la forma por defecto desde 2026-09-12. Los tests del picker
 // en paralelo (los de abajo) cambian de forma explícitamente al renderizar.
@@ -53,6 +55,29 @@ describe('PipelineModal -- cadena en línea', () => {
     expect(submitted.max_steps).toBe(6)
     expect(submitted.steps[4]).toMatchObject({ facet: 'kimi', motor: 'kimi' })
     submitted.steps.forEach(s => expect(s).not.toHaveProperty('timeout_seconds'))
+  })
+
+  // DEUDA.md (anotados b8f80733): el nombre llevaba `Pipeline: ` escrito en
+  // el componente. Sale de i18n, en las dos formas de armar el pipeline.
+  it('el nombre del pipeline sale de i18n, no de un prefijo fijo', async () => {
+    expect(en.pipelineName, 'en.pipelineName').toBeTypeOf('function')
+    // Un spy y no una comparación de texto: el de es.js coincide con el viejo
+    // prefijo fijo, así que comparar solo el texto pasaría con el código viejo.
+    const spy = vi.spyOn(es, 'pipelineName').mockReturnValue('NOMBRE-DESDE-I18N')
+    try {
+      for (const layout of ['chain', 'parallel']) {
+        let submitted = null
+        const { unmount } = renderModal({ onSubmit: (p) => { submitted = p; return Promise.resolve() } }, { layout })
+        await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+        fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+        await waitFor(() => expect(submitted).not.toBeNull())
+        expect(submitted.name).toBe('NOMBRE-DESDE-I18N')
+        unmount()
+      }
+      expect(spy).toHaveBeenCalledWith('probar el picker de motor')
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('la cadena corre en autonomous por defecto; paralelo conserva supervised', async () => {

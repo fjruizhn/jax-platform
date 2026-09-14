@@ -1,6 +1,7 @@
 import os
 import psutil
-from datetime import datetime, date
+from datetime import date
+from tiempo import utc_ahora
 from fastapi import APIRouter, Depends
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
@@ -21,9 +22,9 @@ _PROVIDERS_KEYS = [
 async def _check_http(url: str) -> dict:
     try:
         client = await get_http_client()
-        t0 = datetime.utcnow()
+        t0 = utc_ahora()
         r = await client.get(url, timeout=3.0)
-        ms = int((datetime.utcnow() - t0).total_seconds() * 1000)
+        ms = int((utc_ahora() - t0).total_seconds() * 1000)
         return {"status": "alive" if r.status_code < 500 else "down", "latency_ms": ms}
     except Exception:
         return {"status": "down", "latency_ms": None}
@@ -82,7 +83,7 @@ async def get_dashboard(user: AuthUser = Depends(require_superadmin)):
 
     pool = await get_pool()
     today = date.today().isoformat()
-    now = datetime.utcnow()
+    now = utc_ahora()
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
