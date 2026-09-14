@@ -7,6 +7,7 @@ import AdminUsers from './admin/AdminUsers'
 import AdminRepository from './admin/AdminRepository'
 import AdminSettings from './admin/AdminSettings'
 import AdminCosts from './admin/AdminCosts'
+import AdminSmtp from './admin/AdminSmtp'
 
 export default function Admin() {
   const { t } = useI18n()
@@ -24,6 +25,7 @@ export default function Admin() {
           <Route path="repo" element={<AdminRepository />} />
           <Route path="settings" element={<AdminSettings />} />
           <Route path="costs" element={<AdminCosts />} />
+          <Route path="smtp" element={<AdminSmtp />} />
         </Routes>
       </main>
     </div>

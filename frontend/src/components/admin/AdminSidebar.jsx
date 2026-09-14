@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { path: 'users',     labelKey: 'adminUsers',     icon: '👤' },
   { path: 'repo',      labelKey: 'adminRepo',      icon: '📁' },
   { path: 'settings',  labelKey: 'adminSettings',  icon: '⚙' },
+  { path: 'smtp',      labelKey: 'adminSmtp',      icon: '✉' },
   { path: 'costs',     labelKey: 'adminCosts',     icon: '💰' },
 ]
 

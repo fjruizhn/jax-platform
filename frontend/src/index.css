@@ -61,6 +61,7 @@ html.light-mode .border-slate-800 { border-color: #e2e8f0; }
 
 /* Text */
 html.light-mode .text-hal-text { color: #0f172a; }
+html.light-mode .text-slate-100 { color: #0f172a; }
 html.light-mode .text-slate-200 { color: #1e293b; }
 html.light-mode .text-slate-300 { color: #334155; }
 html.light-mode .text-slate-400 { color: #475569; }
@@ -71,6 +72,45 @@ html.light-mode .text-slate-700 { color: #b0bec5; }
 html.light-mode .hover\:text-slate-200:hover { color: #1e293b; }
 html.light-mode .hover\:text-slate-300:hover { color: #334155; }
 html.light-mode .hover\:text-slate-400:hover { color: #475569; }
+
+/* Rojos y verdes "tintados" en modo claro (2026-09-13, revisión final de la
+   etapa 1 de administración de usuarios). Son los del modo oscuro: texto
+   200-500 sobre fondos 900/950 translúcidos. En claro no tenían override y el
+   aviso de SMTP corrupto medía 1,49:1. Texto a 700/800, fondos a 50/100,
+   bordes a 300; cada hover:, un paso más oscuro. Los fondos sólidos con texto
+   blanco (bg-red-500/600, bg-green-400...) se leen en ambos modos y no se
+   tocan. src/lightModeOverrides.test.js exige que toda clase de este grupo
+   usada en src tenga su override; el contraste de cada par está medido en el
+   reporte de la fix wave (todos >= 4,5:1). */
+html.light-mode .text-red-200 { color: #991b1b; }
+html.light-mode .text-red-300 { color: #b91c1c; }
+html.light-mode .text-red-400 { color: #b91c1c; }
+html.light-mode .text-red-500 { color: #b91c1c; }
+html.light-mode .hover\:text-red-300:hover { color: #991b1b; }
+html.light-mode .hover\:text-red-400:hover { color: #991b1b; }
+
+html.light-mode .text-green-200 { color: #166534; }
+html.light-mode .text-green-300 { color: #15803d; }
+html.light-mode .text-green-400 { color: #15803d; }
+
+html.light-mode .bg-red-900\/30 { background-color: #fef2f2; }
+html.light-mode .bg-red-900\/40 { background-color: #fef2f2; }
+html.light-mode .bg-red-950\/30 { background-color: #fef2f2; }
+html.light-mode .bg-red-900 { background-color: #fee2e2; }
+html.light-mode .bg-red-950 { background-color: #fee2e2; }
+html.light-mode .hover\:bg-red-800\/50:hover { background-color: #fee2e2; }
+html.light-mode .hover\:bg-red-900\/60:hover { background-color: #fee2e2; }
+html.light-mode .hover\:bg-red-900:hover { background-color: #fecaca; }
+
+html.light-mode .bg-green-900\/30 { background-color: #f0fdf4; }
+html.light-mode .bg-green-900\/40 { background-color: #f0fdf4; }
+html.light-mode .bg-green-950\/30 { background-color: #f0fdf4; }
+html.light-mode .bg-green-900 { background-color: #dcfce7; }
+html.light-mode .hover\:bg-green-800\/50:hover { background-color: #dcfce7; }
+
+html.light-mode .border-red-800 { border-color: #fca5a5; }
+html.light-mode .hover\:border-red-700:hover { border-color: #f87171; }
+html.light-mode .border-green-800 { border-color: #86efac; }
 
 /* Placeholder */
 html.light-mode .placeholder-slate-600::placeholder { color: #94a3b8; }

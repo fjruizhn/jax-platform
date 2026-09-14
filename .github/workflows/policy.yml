@@ -70,7 +70,15 @@ jobs:
   # independiente, props al input); 79 desde el ojo HAL en la esquina y la
   # caja que crece (+4 alturaInput, +2 ubicación del ojo); 82 desde el
   # logotipo de texto Axioma (+3: marca y lema en es, lema en en, punto decorativo);
-  # 87 desde la barra de usuario con íconos (+5). Validado
+  # 87 desde la barra de usuario con íconos (+5); 92 desde el 2026-09-12
+  # (admin usuarios etapa 1: AdminSmtp.test.jsx agrega 5); 96 desde el
+  # 2026-09-13 (fix wave de la revisión final: AdminSmtp.test.jsx agrega 4 --
+  # guardado con recarga fallida, banner corrupto en una frase i18n, aviso de
+  # cifrado "none", códigos nuevos en es y en). Fix wave 2 (2026-09-13): sin
+  # cambio en el conteo, 96 medido (solo se amplió la lista de códigos de un
+  # test existente con smtp_usuario_no_ascii); 97 desde el 2026-09-13 (item F:
+  # src/lightModeOverrides.test.js exige override de modo claro para cada
+  # rojo/verde tintado usado en src, +1). Validado
   # rompiendo un test a propósito y viendo este job en rojo sobre el sha real.
   # Gate por conteo del reporter JSON (ver el paso), no por texto.
   frontend-tests:
@@ -96,8 +104,8 @@ jobs:
           node -e '
             const r = require("/tmp/vitest.json");
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} total=${r.numTotalTests}`);
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 87) {
-              console.error("PISO ROTO: se esperaban 87 tests de vitest CORRIDOS y 0 fallidos.");
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 97) {
+              console.error("PISO ROTO: se esperaban 97 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -378,7 +386,43 @@ jobs:
           # (password larga sin 500, cuenta legada, forgot-password sin DB en el
           # request, su limite, el procesamiento en segundo plano, y los codigos
           # de reset). Medido en la rama: 427 / 1.
-          PISO_PASSED = 427
+          # Subido de 427 a 446 (2026-09-12, administración de usuarios etapa 1,
+          # SMTP desde Admin): 19 puros de test_smtp_config.py. Medido: 446 / 1.
+          # Subido de 446 a 462 (2026-09-12/13, administración de usuarios etapa 1,
+          # endpoints de Admin para SMTP): tests/test_smtp_endpoints.py agrega 16
+          # con `client`. Medido en la rama: 462 / 1.
+          # Subido de 462 a 463 (2026-09-13, administración de usuarios etapa 1,
+          # recuperación de contraseña con SMTP de la base): +1:
+          # test_recuperacion_sin_smtp_configurado_no_crea_token_ni_envia.
+          # Medido en la rama: 463 / 1.
+          # Subido de 463 a 527 (2026-09-13, fix wave de la revisión final de la
+          # etapa 1): +20 puros en test_smtp_config.py (contraseña guardada solo
+          # contra el mismo servidor, repr sin contraseña, máscara que descifra,
+          # puerto fuera de rango, caracteres de control, clave Fernet
+          # utilizable, cifrado "none", AUTH no ASCII), +42 con `client` en
+          # test_smtp_endpoints.py (servidor distinto con máscara en PUT y en
+          # test-connection, no ASCII, control, límite de test-connection,
+          # FERNET_KEY ausente/malformada, /config con mayúsculas) y +2 en
+          # test_login_residuos.py (motivo en el log, enlace escapado).
+          # Medido en la rama: 527 / 1.
+          # Subido de 527 a 544 (2026-09-13, fix wave 2 de la revisión final):
+          # +3 puros en test_smtp_config.py (decrypt_db_secret con clave
+          # malformada, host IDNA inválido en probar_conexion y en enviar) y
+          # +14 con `client` en test_smtp_endpoints.py (5 claves que la
+          # collation iguala a smtp.password, clave normal aceptada, guardado
+          # atómico, autocommit devuelto, usuario no ASCII, GET con clave
+          # malformada, host IDNA en test-connection y /smtp/test, remitente
+          # con caracteres de control x2). Medido en la rama: 544 / 1.
+          # Subido de 544 a 545 (2026-09-13, item G): el GET de /api/admin/config
+          # excluye smtp.* con la misma regla de la base que el PUT;
+          # test_config_generico_no_lista_claves_legadas_que_la_collation_iguala_a_smtp
+          # (con `client`, sin cambio en el piso sin DB). Medido en la rama: 545 / 1.
+          # Subido de 545 a 548 (2026-09-13, items H de la re-revisión): +2 con
+          # `client` en test_smtp_endpoints.py (guardado fallido deshace y
+          # restaura el autocommit; rollback que falla no tapa el error
+          # original) y +1 puro en test_smtp_config.py (aviso en el log con
+          # FERNET_KEY malformada). Medido en la rama: 548 / 1.
+          PISO_PASSED = 548
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -601,7 +645,22 @@ jobs:
       # Subido de 217 a 221 (mismo dia, "termina el login"): los 4 tests puros
       # de tests/test_login_residuos.py corren sin DB; los 8 con `client` no.
       # Medido con JAX_CI_NO_DB=1: 221 / 207.
-      JAX_CI_MIN_PASSED: "221"
+      # Subido de 221 a 240 (2026-09-12, administración de usuarios etapa 1,
+      # SMTP desde Admin): los 19 tests de tests/test_smtp_config.py son puros
+      # (dominio SMTP con smtplib reemplazado por dobles) y corren sin DB.
+      # Medido con JAX_CI_NO_DB=1: 240 / 207.
+      # Subido de 240 a 261 (2026-09-13, fix wave de la revisión final de la
+      # etapa 1): los 20 tests nuevos de tests/test_smtp_config.py son puros y
+      # test_correo_de_recuperacion_escapa_el_enlace_en_el_html (en
+      # test_login_residuos.py) no pide `client`: +21. Los 44 nuevos con
+      # `client` se saltean sin DB. Medido con JAX_CI_NO_DB=1: 261 / 267.
+      # Subido de 261 a 264 (2026-09-13, fix wave 2): los 3 tests nuevos de
+      # tests/test_smtp_config.py son puros; los 14 con `client` se saltean.
+      # Medido con JAX_CI_NO_DB=1: 264 / 281.
+      # Subido de 264 a 265 (2026-09-13, items H): el test del aviso de
+      # FERNET_KEY malformada (test_smtp_config.py) es puro; los 2 de rollback
+      # piden `client`. Medido con JAX_CI_NO_DB=1: 265 / 284.
+      JAX_CI_MIN_PASSED: "265"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

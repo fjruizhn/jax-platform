@@ -1,12 +1,10 @@
 import asyncio
+import html as html_lib
 import uuid
 import logging
 import secrets
-import smtplib
 import os
 from datetime import datetime, timedelta
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, Cookie, status
 from pydantic import BaseModel, Field
@@ -18,6 +16,7 @@ from auth import rate_limit
 from db.connection import get_pool
 from db.seed import BCRYPT_MAX_BYTES, verify_password, _hash
 from jax_engine.background import add_safe_task
+import smtp_config
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +211,18 @@ async def _procesar_recuperacion(email: str, client_ip: str) -> None:
             return
 
         user_id, email_guardado = row
+
+        # Sin correo configurado (o con la configuración rota) no se crea un
+        # token que nadie va a recibir: queda en el log con el código. La
+        # respuesta pública ya salió, neutra, antes de esto.
+        try:
+            settings = await smtp_config.cargar_settings()
+        except smtp_config.SmtpNoDisponible as exc:
+            # El motivo es un código estable (p. ej. "password_ilegible"), sin secretos.
+            logger.error("Recuperación de contraseña: correo deshabilitado (%s, motivo: %s); no se creó el token",
+                         exc.codigo, getattr(exc, "motivo", "-"))
+            return
+
         token = str(uuid.uuid4())
         expires_at = datetime.utcnow() + timedelta(hours=1)
 
@@ -230,43 +241,34 @@ async def _procesar_recuperacion(email: str, client_ip: str) -> None:
         frontend_origin = os.getenv("FRONTEND_ORIGIN", "https://axioma-ia.io")
         reset_link = f"{frontend_origin}/reset-password?token={token}"
         # smtplib es bloqueante: a un hilo, nunca en el event loop.
-        await asyncio.to_thread(_send_reset_email, email_guardado, reset_link)
+        await asyncio.to_thread(_send_reset_email, settings, email_guardado, reset_link)
     except Exception:  # fail-soft: corre después de responder; no hay a quién devolverle el error, queda en el log
         logger.exception("Recuperación de contraseña: falló el procesamiento en segundo plano")
 
 
-def _send_reset_email(to_email: str, reset_link: str):
-    smtp_host = os.getenv("SMTP_HOST", "")
-    if not smtp_host:
-        logger.warning("SMTP_HOST no configurado: no se pudo enviar el correo de recuperación")
-        return
+ASUNTO_RECUPERACION = "Recuperación de contraseña — Axioma"
 
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USER", "")
-    smtp_pass = os.getenv("SMTP_PASSWORD", "")
-    smtp_from = os.getenv("SMTP_FROM", smtp_user)
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Recuperación de contraseña — Axioma"
-    msg["From"] = smtp_from
-    msg["To"] = to_email
-
-    text = f"Para restablecer tu contraseña, accede al siguiente enlace:\n\n{reset_link}\n\nEste enlace expira en 1 hora."
-    html = f"""<p>Para restablecer tu contraseña, haz clic en el siguiente enlace:</p>
-<p><a href="{reset_link}">{reset_link}</a></p>
-<p>Este enlace expira en 1 hora. Si no solicitaste este cambio, ignora este correo.</p>"""
-
-    msg.attach(MIMEText(text, "plain"))
-    msg.attach(MIMEText(html, "html"))
-
-    try:
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
-            server.starttls()
-            if smtp_user:
-                server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_from, [to_email], msg.as_string())
-    except Exception as exc:
-        logger.error("Error enviando email de reset: %s", exc)
+def _send_reset_email(settings: smtp_config.SmtpSettings, to_email: str, reset_link: str) -> None:
+    """Bloqueante (smtplib): se llama dentro de asyncio.to_thread. LANZA si el
+    servidor falla -- el reset público lo registra en _procesar_recuperacion;
+    el reset por admin (etapa 4) se lo muestra al admin. Antes leía SMTP_* del
+    entorno, que nunca estuvieron definidas: "¿Olvidaste tu contraseña?" no
+    envió un solo correo (spec §1, hallazgo 8)."""
+    texto = (
+        f"Para restablecer tu contraseña, accede al siguiente enlace:\n\n{reset_link}\n\n"
+        "Este enlace expira en 1 hora."
+    )
+    # El enlace va escapado en el HTML (href y texto): FRONTEND_ORIGIN o el
+    # token podrían traer comillas o "<". El texto plano va tal cual.
+    enlace = html_lib.escape(reset_link, quote=True)
+    html = (
+        "<p>Para restablecer tu contraseña, haz clic en el siguiente enlace:</p>"
+        f'<p><a href="{enlace}">{enlace}</a></p>'
+        "<p>Este enlace expira en 1 hora. Si no solicitaste este cambio, ignora este correo.</p>"
+    )
+    mensaje = smtp_config.construir_mensaje(settings, to_email, ASUNTO_RECUPERACION, texto, html)
+    smtp_config.enviar(settings, mensaje)
 
 
 class ResetPasswordRequest(BaseModel):

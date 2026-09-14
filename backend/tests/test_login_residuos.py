@@ -157,10 +157,23 @@ def test_forgot_password_tiene_limite_de_intentos(client, limites_chicos, monkey
     assert int(r.headers["Retry-After"]) >= 1
 
 
+def _smtp_de_prueba():
+    import smtp_config
+    return smtp_config.SmtpSettings(
+        host="mail.example.test", port=587, encryption="tls", user="u", password="p",
+        from_name="Axioma", from_email="no-reply@example.test")
+
+
 def test_recuperacion_de_cuenta_real_crea_token_y_manda_el_correo(client, monkeypatch):
+    import smtp_config
     from api import auth as auth_mod
     enviados = []
-    monkeypatch.setattr(auth_mod, "_send_reset_email", lambda to, link: enviados.append((to, link)))
+
+    async def configurado():
+        return _smtp_de_prueba()
+
+    monkeypatch.setattr(smtp_config, "cargar_settings", configurado)
+    monkeypatch.setattr(auth_mod, "_send_reset_email", lambda s, to, link: enviados.append((s.host, to, link)))
     email = _email()
     user_id = client.portal.call(_crear_con_hash, email, bcrypt.hashpw(b"clave-x", bcrypt.gensalt(rounds=4)).decode())
     try:
@@ -169,8 +182,8 @@ def test_recuperacion_de_cuenta_real_crea_token_y_manda_el_correo(client, monkey
             _sql, "SELECT token, ip_address FROM password_reset_tokens WHERE user_id = %s AND used = FALSE",
             (user_id,), True)
         assert len(filas) == 1 and filas[0][1] == "203.0.113.5", filas
-        assert len(enviados) == 1 and enviados[0][0] == email
-        assert filas[0][0] in enviados[0][1], "el enlace no lleva el token guardado"
+        assert len(enviados) == 1 and enviados[0][:2] == ("mail.example.test", email)
+        assert filas[0][0] in enviados[0][2], "el enlace no lleva el token guardado"
     finally:
         client.portal.call(_borrar, email)
 
@@ -178,9 +191,75 @@ def test_recuperacion_de_cuenta_real_crea_token_y_manda_el_correo(client, monkey
 def test_recuperacion_de_email_inexistente_no_manda_nada(client, monkeypatch):
     from api import auth as auth_mod
     enviados = []
-    monkeypatch.setattr(auth_mod, "_send_reset_email", lambda to, link: enviados.append(to))
+    monkeypatch.setattr(auth_mod, "_send_reset_email", lambda s, to, link: enviados.append(to))
     client.portal.call(auth_mod._procesar_recuperacion, _email(), "203.0.113.5")
     assert enviados == []
+
+
+def test_recuperacion_sin_smtp_configurado_no_crea_token_ni_envia(client, monkeypatch):
+    # El forgot-password público sigue respondiendo neutro (spec §3.1); en
+    # segundo plano, sin correo configurado, no se crea un token que nadie
+    # va a recibir, y queda en el log por qué.
+    import smtp_config
+    from api import auth as auth_mod
+    enviados = []
+
+    async def sin_configurar():
+        raise smtp_config.SmtpNoConfigurado("nunca configurado")
+
+    monkeypatch.setattr(smtp_config, "cargar_settings", sin_configurar)
+    monkeypatch.setattr(auth_mod, "_send_reset_email", lambda s, to, link: enviados.append(to))
+    email = _email()
+    user_id = client.portal.call(_crear_con_hash, email, bcrypt.hashpw(b"clave-x", bcrypt.gensalt(rounds=4)).decode())
+    try:
+        client.portal.call(auth_mod._procesar_recuperacion, email, "203.0.113.5")
+        filas = client.portal.call(_sql, "SELECT id FROM password_reset_tokens WHERE user_id = %s", (user_id,), True)
+        assert filas == () or list(filas) == []
+        assert enviados == []
+    finally:
+        client.portal.call(_borrar, email)
+
+
+def test_recuperacion_con_smtp_corrupto_registra_el_motivo_y_no_crea_token(client, monkeypatch, caplog):
+    # Revisión final 2026-09-13: el log decía solo "smtp_config_corrupta";
+    # quien opera necesita el motivo (sin datos secretos) para arreglarlo.
+    import smtp_config
+    from api import auth as auth_mod
+    enviados = []
+
+    async def corrupta():
+        raise smtp_config.SmtpConfigCorrupta("password_ilegible")
+
+    monkeypatch.setattr(smtp_config, "cargar_settings", corrupta)
+    monkeypatch.setattr(auth_mod, "_send_reset_email", lambda s, to, link: enviados.append(to))
+    email = _email()
+    user_id = client.portal.call(_crear_con_hash, email, bcrypt.hashpw(b"clave-x", bcrypt.gensalt(rounds=4)).decode())
+    try:
+        with caplog.at_level("ERROR", logger="api.auth"):
+            client.portal.call(auth_mod._procesar_recuperacion, email, "203.0.113.5")
+        filas = client.portal.call(_sql, "SELECT id FROM password_reset_tokens WHERE user_id = %s", (user_id,), True)
+        assert filas == () or list(filas) == []
+        assert enviados == []
+        lineas = [r.getMessage() for r in caplog.records if r.name == "api.auth"]
+        assert any("smtp_config_corrupta" in m and "password_ilegible" in m for m in lineas), lineas
+    finally:
+        client.portal.call(_borrar, email)
+
+
+def test_correo_de_recuperacion_escapa_el_enlace_en_el_html(monkeypatch):
+    import smtp_config
+    from api import auth as auth_mod
+    enviados = []
+    monkeypatch.setattr(smtp_config, "enviar", lambda s, msg: enviados.append(msg))
+    link = 'https://axioma-ia.io/reset-password?token=a"b<c>&d'
+    auth_mod._send_reset_email(_smtp_de_prueba(), "d@example.test", link)
+    (msg,) = enviados
+    partes = {p.get_content_type(): p.get_content() for p in msg.walk() if not p.is_multipart()}
+    html = partes["text/html"]
+    assert link not in html
+    assert 'href="https://axioma-ia.io/reset-password?token=a&quot;b&lt;c&gt;&amp;d"' in html
+    assert html.count("a&quot;b&lt;c&gt;&amp;d") == 2  # en el href y en el texto
+    assert link in partes["text/plain"]  # el texto plano queda igual
 
 
 def test_reset_con_password_de_mas_de_72_bytes_da_400_y_no_500(client):
