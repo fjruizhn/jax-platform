@@ -59,6 +59,20 @@ def test_pytest_fail_dentro_del_portal_no_mata_la_sesion(client):
     determinística, `RuntimeError: This portal is not running`. Con el
     envoltorio (código real), el portal nunca llega a ese estado: el poll
     agota su tope sin encontrarlo muerto y la segunda llamada funciona."""
+    assert hasattr(client.portal, "_event_loop_thread_id"), (
+        "BlockingPortal ya no tiene el atributo interno `_event_loop_thread_id` "
+        "-- es el que usa `BlockingPortal._check_running()` para decidir si el "
+        "portal sigue vivo (anyio/from_thread.py, verificado en anyio 4.14.2) y "
+        "el que pollea `_esperar_portal_muerto()` de este archivo. Si anyio lo "
+        "renombró o cambió de mecanismo, esta aserción tiene que fallar ACÁ, "
+        "ruidosa: sin ella, el poll de abajo nunca vería al portal 'muerto' "
+        "(siempre `None` por un `getattr` con default), agotaría el tope en "
+        "silencio y el rojo de la mutación (sacar el envoltorio de conftest.py) "
+        "dejaría de dispararse sin que nadie se entere -- un control que no "
+        "falla no valida. Revisar el mecanismo de este test contra la versión "
+        "de anyio instalada."
+    )
+
     async def explota():
         pytest.fail("mensaje de prueba, a propósito (test_arnes_portal)")
 
