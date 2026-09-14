@@ -4,9 +4,12 @@ import { useJaxStore } from '../store/useJaxStore'
 import { useI18n } from '../i18n/index.jsx'
 import api from '../api/client'
 import PasswordInput from '../components/PasswordInput'
+import AlertaError from '../components/AlertaError'
 
 export default function Login() {
   const login = useJaxStore((s) => s.login)
+  const avisoSesion = useJaxStore((s) => s.avisoSesion)
+  const clearAvisoSesion = useJaxStore((s) => s.clearAvisoSesion)
   const { lang, setLang, t } = useI18n()
   const navigate = useNavigate()
   const [email, setEmail] = useState('')
@@ -27,6 +30,7 @@ export default function Login() {
     setLoading(true)
     try {
       await login(email, password)
+      clearAvisoSesion()
       navigate('/')
     } catch (err) {
       const status = err.response?.status
@@ -157,6 +161,12 @@ export default function Login() {
 
         <h1 className="text-center text-2xl font-bold text-slate-200 mb-1">{t.loginTitle}</h1>
         <p className="text-center text-xs text-slate-600 mb-8">{t.loginTagline}</p>
+
+        {avisoSesion && (
+          <AlertaError className="text-sm bg-red-900/30 border border-red-800 rounded-lg px-3 py-2 mb-4">
+            {t[avisoSesion] ?? t.loginError}
+          </AlertaError>
+        )}
 
         <form onSubmit={handleSubmit} className="bg-slate-800 rounded-xl p-6 border border-slate-700 space-y-4">
           <div>

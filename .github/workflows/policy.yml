@@ -118,8 +118,14 @@ jobs:
             // no queda sobre otro pipeline ni cuando ya no espera aprobacion) y +2
             // AdminSettings (sin carga buena no se guarda; un fallo no convive con
             // "Guardado"). El test de D4 pasa a un spy: rompe con el prefijo fijo.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 125) {
-              console.error("PISO ROTO: se esperaban 125 tests de vitest CORRIDOS y 0 fallidos.");
+            // 125 -> 133 el 2026-09-14 (Task 4b, admin usuarios etapa 2): +4
+            // client.test.js (nuevo -- el interceptor deja avisoSesion antes de
+            // borrar token/user, distingue sesion_invalida de sesion_expirada, y
+            // no toca el aviso si el refresh anda) y +4 Login.test.jsx (muestra
+            // el aviso en un role="alert" traducido, lo borra tras un login
+            // exitoso, y las dos claves existen en es/en). Medido con vitest run.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 133) {
+              console.error("PISO ROTO: se esperaban 133 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

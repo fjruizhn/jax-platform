@@ -159,6 +159,10 @@ export default {
   loginButton: 'Enter Axioma',
   showPassword: 'Show password',
   hidePassword: 'Hide password',
+  // Session-close reason (2026-09-14, Task 4b): the interceptor in
+  // api/client.js used to silently clear the session on a failed refresh.
+  sesion_invalida: 'Your session was closed: your account was deactivated or its access changed. Please sign in again.',
+  sesion_expirada: 'Your session expired. Please sign in again.',
   accountLocked: 'Account locked. Check your email.',
   accountLockedMinutes: (min) => `Account locked. Try again in ${min} minute(s).`,
   tooManyAttempts: 'Too many attempts. Wait a moment and try again.',
