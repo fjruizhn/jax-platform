@@ -95,7 +95,7 @@ def test_tripwire_ops_del_toml_y_capabilities_de_la_db_no_comparten_nombres(clie
         "de CAPABILITY_AVAILABLE va a dar SOURCE_CONFLICT. Renombrar uno de los dos.")
 
 
-def test_control_el_tripwire_ve_un_nombre_repetido(client, tmp_path):
+def test_control_el_tripwire_ve_un_nombre_repetido(client, tmp_path, monkeypatch):
     """CONTROL del TRIPWIRE: con un config.toml que agrega `[ops.generate]`, la
     intersección da ['generate'] y el resolver da SOURCE_CONFLICT."""
     destino = tmp_path / "jax"
@@ -103,13 +103,11 @@ def test_control_el_tripwire_ve_un_nombre_repetido(client, tmp_path):
     shutil.copy(governance_context.JAX_REPO / "las_manos" / "config.toml", destino / "las_manos" / "config.toml")
     with open(destino / "las_manos" / "config.toml", "a", encoding="utf-8") as f:
         f.write("\n[ops.generate]\n")
-    anterior = governance_context.JAX_REPO
-    governance_context.JAX_REPO = destino
+    monkeypatch.setattr(governance_context, "JAX_REPO", destino)
     governance_context.validation_context.cache_clear()
     try:
         ctx, predicates, _ = client.portal.call(governance_context.validation_context)
     finally:
-        governance_context.JAX_REPO = anterior
         governance_context.validation_context.cache_clear()
     assert _en_ambos(ctx) == ["generate"]
     claim = governance_claims.Claim(
