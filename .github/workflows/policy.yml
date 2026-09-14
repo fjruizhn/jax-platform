@@ -483,7 +483,22 @@ jobs:
           # 633 -> 635 (revisión final de la etapa 2): el timeout fuera del
           # receive del handshake WS se loguea, y /api/auth/me hace una sola
           # consulta a jax_users. Medido: 635 / 1.
-          PISO_PASSED = 635
+          # Subido de 635 a 645 (2026-09-14, tanda A v3, capability.mode):
+          # tests/test_capability_mode.py -- 2 puros (la semilla declara el
+          # modo de todo lo sembrado; solo file_write es mutating) y 7 con
+          # `client` (columna varchar(16) NOT NULL sin default + CHECK
+          # chk_capability_mode presente; valores sembrados; CONTROL: INSERT
+          # sin mode falla 1364, INSERT con modo inválido falla 4025; base
+          # vieja sin columna queda rellenada y en forma final; la columna
+          # ENUM que dejó el incidente del 2026-09-14 en producción queda
+          # convertida a varchar(16)+CHECK conservando los 17 valores; una
+          # fila huérfana frena la migración con su nombre) más
+          # tests/test_arnes_portal.py -- 1 con `client` (un `pytest.fail`
+          # dentro de `client.portal.call` sale como `Failed` afuera sin
+          # matar el `BlockingPortal` de sesión; hallazgo de esta misma
+          # tarea, ver conftest.py::_envolver_portal_call). Vistos en rojo
+          # antes del arreglo; mutaciones en el PR. Medido: 645 / 1.
+          PISO_PASSED = 645
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -747,7 +762,14 @@ jobs:
       # sin cambio. Los 2 tests nuevos (log de error en fallo de
       # infraestructura / sin log en sesión inválida) también piden `client`
       # y se saltean. Medido con JAX_CI_NO_DB=1: 303 / 331.
-      JAX_CI_MIN_PASSED: "303"
+      # Subido de 303 a 305 (2026-09-14, tanda A v3, capability.mode): +2
+      # puros de test_capability_mode.py (la semilla declara el modo de todo
+      # lo sembrado; solo file_write es mutating) corren sin DB. Los 7 con
+      # `client` se saltean sin DB (columna varchar(16)+CHECK, valores
+      # sembrados, los dos CONTROL, base vieja, columna ENUM del incidente,
+      # fila huérfana); el nuevo con `client` de test_arnes_portal.py
+      # también se saltea. Medido con JAX_CI_NO_DB=1: 305 / 341.
+      JAX_CI_MIN_PASSED: "305"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

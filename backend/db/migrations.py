@@ -427,6 +427,19 @@ CREATE TABLE IF NOT EXISTS capability (
   -- fecha, nada mas. Pendiente: darle lector real o dropearla.
   sandbox_only BOOLEAN NOT NULL DEFAULT TRUE,
   requires_human_gate BOOLEAN NOT NULL DEFAULT FALSE,
+  -- Tanda A v3 (2026-09-14, decisión de Fernando): ¿la capability cambia el
+  -- estado del sistema? 'mutating' solo file_write; el resto produce texto o
+  -- parches sin aplicarlos. VARCHAR(16) + CHECK, NOT NULL y SIN DEFAULT a
+  -- propósito: un ENUM NOT NULL sin default NO daba la garantía que este
+  -- diseño quería -- medido en MariaDB 12.3.3: omitir la columna guarda en
+  -- silencio el primer valor del ENUM ('read_only'), el mismo fail-open que
+  -- se quería evitar. Con VARCHAR(16)+CHECK, omitir `mode` falla con 1364
+  -- (STRICT_TRANS_TABLES) y un valor fuera del conjunto falla con 4025.
+  -- Lo lee MotorCatalog.from_db() (jax) y lo verifica el resolver de
+  -- CAPABILITY_AVAILABLE. Spec jax 2026-09-14-gobernanza-catalogo-db-design.md
+  -- §0 (v3) y §3.1.
+  mode VARCHAR(16) NOT NULL,
+  CONSTRAINT chk_capability_mode CHECK (mode IN ('read_only','mutating')),
   max_execution_minutes INT NOT NULL,
   max_recursion_depth INT NOT NULL DEFAULT 0,
   output_schema VARCHAR(100) NULL,
@@ -629,6 +642,60 @@ _CAPABILITY_SEED = [
      ["jacobs"], None),
 ]
 
+# GAP2 Fase2 (2026-08-19, jax/las_manos/motor_registry/tool_authority.py):
+# capabilities dedicadas para read_file/write_file -- ninguna de las 12
+# capabilities existentes mapea honestamente a "leer/escribir un archivo"
+# (verificado real, SELECT contra jax_memory: solo code_swarm/
+# implementation tienen forbidden_paths poblado, y ninguna de las dos
+# lista jax_local en capability_motor; generate/reason/design/reconcile
+# SI listan jax_local pero tienen forbidden_paths=NULL -- reusarlas
+# hubiera dejado read_file sin proteccion real de .env/secrets/).
+#
+# Ajustado por Fernando antes de aprobar el seed: file_read en
+# risk_level='medium' (no 'low') -- leer archivos arbitrarios del
+# workspace es acceso a datos que el modelo no tenia, forbidden_paths
+# cubre lo conocido, no lo que todavia no esta en la lista.
+#
+# max_execution_minutes=1 en ambas originalmente (2026-08-19): placeholder
+# deliberado, honesto para cuando se cablee, sin riesgo porque nada lo
+# lee. Recalibrado a 5 (300s) el 2026-08-20 (pago de deuda ronda 3, T1
+# paso 1/3) por instrucción directa de Fernando -- alinear con el default
+# real que ya corre en produccion (jacobs/plan.py::_DEFAULT_TIMEOUT_
+# SECONDS=300) en vez de con un placeholder sin evidencia. Sigue sin
+# consumir ningun timeout real hoy (enforcer sin cablear, ver
+# CONTEXT.md) -- este cambio tampoco altera comportamiento de produccion.
+#
+# forbidden_paths reutiliza EXACTO el mismo array ya usado por
+# code_swarm/implementation -- no una lista nueva paralela.
+# allowed_callers=['jacobs']: unico caller real (GAP2 Fase1, gate
+# literal de motor=='jax_local' en worker.py, siempre despachado como
+# caller='jacobs').
+_FILE_CAPABILITY_SEED = [
+    # key, risk_level, sandbox_only, requires_human_gate, max_execution_minutes,
+    # max_recursion_depth, output_schema, fallback_motor, fallback_mode, callers, forbidden
+    ("file_read", "medium", True, False, 5, 0, "", None, None,
+     ["jacobs"], [".env", "secrets/", "private_keys/", "credentials/"]),
+    # T3 (Fase4, 2026-08-19): requires_human_gate False -- ver
+    # _fix_file_write_no_human_gate() abajo, que ademas actualiza la
+    # fila si ya existia sembrada con True (produccion real, sembrada
+    # en Fase2 antes de esta decision).
+    ("file_write", "medium", True, False, 5, 0, "", None, None,
+     ["jacobs"], [".env", "secrets/", "private_keys/", "credentials/"]),
+]
+
+# Modo de cada capability sembrada (tanda A v3, 2026-09-14, decisión de
+# Fernando): 'mutating' SOLO file_write, la única que cambia el estado del
+# sistema. Las demás producen texto o parches sin aplicarlos. UNA fuente:
+# la usan los INSERT de las semillas y _backfill_capability_mode. Sin
+# default a propósito, mismo conjunto que el CHECK de la columna (ver
+# CREATE_CAPABILITY). tests/test_capability_mode.py es el tripwire de que
+# cubre exactamente lo sembrado.
+_CAPABILITY_MODE: dict[str, str] = {
+    **{fila[0]: "read_only" for fila in _CAPABILITY_SEED},
+    "file_read": "read_only",
+    "file_write": "mutating",
+}
+
 # (capability_key, [motor_key, ...] en orden de prioridad). "thot" queda
 # excluido a proposito de validate_consistency/critique -- no existe como
 # motor todavia (Task 8 lo crea junto con esas 2 filas via INSERT directo,
@@ -687,11 +754,12 @@ async def _seed_motors_and_capabilities(cur) -> None:
             "INSERT IGNORE INTO capability "
             "(`key`, risk_level, sandbox_only, requires_human_gate, max_execution_minutes, "
             " max_recursion_depth, output_schema, fallback_motor, fallback_mode, "
-            " allowed_callers, forbidden_paths) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            " allowed_callers, forbidden_paths, mode) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (key, risk_level, sandbox_only, gate, max_exec, max_rec, schema,
              effective_fallback_motor, fallback_mode, json.dumps(callers),
-             json.dumps(forbidden) if forbidden is not None else None),
+             json.dumps(forbidden) if forbidden is not None else None,
+             _CAPABILITY_MODE[key]),
         )
 
     for capability_key, motor_keys in _CAPABILITY_MOTOR_SEED:
@@ -787,28 +855,17 @@ async def _seed_file_tools_capabilities(cur) -> None:
     allowed_callers=['jacobs']: unico caller real (GAP2 Fase1, gate
     literal de motor=='jax_local' en worker.py, siempre despachado como
     caller='jacobs')."""
-    file_capabilities = [
-        # key, risk_level, sandbox_only, requires_human_gate, max_execution_minutes,
-        # max_recursion_depth, output_schema, fallback_motor, fallback_mode, callers, forbidden
-        ("file_read", "medium", True, False, 5, 0, "", None, None,
-         ["jacobs"], [".env", "secrets/", "private_keys/", "credentials/"]),
-        # T3 (Fase4, 2026-08-19): requires_human_gate False -- ver
-        # _fix_file_write_no_human_gate() abajo, que ademas actualiza la
-        # fila si ya existia sembrada con True (produccion real, sembrada
-        # en Fase2 antes de esta decision).
-        ("file_write", "medium", True, False, 5, 0, "", None, None,
-         ["jacobs"], [".env", "secrets/", "private_keys/", "credentials/"]),
-    ]
     for (key, risk_level, sandbox_only, gate, max_exec, max_rec, schema,
-         fallback_motor, fallback_mode, callers, forbidden) in file_capabilities:
+         fallback_motor, fallback_mode, callers, forbidden) in _FILE_CAPABILITY_SEED:
         await cur.execute(
             "INSERT IGNORE INTO capability "
             "(`key`, risk_level, sandbox_only, requires_human_gate, max_execution_minutes, "
             " max_recursion_depth, output_schema, fallback_motor, fallback_mode, "
-            " allowed_callers, forbidden_paths) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            " allowed_callers, forbidden_paths, mode) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (key, risk_level, sandbox_only, gate, max_exec, max_rec, schema,
-             fallback_motor, fallback_mode, json.dumps(callers), json.dumps(forbidden)),
+             fallback_motor, fallback_mode, json.dumps(callers), json.dumps(forbidden),
+             _CAPABILITY_MODE[key]),
         )
 
     await cur.execute("SELECT 1 FROM motor WHERE `key`='jax_local'")
@@ -1269,6 +1326,18 @@ _COLUMNS = [
     # del CREATE TABLE para las filas ya existentes de una base vieja.
     ("shadow_messages", "origin",
      "ALTER TABLE shadow_messages ADD COLUMN origin VARCHAR(20) NOT NULL DEFAULT 'unattributed'"),
+    # Tanda A v3 (2026-09-14): en bases que ya tienen `capability` nace NULL
+    # A PROPÓSITO (sin CHECK todavía: el CHECK lo agrega
+    # _asegurar_forma_de_capability_mode una vez que no quedan NULL). Un ADD
+    # COLUMN ... NOT NULL sin default le pondría a las filas existentes un
+    # valor inventado -- file_write quedaría mal clasificado en silencio
+    # hasta el UPDATE, y el DDL hace commit implícito. _backfill_capability_
+    # mode la rellena desde _CAPABILITY_MODE y _asegurar_forma_de_capability_
+    # mode la pasa a VARCHAR(16) NOT NULL + CHECK. También convierte la
+    # columna ENUM que ya quedó en producción por el incidente del
+    # 2026-09-14 (ver spec §0 v3), conservando los valores.
+    ("capability", "mode",
+     "ALTER TABLE capability ADD COLUMN mode VARCHAR(16) NULL"),
 ]
 
 
@@ -1628,6 +1697,67 @@ async def _reclassify_provenance_mismatch(cur) -> None:
     )
 
 
+async def _backfill_capability_mode(cur) -> None:
+    """Rellena `mode` en las filas que ya existían sin columna. Solo toca
+    NULL: nunca pisa un modo ya declarado."""
+    for key, mode in _CAPABILITY_MODE.items():
+        await cur.execute(
+            "UPDATE capability SET mode=%s WHERE `key`=%s AND mode IS NULL", (mode, key)
+        )
+
+
+async def _asegurar_forma_de_capability_mode(cur) -> None:
+    """Deja `capability.mode` en su forma final: VARCHAR(16) NOT NULL +
+    CHECK, sin default (tanda A v3, spec §0/§3.1). Idempotente, en orden:
+
+    (a) si queda una capability sin modo (una fila que ninguna migración
+        sembró), la migración FALLA con su nombre: no se le inventa un modo
+        (P10).
+    (b) si el tipo de columna no es exactamente `varchar(16)` o todavía
+        admite NULL, `MODIFY COLUMN mode VARCHAR(16) NOT NULL` -- esto
+        también convierte el `ENUM('read_only','mutating') NOT NULL` que ya
+        quedó en producción por el incidente del 2026-09-14 (ver spec §0
+        v3): un `MODIFY` de ENUM a VARCHAR conserva los valores (medido).
+    (c) si no existe un CHECK llamado `chk_capability_mode` para
+        `capability` (se consulta `information_schema.CHECK_CONSTRAINTS`
+        antes de agregarlo: repetir el `ADD CONSTRAINT` da el error 1826),
+        se agrega.
+
+    Nombre anterior: `_enforce_capability_mode_not_null` (v2, solo ENUM);
+    renombrada al pasar a la forma completa de v3."""
+    await cur.execute("SELECT `key` FROM capability WHERE mode IS NULL ORDER BY `key`")
+    sin_modo = [fila[0] for fila in await cur.fetchall()]
+    if sin_modo:
+        raise RuntimeError(
+            f"capability sin mode declarado: {sin_modo}. Ninguna migración las sembró: "
+            "declarar su modo en _CAPABILITY_MODE (db/migrations.py) o borrarlas. "
+            "Sin default a propósito, ver spec jax 2026-09-14-gobernanza-catalogo-db-design.md §3.1."
+        )
+
+    await cur.execute(
+        "SELECT COLUMN_TYPE, IS_NULLABLE FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'capability' AND COLUMN_NAME = 'mode'"
+    )
+    fila = await cur.fetchone()
+    if fila is not None:
+        column_type, is_nullable = fila
+        if column_type != "varchar(16)" or is_nullable == "YES":
+            await cur.execute(
+                "ALTER TABLE capability MODIFY COLUMN mode VARCHAR(16) NOT NULL"
+            )
+
+    await cur.execute(
+        "SELECT 1 FROM information_schema.CHECK_CONSTRAINTS "
+        "WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'capability' "
+        "AND CONSTRAINT_NAME = 'chk_capability_mode'"
+    )
+    if await cur.fetchone() is None:
+        await cur.execute(
+            "ALTER TABLE capability ADD CONSTRAINT chk_capability_mode "
+            "CHECK (mode IN ('read_only','mutating'))"
+        )
+
+
 async def run_migrations():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1662,6 +1792,12 @@ async def run_migrations():
             await _seed_file_tools_capabilities(cur)
             await _fix_file_write_gate_and_auditor(cur)
             await _raise_generate_execution_ceiling(cur)
+            # Después de TODAS las semillas de capability: las filas nuevas ya
+            # entraron con su modo; las viejas se rellenan y la columna queda
+            # VARCHAR(16) NOT NULL + CHECK. Una fila huérfana frena acá (ver
+            # la función).
+            await _backfill_capability_mode(cur)
+            await _asegurar_forma_de_capability_mode(cur)
             await _eliminate_motor_model_ref_denormalization(cur)
             # Antes del seed de allowed_callers: kimi necesita el transporte
             # http_* para que tener acceso al gate tenga sentido.
