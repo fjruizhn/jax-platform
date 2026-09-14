@@ -11,19 +11,41 @@ DB se cuelga en vez de rechazar, cada `_db_conn()`/`get_conn()`/`_conn()` de
 este repo esperaba indefinidamente.
 
 Punto único de lectura y validación de `JAX_DB_CONNECT_TIMEOUT_SECONDS`,
-importado (siempre `from jax.core.db_connect_config import
-db_connect_timeout_seconds`, import absoluto -- resuelve igual sin importar
-si el módulo que lo llama se cargó como `jax.core.X`, `las_manos.X` o
-`jacobs.X`, porque el checkout siempre corre con la raíz del repo en
-`sys.path`) desde jax/core/, las_manos/ (raíz y motor_registry/) y jacobs/ --
+compartido desde jax/core/, las_manos/ (raíz y motor_registry/) y jacobs/ --
 decisión explícita del controller para NO duplicar esta validación en cada
-uno de los sitios que abren `aiomysql.connect()`. Es una excepción
-deliberada al patrón "espejo mínimo, sin paquete compartido" que gobierna
-credential_resolver.py/model_catalog.py/etc (ver sus propios docstrings):
-este módulo no tiene estado, no toca la DB y no tiene dependencias más allá
-de `os` de la stdlib -- compartirlo no reintroduce el acoplamiento que ese
-patrón evita (repos/venvs con su propio código de I/O real, desplegables por
-separado).
+uno de los sitios que abren `aiomysql.connect()`/`create_pool()`.
+
+Import por CONTEXTO REAL, NO uno solo (corregido 2026-09-14, ronda de
+arreglo 3 -- la versión anterior de este párrafo decía que el import era
+"siempre absoluto" porque "el checkout siempre corre con la raíz del repo
+en sys.path"; es falso, medido contra el servicio real de LAS MANOS). En
+jax/core/ y en tests/ (siempre invocados con la raíz del repo en
+`sys.path` -- el REPL, los workers de `jax.memory`, `python -m pytest`) el
+import es absoluto y simple: `from jax.core.db_connect_config import
+db_connect_timeout_seconds`. Pero LAS MANOS corre en producción como
+`uvicorn server:app` con `WorkingDirectory=/home/fruiz/jax/las_manos` y SIN
+`PYTHONPATH` -- medido con el python real de ese venv y ese cwd: ahí
+`jax.core` NO es importable ("No module named 'jax'"), solo lo que vive
+DIRECTO en `las_manos/` (bare). Por eso los archivos que corren (también o
+solo) en ese contexto --`jax/core/facet_resolver.py` (symlinkeado como
+`las_manos/facet_resolver.py`), `las_manos/credential_resolver.py`,
+`las_manos/model_catalog.py`, `las_manos/motor_registry/{catalog,
+facet_policy,usage_writer}.py`, `jacobs/store.py`, `jacobs/usage_writer.py`
+-- usan el mismo `try/except` bare-primero-calificado-después que este
+módulo comparte con `credential_resolver.py`: el bare `from
+db_connect_config import ...` resuelve vía el symlink
+`las_manos/db_connect_config.py -> ../jax/core/db_connect_config.py` (en
+LAS MANOS y en cualquier job de CI con `las_manos/` en `PYTHONPATH`); el
+`except ImportError` cae a `jax.core.db_connect_config` para los contextos
+donde solo la raíz del repo está en `sys.path` (el REPL, jobs de CI sin
+`PYTHONPATH` propio, como `governance`).
+
+Es una excepción deliberada al patrón "espejo mínimo, sin paquete
+compartido" que gobierna credential_resolver.py/model_catalog.py/etc (ver
+sus propios docstrings): este módulo no tiene estado, no toca la DB y no
+tiene dependencias más allá de `os` de la stdlib -- compartirlo no
+reintroduce el acoplamiento que ese patrón evita (repos/venvs con su
+propio código de I/O real, desplegables por separado).
 
 LÍMITE (informativo, verificado 2026-09-14 contra aiomysql 0.3.2,
 `aiomysql/connection.py` líneas ~519-532): `connect_timeout` SOLO acota la
@@ -37,15 +59,17 @@ handshake + queries) con su propio `wait_for`
 `backend/governance_context.py`) -- este helper es la capa de abajo (el
 socket), no un reemplazo de esa cota.
 
-ESPEJO -- Tarea 1b (tanda A, PR-A, 2026-09-14): copia VERBATIM de
-`jax/core/db_connect_config.py` @2dedf0b. El contenido (incluidos los
+ESPEJO -- Tarea 1b (tanda A, PR-A, 2026-09-14; docstring re-sincronizado en
+la ronda de arreglo 1 tras la re-revisión, mismo día): copia VERBATIM de
+`jax/core/db_connect_config.py` @5d60679. El contenido (incluidos los
 párrafos que hablan de `jax/core/`, `las_manos/` y `jacobs/`, que no existen
 en este repo) es intencionalmente idéntico byte a byte al canónico de jax --
 es el contrato del espejo, no una desprolijidad. `check_mirror_sync.py` de
-jax aún no compara esta familia (la agrega el implementador del otro lado,
-en su propia ronda); esta nota vive fuera de cualquier símbolo comparado
-(no es parte de un `def`/`class`/constante de módulo) para no producir drift
-el día que la familia se registre.
+jax ya registra esta familia (`db_connect_config`, agregada por el
+implementador de la Tarea 2b); esta nota vive fuera de cualquier símbolo
+comparado (no es parte de un `def`/`class`/constante de módulo, el único
+símbolo en `compartidos` es `db_connect_timeout_seconds`) para no producir
+drift.
 
 En memoria de Jairo Urbina.
 """
