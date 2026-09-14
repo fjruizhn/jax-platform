@@ -459,7 +459,9 @@ jobs:
           # y test_refresh_token_lleva_la_version son puros; test_columna_
           # token_version pide `client` (arranca la app, corre run_migrations,
           # crea jax_users.token_version en jax_memory_test). Medido: 614 / 1.
-          PISO_PASSED = 614
+          # Subido de 614 a 628 (2026-09-14, admin usuarios etapa 2, Task 3):
+          # 14 de middleware/refresh/login/EXPLAIN. Medido: 628 / 1.
+          PISO_PASSED = 628
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -711,6 +713,10 @@ jobs:
       # `tv` + 1 de esquema): los 2 puros de `tv` no piden `client`, corren
       # sin DB; test_columna_token_version sí lo pide y se saltea (+1 skip).
       # Medido con JAX_CI_NO_DB=1: 303 / 312.
+      # 303 -> 303 (2026-09-14, admin usuarios etapa 2, Task 3): sin cambio.
+      # Los 14 tests nuevos de middleware/refresh/login piden `client`
+      # (verifican status/role/token_version contra la base): se saltean
+      # los 14, no suman a `passed`. Medido con JAX_CI_NO_DB=1: 303 / 326.
       JAX_CI_MIN_PASSED: "303"
     steps:
       - uses: actions/checkout@v4

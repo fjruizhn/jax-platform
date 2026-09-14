@@ -11,8 +11,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from pydantic import BaseModel, Field
 
 from auth.models import AuthUser, LoginRequest, LoginResponse, MeResponse, RefreshResponse
-from auth.jwt import create_access_token, create_refresh_token, decode_token
-from auth.middleware import get_current_user
+from auth.jwt import REFRESH_EXPIRE_SECONDS, create_access_token, create_refresh_token, decode_token
+from auth.middleware import get_current_user, verificar_sesion
 from auth import rate_limit
 from db.connection import get_pool
 from db.seed import BCRYPT_MAX_BYTES, verify_password, _hash
@@ -41,6 +41,22 @@ def _credenciales_invalidas() -> HTTPException:
     return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_CREDENCIALES_INVALIDAS)
 
 
+def _emitir_tokens(response: Response, user_id: str, tenant_id: str, role: str, token_version: int) -> str:
+    """Emite access + refresh con la versión vigente; el refresh va en la
+    cookie HttpOnly. Lo usan el login y, desde la etapa 4, el cambio de
+    contraseña propio (que sube la versión y tiene que dejarle a ESTA sesión
+    tokens nuevos)."""
+    refresh_token = create_refresh_token(user_id, tenant_id, role, token_version)
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        max_age=REFRESH_EXPIRE_SECONDS,
+        samesite="lax",
+    )
+    return create_access_token(user_id, tenant_id, role, token_version)
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(req: LoginRequest, request: Request, response: Response):
     # Antes de la DB y del bcrypt: sin límite, cada intento (exista o no el
@@ -51,7 +67,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT user_id, tenant_id, email, password_hash, role, status, "
-                "failed_attempts, locked_until "
+                "failed_attempts, locked_until, token_version "
                 "FROM jax_users WHERE email = %s",
                 (req.email,),
             )
@@ -63,7 +79,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         await verify_password(req.password, _HASH_DE_RELLENO)
         raise _credenciales_invalidas()
 
-    user_id, tenant_id, email, password_hash, role, user_status, failed_attempts, locked_until = row
+    user_id, tenant_id, email, password_hash, role, user_status, failed_attempts, locked_until, token_version = row
     now = utc_ahora()
     bloqueada = bool(locked_until and locked_until > now)
 
@@ -105,16 +121,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 (user_id,),
             )
 
-    access = create_access_token(str(user_id), str(tenant_id), role)
-    refresh = create_refresh_token(str(user_id), str(tenant_id), role)
-
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh,
-        httponly=True,
-        max_age=7 * 24 * 3600,
-        samesite="lax",
-    )
+    access = _emitir_tokens(response, str(user_id), str(tenant_id), role, token_version)
 
     return LoginResponse(
         access_token=access,
@@ -129,16 +136,13 @@ async def login(req: LoginRequest, request: Request, response: Response):
 async def refresh(refresh_token: str = Cookie(None)):
     if not refresh_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sin refresh token")
-
-    payload = decode_token(refresh_token)
-    if payload.get("type") != "refresh":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token inválido")
-
-    access = create_access_token(
-        str(payload["user_id"]),
-        str(payload["tenant_id"]),
-        payload["role"],
-    )
+    # La misma verificación que cada request (etapa 2): un refresh de un
+    # usuario desactivado o con la versión vieja ya no reemite nada. El access
+    # nuevo lleva el rol y la versión de la BASE, no los del refresh.
+    # La cookie NO se rota: rotarla haría deslizante la sesión de 7 días, y la
+    # versión ya invalida el refresh viejo cuando hace falta.
+    user = await verificar_sesion(decode_token(refresh_token), "refresh")
+    access = create_access_token(user.user_id, user.tenant_id, user.role, user.token_version)
     return RefreshResponse(access_token=access)
 
 
