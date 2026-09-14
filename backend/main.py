@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -51,6 +51,7 @@ from jax_engine.websocket_hub import ws_hub
 from jax_engine.lifecycle import lifecycle_lock, sse_connections
 from jax_engine.schemas import JAXEvent
 from auth.jwt import decode_token
+from auth.middleware import verificar_sesion
 
 from api.health import router as health_router
 from api.auth import router as auth_router
@@ -77,6 +78,8 @@ from api.admin import (
     admin_motors_router,
     smtp_router,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -198,7 +201,22 @@ async def websocket_endpoint(
     await websocket.accept()
 
     try:
-        auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+        # El wait_for va en su propio try: SÓLO el timeout de ESTE receive()
+        # (la persona no manda el mensaje de auth a tiempo) es un 4001
+        # silencioso. Si queda en el try grande de abajo, un TimeoutError de
+        # cualquier otra cosa (p.ej. verificar_sesion/pool.acquire, si algún
+        # día tuviera su propio timeout) caería en la misma rama silenciosa
+        # -- indistinguible de esto, sin loguear el fallo real (M-2, code
+        # review de esta ronda).
+        try:
+            auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+        except asyncio.TimeoutError:
+            try:
+                await websocket.close(code=4001)
+            except RuntimeError:  # fail-soft: best-effort close() tras un error ya manejado arriba; el except externo ya hace return
+                pass
+            return
+
         if auth_msg.get("type") != "auth":
             await websocket.close(code=4001)
             return
@@ -210,23 +228,39 @@ async def websocket_endpoint(
             await websocket.close(code=4001)
             return
 
+        # La misma verificación que cada request HTTP (admin usuarios etapa
+        # 2): usuario existente, `active` y con la versión de token vigente.
+        # Un HTTPException (sesión inválida) cae en el `except HTTPException`
+        # de abajo -> 4001 sin log; cualquier otra excepción (pool agotado,
+        # MariaDB caída, o un TimeoutError que no sea el del receive() de
+        # arriba) cae en el `except Exception` -> 4001 CON log (code review
+        # de esta ronda).
+        sesion = await verificar_sesion(payload, "access")
+
     except WebSocketDisconnect:
         return
-    except asyncio.TimeoutError:
+    except (HTTPException, ValueError, TypeError, AttributeError, KeyError):
+        # Caso esperado del handshake, no un fallo de infraestructura: token
+        # invalido/expirado o sesion invalida -- inactiva, rol cambiado,
+        # token_version vieja (HTTPException de decode_token/verificar_sesion,
+        # code review de esta ronda), o el mensaje de auth malformado (JSON
+        # invalido, no es un dict, faltan campos -- el comportamiento de
+        # antes de esta ronda). No se loguea como error.
         try:
             await websocket.close(code=4001)
-        except RuntimeError:  # fail-soft: best-effort close() tras un error ya manejado arriba; el except externo ya hace return
+        except RuntimeError:  # fail-soft: mismo best-effort close() que la rama anterior, el except externo ya hace return
             pass
         return
-    except Exception:
+    except Exception:  # fail-soft: fallo real de infraestructura (pool agotado, MariaDB caida, timeout de la consulta) -- cierra 4001 igual que arriba, pero primero deja rastro en el log; sin esto es indistinguible de una sesion invalida (code review de esta ronda)
+        logger.exception("Fallo inesperado en el handshake WebSocket")
         try:
             await websocket.close(code=4001)
         except RuntimeError:  # fail-soft: mismo best-effort close() que la rama anterior, el except externo ya hace return
             pass
         return
 
-    tenant_id = str(payload["tenant_id"])
-    role = payload["role"]
+    tenant_id = sesion.tenant_id
+    role = sesion.role  # de la base, no del token
 
     await websocket.send_json({"type": "auth_ok"})
 

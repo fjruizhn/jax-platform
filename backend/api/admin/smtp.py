@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 import smtp_config
 from crypto_secrets import clave_de_cifrado_utilizable
-from auth.middleware import require_superadmin
+from auth.middleware import SESION_INVALIDA, require_superadmin
 from auth.models import AuthUser
 from auth.rate_limit import SlidingWindowLimiter, parse_rate
 from db.connection import get_pool
@@ -158,7 +158,7 @@ async def _email_de(user_id: int) -> str:
             await cur.execute("SELECT email FROM jax_users WHERE user_id = %s", (user_id,))
             fila = await cur.fetchone()
     if fila is None:
-        raise HTTPException(status_code=401, detail="sesion_invalida")
+        raise HTTPException(status_code=401, detail=SESION_INVALIDA)
     return fila[0]
 
 

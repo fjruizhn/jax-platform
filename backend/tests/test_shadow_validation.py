@@ -38,6 +38,7 @@ escritura a DB, cosa que no puede: el `user_id` no numérico del token
 hace que `conv_uuid` quede `None` de forma estructural (ver el
 docstring del test).
 """
+from tests.identidades import token_de
 import json
 import uuid
 
@@ -319,10 +320,9 @@ def test_chat_endpoint_does_not_break_when_shadow_validation_is_enqueued(client)
     # timing de BackgroundTasks dentro de TestClient, que no es
     # determinístico (ver nota original más abajo).
     import http_client
-    from auth.jwt import create_access_token
     from tests.test_chat_contract_wrapper import _FakePostClient, _FakeResponse
 
-    token = create_access_token("test-shadow-e2e-user", "test-shadow-e2e-tenant", "operator")
+    token = token_de(client, "test-shadow-e2e-user", "operator", "test-shadow-e2e-tenant")
     fake = _FakePostClient(_FakeResponse({
         "choices": [{"message": {"content":
             '{"claim": [], "analysis": "no hay nada que afirmar", "judgment": null}'}}],
@@ -356,10 +356,9 @@ def test_chat_endpoint_survives_shadow_validation_import_failure(client):
     from unittest.mock import patch
 
     import http_client
-    from auth.jwt import create_access_token
     from tests.test_chat_contract_wrapper import _FakePostClient, _FakeResponse
 
-    token = create_access_token("test-shadow-import-fail-user", "test-shadow-import-fail-tenant", "operator")
+    token = token_de(client, "test-shadow-import-fail-user", "operator", "test-shadow-import-fail-tenant")
     fake = _FakePostClient(
         _FakeResponse({
             "choices": [{"message": {"content":

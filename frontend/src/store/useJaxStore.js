@@ -132,6 +132,11 @@ export const useJaxStore = create((set, get) => {
   generatingImage: false,
   _pipelineCompletedShown: new Set(),
   _sessionEpoch: 0,
+  // Motivo por el que se cerró la sesión (clave de i18n) o null. Lo escribe
+  // api/client.js ANTES de borrar token/user cuando el refresh silencioso
+  // falla — nunca se borra la sesión sin dejar el motivo. Login.jsx lo
+  // muestra y lo borra tras un login exitoso.
+  avisoSesion: null,
 
   restoreSession: async () => {
     try {
@@ -155,6 +160,12 @@ export const useJaxStore = create((set, get) => {
     bumpSessionEpoch()
     return data
   },
+
+  // Login.jsx la llama tras un login exitoso -- separada de login() porque
+  // Login.test.jsx mockea login() como función suelta (vi.fn()), así que la
+  // limpieza del aviso tiene que ser una responsabilidad explícita y propia
+  // del componente, no un efecto secundario escondido dentro de login().
+  clearAvisoSesion: () => set({ avisoSesion: null }),
 
   logout: () => {
     set({ token: null, user: null, messages: [], _pipelineCompletedShown: new Set() })

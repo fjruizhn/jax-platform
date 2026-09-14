@@ -19,6 +19,8 @@ JAX_CI_NO_DB=1 se saltea por la Regla 1 de conftest.py (pide `client`).
 """
 from __future__ import annotations
 
+from tests.identidades import token_de
+
 import inspect
 import uuid
 
@@ -80,9 +82,8 @@ def _post_chat(client, body, user_suffix):
     # test_shadow_validation_navigable_without_messages_row (fila sin FK a
     # `messages`).
     import http_client
-    from auth.jwt import create_access_token
-    token = create_access_token(
-        f"test-origin-user-{user_suffix}", f"test-origin-tenant-{user_suffix}", "operator")
+    token = token_de(client, f"test-origin-user-{user_suffix}", "operator",
+                     f"test-origin-tenant-{user_suffix}")
     fake = _RecordingPostClient()
     captured = {}
 
@@ -146,9 +147,8 @@ def test_run_shadow_validation_persists_the_origin_it_received(client):
 
 
 def test_origin_outside_closed_vocabulary_is_422_and_writes_no_row(client):
-    from auth.jwt import create_access_token
     before = client.portal.call(_count_shadow_messages)
-    token = create_access_token("test-origin-user-3", "test-origin-tenant-3", "operator")
+    token = token_de(client, "test-origin-user-3", "operator", "test-origin-tenant-3")
     resp = client.post(
         "/api/chat", json={"message": "hola", "facet": "jekyll", "origin": "bogus"},
         headers={"Authorization": f"Bearer {token}"})

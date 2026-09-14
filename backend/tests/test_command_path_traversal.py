@@ -16,13 +16,13 @@ first, then the actual leak is demonstrated by calling the handler directly
 fallback the task brief calls for when routing makes an end-to-end HTTP
 payload impractical.
 """
+from tests.identidades import token_de
 import uuid
 
 import pytest
 from fastapi import HTTPException
 
 from api.command import MISSIONS_DIR, get_command_result
-from auth.jwt import create_access_token
 from auth.models import AuthUser
 
 SENTINEL = "TOP-SECRET-OUTSIDE-MISSIONS-DIR-1a2b3c"
@@ -30,7 +30,7 @@ SENTINEL = "TOP-SECRET-OUTSIDE-MISSIONS-DIR-1a2b3c"
 
 def test_encoded_slash_404s_at_router_not_the_handler(client):
     """Confirms %2F never reaches the handler -- justifies the direct-call test below."""
-    token = create_access_token("attacker", "1", "operator")
+    token = token_de(client, "path-traversal-attacker")
     headers = {"Authorization": f"Bearer {token}"}
 
     resp = client.get(
@@ -79,7 +79,7 @@ async def test_truly_unknown_uuid_404s_instead_of_claiming_running(client):
     """Un task_id que nunca se creó (sin owner file) ya no reporta "running"
     para siempre -- ver test_command_ownership.py para el caso real: un task
     propio reporta running normalmente antes de completarse."""
-    token = create_access_token("real-user", "1", "operator")
+    token = token_de(client, "path-traversal-real-user")
     headers = {"Authorization": f"Bearer {token}"}
 
     resp = client.get(f"/api/command/{uuid.uuid4()}", headers=headers)

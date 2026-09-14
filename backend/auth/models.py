@@ -43,3 +43,4 @@ class AuthUser(BaseModel):
     tenant_id: str
     role: str
     email: Optional[str] = None
+    token_version: int = 0

@@ -12,11 +12,11 @@
 
 ## Global Constraints
 
-- **Repo:** `/home/fruiz/jax-platform`. Rama desde `master` actualizado, con la etapa 1 ya mergeada: `git -C /home/fruiz/jax-platform fetch origin && git -C /home/fruiz/jax-platform switch -c feat/admin-usuarios-2-sesiones origin/master`. Siempre `git -C <ruta>`.
+- **Repo — CORREGIDO 2026-09-14:** se trabaja en el WORKTREE `/home/fruiz/worktrees/jax-platform-etapa2` (rama `feat/admin-usuarios-etapa2-sesiones`, creada desde `origin/master` `bfab4de`), NUNCA en `/home/fruiz/jax-platform`: de ese checkout sirve el servicio `jax-platform`. En las Tasks 0-5, donde un comando dice `/home/fruiz/jax-platform/...`, se usa el worktree; el Python es `/home/fruiz/jax-platform/backend/.venv/bin/python` (el worktree no tiene `.venv`) y `frontend/node_modules` es un symlink al del checkout. Solo la Task 6 (despliegue, después del merge) usa `/home/fruiz/jax-platform`. Siempre `git -C <ruta>`.
 - **TDD obligatorio**, con el rojo visto por el motivo que dice cada paso. Donde un test es un **control** que ya pasa hoy, el plan lo dice en el mismo paso: un control que no falla no valida el cambio, solo impide que el refactor pierda algo que ya andaba.
 - **Backend tests:** `cd /home/fruiz/jax-platform/backend && .venv/bin/python -m pytest ...`. Con `client` → `jax_memory_test`. Helpers async desde un test: `client.portal.call(fn, *args)` (sin kwargs: usar `functools.partial`).
 - **Ningún test modifica `user_id=1`** (superadmin sembrado): muchos archivos firman tokens para él con `tv=0`, y desde esta etapa un `token_version` distinto de 0 en esa fila rompería la suite entera.
-- **Pisos exactos** en `.github/workflows/policy.yml`: `PISO_PASSED` (job con DB), `JAX_CI_MIN_PASSED` (job sin DB) y `numPassedTests` (vitest). Leer su valor ACTUAL en el archivo antes de tocarlo. Después de la etapa 1 deberían ser 463 / 240 / 92; si no lo son, se usa lo que diga el archivo. Cada tarea sube los pisos con el número **MEDIDO** y un comentario con el porqué.
+- **Pisos exactos** en `.github/workflows/policy.yml`: `PISO_PASSED` (job con DB), `JAX_CI_MIN_PASSED` (job sin DB) y `numPassedTests` (vitest). Leer su valor ACTUAL en el archivo antes de tocarlo. Medidos el 2026-09-14 en `bfab4de`: **611 / 301 / 125** (el 463 / 240 / 92 original quedó viejo tras la etapa 1 y el lote de deuda del 09-14). Cada tarea sube los pisos con el número **MEDIDO** y un comentario con el porqué.
 - **P10:** `except Exception` con `# fail-soft: <razón>` en la misma línea. **BackgroundTasks:** solo `add_safe_task`. **Async:** nada bloqueante; la consulta nueva va por aiomysql.
 - **LAS CUATRO:** la consulta del middleware va por `PRIMARY` (verificada con `EXPLAIN` en un test y en producción). **Sin caché de entrada** (spec §3.2: sin medición no hay caché). Prueba de carga de un endpoint autenticado ANTES y DESPUÉS, con el número escrito en la Biblioteca (`/home/fruiz/jax/DEUDA.md`).
 - **Compatibilidad al desplegar:** un token emitido antes del despliegue no trae `tv` y vale como `tv=0` (spec §3.2): nadie queda afuera.
@@ -25,7 +25,7 @@
 - **`/refresh` no rota la cookie de refresh:** emite un access nuevo con el rol y la versión actuales. Rotarla convertiría los 7 días fijos en una sesión deslizante sin fin, y la versión ya invalida el refresh viejo. Las etapas que suben `token_version` para la sesión actual (etapa 4, Mi cuenta) emiten las dos cookies con `_emitir_tokens`.
 - **Qué NO es de esta etapa:** subir `token_version` en cambio de rol/estado, "cerrar sesiones" y auditoría (etapa 3); contraseñas (etapa 4); baja (etapa 5). Esta etapa construye el mecanismo; el corte por desactivación o degradación ya funciona desde acá porque el middleware lee `status` y `role` de la base.
 - Commits sin `--no-verify` (no se toca `backend/db/seed.py`). **YAGNI:** nada de spec §4.
-- **Cierre:** PR → CI verde por `headSha` → despliegue backend (no hay frontend en esta etapa) → verificación en vivo (§5) → número de carga en la Biblioteca.
+- **Cierre:** PR → CI verde por `headSha` → despliegue backend **y frontend** (desde 2026-09-14 la etapa incluye la Task 4b; deploy con `--exclude .user.ini` en los dos saltos del rsync, aaPanel lo deja inmutable) → verificación en vivo (§5) → número de carga en la Biblioteca.
 
 ---
 
@@ -41,7 +41,7 @@
 | `backend/main.py` | Modificar | handshake del WS con `verificar_sesion` |
 | `backend/tests/identidades.py` | Crear | identidades reales para tests (fábrica, borrado, tokens) |
 | `backend/tests/conftest.py` | Modificar | fixture `usuarios` |
-| 13 archivos de `backend/tests/` | Modificar | dejan de firmar tokens para ids inventados |
+| 14 archivos de `backend/tests/` | Modificar | dejan de firmar tokens para ids inventados |
 | `backend/tests/test_sesiones_token_version.py` | Crear | tests de la etapa |
 | `.github/workflows/policy.yml` | Modificar | pisos |
 
@@ -248,7 +248,7 @@ git -C /home/fruiz/jax-platform commit -m "feat(auth): jax_users.token_version y
 
 ### Task 2: Identidades reales en los tests existentes
 
-Esta tarea no agrega tests: cambia **13 archivos** que hoy firman tokens para ids que no existen en `jax_users` (`"test-keys-pooling-user"`, `"attacker"`, `"test-user-a"`...), más uno que firma para `user_id="1"` con rol `"user"` esperando un 403 (`test_admin_motors_endpoints.py::_user_headers`). Con el middleware de la Task 3, los primeros responderían 401, y el segundo recibiría el rol real de user 1 (superadmin) y su 403 pasaría a 200. Se migran ANTES del middleware, con la suite verde antes y después.
+Esta tarea no agrega tests: cambia **14 archivos** que hoy firman tokens para ids que no existen en `jax_users` (`"test-keys-pooling-user"`, `"attacker"`, `"test-user-a"`...), más uno que firma para `user_id="1"` con rol `"user"` esperando un 403 (`test_admin_motors_endpoints.py::_user_headers`). Con el middleware de la Task 3, los primeros responderían 401, y el segundo recibiría el rol real de user 1 (superadmin) y su 403 pasaría a 200. Se migran ANTES del middleware, con la suite verde antes y después.
 
 Inventario verificado con `grep -rn create_access_token backend/tests` el 2026-09-12. **No** cambian (siguen siendo válidos con la consulta por PK): los que firman para `"1"` con rol superadmin o con un rol irrelevante para lo que prueban (`test_admin_facet_bindings_endpoints.py`, `test_admin_models_endpoints.py`, `test_pipelines_identity_injection.py`, `test_motors_endpoint.py`, `test_image_http_pooling.py`, `test_grounding_config_revalidation.py`, y `_superadmin_headers` de `test_admin_motors_endpoints.py`), y los que llaman handlers directo con `AuthUser(...)` sin pasar por HTTP (`test_command_ownership.py`, `test_pipeline_ownership.py`, la parte directa de `test_command_path_traversal.py`, el test de carrera de `test_websocket_isolation.py`).
 
@@ -392,7 +392,7 @@ def usuarios(client):
         client.portal.call(borrar_usuario, user_id)
 ```
 
-- [ ] **Step 4: Migrar los 13 archivos con un script que falla si algo no calza**
+- [ ] **Step 4: Migrar los 14 archivos con un script que falla si algo no calza**
 
 Guardar como `$SCRATCH/migrar_identidades.py` (en el scratchpad de la sesión, NO en el repo) y correrlo con `cd /home/fruiz/jax-platform/backend && .venv/bin/python $SCRATCH/migrar_identidades.py`:
 
@@ -456,8 +456,8 @@ for nombre, etiqueta, rol, helper in [
                f'def {helper}(client):\n    return cabeceras(client, "{etiqueta}", "{rol}", TENANT_ID)\n')
     texto = leer(nombre)
     cambios[nombre] = texto.replace(f"{helper}()", f"{helper}(client)")
-    quitar_import_sin_uso(nombre)
     importar(nombre, "from tests.identidades import cabeceras")
+    quitar_import_sin_uso(nombre)
 
 # test_facet_model_wiring.py: operador, tenant NO numérico (sin memoria semántica)
 n = "test_facet_model_wiring.py"
@@ -466,8 +466,8 @@ reemplazar(n, 'def _auth_headers():\n    token = create_access_token(USER_ID, TE
               '    return {"Authorization": f"Bearer {token}"}\n',
            'def _auth_headers(client):\n    return cabeceras(client, "facet-model-wiring", "operator", TENANT_ID)\n')
 cambios[n] = leer(n).replace("_auth_headers()", "_auth_headers(client)")
-quitar_import_sin_uso(n)
 importar(n, "from tests.identidades import cabeceras")
+quitar_import_sin_uso(n)
 
 # test_pipelines_http_pooling.py: el id real también es el dueño de la fila
 n = "test_pipelines_http_pooling.py"
@@ -481,8 +481,8 @@ reemplazar(n, "(pipeline_id, time.time(), time.time(), USER_ID, TENANT_ID, time.
 reemplazar(n, "client.portal.call(_insert_owned_row, pipeline_id)",
            'client.portal.call(_insert_owned_row, pipeline_id, uid(client, ETIQUETA, "operator"))')
 cambios[n] = leer(n).replace("_headers()", "_headers(client)")
-quitar_import_sin_uso(n)
 importar(n, "from tests.identidades import cabeceras, uid")
+quitar_import_sin_uso(n)
 
 # test_admin_motors_endpoints.py: solo el helper de "no superadmin" cambia
 n = "test_admin_motors_endpoints.py"
@@ -514,14 +514,14 @@ for nombre, veces in [
     if n_sub != veces:
         sys.exit(f"{nombre}: {n_sub} tokens en línea, se esperaban {veces}")
     cambios[nombre] = texto
-    quitar_import_sin_uso(nombre)
     importar(nombre, "from tests.identidades import token_de")
+    quitar_import_sin_uso(nombre)
 
 n = "test_command_path_traversal.py"
 reemplazar(n, 'create_access_token("attacker", "1", "operator")', 'token_de(client, "path-traversal-attacker")')
 reemplazar(n, 'create_access_token("real-user", "1", "operator")', 'token_de(client, "path-traversal-real-user")')
-quitar_import_sin_uso(n)
 importar(n, "from tests.identidades import token_de")
+quitar_import_sin_uso(n)
 
 # --- 3. WebSocket: el path /ws/{user_id} y el token tienen que ser del mismo id REAL
 n = "test_websocket_isolation.py"
@@ -544,7 +544,7 @@ for nombre, texto in cambios.items():
     print("migrado", nombre)
 ```
 
-Expected: 13 líneas `migrado ...` y ningún `sys.exit`. Si el script aborta, NO se corrige el conteo esperado a ciegas: se lee el archivo, se entiende qué cambió en el árbol y se ajusta el reemplazo.
+Expected: 14 líneas `migrado ...` y ningún `sys.exit`. *(Corregido 2026-09-14: el script original llamaba `quitar_import_sin_uso` antes de `importar`; en `test_admin_keys_model_source.py`, cuyo único import es el de `create_access_token`, eso dejaba el archivo sin imports y abortaba con "sin imports a nivel de módulo". Ahora cada par importa primero.)* Si el script aborta, NO se corrige el conteo esperado a ciegas: se lee el archivo, se entiende qué cambió en el árbol y se ajusta el reemplazo.
 
 - [ ] **Step 5: Revisar el diff y verificar que no quedan ids inventados**
 
@@ -553,7 +553,7 @@ git -C /home/fruiz/jax-platform diff --stat
 grep -rn 'create_access_token("\(test-\|attacker\|real-user\)' /home/fruiz/jax-platform/backend/tests; echo "sin salida = ok"
 grep -rn '_user_headers()\|_superadmin_headers()\|_auth_headers()\|_headers()' /home/fruiz/jax-platform/backend/tests/test_keys_http_pooling.py /home/fruiz/jax-platform/backend/tests/test_dashboard_http_pooling.py /home/fruiz/jax-platform/backend/tests/test_admin_keys_model_source.py /home/fruiz/jax-platform/backend/tests/test_admin_keys_n1.py /home/fruiz/jax-platform/backend/tests/test_facet_model_wiring.py /home/fruiz/jax-platform/backend/tests/test_pipelines_http_pooling.py /home/fruiz/jax-platform/backend/tests/test_admin_motors_endpoints.py; echo "sin salida = ok"
 ```
-Leer el diff completo de los 13 archivos: cada cambio tiene que ser uno de los reemplazos del script, nada más.
+Leer el diff completo de los 14 archivos: cada cambio tiene que ser uno de los reemplazos del script, nada más.
 
 - [ ] **Step 6: La suite da el MISMO número que en el Step 1**
 
@@ -973,6 +973,22 @@ git -C /home/fruiz/jax-platform commit -m "feat(ws): el handshake verifica estad
 
 ---
 
+### Task 4b: El frontend dice por qué se cerró la sesión (agregada 2026-09-14, decisión de Fernando)
+
+**Por qué:** desde la Task 3 un usuario desactivado o degradado recibe 401. `frontend/src/api/client.js:20-29` intenta `/api/auth/refresh` y, si también falla, borra la sesión **en silencio** (`useJaxStore.setState({ token: null, user: null })`): la persona queda afuera sin explicación.
+
+**Files:**
+- Modify: `frontend/src/api/client.js` (guardar el motivo antes de borrar la sesión), `frontend/src/store/useJaxStore.js` (campo `avisoSesion`, clave de i18n o `null`), `frontend/src/pages/Login.jsx` (mostrarlo con `components/AlertaError.jsx`; se borra al iniciar sesión), `frontend/src/i18n/es.js` + `en.js` (`sesion_invalida`, `sesion_expirada`).
+- Tests: `frontend/src/api/client.test.js` (crear) y `frontend/src/pages/Login.test.jsx`.
+- Backend: el código `sesion_invalida` sale de **una** constante compartida. Hoy ya lo produce `backend/api/admin/smtp.py:161`; la Task 3 define la constante y `smtp.py` la importa (dos productores del mismo código con dos literales es deuda).
+
+**Comportamiento:** si el refresh falla, el interceptor guarda `avisoSesion = 'sesion_invalida'` cuando el backend lo dijo (detail `sesion_invalida` en la respuesta del 401 o del refresh) y `'sesion_expirada'` en cualquier otro caso. Login lo muestra traducido; un login exitoso lo borra. Nunca se borra la sesión sin dejar el motivo.
+
+- [ ] **Step 1 (RED):** tests de vitest: (a) refresh fallido con `sesion_invalida` → `avisoSesion === 'sesion_invalida'`; (b) refresh fallido sin código → `'sesion_expirada'`; (c) Login con `avisoSesion` muestra `es.sesion_invalida` en un `role="alert"`; (d) login exitoso lo borra; (e) las dos claves existen en es y en en. Verlos fallar por el motivo esperado.
+- [ ] **Step 2:** implementar lo mínimo para verde.
+- [ ] **Step 3:** vitest completo; `numPassedTests` en `policy.yml` sube de 125 al número **medido**, con comentario.
+- [ ] **Step 4:** commit.
+
 ### Task 5: PR y gate de CI
 
 - [ ] **Step 1: Suite local completa** (con DB, sin DB, vitest): los tres números iguales a los pisos del archivo.
@@ -982,7 +998,7 @@ git -C /home/fruiz/jax-platform commit -m "feat(ws): el handshake verifica estad
 git -C /home/fruiz/jax-platform push -u origin feat/admin-usuarios-2-sesiones
 gh pr create --repo fjruizhn/jax-platform --base master --head feat/admin-usuarios-2-sesiones \
   --title "Admin usuarios · etapa 2: sesiones que se cortan de verdad (token_version)" \
-  --body "Spec §3.2. Plan: docs/superpowers/plans/2026-09-12-admin-usuarios-etapa-2-sesiones.md. Migración token_version; middleware async por PRIMARY (EXPLAIN en test); /refresh y WS con la misma verificación; 13 archivos de test pasan a identidades reales."
+  --body "Spec §3.2. Plan: docs/superpowers/plans/2026-09-12-admin-usuarios-etapa-2-sesiones.md. Migración token_version; middleware async por PRIMARY (EXPLAIN en test); /refresh y WS con la misma verificación; 14 archivos de test pasan a identidades reales."
 ```
 
 - [ ] **Step 3: Gate por headSha (ANTES de mergear)**
@@ -1070,6 +1086,6 @@ Agregar a `/home/fruiz/jax/DEUDA.md` (PR propio en el repo `jax`) una entrada "S
 ## Autorrevisión (hecha al escribir el plan)
 
 - **Cobertura de §3.2:** migración (Task 1), `tv` en ambos tokens (Task 1), `get_current_user` async por PK con los tres rechazos y el rol desde la base (Task 3), `/refresh` con la misma verificación y el rol y la versión actuales (Task 3), WebSocket (Task 4), tokens sin `tv` como 0 (control en la Task 3), sin caché + EXPLAIN + carga antes y después (Tasks 0, 3 y 6). "token_version sube en..." es de las etapas 3, 4 y 5; esta etapa deja `_emitir_tokens` para la 4.
-- **Riesgo que el spec no mencionaba y el plan cubre:** 13 archivos de test firman tokens para ids inexistentes (Task 2). Sin esa migración, la etapa rompía la suite o, peor, se "arreglaba" con `dependency_overrides`, que dejaría a esos tests sin probar la autenticación.
+- **Riesgo que el spec no mencionaba y el plan cubre:** 14 archivos de test firman tokens para ids inexistentes (Task 2). Sin esa migración, la etapa rompía la suite o, peor, se "arreglaba" con `dependency_overrides`, que dejaría a esos tests sin probar la autenticación.
 - **Placeholders:** `<N>`, `<fecha hora CST>` y los conteos medidos son valores de ejecución.
 - **Nombres consistentes:** `verificar_sesion`, `SQL_ESTADO_DE_SESION`, `SESION_INVALIDA = "sesion_invalida"`, `_emitir_tokens`, `token_para`, `usuarios`: iguales en tests, implementación e Interfaces.

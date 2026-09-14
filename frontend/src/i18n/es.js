@@ -162,6 +162,10 @@ export default {
   loginButton: 'Entrar a Axioma',
   showPassword: 'Mostrar contraseña',
   hidePassword: 'Ocultar contraseña',
+  // Motivo del cierre de sesión (2026-09-14, Task 4b): antes el interceptor
+  // de api/client.js borraba la sesión en silencio ante un refresh fallido.
+  sesion_invalida: 'Tu sesión se cerró: tu usuario fue desactivado o cambió su acceso. Iniciá sesión de nuevo.',
+  sesion_expirada: 'Tu sesión venció. Iniciá sesión de nuevo.',
   accountLocked: 'Cuenta bloqueada. Revisa tu correo.',
   accountLockedMinutes: (min) => `Cuenta bloqueada. Intenta de nuevo en ${min} minuto(s).`,
   tooManyAttempts: 'Demasiados intentos. Espera un momento y vuelve a intentarlo.',

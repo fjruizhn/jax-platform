@@ -11,6 +11,7 @@ by the time it returns, any message destined for a socket is already buffered in
 that session's receive stream. That makes the "nothing was delivered" assertion
 deterministic (inspect the buffer) instead of racy (sleep-and-hope).
 """
+from tests.identidades import uid
 import asyncio
 
 import main as main_module
@@ -61,22 +62,23 @@ def _buffered(sock) -> int:
 
 def test_event_reaches_only_addressed_user(client):
     """An event addressed to user A must not leak to user B in the same tenant."""
-    with client.websocket_connect("/ws/test-user-a") as ws_a, \
-         client.websocket_connect("/ws/test-user-b") as ws_b:
-        _handshake(ws_a, "test-user-a")
-        _handshake(ws_b, "test-user-b")
+    a, b = uid(client, "ws-aislamiento-a"), uid(client, "ws-aislamiento-b")
+    with client.websocket_connect(f"/ws/{a}") as ws_a, \
+         client.websocket_connect(f"/ws/{b}") as ws_b:
+        _handshake(ws_a, a)
+        _handshake(ws_b, b)
 
         event = JAXEvent(
             event_type="facet_status_changed",
             tenant_id=TENANT,
-            user_id="test-user-a",
+            user_id=a,
             payload={"facet": "jax_local", "status": "thinking"},
         )
         _publish(client, event)
 
         got = ws_a.receive_json()
         assert got["event_id"] == event.event_id
-        assert got["user_id"] == "test-user-a"
+        assert got["user_id"] == a
 
         # B is in the same tenant but is NOT the addressee -> must get nothing.
         assert _buffered(ws_b) == 0
@@ -84,13 +86,14 @@ def test_event_reaches_only_addressed_user(client):
 
 def test_multi_tab_second_connection_survives_first_close(client):
     """Two tabs for the same user: closing one must not silence the other."""
-    ws1 = client.websocket_connect("/ws/test-user-a")
+    a = uid(client, "ws-aislamiento-a")
+    ws1 = client.websocket_connect(f"/ws/{a}")
     sock1 = ws1.__enter__()
-    _handshake(sock1, "test-user-a")
+    _handshake(sock1, a)
 
-    ws2 = client.websocket_connect("/ws/test-user-a")
+    ws2 = client.websocket_connect(f"/ws/{a}")
     sock2 = ws2.__enter__()
-    _handshake(sock2, "test-user-a")
+    _handshake(sock2, a)
 
     # Close the first tab. The second tab's socket stays open.
     ws1.__exit__(None, None, None)
@@ -99,7 +102,7 @@ def test_multi_tab_second_connection_survives_first_close(client):
         event = JAXEvent(
             event_type="facet_status_changed",
             tenant_id=TENANT,
-            user_id="test-user-a",
+            user_id=a,
             payload={"facet": "jax_local", "status": "idle"},
         )
         _publish(client, event)

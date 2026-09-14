@@ -715,9 +715,27 @@ async def delete_user(user_id: int, user: AuthUser = Depends(require_superadmin)
     return {"ok": True}
 ```
 
+- [ ] **Step 4b: Cortar los WebSocket ya abiertos** *(enmienda 2026-09-14, revisión final de la etapa 2, hallazgo M-1)*
+
+`verificar_sesion` corta el WS solo en el handshake: una pestaña abierta de un usuario degradado,
+desactivado o borrado seguiría recibiendo eventos hasta reconectar. Donde nace el incremento de
+`token_version` (y el borrado) se cierran también sus conexiones vivas:
+
+- `backend/jax_engine/websocket_hub.py`: nuevo `async def close_user(self, user_id: str, code: int = 4001) -> int`
+  — saca bajo `_lock` todas las conexiones del usuario, las cierra fuera del lock con ese código
+  (una excepción al cerrar una no impide cerrar las demás) y devuelve cuántas cerró.
+- `update_user` (cuando cambia rol o estado), `revoke_sessions` (Task 3) y `delete_user`: llamar
+  `await ws_hub.close_user(str(user_id))` **después** de que la transacción confirma (nunca
+  dentro: un rollback no debe haber cortado sesiones).
+- Tests: el hub cierra todas las conexiones del usuario con 4001 y no toca las de otro; cada uno
+  de los tres endpoints llama al hub tras el commit y no lo llama si la guarda responde 409/404.
+
+*(M-4, anotado:* `tenant_id` sigue saliendo del token — aceptado por el spec §3.2 con un solo
+tenant. Si llega multi-tenant, `verificar_sesion` lo lee de `jax_users` igual que el rol.)*
+
 - [ ] **Step 5: Verde**
 
-Run: `cd /home/fruiz/jax-platform/backend && .venv/bin/python -m pytest tests/test_admin_usuarios_guardas.py tests/test_user_audit.py -q` → `14 passed` (11 + 3).
+Run: `cd /home/fruiz/jax-platform/backend && .venv/bin/python -m pytest tests/test_admin_usuarios_guardas.py tests/test_user_audit.py -q` → `14 passed` (11 + 3) más los tests del Step 4b.
 Run: suite completa → 0 failed.
 
 - [ ] **Step 6: Pisos medidos** — sin DB +2 (los dos puros); con DB +11.

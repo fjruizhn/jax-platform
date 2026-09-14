@@ -4,18 +4,16 @@ query pattern that scales linearly with len(PROVIDERS). This pins the fix:
 those reads must be batched into O(1) queries (one IN (...) per table),
 regardless of how many providers exist.
 """
+from tests.identidades import cabeceras
 import aiomysql
 import pytest
 
-from auth.jwt import create_access_token
 
-USER_ID = "test-admin-keys-user"
 TENANT_ID = "test-admin-keys-tenant"
 
 
-def _superadmin_headers():
-    token = create_access_token(USER_ID, TENANT_ID, "superadmin")
-    return {"Authorization": f"Bearer {token}"}
+def _superadmin_headers(client):
+    return cabeceras(client, "admin-keys-n1", "superadmin", TENANT_ID)
 
 
 class _QueryCounter:
@@ -55,7 +53,7 @@ def test_list_keys_reads_are_not_n_plus_one(client):
     from api.admin.keys import PROVIDERS
 
     with _QueryCounter() as counter:
-        resp = client.get("/api/admin/keys", headers=_superadmin_headers())
+        resp = client.get("/api/admin/keys", headers=_superadmin_headers(client))
 
     assert resp.status_code == 200, resp.text
     assert len(resp.json()["providers"]) == len(PROVIDERS)

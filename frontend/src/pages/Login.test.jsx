@@ -7,8 +7,13 @@ import '@testing-library/jest-dom'
 // Retry-After. Antes ese caso caía en "Usuario o contraseña incorrectos", que
 // es falso: la persona no se equivocó, tiene que esperar.
 const loginMock = vi.fn()
+const clearAvisoSesionMock = vi.fn()
+// Motivo del cierre de sesión (2026-09-14, Task 4b): mutable para que cada
+// test pueda simular que se llegó a Login con un aviso ya puesto (p.ej. el
+// interceptor de api/client.js lo dejó tras un refresh fallido).
+let avisoSesion = null
 vi.mock('../store/useJaxStore', () => ({
-  useJaxStore: (selector) => selector({ login: loginMock }),
+  useJaxStore: (selector) => selector({ login: loginMock, avisoSesion, clearAvisoSesion: clearAvisoSesionMock }),
 }))
 vi.mock('../api/client', () => ({ default: { post: vi.fn() } }))
 
@@ -34,6 +39,8 @@ function enviar() {
 
 beforeEach(() => {
   loginMock.mockReset()
+  clearAvisoSesionMock.mockReset()
+  avisoSesion = null
   localStorage.clear()
 })
 
@@ -58,6 +65,56 @@ describe('Login -- límite de intentos', () => {
     renderLogin()
     enviar()
     await waitFor(() => expect(screen.getByText(/Usuario o contraseña incorrectos/i)).toBeInTheDocument())
+  })
+})
+
+// Aviso de por qué se cerró la sesión (2026-09-14, Task 4b): antes el
+// interceptor de api/client.js borraba la sesión en silencio ante un refresh
+// fallido. Ahora deja el motivo en avisoSesion (store) y Login lo muestra.
+describe('Login -- aviso de cierre de sesión', () => {
+  it('con avisoSesion puesto, muestra el mensaje traducido en un role="alert"', () => {
+    avisoSesion = 'sesion_invalida'
+    renderLogin()
+    const alerta = screen.getByRole('alert')
+    expect(alerta).toHaveTextContent(/Tu sesión se cerró: tu usuario fue desactivado/)
+  })
+
+  it('sin avisoSesion, no muestra ningún role="alert"', () => {
+    renderLogin()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('un login exitoso borra el aviso', async () => {
+    avisoSesion = 'sesion_invalida'
+    loginMock.mockResolvedValue({ access_token: 'x' })
+    renderLogin()
+    enviar()
+    await waitFor(() => expect(clearAvisoSesionMock).toHaveBeenCalled())
+  })
+
+  // I-1 (revisión final, 2026-09-14): antes clearAvisoSesion() sólo corría
+  // DESPUÉS de un login exitoso -- si quedaba un aviso viejo y esta persona
+  // escribía mal la contraseña, el aviso ("Tu sesión venció") seguía en
+  // pantalla junto con "Usuario o contraseña incorrectos": dos cajas rojas.
+  // Ahora se limpia al ENVIAR el formulario, no al tener éxito.
+  it('un login fallido (contraseña equivocada) también borra el aviso previo', async () => {
+    avisoSesion = 'sesion_invalida'
+    loginMock.mockRejectedValue({ response: { status: 401, headers: {}, data: {} } })
+    renderLogin()
+    enviar()
+    await waitFor(() => expect(screen.getByText(/Usuario o contraseña incorrectos/i)).toBeInTheDocument())
+    expect(clearAvisoSesionMock).toHaveBeenCalled()
+  })
+
+  it('las claves sesion_invalida y sesion_expirada existen en es y en', async () => {
+    const { default: es } = await import('../i18n/es.js')
+    const { default: en } = await import('../i18n/en.js')
+    for (const claves of [es, en]) {
+      expect(typeof claves.sesion_invalida).toBe('string')
+      expect(claves.sesion_invalida.length).toBeGreaterThan(0)
+      expect(typeof claves.sesion_expirada).toBe('string')
+      expect(claves.sesion_expirada.length).toBeGreaterThan(0)
+    }
   })
 })
 
