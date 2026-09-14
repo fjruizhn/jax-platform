@@ -38,6 +38,10 @@
 - **P10:** todo `except Exception` del backend lleva `# fail-soft: <razón>` en la misma línea (scanner `tests/test_no_fail_open_except.py`). El endpoint nuevo no atrapa nada: si la base falla, responde 500 y el cliente se queda con el último predeterminado conocido.
 - **LAS CUATRO:** EXPLAIN de la consulta real en un test (índice); sin caché nuevo en backend (§5.2 del spec); `localStorage['jax_theme_default']` es el caché del cliente, invalidado en cada carga y al guardar; aiomysql; `font-display: swap`; tamaño de bundle y FCP/CLS antes y después de cada PR; prueba de carga de `/api/apariencia` con números en `/home/fruiz/jax/DEUDA.md` (Task 30). Sin número medido no hay GO.
 - **Pisos de CI** (`.github/workflows/policy.yml`): `numPassedTests` (vitest, exacto), `PISO_PASSED` (job con DB), `JAX_CI_MIN_PASSED` (job sin DB). Se mueven: medidos el 2026-09-14, master `bfab4de` = **125 / 611 / 301** y la rama de la etapa 2 ya los lleva a **125 / 633 / 303** (su Task 4b todavía va a subir vitest). **Siempre se lee el valor vigente del archivo después del rebase** y se pone el número **medido**, con comentario del porqué.
+  - **ACTUALIZADO 2026-09-14 ~15:30 (Hyde):** la etapa 2 se mergeó y desplegó (jax-platform#70 → `3d90f58`); `feat/tema-tokens` ya está rebasada encima. Pisos vigentes en master: vitest **139**, `PISO_PASSED` **635**, `JAX_CI_MIN_PASSED` **303**. La tanda A (gobernanza) se mergea ANTES que este plan y va a moverlos otra vez: se vuelve a rebasar y a leer el archivo antes de ejecutar.
+- **Decisiones de Fernando posteriores al plan (2026-09-14, en chat):**
+  - **Fondos con el color de la faceta y texto encima** (Enviar con texto blanco a 2,54:1): se hace lo que propone el PR 3 — **superficie opaca neutra con borde y acento del color de la faceta**; la matriz pasa de 88 a 97 pares.
+  - **Placeholder del correo en Login** (hoy el correo real de Fernando, hardcodeado): entra al **PR 1** como texto i18n con un **ejemplo genérico**: `es` → `nombre@empresa.com`, `en` → `name@company.com`. Test: el placeholder sale de i18n y no contiene `rich-hn`.
 - **impeccable:** el hook marca Inter como sobreusada. Es una DECISIÓN de Fernando: se registra con `impeccable hooks ignore-value` y el motivo `user confirmed: Fernando 2026-09-14` (Task 8). No se reabre.
 - **Registro de medidas:** `/home/fruiz/worktrees/jax-platform-tema/.superpowers/sdd/tema-tokens-medidas.md`. `.superpowers/` está en `.gitignore` (verificado con `git check-ignore`). Ahí van, con fecha y hora, cada número de bundle, FCP/CLS y carga. La Task 30 los pasa a DEUDA.
 - **Deploy del frontend** (`/home/fruiz/jax/CONTEXT.md` §7, "CORREGIDO 2026-09-14"): build → backup en la VM con `cp -a` y `diff -rq` → rsync a `/tmp/axioma-deploy/` en la VM dev (`ssh -p 58291 fruiz@172.16.20.11`) → `sudo rsync -a --delete --chown=www:www` a `/www/wwwroot/axioma-ia.io/`, con `--exclude .user.ini` **en los dos saltos** (sin eso, `--delete` falla con código 23: aaPanel deja `.user.ini` inmutable).
@@ -2318,7 +2322,7 @@ Todos los checks `SUCCESS` y los shas iguales → merge (`gh pr merge <N> --repo
 
 ## Hallazgos fuera de alcance (anotados, no se tocan en este plan)
 
-- `pages/Login.jsx` trae el placeholder del correo hardcodeado (`fernando@rich-hn.com`), fuera de i18n. No es color ni tema; se le lleva a Fernando para que decida si entra al PR 1 como clave `loginEmailPlaceholder` en es/en.
+- `pages/Login.jsx` trae el placeholder del correo hardcodeado (`fernando@rich-hn.com`), fuera de i18n. No es color ni tema. **DECIDIDO por Fernando (2026-09-14):** entra al PR 1 como clave `loginEmailPlaceholder` en es/en con un ejemplo genérico (`nombre@empresa.com` / `name@company.com`); ver "Decisiones de Fernando posteriores al plan" en Global Constraints.
 - `prose prose-invert` en `Message.jsx` no hace nada: no hay plugin de tipografía. No es alcance de un PR de tokens.
 
 ## Autorrevisión (contra el spec, 2026-09-14)
