@@ -30,22 +30,20 @@ La llamada saliente a Ollama se intercepta parcheando
 `httpx.AsyncClient.post` (AsyncMock, sin self-binding) — sin red, sin
 Ollama real.
 """
+from tests.identidades import cabeceras
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
-from auth.jwt import create_access_token
 from facet_resolver import FacetUnavailableError
 
-USER_ID = "test-facet-user"
 TENANT_ID = "test-facet-tenant"
 
 SENTINEL_MODEL = "sentinel-dbwins-model:99z"  # unmistakably not from config.toml
 
 
-def _auth_headers():
-    token = create_access_token(USER_ID, TENANT_ID, "operator")
-    return {"Authorization": f"Bearer {token}"}
+def _auth_headers(client):
+    return cabeceras(client, "facet-model-wiring", "operator", TENANT_ID)
 
 
 def _ollama_response(content="ok"):
@@ -124,7 +122,7 @@ def _post_chat(client):
         resp = client.post(
             "/api/chat",
             json={"message": "hola, como estas", "facet": "jax_local"},
-            headers=_auth_headers(),
+            headers=_auth_headers(client),
         )
     assert resp.status_code == 200, resp.text
     assert mock_post.call_count == 1, f"expected one Ollama call, got {mock_post.call_count}"
@@ -160,7 +158,7 @@ def test_degrades_explicitly_when_facet_unavailable(client):
         resp = client.post(
             "/api/chat",
             json={"message": "hola, como estas", "facet": "jax_local"},
-            headers=_auth_headers(),
+            headers=_auth_headers(client),
         )
     # FacetUnavailableError -> _invoke_facet devuelve mensaje de degradacion
     # explicito (fail-closed, ver api/chat.py) en vez de invocar Ollama con
@@ -201,7 +199,7 @@ def test_model_identity_question_short_circuits_before_ollama(client):
             resp = client.post(
                 "/api/chat",
                 json={"message": "que modelo sos", "facet": "jax_local"},
-                headers=_auth_headers(),
+                headers=_auth_headers(client),
             )
         assert resp.status_code == 200, resp.text
         assert mock_post.call_count == 0, (

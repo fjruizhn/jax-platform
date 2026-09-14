@@ -282,4 +282,26 @@ def _limites_de_login_limpios():
         return
     rate_limit.reset_login_limiters()
     yield
+
+
+@pytest.fixture
+def usuarios(client):
+    """Fábrica de usuarios REALES en jax_users que se borran al terminar el
+    test (2026-09-12, admin usuarios etapa 2): crear(**kw) -> (user_id, email),
+    con los kwargs de tests/identidades.py::crear_usuario. Pide `client`, así
+    que en el job sin DB se salta sola (Regla 1)."""
+    from functools import partial
+
+    from tests.identidades import borrar_usuario, crear_usuario
+
+    creados = []
+
+    def crear(**kw):
+        user_id, email = client.portal.call(partial(crear_usuario, **kw))
+        creados.append(user_id)
+        return user_id, email
+
+    yield crear
+    for user_id in creados:
+        client.portal.call(borrar_usuario, user_id)
     rate_limit.reset_login_limiters()

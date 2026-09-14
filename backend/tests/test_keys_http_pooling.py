@@ -1,14 +1,12 @@
+from tests.identidades import cabeceras
 import api.admin.keys as keys_module
 import http_client
-from auth.jwt import create_access_token
 
-USER_ID = "test-keys-pooling-user"
 TENANT_ID = "test-keys-pooling-tenant"
 
 
-def _superadmin_headers():
-    token = create_access_token(USER_ID, TENANT_ID, "superadmin")
-    return {"Authorization": f"Bearer {token}"}
+def _superadmin_headers(client):
+    return cabeceras(client, "keys-pooling", "superadmin", TENANT_ID)
 
 
 class _FakeResponse:
@@ -39,7 +37,7 @@ def test_test_key_generic_branch_uses_the_shared_client(client, monkeypatch):
     original = http_client._client
     http_client._client = fake
     try:
-        resp = client.post("/api/admin/keys/openai/test", headers=_superadmin_headers())
+        resp = client.post("/api/admin/keys/openai/test", headers=_superadmin_headers(client))
     finally:
         http_client._client = original
 
@@ -63,7 +61,7 @@ def test_test_key_gemini_branch_uses_the_shared_client(client, monkeypatch):
     original = http_client._client
     http_client._client = fake
     try:
-        resp = client.post("/api/admin/keys/gemini/test", headers=_superadmin_headers())
+        resp = client.post("/api/admin/keys/gemini/test", headers=_superadmin_headers(client))
     finally:
         http_client._client = original
 

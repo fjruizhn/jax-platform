@@ -9,6 +9,8 @@ None por los ids no numéricos -- mismo patrón que test_chat_contract_wrapper).
 """
 from __future__ import annotations
 
+from tests.identidades import token_de
+
 import http_client
 from unittest.mock import patch
 
@@ -31,8 +33,7 @@ class _RecordingPostClient:
 
 def test_same_snapshot_object_reaches_prompt_and_background_task(client):
     import grounding as governance_grounding
-    from auth.jwt import create_access_token
-    token = create_access_token("test-grounding-user", "test-grounding-tenant", "operator")
+    token = token_de(client, "test-grounding-user", "operator", "test-grounding-tenant")
     fake = _RecordingPostClient()
     captured = {}
 
@@ -66,9 +67,8 @@ def test_same_snapshot_object_reaches_prompt_and_background_task(client):
 
 def test_snapshot_build_failure_is_marked_not_hidden(client, caplog):
     import grounding as governance_grounding
-    from auth.jwt import create_access_token
     import api.chat as chat
-    token = create_access_token("test-grounding-user-2", "test-grounding-tenant-2", "operator")
+    token = token_de(client, "test-grounding-user-2", "operator", "test-grounding-tenant-2")
     fake = _RecordingPostClient()
     captured = {}
 

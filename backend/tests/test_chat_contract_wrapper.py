@@ -9,6 +9,7 @@ infra/facetas-bloque-d, ya mergeada a master). is_canned se deriva en
 el call site del endpoint como "usage is None" — ver
 test_chat_endpoint_marks_contract_degraded_on_truncated_json más abajo.
 """
+from tests.identidades import token_de
 from api.chat import _parse_contract_response
 
 
@@ -197,11 +198,10 @@ class _FakePostClient:
 
 
 def test_chat_endpoint_marks_contract_degraded_on_truncated_json(client):
-    from auth.jwt import create_access_token
     # ids no numéricos a propósito (mismo patrón que test_facet_model_wiring.py):
     # chat.py solo toca el camino de memoria semántica cuando user_id/tenant_id
     # parsean a int — así aislamos el único llamado saliente que nos importa.
-    token = create_access_token("test-contract-user", "test-contract-tenant", "operator")
+    token = token_de(client, "test-contract-user", "operator", "test-contract-tenant")
     fake = _FakePostClient(
         _FakeResponse({
             "choices": [{"message": {"content": '{"claim": [{"predicate": "CAPABILITY_AVAI'}}],
@@ -231,8 +231,7 @@ def test_chat_endpoint_contract_not_degraded_on_valid_json(client):
     mostrada es analysis (+judgment), no el JSON crudo — prueba que
     is_canned=False (llamada real) efectivamente dispara el parseo, y que
     el parseo exitoso no degrada."""
-    from auth.jwt import create_access_token
-    token = create_access_token("test-contract-user-2", "test-contract-tenant-2", "operator")
+    token = token_de(client, "test-contract-user-2", "operator", "test-contract-tenant-2")
     fake = _FakePostClient(
         _FakeResponse({
             "choices": [{"message": {"content": (

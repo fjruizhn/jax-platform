@@ -10,6 +10,7 @@ PATCH agregado 2026-08-19 (edicion, hueco real del alcance original
 crear+listar) — ver docstring de update_motor en el router para el guard
 anti-divergencia con facet_binding.
 """
+from tests.identidades import cabeceras
 from auth.jwt import create_access_token
 
 USER_ID = "1"
@@ -21,9 +22,10 @@ def _superadmin_headers():
     return {"Authorization": f"Bearer {token}"}
 
 
-def _user_headers():
-    token = create_access_token(USER_ID, TENANT_ID, "user")
-    return {"Authorization": f"Bearer {token}"}
+def _user_headers(client):
+    # Operador REAL: con el rol leído de la base, un token de user_id=1 con
+    # rol "user" sería superadmin y este 403 pasaría a 200.
+    return cabeceras(client, "admin-motors", "operator", TENANT_ID)
 
 
 async def _cleanup_motor(key):
@@ -99,7 +101,7 @@ def test_list_motors_requires_superadmin(client):
     resp = client.get("/api/admin/motors")
     assert resp.status_code in (401, 403)
 
-    resp = client.get("/api/admin/motors", headers=_user_headers())
+    resp = client.get("/api/admin/motors", headers=_user_headers(client))
     assert resp.status_code == 403
 
 

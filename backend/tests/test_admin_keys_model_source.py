@@ -10,15 +10,13 @@ facet_models — por eso el escenario se fuerza explicitamente (desactivar
 cualquier fila activa de 'thot' en facet_models) en vez de asumir que la
 tabla legacy esta vacia. Restaura el estado previo en el finally.
 """
-from auth.jwt import create_access_token
+from tests.identidades import cabeceras
 
-USER_ID = "test-admin-keys-model-source-user"
 TENANT_ID = "test-admin-keys-model-source-tenant"
 
 
-def _superadmin_headers():
-    token = create_access_token(USER_ID, TENANT_ID, "superadmin")
-    return {"Authorization": f"Bearer {token}"}
+def _superadmin_headers(client):
+    return cabeceras(client, "admin-keys-model-source", "superadmin", TENANT_ID)
 
 
 async def _thot_active_facet_models_ids():
@@ -51,7 +49,7 @@ def test_list_keys_falls_back_to_facet_binding_when_legacy_table_has_no_active_r
     active_ids = client.portal.call(_thot_active_facet_models_ids)
     client.portal.call(_set_active, active_ids, False)
     try:
-        resp = client.get("/api/admin/keys", headers=_superadmin_headers())
+        resp = client.get("/api/admin/keys", headers=_superadmin_headers(client))
     finally:
         client.portal.call(_set_active, active_ids, True)
 

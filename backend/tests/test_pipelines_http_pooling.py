@@ -1,22 +1,21 @@
+from tests.identidades import cabeceras, uid
 import time
 import uuid
 
 import httpx
 import pytest
 
-from auth.jwt import create_access_token
 from db.connection import get_pool
 
-USER_ID = "test-pipelines-pooling-user"
+ETIQUETA = "pipelines-pooling"
 TENANT_ID = "test-pipelines-pooling-tenant"
 
 
-def _headers():
-    token = create_access_token(USER_ID, TENANT_ID, "operator")
-    return {"Authorization": f"Bearer {token}"}
+def _headers(client):
+    return cabeceras(client, ETIQUETA, "operator", TENANT_ID)
 
 
-async def _insert_owned_row(pipeline_id):
+async def _insert_owned_row(pipeline_id, user_id):
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -25,7 +24,7 @@ async def _insert_owned_row(pipeline_id):
                 "(pipeline_id, name, invoked_by, mode, status, created_at, updated_at, "
                 " user_id, tenant_id, owner_ack_at) "
                 "VALUES (%s, 'test', 'hyde', 'supervised', 'running', %s, %s, %s, %s, %s)",
-                (pipeline_id, time.time(), time.time(), USER_ID, TENANT_ID, time.time()),
+                (pipeline_id, time.time(), time.time(), user_id, TENANT_ID, time.time()),
             )
 
 
@@ -39,7 +38,7 @@ async def _delete_row(pipeline_id):
 @pytest.fixture
 def owned_pipeline_id(client):
     pipeline_id = str(uuid.uuid4())
-    client.portal.call(_insert_owned_row, pipeline_id)
+    client.portal.call(_insert_owned_row, pipeline_id, uid(client, ETIQUETA, "operator"))
     yield pipeline_id
     client.portal.call(_delete_row, pipeline_id)
 
@@ -77,13 +76,13 @@ def test_pipeline_endpoints_do_not_create_a_new_client_per_request(client, owned
     identity so the by-id requests actually reach the shared client (past
     the ownership check) instead of short-circuiting at a 404."""
     with _ClientInstantiationCounter() as counter:
-        resp = client.get("/api/pipelines", headers=_headers())
+        resp = client.get("/api/pipelines", headers=_headers(client))
         assert resp.status_code == 200
 
-        resp = client.get(f"/api/pipelines/{owned_pipeline_id}", headers=_headers())
+        resp = client.get(f"/api/pipelines/{owned_pipeline_id}", headers=_headers(client))
         assert resp.status_code in (200, 502)
 
-        resp = client.get(f"/api/pipelines/{owned_pipeline_id}/results", headers=_headers())
+        resp = client.get(f"/api/pipelines/{owned_pipeline_id}/results", headers=_headers(client))
         assert resp.status_code in (200, 502)
 
     assert counter.count == 0, (
@@ -96,7 +95,7 @@ def test_by_id_endpoint_404s_before_touching_the_client_when_not_the_owner(clien
     """A pipeline_id with no matching owner record 404s at the ownership
     check, before get_http_client() is ever called."""
     with _ClientInstantiationCounter() as counter:
-        resp = client.get(f"/api/pipelines/{uuid.uuid4()}", headers=_headers())
+        resp = client.get(f"/api/pipelines/{uuid.uuid4()}", headers=_headers(client))
         assert resp.status_code == 404
 
     assert counter.count == 0
