@@ -124,8 +124,13 @@ jobs:
             // no toca el aviso si el refresh anda) y +4 Login.test.jsx (muestra
             // el aviso en un role="alert" traducido, lo borra tras un login
             // exitoso, y las dos claves existen en es/en). Medido con vitest run.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 133) {
-              console.error("PISO ROTO: se esperaban 133 tests de vitest CORRIDOS y 0 fallidos.");
+            // 133 -> 139 (revisión final de la etapa 2): +5
+            // client.authEndpoints.test.js (el interceptor no actúa sobre los 401
+            // de /auth/login, /auth/refresh ni /auth/logout; otra ruta sigue
+            // poniendo el aviso) y +1 Login.test.jsx (el aviso se borra al enviar
+            // el formulario). Medido con vitest run: 139.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 139) {
+              console.error("PISO ROTO: se esperaban 139 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -475,7 +480,10 @@ jobs:
           # de infraestructura indistinguibles): 2 tests del handshake WS
           # (fallo de infraestructura logueado / sesión inválida sin log).
           # Medido: 633 / 1.
-          PISO_PASSED = 633
+          # 633 -> 635 (revisión final de la etapa 2): el timeout fuera del
+          # receive del handshake WS se loguea, y /api/auth/me hace una sola
+          # consulta a jax_users. Medido: 635 / 1.
+          PISO_PASSED = 635
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
