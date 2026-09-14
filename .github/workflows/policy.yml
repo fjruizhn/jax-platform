@@ -78,7 +78,11 @@ jobs:
   # cambio en el conteo, 96 medido (solo se amplió la lista de códigos de un
   # test existente con smtp_usuario_no_ascii); 97 desde el 2026-09-13 (item F:
   # src/lightModeOverrides.test.js exige override de modo claro para cada
-  # rojo/verde tintado usado en src, +1). Validado
+  # rojo/verde tintado usado en src, +1); 107 desde el 2026-09-13 (destinatario
+  # y puertos: AdminSmtp.test.jsx agrega 10 -- puerto por cifrado, puerto
+  # personalizado, puerto guardado al cargar, destinatario por defecto,
+  # diálogo prellenado con test_to y con email_sesion, envío con { to },
+  # error dentro del diálogo, Cancelar/Escape, textos es/en; medido 107). Validado
   # rompiendo un test a propósito y viendo este job en rojo sobre el sha real.
   # Gate por conteo del reporter JSON (ver el paso), no por texto.
   frontend-tests:
@@ -104,8 +108,8 @@ jobs:
           node -e '
             const r = require("/tmp/vitest.json");
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} total=${r.numTotalTests}`);
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 97) {
-              console.error("PISO ROTO: se esperaban 97 tests de vitest CORRIDOS y 0 fallidos.");
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 107) {
+              console.error("PISO ROTO: se esperaban 107 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -422,7 +426,16 @@ jobs:
           # restaura el autocommit; rollback que falla no tapa el error
           # original) y +1 puro en test_smtp_config.py (aviso en el log con
           # FERNET_KEY malformada). Medido en la rama: 548 / 1.
-          PISO_PASSED = 548
+          # Subido de 548 a 583 (2026-09-13, destinatario y puertos): +14 puros
+          # en test_smtp_config.py (smtp.test_to opcional que no corrompe,
+          # test_to en la pantalla, filas_a_guardar con/sin/inválido,
+          # destinatario_de_prueba pedido/guardado/sesión e inválidos) y +21
+          # con `client` en test_smtp_endpoints.py (GET con test_to y
+          # email_sesion, PUT guarda/limpia/no toca, inválidos y con \r\n,
+          # POST /smtp/test con to, sin to con test_to, sin nada a la sesión,
+          # test_to guardado inválido, límite primero, /config reserva
+          # smtp.test_to). Medido en la rama: 583 / 1.
+          PISO_PASSED = 583
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -660,7 +673,11 @@ jobs:
       # Subido de 264 a 265 (2026-09-13, items H): el test del aviso de
       # FERNET_KEY malformada (test_smtp_config.py) es puro; los 2 de rollback
       # piden `client`. Medido con JAX_CI_NO_DB=1: 265 / 284.
-      JAX_CI_MIN_PASSED: "265"
+      # Subido de 265 a 279 (2026-09-13, destinatario y puertos): los 14 tests
+      # nuevos de tests/test_smtp_config.py son puros; los 21 de
+      # test_smtp_endpoints.py piden `client` y se saltean.
+      # Medido con JAX_CI_NO_DB=1: 279 / 305.
+      JAX_CI_MIN_PASSED: "279"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
