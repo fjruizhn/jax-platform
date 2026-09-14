@@ -1099,6 +1099,12 @@ _COLUMNS = [
     ("jax_users", "last_login", "ALTER TABLE jax_users ADD COLUMN last_login TIMESTAMP NULL"),
     ("jax_users", "failed_attempts", "ALTER TABLE jax_users ADD COLUMN failed_attempts INT DEFAULT 0"),
     ("jax_users", "locked_until", "ALTER TABLE jax_users ADD COLUMN locked_until DATETIME NULL"),
+    # Sesiones que se cortan de verdad (2026-09-12, admin usuarios etapa 2):
+    # access y refresh llevan `tv`; subir esta columna invalida TODOS los
+    # tokens del usuario en el request siguiente. NOT NULL DEFAULT 0 para las
+    # filas existentes: un token viejo (sin `tv`) vale como 0 y nadie queda
+    # afuera al desplegar.
+    ("jax_users", "token_version", "ALTER TABLE jax_users ADD COLUMN token_version INT NOT NULL DEFAULT 0"),
     # Bloque D (D1.1/D1.3) — divergencia real ya presente en
     # api/admin/keys.py:158-169 (Gemini usa ?key=, los otros 4 Authorization:
     # Bearer). models_list_url NULL = sin sync automatico de capa (a)

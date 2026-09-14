@@ -454,7 +454,12 @@ jobs:
           # Subido de 608 a 611 (2026-09-14, deuda sin fecha, lote 1): +3 puros en
           # test_utc_ahora.py (utc_ahora es UTC sin zona, se compara contra un
           # DATETIME sin zona, y ningun modulo llama utcnow). Medido: 611 / 1.
-          PISO_PASSED = 611
+          # Subido de 611 a 614 (2026-09-14, admin usuarios etapa 2, Task 1:
+          # 2 puros de `tv` + 1 de esquema): test_access_token_lleva_la_version
+          # y test_refresh_token_lleva_la_version son puros; test_columna_
+          # token_version pide `client` (arranca la app, corre run_migrations,
+          # crea jax_users.token_version en jax_memory_test). Medido: 614 / 1.
+          PISO_PASSED = 614
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -702,7 +707,11 @@ jobs:
       # Medido con JAX_CI_NO_DB=1: 298 / 311.
       # 298 -> 301 (2026-09-14): los 3 de test_utc_ahora.py son puros.
       # Medido con JAX_CI_NO_DB=1: 301 / 311.
-      JAX_CI_MIN_PASSED: "301"
+      # 301 -> 303 (2026-09-14, admin usuarios etapa 2, Task 1: 2 puros de
+      # `tv` + 1 de esquema): los 2 puros de `tv` no piden `client`, corren
+      # sin DB; test_columna_token_version sí lo pide y se saltea (+1 skip).
+      # Medido con JAX_CI_NO_DB=1: 303 / 312.
+      JAX_CI_MIN_PASSED: "303"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
