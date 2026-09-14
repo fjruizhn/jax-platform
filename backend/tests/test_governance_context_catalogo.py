@@ -209,7 +209,7 @@ def test_una_recarga_colgada_vence_con_TimeoutError_y_no_retiene_nada(monkeypatc
     y, con ella, a todo turno que necesitara recargar. Ahora la recarga
     tiene límite (GOVERNANCE_RELOAD_TIMEOUT_SECONDS) y, vencida, no deja
     nada retenido: el turno siguiente con la DB sana recarga y devuelve."""
-    monkeypatch.setattr(governance_context, "GOVERNANCE_RELOAD_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setenv("GOVERNANCE_RELOAD_TIMEOUT_SECONDS", "0.05")
 
     async def colgado():
         await asyncio.Event().wait()  # nunca se setea: la DB que no contesta
@@ -267,3 +267,98 @@ def test_n_turnos_a_la_vez_con_la_db_caida_comparten_un_solo_intento(monkeypatch
         governance_context.validation_context.cache_clear()
     assert all(isinstance(r, ConnectionRefusedError) for r in resultados), resultados
     assert fake.await_count == 1, f"{fake.await_count} intentos de recarga para 20 turnos"
+
+
+# --- Ronda de arreglo 2 -------------------------------------------------------
+
+def _espiar_wait_for(monkeypatch):
+    """Registra el timeout con el que se lanza cada recarga (wait_for real)."""
+    vistos = []
+    real = asyncio.wait_for
+
+    async def espia(aw, timeout):
+        vistos.append(timeout)
+        return await real(aw, timeout)
+
+    monkeypatch.setattr(governance_context.asyncio, "wait_for", espia)
+    return vistos
+
+
+def test_timeout_de_recarga_por_defecto_5_segundos(from_db, monkeypatch):
+    monkeypatch.delenv("GOVERNANCE_RELOAD_TIMEOUT_SECONDS", raising=False)
+    vistos = _espiar_wait_for(monkeypatch)
+    asyncio.run(governance_context.validation_context())
+    assert vistos == [5.0]
+
+
+def test_timeout_de_recarga_se_lee_en_cada_recarga(from_db, monkeypatch):
+    """Se lee al lanzar la recarga, no al importar: cambiarla no exige
+    reiniciar ni reimportar (mismo patrón que JAX_DB_CONNECT_TIMEOUT_SECONDS
+    en jax, las_manos/motor_registry/catalog.py)."""
+    monkeypatch.setenv("GOVERNANCE_RELOAD_TIMEOUT_SECONDS", "2.5")
+    vistos = _espiar_wait_for(monkeypatch)
+    asyncio.run(governance_context.validation_context())
+    assert vistos == [2.5]
+
+
+@pytest.mark.parametrize("valor", ["abc", "0", "-1", "nan", "inf"])
+def test_timeout_de_recarga_invalido_es_RuntimeError_con_su_nombre(from_db, monkeypatch, valor):
+    """0/negativo/nan daban TimeoutError sin texto en cada recarga; inf dejaba
+    la recarga SIN límite en silencio (el cuelgue que cerró la ronda 1)."""
+    monkeypatch.setenv("GOVERNANCE_RELOAD_TIMEOUT_SECONDS", valor)
+    with pytest.raises(RuntimeError, match=rf"GOVERNANCE_RELOAD_TIMEOUT_SECONDS='{valor}'"):
+        asyncio.run(governance_context.validation_context())
+
+
+def test_timeout_de_recarga_invalido_llega_al_chat_como_SnapshotError_con_su_nombre(from_db, monkeypatch):
+    import api.chat as chat
+
+    monkeypatch.setenv("GOVERNANCE_RELOAD_TIMEOUT_SECONDS", "0")
+    resultado = asyncio.run(chat._build_grounding())
+    assert isinstance(resultado, governance_grounding.SnapshotError)
+    assert "GOVERNANCE_RELOAD_TIMEOUT_SECONDS" in resultado.reason
+
+
+def test_turnos_cancelados_sobre_una_recarga_que_falla_dejan_UN_error_y_los_demas_la_reciben(
+        monkeypatch, caplog):
+    """Opción (a) de la ronda 2, declarada: en Python 3.14 `asyncio.shield`,
+    cuando el turno que espera se cancela, deja en la recarga un callback que
+    loguea ERROR "... exception in shielded future" si la recarga falla. Ese
+    log NO depende de que la excepción esté recuperada (asyncio/tasks.py,
+    _log_on_exception), así que no se puede evitar marcándola; y tampoco se
+    quiere: es una recarga fallida, visible (P10). Lo que se fija: una sola
+    línea por recarga aunque se cancelen varios turnos, y los que siguen
+    esperando reciben la MISMA excepción."""
+    arranco = None
+
+    async def cae():
+        arranco.set()
+        await asyncio.sleep(0.05)
+        raise ConnectionRefusedError("DB caída, simulada")
+
+    fake = AsyncMock(side_effect=cae)
+    monkeypatch.setattr(MotorCatalog, "from_db", fake)
+    governance_context.validation_context.cache_clear()
+
+    async def correr():
+        nonlocal arranco
+        arranco = asyncio.Event()
+        cancelados = [asyncio.ensure_future(governance_context.validation_context()) for _ in range(3)]
+        vivo = asyncio.ensure_future(governance_context.validation_context())
+        await arranco.wait()
+        for t in cancelados:
+            t.cancel()
+        resultado = await asyncio.gather(vivo, return_exceptions=True)
+        await asyncio.sleep(0)  # que corran los callbacks de la recarga
+        return resultado[0], [t.cancelled() for t in cancelados]
+
+    try:
+        with caplog.at_level("ERROR", logger="asyncio"):
+            vivo, cancelados = asyncio.run(correr())
+    finally:
+        governance_context.validation_context.cache_clear()
+    assert all(cancelados)
+    assert isinstance(vivo, ConnectionRefusedError)
+    assert fake.await_count == 1
+    lineas = [r for r in caplog.records if "exception in shielded future" in r.getMessage()]
+    assert len(lineas) == 1, [r.getMessage() for r in caplog.records]

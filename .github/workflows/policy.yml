@@ -519,7 +519,14 @@ jobs:
           # colgada vence con TimeoutError y no retiene nada, y 20 turnos con
           # la DB caída comparten UN intento. Vistos en rojo antes del
           # arreglo; mutaciones (d) y (e) en el PR. Medido: 659 / 1.
-          PISO_PASSED = 659
+          # Subido de 659 a 668 (2026-09-14, ronda de arreglo 2 de la Tarea 6):
+          # +9 puros en test_governance_context_catalogo.py -- timeout de
+          # recarga por defecto (5.0), leído en cada recarga, 5 inválidos
+          # (abc, 0, -1, nan, inf) -> RuntimeError con el nombre, inválido ->
+          # SnapshotError en el chat, y turnos cancelados sobre una recarga
+          # que falla -> UNA línea ERROR de shield y los demás reciben la
+          # excepción (opción a). Rojo visto antes del arreglo. Medido: 668 / 1.
+          PISO_PASSED = 668
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -800,7 +807,11 @@ jobs:
       # Subido de 315 a 317 (2026-09-14, ronda de arreglo 1 de la Tarea 6):
       # +2 puros (recarga colgada con límite; 20 turnos con la DB caída, un
       # intento). Medido con JAX_CI_NO_DB=1: 317 / 343.
-      JAX_CI_MIN_PASSED: "317"
+      # Subido de 317 a 326 (2026-09-14, ronda de arreglo 2 de la Tarea 6):
+      # +9 puros (timeout de recarga: default, leído en cada recarga, 5
+      # inválidos, SnapshotError en el chat; log único de shield, opción a).
+      # Medido con JAX_CI_NO_DB=1: 326 / 343.
+      JAX_CI_MIN_PASSED: "326"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

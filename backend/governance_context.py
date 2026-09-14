@@ -77,17 +77,31 @@ vacío. Ahora:
     UN intento, no N en serie. Terminada (bien o mal) se limpia el "en
     vuelo"; si falló, `_cache` no cambia y el turno SIGUIENTE reintenta.
     Cancelación: cada turno espera con `asyncio.shield`, así que cancelar el
-    turno que la lanzó no cancela la recarga de los demás.
+    turno que la lanzó no cancela la recarga de los demás. Consecuencia
+    declarada (ronda de arreglo 2, opción a): en Python 3.14, si un turno se
+    cancela mientras espera y la recarga después falla, `shield` deja en el
+    log de asyncio UNA línea ERROR "... exception in shielded future" por
+    recarga (asyncio/tasks.py, `_log_on_exception`; no depende de que la
+    excepción esté recuperada). Se deja: es una recarga fallida y tiene que
+    verse (P10); los que siguen esperando reciben igual la excepción.
   * LÍMITE DE TIEMPO: la recarga completa (from_db + el to_thread) va bajo
-    `asyncio.wait_for(..., GOVERNANCE_RELOAD_TIMEOUT_SECONDS)`, variable de
-    entorno, default 5.0 s. Por qué 5: la recarga completa en frío mide
+    `asyncio.wait_for(..., timeout)`, con el timeout de la variable de
+    entorno GOVERNANCE_RELOAD_TIMEOUT_SECONDS, default 5.0 s. Se lee y se
+    valida en CADA recarga (`_reload_timeout()`, mismo patrón que
+    JAX_DB_CONNECT_TIMEOUT_SECONDS en jax, las_manos/motor_registry/
+    catalog.py): tiene que ser numérica, finita y > 0; si no, RuntimeError
+    con el nombre y el valor (en el chat, SnapshotError con ese texto). Un
+    0/negativo/nan daría un TimeoutError mudo en cada recarga, e inf dejaría
+    la recarga SIN límite en silencio (P10). Por qué 5: la recarga completa en frío mide
     p95 2,7 ms (2026-09-14), así que 5 s son más de mil veces el caso normal
     y no cortan una DB lenta pero viva; y acota lo que un turno puede quedar
     colgado si la DB acepta TCP y no contesta (aiomysql.connect no trae
     connect_timeout por defecto). Vencida: TimeoutError visible (en el chat
     SnapshotError; en sombra, sin veredictos) y caché intacto. El hilo de
     `to_thread` no se puede cancelar: si ya arrancó, termina de leer los
-    YAML/TOML y su resultado se descarta.
+    YAML/TOML y su resultado se descarta. El connect_timeout de 10 s que
+    trae from_db() en jax no llega a actuar acá (estos 5 s vencen antes);
+    en LAS MANOS, que llama a from_db() sin este límite, sí actúa.
   * FALLA VISIBLE: si from_db() lanza, la excepción sube y la caché queda
     como estaba (no se sirve: la clave ya no coincide). En el chat,
     `_build_grounding` la convierte en SnapshotError
@@ -104,6 +118,7 @@ vacío. Ahora:
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import sys
 from pathlib import Path
@@ -117,11 +132,6 @@ if str(JAX_REPO / "policy" / "governance") not in sys.path:
 import facet_resolver  # noqa: E402  (su sello invalida también este caché)
 import loaders as governance_loaders  # noqa: E402
 import validator as governance_validator  # noqa: E402
-
-# Límite de la recarga completa del contexto (from_db + to_thread). Por qué
-# 5.0 s: ver el docstring del módulo. Se lee por nombre al lanzar cada
-# recarga, así que un test puede reapuntarlo.
-GOVERNANCE_RELOAD_TIMEOUT_SECONDS = float(os.getenv("GOVERNANCE_RELOAD_TIMEOUT_SECONDS", "5.0"))
 
 _FileStamp = tuple[tuple[str, int | None], ...]
 _Stamp = tuple[_FileStamp, float | None]
@@ -170,11 +180,31 @@ async def _build():
     return await asyncio.to_thread(_build_static, catalog)
 
 
+def _reload_timeout() -> float:
+    """Límite de la recarga completa (from_db + to_thread), en segundos.
+    Por qué 5.0 por defecto y por qué se valida: docstring del módulo."""
+    raw = os.getenv("GOVERNANCE_RELOAD_TIMEOUT_SECONDS", "5.0")
+    try:
+        timeout = float(raw)
+    except ValueError:
+        timeout = None
+    if timeout is None or not math.isfinite(timeout) or timeout <= 0:
+        raise RuntimeError(
+            f"GOVERNANCE_RELOAD_TIMEOUT_SECONDS={raw!r} inválido -- tiene que ser "
+            "un número finito y positivo (segundos). Sin esto la recarga del "
+            "contexto de gobernanza no tiene límite si la DB se cuelga."
+        )
+    return timeout
+
+
 async def _reload(stamp: _Stamp):
     """La recarga compartida: con límite de tiempo; si lanza, `_cache` no
     se toca y la excepción llega a TODOS los turnos que la esperan."""
     global _cache
-    value = await asyncio.wait_for(_build(), timeout=GOVERNANCE_RELOAD_TIMEOUT_SECONDS)
+    # El timeout se valida ANTES de crear la corrutina: si es inválido, no
+    # queda un `_build()` creado y nunca esperado (RuntimeWarning).
+    timeout = _reload_timeout()
+    value = await asyncio.wait_for(_build(), timeout=timeout)
     _cache = (stamp, value)
     return value
 
@@ -184,9 +214,11 @@ def _done(inflight: tuple[_Stamp, asyncio.Future]):
         global _inflight
         if _inflight is inflight:  # otra recarga más nueva pudo reemplazarla
             _inflight = None
-        # Marca la excepción como recuperada: si todos los turnos que la
-        # esperaban se cancelaron, asyncio no avisa "never retrieved". Los
-        # que siguen esperando la reciben igual por su shield().
+        # Marca la excepción como recuperada: evita el aviso "Task exception
+        # was never retrieved" si nadie la esperaba. NO evita el ERROR "...
+        # exception in shielded future" que deja shield() cuando un turno se
+        # canceló esperando (opción a, ver el docstring del módulo): ese se
+        # deja a propósito. Los que siguen esperando la reciben por shield().
         if not task.cancelled():
             task.exception()
     return callback
@@ -204,7 +236,8 @@ async def validation_context():
         inflight = (stamp, asyncio.ensure_future(_reload(stamp)))
         _inflight = inflight
         inflight[1].add_done_callback(_done(inflight))
-    # shield: cancelar ESTE turno no cancela la recarga de los demás.
+    # shield: cancelar ESTE turno no cancela la recarga de los demás (y, si
+    # la recarga falla después, asyncio loguea una línea ERROR: opción a).
     return await asyncio.shield(inflight[1])
 
 
