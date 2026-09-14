@@ -282,6 +282,7 @@ def _limites_de_login_limpios():
         return
     rate_limit.reset_login_limiters()
     yield
+    rate_limit.reset_login_limiters()
 
 
 @pytest.fixture
@@ -304,4 +305,3 @@ def usuarios(client):
     yield crear
     for user_id in creados:
         client.portal.call(borrar_usuario, user_id)
-    rate_limit.reset_login_limiters()
