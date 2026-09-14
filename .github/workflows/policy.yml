@@ -110,8 +110,12 @@ jobs:
           node -e '
             const r = require("/tmp/vitest.json");
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} total=${r.numTotalTests}`);
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 108) {
-              console.error("PISO ROTO: se esperaban 108 tests de vitest CORRIDOS y 0 fallidos.");
+            // 108 -> 121 el 2026-09-14 (deuda sin fecha, lote 1): +7 AdminSettings.test.jsx
+            // (los errores del PUT /admin/config se ven y se traducen), +5
+            // RightPanel.test.jsx (Aprobar y Cancelar muestran su fallo) y +1
+            // PipelineModal.test.jsx (el nombre sale de i18n). Vistos en rojo antes.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 121) {
+              console.error("PISO ROTO: se esperaban 121 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -443,7 +447,10 @@ jobs:
           # y filas_a_guardar rechazan las 8) y +6 con `client` en
           # test_smtp_endpoints.py (to y test_to con , y ; x2 cada uno,
           # from_email con varias direcciones x2). Medido en la rama: 608 / 1.
-          PISO_PASSED = 608
+          # Subido de 608 a 611 (2026-09-14, deuda sin fecha, lote 1): +3 puros en
+          # test_utc_ahora.py (utc_ahora es UTC sin zona, se compara contra un
+          # DATETIME sin zona, y ningun modulo llama utcnow). Medido: 611 / 1.
+          PISO_PASSED = 611
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -689,7 +696,9 @@ jobs:
       # los 19 tests nuevos de test_smtp_config.py (un solo destinatario) son
       # puros; los 6 de test_smtp_endpoints.py piden `client` y se saltean.
       # Medido con JAX_CI_NO_DB=1: 298 / 311.
-      JAX_CI_MIN_PASSED: "298"
+      # 298 -> 301 (2026-09-14): los 3 de test_utc_ahora.py son puros.
+      # Medido con JAX_CI_NO_DB=1: 301 / 311.
+      JAX_CI_MIN_PASSED: "301"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

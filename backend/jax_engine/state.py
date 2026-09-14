@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from tiempo import utc_ahora
 import httpx
 from http_client import get_http_client
 from .schemas import (
@@ -87,7 +87,7 @@ class JAXEngineState:
             )
         self._state.facets[facet].status = status
         self._state.facets[facet].last_message = message
-        self._state.facets[facet].last_update = datetime.utcnow().isoformat() + "Z"
+        self._state.facets[facet].last_update = utc_ahora().isoformat() + "Z"
 
         event = JAXEvent(
             event_type="facet_status_changed",
@@ -153,7 +153,7 @@ class JAXEngineState:
             status=mapped_status,
             steps=steps,
             created_at=existing.created_at,
-            updated_at=datetime.utcnow().isoformat() + "Z",
+            updated_at=utc_ahora().isoformat() + "Z",
         )
 
     async def _check_las_manos_health(self, client: httpx.AsyncClient):
@@ -165,7 +165,7 @@ class JAXEngineState:
 
         if alive != self._state.las_manos_alive:
             self._state.las_manos_alive = alive
-            self._state.last_health_check = datetime.utcnow().isoformat() + "Z"
+            self._state.last_health_check = utc_ahora().isoformat() + "Z"
             for user_id, session in list(self._state.connected_users.items()):
                 event = JAXEvent(
                     event_type="las_manos_health_changed",

@@ -30,25 +30,33 @@ function RightPanel() {
   const { t } = useI18n()
   const [tab, setTab] = useState('pipelines')
   const [cancelling, setCancelling] = useState(false)
+  // Clave de i18n del último fallo de Aprobar/Cancelar (2026-09-14): antes
+  // solo iba a console.error y en la interfaz no pasaba nada. Se guarda la
+  // clave, no el texto, para que un cambio de idioma lo traduzca de nuevo.
+  const [aviso, setAviso] = useState(null)
 
   const pipelines = Object.values(activePipelines)
   const activePipeline = pipelines.find(p => ['running', 'waiting_gate'].includes(p.status))
     || pipelines[0]
 
   async function handleResume(pipelineId) {
+    setAviso(null)
     try {
       await api.post(`/pipelines/${pipelineId}/resume`)
     } catch (e) {
       console.error('resume failed', e)
+      setAviso('approveError')
     }
   }
 
   async function handleCancel(pipelineId) {
+    setAviso(null)
     setCancelling(true)
     try {
       await api.post(`/pipelines/${pipelineId}/cancel`)
     } catch (e) {
       console.error('cancel failed', e)
+      setAviso('cancelError')
     } finally {
       setCancelling(false)
     }
@@ -128,6 +136,12 @@ function RightPanel() {
               >
                 {cancelling ? t.cancelling : t.cancelPipeline}
               </button>
+
+              {aviso && (
+                <div role="alert" className="mt-2 text-xs text-red-400">
+                  {t[aviso]}
+                </div>
+              )}
 
               {pipelines.length > 1 && (
                 <div className="mt-3 text-xs text-slate-600">

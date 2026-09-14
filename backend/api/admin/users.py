@@ -1,5 +1,5 @@
 import bcrypt
-from datetime import datetime
+from tiempo import utc_ahora
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -19,7 +19,7 @@ def _hash(plain: str) -> str:
 @router.get("/users")
 async def list_users(user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
-    now = datetime.utcnow()
+    now = utc_ahora()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(

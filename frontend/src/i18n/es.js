@@ -22,6 +22,10 @@ export default {
   approve: '✓ Aprobar',
   cancelling: 'Cancelando…',
   cancelPipeline: 'Cancelar pipeline',
+  approveError: 'No se pudo aprobar el paso. Probá de nuevo.',
+  cancelError: 'No se pudo cancelar el pipeline. Probá de nuevo.',
+  // Nombre guardado del pipeline: el objetivo, recortado a 50 caracteres.
+  pipelineName: (objetivo) => `Pipeline: ${objetivo.slice(0, 50)}`,
 
   // Audit log
   auditLog: 'Audit Log',
@@ -387,6 +391,10 @@ export default {
   adminSettingsTitle: 'Configuración del Sistema',
   adminSettingsSave: 'Guardar',
   adminSettingsSaved: 'Guardado',
+  adminSettingsSaveError: 'No se pudo guardar la configuración.',
+  adminSettingsLoadError: 'No se pudo cargar la configuración.',
+  config_clave_reservada: 'Una de las claves está reservada y no se puede cambiar desde esta pantalla. No se guardó nada.',
+  config_collation_desconocida: 'La base no permitió verificar las claves reservadas, así que no se guardó nada.',
   adminSettingsLang: 'Idioma por defecto',
   adminSettingsTheme: 'Tema por defecto',
   adminSettingsTimeout: 'Timeout sesión (min)',

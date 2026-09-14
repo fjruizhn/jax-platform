@@ -21,7 +21,8 @@ crea su usuario con un email único y lo borra al terminar.
 """
 import asyncio
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
+from tiempo import utc_ahora
 
 import bcrypt
 import pytest
@@ -282,8 +283,8 @@ def test_reset_devuelve_codigos_estables_que_el_frontend_traduce(client):
         client.portal.call(
             _sql, "INSERT INTO password_reset_tokens (user_id, token, expires_at, used, ip_address) "
                   "VALUES (%s, %s, %s, TRUE, 'test'), (%s, %s, %s, FALSE, 'test')",
-            (user_id, usado, datetime.utcnow() + timedelta(hours=1),
-             user_id, vencido, datetime.utcnow() - timedelta(hours=1)))
+            (user_id, usado, utc_ahora() + timedelta(hours=1),
+             user_id, vencido, utc_ahora() - timedelta(hours=1)))
         assert reset(usado) == (400, "reset_token_usado")
         assert reset(vencido) == (400, "reset_token_expirado")
     finally:

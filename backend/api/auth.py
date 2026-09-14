@@ -4,7 +4,8 @@ import uuid
 import logging
 import secrets
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
+from tiempo import utc_ahora
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, Cookie, status
 from pydantic import BaseModel, Field
@@ -63,7 +64,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         raise _credenciales_invalidas()
 
     user_id, tenant_id, email, password_hash, role, user_status, failed_attempts, locked_until = row
-    now = datetime.utcnow()
+    now = utc_ahora()
     bloqueada = bool(locked_until and locked_until > now)
 
     if not await verify_password(req.password, password_hash):
@@ -224,7 +225,7 @@ async def _procesar_recuperacion(email: str, client_ip: str) -> None:
             return
 
         token = str(uuid.uuid4())
-        expires_at = datetime.utcnow() + timedelta(hours=1)
+        expires_at = utc_ahora() + timedelta(hours=1)
 
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
@@ -303,7 +304,7 @@ async def reset_password(req: ResetPasswordRequest):
     if used:
         raise HTTPException(status_code=400, detail="reset_token_usado")
 
-    if expires_at < datetime.utcnow():
+    if expires_at < utc_ahora():
         raise HTTPException(status_code=400, detail="reset_token_expirado")
 
     new_hash = _hash(req.password)
