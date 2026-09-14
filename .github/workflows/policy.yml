@@ -514,7 +514,12 @@ jobs:
           # catálogo cambiado entre snapshot y validación -> FACT_MISMATCH,
           # SnapshotError) y 1 con `client` (from_db real con capability.mode). Vistos
           # en rojo antes del arreglo; mutaciones en el PR. Medido: 657 / 1.
-          PISO_PASSED = 657
+          # Subido de 657 a 659 (2026-09-14, ronda de arreglo 1 de la Tarea 6):
+          # +2 puros en test_governance_context_catalogo.py -- una recarga
+          # colgada vence con TimeoutError y no retiene nada, y 20 turnos con
+          # la DB caída comparten UN intento. Vistos en rojo antes del
+          # arreglo; mutaciones (d) y (e) en el PR. Medido: 659 / 1.
+          PISO_PASSED = 659
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -792,7 +797,10 @@ jobs:
       # puros de test_governance_context_catalogo.py (from_db parcheado) corren
       # sin DB; el de from_db real pide `client` y se saltea. Vistos en rojo
       # antes del arreglo. Medido con JAX_CI_NO_DB=1: 315 / 343.
-      JAX_CI_MIN_PASSED: "315"
+      # Subido de 315 a 317 (2026-09-14, ronda de arreglo 1 de la Tarea 6):
+      # +2 puros (recarga colgada con límite; 20 turnos con la DB caída, un
+      # intento). Medido con JAX_CI_NO_DB=1: 317 / 343.
+      JAX_CI_MIN_PASSED: "317"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -70,7 +70,24 @@ vacío. Ahora:
     cambios del catálogo entran al reiniciar. En hall9000 el sello existe
     (/srv/jax-data/facet-cache-seal, verificado 2026-09-14); el despliegue lo
     vuelve a verificar.
-  * UNA recarga a la vez (`asyncio.Lock` con doble chequeo).
+  * UNA recarga en vuelo, COMPARTIDA (ronda de arreglo 1): la tarea de
+    recarga se guarda junto con el stamp para el que se lanzó. Un turno que
+    encuentra una en vuelo para el MISMO stamp la espera y recibe su mismo
+    resultado o su misma excepción: con la DB caída, N turnos a la vez son
+    UN intento, no N en serie. Terminada (bien o mal) se limpia el "en
+    vuelo"; si falló, `_cache` no cambia y el turno SIGUIENTE reintenta.
+    Cancelación: cada turno espera con `asyncio.shield`, así que cancelar el
+    turno que la lanzó no cancela la recarga de los demás.
+  * LÍMITE DE TIEMPO: la recarga completa (from_db + el to_thread) va bajo
+    `asyncio.wait_for(..., GOVERNANCE_RELOAD_TIMEOUT_SECONDS)`, variable de
+    entorno, default 5.0 s. Por qué 5: la recarga completa en frío mide
+    p95 2,7 ms (2026-09-14), así que 5 s son más de mil veces el caso normal
+    y no cortan una DB lenta pero viva; y acota lo que un turno puede quedar
+    colgado si la DB acepta TCP y no contesta (aiomysql.connect no trae
+    connect_timeout por defecto). Vencida: TimeoutError visible (en el chat
+    SnapshotError; en sombra, sin veredictos) y caché intacto. El hilo de
+    `to_thread` no se puede cancelar: si ya arrancó, termina de leer los
+    YAML/TOML y su resultado se descarta.
   * FALLA VISIBLE: si from_db() lanza, la excepción sube y la caché queda
     como estaba (no se sirve: la clave ya no coincide). En el chat,
     `_build_grounding` la convierte en SnapshotError
@@ -79,9 +96,10 @@ vacío. Ahora:
     en silencio, o daría VALID a una capability revocada (P10).
   * Costo: un stat más por turno; la recarga solo cuando cambió algo.
     Latencia medida antes/después: DEUDA.md de jax.
-  * Si la DB cuelga en vez de rechazar, la recarga espera lo que espere
-    aiomysql.connect -- igual que el resto del turno, que ya depende de la
-    misma DB por el pool.
+  * Una recarga lanzada para un stamp que ya quedó viejo puede terminar
+    después de otra más nueva y escribir `_cache` con SU stamp: no se sirve
+    (la clave no coincide) y el turno siguiente recarga. Costo: una recarga
+    de más, nunca un dato viejo servido.
 """
 from __future__ import annotations
 
@@ -99,6 +117,11 @@ if str(JAX_REPO / "policy" / "governance") not in sys.path:
 import facet_resolver  # noqa: E402  (su sello invalida también este caché)
 import loaders as governance_loaders  # noqa: E402
 import validator as governance_validator  # noqa: E402
+
+# Límite de la recarga completa del contexto (from_db + to_thread). Por qué
+# 5.0 s: ver el docstring del módulo. Se lee por nombre al lanzar cada
+# recarga, así que un test puede reapuntarlo.
+GOVERNANCE_RELOAD_TIMEOUT_SECONDS = float(os.getenv("GOVERNANCE_RELOAD_TIMEOUT_SECONDS", "5.0"))
 
 _FileStamp = tuple[tuple[str, int | None], ...]
 _Stamp = tuple[_FileStamp, float | None]
@@ -131,7 +154,7 @@ def _stamp() -> _Stamp:
 
 
 _cache: tuple[_Stamp, tuple] | None = None
-_lock = asyncio.Lock()
+_inflight: tuple[_Stamp, asyncio.Future] | None = None
 
 
 def _build_static(catalog):
@@ -147,29 +170,57 @@ async def _build():
     return await asyncio.to_thread(_build_static, catalog)
 
 
+async def _reload(stamp: _Stamp):
+    """La recarga compartida: con límite de tiempo; si lanza, `_cache` no
+    se toca y la excepción llega a TODOS los turnos que la esperan."""
+    global _cache
+    value = await asyncio.wait_for(_build(), timeout=GOVERNANCE_RELOAD_TIMEOUT_SECONDS)
+    _cache = (stamp, value)
+    return value
+
+
+def _done(inflight: tuple[_Stamp, asyncio.Future]):
+    def callback(task: asyncio.Future) -> None:
+        global _inflight
+        if _inflight is inflight:  # otra recarga más nueva pudo reemplazarla
+            _inflight = None
+        # Marca la excepción como recuperada: si todos los turnos que la
+        # esperaban se cancelaron, asyncio no avisa "never retrieved". Los
+        # que siguen esperando la reciben igual por su shield().
+        if not task.cancelled():
+            task.exception()
+    return callback
+
+
 async def validation_context():
     """(ValidationContext, predicates, term_categories) de gobernanza."""
-    global _cache
+    global _inflight
     stamp = _stamp()
     cached = _cache
     if cached is not None and cached[0] == stamp:
         return cached[1]
-    async with _lock:
-        stamp = _stamp()  # otro turno pudo recargar mientras esperábamos
-        cached = _cache
-        if cached is not None and cached[0] == stamp:
-            return cached[1]
-        value = await _build()
-        _cache = (stamp, value)
-        return value
+    inflight = _inflight
+    if inflight is None or inflight[0] != stamp:
+        inflight = (stamp, asyncio.ensure_future(_reload(stamp)))
+        _inflight = inflight
+        inflight[1].add_done_callback(_done(inflight))
+    # shield: cancelar ESTE turno no cancela la recarga de los demás.
+    return await asyncio.shield(inflight[1])
 
 
 def _cache_clear() -> None:
-    """Vacía la caché y crea un lock nuevo: un test que usó el lock en su
-    propio loop no se lo deja atado al siguiente."""
-    global _cache, _lock
+    """Vacía la caché y olvida la recarga en vuelo (solo la usan los tests).
+
+    Primitivo atado a un loop a nivel de módulo: `_inflight` guarda una
+    tarea, que pertenece al loop donde se creó -- solo MIENTRAS está en
+    vuelo; al terminar (bien, mal o cancelada al cerrarse su loop) el
+    callback la limpia. Ya no hay `asyncio.Lock` de módulo (se ataba al
+    loop de la primera contención). Un test que la deje en vuelo y abra
+    otro loop sin llamar a esto esperaría una tarea de un loop ajeno; por
+    eso los tests llaman a cache_clear() antes y después."""
+    global _cache, _inflight
     _cache = None
-    _lock = asyncio.Lock()
+    _inflight = None
 
 
 # Compatibilidad: quien tenía `validation_context.cache_clear()` lo sigue

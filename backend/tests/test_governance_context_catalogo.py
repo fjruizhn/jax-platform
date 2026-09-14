@@ -201,3 +201,69 @@ def test_con_la_db_real_el_contexto_trae_las_capabilities_sembradas_con_su_modo(
         governance_context.validation_context.cache_clear()
     assert ctx.catalog.get_capability("generate").mode == "read_only"
     assert ctx.catalog.get_capability("file_write").mode == "mutating"
+
+
+def test_una_recarga_colgada_vence_con_TimeoutError_y_no_retiene_nada(monkeypatch):
+    """Ronda de arreglo 1 (Minor 1): una DB que acepta TCP y no responde
+    colgaba la recarga para siempre (aiomysql.connect sin connect_timeout)
+    y, con ella, a todo turno que necesitara recargar. Ahora la recarga
+    tiene límite (GOVERNANCE_RELOAD_TIMEOUT_SECONDS) y, vencida, no deja
+    nada retenido: el turno siguiente con la DB sana recarga y devuelve."""
+    monkeypatch.setattr(governance_context, "GOVERNANCE_RELOAD_TIMEOUT_SECONDS", 0.05)
+
+    async def colgado():
+        await asyncio.Event().wait()  # nunca se setea: la DB que no contesta
+
+    fake = AsyncMock(side_effect=colgado)
+    monkeypatch.setattr(MotorCatalog, "from_db", fake)
+    governance_context.validation_context.cache_clear()
+
+    async def correr():
+        # Guarda externa de 2 s para que el rojo no cuelgue la suite: si la
+        # llamada no terminó sola, se cancela y el test lo dice.
+        colgada = asyncio.ensure_future(governance_context.validation_context())
+        hecho, _ = await asyncio.wait({colgada}, timeout=2.0)
+        if colgada not in hecho:
+            colgada.cancel()
+            return "colgada", None
+        primera = colgada.exception()
+        fake.side_effect = lambda: _catalogo(generate="read_only")
+        sana = asyncio.ensure_future(governance_context.validation_context())
+        hecho, _ = await asyncio.wait({sana}, timeout=2.0)
+        if sana not in hecho:
+            sana.cancel()
+            return primera, "retenida"
+        return primera, sana.result()
+
+    try:
+        primera, segunda = asyncio.run(correr())
+    finally:
+        governance_context.validation_context.cache_clear()
+    assert primera != "colgada", "la recarga no tiene límite de tiempo: sigue colgada a los 2 s"
+    assert isinstance(primera, TimeoutError), repr(primera)
+    assert segunda != "retenida", "tras el vencimiento, el turno siguiente quedó retenido"
+    assert segunda[0].catalog.get_capability("generate").mode == "read_only"
+
+
+def test_n_turnos_a_la_vez_con_la_db_caida_comparten_un_solo_intento(monkeypatch):
+    """Ronda de arreglo 1 (Minor 2): con la DB caída, 20 turnos encolados
+    detrás del lock reintentaban EN SERIE (20 conexiones). Ahora esperan la
+    MISMA recarga en vuelo y reciben su MISMA excepción: un intento."""
+    async def cae():
+        await asyncio.sleep(0.05)
+        raise ConnectionRefusedError("DB caída, simulada")
+
+    fake = AsyncMock(side_effect=cae)
+    monkeypatch.setattr(MotorCatalog, "from_db", fake)
+    governance_context.validation_context.cache_clear()
+
+    async def veinte_turnos():
+        return await asyncio.gather(
+            *(governance_context.validation_context() for _ in range(20)), return_exceptions=True)
+
+    try:
+        resultados = asyncio.run(veinte_turnos())
+    finally:
+        governance_context.validation_context.cache_clear()
+    assert all(isinstance(r, ConnectionRefusedError) for r in resultados), resultados
+    assert fake.await_count == 1, f"{fake.await_count} intentos de recarga para 20 turnos"
