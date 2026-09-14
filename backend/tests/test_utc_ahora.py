@@ -45,6 +45,7 @@ def test_ningun_modulo_del_backend_llama_utcnow():
             continue
         arbol = ast.parse(ruta.read_text(encoding="utf-8"))
         for nodo in ast.walk(arbol):
-            if isinstance(nodo, ast.Attribute) and nodo.attr == "utcnow":
+            # utcfromtimestamp tiene la misma deprecación y el mismo problema.
+            if isinstance(nodo, ast.Attribute) and nodo.attr in {"utcnow", "utcfromtimestamp"}:
                 ofensores.append(f"{ruta.relative_to(BACKEND)}:{nodo.lineno}")
     assert ofensores == []

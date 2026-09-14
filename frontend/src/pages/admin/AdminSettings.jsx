@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { codigoDe } from '../../api/errores'
+import AlertaError from '../../components/AlertaError'
 
 // Códigos con los que PUT /admin/config rechaza (backend/api/admin/config_admin.py).
 // Cada uno tiene su texto; cualquier otro cae en el genérico, nunca en silencio
@@ -16,6 +17,9 @@ function claveDeError(err) {
 export default function AdminSettings() {
   const { t } = useI18n()
   const [config, setConfig] = useState({})
+  // Sin una carga buena no se guarda: los campos mostrarían valores por
+  // defecto y "Guardar" enviaría una lista vacía que el backend acepta.
+  const [cargado, setCargado] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   // Clave de i18n del error vigente: se traduce al renderizar.
@@ -26,6 +30,7 @@ export default function AdminSettings() {
       const map = {}
       r.data.config.forEach(({ key, value }) => { map[key] = value })
       setConfig(map)
+      setCargado(true)
     }).catch(() => setError('adminSettingsLoadError'))
   }, [])
 
@@ -42,6 +47,8 @@ export default function AdminSettings() {
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } catch (err) {
+      // Un "Guardado" de un intento anterior no puede convivir con este error.
+      setSaved(false)
       setError(claveDeError(err))
     } finally {
       setSaving(false)
@@ -89,13 +96,13 @@ export default function AdminSettings() {
         </div>
 
         {error && (
-          <div role="alert" className="text-sm text-red-400">{t[error]}</div>
+          <AlertaError className="text-sm">{t[error] ?? t.adminSettingsSaveError}</AlertaError>
         )}
 
         <div className="pt-2">
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !cargado}
             className="px-5 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold disabled:opacity-50 transition-colors"
           >
             {saved ? `✓ ${t.adminSettingsSaved}` : saving ? t.attachUploading : t.adminSettingsSave}

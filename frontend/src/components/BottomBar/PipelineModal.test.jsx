@@ -60,16 +60,23 @@ describe('PipelineModal -- cadena en línea', () => {
   // DEUDA.md (anotados b8f80733): el nombre llevaba `Pipeline: ` escrito en
   // el componente. Sale de i18n, en las dos formas de armar el pipeline.
   it('el nombre del pipeline sale de i18n, no de un prefijo fijo', async () => {
-    expect(es.pipelineName, 'es.pipelineName').toBeTypeOf('function')
     expect(en.pipelineName, 'en.pipelineName').toBeTypeOf('function')
-    for (const layout of ['chain', 'parallel']) {
-      let submitted = null
-      const { unmount } = renderModal({ onSubmit: (p) => { submitted = p; return Promise.resolve() } }, { layout })
-      await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
-      fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
-      await waitFor(() => expect(submitted).not.toBeNull())
-      expect(submitted.name).toBe(es.pipelineName('probar el picker de motor'))
-      unmount()
+    // Un spy y no una comparación de texto: el de es.js coincide con el viejo
+    // prefijo fijo, así que comparar solo el texto pasaría con el código viejo.
+    const spy = vi.spyOn(es, 'pipelineName').mockReturnValue('NOMBRE-DESDE-I18N')
+    try {
+      for (const layout of ['chain', 'parallel']) {
+        let submitted = null
+        const { unmount } = renderModal({ onSubmit: (p) => { submitted = p; return Promise.resolve() } }, { layout })
+        await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+        fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+        await waitFor(() => expect(submitted).not.toBeNull())
+        expect(submitted.name).toBe('NOMBRE-DESDE-I18N')
+        unmount()
+      }
+      expect(spy).toHaveBeenCalledWith('probar el picker de motor')
+    } finally {
+      spy.mockRestore()
     }
   })
 

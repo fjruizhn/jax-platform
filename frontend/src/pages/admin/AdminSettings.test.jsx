@@ -73,6 +73,24 @@ describe('AdminSettings -- los errores del guardado se ven', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(es.adminSettingsLoadError)
   })
 
+  it('si la carga falla, Guardar queda deshabilitado: no se "guarda" una pantalla vacía', async () => {
+    api.get.mockRejectedValue(rechazo(500, 'lo_que_sea'))
+    renderSettings()
+    await screen.findByRole('alert')
+    expect(screen.getByRole('button', { name: es.adminSettingsSave })).toBeDisabled()
+  })
+
+  it('tras un guardado bueno, un fallo no deja el botón diciendo Guardado', async () => {
+    api.get.mockResolvedValue(CONFIG)
+    api.put.mockResolvedValueOnce({ data: { ok: true } }).mockRejectedValueOnce(rechazo(400, 'config_clave_reservada'))
+    renderSettings()
+    await guardar()
+    const guardado = await screen.findByRole('button', { name: `✓ ${es.adminSettingsSaved}` })
+    fireEvent.click(guardado)
+    await screen.findByRole('alert')
+    expect(screen.getByRole('button', { name: es.adminSettingsSave })).toBeInTheDocument()
+  })
+
   it('un guardado bueno no deja ninguna alerta', async () => {
     api.get.mockResolvedValue(CONFIG)
     api.put.mockResolvedValue({ data: { ok: true } })

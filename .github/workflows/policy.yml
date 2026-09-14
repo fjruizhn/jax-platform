@@ -114,8 +114,12 @@ jobs:
             // (los errores del PUT /admin/config se ven y se traducen), +5
             // RightPanel.test.jsx (Aprobar y Cancelar muestran su fallo) y +1
             // PipelineModal.test.jsx (el nombre sale de i18n). Vistos en rojo antes.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 121) {
-              console.error("PISO ROTO: se esperaban 121 tests de vitest CORRIDOS y 0 fallidos.");
+            // 121 -> 125 el mismo dia, por la revision del PR: +2 RightPanel (el aviso
+            // no queda sobre otro pipeline ni cuando ya no espera aprobacion) y +2
+            // AdminSettings (sin carga buena no se guarda; un fallo no convive con
+            // "Guardado"). El test de D4 pasa a un spy: rompe con el prefijo fijo.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 125) {
+              console.error("PISO ROTO: se esperaban 125 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -57,6 +57,26 @@ describe('RightPanel -- los fallos de Aprobar y Cancelar se ven', () => {
     fireEvent.click(screen.getByRole('button', { name: es.approve }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/pipelines/p1-0000-0000/resume'))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('el aviso de Aprobar desaparece si el pipeline ya no espera aprobación', async () => {
+    api.post.mockRejectedValue(new Error('502'))
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: es.approve }))
+    await screen.findByRole('alert')
+    act(() => useJaxStore.setState({ activePipelines: { p1: { ...EN_ESPERA.p1, status: 'running' } } }))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  it('el aviso no se muestra sobre otro pipeline', async () => {
+    api.post.mockRejectedValue(new Error('502'))
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: es.cancelPipeline }))
+    await screen.findByRole('alert')
+    act(() => useJaxStore.setState({
+      activePipelines: { p2: { pipeline_id: 'p2-0000-0000', name: 'otro', status: 'running', steps: [] } },
+    }))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
   })
 
   it('un aviso viejo se borra al reintentar con éxito', async () => {
