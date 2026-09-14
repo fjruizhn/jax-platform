@@ -531,7 +531,13 @@ jobs:
           # punta a punta (VALID/OBSERVADO; modo equivocado FACT_NOT_IN_SNAPSHOT),
           # TRIPWIRE ops∩DB vacío y su CONTROL. Rojos por mutación y contra el jax de
           # producción.
-          PISO_PASSED = 672
+          # PR-A (rebase 2026-09-14, Tarea 1b, espejo de connect_timeout de aiomysql):
+          # 646 -> 656 (test_aiomysql_connect_timeout_tripwire.py 5 + test_db_connect_config.py 5)
+          # y 656 -> 665 (+9 del tripwire alineado con jax @5d60679: alias, from-import,
+          # aiomysql.pool, fail-closed ante archivos que no parsean), medidos contra jax master.
+          # Rebase de PR-C sobre PR-A: se suman los deltas sobre la base común 646
+          # (PR-A +19, PR-C +26). Medido contra jax con PR-B (5d60679): 691 / 1.
+          PISO_PASSED = 691
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -819,7 +825,11 @@ jobs:
       # 326 -> 326 (2026-09-14, tanda A v2): sin cambio en passed. skipped +4
       # (test_catalogo_db_en_la_mesa.py, los 4 con client). Medido con
       # JAX_CI_NO_DB=1: 326 / 347.
-      JAX_CI_MIN_PASSED: "326"
+      # PR-A (rebase 2026-09-14, Tarea 1b, espejo de connect_timeout): 305 -> 315 -> 324,
+      # todos puros (tripwire + helper), ver el comentario del piso con DB. Rebase de
+      # PR-C sobre PR-A: deltas sumados sobre la base común 305 (PR-A +19, PR-C +21).
+      # Medido con JAX_CI_NO_DB=1 contra jax con PR-B (5d60679): 345 / 347.
+      JAX_CI_MIN_PASSED: "345"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
