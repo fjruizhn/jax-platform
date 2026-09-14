@@ -169,7 +169,6 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
       await onSubmit({
         name: t.pipelineName(objective),
         objective,
-        invoked_by: 'Fernando',
         mode,
         max_steps: steps.length,
         steps,
@@ -184,7 +183,6 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
     await onSubmit({
       name: t.pipelineName(objective),
       objective,
-      invoked_by: 'Fernando',
       mode,
       max_steps: Math.max(steps.length, 1),
       steps: steps.length > 0 ? steps : null,

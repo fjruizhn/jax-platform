@@ -129,8 +129,9 @@ jobs:
             // de /auth/login, /auth/refresh ni /auth/logout; otra ruta sigue
             // poniendo el aviso) y +1 Login.test.jsx (el aviso se borra al enviar
             // el formulario). Medido con vitest run: 139.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 139) {
-              console.error("PISO ROTO: se esperaban 139 tests de vitest CORRIDOS y 0 fallidos.");
+            // 139 -> 140 el 2026-09-14 (tanda A): PipelineModal.test.jsx (+1) -- el modal no manda invoked_by en ninguna de las dos formas (lo pone el backend como el rol "plataforma"). Visto en rojo antes.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 140) {
+              console.error("PISO ROTO: se esperaban 140 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

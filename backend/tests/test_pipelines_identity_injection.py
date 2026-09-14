@@ -1,6 +1,7 @@
 """api/pipelines.py reenviaba el body del cliente sin inyectar identidad
-real -- create_pipeline dependia de lo que mandara el front (hoy "Fernando"
-fijo), resume_pipeline lo hardcodeaba en Python directamente. Ninguno de
+real -- create_pipeline dependia de lo que mandara el front (hasta
+2026-09-14, "Fernando" fijo; ahora el rol "plataforma", puesto por el
+backend), resume_pipeline lo hardcodeaba en Python directamente. Ninguno de
 los dos debe confiar en identidad que venga del cliente para algo que se
 usa para atribuir costo."""
 from auth.jwt import create_access_token
@@ -55,6 +56,9 @@ def test_create_pipeline_inyecta_identidad_real(client, monkeypatch):
 
     assert captured["json"]["user_id"] == USER_ID
     assert captured["json"]["tenant_id"] == TENANT_ID
+    # tanda A (2026-09-14): invoked_by es un ROL que pone el backend, igual que
+    # la identidad; lo que mande el cliente se pisa.
+    assert captured["json"]["invoked_by"] == "plataforma"
 
 
 def test_resume_pipeline_inyecta_identidad_real(client, monkeypatch):
@@ -85,8 +89,8 @@ def test_resume_pipeline_inyecta_identidad_real(client, monkeypatch):
 
     assert captured["json"]["user_id"] == USER_ID
     assert captured["json"]["tenant_id"] == TENANT_ID
-    # "invoked_by": "Fernando" is kept as the human-readable label -- it's
-    # not what cost attribution reads. What must never be "Fernando" is the
-    # real identity fields themselves.
+    # tanda A (2026-09-14): el backend declara el rol "plataforma" (Jacobs
+    # exige ese rol para reanudar); la identidad real va en user_id/tenant_id.
+    assert captured["json"]["invoked_by"] == "plataforma"
     assert captured["json"]["user_id"] != "Fernando"
     assert captured["json"]["tenant_id"] != "Fernando"
