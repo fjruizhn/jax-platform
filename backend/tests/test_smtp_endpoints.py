@@ -562,3 +562,129 @@ def test_guardar_filas_con_rollback_que_falla_propaga_el_error_original(client, 
     (conn,) = conexiones
     assert conn.closed
     assert client.portal.call(_filas_smtp) == antes
+
+
+# ------------- destinatario del correo de prueba (2026-09-13, decisión de Fernando)
+
+DESTINO = "destino-prueba@example.test"
+
+
+def _email_superadmin(client):
+    (fila,) = client.portal.call(_sql, "SELECT email FROM jax_users WHERE user_id = 1", (), True)
+    return fila[0]
+
+
+def _espiar_envios(monkeypatch):
+    enviados = []
+    monkeypatch.setattr(smtp_config, "enviar", lambda s, msg: enviados.append(msg["To"]))
+    return enviados
+
+
+def test_get_trae_test_to_y_email_sesion(client):
+    cuerpo = client.get("/api/admin/smtp", headers=_admin()).json()
+    assert (cuerpo["test_to"], cuerpo["email_sesion"]) == ("", _email_superadmin(client))
+    assert _guardar(client, test_to=DESTINO).status_code == 200
+    assert client.get("/api/admin/smtp", headers=_admin()).json()["test_to"] == DESTINO
+
+
+def test_put_guarda_limpia_y_sin_la_clave_no_toca_test_to(client):
+    assert _guardar(client, test_to=f"  {DESTINO} ").status_code == 200
+    assert client.portal.call(_filas_smtp)["smtp.test_to"] == DESTINO
+    # Sin la clave en el body (cliente viejo): la fila queda como estaba.
+    assert _guardar(client, password=smtp_config.MASCARA).status_code == 200
+    assert client.portal.call(_filas_smtp)["smtp.test_to"] == DESTINO
+    for vacio in ("", None):
+        assert _guardar(client, test_to=DESTINO).status_code == 200
+        assert _guardar(client, password=smtp_config.MASCARA, test_to=vacio).status_code == 200
+        assert client.portal.call(_filas_smtp)["smtp.test_to"] == ""
+
+
+@pytest.mark.parametrize("malo", ["no-es-un-correo", f"{DESTINO}\r\nBcc: x@y.io", "a" * 250 + "@x.io"])
+def test_put_rechaza_test_to_invalido_y_no_escribe(client, malo):
+    assert _guardar(client).status_code == 200
+    antes = client.portal.call(_filas_smtp)
+    r = _guardar(client, password=smtp_config.MASCARA, from_name="Otro", test_to=malo)
+    assert r.status_code in (400, 422)
+    if r.status_code == 400:
+        assert r.json()["detail"] == "smtp_destinatario_invalido"
+    assert client.portal.call(_filas_smtp) == antes
+
+
+def test_put_con_test_to_de_control_es_400_con_codigo(client):
+    r = _guardar(client, test_to=f"{DESTINO}\r\nBcc: x@y.io")
+    assert (r.status_code, r.json()["detail"]) == (400, "smtp_destinatario_invalido")
+    assert client.portal.call(_filas_smtp) == {}
+
+
+def test_prueba_con_to_va_a_ese_destino(client, monkeypatch):
+    enviados = _espiar_envios(monkeypatch)
+    assert _guardar(client, test_to="guardado@example.test").status_code == 200
+    r = client.post("/api/admin/smtp/test", json={"to": f" {DESTINO} "}, headers=_admin())
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "to": DESTINO}
+    assert enviados == [DESTINO]
+
+
+@pytest.mark.parametrize("malo", ["no-es-un-correo", f"{DESTINO}\r\nBcc: x@y.io", f"{DESTINO}\x00"])
+def test_prueba_con_to_invalido_es_400_y_no_envia(client, monkeypatch, malo):
+    enviados = _espiar_envios(monkeypatch)
+    assert _guardar(client).status_code == 200
+    r = client.post("/api/admin/smtp/test", json={"to": malo}, headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (400, "smtp_destinatario_invalido")
+    assert enviados == []
+
+
+@pytest.mark.parametrize("cuerpo", [None, {}, {"to": None}, {"to": ""}, {"to": "   "}])
+def test_prueba_sin_to_y_con_test_to_guardado_va_a_test_to(client, monkeypatch, cuerpo):
+    enviados = _espiar_envios(monkeypatch)
+    assert _guardar(client, test_to=DESTINO).status_code == 200
+    r = client.post("/api/admin/smtp/test", json=cuerpo, headers=_admin())
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "to": DESTINO} and enviados == [DESTINO]
+
+
+@pytest.mark.parametrize("cuerpo", [{}, {"to": None}, {"to": ""}])
+def test_prueba_sin_to_ni_test_to_va_al_correo_de_la_sesion(client, monkeypatch, cuerpo):
+    enviados = _espiar_envios(monkeypatch)
+    assert _guardar(client, test_to="").status_code == 200
+    r = client.post("/api/admin/smtp/test", json=cuerpo, headers=_admin())
+    assert r.status_code == 200, r.text
+    assert enviados == [_email_superadmin(client)]
+
+
+def test_prueba_con_test_to_guardado_invalido_es_400(client, monkeypatch):
+    enviados = _espiar_envios(monkeypatch)
+    assert _guardar(client).status_code == 200
+    client.portal.call(_sql, "INSERT INTO axioma_config (config_key, config_value) VALUES ('smtp.test_to', %s)",
+                       ("no-es-un-correo",))
+    r = client.post("/api/admin/smtp/test", headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (400, "smtp_destinatario_invalido")
+    assert enviados == []
+    # Y no es corrupción del envío: la pantalla no la marca como dañada.
+    assert client.get("/api/admin/smtp", headers=_admin()).json()["corrupta"] is False
+
+
+def test_prueba_con_to_sigue_teniendo_limite_y_el_limite_va_primero(client, monkeypatch):
+    import api.admin.smtp as smtp_mod
+    monkeypatch.setattr(smtp_mod, "SMTP_TEST_LIMITER", SlidingWindowLimiter(2, 300, 1000))
+    enviados = _espiar_envios(monkeypatch)
+    assert _guardar(client).status_code == 200
+    for _ in range(2):
+        assert client.post("/api/admin/smtp/test", json={"to": DESTINO}, headers=_admin()).status_code == 200
+    r = client.post("/api/admin/smtp/test", json={"to": DESTINO}, headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (429, "smtp_demasiadas_pruebas")
+    # Con el límite agotado, ni siquiera un destino inválido llega a validarse.
+    r = client.post("/api/admin/smtp/test", json={"to": "no-es-un-correo"}, headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (429, "smtp_demasiadas_pruebas")
+    assert enviados == [DESTINO, DESTINO]
+
+
+def test_config_generico_rechaza_y_no_lista_smtp_test_to(client):
+    assert _guardar(client, test_to=DESTINO).status_code == 200
+    antes = client.portal.call(_filas_smtp)
+    r = client.put("/api/admin/config", json=[{"key": "smtp.test_to", "value": "otro@example.test"}],
+                   headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (400, "config_clave_reservada")
+    assert client.portal.call(_filas_smtp) == antes
+    claves = [i["key"] for i in client.get("/api/admin/config", headers=_admin()).json()["config"]]
+    assert claves and "smtp.test_to" not in claves

@@ -33,7 +33,7 @@ from email.utils import formataddr, formatdate, make_msgid
 
 from crypto_secrets import decrypt_db_secret, encrypt_secret
 from db.connection import get_pool
-from validacion import tiene_caracteres_de_control
+from validacion import email_valido, tiene_caracteres_de_control
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,12 @@ CLAVES = (
     "smtp.password", "smtp.from_name", "smtp.from_email",
 )
 CLAVE_SECRETA = "smtp.password"
+# Destinatario por defecto del correo de prueba (2026-09-13, decisión de
+# Fernando). OPCIONAL: fuera de CLAVES a propósito -- motivo_de_corrupcion no
+# la exige, y guardada inválida solo afecta al default de la prueba, nunca al
+# envío de los correos de recuperación.
+CLAVE_DESTINO_PRUEBA = "smtp.test_to"
+CLAVES_OPCIONALES = (CLAVE_DESTINO_PRUEBA,)
 MASCARA = "••••••••"
 CIFRADOS = ("tls", "ssl", "none")
 TIMEOUT_S = 10
@@ -80,6 +86,12 @@ class SmtpReescribirContrasena(Exception):
     """Se pidió reusar la contraseña guardada contra otro servidor (host,
     puerto, cifrado o usuario distinto del guardado)."""
     codigo = "smtp_reescribir_contrasena_al_cambiar_servidor"
+
+
+class SmtpDestinatarioInvalido(Exception):
+    """El destinatario de la prueba (pedido o guardado) no es un correo
+    válido o trae caracteres de control (inyectaría un encabezado)."""
+    codigo = "smtp_destinatario_invalido"
 
 
 class SmtpPasoFallido(Exception):
@@ -156,10 +168,32 @@ def estado_para_pantalla(filas: dict[str, str]) -> dict:
         "password": MASCARA if motivo is None and decrypt_db_secret(filas.get(CLAVE_SECRETA, "")) else "",
         "from_name": filas.get("smtp.from_name", ""),
         "from_email": filas.get("smtp.from_email", ""),
+        "test_to": filas.get(CLAVE_DESTINO_PRUEBA, ""),
         "configurado": bool(filas.get("smtp.host")),
         "corrupta": motivo is not None,
         "motivo": motivo,
     }
+
+
+def normalizar_destinatario(valor: str | None) -> str:
+    """LA regla del destinatario de prueba -- la usan el guardado de
+    smtp.test_to y la resolución de /smtp/test. "" si viene vacío (o None);
+    si no, sin espacios alrededor, un correo válido y sin caracteres de
+    control, o SmtpDestinatarioInvalido."""
+    limpio = (valor or "").strip()
+    if limpio and (tiene_caracteres_de_control(limpio) or not email_valido(limpio)):
+        raise SmtpDestinatarioInvalido(limpio)
+    return limpio
+
+
+def destinatario_de_prueba(pedido: str | None, filas: dict[str, str]) -> str | None:
+    """A quién va el correo de prueba: 1) el pedido, si no está vacío; 2) si
+    no, smtp.test_to guardado, si no está vacío; 3) si no, None -- quien
+    llama usa el correo de la sesión. Un pedido o guardado inválido lanza
+    SmtpDestinatarioInvalido: nunca cae en silencio al siguiente."""
+    return (normalizar_destinatario(pedido)
+            or normalizar_destinatario(filas.get(CLAVE_DESTINO_PRUEBA))
+            or None)
 
 
 def trae_contrasena_nueva(datos: dict) -> bool:
@@ -191,7 +225,10 @@ def filas_a_guardar(filas_actuales: dict[str, str], datos: dict) -> dict[str, st
     distinta de la máscara; sin nueva, se conserva la guardada solo si
     contrasena_para_reusar lo permite. Con el estado corrupto se PUEDE
     reconfigurar (bloquearlo dejaría como salida la cirugía en la base), pero
-    exigiendo volver a escribir la contraseña -- igual que AteneaERP."""
+    exigiendo volver a escribir la contraseña -- igual que AteneaERP.
+    smtp.test_to solo se escribe si `datos` trae la clave "test_to" (un
+    cliente viejo que no la manda no la borra); None o vacío guardan ""."""
+    destino = normalizar_destinatario(datos["test_to"]) if "test_to" in datos else None
     trae_nueva = trae_contrasena_nueva(datos)
     if not trae_nueva:
         motivo = motivo_de_corrupcion(filas_actuales)
@@ -206,20 +243,24 @@ def filas_a_guardar(filas_actuales: dict[str, str], datos: dict) -> dict[str, st
         "smtp.from_name": datos["from_name"],
         "smtp.from_email": datos["from_email"],
     }
+    if destino is not None:
+        filas[CLAVE_DESTINO_PRUEBA] = destino
     if trae_nueva:
         filas[CLAVE_SECRETA] = encrypt_secret(datos["password"])
     return filas
 
 
 async def leer_filas() -> dict[str, str]:
-    marcadores = ", ".join(["%s"] * len(CLAVES))
+    """Las obligatorias y las opcionales, en una sola consulta."""
+    claves = CLAVES + CLAVES_OPCIONALES
+    marcadores = ", ".join(["%s"] * len(claves))
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             # config_key es PRIMARY KEY: el IN va por el índice.
             await cur.execute(
                 f"SELECT config_key, config_value FROM axioma_config WHERE config_key IN ({marcadores})",
-                CLAVES,
+                claves,
             )
             return {clave: valor for clave, valor in await cur.fetchall()}
 
