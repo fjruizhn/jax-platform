@@ -139,8 +139,12 @@ jobs:
             // genérico, cancelar) y +4 AdminModelCatalog.test.jsx (último rechazo guardado + botón,
             // el 409 en vivo ofrece declarar, el de otro proveedor no, columna de contrato y
             // declarar desde la tabla). Medido con vitest run: 146 + 11 = 157.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 157) {
-              console.error("PISO ROTO: se esperaban 157 tests de vitest CORRIDOS y 0 fallidos.");
+            // PR-L ronda 1: +6 AdminFacetBindings.test.jsx (clave nueva es/en; el 409 de contrato
+            // del PUT ofrece declarar; el de otro proveedor no; el último rechazo guardado se ve y
+            // declara con el mismo endpoint; un rechazo de un modelo fuera de la lista igual abre el
+            // formulario; sin rechazo no hay aviso). Medido con vitest run: 157 + 6 = 163.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 163) {
+              console.error("PISO ROTO: se esperaban 163 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -559,7 +563,13 @@ jobs:
           # 404; válido -> fila + auditoría + sello; EXPLAIN por PK; migración idempotente; flujo
           # approve 409 -> declarar -> approve 200; rastro del rechazo por contrato, por proveedor
           # y del PUT). Medido contra jax master f84ecc1 (= f36ef3f + solo docs): 709 + 11 = 720 / 1.
-          PISO_PASSED = 720
+          # PR-L ronda 1 (2026-09-14): +4 en test_contrato_dispatch_admin.py (borrar modelo y
+          # propuesta no falla y la auditoría sigue legible; la migración convierte la tabla con
+          # FK duras; la lista de bindings muestra el último rechazo posterior al último cambio;
+          # EXPLAIN del rastro por faceta sin scan) y +2 en test_semilla_contrato_dispatch.py
+          # (toda faceta http_openai_compat de la semilla de base vacía cumple el contrato; ada
+          # nace en glm-5.3). Medido contra jax f84ecc1: 720 + 6 = 726 / 1.
+          PISO_PASSED = 726
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -856,7 +866,10 @@ jobs:
       # Rebase de PR-J sobre la tanda A: 345 + 4. Medido con JAX_CI_NO_DB=1: 349 / 361.
       # PR-L (2026-09-14): 349 -> 349. Los 11 tests nuevos piden `client` (escriben y leen
       # jax_memory_test) y se saltan sin DB. Medido con JAX_CI_NO_DB=1: 349 passed / 372 skipped.
-      JAX_CI_MIN_PASSED: "349"
+      # PR-L ronda 1: +2 puros (tests/test_semilla_contrato_dispatch.py, tripwire de la semilla
+      # de base vacía contra los validadores del dispatch); los +4 de auditoría piden `client`.
+      # Medido con JAX_CI_NO_DB=1: 351 passed / 376 skipped.
+      JAX_CI_MIN_PASSED: "351"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -57,5 +57,79 @@ describe('AdminFacetBindings -- el rechazo por contrato de dispatch se traduce',
     expect(await screen.findByRole('alert')).toHaveTextContent(
       es.adminBindingsSaveError('model_ref 2111 no existe en el catalogo'),
     )
+  })
+})
+
+// PR-L ronda 1 (2026-09-14): el 409 del PUT ofrece "declarar contrato" hacia
+// el mismo formulario/endpoint que el catálogo, y el último rechazo registrado
+// para la faceta (model_catalog_audit) se ve en esta pantalla.
+const RECHAZO_GUARDADO = {
+  code: 'modelo_sin_contrato_de_dispatch', model_ref: 2111, model_id: 'deepseek-flash',
+  provider_modelo: 'deepseek', campos: ['max_output_tokens'], performed_by: 1,
+  performed_at: '2026-09-14 10:00:00',
+}
+
+function renderBindings(binding = BINDING) {
+  api.get.mockImplementation(url => Promise.resolve(
+    url.startsWith('/admin/facet-bindings')
+      ? { data: { bindings: [binding] } }
+      : { data: { models: [MODELO], max_tokens_param_opciones: ['max_tokens', 'max_completion_tokens'] } },
+  ))
+  render(<I18nProvider><AdminFacetBindings /></I18nProvider>)
+}
+
+describe('AdminFacetBindings -- declarar contrato desde el 409 y el rastro (PR-L)', () => {
+  it('la clave nueva existe en es y en', async () => {
+    const { default: en } = await import('../../i18n/en.js')
+    expect(es.adminBindingsUltimoRechazo('x')).toContain('x')
+    expect(en.adminBindingsUltimoRechazo('x')).toContain('x')
+  })
+
+  it('el 409 de contrato del PUT ofrece declarar el contrato de esa fila', async () => {
+    api.put.mockRejectedValueOnce(rechazo(409, {
+      code: 'modelo_sin_contrato_de_dispatch', model_ref: MODELO.id, model_id: 'deepseek-flash',
+      provider_modelo: 'deepseek', campos: ['max_tokens_param'], message: '...',
+    }))
+    await guardarHacia(MODELO.id)
+    const alerta = await screen.findByRole('alert')
+    fireEvent.click(within(alerta).getByRole('button', { name: es.adminContratoDeclarar }))
+    expect(await screen.findByText(es.adminContratoTitulo('deepseek/deepseek-flash'))).toBeInTheDocument()
+  })
+
+  it('el 409 de otro proveedor no ofrece declarar contrato', async () => {
+    api.put.mockRejectedValueOnce(rechazo(409, {
+      code: 'modelo_de_otro_proveedor', model_ref: MODELO.id, model_id: 'deepseek-flash', campos: ['provider_id'],
+      provider_modelo: 'deepseek', provider_binding: 'openai', message: '...',
+    }))
+    await guardarHacia(MODELO.id)
+    const alerta = await screen.findByRole('alert')
+    expect(within(alerta).queryByRole('button', { name: es.adminContratoDeclarar })).not.toBeInTheDocument()
+  })
+
+  it('el último rechazo guardado se ve y declara el contrato con el mismo endpoint', async () => {
+    api.put.mockResolvedValue({ data: { ok: true } })
+    renderBindings({ ...BINDING, ultimo_rechazo: RECHAZO_GUARDADO })
+    expect(await screen.findByText(es.adminBindingsUltimoRechazo('2026-09-14 10:00'))).toBeInTheDocument()
+    expect(screen.getByText(es.modelo_sin_contrato_de_dispatch('deepseek-flash', 'max_output_tokens'))).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: es.adminContratoDeclarar }))
+    fireEvent.change(await screen.findByLabelText(es.adminContratoParam), { target: { value: 'max_tokens' } })
+    fireEvent.change(screen.getByLabelText(es.adminContratoTope), { target: { value: '4096' } })
+    fireEvent.click(screen.getByRole('button', { name: es.adminContratoGuardar }))
+    expect(await screen.findByText(es.adminContratoGuardado)).toBeInTheDocument()
+    expect(api.put).toHaveBeenCalledWith('/admin/models/2111/contrato-dispatch', {
+      max_tokens_param: 'max_tokens', max_output_tokens: 4096,
+    })
+  })
+
+  it('un rechazo de un modelo que no está en la lista igual abre el formulario', async () => {
+    renderBindings({ ...BINDING, ultimo_rechazo: { ...RECHAZO_GUARDADO, model_ref: 9999, model_id: 'otro-modelo' } })
+    fireEvent.click(await screen.findByRole('button', { name: es.adminContratoDeclarar }))
+    expect(await screen.findByText(es.adminContratoTitulo('deepseek/otro-modelo'))).toBeInTheDocument()
+  })
+
+  it('sin rechazo guardado no hay aviso ni botón', async () => {
+    renderBindings()
+    await screen.findByText('deepseek/deepseek-v4-flash')
+    expect(screen.queryByRole('button', { name: es.adminContratoDeclarar })).not.toBeInTheDocument()
   })
 })

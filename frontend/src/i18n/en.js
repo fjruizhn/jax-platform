@@ -354,6 +354,8 @@ export default {
   adminModelsContrato: 'Dispatch contract',
   adminModelsContratoSinDeclarar: 'Not declared',
   adminProposalsUltimoRechazo: (fecha) => `Last approval attempt rejected (${fecha}):`,
+  // PR-L round 1: a facet's last recorded rejection, on the Bindings screen.
+  adminBindingsUltimoRechazo: (fecha) => `Last change rejected (${fecha}):`,
 
   // Admin — Motors tab (R4 Task 9): register a motor/capability without hand-written SQL
   adminTabMotors: 'Motors',

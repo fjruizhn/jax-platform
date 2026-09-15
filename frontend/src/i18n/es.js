@@ -357,6 +357,8 @@ export default {
   adminModelsContrato: 'Contrato de dispatch',
   adminModelsContratoSinDeclarar: 'Sin declarar',
   adminProposalsUltimoRechazo: (fecha) => `Último intento de aprobación rechazado (${fecha}):`,
+  // PR-L ronda 1: el último rechazo registrado para una faceta, en Bindings.
+  adminBindingsUltimoRechazo: (fecha) => `Último cambio rechazado (${fecha}):`,
 
   // Admin — pestaña Motores (R4 Task 9): alta de motor/capability sin SQL a mano
   adminTabMotors: 'Motores',
