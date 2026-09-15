@@ -53,6 +53,7 @@ import pytest  # noqa: E402
 
 import api.auth as auth_mod  # noqa: E402
 import api.admin.users as users_mod  # noqa: E402
+from auth import conexiones as conexiones_mod  # noqa: E402
 from auth import rate_limit  # noqa: E402
 from auth.jwt import decode_token  # noqa: E402
 from auth.rate_limit import SlidingWindowLimiter  # noqa: E402
@@ -100,7 +101,7 @@ def cortes(monkeypatch):
         return 0
 
     monkeypatch.setattr(ws_hub, "close_user", ws)
-    monkeypatch.setattr(users_mod, "close_user_streams", sse)
+    monkeypatch.setattr(conexiones_mod, "close_user_streams", sse)
     return registro
 
 
@@ -151,7 +152,7 @@ def test_mi_cuenta_si_el_corte_falla_el_cambio_confirmado_responde_igual(client,
         raise RuntimeError("hub caído")
 
     monkeypatch.setattr(ws_hub, "close_user", revienta)
-    monkeypatch.setattr(users_mod, "close_user_streams", revienta)
+    monkeypatch.setattr(conexiones_mod, "close_user_streams", revienta)
     u, _ = usuarios(password=CLAVE)
     r = _cambiar(client, token_para(u), CLAVE, NUEVA)
     assert r.status_code == 200 and decode_token(r.json()["access_token"])["tv"] == 1
@@ -364,7 +365,7 @@ def test_reset_si_el_corte_falla_el_reset_confirmado_responde_igual(client, usua
         raise RuntimeError("hub caído")
 
     monkeypatch.setattr(ws_hub, "close_user", revienta)
-    monkeypatch.setattr(users_mod, "close_user_streams", revienta)
+    monkeypatch.setattr(conexiones_mod, "close_user_streams", revienta)
     u, _ = usuarios(password=CLAVE)
     token = str(uuid.uuid4())
     client.portal.call(sql, "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "

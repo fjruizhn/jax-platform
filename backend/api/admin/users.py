@@ -12,15 +12,15 @@ from pydantic import BaseModel, ConfigDict
 
 import user_audit
 import smtp_config
-from api.events import close_user_streams
+from api import auth as auth_api
 from auth import rate_limit
+from auth.conexiones import _cortar_conexiones
 from auth.password_rules import problema_de_password
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
 from db.seed import _hash
 from db.transaccion import transaccion
-from jax_engine.websocket_hub import ws_hub
 
 logger = logging.getLogger(__name__)
 
@@ -105,22 +105,6 @@ async def _leer_para_actualizar(cur, user_id: int):
     await _bloquear_superadmins_activos(cur)
     await cur.execute("SELECT role, status FROM jax_users WHERE user_id = %s FOR UPDATE", (user_id,))
     return await cur.fetchone()
-
-
-async def _cortar_conexiones(user_id: int) -> None:
-    """Step 4b (Ruling U5): cierra el WS (4001) y los streams SSE ya abiertos
-    del usuario. Se llama DESPUÉS del commit, nunca dentro de la transacción:
-    un rollback no debe haber cortado sesiones. Cada canal por separado y
-    tolerante: el cambio ya está confirmado, así que un fallo acá no puede
-    volverse un 500 de algo que sí se hizo."""
-    try:
-        await ws_hub.close_user(str(user_id))
-    except Exception:  # fail-soft: el cambio ya está confirmado; cortar conexiones es best-effort (la sesión igual muere en el request siguiente por token_version)
-        logger.exception("No se pudieron cerrar los WebSocket del usuario %s", user_id)
-    try:
-        await close_user_streams(str(user_id))
-    except Exception:  # fail-soft: el cambio ya está confirmado; cortar conexiones es best-effort (el SSE reconecta y verificar_sesion lo rechaza)
-        logger.exception("No se pudieron cerrar los streams SSE del usuario %s", user_id)
 
 
 @router.get("/users")
@@ -307,13 +291,7 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
     """Reset por admin = enlace por correo (spec §3.4). Reusa el núcleo de la
     recuperación pública (_crear_enlace_de_recuperacion + _send_reset_email),
     pero NO su envoltorio fail-soft: acá el admin ESPERA el envío (en un hilo)
-    y ve el error. Un 200 sin correo sería el éxito falso que el spec prohíbe.
-    Import de api.auth DIFERIDO (no al tope del módulo): auth.py importa
-    _cortar_conexiones de este módulo, así que un `from api import auth`
-    al tope aquí cierra un ciclo que revienta según qué módulo cargue
-    primero -- medido: entrar por `api.admin.users` (como hace
-    test_admin_usuarios_guardas.py) daba ImportError en collection."""
-    from api import auth as auth_api
+    y ve el error. Un 200 sin correo sería el éxito falso que el spec prohíbe."""
     try:
         settings = await smtp_config.cargar_settings()
     except smtp_config.SmtpNoDisponible as exc:

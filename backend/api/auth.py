@@ -20,7 +20,7 @@ from db.seed import verify_password, _hash
 from jax_engine.background import add_safe_task
 import smtp_config
 import user_audit
-from api.admin.users import _cortar_conexiones
+from auth.conexiones import _cortar_conexiones
 from db.transaccion import transaccion
 
 logger = logging.getLogger(__name__)
