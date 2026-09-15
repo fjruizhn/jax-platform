@@ -1,5 +1,11 @@
 import json
+import logging
+
+import aiomysql
+
 from .connection import get_pool
+
+logger = logging.getLogger(__name__)
 
 CREATE_TENANTS = """
 CREATE TABLE IF NOT EXISTS jax_tenants (
@@ -1560,6 +1566,68 @@ _INDEXES = [
 ]
 
 
+# Fix wave final, item 8 (2026-09-15): GET /api/admin/usage filtra por
+# created_at y agrupa por (facet, model, request_type) o (facet, dia). Sin
+# indice era un scan completo de axioma_usage en cada pedido (gate U29: p95
+# ~2,7 s con 102k filas). Cubriente: el rango de fechas se lee del indice con
+# todas las columnas que suman las dos consultas, sin tocar la fila base.
+# axioma_usage es de la plataforma (CREATE_AXIOMA_USAGE, arriba); jax solo
+# inserta. ALGORITHM=INPLACE, LOCK=NONE explicitos: si MariaDB no puede
+# crearlo en linea, FALLA en vez de caer a COPY, que bloquea los INSERT de
+# record_usage (y de Jacobs/LAS MANOS) mientras copia.
+DDL_INDICE_USO_POR_PERIODO = (
+    "ALTER TABLE axioma_usage ADD INDEX idx_axioma_usage_periodo "
+    "(created_at, facet, model, request_type, tokens_in, tokens_out, cost_usd), "
+    "ALGORITHM=INPLACE, LOCK=NONE"
+)
+
+# Espera maxima por el metadata lock del DDL acotado: el default de MariaDB
+# (lock_wait_timeout) es 86400 s, y una transaccion larga sobre la tabla
+# dejaria el arranque colgado un dia. Mientras el DDL espera su MDL exclusivo,
+# las lecturas y escrituras NUEVAS de la tabla se encolan detras: por eso
+# 30 s, la misma cota que jax/jacobs/store.py.
+_LOCK_WAIT_DDL_SEGUNDOS = 30
+_ER_LOCK_WAIT_TIMEOUT = 1205
+
+
+async def _crear_indice_acotado(cur, tabla: str, indice: str, ddl: str) -> bool:
+    """Corre `ddl` con lock_wait_timeout de 30 s en ESTA sesion y restaura
+    el valor previo pase lo que pase. True si lo creo.
+
+    Politica de jax/jacobs/store.py::_crear_indice_acotado: si la espera vence
+    (1205), ERROR en el log con el indice y el motivo, y el arranque SIGUE --
+    el proximo arranque lo reintenta, porque _index_exists ve que falta. El
+    indice es de rendimiento, no un contrato: sin el, las consultas de uso
+    siguen correctas (scan). Cualquier OTRO error (INPLACE o LOCK=NONE no
+    soportados, sintaxis) SUBE: no es una espera, es un DDL que no puede correr
+    como se declaro."""
+    await cur.execute("SELECT @@SESSION.lock_wait_timeout")
+    (previo,) = await cur.fetchone()
+    await cur.execute("SET SESSION lock_wait_timeout=%s", (_LOCK_WAIT_DDL_SEGUNDOS,))
+    try:
+        await cur.execute(ddl)
+        return True
+    except aiomysql.OperationalError as e:  # fail-soft: el indice solo acelera; las consultas de uso siguen correctas como scan; 1205 se reintenta en el proximo arranque y todo otro error sube
+        if not (e.args and e.args[0] == _ER_LOCK_WAIT_TIMEOUT):
+            raise
+        logger.error(
+            "run_migrations: no se creo %s en %s -- otra transaccion tiene la tabla y "
+            "vencio la espera de %d s (%s). El arranque sigue SIN el indice (las "
+            "consultas de uso hacen scan); se reintenta en el proximo arranque.",
+            indice, tabla, _LOCK_WAIT_DDL_SEGUNDOS, e,
+        )
+        return False
+    finally:
+        await cur.execute("SET SESSION lock_wait_timeout=%s", (int(previo),))
+
+
+async def _indice_de_uso_por_periodo(cur) -> None:
+    """Idempotente: solo crea idx_axioma_usage_periodo si falta."""
+    if not await _index_exists(cur, "axioma_usage", "idx_axioma_usage_periodo"):
+        await _crear_indice_acotado(
+            cur, "axioma_usage", "idx_axioma_usage_periodo", DDL_INDICE_USO_POR_PERIODO)
+
+
 async def _index_exists(cur, table_name: str, index_name: str) -> bool:
     await cur.execute(
         """
@@ -2055,6 +2123,7 @@ async def run_migrations():
             for table_name, index_name, ddl in _INDEXES:
                 if not await _index_exists(cur, table_name, index_name):
                     await cur.execute(ddl)
+            await _indice_de_uso_por_periodo(cur)
 
             await _drop_axioma_artifacts(cur)
             await _seed_providers(cur)

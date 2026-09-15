@@ -1,5 +1,5 @@
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
@@ -138,6 +138,39 @@ async def record_usage(
         )
 
 
+# Fix wave final, item 8 (2026-09-15): la prueba de carga del gate U29 dio
+# NO-GO (102k filas, ~11 rps planos, p95 ~2,7 s con c=25; EXPLAIN `ALL` +
+# temporary + filesort). `WHERE DATE(created_at) >= dia` no es sargable: la
+# funcion sobre la columna impide usar cualquier indice. `created_at >= <00:00
+# del dia>` devuelve exactamente lo mismo (created_at es TIMESTAMP: DATE() y
+# la comparacion usan la misma zona de la sesion) y usa
+# idx_axioma_usage_periodo (db/migrations.py), cubriente: el rango se lee del
+# indice sin tocar la fila. El `Using temporary; Using filesort` que queda es
+# sobre los GRUPOS, no sobre las filas (tests/test_uso_por_periodo.py).
+# ORDER BY SUM(cost_usd): antes `ORDER BY cost_usd` ordenaba por el costo de
+# una fila cualquiera de cada grupo.
+SQL_USO_POR_FACETA = """
+    SELECT facet, model, SUM(tokens_in), SUM(tokens_out), SUM(cost_usd), COUNT(*), request_type,
+           SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced_requests
+    FROM axioma_usage
+    WHERE created_at >= %s
+    GROUP BY facet, model, request_type
+    ORDER BY SUM(cost_usd) DESC
+"""
+SQL_USO_GRAFICO = """
+    SELECT facet, DATE(created_at) AS day, COUNT(*) AS cnt
+    FROM axioma_usage
+    WHERE created_at >= %s
+    GROUP BY facet, day
+"""
+
+
+def _inicio_del_dia(dia: date) -> datetime:
+    """Limite inferior del rango: `created_at >= 00:00:00 de dia` equivale
+    a `DATE(created_at) >= dia`."""
+    return datetime.combine(dia, time.min)
+
+
 @router.get("/usage")
 async def get_usage(
     period: str = Query("day", pattern="^(day|week|month)$"),
@@ -149,29 +182,11 @@ async def get_usage(
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                SELECT facet, model, SUM(tokens_in), SUM(tokens_out), SUM(cost_usd), COUNT(*), request_type,
-                       SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced_requests
-                FROM axioma_usage
-                WHERE DATE(created_at) >= %s
-                GROUP BY facet, model, request_type
-                ORDER BY cost_usd DESC
-                """,
-                (since.isoformat(),),
-            )
+            await cur.execute(SQL_USO_POR_FACETA, (_inicio_del_dia(since),))
             rows = await cur.fetchall()
 
             labels = [(date.today() - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
-            await cur.execute(
-                """
-                SELECT facet, DATE(created_at) as day, COUNT(*) as cnt
-                FROM axioma_usage
-                WHERE DATE(created_at) >= %s
-                GROUP BY facet, day
-                """,
-                ((date.today() - timedelta(days=7)).isoformat(),),
-            )
+            await cur.execute(SQL_USO_GRAFICO, (_inicio_del_dia(date.today() - timedelta(days=7)),))
             chart_rows = await cur.fetchall()
 
     by_facet = [
