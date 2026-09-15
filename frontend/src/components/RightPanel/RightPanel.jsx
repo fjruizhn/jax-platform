@@ -132,7 +132,7 @@ function RightPanel() {
               {activePipeline.status === 'waiting_gate' && (
                 <button
                   onClick={() => handleResume(activePipeline.pipeline_id)}
-                  className="mt-3 w-full py-2 rounded-lg bg-aviso-fondo border border-transparent hover:border-aviso-borde text-aviso text-xs font-bold uppercase tracking-widest transition-colors"
+                  className="mt-3 w-full py-2 rounded-lg bg-accion hover:bg-accion-hover text-sobre-color text-xs font-bold uppercase tracking-widest transition-colors"
                 >
                   {t.approve}
                 </button>

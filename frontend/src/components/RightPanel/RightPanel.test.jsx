@@ -88,3 +88,15 @@ describe('RightPanel -- los fallos de Aprobar y Cancelar se ven', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
   })
 })
+
+describe('RightPanel -- jerarquía visual del gate', () => {
+  // Revisión de ddde201: Aprobar quedaba con bg-aviso-fondo, casi idéntico a
+  // Cancelar (bg-superficie) en modo claro. Aprobar es la única acción
+  // primaria de un pipeline pausado: vuelve a un CTA sólido con par
+  // declarado (sobre-color/accion).
+  it('Aprobar es el CTA sólido con bg-accion, distinto de Cancelar', () => {
+    renderPanel()
+    expect(screen.getByRole('button', { name: es.approve })).toHaveClass('bg-accion')
+    expect(screen.getByRole('button', { name: es.cancelPipeline })).not.toHaveClass('bg-accion')
+  })
+})
