@@ -8,6 +8,14 @@ export default {
   lasManos: 'LAS MANOS',
   alive: 'vivo',
   down: 'caído',
+  // M-2 (revisión final PR 3, 2026-09-14): wsStatus (useJaxStore.js,
+  // api/websocket.js) se mostraba crudo, sin traducir. Un valor que el
+  // diccionario no conoce cae en el mismo dato crudo (LeftPanel.jsx).
+  wsStatusLabels: {
+    connected: 'Conectado',
+    disconnected: 'Desconectado',
+    reconnecting: 'Reconectando',
+  },
 
   // FacetCard status
   statusIdle: 'En reposo',
@@ -20,6 +28,17 @@ export default {
   tabAudit: 'Audit',
   stepsLabel: 'pasos',
   noPipelinesActive: 'Sin pipelines activos',
+  // M-2 (revisión final PR 3, 2026-09-14): activePipeline.status
+  // (jax_engine/schemas.py::PipelineStatus) se mostraba crudo. Un valor que
+  // el backend agregue y el diccionario no conozca cae en el dato crudo
+  // (RightPanel.jsx).
+  pipelineStatusLabels: {
+    pending: 'Pendiente',
+    running: 'En curso',
+    waiting_gate: 'Esperando aprobación',
+    completed: 'Completado',
+    failed: 'Fallido',
+  },
   pipelinesAdditional: (n) => `+${n} pipeline(s) adicional(es)`,
   approve: '✓ Aprobar',
   cancelling: 'Cancelando…',

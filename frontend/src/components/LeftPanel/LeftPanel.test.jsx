@@ -29,3 +29,21 @@ describe('LeftPanel -- rótulo de LAS MANOS desde i18n', () => {
     expect(en.lasManos).toBe('LAS MANOS')
   })
 })
+
+// M-2 (revisión final PR 3, 2026-09-14): wsStatus (useJaxStore.js,
+// api/websocket.js) se mostraba crudo ('connected'/'disconnected'/
+// 'reconnecting'), sin traducir.
+describe('LeftPanel -- wsStatus traducido (M-2)', () => {
+  it('las claves de los 3 estados existen en es y en', () => {
+    for (const clave of ['connected', 'disconnected', 'reconnecting']) {
+      expect(es.wsStatusLabels[clave], `es.wsStatusLabels.${clave}`).toBeTruthy()
+      expect(en.wsStatusLabels[clave], `en.wsStatusLabels.${clave}`).toBeTruthy()
+    }
+  })
+
+  it('el estado por defecto (disconnected) se muestra traducido, no el valor crudo', () => {
+    render(<LeftPanel />)
+    expect(screen.getByText(es.wsStatusLabels.disconnected)).toBeInTheDocument()
+    expect(screen.queryByText('disconnected')).not.toBeInTheDocument()
+  })
+})

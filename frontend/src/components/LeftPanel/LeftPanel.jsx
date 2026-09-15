@@ -57,7 +57,7 @@ function LeftPanel() {
             wsStatus === 'connected' ? 'bg-info' : 'bg-aviso'
           }`} />
           <span className="text-texto-suave">{t.wsLabel}</span>
-          <span className="text-texto-tenue">{wsStatus}</span>
+          <span className="text-texto-tenue">{t.wsStatusLabels[wsStatus] || wsStatus}</span>
         </div>
       </div>
     </div>

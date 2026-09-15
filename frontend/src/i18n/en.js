@@ -8,6 +8,14 @@ export default {
   lasManos: 'LAS MANOS',
   alive: 'online',
   down: 'offline',
+  // M-2 (final review PR 3, 2026-09-14): wsStatus (useJaxStore.js,
+  // api/websocket.js) was shown raw, untranslated. An unknown value falls
+  // back to the raw value (LeftPanel.jsx).
+  wsStatusLabels: {
+    connected: 'Connected',
+    disconnected: 'Disconnected',
+    reconnecting: 'Reconnecting',
+  },
 
   // FacetCard status
   statusIdle: 'Idle',
@@ -20,6 +28,17 @@ export default {
   tabAudit: 'Audit',
   stepsLabel: 'steps',
   noPipelinesActive: 'No active pipelines',
+  // M-2 (final review PR 3, 2026-09-14): activePipeline.status
+  // (jax_engine/schemas.py::PipelineStatus) was shown raw. A value the
+  // backend adds that the dictionary doesn't know falls back to the raw
+  // value (RightPanel.jsx).
+  pipelineStatusLabels: {
+    pending: 'Pending',
+    running: 'Running',
+    waiting_gate: 'Waiting for approval',
+    completed: 'Completed',
+    failed: 'Failed',
+  },
   pipelinesAdditional: (n) => `+${n} additional pipeline(s)`,
   approve: '✓ Approve',
   cancelling: 'Cancelling…',

@@ -117,7 +117,7 @@ function RightPanel() {
                     ? 'text-info'
                     : 'text-texto-suave'
                 }`}>
-                  {activePipeline.status}
+                  {t.pipelineStatusLabels[activePipeline.status] || activePipeline.status}
                 </div>
               </div>
 
