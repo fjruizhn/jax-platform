@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import smtplib
 
 import aiomysql
 from pymysql.constants.ER import DUP_ENTRY as ER_DUP_ENTRY
@@ -10,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 import user_audit
+import smtp_config
 from api.events import close_user_streams
 from auth import rate_limit
 from auth.password_rules import problema_de_password
@@ -298,3 +300,48 @@ async def delete_user(user_id: int, user: AuthUser = Depends(require_superadmin)
         await cur.execute("DELETE FROM jax_users WHERE user_id = %s", (user_id,))
     await _cortar_conexiones(user_id)
     return {"ok": True}
+
+
+@router.post("/users/{user_id}/reset-link")
+async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depends(require_superadmin)):
+    """Reset por admin = enlace por correo (spec §3.4). Reusa el núcleo de la
+    recuperación pública (_crear_enlace_de_recuperacion + _send_reset_email),
+    pero NO su envoltorio fail-soft: acá el admin ESPERA el envío (en un hilo)
+    y ve el error. Un 200 sin correo sería el éxito falso que el spec prohíbe.
+    Import de api.auth DIFERIDO (no al tope del módulo): auth.py importa
+    _cortar_conexiones de este módulo, así que un `from api import auth`
+    al tope aquí cierra un ciclo que revienta según qué módulo cargue
+    primero -- medido: entrar por `api.admin.users` (como hace
+    test_admin_usuarios_guardas.py) daba ImportError en collection."""
+    from api import auth as auth_api
+    try:
+        settings = await smtp_config.cargar_settings()
+    except smtp_config.SmtpNoDisponible as exc:
+        raise HTTPException(status_code=503, detail=exc.codigo) from exc
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT email, status FROM jax_users WHERE user_id = %s", (user_id,))
+            fila = await cur.fetchone()
+    if fila is None:
+        raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+    email, estado = fila
+    if estado != "active":
+        raise HTTPException(status_code=409, detail="usuario_no_activo")
+    ip = _ip(request)
+    enlace = await auth_api._crear_enlace_de_recuperacion(user_id, ip)
+    try:
+        await asyncio.to_thread(auth_api._send_reset_email, settings, email, enlace)
+    except (OSError, smtplib.SMTPException) as exc:
+        # U17: un enlace que no salió no puede quedar vivo. Se borra el token
+        # recién creado ANTES de devolver el error -- si no, un enlace nunca
+        # entregado (por ejemplo, visto en un log) seguiría siendo válido.
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE", (user_id,)
+                )
+        raise HTTPException(status_code=502, detail={"code": "smtp_envio_fallido", "server": str(exc)}) from exc
+    async with transaccion() as cur:
+        await user_audit.registrar(cur, int(user.user_id), user_id, "reset_link_sent", {"to": email}, ip)
+    return {"ok": True, "to": email}

@@ -745,7 +745,14 @@ jobs:
           # el medio no se pisa, límite del login). Medido: 797 / 1.
           # Subido de 797 a 799 (2026-09-15, Task 2 fix ronda 1): +2 en test_contrasenas.py
           # (revocación y desactivación concurrentes -> 401 sesion_invalida). Medido: 799 / 1.
-          PISO_PASSED = 799
+          # Subido de 799 a 807 (2026-09-15, admin usuarios etapa 4, Task 3): +8 en
+          # test_contrasenas.py (enlace de recuperación por admin: sin SMTP -> 503 sin
+          # token, crea token y audita, SMTP que falla -> 502 y borra el token (U17),
+          # a inactivo/inexistente, solo superadmin; completar el reset sube token_version
+          # y corta sesiones; token usado/expirado/inválido no corta nada; el corte fallido
+          # no rompe el 200). El brief pedía 6; U9 agregó 2 más (sin corte / corte fail-soft
+          # en reset). Medido: 807 / 1.
+          PISO_PASSED = 807
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1077,6 +1084,8 @@ jobs:
       # JAX_CI_NO_DB=1: 369 / 429.
       # Task 2 fix ronda 1 (2026-09-15): +2 que piden `client` (sin cambio). Medido con
       # JAX_CI_NO_DB=1: 369 / 431.
+      # Task 3 (2026-09-15): los 8 de enlace de recuperación / reset piden `client`
+      # (sin cambio en passed). Medido con JAX_CI_NO_DB=1: 369 / 439.
       JAX_CI_MIN_PASSED: "369"
     steps:
       - uses: actions/checkout@v4

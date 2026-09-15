@@ -234,3 +234,141 @@ def test_mi_cuenta_tiene_el_limite_del_login(client, usuarios, monkeypatch):
         assert _cambiar(client, token_para(u), "equivocada", NUEVA).status_code == 400
     r = _cambiar(client, token_para(u), "equivocada", NUEVA)
     assert r.status_code == 429 and int(r.headers["Retry-After"]) >= 1
+
+
+# ------------------------------------------------ enlace de recuperación
+
+import smtplib  # noqa: E402
+from datetime import timedelta  # noqa: E402
+
+import smtp_config  # noqa: E402
+from tiempo import utc_ahora  # noqa: E402
+
+
+@pytest.fixture
+def smtp_configurado(monkeypatch):
+    async def cargar():
+        return smtp_config.SmtpSettings(host="mail.example.test", port=587, encryption="tls", user="u",
+                                        password="p", from_name="Axioma", from_email="no-reply@example.test")
+
+    monkeypatch.setattr(smtp_config, "cargar_settings", cargar)
+
+
+def _enlace(client, user_id, cabeceras=None):
+    return client.post(f"/api/admin/users/{user_id}/reset-link", headers=cabeceras or _admin())
+
+
+async def _tokens(user_id):
+    return [f[0] for f in await sql("SELECT token FROM password_reset_tokens WHERE user_id = %s AND used = FALSE",
+                                    (user_id,), True)]
+
+
+def test_enlace_sin_smtp_configurado_es_503_y_no_crea_token(client, usuarios, monkeypatch):
+    async def sin_configurar():
+        raise smtp_config.SmtpNoConfigurado("nunca configurado")
+
+    monkeypatch.setattr(smtp_config, "cargar_settings", sin_configurar)
+    u, _ = usuarios()
+    r = _enlace(client, u)
+    assert (r.status_code, r.json()["detail"]) == (503, "smtp_no_configurado")
+    assert client.portal.call(_tokens, u) == []
+
+
+def test_enlace_crea_token_manda_al_correo_guardado_y_audita(client, usuarios, smtp_configurado, monkeypatch):
+    from api import auth as auth_mod
+    enviados = []
+    monkeypatch.setattr(auth_mod, "_send_reset_email", lambda s, to, link: enviados.append((s.host, to, link)))
+    u, email = usuarios()
+    r = _enlace(client, u)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "to": email}
+    (token,) = client.portal.call(_tokens, u)
+    ((host, destino, link),) = enviados
+    assert (host, destino) == ("mail.example.test", email) and token in link
+    assert client.portal.call(_acciones, u) == ["reset_link_sent"]
+
+
+def test_enlace_con_smtp_que_falla_es_502_con_la_respuesta_y_borra_el_token(client, usuarios, smtp_configurado,
+                                                                             monkeypatch):
+    from api import auth as auth_mod
+
+    def falla(s, to, link):
+        raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+
+    monkeypatch.setattr(auth_mod, "_send_reset_email", falla)
+    u, _ = usuarios()
+    r = _enlace(client, u)
+    assert r.status_code == 502
+    assert r.json()["detail"]["code"] == "smtp_envio_fallido"
+    assert "unexpectedly closed" in r.json()["detail"]["server"]
+    assert client.portal.call(_acciones, u) == [], "no se audita un envío que no salió"
+    # U17: un enlace no entregado no puede seguir siendo válido.
+    assert client.portal.call(_tokens, u) == []
+
+
+def test_enlace_a_inactivo_o_inexistente(client, usuarios, smtp_configurado):
+    u, _ = usuarios(status="inactive")
+    r = _enlace(client, u)
+    assert (r.status_code, r.json()["detail"]) == (409, "usuario_no_activo")
+    r = _enlace(client, 10**9)
+    assert (r.status_code, r.json()["detail"]) == (404, "usuario_no_encontrado")
+
+
+def test_enlace_solo_superadmin(client, usuarios, smtp_configurado):
+    u, _ = usuarios()
+    assert _enlace(client, u, auth(token_para(u))).status_code == 403
+
+
+def test_completar_el_reset_cierra_las_sesiones_y_audita(client, usuarios, cortes):
+    u, email = usuarios(password=CLAVE)
+    viejo = token_para(u)
+    token = str(uuid.uuid4())
+    client.portal.call(sql, "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
+                            "VALUES (%s, %s, %s, 'test')", (u, token, utc_ahora() + timedelta(hours=1)))
+    r = client.post("/api/auth/reset-password", json={"token": token, "password": NUEVA})
+    assert r.status_code == 200, r.text
+    assert client.get("/api/auth/me", headers=auth(viejo)).status_code == 401
+    assert client.portal.call(_version, u) == 1
+    assert client.portal.call(_acciones, u) == ["password_reset_completed"]
+    assert _login(client, email, NUEVA).status_code == 200
+    # U9: el corte pasa DESPUÉS del commit y ve ya la versión confirmada.
+    assert cortes == [("ws", str(u), 1), ("sse", str(u), 1)]
+    r = client.post("/api/auth/reset-password", json={"token": token, "password": "otra-clave-789"})
+    assert (r.status_code, r.json()["detail"]) == (400, "reset_token_usado")
+
+
+def test_reset_con_token_usado_expirado_o_invalido_no_corta_conexiones(client, usuarios, cortes):
+    u, _ = usuarios(password=CLAVE)
+
+    usado = str(uuid.uuid4())
+    client.portal.call(sql, "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address, used) "
+                            "VALUES (%s, %s, %s, 'test', TRUE)", (u, usado, utc_ahora() + timedelta(hours=1)))
+    assert client.post("/api/auth/reset-password",
+                       json={"token": usado, "password": NUEVA}).status_code == 400
+
+    expirado = str(uuid.uuid4())
+    client.portal.call(sql, "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
+                            "VALUES (%s, %s, %s, 'test')", (u, expirado, utc_ahora() - timedelta(hours=1)))
+    assert client.post("/api/auth/reset-password",
+                       json={"token": expirado, "password": NUEVA}).status_code == 400
+
+    assert client.post("/api/auth/reset-password",
+                       json={"token": str(uuid.uuid4()), "password": NUEVA}).status_code == 400
+
+    assert cortes == [], "ningún token usado/expirado/inválido corta conexiones"
+    assert client.portal.call(_version, u) == 0
+
+
+def test_reset_si_el_corte_falla_el_reset_confirmado_responde_igual(client, usuarios, monkeypatch):
+    async def revienta(user_id, code=4001):
+        raise RuntimeError("hub caído")
+
+    monkeypatch.setattr(ws_hub, "close_user", revienta)
+    monkeypatch.setattr(users_mod, "close_user_streams", revienta)
+    u, _ = usuarios(password=CLAVE)
+    token = str(uuid.uuid4())
+    client.portal.call(sql, "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
+                            "VALUES (%s, %s, %s, 'test')", (u, token, utc_ahora() + timedelta(hours=1)))
+    r = client.post("/api/auth/reset-password", json={"token": token, "password": NUEVA})
+    assert r.status_code == 200, r.text
+    assert client.portal.call(_version, u) == 1

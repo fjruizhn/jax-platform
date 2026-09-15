@@ -278,6 +278,29 @@ async def forgot_password(req: ForgotPasswordRequest, request: Request, backgrou
     return {"ok": True, "message": _MENSAJE_RECUPERACION}
 
 
+async def _crear_enlace_de_recuperacion(user_id: int, client_ip: str) -> str:
+    """Invalida los tokens pendientes del usuario, crea uno nuevo (1 hora) y
+    devuelve el enlace. Lo comparten el forgot-password público
+    (_procesar_recuperacion) y el reset por admin (etapa 4,
+    api/admin/users.py::send_reset_link)."""
+    token = str(uuid.uuid4())
+    expires_at = utc_ahora() + timedelta(hours=1)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE",
+                (user_id,),
+            )
+            await cur.execute(
+                "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
+                "VALUES (%s, %s, %s, %s)",
+                (user_id, token, expires_at, client_ip),
+            )
+    frontend_origin = os.getenv("FRONTEND_ORIGIN", "https://axioma-ia.io")
+    return f"{frontend_origin}/reset-password?token={token}"
+
+
 async def _procesar_recuperacion(email: str, client_ip: str) -> None:
     """Crea el token y manda el correo, fuera del request. El correo va al
     email GUARDADO, no al que mandó el cliente."""
@@ -306,23 +329,7 @@ async def _procesar_recuperacion(email: str, client_ip: str) -> None:
                          exc.codigo, getattr(exc, "motivo", "-"))
             return
 
-        token = str(uuid.uuid4())
-        expires_at = utc_ahora() + timedelta(hours=1)
-
-        async with pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE",
-                    (user_id,),
-                )
-                await cur.execute(
-                    "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
-                    "VALUES (%s, %s, %s, %s)",
-                    (user_id, token, expires_at, client_ip),
-                )
-
-        frontend_origin = os.getenv("FRONTEND_ORIGIN", "https://axioma-ia.io")
-        reset_link = f"{frontend_origin}/reset-password?token={token}"
+        reset_link = await _crear_enlace_de_recuperacion(user_id, client_ip)
         # smtplib es bloqueante: a un hilo, nunca en el event loop.
         await asyncio.to_thread(_send_reset_email, settings, email_guardado, reset_link)
     except Exception:  # fail-soft: corre después de responder; no hay a quién devolverle el error, queda en el log
@@ -360,7 +367,7 @@ class ResetPasswordRequest(BaseModel):
 
 
 @router.post("/reset-password")
-async def reset_password(req: ResetPasswordRequest):
+async def reset_password(req: ResetPasswordRequest, request: Request):
     # Códigos estables (2026-09-12): el frontend los traduce con i18n. Antes
     # mostraba este `detail` tal cual, en español aunque la UI estuviera en inglés.
     # La regla es la única del sistema (etapa 4, auth/password_rules.py); acá
@@ -392,17 +399,29 @@ async def reset_password(req: ResetPasswordRequest):
 
     # bcrypt de costo 12 (~150 ms de CPU): en un hilo, no en el event loop.
     new_hash = await asyncio.to_thread(_hash, req.password)
+    ip = rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES)
 
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE jax_users SET password_hash = %s, failed_attempts = 0, locked_until = NULL "
-                "WHERE user_id = %s",
-                (new_hash, user_id),
-            )
-            await cur.execute(
-                "UPDATE password_reset_tokens SET used = TRUE WHERE id = %s",
-                (token_id,),
-            )
+    async with transaccion() as cur:
+        # Reclamar el token es lo PRIMERO y es atómico: con dos envíos
+        # simultáneos del mismo enlace, solo uno cambia la fila (el otro ve
+        # 0 filas y revierte). Un UPDATE que cambia FALSE -> TRUE siempre
+        # reporta 1 fila afectada; si el WHERE lo excluye, 0.
+        await cur.execute(
+            "UPDATE password_reset_tokens SET used = TRUE WHERE id = %s AND used = FALSE",
+            (token_id,),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=400, detail="reset_token_usado")
+        # Contraseña nueva por enlace: todas las sesiones viejas se cortan (spec §3.2).
+        await cur.execute(
+            "UPDATE jax_users SET password_hash = %s, failed_attempts = 0, locked_until = NULL, "
+            "token_version = token_version + 1 WHERE user_id = %s",
+            (new_hash, user_id),
+        )
+        await user_audit.registrar(cur, user_id, user_id, "password_reset_completed", None, ip)
 
+    # Ruling U9 (spec §3.2): después del commit, fail-soft. Nunca dentro de la
+    # transacción ni en los caminos de error de arriba (token inválido, usado
+    # o expirado no corta nada).
+    await _cortar_conexiones(user_id)
     return {"ok": True, "message": "Contraseña actualizada correctamente"}
