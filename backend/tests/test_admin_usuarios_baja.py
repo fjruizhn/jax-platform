@@ -595,7 +595,7 @@ async def _mirar_desde_otra_conexion(user_id):
     try:
         await sql("SELECT user_id FROM jax_users WHERE user_id = %s FOR UPDATE NOWAIT", (user_id,), True)
         fila = "libre"
-    except Exception as exc:  # el error de NOWAIT es la señal que se registra, no un fallo del test
+    except Exception as exc:  # fail-soft: el error de NOWAIT es la señal que se registra, no un fallo del test
         fila = f"tomada: {exc}"
     return tokens, fila
 

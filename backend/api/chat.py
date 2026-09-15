@@ -102,13 +102,27 @@ _load_jax_env()
 # semántica (y con ella shadow validation, que no encola sin conv_uuid) en
 # vez de degradar solo el bypass de completeness. Cada import falla solo.
 sys.path.insert(0, os.path.expanduser("~/jax"))
-try:
-    from jax.memory.db import MemoryDB
-except Exception:
-    MemoryDB = None
+def _importar_memorydb():
+    """Task 3 (2026-09-15, clase b): antes era `except Exception` MUDO -- un
+    error dentro de jax.memory.db dejaba MemoryDB = None sin rastro. Ahora
+    solo un ImportError es "memoria ausente" (logueado con traceback); un
+    SyntaxError u otro bug del repo jax se propaga y el servicio no arranca
+    en silencio sin memoria. Corre una vez, al importar el modulo."""
+    try:
+        from jax.memory.db import MemoryDB as clase
+    except ImportError:  # fail-soft: el chat sigue sin memoria ni shadow validation; el fallo queda logueado con traceback
+        logging.getLogger(__name__).exception(
+            "MemoryDB no importable: chat SIN memoria ni shadow validation")
+        return None
+    return clase
+
+
+MemoryDB = _importar_memorydb()
 try:
     from jax.memory.db import detect_completeness_intent
-except Exception:
+except Exception:  # fail-soft: sin la función auxiliar solo se pierde el bypass de completeness; MemoryDB se importa por separado y sigue viva
+    logging.getLogger(__name__).warning(
+        "detect_completeness_intent no importable: chat sin bypass de completeness", exc_info=True)
     def detect_completeness_intent(text: str) -> str | None:
         return None
 
@@ -146,15 +160,24 @@ async def _ensure_memory() -> bool:
             "memoria jax-dual-mariadb-instances). Sourceá /etc/jax/.env o "
             "exportalos a mano antes de conectar."
         )
+    # Task 3 (2026-09-15, clase b): int(port) vivia dentro del try de abajo,
+    # asi que un JAX_DB_PORT mal formado apagaba la memoria SIN log. Se
+    # valida aparte, con el mismo costo que antes (un int() por llamada).
+    try:
+        puerto = int(port)
+    except ValueError:  # fail-soft: puerto mal formado = turno sin memoria, pero logueado como ERROR en cada intento con el valor recibido
+        logger.error("JAX_DB_PORT=%r no es un puerto: memoria del chat DESACTIVADA", port)
+        _memory_ready = False
+        return False
     try:
         _memory_ready = await _memory.connect(
             host=host,
             user=os.getenv("JAX_DB_USER", ""),
             password=os.getenv("JAX_DB_PASSWORD", ""),
             database=os.getenv("JAX_DB_NAME", "jax_memory"),
-            port=int(port),
+            port=puerto,
         )
-    except Exception:
+    except Exception:  # fail-soft: DB de memoria caída = turno sin memoria; MemoryDB.connect ya loguea la causa
         _memory_ready = False
     return _memory_ready
 
@@ -216,7 +239,8 @@ async def _semantic_context(user_text: str, user_id: int, project_id,
             facts = await _memory.get_facts(
                 only_unverified=False, fact_type=tipo_completeness, limit=20,
                 user_id=user_id, project_id=project_id)
-        except Exception:
+        except Exception:  # fail-soft: sin facts el turno responde sin ese bloque de contexto; no se inventa contenido
+            logger.warning("get_facts (completeness) falló: turno sin bloque de facts", exc_info=True)
             facts = None
         if facts:
             lineas_facts = [f"- {f['fact_text']}" for f in facts]
@@ -229,7 +253,8 @@ async def _semantic_context(user_text: str, user_id: int, project_id,
         similares = await _memory.search_similar_messages(
             user_text, limit=5, user_id=user_id, project_id=project_id,
             recent_history=recent_history)
-    except Exception:
+    except Exception:  # fail-soft: memoria semántica caída = turno sin contexto previo, mismo contrato que MemoryDB (devuelve [] ante fallo)
+        logger.warning("search_similar_messages falló: turno sin contexto semántico", exc_info=True)
         similares = []
     # Fail-soft tambien al CONSUMIR, no solo al consultar: una fila con
     # distancia inutilizable (None o NaN -- embeddings "vector cero", ver
@@ -652,7 +677,7 @@ async def _build_grounding() -> "governance_grounding.Snapshot | governance_grou
     que sería indistinguible de "no hay capabilities"."""
     try:
         return await _build_snapshot_or_raise()
-    except Exception as e:
+    except Exception as e:  # fail-soft: se convierte en SnapshotError explícito (sha='ERROR' en el validador), nunca en snapshot vacío; logueado con traceback
         logger.exception("no se pudo construir el snapshot de grounding")
         return governance_grounding.SnapshotError(f"{type(e).__name__}: {e}")
 
@@ -786,7 +811,7 @@ async def _record_resolved_version_from_response(facet_key: str, data: dict) -> 
         return
     try:
         await model_catalog.record_resolved_version(facet_key, resolved)
-    except Exception as e:
+    except Exception as e:  # fail-soft: telemetría de versión resuelta; la respuesta del facet ya existe y no depende de este registro
         logger.warning(f"resolved_version capture failed facet={facet_key} reason={type(e).__name__}")
 
 
@@ -842,7 +867,7 @@ async def _invoke_facet_dispatch(
                     f"authorize-facet denied facet={facet} caller={_JAX_PLATFORM_CHAT_CALLER} "
                     f"reason={body.get('reason')!r}"
                 )
-        except Exception as e:
+        except Exception as e:  # fail-soft: fail-CLOSED -- cualquier error deniega (allowed=False, OUTCOME_GATE_UNREACHABLE); no se sigue sin autorización
             # Fail-closed (P10): cualquier falla -- timeout, conexión
             # rechazada, respuesta inesperada -- deniega. Nunca "no pude
             # verificar, sigo igual". Logueado por separado del caso de
@@ -1073,7 +1098,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         # la palabra "None", no el valor fail-closed real.
         origin = req.origin or "unattributed"
         add_safe_task(background_tasks, run_shadow_validation, conv_uuid, shadow_message_id, facet, contract, grounding, origin)
-    except Exception:
+    except Exception:  # fail-soft: la respuesta ya se guardó y se transmitió; encolar la medición no puede tumbar el turno; logueado con traceback
         logger.exception("no se pudo encolar shadow validation")
 
     return ChatResponse(

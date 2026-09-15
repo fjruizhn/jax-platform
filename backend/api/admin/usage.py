@@ -68,7 +68,7 @@ async def record_usage(
                     (int(tenant_id), int(user_id), facet, model, tokens_in, tokens_out, cost, request_type),
                 )
             await conn.commit()
-    except Exception as e:
+    except Exception as e:  # fail-soft: el turno ya se pagó y ya respondió; un 500 no recupera el costo y le quita la respuesta al usuario; el hueco queda en log WARNING
         logger.warning(f"record_usage failed facet={facet} model={model} reason={type(e).__name__}: {e}")
         # usage tracking is best-effort — no re-raise, pero el fallo queda visible en logs
 

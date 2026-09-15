@@ -63,7 +63,7 @@ def add_safe_task(
             resultado = func(*args, **kwargs)
             if inspect.isawaitable(resultado):
                 await resultado
-        except Exception:
+        except Exception:  # fail-soft: propagar cancelaría las tareas encoladas después; la respuesta HTTP ya salió; logueado con traceback
             logger.exception(
                 "background_task_failed task=%s -- la excepcion se detiene en el "
                 "envoltorio a proposito: propagarla cancelaria las tareas "

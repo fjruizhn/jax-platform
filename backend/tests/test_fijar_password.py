@@ -595,7 +595,7 @@ async def _fila_libre(user_id):
     try:
         await sql("SELECT user_id FROM jax_users WHERE user_id = %s FOR UPDATE NOWAIT", (user_id,), True)
         return "libre"
-    except Exception as exc:  # el error de NOWAIT es la señal que se registra, no un fallo del test
+    except Exception as exc:  # fail-soft: el error de NOWAIT es la señal que se registra, no un fallo del test
         return f"tomada: {exc}"
 
 

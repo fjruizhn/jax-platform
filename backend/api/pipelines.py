@@ -86,7 +86,7 @@ async def list_pipelines(user: AuthUser = Depends(get_current_user)):
     try:
         r = await client.get(f"{JACOBS_URL}/pipeline", timeout=5.0)
         return r.json()
-    except Exception:
+    except Exception:  # fail-soft: LAS MANOS caído devuelve lista vacía CON campo 'error' explícito; es solo lectura, no se decide nada con esto
         return {"pipelines": [], "error": "LAS MANOS no disponible"}
 
 

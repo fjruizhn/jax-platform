@@ -207,17 +207,30 @@ async def sync_models(user: AuthUser = Depends(require_superadmin)):
     for provider_id in _SYNCABLE_PROVIDERS:
         try:
             results.append(await model_catalog.sync_provider_models(provider_id))
-        except Exception as e:
+        except Exception as e:  # fail-soft: un provider caído no frena a los demás; su error va en el resultado y apaga ok
             logger.warning(f"sync_models provider={provider_id} failed reason={type(e).__name__}: {e}")
             results.append({"provider_id": provider_id, "error": str(e)[:200]})
 
     try:
         enrich_result = await model_catalog.enrich_from_models_dev()
-    except Exception as e:
+    except Exception as e:  # fail-soft: el enriquecimiento es capa (b) opcional; su error va en 'enrich' y apaga ok
         logger.warning(f"sync_models enrich failed reason={type(e).__name__}: {e}")
         enrich_result = {"error": str(e)[:200]}
 
-    return {"ok": True, "providers": results, "enrich": enrich_result}
+    # Task 3 (2026-09-15, clase b): antes `ok` era True siempre, aunque
+    # fallaran todos los providers y el enriquecimiento. Contrato: 200 con
+    # `ok` calculado; si algo fallo, `code: "sync_con_errores"` y la lista de
+    # providers que fallaron (el resto SI se sincronizo, por eso no es 502).
+    providers_fallidos = [r["provider_id"] for r in results if "error" in r]
+    enrich_fallido = "error" in enrich_result
+    ok = not providers_fallidos and not enrich_fallido
+    respuesta = {
+        "ok": ok, "providers": results, "enrich": enrich_result,
+        "providers_fallidos": providers_fallidos, "enrich_fallido": enrich_fallido,
+    }
+    if not ok:
+        respuesta["code"] = "sync_con_errores"
+    return respuesta
 
 
 # PR-L ronda 2 (2026-09-14, punto 7 de la revisión): la lista era sin límite y,

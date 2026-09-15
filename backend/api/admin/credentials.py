@@ -196,7 +196,7 @@ async def test_credential(
         error = None if ok else r.text[:200]
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception as e:  # fail-soft: el fallo se persiste como last_health_status='failed' con detalle y se audita; no hay falso ok
         error = str(e)[:200]
 
     status = "ok" if ok else "failed"

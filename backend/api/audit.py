@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from auth.middleware import get_current_user
 from auth.models import AuthUser
@@ -28,5 +28,8 @@ async def get_audit(user: AuthUser = Depends(get_current_user)):
             except json.JSONDecodeError:  # fail-soft: descarta una linea JSONL corrupta entre las ultimas 20 mostradas; el resto del log se muestra igual, no es un fallo total silencioso
                 pass
         return {"events": events}
-    except Exception:
-        return {"events": []}
+    except (OSError, UnicodeDecodeError) as exc:
+        # Task 3 (2026-09-15, clase b): antes `except Exception` devolvia
+        # {"events": []} -- un audit ilegible se veia igual que "no hubo
+        # eventos". Un fallo del camino de auditoria no se disfraza de sano.
+        raise HTTPException(status_code=503, detail="auditoria_ilegible") from exc

@@ -438,7 +438,7 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
         if not enviado:
             try:
                 await _borrar_enlace_no_entregado(token)
-            except Exception:
+            except Exception:  # fail-soft: limpieza en finally; la excepción original sigue propagándose y el token expira en 1 h
                 # fail-soft SOLO para la limpieza: si el DELETE mismo falla,
                 # se loguea (con user_id, NUNCA el token -- es la credencial)
                 # y la excepción ORIGINAL (la del envío, o la cancelación)
@@ -450,7 +450,7 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
     try:
         async with transaccion() as cur:
             await user_audit.registrar(cur, int(user.user_id), user_id, "reset_link_sent", {"to": email}, ip)
-    except Exception:
+    except Exception:  # fail-soft: Ruling U22 -- el correo ya salió y no se deshace; un 500 empujaría a un segundo envío; transaccion() ya revirtió y el fallo queda en log
         # Ruling U22 (fix ronda 2, 2026-09-15): fail-soft. `transaccion()` ya
         # revirtió (su propio `except BaseException: rollback(); raise`) antes
         # de que esto la atrape -- acá solo se decide la RESPUESTA. El correo

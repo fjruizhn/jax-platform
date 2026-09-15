@@ -107,7 +107,7 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
         await _invoke_facet(facet, config, CANARY_USER_ID, CANARY_MESSAGE,
                             source=source)
         return None
-    except Exception:
+    except Exception:  # fail-soft: _invoke_facet ya registró el evento clasificado antes de relanzar; se devuelve 'probe_error' explícito, sin segunda fila
         # NO se registra aca -- decision de diseno, no un olvido.
         #
         # `_invoke_facet` es un envoltorio TOTAL: cuando lanza, ya escribio

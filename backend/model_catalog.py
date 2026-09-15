@@ -188,7 +188,7 @@ async def _sync_ollama_models(url: str) -> dict:
     try:
         resp = await client.get(url, timeout=15.0)
         resp.raise_for_status()
-    except Exception as e:
+    except Exception as e:  # fail-soft: Ollama caído no es un catálogo vacío: se devuelve 'skipped' explícito y no se toca ninguna fila de model (ni misses ni deprecated)
         logger.warning(f"model_catalog sync provider=ollama unreachable reason={type(e).__name__}: {e}")
         return {"provider_id": "ollama", "fetched": 0, "skipped": f"ollama no alcanzable: {type(e).__name__}"}
 
