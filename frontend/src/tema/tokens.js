@@ -91,6 +91,11 @@ export const MIGRADOS = [
   'components/BottomBar/BottomBar.jsx',
   'components/BottomBar/KillSwitch.jsx',
   'components/BottomBar/PipelineModal.jsx',
+  'components/CenterPanel/CenterPanel.jsx',
+  'components/chat/AttachButton.jsx',
+  'components/chat/FileAttachment.jsx',
+  'components/LeftPanel/LeftPanel.jsx',
+  'components/Notifications/Toast.jsx',
 ]
 
 const RESPALDO = 'texto-suave'

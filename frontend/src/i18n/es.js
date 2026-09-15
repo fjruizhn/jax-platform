@@ -71,6 +71,8 @@ export default {
   killConfirmYes: 'SÍ, DETENER TODO',
   // Término del producto (como eyeKillSwitch): igual en los dos idiomas.
   killButton: 'KILL',
+  // Sigla técnica (WebSocket), igual en los dos idiomas.
+  wsLabel: 'WS',
   cancel: 'Cancelar',
   killTitle: 'Kill Switch — detiene todos los procesos',
   // killSwitchActive: badge persistente en la UI. killSwitchToast: toast al
@@ -213,6 +215,7 @@ export default {
   attachTooLarge: 'Archivo demasiado grande (máx 10MB)',
   attachTypes: 'Imágenes, PDF, texto, código',
   attachedFile: (name) => `Adjunto: ${name}`,
+  attachReady: '✓ listo',
 
   // Admin module
   adminTitle: 'Administración',

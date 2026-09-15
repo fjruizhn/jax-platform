@@ -2,10 +2,10 @@ import { memo } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 
 const TYPE_STYLES = {
-  error:   'bg-red-900 border-red-600 text-red-200',
-  warning: 'bg-amber-900 border-amber-600 text-amber-200',
-  info:    'bg-blue-900 border-blue-600 text-blue-200',
-  success: 'bg-green-900 border-green-600 text-green-200',
+  error:   'bg-peligro-fondo border-peligro-borde text-peligro',
+  warning: 'bg-aviso-fondo border-aviso-borde text-aviso',
+  info:    'bg-info-fondo border-accion text-info',
+  success: 'bg-exito-fondo border-exito-borde text-exito',
 }
 
 function Toast() {

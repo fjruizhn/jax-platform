@@ -71,6 +71,8 @@ export default {
   killConfirmYes: 'YES, STOP ALL',
   // Product term (like eyeKillSwitch): same value in both languages.
   killButton: 'KILL',
+  // Technical abbreviation (WebSocket), same value in both languages.
+  wsLabel: 'WS',
   cancel: 'Cancel',
   killTitle: 'Kill Switch — stops all processes',
   killSwitchToast: 'KILL SWITCH ACTIVATED',
@@ -210,6 +212,7 @@ export default {
   attachTooLarge: 'File too large (max 10MB)',
   attachTypes: 'Images, PDF, text, code',
   attachedFile: (name) => `Attached: ${name}`,
+  attachReady: '✓ ready',
 
   // Admin module
   adminTitle: 'Administration',
