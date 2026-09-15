@@ -55,6 +55,14 @@ existe específicamente para poseer (hash fail-closed contra
 policy/VERSION, única fuente de verdad de la estructura de categorías).
 Con el merge hecho, se removió: `loaders.load_vocabulary()` es ahora la
 única fuente de `term_categories`, sin duplicación.
+
+Conexión del pool durante la recarga (tanda A v2, 2026-09-14, revisión final M5):
+`_validation_context()` corre DENTRO del `pool.acquire()` abierto para el INSERT de
+`shadow_messages` (el orden INSERT-primero es deliberado: la fila queda visible aunque
+la validación falle). Desde que el contexto carga el catálogo de la DB, esa llamada
+puede esperar una recarga de hasta GOVERNANCE_RELOAD_TIMEOUT_SECONDS con la conexión
+tomada (el pool tiene maxsize=10). Aceptado: la recarga es compartida (una por stamp,
+no una por turno) y, con la DB colgada, el pool no serviría de todos modos.
 """
 from __future__ import annotations
 
