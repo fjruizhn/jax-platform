@@ -21,7 +21,7 @@ from jax_engine.background import add_safe_task
 import smtp_config
 import user_audit
 from auth.conexiones import _cortar_conexiones
-from db.transaccion import transaccion
+from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 
 logger = logging.getLogger(__name__)
 
@@ -349,7 +349,20 @@ async def _procesar_recuperacion(email: str, client_ip: str) -> None:
         # renombre del correo). Un FOR UPDATE por email tomaría primero esa
         # entrada y luego esperaría la PK -- orden opuesto al de la baja ->
         # ciclo -> InnoDB 1213.
-        async with transaccion() as cur:
+        #
+        # READ COMMITTED (Ruling U33, fix ronda 2, 2026-09-15), NO el
+        # REPEATABLE READ por defecto. El bloqueo por PK es de registro en los
+        # dos niveles, pero el DELETE de _crear_enlace_de_recuperacion va por
+        # el índice NO único de la FK user_id: en REPEATABLE READ toma
+        # bloqueos de hueco, y el INSERT que sigue pide un insert-intention en
+        # ese mismo hueco. Dos forgot-password de usuarios DISTINTOS que
+        # comparten hueco (p. ej. los dos más nuevos que todo token existente)
+        # hacían DELETE, DELETE, INSERT, INSERT -> 1213, que el except
+        # fail-soft de abajo tragaba: uno de los dos se quedaba sin correo
+        # (medido: test_dos_forgot_password_de_usuarios_distintos_...). En
+        # READ COMMITTED no hay bloqueos de hueco. El reset por admin
+        # (send_reset_link) ya corría en este mismo nivel.
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
             await cur.execute(
                 "SELECT email FROM jax_users WHERE user_id = %s AND status = 'active' FOR UPDATE",
                 (user_id,),

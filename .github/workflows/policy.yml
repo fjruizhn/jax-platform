@@ -894,7 +894,16 @@ jobs:
           # (token vivo x3, `assert not True`, alta 200) antes de verde; mutaciones
           # capturadas: sin FOR UPDATE en send_reset_link, sin el re-bloqueo por PK en
           # _procesar_recuperacion, baja sin renombrar. Medido dos veces: 842 / 1.
-          PISO_PASSED = 842
+          # Subido de 842 a 845 (2026-09-15, etapa 5, Task 3 fix ronda 2, Ruling U33 y M1):
+          # +3 en test_admin_usuarios_baja.py. U33 (+1): dos forgot-password de usuarios
+          # distintos intercalados (DELETE, DELETE, INSERT, INSERT) mandan los dos correos
+          # sin 1213 -- visto en ROJO sobre 8c34800 con el 1213 real en REPEATABLE READ,
+          # verde en READ COMMITTED. M1 (+2): el correo sale DESPUÉS del commit y sin la
+          # fila tomada, en send_reset_link y en _procesar_recuperacion (otra conexión ve
+          # el token confirmado y FOR UPDATE NOWAIT pasa) -- la mutación "envío dentro de
+          # la transacción" cae en ~0,4 s en los dos caminos. M2 solo endurece un test
+          # existente (sin cambio en el conteo). Medido dos veces: 845 / 1.
+          PISO_PASSED = 845
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1252,6 +1261,9 @@ jobs:
       # (test_un_correo_renombrado_por_la_baja_no_es_un_correo_valido); los otros 6
       # nuevos de test_admin_usuarios_baja.py piden `client` y se saltean.
       # Medido dos veces con JAX_CI_NO_DB=1: 371 / 472.
+      # Task 3 fix ronda 2 (2026-09-15, Ruling U33 y M1): los 3 nuevos de
+      # test_admin_usuarios_baja.py piden `client` y se saltean (sin cambio en
+      # passed). Medido dos veces con JAX_CI_NO_DB=1: 371 / 475.
       JAX_CI_MIN_PASSED: "371"
     steps:
       - uses: actions/checkout@v4

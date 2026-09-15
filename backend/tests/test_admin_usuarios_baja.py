@@ -288,8 +288,10 @@ def test_baja_colada_antes_del_token_del_enlace_de_admin_no_deja_token_vivo(clie
     """La baja arranca justo antes del INSERT del token y se le dan 0,5 s para
     confirmar. Antes: confirmaba (nada la frenaba) y el token se creaba igual
     para un dado de baja. Ahora espera el bloqueo de la fila; el token se crea,
-    la transacción confirma y la baja, al entrar, lo borra."""
-    u, _ = usuarios()
+    la transacción confirma y la baja, al entrar, lo borra. Por eso el enlace
+    responde 200 (fix ronda 2, M2): el 404 no puede darse en esta costura,
+    la fila ya está bloqueada cuando la baja arranca."""
+    u, email = usuarios()
     real, bajas = auth_mod._crear_enlace_de_recuperacion, []
 
     async def con_baja_colada(*args):
@@ -309,7 +311,7 @@ def test_baja_colada_antes_del_token_del_enlace_de_admin_no_deja_token_vivo(clie
     resultado, baja = client.portal.call(correr)
     assert baja == {"ok": True}
     assert client.portal.call(_tokens_pendientes, u) == [], "un dado de baja no puede quedar con un enlace vivo"
-    assert resultado == (404, "usuario_no_encontrado") or resultado["ok"] is True, resultado
+    assert resultado == {"ok": True, "to": email}, resultado
 
 
 def test_enlace_de_admin_y_baja_concurrentes_sin_deadlock_ni_token_vivo(client, usuarios, smtp_y_buzon):
@@ -393,3 +395,117 @@ def test_la_baja_libera_el_correo_tambien_para_editar_a_otro(client, usuarios):
     r = _put(client, b, email=email_a)
     assert r.status_code == 200, r.text
     assert client.portal.call(_fila, b)[0] == email_a
+
+
+# ------ fix ronda 2 (Ruling U33): forgot-password en READ COMMITTED, sin 1213
+#
+# El DELETE de los tokens pendientes va por el índice NO único de la FK
+# user_id. En REPEATABLE READ toma bloqueos de hueco, y el INSERT que sigue
+# pide un insert-intention en ese mismo hueco. Dos forgot-password de usuarios
+# DISTINTOS que comparten hueco (los dos más nuevos que todo token existente)
+# hacían DELETE, DELETE, INSERT, INSERT -> 1213; el except fail-soft lo tragaba
+# y uno de los dos no recibía el correo.
+
+class _CursorConBarrera:
+    """Envuelve el cursor real: antes del INSERT del token espera a que el
+    otro pedido haya hecho su DELETE (o 1,5 s), para forzar DELETE, DELETE,
+    INSERT, INSERT sin reimplementar el helper."""
+
+    def __init__(self, cur, llegadas, todas):
+        self._cur, self._llegadas, self._todas = cur, llegadas, todas
+
+    async def execute(self, consulta, args=None):
+        if consulta.startswith("INSERT INTO password_reset_tokens"):
+            self._llegadas.append(1)
+            if len(self._llegadas) == 2:
+                self._todas.set()
+            try:
+                await asyncio.wait_for(self._todas.wait(), timeout=1.5)
+            except asyncio.TimeoutError:  # fail-soft: si el otro pedido ya espera un bloqueo, no llega; la barrera no puede exigirlo
+                pass
+        return await self._cur.execute(consulta, args)
+
+    def __getattr__(self, nombre):
+        return getattr(self._cur, nombre)
+
+
+def test_dos_forgot_password_de_usuarios_distintos_intercalados_no_dan_1213(client, usuarios, smtp_y_buzon,
+                                                                           monkeypatch, caplog):
+    a, email_a = usuarios()
+    b, email_b = usuarios()
+    real, llegadas = auth_mod._crear_enlace_de_recuperacion, []
+    todas = asyncio.Event()
+
+    async def con_barrera(cur, user_id, ip):
+        return await real(_CursorConBarrera(cur, llegadas, todas), user_id, ip)
+
+    monkeypatch.setattr(auth_mod, "_crear_enlace_de_recuperacion", con_barrera)
+
+    async def ambos():
+        todas.clear()  # el Event se crea fuera del loop del portal; se usa dentro
+        return await asyncio.gather(auth_mod._procesar_recuperacion(email_a, "203.0.113.5"),
+                                    auth_mod._procesar_recuperacion(email_b, "203.0.113.6"))
+
+    with caplog.at_level(logging.ERROR, logger="api.auth"):
+        client.portal.call(ambos)
+    fallos = [r.getMessage() + " " + str(r.exc_info[1] if r.exc_info else "") for r in caplog.records
+              if r.name == "api.auth"]
+    assert fallos == [], f"un pedido falló en segundo plano (1213): {fallos}"
+    assert len(llegadas) == 2, "los dos pedidos llegaron al INSERT"
+    assert sorted(to for to, _ in smtp_y_buzon) == sorted([email_a, email_b])
+    assert len(client.portal.call(_tokens_pendientes, a)) == 1
+    assert len(client.portal.call(_tokens_pendientes, b)) == 1
+
+
+# ------- fix ronda 2 (M1): el correo sale DESPUÉS del commit, sin la fila tomada
+#
+# Desde el stub de _send_reset_email (corre en un hilo, asyncio.to_thread) se
+# mira la base por OTRA conexión: el token ya tiene que estar confirmado y la
+# fila del usuario, libre (FOR UPDATE NOWAIT no espera: si está tomada, falla
+# al instante). Si el envío volviera a quedar dentro de la transacción, esto
+# lo dice en el acto y no tras 50 s de espera de bloqueo.
+
+async def _mirar_desde_otra_conexion(user_id):
+    ((tokens,),) = await sql("SELECT COUNT(*) FROM password_reset_tokens WHERE user_id = %s AND used = FALSE",
+                             (user_id,), True)
+    try:
+        await sql("SELECT user_id FROM jax_users WHERE user_id = %s FOR UPDATE NOWAIT", (user_id,), True)
+        fila = "libre"
+    except Exception as exc:  # el error de NOWAIT es la señal que se registra, no un fallo del test
+        fila = f"tomada: {exc}"
+    return tokens, fila
+
+
+@pytest.fixture
+def buzon_que_mira(client, monkeypatch):
+    async def cargar():
+        return smtp_config.SmtpSettings(host="mail.example.test", port=587, encryption="tls", user="u",
+                                        password="p", from_name="Axioma", from_email="no-reply@example.test")
+
+    vistas = []
+
+    def enviar(settings, to, link):
+        # Hilo de trabajo: el portal del cliente es seguro desde acá.
+        vistas.append((to, client.portal.call(_mirar_desde_otra_conexion, vistas_de[to])))
+
+    vistas_de = {}
+    monkeypatch.setattr(smtp_config, "cargar_settings", cargar)
+    monkeypatch.setattr(auth_mod, "_send_reset_email", enviar)
+    return vistas, vistas_de
+
+
+def test_el_enlace_de_admin_sale_despues_del_commit_y_sin_la_fila_tomada(client, usuarios, buzon_que_mira):
+    vistas, vistas_de = buzon_que_mira
+    u, email = usuarios()
+    vistas_de[email] = u
+    r = client.post(f"/api/admin/users/{u}/reset-link", headers=_admin())
+    assert r.status_code == 200, r.text
+    assert vistas == [(email, (1, "libre"))]
+
+
+def test_el_forgot_password_sale_despues_del_commit_y_sin_la_fila_tomada(client, usuarios, buzon_que_mira):
+    vistas, vistas_de = buzon_que_mira
+    u, email = usuarios()
+    vistas_de[email] = u
+    client.portal.call(auth_mod._procesar_recuperacion, email, "203.0.113.5")
+    assert vistas == [(email, (1, "libre"))]

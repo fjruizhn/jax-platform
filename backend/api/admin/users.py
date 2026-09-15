@@ -21,7 +21,7 @@ from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
 from db.seed import _hash
-from db.transaccion import transaccion
+from db.transaccion import AISLAMIENTO_ADMIN, transaccion  # noqa: F401 -- reexporta AISLAMIENTO_ADMIN
 from validacion import email_valido
 
 logger = logging.getLogger(__name__)
@@ -73,8 +73,9 @@ def pierde_superadmin_activo(rol_actual: str, estado_actual: str, nuevo_rol: str
 # igual, aun con orden fijo (medido: el test de degradación mutua lo reproducía).
 # READ COMMITTED bloquea solo filas. Sigue siendo correcto para la invariante:
 # un fantasma solo puede SUMAR superadmins; quitar uno exige una fila que ya
-# tenemos bloqueada.
-AISLAMIENTO_ADMIN = "READ COMMITTED"
+# tenemos bloqueada. (La constante vive en db/transaccion.py desde U33 y se
+# importa arriba con el mismo nombre: users_mod.AISLAMIENTO_ADMIN sigue siendo
+# la misma.)
 SQL_SUPERADMINS_ACTIVOS = (
     "SELECT user_id FROM jax_users WHERE role = 'superadmin' AND status = 'active' "
     "ORDER BY user_id FOR UPDATE"
