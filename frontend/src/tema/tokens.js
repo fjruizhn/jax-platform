@@ -85,6 +85,9 @@ export const MIGRADOS = [
   'pages/admin/AdminDashboard.jsx',
   'pages/admin/AdminCosts.jsx',
   'pages/admin/AdminFacetBindings.jsx',
+  'store/useJaxStore.js',
+  'components/LeftPanel/FacetCard.jsx',
+  'components/CenterPanel/Message.jsx',
 ]
 
 const RESPALDO = 'texto-suave'

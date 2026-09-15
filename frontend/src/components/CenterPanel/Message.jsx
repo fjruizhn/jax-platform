@@ -1,53 +1,49 @@
 import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { useI18n } from '../../i18n/index.jsx'
-import { FACET_COLORS as FACET_COLORS_BASE } from '../../store/useJaxStore'
+import { FACET_TOKENS } from '../../store/useJaxStore'
+import { colorToken } from '../../tema/tokens'
 
-// dalle/user no son facetas (ver useJaxStore.js) — extensión local para el chat
-const FACET_COLORS = {
-  ...FACET_COLORS_BASE,
-  dalle: '#7c3aed',
-  user:  '#94a3b8',
-}
+// dalle/user no son facetas (ver useJaxStore.js): extensión local para el chat.
+const TOKEN_DE = { ...FACET_TOKENS, dalle: 'faceta-imagen', user: 'texto-suave' }
 
-function Spinner({ color }) {
+function Spinner({ token }) {
   return (
     <span
       className="inline-block w-3 h-3 rounded-full border-2 border-t-transparent animate-spin ml-1"
-      style={{ borderColor: color, borderTopColor: 'transparent' }}
+      style={{ borderColor: colorToken(token), borderTopColor: 'transparent' }}
     />
   )
 }
 
 function Message({ message }) {
   const { t } = useI18n()
-  const color = FACET_COLORS[message.facet] || '#94a3b8'
+  const token = TOKEN_DE[message.facet] || 'texto-suave'
   const isUser = message.facet === 'user'
   const isRunning = message.status === 'running'
 
   return (
     <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
       <div
-        className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold mt-0.5"
-        style={{ backgroundColor: color + '25', border: `1px solid ${color}60`, color }}
+        className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold mt-0.5 bg-superficie border"
+        style={{ borderColor: colorToken(token, 0.38), color: colorToken(token) }}
       >
         {(message.facet || 'U')[0].toUpperCase()}
       </div>
       <div className={`flex-1 max-w-[85%] ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
         <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs font-semibold capitalize" style={{ color }}>
+          <span className="text-xs font-semibold capitalize" style={{ color: colorToken(token) }}>
             {message.facet === 'user' ? t.userLabel : (message.facet || t.userLabel)}
           </span>
-          {isRunning && <Spinner color={color} />}
-          <span className="text-xs text-slate-600">
+          {isRunning && <Spinner token={token} />}
+          <span className="text-xs text-texto-tenue">
             {message.timestamp ? new Date(message.timestamp).toLocaleTimeString('es-HN') : ''}
           </span>
         </div>
         <div
-          className="rounded-lg px-3 py-2 text-sm text-slate-200 prose prose-invert prose-sm max-w-none"
+          className={`rounded-lg px-3 py-2 text-sm text-texto max-w-none ${isUser ? 'bg-burbuja-usuario' : 'bg-superficie'}`}
           style={{
-            backgroundColor: isUser ? '#1e3a5f' : '#1e293b',
-            border: `1px solid ${isRunning ? color + '60' : color + '20'}`,
+            border: `1px solid ${colorToken(token, isRunning ? 0.38 : 0.12)}`,
             opacity: isRunning ? 0.85 : 1,
           }}
         >
@@ -68,14 +64,14 @@ function Message({ message }) {
             />
           )}
           {message.attachment && message.attachment.type !== 'image' && (
-            <div className="flex items-center gap-2 text-xs text-slate-400 mb-2 p-2 rounded bg-slate-800 border border-slate-700">
+            <div className="flex items-center gap-2 text-xs text-texto-suave mb-2 p-2 rounded bg-hundido border border-borde">
               <span>📎</span>
               <span>{message.attachment.filename}</span>
             </div>
           )}
           <ReactMarkdown>{message.content}</ReactMarkdown>
           {message.contract_degraded && (
-            <div className="text-xs text-slate-500 mt-2 italic">
+            <div className="text-xs text-texto-suave mt-2 italic">
               {t.contractDegradedNote}
             </div>
           )}

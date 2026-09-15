@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { getEyeState } from './useJaxStore'
+import { TOKENS } from '../tema/tokens'
 
 describe('getEyeState idle label i18n', () => {
   it('uses the given idleLabel instead of hardcoded Spanish when idle', () => {
@@ -43,5 +44,29 @@ describe('getEyeState labels (M5, sin hardcodear)', () => {
     expect(getEyeState({}, {}, false, false, false, 'idle', labels).label).toBe('MANOS CAÍDAS')
     expect(getEyeState({}, { p: { status: 'waiting_gate' } }, true, false, false, 'idle', labels).label).toBe('PORTÓN')
     expect(getEyeState({}, { p: { status: 'running' } }, true, false, false, 'idle', labels).label).toBe('Jacobo')
+  })
+})
+
+// Task 20 (spec 2026-09-14-tema-tokens §7.3): el ojo devuelve el NOMBRE de un
+// token del tema, no un hex; HalEye lo pinta con colorToken().
+describe('getEyeState devuelve tokens', () => {
+  it('cada estado del ojo devuelve un token del tema, no un hex', () => {
+    const pensando = { hyde: { status: 'thinking', token: 'faceta-hyde' } }
+    const casos = [
+      getEyeState({}, {}, true, true, false, 'idle'),                                 // kill switch
+      getEyeState({}, {}, true, false, true, 'idle'),                                 // DALL·E
+      getEyeState(pensando, {}, true, false, false, 'idle'),                          // faceta pensando
+      getEyeState({}, {}, false, false, false, 'idle'),                               // LAS MANOS caído
+      getEyeState({}, { p: { status: 'waiting_gate' } }, true, false, false, 'idle'), // gate
+      getEyeState({}, { p: { status: 'running' } }, true, false, false, 'idle'),      // Jacobs
+      getEyeState({}, {}, true, false, false, 'idle'),                                // reposo
+    ]
+    expect(casos.map((e) => e.token)).toEqual([
+      'peligro', 'faceta-imagen', 'faceta-hyde', 'texto-tenue', 'aviso', 'faceta-jacobs', 'faceta-jax-local',
+    ])
+    for (const e of casos) {
+      expect(TOKENS).toContain(e.token)
+      expect(e).not.toHaveProperty('color')
+    }
   })
 })
