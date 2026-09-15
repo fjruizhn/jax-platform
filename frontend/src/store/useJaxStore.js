@@ -186,6 +186,15 @@ export const useJaxStore = create((set, get) => {
     })
   },
 
+  // Mi cuenta (2026-09-12, admin usuarios etapa 4): el backend sube la versión
+  // de token -- cierra las OTRAS sesiones -- y le da a esta un access nuevo (y
+  // la cookie de refresh nueva). Cambiar `token` reconecta el WebSocket con él
+  // (useWebSocket depende de token).
+  cambiarMiPassword: async (actual, nueva) => {
+    const { data } = await api.post('/auth/me/password', { current_password: actual, new_password: nueva })
+    set({ token: data.access_token })
+  },
+
   setWsStatus: (wsStatus) => set({ wsStatus }),
 
   setActiveFacet: (facet) => set({ activeFacet: facet }),

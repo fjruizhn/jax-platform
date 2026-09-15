@@ -598,6 +598,9 @@ export default {
     rol_invalido: 'Invalid role.',
     estado_invalido: 'Invalid status.',
     sesion_invalida: 'Your session is no longer valid. Sign in again.',
+    usuario_no_activo: 'The user is not active: a link cannot be sent.',
+    password_corta: 'The password must be at least 8 characters.',
+    password_larga: 'The password is too long (maximum 72 bytes; accented letters take 2).',
   },
   adminAuditActions: {
     create: 'Created',
@@ -612,6 +615,19 @@ export default {
     password_reset_completed: 'Reset their password',
   },
   adminAuditUnknown: 'Unknown action',
+
+  // My account and recovery link — stage 4 (2026-09-12)
+  myAccount: 'My account',
+  myAccountChangePassword: 'Change my password',
+  myAccountCurrent: 'Current password',
+  myAccountSubmit: 'Change password',
+  myAccountSubmitting: 'Saving…',
+  myAccountDone: 'Password changed. Your other sessions were closed.',
+  myAccountWrongCurrent: 'The current password is not correct.',
+  myAccountTooMany: 'Too many attempts. Wait and try again.',
+  myAccountError: 'The password could not be changed.',
+  adminUserSendResetLink: 'Send link',
+  adminResetLinkSent: (email) => `Recovery link sent to ${email}.`,
 
   // Restoring pending tasks (useJaxStore.js)
   taskRestoring: (id) => `_Task \`${id}\` — checking status…_`,

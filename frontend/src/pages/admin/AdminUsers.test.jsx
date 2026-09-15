@@ -157,3 +157,24 @@ describe('AdminUsers -- etapa 3: 403 auto_accion_prohibida', () => {
     await waitFor(() => expect(within(sigue).getByRole('button', { name: 'Guardar' })).not.toBeDisabled())
   })
 })
+
+describe('AdminUsers — enlace de recuperación', () => {
+  it('sin SMTP configurado el 503 aparece traducido, no como éxito', async () => {
+    api.post.mockRejectedValue({ response: { status: 503, data: { detail: 'smtp_no_configurado' } } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar enlace' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error', message: 'El correo saliente no está configurado.',
+    }))
+    expect(api.post).toHaveBeenCalledWith('/admin/users/2/reset-link')
+  })
+
+  it('con éxito dice a qué correo se mandó', async () => {
+    api.post.mockResolvedValue({ data: { ok: true, to: 'b@x.io' } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar enlace' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'success', message: 'Enlace de recuperación enviado a b@x.io.',
+    }))
+  })
+})

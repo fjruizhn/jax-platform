@@ -85,6 +85,15 @@ export default function AdminUsers() {
     }
   }
 
+  async function handleResetLink(u) {
+    try {
+      const { data } = await api.post(`/admin/users/${u.user_id}/reset-link`)
+      avisarExito(t.adminResetLinkSent(data.to))
+    } catch (err) {
+      avisarError(err)
+    }
+  }
+
   async function handleDelete(u) {
     if (!window.confirm(t.adminDeleteConfirm(u.email))) return
     try {
@@ -155,6 +164,7 @@ export default function AdminUsers() {
                       </button>
                     )}
                     <button onClick={() => handleRevoke(u)} className={ACCION_NEUTRA}>{t.adminUserRevokeSessions}</button>
+                    <button onClick={() => handleResetLink(u)} className={ACCION_NEUTRA}>{t.adminUserSendResetLink}</button>
                     <button onClick={() => setHistorialDe(u)} className={ACCION_NEUTRA}>{t.adminUserHistory}</button>
                     <button
                       onClick={() => handleDelete(u)}

@@ -262,8 +262,26 @@ jobs:
             // sin light-mode: el script inicial ya no agrega esa clase). Vistos
             // en rojo antes de verde. Medido con vitest run: 257 passed en 41
             // archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 257) {
-              console.error("PISO ROTO: se esperaban 257 tests de vitest CORRIDOS y 0 fallidos.");
+            // 257 -> 271 el 2026-09-15 (admin usuarios etapa 4, Task 4 -- regla
+            // compartida, Mi cuenta y "Enviar enlace"): +3 lib/reglasPassword.test.js
+            // (nuevo: la misma regla del backend -- 8 caracteres como puntos de
+            // código, 72 bytes UTF-8, un emoji cuenta 1) +4 MiCuentaModal.test.jsx
+            // (nuevo: confirmación que no coincide, más de 72 bytes, contraseña
+            // actual incorrecta traducida, éxito avisa que las otras sesiones se
+            // cerraron) +1 BarraUsuario.test.jsx (un clic en el correo abre "Mi
+            // cuenta") +2 AdminUsers.test.jsx (enlace de recuperación: 503
+            // smtp_no_configurado traducido, no como éxito; éxito dice a qué correo
+            // se mandó) +3 erroresAdmin.test.js (nuevo, C4-2: un código de
+            // adminErrors se traduce ahí, un smtp_* ausente cae a t.smtpErrors, un
+            // código desconocido cae al genérico y nunca se muestra crudo) +1
+            // useJaxStore.test.js (cambiarMiPassword postea current/new_password y
+            // reemplaza token con el access nuevo). Vistos en rojo antes de verde
+            // (reglasPassword.test.js y useJaxStore.test.js/cambiarMiPassword se
+            // implementaron junto con su prueba -- desviación de TDD estricto,
+            // documentada en el informe de la tarea). Medido con vitest run: 271
+            // passed en 44 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 271) {
+              console.error("PISO ROTO: se esperaban 271 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

@@ -52,3 +52,24 @@ describe('restoreSession', () => {
     expect(state.sessionRestoring).toBe(false)
   })
 })
+
+// Mi cuenta (2026-09-12, admin usuarios etapa 4): cambiar la propia
+// contraseña reemplaza `token` con el access nuevo que manda el backend --
+// las otras sesiones quedan cerradas por su propio token_version.
+describe('cambiarMiPassword', () => {
+  beforeEach(() => {
+    useJaxStore.setState(INITIAL_STATE, true)
+    vi.clearAllMocks()
+  })
+
+  it('postea current/new password y reemplaza el token con el access nuevo', async () => {
+    api.post.mockResolvedValue({ data: { access_token: 'tok-nuevo' } })
+
+    await useJaxStore.getState().cambiarMiPassword('vieja-clave', 'nueva-clave-9')
+
+    expect(api.post).toHaveBeenCalledWith('/auth/me/password', {
+      current_password: 'vieja-clave', new_password: 'nueva-clave-9',
+    })
+    expect(useJaxStore.getState().token).toBe('tok-nuevo')
+  })
+})

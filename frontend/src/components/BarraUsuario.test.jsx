@@ -10,7 +10,7 @@ import '@testing-library/jest-dom'
 const logoutMock = vi.fn()
 let usuario = { email: 'fruiztorres@me.com', role: 'superadmin' }
 vi.mock('../store/useJaxStore', () => ({
-  useJaxStore: (selector) => selector({ user: usuario, logout: logoutMock }),
+  useJaxStore: (selector) => selector({ user: usuario, logout: logoutMock, cambiarMiPassword: vi.fn() }),
 }))
 
 import BarraUsuario from './BarraUsuario'
@@ -72,5 +72,13 @@ describe('BarraUsuario', () => {
     renderBarra()
     fireEvent.click(screen.getByRole('button', { name: 'Salir' }))
     expect(logoutMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('BarraUsuario — Mi cuenta', () => {
+  it('un clic en el correo abre "Mi cuenta"', () => {
+    renderBarra()
+    fireEvent.click(screen.getByRole('button', { name: /fruiztorres@me.com/ }))
+    expect(screen.getByRole('dialog', { name: 'Mi cuenta' })).toBeInTheDocument()
   })
 })

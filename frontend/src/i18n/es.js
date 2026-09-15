@@ -601,6 +601,9 @@ export default {
     rol_invalido: 'Rol inválido.',
     estado_invalido: 'Estado inválido.',
     sesion_invalida: 'Tu sesión ya no es válida. Volvé a entrar.',
+    usuario_no_activo: 'El usuario no está activo: no se le puede enviar un enlace.',
+    password_corta: 'La contraseña debe tener al menos 8 caracteres.',
+    password_larga: 'La contraseña es demasiado larga (máximo 72 bytes; los acentos ocupan 2).',
   },
   adminAuditActions: {
     create: 'Alta',
@@ -615,6 +618,19 @@ export default {
     password_reset_completed: 'Restableció su contraseña',
   },
   adminAuditUnknown: 'Acción desconocida',
+
+  // Mi cuenta y enlace de recuperación — etapa 4 (2026-09-12)
+  myAccount: 'Mi cuenta',
+  myAccountChangePassword: 'Cambiar mi contraseña',
+  myAccountCurrent: 'Contraseña actual',
+  myAccountSubmit: 'Cambiar contraseña',
+  myAccountSubmitting: 'Guardando…',
+  myAccountDone: 'Contraseña cambiada. Tus otras sesiones se cerraron.',
+  myAccountWrongCurrent: 'La contraseña actual no es correcta.',
+  myAccountTooMany: 'Demasiados intentos. Esperá y volvé a intentarlo.',
+  myAccountError: 'No se pudo cambiar la contraseña.',
+  adminUserSendResetLink: 'Enviar enlace',
+  adminResetLinkSent: (email) => `Enlace de recuperación enviado a ${email}.`,
 
   // Restaurar tareas pendientes (useJaxStore.js)
   taskRestoring: (id) => `_Tarea \`${id}\` — verificando estado…_`,

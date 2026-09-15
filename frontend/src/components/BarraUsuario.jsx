@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useJaxStore } from '../store/useJaxStore'
 import { useTema } from '../store/useTema'
 import { useI18n } from '../i18n/index.jsx'
+import MiCuentaModal from './MiCuentaModal'
 
 // Barra superior derecha (2026-09-12, pedido de Fernando):
 //   Usuario: <correo>  │  🌐 ES   ☀   ⚙ (solo superadmin)   ⏻
@@ -72,6 +74,7 @@ export default function BarraUsuario() {
   const logout = useJaxStore((s) => s.logout)
   const { theme, toggleTheme } = useTema()
   const { lang, setLang, t } = useI18n()
+  const [miCuenta, setMiCuenta] = useState(false)
 
   const otroIdioma = lang === 'es' ? 'en' : 'es'
   const etiquetaIdioma = t.switchLanguage(NOMBRE_IDIOMA[otroIdioma])
@@ -79,9 +82,17 @@ export default function BarraUsuario() {
 
   return (
     <div className="flex items-center gap-3 min-w-0">
-      <span className="text-xs text-texto-tenue truncate max-w-[20rem]" title={user?.email}>
+      {/* Mi cuenta (etapa 4): el correo es el acceso. Sin aria-label, a propósito:
+          el nombre accesible sigue siendo "Usuario: <correo>". */}
+      <button
+        type="button"
+        onClick={() => setMiCuenta(true)}
+        title={t.myAccount}
+        className="text-xs text-texto-tenue truncate max-w-[20rem] rounded hover:text-texto transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-foco"
+      >
         {t.userLabel}: <span className="text-texto">{user?.email}</span>
-      </span>
+      </button>
+      {miCuenta && <MiCuentaModal onCerrar={() => setMiCuenta(false)} />}
 
       <span aria-hidden="true" className="h-4 w-px bg-borde flex-shrink-0" />
 

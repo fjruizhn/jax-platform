@@ -3,10 +3,7 @@ import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { useI18n } from '../i18n/index.jsx'
 import api from '../api/client'
 import PasswordInput from '../components/PasswordInput'
-
-// Límite del algoritmo bcrypt, no configuración: usa solo los primeros 72
-// bytes, y el backend rechaza más (bcrypt 5 lanza error en vez de truncar).
-const BCRYPT_MAX_BYTES = 72
+import { problemaDePassword } from '../lib/reglasPassword'
 
 export default function ResetPassword() {
   const { lang, setLang, t } = useI18n()
@@ -44,9 +41,10 @@ export default function ResetPassword() {
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
-    if (password.length < 8) { setError(t.resetPasswordShort); return }
-    // bcrypt no admite más de 72 BYTES (no caracteres: una ñ ocupa 2).
-    if (new TextEncoder().encode(password).length > BCRYPT_MAX_BYTES) { setError(t.resetPasswordLong); return }
+    // La misma regla que el backend (lib/reglasPassword.js).
+    const problema = problemaDePassword(password)
+    if (problema === 'corta') { setError(t.resetPasswordShort); return }
+    if (problema === 'larga') { setError(t.resetPasswordLong); return }
     if (password !== confirm) { setError(t.resetPasswordMismatch); return }
 
     setSubmitting(true)
