@@ -5,6 +5,7 @@ import { useJaxStore } from '../../store/useJaxStore'
 import EditarUsuarioModal from '../../components/admin/EditarUsuarioModal'
 import HistorialUsuario from '../../components/admin/HistorialUsuario'
 import CrearUsuarioModal from '../../components/admin/CrearUsuarioModal'
+import ConfirmacionSuma from '../../components/ConfirmacionSuma'
 import { mensajeDeError } from './erroresAdmin'
 
 // Botón neutro de la fila (texto/superficie-2 y texto-fuerte/superficie-2 son
@@ -19,10 +20,12 @@ const ACCION_NEUTRA = 'text-xs px-2 py-0.5 rounded bg-superficie-2 text-texto ho
 export default function AdminUsers() {
   const { t, lang } = useI18n()
   const addToast = useJaxStore((s) => s.addToast)
+  const actualizarMiEmail = useJaxStore((s) => s.actualizarMiEmail)
   const [users, setUsers] = useState([])
   const [showCreate, setShowCreate] = useState(false)
   const [editando, setEditando] = useState(null)
   const [historialDe, setHistorialDe] = useState(null)
+  const [dandoDeBaja, setDandoDeBaja] = useState(null)
   // Ruling U25 (fix round 2, 2026-09-15): un solo modal a la vez -- antes
   // `editando` y `historialDe` eran independientes, y el fondo seguía
   // alcanzable con Tab detrás de un modal (sin `inert` ni trampa de foco), así
@@ -32,22 +35,35 @@ export default function AdminUsers() {
   // suyo. El fondo inert ya no es local (data-admin-contenido dejaba vivo el
   // AdminSidebar): Dialogo marca #root entero (Ruling U27, 2026-09-15).
 
+  // Etapa 5 (Ruling U28): la baja (ConfirmacionSuma) entra a la misma
+  // exclusión mutua.
+
   function abrirCrear() {
     setEditando(null)
     setHistorialDe(null)
+    setDandoDeBaja(null)
     setShowCreate(true)
   }
 
   function abrirEdicion(u) {
     setHistorialDe(null)
     setShowCreate(false)
+    setDandoDeBaja(null)
     setEditando(u)
   }
 
   function abrirHistorial(u) {
     setEditando(null)
     setShowCreate(false)
+    setDandoDeBaja(null)
     setHistorialDe(u)
+  }
+
+  function abrirBaja(u) {
+    setEditando(null)
+    setShowCreate(false)
+    setHistorialDe(null)
+    setDandoDeBaja(u)
   }
 
   function avisarError(err) {
@@ -77,6 +93,8 @@ export default function AdminUsers() {
   async function guardarEdicion(cambios) {
     try {
       await api.put(`/admin/users/${editando.user_id}`, cambios)
+      // Si el correo editado es el propio, la barra de usuario no queda vieja.
+      if (cambios.email !== undefined) actualizarMiEmail(editando.user_id, cambios.email)
       setEditando(null)
       avisarExito(t.adminUserSaved)
       load()
@@ -112,10 +130,15 @@ export default function AdminUsers() {
     }
   }
 
-  async function handleDelete(u) {
-    if (!window.confirm(t.adminDeleteConfirm(u.email))) return
+  // Eliminar = dar de baja (etapa 5): confirmación por suma en vez del
+  // confirm del navegador, y POST /baja (el backend ya no acepta el borrado:
+  // 405). Ante un error el diálogo sigue abierto y el toast dice por qué.
+  async function confirmarBaja() {
+    const u = dandoDeBaja
     try {
-      await api.delete(`/admin/users/${u.user_id}`)
+      await api.post(`/admin/users/${u.user_id}/baja`)
+      setDandoDeBaja(null)
+      avisarExito(t.adminBajaDone(u.email))
       load()
     } catch (err) {
       avisarError(err)
@@ -185,10 +208,10 @@ export default function AdminUsers() {
                     <button onClick={() => handleResetLink(u)} className={ACCION_NEUTRA}>{t.adminUserSendResetLink}</button>
                     <button onClick={() => abrirHistorial(u)} className={ACCION_NEUTRA}>{t.adminUserHistory}</button>
                     <button
-                      onClick={() => handleDelete(u)}
+                      onClick={() => abrirBaja(u)}
                       className="text-xs px-2 py-0.5 rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors"
                     >
-                      {t.adminUserDelete}
+                      {t.adminUserBaja}
                     </button>
                   </div>
                 </td>
@@ -200,6 +223,15 @@ export default function AdminUsers() {
 
       {editando && <EditarUsuarioModal usuario={editando} onGuardar={guardarEdicion} onCerrar={() => setEditando(null)} />}
       {historialDe && <HistorialUsuario usuario={historialDe} onCerrar={() => setHistorialDe(null)} />}
+      {dandoDeBaja && (
+        <ConfirmacionSuma
+          titulo={t.adminBajaTitle(dandoDeBaja.email)}
+          mensaje={t.adminBajaMessage}
+          textoConfirmar={t.adminUserBaja}
+          onConfirmar={confirmarBaja}
+          onCancelar={() => setDandoDeBaja(null)}
+        />
+      )}
 
       {showCreate && <CrearUsuarioModal onCrear={crearUsuario} onCerrar={() => setShowCreate(false)} />}
     </div>

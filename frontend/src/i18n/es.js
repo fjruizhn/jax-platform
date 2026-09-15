@@ -438,7 +438,6 @@ export default {
   adminUserInactive: 'inactivo',
   adminUserLocked: 'bloqueado',
   adminUserUnlock: 'Desbloquear',
-  adminUserDelete: 'Eliminar',
   adminUserResetPwd: 'Reset pwd',
   adminUserChangeRole: 'Cambiar rol',
   adminCreateTitle: 'Crear Usuario',
@@ -446,7 +445,6 @@ export default {
   adminCreateSubmit: 'Crear',
   adminCreateSubmitting: 'Creando…',
   adminCreateCancel: 'Cancelar',
-  adminDeleteConfirm: (email) => `¿Eliminar usuario ${email}?`,
   // I-1 (revisión final PR 2, 2026-09-14): AdminUsers.jsx:100 tenía
   // "({n} intentos)" escrito directo en el JSX.
   adminUserFailedAttempts: (n) => `(${n} intentos)`,
@@ -606,6 +604,8 @@ export default {
     password_corta: 'La contraseña debe tener al menos 8 caracteres.',
     password_larga: 'La contraseña es demasiado larga (máximo 72 bytes; los acentos ocupan 2).',
     smtp_password_no_ascii: 'La contraseña SMTP guardada tiene caracteres no ASCII (tildes o ñ) y el servidor no la acepta. Volvé a escribirla en Administración → Correo (SMTP).',
+    email_invalido: 'El correo no es válido.',
+    email_ya_existe: 'Ya existe un usuario con ese correo.',
   },
   adminAuditActions: {
     create: 'Alta',
@@ -633,6 +633,14 @@ export default {
   myAccountError: 'No se pudo cambiar la contraseña.',
   adminUserSendResetLink: 'Enviar enlace',
   adminResetLinkSent: (email) => `Enlace de recuperación enviado a ${email}.`,
+
+  // Editar y dar de baja — etapa 5 (2026-09-15)
+  adminUserBaja: 'Dar de baja',
+  adminBajaTitle: (email) => `Dar de baja a ${email}`,
+  adminBajaMessage: 'La cuenta queda inutilizable, sale de la lista y libera el correo. Su historial se conserva.',
+  adminBajaDone: (email) => `${email} fue dado de baja.`,
+  confirmSumLabel: (a, b) => `Resolvé ${a} + ${b} = ?`,
+  confirmSumHint: 'Escribí el resultado para habilitar el botón.',
 
   // Restaurar tareas pendientes (useJaxStore.js)
   taskRestoring: (id) => `_Tarea \`${id}\` — verificando estado…_`,

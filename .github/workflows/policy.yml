@@ -347,8 +347,21 @@ jobs:
             // "Creating…", t.adminCreateSubmitting, no el texto de adjuntar).
             // Vistos en rojo antes de verde. Medido con vitest run: 315 passed
             // en 47 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 315) {
-              console.error("PISO ROTO: se esperaban 315 tests de vitest CORRIDOS y 0 fallidos.");
+            // 315 -> 329 el 2026-09-15 (etapa 5 de admin usuarios, Task 4:
+            // dar de baja con confirmación por suma y editar el correo): +5
+            // ConfirmacionSuma.test.jsx (archivo nuevo: botón sólo con la suma
+            // correcta, confirmar, cancelar, rango de numerosAlAzar, Escape)
+            // +1 EditarUsuarioModal.test.jsx (correo recortado y sólo si
+            // cambió; el test de foco pasa del rol al correo, sin sumar) +4
+            // AdminUsers.test.jsx (baja con suma y POST /baja, alta con
+            // email_ya_existe traducido, un solo diálogo al abrir la baja,
+            // guardar el correo avisa al store) +2 erroresAdmin.test.js (en es
+            // y en en, email_invalido/rol_invalido/email_ya_existe traducidos)
+            // +2 useJaxStore.test.js (actualizarMiEmail: el correo propio
+            // cambia user.email; el de otro no). Vistos en rojo antes de verde.
+            // Medido con vitest run: 329 passed en 48 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 329) {
+              console.error("PISO ROTO: se esperaban 329 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

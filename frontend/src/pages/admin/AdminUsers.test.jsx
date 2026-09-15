@@ -10,8 +10,11 @@ vi.mock('../../api/client', () => ({ default: { get: vi.fn(), put: vi.fn(), post
 // muestran traducidos en un toast -- antes cada acción terminaba en
 // `.catch(() => {})`. El mock del store vale para todo el archivo.
 const addToastMock = vi.fn()
+// Etapa 5: tras guardar un correo, AdminUsers avisa al store (actualizarMiEmail
+// decide si es el usuario logueado; lo prueba useJaxStore.test.js).
+const actualizarMiEmailMock = vi.fn()
 vi.mock('../../store/useJaxStore', () => ({
-  useJaxStore: (selector) => selector({ addToast: addToastMock }),
+  useJaxStore: (selector) => selector({ addToast: addToastMock, actualizarMiEmail: actualizarMiEmailMock }),
 }))
 
 import api from '../../api/client'
@@ -50,6 +53,7 @@ function servirGet(usuarios) {
 
 beforeEach(() => {
   addToastMock.mockReset()
+  actualizarMiEmailMock.mockReset()
   api.get.mockReset(); api.post.mockReset(); api.put.mockReset(); api.delete.mockReset()
   servirGet([USUARIO])
   localStorage.clear()
@@ -258,5 +262,64 @@ describe('AdminUsers -- un solo modal a la vez (Ruling U25)', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})
+
+// Etapa 5 (2026-09-15): eliminar = dar de baja, detrás de ConfirmacionSuma
+// (nunca window.confirm ni DELETE); el alta traduce los códigos estables.
+describe('AdminUsers — baja y alta', () => {
+  beforeEach(() => servirGet([SUPERADMIN]))
+
+  it('dar de baja exige la suma y recién ahí llama al backend', async () => {
+    api.post.mockResolvedValue({ data: { ok: true } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Dar de baja' }))
+    const dialogo = screen.getByRole('dialog', { name: 'Dar de baja a b@x.io' })
+    const confirmar = within(dialogo).getByRole('button', { name: 'Dar de baja' })
+    expect(confirmar).toBeDisabled()
+    const [, a, b] = within(dialogo).getByText(/Resolvé \d+ \+ \d+ = \?/).textContent.match(/(\d+) \+ (\d+)/)
+    fireEvent.change(within(dialogo).getByRole('spinbutton'), { target: { value: String(Number(a) + Number(b)) } })
+    expect(api.post).not.toHaveBeenCalled()
+    fireEvent.click(confirmar)
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/2/baja'))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({ type: 'success', message: 'b@x.io fue dado de baja.' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(api.delete).not.toHaveBeenCalled()
+  })
+
+  it('el alta con un correo repetido muestra el error traducido', async () => {
+    api.post.mockRejectedValue({ response: { status: 409, data: { detail: 'email_ya_existe' } } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: '+ Nuevo usuario' }))
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'b@x.io' } })
+    fireEvent.change(screen.getByLabelText('Contraseña temporal'), { target: { value: 'clave-larga-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Crear' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error', message: 'Ya existe un usuario con ese correo.',
+    }))
+  })
+
+  // Ruling U25/U28: "Dar de baja" entra a la exclusión mutua de los modales.
+  it('abrir "Dar de baja" con Editar abierto deja un solo diálogo', async () => {
+    renderUsers()
+    const botonEditar = await screen.findByRole('button', { name: 'Editar' })
+    const botonBaja = screen.getByRole('button', { name: 'Dar de baja' })
+    fireEvent.click(botonEditar)
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    fireEvent.click(botonBaja)
+    const dialogos = screen.getAllByRole('dialog')
+    expect(dialogos).toHaveLength(1)
+    expect(dialogos[0]).toHaveAttribute('aria-labelledby', 'confirmacion-suma-titulo')
+  })
+
+  it('guardar un correo nuevo avisa al store con el user_id y el correo guardado', async () => {
+    api.put.mockResolvedValue({ data: { ok: true } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar' }))
+    const dialogo = screen.getByRole('dialog')
+    fireEvent.change(within(dialogo).getByLabelText('Email'), { target: { value: ' nuevo@x.io ' } })
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Guardar' }))
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/users/2', { email: 'nuevo@x.io' }))
+    await waitFor(() => expect(actualizarMiEmailMock).toHaveBeenCalledWith(2, 'nuevo@x.io'))
   })
 })

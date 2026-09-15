@@ -52,3 +52,18 @@ describe('mensajeDeError -- smtp_password_no_ascii en Usuarios (minor 6)', () =>
     expect(mensaje).toContain(textos.adminSmtp)
   })
 })
+
+// Etapa 5 (2026-09-15, Ruling U12): la Task 2 volvió códigos estables los
+// errores del alta y del PUT con correo. Los tres tienen texto propio en es y
+// en en: la UI nunca muestra el código crudo ni el genérico.
+describe('mensajeDeError -- códigos de la etapa 5', () => {
+  it.each(['es', 'en'])('en %s, email_invalido, rol_invalido y email_ya_existe se traducen', async (lang) => {
+    const { default: textos } = await import(`../../i18n/${lang}.js`)
+    for (const codigo of ['email_invalido', 'rol_invalido', 'email_ya_existe']) {
+      const mensaje = mensajeDeError(textos, err(codigo))
+      expect(textos.adminErrors[codigo]).toBeTruthy()
+      expect(mensaje).toBe(textos.adminErrors[codigo])
+      expect(mensaje).not.toBe(textos.adminErrorGeneric)
+    }
+  })
+})

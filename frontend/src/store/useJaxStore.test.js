@@ -101,3 +101,23 @@ describe('cambiarMiPassword', () => {
     expect(useJaxStore.getState().token).toBeNull()
   })
 })
+
+// Etapa 5 (2026-09-15, Task 4): el JWT no lleva el correo y la barra de
+// usuario muestra user.email del store. Si el admin se edita SU PROPIO correo,
+// la barra no puede quedar con el viejo hasta el próximo /auth/me.
+describe('actualizarMiEmail', () => {
+  beforeEach(() => {
+    useJaxStore.setState(INITIAL_STATE, true)
+    useJaxStore.setState({ user: { user_id: 1, email: 'viejo@x.io', role: 'superadmin' } })
+  })
+
+  it('editar el correo propio cambia user.email del store', () => {
+    useJaxStore.getState().actualizarMiEmail(1, 'nuevo@x.io')
+    expect(useJaxStore.getState().user).toEqual({ user_id: 1, email: 'nuevo@x.io', role: 'superadmin' })
+  })
+
+  it('editar el correo de otro usuario no toca user.email', () => {
+    useJaxStore.getState().actualizarMiEmail(2, 'otro@x.io')
+    expect(useJaxStore.getState().user.email).toBe('viejo@x.io')
+  })
+})

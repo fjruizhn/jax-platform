@@ -2,9 +2,10 @@ import { useState } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import Dialogo from '../Dialogo'
 
-// Editar rol y estado (2026-09-15, admin usuarios etapa 3). Manda SOLO lo que
-// cambió; qué está permitido lo decide el backend (último superadmin,
-// auto-acciones) y el padre muestra el error traducido. `deleted` no es una
+// Editar correo, rol y estado (2026-09-15, admin usuarios etapas 3 y 5). Manda
+// SOLO lo que cambió (el correo, recortado); qué está permitido lo decide el
+// backend (formato, único, último superadmin, auto-acciones) y el padre
+// muestra el error traducido. `deleted` no es una
 // opción: eso es la baja. Pinta solo con tokens. El comportamiento de diálogo
 // (portal, #root inert, foco, Escape) lo pone Dialogo (Ruling U27).
 const ROLES = ['superadmin', 'operator', 'viewer']
@@ -16,11 +17,13 @@ const ETIQUETA = 'block text-xs text-texto-suave mb-1'
 
 export default function EditarUsuarioModal({ usuario, onGuardar, onCerrar }) {
   const { t } = useI18n()
+  const [email, setEmail] = useState(usuario.email)
   const [role, setRole] = useState(usuario.role)
   const [status, setStatus] = useState(usuario.status)
   const [guardando, setGuardando] = useState(false)
 
   const cambios = {}
+  if (email.trim() !== usuario.email) cambios.email = email.trim()
   if (role !== usuario.role) cambios.role = role
   if (status !== usuario.status) cambios.status = status
   const hayCambios = Object.keys(cambios).length > 0
@@ -40,6 +43,10 @@ export default function EditarUsuarioModal({ usuario, onGuardar, onCerrar }) {
   return (
     <Dialogo idTitulo="editar-usuario-titulo" titulo={t.adminUserEditTitle(usuario.email)} onCerrar={onCerrar}>
         <form onSubmit={enviar} className="space-y-3">
+          <div>
+            <label htmlFor="editar-email" className={ETIQUETA}>{t.adminUserEmail}</label>
+            <input id="editar-email" type="email" maxLength={254} value={email} onChange={(e) => setEmail(e.target.value)} className={CAMPO} />
+          </div>
           <div>
             <label htmlFor="editar-rol" className={ETIQUETA}>{t.adminUserRole}</label>
             <select id="editar-rol" value={role} onChange={(e) => setRole(e.target.value)} className={CAMPO}>
