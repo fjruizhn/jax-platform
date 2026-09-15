@@ -143,6 +143,8 @@ jobs:
             // del PUT ofrece declarar; el de otro proveedor no; el último rechazo guardado se ve y
             // declara con el mismo endpoint; un rechazo de un modelo fuera de la lista igual abre el
             // formulario; sin rechazo no hay aviso). Medido con vitest run: 157 + 6 = 163.
+            // PR-L ronda 2: 163 -> 163. El aviso propio de Bindings (adminBindingsContratoGuardado)
+            // se afirma dentro de dos tests existentes, sin tests nuevos. Medido con vitest run: 163.
             if (r.numFailedTests !== 0 || r.numPassedTests !== 163) {
               console.error("PISO ROTO: se esperaban 163 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
@@ -569,7 +571,13 @@ jobs:
           # EXPLAIN del rastro por faceta sin scan) y +2 en test_semilla_contrato_dispatch.py
           # (toda faceta http_openai_compat de la semilla de base vacía cumple el contrato; ada
           # nace en glm-5.3). Medido contra jax f84ecc1: 720 + 6 = 726 / 1.
-          PISO_PASSED = 726
+          # PR-L ronda 2 (2026-09-14, 7 Minor de la revisión): +8 — tope superior de
+          # max_output_tokens -> 422; borrar un usuario con auditoría no falla; email snapshot en
+          # el 409; la tabla real sin ninguna FK; list_proposals acotada y por índice (2); keys sin
+          # literales ni facet_models (2). El test de migración pasa a una tabla temporal (mismo
+          # conteo). Los 3 tests que dependían de model.id=3 dejan de depender de su valor.
+          # Medido contra jax f84ecc1: 726 + 8 = 734 / 1.
+          PISO_PASSED = 734
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -869,7 +877,9 @@ jobs:
       # PR-L ronda 1: +2 puros (tests/test_semilla_contrato_dispatch.py, tripwire de la semilla
       # de base vacía contra los validadores del dispatch); los +4 de auditoría piden `client`.
       # Medido con JAX_CI_NO_DB=1: 351 passed / 376 skipped.
-      JAX_CI_MIN_PASSED: "351"
+      # PR-L ronda 2: +1 puro (keys.PROVIDERS sin literales de modelo); los otros 7 piden
+      # `client`. Medido con JAX_CI_NO_DB=1: 352 passed / 383 skipped.
+      JAX_CI_MIN_PASSED: "352"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

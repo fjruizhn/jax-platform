@@ -83,6 +83,10 @@ describe('AdminFacetBindings -- declarar contrato desde el 409 y el rastro (PR-L
     const { default: en } = await import('../../i18n/en.js')
     expect(es.adminBindingsUltimoRechazo('x')).toContain('x')
     expect(en.adminBindingsUltimoRechazo('x')).toContain('x')
+    for (const t of [es, en]) {
+      expect(t.adminBindingsContratoGuardado, 'adminBindingsContratoGuardado').toBeTruthy()
+      expect(t.adminBindingsContratoGuardado).not.toBe(t.adminContratoGuardado)
+    }
   })
 
   it('el 409 de contrato del PUT ofrece declarar el contrato de esa fila', async () => {
@@ -115,7 +119,9 @@ describe('AdminFacetBindings -- declarar contrato desde el 409 y el rastro (PR-L
     fireEvent.change(await screen.findByLabelText(es.adminContratoParam), { target: { value: 'max_tokens' } })
     fireEvent.change(screen.getByLabelText(es.adminContratoTope), { target: { value: '4096' } })
     fireEvent.click(screen.getByRole('button', { name: es.adminContratoGuardar }))
-    expect(await screen.findByText(es.adminContratoGuardado)).toBeInTheDocument()
+    // Ronda 2: en Bindings no hay propuesta que reaprobar -- aviso propio.
+    expect(await screen.findByText(es.adminBindingsContratoGuardado)).toBeInTheDocument()
+    expect(screen.queryByText(es.adminContratoGuardado)).not.toBeInTheDocument()
     expect(api.put).toHaveBeenCalledWith('/admin/models/2111/contrato-dispatch', {
       max_tokens_param: 'max_tokens', max_output_tokens: 4096,
     })

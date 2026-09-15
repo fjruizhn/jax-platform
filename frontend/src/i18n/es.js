@@ -359,6 +359,8 @@ export default {
   adminProposalsUltimoRechazo: (fecha) => `Último intento de aprobación rechazado (${fecha}):`,
   // PR-L ronda 1: el último rechazo registrado para una faceta, en Bindings.
   adminBindingsUltimoRechazo: (fecha) => `Último cambio rechazado (${fecha}):`,
+  // Ronda 2: en Bindings no hay propuesta; el paso siguiente es volver a guardar el binding.
+  adminBindingsContratoGuardado: 'Contrato declarado. Ya se puede volver a guardar el binding de la faceta.',
 
   // Admin — pestaña Motores (R4 Task 9): alta de motor/capability sin SQL a mano
   adminTabMotors: 'Motores',

@@ -118,7 +118,7 @@ export default function AdminFacetBindings() {
   return (
     <div>
       <h2 className="text-sm font-semibold text-slate-200 mb-4">{t.adminBindingsTitle}</h2>
-      {contratoGuardado && <p role="status" className="text-xs text-green-400 mb-3">{t.adminContratoGuardado}</p>}
+      {contratoGuardado && <p role="status" className="text-xs text-green-400 mb-3">{t.adminBindingsContratoGuardado}</p>}
       {modeloContrato && (
         <FormContratoDispatch
           key={modeloContrato.id}

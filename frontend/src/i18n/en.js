@@ -356,6 +356,8 @@ export default {
   adminProposalsUltimoRechazo: (fecha) => `Last approval attempt rejected (${fecha}):`,
   // PR-L round 1: a facet's last recorded rejection, on the Bindings screen.
   adminBindingsUltimoRechazo: (fecha) => `Last change rejected (${fecha}):`,
+  // Round 2: Bindings has no proposal; the next step is saving the binding again.
+  adminBindingsContratoGuardado: "Contract declared. The facet's binding can be saved again.",
 
   // Admin — Motors tab (R4 Task 9): register a motor/capability without hand-written SQL
   adminTabMotors: 'Motors',
