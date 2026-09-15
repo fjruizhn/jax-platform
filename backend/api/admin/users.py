@@ -1,7 +1,9 @@
 import asyncio
 import logging
 
+import aiomysql
 import bcrypt
+from pymysql.constants.ER import DUP_ENTRY as ER_DUP_ENTRY
 from tiempo import utc_ahora
 from typing import Optional
 
@@ -172,10 +174,18 @@ async def create_user(req: CreateUserRequest, request: Request, user: AuthUser =
         (count,) = await cur.fetchone()
         if count > 0:
             raise HTTPException(status_code=409, detail="Email ya existe")
-        await cur.execute(
-            "INSERT INTO jax_users (tenant_id, email, password_hash, role, status) VALUES (1, %s, %s, %s, 'active')",
-            (req.email, ph, req.role),
-        )
+        # El chequeo de arriba no bloquea: dos altas simultáneas con el mismo
+        # email pueden pasarlo las dos. La que pierde choca con el UNIQUE de
+        # email (1062) -> el mismo 409, y la transacción revierte sin auditoría.
+        try:
+            await cur.execute(
+                "INSERT INTO jax_users (tenant_id, email, password_hash, role, status) VALUES (1, %s, %s, %s, 'active')",
+                (req.email, ph, req.role),
+            )
+        except aiomysql.IntegrityError as e:
+            if e.args and e.args[0] == ER_DUP_ENTRY:
+                raise HTTPException(status_code=409, detail="Email ya existe") from e
+            raise
         new_id = cur.lastrowid
         await user_audit.registrar(cur, int(user.user_id), new_id, "create",
                                    {"email": req.email, "role": req.role}, _ip(request))

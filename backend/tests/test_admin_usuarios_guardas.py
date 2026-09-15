@@ -469,3 +469,46 @@ def test_historial_devuelve_las_ultimas_50_mas_nuevas_primero(client, usuarios):
 def test_historial_solo_superadmin(client, usuarios):
     o, _ = usuarios()
     assert client.get(f"/api/admin/users/{o}/audit", headers=auth(token_para(o))).status_code == 403
+
+
+def test_alta_con_email_duplicado_concurrente_responde_409_sin_auditoria(client, monkeypatch):
+    """Carrera entre el SELECT COUNT y el INSERT: otra conexión da de alta el
+    mismo email justo después del chequeo. El INSERT perdedor choca con el
+    UNIQUE de email (1062): tiene que ser el mismo 409 que el chequeo, no un
+    500, y la transacción revierte sin registro de auditoría."""
+    from contextlib import asynccontextmanager
+
+    email = f"test-carrera-{uuid.uuid4().hex[:10]}@example.invalid"
+    transaccion_real = users_mod.transaccion
+
+    class _CursorQueDejaColarse:
+        def __init__(self, cur):
+            self._cur = cur
+
+        def __getattr__(self, nombre):
+            return getattr(self._cur, nombre)
+
+        async def execute(self, consulta, args=()):
+            resultado = await self._cur.execute(consulta, args)
+            if consulta.startswith("SELECT COUNT(*) FROM jax_users WHERE email"):
+                await sql("INSERT INTO jax_users (tenant_id, email, password_hash, role, status) "
+                          "VALUES (1, %s, 'x', 'viewer', 'active')", (email,))
+            return resultado
+
+    @asynccontextmanager
+    async def con_carrera(*args, **kw):
+        async with transaccion_real(*args, **kw) as cur:
+            yield _CursorQueDejaColarse(cur)
+
+    monkeypatch.setattr(users_mod, "transaccion", con_carrera)
+    try:
+        r = client.post("/api/admin/users", json={"email": email, "role": "viewer", "password": "clave-larga-1"},
+                        headers=_admin())
+        assert (r.status_code, r.json().get("detail")) == (409, "Email ya existe"), r.text
+        ((auditados,),) = client.portal.call(
+            sql, "SELECT COUNT(*) FROM user_admin_audit WHERE action = 'create' AND detail LIKE %s",
+            (f"%{email}%",), True)
+        assert auditados == 0
+    finally:
+        for (intruso,) in client.portal.call(sql, "SELECT user_id FROM jax_users WHERE email = %s", (email,), True):
+            client.portal.call(borrar_usuario, intruso)

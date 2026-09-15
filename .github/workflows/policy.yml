@@ -689,7 +689,10 @@ jobs:
           # test_admin_usuarios_guardas.py (cerrar sesiones: tokens + auditoría + 404; cerrar
           # sesiones corta WS y SSE tras el commit; desbloqueo auditado; alta auditada; historial
           # 50 más nuevas primero; historial solo superadmin). Medido: 777 / 1.
-          PISO_PASSED = 777
+          # Subido de 777 a 778 (2026-09-15, Task 3 fix ronda 1): +1 en
+          # test_admin_usuarios_guardas.py (alta con email duplicado concurrente: el INSERT
+          # perdedor choca con el UNIQUE -> 409 y sin auditoría, no 500). Medido: 778 / 1.
+          PISO_PASSED = 778
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1007,6 +1010,8 @@ jobs:
       # Medido con JAX_CI_NO_DB=1: 362 / 410.
       # Sin cambio (2026-09-15, admin usuarios etapa 3, Task 3): los 6 nuevos de
       # test_admin_usuarios_guardas.py piden `client`. Medido con JAX_CI_NO_DB=1: 362 / 416.
+      # Sin cambio (2026-09-15, Task 3 fix ronda 1): el test de alta concurrente pide
+      # `client`. Medido con JAX_CI_NO_DB=1: 362 / 417.
       JAX_CI_MIN_PASSED: "362"
     steps:
       - uses: actions/checkout@v4
