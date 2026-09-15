@@ -54,6 +54,11 @@ _PARAM_SECRETO = re.compile(
 #      si lo que sigue TIENE FORMA de credencial: 16 caracteres de token o mas
 #      y al menos un digito. Asi "basic idea of it" y "the bearer of bad news"
 #      quedan intactos, y "Bearer eyJhbGciOiJIUzI1NiJ9…" no.
+#   3. Fix wave final (2026-09-15, paridad con jax/core/redaccion.py): el
+#      valor puede ir ENTRE COMILLAS despues del esquema (`Bearer 'x'`,
+#      `Bearer "x y"`); antes la clase sin comillas no lo tomaba, el esquema
+#      pasaba a ser el "valor" y el secreto entre comillas quedaba en claro.
+#      _tapar_auth devuelve las comillas alrededor de la marca.
 _AUTH_CONTEXTO = re.compile(
     r"""(?ix)
     (?<![a-z0-9_\-])
@@ -61,7 +66,7 @@ _AUTH_CONTEXTO = re.compile(
     (\s*[=:]\s*)
     (["']?)
     (?:(bearer|basic|token|digest)\s+)?
-    ([^\s"'&,;<>}\]]+)
+    (?:"([^"]*)"|'([^']*)'|([^\s"'&,;<>}\]]+))
     """)
 _ESQUEMA_SUELTO = re.compile(
     r"(?i)\b(bearer|basic|token|digest)\s+(?=[A-Za-z0-9._~+/=\-]*\d)[A-Za-z0-9._~+/=\-]{16,}")
@@ -70,7 +75,13 @@ _ESQUEMA_SUELTO = re.compile(
 def _tapar_auth(m: re.Match) -> str:
     comilla, nombre, separador, comilla_valor, esquema = m.group(1, 2, 3, 4, 5)
     prefijo = f"{esquema} " if esquema else ""
-    return f"{comilla}{nombre}{comilla}{separador}{comilla_valor}{prefijo}{MARCA}"
+    if m.group(6) is not None:
+        valor = f'"{MARCA}"'
+    elif m.group(7) is not None:
+        valor = f"'{MARCA}'"
+    else:
+        valor = MARCA
+    return f"{comilla}{nombre}{comilla}{separador}{comilla_valor}{prefijo}{valor}"
 
 
 def _tapar_param(m: re.Match) -> str:
@@ -107,6 +118,17 @@ def redactar_secretos(texto: str | None, secretos: Iterable[str | None] = ()) ->
     texto = _PARAM_SECRETO.sub(_tapar_param, texto)
     texto = _ESQUEMA_SUELTO.sub(lambda m: f"{m.group(1)} {MARCA}", texto)
     return _KEY_GOOGLE.sub(MARCA, texto)
+
+
+def recortar_redactado(texto: str | None, limite: int,
+                       secretos: Iterable[str | None] = ()) -> str | None:
+    """Redacta PRIMERO y recorta despues. Al reves, un secreto que cruza el
+    corte queda partido: el pedazo ya no tiene la forma que reconocen las
+    reglas (ni el secreto conocido entero) y se filtra en claro. Es la forma
+    de recortar un texto de error de proveedor (fix wave final, 2026-09-15:
+    la misma funcion que jax/core/redaccion.py)."""
+    limpio = redactar_secretos(texto, secretos)
+    return limpio if limpio is None else limpio[:limite]
 
 
 def texto_de_error(e: BaseException, secretos: Iterable[str | None] = ()) -> str:

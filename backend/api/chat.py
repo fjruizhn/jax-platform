@@ -34,7 +34,7 @@ from jax_engine.events import event_bus
 from jax_engine.state import engine_state, LAS_MANOS_URL
 from api.admin.usage import record_usage, validar_ids_de_uso
 from db.connection import get_pool
-from redaccion import redactar_secretos, texto_de_error
+from redaccion import recortar_redactado, redactar_secretos, texto_de_error
 from facet_health import (
     record_facet_health,
     OUTCOME_OK,
@@ -129,6 +129,10 @@ except Exception:  # fail-soft: sin la función auxiliar solo se pierde el bypas
 
 _memory = None              # instancia única (lazy)
 _memory_ready = False
+# Fix wave final (2026-09-15): un JAX_DB_PORT mal formado es un error de
+# configuracion que no cambia mientras el proceso vive -- se avisa en ERROR
+# una sola vez (con el motivo) y los turnos siguientes quedan en DEBUG.
+_puerto_invalido_avisado = False
 # "user_id:project_id" -> conversation_uuid. OrderedDict como LRU: sin cota,
 # cada par (usuario, proyecto) que alguna vez chateó quedaba abierto acá para
 # siempre. Al superar MAX_TRACKED_CONVERSATIONS se cierra (end_conversation)
@@ -140,7 +144,7 @@ MAX_TRACKED_CONVERSATIONS = 500
 
 async def _ensure_memory() -> bool:
     """Conecta (lazy) a la MISMA jax_memory del REPL. False si falla (no rompe)."""
-    global _memory, _memory_ready
+    global _memory, _memory_ready, _puerto_invalido_avisado
     if MemoryDB is None:
         return False
     if _memory_ready and _memory and _memory.is_connected:
@@ -164,10 +168,17 @@ async def _ensure_memory() -> bool:
     # Task 3 (2026-09-15, clase b): int(port) vivia dentro del try de abajo,
     # asi que un JAX_DB_PORT mal formado apagaba la memoria SIN log. Se
     # valida aparte, con el mismo costo que antes (un int() por llamada).
+    # Fix wave final: el ERROR sale UNA vez por proceso (antes, uno por turno).
     try:
         puerto = int(port)
-    except ValueError:  # fail-soft: puerto mal formado = turno sin memoria, pero logueado como ERROR en cada intento con el valor recibido
-        logger.error("JAX_DB_PORT=%r no es un puerto: memoria del chat DESACTIVADA", port)
+    except ValueError as e:  # fail-soft: puerto mal formado = turno sin memoria; ERROR una vez por proceso con el valor y el motivo, DEBUG en cada turno siguiente
+        if not _puerto_invalido_avisado:
+            _puerto_invalido_avisado = True
+            logger.error(
+                "JAX_DB_PORT=%r no es un puerto (%s): memoria del chat DESACTIVADA "
+                "en este proceso hasta corregir la config y reiniciar", port, e)
+        else:
+            logger.debug("JAX_DB_PORT=%r no es un puerto: turno sin memoria (ERROR ya logueado)", port)
         _memory_ready = False
         return False
     try:
@@ -981,7 +992,7 @@ def _detalle_502_http(facet: str, e: httpx.HTTPStatusError) -> str:
     responde con error. Fix round 1 (review de 3bed155): REDACTAR y DESPUÉS
     recortar -- recortando antes, una key que cruzaba el caracter 200 quedaba
     cortada, sin forma reconocible, y su prefijo salía en claro."""
-    cuerpo = redactar_secretos(e.response.text)[:200]
+    cuerpo = recortar_redactado(e.response.text, 200)
     return f"Error HTTP {e.response.status_code} en {facet}: {cuerpo}"
 
 

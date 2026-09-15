@@ -695,3 +695,46 @@ describe('AdminUsers — Mostrar bajas (Task 2, DEUDA U36)', () => {
     expect(screen.queryByText('borrado@x.io')).not.toBeInTheDocument()
   })
 })
+
+// Fix wave final (2026-09-15): con "Mostrar bajas" encendido, una baja
+// exitosa recargaba solo la lista de activos -- la de bajas quedaba vieja y
+// el usuario recién dado de baja no aparecía hasta apagar y prender el
+// interruptor.
+describe('AdminUsers — la baja refresca también la lista de bajas', () => {
+  it('con "Mostrar bajas" encendido, el usuario dado de baja aparece ahí sin tocar el interruptor', async () => {
+    let activos = [USUARIO]
+    let bajas = [BAJA]
+    api.get.mockImplementation((url) => {
+      if (url === '/admin/users?bajas=true') return Promise.resolve({ data: { users: bajas } })
+      if (url === '/admin/users') return Promise.resolve({ data: { users: activos } })
+      return Promise.resolve({ data: { entries: HISTORIAL } })
+    })
+    api.post.mockImplementation(async () => {
+      activos = []
+      bajas = [{ ...BAJA, user_id: 2, email_original: 'op@axioma-ia.io' }, BAJA]
+      return { data: { ok: true } }
+    })
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    const interruptor = screen.getByRole('button', { name: 'Mostrar bajas' })
+    fireEvent.click(interruptor)
+    await screen.findByText('borrado@x.io')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dar de baja' }))
+    const dialogo = screen.getByRole('dialog', { name: 'Dar de baja a op@axioma-ia.io' })
+    const [, a, b] = within(dialogo).getByText(/Resolvé \d+ \+ \d+ = \?/).textContent.match(/(\d+) \+ (\d+)/)
+    fireEvent.change(within(dialogo).getByRole('spinbutton'), { target: { value: String(Number(a) + Number(b)) } })
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Dar de baja' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/2/baja'))
+
+    // La fila de op@ ahora es la de la lista de bajas: sólo "Historial".
+    await waitFor(() => {
+      const fila = screen.getByText('op@axioma-ia.io').closest('tr')
+      expect(within(fila).getByRole('button', { name: 'Historial' })).toBeInTheDocument()
+      expect(within(fila).queryByRole('button', { name: 'Editar' })).not.toBeInTheDocument()
+    })
+    expect(screen.getByText('borrado@x.io')).toBeInTheDocument()
+    expect(interruptor).toHaveAttribute('aria-pressed', 'true')
+    expect(api.get.mock.calls.filter(([url]) => url === '/admin/users?bajas=true')).toHaveLength(2)
+  })
+})

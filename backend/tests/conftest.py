@@ -363,6 +363,53 @@ def _limites_de_login_limpios():
     rate_limit.reset_login_limiters()
 
 
+async def _borrar_filas_de_uso(ids):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            marcas = ", ".join(["%s"] * len(ids))
+            await cur.execute(f"DELETE FROM axioma_usage WHERE id IN ({marcas})", tuple(ids))
+        await conn.commit()
+
+
+@pytest.fixture(autouse=True)
+def _uso_de_chat_limpio(request, monkeypatch):
+    """Fix wave final, item 4 (2026-09-15): cada turno de chat con respuesta
+    del LLM inserta una fila real en axioma_usage (jax_memory_test) y nadie
+    la borraba -- la tabla crecia con cada corrida de la suite.
+
+    Anota el id EXACTO de cada fila que escribe api.chat.record_usage durante
+    el test (record_usage devuelve el id) y borra esos ids al terminar. Ni por
+    tenant ni por ventana de tiempo: los tests de chat comparten tenant 1 y
+    usuarios con otras sesiones, y la prueba de carga usa tenants >= 900000
+    -- solo se borra lo que ESTE test escribio. Autouse y no un fixture a
+    pedir: un test de chat nuevo queda cubierto solo (mismo criterio que el
+    aislamiento del sello). Test: tests/test_uso_de_chat_limpio.py."""
+    try:
+        from api import chat as chat_mod
+    except ImportError:  # fail-soft: jobs de CI que solo instalan pytest (sin fastapi) no pueden correr un turno de chat; no hay fila que borrar
+        yield
+        return
+    real = chat_mod.record_usage
+    escritas: list[int] = []
+
+    async def anotando(*args, **kwargs):
+        fila = await real(*args, **kwargs)
+        if fila:
+            escritas.append(fila)
+        return fila
+
+    monkeypatch.setattr(chat_mod, "record_usage", anotando)
+    yield
+    if escritas:
+        # Hubo una fila => hubo DB => el test pidio `client` (el pool vive
+        # en el loop de su portal).
+        assert "client" in request.fixturenames, (
+            f"el test escribio axioma_usage {escritas} sin el fixture client: no se pueden borrar")
+        request.getfixturevalue("client").portal.call(_borrar_filas_de_uso, escritas)
+
+
 @pytest.fixture
 def chat_sin_memoria(monkeypatch):
     """Task 7 (2026-09-15): /api/chat rechaza ids no numericos ANTES del LLM

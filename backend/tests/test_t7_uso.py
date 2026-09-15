@@ -69,6 +69,9 @@ def test_el_ultimo_error_y_el_log_van_redactados(monkeypatch, caplog):
 
 def test_escritura_exitosa_no_sube_el_contador(monkeypatch):
     class _Cur:
+        # Como el cursor real de aiomysql: record_usage devuelve el id de la
+        # fila escrita (fix wave final, 2026-09-15).
+        lastrowid = 1
         async def execute(self, sql, params=None): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False

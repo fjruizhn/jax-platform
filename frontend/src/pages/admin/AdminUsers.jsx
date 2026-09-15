@@ -37,6 +37,12 @@ export default function AdminUsers() {
   // misma, sólo su botón "Historial" reusa abrirHistorial.
   const [mostrarBajas, setMostrarBajas] = useState(false)
   const [bajas, setBajas] = useState([])
+  // Fix wave final (2026-09-15): una baja que termina con el interruptor
+  // encendido recarga TAMBIÉN la lista de bajas. El ref espeja el
+  // interruptor para leerlo cuando la respuesta llega (la baja pudo
+  // empezar con él apagado). Apagado no hace falta marca de "vieja":
+  // encenderlo siempre vuelve a pedir la lista.
+  const mostrarBajasRef = useRef(false)
   const [showCreate, setShowCreate] = useState(false)
   const [editando, setEditando] = useState(null)
   const [historialDe, setHistorialDe] = useState(null)
@@ -159,12 +165,21 @@ export default function AdminUsers() {
     return api.get('/admin/users').then(r => setUsers(r.data.users)).catch(avisarError)
   }
 
+  function cargarBajas() {
+    return api.get('/admin/users?bajas=true').then(r => setBajas(r.data.users)).catch(avisarError)
+  }
+
   function alternarBajas() {
     const activar = !mostrarBajas
+    mostrarBajasRef.current = activar
     setMostrarBajas(activar)
-    if (activar) {
-      api.get('/admin/users?bajas=true').then(r => setBajas(r.data.users)).catch(avisarError)
-    }
+    if (activar) cargarBajas()
+  }
+
+  // Tras una baja (o el 404 de otra que ganó la carrera): activos siempre,
+  // bajas si su lista está a la vista.
+  function recargarTrasBaja() {
+    return Promise.all([load(), mostrarBajasRef.current ? cargarBajas() : null])
   }
 
   useEffect(() => { load() }, [])
@@ -248,13 +263,13 @@ export default function AdminUsers() {
       await api.post(`/admin/users/${u.user_id}/baja`)
       const eraLaAbierta = cerrarBajaSiEs(u.user_id)
       avisarExito(t.adminBajaDone(u.email))
-      await load()
+      await recargarTrasBaja()
       if (eraLaAbierta) setEnfocarNuevo(true)
     } catch (err) {
       if (codigoDe(err) === 'usuario_no_encontrado') {
         cerrarBajaSiEs(u.user_id)
         avisarError(err)
-        await load()
+        await recargarTrasBaja()
       } else {
         avisarError(err)
       }

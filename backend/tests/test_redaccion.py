@@ -1,8 +1,11 @@
 """Task 6 S1 (2026-09-15): `redactar_secretos` -- funcion pura, sin I/O.
 
-La key de Gemini viaja en `?key=` y httpx.HTTPStatusError mete la URL entera
-en str(e): sin redactar, quedaba en facet_health_event.detail, en el log y en
-la respuesta del sync de modelos. Todas las keys de este archivo son FALSAS.
+Historia: la key de Gemini viajaba en `?key=` y httpx.HTTPStatusError mete la
+URL entera en str(e): sin redactar, quedaba en facet_health_event.detail, en el
+log y en la respuesta del sync de modelos. Desde T6-2 (2026-09-15) la key va en
+la cabecera `x-goog-api-key`; estos tests quedan como defensa en profundidad
+para cualquier secreto que igual llegue a un texto o a una URL. Todas las keys
+de este archivo son FALSAS.
 """
 import logging
 
@@ -15,8 +18,10 @@ KEY = "AIzaFAKE-task6-0123456789abcdef"
 
 
 def test_el_filtro_redacta_el_log_de_httpx(caplog):
-    """httpx loguea `HTTP Request: POST <url>` en INFO en cada pedido: con
-    Gemini, la URL trae `?key=`. El filtro va en el logger, no en un handler."""
+    """httpx loguea `HTTP Request: POST <url>` en INFO en cada pedido. Con
+    Gemini la URL traia `?key=` hasta T6-2 (hoy la key va en la cabecera
+    `x-goog-api-key`); el filtro sigue como defensa en profundidad para
+    cualquier secreto en una query. Va en el logger, no en un handler."""
     assert any(isinstance(f, FiltroDeSecretos) for f in logging.getLogger("httpx").filters)
     caplog.set_level(logging.INFO, logger="httpx")
     url = httpx.URL(f"https://g.example/v1beta/models/m:generateContent?key={KEY}")
@@ -141,3 +146,19 @@ def test_texto_de_error_de_un_HTTPStatusError_real_no_trae_la_key():
     assert KEY not in out
     assert out.startswith("HTTPStatusError: ")
     assert "key=***" in out
+
+
+# --- Fix wave final (2026-09-15): paridad con jax/core/redaccion.py ------------
+# Hueco compartido con jax (review de 05c028b, punto 2; portado de
+# jax tests/test_redaccion.py): un valor ENTRE COMILLAS despues del esquema
+# quedaba entero en claro -- la clase sin comillas no lo tomaba, el esquema
+# pasaba a ser el "valor" y el secreto seguia visible.
+@pytest.mark.parametrize("texto, esperado", [
+    ("Authorization: Bearer 'quoted-FAKE-123' fin", "Authorization: Bearer '***' fin"),
+    ('Authorization: Bearer "quoted-FAKE-123" fin', 'Authorization: Bearer "***" fin'),
+    ("Authorization: Token 'con espacios FAKE 9'", "Authorization: Token '***'"),
+])
+def test_valor_entre_comillas_despues_del_esquema(texto, esperado):
+    out = redactar_secretos(texto)
+    assert "quoted-FAKE" not in out and "FAKE 9" not in out
+    assert out == esperado

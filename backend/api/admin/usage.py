@@ -92,7 +92,11 @@ async def record_usage(
     el catalogo (nunca corrio un sync), cost_usd queda NULL con el motivo
     visible en el propio dato (nunca un numero inventado). cost_usd_override
     es para pricing plano-por-request que no encaja en precio-por-token
-    (ej. generacion de imagenes)."""
+    (ej. generacion de imagenes).
+
+    Devuelve el id de la fila escrita, o None si no se pudo escribir (fix
+    wave final, 2026-09-15: los tests de chat borran exactamente las filas
+    que escribieron; los llamadores de produccion lo ignoran)."""
     try:
         if cost_usd_override is not None:
             cost = cost_usd_override
@@ -118,7 +122,9 @@ async def record_usage(
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                     (int(tenant_id), int(user_id), facet, model, tokens_in, tokens_out, cost, request_type),
                 )
+                fila = cur.lastrowid
             await conn.commit()
+        return fila
     except Exception as e:  # fail-soft: el turno ya se pagó y ya respondió; un 500 no recupera el costo y le quita la respuesta al usuario; la pérdida la hace visible el contador registros_perdidos (GET /api/admin/usage) y el WARNING
         global _registros_perdidos, _ultimo_error
         _registros_perdidos += 1

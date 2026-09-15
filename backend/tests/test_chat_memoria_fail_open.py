@@ -36,6 +36,9 @@ def memoria_limpia(monkeypatch):
     monkeypatch.setattr(chat_mod, "MemoryDB", _MemoryDBFalsa)
     monkeypatch.setattr(chat_mod, "_memory", None)
     monkeypatch.setattr(chat_mod, "_memory_ready", False)
+    # Fix wave final: el aviso de puerto invalido es UNO por proceso; cada
+    # test parte como un proceso nuevo.
+    monkeypatch.setattr(chat_mod, "_puerto_invalido_avisado", False, raising=False)
     monkeypatch.setenv("JAX_DB_HOST", "127.0.0.1")
 
 
@@ -81,3 +84,24 @@ def test_un_error_que_no_es_de_import_no_se_traga(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", _import_que_falla(SyntaxError("bug en jax")))
     with pytest.raises(SyntaxError):
         chat_mod._importar_memorydb()
+
+
+def test_puerto_mal_formado_loguea_UN_error_por_proceso(monkeypatch, caplog, memoria_limpia):
+    """Fix wave final (2026-09-15): con un JAX_DB_PORT mal formado cada turno
+    de chat logueaba un ERROR -- el journal se llenaba con el mismo aviso. Se
+    avisa UNA vez por proceso con el motivo y "memoria DESACTIVADA"; los
+    turnos siguientes quedan en DEBUG."""
+    monkeypatch.setenv("JAX_DB_PORT", "abc")
+    with caplog.at_level(logging.DEBUG, logger="api.chat"):
+        assert asyncio.run(chat_mod._ensure_memory()) is False   # turno 1
+        assert asyncio.run(chat_mod._ensure_memory()) is False   # turno 2
+    del_chat = [r for r in caplog.records if r.name == "api.chat"]
+    errores = [r for r in del_chat if r.levelno >= logging.ERROR]
+    assert len(errores) == 1, [r.getMessage() for r in errores]
+    mensaje = errores[0].getMessage()
+    assert "JAX_DB_PORT='abc'" in mensaje
+    assert "invalid literal" in mensaje, "el ERROR tiene que decir el motivo"
+    assert "DESACTIVADA" in mensaje
+    assert any(r.levelno == logging.DEBUG and "JAX_DB_PORT" in r.getMessage() for r in del_chat), (
+        "el segundo turno sigue dejando rastro, en DEBUG")
+    assert _MemoryDBFalsa.conexiones == []
