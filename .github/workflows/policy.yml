@@ -761,7 +761,16 @@ jobs:
           # `AND used = FALSE` y el chequeo de rowcount; U21, el usuario se bloquea ANTES
           # que el token en /reset-password, mismo orden que la cascada de delete_user --
           # verificado en rojo quitando el SELECT ... FOR UPDATE). Medido: 812 / 1.
-          PISO_PASSED = 812
+          # Subido de 812 a 815 (2026-09-15, Task 3 fix ronda 2): +3 en test_contrasenas.py
+          # (una cancelación del envío -- asyncio.CancelledError, BaseException -- borra
+          # igual el token no entregado, vía el `finally`/bandera `enviado`, y la
+          # cancelación sigue propagándose; un fallo de auditoría DESPUÉS de un envío
+          # exitoso responde 200 igual, U22 fail-soft; el orden de bloqueo de U21 --
+          # SELECT ... FOR UPDATE del usuario antes del UPDATE que reclama el token -- se
+          # prueba grabando el SQL ejecutado, no solo el resultado: verificado en rojo
+          # quitando el FOR UPDATE y, por separado, moviendo el bloqueo después del
+          # reclamo). Medido: 815 / 1.
+          PISO_PASSED = 815
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1098,6 +1107,9 @@ jobs:
       # Task 3 fix ronda 1 (2026-09-15): los 5 nuevos (errores de reset-link, borrado
       # por token exacto, claim atómico, U21) piden `client` (sin cambio en passed).
       # Medido con JAX_CI_NO_DB=1: 369 / 444.
+      # Task 3 fix ronda 2 (2026-09-15): los 3 nuevos (cancelación del envío, fallo de
+      # auditoría fail-soft, orden de bloqueo U21 por SQL grabado) piden `client` (sin
+      # cambio en passed). Medido con JAX_CI_NO_DB=1: 369 / 447.
       JAX_CI_MIN_PASSED: "369"
     steps:
       - uses: actions/checkout@v4

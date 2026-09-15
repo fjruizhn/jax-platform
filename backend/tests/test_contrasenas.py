@@ -239,10 +239,12 @@ def test_mi_cuenta_tiene_el_limite_del_login(client, usuarios, monkeypatch):
 
 # ------------------------------------------------ enlace de recuperación
 
+import asyncio  # noqa: E402
 import smtplib  # noqa: E402
 from datetime import timedelta  # noqa: E402
 
 import smtp_config  # noqa: E402
+import user_audit  # noqa: E402
 from tiempo import utc_ahora  # noqa: E402
 
 
@@ -360,6 +362,110 @@ def test_enlace_borra_por_token_exacto_no_pisa_un_forgot_password_concurrente(cl
     r = _enlace(client, u)
     assert r.status_code == 502
     assert len(client.portal.call(_tokens, u)) == 1, "el token concurrente sobrevive; solo se borra el nuestro"
+
+
+def test_enlace_con_envio_cancelado_borra_el_token_y_propaga(client, usuarios, smtp_configurado, monkeypatch):
+    """Fix ronda 2, hallazgo 3(a) (2026-09-15): asyncio.CancelledError es
+    BaseException, no Exception -- ningún `except` de send_reset_link lo
+    atrapa (ni el de smtp_password_no_ascii, ni config_corrupta, ni
+    smtp_envio_fallido). Antes de este fix, una cancelación se saltaba
+    también la limpieza y dejaba el token vivo. El `finally` con la bandera
+    `enviado` corre igual y lo borra; la cancelación sigue propagándose (no
+    se convierte en una respuesta HTTP -- Starlette la deja pasar tal cual).
+    Lo que llega hasta acá es `concurrent.futures.CancelledError`, no
+    `asyncio.CancelledError`: levantar CancelledError DENTRO de una tarea es
+    la señal de asyncio para cancelar ESA tarea (medido), así que el portal
+    (que corre el request como una tarea y espera el resultado con un
+    `concurrent.futures.Future`) ve la tarea cancelada, no la excepción
+    original -- pero el efecto que importa acá (nada atrapa la cancelación
+    antes del `finally`, y el `finally` limpia igual) es el mismo."""
+    import concurrent.futures
+    from api import auth as auth_mod
+
+    def cancelado(s, to, link):
+        raise asyncio.CancelledError("cliente se fue a mitad del envío")
+
+    monkeypatch.setattr(auth_mod, "_send_reset_email", cancelado)
+    u, _ = usuarios()
+    with pytest.raises(concurrent.futures.CancelledError):
+        _enlace(client, u)
+    assert client.portal.call(_tokens, u) == [], "el token no puede quedar vivo aunque el envío se cancele"
+    assert client.portal.call(_acciones, u) == [], "no se audita un envío que no salió"
+
+
+def test_enlace_con_fallo_de_auditoria_tras_enviar_responde_200_igual(client, usuarios, smtp_configurado,
+                                                                       monkeypatch):
+    """Ruling U22, fix ronda 2 (2026-09-15): el correo YA SALIÓ cuando la
+    auditoría se intenta -- si esa escritura falla, la respuesta sigue siendo
+    200 (fail-soft; el error no puede deshacer un correo ya entregado). El
+    token queda consumido igual (no hay limpieza: `enviado` es True) y nada
+    más cambia."""
+    from api import auth as auth_mod
+
+    enviados = []
+    monkeypatch.setattr(auth_mod, "_send_reset_email", lambda s, to, link: enviados.append((to, link)))
+
+    async def falla(*a, **kw):
+        raise RuntimeError("DB caída justo acá")
+
+    monkeypatch.setattr(user_audit, "registrar", falla)
+    u, email = usuarios()
+    r = _enlace(client, u)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "to": email}
+    assert len(enviados) == 1, "el correo salió a pesar de que la auditoría falló DESPUÉS"
+    assert client.portal.call(_acciones, u) == [], "la auditoría falló: no hay fila"
+    (token,) = client.portal.call(_tokens, u)
+    assert token in enviados[0][1], "el token del correo enviado sigue siendo el vigente (no se borró ni se creó otro)"
+
+
+def test_reset_bloquea_el_usuario_antes_que_el_token(client, usuarios, monkeypatch):
+    """Ruling U21 (fix ronda 2, 2026-09-15): esto prueba el ORDEN de bloqueo
+    real -- no solo el resultado -- grabando el SQL que /reset-password
+    ejecuta dentro de su transacción. Tiene que aparecer un
+    `SELECT ... FROM jax_users ... FOR UPDATE` ANTES que el
+    `UPDATE password_reset_tokens ... used = TRUE` que reclama el token. Sin
+    el `FOR UPDATE` del usuario (o con el bloqueo movido después del reclamo)
+    este test falla: verificado a mano quitando cada uno y restaurando
+    después (ver task-3-report.md)."""
+    from contextlib import asynccontextmanager
+
+    u, _ = usuarios(password=CLAVE)
+    token = str(uuid.uuid4())
+    client.portal.call(sql, "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
+                            "VALUES (%s, %s, %s, 'test')", (u, token, utc_ahora() + timedelta(hours=1)))
+
+    ejecutadas = []
+    transaccion_real = auth_mod.transaccion
+
+    class _CursorQueGraba:
+        def __init__(self, cur):
+            self._cur = cur
+
+        def __getattr__(self, nombre):
+            return getattr(self._cur, nombre)
+
+        async def execute(self, consulta, args=()):
+            ejecutadas.append(consulta)
+            return await self._cur.execute(consulta, args)
+
+    @asynccontextmanager
+    async def con_registro(*args, **kw):
+        async with transaccion_real(*args, **kw) as cur:
+            yield _CursorQueGraba(cur)
+
+    monkeypatch.setattr(auth_mod, "transaccion", con_registro)
+    r = client.post("/api/auth/reset-password", json={"token": token, "password": NUEVA})
+    assert r.status_code == 200, r.text
+
+    indice_usuario = next(i for i, q in enumerate(ejecutadas)
+                          if q.startswith("SELECT status FROM jax_users") and "FOR UPDATE" in q)
+    indice_token = next(i for i, q in enumerate(ejecutadas)
+                        if q.startswith("UPDATE password_reset_tokens SET used = TRUE"))
+    assert indice_usuario < indice_token, (
+        "el SELECT ... FOR UPDATE del usuario tiene que ejecutarse ANTES que el "
+        "UPDATE que reclama el token (Ruling U21, orden de bloqueo)"
+    )
 
 
 def test_enlace_a_inactivo_o_inexistente(client, usuarios, smtp_configurado):

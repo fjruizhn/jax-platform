@@ -323,22 +323,61 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
     # ValueError ANTES que (OSError, SMTPException), y UnicodeEncodeError
     # ANTES que ValueError -- es subclase suya (smtplib codifica el AUTH en
     # ascii). En los tres casos: el enlace recién creado no puede quedar vivo
-    # (fix arriba) y no se audita un envío que no salió.
+    # (fix ronda 1) y no se audita un envío que no salió.
+    #
+    # Fix ronda 2 (2026-09-15, hallazgo 3): la limpieza se movió a un
+    # `finally` con la bandera `enviado`, en vez de repetirla en cada except.
+    # `finally` corre ante CUALQUIER salida del `try` que no haya puesto
+    # `enviado = True` -- incluida una que ningún `except` de acá atrapa,
+    # como `asyncio.CancelledError` (BaseException, no Exception: el cliente
+    # cierra la conexión o el servidor se apaga a mitad del envío). Sin este
+    # cambio, una cancelación se saltaba los tres `except` Y la limpieza, y
+    # dejaba un token vivo sin que nadie lo hubiera mandado.
+    enviado = False
     try:
         await asyncio.to_thread(auth_api._send_reset_email, settings, email, enlace)
+        enviado = True
     except UnicodeEncodeError as exc:
-        await _borrar_enlace_no_entregado(token)
+        # NUNCA se loguea `exc` acá -- smtplib codifica el AUTH (usuario Y
+        # CONTRASEÑA) en ascii, y `exc.object` trae el valor completo que no
+        # pudo codificarse (medido: para una contraseña con un caracter no
+        # ASCII, `exc.object` es la contraseña entera). Mensaje fijo, sin
+        # interpolar la excepción.
+        logger.warning("Enlace de recuperación (admin) a %s: la contraseña SMTP guardada no es ASCII (AUTH)", email)
         raise HTTPException(status_code=502, detail={"code": "smtp_password_no_ascii", "server": ""}) from exc
     except ValueError as exc:
         # construir_mensaje rechaza encabezados con caracteres de control:
         # misma red de estado corrupto que /smtp/test, mismo código.
         logger.warning("Enlace de recuperación (admin): no se pudo armar el mensaje: %s", exc)
-        await _borrar_enlace_no_entregado(token)
         raise HTTPException(status_code=503, detail="smtp_config_corrupta") from exc
     except (OSError, smtplib.SMTPException) as exc:
         logger.warning("Enlace de recuperación (admin) a %s falló: %s", email, exc)
-        await _borrar_enlace_no_entregado(token)
         raise HTTPException(status_code=502, detail={"code": "smtp_envio_fallido", "server": str(exc)}) from exc
-    async with transaccion() as cur:
-        await user_audit.registrar(cur, int(user.user_id), user_id, "reset_link_sent", {"to": email}, ip)
+    finally:
+        if not enviado:
+            try:
+                await _borrar_enlace_no_entregado(token)
+            except Exception:
+                # fail-soft SOLO para la limpieza: si el DELETE mismo falla,
+                # se loguea (con user_id, NUNCA el token -- es la credencial)
+                # y la excepción ORIGINAL (la del envío, o la cancelación)
+                # sigue propagándose sola -- no se relanza esta ni se pierde
+                # aquella. Tapar el error real con uno de limpieza sería peor
+                # que dejar un token huérfano, que además expira en 1 hora.
+                logger.exception(
+                    "Enlace de recuperación (admin): no se pudo borrar el token no entregado (user_id=%s)", user_id)
+    try:
+        async with transaccion() as cur:
+            await user_audit.registrar(cur, int(user.user_id), user_id, "reset_link_sent", {"to": email}, ip)
+    except Exception:
+        # Ruling U22 (fix ronda 2, 2026-09-15): fail-soft. `transaccion()` ya
+        # revirtió (su propio `except BaseException: rollback(); raise`) antes
+        # de que esto la atrape -- acá solo se decide la RESPUESTA. El correo
+        # YA SALIÓ y no se puede deshacer: un 500 no lo cambiaría, solo
+        # empujaría al admin a reintentar y mandar un SEGUNDO enlace
+        # innecesario. Se responde 200 igual; el fallo de auditoría queda en
+        # el log con quién lo pidió, a quién y para qué usuario.
+        logger.exception(
+            "Enlace de recuperación (admin): se envió pero no se pudo auditar (user_id=%s, actor=%s, to=%s)",
+            user_id, user.user_id, email)
     return {"ok": True, "to": email}
