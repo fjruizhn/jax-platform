@@ -291,7 +291,6 @@ def test_el_reset_por_enlace_limpia_la_marca(client, usuarios):
 
 # ------------------------------------------------------ endpoint del admin
 
-import json  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 
 import api.admin.users as users_mod  # noqa: E402
@@ -485,3 +484,90 @@ def test_mi_cuenta_no_deshace_una_contrasena_fijada_en_el_medio(client, usuarios
     assert client.portal.call(_marca, u) is True
     assert _login(client, email, FIJADA).status_code == 200
     assert [a for a, _ in client.portal.call(_auditoria, u)] == ["password_set_by_admin"]
+
+
+# ------------------------------------- enlace de recuperación con la marca
+# (Task 3 fix ronda 1, Ruling F5). Completar un enlace y apagar la marca se
+# acepta; lo que no: terminar con la contraseña del admin (esquiva P1).
+
+async def _enlace_pendiente(user_id):
+    token = str(uuid.uuid4())
+    await sql("INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
+              "VALUES (%s, %s, %s, 'test')", (user_id, token, utc_ahora() + timedelta(hours=1)))
+    return token
+
+
+async def _usado(token):
+    ((u,),) = await sql("SELECT used FROM password_reset_tokens WHERE token = %s", (token,), True)
+    return bool(u)
+
+
+def _resetear(client, token, password):
+    return client.post("/api/auth/reset-password", json={"token": token, "password": password})
+
+
+def test_el_enlace_no_acepta_la_contrasena_del_admin_y_el_mismo_token_sirve_despues(client, usuarios, cortes):
+    u, email = usuarios(password=CLAVE)
+    assert _fijar(client, u).status_code == 200
+    token = client.portal.call(_enlace_pendiente, u)  # creado DESPUÉS de fijar
+    r = _resetear(client, token, FIJADA)
+    assert (r.status_code, r.json()["detail"]) == (400, "password_igual_a_la_actual")
+    assert client.portal.call(_usado, token) is False, "el token no se consume"
+    assert client.portal.call(_marca, u) is True
+    r = _resetear(client, token, NUEVA)
+    assert r.status_code == 200, r.text
+    assert client.portal.call(_marca, u) is False
+    assert _login(client, email, NUEVA).status_code == 200
+
+
+def test_el_enlace_sin_la_marca_acepta_la_misma_contrasena(client, usuarios, cortes):
+    """P1 vale SÓLO con la marca (como Mi cuenta, M3 de la Task 2)."""
+    u, email = usuarios(password=CLAVE)
+    token = client.portal.call(_enlace_pendiente, u)
+    r = _resetear(client, token, CLAVE)
+    assert r.status_code == 200, r.text
+    assert client.portal.call(_usado, token) is True
+
+
+def test_el_enlace_con_la_marca_rechaza_si_la_contrasena_cambio_antes_del_bloqueo(client, usuarios, cortes,
+                                                                                  monkeypatch):
+    """Defensa en profundidad (F5 c): entre la verificación sin bloqueo y el
+    FOR UPDATE, la contraseña cambia y la marca sigue puesta (costura:
+    verify_password). Bajo el bloqueo se compara el hash como string y se
+    revierte ANTES de reclamar el token."""
+    from db.seed import _hash
+
+    u, _ = usuarios(password=CLAVE)
+    assert _fijar(client, u).status_code == 200
+    token = client.portal.call(_enlace_pendiente, u)
+    otro_hash = _hash("clave-de-otro-000")
+    verificar_real = auth_mod.verify_password
+
+    async def verifica_y_cambia(plain, hashed):
+        ok = await verificar_real(plain, hashed)
+        await sql("UPDATE jax_users SET password_hash = %s WHERE user_id = %s", (otro_hash, u))
+        return ok
+
+    monkeypatch.setattr(auth_mod, "verify_password", verifica_y_cambia)
+    r = _resetear(client, token, NUEVA)
+    assert (r.status_code, r.json()["detail"]) == (400, "reset_token_invalido")
+    assert client.portal.call(_usado, token) is False
+    assert client.portal.call(_marca, u) is True
+    ((h,),) = client.portal.call(sql, "SELECT password_hash FROM jax_users WHERE user_id = %s", (u,), True)
+    assert h == otro_hash, "no se escribió nada"
+
+
+def test_la_consulta_del_token_de_recuperacion_va_por_indices(client, usuarios):
+    """LAS CUATRO (indexing): EXPLAIN sobre la consulta REAL (la constante),
+    con un token que EXISTE (uno inexistente en un índice único colapsa el plan
+    a 'Impossible WHERE' y no prueba nada): el token por su índice único y el
+    usuario por PRIMARY, los dos const/eq_ref, sin filesort ni temporary."""
+    u, _ = usuarios()
+    token = client.portal.call(_enlace_pendiente, u)
+    filas = [tuple(f) for f in client.portal.call(
+        sql, "EXPLAIN " + auth_mod.SQL_TOKEN_DE_RECUPERACION, (token,), True)]
+    planes = {f[2]: (f[3], f[5]) for f in filas}  # table -> (type, key)
+    assert set(planes) == {"t", "u"}, filas
+    assert planes["u"][0] in ("const", "eq_ref") and planes["u"][1] == "PRIMARY", filas
+    assert planes["t"][0] in ("const", "eq_ref") and planes["t"][1] is not None, filas
+    assert all("filesort" not in str(f[-1]) and "temporary" not in str(f[-1]) for f in filas), filas

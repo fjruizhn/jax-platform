@@ -459,7 +459,10 @@ def test_reset_bloquea_el_usuario_antes_que_el_token(client, usuarios, monkeypat
     assert r.status_code == 200, r.text
 
     indice_usuario = next(i for i, q in enumerate(ejecutadas)
-                          if q.startswith("SELECT status FROM jax_users") and "FOR UPDATE" in q)
+                          # F5 (2026-09-15): la lectura bajo bloqueo trae también
+                          # password_hash y must_change_password (defensa de P1).
+                          if q.startswith("SELECT status, password_hash, must_change_password FROM jax_users")
+                          and "FOR UPDATE" in q)
     indice_token = next(i for i, q in enumerate(ejecutadas)
                         if q.startswith("UPDATE password_reset_tokens SET used = TRUE"))
     assert indice_usuario < indice_token, (

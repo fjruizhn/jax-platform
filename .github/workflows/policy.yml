@@ -985,7 +985,17 @@ jobs:
           # UPDATE -> tokens -> auditoría; Mi cuenta concurrente no deshace lo
           # fijado). 9 vistos en rojo (405, la ruta no existía) antes de verde;
           # 8 mutaciones capturadas. Medido dos veces: 870 / 1.
-          PISO_PASSED = 870
+          # Subido de 870 a 874 (2026-09-15, Task 3 fix ronda 1, Ruling F5 -- P1
+          # también por el enlace de recuperación): +4 en test_fijar_password.py
+          # (la contraseña del admin por el enlace da 400 password_igual_a_la_actual
+          # sin consumir el token y el mismo token sirve después con otra; sin la
+          # marca se acepta la misma; defensa bajo el bloqueo con costura en
+          # verify_password -> reset_token_invalido sin escribir; EXPLAIN de
+          # SQL_TOKEN_DE_RECUPERACION: token por índice único y usuario por
+          # PRIMARY). 3 vistos en rojo antes de verde (el de control pasa desde el
+          # rojo y cae con la mutación "sin el alcance de la marca"); 3 mutaciones
+          # capturadas. Medido dos veces: 874 / 1.
+          PISO_PASSED = 874
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1368,6 +1378,10 @@ jobs:
       # test_fijar_password.py (POST /api/admin/users/{id}/password) piden
       # `client` y se saltean (sin cambio en passed).
       # Medido dos veces con JAX_CI_NO_DB=1: 374 / 497.
+      # Task 3 fix ronda 1 (2026-09-15, Ruling F5): los 4 nuevos de
+      # test_fijar_password.py (P1 por el enlace de recuperación) piden
+      # `client` y se saltean (sin cambio en passed).
+      # Medido dos veces con JAX_CI_NO_DB=1: 374 / 501.
       JAX_CI_MIN_PASSED: "374"
     steps:
       - uses: actions/checkout@v4

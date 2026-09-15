@@ -420,6 +420,15 @@ class ResetPasswordRequest(BaseModel):
     password: str
 
 
+# El token por su índice único y el usuario por PRIMARY (eq_ref): una sola
+# consulta trae lo necesario para P1 (Ruling F5). EXPLAIN en
+# tests/test_fijar_password.py::test_la_consulta_del_token_de_recuperacion_va_por_indices.
+SQL_TOKEN_DE_RECUPERACION = (
+    "SELECT t.id, t.user_id, t.expires_at, t.used, u.password_hash, u.must_change_password "
+    "FROM password_reset_tokens t JOIN jax_users u ON u.user_id = t.user_id WHERE t.token = %s"
+)
+
+
 @router.post("/reset-password")
 async def reset_password(req: ResetPasswordRequest, request: Request):
     # Códigos estables (2026-09-12): el frontend los traduce con i18n. Antes
@@ -434,22 +443,28 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT id, user_id, expires_at, used FROM password_reset_tokens WHERE token = %s",
-                (req.token,),
-            )
+            await cur.execute(SQL_TOKEN_DE_RECUPERACION, (req.token,))
             row = await cur.fetchone()
 
     if not row:
         raise HTTPException(status_code=400, detail="reset_token_invalido")
 
-    token_id, user_id, expires_at, used = row
+    token_id, user_id, expires_at, used, hash_leido, marca_leida = row
 
     if used:
         raise HTTPException(status_code=400, detail="reset_token_usado")
 
     if expires_at < utc_ahora():
         raise HTTPException(status_code=400, detail="reset_token_expirado")
+
+    # P1 también por el enlace (Ruling F5, 2026-09-15): mientras el cambio sea
+    # obligatorio, la nueva no puede ser la vigente (la que fijó el admin) --
+    # si no, completar un enlace creado DESPUÉS de fijarla esquivaba P1. Va
+    # después de los chequeos del token (un token inválido no cuesta bcrypt)
+    # y NO escribe nada: el token queda sin consumir para reintentar con otra.
+    # Sin la marca, se acepta la misma (como Mi cuenta).
+    if marca_leida and await verify_password(req.password, hash_leido):
+        raise HTTPException(status_code=400, detail="password_igual_a_la_actual")
 
     # bcrypt de costo 12 (~150 ms de CPU): en un hilo, no en el event loop.
     new_hash = await asyncio.to_thread(_hash, req.password)
@@ -470,11 +485,23 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
         # También cierra el hueco de un reset a un usuario borrado/desactivado
         # DESPUÉS de crear el token: sin esto, el UPDATE de abajo escribiría
         # sobre una fila que ya no debería aceptar contraseñas nuevas.
-        await cur.execute("SELECT status FROM jax_users WHERE user_id = %s FOR UPDATE", (user_id,))
+        await cur.execute(
+            "SELECT status, password_hash, must_change_password FROM jax_users WHERE user_id = %s FOR UPDATE",
+            (user_id,),
+        )
         fila_usuario = await cur.fetchone()
         if fila_usuario is None or fila_usuario[0] != "active":
             # Mismo código que un token que nunca existió: no se distingue
             # "usuario borrado/inactivo" de "token inválido" en la respuesta.
+            raise HTTPException(status_code=400, detail="reset_token_invalido")
+        # Defensa en profundidad de P1 (F5): si con la marca puesta la
+        # contraseña cambió desde la lectura de arriba (o la marca se prendió
+        # después), la verificación de P1 se hizo contra otro hash. Se revierte
+        # ANTES de reclamar el token, comparando strings (sin bcrypt bajo el
+        # bloqueo, como Mi cuenta). Hoy el único que prende la marca (fijar)
+        # borra los enlaces pendientes, así que este token ya estaría muerto:
+        # mismo código que un token inválido.
+        if fila_usuario[2] and fila_usuario[1] != hash_leido:
             raise HTTPException(status_code=400, detail="reset_token_invalido")
         # Reclamar el token es lo SEGUNDO y es atómico: con dos envíos
         # simultáneos del mismo enlace, solo uno cambia la fila (el otro ve
