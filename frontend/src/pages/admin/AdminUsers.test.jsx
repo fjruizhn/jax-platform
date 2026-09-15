@@ -56,6 +56,21 @@ describe('AdminUsers -- i18n (I-1)', () => {
   })
 })
 
+// M-2 (revisión final PR 2, 2026-09-14): el select de rol tenía border-borde
+// (1,41:1 sobre superficie, bajo el mínimo 3:1 de WCAG 1.4.11 para un
+// control) y focus:outline-none sin ningún indicador de foco de reemplazo.
+describe('AdminUsers -- borde y foco del select de rol (M-2)', () => {
+  it('usa border-borde-control (par de 3:1 declarado) y focus:border-foco', async () => {
+    api.get.mockResolvedValue({ data: { users: [USUARIO] } })
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    const select = screen.getByDisplayValue('operator')
+    expect(select.className).toMatch(/(^|\s)border-borde-control(\s|$)/)
+    expect(select.className).not.toMatch(/(^|\s)border-borde(\s|$)/)
+    expect(select.className).toMatch(/(^|\s)focus:border-foco(\s|$)/)
+  })
+})
+
 // M-1 (revisión final PR 2, 2026-09-14): "Desbloquear" era bg-aviso-fondo
 // sobre una fila que también es bg-aviso-fondo cuando is_locked -- en reposo
 // no se distinguía del fondo de la fila, en ningún tema.

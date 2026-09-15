@@ -86,10 +86,16 @@ export default function AdminUsers() {
               <tr key={u.user_id} className={`hover:bg-superficie transition-colors ${u.is_locked ? 'bg-aviso-fondo' : 'bg-hundido'}`}>
                 <td className="px-4 py-3 text-texto">{u.email}</td>
                 <td className="px-4 py-3">
+                  {/* M-2 (revisión final PR 2, 2026-09-14): border-borde daba
+                      1,41:1 sobre superficie, bajo el mínimo 3:1 de WCAG 1.4.11
+                      para un control; focus:outline-none no tenía reemplazo.
+                      border-borde-control sí tiene el par de 3:1 declarado
+                      sobre superficie (Ruling 26: el fondo del select se
+                      mantiene). */}
                   <select
                     value={u.role}
                     onChange={e => handleRoleChange(u, e.target.value)}
-                    className="bg-superficie border border-borde rounded px-2 py-0.5 text-xs text-texto focus:outline-none"
+                    className="bg-superficie border border-borde-control rounded px-2 py-0.5 text-xs text-texto focus:outline-none focus:border-foco"
                   >
                     {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
                   </select>
