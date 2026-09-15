@@ -131,14 +131,27 @@ async def login(req: LoginRequest, request: Request, response: Response):
     # Bloqueos: una sola fila de jax_users, por PK, sin nada tomado antes ni
     # pedido después (el mismo argumento que Mi cuenta: sin ciclo con las
     # escrituras de admin). READ COMMITTED (U33). bcrypt quedó arriba, fuera.
+    # Fix ronda 1 (2026-09-15, F1): `password_hash = %s` ata el bump al hash
+    # que verificó el bcrypt. Si en esa ventana confirmó un cambio de
+    # contraseña (fijar por admin, reset, Mi cuenta), la contraseña probada ya
+    # no es la vigente: 0 filas, sin tokens, sin cookie, sin corte -- si no, el
+    # bump se apilaba sobre la versión nueva y emitía tokens VÁLIDOS con la
+    # marca vieja. (Revocar sesiones y desbloquear no cambian el hash: un login
+    # que llega después de ellos sigue ganando, a propósito.)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         await cur.execute(
             "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL, last_login = NOW(), "
-            "token_version = token_version + 1 WHERE user_id = %s AND status = 'active'",
-            (user_id,),
+            "token_version = token_version + 1 "
+            "WHERE user_id = %s AND status = 'active' AND password_hash = %s",
+            (user_id, password_hash),
         )
         if cur.rowcount != 1:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
+            # Por PK, dentro de la misma transacción: decide sólo la respuesta.
+            await cur.execute("SELECT status FROM jax_users WHERE user_id = %s", (user_id,))
+            vigente = await cur.fetchone()
+            if vigente is None or vigente[0] != "active":
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
+            raise _credenciales_invalidas()
         await cur.execute("SELECT token_version FROM jax_users WHERE user_id = %s", (user_id,))
         (token_version,) = await cur.fetchone()
 
@@ -217,13 +230,21 @@ async def logout(response: Response, refresh_token: str = Cookie(None)):
             user = None
         if user is not None:
             user_id = int(user.user_id)
+            # Fix ronda 1 (2026-09-15, F2): sólo mata SU versión. Si entre la
+            # verificación y este UPDATE confirmó el login de otro dispositivo,
+            # esta sesión ya estaba muerta: 0 filas, sin corte (cortar echaría
+            # a la sesión nueva), y la respuesta es la misma.
             async with transaccion(AISLAMIENTO_ADMIN) as cur:
                 await cur.execute(
-                    "UPDATE jax_users SET token_version = token_version + 1 WHERE user_id = %s", (user_id,)
+                    "UPDATE jax_users SET token_version = token_version + 1 "
+                    "WHERE user_id = %s AND token_version = %s",
+                    (user_id, user.token_version),
                 )
+                matada = cur.rowcount == 1
             # Ruling U9: después del commit, fail-soft (las otras pestañas de
             # este navegador comparten la cookie: salen también, a propósito).
-            await _cortar_conexiones(user_id)
+            if matada:
+                await _cortar_conexiones(user_id)
     response.delete_cookie(key="refresh_token", samesite="lax")
     return {"ok": True}
 

@@ -1014,7 +1014,14 @@ jobs:
           # sesión). Adaptados 3 existentes que asumían que el login no sube la
           # versión. 6 vistos en rojo antes de verde; 7 mutaciones capturadas.
           # Medido dos veces: 888 / 1.
-          PISO_PASSED = 888
+          # Subido de 888 a 890 (2026-09-15, Task 3b fix ronda 1): +2 en
+          # test_sesion_unica.py -- un cambio de contraseña confirmado durante
+          # el bcrypt deja al login sin tokens (F1: el bump exige el hash
+          # verificado) y el logout de A no mata la sesión nueva de B (F2: el
+          # bump exige la versión verificada). Los 2 vistos en rojo sobre 7218b49;
+          # las 2 mutaciones (sin el hash / sin la versión) capturadas.
+          # Medido dos veces: 890 / 1.
+          PISO_PASSED = 890
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1408,6 +1415,8 @@ jobs:
       # Task 3b (2026-09-15, sesión única): los 13 nuevos de
       # tests/test_sesion_unica.py piden `client` y se saltean (sin cambio en
       # passed). Medido dos veces con JAX_CI_NO_DB=1: 374 / 515.
+      # Task 3b fix ronda 1 (2026-09-15): los 2 nuevos piden `client` y se
+      # saltean (sin cambio en passed). Medido dos veces con JAX_CI_NO_DB=1: 374 / 517.
       JAX_CI_MIN_PASSED: "374"
     steps:
       - uses: actions/checkout@v4

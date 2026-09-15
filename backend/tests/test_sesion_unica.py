@@ -273,3 +273,48 @@ def test_si_la_lectura_de_la_sesion_falla_el_logout_no_la_da_por_muerta(client, 
         _con_cookie(client, "/api/auth/logout", token_para(u, tipo="refresh"))
     assert client.portal.call(_version, u) == 0
     assert cortes == []
+
+
+# ------------------------------------------- fix ronda 1 (review de 7218b49)
+
+def test_si_la_contrasena_cambia_durante_el_bcrypt_el_login_no_emite_nada(client, usuarios, cortes, monkeypatch):
+    """F1: el bcrypt verificó la contraseña VIEJA. Si en esa ventana confirmó
+    un cambio de contraseña (fijar por admin, reset, Mi cuenta: suben la
+    versión), el bump del login no puede apilarse encima y dar tokens válidos:
+    el UPDATE exige el hash verificado -> 0 filas -> 401 genérico, sin nada."""
+    u, email = usuarios(password=CLAVE, token_version=3)
+    real = auth_mod.verify_password
+
+    async def y_en_el_medio_la_cambian(plain, hashed):
+        ok = await real(plain, hashed)
+        await sql("UPDATE jax_users SET password_hash = %s, token_version = token_version + 1 WHERE user_id = %s",
+                  (auth_mod._hash("otra-clave-distinta-9"), u))
+        return ok
+
+    monkeypatch.setattr(auth_mod, "verify_password", y_en_el_medio_la_cambian)
+    r, cookie = _login(client, email)
+    assert (r.status_code, r.json()["detail"]) == (401, "Usuario o contraseña incorrectos")
+    assert "access_token" not in r.json() and cookie is None
+    assert client.portal.call(_version, u) == 4, "sólo el cambio de contraseña subió la versión"
+    assert cortes == []
+
+
+def test_el_logout_no_mata_la_sesion_nueva_de_otro_dispositivo(client, usuarios, cortes, monkeypatch):
+    """F2: entre la verificación de la cookie de A y el UPDATE del logout,
+    confirma el login de B. El logout de A sólo mata SU versión: 0 filas ->
+    200, cookie borrada, sin corte, y la sesión de B sigue viva."""
+    u, _ = usuarios()
+    real = auth_mod.verificar_sesion
+
+    async def y_en_el_medio_entra_b(*args, **kwargs):
+        user = await real(*args, **kwargs)
+        await sql("UPDATE jax_users SET token_version = token_version + 1 WHERE user_id = %s", (u,))
+        return user
+
+    monkeypatch.setattr(auth_mod, "verificar_sesion", y_en_el_medio_entra_b)
+    r = _con_cookie(client, "/api/auth/logout", token_para(u, tipo="refresh", tv=0))
+    assert (r.status_code, r.json()) == (200, {"ok": True})
+    assert _borra_la_cookie(r)
+    assert client.portal.call(_version, u) == 1, "sólo el login de B subió la versión"
+    assert cortes == []
+    assert client.get("/api/auth/me", headers=auth(token_para(u, tv=1))).status_code == 200
