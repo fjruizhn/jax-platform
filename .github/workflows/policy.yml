@@ -470,8 +470,15 @@ jobs:
             // auditoria abierta, vuelve a Pipelines). Cada uno rojo bajo su
             // mutacion (sin clearInterval; tabActual = tab). Medido con vitest
             // run: 414 passed en 52 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 414) {
-              console.error("PISO ROTO: se esperaban 414 tests de vitest CORRIDOS y 0 fallidos.");
+            // 414 -> 419 el 2026-09-15 (Task 7, registros de uso perdidos): +5
+            // en AdminCosts.test.jsx (aviso "total incompleto: N registros
+            // perdidos" en es y en en con N interpolado; sin aviso con 0 ni sin
+            // el campo; el aviso sale aunque by_facet venga vacio). Los 3
+            // positivos vistos en rojo antes de verde; los 2 negativos son
+            // controles. Medido con vitest run: 419 passed en 52 archivos, 0
+            // fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 419) {
+              console.error("PISO ROTO: se esperaban 419 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1187,7 +1194,17 @@ jobs:
           # Vistos en rojo antes de verde (7 de la regex; el del indice bajo
           # mutacion y, de hecho, mientras el PR companion de jax lo tuvo
           # borrado). Medido dos veces: 992 / 1.
-          PISO_PASSED = 992
+          # Subido de 992 a 1012 (2026-09-15, Task 7, registro de uso): +20 en
+          # test_t7_uso.py (contador registros_perdidos: parte de cero, sube
+          # con el fallo del insert sin lanzar, ultimo_error y log redactados,
+          # no sube con escritura exitosa; validar_ids_de_uso con 3 casos
+          # validos y 10 invalidos; chat e imagen cortan antes del proveedor;
+          # GET /api/admin/usage expone registros_perdidos). Los 19 tests de
+          # chat que usaban tenants no numericos pasan a tenant "1" con el
+          # fixture chat_sin_memoria (sin cambio en el conteo). Vistos en rojo
+          # antes de verde (los de chat/imagen, ademas, bajo la mutacion que
+          # quita la validacion). Medido dos veces: 1012 / 1.
+          PISO_PASSED = 1012
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1615,7 +1632,10 @@ jobs:
       # Fix round 2 de la Task 6 (2026-09-15): +11 puros en
       # test_redaccion.py; el test nuevo del indice de jacobs_pipelines pide
       # `client` y se saltea. Medido dos veces con JAX_CI_NO_DB=1: 451 / 542.
-      JAX_CI_MIN_PASSED: "451"
+      # Task 7 (2026-09-15, registro de uso): +19 puros en test_t7_uso.py; el
+      # de GET /api/admin/usage pide `client` y se saltea. Medido dos veces
+      # con JAX_CI_NO_DB=1: 470 / 543.
+      JAX_CI_MIN_PASSED: "470"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
