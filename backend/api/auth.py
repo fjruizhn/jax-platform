@@ -407,9 +407,11 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
     async with transaccion() as cur:
         # Orden de bloqueo (Ruling U21, fix ronda 1 2026-09-15): el USUARIO se
         # bloquea PRIMERO, antes que el token. `password_reset_tokens.user_id`
-        # tiene FK ON DELETE CASCADE hacia jax_users: cuando delete_user borra
-        # al usuario, InnoDB toma la fila de jax_users y DESDE AHÍ cascada a
-        # sus tokens -- en ese orden (usuario, después token). Si esta
+        # tiene FK ON DELETE CASCADE hacia jax_users: cuando se borraba al
+        # usuario (el viejo delete_user; desde la etapa 5 la baja hace lo mismo
+        # a mano: bloquea la fila y DESPUÉS borra sus tokens pendientes),
+        # InnoDB tomaba la fila de jax_users y DESDE AHÍ cascadaba a sus
+        # tokens -- en ese orden (usuario, después token). Si esta
         # transacción tomara el token primero y el usuario después, un DELETE
         # concurrente que ya tiene al usuario y espera el token forma un ciclo
         # con esta (que tendría el token y esperaría al usuario) -> 1213. Con

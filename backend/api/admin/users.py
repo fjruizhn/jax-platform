@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import smtplib
+from datetime import date
 
 import aiomysql
 from pymysql.constants.ER import DUP_ENTRY as ER_DUP_ENTRY
@@ -38,7 +39,7 @@ def _ip(request: Request) -> str:
 
 # --------------------------------------------------------------- guardas
 # (2026-09-12, admin usuarios etapa 3, spec §3.3). Reemplazan al literal
-# `user_id == 1` que tenía delete_user: lo que se protege no es una fila, es
+# `user_id == 1` que tenía el viejo delete_user: lo que se protege no es una fila, es
 # que el sistema tenga siempre al menos un superadmin activo.
 
 def guarda_auto_accion(actor_id: int, target_id: int) -> None:
@@ -112,21 +113,25 @@ async def _leer_para_actualizar(cur, user_id: int):
     return await cur.fetchone()
 
 
+# Un dado de baja no aparece (etapa 5). created_at/last_login son TIMESTAMP:
+# UNIX_TIMESTAMP da el instante exacto sin pasar por la zona de la sesión
+# (SYSTEM = CST); leídas como fecha salían en hora CST sin zona. locked_until
+# es DATETIME escrito con utc_ahora() (auth.login). Plan medido con EXPLAIN en
+# tests/test_admin_usuarios_baja.py: recorre la PK en orden, sin filesort.
+SQL_LISTA_USUARIOS = (
+    "SELECT user_id, email, role, status, UNIX_TIMESTAMP(created_at), "
+    "UNIX_TIMESTAMP(last_login), failed_attempts, locked_until "
+    "FROM jax_users WHERE status <> 'deleted' ORDER BY user_id"
+)
+
+
 @router.get("/users")
 async def list_users(user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
     now = utc_ahora()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                # created_at/last_login son TIMESTAMP: UNIX_TIMESTAMP da el
-                # instante exacto sin pasar por la zona de la sesión (SYSTEM =
-                # CST); leídas como fecha salían en hora CST sin zona.
-                # locked_until es DATETIME escrito con utc_ahora() (auth.login).
-                "SELECT user_id, email, role, status, UNIX_TIMESTAMP(created_at), "
-                "UNIX_TIMESTAMP(last_login), failed_attempts, locked_until "
-                "FROM jax_users ORDER BY user_id"
-            )
+            await cur.execute(SQL_LISTA_USUARIOS)
             rows = await cur.fetchall()
     return {
         "users": [
@@ -276,7 +281,7 @@ async def update_user(
 
 @router.post("/users/{user_id}/unlock")
 async def unlock_user(user_id: int, request: Request, user: AuthUser = Depends(require_superadmin)):
-    # Mismo orden de bloqueos que PUT/DELETE (_leer_para_actualizar dentro de
+    # Mismo orden de bloqueos que el PUT y la baja (_leer_para_actualizar dentro de
     # transaccion(AISLAMIENTO_ADMIN)): ninguna escritura de admin puede formar
     # un ciclo de espera con otra.
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
@@ -299,7 +304,7 @@ async def revoke_sessions(user_id: int, request: Request, user: AuthUser = Depen
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await cur.execute("UPDATE jax_users SET token_version = token_version + 1 WHERE user_id = %s", (user_id,))
         await user_audit.registrar(cur, int(user.user_id), user_id, "sessions_revoked", None, _ip(request))
-    # ...y las conexiones WS/SSE ya abiertas, tras el commit (como PUT/DELETE).
+    # ...y las conexiones WS/SSE ya abiertas, tras el commit (como el PUT y la baja).
     await _cortar_conexiones(user_id)
     return {"ok": True}
 
@@ -308,22 +313,6 @@ async def revoke_sessions(user_id: int, request: Request, user: AuthUser = Depen
 async def user_audit_history(user_id: int, user: AuthUser = Depends(require_superadmin)):
     # Últimas 50, más nueva primero; por idx_user_admin_audit_target_ts.
     return {"entries": await user_audit.historial(user_id)}
-
-
-@router.delete("/users/{user_id}")
-async def delete_user(user_id: int, user: AuthUser = Depends(require_superadmin)):
-    # Sigue existiendo hasta la etapa 5 (que lo reemplaza por la baja). El
-    # literal `user_id == 1` ya no está: lo reemplazan las guardas.
-    guarda_auto_accion(int(user.user_id), user_id)
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        actual = await _leer_para_actualizar(cur, user_id)
-        if actual is None:
-            raise HTTPException(status_code=404, detail="usuario_no_encontrado")
-        rol_actual, estado_actual, _email = actual
-        await exigir_invariante(cur, user_id, rol_actual, estado_actual, rol_actual, "deleted")
-        await cur.execute("DELETE FROM jax_users WHERE user_id = %s", (user_id,))
-    await _cortar_conexiones(user_id)
-    return {"ok": True}
 
 
 async def _borrar_enlace_no_entregado(token: str) -> None:
@@ -350,7 +339,7 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT email, status FROM jax_users WHERE user_id = %s", (user_id,))
+            await cur.execute("SELECT email, status FROM jax_users WHERE user_id = %s AND status <> 'deleted'", (user_id,))
             fila = await cur.fetchone()
     if fila is None:
         raise HTTPException(status_code=404, detail="usuario_no_encontrado")
@@ -421,3 +410,49 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
             "Enlace de recuperación (admin): se envió pero no se pudo auditar (user_id=%s, actor=%s, to=%s)",
             user_id, user.user_id, email)
     return {"ok": True, "to": email}
+
+
+# ------------------------------------------------------------------ baja
+# (etapa 5, spec §2 y §3.5, Rulings U10/U11). Reemplaza al DELETE.
+
+def email_de_baja(email: str, user_id: int, fecha: date) -> str:
+    """El correo de un dado de baja se renombra para LIBERAR la dirección
+    (spec §3.5); el original queda en la auditoría. Cabe en VARCHAR(320):
+    254 + len("#baja-") + 10 dígitos + 1 + 8 = 279."""
+    return f"{email}#baja-{user_id}-{fecha:%Y%m%d}"
+
+
+@router.post("/users/{user_id}/baja")
+async def dar_de_baja(user_id: int, request: Request, user: AuthUser = Depends(require_superadmin)):
+    """Eliminar = dar de baja (decisión de Fernando, spec §2): la cuenta queda
+    inutilizable (status='deleted', versión nueva: toda sesión muere en el
+    request siguiente), sale de la lista y libera el correo. Se conserva todo
+    lo demás, historial incluido. Nada de DELETE.
+
+    Orden fijo (U11): guarda de auto-acción; en transaccion(AISLAMIENTO_ADMIN)
+    el conjunto de superadmins y después la fila (_leer_para_actualizar), 404,
+    invariante, UPDATE, enlaces pendientes (usuario -> token, como
+    /reset-password, U21) y auditoría; el corte de conexiones, tras el commit.
+    Un dado de baja ya no existe para _leer_para_actualizar: repetir la baja
+    es 404, como cualquier otra acción sobre él."""
+    actor_id = int(user.user_id)
+    guarda_auto_accion(actor_id, user_id)
+    ahora = utc_ahora().replace(microsecond=0)
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        actual = await _leer_para_actualizar(cur, user_id)
+        if actual is None:
+            raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+        rol_actual, estado_actual, email_actual = actual
+        await exigir_invariante(cur, user_id, rol_actual, estado_actual, rol_actual, "deleted")
+        await cur.execute(
+            "UPDATE jax_users SET status = 'deleted', deleted_at = %s, deleted_by = %s, email = %s, "
+            "token_version = token_version + 1, failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
+            (ahora, actor_id, email_de_baja(email_actual, user_id, ahora.date()), user_id),
+        )
+        # Ningún enlace de recuperación vivo sobrevive a la baja. Va DESPUÉS
+        # de bloquear la fila del usuario (usuario -> token, el orden de
+        # /reset-password, U21); por el índice de la FK user_id.
+        await cur.execute("DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE", (user_id,))
+        await user_audit.registrar(cur, actor_id, user_id, "baja", {"email": email_actual}, _ip(request))
+    await _cortar_conexiones(user_id)
+    return {"ok": True}

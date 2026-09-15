@@ -873,7 +873,18 @@ jobs:
           # no-op sin auditoría -- verificado en rojo forzando cambia_email = True;
           # un cambio de solo correo no corta WS/SSE -- verificado en rojo sacando el
           # `if corta_sesiones:` de la línea 272). Medido dos veces: 824 / 1.
-          PISO_PASSED = 824
+          # Subido de 824 a 835 (2026-09-15, admin usuarios etapa 5, Task 3: la baja
+          # reemplaza al DELETE): +12 en test_admin_usuarios_baja.py (email_de_baja puro;
+          # baja inutiliza/renombra/audita, libera el correo, sale de la lista, auto-acción
+          # y último superadmin, un dado de baja ya no se toca, DELETE -> 405, solo
+          # superadmin, 404 de inexistente, borra los enlaces pendientes, reset-link a un
+          # dado de baja -> 404 sin token, EXPLAIN de la lista sin filesort) y -1 en
+          # test_admin_usuarios_guardas.py (se BORRA test_delete_usa_las_guardas_..., el
+          # endpoint ya no existe; los otros 2 tests del DELETE pasan a /baja). Vistos en
+          # rojo (405, AttributeError, 409 usuario_no_activo, token vivo) antes de verde;
+          # mutaciones capturadas: corte dentro de la transacción, sin token_version+1,
+          # ORDER BY email. Medido dos veces: 835 / 1.
+          PISO_PASSED = 835
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1222,7 +1233,12 @@ jobs:
       # Admin usuarios etapa 5, Task 2 fix ronda 1 (2026-09-15): los 3 nuevos de
       # test_admin_usuarios_guardas.py piden `client` y se saltean (sin cambio en
       # passed). Medido dos veces con JAX_CI_NO_DB=1: 369 / 456.
-      JAX_CI_MIN_PASSED: "369"
+      # Admin usuarios etapa 5, Task 3 (2026-09-15, la baja reemplaza al DELETE): +1 puro
+      # (test_email_de_baja_...); los otros 11 nuevos de test_admin_usuarios_baja.py
+      # piden `client` y se saltean, y el test borrado del DELETE en
+      # test_admin_usuarios_guardas.py también pedía `client` (+11 -1 = +10 skips).
+      # Medido dos veces con JAX_CI_NO_DB=1: 370 / 466.
+      JAX_CI_MIN_PASSED: "370"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
