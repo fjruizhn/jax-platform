@@ -6,7 +6,7 @@ import '@testing-library/jest-dom'
 // "Aprobar" y "Cancelar pipeline" tragaban el error con un console.error.
 // Si /resume o /cancel fallaba, en la interfaz no pasaba nada y el pipeline
 // seguía esperando sin que nadie supiera por qué. El fallo se muestra.
-vi.mock('../../api/client', () => ({ default: { post: vi.fn() } }))
+vi.mock('../../api/client', () => ({ default: { post: vi.fn(), get: vi.fn() } }))
 
 import api from '../../api/client'
 import RightPanel from './RightPanel'
@@ -25,8 +25,52 @@ function renderPanel() {
 
 beforeEach(() => {
   api.post.mockReset()
+  api.get.mockReset()
+  api.get.mockResolvedValue({ data: { events: [] } })
   localStorage.clear()
   useJaxStore.setState({ activePipelines: EN_ESPERA })
+})
+
+// Task 6 S3 (2026-09-15): /api/audit es solo para superadmin. La pestaña de
+// auditoría no se le ofrece a nadie más (como el engranaje de Administración).
+describe('RightPanel -- la pestaña de auditoría es solo para superadmin', () => {
+  for (const role of ['viewer', 'operator']) {
+    it(`un ${role} no ve la pestaña ni dispara /audit`, () => {
+      useJaxStore.setState({ user: { user_id: '7', role } })
+      renderPanel()
+      expect(screen.queryByRole('button', { name: es.tabAudit })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: es.tabDirectorJacobs })).toBeInTheDocument()
+      expect(api.get).not.toHaveBeenCalled()
+    })
+  }
+
+  it('sin usuario en el store tampoco aparece', () => {
+    useJaxStore.setState({ user: null })
+    renderPanel()
+    expect(screen.queryByRole('button', { name: es.tabAudit })).not.toBeInTheDocument()
+  })
+
+  it('un superadmin ve la pestaña y al abrirla carga la auditoría', async () => {
+    useJaxStore.setState({ user: { user_id: '1', role: 'superadmin' } })
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: es.tabAudit }))
+    expect(await screen.findByText(es.auditLog)).toBeInTheDocument()
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/audit'))
+  })
+
+  // Fix round 1 (review de 3bed155): la vuelta a Pipelines no tenía test.
+  it('si el rol deja de ser superadmin con la auditoría abierta, vuelve a Pipelines', async () => {
+    useJaxStore.setState({ user: { user_id: '1', role: 'superadmin' } })
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: es.tabAudit }))
+    expect(await screen.findByText(es.auditLog)).toBeInTheDocument()
+
+    act(() => { useJaxStore.setState({ user: { user_id: '1', role: 'viewer' } }) })
+
+    expect(screen.queryByText(es.auditLog)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: es.tabAudit })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: es.approve })).toBeInTheDocument()
+  })
 })
 
 describe('RightPanel -- los fallos de Aprobar y Cancelar se ven', () => {

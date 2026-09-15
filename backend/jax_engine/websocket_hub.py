@@ -38,7 +38,7 @@ class WebSocketHub:
         for connection_id, ws in conns:
             try:
                 await ws.send_json(event.model_dump())
-            except Exception:
+            except Exception:  # fail-soft: un socket muerto se desconecta; los demás sockets del usuario siguen recibiendo (CancelledError no se atrapa)
                 await self.disconnect(user_id, connection_id)
 
     async def close_user(self, user_id: str, code: int = 4001) -> int:

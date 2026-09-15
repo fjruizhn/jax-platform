@@ -72,7 +72,7 @@ async def upload_file(
     # text or code
     try:
         text = content.decode("utf-8")
-    except Exception:
+    except UnicodeDecodeError:
         text = content.decode("latin-1", errors="replace")
 
     return {

@@ -52,6 +52,9 @@ export default {
   auditLog: 'Audit Log',
   loading: 'Loading…',
   noEventsYet: 'No events yet',
+  auditoria_ilegible: 'The audit log could not be read',
+  auditLogError: 'Could not load the audit log',
+  auditoriaSoloSuperadmin: 'Only a superadmin can view the LAS MANOS audit log.',
 
   // Step card
   clickToSeeResult: 'Click to see result in chat',
@@ -319,6 +322,7 @@ export default {
   adminModelsSync: 'Sync',
   adminModelsSyncing: 'Syncing…',
   adminModelsSyncError: 'Sync failed',
+  sync_con_errores: (lista) => `Sync incomplete, failed: ${lista}`,
   adminModelsProvider: 'Provider',
   adminModelsModelId: 'Model',
   adminModelsAlias: 'Alias',
@@ -461,7 +465,8 @@ export default {
   adminRepoDelete: 'Delete',
   adminRepoDownload: 'Download',
   adminRepoPreview: 'Preview',
-  adminRepoDeleteConfirm: (name) => `Delete ${name}?`,
+  adminRepoDeleteTitle: (name) => `Delete ${name}`,
+  adminRepoDeleteMessage: 'The file is removed from the repository and cannot be undone.',
   adminRepoSize: (bytes) => bytes < 1024 ? `${bytes}B` : bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`,
 
   // Admin settings
@@ -500,6 +505,7 @@ export default {
   adminCostsNoPricing: 'No pricing',
   adminCostsPartialMarker: '*',
   adminCostsPartialNote: '* Partial total — some models have no price loaded in the catalog and are not included in the sum.',
+  adminCostsRegistrosPerdidos: (n) => `incomplete total: ${n} records lost`,
 
   // HAL Eye
   eyeIdle: 'idle',
@@ -648,6 +654,13 @@ export default {
   adminSetPasswordHint: 'Their open sessions are closed and they will have to change it at their next sign-in.',
   adminSetPasswordSubmitting: 'Saving…',
   adminPasswordSetDone: (email) => `Password set for ${email}. They will have to change it when signing in.`,
+
+  // Deleted users' history visible from the UI (2026-09-15, Task 2, DEUDA U36)
+  adminUserShowBajas: 'Show deleted users',
+  adminBajaListEmail: 'Original email',
+  adminBajaListDeletedAt: 'Deleted on',
+  adminBajaListDeletedBy: 'Deleted by',
+
   forcedChangeTitle: 'Change your password',
   forcedChangeIntro: 'An administrator set your password. To continue, choose a new one.',
   forcedChangeDone: 'Password changed. You can continue.',

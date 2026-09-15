@@ -52,6 +52,9 @@ export default {
   auditLog: 'Audit Log',
   loading: 'Cargando…',
   noEventsYet: 'Sin eventos aún',
+  auditoria_ilegible: 'No se pudo leer el registro de auditoría',
+  auditLogError: 'No se pudo cargar la auditoría',
+  auditoriaSoloSuperadmin: 'La auditoría de LAS MANOS solo la puede ver un superadmin.',
 
   // Step card
   clickToSeeResult: 'Click para ver resultado en chat',
@@ -322,6 +325,7 @@ export default {
   adminModelsSync: 'Sincronizar',
   adminModelsSyncing: 'Sincronizando…',
   adminModelsSyncError: 'Error al sincronizar',
+  sync_con_errores: (lista) => `Sincronización incompleta, fallaron: ${lista}`,
   adminModelsProvider: 'Proveedor',
   adminModelsModelId: 'Modelo',
   adminModelsAlias: 'Alias',
@@ -464,7 +468,8 @@ export default {
   adminRepoDelete: 'Eliminar',
   adminRepoDownload: 'Descargar',
   adminRepoPreview: 'Preview',
-  adminRepoDeleteConfirm: (name) => `¿Eliminar ${name}?`,
+  adminRepoDeleteTitle: (name) => `Eliminar ${name}`,
+  adminRepoDeleteMessage: 'El archivo se borra del repositorio y no se puede deshacer.',
   adminRepoSize: (bytes) => bytes < 1024 ? `${bytes}B` : bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`,
 
   // Admin settings
@@ -503,6 +508,7 @@ export default {
   adminCostsNoPricing: 'Sin precio',
   adminCostsPartialMarker: '*',
   adminCostsPartialNote: '* Total parcial — hay modelos sin precio cargado en el catálogo, no están incluidos en la suma.',
+  adminCostsRegistrosPerdidos: (n) => `total incompleto: ${n} registros perdidos`,
 
   // HAL Eye
   eyeIdle: 'reposo',
@@ -651,6 +657,13 @@ export default {
   adminSetPasswordHint: 'Sus sesiones abiertas se cierran y tendrá que cambiarla en su próximo inicio de sesión.',
   adminSetPasswordSubmitting: 'Guardando…',
   adminPasswordSetDone: (email) => `Contraseña fijada para ${email}. Tendrá que cambiarla al entrar.`,
+
+  // Historial de las bajas visible desde la UI (2026-09-15, Task 2, DEUDA U36)
+  adminUserShowBajas: 'Mostrar bajas',
+  adminBajaListEmail: 'Correo original',
+  adminBajaListDeletedAt: 'Fecha de baja',
+  adminBajaListDeletedBy: 'Dado de baja por',
+
   forcedChangeTitle: 'Cambiá tu contraseña',
   forcedChangeIntro: 'Un administrador fijó tu contraseña. Para seguir, elegí una nueva.',
   forcedChangeDone: 'Contraseña cambiada. Ya podés seguir.',

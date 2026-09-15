@@ -26,7 +26,7 @@ async def _check_http(url: str) -> dict:
         r = await client.get(url, timeout=3.0)
         ms = int((utc_ahora() - t0).total_seconds() * 1000)
         return {"status": "alive" if r.status_code < 500 else "down", "latency_ms": ms}
-    except Exception:
+    except Exception:  # fail-soft: cualquier error del ping ES 'down' en el tablero
         return {"status": "down", "latency_ms": None}
 
 
@@ -37,7 +37,7 @@ async def _check_db() -> dict:
             async with conn.cursor() as cur:
                 await cur.execute("SELECT 1")
         return {"status": "connected"}
-    except Exception:
+    except Exception:  # fail-soft: cualquier error ES status 'error' en el tablero
         return {"status": "error"}
 
 

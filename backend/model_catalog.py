@@ -17,7 +17,7 @@ import time
 
 from credential_resolver import resolve_credential_instrumented
 from db.connection import get_pool
-from http_client import get_http_client
+from http_client import cabeceras_gemini, get_http_client
 
 logger = logging.getLogger("model_catalog")
 
@@ -122,8 +122,17 @@ async def sync_provider_models(provider_id: str) -> dict:
         credential = await resolve_credential_instrumented(provider_id)
 
     client = await get_http_client()
-    if transport == "query_param":
-        resp = await client.get(f"{url}?key={credential}", timeout=15.0)
+    if transport == "header_goog_api_key":
+        # T6-2 (2026-09-15): Gemini, key en la cabecera x-goog-api-key.
+        resp = await client.get(url, headers=cabeceras_gemini(credential), timeout=15.0)
+    elif transport == "query_param":
+        # Fail-closed: el valor viejo ponia la key en la URL. La migracion
+        # _migrar_gemini_a_cabecera lo reemplaza; una fila que igual lo
+        # tenga no vuelve a filtrar el secreto -- falla, y sync_models la
+        # reporta como error del provider.
+        raise ValueError(
+            f"provider={provider_id}: api_key_transport='query_param' ya no se usa "
+            "(la key iria en la URL); debe ser 'header_goog_api_key'")
     else:
         headers = {"Authorization": f"Bearer {credential}"}
         if provider_id == "anthropic":
@@ -188,7 +197,7 @@ async def _sync_ollama_models(url: str) -> dict:
     try:
         resp = await client.get(url, timeout=15.0)
         resp.raise_for_status()
-    except Exception as e:
+    except Exception as e:  # fail-soft: Ollama caído no es un catálogo vacío: se devuelve 'skipped' explícito y no se toca ninguna fila de model (ni misses ni deprecated)
         logger.warning(f"model_catalog sync provider=ollama unreachable reason={type(e).__name__}: {e}")
         return {"provider_id": "ollama", "fetched": 0, "skipped": f"ollama no alcanzable: {type(e).__name__}"}
 

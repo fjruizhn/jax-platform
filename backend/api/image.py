@@ -9,7 +9,8 @@ from jax_engine.schemas import JAXEvent
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from jax_engine.events import event_bus
 from http_client import get_http_client
-from api.admin.usage import record_usage
+from api.admin.usage import record_usage, validar_ids_de_uso
+from redaccion import recortar_redactado
 
 router = APIRouter(prefix="/api")
 
@@ -40,6 +41,8 @@ class ImageResponse(BaseModel):
 
 @router.post("/image/generate", response_model=ImageResponse)
 async def generate_image(req: ImageRequest, user: AuthUser = Depends(get_current_user)):
+    # Task 7: antes de la credencial y del proveedor (0,04 USD por imagen).
+    validar_ids_de_uso(user.user_id, user.tenant_id)
     try:
         api_key = await resolve_credential_instrumented("openai")
     except CredentialUnavailableError:
@@ -63,13 +66,20 @@ async def generate_image(req: ImageRequest, user: AuthUser = Depends(get_current
             timeout=120.0,
         )
         r.raise_for_status()
+    # Fix wave final (2026-09-15): el texto del proveedor sale al usuario.
+    # Se REDACTA y DESPUES se recorta (recortar_redactado, el mismo criterio
+    # que chat.py::_detalle_502_http), con la credencial de este pedido como
+    # secreto conocido: recortando primero, un secreto que cruzaba el
+    # caracter 200 quedaba partido, sin forma reconocible, y salia en claro.
     except httpx.HTTPStatusError as e:
+        cuerpo = recortar_redactado(e.response.text, 200, (api_key,))
         raise HTTPException(
             status_code=502,
-            detail=f"Image API error {e.response.status_code}: {e.response.text[:200]}",
+            detail=f"Image API error {e.response.status_code}: {cuerpo}",
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Error generando imagen: {str(e)[:200]}")
+        motivo = recortar_redactado(str(e), 200, (api_key,))
+        raise HTTPException(status_code=502, detail=f"Error generando imagen: {motivo}")
 
     data = r.json()
     item = data["data"][0]

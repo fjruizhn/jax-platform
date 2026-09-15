@@ -12,9 +12,11 @@ verdadera.
   que otro test todavía usa.
 - `crear_usuario`/`borrar_usuario` (y el fixture `usuarios` de conftest.py):
   filas descartables para los tests que cambian estado, rol o versión.
-- `tenant_id` sigue saliendo del token. Los tests de chat pasan tenants NO
-  numéricos a propósito: api/chat.py solo entra al camino de memoria semántica
-  cuando user_id Y tenant_id son enteros.
+- `tenant_id` sigue saliendo del token. Desde la Task 7 (2026-09-15)
+  /api/chat y /api/image/generate rechazan con 400 `ids_de_uso_invalidos` un
+  tenant o user no numérico, ANTES del LLM. Los tests de chat pasan un tenant
+  numérico y, para no entrar al camino de memoria semántica, piden el fixture
+  `chat_sin_memoria` (conftest.py) en vez de usar un tenant no numérico.
 - user_id=1 (el superadmin sembrado) no se toca desde ningún test.
 """
 import secrets

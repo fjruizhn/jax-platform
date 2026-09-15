@@ -1,5 +1,11 @@
 import json
+import logging
+
+import aiomysql
+
 from .connection import get_pool
+
+logger = logging.getLogger(__name__)
 
 CREATE_TENANTS = """
 CREATE TABLE IF NOT EXISTS jax_tenants (
@@ -1071,7 +1077,8 @@ async def _seed_providers(cur) -> None:
 
 
 # provider_id -> (api_key_transport, models_list_url). Los 4 OpenAI-
-# compatibles + Gemini (query_param, ya visto en api/admin/keys.py:159-166)
+# compatibles (header_bearer) + Gemini (header_goog_api_key: la key en la
+# cabecera x-goog-api-key, desde T6-2 del 2026-09-15; antes query_param)
 # usan `credential` DB via el transport indicado. anthropic Y ollama tienen
 # sync real pero NINGUNO de los dos usa `credential`/transport de esta
 # tabla — model_catalog.py los resuelve aparte, ver sus ramas explicitas en
@@ -1085,7 +1092,8 @@ _PROVIDER_SYNC_SEED = [
     ("deepseek",  "header_bearer", "https://api.deepseek.com/v1/models"),
     ("moonshot",  "header_bearer", "https://api.moonshot.ai/v1/models"),
     ("zhipu",     "header_bearer", "https://api.z.ai/api/paas/v4/models"),
-    ("gemini",    "query_param",   "https://generativelanguage.googleapis.com/v1beta/models"),
+    # T6-2 (2026-09-15): antes 'query_param' (key en la URL).
+    ("gemini",    "header_goog_api_key", "https://generativelanguage.googleapis.com/v1beta/models"),
     ("anthropic", "header_bearer", "https://api.anthropic.com/v1/models"),
     # ollama: local, sin API key (provider.auth_type='none') — transport
     # queda en el default inerte, model_catalog.py nunca lo lee para este
@@ -1261,8 +1269,10 @@ _COLUMNS = [
     ("jax_users", "must_change_password",
      "ALTER TABLE jax_users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE"),
     # Bloque D (D1.1/D1.3) — divergencia real ya presente en
-    # api/admin/keys.py:158-169 (Gemini usa ?key=, los otros 4 Authorization:
-    # Bearer). models_list_url NULL = sin sync automatico de capa (a)
+    # api/admin/keys.py (Gemini: cabecera x-goog-api-key desde T6-2 del
+    # 2026-09-15 -- valor 'header_goog_api_key', agregado al ENUM en
+    # _ENUM_EXTENSIONS --; los otros 4: Authorization: Bearer). Este ALTER es
+    # el historico de la columna, no se toca. models_list_url NULL = sin sync automatico de capa (a)
     # todavia para ese provider (ollama/anthropic).
     ("provider", "api_key_transport", "ALTER TABLE provider ADD COLUMN api_key_transport ENUM('header_bearer','query_param') NOT NULL DEFAULT 'header_bearer'"),
     ("provider", "models_list_url", "ALTER TABLE provider ADD COLUMN models_list_url VARCHAR(255) NULL"),
@@ -1495,6 +1505,15 @@ _ENUM_EXTENSIONS = [
         "ENUM('ok','provider_error','gate_denied','gate_unreachable',"
         "'unbound','unsupported_transport','probe_error','config_error') NOT NULL",
     ),
+    # T6-2 (2026-09-15): Gemini manda la key en la cabecera x-goog-api-key.
+    # 'query_param' se conserva en el ENUM para que el ALTER no falle sobre
+    # filas viejas; _migrar_gemini_a_cabecera las mueve y model_catalog
+    # rechaza el valor viejo (fail-closed).
+    (
+        "provider", "api_key_transport", "header_goog_api_key",
+        "ALTER TABLE provider MODIFY COLUMN api_key_transport "
+        "ENUM('header_bearer','query_param','header_goog_api_key') NOT NULL DEFAULT 'header_bearer'",
+    ),
 ]
 
 
@@ -1545,6 +1564,68 @@ _INDEXES = [
     ("jax_users", "idx_jax_users_role_status",
      "ALTER TABLE jax_users ADD INDEX idx_jax_users_role_status (role, status)"),
 ]
+
+
+# Fix wave final, item 8 (2026-09-15): GET /api/admin/usage filtra por
+# created_at y agrupa por (facet, model, request_type) o (facet, dia). Sin
+# indice era un scan completo de axioma_usage en cada pedido (gate U29: p95
+# ~2,7 s con 102k filas). Cubriente: el rango de fechas se lee del indice con
+# todas las columnas que suman las dos consultas, sin tocar la fila base.
+# axioma_usage es de la plataforma (CREATE_AXIOMA_USAGE, arriba); jax solo
+# inserta. ALGORITHM=INPLACE, LOCK=NONE explicitos: si MariaDB no puede
+# crearlo en linea, FALLA en vez de caer a COPY, que bloquea los INSERT de
+# record_usage (y de Jacobs/LAS MANOS) mientras copia.
+DDL_INDICE_USO_POR_PERIODO = (
+    "ALTER TABLE axioma_usage ADD INDEX idx_axioma_usage_periodo "
+    "(created_at, facet, model, request_type, tokens_in, tokens_out, cost_usd), "
+    "ALGORITHM=INPLACE, LOCK=NONE"
+)
+
+# Espera maxima por el metadata lock del DDL acotado: el default de MariaDB
+# (lock_wait_timeout) es 86400 s, y una transaccion larga sobre la tabla
+# dejaria el arranque colgado un dia. Mientras el DDL espera su MDL exclusivo,
+# las lecturas y escrituras NUEVAS de la tabla se encolan detras: por eso
+# 30 s, la misma cota que jax/jacobs/store.py.
+_LOCK_WAIT_DDL_SEGUNDOS = 30
+_ER_LOCK_WAIT_TIMEOUT = 1205
+
+
+async def _crear_indice_acotado(cur, tabla: str, indice: str, ddl: str) -> bool:
+    """Corre `ddl` con lock_wait_timeout de 30 s en ESTA sesion y restaura
+    el valor previo pase lo que pase. True si lo creo.
+
+    Politica de jax/jacobs/store.py::_crear_indice_acotado: si la espera vence
+    (1205), ERROR en el log con el indice y el motivo, y el arranque SIGUE --
+    el proximo arranque lo reintenta, porque _index_exists ve que falta. El
+    indice es de rendimiento, no un contrato: sin el, las consultas de uso
+    siguen correctas (scan). Cualquier OTRO error (INPLACE o LOCK=NONE no
+    soportados, sintaxis) SUBE: no es una espera, es un DDL que no puede correr
+    como se declaro."""
+    await cur.execute("SELECT @@SESSION.lock_wait_timeout")
+    (previo,) = await cur.fetchone()
+    await cur.execute("SET SESSION lock_wait_timeout=%s", (_LOCK_WAIT_DDL_SEGUNDOS,))
+    try:
+        await cur.execute(ddl)
+        return True
+    except aiomysql.OperationalError as e:  # fail-soft: el indice solo acelera; las consultas de uso siguen correctas como scan; 1205 se reintenta en el proximo arranque y todo otro error sube
+        if not (e.args and e.args[0] == _ER_LOCK_WAIT_TIMEOUT):
+            raise
+        logger.error(
+            "run_migrations: no se creo %s en %s -- otra transaccion tiene la tabla y "
+            "vencio la espera de %d s (%s). El arranque sigue SIN el indice (las "
+            "consultas de uso hacen scan); se reintenta en el proximo arranque.",
+            indice, tabla, _LOCK_WAIT_DDL_SEGUNDOS, e,
+        )
+        return False
+    finally:
+        await cur.execute("SET SESSION lock_wait_timeout=%s", (int(previo),))
+
+
+async def _indice_de_uso_por_periodo(cur) -> None:
+    """Idempotente: solo crea idx_axioma_usage_periodo si falta."""
+    if not await _index_exists(cur, "axioma_usage", "idx_axioma_usage_periodo"):
+        await _crear_indice_acotado(
+            cur, "axioma_usage", "idx_axioma_usage_periodo", DDL_INDICE_USO_POR_PERIODO)
 
 
 async def _index_exists(cur, table_name: str, index_name: str) -> bool:
@@ -1996,6 +2077,16 @@ async def _auditoria_de_catalogo_sin_fk_duras(cur, tabla: str = "model_catalog_a
     )
 
 
+async def _migrar_gemini_a_cabecera(cur) -> None:
+    """T6-2 (2026-09-15): la key de Gemini viajaba en `?key=` y terminaba en
+    textos de error y logs. Toda fila con el transporte viejo pasa a la
+    cabecera. Idempotente (sin filas viejas, no toca nada)."""
+    await cur.execute(
+        "UPDATE provider SET api_key_transport='header_goog_api_key' "
+        "WHERE api_key_transport='query_param'"
+    )
+
+
 async def _indices_de_model_binding_proposal(cur) -> None:
     """PR-L ronda 2: los índices de list_proposals en una base donde la tabla
     ya existía sin ellos (en una base nueva los trae el CREATE). Idempotente."""
@@ -2032,12 +2123,14 @@ async def run_migrations():
             for table_name, index_name, ddl in _INDEXES:
                 if not await _index_exists(cur, table_name, index_name):
                     await cur.execute(ddl)
+            await _indice_de_uso_por_periodo(cur)
 
             await _drop_axioma_artifacts(cur)
             await _seed_providers(cur)
             await _migrate_user_api_keys_to_credential(cur)
             await _seed_facets(cur)
             await _seed_provider_sync_config(cur)
+            await _migrar_gemini_a_cabecera(cur)
             await _seed_models_and_backfill(cur)
             await _fix_anthropic_sonnet_alias(cur)
             await _seed_motors_and_capabilities(cur)
@@ -2062,6 +2155,10 @@ async def run_migrations():
             # nadie escriba en ella (PR-L ronda 1).
             await _auditoria_de_catalogo_sin_fk_duras(cur)
             await _indices_de_model_binding_proposal(cur)
+            # Ruling T6-6 (2026-09-15): idx_jacobs_pipelines_duenio NO se crea
+            # aca -- jacobs_pipelines es del repo jax, y su indice vive en
+            # jax/jacobs/store.py::init_tables(). La plataforma no corre DDL
+            # sobre tablas de jax.
             # Despues de _seed_models_and_backfill: las filas de `model` tienen
             # que existir para poder actualizarlas.
             await _seed_model_max_tokens_param(cur)

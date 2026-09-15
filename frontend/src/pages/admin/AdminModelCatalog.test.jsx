@@ -35,6 +35,37 @@ beforeEach(() => {
   localStorage.clear()
 })
 
+// Task 3 (2026-09-15): /admin/models/sync decía ok:true aunque fallaran todos
+// los providers, y la pantalla no leía el cuerpo. Ahora el backend manda `ok`
+// calculado, `code: 'sync_con_errores'` y la lista de lo que falló.
+describe('AdminModelCatalog -- un sync con errores no se ve como éxito', () => {
+  it('el texto existe en los dos idiomas y nombra lo que falló', () => {
+    expect(es.sync_con_errores('openai, models.dev')).toContain('openai, models.dev')
+    expect(en.sync_con_errores('openai, models.dev')).toContain('openai, models.dev')
+  })
+
+  it('ok:false nombra los providers que fallaron y el enriquecimiento', async () => {
+    api.post.mockResolvedValue({ data: {
+      ok: false, code: 'sync_con_errores', providers_fallidos: ['openai', 'gemini'],
+      enrich_fallido: true, providers: [], enrich: { error: 'x' },
+    } })
+    renderCatalogo()
+    fireEvent.click(screen.getByText(es.adminModelsSync))
+    expect(await screen.findByText(es.sync_con_errores('openai, gemini, models.dev'))).toBeInTheDocument()
+  })
+
+  it('ok:true no muestra ningún aviso de error', async () => {
+    api.post.mockResolvedValue({ data: {
+      ok: true, providers_fallidos: [], enrich_fallido: false, providers: [], enrich: {},
+    } })
+    renderCatalogo()
+    fireEvent.click(screen.getByText(es.adminModelsSync))
+    await screen.findByText(es.adminModelsSync)
+    expect(screen.queryByText(/openai|models\.dev/)).not.toBeInTheDocument()
+    expect(screen.queryByText(es.adminModelsSyncError)).not.toBeInTheDocument()
+  })
+})
+
 describe('AdminModelCatalog -- una aprobación rechazada se ve', () => {
   it('los textos existen en los dos idiomas', () => {
     for (const clave of ['modelo_sin_contrato_de_dispatch', 'adminProposalsDecideError']) {

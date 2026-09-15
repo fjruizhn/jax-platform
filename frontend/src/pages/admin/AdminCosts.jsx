@@ -84,6 +84,15 @@ export default function AdminCosts() {
         </div>
       </div>
 
+      {/* Task 7: filas que record_usage no pudo escribir (por proceso, desde
+          el arranque). Fuera del condicional de filas: si se perdieron todas,
+          "sin datos" solo sería mentira. */}
+      {data?.registros_perdidos > 0 && (
+        <p role="status" className="text-xs font-semibold text-aviso bg-aviso-fondo border border-aviso-borde rounded px-3 py-2 mb-4">
+          {t.adminCostsRegistrosPerdidos(data.registros_perdidos)}
+        </p>
+      )}
+
       {data?.by_facet.length > 0 ? (
         <>
           <div className="rounded-lg border border-borde overflow-hidden mb-6">

@@ -69,5 +69,8 @@ def test_test_key_gemini_branch_uses_the_shared_client(client, monkeypatch):
     assert resp.json()["ok"] is True
     assert len(fake.calls) == 1
     url, kwargs = fake.calls[0]
-    assert url == "https://generativelanguage.googleapis.com/v1beta/models?key=gk-fake-key"
+    # T6-2 (2026-09-15): la key va en la cabecera x-goog-api-key, nunca en la URL.
+    assert url == "https://generativelanguage.googleapis.com/v1beta/models"
+    assert "key=" not in url
+    assert kwargs["headers"] == {"x-goog-api-key": "gk-fake-key"}
     assert kwargs["timeout"] == 10.0

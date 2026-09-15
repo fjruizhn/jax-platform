@@ -135,7 +135,7 @@ async def _run_command(
         await event_bus.publish(done_event)
         await engine_state.set_facet_status("hyde", "idle", tenant_id, user_id)
 
-    except Exception as e:
+    except Exception as e:  # fail-soft: tarea de fondo: el fallo se publica como command_completed status='failed' y se escribe en result_file; no hay falso éxito
         err = str(e)
         result_file.write_text(f"Error ejecutando tarea: {err}")
         fail_event = JAXEvent(

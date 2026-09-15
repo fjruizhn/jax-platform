@@ -62,3 +62,40 @@ describe('AdminCosts -- locale de números (re-revisión, sin diferidos)', () =>
     expect(await screen.findByText('890,123')).toBeInTheDocument()
   })
 })
+
+// Task 7 (2026-09-15): GET /api/admin/usage expone registros_perdidos (filas
+// que record_usage no pudo escribir desde el arranque del proceso). Con > 0
+// el total esta incompleto y la vista lo tiene que decir.
+describe('AdminCosts -- registros perdidos (Task 7)', () => {
+  it('con registros_perdidos > 0 avisa "total incompleto: N registros perdidos"', async () => {
+    api.get.mockResolvedValue({ data: { ...DATA, registros_perdidos: 3 } })
+    renderCosts()
+    expect(await screen.findByText('total incompleto: 3 registros perdidos')).toBeInTheDocument()
+  })
+
+  it('en inglés el aviso sale traducido con el número interpolado', async () => {
+    localStorage.setItem('jax_lang', 'en')
+    api.get.mockResolvedValue({ data: { ...DATA, registros_perdidos: 7 } })
+    renderCosts()
+    expect(await screen.findByText('incomplete total: 7 records lost')).toBeInTheDocument()
+  })
+
+  it('con registros_perdidos = 0 no hay aviso', async () => {
+    api.get.mockResolvedValue({ data: { ...DATA, registros_perdidos: 0 } })
+    renderCosts()
+    await screen.findByText('gpt-x')
+    expect(screen.queryByText(/registros perdidos/)).not.toBeInTheDocument()
+  })
+
+  it('sin el campo (backend viejo) no hay aviso', async () => {
+    renderCosts()
+    await screen.findByText('gpt-x')
+    expect(screen.queryByText(/registros perdidos/)).not.toBeInTheDocument()
+  })
+
+  it('el aviso sale aunque no haya filas: si se perdieron todas, "sin datos" mentiría solo', async () => {
+    api.get.mockResolvedValue({ data: { by_facet: [], chart_data: null, registros_perdidos: 2 } })
+    renderCosts()
+    expect(await screen.findByText('total incompleto: 2 registros perdidos')).toBeInTheDocument()
+  })
+})

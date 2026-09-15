@@ -34,10 +34,16 @@ distinto del crash ya cubierto dentro de la región protegida) y se
 renombró `test_chat_endpoint_enqueues_shadow_validation` a
 `test_chat_endpoint_does_not_break_when_shadow_validation_is_enqueued`
 porque el nombre original implicaba que ejercitaba el camino de
-escritura a DB, cosa que no puede: el `user_id` no numérico del token
+escritura a DB, cosa que no puede: la memoria semántica apagada (fixture
+chat_sin_memoria; hasta la Task 7 era el `user_id` no numérico del token)
 hace que `conv_uuid` quede `None` de forma estructural (ver el
 docstring del test).
 """
+import pytest
+
+# Task 7: tenant numerico + memoria apagada de forma explicita (conftest.py).
+pytestmark = pytest.mark.usefixtures("chat_sin_memoria")
+
 from tests.identidades import token_de
 import asyncio
 import json
@@ -305,10 +311,12 @@ def test_shadow_validation_skips_when_conv_uuid_is_none(client):
 
 def test_chat_endpoint_does_not_break_when_shadow_validation_is_enqueued(client):
     # OJO — esto NO prueba que la fila de shadow_messages se haya escrito.
-    # El user_id del token es no numérico a propósito (mismo patrón que
+    # La memoria semántica está apagada a propósito con el fixture
+    # chat_sin_memoria (Task 7; antes era un user_id no numérico, que el
+    # chat ahora rechaza antes del LLM -- mismo patrón que
     # test_chat_contract_wrapper.py: "así aislamos el único llamado
-    # saliente que nos importa"), lo que hace que `int(user_id)` falle en
-    # chat(), `conv_uuid` quede None, y run_shadow_validation() retorne
+    # saliente que nos importa"), lo que hace que `_ensure_memory()` dé
+    # False, `conv_uuid` quede None, y run_shadow_validation() retorne
     # de inmediato sin tocar la DB (ver
     # test_shadow_validation_skips_when_conv_uuid_is_none) —
     # estructuralmente no puede ejercitar el camino de escritura, con
@@ -323,7 +331,7 @@ def test_chat_endpoint_does_not_break_when_shadow_validation_is_enqueued(client)
     import http_client
     from tests.test_chat_contract_wrapper import _FakePostClient, _FakeResponse
 
-    token = token_de(client, "test-shadow-e2e-user", "operator", "test-shadow-e2e-tenant")
+    token = token_de(client, "test-shadow-e2e-user", "operator", "1")
     fake = _FakePostClient(_FakeResponse({
         "choices": [{"message": {"content":
             '{"claim": [], "analysis": "no hay nada que afirmar", "judgment": null}'}}],
@@ -359,7 +367,7 @@ def test_chat_endpoint_survives_shadow_validation_import_failure(client):
     import http_client
     from tests.test_chat_contract_wrapper import _FakePostClient, _FakeResponse
 
-    token = token_de(client, "test-shadow-import-fail-user", "operator", "test-shadow-import-fail-tenant")
+    token = token_de(client, "test-shadow-import-fail-user", "operator", "1")
     fake = _FakePostClient(
         _FakeResponse({
             "choices": [{"message": {"content":

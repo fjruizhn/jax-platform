@@ -160,7 +160,7 @@ class JAXEngineState:
         try:
             r = await client.get(f"{LAS_MANOS_URL}/health", timeout=5.0)
             alive = r.status_code == 200
-        except Exception:
+        except Exception:  # fail-soft: cualquier error de la sonda ES la señal 'caído' (alive=False) y se emite las_manos_health_changed
             alive = False
 
         if alive != self._state.las_manos_alive:
@@ -225,26 +225,14 @@ class JAXEngineState:
                 # pipeline que termina SOLA (no cancelada) nunca lo hacía,
                 # así que cada una consumía uno de los 3 cupos concurrentes
                 # para siempre.
-                try:
-                    await resource_manager.release_pipeline(pipeline.tenant_id, pid)
-                except Exception:
-                    # fail-open real (encontrado en triage de P10, 2026-08-19):
-                    # remove_pipeline() ya sacó esta pipeline de active_pipelines,
-                    # así que si release_pipeline() falla acá, nada la va a
-                    # reintentar — es exactamente el leak de cupo que el
-                    # comentario de arriba documenta, reproducido por esta
-                    # excepción en vez de por el bug original. Logueado con
-                    # el contexto completo para que se pueda liberar a mano;
-                    # no se re-lanza porque tumbaría el polling del resto de
-                    # las pipelines activas en este mismo ciclo.
-                    logger.error(
-                        "release_pipeline falló tras completar pipeline %s "
-                        "(tenant=%s) — el cupo concurrente puede haber "
-                        "quedado leakeado, requiere intervención manual",
-                        pid, pipeline.tenant_id, exc_info=True,
-                    )
+                # Sin try propio (Task 3, 2026-09-15, clase c del triage):
+                # release_pipeline es un set.discard sobre un defaultdict(set)
+                # bajo un asyncio.Lock (resource_manager.py) -- no puede lanzar
+                # Exception. El try que habia aca describia un riesgo que el
+                # codigo no tiene.
+                await resource_manager.release_pipeline(pipeline.tenant_id, pid)
 
-        except Exception:  # fail-soft: cubre fetch/parse HTTP de UNA pipeline en _poll_one_pipeline; un fallo transitorio no debe tumbar el polling de las demás pipelines activas en este ciclo — la liberación de cupo, que sí es crítica, ya tiene su propio manejo explícito arriba
+        except Exception:  # fail-soft: cubre fetch/parse HTTP de UNA pipeline en _poll_one_pipeline; un fallo transitorio no debe tumbar el polling de las demás pipelines activas en este ciclo — la liberación de cupo de arriba es en memoria y no lanza (resource_manager.py)
             pass
 
     def start_background_tasks(self):

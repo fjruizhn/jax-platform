@@ -13,6 +13,11 @@ validated_at NULL. Ver también shadow_validation.py::_insert_shadow_message
 (clamp facet[:30], defensa en profundidad para cualquier otro caller de
 run_shadow_validation).
 """
+import pytest
+
+# Task 7: tenant numerico + memoria apagada de forma explicita (conftest.py).
+pytestmark = pytest.mark.usefixtures("chat_sin_memoria")
+
 from tests.identidades import token_de
 import http_client
 import httpx
@@ -23,7 +28,7 @@ def test_chat_endpoint_rejects_overlong_unknown_facet(client):
     # Reproduce el bug original: una faceta inventada, más larga que la
     # columna shadow_messages.facet VARCHAR(30), nunca debería llegar a
     # _invoke_facet ni a la validación de shadow — se rechaza acá mismo.
-    token = token_de(client, "test-facet-validation-overlong-user", "operator", "test-facet-validation-overlong-tenant")
+    token = token_de(client, "test-facet-validation-overlong-user", "operator", "1")
     resp = client.post(
         "/api/chat",
         json={"message": "hola", "facet": "x" * 100},
@@ -37,7 +42,7 @@ def test_chat_endpoint_rejects_short_but_unrecognized_facet(client):
     # Una faceta corta (cabría sin problema en VARCHAR(30)) pero que no
     # está en config["personalities"] también debe rechazarse — el bug no
     # es solo de longitud, es de "cualquier facet no reconocida se cuela".
-    token = token_de(client, "test-facet-validation-unknown-user", "operator", "test-facet-validation-unknown-tenant")
+    token = token_de(client, "test-facet-validation-unknown-user", "operator", "1")
     resp = client.post(
         "/api/chat",
         json={"message": "hola", "facet": "no_existe"},
@@ -52,7 +57,7 @@ def test_chat_endpoint_accepts_known_facet_and_round_trips_it(client):
     # sigue funcionando exactamente igual que antes del fix — el request
     # se resuelve normalmente y el campo facet vuelve intacto en la
     # respuesta.
-    token = token_de(client, "test-facet-validation-known-user", "operator", "test-facet-validation-known-tenant")
+    token = token_de(client, "test-facet-validation-known-user", "operator", "1")
     fake = _FakePostClient(
         _FakeResponse({
             "choices": [{"message": {"content":
@@ -84,7 +89,7 @@ def test_chat_endpoint_accepts_none_facet_and_auto_routes(client):
     # por construcción, así que esto nunca debería dar 400. La respuesta
     # falsa trae ambas formas (Ollama y OpenAI-compat) porque no sabemos
     # de antemano a qué faceta va a rutear _auto_route.
-    token = token_de(client, "test-facet-validation-none-user", "operator", "test-facet-validation-none-tenant")
+    token = token_de(client, "test-facet-validation-none-user", "operator", "1")
     fake = _FakePostClient(_FakeResponse({
         "message": {"content":
             '{"claim": [], "analysis": "auto-ruteado", "judgment": null}'},
@@ -114,7 +119,7 @@ class _FakeFailingPostClient:
 
 
 def test_chat_endpoint_denies_hipatia_when_authorize_facet_returns_false(client):
-    token = token_de(client, "test-authz-denied-user", "operator", "test-authz-denied-tenant")
+    token = token_de(client, "test-authz-denied-user", "operator", "1")
     fake = _FakePostClient(_FakeResponse({"allowed": False, "reason": "caller no autorizado"}))
     original = http_client._client
     http_client._client = fake
@@ -139,7 +144,7 @@ def test_chat_endpoint_denies_hipatia_logs_the_reason_from_authorize_facet(clien
     # usuario. Ver tambien test_chat_endpoint_denies_hipatia_when_las_manos_is_down
     # para el caso "las_manos no respondio en absoluto" -- son casos
     # distintos y el fix los loguea distinto a proposito.
-    token = token_de(client, "test-authz-logs-user", "operator", "test-authz-logs-tenant")
+    token = token_de(client, "test-authz-logs-user", "operator", "1")
     fake = _FakePostClient(_FakeResponse({"allowed": False, "reason": "caller no autorizado"}))
     original = http_client._client
     http_client._client = fake
@@ -160,7 +165,7 @@ def test_chat_endpoint_denies_hipatia_when_las_manos_is_down(client):
     """El caso critico: las_manos no responde en absoluto (ConnectError,
     no un 4xx/5xx prolijo). Fail-closed exige que esto tambien deniegue,
     no que se despache igual porque "no se pudo verificar"."""
-    token = token_de(client, "test-authz-down-user", "operator", "test-authz-down-tenant")
+    token = token_de(client, "test-authz-down-user", "operator", "1")
     original = http_client._client
     http_client._client = _FakeFailingPostClient()
     try:
@@ -177,7 +182,7 @@ def test_chat_endpoint_denies_hipatia_when_las_manos_is_down(client):
 
 
 def test_chat_endpoint_allows_hipatia_when_authorize_facet_returns_true(client):
-    token = token_de(client, "test-authz-allowed-user", "operator", "test-authz-allowed-tenant")
+    token = token_de(client, "test-authz-allowed-user", "operator", "1")
 
     class _SequencedFakeClient:
         """Primera llamada = /motor/authorize-facet (allowed=True), segunda
@@ -242,7 +247,7 @@ def test_chat_endpoint_does_not_authorize_a_non_governed_facet(client):
     arriba para responder con el modelo LOCAL, que es justo el camino que
     tiene que seguir funcionando cuando el resto no.
     """
-    token = token_de(client, "test-nogov-user", "operator", "test-nogov-tenant")
+    token = token_de(client, "test-nogov-user", "operator", "1")
     fake = _UrlRecordingClient(_FakeResponse({
         "message": {"content":
             '{"claim": [], "analysis": "local, sin gate", "judgment": null}'},

@@ -6,6 +6,7 @@ import logging
 import time
 
 from db.connection import get_pool
+from redaccion import redactar_secretos, texto_de_error
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,14 @@ async def record_facet_health(
         raise ValueError(f"source invalido: {source!r}")
 
     if detail is not None:
-        detail = detail[:_DETAIL_MAX]
+        # Task 6 S1 (2026-09-15): redactar en el PUNTO DE ESCRITURA -- todo
+        # escritor (chat y sonda) pasa por aca, asi que un llamador nuevo que
+        # mande str(e) crudo no puede guardar un secreto. Defensa en
+        # profundidad: la key de Gemini viaja en la cabecera x-goog-api-key
+        # desde T6-2, y las cabeceras no aparecen en str(e) de httpx; esto
+        # tapa lo que igual llegue en un texto. Redactar ANTES de truncar: una
+        # key cortada a la mitad ya no tiene forma reconocible.
+        detail = redactar_secretos(detail)[:_DETAIL_MAX]
 
     try:
         pool = await get_pool()
@@ -97,7 +105,7 @@ async def record_facet_health(
     except Exception as e:  # fail-soft: registrar salud no puede tumbar un turno de chat ya respondido; la ausencia de fila se lee como `unknown` rio abajo, nunca como `ok`
         global _write_failures, _last_write_error
         _write_failures += 1
-        _last_write_error = f"{type(e).__name__}: {e}"[:_DETAIL_MAX]
+        _last_write_error = texto_de_error(e)[:_DETAIL_MAX]
         # Prefijo estable: se cuenta desde journalctl sin depender del endpoint.
         logger.warning(
             "facet_health_write_failed facet=%s outcome=%s source=%s total=%d",

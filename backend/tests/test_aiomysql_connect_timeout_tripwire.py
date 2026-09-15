@@ -208,7 +208,7 @@ def _hallazgos_en(path: Path) -> list[str]:
             continue
         try:
             nombre = ast.unparse(nodo.func)
-        except Exception:
+        except Exception:  # fail-soft: ast.unparse no aplica a esta forma de llamada; se reporta con el nombre de la forma, el tripwire sigue evaluando el timeout
             nombre = forma
         tiene_timeout = any(kw.arg == "connect_timeout" for kw in nodo.keywords)
         if not tiene_timeout:

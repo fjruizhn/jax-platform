@@ -13,7 +13,7 @@ from typing import Literal, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import httpx
-from http_client import get_http_client
+from http_client import cabeceras_gemini, get_http_client
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from facet_resolver import resolve_facet, FacetUnavailableError
 # ModelDispatchConfigError y los dos validadores del contrato de dispatch
@@ -32,8 +32,9 @@ from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
 from jax_engine.events import event_bus
 from jax_engine.state import engine_state, LAS_MANOS_URL
-from api.admin.usage import record_usage
+from api.admin.usage import record_usage, validar_ids_de_uso
 from db.connection import get_pool
+from redaccion import recortar_redactado, redactar_secretos, texto_de_error
 from facet_health import (
     record_facet_health,
     OUTCOME_OK,
@@ -102,18 +103,36 @@ _load_jax_env()
 # semántica (y con ella shadow validation, que no encola sin conv_uuid) en
 # vez de degradar solo el bypass de completeness. Cada import falla solo.
 sys.path.insert(0, os.path.expanduser("~/jax"))
-try:
-    from jax.memory.db import MemoryDB
-except Exception:
-    MemoryDB = None
+def _importar_memorydb():
+    """Task 3 (2026-09-15, clase b): antes era `except Exception` MUDO -- un
+    error dentro de jax.memory.db dejaba MemoryDB = None sin rastro. Ahora
+    solo un ImportError es "memoria ausente" (logueado con traceback); un
+    SyntaxError u otro bug del repo jax se propaga y el servicio no arranca
+    en silencio sin memoria. Corre una vez, al importar el modulo."""
+    try:
+        from jax.memory.db import MemoryDB as clase
+    except ImportError:  # fail-soft: el chat sigue sin memoria ni shadow validation; el fallo queda logueado con traceback
+        logging.getLogger(__name__).exception(
+            "MemoryDB no importable: chat SIN memoria ni shadow validation")
+        return None
+    return clase
+
+
+MemoryDB = _importar_memorydb()
 try:
     from jax.memory.db import detect_completeness_intent
-except Exception:
+except Exception:  # fail-soft: sin la función auxiliar solo se pierde el bypass de completeness; MemoryDB se importa por separado y sigue viva
+    logging.getLogger(__name__).warning(
+        "detect_completeness_intent no importable: chat sin bypass de completeness", exc_info=True)
     def detect_completeness_intent(text: str) -> str | None:
         return None
 
 _memory = None              # instancia única (lazy)
 _memory_ready = False
+# Fix wave final (2026-09-15): un JAX_DB_PORT mal formado es un error de
+# configuracion que no cambia mientras el proceso vive -- se avisa en ERROR
+# una sola vez (con el motivo) y los turnos siguientes quedan en DEBUG.
+_puerto_invalido_avisado = False
 # "user_id:project_id" -> conversation_uuid. OrderedDict como LRU: sin cota,
 # cada par (usuario, proyecto) que alguna vez chateó quedaba abierto acá para
 # siempre. Al superar MAX_TRACKED_CONVERSATIONS se cierra (end_conversation)
@@ -125,7 +144,7 @@ MAX_TRACKED_CONVERSATIONS = 500
 
 async def _ensure_memory() -> bool:
     """Conecta (lazy) a la MISMA jax_memory del REPL. False si falla (no rompe)."""
-    global _memory, _memory_ready
+    global _memory, _memory_ready, _puerto_invalido_avisado
     if MemoryDB is None:
         return False
     if _memory_ready and _memory and _memory.is_connected:
@@ -146,15 +165,31 @@ async def _ensure_memory() -> bool:
             "memoria jax-dual-mariadb-instances). Sourceá /etc/jax/.env o "
             "exportalos a mano antes de conectar."
         )
+    # Task 3 (2026-09-15, clase b): int(port) vivia dentro del try de abajo,
+    # asi que un JAX_DB_PORT mal formado apagaba la memoria SIN log. Se
+    # valida aparte, con el mismo costo que antes (un int() por llamada).
+    # Fix wave final: el ERROR sale UNA vez por proceso (antes, uno por turno).
+    try:
+        puerto = int(port)
+    except ValueError as e:  # fail-soft: puerto mal formado = turno sin memoria; ERROR una vez por proceso con el valor y el motivo, DEBUG en cada turno siguiente
+        if not _puerto_invalido_avisado:
+            _puerto_invalido_avisado = True
+            logger.error(
+                "JAX_DB_PORT=%r no es un puerto (%s): memoria del chat DESACTIVADA "
+                "en este proceso hasta corregir la config y reiniciar", port, e)
+        else:
+            logger.debug("JAX_DB_PORT=%r no es un puerto: turno sin memoria (ERROR ya logueado)", port)
+        _memory_ready = False
+        return False
     try:
         _memory_ready = await _memory.connect(
             host=host,
             user=os.getenv("JAX_DB_USER", ""),
             password=os.getenv("JAX_DB_PASSWORD", ""),
             database=os.getenv("JAX_DB_NAME", "jax_memory"),
-            port=int(port),
+            port=puerto,
         )
-    except Exception:
+    except Exception:  # fail-soft: DB de memoria caída = turno sin memoria; MemoryDB.connect ya loguea la causa
         _memory_ready = False
     return _memory_ready
 
@@ -216,7 +251,8 @@ async def _semantic_context(user_text: str, user_id: int, project_id,
             facts = await _memory.get_facts(
                 only_unverified=False, fact_type=tipo_completeness, limit=20,
                 user_id=user_id, project_id=project_id)
-        except Exception:
+        except Exception:  # fail-soft: sin facts el turno responde sin ese bloque de contexto; no se inventa contenido
+            logger.warning("get_facts (completeness) falló: turno sin bloque de facts", exc_info=True)
             facts = None
         if facts:
             lineas_facts = [f"- {f['fact_text']}" for f in facts]
@@ -229,7 +265,8 @@ async def _semantic_context(user_text: str, user_id: int, project_id,
         similares = await _memory.search_similar_messages(
             user_text, limit=5, user_id=user_id, project_id=project_id,
             recent_history=recent_history)
-    except Exception:
+    except Exception:  # fail-soft: memoria semántica caída = turno sin contexto previo, mismo contrato que MemoryDB (devuelve [] ante fallo)
+        logger.warning("search_similar_messages falló: turno sin contexto semántico", exc_info=True)
         similares = []
     # Fail-soft tambien al CONSUMIR, no solo al consultar: una fila con
     # distancia inutilizable (None o NaN -- embeddings "vector cero", ver
@@ -652,7 +689,7 @@ async def _build_grounding() -> "governance_grounding.Snapshot | governance_grou
     que sería indistinguible de "no hay capabilities"."""
     try:
         return await _build_snapshot_or_raise()
-    except Exception as e:
+    except Exception as e:  # fail-soft: se convierte en SnapshotError explícito (sha='ERROR' en el validador), nunca en snapshot vacío; logueado con traceback
         logger.exception("no se pudo construir el snapshot de grounding")
         return governance_grounding.SnapshotError(f"{type(e).__name__}: {e}")
 
@@ -712,7 +749,8 @@ async def _call_gemini(
     system_prompt: str, history: list[dict], message: str,
     on_response=None,
 ) -> tuple[str, int, int]:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    # T6-2: la key va en la cabecera, nunca en la URL.
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     contents = []
     for h in history:
         role = "user" if h["role"] == "user" else "model"
@@ -724,7 +762,7 @@ async def _call_gemini(
         "tools": [{"googleSearch": {}}],
     }
     client = await get_http_client()
-    r = await client.post(url, json=body, timeout=120.0)
+    r = await client.post(url, json=body, headers=cabeceras_gemini(api_key), timeout=120.0)
     r.raise_for_status()
     data = r.json()
     if on_response:
@@ -786,7 +824,7 @@ async def _record_resolved_version_from_response(facet_key: str, data: dict) -> 
         return
     try:
         await model_catalog.record_resolved_version(facet_key, resolved)
-    except Exception as e:
+    except Exception as e:  # fail-soft: telemetría de versión resuelta; la respuesta del facet ya existe y no depende de este registro
         logger.warning(f"resolved_version capture failed facet={facet_key} reason={type(e).__name__}")
 
 
@@ -842,7 +880,7 @@ async def _invoke_facet_dispatch(
                     f"authorize-facet denied facet={facet} caller={_JAX_PLATFORM_CHAT_CALLER} "
                     f"reason={body.get('reason')!r}"
                 )
-        except Exception as e:
+        except Exception as e:  # fail-soft: fail-CLOSED -- cualquier error deniega (allowed=False, OUTCOME_GATE_UNREACHABLE); no se sigue sin autorización
             # Fail-closed (P10): cualquier falla -- timeout, conexión
             # rechazada, respuesta inesperada -- deniega. Nunca "no pude
             # verificar, sigo igual". Logueado por separado del caso de
@@ -924,7 +962,7 @@ async def _invoke_facet(
         # real del proveedor -- por eso config_error es un outcome propio,
         # no provider_error.
         await record_facet_health(
-            facet, OUTCOME_CONFIG_ERROR, source, f"{type(e).__name__}: {e}")
+            facet, OUTCOME_CONFIG_ERROR, source, texto_de_error(e))
         # ERROR en el log ADEMÁS de la excepción: el 502 que ve el usuario
         # trunca a 200 chars, el operador necesita el mensaje completo (trae
         # el UPDATE que siembra la fila). Vive acá y no en los validadores
@@ -939,11 +977,23 @@ async def _invoke_facet(
         logger.error(f"dispatch abortado: facet={facet!r} source={source!r}: {e}")
         raise            # SIEMPRE re-lanza: no puede volverse fail-open
     except Exception as e:
+        # Task 6 S1: texto_de_error redacta. Defensa en profundidad: la key
+        # de Gemini va en la cabecera x-goog-api-key (T6-2) y str(e) de un
+        # HTTPStatusError trae la URL, no las cabeceras.
         await record_facet_health(
-            facet, OUTCOME_PROVIDER_ERROR, source, f"{type(e).__name__}: {e}")
+            facet, OUTCOME_PROVIDER_ERROR, source, texto_de_error(e))
         raise            # SIEMPRE re-lanza: no puede volverse fail-open
     await record_facet_health(facet, outcome, source)
     return texto, usage
+
+
+def _detalle_502_http(facet: str, e: httpx.HTTPStatusError) -> str:
+    """Texto del 502 que ve el usuario (y que va al bus) cuando el proveedor
+    responde con error. Fix round 1 (review de 3bed155): REDACTAR y DESPUÉS
+    recortar -- recortando antes, una key que cruzaba el caracter 200 quedaba
+    cortada, sin forma reconocible, y su prefijo salía en claro."""
+    cuerpo = recortar_redactado(e.response.text, 200)
+    return f"Error HTTP {e.response.status_code} en {facet}: {cuerpo}"
 
 
 def _update_history(user_id: str, user_msg: str, assistant_msg: str):
@@ -973,6 +1023,9 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     facet = req.facet if req.facet else _auto_route(req.message)
     tenant_id = user.tenant_id
     user_id = user.user_id
+    # Task 7: ids no numericos se cortan ACA, antes de la memoria y del LLM --
+    # si no, el turno se paga y la fila de uso se pierde en el INSERT.
+    validar_ids_de_uso(user_id, tenant_id)
     timestamp = utc_ahora().isoformat() + "Z"
 
     # --- Memoria semántica (misma jax_memory que el REPL) — best-effort -----
@@ -1015,13 +1068,17 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
             facet, config, user_id, req.message, semantic_context, grounding=grounding)
         is_canned = usage is None
     except httpx.HTTPStatusError as e:
-        detail = f"Error HTTP {e.response.status_code} en {facet}: {e.response.text[:200]}"
+        # Task 6 S1: el cuerpo del proveedor no deberia repetir la key, pero
+        # este texto sale al usuario y al bus -- se redacta igual (y antes de
+        # recortar: ver _detalle_502_http).
+        detail = _detalle_502_http(facet, e)
         await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail[:100])
         await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
         raise HTTPException(status_code=502, detail=detail)
     except Exception as e:
-        detail = f"Error en {facet}: {str(e)[:200]}"
-        await engine_state.set_facet_status(facet, "error", tenant_id, user_id, str(e)[:100])
+        motivo = redactar_secretos(str(e))
+        detail = f"Error en {facet}: {motivo[:200]}"
+        await engine_state.set_facet_status(facet, "error", tenant_id, user_id, motivo[:100])
         await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
         raise HTTPException(status_code=502, detail=detail)
 
@@ -1073,7 +1130,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         # la palabra "None", no el valor fail-closed real.
         origin = req.origin or "unattributed"
         add_safe_task(background_tasks, run_shadow_validation, conv_uuid, shadow_message_id, facet, contract, grounding, origin)
-    except Exception:
+    except Exception:  # fail-soft: la respuesta ya se guardó y se transmitió; encolar la medición no puede tumbar el turno; logueado con traceback
         logger.exception("no se pudo encolar shadow validation")
 
     return ChatResponse(

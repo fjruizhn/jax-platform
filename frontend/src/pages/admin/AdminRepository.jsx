@@ -1,6 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
+import { useJaxStore } from '../../store/useJaxStore'
+import ConfirmacionSuma from '../../components/ConfirmacionSuma'
+import Dialogo from '../../components/Dialogo'
 import ReactMarkdown from 'react-markdown'
 
 const FOLDER_LABELS = {
@@ -12,9 +15,28 @@ const FOLDER_LABELS = {
 
 export default function AdminRepository() {
   const { t, lang } = useI18n()
+  const addToast = useJaxStore((s) => s.addToast)
   const [data, setData] = useState(null)
   const [preview, setPreview] = useState(null)
   const [activeFolder, setActiveFolder] = useState('documents')
+  // Task 1 (2026-09-15): la confirmación de borrado pasa por ConfirmacionSuma
+  // en vez de window.confirm, mismo patrón que la baja en AdminUsers.jsx --
+  // borrandoRef espeja el estado de forma síncrona para que una respuesta que
+  // llega tarde no cierre, ni le robe el foco, al diálogo de OTRO archivo que
+  // se haya abierto mientras tanto.
+  const [borrando, setBorrandoState] = useState(null)
+  const borrandoRef = useRef(null)
+  function fijarBorrando(f) {
+    borrandoRef.current = f
+    setBorrandoState(f)
+  }
+  function cerrarBorrandoSiEs(path) {
+    if (borrandoRef.current?.path === path) {
+      fijarBorrando(null)
+      return true
+    }
+    return false
+  }
 
   function load() {
     api.get('/admin/repo').then(r => setData(r.data.folders)).catch(() => {})
@@ -22,15 +44,29 @@ export default function AdminRepository() {
 
   useEffect(() => { load() }, [])
 
+  // K1 (fix round 1, review de la Task 1): Preview y el borrado se excluyen
+  // mutuamente, mismo patrón que los abrir* de AdminUsers.jsx -- se cierra el
+  // otro ANTES de abrir el propio.
   async function handlePreview(file) {
+    fijarBorrando(null)
     const { data: fd } = await api.get(`/admin/repo/file?path=${encodeURIComponent(file.path)}`)
     setPreview({ ...fd, filename: file.name })
   }
 
-  async function handleDelete(file) {
-    if (!window.confirm(t.adminRepoDeleteConfirm(file.name))) return
-    await api.delete(`/admin/repo/file?path=${encodeURIComponent(file.path)}`)
-    load()
+  function handleDelete(file) {
+    setPreview(null)
+    fijarBorrando(file)
+  }
+
+  async function confirmarBorrado() {
+    const f = borrando
+    try {
+      await api.delete(`/admin/repo/file?path=${encodeURIComponent(f.path)}`)
+      cerrarBorrandoSiEs(f.path)
+      load()
+    } catch (err) {
+      addToast({ type: 'error', message: t.adminErrorGeneric })
+    }
   }
 
   function handleDownload(file) {
@@ -101,31 +137,41 @@ export default function AdminRepository() {
         )}
       </div>
 
-      {/* Preview modal */}
+      {borrando && (
+        <ConfirmacionSuma
+          titulo={t.adminRepoDeleteTitle(borrando.name)}
+          mensaje={t.adminRepoDeleteMessage}
+          textoConfirmar={t.adminRepoDelete}
+          onConfirmar={confirmarBorrado}
+          onCancelar={() => fijarBorrando(null)}
+        />
+      )}
+
+      {/* K1 (fix round 1): Preview iba en un <div> a mano -- sin role, sin
+          aria-modal, sin inert de #root, sin trampa de foco y sin Escape.
+          Ahora va sobre Dialogo, con la misma exclusión mutua que el resto
+          de los diálogos (Ruling U25/U27/U28). */}
       {preview && (
-        <div className="fixed inset-0 bg-fondo/70 flex items-center justify-center z-50 p-6">
-          <div className="bg-superficie border border-borde rounded-xl w-full max-w-3xl max-h-[80vh] overflow-hidden flex flex-col shadow-2xl">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-borde">
-              <span className="text-sm font-semibold text-texto">{preview.filename}</span>
-              <button onClick={() => setPreview(null)} className="text-texto-tenue hover:text-texto text-lg font-bold">×</button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4">
-              {preview.type === 'image' ? (
-                <img src={preview.base64} alt={preview.filename} className="max-w-full rounded" />
-              ) : preview.type === 'markdown' ? (
-                // M-3 (revisión final PR 2, 2026-09-14): prose/prose-invert/prose-sm
-                // son de @tailwindcss/typography, que no está instalado (plugins: []
-                // en tailwind.config.js) -- no hacían nada, y prose-invert forzaría
-                // texto claro en el tema claro si el plugin se agregara algún día.
-                <div className="max-w-none text-texto">
-                  <ReactMarkdown>{preview.content}</ReactMarkdown>
-                </div>
-              ) : (
-                <pre className="text-xs text-texto whitespace-pre-wrap font-mono">{preview.content}</pre>
-              )}
-            </div>
+        <Dialogo idTitulo="repo-preview-titulo" titulo={preview.filename} onCerrar={() => setPreview(null)} className="max-w-3xl">
+          <div className="flex justify-end -mt-2 mb-2">
+            <button onClick={() => setPreview(null)} aria-label={t.adminHistoryClose} className="text-texto-tenue hover:text-texto text-lg font-bold">×</button>
           </div>
-        </div>
+          <div className="max-h-[60vh] overflow-y-auto">
+            {preview.type === 'image' ? (
+              <img src={preview.base64} alt={preview.filename} className="max-w-full rounded" />
+            ) : preview.type === 'markdown' ? (
+              // M-3 (revisión final PR 2, 2026-09-14): prose/prose-invert/prose-sm
+              // son de @tailwindcss/typography, que no está instalado (plugins: []
+              // en tailwind.config.js) -- no hacían nada, y prose-invert forzaría
+              // texto claro en el tema claro si el plugin se agregara algún día.
+              <div className="max-w-none text-texto">
+                <ReactMarkdown>{preview.content}</ReactMarkdown>
+              </div>
+            ) : (
+              <pre className="text-xs text-texto whitespace-pre-wrap font-mono">{preview.content}</pre>
+            )}
+          </div>
+        </Dialogo>
       )}
     </div>
   )

@@ -125,13 +125,53 @@ SQL_LISTA_USUARIOS = (
     "FROM jax_users WHERE status <> 'deleted' ORDER BY user_id"
 )
 
+# Historial de las bajas visible desde la UI (2026-09-15, Task 2, DEUDA U36).
+# `b` es la fila dada de baja: mismo plan que SQL_LISTA_USUARIOS (recorre la
+# PK en el orden del ORDER BY, sin filesort ni temporal -- `status = 'deleted'`
+# tampoco es un prefijo usable de idx_jax_users_role_status). `a` resuelve
+# quién la hizo a su correo ACTUAL con un LEFT JOIN por PK -- eq_ref, una sola
+# consulta para todas las filas (no una por fila). Si `a` también está de
+# baja, `a.email` es su propio correo renombrado y se deshace igual, con
+# email_original. Plan medido con EXPLAIN en
+# tests/test_admin_usuarios_baja.py::test_lista_de_bajas_explain_sin_filesort_ni_temporal.
+SQL_LISTA_BAJAS = (
+    "SELECT b.user_id, b.email, b.role, b.deleted_at, b.deleted_by, a.email AS deleted_by_email "
+    "FROM jax_users b LEFT JOIN jax_users a ON a.user_id = b.deleted_by "
+    "WHERE b.status = 'deleted' ORDER BY b.user_id"
+)
+
+
+def email_original(email: str) -> str:
+    """Inversa de `email_de_baja`: la parte del correo renombrado antes del
+    ÚLTIMO '#baja-'. U32 garantiza que un correo VIVO nunca contiene '#', así
+    que esto no puede confundir un correo real con uno renombrado. Si la fila
+    no tuviera el sufijo (no debería pasar para una fila 'deleted'), se
+    devuelve el correo tal cual -- no asume el invariante, sólo lo aprovecha."""
+    return email.rsplit("#baja-", 1)[0]
+
 
 @router.get("/users")
-async def list_users(user: AuthUser = Depends(require_superadmin)):
+async def list_users(bajas: bool = False, user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
-    now = utc_ahora()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            if bajas:
+                await cur.execute(SQL_LISTA_BAJAS)
+                rows = await cur.fetchall()
+                return {
+                    "users": [
+                        {
+                            "user_id": r[0],
+                            "email_original": email_original(r[1]),
+                            "role": r[2],
+                            "deleted_at": iso_utc(r[3]),
+                            "deleted_by": r[4],
+                            "deleted_by_email": email_original(r[5]) if r[5] is not None else None,
+                        }
+                        for r in rows
+                    ]
+                }
+            now = utc_ahora()
             await cur.execute(SQL_LISTA_USUARIOS)
             rows = await cur.fetchall()
     return {
@@ -398,7 +438,7 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
         if not enviado:
             try:
                 await _borrar_enlace_no_entregado(token)
-            except Exception:
+            except Exception:  # fail-soft: limpieza en finally; la excepción original sigue propagándose y el token expira en 1 h
                 # fail-soft SOLO para la limpieza: si el DELETE mismo falla,
                 # se loguea (con user_id, NUNCA el token -- es la credencial)
                 # y la excepción ORIGINAL (la del envío, o la cancelación)
@@ -410,7 +450,7 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
     try:
         async with transaccion() as cur:
             await user_audit.registrar(cur, int(user.user_id), user_id, "reset_link_sent", {"to": email}, ip)
-    except Exception:
+    except Exception:  # fail-soft: Ruling U22 -- el correo ya salió y no se deshace; un 500 empujaría a un segundo envío; transaccion() ya revirtió y el fallo queda en log
         # Ruling U22 (fix ronda 2, 2026-09-15): fail-soft. `transaccion()` ya
         # revirtió (su propio `except BaseException: rollback(); raise`) antes
         # de que esto la atrape -- acá solo se decide la RESPUESTA. El correo

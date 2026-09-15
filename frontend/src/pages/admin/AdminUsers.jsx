@@ -23,7 +23,26 @@ export default function AdminUsers() {
   const { t, lang } = useI18n()
   const addToast = useJaxStore((s) => s.addToast)
   const actualizarMiEmail = useJaxStore((s) => s.actualizarMiEmail)
+  // Task 1 (2026-09-15, decisión de Fernando, revierte Ruling F7): la fila
+  // del usuario logueado no ofrece "Fijar contraseña" ni "Dar de baja" -- es
+  // solo la UI; el backend sigue rechazando la auto-acción con 403
+  // auto_accion_prohibida como defensa en profundidad (sin tocar acá).
+  const usuarioLogueado = useJaxStore((s) => s.user)
   const [users, setUsers] = useState([])
+  // Task 2 (2026-09-15, DEUDA U36): historial de las bajas visible desde la
+  // UI. `mostrarBajas` es el estado del interruptor (aria-pressed, mismo
+  // patrón que el ojito de PasswordInput); la lista de bajas se pide recién
+  // al activarlo, no en cada montaje -- es de solo lectura, no participa de
+  // la exclusión mutua de los modales (Ruling U25/U28): no abre nada por sí
+  // misma, sólo su botón "Historial" reusa abrirHistorial.
+  const [mostrarBajas, setMostrarBajas] = useState(false)
+  const [bajas, setBajas] = useState([])
+  // Fix wave final (2026-09-15): una baja que termina con el interruptor
+  // encendido recarga TAMBIÉN la lista de bajas. El ref espeja el
+  // interruptor para leerlo cuando la respuesta llega (la baja pudo
+  // empezar con él apagado). Apagado no hace falta marca de "vieja":
+  // encenderlo siempre vuelve a pedir la lista.
+  const mostrarBajasRef = useRef(false)
   const [showCreate, setShowCreate] = useState(false)
   const [editando, setEditando] = useState(null)
   const [historialDe, setHistorialDe] = useState(null)
@@ -146,6 +165,30 @@ export default function AdminUsers() {
     return api.get('/admin/users').then(r => setUsers(r.data.users)).catch(avisarError)
   }
 
+  // Ronda 2 (2026-09-15): dos pedidos de bajas en vuelo pueden resolverse
+  // fuera de orden. Cada pedido toma un número; sólo se aplica (lista o
+  // error) el del último pedido hecho, y una respuesta vieja se descarta.
+  const pedidoBajas = useRef(0)
+  function cargarBajas() {
+    const n = ++pedidoBajas.current
+    return api.get('/admin/users?bajas=true')
+      .then(r => { if (n === pedidoBajas.current) setBajas(r.data.users) })
+      .catch(err => { if (n === pedidoBajas.current) avisarError(err) })
+  }
+
+  function alternarBajas() {
+    const activar = !mostrarBajas
+    mostrarBajasRef.current = activar
+    setMostrarBajas(activar)
+    if (activar) cargarBajas()
+  }
+
+  // Tras una baja (o el 404 de otra que ganó la carrera): activos siempre,
+  // bajas si su lista está a la vista.
+  function recargarTrasBaja() {
+    return Promise.all([load(), mostrarBajasRef.current ? cargarBajas() : null])
+  }
+
   useEffect(() => { load() }, [])
 
   async function crearUsuario(form) {
@@ -227,13 +270,13 @@ export default function AdminUsers() {
       await api.post(`/admin/users/${u.user_id}/baja`)
       const eraLaAbierta = cerrarBajaSiEs(u.user_id)
       avisarExito(t.adminBajaDone(u.email))
-      await load()
+      await recargarTrasBaja()
       if (eraLaAbierta) setEnfocarNuevo(true)
     } catch (err) {
       if (codigoDe(err) === 'usuario_no_encontrado') {
         cerrarBajaSiEs(u.user_id)
         avisarError(err)
-        await load()
+        await recargarTrasBaja()
       } else {
         avisarError(err)
       }
@@ -250,13 +293,26 @@ export default function AdminUsers() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-xl font-bold text-texto-fuerte">{t.adminUsersTitle}</h1>
-        <button
-          ref={botonNuevo}
-          onClick={abrirCrear}
-          className="px-3 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold transition-colors"
-        >
-          + {t.adminUserCreate}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={alternarBajas}
+            aria-pressed={mostrarBajas}
+            className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+              mostrarBajas
+                ? 'bg-acento text-sobre-color'
+                : 'bg-superficie-2 text-texto hover:text-texto-fuerte'
+            }`}
+          >
+            {t.adminUserShowBajas}
+          </button>
+          <button
+            ref={botonNuevo}
+            onClick={abrirCrear}
+            className="px-3 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold transition-colors"
+          >
+            + {t.adminUserCreate}
+          </button>
+        </div>
       </div>
 
       <div className="rounded-lg border border-borde overflow-hidden">
@@ -269,7 +325,9 @@ export default function AdminUsers() {
             </tr>
           </thead>
           <tbody className="divide-y divide-borde/50">
-            {users.map(u => (
+            {users.map(u => {
+              const esPropia = usuarioLogueado?.user_id === u.user_id
+              return (
               <tr key={u.user_id} className={`hover:bg-superficie transition-colors ${u.is_locked ? 'bg-aviso-fondo' : 'bg-hundido'}`}>
                 <td className="px-4 py-3 text-texto">{u.email}</td>
                 {/* Etapa 3 (Ruling U6): el rol se muestra como texto y se
@@ -302,21 +360,59 @@ export default function AdminUsers() {
                     )}
                     <button onClick={() => handleRevoke(u)} className={ACCION_NEUTRA}>{t.adminUserRevokeSessions}</button>
                     <button onClick={() => handleResetLink(u)} className={ACCION_NEUTRA}>{t.adminUserSendResetLink}</button>
-                    <button onClick={() => abrirFijarPassword(u)} className={ACCION_NEUTRA}>{t.adminUserSetPassword}</button>
+                    {!esPropia && (
+                      <button onClick={() => abrirFijarPassword(u)} className={ACCION_NEUTRA}>{t.adminUserSetPassword}</button>
+                    )}
                     <button onClick={() => abrirHistorial(u)} className={ACCION_NEUTRA}>{t.adminUserHistory}</button>
-                    <button
-                      onClick={() => abrirBaja(u)}
-                      className="text-xs px-2 py-0.5 rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors"
-                    >
-                      {t.adminUserBaja}
-                    </button>
+                    {!esPropia && (
+                      <button
+                        onClick={() => abrirBaja(u)}
+                        className="text-xs px-2 py-0.5 rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors"
+                      >
+                        {t.adminUserBaja}
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>
+
+      {mostrarBajas && (
+        <div className="rounded-lg border border-borde overflow-hidden mt-6">
+          <table className="w-full text-sm">
+            <thead className="bg-hundido border-b border-borde">
+              <tr>
+                {[t.adminBajaListEmail, t.adminBajaListDeletedAt, t.adminBajaListDeletedBy, t.adminUserActions].map(h => (
+                  <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-borde/50">
+              {bajas.map(b => (
+                <tr key={b.user_id} className="bg-hundido">
+                  <td className="px-4 py-3 text-texto">{b.email_original}</td>
+                  <td className="px-4 py-3 text-xs text-texto">
+                    {b.deleted_at ? new Date(b.deleted_at).toLocaleString(localeFor(lang)) : '—'}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-texto">{b.deleted_by_email || '—'}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => abrirHistorial({ user_id: b.user_id, email: b.email_original })}
+                      className={ACCION_NEUTRA}
+                    >
+                      {t.adminUserHistory}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {editando && <EditarUsuarioModal usuario={editando} onGuardar={guardarEdicion} onCerrar={() => setEditando(null)} />}
       {historialDe && <HistorialUsuario usuario={historialDe} onCerrar={() => setHistorialDe(null)} />}

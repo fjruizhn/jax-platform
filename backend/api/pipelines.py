@@ -54,6 +54,14 @@ async def _record_pipeline_owner(pipeline_id: str, tenant_id: str, user_id: str)
             )
 
 
+def es_del_usuario(user_id: str, tenant_id: str, user: AuthUser) -> bool:
+    """LA regla de pertenencia de un pipeline: user_id Y tenant_id coinciden
+    con los del token. Sin excepcion por rol (un superadmin que no es el
+    dueño recibe 404 igual). La usan _require_pipeline_owner (4 endpoints por
+    id) y GET /api/state (Task 6 S2, 2026-09-15) -- una sola regla, no dos."""
+    return user_id == user.user_id and tenant_id == user.tenant_id
+
+
 async def _require_pipeline_owner(pipeline_id: str, user: AuthUser):
     # 404 (no 403) para no confirmarle a un no-dueño que el pipeline_id
     # existe. Pipelines creadas antes de esta migración no tienen
@@ -71,23 +79,37 @@ async def _require_pipeline_owner(pipeline_id: str, user: AuthUser):
                 (pipeline_id,),
             )
             row = await cur.fetchone()
-    if (
-        row is None
-        or row[2] is None
-        or row[0] != user.user_id
-        or row[1] != user.tenant_id
-    ):
+    if row is None or row[2] is None or not es_del_usuario(row[0], row[1], user):
         raise HTTPException(status_code=404, detail="Pipeline no encontrado")
+
+
+# T6-5a (2026-09-15): la lista sale de jacobs_pipelines con la MISMA regla de
+# dueño que los endpoints por id (user_id Y tenant_id del token, y
+# owner_ack_at poblado). Antes hacía proxy de GET {JACOBS_URL}/pipeline, que
+# Jacobs no tiene (405 devuelto como 200) y que no filtraba nada: el día que
+# existiera, entregaba todos los pipelines a cualquier sesión.
+# Índice idx_jacobs_pipelines_duenio (user_id, tenant_id, created_at), creado
+# en db/migrations.py; EXPLAIN en tests/test_t6_seguimiento.py.
+SQL_PIPELINES_DEL_USUARIO = (
+    "SELECT pipeline_id, name, status, created_at, updated_at FROM jacobs_pipelines "
+    "WHERE user_id=%s AND tenant_id=%s AND owner_ack_at IS NOT NULL "
+    "ORDER BY created_at DESC LIMIT %s"
+)
+LISTA_PIPELINES_MAX = int(os.getenv("JAX_LISTA_PIPELINES_MAX", "50"))
 
 
 @router.get("")
 async def list_pipelines(user: AuthUser = Depends(get_current_user)):
-    client = await get_http_client()
-    try:
-        r = await client.get(f"{JACOBS_URL}/pipeline", timeout=5.0)
-        return r.json()
-    except Exception:
-        return {"pipelines": [], "error": "LAS MANOS no disponible"}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(SQL_PIPELINES_DEL_USUARIO,
+                              (user.user_id, user.tenant_id, LISTA_PIPELINES_MAX))
+            filas = await cur.fetchall()
+    return {"pipelines": [
+        {"pipeline_id": pid, "name": name, "status": st, "created_at": c, "updated_at": u}
+        for pid, name, st, c, u in filas
+    ]}
 
 
 @router.post("")

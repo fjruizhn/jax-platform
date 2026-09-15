@@ -95,8 +95,50 @@ def test_sync_endpoint_only_touches_model_never_facet_binding(client, monkeypatc
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["ok"] is True
+    assert body["providers_fallidos"] == [] and body["enrich_fallido"] is False
+    assert "code" not in body
     assert set(calls["providers"]) == {"openai", "deepseek", "gemini", "moonshot", "zhipu", "anthropic", "ollama"}
     assert calls["enrich"] == 1
+
+
+def test_sync_con_todos_los_providers_caidos_no_dice_ok(client, monkeypatch):
+    """Task 3 (2026-09-15), clase (b): el `except` por provider esta bien (uno
+    caido no frena a los demas), pero la respuesta decia `ok: True` aunque
+    fallaran TODOS -- y el frontend no leia el cuerpo."""
+    async def falla(provider_id):
+        raise RuntimeError(f"{provider_id} caido")
+
+    async def fake_enrich():
+        return {"enriched": 1}
+
+    monkeypatch.setattr(model_catalog, "sync_provider_models", falla)
+    monkeypatch.setattr(model_catalog, "enrich_from_models_dev", fake_enrich)
+
+    resp = client.post("/api/admin/models/sync", headers=_superadmin_headers())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["code"] == "sync_con_errores"
+    assert set(body["providers_fallidos"]) == {"openai", "deepseek", "gemini", "moonshot", "zhipu", "anthropic", "ollama"}
+    assert body["enrich_fallido"] is False
+
+
+def test_sync_con_el_enriquecimiento_caido_no_dice_ok(client, monkeypatch):
+    async def fake_sync(provider_id):
+        return {"provider_id": provider_id, "fetched": 1}
+
+    async def falla_enrich():
+        raise RuntimeError("models.dev caido")
+
+    monkeypatch.setattr(model_catalog, "sync_provider_models", fake_sync)
+    monkeypatch.setattr(model_catalog, "enrich_from_models_dev", falla_enrich)
+
+    body = client.post("/api/admin/models/sync", headers=_superadmin_headers()).json()
+    assert body["ok"] is False
+    assert body["code"] == "sync_con_errores"
+    assert body["providers_fallidos"] == []
+    assert body["enrich_fallido"] is True
+    assert "error" in body["enrich"]
 
 
 def test_sync_endpoint_requires_superadmin(client):

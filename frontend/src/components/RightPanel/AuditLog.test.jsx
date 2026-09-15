@@ -7,6 +7,8 @@ vi.mock('../../api/client', () => ({ default: { get: vi.fn() } }))
 import api from '../../api/client'
 import AuditLog from './AuditLog'
 import { I18nProvider } from '../../i18n/index.jsx'
+import es from '../../i18n/es.js'
+import en from '../../i18n/en.js'
 
 const EVENTO = {
   event: 'ENVELOPE_ACCEPTED',
@@ -23,6 +25,91 @@ beforeEach(() => {
   api.get.mockReset()
   api.get.mockResolvedValue({ data: { events: [EVENTO] } })
   localStorage.clear()
+})
+
+// Task 3 (2026-09-15): un audit.jsonl ilegible respondía {events: []} y el
+// panel decía "Sin eventos aún". Ahora el backend responde 503
+// `auditoria_ilegible` y el panel lo dice, traducido, en vez de la lista vacía.
+describe('AuditLog -- un audit ilegible no se ve como "sin eventos"', () => {
+  it('los textos existen en los dos idiomas', () => {
+    for (const clave of ['auditoria_ilegible', 'auditLogError']) {
+      expect(es[clave], `es.${clave}`).toBeTruthy()
+      expect(en[clave], `en.${clave}`).toBeTruthy()
+    }
+  })
+
+  it('el 503 auditoria_ilegible muestra su texto y no "sin eventos"', async () => {
+    api.get.mockRejectedValue({ response: { status: 503, data: { detail: 'auditoria_ilegible' } } })
+    renderLog()
+    expect(await screen.findByText(es.auditoria_ilegible)).toBeInTheDocument()
+    expect(screen.queryByText(es.noEventsYet)).not.toBeInTheDocument()
+  })
+
+  it('otro fallo muestra el error genérico, no "sin eventos"', async () => {
+    api.get.mockRejectedValue(new Error('Network Error'))
+    renderLog()
+    expect(await screen.findByText(es.auditLogError)).toBeInTheDocument()
+    expect(screen.queryByText(es.noEventsYet)).not.toBeInTheDocument()
+  })
+
+  it('un archivo vacío sigue siendo "sin eventos"', async () => {
+    api.get.mockResolvedValue({ data: { events: [] } })
+    renderLog()
+    expect(await screen.findByText(es.noEventsYet)).toBeInTheDocument()
+  })
+})
+
+// Task 6 S3 (2026-09-15): /api/audit pasó a require_superadmin. Si igual
+// llega un 403 (rol cambiado con la pestaña abierta), el panel lo dice
+// traducido en vez del error genérico o de una lista vacía.
+describe('AuditLog -- el 403 de quien no es superadmin se dice, traducido', () => {
+  const PROHIBIDO = { response: { status: 403, data: { detail: 'Solo superadmin' } } }
+
+  it('el texto existe en los dos idiomas', () => {
+    expect(es.auditoriaSoloSuperadmin).toBeTruthy()
+    expect(en.auditoriaSoloSuperadmin).toBeTruthy()
+  })
+
+  it('en español, el 403 muestra su texto y no "sin eventos" ni el genérico', async () => {
+    api.get.mockRejectedValue(PROHIBIDO)
+    renderLog()
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.auditoriaSoloSuperadmin)
+    expect(screen.queryByText(es.noEventsYet)).not.toBeInTheDocument()
+    expect(screen.queryByText(es.auditLogError)).not.toBeInTheDocument()
+  })
+
+  it('en inglés, el 403 muestra el texto en inglés', async () => {
+    localStorage.setItem('jax_lang', 'en')
+    api.get.mockRejectedValue(PROHIBIDO)
+    renderLog()
+    expect(await screen.findByRole('alert')).toHaveTextContent(en.auditoriaSoloSuperadmin)
+  })
+
+  // Fix round 1 (review de 3bed155): el corte del polling no tenía test.
+  it('después de un 403 deja de preguntar: 30 s después sigue en 1 pedido', async () => {
+    vi.useFakeTimers()
+    try {
+      api.get.mockRejectedValue(PROHIBIDO)
+      renderLog()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(api.get).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(api.get).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('control: sin 403 sigue preguntando cada 10 s', async () => {
+    vi.useFakeTimers()
+    try {
+      renderLog()
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(api.get).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 // I-2 (revisión final PR 3, 2026-09-14): la hora del evento fijaba 'es-HN' en

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -13,8 +13,13 @@ const addToastMock = vi.fn()
 // Etapa 5: tras guardar un correo, AdminUsers avisa al store (actualizarMiEmail
 // decide si es el usuario logueado; lo prueba useJaxStore.test.js).
 const actualizarMiEmailMock = vi.fn()
+// Task 1 (2026-09-15, decisión de Fernando, revierte Ruling F7): la fila
+// propia no ofrece auto-acciones. `usuario` es el logueado del store; por
+// defecto no coincide con ningún user_id de fixture (2, 3, 5) para no afectar
+// los tests existentes. Mismo patrón que BarraUsuario.test.jsx.
+let usuario = { user_id: 1, email: 'admin@axioma-ia.io', role: 'superadmin' }
 vi.mock('../../store/useJaxStore', () => ({
-  useJaxStore: (selector) => selector({ addToast: addToastMock, actualizarMiEmail: actualizarMiEmailMock }),
+  useJaxStore: (selector) => selector({ addToast: addToastMock, actualizarMiEmail: actualizarMiEmailMock, user: usuario }),
 }))
 
 import api from '../../api/client'
@@ -56,6 +61,7 @@ beforeEach(() => {
   actualizarMiEmailMock.mockReset()
   api.get.mockReset(); api.post.mockReset(); api.put.mockReset(); api.delete.mockReset()
   servirGet([USUARIO])
+  usuario = { user_id: 1, email: 'admin@axioma-ia.io', role: 'superadmin' }
   localStorage.clear()
 })
 
@@ -575,5 +581,189 @@ describe('AdminUsers — fijar contraseña', () => {
       type: 'success', message: 'Contraseña fijada para b@x.io. Tendrá que cambiarla al entrar.',
     }))
     expect(screen.getByRole('dialog', { name: 'Fijar la contraseña de y@x.io' })).toBeInTheDocument()
+  })
+})
+
+// Task 1 (2026-09-15, decisión de Fernando, revierte Ruling F7): la fila del
+// usuario logueado no ofrece auto-acciones. El backend sigue rechazando la
+// auto-acción con 403 auto_accion_prohibida como defensa en profundidad
+// (ronda de "403 auto_accion_prohibida" arriba) -- esto es solo la UI.
+describe('AdminUsers — fila propia sin auto-acciones (decisión de Fernando, revierte F7)', () => {
+  it('la fila del usuario logueado no muestra "Fijar contraseña" ni "Dar de baja"', async () => {
+    usuario = { user_id: 2, email: 'op@axioma-ia.io', role: 'operator' }
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    expect(screen.queryByRole('button', { name: 'Fijar contraseña' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Dar de baja' })).not.toBeInTheDocument()
+    // Las demás acciones de la fila quedan como están.
+    expect(screen.getByRole('button', { name: 'Editar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cerrar sesiones' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Enviar enlace' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Historial' })).toBeInTheDocument()
+  })
+
+  it('la fila de otro usuario sí muestra "Fijar contraseña" y "Dar de baja"', async () => {
+    usuario = { user_id: 999, email: 'otro-admin@axioma-ia.io', role: 'superadmin' }
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    expect(screen.getByRole('button', { name: 'Fijar contraseña' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Dar de baja' })).toBeInTheDocument()
+  })
+
+  it('con dos filas, solo la propia esconde las dos acciones -- la otra las conserva', async () => {
+    usuario = { user_id: 2, email: 'op@axioma-ia.io', role: 'operator' }
+    servirGet([USUARIO, OTRO])
+    renderUsers()
+    await screen.findByText('y@x.io')
+    // "Fijar contraseña"/"Dar de baja" aparecen una sola vez: los de la fila OTRO.
+    expect(screen.getAllByRole('button', { name: 'Fijar contraseña' })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Dar de baja' })).toHaveLength(1)
+  })
+})
+
+// Task 2 (2026-09-15, DEUDA U36): historial de las bajas visible desde la UI.
+// Interruptor "Mostrar bajas" -- aria-pressed (M-2/PasswordInput ya usa este
+// patrón) -- que pide /admin/users?bajas=true y lista las bajas en modo solo
+// lectura, con un único botón "Historial" por fila.
+const BAJA = {
+  user_id: 7, email_original: 'borrado@x.io', role: 'operator',
+  deleted_at: '2026-09-15T10:00:00.000+00:00', deleted_by: 1, deleted_by_email: 'admin@axioma-ia.io',
+}
+
+function servirGetConBajas(usuariosActivos, bajas) {
+  api.get.mockImplementation((url) => {
+    if (url === '/admin/users?bajas=true') return Promise.resolve({ data: { users: bajas } })
+    if (url === '/admin/users') return Promise.resolve({ data: { users: usuariosActivos } })
+    return Promise.resolve({ data: { entries: HISTORIAL } })
+  })
+}
+
+describe('AdminUsers — Mostrar bajas (Task 2, DEUDA U36)', () => {
+  it('el interruptor arranca apagado y no pide las bajas al montar', async () => {
+    servirGetConBajas([USUARIO], [BAJA])
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    const interruptor = screen.getByRole('button', { name: 'Mostrar bajas' })
+    expect(interruptor).toHaveAttribute('aria-pressed', 'false')
+    expect(api.get).not.toHaveBeenCalledWith('/admin/users?bajas=true')
+  })
+
+  it('al activarlo pide y lista las bajas en modo solo lectura', async () => {
+    servirGetConBajas([USUARIO], [BAJA])
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: 'Mostrar bajas' }))
+    expect(screen.getByRole('button', { name: 'Mostrar bajas' })).toHaveAttribute('aria-pressed', 'true')
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/users?bajas=true'))
+    expect(await screen.findByText('borrado@x.io')).toBeInTheDocument()
+    expect(screen.getByText('admin@axioma-ia.io')).toBeInTheDocument()
+  })
+
+  it('la fila de una baja sólo ofrece "Historial", ninguna otra acción', async () => {
+    servirGetConBajas([USUARIO], [BAJA])
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: 'Mostrar bajas' }))
+    const fila = (await screen.findByText('borrado@x.io')).closest('tr')
+    expect(within(fila).getByRole('button', { name: 'Historial' })).toBeInTheDocument()
+    expect(within(fila).queryByRole('button', { name: 'Editar' })).not.toBeInTheDocument()
+    expect(within(fila).queryByRole('button', { name: 'Dar de baja' })).not.toBeInTheDocument()
+    expect(within(fila).queryByRole('button', { name: 'Fijar contraseña' })).not.toBeInTheDocument()
+  })
+
+  it('"Historial" de una fila de baja abre el historial de ese usuario', async () => {
+    servirGetConBajas([USUARIO], [BAJA])
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: 'Mostrar bajas' }))
+    const fila = (await screen.findByText('borrado@x.io')).closest('tr')
+    fireEvent.click(within(fila).getByRole('button', { name: 'Historial' }))
+    const dialogo = await screen.findByRole('dialog')
+    expect(dialogo).toHaveAttribute('aria-labelledby', 'historial-titulo')
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/users/7/audit'))
+  })
+
+  it('apagar el interruptor esconde de nuevo la lista de bajas', async () => {
+    servirGetConBajas([USUARIO], [BAJA])
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    const interruptor = screen.getByRole('button', { name: 'Mostrar bajas' })
+    fireEvent.click(interruptor)
+    await screen.findByText('borrado@x.io')
+    fireEvent.click(interruptor)
+    expect(interruptor).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByText('borrado@x.io')).not.toBeInTheDocument()
+  })
+})
+
+// Fix wave final (2026-09-15): con "Mostrar bajas" encendido, una baja
+// exitosa recargaba solo la lista de activos -- la de bajas quedaba vieja y
+// el usuario recién dado de baja no aparecía hasta apagar y prender el
+// interruptor.
+describe('AdminUsers — la baja refresca también la lista de bajas', () => {
+  it('con "Mostrar bajas" encendido, el usuario dado de baja aparece ahí sin tocar el interruptor', async () => {
+    let activos = [USUARIO]
+    let bajas = [BAJA]
+    api.get.mockImplementation((url) => {
+      if (url === '/admin/users?bajas=true') return Promise.resolve({ data: { users: bajas } })
+      if (url === '/admin/users') return Promise.resolve({ data: { users: activos } })
+      return Promise.resolve({ data: { entries: HISTORIAL } })
+    })
+    api.post.mockImplementation(async () => {
+      activos = []
+      bajas = [{ ...BAJA, user_id: 2, email_original: 'op@axioma-ia.io' }, BAJA]
+      return { data: { ok: true } }
+    })
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    const interruptor = screen.getByRole('button', { name: 'Mostrar bajas' })
+    fireEvent.click(interruptor)
+    await screen.findByText('borrado@x.io')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dar de baja' }))
+    const dialogo = screen.getByRole('dialog', { name: 'Dar de baja a op@axioma-ia.io' })
+    const [, a, b] = within(dialogo).getByText(/Resolvé \d+ \+ \d+ = \?/).textContent.match(/(\d+) \+ (\d+)/)
+    fireEvent.change(within(dialogo).getByRole('spinbutton'), { target: { value: String(Number(a) + Number(b)) } })
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Dar de baja' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/2/baja'))
+
+    // La fila de op@ ahora es la de la lista de bajas: sólo "Historial".
+    await waitFor(() => {
+      const fila = screen.getByText('op@axioma-ia.io').closest('tr')
+      expect(within(fila).getByRole('button', { name: 'Historial' })).toBeInTheDocument()
+      expect(within(fila).queryByRole('button', { name: 'Editar' })).not.toBeInTheDocument()
+    })
+    expect(screen.getByText('borrado@x.io')).toBeInTheDocument()
+    expect(interruptor).toHaveAttribute('aria-pressed', 'true')
+    expect(api.get.mock.calls.filter(([url]) => url === '/admin/users?bajas=true')).toHaveLength(2)
+  })
+})
+
+// Ronda 2 (2026-09-15, re-review de 0c72f4e): dos pedidos de bajas en vuelo
+// (apagar y prender rápido, o una baja con la lista a la vista) podían
+// resolverse fuera de orden, y la respuesta VIEJA pisaba a la nueva.
+describe('AdminUsers — bajas: sólo se aplica la respuesta más reciente', () => {
+  it('si el pedido viejo de bajas llega último, su lista no se muestra', async () => {
+    const pendientes = []
+    api.get.mockImplementation((url) => {
+      if (url === '/admin/users?bajas=true') return new Promise((resolver) => pendientes.push(resolver))
+      if (url === '/admin/users') return Promise.resolve({ data: { users: [USUARIO] } })
+      return Promise.resolve({ data: { entries: HISTORIAL } })
+    })
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    const interruptor = screen.getByRole('button', { name: 'Mostrar bajas' })
+    fireEvent.click(interruptor)   // pedido 1
+    fireEvent.click(interruptor)   // apaga
+    fireEvent.click(interruptor)   // pedido 2
+    expect(pendientes).toHaveLength(2)
+
+    await act(async () => { pendientes[1]({ data: { users: [BAJA] } }) })
+    expect(await screen.findByText('borrado@x.io')).toBeInTheDocument()
+    await act(async () => {
+      pendientes[0]({ data: { users: [{ ...BAJA, user_id: 9, email_original: 'vieja@x.io' }] } })
+    })
+    expect(screen.queryByText('vieja@x.io')).not.toBeInTheDocument()
+    expect(screen.getByText('borrado@x.io')).toBeInTheDocument()
   })
 })

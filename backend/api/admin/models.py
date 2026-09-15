@@ -30,6 +30,7 @@ from contrato_dispatch import (
     registrar_rechazo_de_binding,
 )
 from db.connection import get_pool
+from redaccion import redactar_secretos, texto_de_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/models")
@@ -207,17 +208,34 @@ async def sync_models(user: AuthUser = Depends(require_superadmin)):
     for provider_id in _SYNCABLE_PROVIDERS:
         try:
             results.append(await model_catalog.sync_provider_models(provider_id))
-        except Exception as e:
-            logger.warning(f"sync_models provider={provider_id} failed reason={type(e).__name__}: {e}")
-            results.append({"provider_id": provider_id, "error": str(e)[:200]})
+        except Exception as e:  # fail-soft: un provider caído no frena a los demás; su error va en el resultado y apaga ok
+            # Task 6 S1: el log y la respuesta usan el texto ya redactado.
+            # Defensa en profundidad: la key de Gemini va en la cabecera
+            # x-goog-api-key (T6-2); str(e) de httpx trae la URL, sin ella.
+            motivo = texto_de_error(e)
+            logger.warning(f"sync_models provider={provider_id} failed reason={motivo}")
+            results.append({"provider_id": provider_id, "error": redactar_secretos(str(e))[:200]})
 
     try:
         enrich_result = await model_catalog.enrich_from_models_dev()
-    except Exception as e:
-        logger.warning(f"sync_models enrich failed reason={type(e).__name__}: {e}")
-        enrich_result = {"error": str(e)[:200]}
+    except Exception as e:  # fail-soft: el enriquecimiento es capa (b) opcional; su error va en 'enrich' y apaga ok
+        logger.warning(f"sync_models enrich failed reason={texto_de_error(e)}")
+        enrich_result = {"error": redactar_secretos(str(e))[:200]}
 
-    return {"ok": True, "providers": results, "enrich": enrich_result}
+    # Task 3 (2026-09-15, clase b): antes `ok` era True siempre, aunque
+    # fallaran todos los providers y el enriquecimiento. Contrato: 200 con
+    # `ok` calculado; si algo fallo, `code: "sync_con_errores"` y la lista de
+    # providers que fallaron (el resto SI se sincronizo, por eso no es 502).
+    providers_fallidos = [r["provider_id"] for r in results if "error" in r]
+    enrich_fallido = "error" in enrich_result
+    ok = not providers_fallidos and not enrich_fallido
+    respuesta = {
+        "ok": ok, "providers": results, "enrich": enrich_result,
+        "providers_fallidos": providers_fallidos, "enrich_fallido": enrich_fallido,
+    }
+    if not ok:
+        respuesta["code"] = "sync_con_errores"
+    return respuesta
 
 
 # PR-L ronda 2 (2026-09-14, punto 7 de la revisión): la lista era sin límite y,

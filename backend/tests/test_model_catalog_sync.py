@@ -117,7 +117,10 @@ def test_sync_provider_models_gemini_uses_models_key_and_strips_prefix(client, m
 
     assert result["fetched"] == 1
     url, kwargs = fake.calls[0]
-    assert "key=gk-fake" in url
+    # T6-2 (2026-09-15): la key va en la cabecera x-goog-api-key, nunca en la URL.
+    assert url == "https://generativelanguage.googleapis.com/v1beta/models"
+    assert "key=" not in url
+    assert kwargs["headers"] == {"x-goog-api-key": "gk-fake"}
 
     row = client.portal.call(_fetch_model, "gemini", "gemini-2.5-flash")
     assert row is not None

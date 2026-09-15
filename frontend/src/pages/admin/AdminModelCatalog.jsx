@@ -29,6 +29,8 @@ export default function AdminModelCatalog() {
   const [proposals, setProposals] = useState([])
   const [syncing, setSyncing] = useState(false)
   const [syncError, setSyncError] = useState(false)
+  // Task 3 (2026-09-15): lo que falló en un sync que respondió ok:false.
+  const [syncFallidos, setSyncFallidos] = useState(null)
   const [deciding, setDeciding] = useState(null)
   // El error crudo: se traduce al renderizar, así un cambio de idioma lo sigue.
   const [decideError, setDecideError] = useState(null)
@@ -70,9 +72,15 @@ export default function AdminModelCatalog() {
   async function handleSync() {
     setSyncing(true)
     setSyncError(false)
+    setSyncFallidos(null)
     try {
       // Solo escribe `model` — regla de oro (D1.3): nunca facet_binding.
-      await api.post('/admin/models/sync')
+      const { data } = await api.post('/admin/models/sync')
+      // Task 3 (2026-09-15): antes se ignoraba el cuerpo y un sync en que
+      // fallaba todo se veía como éxito. Lo que sí se sincronizó se recarga igual.
+      if (data?.ok === false) {
+        setSyncFallidos([...(data.providers_fallidos || []), ...(data.enrich_fallido ? ['models.dev'] : [])])
+      }
       loadModels()
       loadProposals()
     } catch {
@@ -113,6 +121,7 @@ export default function AdminModelCatalog() {
         <h2 className="text-sm font-semibold text-texto">{t.adminModelsTitle}</h2>
         <div className="flex items-center gap-2">
           {syncError && <span className="text-xs text-peligro">{t.adminModelsSyncError}</span>}
+          {syncFallidos && <span role="alert" className="text-xs text-peligro">{t.sync_con_errores(syncFallidos.join(', '))}</span>}
           <button
             onClick={handleSync}
             disabled={syncing}

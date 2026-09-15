@@ -28,6 +28,7 @@ function ProgressBar({ steps, t }) {
 
 function RightPanel() {
   const activePipelines = useJaxStore((s) => s.activePipelines)
+  const role = useJaxStore((s) => s.user?.role)
   const { t } = useI18n()
   const [tab, setTab] = useState('pipelines')
   const [cancelling, setCancelling] = useState(false)
@@ -71,9 +72,14 @@ function RightPanel() {
     && (aviso.clave !== 'approveError' || activePipeline.status === 'waiting_gate')
     ? aviso : null
 
+  // Task 6 S3 (2026-09-15): /api/audit es solo para superadmin (el log
+  // forense de LAS MANOS). La pestaña no se le ofrece a nadie más, igual que
+  // el engranaje de Administración en BarraUsuario; el backend la niega igual.
+  const esSuperadmin = role === 'superadmin'
+  const tabActual = tab === 'log' && !esSuperadmin ? 'pipelines' : tab
   const TABS = [
     { id: 'pipelines', label: t.tabDirectorJacobs },
-    { id: 'log',       label: t.tabAudit },
+    ...(esSuperadmin ? [{ id: 'log', label: t.tabAudit }] : []),
   ]
 
   return (
@@ -85,7 +91,7 @@ function RightPanel() {
             key={tabId}
             onClick={() => setTab(tabId)}
             className={`flex-1 py-2 text-xs uppercase tracking-wider font-semibold transition-colors ${
-              tab === tabId
+              tabActual === tabId
                 ? 'text-info border-b-2 border-info'
                 : 'text-texto-tenue hover:text-texto'
             }`}
@@ -95,7 +101,7 @@ function RightPanel() {
         ))}
       </div>
 
-      {tab === 'pipelines' ? (
+      {tabActual === 'pipelines' ? (
         <div className="flex-1 overflow-y-auto">
           {!activePipeline ? (
             <div className="px-4 py-6 text-sm text-texto-tenue text-center">

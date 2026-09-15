@@ -408,8 +408,87 @@ jobs:
             // BottomBar.test.jsx suma una aserción del marcador, no un test.
             // Medido dos veces con vitest run: 379 passed en 52 archivos, 0
             // fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 379) {
-              console.error("PISO ROTO: se esperaban 379 tests de vitest CORRIDOS y 0 fallidos.");
+            // 379 -> 386 el 2026-09-15 (Task 1 de pendientes-2026-09-22, la
+            // fila propia sin auto-acciones y Repositorio con
+            // ConfirmacionSuma): +3 AdminUsers.test.jsx (la fila del usuario
+            // logueado no muestra "Fijar contraseña" ni "Dar de baja"; la de
+            // otro sí; con dos filas solo la propia las esconde -- rojos sin
+            // el filtro esPropia) +4 AdminRepository.test.jsx (borrar exige
+            // la suma, Cancelar y Escape no borran, un error deja el diálogo
+            // abierto con el toast -- rojos con window.confirm). Vistos en
+            // rojo antes de verde. Medido con vitest run: 386 passed en 52
+            // archivos, 0 fallidos.
+            // 386 -> 391 el 2026-09-15 (fix round 1 de la Task 1, review K1/
+            // K2): +4 AdminRepository.test.jsx (Preview es un diálogo
+            // etiquetado con el nombre del archivo, Escape lo cierra, abrir
+            // Eliminar con Preview abierto deja solo el de borrado y
+            // viceversa -- rojos con el <div> a mano, sin role="dialog")
+            // +1 AdminRepository.test.jsx (una respuesta tardía de X no
+            // cierra el diálogo de borrado de Y -- pasa en el código actual,
+            // que ya guarda por path con cerrarBorrandoSiEs; verificado en
+            // rojo a mano con un fijarBorrando(null) incondicional antes de
+            // dejar el test, y devuelto a verde). Medido dos veces con
+            // vitest run: 391 passed en 52 archivos, 0 fallidos.
+            // 391 -> 392 el 2026-09-15 (fix round 2 de la Task 1, F1): +1
+            // AdminRepository.test.jsx (con Preview abierto, #root queda
+            // inert; al cerrarlo, no -- todo consumidor de Dialogo.jsx tiene
+            // este test, y a Preview le faltaba el suyo). Visto en rojo
+            // revirtiendo a mano el Preview a un <div> sin Dialogo, y
+            // devuelto a verde. Medido dos veces con vitest run: 392 passed
+            // en 52 archivos, 0 fallidos.
+            // 392 -> 397 el 2026-09-15 (Task 2, DEUDA U36 -- historial de las
+            // bajas visible desde la UI): +5 en AdminUsers.test.jsx (el
+            // interruptor "Mostrar bajas" arranca apagado y no pide la lista
+            // al montar; al activarlo pide /admin/users?bajas=true y lista
+            // las bajas en modo solo lectura; la fila de una baja sólo
+            // ofrece "Historial", ninguna otra acción; "Historial" de una
+            // fila de baja abre el historial de ese usuario; apagar el
+            // interruptor esconde de nuevo la lista). Vistos en rojo antes de
+            // verde (el botón "Mostrar bajas" no existía). Medido dos veces
+            // con vitest run: 397 passed en 52 archivos, 0 fallidos.
+            // 397 -> 404 el 2026-09-15 (Task 3, except amplios sin marca): +4
+            // en AuditLog.test.jsx (textos en es/en; el 503 auditoria_ilegible
+            // muestra su texto y no "sin eventos"; otro fallo muestra el error
+            // genérico; el archivo vacío sigue siendo "sin eventos") y +3 en
+            // AdminModelCatalog.test.jsx (texto sync_con_errores en es/en;
+            // ok:false nombra los providers fallidos y models.dev; ok:true no
+            // muestra aviso). Vistos en rojo antes de verde (5 rojos: el catch
+            // mudo y el cuerpo del sync ignorado). Medido dos veces con vitest
+            // run: 404 passed en 52 archivos, 0 fallidos.
+            // 404 -> 411 el 2026-09-15 (Task 6 S3, /api/audit solo para
+            // superadmin): +3 en AuditLog.test.jsx (texto del 403 en es/en; el
+            // 403 muestra su texto y no sin eventos ni el generico, en es y en
+            // en) y +4 en RightPanel.test.jsx (viewer y operator no ven la
+            // pestana ni disparan /audit; sin usuario tampoco; el superadmin la
+            // ve y carga la auditoria). Vistos en rojo antes de verde (6 rojos
+            // contra la fuente anterior). Medido con vitest run: 411 passed en
+            // 52 archivos, 0 fallidos.
+            // 411 -> 414 el 2026-09-15 (fix round 1 del review de 3bed155): +2
+            // en AuditLog.test.jsx (tras un 403 no vuelve a preguntar en 30 s,
+            // con fake timers; control: sin 403 pregunta cada 10 s) y +1 en
+            // RightPanel.test.jsx (si el rol deja de ser superadmin con la
+            // auditoria abierta, vuelve a Pipelines). Cada uno rojo bajo su
+            // mutacion (sin clearInterval; tabActual = tab). Medido con vitest
+            // run: 414 passed en 52 archivos, 0 fallidos.
+            // 414 -> 419 el 2026-09-15 (Task 7, registros de uso perdidos): +5
+            // en AdminCosts.test.jsx (aviso "total incompleto: N registros
+            // perdidos" en es y en en con N interpolado; sin aviso con 0 ni sin
+            // el campo; el aviso sale aunque by_facet venga vacio). Los 3
+            // positivos vistos en rojo antes de verde; los 2 negativos son
+            // controles. Medido con vitest run: 419 passed en 52 archivos, 0
+            // fallidos.
+            // 419 -> 420 el 2026-09-15 (fix wave final de la rama
+            // feat/pendientes-2026-09-22): +1 en AdminUsers.test.jsx (con
+            // "Mostrar bajas" encendido, una baja exitosa refresca tambien la
+            // lista de bajas y el usuario aparece ahi sin tocar el
+            // interruptor). Visto en rojo contra el AdminUsers.jsx anterior.
+            // Medido con vitest run: 420 passed, 0 fallidos.
+            // 420 -> 421 el 2026-09-15 (fix wave final, ronda 2, re-review de
+            // 0c72f4e): +1 en AdminUsers.test.jsx (dos pedidos de bajas en
+            // vuelo; el viejo llega ultimo y su lista no se muestra). Visto en
+            // rojo antes de verde. Medido con vitest run: 421 passed, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 421) {
+              console.error("PISO ROTO: se esperaban 421 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1051,7 +1130,121 @@ jobs:
           # bump exige la versión verificada). Los 2 vistos en rojo sobre 7218b49;
           # las 2 mutaciones (sin el hash / sin la versión) capturadas.
           # Medido dos veces: 890 / 1.
-          PISO_PASSED = 890
+          # Subido de 890 a 897 (2026-09-15, Task 2, DEUDA U36 -- historial de
+          # las bajas visible desde la UI): +7 en test_admin_usuarios_baja.py
+          # (email_original deriva lo anterior al último '#baja-'; GET
+          # /api/admin/users?bajas=true exige superadmin; la lista de bajas
+          # devuelve solo user_id/email_original/role/deleted_at/deleted_by/
+          # deleted_by_email de los 'deleted'; sin el parámetro la lista
+          # normal no cambia de claves; EXPLAIN de SQL_LISTA_BAJAS sin
+          # filesort ni temporal; deleted_by se resuelve al correo ACTUAL del
+          # actor con un LEFT JOIN; GET /users/{id}/audit ya funcionaba para
+          # un dado de baja, ahora con test que lo confirma). Vistos en rojo
+          # antes de verde (SQL_LISTA_BAJAS y email_original no existían).
+          # Medido dos veces: 897 / 1.
+          # Task 2 fix ronda 1 (2026-09-15, revisión de ed2fb9c): sin cambio
+          # en el piso -- se agregaron dos aserciones a tests existentes (un
+          # caso de dos '#baja-' en email_original, que mata la mutación
+          # rsplit -> split, antes sobreviviente; y `key == "PRIMARY"` para la
+          # tabla `b` del EXPLAIN de SQL_LISTA_BAJAS), no tests nuevos.
+          # Medido dos veces: 897 / 1.
+          # Subido de 897 a 920 (2026-09-15, Task 3, except amplios sin
+          # marca): +12 en test_no_fail_open_except.py (11 casos sinteticos de
+          # la regla nueva + la guardia de que el escaneo ve archivos: con
+          # `path.parts` absolutas, un checkout bajo /home/fruiz/worktrees se
+          # excluia entero y el test pasaba sin escanear nada), +4 en
+          # test_chat_memoria_fail_open.py (puerto mal formado ruidoso, puerto
+          # valido conecta, ImportError logueado, SyntaxError no se traga), +5
+          # en test_audit_ilegible.py (503 por OSError y por UTF-8 invalido;
+          # vacio, ausente y legible sin cambio) y +2 en
+          # test_admin_models_endpoints.py (sync con todos los providers o con
+          # el enriquecimiento caidos: ok False + sync_con_errores). Vistos en
+          # rojo antes de verde. Medido dos veces: 920 / 1.
+          # Task 3 fix ronda 1 (2026-09-15, revision de c706321): +3 en
+          # test_no_fail_open_except.py (except amplio que solo loguea, sin
+          # marca falla y con marca pasa -- mata la mutacion "logger.* cuenta
+          # como relanzar"; un archivo que no se puede parsear es violacion,
+          # antes se salteaba en silencio). La guardia del escaneo exige ademas
+          # jax_engine/, api/admin/, api/ y >= 120 archivos (sin test nuevo).
+          # Vistos en rojo (el parse con TypeError; los otros dos bajo su
+          # mutacion). Medido dos veces: 923 / 1.
+          # Subido de 923 a 952 (2026-09-15, Task 6, seguridad S1-S3): +9 en
+          # test_redaccion.py (redactar_secretos: ?key=, api_key=, token=,
+          # AIza suelta, secretos conocidos, None/vacio, texto sin secretos,
+          # HTTPStatusError real; filtro de los loggers de httpx), +7 en
+          # test_redaccion_caminos.py (chat, escritor, redactar antes de
+          # truncar, sonda por rebind, sync directo; chat contra
+          # facet_health_event en jax_memory_test y sync por HTTP), +9 en
+          # test_state_por_duenio.py (/api/state filtra por user_id y
+          # tenant_id con la regla de _require_pipeline_owner, sesion propia,
+          # lo global igual, por HTTP) y +4 en test_audit_superadmin.py
+          # (viewer/operator 403, superadmin 200, sin sesion). Vistos en rojo
+          # antes de verde. Medido dos veces: 952 / 1.
+          # Subido de 952 a 980 (2026-09-15, Task 6 follow-ups T6-1/T6-2/T6-5
+          # y fix round 1 del review de 3bed155): +14 en
+          # test_t6_seguimiento.py (filtro de httpx con un pedido real; key de
+          # Gemini en x-goog-api-key y no en la URL en chat, sync, /keys y
+          # /credentials; query_param rechazado; migracion de provider;
+          # /api/pipelines por dueño -- 3 casos -- y su EXPLAIN con
+          # idx_jacobs_pipelines_duenio; /api/facets/{facet}/status 403 para
+          # viewer/operator y 200 para superadmin), +13 en test_redaccion.py
+          # (comillas, JSON, espacios, Bearer, password, secret, cabecera
+          # x-goog-api-key; monkey/turkey/PRIMARY intactos; sort_key tapado)
+          # y +1 en test_redaccion_caminos.py (el 502 redacta antes de
+          # recortar). Vistos en rojo antes de verde (el de truncar y el del
+          # 502, bajo su mutacion). Medido dos veces: 980 / 1.
+          # Subido de 980 a 992 (2026-09-15, fix round 2 de la Task 6): +11 en
+          # test_redaccion.py (Authorization con Token/Basic/JSON/parametro,
+          # credential=, private_key_id; Bearer suelto con forma de
+          # credencial; "basic idea of it", "the bearer of bad news", for key
+          # 'PRIMARY' y for key: PRIMARY intactos) y +1 en
+          # test_t6_seguimiento.py (idx_jacobs_pipelines_duenio existe con
+          # (user_id, tenant_id, created_at) -- lo crea jax/jacobs/store.py
+          # via el paso "Crear el esquema de Jacobs", ya no la plataforma).
+          # Vistos en rojo antes de verde (7 de la regex; el del indice bajo
+          # mutacion y, de hecho, mientras el PR companion de jax lo tuvo
+          # borrado). Medido dos veces: 992 / 1.
+          # Subido de 992 a 1012 (2026-09-15, Task 7, registro de uso): +20 en
+          # test_t7_uso.py (contador registros_perdidos: parte de cero, sube
+          # con el fallo del insert sin lanzar, ultimo_error y log redactados,
+          # no sube con escritura exitosa; validar_ids_de_uso con 3 casos
+          # validos y 10 invalidos; chat e imagen cortan antes del proveedor;
+          # GET /api/admin/usage expone registros_perdidos). Los 19 tests de
+          # chat que usaban tenants no numericos pasan a tenant "1" con el
+          # fixture chat_sin_memoria (sin cambio en el conteo). Vistos en rojo
+          # antes de verde (los de chat/imagen, ademas, bajo la mutacion que
+          # quita la validacion). Medido dos veces: 1012 / 1.
+          # Subido de 1012 a 1046 (2026-09-15, fix wave final de la rama
+          # feat/pendientes-2026-09-22): +3 en test_redaccion.py (valor entre
+          # comillas despues del esquema, paridad con jax), +19 en
+          # test_fix_wave_final.py (sin DDL sobre jacobs_* en migrations.py y
+          # su tabla de casos; 502 de imagen redactado antes de recortar), +1
+          # en test_chat_memoria_fail_open.py (un ERROR por proceso con
+          # JAX_DB_PORT mal formado), +2 en test_uso_de_chat_limpio.py (los
+          # tests de chat no dejan filas en axioma_usage) y +9 en
+          # test_uso_por_periodo.py (rango sargable = mismo resultado,
+          # ORDER BY SUM(cost_usd), idx_axioma_usage_periodo y su DDL
+          # acotado, EXPLAIN de las dos consultas reales). Vistos en rojo
+          # antes de verde (el de jacobs_* bajo la mutacion que re-agrega el
+          # ALTER TABLE jacobs_pipelines ADD INDEX). Medido dos veces: 1046 / 1.
+          # Subido de 1046 a 1055 (2026-09-15, fix wave final ronda 2,
+          # re-review de 0c72f4e): +4 en test_redaccion.py (valor entero entre
+          # comillas, con y sin esquema, con espacios, dobles y simples) y +5
+          # en test_uso_por_periodo.py (el WHERE de las dos consultas filtra
+          # por created_at sin funcion encima; la migracion crea el indice si
+          # falta con el DDL acotado y no toca nada si esta; run_migrations la
+          # llama). Rojos antes de verde o bajo su mutacion (DATE() de vuelta
+          # en cada constante, la llamada quitada, el chequeo quitado).
+          # Medido dos veces: 1055 / 1.
+          # Subido de 1055 a 1076 (2026-09-15, fix wave final ronda 3): +21 en
+          # test_redaccion.py (comilla escapada dentro del valor en
+          # Authorization y en api_key, dobles/simples, con y sin esquema --
+          # 8; valor que termina en barra escapada -- 2; comilla sin cerrar
+          # tapa hasta el final -- 3; 8 entradas adversariales de 100 KB en
+          # < 50 ms). Los 11 de escape y sin cerrar, rojos antes de verde; los
+          # 2 de barra y los 8 de tiempo son controles de la forma nueva.
+          # Medido dos veces: 1076 / 1.
+          PISO_PASSED = 1076
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1447,7 +1640,54 @@ jobs:
       # passed). Medido dos veces con JAX_CI_NO_DB=1: 374 / 515.
       # Task 3b fix ronda 1 (2026-09-15): los 2 nuevos piden `client` y se
       # saltean (sin cambio en passed). Medido dos veces con JAX_CI_NO_DB=1: 374 / 517.
-      JAX_CI_MIN_PASSED: "374"
+      # Task 2 (2026-09-15, DEUDA U36 -- historial de las bajas visible desde
+      # la UI): +1 puro (test_email_original_deriva_lo_anterior_al_ultimo_
+      # sufijo_de_baja, no pide `client`); los otros 6 nuevos de
+      # test_admin_usuarios_baja.py piden `client` y se saltean (sin cambio
+      # en passed más allá del puro). Medido dos veces con JAX_CI_NO_DB=1:
+      # 375 / 523.
+      # Task 2 fix ronda 1 (2026-09-15, revisión de ed2fb9c): sin cambio --
+      # dos aserciones nuevas en tests puros existentes (email_original con
+      # dos '#baja-'; `key == "PRIMARY"` del EXPLAIN, que pide `client` y ya
+      # estaba en el piso con DB). Medido dos veces con JAX_CI_NO_DB=1:
+      # 375 / 523.
+      # Task 3 (2026-09-15, except amplios sin marca): +21 puros (12 de
+      # test_no_fail_open_except.py, 4 de test_chat_memoria_fail_open.py, 5
+      # de test_audit_ilegible.py); los 2 nuevos de
+      # test_admin_models_endpoints.py piden `client` y se saltean. Medido dos
+      # veces con JAX_CI_NO_DB=1: 396 / 525.
+      # Task 3 fix ronda 1 (2026-09-15, revision de c706321): +3 puros en
+      # test_no_fail_open_except.py (solo-loguea sin/con marca; archivo que no
+      # se puede parsear). Medido dos veces con JAX_CI_NO_DB=1: 399 / 525.
+      # Task 6 (2026-09-15, seguridad S1-S3): +22 puros (9 de
+      # test_redaccion.py, 5 de test_redaccion_caminos.py, 8 de
+      # test_state_por_duenio.py); los 7 que piden `client` (2 de
+      # test_redaccion_caminos.py, 1 de test_state_por_duenio.py, 4 de
+      # test_audit_superadmin.py) se saltean. Medido dos veces con
+      # JAX_CI_NO_DB=1: 421 / 532.
+      # Task 6 follow-ups y fix round 1 (2026-09-15): +19 puros (5 de
+      # test_t6_seguimiento.py, 13 de test_redaccion.py, 1 de
+      # test_redaccion_caminos.py); los 9 de test_t6_seguimiento.py que piden
+      # `client` se saltean. Medido dos veces con JAX_CI_NO_DB=1: 440 / 541.
+      # Fix round 2 de la Task 6 (2026-09-15): +11 puros en
+      # test_redaccion.py; el test nuevo del indice de jacobs_pipelines pide
+      # `client` y se saltea. Medido dos veces con JAX_CI_NO_DB=1: 451 / 542.
+      # Task 7 (2026-09-15, registro de uso): +19 puros en test_t7_uso.py; el
+      # de GET /api/admin/usage pide `client` y se saltea. Medido dos veces
+      # con JAX_CI_NO_DB=1: 470 / 543.
+      # Fix wave final (2026-09-15, rama feat/pendientes-2026-09-22): +27
+      # puros (3 de test_redaccion.py, 19 de test_fix_wave_final.py, 1 de
+      # test_chat_memoria_fail_open.py, 4 de test_uso_por_periodo.py -- DDL
+      # del indice y politica 1205); los 7 que piden `client` (2 de
+      # test_uso_de_chat_limpio.py, 5 de test_uso_por_periodo.py) se
+      # saltean. Medido dos veces con JAX_CI_NO_DB=1: 497 / 550.
+      # Fix wave final ronda 2 (2026-09-15, re-review de 0c72f4e): +9 puros
+      # (4 de test_redaccion.py, 5 de test_uso_por_periodo.py). Medido dos
+      # veces con JAX_CI_NO_DB=1: 506 / 550.
+      # Fix wave final ronda 3 (2026-09-15): +21 puros en test_redaccion.py
+      # (escapes, barra final, comilla sin cerrar, 100 KB adversarial).
+      # Medido dos veces con JAX_CI_NO_DB=1: 527 / 550.
+      JAX_CI_MIN_PASSED: "527"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

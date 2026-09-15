@@ -30,6 +30,11 @@ La llamada saliente a Ollama se intercepta parcheando
 `httpx.AsyncClient.post` (AsyncMock, sin self-binding) — sin red, sin
 Ollama real.
 """
+import pytest
+
+# Task 7: tenant numerico + memoria apagada de forma explicita (conftest.py).
+pytestmark = pytest.mark.usefixtures("chat_sin_memoria")
+
 from tests.identidades import cabeceras
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,7 +42,7 @@ import httpx
 
 from facet_resolver import FacetUnavailableError
 
-TENANT_ID = "test-facet-tenant"
+TENANT_ID = "1"  # Task 7: numerico; la memoria se apaga con chat_sin_memoria
 
 SENTINEL_MODEL = "sentinel-dbwins-model:99z"  # unmistakably not from config.toml
 

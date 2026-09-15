@@ -19,7 +19,8 @@ from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from crypto_secrets import encrypt_secret
 from db.connection import get_pool
-from http_client import get_http_client
+from http_client import cabeceras_gemini, get_http_client
+from redaccion import redactar_secretos
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin")
@@ -184,8 +185,9 @@ async def test_credential(
         t0 = time.time()
         client = await get_http_client()
         if provider_id == "gemini":
-            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-            r = await client.get(url, timeout=10.0)
+            # T6-2: la key va en la cabecera x-goog-api-key, nunca en la URL.
+            url = "https://generativelanguage.googleapis.com/v1beta/models"
+            r = await client.get(url, headers=cabeceras_gemini(api_key), timeout=10.0)
         else:
             test_url = _TEST_URLS.get(provider_id)
             if not test_url:
@@ -193,11 +195,12 @@ async def test_credential(
             r = await client.get(test_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=10.0)
         latency_ms = int((time.time() - t0) * 1000)
         ok = r.status_code < 400
-        error = None if ok else r.text[:200]
+        error = None if ok else redactar_secretos(r.text, [api_key])[:200]
     except HTTPException:
         raise
-    except Exception as e:
-        error = str(e)[:200]
+    except Exception as e:  # fail-soft: el fallo se persiste como last_health_status='failed' con detalle y se audita; no hay falso ok
+        # Task 6 S1: last_health_detail se guarda en la DB -- nunca con la key.
+        error = redactar_secretos(str(e), [api_key])[:200]
 
     status = "ok" if ok else "failed"
     async with pool.acquire() as conn:
