@@ -277,6 +277,11 @@ def test_email_original_deriva_lo_anterior_al_ultimo_sufijo_de_baja():
     # un '-' en la parte local no confunde el rsplit: el separador es el
     # literal '#baja-', no un '-' suelto.
     assert users_mod.email_original("ana-maria@x.io#baja-42-20260912") == "ana-maria@x.io"
+    # fix ronda 1 (revisión de ed2fb9c): dos '#baja-' en la cadena -- el
+    # rsplit tiene que cortar en el ÚLTIMO, no en el primero. Mata la
+    # mutación rsplit -> split, que antes sobrevivía (ningún test tenía dos
+    # ocurrencias).
+    assert users_mod.email_original("a#baja-1-20260101#baja-2-20260102") == "a#baja-1-20260101"
 
 
 def test_lista_de_bajas_solo_superadmin(client, usuarios):
@@ -327,9 +332,10 @@ def test_lista_de_bajas_explain_sin_filesort_ni_temporal(client):
     filas = [tuple(f) for f in client.portal.call(sql, "EXPLAIN " + users_mod.SQL_LISTA_BAJAS, (), True)]
     por_tabla = {f[2]: f for f in filas}
     assert set(por_tabla) == {"b", "a"}
-    _id, _sel, _tabla_b, tipo_b, _posibles_b, _clave_b, _largo_b, _ref_b, _filas_b, extra_b = por_tabla["b"]
+    _id, _sel, _tabla_b, tipo_b, _posibles_b, clave_b, _largo_b, _ref_b, _filas_b, extra_b = por_tabla["b"]
     _id, _sel, _tabla_a, tipo_a, _posibles_a, _clave_a, _largo_a, _ref_a, _filas_a, extra_a = por_tabla["a"]
     assert tipo_b in ("ALL", "index", "ref")
+    assert clave_b == "PRIMARY", filas  # fix ronda 1: no basta el type, el plan tiene que usar la PK
     assert tipo_a == "eq_ref"
     for extra in (extra_b, extra_a):
         assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas

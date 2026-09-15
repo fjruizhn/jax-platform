@@ -1101,6 +1101,12 @@ jobs:
           # un dado de baja, ahora con test que lo confirma). Vistos en rojo
           # antes de verde (SQL_LISTA_BAJAS y email_original no existían).
           # Medido dos veces: 897 / 1.
+          # Task 2 fix ronda 1 (2026-09-15, revisión de ed2fb9c): sin cambio
+          # en el piso -- se agregaron dos aserciones a tests existentes (un
+          # caso de dos '#baja-' en email_original, que mata la mutación
+          # rsplit -> split, antes sobreviviente; y `key == "PRIMARY"` para la
+          # tabla `b` del EXPLAIN de SQL_LISTA_BAJAS), no tests nuevos.
+          # Medido dos veces: 897 / 1.
           PISO_PASSED = 897
           MAX_SKIPS = 1
 
@@ -1502,6 +1508,11 @@ jobs:
       # sufijo_de_baja, no pide `client`); los otros 6 nuevos de
       # test_admin_usuarios_baja.py piden `client` y se saltean (sin cambio
       # en passed más allá del puro). Medido dos veces con JAX_CI_NO_DB=1:
+      # 375 / 523.
+      # Task 2 fix ronda 1 (2026-09-15, revisión de ed2fb9c): sin cambio --
+      # dos aserciones nuevas en tests puros existentes (email_original con
+      # dos '#baja-'; `key == "PRIMARY"` del EXPLAIN, que pide `client` y ya
+      # estaba en el piso con DB). Medido dos veces con JAX_CI_NO_DB=1:
       # 375 / 523.
       JAX_CI_MIN_PASSED: "375"
     steps:
