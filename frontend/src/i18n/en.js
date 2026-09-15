@@ -69,6 +69,8 @@ export default {
   killSwitchActive: 'KILL SWITCH ACTIVE',
   killConfirm: 'Confirm?',
   killConfirmYes: 'YES, STOP ALL',
+  // Product term (like eyeKillSwitch): same value in both languages.
+  killButton: 'KILL',
   cancel: 'Cancel',
   killTitle: 'Kill Switch — stops all processes',
   killSwitchToast: 'KILL SWITCH ACTIVATED',

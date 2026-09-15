@@ -7,9 +7,10 @@ import AttachButton from '../chat/AttachButton'
 import FileAttachment from '../chat/FileAttachment'
 import api from '../../api/client'
 import { alturaInput } from './alturaInput'
+import { colorToken } from '../../tema/tokens'
 
-// Solo orden de despliegue — label/color vienen de /api/facets (tabla
-// `facet`, Bloque C) via el store, no se duplican aca.
+// Solo orden de despliegue — label viene de /api/facets (tabla `facet`,
+// Bloque C) y el token de color del store; no se duplican aca.
 const FACET_ORDER = ['jax_local', 'jekyll', 'hipatia', 'thot', 'kimi', 'hyde', 'ada']
 
 function BottomBar() {
@@ -17,7 +18,7 @@ function BottomBar() {
   const FACETS = FACET_ORDER.map((id) => ({
     id,
     label: facetsState[id]?.display_name || facetsState[id]?.name || id,
-    color: facetsState[id]?.color || '#94a3b8',
+    token: facetsState[id]?.token || 'texto-suave',
   }))
   const [input, setInput] = useState('')
   const [mode, setMode] = useState('chat')
@@ -260,7 +261,7 @@ function BottomBar() {
         />
       )}
 
-      <div className="flex-shrink-0 border-t border-slate-700 bg-slate-900 px-4 py-3">
+      <div className="flex-shrink-0 border-t border-borde bg-fondo px-4 py-3">
         {/* Selector de faceta — solo visible en modo chat */}
         {mode === 'chat' && (
           <div className="flex gap-1 mb-2 flex-wrap">
@@ -268,12 +269,12 @@ function BottomBar() {
               <button
                 key={f.id}
                 onClick={() => setActiveFacet(f.id)}
-                className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${
+                className={`px-2 py-0.5 rounded border bg-superficie text-xs font-semibold transition-colors ${
                   activeFacet === f.id
-                    ? 'text-slate-900'
-                    : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                    ? ''
+                    : 'border-transparent text-texto-suave hover:text-texto'
                 }`}
-                style={activeFacet === f.id ? { backgroundColor: f.color } : {}}
+                style={activeFacet === f.id ? { borderColor: colorToken(f.token), color: colorToken(f.token) } : {}}
               >
                 {f.label}
               </button>
@@ -283,19 +284,19 @@ function BottomBar() {
 
         {/* Hint de modo */}
         {mode === 'comando' && (
-          <div className="mb-2 text-xs text-orange-400 font-semibold flex items-center gap-1">
+          <div className="mb-2 text-xs text-aviso font-semibold flex items-center gap-1">
             <span>⚡</span>
             <span>{t.hydeHint}</span>
           </div>
         )}
         {mode === 'pipeline' && (
-          <div className="mb-2 text-xs text-white font-semibold flex items-center gap-1">
+          <div className="mb-2 text-xs text-texto-fuerte font-semibold flex items-center gap-1">
             <span>⚙</span>
             <span>{t.jacobsHint}</span>
           </div>
         )}
         {mode === 'imagen' && (
-          <div className="mb-2 text-xs font-semibold flex items-center gap-1" style={{ color: '#7c3aed' }}>
+          <div className="mb-2 text-xs text-faceta-imagen font-semibold flex items-center gap-1">
             <span>🎨</span>
             <span>{t.imagenHint}</span>
           </div>
@@ -320,15 +321,14 @@ function BottomBar() {
                 className={`px-2 py-1 rounded text-xs font-semibold transition-colors ${
                   mode === m
                     ? m === 'comando'
-                      ? 'bg-orange-600 text-white'
+                      ? 'bg-modo-comando text-sobre-color'
                       : m === 'pipeline'
-                      ? 'bg-white text-slate-900'
+                      ? 'bg-texto-fuerte text-fondo'
                       : m === 'imagen'
-                      ? 'text-white'
-                      : 'bg-blue-600 text-white'
-                    : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                      ? 'bg-acento text-sobre-color'
+                      : 'bg-accion text-sobre-color'
+                    : 'bg-superficie text-texto-suave hover:text-texto'
                 }`}
-                style={mode === m && m === 'imagen' ? { backgroundColor: '#7c3aed' } : {}}
               >
                 {label}
               </button>
@@ -350,27 +350,32 @@ function BottomBar() {
             rows={1}
             placeholder={placeholder}
             disabled={sending}
-            className="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 resize-none focus:outline-none focus:border-blue-500 disabled:opacity-50"
+            className="flex-1 bg-superficie border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue resize-none focus:outline-none focus:border-foco disabled:opacity-50"
             style={{
               minHeight: '38px',
-              borderColor: mode === 'comando' ? '#f97316' + '80'
-                : mode === 'pipeline' ? '#ffffff40'
-                : mode === 'imagen' ? '#7c3aed80'
-                : sending ? activeFacetObj.color + '80' : undefined,
+              borderColor: mode === 'comando' ? colorToken('modo-comando', 0.5)
+                : mode === 'pipeline' ? colorToken('texto-fuerte', 0.25)
+                : mode === 'imagen' ? colorToken('faceta-imagen', 0.5)
+                : sending ? colorToken(activeFacetObj.token, 0.5) : undefined,
             }}
           />
 
-          {/* Send */}
+          {/* Send. En chat: superficie con borde y texto de la faceta activa
+              (Ruling 30, decisión de Fernando): ningún texto va sobre un
+              fondo sólido del color de la faceta. Mientras envía está
+              disabled, así que disabled:opacity-40 hace de estado "enviando". */}
           <button
             onClick={handleSend}
             disabled={!input.trim() || sending}
-            className="flex-shrink-0 px-4 py-2 rounded-lg disabled:opacity-40 text-white text-sm font-semibold transition-colors"
-            style={{
-              backgroundColor: mode === 'comando' ? '#f97316'
-                : mode === 'pipeline' ? '#ffffff'
-                : mode === 'imagen' ? '#7c3aed'
-                : sending ? activeFacetObj.color + 'aa' : activeFacetObj.color,
-              color: mode === 'pipeline' ? '#0f172a' : 'white',
+            className={`flex-shrink-0 px-4 py-2 rounded-lg border disabled:opacity-40 text-sm font-semibold transition-colors ${
+              mode === 'comando' ? 'border-transparent bg-modo-comando text-sobre-color'
+                : mode === 'pipeline' ? 'border-transparent bg-texto-fuerte text-fondo'
+                : mode === 'imagen' ? 'border-transparent bg-acento text-sobre-color'
+                : 'bg-superficie'
+            }`}
+            style={['comando', 'pipeline', 'imagen'].includes(mode) ? undefined : {
+              borderColor: colorToken(activeFacetObj.token),
+              color: colorToken(activeFacetObj.token),
             }}
           >
             {mode === 'pipeline' ? t.configure : mode === 'imagen' && sending ? t.generatingImage : sending ? '…' : t.send}

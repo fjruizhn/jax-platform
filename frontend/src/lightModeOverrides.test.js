@@ -42,7 +42,12 @@ function selector(clase) {
 describe('modo claro: rojos y verdes tintados', () => {
   it('cada clase tintada que usa la app tiene override en html.light-mode', () => {
     const usadas = clasesUsadas()
-    expect(usadas.length).toBeGreaterThan(10) // el escaneo encontró algo de verdad
+    // Piso bajado de > 10 a > 0 (Task 21 del tema con tokens, 2026-09-15): la
+    // migración del PR 3 deja menos rojos y verdes tintados en uso, y cada
+    // tarea del chat baja la cuenta. El test se borra en la Task 24 del plan,
+    // junto con los rojos y verdes de la capa vieja. La aserción que manda
+    // (toda clase en uso tiene override) no cambia.
+    expect(usadas.length).toBeGreaterThan(0) // el escaneo encontró algo de verdad
     const faltan = usadas.filter((c) => !css.includes(`${selector(c)} {`))
     expect(faltan).toEqual([])
   })

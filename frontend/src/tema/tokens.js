@@ -88,6 +88,9 @@ export const MIGRADOS = [
   'store/useJaxStore.js',
   'components/LeftPanel/FacetCard.jsx',
   'components/CenterPanel/Message.jsx',
+  'components/BottomBar/BottomBar.jsx',
+  'components/BottomBar/KillSwitch.jsx',
+  'components/BottomBar/PipelineModal.jsx',
 ]
 
 const RESPALDO = 'texto-suave'

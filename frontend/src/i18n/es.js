@@ -69,6 +69,8 @@ export default {
   killSwitchActive: 'KILL SWITCH ACTIVO',
   killConfirm: '¿Confirmar?',
   killConfirmYes: 'SÍ, DETENER TODO',
+  // Término del producto (como eyeKillSwitch): igual en los dos idiomas.
+  killButton: 'KILL',
   cancel: 'Cancelar',
   killTitle: 'Kill Switch — detiene todos los procesos',
   // killSwitchActive: badge persistente en la UI. killSwitchToast: toast al
