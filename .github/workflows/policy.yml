@@ -129,18 +129,13 @@ jobs:
             // de /auth/login, /auth/refresh ni /auth/logout; otra ruta sigue
             // poniendo el aviso) y +1 Login.test.jsx (el aviso se borra al enviar
             // el formulario). Medido con vitest run: 139.
-            // 139 -> 144 (2026-09-14, PR-J, contrato de dispatch al aprobar):
-            // +3 AdminModelCatalog.test.jsx (nuevo -- las dos claves existen en
-            // es/en, el 409 modelo_sin_contrato_de_dispatch nombra modelo y
-            // columnas, otro error cae en el genérico en vez del catch vacío) y
-            // +2 AdminFacetBindings.test.jsx (nuevo -- el 409 con detail objeto
-            // se traduce y ya no sale "[object Object]"; un detail de texto se
-            // sigue mostrando). Medido con vitest run: 144.
-            // 144 -> 145 (2026-09-14, PR-J ronda 1): +1 AdminModelCatalog.test.jsx
-            // (el 409 modelo_de_otro_proveedor nombra los dos proveedores, y la
-            // clave existe en es/en). Medido con vitest run: 145.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 145) {
-              console.error("PISO ROTO: se esperaban 145 tests de vitest CORRIDOS y 0 fallidos.");
+            // 139 -> 140 el 2026-09-14 (tanda A): PipelineModal.test.jsx (+1) -- el modal no manda invoked_by en ninguna de las dos formas (lo pone el backend como el rol "plataforma"). Visto en rojo antes.
+            // PR-J (2026-09-14, contrato de dispatch al aprobar): +5 AdminModelCatalog.test.jsx /
+            // AdminFacetBindings.test.jsx (los dos 409 traducidos es/en, detail objeto ya no
+            // sale "[object Object]") y +1 en la ronda 1 (modelo_de_otro_proveedor). Rebase de
+            // PR-J sobre la tanda A: 140 + 6. Medido con vitest run: 146.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 146) {
+              console.error("PISO ROTO: se esperaban 146 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -517,64 +512,43 @@ jobs:
           # del `ADD CONSTRAINT`. Rojo visto antes del arreglo; mutación
           # (d) ahora cae también en este test y en el de la base vieja
           # (Minor 1). Medido: 646 / 1.
-          # Subido de 646 a 656 (2026-09-14, tanda A, Tarea 1b, PR-A --
-          # espejo de connect_timeout de aiomysql): 10 puros nuevos, los dos
-          # sin `client` -- test_aiomysql_connect_timeout_tripwire.py (5,
-          # tripwire AST sobre backend/ + control de mutación: detecta
-          # `aiomysql.connect(`/`create_pool(` sin connect_timeout, no
-          # confunde un docstring/comentario con una llamada real, acepta el
-          # kwarg explícito) y test_db_connect_config.py (5, el helper
-          # puro: default 10s, valor válido por env, no numérico/cero/
-          # negativo -> RuntimeError). Medido contra jax master (fb8a8a1,
-          # el mismo que clona el paso "Traer el repo jax" de este job) para
-          # no confundir con el gap de integración de PR-C (gobernanza-
-          # catálogo, todavía sin rebasar a esta rama): con
-          # JAX_REPO_PATH apuntando a un checkout de jax que YA tiene el
-          # `catalog` nuevo en `load_validation_context()` sin que
-          # `backend/governance_context.py` de esta rama lo pase todavía,
-          # los tests de grounding/shadow_validation fallan con
-          # `TypeError: load_validation_context() missing 1 required
-          # positional argument: 'catalog'` -- 33 fallos, ninguno tocado por
-          # esta tarea (diff de la Tarea 1b: solo
-          # facet_resolver.py/credential_resolver.py/db/connection.py/
-          # db_connect_config.py, ninguno importa governance_context). No es
-          # una regresión de esta tarea; es el mismo gap que el controller
-          # ya declaró pendiente de rebase. Medido contra jax master: 656 / 1.
-          # Subido de 656 a 665 (2026-09-14, ronda de arreglo 1 sobre la
-          # re-revisión de la Tarea 1b -- 2 Important del tripwire propio):
-          # +9 puros en test_aiomysql_connect_timeout_tripwire.py, alineado
-          # con el tripwire final de jax @5d60679 ("Ronda de arreglo 3") --
-          # resolución de alias por archivo (from-import con/sin alias,
-          # `import aiomysql as X`, `aiomysql.pool.create_pool`, `import
-          # aiomysql.pool as X`, control positivo de las 3 formas CON
-          # connect_timeout) y fail-closed ante un archivo que no parsea
-          # (`_NO_PARSEA` vacío -- backend/ no tiene ninguno, medido -- con
-          # un test sintético que declara y retira una entrada TEMPORAL para
-          # ejercitar el mecanismo, más el control de que uno NO declarado
-          # hace fallar el tripwire). Los dos huecos vistos en rojo con el
-          # detector anterior antes del arreglo (confirmado corriendo
-          # `_hallazgos_en()` de bb1e144 contra las 3 formas de alias y
-          # contra un archivo roto: `[]` en los 4 casos -- MISSED). Medido
-          # contra jax master: 665 / 1.
-          # Subido de 665 a 679 (2026-09-14, PR-J -- jekyll caída por aprobar
-          # un modelo sin contrato de dispatch): +10 en
-          # test_contrato_dispatch_al_aprobar.py (approve y PUT: sin
-          # max_tokens_param -> 409, sin max_output_tokens -> 409, contrato
-          # completo -> 200 + probe encolada, faceta ollama/subprocess no se
-          # bloquea; más 2 puros) y +2/+2 en test_model_max_tokens_param.py /
-          # test_model_max_output_tokens.py (deepseek-flash y deepseek-v4-pro
-          # en la lista y sembrados sin pisar un valor manual). Medido contra
-          # jax master: 679 / 1.
-          # Subido de 679 a 683 (2026-09-14, PR-J ronda 1): +4 en
-          # test_contrato_dispatch_al_aprobar.py -- approve y PUT hacia un
-          # modelo de otro proveedor -> 409 modelo_de_otro_proveedor con el
-          # binding intacto; el guard loguea WARNING y no "dispatch abortado";
-          # el dispatch real (_invoke_facet) sigue logueando su ERROR con el
-          # UPDATE. test_approve_proposal_resolves_homonymous_motor pasa a
-          # aprobar un modelo de ollama (antes 'sonnet' de anthropic: el
-          # binding cruzado que el guard ahora rechaza). Medido contra jax
-          # master: 683 / 1.
-          PISO_PASSED = 683
+          # Subido de 646 a 657 (2026-09-14, tanda A v2, catálogo de la DB):
+          # test_governance_context_catalogo.py -- 10 puros (catálogo de la DB, hit sin
+          # recarga, recarga por sello, DB caída en frío y en caliente, una recarga con
+          # 20 turnos, la Mesa acredita y valida una capability de la DB + CONTROL,
+          # catálogo cambiado entre snapshot y validación -> FACT_MISMATCH,
+          # SnapshotError) y 1 con `client` (from_db real con capability.mode). Vistos
+          # en rojo antes del arreglo; mutaciones en el PR. Medido: 657 / 1.
+          # Subido de 657 a 659 (2026-09-14, ronda de arreglo 1 de la Tarea 6):
+          # +2 puros en test_governance_context_catalogo.py -- una recarga
+          # colgada vence con TimeoutError y no retiene nada, y 20 turnos con
+          # la DB caída comparten UN intento. Vistos en rojo antes del
+          # arreglo; mutaciones (d) y (e) en el PR. Medido: 659 / 1.
+          # Subido de 659 a 668 (2026-09-14, ronda de arreglo 2 de la Tarea 6):
+          # +9 puros en test_governance_context_catalogo.py -- timeout de
+          # recarga por defecto (5.0), leído en cada recarga, 5 inválidos
+          # (abc, 0, -1, nan, inf) -> RuntimeError con el nombre, inválido ->
+          # SnapshotError en el chat, y turnos cancelados sobre una recarga
+          # que falla -> UNA línea ERROR de shield y los demás reciben la
+          # excepción (opción a). Rojo visto antes del arreglo. Medido: 668 / 1.
+          # +4 (2026-09-14, tanda A v2): test_catalogo_db_en_la_mesa.py -- la Mesa de
+          # punta a punta (VALID/OBSERVADO; modo equivocado FACT_NOT_IN_SNAPSHOT),
+          # TRIPWIRE ops∩DB vacío y su CONTROL. Rojos por mutación y contra el jax de
+          # producción.
+          # PR-A (rebase 2026-09-14, Tarea 1b, espejo de connect_timeout de aiomysql):
+          # 646 -> 656 (test_aiomysql_connect_timeout_tripwire.py 5 + test_db_connect_config.py 5)
+          # y 656 -> 665 (+9 del tripwire alineado con jax @5d60679: alias, from-import,
+          # aiomysql.pool, fail-closed ante archivos que no parsean), medidos contra jax master.
+          # Rebase de PR-C sobre PR-A: se suman los deltas sobre la base común 646
+          # (PR-A +19, PR-C +26). Medido contra jax con PR-B (5d60679): 691 / 1.
+          # PR-J (2026-09-14, jekyll caída por aprobar un modelo sin contrato de dispatch):
+          # +14 en test_contrato_dispatch_al_aprobar.py (approve y PUT: sin max_tokens_param /
+          # sin max_output_tokens / de otro proveedor -> 409 con el binding intacto; contrato
+          # completo -> 200; ollama/subprocess no se bloquean; logs WARNING vs ERROR) y +4 en
+          # test_model_max_tokens_param.py / test_model_max_output_tokens.py (deepseek-flash y
+          # deepseek-v4-pro sembrados sin pisar un valor manual). Rebase de PR-J sobre la
+          # tanda A: 691 + 18. Medido contra jax con PR-B: 709 / 1.
+          PISO_PASSED = 709
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -848,31 +822,28 @@ jobs:
       # 305 -> 305 (2026-09-14, ronda de arreglo 1 sobre la revisión de
       # PR-A): sin cambio. El test nuevo (Minor 4, modo inválido sin CHECK)
       # pide `client` y se saltea. Medido con JAX_CI_NO_DB=1: 305 / 342.
-      # Subido de 305 a 315 (2026-09-14, tanda A, Tarea 1b, PR-A -- espejo
-      # de connect_timeout de aiomysql): los 10 tests nuevos son puros (ni
-      # `client` ni DB) y corren igual con JAX_CI_NO_DB=1 --
-      # test_aiomysql_connect_timeout_tripwire.py (5) y
-      # test_db_connect_config.py (5), ver el comentario del piso con DB
-      # arriba para el detalle. Medido contra jax master (mismo repo que
-      # clona el paso "Traer el repo jax" de este job, no el checkout local
-      # de la gobernanza-catálogo todavía sin rebasar) con JAX_CI_NO_DB=1:
-      # 315 / 342.
-      # Subido de 315 a 324 (2026-09-14, ronda de arreglo 1 sobre la
-      # re-revisión de la Tarea 1b): los 9 tests nuevos del tripwire son
-      # puros (ni `client` ni DB) y corren igual con JAX_CI_NO_DB=1 -- ver
-      # el comentario del piso con DB arriba para el detalle. Medido contra
-      # jax master con JAX_CI_NO_DB=1: 324 / 342.
-      # Subido de 324 a 328 (2026-09-14, PR-J): de los 14 tests nuevos, 4 son
-      # puros y corren sin DB -- faltantes_del_contrato por transporte, chat.py
-      # reexporta LOS MISMOS validadores que usan los admins, y las dos listas
-      # de seed con deepseek-flash/deepseek-v4-pro. Los otros 10 piden
-      # `client` y se saltean. Medido contra jax master con JAX_CI_NO_DB=1:
-      # 328 / 352.
-      # 328 -> 328 (2026-09-14, PR-J ronda 1): sin cambio. Los 4 tests nuevos
-      # piden `client` y se saltean; el test de log de
-      # test_model_max_output_tokens.py se reescribió (el validador ya no
-      # loguea) y sigue siendo puro. Medido con JAX_CI_NO_DB=1: 328 / 356.
-      JAX_CI_MIN_PASSED: "328"
+      # Subido de 305 a 315 (2026-09-14, tanda A v2, catálogo de la DB): +10
+      # puros de test_governance_context_catalogo.py (from_db parcheado) corren
+      # sin DB; el de from_db real pide `client` y se saltea. Vistos en rojo
+      # antes del arreglo. Medido con JAX_CI_NO_DB=1: 315 / 343.
+      # Subido de 315 a 317 (2026-09-14, ronda de arreglo 1 de la Tarea 6):
+      # +2 puros (recarga colgada con límite; 20 turnos con la DB caída, un
+      # intento). Medido con JAX_CI_NO_DB=1: 317 / 343.
+      # Subido de 317 a 326 (2026-09-14, ronda de arreglo 2 de la Tarea 6):
+      # +9 puros (timeout de recarga: default, leído en cada recarga, 5
+      # inválidos, SnapshotError en el chat; log único de shield, opción a).
+      # Medido con JAX_CI_NO_DB=1: 326 / 343.
+      # 326 -> 326 (2026-09-14, tanda A v2): sin cambio en passed. skipped +4
+      # (test_catalogo_db_en_la_mesa.py, los 4 con client). Medido con
+      # JAX_CI_NO_DB=1: 326 / 347.
+      # PR-A (rebase 2026-09-14, Tarea 1b, espejo de connect_timeout): 305 -> 315 -> 324,
+      # todos puros (tripwire + helper), ver el comentario del piso con DB. Rebase de
+      # PR-C sobre PR-A: deltas sumados sobre la base común 305 (PR-A +19, PR-C +21).
+      # Medido con JAX_CI_NO_DB=1 contra jax con PR-B (5d60679): 345 / 347.
+      # PR-J (2026-09-14): +4 puros (faltantes del contrato por transporte, chat.py
+      # reexporta los mismos validadores, las dos listas de seed); el resto pide `client`.
+      # Rebase de PR-J sobre la tanda A: 345 + 4. Medido con JAX_CI_NO_DB=1: 349 / 361.
+      JAX_CI_MIN_PASSED: "349"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
