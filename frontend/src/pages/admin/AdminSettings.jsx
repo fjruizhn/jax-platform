@@ -3,6 +3,7 @@ import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { codigoDe } from '../../api/errores'
 import AlertaError from '../../components/AlertaError'
+import { useTema } from '../../store/useTema'
 
 // Códigos con los que PUT /admin/config rechaza (backend/api/admin/config_admin.py).
 // Cada uno tiene su texto; cualquier otro cae en el genérico, nunca en silencio
@@ -44,6 +45,9 @@ export default function AdminSettings() {
     try {
       const items = Object.entries(config).map(([key, value]) => ({ key, value: String(value) }))
       await api.put('/admin/config', items)
+      // El nuevo predeterminado se ve en este navegador sin recargar (spec
+      // §5.2.4); si el usuario eligió un tema, su elección sigue ganando.
+      useTema.getState().fijarPredeterminado(config.theme_default)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } catch (err) {
