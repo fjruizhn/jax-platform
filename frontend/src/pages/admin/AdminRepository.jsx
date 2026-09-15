@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useI18n } from '../../i18n/index.jsx'
+import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import ReactMarkdown from 'react-markdown'
 
@@ -11,7 +11,7 @@ const FOLDER_LABELS = {
 }
 
 export default function AdminRepository() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [data, setData] = useState(null)
   const [preview, setPreview] = useState(null)
   const [activeFolder, setActiveFolder] = useState('documents')
@@ -76,8 +76,8 @@ export default function AdminRepository() {
           <table className="w-full text-sm">
             <thead className="bg-hundido border-b border-borde">
               <tr>
-                {['Nombre', 'Tamaño', 'Modificado', ''].map(h => (
-                  <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
+                {[t.adminRepoColName, t.adminRepoColSize, t.adminRepoColModified, ''].map((h, i) => (
+                  <th key={i} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -86,7 +86,7 @@ export default function AdminRepository() {
                 <tr key={f.path} className="bg-hundido hover:bg-superficie transition-colors">
                   <td className="px-4 py-3 text-texto font-mono text-xs">{f.name}</td>
                   <td className="px-4 py-3 text-texto-tenue text-xs">{t.adminRepoSize(f.size)}</td>
-                  <td className="px-4 py-3 text-texto-tenue text-xs">{new Date(f.modified).toLocaleString('es-HN')}</td>
+                  <td className="px-4 py-3 text-texto-tenue text-xs">{new Date(f.modified).toLocaleString(localeFor(lang))}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <button onClick={() => handlePreview(f)} className="text-xs px-2 py-0.5 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors">{t.adminRepoPreview}</button>

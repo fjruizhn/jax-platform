@@ -20,7 +20,10 @@ export default function AdminSidebar() {
         <div className="text-xs font-bold text-acento-texto uppercase tracking-widest">
           {t.adminTitle}
         </div>
-        <div className="text-xs text-texto-tenue mt-0.5">Axioma v0.3</div>
+        {/* I-1 (revisión final PR 2, 2026-09-14): versión desde package.json
+            (define __APP_VERSION__ en vite.config.js), no un dato fijo.
+            "Axioma" es marca, no texto a traducir (igual que brandName). */}
+        <div className="text-xs text-texto-tenue mt-0.5">Axioma v{__APP_VERSION__}</div>
       </div>
 
       <nav className="flex-1 py-3">

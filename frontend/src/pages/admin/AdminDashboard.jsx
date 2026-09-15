@@ -83,7 +83,7 @@ export default function AdminDashboard() {
                 <StatCard label={t.statUsersLocked} value={s.users_locked} color="orange" />
               )}
               <StatCard
-                label="API Keys"
+                label={t.statApiKeysLabel}
                 value={`${s.api_keys_configured}/${s.api_keys_total}`}
                 color={s.api_keys_configured === s.api_keys_total ? 'green' : 'orange'}
               />

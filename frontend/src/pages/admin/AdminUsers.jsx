@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react'
-import { useI18n } from '../../i18n/index.jsx'
+import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import PasswordInput from '../../components/PasswordInput'
 
 const ROLES = ['superadmin', 'operator', 'viewer']
 
 export default function AdminUsers() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [users, setUsers] = useState([])
   const [showCreate, setShowCreate] = useState(false)
   const [form, setForm] = useState({ email: '', role: 'operator', password: '' })
@@ -97,11 +97,11 @@ export default function AdminUsers() {
                 <td className="px-4 py-3">
                   {statusBadge(u)}
                   {u.failed_attempts > 0 && !u.is_locked && (
-                    <span className="ml-2 text-xs text-texto-tenue">({u.failed_attempts} intentos)</span>
+                    <span className="ml-2 text-xs text-texto-tenue">{t.adminUserFailedAttempts(u.failed_attempts)}</span>
                   )}
                 </td>
                 <td className="px-4 py-3 text-xs text-texto">
-                  {u.last_login ? new Date(u.last_login).toLocaleString('es-HN') : '—'}
+                  {u.last_login ? new Date(u.last_login).toLocaleString(localeFor(lang)) : '—'}
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2 flex-wrap">
