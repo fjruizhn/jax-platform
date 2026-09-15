@@ -1519,9 +1519,19 @@ async def _eliminate_motor_model_ref_denormalization(cur) -> None:
 #     repo, que hoy manda 'max_tokens' fijo. Se siembra por completitud del
 #     catalogo (la columna describe el modelo, no el despachador que lo usa);
 #     ese repo queda intacto y no lee la columna todavia.
+#   - deepseek-flash / deepseek-v4-pro (provider deepseek) -> 'max_tokens'.
+#     Agregados 2026-09-14 (PR-J): DeepSeek renombro deepseek-v4-flash ->
+#     deepseek-flash, se aprobo la propuesta de drift (#11) y jekyll quedo
+#     apuntando a una fila sin este dato -> caida desde 2026-09-12 19:40 CST.
+#     Fuente: doc oficial https://api-docs.deepseek.com (leida 2026-09-14): el
+#     parametro es `max_tokens`, NO existe `max_completion_tokens` en esa API;
+#     modelos vigentes deepseek-flash y deepseek-v4-pro (deepseek-v4-flash es
+#     el nombre legado retirado; su fila se deja, describe un modelo real).
 _MODEL_MAX_TOKENS_PARAM_SEED = [
     ("openai",   "gpt-5.6-terra",      "max_completion_tokens"),
     ("deepseek", "deepseek-v4-flash",  "max_tokens"),
+    ("deepseek", "deepseek-flash",     "max_tokens"),
+    ("deepseek", "deepseek-v4-pro",    "max_tokens"),
     ("zhipu",    "glm-5.3",            "max_tokens"),
     ("moonshot", "kimi-k3",            "max_tokens"),
 ]
@@ -1561,9 +1571,16 @@ async def _seed_model_max_tokens_param(cur) -> None:
 # codigo mandaba fijo (_MAX_OUTPUT_TOKENS) y con el que funcionan hoy en
 # produccion, asi que sembrarlo es cambio de comportamiento CERO para jekyll y
 # ada. Sembrar solo el de thot los tumbaria: NULL -> fallo ruidoso.
+#   - deepseek-flash / deepseek-v4-pro -> 393216. Agregados 2026-09-14 (PR-J,
+#     ver _MODEL_MAX_TOKENS_PARAM_SEED). Fuente: doc oficial
+#     https://api-docs.deepseek.com (leida 2026-09-14): max_tokens admite de 1
+#     a 393216 (384K). El valor es DECISION de Fernando (2026-09-14): el maximo
+#     documentado, no una estimacion ni el 131072 heredado.
 _MODEL_MAX_OUTPUT_TOKENS_SEED = [
     ("openai",   "gpt-5.6-terra",      128000),
     ("deepseek", "deepseek-v4-flash",  131072),
+    ("deepseek", "deepseek-flash",     393216),
+    ("deepseek", "deepseek-v4-pro",    393216),
     ("zhipu",    "glm-5.3",            131072),
     ("moonshot", "kimi-k3",            131072),
 ]

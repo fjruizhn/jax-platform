@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
+import { textoDeErrorDeBinding } from '../../api/errores'
+import AlertaError from '../../components/AlertaError'
 
 const STATUS_COLOR = {
   available: 'text-green-400',
@@ -22,6 +24,8 @@ export default function AdminModelCatalog() {
   const [syncing, setSyncing] = useState(false)
   const [syncError, setSyncError] = useState(false)
   const [deciding, setDeciding] = useState(null)
+  // El error crudo: se traduce al renderizar, así un cambio de idioma lo sigue.
+  const [decideError, setDecideError] = useState(null)
 
   const loadModels = useCallback(() => {
     api.get('/admin/models').then(r => setModels(r.data.models)).catch(() => {})
@@ -50,11 +54,15 @@ export default function AdminModelCatalog() {
 
   async function decide(id, action) {
     setDeciding(`${id}-${action}`)
+    setDecideError(null)
     try {
       await api.post(`/admin/models/proposals/${id}/${action}`)
       loadProposals()
       loadModels()
-    } catch {
+    } catch (err) {
+      // 2026-09-14 (PR-J): el catch estaba vacío. Una aprobación rechazada por
+      // contrato de dispatch (409) parecía un click que no hizo nada.
+      setDecideError(err)
     } finally {
       setDeciding(null)
     }
@@ -84,6 +92,12 @@ export default function AdminModelCatalog() {
           </button>
         </div>
       </div>
+
+      {decideError && (
+        <AlertaError className="text-xs mb-3">
+          {textoDeErrorDeBinding(t, decideError) || t.adminProposalsDecideError}
+        </AlertaError>
+      )}
 
       {proposals.length > 0 && (
         <div className="rounded-lg border border-purple-800/50 bg-purple-950/20 overflow-hidden mb-6">

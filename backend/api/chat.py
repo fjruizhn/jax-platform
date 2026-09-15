@@ -16,6 +16,16 @@ import httpx
 from http_client import get_http_client
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from facet_resolver import resolve_facet, FacetUnavailableError
+# ModelDispatchConfigError y los dos validadores del contrato de dispatch
+# (_max_tokens_field / _max_output_tokens_value) viven en contrato_dispatch.py
+# desde 2026-09-14: los usan también los admins que escriben facet_binding,
+# con la MISMA regla. Se reexportan acá para no mover a sus lectores.
+from contrato_dispatch import (
+    ModelDispatchConfigError,
+    _MAX_TOKENS_PARAM_NAMES,
+    _max_output_tokens_value,
+    _max_tokens_field,
+)
 import model_catalog
 from auth.middleware import get_current_user
 from auth.models import AuthUser
@@ -668,132 +678,6 @@ async def _call_ollama(system_prompt: str, history: list[dict], message: str, co
     return data["message"]["content"], data.get("prompt_eval_count", 0), data.get("eval_count", 0)
 
 
-class ModelDispatchConfigError(RuntimeError):
-    """El catálogo (`model`) no declara un dato que el dispatch NECESITA para
-    armar el request. FAIL-CLOSED y RUIDOSO: nunca se asume un valor por
-    defecto — un default silencioso es exactamente lo que convierte el
-    próximo modelo nuevo en un incidente sin síntoma."""
-
-
-# Nombres válidos del parámetro de límite de salida. Es el mismo conjunto que
-# el ENUM de model.max_tokens_param (db/migrations.py) — se replica acá para
-# que un valor imposible en la DB (ej. una migración a mano que se saltó el
-# ENUM) no termine armando una clave arbitraria en el JSON que va a la API.
-_MAX_TOKENS_PARAM_NAMES = ("max_tokens", "max_completion_tokens")
-
-# El límite de salida se manda SIEMPRE explícito: sin él, un modelo de
-# razonamiento (reasoning_content compitiendo por el mismo budget que content)
-# puede agotarlo y cortar la respuesta antes de escribirla — mismo bug ya
-# diagnosticado y corregido en motor_registry/worker.py::_call_kimi (017ba2f,
-# 2026-08-10). Lo que dejó de ser universal es el VALOR: acá vivía la constante
-# 131072 (la misma que jax/muscles/base.py) hasta que gpt-5.6-terra la rechazó
-# con HTTP 400 ("max_tokens is too large: 131072. This model supports at most
-# 128000 completion tokens"). Ahora sale de model.max_output_tokens, fila por
-# fila. Ver _max_output_tokens_value().
-
-
-def _max_tokens_field(model: str, max_tokens_param: str | None) -> str:
-    """Devuelve el NOMBRE del parámetro de límite de salida que exige la API de
-    `model`, tal como lo declara el catálogo (`model.max_tokens_param`).
-
-    Por qué es un dato del catálogo y no una constante: 'max_tokens' fue el
-    nombre único durante años, pero OpenAI lo rechaza con HTTP 400
-    ("Unsupported parameter: 'max_tokens' is not supported with this model.
-    Use 'max_completion_tokens' instead") en su generación nueva — el que tumbó
-    a thot/gpt-5.6-terra por 3 días (2026-08-24). Cambiar la constante al
-    nombre nuevo arregla la instancia y rompe la clase: deepseek-v4-flash
-    (jekyll) y glm-5.3 (ada) siguen exigiendo el viejo. Es una propiedad
-    estable POR MODELO, del mismo eje que supports_tool_use /
-    supports_structured_output / context_window, y vive en la misma fila.
-
-    NULL falla ruidoso a propósito (decisión del dueño, 2026-08-27): si el
-    default fuera el parámetro viejo, el próximo modelo nuevo se rompería igual
-    que thot pero en silencio y sin nadie mirando. Preferimos que un modelo sin
-    valor falle con un mensaje que un operador pueda ejecutar."""
-    if max_tokens_param is None:
-        # ERROR en el log ADEMÁS de la excepción: el 502 que ve el usuario
-        # trunca a 200 chars (ver el handler del endpoint), el operador
-        # necesita el UPDATE completo.
-        logger.error(
-            f"dispatch abortado: model_id={model!r} sin max_tokens_param en la "
-            f"tabla `model`. Sembrar: UPDATE model SET "
-            f"max_tokens_param='max_tokens'|'max_completion_tokens' "
-            f"WHERE model_id='{model}';"
-        )
-        raise ModelDispatchConfigError(
-            f"modelo '{model}': la fila de `model` no declara max_tokens_param, "
-            f"así que no se sabe si su API exige 'max_tokens' o "
-            f"'max_completion_tokens' y NO se asume ninguno. Sembrala: "
-            f"UPDATE model SET max_tokens_param='max_tokens' "  # o 'max_completion_tokens'
-            f"WHERE model_id='{model}';  -- agregá AND provider_id='<provider>' "
-            f"si ese model_id existe para más de un proveedor. Usá "
-            f"'max_completion_tokens' para los modelos que rechazan el viejo "
-            f"con HTTP 400 (generación nueva de OpenAI), 'max_tokens' para el resto."
-        )
-    if max_tokens_param not in _MAX_TOKENS_PARAM_NAMES:
-        raise ModelDispatchConfigError(
-            f"modelo '{model}': max_tokens_param={max_tokens_param!r} no es un "
-            f"nombre de parámetro conocido {_MAX_TOKENS_PARAM_NAMES}. Corregí la "
-            f"fila de `model` — no se manda una clave arbitraria a la API."
-        )
-    return max_tokens_param
-
-
-def _max_output_tokens_value(model: str, max_output_tokens: int | None) -> int:
-    """Devuelve el VALOR del límite de tokens de salida que acepta la API de
-    `model`, tal como lo declara el catálogo (`model.max_output_tokens`).
-
-    Par de _max_tokens_field(): aquel resuelve CÓMO se llama el parámetro, éste
-    QUÉ VALOR admite. Arreglado el nombre (2026-08-27), la misma API contestó
-    HTTP 400 por el valor: "max_tokens is too large: 131072. This model supports
-    at most 128000 completion tokens, whereas you provided 131072". La constante
-    131072 era universal mientras todos los modelos del camino la aceptaran;
-    dejó de serlo, y el tope es una propiedad estable POR MODELO.
-
-    NO se deriva de context_window: aquella es la ventana TOTAL (entrada+salida)
-    y ésta el tope de completion. gpt-5.6-terra tiene context_window=1050000
-    contra un tope de 128000 — verificado, no supuesto. Derivar uno del otro
-    sería inventar el dato.
-
-    NULL falla ruidoso a propósito (decisión del dueño, textual: "prefiero que
-    un modelo sin valor falle ruidoso a que asuma"). Un default de 131072
-    reproduciría este incidente contra el próximo modelo con tope más bajo; uno
-    "conservador" truncaría respuestas de modelos de razonamiento en silencio,
-    que es justo el bug que el límite explícito existe para prevenir."""
-    if max_output_tokens is None:
-        # ERROR en el log ADEMÁS de la excepción: el 502 que ve el usuario
-        # trunca a 200 chars (ver el handler del endpoint), el operador
-        # necesita el UPDATE completo.
-        logger.error(
-            f"dispatch abortado: model_id={model!r} sin max_output_tokens en la "
-            f"tabla `model`. Sembrar: UPDATE model SET "
-            f"max_output_tokens=<tope de completion del modelo> "
-            f"WHERE model_id='{model}';"
-        )
-        raise ModelDispatchConfigError(
-            f"modelo '{model}': la fila de `model` no declara max_output_tokens, "
-            f"así que no se sabe cuántos tokens de salida acepta su API y NO se "
-            f"asume ninguno. Sembrala: "
-            f"UPDATE model SET max_output_tokens=<tope de completion> "
-            f"WHERE model_id='{model}';  -- agregá AND provider_id='<provider>' "
-            f"si ese model_id existe para más de un proveedor. El tope sale de la "
-            f"doc del proveedor o del propio HTTP 400 ('This model supports at "
-            f"most N completion tokens'); NO es context_window, que es la ventana "
-            f"total entrada+salida y suele ser mucho mayor."
-        )
-    if not isinstance(max_output_tokens, int) or isinstance(max_output_tokens, bool) or max_output_tokens <= 0:
-        # Defensa en profundidad contra un valor imposible en la DB (una
-        # migración a mano, un 0 heredado de un backfill): un límite <= 0 haría
-        # que la API devuelva vacío o un 400, con un modo de falla que se
-        # confunde con un error real del proveedor.
-        raise ModelDispatchConfigError(
-            f"modelo '{model}': max_output_tokens={max_output_tokens!r} no es un "
-            f"entero positivo. Corregí la fila de `model` — no se manda un límite "
-            f"inválido a la API."
-        )
-    return max_output_tokens
-
-
 async def _call_openai_compat(
     base_url: str, api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
@@ -1041,6 +925,18 @@ async def _invoke_facet(
         # no provider_error.
         await record_facet_health(
             facet, OUTCOME_CONFIG_ERROR, source, f"{type(e).__name__}: {e}")
+        # ERROR en el log ADEMÁS de la excepción: el 502 que ve el usuario
+        # trunca a 200 chars, el operador necesita el mensaje completo (trae
+        # el UPDATE que siembra la fila). Vive acá y no en los validadores
+        # desde 2026-09-14 (PR-J ronda 1): los validadores también los usan
+        # los admins, donde no se aborta ningún dispatch.
+        # DESVÍO DELIBERADO del requisito ("mismo log, idéntico"): antes solo
+        # los dos casos NULL logueaban, ahora sale para CUALQUIER
+        # ModelDispatchConfigError (también un nombre de parámetro inválido o
+        # un tope <= 0, que antes solo subían como excepción) y suma
+        # facet/source. Es mejor así: toda abortada por catálogo deja rastro
+        # con qué faceta y qué camino (chat o canario) la disparó.
+        logger.error(f"dispatch abortado: facet={facet!r} source={source!r}: {e}")
         raise            # SIEMPRE re-lanza: no puede volverse fail-open
     except Exception as e:
         await record_facet_health(

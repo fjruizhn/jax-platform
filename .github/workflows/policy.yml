@@ -130,8 +130,12 @@ jobs:
             // poniendo el aviso) y +1 Login.test.jsx (el aviso se borra al enviar
             // el formulario). Medido con vitest run: 139.
             // 139 -> 140 el 2026-09-14 (tanda A): PipelineModal.test.jsx (+1) -- el modal no manda invoked_by en ninguna de las dos formas (lo pone el backend como el rol "plataforma"). Visto en rojo antes.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 140) {
-              console.error("PISO ROTO: se esperaban 140 tests de vitest CORRIDOS y 0 fallidos.");
+            // PR-J (2026-09-14, contrato de dispatch al aprobar): +5 AdminModelCatalog.test.jsx /
+            // AdminFacetBindings.test.jsx (los dos 409 traducidos es/en, detail objeto ya no
+            // sale "[object Object]") y +1 en la ronda 1 (modelo_de_otro_proveedor). Rebase de
+            // PR-J sobre la tanda A: 140 + 6. Medido con vitest run: 146.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 146) {
+              console.error("PISO ROTO: se esperaban 146 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -537,7 +541,14 @@ jobs:
           # aiomysql.pool, fail-closed ante archivos que no parsean), medidos contra jax master.
           # Rebase de PR-C sobre PR-A: se suman los deltas sobre la base común 646
           # (PR-A +19, PR-C +26). Medido contra jax con PR-B (5d60679): 691 / 1.
-          PISO_PASSED = 691
+          # PR-J (2026-09-14, jekyll caída por aprobar un modelo sin contrato de dispatch):
+          # +14 en test_contrato_dispatch_al_aprobar.py (approve y PUT: sin max_tokens_param /
+          # sin max_output_tokens / de otro proveedor -> 409 con el binding intacto; contrato
+          # completo -> 200; ollama/subprocess no se bloquean; logs WARNING vs ERROR) y +4 en
+          # test_model_max_tokens_param.py / test_model_max_output_tokens.py (deepseek-flash y
+          # deepseek-v4-pro sembrados sin pisar un valor manual). Rebase de PR-J sobre la
+          # tanda A: 691 + 18. Medido contra jax con PR-B: 709 / 1.
+          PISO_PASSED = 709
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -829,7 +840,10 @@ jobs:
       # todos puros (tripwire + helper), ver el comentario del piso con DB. Rebase de
       # PR-C sobre PR-A: deltas sumados sobre la base común 305 (PR-A +19, PR-C +21).
       # Medido con JAX_CI_NO_DB=1 contra jax con PR-B (5d60679): 345 / 347.
-      JAX_CI_MIN_PASSED: "345"
+      # PR-J (2026-09-14): +4 puros (faltantes del contrato por transporte, chat.py
+      # reexporta los mismos validadores, las dos listas de seed); el resto pide `client`.
+      # Rebase de PR-J sobre la tanda A: 345 + 4. Medido con JAX_CI_NO_DB=1: 349 / 361.
+      JAX_CI_MIN_PASSED: "349"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

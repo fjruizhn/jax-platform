@@ -12,6 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 import model_catalog
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
+from contrato_dispatch import detalle_si_rompe_el_contrato
 from db.connection import get_pool
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,16 @@ async def approve_proposal(
             facet_key, proposed_model_ref, current_status = row
             if current_status != "pending":
                 raise HTTPException(status_code=409, detail=f"Proposal ya esta '{current_status}'")
+
+            # 2026-09-14 (PR-J): ANTES de escribir, el modelo propuesto tiene
+            # que cumplir el contrato de dispatch del transporte de la faceta,
+            # con los MISMOS validadores que el dispatch. Si no, 409 y nada se
+            # escribe: la propuesta sigue 'pending' (se aprueba cuando la fila
+            # de `model` este sembrada) y el binding no cambia. Aprobar la #11
+            # sin este chequeo dejo a jekyll caida hasta su primer uso.
+            detalle = await detalle_si_rompe_el_contrato(cur, facet_key, proposed_model_ref)
+            if detalle is not None:
+                raise HTTPException(status_code=409, detail=detalle)
 
             decided_by = int(user.user_id)
             await cur.execute(

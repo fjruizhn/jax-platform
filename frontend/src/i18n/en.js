@@ -327,6 +327,15 @@ export default {
   adminBindingsSaving: 'Saving…',
   adminBindingsSaveError: (detail) => `Couldn't save: ${detail}`,
   adminBindingsSelectModel: 'Pick a model from the catalog',
+  // 409 when approving a proposal or saving a binding (2026-09-14, PR-J): the
+  // target model does not declare what this facet's dispatch needs.
+  modelo_sin_contrato_de_dispatch: (modelo, campos) =>
+    `Model ${modelo} does not declare ${campos} in the catalog, so this facet could not use it. That catalog row must be completed first. Nothing was changed.`,
+  adminProposalsDecideError: 'The decision on the proposal could not be completed.',
+  // Round 1 409 (2026-09-14): the binding would keep a provider that is not
+  // the model's, and the facet would send the model to the wrong service.
+  modelo_de_otro_proveedor: (modelo, proveedorModelo, proveedorBinding) =>
+    `Model ${modelo} belongs to ${proveedorModelo}, but this facet would be configured with ${proveedorBinding}, so it could not use it. Pick a ${proveedorBinding} model. Nothing was changed.`,
 
   // Admin — Motors tab (R4 Task 9): register a motor/capability without hand-written SQL
   adminTabMotors: 'Motors',

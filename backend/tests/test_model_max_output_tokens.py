@@ -73,17 +73,20 @@ def test_null_fails_loud_naming_the_model_and_the_remedy():
     )
 
 
-def test_null_also_logs_an_error_with_the_update(caplog):
+def test_null_carries_the_update_in_the_exception_and_the_validator_does_not_log(caplog):
     """El 502 que ve el usuario trunca el mensaje; el operador lee el log. El
-    UPDATE tiene que estar completo alla tambien."""
+    UPDATE viaja completo en la excepcion, y el ERROR "dispatch abortado" lo
+    escribe el camino de dispatch (api/chat.py::_invoke_facet, ver
+    test_contrato_dispatch_al_aprobar.py), NO el validador: desde 2026-09-14
+    lo usan tambien los admins, donde no se aborta ningun dispatch."""
     import logging
 
-    with caplog.at_level(logging.ERROR):
-        with pytest.raises(ModelDispatchConfigError):
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(ModelDispatchConfigError) as exc:
             _max_output_tokens_value("modelo-sin-sembrar", None)
-    logged = "\n".join(r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
-    assert "modelo-sin-sembrar" in logged
-    assert "UPDATE model SET max_output_tokens" in logged
+    assert "modelo-sin-sembrar" in str(exc.value)
+    assert "UPDATE model SET max_output_tokens" in str(exc.value)
+    assert not [r for r in caplog.records if "dispatch abortado" in r.getMessage()]
 
 
 @pytest.mark.parametrize("valor_imposible", [0, -1, "131072", 131072.0, True])
@@ -340,3 +343,68 @@ def test_resolve_facet_carries_max_output_tokens_from_the_model_row(client):
         f"jekyll resolvio a {resolved.model!r} con "
         f"max_output_tokens={resolved.max_output_tokens!r}"
     )
+
+
+# --------------------------------------------------------------------------
+# PR-J (2026-09-14): deepseek-flash / deepseek-v4-pro, los modelos vigentes de
+# DeepSeek tras retirar deepseek-v4-flash (jekyll caida desde 2026-09-12).
+# --------------------------------------------------------------------------
+
+_DEEPSEEK_VIGENTES = ("deepseek-flash", "deepseek-v4-pro")
+
+
+async def _commit(sql, params=()):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql, params)
+        await conn.commit()
+
+
+def test_seed_declara_393216_para_los_deepseek_vigentes():
+    """Doc oficial (api-docs.deepseek.com, 2026-09-14): max_tokens va de 1 a
+    393216 (384K). Decision de Fernando: el maximo documentado."""
+    seeded = {(p, m): v for p, m, v in _MODEL_MAX_OUTPUT_TOKENS_SEED}
+    for model_id in _DEEPSEEK_VIGENTES:
+        assert seeded[("deepseek", model_id)] == 393216, model_id
+
+
+def test_seed_siembra_los_deepseek_vigentes_en_la_db_sin_pisar_valores(client):
+    insertadas = []
+    for model_id in _DEEPSEEK_VIGENTES:
+        if not client.portal.call(
+            _fetch, "SELECT id FROM model WHERE provider_id='deepseek' AND model_id=%s", (model_id,),
+        ):
+            client.portal.call(
+                _commit,
+                "INSERT INTO model (provider_id, model_id, source, source_checked_at) "
+                "VALUES ('deepseek', %s, 'provider_api', NOW())", (model_id,),
+            )
+            insertadas.append(model_id)
+    try:
+        client.portal.call(
+            _commit,
+            "UPDATE model SET max_output_tokens=NULL WHERE provider_id='deepseek' AND model_id='deepseek-flash'",
+        )
+        client.portal.call(
+            _commit,
+            "UPDATE model SET max_output_tokens=8000 WHERE provider_id='deepseek' AND model_id='deepseek-v4-pro'",
+        )
+        client.portal.call(_run_seed)
+        (flash,), = client.portal.call(
+            _fetch, "SELECT max_output_tokens FROM model WHERE provider_id='deepseek' AND model_id='deepseek-flash'")
+        (pro,), = client.portal.call(
+            _fetch, "SELECT max_output_tokens FROM model WHERE provider_id='deepseek' AND model_id='deepseek-v4-pro'")
+        assert flash == 393216
+        assert pro == 8000, "el seed piso un valor puesto a mano"
+    finally:
+        for model_id in _DEEPSEEK_VIGENTES:
+            if model_id in insertadas:
+                client.portal.call(
+                    _commit, "DELETE FROM model WHERE provider_id='deepseek' AND model_id=%s", (model_id,))
+            else:
+                client.portal.call(
+                    _commit, "UPDATE model SET max_output_tokens=NULL "
+                    "WHERE provider_id='deepseek' AND model_id=%s", (model_id,))
+        client.portal.call(_run_seed)

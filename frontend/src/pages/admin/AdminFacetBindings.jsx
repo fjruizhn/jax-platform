@@ -2,6 +2,18 @@ import { useState, useEffect, useCallback } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { FACET_COLORS } from '../../store/useJaxStore'
+import { textoDeErrorDeBinding } from '../../api/errores'
+import AlertaError from '../../components/AlertaError'
+
+// El 409 de contrato de dispatch trae un objeto en `detail` (2026-09-14,
+// PR-J): antes se interpolaba tal cual y salía "[object Object]". Ese código
+// se traduce; cualquier otro conserva el texto que mandó el backend.
+function mensajeDeGuardado(t, err) {
+  const traducido = textoDeErrorDeBinding(t, err)
+  if (traducido) return traducido
+  const detail = err?.response?.data?.detail
+  return t.adminBindingsSaveError(typeof detail === 'string' ? detail : String(err))
+}
 
 const CAPABILITY_STYLE = {
   ok: 'text-green-400',
@@ -47,7 +59,8 @@ export default function AdminFacetBindings() {
       setEditing(null)
       loadBindings()
     } catch (e) {
-      setSaveError(e?.response?.data?.detail || String(e))
+      // El error crudo: se traduce al renderizar (ver mensajeDeGuardado).
+      setSaveError(e)
     } finally {
       setSaving(false)
     }
@@ -110,7 +123,7 @@ export default function AdminFacetBindings() {
                     </span>
                   )}
                   {editing === b.facet_key && saveError && (
-                    <p className="text-xs text-red-400 mt-1">{t.adminBindingsSaveError(saveError)}</p>
+                    <AlertaError className="text-xs mt-1">{mensajeDeGuardado(t, saveError)}</AlertaError>
                   )}
                 </td>
                 <td className={`px-4 py-3 text-xs font-semibold ${CAPABILITY_STYLE[b.capability_check]}`}>

@@ -200,8 +200,47 @@ def test_approve_proposal_resolves_homonymous_motor_via_view_not_raw_column(clie
     assert client.portal.call(_fetch_motor_model_ref, "jax_local") is None  # precondicion: NULL a proposito
     assert client.portal.call(_fetch_motor_resolved_model_ref, "jax_local") == original_ref
 
-    other_ref = 2 if original_ref != 2 else 3  # cualquier model.id valido distinto del actual
+    # Un modelo DEL MISMO proveedor que jax_local (ollama). Hasta 2026-09-14
+    # esto era "model.id 2 o 3" -- en jax_memory_test, 'sonnet' de anthropic:
+    # el test aprobaba un binding con provider_id=ollama y un modelo de
+    # anthropic, justo lo que el guard de la ronda 1 de PR-J rechaza (409
+    # modelo_de_otro_proveedor). Lo que este test prueba (la vista sigue a
+    # facet_binding) no depende del proveedor.
+    other_ref = client.portal.call(_crear_modelo_ollama_de_prueba)
+    try:
+        _aprobar_y_verificar_vista(client, original_ref, other_ref)
+    finally:
+        client.portal.call(_borrar_modelo_de_prueba, other_ref)
 
+
+async def _crear_modelo_ollama_de_prueba():
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT IGNORE INTO model (provider_id, model_id, source, source_checked_at) "
+                "VALUES ('ollama', 'test-vista-motor-otro-modelo', 'manual', NOW())")
+            await cur.execute(
+                "SELECT id FROM model WHERE provider_id='ollama' AND model_id='test-vista-motor-otro-modelo'")
+            (ref,) = await cur.fetchone()
+        await conn.commit()
+    return ref
+
+
+async def _borrar_modelo_de_prueba(ref):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM model_binding_proposal WHERE proposed_model_ref=%s OR current_model_ref=%s",
+                (ref, ref))
+            await cur.execute("DELETE FROM model WHERE id=%s", (ref,))
+        await conn.commit()
+
+
+def _aprobar_y_verificar_vista(client, original_ref, other_ref):
     proposal_id, _ = client.portal.call(_make_pending_proposal, "jax_local", other_ref)
     resp = client.post(f"/api/admin/models/proposals/{proposal_id}/approve", headers=_superadmin_headers())
     assert resp.status_code == 200, resp.text
