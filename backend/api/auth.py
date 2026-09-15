@@ -118,14 +118,33 @@ async def login(req: LoginRequest, request: Request, response: Response):
             detail=f"Cuenta bloqueada. Intenta de nuevo en {remaining} minuto(s).",
         )
 
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL, last_login = NOW() "
-                "WHERE user_id = %s",
-                (user_id,),
-            )
+    # Sesión única (2026-09-15, Task 3b, Ruling F2): el login EXITOSO -- y
+    # sólo él; ningún camino de error de arriba escribe token_version -- sube
+    # la versión, así que toda sesión anterior de este usuario muere. Sube y
+    # RELEE en la misma transacción: la fila queda bloqueada hasta el commit,
+    # así que con dos logins simultáneos el segundo UPDATE espera, incrementa
+    # sobre el primero y cada uno emite la versión que él escribió (gana el
+    # último). Nunca "versión leída arriba + 1": esa lectura no bloquea, y dos
+    # logins emitirían la misma versión vieja -> ninguna sesión viva.
+    # `status = 'active'` en el WHERE: si en la ventana del bcrypt un admin lo
+    # desactivó o lo dio de baja, 0 filas -> la misma respuesta que un inactivo.
+    # Bloqueos: una sola fila de jax_users, por PK, sin nada tomado antes ni
+    # pedido después (el mismo argumento que Mi cuenta: sin ciclo con las
+    # escrituras de admin). READ COMMITTED (U33). bcrypt quedó arriba, fuera.
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        await cur.execute(
+            "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL, last_login = NOW(), "
+            "token_version = token_version + 1 WHERE user_id = %s AND status = 'active'",
+            (user_id,),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
+        await cur.execute("SELECT token_version FROM jax_users WHERE user_id = %s", (user_id,))
+        (token_version,) = await cur.fetchone()
 
+    # Ruling U9: después del commit, fail-soft. Cierra el WS/SSE de la sesión
+    # vieja ya mismo (si no, seguirían abiertos hasta su próxima verificación).
+    await _cortar_conexiones(user_id)
     access = _emitir_tokens(response, str(user_id), str(tenant_id), role, token_version)
 
     return LoginResponse(
@@ -172,7 +191,39 @@ async def me(user: AuthUser = Depends(get_current_user_con_cambio_pendiente)):
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(response: Response, refresh_token: str = Cookie(None)):
+    """Sesión única (2026-09-15, Task 3b, Ruling F2): salir mata la sesión EN
+    EL SERVIDOR, no sólo la cookie del navegador. La sesión se identifica por
+    la cookie de refresh (como /refresh) y se mata subiendo token_version; el
+    access de 15 min y cualquier copia del refresh quedan con la versión vieja.
+
+    Nunca responde 401 (el frontend no puede quedar en un bucle al salir): sin
+    cookie, con un token inválido o vencido, con la versión vieja o con un
+    usuario inactivo o dado de baja no hay sesión viva que matar -> sólo se
+    borra la cookie, sin escribir. Sin fila de auditoría: salir es una acción
+    rutinaria del propio usuario.
+
+    Admite la marca de cambio obligatorio (U34): quien la tiene también tiene
+    que poder salir. Es el tercer llamador con el opt-in, declarado en
+    tests/test_fijar_password.py::test_nadie_mas_admite_la_marca."""
+    if refresh_token:
+        try:
+            # decode_token convierte el JWTError en HTTPException(401) y
+            # verificar_sesion rechaza con HTTPException: los dos significan
+            # "no hay sesión viva". Sólo eso se atrapa; un error de la base en
+            # la escritura de abajo NO (sería informar un éxito que no ocurrió).
+            user = await verificar_sesion(decode_token(refresh_token), "refresh", admite_cambio_pendiente=True)
+        except HTTPException:
+            user = None
+        if user is not None:
+            user_id = int(user.user_id)
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await cur.execute(
+                    "UPDATE jax_users SET token_version = token_version + 1 WHERE user_id = %s", (user_id,)
+                )
+            # Ruling U9: después del commit, fail-soft (las otras pestañas de
+            # este navegador comparten la cookie: salen también, a propósito).
+            await _cortar_conexiones(user_id)
     response.delete_cookie(key="refresh_token", samesite="lax")
     return {"ok": True}
 

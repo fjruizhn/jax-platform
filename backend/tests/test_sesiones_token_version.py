@@ -215,7 +215,9 @@ def test_login_emite_la_version_actual(client, usuarios):
     r = client.post("/api/auth/login", json={"email": email, "password": "clave-de-prueba-9"})
     client.cookies.clear()
     assert r.status_code == 200, r.text
-    assert decode_token(r.json()["access_token"])["tv"] == 4
+    # Task 3b (sesión única, 2026-09-15): el login sube la versión y emite la
+    # que él mismo escribió (4 -> 5), no la que leyó antes del bcrypt.
+    assert decode_token(r.json()["access_token"])["tv"] == 5
 
 
 # ------------------------------------------------------------- WebSocket

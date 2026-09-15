@@ -1003,7 +1003,18 @@ jobs:
           # (d) "el chequeo de P1 movido dentro de la transacción" (1205 al
           # instante). El EXPLAIN del token ahora nombra el índice (`token`).
           # Medido dos veces: 875 / 1.
-          PISO_PASSED = 875
+          # Subido de 875 a 888 (2026-09-15, Task 3b, sesión única, Ruling F2):
+          # +13 en tests/test_sesion_unica.py (el segundo login mata la primera
+          # sesión; login fallido -- contraseña, bloqueo, inactivo -- no sube ni
+          # corta; inactivo durante el bcrypt -> 403 sin tokens; dos logins
+          # simultáneos dejan una sola sesión válida y la base en +2; logout con
+          # cookie válida sube y corta post-commit; 5 casos sin sesión viva que
+          # sólo borran la cookie; logout con la marca; un error de la base en el
+          # logout no se traga, ni en la escritura ni en la lectura de la
+          # sesión). Adaptados 3 existentes que asumían que el login no sube la
+          # versión. 6 vistos en rojo antes de verde; 7 mutaciones capturadas.
+          # Medido dos veces: 888 / 1.
+          PISO_PASSED = 888
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1394,6 +1405,9 @@ jobs:
       # test_el_reset_con_la_marca_no_corre_bcrypt_con_la_fila_tomada pide
       # `client` y se saltea (sin cambio en passed).
       # Medido dos veces con JAX_CI_NO_DB=1: 374 / 502.
+      # Task 3b (2026-09-15, sesión única): los 13 nuevos de
+      # tests/test_sesion_unica.py piden `client` y se saltean (sin cambio en
+      # passed). Medido dos veces con JAX_CI_NO_DB=1: 374 / 515.
       JAX_CI_MIN_PASSED: "374"
     steps:
       - uses: actions/checkout@v4

@@ -495,9 +495,13 @@ def test_completar_el_reset_cierra_las_sesiones_y_audita(client, usuarios, corte
     assert client.get("/api/auth/me", headers=auth(viejo)).status_code == 401
     assert client.portal.call(_version, u) == 1
     assert client.portal.call(_acciones, u) == ["password_reset_completed"]
-    assert _login(client, email, NUEVA).status_code == 200
     # U9: el corte pasa DESPUÉS del commit y ve ya la versión confirmada.
     assert cortes == [("ws", str(u), 1), ("sse", str(u), 1)]
+    # Task 3b (sesión única): el login exitoso con la nueva sube la versión y
+    # corta de nuevo, también después de su commit.
+    assert _login(client, email, NUEVA).status_code == 200
+    assert client.portal.call(_version, u) == 2
+    assert cortes[2:] == [("ws", str(u), 2), ("sse", str(u), 2)]
     r = client.post("/api/auth/reset-password", json={"token": token, "password": "otra-clave-789"})
     assert (r.status_code, r.json()["detail"]) == (400, "reset_token_usado")
 

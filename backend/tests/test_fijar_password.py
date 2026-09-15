@@ -224,6 +224,11 @@ def test_nadie_mas_admite_la_marca():
     assert hallados == {
         ("auth/middleware.py", "get_current_user_con_cambio_pendiente"),
         ("api/auth.py", "refresh"),
+        # Task 3b (2026-09-15, Ruling F2, sesión única): tercer sitio,
+        # agregado A PROPÓSITO -- el logout identifica la sesión por la cookie
+        # de refresh y quien tiene la marca también tiene que poder salir.
+        # Cualquier otro opt-in nuevo sigue rompiendo este test.
+        ("api/auth.py", "logout"),
     }
 
 
@@ -339,13 +344,17 @@ def test_fijar_password_cambia_corta_marca_y_audita_sin_la_contrasena(client, us
     r = _fijar(client, u)
     assert (r.status_code, r.json()) == (200, {"ok": True})
     assert client.get("/api/auth/me", headers=auth(viejo)).status_code == 401, "las sesiones viejas mueren"
+    assert client.portal.call(_version, u) == 1
+    assert cortes == [("ws", str(u), 1), ("sse", str(u), 1)], "corte tras el commit"
     assert _login(client, email, CLAVE).status_code == 401
     r = _login(client, email, FIJADA)
     assert r.status_code == 200 and r.json()["must_change_password"] is True
-    assert client.portal.call(_version, u) == 1
+    # Task 3b (sesión única): el login exitoso con la fijada sube 1 más; el
+    # fallido con la vieja no tocó nada.
+    assert client.portal.call(_version, u) == 2
     ((accion, detalle),) = client.portal.call(_auditoria, u)
     assert (accion, detalle) == ("password_set_by_admin", None)
-    assert cortes == [("ws", str(u), 1), ("sse", str(u), 1)], "corte tras el commit"
+    assert cortes[2:] == [("ws", str(u), 2), ("sse", str(u), 2)]
 
 
 def test_fijar_password_aplica_la_regla_sin_tocar_nada(client, usuarios, cortes):
