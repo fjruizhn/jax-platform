@@ -84,6 +84,32 @@ describe('AuditLog -- el 403 de quien no es superadmin se dice, traducido', () =
     renderLog()
     expect(await screen.findByRole('alert')).toHaveTextContent(en.auditoriaSoloSuperadmin)
   })
+
+  // Fix round 1 (review de 3bed155): el corte del polling no tenía test.
+  it('después de un 403 deja de preguntar: 30 s después sigue en 1 pedido', async () => {
+    vi.useFakeTimers()
+    try {
+      api.get.mockRejectedValue(PROHIBIDO)
+      renderLog()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(api.get).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(api.get).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('control: sin 403 sigue preguntando cada 10 s', async () => {
+    vi.useFakeTimers()
+    try {
+      renderLog()
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(api.get).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 // I-2 (revisión final PR 3, 2026-09-14): la hora del evento fijaba 'es-HN' en

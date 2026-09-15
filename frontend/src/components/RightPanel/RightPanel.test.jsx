@@ -57,6 +57,20 @@ describe('RightPanel -- la pestaña de auditoría es solo para superadmin', () =
     expect(await screen.findByText(es.auditLog)).toBeInTheDocument()
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/audit'))
   })
+
+  // Fix round 1 (review de 3bed155): la vuelta a Pipelines no tenía test.
+  it('si el rol deja de ser superadmin con la auditoría abierta, vuelve a Pipelines', async () => {
+    useJaxStore.setState({ user: { user_id: '1', role: 'superadmin' } })
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: es.tabAudit }))
+    expect(await screen.findByText(es.auditLog)).toBeInTheDocument()
+
+    act(() => { useJaxStore.setState({ user: { user_id: '1', role: 'viewer' } }) })
+
+    expect(screen.queryByText(es.auditLog)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: es.tabAudit })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: es.approve })).toBeInTheDocument()
+  })
 })
 
 describe('RightPanel -- los fallos de Aprobar y Cancelar se ven', () => {

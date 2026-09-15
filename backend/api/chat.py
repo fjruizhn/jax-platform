@@ -975,6 +975,15 @@ async def _invoke_facet(
     return texto, usage
 
 
+def _detalle_502_http(facet: str, e: httpx.HTTPStatusError) -> str:
+    """Texto del 502 que ve el usuario (y que va al bus) cuando el proveedor
+    responde con error. Fix round 1 (review de 3bed155): REDACTAR y DESPUÉS
+    recortar -- recortando antes, una key que cruzaba el caracter 200 quedaba
+    cortada, sin forma reconocible, y su prefijo salía en claro."""
+    cuerpo = redactar_secretos(e.response.text)[:200]
+    return f"Error HTTP {e.response.status_code} en {facet}: {cuerpo}"
+
+
 def _update_history(user_id: str, user_msg: str, assistant_msg: str):
     history = _conversations.get(user_id, [])
     history.append({"role": "user", "content": user_msg})
@@ -1045,8 +1054,9 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         is_canned = usage is None
     except httpx.HTTPStatusError as e:
         # Task 6 S1: el cuerpo del proveedor no deberia repetir la key, pero
-        # este texto sale al usuario y al bus -- se redacta igual.
-        detail = redactar_secretos(f"Error HTTP {e.response.status_code} en {facet}: {e.response.text[:200]}")
+        # este texto sale al usuario y al bus -- se redacta igual (y antes de
+        # recortar: ver _detalle_502_http).
+        detail = _detalle_502_http(facet, e)
         await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail[:100])
         await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
         raise HTTPException(status_code=502, detail=detail)

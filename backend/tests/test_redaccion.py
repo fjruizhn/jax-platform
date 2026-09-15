@@ -11,6 +11,8 @@ import httpx
 import http_client  # noqa: F401 -- instala el filtro en los loggers de httpx
 from redaccion import FiltroDeSecretos, redactar_secretos, texto_de_error
 
+KEY = "AIzaFAKE-task6-0123456789abcdef"
+
 
 def test_el_filtro_redacta_el_log_de_httpx(caplog):
     """httpx loguea `HTTP Request: POST <url>` en INFO en cada pedido: con
@@ -23,7 +25,40 @@ def test_el_filtro_redacta_el_log_de_httpx(caplog):
     assert KEY not in caplog.text
     assert "key=***" in caplog.text
 
-KEY = "AIzaFAKE-task6-0123456789abcdef"
+
+# --- Fix round 1 (2026-09-15, review de 3bed155): formas que la regex de S1
+# no cubria, y nombres que NO son secretos.
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("texto, esperado", [
+    ('api_key="sk-FAKE-comillas-dobles" x', 'api_key="***" x'),
+    ("api_key='sk-FAKE-comillas-simples' x", "api_key='***' x"),
+    ('{"api_key": "sk-FAKE-json", "n": 1}', '{"api_key": "***", "n": 1}'),
+    ("token = tok-FAKE-espacios fin", "token = *** fin"),
+    ("Authorization: Bearer x", "Authorization: Bearer ***"),
+    ("Authorization: Bearer tok-FAKE.abc_123/xyz= fin", "Authorization: Bearer *** fin"),
+    ("password=hunter2-FAKE&u=1", "password=***&u=1"),
+    ("secret=s3cr3t-FAKE fin", "secret=*** fin"),
+    ("x-goog-api-key: AIzaFAKE-cabecera-0123456789", "x-goog-api-key: ***"),
+])
+def test_formas_de_secreto_que_se_redactan(texto, esperado):
+    assert redactar_secretos(texto) == esperado
+
+
+@pytest.mark.parametrize("texto", [
+    "monkey=5 y turkey=3",
+    "turkey=pavo",
+    "Duplicate entry 'x' for key 'PRIMARY'",
+])
+def test_nombres_que_no_son_secretos_no_se_tocan(texto):
+    assert redactar_secretos(texto) == texto
+
+
+def test_sort_key_y_cache_key_se_redactan_perdida_aceptada():
+    """Perdida aceptada (review de 3bed155): un nombre compuesto que termina
+    en `_key` se trata como secreto. Mejor tapar de mas que filtrar."""
+    assert redactar_secretos("sort_key=nombre&cache_key=abc") == "sort_key=***&cache_key=***"
 
 
 def test_query_key_se_redacta_y_el_resto_de_la_url_queda():

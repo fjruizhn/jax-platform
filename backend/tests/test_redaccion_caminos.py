@@ -128,12 +128,35 @@ def test_record_facet_health_redacta_en_el_punto_de_escritura(monkeypatch):
 
 def test_record_facet_health_redacta_antes_de_truncar(monkeypatch):
     """Si truncara primero, una key cortada a la mitad ya no tendria forma
-    reconocible y su prefijo quedaria en la fila."""
+    reconocible y su prefijo quedaria en la fila.
+
+    Fix round 1 (review de 3bed155): la version anterior (200 de relleno) no
+    podia fallar -- la key entera cabia bajo el tope de 255. Ahora 248 de
+    relleno + una key AIza SUELTA que cruza el corte: con el slice ANTES de
+    redactar quedarian 'AIzaFA' (6 chars, sin forma reconocible) en la fila.
+    Verificado bajo esa mutacion en facet_health.py."""
     sink = _sink(monkeypatch)
-    relleno = "x" * 200
+    relleno = "x" * 248
     asyncio.run(facet_health.record_facet_health(
-        "thot", "provider_error", "chat", f"{relleno} ?key={KEY}"))
-    assert "AIzaFAKE" not in _details(sink)[0]
+        "thot", "provider_error", "chat", f"{relleno} {KEY}"))
+    detail = _details(sink)[0]
+    assert len(detail) <= 255
+    assert "AIza" not in detail
+    assert detail.endswith("***")
+
+
+def test_el_502_del_chat_redacta_antes_de_recortar():
+    """Fix round 1 (review de 3bed155): el 502 armaba
+    redactar_secretos(f"... {e.response.text[:200]}") -- recortaba ANTES de
+    redactar. Una key que cruza el caracter 200 quedaba cortada, sin forma
+    reconocible, y su prefijo salia al usuario y al bus."""
+    req = httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/m:generateContent")
+    cuerpo = "e" * 190 + " " + KEY + " fin"          # la key empieza en el 191
+    exc = httpx.HTTPStatusError("x", request=req, response=httpx.Response(400, text=cuerpo, request=req))
+    detail = chat_mod._detalle_502_http("hipatia", exc)
+    assert detail.startswith("Error HTTP 400 en hipatia: ")
+    assert "AIza" not in detail
+    assert len(detail) <= len("Error HTTP 400 en hipatia: ") + 200
 
 
 # --- 2. sonda por rebind --------------------------------------------------------

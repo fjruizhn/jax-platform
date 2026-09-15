@@ -16,10 +16,41 @@ from collections.abc import Iterable
 
 MARCA = "***"
 
-# `key=`, `api_key=`, `x-goog-api-key=`, `token=`, `access_token=`... en
-# query strings o en texto libre. El valor termina en &, espacio o comilla.
+# Nombre de secreto seguido de `=` o `:` (con o sin espacios) y su valor, en
+# query strings, cabeceras, JSON o texto libre (fix round 1, review de
+# 3bed155): `key=`, `api_key="…"`, `'token': '…'`, `"api_key": "…"`,
+# `token = x`, `x-goog-api-key: …`, `password=`, `secret=`.
+#   - El nombre empieza en un borde (lookbehind: ni letra, ni digito, ni `_`
+#     ni `-`), asi `monkey=5` y `turkey=` NO se tocan.
+#   - Puede llevar prefijos separados por `_`/`-` (`api_key`, `access_token`,
+#     `x-goog-api-key`, `client_secret`). Perdida aceptada: `sort_key=` y
+#     `cache_key=` tambien se tapan -- mejor de mas que de menos.
+#   - `for key 'PRIMARY'` no tiene `=`/`:` -> intacto.
+#   - El valor entre comillas conserva las comillas; sin comillas termina en
+#     `&`, espacio, comilla, `,`, `;`, `<`, `>`, `}` o `]`.
 _PARAM_SECRETO = re.compile(
-    r"(?i)\b([a-z0-9_\-]*(?:key|token))=([^&\s'\"<>]+)")
+    r"""(?ix)
+    (?<![a-z0-9_\-])
+    (["']?)
+    ((?:[a-z0-9]+[_\-])*(?:api_?key|key|token|password|passwd|secret))
+    \1
+    (\s*[=:]\s*)
+    (?:"([^"]*)"|'([^']*)'|([^&\s'",;<>}\]]+))
+    """)
+
+# `Authorization: Bearer x` / `Basic x`: el esquema queda, el valor no.
+_ESQUEMA_AUTH = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]+")
+
+
+def _tapar_param(m: re.Match) -> str:
+    comilla, nombre, separador = m.group(1), m.group(2), m.group(3)
+    if m.group(4) is not None:
+        valor = f'"{MARCA}"'
+    elif m.group(5) is not None:
+        valor = f"'{MARCA}'"
+    else:
+        valor = MARCA
+    return f"{comilla}{nombre}{comilla}{separador}{valor}"
 
 # Forma de las API keys de Google (Gemini): "AIza" + 35 caracteres. Se exige
 # un minimo de 10 para no comerse palabras cortas que empiecen igual.
@@ -37,7 +68,8 @@ def redactar_secretos(texto: str | None, secretos: Iterable[str | None] = ()) ->
     # deja un resto del largo sin tapar.
     for s in sorted((s for s in secretos if s), key=len, reverse=True):
         texto = texto.replace(s, MARCA)
-    texto = _PARAM_SECRETO.sub(lambda m: f"{m.group(1)}={MARCA}", texto)
+    texto = _PARAM_SECRETO.sub(_tapar_param, texto)
+    texto = _ESQUEMA_AUTH.sub(lambda m: f"{m.group(1)} {MARCA}", texto)
     return _KEY_GOOGLE.sub(MARCA, texto)
 
 
