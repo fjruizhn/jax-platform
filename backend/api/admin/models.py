@@ -4,6 +4,11 @@ jax-platform/docs/fase2-facetas-diseno.md D1.3.
 REGLA DE ORO: /sync solo escribe `model` (via model_catalog, capas a+b).
 /proposals/{id}/approve es el UNICO camino de este router hacia
 facet_binding — nunca un UPDATE directo disparado por el sync.
+
+PR-L (2026-09-14): PUT /{model_ref}/contrato-dispatch declara el contrato de
+dispatch de una fila, y los 409 del guard quedan en model_catalog_audit. Sin
+backfill a proposito: los rechazos anteriores a ese deploy solo existieron en
+el log y en la pantalla de quien hizo click, no hay de donde reconstruirlos.
 """
 import json
 import logging
@@ -20,6 +25,7 @@ from contrato_dispatch import (
     _MAX_TOKENS_PARAM_NAMES,
     detalle_si_rompe_el_contrato,
     errores_del_contrato,
+    fila_de_rechazo,
     ip_de,
     registrar_rechazo_de_binding,
 )
@@ -104,7 +110,7 @@ async def list_models(
 # que el test de EXPLAIN mida la consulta REAL y no una copia. Las dos van por
 # PK (model.id): una fila, sin filesort.
 _SQL_CONTRATO_ACTUAL = (
-    "SELECT model_id, max_tokens_param, max_output_tokens FROM model WHERE id=%s FOR UPDATE"
+    "SELECT provider_id, model_id, max_tokens_param, max_output_tokens FROM model WHERE id=%s FOR UPDATE"
 )
 _SQL_DECLARAR_CONTRATO = (
     "UPDATE model SET max_tokens_param=%s, max_output_tokens=%s WHERE id=%s"
@@ -141,7 +147,12 @@ async def declarar_contrato_dispatch(
     transacción, por PK. Después del commit estampa el sello de
     facet_resolver: la resolución cacheada de cualquier faceta que use esta
     fila (Mesa web, LAS MANOS, REPL) queda obsoleta y el próximo dispatch lee
-    el valor nuevo sin reiniciar. Sin caché nueva."""
+    el valor nuevo sin reiniciar. Sin caché nueva.
+
+    NO reaprueba la propuesta rechazada ni reintenta el PUT del binding, a
+    propósito (decisión de la ronda 1 de PR-L): declarar el contrato arregla
+    el catálogo; cambiar el modelo de una faceta sigue siendo una decisión
+    explícita de un superadmin, que vuelve a hacer click en Aprobar."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -150,7 +161,7 @@ async def declarar_contrato_dispatch(
             if fila is None:
                 await conn.rollback()
                 raise HTTPException(status_code=404, detail="modelo_no_encontrado")
-            model_id, param_antes, tope_antes = fila
+            provider_id, model_id, param_antes, tope_antes = fila
 
             errores = errores_del_contrato(model_id, req.max_tokens_param, req.max_output_tokens)
             if errores:
@@ -167,9 +178,11 @@ async def declarar_contrato_dispatch(
             despues = {"max_tokens_param": req.max_tokens_param, "max_output_tokens": req.max_output_tokens}
             await cur.execute(_SQL_DECLARAR_CONTRATO, (req.max_tokens_param, req.max_output_tokens, model_ref))
             await cur.execute(
-                "INSERT INTO model_catalog_audit (action, model_ref, valor_antes, valor_despues, "
-                "performed_by, performed_from_ip) VALUES ('contrato_declarado', %s, %s, %s, %s, %s)",
-                (model_ref, json.dumps(antes), json.dumps(despues), int(user.user_id), ip_de(request)),
+                "INSERT INTO model_catalog_audit (action, model_ref, provider_id, model_id, valor_antes, "
+                "valor_despues, performed_by, performed_from_ip) "
+                "VALUES ('contrato_declarado', %s, %s, %s, %s, %s, %s, %s)",
+                (model_ref, provider_id, model_id, json.dumps(antes), json.dumps(despues),
+                 int(user.user_id), ip_de(request)),
             )
         await conn.commit()
 
@@ -245,7 +258,7 @@ async def list_proposals(
 # PR-L (2026-09-14): el último 409 del guard por propuesta. Una sola query
 # para toda la lista (no una por fila), por idx_proposal_id (proposal_id, id).
 _SQL_RECHAZOS_DE_PROPUESTAS = (
-    "SELECT proposal_id, code, valor_despues, performed_by, performed_at "
+    "SELECT proposal_id, code, valor_despues, performed_by, performed_at, provider_id, model_id "
     "FROM model_catalog_audit "
     "WHERE action='binding_rechazado' AND proposal_id IN ({marcas}) ORDER BY proposal_id, id"
 )
@@ -257,19 +270,11 @@ async def _ultimos_rechazos(cur, proposal_ids: list[int]) -> dict:
     marcas = ", ".join(["%s"] * len(proposal_ids))
     await cur.execute(_SQL_RECHAZOS_DE_PROPUESTAS.format(marcas=marcas), tuple(proposal_ids))
     ultimos = {}
-    for proposal_id, code, detalle, performed_by, performed_at in await cur.fetchall():
-        detalle = json.loads(detalle) if detalle else {}
+    for proposal_id, code, detalle, performed_by, performed_at, provider_id, model_id in await cur.fetchall():
         # ORDER BY id: el último pisa a los anteriores.
-        ultimos[proposal_id] = {
-            "code": code,
-            "model_ref": detalle.get("model_ref"),
-            "model_id": detalle.get("model_id"),
-            "campos": detalle.get("campos", []),
-            "provider_modelo": detalle.get("provider_modelo"),
-            "provider_binding": detalle.get("provider_binding"),
-            "performed_by": performed_by,
-            "performed_at": str(performed_at) if performed_at else None,
-        }
+        rechazo = fila_de_rechazo(code, detalle, performed_by, performed_at, provider_id, model_id)
+        rechazo["proposal_id"] = proposal_id
+        ultimos[proposal_id] = rechazo
     return ultimos
 
 

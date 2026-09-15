@@ -11,10 +11,31 @@ from pydantic import BaseModel
 
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
-from contrato_dispatch import detalle_si_rompe_el_contrato, ip_de, registrar_rechazo_de_binding
+from contrato_dispatch import (
+    detalle_si_rompe_el_contrato,
+    fila_de_rechazo,
+    ip_de,
+    registrar_rechazo_de_binding,
+)
 from db.connection import get_pool
 
 router = APIRouter(prefix="/api/admin/facet-bindings")
+
+# PR-L ronda 1 (2026-09-14): el último 409 del guard de cada faceta (de
+# approve o de este PUT), para mostrarlo en la pantalla de bindings. DOS
+# queries a propósito: con un JOIN a una tabla derivada, MariaDB eligió
+# recorrer la auditoría ENTERA (EXPLAIN: type=ALL sobre `a`, medido en esta
+# ronda), un costo que crece con la historia. Separadas, cada una tiene su
+# índice garantizado: MAX(id) por faceta sale solo de idx_facet_rechazo
+# (action, facet_key, id) y las filas, por PRIMARY.
+_SQL_ULTIMO_ID_POR_FACETA = (
+    "SELECT MAX(id) FROM model_catalog_audit "
+    "WHERE action = 'binding_rechazado' AND facet_key IS NOT NULL GROUP BY facet_key"
+)
+_SQL_RECHAZOS_POR_ID = (
+    "SELECT facet_key, code, valor_despues, performed_by, performed_at, "
+    "provider_id, model_id, proposal_id FROM model_catalog_audit WHERE id IN ({marcas})"
+)
 
 
 def _capability_check(facet_row: dict, model_row: dict | None) -> str:
@@ -42,18 +63,39 @@ async def list_facet_bindings(user: AuthUser = Depends(require_superadmin)):
                 "SELECT f.`key`, f.display_name, f.transport, f.requires_tool_use, "
                 "f.requires_structured_output, f.min_context_tokens, f.status, "
                 "b.role, b.provider_id, b.model_ref, m.model_id, m.supports_tool_use, "
-                "m.context_window, m.status "
+                "m.context_window, m.status, b.approved_at "
                 "FROM facet f "
                 "LEFT JOIN facet_binding b ON b.facet_key = f.`key` AND b.role = 'primary' "
                 "LEFT JOIN model m ON m.id = b.model_ref "
                 "ORDER BY f.`key`"
             )
             rows = await cur.fetchall()
+            await cur.execute(_SQL_ULTIMO_ID_POR_FACETA)
+            ids = [fila[0] for fila in await cur.fetchall()]
+            filas_rechazo = []
+            if ids:
+                marcas = ", ".join(["%s"] * len(ids))
+                await cur.execute(_SQL_RECHAZOS_POR_ID.format(marcas=marcas), tuple(ids))
+                filas_rechazo = await cur.fetchall()
+            rechazos = {}
+            for (facet, code, detalle, performed_by, performed_at,
+                 r_provider, r_model, proposal_id) in filas_rechazo:
+                rechazo = fila_de_rechazo(code, detalle, performed_by, performed_at, r_provider, r_model)
+                rechazo["proposal_id"] = proposal_id
+                rechazos[facet] = (performed_at, rechazo)
 
     bindings = []
     for (key, display_name, transport, requires_tool_use, requires_structured_output,
          min_context_tokens, facet_status, role, provider_id, model_ref, model_id,
-         supports_tool_use, context_window, model_status) in rows:
+         supports_tool_use, context_window, model_status, approved_at) in rows:
+        # Un rechazo anterior (o del mismo segundo) al último cambio aprobado
+        # del binding ya no describe el estado de la faceta: no se muestra.
+        # La historia completa sigue en model_catalog_audit.
+        ultimo_rechazo = None
+        if key in rechazos:
+            rechazado_at, rechazo = rechazos[key]
+            if approved_at is None or rechazado_at > approved_at:
+                ultimo_rechazo = rechazo
         facet_row = {
             "requires_tool_use": bool(requires_tool_use),
             "min_context_tokens": min_context_tokens,
@@ -75,6 +117,7 @@ async def list_facet_bindings(user: AuthUser = Depends(require_superadmin)):
             "model_id": model_id,
             "model_status": model_status,
             "capability_check": _capability_check(facet_row, model_row),
+            "ultimo_rechazo": ultimo_rechazo,
         })
     return {"bindings": bindings}
 

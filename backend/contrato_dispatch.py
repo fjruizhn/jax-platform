@@ -276,6 +276,10 @@ async def detalle_si_rompe_el_contrato(
             "transport": transport,
             "model_ref": model_ref,
             "model_id": model_id,
+            # El proveedor de la fila (PR-L ronda 1): la auditoría lo guarda
+            # legible y la UI arma el formulario aunque la fila no esté en
+            # la lista que tiene cargada.
+            "provider_modelo": model_provider,
             "campos": [campo for campo, _ in faltantes],
             "message": " | ".join(str(e) for _, e in faltantes),
         }
@@ -324,10 +328,33 @@ async def registrar_rechazo_de_binding(
     El que llama hace commit ANTES de levantar el 409: es lo único que esa
     transacción escribe (el guard corre antes de cualquier UPDATE), así que
     commitear no deja nada a medias. proposal_id None = PUT de binding."""
+    # provider_id/model_id: los identificadores legibles del momento (PR-L
+    # ronda 1) -- la tabla no tiene FK a model ni a la propuesta, así que la
+    # historia tiene que entenderse sola si esas filas se borran.
     await cur.execute(
-        "INSERT INTO model_catalog_audit (action, model_ref, facet_key, proposal_id, code, "
-        "valor_despues, performed_by, performed_from_ip) "
-        "VALUES ('binding_rechazado', %s, %s, %s, %s, %s, %s, %s)",
-        (detalle["model_ref"], detalle["facet_key"], proposal_id, detalle["code"],
-         json.dumps(detalle, ensure_ascii=False), performed_by, performed_from_ip),
+        "INSERT INTO model_catalog_audit (action, model_ref, provider_id, model_id, facet_key, "
+        "proposal_id, code, valor_despues, performed_by, performed_from_ip) "
+        "VALUES ('binding_rechazado', %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (detalle["model_ref"], detalle["provider_modelo"], detalle["model_id"], detalle["facet_key"],
+         proposal_id, detalle["code"], json.dumps(detalle, ensure_ascii=False),
+         performed_by, performed_from_ip),
     )
+
+
+def fila_de_rechazo(code, valor_despues, performed_by, performed_at, provider_id, model_id) -> dict:
+    """Un 'binding_rechazado' de model_catalog_audit como lo lee la UI (el
+    mismo formato en la lista de propuestas y en la de bindings). Los
+    identificadores legibles salen de las columnas; campos y proveedores del
+    `detail` guardado."""
+    detalle = json.loads(valor_despues) if valor_despues else {}
+    return {
+        "code": code,
+        "model_ref": detalle.get("model_ref"),
+        "model_id": model_id or detalle.get("model_id"),
+        "campos": detalle.get("campos", []),
+        "provider_modelo": provider_id or detalle.get("provider_modelo"),
+        "provider_binding": detalle.get("provider_binding"),
+        "proposal_id": None,
+        "performed_by": performed_by,
+        "performed_at": str(performed_at) if performed_at else None,
+    }

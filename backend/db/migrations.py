@@ -388,14 +388,27 @@ CREATE TABLE IF NOT EXISTS model_binding_proposal (
 # provider_id/credential_id no describen una fila de `model`. Por que no
 # columnas en model_binding_proposal: el rechazo tambien pasa en el PUT (sin
 # propuesta) y una columna guarda solo el ULTIMO -- esto es historia.
-# idx_proposal_id: la lista de propuestas trae el ultimo rechazo de cada una
-# por (proposal_id, id). FKs a proposito: la historia no puede quedar
-# apuntando a una fila borrada.
+# Indices: idx_proposal_id -> ultimo rechazo de cada propuesta por
+# (proposal_id, id); idx_facet_rechazo -> ultimo rechazo de cada faceta
+# (action, facet_key, MAX(id)) en la pantalla de bindings; idx_model_time ->
+# historia de una fila.
+#
+# SIN FK a model ni a model_binding_proposal (ronda 1 de PR-L, 2026-09-14,
+# decision del coordinador con la autorizacion de Fernando): una auditoria no
+# puede impedir borrar la entidad que audita, ni perder su fila si se borra.
+# model_ref/proposal_id quedan como el numero que eran; provider_id/model_id
+# (y facet_key) guardan los identificadores LEGIBLES del momento del evento,
+# asi la historia se entiende aunque la fila ya no exista. La FK a jax_users
+# se conserva: es el QUIEN, mismo criterio que credential_audit. Una base con
+# la forma anterior (FK duras, sin provider_id/model_id) la convierte
+# _auditoria_de_catalogo_sin_fk_duras().
 CREATE_MODEL_CATALOG_AUDIT = """
 CREATE TABLE IF NOT EXISTS model_catalog_audit (
   id INT AUTO_INCREMENT PRIMARY KEY,
   action ENUM('contrato_declarado','binding_rechazado') NOT NULL,
   model_ref INT NOT NULL,
+  provider_id VARCHAR(50) NULL,
+  model_id VARCHAR(100) NULL,
   facet_key VARCHAR(50) NULL,
   proposal_id INT NULL,
   code VARCHAR(64) NULL,
@@ -404,10 +417,9 @@ CREATE TABLE IF NOT EXISTS model_catalog_audit (
   performed_by INT NOT NULL,
   performed_from_ip VARCHAR(45) NOT NULL,
   performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (model_ref) REFERENCES model(id),
-  FOREIGN KEY (proposal_id) REFERENCES model_binding_proposal(id),
   FOREIGN KEY (performed_by) REFERENCES jax_users(user_id),
   INDEX idx_proposal_id (proposal_id, id),
+  INDEX idx_facet_rechazo (action, facet_key, id),
   INDEX idx_model_time (model_ref, performed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
@@ -1836,6 +1848,46 @@ async def _asegurar_forma_de_capability_mode(cur) -> None:
         )
 
 
+async def _auditoria_de_catalogo_sin_fk_duras(cur) -> None:
+    """Lleva model_catalog_audit a la forma de la ronda 1 de PR-L
+    (2026-09-14) en una base donde ya existe con la forma de ba1f704: FK
+    duras a model y a model_binding_proposal, sin provider_id/model_id. Ver
+    el comentario de CREATE_MODEL_CATALOG_AUDIT. Idempotente: cada paso mira
+    information_schema antes de actuar; en una base nueva no hace nada salvo
+    el UPDATE (que no encuentra filas)."""
+    for columna, ddl in (
+        ("provider_id", "ALTER TABLE model_catalog_audit ADD COLUMN provider_id VARCHAR(50) NULL AFTER model_ref"),
+        ("model_id", "ALTER TABLE model_catalog_audit ADD COLUMN model_id VARCHAR(100) NULL AFTER provider_id"),
+    ):
+        if not await _column_exists(cur, "model_catalog_audit", columna):
+            await cur.execute(ddl)
+
+    # Los nombres de las FK los generó el servidor (en MariaDB, `1`, `2`...):
+    # se leen, no se suponen.
+    await cur.execute(
+        "SELECT CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS "
+        "WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'model_catalog_audit' "
+        "AND REFERENCED_TABLE_NAME IN ('model', 'model_binding_proposal')"
+    )
+    for (nombre,) in await cur.fetchall():
+        await cur.execute(f"ALTER TABLE model_catalog_audit DROP FOREIGN KEY `{nombre}`")
+
+    await cur.execute(
+        "SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() "
+        "AND TABLE_NAME = 'model_catalog_audit' AND INDEX_NAME = 'idx_facet_rechazo' LIMIT 1"
+    )
+    if await cur.fetchone() is None:
+        await cur.execute("ALTER TABLE model_catalog_audit ADD INDEX idx_facet_rechazo (action, facet_key, id)")
+
+    # Filas escritas con la forma vieja: se completan desde `model` mientras
+    # la fila exista (con la forma vieja la FK garantizaba que existe).
+    await cur.execute(
+        "UPDATE model_catalog_audit a JOIN model m ON m.id = a.model_ref "
+        "SET a.provider_id = m.provider_id, a.model_id = m.model_id "
+        "WHERE a.model_id IS NULL"
+    )
+
+
 async def run_migrations():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1881,6 +1933,9 @@ async def run_migrations():
             # http_* para que tener acceso al gate tenga sentido.
             await _migrate_kimi_chat_transport(cur)
             await _seed_http_facet_allowed_callers(cur)
+            # Después del bucle de _TABLES (la tabla existe) y antes de que
+            # nadie escriba en ella (PR-L ronda 1).
+            await _auditoria_de_catalogo_sin_fk_duras(cur)
             # Despues de _seed_models_and_backfill: las filas de `model` tienen
             # que existir para poder actualizarlas.
             await _seed_model_max_tokens_param(cur)

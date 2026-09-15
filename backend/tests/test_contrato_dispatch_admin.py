@@ -398,3 +398,181 @@ def test_put_de_binding_rechazado_deja_rastro_sin_propuesta(client):
     finally:
         client.portal.call(_restaurar, "jekyll", antes)
         client.portal.call(_borrar_fila, ref)
+
+
+# ------------------------------------------------------- Ronda 1 (PR-L) ---
+# La auditoría no bloquea ni pierde historia: sin FK duras a model ni a
+# model_binding_proposal, con los identificadores legibles del momento.
+
+async def _auditoria_por_model_id(model_id):
+    return await _q(
+        "SELECT action, model_ref, provider_id, model_id, facet_key, proposal_id, code "
+        "FROM model_catalog_audit WHERE model_id=%s ORDER BY id", (model_id,),
+    )
+
+
+async def _borrar_auditoria_por_model_id(model_id):
+    await _q("DELETE FROM model_catalog_audit WHERE model_id=%s", (model_id,), commit=True)
+
+
+async def _borrar_sin_tocar_auditoria(ref, pid):
+    """Borra la propuesta y la fila de model SIN borrar antes la auditoría.
+    Devuelve el error en vez de dejarlo escapar del portal."""
+    import aiomysql
+    try:
+        await _q("DELETE FROM model_binding_proposal WHERE id=%s OR proposed_model_ref=%s", (pid, ref), commit=True)
+        await _q("DELETE FROM model WHERE id=%s", (ref,), commit=True)
+    except aiomysql.IntegrityError as e:
+        return e
+    return None
+
+
+def test_borrar_modelo_y_propuesta_no_falla_y_la_auditoria_sigue_legible(client):
+    modelo = "test-prl-r1-se-borra"
+    # Arranca limpio: una corrida anterior que falló a mitad puede haber
+    # dejado auditoría y propuestas de este model_id en jax_memory_test.
+    client.portal.call(_borrar_auditoria_por_model_id, modelo)
+    ref = client.portal.call(_crear_fila, modelo)
+    client.portal.call(_q, "DELETE FROM model_binding_proposal WHERE proposed_model_ref=%s", (ref,), True)
+    antes = client.portal.call(_binding, "jekyll")
+    try:
+        pid = client.portal.call(_propuesta, "jekyll", ref)
+        assert client.post(f"/api/admin/models/proposals/{pid}/approve", headers=_headers()).status_code == 409
+        assert _declarar(client, ref, {"max_tokens_param": "max_tokens", "max_output_tokens": 4096}).status_code == 200
+        client.portal.call(_restaurar, "jekyll", antes)
+
+        error = client.portal.call(_borrar_sin_tocar_auditoria, ref, pid)
+        assert error is None, f"la auditoría impidió borrar: {error}"
+
+        filas = client.portal.call(_auditoria_por_model_id, modelo)
+        assert filas == (
+            ("binding_rechazado", ref, _PROVEEDOR, modelo, "jekyll", pid, "modelo_sin_contrato_de_dispatch"),
+            ("contrato_declarado", ref, _PROVEEDOR, modelo, None, None, None),
+        ), filas
+    finally:
+        client.portal.call(_restaurar, "jekyll", antes)
+        client.portal.call(_borrar_auditoria_por_model_id, modelo)
+        client.portal.call(_q, "DELETE FROM model_binding_proposal WHERE proposed_model_ref=%s", (ref,), True)
+        client.portal.call(_q, "DELETE FROM model WHERE id=%s", (ref,), True)
+
+
+# La forma de la tabla en ba1f704 (FK duras a model y a la propuesta, sin
+# provider_id/model_id): la que ya existe en CI y en jax_memory_test.
+_DDL_VIEJA = """
+CREATE TABLE model_catalog_audit (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  action ENUM('contrato_declarado','binding_rechazado') NOT NULL,
+  model_ref INT NOT NULL,
+  facet_key VARCHAR(50) NULL,
+  proposal_id INT NULL,
+  code VARCHAR(64) NULL,
+  valor_antes LONGTEXT NULL CHECK (valor_antes IS NULL OR json_valid(valor_antes)),
+  valor_despues LONGTEXT NULL CHECK (valor_despues IS NULL OR json_valid(valor_despues)),
+  performed_by INT NOT NULL,
+  performed_from_ip VARCHAR(45) NOT NULL,
+  performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (model_ref) REFERENCES model(id),
+  FOREIGN KEY (proposal_id) REFERENCES model_binding_proposal(id),
+  FOREIGN KEY (performed_by) REFERENCES jax_users(user_id),
+  INDEX idx_proposal_id (proposal_id, id),
+  INDEX idx_model_time (model_ref, performed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+
+async def _forma_de_la_auditoria():
+    fks = await _q(
+        "SELECT REFERENCED_TABLE_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS "
+        "WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'model_catalog_audit' "
+        "ORDER BY REFERENCED_TABLE_NAME")
+    columnas = await _q(
+        "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'model_catalog_audit'")
+    indices = await _q(
+        "SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'model_catalog_audit'")
+    return ([f for (f,) in fks], {c for (c,) in columnas}, {i for (i,) in indices})
+
+
+def test_la_migracion_convierte_la_tabla_con_fks_duras(client):
+    from db.migrations import run_migrations
+    modelo = "test-prl-r1-migracion"
+    ref = client.portal.call(_crear_fila, modelo)
+    try:
+        client.portal.call(_q, "DROP TABLE model_catalog_audit", (), True)
+        client.portal.call(_q, _DDL_VIEJA, (), True)
+        client.portal.call(
+            _q, "INSERT INTO model_catalog_audit (action, model_ref, valor_despues, performed_by, "
+                "performed_from_ip) VALUES ('contrato_declarado', %s, '{}', %s, 'test')",
+            (ref, int(USER_ID)), True)
+
+        client.portal.call(run_migrations)
+        client.portal.call(run_migrations)  # idempotente
+
+        fks, columnas, indices = client.portal.call(_forma_de_la_auditoria)
+        assert fks == ["jax_users"], f"quedaron FK duras a {fks}"
+        assert {"provider_id", "model_id"} <= columnas
+        assert {"idx_proposal_id", "idx_model_time", "idx_facet_rechazo"} <= indices
+        # La fila vieja se completó con los identificadores legibles.
+        filas = client.portal.call(_auditoria_por_model_id, modelo)
+        assert [(f[1], f[2], f[3]) for f in filas] == [(ref, _PROVEEDOR, modelo)]
+    finally:
+        client.portal.call(_borrar_auditoria_por_model_id, modelo)
+        client.portal.call(_q, "DELETE FROM model_catalog_audit WHERE model_ref=%s", (ref,), True)
+        client.portal.call(_q, "DELETE FROM model WHERE id=%s", (ref,), True)
+
+
+def test_la_lista_de_bindings_muestra_el_ultimo_rechazo_de_la_faceta(client, monkeypatch):
+    import jax_engine.background as background
+    monkeypatch.setattr(background, "add_safe_task", lambda *a: None)
+    ref = client.portal.call(_crear_fila)
+    antes = client.portal.call(_binding, "jekyll")
+    try:
+        # approved_at viejo: el rechazo es posterior al último cambio.
+        client.portal.call(
+            _q, "UPDATE facet_binding SET approved_at='2020-01-01 00:00:00' "
+                "WHERE facet_key='jekyll' AND role='primary'", (), True)
+        resp = client.put("/api/admin/facet-bindings/jekyll",
+                          json={"provider_id": _PROVEEDOR, "model_ref": ref}, headers=_headers())
+        assert resp.status_code == 409, resp.text
+
+        lista = client.get("/api/admin/facet-bindings", headers=_headers()).json()["bindings"]
+        jekyll = next(b for b in lista if b["facet_key"] == "jekyll")
+        rechazo = jekyll["ultimo_rechazo"]
+        assert rechazo["code"] == "modelo_sin_contrato_de_dispatch"
+        assert (rechazo["model_ref"], rechazo["model_id"], rechazo["provider_modelo"]) == (
+            ref, SIN_CONTRATO, _PROVEEDOR)
+        assert rechazo["campos"] == ["max_tokens_param", "max_output_tokens"]
+        assert rechazo["performed_at"]
+        otras = [b for b in lista if b["facet_key"] == "hyde"]
+        assert otras and otras[0]["ultimo_rechazo"] is None
+
+        # Un cambio aprobado DESPUÉS deja viejo al rechazo: ya no se muestra.
+        assert _declarar(client, ref, {"max_tokens_param": "max_tokens", "max_output_tokens": 4096}).status_code == 200
+        resp = client.put("/api/admin/facet-bindings/jekyll",
+                          json={"provider_id": _PROVEEDOR, "model_ref": ref}, headers=_headers())
+        assert resp.status_code == 200, resp.text
+        lista = client.get("/api/admin/facet-bindings", headers=_headers()).json()["bindings"]
+        assert next(b for b in lista if b["facet_key"] == "jekyll")["ultimo_rechazo"] is None
+    finally:
+        client.portal.call(_restaurar, "jekyll", antes)
+        client.portal.call(_borrar_fila, ref)
+
+
+def test_el_rastro_de_facetas_usa_su_indice(client):
+    """Las dos queries del rastro por faceta van por índice, sin scan. La
+    primera versión (JOIN a una tabla derivada) pasaba un chequeo que miraba
+    solo la subconsulta y escondía un type=ALL sobre la tabla de afuera:
+    ahora se exige a TODAS las filas del plan."""
+    from api.admin.facet_bindings import _SQL_RECHAZOS_POR_ID, _SQL_ULTIMO_ID_POR_FACETA
+    for sql, params, indice in (
+        (_SQL_ULTIMO_ID_POR_FACETA, (), "idx_facet_rechazo"),
+        (_SQL_RECHAZOS_POR_ID.format(marcas="%s, %s"), (1, 2), "PRIMARY"),
+    ):
+        filas = client.portal.call(_explain, sql, params)
+        print(f"\nEXPLAIN rastro por faceta ({indice}): {filas}")
+        assert len(filas) == 1, filas
+        fila = filas[0]
+        assert fila["type"] != "ALL" and fila["key"] == indice, fila
+        extra = fila.get("Extra") or ""
+        assert "filesort" not in extra and "temporary" not in extra, fila
