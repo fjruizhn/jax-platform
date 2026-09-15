@@ -152,8 +152,15 @@ jobs:
             // +5 useTema.test.js y +1 AdminSettings (guardar aplica el predeterminado), +1
             // placeholder de Login.test.jsx (ruling del controlador sobre el placeholder
             // del campo de usuario). Vistos en rojo antes de verde. Medido con vitest run: 185.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 185) {
-              console.error("PISO ROTO: se esperaban 185 tests de vitest CORRIDOS y 0 fallidos.");
+            // 185 -> 189 el 2026-09-15 (tema PR 1, arreglos de la revisión final): +2
+            // contraste.test.js (I-1: texto-tenue/hundido ya en PARES, y ::placeholder con
+            // var(--texto-tenue) en @layer base de index.css), +1 useTema.test.js (M-4: con
+            // localStorage bloqueado el store arranca en dark y toggleTheme no lanza), +1
+            // scriptTema.test.js (M-4: el script en línea y aplicarTema caen los dos a
+            // oscuro sin lanzar). M-2 y M-3 fortalecen tests existentes, sin sumar. Vistos
+            // en rojo antes de verde. Medido con vitest run: 189.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 189) {
+              console.error("PISO ROTO: se esperaban 189 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
