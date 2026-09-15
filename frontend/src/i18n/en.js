@@ -174,6 +174,7 @@ export default {
   forgotPasswordSend: 'Send instructions',
   forgotPasswordSending: 'Sending…',
   backToLogin: 'Back to login',
+  emailPlaceholder: 'name@company.com',
   resetPasswordTitle: 'New password',
   resetPasswordDesc: 'Enter your new password.',
   resetPasswordLabel: 'New password',

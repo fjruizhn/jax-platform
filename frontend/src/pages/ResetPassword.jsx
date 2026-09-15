@@ -22,10 +22,10 @@ export default function ResetPassword() {
 
   if (!token) {
     return (
-      <div className="min-h-dvh bg-hal-bg flex items-center justify-center p-4">
+      <div className="min-h-dvh bg-fondo flex items-center justify-center p-4">
         <div className="w-full max-w-md text-center">
-          <p className="text-red-400 text-sm mb-4">{t.resetPasswordInvalid}</p>
-          <Link to="/login" className="text-xs text-blue-400 hover:text-blue-300">← {t.backToLogin}</Link>
+          <p className="text-peligro text-sm mb-4">{t.resetPasswordInvalid}</p>
+          <Link to="/login" className="text-xs text-info hover:underline">← {t.backToLogin}</Link>
         </div>
       </div>
     )
@@ -62,54 +62,54 @@ export default function ResetPassword() {
   }
 
   return (
-    <div className="min-h-dvh bg-hal-bg flex items-center justify-center p-4">
+    <div className="min-h-dvh bg-fondo flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="flex justify-end gap-1 mb-4">
           {['es', 'en'].map((l) => (
             <button key={l} onClick={() => setLang(l)}
-              className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${lang === l ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+              className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${lang === l ? 'bg-accion text-sobre-color' : 'text-texto-tenue hover:text-texto'}`}>
               {l}
             </button>
           ))}
         </div>
 
-        <h1 className="text-center text-2xl font-bold text-slate-200 mb-1">{t.resetPasswordTitle}</h1>
-        <p className="text-center text-xs text-slate-600 mb-8">{t.resetPasswordDesc}</p>
+        <h1 className="text-center text-2xl font-bold text-texto mb-1">{t.resetPasswordTitle}</h1>
+        <p className="text-center text-xs text-texto-tenue mb-8">{t.resetPasswordDesc}</p>
 
-        <div className="bg-slate-800 rounded-xl p-6 border border-slate-700 space-y-4">
+        <div className="bg-superficie rounded-xl p-6 border border-borde space-y-4">
           {success ? (
-            <div className="text-sm text-green-400 bg-green-900/30 border border-green-800 rounded-lg px-3 py-3 text-center">
+            <div className="text-sm text-exito bg-exito-fondo border border-exito-borde rounded-lg px-3 py-3 text-center">
               {t.resetPasswordSuccess}
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider">
+                <label className="block text-xs text-texto-suave mb-1 font-semibold uppercase tracking-wider">
                   {t.resetPasswordLabel}
                 </label>
                 <PasswordInput
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+                  className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco"
                   required
                   autoFocus
                 />
               </div>
 
               <div>
-                <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider">
+                <label className="block text-xs text-texto-suave mb-1 font-semibold uppercase tracking-wider">
                   {t.resetPasswordConfirm}
                 </label>
                 <PasswordInput
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+                  className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco"
                   required
                 />
               </div>
 
               {error && (
-                <div className="text-sm text-red-400 bg-red-900/30 border border-red-800 rounded-lg px-3 py-2">
+                <div className="text-sm text-peligro bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2">
                   {error}
                 </div>
               )}
@@ -117,7 +117,7 @@ export default function ResetPassword() {
               <button
                 type="submit"
                 disabled={submitting}
-                className="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold transition-colors"
+                className="w-full py-2.5 rounded-lg bg-accion hover:bg-accion-hover disabled:opacity-50 text-sobre-color font-semibold transition-colors"
               >
                 {submitting ? t.resetPasswordSubmitting : t.resetPasswordSubmit}
               </button>
@@ -125,7 +125,7 @@ export default function ResetPassword() {
           )}
 
           <div className="text-center">
-            <Link to="/login" className="text-xs text-slate-500 hover:text-slate-300 transition-colors">
+            <Link to="/login" className="text-xs text-texto-tenue hover:text-texto transition-colors">
               ← {t.backToLogin}
             </Link>
           </div>

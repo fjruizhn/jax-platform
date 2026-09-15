@@ -6,8 +6,8 @@ import { useI18n } from '../i18n/index.jsx'
 // Barra superior derecha (2026-09-12, pedido de Fernando):
 //   Usuario: <correo>  │  🌐 ES   ☀   ⚙ (solo superadmin)   ⏻
 // Lo único que se lee es el usuario; el resto son íconos con nombre accesible
-// y tooltip (i18n). Los íconos son de trazo en currentColor: toman los grises
-// slate del resto de la UI, que html.light-mode ya ajusta en src/index.css.
+// y tooltip (i18n). Los íconos son de trazo en currentColor: toman el color
+// del token de texto del botón (src/tema/tokens.css).
 
 // Cada idioma se nombra en su propia lengua (convención de los selectores de
 // idioma): no se traduce.
@@ -64,8 +64,8 @@ function IconoSalir() {
 
 // Sin color de hover en la base: dos hover:text-* en el mismo elemento no los
 // decide el orden del className sino el del CSS generado. Cada botón pone el suyo.
-const BOTON = 'flex items-center gap-1 p-1.5 rounded text-slate-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500'
-const BOTON_NEUTRO = `${BOTON} hover:text-slate-300`
+const BOTON = 'flex items-center gap-1 p-1.5 rounded text-texto-tenue transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
+const BOTON_NEUTRO = `${BOTON} hover:text-texto`
 
 export default function BarraUsuario() {
   const user = useJaxStore((s) => s.user)
@@ -79,11 +79,11 @@ export default function BarraUsuario() {
 
   return (
     <div className="flex items-center gap-3 min-w-0">
-      <span className="text-xs text-slate-500 truncate max-w-[20rem]" title={user?.email}>
-        {t.userLabel}: <span className="text-slate-300">{user?.email}</span>
+      <span className="text-xs text-texto-tenue truncate max-w-[20rem]" title={user?.email}>
+        {t.userLabel}: <span className="text-texto">{user?.email}</span>
       </span>
 
-      <span aria-hidden="true" className="h-4 w-px bg-slate-700 flex-shrink-0" />
+      <span aria-hidden="true" className="h-4 w-px bg-borde flex-shrink-0" />
 
       <div className="flex items-center gap-1 flex-shrink-0">
         <button type="button" onClick={() => setLang(otroIdioma)} aria-label={etiquetaIdioma} title={etiquetaIdioma} className={BOTON_NEUTRO}>
@@ -107,7 +107,7 @@ export default function BarraUsuario() {
           onClick={logout}
           aria-label={t.logout}
           title={t.logout}
-          className={`${BOTON} hover:text-red-400`}
+          className={`${BOTON} hover:text-peligro`}
         >
           <IconoSalir />
         </button>

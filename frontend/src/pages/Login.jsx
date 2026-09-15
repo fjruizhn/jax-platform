@@ -81,49 +81,49 @@ export default function Login() {
 
   if (showForgot) {
     return (
-      <div className="min-h-dvh bg-hal-bg flex items-center justify-center p-4">
+      <div className="min-h-dvh bg-fondo flex items-center justify-center p-4">
         <div className="w-full max-w-md">
           <div className="flex justify-end gap-1 mb-4">
             {['es', 'en'].map((l) => (
               <button key={l} onClick={() => setLang(l)}
-                className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${lang === l ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+                className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${lang === l ? 'bg-accion text-sobre-color' : 'text-texto-tenue hover:text-texto'}`}>
                 {l}
               </button>
             ))}
           </div>
 
-          <h1 className="text-center text-2xl font-bold text-slate-200 mb-1">{t.forgotPasswordTitle}</h1>
-          <p className="text-center text-xs text-slate-600 mb-8">{t.forgotPasswordDesc}</p>
+          <h1 className="text-center text-2xl font-bold text-texto mb-1">{t.forgotPasswordTitle}</h1>
+          <p className="text-center text-xs text-texto-tenue mb-8">{t.forgotPasswordDesc}</p>
 
-          <div className="bg-slate-800 rounded-xl p-6 border border-slate-700 space-y-4">
+          <div className="bg-superficie rounded-xl p-6 border border-borde space-y-4">
             {forgotSent ? (
-              <div className="text-sm text-green-400 bg-green-900/30 border border-green-800 rounded-lg px-3 py-3 text-center">
+              <div className="text-sm text-exito bg-exito-fondo border border-exito-borde rounded-lg px-3 py-3 text-center">
                 {t.forgotPasswordSent}
               </div>
             ) : (
               <form onSubmit={handleForgot} className="space-y-4">
                 <div>
-                  <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider">
+                  <label className="block text-xs text-texto-suave mb-1 font-semibold uppercase tracking-wider">
                     {t.emailLabel}
                   </label>
                   <input
                     type="email"
                     value={forgotEmail}
                     onChange={(e) => setForgotEmail(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+                    className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco"
                     required
                     autoFocus
                   />
                 </div>
                 {forgotError && (
-                  <div className="text-sm text-red-400 bg-red-900/30 border border-red-800 rounded-lg px-3 py-2">
+                  <div className="text-sm text-peligro bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2">
                     {forgotError}
                   </div>
                 )}
                 <button
                   type="submit"
                   disabled={forgotSending}
-                  className="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold transition-colors"
+                  className="w-full py-2.5 rounded-lg bg-accion hover:bg-accion-hover disabled:opacity-50 text-sobre-color font-semibold transition-colors"
                 >
                   {forgotSending ? t.forgotPasswordSending : t.forgotPasswordSend}
                 </button>
@@ -131,7 +131,7 @@ export default function Login() {
             )}
             <button
               onClick={() => { setShowForgot(false); setForgotSent(false); setForgotEmail('') }}
-              className="w-full text-xs text-slate-500 hover:text-slate-300 transition-colors"
+              className="w-full text-xs text-texto-tenue hover:text-texto transition-colors"
             >
               ← {t.backToLogin}
             </button>
@@ -142,68 +142,68 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-dvh bg-hal-bg flex items-center justify-center p-4">
+    <div className="min-h-dvh bg-fondo flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="flex justify-end gap-1 mb-4">
           {['es', 'en'].map((l) => (
             <button key={l} onClick={() => setLang(l)}
-              className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${lang === l ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+              className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${lang === l ? 'bg-accion text-sobre-color' : 'text-texto-tenue hover:text-texto'}`}>
               {l}
             </button>
           ))}
         </div>
 
         <div className="flex justify-center mb-8">
-          <svg width="80" height="80" viewBox="0 0 80 80">
-            <circle cx="40" cy="40" r="36" fill="#0f172a" stroke="#1e293b" strokeWidth="2" />
-            <circle cx="40" cy="40" r="30" fill="none" stroke="#3b82f6" strokeWidth="1" opacity="0.3" />
-            <circle cx="40" cy="40" r="16" fill="#3b82f6" opacity="0.9" />
-            <circle cx="40" cy="40" r="12" fill="#0f172a" opacity="0.5" />
-            <circle cx="40" cy="40" r="6" fill="#0a0f1a" />
-            <circle cx="34" cy="34" r="2.5" fill="white" opacity="0.6" />
+          <svg width="80" height="80" viewBox="0 0 80 80" aria-hidden="true">
+            <circle cx="40" cy="40" r="36" className="fill-fondo stroke-superficie" strokeWidth="2" />
+            <circle cx="40" cy="40" r="30" fill="none" className="stroke-faceta-jax-local" strokeWidth="1" opacity="0.3" />
+            <circle cx="40" cy="40" r="16" className="fill-faceta-jax-local" opacity="0.9" />
+            <circle cx="40" cy="40" r="12" className="fill-fondo" opacity="0.5" />
+            <circle cx="40" cy="40" r="6" className="fill-fondo" />
+            <circle cx="34" cy="34" r="2.5" className="fill-sobre-color" opacity="0.6" />
           </svg>
         </div>
 
-        <h1 className="text-center text-2xl font-bold text-slate-200 mb-1">{t.loginTitle}</h1>
-        <p className="text-center text-xs text-slate-600 mb-8">{t.loginTagline}</p>
+        <h1 className="text-center text-2xl font-bold text-texto mb-1">{t.loginTitle}</h1>
+        <p className="text-center text-xs text-texto-tenue mb-8">{t.loginTagline}</p>
 
         {avisoSesion && (
-          <AlertaError className="text-sm bg-red-900/30 border border-red-800 rounded-lg px-3 py-2 mb-4">
+          <AlertaError className="text-sm bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2 mb-4">
             {t[avisoSesion] ?? t.loginError}
           </AlertaError>
         )}
 
-        <form onSubmit={handleSubmit} className="bg-slate-800 rounded-xl p-6 border border-slate-700 space-y-4">
+        <form onSubmit={handleSubmit} className="bg-superficie rounded-xl p-6 border border-borde space-y-4">
           <div>
-            <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider">
+            <label className="block text-xs text-texto-suave mb-1 font-semibold uppercase tracking-wider">
               {t.emailLabel}
             </label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
-              placeholder="fernando@rich-hn.com"
+              className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco"
+              placeholder={t.emailPlaceholder}
               required
               autoFocus
             />
           </div>
 
           <div>
-            <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider">
+            <label className="block text-xs text-texto-suave mb-1 font-semibold uppercase tracking-wider">
               {t.passwordLabel}
             </label>
             <PasswordInput
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+              className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco"
               placeholder="••••••••"
               required
             />
           </div>
 
           {error && (
-            <div className="text-sm text-red-400 bg-red-900/30 border border-red-800 rounded-lg px-3 py-2">
+            <div className="text-sm text-peligro bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2">
               {error}
             </div>
           )}
@@ -211,7 +211,7 @@ export default function Login() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold transition-colors"
+            className="w-full py-2.5 rounded-lg bg-accion hover:bg-accion-hover disabled:opacity-50 text-sobre-color font-semibold transition-colors"
           >
             {loading ? t.loggingIn : t.loginButton}
           </button>
@@ -220,7 +220,7 @@ export default function Login() {
             <button
               type="button"
               onClick={() => setShowForgot(true)}
-              className="text-xs text-slate-500 hover:text-blue-400 transition-colors"
+              className="text-xs text-texto-tenue hover:text-info transition-colors"
             >
               {t.forgotPassword}
             </button>

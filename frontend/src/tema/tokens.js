@@ -63,7 +63,14 @@ export const PERMITIDOS_CRUDOS = []
 
 // Archivos (relativos a src/) que ya pintan sólo con tokens. Cada PR del
 // rollout amplía la lista; el PR 4 la reemplaza por "todos".
-export const MIGRADOS = []
+export const MIGRADOS = [
+  'components/AlertaError.jsx',
+  'components/BarraUsuario.jsx',
+  'components/LogoAxioma.jsx',
+  'components/PasswordInput.jsx',
+  'pages/Login.jsx',
+  'pages/ResetPassword.jsx',
+]
 
 const RESPALDO = 'texto-suave'
 
