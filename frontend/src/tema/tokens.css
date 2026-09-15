@@ -1,0 +1,106 @@
+/* Tokens de color del tema (spec 2026-09-14-tema-tokens-design.md §3).
+   ÚNICA fuente de verdad de los valores: Tailwind y el test de contraste los
+   leen de acá. Canales RGB separados por espacio para que Tailwind aplique
+   opacidad: rgb(var(--fondo) / <alpha-value>).
+   Oscuro = :root (el tema de hoy y el DEFAULT_CONFIG). Claro = data-tema. */
+:root {
+  color-scheme: dark;
+  --fondo: 15 23 42;
+  --superficie: 30 41 59;
+  --superficie-2: 51 65 85;
+  --hundido: 15 23 42;
+  --borde: 51 65 85;
+  --borde-control: 99 115 138;
+  --barra-pista: 30 41 59;
+  --barra-pulgar: 51 65 85;
+  --texto-fuerte: 241 245 249;
+  --texto: 226 232 240;
+  --texto-suave: 148 163 184;
+  --texto-tenue: 129 144 166;
+  --sobre-color: 255 255 255;
+  --acento: 147 51 234;
+  --acento-hover: 126 34 206;
+  --acento-texto: 192 132 252;
+  --acento-fondo: 53 36 89;
+  --accion: 37 99 235;
+  --accion-hover: 29 78 216;
+  --info: 96 165 250;
+  --info-fondo: 30 46 83;
+  --foco: 59 130 246;
+  --peligro: 248 113 113;
+  --peligro-fondo: 59 37 50;
+  --peligro-borde: 153 27 27;
+  --peligro-solido: 220 38 38;
+  --peligro-solido-hover: 185 28 28;
+  --exito: 74 222 128;
+  --exito-fondo: 27 54 55;
+  --exito-borde: 22 101 52;
+  --aviso: 251 191 36;
+  --aviso-fondo: 57 45 46;
+  --aviso-borde: 146 64 14;
+  --oro: 201 168 76;
+  --oro-claro: 232 213 163;
+  --oro-oscuro: 138 109 47;
+  --burbuja-usuario: 29 56 92;
+  --modo-comando: 194 65 12;
+  --faceta-jax-local: 96 165 250;
+  --faceta-jekyll: 129 140 248;
+  --faceta-hyde: 249 115 22;
+  --faceta-hipatia: 16 185 129;
+  --faceta-thot: 245 158 11;
+  --faceta-kimi: 6 182 212;
+  --faceta-ada: 167 139 250;
+  --faceta-jacobs: 255 255 255;
+  --faceta-imagen: 167 139 250;
+}
+
+:root[data-tema="claro"] {
+  color-scheme: light;
+  --fondo: 248 250 252;
+  --superficie: 241 245 249;
+  --superficie-2: 226 232 240;
+  --hundido: 255 255 255;
+  --borde: 203 213 225;
+  --borde-control: 127 143 165;
+  --barra-pista: 226 232 240;
+  --barra-pulgar: 148 163 184;
+  --texto-fuerte: 2 6 23;
+  --texto: 15 23 42;
+  --texto-suave: 71 85 105;
+  --texto-tenue: 97 113 136;
+  --sobre-color: 255 255 255;
+  --acento: 147 51 234;
+  --acento-hover: 126 34 206;
+  --acento-texto: 126 34 206;
+  --acento-fondo: 250 245 255;
+  --accion: 37 99 235;
+  --accion-hover: 29 78 216;
+  --info: 29 78 216;
+  --info-fondo: 239 246 255;
+  --foco: 59 130 246;
+  --peligro: 185 28 28;
+  --peligro-fondo: 254 242 242;
+  --peligro-borde: 252 165 165;
+  --peligro-solido: 220 38 38;
+  --peligro-solido-hover: 185 28 28;
+  --exito: 21 128 61;
+  --exito-fondo: 240 253 244;
+  --exito-borde: 134 239 172;
+  --aviso: 180 83 9;
+  --aviso-fondo: 255 251 235;
+  --aviso-borde: 252 211 77;
+  --oro: 122 95 36;
+  --oro-claro: 137 108 47;
+  --oro-oscuro: 160 138 85;
+  --burbuja-usuario: 219 234 254;
+  --modo-comando: 194 65 12;
+  --faceta-jax-local: 29 78 216;
+  --faceta-jekyll: 67 56 202;
+  --faceta-hyde: 194 65 12;
+  --faceta-hipatia: 4 120 87;
+  --faceta-thot: 180 83 9;
+  --faceta-kimi: 14 116 144;
+  --faceta-ada: 109 40 217;
+  --faceta-jacobs: 15 23 42;
+  --faceta-imagen: 109 40 217;
+}
