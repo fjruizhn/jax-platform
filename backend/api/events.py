@@ -1,13 +1,16 @@
 import asyncio
 import json
-from fastapi import APIRouter, Depends
+import logging
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from auth.middleware import get_current_user
+from auth.middleware import get_current_user, reverificar_sesion
 from auth.models import AuthUser
 from jax_engine.events import event_bus
 from jax_engine.lifecycle import lifecycle_lock, sse_connections
 from jax_engine.websocket_hub import ws_hub
 from jax_engine.schemas import JAXEvent
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/events")
 
@@ -64,6 +67,18 @@ async def sse_events(user: AuthUser = Depends(get_current_user)):
         await queue.put(event)
 
     await _sse_connect_and_subscribe(user.user_id, user.tenant_id, callback, queue)
+
+    # m1 (revisión final, etapa 3): el corte de un admin pudo caer entre
+    # get_current_user y el registro del stream, y entonces no lo encontró. Ya
+    # registrado, se verifica de nuevo; si la sesión ya no vale, el stream
+    # termina igual que con close_user_streams (el finally del generador limpia).
+    try:
+        await reverificar_sesion(user)
+    except HTTPException:
+        queue.put_nowait(_CERRAR)
+    except Exception:  # fail-soft: fallo de infraestructura al re-verificar -- falla cerrado (termina el stream) con rastro en el log
+        logger.exception("Fallo inesperado al re-verificar la sesión del stream SSE")
+        queue.put_nowait(_CERRAR)
 
     async def generator():
         try:

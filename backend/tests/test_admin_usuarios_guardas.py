@@ -223,7 +223,13 @@ class _Usuario:
         self.user_id, self.tenant_id = user_id, "1"
 
 
-async def test_close_user_streams_termina_el_stream_sse_del_usuario_y_no_el_de_otro():
+async def test_close_user_streams_termina_el_stream_sse_del_usuario_y_no_el_de_otro(monkeypatch):
+    # Sin base: la re-verificación posterior al registro (m1) se da por buena;
+    # lo que se prueba acá es close_user_streams.
+    async def _vigente(user):
+        return user
+
+    monkeypatch.setattr(events_mod, "reverificar_sesion", _vigente)
     resp_a = await events_mod.sse_events(_Usuario("sse-corte-a"))
     resp_b = await events_mod.sse_events(_Usuario("sse-corte-b"))
     gen_a, gen_b = resp_a.body_iterator, resp_b.body_iterator
@@ -309,6 +315,77 @@ def test_una_pestana_ws_abierta_se_cierra_con_4001_al_desactivar_al_usuario(clie
         while mensaje["type"] == "websocket.send":
             mensaje = sock.receive()
         assert (mensaje["type"], mensaje.get("code")) == ("websocket.close", 4001)
+
+
+# ------------- m1 (revisión final): el corte cae entre verificar y registrar
+#
+# Antes: WS y SSE verificaban la sesión y DESPUÉS se registraban. Si el commit
+# del admin (sube token_version) y su corte caían en ese hueco, el corte no
+# encontraba la conexión y ésta quedaba registrada con una sesión ya inválida.
+# Ahora se re-verifica después de registrar. Los tests fuerzan el hueco: el
+# paso de registro sube la versión y corre el corte antes de registrar.
+
+async def _subir_version(user_id):
+    await sql("UPDATE jax_users SET token_version = token_version + 1 WHERE user_id = %s", (int(user_id),))
+
+
+def test_ws_registrado_despues_del_corte_se_cierra_con_4001(client, usuarios, monkeypatch):
+    import main
+
+    o, _ = usuarios()
+    registrar_real = main._ws_connect_and_subscribe
+
+    async def corte_en_el_hueco(user_id, *args):
+        await _subir_version(user_id)
+        assert await ws_hub.close_user(str(user_id)) == 0, "el corte todavía no encuentra la conexión"
+        return await registrar_real(user_id, *args)
+
+    monkeypatch.setattr(main, "_ws_connect_and_subscribe", corte_en_el_hueco)
+    with client.websocket_connect(f"/ws/{o}") as sock:
+        sock.send_json({"type": "auth", "token": token_para(o)})
+        assert sock.receive_json() == {"type": "auth_ok"}
+        sock.send_json({"type": "ping"})
+        mensaje = sock.receive()
+        while mensaje["type"] == "websocket.send" and '"pong"' not in mensaje.get("text", ""):
+            mensaje = sock.receive()
+        assert (mensaje["type"], mensaje.get("code")) == ("websocket.close", 4001), (
+            "la conexión sobrevivió al corte: respondió el ping")
+
+
+def test_sse_registrado_despues_del_corte_termina_el_stream(client, usuarios, monkeypatch):
+    from auth.jwt import decode_token
+    from auth.middleware import verificar_sesion
+
+    o, _ = usuarios()
+    registrar_real = events_mod._sse_connect_and_subscribe
+
+    async def corte_en_el_hueco(user_id, *args):
+        await _subir_version(user_id)
+        assert await events_mod.close_user_streams(str(user_id)) == 0, "el corte todavía no encuentra el stream"
+        return await registrar_real(user_id, *args)
+
+    monkeypatch.setattr(events_mod, "_sse_connect_and_subscribe", corte_en_el_hueco)
+
+    async def abrir_y_leer():
+        user = await verificar_sesion(decode_token(token_para(o)), "access")
+        gen = (await events_mod.sse_events(user)).body_iterator
+        siguiente = asyncio.ensure_future(gen.__anext__())
+        try:
+            listos, _ = await asyncio.wait({siguiente}, timeout=2)
+            if not listos:
+                return "abierto"
+            try:
+                siguiente.result()
+            except StopAsyncIteration:
+                return "terminado"
+            return "evento"
+        finally:
+            siguiente.cancel()
+            await asyncio.gather(siguiente, return_exceptions=True)
+            await gen.aclose()
+
+    assert client.portal.call(abrir_y_leer) == "terminado"
+    assert not sse_connections.has_connections(str(o))
 
 
 # ------------------------- fix ronda 1: concurrencia y corte tolerante

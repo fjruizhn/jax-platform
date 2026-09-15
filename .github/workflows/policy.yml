@@ -719,7 +719,11 @@ jobs:
           # +2 en test_admin_usuarios_guardas.py (last_login/created_at/locked_until de
           # GET /admin/users y ts del historial salen en UTC con +00:00; la sesión de MariaDB
           # es SYSTEM = CST). Medido: 783 / 1.
-          PISO_PASSED = 783
+          # Subido de 783 a 785 (2026-09-15, m1 de la revisión final: re-verificar la sesión
+          # después de registrar): +2 en test_admin_usuarios_guardas.py (un WS y un stream SSE
+          # registrados después del corte se cierran con 4001 / terminan; vistos en rojo antes
+          # de verde). Medido: 785 / 1.
+          PISO_PASSED = 785
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

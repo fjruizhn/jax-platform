@@ -59,6 +59,20 @@ async def verificar_sesion(payload: dict, tipo: str) -> AuthUser:
     )
 
 
+async def reverificar_sesion(user: AuthUser) -> AuthUser:
+    """Vuelve a correr verificar_sesion para una sesión ya verificada
+    (2026-09-15, admin usuarios etapa 3, m1 de la revisión final). WS y SSE la
+    llaman DESPUÉS de registrar la conexión: si el commit de un admin (sube
+    token_version o cambia el estado) y su corte cayeron entre la primera
+    verificación y el registro, el corte no encontró la conexión; acá se ve.
+    `user.token_version` es la versión del token (la primera verificación exige
+    que coincida con la base). Lanza lo mismo que verificar_sesion."""
+    return await verificar_sesion(
+        {"type": "access", "user_id": user.user_id, "tenant_id": user.tenant_id, "tv": user.token_version},
+        "access",
+    )
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer),
 ) -> AuthUser:
