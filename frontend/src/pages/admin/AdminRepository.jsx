@@ -113,7 +113,11 @@ export default function AdminRepository() {
               {preview.type === 'image' ? (
                 <img src={preview.base64} alt={preview.filename} className="max-w-full rounded" />
               ) : preview.type === 'markdown' ? (
-                <div className="prose prose-invert prose-sm max-w-none">
+                // M-3 (revisión final PR 2, 2026-09-14): prose/prose-invert/prose-sm
+                // son de @tailwindcss/typography, que no está instalado (plugins: []
+                // en tailwind.config.js) -- no hacían nada, y prose-invert forzaría
+                // texto claro en el tema claro si el plugin se agregara algún día.
+                <div className="max-w-none text-texto">
                   <ReactMarkdown>{preview.content}</ReactMarkdown>
                 </div>
               ) : (

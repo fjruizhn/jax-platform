@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -50,5 +50,27 @@ describe('AdminRepository -- i18n (I-1)', () => {
     if (esperado !== fijoEsHN) {
       expect(screen.queryByText(fijoEsHN)).not.toBeInTheDocument()
     }
+  })
+})
+
+// M-3 (revisión final PR 2, 2026-09-14): prose-invert es de
+// @tailwindcss/typography, que no está instalado (plugins: [] en
+// tailwind.config.js) -- hoy no hace nada, pero forzaría texto claro en el
+// tema claro si el plugin se agregara. El texto del preview debe pintar con
+// el token text-texto, no con una clase muerta de un plugin ausente.
+describe('AdminRepository -- preview markdown sin prose-invert (M-3)', () => {
+  it('el contenedor del preview markdown no lleva prose ni prose-invert, y usa text-texto', async () => {
+    api.get.mockImplementation((url) => {
+      if (url.startsWith('/admin/repo/file')) {
+        return Promise.resolve({ data: { type: 'markdown', content: '# Hola' } })
+      }
+      return Promise.resolve({ data: { folders: FOLDERS } })
+    })
+    renderRepo()
+    fireEvent.click(await screen.findByText('Preview'))
+    const encabezado = await screen.findByRole('heading', { name: 'Hola' })
+    const contenedor = encabezado.parentElement
+    expect(contenedor.className).not.toMatch(/(^|\s)prose(-\S+)?(\s|$)/)
+    expect(contenedor.className).toMatch(/(^|\s)text-texto(\s|$)/)
   })
 })
