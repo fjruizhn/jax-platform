@@ -601,7 +601,7 @@ def test_alta_con_email_duplicado_concurrente_responde_409_sin_auditoria(client,
     try:
         r = client.post("/api/admin/users", json={"email": email, "role": "viewer", "password": "clave-larga-1"},
                         headers=_admin())
-        assert (r.status_code, r.json().get("detail")) == (409, "Email ya existe"), r.text
+        assert (r.status_code, r.json().get("detail")) == (409, "email_ya_existe"), r.text
         ((auditados,),) = client.portal.call(
             sql, "SELECT COUNT(*) FROM user_admin_audit WHERE action = 'create' AND detail LIKE %s",
             (f"%{email}%",), True)

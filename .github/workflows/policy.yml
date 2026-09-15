@@ -859,7 +859,13 @@ jobs:
           # deleted_at/deleted_by/email VARCHAR(320)): +2 en test_admin_usuarios_baja.py
           # (esquema de las columnas de la baja + el índice único de email se conserva
           # tras el MODIFY). Vistos en rojo antes de verde. Medido: 817 / 1.
-          PISO_PASSED = 817
+          # Subido de 817 a 821 (2026-09-15, admin usuarios etapa 5, Task 2: PUT con
+          # email validado y create_user con códigos estables): +4 en
+          # test_admin_usuarios_baja.py (editar el correo audita sin cortar sesiones,
+          # correo inválido, correo repetido, alta con rol_invalido/email_invalido/
+          # email_ya_existe). Vistos en rojo (422 extra_forbidden en el PUT, mensajes
+          # sueltos en el alta) antes de verde. Medido dos veces: 821 / 1.
+          PISO_PASSED = 821
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1202,6 +1208,9 @@ jobs:
       # Admin usuarios etapa 5, Task 1 (2026-09-15): los 2 nuevos de
       # test_admin_usuarios_baja.py piden `client` (sin cambio en passed). Medido con
       # JAX_CI_NO_DB=1: 369 / 449.
+      # Admin usuarios etapa 5, Task 2 (2026-09-15): los 4 nuevos de
+      # test_admin_usuarios_baja.py piden `client` y se saltean (sin cambio en
+      # passed). Medido dos veces con JAX_CI_NO_DB=1: 369 / 453.
       JAX_CI_MIN_PASSED: "369"
     steps:
       - uses: actions/checkout@v4

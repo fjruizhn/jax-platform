@@ -21,6 +21,7 @@ from auth.models import AuthUser
 from db.connection import get_pool
 from db.seed import _hash
 from db.transaccion import transaccion
+from validacion import email_valido
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +103,12 @@ async def _leer_para_actualizar(cur, user_id: int):
     # Orden fijo: el conjunto de superadmins activos antes que el destino,
     # SIEMPRE (también si el destino no es superadmin: el costo es serializar
     # las escrituras de admin, que son raras). Ver SQL_SUPERADMINS_ACTIVOS.
+    # Un dado de baja no existe para ninguna acción (etapa 5): 404.
     await _bloquear_superadmins_activos(cur)
-    await cur.execute("SELECT role, status FROM jax_users WHERE user_id = %s FOR UPDATE", (user_id,))
+    await cur.execute(
+        "SELECT role, status, email FROM jax_users WHERE user_id = %s AND status <> 'deleted' FOR UPDATE",
+        (user_id,),
+    )
     return await cur.fetchone()
 
 
@@ -149,8 +154,13 @@ class CreateUserRequest(BaseModel):
 
 @router.post("/users")
 async def create_user(req: CreateUserRequest, request: Request, user: AuthUser = Depends(require_superadmin)):
+    # Códigos estables (etapa 5, Task 2, Ruling U12): el frontend los traduce
+    # con mensajeDeError; nada de texto para el usuario acá.
+    email = req.email.strip()
+    if not email_valido(email):
+        raise HTTPException(status_code=400, detail="email_invalido")
     if req.role not in VALID_ROLES:
-        raise HTTPException(status_code=400, detail=f"Rol inválido: {req.role}")
+        raise HTTPException(status_code=400, detail="rol_invalido")
 
     # Regla única (etapa 4, spec §3.4). El _hash de db/seed.py lanza con más
     # de 72 bytes; el local de antes no tenía tope y bcrypt 5 daba un 500.
@@ -162,26 +172,26 @@ async def create_user(req: CreateUserRequest, request: Request, user: AuthUser =
     ph = await asyncio.to_thread(_hash, req.password)
     # El alta y su registro de auditoría van juntos (etapa 3, spec §3.3).
     async with transaccion() as cur:
-        await cur.execute("SELECT COUNT(*) FROM jax_users WHERE email = %s", (req.email,))
+        await cur.execute("SELECT COUNT(*) FROM jax_users WHERE email = %s", (email,))
         (count,) = await cur.fetchone()
         if count > 0:
-            raise HTTPException(status_code=409, detail="Email ya existe")
+            raise HTTPException(status_code=409, detail="email_ya_existe")
         # El chequeo de arriba no bloquea: dos altas simultáneas con el mismo
         # email pueden pasarlo las dos. La que pierde choca con el UNIQUE de
         # email (1062) -> el mismo 409, y la transacción revierte sin auditoría.
         try:
             await cur.execute(
                 "INSERT INTO jax_users (tenant_id, email, password_hash, role, status) VALUES (1, %s, %s, %s, 'active')",
-                (req.email, ph, req.role),
+                (email, ph, req.role),
             )
         except aiomysql.IntegrityError as e:
             if e.args and e.args[0] == ER_DUP_ENTRY:
-                raise HTTPException(status_code=409, detail="Email ya existe") from e
+                raise HTTPException(status_code=409, detail="email_ya_existe") from e
             raise
         new_id = cur.lastrowid
         await user_audit.registrar(cur, int(user.user_id), new_id, "create",
-                                   {"email": req.email, "role": req.role}, _ip(request))
-    return {"user_id": new_id, "email": req.email, "role": req.role, "status": "active"}
+                                   {"email": email, "role": req.role}, _ip(request))
+    return {"user_id": new_id, "email": email, "role": req.role, "status": "active"}
 
 
 class UpdateUserRequest(BaseModel):
@@ -189,6 +199,7 @@ class UpdateUserRequest(BaseModel):
     # de ignorarse en silencio. La contraseña la cambia el dueño en Mi cuenta
     # o por enlace de recuperación (etapa 4).
     model_config = ConfigDict(extra="forbid")
+    email: Optional[str] = None
     role: Optional[str] = None
     status: Optional[str] = None
 
@@ -200,6 +211,11 @@ async def update_user(
     request: Request,
     user: AuthUser = Depends(require_superadmin),
 ):
+    # email (etapa 5, Task 2): se recorta y valida ACÁ, antes de tocar la DB,
+    # igual que rol y estado.
+    email_pedido = req.email.strip() if req.email is not None else None
+    if email_pedido is not None and not email_valido(email_pedido):
+        raise HTTPException(status_code=400, detail="email_invalido")
     if req.role is not None and req.role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail="rol_invalido")
     if req.status is not None and req.status not in ESTADOS_EDITABLES:
@@ -209,28 +225,52 @@ async def update_user(
         actual = await _leer_para_actualizar(cur, user_id)
         if actual is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
-        rol_actual, estado_actual = actual
+        rol_actual, estado_actual, email_actual = actual
         nuevo_rol = req.role if req.role is not None else rol_actual
         nuevo_estado = req.status if req.status is not None else estado_actual
+        nuevo_email = email_pedido if email_pedido is not None else email_actual
         cambia_rol, cambia_estado = nuevo_rol != rol_actual, nuevo_estado != estado_actual
-        if not (cambia_rol or cambia_estado):
+        cambia_email = nuevo_email != email_actual
+        if not (cambia_rol or cambia_estado or cambia_email):
             return {"ok": True}
-        guarda_auto_accion(actor_id, user_id)
-        await exigir_invariante(cur, user_id, rol_actual, estado_actual, nuevo_rol, nuevo_estado)
-        # Rol o estado nuevos: todas las sesiones del usuario se cortan en el
-        # request siguiente (spec §3.2).
-        await cur.execute(
-            "UPDATE jax_users SET role = %s, status = %s, token_version = token_version + 1 WHERE user_id = %s",
-            (nuevo_rol, nuevo_estado, user_id),
-        )
+        # Rol o estado nuevos cortan TODAS las sesiones (spec §3.2): ahí es
+        # donde aplican la guarda de auto-acción y el invariante de
+        # superadmin. Un cambio de email solo (U11 de la Task 2 del
+        # controller): la identidad sigue siendo el user_id, no corta
+        # sesiones ni pide el invariante, y el admin puede editarse su
+        # propio email (no es la acción que la guarda prohíbe).
+        corta_sesiones = cambia_rol or cambia_estado
+        if corta_sesiones:
+            guarda_auto_accion(actor_id, user_id)
+            await exigir_invariante(cur, user_id, rol_actual, estado_actual, nuevo_rol, nuevo_estado)
+        if cambia_email:
+            # No bloquea (como el alta): el respaldo es el UNIQUE de email
+            # capturado abajo como IntegrityError -> email_ya_existe.
+            await cur.execute("SELECT 1 FROM jax_users WHERE email = %s AND user_id <> %s", (nuevo_email, user_id))
+            if await cur.fetchone():
+                raise HTTPException(status_code=409, detail="email_ya_existe")
+        try:
+            await cur.execute(
+                "UPDATE jax_users SET email = %s, role = %s, status = %s, "
+                "token_version = token_version + %s WHERE user_id = %s",
+                (nuevo_email, nuevo_rol, nuevo_estado, 1 if corta_sesiones else 0, user_id),
+            )
+        except aiomysql.IntegrityError as e:
+            if e.args and e.args[0] == ER_DUP_ENTRY:
+                raise HTTPException(status_code=409, detail="email_ya_existe") from e
+            raise
         ip = _ip(request)
+        if cambia_email:
+            await user_audit.registrar(cur, actor_id, user_id, "update_email",
+                                       {"from": email_actual, "to": nuevo_email}, ip)
         if cambia_rol:
             await user_audit.registrar(cur, actor_id, user_id, "update_role", {"from": rol_actual, "to": nuevo_rol}, ip)
         if cambia_estado:
             await user_audit.registrar(cur, actor_id, user_id, "update_status",
                                        {"from": estado_actual, "to": nuevo_estado}, ip)
     # ...y las conexiones ya abiertas, ahora (Step 4b), tras el commit.
-    await _cortar_conexiones(user_id)
+    if corta_sesiones:
+        await _cortar_conexiones(user_id)
     return {"ok": True}
 
 
@@ -279,7 +319,7 @@ async def delete_user(user_id: int, user: AuthUser = Depends(require_superadmin)
         actual = await _leer_para_actualizar(cur, user_id)
         if actual is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
-        rol_actual, estado_actual = actual
+        rol_actual, estado_actual, _email = actual
         await exigir_invariante(cur, user_id, rol_actual, estado_actual, rol_actual, "deleted")
         await cur.execute("DELETE FROM jax_users WHERE user_id = %s", (user_id,))
     await _cortar_conexiones(user_id)
