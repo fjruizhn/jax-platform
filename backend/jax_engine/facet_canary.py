@@ -22,6 +22,7 @@ from facet_health import (
     SOURCE_CANARY_REBIND,
 )
 from facet_resolver import invalidate_facet_cache
+from redaccion import texto_de_error
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +204,7 @@ async def probe_after_rebind(facet_key: str) -> str | None:
     except Exception as e:  # fail-soft: corre en una BackgroundTask ya con la respuesta emitida -- re-lanzar solo dejaria rastro en journalctl (el reaper lee facet_health_event, no el journal) y ademas abortaria cualquier BackgroundTask encolada despues de esta en la misma request. El evento en la tabla, no la excepcion, es el detector real.
         await record_facet_health(
             facet_key, OUTCOME_PROBE_ERROR, SOURCE_CANARY_REBIND,
-            f"{type(e).__name__}: {e}")
+            texto_de_error(e))
         return OUTCOME_PROBE_ERROR
 
 

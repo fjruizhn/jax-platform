@@ -30,6 +30,7 @@ from contrato_dispatch import (
     registrar_rechazo_de_binding,
 )
 from db.connection import get_pool
+from redaccion import redactar_secretos, texto_de_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/models")
@@ -208,14 +209,17 @@ async def sync_models(user: AuthUser = Depends(require_superadmin)):
         try:
             results.append(await model_catalog.sync_provider_models(provider_id))
         except Exception as e:  # fail-soft: un provider caído no frena a los demás; su error va en el resultado y apaga ok
-            logger.warning(f"sync_models provider={provider_id} failed reason={type(e).__name__}: {e}")
-            results.append({"provider_id": provider_id, "error": str(e)[:200]})
+            # Task 6 S1: la URL de Gemini lleva `?key=` y httpx la mete en
+            # str(e) -- el log y la respuesta usan el texto ya redactado.
+            motivo = texto_de_error(e)
+            logger.warning(f"sync_models provider={provider_id} failed reason={motivo}")
+            results.append({"provider_id": provider_id, "error": redactar_secretos(str(e))[:200]})
 
     try:
         enrich_result = await model_catalog.enrich_from_models_dev()
     except Exception as e:  # fail-soft: el enriquecimiento es capa (b) opcional; su error va en 'enrich' y apaga ok
-        logger.warning(f"sync_models enrich failed reason={type(e).__name__}: {e}")
-        enrich_result = {"error": str(e)[:200]}
+        logger.warning(f"sync_models enrich failed reason={texto_de_error(e)}")
+        enrich_result = {"error": redactar_secretos(str(e))[:200]}
 
     # Task 3 (2026-09-15, clase b): antes `ok` era True siempre, aunque
     # fallaran todos los providers y el enriquecimiento. Contrato: 200 con

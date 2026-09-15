@@ -34,6 +34,7 @@ from jax_engine.events import event_bus
 from jax_engine.state import engine_state, LAS_MANOS_URL
 from api.admin.usage import record_usage
 from db.connection import get_pool
+from redaccion import redactar_secretos, texto_de_error
 from facet_health import (
     record_facet_health,
     OUTCOME_OK,
@@ -949,7 +950,7 @@ async def _invoke_facet(
         # real del proveedor -- por eso config_error es un outcome propio,
         # no provider_error.
         await record_facet_health(
-            facet, OUTCOME_CONFIG_ERROR, source, f"{type(e).__name__}: {e}")
+            facet, OUTCOME_CONFIG_ERROR, source, texto_de_error(e))
         # ERROR en el log ADEMÁS de la excepción: el 502 que ve el usuario
         # trunca a 200 chars, el operador necesita el mensaje completo (trae
         # el UPDATE que siembra la fila). Vive acá y no en los validadores
@@ -964,8 +965,10 @@ async def _invoke_facet(
         logger.error(f"dispatch abortado: facet={facet!r} source={source!r}: {e}")
         raise            # SIEMPRE re-lanza: no puede volverse fail-open
     except Exception as e:
+        # Task 6 S1: texto_de_error redacta -- un HTTPStatusError de Gemini
+        # trae la URL con `?key=` en str(e).
         await record_facet_health(
-            facet, OUTCOME_PROVIDER_ERROR, source, f"{type(e).__name__}: {e}")
+            facet, OUTCOME_PROVIDER_ERROR, source, texto_de_error(e))
         raise            # SIEMPRE re-lanza: no puede volverse fail-open
     await record_facet_health(facet, outcome, source)
     return texto, usage
@@ -1040,13 +1043,16 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
             facet, config, user_id, req.message, semantic_context, grounding=grounding)
         is_canned = usage is None
     except httpx.HTTPStatusError as e:
-        detail = f"Error HTTP {e.response.status_code} en {facet}: {e.response.text[:200]}"
+        # Task 6 S1: el cuerpo del proveedor no deberia repetir la key, pero
+        # este texto sale al usuario y al bus -- se redacta igual.
+        detail = redactar_secretos(f"Error HTTP {e.response.status_code} en {facet}: {e.response.text[:200]}")
         await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail[:100])
         await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
         raise HTTPException(status_code=502, detail=detail)
     except Exception as e:
-        detail = f"Error en {facet}: {str(e)[:200]}"
-        await engine_state.set_facet_status(facet, "error", tenant_id, user_id, str(e)[:100])
+        motivo = redactar_secretos(str(e))
+        detail = f"Error en {facet}: {motivo[:200]}"
+        await engine_state.set_facet_status(facet, "error", tenant_id, user_id, motivo[:100])
         await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
         raise HTTPException(status_code=502, detail=detail)
 

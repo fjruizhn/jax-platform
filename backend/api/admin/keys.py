@@ -8,6 +8,7 @@ from auth.models import AuthUser
 from crypto_secrets import encrypt_secret, decrypt_secret, decrypt_db_secret
 from db.connection import get_pool
 from http_client import get_http_client
+from redaccion import redactar_secretos
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin")
@@ -176,9 +177,11 @@ async def test_key(provider_id: str, user: AuthUser = Depends(require_superadmin
                 client = await get_http_client()
                 r = await client.get(url, timeout=10.0)
                 ms = int((time.time() - t0) * 1000)
-                return {"ok": r.status_code == 200, "latency_ms": ms, "error": None if r.status_code == 200 else r.text[:100]}
+                return {"ok": r.status_code == 200, "latency_ms": ms,
+                        "error": None if r.status_code == 200 else redactar_secretos(r.text, [api_key])[:100]}
             except Exception as e:  # fail-soft: el fallo del test ES el resultado (ok=False con error) que se le muestra al superadmin
-                return {"ok": False, "latency_ms": None, "error": str(e)[:100]}
+                # Task 6 S1: la URL lleva `?key=`; se redacta antes de devolver.
+                return {"ok": False, "latency_ms": None, "error": redactar_secretos(str(e), [api_key])[:100]}
         return {"ok": False, "latency_ms": None, "error": "Test no disponible para este provider"}
 
     try:
@@ -186,9 +189,10 @@ async def test_key(provider_id: str, user: AuthUser = Depends(require_superadmin
         client = await get_http_client()
         r = await client.get(prov["test_url"], headers={"Authorization": f"Bearer {api_key}"}, timeout=10.0)
         ms = int((time.time() - t0) * 1000)
-        return {"ok": r.status_code < 400, "latency_ms": ms, "error": None if r.status_code < 400 else r.text[:100]}
+        return {"ok": r.status_code < 400, "latency_ms": ms,
+                "error": None if r.status_code < 400 else redactar_secretos(r.text, [api_key])[:100]}
     except Exception as e:  # fail-soft: el fallo del test ES el resultado (ok=False con error) que se le muestra al superadmin
-        return {"ok": False, "latency_ms": None, "error": str(e)[:100]}
+        return {"ok": False, "latency_ms": None, "error": redactar_secretos(str(e), [api_key])[:100]}
 
 
 class UpdateKeyRequest(BaseModel):
