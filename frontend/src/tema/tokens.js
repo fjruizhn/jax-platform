@@ -77,6 +77,9 @@ export const MIGRADOS = [
   'components/admin/AdminSidebar.jsx',
   'pages/admin/AdminUsers.jsx',
   'pages/admin/AdminMotors.jsx',
+  'pages/admin/AdminFacetsModels.jsx',
+  'pages/admin/AdminModelCatalog.jsx',
+  'pages/admin/FormContratoDispatch.jsx',
 ]
 
 const RESPALDO = 'texto-suave'
