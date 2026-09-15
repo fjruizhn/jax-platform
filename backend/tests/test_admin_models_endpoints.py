@@ -27,6 +27,16 @@ async def _modelo_de_thot():
             return await cur.fetchone()
 
 
+async def _contrato_en_db(model_ref):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT max_tokens_param, max_output_tokens FROM model WHERE id=%s", (model_ref,))
+            return await cur.fetchone()
+
+
 def test_list_models_returns_the_seeded_catalog(client):
     resp = client.get("/api/admin/models", headers=_superadmin_headers())
     assert resp.status_code == 200, resp.text
@@ -46,9 +56,13 @@ def test_list_models_returns_the_seeded_catalog(client):
     assert "max_tokens_param" in thot_row
     # max_output_tokens (par del anterior): mismo motivo, mismo estado roto.
     assert "max_output_tokens" in thot_row
+    # El endpoint muestra lo que la fila TIENE (PR-L ronda 2): se compara con
+    # la base, no con el valor sembrado -- la fila es mutable (el endpoint de
+    # PR-L la escribe) y afirmar 131072 hacía depender el test de quién la
+    # tocó antes. Que la semilla ponga 131072 lo fija test_model_max_output_tokens.
     seeded = next(m for m in models if m["model_id"] == "deepseek-v4-flash")
-    assert seeded["max_tokens_param"] == "max_tokens"
-    assert seeded["max_output_tokens"] == 131072
+    en_db = client.portal.call(_contrato_en_db, seeded["id"])
+    assert (seeded["max_tokens_param"], seeded["max_output_tokens"]) == en_db
 
 
 def test_list_models_filters_by_provider_and_status(client):

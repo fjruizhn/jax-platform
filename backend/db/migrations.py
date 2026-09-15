@@ -369,7 +369,10 @@ CREATE TABLE IF NOT EXISTS model_binding_proposal (
   created_at DATETIME DEFAULT NOW(),
   FOREIGN KEY (facet_key) REFERENCES facet(`key`),
   FOREIGN KEY (proposed_model_ref) REFERENCES model(id),
-  FOREIGN KEY (decided_by) REFERENCES jax_users(user_id)
+  FOREIGN KEY (decided_by) REFERENCES jax_users(user_id),
+  -- PR-L ronda 2: list_proposals ordena por created_at, con o sin status.
+  INDEX idx_created (created_at),
+  INDEX idx_status_created (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -398,10 +401,13 @@ CREATE TABLE IF NOT EXISTS model_binding_proposal (
 # puede impedir borrar la entidad que audita, ni perder su fila si se borra.
 # model_ref/proposal_id quedan como el numero que eran; provider_id/model_id
 # (y facet_key) guardan los identificadores LEGIBLES del momento del evento,
-# asi la historia se entiende aunque la fila ya no exista. La FK a jax_users
-# se conserva: es el QUIEN, mismo criterio que credential_audit. Una base con
-# la forma anterior (FK duras, sin provider_id/model_id) la convierte
-# _auditoria_de_catalogo_sin_fk_duras().
+# asi la historia se entiende aunque la fila ya no exista.
+# Ronda 2: tampoco FK a jax_users. performed_by queda como el numero que era
+# y performed_by_email guarda el email del momento: borrar a quien actuo no
+# falla ni borra su historia. (credential_audit, facet_binding.approved_by y
+# model_binding_proposal.decided_by siguen bloqueando un DELETE de usuario:
+# preexistente, va a DEUDA con la baja logica de la etapa 5.) Una base con
+# una forma anterior la convierte _auditoria_de_catalogo_sin_fk_duras().
 CREATE_MODEL_CATALOG_AUDIT = """
 CREATE TABLE IF NOT EXISTS model_catalog_audit (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -415,9 +421,9 @@ CREATE TABLE IF NOT EXISTS model_catalog_audit (
   valor_antes LONGTEXT NULL CHECK (valor_antes IS NULL OR json_valid(valor_antes)),
   valor_despues LONGTEXT NULL CHECK (valor_despues IS NULL OR json_valid(valor_despues)),
   performed_by INT NOT NULL,
+  performed_by_email VARCHAR(255) NULL,
   performed_from_ip VARCHAR(45) NOT NULL,
   performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (performed_by) REFERENCES jax_users(user_id),
   INDEX idx_proposal_id (proposal_id, id),
   INDEX idx_facet_rechazo (action, facet_key, id),
   INDEX idx_model_time (model_ref, performed_at)
@@ -568,7 +574,7 @@ _TABLES = [
     ("facet", CREATE_FACET),                # antes de facet_binding y model_binding_proposal (FK)
     ("facet_binding", CREATE_FACET_BINDING),
     ("model_binding_proposal", CREATE_MODEL_BINDING_PROPOSAL),
-    ("model_catalog_audit", CREATE_MODEL_CATALOG_AUDIT),  # despues de model y model_binding_proposal (FK)
+    ("model_catalog_audit", CREATE_MODEL_CATALOG_AUDIT),  # sin FK (PR-L rondas 1-2): el orden no importa
     ("motor", CREATE_MOTOR),                          # antes de capability (FK fallback_motor)
     ("capability", CREATE_CAPABILITY),                # antes de capability_motor (FK)
     ("capability_motor", CREATE_CAPABILITY_MOTOR),
@@ -1862,44 +1868,72 @@ async def _asegurar_forma_de_capability_mode(cur) -> None:
         )
 
 
-async def _auditoria_de_catalogo_sin_fk_duras(cur) -> None:
-    """Lleva model_catalog_audit a la forma de la ronda 1 de PR-L
-    (2026-09-14) en una base donde ya existe con la forma de ba1f704: FK
-    duras a model y a model_binding_proposal, sin provider_id/model_id. Ver
-    el comentario de CREATE_MODEL_CATALOG_AUDIT. Idempotente: cada paso mira
-    information_schema antes de actuar; en una base nueva no hace nada salvo
-    el UPDATE (que no encuentra filas)."""
+async def _auditoria_de_catalogo_sin_fk_duras(cur, tabla: str = "model_catalog_audit") -> None:
+    """Lleva la auditoría del catálogo a su forma final (PR-L rondas 1-2) en
+    una base donde ya existe con una forma anterior: FK duras a model, a
+    model_binding_proposal o a jax_users, sin provider_id/model_id/
+    performed_by_email. Ver el comentario de CREATE_MODEL_CATALOG_AUDIT.
+    Idempotente: cada paso mira information_schema antes de actuar; en una
+    base nueva no hace nada salvo los UPDATE (que no encuentran filas).
+
+    `tabla`: el test de conversión la corre sobre una tabla temporal con otro
+    nombre, sin tocar la auditoría real de jax_memory_test (ronda 2). Solo
+    acepta nombres de identificador simples: va interpolada en el DDL."""
+    if not tabla.replace("_", "").isalnum():
+        raise ValueError(f"nombre de tabla inválido: {tabla!r}")
     for columna, ddl in (
-        ("provider_id", "ALTER TABLE model_catalog_audit ADD COLUMN provider_id VARCHAR(50) NULL AFTER model_ref"),
-        ("model_id", "ALTER TABLE model_catalog_audit ADD COLUMN model_id VARCHAR(100) NULL AFTER provider_id"),
+        ("provider_id", f"ALTER TABLE {tabla} ADD COLUMN provider_id VARCHAR(50) NULL AFTER model_ref"),
+        ("model_id", f"ALTER TABLE {tabla} ADD COLUMN model_id VARCHAR(100) NULL AFTER provider_id"),
+        ("performed_by_email",
+         f"ALTER TABLE {tabla} ADD COLUMN performed_by_email VARCHAR(255) NULL AFTER performed_by"),
     ):
-        if not await _column_exists(cur, "model_catalog_audit", columna):
+        if not await _column_exists(cur, tabla, columna):
             await cur.execute(ddl)
 
     # Los nombres de las FK los generó el servidor (en MariaDB, `1`, `2`...):
     # se leen, no se suponen.
     await cur.execute(
         "SELECT CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS "
-        "WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'model_catalog_audit' "
-        "AND REFERENCED_TABLE_NAME IN ('model', 'model_binding_proposal')"
+        "WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = %s "
+        "AND REFERENCED_TABLE_NAME IN ('model', 'model_binding_proposal', 'jax_users')",
+        (tabla,),
     )
     for (nombre,) in await cur.fetchall():
-        await cur.execute(f"ALTER TABLE model_catalog_audit DROP FOREIGN KEY `{nombre}`")
+        await cur.execute(f"ALTER TABLE {tabla} DROP FOREIGN KEY `{nombre}`")
 
     await cur.execute(
         "SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() "
-        "AND TABLE_NAME = 'model_catalog_audit' AND INDEX_NAME = 'idx_facet_rechazo' LIMIT 1"
+        "AND TABLE_NAME = %s AND INDEX_NAME = 'idx_facet_rechazo' LIMIT 1",
+        (tabla,),
     )
     if await cur.fetchone() is None:
-        await cur.execute("ALTER TABLE model_catalog_audit ADD INDEX idx_facet_rechazo (action, facet_key, id)")
+        await cur.execute(f"ALTER TABLE {tabla} ADD INDEX idx_facet_rechazo (action, facet_key, id)")
 
-    # Filas escritas con la forma vieja: se completan desde `model` mientras
-    # la fila exista (con la forma vieja la FK garantizaba que existe).
+    # Filas escritas con una forma vieja: se completan mientras la fila de
+    # origen exista (con la forma vieja las FK garantizaban que existe).
     await cur.execute(
-        "UPDATE model_catalog_audit a JOIN model m ON m.id = a.model_ref "
+        f"UPDATE {tabla} a JOIN model m ON m.id = a.model_ref "
         "SET a.provider_id = m.provider_id, a.model_id = m.model_id "
         "WHERE a.model_id IS NULL"
     )
+    await cur.execute(
+        f"UPDATE {tabla} a JOIN jax_users u ON u.user_id = a.performed_by "
+        "SET a.performed_by_email = u.email "
+        "WHERE a.performed_by_email IS NULL"
+    )
+
+
+async def _indices_de_model_binding_proposal(cur) -> None:
+    """PR-L ronda 2: los índices de list_proposals en una base donde la tabla
+    ya existía sin ellos (en una base nueva los trae el CREATE). Idempotente."""
+    for nombre, columnas in (("idx_created", "created_at"), ("idx_status_created", "status, created_at")):
+        await cur.execute(
+            "SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() "
+            "AND TABLE_NAME = 'model_binding_proposal' AND INDEX_NAME = %s LIMIT 1",
+            (nombre,),
+        )
+        if await cur.fetchone() is None:
+            await cur.execute(f"ALTER TABLE model_binding_proposal ADD INDEX {nombre} ({columnas})")
 
 
 async def run_migrations():
@@ -1950,6 +1984,7 @@ async def run_migrations():
             # Después del bucle de _TABLES (la tabla existe) y antes de que
             # nadie escriba en ella (PR-L ronda 1).
             await _auditoria_de_catalogo_sin_fk_duras(cur)
+            await _indices_de_model_binding_proposal(cur)
             # Despues de _seed_models_and_backfill: las filas de `model` tienen
             # que existir para poder actualizarlas.
             await _seed_model_max_tokens_param(cur)

@@ -233,7 +233,18 @@ def test_column_exists_after_run_migrations(client):
 def test_seed_populates_every_verified_model_present_in_the_catalog(client):
     """Se afirma sobre las filas que existen en esta DB: jax_memory_test no
     tiene todo el catalogo de produccion, pero ninguna fila sembrable puede
-    quedar NULL."""
+    quedar NULL.
+
+    Arranca con esas filas en NULL (PR-L ronda 2, 2026-09-14): la semilla
+    solo llena NULL a propósito (no pisa un valor manual), así que afirmar
+    sobre el valor que la fila TENGA hacía depender el test de lo que otro
+    escribió antes -- la prueba de carga de PR-L dejó deepseek-v4-flash en
+    393216 y este test falló sin que la semilla cambiara. Así se prueba la
+    semilla de verdad, y la fila queda en su valor sembrado."""
+    for provider_id, model_id, _expected in _MODEL_MAX_OUTPUT_TOKENS_SEED:
+        client.portal.call(
+            _commit, "UPDATE model SET max_output_tokens = NULL WHERE provider_id = %s AND model_id = %s",
+            (provider_id, model_id))
     client.portal.call(_run_seed)
     for provider_id, model_id, expected in _MODEL_MAX_OUTPUT_TOKENS_SEED:
         rows = client.portal.call(
@@ -335,14 +346,27 @@ def test_resolve_facet_carries_max_output_tokens_from_the_model_row(client):
     verdad, la misma fila."""
     import facet_resolver
 
-    client.portal.call(_run_seed)
-    facet_resolver._cache.pop("jekyll", None)
-    resolved = client.portal.call(facet_resolver.resolve_facet, "jekyll")
-    assert resolved.transport == "http_openai_compat"
-    assert resolved.max_output_tokens == 131072, (
-        f"jekyll resolvio a {resolved.model!r} con "
-        f"max_output_tokens={resolved.max_output_tokens!r}"
+    # Centinela propio sobre la fila que jekyll tiene HOY (PR-L ronda 2): el
+    # test prueba la plomería (el valor de la fila llega al ResolvedFacet), no
+    # qué valor dejó en esa fila otro test o la prueba de carga.
+    (ref, antes), = client.portal.call(
+        _fetch,
+        "SELECT m.id, m.max_output_tokens FROM facet_binding b JOIN model m ON m.id = b.model_ref "
+        "WHERE b.facet_key = 'jekyll' AND b.role = 'primary'",
     )
+    centinela = 4321
+    client.portal.call(_commit, "UPDATE model SET max_output_tokens = %s WHERE id = %s", (centinela, ref))
+    try:
+        facet_resolver._cache.pop("jekyll", None)
+        resolved = client.portal.call(facet_resolver.resolve_facet, "jekyll")
+        assert resolved.transport == "http_openai_compat"
+        assert resolved.max_output_tokens == centinela, (
+            f"jekyll resolvio a {resolved.model!r} con "
+            f"max_output_tokens={resolved.max_output_tokens!r}"
+        )
+    finally:
+        client.portal.call(_commit, "UPDATE model SET max_output_tokens = %s WHERE id = %s", (antes, ref))
+        facet_resolver._cache.pop("jekyll", None)
 
 
 # --------------------------------------------------------------------------

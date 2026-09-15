@@ -14,7 +14,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 import facet_resolver
@@ -179,10 +179,10 @@ async def declarar_contrato_dispatch(
             await cur.execute(_SQL_DECLARAR_CONTRATO, (req.max_tokens_param, req.max_output_tokens, model_ref))
             await cur.execute(
                 "INSERT INTO model_catalog_audit (action, model_ref, provider_id, model_id, valor_antes, "
-                "valor_despues, performed_by, performed_from_ip) "
-                "VALUES ('contrato_declarado', %s, %s, %s, %s, %s, %s, %s)",
+                "valor_despues, performed_by, performed_by_email, performed_from_ip) "
+                "VALUES ('contrato_declarado', %s, %s, %s, %s, %s, %s, %s, %s)",
                 (model_ref, provider_id, model_id, json.dumps(antes), json.dumps(despues),
-                 int(user.user_id), ip_de(request)),
+                 int(user.user_id), user.email, ip_de(request)),
             )
         await conn.commit()
 
@@ -220,21 +220,33 @@ async def sync_models(user: AuthUser = Depends(require_superadmin)):
     return {"ok": True, "providers": results, "enrich": enrich_result}
 
 
-@router.get("/proposals")
-async def list_proposals(
-    status: str | None = None,
-    user: AuthUser = Depends(require_superadmin),
-):
-    pool = await get_pool()
+# PR-L ronda 2 (2026-09-14, punto 7 de la revisión): la lista era sin límite y,
+# sin `status`, traía la historia entera (y el IN de _ultimos_rechazos crecía
+# con ella; jax_memory_test ya tiene más de 1600 propuestas). Ahora `limit` con
+# tope; ORDER BY created_at va por idx_created / idx_status_created.
+LIMITE_PROPUESTAS_POR_DEFECTO = 200
+LIMITE_PROPUESTAS_MAX = 500
+
+
+def _sql_propuestas(con_status: bool) -> str:
     sql = (
         "SELECT id, facet_key, current_model_ref, proposed_model_ref, reason, "
         "detail, status, decided_by, decided_at, created_at FROM model_binding_proposal"
     )
-    params = []
-    if status:
+    if con_status:
         sql += " WHERE status = %s"
-        params.append(status)
-    sql += " ORDER BY created_at DESC"
+    return sql + " ORDER BY created_at DESC LIMIT %s"
+
+
+@router.get("/proposals")
+async def list_proposals(
+    status: str | None = None,
+    limit: int = Query(LIMITE_PROPUESTAS_POR_DEFECTO, ge=1, le=LIMITE_PROPUESTAS_MAX),
+    user: AuthUser = Depends(require_superadmin),
+):
+    pool = await get_pool()
+    sql = _sql_propuestas(bool(status))
+    params = ([status] if status else []) + [limit]
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -333,7 +345,7 @@ async def approve_proposal(
                 # 409: es lo único que esta transacción escribe -- el guard
                 # corre antes de cualquier UPDATE.
                 await registrar_rechazo_de_binding(
-                    cur, detalle, proposal_id, decided_by, ip_de(request))
+                    cur, detalle, proposal_id, decided_by, user.email, ip_de(request))
                 await conn.commit()
                 raise HTTPException(status_code=409, detail=detalle)
 

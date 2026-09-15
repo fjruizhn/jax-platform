@@ -480,46 +480,84 @@ CREATE TABLE model_catalog_audit (
 """
 
 
-async def _forma_de_la_auditoria():
+_TABLA_PRUEBA = "model_catalog_audit_prueba_migracion"
+
+
+async def _forma_de(tabla):
     fks = await _q(
         "SELECT REFERENCED_TABLE_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS "
-        "WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'model_catalog_audit' "
-        "ORDER BY REFERENCED_TABLE_NAME")
+        "WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = %s "
+        "ORDER BY REFERENCED_TABLE_NAME", (tabla,))
     columnas = await _q(
         "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
-        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'model_catalog_audit'")
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s", (tabla,))
     indices = await _q(
         "SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS "
-        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'model_catalog_audit'")
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s", (tabla,))
     return ([f for (f,) in fks], {c for (c,) in columnas}, {i for (i,) in indices})
 
 
+async def _convertir(tabla):
+    from db.connection import get_pool
+    from db.migrations import _auditoria_de_catalogo_sin_fk_duras
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await _auditoria_de_catalogo_sin_fk_duras(cur, tabla)
+        await conn.commit()
+
+
 def test_la_migracion_convierte_la_tabla_con_fks_duras(client):
-    from db.migrations import run_migrations
-    modelo = "test-prl-r1-migracion"
+    """Convierte una tabla con la forma de ba1f704 (FK duras a model, a la
+    propuesta y a jax_users, sin identificadores legibles).
+
+    Ronda 2: sobre una tabla TEMPORAL con otro nombre, no sobre
+    model_catalog_audit. La versión anterior hacía DROP de la tabla real y
+    borraba toda la auditoría de jax_memory_test, incluidas filas de otras
+    corridas concurrentes. Ahora la auditoría real no se toca (se cuenta
+    antes y después)."""
+    modelo = "test-prl-r2-migracion"
     ref = client.portal.call(_crear_fila, modelo)
+    reales_antes = client.portal.call(_q, "SELECT COUNT(*) FROM model_catalog_audit")[0][0]
     try:
-        client.portal.call(_q, "DROP TABLE model_catalog_audit", (), True)
-        client.portal.call(_q, _DDL_VIEJA, (), True)
+        client.portal.call(_q, f"DROP TABLE IF EXISTS {_TABLA_PRUEBA}", (), True)
+        client.portal.call(_q, _DDL_VIEJA.replace("CREATE TABLE model_catalog_audit",
+                                                  f"CREATE TABLE {_TABLA_PRUEBA}"), (), True)
         client.portal.call(
-            _q, "INSERT INTO model_catalog_audit (action, model_ref, valor_despues, performed_by, "
+            _q, f"INSERT INTO {_TABLA_PRUEBA} (action, model_ref, valor_despues, performed_by, "
                 "performed_from_ip) VALUES ('contrato_declarado', %s, '{}', %s, 'test')",
             (ref, int(USER_ID)), True)
+        fks_viejas, _, _ = client.portal.call(_forma_de, _TABLA_PRUEBA)
+        assert fks_viejas == ["jax_users", "model", "model_binding_proposal"], fks_viejas
 
-        client.portal.call(run_migrations)
-        client.portal.call(run_migrations)  # idempotente
+        client.portal.call(_convertir, _TABLA_PRUEBA)
+        client.portal.call(_convertir, _TABLA_PRUEBA)  # idempotente
 
-        fks, columnas, indices = client.portal.call(_forma_de_la_auditoria)
-        assert fks == ["jax_users"], f"quedaron FK duras a {fks}"
-        assert {"provider_id", "model_id"} <= columnas
+        fks, columnas, indices = client.portal.call(_forma_de, _TABLA_PRUEBA)
+        assert fks == [], f"quedaron FK duras a {fks}"
+        assert {"provider_id", "model_id", "performed_by_email"} <= columnas
         assert {"idx_proposal_id", "idx_model_time", "idx_facet_rechazo"} <= indices
-        # La fila vieja se completó con los identificadores legibles.
-        filas = client.portal.call(_auditoria_por_model_id, modelo)
-        assert [(f[1], f[2], f[3]) for f in filas] == [(ref, _PROVEEDOR, modelo)]
+        filas = client.portal.call(
+            _q, f"SELECT model_ref, provider_id, model_id, performed_by, performed_by_email "
+                f"FROM {_TABLA_PRUEBA}")
+        email_1 = client.portal.call(_q, "SELECT email FROM jax_users WHERE user_id=%s", (int(USER_ID),))[0][0]
+        assert filas == ((ref, _PROVEEDOR, modelo, int(USER_ID), email_1),), filas
+
+        reales_despues = client.portal.call(_q, "SELECT COUNT(*) FROM model_catalog_audit")[0][0]
+        assert reales_despues == reales_antes, "el test tocó la auditoría real"
     finally:
-        client.portal.call(_borrar_auditoria_por_model_id, modelo)
-        client.portal.call(_q, "DELETE FROM model_catalog_audit WHERE model_ref=%s", (ref,), True)
+        client.portal.call(_q, f"DROP TABLE IF EXISTS {_TABLA_PRUEBA}", (), True)
         client.portal.call(_q, "DELETE FROM model WHERE id=%s", (ref,), True)
+
+
+def test_la_tabla_real_queda_sin_ninguna_fk(client):
+    """Ronda 2: tampoco FK a jax_users. Una auditoría no bloquea borrar a
+    quien la escribió; el email queda como snapshot."""
+    from db.migrations import run_migrations
+    client.portal.call(run_migrations)
+    fks, columnas, _ = client.portal.call(_forma_de, "model_catalog_audit")
+    assert fks == [], fks
+    assert "performed_by_email" in columnas
 
 
 def test_la_lista_de_bindings_muestra_el_ultimo_rechazo_de_la_faceta(client, monkeypatch):
@@ -576,3 +614,106 @@ def test_el_rastro_de_facetas_usa_su_indice(client):
         assert fila["type"] != "ALL" and fila["key"] == indice, fila
         extra = fila.get("Extra") or ""
         assert "filesort" not in extra and "temporary" not in extra, fila
+
+
+# ------------------------------------------------------- Ronda 2 (PR-L) ---
+
+def test_tope_por_encima_del_int_de_la_columna_es_422(client):
+    """model.max_output_tokens es INT con signo: lo que no cabe es 422 con
+    código (antes pasaba el validador y el UPDATE fallaba: 500)."""
+    ref = client.portal.call(_crear_fila)
+    try:
+        _assert_422(
+            _declarar(client, ref, {"max_tokens_param": "max_tokens", "max_output_tokens": 2147483648}),
+            ["max_output_tokens"],
+        )
+        assert client.portal.call(_contrato, ref) == (None, None)
+        resp = _declarar(client, ref, {"max_tokens_param": "max_tokens", "max_output_tokens": 2147483647})
+        assert resp.status_code == 200, resp.text
+        assert client.portal.call(_contrato, ref) == ("max_tokens", 2147483647)
+    finally:
+        client.portal.call(_borrar_fila, ref)
+
+
+async def _borrar_usuario_devolviendo_error(user_id):
+    import aiomysql
+
+    from tests.identidades import borrar_usuario
+    try:
+        await borrar_usuario(user_id)
+    except aiomysql.IntegrityError as e:
+        return e
+    return None
+
+
+def test_borrar_un_usuario_con_auditoria_no_falla_y_la_fila_queda_legible(client, usuarios):
+    user_id, email = usuarios(role="superadmin")
+    token = create_access_token(str(user_id), TENANT_ID, "superadmin")
+    ref = client.portal.call(_crear_fila, "test-prl-r2-usuario")
+    try:
+        resp = client.put(f"/api/admin/models/{ref}/contrato-dispatch",
+                          json={"max_tokens_param": "max_tokens", "max_output_tokens": 4096},
+                          headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, resp.text
+
+        error = client.portal.call(_borrar_usuario_devolviendo_error, user_id)
+        assert error is None, f"la auditoría impidió borrar al usuario: {error}"
+
+        filas = client.portal.call(
+            _q, "SELECT action, performed_by, performed_by_email, model_id FROM model_catalog_audit "
+                "WHERE model_ref=%s", (ref,))
+        assert filas == (("contrato_declarado", user_id, email, "test-prl-r2-usuario"),), filas
+    finally:
+        client.portal.call(_borrar_fila, ref)
+
+
+def test_la_auditoria_guarda_el_email_de_quien_actuo(client):
+    """El 409 del guard también guarda el snapshot del email."""
+    ref = client.portal.call(_crear_fila)
+    antes = client.portal.call(_binding, "jekyll")
+    try:
+        resp = client.put("/api/admin/facet-bindings/jekyll",
+                          json={"provider_id": _PROVEEDOR, "model_ref": ref}, headers=_headers())
+        assert resp.status_code == 409, resp.text
+        email_1 = client.portal.call(_q, "SELECT email FROM jax_users WHERE user_id=%s", (int(USER_ID),))[0][0]
+        filas = client.portal.call(
+            _q, "SELECT performed_by, performed_by_email FROM model_catalog_audit WHERE model_ref=%s", (ref,))
+        assert filas == ((int(USER_ID), email_1),), filas
+    finally:
+        client.portal.call(_restaurar, "jekyll", antes)
+        client.portal.call(_borrar_fila, ref)
+
+
+async def _propuestas_de_prueba(facet_key, ref, n):
+    return [await _propuesta(facet_key, ref) for _ in range(n)]
+
+
+def test_list_proposals_es_acotada(client):
+    """Punto 7 de la revisión: sin `status`, la lista (y el IN de
+    _ultimos_rechazos) crecía con toda la historia. Ahora `limit` con tope."""
+    ref = client.portal.call(_crear_fila)
+    try:
+        client.portal.call(_propuestas_de_prueba, "jekyll", ref, 3)
+        resp = client.get("/api/admin/models/proposals?limit=2", headers=_headers())
+        assert resp.status_code == 200, resp.text
+        assert len(resp.json()["proposals"]) == 2
+        for malo in (0, -1, 501):
+            resp = client.get(f"/api/admin/models/proposals?limit={malo}", headers=_headers())
+            assert resp.status_code == 422, (malo, resp.text)
+        from api.admin.models import LIMITE_PROPUESTAS_MAX, LIMITE_PROPUESTAS_POR_DEFECTO
+        assert LIMITE_PROPUESTAS_POR_DEFECTO <= LIMITE_PROPUESTAS_MAX == 500
+    finally:
+        client.portal.call(_borrar_fila, ref)
+
+
+def test_list_proposals_ordena_por_indice(client):
+    """LAS CUATRO: ORDER BY created_at (con y sin status) va por índice, sin
+    filesort, sobre la consulta REAL del módulo."""
+    from api.admin.models import _sql_propuestas
+    for con_status, params in ((False, (50,)), (True, ("pending", 50))):
+        filas = client.portal.call(_explain, _sql_propuestas(con_status), params)
+        print(f"\nEXPLAIN list_proposals status={con_status}: {filas}")
+        assert len(filas) == 1, filas
+        fila = filas[0]
+        assert fila["type"] != "ALL", fila
+        assert "filesort" not in (fila.get("Extra") or ""), fila

@@ -158,7 +158,7 @@ async def update_facet_binding(
                 # PR-L (2026-09-14): el rechazo queda en la DB, no solo en
                 # el log. Commit antes del 409: es lo único escrito acá.
                 await registrar_rechazo_de_binding(
-                    cur, detalle, None, approved_by, ip_de(request))
+                    cur, detalle, None, approved_by, user.email, ip_de(request))
                 await conn.commit()
                 raise HTTPException(status_code=409, detail=detalle)
 

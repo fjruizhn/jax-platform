@@ -55,6 +55,12 @@ class ModelDispatchConfigError(RuntimeError):
 # ENUM) no termine armando una clave arbitraria en el JSON que va a la API.
 _MAX_TOKENS_PARAM_NAMES = ("max_tokens", "max_completion_tokens")
 
+# Tope superior de max_output_tokens: model.max_output_tokens es INT con signo
+# (db/migrations.py). Un valor mayor pasaba el validador y reventaba el UPDATE
+# con DataError 1264 (un 500) al declararlo desde el admin (PR-L ronda 2). Mismo
+# criterio que el ENUM de arriba: el validador conoce el límite de la columna.
+_MAX_OUTPUT_TOKENS_TOPE_COLUMNA = 2**31 - 1
+
 # El límite de salida se manda SIEMPRE explícito: sin él, un modelo de
 # razonamiento (reasoning_content compitiendo por el mismo budget que content)
 # puede agotarlo y cortar la respuesta antes de escribirla — mismo bug ya
@@ -152,6 +158,12 @@ def _max_output_tokens_value(model: str, max_output_tokens: int | None) -> int:
             f"modelo '{model}': max_output_tokens={max_output_tokens!r} no es un "
             f"entero positivo. Corregí la fila de `model` — no se manda un límite "
             f"inválido a la API."
+        )
+    if max_output_tokens > _MAX_OUTPUT_TOKENS_TOPE_COLUMNA:
+        raise ModelDispatchConfigError(
+            f"modelo '{model}': max_output_tokens={max_output_tokens!r} no cabe en "
+            f"model.max_output_tokens (INT, máximo {_MAX_OUTPUT_TOKENS_TOPE_COLUMNA}). "
+            f"Ningún proveedor documenta un tope así: revisá el valor."
         )
     return max_output_tokens
 
@@ -318,7 +330,8 @@ async def detalle_si_rompe_el_contrato(
 
 
 async def registrar_rechazo_de_binding(
-    cur, detalle: dict, proposal_id: int | None, performed_by: int, performed_from_ip: str,
+    cur, detalle: dict, proposal_id: int | None, performed_by: int,
+    performed_by_email: str | None, performed_from_ip: str,
 ) -> None:
     """Deja en model_catalog_audit el 409 que `detalle_si_rompe_el_contrato`
     acaba de devolver (PR-L, 2026-09-14). Antes un rechazo solo existía en
@@ -333,11 +346,11 @@ async def registrar_rechazo_de_binding(
     # historia tiene que entenderse sola si esas filas se borran.
     await cur.execute(
         "INSERT INTO model_catalog_audit (action, model_ref, provider_id, model_id, facet_key, "
-        "proposal_id, code, valor_despues, performed_by, performed_from_ip) "
-        "VALUES ('binding_rechazado', %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        "proposal_id, code, valor_despues, performed_by, performed_by_email, performed_from_ip) "
+        "VALUES ('binding_rechazado', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (detalle["model_ref"], detalle["provider_modelo"], detalle["model_id"], detalle["facet_key"],
          proposal_id, detalle["code"], json.dumps(detalle, ensure_ascii=False),
-         performed_by, performed_from_ip),
+         performed_by, performed_by_email, performed_from_ip),
     )
 
 
