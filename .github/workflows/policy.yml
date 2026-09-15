@@ -1236,7 +1236,15 @@ jobs:
           # llama). Rojos antes de verde o bajo su mutacion (DATE() de vuelta
           # en cada constante, la llamada quitada, el chequeo quitado).
           # Medido dos veces: 1055 / 1.
-          PISO_PASSED = 1055
+          # Subido de 1055 a 1076 (2026-09-15, fix wave final ronda 3): +21 en
+          # test_redaccion.py (comilla escapada dentro del valor en
+          # Authorization y en api_key, dobles/simples, con y sin esquema --
+          # 8; valor que termina en barra escapada -- 2; comilla sin cerrar
+          # tapa hasta el final -- 3; 8 entradas adversariales de 100 KB en
+          # < 50 ms). Los 11 de escape y sin cerrar, rojos antes de verde; los
+          # 2 de barra y los 8 de tiempo son controles de la forma nueva.
+          # Medido dos veces: 1076 / 1.
+          PISO_PASSED = 1076
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1676,7 +1684,10 @@ jobs:
       # Fix wave final ronda 2 (2026-09-15, re-review de 0c72f4e): +9 puros
       # (4 de test_redaccion.py, 5 de test_uso_por_periodo.py). Medido dos
       # veces con JAX_CI_NO_DB=1: 506 / 550.
-      JAX_CI_MIN_PASSED: "506"
+      # Fix wave final ronda 3 (2026-09-15): +21 puros en test_redaccion.py
+      # (escapes, barra final, comilla sin cerrar, 100 KB adversarial).
+      # Medido dos veces con JAX_CI_NO_DB=1: 527 / 550.
+      JAX_CI_MIN_PASSED: "527"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
