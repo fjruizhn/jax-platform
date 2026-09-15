@@ -15,12 +15,29 @@ def _superadmin_headers():
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _modelo_de_thot():
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT m.provider_id, m.model_id FROM facet_binding b JOIN model m ON m.id = b.model_ref "
+                "WHERE b.facet_key='thot' AND b.role='primary'"
+            )
+            return await cur.fetchone()
+
+
 def test_list_models_returns_the_seeded_catalog(client):
     resp = client.get("/api/admin/models", headers=_superadmin_headers())
     assert resp.status_code == 200, resp.text
     models = resp.json()["models"]
     assert len(models) >= 7  # las 7 filas sembradas por Bloque C
-    thot_row = next(m for m in models if m["provider_id"] == "openai" and m["model_id"] == "gpt-5.5")
+    # La fila de thot es la de su binding ACTUAL, leída de la base, no un
+    # literal (PR-L ronda 1): la semilla de base vacía pasó de gpt-5.5 a
+    # gpt-5.6-terra, así que en la base virgen de CI gpt-5.5 no existe y en
+    # el jax_memory_test local (sembrado antes) gpt-5.6-terra puede no existir.
+    thot_provider, thot_model = client.portal.call(_modelo_de_thot)
+    thot_row = next(m for m in models if m["provider_id"] == thot_provider and m["model_id"] == thot_model)
     assert thot_row["status"] == "available"
     assert "source" in thot_row and "source_checked_at" in thot_row  # procedencia siempre visible
     # max_tokens_param siempre visible: NULL es el estado que hace fallar el

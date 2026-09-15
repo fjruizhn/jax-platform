@@ -596,9 +596,17 @@ _FACET_BINDING_SEED = [
     ("hyde",      "anthropic", "sonnet"),
     ("jekyll",    "deepseek", "deepseek-v4-flash"),
     ("hipatia",   "gemini",   "gemini-2.5-flash"),
-    ("thot",      "openai",   "gpt-5.5"),
+    # thot y ada (PR-L ronda 1, 2026-09-14, hallazgo de PR-K): gpt-5.5 y
+    # glm-5.2 no tienen contrato de dispatch en _MODEL_MAX_*_SEED, así que en
+    # una base VACÍA esas facetas nacían rotas (http_openai_compat falla
+    # cerrado sin max_tokens_param/max_output_tokens). Ahora son los modelos
+    # de producción según este mismo archivo (ver los comentarios de
+    # _MODEL_MAX_*_SEED), que sí lo tienen. Solo afecta a una base vacía:
+    # _seed_facets no escribe bindings si la tabla ya tiene filas.
+    # tests/test_semilla_contrato_dispatch.py es el tripwire.
+    ("thot",      "openai",   "gpt-5.6-terra"),
     ("kimi",      "moonshot", "kimi-k3"),
-    ("ada",       "zhipu",    "glm-5.2"),
+    ("ada",       "zhipu",    "glm-5.3"),
 ]
 
 
@@ -629,7 +637,11 @@ _FACET_PERSONAS = {
 _MOTOR_SEED = [
     # key,   provider_id, model_id,   transport,             max_tokens, timeout, reasoning, visibility,    sandbox
     ("kimi", "moonshot", "kimi-k3",   "http_openai_compat",  8000,       600,     True,      "audit_only",  True),
-    ("ada",  "zhipu",    "glm-5.2",   "http_openai_compat",  8000,       600,     True,      "audit_only",  True),
+    # glm-5.3 (PR-L ronda 1): el mismo modelo que el binding semilla de ada.
+    # Con glm-5.2, en una base vacía la fila de `model` ya no existe (se
+    # deriva de los bindings) y _seed_motors_and_capabilities salteaba el
+    # motor ada en silencio.
+    ("ada",  "zhipu",    "glm-5.3",   "http_openai_compat",  8000,       600,     True,      "audit_only",  True),
 ]
 
 # key, risk_level, sandbox_only, requires_human_gate, max_exec_min, max_recursion,
@@ -954,8 +966,10 @@ async def _seed_thot_motor(cur) -> None:
     validate_consistency/critique referenciaban 'thot' en config.toml
     (allowed_motors) pero Task 1 excluyo esas 2 filas porque el motor no
     existia -- se completan aca."""
+    # gpt-5.6-terra (PR-L ronda 1): el binding semilla de thot. Con gpt-5.5,
+    # en una base vacía esa fila ya no existe y el motor thot no se sembraba.
     await cur.execute(
-        "SELECT id FROM model WHERE provider_id='openai' AND model_id='gpt-5.5'"
+        "SELECT id FROM model WHERE provider_id='openai' AND model_id='gpt-5.6-terra'"
     )
     row = await cur.fetchone()
     if row is None:

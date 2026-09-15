@@ -274,16 +274,24 @@ def test_update_motor_changes_model_for_a_motor_without_facet(client):
                   "transport": "http_openai_compat"},
             headers=_superadmin_headers(),
         )
+        # PR-L ronda 1: el destino es el modelo del binding ACTUAL de thot, leído de
+        # la base. gpt-5.5 ya no existe en la base virgen de CI (la semilla pasó a
+        # gpt-5.6-terra) y gpt-5.6-terra puede no existir en el jax_memory_test local.
+        destino = client.portal.call(
+            _db_fetch_one,
+            "SELECT m.provider_id, m.model_id FROM facet_binding b JOIN model m ON m.id = b.model_ref "
+            "WHERE b.facet_key='thot' AND b.role='primary'",
+        )
         resp = client.patch(
             f"/api/admin/motors/{key}",
-            json={"provider_id": "openai", "model_id": "gpt-5.5", "max_tokens": 999},
+            json={"provider_id": destino[0], "model_id": destino[1], "max_tokens": 999},
             headers=_superadmin_headers(),
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["ok"] is True
 
         row = client.portal.call(_fetch_motor_row, key)
-        assert row == ("http_openai_compat", "openai", "gpt-5.5", "active")
+        assert row == ("http_openai_compat", destino[0], destino[1], "active")
     finally:
         client.portal.call(_cleanup_motor, key)
 

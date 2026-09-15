@@ -30,6 +30,24 @@ async def _thot_active_facet_models_ids():
             return [r[0] for r in await cur.fetchall()]
 
 
+async def _modelo_real_de_thot():
+    """El model_id que facet_binding (via model_ref) le da hoy a thot en ESTA
+    base: en jax_memory_test local es el que haya dejado su historia, en la
+    base virgen de CI el de la semilla (gpt-5.6-terra desde PR-L ronda 1). El
+    test fija la regla -- se muestra el binding real, no un literal --, no un
+    nombre de modelo."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT m.model_id FROM facet_binding b JOIN model m ON m.id = b.model_ref "
+                "WHERE b.facet_key='thot' AND b.role='primary'"
+            )
+            (model_id,) = await cur.fetchone()
+            return model_id
+
+
 async def _set_active(ids, active):
     from db.connection import get_pool
     pool = await get_pool()
@@ -55,4 +73,6 @@ def test_list_keys_falls_back_to_facet_binding_when_legacy_table_has_no_active_r
 
     assert resp.status_code == 200, resp.text
     by_id = {p["id"]: p for p in resp.json()["providers"]}
-    assert by_id["openai"]["model"] == "gpt-5.5"  # NO "gpt-4o" (bug D0)
+    real = client.portal.call(_modelo_real_de_thot)
+    assert real != "gpt-4o"
+    assert by_id["openai"]["model"] == real  # el binding real, NO "gpt-4o" (bug D0)
