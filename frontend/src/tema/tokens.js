@@ -12,6 +12,7 @@ export const TOKENS = [
   'peligro', 'peligro-fondo', 'peligro-borde', 'peligro-solido', 'peligro-solido-hover',
   'exito', 'exito-fondo', 'exito-borde',
   'aviso', 'aviso-fondo', 'aviso-borde',
+  'obsoleto',
   'oro', 'oro-claro', 'oro-oscuro',
   'burbuja-usuario', 'modo-comando',
   'faceta-jax-local', 'faceta-jekyll', 'faceta-hyde', 'faceta-hipatia',
@@ -25,7 +26,7 @@ export const AA_UI = 3
 const FACETAS = TOKENS.filter((t) => t.startsWith('faceta-'))
 const TEXTOS_SOBRE_BASE = [
   'texto-fuerte', 'texto', 'texto-suave', 'texto-tenue', 'acento-texto',
-  'info', 'peligro', 'exito', 'aviso', 'oro', 'oro-claro', ...FACETAS,
+  'info', 'peligro', 'exito', 'aviso', 'obsoleto', 'oro', 'oro-claro', ...FACETAS,
 ]
 const FONDOS_BASE = ['fondo', 'superficie', 'hundido']
 
@@ -71,6 +72,19 @@ export const MIGRADOS = [
   'components/PasswordInput.jsx',
   'pages/Login.jsx',
   'pages/ResetPassword.jsx',
+  'pages/admin/AdminSmtp.jsx',
+  'pages/admin/AdminSettings.jsx',
+  'pages/Admin.jsx',
+  'components/admin/AdminSidebar.jsx',
+  'pages/admin/AdminUsers.jsx',
+  'pages/admin/AdminMotors.jsx',
+  'pages/admin/AdminFacetsModels.jsx',
+  'pages/admin/AdminModelCatalog.jsx',
+  'pages/admin/FormContratoDispatch.jsx',
+  'pages/admin/AdminRepository.jsx',
+  'pages/admin/AdminDashboard.jsx',
+  'pages/admin/AdminCosts.jsx',
+  'pages/admin/AdminFacetBindings.jsx',
 ]
 
 const RESPALDO = 'texto-suave'
@@ -80,4 +94,12 @@ const RESPALDO = 'texto-suave'
 export function colorToken(nombre, alfa = 1) {
   const token = TOKENS.includes(nombre) ? nombre : RESPALDO
   return `rgb(var(--${token}) / ${alfa})`
+}
+
+// Clave de faceta del backend (jax_local, hyde, ...) -> su token de identidad.
+// DALL·E no es una faceta: se pide 'faceta-imagen' directo. Una clave que el
+// tema no conoce cae en el mismo respaldo que colorToken.
+export function tokenDeFaceta(clave) {
+  const token = `faceta-${String(clave).replaceAll('_', '-')}`
+  return TOKENS.includes(token) ? token : RESPALDO
 }

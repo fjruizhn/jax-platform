@@ -238,6 +238,10 @@ export default {
   statUsersLocked: 'Bloqueados',
   statApiKeys: (c, t) => `API Keys: ${c}/${t}`,
   statRam: (pct) => `RAM: ${pct}%`,
+  // I-1 (revisión final PR 2, 2026-09-14): AdminDashboard.jsx tenía
+  // label="API Keys" fijo. "API Keys" es el mismo término en los dos
+  // idiomas (nombre técnico), como brandName o eyeKillSwitch.
+  statApiKeysLabel: 'API Keys',
 
   // Admin API keys
   adminKeyProvider: 'Proveedor',
@@ -409,6 +413,9 @@ export default {
   adminCreateSubmit: 'Crear',
   adminCreateCancel: 'Cancelar',
   adminDeleteConfirm: (email) => `¿Eliminar usuario ${email}?`,
+  // I-1 (revisión final PR 2, 2026-09-14): AdminUsers.jsx:100 tenía
+  // "({n} intentos)" escrito directo en el JSX.
+  adminUserFailedAttempts: (n) => `(${n} intentos)`,
 
   // Admin repository
   adminRepoTitle: 'Repositorio de Artefactos',
@@ -417,6 +424,11 @@ export default {
   adminRepoDocuments: 'Documentos',
   adminRepoImages: 'Imágenes',
   adminRepoEmpty: 'Sin archivos',
+  // I-1 (revisión final PR 2, 2026-09-14): encabezados de la tabla del
+  // repositorio (AdminRepository.jsx:79), antes fijos en español.
+  adminRepoColName: 'Nombre',
+  adminRepoColSize: 'Tamaño',
+  adminRepoColModified: 'Modificado',
   adminRepoDelete: 'Eliminar',
   adminRepoDownload: 'Descargar',
   adminRepoPreview: 'Preview',

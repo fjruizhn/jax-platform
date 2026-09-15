@@ -175,8 +175,35 @@ jobs:
             // HalEye.i18nLabels.test.jsx (nuevo: HalEye lee t.eye* de verdad, con un t de
             // mentira que prueba la conexión). Vistos en rojo antes de verde. Medido con
             // vitest run: 206.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 206) {
-              console.error("PISO ROTO: se esperaban 206 tests de vitest CORRIDOS y 0 fallidos.");
+            // 206 -> 209 el 2026-09-15 (tema con tokens, pr2): +1 tokenDeFaceta
+            // (contraste.test.js, Task 13) y +2 "deprecado" distinto de "degradado"
+            // (Ruling 28, Task 16b: +1 contraste.test.js -- token obsoleto con sus
+            // pares AA -- y +1 AdminModelCatalog.test.jsx -- deprecated pinta
+            // text-obsoleto, degraded se queda en text-aviso). Vistos en rojo antes
+            // de verde. Medido con vitest run: 209.
+            // 209 -> 217 el 2026-09-15 (ola de arreglos final del PR 2, I-1/M-1/M-2/M-3):
+            // +5 i18n (AdminRepository.test.jsx: encabezados en inglés + fecha en
+            // en-US; AdminUsers.test.jsx: "attempts" en inglés + fecha en en-US;
+            // AdminSidebar.test.jsx: versión desde package.json, no "v0.3" fijo)
+            // +1 AdminUsers.test.jsx (M-1: Desbloquear no lleva bg-aviso-fondo sobre
+            // la fila bloqueada, sí border-aviso-borde) +1 AdminUsers.test.jsx (M-2:
+            // el select de rol lleva border-borde-control y focus:border-foco) +1
+            // AdminRepository.test.jsx (M-3: el preview markdown no lleva prose-invert
+            // y pinta con text-texto). Vistos en rojo antes de verde. Medido con
+            // vitest run: 217.
+            // 217 -> 220 el 2026-09-15 (re-revisión acotada del PR 2, sin diferidos):
+            // AdminCosts.jsx:106-107 formateaba tokens_in/tokens_out con
+            // toLocaleString() sin locale -- seguía el locale del navegador, no el
+            // idioma activo. +3 AdminCosts.test.jsx (nuevo archivo): en inglés
+            // Number.prototype.toLocaleString se llama con 'en-US', en español (por
+            // defecto) con 'es-HN' (localeFor(lang), igual que las fechas de I-1), y
+            // el valor formateado sale con el agrupamiento de miles correcto. Nota:
+            // es-HN y en-US agrupan igual para enteros en este ICU (ambos usan coma
+            // de millar) -- por eso las dos primeras pruebas espían el argumento de
+            // locale en vez de comparar texto renderizado entre idiomas, que sería
+            // igual. Vistos en rojo antes de verde. Medido con vitest run: 220.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 220) {
+              console.error("PISO ROTO: se esperaban 220 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

@@ -103,6 +103,30 @@ function renderConModelos(propuesta = PROPUESTA) {
   return render(<I18nProvider><AdminModelCatalog /></I18nProvider>)
 }
 
+// Task 16b (Ruling 28): "deprecado" se ve distinto de "degradado" -- antes
+// los dos pintaban text-aviso y sólo los distinguía la palabra.
+const MODELO_DEPRECADO = {
+  id: 4, provider_id: 'deepseek', model_id: 'deepseek-v3', status: 'deprecated', source: 'provider_api',
+  max_tokens_param: 'max_tokens', max_output_tokens: 131072,
+}
+const MODELO_DEGRADADO = {
+  id: 5, provider_id: 'deepseek', model_id: 'deepseek-v3-mini', status: 'degraded', source: 'provider_api',
+  max_tokens_param: 'max_tokens', max_output_tokens: 131072,
+}
+
+describe('AdminModelCatalog -- "deprecado" se distingue de "degradado" (Ruling 28)', () => {
+  it('deprecated pinta text-obsoleto y degraded se queda en text-aviso', async () => {
+    api.get.mockImplementation(url => Promise.resolve(
+      url.startsWith('/admin/models/proposals')
+        ? { data: { proposals: [] } }
+        : { data: { models: [MODELO_DEPRECADO, MODELO_DEGRADADO] } },
+    ))
+    render(<I18nProvider><AdminModelCatalog /></I18nProvider>)
+    expect(await screen.findByText(es.adminModelsStatusDeprecated)).toHaveClass('text-obsoleto')
+    expect(screen.getByText(es.adminModelsStatusDegraded)).toHaveClass('text-aviso')
+  })
+})
+
 describe('AdminModelCatalog -- declarar contrato de dispatch (PR-L)', () => {
   it('la propuesta muestra su último rechazo guardado y ofrece declarar el contrato', async () => {
     renderConModelos({ ...PROPUESTA, ultimo_rechazo: RECHAZO_GUARDADO })

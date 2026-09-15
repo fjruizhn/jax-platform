@@ -11,10 +11,10 @@ import FormContratoDispatch from './FormContratoDispatch'
 const CODIGO_SIN_CONTRATO = 'modelo_sin_contrato_de_dispatch'
 
 const STATUS_COLOR = {
-  available: 'text-green-400',
-  degraded: 'text-yellow-400',
-  deprecated: 'text-orange-400',
-  gone: 'text-slate-500',
+  available: 'text-exito',
+  degraded: 'text-aviso',
+  deprecated: 'text-obsoleto',
+  gone: 'text-texto-tenue',
 }
 
 const REASON_KEY = {
@@ -110,13 +110,13 @@ export default function AdminModelCatalog() {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-sm font-semibold text-slate-200">{t.adminModelsTitle}</h2>
+        <h2 className="text-sm font-semibold text-texto">{t.adminModelsTitle}</h2>
         <div className="flex items-center gap-2">
-          {syncError && <span className="text-xs text-red-400">{t.adminModelsSyncError}</span>}
+          {syncError && <span className="text-xs text-peligro">{t.adminModelsSyncError}</span>}
           <button
             onClick={handleSync}
             disabled={syncing}
-            className="text-xs px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-semibold disabled:opacity-50 transition-colors"
+            className="text-xs px-3 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color font-semibold disabled:opacity-50 transition-colors"
           >
             {syncing ? t.adminModelsSyncing : t.adminModelsSync}
           </button>
@@ -130,7 +130,7 @@ export default function AdminModelCatalog() {
             <button
               type="button"
               onClick={() => abrirContrato(detalleDecideError.model_ref)}
-              className="ml-2 text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+              className="ml-2 text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors"
             >
               {t.adminContratoDeclarar}
             </button>
@@ -138,7 +138,7 @@ export default function AdminModelCatalog() {
         </AlertaError>
       )}
 
-      {contratoGuardado && <p role="status" className="text-xs text-green-400 mb-3">{t.adminContratoGuardado}</p>}
+      {contratoGuardado && <p role="status" className="text-xs text-exito mb-3">{t.adminContratoGuardado}</p>}
 
       {modeloContrato && (
         <FormContratoDispatch
@@ -151,40 +151,40 @@ export default function AdminModelCatalog() {
       )}
 
       {proposals.length > 0 && (
-        <div className="rounded-lg border border-purple-800/50 bg-purple-950/20 overflow-hidden mb-6">
-          <div className="px-4 py-2 border-b border-purple-800/50">
-            <h3 className="text-xs font-semibold text-purple-300 uppercase tracking-wider">{t.adminProposalsTitle}</h3>
+        <div className="rounded-lg border border-acento/40 bg-acento-fondo overflow-hidden mb-6">
+          <div className="px-4 py-2 border-b border-acento/40">
+            <h3 className="text-xs font-semibold text-acento-texto uppercase tracking-wider">{t.adminProposalsTitle}</h3>
           </div>
           <table className="w-full text-sm">
-            <thead className="bg-slate-900/60 border-b border-slate-800">
+            <thead className="bg-hundido border-b border-borde">
               <tr>
                 {[t.adminProposalsFacet, t.adminProposalsProposed, t.adminProposalsReason, t.adminProposalsDetail, ''].map(h => (
-                  <th key={h} className="text-left px-4 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">{h}</th>
+                  <th key={h} className="text-left px-4 py-2 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/50">
+            <tbody className="divide-y divide-borde/50">
               {proposals.map(p => {
                 const proposedModel = models.find(m => m.id === p.proposed_model_ref)
                 return (
-                  <tr key={p.id} className="bg-slate-900/50">
-                    <td className="px-4 py-3 font-medium text-slate-200">{p.facet_key}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-300">
+                  <tr key={p.id} className="bg-hundido">
+                    <td className="px-4 py-3 font-medium text-texto">{p.facet_key}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-texto">
                       {proposedModel ? `${proposedModel.provider_id}/${proposedModel.model_id}` : p.proposed_model_ref}
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-400">{t[REASON_KEY[p.reason]] || p.reason}</td>
-                    <td className="px-4 py-3 text-xs text-slate-500">
+                    <td className="px-4 py-3 text-xs text-texto-suave">{t[REASON_KEY[p.reason]] || p.reason}</td>
+                    <td className="px-4 py-3 text-xs text-texto-tenue">
                       {p.detail}
                       {p.ultimo_rechazo && (
                         // Rastro del último 409 del guard (model_catalog_audit, PR-L).
-                        <div className="mt-1 text-red-400">
+                        <div className="mt-1 text-peligro">
                           <span>{t.adminProposalsUltimoRechazo(p.ultimo_rechazo.performed_at?.slice(0, 16) || t.adminModelsNoData)}</span>{' '}
                           <span>{textoDeDetalleDeBinding(t, p.ultimo_rechazo) || p.ultimo_rechazo.code}</span>
                           {p.ultimo_rechazo.code === CODIGO_SIN_CONTRATO && p.ultimo_rechazo.model_ref != null && (
                             <button
                               type="button"
                               onClick={() => abrirContrato(p.ultimo_rechazo.model_ref)}
-                              className="ml-2 text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                              className="ml-2 text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors"
                             >
                               {t.adminContratoDeclarar}
                             </button>
@@ -197,14 +197,14 @@ export default function AdminModelCatalog() {
                         <button
                           onClick={() => decide(p.id, 'approve')}
                           disabled={!!deciding}
-                          className="text-xs px-2 py-1 rounded bg-green-900/40 hover:bg-green-800/50 text-green-300 disabled:opacity-40 transition-colors"
+                          className="text-xs px-2 py-1 rounded bg-exito-fondo text-exito border border-transparent hover:border-exito-borde disabled:opacity-40 transition-colors"
                         >
                           {deciding === `${p.id}-approve` ? t.adminProposalsApproving : t.adminProposalsApprove}
                         </button>
                         <button
                           onClick={() => decide(p.id, 'reject')}
                           disabled={!!deciding}
-                          className="text-xs px-2 py-1 rounded bg-red-900/40 hover:bg-red-800/50 text-red-300 disabled:opacity-40 transition-colors"
+                          className="text-xs px-2 py-1 rounded bg-peligro-fondo text-peligro border border-transparent hover:border-peligro-borde disabled:opacity-40 transition-colors"
                         >
                           {deciding === `${p.id}-reject` ? t.adminProposalsRejecting : t.adminProposalsReject}
                         </button>
@@ -218,50 +218,50 @@ export default function AdminModelCatalog() {
         </div>
       )}
       {proposals.length === 0 && (
-        <p className="text-xs text-slate-500 mb-6">{t.adminProposalsEmpty}</p>
+        <p className="text-xs text-texto-tenue mb-6">{t.adminProposalsEmpty}</p>
       )}
 
-      <div className="rounded-lg border border-slate-800 overflow-hidden">
+      <div className="rounded-lg border border-borde overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-slate-900 border-b border-slate-800">
+          <thead className="bg-hundido border-b border-borde">
             <tr>
               {[t.adminModelsProvider, t.adminModelsModelId, t.adminModelsAlias, t.adminModelsStatus,
                 t.adminModelsSource, t.adminModelsContext, t.adminModelsContrato, t.adminModelsPrice,
                 t.adminModelsSourceCheckedAt].map(h => (
-                <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">{h}</th>
+                <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/50">
+          <tbody className="divide-y divide-borde/50">
             {models.map(m => (
-              <tr key={m.id} className="bg-slate-900/50 hover:bg-slate-800/30 transition-colors">
-                <td className="px-4 py-3 font-medium text-slate-200">{m.provider_id}</td>
-                <td className="px-4 py-3 font-mono text-xs text-slate-300">{m.model_id}</td>
-                <td className="px-4 py-3 text-xs text-slate-500">{m.is_alias ? '↪' : ''}</td>
-                <td className={`px-4 py-3 text-xs font-semibold ${STATUS_COLOR[m.status] || 'text-slate-400'}`}>
+              <tr key={m.id} className="bg-hundido hover:bg-superficie transition-colors">
+                <td className="px-4 py-3 font-medium text-texto">{m.provider_id}</td>
+                <td className="px-4 py-3 font-mono text-xs text-texto">{m.model_id}</td>
+                <td className="px-4 py-3 text-xs text-texto-tenue">{m.is_alias ? '↪' : ''}</td>
+                <td className={`px-4 py-3 text-xs font-semibold ${STATUS_COLOR[m.status] || 'text-texto-suave'}`}>
                   {statusLabel(m.status)}
-                  {m.consecutive_misses > 0 && <span className="text-slate-600"> ({m.consecutive_misses})</span>}
+                  {m.consecutive_misses > 0 && <span className="text-texto-tenue"> ({m.consecutive_misses})</span>}
                 </td>
-                <td className="px-4 py-3 text-xs text-slate-500">{sourceLabel(m.source)}</td>
-                <td className="px-4 py-3 text-xs text-slate-400">{m.context_window ?? t.adminModelsNoData}</td>
+                <td className="px-4 py-3 text-xs text-texto-tenue">{sourceLabel(m.source)}</td>
+                <td className="px-4 py-3 text-xs text-texto-suave">{m.context_window ?? t.adminModelsNoData}</td>
                 <td className="px-4 py-3 text-xs">
                   {m.max_tokens_param && m.max_output_tokens != null
-                    ? <span className="font-mono text-slate-400">{`${m.max_tokens_param} · ${m.max_output_tokens}`}</span>
-                    : <span className="text-orange-400">{t.adminModelsContratoSinDeclarar}</span>}
+                    ? <span className="font-mono text-texto-suave">{`${m.max_tokens_param} · ${m.max_output_tokens}`}</span>
+                    : <span className="text-aviso">{t.adminModelsContratoSinDeclarar}</span>}
                   <button
                     type="button"
                     onClick={() => abrirContrato(m.id)}
-                    className="ml-2 text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                    className="ml-2 text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors"
                   >
                     {t.adminContratoDeclarar}
                   </button>
                 </td>
-                <td className="px-4 py-3 text-xs text-slate-400 font-mono">
+                <td className="px-4 py-3 text-xs text-texto-suave font-mono">
                   {m.price_input_per_1m_usd != null || m.price_output_per_1m_usd != null
                     ? `$${m.price_input_per_1m_usd ?? '?'} / $${m.price_output_per_1m_usd ?? '?'}`
                     : t.adminModelsNoData}
                 </td>
-                <td className="px-4 py-3 text-[10px] text-slate-600">{m.source_checked_at?.slice(0, 16) || t.adminModelsNoData}</td>
+                <td className="px-4 py-3 text-[10px] text-texto-tenue">{m.source_checked_at?.slice(0, 16) || t.adminModelsNoData}</td>
               </tr>
             ))}
           </tbody>

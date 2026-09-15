@@ -88,17 +88,17 @@ export default function AdminFacetsModels() {
 
   return (
     <div>
-      <h1 className="text-xl font-bold text-slate-100 mb-6">{t.adminFacetsModels}</h1>
+      <h1 className="text-xl font-bold text-texto-fuerte mb-6">{t.adminFacetsModels}</h1>
 
-      <div className="flex gap-1 border-b border-slate-800 mb-6">
+      <div className="flex gap-1 border-b border-borde mb-6">
         {TABS.map(tab => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
               activeTab === tab.key
-                ? 'border-purple-500 text-purple-300'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'border-acento text-acento-texto'
+                : 'border-transparent text-texto-suave hover:text-texto'
             }`}
           >
             {t[tab.labelKey]}
@@ -111,7 +111,7 @@ export default function AdminFacetsModels() {
       {activeTab === 'motors' && <AdminMotors />}
 
       {activeTab === 'providers' && (
-      <div className="rounded-lg border border-slate-800 overflow-hidden">
+      <div className="rounded-lg border border-borde overflow-hidden">
         {/* Faceta/modelo NO viven acá — Bloque D los movió a la pestaña
             "Facetas y Bindings" (facet_binding, fuente real). Esta tabla
             era antes la UI de facet_models (legacy): mostraba y editaba un
@@ -119,24 +119,24 @@ export default function AdminFacetsModels() {
             invocar — dos pestañas podían afirmar cosas distintas del mismo
             hecho. Esta pestaña es solo identidad de proveedor + credencial. */}
         <table className="w-full text-sm">
-          <thead className="bg-slate-900 border-b border-slate-800">
+          <thead className="bg-hundido border-b border-borde">
             <tr>
               {[t.adminKeyProvider, t.adminKeyValue, t.adminKeyStatus, ''].map(h => (
-                <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">{h}</th>
+                <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/50">
+          <tbody className="divide-y divide-borde/50">
             {providers.map(p => {
               const res = testResult[p.id]
               return (
-                <tr key={p.id} className="bg-slate-900/50 hover:bg-slate-800/30 transition-colors">
-                  <td className="px-4 py-3 font-medium text-slate-200">{p.name}</td>
+                <tr key={p.id} className="bg-hundido hover:bg-superficie transition-colors">
+                  <td className="px-4 py-3 font-medium text-texto">{p.name}</td>
                   <td className="px-4 py-3">
                     {p.has_key ? (
-                      <span className="font-mono text-xs text-slate-400">••••{p.key_last4}</span>
+                      <span className="font-mono text-xs text-texto-suave">••••{p.key_last4}</span>
                     ) : (
-                      <span className="text-xs text-red-400">{t.adminKeyMissing}</span>
+                      <span className="text-xs text-peligro">{t.adminKeyMissing}</span>
                     )}
                   </td>
                   <td className="px-4 py-3">
@@ -146,22 +146,22 @@ export default function AdminFacetsModels() {
                       const mostRecent = activeCreds[0]
                       if (res) {
                         return (
-                          <span className={`text-xs font-semibold ${res.ok ? 'text-green-400' : 'text-red-400'}`}>
+                          <span className={`text-xs font-semibold ${res.ok ? 'text-exito' : 'text-peligro'}`}>
                             {res.ok ? `${t.adminKeyOk} ${res.latency_ms ? t.adminKeyLatency(res.latency_ms) : ''}` : `${t.adminKeyFail}: ${res.error || ''}`}
                           </span>
                         )
                       }
                       if (!activeCreds.length) {
-                        return <span className="text-xs text-slate-500">○ {t.adminKeyNoActive}</span>
+                        return <span className="text-xs text-texto-tenue">○ {t.adminKeyNoActive}</span>
                       }
                       return (
                         <div className="flex flex-col gap-0.5">
-                          <span className={`text-xs ${mostRecent.last_health_status === 'ok' ? 'text-green-400' : mostRecent.last_health_status === 'failed' ? 'text-red-400' : 'text-slate-400'}`}>
+                          <span className={`text-xs ${mostRecent.last_health_status === 'ok' ? 'text-exito' : mostRecent.last_health_status === 'failed' ? 'text-peligro' : 'text-texto-suave'}`}>
                             ● {t.adminKeyActiveCount(activeCreds.length)}
                             {mostRecent.last_health_status !== 'unknown' && ` · ${mostRecent.last_health_status}`}
                           </span>
                           {mostRecent.last_verified_at && (
-                            <span className="text-[10px] text-slate-600">{t.adminKeyLastVerified}: {mostRecent.last_verified_at}</span>
+                            <span className="text-[10px] text-texto-tenue">{t.adminKeyLastVerified}: {mostRecent.last_verified_at}</span>
                           )}
                         </div>
                       )
@@ -172,20 +172,20 @@ export default function AdminFacetsModels() {
                       <button
                         onClick={() => handleTest(p.id)}
                         disabled={testing[p.id] || !p.has_key}
-                        className="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 disabled:opacity-40 transition-colors"
+                        className="text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte disabled:opacity-40 transition-colors"
                       >
                         {testing[p.id] ? t.adminKeyTesting : t.adminKeyTest}
                       </button>
                       <button
                         onClick={() => { setRotating(p.id); setNewKey('') }}
-                        className="text-xs px-2 py-1 rounded bg-purple-900/50 hover:bg-purple-800/50 text-purple-300 transition-colors"
+                        className="text-xs px-2 py-1 rounded bg-acento-fondo text-acento-texto border border-transparent hover:border-acento transition-colors"
                       >
                         {t.adminKeyRotate}
                       </button>
                       <button
                         onClick={() => setRevokeConfirm(p.id)}
                         disabled={revoking === p.id || !(credentialsById[p.id]?.credentials || []).some(c => c.state === 'active')}
-                        className="text-xs px-2 py-1 rounded bg-red-900/40 hover:bg-red-800/50 text-red-300 disabled:opacity-30 transition-colors"
+                        className="text-xs px-2 py-1 rounded bg-peligro-fondo text-peligro border border-transparent hover:border-peligro-borde disabled:opacity-30 transition-colors"
                       >
                         {revoking === p.id ? t.adminKeyRevoking : t.adminKeyRevoke}
                       </button>
@@ -201,9 +201,9 @@ export default function AdminFacetsModels() {
 
       {/* Modal rotación */}
       {rotating && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-md shadow-2xl">
-            <h2 className="text-sm font-semibold text-slate-200 mb-4">
+        <div className="fixed inset-0 bg-fondo/70 flex items-center justify-center z-50">
+          <div className="bg-superficie border border-borde rounded-xl p-6 w-full max-w-md shadow-2xl">
+            <h2 className="text-sm font-semibold text-texto mb-4">
               {t.adminKeyEnter} {providers.find(p => p.id === rotating)?.name}
             </h2>
             <PasswordInput
@@ -211,14 +211,14 @@ export default function AdminFacetsModels() {
               onChange={e => setNewKey(e.target.value)}
               placeholder={t.adminKeyNewValue}
               wrapperClassName="mb-4"
-              className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-purple-500 font-mono"
+              className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco font-mono"
             />
             <div className="flex gap-2 justify-end">
-              <button onClick={() => setRotating(null)} className="px-3 py-1.5 rounded-lg text-sm text-slate-400 hover:text-slate-200 transition-colors">{t.adminCreateCancel}</button>
+              <button onClick={() => setRotating(null)} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminCreateCancel}</button>
               <button
                 onClick={() => handleRotate(rotating)}
                 disabled={saving || !newKey.trim()}
-                className="px-4 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold disabled:opacity-50 transition-colors"
+                className="px-4 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold disabled:opacity-50 transition-colors"
               >
                 {saving ? t.attachUploading : t.adminKeySave}
               </button>
@@ -229,16 +229,16 @@ export default function AdminFacetsModels() {
 
       {/* Modal confirmación de revocación — corte inmediato, sin gracia */}
       {revokeConfirm && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-md shadow-2xl">
-            <h2 className="text-sm font-semibold text-red-300 mb-2">{t.adminKeyRevokeConfirmTitle}</h2>
-            <p className="text-xs text-slate-400 mb-4">{t.adminKeyRevokeConfirmBody}</p>
+        <div className="fixed inset-0 bg-fondo/70 flex items-center justify-center z-50">
+          <div className="bg-superficie border border-borde rounded-xl p-6 w-full max-w-md shadow-2xl">
+            <h2 className="text-sm font-semibold text-peligro mb-2">{t.adminKeyRevokeConfirmTitle}</h2>
+            <p className="text-xs text-texto-suave mb-4">{t.adminKeyRevokeConfirmBody}</p>
             <div className="flex gap-2 justify-end">
-              <button onClick={() => setRevokeConfirm(null)} className="px-3 py-1.5 rounded-lg text-sm text-slate-400 hover:text-slate-200 transition-colors">{t.adminCreateCancel}</button>
+              <button onClick={() => setRevokeConfirm(null)} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminCreateCancel}</button>
               <button
                 onClick={() => handleRevoke(revokeConfirm)}
                 disabled={revoking === revokeConfirm}
-                className="px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-semibold disabled:opacity-50 transition-colors"
+                className="px-4 py-1.5 rounded-lg bg-peligro-solido hover:bg-peligro-solido-hover text-sobre-color text-sm font-semibold disabled:opacity-50 transition-colors"
               >
                 {t.adminKeyRevoke}
               </button>
