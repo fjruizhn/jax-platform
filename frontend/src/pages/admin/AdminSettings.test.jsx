@@ -125,4 +125,37 @@ describe('AdminSettings -- los errores del guardado se ven', () => {
     await waitFor(() => expect(localStorage.getItem('jax_theme_default')).toBe('light'))
     expect(document.documentElement.getAttribute('data-tema')).toBe('claro')
   })
+
+  // Decisión de Fernando (2026-09-14, brief fix-vivo-brief.md §B): guardar el
+  // predeterminado en Configuración también fija la elección del propio
+  // admin -- su navegador cambia de tema aunque tuviera otra elección.
+  it('guardar el predeterminado fija también la elección del admin, aunque tuviera otra', async () => {
+    localStorage.setItem('jax_theme', 'dark')
+    api.get.mockResolvedValue({ data: { config: [
+      { key: 'system_name', value: 'Axioma' },
+      { key: 'theme_default', value: 'light' },
+    ] } })
+    api.put.mockResolvedValue({ data: { ok: true } })
+    renderSettings()
+    await guardar()
+    await waitFor(() => expect(useTema.getState().theme).toBe('light'))
+    expect(localStorage.getItem('jax_theme')).toBe('light')
+    expect(localStorage.getItem('jax_theme_default')).toBe('light')
+    expect(document.documentElement.getAttribute('data-tema')).toBe('claro')
+  })
+
+  it('un PUT que falla no cambia el tema ni la elección', async () => {
+    localStorage.setItem('jax_theme', 'dark')
+    api.get.mockResolvedValue({ data: { config: [
+      { key: 'system_name', value: 'Axioma' },
+      { key: 'theme_default', value: 'light' },
+    ] } })
+    api.put.mockRejectedValue(rechazo(400, 'config_clave_reservada'))
+    renderSettings()
+    await guardar()
+    await screen.findByRole('alert')
+    expect(localStorage.getItem('jax_theme')).toBe('dark')
+    expect(localStorage.getItem('jax_theme_default')).toBeNull()
+    expect(useTema.getState().theme).toBe('dark')
+  })
 })

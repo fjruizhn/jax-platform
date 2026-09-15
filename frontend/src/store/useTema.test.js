@@ -68,6 +68,29 @@ describe('useTema', () => {
   // useTema.js tira y la pantalla de Login queda en blanco. Se reimporta el
   // módulo fresco (vi.resetModules) con Storage.prototype parcheada para
   // lanzar, para que temaInicial() corra bajo el bloqueo real.
+  // Decisión de Fernando (2026-09-14, brief fix-vivo-brief.md §B): guardar el
+  // predeterminado en Configuración también fija la elección del propio
+  // admin, aunque tuviera otra. sincronizarPredeterminado (al cargar la app)
+  // NO cambia: sigue sin pisar la elección de nadie.
+  it('fijarPredeterminadoComoEleccion pisa una elección existente', () => {
+    localStorage.setItem('jax_theme', 'dark')
+    useTema.getState().fijarPredeterminadoComoEleccion('light')
+    expect(useTema.getState().theme).toBe('light')
+    expect(localStorage.getItem('jax_theme')).toBe('light')
+    expect(localStorage.getItem('jax_theme_default')).toBe('light')
+    expect(useTema.getState().predeterminado).toBe('light')
+    expect(html().getAttribute('data-tema')).toBe('claro')
+    expect(html().classList.contains('light-mode')).toBe(true)
+  })
+
+  it('fijarPredeterminadoComoEleccion ignora un valor fuera de lista', () => {
+    localStorage.setItem('jax_theme', 'dark')
+    useTema.getState().fijarPredeterminadoComoEleccion('<b>claro</b>')
+    expect(useTema.getState().theme).toBe('dark')
+    expect(localStorage.getItem('jax_theme')).toBe('dark')
+    expect(localStorage.getItem('jax_theme_default')).toBeNull()
+  })
+
   it('con localStorage bloqueado, el store arranca en dark y toggleTheme no lanza', async () => {
     const getItemOriginal = Storage.prototype.getItem
     const setItemOriginal = Storage.prototype.setItem
