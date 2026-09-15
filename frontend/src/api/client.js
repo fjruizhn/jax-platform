@@ -19,6 +19,27 @@ const SESION_INVALIDA = 'sesion_invalida'
 // credenciales. Estos tres nunca deben reintentar ni tocar el store acá.
 const ENDPOINTS_DE_AUTH_SIN_REINTENTO = ['/auth/login', '/auth/refresh', '/auth/logout']
 
+// Minor 5 del review final de la etapa 4 (2026-09-15, Ruling U27): el cambio de
+// la propia contraseña sube token_version. Un 401 de un poll que salió con el
+// access viejo mientras el cambio está en vuelo NO debe ir a /auth/refresh: el
+// navegador puede no haber aplicado todavía la cookie de refresh nueva, el
+// refresh falla y la pestaña que cambió la contraseña queda deslogueada. Se
+// espera la promesa del cambio (store.cambioDePasswordEnCurso) y se reintenta
+// una vez con el token nuevo. Nunca para el propio POST: esperaría su propia
+// promesa y no terminaría nunca.
+const CAMBIO_DE_PASSWORD = '/auth/me/password'
+
+async function tokenTrasCambioDePassword(config) {
+  const cambio = useJaxStore.getState().cambioDePasswordEnCurso
+  if (!cambio || config?.url === CAMBIO_DE_PASSWORD) return null
+  try {
+    await cambio
+  } catch {
+    return null // el cambio falló: camino normal del refresh
+  }
+  return useJaxStore.getState().token
+}
+
 const api = axios.create({
   baseURL: '/api',
   withCredentials: true,
@@ -37,6 +58,12 @@ api.interceptors.response.use(
   async (err) => {
     const esAuthSinReintento = ENDPOINTS_DE_AUTH_SIN_REINTENTO.includes(err.config?.url)
     if (err.response?.status === 401 && !err.config?._retried && !esAuthSinReintento) {
+      const tokenNuevo = await tokenTrasCambioDePassword(err.config)
+      if (tokenNuevo) {
+        err.config._retried = true
+        err.config.headers.Authorization = `Bearer ${tokenNuevo}`
+        return axios(err.config)
+      }
       try {
         const { data } = await axios.post('/api/auth/refresh', {}, { withCredentials: true })
         useJaxStore.setState({ token: data.access_token })

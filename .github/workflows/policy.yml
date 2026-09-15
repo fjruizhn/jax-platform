@@ -321,8 +321,19 @@ jobs:
             // vuelta, y 1 de que el inert local ya no existe). Vistos en rojo
             // antes de verde (mutaciones de cada línea de Dialogo.jsx). Medido
             // con vitest run: 302 passed en 47 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 302) {
-              console.error("PISO ROTO: se esperaban 302 tests de vitest CORRIDOS y 0 fallidos.");
+            // 302 -> 309 el 2026-09-15 (review final de la etapa 4, minor 5: la
+            // carrera del token tras cambiar la contraseña): +5 api/client.test.js
+            // (un 401 con un cambio en vuelo espera la promesa y reintenta UNA vez
+            // con el token nuevo sin /auth/refresh; si el cambio falla cae al
+            // refresh; el 401 del propio POST /auth/me/password no espera su
+            // propia promesa -- sin deadlock --; un request ya reintentado no
+            // reintenta -- sin bucle --; sin cambio en vuelo el refresh no cambia)
+            // +2 store/useJaxStore.test.js (cambioDePasswordEnCurso se expone
+            // mientras dura y se limpia al terminar, también si falla). Vistos en
+            // rojo antes de verde (mutaciones de cada guarda). Medido con vitest
+            // run: 309 passed en 47 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 309) {
+              console.error("PISO ROTO: se esperaban 309 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
