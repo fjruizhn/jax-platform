@@ -122,16 +122,12 @@ const PROHIBIDOS = [
   ['color con nombre en SVG o estilo', /(?:fill|stroke)=["'](?:white|black)["']|:\s*['"](?:white|black)['"]/g],
 ]
 
-describe('uso de tokens en los archivos migrados', () => {
-  it('los archivos migrados pintan sólo con tokens', () => {
+describe('uso de tokens en todo src', () => {
+  it('todo src pinta sólo con tokens', () => {
     expect(Object.keys(porRuta).length).toBeGreaterThan(40) // verde sobre cero archivos no vale
     const hallazgos = []
     for (const ruta of Object.keys(porRuta)) {
       const codigo = porRuta[ruta]
-      if (codigo === undefined) {
-        hallazgos.push(`${ruta}: no existe (¿ruta mal escrita?)`)
-        continue
-      }
       for (const [que, patron] of PROHIBIDOS) {
         for (const m of codigo.match(patron) || []) {
           if (PERMITIDOS_CRUDOS.some((p) => p.archivo === ruta && p.texto === m)) continue
@@ -159,7 +155,7 @@ describe('uso de tokens en los archivos migrados', () => {
 // Hojas de estilo (spec §6.4): ninguna fuera de tokens.css pinta con hex/rgb
 // literal. Se leen por fs porque `?raw` de CSS llega vacío en vitest.
 describe('uso de tokens en las hojas de estilo', () => {
-  it('ninguna hoja de estilo fuera de tokens.css tiene hex ni rgb literal', () => {
+  it('ninguna hoja de estilo fuera de tokens.css tiene hex, rgb literal ni light-mode', () => {
     const raiz = new URL('../', import.meta.url)
     const hojas = readdirSync(raiz, { recursive: true })
       .filter((f) => f.endsWith('.css') && f.replaceAll('\\', '/') !== 'tema/tokens.css')
@@ -167,7 +163,7 @@ describe('uso de tokens en las hojas de estilo', () => {
     const hallazgos = []
     for (const hoja of hojas) {
       const css = readFileSync(new URL(hoja, raiz), 'utf8')
-      for (const m of css.match(/#[0-9a-fA-F]{3,8}(?![0-9a-zA-Z])|rgba?\(\s*\d/g) || []) hallazgos.push(`${hoja}: «${m}»`)
+      for (const m of css.match(/#[0-9a-fA-F]{3,8}(?![0-9a-zA-Z])|rgba?\(\s*\d|light-mode/g) || []) hallazgos.push(`${hoja}: «${m}»`)
     }
     expect(hallazgos).toEqual([])
   })
