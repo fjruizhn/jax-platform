@@ -151,6 +151,11 @@ export const useJaxStore = create((set, get) => {
   // un 401 para reintentar con el token nuevo en vez de llamar a /auth/refresh
   // con la cookie vieja (que ya no vale tras subir token_version).
   cambioDePasswordEnCurso: null,
+  // Promesa del logout mientras está en vuelo, o null (fix round 1 del review
+  // de dd47d82). Un segundo logout() la reusa (un doble clic no envía dos
+  // POST), los botones de salir quedan ocupados, y api/client.js no convierte
+  // en aviso un 401 que llegue mientras tanto.
+  saliendo: null,
 
   restoreSession: async () => {
     try {
@@ -188,14 +193,24 @@ export const useJaxStore = create((set, get) => {
   // logout. Si el pedido falla (red), la sesión local se limpia igual y no se
   // reintenta (/auth/logout está en ENDPOINTS_DE_AUTH_SIN_REINTENTO). El
   // timeout evita que una red colgada deje a la persona sin poder salir.
-  logout: async () => {
-    try {
-      await api.post('/auth/logout', {}, { timeout: LOGOUT_TIMEOUT_MS })
-    } catch {
-      // sin sesión viva en el servidor o sin red: igual se sale localmente
-    }
-    set({ token: null, user: null, messages: [], _pipelineCompletedShown: new Set() })
-    bumpSessionEpoch()
+  //
+  // Fix round 1 (review de dd47d82): una sola salida en vuelo (`saliendo`), y
+  // avisoSesion se borra -- un poll que llegó al servidor después del logout
+  // no debe dejar en Login "se inició sesión en otro lugar".
+  logout: () => {
+    const enCurso = get().saliendo
+    if (enCurso) return enCurso
+    const promesa = (async () => {
+      try {
+        await api.post('/auth/logout', {}, { timeout: LOGOUT_TIMEOUT_MS })
+      } catch {
+        // sin sesión viva en el servidor o sin red: igual se sale localmente
+      }
+      set({ token: null, user: null, messages: [], _pipelineCompletedShown: new Set(), avisoSesion: null, saliendo: null })
+      bumpSessionEpoch()
+    })()
+    set({ saliendo: promesa })
+    return promesa
     // No hace falta limpiar jax_pending_cmds acá a mano: está scopeado por
     // owner (ver _loadPendingIds arriba), así que un login de otro usuario
     // ya lo lee vacío solo. Borrarlo acá de más perdería, sin necesidad, los

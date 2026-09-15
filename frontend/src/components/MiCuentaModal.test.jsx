@@ -9,8 +9,9 @@ const cambiarMock = vi.fn()
 // addToast (aviso al terminar).
 const logoutMock = vi.fn()
 const addToastMock = vi.fn()
+let saliendo = null
 vi.mock('../store/useJaxStore', () => ({
-  useJaxStore: (selector) => selector({ cambiarMiPassword: cambiarMock, logout: logoutMock, addToast: addToastMock }),
+  useJaxStore: (selector) => selector({ cambiarMiPassword: cambiarMock, logout: logoutMock, addToast: addToastMock, saliendo }),
 }))
 
 import MiCuentaModal from './MiCuentaModal'
@@ -28,6 +29,7 @@ beforeEach(() => {
   cambiarMock.mockReset()
   logoutMock.mockReset()
   addToastMock.mockReset()
+  saliendo = null
   localStorage.clear()
 })
 
@@ -137,6 +139,14 @@ describe('MiCuentaModal obligatorio (cambio exigido por el admin, U34)', () => {
     renderObligatorio()
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }))
     expect(logoutMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('con el logout en vuelo, "Cerrar sesión" está deshabilitado y aria-busy', () => {
+    saliendo = new Promise(() => {})
+    renderObligatorio()
+    const boton = screen.getByRole('button', { name: 'Cerrar sesión' })
+    expect(boton).toBeDisabled()
+    expect(boton).toHaveAttribute('aria-busy', 'true')
   })
 
   it('la misma contraseña que fijó el admin se rechaza traducida', async () => {

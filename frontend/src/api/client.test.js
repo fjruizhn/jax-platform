@@ -205,3 +205,30 @@ describe('client.js -- 403 cambio_de_password_requerido (U34)', () => {
     expect(setStateMock).not.toHaveBeenCalled()
   })
 })
+
+// Fix round 1 (review de dd47d82): un 401 durante o después de un logout
+// VOLUNTARIO no es "la sesión se cerró en otro lugar": sin refresh y sin aviso.
+// El caso de un login más nuevo en otro lado (misma época, sin logout en
+// vuelo) sigue mostrando el aviso: lo cubre 'client.js -- aviso de por qué se
+// cerró la sesión'.
+describe('client.js -- 401 durante o después de un logout voluntario', () => {
+  it('cada pedido lleva la época de sesión con la que salió', () => {
+    getStateMock.mockReturnValue({ token: 't', _sessionEpoch: 7 })
+    const onRequest = requestUse.mock.calls[0][0]
+    expect(onRequest({ headers: {} })._epoch).toBe(7)
+  })
+
+  it('con el logout en vuelo: sin refresh ni aviso', async () => {
+    getStateMock.mockReturnValue({ token: 't', _sessionEpoch: 3, saliendo: new Promise(() => {}) })
+    await expect(onRejected({ ...err401('sesion_invalida'), config: { headers: {}, _epoch: 3 } })).rejects.toBeTruthy()
+    expect(axiosPostMock).not.toHaveBeenCalled()
+    expect(setStateMock).not.toHaveBeenCalled()
+  })
+
+  it('con la época ya cambiada (el logout terminó): sin refresh ni aviso', async () => {
+    getStateMock.mockReturnValue({ token: null, _sessionEpoch: 4, saliendo: null })
+    await expect(onRejected({ ...err401('sesion_invalida'), config: { headers: {}, _epoch: 3 } })).rejects.toBeTruthy()
+    expect(axiosPostMock).not.toHaveBeenCalled()
+    expect(setStateMock).not.toHaveBeenCalled()
+  })
+})

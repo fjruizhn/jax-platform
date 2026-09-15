@@ -27,7 +27,10 @@ describe('BottomBar -- botón Enviar en modo chat', () => {
   })
 
   it('usa el token de la faceta activa en borde y texto, sin fondo de faceta', () => {
-    renderBar()
+    const { container } = renderBar()
+    // U34: el campo del chat es el punto de entrada del foco tras el cambio
+    // obligatorio de contraseña (RequireAuth busca [data-foco-inicial]).
+    expect(container.querySelector('[data-foco-inicial]')).toBe(container.querySelector('textarea'))
     const enviar = screen.getByRole('button', { name: 'Enviar' })
     const estilo = enviar.getAttribute('style') || ''
     expect(estilo).toContain('border-color: rgb(var(--faceta-hyde) / 1)')

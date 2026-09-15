@@ -133,6 +133,29 @@ describe('logout', () => {
     expect(useJaxStore.getState().user).toBeNull()
   })
 
+  it('un doble clic envía un solo POST: la segunda llamada reusa la promesa en vuelo', async () => {
+    let resolver
+    api.post.mockReturnValue(new Promise((r) => { resolver = r }))
+    const primera = useJaxStore.getState().logout()
+    const segunda = useJaxStore.getState().logout()
+    expect(segunda).toBe(primera)
+    expect(useJaxStore.getState().saliendo).toBe(primera)
+    resolver({ data: { ok: true } })
+    await primera
+    expect(api.post).toHaveBeenCalledTimes(1)
+    expect(useJaxStore.getState().saliendo).toBeNull()
+  })
+
+  // Fix round 1 (review de dd47d82): un poll que llegó al servidor después del
+  // logout daba 401 -> refresh fallido -> avisoSesion 'sesion_invalida' ("se
+  // inició sesión en otro lugar") en un logout voluntario.
+  it('borra avisoSesion: un logout voluntario no deja aviso en Login', async () => {
+    useJaxStore.setState({ avisoSesion: 'sesion_invalida' })
+    api.post.mockResolvedValue({ data: { ok: true } })
+    await useJaxStore.getState().logout()
+    expect(useJaxStore.getState().avisoSesion).toBeNull()
+  })
+
   it('si el pedido falla, limpia igual y no reintenta', async () => {
     api.post.mockRejectedValue(new Error('red caída'))
     await useJaxStore.getState().logout()

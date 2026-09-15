@@ -23,6 +23,7 @@ export default function MiCuentaModal({ onCerrar, obligatorio = false }) {
   const { t } = useI18n()
   const cambiarMiPassword = useJaxStore((s) => s.cambiarMiPassword)
   const logout = useJaxStore((s) => s.logout)
+  const saliendo = useJaxStore((s) => !!s.saliendo)
   const addToast = useJaxStore((s) => s.addToast)
   const [actual, setActual] = useState('')
   const [nueva, setNueva] = useState('')
@@ -98,7 +99,7 @@ export default function MiCuentaModal({ onCerrar, obligatorio = false }) {
             )}
             <div className="flex gap-2 justify-end pt-2">
               {obligatorio
-                ? <button type="button" onClick={() => logout()} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-peligro transition-colors">{t.forcedChangeLogout}</button>
+                ? <button type="button" onClick={() => logout()} disabled={saliendo} aria-busy={saliendo} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-peligro disabled:opacity-50 transition-colors">{t.forcedChangeLogout}</button>
                 : <button type="button" onClick={onCerrar} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminCreateCancel}</button>}
               <button type="submit" disabled={enviando} className="px-4 py-1.5 rounded-lg bg-accion hover:bg-accion-hover text-sobre-color text-sm font-semibold disabled:opacity-50 transition-colors">
                 {enviando ? t.myAccountSubmitting : t.myAccountSubmit}

@@ -533,6 +533,25 @@ describe('AdminUsers — fijar contraseña', () => {
     })
   })
 
+  // Fix round 1 (review de dd47d82): el sentido "abrir Fijar cierra el otro"
+  // sólo tenía el caso de Editar.
+  it.each([
+    ['Dar de baja', 'confirmacion-suma-titulo'],
+    ['Historial', 'historial-titulo'],
+    ['+ Nuevo usuario', null],
+  ])('con "%s" abierto, abrir "Fijar contraseña" lo cierra y deja un solo diálogo', async (boton) => {
+    renderUsers()
+    const botonFijar = await screen.findByRole('button', { name: 'Fijar contraseña' })
+    fireEvent.click(screen.getByRole('button', { name: boton }))
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    fireEvent.click(botonFijar)
+    await waitFor(() => {
+      const dialogos = screen.getAllByRole('dialog')
+      expect(dialogos).toHaveLength(1)
+      expect(dialogos[0]).toHaveAttribute('aria-labelledby', 'fijar-password-titulo')
+    })
+  })
+
   it('un éxito tardío no cierra el "Fijar contraseña" de OTRO usuario', async () => {
     servirGet([SUPERADMIN, OTRO])
     let resolverX

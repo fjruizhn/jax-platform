@@ -72,6 +72,8 @@ const BOTON_NEUTRO = `${BOTON} hover:text-texto`
 export default function BarraUsuario() {
   const user = useJaxStore((s) => s.user)
   const logout = useJaxStore((s) => s.logout)
+  // Logout en vuelo: el botón queda ocupado (un doble clic no envía dos).
+  const saliendo = useJaxStore((s) => !!s.saliendo)
   const { theme, toggleTheme } = useTema()
   const { lang, setLang, t } = useI18n()
   const [miCuenta, setMiCuenta] = useState(false)
@@ -115,10 +117,12 @@ export default function BarraUsuario() {
 
         <button
           type="button"
-          onClick={logout}
+          onClick={() => logout()}
+          disabled={saliendo}
+          aria-busy={saliendo}
           aria-label={t.logout}
           title={t.logout}
-          className={`${BOTON} hover:text-peligro`}
+          className={`${BOTON} hover:text-peligro disabled:opacity-50`}
         >
           <IconoSalir />
         </button>

@@ -395,8 +395,21 @@ jobs:
             // usuario) +1 ResetPassword.test.jsx (F5). Vistos en rojo antes de
             // verde (los 2 del WebSocket, bajo su mutación). Medido dos veces
             // con vitest run: 368 passed en 51 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 368) {
-              console.error("PISO ROTO: se esperaban 368 tests de vitest CORRIDOS y 0 fallidos.");
+            // 368 -> 379 el 2026-09-15 (fix round 1 de la Task 4 de Fijar
+            // contraseña, review de dd47d82): +3 AdminUsers.test.jsx (con
+            // baja, historial o alta abiertos, abrir "Fijar contraseña" los
+            // cierra -- rojos bajo a1/a3/a4) +2 useJaxStore.test.js (doble
+            // logout = un solo POST y la misma promesa `saliendo`; logout
+            // borra avisoSesion) +3 client.test.js (cada pedido lleva su
+            // _epoch; un 401 con el logout en vuelo o de una época vieja no
+            // refresca ni avisa) +1 BarraUsuario.test.jsx y +1
+            // MiCuentaModal.test.jsx (botón de salir disabled y aria-busy en
+            // vuelo) +1 Admin.test.jsx (nuevo: <main> con data-foco-inicial).
+            // BottomBar.test.jsx suma una aserción del marcador, no un test.
+            // Medido dos veces con vitest run: 379 passed en 52 archivos, 0
+            // fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 379) {
+              console.error("PISO ROTO: se esperaban 379 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
