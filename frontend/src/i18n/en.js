@@ -336,6 +336,24 @@ export default {
   // the model's, and the facet would send the model to the wrong service.
   modelo_de_otro_proveedor: (modelo, proveedorModelo, proveedorBinding) =>
     `Model ${modelo} belongs to ${proveedorModelo}, but this facet would be configured with ${proveedorBinding}, so it could not use it. Pick a ${proveedorBinding} model. Nothing was changed.`,
+  // PR-L (2026-09-14): declare a catalog row's dispatch contract from the
+  // admin (it used to be a hand-written UPDATE).
+  adminContratoTitulo: (modelo) => `Dispatch contract for ${modelo}`,
+  adminContratoParam: 'Output limit parameter name',
+  adminContratoTope: 'Max output tokens',
+  adminContratoAyuda: "What this model's API requires at dispatch: the name of its output limit parameter and the maximum number of output tokens it accepts. The limit comes from the provider's documentation or its own HTTP 400 error; it is not the context window. Who declared it and the previous value are recorded.",
+  adminContratoElegir: 'Pick one',
+  adminContratoGuardar: 'Save contract',
+  adminContratoGuardando: 'Saving…',
+  adminContratoCancelar: 'Cancel',
+  adminContratoGuardado: 'Contract declared. The proposal can be approved again.',
+  adminContratoError: 'The contract could not be declared.',
+  contrato_dispatch_invalido: (campos) =>
+    `The value of ${campos} is not valid for this model's dispatch. Nothing was changed.`,
+  adminContratoDeclarar: 'Declare contract',
+  adminModelsContrato: 'Dispatch contract',
+  adminModelsContratoSinDeclarar: 'Not declared',
+  adminProposalsUltimoRechazo: (fecha) => `Last approval attempt rejected (${fecha}):`,
 
   // Admin — Motors tab (R4 Task 9): register a motor/capability without hand-written SQL
   adminTabMotors: 'Motors',

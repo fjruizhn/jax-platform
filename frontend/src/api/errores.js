@@ -16,12 +16,17 @@ export function codigoDe(err) {
 // Ronda 1: `modelo_de_otro_proveedor`, el mismo guard cuando el binding
 // quedaría con un provider_id distinto al del modelo.
 export function textoDeErrorDeBinding(t, err) {
-  const codigo = codigoDe(err)
-  const detail = err?.response?.data?.detail
-  if (codigo === 'modelo_sin_contrato_de_dispatch') {
+  return textoDeDetalleDeBinding(t, err?.response?.data?.detail)
+}
+
+// Lo mismo desde el `detail` solo (PR-L, 2026-09-14): el último rechazo que
+// GET /admin/models/proposals devuelve en `ultimo_rechazo` (guardado en
+// model_catalog_audit) se lee con el mismo texto que el 409 en vivo.
+export function textoDeDetalleDeBinding(t, detail) {
+  if (detail?.code === 'modelo_sin_contrato_de_dispatch') {
     return t.modelo_sin_contrato_de_dispatch(detail.model_id, (detail.campos || []).join(', '))
   }
-  if (codigo === 'modelo_de_otro_proveedor') {
+  if (detail?.code === 'modelo_de_otro_proveedor') {
     return t.modelo_de_otro_proveedor(detail.model_id, detail.provider_modelo, detail.provider_binding)
   }
   return null

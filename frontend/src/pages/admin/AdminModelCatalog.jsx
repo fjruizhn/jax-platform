@@ -1,8 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
-import { textoDeErrorDeBinding } from '../../api/errores'
+import { codigoDe, textoDeDetalleDeBinding, textoDeErrorDeBinding } from '../../api/errores'
 import AlertaError from '../../components/AlertaError'
+import FormContratoDispatch from './FormContratoDispatch'
+
+// El único rechazo del guard que se arregla declarando el contrato de la fila
+// (PR-L). `modelo_de_otro_proveedor` no: su remedio es otro modelo o el PUT
+// del binding.
+const CODIGO_SIN_CONTRATO = 'modelo_sin_contrato_de_dispatch'
 
 const STATUS_COLOR = {
   available: 'text-green-400',
@@ -26,10 +32,34 @@ export default function AdminModelCatalog() {
   const [deciding, setDeciding] = useState(null)
   // El error crudo: se traduce al renderizar, así un cambio de idioma lo sigue.
   const [decideError, setDecideError] = useState(null)
+  // PR-L: opciones del parámetro (vienen del backend), la fila cuyo contrato
+  // se está declarando y el aviso de éxito.
+  const [opcionesParam, setOpcionesParam] = useState([])
+  const [contratoDe, setContratoDe] = useState(null)
+  const [contratoGuardado, setContratoGuardado] = useState(false)
 
   const loadModels = useCallback(() => {
-    api.get('/admin/models').then(r => setModels(r.data.models)).catch(() => {})
+    api.get('/admin/models').then(r => {
+      setModels(r.data.models)
+      setOpcionesParam(r.data.max_tokens_param_opciones || [])
+    }).catch(() => {})
   }, [])
+
+  function abrirContrato(modelRef) {
+    setContratoGuardado(false)
+    setContratoDe(modelRef)
+  }
+
+  function contratoDeclarado() {
+    setContratoDe(null)
+    setContratoGuardado(true)
+    setDecideError(null)
+    loadModels()
+    loadProposals()
+  }
+
+  const modeloContrato = contratoDe != null ? models.find(m => m.id === contratoDe) : null
+  const detalleDecideError = decideError?.response?.data?.detail
 
   const loadProposals = useCallback(() => {
     api.get('/admin/models/proposals?status=pending').then(r => setProposals(r.data.proposals)).catch(() => {})
@@ -96,7 +126,28 @@ export default function AdminModelCatalog() {
       {decideError && (
         <AlertaError className="text-xs mb-3">
           {textoDeErrorDeBinding(t, decideError) || t.adminProposalsDecideError}
+          {codigoDe(decideError) === CODIGO_SIN_CONTRATO && detalleDecideError?.model_ref != null && (
+            <button
+              type="button"
+              onClick={() => abrirContrato(detalleDecideError.model_ref)}
+              className="ml-2 text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+            >
+              {t.adminContratoDeclarar}
+            </button>
+          )}
         </AlertaError>
+      )}
+
+      {contratoGuardado && <p role="status" className="text-xs text-green-400 mb-3">{t.adminContratoGuardado}</p>}
+
+      {modeloContrato && (
+        <FormContratoDispatch
+          key={modeloContrato.id}
+          modelo={modeloContrato}
+          opciones={opcionesParam}
+          onGuardado={contratoDeclarado}
+          onCancelar={() => setContratoDe(null)}
+        />
       )}
 
       {proposals.length > 0 && (
@@ -122,7 +173,25 @@ export default function AdminModelCatalog() {
                       {proposedModel ? `${proposedModel.provider_id}/${proposedModel.model_id}` : p.proposed_model_ref}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-400">{t[REASON_KEY[p.reason]] || p.reason}</td>
-                    <td className="px-4 py-3 text-xs text-slate-500">{p.detail}</td>
+                    <td className="px-4 py-3 text-xs text-slate-500">
+                      {p.detail}
+                      {p.ultimo_rechazo && (
+                        // Rastro del último 409 del guard (model_catalog_audit, PR-L).
+                        <div className="mt-1 text-red-400">
+                          <span>{t.adminProposalsUltimoRechazo(p.ultimo_rechazo.performed_at?.slice(0, 16) || t.adminModelsNoData)}</span>{' '}
+                          <span>{textoDeDetalleDeBinding(t, p.ultimo_rechazo) || p.ultimo_rechazo.code}</span>
+                          {p.ultimo_rechazo.code === CODIGO_SIN_CONTRATO && p.ultimo_rechazo.model_ref != null && (
+                            <button
+                              type="button"
+                              onClick={() => abrirContrato(p.ultimo_rechazo.model_ref)}
+                              className="ml-2 text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                            >
+                              {t.adminContratoDeclarar}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <button
@@ -157,7 +226,8 @@ export default function AdminModelCatalog() {
           <thead className="bg-slate-900 border-b border-slate-800">
             <tr>
               {[t.adminModelsProvider, t.adminModelsModelId, t.adminModelsAlias, t.adminModelsStatus,
-                t.adminModelsSource, t.adminModelsContext, t.adminModelsPrice, t.adminModelsSourceCheckedAt].map(h => (
+                t.adminModelsSource, t.adminModelsContext, t.adminModelsContrato, t.adminModelsPrice,
+                t.adminModelsSourceCheckedAt].map(h => (
                 <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">{h}</th>
               ))}
             </tr>
@@ -174,6 +244,18 @@ export default function AdminModelCatalog() {
                 </td>
                 <td className="px-4 py-3 text-xs text-slate-500">{sourceLabel(m.source)}</td>
                 <td className="px-4 py-3 text-xs text-slate-400">{m.context_window ?? t.adminModelsNoData}</td>
+                <td className="px-4 py-3 text-xs">
+                  {m.max_tokens_param && m.max_output_tokens != null
+                    ? <span className="font-mono text-slate-400">{`${m.max_tokens_param} · ${m.max_output_tokens}`}</span>
+                    : <span className="text-orange-400">{t.adminModelsContratoSinDeclarar}</span>}
+                  <button
+                    type="button"
+                    onClick={() => abrirContrato(m.id)}
+                    className="ml-2 text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                  >
+                    {t.adminContratoDeclarar}
+                  </button>
+                </td>
                 <td className="px-4 py-3 text-xs text-slate-400 font-mono">
                   {m.price_input_per_1m_usd != null || m.price_output_per_1m_usd != null
                     ? `$${m.price_input_per_1m_usd ?? '?'} / $${m.price_output_per_1m_usd ?? '?'}`
