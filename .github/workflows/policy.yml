@@ -134,8 +134,19 @@ jobs:
             // AdminFacetBindings.test.jsx (los dos 409 traducidos es/en, detail objeto ya no
             // sale "[object Object]") y +1 en la ronda 1 (modelo_de_otro_proveedor). Rebase de
             // PR-J sobre la tanda A: 140 + 6. Medido con vitest run: 146.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 146) {
-              console.error("PISO ROTO: se esperaban 146 tests de vitest CORRIDOS y 0 fallidos.");
+            // PR-L (2026-09-14, declarar el contrato de dispatch): +7 FormContratoDispatch.test.jsx
+            // (claves es/en, opciones del backend, PUT del par, 422 traducido, tope vacío va null,
+            // genérico, cancelar) y +4 AdminModelCatalog.test.jsx (último rechazo guardado + botón,
+            // el 409 en vivo ofrece declarar, el de otro proveedor no, columna de contrato y
+            // declarar desde la tabla). Medido con vitest run: 146 + 11 = 157.
+            // PR-L ronda 1: +6 AdminFacetBindings.test.jsx (clave nueva es/en; el 409 de contrato
+            // del PUT ofrece declarar; el de otro proveedor no; el último rechazo guardado se ve y
+            // declara con el mismo endpoint; un rechazo de un modelo fuera de la lista igual abre el
+            // formulario; sin rechazo no hay aviso). Medido con vitest run: 157 + 6 = 163.
+            // PR-L ronda 2: 163 -> 163. El aviso propio de Bindings (adminBindingsContratoGuardado)
+            // se afirma dentro de dos tests existentes, sin tests nuevos. Medido con vitest run: 163.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 163) {
+              console.error("PISO ROTO: se esperaban 163 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -548,7 +559,29 @@ jobs:
           # test_model_max_tokens_param.py / test_model_max_output_tokens.py (deepseek-flash y
           # deepseek-v4-pro sembrados sin pisar un valor manual). Rebase de PR-J sobre la
           # tanda A: 691 + 18. Medido contra jax con PR-B: 709 / 1.
-          PISO_PASSED = 709
+          # PR-L (2026-09-14, Ruling 33: declarar el contrato de dispatch desde el admin + rastro
+          # del 409): +11 en test_contrato_dispatch_admin.py (solo superadmin 401/403; valores
+          # inválidos -> 422 con código y sin escribir; mensaje = el del validador del dispatch;
+          # 404; válido -> fila + auditoría + sello; EXPLAIN por PK; migración idempotente; flujo
+          # approve 409 -> declarar -> approve 200; rastro del rechazo por contrato, por proveedor
+          # y del PUT). Medido contra jax master f84ecc1 (= f36ef3f + solo docs): 709 + 11 = 720 / 1.
+          # PR-L ronda 1 (2026-09-14): +4 en test_contrato_dispatch_admin.py (borrar modelo y
+          # propuesta no falla y la auditoría sigue legible; la migración convierte la tabla con
+          # FK duras; la lista de bindings muestra el último rechazo posterior al último cambio;
+          # EXPLAIN del rastro por faceta sin scan) y +2 en test_semilla_contrato_dispatch.py
+          # (toda faceta http_openai_compat de la semilla de base vacía cumple el contrato; ada
+          # nace en glm-5.3). Medido contra jax f84ecc1: 720 + 6 = 726 / 1.
+          # PR-L ronda 2 (2026-09-14, 7 Minor de la revisión): +8 — tope superior de
+          # max_output_tokens -> 422; borrar un usuario con auditoría no falla; email snapshot en
+          # el 409; la tabla real sin ninguna FK; list_proposals acotada y por índice (2); keys sin
+          # literales ni facet_models (2). El test de migración pasa a una tabla temporal (mismo
+          # conteo). Los 3 tests que dependían de model.id=3 dejan de depender de su valor.
+          # Medido contra jax f84ecc1: 726 + 8 = 734 / 1.
+          # PR-L ronda 3 (2026-09-14, decisión de Fernando): +3 en test_model_max_output_tokens.py
+          # (ollama/qwen3.6:35b-a3b-q4_K_M sembrado en 262144; sin max_tokens_param porque ollama no
+          # lo lee; sembrado en la DB sin pisar un valor manual). Medido contra jax f84ecc1:
+          # 734 + 3 = 737 / 1.
+          PISO_PASSED = 737
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -843,7 +876,16 @@ jobs:
       # PR-J (2026-09-14): +4 puros (faltantes del contrato por transporte, chat.py
       # reexporta los mismos validadores, las dos listas de seed); el resto pide `client`.
       # Rebase de PR-J sobre la tanda A: 345 + 4. Medido con JAX_CI_NO_DB=1: 349 / 361.
-      JAX_CI_MIN_PASSED: "349"
+      # PR-L (2026-09-14): 349 -> 349. Los 11 tests nuevos piden `client` (escriben y leen
+      # jax_memory_test) y se saltan sin DB. Medido con JAX_CI_NO_DB=1: 349 passed / 372 skipped.
+      # PR-L ronda 1: +2 puros (tests/test_semilla_contrato_dispatch.py, tripwire de la semilla
+      # de base vacía contra los validadores del dispatch); los +4 de auditoría piden `client`.
+      # Medido con JAX_CI_NO_DB=1: 351 passed / 376 skipped.
+      # PR-L ronda 2: +1 puro (keys.PROVIDERS sin literales de modelo); los otros 7 piden
+      # `client`. Medido con JAX_CI_NO_DB=1: 352 passed / 383 skipped.
+      # PR-L ronda 3: +2 puros (el valor del qwen de jax_local en la lista de semilla, y que no
+      # tenga max_tokens_param); el de la DB pide `client`. Medido con JAX_CI_NO_DB=1: 354 / 384.
+      JAX_CI_MIN_PASSED: "354"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

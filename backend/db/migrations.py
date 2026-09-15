@@ -369,7 +369,64 @@ CREATE TABLE IF NOT EXISTS model_binding_proposal (
   created_at DATETIME DEFAULT NOW(),
   FOREIGN KEY (facet_key) REFERENCES facet(`key`),
   FOREIGN KEY (proposed_model_ref) REFERENCES model(id),
-  FOREIGN KEY (decided_by) REFERENCES jax_users(user_id)
+  FOREIGN KEY (decided_by) REFERENCES jax_users(user_id),
+  -- PR-L ronda 2: list_proposals ordena por created_at, con o sin status.
+  INDEX idx_created (created_at),
+  INDEX idx_status_created (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+# PR-L (2026-09-14, Ruling 33) — auditoria del catalogo de modelos. Dos
+# eventos, los dos de un superadmin humano (performed_by/from_ip del JWT y del
+# Request: el log del servidor solo ve JAX_DB_USER, mismo motivo que
+# credential_audit):
+#   - 'contrato_declarado': PUT /api/admin/models/{id}/contrato-dispatch cambio
+#     max_tokens_param/max_output_tokens de la fila. valor_antes/valor_despues
+#     son el par completo, asi un contrato mal declarado se revierte leyendo
+#     esta tabla y no la memoria de nadie.
+#   - 'binding_rechazado': el guard de contrato_dispatch rechazo (409) aprobar
+#     una propuesta (proposal_id) o un PUT de binding (proposal_id NULL).
+#     valor_despues guarda el `detail` del 409 tal cual lo vio el admin.
+# Por que no credential_audit: su action es un ENUM de credenciales y su
+# provider_id/credential_id no describen una fila de `model`. Por que no
+# columnas en model_binding_proposal: el rechazo tambien pasa en el PUT (sin
+# propuesta) y una columna guarda solo el ULTIMO -- esto es historia.
+# Indices: idx_proposal_id -> ultimo rechazo de cada propuesta por
+# (proposal_id, id); idx_facet_rechazo -> ultimo rechazo de cada faceta
+# (action, facet_key, MAX(id)) en la pantalla de bindings; idx_model_time ->
+# historia de una fila.
+#
+# SIN FK a model ni a model_binding_proposal (ronda 1 de PR-L, 2026-09-14,
+# decision del coordinador con la autorizacion de Fernando): una auditoria no
+# puede impedir borrar la entidad que audita, ni perder su fila si se borra.
+# model_ref/proposal_id quedan como el numero que eran; provider_id/model_id
+# (y facet_key) guardan los identificadores LEGIBLES del momento del evento,
+# asi la historia se entiende aunque la fila ya no exista.
+# Ronda 2: tampoco FK a jax_users. performed_by queda como el numero que era
+# y performed_by_email guarda el email del momento: borrar a quien actuo no
+# falla ni borra su historia. (credential_audit, facet_binding.approved_by y
+# model_binding_proposal.decided_by siguen bloqueando un DELETE de usuario:
+# preexistente, va a DEUDA con la baja logica de la etapa 5.) Una base con
+# una forma anterior la convierte _auditoria_de_catalogo_sin_fk_duras().
+CREATE_MODEL_CATALOG_AUDIT = """
+CREATE TABLE IF NOT EXISTS model_catalog_audit (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  action ENUM('contrato_declarado','binding_rechazado') NOT NULL,
+  model_ref INT NOT NULL,
+  provider_id VARCHAR(50) NULL,
+  model_id VARCHAR(100) NULL,
+  facet_key VARCHAR(50) NULL,
+  proposal_id INT NULL,
+  code VARCHAR(64) NULL,
+  valor_antes LONGTEXT NULL CHECK (valor_antes IS NULL OR json_valid(valor_antes)),
+  valor_despues LONGTEXT NULL CHECK (valor_despues IS NULL OR json_valid(valor_despues)),
+  performed_by INT NOT NULL,
+  performed_by_email VARCHAR(255) NULL,
+  performed_from_ip VARCHAR(45) NOT NULL,
+  performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_proposal_id (proposal_id, id),
+  INDEX idx_facet_rechazo (action, facet_key, id),
+  INDEX idx_model_time (model_ref, performed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -517,6 +574,7 @@ _TABLES = [
     ("facet", CREATE_FACET),                # antes de facet_binding y model_binding_proposal (FK)
     ("facet_binding", CREATE_FACET_BINDING),
     ("model_binding_proposal", CREATE_MODEL_BINDING_PROPOSAL),
+    ("model_catalog_audit", CREATE_MODEL_CATALOG_AUDIT),  # sin FK (PR-L rondas 1-2): el orden no importa
     ("motor", CREATE_MOTOR),                          # antes de capability (FK fallback_motor)
     ("capability", CREATE_CAPABILITY),                # antes de capability_motor (FK)
     ("capability_motor", CREATE_CAPABILITY_MOTOR),
@@ -544,9 +602,17 @@ _FACET_BINDING_SEED = [
     ("hyde",      "anthropic", "sonnet"),
     ("jekyll",    "deepseek", "deepseek-v4-flash"),
     ("hipatia",   "gemini",   "gemini-2.5-flash"),
-    ("thot",      "openai",   "gpt-5.5"),
+    # thot y ada (PR-L ronda 1, 2026-09-14, hallazgo de PR-K): gpt-5.5 y
+    # glm-5.2 no tienen contrato de dispatch en _MODEL_MAX_*_SEED, así que en
+    # una base VACÍA esas facetas nacían rotas (http_openai_compat falla
+    # cerrado sin max_tokens_param/max_output_tokens). Ahora son los modelos
+    # de producción según este mismo archivo (ver los comentarios de
+    # _MODEL_MAX_*_SEED), que sí lo tienen. Solo afecta a una base vacía:
+    # _seed_facets no escribe bindings si la tabla ya tiene filas.
+    # tests/test_semilla_contrato_dispatch.py es el tripwire.
+    ("thot",      "openai",   "gpt-5.6-terra"),
     ("kimi",      "moonshot", "kimi-k3"),
-    ("ada",       "zhipu",    "glm-5.2"),
+    ("ada",       "zhipu",    "glm-5.3"),
 ]
 
 
@@ -577,7 +643,11 @@ _FACET_PERSONAS = {
 _MOTOR_SEED = [
     # key,   provider_id, model_id,   transport,             max_tokens, timeout, reasoning, visibility,    sandbox
     ("kimi", "moonshot", "kimi-k3",   "http_openai_compat",  8000,       600,     True,      "audit_only",  True),
-    ("ada",  "zhipu",    "glm-5.2",   "http_openai_compat",  8000,       600,     True,      "audit_only",  True),
+    # glm-5.3 (PR-L ronda 1): el mismo modelo que el binding semilla de ada.
+    # Con glm-5.2, en una base vacía la fila de `model` ya no existe (se
+    # deriva de los bindings) y _seed_motors_and_capabilities salteaba el
+    # motor ada en silencio.
+    ("ada",  "zhipu",    "glm-5.3",   "http_openai_compat",  8000,       600,     True,      "audit_only",  True),
 ]
 
 # key, risk_level, sandbox_only, requires_human_gate, max_exec_min, max_recursion,
@@ -902,8 +972,10 @@ async def _seed_thot_motor(cur) -> None:
     validate_consistency/critique referenciaban 'thot' en config.toml
     (allowed_motors) pero Task 1 excluyo esas 2 filas porque el motor no
     existia -- se completan aca."""
+    # gpt-5.6-terra (PR-L ronda 1): el binding semilla de thot. Con gpt-5.5,
+    # en una base vacía esa fila ya no existe y el motor thot no se sembraba.
     await cur.execute(
-        "SELECT id FROM model WHERE provider_id='openai' AND model_id='gpt-5.5'"
+        "SELECT id FROM model WHERE provider_id='openai' AND model_id='gpt-5.6-terra'"
     )
     row = await cur.fetchone()
     if row is None:
@@ -1583,6 +1655,17 @@ _MODEL_MAX_OUTPUT_TOKENS_SEED = [
     ("deepseek", "deepseek-v4-pro",    393216),
     ("zhipu",    "glm-5.3",            131072),
     ("moonshot", "kimi-k3",            131072),
+    # PR-L ronda 3 (2026-09-14, decisión de Fernando ~20:50): el modelo del
+    # binding de jax_local en producción (model id 1556, hoy NULL/NULL). Con
+    # PR-K (jax) todo camino Ollama exige max_output_tokens, así que sin esta
+    # fila jax_local dejaría de despachar. 262144 = su contexto, leído con
+    # `ollama show` (qwen35moe 36.0B, context length 262144); la doc oficial
+    # de Ollama dice num_predict default -1 = generación sin tope, o sea que
+    # hoy no tiene ninguno y el contexto es el techo real. SOLO esta lista: el
+    # contrato de transporte de ollama no lee max_tokens_param (ollama no está
+    # en contrato_dispatch.TRANSPORTS_CON_CONTRATO_DE_DISPATCH), así que no se
+    # siembra un nombre de parámetro que nadie usa. WHERE IS NULL como el resto.
+    ("ollama",   "qwen3.6:35b-a3b-q4_K_M", 262144),
 ]
 
 
@@ -1796,6 +1879,74 @@ async def _asegurar_forma_de_capability_mode(cur) -> None:
         )
 
 
+async def _auditoria_de_catalogo_sin_fk_duras(cur, tabla: str = "model_catalog_audit") -> None:
+    """Lleva la auditoría del catálogo a su forma final (PR-L rondas 1-2) en
+    una base donde ya existe con una forma anterior: FK duras a model, a
+    model_binding_proposal o a jax_users, sin provider_id/model_id/
+    performed_by_email. Ver el comentario de CREATE_MODEL_CATALOG_AUDIT.
+    Idempotente: cada paso mira information_schema antes de actuar; en una
+    base nueva no hace nada salvo los UPDATE (que no encuentran filas).
+
+    `tabla`: el test de conversión la corre sobre una tabla temporal con otro
+    nombre, sin tocar la auditoría real de jax_memory_test (ronda 2). Solo
+    acepta nombres de identificador simples: va interpolada en el DDL."""
+    if not tabla.replace("_", "").isalnum():
+        raise ValueError(f"nombre de tabla inválido: {tabla!r}")
+    for columna, ddl in (
+        ("provider_id", f"ALTER TABLE {tabla} ADD COLUMN provider_id VARCHAR(50) NULL AFTER model_ref"),
+        ("model_id", f"ALTER TABLE {tabla} ADD COLUMN model_id VARCHAR(100) NULL AFTER provider_id"),
+        ("performed_by_email",
+         f"ALTER TABLE {tabla} ADD COLUMN performed_by_email VARCHAR(255) NULL AFTER performed_by"),
+    ):
+        if not await _column_exists(cur, tabla, columna):
+            await cur.execute(ddl)
+
+    # Los nombres de las FK los generó el servidor (en MariaDB, `1`, `2`...):
+    # se leen, no se suponen.
+    await cur.execute(
+        "SELECT CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS "
+        "WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = %s "
+        "AND REFERENCED_TABLE_NAME IN ('model', 'model_binding_proposal', 'jax_users')",
+        (tabla,),
+    )
+    for (nombre,) in await cur.fetchall():
+        await cur.execute(f"ALTER TABLE {tabla} DROP FOREIGN KEY `{nombre}`")
+
+    await cur.execute(
+        "SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() "
+        "AND TABLE_NAME = %s AND INDEX_NAME = 'idx_facet_rechazo' LIMIT 1",
+        (tabla,),
+    )
+    if await cur.fetchone() is None:
+        await cur.execute(f"ALTER TABLE {tabla} ADD INDEX idx_facet_rechazo (action, facet_key, id)")
+
+    # Filas escritas con una forma vieja: se completan mientras la fila de
+    # origen exista (con la forma vieja las FK garantizaban que existe).
+    await cur.execute(
+        f"UPDATE {tabla} a JOIN model m ON m.id = a.model_ref "
+        "SET a.provider_id = m.provider_id, a.model_id = m.model_id "
+        "WHERE a.model_id IS NULL"
+    )
+    await cur.execute(
+        f"UPDATE {tabla} a JOIN jax_users u ON u.user_id = a.performed_by "
+        "SET a.performed_by_email = u.email "
+        "WHERE a.performed_by_email IS NULL"
+    )
+
+
+async def _indices_de_model_binding_proposal(cur) -> None:
+    """PR-L ronda 2: los índices de list_proposals en una base donde la tabla
+    ya existía sin ellos (en una base nueva los trae el CREATE). Idempotente."""
+    for nombre, columnas in (("idx_created", "created_at"), ("idx_status_created", "status, created_at")):
+        await cur.execute(
+            "SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() "
+            "AND TABLE_NAME = 'model_binding_proposal' AND INDEX_NAME = %s LIMIT 1",
+            (nombre,),
+        )
+        if await cur.fetchone() is None:
+            await cur.execute(f"ALTER TABLE model_binding_proposal ADD INDEX {nombre} ({columnas})")
+
+
 async def run_migrations():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1841,6 +1992,10 @@ async def run_migrations():
             # http_* para que tener acceso al gate tenga sentido.
             await _migrate_kimi_chat_transport(cur)
             await _seed_http_facet_allowed_callers(cur)
+            # Después del bucle de _TABLES (la tabla existe) y antes de que
+            # nadie escriba en ella (PR-L ronda 1).
+            await _auditoria_de_catalogo_sin_fk_duras(cur)
+            await _indices_de_model_binding_proposal(cur)
             # Despues de _seed_models_and_backfill: las filas de `model` tienen
             # que existir para poder actualizarlas.
             await _seed_model_max_tokens_param(cur)

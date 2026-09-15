@@ -339,6 +339,28 @@ export default {
   // no es el del modelo, y la faceta mandaría el modelo al servicio equivocado.
   modelo_de_otro_proveedor: (modelo, proveedorModelo, proveedorBinding) =>
     `El modelo ${modelo} es de ${proveedorModelo}, pero esta faceta quedaría configurada con ${proveedorBinding}: no podría usarlo. Elegí un modelo de ${proveedorBinding}. No se cambió nada.`,
+  // PR-L (2026-09-14): declarar el contrato de dispatch de una fila del
+  // catálogo desde el admin (antes era un UPDATE a mano).
+  adminContratoTitulo: (modelo) => `Contrato de dispatch de ${modelo}`,
+  adminContratoParam: 'Nombre del parámetro de límite de salida',
+  adminContratoTope: 'Tope de tokens de salida',
+  adminContratoAyuda: 'Lo que la API de este modelo exige al despachar: cómo se llama su parámetro de límite de salida y cuántos tokens de salida acepta como máximo. El tope sale de la documentación del proveedor o de su propio error HTTP 400; no es la ventana de contexto. Queda registrado quién lo declaró y el valor anterior.',
+  adminContratoElegir: 'Elegí uno',
+  adminContratoGuardar: 'Guardar contrato',
+  adminContratoGuardando: 'Guardando…',
+  adminContratoCancelar: 'Cancelar',
+  adminContratoGuardado: 'Contrato declarado. Ya se puede volver a aprobar la propuesta.',
+  adminContratoError: 'No se pudo declarar el contrato.',
+  contrato_dispatch_invalido: (campos) =>
+    `El valor de ${campos} no es válido para el dispatch de este modelo. No se cambió nada.`,
+  adminContratoDeclarar: 'Declarar contrato',
+  adminModelsContrato: 'Contrato de dispatch',
+  adminModelsContratoSinDeclarar: 'Sin declarar',
+  adminProposalsUltimoRechazo: (fecha) => `Último intento de aprobación rechazado (${fecha}):`,
+  // PR-L ronda 1: el último rechazo registrado para una faceta, en Bindings.
+  adminBindingsUltimoRechazo: (fecha) => `Último cambio rechazado (${fecha}):`,
+  // Ronda 2: en Bindings no hay propuesta; el paso siguiente es volver a guardar el binding.
+  adminBindingsContratoGuardado: 'Contrato declarado. Ya se puede volver a guardar el binding de la faceta.',
 
   // Admin — pestaña Motores (R4 Task 9): alta de motor/capability sin SQL a mano
   adminTabMotors: 'Motores',
