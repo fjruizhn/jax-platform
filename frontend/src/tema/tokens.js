@@ -96,6 +96,9 @@ export const MIGRADOS = [
   'components/chat/FileAttachment.jsx',
   'components/LeftPanel/LeftPanel.jsx',
   'components/Notifications/Toast.jsx',
+  'components/RightPanel/RightPanel.jsx',
+  'components/RightPanel/AuditLog.jsx',
+  'components/RightPanel/StepCard.jsx',
 ]
 
 const RESPALDO = 'texto-suave'

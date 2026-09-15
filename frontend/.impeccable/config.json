@@ -8,6 +8,15 @@
         "value": "inter",
         "createdAt": "2026-09-14T01:17:16.029Z",
         "reason": "Fernando confirmed (2026-09-13, chat): Inter es la fuente de la plataforma desde v0.2 (5e28e9e, 2026-06-19); se mantiene por coherencia visual"
+      },
+      {
+        "rule": "gray-on-color",
+        "value": "*",
+        "files": [
+          "src/components/RightPanel/RightPanel.jsx"
+        ],
+        "createdAt": "2026-09-15T09:17:17.491Z",
+        "reason": "false positive: Cancel pipeline button pairs text-texto-tenue with hover:text-peligro alongside hover:bg-peligro-fondo -- Tailwind swaps text and bg together on hover, gray never renders on the colored bg (task-23, 2026-09-15)"
       }
     ]
   }
