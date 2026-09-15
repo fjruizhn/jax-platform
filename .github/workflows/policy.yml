@@ -254,6 +254,8 @@ jobs:
             // falla) +2 HistorialUsuario.test.jsx (nuevo: una respuesta tardía tras
             // cerrar el modal o cambiar de usuario se ignora; vistos en rojo antes
             // de verde). Medido con vitest run en la rama: 228; sobre el PR 3: 255.
+            // Re-medido el 2026-09-15 tras rebasar la etapa 3 sobre master 65c02de
+            // (PR 3 del tema): vitest run da 255 passed en 41 archivos, 0 fallidos.
             if (r.numFailedTests !== 0 || r.numPassedTests !== 255) {
               console.error("PISO ROTO: se esperaban 255 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
@@ -723,7 +725,11 @@ jobs:
           # después de registrar): +2 en test_admin_usuarios_guardas.py (un WS y un stream SSE
           # registrados después del corte se cierran con 4001 / terminan; vistos en rojo antes
           # de verde). Medido: 785 / 1.
-          PISO_PASSED = 785
+          # Subido de 785 a 786 (2026-09-15, re-revisión de 6424be0): +1 puro en
+          # test_admin_usuarios_guardas.py (si la re-verificación del SSE se cancela, el
+          # registro se deshace). Re-medido tras rebasar sobre master 65c02de (PR 3 del
+          # tema): 786 / 1.
+          PISO_PASSED = 786
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1045,7 +1051,11 @@ jobs:
       # `client`. Medido con JAX_CI_NO_DB=1: 362 / 417.
       # Task 4 fix ronda 1 (2026-09-15): +3 puros (test_iso_utc.py); los 2 de fechas en
       # test_admin_usuarios_guardas.py piden `client`. Medido con JAX_CI_NO_DB=1: 365 / 419.
-      JAX_CI_MIN_PASSED: "365"
+      # m1 de la revisión final (2026-09-15): los 2 de WS/SSE registrados después del
+      # corte piden `client` (sin cambio). Re-revisión de 6424be0 (2026-09-15): +1 puro
+      # (la re-verificación del SSE cancelada deshace el registro). Re-medido tras
+      # rebasar sobre master 65c02de (PR 3 del tema) con JAX_CI_NO_DB=1: 366 / 421.
+      JAX_CI_MIN_PASSED: "366"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
