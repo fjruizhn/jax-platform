@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status as http_status
-from auth.middleware import get_current_user
+from auth.middleware import get_current_user, require_superadmin
 from auth.models import AuthUser
 from jax_engine.state import engine_state
 from db.connection import get_pool
@@ -28,11 +28,15 @@ async def list_facets(user: AuthUser = Depends(get_current_user)):
     return {"facets": facets}
 
 
+# T6-5b (2026-09-15): cambia el estado GLOBAL de una faceta y se difunde por
+# el bus a todos. Solo exigía sesión: cualquier viewer podía poner a thot en
+# "offline" para todos. No tiene llamador en el frontend ni en el repo jax
+# (verificado con grep): queda como herramienta de administración.
 @router.post("/{facet}/status")
 async def set_facet_status(
     facet: str,
     body: dict,
-    user: AuthUser = Depends(get_current_user),
+    user: AuthUser = Depends(require_superadmin),
 ):
     new_status = body.get("status")
     message = body.get("message", "")

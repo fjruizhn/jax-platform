@@ -13,7 +13,7 @@ from typing import Literal, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import httpx
-from http_client import get_http_client
+from http_client import cabeceras_gemini, get_http_client
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from facet_resolver import resolve_facet, FacetUnavailableError
 # ModelDispatchConfigError y los dos validadores del contrato de dispatch
@@ -738,7 +738,8 @@ async def _call_gemini(
     system_prompt: str, history: list[dict], message: str,
     on_response=None,
 ) -> tuple[str, int, int]:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    # T6-2: la key va en la cabecera, nunca en la URL.
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     contents = []
     for h in history:
         role = "user" if h["role"] == "user" else "model"
@@ -750,7 +751,7 @@ async def _call_gemini(
         "tools": [{"googleSearch": {}}],
     }
     client = await get_http_client()
-    r = await client.post(url, json=body, timeout=120.0)
+    r = await client.post(url, json=body, headers=cabeceras_gemini(api_key), timeout=120.0)
     r.raise_for_status()
     data = r.json()
     if on_response:

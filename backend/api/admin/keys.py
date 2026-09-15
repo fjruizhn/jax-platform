@@ -7,7 +7,7 @@ from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from crypto_secrets import encrypt_secret, decrypt_secret, decrypt_db_secret
 from db.connection import get_pool
-from http_client import get_http_client
+from http_client import cabeceras_gemini, get_http_client
 from redaccion import redactar_secretos
 
 logger = logging.getLogger(__name__)
@@ -171,16 +171,17 @@ async def test_key(provider_id: str, user: AuthUser = Depends(require_superadmin
 
     if not prov["test_url"]:
         if provider_id == "gemini":
-            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+            # T6-2: la key va en la cabecera x-goog-api-key, nunca en la URL.
+            url = "https://generativelanguage.googleapis.com/v1beta/models"
             try:
                 t0 = time.time()
                 client = await get_http_client()
-                r = await client.get(url, timeout=10.0)
+                r = await client.get(url, headers=cabeceras_gemini(api_key), timeout=10.0)
                 ms = int((time.time() - t0) * 1000)
                 return {"ok": r.status_code == 200, "latency_ms": ms,
                         "error": None if r.status_code == 200 else redactar_secretos(r.text, [api_key])[:100]}
             except Exception as e:  # fail-soft: el fallo del test ES el resultado (ok=False con error) que se le muestra al superadmin
-                # Task 6 S1: la URL lleva `?key=`; se redacta antes de devolver.
+                # Task 6 S1: defensa en profundidad -- se redacta antes de devolver.
                 return {"ok": False, "latency_ms": None, "error": redactar_secretos(str(e), [api_key])[:100]}
         return {"ok": False, "latency_ms": None, "error": "Test no disponible para este provider"}
 

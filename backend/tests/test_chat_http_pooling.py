@@ -77,5 +77,7 @@ async def test_call_gemini_uses_the_shared_client():
     assert result == "respuesta gemini"
     assert len(fake.calls) == 1
     url, kwargs = fake.calls[0]
-    assert url.startswith("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent")
+    # T6-2 (2026-09-15): la key va en la cabecera x-goog-api-key, nunca en la URL.
+    assert url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    assert kwargs["headers"] == {"x-goog-api-key": "test-key"}
     assert kwargs["timeout"] == 120.0

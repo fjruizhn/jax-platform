@@ -19,7 +19,7 @@ from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from crypto_secrets import encrypt_secret
 from db.connection import get_pool
-from http_client import get_http_client
+from http_client import cabeceras_gemini, get_http_client
 from redaccion import redactar_secretos
 
 logger = logging.getLogger(__name__)
@@ -185,8 +185,9 @@ async def test_credential(
         t0 = time.time()
         client = await get_http_client()
         if provider_id == "gemini":
-            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-            r = await client.get(url, timeout=10.0)
+            # T6-2: la key va en la cabecera x-goog-api-key, nunca en la URL.
+            url = "https://generativelanguage.googleapis.com/v1beta/models"
+            r = await client.get(url, headers=cabeceras_gemini(api_key), timeout=10.0)
         else:
             test_url = _TEST_URLS.get(provider_id)
             if not test_url:

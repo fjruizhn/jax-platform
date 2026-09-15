@@ -103,7 +103,11 @@ def test_chat_gemini_con_error_no_guarda_ni_loguea_la_key(monkeypatch, caplog):
 
     with pytest.raises(httpx.HTTPStatusError) as exc:
         asyncio.run(chat_mod._invoke_facet("thot", _config(), "u1", "hola"))
-    assert KEY in str(exc.value)          # control: la excepcion SI la trae
+    # T6-2 (2026-09-15): la key viaja en la cabecera x-goog-api-key, asi que
+    # la excepcion de httpx YA NO la trae (antes este control afirmaba lo
+    # contrario). La redaccion del escritor sigue probada abajo, con textos
+    # que si la traen (defensa en profundidad).
+    assert KEY not in str(exc.value)
 
     details = _details(sink)
     assert len(details) == 1

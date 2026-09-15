@@ -1085,7 +1085,8 @@ _PROVIDER_SYNC_SEED = [
     ("deepseek",  "header_bearer", "https://api.deepseek.com/v1/models"),
     ("moonshot",  "header_bearer", "https://api.moonshot.ai/v1/models"),
     ("zhipu",     "header_bearer", "https://api.z.ai/api/paas/v4/models"),
-    ("gemini",    "query_param",   "https://generativelanguage.googleapis.com/v1beta/models"),
+    # T6-2 (2026-09-15): antes 'query_param' (key en la URL).
+    ("gemini",    "header_goog_api_key", "https://generativelanguage.googleapis.com/v1beta/models"),
     ("anthropic", "header_bearer", "https://api.anthropic.com/v1/models"),
     # ollama: local, sin API key (provider.auth_type='none') — transport
     # queda en el default inerte, model_catalog.py nunca lo lee para este
@@ -1494,6 +1495,15 @@ _ENUM_EXTENSIONS = [
         "ALTER TABLE facet_health_event MODIFY COLUMN outcome "
         "ENUM('ok','provider_error','gate_denied','gate_unreachable',"
         "'unbound','unsupported_transport','probe_error','config_error') NOT NULL",
+    ),
+    # T6-2 (2026-09-15): Gemini manda la key en la cabecera x-goog-api-key.
+    # 'query_param' se conserva en el ENUM para que el ALTER no falle sobre
+    # filas viejas; _migrar_gemini_a_cabecera las mueve y model_catalog
+    # rechaza el valor viejo (fail-closed).
+    (
+        "provider", "api_key_transport", "header_goog_api_key",
+        "ALTER TABLE provider MODIFY COLUMN api_key_transport "
+        "ENUM('header_bearer','query_param','header_goog_api_key') NOT NULL DEFAULT 'header_bearer'",
     ),
 ]
 
@@ -1996,6 +2006,31 @@ async def _auditoria_de_catalogo_sin_fk_duras(cur, tabla: str = "model_catalog_a
     )
 
 
+async def _migrar_gemini_a_cabecera(cur) -> None:
+    """T6-2 (2026-09-15): la key de Gemini viajaba en `?key=` y terminaba en
+    textos de error y logs. Toda fila con el transporte viejo pasa a la
+    cabecera. Idempotente (sin filas viejas, no toca nada)."""
+    await cur.execute(
+        "UPDATE provider SET api_key_transport='header_goog_api_key' "
+        "WHERE api_key_transport='query_param'"
+    )
+
+
+async def _indice_de_duenio_en_jacobs_pipelines(cur) -> None:
+    """T6-5a (2026-09-15): GET /api/pipelines filtra por (user_id, tenant_id)
+    y ordena por created_at -- LAS CUATRO (indexing), EXPLAIN en
+    tests/test_t6_seguimiento.py. La tabla la crea Jacobs (repo jax,
+    jacobs/store.py): si todavia no existe (base nueva, Jacobs no arranco),
+    se saltea y el proximo arranque de la plataforma crea el indice."""
+    if not await _table_exists(cur, "jacobs_pipelines"):
+        return
+    if not await _index_exists(cur, "jacobs_pipelines", "idx_jacobs_pipelines_duenio"):
+        await cur.execute(
+            "ALTER TABLE jacobs_pipelines ADD INDEX idx_jacobs_pipelines_duenio "
+            "(user_id, tenant_id, created_at)"
+        )
+
+
 async def _indices_de_model_binding_proposal(cur) -> None:
     """PR-L ronda 2: los índices de list_proposals en una base donde la tabla
     ya existía sin ellos (en una base nueva los trae el CREATE). Idempotente."""
@@ -2038,6 +2073,7 @@ async def run_migrations():
             await _migrate_user_api_keys_to_credential(cur)
             await _seed_facets(cur)
             await _seed_provider_sync_config(cur)
+            await _migrar_gemini_a_cabecera(cur)
             await _seed_models_and_backfill(cur)
             await _fix_anthropic_sonnet_alias(cur)
             await _seed_motors_and_capabilities(cur)
@@ -2062,6 +2098,7 @@ async def run_migrations():
             # nadie escriba en ella (PR-L ronda 1).
             await _auditoria_de_catalogo_sin_fk_duras(cur)
             await _indices_de_model_binding_proposal(cur)
+            await _indice_de_duenio_en_jacobs_pipelines(cur)
             # Despues de _seed_models_and_backfill: las filas de `model` tienen
             # que existir para poder actualizarlas.
             await _seed_model_max_tokens_param(cur)
