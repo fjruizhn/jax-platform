@@ -54,6 +54,14 @@ async def _record_pipeline_owner(pipeline_id: str, tenant_id: str, user_id: str)
             )
 
 
+def es_del_usuario(user_id: str, tenant_id: str, user: AuthUser) -> bool:
+    """LA regla de pertenencia de un pipeline: user_id Y tenant_id coinciden
+    con los del token. Sin excepcion por rol (un superadmin que no es el
+    dueño recibe 404 igual). La usan _require_pipeline_owner (4 endpoints por
+    id) y GET /api/state (Task 6 S2, 2026-09-15) -- una sola regla, no dos."""
+    return user_id == user.user_id and tenant_id == user.tenant_id
+
+
 async def _require_pipeline_owner(pipeline_id: str, user: AuthUser):
     # 404 (no 403) para no confirmarle a un no-dueño que el pipeline_id
     # existe. Pipelines creadas antes de esta migración no tienen
@@ -71,12 +79,7 @@ async def _require_pipeline_owner(pipeline_id: str, user: AuthUser):
                 (pipeline_id,),
             )
             row = await cur.fetchone()
-    if (
-        row is None
-        or row[2] is None
-        or row[0] != user.user_id
-        or row[1] != user.tenant_id
-    ):
+    if row is None or row[2] is None or not es_del_usuario(row[0], row[1], user):
         raise HTTPException(status_code=404, detail="Pipeline no encontrado")
 
 
