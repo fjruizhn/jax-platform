@@ -46,19 +46,3 @@ body {
   background: rgb(var(--barra-pulgar));
   border-radius: 3px;
 }
-
-/* ===================== LIGHT MODE (capa vieja) =====================
-   Overrides clase por clase de las pantallas que TODAVÍA no migraron a tokens
-   (spec 2026-09-14-tema-tokens §8). Sólo quedan los que usa Dashboard; el
-   resto de la capa se fue en la Task 24. Se borra entera en el PR 4. No
-   agregar overrides nuevos: migrar a tokens. */
-
-/* Backgrounds */
-html.light-mode .bg-hal-bg { background-color: #f8fafc; }
-html.light-mode .bg-slate-900 { background-color: #ffffff; }
-
-/* Borders */
-html.light-mode .border-slate-700 { border-color: #cbd5e1; }
-
-/* Text */
-html.light-mode .text-hal-text { color: #0f172a; }

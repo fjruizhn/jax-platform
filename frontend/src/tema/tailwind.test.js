@@ -11,4 +11,7 @@ it('tailwind.config.js expone cada token como rgb(var(--x) / <alpha-value>)', ()
   expect(mal).toEqual([])
   // El `oro` de antes era un objeto con hex; ahora es el token.
   expect(colores.oro).toBe('rgb(var(--oro) / <alpha-value>)')
+  // Task 27 (PR 4, cierre del rollout): Dashboard migró en el Task 26; los
+  // colores hal-* de la capa vieja ya no tienen usuarios.
+  expect(colores.hal).toBeUndefined()
 })

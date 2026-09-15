@@ -256,8 +256,14 @@ jobs:
             // de verde). Medido con vitest run en la rama: 228; sobre el PR 3: 255.
             // Re-medido el 2026-09-15 tras rebasar la etapa 3 sobre master 65c02de
             // (PR 3 del tema): vitest run da 255 passed en 41 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 255) {
-              console.error("PISO ROTO: se esperaban 255 tests de vitest CORRIDOS y 0 fallidos.");
+            // 255 -> 257 el 2026-09-15 (tema con tokens, pr4, tras rebasar sobre
+            // la etapa 3): +1 Task 26 (test de hojas de estilo: la capa
+            // html.light-mode ya no existe en index.css) +1 Task 27 (index.html
+            // sin light-mode: el script inicial ya no agrega esa clase). Vistos
+            // en rojo antes de verde. Medido con vitest run: 257 passed en 41
+            // archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 257) {
+              console.error("PISO ROTO: se esperaban 257 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

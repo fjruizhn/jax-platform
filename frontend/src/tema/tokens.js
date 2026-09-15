@@ -62,47 +62,6 @@ export const EXENTOS_TEXTO = {
 // { archivo, texto, motivo } y la aprueba la revisión.
 export const PERMITIDOS_CRUDOS = []
 
-// Archivos (relativos a src/) que ya pintan sólo con tokens. Cada PR del
-// rollout amplía la lista; el PR 4 la reemplaza por "todos".
-export const MIGRADOS = [
-  'components/AlertaError.jsx',
-  'components/BarraUsuario.jsx',
-  'components/HalEye/HalEye.jsx',
-  'components/LogoAxioma.jsx',
-  'components/PasswordInput.jsx',
-  'pages/Login.jsx',
-  'pages/ResetPassword.jsx',
-  'pages/admin/AdminSmtp.jsx',
-  'pages/admin/AdminSettings.jsx',
-  'pages/Admin.jsx',
-  'components/admin/AdminSidebar.jsx',
-  'pages/admin/AdminUsers.jsx',
-  'pages/admin/AdminMotors.jsx',
-  'pages/admin/AdminFacetsModels.jsx',
-  'pages/admin/AdminModelCatalog.jsx',
-  'pages/admin/FormContratoDispatch.jsx',
-  'pages/admin/AdminRepository.jsx',
-  'pages/admin/AdminDashboard.jsx',
-  'pages/admin/AdminCosts.jsx',
-  'pages/admin/AdminFacetBindings.jsx',
-  'store/useJaxStore.js',
-  'components/LeftPanel/FacetCard.jsx',
-  'components/CenterPanel/Message.jsx',
-  'components/BottomBar/BottomBar.jsx',
-  'components/BottomBar/KillSwitch.jsx',
-  'components/BottomBar/PipelineModal.jsx',
-  'components/CenterPanel/CenterPanel.jsx',
-  'components/chat/AttachButton.jsx',
-  'components/chat/FileAttachment.jsx',
-  'components/LeftPanel/LeftPanel.jsx',
-  'components/Notifications/Toast.jsx',
-  'components/RightPanel/RightPanel.jsx',
-  'components/RightPanel/AuditLog.jsx',
-  'components/RightPanel/StepCard.jsx',
-  'components/admin/EditarUsuarioModal.jsx',
-  'components/admin/HistorialUsuario.jsx',
-]
-
 const RESPALDO = 'texto-suave'
 
 // Color CSS de un token para un `style={{}}` (colores que vienen de datos).

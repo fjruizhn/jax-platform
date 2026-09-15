@@ -25,7 +25,6 @@ describe('useTema', () => {
     expect(localStorage.getItem('jax_theme_default')).toBe('light')
     expect(useTema.getState().theme).toBe('light')
     expect(html().getAttribute('data-tema')).toBe('claro')
-    expect(html().classList.contains('light-mode')).toBe(true)
   })
 
   it('con elección guardada, un predeterminado distinto no cambia el tema', async () => {
@@ -44,7 +43,6 @@ describe('useTema', () => {
     useTema.getState().toggleTheme()
     expect(localStorage.getItem('jax_theme')).toBe('dark')
     expect(html().hasAttribute('data-tema')).toBe(false)
-    expect(html().classList.contains('light-mode')).toBe(false)
   })
 
   it('un valor fuera de lista del servidor se ignora', async () => {
@@ -80,7 +78,6 @@ describe('useTema', () => {
     expect(localStorage.getItem('jax_theme_default')).toBe('light')
     expect(useTema.getState().predeterminado).toBe('light')
     expect(html().getAttribute('data-tema')).toBe('claro')
-    expect(html().classList.contains('light-mode')).toBe(true)
   })
 
   it('fijarPredeterminadoComoEleccion ignora un valor fuera de lista', () => {
