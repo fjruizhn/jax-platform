@@ -1519,8 +1519,9 @@ _COLUMN_WIDENS = [
     ),
     # jax_users.email era VARCHAR(100), pero se valida hasta 254 (RFC 5321) y la
     # baja lo renombra a <original>#baja-<id>-<yyyymmdd> para liberar la
-    # dirección: hasta 254 + 26. 320 deja margen. MODIFY conserva el UNIQUE
-    # (índice de 1280 bytes en utf8mb4, bajo el límite de 3072 de InnoDB).
+    # dirección: hasta 254 + 25 = 279 (ver email_de_baja en api/admin/users.py).
+    # 320 deja margen. MODIFY conserva el UNIQUE (índice de 1280 bytes en
+    # utf8mb4, bajo el límite de 3072 de InnoDB).
     (
         "jax_users", "email", 320,
         "ALTER TABLE jax_users MODIFY COLUMN email VARCHAR(320) NOT NULL",

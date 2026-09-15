@@ -369,8 +369,17 @@ jobs:
             // (doble clic / doble submit en vuelo confirman una sola vez). El
             // de foco visto en rojo; los otros, en rojo bajo su mutación.
             // Medido con vitest run: 336 passed en 48 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 336) {
-              console.error("PISO ROTO: se esperaban 336 tests de vitest CORRIDOS y 0 fallidos.");
+            // 336 -> 339 el 2026-09-15 (tanda del review final de la etapa 5,
+            // Ruling U36, m2/m3): +3 AdminUsers.test.jsx (m2: un 404
+            // usuario_no_encontrado en /baja cierra el diálogo, avisa y
+            // recarga la lista -- un 409 sigue dejándolo abierto; m3: una
+            // confirmación en vuelo, ya cancelada en pantalla, no cierra ni
+            // le roba el foco al diálogo de baja de OTRO usuario --
+            // cerrarBajaSiEs sólo toca el diálogo si sigue siendo el suyo).
+            // Vistos en rojo antes de verde. Medido con vitest run: 339
+            // passed en 48 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 339) {
+              console.error("PISO ROTO: se esperaban 339 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -925,7 +934,20 @@ jobs:
           # el token confirmado y FOR UPDATE NOWAIT pasa) -- la mutación "envío dentro de
           # la transacción" cae en ~0,4 s en los dos caminos. M2 solo endurece un test
           # existente (sin cambio en el conteo). Medido dos veces: 845 / 1.
-          PISO_PASSED = 845
+          # Subido de 845 a 846 (2026-09-15, tanda del review final de la etapa 5, Ruling
+          # U36, m4): +1 en test_admin_usuarios_baja.py --
+          # test_refresh_no_revive_a_un_dado_de_baja: POST /api/auth/refresh con la cookie
+          # de refresh de un usuario, tomada ANTES de la baja, da 401 sesion_invalida
+          # después. Verificado que refresh pasa de verdad por verificar_sesion quitando
+          # esa llamada (bypass real de la etapa 2): cae en ROJO. Las dos mutaciones de un
+          # solo renglón que pidió la revisión (saltar sólo el chequeo de status en
+          # verificar_sesion; no subir token_version en dar_de_baja) NO ponen este test en
+          # rojo por separado -- las dos condiciones se escriben en el MISMO UPDATE
+          # (status='deleted' + token_version+1) y verificar_sesion las exige con un OR:
+          # cualquiera de las dos sola ya basta para el 401, así que sacar una deja a la
+          # otra cubriendo (defensa en profundidad real, no un hueco de la prueba);
+          # medido con las dos mutaciones por separado, revertidas. Medido dos veces: 846 / 1.
+          PISO_PASSED = 846
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1286,6 +1308,9 @@ jobs:
       # Task 3 fix ronda 2 (2026-09-15, Ruling U33 y M1): los 3 nuevos de
       # test_admin_usuarios_baja.py piden `client` y se saltean (sin cambio en
       # passed). Medido dos veces con JAX_CI_NO_DB=1: 371 / 475.
+      # Tanda del review final de la etapa 5 (2026-09-15, Ruling U36, m4): el nuevo
+      # test_refresh_no_revive_a_un_dado_de_baja pide `client` y se saltea (sin cambio
+      # en passed). Medido dos veces con JAX_CI_NO_DB=1: 371 / 476.
       JAX_CI_MIN_PASSED: "371"
     steps:
       - uses: actions/checkout@v4

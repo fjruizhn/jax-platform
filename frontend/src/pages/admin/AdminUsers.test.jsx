@@ -399,3 +399,75 @@ describe('AdminUsers — baja: foco, error, exclusión y correo propio (fix roun
     expect(actualizarMiEmailMock).not.toHaveBeenCalled()
   })
 })
+
+// Tanda del review final de la etapa 5 (m2, m3; Ruling U36).
+const OTRO = {
+  user_id: 5, email: 'y@x.io', role: 'operator', status: 'active', created_at: null,
+  last_login: null, failed_attempts: 0, locked_until: null, is_locked: false,
+}
+
+describe('AdminUsers — baja: revisión final (m2/m3)', () => {
+  it('m2: un 404 usuario_no_encontrado cierra el diálogo, avisa y recarga la lista', async () => {
+    servirGet([SUPERADMIN])
+    api.post.mockRejectedValue({ response: { status: 404, data: { detail: 'usuario_no_encontrado' } } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Dar de baja' }))
+    const dialogo = screen.getByRole('dialog')
+    resolverSuma(dialogo)
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Dar de baja' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error', message: 'El usuario no existe.',
+    }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // load() en el mount + load() tras el 404: dos llamadas.
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
+  })
+
+  it('m2: un 409 (el existente, ultimo_superadmin) sigue dejando el diálogo abierto', async () => {
+    servirGet([SUPERADMIN])
+    api.post.mockRejectedValue({ response: { status: 409, data: { detail: 'ultimo_superadmin' } } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Dar de baja' }))
+    const dialogo = screen.getByRole('dialog')
+    resolverSuma(dialogo)
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Dar de baja' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error', message: 'No se puede: tiene que quedar al menos un superadmin activo.',
+    }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(api.get).toHaveBeenCalledTimes(1)
+  })
+
+  it('m3: una confirmación en vuelo no cierra ni le roba el foco al diálogo de baja de OTRO usuario', async () => {
+    servirGet([SUPERADMIN, OTRO])
+    let resolverX
+    const promesaX = new Promise((resolve) => { resolverX = resolve })
+    api.post.mockImplementation((url) => (url === '/admin/users/2/baja' ? promesaX : Promise.resolve({ data: { ok: true } })))
+    renderUsers()
+
+    const botonesBaja = await screen.findAllByRole('button', { name: 'Dar de baja' })
+    fireEvent.click(botonesBaja[0]) // fila de b@x.io (X)
+    const dialogoX = screen.getByRole('dialog', { name: 'Dar de baja a b@x.io' })
+    resolverSuma(dialogoX)
+    fireEvent.click(within(dialogoX).getByRole('button', { name: 'Dar de baja' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/2/baja'))
+
+    // X sigue esperando la respuesta -- Cancelar/Escape siguen habilitados.
+    fireEvent.click(within(dialogoX).getByRole('button', { name: 'Cancelar' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Dar de baja a b@x.io' })).not.toBeInTheDocument())
+
+    const botonBajaY = screen.getAllByRole('button', { name: 'Dar de baja' })[1]
+    fireEvent.click(botonBajaY)
+    const dialogoY = screen.getByRole('dialog', { name: 'Dar de baja a y@x.io' })
+    resolverSuma(dialogoY)
+
+    // Recién ahora responde la confirmación de X, ya cancelada en pantalla.
+    resolverX({ data: { ok: true } })
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'success', message: 'b@x.io fue dado de baja.',
+    }))
+
+    expect(screen.getByRole('dialog', { name: 'Dar de baja a y@x.io' })).toBeInTheDocument()
+    expect(dialogoY.contains(document.activeElement)).toBe(true)
+  })
+})

@@ -126,6 +126,31 @@ def test_baja_inutiliza_la_cuenta_renombra_el_correo_y_audita(client, usuarios):
     assert (accion, json.loads(detalle)) == ("baja", {"email": email})
 
 
+def _refresh(client, token):
+    try:
+        # Cookie explícita: el jar del `client` de sesión puede traer la de
+        # otro test (login); http.cookiejar no pisa una Cookie ya puesta
+        # (mismo patrón que tests/test_sesiones_token_version.py::_refresh).
+        return client.post("/api/auth/refresh", headers={"Cookie": f"refresh_token={token}"})
+    finally:
+        client.cookies.clear()
+
+
+def test_refresh_no_revive_a_un_dado_de_baja(client, usuarios):
+    """m4 (revisión final de la etapa 5, 2026-09-15): /api/auth/refresh pasa
+    por verificar_sesion (auth/middleware.py) igual que cualquier otro
+    request -- no tiene un camino propio que reemita a partir del rol/versión
+    del refresh token sin volver a mirar la base (ese era el hallazgo 1 de la
+    etapa 2). La baja pone status='deleted' y sube token_version: el refresh
+    tomado ANTES de la baja (la cookie de una sesión que estaba viva) deja de
+    servir."""
+    u, _ = usuarios(password="clave-de-la-baja-1")
+    refresco_previo = token_para(u, tipo="refresh")
+    assert _baja(client, u).status_code == 200
+    r = _refresh(client, refresco_previo)
+    assert (r.status_code, r.json()["detail"]) == (401, "sesion_invalida")
+
+
 def test_la_baja_libera_el_correo(client, usuarios):
     u, email = usuarios()
     assert _baja(client, u).status_code == 200
