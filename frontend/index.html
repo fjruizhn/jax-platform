@@ -2,6 +2,21 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
+    <!-- Tema antes del primer pintado (spec 2026-09-14-tema-tokens §5.2).
+         Copia mínima de src/tema/aplicarTema.js (temaInicial + aplicarTema);
+         si cambia uno, cambia el otro: src/tema/scriptTema.test.js los compara. -->
+    <script id="tema-inicial">
+      (function () {
+        var e = localStorage.getItem('jax_theme')
+        var p = localStorage.getItem('jax_theme_default')
+        var ok = function (v) { return v === 'dark' || v === 'light' }
+        var tema = ok(e) ? e : ok(p) ? p : 'dark'
+        if (tema === 'light') {
+          document.documentElement.setAttribute('data-tema', 'claro')
+          document.documentElement.classList.add('light-mode')
+        }
+      })()
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Axioma</title>
     <meta name="description" content="Axioma Platform — En memoria de Jairo Urbina" />
