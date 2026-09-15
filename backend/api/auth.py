@@ -219,11 +219,24 @@ async def cambiar_mi_password(
     # otra de jax_users -> no hay ciclo posible con ellas (no hace falta
     # _leer_para_actualizar, que serializaría todo cambio de contraseña con
     # las escrituras de admin sin necesidad).
+    # Fix ronda 1 (2026-09-15): se relee también la sesión. Si en la ventana
+    # de bcrypt el admin revocó las sesiones (token_version), desactivó la
+    # cuenta o la borró, esta sesión ya no vale: 401 sin escribir, sin
+    # auditar, sin cortar y sin tokens -- si no, la revocación quedaba
+    # deshecha por los tokens nuevos de tv+1.
     async with transaccion() as cur:
-        await cur.execute("SELECT password_hash FROM jax_users WHERE user_id = %s FOR UPDATE", (user_id,))
+        await cur.execute(
+            "SELECT password_hash, token_version, status FROM jax_users WHERE user_id = %s FOR UPDATE",
+            (user_id,),
+        )
         vigente = await cur.fetchone()
-        if vigente is None or vigente[0] != hash_verificado:
+        if vigente is None or vigente[1] != user.token_version or vigente[2] != "active":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="sesion_invalida")
+        if vigente[0] != hash_verificado:
             raise actual_incorrecta
+        # Ruling U16: una cuenta bloqueada pero activa, con sesión viva, que
+        # prueba la actual puede cambiarla, y eso limpia el bloqueo como un
+        # login exitoso (el límite del login ya se aplicó arriba).
         await cur.execute(
             "UPDATE jax_users SET password_hash = %s, token_version = token_version + 1, "
             "failed_attempts = 0, locked_until = NULL WHERE user_id = %s",

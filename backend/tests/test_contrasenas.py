@@ -177,6 +177,55 @@ def test_mi_cuenta_si_la_contrasena_cambio_mientras_se_verificaba_no_pisa(client
     assert client.portal.call(_acciones, u) == [] and cortes == []
 
 
+async def _hash_de(user_id):
+    ((h,),) = await sql("SELECT password_hash FROM jax_users WHERE user_id = %s", (user_id,), True)
+    return h
+
+
+def _cambio_con_algo_concurrente(client, usuarios, monkeypatch, sentencia):
+    """Mientras se verifica la actual (la ventana de bcrypt), otra conexión
+    ejecuta `sentencia` sobre el usuario. Devuelve (user_id, hash_antes, respuesta, cookie)."""
+    u, _ = usuarios(password=CLAVE)
+    antes = client.portal.call(_hash_de, u)
+    verificar_real = auth_mod.verify_password
+
+    async def verifica_y_otro_cambia(plain, hashed):
+        ok = await verificar_real(plain, hashed)
+        await sql(sentencia, (u,))
+        return ok
+
+    monkeypatch.setattr(auth_mod, "verify_password", verifica_y_otro_cambia)
+    try:
+        r = client.post("/api/auth/me/password", json={"current_password": CLAVE, "new_password": NUEVA},
+                        headers=auth(token_para(u)))
+        cookie = r.cookies.get("refresh_token")
+    finally:
+        client.cookies.clear()
+    return u, antes, r, cookie
+
+
+def _no_hizo_nada(client, u, antes, r, cookie, cortes):
+    assert (r.status_code, r.json()["detail"]) == (401, "sesion_invalida")
+    assert "access_token" not in r.json() and cookie is None, "sin tokens"
+    assert client.portal.call(_hash_de, u) == antes, "el hash no cambia"
+    assert client.portal.call(_acciones, u) == [] and cortes == []
+
+
+def test_mi_cuenta_no_deshace_una_revocacion_concurrente(client, usuarios, cortes, monkeypatch):
+    u, antes, r, cookie = _cambio_con_algo_concurrente(
+        client, usuarios, monkeypatch, "UPDATE jax_users SET token_version = token_version + 1 WHERE user_id = %s")
+    _no_hizo_nada(client, u, antes, r, cookie, cortes)
+    assert client.portal.call(_version, u) == 1, "la revocación queda como la dejó el admin"
+
+
+def test_mi_cuenta_no_cambia_la_contrasena_de_una_cuenta_desactivada_en_el_medio(client, usuarios, cortes,
+                                                                                 monkeypatch):
+    u, antes, r, cookie = _cambio_con_algo_concurrente(
+        client, usuarios, monkeypatch, "UPDATE jax_users SET status = 'inactive' WHERE user_id = %s")
+    _no_hizo_nada(client, u, antes, r, cookie, cortes)
+    assert client.portal.call(_version, u) == 0
+
+
 def test_mi_cuenta_tiene_el_limite_del_login(client, usuarios, monkeypatch):
     monkeypatch.setattr(rate_limit, "LOGIN_IP_LIMITER", SlidingWindowLimiter(2, 60, 1000))
     monkeypatch.setattr(rate_limit, "TRUSTED_PROXIES", frozenset())
