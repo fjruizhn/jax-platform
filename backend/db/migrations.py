@@ -15,7 +15,7 @@ CREATE_USERS = """
 CREATE TABLE IF NOT EXISTS jax_users (
   user_id INT AUTO_INCREMENT PRIMARY KEY,
   tenant_id INT NOT NULL,
-  email VARCHAR(100) NOT NULL UNIQUE,
+  email VARCHAR(320) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
   role VARCHAR(20) DEFAULT 'operator',
   status VARCHAR(20) DEFAULT 'active',
@@ -1251,6 +1251,9 @@ _COLUMNS = [
     # filas existentes: un token viejo (sin `tv`) vale como 0 y nadie queda
     # afuera al desplegar.
     ("jax_users", "token_version", "ALTER TABLE jax_users ADD COLUMN token_version INT NOT NULL DEFAULT 0"),
+    # Baja en vez de DELETE (2026-09-12, admin usuarios etapa 5, spec §3.5).
+    ("jax_users", "deleted_at", "ALTER TABLE jax_users ADD COLUMN deleted_at DATETIME NULL"),
+    ("jax_users", "deleted_by", "ALTER TABLE jax_users ADD COLUMN deleted_by INT NULL"),
     # Bloque D (D1.1/D1.3) — divergencia real ya presente en
     # api/admin/keys.py:158-169 (Gemini usa ?key=, los otros 4 Authorization:
     # Bearer). models_list_url NULL = sin sync automatico de capa (a)
@@ -1513,6 +1516,14 @@ _COLUMN_WIDENS = [
     (
         "axioma_usage", "model", 100,
         "ALTER TABLE axioma_usage MODIFY COLUMN model VARCHAR(100) NOT NULL",
+    ),
+    # jax_users.email era VARCHAR(100), pero se valida hasta 254 (RFC 5321) y la
+    # baja lo renombra a <original>#baja-<id>-<yyyymmdd> para liberar la
+    # dirección: hasta 254 + 26. 320 deja margen. MODIFY conserva el UNIQUE
+    # (índice de 1280 bytes en utf8mb4, bajo el límite de 3072 de InnoDB).
+    (
+        "jax_users", "email", 320,
+        "ALTER TABLE jax_users MODIFY COLUMN email VARCHAR(320) NOT NULL",
     ),
 ]
 
