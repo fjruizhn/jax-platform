@@ -13,7 +13,7 @@ const CODIGO_SIN_CONTRATO = 'modelo_sin_contrato_de_dispatch'
 const STATUS_COLOR = {
   available: 'text-exito',
   degraded: 'text-aviso',
-  deprecated: 'text-aviso',
+  deprecated: 'text-obsoleto',
   gone: 'text-texto-tenue',
 }
 

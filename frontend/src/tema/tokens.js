@@ -12,6 +12,7 @@ export const TOKENS = [
   'peligro', 'peligro-fondo', 'peligro-borde', 'peligro-solido', 'peligro-solido-hover',
   'exito', 'exito-fondo', 'exito-borde',
   'aviso', 'aviso-fondo', 'aviso-borde',
+  'obsoleto',
   'oro', 'oro-claro', 'oro-oscuro',
   'burbuja-usuario', 'modo-comando',
   'faceta-jax-local', 'faceta-jekyll', 'faceta-hyde', 'faceta-hipatia',
@@ -25,7 +26,7 @@ export const AA_UI = 3
 const FACETAS = TOKENS.filter((t) => t.startsWith('faceta-'))
 const TEXTOS_SOBRE_BASE = [
   'texto-fuerte', 'texto', 'texto-suave', 'texto-tenue', 'acento-texto',
-  'info', 'peligro', 'exito', 'aviso', 'oro', 'oro-claro', ...FACETAS,
+  'info', 'peligro', 'exito', 'aviso', 'obsoleto', 'oro', 'oro-claro', ...FACETAS,
 ]
 const FONDOS_BASE = ['fondo', 'superficie', 'hundido']
 

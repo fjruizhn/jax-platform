@@ -40,9 +40,9 @@ function fallas(tema) {
 }
 
 describe('tokens de color', () => {
-  it('tokens.css tiene los dos temas con 47 tokens cada uno', () => {
-    expect(Object.keys(temas.oscuro)).toHaveLength(47)
-    expect(Object.keys(temas.claro)).toHaveLength(47)
+  it('tokens.css tiene los dos temas con 48 tokens cada uno', () => {
+    expect(Object.keys(temas.oscuro)).toHaveLength(48)
+    expect(Object.keys(temas.claro)).toHaveLength(48)
   })
 
   it('todo token de tokens.js tiene valor en los dos temas, y todo valor tiene nombre', () => {
@@ -60,13 +60,23 @@ describe('tokens de color', () => {
     expect(r).toBeLessThan(AA_TEXTO)
   })
 
-  it('los 88 pares alcanzan su mínimo en oscuro', () => {
-    expect(PARES).toHaveLength(88)
+  it('los 91 pares alcanzan su mínimo en oscuro', () => {
+    expect(PARES).toHaveLength(91)
     expect(fallas('oscuro')).toEqual([])
   })
 
-  it('los 88 pares alcanzan su mínimo en claro', () => {
+  it('los 91 pares alcanzan su mínimo en claro', () => {
     expect(fallas('claro')).toEqual([])
+  })
+
+  // Task 16b (Ruling 28): "deprecado" necesita su propio token, distinto de
+  // "degradado" (aviso). obsoleto es naranja, con pares sobre los tres fondos
+  // base -- igual que aviso.
+  it('obsoleto existe en TOKENS con pares AA sobre fondo, superficie y hundido', () => {
+    expect(TOKENS).toContain('obsoleto')
+    for (const fondo of ['fondo', 'superficie', 'hundido']) {
+      expect(PARES).toContainEqual(['obsoleto', fondo, AA_TEXTO])
+    }
   })
 
   it('colorToken arma rgb(var()) y un nombre desconocido cae en texto-suave', () => {
