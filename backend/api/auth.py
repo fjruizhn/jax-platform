@@ -19,6 +19,9 @@ from db.connection import get_pool
 from db.seed import verify_password, _hash
 from jax_engine.background import add_safe_task
 import smtp_config
+import user_audit
+from api.admin.users import _cortar_conexiones
+from db.transaccion import transaccion
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +168,75 @@ async def me(user: AuthUser = Depends(get_current_user)):
 async def logout(response: Response):
     response.delete_cookie(key="refresh_token", samesite="lax")
     return {"ok": True}
+
+
+class CambioPasswordRequest(BaseModel):
+    current_password: str = Field(max_length=1024)
+    new_password: str = Field(max_length=1024)
+
+
+@router.post("/me/password", response_model=RefreshResponse)
+async def cambiar_mi_password(
+    req: CambioPasswordRequest,
+    request: Request,
+    response: Response,
+    user: AuthUser = Depends(get_current_user),
+):
+    """Mi cuenta (2026-09-15, admin usuarios etapa 4, spec §3.2 y §3.4). Exige
+    la contraseña actual, con el mismo límite de intentos que el login (sin él,
+    un token robado sirve para adivinar la contraseña a velocidad de CPU).
+    Sube token_version: se cierran las OTRAS sesiones, y esta recibe tokens
+    nuevos (access en la respuesta, refresh en la cookie)."""
+    user_id = int(user.user_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT email, password_hash FROM jax_users WHERE user_id = %s", (user_id,))
+            fila = await cur.fetchone()
+    if fila is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="sesion_invalida")
+    email, hash_verificado = fila
+    rate_limit.check_login_rate(request, email)
+    # 400 y no 401: un 401 dispara el refresh del frontend y, al fallar, lo desloguea.
+    actual_incorrecta = HTTPException(status_code=400, detail="password_actual_incorrecta")
+    if not await verify_password(req.current_password, hash_verificado):
+        raise actual_incorrecta
+    problema = problema_de_password(req.new_password)
+    if problema:
+        raise HTTPException(status_code=400, detail=f"password_{problema}")
+    # bcrypt (~150 ms) fuera del event loop y fuera de la transacción.
+    nuevo_hash = await asyncio.to_thread(_hash, req.new_password)
+    ip = rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES)
+    # Una transacción: la verificación queda atada a la escritura porque la
+    # fila se relee con FOR UPDATE y el hash tiene que ser EL MISMO que se
+    # verificó (si otra pestaña o un reset lo cambió en el medio, no se pisa:
+    # la contraseña presentada ya no es la vigente). El bcrypt de la
+    # verificación no corre con el bloqueo tomado.
+    # Bloqueos: una sola fila de jax_users, por PK (y el INSERT de auditoría,
+    # cuya FK apunta a esa misma fila). Las escrituras de admin toman el
+    # conjunto de superadmins y luego su destino; esta transacción no tiene
+    # nada tomado mientras espera su única fila, y teniéndola no pide ninguna
+    # otra de jax_users -> no hay ciclo posible con ellas (no hace falta
+    # _leer_para_actualizar, que serializaría todo cambio de contraseña con
+    # las escrituras de admin sin necesidad).
+    async with transaccion() as cur:
+        await cur.execute("SELECT password_hash FROM jax_users WHERE user_id = %s FOR UPDATE", (user_id,))
+        vigente = await cur.fetchone()
+        if vigente is None or vigente[0] != hash_verificado:
+            raise actual_incorrecta
+        await cur.execute(
+            "UPDATE jax_users SET password_hash = %s, token_version = token_version + 1, "
+            "failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
+            (nuevo_hash, user_id),
+        )
+        await cur.execute("SELECT token_version FROM jax_users WHERE user_id = %s", (user_id,))
+        (nueva_version,) = await cur.fetchone()
+        await user_audit.registrar(cur, user_id, user_id, "password_changed_self", None, ip)
+    # Ruling U9 (spec §3.2): después del commit, fail-soft. Se corta también
+    # la pestaña que hizo el cambio: reconecta sola con el token nuevo.
+    await _cortar_conexiones(user_id)
+    access = _emitir_tokens(response, user.user_id, user.tenant_id, user.role, nueva_version)
+    return RefreshResponse(access_token=access)
 
 
 class ForgotPasswordRequest(BaseModel):

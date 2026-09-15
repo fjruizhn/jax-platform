@@ -739,7 +739,11 @@ jobs:
           # test_contrasenas.py (3 puros de la regla única: corta, larga por bytes, caracteres
           # como puntos de código; alta con password_corta/password_larga -> 400 y sin fila,
           # no 500). Medido: 790 / 1.
-          PISO_PASSED = 790
+          # Subido de 790 a 797 (2026-09-15, admin usuarios etapa 4, Task 2): +7 en
+          # test_contrasenas.py (Mi cuenta: exige la actual, regla, tokens nuevos y otras
+          # sesiones cerradas, corte WS/SSE post-commit, corte fail-soft, hash cambiado en
+          # el medio no se pisa, límite del login). Medido: 797 / 1.
+          PISO_PASSED = 797
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1067,6 +1071,8 @@ jobs:
       # rebasar sobre master 65c02de (PR 3 del tema) con JAX_CI_NO_DB=1: 366 / 421.
       # Admin usuarios etapa 4, Task 1 (2026-09-15): +3 puros en test_contrasenas.py (regla
       # única de contraseña); el del alta pide `client`. Medido con JAX_CI_NO_DB=1: 369 / 422.
+      # Task 2 (2026-09-15): los 7 de Mi cuenta piden `client` (sin cambio). Medido con
+      # JAX_CI_NO_DB=1: 369 / 429.
       JAX_CI_MIN_PASSED: "369"
     steps:
       - uses: actions/checkout@v4
