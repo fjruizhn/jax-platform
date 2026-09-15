@@ -558,7 +558,7 @@ jobs:
           # inválidos -> 422 con código y sin escribir; mensaje = el del validador del dispatch;
           # 404; válido -> fila + auditoría + sello; EXPLAIN por PK; migración idempotente; flujo
           # approve 409 -> declarar -> approve 200; rastro del rechazo por contrato, por proveedor
-          # y del PUT). Medido contra jax master f36ef3f: 709 + 11 = 720 / 1.
+          # y del PUT). Medido contra jax master f84ecc1 (= f36ef3f + solo docs): 709 + 11 = 720 / 1.
           PISO_PASSED = 720
           MAX_SKIPS = 1
 
