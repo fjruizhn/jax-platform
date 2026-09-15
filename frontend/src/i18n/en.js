@@ -88,6 +88,11 @@ export default {
   newPipelineTitle: 'New Pipeline · Jacobs',
   objectiveLabel: 'Objective',
   modeLabel: 'Mode',
+  // I-1 (final review PR 3, 2026-09-14): pipeline mode labels were
+  // hardcoded in English inside PipelineModal.jsx.
+  pipelineModeSupervised: '👁 Supervised',
+  pipelineModeAutonomous: '⚡ Autonomous',
+  pipelineModeDryRun: '🧪 Dry run',
   facetsLabel: 'Facets',
   starting: 'Starting…',
   planAndExecute: 'Plan and execute',
@@ -198,6 +203,10 @@ export default {
   // Message
   userLabel: 'User',
   contractDegradedNote: 'The response did not meet the expected format.',
+  // I-1 (final review PR 3, 2026-09-14): <img> alt text was hardcoded in
+  // Spanish, not going through i18n (it showed up in Spanish in English UI).
+  altGeneratedImage: 'generated image',
+  altAttachment: 'attachment',
 
   // Theme / language
   lightMode: 'Light mode',

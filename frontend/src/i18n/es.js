@@ -91,6 +91,11 @@ export default {
   newPipelineTitle: 'Nuevo Pipeline · Jacobs',
   objectiveLabel: 'Objetivo',
   modeLabel: 'Modo',
+  // I-1 (revisión final PR 3, 2026-09-14): las etiquetas de modo del pipeline
+  // estaban hardcodeadas en inglés dentro de PipelineModal.jsx.
+  pipelineModeSupervised: '👁 Supervisado',
+  pipelineModeAutonomous: '⚡ Autónomo',
+  pipelineModeDryRun: '🧪 Prueba en seco',
   facetsLabel: 'Facetas',
   starting: 'Iniciando…',
   planAndExecute: 'Planificar y ejecutar',
@@ -201,6 +206,10 @@ export default {
   // Message
   userLabel: 'Usuario',
   contractDegradedNote: 'La respuesta no cumplió el formato esperado.',
+  // I-1 (revisión final PR 3, 2026-09-14): alt de <img> hardcodeado en
+  // español, sin pasar por i18n (se veía en la interfaz en inglés).
+  altGeneratedImage: 'imagen generada',
+  altAttachment: 'adjunto',
 
   // Theme / language
   lightMode: 'Modo claro',

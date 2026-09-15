@@ -50,7 +50,7 @@ function Message({ message }) {
           {message.image_url && (
             <img
               src={message.image_url}
-              alt={message.content || 'imagen generada'}
+              alt={message.content || t.altGeneratedImage}
               className="rounded-md max-w-full mb-2"
               style={{ maxWidth: '512px', maxHeight: '400px', objectFit: 'contain' }}
             />
@@ -58,7 +58,7 @@ function Message({ message }) {
           {message.attachment && message.attachment.type === 'image' && message.attachment.base64 && (
             <img
               src={message.attachment.base64}
-              alt={message.attachment.filename || 'adjunto'}
+              alt={message.attachment.filename || t.altAttachment}
               className="rounded-md mb-2"
               style={{ maxWidth: '400px', maxHeight: '400px', objectFit: 'contain' }}
             />

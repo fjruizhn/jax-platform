@@ -193,9 +193,9 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   }
 
   const PIPELINE_MODES = [
-    { id: 'supervised',  label: '👁 Supervised' },
-    { id: 'autonomous',  label: '⚡ Autonomous' },
-    { id: 'dry_run',     label: '🧪 Dry run' },
+    { id: 'supervised',  label: t.pipelineModeSupervised },
+    { id: 'autonomous',  label: t.pipelineModeAutonomous },
+    { id: 'dry_run',     label: t.pipelineModeDryRun },
   ]
 
   return (

@@ -3,6 +3,8 @@ import { describe, it, expect } from 'vitest'
 import '@testing-library/jest-dom'
 import Message from './Message'
 import { I18nProvider } from '../../i18n/index.jsx'
+import es from '../../i18n/es.js'
+import en from '../../i18n/en.js'
 
 function renderMessage(message) {
   return render(
@@ -34,5 +36,31 @@ describe('Message contract degradation footnote', () => {
   it('no muestra la nota cuando contract_degraded no está presente (mensajes viejos)', () => {
     renderMessage({ facet: 'jekyll', content: 'mensaje de antes de este cambio' })
     expect(screen.queryByText(/no cumplió el formato esperado/i)).not.toBeInTheDocument()
+  })
+})
+
+// I-1 (revisión final PR 3, 2026-09-14): el alt de <img> (imagen generada /
+// adjunto) estaba hardcodeado en español, sin pasar por i18n.
+describe('Message -- alt de imagen y adjunto desde i18n (I-1)', () => {
+  it('imagen generada: usa t.altGeneratedImage cuando no hay content', () => {
+    renderMessage({ facet: 'dalle', image_url: 'https://example.com/img.png', content: '' })
+    expect(screen.getByAltText(es.altGeneratedImage)).toBeInTheDocument()
+  })
+
+  it('adjunto imagen: usa t.altAttachment cuando no hay filename', () => {
+    renderMessage({
+      facet: 'user',
+      content: '',
+      attachment: { type: 'image', base64: 'data:image/png;base64,xxx' },
+    })
+    expect(screen.getByAltText(es.altAttachment)).toBeInTheDocument()
+  })
+
+  it('en inglés, el alt sale en inglés, no el literal fijo en español', () => {
+    localStorage.setItem('jax_lang', 'en')
+    renderMessage({ facet: 'dalle', image_url: 'https://example.com/img.png', content: '' })
+    expect(screen.getByAltText(en.altGeneratedImage)).toBeInTheDocument()
+    expect(screen.queryByAltText('imagen generada')).not.toBeInTheDocument()
+    localStorage.clear()
   })
 })
