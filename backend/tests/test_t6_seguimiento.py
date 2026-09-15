@@ -256,8 +256,27 @@ def test_T6_5a_mismo_usuario_en_otro_tenant_no_es_el_duenio(client, pipelines_de
     assert resp.json()["pipelines"] == []
 
 
+def test_T6_6_el_indice_de_duenio_existe_con_sus_columnas(client):
+    """Ruling T6-6 (2026-09-15): el indice es de `jacobs_pipelines`, tabla del
+    repo jax. DUEÑO Y FUENTE DE VERDAD: jax/jacobs/store.py::init_tables().
+    La plataforma NO corre DDL sobre esa tabla. En CI la crea el paso "Crear
+    el esquema de Jacobs con SU propio init_tables()" (policy.yml, clona jax
+    master). Si falta, este test FALLA con el motivo -- no se saltea: una
+    consulta de camino caliente sin indice no es un estado aceptable."""
+    filas = client.portal.call(
+        sql,
+        "SELECT COLUMN_NAME FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'jacobs_pipelines' "
+        "AND INDEX_NAME = 'idx_jacobs_pipelines_duenio' ORDER BY SEQ_IN_INDEX", (), True)
+    assert [f[0] for f in filas] == ["user_id", "tenant_id", "created_at"], (
+        "jacobs_pipelines no tiene idx_jacobs_pipelines_duenio (user_id, tenant_id, "
+        "created_at). Lo crea jax/jacobs/store.py::init_tables(): correr el init_tables() "
+        "de jax (con el PR del indice) contra esta base.")
+
+
 def test_T6_5a_la_consulta_usa_el_indice_de_duenio(client, pipelines_de_dos_tenants):
-    """LAS CUATRO (indexing): EXPLAIN sobre la consulta REAL."""
+    """LAS CUATRO (indexing): EXPLAIN sobre la consulta REAL. El indice lo crea
+    jax/jacobs/store.py (ver el test de arriba), no la plataforma."""
     filas = client.portal.call(sql, "EXPLAIN " + pipelines_mod.SQL_PIPELINES_DEL_USUARIO,
                                ("x", "TENANT-A", pipelines_mod.LISTA_PIPELINES_MAX), True)
     ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]

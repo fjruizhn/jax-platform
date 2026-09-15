@@ -966,8 +966,9 @@ async def _invoke_facet(
         logger.error(f"dispatch abortado: facet={facet!r} source={source!r}: {e}")
         raise            # SIEMPRE re-lanza: no puede volverse fail-open
     except Exception as e:
-        # Task 6 S1: texto_de_error redacta -- un HTTPStatusError de Gemini
-        # trae la URL con `?key=` en str(e).
+        # Task 6 S1: texto_de_error redacta. Defensa en profundidad: la key
+        # de Gemini va en la cabecera x-goog-api-key (T6-2) y str(e) de un
+        # HTTPStatusError trae la URL, no las cabeceras.
         await record_facet_health(
             facet, OUTCOME_PROVIDER_ERROR, source, texto_de_error(e))
         raise            # SIEMPRE re-lanza: no puede volverse fail-open

@@ -1071,7 +1071,8 @@ async def _seed_providers(cur) -> None:
 
 
 # provider_id -> (api_key_transport, models_list_url). Los 4 OpenAI-
-# compatibles + Gemini (query_param, ya visto en api/admin/keys.py:159-166)
+# compatibles (header_bearer) + Gemini (header_goog_api_key: la key en la
+# cabecera x-goog-api-key, desde T6-2 del 2026-09-15; antes query_param)
 # usan `credential` DB via el transport indicado. anthropic Y ollama tienen
 # sync real pero NINGUNO de los dos usa `credential`/transport de esta
 # tabla — model_catalog.py los resuelve aparte, ver sus ramas explicitas en
@@ -1262,8 +1263,10 @@ _COLUMNS = [
     ("jax_users", "must_change_password",
      "ALTER TABLE jax_users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE"),
     # Bloque D (D1.1/D1.3) — divergencia real ya presente en
-    # api/admin/keys.py:158-169 (Gemini usa ?key=, los otros 4 Authorization:
-    # Bearer). models_list_url NULL = sin sync automatico de capa (a)
+    # api/admin/keys.py (Gemini: cabecera x-goog-api-key desde T6-2 del
+    # 2026-09-15 -- valor 'header_goog_api_key', agregado al ENUM en
+    # _ENUM_EXTENSIONS --; los otros 4: Authorization: Bearer). Este ALTER es
+    # el historico de la columna, no se toca. models_list_url NULL = sin sync automatico de capa (a)
     # todavia para ese provider (ollama/anthropic).
     ("provider", "api_key_transport", "ALTER TABLE provider ADD COLUMN api_key_transport ENUM('header_bearer','query_param') NOT NULL DEFAULT 'header_bearer'"),
     ("provider", "models_list_url", "ALTER TABLE provider ADD COLUMN models_list_url VARCHAR(255) NULL"),
@@ -2016,21 +2019,6 @@ async def _migrar_gemini_a_cabecera(cur) -> None:
     )
 
 
-async def _indice_de_duenio_en_jacobs_pipelines(cur) -> None:
-    """T6-5a (2026-09-15): GET /api/pipelines filtra por (user_id, tenant_id)
-    y ordena por created_at -- LAS CUATRO (indexing), EXPLAIN en
-    tests/test_t6_seguimiento.py. La tabla la crea Jacobs (repo jax,
-    jacobs/store.py): si todavia no existe (base nueva, Jacobs no arranco),
-    se saltea y el proximo arranque de la plataforma crea el indice."""
-    if not await _table_exists(cur, "jacobs_pipelines"):
-        return
-    if not await _index_exists(cur, "jacobs_pipelines", "idx_jacobs_pipelines_duenio"):
-        await cur.execute(
-            "ALTER TABLE jacobs_pipelines ADD INDEX idx_jacobs_pipelines_duenio "
-            "(user_id, tenant_id, created_at)"
-        )
-
-
 async def _indices_de_model_binding_proposal(cur) -> None:
     """PR-L ronda 2: los índices de list_proposals en una base donde la tabla
     ya existía sin ellos (en una base nueva los trae el CREATE). Idempotente."""
@@ -2098,7 +2086,10 @@ async def run_migrations():
             # nadie escriba en ella (PR-L ronda 1).
             await _auditoria_de_catalogo_sin_fk_duras(cur)
             await _indices_de_model_binding_proposal(cur)
-            await _indice_de_duenio_en_jacobs_pipelines(cur)
+            # Ruling T6-6 (2026-09-15): idx_jacobs_pipelines_duenio NO se crea
+            # aca -- jacobs_pipelines es del repo jax, y su indice vive en
+            # jax/jacobs/store.py::init_tables(). La plataforma no corre DDL
+            # sobre tablas de jax.
             # Despues de _seed_models_and_backfill: las filas de `model` tienen
             # que existir para poder actualizarlas.
             await _seed_model_max_tokens_param(cur)

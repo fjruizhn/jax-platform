@@ -55,6 +55,32 @@ def test_nombres_que_no_son_secretos_no_se_tocan(texto):
     assert redactar_secretos(texto) == texto
 
 
+# --- Fix round 2 (2026-09-15, re-review de 3bed155..e6f2b75) ---------------------
+@pytest.mark.parametrize("texto, esperado", [
+    ("Authorization: Token abc", "Authorization: Token ***"),
+    ("Authorization: Basic dXNlcjpwYXNz fin", "Authorization: Basic *** fin"),
+    ('{"authorization": "Bearer abc"}', '{"authorization": "Bearer ***"}'),
+    ("GET /x?authorization=abc&n=1", "GET /x?authorization=***&n=1"),
+    ("credential=abc fin", "credential=*** fin"),
+    ("private_key_id: abc", "private_key_id: ***"),
+    # Esquema suelto (sin contexto Authorization): solo si lo que sigue tiene
+    # forma de credencial (>= 16 caracteres de token y al menos un digito).
+    ("reintento con Bearer eyJhbGciOiJIUzI1NiJ9.payload", "reintento con Bearer ***"),
+])
+def test_ronda2_formas_de_secreto_que_se_redactan(texto, esperado):
+    assert redactar_secretos(texto) == esperado
+
+
+@pytest.mark.parametrize("texto", [
+    "basic idea of it",
+    "the bearer of bad news",
+    "Duplicate entry 'x' for key 'PRIMARY'",
+    "for key: PRIMARY",
+])
+def test_ronda2_prosa_que_no_se_toca(texto):
+    assert redactar_secretos(texto) == texto
+
+
 def test_sort_key_y_cache_key_se_redactan_perdida_aceptada():
     """Perdida aceptada (review de 3bed155): un nombre compuesto que termina
     en `_key` se trata como secreto. Mejor tapar de mas que filtrar."""

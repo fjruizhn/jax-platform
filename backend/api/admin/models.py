@@ -209,8 +209,9 @@ async def sync_models(user: AuthUser = Depends(require_superadmin)):
         try:
             results.append(await model_catalog.sync_provider_models(provider_id))
         except Exception as e:  # fail-soft: un provider caído no frena a los demás; su error va en el resultado y apaga ok
-            # Task 6 S1: la URL de Gemini lleva `?key=` y httpx la mete en
-            # str(e) -- el log y la respuesta usan el texto ya redactado.
+            # Task 6 S1: el log y la respuesta usan el texto ya redactado.
+            # Defensa en profundidad: la key de Gemini va en la cabecera
+            # x-goog-api-key (T6-2); str(e) de httpx trae la URL, sin ella.
             motivo = texto_de_error(e)
             logger.warning(f"sync_models provider={provider_id} failed reason={motivo}")
             results.append({"provider_id": provider_id, "error": redactar_secretos(str(e))[:200]})

@@ -84,8 +84,10 @@ async def record_facet_health(
     if detail is not None:
         # Task 6 S1 (2026-09-15): redactar en el PUNTO DE ESCRITURA -- todo
         # escritor (chat y sonda) pasa por aca, asi que un llamador nuevo que
-        # mande str(e) crudo no puede guardar la key de Gemini (viaja en
-        # `?key=` y httpx la mete en str(e)). Redactar ANTES de truncar: una
+        # mande str(e) crudo no puede guardar un secreto. Defensa en
+        # profundidad: la key de Gemini viaja en la cabecera x-goog-api-key
+        # desde T6-2, y las cabeceras no aparecen en str(e) de httpx; esto
+        # tapa lo que igual llegue en un texto. Redactar ANTES de truncar: una
         # key cortada a la mitad ya no tiene forma reconocible.
         detail = redactar_secretos(detail)[:_DETAIL_MAX]
 
