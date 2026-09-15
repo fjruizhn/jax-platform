@@ -134,3 +134,26 @@ describe('AdminUsers -- etapa 3: toasts, edición, sesiones e historial', () => 
     expect(within(dialogo).getByText('por fernando@rich-hn.com')).toBeInTheDocument()
   })
 })
+
+// Task 4, ronda 1 (2026-09-15): el camino 403. Guardarse a uno mismo un rol o
+// estado responde auto_accion_prohibida: sale traducido y el modal NO se
+// cierra (el admin ve qué intentó y puede cancelar o corregir).
+describe('AdminUsers -- etapa 3: 403 auto_accion_prohibida', () => {
+  beforeEach(() => servirGet([SUPERADMIN]))
+
+  it('un 403 auto_accion_prohibida al editar aparece traducido y el modal sigue abierto', async () => {
+    api.put.mockRejectedValue({ response: { status: 403, data: { detail: 'auto_accion_prohibida' } } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar' }))
+    const dialogo = screen.getByRole('dialog')
+    fireEvent.change(within(dialogo).getByLabelText('Estado'), { target: { value: 'inactive' } })
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Guardar' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error',
+      message: 'No podés cambiar tu propio rol ni tu estado, ni darte de baja. Tu contraseña se cambia en "Mi cuenta".',
+    }))
+    expect(api.put).toHaveBeenCalledWith('/admin/users/2', { status: 'inactive' })
+    const sigue = screen.getByRole('dialog')
+    await waitFor(() => expect(within(sigue).getByRole('button', { name: 'Guardar' })).not.toBeDisabled())
+  })
+})

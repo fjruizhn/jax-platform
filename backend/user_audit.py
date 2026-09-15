@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 from db.connection import get_pool
+from tiempo import iso_utc
 
 ACCIONES = frozenset({
     "create", "update_email", "update_role", "update_status", "reset_link_sent",
@@ -31,9 +32,13 @@ async def registrar(cur, actor_user_id: int, target_user_id: int, action: str,
                     detail: dict | None = None, ip: str | None = None) -> None:
     if action not in ACCIONES:
         raise ValueError(f"acción de auditoría desconocida: {action!r}")
+    # `ts` se escribe EN UTC explícito (2026-09-15): el DEFAULT
+    # CURRENT_TIMESTAMP(6) de la columna sigue la zona de la sesión (SYSTEM =
+    # CST) y el historial la presentaría 6 h corrida. Este es el único
+    # escritor de la tabla; `historial` la lee como UTC (tiempo.iso_utc).
     await cur.execute(
-        "INSERT INTO user_admin_audit (actor_user_id, target_user_id, action, detail, ip) "
-        "VALUES (%s, %s, %s, %s, %s)",
+        "INSERT INTO user_admin_audit (ts, actor_user_id, target_user_id, action, detail, ip) "
+        "VALUES (UTC_TIMESTAMP(6), %s, %s, %s, %s, %s)",
         (actor_user_id, target_user_id, action,
          json.dumps(detail, ensure_ascii=False) if detail is not None else None, ip),
     )
@@ -48,7 +53,7 @@ async def historial(target_user_id: int, limite: int = 50) -> list[dict]:
     return [
         {
             "id": f[0],
-            "ts": f[1].isoformat() if f[1] else None,
+            "ts": iso_utc(f[1]),
             "actor_user_id": f[2],
             "actor_email": f[3],
             "action": f[4],

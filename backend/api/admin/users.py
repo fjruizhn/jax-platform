@@ -4,7 +4,7 @@ import logging
 import aiomysql
 import bcrypt
 from pymysql.constants.ER import DUP_ENTRY as ER_DUP_ENTRY
-from tiempo import utc_ahora
+from tiempo import iso_utc, utc_ahora
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -131,8 +131,12 @@ async def list_users(user: AuthUser = Depends(require_superadmin)):
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT user_id, email, role, status, created_at, last_login, "
-                "failed_attempts, locked_until "
+                # created_at/last_login son TIMESTAMP: UNIX_TIMESTAMP da el
+                # instante exacto sin pasar por la zona de la sesión (SYSTEM =
+                # CST); leídas como fecha salían en hora CST sin zona.
+                # locked_until es DATETIME escrito con utc_ahora() (auth.login).
+                "SELECT user_id, email, role, status, UNIX_TIMESTAMP(created_at), "
+                "UNIX_TIMESTAMP(last_login), failed_attempts, locked_until "
                 "FROM jax_users ORDER BY user_id"
             )
             rows = await cur.fetchall()
@@ -143,10 +147,10 @@ async def list_users(user: AuthUser = Depends(require_superadmin)):
                 "email": r[1],
                 "role": r[2],
                 "status": r[3],
-                "created_at": r[4].isoformat() if r[4] else None,
-                "last_login": r[5].isoformat() if r[5] else None,
+                "created_at": iso_utc(r[4]),
+                "last_login": iso_utc(r[5]),
                 "failed_attempts": r[6] or 0,
-                "locked_until": r[7].isoformat() if r[7] else None,
+                "locked_until": iso_utc(r[7]),
                 "is_locked": bool(r[7] and r[7] > now),
             }
             for r in rows

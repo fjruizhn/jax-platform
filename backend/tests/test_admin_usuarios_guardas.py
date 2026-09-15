@@ -18,6 +18,7 @@ las conexiones YA abiertas del usuario se cierran después del commit: el WS con
 """
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -27,6 +28,7 @@ from api.admin import users as users_mod
 from jax_engine.lifecycle import sse_connections
 from jax_engine.websocket_hub import WebSocketHub, ws_hub
 from tests.identidades import auth, sql, token_para
+from tiempo import utc_ahora
 
 
 def _admin():
@@ -430,7 +432,7 @@ def test_cerrar_sesiones_corta_ws_y_sse_despues_del_commit(client, usuarios, cor
 def test_desbloquear_audita(client, usuarios):
     o, _ = usuarios()
     client.portal.call(sql, "UPDATE jax_users SET failed_attempts = 5, "
-                            "locked_until = NOW() + INTERVAL 10 MINUTE WHERE user_id = %s", (o,))
+                            "locked_until = UTC_TIMESTAMP() + INTERVAL 10 MINUTE WHERE user_id = %s", (o,))
     assert client.post(f"/api/admin/users/{o}/unlock", headers=_admin()).status_code == 200
     ((intentos, bloqueo),) = client.portal.call(sql, "SELECT failed_attempts, locked_until FROM jax_users "
                                                      "WHERE user_id = %s", (o,), True)
@@ -512,3 +514,39 @@ def test_alta_con_email_duplicado_concurrente_responde_409_sin_auditoria(client,
     finally:
         for (intruso,) in client.portal.call(sql, "SELECT user_id FROM jax_users WHERE email = %s", (email,), True):
             client.portal.call(borrar_usuario, intruso)
+
+
+# ------------------------------------------- fechas con zona (Task 4, ronda 1)
+# La sesión de MariaDB de la app corre en SYSTEM = CST (UTC-6; medido el
+# 2026-09-15 con @@session.time_zone y UTC_TIMESTAMP() vs NOW()). Antes estas
+# fechas salían con isoformat() sin zona -- y además en hora CST --, así que
+# `new Date()` en el navegador las leía como hora local.
+
+def _utc_cerca(valor, esperado, margen=120):
+    dt = datetime.fromisoformat(valor)
+    assert dt.utcoffset() is not None and dt.utcoffset().total_seconds() == 0, f"sin zona UTC explícita: {valor!r}"
+    assert abs((dt - esperado).total_seconds()) < margen, (
+        f"{valor!r} no es ~{esperado.isoformat()} (¿hora CST de la sesión presentada como UTC?)")
+
+
+def test_ultimo_acceso_alta_y_bloqueo_salen_en_utc_con_zona(client, usuarios):
+    o, _ = usuarios()
+    ahora = datetime.now(timezone.utc)
+    # Como auth.login: last_login con NOW() (TIMESTAMP), locked_until con utc_ahora().
+    client.portal.call(sql, "UPDATE jax_users SET last_login = NOW(), locked_until = %s WHERE user_id = %s",
+                       (utc_ahora() + timedelta(minutes=10), o))
+    r = client.get("/api/admin/users", headers=_admin())
+    assert r.status_code == 200, r.text
+    fila = next(u for u in r.json()["users"] if u["user_id"] == o)
+    _utc_cerca(fila["last_login"], ahora)
+    _utc_cerca(fila["created_at"], ahora)
+    _utc_cerca(fila["locked_until"], ahora + timedelta(minutes=10))
+    assert fila["is_locked"] is True
+
+
+def test_historial_ts_sale_en_utc_con_zona(client, usuarios):
+    o, _ = usuarios()
+    ahora = datetime.now(timezone.utc)
+    assert client.post(f"/api/admin/users/{o}/revoke-sessions", headers=_admin()).status_code == 200
+    (entrada,) = client.get(f"/api/admin/users/{o}/audit", headers=_admin()).json()["entries"]
+    _utc_cerca(entrada["ts"], ahora)

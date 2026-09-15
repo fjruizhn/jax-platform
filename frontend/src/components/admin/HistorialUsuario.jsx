@@ -12,14 +12,22 @@ export default function HistorialUsuario({ usuario, onCerrar }) {
   const addToast = useJaxStore((s) => s.addToast)
   const [entradas, setEntradas] = useState(null)
 
+  // `cancelado` (Task 4, ronda 1, 2026-09-15): una respuesta que llega después
+  // de cerrar el modal o de cambiar de usuario se ignora -- antes pintaba la
+  // lista de otro usuario o tiraba un toast de un modal ya cerrado. `t` y
+  // `addToast` van en las deps: addToast es estable (zustand) y `t` solo
+  // cambia al cambiar de idioma, que vuelve a pedir el historial (inocuo).
   useEffect(() => {
+    let cancelado = false
     api.get(`/admin/users/${usuario.user_id}/audit`)
-      .then((r) => setEntradas(r.data.entries))
+      .then((r) => { if (!cancelado) setEntradas(r.data.entries) })
       .catch((err) => {
+        if (cancelado) return
         addToast({ type: 'error', message: mensajeDeError(t, err) })
         setEntradas([])
       })
-  }, [usuario.user_id])
+    return () => { cancelado = true }
+  }, [usuario.user_id, t, addToast])
 
   function cambio(detalle) {
     if (!detalle || detalle.from === undefined) return null

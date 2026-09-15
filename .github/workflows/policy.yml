@@ -246,8 +246,16 @@ jobs:
             // endpoint y avisa; el historial muestra acción, cambio y actor).
             // Vistos en rojo antes de verde. Medido con vitest run en la rama: 225;
             // sobre el PR 3 del tema: 247 + 5 = 252.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 252) {
-              console.error("PISO ROTO: se esperaban 252 tests de vitest CORRIDOS y 0 fallidos.");
+            // 252 -> 255 el 2026-09-15 (Task 4, ronda 1 de arreglos; en la rama sola
+            // era 225 -> 228): +1
+            // AdminUsers.test.jsx (403 auto_accion_prohibida traducido y el modal
+            // sigue abierto; verde al primer intento porque el comportamiento ya
+            // existía -- validado con un mutante que cierra el modal ante el error:
+            // falla) +2 HistorialUsuario.test.jsx (nuevo: una respuesta tardía tras
+            // cerrar el modal o cambiar de usuario se ignora; vistos en rojo antes
+            // de verde). Medido con vitest run en la rama: 228; sobre el PR 3: 255.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 255) {
+              console.error("PISO ROTO: se esperaban 255 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -706,7 +714,12 @@ jobs:
           # Subido de 777 a 778 (2026-09-15, Task 3 fix ronda 1): +1 en
           # test_admin_usuarios_guardas.py (alta con email duplicado concurrente: el INSERT
           # perdedor choca con el UNIQUE -> 409 y sin auditoría, no 500). Medido: 778 / 1.
-          PISO_PASSED = 778
+          # Subido de 778 a 783 (2026-09-15, Task 4 fix ronda 1, fechas con zona): +3 puros en
+          # test_iso_utc.py (tiempo.iso_utc: hora UTC sin zona, epoch de UNIX_TIMESTAMP, NULL)
+          # +2 en test_admin_usuarios_guardas.py (last_login/created_at/locked_until de
+          # GET /admin/users y ts del historial salen en UTC con +00:00; la sesión de MariaDB
+          # es SYSTEM = CST). Medido: 783 / 1.
+          PISO_PASSED = 783
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1026,7 +1039,9 @@ jobs:
       # test_admin_usuarios_guardas.py piden `client`. Medido con JAX_CI_NO_DB=1: 362 / 416.
       # Sin cambio (2026-09-15, Task 3 fix ronda 1): el test de alta concurrente pide
       # `client`. Medido con JAX_CI_NO_DB=1: 362 / 417.
-      JAX_CI_MIN_PASSED: "362"
+      # Task 4 fix ronda 1 (2026-09-15): +3 puros (test_iso_utc.py); los 2 de fechas en
+      # test_admin_usuarios_guardas.py piden `client`. Medido con JAX_CI_NO_DB=1: 365 / 419.
+      JAX_CI_MIN_PASSED: "365"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
