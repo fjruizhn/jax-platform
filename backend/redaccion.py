@@ -59,29 +59,47 @@ _PARAM_SECRETO = re.compile(
 #      `Bearer "x y"`); antes la clase sin comillas no lo tomaba, el esquema
 #      pasaba a ser el "valor" y el secreto entre comillas quedaba en claro.
 #      _tapar_auth devuelve las comillas alrededor de la marca.
+#   4. Ronda 2 (re-review de 0c72f4e): el valor ENTERO puede ir entre
+#      comillas, con o sin esquema adentro y con espacios (`authorization:
+#      "secret value"`, `"authorization": "Bearer abc def"`). Antes un grupo
+#      de comilla opcional se tragaba la de apertura y el valor sin comillas
+#      cortaba en el primer espacio: `"*** value"`. Ahora cada forma entre
+#      comillas es su propia alternativa y se tapa hasta la comilla de cierre.
 _AUTH_CONTEXTO = re.compile(
     r"""(?ix)
     (?<![a-z0-9_\-])
     (["']?)(authorization)\1
     (\s*[=:]\s*)
-    (["']?)
-    (?:(bearer|basic|token|digest)\s+)?
-    (?:"([^"]*)"|'([^']*)'|([^\s"'&,;<>}\]]+))
+    (?:
+        "(?:(bearer|basic|token|digest)\s+)?([^"]*)"
+      | '(?:(bearer|basic|token|digest)\s+)?([^']*)'
+      | (?:(bearer|basic|token|digest)\s+)?
+        (?:"([^"]*)"|'([^']*)'|([^\s"'&,;<>}\]]+))
+    )
     """)
 _ESQUEMA_SUELTO = re.compile(
     r"(?i)\b(bearer|basic|token|digest)\s+(?=[A-Za-z0-9._~+/=\-]*\d)[A-Za-z0-9._~+/=\-]{16,}")
 
 
 def _tapar_auth(m: re.Match) -> str:
-    comilla, nombre, separador, comilla_valor, esquema = m.group(1, 2, 3, 4, 5)
+    comilla, nombre, separador = m.group(1, 2, 3)
+    if m.group(5) is not None:              # "<esquema> valor" entero entre dobles
+        esquema = m.group(4)
+        prefijo = f"{esquema} " if esquema else ""
+        return f'{comilla}{nombre}{comilla}{separador}"{prefijo}{MARCA}"'
+    if m.group(7) is not None:              # '<esquema> valor' entero entre simples
+        esquema = m.group(6)
+        prefijo = f"{esquema} " if esquema else ""
+        return f"{comilla}{nombre}{comilla}{separador}'{prefijo}{MARCA}'"
+    esquema = m.group(8)                    # esquema sin comillas; valor con o sin
     prefijo = f"{esquema} " if esquema else ""
-    if m.group(6) is not None:
+    if m.group(9) is not None:
         valor = f'"{MARCA}"'
-    elif m.group(7) is not None:
+    elif m.group(10) is not None:
         valor = f"'{MARCA}'"
     else:
         valor = MARCA
-    return f"{comilla}{nombre}{comilla}{separador}{comilla_valor}{prefijo}{valor}"
+    return f"{comilla}{nombre}{comilla}{separador}{prefijo}{valor}"
 
 
 def _tapar_param(m: re.Match) -> str:

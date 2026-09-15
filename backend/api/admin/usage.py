@@ -140,12 +140,16 @@ async def record_usage(
 
 # Fix wave final, item 8 (2026-09-15): la prueba de carga del gate U29 dio
 # NO-GO (102k filas, ~11 rps planos, p95 ~2,7 s con c=25; EXPLAIN `ALL` +
-# temporary + filesort). `WHERE DATE(created_at) >= dia` no es sargable: la
-# funcion sobre la columna impide usar cualquier indice. `created_at >= <00:00
-# del dia>` devuelve exactamente lo mismo (created_at es TIMESTAMP: DATE() y
-# la comparacion usan la misma zona de la sesion) y usa
-# idx_axioma_usage_periodo (db/migrations.py), cubriente: el rango se lee del
-# indice sin tocar la fila. El `Using temporary; Using filesort` que queda es
+# temporary + filesort). La causa fue que NO HABIA INDICE: axioma_usage solo
+# tenia PRIMARY. Lo resuelve idx_axioma_usage_periodo (db/migrations.py),
+# cubriente: el rango se lee del indice sin tocar la fila.
+# El rango `created_at >= <00:00 del dia>` es sargable A PROPOSITO y no
+# depende del optimizador: MariaDB >= 11.1 reescribe por su cuenta
+# `DATE(created_at) >= dia` como rango, pero una version anterior, otro
+# motor o una forma que la reescritura no cubra no lo harian. Devuelve
+# exactamente lo mismo (created_at es TIMESTAMP: DATE() y la comparacion usan
+# la misma zona de la sesion). El test del texto del WHERE lo fija
+# (tests/test_uso_por_periodo.py), porque el EXPLAIN no distingue las formas. El `Using temporary; Using filesort` que queda es
 # sobre los GRUPOS, no sobre las filas (tests/test_uso_por_periodo.py).
 # ORDER BY SUM(cost_usd): antes `ORDER BY cost_usd` ordenaba por el costo de
 # una fila cualquiera de cada grupo.

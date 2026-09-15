@@ -165,8 +165,15 @@ export default function AdminUsers() {
     return api.get('/admin/users').then(r => setUsers(r.data.users)).catch(avisarError)
   }
 
+  // Ronda 2 (2026-09-15): dos pedidos de bajas en vuelo pueden resolverse
+  // fuera de orden. Cada pedido toma un número; sólo se aplica (lista o
+  // error) el del último pedido hecho, y una respuesta vieja se descarta.
+  const pedidoBajas = useRef(0)
   function cargarBajas() {
-    return api.get('/admin/users?bajas=true').then(r => setBajas(r.data.users)).catch(avisarError)
+    const n = ++pedidoBajas.current
+    return api.get('/admin/users?bajas=true')
+      .then(r => { if (n === pedidoBajas.current) setBajas(r.data.users) })
+      .catch(err => { if (n === pedidoBajas.current) avisarError(err) })
   }
 
   function alternarBajas() {

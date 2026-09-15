@@ -277,3 +277,72 @@ def test_explain_de_la_consulta_real_usa_el_indice_cubriente(client, nombre):
     assert "temporary_table" in camino, camino
     if "filesort" in camino:
         assert camino.index("filesort") < camino.index("temporary_table"), camino
+
+
+# --- Ronda 2 (2026-09-15, re-review de 0c72f4e) ---------------------------------
+# MariaDB >= 11.1 reescribe `DATE(created_at) >= const` como rango por su
+# cuenta: el EXPLAIN y la igualdad de resultados NO distinguen las dos formas.
+# Este test fija la forma sargable en el texto de la consulta.
+import ast  # noqa: E402
+import re  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+
+@pytest.mark.parametrize("nombre", ["SQL_USO_POR_FACETA", "SQL_USO_GRAFICO"])
+def test_el_where_filtra_por_created_at_sin_funcion_encima(nombre):
+    consulta = getattr(usage_mod, nombre)
+    m = re.search(r"(?is)\bWHERE\b(.*?)(?:\bGROUP\s+BY\b|\bORDER\s+BY\b|$)", consulta)
+    assert m, consulta
+    where = m.group(1)
+    assert re.search(r"(?i)(?<![\w(])created_at\s*>=\s*%s", where), where
+    assert not re.search(r"(?i)\w+\s*\(\s*created_at\b", where), (
+        f"una funcion envuelve created_at en el WHERE de {nombre}: {where.strip()}")
+
+
+class _CurDeMigracion:
+    def __init__(self, existe: bool):
+        self.existe = existe
+        self.sqls = []
+        self._ultimo = ""
+
+    async def execute(self, consulta, args=None):
+        self.sqls.append((consulta, args))
+        self._ultimo = consulta
+
+    async def fetchone(self):
+        if "information_schema.STATISTICS" in self._ultimo:
+            return (1 if self.existe else 0,)
+        if "@@SESSION.lock_wait_timeout" in self._ultimo:
+            return (86400,)
+        raise AssertionError(f"fetchone inesperado tras {self._ultimo!r}")
+
+
+def test_la_migracion_crea_el_indice_si_falta_con_el_ddl_acotado():
+    cur = _CurDeMigracion(existe=False)
+    asyncio.run(migrations._indice_de_uso_por_periodo(cur))
+    ddl = [q for q, _ in cur.sqls if q.startswith("ALTER TABLE")]
+    assert ddl == [migrations.DDL_INDICE_USO_POR_PERIODO]
+    assert "ALGORITHM=INPLACE" in ddl[0] and "LOCK=NONE" in ddl[0]
+    i = [q for q, _ in cur.sqls].index(ddl[0])
+    assert cur.sqls[i - 1] == ("SET SESSION lock_wait_timeout=%s", (30,))
+    assert cur.sqls[i + 1] == ("SET SESSION lock_wait_timeout=%s", (86400,))
+    assert any(a == ("axioma_usage", IDX) for _, a in cur.sqls)
+
+
+def test_la_migracion_no_toca_nada_si_el_indice_ya_esta():
+    cur = _CurDeMigracion(existe=True)
+    asyncio.run(migrations._indice_de_uso_por_periodo(cur))
+    assert len(cur.sqls) == 1 and "information_schema.STATISTICS" in cur.sqls[0][0]
+
+
+def test_run_migrations_llama_a_la_migracion_del_indice():
+    """En una DB con el indice ya creado, sacar la llamada no rompe nada
+    visible: el test de information_schema sigue verde. Este escaneo si."""
+    arbol = ast.parse(Path(migrations.__file__).read_text())
+    (run,) = [n for n in ast.walk(arbol)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "run_migrations"]
+    llamadas = [n for n in ast.walk(run)
+                if isinstance(n, ast.Await) and isinstance(n.value, ast.Call)
+                and isinstance(n.value.func, ast.Name)
+                and n.value.func.id == "_indice_de_uso_por_periodo"]
+    assert len(llamadas) == 1

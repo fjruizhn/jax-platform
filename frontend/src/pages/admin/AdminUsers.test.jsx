@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -736,5 +736,34 @@ describe('AdminUsers — la baja refresca también la lista de bajas', () => {
     expect(screen.getByText('borrado@x.io')).toBeInTheDocument()
     expect(interruptor).toHaveAttribute('aria-pressed', 'true')
     expect(api.get.mock.calls.filter(([url]) => url === '/admin/users?bajas=true')).toHaveLength(2)
+  })
+})
+
+// Ronda 2 (2026-09-15, re-review de 0c72f4e): dos pedidos de bajas en vuelo
+// (apagar y prender rápido, o una baja con la lista a la vista) podían
+// resolverse fuera de orden, y la respuesta VIEJA pisaba a la nueva.
+describe('AdminUsers — bajas: sólo se aplica la respuesta más reciente', () => {
+  it('si el pedido viejo de bajas llega último, su lista no se muestra', async () => {
+    const pendientes = []
+    api.get.mockImplementation((url) => {
+      if (url === '/admin/users?bajas=true') return new Promise((resolver) => pendientes.push(resolver))
+      if (url === '/admin/users') return Promise.resolve({ data: { users: [USUARIO] } })
+      return Promise.resolve({ data: { entries: HISTORIAL } })
+    })
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    const interruptor = screen.getByRole('button', { name: 'Mostrar bajas' })
+    fireEvent.click(interruptor)   // pedido 1
+    fireEvent.click(interruptor)   // apaga
+    fireEvent.click(interruptor)   // pedido 2
+    expect(pendientes).toHaveLength(2)
+
+    await act(async () => { pendientes[1]({ data: { users: [BAJA] } }) })
+    expect(await screen.findByText('borrado@x.io')).toBeInTheDocument()
+    await act(async () => {
+      pendientes[0]({ data: { users: [{ ...BAJA, user_id: 9, email_original: 'vieja@x.io' }] } })
+    })
+    expect(screen.queryByText('vieja@x.io')).not.toBeInTheDocument()
+    expect(screen.getByText('borrado@x.io')).toBeInTheDocument()
   })
 })
