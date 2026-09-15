@@ -166,8 +166,17 @@ jobs:
             // del panel sin pasar por la store, dirigido por la store sin la prop, Ruling 21)
             // +1 Login.test.jsx (el HalEye en reposo se renderiza, no el apagado "sin
             // sesión"). Vistos en rojo antes de verde. Medido con vitest run: 197.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 197) {
-              console.error("PISO ROTO: se esperaban 197 tests de vitest CORRIDOS y 0 fallidos.");
+            // 197 -> 206 el 2026-09-14 (fix vivo del PR 1, revisión de código): +1
+            // HalEye.test.jsx (M3: el anillo del housing usa stroke-borde, no
+            // stroke-superficie -- casi invisible en claro tras la parte A) +1
+            // HalEye.test.jsx (M5: las claves eyeKillSwitch/eyeDallE3/eyeLasManosDown/
+            // eyeGate/eyeJacobs existen en es y en) +2 useJaxStore.eyeState.test.js (M5:
+            // getEyeState acepta `labels` y lo usa en vez del texto hardcodeado) +5
+            // HalEye.i18nLabels.test.jsx (nuevo: HalEye lee t.eye* de verdad, con un t de
+            // mentira que prueba la conexión). Vistos en rojo antes de verde. Medido con
+            // vitest run: 206.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 206) {
+              console.error("PISO ROTO: se esperaban 206 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
