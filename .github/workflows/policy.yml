@@ -202,8 +202,38 @@ jobs:
             // de millar) -- por eso las dos primeras pruebas espían el argumento de
             // locale en vez de comparar texto renderizado entre idiomas, que sería
             // igual. Vistos en rojo antes de verde. Medido con vitest run: 220.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 220) {
-              console.error("PISO ROTO: se esperaban 220 tests de vitest CORRIDOS y 0 fallidos.");
+            // 220 -> 231 el 2026-09-15 (tema con tokens, pr3): +1
+            // useJaxStore.eyeState.test.js (Task 20: cada estado del ojo devuelve un
+            // token del tema, no un hex) +3 useJaxStore.facetTokens.test.js (nuevo
+            // archivo, Task 20: loadState con token conocido, loadState con token que
+            // el tema no conoce cae en el respaldo, facet_status_changed con token de
+            // la clave) +3 BottomBar.test.jsx (Task 21: token en borde/texto sin fondo
+            // de faceta, sigue a la faceta elegida, la faceta elegida pinta borde/texto
+            // sin fondo de color) +2 KillSwitch.test.jsx (Task 21: muestra t.killButton,
+            // la clave existe en es.js y en.js) +2 LeftPanel.test.jsx (fix i18n: muestra
+            // t.lasManos, la clave existe en es.js y en.js) +1 RightPanel.test.jsx
+            // (Aprobar es el CTA sólido con bg-accion, distinto de Cancelar) -1
+            // lightModeOverrides.test.js (se borra el archivo entero junto con la capa
+            // vieja; el único test que tenía se va con él). Vistos en rojo antes de
+            // verde. Medido con vitest run: 231.
+            // 231 -> 247 el 2026-09-15 (fix-wave revisión final PR 3, tema con
+            // tokens): +16 tests de los 5 hallazgos FIX-BEFORE-MERGE.
+            // PipelineModal.test.jsx +2 (I-1: rótulos de modo -- Supervised/
+            // Autonomous/Dry run -- desde i18n, no hardcodeados en inglés).
+            // Message.test.jsx +5 (I-1: alt de imagen generada/adjunto desde i18n
+            // +3; I-2: hora sigue localeFor(lang), no es-HN fijo +2).
+            // AuditLog.test.jsx +2 (nuevo archivo; I-2: misma hora fijada en
+            // es-HN, ahora localeFor(lang)).
+            // HalEye.test.jsx +1 (M-1: la etiqueta de estado del ojo pierde
+            // opacity-40, pasa a opacidad plena -- contraste AA).
+            // RightPanel.test.jsx +4 (M-2: activePipeline.status traducido con
+            // respaldo al valor crudo +3; M-3: la pista de la barra de progreso
+            // usa bg-borde en vez de bg-superficie, casi invisible en claro +1).
+            // LeftPanel.test.jsx +2 (M-2: wsStatus traducido con respaldo al
+            // valor crudo). Vistos en rojo antes de verde. Medido con vitest
+            // run: 247.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 247) {
+              console.error("PISO ROTO: se esperaban 247 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

@@ -39,7 +39,7 @@ export default function AttachButton({ onFileSelected, disabled }) {
         onClick={handleClick}
         disabled={disabled}
         title={t.attachTooltip}
-        className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 disabled:opacity-40 transition-colors border border-slate-700 text-lg font-bold"
+        className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-superficie hover:bg-superficie-2 text-texto-suave hover:text-texto disabled:opacity-40 transition-colors border border-borde text-lg font-bold"
       >
         +
       </button>

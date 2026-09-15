@@ -4,8 +4,18 @@ export default {
 
   // Left panel
   facets: 'Facets',
+  // Component's proper name (like killButton/eyeLasManosDown): same value in both languages.
+  lasManos: 'LAS MANOS',
   alive: 'online',
   down: 'offline',
+  // M-2 (final review PR 3, 2026-09-14): wsStatus (useJaxStore.js,
+  // api/websocket.js) was shown raw, untranslated. An unknown value falls
+  // back to the raw value (LeftPanel.jsx).
+  wsStatusLabels: {
+    connected: 'Connected',
+    disconnected: 'Disconnected',
+    reconnecting: 'Reconnecting',
+  },
 
   // FacetCard status
   statusIdle: 'Idle',
@@ -18,6 +28,17 @@ export default {
   tabAudit: 'Audit',
   stepsLabel: 'steps',
   noPipelinesActive: 'No active pipelines',
+  // M-2 (final review PR 3, 2026-09-14): activePipeline.status
+  // (jax_engine/schemas.py::PipelineStatus) was shown raw. A value the
+  // backend adds that the dictionary doesn't know falls back to the raw
+  // value (RightPanel.jsx).
+  pipelineStatusLabels: {
+    pending: 'Pending',
+    running: 'Running',
+    waiting_gate: 'Waiting for approval',
+    completed: 'Completed',
+    failed: 'Failed',
+  },
   pipelinesAdditional: (n) => `+${n} additional pipeline(s)`,
   approve: '✓ Approve',
   cancelling: 'Cancelling…',
@@ -69,6 +90,10 @@ export default {
   killSwitchActive: 'KILL SWITCH ACTIVE',
   killConfirm: 'Confirm?',
   killConfirmYes: 'YES, STOP ALL',
+  // Product term (like eyeKillSwitch): same value in both languages.
+  killButton: 'KILL',
+  // Technical abbreviation (WebSocket), same value in both languages.
+  wsLabel: 'WS',
   cancel: 'Cancel',
   killTitle: 'Kill Switch — stops all processes',
   killSwitchToast: 'KILL SWITCH ACTIVATED',
@@ -82,6 +107,11 @@ export default {
   newPipelineTitle: 'New Pipeline · Jacobs',
   objectiveLabel: 'Objective',
   modeLabel: 'Mode',
+  // I-1 (final review PR 3, 2026-09-14): pipeline mode labels were
+  // hardcoded in English inside PipelineModal.jsx.
+  pipelineModeSupervised: '👁 Supervised',
+  pipelineModeAutonomous: '⚡ Autonomous',
+  pipelineModeDryRun: '🧪 Dry run',
   facetsLabel: 'Facets',
   starting: 'Starting…',
   planAndExecute: 'Plan and execute',
@@ -192,6 +222,10 @@ export default {
   // Message
   userLabel: 'User',
   contractDegradedNote: 'The response did not meet the expected format.',
+  // I-1 (final review PR 3, 2026-09-14): <img> alt text was hardcoded in
+  // Spanish, not going through i18n (it showed up in Spanish in English UI).
+  altGeneratedImage: 'generated image',
+  altAttachment: 'attachment',
 
   // Theme / language
   lightMode: 'Light mode',
@@ -208,6 +242,7 @@ export default {
   attachTooLarge: 'File too large (max 10MB)',
   attachTypes: 'Images, PDF, text, code',
   attachedFile: (name) => `Attached: ${name}`,
+  attachReady: '✓ ready',
 
   // Admin module
   adminTitle: 'Administration',

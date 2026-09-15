@@ -2,7 +2,8 @@ import { create } from 'zustand'
 import api from '../api/client'
 import es from '../i18n/es.js'
 import en from '../i18n/en.js'
-import { COLOR_JAX_LOCAL, EYE_ESTADO_REPOSO } from './eyeRestState'
+import { EYE_ESTADO_REPOSO } from './eyeRestState'
+import { tokenDeFaceta } from '../tema/tokens'
 
 // Este módulo no es un componente — no puede usar el hook useI18n(). Lee la
 // misma fuente que I18nProvider (localStorage 'jax_lang') para los mensajes
@@ -68,21 +69,26 @@ function _reconcileSteps(prevSteps, nextSteps) {
   })
 }
 
-export const FACET_COLORS = {
-  jax_local: COLOR_JAX_LOCAL,
-  jekyll:    '#6366f1',
-  hyde:      '#f97316',
-  hipatia:   '#10b981',
-  thot:      '#f59e0b',
-  kimi:      '#06b6d4',
-  ada:       '#7c3aed',
-  jacobs:    '#ffffff',
-}
+// Token de identidad de cada faceta (spec 2026-09-14-tema-tokens §7.3): el
+// store guarda el NOMBRE del token, no un hex; quien pinta usa colorToken().
+export const FACET_TOKENS = Object.fromEntries(
+  ['jax_local', 'jekyll', 'hyde', 'hipatia', 'thot', 'kimi', 'ada', 'jacobs'].map((n) => [n, tokenDeFaceta(n)]),
+)
 
-const DEFAULT_FACETS = Object.keys(FACET_COLORS).reduce((acc, name) => {
-  acc[name] = { name, status: 'idle', last_message: '', color: FACET_COLORS[name] }
+const DEFAULT_FACETS = Object.keys(FACET_TOKENS).reduce((acc, name) => {
+  acc[name] = { name, status: 'idle', last_message: '', token: FACET_TOKENS[name] }
   return acc
 }, {})
+
+// Faceta que entra desde el servidor (/api/state o facet_status_changed). El
+// backend manda {name, status, last_message, last_update, color} SIN token:
+// el token se deriva SIEMPRE de la clave (nunca de los datos del servidor) y
+// el `color` hex del backend se descarta -- nada pinta con él. Lo demás se
+// fusiona sobre el default de la faceta (o sobre lo que ya había).
+function _facetaDelServidor(clave, base, datos) {
+  const { color: _hexDelBackend, ...resto } = datos || {}
+  return { ...DEFAULT_FACETS[clave], ...base, ...resto, token: tokenDeFaceta(clave) }
+}
 
 // Migración: el JWT y los datos de usuario vivían en localStorage (legible por XSS).
 // Se purgan los restos de sesiones previas a este cambio.
@@ -194,11 +200,10 @@ export const useJaxStore = create((set, get) => {
         const update = {
           facets: {
             ...s.facets,
-            [payload.facet]: {
-              ...s.facets[payload.facet],
+            [payload.facet]: _facetaDelServidor(payload.facet, s.facets[payload.facet], {
               status: payload.status,
               last_message: payload.message || '',
-            },
+            }),
           },
         }
         if (payload.status === 'thinking') {
@@ -497,7 +502,12 @@ export const useJaxStore = create((set, get) => {
     try {
       const { data } = await api.get('/state')
       set({
-        facets: { ...DEFAULT_FACETS, ...data.facets },
+        facets: {
+          ...DEFAULT_FACETS,
+          ...Object.fromEntries(
+            Object.entries(data.facets || {}).map(([k, v]) => [k, _facetaDelServidor(k, undefined, v)]),
+          ),
+        },
         activePipelines: _evictOldFinishedPipelines(data.active_pipelines || {}),
         lasManos: data.las_manos_alive,
       })
@@ -527,25 +537,25 @@ export function getEyeState(
     jacobs = 'Jacobs',
   } = labels
 
-  if (killSwitchActive) return { color: '#ef4444', animation: 'none', label: killSwitch }
+  if (killSwitchActive) return { token: 'peligro', animation: 'none', label: killSwitch }
 
-  if (generatingImage) return { color: '#7c3aed', animation: 'pulse-fast', label: dalle }
+  if (generatingImage) return { token: 'faceta-imagen', animation: 'pulse-fast', label: dalle }
 
   // Thinking toma prioridad sobre todo — incluso si lasManos está abajo
   const thinking = Object.entries(facets).find(([, f]) => f.status === 'thinking')
   if (thinking) {
     const [name, f] = thinking
     const anim = name === 'hyde' ? 'pulse-fast' : 'pulse-slow'
-    return { color: f.color, animation: anim, label: name }
+    return { token: f.token, animation: anim, label: name }
   }
 
-  if (!lasManos) return { color: '#374151', animation: 'none', label: lasManosDown }
+  if (!lasManos) return { token: 'texto-tenue', animation: 'none', label: lasManosDown }
 
   const hasGate = Object.values(activePipelines).some(p => p.status === 'waiting_gate')
-  if (hasGate) return { color: '#f59e0b', animation: 'blink', label: gate }
+  if (hasGate) return { token: 'aviso', animation: 'blink', label: gate }
 
   const hasRunning = Object.values(activePipelines).some(p => p.status === 'running')
-  if (hasRunning) return { color: '#ffffff', animation: 'pulse-slow', label: jacobs }
+  if (hasRunning) return { token: 'faceta-jacobs', animation: 'pulse-slow', label: jacobs }
 
   return { ...EYE_ESTADO_REPOSO, label: idleLabel }
 }

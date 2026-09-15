@@ -15,7 +15,7 @@ export default function FileAttachment({ attachment, onRemove, uploading }) {
   const isImage = attachment.type === 'image'
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 mb-2 max-w-xs">
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-superficie border border-borde-control mb-2 max-w-xs">
       {isImage && attachment.base64 ? (
         <img
           src={attachment.base64}
@@ -26,12 +26,12 @@ export default function FileAttachment({ attachment, onRemove, uploading }) {
         <span className="text-xl flex-shrink-0">{icon}</span>
       )}
       <div className="flex-1 min-w-0">
-        <div className="text-xs text-slate-300 truncate font-medium">{attachment.filename}</div>
+        <div className="text-xs text-texto truncate font-medium">{attachment.filename}</div>
         {uploading && (
-          <div className="text-xs text-blue-400">{t.attachUploading}</div>
+          <div className="text-xs text-info">{t.attachUploading}</div>
         )}
         {!uploading && attachment.ready && (
-          <div className="text-xs text-green-400">✓ listo</div>
+          <div className="text-xs text-exito">{t.attachReady}</div>
         )}
       </div>
       {!uploading && (
@@ -39,7 +39,7 @@ export default function FileAttachment({ attachment, onRemove, uploading }) {
           type="button"
           onClick={onRemove}
           title={t.attachRemove}
-          className="flex-shrink-0 text-slate-500 hover:text-red-400 transition-colors text-sm font-bold"
+          className="flex-shrink-0 text-texto-tenue hover:text-peligro transition-colors text-sm font-bold"
         >
           ×
         </button>

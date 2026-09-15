@@ -117,7 +117,7 @@ describe('PipelineModal -- cadena en línea', () => {
     renderModal({ onSubmit: (p) => { submitted = p; return Promise.resolve() } }, { layout: 'chain' })
     await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
 
-    fireEvent.click(screen.getByText(/Supervised/))
+    fireEvent.click(screen.getByText(es.pipelineModeSupervised))
     fireEvent.click(screen.getByText(/En paralelo/i))
     fireEvent.click(screen.getByText(/En cadena/i))
     fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
@@ -326,5 +326,31 @@ describe('PipelineModal -- picker de motor (R4 + T5)', () => {
     await waitFor(() => expect(api.get).toHaveBeenCalled())
 
     expect(screen.getByText(/Planificar y ejecutar/i).closest('button')).not.toBeDisabled()
+  })
+})
+
+// I-1 (revisión final PR 3, 2026-09-14): las etiquetas de modo (Supervised/
+// Autonomous/Dry run) estaban hardcodeadas en inglés dentro del componente,
+// sin pasar por i18n -- se veían en inglés aunque la interfaz estuviera en
+// español.
+describe('PipelineModal -- etiquetas de modo desde i18n (I-1)', () => {
+  it('las claves existen, no están vacías y difieren entre es y en', () => {
+    for (const clave of ['pipelineModeSupervised', 'pipelineModeAutonomous', 'pipelineModeDryRun']) {
+      expect(es[clave], `es.${clave}`).toBeTruthy()
+      expect(en[clave], `en.${clave}`).toBeTruthy()
+      expect(es[clave], `${clave} debería diferir entre es y en`).not.toBe(en[clave])
+    }
+  })
+
+  it('en español muestra el texto de es.js, no el literal en inglés', async () => {
+    renderModal({}, { layout: 'chain' })
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+
+    expect(screen.getByText(es.pipelineModeSupervised)).toBeInTheDocument()
+    expect(screen.getByText(es.pipelineModeAutonomous)).toBeInTheDocument()
+    expect(screen.getByText(es.pipelineModeDryRun)).toBeInTheDocument()
+    expect(screen.queryByText('👁 Supervised')).not.toBeInTheDocument()
+    expect(screen.queryByText('⚡ Autonomous')).not.toBeInTheDocument()
+    expect(screen.queryByText('🧪 Dry run')).not.toBeInTheDocument()
   })
 })

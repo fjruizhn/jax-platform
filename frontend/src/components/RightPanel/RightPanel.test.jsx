@@ -88,3 +88,64 @@ describe('RightPanel -- los fallos de Aprobar y Cancelar se ven', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
   })
 })
+
+describe('RightPanel -- jerarquía visual del gate', () => {
+  // Revisión de ddde201: Aprobar quedaba con bg-aviso-fondo, casi idéntico a
+  // Cancelar (bg-superficie) en modo claro. Aprobar es la única acción
+  // primaria de un pipeline pausado: vuelve a un CTA sólido con par
+  // declarado (sobre-color/accion).
+  it('Aprobar es el CTA sólido con bg-accion, distinto de Cancelar', () => {
+    renderPanel()
+    expect(screen.getByRole('button', { name: es.approve })).toHaveClass('bg-accion')
+    expect(screen.getByRole('button', { name: es.cancelPipeline })).not.toHaveClass('bg-accion')
+  })
+})
+
+// M-2 (revisión final PR 3, 2026-09-14): activePipeline.status
+// (jax_engine/schemas.py::PipelineStatus) se mostraba crudo, sin traducir.
+describe('RightPanel -- status del pipeline traducido (M-2)', () => {
+  it('las claves de los 5 estados existen en es y en', () => {
+    for (const clave of ['pending', 'running', 'waiting_gate', 'completed', 'failed']) {
+      expect(es.pipelineStatusLabels[clave], `es.pipelineStatusLabels.${clave}`).toBeTruthy()
+      expect(en.pipelineStatusLabels[clave], `en.pipelineStatusLabels.${clave}`).toBeTruthy()
+    }
+  })
+
+  it('waiting_gate se muestra traducido, no el valor crudo del backend', () => {
+    renderPanel()
+    expect(screen.getByText(es.pipelineStatusLabels.waiting_gate)).toBeInTheDocument()
+    expect(screen.queryByText('waiting_gate')).not.toBeInTheDocument()
+  })
+
+  it('un status desconocido cae de vuelta en el valor crudo (fallback seguro)', () => {
+    useJaxStore.setState({
+      activePipelines: { p1: { pipeline_id: 'p1-0000-0000', name: 'probar', status: 'a_new_backend_status', steps: [] } },
+    })
+    renderPanel()
+    expect(screen.getByText('a_new_backend_status')).toBeInTheDocument()
+  })
+})
+
+// M-3 (Ruling 37, revisión final PR 3, 2026-09-14): la pista de la barra de
+// progreso usaba bg-superficie -- 1,05:1 contra bg-accion (el relleno) en
+// claro, casi invisible. bg-borde sí se distingue en los dos temas
+// (contraste.test.js::HalEye -- anillo del housing ya lo prueba para el
+// mismo par borde/fondo).
+describe('RightPanel -- pista de la barra de progreso (M-3)', () => {
+  it('la pista usa bg-borde, no bg-superficie', () => {
+    useJaxStore.setState({
+      activePipelines: {
+        p1: {
+          pipeline_id: 'p1-0000-0000',
+          name: 'probar',
+          status: 'running',
+          steps: [{ step_id: 's1', status: 'completed' }, { step_id: 's2', status: 'pending' }],
+        },
+      },
+    })
+    const { container } = renderPanel()
+    const pista = container.querySelector('.h-1')
+    expect(pista).toHaveClass('bg-borde')
+    expect(pista).not.toHaveClass('bg-superficie')
+  })
+})

@@ -4,8 +4,18 @@ export default {
 
   // Left panel
   facets: 'Facetas',
+  // Nombre propio del componente (como killButton/eyeLasManosDown): igual en los dos idiomas.
+  lasManos: 'LAS MANOS',
   alive: 'vivo',
   down: 'caído',
+  // M-2 (revisión final PR 3, 2026-09-14): wsStatus (useJaxStore.js,
+  // api/websocket.js) se mostraba crudo, sin traducir. Un valor que el
+  // diccionario no conoce cae en el mismo dato crudo (LeftPanel.jsx).
+  wsStatusLabels: {
+    connected: 'Conectado',
+    disconnected: 'Desconectado',
+    reconnecting: 'Reconectando',
+  },
 
   // FacetCard status
   statusIdle: 'En reposo',
@@ -18,6 +28,17 @@ export default {
   tabAudit: 'Audit',
   stepsLabel: 'pasos',
   noPipelinesActive: 'Sin pipelines activos',
+  // M-2 (revisión final PR 3, 2026-09-14): activePipeline.status
+  // (jax_engine/schemas.py::PipelineStatus) se mostraba crudo. Un valor que
+  // el backend agregue y el diccionario no conozca cae en el dato crudo
+  // (RightPanel.jsx).
+  pipelineStatusLabels: {
+    pending: 'Pendiente',
+    running: 'En curso',
+    waiting_gate: 'Esperando aprobación',
+    completed: 'Completado',
+    failed: 'Fallido',
+  },
   pipelinesAdditional: (n) => `+${n} pipeline(s) adicional(es)`,
   approve: '✓ Aprobar',
   cancelling: 'Cancelando…',
@@ -69,6 +90,10 @@ export default {
   killSwitchActive: 'KILL SWITCH ACTIVO',
   killConfirm: '¿Confirmar?',
   killConfirmYes: 'SÍ, DETENER TODO',
+  // Término del producto (como eyeKillSwitch): igual en los dos idiomas.
+  killButton: 'KILL',
+  // Sigla técnica (WebSocket), igual en los dos idiomas.
+  wsLabel: 'WS',
   cancel: 'Cancelar',
   killTitle: 'Kill Switch — detiene todos los procesos',
   // killSwitchActive: badge persistente en la UI. killSwitchToast: toast al
@@ -85,6 +110,11 @@ export default {
   newPipelineTitle: 'Nuevo Pipeline · Jacobs',
   objectiveLabel: 'Objetivo',
   modeLabel: 'Modo',
+  // I-1 (revisión final PR 3, 2026-09-14): las etiquetas de modo del pipeline
+  // estaban hardcodeadas en inglés dentro de PipelineModal.jsx.
+  pipelineModeSupervised: '👁 Supervisado',
+  pipelineModeAutonomous: '⚡ Autónomo',
+  pipelineModeDryRun: '🧪 Prueba en seco',
   facetsLabel: 'Facetas',
   starting: 'Iniciando…',
   planAndExecute: 'Planificar y ejecutar',
@@ -195,6 +225,10 @@ export default {
   // Message
   userLabel: 'Usuario',
   contractDegradedNote: 'La respuesta no cumplió el formato esperado.',
+  // I-1 (revisión final PR 3, 2026-09-14): alt de <img> hardcodeado en
+  // español, sin pasar por i18n (se veía en la interfaz en inglés).
+  altGeneratedImage: 'imagen generada',
+  altAttachment: 'adjunto',
 
   // Theme / language
   lightMode: 'Modo claro',
@@ -211,6 +245,7 @@ export default {
   attachTooLarge: 'Archivo demasiado grande (máx 10MB)',
   attachTypes: 'Imágenes, PDF, texto, código',
   attachedFile: (name) => `Adjunto: ${name}`,
+  attachReady: '✓ listo',
 
   // Admin module
   adminTitle: 'Administración',

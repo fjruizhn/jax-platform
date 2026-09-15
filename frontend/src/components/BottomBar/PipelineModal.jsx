@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import { useJaxStore } from '../../store/useJaxStore'
 import api from '../../api/client'
+import { colorToken } from '../../tema/tokens'
 import {
   GOVERNED_FACETS,
   CHAIN_ROLES,
@@ -13,7 +14,7 @@ import {
 } from './pipelineChain'
 
 // capability/desc son de otro sistema (las_manos, tablas motor/capability/
-// capability_motor -- R4) -- label/color vienen de facetsState (/api/facets).
+// capability_motor -- R4) -- label y token vienen de facetsState (/api/facets).
 function getFacetOptions(t, facetsState) {
   return [
     { id: 'jax_local', capability: 'reasoning',       desc: t.descJaxLocal },
@@ -25,7 +26,7 @@ function getFacetOptions(t, facetsState) {
   ].map(f => ({
     ...f,
     label: facetsState[f.id]?.display_name || facetsState[f.id]?.name || f.id,
-    color: facetsState[f.id]?.color || '#94a3b8',
+    token: facetsState[f.id]?.token || 'texto-suave',
   }))
 }
 
@@ -192,30 +193,29 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   }
 
   const PIPELINE_MODES = [
-    { id: 'supervised',  label: '👁 Supervised' },
-    { id: 'autonomous',  label: '⚡ Autonomous' },
-    { id: 'dry_run',     label: '🧪 Dry run' },
+    { id: 'supervised',  label: t.pipelineModeSupervised },
+    { id: 'autonomous',  label: t.pipelineModeAutonomous },
+    { id: 'dry_run',     label: t.pipelineModeDryRun },
   ]
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-fondo/70"
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div className="bg-slate-900 border border-slate-700 rounded-xl p-5 w-full max-w-md shadow-2xl">
+      <div className="bg-superficie border border-borde rounded-xl p-5 w-full max-w-md shadow-2xl">
         <div className="mb-4">
-          <h2 className="text-sm font-bold text-slate-200 uppercase tracking-widest">
+          <h2 className="text-sm font-bold text-texto uppercase tracking-widest">
             {t.newPipelineTitle}
           </h2>
-          <p className="text-xs text-slate-500 mt-1 truncate">
+          <p className="text-xs text-texto-tenue mt-1 truncate">
             {t.objectiveLabel}: {objective}
           </p>
         </div>
 
         {/* Modo */}
         <div className="mb-4">
-          <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">{t.modeLabel}</p>
+          <p className="text-xs font-semibold text-texto-suave mb-2 uppercase tracking-wider">{t.modeLabel}</p>
           <div className="flex gap-2">
             {PIPELINE_MODES.map(({ id: m, label }) => (
               <button
@@ -224,9 +224,9 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
                 className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                   mode === m
                     ? m === 'autonomous'
-                      ? 'border-orange-500 bg-orange-500/20 text-orange-300'
-                      : 'border-blue-500 bg-blue-500/20 text-blue-300'
-                    : 'border-slate-700 bg-slate-800 text-slate-500 hover:text-slate-300'
+                      ? 'border-aviso-borde bg-aviso-fondo text-aviso'
+                      : 'border-info bg-info-fondo text-info'
+                    : 'border-borde bg-hundido text-texto-tenue hover:text-texto'
                 }`}
               >
                 {label}
@@ -237,7 +237,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
 
         {/* Forma: en cadena (depends_on) o en paralelo (lista plana) */}
         <div className="mb-4">
-          <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">{t.layoutLabel}</p>
+          <p className="text-xs font-semibold text-texto-suave mb-2 uppercase tracking-wider">{t.layoutLabel}</p>
           <div className="flex gap-2">
             {[['chain', t.layoutChain], ['parallel', t.layoutParallel]].map(([id, label]) => (
               <button
@@ -249,8 +249,8 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
                 aria-pressed={layout === id}
                 className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                   layout === id
-                    ? 'border-blue-500 bg-blue-500/20 text-blue-300'
-                    : 'border-slate-700 bg-slate-800 text-slate-500 hover:text-slate-300'
+                    ? 'border-info bg-info-fondo text-info'
+                    : 'border-borde bg-hundido text-texto-tenue hover:text-texto'
                 }`}
               >
                 {label}
@@ -261,19 +261,19 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
 
         {layout === 'chain' && (
           <div className="mb-5">
-            <p className="text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">{t.chainLabel}</p>
-            <p className="text-[11px] text-slate-500 mb-2">{t.chainHint}</p>
+            <p className="text-xs font-semibold text-texto-suave mb-1 uppercase tracking-wider">{t.chainLabel}</p>
+            <p className="text-[11px] text-texto-tenue mb-2">{t.chainHint}</p>
             <ol className="space-y-1.5">
               {CHAIN_ROLES.map((role, i) => (
                 <li
                   key={role.id}
-                  className="flex items-center gap-2 p-2 rounded-lg border border-slate-800 bg-slate-800/50"
+                  className="flex items-center gap-2 p-2 rounded-lg border border-borde bg-hundido"
                 >
-                  <span className="text-xs font-semibold text-slate-500 w-4">{i + 1}.</span>
-                  <span className="text-xs text-slate-300 flex-1">{t.chainRoles[role.id]}</span>
+                  <span className="text-xs font-semibold text-texto-tenue w-4">{i + 1}.</span>
+                  <span className="text-xs text-texto flex-1">{t.chainRoles[role.id]}</span>
                   <select
                     aria-label={t.chainRoles[role.id]}
-                    className="text-xs bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-300"
+                    className="text-xs bg-hundido border border-borde-control rounded px-2 py-1 text-texto focus:outline-none focus:border-foco"
                     value={chainFacets[role.id]}
                     onChange={(e) => setChainFacets(f => ({ ...f, [role.id]: e.target.value }))}
                   >
@@ -285,12 +285,12 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
               ))}
             </ol>
             {violations.map(v => (
-              <p key={`${v.role}-${v.dependsOnRole}`} className="mt-2 text-[11px] text-red-400">
+              <p key={`${v.role}-${v.dependsOnRole}`} className="mt-2 text-[11px] text-peligro">
                 {t.chainCleanroomWarning(t.chainRoles[v.role], facetLabel(v.facet), t.chainRoles[v.dependsOnRole])}
               </p>
             ))}
             {invalidRoles.map(r => (
-              <p key={`invalid-${r.id}`} className="mt-2 text-[11px] text-red-400">
+              <p key={`invalid-${r.id}`} className="mt-2 text-[11px] text-peligro">
                 {t.chainInvalidFacet(t.chainRoles[r.id])}
               </p>
             ))}
@@ -300,7 +300,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
         {/* Facetas (en paralelo) */}
         {layout === 'parallel' && (
         <div className="mb-5">
-          <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">
+          <p className="text-xs font-semibold text-texto-suave mb-2 uppercase tracking-wider">
             {t.facetsLabel}
           </p>
           <div className="space-y-1.5">
@@ -310,15 +310,10 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
               return (
                 <div key={f.id}>
                   <label
-                    className={`flex items-center gap-3 p-2 rounded-lg border cursor-pointer transition-colors ${
-                      selected.includes(f.id)
-                        ? 'border-opacity-60 bg-opacity-10'
-                        : 'border-slate-800 bg-slate-800/50 hover:border-slate-700'
+                    className={`flex items-center gap-3 p-2 rounded-lg border border-borde bg-hundido cursor-pointer transition-colors ${
+                      selected.includes(f.id) ? '' : 'hover:border-borde-control'
                     }`}
-                    style={selected.includes(f.id) ? {
-                      borderColor: f.color + '80',
-                      backgroundColor: f.color + '12',
-                    } : {}}
+                    style={selected.includes(f.id) ? { borderColor: colorToken(f.token, 0.5) } : {}}
                   >
                     <input
                       type="checkbox"
@@ -326,25 +321,28 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
                       onChange={() => toggleFacet(f.id)}
                       className="sr-only"
                     />
+                    {/* Tilde (Ruling 30): elegida = superficie con borde y ✓
+                        del color de la faceta; nunca texto sobre el color sólido. */}
                     <span
-                      className="w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 text-xs"
+                      className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 text-xs ${
+                        selected.includes(f.id) ? 'bg-superficie' : 'border-borde-control'
+                      }`}
                       style={selected.includes(f.id) ? {
-                        borderColor: f.color,
-                        backgroundColor: f.color,
-                        color: '#000',
-                      } : { borderColor: '#475569' }}
+                        borderColor: colorToken(f.token),
+                        color: colorToken(f.token),
+                      } : undefined}
                     >
                       {selected.includes(f.id) ? '✓' : ''}
                     </span>
-                    <span className="text-xs font-semibold" style={{ color: f.color }}>{f.label}</span>
-                    <span className="text-xs text-slate-500">{f.desc}</span>
+                    <span className="text-xs font-semibold" style={{ color: colorToken(f.token) }}>{f.label}</span>
+                    <span className="text-xs text-texto-tenue">{f.desc}</span>
                   </label>
                   {selected.includes(f.id) && motorOptions.length > 0 && (
                     // T5: default = f.id (el motor que el checkbox dice),
                     // no '' (auto) -- '' sigue disponible como elección
                     // EXPLÍCITA del usuario, ya no como default silencioso.
                     <select
-                      className="ml-7 mt-1 text-xs bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-300"
+                      className="ml-7 mt-1 text-xs bg-hundido border border-borde-control rounded px-2 py-1 text-texto focus:outline-none focus:border-foco"
                       value={motorChoices[f.id] !== undefined ? motorChoices[f.id] : f.id}
                       onChange={(e) => setMotorFor(f.id, e.target.value)}
                     >
@@ -353,7 +351,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
                     </select>
                   )}
                   {selected.includes(f.id) && motorsByKey && !cap && (
-                    <p className="ml-7 mt-1 text-[11px] text-amber-500/80">
+                    <p className="ml-7 mt-1 text-[11px] text-aviso">
                       {t.facetUngoverned}
                     </p>
                   )}
@@ -367,17 +365,17 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
         {/* T5: fail-closed -- sin catálogo real (cargando o falló), no se
             arma ningún plan. Nada de fallback silencioso. */}
         {catalogFailed && (
-          <p className="mb-2 text-[11px] text-red-400">{t.catalogFailedHint}</p>
+          <p className="mb-2 text-[11px] text-peligro">{t.catalogFailedHint}</p>
         )}
         {!catalogFailed && !catalogReady && (
-          <p className="mb-2 text-[11px] text-slate-500">{t.catalogLoadingHint}</p>
+          <p className="mb-2 text-[11px] text-texto-tenue">{t.catalogLoadingHint}</p>
         )}
 
         {/* Botones */}
         <div className="flex gap-2">
           <button
             onClick={onClose}
-            className="flex-1 py-2 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700 transition-colors"
+            className="flex-1 py-2 rounded-lg text-xs font-semibold bg-hundido text-texto-suave hover:text-texto border border-borde transition-colors"
           >
             {t.cancel}
           </button>
@@ -387,8 +385,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
               submitting || !catalogReady
               || (layout === 'chain' ? chainBlocked : selected.length === 0)
             }
-            className="flex-1 py-2 rounded-lg text-xs font-bold text-white transition-colors disabled:opacity-40"
-            style={{ backgroundColor: '#3b82f6' }}
+            className="flex-1 py-2 rounded-lg text-xs font-bold bg-accion hover:bg-accion-hover text-sobre-color transition-colors disabled:opacity-40"
           >
             {submitting ? t.starting : t.planAndExecute}
           </button>
