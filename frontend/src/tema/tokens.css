@@ -56,8 +56,8 @@
 
 :root[data-tema="claro"] {
   color-scheme: light;
-  --fondo: 248 250 252;
-  --superficie: 241 245 249;
+  --fondo: 241 245 249;
+  --superficie: 248 250 252;
   --superficie-2: 226 232 240;
   --hundido: 255 255 255;
   --borde: 203 213 225;
