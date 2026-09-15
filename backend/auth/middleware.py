@@ -25,8 +25,12 @@ bearer = HTTPBearer(auto_error=True)
 SESION_INVALIDA = "sesion_invalida"
 CAMBIO_DE_PASSWORD_REQUERIDO = "cambio_de_password_requerido"
 # Las ÚNICAS rutas que aceptan una sesión con must_change_password (Ruling
-# U34). Además de ellas: /api/auth/refresh (llama a verificar_sesion a mano) y
-# /api/auth/logout (no autentica). Todo lo demás se niega por defecto.
+# U34). Son tres sitios de opt-in explícito, todos con
+# admite_cambio_pendiente=True: get_current_user_con_cambio_pendiente (la usan
+# /me y /me/password), /api/auth/refresh (llama a verificar_sesion a mano) y
+# /api/auth/logout (también llama a verificar_sesion a mano — SÍ autentica,
+# desde Task 3b identifica la sesión por la cookie de refresh). Todo lo demás
+# se niega por defecto.
 # tests/test_fijar_password.py fija que esta lista y las rutas que piden
 # get_current_user_con_cambio_pendiente son el mismo conjunto.
 RUTAS_CON_CAMBIO_PENDIENTE = frozenset({("GET", "/api/auth/me"), ("POST", "/api/auth/me/password")})

@@ -208,10 +208,10 @@ def _llamadas_que_admiten_la_marca(arbol):
 
 
 def test_nadie_mas_admite_la_marca():
-    """Sólo dos lugares admiten la marca: la dependencia permisiva (que usan
-    /me y /me/password) y /refresh. Fix ronda 1 de la review: antes contaba el
-    texto exacto `admite_cambio_pendiente=True`, que `= True` con espacios o
-    `**{...}` esquivaban."""
+    """Tres lugares admiten la marca: la dependencia permisiva (que usan
+    /me y /me/password), /refresh y /logout. Fix ronda 1 de la review: antes
+    contaba el texto exacto `admite_cambio_pendiente=True`, que `= True` con
+    espacios o `**{...}` esquivaban."""
     raiz = pathlib.Path(__file__).resolve().parents[1]
     hallados = set()
     for archivo in raiz.rglob("*.py"):
