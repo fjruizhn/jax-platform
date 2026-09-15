@@ -138,4 +138,91 @@ describe('AdminRepository -- borrar pasa por ConfirmacionSuma, no por window.con
     }))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
+
+  // K2 (fix round 1, review de la Task 1): el mismo riesgo que m3 en
+  // AdminUsers.test.jsx (una confirmación en vuelo no debe robarle el
+  // diálogo a OTRO archivo) pero para Repositorio. Debe pasar en el código
+  // actual (cerrarBorrandoSiEs ya guarda por path) y ponerse rojo si
+  // confirmarBorrado cerrara con un fijarBorrando(null) incondicional --
+  // verificado a mano con esa mutación antes de dejar este test.
+  it('una respuesta tardía de X no cierra el diálogo de borrado abierto para Y', async () => {
+    const OTRO = { path: 'documents/otro.pdf', name: 'otro.pdf', size: 100, modified: '2026-03-14T18:30:00Z' }
+    api.get.mockResolvedValue({ data: { folders: { ...FOLDERS, documents: [ARCHIVO, OTRO] } } })
+    let resolverX
+    const promesaX = new Promise((resolve) => { resolverX = resolve })
+    api.delete.mockImplementation((url) => (url.includes('informe.pdf') ? promesaX : Promise.resolve({})))
+    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    const botones = await screen.findAllByRole('button', { name: 'Eliminar' })
+    fireEvent.click(botones[0])
+    const dialogoX = screen.getByRole('dialog', { name: 'Eliminar informe.pdf' })
+    resolverSuma(dialogoX)
+    fireEvent.click(within(dialogoX).getByRole('button', { name: 'Eliminar' }))
+    await waitFor(() => expect(api.delete).toHaveBeenCalledWith(expect.stringContaining('informe.pdf')))
+    fireEvent.click(within(dialogoX).getByRole('button', { name: 'Cancelar' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Eliminar informe.pdf' })).not.toBeInTheDocument())
+    fireEvent.click(screen.getAllByRole('button', { name: 'Eliminar' })[1])
+    screen.getByRole('dialog', { name: 'Eliminar otro.pdf' })
+    resolverX({})
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('dialog', { name: 'Eliminar otro.pdf' })).toBeInTheDocument()
+  })
+})
+
+// K1 (fix round 1, review de la Task 1, High): el modal de Preview era un
+// <div> a mano -- sin role, sin aria-modal, sin inert de #root, sin trampa de
+// foco y sin Escape -- y podía estar abierto a la vez que ConfirmacionSuma.
+// Ahora va sobre Dialogo, y handlePreview/handleDelete se cierran entre sí
+// (mismo patrón que los abrir* de AdminUsers.jsx).
+describe('AdminRepository -- Preview sobre Dialogo, un modal a la vez (K1)', () => {
+  function servirPreview() {
+    api.get.mockImplementation((url) => {
+      if (url.startsWith('/admin/repo/file')) {
+        return Promise.resolve({ data: { type: 'text', content: 'contenido' } })
+      }
+      return Promise.resolve({ data: { folders: FOLDERS } })
+    })
+  }
+
+  it('Preview es un diálogo etiquetado con el nombre del archivo', async () => {
+    servirPreview()
+    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }))
+    const dialogo = await screen.findByRole('dialog', { name: 'informe.pdf' })
+    expect(dialogo).toHaveAttribute('aria-modal', 'true')
+  })
+
+  it('Escape cierra el Preview', async () => {
+    servirPreview()
+    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }))
+    await screen.findByRole('dialog', { name: 'informe.pdf' })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('abrir Eliminar con Preview abierto deja un solo diálogo (el de borrado)', async () => {
+    servirPreview()
+    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }))
+    await screen.findByRole('dialog', { name: 'informe.pdf' })
+    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }))
+    await waitFor(() => {
+      const dialogos = screen.getAllByRole('dialog')
+      expect(dialogos).toHaveLength(1)
+      expect(dialogos[0]).toHaveAttribute('aria-labelledby', 'confirmacion-suma-titulo')
+    })
+  })
+
+  it('abrir Preview con Eliminar abierto deja un solo diálogo (el de Preview)', async () => {
+    servirPreview()
+    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Eliminar' }))
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    await waitFor(() => {
+      const dialogos = screen.getAllByRole('dialog')
+      expect(dialogos).toHaveLength(1)
+      expect(dialogos[0]).toHaveAttribute('aria-labelledby', 'repo-preview-titulo')
+    })
+  })
 })

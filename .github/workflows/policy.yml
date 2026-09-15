@@ -418,8 +418,19 @@ jobs:
             // abierto con el toast -- rojos con window.confirm). Vistos en
             // rojo antes de verde. Medido con vitest run: 386 passed en 52
             // archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 386) {
-              console.error("PISO ROTO: se esperaban 386 tests de vitest CORRIDOS y 0 fallidos.");
+            // 386 -> 391 el 2026-09-15 (fix round 1 de la Task 1, review K1/
+            // K2): +4 AdminRepository.test.jsx (Preview es un diálogo
+            // etiquetado con el nombre del archivo, Escape lo cierra, abrir
+            // Eliminar con Preview abierto deja solo el de borrado y
+            // viceversa -- rojos con el <div> a mano, sin role="dialog")
+            // +1 AdminRepository.test.jsx (una respuesta tardía de X no
+            // cierra el diálogo de borrado de Y -- pasa en el código actual,
+            // que ya guarda por path con cerrarBorrandoSiEs; verificado en
+            // rojo a mano con un fijarBorrando(null) incondicional antes de
+            // dejar el test, y devuelto a verde). Medido dos veces con
+            // vitest run: 391 passed en 52 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 391) {
+              console.error("PISO ROTO: se esperaban 391 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
