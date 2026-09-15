@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { useJaxStore } from '../store/useJaxStore'
-import { useTheme } from '../store/useTheme'
+import { useTema } from '../store/useTema'
 import { useI18n } from '../i18n/index.jsx'
 
 // Barra superior derecha (2026-09-12, pedido de Fernando):
@@ -70,7 +70,7 @@ const BOTON_NEUTRO = `${BOTON} hover:text-slate-300`
 export default function BarraUsuario() {
   const user = useJaxStore((s) => s.user)
   const logout = useJaxStore((s) => s.logout)
-  const { theme, toggleTheme } = useTheme()
+  const { theme, toggleTheme } = useTema()
   const { lang, setLang, t } = useI18n()
 
   const otroIdioma = lang === 'es' ? 'en' : 'es'
