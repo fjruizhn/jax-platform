@@ -191,8 +191,19 @@ jobs:
             // AdminRepository.test.jsx (M-3: el preview markdown no lleva prose-invert
             // y pinta con text-texto). Vistos en rojo antes de verde. Medido con
             // vitest run: 217.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 217) {
-              console.error("PISO ROTO: se esperaban 217 tests de vitest CORRIDOS y 0 fallidos.");
+            // 217 -> 220 el 2026-09-15 (re-revisión acotada del PR 2, sin diferidos):
+            // AdminCosts.jsx:106-107 formateaba tokens_in/tokens_out con
+            // toLocaleString() sin locale -- seguía el locale del navegador, no el
+            // idioma activo. +3 AdminCosts.test.jsx (nuevo archivo): en inglés
+            // Number.prototype.toLocaleString se llama con 'en-US', en español (por
+            // defecto) con 'es-HN' (localeFor(lang), igual que las fechas de I-1), y
+            // el valor formateado sale con el agrupamiento de miles correcto. Nota:
+            // es-HN y en-US agrupan igual para enteros en este ICU (ambos usan coma
+            // de millar) -- por eso las dos primeras pruebas espían el argumento de
+            // locale en vez de comparar texto renderizado entre idiomas, que sería
+            // igual. Vistos en rojo antes de verde. Medido con vitest run: 220.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 220) {
+              console.error("PISO ROTO: se esperaban 220 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
