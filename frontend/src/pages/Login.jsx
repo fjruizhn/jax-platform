@@ -5,6 +5,7 @@ import { useI18n } from '../i18n/index.jsx'
 import api from '../api/client'
 import PasswordInput from '../components/PasswordInput'
 import AlertaError from '../components/AlertaError'
+import HalEye from '../components/HalEye/HalEye'
 
 export default function Login() {
   const login = useJaxStore((s) => s.login)
@@ -154,14 +155,7 @@ export default function Login() {
         </div>
 
         <div className="flex justify-center mb-8">
-          <svg width="80" height="80" viewBox="0 0 80 80" aria-hidden="true">
-            <circle cx="40" cy="40" r="36" className="fill-fondo stroke-superficie" strokeWidth="2" />
-            <circle cx="40" cy="40" r="30" fill="none" className="stroke-faceta-jax-local" strokeWidth="1" opacity="0.3" />
-            <circle cx="40" cy="40" r="16" className="fill-faceta-jax-local" opacity="0.9" />
-            <circle cx="40" cy="40" r="12" className="fill-fondo" opacity="0.5" />
-            <circle cx="40" cy="40" r="6" className="fill-fondo" />
-            <circle cx="34" cy="34" r="2.5" className="fill-sobre-color" opacity="0.6" />
-          </svg>
+          <HalEye size={150} reposo />
         </div>
 
         <h1 className="text-center text-2xl font-bold text-texto mb-1">{t.loginTitle}</h1>

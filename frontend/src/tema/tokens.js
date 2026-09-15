@@ -66,6 +66,7 @@ export const PERMITIDOS_CRUDOS = []
 export const MIGRADOS = [
   'components/AlertaError.jsx',
   'components/BarraUsuario.jsx',
+  'components/HalEye/HalEye.jsx',
   'components/LogoAxioma.jsx',
   'components/PasswordInput.jsx',
   'pages/Login.jsx',

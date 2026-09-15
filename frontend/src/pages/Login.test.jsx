@@ -118,6 +118,19 @@ describe('Login -- aviso de cierre de sesión', () => {
   })
 })
 
+// Ojo HAL animado (2026-09-14, fix vivo del PR 1, Ruling 21): antes un SVG
+// fijo de 80px; ahora HalEye en modo `reposo` -- el estado de reposo del
+// panel (azul, pulse-slow), fijo, sin depender de la store (acá no hay
+// sesión: useJaxStore está mockeado sin facets/lasManos/etc).
+describe('Login -- ojo HAL', () => {
+  it('muestra el HalEye en estado de reposo fijo (pulse-slow), no el apagado de "sin sesión"', () => {
+    const { container } = renderLogin()
+    expect(container.querySelector('.hal-anim-pulse-slow')).toBeInTheDocument()
+    expect(container.querySelector('.hal-anim-none')).not.toBeInTheDocument()
+    expect(screen.queryByText(/LAS MANOS DOWN/i)).not.toBeInTheDocument()
+  })
+})
+
 // Recuperación de contraseña (2026-09-12): comparte el límite del login. Con un
 // 429 no se procesó nada, así que "si el correo existe, te llegará" es falso.
 describe('Login -- recuperación de contraseña', () => {

@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import api from '../api/client'
 import es from '../i18n/es.js'
 import en from '../i18n/en.js'
+import { COLOR_JAX_LOCAL, EYE_ESTADO_REPOSO } from './eyeRestState'
 
 // Este módulo no es un componente — no puede usar el hook useI18n(). Lee la
 // misma fuente que I18nProvider (localStorage 'jax_lang') para los mensajes
@@ -68,7 +69,7 @@ function _reconcileSteps(prevSteps, nextSteps) {
 }
 
 export const FACET_COLORS = {
-  jax_local: '#3b82f6',
+  jax_local: COLOR_JAX_LOCAL,
   jekyll:    '#6366f1',
   hyde:      '#f97316',
   hipatia:   '#10b981',
@@ -526,5 +527,5 @@ export function getEyeState(facets, activePipelines, lasManos, killSwitchActive,
   const hasRunning = Object.values(activePipelines).some(p => p.status === 'running')
   if (hasRunning) return { color: '#ffffff', animation: 'pulse-slow', label: 'Jacobs' }
 
-  return { color: '#3b82f6', animation: 'pulse-slow', label: idleLabel }
+  return { ...EYE_ESTADO_REPOSO, label: idleLabel }
 }

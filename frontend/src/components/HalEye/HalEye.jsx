@@ -1,16 +1,25 @@
 import { memo } from 'react'
 import './HalEye.css'
 import { useJaxStore, getEyeState } from '../../store/useJaxStore'
+import { EYE_ESTADO_REPOSO } from '../../store/eyeRestState'
 import { useI18n } from '../../i18n/index.jsx'
 
-function HalEye({ size = 220 }) {
+// `reposo` (Ruling 21, fix-vivo-brief.md §C, decisión de Fernando
+// 2026-09-14): fuerza el estado de reposo del panel -- azul, pulse-slow, sin
+// etiqueta visible -- SIN llamar a getEyeState ni leer la store. Lo usa
+// Login, que no tiene sesión: mostrar ahí "LAS MANOS DOWN" (lo que
+// getEyeState calcularía con la store vacía) se vería roto. LeftPanel no pasa
+// la prop y sigue exactamente igual, dirigido por la store.
+function HalEye({ size = 220, reposo = false }) {
   const facets = useJaxStore((s) => s.facets)
   const activePipelines = useJaxStore((s) => s.activePipelines)
   const lasManos = useJaxStore((s) => s.lasManos)
   const killSwitchActive = useJaxStore((s) => s.killSwitchActive)
   const generatingImage = useJaxStore((s) => s.generatingImage)
   const { t } = useI18n()
-  const eye = getEyeState(facets, activePipelines, lasManos, killSwitchActive, generatingImage, t.eyeIdle)
+  const eye = reposo
+    ? { ...EYE_ESTADO_REPOSO, label: t.eyeIdle }
+    : getEyeState(facets, activePipelines, lasManos, killSwitchActive, generatingImage, t.eyeIdle)
 
   const r = size / 2
   const outerR = r * 0.92
@@ -29,7 +38,7 @@ function HalEye({ size = 220 }) {
           aria-label={t.halEyeAriaLabel(eye.label)}
         >
           {/* Outer housing */}
-          <circle cx={r} cy={r} r={outerR} fill="#0f172a" stroke="#1e293b" strokeWidth="3" />
+          <circle cx={r} cy={r} r={outerR} className="fill-fondo stroke-superficie" strokeWidth="3" />
 
           {/* Glow rings */}
           <circle
@@ -60,14 +69,14 @@ function HalEye({ size = 220 }) {
           {/* Inner iris detail */}
           <circle
             cx={r} cy={r} r={irisR * 0.75}
-            fill="#0f172a"
+            className="fill-fondo"
             opacity="0.5"
           />
 
           {/* Pupil */}
           <circle
             cx={r} cy={r} r={pupilR}
-            fill="#0a0f1a"
+            className="fill-fondo"
           />
 
           {/* Specular highlight */}
@@ -75,7 +84,7 @@ function HalEye({ size = 220 }) {
             cx={r - irisR * 0.25}
             cy={r - irisR * 0.25}
             r={pupilR * 0.35}
-            fill="white"
+            className="fill-sobre-color"
             opacity="0.6"
           />
 
@@ -92,12 +101,14 @@ function HalEye({ size = 220 }) {
           )}
         </svg>
       </div>
-      <div
-        className="absolute bottom-0 text-xs font-mono opacity-40"
-        style={{ color: eye.color }}
-      >
-        {eye.label}
-      </div>
+      {!reposo && (
+        <div
+          className="absolute bottom-0 text-xs font-mono opacity-40"
+          style={{ color: eye.color }}
+        >
+          {eye.label}
+        </div>
+      )}
     </div>
   )
 }
