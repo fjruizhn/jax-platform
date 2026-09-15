@@ -461,7 +461,8 @@ export default {
   adminRepoDelete: 'Delete',
   adminRepoDownload: 'Download',
   adminRepoPreview: 'Preview',
-  adminRepoDeleteConfirm: (name) => `Delete ${name}?`,
+  adminRepoDeleteTitle: (name) => `Delete ${name}`,
+  adminRepoDeleteMessage: 'The file is removed from the repository and cannot be undone.',
   adminRepoSize: (bytes) => bytes < 1024 ? `${bytes}B` : bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`,
 
   // Admin settings

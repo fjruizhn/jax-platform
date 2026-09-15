@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
+import { useJaxStore } from '../../store/useJaxStore'
+import ConfirmacionSuma from '../../components/ConfirmacionSuma'
 import ReactMarkdown from 'react-markdown'
 
 const FOLDER_LABELS = {
@@ -12,9 +14,28 @@ const FOLDER_LABELS = {
 
 export default function AdminRepository() {
   const { t, lang } = useI18n()
+  const addToast = useJaxStore((s) => s.addToast)
   const [data, setData] = useState(null)
   const [preview, setPreview] = useState(null)
   const [activeFolder, setActiveFolder] = useState('documents')
+  // Task 1 (2026-09-15): la confirmación de borrado pasa por ConfirmacionSuma
+  // en vez de window.confirm, mismo patrón que la baja en AdminUsers.jsx --
+  // borrandoRef espeja el estado de forma síncrona para que una respuesta que
+  // llega tarde no cierre, ni le robe el foco, al diálogo de OTRO archivo que
+  // se haya abierto mientras tanto.
+  const [borrando, setBorrandoState] = useState(null)
+  const borrandoRef = useRef(null)
+  function fijarBorrando(f) {
+    borrandoRef.current = f
+    setBorrandoState(f)
+  }
+  function cerrarBorrandoSiEs(path) {
+    if (borrandoRef.current?.path === path) {
+      fijarBorrando(null)
+      return true
+    }
+    return false
+  }
 
   function load() {
     api.get('/admin/repo').then(r => setData(r.data.folders)).catch(() => {})
@@ -27,10 +48,19 @@ export default function AdminRepository() {
     setPreview({ ...fd, filename: file.name })
   }
 
-  async function handleDelete(file) {
-    if (!window.confirm(t.adminRepoDeleteConfirm(file.name))) return
-    await api.delete(`/admin/repo/file?path=${encodeURIComponent(file.path)}`)
-    load()
+  function handleDelete(file) {
+    fijarBorrando(file)
+  }
+
+  async function confirmarBorrado() {
+    const f = borrando
+    try {
+      await api.delete(`/admin/repo/file?path=${encodeURIComponent(f.path)}`)
+      cerrarBorrandoSiEs(f.path)
+      load()
+    } catch (err) {
+      addToast({ type: 'error', message: t.adminErrorGeneric })
+    }
   }
 
   function handleDownload(file) {
@@ -100,6 +130,16 @@ export default function AdminRepository() {
           </table>
         )}
       </div>
+
+      {borrando && (
+        <ConfirmacionSuma
+          titulo={t.adminRepoDeleteTitle(borrando.name)}
+          mensaje={t.adminRepoDeleteMessage}
+          textoConfirmar={t.adminRepoDelete}
+          onConfirmar={confirmarBorrado}
+          onCancelar={() => fijarBorrando(null)}
+        />
+      )}
 
       {/* Preview modal */}
       {preview && (

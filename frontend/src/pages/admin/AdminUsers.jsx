@@ -23,6 +23,11 @@ export default function AdminUsers() {
   const { t, lang } = useI18n()
   const addToast = useJaxStore((s) => s.addToast)
   const actualizarMiEmail = useJaxStore((s) => s.actualizarMiEmail)
+  // Task 1 (2026-09-15, decisión de Fernando, revierte Ruling F7): la fila
+  // del usuario logueado no ofrece "Fijar contraseña" ni "Dar de baja" -- es
+  // solo la UI; el backend sigue rechazando la auto-acción con 403
+  // auto_accion_prohibida como defensa en profundidad (sin tocar acá).
+  const usuarioLogueado = useJaxStore((s) => s.user)
   const [users, setUsers] = useState([])
   const [showCreate, setShowCreate] = useState(false)
   const [editando, setEditando] = useState(null)
@@ -269,7 +274,9 @@ export default function AdminUsers() {
             </tr>
           </thead>
           <tbody className="divide-y divide-borde/50">
-            {users.map(u => (
+            {users.map(u => {
+              const esPropia = usuarioLogueado?.user_id === u.user_id
+              return (
               <tr key={u.user_id} className={`hover:bg-superficie transition-colors ${u.is_locked ? 'bg-aviso-fondo' : 'bg-hundido'}`}>
                 <td className="px-4 py-3 text-texto">{u.email}</td>
                 {/* Etapa 3 (Ruling U6): el rol se muestra como texto y se
@@ -302,18 +309,23 @@ export default function AdminUsers() {
                     )}
                     <button onClick={() => handleRevoke(u)} className={ACCION_NEUTRA}>{t.adminUserRevokeSessions}</button>
                     <button onClick={() => handleResetLink(u)} className={ACCION_NEUTRA}>{t.adminUserSendResetLink}</button>
-                    <button onClick={() => abrirFijarPassword(u)} className={ACCION_NEUTRA}>{t.adminUserSetPassword}</button>
+                    {!esPropia && (
+                      <button onClick={() => abrirFijarPassword(u)} className={ACCION_NEUTRA}>{t.adminUserSetPassword}</button>
+                    )}
                     <button onClick={() => abrirHistorial(u)} className={ACCION_NEUTRA}>{t.adminUserHistory}</button>
-                    <button
-                      onClick={() => abrirBaja(u)}
-                      className="text-xs px-2 py-0.5 rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors"
-                    >
-                      {t.adminUserBaja}
-                    </button>
+                    {!esPropia && (
+                      <button
+                        onClick={() => abrirBaja(u)}
+                        className="text-xs px-2 py-0.5 rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors"
+                      >
+                        {t.adminUserBaja}
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>

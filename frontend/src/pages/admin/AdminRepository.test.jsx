@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -7,9 +7,22 @@ import '@testing-library/jest-dom'
 // estaban fijos, sin pasar por i18n -- en inglés la tabla salía en español.
 vi.mock('../../api/client', () => ({ default: { get: vi.fn(), delete: vi.fn() } }))
 
+// Task 1 (2026-09-15): borrar pasa por ConfirmacionSuma, que necesita
+// addToast del store para el toast de error (mismo patrón que AdminUsers).
+const addToastMock = vi.fn()
+vi.mock('../../store/useJaxStore', () => ({
+  useJaxStore: (selector) => selector({ addToast: addToastMock }),
+}))
+
 import api from '../../api/client'
 import AdminRepository from './AdminRepository'
 import { I18nProvider } from '../../i18n/index.jsx'
+
+// Resuelve la suma al azar del diálogo, igual que en AdminUsers.test.jsx.
+function resolverSuma(dialogo) {
+  const [, a, b] = within(dialogo).getByText(/Resolvé \d+ \+ \d+ = \?/).textContent.match(/(\d+) \+ (\d+)/)
+  fireEvent.change(within(dialogo).getByRole('spinbutton'), { target: { value: String(Number(a) + Number(b)) } })
+}
 
 const ARCHIVO = { path: 'documents/informe.pdf', name: 'informe.pdf', size: 2048, modified: '2026-03-14T18:30:00Z' }
 const FOLDERS = { missions: [], pipelines: [], documents: [ARCHIVO], images: [] }
@@ -21,6 +34,8 @@ function renderRepo() {
 beforeEach(() => {
   api.get.mockReset()
   api.get.mockResolvedValue({ data: { folders: FOLDERS } })
+  api.delete.mockReset()
+  addToastMock.mockReset()
   localStorage.clear()
 })
 
@@ -72,5 +87,55 @@ describe('AdminRepository -- preview markdown sin prose-invert (M-3)', () => {
     const contenedor = encabezado.parentElement
     expect(contenedor.className).not.toMatch(/(^|\s)prose(-\S+)?(\s|$)/)
     expect(contenedor.className).toMatch(/(^|\s)text-texto(\s|$)/)
+  })
+})
+
+// Task 1 (2026-09-15): la confirmación de borrado pasa por ConfirmacionSuma,
+// con el mismo patrón que la baja en AdminUsers -- window.confirm queda fuera
+// de todo src (grep en el reporte de la tarea).
+describe('AdminRepository -- borrar pasa por ConfirmacionSuma, no por window.confirm', () => {
+  it('borrar exige la suma antes de llamar a la API', async () => {
+    api.delete.mockResolvedValue({})
+    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Eliminar' }))
+    const dialogo = screen.getByRole('dialog', { name: 'Eliminar informe.pdf' })
+    const confirmar = within(dialogo).getByRole('button', { name: 'Eliminar' })
+    expect(confirmar).toBeDisabled()
+    resolverSuma(dialogo)
+    expect(api.delete).not.toHaveBeenCalled()
+    fireEvent.click(confirmar)
+    await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/admin/repo/file?path=documents%2Finforme.pdf'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('Cancelar no borra', async () => {
+    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Eliminar' }))
+    const dialogo = screen.getByRole('dialog')
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Cancelar' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(api.delete).not.toHaveBeenCalled()
+  })
+
+  it('Escape no borra', async () => {
+    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Eliminar' }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(api.delete).not.toHaveBeenCalled()
+  })
+
+  it('si hay error, el diálogo sigue abierto y avisa traducido', async () => {
+    api.delete.mockRejectedValue({ response: { status: 500 } })
+    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Eliminar' }))
+    const dialogo = screen.getByRole('dialog')
+    resolverSuma(dialogo)
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Eliminar' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error', message: 'No se pudo completar la acción.',
+    }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 })

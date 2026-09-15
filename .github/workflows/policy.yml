@@ -408,8 +408,18 @@ jobs:
             // BottomBar.test.jsx suma una aserción del marcador, no un test.
             // Medido dos veces con vitest run: 379 passed en 52 archivos, 0
             // fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 379) {
-              console.error("PISO ROTO: se esperaban 379 tests de vitest CORRIDOS y 0 fallidos.");
+            // 379 -> 386 el 2026-09-15 (Task 1 de pendientes-2026-09-22, la
+            // fila propia sin auto-acciones y Repositorio con
+            // ConfirmacionSuma): +3 AdminUsers.test.jsx (la fila del usuario
+            // logueado no muestra "Fijar contraseña" ni "Dar de baja"; la de
+            // otro sí; con dos filas solo la propia las esconde -- rojos sin
+            // el filtro esPropia) +4 AdminRepository.test.jsx (borrar exige
+            // la suma, Cancelar y Escape no borran, un error deja el diálogo
+            // abierto con el toast -- rojos con window.confirm). Vistos en
+            // rojo antes de verde. Medido con vitest run: 386 passed en 52
+            // archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 386) {
+              console.error("PISO ROTO: se esperaban 386 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

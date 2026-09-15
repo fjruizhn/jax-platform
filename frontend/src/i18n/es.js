@@ -464,7 +464,8 @@ export default {
   adminRepoDelete: 'Eliminar',
   adminRepoDownload: 'Descargar',
   adminRepoPreview: 'Preview',
-  adminRepoDeleteConfirm: (name) => `¿Eliminar ${name}?`,
+  adminRepoDeleteTitle: (name) => `Eliminar ${name}`,
+  adminRepoDeleteMessage: 'El archivo se borra del repositorio y no se puede deshacer.',
   adminRepoSize: (bytes) => bytes < 1024 ? `${bytes}B` : bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`,
 
   // Admin settings

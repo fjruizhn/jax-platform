@@ -13,8 +13,13 @@ const addToastMock = vi.fn()
 // Etapa 5: tras guardar un correo, AdminUsers avisa al store (actualizarMiEmail
 // decide si es el usuario logueado; lo prueba useJaxStore.test.js).
 const actualizarMiEmailMock = vi.fn()
+// Task 1 (2026-09-15, decisión de Fernando, revierte Ruling F7): la fila
+// propia no ofrece auto-acciones. `usuario` es el logueado del store; por
+// defecto no coincide con ningún user_id de fixture (2, 3, 5) para no afectar
+// los tests existentes. Mismo patrón que BarraUsuario.test.jsx.
+let usuario = { user_id: 1, email: 'admin@axioma-ia.io', role: 'superadmin' }
 vi.mock('../../store/useJaxStore', () => ({
-  useJaxStore: (selector) => selector({ addToast: addToastMock, actualizarMiEmail: actualizarMiEmailMock }),
+  useJaxStore: (selector) => selector({ addToast: addToastMock, actualizarMiEmail: actualizarMiEmailMock, user: usuario }),
 }))
 
 import api from '../../api/client'
@@ -56,6 +61,7 @@ beforeEach(() => {
   actualizarMiEmailMock.mockReset()
   api.get.mockReset(); api.post.mockReset(); api.put.mockReset(); api.delete.mockReset()
   servirGet([USUARIO])
+  usuario = { user_id: 1, email: 'admin@axioma-ia.io', role: 'superadmin' }
   localStorage.clear()
 })
 
@@ -575,5 +581,42 @@ describe('AdminUsers — fijar contraseña', () => {
       type: 'success', message: 'Contraseña fijada para b@x.io. Tendrá que cambiarla al entrar.',
     }))
     expect(screen.getByRole('dialog', { name: 'Fijar la contraseña de y@x.io' })).toBeInTheDocument()
+  })
+})
+
+// Task 1 (2026-09-15, decisión de Fernando, revierte Ruling F7): la fila del
+// usuario logueado no ofrece auto-acciones. El backend sigue rechazando la
+// auto-acción con 403 auto_accion_prohibida como defensa en profundidad
+// (ronda de "403 auto_accion_prohibida" arriba) -- esto es solo la UI.
+describe('AdminUsers — fila propia sin auto-acciones (decisión de Fernando, revierte F7)', () => {
+  it('la fila del usuario logueado no muestra "Fijar contraseña" ni "Dar de baja"', async () => {
+    usuario = { user_id: 2, email: 'op@axioma-ia.io', role: 'operator' }
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    expect(screen.queryByRole('button', { name: 'Fijar contraseña' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Dar de baja' })).not.toBeInTheDocument()
+    // Las demás acciones de la fila quedan como están.
+    expect(screen.getByRole('button', { name: 'Editar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cerrar sesiones' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Enviar enlace' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Historial' })).toBeInTheDocument()
+  })
+
+  it('la fila de otro usuario sí muestra "Fijar contraseña" y "Dar de baja"', async () => {
+    usuario = { user_id: 999, email: 'otro-admin@axioma-ia.io', role: 'superadmin' }
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    expect(screen.getByRole('button', { name: 'Fijar contraseña' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Dar de baja' })).toBeInTheDocument()
+  })
+
+  it('con dos filas, solo la propia esconde las dos acciones -- la otra las conserva', async () => {
+    usuario = { user_id: 2, email: 'op@axioma-ia.io', role: 'operator' }
+    servirGet([USUARIO, OTRO])
+    renderUsers()
+    await screen.findByText('y@x.io')
+    // "Fijar contraseña"/"Dar de baja" aparecen una sola vez: los de la fila OTRO.
+    expect(screen.getAllByRole('button', { name: 'Fijar contraseña' })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Dar de baja' })).toHaveLength(1)
   })
 })
