@@ -80,6 +80,16 @@ const DEFAULT_FACETS = Object.keys(FACET_TOKENS).reduce((acc, name) => {
   return acc
 }, {})
 
+// Faceta que entra desde el servidor (/api/state o facet_status_changed). El
+// backend manda {name, status, last_message, last_update, color} SIN token:
+// el token se deriva SIEMPRE de la clave (nunca de los datos del servidor) y
+// el `color` hex del backend se descarta -- nada pinta con él. Lo demás se
+// fusiona sobre el default de la faceta (o sobre lo que ya había).
+function _facetaDelServidor(clave, base, datos) {
+  const { color: _hexDelBackend, ...resto } = datos || {}
+  return { ...DEFAULT_FACETS[clave], ...base, ...resto, token: tokenDeFaceta(clave) }
+}
+
 // Migración: el JWT y los datos de usuario vivían en localStorage (legible por XSS).
 // Se purgan los restos de sesiones previas a este cambio.
 localStorage.removeItem('jax_token')
@@ -190,11 +200,10 @@ export const useJaxStore = create((set, get) => {
         const update = {
           facets: {
             ...s.facets,
-            [payload.facet]: {
-              ...s.facets[payload.facet],
+            [payload.facet]: _facetaDelServidor(payload.facet, s.facets[payload.facet], {
               status: payload.status,
               last_message: payload.message || '',
-            },
+            }),
           },
         }
         if (payload.status === 'thinking') {
@@ -493,7 +502,12 @@ export const useJaxStore = create((set, get) => {
     try {
       const { data } = await api.get('/state')
       set({
-        facets: { ...DEFAULT_FACETS, ...data.facets },
+        facets: {
+          ...DEFAULT_FACETS,
+          ...Object.fromEntries(
+            Object.entries(data.facets || {}).map(([k, v]) => [k, _facetaDelServidor(k, undefined, v)]),
+          ),
+        },
         activePipelines: _evictOldFinishedPipelines(data.active_pipelines || {}),
         lasManos: data.las_manos_alive,
       })

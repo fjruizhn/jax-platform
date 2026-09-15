@@ -6,8 +6,8 @@ import { useI18n } from '../../i18n/index.jsx'
 import { colorToken } from '../../tema/tokens'
 
 // `reposo` (Ruling 21, fix-vivo-brief.md §C, decisión de Fernando
-// 2026-09-14): fuerza el estado de reposo del panel -- azul, pulse-slow, sin
-// etiqueta visible -- SIN llamar a getEyeState ni leer la store. Lo usa
+// 2026-09-14): fuerza el estado de reposo del panel -- el token de jax_local,
+// pulse-slow, sin etiqueta visible -- SIN llamar a getEyeState ni leer la store. Lo usa
 // Login, que no tiene sesión: mostrar ahí "LAS MANOS DOWN" (lo que
 // getEyeState calcularía con la store vacía) se vería roto. LeftPanel no pasa
 // la prop y sigue exactamente igual, dirigido por la store.
