@@ -508,6 +508,7 @@ export default {
   adminCostsNoPricing: 'Sin precio',
   adminCostsPartialMarker: '*',
   adminCostsPartialNote: '* Total parcial — hay modelos sin precio cargado en el catálogo, no están incluidos en la suma.',
+  adminCostsRegistrosPerdidos: (n) => `total incompleto: ${n} registros perdidos`,
 
   // HAL Eye
   eyeIdle: 'reposo',

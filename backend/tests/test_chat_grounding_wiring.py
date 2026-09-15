@@ -5,9 +5,16 @@ objeto snapshot y se verifica en sus dos consumidores:
   2. ese mismo objeto es el que se encoló para run_shadow_validation.
 La persistencia del sha256 de ese objeto la cubre
 tests/test_shadow_validation_grounding.py (necesita conv_uuid, que acá es
-None por los ids no numéricos -- mismo patrón que test_chat_contract_wrapper).
+None porque la memoria semántica está apagada con el fixture chat_sin_memoria
+-- desde la Task 7 los ids son numéricos; mismo patrón que
+test_chat_contract_wrapper).
 """
 from __future__ import annotations
+
+import pytest
+
+# Task 7: tenant numerico + memoria apagada de forma explicita (conftest.py).
+pytestmark = pytest.mark.usefixtures("chat_sin_memoria")
 
 from tests.identidades import token_de
 
@@ -33,7 +40,7 @@ class _RecordingPostClient:
 
 def test_same_snapshot_object_reaches_prompt_and_background_task(client):
     import grounding as governance_grounding
-    token = token_de(client, "test-grounding-user", "operator", "test-grounding-tenant")
+    token = token_de(client, "test-grounding-user", "operator", "1")
     fake = _RecordingPostClient()
     captured = {}
 
@@ -68,7 +75,7 @@ def test_same_snapshot_object_reaches_prompt_and_background_task(client):
 def test_snapshot_build_failure_is_marked_not_hidden(client, caplog):
     import grounding as governance_grounding
     import api.chat as chat
-    token = token_de(client, "test-grounding-user-2", "operator", "test-grounding-tenant-2")
+    token = token_de(client, "test-grounding-user-2", "operator", "1")
     fake = _RecordingPostClient()
     captured = {}
 

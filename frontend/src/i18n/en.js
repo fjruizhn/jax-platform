@@ -505,6 +505,7 @@ export default {
   adminCostsNoPricing: 'No pricing',
   adminCostsPartialMarker: '*',
   adminCostsPartialNote: '* Partial total — some models have no price loaded in the catalog and are not included in the sum.',
+  adminCostsRegistrosPerdidos: (n) => `incomplete total: ${n} records lost`,
 
   // HAL Eye
   eyeIdle: 'idle',

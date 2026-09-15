@@ -9,7 +9,7 @@ from jax_engine.schemas import JAXEvent
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from jax_engine.events import event_bus
 from http_client import get_http_client
-from api.admin.usage import record_usage
+from api.admin.usage import record_usage, validar_ids_de_uso
 
 router = APIRouter(prefix="/api")
 
@@ -40,6 +40,8 @@ class ImageResponse(BaseModel):
 
 @router.post("/image/generate", response_model=ImageResponse)
 async def generate_image(req: ImageRequest, user: AuthUser = Depends(get_current_user)):
+    # Task 7: antes de la credencial y del proveedor (0,04 USD por imagen).
+    validar_ids_de_uso(user.user_id, user.tenant_id)
     try:
         api_key = await resolve_credential_instrumented("openai")
     except CredentialUnavailableError:

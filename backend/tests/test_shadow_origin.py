@@ -19,6 +19,11 @@ JAX_CI_NO_DB=1 se saltea por la Regla 1 de conftest.py (pide `client`).
 """
 from __future__ import annotations
 
+import pytest
+
+# Task 7: tenant numerico + memoria apagada de forma explicita (conftest.py).
+pytestmark = pytest.mark.usefixtures("chat_sin_memoria")
+
 from tests.identidades import token_de
 
 import inspect
@@ -70,7 +75,9 @@ def _post_chat(client, body, user_suffix):
     # Sin mockear add_safe_task del todo: se lo envuelve para CAPTURAR los
     # argumentos con los que se encoló run_shadow_validation (mismo patrón
     # que test_chat_grounding_wiring.py). NO se deja correr la llamada real:
-    # user_id no numérico a propósito (igual que
+    # memoria semántica apagada a propósito con el fixture chat_sin_memoria
+    # (Task 7: antes era un user_id no numérico, que el chat ahora rechaza
+    # antes del LLM; igual que
     # test_chat_endpoint_does_not_break_when_shadow_validation_is_enqueued
     # en test_shadow_validation.py) porque conv_uuid depende de
     # jax.memory.db.start_conversation(), que vive en el esquema de
@@ -82,8 +89,7 @@ def _post_chat(client, body, user_suffix):
     # test_shadow_validation_navigable_without_messages_row (fila sin FK a
     # `messages`).
     import http_client
-    token = token_de(client, f"test-origin-user-{user_suffix}", "operator",
-                     f"test-origin-tenant-{user_suffix}")
+    token = token_de(client, f"test-origin-user-{user_suffix}", "operator", "1")
     fake = _RecordingPostClient()
     captured = {}
 
@@ -148,7 +154,7 @@ def test_run_shadow_validation_persists_the_origin_it_received(client):
 
 def test_origin_outside_closed_vocabulary_is_422_and_writes_no_row(client):
     before = client.portal.call(_count_shadow_messages)
-    token = token_de(client, "test-origin-user-3", "operator", "test-origin-tenant-3")
+    token = token_de(client, "test-origin-user-3", "operator", "1")
     resp = client.post(
         "/api/chat", json={"message": "hola", "facet": "jekyll", "origin": "bogus"},
         headers={"Authorization": f"Bearer {token}"})

@@ -1,13 +1,64 @@
 import logging
 from datetime import date, timedelta
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
+from redaccion import texto_de_error
 
 logger = logging.getLogger("admin.usage")
 
 router = APIRouter(prefix="/api/admin")
+
+# Task 7 (2026-09-15, hallazgos-laterales.md §4, opcion 1): rastro observable
+# de las filas de axioma_usage que record_usage NO pudo escribir. Mismo patron
+# que facet_health.write_failure_stats(): en memoria y no en la DB, porque la
+# DB es justamente lo que puede estar caido. Por proceso: se reinicia con el
+# servicio y cuenta desde el ultimo arranque, no un historico. La solucion de
+# fondo (que no se pierda ninguna fila) es la cola durable con reintento,
+# pendiente con fecha 2026-09-29.
+_registros_perdidos = 0
+_ultimo_error: str | None = None
+_ERROR_MAX = 255
+
+CODIGO_IDS_INVALIDOS = "ids_de_uso_invalidos"
+# Un BIGINT sin signo tiene 20 digitos: mas largo no es un id, y la cota
+# mantiene la validacion en O(1).
+_ID_MAX_DIGITOS = 20
+
+
+def registros_perdidos_stats() -> dict:
+    """Lo publica GET /api/admin/usage: un total que no incluye las filas
+    perdidas tiene que decir que esta incompleto."""
+    return {"registros_perdidos": _registros_perdidos, "ultimo_error": _ultimo_error}
+
+
+def reset_registros_perdidos() -> None:
+    """Solo para tests -- que cada test parta de cero sin depender del orden."""
+    global _registros_perdidos, _ultimo_error
+    _registros_perdidos = 0
+    _ultimo_error = None
+
+
+def _es_id(valor) -> bool:
+    return (
+        isinstance(valor, str)
+        and 0 < len(valor) <= _ID_MAX_DIGITOS
+        and valor.isascii()
+        and valor.isdigit()
+    )
+
+
+def validar_ids_de_uso(user_id, tenant_id) -> None:
+    """Task 7: axioma_usage guarda tenant_id/user_id como enteros. Un id no
+    numerico hacia fallar el INSERT DESPUES de pagarle al proveedor; se
+    rechaza en la entrada, ANTES de resolver credencial o llamar al LLM.
+    Pura: sin I/O, O(1) (longitud acotada). Los ids salen del JWT
+    (auth/middleware.py): user_id ya viene validado como int, pero tenant_id
+    se copia tal cual del token (default "" si falta), asi que un token con
+    tenant no numerico si llega aca."""
+    if not (_es_id(user_id) and _es_id(tenant_id)):
+        raise HTTPException(status_code=400, detail={"code": CODIGO_IDS_INVALIDOS})
 
 
 async def _lookup_model_price(provider_id: str, model: str) -> tuple[float | None, float | None]:
@@ -68,9 +119,17 @@ async def record_usage(
                     (int(tenant_id), int(user_id), facet, model, tokens_in, tokens_out, cost, request_type),
                 )
             await conn.commit()
-    except Exception as e:  # fail-soft: el turno ya se pagó y ya respondió; un 500 no recupera el costo y le quita la respuesta al usuario; el hueco queda en log WARNING
-        logger.warning(f"record_usage failed facet={facet} model={model} reason={type(e).__name__}: {e}")
-        # usage tracking is best-effort — no re-raise, pero el fallo queda visible en logs
+    except Exception as e:  # fail-soft: el turno ya se pagó y ya respondió; un 500 no recupera el costo y le quita la respuesta al usuario; la pérdida la hace visible el contador registros_perdidos (GET /api/admin/usage) y el WARNING
+        global _registros_perdidos, _ultimo_error
+        _registros_perdidos += 1
+        _ultimo_error = texto_de_error(e)[:_ERROR_MAX]
+        # Prefijo estable: se cuenta desde journalctl sin depender del endpoint.
+        # El texto del error pasa por la redaccion (Task 6): puede venir del
+        # proveedor o de la DB.
+        logger.warning(
+            "record_usage failed facet=%s model=%s total=%d reason=%s",
+            facet, model, _registros_perdidos, _ultimo_error,
+        )
 
 
 @router.get("/usage")
@@ -136,4 +195,7 @@ async def get_usage(
         "by_facet": by_facet,
         "chart_data": {"labels": labels, "datasets": datasets},
         "period": period,
+        # Task 7: filas que record_usage no pudo escribir desde el arranque de
+        # ESTE proceso. > 0 = el total de arriba esta incompleto.
+        "registros_perdidos": _registros_perdidos,
     }

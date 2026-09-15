@@ -364,6 +364,18 @@ def _limites_de_login_limpios():
 
 
 @pytest.fixture
+def chat_sin_memoria(monkeypatch):
+    """Task 7 (2026-09-15): /api/chat rechaza ids no numericos ANTES del LLM
+    (api/admin/usage.py::validar_ids_de_uso), asi que los tests de chat ya no
+    pueden pasar un tenant NO numerico para esquivar la memoria semantica.
+    Este fixture la apaga de forma explicita: con MemoryDB = None,
+    _ensure_memory() devuelve False y el turno corre sin conversacion ni
+    contexto semantico -- lo mismo que antes lograba el tenant no numerico."""
+    from api import chat as chat_mod
+    monkeypatch.setattr(chat_mod, "MemoryDB", None)
+
+
+@pytest.fixture
 def usuarios(client):
     """Fábrica de usuarios REALES en jax_users que se borran al terminar el
     test (2026-09-12, admin usuarios etapa 2): crear(**kw) -> (user_id, email),

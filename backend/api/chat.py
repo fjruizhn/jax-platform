@@ -32,7 +32,7 @@ from auth.models import AuthUser
 from jax_engine.schemas import JAXEvent
 from jax_engine.events import event_bus
 from jax_engine.state import engine_state, LAS_MANOS_URL
-from api.admin.usage import record_usage
+from api.admin.usage import record_usage, validar_ids_de_uso
 from db.connection import get_pool
 from redaccion import redactar_secretos, texto_de_error
 from facet_health import (
@@ -1012,6 +1012,9 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     facet = req.facet if req.facet else _auto_route(req.message)
     tenant_id = user.tenant_id
     user_id = user.user_id
+    # Task 7: ids no numericos se cortan ACA, antes de la memoria y del LLM --
+    # si no, el turno se paga y la fila de uso se pierde en el INSERT.
+    validar_ids_de_uso(user_id, tenant_id)
     timestamp = utc_ahora().isoformat() + "Z"
 
     # --- Memoria semántica (misma jax_memory que el REPL) — best-effort -----
