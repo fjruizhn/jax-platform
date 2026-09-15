@@ -246,7 +246,10 @@ def test_approve_proposal_encola_probe_after_rebind(monkeypatch):
     bg = _FakeBackgroundTasks()
     user = SimpleNamespace(user_id="1")
 
-    asyncio.run(models_mod.approve_proposal(1, background_tasks=bg, user=user))
+    # request (PR-L): solo se lee en el 409 del guard, para performed_from_ip.
+    request = SimpleNamespace(client=SimpleNamespace(host="testclient"))
+
+    asyncio.run(models_mod.approve_proposal(1, background_tasks=bg, request=request, user=user))
 
     assert len(bg.tasks) == 1
     func, args, kwargs = bg.tasks[0]
@@ -268,7 +271,9 @@ def test_update_facet_binding_encola_probe_after_rebind(monkeypatch):
     user = SimpleNamespace(user_id="1")
     req = fb_mod.UpdateBindingRequest(provider_id="deepseek", model_ref=42)
 
-    asyncio.run(fb_mod.update_facet_binding("thot", req=req, background_tasks=bg, user=user))
+    request = SimpleNamespace(client=SimpleNamespace(host="testclient"))  # PR-L, ver arriba
+
+    asyncio.run(fb_mod.update_facet_binding("thot", req=req, background_tasks=bg, request=request, user=user))
 
     assert len(bg.tasks) == 1
     func, args, kwargs = bg.tasks[0]

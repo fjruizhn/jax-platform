@@ -69,6 +69,9 @@ async def _crear_filas():
 
 async def _borrar_filas(ids):
     for ref in ids.values():
+        # PR-L: los 409 del guard dejan fila en model_catalog_audit (FK a
+        # model y a model_binding_proposal): se borra primero.
+        await _q("DELETE FROM model_catalog_audit WHERE model_ref=%s", (ref,), commit=True)
         await _q("DELETE FROM model_binding_proposal WHERE proposed_model_ref=%s OR current_model_ref=%s",
                  (ref, ref), commit=True)
         await _q("DELETE FROM model WHERE id=%s", (ref,), commit=True)

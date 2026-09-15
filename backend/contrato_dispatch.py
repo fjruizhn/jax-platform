@@ -20,9 +20,17 @@ api/admin/__init__.py, que importa .models y .facet_bindings (ciclo verificado,
 ver el import diferido de approve_proposal). Este módulo no importa nada de
 la app.
 """
+import json
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def ip_de(request) -> str:
+    """IP de quien hizo el pedido, para performed_from_ip de la auditoría.
+    Misma regla que api/admin/credentials.py::_audit ("unknown" si el
+    Request no trae cliente, p. ej. en algunos transportes de test)."""
+    return request.client.host if request.client else "unknown"
 
 # Transportes cuyo dispatch en la Mesa web lee el contrato de la fila de
 # `model`. Hoy uno solo: http_openai_compat manda `{max_tokens_param:
@@ -163,6 +171,18 @@ def faltantes_del_contrato(
     una vez todo lo que falta sembrar."""
     if transport not in TRANSPORTS_CON_CONTRATO_DE_DISPATCH:
         return []
+    return errores_del_contrato(model, max_tokens_param, max_output_tokens)
+
+
+def errores_del_contrato(
+    model: str, max_tokens_param, max_output_tokens,
+) -> list[tuple[str, ModelDispatchConfigError]]:
+    """Los dos validadores del dispatch sobre un par (param, tope), SIN mirar
+    el transporte: `(columna, error)` por cada uno que levantaría. Lo usan
+    faltantes_del_contrato (el guard, que primero decide si el transporte lo
+    lee) y PUT /api/admin/models/{id}/contrato-dispatch (PR-L), que declara
+    el contrato de una fila y tiene que aceptar exactamente lo que el
+    dispatch acepta."""
     errores = []
     try:
         _max_tokens_field(model, max_tokens_param)
@@ -244,6 +264,9 @@ async def detalle_si_rompe_el_contrato(
         binding_row = await cur.fetchone()
         provider_id = binding_row[0] if binding_row else model_provider
 
+    # model_ref en los dos detail (PR-L, 2026-09-14): la UI ofrece "declarar
+    # contrato" sobre ESA fila (PUT /api/admin/models/{model_ref}/contrato-
+    # dispatch); model_id solo no alcanza, se repite entre proveedores.
     detalle = None
     faltantes = faltantes_del_contrato(transport, model_id, max_tokens_param, max_output_tokens)
     if faltantes:
@@ -251,6 +274,7 @@ async def detalle_si_rompe_el_contrato(
             "code": "modelo_sin_contrato_de_dispatch",
             "facet_key": facet_key,
             "transport": transport,
+            "model_ref": model_ref,
             "model_id": model_id,
             "campos": [campo for campo, _ in faltantes],
             "message": " | ".join(str(e) for _, e in faltantes),
@@ -260,6 +284,7 @@ async def detalle_si_rompe_el_contrato(
             "code": "modelo_de_otro_proveedor",
             "facet_key": facet_key,
             "transport": transport,
+            "model_ref": model_ref,
             "model_id": model_id,
             "campos": ["provider_id"],
             "provider_binding": provider_id,
@@ -286,3 +311,23 @@ async def detalle_si_rompe_el_contrato(
             f"campos={detalle['campos']}"
         )
     return detalle
+
+
+async def registrar_rechazo_de_binding(
+    cur, detalle: dict, proposal_id: int | None, performed_by: int, performed_from_ip: str,
+) -> None:
+    """Deja en model_catalog_audit el 409 que `detalle_si_rompe_el_contrato`
+    acaba de devolver (PR-L, 2026-09-14). Antes un rechazo solo existía en
+    el log y en la pantalla de quien hizo click: la propuesta seguía
+    'pending' sin ninguna marca de que alguien la intentó y chocó.
+
+    El que llama hace commit ANTES de levantar el 409: es lo único que esa
+    transacción escribe (el guard corre antes de cualquier UPDATE), así que
+    commitear no deja nada a medias. proposal_id None = PUT de binding."""
+    await cur.execute(
+        "INSERT INTO model_catalog_audit (action, model_ref, facet_key, proposal_id, code, "
+        "valor_despues, performed_by, performed_from_ip) "
+        "VALUES ('binding_rechazado', %s, %s, %s, %s, %s, %s, %s)",
+        (detalle["model_ref"], detalle["facet_key"], proposal_id, detalle["code"],
+         json.dumps(detalle, ensure_ascii=False), performed_by, performed_from_ip),
+    )

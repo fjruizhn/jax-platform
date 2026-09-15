@@ -373,6 +373,45 @@ CREATE TABLE IF NOT EXISTS model_binding_proposal (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# PR-L (2026-09-14, Ruling 33) — auditoria del catalogo de modelos. Dos
+# eventos, los dos de un superadmin humano (performed_by/from_ip del JWT y del
+# Request: el log del servidor solo ve JAX_DB_USER, mismo motivo que
+# credential_audit):
+#   - 'contrato_declarado': PUT /api/admin/models/{id}/contrato-dispatch cambio
+#     max_tokens_param/max_output_tokens de la fila. valor_antes/valor_despues
+#     son el par completo, asi un contrato mal declarado se revierte leyendo
+#     esta tabla y no la memoria de nadie.
+#   - 'binding_rechazado': el guard de contrato_dispatch rechazo (409) aprobar
+#     una propuesta (proposal_id) o un PUT de binding (proposal_id NULL).
+#     valor_despues guarda el `detail` del 409 tal cual lo vio el admin.
+# Por que no credential_audit: su action es un ENUM de credenciales y su
+# provider_id/credential_id no describen una fila de `model`. Por que no
+# columnas en model_binding_proposal: el rechazo tambien pasa en el PUT (sin
+# propuesta) y una columna guarda solo el ULTIMO -- esto es historia.
+# idx_proposal_id: la lista de propuestas trae el ultimo rechazo de cada una
+# por (proposal_id, id). FKs a proposito: la historia no puede quedar
+# apuntando a una fila borrada.
+CREATE_MODEL_CATALOG_AUDIT = """
+CREATE TABLE IF NOT EXISTS model_catalog_audit (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  action ENUM('contrato_declarado','binding_rechazado') NOT NULL,
+  model_ref INT NOT NULL,
+  facet_key VARCHAR(50) NULL,
+  proposal_id INT NULL,
+  code VARCHAR(64) NULL,
+  valor_antes LONGTEXT NULL CHECK (valor_antes IS NULL OR json_valid(valor_antes)),
+  valor_despues LONGTEXT NULL CHECK (valor_despues IS NULL OR json_valid(valor_despues)),
+  performed_by INT NOT NULL,
+  performed_from_ip VARCHAR(45) NOT NULL,
+  performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (model_ref) REFERENCES model(id),
+  FOREIGN KEY (proposal_id) REFERENCES model_binding_proposal(id),
+  FOREIGN KEY (performed_by) REFERENCES jax_users(user_id),
+  INDEX idx_proposal_id (proposal_id, id),
+  INDEX idx_model_time (model_ref, performed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 # R4 — motor desacoplado de faceta. Tres ejes separados: capability (que
 # sabe hacer), transport (como se le habla, mismo enum que facet.transport),
 # auth (via provider.auth_type, ya existente — ollama='none' ya sembrado).
@@ -517,6 +556,7 @@ _TABLES = [
     ("facet", CREATE_FACET),                # antes de facet_binding y model_binding_proposal (FK)
     ("facet_binding", CREATE_FACET_BINDING),
     ("model_binding_proposal", CREATE_MODEL_BINDING_PROPOSAL),
+    ("model_catalog_audit", CREATE_MODEL_CATALOG_AUDIT),  # despues de model y model_binding_proposal (FK)
     ("motor", CREATE_MOTOR),                          # antes de capability (FK fallback_motor)
     ("capability", CREATE_CAPABILITY),                # antes de capability_motor (FK)
     ("capability_motor", CREATE_CAPABILITY_MOTOR),

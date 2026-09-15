@@ -6,12 +6,12 @@ Contrato de capabilities: en Bloque C (C1.2) quedaba explicitamente marcado
 (Bloque D) ya es un chequeo real.
 """
 import aiomysql
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
-from contrato_dispatch import detalle_si_rompe_el_contrato
+from contrato_dispatch import detalle_si_rompe_el_contrato, ip_de, registrar_rechazo_de_binding
 from db.connection import get_pool
 
 router = APIRouter(prefix="/api/admin/facet-bindings")
@@ -90,6 +90,7 @@ async def update_facet_binding(
     facet_key: str,
     req: UpdateBindingRequest,
     background_tasks: BackgroundTasks,
+    request: Request,
     user: AuthUser = Depends(require_superadmin),
 ):
     """Escritura directa autorizada por un superadmin (approved_by/approved_at
@@ -111,6 +112,11 @@ async def update_facet_binding(
             # FK de abajo (400), como siempre.
             detalle = await detalle_si_rompe_el_contrato(cur, facet_key, req.model_ref, req.provider_id)
             if detalle is not None:
+                # PR-L (2026-09-14): el rechazo queda en la DB, no solo en
+                # el log. Commit antes del 409: es lo único escrito acá.
+                await registrar_rechazo_de_binding(
+                    cur, detalle, None, approved_by, ip_de(request))
+                await conn.commit()
                 raise HTTPException(status_code=409, detail=detalle)
 
             try:
