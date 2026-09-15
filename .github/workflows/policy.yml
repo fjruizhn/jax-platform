@@ -175,8 +175,14 @@ jobs:
             // HalEye.i18nLabels.test.jsx (nuevo: HalEye lee t.eye* de verdad, con un t de
             // mentira que prueba la conexión). Vistos en rojo antes de verde. Medido con
             // vitest run: 206.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 206) {
-              console.error("PISO ROTO: se esperaban 206 tests de vitest CORRIDOS y 0 fallidos.");
+            // 206 -> 209 el 2026-09-15 (tema con tokens, pr2): +1 tokenDeFaceta
+            // (contraste.test.js, Task 13) y +2 "deprecado" distinto de "degradado"
+            // (Ruling 28, Task 16b: +1 contraste.test.js -- token obsoleto con sus
+            // pares AA -- y +1 AdminModelCatalog.test.jsx -- deprecated pinta
+            // text-obsoleto, degraded se queda en text-aviso). Vistos en rojo antes
+            // de verde. Medido con vitest run: 209.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 209) {
+              console.error("PISO ROTO: se esperaban 209 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
