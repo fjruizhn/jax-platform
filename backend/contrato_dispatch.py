@@ -76,15 +76,11 @@ def _max_tokens_field(model: str, max_tokens_param: str | None) -> str:
     que thot pero en silencio y sin nadie mirando. Preferimos que un modelo sin
     valor falle con un mensaje que un operador pueda ejecutar."""
     if max_tokens_param is None:
-        # ERROR en el log ADEMÁS de la excepción: el 502 que ve el usuario
-        # trunca a 200 chars (ver el handler del endpoint), el operador
-        # necesita el UPDATE completo.
-        logger.error(
-            f"dispatch abortado: model_id={model!r} sin max_tokens_param en la "
-            f"tabla `model`. Sembrar: UPDATE model SET "
-            f"max_tokens_param='max_tokens'|'max_completion_tokens' "
-            f"WHERE model_id='{model}';"
-        )
+        # Sin log acá (2026-09-14, PR-J ronda 1): este validador lo usan
+        # también los admins, donde NO se aborta ningún dispatch. El ERROR
+        # "dispatch abortado" (con este mensaje completo, que trae el UPDATE:
+        # el 502 que ve el usuario trunca a 200 chars) lo escribe el camino de
+        # dispatch en api/chat.py::_invoke_facet; el admin escribe su WARNING.
         raise ModelDispatchConfigError(
             f"modelo '{model}': la fila de `model` no declara max_tokens_param, "
             f"así que no se sabe si su API exige 'max_tokens' o "
@@ -126,15 +122,7 @@ def _max_output_tokens_value(model: str, max_output_tokens: int | None) -> int:
     "conservador" truncaría respuestas de modelos de razonamiento en silencio,
     que es justo el bug que el límite explícito existe para prevenir."""
     if max_output_tokens is None:
-        # ERROR en el log ADEMÁS de la excepción: el 502 que ve el usuario
-        # trunca a 200 chars (ver el handler del endpoint), el operador
-        # necesita el UPDATE completo.
-        logger.error(
-            f"dispatch abortado: model_id={model!r} sin max_output_tokens en la "
-            f"tabla `model`. Sembrar: UPDATE model SET "
-            f"max_output_tokens=<tope de completion del modelo> "
-            f"WHERE model_id='{model}';"
-        )
+        # Sin log acá: ver el comentario gemelo en _max_tokens_field.
         raise ModelDispatchConfigError(
             f"modelo '{model}': la fila de `model` no declara max_output_tokens, "
             f"así que no se sabe cuántos tokens de salida acepta su API y NO se "
@@ -186,34 +174,101 @@ def faltantes_del_contrato(
     return errores
 
 
-async def detalle_si_rompe_el_contrato(cur, facet_key: str, model_ref: int) -> dict | None:
+async def detalle_si_rompe_el_contrato(
+    cur, facet_key: str, model_ref: int, provider_id: str | None = None,
+) -> dict | None:
     """Lo que chequean los dos escritores de facet_binding ANTES de escribir:
     ¿el dispatch de `facet_key` aceptaría la fila `model_ref`?
+
+    `provider_id`: el que quedará en facet_binding.provider_id. El PUT lo
+    manda en el request; approve no lo toca (solo cambia model_ref), así que
+    pasa None y se usa el que el binding ya tiene.
 
     None = sí (o no hay nada que decidir acá: faceta o modelo inexistentes los
     rechaza el propio endpoint con su 404/FK de siempre). Si no, el `detail`
     del 409 -- un código estable que el frontend traduce (mismo estilo que
-    AdminSmtp: objeto con `code` y datos), qué columnas faltan y el mensaje
-    completo de los validadores, que trae el UPDATE que la siembra."""
+    AdminSmtp: objeto con `code` y datos), qué columna falla y el mensaje.
+
+    Qué se exige, MEDIDO contra TODOS los lectores que despachan con
+    facet_binding.model_ref (2026-09-14, PR-J ronda 1; jax @fb8a8a1, solo
+    lectura):
+
+    1. max_tokens_param + max_output_tokens, solo si el transporte los lee
+       (TRANSPORTS_CON_CONTRATO_DE_DISPATCH). Único lector:
+       jax-platform api/chat.py::_call_openai_compat. Ningún otro lector los
+       lee: jax/core/facet_resolver.py:229-233 y las_manos/facet_resolver.py:
+       231-232 solo traen m.model_id; jacobs/executor.py:318 (openai-compat)
+       manda {"model","messages","stream"} sin límite; las_manos/
+       motor_registry/worker.py:152-153 manda motor.max_tokens (tabla motor,
+       no model; 0 = no lo manda); jax/muscles/base.py:230,269 y
+       jacobs/plan.py:577 mandan "max_tokens": 131072 FIJO sin leer `model`.
+       Ninguno rompe si esas columnas faltan; ningún otro campo de `model`
+       es exigido por ninguno (model_id es NOT NULL).
+    2. provider_id del binding == provider_id del modelo, en TODO transporte.
+       Los resolvers sacan base_url y credencial de b.provider_id y el modelo
+       de b.model_ref (jax-platform facet_resolver.py:274-279,
+       jax/core/facet_resolver.py:229-233, las_manos/facet_resolver.py:
+       231-232), mientras que motor_registry saca el proveedor del MODELO
+       (las_manos/motor_registry/catalog.py:183-189) y el REPL también
+       (jax/core/registro_facetas.py:17-19, que documenta el desalineo). Un
+       binding con proveedor distinto al del modelo manda model_id de un
+       proveedor a la URL y credencial de otro, y los lectores divergen
+       entre sí. approve cambia model_ref sin tocar provider_id: una
+       propuesta hacia un modelo de otro proveedor lo producía."""
     await cur.execute("SELECT transport FROM facet WHERE `key`=%s", (facet_key,))
     facet_row = await cur.fetchone()
     await cur.execute(
-        "SELECT model_id, max_tokens_param, max_output_tokens FROM model WHERE id=%s",
+        "SELECT provider_id, model_id, max_tokens_param, max_output_tokens FROM model WHERE id=%s",
         (model_ref,),
     )
     model_row = await cur.fetchone()
     if facet_row is None or model_row is None:
         return None
     (transport,) = facet_row
-    model_id, max_tokens_param, max_output_tokens = model_row
+    model_provider, model_id, max_tokens_param, max_output_tokens = model_row
+    if provider_id is None:
+        await cur.execute(
+            "SELECT provider_id FROM facet_binding WHERE facet_key=%s AND role='primary'",
+            (facet_key,),
+        )
+        binding_row = await cur.fetchone()
+        provider_id = binding_row[0] if binding_row else model_provider
+
+    detalle = None
     faltantes = faltantes_del_contrato(transport, model_id, max_tokens_param, max_output_tokens)
-    if not faltantes:
-        return None
-    return {
-        "code": "modelo_sin_contrato_de_dispatch",
-        "facet_key": facet_key,
-        "transport": transport,
-        "model_id": model_id,
-        "campos": [campo for campo, _ in faltantes],
-        "message": " | ".join(str(e) for _, e in faltantes),
-    }
+    if faltantes:
+        detalle = {
+            "code": "modelo_sin_contrato_de_dispatch",
+            "facet_key": facet_key,
+            "transport": transport,
+            "model_id": model_id,
+            "campos": [campo for campo, _ in faltantes],
+            "message": " | ".join(str(e) for _, e in faltantes),
+        }
+    elif provider_id != model_provider:
+        detalle = {
+            "code": "modelo_de_otro_proveedor",
+            "facet_key": facet_key,
+            "transport": transport,
+            "model_id": model_id,
+            "campos": ["provider_id"],
+            "provider_binding": provider_id,
+            "provider_modelo": model_provider,
+            "message": (
+                f"modelo '{model_id}' es del proveedor '{model_provider}' y el "
+                f"binding de '{facet_key}' quedaría con provider_id='{provider_id}': "
+                f"el dispatch mandaría el modelo a la URL y credencial de otro "
+                f"proveedor. Elegí un modelo de '{provider_id}' o cambiá el "
+                f"binding con PUT /api/admin/facet-bindings/{facet_key} "
+                f"(provider_id='{model_provider}')."
+            ),
+        }
+    if detalle is not None:
+        # WARNING y no ERROR: no se abortó ningún dispatch, se rechazó una
+        # escritura. El ERROR "dispatch abortado" es del camino de chat.py.
+        logger.warning(
+            f"escritura de facet_binding rechazada: modelo sin contrato de dispatch "
+            f"facet_key={facet_key!r} model={model_id!r} code={detalle['code']} "
+            f"campos={detalle['campos']}"
+        )
+    return detalle

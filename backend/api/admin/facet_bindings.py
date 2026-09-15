@@ -109,7 +109,7 @@ async def update_facet_binding(
             # el contrato de dispatch del transporte de la faceta, o 409 y el
             # binding no cambia. Un model_ref inexistente sigue cayendo en la
             # FK de abajo (400), como siempre.
-            detalle = await detalle_si_rompe_el_contrato(cur, facet_key, req.model_ref)
+            detalle = await detalle_si_rompe_el_contrato(cur, facet_key, req.model_ref, req.provider_id)
             if detalle is not None:
                 raise HTTPException(status_code=409, detail=detalle)
 

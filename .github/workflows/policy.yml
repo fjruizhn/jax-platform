@@ -136,8 +136,11 @@ jobs:
             // +2 AdminFacetBindings.test.jsx (nuevo -- el 409 con detail objeto
             // se traduce y ya no sale "[object Object]"; un detail de texto se
             // sigue mostrando). Medido con vitest run: 144.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 144) {
-              console.error("PISO ROTO: se esperaban 144 tests de vitest CORRIDOS y 0 fallidos.");
+            // 144 -> 145 (2026-09-14, PR-J ronda 1): +1 AdminModelCatalog.test.jsx
+            // (el 409 modelo_de_otro_proveedor nombra los dos proveedores, y la
+            // clave existe en es/en). Medido con vitest run: 145.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 145) {
+              console.error("PISO ROTO: se esperaban 145 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -562,7 +565,16 @@ jobs:
           # test_model_max_output_tokens.py (deepseek-flash y deepseek-v4-pro
           # en la lista y sembrados sin pisar un valor manual). Medido contra
           # jax master: 679 / 1.
-          PISO_PASSED = 679
+          # Subido de 679 a 683 (2026-09-14, PR-J ronda 1): +4 en
+          # test_contrato_dispatch_al_aprobar.py -- approve y PUT hacia un
+          # modelo de otro proveedor -> 409 modelo_de_otro_proveedor con el
+          # binding intacto; el guard loguea WARNING y no "dispatch abortado";
+          # el dispatch real (_invoke_facet) sigue logueando su ERROR con el
+          # UPDATE. test_approve_proposal_resolves_homonymous_motor pasa a
+          # aprobar un modelo de ollama (antes 'sonnet' de anthropic: el
+          # binding cruzado que el guard ahora rechaza). Medido contra jax
+          # master: 683 / 1.
+          PISO_PASSED = 683
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -856,6 +868,10 @@ jobs:
       # de seed con deepseek-flash/deepseek-v4-pro. Los otros 10 piden
       # `client` y se saltean. Medido contra jax master con JAX_CI_NO_DB=1:
       # 328 / 352.
+      # 328 -> 328 (2026-09-14, PR-J ronda 1): sin cambio. Los 4 tests nuevos
+      # piden `client` y se saltean; el test de log de
+      # test_model_max_output_tokens.py se reescribió (el validador ya no
+      # loguea) y sigue siendo puro. Medido con JAX_CI_NO_DB=1: 328 / 356.
       JAX_CI_MIN_PASSED: "328"
     steps:
       - uses: actions/checkout@v4

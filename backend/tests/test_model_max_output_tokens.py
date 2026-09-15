@@ -73,17 +73,20 @@ def test_null_fails_loud_naming_the_model_and_the_remedy():
     )
 
 
-def test_null_also_logs_an_error_with_the_update(caplog):
+def test_null_carries_the_update_in_the_exception_and_the_validator_does_not_log(caplog):
     """El 502 que ve el usuario trunca el mensaje; el operador lee el log. El
-    UPDATE tiene que estar completo alla tambien."""
+    UPDATE viaja completo en la excepcion, y el ERROR "dispatch abortado" lo
+    escribe el camino de dispatch (api/chat.py::_invoke_facet, ver
+    test_contrato_dispatch_al_aprobar.py), NO el validador: desde 2026-09-14
+    lo usan tambien los admins, donde no se aborta ningun dispatch."""
     import logging
 
-    with caplog.at_level(logging.ERROR):
-        with pytest.raises(ModelDispatchConfigError):
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(ModelDispatchConfigError) as exc:
             _max_output_tokens_value("modelo-sin-sembrar", None)
-    logged = "\n".join(r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
-    assert "modelo-sin-sembrar" in logged
-    assert "UPDATE model SET max_output_tokens" in logged
+    assert "modelo-sin-sembrar" in str(exc.value)
+    assert "UPDATE model SET max_output_tokens" in str(exc.value)
+    assert not [r for r in caplog.records if "dispatch abortado" in r.getMessage()]
 
 
 @pytest.mark.parametrize("valor_imposible", [0, -1, "131072", 131072.0, True])

@@ -925,6 +925,12 @@ async def _invoke_facet(
         # no provider_error.
         await record_facet_health(
             facet, OUTCOME_CONFIG_ERROR, source, f"{type(e).__name__}: {e}")
+        # ERROR en el log ADEMÁS de la excepción: el 502 que ve el usuario
+        # trunca a 200 chars, el operador necesita el mensaje completo (trae
+        # el UPDATE que siembra la fila). Vive acá y no en los validadores
+        # desde 2026-09-14 (PR-J ronda 1): los validadores también los usan
+        # los admins, donde no se aborta ningún dispatch.
+        logger.error(f"dispatch abortado: facet={facet!r} source={source!r}: {e}")
         raise            # SIEMPRE re-lanza: no puede volverse fail-open
     except Exception as e:
         await record_facet_health(

@@ -57,6 +57,19 @@ describe('AdminModelCatalog -- una aprobación rechazada se ve', () => {
     )
   })
 
+  it('el 409 de otro proveedor nombra los dos proveedores', async () => {
+    expect(en.modelo_de_otro_proveedor('m', 'a', 'b')).toContain('b')
+    api.post.mockRejectedValue(rechazo(409, {
+      code: 'modelo_de_otro_proveedor', model_id: 'gpt-x', campos: ['provider_id'],
+      provider_modelo: 'openai', provider_binding: 'deepseek', message: '...',
+    }))
+    renderCatalogo()
+    fireEvent.click(await screen.findByRole('button', { name: es.adminProposalsApprove }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      es.modelo_de_otro_proveedor('gpt-x', 'openai', 'deepseek'),
+    )
+  })
+
   it('otro error cae en el texto genérico, no en silencio', async () => {
     api.post.mockRejectedValue(rechazo(500, 'lo_que_sea'))
     renderCatalogo()

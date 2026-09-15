@@ -22,10 +22,17 @@ TENANT_ID = "test-contrato-dispatch-tenant"
 SIN_PARAM = "test-contrato-sin-max-tokens-param"
 SIN_TOPE = "test-contrato-sin-max-output-tokens"
 COMPLETO = "test-contrato-completo"
+# Ronda 1: el binding tiene que quedar con el proveedor del modelo. Para una
+# faceta ollama (jax_local) la fila sin contrato tiene que ser de ollama; la
+# de openai es un modelo completo de OTRO proveedor que el de jekyll.
+OLLAMA_SIN_PARAM = "test-contrato-ollama-sin-max-tokens-param"
+OPENAI_COMPLETO = "test-contrato-openai-completo"
 _FILAS = {
-    SIN_PARAM: (None, 4096),
-    SIN_TOPE: ("max_tokens", None),
-    COMPLETO: ("max_tokens", 4096),
+    SIN_PARAM: ("deepseek", None, 4096),
+    SIN_TOPE: ("deepseek", "max_tokens", None),
+    COMPLETO: ("deepseek", "max_tokens", 4096),
+    OLLAMA_SIN_PARAM: ("ollama", None, None),
+    OPENAI_COMPLETO: ("openai", "max_completion_tokens", 4096),
 }
 
 
@@ -47,15 +54,15 @@ async def _q(sql, params=(), commit=False):
 
 async def _crear_filas():
     ids = {}
-    for model_id, (param, tope) in _FILAS.items():
+    for model_id, (provider_id, param, tope) in _FILAS.items():
         await _q(
             "INSERT INTO model (provider_id, model_id, max_tokens_param, max_output_tokens, "
-            "source, source_checked_at) VALUES ('deepseek', %s, %s, %s, 'manual', NOW()) "
+            "source, source_checked_at) VALUES (%s, %s, %s, %s, 'manual', NOW()) "
             "ON DUPLICATE KEY UPDATE max_tokens_param=VALUES(max_tokens_param), "
             "max_output_tokens=VALUES(max_output_tokens)",
-            (model_id, param, tope), commit=True,
+            (provider_id, model_id, param, tope), commit=True,
         )
-        rows = await _q("SELECT id FROM model WHERE provider_id='deepseek' AND model_id=%s", (model_id,))
+        rows = await _q("SELECT id FROM model WHERE provider_id=%s AND model_id=%s", (provider_id, model_id))
         ids[model_id] = rows[0][0]
     return ids
 
@@ -125,13 +132,14 @@ def _aprobar(client, facet_key, model_id):
         client.portal.call(_borrar_filas, ids)
 
 
-def _put(client, facet_key, model_id):
+def _put(client, facet_key, model_id, provider_id=None):
+    """provider_id: el del request; por defecto, el del propio modelo."""
     ids = client.portal.call(_crear_filas)
     antes = client.portal.call(_binding, facet_key)
     try:
         resp = client.put(
             f"/api/admin/facet-bindings/{facet_key}",
-            json={"provider_id": "deepseek", "model_ref": ids[model_id]},
+            json={"provider_id": provider_id or _FILAS[model_id][0], "model_ref": ids[model_id]},
             headers=_headers(),
         )
         despues = client.portal.call(_binding, facet_key)
@@ -180,7 +188,7 @@ def test_approve_con_contrato_completo_sigue_como_hoy(client, monkeypatch):
 def test_approve_de_faceta_que_no_lee_el_contrato_no_se_bloquea(client):
     """jax_local es ollama: max_tokens_param no significa nada para su
     dispatch, bloquear sería inventar un requisito."""
-    resp, estado, antes, despues, ref = _aprobar(client, "jax_local", SIN_PARAM)
+    resp, estado, antes, despues, ref = _aprobar(client, "jax_local", OLLAMA_SIN_PARAM)
     assert resp.status_code == 200, resp.text
     assert estado[0] == "approved"
     assert despues[1] == ref
@@ -233,3 +241,79 @@ def test_chat_usa_los_mismos_validadores_que_los_admins():
     assert chat._max_tokens_field is contrato_dispatch._max_tokens_field
     assert chat._max_output_tokens_value is contrato_dispatch._max_output_tokens_value
     assert chat.ModelDispatchConfigError is contrato_dispatch.ModelDispatchConfigError
+
+
+# ------------------------------------------------ Ronda 1: proveedor -------
+# Medido contra los lectores (ver el docstring de
+# contrato_dispatch.detalle_si_rompe_el_contrato): los resolvers sacan URL y
+# credencial de facet_binding.provider_id y el modelo de model_ref; approve
+# cambia model_ref sin tocar provider_id.
+
+def _assert_409_de_proveedor(resp, provider_binding, provider_modelo):
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "modelo_de_otro_proveedor"
+    assert detail["campos"] == ["provider_id"]
+    assert (detail["provider_binding"], detail["provider_modelo"]) == (provider_binding, provider_modelo)
+
+
+def test_approve_hacia_modelo_de_otro_proveedor_es_409_y_no_toca_nada(client):
+    resp, estado, antes, despues, _ = _aprobar(client, "jekyll", OPENAI_COMPLETO)
+    _assert_409_de_proveedor(resp, antes[0], "openai")
+    assert estado == ("pending", None)
+    assert despues == antes
+
+
+def test_put_con_provider_distinto_al_del_modelo_es_409_y_no_toca_nada(client):
+    resp, antes, despues, _ = _put(client, "jekyll", COMPLETO, provider_id="openai")
+    _assert_409_de_proveedor(resp, "openai", "deepseek")
+    assert despues == antes
+
+
+# ------------------------------------------------ Ronda 1: logs ------------
+
+def test_el_guard_loguea_warning_y_no_dispatch_abortado(client, caplog):
+    """Rechazar una aprobación no aborta ningún dispatch: el log no puede
+    decir que sí."""
+    import logging
+    with caplog.at_level(logging.DEBUG):
+        resp, *_ = _aprobar(client, "jekyll", SIN_PARAM)
+    assert resp.status_code == 409, resp.text
+    mensajes = [(r.levelno, r.getMessage()) for r in caplog.records]
+    assert not [m for _, m in mensajes if "dispatch abortado" in m], mensajes
+    avisos = [m for nivel, m in mensajes if nivel == logging.WARNING and "escritura de facet_binding rechazada" in m]
+    assert avisos and "jekyll" in avisos[0] and SIN_PARAM in avisos[0]
+
+
+async def _dispatch_real_sin_contrato(chat):
+    """El camino de dispatch de verdad (_invoke_facet -> _call_openai_compat
+    con los validadores reales); solo se evita resolver la faceta y el gate
+    de las_manos. Devuelve la excepción en vez de dejarla escapar del
+    portal (nada de pytest.raises dentro de client.portal.call)."""
+    async def dispatch(facet, config, user_id, message, semantic_context, grounding=None):
+        await chat._call_openai_compat(
+            "https://api.example.com/v1", "sk-fake", "modelo-sin-sembrar",
+            "system", [], "hola", None, 4096,
+        )
+    original = chat._invoke_facet_dispatch
+    chat._invoke_facet_dispatch = dispatch
+    try:
+        await chat._invoke_facet("jekyll", {}, "test-user", "hola")
+    except chat.ModelDispatchConfigError as e:
+        return e
+    finally:
+        chat._invoke_facet_dispatch = original
+    return None
+
+
+def test_el_dispatch_real_sigue_logueando_dispatch_abortado_con_el_update(client, caplog):
+    import logging
+    import api.chat as chat
+    with caplog.at_level(logging.ERROR, logger="api.chat"):
+        error = client.portal.call(_dispatch_real_sin_contrato, chat)
+    assert isinstance(error, chat.ModelDispatchConfigError), "el dispatch dejó de fallar cerrado"
+    errores = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    logueado = [m for m in errores if "dispatch abortado" in m]
+    assert logueado, errores
+    assert "modelo-sin-sembrar" in logueado[0]
+    assert "UPDATE model SET max_tokens_param" in logueado[0]

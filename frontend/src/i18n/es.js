@@ -335,6 +335,10 @@ export default {
   modelo_sin_contrato_de_dispatch: (modelo, campos) =>
     `El modelo ${modelo} no declara ${campos} en el catálogo, así que esta faceta no podría usarlo. Hay que completar esa fila del catálogo antes. No se cambió nada.`,
   adminProposalsDecideError: 'No se pudo completar la decisión sobre la propuesta.',
+  // 409 de la ronda 1 (2026-09-14): el binding quedaría con un proveedor que
+  // no es el del modelo, y la faceta mandaría el modelo al servicio equivocado.
+  modelo_de_otro_proveedor: (modelo, proveedorModelo, proveedorBinding) =>
+    `El modelo ${modelo} es de ${proveedorModelo}, pero esta faceta quedaría configurada con ${proveedorBinding}: no podría usarlo. Elegí un modelo de ${proveedorBinding}. No se cambió nada.`,
 
   // Admin — pestaña Motores (R4 Task 9): alta de motor/capability sin SQL a mano
   adminTabMotors: 'Motores',
