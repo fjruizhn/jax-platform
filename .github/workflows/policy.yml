@@ -292,8 +292,20 @@ jobs:
             // compartido lib/useCerrarConEscape.js -- nunca cierra por clic en el
             // fondo. Vistos en rojo antes de verde. Medido con vitest run: 277
             // passed en 44 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 277) {
-              console.error("PISO ROTO: se esperaban 277 tests de vitest CORRIDOS y 0 fallidos.");
+            // 277 -> 280 el 2026-09-15 (Task 4, fix round 2 -- regresión Ruling U25:
+            // un solo Escape cerraba Editar e Historial a la vez porque el fondo
+            // seguía alcanzable con Tab detrás de un modal): +1 AdminUsers.test.jsx
+            // (con un modal abierto el fondo -- data-admin-contenido -- queda
+            // inert; con todos cerrados, no) +1 AdminUsers.test.jsx (abrir
+            // Historial con Editar abierto deja un solo modal montado -- exclusión
+            // mutua en abrirCrear/abrirEdicion/abrirHistorial --, y Escape lo
+            // cierra sin reabrir Editar) +1 lib/useCerrarConEscape.test.js (nuevo:
+            // el listener de keydown se agrega una sola vez, no se re-agrega al
+            // cambiar `onCerrar` entre renders, y Escape llama siempre al callback
+            // más reciente -- ahora en un ref). Vistos en rojo antes de verde.
+            // Medido con vitest run: 280 passed en 45 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 280) {
+              console.error("PISO ROTO: se esperaban 280 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

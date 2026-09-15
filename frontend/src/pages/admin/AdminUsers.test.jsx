@@ -193,3 +193,45 @@ describe('AdminUsers — enlace de recuperación', () => {
     }))
   })
 })
+
+// Fix round 2 (2026-09-15, Ruling U25): con un modal abierto, el fondo (header
+// + tabla) seguía alcanzable con Tab -- sin `inert` y sin trampa de foco --,
+// así que un par de Tabs y Enter podían abrir Historial ENCIMA de Editar, y un
+// solo Escape (los dos hooks escuchan en `document`) cerraba los dos a la vez,
+// descartando en silencio una edición sin guardar.
+describe('AdminUsers -- fondo inert detrás de un modal (Ruling U25)', () => {
+  it('con un modal abierto el fondo queda inert; con todos cerrados, no', async () => {
+    renderUsers()
+    const contenido = document.querySelector('[data-admin-contenido]')
+    expect(contenido).not.toHaveAttribute('inert')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar' }))
+    expect(contenido).toHaveAttribute('inert')
+  })
+})
+
+describe('AdminUsers -- un solo modal a la vez (Ruling U25)', () => {
+  it('abrir Historial con Editar abierto deja un solo modal, y Escape lo cierra sin reabrir Editar', async () => {
+    renderUsers()
+    const botonEditar = await screen.findByRole('button', { name: 'Editar' })
+    // Se toma la referencia ANTES de abrir Editar: una vez que el fondo queda
+    // inert, un query por rol ya no la encontraría (queda fuera del árbol de
+    // accesibilidad) -- fireEvent sobre el nodo ya obtenido no depende de eso.
+    const botonHistorial = screen.getByRole('button', { name: 'Historial' })
+
+    fireEvent.click(botonEditar)
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+
+    fireEvent.click(botonHistorial)
+    // HistorialUsuario pide su propio /audit al montar: se espera con waitFor
+    // (envuelve en act) para no dejar esa resolución fuera de React.
+    await waitFor(() => {
+      const dialogos = screen.getAllByRole('dialog')
+      expect(dialogos).toHaveLength(1)
+      expect(dialogos[0]).toHaveAttribute('aria-labelledby', 'historial-titulo')
+    })
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})

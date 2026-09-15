@@ -26,6 +26,33 @@ export default function AdminUsers() {
   const [saving, setSaving] = useState(false)
   const [editando, setEditando] = useState(null)
   const [historialDe, setHistorialDe] = useState(null)
+  // Ruling U25 (fix round 2, 2026-09-15): un solo modal a la vez -- antes
+  // `editando` y `historialDe` eran independientes, y el fondo seguía
+  // alcanzable con Tab detrás de un modal (sin `inert` ni trampa de foco), así
+  // que un par de Tabs y Enter podían abrir Historial ENCIMA de Editar, y un
+  // solo Escape cerraba los dos a la vez -- descartando en silencio una
+  // edición sin guardar. `algunModalAbierto` marca inert el contenido de atrás
+  // (header + tabla); los `abrir*` cierran los otros dos antes de abrir el
+  // suyo.
+  const algunModalAbierto = showCreate || !!editando || !!historialDe
+
+  function abrirCrear() {
+    setEditando(null)
+    setHistorialDe(null)
+    setShowCreate(true)
+  }
+
+  function abrirEdicion(u) {
+    setHistorialDe(null)
+    setShowCreate(false)
+    setEditando(u)
+  }
+
+  function abrirHistorial(u) {
+    setEditando(null)
+    setShowCreate(false)
+    setHistorialDe(u)
+  }
 
   function avisarError(err) {
     addToast({ type: 'error', message: mensajeDeError(t, err) })
@@ -112,72 +139,78 @@ export default function AdminUsers() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-xl font-bold text-texto-fuerte">{t.adminUsersTitle}</h1>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="px-3 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold transition-colors"
-        >
-          + {t.adminUserCreate}
-        </button>
-      </div>
+      {/* Ruling U25: el fondo (header + tabla) queda `inert` mientras cualquier
+          modal está abierto -- ni Tab ni un lector de pantalla lo alcanzan. Los
+          tres modales van AFUERA de este div, como hermanos, para no quedar
+          inert ellos también. */}
+      <div data-admin-contenido="" inert={algunModalAbierto}>
+        <div className="flex items-center justify-between mb-6">
+          <h1 className="text-xl font-bold text-texto-fuerte">{t.adminUsersTitle}</h1>
+          <button
+            onClick={abrirCrear}
+            className="px-3 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold transition-colors"
+          >
+            + {t.adminUserCreate}
+          </button>
+        </div>
 
-      <div className="rounded-lg border border-borde overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-hundido border-b border-borde">
-            <tr>
-              {[t.adminUserEmail, t.adminUserRole, t.adminUserStatus, t.adminUserLastLogin, t.adminUserActions].map(h => (
-                <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-borde/50">
-            {users.map(u => (
-              <tr key={u.user_id} className={`hover:bg-superficie transition-colors ${u.is_locked ? 'bg-aviso-fondo' : 'bg-hundido'}`}>
-                <td className="px-4 py-3 text-texto">{u.email}</td>
-                {/* Etapa 3 (Ruling U6): el rol se muestra como texto y se
-                    cambia en el modal Editar; la guarda M-2 del select vive
-                    ahora en EditarUsuarioModal. */}
-                <td className="px-4 py-3 text-xs text-texto">{u.role}</td>
-                <td className="px-4 py-3">
-                  {statusBadge(u)}
-                  {u.failed_attempts > 0 && !u.is_locked && (
-                    <span className="ml-2 text-xs text-texto-tenue">{t.adminUserFailedAttempts(u.failed_attempts)}</span>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-xs text-texto">
-                  {u.last_login ? new Date(u.last_login).toLocaleString(localeFor(lang)) : '—'}
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={() => setEditando(u)} className={ACCION_NEUTRA}>{t.adminUserEdit}</button>
-                    {u.is_locked && (
-                      // M-1 (revisión final PR 2, 2026-09-14): la fila bloqueada
-                      // también es bg-aviso-fondo, así que un botón con el mismo
-                      // fondo no se distinguía de la fila. bg-superficie sí
-                      // difiere y aviso/superficie es un par declarado en PARES.
-                      <button
-                        onClick={() => handleUnlock(u)}
-                        className="text-xs px-2 py-0.5 rounded bg-superficie text-aviso border border-aviso-borde hover:border-aviso focus:outline-none focus-visible:ring-2 focus-visible:ring-foco transition-colors"
-                      >
-                        {t.adminUserUnlock}
-                      </button>
-                    )}
-                    <button onClick={() => handleRevoke(u)} className={ACCION_NEUTRA}>{t.adminUserRevokeSessions}</button>
-                    <button onClick={() => handleResetLink(u)} className={ACCION_NEUTRA}>{t.adminUserSendResetLink}</button>
-                    <button onClick={() => setHistorialDe(u)} className={ACCION_NEUTRA}>{t.adminUserHistory}</button>
-                    <button
-                      onClick={() => handleDelete(u)}
-                      className="text-xs px-2 py-0.5 rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors"
-                    >
-                      {t.adminUserDelete}
-                    </button>
-                  </div>
-                </td>
+        <div className="rounded-lg border border-borde overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-hundido border-b border-borde">
+              <tr>
+                {[t.adminUserEmail, t.adminUserRole, t.adminUserStatus, t.adminUserLastLogin, t.adminUserActions].map(h => (
+                  <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-borde/50">
+              {users.map(u => (
+                <tr key={u.user_id} className={`hover:bg-superficie transition-colors ${u.is_locked ? 'bg-aviso-fondo' : 'bg-hundido'}`}>
+                  <td className="px-4 py-3 text-texto">{u.email}</td>
+                  {/* Etapa 3 (Ruling U6): el rol se muestra como texto y se
+                      cambia en el modal Editar; la guarda M-2 del select vive
+                      ahora en EditarUsuarioModal. */}
+                  <td className="px-4 py-3 text-xs text-texto">{u.role}</td>
+                  <td className="px-4 py-3">
+                    {statusBadge(u)}
+                    {u.failed_attempts > 0 && !u.is_locked && (
+                      <span className="ml-2 text-xs text-texto-tenue">{t.adminUserFailedAttempts(u.failed_attempts)}</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-texto">
+                    {u.last_login ? new Date(u.last_login).toLocaleString(localeFor(lang)) : '—'}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button onClick={() => abrirEdicion(u)} className={ACCION_NEUTRA}>{t.adminUserEdit}</button>
+                      {u.is_locked && (
+                        // M-1 (revisión final PR 2, 2026-09-14): la fila bloqueada
+                        // también es bg-aviso-fondo, así que un botón con el mismo
+                        // fondo no se distinguía de la fila. bg-superficie sí
+                        // difiere y aviso/superficie es un par declarado en PARES.
+                        <button
+                          onClick={() => handleUnlock(u)}
+                          className="text-xs px-2 py-0.5 rounded bg-superficie text-aviso border border-aviso-borde hover:border-aviso focus:outline-none focus-visible:ring-2 focus-visible:ring-foco transition-colors"
+                        >
+                          {t.adminUserUnlock}
+                        </button>
+                      )}
+                      <button onClick={() => handleRevoke(u)} className={ACCION_NEUTRA}>{t.adminUserRevokeSessions}</button>
+                      <button onClick={() => handleResetLink(u)} className={ACCION_NEUTRA}>{t.adminUserSendResetLink}</button>
+                      <button onClick={() => abrirHistorial(u)} className={ACCION_NEUTRA}>{t.adminUserHistory}</button>
+                      <button
+                        onClick={() => handleDelete(u)}
+                        className="text-xs px-2 py-0.5 rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors"
+                      >
+                        {t.adminUserDelete}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {editando && <EditarUsuarioModal usuario={editando} onGuardar={guardarEdicion} onCerrar={() => setEditando(null)} />}
