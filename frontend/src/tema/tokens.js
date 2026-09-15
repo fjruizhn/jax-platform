@@ -81,3 +81,11 @@ export function colorToken(nombre, alfa = 1) {
   const token = TOKENS.includes(nombre) ? nombre : RESPALDO
   return `rgb(var(--${token}) / ${alfa})`
 }
+
+// Clave de faceta del backend (jax_local, hyde, ...) -> su token de identidad.
+// DALL·E no es una faceta: se pide 'faceta-imagen' directo. Una clave que el
+// tema no conoce cae en el mismo respaldo que colorToken.
+export function tokenDeFaceta(clave) {
+  const token = `faceta-${String(clave).replaceAll('_', '-')}`
+  return TOKENS.includes(token) ? token : RESPALDO
+}

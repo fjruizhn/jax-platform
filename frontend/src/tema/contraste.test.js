@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { parsearTokens, contraste } from './contraste.js'
-import { TOKENS, PARES, AA_TEXTO, colorToken, EXENTOS_TEXTO, PERMITIDOS_CRUDOS, MIGRADOS } from './tokens.js'
+import { TOKENS, PARES, AA_TEXTO, colorToken, tokenDeFaceta, EXENTOS_TEXTO, PERMITIDOS_CRUDOS, MIGRADOS } from './tokens.js'
 
 // Test de contraste del tema (spec 2026-09-14-tema-tokens-design.md §6).
 // Reemplaza a lightModeOverrides.test.js, que exigía que un override
@@ -73,6 +73,13 @@ describe('tokens de color', () => {
     expect(colorToken('faceta-hyde')).toBe('rgb(var(--faceta-hyde) / 1)')
     expect(colorToken('peligro', 0.12)).toBe('rgb(var(--peligro) / 0.12)')
     expect(colorToken('no-existe')).toBe('rgb(var(--texto-suave) / 1)')
+  })
+
+  it('tokenDeFaceta traduce la clave del backend y cae en texto-suave si no la conoce', () => {
+    expect(tokenDeFaceta('jax_local')).toBe('faceta-jax-local')
+    expect(tokenDeFaceta('hyde')).toBe('faceta-hyde')
+    expect(tokenDeFaceta('claude')).toBe('texto-suave')
+    expect(tokenDeFaceta(undefined)).toBe('texto-suave')
   })
 })
 
