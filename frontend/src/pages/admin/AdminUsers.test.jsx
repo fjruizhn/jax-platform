@@ -15,6 +15,11 @@ const USUARIO = {
   is_locked: false, failed_attempts: 3, last_login: '2026-03-14T18:30:00Z',
 }
 
+const USUARIO_BLOQUEADO = {
+  user_id: 3, email: 'bloqueado@axioma-ia.io', role: 'viewer', status: 'active',
+  is_locked: true, failed_attempts: 5, last_login: '2026-03-14T18:30:00Z',
+}
+
 function renderUsers() {
   return render(<I18nProvider><AdminUsers /></I18nProvider>)
 }
@@ -48,5 +53,18 @@ describe('AdminUsers -- i18n (I-1)', () => {
     if (esperado !== fijoEsHN) {
       expect(screen.queryByText(fijoEsHN)).not.toBeInTheDocument()
     }
+  })
+})
+
+// M-1 (revisión final PR 2, 2026-09-14): "Desbloquear" era bg-aviso-fondo
+// sobre una fila que también es bg-aviso-fondo cuando is_locked -- en reposo
+// no se distinguía del fondo de la fila, en ningún tema.
+describe('AdminUsers -- botón Desbloquear sobre fila bloqueada (M-1)', () => {
+  it('el fondo del botón difiere del fondo de la fila (aviso-fondo) y tiene borde visible en reposo', async () => {
+    api.get.mockResolvedValue({ data: { users: [USUARIO_BLOQUEADO] } })
+    renderUsers()
+    const boton = await screen.findByRole('button', { name: 'Desbloquear' })
+    expect(boton.className).not.toMatch(/(^|\s)bg-aviso-fondo(\s|$)/)
+    expect(boton.className).toMatch(/(^|\s)border-aviso-borde(\s|$)/)
   })
 })

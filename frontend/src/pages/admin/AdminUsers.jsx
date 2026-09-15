@@ -106,9 +106,13 @@ export default function AdminUsers() {
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2 flex-wrap">
                     {u.is_locked && (
+                      // M-1 (revisión final PR 2, 2026-09-14): la fila bloqueada
+                      // también es bg-aviso-fondo, así que un botón con el mismo
+                      // fondo no se distinguía de la fila. bg-superficie sí
+                      // difiere y aviso/superficie es un par declarado en PARES.
                       <button
                         onClick={() => handleUnlock(u)}
-                        className="text-xs px-2 py-0.5 rounded bg-aviso-fondo border border-transparent hover:border-aviso-borde text-aviso transition-colors"
+                        className="text-xs px-2 py-0.5 rounded bg-superficie text-aviso border border-aviso-borde hover:border-aviso focus:outline-none focus-visible:ring-2 focus-visible:ring-foco transition-colors"
                       >
                         {t.adminUserUnlock}
                       </button>
