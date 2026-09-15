@@ -955,7 +955,16 @@ jobs:
           # siguen en const/PRIMARY y en 1 consulta). Sólo se INFORMA la marca; no
           # se hace cumplir (eso es la Task 2). Vistos en rojo (columna inexistente,
           # luego Unknown column) antes de verde. Medido dos veces: 848 / 1.
-          PISO_PASSED = 848
+          # Subido de 848 a 859 (2026-09-15, fijar contraseña por admin, Task 2 --
+          # la marca se CUMPLE, negado por defecto en verificar_sesion): +11 en
+          # test_fijar_password.py (403 cambio_de_password_requerido fuera de /me,
+          # Mi cuenta, refresh y logout; WS 4001; reverificar_sesion rechaza; 401
+          # antes que 403; login y /me informan la marca; Mi cuenta y el reset la
+          # limpian; password_igual_a_la_actual; recorrido de las rutas EFECTIVAS
+          # con iter_route_contexts y búsqueda del opt-in en backend/). 9 vistos en
+          # rojo por el motivo del brief; los 2 de control pasan desde el rojo.
+          # Medido dos veces: 859 / 1.
+          PISO_PASSED = 859
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1322,7 +1331,12 @@ jobs:
       # Fijar contraseña por admin, Task 1 (2026-09-15): los 2 nuevos de
       # test_fijar_password.py piden `client` y se saltean (sin cambio en passed).
       # Medido dos veces con JAX_CI_NO_DB=1: 371 / 478.
-      JAX_CI_MIN_PASSED: "371"
+      # Fijar contraseña por admin, Task 2 (2026-09-15): +2 puros
+      # (test_solo_me_y_mi_cuenta_admiten_la_marca importa la app sin arrancarla;
+      # test_nadie_mas_admite_la_marca lee el código); los otros 9 nuevos de
+      # test_fijar_password.py piden `client` y se saltean.
+      # Medido dos veces con JAX_CI_NO_DB=1: 373 / 487.
+      JAX_CI_MIN_PASSED: "373"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from auth.models import AuthUser, LoginRequest, LoginResponse, MeResponse, RefreshResponse
 from auth.jwt import REFRESH_EXPIRE_SECONDS, create_access_token, create_refresh_token, decode_token
-from auth.middleware import get_current_user, verificar_sesion
+from auth.middleware import get_current_user_con_cambio_pendiente, verificar_sesion
 from auth import rate_limit
 from auth.password_rules import problema_de_password
 from db.connection import get_pool
@@ -71,7 +71,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT user_id, tenant_id, email, password_hash, role, status, "
-                "failed_attempts, locked_until, token_version "
+                "failed_attempts, locked_until, token_version, must_change_password "
                 "FROM jax_users WHERE email = %s",
                 (req.email,),
             )
@@ -83,7 +83,8 @@ async def login(req: LoginRequest, request: Request, response: Response):
         await verify_password(req.password, _HASH_DE_RELLENO)
         raise _credenciales_invalidas()
 
-    user_id, tenant_id, email, password_hash, role, user_status, failed_attempts, locked_until, token_version = row
+    (user_id, tenant_id, email, password_hash, role, user_status, failed_attempts, locked_until, token_version,
+     must_change_password) = row
     now = utc_ahora()
     bloqueada = bool(locked_until and locked_until > now)
 
@@ -133,6 +134,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         tenant_id=tenant_id,
         role=role,
         email=email,
+        must_change_password=bool(must_change_password),
     )
 
 
@@ -145,14 +147,18 @@ async def refresh(refresh_token: str = Cookie(None)):
     # nuevo lleva el rol y la versión de la BASE, no los del refresh.
     # La cookie NO se rota: rotarla haría deslizante la sesión de 7 días, y la
     # versión ya invalida el refresh viejo cuando hace falta.
-    user = await verificar_sesion(decode_token(refresh_token), "refresh")
+    # U34: la renovación se admite con la marca; sin ella, el access de 15 min
+    # vence en medio del cambio obligatorio. El access nuevo no lleva la marca:
+    # la lee verificar_sesion de la base en cada request, así que se vuelve a
+    # hacer cumplir en el siguiente.
+    user = await verificar_sesion(decode_token(refresh_token), "refresh", admite_cambio_pendiente=True)
     access = create_access_token(user.user_id, user.tenant_id, user.role, user.token_version)
     return RefreshResponse(access_token=access)
 
 
 @router.get("/me", response_model=MeResponse)
-async def me(user: AuthUser = Depends(get_current_user)):
-    # get_current_user ya pasó por verificar_sesion (una SELECT por PK que
+async def me(user: AuthUser = Depends(get_current_user_con_cambio_pendiente)):
+    # get_current_user_con_cambio_pendiente ya pasó por verificar_sesion (una SELECT por PK que
     # trae status/role/token_version/email): no hace falta un segundo SELECT
     # acá. Si el usuario no existiera, verificar_sesion ya habría cortado con
     # 401 (fail-closed) antes de llegar a este punto (code review, M-3).
@@ -161,6 +167,7 @@ async def me(user: AuthUser = Depends(get_current_user)):
         tenant_id=int(user.tenant_id),
         role=user.role,
         email=user.email,
+        must_change_password=user.must_change_password,
     )
 
 
@@ -180,7 +187,7 @@ async def cambiar_mi_password(
     req: CambioPasswordRequest,
     request: Request,
     response: Response,
-    user: AuthUser = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user_con_cambio_pendiente),
 ):
     """Mi cuenta (2026-09-15, admin usuarios etapa 4, spec §3.2 y §3.4). Exige
     la contraseña actual, con el mismo límite de intentos que el login (sin él,
@@ -204,6 +211,11 @@ async def cambiar_mi_password(
     problema = problema_de_password(req.new_password)
     if problema:
         raise HTTPException(status_code=400, detail=f"password_{problema}")
+    # Cambio obligatorio (U34, P1): con la marca, la nueva no puede ser la que
+    # fijó el admin -- si no, el cambio no cambia nada. Comparación de strings:
+    # la actual ya se verificó contra el hash.
+    if user.must_change_password and req.new_password == req.current_password:
+        raise HTTPException(status_code=400, detail="password_igual_a_la_actual")
     # bcrypt (~150 ms) fuera del event loop y fuera de la transacción.
     nuevo_hash = await asyncio.to_thread(_hash, req.new_password)
     ip = rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES)
@@ -239,7 +251,7 @@ async def cambiar_mi_password(
         # login exitoso (el límite del login ya se aplicó arriba).
         await cur.execute(
             "UPDATE jax_users SET password_hash = %s, token_version = token_version + 1, "
-            "failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
+            "failed_attempts = 0, locked_until = NULL, must_change_password = FALSE WHERE user_id = %s",
             (nuevo_hash, user_id),
         )
         await cur.execute("SELECT token_version FROM jax_users WHERE user_id = %s", (user_id,))
@@ -475,9 +487,11 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
         if cur.rowcount != 1:
             raise HTTPException(status_code=400, detail="reset_token_usado")
         # Contraseña nueva por enlace: todas las sesiones viejas se cortan (spec §3.2).
+        # La persona eligió su propia contraseña por el enlace: la marca del
+        # cambio obligatorio (U34) queda cumplida y se limpia.
         await cur.execute(
             "UPDATE jax_users SET password_hash = %s, failed_attempts = 0, locked_until = NULL, "
-            "token_version = token_version + 1 WHERE user_id = %s",
+            "token_version = token_version + 1, must_change_password = FALSE WHERE user_id = %s",
             (new_hash, user_id),
         )
         await user_audit.registrar(cur, user_id, user_id, "password_reset_completed", None, ip)

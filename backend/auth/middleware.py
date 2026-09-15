@@ -23,6 +23,13 @@ from .models import AuthUser
 bearer = HTTPBearer(auto_error=True)
 
 SESION_INVALIDA = "sesion_invalida"
+CAMBIO_DE_PASSWORD_REQUERIDO = "cambio_de_password_requerido"
+# Las ÚNICAS rutas que aceptan una sesión con must_change_password (Ruling
+# U34). Además de ellas: /api/auth/refresh (llama a verificar_sesion a mano) y
+# /api/auth/logout (no autentica). Todo lo demás se niega por defecto.
+# tests/test_fijar_password.py fija que esta lista y las rutas que piden
+# get_current_user_con_cambio_pendiente son el mismo conjunto.
+RUTAS_CON_CAMBIO_PENDIENTE = frozenset({("GET", "/api/auth/me"), ("POST", "/api/auth/me/password")})
 SQL_ESTADO_DE_SESION = "SELECT status, role, token_version, email, must_change_password FROM jax_users WHERE user_id = %s"
 
 
@@ -32,7 +39,7 @@ def _rechazo() -> HTTPException:
     return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=SESION_INVALIDA)
 
 
-async def verificar_sesion(payload: dict, tipo: str) -> AuthUser:
+async def verificar_sesion(payload: dict, tipo: str, *, admite_cambio_pendiente: bool = False) -> AuthUser:
     if payload.get("type") != tipo:
         raise _rechazo()
     try:
@@ -50,6 +57,10 @@ async def verificar_sesion(payload: dict, tipo: str) -> AuthUser:
     estado, rol, tv_base, email, cambio_pendiente = fila
     if estado != "active" or tv_token != int(tv_base):
         raise _rechazo()
+    # Después de los 401: una sesión revocada sigue siendo 401 (el frontend la
+    # manda al login); una válida con la marca, 403 (la manda al cambio).
+    if cambio_pendiente and not admite_cambio_pendiente:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CAMBIO_DE_PASSWORD_REQUERIDO)
     return AuthUser(
         user_id=str(user_id),
         tenant_id=str(payload.get("tenant_id", "")),
@@ -78,6 +89,14 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer),
 ) -> AuthUser:
     return await verificar_sesion(decode_token(credentials.credentials), "access")
+
+
+async def get_current_user_con_cambio_pendiente(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer),
+) -> AuthUser:
+    """SOLO para RUTAS_CON_CAMBIO_PENDIENTE (/me y /me/password). Cualquier
+    otra ruta usa get_current_user, que niega la sesión con la marca."""
+    return await verificar_sesion(decode_token(credentials.credentials), "access", admite_cambio_pendiente=True)
 
 
 def require_superadmin(user: AuthUser = Depends(get_current_user)) -> AuthUser:
