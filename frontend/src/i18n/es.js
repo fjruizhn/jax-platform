@@ -652,6 +652,13 @@ export default {
   adminSetPasswordHint: 'Sus sesiones abiertas se cierran y tendrá que cambiarla en su próximo inicio de sesión.',
   adminSetPasswordSubmitting: 'Guardando…',
   adminPasswordSetDone: (email) => `Contraseña fijada para ${email}. Tendrá que cambiarla al entrar.`,
+
+  // Historial de las bajas visible desde la UI (2026-09-15, Task 2, DEUDA U36)
+  adminUserShowBajas: 'Mostrar bajas',
+  adminBajaListEmail: 'Correo original',
+  adminBajaListDeletedAt: 'Fecha de baja',
+  adminBajaListDeletedBy: 'Dado de baja por',
+
   forcedChangeTitle: 'Cambiá tu contraseña',
   forcedChangeIntro: 'Un administrador fijó tu contraseña. Para seguir, elegí una nueva.',
   forcedChangeDone: 'Contraseña cambiada. Ya podés seguir.',

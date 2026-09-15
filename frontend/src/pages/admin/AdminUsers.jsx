@@ -29,6 +29,14 @@ export default function AdminUsers() {
   // auto_accion_prohibida como defensa en profundidad (sin tocar acá).
   const usuarioLogueado = useJaxStore((s) => s.user)
   const [users, setUsers] = useState([])
+  // Task 2 (2026-09-15, DEUDA U36): historial de las bajas visible desde la
+  // UI. `mostrarBajas` es el estado del interruptor (aria-pressed, mismo
+  // patrón que el ojito de PasswordInput); la lista de bajas se pide recién
+  // al activarlo, no en cada montaje -- es de solo lectura, no participa de
+  // la exclusión mutua de los modales (Ruling U25/U28): no abre nada por sí
+  // misma, sólo su botón "Historial" reusa abrirHistorial.
+  const [mostrarBajas, setMostrarBajas] = useState(false)
+  const [bajas, setBajas] = useState([])
   const [showCreate, setShowCreate] = useState(false)
   const [editando, setEditando] = useState(null)
   const [historialDe, setHistorialDe] = useState(null)
@@ -151,6 +159,14 @@ export default function AdminUsers() {
     return api.get('/admin/users').then(r => setUsers(r.data.users)).catch(avisarError)
   }
 
+  function alternarBajas() {
+    const activar = !mostrarBajas
+    setMostrarBajas(activar)
+    if (activar) {
+      api.get('/admin/users?bajas=true').then(r => setBajas(r.data.users)).catch(avisarError)
+    }
+  }
+
   useEffect(() => { load() }, [])
 
   async function crearUsuario(form) {
@@ -255,13 +271,26 @@ export default function AdminUsers() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-xl font-bold text-texto-fuerte">{t.adminUsersTitle}</h1>
-        <button
-          ref={botonNuevo}
-          onClick={abrirCrear}
-          className="px-3 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold transition-colors"
-        >
-          + {t.adminUserCreate}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={alternarBajas}
+            aria-pressed={mostrarBajas}
+            className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+              mostrarBajas
+                ? 'bg-acento text-sobre-color'
+                : 'bg-superficie-2 text-texto hover:text-texto-fuerte'
+            }`}
+          >
+            {t.adminUserShowBajas}
+          </button>
+          <button
+            ref={botonNuevo}
+            onClick={abrirCrear}
+            className="px-3 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold transition-colors"
+          >
+            + {t.adminUserCreate}
+          </button>
+        </div>
       </div>
 
       <div className="rounded-lg border border-borde overflow-hidden">
@@ -329,6 +358,39 @@ export default function AdminUsers() {
           </tbody>
         </table>
       </div>
+
+      {mostrarBajas && (
+        <div className="rounded-lg border border-borde overflow-hidden mt-6">
+          <table className="w-full text-sm">
+            <thead className="bg-hundido border-b border-borde">
+              <tr>
+                {[t.adminBajaListEmail, t.adminBajaListDeletedAt, t.adminBajaListDeletedBy, t.adminUserActions].map(h => (
+                  <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-borde/50">
+              {bajas.map(b => (
+                <tr key={b.user_id} className="bg-hundido">
+                  <td className="px-4 py-3 text-texto">{b.email_original}</td>
+                  <td className="px-4 py-3 text-xs text-texto">
+                    {b.deleted_at ? new Date(b.deleted_at).toLocaleString(localeFor(lang)) : '—'}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-texto">{b.deleted_by_email || '—'}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => abrirHistorial({ user_id: b.user_id, email: b.email_original })}
+                      className={ACCION_NEUTRA}
+                    >
+                      {t.adminUserHistory}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {editando && <EditarUsuarioModal usuario={editando} onGuardar={guardarEdicion} onCerrar={() => setEditando(null)} />}
       {historialDe && <HistorialUsuario usuario={historialDe} onCerrar={() => setHistorialDe(null)} />}

@@ -436,8 +436,18 @@ jobs:
             // revirtiendo a mano el Preview a un <div> sin Dialogo, y
             // devuelto a verde. Medido dos veces con vitest run: 392 passed
             // en 52 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 392) {
-              console.error("PISO ROTO: se esperaban 392 tests de vitest CORRIDOS y 0 fallidos.");
+            // 392 -> 397 el 2026-09-15 (Task 2, DEUDA U36 -- historial de las
+            // bajas visible desde la UI): +5 en AdminUsers.test.jsx (el
+            // interruptor "Mostrar bajas" arranca apagado y no pide la lista
+            // al montar; al activarlo pide /admin/users?bajas=true y lista
+            // las bajas en modo solo lectura; la fila de una baja sólo
+            // ofrece "Historial", ninguna otra acción; "Historial" de una
+            // fila de baja abre el historial de ese usuario; apagar el
+            // interruptor esconde de nuevo la lista). Vistos en rojo antes de
+            // verde (el botón "Mostrar bajas" no existía). Medido dos veces
+            // con vitest run: 397 passed en 52 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 397) {
+              console.error("PISO ROTO: se esperaban 397 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1079,7 +1089,19 @@ jobs:
           # bump exige la versión verificada). Los 2 vistos en rojo sobre 7218b49;
           # las 2 mutaciones (sin el hash / sin la versión) capturadas.
           # Medido dos veces: 890 / 1.
-          PISO_PASSED = 890
+          # Subido de 890 a 897 (2026-09-15, Task 2, DEUDA U36 -- historial de
+          # las bajas visible desde la UI): +7 en test_admin_usuarios_baja.py
+          # (email_original deriva lo anterior al último '#baja-'; GET
+          # /api/admin/users?bajas=true exige superadmin; la lista de bajas
+          # devuelve solo user_id/email_original/role/deleted_at/deleted_by/
+          # deleted_by_email de los 'deleted'; sin el parámetro la lista
+          # normal no cambia de claves; EXPLAIN de SQL_LISTA_BAJAS sin
+          # filesort ni temporal; deleted_by se resuelve al correo ACTUAL del
+          # actor con un LEFT JOIN; GET /users/{id}/audit ya funcionaba para
+          # un dado de baja, ahora con test que lo confirma). Vistos en rojo
+          # antes de verde (SQL_LISTA_BAJAS y email_original no existían).
+          # Medido dos veces: 897 / 1.
+          PISO_PASSED = 897
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1475,7 +1497,13 @@ jobs:
       # passed). Medido dos veces con JAX_CI_NO_DB=1: 374 / 515.
       # Task 3b fix ronda 1 (2026-09-15): los 2 nuevos piden `client` y se
       # saltean (sin cambio en passed). Medido dos veces con JAX_CI_NO_DB=1: 374 / 517.
-      JAX_CI_MIN_PASSED: "374"
+      # Task 2 (2026-09-15, DEUDA U36 -- historial de las bajas visible desde
+      # la UI): +1 puro (test_email_original_deriva_lo_anterior_al_ultimo_
+      # sufijo_de_baja, no pide `client`); los otros 6 nuevos de
+      # test_admin_usuarios_baja.py piden `client` y se saltean (sin cambio
+      # en passed más allá del puro). Medido dos veces con JAX_CI_NO_DB=1:
+      # 375 / 523.
+      JAX_CI_MIN_PASSED: "375"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -620,3 +620,78 @@ describe('AdminUsers — fila propia sin auto-acciones (decisión de Fernando, r
     expect(screen.getAllByRole('button', { name: 'Dar de baja' })).toHaveLength(1)
   })
 })
+
+// Task 2 (2026-09-15, DEUDA U36): historial de las bajas visible desde la UI.
+// Interruptor "Mostrar bajas" -- aria-pressed (M-2/PasswordInput ya usa este
+// patrón) -- que pide /admin/users?bajas=true y lista las bajas en modo solo
+// lectura, con un único botón "Historial" por fila.
+const BAJA = {
+  user_id: 7, email_original: 'borrado@x.io', role: 'operator',
+  deleted_at: '2026-09-15T10:00:00.000+00:00', deleted_by: 1, deleted_by_email: 'admin@axioma-ia.io',
+}
+
+function servirGetConBajas(usuariosActivos, bajas) {
+  api.get.mockImplementation((url) => {
+    if (url === '/admin/users?bajas=true') return Promise.resolve({ data: { users: bajas } })
+    if (url === '/admin/users') return Promise.resolve({ data: { users: usuariosActivos } })
+    return Promise.resolve({ data: { entries: HISTORIAL } })
+  })
+}
+
+describe('AdminUsers — Mostrar bajas (Task 2, DEUDA U36)', () => {
+  it('el interruptor arranca apagado y no pide las bajas al montar', async () => {
+    servirGetConBajas([USUARIO], [BAJA])
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    const interruptor = screen.getByRole('button', { name: 'Mostrar bajas' })
+    expect(interruptor).toHaveAttribute('aria-pressed', 'false')
+    expect(api.get).not.toHaveBeenCalledWith('/admin/users?bajas=true')
+  })
+
+  it('al activarlo pide y lista las bajas en modo solo lectura', async () => {
+    servirGetConBajas([USUARIO], [BAJA])
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: 'Mostrar bajas' }))
+    expect(screen.getByRole('button', { name: 'Mostrar bajas' })).toHaveAttribute('aria-pressed', 'true')
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/users?bajas=true'))
+    expect(await screen.findByText('borrado@x.io')).toBeInTheDocument()
+    expect(screen.getByText('admin@axioma-ia.io')).toBeInTheDocument()
+  })
+
+  it('la fila de una baja sólo ofrece "Historial", ninguna otra acción', async () => {
+    servirGetConBajas([USUARIO], [BAJA])
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: 'Mostrar bajas' }))
+    const fila = (await screen.findByText('borrado@x.io')).closest('tr')
+    expect(within(fila).getByRole('button', { name: 'Historial' })).toBeInTheDocument()
+    expect(within(fila).queryByRole('button', { name: 'Editar' })).not.toBeInTheDocument()
+    expect(within(fila).queryByRole('button', { name: 'Dar de baja' })).not.toBeInTheDocument()
+    expect(within(fila).queryByRole('button', { name: 'Fijar contraseña' })).not.toBeInTheDocument()
+  })
+
+  it('"Historial" de una fila de baja abre el historial de ese usuario', async () => {
+    servirGetConBajas([USUARIO], [BAJA])
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: 'Mostrar bajas' }))
+    const fila = (await screen.findByText('borrado@x.io')).closest('tr')
+    fireEvent.click(within(fila).getByRole('button', { name: 'Historial' }))
+    const dialogo = await screen.findByRole('dialog')
+    expect(dialogo).toHaveAttribute('aria-labelledby', 'historial-titulo')
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/users/7/audit'))
+  })
+
+  it('apagar el interruptor esconde de nuevo la lista de bajas', async () => {
+    servirGetConBajas([USUARIO], [BAJA])
+    renderUsers()
+    await screen.findByText('op@axioma-ia.io')
+    const interruptor = screen.getByRole('button', { name: 'Mostrar bajas' })
+    fireEvent.click(interruptor)
+    await screen.findByText('borrado@x.io')
+    fireEvent.click(interruptor)
+    expect(interruptor).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByText('borrado@x.io')).not.toBeInTheDocument()
+  })
+})

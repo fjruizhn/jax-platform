@@ -649,6 +649,13 @@ export default {
   adminSetPasswordHint: 'Their open sessions are closed and they will have to change it at their next sign-in.',
   adminSetPasswordSubmitting: 'Saving…',
   adminPasswordSetDone: (email) => `Password set for ${email}. They will have to change it when signing in.`,
+
+  // Deleted users' history visible from the UI (2026-09-15, Task 2, DEUDA U36)
+  adminUserShowBajas: 'Show deleted users',
+  adminBajaListEmail: 'Original email',
+  adminBajaListDeletedAt: 'Deleted on',
+  adminBajaListDeletedBy: 'Deleted by',
+
   forcedChangeTitle: 'Change your password',
   forcedChangeIntro: 'An administrator set your password. To continue, choose a new one.',
   forcedChangeDone: 'Password changed. You can continue.',

@@ -264,6 +264,99 @@ def test_la_lista_sin_dados_de_baja_no_ordena_en_memoria(client):
     assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
 
 
+# ------------------------------------ Task 2 (DEUDA U36): historial de bajas
+
+def test_email_original_deriva_lo_anterior_al_ultimo_sufijo_de_baja():
+    """email_original es la inversa de email_de_baja: la parte antes del
+    ÚLTIMO '#baja-'. U32 garantiza que un correo VIVO nunca tiene '#', así que
+    esto no puede confundir un correo real con uno renombrado."""
+    assert users_mod.email_original("ana@x.io#baja-42-20260912") == "ana@x.io"
+    # sin el sufijo: se devuelve tal cual (defensivo, no debería pasar para
+    # una fila 'deleted', pero email_original no asume el invariante).
+    assert users_mod.email_original("ana@x.io") == "ana@x.io"
+    # un '-' en la parte local no confunde el rsplit: el separador es el
+    # literal '#baja-', no un '-' suelto.
+    assert users_mod.email_original("ana-maria@x.io#baja-42-20260912") == "ana-maria@x.io"
+
+
+def test_lista_de_bajas_solo_superadmin(client, usuarios):
+    u, _ = usuarios()
+    otro, _ = usuarios()
+    r = client.get("/api/admin/users?bajas=true", headers=auth(token_para(u)))
+    assert r.status_code == 403
+
+
+def test_lista_de_bajas_devuelve_solo_los_dados_de_baja_con_email_original_y_quien_la_hizo(client, usuarios):
+    vivo, _ = usuarios()
+    ido, email_ido = usuarios(role="operator")
+    assert _baja(client, ido).status_code == 200
+    r = client.get("/api/admin/users?bajas=true", headers=_admin())
+    assert r.status_code == 200
+    filas = r.json()["users"]
+    assert [f["user_id"] for f in filas] == [ido]
+    fila = filas[0]
+    assert fila["email_original"] == email_ido
+    assert fila["role"] == "operator"
+    assert fila["deleted_by"] == 1
+    assert fila["deleted_by_email"] == "fernando@rich-hn.com"  # el superadmin sembrado (user_id=1)
+    assert fila["deleted_at"] is not None
+    # el vivo no aparece en la lista de bajas, ni el dado de baja en la normal
+    ids_normales = [x["user_id"] for x in client.get("/api/admin/users", headers=_admin()).json()["users"]]
+    assert vivo in ids_normales and ido not in ids_normales
+
+
+def test_lista_sin_el_parametro_bajas_no_cambia(client, usuarios):
+    """Sin `bajas=true` la lista queda EXACTAMENTE como hoy: mismas claves,
+    ningún campo de baja se filtra."""
+    u, _ = usuarios()
+    r = client.get("/api/admin/users", headers=_admin())
+    assert r.status_code == 200
+    fila = next(f for f in r.json()["users"] if f["user_id"] == u)
+    assert set(fila.keys()) == {
+        "user_id", "email", "role", "status", "created_at", "last_login",
+        "failed_attempts", "locked_until", "is_locked",
+    }
+
+
+def test_lista_de_bajas_explain_sin_filesort_ni_temporal(client):
+    """LAS CUATRO (indexing), EXPLAIN sobre la consulta REAL de
+    SQL_LISTA_BAJAS: `b` (la fila dada de baja) recorre la PK en el orden del
+    ORDER BY -- igual que SQL_LISTA_USUARIOS, tabla chica y crece despacio,
+    aceptado por el plan -- y `a` (el actor, LEFT JOIN por PK) es eq_ref.
+    Ninguna de las dos filas usa filesort ni tabla temporal."""
+    filas = [tuple(f) for f in client.portal.call(sql, "EXPLAIN " + users_mod.SQL_LISTA_BAJAS, (), True)]
+    por_tabla = {f[2]: f for f in filas}
+    assert set(por_tabla) == {"b", "a"}
+    _id, _sel, _tabla_b, tipo_b, _posibles_b, _clave_b, _largo_b, _ref_b, _filas_b, extra_b = por_tabla["b"]
+    _id, _sel, _tabla_a, tipo_a, _posibles_a, _clave_a, _largo_a, _ref_a, _filas_a, extra_a = por_tabla["a"]
+    assert tipo_b in ("ALL", "index", "ref")
+    assert tipo_a == "eq_ref"
+    for extra in (extra_b, extra_a):
+        assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
+
+
+def test_lista_de_bajas_resuelve_deleted_by_al_correo_actual_del_actor(client, usuarios):
+    actor, email_actor = usuarios(role="superadmin")
+    ido, _ = usuarios()
+    r = _baja(client, ido, auth(token_para(actor, role="superadmin")))
+    assert r.status_code == 200
+    filas = client.get("/api/admin/users?bajas=true", headers=_admin()).json()["users"]
+    fila = next(f for f in filas if f["user_id"] == ido)
+    assert fila["deleted_by"] == actor
+    assert fila["deleted_by_email"] == email_actor
+
+
+def test_audit_history_funciona_para_un_dado_de_baja(client, usuarios):
+    """GET /users/{id}/audit ya no filtra por status: confirmado para un dado
+    de baja, incluida la acción 'baja' en su historial."""
+    u, email = usuarios()
+    assert _baja(client, u).status_code == 200
+    r = client.get(f"/api/admin/users/{u}/audit", headers=_admin())
+    assert r.status_code == 200
+    acciones = [e["action"] for e in r.json()["entries"]]
+    assert "baja" in acciones
+
+
 # ------------------ fix ronda 1 (Ruling U31): enlace y baja, sin carrera
 #
 # Antes: send_reset_link y _procesar_recuperacion leían el estado SIN bloqueo
