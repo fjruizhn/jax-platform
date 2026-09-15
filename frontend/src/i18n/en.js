@@ -52,6 +52,8 @@ export default {
   auditLog: 'Audit Log',
   loading: 'Loading…',
   noEventsYet: 'No events yet',
+  auditoria_ilegible: 'The audit log could not be read',
+  auditLogError: 'Could not load the audit log',
 
   // Step card
   clickToSeeResult: 'Click to see result in chat',
@@ -319,6 +321,7 @@ export default {
   adminModelsSync: 'Sync',
   adminModelsSyncing: 'Syncing…',
   adminModelsSyncError: 'Sync failed',
+  sync_con_errores: (lista) => `Sync incomplete, failed: ${lista}`,
   adminModelsProvider: 'Provider',
   adminModelsModelId: 'Model',
   adminModelsAlias: 'Alias',

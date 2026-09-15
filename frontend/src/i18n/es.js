@@ -52,6 +52,8 @@ export default {
   auditLog: 'Audit Log',
   loading: 'Cargando…',
   noEventsYet: 'Sin eventos aún',
+  auditoria_ilegible: 'No se pudo leer el registro de auditoría',
+  auditLogError: 'No se pudo cargar la auditoría',
 
   // Step card
   clickToSeeResult: 'Click para ver resultado en chat',
@@ -322,6 +324,7 @@ export default {
   adminModelsSync: 'Sincronizar',
   adminModelsSyncing: 'Sincronizando…',
   adminModelsSyncError: 'Error al sincronizar',
+  sync_con_errores: (lista) => `Sincronización incompleta, fallaron: ${lista}`,
   adminModelsProvider: 'Proveedor',
   adminModelsModelId: 'Modelo',
   adminModelsAlias: 'Alias',

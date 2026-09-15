@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from 'react'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
+import { codigoDe } from '../../api/errores'
 
 const EVENT_COLOR = {
   ENVELOPE_ACCEPTED:   'text-exito',
@@ -22,13 +23,18 @@ function AuditLog() {
   const { t, lang } = useI18n()
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
+  // Task 3 (2026-09-15): el código del fallo, o 'otro'. null = sin error.
+  const [error, setError] = useState(null)
 
   async function fetchAudit() {
     try {
       const { data } = await api.get('/audit')
       setEvents(data.events || [])
-    } catch {
-      // LAS MANOS puede estar caído
+      setError(null)
+    } catch (err) {
+      // Task 3 (2026-09-15): el catch era mudo y el panel seguía diciendo
+      // "Sin eventos aún". Un audit que no se puede leer no es un audit vacío.
+      setError(codigoDe(err) === 'auditoria_ilegible' ? 'auditoria_ilegible' : 'otro')
     } finally {
       setLoading(false)
     }
@@ -51,6 +57,10 @@ function AuditLog() {
       <div className="flex-1 overflow-y-auto">
         {loading ? (
           <div className="px-3 py-4 text-xs text-texto-tenue">{t.loading}</div>
+        ) : error ? (
+          <div role="alert" className="px-3 py-4 text-xs text-peligro">
+            {error === 'auditoria_ilegible' ? t.auditoria_ilegible : t.auditLogError}
+          </div>
         ) : events.length === 0 ? (
           <div className="px-3 py-4 text-xs text-texto-tenue">{t.noEventsYet}</div>
         ) : (

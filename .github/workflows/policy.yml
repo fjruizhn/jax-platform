@@ -446,8 +446,17 @@ jobs:
             // interruptor esconde de nuevo la lista). Vistos en rojo antes de
             // verde (el botón "Mostrar bajas" no existía). Medido dos veces
             // con vitest run: 397 passed en 52 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 397) {
-              console.error("PISO ROTO: se esperaban 397 tests de vitest CORRIDOS y 0 fallidos.");
+            // 397 -> 404 el 2026-09-15 (Task 3, except amplios sin marca): +4
+            // en AuditLog.test.jsx (textos en es/en; el 503 auditoria_ilegible
+            // muestra su texto y no "sin eventos"; otro fallo muestra el error
+            // genérico; el archivo vacío sigue siendo "sin eventos") y +3 en
+            // AdminModelCatalog.test.jsx (texto sync_con_errores en es/en;
+            // ok:false nombra los providers fallidos y models.dev; ok:true no
+            // muestra aviso). Vistos en rojo antes de verde (5 rojos: el catch
+            // mudo y el cuerpo del sync ignorado). Medido dos veces con vitest
+            // run: 404 passed en 52 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 404) {
+              console.error("PISO ROTO: se esperaban 404 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1107,7 +1116,19 @@ jobs:
           # rsplit -> split, antes sobreviviente; y `key == "PRIMARY"` para la
           # tabla `b` del EXPLAIN de SQL_LISTA_BAJAS), no tests nuevos.
           # Medido dos veces: 897 / 1.
-          PISO_PASSED = 897
+          # Subido de 897 a 920 (2026-09-15, Task 3, except amplios sin
+          # marca): +12 en test_no_fail_open_except.py (11 casos sinteticos de
+          # la regla nueva + la guardia de que el escaneo ve archivos: con
+          # `path.parts` absolutas, un checkout bajo /home/fruiz/worktrees se
+          # excluia entero y el test pasaba sin escanear nada), +4 en
+          # test_chat_memoria_fail_open.py (puerto mal formado ruidoso, puerto
+          # valido conecta, ImportError logueado, SyntaxError no se traga), +5
+          # en test_audit_ilegible.py (503 por OSError y por UTF-8 invalido;
+          # vacio, ausente y legible sin cambio) y +2 en
+          # test_admin_models_endpoints.py (sync con todos los providers o con
+          # el enriquecimiento caidos: ok False + sync_con_errores). Vistos en
+          # rojo antes de verde. Medido dos veces: 920 / 1.
+          PISO_PASSED = 920
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1514,7 +1535,12 @@ jobs:
       # dos '#baja-'; `key == "PRIMARY"` del EXPLAIN, que pide `client` y ya
       # estaba en el piso con DB). Medido dos veces con JAX_CI_NO_DB=1:
       # 375 / 523.
-      JAX_CI_MIN_PASSED: "375"
+      # Task 3 (2026-09-15, except amplios sin marca): +21 puros (12 de
+      # test_no_fail_open_except.py, 4 de test_chat_memoria_fail_open.py, 5
+      # de test_audit_ilegible.py); los 2 nuevos de
+      # test_admin_models_endpoints.py piden `client` y se saltean. Medido dos
+      # veces con JAX_CI_NO_DB=1: 396 / 525.
+      JAX_CI_MIN_PASSED: "396"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
