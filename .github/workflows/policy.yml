@@ -145,8 +145,22 @@ jobs:
             // formulario; sin rechazo no hay aviso). Medido con vitest run: 157 + 6 = 163.
             // PR-L ronda 2: 163 -> 163. El aviso propio de Bindings (adminBindingsContratoGuardado)
             // se afirma dentro de dos tests existentes, sin tests nuevos. Medido con vitest run: 163.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 163) {
-              console.error("PISO ROTO: se esperaban 163 tests de vitest CORRIDOS y 0 fallidos.");
+            // 163 -> 185 el 2026-09-14 (tema con tokens, PR 1): +6
+            // contraste.test.js (dos temas, completitud, control negativo, colorToken),
+            // +2 uso de tokens en archivos migrados, +1 tailwind.test.js, +6
+            // scriptTema.test.js (script de index.html = aplicarTema, 5 casos + posicion),
+            // +5 useTema.test.js y +1 AdminSettings (guardar aplica el predeterminado), +1
+            // placeholder de Login.test.jsx (ruling del controlador sobre el placeholder
+            // del campo de usuario). Vistos en rojo antes de verde. Medido con vitest run: 185.
+            // 185 -> 189 el 2026-09-15 (tema PR 1, arreglos de la revisión final): +2
+            // contraste.test.js (I-1: texto-tenue/hundido ya en PARES, y ::placeholder con
+            // var(--texto-tenue) en @layer base de index.css), +1 useTema.test.js (M-4: con
+            // localStorage bloqueado el store arranca en dark y toggleTheme no lanza), +1
+            // scriptTema.test.js (M-4: el script en línea y aplicarTema caen los dos a
+            // oscuro sin lanzar). M-2 y M-3 fortalecen tests existentes, sin sumar. Vistos
+            // en rojo antes de verde. Medido con vitest run: 189.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 189) {
+              console.error("PISO ROTO: se esperaban 189 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -581,7 +595,10 @@ jobs:
           # (ollama/qwen3.6:35b-a3b-q4_K_M sembrado en 262144; sin max_tokens_param porque ollama no
           # lo lee; sembrado en la DB sin pisar un valor manual). Medido contra jax f84ecc1:
           # 734 + 3 = 737 / 1.
-          PISO_PASSED = 737
+          # Subido de 737 a 744 (2026-09-14, tema con tokens PR 1): +7 con `client` en
+          # test_apariencia.py (valor guardado, fila ausente, fuera de lista, sin otras
+          # claves, sin token, no-cache, EXPLAIN). Medido: 744 / 1.
+          PISO_PASSED = 744
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -885,6 +902,8 @@ jobs:
       # `client`. Medido con JAX_CI_NO_DB=1: 352 passed / 383 skipped.
       # PR-L ronda 3: +2 puros (el valor del qwen de jax_local en la lista de semilla, y que no
       # tenga max_tokens_param); el de la DB pide `client`. Medido con JAX_CI_NO_DB=1: 354 / 384.
+      # Sin cambio (2026-09-14, tema PR 1): los 7 de test_apariencia.py piden client.
+      # Medido con JAX_CI_NO_DB=1: 354 / 391.
       JAX_CI_MIN_PASSED: "354"
     steps:
       - uses: actions/checkout@v4

@@ -8,9 +8,7 @@ import { useI18n } from '../i18n/index.jsx'
 //   confirmar (ResetPassword usaba un solo botón para las dos).
 // - El botón es type="button": dentro de un <form> no lo envía.
 // - Texto accesible desde i18n (aria-label + title), no un emoji.
-// - Colores: las mismas clases slate que el resto de la UI, que
-//   html.light-mode sobrescribe en src/index.css -- sirve en los dos temas sin
-//   un color fijo acá.
+// - Colores: tokens del tema (src/tema/tokens.css), sirven en los dos temas.
 // - `className` va al <input> tal cual (cada pantalla conserva su estilo);
 //   `wrapperClassName` al contenedor, para márgenes: un margen en el input
 //   descentraría el ojito, que se posiciona contra el contenedor.
@@ -28,7 +26,7 @@ export default function PasswordInput({ className = '', wrapperClassName = '', .
         aria-label={etiqueta}
         aria-pressed={visible}
         title={etiqueta}
-        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
+        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-texto-tenue hover:text-texto transition-colors"
       >
         {visible ? (
           <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">

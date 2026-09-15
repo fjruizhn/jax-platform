@@ -11,8 +11,9 @@ import '@fontsource/ibm-plex-serif/latin-300-italic.css'
 //
 // Una sola pieza fuerte: "Axioma" en serif 600 dorado. El lema acompaña en
 // itálica fina y un dorado más apagado, sobre la misma línea de base. En
-// pantallas angostas queda solo "Axioma". En modo claro los dorados se
-// oscurecen para leerse sobre blanco (src/index.css, html.light-mode).
+// pantallas angostas queda solo "Axioma". Los dorados son tokens (oro,
+// oro-claro, oro-oscuro en src/tema/tokens.css): en claro ya vienen
+// oscurecidos para leerse sobre blanco.
 export default function LogoAxioma() {
   const { t } = useI18n()
   return (

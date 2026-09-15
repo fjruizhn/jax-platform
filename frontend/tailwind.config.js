@@ -1,19 +1,23 @@
+import { TOKENS } from './src/tema/tokens.js'
+
+// Tokens del tema (spec 2026-09-14-tema-tokens §4): un color por token, con
+// opacidad. Los valores están en src/tema/tokens.css; acá sólo los nombres.
+const token = (nombre) => `rgb(var(--${nombre}) / <alpha-value>)`
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{js,jsx}'],
   theme: {
     extend: {
-      // Marca Axioma (2026-09-12): la misma tipografía y los mismos dorados de
-      // la portada de Six Impossible Things (--gold, --gold-light, --gold-dark).
+      // Marca Axioma (2026-09-12): la misma tipografía y los mismos dorados,
+      // ahora en tokens.css.
       fontFamily: {
         marca: ['"IBM Plex Serif"', 'Georgia', 'serif'],
       },
       colors: {
-        oro: {
-          DEFAULT: '#c9a84c',
-          claro: '#e8d5a3',
-          oscuro: '#8a6d2f',
-        },
+        ...Object.fromEntries(TOKENS.map((n) => [n, token(n)])),
+        // Colores viejos del panel: se van en el PR 4 del rollout, cuando
+        // Dashboard migra (hoy los usa con bg-hal-bg y text-hal-text).
         hal: {
           bg: '#0f172a',
           panel: '#1e293b',

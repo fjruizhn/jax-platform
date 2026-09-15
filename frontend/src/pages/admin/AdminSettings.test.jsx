@@ -14,6 +14,8 @@ import AdminSettings from './AdminSettings'
 import { I18nProvider } from '../../i18n/index.jsx'
 import es from '../../i18n/es.js'
 import en from '../../i18n/en.js'
+import { useTema } from '../../store/useTema'
+import { aplicarTema } from '../../tema/aplicarTema'
 
 const CONFIG = { data: { config: [{ key: 'system_name', value: 'Axioma' }] } }
 
@@ -33,6 +35,8 @@ async function guardar() {
 beforeEach(() => {
   api.get.mockReset(); api.put.mockReset()
   localStorage.clear()
+  useTema.setState({ theme: 'dark', predeterminado: null })
+  aplicarTema('dark')
 })
 
 describe('AdminSettings -- los errores del guardado se ven', () => {
@@ -108,5 +112,17 @@ describe('AdminSettings -- los errores del guardado se ven', () => {
     await screen.findByRole('alert')
     fireEvent.click(screen.getByRole('button', { name: es.adminSettingsSave }))
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  it('guardar el tema predeterminado lo aplica en este navegador si el usuario no eligió', async () => {
+    api.get.mockResolvedValue({ data: { config: [
+      { key: 'system_name', value: 'Axioma' },
+      { key: 'theme_default', value: 'light' },
+    ] } })
+    api.put.mockResolvedValue({ data: { ok: true } })
+    renderSettings()
+    await guardar()
+    await waitFor(() => expect(localStorage.getItem('jax_theme_default')).toBe('light'))
+    expect(document.documentElement.getAttribute('data-tema')).toBe('claro')
   })
 })

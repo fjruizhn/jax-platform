@@ -1,14 +1,33 @@
+/* Tokens del tema: única fuente de los valores de color (src/tema/tokens.css). */
+@import './tema/tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 body {
-  background-color: #0f172a;
-  color: #e2e8f0;
+  background-color: rgb(var(--fondo));
+  color: rgb(var(--texto));
   font-family: 'Inter', 'Segoe UI', sans-serif;
   margin: 0;
   padding: 0;
   overflow: hidden;
+}
+
+/* I-1 (revisión final del PR 1 de tema, 2026-09-14): sin esta regla, el
+   placeholder de un input migrado sale del preflight de Tailwind
+   (gray-400 crudo, fijo en los dos temas) -- 2,54:1 sobre `hundido` claro,
+   falla AA 1.4.3. Una sola regla en @layer base, con el token texto-tenue
+   (>= 4,5:1 sobre hundido en los dos temas, ya en PARES): toda pantalla
+   migrada queda cubierta sin tocarla. `opacity: 1` porque Firefox aplica una
+   opacidad reducida a ::placeholder por defecto. Los placeholder-slate-* de
+   las pantallas sin migrar siguen ganando por especificidad de clase. */
+@layer base {
+  input::placeholder,
+  textarea::placeholder {
+    color: rgb(var(--texto-tenue));
+    opacity: 1;
+  }
 }
 
 * {
@@ -20,28 +39,18 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #1e293b;
+  background: rgb(var(--barra-pista));
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: rgb(var(--barra-pulgar));
   border-radius: 3px;
 }
 
-/* ===================== LIGHT MODE ===================== */
-
-html.light-mode body {
-  background-color: #f8fafc;
-  color: #0f172a;
-}
-
-html.light-mode ::-webkit-scrollbar-track {
-  background: #e2e8f0;
-}
-
-html.light-mode ::-webkit-scrollbar-thumb {
-  background: #94a3b8;
-}
+/* ===================== LIGHT MODE (capa vieja) =====================
+   Overrides clase por clase de las pantallas que TODAVÍA no migraron a tokens
+   (spec 2026-09-14-tema-tokens §8). Se achica en cada PR del rollout y se
+   borra entera en el PR 4. No agregar overrides nuevos: migrar a tokens. */
 
 /* Backgrounds */
 html.light-mode .bg-hal-bg { background-color: #f8fafc; }
@@ -117,9 +126,3 @@ html.light-mode .placeholder-slate-600::placeholder { color: #94a3b8; }
 
 /* Focus border */
 html.light-mode .focus\:border-blue-500:focus { border-color: #3b82f6; }
-
-/* Marca Axioma en modo claro (2026-09-12): #c9a84c sobre blanco no se lee;
-   se usa el dorado oscuro de la marca y uno más profundo para el nombre. */
-html.light-mode .text-oro { color: #7a5f24; }
-html.light-mode .text-oro-claro { color: #8a6d2f; }
-html.light-mode .text-oro-oscuro { color: #a08a55; }

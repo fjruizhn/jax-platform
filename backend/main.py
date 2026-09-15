@@ -65,6 +65,7 @@ from api.audit import router as audit_router
 from api.image import router as image_router
 from api.upload import router as upload_router
 from api.motors import router as motors_router
+from api.apariencia import router as apariencia_router
 from api.admin import (
     dashboard_router,
     keys_router,
@@ -146,6 +147,7 @@ app.include_router(models_router)
 app.include_router(facet_bindings_router)
 app.include_router(admin_motors_router)
 app.include_router(smtp_router)
+app.include_router(apariencia_router)
 
 
 # ws_hub and event_bus each guard their own state with their own lock, so a

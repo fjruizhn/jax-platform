@@ -15,6 +15,8 @@ vi.mock('../store/useJaxStore', () => ({
 
 import BarraUsuario from './BarraUsuario'
 import { I18nProvider } from '../i18n/index.jsx'
+import { useTema } from '../store/useTema'
+import { aplicarTema } from '../tema/aplicarTema'
 
 function renderBarra() {
   return render(
@@ -29,6 +31,10 @@ function renderBarra() {
 beforeEach(() => {
   logoutMock.mockReset()
   localStorage.clear()
+  // El store de tema es un módulo único: un test que toca el interruptor no
+  // puede dejarle el tema cambiado al siguiente.
+  useTema.setState({ theme: 'dark', predeterminado: null })
+  aplicarTema('dark')
   usuario = { email: 'fruiztorres@me.com', role: 'superadmin' }
 })
 

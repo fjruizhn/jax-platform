@@ -32,7 +32,7 @@ function renderLogin() {
 }
 
 function enviar() {
-  fireEvent.change(screen.getByPlaceholderText('fernando@rich-hn.com'), { target: { value: 'a@b.c' } })
+  fireEvent.change(screen.getByPlaceholderText('nombre@empresa.com'), { target: { value: 'a@b.c' } })
   fireEvent.change(screen.getByPlaceholderText('••••••••'), { target: { value: 'x' } })
   fireEvent.click(screen.getByText(/Entrar a Axioma/i))
 }
@@ -140,5 +140,31 @@ describe('Login -- recuperación de contraseña', () => {
     renderLogin()
     pedirRecuperacion()
     await waitFor(() => expect(screen.getByText(/Si el correo existe/i)).toBeInTheDocument())
+  })
+})
+
+// Placeholder del email genérico (2026-09-14, decisión de Fernando, Task 9):
+// antes era un correo real hardcodeado ("fernando@rich-hn.com"), que
+// filtraba un dato personal en el HTML servido a cualquier visitante.
+describe('Login -- placeholder del email', () => {
+  // M-3 (revisión final, 2026-09-14): sólo probar en es no prueba el origen
+  // i18n -- un placeholder="nombre@empresa.com" hardcodeado en Login.jsx
+  // pasaría igual. Se renderiza también en en y se exige en.emailPlaceholder
+  // (name@company.com); si es y en dieran el mismo valor, el render en en no
+  // probaría nada, así que también se exige que difieran.
+  it('el placeholder del email sale de i18n (es y en), no del correo real de Fernando', async () => {
+    const { default: es } = await import('../i18n/es.js')
+    const { default: en } = await import('../i18n/en.js')
+    expect(es.emailPlaceholder).not.toBe(en.emailPlaceholder)
+
+    const primero = renderLogin()
+    expect(screen.getByPlaceholderText(es.emailPlaceholder)).toBeInTheDocument()
+    expect(es.emailPlaceholder).not.toContain('rich-hn')
+    primero.unmount()
+
+    localStorage.setItem('jax_lang', 'en')
+    renderLogin()
+    expect(screen.getByPlaceholderText(en.emailPlaceholder)).toBeInTheDocument()
+    expect(en.emailPlaceholder).toBe('name@company.com')
   })
 })
