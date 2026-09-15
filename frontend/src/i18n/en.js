@@ -4,6 +4,8 @@ export default {
 
   // Left panel
   facets: 'Facets',
+  // Component's proper name (like killButton/eyeLasManosDown): same value in both languages.
+  lasManos: 'LAS MANOS',
   alive: 'online',
   down: 'offline',
 
