@@ -16,7 +16,7 @@ function ProgressBar({ steps, t }) {
         <span>{done}/{steps.length} {t.stepsLabel}</span>
         <span>{pct}%</span>
       </div>
-      <div className="h-1 bg-superficie rounded-full overflow-hidden">
+      <div className="h-1 bg-borde rounded-full overflow-hidden">
         <div
           className="h-full rounded-full bg-accion transition-all duration-500"
           style={{ width: `${pct}%` }}

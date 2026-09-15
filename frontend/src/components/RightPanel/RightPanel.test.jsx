@@ -125,3 +125,27 @@ describe('RightPanel -- status del pipeline traducido (M-2)', () => {
     expect(screen.getByText('a_new_backend_status')).toBeInTheDocument()
   })
 })
+
+// M-3 (Ruling 37, revisión final PR 3, 2026-09-14): la pista de la barra de
+// progreso usaba bg-superficie -- 1,05:1 contra bg-accion (el relleno) en
+// claro, casi invisible. bg-borde sí se distingue en los dos temas
+// (contraste.test.js::HalEye -- anillo del housing ya lo prueba para el
+// mismo par borde/fondo).
+describe('RightPanel -- pista de la barra de progreso (M-3)', () => {
+  it('la pista usa bg-borde, no bg-superficie', () => {
+    useJaxStore.setState({
+      activePipelines: {
+        p1: {
+          pipeline_id: 'p1-0000-0000',
+          name: 'probar',
+          status: 'running',
+          steps: [{ step_id: 's1', status: 'completed' }, { step_id: 's2', status: 'pending' }],
+        },
+      },
+    })
+    const { container } = renderPanel()
+    const pista = container.querySelector('.h-1')
+    expect(pista).toHaveClass('bg-borde')
+    expect(pista).not.toHaveClass('bg-superficie')
+  })
+})
