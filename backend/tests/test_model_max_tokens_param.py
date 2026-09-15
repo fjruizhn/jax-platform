@@ -288,3 +288,72 @@ def test_resolve_facet_carries_max_tokens_param_from_the_model_row(client):
         f"jekyll resolvio a {resolved.model!r} con "
         f"max_tokens_param={resolved.max_tokens_param!r}"
     )
+
+
+# --------------------------------------------------------------------------
+# PR-J (2026-09-14): deepseek-flash / deepseek-v4-pro, los modelos vigentes de
+# DeepSeek tras retirar deepseek-v4-flash (jekyll caida desde 2026-09-12).
+# --------------------------------------------------------------------------
+
+_DEEPSEEK_VIGENTES = ("deepseek-flash", "deepseek-v4-pro")
+
+
+async def _commit(sql, params=()):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql, params)
+        await conn.commit()
+
+
+def test_seed_declara_max_tokens_para_los_deepseek_vigentes():
+    """Doc oficial (api-docs.deepseek.com, 2026-09-14): el parametro es
+    'max_tokens' -- no existe 'max_completion_tokens' en esa API."""
+    seeded = {(p, m): v for p, m, v in _MODEL_MAX_TOKENS_PARAM_SEED}
+    for model_id in _DEEPSEEK_VIGENTES:
+        assert seeded[("deepseek", model_id)] == "max_tokens", model_id
+
+
+def test_seed_siembra_los_deepseek_vigentes_en_la_db_sin_pisar_valores(client):
+    """La migracion arregla la fila que dejo a jekyll caida: una fila de
+    deepseek-flash en NULL queda con 'max_tokens' tras el seed; una con un
+    valor puesto a mano no se pisa (guard WHERE ... IS NULL)."""
+    insertadas = []
+    for model_id in _DEEPSEEK_VIGENTES:
+        if not client.portal.call(
+            _fetch, "SELECT id FROM model WHERE provider_id='deepseek' AND model_id=%s", (model_id,),
+        ):
+            client.portal.call(
+                _commit,
+                "INSERT INTO model (provider_id, model_id, source, source_checked_at) "
+                "VALUES ('deepseek', %s, 'provider_api', NOW())", (model_id,),
+            )
+            insertadas.append(model_id)
+    try:
+        client.portal.call(
+            _commit,
+            "UPDATE model SET max_tokens_param=NULL WHERE provider_id='deepseek' AND model_id='deepseek-flash'",
+        )
+        client.portal.call(
+            _commit,
+            "UPDATE model SET max_tokens_param='max_completion_tokens' "
+            "WHERE provider_id='deepseek' AND model_id='deepseek-v4-pro'",
+        )
+        client.portal.call(_run_seed)
+        (flash,), = client.portal.call(
+            _fetch, "SELECT max_tokens_param FROM model WHERE provider_id='deepseek' AND model_id='deepseek-flash'")
+        (pro,), = client.portal.call(
+            _fetch, "SELECT max_tokens_param FROM model WHERE provider_id='deepseek' AND model_id='deepseek-v4-pro'")
+        assert flash == "max_tokens"
+        assert pro == "max_completion_tokens", "el seed piso un valor puesto a mano"
+    finally:
+        for model_id in _DEEPSEEK_VIGENTES:
+            if model_id in insertadas:
+                client.portal.call(
+                    _commit, "DELETE FROM model WHERE provider_id='deepseek' AND model_id=%s", (model_id,))
+            else:
+                client.portal.call(
+                    _commit, "UPDATE model SET max_tokens_param=NULL "
+                    "WHERE provider_id='deepseek' AND model_id=%s", (model_id,))
+        client.portal.call(_run_seed)

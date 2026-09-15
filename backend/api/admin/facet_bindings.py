@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
+from contrato_dispatch import detalle_si_rompe_el_contrato
 from db.connection import get_pool
 
 router = APIRouter(prefix="/api/admin/facet-bindings")
@@ -102,6 +103,15 @@ async def update_facet_binding(
             await cur.execute("SELECT `key` FROM facet WHERE `key`=%s", (facet_key,))
             if not await cur.fetchone():
                 raise HTTPException(status_code=404, detail=f"Faceta '{facet_key}' no existe")
+
+            # 2026-09-14 (PR-J): mismo chequeo que approve_proposal, el otro
+            # escritor de facet_binding -- el modelo destino tiene que cumplir
+            # el contrato de dispatch del transporte de la faceta, o 409 y el
+            # binding no cambia. Un model_ref inexistente sigue cayendo en la
+            # FK de abajo (400), como siempre.
+            detalle = await detalle_si_rompe_el_contrato(cur, facet_key, req.model_ref)
+            if detalle is not None:
+                raise HTTPException(status_code=409, detail=detalle)
 
             try:
                 await cur.execute(
