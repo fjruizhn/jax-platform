@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useI18n } from '../../i18n/index.jsx'
+import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { colorToken, tokenDeFaceta } from '../../tema/tokens'
 
@@ -51,7 +51,7 @@ function SimpleBarChart({ labels, datasets }) {
 }
 
 export default function AdminCosts() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [period, setPeriod] = useState('day')
   const [data, setData] = useState(null)
 
@@ -103,8 +103,11 @@ export default function AdminCosts() {
                         style={{ color: colorToken(tokenDeFaceta(r.facet)), borderColor: colorToken(tokenDeFaceta(r.facet), 0.4) }}>{r.facet}</span>
                     </td>
                     <td className="px-4 py-3 text-xs text-texto-suave font-mono">{r.model}</td>
-                    <td className="px-4 py-3 text-xs text-texto">{r.tokens_in.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-xs text-texto">{r.tokens_out.toLocaleString()}</td>
+                    {/* Re-revisión acotada (2026-09-15, sin diferidos): sin locale,
+                        estos números seguían el locale del navegador, no el idioma
+                        activo de la app -- mismo defecto que I-1 en las fechas. */}
+                    <td className="px-4 py-3 text-xs text-texto">{r.tokens_in.toLocaleString(localeFor(lang))}</td>
+                    <td className="px-4 py-3 text-xs text-texto">{r.tokens_out.toLocaleString(localeFor(lang))}</td>
                     <td className="px-4 py-3 text-xs text-exito font-mono">
                       {r.cost_usd === null ? (
                         <span className="text-texto-tenue" title={t.adminCostsNoPricing}>{t.adminCostsNoPricing}</span>
