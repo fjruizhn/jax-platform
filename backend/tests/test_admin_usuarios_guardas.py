@@ -307,3 +307,91 @@ def test_una_pestana_ws_abierta_se_cierra_con_4001_al_desactivar_al_usuario(clie
         while mensaje["type"] == "websocket.send":
             mensaje = sock.receive()
         assert (mensaje["type"], mensaje.get("code")) == ("websocket.close", 4001)
+
+
+# ------------------------- fix ronda 1: concurrencia y corte tolerante
+
+def test_degradacion_mutua_concurrente_no_da_deadlock_uno_gana_y_el_otro_409(client, usuarios, monkeypatch):
+    """A degrada a B y B degrada a A, a la vez, en dos transacciones reales.
+    Antes: cada una bloqueaba su destino y después pedía el del otro (el
+    FOR UPDATE del conteo) -> InnoDB 1213 -> 500. Ahora los bloqueos se toman
+    en orden fijo: uno gana y el otro ve el resultado y responde 409.
+
+    Mundo de dos superadmins: user 1 (y los de otros tests) también son
+    superadmins activos en jax_memory_test y no se tocan, así que el conteo
+    se restringe a la pareja — pero SIEMPRE después de ejecutar la consulta
+    real, con sus bloqueos reales. La barrera espera a que las dos lleguen al
+    punto de decisión (o 1,5 s, si el orden fijo deja a una esperando antes)."""
+    from starlette.requests import Request
+
+    from auth.models import AuthUser
+
+    a, _ = usuarios(role="superadmin")
+    b, _ = usuarios(role="superadmin")
+    conteo_real = users_mod.otros_superadmins_activos
+
+    async def en_un_mundo_de_dos(cur, excluido):
+        await conteo_real(cur, excluido)
+        await cur.execute(
+            "SELECT user_id FROM jax_users WHERE role = 'superadmin' AND status = 'active' "
+            "AND user_id IN (%s, %s) AND user_id <> %s FOR UPDATE", (a, b, excluido))
+        return len(await cur.fetchall())
+
+    llegadas, todas = [], asyncio.Event()
+    invariante_real = users_mod.exigir_invariante
+
+    async def con_barrera(*args):
+        llegadas.append(1)
+        if len(llegadas) == 2:
+            todas.set()
+        try:
+            await asyncio.wait_for(todas.wait(), timeout=1.5)
+        except asyncio.TimeoutError:  # fail-soft: con el orden fijo la otra transacción espera ANTES de este punto; la barrera no puede exigir que llegue
+            pass
+        return await invariante_real(*args)
+
+    monkeypatch.setattr(users_mod, "otros_superadmins_activos", en_un_mundo_de_dos)
+    monkeypatch.setattr(users_mod, "exigir_invariante", con_barrera)
+
+    def pedido():
+        return Request({"type": "http", "method": "PUT", "path": "/", "headers": [], "client": ("testclient", 1)})
+
+    async def ambos():
+        return await asyncio.gather(
+            users_mod.update_user(b, users_mod.UpdateUserRequest(role="operator"), pedido(),
+                                  AuthUser(user_id=str(a), tenant_id="1", role="superadmin")),
+            users_mod.update_user(a, users_mod.UpdateUserRequest(role="operator"), pedido(),
+                                  AuthUser(user_id=str(b), tenant_id="1", role="superadmin")),
+            return_exceptions=True)
+
+    resultados = client.portal.call(ambos)
+    inesperados = [r for r in resultados if isinstance(r, Exception) and not isinstance(r, HTTPException)]
+    assert inesperados == [], f"nada de 500 (deadlock): {inesperados!r}"
+    ok = [r for r in resultados if r == {"ok": True}]
+    rechazos = [(r.status_code, r.detail) for r in resultados if isinstance(r, HTTPException)]
+    assert (len(ok), rechazos) == (1, [(409, "ultimo_superadmin")]), resultados
+    roles = sorted(client.portal.call(_fila, u)[0] for u in (a, b))
+    assert roles == ["operator", "superadmin"], "queda exactamente un superadmin de la pareja"
+
+
+def test_si_cortar_conexiones_falla_el_cambio_confirmado_responde_igual(client, usuarios, monkeypatch):
+    async def revienta(user_id, code=4001):
+        raise RuntimeError("hub caído")
+
+    monkeypatch.setattr(ws_hub, "close_user", revienta)
+    monkeypatch.setattr(users_mod, "close_user_streams", revienta)
+    o, _ = usuarios()
+    assert _put(client, o, status="inactive").status_code == 200
+    assert client.portal.call(_fila, o) == ("operator", "inactive", 1)
+    p, _ = usuarios()
+    assert client.delete(f"/api/admin/users/{p}", headers=_admin()).status_code == 200
+    assert client.portal.call(_fila, p) is None
+
+
+async def test_transaccion_rechaza_un_nivel_de_aislamiento_fuera_de_la_lista():
+    """El nivel va interpolado en `SET TRANSACTION`: lista cerrada, y falla
+    antes de pedir una conexión."""
+    from db.transaccion import transaccion
+    with pytest.raises(ValueError):
+        async with transaccion("SERIALIZABLE; DROP TABLE jax_users"):
+            pass

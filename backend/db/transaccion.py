@@ -9,11 +9,21 @@ from contextlib import asynccontextmanager
 
 from .connection import get_pool
 
+# `aislamiento` (fix ronda 1 de la Task 2, 2026-09-15): nivel para ESTA
+# transacción sola (`SET TRANSACTION`, sin SESSION: la conexión vuelve al pool
+# con el nivel por defecto). Lista cerrada: el valor va interpolado en el SQL.
+AISLAMIENTOS = frozenset({"READ COMMITTED", "REPEATABLE READ"})
+
 
 @asynccontextmanager
-async def transaccion():
+async def transaccion(aislamiento: str | None = None):
+    if aislamiento is not None and aislamiento not in AISLAMIENTOS:
+        raise ValueError(f"nivel de aislamiento desconocido: {aislamiento!r}")
     pool = await get_pool()
     async with pool.acquire() as conn:
+        if aislamiento is not None:
+            async with conn.cursor() as cur:
+                await cur.execute(f"SET TRANSACTION ISOLATION LEVEL {aislamiento}")
         await conn.begin()
         try:
             async with conn.cursor() as cur:

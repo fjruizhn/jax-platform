@@ -1,3 +1,5 @@
+import logging
+
 import bcrypt
 from tiempo import utc_ahora
 from typing import Optional
@@ -13,6 +15,8 @@ from auth.models import AuthUser
 from db.connection import get_pool
 from db.transaccion import transaccion
 from jax_engine.websocket_hub import ws_hub
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin")
 
@@ -46,19 +50,43 @@ def pierde_superadmin_activo(rol_actual: str, estado_actual: str, nuevo_rol: str
         nuevo_rol != "superadmin" or nuevo_estado != "active")
 
 
-# FOR UPDATE, dentro de la transacción del cambio: dos admins que se degradan
-# mutuamente a la vez se serializan acá, y el segundo ve el resultado del
-# primero. Filtra por idx_jax_users_role_status; verificado con EXPLAIN en
-# tests/test_user_audit.py::test_conteo_de_superadmins_usa_el_indice_role_status.
-SQL_OTROS_SUPERADMINS_ACTIVOS = (
+# ORDEN FIJO DE BLOQUEOS (fix ronda 1, 2026-09-15). Toda escritura de admin
+# sobre jax_users bloquea PRIMERO el conjunto de superadmins activos (esta
+# consulta) y DESPUÉS la fila destino (_leer_para_actualizar). Antes cada
+# transacción bloqueaba su destino y luego pedía el conjunto: A degradando a B
+# y B degradando a A se esperaban en orden opuesto -> InnoDB 1213 -> 500. Con
+# el conjunto primero, la segunda espera en la primera fila del conjunto sin
+# tener nada tomado, y al entrar ve (lectura con bloqueo = lectura actual) el
+# resultado de la primera -> 409 ultimo_superadmin. InnoDB bloquea en el orden
+# del recorrido: por idx_jax_users_role_status, cuya cola es la PK, o sea por
+# user_id (el ORDER BY lo documenta y no agrega filesort). Verificado con
+# EXPLAIN en tests/test_user_audit.py::test_conteo_de_superadmins_usa_el_indice_role_status.
+#
+# READ COMMITTED en esas transacciones: en REPEATABLE READ el FOR UPDATE del
+# rango toma next-key locks (fila + hueco), y la petición EN ESPERA de la
+# segunda transacción sobre el hueco choca con el INSERT de la entrada nueva
+# (operator, active, B) que hace el UPDATE de la primera en el índice -> 1213
+# igual, aun con orden fijo (medido: el test de degradación mutua lo reproducía).
+# READ COMMITTED bloquea solo filas. Sigue siendo correcto para la invariante:
+# un fantasma solo puede SUMAR superadmins; quitar uno exige una fila que ya
+# tenemos bloqueada.
+AISLAMIENTO_ADMIN = "READ COMMITTED"
+SQL_SUPERADMINS_ACTIVOS = (
     "SELECT user_id FROM jax_users WHERE role = 'superadmin' AND status = 'active' "
-    "AND user_id <> %s FOR UPDATE"
+    "ORDER BY user_id FOR UPDATE"
 )
 
 
+async def _bloquear_superadmins_activos(cur) -> list[int]:
+    await cur.execute(SQL_SUPERADMINS_ACTIVOS)
+    return [fila[0] for fila in await cur.fetchall()]
+
+
 async def otros_superadmins_activos(cur, excluido: int) -> int:
-    await cur.execute(SQL_OTROS_SUPERADMINS_ACTIVOS, (excluido,))
-    return len(await cur.fetchall())
+    # Misma consulta (y mismos bloqueos, ya tomados por _leer_para_actualizar
+    # en esta transacción): el destino se excluye acá, no en el SQL, para que
+    # el recorrido y el orden de bloqueo sean idénticos en los dos puntos.
+    return sum(1 for user_id in await _bloquear_superadmins_activos(cur) if user_id != excluido)
 
 
 async def exigir_invariante(cur, target_id: int, rol_actual: str, estado_actual: str,
@@ -69,6 +97,10 @@ async def exigir_invariante(cur, target_id: int, rol_actual: str, estado_actual:
 
 
 async def _leer_para_actualizar(cur, user_id: int):
+    # Orden fijo: el conjunto de superadmins activos antes que el destino,
+    # SIEMPRE (también si el destino no es superadmin: el costo es serializar
+    # las escrituras de admin, que son raras). Ver SQL_SUPERADMINS_ACTIVOS.
+    await _bloquear_superadmins_activos(cur)
     await cur.execute("SELECT role, status FROM jax_users WHERE user_id = %s FOR UPDATE", (user_id,))
     return await cur.fetchone()
 
@@ -76,9 +108,17 @@ async def _leer_para_actualizar(cur, user_id: int):
 async def _cortar_conexiones(user_id: int) -> None:
     """Step 4b (Ruling U5): cierra el WS (4001) y los streams SSE ya abiertos
     del usuario. Se llama DESPUÉS del commit, nunca dentro de la transacción:
-    un rollback no debe haber cortado sesiones."""
-    await ws_hub.close_user(str(user_id))
-    await close_user_streams(str(user_id))
+    un rollback no debe haber cortado sesiones. Cada canal por separado y
+    tolerante: el cambio ya está confirmado, así que un fallo acá no puede
+    volverse un 500 de algo que sí se hizo."""
+    try:
+        await ws_hub.close_user(str(user_id))
+    except Exception:  # fail-soft: el cambio ya está confirmado; cortar conexiones es best-effort (la sesión igual muere en el request siguiente por token_version)
+        logger.exception("No se pudieron cerrar los WebSocket del usuario %s", user_id)
+    try:
+        await close_user_streams(str(user_id))
+    except Exception:  # fail-soft: el cambio ya está confirmado; cortar conexiones es best-effort (el SSE reconecta y verificar_sesion lo rechaza)
+        logger.exception("No se pudieron cerrar los streams SSE del usuario %s", user_id)
 
 
 @router.get("/users")
@@ -160,7 +200,7 @@ async def update_user(
     if req.status is not None and req.status not in ESTADOS_EDITABLES:
         raise HTTPException(status_code=400, detail="estado_invalido")
     actor_id = int(user.user_id)
-    async with transaccion() as cur:
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
         actual = await _leer_para_actualizar(cur, user_id)
         if actual is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
@@ -206,7 +246,7 @@ async def delete_user(user_id: int, user: AuthUser = Depends(require_superadmin)
     # Sigue existiendo hasta la etapa 5 (que lo reemplaza por la baja). El
     # literal `user_id == 1` ya no está: lo reemplazan las guardas.
     guarda_auto_accion(int(user.user_id), user_id)
-    async with transaccion() as cur:
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
         actual = await _leer_para_actualizar(cur, user_id)
         if actual is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")

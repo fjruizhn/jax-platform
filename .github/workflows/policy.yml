@@ -681,7 +681,11 @@ jobs:
           # inválidos/password 422, conteo contra la base; DELETE sin literal) y 8 del
           # Step 4b (ws_hub.close_user ×3 y close_user_streams puros; PUT/DELETE cortan WS
           # y SSE tras el commit ×3; pestaña WS real cerrada con 4001). Medido: 768 / 1.
-          PISO_PASSED = 768
+          # Subido de 768 a 771 (2026-09-15, Task 2 fix ronda 1): +3 en
+          # test_admin_usuarios_guardas.py (degradación mutua concurrente sin deadlock -> 200 +
+          # 409; corte de conexiones que falla tras el commit sigue en 200; transaccion() rechaza
+          # un nivel de aislamiento fuera de la lista). Medido: 771 / 1.
+          PISO_PASSED = 771
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -994,7 +998,10 @@ jobs:
       # (guarda_auto_accion, pierde_superadmin_activo, ws_hub.close_user ×3,
       # close_user_streams); los otros 13 piden `client`.
       # Medido con JAX_CI_NO_DB=1: 361 / 408.
-      JAX_CI_MIN_PASSED: "361"
+      # Task 2 fix ronda 1 (2026-09-15): +1 puro (transaccion() rechaza un nivel de
+      # aislamiento fuera de la lista); los otros 2 piden `client`.
+      # Medido con JAX_CI_NO_DB=1: 362 / 410.
+      JAX_CI_MIN_PASSED: "362"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
