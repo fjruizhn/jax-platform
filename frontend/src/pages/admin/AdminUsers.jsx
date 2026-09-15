@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { useJaxStore } from '../../store/useJaxStore'
@@ -26,6 +26,18 @@ export default function AdminUsers() {
   const [editando, setEditando] = useState(null)
   const [historialDe, setHistorialDe] = useState(null)
   const [dandoDeBaja, setDandoDeBaja] = useState(null)
+  // Ruling U35 (WCAG 2.4.3, 2026-09-15): tras una baja exitosa, Dialogo
+  // devuelve el foco al botón "Dar de baja" de la fila, y load() borra esa
+  // fila: el foco caía a body. Se lleva a "+ Nuevo usuario". Va en un efecto
+  // (corre después de la limpieza de Dialogo, que restaura el foco al
+  // desmontarse) y se pide recién cuando load() terminó (la fila ya no está).
+  const botonNuevo = useRef(null)
+  const [enfocarNuevo, setEnfocarNuevo] = useState(false)
+  useEffect(() => {
+    if (!enfocarNuevo) return
+    botonNuevo.current?.focus()
+    setEnfocarNuevo(false)
+  }, [enfocarNuevo])
   // Ruling U25 (fix round 2, 2026-09-15): un solo modal a la vez -- antes
   // `editando` y `historialDe` eran independientes, y el fondo seguía
   // alcanzable con Tab detrás de un modal (sin `inert` ni trampa de foco), así
@@ -75,7 +87,7 @@ export default function AdminUsers() {
   }
 
   function load() {
-    api.get('/admin/users').then(r => setUsers(r.data.users)).catch(avisarError)
+    return api.get('/admin/users').then(r => setUsers(r.data.users)).catch(avisarError)
   }
 
   useEffect(() => { load() }, [])
@@ -139,7 +151,8 @@ export default function AdminUsers() {
       await api.post(`/admin/users/${u.user_id}/baja`)
       setDandoDeBaja(null)
       avisarExito(t.adminBajaDone(u.email))
-      load()
+      await load()
+      setEnfocarNuevo(true)
     } catch (err) {
       avisarError(err)
     }
@@ -156,6 +169,7 @@ export default function AdminUsers() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-xl font-bold text-texto-fuerte">{t.adminUsersTitle}</h1>
         <button
+          ref={botonNuevo}
           onClick={abrirCrear}
           className="px-3 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold transition-colors"
         >

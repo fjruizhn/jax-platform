@@ -323,3 +323,79 @@ describe('AdminUsers — baja y alta', () => {
     await waitFor(() => expect(actualizarMiEmailMock).toHaveBeenCalledWith(2, 'nuevo@x.io'))
   })
 })
+
+// Fix round 1 de la Task 4 (2026-09-15, review de 05b2200).
+function resolverSuma(dialogo) {
+  const [, a, b] = within(dialogo).getByText(/Resolvé \d+ \+ \d+ = \?/).textContent.match(/(\d+) \+ (\d+)/)
+  fireEvent.change(within(dialogo).getByRole('spinbutton'), { target: { value: String(Number(a) + Number(b)) } })
+}
+
+describe('AdminUsers — baja: foco, error, exclusión y correo propio (fix round 1)', () => {
+  beforeEach(() => servirGet([SUPERADMIN]))
+
+  // Ruling U35 (WCAG 2.4.3): Dialogo devuelve el foco al botón de la fila, y
+  // load() borra esa fila -- el foco caía a body. Va a "+ Nuevo usuario".
+  it('tras una baja exitosa el foco queda en "+ Nuevo usuario", no en body', async () => {
+    let dadoDeBaja = false
+    api.get.mockImplementation((url) => Promise.resolve(
+      url === '/admin/users' ? { data: { users: dadoDeBaja ? [] : [SUPERADMIN] } } : { data: { entries: HISTORIAL } }))
+    api.post.mockImplementation(() => { dadoDeBaja = true; return Promise.resolve({ data: { ok: true } }) })
+    renderUsers()
+    const disparador = await screen.findByRole('button', { name: 'Dar de baja' })
+    disparador.focus()
+    fireEvent.click(disparador)
+    const dialogo = screen.getByRole('dialog')
+    resolverSuma(dialogo)
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Dar de baja' }))
+    await waitFor(() => expect(screen.queryByText('b@x.io')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: '+ Nuevo usuario' })).toHaveFocus())
+    expect(document.activeElement).not.toBe(document.body)
+  })
+
+  it('si /baja falla (409 ultimo_superadmin) el diálogo sigue abierto, con el foco adentro, y el error sale traducido', async () => {
+    api.post.mockRejectedValue({ response: { status: 409, data: { detail: 'ultimo_superadmin' } } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Dar de baja' }))
+    const dialogo = screen.getByRole('dialog')
+    resolverSuma(dialogo)
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Dar de baja' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error', message: 'No se puede: tiene que quedar al menos un superadmin activo.',
+    }))
+    const sigue = screen.getByRole('dialog', { name: 'Dar de baja a b@x.io' })
+    await waitFor(() => expect(within(sigue).getByRole('button', { name: 'Dar de baja' })).toBeEnabled())
+    expect(sigue.contains(document.activeElement)).toBe(true)
+  })
+
+  it.each([
+    ['Editar', 'editar-usuario-titulo'],
+    ['Historial', 'historial-titulo'],
+    ['+ Nuevo usuario', null],
+  ])('con la baja abierta, abrir "%s" la cierra y deja un solo diálogo', async (boton, idTitulo) => {
+    renderUsers()
+    const botonBaja = await screen.findByRole('button', { name: 'Dar de baja' })
+    const otro = screen.getByRole('button', { name: boton })
+    fireEvent.click(botonBaja)
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    fireEvent.click(otro)
+    await waitFor(() => {
+      const dialogos = screen.getAllByRole('dialog')
+      expect(dialogos).toHaveLength(1)
+      expect(dialogos[0]).not.toHaveAttribute('aria-labelledby', 'confirmacion-suma-titulo')
+      if (idTitulo) expect(dialogos[0]).toHaveAttribute('aria-labelledby', idTitulo)
+    })
+  })
+
+  it('si el PUT del correo falla, el store no se entera (user.email no cambia)', async () => {
+    api.put.mockRejectedValue({ response: { status: 409, data: { detail: 'email_ya_existe' } } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar' }))
+    const dialogo = screen.getByRole('dialog')
+    fireEvent.change(within(dialogo).getByLabelText('Email'), { target: { value: 'otro@x.io' } })
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Guardar' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error', message: 'Ya existe un usuario con ese correo.',
+    }))
+    expect(actualizarMiEmailMock).not.toHaveBeenCalled()
+  })
+})

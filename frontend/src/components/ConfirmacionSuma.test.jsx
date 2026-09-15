@@ -57,3 +57,22 @@ describe('ConfirmacionSuma', () => {
     expect(onConfirmar).not.toHaveBeenCalled()
   })
 })
+
+// Fix round 1 de la Task 4: con la primera confirmación en vuelo, ni un
+// segundo clic ni un segundo submit (Enter) vuelven a confirmar.
+describe('ConfirmacionSuma -- doble envío', () => {
+  it('mientras confirma, otro clic u otro submit no llaman de nuevo a onConfirmar', async () => {
+    let resolver
+    const onConfirmar = vi.fn(() => new Promise((r) => { resolver = r }))
+    renderSuma({ onConfirmar })
+    fireEvent.change(screen.getByLabelText('Resolvé 12 + 7 = ?'), { target: { value: '19' } })
+    const boton = screen.getByRole('button', { name: 'Dar de baja' })
+    fireEvent.click(boton)
+    fireEvent.click(boton)
+    fireEvent.submit(boton.closest('form'))
+    fireEvent.submit(boton.closest('form'))
+    expect(onConfirmar).toHaveBeenCalledTimes(1)
+    resolver()
+    await waitFor(() => expect(boton).toBeEnabled())
+  })
+})

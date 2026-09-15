@@ -360,8 +360,17 @@ jobs:
             // +2 useJaxStore.test.js (actualizarMiEmail: el correo propio
             // cambia user.email; el de otro no). Vistos en rojo antes de verde.
             // Medido con vitest run: 329 passed en 48 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 329) {
-              console.error("PISO ROTO: se esperaban 329 tests de vitest CORRIDOS y 0 fallidos.");
+            // 329 -> 336 el 2026-09-15 (fix round 1 de la Task 4 de la etapa
+            // 5): +6 AdminUsers.test.jsx (tras la baja el foco va a "+ Nuevo
+            // usuario", Ruling U35; /baja con 409 deja el diálogo abierto con
+            // el foco adentro y el toast traducido; con la baja abierta, Editar,
+            // Historial y "+ Nuevo usuario" la cierran -- 3 casos; un PUT de
+            // correo fallido no toca el store) +1 ConfirmacionSuma.test.jsx
+            // (doble clic / doble submit en vuelo confirman una sola vez). El
+            // de foco visto en rojo; los otros, en rojo bajo su mutación.
+            // Medido con vitest run: 336 passed en 48 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 336) {
+              console.error("PISO ROTO: se esperaban 336 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
