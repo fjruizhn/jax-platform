@@ -336,18 +336,28 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
         settings = await smtp_config.cargar_settings()
     except smtp_config.SmtpNoDisponible as exc:
         raise HTTPException(status_code=503, detail=exc.codigo) from exc
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("SELECT email, status FROM jax_users WHERE user_id = %s AND status <> 'deleted'", (user_id,))
-            fila = await cur.fetchone()
-    if fila is None:
-        raise HTTPException(status_code=404, detail="usuario_no_encontrado")
-    email, estado = fila
-    if estado != "active":
-        raise HTTPException(status_code=409, detail="usuario_no_activo")
     ip = _ip(request)
-    token, enlace = await auth_api._crear_enlace_de_recuperacion(user_id, ip)
+    # Ruling U31 (etapa 5, Task 3 fix ronda 1, 2026-09-15): la lectura del
+    # usuario y el token van en UNA transacción, con la fila bloqueada por PK.
+    # Antes se leía sin bloqueo y el token se creaba en otra conexión: una baja
+    # confirmada en ese hueco dejaba un enlace vivo para un dado de baja. Ahora
+    # la baja o confirma antes (404) o espera esta fila y, al entrar, borra el
+    # token recién creado. Orden usuario -> token: sufijo del de la baja
+    # (superadmins -> usuario -> token) y el de /reset-password (U21); no hace
+    # falta el conjunto de superadmins (no se decide ningún invariante acá).
+    # El envío va DESPUÉS del commit: nunca se retiene una fila durante SMTP.
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        await cur.execute(
+            "SELECT email, status FROM jax_users WHERE user_id = %s AND status <> 'deleted' FOR UPDATE",
+            (user_id,),
+        )
+        fila = await cur.fetchone()
+        if fila is None:
+            raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+        email, estado = fila
+        if estado != "active":
+            raise HTTPException(status_code=409, detail="usuario_no_activo")
+        token, enlace = await auth_api._crear_enlace_de_recuperacion(cur, user_id, ip)
     # Mismo juego de excepciones que /smtp/test (etapa 1, api/admin/smtp.py):
     # ValueError ANTES que (OSError, SMTPException), y UnicodeEncodeError
     # ANTES que ValueError -- es subclase suya (smtplib codifica el AUTH en

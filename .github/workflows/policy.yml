@@ -884,7 +884,17 @@ jobs:
           # rojo (405, AttributeError, 409 usuario_no_activo, token vivo) antes de verde;
           # mutaciones capturadas: corte dentro de la transacción, sin token_version+1,
           # ORDER BY email. Medido dos veces: 835 / 1.
-          PISO_PASSED = 835
+          # Subido de 835 a 842 (2026-09-15, etapa 5, Task 3 fix ronda 1, Rulings U31 y
+          # U32): +7 en test_admin_usuarios_baja.py. U31 (+4): baja colada antes del token
+          # del enlace de admin sin token vivo, enlace de admin y baja concurrentes sin
+          # deadlock, baja entre la búsqueda y el token del forgot-password sin token ni
+          # correo, forgot-password y baja concurrentes sin deadlock. U32 (+2): el correo
+          # renombrado no es válido (puro) y el alta/PUT con él dan 400 email_invalido.
+          # Más +1: la baja libera el correo también para el PUT de otro. Vistos en rojo
+          # (token vivo x3, `assert not True`, alta 200) antes de verde; mutaciones
+          # capturadas: sin FOR UPDATE en send_reset_link, sin el re-bloqueo por PK en
+          # _procesar_recuperacion, baja sin renombrar. Medido dos veces: 842 / 1.
+          PISO_PASSED = 842
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1238,7 +1248,11 @@ jobs:
       # piden `client` y se saltean, y el test borrado del DELETE en
       # test_admin_usuarios_guardas.py también pedía `client` (+11 -1 = +10 skips).
       # Medido dos veces con JAX_CI_NO_DB=1: 370 / 466.
-      JAX_CI_MIN_PASSED: "370"
+      # Task 3 fix ronda 1 (2026-09-15, Rulings U31 y U32): +1 puro
+      # (test_un_correo_renombrado_por_la_baja_no_es_un_correo_valido); los otros 6
+      # nuevos de test_admin_usuarios_baja.py piden `client` y se saltean.
+      # Medido dos veces con JAX_CI_NO_DB=1: 371 / 472.
+      JAX_CI_MIN_PASSED: "371"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

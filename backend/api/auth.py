@@ -278,28 +278,33 @@ async def forgot_password(req: ForgotPasswordRequest, request: Request, backgrou
     return {"ok": True, "message": _MENSAJE_RECUPERACION}
 
 
-async def _crear_enlace_de_recuperacion(user_id: int, client_ip: str) -> tuple[str, str]:
+async def _crear_enlace_de_recuperacion(cur, user_id: int, client_ip: str) -> tuple[str, str]:
     """Invalida los tokens pendientes del usuario, crea uno nuevo (1 hora) y
     devuelve (token, enlace). Lo comparten el forgot-password público
     (_procesar_recuperacion) y el reset por admin (etapa 4,
     api/admin/users.py::send_reset_link). Devolver también el token (fix
     ronda 1, 2026-09-15, U17): si el envío falla, quien llama borra ESE token
     por valor exacto -- no por user_id, que también borraría un token de un
-    forgot-password concurrente del mismo usuario."""
+    forgot-password concurrente del mismo usuario.
+
+    Ruling U31 (etapa 5, Task 3 fix ronda 1, 2026-09-15): corre en el cursor
+    de QUIEN LLAMA, dentro de su transacción y con la fila del usuario YA
+    bloqueada por PK (FOR UPDATE). No abre conexión propia. Antes abría otra
+    conexión en autocommit: entre la lectura del estado y este INSERT, una
+    baja podía confirmar y el token quedaba vivo para un dado de baja. Con la
+    fila bloqueada, la baja espera y, al entrar, borra este token pendiente.
+    Orden usuario -> token: el mismo de la baja y de /reset-password (U21)."""
     token = str(uuid.uuid4())
     expires_at = utc_ahora() + timedelta(hours=1)
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE",
-                (user_id,),
-            )
-            await cur.execute(
-                "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
-                "VALUES (%s, %s, %s, %s)",
-                (user_id, token, expires_at, client_ip),
-            )
+    await cur.execute(
+        "DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE",
+        (user_id,),
+    )
+    await cur.execute(
+        "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
+        "VALUES (%s, %s, %s, %s)",
+        (user_id, token, expires_at, client_ip),
+    )
     frontend_origin = os.getenv("FRONTEND_ORIGIN", "https://axioma-ia.io")
     return token, f"{frontend_origin}/reset-password?token={token}"
 
@@ -332,7 +337,28 @@ async def _procesar_recuperacion(email: str, client_ip: str) -> None:
                          exc.codigo, getattr(exc, "motivo", "-"))
             return
 
-        _token, reset_link = await _crear_enlace_de_recuperacion(user_id, client_ip)
+        # U31 (etapa 5, Task 3 fix ronda 1, 2026-09-15): la búsqueda de arriba
+        # no bloquea, y una baja pudo confirmar desde entonces (por ejemplo,
+        # mientras se cargaban los ajustes SMTP). Se RE-BLOQUEA la fila POR PK
+        # y se crea el token en la MISMA transacción; el correo sale después
+        # del commit, al email releído bajo el bloqueo. Si ya no está activa,
+        # se termina en silencio (la respuesta pública ya salió, neutra).
+        #
+        # Por PK y NUNCA por el índice de email: la baja bloquea la PK y
+        # DESPUÉS reescribe la entrada de email en el índice secundario (el
+        # renombre del correo). Un FOR UPDATE por email tomaría primero esa
+        # entrada y luego esperaría la PK -- orden opuesto al de la baja ->
+        # ciclo -> InnoDB 1213.
+        async with transaccion() as cur:
+            await cur.execute(
+                "SELECT email FROM jax_users WHERE user_id = %s AND status = 'active' FOR UPDATE",
+                (user_id,),
+            )
+            vigente = await cur.fetchone()
+            if vigente is None:
+                return
+            (email_guardado,) = vigente
+            _token, reset_link = await _crear_enlace_de_recuperacion(cur, user_id, client_ip)
         # smtplib es bloqueante: a un hilo, nunca en el event loop.
         await asyncio.to_thread(_send_reset_email, settings, email_guardado, reset_link)
     except Exception:  # fail-soft: corre después de responder; no hay a quién devolverle el error, queda en el log
