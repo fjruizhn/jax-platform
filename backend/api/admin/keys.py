@@ -14,12 +14,16 @@ router = APIRouter(prefix="/api/admin")
 
 ENV_PATH = "/etc/jax/.env"
 
+# Sin modelo (PR-L ronda 2, 2026-09-14): el modelo de cada faceta sale SOLO de
+# facet_binding (_get_binding_models_batch). Los literales que vivían acá
+# (gpt-4o, kimi-k2.7-code, glm-5.2...) eran el último recurso de /keys, ya
+# desfasados con la semilla; sin binding la respuesta trae model=None.
 PROVIDERS = [
-    {"id": "openai",    "name": "OpenAI",    "facet": "thot",   "model": "gpt-4o",           "env_key": "OPENAI_API_KEY",   "test_url": "https://api.openai.com/v1/models"},
-    {"id": "deepseek",  "name": "DeepSeek",  "facet": "jekyll", "model": "deepseek-v4-flash", "env_key": "DEEPSEEK_API_KEY", "test_url": "https://api.deepseek.com/v1/models"},
-    {"id": "gemini",    "name": "Gemini",    "facet": "hipatia","model": "gemini-2.5-flash",  "env_key": "GEMINI_API_KEY",   "test_url": None},
-    {"id": "moonshot",  "name": "Moonshot",  "facet": "kimi",   "model": "kimi-k2.7-code",   "env_key": "KIMI_API_KEY",     "test_url": "https://api.moonshot.ai/v1/models"},
-    {"id": "zhipu",     "name": "Z.ai",      "facet": "ada",    "model": "glm-5.2",            "env_key": "ZAI_API_KEY",      "test_url": "https://api.z.ai/api/paas/v4/models"},
+    {"id": "openai",    "name": "OpenAI",    "facet": "thot",   "env_key": "OPENAI_API_KEY",   "test_url": "https://api.openai.com/v1/models"},
+    {"id": "deepseek",  "name": "DeepSeek",  "facet": "jekyll", "env_key": "DEEPSEEK_API_KEY", "test_url": "https://api.deepseek.com/v1/models"},
+    {"id": "gemini",    "name": "Gemini",    "facet": "hipatia","env_key": "GEMINI_API_KEY",   "test_url": None},
+    {"id": "moonshot",  "name": "Moonshot",  "facet": "kimi",   "env_key": "KIMI_API_KEY",     "test_url": "https://api.moonshot.ai/v1/models"},
+    {"id": "zhipu",     "name": "Z.ai",      "facet": "ada",    "env_key": "ZAI_API_KEY",      "test_url": "https://api.z.ai/api/paas/v4/models"},
 ]
 
 _PROVIDER_MAP = {p["id"]: p for p in PROVIDERS}
@@ -105,27 +109,12 @@ async def _get_db_keys_batch(pool, user_id: int, provider_ids: list) -> dict:
     return {provider_id: decrypt_db_secret(encrypted) for provider_id, encrypted in rows}
 
 
-async def _get_active_models_batch(pool, facets: list) -> dict:
-    if not facets:
-        return {}
-    placeholders = ", ".join(["%s"] * len(facets))
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT facet, model_name FROM facet_models "
-                f"WHERE facet IN ({placeholders}) AND is_active = TRUE",
-                tuple(facets),
-            )
-            rows = await cur.fetchall()
-    return {facet: model_name for facet, model_name in rows}
-
-
 async def _get_binding_models_batch(pool, facets: list) -> dict:
     """Bloque D (D0/D1.5) — fuente real post-Bloque-C: facet_binding/model,
     la MISMA que usan REPL/Mesa web/Jacobs via facet_resolver.py. Cierra el
     bug de admin/keys.py:18 (PROVIDERS['model']='gpt-4o' hardcodeado para
-    thot, real gpt-5.5): esta consulta gana sobre facet_models (legacy) y
-    sobre el literal, sin tocar ninguna de las dos."""
+    thot, real gpt-5.5). Desde PR-L ronda 2 es la UNICA fuente: el fallback
+    a facet_models (legacy) y al literal se eliminaron."""
     if not facets:
         return {}
     placeholders = ", ".join(["%s"] * len(facets))
@@ -147,20 +136,15 @@ async def list_keys(user: AuthUser = Depends(require_superadmin)):
     await _seed_keys_from_env(pool, user_id=1)
 
     keys_by_provider = await _get_db_keys_batch(pool, user_id=1, provider_ids=[p["id"] for p in PROVIDERS])
-    models_by_facet = await _get_active_models_batch(pool, facets=[p["facet"] for p in PROVIDERS])
     binding_models_by_facet = await _get_binding_models_batch(pool, facets=[p["facet"] for p in PROVIDERS])
 
     result = []
     for p in PROVIDERS:
         raw = keys_by_provider.get(p["id"], "")
-        # Orden de preferencia: facet_binding (Bloque C/D, fuente real y
-        # actual) > facet_models (legacy) > literal hardcodeado (ultimo
-        # recurso, sabido stale — ver D0).
-        model = (
-            binding_models_by_facet.get(p["facet"])
-            or models_by_facet.get(p["facet"])
-            or p["model"]
-        )
+        # SOLO facet_binding (PR-L ronda 2): ni facet_models (legacy, ya no
+        # la lee ningún dispatch) ni un literal. Sin binding, None: "sin dato"
+        # es la verdad, un nombre de modelo inventado no.
+        model = binding_models_by_facet.get(p["facet"])
         result.append({
             "id": p["id"],
             "name": p["name"],
