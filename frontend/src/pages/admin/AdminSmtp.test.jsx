@@ -96,7 +96,7 @@ describe('AdminSmtp', () => {
     const estado = await screen.findByRole('status')
     await waitFor(() => expect(estado).toHaveTextContent(es.smtpSaved))
     expect(estado).toHaveTextContent(es.smtpReloadFailed)
-    expect(estado.className).toContain('text-green-400')
+    expect(estado.className).toContain('text-exito')
   })
 
   it('el banner de estado corrupto es una sola frase de i18n, sin puntuación agregada', async () => {

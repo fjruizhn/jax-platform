@@ -17,8 +17,8 @@ const MASCARA = '••••••••'
 const PUERTO_POR_CIFRADO = { none: 25, tls: 587, ssl: 465 }
 const VACIO = { host: '', port: 587, encryption: 'tls', user: '', password: '', from_name: '', from_email: '', test_to: '' }
 const DIALOGO_CERRADO = { abierto: false, to: '', error: null }
-const INPUT = 'w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500'
-const LABEL = 'block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider'
+const INPUT = 'w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco'
+const LABEL = 'block text-xs text-texto-suave mb-1 font-semibold uppercase tracking-wider'
 const BOTON = 'px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50'
 
 export default function AdminSmtp() {
@@ -146,11 +146,11 @@ export default function AdminSmtp() {
 
   return (
     <div>
-      <h1 className="text-xl font-bold text-slate-100 mb-1">{t.smtpTitle}</h1>
-      <p className="text-xs text-slate-500 mb-6">{t.smtpDesc}</p>
+      <h1 className="text-xl font-bold text-texto-fuerte mb-1">{t.smtpTitle}</h1>
+      <p className="text-xs text-texto-tenue mb-6">{t.smtpDesc}</p>
 
       {estado.corrupta && (
-        <div role="alert" className="max-w-lg mb-4 text-sm text-red-400 bg-red-900/30 border border-red-800 rounded-lg px-3 py-2">
+        <div role="alert" className="max-w-lg mb-4 text-sm text-peligro bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2">
           {t.smtpCorruptBanner(motivoLegible(estado.motivo))}
         </div>
       )}
@@ -174,7 +174,7 @@ export default function AdminSmtp() {
             <option value="none">{t.smtpEncNone}</option>
           </select>
           {form.encryption === 'none' && (
-            <p className="mt-1 text-xs text-red-400 bg-red-900/30 border border-red-800 rounded-lg px-3 py-2">{t.smtpEncNoneWarning}</p>
+            <p className="mt-1 text-xs text-peligro bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2">{t.smtpEncNoneWarning}</p>
           )}
         </div>
         <div>
@@ -184,7 +184,7 @@ export default function AdminSmtp() {
         <div>
           <label className={LABEL} htmlFor="smtp-pass">{t.smtpPassword}</label>
           <PasswordInput id="smtp-pass" className={INPUT} value={form.password} onChange={(e) => set('password', e.target.value)} autoComplete="new-password" />
-          {form.password === MASCARA && <p className="mt-1 text-xs text-slate-500">{t.smtpPasswordHint}</p>}
+          {form.password === MASCARA && <p className="mt-1 text-xs text-texto-tenue">{t.smtpPasswordHint}</p>}
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -199,39 +199,39 @@ export default function AdminSmtp() {
         <div>
           <label className={LABEL} htmlFor="smtp-test-to-default">{t.smtpTestToDefault}</label>
           <input id="smtp-test-to-default" type="email" className={INPUT} value={form.test_to} onChange={(e) => set('test_to', e.target.value)} autoComplete="off" />
-          <p className="mt-1 text-xs text-slate-500">{t.smtpTestToHint}</p>
+          <p className="mt-1 text-xs text-texto-tenue">{t.smtpTestToHint}</p>
         </div>
 
         {resultado && (
-          <div role="status" className={`text-sm rounded-lg px-3 py-2 border ${resultado.ok ? 'text-green-400 bg-green-900/30 border-green-800' : 'text-red-400 bg-red-900/30 border-red-800'}`}>
+          <div role="status" className={`text-sm rounded-lg px-3 py-2 border ${resultado.ok ? 'text-exito bg-exito-fondo border-exito-borde' : 'text-peligro bg-peligro-fondo border-peligro-borde'}`}>
             {resultado.texto}
           </div>
         )}
 
         <div className="flex flex-wrap gap-2 pt-2">
-          <button type="submit" disabled={ocupado !== null} className={`${BOTON} bg-purple-600 hover:bg-purple-700 text-white`}>
+          <button type="submit" disabled={ocupado !== null} className={`${BOTON} bg-acento hover:bg-acento-hover text-sobre-color`}>
             {ocupado === 'guardar' ? t.smtpSaving : t.smtpSave}
           </button>
-          <button type="button" onClick={probarConexion} disabled={ocupado !== null} className={`${BOTON} bg-slate-700 hover:bg-slate-600 text-slate-300`}>
+          <button type="button" onClick={probarConexion} disabled={ocupado !== null} className={`${BOTON} bg-superficie-2 text-texto hover:text-texto-fuerte`}>
             {ocupado === 'conexion' ? t.smtpTesting : t.smtpTestConnection}
           </button>
-          <button type="button" ref={disparadorPrueba} onClick={abrirDialogo} disabled={ocupado !== null} className={`${BOTON} bg-slate-700 hover:bg-slate-600 text-slate-300`}>
+          <button type="button" ref={disparadorPrueba} onClick={abrirDialogo} disabled={ocupado !== null} className={`${BOTON} bg-superficie-2 text-texto hover:text-texto-fuerte`}>
             {t.smtpSendTest}
           </button>
         </div>
       </form>
 
       {dialogo.abierto && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={cerrarDialogo}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-fondo/70 p-4" onClick={cerrarDialogo}>
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="smtp-test-titulo"
-            className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-lg p-5"
+            className="w-full max-w-md bg-superficie border border-borde rounded-lg p-5"
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => { if (e.key === 'Escape') cerrarDialogo() }}
           >
-            <h2 id="smtp-test-titulo" className="text-base font-bold text-slate-100 mb-4">{t.smtpTestModalTitle}</h2>
+            <h2 id="smtp-test-titulo" className="text-base font-bold text-texto-fuerte mb-4">{t.smtpTestModalTitle}</h2>
             <form onSubmit={enviarPrueba} className="space-y-3">
               <div>
                 <label className={LABEL} htmlFor="smtp-test-to">{t.smtpTestRecipient}</label>
@@ -241,15 +241,15 @@ export default function AdminSmtp() {
                 />
               </div>
               {dialogo.error && (
-                <div role="alert" className="text-sm text-red-400 bg-red-900/30 border border-red-800 rounded-lg px-3 py-2">
+                <div role="alert" className="text-sm text-peligro bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2">
                   {dialogo.error}
                 </div>
               )}
               <div className="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={cerrarDialogo} disabled={ocupado === 'prueba'} className={`${BOTON} bg-slate-700 hover:bg-slate-600 text-slate-300`}>
+                <button type="button" onClick={cerrarDialogo} disabled={ocupado === 'prueba'} className={`${BOTON} bg-superficie-2 text-texto hover:text-texto-fuerte`}>
                   {t.smtpCancel}
                 </button>
-                <button type="submit" disabled={ocupado === 'prueba' || !dialogo.to.trim()} className={`${BOTON} bg-purple-600 hover:bg-purple-700 text-white`}>
+                <button type="submit" disabled={ocupado === 'prueba' || !dialogo.to.trim()} className={`${BOTON} bg-acento hover:bg-acento-hover text-sobre-color`}>
                   {ocupado === 'prueba' ? t.smtpSending : t.smtpTestSendButton}
                 </button>
               </div>

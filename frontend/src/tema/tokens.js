@@ -71,6 +71,10 @@ export const MIGRADOS = [
   'components/PasswordInput.jsx',
   'pages/Login.jsx',
   'pages/ResetPassword.jsx',
+  'pages/admin/AdminSmtp.jsx',
+  'pages/admin/AdminSettings.jsx',
+  'pages/Admin.jsx',
+  'components/admin/AdminSidebar.jsx',
 ]
 
 const RESPALDO = 'texto-suave'
