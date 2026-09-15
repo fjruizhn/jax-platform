@@ -1,19 +1,42 @@
 import { useState, useEffect } from 'react'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
+import { useJaxStore } from '../../store/useJaxStore'
 import PasswordInput from '../../components/PasswordInput'
+import EditarUsuarioModal from '../../components/admin/EditarUsuarioModal'
+import HistorialUsuario from '../../components/admin/HistorialUsuario'
+import { mensajeDeError } from './erroresAdmin'
 
 const ROLES = ['superadmin', 'operator', 'viewer']
+// Botón neutro de la fila (texto/superficie-2 y texto-fuerte/superficie-2 son
+// pares declarados en PARES).
+const ACCION_NEUTRA = 'text-xs px-2 py-0.5 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors'
 
+// Etapa 3 (2026-09-15): cada acción muestra su error traducido en un toast
+// (antes todas terminaban en `.catch(() => {})` y el admin no se enteraba).
+// Rol y estado se editan en EditarUsuarioModal. Qué está permitido lo decide
+// el backend (último superadmin, auto-acciones): el botón de eliminar ya no se
+// esconde para user_id 1.
 export default function AdminUsers() {
   const { t, lang } = useI18n()
+  const addToast = useJaxStore((s) => s.addToast)
   const [users, setUsers] = useState([])
   const [showCreate, setShowCreate] = useState(false)
   const [form, setForm] = useState({ email: '', role: 'operator', password: '' })
   const [saving, setSaving] = useState(false)
+  const [editando, setEditando] = useState(null)
+  const [historialDe, setHistorialDe] = useState(null)
+
+  function avisarError(err) {
+    addToast({ type: 'error', message: mensajeDeError(t, err) })
+  }
+
+  function avisarExito(message) {
+    addToast({ type: 'success', message })
+  }
 
   function load() {
-    api.get('/admin/users').then(r => setUsers(r.data.users)).catch(() => {})
+    api.get('/admin/users').then(r => setUsers(r.data.users)).catch(avisarError)
   }
 
   useEffect(() => { load() }, [])
@@ -26,32 +49,50 @@ export default function AdminUsers() {
       setShowCreate(false)
       setForm({ email: '', role: 'operator', password: '' })
       load()
-    } catch {
+    } catch (err) {
+      avisarError(err)
     } finally {
       setSaving(false)
     }
   }
 
-  async function handleStatusToggle(u) {
-    const newStatus = u.status === 'active' ? 'inactive' : 'active'
-    await api.put(`/admin/users/${u.user_id}`, { status: newStatus }).catch(() => {})
-    load()
+  async function guardarEdicion(cambios) {
+    try {
+      await api.put(`/admin/users/${editando.user_id}`, cambios)
+      setEditando(null)
+      avisarExito(t.adminUserSaved)
+      load()
+    } catch (err) {
+      avisarError(err)
+    }
   }
 
   async function handleUnlock(u) {
-    await api.post(`/admin/users/${u.user_id}/unlock`).catch(() => {})
-    load()
+    try {
+      await api.post(`/admin/users/${u.user_id}/unlock`)
+      load()
+    } catch (err) {
+      avisarError(err)
+    }
+  }
+
+  async function handleRevoke(u) {
+    try {
+      await api.post(`/admin/users/${u.user_id}/revoke-sessions`)
+      avisarExito(t.adminSessionsRevoked(u.email))
+    } catch (err) {
+      avisarError(err)
+    }
   }
 
   async function handleDelete(u) {
     if (!window.confirm(t.adminDeleteConfirm(u.email))) return
-    await api.delete(`/admin/users/${u.user_id}`).catch(() => {})
-    load()
-  }
-
-  async function handleRoleChange(u, role) {
-    await api.put(`/admin/users/${u.user_id}`, { role }).catch(() => {})
-    load()
+    try {
+      await api.delete(`/admin/users/${u.user_id}`)
+      load()
+    } catch (err) {
+      avisarError(err)
+    }
   }
 
   function statusBadge(u) {
@@ -85,21 +126,10 @@ export default function AdminUsers() {
             {users.map(u => (
               <tr key={u.user_id} className={`hover:bg-superficie transition-colors ${u.is_locked ? 'bg-aviso-fondo' : 'bg-hundido'}`}>
                 <td className="px-4 py-3 text-texto">{u.email}</td>
-                <td className="px-4 py-3">
-                  {/* M-2 (revisión final PR 2, 2026-09-14): border-borde daba
-                      1,41:1 sobre superficie, bajo el mínimo 3:1 de WCAG 1.4.11
-                      para un control; focus:outline-none no tenía reemplazo.
-                      border-borde-control sí tiene el par de 3:1 declarado
-                      sobre superficie (Ruling 26: el fondo del select se
-                      mantiene). */}
-                  <select
-                    value={u.role}
-                    onChange={e => handleRoleChange(u, e.target.value)}
-                    className="bg-superficie border border-borde-control rounded px-2 py-0.5 text-xs text-texto focus:outline-none focus:border-foco"
-                  >
-                    {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-                  </select>
-                </td>
+                {/* Etapa 3 (Ruling U6): el rol se muestra como texto y se
+                    cambia en el modal Editar; la guarda M-2 del select vive
+                    ahora en EditarUsuarioModal. */}
+                <td className="px-4 py-3 text-xs text-texto">{u.role}</td>
                 <td className="px-4 py-3">
                   {statusBadge(u)}
                   {u.failed_attempts > 0 && !u.is_locked && (
@@ -111,6 +141,7 @@ export default function AdminUsers() {
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2 flex-wrap">
+                    <button onClick={() => setEditando(u)} className={ACCION_NEUTRA}>{t.adminUserEdit}</button>
                     {u.is_locked && (
                       // M-1 (revisión final PR 2, 2026-09-14): la fila bloqueada
                       // también es bg-aviso-fondo, así que un botón con el mismo
@@ -123,20 +154,14 @@ export default function AdminUsers() {
                         {t.adminUserUnlock}
                       </button>
                     )}
+                    <button onClick={() => handleRevoke(u)} className={ACCION_NEUTRA}>{t.adminUserRevokeSessions}</button>
+                    <button onClick={() => setHistorialDe(u)} className={ACCION_NEUTRA}>{t.adminUserHistory}</button>
                     <button
-                      onClick={() => handleStatusToggle(u)}
-                      className="text-xs px-2 py-0.5 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors"
+                      onClick={() => handleDelete(u)}
+                      className="text-xs px-2 py-0.5 rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors"
                     >
-                      {u.status === 'active' ? t.adminUserDisable : t.adminUserEnable}
+                      {t.adminUserDelete}
                     </button>
-                    {u.user_id !== 1 && (
-                      <button
-                        onClick={() => handleDelete(u)}
-                        className="text-xs px-2 py-0.5 rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors"
-                      >
-                        {t.adminUserDelete}
-                      </button>
-                    )}
                   </div>
                 </td>
               </tr>
@@ -144,6 +169,9 @@ export default function AdminUsers() {
           </tbody>
         </table>
       </div>
+
+      {editando && <EditarUsuarioModal usuario={editando} onGuardar={guardarEdicion} onCerrar={() => setEditando(null)} />}
+      {historialDe && <HistorialUsuario usuario={historialDe} onCerrar={() => setHistorialDe(null)} />}
 
       {showCreate && (
         <div className="fixed inset-0 bg-fondo/70 flex items-center justify-center z-50">

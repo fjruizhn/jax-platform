@@ -232,8 +232,22 @@ jobs:
             // LeftPanel.test.jsx +2 (M-2: wsStatus traducido con respaldo al
             // valor crudo). Vistos en rojo antes de verde. Medido con vitest
             // run: 247.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 247) {
-              console.error("PISO ROTO: se esperaban 247 tests de vitest CORRIDOS y 0 fallidos.");
+            // 247 -> 252 el 2026-09-15 (rebase de la etapa 3 de admin usuarios
+            // sobre el PR 3 del tema; en la rama sola era 220 -> 225, +5 netos),
+            // admin usuarios etapa 3, Task 4: errores
+            // traducidos en toasts, edición de rol/estado, cerrar sesiones e
+            // historial): +3 EditarUsuarioModal.test.jsx (nuevo: manda solo lo que
+            // cambió; el estado no ofrece "deleted" y sin cambios no se guarda; y
+            // la guarda M-2 del select de rol -- border-borde-control +
+            // focus:border-foco -- MUDADA desde AdminUsers.test.jsx, cuyo describe
+            // M-2 se borró porque el rol ya no se edita en línea, Ruling U6) -1
+            // AdminUsers.test.jsx (ese M-2) +3 AdminUsers.test.jsx (409
+            // ultimo_superadmin traducido en un toast; cerrar sesiones llama al
+            // endpoint y avisa; el historial muestra acción, cambio y actor).
+            // Vistos en rojo antes de verde. Medido con vitest run en la rama: 225;
+            // sobre el PR 3 del tema: 247 + 5 = 252.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 252) {
+              console.error("PISO ROTO: se esperaban 252 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
