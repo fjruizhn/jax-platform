@@ -12,6 +12,7 @@ import { TOKENS, PARES, AA_TEXTO, colorToken, tokenDeFaceta, EXENTOS_TEXTO, PERM
 const css = readFileSync(new URL('./tokens.css', import.meta.url), 'utf8')
 const temas = parsearTokens(css)
 const indexCss = readFileSync(new URL('../index.css', import.meta.url), 'utf8')
+const indexHtml = readFileSync(new URL('../../index.html', import.meta.url), 'utf8')
 
 // Contenido de un `@layer base { ... }` de nivel superior, contando llaves (no
 // alcanza con una regex no-greedy: el bloque puede tener selectores propios).
@@ -93,8 +94,17 @@ describe('tokens de color', () => {
   })
 })
 
+// Task 27 (PR 4, cierre del rollout): la capa vieja de index.css ya no existe,
+// así que el script en línea de index.html no puede seguir marcando la clase.
+describe('index.html sin la capa vieja', () => {
+  it('no marca la clase light-mode', () => {
+    expect(indexHtml).not.toContain('light-mode')
+  })
+})
+
 // Uso (spec §6.4): un archivo ya migrado no vuelve a pintar con colores crudos.
-// "Ya migrado" es MIGRADOS en tokens.js; cada PR del rollout lo amplía.
+// El escaneo cubre todo .js/.jsx no-test bajo src (import.meta.glob abajo);
+// no hay lista de "migrados" que mantener.
 const fuentes = import.meta.glob(['../**/*.{js,jsx}', '!../**/*.test.{js,jsx}'], {
   query: '?raw', import: 'default', eager: true,
 })
@@ -105,6 +115,7 @@ const PROPIEDAD = 'bg|text|border|divide|ring|placeholder|fill|stroke|from|via|t
 const PROHIBIDOS = [
   ['clase de paleta de Tailwind', new RegExp(`(?<![\\w-])(?:${PROPIEDAD})-(?:(?:${PALETA})-\\d{2,3}|white|black)(?:\\/\\d+)?(?![\\w-])`, 'g')],
   ['color hal-*', /(?<![\w-])(?:bg|text|border)-hal-[a-z]+/g],
+  ['clase de la capa vieja', /light-mode/g],
   ['hex', /#[0-9a-fA-F]{3,8}(?![0-9a-zA-Z])/g],
   ['rgb()/rgba() literal', /rgba?\(\s*\d/g],
   ['prefijo dark:', /(?<![\w-])dark:[a-z]/g],

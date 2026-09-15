@@ -16,15 +16,6 @@ export default {
       },
       colors: {
         ...Object.fromEntries(TOKENS.map((n) => [n, token(n)])),
-        // Colores viejos del panel: se van en el PR 4 del rollout, cuando
-        // Dashboard migra (hoy los usa con bg-hal-bg y text-hal-text).
-        hal: {
-          bg: '#0f172a',
-          panel: '#1e293b',
-          border: '#334155',
-          text: '#e2e8f0',
-          muted: '#64748b',
-        },
       },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',

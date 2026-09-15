@@ -28,14 +28,8 @@ export function temaInicial(almacen = localStorage) {
   }
 }
 
-// data-tema="claro" es lo que leen los tokens. La clase light-mode es la de la
-// capa vieja de index.css: convive hasta el PR 4 del rollout, que la quita.
+// data-tema="claro" es lo que leen los tokens (src/tema/tokens.css).
 export function aplicarTema(tema, raiz = document.documentElement) {
-  if (tema === 'light') {
-    raiz.setAttribute('data-tema', 'claro')
-    raiz.classList.add('light-mode')
-  } else {
-    raiz.removeAttribute('data-tema')
-    raiz.classList.remove('light-mode')
-  }
+  if (tema === 'light') raiz.setAttribute('data-tema', 'claro')
+  else raiz.removeAttribute('data-tema')
 }
