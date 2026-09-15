@@ -159,8 +159,15 @@ jobs:
             // scriptTema.test.js (M-4: el script en línea y aplicarTema caen los dos a
             // oscuro sin lanzar). M-2 y M-3 fortalecen tests existentes, sin sumar. Vistos
             // en rojo antes de verde. Medido con vitest run: 189.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 189) {
-              console.error("PISO ROTO: se esperaban 189 tests de vitest CORRIDOS y 0 fallidos.");
+            // 189 -> 197 el 2026-09-14 (fix vivo del PR 1, decisiones de Fernando tras
+            // probarlo): +2 useTema.test.js y +2 AdminSettings.test.jsx (guardar el
+            // predeterminado en Configuración también fija la elección del propio admin,
+            // Ruling B) +3 HalEye.test.jsx (nuevo: prop `reposo` fija el estado de reposo
+            // del panel sin pasar por la store, dirigido por la store sin la prop, Ruling 21)
+            // +1 Login.test.jsx (el HalEye en reposo se renderiza, no el apagado "sin
+            // sesión"). Vistos en rojo antes de verde. Medido con vitest run: 197.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 197) {
+              console.error("PISO ROTO: se esperaban 197 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
