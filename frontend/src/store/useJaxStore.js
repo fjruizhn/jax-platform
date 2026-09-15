@@ -208,6 +208,16 @@ export const useJaxStore = create((set, get) => {
     }
   },
 
+  // Etapa 5 (2026-09-15): el admin puede editar correos desde Usuarios. El JWT
+  // no lleva el correo (verificar_sesion lo relee en cada request), pero la
+  // barra de usuario muestra user.email del store: si el correo editado es el
+  // del usuario logueado, se actualiza acá con el valor guardado; si es de
+  // otro, no se toca nada.
+  actualizarMiEmail: (userId, email) => {
+    const user = get().user
+    if (user && user.user_id === userId) set({ user: { ...user, email } })
+  },
+
   setWsStatus: (wsStatus) => set({ wsStatus }),
 
   setActiveFacet: (facet) => set({ activeFacet: facet }),

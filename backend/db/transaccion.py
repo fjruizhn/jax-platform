@@ -14,6 +14,13 @@ from .connection import get_pool
 # con el nivel por defecto). Lista cerrada: el valor va interpolado en el SQL.
 AISLAMIENTOS = frozenset({"READ COMMITTED", "REPEATABLE READ"})
 
+# READ COMMITTED: bloquea solo filas, sin huecos. Nació para las escrituras de
+# admin sobre jax_users (el porqué, en api/admin/users.py, que lo reexporta con
+# este mismo nombre). Ruling U33 (etapa 5, Task 3 fix ronda 2, 2026-09-15): vive
+# acá para que api/auth.py lo use sin importar api/admin/users.py (ese ciclo de
+# import lo cerró la etapa 4). Lo usa también el forgot-password público.
+AISLAMIENTO_ADMIN = "READ COMMITTED"
+
 
 @asynccontextmanager
 async def transaccion(aislamiento: str | None = None):

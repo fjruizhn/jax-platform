@@ -493,10 +493,17 @@ VARIAS_O_RARAS = ["postmaster,a@b.io", "x;y@b.io", '"a"@b.io', "<a@b.io>", "a@b.
 UNICAS = ["fernando@rich-hn.com", "a.b+c@sub.example.test", "no-reply@axioma-ia.io"]
 
 
+# Ruling U32 (etapa 5, Task 3 fix ronda 1, 2026-09-15): el dominio de
+# email_valido solo admite [A-Za-z0-9-]. Estas dos tienen la rareza EN EL
+# DOMINIO ("b.io>", "b.io,") y ahora las rechaza ya email_valido; el resto la
+# tiene en la parte local y sigue siendo trabajo de direccion_unica_valida.
+RAREZA_EN_EL_DOMINIO = {"<a@b.io>", "a@b.io,"}
+
+
 @pytest.mark.parametrize("malo", VARIAS_O_RARAS)
 def test_direccion_unica_valida_rechaza_listas_y_caracteres_de_encabezado(malo):
     import validacion
-    assert validacion.email_valido(malo)  # email_valido NO cambia (lo usa el login)
+    assert validacion.email_valido(malo) is (malo not in RAREZA_EN_EL_DOMINIO)
     assert validacion.direccion_unica_valida(malo) is False
 
 

@@ -347,8 +347,39 @@ jobs:
             // "Creating…", t.adminCreateSubmitting, no el texto de adjuntar).
             // Vistos en rojo antes de verde. Medido con vitest run: 315 passed
             // en 47 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 315) {
-              console.error("PISO ROTO: se esperaban 315 tests de vitest CORRIDOS y 0 fallidos.");
+            // 315 -> 329 el 2026-09-15 (etapa 5 de admin usuarios, Task 4:
+            // dar de baja con confirmación por suma y editar el correo): +5
+            // ConfirmacionSuma.test.jsx (archivo nuevo: botón sólo con la suma
+            // correcta, confirmar, cancelar, rango de numerosAlAzar, Escape)
+            // +1 EditarUsuarioModal.test.jsx (correo recortado y sólo si
+            // cambió; el test de foco pasa del rol al correo, sin sumar) +4
+            // AdminUsers.test.jsx (baja con suma y POST /baja, alta con
+            // email_ya_existe traducido, un solo diálogo al abrir la baja,
+            // guardar el correo avisa al store) +2 erroresAdmin.test.js (en es
+            // y en en, email_invalido/rol_invalido/email_ya_existe traducidos)
+            // +2 useJaxStore.test.js (actualizarMiEmail: el correo propio
+            // cambia user.email; el de otro no). Vistos en rojo antes de verde.
+            // Medido con vitest run: 329 passed en 48 archivos, 0 fallidos.
+            // 329 -> 336 el 2026-09-15 (fix round 1 de la Task 4 de la etapa
+            // 5): +6 AdminUsers.test.jsx (tras la baja el foco va a "+ Nuevo
+            // usuario", Ruling U35; /baja con 409 deja el diálogo abierto con
+            // el foco adentro y el toast traducido; con la baja abierta, Editar,
+            // Historial y "+ Nuevo usuario" la cierran -- 3 casos; un PUT de
+            // correo fallido no toca el store) +1 ConfirmacionSuma.test.jsx
+            // (doble clic / doble submit en vuelo confirman una sola vez). El
+            // de foco visto en rojo; los otros, en rojo bajo su mutación.
+            // Medido con vitest run: 336 passed en 48 archivos, 0 fallidos.
+            // 336 -> 339 el 2026-09-15 (tanda del review final de la etapa 5,
+            // Ruling U36, m2/m3): +3 AdminUsers.test.jsx (m2: un 404
+            // usuario_no_encontrado en /baja cierra el diálogo, avisa y
+            // recarga la lista -- un 409 sigue dejándolo abierto; m3: una
+            // confirmación en vuelo, ya cancelada en pantalla, no cierra ni
+            // le roba el foco al diálogo de baja de OTRO usuario --
+            // cerrarBajaSiEs sólo toca el diálogo si sigue siendo el suyo).
+            // Vistos en rojo antes de verde. Medido con vitest run: 339
+            // passed en 48 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 339) {
+              console.error("PISO ROTO: se esperaban 339 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -855,7 +886,68 @@ jobs:
           # prueba grabando el SQL ejecutado, no solo el resultado: verificado en rojo
           # quitando el FOR UPDATE y, por separado, moviendo el bloqueo después del
           # reclamo). Medido: 815 / 1.
-          PISO_PASSED = 815
+          # Subido de 815 a 817 (2026-09-15, admin usuarios etapa 5, Task 1: migración
+          # deleted_at/deleted_by/email VARCHAR(320)): +2 en test_admin_usuarios_baja.py
+          # (esquema de las columnas de la baja + el índice único de email se conserva
+          # tras el MODIFY). Vistos en rojo antes de verde. Medido: 817 / 1.
+          # Subido de 817 a 821 (2026-09-15, admin usuarios etapa 5, Task 2: PUT con
+          # email validado y create_user con códigos estables): +4 en
+          # test_admin_usuarios_baja.py (editar el correo audita sin cortar sesiones,
+          # correo inválido, correo repetido, alta con rol_invalido/email_invalido/
+          # email_ya_existe). Vistos en rojo (422 extra_forbidden en el PUT, mensajes
+          # sueltos en el alta) antes de verde. Medido dos veces: 821 / 1.
+          # Subido de 821 a 824 (2026-09-15, Task 2 fix ronda 1: la revisión de ed73bab
+          # encontró el mapeo IntegrityError -> email_ya_existe del PUT sin test): +3 en
+          # test_admin_usuarios_guardas.py (carrera del PUT con correo repetido por
+          # case-only, mismo patrón de cursor colado que el alta -- verificado en rojo
+          # quitando el try/except de la línea 258; correo idéntico al actual es un
+          # no-op sin auditoría -- verificado en rojo forzando cambia_email = True;
+          # un cambio de solo correo no corta WS/SSE -- verificado en rojo sacando el
+          # `if corta_sesiones:` de la línea 272). Medido dos veces: 824 / 1.
+          # Subido de 824 a 835 (2026-09-15, admin usuarios etapa 5, Task 3: la baja
+          # reemplaza al DELETE): +12 en test_admin_usuarios_baja.py (email_de_baja puro;
+          # baja inutiliza/renombra/audita, libera el correo, sale de la lista, auto-acción
+          # y último superadmin, un dado de baja ya no se toca, DELETE -> 405, solo
+          # superadmin, 404 de inexistente, borra los enlaces pendientes, reset-link a un
+          # dado de baja -> 404 sin token, EXPLAIN de la lista sin filesort) y -1 en
+          # test_admin_usuarios_guardas.py (se BORRA test_delete_usa_las_guardas_..., el
+          # endpoint ya no existe; los otros 2 tests del DELETE pasan a /baja). Vistos en
+          # rojo (405, AttributeError, 409 usuario_no_activo, token vivo) antes de verde;
+          # mutaciones capturadas: corte dentro de la transacción, sin token_version+1,
+          # ORDER BY email. Medido dos veces: 835 / 1.
+          # Subido de 835 a 842 (2026-09-15, etapa 5, Task 3 fix ronda 1, Rulings U31 y
+          # U32): +7 en test_admin_usuarios_baja.py. U31 (+4): baja colada antes del token
+          # del enlace de admin sin token vivo, enlace de admin y baja concurrentes sin
+          # deadlock, baja entre la búsqueda y el token del forgot-password sin token ni
+          # correo, forgot-password y baja concurrentes sin deadlock. U32 (+2): el correo
+          # renombrado no es válido (puro) y el alta/PUT con él dan 400 email_invalido.
+          # Más +1: la baja libera el correo también para el PUT de otro. Vistos en rojo
+          # (token vivo x3, `assert not True`, alta 200) antes de verde; mutaciones
+          # capturadas: sin FOR UPDATE en send_reset_link, sin el re-bloqueo por PK en
+          # _procesar_recuperacion, baja sin renombrar. Medido dos veces: 842 / 1.
+          # Subido de 842 a 845 (2026-09-15, etapa 5, Task 3 fix ronda 2, Ruling U33 y M1):
+          # +3 en test_admin_usuarios_baja.py. U33 (+1): dos forgot-password de usuarios
+          # distintos intercalados (DELETE, DELETE, INSERT, INSERT) mandan los dos correos
+          # sin 1213 -- visto en ROJO sobre 8c34800 con el 1213 real en REPEATABLE READ,
+          # verde en READ COMMITTED. M1 (+2): el correo sale DESPUÉS del commit y sin la
+          # fila tomada, en send_reset_link y en _procesar_recuperacion (otra conexión ve
+          # el token confirmado y FOR UPDATE NOWAIT pasa) -- la mutación "envío dentro de
+          # la transacción" cae en ~0,4 s en los dos caminos. M2 solo endurece un test
+          # existente (sin cambio en el conteo). Medido dos veces: 845 / 1.
+          # Subido de 845 a 846 (2026-09-15, tanda del review final de la etapa 5, Ruling
+          # U36, m4): +1 en test_admin_usuarios_baja.py --
+          # test_refresh_no_revive_a_un_dado_de_baja: POST /api/auth/refresh con la cookie
+          # de refresh de un usuario, tomada ANTES de la baja, da 401 sesion_invalida
+          # después. Verificado que refresh pasa de verdad por verificar_sesion quitando
+          # esa llamada (bypass real de la etapa 2): cae en ROJO. Las dos mutaciones de un
+          # solo renglón que pidió la revisión (saltar sólo el chequeo de status en
+          # verificar_sesion; no subir token_version en dar_de_baja) NO ponen este test en
+          # rojo por separado -- las dos condiciones se escriben en el MISMO UPDATE
+          # (status='deleted' + token_version+1) y verificar_sesion las exige con un OR:
+          # cualquiera de las dos sola ya basta para el 401, así que sacar una deja a la
+          # otra cubriendo (defensa en profundidad real, no un hueco de la prueba);
+          # medido con las dos mutaciones por separado, revertidas. Medido dos veces: 846 / 1.
+          PISO_PASSED = 846
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1195,7 +1287,31 @@ jobs:
       # Task 3 fix ronda 2 (2026-09-15): los 3 nuevos (cancelación del envío, fallo de
       # auditoría fail-soft, orden de bloqueo U21 por SQL grabado) piden `client` (sin
       # cambio en passed). Medido con JAX_CI_NO_DB=1: 369 / 447.
-      JAX_CI_MIN_PASSED: "369"
+      # Admin usuarios etapa 5, Task 1 (2026-09-15): los 2 nuevos de
+      # test_admin_usuarios_baja.py piden `client` (sin cambio en passed). Medido con
+      # JAX_CI_NO_DB=1: 369 / 449.
+      # Admin usuarios etapa 5, Task 2 (2026-09-15): los 4 nuevos de
+      # test_admin_usuarios_baja.py piden `client` y se saltean (sin cambio en
+      # passed). Medido dos veces con JAX_CI_NO_DB=1: 369 / 453.
+      # Admin usuarios etapa 5, Task 2 fix ronda 1 (2026-09-15): los 3 nuevos de
+      # test_admin_usuarios_guardas.py piden `client` y se saltean (sin cambio en
+      # passed). Medido dos veces con JAX_CI_NO_DB=1: 369 / 456.
+      # Admin usuarios etapa 5, Task 3 (2026-09-15, la baja reemplaza al DELETE): +1 puro
+      # (test_email_de_baja_...); los otros 11 nuevos de test_admin_usuarios_baja.py
+      # piden `client` y se saltean, y el test borrado del DELETE en
+      # test_admin_usuarios_guardas.py también pedía `client` (+11 -1 = +10 skips).
+      # Medido dos veces con JAX_CI_NO_DB=1: 370 / 466.
+      # Task 3 fix ronda 1 (2026-09-15, Rulings U31 y U32): +1 puro
+      # (test_un_correo_renombrado_por_la_baja_no_es_un_correo_valido); los otros 6
+      # nuevos de test_admin_usuarios_baja.py piden `client` y se saltean.
+      # Medido dos veces con JAX_CI_NO_DB=1: 371 / 472.
+      # Task 3 fix ronda 2 (2026-09-15, Ruling U33 y M1): los 3 nuevos de
+      # test_admin_usuarios_baja.py piden `client` y se saltean (sin cambio en
+      # passed). Medido dos veces con JAX_CI_NO_DB=1: 371 / 475.
+      # Tanda del review final de la etapa 5 (2026-09-15, Ruling U36, m4): el nuevo
+      # test_refresh_no_revive_a_un_dado_de_baja pide `client` y se saltea (sin cambio
+      # en passed). Medido dos veces con JAX_CI_NO_DB=1: 371 / 476.
+      JAX_CI_MIN_PASSED: "371"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

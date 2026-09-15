@@ -30,7 +30,8 @@ describe('EditarUsuarioModal', () => {
       const dialogo = screen.getByRole('dialog', { name: 'Editar b@x.io' })
       expect(root.contains(dialogo)).toBe(false)
       expect(root).toHaveAttribute('inert')
-      expect(screen.getByLabelText('Rol')).toHaveFocus()
+      // Etapa 5: el correo es ahora el primer campo, y Dialogo lleva el foco ahí.
+      expect(screen.getByLabelText('Email')).toHaveFocus()
     } finally {
       root.remove()
     }
@@ -41,6 +42,13 @@ describe('EditarUsuarioModal', () => {
     const opciones = [...screen.getByLabelText('Estado').querySelectorAll('option')].map((o) => o.value)
     expect(opciones).toEqual(['active', 'inactive'])
     expect(screen.getByRole('button', { name: 'Guardar' })).toBeDisabled()
+  })
+
+  it('el correo viaja recortado y solo si cambió', () => {
+    const onGuardar = renderModal()
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: '  nuevo@x.io  ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar' }))
+    expect(onGuardar).toHaveBeenCalledWith({ email: 'nuevo@x.io' })
   })
 })
 

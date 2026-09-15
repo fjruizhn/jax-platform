@@ -20,7 +20,14 @@ import re
 from email.utils import getaddresses
 
 EMAIL_MAX = 254
-_EMAIL = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
+# Etiquetas del dominio: solo letras ASCII, dígitos y guion (Ruling U32,
+# etapa 5, Task 3 fix ronda 1, 2026-09-15). Antes admitían cualquier cosa
+# salvo @, espacio y punto: "ana@x.io#baja-42-20260912" -- el correo que la
+# baja le pone a un usuario -- pasaba, y un superadmin podía dárselo a OTRO
+# usuario por el alta o el PUT; la baja real de aquel chocaba después con el
+# UNIQUE de email (500). Un dominio internacionalizado se escribe en su forma
+# ASCII (punycode, xn--...).
+_EMAIL = re.compile(r"^[^@\s]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
 
 
 def email_valido(valor: str) -> bool:
@@ -37,9 +44,10 @@ def direccion_unica_valida(valor: str) -> bool:
     (To, From). email_valido deja pasar , ; < > " ( ): "postmaster,a@b.io"
     se volvía dos destinatarios y "x;y@b.io" se truncaba a "x" (revisión,
     2026-09-13). Es la que usa SMTP: destinatario de la prueba y from_email.
-    email_valido queda como regla base y no se endurece: la etapa 5 del plan
-    de administración de usuarios la usa para el email de un usuario, que no
-    va a un encabezado."""
+    email_valido es la regla base (la usa el email de un usuario, etapa 5, que
+    no va a un encabezado). Desde U32 su dominio solo admite [A-Za-z0-9-], así
+    que las rarezas EN EL DOMINIO ("<a@b.io>", "a@b.io,") ya caen ahí; las de
+    la parte local (, ; < " ( ) \\ [ ]) siguen siendo trabajo de esta."""
     return (email_valido(valor)
             and not _ESPECIALES_DE_ENCABEZADO.intersection(valor)
             and getaddresses([valor]) == [("", valor)])

@@ -435,7 +435,6 @@ export default {
   adminUserInactive: 'inactive',
   adminUserLocked: 'locked',
   adminUserUnlock: 'Unlock',
-  adminUserDelete: 'Delete',
   adminUserResetPwd: 'Reset pwd',
   adminUserChangeRole: 'Change role',
   adminCreateTitle: 'Create User',
@@ -443,7 +442,6 @@ export default {
   adminCreateSubmit: 'Create',
   adminCreateSubmitting: 'Creating…',
   adminCreateCancel: 'Cancel',
-  adminDeleteConfirm: (email) => `Delete user ${email}?`,
   // I-1 (final review PR 2, 2026-09-14): AdminUsers.jsx:100 had
   // "({n} intentos)" written directly in Spanish in the JSX.
   adminUserFailedAttempts: (n) => `(${n} attempts)`,
@@ -603,6 +601,8 @@ export default {
     password_corta: 'The password must be at least 8 characters.',
     password_larga: 'The password is too long (maximum 72 bytes; accented letters take 2).',
     smtp_password_no_ascii: 'The saved SMTP password has non-ASCII characters (accents or ñ) and the server does not accept it. Re-enter it in Administration → Email (SMTP).',
+    email_invalido: 'The email is not valid.',
+    email_ya_existe: 'A user with that email already exists.',
   },
   adminAuditActions: {
     create: 'Created',
@@ -630,6 +630,14 @@ export default {
   myAccountError: 'The password could not be changed.',
   adminUserSendResetLink: 'Send link',
   adminResetLinkSent: (email) => `Recovery link sent to ${email}.`,
+
+  // Edit and remove — stage 5 (2026-09-15)
+  adminUserBaja: 'Remove',
+  adminBajaTitle: (email) => `Remove ${email}`,
+  adminBajaMessage: 'The account becomes unusable, leaves the list and frees the email. Its history is kept.',
+  adminBajaDone: (email) => `${email} was removed.`,
+  confirmSumLabel: (a, b) => `Solve ${a} + ${b} = ?`,
+  confirmSumHint: 'Type the result to enable the button.',
 
   // Restoring pending tasks (useJaxStore.js)
   taskRestoring: (id) => `_Task \`${id}\` — checking status…_`,

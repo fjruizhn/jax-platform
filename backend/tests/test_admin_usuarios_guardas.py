@@ -11,7 +11,7 @@ superadmin activo, así que el caso real no se puede armar sin tocarlo. El
 conteo en sí se prueba aparte, contra la base.
 
 Step 4b (enmienda M-1 de la etapa 2, Ruling U5): verificar_sesion corta el WS
-y el SSE solo al conectar. Cuando cambian rol o estado (o se borra la fila),
+y el SSE solo al conectar. Cuando cambian rol o estado (o llega la baja, etapa 5),
 las conexiones YA abiertas del usuario se cierran después del commit: el WS con
 4001 (ws_hub.close_user) y el stream SSE terminando su generador
 (api.events.close_user_streams).
@@ -158,18 +158,6 @@ def test_cuenta_los_otros_superadmins_activos(client, usuarios):
     assert client.portal.call(contar, a) == independiente
 
 
-# ---------------------------------------------------------------- DELETE
-
-def test_delete_usa_las_guardas_y_no_el_literal_user_id_1(client, usuarios, monkeypatch):
-    s, _ = usuarios(role="superadmin")
-    r = client.delete(f"/api/admin/users/{s}", headers=auth(token_para(s, role="superadmin")))
-    assert (r.status_code, r.json()["detail"]) == (403, "auto_accion_prohibida")
-    monkeypatch.setattr(users_mod, "otros_superadmins_activos", _ninguno)
-    r = client.delete(f"/api/admin/users/{s}", headers=_admin())
-    assert (r.status_code, r.json()["detail"]) == (409, "ultimo_superadmin")
-    assert client.portal.call(_fila, s) is not None
-
-
 # ------------------------------------------- Step 4b: el hub cierra el WS
 
 class _SocketQueCierra:
@@ -307,15 +295,22 @@ def test_put_rechazado_o_sin_cambios_no_corta_nada(client, usuarios, cortes, mon
     assert cortes == []
 
 
-def test_delete_corta_despues_del_commit_y_no_si_la_guarda_responde(client, usuarios, cortes, monkeypatch):
+def test_baja_corta_una_vez_despues_del_commit_y_no_si_la_guarda_responde(client, usuarios, cortes, monkeypatch):
+    """Etapa 5 (Ruling U11): el corte que tenía el DELETE pasa a la baja. Una
+    sola vez por canal y con la fila YA confirmada (otra conexión la ve dada de
+    baja y con la versión nueva); ni el 404, ni el 403 de auto-acción, ni el
+    409 del último superadmin cortan nada."""
     o, _ = usuarios()
-    assert client.delete(f"/api/admin/users/{o}", headers=_admin()).status_code == 200
-    assert cortes == [("ws", str(o), None), ("sse", str(o), None)], "la fila ya no existe al cortar"
+    assert client.post(f"/api/admin/users/{o}/baja", headers=_admin()).status_code == 200
+    assert cortes == [("ws", str(o), ("operator", "deleted", 1)), ("sse", str(o), ("operator", "deleted", 1))]
     cortes.clear()
-    assert client.delete(f"/api/admin/users/{10**9}", headers=_admin()).status_code == 404
+    assert client.post(f"/api/admin/users/{10**9}/baja", headers=_admin()).status_code == 404
+    assert client.post(f"/api/admin/users/{o}/baja", headers=_admin()).status_code == 404  # ya dado de baja
     s, _ = usuarios(role="superadmin")
+    r = client.post(f"/api/admin/users/{s}/baja", headers=auth(token_para(s, role="superadmin")))
+    assert r.status_code == 403
     monkeypatch.setattr(users_mod, "otros_superadmins_activos", _ninguno)
-    assert client.delete(f"/api/admin/users/{s}", headers=_admin()).status_code == 409
+    assert client.post(f"/api/admin/users/{s}/baja", headers=_admin()).status_code == 409
     assert cortes == []
 
 
@@ -481,8 +476,8 @@ def test_si_cortar_conexiones_falla_el_cambio_confirmado_responde_igual(client, 
     assert _put(client, o, status="inactive").status_code == 200
     assert client.portal.call(_fila, o) == ("operator", "inactive", 1)
     p, _ = usuarios()
-    assert client.delete(f"/api/admin/users/{p}", headers=_admin()).status_code == 200
-    assert client.portal.call(_fila, p) is None
+    assert client.post(f"/api/admin/users/{p}/baja", headers=_admin()).status_code == 200
+    assert client.portal.call(_fila, p) == ("operator", "deleted", 1)
 
 
 async def test_transaccion_rechaza_un_nivel_de_aislamiento_fuera_de_la_lista():
@@ -515,7 +510,7 @@ def test_cerrar_sesiones_corta_los_tokens_y_audita(client, usuarios):
 
 def test_cerrar_sesiones_corta_ws_y_sse_despues_del_commit(client, usuarios, cortes):
     """Controller: además de subir token_version, las conexiones YA abiertas
-    se cierran tras el commit (mismo corte que PUT/DELETE). Un 404 no corta."""
+    se cierran tras el commit (mismo corte que PUT y la baja). Un 404 no corta."""
     o, _ = usuarios()
     assert client.post(f"/api/admin/users/{o}/revoke-sessions", headers=_admin()).status_code == 200
     assert cortes == [("ws", str(o), ("operator", "active", 1)), ("sse", str(o), ("operator", "active", 1))]
@@ -601,7 +596,7 @@ def test_alta_con_email_duplicado_concurrente_responde_409_sin_auditoria(client,
     try:
         r = client.post("/api/admin/users", json={"email": email, "role": "viewer", "password": "clave-larga-1"},
                         headers=_admin())
-        assert (r.status_code, r.json().get("detail")) == (409, "Email ya existe"), r.text
+        assert (r.status_code, r.json().get("detail")) == (409, "email_ya_existe"), r.text
         ((auditados,),) = client.portal.call(
             sql, "SELECT COUNT(*) FROM user_admin_audit WHERE action = 'create' AND detail LIKE %s",
             (f"%{email}%",), True)
@@ -609,6 +604,75 @@ def test_alta_con_email_duplicado_concurrente_responde_409_sin_auditoria(client,
     finally:
         for (intruso,) in client.portal.call(sql, "SELECT user_id FROM jax_users WHERE email = %s", (email,), True):
             client.portal.call(borrar_usuario, intruso)
+
+
+def test_editar_correo_repetido_concurrente_responde_409_sin_auditoria_ni_cambio(client, usuarios, monkeypatch):
+    """Fix round 1 (2026-09-15, hallazgo IMPORTANT de la revisión de ed73bab):
+    el precheck de PUT (~l.249, `SELECT 1 FROM jax_users WHERE email = %s AND
+    user_id <> %s`) no bloquea -- dos admins editando DOS usuarios distintos
+    al mismo correo pasan los dos el precheck. Acá el que "gana" la carrera
+    es OTRO admin editando a `o`: justo después de nuestro precheck (que no
+    encuentra nada, porque el correo todavía no existe en ningún lado), `o`
+    queda con el MISMO correo que estamos por escribir -- en mayúsculas, para
+    ejercitar también que el UNIQUE es case-insensitive (utf8mb4_uca1400_ai_ci).
+    El UPDATE perdedor (el nuestro) choca con el índice -> tiene que ser el
+    mismo 409 `email_ya_existe` del precheck, no un 500 de aiomysql.IntegrityError
+    sin capturar; la transacción revierte sin auditoría ni cambio de correo."""
+    from contextlib import asynccontextmanager
+
+    u, email_u = usuarios()
+    o, _ = usuarios()
+    nuevo = f"test-carrera-put-{uuid.uuid4().hex[:10]}@example.invalid"
+    transaccion_real = users_mod.transaccion
+
+    class _CursorQueDejaColarse:
+        def __init__(self, cur):
+            self._cur = cur
+
+        def __getattr__(self, nombre):
+            return getattr(self._cur, nombre)
+
+        async def execute(self, consulta, args=()):
+            resultado = await self._cur.execute(consulta, args)
+            if consulta.startswith("SELECT 1 FROM jax_users WHERE email"):
+                # El otro admin ya confirmó su PUT sobre `o`: mismo correo
+                # que el nuestro, con distinto casing.
+                await sql("UPDATE jax_users SET email = %s WHERE user_id = %s", (nuevo.upper(), o))
+            return resultado
+
+    @asynccontextmanager
+    async def con_carrera(*args, **kw):
+        async with transaccion_real(*args, **kw) as cur:
+            yield _CursorQueDejaColarse(cur)
+
+    monkeypatch.setattr(users_mod, "transaccion", con_carrera)
+    r = _put(client, u, email=nuevo)
+    assert (r.status_code, r.json().get("detail")) == (409, "email_ya_existe"), r.text
+    assert client.portal.call(_auditoria, u) == []
+    ((email_final,),) = client.portal.call(sql, "SELECT email FROM jax_users WHERE user_id = %s", (u,), True)
+    assert email_final == email_u
+
+
+def test_editar_con_el_mismo_correo_actual_no_hace_nada(client, usuarios):
+    """Fix round 1 (hallazgo MINOR): mandar el correo ACTUAL (ya recortado)
+    es un no-op -- mismo camino que "nada cambió" para rol/estado. Nada de
+    auditoría `update_email` ni de subir token_version por un correo que en
+    los hechos no cambió."""
+    u, email_u = usuarios()
+    r = _put(client, u, email=email_u)
+    assert r.status_code == 200, r.text
+    assert client.portal.call(_fila, u) == ("operator", "active", 0)
+    assert client.portal.call(_auditoria, u) == []
+
+
+def test_editar_solo_el_correo_no_corta_conexiones(client, usuarios, cortes):
+    """Fix round 1 (hallazgo MINOR): un cambio de SOLO correo no invalida
+    sesiones (no sube token_version, U11) y por lo tanto tampoco tiene que
+    cortar las conexiones WS/SSE ya abiertas -- nada quedó inválido."""
+    u, _ = usuarios()
+    nuevo = f"test-sin-corte-{uuid.uuid4().hex[:10]}@example.invalid"
+    assert _put(client, u, email=nuevo).status_code == 200
+    assert cortes == []
 
 
 # ------------------------------------------- fechas con zona (Task 4, ronda 1)

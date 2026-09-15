@@ -569,9 +569,9 @@ def test_reset_reclama_el_token_bajo_el_bloqueo_del_usuario(client, usuarios, co
 
 def test_reset_a_un_usuario_inactivo_es_400_y_no_consume_el_token(client, usuarios, cortes):
     """Ruling U21 (fix ronda 1, 2026-09-15): el usuario se bloquea ANTES que
-    el token -- mismo orden que la cascada de delete_user (jax_users, después
-    password_reset_tokens vía FK ON DELETE CASCADE), para no formar un ciclo
-    de espera con esa transacción. Un token válido para un usuario ya inactivo
+    el token -- mismo orden que la cascada del viejo delete_user y que la baja
+    de la etapa 5 (jax_users, después password_reset_tokens), para no formar
+    un ciclo de espera con esa transacción. Un token válido para un usuario ya inactivo
     no se consume: 400 reset_token_invalido, sin escribir nada."""
     u, _ = usuarios(password=CLAVE, status="inactive")
     antes = client.portal.call(_hash_de, u)
