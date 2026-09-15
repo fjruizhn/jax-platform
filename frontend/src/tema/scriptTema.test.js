@@ -36,14 +36,32 @@ const CASOS = [
 ]
 
 describe('script de tema en index.html', () => {
-  it('existe y va antes de cualquier link, style o script de módulo', () => {
+  // M-2 (revisión final, 2026-09-14): el chequeo original sólo buscaba
+  // `<script type="module"` DENTRO de <head>, pero el módulo vive en <body>
+  // -- esa rama nunca corría y el test aparentaba cubrir el orden sin
+  // hacerlo. Ahora se ubica el bloque del script de tema (dondequiera que
+  // esté) y se exige que esté en <head> y que NADA de <link>, <style> o
+  // <script> (cualquier otro, en TODO el documento, head o body) aparezca
+  // antes de que termine ese bloque.
+  it('existe, está en <head>, y va antes de cualquier link, style u otro script', () => {
     expect(script).toBeTruthy()
     const head = html.slice(0, html.indexOf('</head>'))
-    const pos = head.indexOf('id="tema-inicial"')
-    for (const tag of ['<link', '<style', '<script type="module"']) {
-      const otro = head.indexOf(tag)
-      if (otro !== -1) expect(pos).toBeLessThan(otro)
+    expect(head).toContain('id="tema-inicial"')
+
+    const inicio = html.indexOf('<script id="tema-inicial">')
+    expect(inicio).not.toBe(-1)
+    const finBloque = html.indexOf('</script>', inicio) + '</script>'.length
+    const antes = html.slice(0, inicio)
+    const despues = html.slice(finBloque)
+
+    for (const tag of ['<link', '<style', '<script']) {
+      expect(antes.includes(tag)).toBe(false)
     }
+    // Si nada de esto aparece DESPUÉS en todo el documento, la comprobación de
+    // arriba es una tautología (verde sobre un documento sin recursos que
+    // comparar): el módulo de <body> tiene que aparecer ahí para que el
+    // chequeo de orden pruebe algo real.
+    expect(despues).toContain('<script type="module"')
   })
 
   it.each(CASOS)('%s: el script y aplicarTema dejan el mismo DOM', (_, valores, esperado) => {
