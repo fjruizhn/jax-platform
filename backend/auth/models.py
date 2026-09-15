@@ -44,3 +44,4 @@ class AuthUser(BaseModel):
     role: str
     email: Optional[str] = None
     token_version: int = 0
+    must_change_password: bool = False

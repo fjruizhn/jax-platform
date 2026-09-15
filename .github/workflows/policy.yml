@@ -947,7 +947,15 @@ jobs:
           # cualquiera de las dos sola ya basta para el 401, así que sacar una deja a la
           # otra cubriendo (defensa en profundidad real, no un hueco de la prueba);
           # medido con las dos mutaciones por separado, revertidas. Medido dos veces: 846 / 1.
-          PISO_PASSED = 846
+          # Subido de 846 a 848 (2026-09-15, fijar contraseña por admin, Task 1 --
+          # jax_users.must_change_password): +2 en test_fijar_password.py (nuevo --
+          # la columna es tinyint NOT NULL DEFAULT 0, y verificar_sesion informa la
+          # marca leyéndola en la MISMA consulta por PK -- test_la_consulta_del_
+          # middleware_va_por_primary y test_me_hace_una_sola_consulta_a_jax_users
+          # siguen en const/PRIMARY y en 1 consulta). Sólo se INFORMA la marca; no
+          # se hace cumplir (eso es la Task 2). Vistos en rojo (columna inexistente,
+          # luego Unknown column) antes de verde. Medido dos veces: 848 / 1.
+          PISO_PASSED = 848
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1311,6 +1319,9 @@ jobs:
       # Tanda del review final de la etapa 5 (2026-09-15, Ruling U36, m4): el nuevo
       # test_refresh_no_revive_a_un_dado_de_baja pide `client` y se saltea (sin cambio
       # en passed). Medido dos veces con JAX_CI_NO_DB=1: 371 / 476.
+      # Fijar contraseña por admin, Task 1 (2026-09-15): los 2 nuevos de
+      # test_fijar_password.py piden `client` y se saltean (sin cambio en passed).
+      # Medido dos veces con JAX_CI_NO_DB=1: 371 / 478.
       JAX_CI_MIN_PASSED: "371"
     steps:
       - uses: actions/checkout@v4

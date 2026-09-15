@@ -1254,6 +1254,12 @@ _COLUMNS = [
     # Baja en vez de DELETE (2026-09-12, admin usuarios etapa 5, spec §3.5).
     ("jax_users", "deleted_at", "ALTER TABLE jax_users ADD COLUMN deleted_at DATETIME NULL"),
     ("jax_users", "deleted_by", "ALTER TABLE jax_users ADD COLUMN deleted_by INT NULL"),
+    # Cambio obligatorio de contraseña (2026-09-15, fijar contraseña por admin,
+    # Ruling U34). NOT NULL DEFAULT FALSE: las filas existentes quedan sin la
+    # marca y nadie queda encerrado al desplegar. La prende sólo
+    # POST /api/admin/users/{id}/password; la apagan Mi cuenta y /reset-password.
+    ("jax_users", "must_change_password",
+     "ALTER TABLE jax_users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE"),
     # Bloque D (D1.1/D1.3) — divergencia real ya presente en
     # api/admin/keys.py:158-169 (Gemini usa ?key=, los otros 4 Authorization:
     # Bearer). models_list_url NULL = sin sync automatico de capa (a)

@@ -3,8 +3,8 @@
 Antes solo se decodificaba el JWT: el rol salía del token y nada miraba la
 base, así que desactivar, borrar o degradar a alguien no cortaba su sesión
 hasta que el token vencía (spec §1, hallazgo 1). Ahora cada request lee
-status, role y token_version POR CLAVE PRIMARIA (EXPLAIN: const/PRIMARY,
-fijado en tests/test_sesiones_token_version.py).
+status, role, token_version, email y must_change_password POR CLAVE PRIMARIA
+(EXPLAIN: const/PRIMARY, fijado en tests/test_sesiones_token_version.py).
 
 Sin caché a propósito (LAS CUATRO §2: sin medición no hay caché). Si algún día
 hiciera falta uno, su invalidación es la propia token_version.
@@ -23,7 +23,7 @@ from .models import AuthUser
 bearer = HTTPBearer(auto_error=True)
 
 SESION_INVALIDA = "sesion_invalida"
-SQL_ESTADO_DE_SESION = "SELECT status, role, token_version, email FROM jax_users WHERE user_id = %s"
+SQL_ESTADO_DE_SESION = "SELECT status, role, token_version, email, must_change_password FROM jax_users WHERE user_id = %s"
 
 
 def _rechazo() -> HTTPException:
@@ -47,7 +47,7 @@ async def verificar_sesion(payload: dict, tipo: str) -> AuthUser:
             fila = await cur.fetchone()
     if fila is None:
         raise _rechazo()
-    estado, rol, tv_base, email = fila
+    estado, rol, tv_base, email, cambio_pendiente = fila
     if estado != "active" or tv_token != int(tv_base):
         raise _rechazo()
     return AuthUser(
@@ -56,6 +56,7 @@ async def verificar_sesion(payload: dict, tipo: str) -> AuthUser:
         role=rol,
         email=email,
         token_version=int(tv_base),
+        must_change_password=bool(cambio_pendiente),
     )
 
 
