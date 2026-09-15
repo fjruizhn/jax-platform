@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # de `model` al despachar, entra en este conjunto en el mismo commit.
 TRANSPORTS_CON_CONTRATO_DE_DISPATCH = frozenset({"http_openai_compat"})
 
+
 class ModelDispatchConfigError(RuntimeError):
     """El catálogo (`model`) no declara un dato que el dispatch NECESITA para
     armar el request. FAIL-CLOSED y RUIDOSO: nunca se asume un valor por
@@ -189,6 +190,15 @@ async def detalle_si_rompe_el_contrato(
     del 409 -- un código estable que el frontend traduce (mismo estilo que
     AdminSmtp: objeto con `code` y datos), qué columna falla y el mensaje.
 
+    Rol del binding: el PUT acepta role != 'primary' (fallback/disabled) y el
+    contrato se exige IGUAL para esos roles, aunque hoy no se despachan (los
+    resolvers leen solo role='primary': jax-platform facet_resolver.py:277,
+    jax/core/facet_resolver.py:230). Decisión conservadora de la ronda 2 de
+    PR-J (2026-09-14): un fallback que no cumple el contrato es una faceta
+    rota esperando el día en que alguien lo promueva o lo empiece a leer.
+    Verificar al escribir cuesta una query; descubrirlo en el primer uso es
+    el incidente de jekyll otra vez.
+
     Qué se exige, MEDIDO contra TODOS los lectores que despachan con
     facet_binding.model_ref (2026-09-14, PR-J ronda 1; jax @fb8a8a1, solo
     lectura):
@@ -266,8 +276,12 @@ async def detalle_si_rompe_el_contrato(
     if detalle is not None:
         # WARNING y no ERROR: no se abortó ningún dispatch, se rechazó una
         # escritura. El ERROR "dispatch abortado" es del camino de chat.py.
+        motivo = {
+            "modelo_sin_contrato_de_dispatch": "modelo sin contrato de dispatch",
+            "modelo_de_otro_proveedor": "modelo de otro proveedor",
+        }[detalle["code"]]
         logger.warning(
-            f"escritura de facet_binding rechazada: modelo sin contrato de dispatch "
+            f"escritura de facet_binding rechazada: {motivo} "
             f"facet_key={facet_key!r} model={model_id!r} code={detalle['code']} "
             f"campos={detalle['campos']}"
         )

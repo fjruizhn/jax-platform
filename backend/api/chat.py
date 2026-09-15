@@ -930,6 +930,12 @@ async def _invoke_facet(
         # el UPDATE que siembra la fila). Vive acá y no en los validadores
         # desde 2026-09-14 (PR-J ronda 1): los validadores también los usan
         # los admins, donde no se aborta ningún dispatch.
+        # DESVÍO DELIBERADO del requisito ("mismo log, idéntico"): antes solo
+        # los dos casos NULL logueaban, ahora sale para CUALQUIER
+        # ModelDispatchConfigError (también un nombre de parámetro inválido o
+        # un tope <= 0, que antes solo subían como excepción) y suma
+        # facet/source. Es mejor así: toda abortada por catálogo deja rastro
+        # con qué faceta y qué camino (chat o canario) la disparó.
         logger.error(f"dispatch abortado: facet={facet!r} source={source!r}: {e}")
         raise            # SIEMPRE re-lanza: no puede volverse fail-open
     except Exception as e:

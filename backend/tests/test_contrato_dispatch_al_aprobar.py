@@ -75,19 +75,22 @@ async def _borrar_filas(ids):
 
 
 async def _binding(facet_key):
+    """La fila completa que los endpoints escriben, procedencia incluida: un
+    409 no puede tocar ni approved_by/approved_at."""
     rows = await _q(
-        "SELECT provider_id, model_ref, model_id FROM facet_binding "
+        "SELECT provider_id, model_ref, model_id, approved_by, approved_at FROM facet_binding "
         "WHERE facet_key=%s AND role='primary'", (facet_key,),
     )
     return rows[0]
 
 
 async def _restaurar(facet_key, binding):
-    provider_id, model_ref, model_id = binding
+    provider_id, model_ref, model_id, approved_by, approved_at = binding
     await _q(
-        "UPDATE facet_binding SET provider_id=%s, model_ref=%s, model_id=%s "
+        "UPDATE facet_binding SET provider_id=%s, model_ref=%s, model_id=%s, "
+        "approved_by=%s, approved_at=%s "
         "WHERE facet_key=%s AND role='primary'",
-        (provider_id, model_ref, model_id, facet_key), commit=True,
+        (provider_id, model_ref, model_id, approved_by, approved_at, facet_key), commit=True,
     )
 
 
@@ -257,9 +260,15 @@ def _assert_409_de_proveedor(resp, provider_binding, provider_modelo):
     assert (detail["provider_binding"], detail["provider_modelo"]) == (provider_binding, provider_modelo)
 
 
-def test_approve_hacia_modelo_de_otro_proveedor_es_409_y_no_toca_nada(client):
-    resp, estado, antes, despues, _ = _aprobar(client, "jekyll", OPENAI_COMPLETO)
+def test_approve_hacia_modelo_de_otro_proveedor_es_409_y_no_toca_nada(client, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        resp, estado, antes, despues, _ = _aprobar(client, "jekyll", OPENAI_COMPLETO)
     _assert_409_de_proveedor(resp, antes[0], "openai")
+    # El WARNING nombra el motivo real, no "sin contrato de dispatch".
+    avisos = [r.getMessage() for r in caplog.records if "escritura de facet_binding rechazada" in r.getMessage()]
+    assert avisos and "modelo de otro proveedor" in avisos[0], avisos
+    assert "sin contrato de dispatch" not in avisos[0]
     assert estado == ("pending", None)
     assert despues == antes
 
@@ -285,35 +294,55 @@ def test_el_guard_loguea_warning_y_no_dispatch_abortado(client, caplog):
     assert avisos and "jekyll" in avisos[0] and SIN_PARAM in avisos[0]
 
 
+# Nombre único: identifica la fila config_error que _invoke_facet escribe en
+# facet_health_event (jax_memory_test) para borrarla al terminar y no dejar a
+# jekyll "caída" para otros tests ni para quien mire la base de test.
+_MODELO_SIN_SEMBRAR = "modelo-sin-sembrar-prj-ronda2"
+
+
 async def _dispatch_real_sin_contrato(chat):
     """El camino de dispatch de verdad (_invoke_facet -> _call_openai_compat
-    con los validadores reales); solo se evita resolver la faceta y el gate
-    de las_manos. Devuelve la excepción en vez de dejarla escapar del
-    portal (nada de pytest.raises dentro de client.portal.call)."""
-    async def dispatch(facet, config, user_id, message, semantic_context, grounding=None):
-        await chat._call_openai_compat(
-            "https://api.example.com/v1", "sk-fake", "modelo-sin-sembrar",
-            "system", [], "hola", None, 4096,
-        )
-    original = chat._invoke_facet_dispatch
-    chat._invoke_facet_dispatch = dispatch
+    con los validadores reales); _invoke_facet_dispatch viene reemplazado por
+    monkeypatch para evitar solo resolver la faceta y el gate de las_manos.
+    Devuelve la excepción en vez de dejarla escapar del portal (nada de
+    pytest.raises dentro de client.portal.call)."""
     try:
         await chat._invoke_facet("jekyll", {}, "test-user", "hola")
     except chat.ModelDispatchConfigError as e:
         return e
-    finally:
-        chat._invoke_facet_dispatch = original
     return None
 
 
-def test_el_dispatch_real_sigue_logueando_dispatch_abortado_con_el_update(client, caplog):
+async def _eventos_de_la_prueba(borrar=False):
+    patron = f"%{_MODELO_SIN_SEMBRAR}%"
+    if borrar:
+        await _q("DELETE FROM facet_health_event WHERE facet='jekyll' AND detail LIKE %s",
+                 (patron,), commit=True)
+    rows = await _q("SELECT outcome FROM facet_health_event WHERE facet='jekyll' AND detail LIKE %s",
+                    (patron,))
+    return [outcome for (outcome,) in rows]
+
+
+def test_el_dispatch_real_sigue_logueando_dispatch_abortado_con_el_update(client, caplog, monkeypatch):
     import logging
     import api.chat as chat
-    with caplog.at_level(logging.ERROR, logger="api.chat"):
-        error = client.portal.call(_dispatch_real_sin_contrato, chat)
-    assert isinstance(error, chat.ModelDispatchConfigError), "el dispatch dejó de fallar cerrado"
-    errores = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
-    logueado = [m for m in errores if "dispatch abortado" in m]
-    assert logueado, errores
-    assert "modelo-sin-sembrar" in logueado[0]
-    assert "UPDATE model SET max_tokens_param" in logueado[0]
+
+    async def dispatch(facet, config, user_id, message, semantic_context, grounding=None):
+        await chat._call_openai_compat(
+            "https://api.example.com/v1", "sk-fake", _MODELO_SIN_SEMBRAR,
+            "system", [], "hola", None, 4096,
+        )
+    monkeypatch.setattr(chat, "_invoke_facet_dispatch", dispatch)
+    try:
+        with caplog.at_level(logging.ERROR, logger="api.chat"):
+            error = client.portal.call(_dispatch_real_sin_contrato, chat)
+        assert isinstance(error, chat.ModelDispatchConfigError), "el dispatch dejó de fallar cerrado"
+        errores = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        logueado = [m for m in errores if "dispatch abortado" in m]
+        assert logueado, errores
+        assert _MODELO_SIN_SEMBRAR in logueado[0]
+        assert "UPDATE model SET max_tokens_param" in logueado[0]
+        # Y el envoltorio registró el config_error (lo que se limpia abajo).
+        assert client.portal.call(_eventos_de_la_prueba) == ["config_error"]
+    finally:
+        assert client.portal.call(_eventos_de_la_prueba, True) == []
