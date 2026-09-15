@@ -10,7 +10,10 @@ Sin caché en el backend: una lectura por PRIMARY KEY de una tabla chica no
 justifica un caché con invalidación entre procesos (LAS CUATRO: sin medición
 previa, no hay caché nuevo). La prueba de carga del PR 1 lo mide.
 """
+from typing import Literal
+
 from fastapi import APIRouter, Response
+from pydantic import BaseModel
 
 from api.admin.config_admin import DEFAULT_CONFIG
 from db.connection import get_pool
@@ -23,7 +26,15 @@ TEMAS = ("dark", "light")
 CONSULTA = "SELECT config_value FROM axioma_config WHERE config_key = %s"
 
 
-@router.get("/api/apariencia")
+class Apariencia(BaseModel):
+    """Contrato de salida (M-1, revisión final del PR 1, 2026-09-14): un dict
+    más grande (o un DEFAULT_CONFIG inválido) falla ruidoso en la validación
+    de FastAPI en vez de salir al cliente."""
+
+    theme_default: Literal["dark", "light"]
+
+
+@router.get("/api/apariencia", response_model=Apariencia)
 async def apariencia(response: Response):
     response.headers["Cache-Control"] = "no-cache"
     pool = await get_pool()
