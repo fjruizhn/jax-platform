@@ -1128,7 +1128,15 @@ jobs:
           # test_admin_models_endpoints.py (sync con todos los providers o con
           # el enriquecimiento caidos: ok False + sync_con_errores). Vistos en
           # rojo antes de verde. Medido dos veces: 920 / 1.
-          PISO_PASSED = 920
+          # Task 3 fix ronda 1 (2026-09-15, revision de c706321): +3 en
+          # test_no_fail_open_except.py (except amplio que solo loguea, sin
+          # marca falla y con marca pasa -- mata la mutacion "logger.* cuenta
+          # como relanzar"; un archivo que no se puede parsear es violacion,
+          # antes se salteaba en silencio). La guardia del escaneo exige ademas
+          # jax_engine/, api/admin/, api/ y >= 120 archivos (sin test nuevo).
+          # Vistos en rojo (el parse con TypeError; los otros dos bajo su
+          # mutacion). Medido dos veces: 923 / 1.
+          PISO_PASSED = 923
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1540,7 +1548,10 @@ jobs:
       # de test_audit_ilegible.py); los 2 nuevos de
       # test_admin_models_endpoints.py piden `client` y se saltean. Medido dos
       # veces con JAX_CI_NO_DB=1: 396 / 525.
-      JAX_CI_MIN_PASSED: "396"
+      # Task 3 fix ronda 1 (2026-09-15, revision de c706321): +3 puros en
+      # test_no_fail_open_except.py (solo-loguea sin/con marca; archivo que no
+      # se puede parsear). Medido dos veces con JAX_CI_NO_DB=1: 399 / 525.
+      JAX_CI_MIN_PASSED: "399"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

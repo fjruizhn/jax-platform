@@ -114,13 +114,16 @@ def violations_in_source(source: str, filename: str = "<sintetico>") -> list[int
     return sorted(out)
 
 
-def find_fail_open_excepts() -> list[str]:
+def find_fail_open_excepts(files=None) -> list[str]:
     violations = []
-    for path in _iter_python_files():
+    for path in (_iter_python_files() if files is None else files):
         try:
             source = path.read_text(encoding="utf-8")
             lineas = violations_in_source(source, str(path))
         except (SyntaxError, UnicodeDecodeError):
+            # Fix ronda 1 (2026-09-15): antes `continue` -- un archivo que el
+            # escaner no puede leer quedaba sin revisar, en silencio.
+            violations.append(f"{path}: no se pudo parsear")
             continue
         violations.extend(f"{path}:{n}" for n in lineas)
     return violations
@@ -212,11 +215,41 @@ def test_sintetico_la_marca_en_el_cuerpo_no_alcanza():
     assert violations_in_source(src) == [4]
 
 
+def test_sintetico_except_amplio_que_solo_loguea_sin_marca_falla():
+    # Fix ronda 1 (2026-09-15): un _reraises que contara un logger.* como
+    # relanzar dejaba verdes todos los demas casos. Loguear no es relanzar.
+    assert violations_in_source(_src('logger.warning("x")')) == [4]
+
+
+def test_sintetico_except_amplio_que_solo_loguea_con_marca_pasa():
+    assert violations_in_source(_src('logger.warning("x")', marca="  # fail-soft: razon concreta")) == []
+
+
+# Medido el 2026-09-15 (fix ronda 1): 155 archivos .py en el escaneo. El piso
+# va por debajo a proposito: crecer no rompe; perder un arbol entero si.
+PISO_ARCHIVOS_ESCANEADOS = 120
+
+
 def test_el_escaneo_del_repo_ve_archivos_de_produccion():
     # Guardia del propio control: un escaneo que no ve nada pasa siempre.
     vistos = {p.relative_to(_THIS_REPO_ROOT).as_posix() for p in _iter_python_files()}
     assert "backend/api/chat.py" in vistos
     assert "backend/tests/test_no_fail_open_except.py" in vistos
+    for prefijo in ("backend/jax_engine/", "backend/api/admin/", "backend/api/"):
+        assert any(v.startswith(prefijo) for v in vistos), f"el escaneo no ve nada bajo {prefijo}"
+    assert len(vistos) >= PISO_ARCHIVOS_ESCANEADOS, (
+        f"el escaneo ve {len(vistos)} archivos (< {PISO_ARCHIVOS_ESCANEADOS}): se excluyo un arbol")
+
+
+def test_un_archivo_que_no_se_puede_parsear_es_violacion(tmp_path):
+    # Fix ronda 1 (2026-09-15): antes se salteaba en silencio, y un archivo
+    # que el escaner no puede leer nunca se revisaba.
+    roto = tmp_path / "roto.py"
+    roto.write_text("def f(:\n    pass\n")
+    no_utf8 = tmp_path / "latin.py"
+    no_utf8.write_bytes(b"x = '\xff\xfe'\n")
+    violaciones = find_fail_open_excepts(files=[roto, no_utf8])
+    assert violaciones == [f"{roto}: no se pudo parsear", f"{no_utf8}: no se pudo parsear"]
 
 
 def test_no_fail_open_except() -> None:
