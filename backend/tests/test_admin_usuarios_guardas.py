@@ -611,6 +611,75 @@ def test_alta_con_email_duplicado_concurrente_responde_409_sin_auditoria(client,
             client.portal.call(borrar_usuario, intruso)
 
 
+def test_editar_correo_repetido_concurrente_responde_409_sin_auditoria_ni_cambio(client, usuarios, monkeypatch):
+    """Fix round 1 (2026-09-15, hallazgo IMPORTANT de la revisión de ed73bab):
+    el precheck de PUT (~l.249, `SELECT 1 FROM jax_users WHERE email = %s AND
+    user_id <> %s`) no bloquea -- dos admins editando DOS usuarios distintos
+    al mismo correo pasan los dos el precheck. Acá el que "gana" la carrera
+    es OTRO admin editando a `o`: justo después de nuestro precheck (que no
+    encuentra nada, porque el correo todavía no existe en ningún lado), `o`
+    queda con el MISMO correo que estamos por escribir -- en mayúsculas, para
+    ejercitar también que el UNIQUE es case-insensitive (utf8mb4_uca1400_ai_ci).
+    El UPDATE perdedor (el nuestro) choca con el índice -> tiene que ser el
+    mismo 409 `email_ya_existe` del precheck, no un 500 de aiomysql.IntegrityError
+    sin capturar; la transacción revierte sin auditoría ni cambio de correo."""
+    from contextlib import asynccontextmanager
+
+    u, email_u = usuarios()
+    o, _ = usuarios()
+    nuevo = f"test-carrera-put-{uuid.uuid4().hex[:10]}@example.invalid"
+    transaccion_real = users_mod.transaccion
+
+    class _CursorQueDejaColarse:
+        def __init__(self, cur):
+            self._cur = cur
+
+        def __getattr__(self, nombre):
+            return getattr(self._cur, nombre)
+
+        async def execute(self, consulta, args=()):
+            resultado = await self._cur.execute(consulta, args)
+            if consulta.startswith("SELECT 1 FROM jax_users WHERE email"):
+                # El otro admin ya confirmó su PUT sobre `o`: mismo correo
+                # que el nuestro, con distinto casing.
+                await sql("UPDATE jax_users SET email = %s WHERE user_id = %s", (nuevo.upper(), o))
+            return resultado
+
+    @asynccontextmanager
+    async def con_carrera(*args, **kw):
+        async with transaccion_real(*args, **kw) as cur:
+            yield _CursorQueDejaColarse(cur)
+
+    monkeypatch.setattr(users_mod, "transaccion", con_carrera)
+    r = _put(client, u, email=nuevo)
+    assert (r.status_code, r.json().get("detail")) == (409, "email_ya_existe"), r.text
+    assert client.portal.call(_auditoria, u) == []
+    ((email_final,),) = client.portal.call(sql, "SELECT email FROM jax_users WHERE user_id = %s", (u,), True)
+    assert email_final == email_u
+
+
+def test_editar_con_el_mismo_correo_actual_no_hace_nada(client, usuarios):
+    """Fix round 1 (hallazgo MINOR): mandar el correo ACTUAL (ya recortado)
+    es un no-op -- mismo camino que "nada cambió" para rol/estado. Nada de
+    auditoría `update_email` ni de subir token_version por un correo que en
+    los hechos no cambió."""
+    u, email_u = usuarios()
+    r = _put(client, u, email=email_u)
+    assert r.status_code == 200, r.text
+    assert client.portal.call(_fila, u) == ("operator", "active", 0)
+    assert client.portal.call(_auditoria, u) == []
+
+
+def test_editar_solo_el_correo_no_corta_conexiones(client, usuarios, cortes):
+    """Fix round 1 (hallazgo MINOR): un cambio de SOLO correo no invalida
+    sesiones (no sube token_version, U11) y por lo tanto tampoco tiene que
+    cortar las conexiones WS/SSE ya abiertas -- nada quedó inválido."""
+    u, _ = usuarios()
+    nuevo = f"test-sin-corte-{uuid.uuid4().hex[:10]}@example.invalid"
+    assert _put(client, u, email=nuevo).status_code == 200
+    assert cortes == []
+
+
 # ------------------------------------------- fechas con zona (Task 4, ronda 1)
 # La sesión de MariaDB de la app corre en SYSTEM = CST (UTC-6; medido el
 # 2026-09-15 con @@session.time_zone y UTC_TIMESTAMP() vs NOW()). Antes estas

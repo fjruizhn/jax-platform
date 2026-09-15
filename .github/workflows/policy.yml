@@ -865,7 +865,15 @@ jobs:
           # correo inválido, correo repetido, alta con rol_invalido/email_invalido/
           # email_ya_existe). Vistos en rojo (422 extra_forbidden en el PUT, mensajes
           # sueltos en el alta) antes de verde. Medido dos veces: 821 / 1.
-          PISO_PASSED = 821
+          # Subido de 821 a 824 (2026-09-15, Task 2 fix ronda 1: la revisión de ed73bab
+          # encontró el mapeo IntegrityError -> email_ya_existe del PUT sin test): +3 en
+          # test_admin_usuarios_guardas.py (carrera del PUT con correo repetido por
+          # case-only, mismo patrón de cursor colado que el alta -- verificado en rojo
+          # quitando el try/except de la línea 258; correo idéntico al actual es un
+          # no-op sin auditoría -- verificado en rojo forzando cambia_email = True;
+          # un cambio de solo correo no corta WS/SSE -- verificado en rojo sacando el
+          # `if corta_sesiones:` de la línea 272). Medido dos veces: 824 / 1.
+          PISO_PASSED = 824
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1211,6 +1219,9 @@ jobs:
       # Admin usuarios etapa 5, Task 2 (2026-09-15): los 4 nuevos de
       # test_admin_usuarios_baja.py piden `client` y se saltean (sin cambio en
       # passed). Medido dos veces con JAX_CI_NO_DB=1: 369 / 453.
+      # Admin usuarios etapa 5, Task 2 fix ronda 1 (2026-09-15): los 3 nuevos de
+      # test_admin_usuarios_guardas.py piden `client` y se saltean (sin cambio en
+      # passed). Medido dos veces con JAX_CI_NO_DB=1: 369 / 456.
       JAX_CI_MIN_PASSED: "369"
     steps:
       - uses: actions/checkout@v4
