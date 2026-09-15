@@ -194,7 +194,7 @@ export default {
   hidePassword: 'Ocultar contraseña',
   // Motivo del cierre de sesión (2026-09-14, Task 4b): antes el interceptor
   // de api/client.js borraba la sesión en silencio ante un refresh fallido.
-  sesion_invalida: 'Tu sesión se cerró: tu usuario fue desactivado o cambió su acceso. Iniciá sesión de nuevo.',
+  sesion_invalida: 'Tu sesión se cerró: se inició sesión en otro lugar, o tu acceso cambió. Iniciá sesión de nuevo.',
   sesion_expirada: 'Tu sesión venció. Iniciá sesión de nuevo.',
   accountLocked: 'Cuenta bloqueada. Revisa tu correo.',
   accountLockedMinutes: (min) => `Cuenta bloqueada. Intenta de nuevo en ${min} minuto(s).`,
@@ -606,6 +606,8 @@ export default {
     smtp_password_no_ascii: 'La contraseña SMTP guardada tiene caracteres no ASCII (tildes o ñ) y el servidor no la acepta. Volvé a escribirla en Administración → Correo (SMTP).',
     email_invalido: 'El correo no es válido.',
     email_ya_existe: 'Ya existe un usuario con ese correo.',
+    password_igual_a_la_actual: 'La nueva contraseña tiene que ser distinta de la actual.',
+    cambio_de_password_requerido: 'Tenés que cambiar tu contraseña antes de seguir.',
   },
   adminAuditActions: {
     create: 'Alta',
@@ -618,6 +620,7 @@ export default {
     baja: 'Baja',
     password_changed_self: 'Cambió su contraseña',
     password_reset_completed: 'Restableció su contraseña',
+    password_set_by_admin: 'Contraseña fijada por un admin',
   },
   adminAuditUnknown: 'Acción desconocida',
 
@@ -641,6 +644,18 @@ export default {
   adminBajaDone: (email) => `${email} fue dado de baja.`,
   confirmSumLabel: (a, b) => `Resolvé ${a} + ${b} = ?`,
   confirmSumHint: 'Escribí el resultado para habilitar el botón.',
+
+  // Fijar contraseña por admin y cambio obligatorio (2026-09-15, U34)
+  adminUserSetPassword: 'Fijar contraseña',
+  adminSetPasswordTitle: (email) => `Fijar la contraseña de ${email}`,
+  adminSetPasswordHint: 'Sus sesiones abiertas se cierran y tendrá que cambiarla en su próximo inicio de sesión.',
+  adminSetPasswordSubmitting: 'Guardando…',
+  adminPasswordSetDone: (email) => `Contraseña fijada para ${email}. Tendrá que cambiarla al entrar.`,
+  forcedChangeTitle: 'Cambiá tu contraseña',
+  forcedChangeIntro: 'Un administrador fijó tu contraseña. Para seguir, elegí una nueva.',
+  forcedChangeDone: 'Contraseña cambiada. Ya podés seguir.',
+  forcedChangeLogout: 'Cerrar sesión',
+  myAccountSameAsCurrent: 'La nueva contraseña tiene que ser distinta de la que te dieron.',
 
   // Restaurar tareas pendientes (useJaxStore.js)
   taskRestoring: (id) => `_Tarea \`${id}\` — verificando estado…_`,

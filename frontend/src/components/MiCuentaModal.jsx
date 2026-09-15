@@ -10,12 +10,21 @@ import Dialogo from './Dialogo'
 // Colores por tokens (src/tema/tokens.css), misma estructura que el modal de
 // alta (CrearUsuarioModal). El comportamiento de diálogo (portal, #root inert,
 // foco, Escape) lo pone Dialogo (Ruling U27, 2026-09-15).
+//
+// `obligatorio` (2026-09-15, U34): el admin fijó la contraseña. RequireAuth
+// muestra este diálogo EN LUGAR de la app: sin Cancelar, sin Escape y sin el
+// bloque "Cerrar" del éxito; sigue pidiendo la actual (P2). La única salida
+// además de cambiarla es "Cerrar sesión" (/auth/logout admite la marca). Al
+// terminar, el store apaga la marca, RequireAuth monta la app y un toast avisa.
 const CAMPO = 'w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco'
 const ETIQUETA = 'block text-xs text-texto-suave mb-1 font-semibold uppercase tracking-wider'
 
-export default function MiCuentaModal({ onCerrar }) {
+export default function MiCuentaModal({ onCerrar, obligatorio = false }) {
   const { t } = useI18n()
   const cambiarMiPassword = useJaxStore((s) => s.cambiarMiPassword)
+  const logout = useJaxStore((s) => s.logout)
+  const saliendo = useJaxStore((s) => !!s.saliendo)
+  const addToast = useJaxStore((s) => s.addToast)
   const [actual, setActual] = useState('')
   const [nueva, setNueva] = useState('')
   const [confirmar, setConfirmar] = useState('')
@@ -33,6 +42,8 @@ export default function MiCuentaModal({ onCerrar }) {
     password_actual_incorrecta: t.myAccountWrongCurrent,
     password_corta: t.resetPasswordShort,
     password_larga: t.resetPasswordLong,
+    // P1 (U34): sólo con la marca prendida.
+    password_igual_a_la_actual: t.myAccountSameAsCurrent,
   }
 
   async function enviar(e) {
@@ -45,6 +56,11 @@ export default function MiCuentaModal({ onCerrar }) {
     setEnviando(true)
     try {
       await cambiarMiPassword(actual, nueva)
+      if (obligatorio) {
+        // El store ya apagó la marca: RequireAuth desmonta este diálogo.
+        addToast?.({ type: 'success', message: t.forcedChangeDone })
+        return
+      }
       setHecho(true)
     } catch (err) {
       if (err?.response?.status === 429) setError(t.myAccountTooMany)
@@ -55,8 +71,8 @@ export default function MiCuentaModal({ onCerrar }) {
   }
 
   return (
-    <Dialogo idTitulo="mi-cuenta-titulo" titulo={t.myAccount} claseTitulo="text-sm font-semibold text-texto mb-1" onCerrar={onCerrar}>
-        <p className="text-xs text-texto-tenue mb-4">{t.myAccountChangePassword}</p>
+    <Dialogo idTitulo="mi-cuenta-titulo" titulo={obligatorio ? t.forcedChangeTitle : t.myAccount} claseTitulo="text-sm font-semibold text-texto mb-1" cerrable={!obligatorio} onCerrar={onCerrar}>
+        <p className="text-xs text-texto-tenue mb-4">{obligatorio ? t.forcedChangeIntro : t.myAccountChangePassword}</p>
         {/* La región role="status" vive montada y vacía todo el diálogo y
             recibe el texto al terminar: una región viva insertada ya con su
             contenido no se anuncia de forma confiable. Las clases de caja van
@@ -82,7 +98,9 @@ export default function MiCuentaModal({ onCerrar }) {
               <div className="text-sm text-peligro bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2">{error}</div>
             )}
             <div className="flex gap-2 justify-end pt-2">
-              <button type="button" onClick={onCerrar} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminCreateCancel}</button>
+              {obligatorio
+                ? <button type="button" onClick={() => logout()} disabled={saliendo} aria-busy={saliendo} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-peligro disabled:opacity-50 transition-colors">{t.forcedChangeLogout}</button>
+                : <button type="button" onClick={onCerrar} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminCreateCancel}</button>}
               <button type="submit" disabled={enviando} className="px-4 py-1.5 rounded-lg bg-accion hover:bg-accion-hover text-sobre-color text-sm font-semibold disabled:opacity-50 transition-colors">
                 {enviando ? t.myAccountSubmitting : t.myAccountSubmit}
               </button>

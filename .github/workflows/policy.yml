@@ -378,8 +378,38 @@ jobs:
             // cerrarBajaSiEs sólo toca el diálogo si sigue siendo el suyo).
             // Vistos en rojo antes de verde. Medido con vitest run: 339
             // passed en 48 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 339) {
-              console.error("PISO ROTO: se esperaban 339 tests de vitest CORRIDOS y 0 fallidos.");
+            // 339 -> 368 el 2026-09-15 (Fijar contraseña, Task 4: U34, sesión
+            // única F2, F5): +1 useCerrarConEscape.test.js (null no cierra ni
+            // revienta) +1 Dialogo.test.jsx (cerrable={false}) +4
+            // MiCuentaModal.test.jsx (obligatorio: no cerrable, "Cerrar
+            // sesión", password_igual_a_la_actual traducido, toast al terminar)
+            // +4 RequireAuth.test.jsx (nuevo: app sin la marca, sólo el cambio
+            // con ella, foco a [data-foco-inicial] tras el cambio y no antes)
+            // +3 useJaxStore.test.js (el cambio apaga la marca; logout llama a
+            // /auth/logout ANTES de limpiar, y limpia igual si falla) +2
+            // client.test.js (403 cambio_de_password_requerido prende la marca
+            // sin refresh; otro 403 no) +2 websocket.test.js (nuevo: 4001 no
+            // reconecta, 1006 sí) +3 FijarPasswordModal.test.jsx (nuevo) +8
+            // AdminUsers.test.jsx (fijar OK y con error, exclusión en los dos
+            // sentidos -- 1 + 4 casos --, un éxito tardío no cierra el de otro
+            // usuario) +1 ResetPassword.test.jsx (F5). Vistos en rojo antes de
+            // verde (los 2 del WebSocket, bajo su mutación). Medido dos veces
+            // con vitest run: 368 passed en 51 archivos, 0 fallidos.
+            // 368 -> 379 el 2026-09-15 (fix round 1 de la Task 4 de Fijar
+            // contraseña, review de dd47d82): +3 AdminUsers.test.jsx (con
+            // baja, historial o alta abiertos, abrir "Fijar contraseña" los
+            // cierra -- rojos bajo a1/a3/a4) +2 useJaxStore.test.js (doble
+            // logout = un solo POST y la misma promesa `saliendo`; logout
+            // borra avisoSesion) +3 client.test.js (cada pedido lleva su
+            // _epoch; un 401 con el logout en vuelo o de una época vieja no
+            // refresca ni avisa) +1 BarraUsuario.test.jsx y +1
+            // MiCuentaModal.test.jsx (botón de salir disabled y aria-busy en
+            // vuelo) +1 Admin.test.jsx (nuevo: <main> con data-foco-inicial).
+            // BottomBar.test.jsx suma una aserción del marcador, no un test.
+            // Medido dos veces con vitest run: 379 passed en 52 archivos, 0
+            // fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 379) {
+              console.error("PISO ROTO: se esperaban 379 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -947,7 +977,81 @@ jobs:
           # cualquiera de las dos sola ya basta para el 401, así que sacar una deja a la
           # otra cubriendo (defensa en profundidad real, no un hueco de la prueba);
           # medido con las dos mutaciones por separado, revertidas. Medido dos veces: 846 / 1.
-          PISO_PASSED = 846
+          # Subido de 846 a 848 (2026-09-15, fijar contraseña por admin, Task 1 --
+          # jax_users.must_change_password): +2 en test_fijar_password.py (nuevo --
+          # la columna es tinyint NOT NULL DEFAULT 0, y verificar_sesion informa la
+          # marca leyéndola en la MISMA consulta por PK -- test_la_consulta_del_
+          # middleware_va_por_primary y test_me_hace_una_sola_consulta_a_jax_users
+          # siguen en const/PRIMARY y en 1 consulta). Sólo se INFORMA la marca; no
+          # se hace cumplir (eso es la Task 2). Vistos en rojo (columna inexistente,
+          # luego Unknown column) antes de verde. Medido dos veces: 848 / 1.
+          # Subido de 848 a 859 (2026-09-15, fijar contraseña por admin, Task 2 --
+          # la marca se CUMPLE, negado por defecto en verificar_sesion): +11 en
+          # test_fijar_password.py (403 cambio_de_password_requerido fuera de /me,
+          # Mi cuenta, refresh y logout; WS 4001; reverificar_sesion rechaza; 401
+          # antes que 403; login y /me informan la marca; Mi cuenta y el reset la
+          # limpian; password_igual_a_la_actual; recorrido de las rutas EFECTIVAS
+          # con iter_route_contexts y búsqueda del opt-in en backend/). 9 vistos en
+          # rojo por el motivo del brief; los 2 de control pasan desde el rojo.
+          # Medido dos veces: 859 / 1.
+          # Subido de 859 a 861 (2026-09-15, Task 2 fix ronda 1): +2 en
+          # test_fijar_password.py -- test_mi_cuenta_sin_la_marca_acepta_la_misma_
+          # contrasena (P1 SÓLO con la marca; rojo con M3, quitar el
+          # `user.must_change_password and`) y test_el_guard_del_opt_in_ve_las_
+          # variantes_escondidas (el guard del opt-in lee el AST: `= True` con
+          # espacios y **{...} lo ponen en rojo). Medido dos veces: 861 / 1.
+          # Sin cambio en 861 (2026-09-15, Task 2 fix ronda 2, Ruling F3): el
+          # guard resuelve los alias de import (`... import verificar_sesion as
+          # vs`); el caso nuevo va DENTRO de test_el_guard_del_opt_in_ve_las_
+          # variantes_escondidas, sin tests nuevos. Medido dos veces: 861 / 1.
+          # Subido de 861 a 870 (2026-09-15, fijar contraseña por admin, Task 3 --
+          # POST /api/admin/users/{id}/password): +9 en test_fijar_password.py
+          # (cambia la contraseña, sube token_version, prende la marca, audita
+          # password_set_by_admin sin detalle y corta tras el commit; regla única
+          # sin tocar nada; limpia el bloqueo; borra SÓLO los enlaces pendientes;
+          # un inactivo queda inactivo; auto-acción 403, baja/inexistente 404,
+          # operator 403, extra 422; corte fail-soft; bcrypt antes de la
+          # transacción en READ COMMITTED y orden superadmins -> usuario ->
+          # UPDATE -> tokens -> auditoría; Mi cuenta concurrente no deshace lo
+          # fijado). 9 vistos en rojo (405, la ruta no existía) antes de verde;
+          # 8 mutaciones capturadas. Medido dos veces: 870 / 1.
+          # Subido de 870 a 874 (2026-09-15, Task 3 fix ronda 1, Ruling F5 -- P1
+          # también por el enlace de recuperación): +4 en test_fijar_password.py
+          # (la contraseña del admin por el enlace da 400 password_igual_a_la_actual
+          # sin consumir el token y el mismo token sirve después con otra; sin la
+          # marca se acepta la misma; defensa bajo el bloqueo con costura en
+          # verify_password -> reset_token_invalido sin escribir; EXPLAIN de
+          # SQL_TOKEN_DE_RECUPERACION: token por índice único y usuario por
+          # PRIMARY). 3 vistos en rojo antes de verde (el de control pasa desde el
+          # rojo y cae con la mutación "sin el alcance de la marca"); 3 mutaciones
+          # capturadas. Medido dos veces: 874 / 1.
+          # Subido de 874 a 875 (2026-09-15, Task 3 fix ronda 2): +1 en
+          # test_fijar_password.py -- test_el_reset_con_la_marca_no_corre_bcrypt_
+          # con_la_fila_tomada (sonda FOR UPDATE NOWAIT por otra conexión desde el
+          # stub de verify_password: ningún bcrypt con la fila del usuario tomada).
+          # Rojo en ~1 s con (d') "un verify_password extra bajo el bloqueo" y con
+          # (d) "el chequeo de P1 movido dentro de la transacción" (1205 al
+          # instante). El EXPLAIN del token ahora nombra el índice (`token`).
+          # Medido dos veces: 875 / 1.
+          # Subido de 875 a 888 (2026-09-15, Task 3b, sesión única, Ruling F2):
+          # +13 en tests/test_sesion_unica.py (el segundo login mata la primera
+          # sesión; login fallido -- contraseña, bloqueo, inactivo -- no sube ni
+          # corta; inactivo durante el bcrypt -> 403 sin tokens; dos logins
+          # simultáneos dejan una sola sesión válida y la base en +2; logout con
+          # cookie válida sube y corta post-commit; 5 casos sin sesión viva que
+          # sólo borran la cookie; logout con la marca; un error de la base en el
+          # logout no se traga, ni en la escritura ni en la lectura de la
+          # sesión). Adaptados 3 existentes que asumían que el login no sube la
+          # versión. 6 vistos en rojo antes de verde; 7 mutaciones capturadas.
+          # Medido dos veces: 888 / 1.
+          # Subido de 888 a 890 (2026-09-15, Task 3b fix ronda 1): +2 en
+          # test_sesion_unica.py -- un cambio de contraseña confirmado durante
+          # el bcrypt deja al login sin tokens (F1: el bump exige el hash
+          # verificado) y el logout de A no mata la sesión nueva de B (F2: el
+          # bump exige la versión verificada). Los 2 vistos en rojo sobre 7218b49;
+          # las 2 mutaciones (sin el hash / sin la versión) capturadas.
+          # Medido dos veces: 890 / 1.
+          PISO_PASSED = 890
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1311,7 +1415,39 @@ jobs:
       # Tanda del review final de la etapa 5 (2026-09-15, Ruling U36, m4): el nuevo
       # test_refresh_no_revive_a_un_dado_de_baja pide `client` y se saltea (sin cambio
       # en passed). Medido dos veces con JAX_CI_NO_DB=1: 371 / 476.
-      JAX_CI_MIN_PASSED: "371"
+      # Fijar contraseña por admin, Task 1 (2026-09-15): los 2 nuevos de
+      # test_fijar_password.py piden `client` y se saltean (sin cambio en passed).
+      # Medido dos veces con JAX_CI_NO_DB=1: 371 / 478.
+      # Fijar contraseña por admin, Task 2 (2026-09-15): +2 puros
+      # (test_solo_me_y_mi_cuenta_admiten_la_marca importa la app sin arrancarla;
+      # test_nadie_mas_admite_la_marca lee el código); los otros 9 nuevos de
+      # test_fijar_password.py piden `client` y se saltean.
+      # Medido dos veces con JAX_CI_NO_DB=1: 373 / 487.
+      # Task 2 fix ronda 1 (2026-09-15): +1 puro
+      # (test_el_guard_del_opt_in_ve_las_variantes_escondidas); el nuevo
+      # test_mi_cuenta_sin_la_marca_acepta_la_misma_contrasena pide `client` y se
+      # saltea. Medido dos veces con JAX_CI_NO_DB=1: 374 / 488.
+      # Task 2 fix ronda 2 (2026-09-15, Ruling F3): sin cambio -- el caso del
+      # alias de import va dentro de un test puro existente.
+      # Medido dos veces con JAX_CI_NO_DB=1: 374 / 488.
+      # Fijar contraseña por admin, Task 3 (2026-09-15): los 9 nuevos de
+      # test_fijar_password.py (POST /api/admin/users/{id}/password) piden
+      # `client` y se saltean (sin cambio en passed).
+      # Medido dos veces con JAX_CI_NO_DB=1: 374 / 497.
+      # Task 3 fix ronda 1 (2026-09-15, Ruling F5): los 4 nuevos de
+      # test_fijar_password.py (P1 por el enlace de recuperación) piden
+      # `client` y se saltean (sin cambio en passed).
+      # Medido dos veces con JAX_CI_NO_DB=1: 374 / 501.
+      # Task 3 fix ronda 2 (2026-09-15): el nuevo
+      # test_el_reset_con_la_marca_no_corre_bcrypt_con_la_fila_tomada pide
+      # `client` y se saltea (sin cambio en passed).
+      # Medido dos veces con JAX_CI_NO_DB=1: 374 / 502.
+      # Task 3b (2026-09-15, sesión única): los 13 nuevos de
+      # tests/test_sesion_unica.py piden `client` y se saltean (sin cambio en
+      # passed). Medido dos veces con JAX_CI_NO_DB=1: 374 / 515.
+      # Task 3b fix ronda 1 (2026-09-15): los 2 nuevos piden `client` y se
+      # saltean (sin cambio en passed). Medido dos veces con JAX_CI_NO_DB=1: 374 / 517.
+      JAX_CI_MIN_PASSED: "374"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

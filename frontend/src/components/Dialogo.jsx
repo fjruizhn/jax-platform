@@ -20,6 +20,8 @@ import { useCerrarConEscape } from '../lib/useCerrarConEscape'
 //   elemento dentro de un subárbol inert no puede tomar el foco.
 // - Escape cierra (useCerrarConEscape). Un clic en el fondo NO: un clic
 //   accidental no debe perder lo escrito (Ruling U24).
+// - `cerrable={false}` (cambio obligatorio, U34): Escape no cierra; el modal
+//   no dibuja botón de cerrar. Lo demás (portal, inert, foco, ARIA) no cambia.
 // - role="dialog", aria-modal="true" y aria-labelledby al título.
 //
 // Colores: los mismos tokens que tenían los modales (velo bg-fondo/70, panel
@@ -32,10 +34,10 @@ function raiz() {
   return document.getElementById('root')
 }
 
-export default function Dialogo({ idTitulo, titulo, claseTitulo = 'text-sm font-semibold text-texto mb-4', onCerrar, className = 'max-w-md', children }) {
+export default function Dialogo({ idTitulo, titulo, claseTitulo = 'text-sm font-semibold text-texto mb-4', onCerrar, cerrable = true, className = 'max-w-md', children }) {
   const panel = useRef(null)
   const tituloRef = useRef(null)
-  useCerrarConEscape(onCerrar)
+  useCerrarConEscape(cerrable ? onCerrar : null)
 
   // useLayoutEffect: el disparador todavía tiene el foco (nada pintó aún) y
   // el cleanup corre antes de que el navegador reciba otro evento.

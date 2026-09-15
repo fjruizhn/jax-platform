@@ -5,6 +5,7 @@ import { useJaxStore } from '../../store/useJaxStore'
 import EditarUsuarioModal from '../../components/admin/EditarUsuarioModal'
 import HistorialUsuario from '../../components/admin/HistorialUsuario'
 import CrearUsuarioModal from '../../components/admin/CrearUsuarioModal'
+import FijarPasswordModal from '../../components/admin/FijarPasswordModal'
 import ConfirmacionSuma from '../../components/ConfirmacionSuma'
 import { mensajeDeError } from './erroresAdmin'
 import { codigoDe } from '../../api/errores'
@@ -50,6 +51,19 @@ export default function AdminUsers() {
     }
     return false
   }
+  // Fijar contraseña (2026-09-15, decisiones de Fernando que revierten U2):
+  // el mismo patrón que la baja -- estado espejado en un ref con un único
+  // punto de escritura, y cerrarFijarSiEs para que un éxito que llega tarde no
+  // cierre el diálogo de OTRO usuario abierto mientras tanto.
+  const [fijandoPassword, setFijandoPasswordState] = useState(null)
+  const fijandoPasswordRef = useRef(null)
+  function fijarFijandoPassword(u) {
+    fijandoPasswordRef.current = u
+    setFijandoPasswordState(u)
+  }
+  function cerrarFijarSiEs(userId) {
+    if (fijandoPasswordRef.current?.user_id === userId) fijarFijandoPassword(null)
+  }
   // Ruling U35 (WCAG 2.4.3, 2026-09-15): tras una baja exitosa, Dialogo
   // devuelve el foco al botón "Dar de baja" de la fila (su cleanup de
   // useLayoutEffect al desmontarse -- ver components/Dialogo.jsx), y load()
@@ -78,11 +92,12 @@ export default function AdminUsers() {
   // AdminSidebar): Dialogo marca #root entero (Ruling U27, 2026-09-15).
 
   // Etapa 5 (Ruling U28): la baja (ConfirmacionSuma) entra a la misma
-  // exclusión mutua.
+  // exclusión mutua. Fijar contraseña (2026-09-15) también.
 
   function abrirCrear() {
     setEditando(null)
     setHistorialDe(null)
+    fijarFijandoPassword(null)
     fijarDandoDeBaja(null)
     setShowCreate(true)
   }
@@ -90,6 +105,7 @@ export default function AdminUsers() {
   function abrirEdicion(u) {
     setHistorialDe(null)
     setShowCreate(false)
+    fijarFijandoPassword(null)
     fijarDandoDeBaja(null)
     setEditando(u)
   }
@@ -97,6 +113,7 @@ export default function AdminUsers() {
   function abrirHistorial(u) {
     setEditando(null)
     setShowCreate(false)
+    fijarFijandoPassword(null)
     fijarDandoDeBaja(null)
     setHistorialDe(u)
   }
@@ -104,8 +121,17 @@ export default function AdminUsers() {
   function abrirBaja(u) {
     setEditando(null)
     setShowCreate(false)
+    fijarFijandoPassword(null)
     setHistorialDe(null)
     fijarDandoDeBaja(u)
+  }
+
+  function abrirFijarPassword(u) {
+    setEditando(null)
+    setShowCreate(false)
+    setHistorialDe(null)
+    fijarDandoDeBaja(null)
+    fijarFijandoPassword(u)
   }
 
   function avisarError(err) {
@@ -167,6 +193,20 @@ export default function AdminUsers() {
     try {
       const { data } = await api.post(`/admin/users/${u.user_id}/reset-link`)
       avisarExito(t.adminResetLinkSent(data.to))
+    } catch (err) {
+      avisarError(err)
+    }
+  }
+
+  // Fijar contraseña: el backend cierra las sesiones del usuario y le prende
+  // la marca de cambio obligatorio. Un error deja el diálogo abierto con su
+  // toast.
+  async function fijarPassword(nueva) {
+    const u = fijandoPassword
+    try {
+      await api.post(`/admin/users/${u.user_id}/password`, { new_password: nueva })
+      cerrarFijarSiEs(u.user_id)
+      avisarExito(t.adminPasswordSetDone(u.email))
     } catch (err) {
       avisarError(err)
     }
@@ -262,6 +302,7 @@ export default function AdminUsers() {
                     )}
                     <button onClick={() => handleRevoke(u)} className={ACCION_NEUTRA}>{t.adminUserRevokeSessions}</button>
                     <button onClick={() => handleResetLink(u)} className={ACCION_NEUTRA}>{t.adminUserSendResetLink}</button>
+                    <button onClick={() => abrirFijarPassword(u)} className={ACCION_NEUTRA}>{t.adminUserSetPassword}</button>
                     <button onClick={() => abrirHistorial(u)} className={ACCION_NEUTRA}>{t.adminUserHistory}</button>
                     <button
                       onClick={() => abrirBaja(u)}
@@ -287,6 +328,10 @@ export default function AdminUsers() {
           onConfirmar={confirmarBaja}
           onCancelar={() => fijarDandoDeBaja(null)}
         />
+      )}
+
+      {fijandoPassword && (
+        <FijarPasswordModal usuario={fijandoPassword} onFijar={fijarPassword} onCerrar={() => fijarFijandoPassword(null)} />
       )}
 
       {showCreate && <CrearUsuarioModal onCrear={crearUsuario} onCerrar={() => setShowCreate(false)} />}

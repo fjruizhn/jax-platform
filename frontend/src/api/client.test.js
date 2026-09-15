@@ -182,3 +182,53 @@ describe('client.js -- 401 durante un cambio de contraseña en vuelo', () => {
     expect(setStateMock).toHaveBeenCalledWith({ token: 'refrescado' })
   })
 })
+
+// U34 (2026-09-15): el admin fijó la contraseña. La sesión es válida pero el
+// backend niega todo salvo /me, /me/password, /refresh y /logout con 403
+// cambio_de_password_requerido. El interceptor prende la marca (RequireAuth
+// muestra el cambio obligatorio) y deja seguir el error: sin refresh, sin
+// reintento, sin bucle.
+describe('client.js -- 403 cambio_de_password_requerido (U34)', () => {
+  const err403 = (detail) => ({ response: { status: 403, data: { detail } }, config: { headers: {} } })
+
+  it('prende la marca en el usuario del store, sin refresh ni reintento', async () => {
+    getStateMock.mockReturnValue({ token: 't', user: { user_id: 5 } })
+    await expect(onRejected(err403('cambio_de_password_requerido'))).rejects.toBeTruthy()
+    expect(setStateMock).toHaveBeenCalledTimes(1)
+    expect(setStateMock).toHaveBeenCalledWith({ user: { user_id: 5, must_change_password: true } })
+    expect(axiosPostMock).not.toHaveBeenCalled()
+  })
+
+  it('otro 403 no toca el store', async () => {
+    getStateMock.mockReturnValue({ token: 't', user: { user_id: 5 } })
+    await expect(onRejected(err403('Solo superadmin'))).rejects.toBeTruthy()
+    expect(setStateMock).not.toHaveBeenCalled()
+  })
+})
+
+// Fix round 1 (review de dd47d82): un 401 durante o después de un logout
+// VOLUNTARIO no es "la sesión se cerró en otro lugar": sin refresh y sin aviso.
+// El caso de un login más nuevo en otro lado (misma época, sin logout en
+// vuelo) sigue mostrando el aviso: lo cubre 'client.js -- aviso de por qué se
+// cerró la sesión'.
+describe('client.js -- 401 durante o después de un logout voluntario', () => {
+  it('cada pedido lleva la época de sesión con la que salió', () => {
+    getStateMock.mockReturnValue({ token: 't', _sessionEpoch: 7 })
+    const onRequest = requestUse.mock.calls[0][0]
+    expect(onRequest({ headers: {} })._epoch).toBe(7)
+  })
+
+  it('con el logout en vuelo: sin refresh ni aviso', async () => {
+    getStateMock.mockReturnValue({ token: 't', _sessionEpoch: 3, saliendo: new Promise(() => {}) })
+    await expect(onRejected({ ...err401('sesion_invalida'), config: { headers: {}, _epoch: 3 } })).rejects.toBeTruthy()
+    expect(axiosPostMock).not.toHaveBeenCalled()
+    expect(setStateMock).not.toHaveBeenCalled()
+  })
+
+  it('con la época ya cambiada (el logout terminó): sin refresh ni aviso', async () => {
+    getStateMock.mockReturnValue({ token: null, _sessionEpoch: 4, saliendo: null })
+    await expect(onRejected({ ...err401('sesion_invalida'), config: { headers: {}, _epoch: 3 } })).rejects.toBeTruthy()
+    expect(axiosPostMock).not.toHaveBeenCalled()
+    expect(setStateMock).not.toHaveBeenCalled()
+  })
+})

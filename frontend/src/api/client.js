@@ -40,6 +40,10 @@ async function tokenTrasCambioDePassword(config) {
   return useJaxStore.getState().token
 }
 
+// U34 (2026-09-15): el admin fijó la contraseña. La sesión es válida, pero el
+// backend niega todo salvo /me, /me/password, /refresh y /logout con este 403.
+const CAMBIO_REQUERIDO = 'cambio_de_password_requerido'
+
 const api = axios.create({
   baseURL: '/api',
   withCredentials: true,
@@ -50,13 +54,34 @@ api.interceptors.request.use((config) => {
   if (token && !config.headers.Authorization) {
     config.headers.Authorization = `Bearer ${token}`
   }
+  // Época de sesión con la que salió el pedido (fix round 1 del review de
+  // dd47d82): un 401 de un pedido de una sesión que ya terminó no es un aviso.
+  config._epoch = useJaxStore.getState()._sessionEpoch
   return config
 })
 
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
+    // U34: sin refresh ni reintento (el token vale; reintentar daría otro 403).
+    // Se prende la marca y RequireAuth desmonta la app y muestra el cambio
+    // obligatorio: ya no sale ningún pedido más, así que no hay bucle.
+    if (err.response?.status === 403 && codigoDe(err) === CAMBIO_REQUERIDO) {
+      const { user } = useJaxStore.getState()
+      if (user && !user.must_change_password) useJaxStore.setState({ user: { ...user, must_change_password: true } })
+      return Promise.reject(err)
+    }
     const esAuthSinReintento = ENDPOINTS_DE_AUTH_SIN_REINTENTO.includes(err.config?.url)
+    // Fix round 1 (review de dd47d82): un 401 durante un logout voluntario (en
+    // vuelo) o de un pedido de una época de sesión ya cerrada no es "la sesión
+    // se cerró en otro lugar": sin refresh y sin aviso. Un login más nuevo en
+    // OTRO lado no cambia la época de esta pestaña: ese 401 sigue al refresh y
+    // al aviso sesion_invalida.
+    if (err.response?.status === 401) {
+      const { saliendo, _sessionEpoch } = useJaxStore.getState()
+      const epocaVieja = err.config?._epoch !== undefined && err.config._epoch !== _sessionEpoch
+      if (saliendo || epocaVieja) return Promise.reject(err)
+    }
     if (err.response?.status === 401 && !err.config?._retried && !esAuthSinReintento) {
       const tokenNuevo = await tokenTrasCambioDePassword(err.config)
       if (tokenNuevo) {

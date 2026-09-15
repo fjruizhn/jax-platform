@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from auth.models import AuthUser, LoginRequest, LoginResponse, MeResponse, RefreshResponse
 from auth.jwt import REFRESH_EXPIRE_SECONDS, create_access_token, create_refresh_token, decode_token
-from auth.middleware import get_current_user, verificar_sesion
+from auth.middleware import get_current_user_con_cambio_pendiente, verificar_sesion
 from auth import rate_limit
 from auth.password_rules import problema_de_password
 from db.connection import get_pool
@@ -71,7 +71,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT user_id, tenant_id, email, password_hash, role, status, "
-                "failed_attempts, locked_until, token_version "
+                "failed_attempts, locked_until, token_version, must_change_password "
                 "FROM jax_users WHERE email = %s",
                 (req.email,),
             )
@@ -83,7 +83,8 @@ async def login(req: LoginRequest, request: Request, response: Response):
         await verify_password(req.password, _HASH_DE_RELLENO)
         raise _credenciales_invalidas()
 
-    user_id, tenant_id, email, password_hash, role, user_status, failed_attempts, locked_until, token_version = row
+    (user_id, tenant_id, email, password_hash, role, user_status, failed_attempts, locked_until, token_version,
+     must_change_password) = row
     now = utc_ahora()
     bloqueada = bool(locked_until and locked_until > now)
 
@@ -117,14 +118,46 @@ async def login(req: LoginRequest, request: Request, response: Response):
             detail=f"Cuenta bloqueada. Intenta de nuevo en {remaining} minuto(s).",
         )
 
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL, last_login = NOW() "
-                "WHERE user_id = %s",
-                (user_id,),
-            )
+    # Sesión única (2026-09-15, Task 3b, Ruling F2): el login EXITOSO -- y
+    # sólo él; ningún camino de error de arriba escribe token_version -- sube
+    # la versión, así que toda sesión anterior de este usuario muere. Sube y
+    # RELEE en la misma transacción: la fila queda bloqueada hasta el commit,
+    # así que con dos logins simultáneos el segundo UPDATE espera, incrementa
+    # sobre el primero y cada uno emite la versión que él escribió (gana el
+    # último). Nunca "versión leída arriba + 1": esa lectura no bloquea, y dos
+    # logins emitirían la misma versión vieja -> ninguna sesión viva.
+    # `status = 'active'` en el WHERE: si en la ventana del bcrypt un admin lo
+    # desactivó o lo dio de baja, 0 filas -> la misma respuesta que un inactivo.
+    # Bloqueos: una sola fila de jax_users, por PK, sin nada tomado antes ni
+    # pedido después (el mismo argumento que Mi cuenta: sin ciclo con las
+    # escrituras de admin). READ COMMITTED (U33). bcrypt quedó arriba, fuera.
+    # Fix ronda 1 (2026-09-15, F1): `password_hash = %s` ata el bump al hash
+    # que verificó el bcrypt. Si en esa ventana confirmó un cambio de
+    # contraseña (fijar por admin, reset, Mi cuenta), la contraseña probada ya
+    # no es la vigente: 0 filas, sin tokens, sin cookie, sin corte -- si no, el
+    # bump se apilaba sobre la versión nueva y emitía tokens VÁLIDOS con la
+    # marca vieja. (Revocar sesiones y desbloquear no cambian el hash: un login
+    # que llega después de ellos sigue ganando, a propósito.)
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        await cur.execute(
+            "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL, last_login = NOW(), "
+            "token_version = token_version + 1 "
+            "WHERE user_id = %s AND status = 'active' AND password_hash = %s",
+            (user_id, password_hash),
+        )
+        if cur.rowcount != 1:
+            # Por PK, dentro de la misma transacción: decide sólo la respuesta.
+            await cur.execute("SELECT status FROM jax_users WHERE user_id = %s", (user_id,))
+            vigente = await cur.fetchone()
+            if vigente is None or vigente[0] != "active":
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
+            raise _credenciales_invalidas()
+        await cur.execute("SELECT token_version FROM jax_users WHERE user_id = %s", (user_id,))
+        (token_version,) = await cur.fetchone()
 
+    # Ruling U9: después del commit, fail-soft. Cierra el WS/SSE de la sesión
+    # vieja ya mismo (si no, seguirían abiertos hasta su próxima verificación).
+    await _cortar_conexiones(user_id)
     access = _emitir_tokens(response, str(user_id), str(tenant_id), role, token_version)
 
     return LoginResponse(
@@ -133,6 +166,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         tenant_id=tenant_id,
         role=role,
         email=email,
+        must_change_password=bool(must_change_password),
     )
 
 
@@ -145,14 +179,18 @@ async def refresh(refresh_token: str = Cookie(None)):
     # nuevo lleva el rol y la versión de la BASE, no los del refresh.
     # La cookie NO se rota: rotarla haría deslizante la sesión de 7 días, y la
     # versión ya invalida el refresh viejo cuando hace falta.
-    user = await verificar_sesion(decode_token(refresh_token), "refresh")
+    # U34: la renovación se admite con la marca; sin ella, el access de 15 min
+    # vence en medio del cambio obligatorio. El access nuevo no lleva la marca:
+    # la lee verificar_sesion de la base en cada request, así que se vuelve a
+    # hacer cumplir en el siguiente.
+    user = await verificar_sesion(decode_token(refresh_token), "refresh", admite_cambio_pendiente=True)
     access = create_access_token(user.user_id, user.tenant_id, user.role, user.token_version)
     return RefreshResponse(access_token=access)
 
 
 @router.get("/me", response_model=MeResponse)
-async def me(user: AuthUser = Depends(get_current_user)):
-    # get_current_user ya pasó por verificar_sesion (una SELECT por PK que
+async def me(user: AuthUser = Depends(get_current_user_con_cambio_pendiente)):
+    # get_current_user_con_cambio_pendiente ya pasó por verificar_sesion (una SELECT por PK que
     # trae status/role/token_version/email): no hace falta un segundo SELECT
     # acá. Si el usuario no existiera, verificar_sesion ya habría cortado con
     # 401 (fail-closed) antes de llegar a este punto (code review, M-3).
@@ -161,11 +199,52 @@ async def me(user: AuthUser = Depends(get_current_user)):
         tenant_id=int(user.tenant_id),
         role=user.role,
         email=user.email,
+        must_change_password=user.must_change_password,
     )
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(response: Response, refresh_token: str = Cookie(None)):
+    """Sesión única (2026-09-15, Task 3b, Ruling F2): salir mata la sesión EN
+    EL SERVIDOR, no sólo la cookie del navegador. La sesión se identifica por
+    la cookie de refresh (como /refresh) y se mata subiendo token_version; el
+    access de 15 min y cualquier copia del refresh quedan con la versión vieja.
+
+    Nunca responde 401 (el frontend no puede quedar en un bucle al salir): sin
+    cookie, con un token inválido o vencido, con la versión vieja o con un
+    usuario inactivo o dado de baja no hay sesión viva que matar -> sólo se
+    borra la cookie, sin escribir. Sin fila de auditoría: salir es una acción
+    rutinaria del propio usuario.
+
+    Admite la marca de cambio obligatorio (U34): quien la tiene también tiene
+    que poder salir. Es el tercer llamador con el opt-in, declarado en
+    tests/test_fijar_password.py::test_nadie_mas_admite_la_marca."""
+    if refresh_token:
+        try:
+            # decode_token convierte el JWTError en HTTPException(401) y
+            # verificar_sesion rechaza con HTTPException: los dos significan
+            # "no hay sesión viva". Sólo eso se atrapa; un error de la base en
+            # la escritura de abajo NO (sería informar un éxito que no ocurrió).
+            user = await verificar_sesion(decode_token(refresh_token), "refresh", admite_cambio_pendiente=True)
+        except HTTPException:
+            user = None
+        if user is not None:
+            user_id = int(user.user_id)
+            # Fix ronda 1 (2026-09-15, F2): sólo mata SU versión. Si entre la
+            # verificación y este UPDATE confirmó el login de otro dispositivo,
+            # esta sesión ya estaba muerta: 0 filas, sin corte (cortar echaría
+            # a la sesión nueva), y la respuesta es la misma.
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await cur.execute(
+                    "UPDATE jax_users SET token_version = token_version + 1 "
+                    "WHERE user_id = %s AND token_version = %s",
+                    (user_id, user.token_version),
+                )
+                matada = cur.rowcount == 1
+            # Ruling U9: después del commit, fail-soft (las otras pestañas de
+            # este navegador comparten la cookie: salen también, a propósito).
+            if matada:
+                await _cortar_conexiones(user_id)
     response.delete_cookie(key="refresh_token", samesite="lax")
     return {"ok": True}
 
@@ -180,7 +259,7 @@ async def cambiar_mi_password(
     req: CambioPasswordRequest,
     request: Request,
     response: Response,
-    user: AuthUser = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user_con_cambio_pendiente),
 ):
     """Mi cuenta (2026-09-15, admin usuarios etapa 4, spec §3.2 y §3.4). Exige
     la contraseña actual, con el mismo límite de intentos que el login (sin él,
@@ -204,6 +283,11 @@ async def cambiar_mi_password(
     problema = problema_de_password(req.new_password)
     if problema:
         raise HTTPException(status_code=400, detail=f"password_{problema}")
+    # Cambio obligatorio (U34, P1): con la marca, la nueva no puede ser la que
+    # fijó el admin -- si no, el cambio no cambia nada. Comparación de strings:
+    # la actual ya se verificó contra el hash.
+    if user.must_change_password and req.new_password == req.current_password:
+        raise HTTPException(status_code=400, detail="password_igual_a_la_actual")
     # bcrypt (~150 ms) fuera del event loop y fuera de la transacción.
     nuevo_hash = await asyncio.to_thread(_hash, req.new_password)
     ip = rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES)
@@ -239,7 +323,7 @@ async def cambiar_mi_password(
         # login exitoso (el límite del login ya se aplicó arriba).
         await cur.execute(
             "UPDATE jax_users SET password_hash = %s, token_version = token_version + 1, "
-            "failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
+            "failed_attempts = 0, locked_until = NULL, must_change_password = FALSE WHERE user_id = %s",
             (nuevo_hash, user_id),
         )
         await cur.execute("SELECT token_version FROM jax_users WHERE user_id = %s", (user_id,))
@@ -408,6 +492,15 @@ class ResetPasswordRequest(BaseModel):
     password: str
 
 
+# El token por su índice único y el usuario por PRIMARY (eq_ref): una sola
+# consulta trae lo necesario para P1 (Ruling F5). EXPLAIN en
+# tests/test_fijar_password.py::test_la_consulta_del_token_de_recuperacion_va_por_indices.
+SQL_TOKEN_DE_RECUPERACION = (
+    "SELECT t.id, t.user_id, t.expires_at, t.used, u.password_hash, u.must_change_password "
+    "FROM password_reset_tokens t JOIN jax_users u ON u.user_id = t.user_id WHERE t.token = %s"
+)
+
+
 @router.post("/reset-password")
 async def reset_password(req: ResetPasswordRequest, request: Request):
     # Códigos estables (2026-09-12): el frontend los traduce con i18n. Antes
@@ -422,22 +515,28 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT id, user_id, expires_at, used FROM password_reset_tokens WHERE token = %s",
-                (req.token,),
-            )
+            await cur.execute(SQL_TOKEN_DE_RECUPERACION, (req.token,))
             row = await cur.fetchone()
 
     if not row:
         raise HTTPException(status_code=400, detail="reset_token_invalido")
 
-    token_id, user_id, expires_at, used = row
+    token_id, user_id, expires_at, used, hash_leido, marca_leida = row
 
     if used:
         raise HTTPException(status_code=400, detail="reset_token_usado")
 
     if expires_at < utc_ahora():
         raise HTTPException(status_code=400, detail="reset_token_expirado")
+
+    # P1 también por el enlace (Ruling F5, 2026-09-15): mientras el cambio sea
+    # obligatorio, la nueva no puede ser la vigente (la que fijó el admin) --
+    # si no, completar un enlace creado DESPUÉS de fijarla esquivaba P1. Va
+    # después de los chequeos del token (un token inválido no cuesta bcrypt)
+    # y NO escribe nada: el token queda sin consumir para reintentar con otra.
+    # Sin la marca, se acepta la misma (como Mi cuenta).
+    if marca_leida and await verify_password(req.password, hash_leido):
+        raise HTTPException(status_code=400, detail="password_igual_a_la_actual")
 
     # bcrypt de costo 12 (~150 ms de CPU): en un hilo, no en el event loop.
     new_hash = await asyncio.to_thread(_hash, req.password)
@@ -458,11 +557,23 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
         # También cierra el hueco de un reset a un usuario borrado/desactivado
         # DESPUÉS de crear el token: sin esto, el UPDATE de abajo escribiría
         # sobre una fila que ya no debería aceptar contraseñas nuevas.
-        await cur.execute("SELECT status FROM jax_users WHERE user_id = %s FOR UPDATE", (user_id,))
+        await cur.execute(
+            "SELECT status, password_hash, must_change_password FROM jax_users WHERE user_id = %s FOR UPDATE",
+            (user_id,),
+        )
         fila_usuario = await cur.fetchone()
         if fila_usuario is None or fila_usuario[0] != "active":
             # Mismo código que un token que nunca existió: no se distingue
             # "usuario borrado/inactivo" de "token inválido" en la respuesta.
+            raise HTTPException(status_code=400, detail="reset_token_invalido")
+        # Defensa en profundidad de P1 (F5): si con la marca puesta la
+        # contraseña cambió desde la lectura de arriba (o la marca se prendió
+        # después), la verificación de P1 se hizo contra otro hash. Se revierte
+        # ANTES de reclamar el token, comparando strings (sin bcrypt bajo el
+        # bloqueo, como Mi cuenta). Hoy el único que prende la marca (fijar)
+        # borra los enlaces pendientes, así que este token ya estaría muerto:
+        # mismo código que un token inválido.
+        if fila_usuario[2] and fila_usuario[1] != hash_leido:
             raise HTTPException(status_code=400, detail="reset_token_invalido")
         # Reclamar el token es lo SEGUNDO y es atómico: con dos envíos
         # simultáneos del mismo enlace, solo uno cambia la fila (el otro ve
@@ -475,9 +586,11 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
         if cur.rowcount != 1:
             raise HTTPException(status_code=400, detail="reset_token_usado")
         # Contraseña nueva por enlace: todas las sesiones viejas se cortan (spec §3.2).
+        # La persona eligió su propia contraseña por el enlace: la marca del
+        # cambio obligatorio (U34) queda cumplida y se limpia.
         await cur.execute(
             "UPDATE jax_users SET password_hash = %s, failed_attempts = 0, locked_until = NULL, "
-            "token_version = token_version + 1 WHERE user_id = %s",
+            "token_version = token_version + 1, must_change_password = FALSE WHERE user_id = %s",
             (new_hash, user_id),
         )
         await user_audit.registrar(cur, user_id, user_id, "password_reset_completed", None, ip)

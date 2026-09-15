@@ -24,6 +24,7 @@ class LoginResponse(BaseModel):
     tenant_id: int
     role: str
     email: str
+    must_change_password: bool = False
 
 
 class RefreshResponse(BaseModel):
@@ -36,6 +37,7 @@ class MeResponse(BaseModel):
     tenant_id: int
     role: str
     email: str
+    must_change_password: bool = False
 
 
 class AuthUser(BaseModel):
@@ -44,3 +46,4 @@ class AuthUser(BaseModel):
     role: str
     email: Optional[str] = None
     token_version: int = 0
+    must_change_password: bool = False

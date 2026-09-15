@@ -59,3 +59,16 @@ describe('ResetPassword', () => {
     expect(api.post).not.toHaveBeenCalled()
   })
 })
+
+// F5 (2026-09-15): mientras la marca del admin esté prendida, el enlace de
+// recuperación tampoco acepta la contraseña que fijó el admin. El token no se
+// consume: el formulario sigue abierto para probar con otra.
+describe('ResetPassword -- password_igual_a_la_actual (F5)', () => {
+  it('se traduce y el formulario sigue abierto', async () => {
+    api.post.mockRejectedValue({ response: { status: 400, data: { detail: 'password_igual_a_la_actual' } } })
+    const { container } = renderReset()
+    enviar(container, 'clave-del-admin-1')
+    expect(await screen.findByText('La nueva contraseña tiene que ser distinta de la que te dieron.')).toBeInTheDocument()
+    expect(container.querySelectorAll('input[type="password"]')).toHaveLength(2)
+  })
+})

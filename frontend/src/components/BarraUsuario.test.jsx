@@ -9,8 +9,9 @@ import '@testing-library/jest-dom'
 // al lado del logotipo.
 const logoutMock = vi.fn()
 let usuario = { email: 'fruiztorres@me.com', role: 'superadmin' }
+let saliendo = null
 vi.mock('../store/useJaxStore', () => ({
-  useJaxStore: (selector) => selector({ user: usuario, logout: logoutMock, cambiarMiPassword: vi.fn() }),
+  useJaxStore: (selector) => selector({ user: usuario, logout: logoutMock, cambiarMiPassword: vi.fn(), saliendo }),
 }))
 
 import BarraUsuario from './BarraUsuario'
@@ -36,6 +37,7 @@ beforeEach(() => {
   useTema.setState({ theme: 'dark', predeterminado: null })
   aplicarTema('dark')
   usuario = { email: 'fruiztorres@me.com', role: 'superadmin' }
+  saliendo = null
 })
 
 describe('BarraUsuario', () => {
@@ -80,5 +82,17 @@ describe('BarraUsuario — Mi cuenta', () => {
     renderBarra()
     fireEvent.click(screen.getByRole('button', { name: /fruiztorres@me.com/ }))
     expect(screen.getByRole('dialog', { name: 'Mi cuenta' })).toBeInTheDocument()
+  })
+})
+
+// Fix round 1 (review de dd47d82): mientras el POST /auth/logout está en
+// vuelo, el botón queda deshabilitado y ocupado (un doble clic no envía dos).
+describe('BarraUsuario -- salir en vuelo', () => {
+  it('con el logout en vuelo, ⏻ está deshabilitado y aria-busy', () => {
+    saliendo = new Promise(() => {})
+    renderBarra()
+    const salir = screen.getByRole('button', { name: 'Salir' })
+    expect(salir).toBeDisabled()
+    expect(salir).toHaveAttribute('aria-busy', 'true')
   })
 })

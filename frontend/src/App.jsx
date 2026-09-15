@@ -6,14 +6,7 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Admin from './pages/Admin'
 import ResetPassword from './pages/ResetPassword'
-
-function RequireAuth({ children }) {
-  const token = useJaxStore((s) => s.token)
-  const sessionRestoring = useJaxStore((s) => s.sessionRestoring)
-  if (sessionRestoring) return null
-  if (!token) return <Navigate to="/login" replace />
-  return children
-}
+import RequireAuth from './components/RequireAuth'
 
 function RequireSuperadmin({ children }) {
   const user = useJaxStore((s) => s.user)

@@ -459,7 +459,10 @@ def test_reset_bloquea_el_usuario_antes_que_el_token(client, usuarios, monkeypat
     assert r.status_code == 200, r.text
 
     indice_usuario = next(i for i, q in enumerate(ejecutadas)
-                          if q.startswith("SELECT status FROM jax_users") and "FOR UPDATE" in q)
+                          # F5 (2026-09-15): la lectura bajo bloqueo trae también
+                          # password_hash y must_change_password (defensa de P1).
+                          if q.startswith("SELECT status, password_hash, must_change_password FROM jax_users")
+                          and "FOR UPDATE" in q)
     indice_token = next(i for i, q in enumerate(ejecutadas)
                         if q.startswith("UPDATE password_reset_tokens SET used = TRUE"))
     assert indice_usuario < indice_token, (
@@ -492,9 +495,13 @@ def test_completar_el_reset_cierra_las_sesiones_y_audita(client, usuarios, corte
     assert client.get("/api/auth/me", headers=auth(viejo)).status_code == 401
     assert client.portal.call(_version, u) == 1
     assert client.portal.call(_acciones, u) == ["password_reset_completed"]
-    assert _login(client, email, NUEVA).status_code == 200
     # U9: el corte pasa DESPUÉS del commit y ve ya la versión confirmada.
     assert cortes == [("ws", str(u), 1), ("sse", str(u), 1)]
+    # Task 3b (sesión única): el login exitoso con la nueva sube la versión y
+    # corta de nuevo, también después de su commit.
+    assert _login(client, email, NUEVA).status_code == 200
+    assert client.portal.call(_version, u) == 2
+    assert cortes[2:] == [("ws", str(u), 2), ("sse", str(u), 2)]
     r = client.post("/api/auth/reset-password", json={"token": token, "password": "otra-clave-789"})
     assert (r.status_code, r.json()["detail"]) == (400, "reset_token_usado")
 

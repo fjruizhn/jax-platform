@@ -100,6 +100,69 @@ describe('cambiarMiPassword', () => {
     expect(useJaxStore.getState().cambioDePasswordEnCurso).toBeNull()
     expect(useJaxStore.getState().token).toBeNull()
   })
+
+  it('al terminar apaga must_change_password del usuario (U34)', async () => {
+    useJaxStore.setState({ user: { user_id: 5, must_change_password: true } })
+    api.post.mockResolvedValue({ data: { access_token: 'tok-nuevo' } })
+    await useJaxStore.getState().cambiarMiPassword('fijada-por-admin', 'nueva-clave-9')
+    expect(useJaxStore.getState().user).toEqual({ user_id: 5, must_change_password: false })
+  })
+})
+
+// Sesión única (2026-09-15, Ruling F2): salir mata la sesión EN EL SERVIDOR
+// (POST /auth/logout con la cookie de refresh). El pedido sale ANTES de
+// limpiar el estado local: si no, un login rápido en la misma pestaña podía
+// recibir su cookie nueva y después el delete_cookie de este logout.
+describe('logout', () => {
+  beforeEach(() => {
+    useJaxStore.setState({ ...INITIAL_STATE, token: 'tok-vivo', user: { user_id: 5 } }, true)
+    vi.clearAllMocks()
+  })
+
+  it('llama a /auth/logout una vez, con la sesión todavía puesta, y después limpia', async () => {
+    let tokenAlLlamar
+    api.post.mockImplementation(() => {
+      tokenAlLlamar = useJaxStore.getState().token
+      return Promise.resolve({ data: { ok: true } })
+    })
+    await useJaxStore.getState().logout()
+    expect(api.post).toHaveBeenCalledTimes(1)
+    expect(api.post.mock.calls[0][0]).toBe('/auth/logout')
+    expect(tokenAlLlamar).toBe('tok-vivo')
+    expect(useJaxStore.getState().token).toBeNull()
+    expect(useJaxStore.getState().user).toBeNull()
+  })
+
+  it('un doble clic envía un solo POST: la segunda llamada reusa la promesa en vuelo', async () => {
+    let resolver
+    api.post.mockReturnValue(new Promise((r) => { resolver = r }))
+    const primera = useJaxStore.getState().logout()
+    const segunda = useJaxStore.getState().logout()
+    expect(segunda).toBe(primera)
+    expect(useJaxStore.getState().saliendo).toBe(primera)
+    resolver({ data: { ok: true } })
+    await primera
+    expect(api.post).toHaveBeenCalledTimes(1)
+    expect(useJaxStore.getState().saliendo).toBeNull()
+  })
+
+  // Fix round 1 (review de dd47d82): un poll que llegó al servidor después del
+  // logout daba 401 -> refresh fallido -> avisoSesion 'sesion_invalida' ("se
+  // inició sesión en otro lugar") en un logout voluntario.
+  it('borra avisoSesion: un logout voluntario no deja aviso en Login', async () => {
+    useJaxStore.setState({ avisoSesion: 'sesion_invalida' })
+    api.post.mockResolvedValue({ data: { ok: true } })
+    await useJaxStore.getState().logout()
+    expect(useJaxStore.getState().avisoSesion).toBeNull()
+  })
+
+  it('si el pedido falla, limpia igual y no reintenta', async () => {
+    api.post.mockRejectedValue(new Error('red caída'))
+    await useJaxStore.getState().logout()
+    expect(api.post).toHaveBeenCalledTimes(1)
+    expect(useJaxStore.getState().token).toBeNull()
+    expect(useJaxStore.getState().user).toBeNull()
+  })
 })
 
 // Etapa 5 (2026-09-15, Task 4): el JWT no lleva el correo y la barra de

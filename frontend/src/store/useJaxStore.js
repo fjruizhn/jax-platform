@@ -13,6 +13,8 @@ function _t() {
 }
 
 const RESULTS_FETCH_MAX_ATTEMPTS = 2
+// Tope del POST /auth/logout: salir nunca espera más que esto a la red.
+const LOGOUT_TIMEOUT_MS = 5000
 const RESULTS_FETCH_RETRY_DELAY_MS = 2000
 
 // Cotas de memoria para sesiones largas — sin esto, `messages` y
@@ -149,6 +151,11 @@ export const useJaxStore = create((set, get) => {
   // un 401 para reintentar con el token nuevo en vez de llamar a /auth/refresh
   // con la cookie vieja (que ya no vale tras subir token_version).
   cambioDePasswordEnCurso: null,
+  // Promesa del logout mientras está en vuelo, o null (fix round 1 del review
+  // de dd47d82). Un segundo logout() la reusa (un doble clic no envía dos
+  // POST), los botones de salir quedan ocupados, y api/client.js no convierte
+  // en aviso un 401 que llegue mientras tanto.
+  saliendo: null,
 
   restoreSession: async () => {
     try {
@@ -179,16 +186,35 @@ export const useJaxStore = create((set, get) => {
   // del componente, no un efecto secundario escondido dentro de login().
   clearAvisoSesion: () => set({ avisoSesion: null }),
 
+  // Sesión única (2026-09-15, Ruling F2): /auth/logout mata la sesión EN EL
+  // SERVIDOR (sube token_version por la cookie de refresh) y siempre responde
+  // 200. El pedido va ANTES de limpiar: si no, un login rápido en la misma
+  // pestaña podía recibir su cookie nueva y después el delete_cookie de este
+  // logout. Si el pedido falla (red), la sesión local se limpia igual y no se
+  // reintenta (/auth/logout está en ENDPOINTS_DE_AUTH_SIN_REINTENTO). El
+  // timeout evita que una red colgada deje a la persona sin poder salir.
+  //
+  // Fix round 1 (review de dd47d82): una sola salida en vuelo (`saliendo`), y
+  // avisoSesion se borra -- un poll que llegó al servidor después del logout
+  // no debe dejar en Login "se inició sesión en otro lugar".
   logout: () => {
-    set({ token: null, user: null, messages: [], _pipelineCompletedShown: new Set() })
-    bumpSessionEpoch()
+    const enCurso = get().saliendo
+    if (enCurso) return enCurso
+    const promesa = (async () => {
+      try {
+        await api.post('/auth/logout', {}, { timeout: LOGOUT_TIMEOUT_MS })
+      } catch {
+        // sin sesión viva en el servidor o sin red: igual se sale localmente
+      }
+      set({ token: null, user: null, messages: [], _pipelineCompletedShown: new Set(), avisoSesion: null, saliendo: null })
+      bumpSessionEpoch()
+    })()
+    set({ saliendo: promesa })
+    return promesa
     // No hace falta limpiar jax_pending_cmds acá a mano: está scopeado por
     // owner (ver _loadPendingIds arriba), así que un login de otro usuario
     // ya lo lee vacío solo. Borrarlo acá de más perdería, sin necesidad, los
     // comandos pendientes propios de ESTE usuario si vuelve a loguearse.
-    api.post('/auth/logout').catch(() => {
-      // best-effort: la sesión local ya quedó limpia
-    })
   },
 
   // Mi cuenta (2026-09-12, admin usuarios etapa 4): el backend sube la versión
@@ -199,7 +225,14 @@ export const useJaxStore = create((set, get) => {
     // El token nuevo se guarda DENTRO de la promesa: quien la espera (el
     // interceptor) ya lo encuentra en el store al despertar.
     const promesa = api.post('/auth/me/password', { current_password: actual, new_password: nueva })
-      .then(({ data }) => { set({ token: data.access_token }) })
+      .then(({ data }) => {
+        // U34: el backend apaga must_change_password en el MISMO UPDATE que
+        // cambia el hash (api/auth.py, /me/password) y responde sólo el token
+        // (RefreshResponse, sin la marca). Acá se apaga igual, sin pedir /me:
+        // RequireAuth vuelve a montar la app.
+        const user = get().user
+        set({ token: data.access_token, user: user ? { ...user, must_change_password: false } : user })
+      })
     set({ cambioDePasswordEnCurso: promesa })
     try {
       await promesa

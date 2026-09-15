@@ -76,7 +76,7 @@ describe('Login -- aviso de cierre de sesión', () => {
     avisoSesion = 'sesion_invalida'
     renderLogin()
     const alerta = screen.getByRole('alert')
-    expect(alerta).toHaveTextContent(/Tu sesión se cerró: tu usuario fue desactivado/)
+    expect(alerta).toHaveTextContent(/Tu sesión se cerró: se inició sesión en otro lugar/)
   })
 
   it('sin avisoSesion, no muestra ningún role="alert"', () => {
