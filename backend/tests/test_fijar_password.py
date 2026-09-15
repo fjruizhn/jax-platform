@@ -179,6 +179,15 @@ def _llamadas_que_admiten_la_marca(arbol):
     (que puede traerla sin que se vea). Lee el AST: los espacios, los
     paréntesis o un dict desempacado no la esconden."""
     hallados = []
+    # Fix ronda 2 (Ruling F3): los nombres locales ligados a verificar_sesion,
+    # ANTES de buscar llamadas -- `from auth.middleware import verificar_sesion
+    # as vs` los esquivaba. `import auth.middleware as mw` + `mw.verificar_sesion`
+    # ya lo cubre el chequeo de Attribute.attr.
+    nombres = {"verificar_sesion"} | {
+        alias.asname or alias.name
+        for nodo in ast.walk(arbol) if isinstance(nodo, ast.ImportFrom)
+        for alias in nodo.names if alias.name == "verificar_sesion"
+    }
 
     def visitar(nodo, funcion):
         if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -186,7 +195,7 @@ def _llamadas_que_admiten_la_marca(arbol):
         if isinstance(nodo, ast.Call):
             f = nodo.func
             nombre = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
-            if nombre == "verificar_sesion":
+            if nombre in nombres:
                 for kw in nodo.keywords:
                     if kw.arg is None or (kw.arg == "admite_cambio_pendiente" and not (
                             isinstance(kw.value, ast.Constant) and kw.value.value is False)):
@@ -226,8 +235,10 @@ def test_el_guard_del_opt_in_ve_las_variantes_escondidas():
         "async def c(p, x):\n    return await verificar_sesion(p, 'access', admite_cambio_pendiente=x)\n"
         "async def d(p):\n    return await verificar_sesion(p, 'access', admite_cambio_pendiente=False)\n"
         "async def e(p):\n    return await verificar_sesion(p, 'access')\n"
+        "from auth.middleware import verificar_sesion as vs\n"
+        "async def f(p):\n    return await vs(p, 'access', admite_cambio_pendiente=True)\n"
     )
-    assert [f for f, _ in _llamadas_que_admiten_la_marca(ast.parse(fuente))] == ["a", "b", "c"]
+    assert [f for f, _ in _llamadas_que_admiten_la_marca(ast.parse(fuente))] == ["a", "b", "c", "f"]
 
 
 def test_login_y_me_informan_la_marca(client, usuarios):
