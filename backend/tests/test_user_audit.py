@@ -66,13 +66,10 @@ def test_historial_usa_el_indice_target_ts(client):
 
 
 def test_conteo_de_superadmins_usa_el_indice_role_status(client):
-    # La forma del conteo de la invariante (Task 2,
-    # api/admin/users.py::otros_superadmins_activos).
-    plan = _explain(
-        client,
-        "SELECT COUNT(*) FROM jax_users WHERE role = 'superadmin' AND status = 'active' "
-        "AND user_id <> %s FOR UPDATE",
-        (123456789,))
+    # La consulta REAL del conteo de la invariante (Task 2,
+    # api/admin/users.py::otros_superadmins_activos), no una copia a mano.
+    from api.admin.users import SQL_OTROS_SUPERADMINS_ACTIVOS
+    plan = _explain(client, SQL_OTROS_SUPERADMINS_ACTIVOS, (123456789,))
     _, clave, _ = plan["jax_users"]
     assert clave == "idx_jax_users_role_status", plan
 

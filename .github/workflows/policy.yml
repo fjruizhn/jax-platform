@@ -675,7 +675,13 @@ jobs:
           # test_user_audit.py (registrar puro; tabla e índices, EXPLAIN del historial,
           # EXPLAIN del conteo de superadmins y rollback de transaccion() piden `client`).
           # Medido: 749 / 1.
-          PISO_PASSED = 749
+          # Subido de 749 a 768 (2026-09-15, admin usuarios etapa 3, Task 2): +19 en
+          # test_admin_usuarios_guardas.py — 11 de guardas e invariante (2 puros; PUT
+          # auto-acción ×2, último superadmin, degradar/estado auditados, sin cambios,
+          # inválidos/password 422, conteo contra la base; DELETE sin literal) y 8 del
+          # Step 4b (ws_hub.close_user ×3 y close_user_streams puros; PUT/DELETE cortan WS
+          # y SSE tras el commit ×3; pestaña WS real cerrada con 4001). Medido: 768 / 1.
+          PISO_PASSED = 768
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -984,7 +990,11 @@ jobs:
       # Admin usuarios etapa 3, Task 1 (2026-09-15): +1 puro (user_audit.registrar solo
       # acepta acciones conocidas); los otros 4 de test_user_audit.py piden `client`.
       # Medido con JAX_CI_NO_DB=1: 355 / 395.
-      JAX_CI_MIN_PASSED: "355"
+      # Admin usuarios etapa 3, Task 2 (2026-09-15): +6 puros en test_admin_usuarios_guardas.py
+      # (guarda_auto_accion, pierde_superadmin_activo, ws_hub.close_user ×3,
+      # close_user_streams); los otros 13 piden `client`.
+      # Medido con JAX_CI_NO_DB=1: 361 / 408.
+      JAX_CI_MIN_PASSED: "361"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

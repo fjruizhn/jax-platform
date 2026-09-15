@@ -41,6 +41,28 @@ class WebSocketHub:
             except Exception:
                 await self.disconnect(user_id, connection_id)
 
+    async def close_user(self, user_id: str, code: int = 4001) -> int:
+        """Cierra todas las conexiones vivas del usuario (2026-09-15, admin
+        usuarios etapa 3, Step 4b): verificar_sesion corta el WS solo en el
+        handshake, así que una pestaña de un usuario degradado, desactivado o
+        borrado seguiría recibiendo eventos hasta reconectar.
+
+        Las conexiones se leen bajo `_lock` y se cierran FUERA de él (un close
+        es I/O de red). Las entradas no se borran acá: el `finally` del
+        endpoint (main.py::_ws_disconnect_and_maybe_unsubscribe, bajo
+        lifecycle_lock) hace disconnect/unregister/unsubscribe al salir del
+        receive. Devuelve cuántas cerró."""
+        async with self._lock:
+            conns = list(self._connections.get(user_id, {}).values())
+        cerradas = 0
+        for ws in conns:
+            try:
+                await ws.close(code=code)
+                cerradas += 1
+            except Exception:  # fail-soft: el socket pudo cerrarse solo entre la lectura y el close (cliente que se fue, close ya enviado); una conexión rota no debe impedir cerrar las demás del mismo usuario
+                continue
+        return cerradas
+
     async def connected_user_ids(self) -> list[str]:
         async with self._lock:
             return list(self._connections.keys())

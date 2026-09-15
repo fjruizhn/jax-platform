@@ -11,16 +11,32 @@ from jax_engine.schemas import JAXEvent
 
 router = APIRouter(prefix="/api/events")
 
+# Streams SSE abiertos por usuario (2026-09-15, admin usuarios etapa 3, Step
+# 4b / Ruling U5): el SSE autentica una sola vez al conectar, igual que el
+# handshake del WS. Cuando cambian rol o estado del usuario (o se borra),
+# close_user_streams mete _CERRAR en cada cola y el generador termina. Se muta
+# bajo lifecycle_lock, igual que sse_connections.
+_CERRAR = object()
+_streams: dict[str, set[asyncio.Queue]] = {}
 
-async def _sse_connect_and_subscribe(user_id: str, tenant_id: str, callback):
+
+async def _sse_connect_and_subscribe(user_id: str, tenant_id: str, callback, cola: asyncio.Queue | None = None):
     async with lifecycle_lock:
         sse_connections.increment(user_id)
+        if cola is not None:
+            _streams.setdefault(user_id, set()).add(cola)
         await event_bus.subscribe(tenant_id, user_id, callback)
 
 
-async def _sse_disconnect_and_maybe_unsubscribe(user_id: str):
+async def _sse_disconnect_and_maybe_unsubscribe(user_id: str, cola: asyncio.Queue | None = None):
     async with lifecycle_lock:
         sse_connections.decrement(user_id)
+        if cola is not None:
+            colas = _streams.get(user_id)
+            if colas is not None:
+                colas.discard(cola)
+                if not colas:
+                    _streams.pop(user_id, None)
         # Only tear down the shared subscription once no connection on EITHER
         # channel is left for this user — otherwise this SSE connection
         # closing could wipe out a live WS tab's subscription for the same
@@ -29,24 +45,37 @@ async def _sse_disconnect_and_maybe_unsubscribe(user_id: str):
             await event_bus.unsubscribe(user_id)
 
 
+async def close_user_streams(user_id: str) -> int:
+    """Termina todos los streams SSE abiertos del usuario; devuelve cuántos.
+    La cola es sin límite: put_nowait no bloquea ni falla. El `finally` del
+    generador hace el disconnect/unsubscribe."""
+    async with lifecycle_lock:
+        colas = list(_streams.get(user_id, ()))
+    for cola in colas:
+        cola.put_nowait(_CERRAR)
+    return len(colas)
+
+
 @router.get("")
 async def sse_events(user: AuthUser = Depends(get_current_user)):
-    queue: asyncio.Queue[JAXEvent] = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue()
 
     async def callback(event: JAXEvent):
         await queue.put(event)
 
-    await _sse_connect_and_subscribe(user.user_id, user.tenant_id, callback)
+    await _sse_connect_and_subscribe(user.user_id, user.tenant_id, callback, queue)
 
     async def generator():
         try:
             while True:
                 event = await queue.get()
+                if event is _CERRAR:
+                    return
                 yield f"data: {json.dumps(event.model_dump())}\n\n"
         except asyncio.CancelledError:  # fail-soft: CancelledError es la forma normal de terminar el generador SSE al desconectar el cliente
             pass
         finally:
-            await _sse_disconnect_and_maybe_unsubscribe(user.user_id)
+            await _sse_disconnect_and_maybe_unsubscribe(user.user_id, queue)
 
     return StreamingResponse(
         generator(),
