@@ -37,12 +37,90 @@ os.environ["JAX_FACET_SEAL_PATH"] = os.path.join(
     tempfile.mkdtemp(prefix="jax-test-sello-"), "facet-cache-seal")
 
 
+def _envolver_portal_call(portal_call):
+    """Envuelve `BlockingPortal.call` (tanda A, hallazgo de Tarea 1,
+    2026-09-14 -- regla de Fernando: sin hallazgos diferidos, se arregla
+    acá). Una excepción de `pytest.outcomes.OutcomeException` (`Failed`,
+    `Skipped`, ...) -- o cualquier `BaseException` que no sea
+    `KeyboardInterrupt`/`SystemExit`/`GeneratorExit`/la excepción de
+    cancelación de anyio -- lanzada DENTRO de la corrutina que corre el
+    portal se captura ADENTRO (el `BlockingPortal` termina la tarea sin
+    excepción, así que sigue vivo) y se relanza AFUERA, en el hilo
+    sincrónico que llamó a `.call()` -- el test falla como corresponde.
+
+    Medido (reporte anterior de Tarea 1): sin este envoltorio, un
+    `pytest.raises(...)` que no dispara dentro de una función corrida vía
+    `client.portal.call()` deja escapar un `Failed` (`BaseException`) hacia
+    el `BlockingPortal`, y como el fixture `client` es `scope="session"`,
+    mata el portal para el RESTO de la sesión -- la siguiente llamada de
+    CUALQUIER test da `RuntimeError: This portal is not running` (635 →
+    352 passed / 184 failed / 108 errors, medido). Por esto la ENMIENDA v3
+    de la Tarea 1 prohíbe `pytest.raises(...)` dentro de una corrutina
+    corrida por el portal: la corrutina captura y devuelve el error, la
+    aserción va afuera -- este envoltorio es la red de seguridad para
+    cuando ese patrón no se respeta (aquí o en cualquier test futuro).
+    Test: tests/test_arnes_portal.py. Mutación: sacar este envoltorio pone
+    ese test en rojo.
+
+    ALCANCE, importante (fix round 1, Minor 7 de la revisión): esto NO
+    envuelve solo las llamadas que un test hace explícitamente con
+    `client.portal.call(...)`. `starlette.testclient.TestClient` usa el
+    MISMO objeto `self.portal` para sus propias llamadas internas --
+    `_portal_factory` en `starlette/testclient.py` lo comparte -- así que
+    cada request HTTP (`client.get(...)`, `client.post(...)`, ...), el
+    arranque/apagado del lifespan de la app, y cada mensaje de un
+    `websocket_connect(...)` pasan también por `envuelto` sin que el test
+    lo pida. Es intencional y no cambia nada para el camino feliz: con una
+    `Exception` normal (lo único que esos caminos internos producen en la
+    práctica), `envuelto` la captura y la relanza IDÉNTICA, así que el
+    comportamiento es indistinguible de no tener el envoltorio -- la suite
+    entera lo confirma (645/0/0 con DB, sin cambios de conducta). Solo
+    importa si algún día una `BaseException` (un `pytest.fail`/`skip`, por
+    ejemplo) escapara desde DENTRO de uno de esos caminos internos: ahí
+    también quedaría protegida, no solo en los tests que llaman al portal
+    a mano."""
+    import functools
+    import inspect
+
+    import anyio
+
+    @functools.wraps(portal_call)
+    def envuelto(func, *args):
+        capturada: list[BaseException] = []
+
+        async def atrapada():
+            # anyio.get_cancelled_exc_class() exige un backend async EN
+            # CURSO -- acá, dentro de la corrutina que ya corre en el loop
+            # del portal, no al armar el envoltorio (eso rompía el fixture
+            # `client` entero: NoEventLoopError, sin loop activo todavía).
+            inofensivas = (KeyboardInterrupt, SystemExit, GeneratorExit,
+                           anyio.get_cancelled_exc_class())
+            try:
+                resultado = func(*args)
+                if inspect.isawaitable(resultado):
+                    resultado = await resultado
+                return resultado
+            except inofensivas:
+                raise
+            except BaseException as error:  # fail-soft: capturamos DENTRO del portal para relanzar AFUERA, ver docstring de _envolver_portal_call
+                capturada.append(error)
+                return None
+
+        resultado = portal_call(atrapada)
+        if capturada:
+            raise capturada[0]
+        return resultado
+
+    return envuelto
+
+
 @pytest.fixture(scope="session")
 def client():
     from fastapi.testclient import TestClient
     from main import app
 
     with TestClient(app) as c:
+        c.portal.call = _envolver_portal_call(c.portal.call)
         yield c
 
 

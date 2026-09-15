@@ -4,6 +4,8 @@ import weakref
 
 import aiomysql
 
+from db_connect_config import db_connect_timeout_seconds
+
 # UN POOL POR EVENT LOOP, no un global unico.
 #
 # POR QUE: un pool de aiomysql queda ATADO al loop que lo creo -- sus futuros
@@ -63,6 +65,12 @@ async def get_pool() -> aiomysql.Pool:
             autocommit=True,
             minsize=1,
             maxsize=10,
+            # Hallazgo de revisión, Tarea 1b (tanda A, PR-A, 2026-09-14): sin
+            # esto, aiomysql espera sin límite si la DB se cuelga en vez de
+            # rechazar (default aiomysql 0.3.2: connect_timeout=None, ver
+            # db_connect_config.py). Este es el pool PRINCIPAL del backend
+            # -- lo usan 22 módulos.
+            connect_timeout=db_connect_timeout_seconds(),
         )
         _pools[loop] = pool
     return pool
