@@ -432,3 +432,74 @@ def test_seed_siembra_los_deepseek_vigentes_en_la_db_sin_pisar_valores(client):
                     _commit, "UPDATE model SET max_output_tokens=NULL "
                     "WHERE provider_id='deepseek' AND model_id=%s", (model_id,))
         client.portal.call(_run_seed)
+
+
+# --------------------------------------------------------------------------
+# PR-L ronda 3 (2026-09-14, decisión de Fernando ~20:50): el modelo del
+# binding de jax_local en producción, ollama/qwen3.6:35b-a3b-q4_K_M (hoy
+# NULL/NULL). Con PR-K todo camino Ollama exige max_output_tokens: sin esta
+# siembra jax_local dejaría de despachar.
+# --------------------------------------------------------------------------
+
+_QWEN_JAX_LOCAL = ("ollama", "qwen3.6:35b-a3b-q4_K_M")
+
+
+def test_seed_declara_262144_para_el_qwen_de_jax_local():
+    """Fuente: `ollama show` (qwen35moe 36.0B, context length 262144) y la
+    doc oficial de Ollama (num_predict default -1 = generación sin tope).
+    Decisión de Fernando: el contexto como tope."""
+    seeded = {(p, m): v for p, m, v in _MODEL_MAX_OUTPUT_TOKENS_SEED}
+    assert seeded[_QWEN_JAX_LOCAL] == 262144
+
+
+def test_el_qwen_de_jax_local_no_siembra_max_tokens_param():
+    """Medido en contrato_dispatch.py: ollama no está en
+    TRANSPORTS_CON_CONTRATO_DE_DISPATCH; el NOMBRE del parámetro solo lo lee
+    _call_openai_compat. Sembrarlo para ollama sería inventar un dato."""
+    from contrato_dispatch import TRANSPORTS_CON_CONTRATO_DE_DISPATCH
+    from db.migrations import _MODEL_MAX_TOKENS_PARAM_SEED
+    assert "ollama" not in TRANSPORTS_CON_CONTRATO_DE_DISPATCH
+    assert _QWEN_JAX_LOCAL not in {(p, m) for p, m, _v in _MODEL_MAX_TOKENS_PARAM_SEED}
+
+
+def test_seed_siembra_el_qwen_de_jax_local_en_la_db_sin_pisar_valores(client):
+    provider_id, model_id = _QWEN_JAX_LOCAL
+    existia = bool(client.portal.call(
+        _fetch, "SELECT id FROM model WHERE provider_id=%s AND model_id=%s", (provider_id, model_id)))
+    antes = None
+    if existia:
+        (antes,), = client.portal.call(
+            _fetch, "SELECT max_output_tokens FROM model WHERE provider_id=%s AND model_id=%s",
+            (provider_id, model_id))
+    else:
+        client.portal.call(
+            _commit, "INSERT INTO model (provider_id, model_id, source, source_checked_at) "
+            "VALUES (%s, %s, 'provider_api', NOW())", (provider_id, model_id))
+    try:
+        # NULL -> la semilla pone 262144 (WHERE IS NULL).
+        client.portal.call(
+            _commit, "UPDATE model SET max_output_tokens=NULL WHERE provider_id=%s AND model_id=%s",
+            (provider_id, model_id))
+        client.portal.call(_run_seed)
+        (valor,), = client.portal.call(
+            _fetch, "SELECT max_output_tokens FROM model WHERE provider_id=%s AND model_id=%s",
+            (provider_id, model_id))
+        assert valor == 262144
+
+        # Un valor puesto a mano no se pisa.
+        client.portal.call(
+            _commit, "UPDATE model SET max_output_tokens=8000 WHERE provider_id=%s AND model_id=%s",
+            (provider_id, model_id))
+        client.portal.call(_run_seed)
+        (valor,), = client.portal.call(
+            _fetch, "SELECT max_output_tokens FROM model WHERE provider_id=%s AND model_id=%s",
+            (provider_id, model_id))
+        assert valor == 8000, "la semilla pisó un valor puesto a mano"
+    finally:
+        if existia:
+            client.portal.call(
+                _commit, "UPDATE model SET max_output_tokens=%s WHERE provider_id=%s AND model_id=%s",
+                (antes, provider_id, model_id))
+        else:
+            client.portal.call(
+                _commit, "DELETE FROM model WHERE provider_id=%s AND model_id=%s", (provider_id, model_id))

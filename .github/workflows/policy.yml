@@ -577,7 +577,11 @@ jobs:
           # literales ni facet_models (2). El test de migración pasa a una tabla temporal (mismo
           # conteo). Los 3 tests que dependían de model.id=3 dejan de depender de su valor.
           # Medido contra jax f84ecc1: 726 + 8 = 734 / 1.
-          PISO_PASSED = 734
+          # PR-L ronda 3 (2026-09-14, decisión de Fernando): +3 en test_model_max_output_tokens.py
+          # (ollama/qwen3.6:35b-a3b-q4_K_M sembrado en 262144; sin max_tokens_param porque ollama no
+          # lo lee; sembrado en la DB sin pisar un valor manual). Medido contra jax f84ecc1:
+          # 734 + 3 = 737 / 1.
+          PISO_PASSED = 737
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -879,7 +883,9 @@ jobs:
       # Medido con JAX_CI_NO_DB=1: 351 passed / 376 skipped.
       # PR-L ronda 2: +1 puro (keys.PROVIDERS sin literales de modelo); los otros 7 piden
       # `client`. Medido con JAX_CI_NO_DB=1: 352 passed / 383 skipped.
-      JAX_CI_MIN_PASSED: "352"
+      # PR-L ronda 3: +2 puros (el valor del qwen de jax_local en la lista de semilla, y que no
+      # tenga max_tokens_param); el de la DB pide `client`. Medido con JAX_CI_NO_DB=1: 354 / 384.
+      JAX_CI_MIN_PASSED: "354"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

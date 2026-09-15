@@ -1655,6 +1655,17 @@ _MODEL_MAX_OUTPUT_TOKENS_SEED = [
     ("deepseek", "deepseek-v4-pro",    393216),
     ("zhipu",    "glm-5.3",            131072),
     ("moonshot", "kimi-k3",            131072),
+    # PR-L ronda 3 (2026-09-14, decisión de Fernando ~20:50): el modelo del
+    # binding de jax_local en producción (model id 1556, hoy NULL/NULL). Con
+    # PR-K (jax) todo camino Ollama exige max_output_tokens, así que sin esta
+    # fila jax_local dejaría de despachar. 262144 = su contexto, leído con
+    # `ollama show` (qwen35moe 36.0B, context length 262144); la doc oficial
+    # de Ollama dice num_predict default -1 = generación sin tope, o sea que
+    # hoy no tiene ninguno y el contexto es el techo real. SOLO esta lista: el
+    # contrato de transporte de ollama no lee max_tokens_param (ollama no está
+    # en contrato_dispatch.TRANSPORTS_CON_CONTRATO_DE_DISPATCH), así que no se
+    # siembra un nombre de parámetro que nadie usa. WHERE IS NULL como el resto.
+    ("ollama",   "qwen3.6:35b-a3b-q4_K_M", 262144),
 ]
 
 
