@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import bcrypt
@@ -158,24 +159,26 @@ class CreateUserRequest(BaseModel):
 
 
 @router.post("/users")
-async def create_user(req: CreateUserRequest, user: AuthUser = Depends(require_superadmin)):
+async def create_user(req: CreateUserRequest, request: Request, user: AuthUser = Depends(require_superadmin)):
     if req.role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"Rol inválido: {req.role}")
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("SELECT COUNT(*) FROM jax_users WHERE email = %s", (req.email,))
-            (count,) = await cur.fetchone()
-            if count > 0:
-                raise HTTPException(status_code=409, detail="Email ya existe")
-
-            ph = _hash(req.password)
-            await cur.execute(
-                "INSERT INTO jax_users (tenant_id, email, password_hash, role, status) VALUES (1, %s, %s, %s, 'active')",
-                (req.email, ph, req.role),
-            )
-            new_id = cur.lastrowid
+    # bcrypt es CPU pura (~decenas de ms): fuera del event loop y antes de
+    # abrir la transacción, para no tener filas bloqueadas mientras hashea.
+    ph = await asyncio.to_thread(_hash, req.password)
+    # El alta y su registro de auditoría van juntos (etapa 3, spec §3.3).
+    async with transaccion() as cur:
+        await cur.execute("SELECT COUNT(*) FROM jax_users WHERE email = %s", (req.email,))
+        (count,) = await cur.fetchone()
+        if count > 0:
+            raise HTTPException(status_code=409, detail="Email ya existe")
+        await cur.execute(
+            "INSERT INTO jax_users (tenant_id, email, password_hash, role, status) VALUES (1, %s, %s, %s, 'active')",
+            (req.email, ph, req.role),
+        )
+        new_id = cur.lastrowid
+        await user_audit.registrar(cur, int(user.user_id), new_id, "create",
+                                   {"email": req.email, "role": req.role}, _ip(request))
     return {"user_id": new_id, "email": req.email, "role": req.role, "status": "active"}
 
 
@@ -230,15 +233,39 @@ async def update_user(
 
 
 @router.post("/users/{user_id}/unlock")
-async def unlock_user(user_id: int, user: AuthUser = Depends(require_superadmin)):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
-                (user_id,),
-            )
+async def unlock_user(user_id: int, request: Request, user: AuthUser = Depends(require_superadmin)):
+    # Mismo orden de bloqueos que PUT/DELETE (_leer_para_actualizar dentro de
+    # transaccion(AISLAMIENTO_ADMIN)): ninguna escritura de admin puede formar
+    # un ciclo de espera con otra.
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        if await _leer_para_actualizar(cur, user_id) is None:
+            raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+        await cur.execute(
+            "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
+            (user_id,),
+        )
+        await user_audit.registrar(cur, int(user.user_id), user_id, "unlock", None, _ip(request))
     return {"ok": True}
+
+
+@router.post("/users/{user_id}/revoke-sessions")
+async def revoke_sessions(user_id: int, request: Request, user: AuthUser = Depends(require_superadmin)):
+    # Sube la versión: todos los tokens del usuario (access, refresh y el
+    # próximo handshake de WS) quedan inválidos en el request siguiente.
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        if await _leer_para_actualizar(cur, user_id) is None:
+            raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+        await cur.execute("UPDATE jax_users SET token_version = token_version + 1 WHERE user_id = %s", (user_id,))
+        await user_audit.registrar(cur, int(user.user_id), user_id, "sessions_revoked", None, _ip(request))
+    # ...y las conexiones WS/SSE ya abiertas, tras el commit (como PUT/DELETE).
+    await _cortar_conexiones(user_id)
+    return {"ok": True}
+
+
+@router.get("/users/{user_id}/audit")
+async def user_audit_history(user_id: int, user: AuthUser = Depends(require_superadmin)):
+    # Últimas 50, más nueva primero; por idx_user_admin_audit_target_ts.
+    return {"entries": await user_audit.historial(user_id)}
 
 
 @router.delete("/users/{user_id}")

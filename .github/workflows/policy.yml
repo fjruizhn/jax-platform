@@ -685,7 +685,11 @@ jobs:
           # test_admin_usuarios_guardas.py (degradación mutua concurrente sin deadlock -> 200 +
           # 409; corte de conexiones que falla tras el commit sigue en 200; transaccion() rechaza
           # un nivel de aislamiento fuera de la lista). Medido: 771 / 1.
-          PISO_PASSED = 771
+          # Subido de 771 a 777 (2026-09-15, admin usuarios etapa 3, Task 3): +6 en
+          # test_admin_usuarios_guardas.py (cerrar sesiones: tokens + auditoría + 404; cerrar
+          # sesiones corta WS y SSE tras el commit; desbloqueo auditado; alta auditada; historial
+          # 50 más nuevas primero; historial solo superadmin). Medido: 777 / 1.
+          PISO_PASSED = 777
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1001,6 +1005,8 @@ jobs:
       # Task 2 fix ronda 1 (2026-09-15): +1 puro (transaccion() rechaza un nivel de
       # aislamiento fuera de la lista); los otros 2 piden `client`.
       # Medido con JAX_CI_NO_DB=1: 362 / 410.
+      # Sin cambio (2026-09-15, admin usuarios etapa 3, Task 3): los 6 nuevos de
+      # test_admin_usuarios_guardas.py piden `client`. Medido con JAX_CI_NO_DB=1: 362 / 416.
       JAX_CI_MIN_PASSED: "362"
     steps:
       - uses: actions/checkout@v4

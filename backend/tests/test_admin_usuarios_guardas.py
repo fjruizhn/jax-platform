@@ -395,3 +395,77 @@ async def test_transaccion_rechaza_un_nivel_de_aislamiento_fuera_de_la_lista():
     with pytest.raises(ValueError):
         async with transaccion("SERIALIZABLE; DROP TABLE jax_users"):
             pass
+
+
+# ---------------------------------------------- acciones auditadas e historial
+
+import uuid  # noqa: E402
+
+from tests.identidades import borrar_usuario  # noqa: E402
+
+
+def test_cerrar_sesiones_corta_los_tokens_y_audita(client, usuarios):
+    o, _ = usuarios()
+    viejo = token_para(o)
+    assert client.get("/api/auth/me", headers=auth(viejo)).status_code == 200
+    assert client.post(f"/api/admin/users/{o}/revoke-sessions", headers=_admin()).status_code == 200
+    assert client.get("/api/auth/me", headers=auth(viejo)).status_code == 401
+    assert client.portal.call(_fila, o)[2] == 1
+    assert [a[1] for a in client.portal.call(_auditoria, o)] == ["sessions_revoked"]
+    r = client.post("/api/admin/users/1000000000/revoke-sessions", headers=_admin())
+    assert (r.status_code, r.json()["detail"]) == (404, "usuario_no_encontrado")
+
+
+def test_cerrar_sesiones_corta_ws_y_sse_despues_del_commit(client, usuarios, cortes):
+    """Controller: además de subir token_version, las conexiones YA abiertas
+    se cierran tras el commit (mismo corte que PUT/DELETE). Un 404 no corta."""
+    o, _ = usuarios()
+    assert client.post(f"/api/admin/users/{o}/revoke-sessions", headers=_admin()).status_code == 200
+    assert cortes == [("ws", str(o), ("operator", "active", 1)), ("sse", str(o), ("operator", "active", 1))]
+    cortes.clear()
+    assert client.post(f"/api/admin/users/{10**9}/revoke-sessions", headers=_admin()).status_code == 404
+    assert cortes == []
+
+
+def test_desbloquear_audita(client, usuarios):
+    o, _ = usuarios()
+    client.portal.call(sql, "UPDATE jax_users SET failed_attempts = 5, "
+                            "locked_until = NOW() + INTERVAL 10 MINUTE WHERE user_id = %s", (o,))
+    assert client.post(f"/api/admin/users/{o}/unlock", headers=_admin()).status_code == 200
+    ((intentos, bloqueo),) = client.portal.call(sql, "SELECT failed_attempts, locked_until FROM jax_users "
+                                                     "WHERE user_id = %s", (o,), True)
+    assert (intentos, bloqueo) == (0, None)
+    assert [a[1] for a in client.portal.call(_auditoria, o)] == ["unlock"]
+
+
+def test_alta_audita(client):
+    email = f"test-alta-{uuid.uuid4().hex[:10]}@example.invalid"
+    r = client.post("/api/admin/users", json={"email": email, "role": "viewer", "password": "clave-larga-1"},
+                    headers=_admin())
+    assert r.status_code == 200, r.text
+    nuevo = r.json()["user_id"]
+    try:
+        ((actor, accion, detalle, _ip),) = client.portal.call(_auditoria, nuevo)
+        assert (actor, accion, json.loads(detalle)) == (1, "create", {"email": email, "role": "viewer"})
+    finally:
+        client.portal.call(borrar_usuario, nuevo)
+
+
+def test_historial_devuelve_las_ultimas_50_mas_nuevas_primero(client, usuarios):
+    o, _ = usuarios()
+    valores = ", ".join(["(1, %s, 'unlock', %s, NOW(6) - INTERVAL %s SECOND)"] * 55)
+    args = tuple(x for i in range(55) for x in (o, json.dumps({"n": i}), 55 - i))
+    client.portal.call(sql, "INSERT INTO user_admin_audit (actor_user_id, target_user_id, action, detail, ts) "
+                            f"VALUES {valores}", args)
+    r = client.get(f"/api/admin/users/{o}/audit", headers=_admin())
+    assert r.status_code == 200, r.text
+    entradas = r.json()["entries"]
+    assert len(entradas) == 50
+    assert (entradas[0]["detail"], entradas[-1]["detail"]) == ({"n": 54}, {"n": 5})
+    ((email_1,),) = client.portal.call(sql, "SELECT email FROM jax_users WHERE user_id = 1", (), True)
+    assert entradas[0]["actor_email"] == email_1 and entradas[0]["action"] == "unlock"
+
+
+def test_historial_solo_superadmin(client, usuarios):
+    o, _ = usuarios()
+    assert client.get(f"/api/admin/users/{o}/audit", headers=auth(token_para(o))).status_code == 403
