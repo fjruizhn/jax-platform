@@ -1176,7 +1176,18 @@ jobs:
           # y +1 en test_redaccion_caminos.py (el 502 redacta antes de
           # recortar). Vistos en rojo antes de verde (el de truncar y el del
           # 502, bajo su mutacion). Medido dos veces: 980 / 1.
-          PISO_PASSED = 980
+          # Subido de 980 a 992 (2026-09-15, fix round 2 de la Task 6): +11 en
+          # test_redaccion.py (Authorization con Token/Basic/JSON/parametro,
+          # credential=, private_key_id; Bearer suelto con forma de
+          # credencial; "basic idea of it", "the bearer of bad news", for key
+          # 'PRIMARY' y for key: PRIMARY intactos) y +1 en
+          # test_t6_seguimiento.py (idx_jacobs_pipelines_duenio existe con
+          # (user_id, tenant_id, created_at) -- lo crea jax/jacobs/store.py
+          # via el paso "Crear el esquema de Jacobs", ya no la plataforma).
+          # Vistos en rojo antes de verde (7 de la regex; el del indice bajo
+          # mutacion y, de hecho, mientras el PR companion de jax lo tuvo
+          # borrado). Medido dos veces: 992 / 1.
+          PISO_PASSED = 992
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1601,7 +1612,10 @@ jobs:
       # test_t6_seguimiento.py, 13 de test_redaccion.py, 1 de
       # test_redaccion_caminos.py); los 9 de test_t6_seguimiento.py que piden
       # `client` se saltean. Medido dos veces con JAX_CI_NO_DB=1: 440 / 541.
-      JAX_CI_MIN_PASSED: "440"
+      # Fix round 2 de la Task 6 (2026-09-15): +11 puros en
+      # test_redaccion.py; el test nuevo del indice de jacobs_pipelines pide
+      # `client` y se saltea. Medido dos veces con JAX_CI_NO_DB=1: 451 / 542.
+      JAX_CI_MIN_PASSED: "451"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
