@@ -232,8 +232,32 @@ jobs:
             // LeftPanel.test.jsx +2 (M-2: wsStatus traducido con respaldo al
             // valor crudo). Vistos en rojo antes de verde. Medido con vitest
             // run: 247.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 247) {
-              console.error("PISO ROTO: se esperaban 247 tests de vitest CORRIDOS y 0 fallidos.");
+            // 247 -> 252 el 2026-09-15 (rebase de la etapa 3 de admin usuarios
+            // sobre el PR 3 del tema; en la rama sola era 220 -> 225, +5 netos),
+            // admin usuarios etapa 3, Task 4: errores
+            // traducidos en toasts, edición de rol/estado, cerrar sesiones e
+            // historial): +3 EditarUsuarioModal.test.jsx (nuevo: manda solo lo que
+            // cambió; el estado no ofrece "deleted" y sin cambios no se guarda; y
+            // la guarda M-2 del select de rol -- border-borde-control +
+            // focus:border-foco -- MUDADA desde AdminUsers.test.jsx, cuyo describe
+            // M-2 se borró porque el rol ya no se edita en línea, Ruling U6) -1
+            // AdminUsers.test.jsx (ese M-2) +3 AdminUsers.test.jsx (409
+            // ultimo_superadmin traducido en un toast; cerrar sesiones llama al
+            // endpoint y avisa; el historial muestra acción, cambio y actor).
+            // Vistos en rojo antes de verde. Medido con vitest run en la rama: 225;
+            // sobre el PR 3 del tema: 247 + 5 = 252.
+            // 252 -> 255 el 2026-09-15 (Task 4, ronda 1 de arreglos; en la rama sola
+            // era 225 -> 228): +1
+            // AdminUsers.test.jsx (403 auto_accion_prohibida traducido y el modal
+            // sigue abierto; verde al primer intento porque el comportamiento ya
+            // existía -- validado con un mutante que cierra el modal ante el error:
+            // falla) +2 HistorialUsuario.test.jsx (nuevo: una respuesta tardía tras
+            // cerrar el modal o cambiar de usuario se ignora; vistos en rojo antes
+            // de verde). Medido con vitest run en la rama: 228; sobre el PR 3: 255.
+            // Re-medido el 2026-09-15 tras rebasar la etapa 3 sobre master 65c02de
+            // (PR 3 del tema): vitest run da 255 passed en 41 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 255) {
+              console.error("PISO ROTO: se esperaban 255 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -671,7 +695,41 @@ jobs:
           # Subido de 737 a 744 (2026-09-14, tema con tokens PR 1): +7 con `client` en
           # test_apariencia.py (valor guardado, fila ausente, fuera de lista, sin otras
           # claves, sin token, no-cache, EXPLAIN). Medido: 744 / 1.
-          PISO_PASSED = 744
+          # Subido de 744 a 749 (2026-09-15, admin usuarios etapa 3, Task 1): +5 en
+          # test_user_audit.py (registrar puro; tabla e índices, EXPLAIN del historial,
+          # EXPLAIN del conteo de superadmins y rollback de transaccion() piden `client`).
+          # Medido: 749 / 1.
+          # Subido de 749 a 768 (2026-09-15, admin usuarios etapa 3, Task 2): +19 en
+          # test_admin_usuarios_guardas.py — 11 de guardas e invariante (2 puros; PUT
+          # auto-acción ×2, último superadmin, degradar/estado auditados, sin cambios,
+          # inválidos/password 422, conteo contra la base; DELETE sin literal) y 8 del
+          # Step 4b (ws_hub.close_user ×3 y close_user_streams puros; PUT/DELETE cortan WS
+          # y SSE tras el commit ×3; pestaña WS real cerrada con 4001). Medido: 768 / 1.
+          # Subido de 768 a 771 (2026-09-15, Task 2 fix ronda 1): +3 en
+          # test_admin_usuarios_guardas.py (degradación mutua concurrente sin deadlock -> 200 +
+          # 409; corte de conexiones que falla tras el commit sigue en 200; transaccion() rechaza
+          # un nivel de aislamiento fuera de la lista). Medido: 771 / 1.
+          # Subido de 771 a 777 (2026-09-15, admin usuarios etapa 3, Task 3): +6 en
+          # test_admin_usuarios_guardas.py (cerrar sesiones: tokens + auditoría + 404; cerrar
+          # sesiones corta WS y SSE tras el commit; desbloqueo auditado; alta auditada; historial
+          # 50 más nuevas primero; historial solo superadmin). Medido: 777 / 1.
+          # Subido de 777 a 778 (2026-09-15, Task 3 fix ronda 1): +1 en
+          # test_admin_usuarios_guardas.py (alta con email duplicado concurrente: el INSERT
+          # perdedor choca con el UNIQUE -> 409 y sin auditoría, no 500). Medido: 778 / 1.
+          # Subido de 778 a 783 (2026-09-15, Task 4 fix ronda 1, fechas con zona): +3 puros en
+          # test_iso_utc.py (tiempo.iso_utc: hora UTC sin zona, epoch de UNIX_TIMESTAMP, NULL)
+          # +2 en test_admin_usuarios_guardas.py (last_login/created_at/locked_until de
+          # GET /admin/users y ts del historial salen en UTC con +00:00; la sesión de MariaDB
+          # es SYSTEM = CST). Medido: 783 / 1.
+          # Subido de 783 a 785 (2026-09-15, m1 de la revisión final: re-verificar la sesión
+          # después de registrar): +2 en test_admin_usuarios_guardas.py (un WS y un stream SSE
+          # registrados después del corte se cierran con 4001 / terminan; vistos en rojo antes
+          # de verde). Medido: 785 / 1.
+          # Subido de 785 a 786 (2026-09-15, re-revisión de 6424be0): +1 puro en
+          # test_admin_usuarios_guardas.py (si la re-verificación del SSE se cancela, el
+          # registro se deshace). Re-medido tras rebasar sobre master 65c02de (PR 3 del
+          # tema): 786 / 1.
+          PISO_PASSED = 786
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -977,7 +1035,27 @@ jobs:
       # tenga max_tokens_param); el de la DB pide `client`. Medido con JAX_CI_NO_DB=1: 354 / 384.
       # Sin cambio (2026-09-14, tema PR 1): los 7 de test_apariencia.py piden client.
       # Medido con JAX_CI_NO_DB=1: 354 / 391.
-      JAX_CI_MIN_PASSED: "354"
+      # Admin usuarios etapa 3, Task 1 (2026-09-15): +1 puro (user_audit.registrar solo
+      # acepta acciones conocidas); los otros 4 de test_user_audit.py piden `client`.
+      # Medido con JAX_CI_NO_DB=1: 355 / 395.
+      # Admin usuarios etapa 3, Task 2 (2026-09-15): +6 puros en test_admin_usuarios_guardas.py
+      # (guarda_auto_accion, pierde_superadmin_activo, ws_hub.close_user ×3,
+      # close_user_streams); los otros 13 piden `client`.
+      # Medido con JAX_CI_NO_DB=1: 361 / 408.
+      # Task 2 fix ronda 1 (2026-09-15): +1 puro (transaccion() rechaza un nivel de
+      # aislamiento fuera de la lista); los otros 2 piden `client`.
+      # Medido con JAX_CI_NO_DB=1: 362 / 410.
+      # Sin cambio (2026-09-15, admin usuarios etapa 3, Task 3): los 6 nuevos de
+      # test_admin_usuarios_guardas.py piden `client`. Medido con JAX_CI_NO_DB=1: 362 / 416.
+      # Sin cambio (2026-09-15, Task 3 fix ronda 1): el test de alta concurrente pide
+      # `client`. Medido con JAX_CI_NO_DB=1: 362 / 417.
+      # Task 4 fix ronda 1 (2026-09-15): +3 puros (test_iso_utc.py); los 2 de fechas en
+      # test_admin_usuarios_guardas.py piden `client`. Medido con JAX_CI_NO_DB=1: 365 / 419.
+      # m1 de la revisión final (2026-09-15): los 2 de WS/SSE registrados después del
+      # corte piden `client` (sin cambio). Re-revisión de 6424be0 (2026-09-15): +1 puro
+      # (la re-verificación del SSE cancelada deshace el registro). Re-medido tras
+      # rebasar sobre master 65c02de (PR 3 del tema) con JAX_CI_NO_DB=1: 366 / 421.
+      JAX_CI_MIN_PASSED: "366"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

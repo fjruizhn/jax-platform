@@ -51,7 +51,7 @@ from jax_engine.websocket_hub import ws_hub
 from jax_engine.lifecycle import lifecycle_lock, sse_connections
 from jax_engine.schemas import JAXEvent
 from auth.jwt import decode_token
-from auth.middleware import verificar_sesion
+from auth.middleware import reverificar_sesion, verificar_sesion
 
 from api.health import router as health_router
 from api.auth import router as auth_router
@@ -268,9 +268,23 @@ async def websocket_endpoint(
 
     connection_id = await _ws_connect_and_subscribe(user_id, tenant_id, role, websocket)
 
-    heartbeat_task = asyncio.create_task(_heartbeat(user_id, tenant_id))
-
+    heartbeat_task = None
     try:
+        # m1 (revisión final, etapa 3): el corte de un admin pudo caer entre
+        # verificar_sesion y el registro en el hub, y entonces no encontró esta
+        # conexión. Ya registrada, se verifica de nuevo: cualquier corte
+        # posterior la encuentra, y uno anterior se ve acá.
+        try:
+            await reverificar_sesion(sesion)
+        except HTTPException:
+            await _cerrar_4001(websocket)
+            return
+        except Exception:  # fail-soft: fallo de infraestructura al re-verificar -- falla cerrado (4001) como el handshake, con rastro en el log
+            logger.exception("Fallo inesperado al re-verificar la sesión del WebSocket")
+            await _cerrar_4001(websocket)
+            return
+
+        heartbeat_task = asyncio.create_task(_heartbeat(user_id, tenant_id))
         while True:
             data = await websocket.receive_json()
             if data.get("type") == "ping":
@@ -278,8 +292,16 @@ async def websocket_endpoint(
     except WebSocketDisconnect:  # fail-soft: WebSocketDisconnect es el cierre normal del cliente, no un error
         pass
     finally:
-        heartbeat_task.cancel()
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
         await _ws_disconnect_and_maybe_unsubscribe(user_id, connection_id)
+
+
+async def _cerrar_4001(websocket: WebSocket):
+    try:
+        await websocket.close(code=4001)
+    except RuntimeError:  # fail-soft: best-effort close() de un socket que el cliente ya pudo haber cerrado; el finally del endpoint limpia igual
+        pass
 
 
 async def _heartbeat(user_id: str, tenant_id: str):

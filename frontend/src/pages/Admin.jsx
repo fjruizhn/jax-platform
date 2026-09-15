@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useI18n } from '../i18n/index.jsx'
 import AdminSidebar from '../components/admin/AdminSidebar'
+import Toast from '../components/Notifications/Toast'
 import AdminDashboard from './admin/AdminDashboard'
 import AdminFacetsModels from './admin/AdminFacetsModels'
 import AdminUsers from './admin/AdminUsers'
@@ -28,6 +29,9 @@ export default function Admin() {
           <Route path="smtp" element={<AdminSmtp />} />
         </Routes>
       </main>
+      {/* Etapa 3 (2026-09-15): los toasts solo se montaban en Dashboard; en
+          Admin los errores traducidos de las acciones eran invisibles. */}
+      <Toast />
     </div>
   )
 }

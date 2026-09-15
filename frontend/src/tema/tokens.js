@@ -99,6 +99,8 @@ export const MIGRADOS = [
   'components/RightPanel/RightPanel.jsx',
   'components/RightPanel/AuditLog.jsx',
   'components/RightPanel/StepCard.jsx',
+  'components/admin/EditarUsuarioModal.jsx',
+  'components/admin/HistorialUsuario.jsx',
 ]
 
 const RESPALDO = 'texto-suave'
