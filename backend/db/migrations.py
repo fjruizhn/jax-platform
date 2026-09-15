@@ -556,6 +556,22 @@ CREATE TABLE IF NOT EXISTS facet_health_alert (
 # supresion que las de facet -- sin eso, una sonda muerta un viernes
 # produce un mensaje por barrido, 288 el sabado.
 
+# Registro de acciones de administración de usuarios (2026-09-12, admin
+# usuarios etapa 3, spec §3.3). Sin FK a jax_users a propósito: el historial
+# sobrevive a lo que le pase a la fila (y la baja no borra filas).
+CREATE_USER_ADMIN_AUDIT = """
+CREATE TABLE IF NOT EXISTS user_admin_audit (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  ts DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  actor_user_id INT NOT NULL,
+  target_user_id INT NOT NULL,
+  action VARCHAR(40) NOT NULL,
+  detail JSON NULL,
+  ip VARCHAR(45) NULL,
+  INDEX idx_user_admin_audit_target_ts (target_user_id, ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
@@ -580,6 +596,7 @@ _TABLES = [
     ("capability_motor", CREATE_CAPABILITY_MOTOR),
     ("facet_health_event", CREATE_FACET_HEALTH_EVENT),
     ("facet_health_alert", CREATE_FACET_HEALTH_ALERT),
+    ("user_admin_audit", CREATE_USER_ADMIN_AUDIT),    # sin FK a propósito
 ]
 
 # transport, requires_tool_use, auto_selectable — valores actuales reales
@@ -1500,6 +1517,33 @@ _COLUMN_WIDENS = [
 ]
 
 
+# (tabla, índice, DDL) -- agrega un índice a una tabla EXISTENTE si falta.
+# Las tablas nuevas lo declaran en su CREATE TABLE.
+# idx_jax_users_role_status: el conteo de superadmins activos de la
+# invariante (api/admin/users.py::otros_superadmins_activos) filtra por
+# role y status, con FOR UPDATE (2026-09-12, admin usuarios etapa 3).
+# EXPLAIN en tests/test_user_audit.py.
+_INDEXES = [
+    ("jax_users", "idx_jax_users_role_status",
+     "ALTER TABLE jax_users ADD INDEX idx_jax_users_role_status (role, status)"),
+]
+
+
+async def _index_exists(cur, table_name: str, index_name: str) -> bool:
+    await cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND INDEX_NAME = %s
+        """,
+        (table_name, index_name),
+    )
+    row = await cur.fetchone()
+    return bool(row and row[0] > 0)
+
+
 async def _eliminate_motor_model_ref_denormalization(cur) -> None:
     """2026-08-24 -- el bug de divergencia motor/facet_binding (ada glm-5.2
     vs glm-5.3, thot gpt-5.5 vs gpt-5.6-terra en produccion) volvio a
@@ -1965,6 +2009,10 @@ async def run_migrations():
 
             for table_name, column_name, min_length, ddl in _COLUMN_WIDENS:
                 if await _column_too_narrow(cur, table_name, column_name, min_length):
+                    await cur.execute(ddl)
+
+            for table_name, index_name, ddl in _INDEXES:
+                if not await _index_exists(cur, table_name, index_name):
                     await cur.execute(ddl)
 
             await _drop_axioma_artifacts(cur)
