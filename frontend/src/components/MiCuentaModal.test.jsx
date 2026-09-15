@@ -50,4 +50,13 @@ describe('MiCuentaModal', () => {
     expect(await screen.findByText('Contraseña cambiada. Tus otras sesiones se cerraron.')).toBeInTheDocument()
     expect(cambiarMock).toHaveBeenCalledWith('vieja-clave', 'nueva-clave-9')
   })
+
+  // Fix round 1 (2026-09-15, Ruling U24): Escape cierra los tres modales de
+  // usuarios. Nunca un clic en el fondo -- así no se pierde lo escrito.
+  it('Escape cierra el modal', () => {
+    const onCerrar = vi.fn()
+    render(<I18nProvider><MiCuentaModal onCerrar={onCerrar} /></I18nProvider>)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onCerrar).toHaveBeenCalledTimes(1)
+  })
 })

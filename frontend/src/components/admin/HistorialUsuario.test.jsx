@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -54,5 +54,17 @@ describe('HistorialUsuario -- respuestas tardías', () => {
     await tic()
     expect(screen.queryByText('Baja')).not.toBeInTheDocument()
     expect(screen.getByText('Desbloqueo')).toBeInTheDocument()
+  })
+})
+
+// Fix round 1 (2026-09-15, Ruling U24): Escape cierra los tres modales de
+// usuarios. Nunca un clic en el fondo -- así no se pierde lo escrito.
+describe('HistorialUsuario -- Escape (Ruling U24)', () => {
+  it('Escape cierra el modal', () => {
+    api.get.mockReturnValue(new Promise(() => {}))
+    const onCerrar = vi.fn()
+    render(<I18nProvider><HistorialUsuario usuario={{ user_id: 2, email: 'b@x.io' }} onCerrar={onCerrar} /></I18nProvider>)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onCerrar).toHaveBeenCalledTimes(1)
   })
 })

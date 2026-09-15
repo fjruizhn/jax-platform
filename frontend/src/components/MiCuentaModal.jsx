@@ -3,6 +3,7 @@ import { useI18n } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
 import PasswordInput from './PasswordInput'
 import { problemaDePassword } from '../lib/reglasPassword'
+import { useCerrarConEscape } from '../lib/useCerrarConEscape'
 
 // Mi cuenta (2026-09-12, admin usuarios etapa 4, spec §3.4): cambiar la propia
 // contraseña. Exige la actual; al guardar se cierran las otras sesiones.
@@ -14,6 +15,7 @@ const ETIQUETA = 'block text-xs text-texto-suave mb-1 font-semibold uppercase tr
 export default function MiCuentaModal({ onCerrar }) {
   const { t } = useI18n()
   const cambiarMiPassword = useJaxStore((s) => s.cambiarMiPassword)
+  useCerrarConEscape(onCerrar)
   const [actual, setActual] = useState('')
   const [nueva, setNueva] = useState('')
   const [confirmar, setConfirmar] = useState('')

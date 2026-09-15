@@ -41,3 +41,14 @@ describe('EditarUsuarioModal -- borde y foco del select de rol (M-2)', () => {
     expect(select.className).toMatch(/(^|\s)focus:border-foco(\s|$)/)
   })
 })
+
+// Fix round 1 (2026-09-15, Ruling U24): Escape cierra los tres modales de
+// usuarios. Nunca un clic en el fondo -- así no se pierde lo escrito.
+describe('EditarUsuarioModal -- Escape (Ruling U24)', () => {
+  it('Escape cierra el modal', () => {
+    const onCerrar = vi.fn()
+    render(<I18nProvider><EditarUsuarioModal usuario={USUARIO} onGuardar={vi.fn()} onCerrar={onCerrar} /></I18nProvider>)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onCerrar).toHaveBeenCalledTimes(1)
+  })
+})

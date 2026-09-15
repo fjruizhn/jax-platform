@@ -177,4 +177,19 @@ describe('AdminUsers — enlace de recuperación', () => {
       type: 'success', message: 'Enlace de recuperación enviado a b@x.io.',
     }))
   })
+
+  // Fix round 1 (2026-09-15): el camino 502 (el servidor SMTP rechazó el
+  // envío) no tenía test -- mensajeDeError agrega la respuesta del servidor
+  // con smtpServerSaid, y nada probaba que "Enviar enlace" también la mostrara.
+  it('un 502 smtp_envio_fallido muestra el mensaje y la respuesta del servidor SMTP', async () => {
+    api.post.mockRejectedValue({
+      response: { status: 502, data: { detail: { code: 'smtp_envio_fallido', server: 'Connection unexpectedly closed' } } },
+    })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar enlace' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error',
+      message: 'El servidor SMTP no aceptó el correo. Respuesta del servidor: Connection unexpectedly closed',
+    }))
+  })
 })

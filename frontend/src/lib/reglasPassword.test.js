@@ -16,4 +16,16 @@ describe('problemaDePassword', () => {
   it('cuenta caracteres como el backend: un emoji es uno (no dos unidades UTF-16)', () => {
     expect(problemaDePassword('😀'.repeat(7))).toBe('corta')
   })
+
+  // Fix round 1 (2026-09-15): el caso de la ñ saltaba de 72 a 74 bytes y no
+  // pisaba el borde -- un mutante que sube BCRYPT_MAX_BYTES a 73 pasaba sin
+  // que ningún test lo notara. Estos dos casos SÍ caen justo en 72 y 73 bytes
+  // (70/71 caracteres ASCII de 1 byte + una ñ de 2 bytes en UTF-8).
+  it('exactamente 72 bytes (el borde) no es larga', () => {
+    expect(problemaDePassword('a'.repeat(70) + 'ñ')).toBe(null)
+  })
+
+  it('73 bytes (un byte más que el borde) ya es larga', () => {
+    expect(problemaDePassword('a'.repeat(71) + 'ñ')).toBe('larga')
+  })
 })

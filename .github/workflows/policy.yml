@@ -280,8 +280,20 @@ jobs:
             // implementaron junto con su prueba -- desviación de TDD estricto,
             // documentada en el informe de la tarea). Medido con vitest run: 271
             // passed en 44 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 271) {
-              console.error("PISO ROTO: se esperaban 271 tests de vitest CORRIDOS y 0 fallidos.");
+            // 271 -> 277 el 2026-09-15 (Task 4, fix round 1 -- 3 hallazgos): +2
+            // lib/reglasPassword.test.js (borde exacto: 72 bytes -- 70 ascii + una ñ
+            // -- no es larga, 73 bytes ya lo es; verificado con BCRYPT_MAX_BYTES en
+            // 73 a mano: el caso de 73 bytes fallaba, se restauró a 72) +1
+            // AdminUsers.test.jsx (502 smtp_envio_fallido: el toast incluye
+            // smtpServerSaid con la respuesta del servidor; verificado en rojo
+            // quitando esa parte de mensajeDeError y restaurándola) +3 Escape cierra
+            // el modal, uno por archivo (Ruling U24: MiCuentaModal.test.jsx,
+            // EditarUsuarioModal.test.jsx, HistorialUsuario.test.jsx), con el hook
+            // compartido lib/useCerrarConEscape.js -- nunca cierra por clic en el
+            // fondo. Vistos en rojo antes de verde. Medido con vitest run: 277
+            // passed en 44 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 277) {
+              console.error("PISO ROTO: se esperaban 277 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

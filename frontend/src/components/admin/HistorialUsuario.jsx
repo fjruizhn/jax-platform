@@ -3,6 +3,7 @@ import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { useJaxStore } from '../../store/useJaxStore'
 import { mensajeDeError } from '../../pages/admin/erroresAdmin'
+import { useCerrarConEscape } from '../../lib/useCerrarConEscape'
 
 // Historial corto de un usuario (2026-09-15, admin usuarios etapa 3): las
 // últimas 50 acciones de administración sobre él, la más nueva primero. La
@@ -11,6 +12,7 @@ export default function HistorialUsuario({ usuario, onCerrar }) {
   const { lang, t } = useI18n()
   const addToast = useJaxStore((s) => s.addToast)
   const [entradas, setEntradas] = useState(null)
+  useCerrarConEscape(onCerrar)
 
   // `cancelado` (Task 4, ronda 1, 2026-09-15): una respuesta que llega después
   // de cerrar el modal o de cambiar de usuario se ignora -- antes pintaba la

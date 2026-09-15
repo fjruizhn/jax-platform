@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
+import { useCerrarConEscape } from '../../lib/useCerrarConEscape'
 
 // Editar rol y estado (2026-09-15, admin usuarios etapa 3). Manda SOLO lo que
 // cambió; qué está permitido lo decide el backend (último superadmin,
@@ -17,6 +18,7 @@ export default function EditarUsuarioModal({ usuario, onGuardar, onCerrar }) {
   const [role, setRole] = useState(usuario.role)
   const [status, setStatus] = useState(usuario.status)
   const [guardando, setGuardando] = useState(false)
+  useCerrarConEscape(onCerrar)
 
   const cambios = {}
   if (role !== usuario.role) cambios.role = role
