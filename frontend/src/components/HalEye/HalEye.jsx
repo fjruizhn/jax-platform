@@ -38,7 +38,7 @@ function HalEye({ size = 220, reposo = false }) {
           aria-label={t.halEyeAriaLabel(eye.label)}
         >
           {/* Outer housing */}
-          <circle cx={r} cy={r} r={outerR} className="fill-fondo stroke-superficie" strokeWidth="3" />
+          <circle cx={r} cy={r} r={outerR} className="fill-fondo stroke-borde" strokeWidth="3" />
 
           {/* Glow rings */}
           <circle

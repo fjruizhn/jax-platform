@@ -36,6 +36,18 @@ describe('HalEye -- sin prop reposo, dirigido por la store', () => {
   })
 })
 
+// M3 (revisión de código, 2026-09-14): el anillo del housing usaba
+// stroke-superficie sobre fill-fondo; la parte A del fix vivo intercambió
+// --fondo/--superficie en claro y el anillo quedó casi invisible (241 245
+// 249 vs 248 250 252). borde SÍ se distingue de fondo en los dos temas.
+describe('HalEye -- anillo del housing', () => {
+  it('el círculo exterior usa stroke-borde, no stroke-superficie', () => {
+    const { container } = renderEye({ size: 100 })
+    expect(container.querySelector('.stroke-borde')).toBeInTheDocument()
+    expect(container.querySelector('.stroke-superficie')).not.toBeInTheDocument()
+  })
+})
+
 describe('HalEye -- con prop reposo, fijo, ignora la store', () => {
   it('siempre pulse-slow y sin etiqueta visible, aunque la store diga otra cosa', () => {
     useJaxStore.setState({ killSwitchActive: true })
