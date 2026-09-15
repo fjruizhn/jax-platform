@@ -152,7 +152,7 @@ jobs:
             // +5 useTema.test.js y +1 AdminSettings (guardar aplica el predeterminado), +1
             // placeholder de Login.test.jsx (ruling del controlador sobre el placeholder
             // del campo de usuario). Vistos en rojo antes de verde. Medido con vitest run: 185.
-            // 185 -> 189 el 2026-09-15 (tema PR 1, arreglos de la revisión final): +2
+            // 185 -> 189 el 2026-09-14 (tema PR 1, arreglos de la revisión final): +2
             // contraste.test.js (I-1: texto-tenue/hundido ya en PARES, y ::placeholder con
             // var(--texto-tenue) en @layer base de index.css), +1 useTema.test.js (M-4: con
             // localStorage bloqueado el store arranca en dark y toggleTheme no lanza), +1
