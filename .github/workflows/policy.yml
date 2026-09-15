@@ -752,7 +752,16 @@ jobs:
           # y corta sesiones; token usado/expirado/inválido no corta nada; el corte fallido
           # no rompe el 200). El brief pedía 6; U9 agregó 2 más (sin corte / corte fail-soft
           # en reset). Medido: 807 / 1.
-          PISO_PASSED = 807
+          # Subido de 807 a 812 (2026-09-15, Task 3 fix ronda 1): +5 en test_contrasenas.py
+          # (reset-link: UnicodeEncodeError -> 502 smtp_password_no_ascii, ValueError ->
+          # 503 smtp_config_corrupta, ambos con el token borrado y sin auditoría, mismo
+          # juego de códigos que /smtp/test etapa 1; la limpieza borra por token EXACTO y
+          # no pisa un token de un forgot-password concurrente del mismo usuario; el claim
+          # atómico del token bajo la ventana de bcrypt -- verificado en rojo quitando el
+          # `AND used = FALSE` y el chequeo de rowcount; U21, el usuario se bloquea ANTES
+          # que el token en /reset-password, mismo orden que la cascada de delete_user --
+          # verificado en rojo quitando el SELECT ... FOR UPDATE). Medido: 812 / 1.
+          PISO_PASSED = 812
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1086,6 +1095,9 @@ jobs:
       # JAX_CI_NO_DB=1: 369 / 431.
       # Task 3 (2026-09-15): los 8 de enlace de recuperación / reset piden `client`
       # (sin cambio en passed). Medido con JAX_CI_NO_DB=1: 369 / 439.
+      # Task 3 fix ronda 1 (2026-09-15): los 5 nuevos (errores de reset-link, borrado
+      # por token exacto, claim atómico, U21) piden `client` (sin cambio en passed).
+      # Medido con JAX_CI_NO_DB=1: 369 / 444.
       JAX_CI_MIN_PASSED: "369"
     steps:
       - uses: actions/checkout@v4

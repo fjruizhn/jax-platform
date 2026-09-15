@@ -307,6 +307,61 @@ def test_enlace_con_smtp_que_falla_es_502_con_la_respuesta_y_borra_el_token(clie
     assert client.portal.call(_tokens, u) == []
 
 
+def test_enlace_con_password_smtp_no_ascii_es_502_y_borra_el_token(client, usuarios, smtp_configurado, monkeypatch):
+    """Fix ronda 1 (2026-09-15): mismo caso que /smtp/test (etapa 1,
+    api/admin/smtp.py) -- smtplib codifica el AUTH en ascii, una contraseña
+    guardada no ASCII revienta con UnicodeEncodeError, no con OSError."""
+    from api import auth as auth_mod
+
+    def falla(s, to, link):
+        raise UnicodeEncodeError("ascii", "contraseña-ñ", 0, 1, "ordinal not in range(128)")
+
+    monkeypatch.setattr(auth_mod, "_send_reset_email", falla)
+    u, _ = usuarios()
+    r = _enlace(client, u)
+    assert r.status_code == 502
+    assert r.json()["detail"] == {"code": "smtp_password_no_ascii", "server": ""}
+    assert client.portal.call(_tokens, u) == []
+    assert client.portal.call(_acciones, u) == [], "no se audita un envío que no salió"
+
+
+def test_enlace_con_config_corrupta_es_503_y_borra_el_token(client, usuarios, smtp_configurado, monkeypatch):
+    """Fix ronda 1 (2026-09-15): construir_mensaje rechaza encabezados con
+    caracteres de control (misma red que /smtp/test) -- ValueError, DESPUÉS
+    de UnicodeEncodeError en el orden de los except (es su superclase)."""
+    from api import auth as auth_mod
+
+    def falla(s, to, link):
+        raise ValueError("encabezado con caracter de control")
+
+    monkeypatch.setattr(auth_mod, "_send_reset_email", falla)
+    u, _ = usuarios()
+    r = _enlace(client, u)
+    assert (r.status_code, r.json()["detail"]) == (503, "smtp_config_corrupta")
+    assert client.portal.call(_tokens, u) == []
+    assert client.portal.call(_acciones, u) == [], "no se audita un envío que no salió"
+
+
+def test_enlace_borra_por_token_exacto_no_pisa_un_forgot_password_concurrente(client, usuarios, smtp_configurado,
+                                                                               monkeypatch):
+    """Fix ronda 1 / U17 (2026-09-15): la limpieza borra por TOKEN exacto, no
+    por user_id -- un forgot-password concurrente del mismo usuario, creado
+    DESPUÉS del nuestro y ANTES de que el envío admita el fallo, sobrevive."""
+    from api import auth as auth_mod
+    u, _ = usuarios()
+
+    def falla_y_llega_otro_token(s, to, link):
+        client.portal.call(sql, "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
+                                "VALUES (%s, %s, %s, 'test')",
+                           (u, str(uuid.uuid4()), utc_ahora() + timedelta(hours=1)))
+        raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+
+    monkeypatch.setattr(auth_mod, "_send_reset_email", falla_y_llega_otro_token)
+    r = _enlace(client, u)
+    assert r.status_code == 502
+    assert len(client.portal.call(_tokens, u)) == 1, "el token concurrente sobrevive; solo se borra el nuestro"
+
+
 def test_enlace_a_inactivo_o_inexistente(client, usuarios, smtp_configurado):
     u, _ = usuarios(status="inactive")
     r = _enlace(client, u)
@@ -373,3 +428,53 @@ def test_reset_si_el_corte_falla_el_reset_confirmado_responde_igual(client, usua
     r = client.post("/api/auth/reset-password", json={"token": token, "password": NUEVA})
     assert r.status_code == 200, r.text
     assert client.portal.call(_version, u) == 1
+
+
+def test_reset_reclama_el_token_bajo_el_bloqueo_del_usuario(client, usuarios, cortes, monkeypatch):
+    """Fix ronda 1 (2026-09-15): si el token se marca `used` DURANTE la
+    ventana de bcrypt (antes de entrar a la transacción), el UPDATE atómico
+    (`WHERE id = %s AND used = FALSE` + rowcount != 1) lo detecta y revierte
+    -- no pisa un token ya reclamado por otra carrera. Sin ese `AND used =
+    FALSE` (o sin el chequeo de rowcount) este test falla: verificado a mano
+    quitándolos y restaurándolos (ver task-3-report.md)."""
+    u, email = usuarios(password=CLAVE)
+    antes = client.portal.call(_hash_de, u)
+    token = str(uuid.uuid4())
+    client.portal.call(sql, "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
+                            "VALUES (%s, %s, %s, 'test')", (u, token, utc_ahora() + timedelta(hours=1)))
+    hash_real = auth_mod._hash
+
+    def hashea_y_marca_usado(password):
+        h = hash_real(password)
+        # Simula la carrera: OTRA conexión reclama el token mientras este
+        # request todavía está hasheando (bcrypt corre fuera de la transacción).
+        client.portal.call(sql, "UPDATE password_reset_tokens SET used = TRUE WHERE token = %s", (token,))
+        return h
+
+    monkeypatch.setattr(auth_mod, "_hash", hashea_y_marca_usado)
+    r = client.post("/api/auth/reset-password", json={"token": token, "password": NUEVA})
+    assert (r.status_code, r.json()["detail"]) == (400, "reset_token_usado")
+    assert client.portal.call(_version, u) == 0
+    assert client.portal.call(_acciones, u) == []
+    assert cortes == []
+    assert client.portal.call(_hash_de, u) == antes, "la contraseña no cambia"
+    assert _login(client, email, CLAVE).status_code == 200, "la vieja sigue sirviendo"
+
+
+def test_reset_a_un_usuario_inactivo_es_400_y_no_consume_el_token(client, usuarios, cortes):
+    """Ruling U21 (fix ronda 1, 2026-09-15): el usuario se bloquea ANTES que
+    el token -- mismo orden que la cascada de delete_user (jax_users, después
+    password_reset_tokens vía FK ON DELETE CASCADE), para no formar un ciclo
+    de espera con esa transacción. Un token válido para un usuario ya inactivo
+    no se consume: 400 reset_token_invalido, sin escribir nada."""
+    u, _ = usuarios(password=CLAVE, status="inactive")
+    antes = client.portal.call(_hash_de, u)
+    token = str(uuid.uuid4())
+    client.portal.call(sql, "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address) "
+                            "VALUES (%s, %s, %s, 'test')", (u, token, utc_ahora() + timedelta(hours=1)))
+    r = client.post("/api/auth/reset-password", json={"token": token, "password": NUEVA})
+    assert (r.status_code, r.json()["detail"]) == (400, "reset_token_invalido")
+    assert client.portal.call(_tokens, u) == [token], "el token sigue sin usar"
+    assert client.portal.call(_hash_de, u) == antes
+    assert client.portal.call(_acciones, u) == []
+    assert cortes == []

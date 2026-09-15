@@ -278,11 +278,14 @@ async def forgot_password(req: ForgotPasswordRequest, request: Request, backgrou
     return {"ok": True, "message": _MENSAJE_RECUPERACION}
 
 
-async def _crear_enlace_de_recuperacion(user_id: int, client_ip: str) -> str:
+async def _crear_enlace_de_recuperacion(user_id: int, client_ip: str) -> tuple[str, str]:
     """Invalida los tokens pendientes del usuario, crea uno nuevo (1 hora) y
-    devuelve el enlace. Lo comparten el forgot-password público
+    devuelve (token, enlace). Lo comparten el forgot-password público
     (_procesar_recuperacion) y el reset por admin (etapa 4,
-    api/admin/users.py::send_reset_link)."""
+    api/admin/users.py::send_reset_link). Devolver también el token (fix
+    ronda 1, 2026-09-15, U17): si el envío falla, quien llama borra ESE token
+    por valor exacto -- no por user_id, que también borraría un token de un
+    forgot-password concurrente del mismo usuario."""
     token = str(uuid.uuid4())
     expires_at = utc_ahora() + timedelta(hours=1)
     pool = await get_pool()
@@ -298,7 +301,7 @@ async def _crear_enlace_de_recuperacion(user_id: int, client_ip: str) -> str:
                 (user_id, token, expires_at, client_ip),
             )
     frontend_origin = os.getenv("FRONTEND_ORIGIN", "https://axioma-ia.io")
-    return f"{frontend_origin}/reset-password?token={token}"
+    return token, f"{frontend_origin}/reset-password?token={token}"
 
 
 async def _procesar_recuperacion(email: str, client_ip: str) -> None:
@@ -329,7 +332,7 @@ async def _procesar_recuperacion(email: str, client_ip: str) -> None:
                          exc.codigo, getattr(exc, "motivo", "-"))
             return
 
-        reset_link = await _crear_enlace_de_recuperacion(user_id, client_ip)
+        _token, reset_link = await _crear_enlace_de_recuperacion(user_id, client_ip)
         # smtplib es bloqueante: a un hilo, nunca en el event loop.
         await asyncio.to_thread(_send_reset_email, settings, email_guardado, reset_link)
     except Exception:  # fail-soft: corre después de responder; no hay a quién devolverle el error, queda en el log
@@ -402,7 +405,25 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
     ip = rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES)
 
     async with transaccion() as cur:
-        # Reclamar el token es lo PRIMERO y es atómico: con dos envíos
+        # Orden de bloqueo (Ruling U21, fix ronda 1 2026-09-15): el USUARIO se
+        # bloquea PRIMERO, antes que el token. `password_reset_tokens.user_id`
+        # tiene FK ON DELETE CASCADE hacia jax_users: cuando delete_user borra
+        # al usuario, InnoDB toma la fila de jax_users y DESDE AHÍ cascada a
+        # sus tokens -- en ese orden (usuario, después token). Si esta
+        # transacción tomara el token primero y el usuario después, un DELETE
+        # concurrente que ya tiene al usuario y espera el token forma un ciclo
+        # con esta (que tendría el token y esperaría al usuario) -> 1213. Con
+        # el usuario primero en las dos, el orden es el mismo y no hay ciclo.
+        # También cierra el hueco de un reset a un usuario borrado/desactivado
+        # DESPUÉS de crear el token: sin esto, el UPDATE de abajo escribiría
+        # sobre una fila que ya no debería aceptar contraseñas nuevas.
+        await cur.execute("SELECT status FROM jax_users WHERE user_id = %s FOR UPDATE", (user_id,))
+        fila_usuario = await cur.fetchone()
+        if fila_usuario is None or fila_usuario[0] != "active":
+            # Mismo código que un token que nunca existió: no se distingue
+            # "usuario borrado/inactivo" de "token inválido" en la respuesta.
+            raise HTTPException(status_code=400, detail="reset_token_invalido")
+        # Reclamar el token es lo SEGUNDO y es atómico: con dos envíos
         # simultáneos del mismo enlace, solo uno cambia la fila (el otro ve
         # 0 filas y revierte). Un UPDATE que cambia FALSE -> TRUE siempre
         # reporta 1 fila afectada; si el WHERE lo excluye, 0.

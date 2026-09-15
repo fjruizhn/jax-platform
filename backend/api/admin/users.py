@@ -286,6 +286,17 @@ async def delete_user(user_id: int, user: AuthUser = Depends(require_superadmin)
     return {"ok": True}
 
 
+async def _borrar_enlace_no_entregado(token: str) -> None:
+    """U17: un enlace que no salió no puede quedar vivo. Se borra por token
+    EXACTO (fix ronda 1, 2026-09-15), no por user_id: un forgot-password
+    concurrente del mismo usuario, creado DESPUÉS del nuestro, tiene su propio
+    token y no tiene que perderlo por un fallo de envío que no es el suyo."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM password_reset_tokens WHERE token = %s", (token,))
+
+
 @router.post("/users/{user_id}/reset-link")
 async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depends(require_superadmin)):
     """Reset por admin = enlace por correo (spec §3.4). Reusa el núcleo de la
@@ -307,18 +318,26 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
     if estado != "active":
         raise HTTPException(status_code=409, detail="usuario_no_activo")
     ip = _ip(request)
-    enlace = await auth_api._crear_enlace_de_recuperacion(user_id, ip)
+    token, enlace = await auth_api._crear_enlace_de_recuperacion(user_id, ip)
+    # Mismo juego de excepciones que /smtp/test (etapa 1, api/admin/smtp.py):
+    # ValueError ANTES que (OSError, SMTPException), y UnicodeEncodeError
+    # ANTES que ValueError -- es subclase suya (smtplib codifica el AUTH en
+    # ascii). En los tres casos: el enlace recién creado no puede quedar vivo
+    # (fix arriba) y no se audita un envío que no salió.
     try:
         await asyncio.to_thread(auth_api._send_reset_email, settings, email, enlace)
+    except UnicodeEncodeError as exc:
+        await _borrar_enlace_no_entregado(token)
+        raise HTTPException(status_code=502, detail={"code": "smtp_password_no_ascii", "server": ""}) from exc
+    except ValueError as exc:
+        # construir_mensaje rechaza encabezados con caracteres de control:
+        # misma red de estado corrupto que /smtp/test, mismo código.
+        logger.warning("Enlace de recuperación (admin): no se pudo armar el mensaje: %s", exc)
+        await _borrar_enlace_no_entregado(token)
+        raise HTTPException(status_code=503, detail="smtp_config_corrupta") from exc
     except (OSError, smtplib.SMTPException) as exc:
-        # U17: un enlace que no salió no puede quedar vivo. Se borra el token
-        # recién creado ANTES de devolver el error -- si no, un enlace nunca
-        # entregado (por ejemplo, visto en un log) seguiría siendo válido.
-        async with pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE", (user_id,)
-                )
+        logger.warning("Enlace de recuperación (admin) a %s falló: %s", email, exc)
+        await _borrar_enlace_no_entregado(token)
         raise HTTPException(status_code=502, detail={"code": "smtp_envio_fallido", "server": str(exc)}) from exc
     async with transaccion() as cur:
         await user_audit.registrar(cur, int(user.user_id), user_id, "reset_link_sent", {"to": email}, ip)
