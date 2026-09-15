@@ -444,6 +444,7 @@ export default {
   adminCreateTitle: 'Crear Usuario',
   adminCreatePassword: 'Contraseña temporal',
   adminCreateSubmit: 'Crear',
+  adminCreateSubmitting: 'Creando…',
   adminCreateCancel: 'Cancelar',
   adminDeleteConfirm: (email) => `¿Eliminar usuario ${email}?`,
   // I-1 (revisión final PR 2, 2026-09-14): AdminUsers.jsx:100 tenía

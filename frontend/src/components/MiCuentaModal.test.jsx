@@ -71,6 +71,31 @@ describe('MiCuentaModal', () => {
     }
   })
 
+  // Fix round 1 del re-review final (2026-09-15): tras el éxito el form se
+  // desmontaba y el foco caía a body; y la región role="status" se insertaba
+  // ya con su texto (una región viva agregada junto con su contenido no se
+  // anuncia de forma confiable). Ahora la región existe vacía desde el inicio
+  // y el foco va al botón Cerrar del éxito.
+  it('la región de estado existe vacía antes de enviar y recibe el texto de éxito', async () => {
+    cambiarMock.mockResolvedValue()
+    render(<I18nProvider><MiCuentaModal onCerrar={vi.fn()} /></I18nProvider>)
+    const estado = screen.getByRole('status')
+    expect(estado).toBeEmptyDOMElement()
+    fireEvent.change(screen.getByLabelText('Contraseña actual'), { target: { value: 'vieja-clave' } })
+    fireEvent.change(screen.getByLabelText('Nueva contraseña'), { target: { value: 'nueva-clave-9' } })
+    fireEvent.change(screen.getByLabelText('Confirmar contraseña'), { target: { value: 'nueva-clave-9' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cambiar contraseña' }))
+    await waitFor(() => expect(estado).toHaveTextContent('Contraseña cambiada. Tus otras sesiones se cerraron.'))
+    expect(screen.getByRole('status')).toBe(estado)
+  })
+
+  it('tras el éxito el foco va al botón Cerrar', async () => {
+    cambiarMock.mockResolvedValue()
+    llenar('vieja-clave', 'nueva-clave-9', 'nueva-clave-9')
+    const cerrar = await screen.findByRole('button', { name: 'Cerrar' })
+    await waitFor(() => expect(cerrar).toHaveFocus())
+  })
+
   it('Escape cierra el modal', () => {
     const onCerrar = vi.fn()
     render(<I18nProvider><MiCuentaModal onCerrar={onCerrar} /></I18nProvider>)

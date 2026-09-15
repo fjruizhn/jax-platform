@@ -339,8 +339,16 @@ jobs:
             // Vistos en rojo antes de verde (sin la clave salía el texto del
             // formulario SMTP). Medido con vitest run: 311 passed en 47
             // archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 311) {
-              console.error("PISO ROTO: se esperaban 311 tests de vitest CORRIDOS y 0 fallidos.");
+            // 311 -> 315 el 2026-09-15 (fix round 1 del re-review final de la
+            // etapa 4): +2 MiCuentaModal.test.jsx (la región role="status"
+            // existe vacía antes de enviar y recibe el texto de éxito; tras el
+            // éxito el foco va al botón Cerrar) +2 CrearUsuarioModal.test.jsx
+            // (en es y en en, mientras guarda el botón dice "Creando…" /
+            // "Creating…", t.adminCreateSubmitting, no el texto de adjuntar).
+            // Vistos en rojo antes de verde. Medido con vitest run: 315 passed
+            // en 47 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 315) {
+              console.error("PISO ROTO: se esperaban 315 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

@@ -63,4 +63,15 @@ describe('CrearUsuarioModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Crear' }))
     await waitFor(() => expect(onCrear).toHaveBeenCalledWith({ email: 'n@x.io', role: 'viewer', password: 'clave-larga-9' }))
   })
+
+  // Fix round 1 del re-review final (2026-09-15): mientras guarda, el botón
+  // decía "Subiendo…" (t.attachUploading, el texto de adjuntar archivos).
+  it.each([['es', 'Crear', 'Creando…'], ['en', 'Create', 'Creating…']])('en %s, mientras guarda el botón dice "%s" -> "%s"', async (lang, antes, durante) => {
+    localStorage.setItem('jax_lang', lang)
+    renderModal({ onCrear: vi.fn(() => new Promise(() => {})) })
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'n@x.io' } })
+    fireEvent.change(screen.getByLabelText(lang === 'es' ? 'Contraseña temporal' : 'Temporary password'), { target: { value: 'clave-larga-9' } })
+    fireEvent.click(screen.getByRole('button', { name: antes }))
+    expect(await screen.findByRole('button', { name: durante })).toBeDisabled()
+  })
 })

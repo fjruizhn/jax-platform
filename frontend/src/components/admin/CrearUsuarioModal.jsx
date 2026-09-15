@@ -65,7 +65,7 @@ export default function CrearUsuarioModal({ onCrear, onCerrar }) {
         </div>
         <div className="flex gap-2 justify-end pt-2">
           <button type="button" onClick={onCerrar} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminCreateCancel}</button>
-          <button type="submit" disabled={guardando} className="px-4 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold disabled:opacity-50 transition-colors">{guardando ? t.attachUploading : t.adminCreateSubmit}</button>
+          <button type="submit" disabled={guardando} className="px-4 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold disabled:opacity-50 transition-colors">{guardando ? t.adminCreateSubmitting : t.adminCreateSubmit}</button>
         </div>
       </form>
     </Dialogo>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useI18n } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
 import PasswordInput from './PasswordInput'
@@ -22,6 +22,12 @@ export default function MiCuentaModal({ onCerrar }) {
   const [error, setError] = useState('')
   const [hecho, setHecho] = useState(false)
   const [enviando, setEnviando] = useState(false)
+  // Tras el éxito el form se desmonta: el foco va al botón Cerrar en vez de
+  // caer a body (fix round 1 del re-review final, 2026-09-15).
+  const cerrarRef = useRef(null)
+  useEffect(() => {
+    if (hecho) cerrarRef.current?.focus()
+  }, [hecho])
 
   const MENSAJES = {
     password_actual_incorrecta: t.myAccountWrongCurrent,
@@ -51,11 +57,14 @@ export default function MiCuentaModal({ onCerrar }) {
   return (
     <Dialogo idTitulo="mi-cuenta-titulo" titulo={t.myAccount} claseTitulo="text-sm font-semibold text-texto mb-1" onCerrar={onCerrar}>
         <p className="text-xs text-texto-tenue mb-4">{t.myAccountChangePassword}</p>
-        {hecho ? (
-          <div role="status" className="text-sm text-exito bg-exito-fondo border border-exito-borde rounded-lg px-3 py-3">
-            {t.myAccountDone}
-          </div>
-        ) : (
+        {/* La región role="status" vive montada y vacía todo el diálogo y
+            recibe el texto al terminar: una región viva insertada ya con su
+            contenido no se anuncia de forma confiable. Las clases de caja van
+            sólo con texto, para no pintar una caja vacía. */}
+        <div role="status" className={hecho ? 'text-sm text-exito bg-exito-fondo border border-exito-borde rounded-lg px-3 py-3' : undefined}>
+          {hecho ? t.myAccountDone : null}
+        </div>
+        {!hecho && (
           <form onSubmit={enviar} className="space-y-3">
             <div>
               <label htmlFor="mi-cuenta-actual" className={ETIQUETA}>{t.myAccountCurrent}</label>
@@ -82,7 +91,7 @@ export default function MiCuentaModal({ onCerrar }) {
         )}
         {hecho && (
           <div className="flex justify-end pt-4">
-            <button type="button" onClick={onCerrar} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminHistoryClose}</button>
+            <button ref={cerrarRef} type="button" onClick={onCerrar} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminHistoryClose}</button>
           </div>
         )}
     </Dialogo>
