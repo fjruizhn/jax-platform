@@ -108,7 +108,7 @@ export default function AdminUsers() {
                     {u.is_locked && (
                       <button
                         onClick={() => handleUnlock(u)}
-                        className="text-xs px-2 py-0.5 rounded bg-aviso-fondo hover:bg-aviso-fondo text-aviso transition-colors"
+                        className="text-xs px-2 py-0.5 rounded bg-aviso-fondo border border-transparent hover:border-aviso-borde text-aviso transition-colors"
                       >
                         {t.adminUserUnlock}
                       </button>
@@ -122,7 +122,7 @@ export default function AdminUsers() {
                     {u.user_id !== 1 && (
                       <button
                         onClick={() => handleDelete(u)}
-                        className="text-xs px-2 py-0.5 rounded bg-peligro-fondo hover:bg-peligro-fondo text-peligro transition-colors"
+                        className="text-xs px-2 py-0.5 rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors"
                       >
                         {t.adminUserDelete}
                       </button>
@@ -146,12 +146,12 @@ export default function AdminUsers() {
                 value={form.email}
                 onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
                 required
-                className="w-full bg-superficie border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco"
+                className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco"
               />
               <select
                 value={form.role}
                 onChange={e => setForm(f => ({ ...f, role: e.target.value }))}
-                className="w-full bg-superficie border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco"
+                className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco"
               >
                 {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
@@ -160,7 +160,7 @@ export default function AdminUsers() {
                 value={form.password}
                 onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
                 required
-                className="w-full bg-superficie border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco"
+                className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco"
               />
               <div className="flex gap-2 justify-end pt-2">
                 <button type="button" onClick={() => setShowCreate(false)} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminCreateCancel}</button>

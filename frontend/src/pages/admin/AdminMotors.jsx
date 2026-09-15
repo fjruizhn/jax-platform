@@ -163,14 +163,14 @@ export default function AdminMotors() {
               value={form.key}
               onChange={e => setForm(f => ({ ...f, key: e.target.value }))}
               placeholder={t.adminMotorsKeyPlaceholder}
-              className="w-full bg-superficie border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco mb-3 font-mono"
+              className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco mb-3 font-mono"
             />
 
             <label className="block text-xs text-texto-suave mb-1">{t.adminModelsProvider}</label>
             <select
               value={form.provider_id}
               onChange={e => setForm(f => ({ ...f, provider_id: e.target.value, model_id: '' }))}
-              className="w-full bg-superficie border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco mb-3"
+              className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco mb-3"
             >
               <option value="">{t.adminMotorsSelectProvider}</option>
               {providerIds.map(p => <option key={p} value={p}>{p}</option>)}
@@ -181,7 +181,7 @@ export default function AdminMotors() {
               value={form.model_id}
               onChange={e => setForm(f => ({ ...f, model_id: e.target.value }))}
               disabled={!form.provider_id}
-              className="w-full bg-superficie border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco mb-3 disabled:opacity-50"
+              className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco mb-3 disabled:opacity-50"
             >
               <option value="">{t.adminMotorsSelectModel}</option>
               {modelsForProvider.map(m => <option key={m.id} value={m.model_id}>{m.model_id}</option>)}
@@ -191,7 +191,7 @@ export default function AdminMotors() {
             <select
               value={form.transport}
               onChange={e => setForm(f => ({ ...f, transport: e.target.value }))}
-              className="w-full bg-superficie border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco mb-1"
+              className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco mb-1"
             >
               {(transportValues.length ? transportValues : ['http_openai_compat', 'ollama']).map(tr => (
                 <option key={tr} value={tr}>
@@ -210,7 +210,7 @@ export default function AdminMotors() {
                   value={form.max_tokens}
                   onChange={e => setForm(f => ({ ...f, max_tokens: e.target.value }))}
                   placeholder="0"
-                  className="w-full bg-superficie border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco"
+                  className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco"
                 />
               </div>
               <div>
@@ -220,7 +220,7 @@ export default function AdminMotors() {
                   min="1"
                   value={form.default_timeout_seconds}
                   onChange={e => setForm(f => ({ ...f, default_timeout_seconds: e.target.value }))}
-                  className="w-full bg-superficie border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco"
+                  className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco"
                 />
               </div>
             </div>
@@ -259,7 +259,7 @@ export default function AdminMotors() {
                       value={selectedCapabilities[cap.key]}
                       onChange={e => setCapabilityPriority(cap.key, e.target.value)}
                       title={t.adminMotorsPriority}
-                      className="w-16 bg-superficie border border-borde-control rounded px-1.5 py-0.5 text-xs text-texto focus:outline-none focus:border-foco"
+                      className="w-16 bg-hundido border border-borde-control rounded px-1.5 py-0.5 text-xs text-texto focus:outline-none focus:border-foco"
                     />
                   )}
                 </div>
