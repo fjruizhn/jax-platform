@@ -202,8 +202,22 @@ jobs:
             // de millar) -- por eso las dos primeras pruebas espían el argumento de
             // locale en vez de comparar texto renderizado entre idiomas, que sería
             // igual. Vistos en rojo antes de verde. Medido con vitest run: 220.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 220) {
-              console.error("PISO ROTO: se esperaban 220 tests de vitest CORRIDOS y 0 fallidos.");
+            // 220 -> 231 el 2026-09-15 (tema con tokens, pr3): +1
+            // useJaxStore.eyeState.test.js (Task 20: cada estado del ojo devuelve un
+            // token del tema, no un hex) +3 useJaxStore.facetTokens.test.js (nuevo
+            // archivo, Task 20: loadState con token conocido, loadState con token que
+            // el tema no conoce cae en el respaldo, facet_status_changed con token de
+            // la clave) +3 BottomBar.test.jsx (Task 21: token en borde/texto sin fondo
+            // de faceta, sigue a la faceta elegida, la faceta elegida pinta borde/texto
+            // sin fondo de color) +2 KillSwitch.test.jsx (Task 21: muestra t.killButton,
+            // la clave existe en es.js y en.js) +2 LeftPanel.test.jsx (fix i18n: muestra
+            // t.lasManos, la clave existe en es.js y en.js) +1 RightPanel.test.jsx
+            // (Aprobar es el CTA sólido con bg-accion, distinto de Cancelar) -1
+            // lightModeOverrides.test.js (se borra el archivo entero junto con la capa
+            // vieja; el único test que tenía se va con él). Vistos en rojo antes de
+            // verde. Medido con vitest run: 231.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 231) {
+              console.error("PISO ROTO: se esperaban 231 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
