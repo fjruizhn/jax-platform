@@ -483,8 +483,12 @@ jobs:
             // lista de bajas y el usuario aparece ahi sin tocar el
             // interruptor). Visto en rojo contra el AdminUsers.jsx anterior.
             // Medido con vitest run: 420 passed, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 420) {
-              console.error("PISO ROTO: se esperaban 420 tests de vitest CORRIDOS y 0 fallidos.");
+            // 420 -> 421 el 2026-09-15 (fix wave final, ronda 2, re-review de
+            // 0c72f4e): +1 en AdminUsers.test.jsx (dos pedidos de bajas en
+            // vuelo; el viejo llega ultimo y su lista no se muestra). Visto en
+            // rojo antes de verde. Medido con vitest run: 421 passed, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 421) {
+              console.error("PISO ROTO: se esperaban 421 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1223,7 +1227,16 @@ jobs:
           # acotado, EXPLAIN de las dos consultas reales). Vistos en rojo
           # antes de verde (el de jacobs_* bajo la mutacion que re-agrega el
           # ALTER TABLE jacobs_pipelines ADD INDEX). Medido dos veces: 1046 / 1.
-          PISO_PASSED = 1046
+          # Subido de 1046 a 1055 (2026-09-15, fix wave final ronda 2,
+          # re-review de 0c72f4e): +4 en test_redaccion.py (valor entero entre
+          # comillas, con y sin esquema, con espacios, dobles y simples) y +5
+          # en test_uso_por_periodo.py (el WHERE de las dos consultas filtra
+          # por created_at sin funcion encima; la migracion crea el indice si
+          # falta con el DDL acotado y no toca nada si esta; run_migrations la
+          # llama). Rojos antes de verde o bajo su mutacion (DATE() de vuelta
+          # en cada constante, la llamada quitada, el chequeo quitado).
+          # Medido dos veces: 1055 / 1.
+          PISO_PASSED = 1055
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1660,7 +1673,10 @@ jobs:
       # del indice y politica 1205); los 7 que piden `client` (2 de
       # test_uso_de_chat_limpio.py, 5 de test_uso_por_periodo.py) se
       # saltean. Medido dos veces con JAX_CI_NO_DB=1: 497 / 550.
-      JAX_CI_MIN_PASSED: "497"
+      # Fix wave final ronda 2 (2026-09-15, re-review de 0c72f4e): +9 puros
+      # (4 de test_redaccion.py, 5 de test_uso_por_periodo.py). Medido dos
+      # veces con JAX_CI_NO_DB=1: 506 / 550.
+      JAX_CI_MIN_PASSED: "506"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
