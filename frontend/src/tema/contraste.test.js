@@ -11,6 +11,26 @@ import { TOKENS, PARES, AA_TEXTO, colorToken, EXENTOS_TEXTO, PERMITIDOS_CRUDOS, 
 // lightModeOverrides.test.js).
 const css = readFileSync(new URL('./tokens.css', import.meta.url), 'utf8')
 const temas = parsearTokens(css)
+const indexCss = readFileSync(new URL('../index.css', import.meta.url), 'utf8')
+
+// Contenido de un `@layer base { ... }` de nivel superior, contando llaves (no
+// alcanza con una regex no-greedy: el bloque puede tener selectores propios).
+// Si no hay `@layer base`, null: eso también es una forma legítima de fallar.
+function bloqueLayerBase(hoja) {
+  const inicio = hoja.indexOf('@layer base')
+  if (inicio === -1) return null
+  const abre = hoja.indexOf('{', inicio)
+  if (abre === -1) return null
+  let profundidad = 0
+  for (let i = abre; i < hoja.length; i++) {
+    if (hoja[i] === '{') profundidad++
+    else if (hoja[i] === '}') {
+      profundidad--
+      if (profundidad === 0) return hoja.slice(abre + 1, i)
+    }
+  }
+  return null
+}
 
 function fallas(tema) {
   return PARES.flatMap(([frente, fondo, minimo]) => {
@@ -105,5 +125,21 @@ describe('uso de tokens en los archivos migrados', () => {
       }
     }
     expect(hallazgos).toEqual([])
+  })
+})
+
+// I-1 (revisión final, 2026-09-14): ningún input migrado declaraba color de
+// placeholder, así que mandaba el preflight de Tailwind (gray-400, crudo,
+// fijo en los dos temas) -- 2,54:1 sobre `hundido` claro, falla AA. Arreglo en
+// la raíz: UNA regla en @layer base de index.css con el token texto-tenue.
+describe('placeholder por defecto (I-1)', () => {
+  it('texto-tenue sobre hundido ya está en PARES (lo exige el fix de I-1)', () => {
+    expect(PARES.some(([frente, fondo]) => frente === 'texto-tenue' && fondo === 'hundido')).toBe(true)
+  })
+
+  it('index.css fija ::placeholder con var(--texto-tenue) dentro de @layer base', () => {
+    const bloque = bloqueLayerBase(indexCss)
+    expect(bloque).toBeTruthy()
+    expect(bloque).toMatch(/::placeholder[^{}]*\{[^{}]*rgb\(var\(--texto-tenue\)\)[^{}]*\}/)
   })
 })

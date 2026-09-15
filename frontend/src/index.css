@@ -14,6 +14,22 @@ body {
   overflow: hidden;
 }
 
+/* I-1 (revisión final del PR 1 de tema, 2026-09-14): sin esta regla, el
+   placeholder de un input migrado sale del preflight de Tailwind
+   (gray-400 crudo, fijo en los dos temas) -- 2,54:1 sobre `hundido` claro,
+   falla AA 1.4.3. Una sola regla en @layer base, con el token texto-tenue
+   (>= 4,5:1 sobre hundido en los dos temas, ya en PARES): toda pantalla
+   migrada queda cubierta sin tocarla. `opacity: 1` porque Firefox aplica una
+   opacidad reducida a ::placeholder por defecto. Los placeholder-slate-* de
+   las pantallas sin migrar siguen ganando por especificidad de clase. */
+@layer base {
+  input::placeholder,
+  textarea::placeholder {
+    color: rgb(var(--texto-tenue));
+    opacity: 1;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
