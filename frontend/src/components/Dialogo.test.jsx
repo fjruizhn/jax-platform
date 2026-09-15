@@ -155,3 +155,20 @@ describe('Dialogo -- ARIA (e)', () => {
     expect(panel.parentElement.className).toMatch(/(^|\s)bg-fondo\/70(\s|$)/)
   })
 })
+
+// U34 (2026-09-15): el cambio obligatorio de contraseña no se puede cerrar.
+describe('Dialogo -- cerrable={false}', () => {
+  it('con cerrable={false}, Escape no cierra y el resto del contrato sigue', () => {
+    const onCerrar = vi.fn()
+    render(
+      <Dialogo idTitulo="dlg-fijo" titulo="Obligatorio" onCerrar={onCerrar} cerrable={false}>
+        <input aria-label="campo" />
+      </Dialogo>
+    )
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onCerrar).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'Obligatorio' })).toBeInTheDocument()
+    expect(root).toHaveAttribute('inert')
+    expect(screen.getByLabelText('campo')).toHaveFocus()
+  })
+})

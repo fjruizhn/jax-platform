@@ -378,8 +378,25 @@ jobs:
             // cerrarBajaSiEs sólo toca el diálogo si sigue siendo el suyo).
             // Vistos en rojo antes de verde. Medido con vitest run: 339
             // passed en 48 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 339) {
-              console.error("PISO ROTO: se esperaban 339 tests de vitest CORRIDOS y 0 fallidos.");
+            // 339 -> 368 el 2026-09-15 (Fijar contraseña, Task 4: U34, sesión
+            // única F2, F5): +1 useCerrarConEscape.test.js (null no cierra ni
+            // revienta) +1 Dialogo.test.jsx (cerrable={false}) +4
+            // MiCuentaModal.test.jsx (obligatorio: no cerrable, "Cerrar
+            // sesión", password_igual_a_la_actual traducido, toast al terminar)
+            // +4 RequireAuth.test.jsx (nuevo: app sin la marca, sólo el cambio
+            // con ella, foco a [data-foco-inicial] tras el cambio y no antes)
+            // +3 useJaxStore.test.js (el cambio apaga la marca; logout llama a
+            // /auth/logout ANTES de limpiar, y limpia igual si falla) +2
+            // client.test.js (403 cambio_de_password_requerido prende la marca
+            // sin refresh; otro 403 no) +2 websocket.test.js (nuevo: 4001 no
+            // reconecta, 1006 sí) +3 FijarPasswordModal.test.jsx (nuevo) +8
+            // AdminUsers.test.jsx (fijar OK y con error, exclusión en los dos
+            // sentidos -- 1 + 4 casos --, un éxito tardío no cierra el de otro
+            // usuario) +1 ResetPassword.test.jsx (F5). Vistos en rojo antes de
+            // verde (los 2 del WebSocket, bajo su mutación). Medido dos veces
+            // con vitest run: 368 passed en 51 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 368) {
+              console.error("PISO ROTO: se esperaban 368 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

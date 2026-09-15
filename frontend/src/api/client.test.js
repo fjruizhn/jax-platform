@@ -182,3 +182,26 @@ describe('client.js -- 401 durante un cambio de contraseña en vuelo', () => {
     expect(setStateMock).toHaveBeenCalledWith({ token: 'refrescado' })
   })
 })
+
+// U34 (2026-09-15): el admin fijó la contraseña. La sesión es válida pero el
+// backend niega todo salvo /me, /me/password, /refresh y /logout con 403
+// cambio_de_password_requerido. El interceptor prende la marca (RequireAuth
+// muestra el cambio obligatorio) y deja seguir el error: sin refresh, sin
+// reintento, sin bucle.
+describe('client.js -- 403 cambio_de_password_requerido (U34)', () => {
+  const err403 = (detail) => ({ response: { status: 403, data: { detail } }, config: { headers: {} } })
+
+  it('prende la marca en el usuario del store, sin refresh ni reintento', async () => {
+    getStateMock.mockReturnValue({ token: 't', user: { user_id: 5 } })
+    await expect(onRejected(err403('cambio_de_password_requerido'))).rejects.toBeTruthy()
+    expect(setStateMock).toHaveBeenCalledTimes(1)
+    expect(setStateMock).toHaveBeenCalledWith({ user: { user_id: 5, must_change_password: true } })
+    expect(axiosPostMock).not.toHaveBeenCalled()
+  })
+
+  it('otro 403 no toca el store', async () => {
+    getStateMock.mockReturnValue({ token: 't', user: { user_id: 5 } })
+    await expect(onRejected(err403('Solo superadmin'))).rejects.toBeTruthy()
+    expect(setStateMock).not.toHaveBeenCalled()
+  })
+})

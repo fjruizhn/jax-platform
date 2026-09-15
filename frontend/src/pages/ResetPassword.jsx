@@ -36,6 +36,10 @@ export default function ResetPassword() {
     reset_token_expirado: t.resetPasswordExpired,
     reset_password_corta: t.resetPasswordShort,
     reset_password_larga: t.resetPasswordLong,
+    // F5 (2026-09-15): con la marca del admin prendida, el enlace tampoco
+    // acepta la contraseña que fijó el admin. El token no se consume: el
+    // formulario sigue abierto para probar con otra.
+    password_igual_a_la_actual: t.myAccountSameAsCurrent,
   }
 
   async function handleSubmit(e) {

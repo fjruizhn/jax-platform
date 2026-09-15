@@ -121,10 +121,10 @@ describe('logout() does not leak session state into the next login', () => {
     localStorage.removeItem('jax_pending_cmds')
   })
 
-  it('a different user logging in on the same browser does not inherit the previous user\'s pending commands', () => {
+  it('a different user logging in on the same browser does not inherit the previous user\'s pending commands', async () => {
     // user 1 tiene un comando pendiente
     useJaxStore.getState().registerPendingCommand('task-from-user-1', useJaxStore.getState()._sessionEpoch)
-    useJaxStore.getState().logout()
+    await useJaxStore.getState().logout()
 
     // user 2 se loguea en el mismo browser (sin pasar por login() real —
     // sólo lo que le importa a jax_pending_cmds: token + user)
@@ -136,9 +136,9 @@ describe('logout() does not leak session state into the next login', () => {
     expect(useJaxStore.getState().messages).toHaveLength(0)
   })
 
-  it('the SAME user logging back in still sees their own pending commands (owner-scoping is not a blanket wipe)', () => {
+  it('the SAME user logging back in still sees their own pending commands (owner-scoping is not a blanket wipe)', async () => {
     useJaxStore.getState().registerPendingCommand('task-from-user-1', useJaxStore.getState()._sessionEpoch)
-    useJaxStore.getState().logout()
+    await useJaxStore.getState().logout()
 
     // user 1 vuelve a loguearse
     useJaxStore.setState({ token: 'token-user-1-again', user: { user_id: 1 } })
@@ -148,12 +148,12 @@ describe('logout() does not leak session state into the next login', () => {
     expect(useJaxStore.getState().messages.some((m) => m.id === 'cmd-task-from-user-1')).toBe(true)
   })
 
-  it('registerPendingCommand ignores a stale epoch (POST that started before a logout+relogin resolves after)', () => {
+  it('registerPendingCommand ignores a stale epoch (POST that started before a logout+relogin resolves after)', async () => {
     // captura el epoch ANTES del logout+relogin, como hace BottomBar.jsx
     // antes de lanzar el POST /command
     const staleEpoch = useJaxStore.getState()._sessionEpoch
 
-    useJaxStore.getState().logout()
+    await useJaxStore.getState().logout()
     useJaxStore.setState((s) => ({
       token: 'token-user-2',
       user: { user_id: 2 },
@@ -187,7 +187,7 @@ describe('logout() does not leak session state into the next login', () => {
       // dispare el reintento — el token vuelve a ser truthy, así que un
       // simple "¿hay token?" no alcanzaría para distinguir esto de la
       // misma sesión.
-      useJaxStore.getState().logout()
+      await useJaxStore.getState().logout()
       useJaxStore.setState((s) => ({
         token: 'new-session-token',
         user: { user_id: 2 },

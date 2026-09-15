@@ -37,4 +37,16 @@ describe('useCerrarConEscape', () => {
     addSpy.mockRestore()
     removeSpy.mockRestore()
   })
+
+  // U34 (2026-09-15): `null` = diálogo no cerrable (el cambio obligatorio de
+  // contraseña). Escape no hace nada y no revienta.
+  it('con null, Escape no llama a nada ni tira error', () => {
+    const errores = []
+    const alError = (e) => errores.push(e.error)
+    window.addEventListener('error', alError)
+    renderHook(() => useCerrarConEscape(null))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    window.removeEventListener('error', alError)
+    expect(errores).toHaveLength(0)
+  })
 })

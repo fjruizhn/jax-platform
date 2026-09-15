@@ -5,8 +5,12 @@ import '@testing-library/jest-dom'
 // Mi cuenta (2026-09-12, etapa 4): cambiar la propia contraseña exige la
 // actual; la regla es la misma del backend y los errores se traducen.
 const cambiarMock = vi.fn()
+// U34 (2026-09-15): el modo obligatorio usa logout ("Cerrar sesión") y
+// addToast (aviso al terminar).
+const logoutMock = vi.fn()
+const addToastMock = vi.fn()
 vi.mock('../store/useJaxStore', () => ({
-  useJaxStore: (selector) => selector({ cambiarMiPassword: cambiarMock }),
+  useJaxStore: (selector) => selector({ cambiarMiPassword: cambiarMock, logout: logoutMock, addToast: addToastMock }),
 }))
 
 import MiCuentaModal from './MiCuentaModal'
@@ -22,6 +26,8 @@ function llenar(actual, nueva, confirmar) {
 
 beforeEach(() => {
   cambiarMock.mockReset()
+  logoutMock.mockReset()
+  addToastMock.mockReset()
   localStorage.clear()
 })
 
@@ -101,5 +107,52 @@ describe('MiCuentaModal', () => {
     render(<I18nProvider><MiCuentaModal onCerrar={onCerrar} /></I18nProvider>)
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onCerrar).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('MiCuentaModal obligatorio (cambio exigido por el admin, U34)', () => {
+  function renderObligatorio() {
+    const onCerrar = vi.fn()
+    render(<I18nProvider><MiCuentaModal obligatorio onCerrar={onCerrar} /></I18nProvider>)
+    return onCerrar
+  }
+
+  function llenarObligatorio(valor) {
+    fireEvent.change(screen.getByLabelText('Contraseña actual'), { target: { value: valor } })
+    fireEvent.change(screen.getByLabelText('Nueva contraseña'), { target: { value: valor } })
+    fireEvent.change(screen.getByLabelText('Confirmar contraseña'), { target: { value: valor } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cambiar contraseña' }))
+  }
+
+  it('no se puede cerrar: sin Cancelar y Escape no hace nada', () => {
+    const onCerrar = renderObligatorio()
+    expect(screen.getByRole('dialog', { name: 'Cambiá tu contraseña' })).toBeInTheDocument()
+    expect(screen.getByText('Un administrador fijó tu contraseña. Para seguir, elegí una nueva.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancelar' })).not.toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onCerrar).not.toHaveBeenCalled()
+  })
+
+  it('"Cerrar sesión" termina la sesión (logout está permitido)', () => {
+    renderObligatorio()
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }))
+    expect(logoutMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('la misma contraseña que fijó el admin se rechaza traducida', async () => {
+    cambiarMock.mockRejectedValue({ response: { status: 400, data: { detail: 'password_igual_a_la_actual' } } })
+    renderObligatorio()
+    llenarObligatorio('fijada-por-admin')
+    expect(await screen.findByText('La nueva contraseña tiene que ser distinta de la que te dieron.')).toBeInTheDocument()
+  })
+
+  it('al terminar avisa con un toast y no muestra el bloque "Cerrar" (RequireAuth desmonta el diálogo)', async () => {
+    cambiarMock.mockResolvedValue()
+    renderObligatorio()
+    llenarObligatorio('nueva-clave-propia-9')
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'success', message: 'Contraseña cambiada. Ya podés seguir.',
+    }))
+    expect(screen.queryByRole('button', { name: 'Cerrar' })).not.toBeInTheDocument()
   })
 })

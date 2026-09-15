@@ -16,7 +16,9 @@ export default function Admin() {
   return (
     <div className="flex h-dvh bg-fondo text-texto">
       <AdminSidebar />
-      <main className="flex-1 overflow-y-auto p-6">
+      {/* data-foco-inicial: RequireAuth pone el foco acá al terminar el
+          cambio obligatorio de contraseña (U34). */}
+      <main data-foco-inicial tabIndex={-1} className="flex-1 overflow-y-auto p-6 focus:outline-none">
         <Routes>
           <Route path="/" element={<Navigate to="dashboard" replace />} />
           <Route path="dashboard" element={<AdminDashboard />} />

@@ -471,3 +471,90 @@ describe('AdminUsers — baja: revisión final (m2/m3)', () => {
     expect(dialogoY.contains(document.activeElement)).toBe(true)
   })
 })
+
+// Fijar contraseña (2026-09-15, decisiones de Fernando que revierten U2): entra
+// a la misma exclusión mutua (U25/U28) y su éxito, como la baja, sólo cierra el
+// diálogo si sigue siendo el del mismo usuario.
+describe('AdminUsers — fijar contraseña', () => {
+  function fijarEn(dialogo, clave) {
+    fireEvent.change(within(dialogo).getByLabelText('Nueva contraseña'), { target: { value: clave } })
+    fireEvent.change(within(dialogo).getByLabelText('Confirmar contraseña'), { target: { value: clave } })
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Fijar contraseña' }))
+  }
+
+  it('fija, cierra el modal y avisa traducido', async () => {
+    api.post.mockResolvedValue({ data: { ok: true } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Fijar contraseña' }))
+    fijarEn(screen.getByRole('dialog'), 'clave-fijada-789')
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/2/password', { new_password: 'clave-fijada-789' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'success', message: 'Contraseña fijada para op@axioma-ia.io. Tendrá que cambiarla al entrar.',
+    }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('un error deja el modal abierto y avisa traducido', async () => {
+    api.post.mockRejectedValue({ response: { status: 403, data: { detail: 'auto_accion_prohibida' } } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Fijar contraseña' }))
+    fijarEn(screen.getByRole('dialog'), 'clave-fijada-789')
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error', message: 'No podés cambiar tu propio rol ni tu estado, ni darte de baja. Tu contraseña se cambia en "Mi cuenta".',
+    }))
+    expect(screen.getByRole('dialog', { name: 'Fijar la contraseña de op@axioma-ia.io' })).toBeInTheDocument()
+  })
+
+  it('abrir "Fijar contraseña" cierra la edición (un modal a la vez)', async () => {
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Fijar contraseña' }))
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    expect(screen.getByRole('dialog', { name: /Fijar la contraseña/ })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['Editar', 'editar-usuario-titulo'],
+    ['Historial', 'historial-titulo'],
+    ['+ Nuevo usuario', null],
+    ['Dar de baja', 'confirmacion-suma-titulo'],
+  ])('con "Fijar contraseña" abierto, abrir "%s" lo cierra y deja un solo diálogo', async (boton, idTitulo) => {
+    renderUsers()
+    const botonFijar = await screen.findByRole('button', { name: 'Fijar contraseña' })
+    const otro = screen.getByRole('button', { name: boton })
+    fireEvent.click(botonFijar)
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    fireEvent.click(otro)
+    await waitFor(() => {
+      const dialogos = screen.getAllByRole('dialog')
+      expect(dialogos).toHaveLength(1)
+      expect(dialogos[0]).not.toHaveAttribute('aria-labelledby', 'fijar-password-titulo')
+      if (idTitulo) expect(dialogos[0]).toHaveAttribute('aria-labelledby', idTitulo)
+    })
+  })
+
+  it('un éxito tardío no cierra el "Fijar contraseña" de OTRO usuario', async () => {
+    servirGet([SUPERADMIN, OTRO])
+    let resolverX
+    const promesaX = new Promise((resolve) => { resolverX = resolve })
+    api.post.mockImplementation((url) => (url === '/admin/users/2/password' ? promesaX : Promise.resolve({ data: { ok: true } })))
+    renderUsers()
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Fijar contraseña' }))[0]) // b@x.io (X)
+    const dialogoX = screen.getByRole('dialog', { name: 'Fijar la contraseña de b@x.io' })
+    fijarEn(dialogoX, 'clave-fijada-789')
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/2/password', { new_password: 'clave-fijada-789' }))
+
+    // X sigue esperando -- Cancelar sigue habilitado.
+    fireEvent.click(within(dialogoX).getByRole('button', { name: 'Cancelar' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    fireEvent.click(screen.getAllByRole('button', { name: 'Fijar contraseña' })[1]) // y@x.io (Y)
+    expect(screen.getByRole('dialog', { name: 'Fijar la contraseña de y@x.io' })).toBeInTheDocument()
+
+    resolverX({ data: { ok: true } })
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'success', message: 'Contraseña fijada para b@x.io. Tendrá que cambiarla al entrar.',
+    }))
+    expect(screen.getByRole('dialog', { name: 'Fijar la contraseña de y@x.io' })).toBeInTheDocument()
+  })
+})

@@ -191,7 +191,7 @@ export default {
   hidePassword: 'Hide password',
   // Session-close reason (2026-09-14, Task 4b): the interceptor in
   // api/client.js used to silently clear the session on a failed refresh.
-  sesion_invalida: 'Your session was closed: your account was deactivated or its access changed. Please sign in again.',
+  sesion_invalida: 'Your session was closed: someone signed in somewhere else, or your access changed. Please sign in again.',
   sesion_expirada: 'Your session expired. Please sign in again.',
   accountLocked: 'Account locked. Check your email.',
   accountLockedMinutes: (min) => `Account locked. Try again in ${min} minute(s).`,
@@ -603,6 +603,8 @@ export default {
     smtp_password_no_ascii: 'The saved SMTP password has non-ASCII characters (accents or ñ) and the server does not accept it. Re-enter it in Administration → Email (SMTP).',
     email_invalido: 'The email is not valid.',
     email_ya_existe: 'A user with that email already exists.',
+    password_igual_a_la_actual: 'The new password must be different from the current one.',
+    cambio_de_password_requerido: 'You have to change your password before continuing.',
   },
   adminAuditActions: {
     create: 'Created',
@@ -615,6 +617,7 @@ export default {
     baja: 'Removed',
     password_changed_self: 'Changed their password',
     password_reset_completed: 'Reset their password',
+    password_set_by_admin: 'Password set by an admin',
   },
   adminAuditUnknown: 'Unknown action',
 
@@ -638,6 +641,18 @@ export default {
   adminBajaDone: (email) => `${email} was removed.`,
   confirmSumLabel: (a, b) => `Solve ${a} + ${b} = ?`,
   confirmSumHint: 'Type the result to enable the button.',
+
+  // Password set by an admin and forced change (2026-09-15, U34)
+  adminUserSetPassword: 'Set password',
+  adminSetPasswordTitle: (email) => `Set the password of ${email}`,
+  adminSetPasswordHint: 'Their open sessions are closed and they will have to change it at their next sign-in.',
+  adminSetPasswordSubmitting: 'Saving…',
+  adminPasswordSetDone: (email) => `Password set for ${email}. They will have to change it when signing in.`,
+  forcedChangeTitle: 'Change your password',
+  forcedChangeIntro: 'An administrator set your password. To continue, choose a new one.',
+  forcedChangeDone: 'Password changed. You can continue.',
+  forcedChangeLogout: 'Sign out',
+  myAccountSameAsCurrent: 'The new password must be different from the one you were given.',
 
   // Restoring pending tasks (useJaxStore.js)
   taskRestoring: (id) => `_Task \`${id}\` — checking status…_`,

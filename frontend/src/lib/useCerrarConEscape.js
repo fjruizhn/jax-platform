@@ -21,7 +21,8 @@ export function useCerrarConEscape(onCerrar) {
 
   useEffect(() => {
     function onKeyDown(e) {
-      if (e.key === 'Escape') onCerrarRef.current()
+      // `null` = diálogo no cerrable (U34, cambio obligatorio de contraseña).
+      if (e.key === 'Escape') onCerrarRef.current?.()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
