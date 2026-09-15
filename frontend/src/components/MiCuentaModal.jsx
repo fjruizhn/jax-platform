@@ -3,19 +3,19 @@ import { useI18n } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
 import PasswordInput from './PasswordInput'
 import { problemaDePassword } from '../lib/reglasPassword'
-import { useCerrarConEscape } from '../lib/useCerrarConEscape'
+import Dialogo from './Dialogo'
 
 // Mi cuenta (2026-09-12, admin usuarios etapa 4, spec §3.4): cambiar la propia
 // contraseña. Exige la actual; al guardar se cierran las otras sesiones.
 // Colores por tokens (src/tema/tokens.css), misma estructura que el modal de
-// alta de AdminUsers.jsx.
+// alta (CrearUsuarioModal). El comportamiento de diálogo (portal, #root inert,
+// foco, Escape) lo pone Dialogo (Ruling U27, 2026-09-15).
 const CAMPO = 'w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco'
 const ETIQUETA = 'block text-xs text-texto-suave mb-1 font-semibold uppercase tracking-wider'
 
 export default function MiCuentaModal({ onCerrar }) {
   const { t } = useI18n()
   const cambiarMiPassword = useJaxStore((s) => s.cambiarMiPassword)
-  useCerrarConEscape(onCerrar)
   const [actual, setActual] = useState('')
   const [nueva, setNueva] = useState('')
   const [confirmar, setConfirmar] = useState('')
@@ -49,10 +49,7 @@ export default function MiCuentaModal({ onCerrar }) {
   }
 
   return (
-    <div className="fixed inset-0 bg-fondo/70 flex items-center justify-center z-50">
-      <div role="dialog" aria-modal="true" aria-labelledby="mi-cuenta-titulo"
-        className="bg-superficie border border-borde rounded-xl p-6 w-full max-w-md shadow-2xl">
-        <h2 id="mi-cuenta-titulo" className="text-sm font-semibold text-texto mb-1">{t.myAccount}</h2>
+    <Dialogo idTitulo="mi-cuenta-titulo" titulo={t.myAccount} claseTitulo="text-sm font-semibold text-texto mb-1" onCerrar={onCerrar}>
         <p className="text-xs text-texto-tenue mb-4">{t.myAccountChangePassword}</p>
         {hecho ? (
           <div role="status" className="text-sm text-exito bg-exito-fondo border border-exito-borde rounded-lg px-3 py-3">
@@ -88,7 +85,6 @@ export default function MiCuentaModal({ onCerrar }) {
             <button type="button" onClick={onCerrar} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminHistoryClose}</button>
           </div>
         )}
-      </div>
-    </div>
+    </Dialogo>
   )
 }

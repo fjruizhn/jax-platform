@@ -53,6 +53,24 @@ describe('MiCuentaModal', () => {
 
   // Fix round 1 (2026-09-15, Ruling U24): Escape cierra los tres modales de
   // usuarios. Nunca un clic en el fondo -- así no se pierde lo escrito.
+  // Ruling U27 (review final, 2026-09-15): MiCuentaModal usa Dialogo -- es un
+  // diálogo nombrado por su título, vive fuera de #root y deja la app (barra
+  // de usuario, dashboard) inert detrás (minor 4: antes el fondo seguía vivo).
+  it('es un diálogo nombrado por su título, fuera de #root, con #root inert', () => {
+    const root = document.createElement('div')
+    root.id = 'root'
+    document.body.appendChild(root)
+    try {
+      render(<I18nProvider><MiCuentaModal onCerrar={vi.fn()} /></I18nProvider>, { container: root })
+      const dialogo = screen.getByRole('dialog', { name: 'Mi cuenta' })
+      expect(root.contains(dialogo)).toBe(false)
+      expect(root).toHaveAttribute('inert')
+      expect(screen.getByLabelText('Contraseña actual')).toHaveFocus()
+    } finally {
+      root.remove()
+    }
+  })
+
   it('Escape cierra el modal', () => {
     const onCerrar = vi.fn()
     render(<I18nProvider><MiCuentaModal onCerrar={onCerrar} /></I18nProvider>)

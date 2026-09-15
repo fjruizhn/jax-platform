@@ -304,8 +304,25 @@ jobs:
             // cambiar `onCerrar` entre renders, y Escape llama siempre al callback
             // más reciente -- ahora en un ref). Vistos en rojo antes de verde.
             // Medido con vitest run: 280 passed en 45 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 280) {
-              console.error("PISO ROTO: se esperaban 280 tests de vitest CORRIDOS y 0 fallidos.");
+            // 280 -> 302 el 2026-09-15 (review final de la etapa 4, Ruling U27:
+            // un único diálogo, components/Dialogo.jsx): +11 Dialogo.test.jsx
+            // (nuevo: #root inert abierto/cerrado, contador con dos diálogos,
+            // portal fuera de #root, inert quitado al desmontar, foco al primer
+            // campo, foco al título sin campos, foco de vuelta al disparador con
+            // #root ya sin inert, Escape cierra, clic en el fondo no, role/
+            // aria-modal/aria-labelledby, clases de token y ancho del llamador)
+            // +5 CrearUsuarioModal.test.jsx (nuevo: diálogo con #root inert y
+            // foco en el correo, <label> reales, etiquetas en inglés, Escape,
+            // crear manda el formulario) +1 MiCuentaModal, +1 EditarUsuarioModal,
+            // +1 HistorialUsuario (cada uno: diálogo nombrado por su título,
+            // fuera de #root, #root inert, foco adentro) +3 AdminUsers.test.jsx
+            // (el test del inert local data-admin-contenido pasa a #root: 3 casos
+            // Editar/Historial/Nuevo usuario con #root inert, Escape y foco de
+            // vuelta, y 1 de que el inert local ya no existe). Vistos en rojo
+            // antes de verde (mutaciones de cada línea de Dialogo.jsx). Medido
+            // con vitest run: 302 passed en 47 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 302) {
+              console.error("PISO ROTO: se esperaban 302 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

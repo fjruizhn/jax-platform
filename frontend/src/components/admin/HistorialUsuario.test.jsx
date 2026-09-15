@@ -68,3 +68,24 @@ describe('HistorialUsuario -- Escape (Ruling U24)', () => {
     expect(onCerrar).toHaveBeenCalledTimes(1)
   })
 })
+
+// Ruling U27 (review final, 2026-09-15): usa Dialogo. Sin campos, el foco va
+// al título; el panel conserva su ancho (max-w-lg).
+describe('HistorialUsuario -- diálogo (Ruling U27)', () => {
+  it('es un diálogo nombrado por su título, fuera de #root, con #root inert y el foco en el título', () => {
+    api.get.mockReturnValue(new Promise(() => {}))
+    const root = document.createElement('div')
+    root.id = 'root'
+    document.body.appendChild(root)
+    try {
+      render(vista({ user_id: 2, email: 'b@x.io' }), { container: root })
+      const dialogo = screen.getByRole('dialog', { name: 'Historial de b@x.io' })
+      expect(root.contains(dialogo)).toBe(false)
+      expect(root).toHaveAttribute('inert')
+      expect(screen.getByText('Historial de b@x.io')).toHaveFocus()
+      expect(dialogo.className).toMatch(/(^|\s)max-w-lg(\s|$)/)
+    } finally {
+      root.remove()
+    }
+  })
+})

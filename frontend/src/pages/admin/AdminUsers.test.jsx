@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import '@testing-library/jest-dom'
 
 // I-1 (revisión final PR 2, 2026-09-14): "({n} intentos)" y el locale de
@@ -199,14 +199,39 @@ describe('AdminUsers — enlace de recuperación', () => {
 // así que un par de Tabs y Enter podían abrir Historial ENCIMA de Editar, y un
 // solo Escape (los dos hooks escuchan en `document`) cerraba los dos a la vez,
 // descartando en silencio una edición sin guardar.
-describe('AdminUsers -- fondo inert detrás de un modal (Ruling U25)', () => {
-  it('con un modal abierto el fondo queda inert; con todos cerrados, no', async () => {
-    renderUsers()
-    const contenido = document.querySelector('[data-admin-contenido]')
-    expect(contenido).not.toHaveAttribute('inert')
+// Ruling U27 (review final, 2026-09-15): el inert local (data-admin-contenido)
+// dejaba vivo el AdminSidebar de Admin.jsx (I1). Ahora Dialogo marca #root
+// entero: se renderiza dentro de un contenedor con id "root", como en
+// index.html, para que el test mida lo real.
+describe('AdminUsers -- #root inert detrás de un modal (Ruling U25/U27)', () => {
+  let root
+  beforeEach(() => {
+    root = document.createElement('div')
+    root.id = 'root'
+    document.body.appendChild(root)
+  })
+  afterEach(() => root.remove())
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Editar' }))
-    expect(contenido).toHaveAttribute('inert')
+  it.each(['Editar', 'Historial', '+ Nuevo usuario'])('con el modal de "%s" abierto #root queda inert; al cerrarlo, no', async (boton) => {
+    render(<I18nProvider><AdminUsers /></I18nProvider>, { container: root })
+    const disparador = await screen.findByRole('button', { name: boton })
+    expect(root).not.toHaveAttribute('inert')
+
+    disparador.focus()
+    fireEvent.click(disparador)
+    await waitFor(() => expect(root).toHaveAttribute('inert'))
+    expect(root.contains(screen.getByRole('dialog'))).toBe(false)
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(root).not.toHaveAttribute('inert')
+    expect(disparador).toHaveFocus()
+  })
+
+  it('ya no hay un inert local: #root cubre también el sidebar', async () => {
+    render(<I18nProvider><AdminUsers /></I18nProvider>, { container: root })
+    await screen.findByText('op@axioma-ia.io')
+    expect(document.querySelector('[data-admin-contenido]')).toBeNull()
   })
 })
 
