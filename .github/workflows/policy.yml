@@ -216,8 +216,24 @@ jobs:
             // lightModeOverrides.test.js (se borra el archivo entero junto con la capa
             // vieja; el único test que tenía se va con él). Vistos en rojo antes de
             // verde. Medido con vitest run: 231.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 231) {
-              console.error("PISO ROTO: se esperaban 231 tests de vitest CORRIDOS y 0 fallidos.");
+            // 231 -> 247 el 2026-09-15 (fix-wave revisión final PR 3, tema con
+            // tokens): +16 tests de los 5 hallazgos FIX-BEFORE-MERGE.
+            // PipelineModal.test.jsx +2 (I-1: rótulos de modo -- Supervised/
+            // Autonomous/Dry run -- desde i18n, no hardcodeados en inglés).
+            // Message.test.jsx +5 (I-1: alt de imagen generada/adjunto desde i18n
+            // +3; I-2: hora sigue localeFor(lang), no es-HN fijo +2).
+            // AuditLog.test.jsx +2 (nuevo archivo; I-2: misma hora fijada en
+            // es-HN, ahora localeFor(lang)).
+            // HalEye.test.jsx +1 (M-1: la etiqueta de estado del ojo pierde
+            // opacity-40, pasa a opacidad plena -- contraste AA).
+            // RightPanel.test.jsx +4 (M-2: activePipeline.status traducido con
+            // respaldo al valor crudo +3; M-3: la pista de la barra de progreso
+            // usa bg-borde en vez de bg-superficie, casi invisible en claro +1).
+            // LeftPanel.test.jsx +2 (M-2: wsStatus traducido con respaldo al
+            // valor crudo). Vistos en rojo antes de verde. Medido con vitest
+            // run: 247.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 247) {
+              console.error("PISO ROTO: se esperaban 247 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
