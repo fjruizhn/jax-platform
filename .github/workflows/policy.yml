@@ -995,7 +995,15 @@ jobs:
           # PRIMARY). 3 vistos en rojo antes de verde (el de control pasa desde el
           # rojo y cae con la mutación "sin el alcance de la marca"); 3 mutaciones
           # capturadas. Medido dos veces: 874 / 1.
-          PISO_PASSED = 874
+          # Subido de 874 a 875 (2026-09-15, Task 3 fix ronda 2): +1 en
+          # test_fijar_password.py -- test_el_reset_con_la_marca_no_corre_bcrypt_
+          # con_la_fila_tomada (sonda FOR UPDATE NOWAIT por otra conexión desde el
+          # stub de verify_password: ningún bcrypt con la fila del usuario tomada).
+          # Rojo en ~1 s con (d') "un verify_password extra bajo el bloqueo" y con
+          # (d) "el chequeo de P1 movido dentro de la transacción" (1205 al
+          # instante). El EXPLAIN del token ahora nombra el índice (`token`).
+          # Medido dos veces: 875 / 1.
+          PISO_PASSED = 875
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1382,6 +1390,10 @@ jobs:
       # test_fijar_password.py (P1 por el enlace de recuperación) piden
       # `client` y se saltean (sin cambio en passed).
       # Medido dos veces con JAX_CI_NO_DB=1: 374 / 501.
+      # Task 3 fix ronda 2 (2026-09-15): el nuevo
+      # test_el_reset_con_la_marca_no_corre_bcrypt_con_la_fila_tomada pide
+      # `client` y se saltea (sin cambio en passed).
+      # Medido dos veces con JAX_CI_NO_DB=1: 374 / 502.
       JAX_CI_MIN_PASSED: "374"
     steps:
       - uses: actions/checkout@v4

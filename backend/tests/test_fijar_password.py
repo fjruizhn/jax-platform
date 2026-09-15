@@ -569,5 +569,38 @@ def test_la_consulta_del_token_de_recuperacion_va_por_indices(client, usuarios):
     planes = {f[2]: (f[3], f[5]) for f in filas}  # table -> (type, key)
     assert set(planes) == {"t", "u"}, filas
     assert planes["u"][0] in ("const", "eq_ref") and planes["u"][1] == "PRIMARY", filas
-    assert planes["t"][0] in ("const", "eq_ref") and planes["t"][1] is not None, filas
+    assert planes["t"][0] in ("const", "eq_ref") and planes["t"][1] == "token", filas
     assert all("filesort" not in str(f[-1]) and "temporary" not in str(f[-1]) for f in filas), filas
+
+
+# ------- fix ronda 2 (F5): ningún bcrypt corre con la fila del usuario tomada
+#
+# Mismo patrón que la sonda M1 de la etapa 5 (test_admin_usuarios_baja.py):
+# desde el stub de verify_password se mira la fila por OTRA conexión con
+# FOR UPDATE NOWAIT, que no espera -- si el reset la tuviera tomada, falla al
+# instante (1205/3572) en vez de tras la espera de bloqueo de MariaDB. El stub
+# corre en el event loop (verify_password es async), así que la sonda se espera
+# directo; no hace falta run_coroutine_threadsafe.
+
+async def _fila_libre(user_id):
+    try:
+        await sql("SELECT user_id FROM jax_users WHERE user_id = %s FOR UPDATE NOWAIT", (user_id,), True)
+        return "libre"
+    except Exception as exc:  # el error de NOWAIT es la señal que se registra, no un fallo del test
+        return f"tomada: {exc}"
+
+
+def test_el_reset_con_la_marca_no_corre_bcrypt_con_la_fila_tomada(client, usuarios, cortes, monkeypatch):
+    u, _ = usuarios(password=CLAVE)
+    assert _fijar(client, u).status_code == 200
+    token = client.portal.call(_enlace_pendiente, u)
+    verificar_real, vistas = auth_mod.verify_password, []
+
+    async def verifica_y_mira(plain, hashed):
+        vistas.append(await _fila_libre(u))
+        return await verificar_real(plain, hashed)
+
+    monkeypatch.setattr(auth_mod, "verify_password", verifica_y_mira)
+    r = _resetear(client, token, NUEVA)
+    assert r.status_code == 200, r.text
+    assert vistas and all(v == "libre" for v in vistas), vistas
