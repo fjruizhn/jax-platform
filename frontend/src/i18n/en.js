@@ -54,6 +54,7 @@ export default {
   noEventsYet: 'No events yet',
   auditoria_ilegible: 'The audit log could not be read',
   auditLogError: 'Could not load the audit log',
+  auditoriaSoloSuperadmin: 'Only a superadmin can view the LAS MANOS audit log.',
 
   // Step card
   clickToSeeResult: 'Click to see result in chat',

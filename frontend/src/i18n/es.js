@@ -54,6 +54,7 @@ export default {
   noEventsYet: 'Sin eventos aún',
   auditoria_ilegible: 'No se pudo leer el registro de auditoría',
   auditLogError: 'No se pudo cargar la auditoría',
+  auditoriaSoloSuperadmin: 'La auditoría de LAS MANOS solo la puede ver un superadmin.',
 
   // Step card
   clickToSeeResult: 'Click para ver resultado en chat',

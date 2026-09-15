@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { codigoDe } from '../../api/errores'
@@ -25,6 +25,7 @@ function AuditLog() {
   const [loading, setLoading] = useState(true)
   // Task 3 (2026-09-15): el código del fallo, o 'otro'. null = sin error.
   const [error, setError] = useState(null)
+  const intervalo = useRef(null)
 
   async function fetchAudit() {
     try {
@@ -34,7 +35,15 @@ function AuditLog() {
     } catch (err) {
       // Task 3 (2026-09-15): el catch era mudo y el panel seguía diciendo
       // "Sin eventos aún". Un audit que no se puede leer no es un audit vacío.
-      setError(codigoDe(err) === 'auditoria_ilegible' ? 'auditoria_ilegible' : 'otro')
+      if (err?.response?.status === 403) {
+        // Task 6 S3 (2026-09-15): /api/audit es solo para superadmin. Un 403
+        // se dice, traducido, y no se sigue preguntando cada 10 s: la
+        // respuesta no va a cambiar sin volver a iniciar sesión.
+        setError('solo_superadmin')
+        clearInterval(intervalo.current)
+      } else {
+        setError(codigoDe(err) === 'auditoria_ilegible' ? 'auditoria_ilegible' : 'otro')
+      }
     } finally {
       setLoading(false)
     }
@@ -42,8 +51,8 @@ function AuditLog() {
 
   useEffect(() => {
     fetchAudit()
-    const id = setInterval(fetchAudit, 10_000)
-    return () => clearInterval(id)
+    intervalo.current = setInterval(fetchAudit, 10_000)
+    return () => clearInterval(intervalo.current)
   }, [])
 
   return (
@@ -59,7 +68,9 @@ function AuditLog() {
           <div className="px-3 py-4 text-xs text-texto-tenue">{t.loading}</div>
         ) : error ? (
           <div role="alert" className="px-3 py-4 text-xs text-peligro">
-            {error === 'auditoria_ilegible' ? t.auditoria_ilegible : t.auditLogError}
+            {error === 'auditoria_ilegible'
+              ? t.auditoria_ilegible
+              : error === 'solo_superadmin' ? t.auditoriaSoloSuperadmin : t.auditLogError}
           </div>
         ) : events.length === 0 ? (
           <div className="px-3 py-4 text-xs text-texto-tenue">{t.noEventsYet}</div>

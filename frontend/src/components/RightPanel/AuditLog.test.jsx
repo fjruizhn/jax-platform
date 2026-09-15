@@ -59,6 +59,33 @@ describe('AuditLog -- un audit ilegible no se ve como "sin eventos"', () => {
   })
 })
 
+// Task 6 S3 (2026-09-15): /api/audit pasó a require_superadmin. Si igual
+// llega un 403 (rol cambiado con la pestaña abierta), el panel lo dice
+// traducido en vez del error genérico o de una lista vacía.
+describe('AuditLog -- el 403 de quien no es superadmin se dice, traducido', () => {
+  const PROHIBIDO = { response: { status: 403, data: { detail: 'Solo superadmin' } } }
+
+  it('el texto existe en los dos idiomas', () => {
+    expect(es.auditoriaSoloSuperadmin).toBeTruthy()
+    expect(en.auditoriaSoloSuperadmin).toBeTruthy()
+  })
+
+  it('en español, el 403 muestra su texto y no "sin eventos" ni el genérico', async () => {
+    api.get.mockRejectedValue(PROHIBIDO)
+    renderLog()
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.auditoriaSoloSuperadmin)
+    expect(screen.queryByText(es.noEventsYet)).not.toBeInTheDocument()
+    expect(screen.queryByText(es.auditLogError)).not.toBeInTheDocument()
+  })
+
+  it('en inglés, el 403 muestra el texto en inglés', async () => {
+    localStorage.setItem('jax_lang', 'en')
+    api.get.mockRejectedValue(PROHIBIDO)
+    renderLog()
+    expect(await screen.findByRole('alert')).toHaveTextContent(en.auditoriaSoloSuperadmin)
+  })
+})
+
 // I-2 (revisión final PR 3, 2026-09-14): la hora del evento fijaba 'es-HN' en
 // toLocaleTimeString sin importar el idioma activo (mismo defecto que
 // Message.jsx). Ahora sale de localeFor(lang), como AdminUsers/AdminCosts/

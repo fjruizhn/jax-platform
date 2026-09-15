@@ -3,7 +3,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from auth.middleware import get_current_user
+from auth.middleware import require_superadmin
 from auth.models import AuthUser
 
 router = APIRouter(prefix="/api")
@@ -11,8 +11,11 @@ router = APIRouter(prefix="/api")
 AUDIT_LOG = Path.home() / "jax" / "las_manos" / "logs" / "audit.jsonl"
 
 
+# Task 6 S3 (2026-09-15): el log forense de LAS MANOS (hosts, capacidades,
+# el motivo de cada rechazo de politica y stdout/stderr de lo que ejecutan
+# las facetas) solo exigia sesion; un viewer lo leia entero. Solo superadmin.
 @router.get("/audit")
-async def get_audit(user: AuthUser = Depends(get_current_user)):
+async def get_audit(user: AuthUser = Depends(require_superadmin)):
     if not AUDIT_LOG.exists():
         return {"events": []}
     try:
