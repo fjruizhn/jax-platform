@@ -64,3 +64,29 @@ describe('Message -- alt de imagen y adjunto desde i18n (I-1)', () => {
     localStorage.clear()
   })
 })
+
+// I-2 (revisión final PR 3, 2026-09-14): la hora del mensaje fijaba 'es-HN'
+// en toLocaleTimeString sin importar el idioma activo (Ruling 29, ya
+// aplicado a AdminUsers/AdminCosts/AdminRepository). Ahora sale de
+// localeFor(lang).
+describe('Message -- hora sigue el idioma activo, no es-HN fijo (I-2)', () => {
+  it('en inglés, la hora usa en-US, no es-HN fijo', () => {
+    localStorage.setItem('jax_lang', 'en')
+    const timestamp = '2026-03-14T18:30:00Z'
+    renderMessage({ facet: 'jekyll', content: 'hola', timestamp })
+
+    const esperado = new Date(timestamp).toLocaleTimeString('en-US')
+    const fijoEsHN = new Date(timestamp).toLocaleTimeString('es-HN')
+    expect(screen.getByText(esperado)).toBeInTheDocument()
+    if (esperado !== fijoEsHN) {
+      expect(screen.queryByText(fijoEsHN)).not.toBeInTheDocument()
+    }
+    localStorage.clear()
+  })
+
+  it('en español (default), la hora usa es-HN', () => {
+    const timestamp = '2026-03-14T18:30:00Z'
+    renderMessage({ facet: 'jekyll', content: 'hola', timestamp })
+    expect(screen.getByText(new Date(timestamp).toLocaleTimeString('es-HN'))).toBeInTheDocument()
+  })
+})

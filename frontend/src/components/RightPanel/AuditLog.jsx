@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from 'react'
-import { useI18n } from '../../i18n/index.jsx'
+import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
 
 const EVENT_COLOR = {
@@ -19,7 +19,7 @@ function eventColor(event) {
 }
 
 function AuditLog() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -69,7 +69,7 @@ function AuditLog() {
               )}
               {ev['@timestamp'] && (
                 <div className="text-xs text-texto-tenue mt-0.5">
-                  {new Date(ev['@timestamp']).toLocaleTimeString('es-HN')}
+                  {new Date(ev['@timestamp']).toLocaleTimeString(localeFor(lang))}
                 </div>
               )}
             </div>

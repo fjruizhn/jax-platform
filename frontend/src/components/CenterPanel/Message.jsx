@@ -1,6 +1,6 @@
 import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { useI18n } from '../../i18n/index.jsx'
+import { useI18n, localeFor } from '../../i18n/index.jsx'
 import { FACET_TOKENS } from '../../store/useJaxStore'
 import { colorToken } from '../../tema/tokens'
 
@@ -17,7 +17,7 @@ function Spinner({ token }) {
 }
 
 function Message({ message }) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const token = TOKEN_DE[message.facet] || 'texto-suave'
   const isUser = message.facet === 'user'
   const isRunning = message.status === 'running'
@@ -37,7 +37,7 @@ function Message({ message }) {
           </span>
           {isRunning && <Spinner token={token} />}
           <span className="text-xs text-texto-tenue">
-            {message.timestamp ? new Date(message.timestamp).toLocaleTimeString('es-HN') : ''}
+            {message.timestamp ? new Date(message.timestamp).toLocaleTimeString(localeFor(lang)) : ''}
           </span>
         </div>
         <div
