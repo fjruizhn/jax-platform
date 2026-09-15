@@ -477,8 +477,14 @@ jobs:
             // positivos vistos en rojo antes de verde; los 2 negativos son
             // controles. Medido con vitest run: 419 passed en 52 archivos, 0
             // fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 419) {
-              console.error("PISO ROTO: se esperaban 419 tests de vitest CORRIDOS y 0 fallidos.");
+            // 419 -> 420 el 2026-09-15 (fix wave final de la rama
+            // feat/pendientes-2026-09-22): +1 en AdminUsers.test.jsx (con
+            // "Mostrar bajas" encendido, una baja exitosa refresca tambien la
+            // lista de bajas y el usuario aparece ahi sin tocar el
+            // interruptor). Visto en rojo contra el AdminUsers.jsx anterior.
+            // Medido con vitest run: 420 passed, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 420) {
+              console.error("PISO ROTO: se esperaban 420 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1204,7 +1210,20 @@ jobs:
           # fixture chat_sin_memoria (sin cambio en el conteo). Vistos en rojo
           # antes de verde (los de chat/imagen, ademas, bajo la mutacion que
           # quita la validacion). Medido dos veces: 1012 / 1.
-          PISO_PASSED = 1012
+          # Subido de 1012 a 1046 (2026-09-15, fix wave final de la rama
+          # feat/pendientes-2026-09-22): +3 en test_redaccion.py (valor entre
+          # comillas despues del esquema, paridad con jax), +19 en
+          # test_fix_wave_final.py (sin DDL sobre jacobs_* en migrations.py y
+          # su tabla de casos; 502 de imagen redactado antes de recortar), +1
+          # en test_chat_memoria_fail_open.py (un ERROR por proceso con
+          # JAX_DB_PORT mal formado), +2 en test_uso_de_chat_limpio.py (los
+          # tests de chat no dejan filas en axioma_usage) y +9 en
+          # test_uso_por_periodo.py (rango sargable = mismo resultado,
+          # ORDER BY SUM(cost_usd), idx_axioma_usage_periodo y su DDL
+          # acotado, EXPLAIN de las dos consultas reales). Vistos en rojo
+          # antes de verde (el de jacobs_* bajo la mutacion que re-agrega el
+          # ALTER TABLE jacobs_pipelines ADD INDEX). Medido dos veces: 1046 / 1.
+          PISO_PASSED = 1046
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1635,7 +1654,13 @@ jobs:
       # Task 7 (2026-09-15, registro de uso): +19 puros en test_t7_uso.py; el
       # de GET /api/admin/usage pide `client` y se saltea. Medido dos veces
       # con JAX_CI_NO_DB=1: 470 / 543.
-      JAX_CI_MIN_PASSED: "470"
+      # Fix wave final (2026-09-15, rama feat/pendientes-2026-09-22): +27
+      # puros (3 de test_redaccion.py, 19 de test_fix_wave_final.py, 1 de
+      # test_chat_memoria_fail_open.py, 4 de test_uso_por_periodo.py -- DDL
+      # del indice y politica 1205); los 7 que piden `client` (2 de
+      # test_uso_de_chat_limpio.py, 5 de test_uso_por_periodo.py) se
+      # saltean. Medido dos veces con JAX_CI_NO_DB=1: 497 / 550.
+      JAX_CI_MIN_PASSED: "497"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
