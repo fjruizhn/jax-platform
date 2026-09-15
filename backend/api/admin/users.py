@@ -2,7 +2,6 @@ import asyncio
 import logging
 
 import aiomysql
-import bcrypt
 from pymysql.constants.ER import DUP_ENTRY as ER_DUP_ENTRY
 from tiempo import iso_utc, utc_ahora
 from typing import Optional
@@ -13,9 +12,11 @@ from pydantic import BaseModel, ConfigDict
 import user_audit
 from api.events import close_user_streams
 from auth import rate_limit
+from auth.password_rules import problema_de_password
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
+from db.seed import _hash
 from db.transaccion import transaccion
 from jax_engine.websocket_hub import ws_hub
 
@@ -26,10 +27,6 @@ router = APIRouter(prefix="/api/admin")
 VALID_ROLES = {"superadmin", "operator", "viewer"}
 # `deleted` NO se pone por acá: solo la baja (etapa 5).
 ESTADOS_EDITABLES = {"active", "inactive"}
-
-
-def _hash(plain: str) -> str:
-    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
 
 
 def _ip(request: Request) -> str:
@@ -169,7 +166,12 @@ async def create_user(req: CreateUserRequest, request: Request, user: AuthUser =
     if req.role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"Rol inválido: {req.role}")
 
-    # bcrypt es CPU pura (~decenas de ms): fuera del event loop y antes de
+    # Regla única (etapa 4, spec §3.4). El _hash de db/seed.py lanza con más
+    # de 72 bytes; el local de antes no tenía tope y bcrypt 5 daba un 500.
+    problema = problema_de_password(req.password)
+    if problema:
+        raise HTTPException(status_code=400, detail=f"password_{problema}")
+    # bcrypt de costo 12 (~150 ms de CPU): fuera del event loop y antes de
     # abrir la transacción, para no tener filas bloqueadas mientras hashea.
     ph = await asyncio.to_thread(_hash, req.password)
     # El alta y su registro de auditoría van juntos (etapa 3, spec §3.3).

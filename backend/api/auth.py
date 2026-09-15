@@ -14,8 +14,9 @@ from auth.models import AuthUser, LoginRequest, LoginResponse, MeResponse, Refre
 from auth.jwt import REFRESH_EXPIRE_SECONDS, create_access_token, create_refresh_token, decode_token
 from auth.middleware import get_current_user, verificar_sesion
 from auth import rate_limit
+from auth.password_rules import problema_de_password
 from db.connection import get_pool
-from db.seed import BCRYPT_MAX_BYTES, verify_password, _hash
+from db.seed import verify_password, _hash
 from jax_engine.background import add_safe_task
 import smtp_config
 
@@ -277,11 +278,12 @@ class ResetPasswordRequest(BaseModel):
 async def reset_password(req: ResetPasswordRequest):
     # Códigos estables (2026-09-12): el frontend los traduce con i18n. Antes
     # mostraba este `detail` tal cual, en español aunque la UI estuviera en inglés.
-    if len(req.password) < 8:
-        raise HTTPException(status_code=400, detail="reset_password_corta")
+    # La regla es la única del sistema (etapa 4, auth/password_rules.py); acá
+    # se conservan los códigos reset_password_* que ya usa ResetPassword.jsx.
     # bcrypt 5 lanza ValueError con más de 72 bytes: era un 500.
-    if len(req.password.encode()) > BCRYPT_MAX_BYTES:
-        raise HTTPException(status_code=400, detail="reset_password_larga")
+    problema = problema_de_password(req.password)
+    if problema:
+        raise HTTPException(status_code=400, detail=f"reset_password_{problema}")
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -303,7 +305,8 @@ async def reset_password(req: ResetPasswordRequest):
     if expires_at < utc_ahora():
         raise HTTPException(status_code=400, detail="reset_token_expirado")
 
-    new_hash = _hash(req.password)
+    # bcrypt de costo 12 (~150 ms de CPU): en un hilo, no en el event loop.
+    new_hash = await asyncio.to_thread(_hash, req.password)
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:

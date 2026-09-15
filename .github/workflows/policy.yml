@@ -735,7 +735,11 @@ jobs:
           # test_admin_usuarios_guardas.py (si la re-verificación del SSE se cancela, el
           # registro se deshace). Re-medido tras rebasar sobre master 65c02de (PR 3 del
           # tema): 786 / 1.
-          PISO_PASSED = 786
+          # Subido de 786 a 790 (2026-09-15, admin usuarios etapa 4, Task 1): +4 en
+          # test_contrasenas.py (3 puros de la regla única: corta, larga por bytes, caracteres
+          # como puntos de código; alta con password_corta/password_larga -> 400 y sin fila,
+          # no 500). Medido: 790 / 1.
+          PISO_PASSED = 790
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1061,7 +1065,9 @@ jobs:
       # corte piden `client` (sin cambio). Re-revisión de 6424be0 (2026-09-15): +1 puro
       # (la re-verificación del SSE cancelada deshace el registro). Re-medido tras
       # rebasar sobre master 65c02de (PR 3 del tema) con JAX_CI_NO_DB=1: 366 / 421.
-      JAX_CI_MIN_PASSED: "366"
+      # Admin usuarios etapa 4, Task 1 (2026-09-15): +3 puros en test_contrasenas.py (regla
+      # única de contraseña); el del alta pide `client`. Medido con JAX_CI_NO_DB=1: 369 / 422.
+      JAX_CI_MIN_PASSED: "369"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
