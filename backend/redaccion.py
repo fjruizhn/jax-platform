@@ -37,13 +37,13 @@ MARCA = "***"
 #   - El valor entre comillas conserva las comillas; sin comillas termina en
 #     `&`, espacio, comilla, `,`, `;`, `<`, `>`, `}` o `]`.
 _PARAM_SECRETO = re.compile(
-    r"""(?ix)
+    r"""(?isx)
     (?<![a-z0-9_\-])
     (["']?)
     ((?:[a-z0-9]+[_\-])*(?:api_?key|key|token|password|passwd|secret|credentials?)(?:[_\-]id)?)
     \1
     (\s*[=:]\s*)
-    (?:"([^"]*)"|'([^']*)'|([^&\s'",;<>}\]]+))
+    (?:"((?:\\.|[^"\\])*\\?)(?:"|\Z)|'((?:\\.|[^'\\])*\\?)(?:'|\Z)|([^&\s'",;<>}\]]+))
     """)
 
 # Esquemas de autenticacion (Bearer/Basic/Token/Digest). REGLA (fix round 2):
@@ -59,6 +59,13 @@ _PARAM_SECRETO = re.compile(
 #      `Bearer "x y"`); antes la clase sin comillas no lo tomaba, el esquema
 #      pasaba a ser el "valor" y el secreto entre comillas quedaba en claro.
 #      _tapar_auth devuelve las comillas alrededor de la marca.
+#   5. Ronda 3 (2026-09-15): toda forma entre comillas (aca y en
+#      _PARAM_SECRETO) acepta escapes con barra -- `\"` o `\'` dentro del
+#      valor ya no lo cierra antes de tiempo -- y una comilla SIN CERRAR tapa
+#      hasta el final del texto (antes no entraba en ninguna alternativa y el
+#      valor salia entero). `(?:\\.|[^"\\])*` parte el texto de una sola
+#      manera: lineal, sin backtracking catastrofico (test de 100 KB). Flag
+#      `s` para que `\\.` tome tambien un salto de linea escapado.
 #   4. Ronda 2 (re-review de 0c72f4e): el valor ENTERO puede ir entre
 #      comillas, con o sin esquema adentro y con espacios (`authorization:
 #      "secret value"`, `"authorization": "Bearer abc def"`). Antes un grupo
@@ -66,15 +73,17 @@ _PARAM_SECRETO = re.compile(
 #      cortaba en el primer espacio: `"*** value"`. Ahora cada forma entre
 #      comillas es su propia alternativa y se tapa hasta la comilla de cierre.
 _AUTH_CONTEXTO = re.compile(
-    r"""(?ix)
+    r"""(?isx)
     (?<![a-z0-9_\-])
     (["']?)(authorization)\1
     (\s*[=:]\s*)
     (?:
-        "(?:(bearer|basic|token|digest)\s+)?([^"]*)"
-      | '(?:(bearer|basic|token|digest)\s+)?([^']*)'
+        "(?:(bearer|basic|token|digest)\s+)?((?:\\.|[^"\\])*\\?)(?:"|\Z)
+      | '(?:(bearer|basic|token|digest)\s+)?((?:\\.|[^'\\])*\\?)(?:'|\Z)
       | (?:(bearer|basic|token|digest)\s+)?
-        (?:"([^"]*)"|'([^']*)'|([^\s"'&,;<>}\]]+))
+        (?:"((?:\\.|[^"\\])*\\?)(?:"|\Z)
+         | '((?:\\.|[^'\\])*\\?)(?:'|\Z)
+         | ([^\s"'&,;<>}\]]+))
     )
     """)
 _ESQUEMA_SUELTO = re.compile(
