@@ -463,8 +463,15 @@ jobs:
             // ve y carga la auditoria). Vistos en rojo antes de verde (6 rojos
             // contra la fuente anterior). Medido con vitest run: 411 passed en
             // 52 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 411) {
-              console.error("PISO ROTO: se esperaban 411 tests de vitest CORRIDOS y 0 fallidos.");
+            // 411 -> 414 el 2026-09-15 (fix round 1 del review de 3bed155): +2
+            // en AuditLog.test.jsx (tras un 403 no vuelve a preguntar en 30 s,
+            // con fake timers; control: sin 403 pregunta cada 10 s) y +1 en
+            // RightPanel.test.jsx (si el rol deja de ser superadmin con la
+            // auditoria abierta, vuelve a Pipelines). Cada uno rojo bajo su
+            // mutacion (sin clearInterval; tabActual = tab). Medido con vitest
+            // run: 414 passed en 52 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 414) {
+              console.error("PISO ROTO: se esperaban 414 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1156,7 +1163,20 @@ jobs:
           # lo global igual, por HTTP) y +4 en test_audit_superadmin.py
           # (viewer/operator 403, superadmin 200, sin sesion). Vistos en rojo
           # antes de verde. Medido dos veces: 952 / 1.
-          PISO_PASSED = 952
+          # Subido de 952 a 980 (2026-09-15, Task 6 follow-ups T6-1/T6-2/T6-5
+          # y fix round 1 del review de 3bed155): +14 en
+          # test_t6_seguimiento.py (filtro de httpx con un pedido real; key de
+          # Gemini en x-goog-api-key y no en la URL en chat, sync, /keys y
+          # /credentials; query_param rechazado; migracion de provider;
+          # /api/pipelines por dueño -- 3 casos -- y su EXPLAIN con
+          # idx_jacobs_pipelines_duenio; /api/facets/{facet}/status 403 para
+          # viewer/operator y 200 para superadmin), +13 en test_redaccion.py
+          # (comillas, JSON, espacios, Bearer, password, secret, cabecera
+          # x-goog-api-key; monkey/turkey/PRIMARY intactos; sort_key tapado)
+          # y +1 en test_redaccion_caminos.py (el 502 redacta antes de
+          # recortar). Vistos en rojo antes de verde (el de truncar y el del
+          # 502, bajo su mutacion). Medido dos veces: 980 / 1.
+          PISO_PASSED = 980
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1577,7 +1597,11 @@ jobs:
       # test_redaccion_caminos.py, 1 de test_state_por_duenio.py, 4 de
       # test_audit_superadmin.py) se saltean. Medido dos veces con
       # JAX_CI_NO_DB=1: 421 / 532.
-      JAX_CI_MIN_PASSED: "421"
+      # Task 6 follow-ups y fix round 1 (2026-09-15): +19 puros (5 de
+      # test_t6_seguimiento.py, 13 de test_redaccion.py, 1 de
+      # test_redaccion_caminos.py); los 9 de test_t6_seguimiento.py que piden
+      # `client` se saltean. Medido dos veces con JAX_CI_NO_DB=1: 440 / 541.
+      JAX_CI_MIN_PASSED: "440"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
