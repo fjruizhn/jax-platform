@@ -23,6 +23,12 @@ JACOBS_URL = os.getenv("JACOBS_URL", "http://127.0.0.1:7777/jacobs")
 # (huérfano confirmado, sonda T1.a). Margen ~2x sobre el máximo medido.
 JACOBS_PIPELINE_TIMEOUT = float(os.getenv("JACOBS_PIPELINE_TIMEOUT", "60.0"))
 
+# `invoked_by` es el ROL de quien le pide a Jacobs, no una persona (tanda A,
+# 2026-09-14, decisión de Fernando): "plataforma" = pedido de jax-platform en
+# nombre de un usuario autenticado. La identidad viaja en user_id/tenant_id y
+# la pone este backend; el rol también -- nunca se toma del cliente.
+INVOKED_BY_PLATAFORMA = "plataforma"
+
 # engine_state.active_pipelines (memoria) se descarta apenas la pipeline
 # termina -- justo cuando normalmente se pide /results. owner_ack_at en
 # jacobs_pipelines (misma DB fisica jax_memory que ya comparten ambos
@@ -94,6 +100,7 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
     body = await request.json()
     body["user_id"] = user.user_id
     body["tenant_id"] = user.tenant_id
+    body["invoked_by"] = INVOKED_BY_PLATAFORMA
     client = await get_http_client()
     try:
         r = await client.post(f"{JACOBS_URL}/pipeline", json=body, timeout=JACOBS_PIPELINE_TIMEOUT)
@@ -158,7 +165,7 @@ async def resume_pipeline(
     try:
         r = await client.post(
             f"{JACOBS_URL}/pipeline/{pipeline_id}/resume",
-            json={"invoked_by": "Fernando", "user_id": user.user_id, "tenant_id": user.tenant_id},
+            json={"invoked_by": INVOKED_BY_PLATAFORMA, "user_id": user.user_id, "tenant_id": user.tenant_id},
             timeout=10.0,
         )
         return r.json()

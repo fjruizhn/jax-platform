@@ -80,6 +80,20 @@ describe('PipelineModal -- cadena en línea', () => {
     }
   })
 
+  // tanda A (2026-09-14): invoked_by es un rol que pone el backend
+  // (api/pipelines.py); el cliente no lo declara, en ninguna de las dos formas.
+  it('no manda invoked_by en ninguna de las dos formas', async () => {
+    for (const layout of ['chain', 'parallel']) {
+      let submitted = null
+      const { unmount } = renderModal({ onSubmit: (p) => { submitted = p; return Promise.resolve() } }, { layout })
+      await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+      fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+      await waitFor(() => expect(submitted).not.toBeNull())
+      expect(submitted).not.toHaveProperty('invoked_by')
+      unmount()
+    }
+  })
+
   it('la cadena corre en autonomous por defecto; paralelo conserva supervised', async () => {
     let chain = null
     const r1 = renderModal({ onSubmit: (p) => { chain = p; return Promise.resolve() } }, { layout: 'chain' })

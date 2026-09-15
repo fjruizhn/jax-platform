@@ -7,6 +7,7 @@ conftest.py.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 
@@ -86,7 +87,7 @@ async def _fetch_contract_raw(shadow_message_id):
 
 
 def _snapshot():
-    ctx, _, _ = governance_context.validation_context()
+    ctx, _, _ = asyncio.run(governance_context.validation_context())
     return governance_grounding.build_snapshot(ctx)
 
 

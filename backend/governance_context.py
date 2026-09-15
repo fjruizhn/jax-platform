@@ -46,12 +46,81 @@ turno (donde se arma el snapshot) y la background task (donde se resuelve), el
 claim acreditado contra el snapshot viejo se resuelve contra el contexto nuevo
 y sale FACT_MISMATCH. Eso es exactamente lo que el spec §4.3 quiere de las dos
 capas: que sean independientes.
+
+Catálogo de la DB (tanda A v2, 2026-09-14). Desde el Bloque 3 las
+capabilities viven en la DB; hasta hoy este contexto las armaba del TOML
+vacío. Ahora:
+
+  * `validation_context()` es ASYNC: el catálogo sale de
+    `await MotorCatalog.from_db()` (aiomysql), con capability.mode. Los
+    YAML/TOML se leen en `asyncio.to_thread`: nada bloqueante en el turno.
+  * El MISMO contexto alimenta el snapshot del prompt (api/chat.py) y la
+    validación en sombra (shadow_validation.py): lo que se inyecta es lo que
+    se verifica.
+  * CLAVE DE CACHÉ = mtimes de los tres archivos + mtime del sello de
+    facet_resolver (`_seal_mtime()`). INVALIDACIÓN DECLARADA: el sello, que
+    estampan tras commitear las migraciones y el admin de motores/
+    capabilities (y los rebinds de facets). Si la clave cambió, recarga; si
+    no, el mismo objeto. La clave se toma ANTES de consultar: un sello
+    estampado con la consulta en vuelo deja la clave guardada vieja y el
+    próximo turno recarga (mismo criterio que LAS MANOS,
+    motor_registry/routes.py::_load_catalog).
+  * Sello ausente o ilegible: `_seal_mtime()` da None = "sin señal", nunca
+    "invalidar" (contrato de facet_resolver). La clave queda estable y los
+    cambios del catálogo entran al reiniciar. En hall9000 el sello existe
+    (/srv/jax-data/facet-cache-seal, verificado 2026-09-14); el despliegue lo
+    vuelve a verificar.
+  * UNA recarga en vuelo, COMPARTIDA (ronda de arreglo 1): la tarea de
+    recarga se guarda junto con el stamp para el que se lanzó. Un turno que
+    encuentra una en vuelo para el MISMO stamp la espera y recibe su mismo
+    resultado o su misma excepción: con la DB caída, N turnos a la vez son
+    UN intento, no N en serie. Terminada (bien o mal) se limpia el "en
+    vuelo"; si falló, `_cache` no cambia y el turno SIGUIENTE reintenta.
+    Cancelación: cada turno espera con `asyncio.shield`, así que cancelar el
+    turno que la lanzó no cancela la recarga de los demás. Consecuencia
+    declarada (ronda de arreglo 2, opción a): en Python 3.14, si un turno se
+    cancela mientras espera y la recarga después falla, `shield` deja en el
+    log de asyncio UNA línea ERROR "... exception in shielded future" por
+    recarga (asyncio/tasks.py, `_log_on_exception`; no depende de que la
+    excepción esté recuperada). Se deja: es una recarga fallida y tiene que
+    verse (P10); los que siguen esperando reciben igual la excepción.
+  * LÍMITE DE TIEMPO: la recarga completa (from_db + el to_thread) va bajo
+    `asyncio.wait_for(..., timeout)`, con el timeout de la variable de
+    entorno GOVERNANCE_RELOAD_TIMEOUT_SECONDS, default 5.0 s. Se lee y se
+    valida en CADA recarga (`_reload_timeout()`, mismo patrón que
+    JAX_DB_CONNECT_TIMEOUT_SECONDS en jax, las_manos/motor_registry/
+    catalog.py): tiene que ser numérica, finita y > 0; si no, RuntimeError
+    con el nombre y el valor (en el chat, SnapshotError con ese texto). Un
+    0/negativo/nan daría un TimeoutError mudo en cada recarga, e inf dejaría
+    la recarga SIN límite en silencio (P10). Por qué 5: la recarga completa en frío mide
+    p95 2,7 ms (2026-09-14), así que 5 s son más de mil veces el caso normal
+    y no cortan una DB lenta pero viva; y acota lo que un turno puede quedar
+    colgado si la DB acepta TCP y no contesta (aiomysql.connect no trae
+    connect_timeout por defecto). Vencida: TimeoutError visible (en el chat
+    SnapshotError; en sombra, sin veredictos) y caché intacto. El hilo de
+    `to_thread` no se puede cancelar: si ya arrancó, termina de leer los
+    YAML/TOML y su resultado se descarta. El connect_timeout de 10 s que
+    trae from_db() en jax no llega a actuar acá (estos 5 s vencen antes);
+    en LAS MANOS, que llama a from_db() sin este límite, sí actúa.
+  * FALLA VISIBLE: si from_db() lanza, la excepción sube y la caché queda
+    como estaba (no se sirve: la clave ya no coincide). En el chat,
+    `_build_grounding` la convierte en SnapshotError
+    (grounding_snapshot_sha256='ERROR'); la validación en sombra no escribe
+    veredictos. Servir un catálogo vacío o viejo repetiría el falso negativo
+    en silencio, o daría VALID a una capability revocada (P10).
+  * Costo: un stat más por turno; la recarga solo cuando cambió algo.
+    Latencia medida antes/después: DEUDA.md de jax.
+  * Una recarga lanzada para un stamp que ya quedó viejo puede terminar
+    después de otra más nueva y escribir `_cache` con SU stamp: no se sirve
+    (la clave no coincide) y el turno siguiente recarga. Costo: una recarga
+    de más, nunca un dato viejo servido.
 """
 from __future__ import annotations
 
+import asyncio
+import math
 import os
 import sys
-from functools import lru_cache
 from pathlib import Path
 
 JAX_REPO = Path(os.getenv("JAX_REPO_PATH", os.path.expanduser("~/jax")))
@@ -60,11 +129,15 @@ if str(JAX_REPO) not in sys.path:
 if str(JAX_REPO / "policy" / "governance") not in sys.path:
     sys.path.insert(0, str(JAX_REPO / "policy" / "governance"))
 
+import facet_resolver  # noqa: E402  (su sello invalida también este caché)
 import loaders as governance_loaders  # noqa: E402
 import validator as governance_validator  # noqa: E402
 
+_FileStamp = tuple[tuple[str, int | None], ...]
+_Stamp = tuple[_FileStamp, float | None]
 
-def _source_stamp() -> tuple[tuple[str, int | None], ...]:
+
+def _source_stamp() -> _FileStamp:
     """(ruta, mtime_ns) de los tres archivos fuente. Solo stat(): no abre nada.
 
     Un archivo que no se puede statear entra como None -- también invalida, y
@@ -86,21 +159,103 @@ def _source_stamp() -> tuple[tuple[str, int | None], ...]:
     return tuple(marca)
 
 
-@lru_cache(maxsize=1)
-def _build(stamp: tuple[tuple[str, int | None], ...]):
-    """La marca de mtimes es la clave de caché: misma marca, mismo objeto;
-    marca distinta, reconstrucción. `stamp` no se usa adentro a propósito."""
+def _stamp() -> _Stamp:
+    return (_source_stamp(), facet_resolver._seal_mtime())
+
+
+_cache: tuple[_Stamp, tuple] | None = None
+_inflight: tuple[_Stamp, asyncio.Future] | None = None
+
+
+def _build_static(catalog):
+    """La parte de disco (YAML/TOML): corre en un hilo, no en el loop."""
     vocabulary = governance_loaders.load_vocabulary()
-    ctx = governance_validator.load_validation_context(JAX_REPO, vocabulary.config_paths)
+    ctx = governance_validator.load_validation_context(JAX_REPO, vocabulary.config_paths, catalog)
     predicates = governance_loaders.load_predicates()
     return ctx, predicates, vocabulary.term_categories
 
 
-def validation_context():
+async def _build():
+    catalog = await governance_validator.MotorCatalog.from_db()
+    return await asyncio.to_thread(_build_static, catalog)
+
+
+def _reload_timeout() -> float:
+    """Límite de la recarga completa (from_db + to_thread), en segundos.
+    Por qué 5.0 por defecto y por qué se valida: docstring del módulo."""
+    raw = os.getenv("GOVERNANCE_RELOAD_TIMEOUT_SECONDS", "5.0")
+    try:
+        timeout = float(raw)
+    except ValueError:
+        timeout = None
+    if timeout is None or not math.isfinite(timeout) or timeout <= 0:
+        raise RuntimeError(
+            f"GOVERNANCE_RELOAD_TIMEOUT_SECONDS={raw!r} inválido -- tiene que ser "
+            "un número finito y positivo (segundos). Sin esto la recarga del "
+            "contexto de gobernanza no tiene límite si la DB se cuelga."
+        )
+    return timeout
+
+
+async def _reload(stamp: _Stamp):
+    """La recarga compartida: con límite de tiempo; si lanza, `_cache` no
+    se toca y la excepción llega a TODOS los turnos que la esperan."""
+    global _cache
+    # El timeout se valida ANTES de crear la corrutina: si es inválido, no
+    # queda un `_build()` creado y nunca esperado (RuntimeWarning).
+    timeout = _reload_timeout()
+    value = await asyncio.wait_for(_build(), timeout=timeout)
+    _cache = (stamp, value)
+    return value
+
+
+def _done(inflight: tuple[_Stamp, asyncio.Future]):
+    def callback(task: asyncio.Future) -> None:
+        global _inflight
+        if _inflight is inflight:  # otra recarga más nueva pudo reemplazarla
+            _inflight = None
+        # Marca la excepción como recuperada: evita el aviso "Task exception
+        # was never retrieved" si nadie la esperaba. NO evita el ERROR "...
+        # exception in shielded future" que deja shield() cuando un turno se
+        # canceló esperando (opción a, ver el docstring del módulo): ese se
+        # deja a propósito. Los que siguen esperando la reciben por shield().
+        if not task.cancelled():
+            task.exception()
+    return callback
+
+
+async def validation_context():
     """(ValidationContext, predicates, term_categories) de gobernanza."""
-    return _build(_source_stamp())
+    global _inflight
+    stamp = _stamp()
+    cached = _cache
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    inflight = _inflight
+    if inflight is None or inflight[0] != stamp:
+        inflight = (stamp, asyncio.ensure_future(_reload(stamp)))
+        _inflight = inflight
+        inflight[1].add_done_callback(_done(inflight))
+    # shield: cancelar ESTE turno no cancela la recarga de los demás (y, si
+    # la recarga falla después, asyncio loguea una línea ERROR: opción a).
+    return await asyncio.shield(inflight[1])
+
+
+def _cache_clear() -> None:
+    """Vacía la caché y olvida la recarga en vuelo (solo la usan los tests).
+
+    Primitivo atado a un loop a nivel de módulo: `_inflight` guarda una
+    tarea, que pertenece al loop donde se creó -- solo MIENTRAS está en
+    vuelo; al terminar (bien, mal o cancelada al cerrarse su loop) el
+    callback la limpia. Ya no hay `asyncio.Lock` de módulo (se ataba al
+    loop de la primera contención). Un test que la deje en vuelo y abra
+    otro loop sin llamar a esto esperaría una tarea de un loop ajeno; por
+    eso los tests llaman a cache_clear() antes y después."""
+    global _cache, _inflight
+    _cache = None
+    _inflight = None
 
 
 # Compatibilidad: quien tenía `validation_context.cache_clear()` lo sigue
 # teniendo (lo usan los tests para forzar una reconstrucción).
-validation_context.cache_clear = _build.cache_clear
+validation_context.cache_clear = _cache_clear

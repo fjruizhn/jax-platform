@@ -1662,8 +1662,11 @@ async def _reclassify_provenance_mismatch(cur) -> None:
     claves del objeto no importa, a diferencia de una comparación de string
     -- así que no hace falta normalizar el objeto antes de comparar.
     JSON_EXTRACT(sm.grounding_snapshot, '$.capabilities') saca el array de
-    entradas del snapshot (build_snapshot() en grounding.py solo produce la
-    sección "capabilities" hoy -- SECTION_PREDICATE tiene una sola entrada);
+    entradas del snapshot. Desde la tanda A v2 (2026-09-14) build_snapshot()
+    produce también la sección "catalog_capabilities"; esta reclasificación
+    mira solo '$.capabilities' A PROPÓSITO: aplica únicamente a filas
+    históricas con PROVENANCE_MISMATCH (status que ya no se produce desde el
+    2026-09-03), cuyos snapshots tenían una sola sección, "capabilities";
     si existe -> POINTER_MISMATCH (citó mal algo verdadero), si no ->
     FACT_NOT_IN_SNAPSHOT (inventó el hecho, mas grave).
 
