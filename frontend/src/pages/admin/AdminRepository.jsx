@@ -51,7 +51,7 @@ export default function AdminRepository() {
 
   return (
     <div>
-      <h1 className="text-xl font-bold text-slate-100 mb-6">{t.adminRepoTitle}</h1>
+      <h1 className="text-xl font-bold text-texto-fuerte mb-6">{t.adminRepoTitle}</h1>
 
       <div className="flex gap-2 mb-4">
         {Object.keys(FOLDER_LABELS).map(f => (
@@ -60,8 +60,8 @@ export default function AdminRepository() {
             onClick={() => setActiveFolder(f)}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
               activeFolder === f
-                ? 'bg-purple-600 text-white'
-                : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                ? 'bg-acento text-sobre-color'
+                : 'bg-superficie text-texto-suave hover:text-texto'
             }`}
           >
             {t[FOLDER_LABELS[f]]}
@@ -69,29 +69,29 @@ export default function AdminRepository() {
         ))}
       </div>
 
-      <div className="rounded-lg border border-slate-800 overflow-hidden">
+      <div className="rounded-lg border border-borde overflow-hidden">
         {files.length === 0 ? (
-          <div className="px-4 py-8 text-center text-slate-600 text-sm">{t.adminRepoEmpty}</div>
+          <div className="px-4 py-8 text-center text-texto-tenue text-sm">{t.adminRepoEmpty}</div>
         ) : (
           <table className="w-full text-sm">
-            <thead className="bg-slate-900 border-b border-slate-800">
+            <thead className="bg-hundido border-b border-borde">
               <tr>
                 {['Nombre', 'Tamaño', 'Modificado', ''].map(h => (
-                  <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">{h}</th>
+                  <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/50">
+            <tbody className="divide-y divide-borde/50">
               {files.map(f => (
-                <tr key={f.path} className="bg-slate-900/50 hover:bg-slate-800/30 transition-colors">
-                  <td className="px-4 py-3 text-slate-200 font-mono text-xs">{f.name}</td>
-                  <td className="px-4 py-3 text-slate-500 text-xs">{t.adminRepoSize(f.size)}</td>
-                  <td className="px-4 py-3 text-slate-500 text-xs">{new Date(f.modified).toLocaleString('es-HN')}</td>
+                <tr key={f.path} className="bg-hundido hover:bg-superficie transition-colors">
+                  <td className="px-4 py-3 text-texto font-mono text-xs">{f.name}</td>
+                  <td className="px-4 py-3 text-texto-tenue text-xs">{t.adminRepoSize(f.size)}</td>
+                  <td className="px-4 py-3 text-texto-tenue text-xs">{new Date(f.modified).toLocaleString('es-HN')}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <button onClick={() => handlePreview(f)} className="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">{t.adminRepoPreview}</button>
-                      <button onClick={() => handleDownload(f)} className="text-xs px-2 py-0.5 rounded bg-blue-900/40 hover:bg-blue-900/60 text-blue-400 transition-colors">{t.adminRepoDownload}</button>
-                      <button onClick={() => handleDelete(f)} className="text-xs px-2 py-0.5 rounded bg-red-900/40 hover:bg-red-900/60 text-red-400 transition-colors">{t.adminRepoDelete}</button>
+                      <button onClick={() => handlePreview(f)} className="text-xs px-2 py-0.5 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors">{t.adminRepoPreview}</button>
+                      <button onClick={() => handleDownload(f)} className="text-xs px-2 py-0.5 rounded bg-info-fondo text-info border border-transparent hover:border-info transition-colors">{t.adminRepoDownload}</button>
+                      <button onClick={() => handleDelete(f)} className="text-xs px-2 py-0.5 rounded bg-peligro-fondo text-peligro border border-transparent hover:border-peligro-borde transition-colors">{t.adminRepoDelete}</button>
                     </div>
                   </td>
                 </tr>
@@ -103,11 +103,11 @@ export default function AdminRepository() {
 
       {/* Preview modal */}
       {preview && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-6">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-3xl max-h-[80vh] overflow-hidden flex flex-col shadow-2xl">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
-              <span className="text-sm font-semibold text-slate-200">{preview.filename}</span>
-              <button onClick={() => setPreview(null)} className="text-slate-500 hover:text-slate-200 text-lg font-bold">×</button>
+        <div className="fixed inset-0 bg-fondo/70 flex items-center justify-center z-50 p-6">
+          <div className="bg-superficie border border-borde rounded-xl w-full max-w-3xl max-h-[80vh] overflow-hidden flex flex-col shadow-2xl">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-borde">
+              <span className="text-sm font-semibold text-texto">{preview.filename}</span>
+              <button onClick={() => setPreview(null)} className="text-texto-tenue hover:text-texto text-lg font-bold">×</button>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               {preview.type === 'image' ? (
@@ -117,7 +117,7 @@ export default function AdminRepository() {
                   <ReactMarkdown>{preview.content}</ReactMarkdown>
                 </div>
               ) : (
-                <pre className="text-xs text-slate-300 whitespace-pre-wrap font-mono">{preview.content}</pre>
+                <pre className="text-xs text-texto whitespace-pre-wrap font-mono">{preview.content}</pre>
               )}
             </div>
           </div>

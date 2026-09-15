@@ -80,6 +80,10 @@ export const MIGRADOS = [
   'pages/admin/AdminFacetsModels.jsx',
   'pages/admin/AdminModelCatalog.jsx',
   'pages/admin/FormContratoDispatch.jsx',
+  'pages/admin/AdminRepository.jsx',
+  'pages/admin/AdminDashboard.jsx',
+  'pages/admin/AdminCosts.jsx',
+  'pages/admin/AdminFacetBindings.jsx',
 ]
 
 const RESPALDO = 'texto-suave'

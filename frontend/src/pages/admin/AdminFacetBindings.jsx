@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
-import { FACET_COLORS } from '../../store/useJaxStore'
+import { colorToken, tokenDeFaceta } from '../../tema/tokens'
 import { codigoDe, textoDeDetalleDeBinding, textoDeErrorDeBinding } from '../../api/errores'
 import AlertaError from '../../components/AlertaError'
 import FormContratoDispatch from './FormContratoDispatch'
@@ -9,7 +9,7 @@ import FormContratoDispatch from './FormContratoDispatch'
 // El único rechazo del guard que se arregla declarando el contrato de la fila
 // (PR-L ronda 1). `modelo_de_otro_proveedor` no: su remedio es otro modelo.
 const CODIGO_SIN_CONTRATO = 'modelo_sin_contrato_de_dispatch'
-const BOTON_SECUNDARIO = 'text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors'
+const BOTON_SECUNDARIO = 'text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors'
 
 // El 409 de contrato de dispatch trae un objeto en `detail` (2026-09-14,
 // PR-J): antes se interpolaba tal cual y salía "[object Object]". Ese código
@@ -22,9 +22,9 @@ function mensajeDeGuardado(t, err) {
 }
 
 const CAPABILITY_STYLE = {
-  ok: 'text-green-400',
-  warning: 'text-yellow-400',
-  unknown: 'text-slate-500',
+  ok: 'text-exito',
+  warning: 'text-aviso',
+  unknown: 'text-texto-tenue',
 }
 
 export default function AdminFacetBindings() {
@@ -117,8 +117,8 @@ export default function AdminFacetBindings() {
 
   return (
     <div>
-      <h2 className="text-sm font-semibold text-slate-200 mb-4">{t.adminBindingsTitle}</h2>
-      {contratoGuardado && <p role="status" className="text-xs text-green-400 mb-3">{t.adminBindingsContratoGuardado}</p>}
+      <h2 className="text-sm font-semibold text-texto mb-4">{t.adminBindingsTitle}</h2>
+      {contratoGuardado && <p role="status" className="text-xs text-exito mb-3">{t.adminBindingsContratoGuardado}</p>}
       {modeloContrato && (
         <FormContratoDispatch
           key={modeloContrato.id}
@@ -128,34 +128,34 @@ export default function AdminFacetBindings() {
           onCancelar={() => setContratoDe(null)}
         />
       )}
-      <div className="rounded-lg border border-slate-800 overflow-hidden">
+      <div className="rounded-lg border border-borde overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-slate-900 border-b border-slate-800">
+          <thead className="bg-hundido border-b border-borde">
             <tr>
               {[t.adminBindingsFacet, t.adminBindingsTransport, t.adminBindingsModel, t.adminBindingsCapability, ''].map(h => (
-                <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">{h}</th>
+                <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/50">
+          <tbody className="divide-y divide-borde/50">
             {bindings.map(b => (
-              <tr key={b.facet_key} className="bg-slate-900/50 hover:bg-slate-800/30 transition-colors">
+              <tr key={b.facet_key} className="bg-hundido hover:bg-superficie transition-colors">
                 <td className="px-4 py-3">
                   <span
-                    className="text-xs font-semibold px-2 py-0.5 rounded"
-                    style={{ color: FACET_COLORS[b.facet_key] || '#94a3b8', backgroundColor: (FACET_COLORS[b.facet_key] || '#94a3b8') + '20' }}
+                    className="text-xs font-semibold px-2 py-0.5 rounded border bg-superficie"
+                    style={{ color: colorToken(tokenDeFaceta(b.facet_key)), borderColor: colorToken(tokenDeFaceta(b.facet_key), 0.4) }}
                   >
                     {b.display_name || b.facet_key}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-xs text-slate-400 font-mono">{b.transport}</td>
+                <td className="px-4 py-3 text-xs text-texto-suave font-mono">{b.transport}</td>
                 <td className="px-4 py-3">
                   {editing === b.facet_key ? (
                     <div className="flex items-center gap-1.5">
                       <select
                         value={selectedModelRef}
                         onChange={e => setSelectedModelRef(e.target.value)}
-                        className="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-xs font-mono text-slate-200 focus:outline-none focus:border-purple-500"
+                        className="bg-superficie border border-borde-control rounded-lg px-2 py-1 text-xs font-mono text-texto focus:outline-none focus:border-foco"
                       >
                         <option value="">{t.adminBindingsSelectModel}</option>
                         {models.map(m => (
@@ -165,19 +165,19 @@ export default function AdminFacetBindings() {
                       <button
                         onClick={() => save(b.facet_key)}
                         disabled={saving || !selectedModelRef}
-                        className="text-xs px-2 py-1 rounded bg-purple-600 hover:bg-purple-700 text-white font-semibold disabled:opacity-50 transition-colors"
+                        className="text-xs px-2 py-1 rounded bg-acento hover:bg-acento-hover text-sobre-color font-semibold disabled:opacity-50 transition-colors"
                       >
                         {saving ? t.adminBindingsSaving : t.adminBindingsSave}
                       </button>
                       <button
                         onClick={() => setEditing(null)}
-                        className="text-xs px-2 py-1 rounded text-slate-400 hover:text-slate-200 transition-colors"
+                        className="text-xs px-2 py-1 rounded text-texto-suave hover:text-texto transition-colors"
                       >
                         {t.adminBindingsCancel}
                       </button>
                     </div>
                   ) : (
-                    <span className="font-mono text-xs text-slate-300">
+                    <span className="font-mono text-xs text-texto">
                       {b.model_id ? `${b.provider_id}/${b.model_id}` : t.adminBindingsNoBinding}
                     </span>
                   )}
@@ -190,7 +190,7 @@ export default function AdminFacetBindings() {
                   {b.ultimo_rechazo && (
                     // Rastro del último 409 del guard para esta faceta
                     // (model_catalog_audit), posterior a su último cambio aprobado.
-                    <div className="text-xs text-yellow-400 mt-1">
+                    <div className="text-xs text-aviso mt-1">
                       <span>{t.adminBindingsUltimoRechazo(b.ultimo_rechazo.performed_at?.slice(0, 16) || '')}</span>{' '}
                       <span>{textoDeDetalleDeBinding(t, b.ultimo_rechazo) || b.ultimo_rechazo.code}</span>
                       {botonDeclarar(b.ultimo_rechazo)}
@@ -204,7 +204,7 @@ export default function AdminFacetBindings() {
                   {editing !== b.facet_key && (
                     <button
                       onClick={() => startEdit(b)}
-                      className="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                      className="text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors"
                     >
                       {t.adminBindingsEdit}
                     </button>
