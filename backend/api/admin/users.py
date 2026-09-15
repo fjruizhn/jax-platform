@@ -9,7 +9,7 @@ from tiempo import iso_utc, utc_ahora
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 import user_audit
 import smtp_config
@@ -43,8 +43,8 @@ def _ip(request: Request) -> str:
 # que el sistema tenga siempre al menos un superadmin activo.
 
 def guarda_auto_accion(actor_id: int, target_id: int) -> None:
-    """Nadie se degrada, se desactiva ni se da de baja a sí mismo; su
-    contraseña la cambia en "Mi cuenta"."""
+    """Nadie se degrada, se desactiva, se da de baja ni se fija la contraseña a
+    sí mismo; su contraseña la cambia en "Mi cuenta"."""
     if actor_id == target_id:
         raise HTTPException(status_code=403, detail="auto_accion_prohibida")
 
@@ -202,8 +202,9 @@ async def create_user(req: CreateUserRequest, request: Request, user: AuthUser =
 
 class UpdateUserRequest(BaseModel):
     # extra="forbid": un campo que ya no existe (password) responde 422 en vez
-    # de ignorarse en silencio. La contraseña la cambia el dueño en Mi cuenta
-    # o por enlace de recuperación (etapa 4).
+    # de ignorarse en silencio. La contraseña la cambia el dueño (Mi cuenta o
+    # enlace de recuperación, etapa 4) o la fija el admin por
+    # POST /users/{id}/password (2026-09-15, U34), nunca por este PUT.
     model_config = ConfigDict(extra="forbid")
     email: Optional[str] = None
     role: Optional[str] = None
@@ -421,6 +422,52 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
             "Enlace de recuperación (admin): se envió pero no se pudo auditar (user_id=%s, actor=%s, to=%s)",
             user_id, user.user_id, email)
     return {"ok": True, "to": email}
+
+
+# ------------------------------------------------------- fijar contraseña
+# (2026-09-15, DECISIONES de Fernando que revierten U2; Ruling U34). El admin
+# escribe la contraseña de OTRO usuario y ese usuario queda obligado a
+# cambiarla en su próximo login (must_change_password, que el backend hace
+# cumplir en auth/middleware.py). El enlace de recuperación sigue existiendo.
+
+class FijarPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    new_password: str = Field(max_length=1024)
+
+
+@router.post("/users/{user_id}/password")
+async def fijar_password(user_id: int, req: FijarPasswordRequest, request: Request,
+                         user: AuthUser = Depends(require_superadmin)):
+    """Orden fijo (U11): guarda de auto-acción (la propia va por Mi cuenta),
+    regla única, bcrypt en un hilo y ANTES de la transacción; en READ
+    COMMITTED (U33): superadmins -> usuario (_leer_para_actualizar; 404 si no
+    existe o está de baja) -> UPDATE -> enlaces pendientes -> auditoría. Tras
+    el commit, el corte (U9, fail-soft).
+
+    Un inactivo se permite: no le da entrada (el login exige 'active') y deja
+    la cuenta lista para reactivarla, con la marca puesta. El bloqueo se
+    limpia: protegía la contraseña vieja, y la nueva se entrega para usarla ya
+    (igual que /reset-password y Mi cuenta, U16). Los enlaces pendientes se
+    borran: uno viejo no puede pisar lo que fijó el admin ni apagar la marca."""
+    actor_id = int(user.user_id)
+    guarda_auto_accion(actor_id, user_id)
+    problema = problema_de_password(req.new_password)
+    if problema:
+        raise HTTPException(status_code=400, detail=f"password_{problema}")
+    nuevo_hash = await asyncio.to_thread(_hash, req.new_password)
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        if await _leer_para_actualizar(cur, user_id) is None:
+            raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+        await cur.execute(
+            "UPDATE jax_users SET password_hash = %s, token_version = token_version + 1, "
+            "must_change_password = TRUE, failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
+            (nuevo_hash, user_id),
+        )
+        await cur.execute("DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE", (user_id,))
+        # Sin detalle: ni la contraseña ni el hash salen de jax_users.
+        await user_audit.registrar(cur, actor_id, user_id, "password_set_by_admin", None, _ip(request))
+    await _cortar_conexiones(user_id)
+    return {"ok": True}
 
 
 # ------------------------------------------------------------------ baja

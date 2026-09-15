@@ -287,3 +287,201 @@ def test_el_reset_por_enlace_limpia_la_marca(client, usuarios):
     assert client.post("/api/auth/reset-password", json={"token": token, "password": NUEVA}).status_code == 200
     assert client.portal.call(_marca, u) is False
     assert _login(client, email, NUEVA).json()["must_change_password"] is False
+
+
+# ------------------------------------------------------ endpoint del admin
+
+import json  # noqa: E402
+from contextlib import asynccontextmanager  # noqa: E402
+
+import api.admin.users as users_mod  # noqa: E402
+import api.auth as auth_mod  # noqa: E402
+from auth import conexiones as conexiones_mod  # noqa: E402
+from jax_engine.websocket_hub import ws_hub  # noqa: E402
+
+
+async def _version(user_id):
+    ((tv,),) = await sql("SELECT token_version FROM jax_users WHERE user_id = %s", (user_id,), True)
+    return tv
+
+
+async def _auditoria(target):
+    return [tuple(f) for f in await sql("SELECT action, detail FROM user_admin_audit WHERE target_user_id = %s "
+                                        "ORDER BY id", (target,), True)]
+
+
+@pytest.fixture
+def cortes(monkeypatch):
+    """U9: cada corte registra la token_version que ve OTRA conexión (si
+    corriera dentro de la transacción, vería la vieja)."""
+    registro = []
+
+    async def ws(user_id, code=4001):
+        registro.append(("ws", user_id, await _version(int(user_id))))
+        return 0
+
+    async def sse(user_id):
+        registro.append(("sse", user_id, await _version(int(user_id))))
+        return 0
+
+    monkeypatch.setattr(ws_hub, "close_user", ws)
+    monkeypatch.setattr(conexiones_mod, "close_user_streams", sse)
+    return registro
+
+
+def _fijar(client, target, password=FIJADA, cabeceras=None, **extra):
+    return client.post(f"/api/admin/users/{target}/password", json={"new_password": password, **extra},
+                       headers=cabeceras or _admin())
+
+
+def test_fijar_password_cambia_corta_marca_y_audita_sin_la_contrasena(client, usuarios, cortes):
+    u, email = usuarios(password=CLAVE)
+    viejo = token_para(u)
+    r = _fijar(client, u)
+    assert (r.status_code, r.json()) == (200, {"ok": True})
+    assert client.get("/api/auth/me", headers=auth(viejo)).status_code == 401, "las sesiones viejas mueren"
+    assert _login(client, email, CLAVE).status_code == 401
+    r = _login(client, email, FIJADA)
+    assert r.status_code == 200 and r.json()["must_change_password"] is True
+    assert client.portal.call(_version, u) == 1
+    ((accion, detalle),) = client.portal.call(_auditoria, u)
+    assert (accion, detalle) == ("password_set_by_admin", None)
+    assert cortes == [("ws", str(u), 1), ("sse", str(u), 1)], "corte tras el commit"
+
+
+def test_fijar_password_aplica_la_regla_sin_tocar_nada(client, usuarios, cortes):
+    u, _ = usuarios(password=CLAVE)
+    for password, codigo in (("corta", "password_corta"), ("ñ" * 37, "password_larga")):
+        r = _fijar(client, u, password)
+        assert (r.status_code, r.json()["detail"]) == (400, codigo)
+    assert client.portal.call(_version, u) == 0 and client.portal.call(_marca, u) is False
+    assert client.portal.call(_auditoria, u) == [] and cortes == []
+
+
+def test_fijar_password_limpia_el_bloqueo(client, usuarios, cortes):
+    u, email = usuarios(password=CLAVE)
+    client.portal.call(sql, "UPDATE jax_users SET failed_attempts = 5, locked_until = %s WHERE user_id = %s",
+                       (utc_ahora() + timedelta(minutes=15), u))
+    assert _fijar(client, u).status_code == 200
+    ((intentos, hasta),) = client.portal.call(
+        sql, "SELECT failed_attempts, locked_until FROM jax_users WHERE user_id = %s", (u,), True)
+    assert (intentos, hasta) == (0, None)
+    assert _login(client, email, FIJADA).status_code == 200
+
+
+def test_fijar_password_borra_solo_los_enlaces_pendientes(client, usuarios, cortes):
+    u, _ = usuarios(password=CLAVE)
+    pendiente, usado = str(uuid.uuid4()), str(uuid.uuid4())
+    vence = utc_ahora() + timedelta(hours=1)
+    client.portal.call(sql, "INSERT INTO password_reset_tokens (user_id, token, expires_at, ip_address, used) "
+                            "VALUES (%s, %s, %s, 'test', FALSE), (%s, %s, %s, 'test', TRUE)",
+                       (u, pendiente, vence, u, usado, vence))
+    assert _fijar(client, u).status_code == 200
+    filas = client.portal.call(sql, "SELECT token FROM password_reset_tokens WHERE user_id = %s", (u,), True)
+    assert [f[0] for f in filas] == [usado]
+    r = client.post("/api/auth/reset-password", json={"token": pendiente, "password": NUEVA})
+    assert (r.status_code, r.json()["detail"]) == (400, "reset_token_invalido")
+    assert client.portal.call(_marca, u) is True, "un enlace viejo no apaga la marca"
+
+
+def test_fijar_password_a_un_inactivo_no_lo_activa(client, usuarios, cortes):
+    u, email = usuarios(status="inactive", password=CLAVE)
+    assert _fijar(client, u).status_code == 200
+    ((estado,),) = client.portal.call(sql, "SELECT status FROM jax_users WHERE user_id = %s", (u,), True)
+    assert estado == "inactive" and client.portal.call(_marca, u) is True
+    r = _login(client, email, FIJADA)
+    assert (r.status_code, r.json()["detail"]) == (403, "Usuario inactivo")
+
+
+def test_fijar_password_rechazos(client, usuarios, cortes):
+    s, _ = usuarios(role="superadmin")
+    r = _fijar(client, s, cabeceras=auth(token_para(s, role="superadmin")))
+    assert (r.status_code, r.json()["detail"]) == (403, "auto_accion_prohibida"), "la propia va por Mi cuenta"
+    ido, _ = usuarios()
+    assert client.post(f"/api/admin/users/{ido}/baja", headers=_admin()).status_code == 200
+    assert (_fijar(client, ido).status_code, _fijar(client, ido).json()["detail"]) == (404, "usuario_no_encontrado")
+    assert _fijar(client, 2**31 - 1).json()["detail"] == "usuario_no_encontrado"
+    op, _ = usuarios()
+    otro, _ = usuarios()
+    assert _fijar(client, otro, cabeceras=auth(token_para(op))).status_code == 403
+    assert _fijar(client, otro, must_change_password=False).status_code == 422, "extra='forbid'"
+    assert client.portal.call(_version, otro) == 0
+
+
+def test_fijar_password_si_el_corte_falla_responde_igual(client, usuarios, monkeypatch):
+    async def revienta(user_id, code=4001):
+        raise RuntimeError("hub caído")
+
+    monkeypatch.setattr(ws_hub, "close_user", revienta)
+    monkeypatch.setattr(conexiones_mod, "close_user_streams", revienta)
+    u, _ = usuarios()
+    assert _fijar(client, u).status_code == 200
+    assert client.portal.call(_version, u) == 1
+
+
+def test_fijar_password_hashea_antes_y_bloquea_en_el_orden_fijo(client, usuarios, cortes, monkeypatch):
+    """bcrypt ANTES de abrir la transacción (nunca con filas tomadas), READ
+    COMMITTED, superadmins -> usuario -> tokens -> auditoría (U11, U21, U33)."""
+    u, _ = usuarios()
+    pasos = []
+    hash_real, transaccion_real = users_mod._hash, users_mod.transaccion
+
+    def hash_que_graba(p):
+        pasos.append("HASH")
+        return hash_real(p)
+
+    class _Graba:
+        def __init__(self, cur):
+            self._cur = cur
+
+        def __getattr__(self, nombre):
+            return getattr(self._cur, nombre)
+
+        async def execute(self, consulta, args=()):
+            pasos.append(" ".join(consulta.split()))
+            return await self._cur.execute(consulta, args)
+
+    @asynccontextmanager
+    async def con_registro(*args, **kw):
+        pasos.append(("BEGIN", args, kw))
+        async with transaccion_real(*args, **kw) as cur:
+            yield _Graba(cur)
+
+    monkeypatch.setattr(users_mod, "_hash", hash_que_graba)
+    monkeypatch.setattr(users_mod, "transaccion", con_registro)
+    assert _fijar(client, u).status_code == 200
+    assert pasos[0] == "HASH"
+    assert pasos[1] == ("BEGIN", ("READ COMMITTED",), {})
+    sqls = [p for p in pasos[2:] if isinstance(p, str)]
+    orden = [next(i for i, q in enumerate(sqls) if cond(q)) for cond in (
+        lambda q: q == " ".join(users_mod.SQL_SUPERADMINS_ACTIVOS.split()),
+        lambda q: q.startswith("SELECT role, status, email FROM jax_users") and q.endswith("FOR UPDATE"),
+        lambda q: q.startswith("UPDATE jax_users SET password_hash"),
+        lambda q: q.startswith("DELETE FROM password_reset_tokens WHERE user_id"),
+        lambda q: q.startswith("INSERT INTO user_admin_audit"),
+    )]
+    assert orden == sorted(orden), sqls
+
+
+def test_mi_cuenta_no_deshace_una_contrasena_fijada_en_el_medio(client, usuarios, cortes, monkeypatch):
+    """El admin fija la contraseña mientras la persona verifica la actual en
+    Mi cuenta (ventana de bcrypt): Mi cuenta da 401 y queda lo del admin."""
+    u, email = usuarios(password=CLAVE)
+    verificar_real = auth_mod.verify_password
+
+    async def verifica_y_el_admin_fija(plain, hashed):
+        ok = await verificar_real(plain, hashed)
+        from httpx import ASGITransport, AsyncClient
+        from main import app
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(f"/api/admin/users/{u}/password", json={"new_password": FIJADA}, headers=_admin())
+            assert r.status_code == 200, r.text
+        return ok
+
+    monkeypatch.setattr(auth_mod, "verify_password", verifica_y_el_admin_fija)
+    r = _cambiar(client, token_para(u), CLAVE, NUEVA)
+    monkeypatch.setattr(auth_mod, "verify_password", verificar_real)
+    assert (r.status_code, r.json()["detail"]) == (401, "sesion_invalida")
+    assert client.portal.call(_marca, u) is True
+    assert _login(client, email, FIJADA).status_code == 200
+    assert [a for a, _ in client.portal.call(_auditoria, u)] == ["password_set_by_admin"]

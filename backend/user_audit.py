@@ -16,6 +16,7 @@ from tiempo import iso_utc
 ACCIONES = frozenset({
     "create", "update_email", "update_role", "update_status", "reset_link_sent",
     "unlock", "sessions_revoked", "baja", "password_changed_self", "password_reset_completed",
+    "password_set_by_admin",
 })
 
 # Filtra por target_user_id y ordena por ts: idx_user_admin_audit_target_ts.

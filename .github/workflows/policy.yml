@@ -974,7 +974,18 @@ jobs:
           # guard resuelve los alias de import (`... import verificar_sesion as
           # vs`); el caso nuevo va DENTRO de test_el_guard_del_opt_in_ve_las_
           # variantes_escondidas, sin tests nuevos. Medido dos veces: 861 / 1.
-          PISO_PASSED = 861
+          # Subido de 861 a 870 (2026-09-15, fijar contraseña por admin, Task 3 --
+          # POST /api/admin/users/{id}/password): +9 en test_fijar_password.py
+          # (cambia la contraseña, sube token_version, prende la marca, audita
+          # password_set_by_admin sin detalle y corta tras el commit; regla única
+          # sin tocar nada; limpia el bloqueo; borra SÓLO los enlaces pendientes;
+          # un inactivo queda inactivo; auto-acción 403, baja/inexistente 404,
+          # operator 403, extra 422; corte fail-soft; bcrypt antes de la
+          # transacción en READ COMMITTED y orden superadmins -> usuario ->
+          # UPDATE -> tokens -> auditoría; Mi cuenta concurrente no deshace lo
+          # fijado). 9 vistos en rojo (405, la ruta no existía) antes de verde;
+          # 8 mutaciones capturadas. Medido dos veces: 870 / 1.
+          PISO_PASSED = 870
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1353,6 +1364,10 @@ jobs:
       # Task 2 fix ronda 2 (2026-09-15, Ruling F3): sin cambio -- el caso del
       # alias de import va dentro de un test puro existente.
       # Medido dos veces con JAX_CI_NO_DB=1: 374 / 488.
+      # Fijar contraseña por admin, Task 3 (2026-09-15): los 9 nuevos de
+      # test_fijar_password.py (POST /api/admin/users/{id}/password) piden
+      # `client` y se saltean (sin cambio en passed).
+      # Medido dos veces con JAX_CI_NO_DB=1: 374 / 497.
       JAX_CI_MIN_PASSED: "374"
     steps:
       - uses: actions/checkout@v4
