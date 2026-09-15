@@ -14,6 +14,14 @@ function almacen(valores) {
   return { getItem: (k) => (k in valores ? valores[k] : null) }
 }
 
+// M-4 (revisión final, 2026-09-14): con el almacenamiento bloqueado (Safari
+// con cookies bloqueadas, iframe con sandbox), getItem lanza SecurityError.
+function almacenQueLanza() {
+  return {
+    getItem: () => { throw new DOMException('bloqueado', 'SecurityError') },
+  }
+}
+
 function raizFalsa() {
   const attrs = {}
   const clases = new Set()
@@ -72,5 +80,18 @@ describe('script de tema en index.html', () => {
     expect(foto(deScript)).toEqual(foto(deModulo))
     // Que los dos coincidan no alcanza: tienen que coincidir en lo correcto.
     expect(deModulo.attrs['data-tema']).toBe(esperado === 'light' ? 'claro' : undefined)
+  })
+
+  it('con localStorage bloqueado, el script y aplicarTema caen los dos a oscuro sin lanzar', () => {
+    const deScript = raizFalsa()
+    expect(() => {
+      new Function('localStorage', 'document', script)(almacenQueLanza(), { documentElement: deScript })
+    }).not.toThrow()
+    const deModulo = raizFalsa()
+    expect(() => {
+      aplicarTema(temaInicial(almacenQueLanza()), deModulo)
+    }).not.toThrow()
+    expect(foto(deScript)).toEqual(foto(deModulo))
+    expect(deModulo.attrs['data-tema']).toBeUndefined()
   })
 })

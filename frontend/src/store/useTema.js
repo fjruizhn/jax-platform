@@ -8,8 +8,29 @@ import {
 // usan App (sincroniza el predeterminado al montar) y BarraUsuario (el
 // interruptor), y dos estados locales se desalinearían. Misma interfaz que el
 // useTheme de antes ({ theme, toggleTheme }) más `predeterminado`.
+// M-4 (revisión final del PR 1, 2026-09-14): con el almacenamiento bloqueado
+// (Safari con cookies bloqueadas, iframe con sandbox), localStorage.getItem/
+// setItem lanzan SecurityError. `leer`/`escribir` son fail-soft: si el
+// almacenamiento no responde, el tema sigue funcionando en memoria para esta
+// carga (no hay pantalla en blanco), simplemente no persiste.
+function leer(clave) {
+  try {
+    return localStorage.getItem(clave)
+  } catch {
+    return null
+  }
+}
+
+function escribir(clave, valor) {
+  try {
+    localStorage.setItem(clave, valor)
+  } catch {
+    // fail-soft: sin almacenamiento, el cambio de tema sigue en memoria
+  }
+}
+
 function predeterminadoGuardado() {
-  const v = localStorage.getItem(CLAVE_PREDETERMINADO)
+  const v = leer(CLAVE_PREDETERMINADO)
   return esTema(v) ? v : null
 }
 
@@ -20,7 +41,7 @@ export const useTema = create((set, get) => ({
   // El interruptor escribe una ELECCIÓN: desde ahí el predeterminado no la pisa.
   toggleTheme: () => {
     const siguiente = get().theme === 'dark' ? 'light' : 'dark'
-    localStorage.setItem(CLAVE_ELECCION, siguiente)
+    escribir(CLAVE_ELECCION, siguiente)
     aplicarTema(siguiente)
     set({ theme: siguiente })
   },
@@ -30,9 +51,9 @@ export const useTema = create((set, get) => ({
   // Un valor fuera de {'dark','light'} no se guarda ni se aplica.
   fijarPredeterminado: (valor) => {
     if (!esTema(valor)) return
-    localStorage.setItem(CLAVE_PREDETERMINADO, valor)
+    escribir(CLAVE_PREDETERMINADO, valor)
     set({ predeterminado: valor })
-    if (!esTema(localStorage.getItem(CLAVE_ELECCION)) && get().theme !== valor) {
+    if (!esTema(leer(CLAVE_ELECCION)) && get().theme !== valor) {
       aplicarTema(valor)
       set({ theme: valor })
     }

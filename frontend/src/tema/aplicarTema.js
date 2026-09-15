@@ -18,7 +18,14 @@ export function resolverTema(eleccion, predeterminado) {
 }
 
 export function temaInicial(almacen = localStorage) {
-  return resolverTema(almacen.getItem(CLAVE_ELECCION), almacen.getItem(CLAVE_PREDETERMINADO))
+  try {
+    return resolverTema(almacen.getItem(CLAVE_ELECCION), almacen.getItem(CLAVE_PREDETERMINADO))
+  } catch {
+    // fail-soft: almacenamiento bloqueado (Safari con cookies bloqueadas,
+    // iframe con sandbox) -- tema de respaldo, no pantalla en blanco (M-4,
+    // revisión final del PR 1, 2026-09-14).
+    return TEMA_DE_RESPALDO
+  }
 }
 
 // data-tema="claro" es lo que leen los tokens. La clase light-mode es la de la

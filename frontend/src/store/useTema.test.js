@@ -60,4 +60,28 @@ describe('useTema', () => {
     await expect(useTema.getState().sincronizarPredeterminado()).rejects.toThrow('red caída')
     expect(localStorage.getItem('jax_theme_default')).toBe('light')
   })
+
+  // M-4 (revisión final, 2026-09-14): con el almacenamiento bloqueado (Safari
+  // con cookies bloqueadas, iframe con sandbox), localStorage.getItem/setItem
+  // lanzan SecurityError. temaInicial() y predeterminadoGuardado() corren al
+  // EVALUAR el módulo (dentro de create(...)) -- sin try/catch, importar
+  // useTema.js tira y la pantalla de Login queda en blanco. Se reimporta el
+  // módulo fresco (vi.resetModules) con Storage.prototype parcheada para
+  // lanzar, para que temaInicial() corra bajo el bloqueo real.
+  it('con localStorage bloqueado, el store arranca en dark y toggleTheme no lanza', async () => {
+    const getItemOriginal = Storage.prototype.getItem
+    const setItemOriginal = Storage.prototype.setItem
+    Storage.prototype.getItem = () => { throw new DOMException('bloqueado', 'SecurityError') }
+    Storage.prototype.setItem = () => { throw new DOMException('bloqueado', 'SecurityError') }
+    try {
+      vi.resetModules()
+      const { useTema: useTemaFresco } = await import('./useTema')
+      expect(useTemaFresco.getState().theme).toBe('dark')
+      expect(useTemaFresco.getState().predeterminado).toBeNull()
+      expect(() => useTemaFresco.getState().toggleTheme()).not.toThrow()
+    } finally {
+      Storage.prototype.getItem = getItemOriginal
+      Storage.prototype.setItem = setItemOriginal
+    }
+  })
 })

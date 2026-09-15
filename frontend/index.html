@@ -7,10 +7,17 @@
          si cambia uno, cambia el otro: src/tema/scriptTema.test.js los compara. -->
     <script id="tema-inicial">
       (function () {
-        var e = localStorage.getItem('jax_theme')
-        var p = localStorage.getItem('jax_theme_default')
-        var ok = function (v) { return v === 'dark' || v === 'light' }
-        var tema = ok(e) ? e : ok(p) ? p : 'dark'
+        var tema = 'dark'
+        try {
+          var e = localStorage.getItem('jax_theme')
+          var p = localStorage.getItem('jax_theme_default')
+          var ok = function (v) { return v === 'dark' || v === 'light' }
+          tema = ok(e) ? e : ok(p) ? p : 'dark'
+        } catch (err) {
+          // fail-soft: almacenamiento bloqueado (Safari con cookies
+          // bloqueadas, iframe con sandbox) -- tema de respaldo (M-4,
+          // revisión final del PR 1, 2026-09-14).
+        }
         if (tema === 'light') {
           document.documentElement.setAttribute('data-tema', 'claro')
           document.documentElement.classList.add('light-mode')
