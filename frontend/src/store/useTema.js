@@ -59,6 +59,18 @@ export const useTema = create((set, get) => ({
     }
   },
 
+  // Decisión de Fernando (2026-09-14, fix vivo del PR 1): guardar el
+  // predeterminado desde Configuración fija también la elección del propio
+  // admin, aunque ya tuviera otra -- distinto de fijarPredeterminado, que
+  // nunca pisa una elección existente. Sólo la llama AdminSettings.handleSave.
+  fijarPredeterminadoComoEleccion: (valor) => {
+    if (!esTema(valor)) return
+    escribir(CLAVE_PREDETERMINADO, valor)
+    escribir(CLAVE_ELECCION, valor)
+    aplicarTema(valor)
+    set({ predeterminado: valor, theme: valor })
+  },
+
   // Rechaza si la petición falla: quien llama decide (App se queda con el
   // último conocido, que es la regla del spec §5.2).
   sincronizarPredeterminado: async () => {

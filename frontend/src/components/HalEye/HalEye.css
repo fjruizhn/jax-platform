@@ -6,7 +6,7 @@
 }
 
 .hal-eye-svg {
-  filter: drop-shadow(0 0 20px var(--eye-color, #3b82f6));
+  filter: drop-shadow(0 0 20px var(--eye-color, rgb(var(--faceta-jax-local))));
   transition: filter 0.5s ease;
 }
 

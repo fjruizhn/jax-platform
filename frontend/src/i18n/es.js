@@ -462,6 +462,16 @@ export default {
 
   // HAL Eye
   eyeIdle: 'reposo',
+  // M5 (revisión de código, 2026-09-14, fix vivo): getEyeState() traía
+  // estas etiquetas escritas a mano dentro de la función. Son nombres
+  // propios/técnicos de componentes y estados de JAX -- mismo texto en es y
+  // en, como ya hacen killSwitchActive/jacobsHint/imagenHint (sólo la prosa
+  // alrededor se traduce, el nombre no).
+  eyeKillSwitch: 'KILL SWITCH',
+  eyeDallE3: 'DALL-E 3',
+  eyeLasManosDown: 'LAS MANOS DOWN',
+  eyeGate: 'GATE',
+  eyeJacobs: 'Jacobs',
   halEyeAriaLabel: (label) => `Ojo HAL — ${label}`,
 
   // Correo saliente (SMTP) — AdminSmtp.jsx (2026-09-12, admin usuarios etapa 1)

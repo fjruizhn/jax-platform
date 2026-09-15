@@ -46,8 +46,10 @@ export default function AdminSettings() {
       const items = Object.entries(config).map(([key, value]) => ({ key, value: String(value) }))
       await api.put('/admin/config', items)
       // El nuevo predeterminado se ve en este navegador sin recargar (spec
-      // §5.2.4); si el usuario eligió un tema, su elección sigue ganando.
-      useTema.getState().fijarPredeterminado(config.theme_default)
+      // §5.2.4). Decisión de Fernando (2026-09-14): acá también fija la
+      // elección del propio admin, aunque tuviera otra -- los demás usuarios
+      // conservan la suya (sincronizarPredeterminado no cambia).
+      useTema.getState().fijarPredeterminadoComoEleccion(config.theme_default)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } catch (err) {

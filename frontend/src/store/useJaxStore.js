@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import api from '../api/client'
 import es from '../i18n/es.js'
 import en from '../i18n/en.js'
+import { COLOR_JAX_LOCAL, EYE_ESTADO_REPOSO } from './eyeRestState'
 
 // Este módulo no es un componente — no puede usar el hook useI18n(). Lee la
 // misma fuente que I18nProvider (localStorage 'jax_lang') para los mensajes
@@ -68,7 +69,7 @@ function _reconcileSteps(prevSteps, nextSteps) {
 }
 
 export const FACET_COLORS = {
-  jax_local: '#3b82f6',
+  jax_local: COLOR_JAX_LOCAL,
   jekyll:    '#6366f1',
   hyde:      '#f97316',
   hipatia:   '#10b981',
@@ -505,10 +506,30 @@ export const useJaxStore = create((set, get) => {
   }
 })
 
-export function getEyeState(facets, activePipelines, lasManos, killSwitchActive, generatingImage = false, idleLabel = 'reposo') {
-  if (killSwitchActive) return { color: '#ef4444', animation: 'none', label: 'KILL SWITCH' }
+// M5 (revisión de código, 2026-09-14, fix vivo): las etiquetas visibles
+// (KILL SWITCH, DALL-E 3, LAS MANOS DOWN, GATE, Jacobs) venían escritas a
+// mano acá dentro -- hardcoding de i18n, igual que idleLabel antes de pasar
+// a ser parámetro. `labels` sigue el mismo patrón: quien llama (HalEye.jsx)
+// las pasa desde t.eye*; sin el parámetro caen en el mismo texto de
+// siempre, así que una llamada vieja (o un test) que no lo pase no cambia
+// de comportamiento. Son nombres propios/técnicos del ecosistema JAX, no
+// prosa -- i18n/es.js y en.js documentan por qué valen igual en los dos
+// idiomas.
+export function getEyeState(
+  facets, activePipelines, lasManos, killSwitchActive, generatingImage = false,
+  idleLabel = 'reposo', labels = {},
+) {
+  const {
+    killSwitch = 'KILL SWITCH',
+    dalle = 'DALL-E 3',
+    lasManosDown = 'LAS MANOS DOWN',
+    gate = 'GATE',
+    jacobs = 'Jacobs',
+  } = labels
 
-  if (generatingImage) return { color: '#7c3aed', animation: 'pulse-fast', label: 'DALL-E 3' }
+  if (killSwitchActive) return { color: '#ef4444', animation: 'none', label: killSwitch }
+
+  if (generatingImage) return { color: '#7c3aed', animation: 'pulse-fast', label: dalle }
 
   // Thinking toma prioridad sobre todo — incluso si lasManos está abajo
   const thinking = Object.entries(facets).find(([, f]) => f.status === 'thinking')
@@ -518,13 +539,13 @@ export function getEyeState(facets, activePipelines, lasManos, killSwitchActive,
     return { color: f.color, animation: anim, label: name }
   }
 
-  if (!lasManos) return { color: '#374151', animation: 'none', label: 'LAS MANOS DOWN' }
+  if (!lasManos) return { color: '#374151', animation: 'none', label: lasManosDown }
 
   const hasGate = Object.values(activePipelines).some(p => p.status === 'waiting_gate')
-  if (hasGate) return { color: '#f59e0b', animation: 'blink', label: 'GATE' }
+  if (hasGate) return { color: '#f59e0b', animation: 'blink', label: gate }
 
   const hasRunning = Object.values(activePipelines).some(p => p.status === 'running')
-  if (hasRunning) return { color: '#ffffff', animation: 'pulse-slow', label: 'Jacobs' }
+  if (hasRunning) return { color: '#ffffff', animation: 'pulse-slow', label: jacobs }
 
-  return { color: '#3b82f6', animation: 'pulse-slow', label: idleLabel }
+  return { ...EYE_ESTADO_REPOSO, label: idleLabel }
 }

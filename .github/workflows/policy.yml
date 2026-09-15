@@ -152,15 +152,31 @@ jobs:
             // +5 useTema.test.js y +1 AdminSettings (guardar aplica el predeterminado), +1
             // placeholder de Login.test.jsx (ruling del controlador sobre el placeholder
             // del campo de usuario). Vistos en rojo antes de verde. Medido con vitest run: 185.
-            // 185 -> 189 el 2026-09-15 (tema PR 1, arreglos de la revisión final): +2
+            // 185 -> 189 el 2026-09-14 (tema PR 1, arreglos de la revisión final): +2
             // contraste.test.js (I-1: texto-tenue/hundido ya en PARES, y ::placeholder con
             // var(--texto-tenue) en @layer base de index.css), +1 useTema.test.js (M-4: con
             // localStorage bloqueado el store arranca en dark y toggleTheme no lanza), +1
             // scriptTema.test.js (M-4: el script en línea y aplicarTema caen los dos a
             // oscuro sin lanzar). M-2 y M-3 fortalecen tests existentes, sin sumar. Vistos
             // en rojo antes de verde. Medido con vitest run: 189.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 189) {
-              console.error("PISO ROTO: se esperaban 189 tests de vitest CORRIDOS y 0 fallidos.");
+            // 189 -> 197 el 2026-09-14 (fix vivo del PR 1, decisiones de Fernando tras
+            // probarlo): +2 useTema.test.js y +2 AdminSettings.test.jsx (guardar el
+            // predeterminado en Configuración también fija la elección del propio admin,
+            // Ruling B) +3 HalEye.test.jsx (nuevo: prop `reposo` fija el estado de reposo
+            // del panel sin pasar por la store, dirigido por la store sin la prop, Ruling 21)
+            // +1 Login.test.jsx (el HalEye en reposo se renderiza, no el apagado "sin
+            // sesión"). Vistos en rojo antes de verde. Medido con vitest run: 197.
+            // 197 -> 206 el 2026-09-14 (fix vivo del PR 1, revisión de código): +1
+            // HalEye.test.jsx (M3: el anillo del housing usa stroke-borde, no
+            // stroke-superficie -- casi invisible en claro tras la parte A) +1
+            // HalEye.test.jsx (M5: las claves eyeKillSwitch/eyeDallE3/eyeLasManosDown/
+            // eyeGate/eyeJacobs existen en es y en) +2 useJaxStore.eyeState.test.js (M5:
+            // getEyeState acepta `labels` y lo usa en vez del texto hardcodeado) +5
+            // HalEye.i18nLabels.test.jsx (nuevo: HalEye lee t.eye* de verdad, con un t de
+            // mentira que prueba la conexión). Vistos en rojo antes de verde. Medido con
+            // vitest run: 206.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 206) {
+              console.error("PISO ROTO: se esperaban 206 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
