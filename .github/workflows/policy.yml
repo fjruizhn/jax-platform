@@ -964,7 +964,13 @@ jobs:
           # con iter_route_contexts y búsqueda del opt-in en backend/). 9 vistos en
           # rojo por el motivo del brief; los 2 de control pasan desde el rojo.
           # Medido dos veces: 859 / 1.
-          PISO_PASSED = 859
+          # Subido de 859 a 861 (2026-09-15, Task 2 fix ronda 1): +2 en
+          # test_fijar_password.py -- test_mi_cuenta_sin_la_marca_acepta_la_misma_
+          # contrasena (P1 SÓLO con la marca; rojo con M3, quitar el
+          # `user.must_change_password and`) y test_el_guard_del_opt_in_ve_las_
+          # variantes_escondidas (el guard del opt-in lee el AST: `= True` con
+          # espacios y **{...} lo ponen en rojo). Medido dos veces: 861 / 1.
+          PISO_PASSED = 861
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1336,7 +1342,11 @@ jobs:
       # test_nadie_mas_admite_la_marca lee el código); los otros 9 nuevos de
       # test_fijar_password.py piden `client` y se saltean.
       # Medido dos veces con JAX_CI_NO_DB=1: 373 / 487.
-      JAX_CI_MIN_PASSED: "373"
+      # Task 2 fix ronda 1 (2026-09-15): +1 puro
+      # (test_el_guard_del_opt_in_ve_las_variantes_escondidas); el nuevo
+      # test_mi_cuenta_sin_la_marca_acepta_la_misma_contrasena pide `client` y se
+      # saltea. Medido dos veces con JAX_CI_NO_DB=1: 374 / 488.
+      JAX_CI_MIN_PASSED: "374"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
