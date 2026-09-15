@@ -73,12 +73,19 @@ async def sse_events(user: AuthUser = Depends(get_current_user)):
     # registrado, se verifica de nuevo; si la sesión ya no vale, el stream
     # termina igual que con close_user_streams (el finally del generador limpia).
     try:
-        await reverificar_sesion(user)
-    except HTTPException:
-        queue.put_nowait(_CERRAR)
-    except Exception:  # fail-soft: fallo de infraestructura al re-verificar -- falla cerrado (termina el stream) con rastro en el log
-        logger.exception("Fallo inesperado al re-verificar la sesión del stream SSE")
-        queue.put_nowait(_CERRAR)
+        try:
+            await reverificar_sesion(user)
+        except HTTPException:
+            queue.put_nowait(_CERRAR)
+        except Exception:  # fail-soft: fallo de infraestructura al re-verificar -- falla cerrado (termina el stream) con rastro en el log
+            logger.exception("Fallo inesperado al re-verificar la sesión del stream SSE")
+            queue.put_nowait(_CERRAR)
+    except BaseException:
+        # Cancelación del request (CancelledError) durante la re-verificación:
+        # todavía no hay generador cuyo finally limpie, así que se deshace el
+        # registro acá y la cancelación sigue su curso (re-revisión de 6424be0).
+        await _sse_disconnect_and_maybe_unsubscribe(user.user_id, queue)
+        raise
 
     async def generator():
         try:

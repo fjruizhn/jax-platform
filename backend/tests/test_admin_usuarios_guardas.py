@@ -251,6 +251,23 @@ async def test_close_user_streams_termina_el_stream_sse_del_usuario_y_no_el_de_o
     assert await events_mod.close_user_streams("sse-corte-a") == 0
 
 
+async def test_sse_si_la_reverificacion_se_cancela_no_queda_registrado(monkeypatch):
+    """Re-revisión de 6424be0: la re-verificación corre después de registrar y
+    antes de que exista el generador. Si el request se cancela ahí, nadie más
+    limpia: el contador, la cola en _streams y la suscripción quedaban."""
+    from jax_engine.events import event_bus
+
+    async def _cancelada(user):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(events_mod, "reverificar_sesion", _cancelada)
+    with pytest.raises(asyncio.CancelledError):
+        await events_mod.sse_events(_Usuario("sse-cancelada"))
+    assert not sse_connections.has_connections("sse-cancelada")
+    assert "sse-cancelada" not in events_mod._streams
+    assert "sse-cancelada" not in event_bus._subscribers.get("1", {})
+
+
 # ------------------------- Step 4b: los endpoints cortan DESPUÉS del commit
 
 @pytest.fixture
