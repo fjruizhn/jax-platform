@@ -429,8 +429,15 @@ jobs:
             // rojo a mano con un fijarBorrando(null) incondicional antes de
             // dejar el test, y devuelto a verde). Medido dos veces con
             // vitest run: 391 passed en 52 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 391) {
-              console.error("PISO ROTO: se esperaban 391 tests de vitest CORRIDOS y 0 fallidos.");
+            // 391 -> 392 el 2026-09-15 (fix round 2 de la Task 1, F1): +1
+            // AdminRepository.test.jsx (con Preview abierto, #root queda
+            // inert; al cerrarlo, no -- todo consumidor de Dialogo.jsx tiene
+            // este test, y a Preview le faltaba el suyo). Visto en rojo
+            // revirtiendo a mano el Preview a un <div> sin Dialogo, y
+            // devuelto a verde. Medido dos veces con vitest run: 392 passed
+            // en 52 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 392) {
+              console.error("PISO ROTO: se esperaban 392 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

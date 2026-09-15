@@ -225,4 +225,31 @@ describe('AdminRepository -- Preview sobre Dialogo, un modal a la vez (K1)', () 
       expect(dialogos[0]).toHaveAttribute('aria-labelledby', 'repo-preview-titulo')
     })
   })
+
+  // F1 (fix round 2, re-revisión de f109af6): todo consumidor de Dialogo
+  // tiene su propio test de #root inert (ver AdminUsers.test.jsx:225) -- al
+  // Preview le faltaba el suyo. Se renderiza dentro de un contenedor con
+  // id="root" (como index.html) para que el test mida el #root real que
+  // Dialogo.jsx marca con `inert`.
+  it('con Preview abierto, #root queda inert; al cerrarlo, no', async () => {
+    servirPreview()
+    const root = document.createElement('div')
+    root.id = 'root'
+    document.body.appendChild(root)
+    try {
+      render(<I18nProvider><AdminRepository /></I18nProvider>, { container: root })
+      const disparador = await screen.findByRole('button', { name: 'Preview' })
+      expect(root).not.toHaveAttribute('inert')
+
+      fireEvent.click(disparador)
+      await waitFor(() => expect(root).toHaveAttribute('inert'))
+      expect(root.contains(screen.getByRole('dialog'))).toBe(false)
+
+      fireEvent.keyDown(document, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(root).not.toHaveAttribute('inert')
+    } finally {
+      root.remove()
+    }
+  })
 })
