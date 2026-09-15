@@ -332,8 +332,15 @@ jobs:
             // mientras dura y se limpia al terminar, también si falla). Vistos en
             // rojo antes de verde (mutaciones de cada guarda). Medido con vitest
             // run: 309 passed en 47 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 309) {
-              console.error("PISO ROTO: se esperaban 309 tests de vitest CORRIDOS y 0 fallidos.");
+            // 309 -> 311 el 2026-09-15 (review final de la etapa 4, minor 6): +2
+            // pages/admin/erroresAdmin.test.js (en es y en en, el 502
+            // smtp_password_no_ascii de "Enviar enlace" usa adminErrors -- que
+            // gana sobre smtpErrors -- y nombra Administración → Correo (SMTP)).
+            // Vistos en rojo antes de verde (sin la clave salía el texto del
+            // formulario SMTP). Medido con vitest run: 311 passed en 47
+            // archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 311) {
+              console.error("PISO ROTO: se esperaban 311 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

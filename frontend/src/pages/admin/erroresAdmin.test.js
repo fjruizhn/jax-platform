@@ -36,3 +36,19 @@ describe('mensajeDeError', () => {
     expect(mensajeDeError(t, err('codigo_inventado'))).toBe('No se pudo completar la acción.')
   })
 })
+
+// Minor 6 del review final de la etapa 4 (2026-09-15, Ruling U27): el 502
+// smtp_password_no_ascii de "Enviar enlace" mostraba el texto del formulario
+// SMTP ("la contraseña solo puede tener caracteres ASCII"), que en Usuarios no
+// dice qué hacer. adminErrors se consulta antes que smtpErrors: el texto propio
+// gana y manda a re-escribir la contraseña en Administración → Correo (SMTP).
+describe('mensajeDeError -- smtp_password_no_ascii en Usuarios (minor 6)', () => {
+  it.each(['es', 'en'])('en %s gana adminErrors sobre smtpErrors y nombra la pantalla de correo', async (lang) => {
+    const { default: textos } = await import(`../../i18n/${lang}.js`)
+    const mensaje = mensajeDeError(textos, err('smtp_password_no_ascii'))
+    expect(mensaje).toBe(textos.adminErrors.smtp_password_no_ascii)
+    expect(mensaje).not.toBe(textos.smtpErrors.smtp_password_no_ascii)
+    expect(mensaje).toContain(textos.adminTitle)
+    expect(mensaje).toContain(textos.adminSmtp)
+  })
+})

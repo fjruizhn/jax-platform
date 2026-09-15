@@ -601,6 +601,7 @@ export default {
     usuario_no_activo: 'The user is not active: a link cannot be sent.',
     password_corta: 'The password must be at least 8 characters.',
     password_larga: 'The password is too long (maximum 72 bytes; accented letters take 2).',
+    smtp_password_no_ascii: 'The saved SMTP password has non-ASCII characters (accents or ñ) and the server does not accept it. Re-enter it in Administration → Email (SMTP).',
   },
   adminAuditActions: {
     create: 'Created',

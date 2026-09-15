@@ -604,6 +604,7 @@ export default {
     usuario_no_activo: 'El usuario no está activo: no se le puede enviar un enlace.',
     password_corta: 'La contraseña debe tener al menos 8 caracteres.',
     password_larga: 'La contraseña es demasiado larga (máximo 72 bytes; los acentos ocupan 2).',
+    smtp_password_no_ascii: 'La contraseña SMTP guardada tiene caracteres no ASCII (tildes o ñ) y el servidor no la acepta. Volvé a escribirla en Administración → Correo (SMTP).',
   },
   adminAuditActions: {
     create: 'Alta',
