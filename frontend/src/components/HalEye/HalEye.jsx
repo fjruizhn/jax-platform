@@ -115,7 +115,7 @@ function HalEye({ size = 220, reposo = false }) {
       </div>
       {!reposo && (
         <div
-          className="absolute bottom-0 text-xs font-mono opacity-40"
+          className="absolute bottom-0 text-xs font-mono"
           style={{ color }}
         >
           {eye.label}

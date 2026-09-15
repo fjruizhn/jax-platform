@@ -65,6 +65,18 @@ describe('HalEye -- claves de i18n de las etiquetas de getEyeState (M5)', () => 
   })
 })
 
+// M-1 (revisión final PR 3, 2026-09-14): la etiqueta de estado (eye.label)
+// llevaba opacity-40 encima del color de token -- contraste medido entre
+// 1,67:1 y 3,80:1 según el token y el tema, por debajo de AA. El par
+// token/fondo ya está declarado en PARES (contraste.test.js); el defecto era
+// la opacidad extra encima, no el token. Se pinta a opacidad plena.
+describe('HalEye -- etiqueta de estado a opacidad plena (M-1)', () => {
+  it('el texto de la etiqueta no lleva opacity-40', () => {
+    const { getByText } = renderEye({ size: 100 })
+    expect(getByText('LAS MANOS DOWN')).not.toHaveClass('opacity-40')
+  })
+})
+
 describe('HalEye -- con prop reposo, fijo, ignora la store', () => {
   it('siempre pulse-slow y sin etiqueta visible, aunque la store diga otra cosa', () => {
     useJaxStore.setState({ killSwitchActive: true })
