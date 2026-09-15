@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -54,5 +54,38 @@ describe('HistorialUsuario -- respuestas tardías', () => {
     await tic()
     expect(screen.queryByText('Baja')).not.toBeInTheDocument()
     expect(screen.getByText('Desbloqueo')).toBeInTheDocument()
+  })
+})
+
+// Fix round 1 (2026-09-15, Ruling U24): Escape cierra los tres modales de
+// usuarios. Nunca un clic en el fondo -- así no se pierde lo escrito.
+describe('HistorialUsuario -- Escape (Ruling U24)', () => {
+  it('Escape cierra el modal', () => {
+    api.get.mockReturnValue(new Promise(() => {}))
+    const onCerrar = vi.fn()
+    render(<I18nProvider><HistorialUsuario usuario={{ user_id: 2, email: 'b@x.io' }} onCerrar={onCerrar} /></I18nProvider>)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onCerrar).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Ruling U27 (review final, 2026-09-15): usa Dialogo. Sin campos, el foco va
+// al título; el panel conserva su ancho (max-w-lg).
+describe('HistorialUsuario -- diálogo (Ruling U27)', () => {
+  it('es un diálogo nombrado por su título, fuera de #root, con #root inert y el foco en el título', () => {
+    api.get.mockReturnValue(new Promise(() => {}))
+    const root = document.createElement('div')
+    root.id = 'root'
+    document.body.appendChild(root)
+    try {
+      render(vista({ user_id: 2, email: 'b@x.io' }), { container: root })
+      const dialogo = screen.getByRole('dialog', { name: 'Historial de b@x.io' })
+      expect(root.contains(dialogo)).toBe(false)
+      expect(root).toHaveAttribute('inert')
+      expect(screen.getByText('Historial de b@x.io')).toHaveFocus()
+      expect(dialogo.className).toMatch(/(^|\s)max-w-lg(\s|$)/)
+    } finally {
+      root.remove()
+    }
   })
 })

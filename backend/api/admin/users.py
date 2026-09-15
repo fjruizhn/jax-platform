@@ -1,8 +1,8 @@
 import asyncio
 import logging
+import smtplib
 
 import aiomysql
-import bcrypt
 from pymysql.constants.ER import DUP_ENTRY as ER_DUP_ENTRY
 from tiempo import iso_utc, utc_ahora
 from typing import Optional
@@ -11,13 +11,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 import user_audit
-from api.events import close_user_streams
+import smtp_config
+from api import auth as auth_api
 from auth import rate_limit
+from auth.conexiones import _cortar_conexiones
+from auth.password_rules import problema_de_password
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
+from db.seed import _hash
 from db.transaccion import transaccion
-from jax_engine.websocket_hub import ws_hub
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +29,6 @@ router = APIRouter(prefix="/api/admin")
 VALID_ROLES = {"superadmin", "operator", "viewer"}
 # `deleted` NO se pone por acá: solo la baja (etapa 5).
 ESTADOS_EDITABLES = {"active", "inactive"}
-
-
-def _hash(plain: str) -> str:
-    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
 
 
 def _ip(request: Request) -> str:
@@ -108,22 +107,6 @@ async def _leer_para_actualizar(cur, user_id: int):
     return await cur.fetchone()
 
 
-async def _cortar_conexiones(user_id: int) -> None:
-    """Step 4b (Ruling U5): cierra el WS (4001) y los streams SSE ya abiertos
-    del usuario. Se llama DESPUÉS del commit, nunca dentro de la transacción:
-    un rollback no debe haber cortado sesiones. Cada canal por separado y
-    tolerante: el cambio ya está confirmado, así que un fallo acá no puede
-    volverse un 500 de algo que sí se hizo."""
-    try:
-        await ws_hub.close_user(str(user_id))
-    except Exception:  # fail-soft: el cambio ya está confirmado; cortar conexiones es best-effort (la sesión igual muere en el request siguiente por token_version)
-        logger.exception("No se pudieron cerrar los WebSocket del usuario %s", user_id)
-    try:
-        await close_user_streams(str(user_id))
-    except Exception:  # fail-soft: el cambio ya está confirmado; cortar conexiones es best-effort (el SSE reconecta y verificar_sesion lo rechaza)
-        logger.exception("No se pudieron cerrar los streams SSE del usuario %s", user_id)
-
-
 @router.get("/users")
 async def list_users(user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
@@ -169,7 +152,12 @@ async def create_user(req: CreateUserRequest, request: Request, user: AuthUser =
     if req.role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"Rol inválido: {req.role}")
 
-    # bcrypt es CPU pura (~decenas de ms): fuera del event loop y antes de
+    # Regla única (etapa 4, spec §3.4). El _hash de db/seed.py lanza con más
+    # de 72 bytes; el local de antes no tenía tope y bcrypt 5 daba un 500.
+    problema = problema_de_password(req.password)
+    if problema:
+        raise HTTPException(status_code=400, detail=f"password_{problema}")
+    # bcrypt de costo 12 (~150 ms de CPU): fuera del event loop y antes de
     # abrir la transacción, para no tener filas bloqueadas mientras hashea.
     ph = await asyncio.to_thread(_hash, req.password)
     # El alta y su registro de auditoría van juntos (etapa 3, spec §3.3).
@@ -296,3 +284,100 @@ async def delete_user(user_id: int, user: AuthUser = Depends(require_superadmin)
         await cur.execute("DELETE FROM jax_users WHERE user_id = %s", (user_id,))
     await _cortar_conexiones(user_id)
     return {"ok": True}
+
+
+async def _borrar_enlace_no_entregado(token: str) -> None:
+    """U17: un enlace que no salió no puede quedar vivo. Se borra por token
+    EXACTO (fix ronda 1, 2026-09-15), no por user_id: un forgot-password
+    concurrente del mismo usuario, creado DESPUÉS del nuestro, tiene su propio
+    token y no tiene que perderlo por un fallo de envío que no es el suyo."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM password_reset_tokens WHERE token = %s", (token,))
+
+
+@router.post("/users/{user_id}/reset-link")
+async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depends(require_superadmin)):
+    """Reset por admin = enlace por correo (spec §3.4). Reusa el núcleo de la
+    recuperación pública (_crear_enlace_de_recuperacion + _send_reset_email),
+    pero NO su envoltorio fail-soft: acá el admin ESPERA el envío (en un hilo)
+    y ve el error. Un 200 sin correo sería el éxito falso que el spec prohíbe."""
+    try:
+        settings = await smtp_config.cargar_settings()
+    except smtp_config.SmtpNoDisponible as exc:
+        raise HTTPException(status_code=503, detail=exc.codigo) from exc
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT email, status FROM jax_users WHERE user_id = %s", (user_id,))
+            fila = await cur.fetchone()
+    if fila is None:
+        raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+    email, estado = fila
+    if estado != "active":
+        raise HTTPException(status_code=409, detail="usuario_no_activo")
+    ip = _ip(request)
+    token, enlace = await auth_api._crear_enlace_de_recuperacion(user_id, ip)
+    # Mismo juego de excepciones que /smtp/test (etapa 1, api/admin/smtp.py):
+    # ValueError ANTES que (OSError, SMTPException), y UnicodeEncodeError
+    # ANTES que ValueError -- es subclase suya (smtplib codifica el AUTH en
+    # ascii). En los tres casos: el enlace recién creado no puede quedar vivo
+    # (fix ronda 1) y no se audita un envío que no salió.
+    #
+    # Fix ronda 2 (2026-09-15, hallazgo 3): la limpieza se movió a un
+    # `finally` con la bandera `enviado`, en vez de repetirla en cada except.
+    # `finally` corre ante CUALQUIER salida del `try` que no haya puesto
+    # `enviado = True` -- incluida una que ningún `except` de acá atrapa,
+    # como `asyncio.CancelledError` (BaseException, no Exception: el cliente
+    # cierra la conexión o el servidor se apaga a mitad del envío). Sin este
+    # cambio, una cancelación se saltaba los tres `except` Y la limpieza, y
+    # dejaba un token vivo sin que nadie lo hubiera mandado.
+    enviado = False
+    try:
+        await asyncio.to_thread(auth_api._send_reset_email, settings, email, enlace)
+        enviado = True
+    except UnicodeEncodeError as exc:
+        # NUNCA se loguea `exc` acá -- smtplib codifica el AUTH (usuario Y
+        # CONTRASEÑA) en ascii, y `exc.object` trae el valor completo que no
+        # pudo codificarse (medido: para una contraseña con un caracter no
+        # ASCII, `exc.object` es la contraseña entera). Mensaje fijo, sin
+        # interpolar la excepción.
+        logger.warning("Enlace de recuperación (admin) a %s: la contraseña SMTP guardada no es ASCII (AUTH)", email)
+        raise HTTPException(status_code=502, detail={"code": "smtp_password_no_ascii", "server": ""}) from exc
+    except ValueError as exc:
+        # construir_mensaje rechaza encabezados con caracteres de control:
+        # misma red de estado corrupto que /smtp/test, mismo código.
+        logger.warning("Enlace de recuperación (admin): no se pudo armar el mensaje: %s", exc)
+        raise HTTPException(status_code=503, detail="smtp_config_corrupta") from exc
+    except (OSError, smtplib.SMTPException) as exc:
+        logger.warning("Enlace de recuperación (admin) a %s falló: %s", email, exc)
+        raise HTTPException(status_code=502, detail={"code": "smtp_envio_fallido", "server": str(exc)}) from exc
+    finally:
+        if not enviado:
+            try:
+                await _borrar_enlace_no_entregado(token)
+            except Exception:
+                # fail-soft SOLO para la limpieza: si el DELETE mismo falla,
+                # se loguea (con user_id, NUNCA el token -- es la credencial)
+                # y la excepción ORIGINAL (la del envío, o la cancelación)
+                # sigue propagándose sola -- no se relanza esta ni se pierde
+                # aquella. Tapar el error real con uno de limpieza sería peor
+                # que dejar un token huérfano, que además expira en 1 hora.
+                logger.exception(
+                    "Enlace de recuperación (admin): no se pudo borrar el token no entregado (user_id=%s)", user_id)
+    try:
+        async with transaccion() as cur:
+            await user_audit.registrar(cur, int(user.user_id), user_id, "reset_link_sent", {"to": email}, ip)
+    except Exception:
+        # Ruling U22 (fix ronda 2, 2026-09-15): fail-soft. `transaccion()` ya
+        # revirtió (su propio `except BaseException: rollback(); raise`) antes
+        # de que esto la atrape -- acá solo se decide la RESPUESTA. El correo
+        # YA SALIÓ y no se puede deshacer: un 500 no lo cambiaría, solo
+        # empujaría al admin a reintentar y mandar un SEGUNDO enlace
+        # innecesario. Se responde 200 igual; el fallo de auditoría queda en
+        # el log con quién lo pidió, a quién y para qué usuario.
+        logger.exception(
+            "Enlace de recuperación (admin): se envió pero no se pudo auditar (user_id=%s, actor=%s, to=%s)",
+            user_id, user.user_id, email)
+    return {"ok": True, "to": email}

@@ -2,12 +2,11 @@ import { useState, useEffect } from 'react'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { useJaxStore } from '../../store/useJaxStore'
-import PasswordInput from '../../components/PasswordInput'
 import EditarUsuarioModal from '../../components/admin/EditarUsuarioModal'
 import HistorialUsuario from '../../components/admin/HistorialUsuario'
+import CrearUsuarioModal from '../../components/admin/CrearUsuarioModal'
 import { mensajeDeError } from './erroresAdmin'
 
-const ROLES = ['superadmin', 'operator', 'viewer']
 // Botón neutro de la fila (texto/superficie-2 y texto-fuerte/superficie-2 son
 // pares declarados en PARES).
 const ACCION_NEUTRA = 'text-xs px-2 py-0.5 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors'
@@ -22,10 +21,34 @@ export default function AdminUsers() {
   const addToast = useJaxStore((s) => s.addToast)
   const [users, setUsers] = useState([])
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({ email: '', role: 'operator', password: '' })
-  const [saving, setSaving] = useState(false)
   const [editando, setEditando] = useState(null)
   const [historialDe, setHistorialDe] = useState(null)
+  // Ruling U25 (fix round 2, 2026-09-15): un solo modal a la vez -- antes
+  // `editando` y `historialDe` eran independientes, y el fondo seguía
+  // alcanzable con Tab detrás de un modal (sin `inert` ni trampa de foco), así
+  // que un par de Tabs y Enter podían abrir Historial ENCIMA de Editar, y un
+  // solo Escape cerraba los dos a la vez -- descartando en silencio una
+  // edición sin guardar. Los `abrir*` cierran los otros dos antes de abrir el
+  // suyo. El fondo inert ya no es local (data-admin-contenido dejaba vivo el
+  // AdminSidebar): Dialogo marca #root entero (Ruling U27, 2026-09-15).
+
+  function abrirCrear() {
+    setEditando(null)
+    setHistorialDe(null)
+    setShowCreate(true)
+  }
+
+  function abrirEdicion(u) {
+    setHistorialDe(null)
+    setShowCreate(false)
+    setEditando(u)
+  }
+
+  function abrirHistorial(u) {
+    setEditando(null)
+    setShowCreate(false)
+    setHistorialDe(u)
+  }
 
   function avisarError(err) {
     addToast({ type: 'error', message: mensajeDeError(t, err) })
@@ -41,18 +64,13 @@ export default function AdminUsers() {
 
   useEffect(() => { load() }, [])
 
-  async function handleCreate(e) {
-    e.preventDefault()
-    setSaving(true)
+  async function crearUsuario(form) {
     try {
       await api.post('/admin/users', form)
       setShowCreate(false)
-      setForm({ email: '', role: 'operator', password: '' })
       load()
     } catch (err) {
       avisarError(err)
-    } finally {
-      setSaving(false)
     }
   }
 
@@ -85,6 +103,15 @@ export default function AdminUsers() {
     }
   }
 
+  async function handleResetLink(u) {
+    try {
+      const { data } = await api.post(`/admin/users/${u.user_id}/reset-link`)
+      avisarExito(t.adminResetLinkSent(data.to))
+    } catch (err) {
+      avisarError(err)
+    }
+  }
+
   async function handleDelete(u) {
     if (!window.confirm(t.adminDeleteConfirm(u.email))) return
     try {
@@ -106,7 +133,7 @@ export default function AdminUsers() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-xl font-bold text-texto-fuerte">{t.adminUsersTitle}</h1>
         <button
-          onClick={() => setShowCreate(true)}
+          onClick={abrirCrear}
           className="px-3 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold transition-colors"
         >
           + {t.adminUserCreate}
@@ -141,7 +168,7 @@ export default function AdminUsers() {
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={() => setEditando(u)} className={ACCION_NEUTRA}>{t.adminUserEdit}</button>
+                    <button onClick={() => abrirEdicion(u)} className={ACCION_NEUTRA}>{t.adminUserEdit}</button>
                     {u.is_locked && (
                       // M-1 (revisión final PR 2, 2026-09-14): la fila bloqueada
                       // también es bg-aviso-fondo, así que un botón con el mismo
@@ -155,7 +182,8 @@ export default function AdminUsers() {
                       </button>
                     )}
                     <button onClick={() => handleRevoke(u)} className={ACCION_NEUTRA}>{t.adminUserRevokeSessions}</button>
-                    <button onClick={() => setHistorialDe(u)} className={ACCION_NEUTRA}>{t.adminUserHistory}</button>
+                    <button onClick={() => handleResetLink(u)} className={ACCION_NEUTRA}>{t.adminUserSendResetLink}</button>
+                    <button onClick={() => abrirHistorial(u)} className={ACCION_NEUTRA}>{t.adminUserHistory}</button>
                     <button
                       onClick={() => handleDelete(u)}
                       className="text-xs px-2 py-0.5 rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors"
@@ -173,41 +201,7 @@ export default function AdminUsers() {
       {editando && <EditarUsuarioModal usuario={editando} onGuardar={guardarEdicion} onCerrar={() => setEditando(null)} />}
       {historialDe && <HistorialUsuario usuario={historialDe} onCerrar={() => setHistorialDe(null)} />}
 
-      {showCreate && (
-        <div className="fixed inset-0 bg-fondo/70 flex items-center justify-center z-50">
-          <div className="bg-superficie border border-borde rounded-xl p-6 w-full max-w-md shadow-2xl">
-            <h2 className="text-sm font-semibold text-texto mb-4">{t.adminCreateTitle}</h2>
-            <form onSubmit={handleCreate} className="space-y-3">
-              <input
-                type="email"
-                placeholder={t.adminUserEmail}
-                value={form.email}
-                onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-                required
-                className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco"
-              />
-              <select
-                value={form.role}
-                onChange={e => setForm(f => ({ ...f, role: e.target.value }))}
-                className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco"
-              >
-                {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-              </select>
-              <PasswordInput
-                placeholder={t.adminCreatePassword}
-                value={form.password}
-                onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-                required
-                className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco"
-              />
-              <div className="flex gap-2 justify-end pt-2">
-                <button type="button" onClick={() => setShowCreate(false)} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminCreateCancel}</button>
-                <button type="submit" disabled={saving} className="px-4 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold disabled:opacity-50 transition-colors">{saving ? t.attachUploading : t.adminCreateSubmit}</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {showCreate && <CrearUsuarioModal onCrear={crearUsuario} onCerrar={() => setShowCreate(false)} />}
     </div>
   )
 }

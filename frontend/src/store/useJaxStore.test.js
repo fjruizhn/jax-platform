@@ -52,3 +52,52 @@ describe('restoreSession', () => {
     expect(state.sessionRestoring).toBe(false)
   })
 })
+
+// Mi cuenta (2026-09-12, admin usuarios etapa 4): cambiar la propia
+// contraseña reemplaza `token` con el access nuevo que manda el backend --
+// las otras sesiones quedan cerradas por su propio token_version.
+describe('cambiarMiPassword', () => {
+  beforeEach(() => {
+    useJaxStore.setState(INITIAL_STATE, true)
+    vi.clearAllMocks()
+  })
+
+  it('postea current/new password y reemplaza el token con el access nuevo', async () => {
+    api.post.mockResolvedValue({ data: { access_token: 'tok-nuevo' } })
+
+    await useJaxStore.getState().cambiarMiPassword('vieja-clave', 'nueva-clave-9')
+
+    expect(api.post).toHaveBeenCalledWith('/auth/me/password', {
+      current_password: 'vieja-clave', new_password: 'nueva-clave-9',
+    })
+    expect(useJaxStore.getState().token).toBe('tok-nuevo')
+  })
+
+  // Minor 5 del review final (2026-09-15, Ruling U27): el interceptor de
+  // api/client.js necesita saber que hay un cambio de contraseña en vuelo para
+  // esperar el token nuevo en vez de llamar a /auth/refresh con la cookie
+  // vieja. La promesa vive en el store mientras dura y se limpia al terminar.
+  it('expone la promesa del cambio en curso y la limpia al terminar', async () => {
+    let resolver
+    api.post.mockReturnValue(new Promise((r) => { resolver = r }))
+
+    const cambio = useJaxStore.getState().cambiarMiPassword('vieja-clave', 'nueva-clave-9')
+    const enCurso = useJaxStore.getState().cambioDePasswordEnCurso
+    expect(enCurso).toBeInstanceOf(Promise)
+
+    resolver({ data: { access_token: 'tok-nuevo' } })
+    await enCurso
+    // Quien esperó la promesa ya ve el token nuevo en el store.
+    expect(useJaxStore.getState().token).toBe('tok-nuevo')
+    await cambio
+    expect(useJaxStore.getState().cambioDePasswordEnCurso).toBeNull()
+  })
+
+  it('si el cambio falla, la promesa se limpia y el error sube', async () => {
+    api.post.mockRejectedValue({ response: { status: 400, data: { detail: 'password_actual_incorrecta' } } })
+
+    await expect(useJaxStore.getState().cambiarMiPassword('mala', 'nueva-clave-9')).rejects.toBeTruthy()
+    expect(useJaxStore.getState().cambioDePasswordEnCurso).toBeNull()
+    expect(useJaxStore.getState().token).toBeNull()
+  })
+})

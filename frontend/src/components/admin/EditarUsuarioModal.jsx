@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
+import Dialogo from '../Dialogo'
 
 // Editar rol y estado (2026-09-15, admin usuarios etapa 3). Manda SOLO lo que
 // cambió; qué está permitido lo decide el backend (último superadmin,
 // auto-acciones) y el padre muestra el error traducido. `deleted` no es una
-// opción: eso es la baja. Pinta solo con tokens (está en MIGRADOS).
+// opción: eso es la baja. Pinta solo con tokens. El comportamiento de diálogo
+// (portal, #root inert, foco, Escape) lo pone Dialogo (Ruling U27).
 const ROLES = ['superadmin', 'operator', 'viewer']
 const ESTADOS = ['active', 'inactive']
 // M-2: border-borde-control tiene su par de 3:1 sobre hundido; el foco se ve
@@ -36,10 +38,7 @@ export default function EditarUsuarioModal({ usuario, onGuardar, onCerrar }) {
   const etiquetaEstado = { active: t.adminUserActive, inactive: t.adminUserInactive }
 
   return (
-    <div className="fixed inset-0 bg-fondo/70 flex items-center justify-center z-50">
-      <div role="dialog" aria-modal="true" aria-labelledby="editar-usuario-titulo"
-        className="bg-superficie border border-borde rounded-xl p-6 w-full max-w-md shadow-2xl">
-        <h2 id="editar-usuario-titulo" className="text-sm font-semibold text-texto mb-4">{t.adminUserEditTitle(usuario.email)}</h2>
+    <Dialogo idTitulo="editar-usuario-titulo" titulo={t.adminUserEditTitle(usuario.email)} onCerrar={onCerrar}>
         <form onSubmit={enviar} className="space-y-3">
           <div>
             <label htmlFor="editar-rol" className={ETIQUETA}>{t.adminUserRole}</label>
@@ -58,7 +57,6 @@ export default function EditarUsuarioModal({ usuario, onGuardar, onCerrar }) {
             <button type="submit" disabled={!hayCambios || guardando} className="px-4 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold disabled:opacity-50 transition-colors">{t.adminUserSave}</button>
           </div>
         </form>
-      </div>
-    </div>
+    </Dialogo>
   )
 }

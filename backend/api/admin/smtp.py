@@ -195,6 +195,11 @@ async def enviar_prueba_smtp(req: Optional[SmtpPrueba] = None,
         # smtplib codifica el AUTH en ascii: una contraseña guardada no ASCII
         # (fila anterior a la validación) daba 500. Mismo formato que el 502
         # de abajo, sin respuesta del servidor porque no la hubo.
+        # Fix ronda 2 (2026-09-15, mismo hallazgo en send_reset_link,
+        # api/admin/users.py): NUNCA se loguea `exc` -- `exc.object` trae el
+        # valor completo que no pudo codificarse (medido: para una contraseña
+        # con un caracter no ASCII, es la contraseña entera). Mensaje fijo.
+        logger.warning("Correo de prueba SMTP a %s: la contraseña SMTP guardada no es ASCII (AUTH)", destinatario)
         raise HTTPException(status_code=502, detail={"code": "smtp_password_no_ascii", "server": ""}) from exc
     except (OSError, smtplib.SMTPException) as exc:
         logger.warning("Correo de prueba SMTP a %s falló: %s", destinatario, exc)

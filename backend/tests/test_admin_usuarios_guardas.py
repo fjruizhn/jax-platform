@@ -25,6 +25,7 @@ from fastapi import HTTPException
 
 from api import events as events_mod
 from api.admin import users as users_mod
+from auth import conexiones as conexiones_mod
 from jax_engine.lifecycle import sse_connections
 from jax_engine.websocket_hub import WebSocketHub, ws_hub
 from tests.identidades import auth, sql, token_para
@@ -286,7 +287,7 @@ def cortes(monkeypatch):
         return 0
 
     monkeypatch.setattr(ws_hub, "close_user", ws)
-    monkeypatch.setattr(users_mod, "close_user_streams", sse)
+    monkeypatch.setattr(conexiones_mod, "close_user_streams", sse)
     return registro
 
 
@@ -475,7 +476,7 @@ def test_si_cortar_conexiones_falla_el_cambio_confirmado_responde_igual(client, 
         raise RuntimeError("hub caído")
 
     monkeypatch.setattr(ws_hub, "close_user", revienta)
-    monkeypatch.setattr(users_mod, "close_user_streams", revienta)
+    monkeypatch.setattr(conexiones_mod, "close_user_streams", revienta)
     o, _ = usuarios()
     assert _put(client, o, status="inactive").status_code == 200
     assert client.portal.call(_fila, o) == ("operator", "inactive", 1)

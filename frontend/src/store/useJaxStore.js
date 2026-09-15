@@ -144,6 +144,11 @@ export const useJaxStore = create((set, get) => {
   // falla — nunca se borra la sesión sin dejar el motivo. Login.jsx lo
   // muestra y lo borra tras un login exitoso.
   avisoSesion: null,
+  // Promesa del POST /auth/me/password mientras está en vuelo, o null (minor 5
+  // del review final de la etapa 4, 2026-09-15). api/client.js la espera ante
+  // un 401 para reintentar con el token nuevo en vez de llamar a /auth/refresh
+  // con la cookie vieja (que ya no vale tras subir token_version).
+  cambioDePasswordEnCurso: null,
 
   restoreSession: async () => {
     try {
@@ -184,6 +189,23 @@ export const useJaxStore = create((set, get) => {
     api.post('/auth/logout').catch(() => {
       // best-effort: la sesión local ya quedó limpia
     })
+  },
+
+  // Mi cuenta (2026-09-12, admin usuarios etapa 4): el backend sube la versión
+  // de token -- cierra las OTRAS sesiones -- y le da a esta un access nuevo (y
+  // la cookie de refresh nueva). Cambiar `token` reconecta el WebSocket con él
+  // (useWebSocket depende de token).
+  cambiarMiPassword: async (actual, nueva) => {
+    // El token nuevo se guarda DENTRO de la promesa: quien la espera (el
+    // interceptor) ya lo encuentra en el store al despertar.
+    const promesa = api.post('/auth/me/password', { current_password: actual, new_password: nueva })
+      .then(({ data }) => { set({ token: data.access_token }) })
+    set({ cambioDePasswordEnCurso: promesa })
+    try {
+      await promesa
+    } finally {
+      if (get().cambioDePasswordEnCurso === promesa) set({ cambioDePasswordEnCurso: null })
+    }
   },
 
   setWsStatus: (wsStatus) => set({ wsStatus }),

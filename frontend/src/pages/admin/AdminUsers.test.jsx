@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import '@testing-library/jest-dom'
 
 // I-1 (revisión final PR 2, 2026-09-14): "({n} intentos)" y el locale de
@@ -155,5 +155,108 @@ describe('AdminUsers -- etapa 3: 403 auto_accion_prohibida', () => {
     expect(api.put).toHaveBeenCalledWith('/admin/users/2', { status: 'inactive' })
     const sigue = screen.getByRole('dialog')
     await waitFor(() => expect(within(sigue).getByRole('button', { name: 'Guardar' })).not.toBeDisabled())
+  })
+})
+
+describe('AdminUsers — enlace de recuperación', () => {
+  it('sin SMTP configurado el 503 aparece traducido, no como éxito', async () => {
+    api.post.mockRejectedValue({ response: { status: 503, data: { detail: 'smtp_no_configurado' } } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar enlace' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error', message: 'El correo saliente no está configurado.',
+    }))
+    expect(api.post).toHaveBeenCalledWith('/admin/users/2/reset-link')
+  })
+
+  it('con éxito dice a qué correo se mandó', async () => {
+    api.post.mockResolvedValue({ data: { ok: true, to: 'b@x.io' } })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar enlace' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'success', message: 'Enlace de recuperación enviado a b@x.io.',
+    }))
+  })
+
+  // Fix round 1 (2026-09-15): el camino 502 (el servidor SMTP rechazó el
+  // envío) no tenía test -- mensajeDeError agrega la respuesta del servidor
+  // con smtpServerSaid, y nada probaba que "Enviar enlace" también la mostrara.
+  it('un 502 smtp_envio_fallido muestra el mensaje y la respuesta del servidor SMTP', async () => {
+    api.post.mockRejectedValue({
+      response: { status: 502, data: { detail: { code: 'smtp_envio_fallido', server: 'Connection unexpectedly closed' } } },
+    })
+    renderUsers()
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar enlace' }))
+    await waitFor(() => expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error',
+      message: 'El servidor SMTP no aceptó el correo. Respuesta del servidor: Connection unexpectedly closed',
+    }))
+  })
+})
+
+// Fix round 2 (2026-09-15, Ruling U25): con un modal abierto, el fondo (header
+// + tabla) seguía alcanzable con Tab -- sin `inert` y sin trampa de foco --,
+// así que un par de Tabs y Enter podían abrir Historial ENCIMA de Editar, y un
+// solo Escape (los dos hooks escuchan en `document`) cerraba los dos a la vez,
+// descartando en silencio una edición sin guardar.
+// Ruling U27 (review final, 2026-09-15): el inert local (data-admin-contenido)
+// dejaba vivo el AdminSidebar de Admin.jsx (I1). Ahora Dialogo marca #root
+// entero: se renderiza dentro de un contenedor con id "root", como en
+// index.html, para que el test mida lo real.
+describe('AdminUsers -- #root inert detrás de un modal (Ruling U25/U27)', () => {
+  let root
+  beforeEach(() => {
+    root = document.createElement('div')
+    root.id = 'root'
+    document.body.appendChild(root)
+  })
+  afterEach(() => root.remove())
+
+  it.each(['Editar', 'Historial', '+ Nuevo usuario'])('con el modal de "%s" abierto #root queda inert; al cerrarlo, no', async (boton) => {
+    render(<I18nProvider><AdminUsers /></I18nProvider>, { container: root })
+    const disparador = await screen.findByRole('button', { name: boton })
+    expect(root).not.toHaveAttribute('inert')
+
+    disparador.focus()
+    fireEvent.click(disparador)
+    await waitFor(() => expect(root).toHaveAttribute('inert'))
+    expect(root.contains(screen.getByRole('dialog'))).toBe(false)
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(root).not.toHaveAttribute('inert')
+    expect(disparador).toHaveFocus()
+  })
+
+  it('ya no hay un inert local: #root cubre también el sidebar', async () => {
+    render(<I18nProvider><AdminUsers /></I18nProvider>, { container: root })
+    await screen.findByText('op@axioma-ia.io')
+    expect(document.querySelector('[data-admin-contenido]')).toBeNull()
+  })
+})
+
+describe('AdminUsers -- un solo modal a la vez (Ruling U25)', () => {
+  it('abrir Historial con Editar abierto deja un solo modal, y Escape lo cierra sin reabrir Editar', async () => {
+    renderUsers()
+    const botonEditar = await screen.findByRole('button', { name: 'Editar' })
+    // Se toma la referencia ANTES de abrir Editar: una vez que el fondo queda
+    // inert, un query por rol ya no la encontraría (queda fuera del árbol de
+    // accesibilidad) -- fireEvent sobre el nodo ya obtenido no depende de eso.
+    const botonHistorial = screen.getByRole('button', { name: 'Historial' })
+
+    fireEvent.click(botonEditar)
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+
+    fireEvent.click(botonHistorial)
+    // HistorialUsuario pide su propio /audit al montar: se espera con waitFor
+    // (envuelve en act) para no dejar esa resolución fuera de React.
+    await waitFor(() => {
+      const dialogos = screen.getAllByRole('dialog')
+      expect(dialogos).toHaveLength(1)
+      expect(dialogos[0]).toHaveAttribute('aria-labelledby', 'historial-titulo')
+    })
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

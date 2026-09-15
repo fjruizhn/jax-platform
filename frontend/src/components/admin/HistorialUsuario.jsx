@@ -3,10 +3,13 @@ import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { useJaxStore } from '../../store/useJaxStore'
 import { mensajeDeError } from '../../pages/admin/erroresAdmin'
+import Dialogo from '../Dialogo'
 
 // Historial corto de un usuario (2026-09-15, admin usuarios etapa 3): las
 // últimas 50 acciones de administración sobre él, la más nueva primero. La
-// fecha sigue el idioma activo (localeFor, I-1). Pinta solo con tokens.
+// fecha sigue el idioma activo (localeFor, I-1). Pinta solo con tokens. El
+// comportamiento de diálogo lo pone Dialogo (Ruling U27); sin campos, el foco
+// entra al título. Panel más ancho (max-w-lg) que los otros modales.
 export default function HistorialUsuario({ usuario, onCerrar }) {
   const { lang, t } = useI18n()
   const addToast = useJaxStore((s) => s.addToast)
@@ -35,10 +38,7 @@ export default function HistorialUsuario({ usuario, onCerrar }) {
   }
 
   return (
-    <div className="fixed inset-0 bg-fondo/70 flex items-center justify-center z-50">
-      <div role="dialog" aria-modal="true" aria-labelledby="historial-titulo"
-        className="bg-superficie border border-borde rounded-xl p-6 w-full max-w-lg shadow-2xl">
-        <h2 id="historial-titulo" className="text-sm font-semibold text-texto mb-4">{t.adminHistoryTitle(usuario.email)}</h2>
+    <Dialogo idTitulo="historial-titulo" titulo={t.adminHistoryTitle(usuario.email)} onCerrar={onCerrar} className="max-w-lg">
         {entradas !== null && entradas.length === 0 && <p className="text-sm text-texto-tenue">{t.adminHistoryEmpty}</p>}
         <ul className="space-y-2 max-h-96 overflow-y-auto">
           {(entradas || []).map((e) => (
@@ -58,7 +58,6 @@ export default function HistorialUsuario({ usuario, onCerrar }) {
         <div className="flex justify-end pt-4">
           <button type="button" onClick={onCerrar} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminHistoryClose}</button>
         </div>
-      </div>
-    </div>
+    </Dialogo>
   )
 }

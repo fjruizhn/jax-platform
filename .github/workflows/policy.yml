@@ -262,8 +262,93 @@ jobs:
             // sin light-mode: el script inicial ya no agrega esa clase). Vistos
             // en rojo antes de verde. Medido con vitest run: 257 passed en 41
             // archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 257) {
-              console.error("PISO ROTO: se esperaban 257 tests de vitest CORRIDOS y 0 fallidos.");
+            // 257 -> 271 el 2026-09-15 (admin usuarios etapa 4, Task 4 -- regla
+            // compartida, Mi cuenta y "Enviar enlace"): +3 lib/reglasPassword.test.js
+            // (nuevo: la misma regla del backend -- 8 caracteres como puntos de
+            // código, 72 bytes UTF-8, un emoji cuenta 1) +4 MiCuentaModal.test.jsx
+            // (nuevo: confirmación que no coincide, más de 72 bytes, contraseña
+            // actual incorrecta traducida, éxito avisa que las otras sesiones se
+            // cerraron) +1 BarraUsuario.test.jsx (un clic en el correo abre "Mi
+            // cuenta") +2 AdminUsers.test.jsx (enlace de recuperación: 503
+            // smtp_no_configurado traducido, no como éxito; éxito dice a qué correo
+            // se mandó) +3 erroresAdmin.test.js (nuevo, C4-2: un código de
+            // adminErrors se traduce ahí, un smtp_* ausente cae a t.smtpErrors, un
+            // código desconocido cae al genérico y nunca se muestra crudo) +1
+            // useJaxStore.test.js (cambiarMiPassword postea current/new_password y
+            // reemplaza token con el access nuevo). Vistos en rojo antes de verde
+            // (reglasPassword.test.js y useJaxStore.test.js/cambiarMiPassword se
+            // implementaron junto con su prueba -- desviación de TDD estricto,
+            // documentada en el informe de la tarea). Medido con vitest run: 271
+            // passed en 44 archivos, 0 fallidos.
+            // 271 -> 277 el 2026-09-15 (Task 4, fix round 1 -- 3 hallazgos): +2
+            // lib/reglasPassword.test.js (borde exacto: 72 bytes -- 70 ascii + una ñ
+            // -- no es larga, 73 bytes ya lo es; verificado con BCRYPT_MAX_BYTES en
+            // 73 a mano: el caso de 73 bytes fallaba, se restauró a 72) +1
+            // AdminUsers.test.jsx (502 smtp_envio_fallido: el toast incluye
+            // smtpServerSaid con la respuesta del servidor; verificado en rojo
+            // quitando esa parte de mensajeDeError y restaurándola) +3 Escape cierra
+            // el modal, uno por archivo (Ruling U24: MiCuentaModal.test.jsx,
+            // EditarUsuarioModal.test.jsx, HistorialUsuario.test.jsx), con el hook
+            // compartido lib/useCerrarConEscape.js -- nunca cierra por clic en el
+            // fondo. Vistos en rojo antes de verde. Medido con vitest run: 277
+            // passed en 44 archivos, 0 fallidos.
+            // 277 -> 280 el 2026-09-15 (Task 4, fix round 2 -- regresión Ruling U25:
+            // un solo Escape cerraba Editar e Historial a la vez porque el fondo
+            // seguía alcanzable con Tab detrás de un modal): +1 AdminUsers.test.jsx
+            // (con un modal abierto el fondo -- data-admin-contenido -- queda
+            // inert; con todos cerrados, no) +1 AdminUsers.test.jsx (abrir
+            // Historial con Editar abierto deja un solo modal montado -- exclusión
+            // mutua en abrirCrear/abrirEdicion/abrirHistorial --, y Escape lo
+            // cierra sin reabrir Editar) +1 lib/useCerrarConEscape.test.js (nuevo:
+            // el listener de keydown se agrega una sola vez, no se re-agrega al
+            // cambiar `onCerrar` entre renders, y Escape llama siempre al callback
+            // más reciente -- ahora en un ref). Vistos en rojo antes de verde.
+            // Medido con vitest run: 280 passed en 45 archivos, 0 fallidos.
+            // 280 -> 302 el 2026-09-15 (review final de la etapa 4, Ruling U27:
+            // un único diálogo, components/Dialogo.jsx): +11 Dialogo.test.jsx
+            // (nuevo: #root inert abierto/cerrado, contador con dos diálogos,
+            // portal fuera de #root, inert quitado al desmontar, foco al primer
+            // campo, foco al título sin campos, foco de vuelta al disparador con
+            // #root ya sin inert, Escape cierra, clic en el fondo no, role/
+            // aria-modal/aria-labelledby, clases de token y ancho del llamador)
+            // +5 CrearUsuarioModal.test.jsx (nuevo: diálogo con #root inert y
+            // foco en el correo, <label> reales, etiquetas en inglés, Escape,
+            // crear manda el formulario) +1 MiCuentaModal, +1 EditarUsuarioModal,
+            // +1 HistorialUsuario (cada uno: diálogo nombrado por su título,
+            // fuera de #root, #root inert, foco adentro) +3 AdminUsers.test.jsx
+            // (el test del inert local data-admin-contenido pasa a #root: 3 casos
+            // Editar/Historial/Nuevo usuario con #root inert, Escape y foco de
+            // vuelta, y 1 de que el inert local ya no existe). Vistos en rojo
+            // antes de verde (mutaciones de cada línea de Dialogo.jsx). Medido
+            // con vitest run: 302 passed en 47 archivos, 0 fallidos.
+            // 302 -> 309 el 2026-09-15 (review final de la etapa 4, minor 5: la
+            // carrera del token tras cambiar la contraseña): +5 api/client.test.js
+            // (un 401 con un cambio en vuelo espera la promesa y reintenta UNA vez
+            // con el token nuevo sin /auth/refresh; si el cambio falla cae al
+            // refresh; el 401 del propio POST /auth/me/password no espera su
+            // propia promesa -- sin deadlock --; un request ya reintentado no
+            // reintenta -- sin bucle --; sin cambio en vuelo el refresh no cambia)
+            // +2 store/useJaxStore.test.js (cambioDePasswordEnCurso se expone
+            // mientras dura y se limpia al terminar, también si falla). Vistos en
+            // rojo antes de verde (mutaciones de cada guarda). Medido con vitest
+            // run: 309 passed en 47 archivos, 0 fallidos.
+            // 309 -> 311 el 2026-09-15 (review final de la etapa 4, minor 6): +2
+            // pages/admin/erroresAdmin.test.js (en es y en en, el 502
+            // smtp_password_no_ascii de "Enviar enlace" usa adminErrors -- que
+            // gana sobre smtpErrors -- y nombra Administración → Correo (SMTP)).
+            // Vistos en rojo antes de verde (sin la clave salía el texto del
+            // formulario SMTP). Medido con vitest run: 311 passed en 47
+            // archivos, 0 fallidos.
+            // 311 -> 315 el 2026-09-15 (fix round 1 del re-review final de la
+            // etapa 4): +2 MiCuentaModal.test.jsx (la región role="status"
+            // existe vacía antes de enviar y recibe el texto de éxito; tras el
+            // éxito el foco va al botón Cerrar) +2 CrearUsuarioModal.test.jsx
+            // (en es y en en, mientras guarda el botón dice "Creando…" /
+            // "Creating…", t.adminCreateSubmitting, no el texto de adjuntar).
+            // Vistos en rojo antes de verde. Medido con vitest run: 315 passed
+            // en 47 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 315) {
+              console.error("PISO ROTO: se esperaban 315 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -735,7 +820,42 @@ jobs:
           # test_admin_usuarios_guardas.py (si la re-verificación del SSE se cancela, el
           # registro se deshace). Re-medido tras rebasar sobre master 65c02de (PR 3 del
           # tema): 786 / 1.
-          PISO_PASSED = 786
+          # Subido de 786 a 790 (2026-09-15, admin usuarios etapa 4, Task 1): +4 en
+          # test_contrasenas.py (3 puros de la regla única: corta, larga por bytes, caracteres
+          # como puntos de código; alta con password_corta/password_larga -> 400 y sin fila,
+          # no 500). Medido: 790 / 1.
+          # Subido de 790 a 797 (2026-09-15, admin usuarios etapa 4, Task 2): +7 en
+          # test_contrasenas.py (Mi cuenta: exige la actual, regla, tokens nuevos y otras
+          # sesiones cerradas, corte WS/SSE post-commit, corte fail-soft, hash cambiado en
+          # el medio no se pisa, límite del login). Medido: 797 / 1.
+          # Subido de 797 a 799 (2026-09-15, Task 2 fix ronda 1): +2 en test_contrasenas.py
+          # (revocación y desactivación concurrentes -> 401 sesion_invalida). Medido: 799 / 1.
+          # Subido de 799 a 807 (2026-09-15, admin usuarios etapa 4, Task 3): +8 en
+          # test_contrasenas.py (enlace de recuperación por admin: sin SMTP -> 503 sin
+          # token, crea token y audita, SMTP que falla -> 502 y borra el token (U17),
+          # a inactivo/inexistente, solo superadmin; completar el reset sube token_version
+          # y corta sesiones; token usado/expirado/inválido no corta nada; el corte fallido
+          # no rompe el 200). El brief pedía 6; U9 agregó 2 más (sin corte / corte fail-soft
+          # en reset). Medido: 807 / 1.
+          # Subido de 807 a 812 (2026-09-15, Task 3 fix ronda 1): +5 en test_contrasenas.py
+          # (reset-link: UnicodeEncodeError -> 502 smtp_password_no_ascii, ValueError ->
+          # 503 smtp_config_corrupta, ambos con el token borrado y sin auditoría, mismo
+          # juego de códigos que /smtp/test etapa 1; la limpieza borra por token EXACTO y
+          # no pisa un token de un forgot-password concurrente del mismo usuario; el claim
+          # atómico del token bajo la ventana de bcrypt -- verificado en rojo quitando el
+          # `AND used = FALSE` y el chequeo de rowcount; U21, el usuario se bloquea ANTES
+          # que el token en /reset-password, mismo orden que la cascada de delete_user --
+          # verificado en rojo quitando el SELECT ... FOR UPDATE). Medido: 812 / 1.
+          # Subido de 812 a 815 (2026-09-15, Task 3 fix ronda 2): +3 en test_contrasenas.py
+          # (una cancelación del envío -- asyncio.CancelledError, BaseException -- borra
+          # igual el token no entregado, vía el `finally`/bandera `enviado`, y la
+          # cancelación sigue propagándose; un fallo de auditoría DESPUÉS de un envío
+          # exitoso responde 200 igual, U22 fail-soft; el orden de bloqueo de U21 --
+          # SELECT ... FOR UPDATE del usuario antes del UPDATE que reclama el token -- se
+          # prueba grabando el SQL ejecutado, no solo el resultado: verificado en rojo
+          # quitando el FOR UPDATE y, por separado, moviendo el bloqueo después del
+          # reclamo). Medido: 815 / 1.
+          PISO_PASSED = 815
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1061,7 +1181,21 @@ jobs:
       # corte piden `client` (sin cambio). Re-revisión de 6424be0 (2026-09-15): +1 puro
       # (la re-verificación del SSE cancelada deshace el registro). Re-medido tras
       # rebasar sobre master 65c02de (PR 3 del tema) con JAX_CI_NO_DB=1: 366 / 421.
-      JAX_CI_MIN_PASSED: "366"
+      # Admin usuarios etapa 4, Task 1 (2026-09-15): +3 puros en test_contrasenas.py (regla
+      # única de contraseña); el del alta pide `client`. Medido con JAX_CI_NO_DB=1: 369 / 422.
+      # Task 2 (2026-09-15): los 7 de Mi cuenta piden `client` (sin cambio). Medido con
+      # JAX_CI_NO_DB=1: 369 / 429.
+      # Task 2 fix ronda 1 (2026-09-15): +2 que piden `client` (sin cambio). Medido con
+      # JAX_CI_NO_DB=1: 369 / 431.
+      # Task 3 (2026-09-15): los 8 de enlace de recuperación / reset piden `client`
+      # (sin cambio en passed). Medido con JAX_CI_NO_DB=1: 369 / 439.
+      # Task 3 fix ronda 1 (2026-09-15): los 5 nuevos (errores de reset-link, borrado
+      # por token exacto, claim atómico, U21) piden `client` (sin cambio en passed).
+      # Medido con JAX_CI_NO_DB=1: 369 / 444.
+      # Task 3 fix ronda 2 (2026-09-15): los 3 nuevos (cancelación del envío, fallo de
+      # auditoría fail-soft, orden de bloqueo U21 por SQL grabado) piden `client` (sin
+      # cambio en passed). Medido con JAX_CI_NO_DB=1: 369 / 447.
+      JAX_CI_MIN_PASSED: "369"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
