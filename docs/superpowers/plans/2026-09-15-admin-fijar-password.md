@@ -1525,3 +1525,88 @@ Task 6, Step 7. Los puntos de riesgo son 3 (no cerrable, fondo inert, `/admin` a
   Recomendación: **sí, sólo con la marca activa** (`400 password_igual_a_la_actual`). Sin esto, la decisión (2) se cumple de nombre y el admin sigue conociendo la contraseña. Cuesta una comparación de strings. El plan ya lo trae (Task 2); si Fernando dice que no, se quitan el `if` y su test.
 - **P2 · ¿El cambio obligatorio sigue pidiendo la contraseña actual?**
   Recomendación: **sí**. La persona acaba de entrar con ella, así que no le cuesta nada. Si alguien consigue un access token con la marca, sin la actual no puede fijar una contraseña propia. Además comparte el límite de intentos del login. El plan la mantiene.
+
+---
+
+## Enmienda 2026-09-15: sesión única (pedido de Fernando, Ruling F2)
+
+Agregada después de escribir el plan, entre la Task 3 y la Task 4, por pedido de Fernando en el chat: "una persona no debería poder tener 2 sesiones abiertas... al salir de una sesión debería morirse la misma, y si quiere volver a accesar, la nueva sesión debería matar la vieja". La parte de frontend va en la Task 4 y la carga del login y del logout en la Task 5.
+
+### Task 3b: Single session — a new login kills the old one; logout kills the session on the server
+
+**Origin:** Fernando's requirement (2026-09-15, chat), approved inside this branch (Ruling F2): "una persona no debería poder tener 2 sesiones abiertas... al salir de una sesión debería morirse la misma, y si quiere volver a accesar, la nueva sesión debería matar la vieja".
+
+**Verified facts:** re-grepped at 2ada67c, the Task 2 HEAD. Task 3 only touches `users.py` and `user_audit.py`, so these lines hold when 3b starts.
+- **`login`** (`backend/api/auth.py` l.64-65) does NOT touch `token_version`.
+  - Its successful UPDATE is at l.124: `UPDATE jax_users SET failed_attempts = 0, locked_until = NULL, last_login = NOW() …`.
+  - l.129 calls `_emitir_tokens(response, str(user_id), str(tenant_id), role, token_version)` with the value from its unlocked SELECT.
+  - Several sessions coexist today.
+- **`refresh`** (l.141-142) reads the cookie with `refresh_token: str = Cookie(None)`. Follow that pattern in logout.
+- **`logout`** (l.174-176) only calls `response.delete_cookie(key="refresh_token", samesite="lax")`. On the server the session stays alive: the access token for up to 15 minutes, a copied refresh token for up to 7 days.
+- **`auth.py` already imports** `decode_token` (l.14), `_cortar_conexiones` (l.23), and `AISLAMIENTO_ADMIN` and `transaccion` (l.24). Nothing new to import.
+- **`decode_token`** (`auth/jwt.py`) catches `JWTError` and raises `HTTPException(401, "Token inválido o expirado")`. `verificar_sesion` also rejects with an `HTTPException`. In logout, catch EXACTLY `HTTPException`: it covers a malformed token and a rejected session, and there's no broad `except` (no-fail-open policy).
+- Nothing automated logs in through `/api/auth/login`. Production has 2 users.
+
+**Files:**
+- Modify `backend/api/auth.py` (`login`, `logout`).
+- Test: `backend/tests/test_sesion_unica.py` (create).
+- Modify tests that assume two simultaneous sessions of the same user obtained through `/login`. List every one of them in the report.
+- Modify `.github/workflows/policy.yml`.
+
+**Interfaces:**
+- Consumes: `transaccion` and `AISLAMIENTO_ADMIN` from `db.transaccion` (U33; auth.py already imports it); `_cortar_conexiones` from `auth.conexiones`; `verificar_sesion(..., admite_cambio_pendiente=True)` (Task 2); `decode_token`.
+- Produces: a login that invalidates every earlier session of that user, and a logout that invalidates the current one.
+
+## Required behavior
+
+1. **Only a successful login bumps the version.** A wrong password, a locked account, an inactive user, a user in baja, or a rate-limited request NEVER writes `token_version`. Otherwise an attacker without the password could kick the real user out by trying to log in. Keep the existing failed-attempt and lockout logic exactly as it is.
+
+2. **Atomic bump that also reads the value (two simultaneous logins).** After the password check (bcrypt stays outside the transaction, as today), do this inside `transaccion(AISLAMIENTO_ADMIN)`:
+   ```sql
+   UPDATE jax_users SET failed_attempts = 0, locked_until = NULL, last_login = NOW(),
+          token_version = token_version + 1
+    WHERE user_id = %s AND status = 'active'
+   ```
+   Then, in the SAME transaction:
+   ```sql
+   SELECT token_version FROM jax_users WHERE user_id = %s
+   ```
+   The transaction sees its own write, and the row stays locked until commit. Issue the tokens with THAT value.
+   - If the UPDATE affects 0 rows, the status changed during the bcrypt window: return the same response the code gives today for a non-active user. Never issue tokens in that case.
+   - Two concurrent logins: the second UPDATE waits on the row lock and increments after the first commits, so the last login wins and the earlier session's token is already stale.
+   - Never compute `old + 1` from the unlocked SELECT. Two logins would both read 0, both write (DB = 2), and both issue version 1, so both sessions would be dead.
+
+3. **After the commit, cut the old live connections.** Call `_cortar_conexiones(user_id)`, which is fail-soft, so the old session's WS/SSE close right away. Never do this on a failed login.
+
+4. **Logout kills the session on the server.** Read the refresh cookie (`refresh_token: str = Cookie(None)`, the same way `refresh` does).
+   - If the cookie is present, call `verificar_sesion(decode_token(cookie), "refresh", admite_cambio_pendiente=True)`. A flagged user must still be able to log out.
+   - If that succeeds, run `UPDATE jax_users SET token_version = token_version + 1 WHERE user_id = %s` in a transaction, then `_cortar_conexiones(user_id)` after the commit.
+   - In EVERY case, delete the cookie and return 200 `{"ok": True}`: missing cookie, invalid or expired token, stale version, or a user who is inactive or in baja. Logout never answers 401, so the frontend can't loop on it.
+   - Catch ONLY `HTTPException`. Both failure paths raise it: `decode_token` turns a `JWTError` into `HTTPException(401)` (`auth/jwt.py`), and `verificar_sesion` rejects with an `HTTPException` (401 `sesion_invalida`). Do not add a separate JWT exception type, because it never gets that far. No broad `except Exception` (no-fail-open policy).
+   - An `HTTPException` there means "no live session to kill". Delete the cookie and return 200.
+   - Do NOT catch DB errors inside the bump transaction. If the UPDATE fails, logout must surface that as a real error, not report success.
+   - There is no audit row for logout; it is a routine user action. State this in the report.
+   - Two tabs of the same browser share the refresh cookie, so logging out in one ends the session for both. That is the intended "one session".
+
+5. **Mi cuenta** already bumps `token_version` and returns new tokens to the current session. Leave it unchanged.
+
+## Tests (each seen red first; name the production change that would make each one fail)
+- **Login twice, as two "devices":**
+  - the first session's access token gets 401 `sesion_invalida` on `/me`;
+  - the first refresh cookie gets 401 on `/refresh`;
+  - the second session works;
+  - `token_version` went up by exactly 1 per successful login.
+- **Failed logins don't bump anything:** a wrong password, a locked account and an inactive user all leave `token_version` unchanged, and the real user's existing session stays valid.
+- **Concurrent logins** (two connections, modeled on `test_degradacion_mutua_concurrente…` in test_admin_usuarios_guardas.py):
+  - both return 200 with no 500 and no deadlock;
+  - exactly ONE of the two tokens is valid afterwards, the one whose version equals the DB value;
+  - the DB value is the start value + 2.
+- **Connection cuts:** a successful login calls the cut once for that `user_id` after the commit; a failed login calls it zero times. Patch it at `auth.conexiones`, the way the existing tests do.
+- **Logout with a valid cookie:** 200, `token_version` +1, the cut called once, the cookie deleted (`Set-Cookie` with Max-Age=0 or expired), and the old access token 401 afterwards.
+- **Logout with a missing, garbage or stale cookie:** 200, the cookie deleted, NO DB write, no cut.
+- **Logout for a flagged user** (`must_change_password`): it works, with 200 and the version bumped.
+- **Hot path:** `verificar_sesion` is unchanged (still the one SELECT by PK).
+
+## Floors and commit
+- Run the full backend suite twice, with the DB and with `JAX_CI_NO_DB=1`. Set the exact floors with dated comments.
+- Commit: `feat(auth): sesión única -- el login exitoso mata las sesiones anteriores y el logout mata la sesión en el servidor`, with the two trailers.
