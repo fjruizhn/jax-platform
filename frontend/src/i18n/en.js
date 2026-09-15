@@ -459,6 +459,16 @@ export default {
 
   // HAL Eye
   eyeIdle: 'idle',
+  // M5 (code review, 2026-09-14, fix vivo): getEyeState() used to hardcode
+  // these labels in the function body. Proper/technical names of JAX
+  // components and states -- same wording in es and en, like the existing
+  // killSwitchActive/jacobsHint/imagenHint keys already do (only the prose
+  // around them translates, not the name itself).
+  eyeKillSwitch: 'KILL SWITCH',
+  eyeDallE3: 'DALL-E 3',
+  eyeLasManosDown: 'LAS MANOS DOWN',
+  eyeGate: 'GATE',
+  eyeJacobs: 'Jacobs',
   halEyeAriaLabel: (label) => `HAL Eye — ${label}`,
 
   // Outgoing email (SMTP) — AdminSmtp.jsx (2026-09-12, user admin stage 1)

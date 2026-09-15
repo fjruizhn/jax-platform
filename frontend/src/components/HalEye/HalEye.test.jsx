@@ -48,6 +48,23 @@ describe('HalEye -- anillo del housing', () => {
   })
 })
 
+// M5 (revisión de código, 2026-09-14, fix vivo): HalEye pasaba a
+// getEyeState un idleLabel de i18n pero dejaba el resto de las etiquetas
+// (KILL SWITCH, LAS MANOS DOWN, GATE, DALL-E 3, Jacobs) hardcodeadas dentro
+// de la función. Ahora vienen de t.eye*. Que HalEye realmente las lea de
+// t (y no de un texto hardcodeado que coincida por casualidad) lo prueba
+// HalEye.i18nLabels.test.jsx, con un t de mentira con valores distintos.
+describe('HalEye -- claves de i18n de las etiquetas de getEyeState (M5)', () => {
+  it('las claves existen y no están vacías en es y en', async () => {
+    const { default: es } = await import('../../i18n/es.js')
+    const { default: en } = await import('../../i18n/en.js')
+    for (const clave of ['eyeKillSwitch', 'eyeDallE3', 'eyeLasManosDown', 'eyeGate', 'eyeJacobs']) {
+      expect(es[clave], `es.${clave}`).toBeTruthy()
+      expect(en[clave], `en.${clave}`).toBeTruthy()
+    }
+  })
+})
+
 describe('HalEye -- con prop reposo, fijo, ignora la store', () => {
   it('siempre pulse-slow y sin etiqueta visible, aunque la store diga otra cosa', () => {
     useJaxStore.setState({ killSwitchActive: true })
