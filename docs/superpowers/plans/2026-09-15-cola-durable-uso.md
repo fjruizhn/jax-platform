@@ -9,15 +9,22 @@
 Se llama en línea, con `await`, dentro del request: `api/chat.py:1104` y `api/image.py:106`.
 
 ## La decisión de diseño
-Un **archivo de respaldo propio** (una línea JSON por fila pendiente) y una **tarea de fondo que reintenta**. No una tabla: la base es justamente lo que puede estar caído.
+Un **respaldo propio en disco** y una **tarea de fondo que reintenta**. No una tabla: la base es justamente lo que puede estar caído.
 
-- **Dónde:** `JAX_USAGE_SPOOL_PATH` en el entorno, con default `/srv/jax-data/usage-spool/pendientes.jsonl`. El servicio corre como `fruiz` y `/srv/jax-data` es suyo, con 1,8 T libres. Sin hardcoding: el default vive en el código, el valor real en `.env`.
-  - Ese archivo NO está respaldado: es tránsito, no archivo histórico. Se vacía solo cuando las filas entran a la base.
-- **Idempotencia:** `axioma_usage` suma una columna `spool_id CHAR(36) NULL` con índice **UNIQUE**. Cada fila que va al respaldo lleva su id. El reintento inserta con `INSERT IGNORE` (o `ON DUPLICATE KEY UPDATE id=id`): si el proceso se muere entre el INSERT y el borrado de la línea, el reintento siguiente no duplica el cobro.
-  - Las filas normales (camino feliz) siguen con `spool_id` NULL, y un índice UNIQUE admite varios NULL en MariaDB.
-- **La hora es la del turno, no la del reintento:** la fila guardada lleva su `created_at` original y el INSERT lo escribe explícito. Si no, una caída de dos horas movería el costo al día siguiente.
-- **Cota dura:** el respaldo tiene tope (`JAX_USAGE_SPOOL_MAX_FILAS`, default 50.000). Pasado el tope se descarta la fila MÁS VIEJA y se cuenta aparte (`perdidas_por_desborde`). Una caída larga no puede llenar el disco, y la pérdida sigue siendo visible.
-- **Un solo proceso escribe:** el servicio corre un único uvicorn (verificado: `ExecStart` sin `--workers`). Aun así, el módulo serializa con un `asyncio.Lock`, porque los turnos concurrentes sí compiten entre sí.
+**El respaldo es un DIRECTORIO con un archivo por fila pendiente**, no un archivo único con todas las líneas. La razón es que hay **tres procesos** que escriben `axioma_usage` y todos pierden filas igual (pedido de Fernando, 2026-09-15: "arregla esto también, no dejes nada pendiente"):
+- `jax-platform`: `backend/api/admin/usage.py::record_usage` (chat e imágenes);
+- `jax`: `jacobs/usage_writer.py` (los 3 transportes HTTP directos desde un pipeline);
+- `jax`: `las_manos/motor_registry/usage_writer.py` (motores; hoy reintenta 3 veces y después loguea ERROR).
+
+Con un archivo único, el que drena tiene que reescribirlo sin las filas que ya entraron, y esa reescritura pisa lo que otro proceso agregó entremedio. Con un archivo por fila no hay reescritura: se crea con `tmp` + `os.replace` (atómico) y el que drena lo borra recién después de que la fila entró. Ningún proceso toca el archivo de otro salvo para borrarlo ya insertado.
+
+- **Dónde:** `JAX_USAGE_SPOOL_DIR` en el entorno, con default `/srv/jax-data/usage-spool/`. Los tres procesos corren como `fruiz` y ese directorio es suyo, con 1,8 T libres. El nombre de cada archivo es `<spool_id>.json`.
+- **Quién drena:** sólo `jax-platform`, que es el dueño de la tabla y el único con migraciones. Los escritores de `jax` sólo depositan. Si la plataforma está caída, los archivos esperan; al arrancar drena una vez antes del primer ciclo.
+- **Idempotencia:** `axioma_usage` suma una columna `spool_id CHAR(36) NULL` con índice **UNIQUE**. El reintento inserta con `INSERT IGNORE`: si el proceso se muere entre el INSERT y el borrado del archivo, el reintento siguiente no duplica el cobro.
+  - Las filas del camino feliz siguen con `spool_id` NULL, y un índice UNIQUE admite varios NULL en MariaDB.
+- **La hora es la del turno, no la del reintento:** el archivo guarda su `created_at` original y el INSERT lo escribe explícito. Si no, una caída de dos horas movería el costo al día siguiente.
+- **Cota dura:** `JAX_USAGE_SPOOL_MAX_FILAS` (default 50.000). Pasado el tope se descarta el archivo MÁS VIEJO y se cuenta aparte (`perdidas_por_desborde`). Una caída larga no puede llenar el disco, y la pérdida sigue siendo visible.
+- **Formato compartido:** el contenido de cada archivo es el contrato entre los dos repos. Se escribe una sola vez en el plan y los dos lados lo respetan: `spool_id`, `created_at` (ISO 8601 con zona), `tenant_id`, `user_id`, `facet`, `model`, `tokens_in`, `tokens_out`, `cost_usd` (número o null), `request_type`, `origen` (`platform` | `jacobs` | `motor_registry`).
 
 ## Global Constraints
 - **Barrera de DB:** `/etc/jax/.env` es PRODUCCIÓN. Solo pytest toca la DB, y el conftest fuerza `jax_memory_test`.
@@ -34,15 +41,16 @@ Un **archivo de respaldo propio** (una línea JSON por fila pendiente) y una **t
 **Archivos:** `backend/uso/cola.py` (nuevo) y su test.
 
 1. Módulo puro, sin FastAPI y sin la base:
-   - `ruta_del_respaldo()` lee `JAX_USAGE_SPOOL_PATH` o devuelve el default; crea el directorio si falta.
-   - `async def encolar(fila: dict) -> bool`: agrega una línea JSON (`spool_id`, `created_at` ISO, y las 8 columnas), hace `flush` + `fsync`, y devuelve si pudo.
-   - `async def leer_pendientes(limite) -> list[dict]`: lee las primeras N líneas válidas.
-   - `async def quitar(spool_ids: set[str]) -> int`: reescribe el archivo sin esas filas, de forma atómica (archivo temporal + `os.replace` en el mismo directorio).
-   - `def profundidad() -> int` y `estadisticas() -> dict` (`en_cola`, `perdidas_por_desborde`, `ultimo_error_de_respaldo`).
-   - Todo el I/O va por `asyncio.to_thread`, y las operaciones se serializan con un `asyncio.Lock` del módulo.
-2. **Una línea corrupta no rompe la cola:** se saltea, se cuenta y se loguea; las demás siguen. Un archivo que no se puede leer entero es un error visible, no un silencio.
-3. **Tope:** al encolar por encima del máximo, se descarta la más vieja y sube `perdidas_por_desborde`.
-4. Tests, cada uno rojo primero: encolar y leer; reescritura atómica; una línea corrupta en el medio; el tope; el `fsync` (se verifica que se llama); que dos encolados concurrentes no se pisen.
+   - `directorio_del_respaldo()` lee `JAX_USAGE_SPOOL_DIR` o devuelve el default; crea el directorio si falta.
+   - `async def encolar(fila: dict) -> str | None`: escribe `<spool_id>.json` con el formato compartido de arriba, de forma atómica — archivo temporal en el MISMO directorio, `fsync` del archivo, `os.replace`, y `fsync` del directorio para que el rename sobreviva un corte de luz. Devuelve el `spool_id` o None.
+   - `async def leer_pendientes(limite) -> list[dict]`: los N más viejos por fecha de archivo, cada uno con su `spool_id`.
+   - `async def quitar(spool_ids) -> int`: borra esos archivos. Que un archivo ya no esté NO es error (otro ciclo pudo ganarle).
+   - `def estadisticas() -> dict`: `en_cola`, `perdidas_por_desborde`, `corruptos`, `ultimo_error_de_respaldo`.
+   - Todo el I/O va por `asyncio.to_thread`. Un `asyncio.Lock` del módulo serializa dentro del proceso; entre procesos la atomicidad la da el `os.replace`, no el lock.
+2. **Un archivo corrupto no rompe la cola:** se saltea, se cuenta, se loguea una vez y se mueve a `corruptos/` para que el directorio no se tape con lo mismo en cada ciclo. Los demás siguen.
+3. **Tope:** al encolar por encima del máximo, se descarta el archivo más viejo y sube `perdidas_por_desborde`.
+4. Tests, cada uno rojo primero: encolar y leer; que el archivo temporal no quede si falla a mitad; un archivo corrupto en el medio; el tope; que se llama a `fsync` del archivo y del directorio; dos encolados concurrentes no se pisan; `quitar` de algo que ya no está no explota.
+5. **El módulo es el contrato entre los dos repos:** el repo jax va a llevar una copia adaptada (Task 7), igual que ya hace con `usage_writer.py` y `db_connect_config.py`. Escribilo sin dependencias fuera de la biblioteca estándar, para que la copia sea literal.
 
 ## Task 2 — `record_usage` encola cuando la base falla
 **Archivos:** `backend/api/admin/usage.py`, `backend/db/migrations.py` y tests.
@@ -84,4 +92,15 @@ Un **archivo de respaldo propio** (una línea JSON por fila pendiente) y una **t
 - **Deploy:** hay migración (columna + índice UNIQUE). Dump previo de `axioma_usage` verificado fila por fila; el script aborta si la columna o el índice no quedaron.
 - Se crea `/srv/jax-data/usage-spool/` con dueño `fruiz` antes del restart.
 - Smoke: el directorio existe y es escribible; `GET /api/admin/usage` sin token responde 401; el campo `en_cola` aparece en la respuesta autenticada (0).
-- **DEUDA en jax:** se cierra el pendiente del 2026-09-29 y se anota uno nuevo con fecha para los **dos escritores de uso del repo jax** (`jacobs/usage_writer.py` y `las_manos/motor_registry/usage_writer.py`), que pierden filas igual y quedan fuera del alcance de esta rama.
+- **DEUDA en jax:** se cierra el pendiente del 2026-09-29, y se registra que los tres escritores quedaron cubiertos. No queda pendiente abierto de este tema.
+
+## Task 7 — Los dos escritores del repo jax (pedido de Fernando: "no dejes nada pendiente")
+**Repo:** `jax`, worktree aparte, PR propio. **Se mergea y despliega ANTES que la plataforma** si el formato del archivo cambia; si no, después. El orden real lo fija el ledger cuando esté medido.
+
+1. Copia adaptada de `cola.py` en `jax/core/cola_uso.py`, con symlink en `las_manos/` igual que `redaccion.py`. Mismo formato de archivo, mismo default de directorio, misma variable de entorno. Sin dependencias fuera de la biblioteca estándar.
+   - Comparación por AST contra la copia de jax-platform, como se hizo con `redaccion.py`: las reglas y los cuerpos tienen que ser idénticos.
+2. `jacobs/usage_writer.py`: hoy loguea el error y sigue. Pasa a encolar; si tampoco puede encolar, ahí sí ERROR.
+3. `las_manos/motor_registry/usage_writer.py`: mantiene sus 3 reintentos en línea (son baratos y resuelven el caso transitorio); agotados, encola en vez de perder la fila.
+4. Ninguno de los dos drena: sólo la plataforma inserta. Queda dicho en el módulo y en el comentario de cada escritor.
+5. Tests en el repo jax, cada uno rojo primero: la base caída deja el archivo en el respaldo; el archivo tiene el formato compartido; si el respaldo falla, el ERROR queda; el camino feliz no deja nada.
+6. Pisos de CI de jax exactos y fechados.
