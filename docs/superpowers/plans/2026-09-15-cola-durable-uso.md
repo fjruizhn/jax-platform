@@ -24,7 +24,10 @@ Con un archivo único, el que drena tiene que reescribirlo sin las filas que ya 
   - Las filas del camino feliz siguen con `spool_id` NULL, y un índice UNIQUE admite varios NULL en MariaDB.
 - **La hora es la del turno, no la del reintento:** el archivo guarda su `created_at` original y el INSERT lo escribe explícito. Si no, una caída de dos horas movería el costo al día siguiente.
 - **Cota dura:** `JAX_USAGE_SPOOL_MAX_FILAS` (default 50.000). Pasado el tope se descarta el archivo MÁS VIEJO y se cuenta aparte (`perdidas_por_desborde`). Una caída larga no puede llenar el disco, y la pérdida sigue siendo visible.
-- **Formato compartido:** el contenido de cada archivo es el contrato entre los dos repos. Se escribe una sola vez en el plan y los dos lados lo respetan: `spool_id`, `created_at` (ISO 8601 con zona), `tenant_id`, `user_id`, `facet`, `model`, `tokens_in`, `tokens_out`, `cost_usd` (número o null), `request_type`, `origen` (`platform` | `jacobs` | `motor_registry`).
+- **Formato compartido:** el contenido de cada archivo es el contrato entre los dos repos. Se escribe una sola vez en el plan y los dos lados lo respetan: `spool_id`, `created_at` (ISO 8601 con zona), `tenant_id`, `user_id`, `facet`, `model`, `tokens_in`, `tokens_out`, `cost_usd` (número o null), `request_type`, `origen` (`platform` | `jacobs` | `motor_registry`), `status` (string o null) y `job_id` (string o null).
+  - **Trece campos, no once** (DECISIÓN de Fernando, 2026-09-15, opción (b) de la consulta de las 19:3x). `status` y `job_id` sólo los llena `motor_registry`; los otros dos escritores los dejan en `null`. Sin ellos, una fila recuperada del respaldo entra a `axioma_usage` con las dos columnas en NULL y la reconciliación contra `motor_jobs.jsonl` por igualdad exacta (T3) no la puede emparejar: se recupera el cobro pero se pierde la trazabilidad.
+  - Se toca AHORA, antes de que nada dependa del formato (Principio IX: no se difiere un contrato; el respaldo de producción está en 0 archivos y no hay nada desplegado). Cambiarlo después obliga a coordinar el despliegue de los dos repos con dos formatos en vuelo.
+  - **Los trece campos van SIEMPRE en el archivo**, aunque dos sean `null`: `_normalizar` los completa y `_motivo_de_corrupcion` los exige. Así un archivo escrito por una copia vieja del módulo cae en `corruptos/` en vez de entrar a la base a medias — fail-closed. Obligatorios PARA EL LLAMADOR siguen siendo los nueve de siempre: `status` y `job_id` son opcionales al encolar.
 
 ## Global Constraints
 - **Barrera de DB:** `/etc/jax/.env` es PRODUCCIÓN. Solo pytest toca la DB, y el conftest fuerza `jax_memory_test`.
@@ -104,3 +107,23 @@ Con un archivo único, el que drena tiene que reescribirlo sin las filas que ya 
 4. Ninguno de los dos drena: sólo la plataforma inserta. Queda dicho en el módulo y en el comentario de cada escritor.
 5. Tests en el repo jax, cada uno rojo primero: la base caída deja el archivo en el respaldo; el archivo tiene el formato compartido; si el respaldo falla, el ERROR queda; el camino feliz no deja nada.
 6. Pisos de CI de jax exactos y fechados.
+
+## Task 8 — El contrato a trece campos (DECISIÓN de Fernando, opción (b))
+**Se hace ANTES que el drenaje llegue a producción. Dos mitades, en este orden:**
+
+**8a · jax-platform** (`backend/uso/cola.py`, `backend/tests/test_cola_uso.py`, `record_usage` en `backend/api/admin/usage.py`):
+`CAMPOS` pasa a trece con `status` y `job_id` al final; `CAMPOS_OBLIGATORIOS` NO los incluye
+(se suman a la exclusión de `spool_id`/`created_at`); `_normalizar` los completa con `None`;
+`_motivo_de_corrupcion` los exige presentes en el archivo. `record_usage` encola con los dos en `None`.
+Pisos de CI re-medidos dos veces por modo.
+
+**8b · jax** (`jax/core/cola_uso.py` + los dos escritores + tests + pisos): la copia vuelve a quedar
+idéntica por AST. `motor_registry/usage_writer.py` deja de perder `status`/`job_id` en el log y los
+manda en el archivo; `jacobs/usage_writer.py` los manda en `None`. **Va después de 8a**: el
+`check_mirror_sync.py` compara contra la copia de la plataforma.
+
+**Requisito de cualquier copia futura del módulo (lección del incidente 19:22-19:25):** el default del
+módulo apunta al respaldo de PRODUCCIÓN por diseño. La barrera va en el `conftest.py` de la RAÍZ de
+cada repo que lo copie, con `os.environ[...]` en tiempo de import (no un fixture: el que ensucia es el
+test que no sabe que escribe), más un `pytest_sessionfinish` que ponga la corrida en exit 1 si apareció
+un archivo nuevo en el directorio real. Y el freno se ejercita antes de darlo por bueno (Principio VII).
