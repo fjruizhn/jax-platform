@@ -1296,7 +1296,15 @@ jobs:
           # por KeyError: 'en_cola', y la asercion de que `ultimo_error` NO
           # viaja a la pantalla validada por mutacion (**stats -> rojo).
           # Medido dos veces: 1152 / 1.
-          PISO_PASSED = 1152
+          # 1152 -> 1157 el 2026-09-15 (cola durable, Task 9: el camino
+          # degradado deja de ser O(n^2) y el lote va a 500). +4 en
+          # test_cola_uso.py y +1 en test_reintento_de_uso.py, todos puros.
+          # El control que importa cuenta los RECORRIDOS del directorio
+          # (envuelve os.scandir) y se vio rojo contra el codigo viejo con la
+          # razon exacta: "encolar recorrio el directorio 2 veces". El del
+          # lote, rojo por 200 != 500.
+          # Medido dos veces: 1157 / 1. Skips sin cambios (1).
+          PISO_PASSED = 1157
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1756,7 +1764,15 @@ jobs:
       # Medido dos veces con JAX_CI_NO_DB=1: 592 / 560.
       # Task 4b (2026-09-15) no mueve el piso sin DB: su unico test pide
       # `client`. Skips 560 -> 561. Medido dos veces con JAX_CI_NO_DB=1: 592 / 561.
-      JAX_CI_MIN_PASSED: "592"
+      # 592 -> 597 el 2026-09-15 (cola durable, Task 9: el camino degradado
+      # deja de ser O(n^2) y el lote va a 500): +4 puros en test_cola_uso.py
+      # (un solo recorrido del directorio por `encolar`, sin `_listar` en el
+      # camino normal, `en_cola` sigue saliendo del disco, el conteo barato
+      # filtra igual que `_listar`) y +1 en test_reintento_de_uso.py (el lote
+      # por defecto es 500). Ninguno pide `client`, asi que el piso sube lo
+      # mismo en los dos modos y los skips no se mueven.
+      # Medido dos veces con JAX_CI_NO_DB=1: 597 / 561.
+      JAX_CI_MIN_PASSED: "597"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

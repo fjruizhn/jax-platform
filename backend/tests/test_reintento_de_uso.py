@@ -524,3 +524,13 @@ def test_el_drenaje_no_reimplementa_el_formato_del_respaldo():
             modulos.add(nodo.module.split(".")[0])
     assert "json" not in modulos and "pathlib" not in modulos
     assert "uso" in modulos
+
+
+def test_el_lote_por_defecto_es_500(monkeypatch):
+    # DECISIÓN de Fernando (2026-09-15) con números de la prueba de carga: 500
+    # da 835 filas/s contra 747 con 200, y p99 del turno 1,60 ms contra 4,68
+    # -- mejor en los dos ejes a la vez. Con 1000+ el p99 salta a 23 ms. El
+    # número está fijado acá para que "más es mejor" no lo mueva sin medir.
+    monkeypatch.delenv(reintento.VARIABLE_LOTE, raising=False)
+    assert reintento.LOTE_POR_DEFECTO == 500
+    assert reintento.lote() == 500

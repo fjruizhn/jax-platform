@@ -457,3 +457,84 @@ async def test_contar_pendientes_ve_lo_que_dejo_otro_proceso(respaldo_aislado):
 
     assert await cola.contar_pendientes() == 1
     assert cola.estadisticas()["en_cola"] == 1
+
+
+# --- el costo del camino degradado (Task 9) --------------------------------
+
+def _scandir_contado(monkeypatch):
+    """Envuelve `os.scandir` y devuelve la lista de rutas recorridas.
+
+    Contar los recorridos, y no el tiempo, es lo que hace que este control no
+    se caiga en una máquina lenta ni pase de casualidad en una rápida.
+    """
+    recorridos = []
+    scandir_real = os.scandir
+
+    def scandir(ruta, *args, **kwargs):
+        recorridos.append(str(ruta))
+        return scandir_real(ruta, *args, **kwargs)
+
+    monkeypatch.setattr(cola.os, "scandir", scandir)
+    return recorridos
+
+
+async def test_encolar_recorre_el_directorio_una_sola_vez(respaldo_aislado, monkeypatch):
+    # `encolar` corre en el `except` de `record_usage`: camino del turno del
+    # usuario, y sólo con la base caída -- justo cuando la cola está profunda.
+    # Dos recorridos por llamada hacen que el turno k pague O(k): el costo es
+    # cuadrático sobre la caída. Este control existe para que nadie vuelva a
+    # meter la segunda pasada sin enterarse.
+    await cola.encolar(dict(FILA))
+
+    recorridos = _scandir_contado(monkeypatch)
+    spool_id = await cola.encolar(dict(FILA))
+
+    assert spool_id is not None
+    assert len(recorridos) == 1, (
+        f"encolar recorrió el directorio {len(recorridos)} veces: {recorridos}"
+    )
+
+
+async def test_encolar_no_ordena_ni_hace_stat_por_archivo_en_el_camino_normal(
+    respaldo_aislado, monkeypatch,
+):
+    # El `stat()` por archivo y el `sort` son el otro medio del costo: se pagan
+    # sólo cuando hay que elegir la más vieja para descartar.
+    await cola.encolar(dict(FILA))
+
+    llamadas = []
+    monkeypatch.setattr(cola, "_listar", lambda directorio: llamadas.append(directorio) or [])
+
+    assert await cola.encolar(dict(FILA)) is not None
+    assert llamadas == []
+
+
+async def test_el_conteo_del_tope_sigue_saliendo_del_disco(respaldo_aislado):
+    # jacobs y motor_registry depositan en el MISMO directorio sin pasar por
+    # este proceso: un contador en memoria mentiría, y con el tope de por medio
+    # mentiría justo cuando se descarta.
+    respaldo_aislado.mkdir(parents=True)
+    ajeno = {**FILA, "origen": "jacobs",
+             "spool_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+             "created_at": "2026-09-15T10:00:00.000+00:00"}
+    (respaldo_aislado / f"{ajeno['spool_id']}.json").write_text(
+        json.dumps(ajeno), encoding="utf-8")
+
+    await cola.encolar(dict(FILA))
+
+    assert cola.estadisticas()["en_cola"] == 2
+
+
+async def test_el_recorrido_barato_no_cuenta_lo_que_no_es_una_fila_pendiente(
+    respaldo_aislado,
+):
+    await cola.encolar(dict(FILA))
+    (respaldo_aislado / cola.SUBDIRECTORIO_CORRUPTOS).mkdir(parents=True, exist_ok=True)
+    (respaldo_aislado / cola.SUBDIRECTORIO_CORRUPTOS / "viejo.json").write_text(
+        "{}", encoding="utf-8")
+    (respaldo_aislado / ".a-medio-escribir.json.tmp").write_text("{}", encoding="utf-8")
+    (respaldo_aislado / "no-es-una-fila.txt").write_text("nada", encoding="utf-8")
+
+    await cola.encolar(dict(FILA))
+
+    assert cola.estadisticas()["en_cola"] == 2

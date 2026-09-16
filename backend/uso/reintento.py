@@ -51,7 +51,13 @@ VARIABLE_LOTE = "JAX_USAGE_RETRY_BATCH_SIZE"
 #: puede convertirse en una transacción de 50.000 INSERT que bloquee la tabla
 #: que usan chat e image en el camino del usuario. Lo que sobra espera al ciclo
 #: siguiente, que llega en `intervalo()` segundos.
-LOTE_POR_DEFECTO = 200
+#: 500 y no 200: medido bajo carga el 2026-09-15 (Task 5 del plan), 500 drena
+#: 835 filas/s contra 747 y deja el p99 del turno del usuario en 1,60 ms contra
+#: 4,68 -- mejor en los dos ejes a la vez, porque menos ciclos son menos
+#: recorridos del respaldo compitiendo con el turno. No es "más es mejor": con
+#: 1000+ se vuelve inestable y el p99 salta a 23 ms. DECISIÓN de Fernando
+#: (2026-09-15) tras el NO-GO de la prueba de carga.
+LOTE_POR_DEFECTO = 500
 
 _MOTIVO_MAX = 255
 
