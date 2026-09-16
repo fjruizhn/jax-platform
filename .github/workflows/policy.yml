@@ -497,8 +497,12 @@ jobs:
             // del detector (solo-prefijo-window, escaneo de texto crudo, y
             // archivo que no parsea se salta). Medido con vitest run: 431 passed
             // en 53 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 431) {
-              console.error("PISO ROTO: se esperaban 431 tests de vitest CORRIDOS y 0 fallidos.");
+            // 431 -> 444 el 2026-09-15 (cola durable, Task 4a): +13 en
+            // AdminCosts.test.jsx -- la pantalla pasa de UN aviso a TRES
+            // (perdidos, desborde, pendientes) y los tres se prueban en los dos
+            // idiomas. Vistos en rojo antes de verde. Medido dos veces: 444.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 444) {
+              console.error("PISO ROTO: se esperaban 444 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
