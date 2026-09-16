@@ -28,6 +28,12 @@ function nombreDePropiedad(nodo) {
 // No alcanza con que el nombre aparezca: tiene que ser el CALLEE de una
 // llamada, pelado o colgando de un alias de la ventana. `acciones.confirm()`,
 // `t.confirmSumLabel(n)` y `{ confirm: ... }` no son eso.
+// Límite conocido (revisión 2026-09-15): sólo se resuelve el callee escrito a
+// la vista -- un Identifier o un MemberExpression sobre la ventana. Si alguien
+// guarda la función en una variable (`const c = window.confirm; c('x')`), el
+// escaneo no la ve: seguirle el rastro a un valor a través de variables es
+// análisis de flujo, no de sintaxis. Es angosto y deliberado; la regla la
+// sostiene además la revisión de código.
 function llamadaDeDialogo(nodo) {
   const callee = nodo.callee
   if (callee?.type === 'Identifier' && DIALOGOS.includes(callee.name)) return `${callee.name}(…)`
