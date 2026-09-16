@@ -487,8 +487,18 @@ jobs:
             // 0c72f4e): +1 en AdminUsers.test.jsx (dos pedidos de bajas en
             // vuelo; el viejo llega ultimo y su lista no se muestra). Visto en
             // rojo antes de verde. Medido con vitest run: 421 passed, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 421) {
-              console.error("PISO ROTO: se esperaban 421 tests de vitest CORRIDOS y 0 fallidos.");
+            // 421 -> 431 el 2026-09-15 (sin dialogos del navegador, decision de
+            // Fernando del mismo dia): +10 en el archivo nuevo
+            // src/politica/dialogosDelNavegador.test.js, la guarda que escanea
+            // TODO src (produccion y tests) por AST y marca confirm/alert/prompt
+            // pelados o con prefijo de ventana. El control anterior solo miraba
+            // el texto "window.confirm" y un confirm(...) pelado lo pasaba de
+            // largo. Los 8 casos sinteticos vistos en rojo contra tres mutantes
+            // del detector (solo-prefijo-window, escaneo de texto crudo, y
+            // archivo que no parsea se salta). Medido con vitest run: 431 passed
+            // en 53 archivos, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 431) {
+              console.error("PISO ROTO: se esperaban 431 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
