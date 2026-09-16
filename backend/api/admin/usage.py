@@ -318,11 +318,24 @@ async def get_usage(
 
     datasets = {f: [chart_map.get(f, {}).get(l, 0) for l in labels] for f in chart_map}
 
+    _respaldo = registros_perdidos_stats()
+
     return {
         "by_facet": by_facet,
         "chart_data": {"labels": labels, "datasets": datasets},
         "period": period,
         # Task 7: filas que record_usage no pudo escribir desde el arranque de
         # ESTE proceso. > 0 = el total de arriba esta incompleto.
-        "registros_perdidos": _registros_perdidos,
+        #
+        # Task 4b (2026-09-15, cola durable): los otros tres campos, para que la
+        # pantalla pueda distinguir PENDIENTE de PERDIDO -- ver el docstring de
+        # registros_perdidos_stats(), que es la especificacion.
+        #
+        # Se listan uno por uno en vez de desparramar el dict entero: esa
+        # funcion tambien trae `ultimo_error`, que es texto de error de la base
+        # y no tiene por que viajar a una pantalla, y un `**stats` publicaria
+        # ademas cualquier campo que alguien le agregue manana. Fijado por
+        # test_get_usage_expone_pendientes_y_perdidas_por_desborde.
+        **{c: _respaldo[c] for c in ("registros_perdidos", "en_cola",
+                                     "perdidas_por_desborde", "ultimo_reintento")},
     }

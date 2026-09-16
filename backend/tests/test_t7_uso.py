@@ -188,3 +188,41 @@ def test_get_usage_expone_registros_perdidos(client, monkeypatch):
 
     r1 = client.get("/api/admin/usage?period=day", headers=h)
     assert r1.json()["registros_perdidos"] == 1
+
+
+# --- 4b (2026-09-15, cola durable): la vista distingue pendientes de perdidos ---
+def test_get_usage_expone_pendientes_y_perdidas_por_desborde(client, monkeypatch, tmp_path):
+    """La pantalla ya sabe mostrar tres estados (Task 4a), pero el handler no le
+    mandaba los campos: `registros_perdidos_stats()` existía desde la Task 2 y
+    sus únicos llamadores eran los tests. Sin este cableado, AdminCosts.jsx cae
+    siempre al `|| 0` y el aviso de "hay N esperando reintento" no aparece nunca.
+
+    Se listan los tres campos uno por uno en vez de desparramar el dict entero:
+    `registros_perdidos_stats()` también trae `ultimo_error`, que es texto de
+    error de la base y no tiene por qué viajar a una pantalla. Un `**stats`
+    publicaría además cualquier campo que alguien le agregue mañana."""
+    from tests.identidades import cabeceras
+    from uso import cola
+
+    h = cabeceras(client, "t4b-uso-superadmin", "superadmin")
+    monkeypatch.setenv(cola.VARIABLE_DIRECTORIO, str(tmp_path / "respaldo"))
+    cola.reset_estado()
+
+    cuerpo = client.get("/api/admin/usage?period=day", headers=h).json()
+    assert cuerpo["en_cola"] == 0
+    assert cuerpo["perdidas_por_desborde"] == 0
+    assert cuerpo["ultimo_reintento"] is None
+    assert "ultimo_error" not in cuerpo, "el texto de error de la base no viaja a la pantalla"
+
+    client.portal.call(cola.encolar, {
+        "created_at": "2026-09-15T19:00:00+00:00", "tenant_id": 1, "user_id": 1,
+        "facet": "jekyll", "model": "m", "tokens_in": 1, "tokens_out": 1,
+        "cost_usd": 0.01, "request_type": "chat", "origen": "platform",
+        "status": None, "job_id": None,
+    })
+    assert client.get("/api/admin/usage?period=day", headers=h).json()["en_cola"] == 1
+
+    usage_mod.marcar_reintento("2026-09-15T20:00:00+00:00")
+    assert client.get("/api/admin/usage?period=day", headers=h).json()["ultimo_reintento"] == (
+        "2026-09-15T20:00:00+00:00"
+    )
