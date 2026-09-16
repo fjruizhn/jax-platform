@@ -510,6 +510,9 @@ export default {
   adminCostsRegistrosPerdidos: (n, num) => `incomplete total: ${num} record${n === 1 ? '' : 's'} lost`,
   // Also lost, but from a different cause with a different fix for the admin.
   adminCostsPerdidasPorDesborde: (n, num) => `incomplete total: the backup filled up and ${num} old record${n === 1 ? ' was' : 's were'} dropped`,
+  // Task 10 (2026-09-16, the poison row): a third cause of loss. The database
+  // rejects the row's DATA and after three attempts it lands in quarantine.
+  adminCostsRechazadas: (n, num) => `incomplete total: the database rejected ${num} record${n === 1 ? '' : 's'}, now quarantined`,
   // PENDING, not lost: the total is incomplete but completes on its own.
   adminCostsEnCola: (n, num) => `${num} record${n === 1 ? ' is' : 's are'} waiting to be retried; the total will complete on its own.`,
   adminCostsUltimoReintento: (cuando) => `Last retry: ${cuando}`,

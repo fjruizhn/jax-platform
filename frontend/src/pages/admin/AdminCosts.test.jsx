@@ -242,6 +242,51 @@ describe('AdminCosts -- pendientes vs perdidos (Task 4a)', () => {
     ).toBeInTheDocument()
   })
 
+  // Task 10 (2026-09-16, la fila venenosa): una TERCERA causa de perdida, con
+  // su propio texto. "La base la rechazo" manda al admin a mirar el dato de la
+  // fila; "se lleno el respaldo" lo manda a mirar el drenaje. Mezclarlas en un
+  // solo aviso lo manda donde no es.
+  it('las filas que la base rechazo son perdida, con su propio texto', async () => {
+    api.get.mockResolvedValue({
+      data: { ...DATA, registros_perdidos: 0, en_cola: 0, perdidas_por_desborde: 0, rechazadas: 3 },
+    })
+    renderCosts()
+    expect(
+      await screen.findByText('total incompleto: la base rechazó 3 registros, que quedaron en cuarentena')
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/se llenó el respaldo/)).not.toBeInTheDocument()
+  })
+
+  it('singular y plural: 1 rechazada concuerda en los dos idiomas', async () => {
+    api.get.mockResolvedValue({ data: { ...DATA, rechazadas: 1 } })
+    const { unmount } = renderCosts()
+    expect(
+      await screen.findByText('total incompleto: la base rechazó 1 registro, que quedó en cuarentena')
+    ).toBeInTheDocument()
+    unmount()
+    localStorage.setItem('jax_lang', 'en')
+    renderCosts()
+    expect(
+      await screen.findByText('incomplete total: the database rejected 1 record, now quarantined')
+    ).toBeInTheDocument()
+  })
+
+  it('en ingles el aviso de rechazadas sale traducido y en plural', async () => {
+    localStorage.setItem('jax_lang', 'en')
+    api.get.mockResolvedValue({ data: { ...DATA, rechazadas: 4 } })
+    renderCosts()
+    expect(
+      await screen.findByText('incomplete total: the database rejected 4 records, now quarantined')
+    ).toBeInTheDocument()
+  })
+
+  it('un backend viejo sin el campo no inventa un aviso', async () => {
+    api.get.mockResolvedValue({ data: { ...DATA } })
+    renderCosts()
+    await screen.findByText('Total')
+    expect(screen.queryByText(/cuarentena/)).not.toBeInTheDocument()
+  })
+
   it('los avisos salen aunque no haya filas: "sin datos" solo mentiria', async () => {
     api.get.mockResolvedValue({
       data: { by_facet: [], chart_data: null, en_cola: 5, perdidas_por_desborde: 4 },

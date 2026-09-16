@@ -77,12 +77,17 @@ export default function AdminCosts() {
   //   - perdidas_por_desborde  -> PERDIDO también, pero por el respaldo lleno
   //                               descartando lo más viejo. Se nombra distinto
   //                               porque la acción del admin es otra.
+  //   - rechazadas (Task 10)   -> PERDIDO también: la base rechaza el DATO de
+  //                               la fila y el drenaje la mandó a cuarentena
+  //                               tras N intentos. Otra vez, otra acción: acá
+  //                               hay que mirar el dato, no el respaldo.
   // Los dos estados se pueden dar a la vez y entonces se muestran los dos.
   // `|| 0` porque un backend viejo (o el cableado de la Task 4b todavía sin
   // hacer) no manda estos campos: ausente es cero, no un aviso inventado.
   const enCola = data?.en_cola || 0
   const perdidos = data?.registros_perdidos || 0
   const desbordadas = data?.perdidas_por_desborde || 0
+  const rechazadas = data?.rechazadas || 0
   const conteo = (n) => n.toLocaleString(localeFor(lang))
 
   return (
@@ -113,6 +118,11 @@ export default function AdminCosts() {
       {desbordadas > 0 && (
         <p role="status" className="text-xs font-semibold text-aviso bg-aviso-fondo border border-aviso-borde rounded px-3 py-2 mb-4">
           {t.adminCostsPerdidasPorDesborde(desbordadas, conteo(desbordadas))}
+        </p>
+      )}
+      {rechazadas > 0 && (
+        <p role="status" className="text-xs font-semibold text-aviso bg-aviso-fondo border border-aviso-borde rounded px-3 py-2 mb-4">
+          {t.adminCostsRechazadas(rechazadas, conteo(rechazadas))}
         </p>
       )}
       {enCola > 0 && (

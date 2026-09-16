@@ -33,6 +33,22 @@ _ERROR_MAX = 255
 # pendientes" no distingue una cola que avanza de un reintento muerto.
 _ultimo_reintento: str | None = None
 
+# Task 10 (2026-09-16, la fila venenosa): filas que la base RECHAZA siempre y
+# que el drenaje mando a `rechazadas/` tras agotar los intentos. Es PERDIDA,
+# no pendiente: la fila salio del respaldo y no va a entrar nunca a
+# axioma_usage. El archivo sigue en disco -- el dato no se tira -- pero el
+# total del periodo ya no se completa solo.
+#
+# Vive aca, con los otros contadores observables, y no en uso/cola.py: ese
+# archivo es el contrato copiado al repo jax y se compara por AST
+# (scripts/check_mirror_sync.py, familia `cola_uso`, con `_estado` y
+# `estadisticas` entre los simbolos compartidos). Agregarle una clave obligaria
+# a una rama en jax y a un despliegue coordinado de los dos repos para un dato
+# que es puramente de la plataforma: jax deposita, no drena. Misma razon que
+# `_ultimo_reintento`, que ya esta aca por lo mismo.
+_rechazadas = 0
+_ultimo_rechazo: str | None = None
+
 
 # Quien deposito la fila en el respaldo. Los otros dos valores del contrato
 # ("jacobs", "motor_registry") son de los escritores del repo jax. No es
@@ -46,6 +62,15 @@ def marcar_reintento(cuando: str | None = None) -> None:
     global _ultimo_reintento
     _ultimo_reintento = cuando or datetime.now(timezone.utc).isoformat()
 
+
+def marcar_rechazada(spool_id: str, motivo: str) -> None:
+    """La llama el drenaje cuando manda una fila a `rechazadas/`. El motivo es
+    texto de error de la base, ya redactado con `texto_de_error`: se guarda
+    para mirarlo en vivo y NO se publica, igual que `_ultimo_error`."""
+    global _rechazadas, _ultimo_rechazo
+    _rechazadas += 1
+    _ultimo_rechazo = f"{spool_id}: {motivo}"[:_ERROR_MAX]
+
 CODIGO_IDS_INVALIDOS = "ids_de_uso_invalidos"
 # Un BIGINT sin signo tiene 20 digitos: mas largo no es un id, y la cota
 # mantiene la validacion en O(1).
@@ -57,8 +82,11 @@ def registros_perdidos_stats() -> dict:
 
     - `en_cola` / `ultimo_reintento`: PENDIENTE. El total de arriba esta
       incompleto pero se va a completar solo.
-    - `registros_perdidos` / `perdidas_por_desborde`: PERDIDO de verdad. El
-      total nunca se va a completar y hay que decirlo fuerte.
+    - `registros_perdidos` / `perdidas_por_desborde` / `rechazadas`: PERDIDO de
+      verdad. El total nunca se va a completar y hay que decirlo fuerte. Son
+      tres causas distintas y se nombran distinto porque la accion del admin es
+      distinta: no se pudo respaldar / se lleno el respaldo / la base rechaza
+      el DATO de la fila.
 
     `en_cola` y `perdidas_por_desborde` salen de uso/cola.py: `en_cola` es la
     ultima profundidad MEDIDA del disco (no un contador en memoria), porque
@@ -71,6 +99,8 @@ def registros_perdidos_stats() -> dict:
         "ultimo_error": _ultimo_error,
         "en_cola": respaldo["en_cola"],
         "perdidas_por_desborde": respaldo["perdidas_por_desborde"],
+        "rechazadas": _rechazadas,
+        "ultimo_rechazo": _ultimo_rechazo,
         "ultimo_reintento": _ultimo_reintento,
     }
 
@@ -78,9 +108,12 @@ def registros_perdidos_stats() -> dict:
 def reset_registros_perdidos() -> None:
     """Solo para tests -- que cada test parta de cero sin depender del orden."""
     global _registros_perdidos, _ultimo_error, _ultimo_reintento
+    global _rechazadas, _ultimo_rechazo
     _registros_perdidos = 0
     _ultimo_error = None
     _ultimo_reintento = None
+    _rechazadas = 0
+    _ultimo_rechazo = None
 
 
 def _es_id(valor) -> bool:
@@ -332,10 +365,13 @@ async def get_usage(
         # registros_perdidos_stats(), que es la especificacion.
         #
         # Se listan uno por uno en vez de desparramar el dict entero: esa
-        # funcion tambien trae `ultimo_error`, que es texto de error de la base
-        # y no tiene por que viajar a una pantalla, y un `**stats` publicaria
-        # ademas cualquier campo que alguien le agregue manana. Fijado por
-        # test_get_usage_expone_pendientes_y_perdidas_por_desborde.
+        # funcion tambien trae `ultimo_error` y `ultimo_rechazo`, que son texto
+        # de error de la base y no tienen por que viajar a una pantalla, y un
+        # `**stats` publicaria ademas cualquier campo que alguien le agregue
+        # manana. Fijado por
+        # test_get_usage_expone_pendientes_y_perdidas_por_desborde y por
+        # test_get_usage_expone_las_filas_que_la_base_rechazo (Task 10).
         **{c: _respaldo[c] for c in ("registros_perdidos", "en_cola",
-                                     "perdidas_por_desborde", "ultimo_reintento")},
+                                     "perdidas_por_desborde", "rechazadas",
+                                     "ultimo_reintento")},
     }

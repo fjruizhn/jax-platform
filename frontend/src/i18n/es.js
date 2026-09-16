@@ -516,6 +516,12 @@ export default {
   // respaldo en disco se lleno y descarto lo mas viejo. Decirle "la base
   // rechazo la fila" seria mandarlo a mirar donde no es.
   adminCostsPerdidasPorDesborde: (n, num) => `total incompleto: se llenó el respaldo y ${n === 1 ? 'se descartó' : 'se descartaron'} ${num} registro${n === 1 ? '' : 's'} viejo${n === 1 ? '' : 's'}`,
+  // Task 10 (2026-09-16, la fila venenosa): tercera causa de perdida. La base
+  // rechaza el DATO de la fila (un facet demasiado largo, un numero fuera de
+  // rango) y despues de tres intentos la fila queda en cuarentena. Se nombra
+  // distinto de las otras dos porque manda al admin a otro lado: acá hay que
+  // mirar el dato de la fila, no el respaldo ni el drenaje.
+  adminCostsRechazadas: (n, num) => `total incompleto: la base rechazó ${num} registro${n === 1 ? '' : 's'}, que ${n === 1 ? 'quedó' : 'quedaron'} en cuarentena`,
   // PENDIENTE, no perdido: el total esta incompleto y se completa solo.
   adminCostsEnCola: (n, num) => `Hay ${num} registro${n === 1 ? '' : 's'} esperando reintento; el total va a completarse solo.`,
   adminCostsUltimoReintento: (cuando) => `Último reintento: ${cuando}`,
