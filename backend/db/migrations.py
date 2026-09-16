@@ -1594,6 +1594,11 @@ async def _crear_indice_acotado(cur, tabla: str, indice: str, ddl: str) -> bool:
     """Corre `ddl` con lock_wait_timeout de 30 s en ESTA sesion y restaura
     el valor previo pase lo que pase. True si lo creo.
 
+    Generico pese al nombre: `indice` es solo el objeto que se nombra en el
+    log, y desde 2026-09-15 tambien lo usa la columna spool_id
+    (_respaldo_de_uso). La politica de espera es la misma para cualquier DDL
+    en linea sobre una tabla caliente.
+
     Politica de jax/jacobs/store.py::_crear_indice_acotado: si la espera vence
     (1205), ERROR en el log con el indice y el motivo, y el arranque SIGUE --
     el proximo arranque lo reintenta, porque _index_exists ve que falta. El
@@ -1626,6 +1631,53 @@ async def _indice_de_uso_por_periodo(cur) -> None:
     if not await _index_exists(cur, "axioma_usage", "idx_axioma_usage_periodo"):
         await _crear_indice_acotado(
             cur, "axioma_usage", "idx_axioma_usage_periodo", DDL_INDICE_USO_POR_PERIODO)
+
+
+# Cola durable para el registro de uso (2026-09-15, Task 2 del plan
+# 2026-09-15-cola-durable-uso). `spool_id` es lo que hace IDEMPOTENTE al
+# reintento: el drenaje inserta la fila del respaldo con su spool_id y borra el
+# archivo DESPUES; si el proceso se muere entre las dos cosas, el ciclo
+# siguiente reinserta la misma fila y el UNIQUE (con INSERT IGNORE) evita
+# cobrarla dos veces.
+#
+# NULL y sin default: las filas del camino feliz no lo escriben, y un indice
+# UNIQUE admite varios NULL en MariaDB -- si no, la segunda fila de chat
+# fallaria. CHAR(36) es exactamente un UUID canonico con guiones (el nombre del
+# archivo del respaldo, uso/cola.py).
+#
+# ALGORITHM=INPLACE, LOCK=NONE explicitos en los dos DDL, por lo mismo que el
+# indice de periodo: si MariaDB no puede hacerlo en linea, que FALLE en vez de
+# caer a COPY y bloquear los INSERT de record_usage (y los de Jacobs y LAS
+# MANOS) mientras copia la tabla.
+COLUMNA_SPOOL_ID = "spool_id"
+INDICE_SPOOL_ID = "uniq_axioma_usage_spool_id"
+DDL_COLUMNA_SPOOL_ID = (
+    "ALTER TABLE axioma_usage ADD COLUMN spool_id CHAR(36) NULL, "
+    "ALGORITHM=INPLACE, LOCK=NONE"
+)
+DDL_INDICE_SPOOL_ID = (
+    f"ALTER TABLE axioma_usage ADD UNIQUE INDEX {INDICE_SPOOL_ID} ({COLUMNA_SPOOL_ID}), "
+    "ALGORITHM=INPLACE, LOCK=NONE"
+)
+
+
+async def _respaldo_de_uso(cur) -> None:
+    """Idempotente: agrega spool_id y su UNIQUE a axioma_usage si faltan.
+
+    Los dos DDL van por `_crear_indice_acotado` (que es generico: corre
+    CUALQUIER DDL con la espera acotada de 30 s y restaura el valor previo).
+    Si la espera de la COLUMNA vence (1205), el indice NO se intenta: un UNIQUE
+    sobre una columna que no existe es un error duro que tiraria el arranque,
+    y no una espera reintentable. Los dos quedan para el proximo arranque, que
+    ve que faltan.
+    """
+    if not await _column_exists(cur, "axioma_usage", COLUMNA_SPOOL_ID):
+        if not await _crear_indice_acotado(
+                cur, "axioma_usage", COLUMNA_SPOOL_ID, DDL_COLUMNA_SPOOL_ID):
+            return
+    if not await _index_exists(cur, "axioma_usage", INDICE_SPOOL_ID):
+        await _crear_indice_acotado(
+            cur, "axioma_usage", INDICE_SPOOL_ID, DDL_INDICE_SPOOL_ID)
 
 
 async def _index_exists(cur, table_name: str, index_name: str) -> bool:
@@ -2124,6 +2176,7 @@ async def run_migrations():
                 if not await _index_exists(cur, table_name, index_name):
                     await cur.execute(ddl)
             await _indice_de_uso_por_periodo(cur)
+            await _respaldo_de_uso(cur)
 
             await _drop_axioma_artifacts(cur)
             await _seed_providers(cur)

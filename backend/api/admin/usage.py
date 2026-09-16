@@ -1,10 +1,11 @@
 import logging
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
 from redaccion import texto_de_error
+from uso import cola
 
 logger = logging.getLogger("admin.usage")
 
@@ -14,12 +15,36 @@ router = APIRouter(prefix="/api/admin")
 # de las filas de axioma_usage que record_usage NO pudo escribir. Mismo patron
 # que facet_health.write_failure_stats(): en memoria y no en la DB, porque la
 # DB es justamente lo que puede estar caido. Por proceso: se reinicia con el
-# servicio y cuenta desde el ultimo arranque, no un historico. La solucion de
-# fondo (que no se pierda ninguna fila) es la cola durable con reintento,
-# pendiente con fecha 2026-09-29.
+# servicio y cuenta desde el ultimo arranque, no un historico.
+#
+# Desde la cola durable (2026-09-15, Task 2 del plan 2026-09-15-cola-durable-uso)
+# este contador ya NO cuenta cada fallo del INSERT: cuenta las filas que
+# ADEMAS no pudieron dejarse en el respaldo de disco (uso/cola.py). Una fila
+# encolada no esta perdida -- esta pendiente, y el drenaje la va a insertar.
+# Confundir las dos cosas le diria al tablero "total incompleto" cuando el
+# total se va a completar solo.
 _registros_perdidos = 0
 _ultimo_error: str | None = None
 _ERROR_MAX = 255
+
+# Marca de vida del drenaje (backend/uso/reintento.py, Task 3): ISO 8601 del
+# ultimo ciclo. Vive aca y no en cola.py porque cola.py es el contrato copiado
+# al repo jax, y jax NO drena -- solo deposita. Sin este dato, "hay 5
+# pendientes" no distingue una cola que avanza de un reintento muerto.
+_ultimo_reintento: str | None = None
+
+
+# Quien deposito la fila en el respaldo. Los otros dos valores del contrato
+# ("jacobs", "motor_registry") son de los escritores del repo jax. No es
+# configuracion: identifica al proceso, y el frozenset de cola.py lo valida.
+ORIGEN = "platform"
+assert ORIGEN in cola.ORIGENES
+
+
+def marcar_reintento(cuando: str | None = None) -> None:
+    """La llama el drenaje al terminar un ciclo. Sin argumento, ahora."""
+    global _ultimo_reintento
+    _ultimo_reintento = cuando or datetime.now(timezone.utc).isoformat()
 
 CODIGO_IDS_INVALIDOS = "ids_de_uso_invalidos"
 # Un BIGINT sin signo tiene 20 digitos: mas largo no es un id, y la cota
@@ -28,16 +53,34 @@ _ID_MAX_DIGITOS = 20
 
 
 def registros_perdidos_stats() -> dict:
-    """Lo publica GET /api/admin/usage: un total que no incluye las filas
-    perdidas tiene que decir que esta incompleto."""
-    return {"registros_perdidos": _registros_perdidos, "ultimo_error": _ultimo_error}
+    """Lo publica GET /api/admin/usage. Dos estados distintos, no uno:
+
+    - `en_cola` / `ultimo_reintento`: PENDIENTE. El total de arriba esta
+      incompleto pero se va a completar solo.
+    - `registros_perdidos` / `perdidas_por_desborde`: PERDIDO de verdad. El
+      total nunca se va a completar y hay que decirlo fuerte.
+
+    `en_cola` y `perdidas_por_desborde` salen de uso/cola.py: `en_cola` es la
+    ultima profundidad MEDIDA del disco (no un contador en memoria), porque
+    Jacobs y LAS MANOS depositan en el mismo directorio sin pasar por este
+    proceso. Se actualiza en cada encolado y en cada ciclo de drenaje.
+    """
+    respaldo = cola.estadisticas()
+    return {
+        "registros_perdidos": _registros_perdidos,
+        "ultimo_error": _ultimo_error,
+        "en_cola": respaldo["en_cola"],
+        "perdidas_por_desborde": respaldo["perdidas_por_desborde"],
+        "ultimo_reintento": _ultimo_reintento,
+    }
 
 
 def reset_registros_perdidos() -> None:
     """Solo para tests -- que cada test parta de cero sin depender del orden."""
-    global _registros_perdidos, _ultimo_error
+    global _registros_perdidos, _ultimo_error, _ultimo_reintento
     _registros_perdidos = 0
     _ultimo_error = None
+    _ultimo_reintento = None
 
 
 def _es_id(valor) -> bool:
@@ -97,6 +140,11 @@ async def record_usage(
     Devuelve el id de la fila escrita, o None si no se pudo escribir (fix
     wave final, 2026-09-15: los tests de chat borran exactamente las filas
     que escribieron; los llamadores de produccion lo ignoran)."""
+    # Fuera del try: si el fallo es la consulta de precio (tambien va a la
+    # base), el `except` todavia tiene que poder encolar la fila. El gasto
+    # ocurrio igual; lo que no se sabe es cuanto, y eso es exactamente lo que
+    # significa cost_usd NULL (nunca un numero inventado).
+    cost = cost_usd_override
     try:
         if cost_usd_override is not None:
             cost = cost_usd_override
@@ -125,10 +173,15 @@ async def record_usage(
                 fila = cur.lastrowid
             await conn.commit()
         return fila
-    except Exception as e:  # fail-soft: el turno ya se pagó y ya respondió; un 500 no recupera el costo y le quita la respuesta al usuario; la pérdida la hace visible el contador registros_perdidos (GET /api/admin/usage) y el WARNING
+    except Exception as e:  # fail-soft: el turno ya se pagó y ya respondió; un 500 no recupera el costo y le quita la respuesta al usuario; la fila NO se pierde (va al respaldo de uso/cola.py, que el drenaje reinserta), y lo que no se pudo ni encolar lo hace visible registros_perdidos (GET /api/admin/usage) y el WARNING
         global _registros_perdidos, _ultimo_error
+        motivo = texto_de_error(e)[:_ERROR_MAX]
+        if await _encolar_la_fila_perdida(
+                user_id, tenant_id, facet, model, tokens_in, tokens_out,
+                cost, request_type, motivo):
+            return None
         _registros_perdidos += 1
-        _ultimo_error = texto_de_error(e)[:_ERROR_MAX]
+        _ultimo_error = motivo
         # Prefijo estable: se cuenta desde journalctl sin depender del endpoint.
         # El texto del error pasa por la redaccion (Task 6): puede venir del
         # proveedor o de la DB.
@@ -136,6 +189,50 @@ async def record_usage(
             "record_usage failed facet=%s model=%s total=%d reason=%s",
             facet, model, _registros_perdidos, _ultimo_error,
         )
+        return None
+
+
+async def _encolar_la_fila_perdida(
+    user_id, tenant_id, facet, model, tokens_in, tokens_out, cost,
+    request_type, motivo: str,
+) -> bool:
+    """Deja la fila en el respaldo de disco. True si entro.
+
+    `created_at` es la hora del TURNO, fijada aca y no en el reintento: si la
+    pusiera el drenaje, una caida de dos horas moveria el costo al dia
+    siguiente. `tenant_id`/`user_id` se guardan tal como llegaron (los valida
+    validar_ids_de_uso ANTES del LLM); el drenaje los convierte con int(), que
+    es lo que hace el INSERT de arriba y lo que ya guardan las copias de jax.
+
+    `encolar` promete no propagar, pero esto corre DENTRO del `except` de
+    record_usage: si la promesa se rompiera, la excepcion saldria por arriba y
+    el turno ya cobrado terminaria en 500. El try de mas es barato; la
+    respuesta del usuario, no.
+    """
+    try:
+        spool_id = await cola.encolar({
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "facet": facet,
+            "model": model,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost,
+            "request_type": request_type,
+            "origen": ORIGEN,
+        })
+    except Exception as e:  # fail-soft: el respaldo es la red de seguridad, no puede ser lo que tire el turno; si falla, el camino de abajo cuenta la perdida y deja el WARNING
+        logger.warning("record_usage: el respaldo de uso falló: %s", texto_de_error(e)[:_ERROR_MAX])
+        return False
+    if not spool_id:
+        return False
+    # INFO, no WARNING: nada se perdio. El WARNING queda para lo que si.
+    logger.info(
+        "record_usage encolada facet=%s model=%s spool_id=%s reason=%s",
+        facet, model, spool_id, motivo,
+    )
+    return True
 
 
 # Fix wave final, item 8 (2026-09-15): la prueba de carga del gate U29 dio

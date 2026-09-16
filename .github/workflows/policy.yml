@@ -1262,7 +1262,13 @@ jobs:
           # el piso sin DB sube lo mismo. Los 30 vistos en rojo antes de verde
           # (ImportError de `uso.cola`, el modulo todavia no existia).
           # Medido dos veces: 1106 / 1. Skips sin cambios (1).
-          PISO_PASSED = 1106
+          # 1106 -> 1128 el 2026-09-15 (cola durable, Task 2): +22 en
+          # test_respaldo_de_uso.py y los adaptados de test_t7_uso.py -- la
+          # migracion spool_id/UNIQUE, el except de record_usage que encola
+          # antes de contar la perdida, y las estadisticas ampliadas. 4 de
+          # ellos piden `client`, por eso el piso sin DB sube 18 y no 22.
+          # Vistos en rojo antes de verde. Medido dos veces: 1128 / 1.
+          PISO_PASSED = 1128
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1709,7 +1715,10 @@ jobs:
       # tests/test_cola_uso.py (el respaldo en disco; ni DB ni `client`), los
       # mismos 30 que subieron el piso CON DB. Vistos en rojo antes de verde.
       # Medido dos veces con JAX_CI_NO_DB=1: 557 / 550 (skips sin cambios).
-      JAX_CI_MIN_PASSED: "557"
+      # Cola durable, Task 2 (2026-09-15): +18 puros de los 22 nuevos; los
+      # otros 4 piden `client` y quedan salteados sin DB (550 -> 554 skips).
+      # Medido dos veces con JAX_CI_NO_DB=1: 575 / 554.
+      JAX_CI_MIN_PASSED: "575"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

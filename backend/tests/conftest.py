@@ -36,6 +36,16 @@ import tempfile  # noqa: E402
 os.environ["JAX_FACET_SEAL_PATH"] = os.path.join(
     tempfile.mkdtemp(prefix="jax-test-sello-"), "facet-cache-seal")
 
+# Respaldo de uso aislado para TODA la sesión (2026-09-15, cola durable,
+# Task 2), por la misma razón que el sello de arriba: el default de
+# `uso/cola.py` es /srv/jax-data/usage-spool, el directorio REAL del que drena
+# la plataforma en producción y donde depositan Jacobs y LAS MANOS. Un test que
+# ejercite el `except` de record_usage encolaría ahí una fila de mentira, y el
+# reintento se la cobraría a un tenant de verdad. Se fija acá, antes de
+# cualquier import: cola.py lee la variable en cada llamada, así que un test
+# que quiera su propio directorio igual puede hacer monkeypatch.setenv.
+os.environ["JAX_USAGE_SPOOL_DIR"] = tempfile.mkdtemp(prefix="jax-test-respaldo-uso-")
+
 
 def _envolver_portal_call(portal_call):
     """Envuelve `BlockingPortal.call` (tanda A, hallazgo de Tarea 1,

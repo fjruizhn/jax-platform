@@ -21,6 +21,7 @@ from api import chat as chat_mod
 from api import image as image_mod
 from api.admin import usage as usage_mod
 from auth.models import AuthUser
+from uso import cola
 
 SECRETO = "sk-FAKE-task7-0123456789abcdef"
 
@@ -28,8 +29,21 @@ SECRETO = "sk-FAKE-task7-0123456789abcdef"
 @pytest.fixture(autouse=True)
 def _contador_limpio():
     usage_mod.reset_registros_perdidos()
+    cola.reset_estado()
     yield
     usage_mod.reset_registros_perdidos()
+    cola.reset_estado()
+
+
+def _respaldo_que_no_acepta(monkeypatch):
+    """Desde la cola durable (2026-09-15, Task 2), `registros_perdidos` cuenta
+    las filas que ADEMAS no pudieron encolarse: una fila en el respaldo no esta
+    perdida, esta pendiente. Estos tests son sobre el contador de PERDIDAS, asi
+    que le cierran la puerta al respaldo a proposito. El camino en que si entra
+    esta en tests/test_respaldo_de_uso.py."""
+    async def no_encola(fila):
+        return None
+    monkeypatch.setattr(usage_mod.cola, "encolar", no_encola)
 
 
 def _pool_que_falla(monkeypatch, exc):
@@ -45,11 +59,13 @@ def _record(user_id="1", tenant_id="1"):
 
 # --- 1. contador ---------------------------------------------------------------
 def test_contador_parte_de_cero():
-    assert usage_mod.registros_perdidos_stats() == {"registros_perdidos": 0, "ultimo_error": None}
+    stats = usage_mod.registros_perdidos_stats()
+    assert stats["registros_perdidos"] == 0 and stats["ultimo_error"] is None
 
 
 def test_fallo_del_insert_sube_el_contador_y_no_lanza(monkeypatch, caplog):
     _pool_que_falla(monkeypatch, RuntimeError("pool caido"))
+    _respaldo_que_no_acepta(monkeypatch)
     with caplog.at_level("WARNING", logger="admin.usage"):
         assert _record() is None
         assert _record() is None
@@ -61,6 +77,7 @@ def test_fallo_del_insert_sube_el_contador_y_no_lanza(monkeypatch, caplog):
 
 def test_el_ultimo_error_y_el_log_van_redactados(monkeypatch, caplog):
     _pool_que_falla(monkeypatch, RuntimeError(f"fallo conectando api_key={SECRETO} al pool"))
+    _respaldo_que_no_acepta(monkeypatch)
     with caplog.at_level("WARNING", logger="admin.usage"):
         _record()
     assert SECRETO not in usage_mod.registros_perdidos_stats()["ultimo_error"]
@@ -165,6 +182,7 @@ def test_get_usage_expone_registros_perdidos(client, monkeypatch):
     async def get_pool_caido():
         raise RuntimeError("pool caido")
     monkeypatch.setattr(usage_mod, "get_pool", get_pool_caido)
+    _respaldo_que_no_acepta(monkeypatch)
     client.portal.call(usage_mod.record_usage, "1", "1", "jekyll", "p", "m", 1, 1, "chat", 0.01)
     monkeypatch.undo()
 
