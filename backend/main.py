@@ -47,6 +47,7 @@ from jax_engine.state import engine_state
 from jax_engine.events import event_bus
 from jax_engine.owner_cleanup import start_owner_file_cleanup
 from jax_engine.facet_canary import start_facet_canary
+from uso.reintento import start_reintento_de_uso
 from jax_engine.websocket_hub import ws_hub
 from jax_engine.lifecycle import lifecycle_lock, sse_connections
 from jax_engine.schemas import JAXEvent
@@ -92,6 +93,11 @@ async def lifespan(app: FastAPI):
     engine_state.start_background_tasks()
     asyncio.create_task(start_owner_file_cleanup())
     asyncio.create_task(start_facet_canary())
+    # Drenaje del respaldo de uso (2026-09-15, Task 3): reinserta las filas
+    # de axioma_usage que quedaron en disco cuando la base no respondió.
+    # Drena una vez al arrancar, antes del primer sleep: un reinicio
+    # después de una caída tiene que recuperar enseguida, no al minuto.
+    asyncio.create_task(start_reintento_de_uso())
     yield
     # Cerrar conversaciones web abiertas -> el worker de facts las destila.
     try:

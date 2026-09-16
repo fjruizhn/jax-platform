@@ -99,3 +99,159 @@ describe('AdminCosts -- registros perdidos (Task 7)', () => {
     expect(await screen.findByText('total incompleto: 2 registros perdidos')).toBeInTheDocument()
   })
 })
+
+// Task 4a (2026-09-15, plan cola-durable-uso): la pantalla tiene que
+// distinguir DOS estados que antes eran uno solo (spec: docstring de
+// registros_perdidos_stats en backend/api/admin/usage.py):
+//
+//  - PENDIENTE (`en_cola > 0`): el total esta incompleto pero se va a
+//    completar solo cuando drene el reintento. Aviso SUAVE.
+//  - PERDIDO (`registros_perdidos > 0` o `perdidas_por_desborde > 0`): el
+//    total NUNCA se va a completar. Aviso FUERTE.
+//
+// Y los dos se pueden dar a la vez, en cuyo caso salen los dos. Mezclarlos
+// (lo de antes) le dice "total incompleto" al admin cuando el total se
+// arregla solo, o lo tranquiliza cuando no.
+describe('AdminCosts -- pendientes vs perdidos (Task 4a)', () => {
+  it('estado 1/4: sin nada en cola ni perdido, no sale ningun aviso', async () => {
+    api.get.mockResolvedValue({
+      data: { ...DATA, registros_perdidos: 0, en_cola: 0, perdidas_por_desborde: 0 },
+    })
+    renderCosts()
+    await screen.findByText('gpt-x')
+    expect(screen.queryByText(/registros perdidos/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/esperando reintento/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/respaldo/)).not.toBeInTheDocument()
+  })
+
+  it('estado 2/4: solo pendientes -- aviso suave, sin "total incompleto"', async () => {
+    api.get.mockResolvedValue({
+      data: { ...DATA, registros_perdidos: 0, en_cola: 5, perdidas_por_desborde: 0 },
+    })
+    renderCosts()
+    expect(
+      await screen.findByText('Hay 5 registros esperando reintento; el total va a completarse solo.')
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/total incompleto/)).not.toBeInTheDocument()
+  })
+
+  it('estado 3/4: solo perdidos -- aviso fuerte, sin el de pendientes', async () => {
+    api.get.mockResolvedValue({
+      data: { ...DATA, registros_perdidos: 3, en_cola: 0, perdidas_por_desborde: 0 },
+    })
+    renderCosts()
+    expect(await screen.findByText('total incompleto: 3 registros perdidos')).toBeInTheDocument()
+    expect(screen.queryByText(/esperando reintento/)).not.toBeInTheDocument()
+  })
+
+  it('estado 4/4: los dos a la vez -- salen los dos avisos', async () => {
+    api.get.mockResolvedValue({
+      data: { ...DATA, registros_perdidos: 3, en_cola: 5, perdidas_por_desborde: 0 },
+    })
+    renderCosts()
+    expect(await screen.findByText('total incompleto: 3 registros perdidos')).toBeInTheDocument()
+    expect(
+      screen.getByText('Hay 5 registros esperando reintento; el total va a completarse solo.')
+    ).toBeInTheDocument()
+  })
+
+  it('el desborde del respaldo es perdida de verdad, pero se nombra distinto de "la DB rechazo la fila"', async () => {
+    api.get.mockResolvedValue({
+      data: { ...DATA, registros_perdidos: 0, en_cola: 0, perdidas_por_desborde: 4 },
+    })
+    renderCosts()
+    expect(
+      await screen.findByText('total incompleto: se llenó el respaldo y se descartaron 4 registros viejos')
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/registros perdidos/)).not.toBeInTheDocument()
+  })
+
+  it('las dos causas de perdida a la vez salen como dos avisos distintos', async () => {
+    api.get.mockResolvedValue({
+      data: { ...DATA, registros_perdidos: 2, en_cola: 0, perdidas_por_desborde: 4 },
+    })
+    renderCosts()
+    expect(await screen.findByText('total incompleto: 2 registros perdidos')).toBeInTheDocument()
+    expect(
+      screen.getByText('total incompleto: se llenó el respaldo y se descartaron 4 registros viejos')
+    ).toBeInTheDocument()
+  })
+
+  it('con pendientes y marca de vida del drenaje, muestra el ultimo reintento con el locale activo', async () => {
+    const cuando = '2026-09-15T18:30:00Z'
+    api.get.mockResolvedValue({
+      data: { ...DATA, en_cola: 5, ultimo_reintento: cuando },
+    })
+    renderCosts()
+    const esperado = `Último reintento: ${new Date(cuando).toLocaleString('es-HN')}`
+    expect(await screen.findByText(esperado)).toBeInTheDocument()
+  })
+
+  it('sin marca de vida del drenaje no se inventa una fecha', async () => {
+    api.get.mockResolvedValue({ data: { ...DATA, en_cola: 5, ultimo_reintento: null } })
+    renderCosts()
+    await screen.findByText(/esperando reintento/)
+    expect(screen.queryByText(/Último reintento/)).not.toBeInTheDocument()
+  })
+
+  it('singular y plural: 1 registro en cola no dice "registros"', async () => {
+    api.get.mockResolvedValue({ data: { ...DATA, en_cola: 1 } })
+    renderCosts()
+    expect(
+      await screen.findByText('Hay 1 registro esperando reintento; el total va a completarse solo.')
+    ).toBeInTheDocument()
+  })
+
+  it('singular y plural: con 1 descarte el verbo concuerda en los dos idiomas', async () => {
+    api.get.mockResolvedValue({ data: { ...DATA, perdidas_por_desborde: 1 } })
+    const { unmount } = renderCosts()
+    expect(
+      await screen.findByText('total incompleto: se llenó el respaldo y se descartó 1 registro viejo')
+    ).toBeInTheDocument()
+    unmount()
+    localStorage.setItem('jax_lang', 'en')
+    renderCosts()
+    expect(
+      await screen.findByText('incomplete total: the backup filled up and 1 old record was dropped')
+    ).toBeInTheDocument()
+  })
+
+  it('los conteos siguen el locale activo (miles agrupados)', async () => {
+    api.get.mockResolvedValue({ data: { ...DATA, en_cola: 12345 } })
+    renderCosts()
+    expect(
+      await screen.findByText('Hay 12,345 registros esperando reintento; el total va a completarse solo.')
+    ).toBeInTheDocument()
+  })
+
+  it('en ingles los tres avisos salen traducidos', async () => {
+    localStorage.setItem('jax_lang', 'en')
+    api.get.mockResolvedValue({
+      data: { ...DATA, registros_perdidos: 2, en_cola: 5, perdidas_por_desborde: 4, ultimo_reintento: '2026-09-15T18:30:00Z' },
+    })
+    renderCosts()
+    expect(
+      await screen.findByText('5 records are waiting to be retried; the total will complete on its own.')
+    ).toBeInTheDocument()
+    expect(screen.getByText('incomplete total: 2 records lost')).toBeInTheDocument()
+    expect(
+      screen.getByText('incomplete total: the backup filled up and 4 old records were dropped')
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(`Last retry: ${new Date('2026-09-15T18:30:00Z').toLocaleString('en-US')}`)
+    ).toBeInTheDocument()
+  })
+
+  it('los avisos salen aunque no haya filas: "sin datos" solo mentiria', async () => {
+    api.get.mockResolvedValue({
+      data: { by_facet: [], chart_data: null, en_cola: 5, perdidas_por_desborde: 4 },
+    })
+    renderCosts()
+    expect(
+      await screen.findByText('Hay 5 registros esperando reintento; el total va a completarse solo.')
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('total incompleto: se llenó el respaldo y se descartaron 4 registros viejos')
+    ).toBeInTheDocument()
+  })
+})

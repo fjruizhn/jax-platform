@@ -497,8 +497,12 @@ jobs:
             // del detector (solo-prefijo-window, escaneo de texto crudo, y
             // archivo que no parsea se salta). Medido con vitest run: 431 passed
             // en 53 archivos, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 431) {
-              console.error("PISO ROTO: se esperaban 431 tests de vitest CORRIDOS y 0 fallidos.");
+            // 431 -> 444 el 2026-09-15 (cola durable, Task 4a): +13 en
+            // AdminCosts.test.jsx -- la pantalla pasa de UN aviso a TRES
+            // (perdidos, desborde, pendientes) y los tres se prueban en los dos
+            // idiomas. Vistos en rojo antes de verde. Medido dos veces: 444.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 444) {
+              console.error("PISO ROTO: se esperaban 444 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1254,7 +1258,53 @@ jobs:
           # < 50 ms). Los 11 de escape y sin cerrar, rojos antes de verde; los
           # 2 de barra y los 8 de tiempo son controles de la forma nueva.
           # Medido dos veces: 1076 / 1.
-          PISO_PASSED = 1076
+          # Subido de 1076 a 1106 (2026-09-15, cola durable de uso, Task 1):
+          # +30 en tests/test_cola_uso.py, TODOS puros (el modulo backend/uso/
+          # cola.py no conoce la DB ni FastAPI, y el fixture autouse manda
+          # JAX_USAGE_SPOOL_DIR a tmp_path, asi que la suite no roza
+          # /srv/jax-data/usage-spool/). Corren igual en los dos modos, por eso
+          # el piso sin DB sube lo mismo. Los 30 vistos en rojo antes de verde
+          # (ImportError de `uso.cola`, el modulo todavia no existia).
+          # Medido dos veces: 1106 / 1. Skips sin cambios (1).
+          # 1106 -> 1128 el 2026-09-15 (cola durable, Task 2): +22 en
+          # test_respaldo_de_uso.py y los adaptados de test_t7_uso.py -- la
+          # migracion spool_id/UNIQUE, el except de record_usage que encola
+          # antes de contar la perdida, y las estadisticas ampliadas. 4 de
+          # ellos piden `client`, por eso el piso sin DB sube 18 y no 22.
+          # Vistos en rojo antes de verde. Medido dos veces: 1128 / 1.
+          # 1128 -> 1132 el 2026-09-15 (cola durable, Task 8a: el contrato del
+          # archivo pasa a TRECE campos con status y job_id): +4 en
+          # test_cola_uso.py, TODOS puros (status/job_id opcionales para el
+          # llamador; la fila sin ellos sale con los dos en null; la fila con
+          # ellos los conserva; un archivo de ONCE campos va a corruptos/ con
+          # el motivo nombrandolos). Vistos en rojo antes de verde (KeyError
+          # 'status' y la tupla CAMPOS sin los dos ultimos). Corren igual en
+          # los dos modos, por eso el piso sin DB sube lo mismo.
+          # Medido dos veces: 1132 / 1. Skips sin cambios (1).
+          # 1132 -> 1151 el 2026-09-15 (cola durable, Task 3: el drenaje del
+          # respaldo, uso/reintento.py + el lifespan): +19 en
+          # test_reintento_de_uso.py. 6 de ellos piden `client` (ejercitan el
+          # UNIQUE real contra la base), por eso el piso sin DB sube 13 y no 19
+          # y los skips sin DB suben 6. Vistos en rojo antes de verde, mas tres
+          # mutaciones deliberadas revertidas (sacar created_at del INSERT;
+          # quitar del respaldo solo lo que entro nuevo y no el duplicado).
+          # Medido dos veces: 1151 / 1. Skips sin cambios (1).
+          # 1151 -> 1152 el 2026-09-15 (cola durable, Task 4b: cablear
+          # registros_perdidos_stats() al handler de GET /api/admin/usage, que
+          # no lo llamaba). +1 en test_t7_uso.py; pide `client`, asi que sin DB
+          # el piso no se mueve y los skips suben 1 (560 -> 561). Visto en rojo
+          # por KeyError: 'en_cola', y la asercion de que `ultimo_error` NO
+          # viaja a la pantalla validada por mutacion (**stats -> rojo).
+          # Medido dos veces: 1152 / 1.
+          # 1152 -> 1157 el 2026-09-15 (cola durable, Task 9: el camino
+          # degradado deja de ser O(n^2) y el lote va a 500). +4 en
+          # test_cola_uso.py y +1 en test_reintento_de_uso.py, todos puros.
+          # El control que importa cuenta los RECORRIDOS del directorio
+          # (envuelve os.scandir) y se vio rojo contra el codigo viejo con la
+          # razon exacta: "encolar recorrio el directorio 2 veces". El del
+          # lote, rojo por 200 != 500.
+          # Medido dos veces: 1157 / 1. Skips sin cambios (1).
+          PISO_PASSED = 1157
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1697,7 +1747,32 @@ jobs:
       # Fix wave final ronda 3 (2026-09-15): +21 puros en test_redaccion.py
       # (escapes, barra final, comilla sin cerrar, 100 KB adversarial).
       # Medido dos veces con JAX_CI_NO_DB=1: 527 / 550.
-      JAX_CI_MIN_PASSED: "527"
+      # Cola durable de uso, Task 1 (2026-09-15): +30 puros en
+      # tests/test_cola_uso.py (el respaldo en disco; ni DB ni `client`), los
+      # mismos 30 que subieron el piso CON DB. Vistos en rojo antes de verde.
+      # Medido dos veces con JAX_CI_NO_DB=1: 557 / 550 (skips sin cambios).
+      # Cola durable, Task 2 (2026-09-15): +18 puros de los 22 nuevos; los
+      # otros 4 piden `client` y quedan salteados sin DB (550 -> 554 skips).
+      # Medido dos veces con JAX_CI_NO_DB=1: 575 / 554.
+      # Cola durable, Task 8a (2026-09-15, el contrato pasa a TRECE campos):
+      # +4 puros en test_cola_uso.py, los mismos 4 que subieron el piso CON DB
+      # (el modulo no conoce la DB ni `client`). Vistos en rojo antes de verde.
+      # Medido dos veces con JAX_CI_NO_DB=1: 579 / 554 (skips sin cambios).
+      # 579 -> 592 el 2026-09-15 (cola durable, Task 3): +19 tests en
+      # test_reintento_de_uso.py, de los que 6 piden `client` y quedan
+      # salteados sin DB (+13 al piso, 554 -> 560 skips).
+      # Medido dos veces con JAX_CI_NO_DB=1: 592 / 560.
+      # Task 4b (2026-09-15) no mueve el piso sin DB: su unico test pide
+      # `client`. Skips 560 -> 561. Medido dos veces con JAX_CI_NO_DB=1: 592 / 561.
+      # 592 -> 597 el 2026-09-15 (cola durable, Task 9: el camino degradado
+      # deja de ser O(n^2) y el lote va a 500): +4 puros en test_cola_uso.py
+      # (un solo recorrido del directorio por `encolar`, sin `_listar` en el
+      # camino normal, `en_cola` sigue saliendo del disco, el conteo barato
+      # filtra igual que `_listar`) y +1 en test_reintento_de_uso.py (el lote
+      # por defecto es 500). Ninguno pide `client`, asi que el piso sube lo
+      # mismo en los dos modos y los skips no se mueven.
+      # Medido dos veces con JAX_CI_NO_DB=1: 597 / 561.
+      JAX_CI_MIN_PASSED: "597"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -508,7 +508,17 @@ export default {
   adminCostsNoPricing: 'Sin precio',
   adminCostsPartialMarker: '*',
   adminCostsPartialNote: '* Total parcial — hay modelos sin precio cargado en el catálogo, no están incluidos en la suma.',
-  adminCostsRegistrosPerdidos: (n) => `total incompleto: ${n} registros perdidos`,
+  // Task 4a (2026-09-15, cola durable de uso): PERDIDO de verdad -- la fila
+  // no entro en la DB y tampoco se pudo dejar en el respaldo. Este total no
+  // se completa nunca. `num` llega ya formateado con el locale activo.
+  adminCostsRegistrosPerdidos: (n, num) => `total incompleto: ${num} registro${n === 1 ? '' : 's'} perdido${n === 1 ? '' : 's'}`,
+  // Tambien es perdida, pero por otra causa y con otra accion del admin: el
+  // respaldo en disco se lleno y descarto lo mas viejo. Decirle "la base
+  // rechazo la fila" seria mandarlo a mirar donde no es.
+  adminCostsPerdidasPorDesborde: (n, num) => `total incompleto: se llenó el respaldo y ${n === 1 ? 'se descartó' : 'se descartaron'} ${num} registro${n === 1 ? '' : 's'} viejo${n === 1 ? '' : 's'}`,
+  // PENDIENTE, no perdido: el total esta incompleto y se completa solo.
+  adminCostsEnCola: (n, num) => `Hay ${num} registro${n === 1 ? '' : 's'} esperando reintento; el total va a completarse solo.`,
+  adminCostsUltimoReintento: (cuando) => `Último reintento: ${cuando}`,
 
   // HAL Eye
   eyeIdle: 'reposo',

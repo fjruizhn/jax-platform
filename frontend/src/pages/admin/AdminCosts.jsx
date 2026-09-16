@@ -67,6 +67,24 @@ export default function AdminCosts() {
   const totalCost = data?.by_facet.reduce((s, r) => s + (r.cost_usd || 0), 0) || 0
   const hasPartialTotal = data?.by_facet.some(r => r.cost_usd === null || r.unpriced_requests > 0) || false
 
+  // Task 4a (2026-09-15, cola durable de uso): DOS estados, no uno. La
+  // especificación es el docstring de registros_perdidos_stats() en
+  // backend/api/admin/usage.py:
+  //   - en_cola > 0            -> PENDIENTE: el total se completa solo cuando
+  //                               drene el reintento. Aviso suave (info).
+  //   - registros_perdidos > 0 -> PERDIDO: la fila no entró en la DB y tampoco
+  //                               se pudo dejar en el respaldo.
+  //   - perdidas_por_desborde  -> PERDIDO también, pero por el respaldo lleno
+  //                               descartando lo más viejo. Se nombra distinto
+  //                               porque la acción del admin es otra.
+  // Los dos estados se pueden dar a la vez y entonces se muestran los dos.
+  // `|| 0` porque un backend viejo (o el cableado de la Task 4b todavía sin
+  // hacer) no manda estos campos: ausente es cero, no un aviso inventado.
+  const enCola = data?.en_cola || 0
+  const perdidos = data?.registros_perdidos || 0
+  const desbordadas = data?.perdidas_por_desborde || 0
+  const conteo = (n) => n.toLocaleString(localeFor(lang))
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -84,13 +102,31 @@ export default function AdminCosts() {
         </div>
       </div>
 
-      {/* Task 7: filas que record_usage no pudo escribir (por proceso, desde
-          el arranque). Fuera del condicional de filas: si se perdieron todas,
-          "sin datos" solo sería mentira. */}
-      {data?.registros_perdidos > 0 && (
+      {/* Task 7 + Task 4a: filas que no llegaron a axioma_usage (por proceso,
+          desde el arranque). Fuera del condicional de filas: si se perdieron
+          todas, "sin datos" solo sería mentira. Primero lo irreversible. */}
+      {perdidos > 0 && (
         <p role="status" className="text-xs font-semibold text-aviso bg-aviso-fondo border border-aviso-borde rounded px-3 py-2 mb-4">
-          {t.adminCostsRegistrosPerdidos(data.registros_perdidos)}
+          {t.adminCostsRegistrosPerdidos(perdidos, conteo(perdidos))}
         </p>
+      )}
+      {desbordadas > 0 && (
+        <p role="status" className="text-xs font-semibold text-aviso bg-aviso-fondo border border-aviso-borde rounded px-3 py-2 mb-4">
+          {t.adminCostsPerdidasPorDesborde(desbordadas, conteo(desbordadas))}
+        </p>
+      )}
+      {enCola > 0 && (
+        <div role="status" className="bg-info-fondo border border-info/40 rounded px-3 py-2 mb-4">
+          <p className="text-xs text-info">{t.adminCostsEnCola(enCola, conteo(enCola))}</p>
+          {/* Sin marca de vida del drenaje no se inventa una fecha: "hay 5
+              pendientes" sin fecha no distingue una cola que avanza de un
+              reintento muerto, y una fecha falsa lo taparía (Principio VIII). */}
+          {data?.ultimo_reintento && (
+            <p className="text-xs text-texto mt-0.5">
+              {t.adminCostsUltimoReintento(new Date(data.ultimo_reintento).toLocaleString(localeFor(lang)))}
+            </p>
+          )}
+        </div>
       )}
 
       {data?.by_facet.length > 0 ? (
