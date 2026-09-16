@@ -18,6 +18,8 @@ import json
 import os
 import stat
 import sys
+import threading
+import time
 
 import pytest
 
@@ -538,3 +540,197 @@ async def test_el_recorrido_barato_no_cuenta_lo_que_no_es_una_fila_pendiente(
     await cola.encolar(dict(FILA))
 
     assert cola.estadisticas()["en_cola"] == 2
+
+
+# --- el lock: sólo alrededor del tope (Task 11) -----------------------------
+
+async def test_la_escritura_del_archivo_no_corre_bajo_el_lock(
+    respaldo_aislado, monkeypatch,
+):
+    # Los dos `fsync` de `_escribir_atomico` son ~4,4 ms, y con el lock de todo
+    # el proceso alrededor eran el piso ENTERO de 111 ms medido a c=25 con la
+    # cola VACÍA: el turno k esperaba detrás de los k-1 anteriores aunque no
+    # hubiera nada que contar. Ese piso es espera, no trabajo.
+    #
+    # Se puede sacar porque el lock no estaba protegiendo nada: cada fila va a
+    # su propio `<spool_id>.json` con `spool_id` uuid4, por temporal OCULTO +
+    # `os.replace`. Dos escrituras concurrentes no comparten ni el nombre
+    # definitivo ni el temporal.
+    tomado = []
+    original = cola._escribir_atomico
+
+    def espia(directorio, spool_id, fila):
+        tomado.append(cola._lock.locked())
+        return original(directorio, spool_id, fila)
+
+    monkeypatch.setattr(cola, "_escribir_atomico", espia)
+
+    assert await cola.encolar(dict(FILA)) is not None
+    assert tomado == [False], (
+        "la escritura del archivo (con sus dos fsync) corrió bajo `_lock`, que "
+        "es de todo el proceso: eso serializa cada turno detrás de los demás"
+    )
+
+
+async def test_el_descarte_por_tope_sigue_corriendo_bajo_el_lock(
+    respaldo_aislado, monkeypatch,
+):
+    # Lo único que necesita exclusión es el tope: contar y descartar la más
+    # vieja tienen que ser atómicos ENTRE SÍ o dos llamadas concurrentes
+    # descartan de más. `_hacer_lugar` re-lista adentro, así que con el lock
+    # puesto el descarte es exacto.
+    monkeypatch.setenv(cola.VARIABLE_MAX_FILAS, "1")
+    assert await cola.encolar(dict(FILA)) is not None
+
+    tomado = []
+    original = cola._hacer_lugar
+
+    def espia(directorio):
+        tomado.append(cola._lock.locked())
+        return original(directorio)
+
+    monkeypatch.setattr(cola, "_hacer_lugar", espia)
+
+    assert await cola.encolar(dict(FILA)) is not None
+    assert tomado == [True], (
+        "el descarte por desborde corrió sin `_lock`: dos llamadas concurrentes "
+        "pueden descartar de más"
+    )
+
+
+async def test_en_cola_no_retrocede_por_una_llamada_vieja_que_termino_tarde(
+    respaldo_aislado, monkeypatch,
+):
+    # Con la escritura fuera del lock, dos `encolar` pueden TERMINAR en orden
+    # distinto al que MIDIERON el disco. La que midió primero y terminó última
+    # no puede publicar su número viejo: `en_cola` es lo que mira Admin →
+    # Costos justo durante una caída, y verlo retroceder haría creer que la
+    # cola drena cuando en realidad crece.
+    barrera = threading.Event()
+    escrituras = []
+    original = cola._escribir_atomico
+
+    def espia(directorio, spool_id, fila):
+        escrituras.append(spool_id)
+        if len(escrituras) == 1:
+            # 5 s de tope para que el código VIEJO (que escribe bajo el lock)
+            # dé rojo por el número y no se cuelgue para siempre.
+            barrera.wait(5)
+        return original(directorio, spool_id, fila)
+
+    monkeypatch.setattr(cola, "_escribir_atomico", espia)
+
+    lenta = asyncio.create_task(cola.encolar({**FILA, "tokens_in": 0}))
+    for _ in range(500):  # que la lenta llegue a la escritura (ya midió: 0)
+        if escrituras:
+            break
+        await asyncio.sleep(0.002)
+    assert escrituras, "la primera llamada nunca llegó a escribir"
+
+    for i in range(1, 4):
+        assert await cola.encolar({**FILA, "tokens_in": i}) is not None
+    assert cola.estadisticas()["en_cola"] == 3
+
+    barrera.set()
+    assert await lenta is not None
+    assert cola.estadisticas()["en_cola"] == 3, (
+        "`en_cola` retrocedió: una llamada que midió el disco ANTES publicó su "
+        "profundidad DESPUÉS de tres mediciones más nuevas"
+    )
+
+
+async def test_cien_encolados_concurrentes_dejan_cien_archivos(
+    respaldo_aislado, monkeypatch,
+):
+    # Este test NO valida el cambio de la Task 11: con el lock grande de antes
+    # también pasa, porque era MÁS estricto. Lo que valida el cambio es la
+    # medición a c=25. Éste es la red: que sacar el lock de la escritura no
+    # haya roto la unicidad de los nombres ni el contenido de las filas.
+    monkeypatch.setenv(cola.VARIABLE_MAX_FILAS, "1000")
+
+    ids = await asyncio.gather(
+        *(cola.encolar({**FILA, "tokens_in": i}) for i in range(100))
+    )
+
+    assert None not in ids
+    assert len(set(ids)) == 100
+    assert _archivos(respaldo_aislado) == sorted(f"{i}.json" for i in ids)
+    filas = await cola.leer_pendientes(200)
+    assert sorted(f["tokens_in"] for f in filas) == list(range(100))
+
+
+async def test_el_sobrepaso_del_tope_bajo_concurrencia_esta_acotado_y_se_corrige(
+    respaldo_aislado, monkeypatch,
+):
+    # El tope sigue siendo EXACTO en el uso secuencial. Bajo concurrencia se
+    # tolera un sobrepaso transitorio de a lo sumo (llamadas en vuelo - 1)
+    # filas: cada `encolar` cuenta el disco antes de que las otras hayan
+    # escrito, así que sólo la primera ve el desborde y descarta.
+    #
+    # Cuánto: con c=25, 24 filas sobre 50.000 = 0,048%. Por qué se acepta: la
+    # alternativa es serializar la escritura -- exactamente el piso de 111 ms
+    # que esta tarea saca -- para no tener 24 filas de más (~7 KB) que la
+    # llamada siguiente ya borra. `_hacer_lugar` re-lista, así que NUNCA
+    # descarta de más; el error es sólo hacia arriba y dura una llamada.
+    monkeypatch.setenv(cola.VARIABLE_MAX_FILAS, "10")
+    for i in range(10):
+        assert await cola.encolar({**FILA, "tokens_in": i}) is not None
+    assert len(_archivos(respaldo_aislado)) == 10
+
+    en_vuelo = 8
+    await asyncio.gather(
+        *(cola.encolar({**FILA, "tokens_in": 100 + i}) for i in range(en_vuelo))
+    )
+    assert len(_archivos(respaldo_aislado)) <= 10 + en_vuelo - 1
+
+    # y la llamada siguiente lo devuelve al tope exacto
+    assert await cola.encolar(dict(FILA)) is not None
+    assert len(_archivos(respaldo_aislado)) == 10
+
+
+async def test_dos_encolar_no_recorren_el_directorio_a_la_vez(
+    respaldo_aislado, monkeypatch,
+):
+    # EL HALLAZGO de la Task 11: sacar TAMBIÉN el conteo del lock es 7x PEOR,
+    # no mejor. `_contar_barato` es un bucle de Python sobre todas las entradas
+    # con el GIL tomado casi todo el tiempo: 25 a la vez sobre el mismo
+    # directorio no cuestan 25 veces uno, cuestan 230 veces uno. Medido el
+    # 2026-09-16 sobre XFS/NVMe con el cache caliente: 49.000 entradas, 7,98 ms
+    # un hilo solo contra 1.833 ms 25 hilos juntos (10.000: 1,26 contra 372).
+    # A c=25 eso daba 2.039 ms por turno contra los 291 ms del lock grande.
+    #
+    # Este control es lo único que impide que alguien lo vuelva a paralelizar
+    # "para sacarle el lock", y falla en las DOS direcciones: si se paraleliza
+    # el conteo cae `max(pico) == 1`, y si se vuelve a contar una vez por turno
+    # cae `len(pico) < 25`.
+    simultaneos = 0
+    pico = []
+    cerrojo = threading.Lock()
+    original = cola._contar_barato
+
+    def espia(directorio):
+        nonlocal simultaneos
+        with cerrojo:
+            simultaneos += 1
+            pico.append(simultaneos)
+        try:
+            time.sleep(0.01)  # ventana ancha, para que se pisen si pueden
+            return original(directorio)
+        finally:
+            with cerrojo:
+                simultaneos -= 1
+
+    monkeypatch.setattr(cola, "_contar_barato", espia)
+
+    ids = await asyncio.gather(*(cola.encolar(dict(FILA)) for _ in range(25)))
+
+    assert None not in ids
+    assert len(_archivos(respaldo_aislado)) == 25
+    assert max(pico) == 1, (
+        f"{max(pico)} recorridos del directorio A LA VEZ: el conteo se "
+        f"paralelizó, y eso es 230x el costo de uno solo"
+    )
+    assert len(pico) < 25, (
+        f"{len(pico)} recorridos para 25 turnos: cada turno volvió a recorrer "
+        f"el directorio en vez de reusar la medición en curso"
+    )
