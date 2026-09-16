@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from pymysql import err as mysql_err
 
 from api.admin import usage as usage_mod
 from tests.identidades import sql
@@ -79,10 +80,13 @@ def respaldo(tmp_path, monkeypatch):
     monkeypatch.setenv(cola.VARIABLE_DIRECTORIO, str(directorio))
     monkeypatch.delenv(reintento.VARIABLE_INTERVALO, raising=False)
     monkeypatch.delenv(reintento.VARIABLE_LOTE, raising=False)
+    monkeypatch.delenv(reintento.VARIABLE_MAX_INTENTOS, raising=False)
     cola.reset_estado()
+    reintento.reset_intentos()
     usage_mod.reset_registros_perdidos()
     yield directorio
     cola.reset_estado()
+    reintento.reset_intentos()
     usage_mod.reset_registros_perdidos()
 
 
@@ -94,8 +98,14 @@ class _Cursor:
         self.error = error
 
     async def execute(self, consulta, args=None):
-        if self.error is not None:
-            raise self.error
+        # `error` puede ser una excepción (falla todo) o un callable sobre los
+        # args (falla SÓLO la fila que el test eligió): la fila venenosa
+        # (Task 10) necesita distinguir "la base rechaza ESTA fila" de "la
+        # base está caída", y con un error único para todo el lote los dos
+        # casos se ven iguales.
+        error = self.error(args) if callable(self.error) else self.error
+        if error is not None:
+            raise error
         self.registro.append((consulta, args))
 
     async def __aenter__(self):
@@ -534,3 +544,335 @@ def test_el_lote_por_defecto_es_500(monkeypatch):
     monkeypatch.delenv(reintento.VARIABLE_LOTE, raising=False)
     assert reintento.LOTE_POR_DEFECTO == 500
     assert reintento.lote() == 500
+
+
+# --- Task 10 (2026-09-16): la fila venenosa ---------------------------------
+# Una fila que el INSERT rechaza SIEMPRE (un `facet` de más de 30 chars, un
+# `tokens_in` que no entra en el INT) no se quita del respaldo y se reintenta
+# en cada ciclo para siempre: ocupa lugar contra el tope, gasta un INSERT por
+# ciclo y nada lo dice. Pasados N intentos va a `rechazadas/`.
+#
+# El corazón de estos tests es la DISTINCIÓN: "falló el ciclo porque la base
+# está caída" no es "falló esta fila porque la base la rechaza". Si se
+# confunden, una caída larga manda la cola entera a cuarentena y el arreglo es
+# peor que el defecto.
+
+def _rechazo_de_la_base(codigo=1406, mensaje="Data too long for column 'facet' at row 1"):
+    """Lo que tira MariaDB cuando el dato de ESTA fila no entra en la columna.
+    1406 está mapeado a DataError por pymysql; 1292 (fecha imposible) NO está
+    en el mapa y cae a OperationalError -- por eso la clasificación mira el
+    código del servidor y no la clase de la excepción."""
+    return mysql_err.DataError(codigo, mensaje)
+
+
+def _caida_de_la_base():
+    """Lo que tira el driver cuando la conexión se murió. Código de CLIENTE
+    (2013), no del servidor: la base ni vio la fila."""
+    return mysql_err.OperationalError(2013, "Lost connection to MySQL server during query")
+
+
+def _rechazadas(directorio: Path):
+    destino = directorio / reintento.SUBDIRECTORIO_RECHAZADAS
+    if not destino.exists():
+        return []
+    return sorted(p.name for p in destino.glob(f"*{cola.SUFIJO}"))
+
+
+def _envenenar(pool, spool_ids, error=None):
+    """El INSERT de ESAS filas falla; el de las demás entra."""
+    fallo = error if error is not None else _rechazo_de_la_base()
+    pool.conexion.error = lambda args: fallo if args and args[0] in spool_ids else None
+
+
+def test_el_maximo_de_intentos_sale_del_entorno_con_default(monkeypatch):
+    # N = 3 y no 1: un lote puede fallar ENTERO por la base (un bloqueo, un
+    # reinicio a mitad de ciclo) y no queremos cuarentena por eso. Tres
+    # intentos consecutivos son tres ciclos -- tres minutos con el intervalo
+    # por defecto -- y ninguna causa transitoria razonable dura eso sin
+    # tocar el clasificador de abajo.
+    monkeypatch.delenv(reintento.VARIABLE_MAX_INTENTOS, raising=False)
+    assert reintento.MAX_INTENTOS_POR_DEFECTO == 3
+    assert reintento.max_intentos() == 3
+
+    monkeypatch.setenv(reintento.VARIABLE_MAX_INTENTOS, "5")
+    assert reintento.max_intentos() == 5
+    # Un valor mal escrito no puede apagar la cuarentena ni volverla inmediata.
+    monkeypatch.setenv(reintento.VARIABLE_MAX_INTENTOS, "0")
+    assert reintento.max_intentos() == 3
+
+
+def test_solo_un_rechazo_de_la_base_cuenta_contra_el_maximo():
+    """El clasificador, solo. Fail-closed: lo que no está en la lista de
+    códigos de RECHAZO DE DATO se trata como transitorio y NO cuenta. Es la
+    dirección segura: una fila venenosa que sobrevive unos ciclos de más es
+    barato; una fila sana en cuarentena es un cobro perdido."""
+    assert reintento.la_base_rechaza_esta_fila(_rechazo_de_la_base(1406))
+    assert reintento.la_base_rechaza_esta_fila(_rechazo_de_la_base(1264))  # out of range
+    # 1292 no está en el mapa de pymysql y llega como OperationalError: la
+    # clase de la excepción NO alcanza para clasificar, el código sí.
+    assert reintento.la_base_rechaza_esta_fila(
+        mysql_err.OperationalError(1292, "Incorrect datetime value"))
+
+    assert not reintento.la_base_rechaza_esta_fila(_caida_de_la_base())
+    assert not reintento.la_base_rechaza_esta_fila(
+        mysql_err.OperationalError(1040, "Too many connections"))
+    assert not reintento.la_base_rechaza_esta_fila(
+        mysql_err.OperationalError(1213, "Deadlock found"))
+    assert not reintento.la_base_rechaza_esta_fila(
+        mysql_err.ProgrammingError(1146, "Table 'axioma_usage' doesn't exist"))
+    assert not reintento.la_base_rechaza_esta_fila(RuntimeError("cualquier cosa"))
+    assert not reintento.la_base_rechaza_esta_fila(OSError("Connection refused"))
+
+
+async def test_una_fila_que_la_base_rechaza_siempre_termina_en_cuarentena(
+        respaldo, monkeypatch, caplog):
+    pool = _pool_de_mentira(monkeypatch)
+    venenosa = await cola.encolar(_fila(_facet()))
+    await cola.encolar(_fila(_facet()))          # una sana, que sí entra
+    _envenenar(pool, {venenosa})
+
+    # los dos primeros ciclos: la venenosa falla y SIGUE pendiente
+    primero = await reintento.drenar(10)
+    assert primero["fallidas"] == 1 and primero["rechazadas"] == 0
+    assert primero["insertadas"] == 1, "la sana entró en el primer ciclo"
+    assert _archivos(respaldo) == [f"{venenosa}{cola.SUFIJO}"]
+
+    segundo = await reintento.drenar(10)
+    assert segundo["rechazadas"] == 0, "dos intentos no alcanzan"
+    assert reintento.intentos()[venenosa] == 2
+    assert _archivos(respaldo) == [f"{venenosa}{cola.SUFIJO}"]
+
+    with caplog.at_level(logging.ERROR, logger=reintento.LOGGER):
+        tercero = await reintento.drenar(10)
+
+    assert tercero["rechazadas"] == 1
+    assert _archivos(respaldo) == [], "la venenosa dejó de tapar el paso"
+    assert _rechazadas(respaldo) == [f"{venenosa}{cola.SUFIJO}"]
+    # el motivo REAL de la base, redactado, guardado al lado
+    motivo = (respaldo / reintento.SUBDIRECTORIO_RECHAZADAS /
+              f"{venenosa}{reintento.SUFIJO_MOTIVO}").read_text(encoding="utf-8")
+    assert "Data too long" in motivo
+    # un ERROR con el spool_id y el motivo, UNA vez
+    errores = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errores) == 1
+    assert venenosa in errores[0].getMessage() and "Data too long" in errores[0].getMessage()
+    # y se ve en el tablero, como PÉRDIDA
+    assert usage_mod.registros_perdidos_stats()["rechazadas"] == 1
+
+    # el ciclo siguiente ya no la ve
+    cuarto = await reintento.drenar(10)
+    assert cuarto["leidas"] == 0 and cuarto["rechazadas"] == 0
+
+
+async def test_una_caida_larga_de_la_base_no_manda_nada_a_cuarentena(
+        respaldo, monkeypatch):
+    """EL test de esta tarea. Con la base caída fallan TODAS las filas: si el
+    contador no distinguiera "falló el ciclo" de "falló esta fila", una caída
+    de más de N ciclos vaciaría la cola entera a `rechazadas/` -- convertiría
+    una demora recuperable en una pérdida definitiva, que es exactamente lo
+    contrario de para qué existe el respaldo."""
+    ids = [await cola.encolar(_fila(_facet())) for _ in range(3)]
+
+    # (a) la caída dura: el pool ni se consigue. Seis ciclos, el doble de N.
+    _pool_caido(monkeypatch)
+    for _ in range(6):
+        resumen = await reintento.drenar(10)
+        assert resumen["rechazadas"] == 0
+
+    # (b) la caída fea: el pool se consigue pero la conexión está muerta y
+    # explota fila por fila -- en el resumen se ve igual que tres filas
+    # venenosas, y NO lo es.
+    pool = _pool_de_mentira(monkeypatch)
+    pool.conexion.error = _caida_de_la_base()
+    for _ in range(6):
+        resumen = await reintento.drenar(10)
+        assert resumen["fallidas"] == 3
+        assert resumen["rechazadas"] == 0
+
+    assert len(_archivos(respaldo)) == 3, "no se perdió ninguna fila sana"
+    assert _rechazadas(respaldo) == []
+    assert usage_mod.registros_perdidos_stats()["rechazadas"] == 0
+
+    # y cuando la base vuelve, entran las tres
+    pool.conexion.error = None
+    final = await reintento.drenar(10)
+    assert final["insertadas"] == 3 and final["quitadas"] == 3
+    assert _archivos(respaldo) == [] and _rechazadas(respaldo) == []
+    assert sorted(a[0] for _c, a in pool.registro) == sorted(ids)
+
+
+async def test_el_contador_se_reinicia_cuando_la_fila_entra(respaldo, monkeypatch):
+    """Los intentos son CONSECUTIVOS. Una fila que falla dos veces por algo
+    transitorio y después entra no puede arrastrar ese crédito."""
+    pool = _pool_de_mentira(monkeypatch)
+    spool_id = await cola.encolar(_fila(_facet()))
+    _envenenar(pool, {spool_id})
+
+    for _ in range(2):
+        await reintento.drenar(10)
+    assert reintento.intentos()[spool_id] == 2
+
+    pool.conexion.error = None
+    await reintento.drenar(10)
+    assert spool_id not in reintento.intentos(), "entró: el contador vuelve a cero"
+    assert _archivos(respaldo) == []
+
+
+async def test_un_error_ajeno_a_la_fila_tambien_reinicia_su_contador(
+        respaldo, monkeypatch):
+    """Dos rechazos de dato, un bloqueo de la base, y el contador vuelve a
+    cero: "consecutivos" quiere decir consecutivos."""
+    pool = _pool_de_mentira(monkeypatch)
+    venenosa = await cola.encolar(_fila(_facet()))
+    sana = await cola.encolar(_fila(_facet()))
+    _envenenar(pool, {venenosa})
+
+    for _ in range(2):
+        await reintento.drenar(10)
+    assert reintento.intentos()[venenosa] == 2
+
+    # un deadlock: no es culpa de la fila. La sana ya entró, así que el ciclo
+    # NO se ve como una caída -- y aun así el contador de la venenosa se cae.
+    _envenenar(pool, {venenosa}, error=mysql_err.OperationalError(1213, "Deadlock found"))
+    resumen = await reintento.drenar(10)
+    assert resumen["fallidas"] == 1 and resumen["rechazadas"] == 0
+    assert venenosa not in reintento.intentos()
+
+    _envenenar(pool, {venenosa})
+    for _ in range(2):
+        assert (await reintento.drenar(10))["rechazadas"] == 0
+    assert _rechazadas(respaldo) == [], "el tercer intento del contador viejo no cuenta"
+    assert (await reintento.drenar(10))["rechazadas"] == 1
+
+
+async def test_una_fila_en_cuarentena_no_se_lee_ni_cuenta_para_el_tope(
+        respaldo, monkeypatch):
+    """`rechazadas/` es un subdirectorio, igual que `corruptos/`: `_listar` y
+    `_contar_barato` sólo miran el primer nivel. Si contara para el tope, una
+    fila muerta le quitaría lugar a una viva."""
+    pool = _pool_de_mentira(monkeypatch)
+    venenosa = await cola.encolar(_fila(_facet()))
+    _envenenar(pool, {venenosa})
+    for _ in range(3):
+        await reintento.drenar(10)
+    assert _rechazadas(respaldo) == [f"{venenosa}{cola.SUFIJO}"]
+
+    assert await cola.leer_pendientes(100) == []
+    assert await cola.contar_pendientes() == 0
+    assert cola.estadisticas()["en_cola"] == 0
+    # y el subdirectorio no es `corruptos/`: el motivo y la acción del admin
+    # son distintos y no se pueden mezclar en la misma bandeja.
+    assert reintento.SUBDIRECTORIO_RECHAZADAS != cola.SUBDIRECTORIO_CORRUPTOS
+    assert cola.estadisticas()["corruptos"] == 0
+
+
+async def test_si_no_se_puede_mover_la_fila_sigue_pendiente_y_no_se_cuenta(
+        respaldo, monkeypatch, caplog):
+    """Fail-soft: un disco que no deja mover no puede tirar el ciclo ni
+    inventar una pérdida en el tablero."""
+    pool = _pool_de_mentira(monkeypatch)
+    venenosa = await cola.encolar(_fila(_facet()))
+    _envenenar(pool, {venenosa})
+
+    def no_se_puede(spool_id, motivo):
+        raise OSError("Read-only file system")
+
+    monkeypatch.setattr(reintento, "_rechazar", no_se_puede)
+    with caplog.at_level(logging.WARNING, logger=reintento.LOGGER):
+        for _ in range(3):
+            resumen = await reintento.drenar(10)
+
+    assert resumen["rechazadas"] == 0
+    assert _archivos(respaldo) == [f"{venenosa}{cola.SUFIJO}"]
+    assert usage_mod.registros_perdidos_stats()["rechazadas"] == 0
+    assert "Read-only file system" in caplog.text
+
+
+async def test_un_ciclo_donde_no_entro_nada_y_hubo_error_ajeno_no_manda_a_cuarentena(
+        respaldo, monkeypatch):
+    """La SEGUNDA baranda. El caso mixto y feo: la venenosa ya tenía dos
+    intentos y la conexión se muere a mitad del lote justo cuando saca el
+    tercero. Vista fila por fila, la tercera falla es un rechazo de dato de
+    verdad; visto el ciclo entero, no entró NADA y hubo errores que no son de
+    dato -- tiene la forma de una caída. Ante la duda no se manda a
+    cuarentena, que es la decisión que no se puede deshacer."""
+    pool = _pool_de_mentira(monkeypatch)
+    venenosa = await cola.encolar(_fila(_facet()))
+    sana = await cola.encolar(_fila(_facet()))
+    _envenenar(pool, {venenosa})
+
+    # dos ciclos sanos: la sana entra, la venenosa suma dos intentos
+    await reintento.drenar(10)
+    await cola.encolar(_fila(_facet(), spool_id=sana))
+    await reintento.drenar(10)
+    assert reintento.intentos()[venenosa] == 2
+
+    # el ciclo feo: la venenosa saca su 1406 y el resto se muere
+    otra = await cola.encolar(_fila(_facet()))
+    caida = _caida_de_la_base()
+    rechazo = _rechazo_de_la_base()
+    pool.conexion.error = lambda args: rechazo if args and args[0] == venenosa else caida
+
+    resumen = await reintento.drenar(10)
+
+    assert (resumen["insertadas"], resumen["duplicadas"]) == (0, 0)
+    assert resumen["fallidas"] == 2
+    assert resumen["rechazadas"] == 0, "no entró nada: el ciclo no es evidencia"
+    assert _rechazadas(respaldo) == []
+    assert reintento.intentos() == {}, "un ciclo con forma de caída borra los contadores"
+    assert sorted(_archivos(respaldo)) == sorted(
+        [f"{venenosa}{cola.SUFIJO}", f"{otra}{cola.SUFIJO}"])
+
+    # y ya con la base sana hacen falta los tres intentos de nuevo, desde cero
+    _envenenar(pool, {venenosa})
+    for esperado in (0, 0):
+        assert (await reintento.drenar(10))["rechazadas"] == esperado
+    assert (await reintento.drenar(10))["rechazadas"] == 1
+
+
+async def test_un_ciclo_que_falla_entero_borra_los_contadores(respaldo, monkeypatch):
+    """La TERCERA baranda, la del `except` de `drenar`: si el ciclo se cayó
+    entero (el pool no se consigue, el respaldo no se puede leer) ninguna fila
+    tuvo su oportunidad y ningún intento cuenta."""
+    pool = _pool_de_mentira(monkeypatch)
+    venenosa = await cola.encolar(_fila(_facet()))
+    await cola.encolar(_fila(_facet()))
+    _envenenar(pool, {venenosa})
+    await reintento.drenar(10)
+    await cola.encolar(_fila(_facet()))
+    await reintento.drenar(10)
+    assert reintento.intentos()[venenosa] == 2
+
+    _pool_caido(monkeypatch)
+    assert (await reintento.drenar(10))["rechazadas"] == 0
+    assert reintento.intentos() == {}, "el ciclo no corrió: los intentos se borran"
+
+    # el tercer intento del contador viejo ya no existe
+    _pool_de_mentira(monkeypatch)
+    pool2 = reintento.get_pool
+    monkeypatch.setattr(reintento, "get_pool", pool2)
+    await cola.encolar(_fila(_facet()))
+    pool = await reintento.get_pool()
+    _envenenar(pool, {venenosa})
+    assert (await reintento.drenar(10))["rechazadas"] == 0
+    assert reintento.intentos()[venenosa] == 1
+    assert _rechazadas(respaldo) == []
+
+
+async def test_el_contador_no_queda_colgado_si_la_fila_ya_no_esta(respaldo, monkeypatch):
+    """El contador sólo existe para una fila que falló, y una fila que falló
+    sigue pendiente y es de las más viejas: vuelve al lote del ciclo siguiente.
+    La que NO vuelve -- porque el tope la descartó por vieja (`_hacer_lugar`)
+    o porque otro proceso la drenó -- dejaría su entrada colgada para siempre.
+    Sin la poda, `_intentos` es un dict que sólo crece en un servicio que no se
+    reinicia nunca."""
+    pool = _pool_de_mentira(monkeypatch)
+    venenosa = await cola.encolar(_fila(_facet()))
+    _envenenar(pool, {venenosa})
+    await reintento.drenar(10)
+    assert reintento.intentos()[venenosa] == 1
+
+    # el tope la descarta por vieja: el archivo ya no está
+    (respaldo / f"{venenosa}{cola.SUFIJO}").unlink()
+    await reintento.drenar(10)
+    assert reintento.intentos() == {}, "el contador de una fila que ya no existe se poda"

@@ -354,11 +354,17 @@ def test_el_camino_feliz_no_deja_nada_en_el_respaldo(respaldo, monkeypatch):
 
 # --- las estadísticas ------------------------------------------------------------
 def test_las_estadisticas_publican_la_cola(respaldo):
+    # La igualdad es EXACTA a propósito: un campo nuevo tiene que pasar por
+    # acá, porque el handler de /api/admin/usage elige los campos que publica
+    # uno por uno y agregar uno sin cablearlo lo dejaría invisible.
+    # `rechazadas`/`ultimo_rechazo` son de la Task 10 (2026-09-16).
     assert usage_mod.registros_perdidos_stats() == {
         "registros_perdidos": 0,
         "ultimo_error": None,
         "en_cola": 0,
         "perdidas_por_desborde": 0,
+        "rechazadas": 0,
+        "ultimo_rechazo": None,
         "ultimo_reintento": None,
     }
 

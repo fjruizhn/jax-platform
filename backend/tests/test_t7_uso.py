@@ -226,3 +226,33 @@ def test_get_usage_expone_pendientes_y_perdidas_por_desborde(client, monkeypatch
     assert client.get("/api/admin/usage?period=day", headers=h).json()["ultimo_reintento"] == (
         "2026-09-15T20:00:00+00:00"
     )
+
+
+# --- Task 10 (2026-09-16, la fila venenosa): la pérdida nueva se ve ---------
+def test_get_usage_expone_las_filas_que_la_base_rechazo(client, monkeypatch, tmp_path):
+    """`rechazadas` es PÉRDIDA, no pendiente: la fila salió del respaldo y
+    nunca va a entrar a `axioma_usage`. El archivo sigue en `rechazadas/` para
+    que el admin lo mire, pero el total del período ya no se completa solo y
+    hay que decirlo fuerte, como con `perdidas_por_desborde`.
+
+    El motivo de la base NO viaja: es texto de error, igual que `ultimo_error`.
+    """
+    from tests.identidades import cabeceras
+    from uso import cola
+
+    h = cabeceras(client, "t10-uso-superadmin", "superadmin")
+    monkeypatch.setenv(cola.VARIABLE_DIRECTORIO, str(tmp_path / "respaldo"))
+    cola.reset_estado()
+    usage_mod.reset_registros_perdidos()
+
+    cuerpo = client.get("/api/admin/usage?period=day", headers=h).json()
+    assert cuerpo["rechazadas"] == 0
+
+    usage_mod.marcar_rechazada("abc-123", "(1406, \"Data too long for column 'facet'\")")
+    cuerpo = client.get("/api/admin/usage?period=day", headers=h).json()
+    assert cuerpo["rechazadas"] == 1
+    assert "ultimo_rechazo" not in cuerpo, "el texto de error de la base no viaja a la pantalla"
+    assert "Data too long" not in str(cuerpo)
+
+    usage_mod.reset_registros_perdidos()
+    assert usage_mod.registros_perdidos_stats()["rechazadas"] == 0
