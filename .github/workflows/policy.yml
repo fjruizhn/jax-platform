@@ -1315,7 +1315,14 @@ jobs:
           # mutacion (forzando la_base_rechaza_esta_fila a True caen 4).
           # 1 de los 12 pide `client`, por eso sin DB sube 11 y los skips 1.
           # Medido dos veces: 1169 / 1.
-          PISO_PASSED = 1169
+          # 1169 -> 1175 el 2026-09-16 (el lock de encolar): +6 puros en
+          # test_cola_uso.py. El que discrimina de verdad es
+          # test_dos_encolar_no_recorren_el_directorio_a_la_vez, que falla en
+          # LAS DOS direcciones: con el conteo paralelizado (max(pico) > 1) y
+          # con el lock grande de antes (len(pico) == 25). Los otros son red:
+          # ya pasaban con el lock grande, que era mas estricto.
+          # Medido dos veces: 1175 / 1.
+          PISO_PASSED = 1175
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1776,6 +1783,9 @@ jobs:
       # 597 -> 608 el 2026-09-16 (fila venenosa): 11 de los 12 tests nuevos
       # corren sin DB; el que pide `client` suma 1 skip (561 -> 562).
       # Medido dos veces con JAX_CI_NO_DB=1: 608 / 562.
+      # 608 -> 614 el 2026-09-16 (el lock de encolar): los 6 nuevos son puros,
+      # corren en los dos modos. Skips sin cambios.
+      # Medido dos veces con JAX_CI_NO_DB=1: 614 / 562.
       # Task 4b (2026-09-15) no mueve el piso sin DB: su unico test pide
       # `client`. Skips 560 -> 561. Medido dos veces con JAX_CI_NO_DB=1: 592 / 561.
       # 592 -> 597 el 2026-09-15 (cola durable, Task 9: el camino degradado
@@ -1786,7 +1796,7 @@ jobs:
       # por defecto es 500). Ninguno pide `client`, asi que el piso sube lo
       # mismo en los dos modos y los skips no se mueven.
       # Medido dos veces con JAX_CI_NO_DB=1: 597 / 561.
-      JAX_CI_MIN_PASSED: "608"
+      JAX_CI_MIN_PASSED: "614"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
