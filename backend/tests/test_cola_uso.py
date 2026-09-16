@@ -108,12 +108,47 @@ async def test_encolar_escribe_un_archivo_por_fila_con_el_formato_compartido(
     assert guardada["created_at"].endswith("+00:00")
 
 
-async def test_el_contrato_nombra_los_once_campos_y_los_tres_origenes():
+async def test_el_contrato_nombra_los_trece_campos_y_los_tres_origenes():
     assert cola.CAMPOS == (
         "spool_id", "created_at", "tenant_id", "user_id", "facet", "model",
         "tokens_in", "tokens_out", "cost_usd", "request_type", "origen",
+        "status", "job_id",
     )
     assert cola.ORIGENES == frozenset({"platform", "jacobs", "motor_registry"})
+
+
+async def test_status_y_job_id_son_opcionales_para_el_llamador():
+    """Sólo `motor_registry` los tiene. Que estén en el CONTRATO no los hace
+    obligatorios para quien encola: van al archivo en `null`."""
+    assert set(cola.CAMPOS) - set(cola.CAMPOS_OBLIGATORIOS) == {
+        "spool_id", "created_at", "status", "job_id",
+    }
+
+
+async def test_una_fila_sin_status_ni_job_id_sale_con_los_dos_en_null(
+    respaldo_aislado,
+):
+    spool_id = await cola.encolar(dict(FILA))
+
+    guardada = json.loads((respaldo_aislado / f"{spool_id}.json").read_text("utf-8"))
+    assert set(guardada) == set(cola.CAMPOS)
+    assert guardada["status"] is None
+    assert guardada["job_id"] is None
+
+
+async def test_una_fila_con_status_y_job_id_los_conserva(respaldo_aislado):
+    """Sin esto, la fila recuperada entra a `axioma_usage` con las dos columnas
+    en NULL y la reconciliación contra `motor_jobs.jsonl` (T3) no la puede
+    emparejar: se recupera el cobro y se pierde la trazabilidad."""
+    trabajo = "11111111-2222-3333-4444-555555555555"
+
+    spool_id = await cola.encolar(
+        {**FILA, "origen": "motor_registry", "status": "ok", "job_id": trabajo}
+    )
+
+    guardada = json.loads((respaldo_aislado / f"{spool_id}.json").read_text("utf-8"))
+    assert guardada["status"] == "ok"
+    assert guardada["job_id"] == trabajo
 
 
 async def test_cost_usd_puede_venir_en_null(respaldo_aislado):
@@ -281,6 +316,28 @@ async def test_el_corrupto_no_se_vuelve_a_contar_en_el_ciclo_siguiente(
     await cola.leer_pendientes(10)
 
     assert cola.estadisticas()["corruptos"] == 1
+
+
+async def test_un_archivo_de_once_campos_va_a_corruptos_nombrando_los_que_faltan(
+    respaldo_aislado, caplog
+):
+    """Fail-closed a propósito: un archivo escrito por una copia VIEJA del
+    módulo (once campos) no entra a medias -- entraría con `status`/`job_id` en
+    NULL y sin manera de saber que faltaban."""
+    respaldo_aislado.mkdir(parents=True)
+    viejo = {c: FILA.get(c) for c in cola.CAMPOS if c not in ("status", "job_id")}
+    viejo["spool_id"] = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    viejo["created_at"] = "2026-09-15T10:00:00.000+00:00"
+    (respaldo_aislado / f"{viejo['spool_id']}.json").write_text(
+        json.dumps(viejo), encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        assert await cola.leer_pendientes(10) == []
+
+    assert cola.estadisticas()["corruptos"] == 1
+    assert (respaldo_aislado / cola.SUBDIRECTORIO_CORRUPTOS
+            / f"{viejo['spool_id']}.json").exists()
+    assert "status" in caplog.text and "job_id" in caplog.text
 
 
 async def test_un_json_valido_sin_spool_id_es_corrupto(respaldo_aislado):
