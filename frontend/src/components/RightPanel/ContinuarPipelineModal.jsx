@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
+import { useJaxStore } from '../../store/useJaxStore'
+import { nombreDeFaceta } from '../../lib/nombreDeFaceta'
 import api from '../../api/client'
 import Dialogo from '../Dialogo'
 import AlertaError from '../AlertaError'
@@ -31,6 +33,8 @@ const CLASE_SELECT = 'text-xs bg-hundido border border-borde-control rounded px-
 export default function ContinuarPipelineModal({ pipeline, onClose }) {
   const { t, lang } = useI18n()
   const id = pipeline.pipeline_id
+  const facetsState = useJaxStore((s) => s.facets)
+  const nombre = (faceta) => nombreDeFaceta(facetsState, faceta)
   const [pasos, setPasos] = useState(null)
   const [capabilities, setCapabilities] = useState(null)
   const [errorCarga, setErrorCarga] = useState(false)
@@ -180,13 +184,13 @@ export default function ContinuarPipelineModal({ pipeline, onClose }) {
             {pasos.map((p) => (
               <li key={p.step_index} className="flex items-center gap-2 p-2 rounded-lg border border-borde bg-hundido">
                 {reusados.has(p.step_index) ? (
-                  <span className="text-xs text-exito">{t.continuarPasoReusado(p.step_index + 1, p.facet)}</span>
+                  <span className="text-xs text-exito">{t.continuarPasoReusado(p.step_index + 1, nombre(p.facet))}</span>
                 ) : (
                   <>
                     <span className="text-xs text-texto flex-1">{t.continuarPasoACorrer(p.step_index + 1, p.capability)}</span>
                     <select aria-label={t.continuarPasoACorrer(p.step_index + 1, p.capability)} className={CLASE_SELECT}
                       value={facetaDe(p)} disabled={enviando} onChange={(e) => elegir(p, e.target.value)}>
-                      {opciones(p).map((f) => <option key={f} value={f}>{f}</option>)}
+                      {opciones(p).map((f) => <option key={f} value={f}>{nombre(f)}</option>)}
                     </select>
                   </>
                 )}
@@ -197,7 +201,7 @@ export default function ContinuarPipelineModal({ pipeline, onClose }) {
 
         {cleanroom.map((v) => (
           <p key={`${v.paso}-${v.dependsOn}`} className="mb-1 text-[11px] text-peligro">
-            {t.continuarCleanroom(v.paso + 1, v.facet, v.dependsOn + 1)}
+            {t.continuarCleanroom(v.paso + 1, nombre(v.facet), v.dependsOn + 1)}
           </p>
         ))}
 

@@ -3,6 +3,7 @@ import { useI18n } from '../../i18n/index.jsx'
 import { useJaxStore } from '../../store/useJaxStore'
 import api from '../../api/client'
 import { colorToken } from '../../tema/tokens'
+import { nombreDeFaceta } from '../../lib/nombreDeFaceta'
 import Dialogo from '../Dialogo'
 import AlertaError from '../AlertaError'
 import ConfirmarCostoDialogo from '../ConfirmarCostoDialogo'
@@ -30,7 +31,7 @@ function getFacetOptions(t, facetsState) {
     { id: 'ada',       capability: 'analysis',         desc: t.descAda },
   ].map(f => ({
     ...f,
-    label: facetsState[f.id]?.display_name || facetsState[f.id]?.name || f.id,
+    label: nombreDeFaceta(facetsState, f.id),
     token: facetsState[f.id]?.token || 'texto-suave',
   }))
 }

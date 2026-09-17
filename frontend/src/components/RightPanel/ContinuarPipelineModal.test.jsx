@@ -17,6 +17,7 @@ import { I18nProvider } from '../../i18n/index.jsx'
 import es from '../../i18n/es.js'
 import { formatearUsd } from '../../lib/moneda'
 import { textoDeViolacion, textoDeMotivoDeCosto } from '../../api/errores'
+import { useJaxStore } from '../../store/useJaxStore'
 
 // toHaveTextContent colapsa los espacios del DOM (incluido el espacio duro de
 // Intl en es-HN) pero no los del esperado.
@@ -94,6 +95,31 @@ describe('ContinuarPipelineModal -- lo que muestra', () => {
     const dialogo = screen.getByRole('dialog')
     await waitFor(() => expect(dialogo).toHaveTextContent(texto(es.continuarCostoMax(formatearUsd('0.30', 'es')))))
     expect(dialogo).toHaveTextContent(texto(es.confirmarCostoPaso(VEREDICTO.pasos_costo[0], formatearUsd('0.25', 'es'))))
+  })
+
+  // Revisión final, menor 6c: el nombre visible de la faceta (display_name de
+  // /api/state, como PipelineModal), nunca el id crudo; el value sigue siendo el id.
+  it('muestra el nombre visible de la faceta en el paso reusado, las opciones y el clean-room', async () => {
+    const facetasAntes = useJaxStore.getState().facets
+    useJaxStore.setState((s) => ({ facets: {
+      ...s.facets,
+      hipatia: { ...s.facets.hipatia, display_name: 'Hipatia la buscadora' },
+      kimi: { ...s.facets.kimi, display_name: 'Kimi K2' },
+      jekyll: { ...s.facets.jekyll, display_name: 'Jekyll el analista' },
+    } }))
+    try {
+      abrir()
+      expect(await screen.findByText(es.continuarPasoReusado(1, 'Hipatia la buscadora'))).toBeInTheDocument()
+      await waitFor(() => expect(botonContinuar()).not.toBeDisabled())
+      const opcion = Array.from(selectDe(5, 'generate').options).find((o) => o.value === 'kimi')
+      expect(opcion.textContent).toBe('Kimi K2')
+      expect(Array.from(selectDe(5, 'generate').options).some((o) => o.textContent === 'kimi')).toBe(false)
+      // Clean-room: el paso 6 depende del 3 (jekyll); elegir jekyll en el 6 lo dispara.
+      fireEvent.change(selectDe(6, 'validate_consistency'), { target: { value: 'jekyll' } })
+      expect(await screen.findByText(es.continuarCleanroom(6, 'Jekyll el analista', 3))).toBeInTheDocument()
+    } finally {
+      useJaxStore.setState({ facets: facetasAntes })
+    }
   })
 
   it('las opciones de faceta son las de PipelineModal para esa capability', async () => {

@@ -9,6 +9,7 @@ import api from '../../api/client'
 import { textoDeErrorDeMesa, textoDeAviso } from '../../api/errores'
 import { alturaInput } from './alturaInput'
 import { colorToken } from '../../tema/tokens'
+import { nombreDeFaceta } from '../../lib/nombreDeFaceta'
 
 // Solo orden de despliegue — label viene de /api/state (display_name de la tabla
 // `facet`, Bloque C) y el token de color del store; no se duplican aca.
@@ -18,7 +19,7 @@ function BottomBar() {
   const facetsState = useJaxStore((s) => s.facets)
   const FACETS = FACET_ORDER.map((id) => ({
     id,
-    label: facetsState[id]?.display_name || facetsState[id]?.name || id,
+    label: nombreDeFaceta(facetsState, id),
     token: facetsState[id]?.token || 'texto-suave',
   }))
   const [input, setInput] = useState('')
