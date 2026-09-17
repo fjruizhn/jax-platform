@@ -17,6 +17,16 @@ de este módulo, por ejemplo) -- las dos formas son válidas, ver el brief.
 QUÉ PUEDE ROMPER UN POOL Y CÓMO SE MAPEA (todo al mismo código estable
 `pdf_ilegible`, sin agregar uno nuevo):
 
+0. TURNO (Final fix wave #2, I1): `adjuntos.turno.turno_de_pdf()`, un
+   semáforo del tamaño del pool, se toma ANTES del submit. Nunca hay más
+   extracciones enviadas que workers, así que ninguna espera en la cola
+   interna del executor y el timeout de abajo mide solo la corrida. Medido
+   por el revisor antes del arreglo: 1 worker, timeout 2 s, dos extracciones
+   válidas de 1,5 s a la vez -> la segunda salía `pdf_ilegible:timeout` y el
+   reciclado mataba a la primera. Lo que sigue pudiendo pasar: que el timeout
+   de una extracción patológica recicle el pool y alcance a otras EN VUELO en
+   el mismo pool (punto 5); y que la primera extracción tras un reciclado
+   espere el spawn que el precalentado de fondo no llegó a adelantar.
 1. TIMEOUT (JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS): `asyncio.wait_for` corta la
    espera. concurrent.futures.ProcessPoolExecutor NO tiene forma de
    interrumpir una tarea que ya empezó a correr en un worker
@@ -57,10 +67,13 @@ QUÉ PUEDE ROMPER UN POOL Y CÓMO SE MAPEA (todo al mismo código estable
    timing). Importante: una cancelación REAL de este request -- alguien
    llamó `.cancel()` sobre ESTA tarea, p. ej. el cliente se desconectó --
    tiene que seguir siendo `CancelledError` de verdad, no convertirse en
-   `pdf_ilegible`, y NO dispara un reciclado (no hay que castigar a otras
-   extracciones en vuelo por un cliente ajeno que se fue -- costo aceptado:
-   ese worker puntual puede quedar corriendo hasta que algo MÁS lo note,
-   ver el fix report). Se distinguen con `Task.cancelling()` (Python
+   `pdf_ilegible`, y NO dispara un reciclado por sí misma (no hay que
+   castigar a otras extracciones en vuelo por un cliente ajeno que se fue).
+   Final fix wave #2 (I1): el worker sigue ocupado, así que el lugar del
+   turno de pdf queda tomado (`_vigilar_abandonada`) hasta que termine o
+   venza SU presupuesto; si vence, se recicla como cualquier timeout. Antes
+   ese worker "podía quedar corriendo hasta que algo MÁS lo note", y ese algo
+   era la extracción siguiente vencida por esperar detrás. Se distinguen con `Task.cancelling()` (Python
    3.11+): >0 sólo cuando ALGUIEN pidió cancelar ESTA tarea puntualmente,
    no cuando lo que se canceló es el future que esta tarea esperaba por
    otra razón (ver `extraer_texto_en_pool`).
@@ -123,6 +136,7 @@ from concurrent.futures.process import BrokenProcessPool
 
 from adjuntos import limites
 from adjuntos.pdf import PdfIlegible, extraer_texto
+from adjuntos.turno import turno_de_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +154,12 @@ _cerrado = False
 # referencia fuerte, una tarea puede desaparecer a mitad sin aviso. Cada una
 # se quita sola al terminar (done-callback).
 _tareas_de_precalentado: set = set()
+
+# Vigilancias de extracciones abandonadas (Final fix wave #2, I1): mismo
+# motivo que el set de arriba -- cada una retiene un lugar del turno de pdf y
+# lo suelta al terminar; sin referencia fuerte podría desaparecer con el lugar
+# tomado.
+_tareas_de_vigilancia: set = set()
 
 # Un asyncio.Lock por event loop (no uno solo a nivel de módulo): desde
 # Python 3.10 el Lock no exige un loop corriendo al crearse, pero SÍ se ata
@@ -335,6 +355,34 @@ async def _reciclar(pool_sospechoso: ProcessPoolExecutor) -> None:
     tarea.add_done_callback(_tareas_de_precalentado.discard)
 
 
+async def _vigilar_abandonada(futuro, pool: ProcessPoolExecutor, turno: asyncio.Semaphore,
+                              vence: float) -> None:
+    """Final fix wave #2 (I1): el request de `futuro` se canceló (el cliente se
+    fue) con su PDF YA corriendo en un worker. El lugar del turno sigue tomado
+    hasta que ese worker queda libre de verdad: soltarlo antes mandaría a la
+    extracción siguiente a esperar DENTRO del pool, con su timeout contando la
+    espera. Pero nunca más allá del presupuesto de la abandonada (`vence`):
+    si sigue corriendo, se recicla el pool igual que si nadie la hubiera
+    cancelado -- la cancelación no le da más ni menos tiempo -- y el lugar se
+    suelta. Sin esa cota, un PDF colgado con un solo worker dejaría el turno
+    tomado para siempre."""
+    loop = asyncio.get_running_loop()
+    try:
+        espera = asyncio.wrap_future(futuro)
+        await asyncio.wait({espera}, timeout=max(0.0, vence - loop.time()))
+        if not espera.done():
+            logger.warning(
+                "extraccion de pdf abandonada: siguió corriendo pasado su timeout, reciclando")
+            espera.cancel()
+            await _reciclar(pool)
+        elif not espera.cancelled() and isinstance(espera.exception(), BrokenProcessPool):
+            await _reciclar(pool)
+    except Exception:  # fail-soft: vigilancia de fondo de un request que ya se fue; lo único que no puede fallar es soltar el turno (finally), y un pool que quedó roto lo repara _pool_actual en la próxima extracción
+        logger.warning("extraccion de pdf abandonada: fallo al vigilarla", exc_info=True)
+    finally:
+        turno.release()
+
+
 async def extraer_texto_en_pool(
     datos: bytes | str, max_paginas: int, max_chars: int
 ) -> tuple[str, bool]:
@@ -345,50 +393,77 @@ async def extraer_texto_en_pool(
     los bytes o la ruta del PDF (RD2: api/upload.py pasa la ruta, así no
     serializa 10 MB hacia el worker).
 
+    TURNO (Final fix wave #2, I1): antes del submit se toma
+    `adjuntos.turno.turno_de_pdf()`, un semáforo del tamaño del pool. Así
+    nunca hay más extracciones enviadas que workers, ninguna espera dentro
+    del pool y el `wait_for` mide SOLO la corrida. La espera en el semáforo
+    no tiene timeout propio (la acota el trabajo de las que corren, cada una
+    con el suyo) y cancelarla no toma ni retiene nada.
+
     Timeout, worker muerto (BrokenProcessPool), submit sobre un pool
     cerrado (RuntimeError puntual) y cancelación inducida por el pool se
     mapean los cuatro al mismo PdfIlegible que ya usa el endpoint para "PDF
     ilegible" (código estable `pdf_ilegible`, sin agregar uno nuevo) y
     disparan el reciclado del pool. Una cancelación REAL de este request
     (alguien llamó `.cancel()` sobre esta tarea puntualmente) se relanza tal
-    cual -- no se recicla el pool por eso (ver el docstring del módulo,
-    punto 5)."""
+    cual y no recicla por sí misma (ver el docstring del módulo, punto 5);
+    si el PDF ya corría, `_vigilar_abandonada` retiene el lugar hasta que el
+    worker termine o venza su presupuesto."""
     timeout = limites.cargar_timeout_de_pdf()
     loop = asyncio.get_running_loop()
-    pool = await _pool_actual()
+    turno = turno_de_pdf()
+    await turno.acquire()
+    soltar = True
+    futuro = None
     try:
-        # El submit real (ronda de corrección 2, item 1) va DENTRO del try:
-        # `run_in_executor` llama a `pool.submit(...)` SINCRÓNICAMENTE, y
-        # eso puede reventar (BrokenProcessPool/RuntimeError) antes de
-        # devolver ningún future si el pool se rompió/cerró entre el chequeo
-        # de `_pool_actual` y esta línea (otro hilo, otra ventana).
-        future = loop.run_in_executor(pool, extraer_texto, datos, max_paginas, max_chars)
-        return await asyncio.wait_for(future, timeout=timeout)
-    except asyncio.TimeoutError:
-        logger.warning(
-            "extraccion de pdf: timeout a los %s s, reciclando el ProcessPoolExecutor",
-            timeout,
-        )
-        await _reciclar(pool)
-        raise PdfIlegible("timeout") from None
-    except BrokenProcessPool:
-        logger.warning(
-            "extraccion de pdf: pool roto (un worker murió sin avisar), reciclando")
-        await _reciclar(pool)
-        raise PdfIlegible("pool_roto") from None
-    except RuntimeError as e:
-        if not _runtime_error_de_pool_cerrado(e):
-            raise
-        logger.warning(
-            "extraccion de pdf: submit sobre un pool ya cerrado/roto, reciclando")
-        await _reciclar(pool)
-        raise PdfIlegible("pool_roto") from None
-    except asyncio.CancelledError:
-        tarea = asyncio.current_task()
-        if tarea is not None and tarea.cancelling() > 0:
-            raise  # cancelacion real de ESTE request -- no tocar el pool
-        logger.warning(
-            "extraccion de pdf: cancelada por un reciclado ajeno (pool roto o "
-            "recién reciclado), mapeando igual")
-        await _reciclar(pool)
-        raise PdfIlegible("pool_reciclado") from None
+        pool = await _pool_actual()
+        try:
+            # El submit real (ronda de corrección 2, item 1) va DENTRO del try:
+            # `submit(...)` puede reventar (BrokenProcessPool/RuntimeError)
+            # antes de devolver ningún future si el pool se rompió/cerró entre
+            # el chequeo de `_pool_actual` y esta línea (otro hilo, otra
+            # ventana). El future de concurrent.futures se guarda para poder
+            # vigilarlo si este request se cancela (ver abajo).
+            futuro = pool.submit(extraer_texto, datos, max_paginas, max_chars)
+            vence = loop.time() + timeout
+            return await asyncio.wait_for(asyncio.wrap_future(futuro), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "extraccion de pdf: timeout a los %s s, reciclando el ProcessPoolExecutor",
+                timeout,
+            )
+            await _reciclar(pool)
+            raise PdfIlegible("timeout") from None
+        except BrokenProcessPool:
+            logger.warning(
+                "extraccion de pdf: pool roto (un worker murió sin avisar), reciclando")
+            await _reciclar(pool)
+            raise PdfIlegible("pool_roto") from None
+        except RuntimeError as e:
+            if not _runtime_error_de_pool_cerrado(e):
+                raise
+            logger.warning(
+                "extraccion de pdf: submit sobre un pool ya cerrado/roto, reciclando")
+            await _reciclar(pool)
+            raise PdfIlegible("pool_roto") from None
+        except asyncio.CancelledError:
+            tarea = asyncio.current_task()
+            if tarea is not None and tarea.cancelling() > 0:
+                # Cancelación real de ESTE request -- no tocar el pool. Si el
+                # PDF ya corre en un worker (cancel() no lo detuvo), el lugar
+                # queda tomado hasta que termine o venza (I1).
+                if futuro is not None and not futuro.done():
+                    soltar = False
+                    vigilancia = asyncio.create_task(
+                        _vigilar_abandonada(futuro, pool, turno, vence))
+                    _tareas_de_vigilancia.add(vigilancia)
+                    vigilancia.add_done_callback(_tareas_de_vigilancia.discard)
+                raise
+            logger.warning(
+                "extraccion de pdf: cancelada por un reciclado ajeno (pool roto o "
+                "recién reciclado), mapeando igual")
+            await _reciclar(pool)
+            raise PdfIlegible("pool_reciclado") from None
+    finally:
+        if soltar:
+            turno.release()

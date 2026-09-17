@@ -65,3 +65,13 @@ def dormir_y_morir(datos: bytes, max_paginas: int, max_chars: int) -> tuple[str,
     hecho a propósito."""
     time.sleep(0.3)
     os._exit(1)
+
+
+def trabajar(segundos: float, datos, max_paginas: int, max_chars: int) -> tuple[str, bool]:
+    """Una extracción VÁLIDA que tarda `segundos` y devuelve texto (Final fix
+    wave #2, I1). Se usa con functools.partial(trabajar, segundos): el
+    partial de una función de módulo se serializa por nombre, igual que las
+    de arriba. Sirve para probar que el timeout mide solo la corrida y no la
+    espera en cola."""
+    time.sleep(segundos)
+    return f"ok tras {segundos} s", False

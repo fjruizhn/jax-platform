@@ -2,10 +2,11 @@
 
 Medido en staging (final-fix-report.md): /api/health con 5 VUs tenía p95 0,3
 ms solo, 65 ms junto a upload_imagen_max c=25 y 244 ms junto a upload_pdf_max
-c=25. El trabajo de /api/chat/upload corre en asyncio.to_thread, pero
-b64encode y pypdf retienen el GIL: 25 hilos a la vez se lo disputan al event
-loop. JAX_ADJUNTO_SUBIDAS_EN_PROCESO limita cuántas subidas hacen ese trabajo
-a la vez; sin default (fail-closed), como los otros límites."""
+c=25. JAX_ADJUNTO_SUBIDAS_EN_PROCESO limita cuántas subidas clasifican a la
+vez (en un hilo, reteniendo el GIL por bloque); sin default (fail-closed),
+como los otros límites. pypdf ya corre en otro proceso (RD1) y, desde el Final
+fix wave #2 (I1), fuera de este turno: lo acota el turno de pdf
+(JAX_ADJUNTO_PDF_PROCESOS)."""
 import asyncio
 import io
 import threading
@@ -85,14 +86,92 @@ def test_las_subidas_de_imagen_respetan_el_tope(monkeypatch, tope):
     assert all(r["tipo"] == "imagen" and r["bytes"] == len(PNG) for r in resultados)
 
 
-@pytest.mark.parametrize("tope", [1, 2])
-def test_las_subidas_de_pdf_respetan_el_tope_tambien_en_pypdf(monkeypatch, tope):
-    monkeypatch.setenv("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", str(tope))
-    estado = _espiar_trabajo_async(monkeypatch, "extraer_texto_en_pool")
+def _espiar_envios_al_pool(monkeypatch):
+    """Cuántas extracciones están ENVIADAS al ProcessPoolExecutor a la vez
+    (submit hecho, future sin terminar). Final fix wave #2 (I1): eso es lo que
+    acota el turno de pdf; lo que corre de verdad ya lo acota el pool."""
+    import adjuntos.pdf_pool as pdf_pool
+    estado = {"activos": 0, "maximo": 0}
+    pool = pdf_pool.crear_pool()
+    original = pool.submit
+
+    def espia(*a, **k):
+        futuro = original(*a, **k)
+        estado["activos"] += 1
+        estado["maximo"] = max(estado["maximo"], estado["activos"])
+
+        def listo(_):
+            estado["activos"] -= 1
+        futuro.add_done_callback(listo)
+        return futuro
+
+    monkeypatch.setattr(pool, "submit", espia)
+    return estado
+
+
+@pytest.fixture
+def _pool_de_pdf_limpio():
+    import adjuntos.pdf_pool as pdf_pool
+    pdf_pool._cerrado = False
+    yield
+    asyncio.run(pdf_pool.cerrar_pool())
+    pdf_pool._cerrado = False
+
+
+@pytest.mark.parametrize("subidas,procesos", [(1, 2), (2, 1)])
+def test_las_subidas_de_pdf_respetan_el_tope_al_clasificar_y_el_de_procesos_en_pypdf(
+        monkeypatch, _pool_de_pdf_limpio, subidas, procesos):
+    """Final fix wave #2 (I1): la clasificación sigue dentro de
+    turno_de_subida (JAX_ADJUNTO_SUBIDAS_EN_PROCESO); pypdf ya no, lo acota el
+    turno de pdf (JAX_ADJUNTO_PDF_PROCESOS) antes del submit. Antes, con
+    subidas=1 y procesos=2 solo había 1 envío a la vez (el turno de subida
+    retenido durante pypdf), y con subidas=2 y procesos=1 había 2 envíos: el
+    segundo esperaba dentro del pool con su timeout corriendo."""
+    import functools
+    import adjuntos.pdf_pool as pdf_pool
+    from tests import adjuntos_pdf_pool_fixtures as fixtures
+    monkeypatch.setenv("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", str(subidas))
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", str(procesos))
+    monkeypatch.setattr(pdf_pool, "extraer_texto", functools.partial(fixtures.trabajar, 0.4))
+    clasificando = _espiar_trabajo(monkeypatch, "clasificar_archivo")
+    envios = _espiar_envios_al_pool(monkeypatch)
     pdf = pdf_con_texto(["hola"])
     resultados = _subir_a_la_vez([lambda: _archivo(pdf, "i.pdf", "application/pdf")] * 5)
-    assert estado["maximo"] == tope
-    assert all(r["origen"] == "pdf" and "hola" in r["vista_previa"] for r in resultados)
+    assert clasificando["maximo"] == subidas
+    assert envios["maximo"] == procesos
+    assert all(r["origen"] == "pdf" and r["vista_previa"].startswith("ok") for r in resultados)
+
+
+def test_un_pdf_lento_no_frena_una_subida_de_imagen_ya_clasificado(monkeypatch, _pool_de_pdf_limpio):
+    """Final fix wave #2 (I1): con JAX_ADJUNTO_SUBIDAS_EN_PROCESO=1, un PDF que
+    tarda en pypdf ya soltó el turno de subida al terminar de clasificarse.
+    Antes lo retenía durante toda la extracción y una imagen esperaba detrás."""
+    import functools
+    import adjuntos.pdf_pool as pdf_pool
+    from tests import adjuntos_pdf_pool_fixtures as fixtures
+    monkeypatch.setenv("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", "1")
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", "1")
+    monkeypatch.setattr(pdf_pool, "extraer_texto", functools.partial(fixtures.trabajar, 2.0))
+    envios = _espiar_envios_al_pool(monkeypatch)
+    pdf = pdf_con_texto(["hola"])
+
+    async def correr():
+        lento = asyncio.ensure_future(upload_mod.upload_file(
+            file=_archivo(pdf, "i.pdf", "application/pdf"), user=_USUARIO))
+        limite = time.monotonic() + 5
+        while envios["activos"] == 0:
+            assert time.monotonic() < limite, "el PDF nunca llegó al pool"
+            await asyncio.sleep(0.01)
+        inicio = time.monotonic()
+        imagen = await upload_mod.upload_file(file=_archivo(PNG, "f.png", "image/png"), user=_USUARIO)
+        demora = time.monotonic() - inicio
+        assert not lento.done()
+        return imagen, demora, await lento
+
+    imagen, demora, pdf_hecho = asyncio.run(correr())
+    assert imagen["tipo"] == "imagen"
+    assert demora < 1.0, f"la imagen esperó {demora:.2f} s detrás del PDF"
+    assert pdf_hecho["origen"] == "pdf"
 
 
 def test_el_turno_se_libera_si_la_subida_falla(monkeypatch):

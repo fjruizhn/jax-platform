@@ -23,6 +23,7 @@ from adjuntos import limites
 _Semaforos = "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]"
 _por_loop: _Semaforos = weakref.WeakKeyDictionary()
 _subidas_por_loop: _Semaforos = weakref.WeakKeyDictionary()
+_pdf_por_loop: _Semaforos = weakref.WeakKeyDictionary()
 
 
 def _turno(tabla, cargar) -> asyncio.Semaphore:
@@ -39,8 +40,21 @@ def turno_de_imagen() -> asyncio.Semaphore:
 
 def turno_de_subida() -> asyncio.Semaphore:
     """Tope de /api/chat/upload (JAX_ADJUNTO_SUBIDAS_EN_PROCESO, revisión final
-    2026-09-17). Su trabajo corre en asyncio.to_thread, pero b64encode de 10 MB
-    y pypdf retienen el GIL: 25 hilos a la vez se lo disputaban al event loop
-    (health p95 65 ms con imágenes y 244 ms con PDFs a c=25, contra 0,3 ms
-    solo). Mismo patrón que el de imágenes: por loop, leído una vez."""
+    2026-09-17). Cubre SOLO la clasificación (adjuntos/tipos.py::
+    clasificar_archivo, en un hilo): validar hasta 10 MB de texto con el
+    decodificador incremental retiene el GIL por bloque, y 25 a la vez se lo
+    disputaban al event loop. pypdf ya no va acá (corre en otro proceso, RD1)
+    y la espera al pool tampoco (Final fix wave #2, I1): la acota
+    `turno_de_pdf`. Mismo patrón que el de imágenes: por loop, leído una vez."""
     return _turno(_subidas_por_loop, limites.cargar_subidas_en_proceso)
+
+
+def turno_de_pdf() -> asyncio.Semaphore:
+    """Lugares del ProcessPoolExecutor de pypdf (JAX_ADJUNTO_PDF_PROCESOS,
+    Final fix wave #2, I1). adjuntos/pdf_pool.py lo toma ANTES del submit: a lo
+    sumo tantas extracciones enviadas como workers, así ninguna espera DENTRO
+    del pool y su timeout mide solo su corrida. Antes, con más subidas que
+    workers, la que quedaba en la cola del pool vencía por la espera y el
+    reciclado mataba a la que sí corría. Mismo patrón: por loop, leído una
+    vez (el tamaño del pool sale de la misma variable)."""
+    return _turno(_pdf_por_loop, limites.cargar_procesos_de_pdf)

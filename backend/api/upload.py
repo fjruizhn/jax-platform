@@ -24,8 +24,10 @@ Camino de una subida:
    deja archivos (lo que un hilo ya lanzado escriba después lo levanta el
    limpiador por edad).
 
-Clasificar y extraer van dentro de turno_de_subida
-(JAX_ADJUNTO_SUBIDAS_EN_PROCESO); la copia no, es I/O de disco en un hilo.
+Clasificar va dentro de turno_de_subida (JAX_ADJUNTO_SUBIDAS_EN_PROCESO); la
+copia no, es I/O de disco en un hilo; pypdf tampoco (Final fix wave #2, I1):
+espera turno_de_pdf (JAX_ADJUNTO_PDF_PROCESOS) con el turno de subida ya
+suelto, y su timeout mide solo la corrida.
 Errores con código estable.
 
 RD6 (2026-09-17): antes de copiar, en este orden, tope por archivo (413
@@ -114,9 +116,13 @@ async def upload_file(
             except almacen.SubidaDemasiadoGrande:
                 raise _rechazo(413, "adjunto_demasiado_grande", max_bytes=limites.max_bytes) from None
 
-            # Clasificar 10 MB de texto y pypdf compiten por CPU/GIL: el turno
+            # Clasificar 10 MB de texto retiene el GIL por bloque: el turno
             # limita cuántas subidas lo hacen a la vez (adjuntos/turno.py). Se
-            # libera con cualquier salida, también con los rechazos.
+            # libera con cualquier salida, también con los rechazos, y ANTES
+            # de pypdf (Final fix wave #2, I1): la extracción corre en otro
+            # proceso y espera su propio turno (turno_de_pdf, dentro de
+            # extraer_texto_en_pool); retener este mientras tanto dejaba a
+            # un PDF lento frenando las subidas de imagen y texto.
             async with turno_de_subida():
                 try:
                     clase = await asyncio.to_thread(clasificar_archivo, temporal, limites.max_chars)
@@ -125,17 +131,21 @@ async def upload_file(
                 except TipoNoPermitido:
                     raise _rechazo(415, "adjunto_tipo_no_permitido") from None
 
-                if clase.clase == "pdf":
-                    try:
-                        texto, recortado = await extraer_texto_en_pool(
-                            str(temporal), limites.max_paginas, limites.max_chars)
-                    except PdfSinTexto:
-                        raise _rechazo(422, "pdf_sin_texto") from None
-                    except PdfIlegible:
-                        raise _rechazo(422, "pdf_ilegible") from None
-                    origen = "pdf"
-                else:
-                    texto, recortado, origen = clase.texto, clase.recortado, "texto"
+            if clase.clase == "pdf":
+                # La reserva de cuota sigue tomada durante la espera y la
+                # extracción (lo reservado es lo que se va a confirmar); el
+                # candado del usuario no (solo se toma al reservar y al
+                # confirmar, adjuntos/cuota.py).
+                try:
+                    texto, recortado = await extraer_texto_en_pool(
+                        str(temporal), limites.max_paginas, limites.max_chars)
+                except PdfSinTexto:
+                    raise _rechazo(422, "pdf_sin_texto") from None
+                except PdfIlegible:
+                    raise _rechazo(422, "pdf_ilegible") from None
+                origen = "pdf"
+            else:
+                texto, recortado, origen = clase.texto, clase.recortado, "texto"
 
             # El commit (sidecar) vuelve a mirar la cuota bajo el candado del
             # usuario, con el tamaño copiado (adjuntos/cuota.py).

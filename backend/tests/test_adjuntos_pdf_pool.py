@@ -136,19 +136,25 @@ def test_worker_muerto_se_mapea_a_pdf_ilegible_y_el_pool_sigue_sirviendo_despues
 
 # --- item 2: trabajo en vuelo o en cola durante un reciclado ----------------
 
-def test_la_extraccion_en_cola_durante_un_reciclado_tambien_da_pdf_ilegible(monkeypatch):
-    """Con el pool a UN solo worker, la segunda extracción queda en cola
-    mientras la primera corre. La primera tiene un timeout CORTO (1 s) y la
-    segunda uno LARGO (10 s) a propósito: si la segunda sale como
-    pdf_ilegible de todos modos, mucho antes de sus propios 10 s, no puede
-    ser porque agotó SU presupuesto -- tiene que ser porque el reciclado de
-    la primera (que mata el pool entero) le rompió el future por debajo.
-    Sin esta diferencia de timeouts, una carrera de temporización podría
-    hacer pasar el test por casualidad incluso sin el mapeo nuevo."""
-    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", "1")
+def test_la_extraccion_en_vuelo_durante_un_reciclado_tambien_da_pdf_ilegible(monkeypatch):
+    """Con el pool a DOS workers, dos extracciones corren a la vez en el mismo
+    pool. La primera tiene un timeout CORTO (1 s) y la segunda uno LARGO
+    (10 s) a propósito: si la segunda sale como pdf_ilegible mucho antes de
+    sus propios 10 s, no puede ser porque agotó SU presupuesto -- tiene que
+    ser porque el reciclado de la primera (que mata el pool entero) le rompió
+    el future por debajo.
+
+    Final fix wave #2 (I1): antes esta prueba usaba UN worker y la segunda
+    esperaba en la cola del pool. Con el turno de pdf ya no hay cola dentro
+    del pool (la segunda espera el semáforo y entra al pool nuevo); lo que
+    sigue pudiendo pasar es que un reciclado alcance a otra extracción EN
+    VUELO en el mismo pool, y eso es lo que fija ahora."""
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", "2")
     monkeypatch.setattr(pdf_pool, "extraer_texto", fixtures.dormir)
 
     async def escenario():
+        await pdf_pool._pool_actual()
+        await pdf_pool.precalentar_pool()
         monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "1")
         tarea_a = asyncio.ensure_future(
             pdf_pool.extraer_texto_en_pool(b"a", max_paginas=20, max_chars=8000))
@@ -179,10 +185,18 @@ def test_una_cancelacion_real_del_request_se_propaga_sin_traducirse(monkeypatch)
     fabricado. Se distingue de una cancelación inducida por el pool con
     `Task.cancelling()` (>0 sólo cuando ALGUIEN llamó `.cancel()` sobre ESTA
     tarea, no cuando lo que se cancela es el future que esta tarea esperaba
-    por otra razón)."""
-    monkeypatch.setattr(pdf_pool, "extraer_texto", fixtures.dormir)
+    por otra razón).
+
+    Final fix wave #2 (I1): el PDF abandonado es VÁLIDO y termina dentro de
+    su presupuesto (1 s de 5). Con uno colgado, vencido el presupuesto se
+    recicla igual que sin cancelación (ver
+    test_una_cancelacion_real_de_un_pdf_colgado_...); acá se fija que la
+    cancelación por sí misma no recicla."""
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "5")
+    monkeypatch.setattr(pdf_pool, "extraer_texto", _trabajo(1.0))
 
     async def escenario():
+        pool = await pdf_pool._pool_actual()
         tarea = asyncio.ensure_future(
             pdf_pool.extraer_texto_en_pool(b"x", max_paginas=20, max_chars=8000))
         await asyncio.sleep(0.3)  # que el future ya este corriendo en el worker
@@ -197,6 +211,8 @@ def test_una_cancelacion_real_del_request_se_propaga_sin_traducirse(monkeypatch)
         texto, _ = await pdf_pool.extraer_texto_en_pool(
             pdf_con_texto(["ok"]), max_paginas=20, max_chars=8000)
         assert "ok" in texto
+        await asyncio.gather(*pdf_pool._tareas_de_vigilancia)
+        assert pdf_pool._pool is pool
 
     asyncio.run(escenario())
 
@@ -607,3 +623,133 @@ def test_lifespan_crea_y_cierra_el_pool(monkeypatch):
     assert "precalentar" in llamadas
     assert "cerrar" in llamadas
     assert llamadas.index("crear") < llamadas.index("precalentar") < llamadas.index("cerrar")
+
+
+# =============================================================================
+# Final fix wave #2 (2026-09-17), I1: el timeout mide la corrida, no la cola
+# =============================================================================
+
+def _trabajo(segundos):
+    import functools
+    return functools.partial(fixtures.trabajar, segundos)
+
+
+@pytest.mark.parametrize("procesos", [1, 2])
+def test_las_extracciones_en_cola_no_vencen_por_la_espera(monkeypatch, procesos):
+    """Reproducción del revisor: N workers, timeout 2 s, N+1 extracciones
+    VÁLIDAS de 1,5 s a la vez. Antes, la N+1 esperaba dentro del pool y su
+    `wait_for` contaba esa espera: salía `pdf_ilegible:timeout` y el reciclado
+    mataba a las que sí estaban corriendo. Ahora el semáforo del tamaño del
+    pool se toma ANTES del submit: todas terminan bien y nadie recicla."""
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", str(procesos))
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "2")
+    monkeypatch.setattr(pdf_pool, "extraer_texto", _trabajo(1.5))
+    reciclados = []
+    reciclar_real = pdf_pool._reciclar
+
+    async def reciclar_espia(pool):
+        reciclados.append(pool)
+        await reciclar_real(pool)
+
+    monkeypatch.setattr(pdf_pool, "_reciclar", reciclar_espia)
+
+    async def escenario():
+        pool = await pdf_pool._pool_actual()
+        await pdf_pool.precalentar_pool()  # el spawn no cuenta en la corrida
+        resultados = await asyncio.gather(
+            *(pdf_pool.extraer_texto_en_pool(b"x", max_paginas=20, max_chars=8000)
+              for _ in range(procesos + 1)),
+            return_exceptions=True)
+        assert all(isinstance(r, tuple) and r[0].startswith("ok") for r in resultados), resultados
+        assert pdf_pool._pool is pool
+
+    asyncio.run(escenario())
+    assert reciclados == []
+
+
+def test_cancelar_mientras_espera_el_turno_de_pdf_no_retiene_el_lugar(monkeypatch):
+    """Una extracción cancelada mientras espera el semáforo no se queda con
+    un lugar: la siguiente entra en cuanto termina la que corría."""
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", "1")
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "5")
+    monkeypatch.setattr(pdf_pool, "extraer_texto", _trabajo(0.5))
+
+    async def escenario():
+        await pdf_pool._pool_actual()
+        await pdf_pool.precalentar_pool()
+        corriendo = asyncio.ensure_future(
+            pdf_pool.extraer_texto_en_pool(b"a", max_paginas=20, max_chars=8000))
+        await asyncio.sleep(0.1)
+        en_cola = asyncio.ensure_future(
+            pdf_pool.extraer_texto_en_pool(b"b", max_paginas=20, max_chars=8000))
+        await asyncio.sleep(0.1)
+        en_cola.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await en_cola
+        await corriendo
+        inicio = time.monotonic()
+        texto, _ = await asyncio.wait_for(
+            pdf_pool.extraer_texto_en_pool(b"c", max_paginas=20, max_chars=8000), 3)
+        assert texto.startswith("ok")
+        assert time.monotonic() - inicio < 1.5
+        from adjuntos.turno import turno_de_pdf
+        assert not turno_de_pdf().locked()
+
+    asyncio.run(escenario())
+
+
+def test_una_cancelacion_real_retiene_el_lugar_hasta_que_el_worker_termina(monkeypatch):
+    """Si cancelan un request cuyo PDF YA corre en un worker, ese worker sigue
+    ocupado: soltar el lugar en ese momento dejaría a la siguiente extracción
+    esperando DENTRO del pool, con el timeout contando esa espera (I1 por
+    otra puerta). El lugar se suelta cuando el worker termina: la siguiente
+    espera en el semáforo y su timeout mide solo su corrida."""
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", "1")
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "2")
+    monkeypatch.setattr(pdf_pool, "extraer_texto", _trabajo(1.5))
+
+    async def escenario():
+        pool = await pdf_pool._pool_actual()
+        await pdf_pool.precalentar_pool()
+        abandonada = asyncio.ensure_future(
+            pdf_pool.extraer_texto_en_pool(b"a", max_paginas=20, max_chars=8000))
+        await asyncio.sleep(0.5)  # ya corre en el worker
+        abandonada.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await abandonada
+        # Le queda ~1 s al worker; con la cola dentro del pool, 1 + 1,5 > 2 s.
+        texto, _ = await pdf_pool.extraer_texto_en_pool(b"b", max_paginas=20, max_chars=8000)
+        assert texto.startswith("ok")
+        assert pdf_pool._pool is pool  # nadie recicló
+
+    asyncio.run(escenario())
+
+
+def test_una_cancelacion_real_de_un_pdf_colgado_no_deja_el_lugar_tomado_para_siempre(monkeypatch):
+    """El lado opuesto: el worker abandonado está colgado. El lugar no puede
+    quedar tomado para siempre (con un worker, ninguna otra extracción
+    entraría jamás). Vence el presupuesto de la abandonada, se recicla el pool
+    y se suelta el lugar: la siguiente sirve."""
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", "1")
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "1")
+    monkeypatch.setattr(pdf_pool, "extraer_texto", fixtures.dormir)
+
+    async def escenario():
+        pool = await pdf_pool._pool_actual()
+        await pdf_pool.precalentar_pool()
+        abandonada = asyncio.ensure_future(
+            pdf_pool.extraer_texto_en_pool(b"a", max_paginas=20, max_chars=8000))
+        await asyncio.sleep(0.3)
+        abandonada.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await abandonada
+        monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "5")
+        monkeypatch.setattr(pdf_pool, "extraer_texto", _extraer_texto_real)
+        inicio = time.monotonic()
+        texto, _ = await asyncio.wait_for(pdf_pool.extraer_texto_en_pool(
+            pdf_con_texto(["ok"]), max_paginas=20, max_chars=8000), 8)
+        assert "ok" in texto
+        assert time.monotonic() - inicio < 6
+        assert pdf_pool._pool is not pool  # el presupuesto vencido recicló
+
+    asyncio.run(escenario())
