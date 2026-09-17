@@ -6,7 +6,15 @@ import AuditLog from './AuditLog'
 import api from '../../api/client'
 import AlertaError from '../AlertaError'
 import ContinuarPipelineModal from './ContinuarPipelineModal'
-import { textoDeCausa, textoDeErrorDeMesa } from '../../api/errores'
+import { textoDeCausa, textoDeErrorDeMesa, textoDeViolacion } from '../../api/errores'
+
+// Violaciones de un 422 prevuelo_rechazado al reanudar o aprobar (resume y
+// approve-step también pasan por el pre-vuelo, Ruling de la sesión principal
+// 2026-09-17). Cualquier otra forma no se muestra.
+function violacionesDe(error) {
+  const detail = error?.response?.data?.detail
+  return detail?.code === 'prevuelo_rechazado' && Array.isArray(detail.violaciones) ? detail.violaciones : []
+}
 
 // Estados que se pueden continuar (spec 2026-09-17 §5.2 regla 2).
 const CONTINUABLES = ['aborted', 'expired']
@@ -205,6 +213,13 @@ function RightPanel() {
               {avisoVigente && (
                 <AlertaError className="mt-2 text-xs">
                   {textoDeErrorDeMesa(t, avisoVigente.error, t[avisoVigente.clave] ?? t.statusError)}
+                  {violacionesDe(avisoVigente.error).length > 0 && (
+                    <ul className="mt-1 list-disc pl-4">
+                      {violacionesDe(avisoVigente.error).map((v, i) => (
+                        <li key={i}>{textoDeViolacion(t, v)}</li>
+                      ))}
+                    </ul>
+                  )}
                 </AlertaError>
               )}
 

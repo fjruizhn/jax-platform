@@ -580,8 +580,10 @@ jobs:
             // reconectar, api/websocket) y -1: el test de activateKillSwitch de
             // la rama se borró porque el frente B eliminó esa acción. Medido tras
             // el merge: 693 passed, 0 fallidos, 75 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 693) {
-              console.error("PISO ROTO: se esperaban 693 tests de vitest CORRIDOS y 0 fallidos.");
+            // 693 -> 694 el 2026-09-17: +1 en RightPanel.test.jsx (resume con 422
+            // prevuelo_rechazado lista las violaciones traducidas). Visto en rojo.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 694) {
+              console.error("PISO ROTO: se esperaban 694 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1552,7 +1554,10 @@ jobs:
           # el índice (pasa en cuanto se mergee el plan J en jax); ahora sólo lo
           # agrega si la copia de SHOW CREATE TABLE no lo tiene. Medido contra
           # jax_memory_test: 1761 passed / 0 failed / 1 skipped.
-          PISO_PASSED = 1761
+          # 1761 -> 1763 el 2026-09-17: +2 controles en test_pipelines_propagacion.py
+          # (resume propaga prevuelo_rechazado con violaciones y prevuelo_no_disponible;
+          # Jacobs corre el pre-vuelo en resume/approve-step). Pasan con el helper único.
+          PISO_PASSED = 1763
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2121,7 +2126,8 @@ jobs:
       # 1109 -> 1119 el 2026-09-17 (merge de master, credencial de servicio): +10
       # puros de test_credencial_las_manos.py. Medido con JAX_CI_NO_DB=1: 1119
       # passed / 643 skipped.
-      JAX_CI_MIN_PASSED: "1119"
+      # 1119 -> 1121 el 2026-09-17: los mismos +2 controles puros de resume.
+      JAX_CI_MIN_PASSED: "1121"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

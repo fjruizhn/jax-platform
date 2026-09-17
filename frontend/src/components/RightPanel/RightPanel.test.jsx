@@ -107,6 +107,22 @@ describe('RightPanel -- los fallos de Aprobar y Cancelar se ven', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(en.erroresMesa.kill_switch_activo())
   })
 
+  // Plan J, Ruling de la sesión principal (2026-09-17): resume y approve-step
+  // también pasan por el pre-vuelo. Un rechazo dice que no se gastó nada Y
+  // cuáles son los problemas, por paso, traducidos (nunca la regla cruda).
+  it('si /resume responde 422 prevuelo_rechazado, el aviso lista las violaciones traducidas', async () => {
+    const violacion = { paso: 4, faceta: 'kimi', regla: 'credencial_ausente', detalle: '' }
+    api.post.mockRejectedValue({ response: { status: 422, data: { detail: {
+      code: 'prevuelo_rechazado', violaciones: [violacion], costo_max_usd: '0.000000', pasos_costo: [],
+    } } } })
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: es.approve }))
+    const alerta = await screen.findByRole('alert')
+    expect(alerta).toHaveTextContent(es.erroresMesa.prevuelo_rechazado({ violaciones: [violacion] }))
+    expect(alerta).toHaveTextContent(es.reglasPrevuelo.credencial_ausente(violacion))
+    expect(alerta).not.toHaveTextContent('credencial_ausente')
+  })
+
   it('si /cancel falla, aparece el aviso', async () => {
     api.post.mockRejectedValue(new Error('502'))
     renderPanel()

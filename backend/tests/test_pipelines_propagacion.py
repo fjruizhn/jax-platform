@@ -263,3 +263,28 @@ def test_rechazo_con_usd_max_de_un_paso_ilegible_lo_deja_null_sin_romper():
                                          "usd_max": "no-es-un-monto", "motivo": None}]}}
     exc = mod._rechazo_de_jacobs(422, cuerpo, "")
     assert exc.detail["pasos_costo"][0]["usd_max"] is None
+
+
+# Plan J, Ruling de la sesión principal (2026-09-17): resume también corre el
+# pre-vuelo en Jacobs. Sus dos rechazos propios salen con su status y sus datos
+# declarados (control del contrato: el helper único ya los deja pasar).
+def test_resume_propaga_el_rechazo_del_prevuelo_con_sus_violaciones(monkeypatch):
+    v = violacion()
+    falso = JacobsFalso({("POST", f"/pipeline/{PID}/resume"): respuesta(422, {"detail": {
+        "code": "prevuelo_rechazado", "violaciones": [v], "costo_max_usd": "0.000000", "pasos_costo": [],
+    }})})
+    preparar(monkeypatch, falso)
+    resultado = _correr(mod.resume_pipeline(pipeline_id=PID, user=USUARIO))
+    assert isinstance(resultado, HTTPException), resultado
+    assert resultado.status_code == 422
+    assert resultado.detail["code"] == "prevuelo_rechazado"
+    assert resultado.detail["violaciones"] == [v]
+
+
+def test_resume_propaga_prevuelo_no_disponible(monkeypatch):
+    falso = JacobsFalso({("POST", f"/pipeline/{PID}/resume"): respuesta(503, {"detail": {
+        "code": "prevuelo_no_disponible", "motivo": "base caída"}})})
+    preparar(monkeypatch, falso)
+    resultado = _correr(mod.resume_pipeline(pipeline_id=PID, user=USUARIO))
+    assert isinstance(resultado, HTTPException), resultado
+    assert (resultado.status_code, resultado.detail["code"]) == (503, "prevuelo_no_disponible")
