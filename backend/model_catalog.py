@@ -15,7 +15,7 @@ import os
 import re
 import time
 
-from credential_resolver import resolve_credential_instrumented
+from credential_resolver import resolve_credential
 from db.connection import get_pool
 from http_client import cabeceras_gemini, get_http_client
 
@@ -119,7 +119,7 @@ async def sync_provider_models(provider_id: str) -> dict:
             logger.warning(f"model_catalog sync provider=anthropic oauth_unavailable reason={e}")
             return {"provider_id": provider_id, "fetched": 0, "skipped": f"oauth local no disponible: {e}"}
     else:
-        credential = await resolve_credential_instrumented(provider_id)
+        credential = await resolve_credential(provider_id)
 
     client = await get_http_client()
     if transport == "header_goog_api_key":

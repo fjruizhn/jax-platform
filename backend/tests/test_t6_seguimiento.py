@@ -128,7 +128,7 @@ def test_T6_2_sync_del_catalogo_manda_la_key_en_la_cabecera(monkeypatch):
         return KEY
 
     monkeypatch.setattr(model_catalog, "get_http_client", get_client)
-    monkeypatch.setattr(model_catalog, "resolve_credential_instrumented", cred)
+    monkeypatch.setattr(model_catalog, "resolve_credential", cred)
     asyncio.run(model_catalog.sync_provider_models("gemini"))
     (req,) = cap.pedidos
     _sin_key_en_la_url(req)
@@ -150,7 +150,7 @@ def test_T6_2_el_transporte_query_param_ya_no_se_usa(monkeypatch):
         return KEY
 
     monkeypatch.setattr(model_catalog, "get_http_client", get_client)
-    monkeypatch.setattr(model_catalog, "resolve_credential_instrumented", cred)
+    monkeypatch.setattr(model_catalog, "resolve_credential", cred)
     with pytest.raises(ValueError) as exc:
         asyncio.run(model_catalog.sync_provider_models("gemini"))
     assert KEY not in str(exc.value)

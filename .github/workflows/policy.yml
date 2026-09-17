@@ -702,18 +702,12 @@ jobs:
       # "ModuleNotFoundError: No module named 'claims'".
       JAX_REPO_PATH: /tmp/jax
       JAX_OLLAMA_URL: http://127.0.0.1:11434
-      # Credenciales FICTICIAS, a proposito. `_query_facet` resuelve la
-      # credencial del proveedor para todo transport que no sea ollama o
-      # subprocess; sin ninguna, 12 tests reciben "sin binding activo
-      # configurado" -- un mensaje que ademas MIENTE sobre la causa (el binding
-      # existe; lo que falta es la credencial). Los tests stubean la llamada
-      # HTTP, asi que el valor no se usa nunca: solo tiene que existir. Este job
-      # NO debe necesitar ningun secret real del repo.
-      OPENAI_API_KEY: ci-dummy-not-a-real-key
-      DEEPSEEK_API_KEY: ci-dummy-not-a-real-key
-      GEMINI_API_KEY: ci-dummy-not-a-real-key
-      KIMI_API_KEY: ci-dummy-not-a-real-key
-      ZAI_API_KEY: ci-dummy-not-a-real-key
+      # Las credenciales ficticias YA NO van aca (B1.4, 2026-09-17). Estaban
+      # como variables de entorno y 18 tests pasaban gracias al fallback
+      # DB->env; al retirar el fallback se pusieron rojos y mostraron que este
+      # job nunca ejercito el camino real. Ahora el conftest las siembra en la
+      # tabla `credential`, que es donde produccion las lee. Este job sigue sin
+      # necesitar ningun secret real del repo.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -1624,7 +1618,15 @@ jobs:
           #   compartida). Sin esos 2, el limpio es 2049; +1 por el modelo extra del
           #   runner (test_model_max_output_tokens.py:324, el skip que el runner no
           #   tiene) -> 2050. Si el runner da otro número, manda el runner.
-          PISO_PASSED = 2050
+          # 2050 -> 2062 el 2026-09-17, sumando dos ramas del mismo dia sobre el
+          #   piso que dejo el frente D: +8 de B1.4 (test_retiro_fallback_env.py:
+          #   sin credencial en la DB y CON la env var puesta, los 4 consumidores
+          #   fallan cerrado; 7 de los 8 vistos EN ROJO contra 8d9cb73) y +4 de
+          #   test_admin_keys_sin_escritura.py (PUT y DELETE /api/admin/keys ya no
+          #   existen, el modulo no escribe /etc/jax/.env, y la barrera del conftest
+          #   muerde). Sumar deltas, no elegir un lado. Si el runner da otro numero,
+          #   manda el runner.
+          PISO_PASSED = 2062
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2211,7 +2213,12 @@ jobs:
       # Skips 647 -> 703. Los 14 JAX_ADJUNTO(S)_* salen de conftest. Medido dos veces
       # con JAX_CI_NO_DB=1 JAX_JWT_SECRET=ci-dummy tras el rebase sobre 369fa5a: 1346 passed
       # / 703 skipped / 0 failed.
-      JAX_CI_MIN_PASSED: "1346"
+      # 1346 -> 1356 el 2026-09-17: +8 de B1.4 y +2 puros de
+      # test_admin_keys_sin_escritura.py; sus otros 2 piden `client`, asi que
+      # suman SKIPS (703 -> 706), no passed. Puse 1358 por contarlos como puros
+      # y el runner me corrigio: "PISO ROTO: 1356 passed < 1358". Manda el
+      # runner. Sumar deltas con las otras ramas del dia, no elegir un lado.
+      JAX_CI_MIN_PASSED: "1356"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

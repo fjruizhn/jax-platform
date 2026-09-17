@@ -16,19 +16,29 @@ interruptor.ruta_del_interruptor()
 # Debe correr antes de importar cualquier router: systemd carga
 # /etc/jax/.env vía EnvironmentFile con las API keys de proveedor ya
 # cifradas (ver crypto_secrets.py); esto las deja en texto plano en
-# os.environ para que api/chat.py y api/image.py sigan leyendo
-# os.getenv(...) exactamente igual que antes.
+# os.environ.
+#
+# 2026-09-17 (B1.4, retiro del fallback): el camino de RESOLUCIÓN ya NO lee
+# estas variables — api/chat.py, api/image.py, facet_resolver.py y
+# model_catalog.py resuelven contra la DB y fallan cerrado. Lo único que
+# sigue dependiendo de ellas es el admin LEGACY de llaves
+# (api/admin/keys.py), que lee y ESCRIBE /etc/jax/.env. Cuando esas 5
+# variables se retiren del archivo, esta llamada queda en no-op y el admin
+# legacy se queda sin fuente — decidir ahí si se retira o pasa a solo
+# lectura (B1.5 lo deja anotado como decisión aparte).
 from crypto_secrets import decrypt_provider_keys_in_env
 decrypt_provider_keys_in_env()
 
 # jax-platform.service corre con --log-level warning a propósito (sin
 # access-log, sin ruido) — pero eso deja invisible el camino EXITOSO de
 # credential_resolver (source=db se loguea a logger.info, ver
-# credential_resolver.py). Solo source=env_fallback (warning) y
-# FAIL_CLOSED (error) quedan visibles a ese nivel global. Sin este bump,
-# la ventana de 7 días de B1.4 podría "pasar" sin que nadie vea nunca una
-# confirmación positiva de que credential_resolver está resolviendo desde
-# DB — ausencia de fallas no es evidencia de éxito (mismo principio que
+# credential_resolver.py). Solo db_unreachable (warning) y FAIL_CLOSED
+# (error) quedan visibles a ese nivel global. Sin este bump, nadie vería
+# nunca una confirmación positiva de que credential_resolver está
+# resolviendo desde DB — y desde que se retiró el fallback a las env vars
+# (B1.4, 2026-09-17) ese camino es el ÚNICO que hay, así que su evidencia
+# positiva importa más, no menos:
+# ausencia de fallas no es evidencia de éxito (mismo principio que
 # C3 del doc de reformas, aplicado a logging en vez de a claims del
 # modelo). Sube SOLO este logger — el nivel global sigue en warning.
 #

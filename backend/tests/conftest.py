@@ -24,6 +24,54 @@ for _k, _v in _load_env().items():
 
 os.environ["JAX_DB_NAME"] = "jax_memory_test"
 
+# El runner de CI no tiene /etc/jax/.env, asi que no tiene FERNET_KEY, y sin
+# ella no se pueden sembrar credenciales cifradas en la base de tests. Se
+# genera una por sesion SOLO si falta (en hall9000 sale del .env). setdefault
+# a proposito: los tests que ejercitan una FERNET_KEY ausente o malformada la
+# fijan ellos con monkeypatch.
+if not os.environ.get("FERNET_KEY"):
+    # Sin importar cryptography: dos jobs de CI (no-fail-open-except,
+    # invoke-facet-envoltorio) corren este conftest SIN instalar
+    # requirements.txt, y un import de nivel de modulo los tumba con
+    # ModuleNotFoundError. Una llave Fernet es exactamente 32 bytes al azar
+    # en base64 urlsafe, asi que se arma con la biblioteca estandar.
+    import base64
+
+    os.environ["FERNET_KEY"] = base64.urlsafe_b64encode(os.urandom(32)).decode()
+
+# BARRERA DE ESCRITURA A ARCHIVOS DE PRODUCCIÓN (2026-09-17).
+# Incidente real de ese día: un test llamó a PUT /api/admin/keys/{proveedor},
+# que reescribía /etc/jax/.env con un volcado del diccionario parseado. El
+# archivo de PRODUCCIÓN perdió 28 líneas de comentarios y la llave de OpenAI
+# quedó vacía. Se restauró desde respaldo, pero la lección es que la barrera
+# de la base no cubría los archivos. Fail-closed: cualquier apertura para
+# escritura de un archivo de producción revienta el test que la intenta, con
+# el nombre del archivo, en vez de tocarlo.
+_ARCHIVOS_DE_PRODUCCION = frozenset({ENV_PATH, "/etc/jax/config.toml"})
+_open_real = open
+
+
+class EscrituraEnProduccion(RuntimeError):
+    """Un test intentó escribir un archivo de producción."""
+
+
+def _open_vigilado(file, mode="r", *args, **kwargs):
+    if isinstance(file, (str, bytes, os.PathLike)):
+        ruta = os.fspath(file)
+        if isinstance(ruta, bytes):
+            ruta = ruta.decode("utf-8", "replace")
+        if ruta in _ARCHIVOS_DE_PRODUCCION and any(c in mode for c in "wxa+"):
+            raise EscrituraEnProduccion(
+                f"la suite intentó abrir {ruta} en modo {mode!r}: es un archivo "
+                "de producción. Parcheá la ruta con monkeypatch/tmp_path."
+            )
+    return _open_real(file, mode, *args, **kwargs)
+
+
+import builtins as _builtins  # noqa: E402
+
+_builtins.open = _open_vigilado
+
 # Revisión final del frente E (2026-09-16): el lifespan de la app no arranca sin
 # una JAX_OLLAMA_URL válida, y el fixture `client` lo levanta. Se FIJA (no
 # setdefault) a un host `.invalid` (RFC 6761, nunca resuelve), después de cargar
@@ -260,6 +308,52 @@ def _envolver_portal_call(portal_call):
     return envuelto
 
 
+# Credenciales FICTICIAS en la tabla `credential`, no en variables de entorno
+# (B1.4, 2026-09-17). Antes el job de CI exportaba OPENAI_API_KEY y cuatro
+# hermanas con valores de mentira, y 18 tests pasaban gracias al FALLBACK
+# DB->env. Al retirar el fallback esos 18 se pusieron rojos y mostraron lo que
+# tapaban: el CI nunca ejercito el camino real, que es resolver la credencial
+# contra la base. Ahora se siembra donde produccion la lee.
+#
+# El valor no se usa nunca: los tests stubean la llamada HTTP. Solo tiene que
+# existir y estar activo.
+_CREDENCIALES_DE_PRUEBA = [
+    ("openai", "OPENAI_API_KEY"),
+    ("deepseek", "DEEPSEEK_API_KEY"),
+    ("gemini", "GEMINI_API_KEY"),
+    ("moonshot", "KIMI_API_KEY"),
+    ("zhipu", "ZAI_API_KEY"),
+]
+
+
+def _sembrar_credenciales_de_prueba(c) -> None:
+    from crypto_secrets import encrypt_secret
+    from db.connection import get_pool
+
+    cifrada = encrypt_secret("ci-dummy-not-a-real-key")
+
+    async def _sembrar():
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                for provider_id, env_key in _CREDENCIALES_DE_PRUEBA:
+                    await cur.execute(
+                        "SELECT id FROM credential "
+                        "WHERE provider_id = %s AND state = 'active' LIMIT 1",
+                        (provider_id,),
+                    )
+                    if await cur.fetchone():
+                        continue
+                    await cur.execute(
+                        "INSERT INTO credential "
+                        "(provider_id, env_key, encrypted_value, state, activated_at) "
+                        "VALUES (%s, %s, %s, 'active', NOW())",
+                        (provider_id, env_key, cifrada),
+                    )
+
+    c.portal.call(_sembrar)
+
+
 @pytest.fixture(scope="session")
 def client():
     from fastapi.testclient import TestClient
@@ -267,6 +361,7 @@ def client():
 
     with TestClient(app) as c:
         c.portal.call = _envolver_portal_call(c.portal.call)
+        _sembrar_credenciales_de_prueba(c)
         yield c
 
 
