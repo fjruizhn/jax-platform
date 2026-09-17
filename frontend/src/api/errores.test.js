@@ -182,15 +182,15 @@ describe('pre-vuelo y continuar (spec 2026-09-17)', () => {
 
   // Fix round 1 ítem 3: posición y faceta sólo si tienen la forma esperada.
   it('un paso sin posición ni faceta válidas usa el texto genérico y omite el motivo vacío', () => {
-    expect(es.detalleDePaso({ paso: null, faceta: null, motivo: '' })).toBe(es.unPaso)
-    expect(en.detalleDePaso({ paso: null, faceta: null, motivo: '' })).toBe(en.unPaso)
-    expect(es.detalleDePaso({ paso: '3x', faceta: 'ada', motivo: 'm' })).toBe(`${es.unPaso} (ada): m`)
+    expect(es.detalleDePaso({ paso: null, faceta: null, motivo: '' })).toBe('Un paso')
+    expect(en.detalleDePaso({ paso: null, faceta: null, motivo: '' })).toBe('A step')
+    expect(es.detalleDePaso({ paso: '3x', faceta: 'ada', motivo: 'm' })).toBe('Un paso (ada): m')
     expect(es.detalleDePaso({ paso: 1, faceta: { a: 1 }, motivo: 'm' })).toBe('Paso 2: m')
     expect(en.detalleDePaso({ paso: '3', faceta: 'ada', motivo: 'm' })).toBe('Step 4 (ada): m')
     expect(en.detalleDePaso({ paso: 0, faceta: 'ada', motivo: 5 })).toBe('Step 1 (ada)')
-    for (const d of [es, en]) {
+    for (const [d, generico] of [[es, 'Un paso'], [en, 'A step']]) {
       const texto = d.reglaPrevueloDesconocida({ paso: '3x', faceta: { a: 1 } })
-      expect(texto.startsWith(`${d.unPaso}:`)).toBe(true)
+      expect(texto.startsWith(`${generico}:`)).toBe(true)
       expect(texto).not.toContain('[object Object]')
       expect(texto).not.toContain('3x')
     }

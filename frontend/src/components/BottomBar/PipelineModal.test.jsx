@@ -492,7 +492,7 @@ describe('PipelineModal -- pre-vuelo y confirmación de costo', () => {
     fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
     const dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
     expect(dialogo).toHaveTextContent(texto(es.confirmarCostoPaso(paso, formatearUsd('0.60', 'es'))))
-    expect(dialogo).toHaveTextContent(es.unPaso)
+    expect(dialogo).toHaveTextContent('Un paso')
     expect(dialogo).not.toHaveTextContent('[object Object]')
   })
 

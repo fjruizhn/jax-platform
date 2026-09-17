@@ -178,7 +178,6 @@ export default {
   },
   reglaPrevueloDesconocida: (v) => `${lugarDelPaso(v)}: el pre-vuelo lo rechazó por una regla que esta versión no conoce.`,
   detalleDelPrevuelo: (texto) => `Detalle: ${texto}`,
-  unPaso: UN_PASO,
   detalleDePaso: (d) => (typeof d?.motivo === 'string' && d.motivo ? `${lugarDelPaso(d)}: ${d.motivo}` : lugarDelPaso(d)),
   motivosDeCosto: {
     acotado: 'Costo acotado por el tope de salida del modelo.',
