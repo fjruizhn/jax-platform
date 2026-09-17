@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -15,6 +16,8 @@ from jax_engine.schemas import JAXEvent
 from jax_engine.state import engine_state
 from redaccion import recortar_redactado
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api")
 
 MISSIONS_DIR = ruta_requerida("JAX_MISSIONS_DIR")
@@ -29,15 +32,20 @@ def _result_file(task_id: str) -> Path:
     return MISSIONS_DIR / f"web-task-{task_id}_result.md"
 
 
-def _escribir_fallo(task_id: str, motivo: str) -> None:
-    """El fallo de la tarea queda en el archivo de dueño que ya lee GET (A-51),
-    escrito atómico: un GET concurrente nunca lee JSON a medias."""
+def _anotar_en_duenio(task_id: str, clave: str, valor) -> None:
+    """Agrega una clave al archivo de dueño que ya lee GET, escrito atómico:
+    un GET concurrente nunca lee JSON a medias."""
     duenio = _owner_file(task_id)
     datos = json.loads(duenio.read_text())
-    datos["fallo"] = {"code": "comando_fallo", "motivo": motivo}
+    datos[clave] = valor
     temporal = duenio.with_suffix(".json.tmp")
     temporal.write_text(json.dumps(datos))
     os.replace(temporal, duenio)
+
+
+def _escribir_fallo(task_id: str, motivo: str) -> None:
+    """El fallo de la tarea queda en el archivo de dueño (A-51)."""
+    _anotar_en_duenio(task_id, "fallo", {"code": "comando_fallo", "motivo": motivo})
 
 
 class CommandRequest(BaseModel):
@@ -103,6 +111,8 @@ async def get_command_result(task_id: str, user: AuthUser = Depends(get_current_
     result_file = _result_file(task_id)
     if result_file.exists():
         texto = result_file.read_text()
+        if owner.get("simulado") is True:
+            return {"status": "completed", "result": texto, "code": "comando_simulado"}
         return {"status": "completed", "result": texto} if texto else {
             "status": "completed", "result": "", "code": "comando_sin_resultado"}
     return {"status": "running"}
@@ -116,10 +126,14 @@ async def _run_command(
     user_id: str,
     mode: str,
 ):
+    # Solo la EJECUCION puede marcar un fallo: si lo que falla es publicar el
+    # evento o el estado despues de un resultado valido, la tarea no fallo.
     try:
         codigo = None
         if mode == "dry_run":
             texto = mission_file.read_text()
+            # Antes que el resultado: GET no ve un result_file sin la marca.
+            _anotar_en_duenio(task_id, "simulado", True)
             result_file.write_text(texto)
             codigo = "comando_simulado"
         else:
@@ -139,18 +153,22 @@ async def _run_command(
                 result_file.write_text("")
             if not texto:
                 codigo = "comando_sin_resultado"
-        payload = {"task_id": task_id, "status": "completed", "result": texto}
-        if codigo:
-            payload["code"] = codigo
-        await event_bus.publish(JAXEvent(event_type="command_completed", tenant_id=tenant_id,
-                                         user_id=user_id, payload=payload))
-        await engine_state.set_facet_status("hyde", "idle", tenant_id, user_id)
-
     except Exception as e:  # fail-soft: tarea de fondo: el fallo se publica como command_completed status='failed' con código y queda en el archivo de dueño; no hay falso éxito
         motivo = recortar_redactado(str(e), 400)
-        _escribir_fallo(task_id, motivo)
+        try:
+            _escribir_fallo(task_id, motivo)
+        except (OSError, ValueError):  # fail-soft: sin archivo de dueño legible GET da 404 o running, pero el evento failed y el estado idle salen igual; queda en el log
+            logger.exception("command %s: no se pudo registrar el fallo en el archivo de dueño", task_id)
         await event_bus.publish(JAXEvent(
             event_type="command_completed", tenant_id=tenant_id, user_id=user_id,
             payload={"task_id": task_id, "status": "failed", "code": "comando_fallo",
                      "result": "", "motivo": motivo}))
         await engine_state.set_facet_status("hyde", "idle", tenant_id, user_id)
+        return
+
+    payload = {"task_id": task_id, "status": "completed", "result": texto}
+    if codigo:
+        payload["code"] = codigo
+    await event_bus.publish(JAXEvent(event_type="command_completed", tenant_id=tenant_id,
+                                     user_id=user_id, payload=payload))
+    await engine_state.set_facet_status("hyde", "idle", tenant_id, user_id)
