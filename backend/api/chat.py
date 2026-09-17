@@ -615,7 +615,7 @@ def _build_display_response(contract: ContractResult) -> tuple[str, bool]:
     return contract.analysis, False
 
 
-# _invoke_facet devuelve tuple[str, UsageInfo | None]; "usage is None"
+# _invoke_facet devuelve tuple[str | AvisoDeChat, UsageInfo | None]; "usage is None"
 # distingue respuesta enlatada (is_canned, derivado en el call site) de
 # llamada real al LLM, en vez de comparar response_text contra los strings
 # enlatados conocidos — evita que un futuro edit de esos strings rompa la
@@ -1058,8 +1058,8 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         is_canned = usage is None
     except httpx.HTTPStatusError as e:
         # Task 6 S1: el cuerpo del proveedor no deberia repetir la key, pero
-        # este texto sale al usuario y al bus -- se redacta igual (y antes de
-        # recortar: ver _detalle_502_http).
+        # el `motivo` del detail (dict con codigo, A-51) sale al usuario y al
+        # bus -- se redacta igual (y antes de recortar: ver _detalle_502_http).
         detail = _detalle_502_http(facet, e)
         await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail["motivo"][:100])
         await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)

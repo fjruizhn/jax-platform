@@ -5,12 +5,15 @@ estaban atados a $HOME sin variable. JAX_REPO_PATH y JAX_CONFIG_PATH tenian
 default ~/jax (produccion corria con el default: no estan en /etc/jax/.env,
 inventario 2026-08-09). Ahora las seis son obligatorias: sin la variable el
 modulo no se importa y el servicio no arranca (fail-closed).
-A-41: el audit se lee con deque(maxlen=20), filtrando vacias ANTES, en un hilo.
+A-41: el audit se lee desde el FINAL del archivo (sin cargarlo entero), filtrando
+vacias ANTES de contar las 20, en un hilo.
 A-54: email y tenant de la semilla desde el entorno; si faltan y hay que
 sembrar, error explicito. Puros salvo el ultimo (pide client)."""
+import ast
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -74,6 +77,71 @@ def test_ningun_modulo_de_produccion_arma_rutas_desde_home():
         for patron in ("expanduser", "Path.home()"):
             if patron in texto and (rel, patron) not in PERMITIDOS:
                 hallazgos.append(f"{rel}: {patron}")
+    assert hallazgos == []
+
+
+# Ronda final M10 (2026-09-16): el escaneo de arriba busca TEXTO y no ve un
+# default nuevo del estilo os.getenv("JAX_X", "/home/fruiz/jax"). Este va por
+# AST sobre los defaults de os.getenv / os.environ.get / environ.setdefault.
+_LECTORES_DE_ENTORNO = {"getenv", "get", "setdefault"}
+
+
+def _es_lectura_de_entorno(llamada: ast.Call) -> bool:
+    f = llamada.func
+    if isinstance(f, ast.Name):
+        return f.id == "getenv"
+    if not isinstance(f, ast.Attribute) or f.attr not in _LECTORES_DE_ENTORNO:
+        return False
+    if f.attr == "getenv":
+        return True
+    duenio = f.value  # os.environ.get / environ.get
+    return (isinstance(duenio, ast.Attribute) and duenio.attr == "environ") or (
+        isinstance(duenio, ast.Name) and duenio.id == "environ")
+
+
+def _defaults_de_home(fuente: str) -> list[str]:
+    hallazgos = []
+    for nodo in ast.walk(ast.parse(fuente)):
+        if not (isinstance(nodo, ast.Call) and _es_lectura_de_entorno(nodo)):
+            continue
+        default = nodo.args[1] if len(nodo.args) > 1 else next(
+            (k.value for k in nodo.keywords if k.arg == "default"), None)
+        if default is None:
+            continue
+        texto = ast.unparse(default)
+        if re.search(r"(^['\"]~|/home/|['\"]/root(/|['\"])|HOME|\.home\(|expanduser)", texto):
+            hallazgos.append(f"{nodo.lineno}: {texto}")
+    return hallazgos
+
+
+@pytest.mark.parametrize("fuente", [
+    'import os\nX = os.getenv("JAX_X", "/home/fruiz/jax")',
+    'import os\nX = os.environ.get("JAX_X", "~/jax")',
+    'from os import environ\nX = environ.get("JAX_X", default="/root/jax")',
+    'from os import getenv\nX = getenv("JAX_X", f"{os.environ[\'HOME\']}/jax")',
+    'import os\nos.environ.setdefault("JAX_X", str(Path.home() / "jax"))',
+])
+def test_el_escaneo_de_defaults_ve_una_ruta_de_home(fuente):
+    assert _defaults_de_home(fuente)
+
+
+@pytest.mark.parametrize("fuente", [
+    'import os\nX = os.getenv("JAX_X", "")',
+    'import os\nX = os.getenv("JAX_FACET_SEAL_PATH", "/srv/jax-data/facet-cache-seal")',
+    'import os\nX = os.environ.get("JAX_X")',
+    'datos = {"a": 1}\nX = datos.get("a", "/home/no-es-entorno")',
+])
+def test_el_escaneo_de_defaults_no_marca_lo_que_no_es_home(fuente):
+    assert _defaults_de_home(fuente) == []
+
+
+def test_ningun_default_de_variable_de_entorno_apunta_a_home():
+    hallazgos = []
+    for ruta in BACKEND.rglob("*.py"):
+        rel = ruta.relative_to(BACKEND).as_posix()
+        if rel.startswith((".venv/", "tests/")):
+            continue
+        hallazgos += [f"{rel}:{h}" for h in _defaults_de_home(ruta.read_text(encoding="utf-8"))]
     assert hallazgos == []
 
 

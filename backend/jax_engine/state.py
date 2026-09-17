@@ -56,7 +56,7 @@ class JAXEngineState:
 
     async def cargar_nombres_de_facetas(self):
         """A-48. Una lectura al arrancar (main.py lifespan, después de
-        run_migrations). Invalidación: reinicio -- el único escritor de
+        run_seed, que corre después de run_migrations). Invalidación: reinicio -- el único escritor de
         facet.display_name son las migraciones del arranque
         (tests/test_facetas_nombres.py lo fija). Sin base, el lifespan ya
         falló antes: no hay estado sin nombres que servir."""
