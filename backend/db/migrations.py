@@ -661,6 +661,67 @@ CREATE TABLE IF NOT EXISTS ejecutor_punto_restauracion (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# Ejecutor SP2 (2026-09-17): el modo Ejecutor de la plataforma. Estas SÍ crecen (una misión
+# por lanzamiento, decenas de eventos por turno): cada consulta del sondeo tiene su índice y
+# su EXPLAIN en tests/test_ejecutor_misiones.py. Sin FK a ejecutor_host a propósito: la
+# misión guarda los NOMBRES con que se lanzó, aunque la máquina se dé de baja después.
+CREATE_EJECUTOR_MISION = """
+CREATE TABLE IF NOT EXISTS ejecutor_mision (
+  id CHAR(36) NOT NULL PRIMARY KEY,
+  user_id INT NOT NULL,
+  objetivo TEXT NOT NULL,
+  maquinas JSON NOT NULL,
+  sesion_id CHAR(36) NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  INDEX idx_ejecutor_mision_actualizada (updated_at),
+  INDEX idx_ejecutor_mision_usuario (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+CREATE_EJECUTOR_TURNO = """
+CREATE TABLE IF NOT EXISTS ejecutor_turno (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  mision_id CHAR(36) NOT NULL,
+  n INT NOT NULL,
+  instruccion TEXT NOT NULL,
+  estado VARCHAR(16) NOT NULL,
+  codigo VARCHAR(80) NULL,
+  resultado JSON NULL,
+  sesion_iniciada BOOLEAN NOT NULL DEFAULT FALSE,
+  iniciado_at DATETIME(6) NOT NULL,
+  terminado_at DATETIME(6) NULL,
+  CONSTRAINT chk_ejecutor_turno_estado CHECK (estado IN ('en_curso', 'completado', 'rechazado', 'fallido', 'interrumpido')),
+  UNIQUE KEY uk_ejecutor_turno_mision_n (mision_id, n),
+  INDEX idx_ejecutor_turno_estado (estado),
+  FOREIGN KEY (mision_id) REFERENCES ejecutor_mision(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+CREATE_EJECUTOR_BITACORA = """
+CREATE TABLE IF NOT EXISTS ejecutor_bitacora (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  mision_id CHAR(36) NOT NULL,
+  turno INT NULL,
+  evento VARCHAR(60) NOT NULL,
+  datos JSON NOT NULL,
+  at DATETIME(6) NOT NULL,
+  INDEX idx_ejecutor_bitacora_mision (mision_id, id),
+  FOREIGN KEY (mision_id) REFERENCES ejecutor_mision(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+CREATE_EJECUTOR_PAUSA_AUDIT = """
+CREATE TABLE IF NOT EXISTS ejecutor_pausa_audit (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  accion VARCHAR(10) NOT NULL,
+  user_id INT NOT NULL,
+  at DATETIME(6) NOT NULL,
+  CONSTRAINT chk_ejecutor_pausa_audit_accion CHECK (accion IN ('poner', 'quitar')),
+  INDEX idx_ejecutor_pausa_audit_at (at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
@@ -691,6 +752,10 @@ _TABLES = [
     ("ejecutor_host", CREATE_EJECUTOR_HOST),                            # antes de punto_restauracion (FK)
     ("ejecutor_regla", CREATE_EJECUTOR_REGLA),
     ("ejecutor_punto_restauracion", CREATE_EJECUTOR_PUNTO_RESTAURACION),
+    ("ejecutor_mision", CREATE_EJECUTOR_MISION),                        # antes de turno y bitácora (FK)
+    ("ejecutor_turno", CREATE_EJECUTOR_TURNO),
+    ("ejecutor_bitacora", CREATE_EJECUTOR_BITACORA),
+    ("ejecutor_pausa_audit", CREATE_EJECUTOR_PAUSA_AUDIT),              # sin FK a propósito, como kill_switch_audit
 ]
 
 # transport, requires_tool_use, auto_selectable — valores actuales reales

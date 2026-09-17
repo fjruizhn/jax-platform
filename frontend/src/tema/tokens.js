@@ -14,7 +14,7 @@ export const TOKENS = [
   'aviso', 'aviso-fondo', 'aviso-borde',
   'obsoleto',
   'oro', 'oro-claro', 'oro-oscuro',
-  'burbuja-usuario', 'modo-comando',
+  'burbuja-usuario', 'modo-comando', 'modo-ejecutor',
   'faceta-jax-local', 'faceta-jekyll', 'faceta-hyde', 'faceta-hipatia',
   'faceta-thot', 'faceta-kimi', 'faceta-ada', 'faceta-jacobs', 'faceta-imagen',
 ]
@@ -30,7 +30,7 @@ const TEXTOS_SOBRE_BASE = [
 ]
 const FONDOS_BASE = ['fondo', 'superficie', 'hundido']
 
-// [primer plano, fondo, mínimo]. 88 pares (spec §3.3). Lo que no está acá no
+// [primer plano, fondo, mínimo]. 88 pares (spec §3.3); modo-ejecutor suma uno (SP2). Lo que no está acá no
 // se combina: p. ej. texto-suave o un color de estado sobre superficie-2.
 export const PARES = [
   ...FONDOS_BASE.flatMap((f) => TEXTOS_SOBRE_BASE.map((t) => [t, f, AA_TEXTO])),
@@ -40,7 +40,7 @@ export const PARES = [
     [e === 'acento' ? 'acento-texto' : e, `${e}-fondo`, AA_TEXTO],
     ['texto', `${e}-fondo`, AA_TEXTO],
   ]),
-  ...['acento', 'acento-hover', 'accion', 'accion-hover', 'peligro-solido', 'peligro-solido-hover', 'modo-comando']
+  ...['acento', 'acento-hover', 'accion', 'accion-hover', 'peligro-solido', 'peligro-solido-hover', 'modo-comando', 'modo-ejecutor']
     .map((f) => ['sobre-color', f, AA_TEXTO]),
   ['texto', 'burbuja-usuario', AA_TEXTO],
   ['texto-suave', 'burbuja-usuario', AA_TEXTO],

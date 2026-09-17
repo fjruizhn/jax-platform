@@ -75,6 +75,8 @@ from api.image import router as image_router
 from api.upload import router as upload_router
 from api.motors import router as motors_router
 from api.apariencia import router as apariencia_router
+from api.ejecutor import router as ejecutor_router
+from ejecutor import misiones as ejecutor_misiones
 from api.admin import (
     dashboard_router,
     keys_router,
@@ -106,6 +108,9 @@ async def lifespan(app: FastAPI):
     await get_pool()
     await get_http_client()
     await run_migrations()
+    # SP2 del Ejecutor (2026-09-17): un turno en curso de un arranque anterior quedó huérfano
+    # (el reinicio mató el runner y su vigía con el grupo del servicio): se cierra con código.
+    await ejecutor_misiones.reconciliar_al_arrancar()
     # Ruling R16 (2026-09-17): nombra en ERROR cada ajuste ilegible (p.ej. tras
     # cambiar ACCESS_EXPIRE_SECONDS o MAX_PARALLEL_PIPELINES); no aborta.
     await ajustes.avisar_claves_ilegibles()
@@ -177,6 +182,7 @@ ROUTERS = (
     smtp_router,
     kill_switch_router,
     apariencia_router,
+    ejecutor_router,
 )
 for _router in ROUTERS:
     app.include_router(_router)

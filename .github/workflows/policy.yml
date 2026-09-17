@@ -571,8 +571,16 @@ jobs:
             // sigue al freno, foco y ruta heredada (Tasks 9/H y revisión final).
             // Re-medido dos veces tras el rebase (no sumado a ojo): 569 passed,
             // 0 fallidos, 69 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 569) {
-              console.error("PISO ROTO: se esperaban 569 tests de vitest CORRIDOS y 0 fallidos.");
+            // 569 -> 618 el 2026-09-17 (Ejecutor SP2, modo Ejecutor): useEjecutor.test.js
+            // (store: sondeo que corre y se detiene, bitácora incremental sin duplicar, sesión),
+            // PanelEjecutor.test.jsx (un test por estado visible: compuerta, pausa puesta /
+            // ilegible / quitar con la suma, afirmación con la línea literal completa, crudas sin
+            // afirmaciones, rechazo y fallos traducidos, código desconocido crudo, bitácora
+            // traducida, en), BottomBar.ejecutor.test.jsx (modo sólo para superadmin) y
+            // contraste.test.js (token modo-ejecutor, 5.47:1). Vistos en rojo; 10 mutaciones con
+            // cmp previo, todas en rojo. Medido dos veces: 618 passed, 0 fallidos, 72 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 618) {
+              console.error("PISO ROTO: se esperaban 618 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1560,7 +1568,15 @@ jobs:
           #   PYTHONDONTWRITEBYTECODE=1). Medido local dos veces contra jax_memory_test:
           #   1559 passed / 1 skipped (el mismo skip ambiental de gpt-5.6-terra que el
           #   runner corre) -> 1560 en el runner. Si el runner da otro número, manda el runner.
-          PISO_PASSED = 1560
+          # 1560 -> 1606 el 2026-09-17 (Ejecutor SP2, modo Ejecutor): +34 de
+          #   test_ejecutor_misiones.py (con DB: compuerta visible, 403/409/422/423/503 sin
+          #   escribir nada, ciclo completo con runner falso del mismo protocolo, sesión retomada
+          #   por id, un turno a la vez, reconciliación al arrancar, pausa con auditoría y
+          #   reposición, EXPLAIN con volumen de las consultas del sondeo) y +12 de
+          #   test_ejecutor_pausa.py (sin DB). Vistos en rojo; 6 mutaciones con cmp previo, todas
+          #   en rojo. Medido local contra jax_memory_test: 1605 passed / 1 skipped (el mismo skip
+          #   ambiental) -> 1606 en el runner. Si el runner da otro número, manda el runner.
+          PISO_PASSED = 1606
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2136,7 +2152,11 @@ jobs:
       # 915 -> 940 el 2026-09-17 (C1 contra envoltorios del Ejecutor): +25 puros de
       # test_ejecutor_reglas_envoltorios.py; los 2 nuevos de test_ejecutor_tablas.py piden
       # `client` (+2 skips). Medido dos veces con JAX_CI_NO_DB=1: 940 passed / 620 skipped.
-      JAX_CI_MIN_PASSED: "940"
+      # 940 -> 959 el 2026-09-17 (Ejecutor SP2, modo Ejecutor): +12 de test_ejecutor_pausa.py
+      # y +7 puros de test_ejecutor_misiones.py (el runner real no se puede lanzar desde la
+      # suite, variables sin defaults, compuerta ilegible = cerrada); sus otros 27 piden
+      # `client` (+27 skips). Medido con JAX_CI_NO_DB=1, env -i: 959 passed / 647 skipped.
+      JAX_CI_MIN_PASSED: "959"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
