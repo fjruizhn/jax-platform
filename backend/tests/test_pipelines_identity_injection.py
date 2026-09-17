@@ -16,34 +16,26 @@ def _auth_headers():
 
 
 def test_create_pipeline_inyecta_identidad_real(client, monkeypatch):
-    captured = {}
+    from tests.jacobs_falso import JacobsFalso, respuesta, veredicto
 
-    class _FakeClient:
-        async def post(self, url, json=None, timeout=None):
-            captured["url"] = url
-            captured["json"] = json
-            class _R:
-                status_code = 200
-                def json(self):
-                    return {"pipeline_id": None}
-            return _R()
-        async def get(self, url, timeout=None):
-            class _R:
-                def json(self):
-                    return {}
-            return _R()
+    falso = JacobsFalso({
+        ("POST", "/preflight"): respuesta(200, veredicto(costo="0.00")),
+        ("POST", "/pipeline"): respuesta(200, {"pipeline_id": None}),
+    })
 
     async def _fake_get_http_client():
-        return _FakeClient()
+        return falso
 
     import api.pipelines as pipelines_module
     monkeypatch.setattr(pipelines_module, "get_http_client", _fake_get_http_client)
+    monkeypatch.setattr(pipelines_module, "JACOBS_URL", "http://jacobs.test/jacobs")
 
     client.post(
         "/api/pipelines",
         json={
             "name": "test",
             "objective": "x",
+            "steps": [{"facet": "thot", "capability": "critique", "prompt": "x"}],
             "invoked_by": "cliente-mintiendo",
             "mode": "supervised",
             # Client-supplied identity must be overridden, not merely
@@ -54,11 +46,14 @@ def test_create_pipeline_inyecta_identidad_real(client, monkeypatch):
         headers=_auth_headers(),
     )
 
-    assert captured["json"]["user_id"] == USER_ID
-    assert captured["json"]["tenant_id"] == TENANT_ID
+    (enviado,) = falso.cuerpos("POST", "/pipeline")
+    assert enviado["user_id"] == USER_ID
+    assert enviado["tenant_id"] == TENANT_ID
     # tanda A (2026-09-14): invoked_by es un ROL que pone el backend, igual que
     # la identidad; lo que mande el cliente se pisa.
-    assert captured["json"]["invoked_by"] == "plataforma"
+    assert enviado["invoked_by"] == "plataforma"
+    (prevuelo,) = falso.cuerpos("POST", "/preflight")
+    assert (prevuelo["user_id"], prevuelo["tenant_id"], prevuelo["invoked_by"]) == (USER_ID, TENANT_ID, "plataforma")
 
 
 def test_resume_pipeline_inyecta_identidad_real(client, monkeypatch):

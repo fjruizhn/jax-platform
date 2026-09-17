@@ -18,6 +18,8 @@ class _FakeResponse:
     def __init__(self, json_data, status_code):
         self._json_data = json_data
         self.status_code = status_code
+        # _json_de_jacobs lee r.text para un rechazo (httpx.Response lo tiene).
+        self.text = str(json_data)
 
     def json(self):
         return self._json_data
@@ -33,7 +35,7 @@ class _FakeClient:
 
 class _FakeRequest:
     async def json(self):
-        return {"name": "carga-de-cupo"}
+        return {"name": "carga-de-cupo", "steps": [{"facet": "thot", "capability": "critique", "prompt": "x"}]}
 
 
 async def test_el_cupo_lo_decide_el_limite_que_se_pasa():

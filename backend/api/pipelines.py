@@ -1,8 +1,12 @@
 import os
 import time
 import uuid
+from decimal import Decimal, InvalidOperation
+
 import ajustes
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
+
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from db.connection import get_pool
@@ -157,6 +161,97 @@ def _json_de_jacobs(r) -> dict:
     return cuerpo
 
 
+# --- Pre-vuelo (spec 2026-09-17 §6.1) --------------------------------------
+def _monto(valor) -> Decimal:
+    """Monto de Jacobs o del cliente: string decimal o número JSON, finito y >= 0."""
+    if isinstance(valor, bool) or not isinstance(valor, (str, int, float)):
+        raise ValueError(valor)
+    try:
+        monto = Decimal(str(valor))
+    except InvalidOperation as exc:
+        raise ValueError(valor) from exc
+    if not monto.is_finite() or monto < 0:
+        raise ValueError(valor)
+    return monto
+
+
+def _prevuelo_no_disponible() -> HTTPException:
+    detalle = {"code": "prevuelo_no_disponible"}
+    return HTTPException(status_code=502, detail=detalle)
+
+
+def _evaluar_veredicto(crudo, umbral: Decimal) -> dict:
+    """Fail-closed: un veredicto sin `ok` booleano, sin costo legible o con
+    pasos de costo mal formados NO es un pre-vuelo aprobado. Un paso con
+    usd_max null es "no acotado" (sin precio): siempre pide confirmación.
+
+    ENMIENDA ítem 4 (2026-09-17): si Jacobs manda `hay_no_acotados`, tiene
+    que ser bool (si no, fail-closed 502) y se OR-ea con la recomputación
+    local desde usd_max -- nunca se confía en un `false` que contradiga un
+    paso con usd_max null."""
+    try:
+        ok = crudo["ok"]
+        costo = _monto(crudo["costo_max_usd"])
+        pasos = crudo["pasos_costo"]
+        violaciones = crudo["violaciones"]
+        if not isinstance(ok, bool) or not isinstance(pasos, list) or not isinstance(violaciones, list):
+            raise ValueError("forma del veredicto")
+        no_acotado = False
+        for paso in pasos:
+            if paso["usd_max"] is None:
+                no_acotado = True
+            else:
+                _monto(paso["usd_max"])
+        if "hay_no_acotados" in crudo:
+            declarado = crudo["hay_no_acotados"]
+            if not isinstance(declarado, bool):
+                raise ValueError("hay_no_acotados no booleano")
+            no_acotado = no_acotado or declarado
+    except (KeyError, TypeError, ValueError):
+        raise _prevuelo_no_disponible() from None
+    return {
+        "ok": ok,
+        "violaciones": _violaciones_redactadas(violaciones),
+        "costo_max_usd": str(costo),
+        # Ruling del controlador (Task 6): sólo los campos declarados llegan
+        # al navegador -- se reutilizan los saneadores de Task 5, no los
+        # crudos de Jacobs.
+        "pasos_costo": _pasos_costo_saneados(pasos),
+        "sondeadas": _sondeadas_saneadas(crudo.get("sondeadas", [])),
+        "umbral_usd": str(umbral),
+        "requiere_confirmacion": costo > umbral or no_acotado,
+    }
+
+
+async def _prevuelo(client, steps: list, user: AuthUser, umbral: Decimal) -> dict:
+    r = await client.post(
+        f"{JACOBS_URL}/preflight",
+        json={"invoked_by": INVOKED_BY_PLATAFORMA, "user_id": user.user_id,
+              "tenant_id": user.tenant_id, "steps": steps},
+        # Puede sondear facetas (en paralelo, con timeout propio en Jacobs).
+        timeout=JACOBS_PIPELINE_TIMEOUT,
+    )
+    return _evaluar_veredicto(_json_de_jacobs(r), umbral)
+
+
+def _exigir_consentimiento(veredicto: dict, confirmado: Decimal | None) -> None:
+    """422 si el pre-vuelo rechazó; 409 si hace falta confirmar y no se
+    confirmó al menos el costo máximo. Nada de esto crea ni gasta."""
+    if not veredicto["ok"]:
+        detalle = {"code": "prevuelo_rechazado", "violaciones": veredicto["violaciones"],
+                   "costo_max_usd": veredicto["costo_max_usd"], "pasos_costo": veredicto["pasos_costo"]}
+        raise HTTPException(status_code=422, detail=detalle)
+    if veredicto["requiere_confirmacion"] and (
+            confirmado is None or confirmado < Decimal(veredicto["costo_max_usd"])):
+        detalle = {"code": "confirmacion_de_costo", "costo_max_usd": veredicto["costo_max_usd"],
+                   "pasos_costo": veredicto["pasos_costo"], "umbral_usd": veredicto["umbral_usd"]}
+        raise HTTPException(status_code=409, detail=detalle)
+
+
+class PedidoDePrevuelo(BaseModel):
+    steps: list[dict] = Field(min_length=1)
+
+
 # engine_state.active_pipelines (memoria) se descarta apenas la pipeline
 # termina -- justo cuando normalmente se pide /results. owner_ack_at en
 # jacobs_pipelines (misma DB fisica jax_memory que ya comparten ambos
@@ -240,6 +335,20 @@ async def list_pipelines(user: AuthUser = Depends(get_current_user)):
     ]}
 
 
+@router.post("/preflight")
+async def preflight_pipeline(pedido: PedidoDePrevuelo, user: AuthUser = Depends(get_current_user)):
+    # El ajuste se lee FUERA del try: un ajuste ilegible es 503 ajuste_ilegible
+    # (handler de main.py), no un 502 de Jacobs.
+    umbral = await ajustes.valor(ajustes.CONFIRMAR_USD)
+    client = await get_http_client()
+    try:
+        return await _prevuelo(client, pedido.steps, user, umbral)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), MOTIVO_MAX)})
+
+
 @router.post("")
 async def create_pipeline(request: Request, user: AuthUser = Depends(get_current_user)):
     limite = await ajustes.valor(ajustes.MAX_PIPELINES)
@@ -248,21 +357,30 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={"code": "limite_de_pipelines", "max": limite},
         )
+    umbral = await ajustes.valor(ajustes.CONFIRMAR_USD)
     body = await request.json()
+    steps = body.get("steps") if isinstance(body, dict) else None
+    # Sin pasos no hay pre-vuelo ni costo que confirmar (desvío DV-8 del plan).
+    if not isinstance(steps, list) or not steps:
+        raise HTTPException(status_code=422, detail={"code": "pasos_requeridos"})
+    try:
+        crudo = body.pop("costo_confirmado_usd", None)
+        confirmado = None if crudo is None else _monto(crudo)
+    except ValueError:
+        raise HTTPException(status_code=422, detail={"code": "costo_confirmado_invalido"}) from None
     body["user_id"] = user.user_id
     body["tenant_id"] = user.tenant_id
     body["invoked_by"] = INVOKED_BY_PLATAFORMA
     client = await get_http_client()
     try:
+        veredicto = await _prevuelo(client, steps, user, umbral)
+        _exigir_consentimiento(veredicto, confirmado)
+        # Siempre (desvío DV-7): el confirmado, o el umbral como consentimiento
+        # previo del admin. Jacobs responde 409 costo_supera_lo_aceptado sin
+        # crear si su pre-vuelo interno da más.
+        body["costo_max_aceptado_usd"] = str(confirmado if confirmado is not None else umbral)
         r = await client.post(f"{JACOBS_URL}/pipeline", json=body, timeout=JACOBS_PIPELINE_TIMEOUT)
-        data = r.json()
-        if r.status_code != 200:
-            # Jacobs rechazó el pipeline (ej. 422 límite de concurrentes,
-            # 423 kill switch) — propagar el error real en vez de
-            # reenviarlo como 200 con el body de error de Jacobs.
-            raise HTTPException(status_code=r.status_code, detail={
-                "code": "jacobs_rechazo", "status": r.status_code,
-                "motivo": recortar_redactado(str(data.get("detail", "")), 200)})
+        data = _json_de_jacobs(r)
         pipeline_id = data.get("pipeline_id")
         if pipeline_id:
             # Antes de admitir el recurso o publicar el evento de WS
@@ -283,7 +401,7 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
+        raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), MOTIVO_MAX)})
 
 
 @router.get("/{pipeline_id}/results")

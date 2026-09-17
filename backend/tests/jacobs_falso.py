@@ -31,14 +31,21 @@ def violacion(paso: int = 4, faceta: str = "kimi", regla: str = "tope_insuficien
     return {"paso": paso, "faceta": faceta, "regla": regla, "detalle": detalle}
 
 
-def veredicto(ok: bool = True, costo: str = "0.10", violaciones=(), pasos_costo=None, sondeadas=()) -> dict:
-    return {
+def veredicto(ok: bool = True, costo: str = "0.10", violaciones=(), pasos_costo=None, sondeadas=(),
+              hay_no_acotados: bool | None = None) -> dict:
+    v = {
         "ok": ok,
         "violaciones": list(violaciones),
         "costo_max_usd": costo,
         "pasos_costo": list(pasos_costo) if pasos_costo is not None else [paso_costo(usd=costo)],
         "sondeadas": list(sondeadas),
     }
+    # ENMIENDA ítem 4 (2026-09-17): Jacobs puede declarar hay_no_acotados;
+    # si el llamador no lo pide, el veredicto no lo trae (la Mesa lo
+    # recalcula localmente desde usd_max).
+    if hay_no_acotados is not None:
+        v["hay_no_acotados"] = hay_no_acotados
+    return v
 
 
 class JacobsFalso:

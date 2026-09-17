@@ -201,8 +201,9 @@ def test_el_limite_de_pipelines_es_un_codigo_con_el_maximo(monkeypatch):
 
 
 class _Request:
+    # Spec 2026-09-17: la creación exige pasos (pre-vuelo antes de gastar).
     async def json(self):
-        return {"objective": "x"}
+        return {"objective": "x", "steps": [{"facet": "thot", "capability": "critique", "prompt": "x"}]}
 
 
 def _cliente_jacobs(monkeypatch, respuesta=None, excepcion=None):
