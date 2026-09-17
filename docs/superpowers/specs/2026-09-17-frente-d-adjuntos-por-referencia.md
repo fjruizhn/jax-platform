@@ -98,8 +98,10 @@ ProcessPoolExecutor acotado (c, hecho en RD1). Se mantiene `JAX_ADJUNTO_SUBIDAS_
 |---|---|---|
 | `JAX_ADJUNTOS_DIR` | ruta absoluta; directorio 0700 (sin bits de grupo/otros), escribible por el servicio; se crea 0700 si falta | Una ruta relativa depende del cwd. Un directorio abierto a otros no se corrige solo: se avisa |
 | `JAX_ADJUNTOS_TTL_HORAS` | entero **1..168**, solo dígitos y sin ceros a la izquierda | Piso: un adjunto se sube mientras se escribe el mensaje. Techo: 7 días; es entrada de un turno, no un archivo del usuario |
+| `JAX_ADJUNTOS_CUOTA_BYTES_USUARIO` (RD6) | entero **1048576..1099511627776** (1 MiB..1 TiB), solo dígitos y sin ceros a la izquierda; además **≥ `JAX_ADJUNTO_MAX_BYTES`** (lo exige el lifespan). Deploy: **524288000** (500 MB); también el default de `conftest.py` | Piso: menos no deja subir una foto de teléfono. Techo: más es "sin límite" con más ceros. Menor que el tope por archivo rechazaría con el código equivocado archivos que el tope admite |
+| `JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES` (RD6) | entero **1073741824..1099511627776** (1 GiB..1 TiB), mismo formato. Deploy: **53687091200** (50 GB). `conftest.py` lo FUERZA a 1073741824: mide el disco del `mkdtemp` de los tests, no el de producción | Piso: por debajo, lo demás que vive en ese filesystem se queda sin aire antes de que la guarda corte. Techo: un mínimo mayor que el disco es "nunca aceptar", y tiene que verse al arrancar |
 
-**PENDIENTE (deploy, principal):** agregar las dos líneas a `/etc/jax/.env` y crear el
+**PENDIENTE (deploy, principal):** agregar las cuatro líneas (las dos de arriba y las dos de RD6) a `/etc/jax/.env` y crear el
 directorio 0700, propiedad del usuario del servicio, en un disco real (no tmpfs). Ejemplo:
 `/srv/jax-data/adjuntos`. Los tests fuerzan un `mkdtemp` propio (`conftest.py`).
 
@@ -123,6 +125,47 @@ Texto o PDF:
 - Errores sin cambio: 413 `adjunto_demasiado_grande` (con `max_bytes`), 415
   `adjunto_tipo_no_permitido`, 422 `adjunto_vacio` / `pdf_ilegible` / `pdf_sin_texto`.
 - Código nuevo: 404 `adjunto_no_encontrado` (es/en).
+- Códigos nuevos de RD6 (es/en): 413 `adjuntos_cuota_excedida` (con `cuota_bytes`) y 507
+  `adjuntos_sin_espacio` (sin números: el estado del disco no es asunto del cliente).
+
+### 7.1 Cuota por usuario y disco libre (RD6, Principal Ruling "quota", 2026-09-17)
+
+RD5 midió ~0,5 GB/s escritos en `JAX_ADJUNTOS_DIR` con `upload_imagen_max` a c=25, retenidos
+hasta el TTL. Sin techo, un solo usuario llena el disco. Código: `adjuntos/cuota.py`.
+
+**Orden de los chequeos, todos antes de la copia** (Starlette ya volcó el cuerpo, así que su
+tamaño es un hecho medido con `seek`/`tell` en un hilo, no una declaración del cliente):
+1. **Tope por archivo** → 413 `adjunto_demasiado_grande`. Sin estado y lo más barato. Va
+   primero porque un archivo que no entra ni con la cuota vacía tiene que recibir ese motivo,
+   no "cuota excedida" (test `test_max_bytes_se_mira_antes_que_la_cuota`). La copia lo sigue
+   cortando igual, como defensa.
+2. **Cuota del usuario** → 413 `adjuntos_cuota_excedida`. Depende solo de lo suyo; va antes
+   que el disco para que el usuario reciba el motivo que puede resolver él.
+3. **Disco libre** → 507 `adjuntos_sin_espacio`. Global, lo último antes de escribir:
+   `shutil.disk_usage(JAX_ADJUNTOS_DIR)` en `asyncio.to_thread`; rechaza si, escrito el
+   archivo, quedaría menos que el mínimo (`libre - tamaño < mínimo`). Si medir falla
+   (cualquier excepción), se rechaza igual con el mismo 507 y se loguea el tipo de la
+   excepción (fail-closed).
+
+**Qué cuenta:** la suma del campo `bytes` (lo SUBIDO; de un PDF queda solo el texto, pero cuenta
+lo subido) de los adjuntos **vigentes** del usuario, es decir, los que `obtener` le devolvería
+(sidecar legible, suyo, sin vencer), más lo **reservado** por sus subidas en vuelo. Un sidecar
+corrupto no es de nadie y no cuenta. Clave: `user_id` (PK global, como la baja). Se relee el
+directorio en cada chequeo (sin caché: los sidecars son la verdad y no hay nada que invalidar
+cuando limpian el limpiador, la baja o el vencimiento).
+
+**Atomicidad:** `cuota.reserva()` toma un `asyncio.Lock` **por user_id**, lee el uso y, si entra,
+suma la reserva. `Reserva.confirmar()` vuelve a tomar el candado, relee el disco y confirma con
+el tamaño copiado real; escribe el sidecar (el commit) **sin soltar el candado** y recién ahí
+convierte la reserva en adjunto. Si la tarea se cancela durante la escritura, espera al hilo
+antes de soltar. La reserva se libera al salir por cualquier camino, sin `await`. Dos subidas
+del mismo usuario que juntas se pasan: la segunda ve la reserva de la primera y es 413 antes de
+copiar (test con la lectura lenta y vigilada: sin candado, las dos reservan).
+
+**Por qué un candado en memoria alcanza:** jax-platform es **un solo proceso**.
+`auth/rate_limit.py::exigir_un_solo_proceso` aborta el arranque con `--workers` o
+`WEB_CONCURRENCY` > 1. Si algún día hay más de un proceso, la cuota necesita un candado
+compartido (flock sobre el directorio o la base) antes de subir workers.
 
 Camino de una subida:
 1. Starlette ya parseó el multipart. Hasta 1 MB queda en memoria; el resto va a un archivo de
