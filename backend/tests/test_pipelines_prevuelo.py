@@ -495,3 +495,40 @@ def test_preflight_por_http_con_objetivo_no_texto_es_objetivo_invalido(client):
                     headers=cabeceras(client, "prevuelo-objetivo-numero"))
     assert r.status_code == 422, r.text
     assert r.json()["detail"]["code"] == "objetivo_invalido"
+
+
+# ---------------------------------------------------------------- contrato actual de Jacobs (revisión final, importante 2)
+# Plan J R18: todo monto de Jacobs es string con 6 decimales; R17: los
+# rechazos de /jacobs/preflight son dict {code, detalle} con detalle string.
+
+def test_preflight_con_montos_de_6_decimales_los_devuelve_iguales_y_compara_exacto(monkeypatch):
+    pasos = [paso_costo(paso=0, usd="0.600000"), paso_costo(paso=1, usd="0.000000", motivo="local")]
+    preparar(monkeypatch, JacobsFalso(_prevuelo(veredicto(costo="0.600000", pasos_costo=pasos))), umbral="0.60")
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert r["costo_max_usd"] == "0.600000"
+    assert [p["usd_max"] for p in r["pasos_costo"]] == ["0.600000", "0.000000"]
+    assert r["requiere_confirmacion"] is False  # 0.600000 == 0.60: no supera el umbral
+
+
+def test_preflight_con_un_millonesimo_sobre_el_umbral_pide_confirmacion(monkeypatch):
+    preparar(monkeypatch, JacobsFalso(_prevuelo(veredicto(costo="0.600001"))), umbral="0.60")
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert (r["costo_max_usd"], r["requiere_confirmacion"]) == ("0.600001", True)
+
+
+def test_preflight_costo_cero_de_6_decimales_no_pide_confirmacion(monkeypatch):
+    preparar(monkeypatch, JacobsFalso(_prevuelo(veredicto(costo="0.000000"))), umbral="0.00")
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert (r["costo_max_usd"], r["umbral_usd"], r["requiere_confirmacion"]) == ("0.000000", "0.00", False)
+
+
+def test_preflight_403_invocador_no_autorizado_con_detalle_texto_es_jacobs_rechazo_con_ese_detalle(monkeypatch):
+    rechazo = {"detail": {"code": "invocador_no_autorizado",
+                          "detalle": "invoked_by 'plataforma' no autorizado api_key=sk-secreto123456"}}
+    preparar(monkeypatch, JacobsFalso(_prevuelo(rechazo, status=403)))
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert r.status_code == 403
+    assert r.detail["code"] == "jacobs_rechazo" and r.detail["status"] == 403
+    assert r.detail["motivo"].startswith("invoked_by 'plataforma' no autorizado")
+    assert "sk-secreto123456" not in r.detail["motivo"]
+    assert set(r.detail) == {"code", "status", "motivo"}
