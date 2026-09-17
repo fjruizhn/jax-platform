@@ -238,3 +238,23 @@ describe('textoDeCausa', () => {
     expect(textoDeCausa(es, { tipo: 'fallo', paso: { x: 1 } })).not.toContain('[object Object]')
   })
 })
+
+// Fix round 2 ítems 2-3: sólo un string no vacío se agrega como dato.
+describe('datos del servicio con forma rara', () => {
+  it('un motivo que no es string no se agrega a textoDeErrorDeMesa', () => {
+    for (const motivo of [{ x: 1 }, ['a'], 5, true, '']) {
+      const texto = textoDeErrorDeMesa(es, err({ code: 'jacobs_no_responde', motivo }), 'G')
+      expect(texto).toBe(es.erroresMesa.jacobs_no_responde({}))
+      expect(texto).not.toContain('[object Object]')
+    }
+  })
+
+  it('un detalle de violación que no es string no se agrega a textoDeViolacion', () => {
+    const v = { paso: 0, faceta: 'ada', regla: 'faceta_caida' }
+    for (const detalle of [{ x: 1 }, ['a'], 5, true, '']) {
+      const texto = textoDeViolacion(es, { ...v, detalle })
+      expect(texto).toBe(es.reglasPrevuelo.faceta_caida(v))
+      expect(texto).not.toContain('[object Object]')
+    }
+  })
+})

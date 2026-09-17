@@ -45,7 +45,9 @@ export function textoDeErrorDeMesa(t, err, generico) {
   const detail = err?.response?.data?.detail
   const datos = detail && typeof detail === 'object' ? detail : {}
   const partes = [traducir(datos)]
-  if (datos.motivo) partes.push(t.respuestaDelServicio(datos.motivo))
+  // Sólo un string no vacío va como dato (fix round 2): un objeto sería
+  // "[object Object]" en pantalla.
+  if (typeof datos.motivo === 'string' && datos.motivo) partes.push(t.respuestaDelServicio(datos.motivo))
   // `mensaje` (estado_no_continuable, spec 2026-09-17): texto de Jacobs ya
   // redactado por el backend; va como dato, igual que `motivo`. Fix round 1:
   // si el status es uno que la Mesa sabe nombrar, el texto propio alcanza y
@@ -89,7 +91,7 @@ export function textoDeAviso(t, aviso) {
 export function textoDeViolacion(t, v) {
   const conocida = typeof v?.regla === 'string' && Object.hasOwn(t.reglasPrevuelo, v.regla)
   const base = (conocida ? t.reglasPrevuelo[v.regla] : t.reglaPrevueloDesconocida)(v || {})
-  return v?.detalle ? `${base} ${t.detalleDelPrevuelo(v.detalle)}` : base
+  return typeof v?.detalle === 'string' && v.detalle ? `${base} ${t.detalleDelPrevuelo(v.detalle)}` : base
 }
 
 // Motivo por paso de `pasos_costo` (adenda Task 8 ítem 6): por qué el costo de

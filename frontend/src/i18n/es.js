@@ -1,5 +1,8 @@
-// Etiquetas del estado de un pipeline (jacobs/models.py::PipelineStatus).
-// Se comparten con estado_no_continuable: el status nunca se muestra crudo.
+// Etiquetas del estado de un pipeline: el del panel
+// (backend/jax_engine/schemas.py::PipelineStatus, incluye waiting_gate) y el
+// crudo de Jacobs (jacobs/models.py::PipelineStatus, incluye aborted,
+// interrupted y expired). Se leen con Object.hasOwn; un valor desconocido va a
+// un texto genérico, nunca crudo.
 const ETIQUETAS_DE_ESTADO = {
   pending: 'Pendiente',
   running: 'En curso',
@@ -56,10 +59,12 @@ export default {
   tabAudit: 'Audit',
   stepsLabel: 'pasos',
   noPipelinesActive: 'Sin pipelines activos',
-  // M-2 (revisión final PR 3, 2026-09-14): activePipeline.status
-  // (jax_engine/schemas.py::PipelineStatus) se mostraba crudo. Un valor que
-  // el backend agregue y el diccionario no conozca cae en el dato crudo
-  // (RightPanel.jsx).
+  // M-2 (revisión final PR 3, 2026-09-14): activePipeline.status se mostraba
+  // crudo. Las claves (ETIQUETAS_DE_ESTADO, arriba) cubren dos fuentes: el
+  // estado del panel (backend/jax_engine/schemas.py::PipelineStatus, ya
+  // mapeado por jax_engine/state.py) y el status crudo de Jacobs que llega en
+  // estado_no_continuable (jacobs/models.py::PipelineStatus). Quien lo lea usa
+  // Object.hasOwn y, si el valor no está, un texto genérico: nunca el dato crudo.
   pipelineStatusLabels: ETIQUETAS_DE_ESTADO,
   pipelinesAdditional: (n) => `+${n} pipeline(s) adicional(es)`,
   approve: '✓ Aprobar',

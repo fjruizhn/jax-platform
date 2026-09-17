@@ -1,5 +1,8 @@
-// Labels for a pipeline status (jacobs/models.py::PipelineStatus).
-// Shared with estado_no_continuable: the status is never shown raw.
+// Labels for a pipeline status: the panel one
+// (backend/jax_engine/schemas.py::PipelineStatus, includes waiting_gate) and
+// the raw Jacobs one (jacobs/models.py::PipelineStatus, includes aborted,
+// interrupted and expired). Read with Object.hasOwn; an unknown value goes to
+// a generic text, never raw.
 const ETIQUETAS_DE_ESTADO = {
   pending: 'Pending',
   running: 'Running',
@@ -56,10 +59,12 @@ export default {
   tabAudit: 'Audit',
   stepsLabel: 'steps',
   noPipelinesActive: 'No active pipelines',
-  // M-2 (final review PR 3, 2026-09-14): activePipeline.status
-  // (jax_engine/schemas.py::PipelineStatus) was shown raw. A value the
-  // backend adds that the dictionary doesn't know falls back to the raw
-  // value (RightPanel.jsx).
+  // M-2 (final review PR 3, 2026-09-14): activePipeline.status was shown
+  // raw. The keys (ETIQUETAS_DE_ESTADO, above) cover two sources: the panel
+  // status (backend/jax_engine/schemas.py::PipelineStatus, already mapped by
+  // jax_engine/state.py) and the raw Jacobs status in estado_no_continuable
+  // (jacobs/models.py::PipelineStatus). Readers use Object.hasOwn and, when the
+  // value is missing, a generic text: never the raw value.
   pipelineStatusLabels: ETIQUETAS_DE_ESTADO,
   pipelinesAdditional: (n) => `+${n} additional pipeline(s)`,
   approve: '✓ Approve',
