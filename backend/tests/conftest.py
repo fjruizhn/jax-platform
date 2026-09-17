@@ -54,6 +54,18 @@ os.environ["JAX_FACET_SEAL_PATH"] = os.path.join(
 # que quiera su propio directorio igual puede hacer monkeypatch.setenv.
 os.environ["JAX_USAGE_SPOOL_DIR"] = tempfile.mkdtemp(prefix="jax-test-respaldo-uso-")
 
+# Kill switch aislado para TODA la sesión (2026-09-16, frente B), por la misma
+# razón que el sello y el respaldo: /etc/jax/.env define JAX_KILL_SWITCH_PATH
+# y el setdefault de arriba la cargaría. Un test que active el freno contra
+# esa ruta detendría LAS MANOS, Jacobs y el REPL de producción. Asignación,
+# no setdefault. main.py exige la variable al importarse.
+RUTA_DEL_FRENO_DE_PRUEBA = os.path.join(
+    tempfile.mkdtemp(prefix="jax-test-interruptor-"), "PAUSE")
+os.environ["JAX_KILL_SWITCH_PATH"] = RUTA_DEL_FRENO_DE_PRUEBA
+FRENO_DE_PRODUCCION = "/etc/jax/interruptor"
+import time as _time  # noqa: E402
+INICIO_DE_SESION = _time.time()
+
 # Rutas de datos aisladas (2026-09-16, frente A, A-55), por la misma razón
 # que el sello y el respaldo de uso: api/command.py, api/audit.py y
 # api/admin/repository.py las leen AL IMPORTARSE. Antes eran ~/jax/... REALES
@@ -521,3 +533,29 @@ def ajustes_en_db(client):
     for clave, valor in antes.items():
         client.portal.call(sql, "INSERT INTO axioma_config (config_key, config_value) VALUES (%s, %s)", (clave, valor))
     ajustes.invalidar()
+
+
+@pytest.fixture(autouse=True)
+def _freno_suelto_entre_tests():
+    """Ningún test hereda el freno puesto por otro. Estructural, como el
+    aislamiento del sello."""
+    yield
+    try:
+        os.unlink(RUTA_DEL_FRENO_DE_PRUEBA)
+    except FileNotFoundError:  # fail-soft: el test no puso el freno; no hay nada que quitar
+        pass
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Barrera verificable: si durante la sesión apareció o cambió algo en el
+    directorio del freno de producción, la corrida falla. En el runner no
+    existe (0 escrituras, no un error)."""
+    try:
+        cambios = [p.name for p in os.scandir(FRENO_DE_PRODUCCION)
+                   if p.stat(follow_symlinks=False).st_mtime >= INICIO_DE_SESION]
+    except FileNotFoundError:
+        return
+    if cambios:
+        print(f"\nBARRERA DEL KILL SWITCH: la suite tocó {FRENO_DE_PRODUCCION}: {cambios}",
+              file=__import__("sys").stderr)
+        session.exitstatus = 1
