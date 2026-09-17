@@ -36,6 +36,17 @@ describe('textoDeErrorDeMesa (A-51)', () => {
   })
 })
 
+describe('límite de profundidad JSON (2026-09-17)', () => {
+  it('el 422 del middleware se muestra traducido y con el límite del backend', () => {
+    const e = err({ code: 'json_demasiado_profundo', limite: 64 })
+    expect(textoDeErrorDeMesa(es, e, es.errorFacet)).toBe(es.erroresMesa.json_demasiado_profundo({ limite: 64 }))
+    expect(textoDeErrorDeMesa(es, e, es.errorFacet)).toContain('64')
+    // Nunca el código crudo, y nunca el mismo texto en los dos idiomas.
+    expect(textoDeErrorDeMesa(es, e, es.errorFacet)).not.toContain('json_demasiado_profundo')
+    expect(textoDeErrorDeMesa(en, e, en.errorFacet)).not.toBe(textoDeErrorDeMesa(es, e, es.errorFacet))
+  })
+})
+
 describe('textoDeAviso (A-53)', () => {
   it('identidad del modelo arma el hosting por proveedor, en cada idioma', () => {
     const aviso = { code: 'identidad_del_modelo', params: { facet: 'jax_local', model: 'qwen', provider: 'ollama' } }

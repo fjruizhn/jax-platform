@@ -62,6 +62,12 @@ from adjuntos import almacen as almacen_de_adjuntos
 from adjuntos import cuota as cuota_de_adjuntos
 from adjuntos import limite_de_subidas
 from adjuntos import pdf_pool
+import limite_json
+# Se lee acá, al importar, y no en el primer pedido: un JAX_JSON_MAX_DEPTH
+# inservible tiene que tumbar el arranque (EntornoInvalido, systemd lo muestra
+# en el journal), no descubrirse cuando ya hay gente usando la Mesa.
+LIMITE_DE_PROFUNDIDAD_JSON = limite_json.limite_configurado()
+
 from db.connection import get_pool, close_pool
 from http_client import get_http_client, close_http_client
 from db.migrations import run_migrations
@@ -189,6 +195,16 @@ app = FastAPI(title="JAX Platform", version="0.1.0", lifespan=lifespan)
 # Frente C (2026-09-16): un ajuste de admin ilegible es un 503 con código, en
 # cualquier endpoint que lo lea -- nunca un default silencioso (ajustes.py).
 app.add_exception_handler(ajustes.AjusteIlegible, ajustes.respuesta_de_ajuste_ilegible)
+
+# Límite global de profundidad JSON (2026-09-17): un cuerpo con anidamiento
+# profundo agotaba la pila del decodificador y la API respondía 500. Ahora es
+# un 422 con el límite declarado, para TODA la API. Va ANTES del CORS a
+# propósito: Starlette deja como más externo al último agregado, así que el
+# CORS envuelve a este y el 422 sale con las cabeceras que el navegador
+# necesita para leerlo.
+app.add_middleware(
+    limite_json.LimiteDeProfundidadJSON, limite=LIMITE_DE_PROFUNDIDAD_JSON
+)
 
 # Frente A (2026-09-16, A-18): el dev es mismo origen (proxy de Vite para /api
 # y /ws) y producción también (nginx de la VM dev). Solo el origen declarado.

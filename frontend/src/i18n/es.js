@@ -185,6 +185,10 @@ export default {
     pdf_sin_texto: () => 'El PDF no tiene texto que se pueda extraer (¿es un escaneo?).',
     // Frente B (2026-09-17): 423 de chat, imagen, comando y pipelines con el freno puesto.
     kill_switch_activo: () => 'Kill switch activo: JAX está detenido',
+    // Límite global de profundidad JSON (2026-09-17): 422 de cualquier
+    // endpoint ante un cuerpo con demasiado anidamiento. El backend manda el
+    // límite; el texto vive acá, nunca en la respuesta.
+    json_demasiado_profundo: (d) => `El contenido enviado está anidado más de ${d.limite} niveles y el servidor no lo acepta.`,
   },
   reglasPrevuelo: {
     tope_insuficiente: (v) => `${lugarDelPaso(v)}: el tope de salida del modelo no alcanza para esta tarea.`,
