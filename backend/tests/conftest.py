@@ -68,6 +68,15 @@ os.environ["JAX_FACET_SEAL_PATH"] = os.path.join(
 # que quiera su propio directorio igual puede hacer monkeypatch.setenv.
 os.environ["JAX_USAGE_SPOOL_DIR"] = tempfile.mkdtemp(prefix="jax-test-respaldo-uso-")
 
+# Carril de la Mesa aislado para TODA la sesión (2026-09-17, SP3 del Ejecutor),
+# por la misma razón que el sello y el respaldo: /etc/jax/.env define
+# JAX_PROXY_CARRIL_RAIZ=/var/lib/jax-carril, el directorio REAL que sondea el
+# proxy del Ejecutor. Un test que llame a _call_ollama tomaría ese mesa.lock y
+# frenaría al Ejecutor de producción mientras dura. Asignación, no setdefault.
+# Control: tests/test_carril_mesa.py::test_los_tests_no_usan_el_carril_de_produccion.
+RAIZ_DEL_CARRIL_DE_PRUEBA = tempfile.mkdtemp(prefix="jax-test-carril-")
+os.environ["JAX_PROXY_CARRIL_RAIZ"] = RAIZ_DEL_CARRIL_DE_PRUEBA
+
 # Kill switch aislado para TODA la sesión (2026-09-16, frente B), por la misma
 # razón que el sello y el respaldo: /etc/jax/.env define JAX_KILL_SWITCH_PATH
 # y el setdefault de arriba la cargaría. Un test que active el freno contra

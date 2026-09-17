@@ -6,6 +6,7 @@ import sys
 import tomllib
 import unicodedata
 import uuid
+from pathlib import Path
 from collections import OrderedDict
 from functools import lru_cache
 from tiempo import utc_ahora
@@ -31,6 +32,7 @@ from auth.middleware import get_current_user
 from auth.models import AuthUser
 from kill_switch import exigir_mesa_libre
 from config_entorno import ruta_absoluta_requerida, url_requerida
+from ejecutor.prioridad import carril_mesa_async
 from jax_engine.schemas import JAXEvent
 from jax_engine.events import event_bus
 from jax_engine.state import engine_state, LAS_MANOS_URL
@@ -719,17 +721,31 @@ def _url_de_ollama() -> str:
     return url_requerida("JAX_OLLAMA_URL")
 
 
+def _raiz_del_carril() -> Path:
+    """SP3 del Ejecutor (2026-09-17): el directorio de los locks de prioridad. La MISMA
+    variable que lee el proxy del Ejecutor (jax/ejecutor/proxy_carril.py), así los dos
+    miran el mismo `mesa.lock`. Sin ella, EntornoInvalido: una Mesa que no toma su carril
+    deja que el Ejecutor se le cuele delante en silencio. Se valida también al arrancar."""
+    return ruta_absoluta_requerida("JAX_PROXY_CARRIL_RAIZ")
+
+
 async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str) -> tuple[str, int, int]:
     url = f"{_url_de_ollama()}/api/chat"
+    raiz = _raiz_del_carril()
     messages = _build_messages(system_prompt, history, message)
     client = await get_http_client()
-    r = await client.post(
-        url,
-        json={"model": model, "messages": messages, "stream": False, "keep_alive": -1},
-        timeout=180.0,
-    )
-    r.raise_for_status()
-    data = r.json()
+    # Carril de la Mesa (§3.4 bis del spec de Fase 2 de jax): mientras dura la llamada, el
+    # proxy del Ejecutor no manda nada a Ollama. Async: el flock va en un hilo y no congela
+    # el loop. Cubre también la sonda de facet_canary (entra por _invoke_facet). Serializa
+    # las llamadas de Mesa entre sí: gratis con OLLAMA_NUM_PARALLEL=1, que es lo medido.
+    async with carril_mesa_async(raiz):
+        r = await client.post(
+            url,
+            json={"model": model, "messages": messages, "stream": False, "keep_alive": -1},
+            timeout=180.0,
+        )
+        r.raise_for_status()
+        data = r.json()
     return data["message"]["content"], data.get("prompt_eval_count", 0), data.get("eval_count", 0)
 
 

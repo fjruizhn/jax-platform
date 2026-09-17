@@ -68,7 +68,7 @@ from api.state import router as state_router
 from api.facets import router as facets_router
 from api.pipelines import router as pipelines_router
 from api.events import router as events_router
-from api.chat import router as chat_router, _url_de_ollama
+from api.chat import router as chat_router, _raiz_del_carril, _url_de_ollama
 from api.command import router as command_router
 from api.audit import router as audit_router
 from api.image import router as image_router
@@ -100,6 +100,9 @@ async def lifespan(app: FastAPI):
     # la memoria tragaba el error): el servicio arrancaba sano y fallaba delante
     # del usuario. Sin una URL base válida, EntornoInvalido y no arranca.
     _url_de_ollama()
+    # SP3 del Ejecutor (2026-09-17): sin directorio del carril la Mesa no puede tomar su
+    # prioridad sobre el Ejecutor. Mismo criterio que JAX_OLLAMA_URL: no arranca.
+    _raiz_del_carril()
     await get_pool()
     await get_http_client()
     await run_migrations()
