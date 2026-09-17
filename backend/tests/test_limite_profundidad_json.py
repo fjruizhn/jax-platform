@@ -34,7 +34,7 @@ def _app_con_limite(limite=None):
 
 
 def test_profundidad_cuenta_el_anidamiento_real():
-    assert not limite_json.profundidad(b"1") == 0
+    assert limite_json.profundidad(b"1") == 0
     assert limite_json.profundidad(b'{"a":1}') == 1
     assert limite_json.profundidad(b'{"a":[{"b":1}]}') == 3
     assert limite_json.profundidad(_cuerpo_anidado(50).encode()) == 50
