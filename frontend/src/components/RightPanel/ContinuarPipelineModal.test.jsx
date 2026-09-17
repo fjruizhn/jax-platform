@@ -62,9 +62,8 @@ beforeEach(() => {
 
 function abrir() {
   const onClose = vi.fn()
-  const onContinuado = vi.fn()
-  render(<I18nProvider><ContinuarPipelineModal pipeline={PIPELINE} onClose={onClose} onContinuado={onContinuado} /></I18nProvider>)
-  return { onClose, onContinuado }
+  render(<I18nProvider><ContinuarPipelineModal pipeline={PIPELINE} onClose={onClose} /></I18nProvider>)
+  return { onClose }
 }
 
 const selectDe = (n, cap) => screen.getByLabelText(es.continuarPasoACorrer(n, cap))
@@ -234,23 +233,22 @@ describe('ContinuarPipelineModal -- no continuable', () => {
 
 describe('ContinuarPipelineModal -- continuar y confirmar el costo', () => {
   it('sin confirmación continúa sin costo_confirmado_usd, avisa y cierra', async () => {
-    const { onClose, onContinuado } = await listo()
+    const { onClose } = await listo()
     fireEvent.click(botonContinuar())
-    await waitFor(() => expect(onContinuado).toHaveBeenCalledWith(CONTINUADO))
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
     expect(llamadasA(CONTINUAR)).toEqual([[CONTINUAR, { reasignar: {} }]])
     expect(onClose).toHaveBeenCalled()
   })
 
   it('por encima del umbral confirma en ventana propia y continúa con el costo confirmado', async () => {
     mockPrevio(CARO)
-    const { onClose, onContinuado } = await listo()
+    const { onClose } = await listo()
     fireEvent.click(botonContinuar())
     const dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
     expect(llamadasA(CONTINUAR)).toHaveLength(0)
     fireEvent.click(within(dialogo).getByRole('button', { name: es.confirmarCostoBoton }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith(CONTINUAR, { reasignar: {}, costo_confirmado_usd: '0.30' }))
-    await waitFor(() => expect(onContinuado).toHaveBeenCalled())
-    expect(onClose).toHaveBeenCalled()
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
   })
 
   it('la reasignación elegida viaja en continue', async () => {
@@ -463,5 +461,16 @@ describe('ContinuarPipelineModal -- fix round 1', () => {
     dialogo = screen.getByRole('dialog', { name: es.confirmarCostoTitulo })
     expect(dialogo).toHaveTextContent(usd('0.90'))
     expect(within(dialogo).getByRole('alert')).toHaveTextContent(es.erroresMesa.costo_supera_lo_aceptado({}))
+  })
+
+  // Fix round 2 ítem 3: tras un pedido que falla la ventana vuelve a cerrarse.
+  it('tras un continue que falla, Cancelar vuelve a estar habilitado y Escape cierra', async () => {
+    api.post.mockImplementation((url) => (esPrevio(url) ? Promise.resolve({ data: CONTINUABLE }) : Promise.reject(new Error('timeout'))))
+    const { onClose } = await listo()
+    fireEvent.click(botonContinuar())
+    await screen.findByRole('alert')
+    await waitFor(() => expect(screen.getByRole('button', { name: es.cancel })).not.toBeDisabled())
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })

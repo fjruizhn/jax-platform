@@ -28,7 +28,7 @@ import { useConfirmacionDeCosto } from '../../lib/useConfirmacionDeCosto'
 // (clasificarRechazo).
 const CLASE_SELECT = 'text-xs bg-hundido border border-borde-control rounded px-2 py-1 text-texto focus:outline-none focus:border-foco disabled:opacity-40'
 
-export default function ContinuarPipelineModal({ pipeline, onClose, onContinuado }) {
+export default function ContinuarPipelineModal({ pipeline, onClose }) {
   const { t, lang } = useI18n()
   const id = pipeline.pipeline_id
   const [pasos, setPasos] = useState(null)
@@ -128,8 +128,9 @@ export default function ContinuarPipelineModal({ pipeline, onClose, onContinuado
     await conGuardia(async () => {
       try {
         const cuerpo = costo == null ? { reasignar: cuerpoReasignar } : { reasignar: cuerpoReasignar, costo_confirmado_usd: costo }
-        const { data } = await api.post(`/pipelines/${id}/continue`, cuerpo)
-        onContinuado?.(data)
+        // El panel se refresca por el evento pipeline_continued (adenda regla 5):
+        // la respuesta no se reenvía a nadie.
+        await api.post(`/pipelines/${id}/continue`, cuerpo)
         onClose()
       } catch (err) {
         // Genérico propio (fix round 1 ítem 2): tras un fallo de red o un

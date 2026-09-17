@@ -718,4 +718,16 @@ describe('PipelineModal -- pre-vuelo y confirmación de costo', () => {
       expect(screen.getByRole('dialog', { name: es.newPipelineTitle })).toBeInTheDocument()
     })
   }
+
+  // Fix round 2 Task 10 ítem 3: tras un pedido que falla el modal vuelve a cerrarse.
+  it('tras un pre-vuelo que falla, Cancelar vuelve a estar habilitado y Escape cierra', async () => {
+    api.post.mockRejectedValue(new Error('network'))
+    const onClose = vi.fn()
+    await listo({ onClose })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    await screen.findByRole('alert')
+    await waitFor(() => expect(screen.getByRole('button', { name: es.cancel })).not.toBeDisabled())
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
 })
