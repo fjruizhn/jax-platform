@@ -32,6 +32,20 @@ os.environ["JAX_DB_NAME"] = "jax_memory_test"
 # que necesite otro valor hace monkeypatch.setenv.
 os.environ["JAX_OLLAMA_URL"] = "http://ollama.invalid:11434"
 
+# Servicios que la app sondea (2026-09-17, hallazgo de la carga del frente B):
+# el fixture `client` arranca el lifespan, que lanza `_poll_las_manos`
+# (GET {LAS_MANOS_URL}/health cada 30 s) y `_poll_pipelines`; el tablero de
+# admin sondea JAX_PLATFORM_URL. Con el setdefault de arriba eran LAS MANOS
+# (:7777) y la plataforma (:8080) de PRODUCCIÓN. Se FIJAN (no setdefault) a un
+# puerto local donde no escucha nada (9, discard): la conexión se rechaza al
+# instante, sin salir del host ni dejar TIME-WAIT. Van antes de cualquier
+# import: jax_engine.state y api.pipelines leen la variable al importarse.
+# Control: tests/test_conftest_sin_servicios_de_produccion.py.
+DESTINO_DE_SERVICIO_INVALIDO = "http://127.0.0.1:9"
+os.environ["LAS_MANOS_URL"] = DESTINO_DE_SERVICIO_INVALIDO
+os.environ["JACOBS_URL"] = f"{DESTINO_DE_SERVICIO_INVALIDO}/jacobs"
+os.environ["JAX_PLATFORM_URL"] = DESTINO_DE_SERVICIO_INVALIDO
+
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
 # aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture
 # `client` es de sesión y arranca la app -- y con ella run_migrations, que
