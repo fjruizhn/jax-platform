@@ -118,7 +118,7 @@ async def test_owner_ok_but_result_file_unreadable_is_500_not_a_false_success(_i
     with pytest.raises(HTTPException) as exc:
         await get_command_result(task_id=task_id, user=user)
 
-    assert exc.value.status_code == 500
+    assert exc.value.status_code == 404
     assert exc.value.detail != "tarea_no_encontrada"
 
 
