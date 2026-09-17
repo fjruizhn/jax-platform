@@ -32,7 +32,11 @@ que el fixture `client` (conftest.py) captura y relanza cualquier
 """
 from __future__ import annotations
 
+import uuid
+import warnings
+
 import pymysql
+import pytest
 
 from db import migrations
 
@@ -40,6 +44,11 @@ _INFO_MODE = (
     "SELECT IS_NULLABLE, COLUMN_DEFAULT, COLUMN_TYPE FROM information_schema.COLUMNS "
     "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'capability' AND COLUMN_NAME = 'mode'"
 )
+
+# Diario persistente del respaldo de `capability` (ver _esquema_roto_con_respaldo).
+_DIARIO_PREFIJO = "zz_test_capability_mode_respaldo"
+_DIARIO = _DIARIO_PREFIJO
+_DIARIO_MOTOR = f"{_DIARIO_PREFIJO}_motor"
 
 _INFO_CHECK = (
     "SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS "
@@ -73,6 +82,49 @@ async def _sql(sentencia, args=None):
         async with conn.cursor() as cur:
             await cur.execute(sentencia, args)
             return await cur.fetchall()
+
+
+@pytest.fixture
+def fila_ajena(client):
+    """Una capability que sembró OTRA rama (clave fuera de _CAPABILITY_MODE,
+    como `delegate`/`integrate` del frente G en `jax_memory_test`, base
+    compartida), con su `mode` válido y una fila en capability_motor. Los
+    tests que rompen el esquema tienen que dejarla intacta. Siempre se borra
+    al final; el run_migrations() del final repara la base si el test la
+    dejó a medio migrar."""
+    key = f"zz_ajena_{uuid.uuid4().hex[:8]}"
+
+    async def sembrar():
+        motor = (await _sql("SELECT `key` FROM motor ORDER BY `key` LIMIT 1"))[0][0]
+        await _sql(
+            "INSERT INTO capability (`key`, risk_level, max_execution_minutes, allowed_callers, mode) "
+            "VALUES (%s, 'low', 5, '[]', 'read_only')", (key,)
+        )
+        await _sql(
+            "INSERT INTO capability_motor (capability_key, motor_key, priority) VALUES (%s, %s, 0)",
+            (key, motor),
+        )
+
+    async def limpiar():
+        await _sql("DELETE FROM capability_motor WHERE capability_key = %s", (key,))
+        await _sql("DELETE FROM capability WHERE `key` = %s", (key,))
+        await migrations.run_migrations()
+
+    client.portal.call(sembrar)
+    try:
+        yield key
+    finally:
+        client.portal.call(limpiar)
+
+
+async def _estado_fila_ajena(key):
+    """(mode, filas en capability_motor) de la fila ajena; None si no está."""
+    try:
+        fila = await _sql("SELECT mode FROM capability WHERE `key` = %s", (key,))
+    except pymysql.err.MySQLError as error:  # fail-soft: la columna puede no existir si el test dejó la base rota; se DEVUELVE el código y la aserción de afuera falla con él
+        return ("error", error.args[0])
+    motores = await _sql("SELECT COUNT(*) FROM capability_motor WHERE capability_key = %s", (key,))
+    return (fila[0][0] if fila else None, motores[0][0])
 
 
 def test_la_columna_mode_es_not_null_y_sin_default_con_check(client):
@@ -132,7 +184,7 @@ def test_control_un_insert_con_modo_invalido_falla(client):
     assert client.portal.call(correr) == 4025  # CONSTRAINT `chk_capability_mode` failed
 
 
-def test_una_base_vieja_queda_rellenada_y_not_null(client):
+def test_una_base_vieja_queda_rellenada_y_not_null(client, fila_ajena):
     """Producción hoy (base sin columna, CI, bases viejas): run_migrations()
     la agrega NULL sin CHECK, rellena desde _CAPABILITY_MODE, la pasa a
     VARCHAR(16) NOT NULL y agrega el CHECK (se afirma también acá: la
@@ -169,9 +221,10 @@ def test_una_base_vieja_queda_rellenada_y_not_null(client):
     assert info == (("NO", None, "varchar(16)"),)
     assert len(check) == 1
     assert {k: filas.get(k) for k in migrations._CAPABILITY_MODE} == migrations._CAPABILITY_MODE
+    assert client.portal.call(_estado_fila_ajena, fila_ajena) == ("read_only", 1)
 
 
-def test_la_columna_enum_de_produccion_queda_convertida(client):
+def test_la_columna_enum_de_produccion_queda_convertida(client, fila_ajena):
     """El estado de producción de hoy (incidente 2026-09-14, ver spec §0
     v3): la columna quedó como ENUM('read_only','mutating') NOT NULL, SIN
     CHECK. run_migrations() la deja varchar(16)/NOT NULL, con el CHECK y
@@ -205,9 +258,10 @@ def test_la_columna_enum_de_produccion_queda_convertida(client):
     assert info == (("NO", None, "varchar(16)"),)
     assert len(check) == 1
     assert {k: filas.get(k) for k in migrations._CAPABILITY_MODE} == migrations._CAPABILITY_MODE
+    assert client.portal.call(_estado_fila_ajena, fila_ajena) == ("read_only", 1)
 
 
-def test_una_capability_no_sembrada_sin_modo_frena_la_migracion(client):
+def test_una_capability_no_sembrada_sin_modo_frena_la_migracion(client, fila_ajena):
     """Una fila que ninguna migración sembró (SQL a mano) no recibe un modo
     inventado: la migración falla con su nombre y jax-platform no arranca."""
     async def correr():
@@ -230,9 +284,13 @@ def test_una_capability_no_sembrada_sin_modo_frena_la_migracion(client):
     resultado, info = client.portal.call(correr)
     assert resultado is not None and "zz_huerfana" in resultado
     assert info == (("NO", None, "varchar(16)"),)
+    # La migración bajo prueba ve sólo lo que el test controla: la fila
+    # ajena no aparece como huérfana.
+    assert fila_ajena not in resultado
+    assert client.portal.call(_estado_fila_ajena, fila_ajena) == ("read_only", 1)
 
 
-def test_un_modo_invalido_sin_check_frena_la_migracion_con_su_nombre(client):
+def test_un_modo_invalido_sin_check_frena_la_migracion_con_su_nombre(client, fila_ajena):
     """Si el CHECK todavía no existe (una base a medio migrar) y una fila
     tiene un `mode` fuera de {'read_only','mutating'} metido a mano en la
     columna VARCHAR (que sin CHECK no rechaza nada), el `ADD CONSTRAINT`
@@ -259,3 +317,54 @@ def test_un_modo_invalido_sin_check_frena_la_migracion_con_su_nombre(client):
     resultado, check = client.portal.call(correr)
     assert resultado is not None and "zz_modo_raro" in resultado
     assert len(check) == 1
+    assert fila_ajena not in resultado
+    assert client.portal.call(_estado_fila_ajena, fila_ajena) == ("read_only", 1)
+
+
+def test_un_diario_dejado_por_un_kill_se_restaura_al_arrancar(client, fila_ajena):
+    """Recuperación ante un kill a mitad (sin `finally`): queda el diario con
+    la fila ajena apartada y los modos, la fila ajena fuera de `capability` y
+    el esquema roto. El arranque del helper repone todo desde el diario, lo
+    avisa con un warning y borra el diario sólo después de verificar."""
+    async def correr():
+        claves = list(migrations._CAPABILITY_MODE)
+        marcas = ", ".join(["%s"] * len(claves))
+        await _sql(f"DROP TABLE IF EXISTS {_DIARIO_MOTOR}")
+        await _sql(f"DROP TABLE IF EXISTS {_DIARIO}")
+        await _sql(
+            f"CREATE TABLE {_DIARIO_MOTOR} AS SELECT * FROM capability_motor "
+            f"WHERE capability_key NOT IN ({marcas})", claves,
+        )
+        await _sql(
+            f"CREATE TABLE {_DIARIO} AS SELECT c.*, (c.`key` NOT IN ({marcas})) AS ajena "
+            "FROM capability c", claves,
+        )
+        await _sql("DELETE FROM capability_motor WHERE capability_key = %s", (fila_ajena,))
+        await _sql("DELETE FROM capability WHERE `key` = %s", (fila_ajena,))
+        await _sql("ALTER TABLE capability DROP CONSTRAINT chk_capability_mode")
+        await _sql("ALTER TABLE capability MODIFY COLUMN mode VARCHAR(16) NULL")
+        await _sql("UPDATE capability SET mode = NULL WHERE `key` = 'file_write'")
+        try:
+            with warnings.catch_warnings(record=True) as avisos:
+                warnings.simplefilter("always")
+                recuperado = await _recuperar_diario_si_existe()
+            return (
+                recuperado,
+                [str(a.message) for a in avisos],
+                await _sql(f"SHOW TABLES LIKE '{_DIARIO_PREFIJO}%'"),
+                await _sql(_INFO_MODE),
+                await _sql(_INFO_CHECK),
+                dict(await _sql("SELECT `key`, mode FROM capability")),
+            )
+        finally:
+            await _sql(f"DROP TABLE IF EXISTS {_DIARIO_MOTOR}")
+            await _sql(f"DROP TABLE IF EXISTS {_DIARIO}")
+
+    recuperado, avisos, diarios, info, check, filas = client.portal.call(correr)
+    assert recuperado is True
+    assert any(_DIARIO in aviso for aviso in avisos)
+    assert diarios == ()
+    assert info == (("NO", None, "varchar(16)"),)
+    assert len(check) == 1
+    assert filas["file_write"] == "mutating"
+    assert client.portal.call(_estado_fila_ajena, fila_ajena) == ("read_only", 1)
