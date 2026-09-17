@@ -5,6 +5,7 @@ vi.mock('../api/client', () => ({ default: { post: vi.fn(), get: vi.fn() } }))
 import api from '../api/client'
 import { useJaxStore, contenidoDeComando } from './useJaxStore'
 import es from '../i18n/es.js'
+import en from '../i18n/en.js'
 
 const INICIAL = useJaxStore.getState()
 
@@ -27,6 +28,16 @@ describe('contenidoDeComando (A-53)', () => {
     expect(contenidoDeComando(es, { code: 'comando_sin_resultado', result: '' })).toBe(es.commandNoResult)
     expect(contenidoDeComando(es, { code: 'comando_simulado', result: 'mision' })).toBe(es.commandDryRun('mision'))
     expect(contenidoDeComando(es, { result: 'listo' })).toBe('listo')
+  })
+})
+
+describe('comando_fallo sin motivo (ronda final M7)', () => {
+  it.each([['es', es], ['en', en]])('no deja "…tarea: " colgando (%s)', (_idioma, t) => {
+    for (const motivo of [undefined, '', '   ']) {
+      const texto = contenidoDeComando(t, { code: 'comando_fallo', motivo })
+      expect(texto).toBe(t.commandFailedSinMotivo)
+      expect(texto.trim()).not.toMatch(/:$/)
+    }
   })
 })
 

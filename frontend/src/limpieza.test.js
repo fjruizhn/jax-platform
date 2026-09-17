@@ -61,6 +61,18 @@ describe('limpieza del frontend (frente A)', () => {
     expect(fuente('./store/useJaxStore.js')).not.toMatch(/function _t\(/)
   })
 
+  it('ronda final M9: el idioma guardado se lee UNA vez y una propiedad de Object no es idioma', () => {
+    localStorage.setItem('jax_lang', 'en')
+    const lectura = vi.spyOn(Storage.prototype, 'getItem')
+    expect(diccionarioActivo()).toBe(en)
+    expect(lectura).toHaveBeenCalledTimes(1)
+    lectura.mockRestore()
+    for (const raro of ['constructor', 'toString', '__proto__']) {
+      localStorage.setItem('jax_lang', raro)
+      expect(diccionarioActivo()).toBe(es)
+    }
+  })
+
   it('A-45: getEyeState exige todas las etiquetas', () => {
     expect(() => getEyeState({}, {}, true, false, false)).toThrow(/etiqueta/)
     const { killSwitch, ...sinUna } = ETIQUETAS

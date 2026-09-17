@@ -16,7 +16,9 @@ export function localeFor(lang) {
 // Idioma guardado y su diccionario (A-29, 2026-09-16): una sola regla para el
 // proveedor y para el store, que no es un componente y no puede usar el hook.
 export function idiomaGuardado() {
-  return LANGS[localStorage.getItem('jax_lang')] ? localStorage.getItem('jax_lang') : 'es'
+  // Una sola lectura; Object.hasOwn: `constructor` no es un idioma (ronda final M9).
+  const guardado = localStorage.getItem('jax_lang')
+  return typeof guardado === 'string' && Object.hasOwn(LANGS, guardado) ? guardado : 'es'
 }
 
 export function diccionarioActivo() {

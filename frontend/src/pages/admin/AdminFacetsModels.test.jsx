@@ -11,6 +11,7 @@ import api from '../../api/client'
 import AdminFacetsModels from './AdminFacetsModels'
 import { I18nProvider } from '../../i18n/index.jsx'
 import es from '../../i18n/es.js'
+import { useJaxStore } from '../../store/useJaxStore'
 
 function resolverSuma(dialogo) {
   const [, a, b] = within(dialogo).getByText(/Resolvé \d+ \+ \d+ = \?/).textContent.match(/(\d+) \+ (\d+)/)
@@ -19,6 +20,7 @@ function resolverSuma(dialogo) {
 
 beforeEach(() => {
   localStorage.clear()
+  useJaxStore.setState({ toasts: [] })
   api.post.mockReset()
   api.get.mockImplementation((url) => Promise.resolve({ data: url === '/admin/keys'
     ? { providers: [{ id: 'openai', name: 'OpenAI', has_key: true, key_last4: '1234' }] }
@@ -84,5 +86,31 @@ describe('AdminFacetsModels -- credenciales (A-23)', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalled())
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     await waitFor(() => expect(disparador).toHaveFocus())
+  })
+
+  // Ronda final M6 (2026-09-16): el fallo de rotar y el de revocar se avisan
+  // con un toast de i18n (antes no había test que lo fijara).
+  it('un fallo al rotar avisa con el toast de i18n y deja el diálogo abierto', async () => {
+    api.post.mockRejectedValue({ response: { status: 500 } })
+    render(<I18nProvider><AdminFacetsModels /></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: es.adminKeyRotate }))
+    const dialogo = screen.getByRole('dialog')
+    fireEvent.change(within(dialogo).getByPlaceholderText(es.adminKeyNewValue), { target: { value: 'sk-nueva' } })
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.adminKeySave }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/credentials/openai/rotate', { api_key: 'sk-nueva' }))
+    await waitFor(() => expect(useJaxStore.getState().toasts).toEqual([
+      expect.objectContaining({ type: 'error', message: es.adminKeyRotateError })]))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('un fallo al revocar avisa con el toast de i18n', async () => {
+    api.post.mockRejectedValue({ response: { status: 500 } })
+    render(<I18nProvider><AdminFacetsModels /></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: es.adminKeyRevoke }))
+    const dialogo = screen.getByRole('dialog')
+    resolverSuma(dialogo)
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.adminKeyRevoke }))
+    await waitFor(() => expect(useJaxStore.getState().toasts).toEqual([
+      expect.objectContaining({ type: 'error', message: es.adminKeyRevokeError })]))
   })
 })

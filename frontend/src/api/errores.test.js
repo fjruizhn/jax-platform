@@ -40,3 +40,16 @@ describe('textoDeAviso (A-53)', () => {
     expect(textoDeAviso(es, { code: 'algo_nuevo', params: {} })).toBe(es.avisoDesconocido)
   })
 })
+
+describe('códigos que coinciden con propiedades de Object (ronda final M4)', () => {
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])('%s no se trata como un código conocido', (code) => {
+    expect(textoDeErrorDeMesa(es, err({ code }), es.errorFacet)).toBe(es.errorFacet)
+    expect(textoDeErrorDeMesa(es, err(code), es.errorFacet)).toBe(es.errorFacet)
+    expect(textoDeAviso(es, { code, params: {} })).toBe(es.avisoDesconocido)
+  })
+
+  it('un proveedor "constructor" usa el hosting genérico', () => {
+    const aviso = { code: 'identidad_del_modelo', params: { provider: 'constructor' } }
+    expect(textoDeAviso(es, aviso)).toBe(es.avisosChat.identidad_del_modelo(aviso.params, es.hostingGenerico))
+  })
+})

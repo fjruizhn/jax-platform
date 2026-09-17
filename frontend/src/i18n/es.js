@@ -114,6 +114,7 @@ export default {
   hostingGenerico: 'vía la API configurada para esta faceta',
   avisoDesconocido: 'La faceta respondió con un aviso que esta versión no conoce.',
   commandFailed: (motivo) => `Error ejecutando la tarea: ${motivo}`,
+  commandFailedSinMotivo: 'Error ejecutando la tarea.',
   commandDryRun: (mision) => `[Simulación] Tarea registrada:\n\n${mision}`,
   taskInitializing: '_Iniciando tarea autónoma…_',
   taskStarted: (id) => `_Tarea iniciada — \`${id}\`_\n\nHyde está ejecutando en background…`,

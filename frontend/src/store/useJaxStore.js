@@ -8,7 +8,11 @@ import { tokenDeFaceta } from '../tema/tokens'
 // texto que mostrar (sin output, fallo o simulación). Lo usan el evento de WS
 // y la consulta de pendientes: un solo lugar decide el texto.
 export function contenidoDeComando(t, datos) {
-  if (datos?.code === 'comando_fallo') return t.commandFailed(datos.motivo || '')
+  if (datos?.code === 'comando_fallo') {
+    // Ronda final M7: sin motivo no queda "Error ejecutando la tarea: " colgando.
+    const motivo = typeof datos.motivo === 'string' ? datos.motivo.trim() : ''
+    return motivo ? t.commandFailed(motivo) : t.commandFailedSinMotivo
+  }
   if (datos?.code === 'comando_simulado') return t.commandDryRun(datos.result || '')
   return datos?.result || t.commandNoResult
 }
@@ -84,9 +88,10 @@ const DEFAULT_FACETS = Object.keys(FACET_TOKENS).reduce((acc, name) => {
 }, {})
 
 // Faceta que entra desde el servidor (/api/state o facet_status_changed). El
-// backend manda {name, status, last_message, last_update, color} SIN token:
-// el token se deriva SIEMPRE de la clave (nunca de los datos del servidor) y
-// el `color` hex del backend se descarta -- nada pinta con él. Lo demás se
+// backend manda {name, status, last_message, last_update, display_name} SIN
+// token ni color (A-42/A-48): el token se deriva SIEMPRE de la clave (nunca de
+// los datos del servidor) y un `color` que llegara igual se descarta -- nada
+// pinta con él. Lo demás se
 // fusiona sobre el default de la faceta (o sobre lo que ya había).
 function _facetaDelServidor(clave, base, datos) {
   const { color: _hexDelBackend, ...resto } = datos || {}

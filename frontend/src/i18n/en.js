@@ -114,6 +114,7 @@ export default {
   hostingGenerico: 'via the API configured for this facet',
   avisoDesconocido: 'The facet replied with a notice this version does not know.',
   commandFailed: (motivo) => `Error running the task: ${motivo}`,
+  commandFailedSinMotivo: 'Error running the task.',
   commandDryRun: (mision) => `[Dry run] Task registered:\n\n${mision}`,
   taskInitializing: '_Starting autonomous task…_',
   taskStarted: (id) => `_Task started — \`${id}\`_\n\nHyde is running in background…`,

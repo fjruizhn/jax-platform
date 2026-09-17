@@ -172,6 +172,9 @@ def test_degrades_explicitly_when_facet_unavailable(client):
     assert mock_post.call_count == 0, (
         "sin binding activo no debe invocar Ollama en absoluto (fail-closed)"
     )
+    # Ronda final M6 (2026-09-16): el contrato HTTP de la degradacion es un
+    # aviso con codigo (A-53), no un texto: el frontend lo traduce.
+    assert resp.json()["aviso"] == {"code": "faceta_sin_binding", "params": {"facet": "jax_local"}}
 
 
 def test_jax_local_system_prompt_states_resolved_model(client):
