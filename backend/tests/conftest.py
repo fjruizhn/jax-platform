@@ -24,6 +24,39 @@ for _k, _v in _load_env().items():
 
 os.environ["JAX_DB_NAME"] = "jax_memory_test"
 
+# BARRERA DE ESCRITURA A ARCHIVOS DE PRODUCCIÓN (2026-09-17).
+# Incidente real de ese día: un test llamó a PUT /api/admin/keys/{proveedor},
+# que reescribía /etc/jax/.env con un volcado del diccionario parseado. El
+# archivo de PRODUCCIÓN perdió 28 líneas de comentarios y la llave de OpenAI
+# quedó vacía. Se restauró desde respaldo, pero la lección es que la barrera
+# de la base no cubría los archivos. Fail-closed: cualquier apertura para
+# escritura de un archivo de producción revienta el test que la intenta, con
+# el nombre del archivo, en vez de tocarlo.
+_ARCHIVOS_DE_PRODUCCION = frozenset({ENV_PATH, "/etc/jax/config.toml"})
+_open_real = open
+
+
+class EscrituraEnProduccion(RuntimeError):
+    """Un test intentó escribir un archivo de producción."""
+
+
+def _open_vigilado(file, mode="r", *args, **kwargs):
+    if isinstance(file, (str, bytes, os.PathLike)):
+        ruta = os.fspath(file)
+        if isinstance(ruta, bytes):
+            ruta = ruta.decode("utf-8", "replace")
+        if ruta in _ARCHIVOS_DE_PRODUCCION and any(c in mode for c in "wxa+"):
+            raise EscrituraEnProduccion(
+                f"la suite intentó abrir {ruta} en modo {mode!r}: es un archivo "
+                "de producción. Parcheá la ruta con monkeypatch/tmp_path."
+            )
+    return _open_real(file, mode, *args, **kwargs)
+
+
+import builtins as _builtins  # noqa: E402
+
+_builtins.open = _open_vigilado
+
 # Revisión final del frente E (2026-09-16): el lifespan de la app no arranca sin
 # una JAX_OLLAMA_URL válida, y el fixture `client` lo levanta. Se FIJA (no
 # setdefault) a un host `.invalid` (RFC 6761, nunca resuelve), después de cargar
