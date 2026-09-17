@@ -67,7 +67,7 @@ def entorno(monkeypatch):
 
 async def test_activar_pone_el_freno_avisa_y_audita(entorno):
     ruta, eventos, base = entorno
-    assert await kill_switch.activar(ADMIN) == {"activo": True, "cambio": True}
+    assert await kill_switch.activar(ADMIN) == {"activo": True, "cambio": True, "heredada": False}
     assert json.loads(ruta.read_text())["user_id"] == "7"
     assert eventos == [("kill_switch_activated", {"activo": True})]
     assert base.filas == [("activar", 7)]
@@ -76,7 +76,7 @@ async def test_activar_pone_el_freno_avisa_y_audita(entorno):
 async def test_activar_dos_veces_no_duplica_nada(entorno):
     _, eventos, base = entorno
     await kill_switch.activar(ADMIN)
-    assert await kill_switch.activar(ADMIN) == {"activo": True, "cambio": False}
+    assert await kill_switch.activar(ADMIN) == {"activo": True, "cambio": False, "heredada": False}
     assert len(eventos) == 1 and len(base.filas) == 1
 
 
@@ -91,14 +91,14 @@ async def test_activar_con_la_auditoria_caida_deja_el_freno_puesto(entorno):
 
 async def test_reanudar_sin_freno_no_audita(entorno):
     _, eventos, base = entorno
-    assert await kill_switch.reanudar(ADMIN) == {"activo": False, "cambio": False}
+    assert await kill_switch.reanudar(ADMIN) == {"activo": False, "cambio": False, "heredada": False}
     assert eventos == [] and base.filas == []
 
 
 async def test_reanudar_audita_quita_y_avisa(entorno):
     ruta, eventos, base = entorno
     interruptor.escribir_pausa(ruta, "{}")
-    assert await kill_switch.reanudar(ADMIN) == {"activo": False, "cambio": True}
+    assert await kill_switch.reanudar(ADMIN) == {"activo": False, "cambio": True, "heredada": False}
     assert not interruptor.interruptor_activo(ruta)
     assert base.filas == [("reanudar", 7)]
     assert eventos == [("kill_switch_released", {"activo": False})]
@@ -248,7 +248,7 @@ async def test_activar_con_fsync_roto_tras_poner_el_freno_sigue_el_camino_de_cam
         raise OSError("fsync roto")
 
     monkeypatch.setattr(interruptor, "_sincronizar_directorio", _fsync_roto)
-    assert await kill_switch.activar(ADMIN) == {"activo": True, "cambio": True}
+    assert await kill_switch.activar(ADMIN) == {"activo": True, "cambio": True, "heredada": False}
     assert interruptor.interruptor_activo(ruta)
     assert eventos == [("kill_switch_activated", {"activo": True})]
     assert base.filas == [("activar", 7)]
@@ -310,7 +310,13 @@ async def test_activar_con_fail_closed_solo_tras_el_fallo_de_escritura_cuenta_co
     def _escribir_roto(_ruta, _contenido):
         raise kill_switch.InterruptorNoEscribible("disco caído a mitad de camino")
 
+    stat_real = interruptor.os.stat
+
     def _stat_limpio_y_luego_fail_closed(_ruta_arg, *a, **kw):
+        # Task H: sólo el archivo propio; la ruta heredada sigue su stat real
+        # (el conftest la desvía a un temporal inexistente).
+        if str(_ruta_arg) != str(ruta):
+            return stat_real(_ruta_arg, *a, **kw)
         llamadas["n"] += 1
         if llamadas["n"] == 1:
             raise FileNotFoundError()
@@ -319,7 +325,7 @@ async def test_activar_con_fail_closed_solo_tras_el_fallo_de_escritura_cuenta_co
     monkeypatch.setattr(interruptor.os, "stat", _stat_limpio_y_luego_fail_closed)
     monkeypatch.setattr(kill_switch, "_escribir", _escribir_roto)
     resultado = await kill_switch.activar(ADMIN)
-    assert resultado == {"activo": True, "cambio": True}
+    assert resultado == {"activo": True, "cambio": True, "heredada": False}
     assert eventos == [("kill_switch_activated", {"activo": True})]
     assert base.filas == [("activar", 7)]
 

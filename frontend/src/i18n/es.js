@@ -153,6 +153,7 @@ export default {
   killSwitchErrorReanudar: 'No se pudo reanudar',
   killSwitchErrorNoEscribible: 'El servidor no puede escribir el interruptor: nada cambió',
   killSwitchErrorAuditoria: 'El freno quedó puesto, pero la auditoría falló: revisá el registro del servidor',
+  killSwitchHeredada: 'El freno sigue puesto por la ruta vieja /etc/jax/PAUSE: quitala en el servidor',
 
   // Store event toasts (WS handleEvent)
   humanGateRequestedToast: (id) => `Jacobs espera aprobación — pipeline ${id}`,

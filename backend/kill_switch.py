@@ -29,6 +29,17 @@ archivo. Reglas:
   con el freno YA puesto de antes nunca cuenta como cambio de ESA llamada,
   aunque el archivo siga estando ahí después -- eso no prueba que esta
   llamada lo haya puesto.
+- R13 (Task H, 2026-09-17, requisito del controlador principal): la ruta
+  heredada del freno también frena. Lo que la plataforma ESCRIBE se decide
+  con `interruptor.pausa_presente(ruta)` -- sólo el archivo que ella escribe:
+  el "antes" de R10, el "ya no está" de reanudar y los re-chequeos de R9 --;
+  lo que INFORMA (`activo()`, `estado()`, /api/state, `exigir_mesa_libre`,
+  la respuesta de activar/reanudar) usa `interruptor_activo()`, que incluye
+  la heredada, y agrega `heredada`. La plataforma NUNCA borra la ruta
+  heredada (no le pertenece): con ella puesta, reanudar quita el archivo
+  propio si estaba (auditado) y responde `activo: true, heredada: true`, sin
+  difundir "liberado" -- el freno sigue puesto y decirlo a las pestañas
+  sería mentir.
 """
 from __future__ import annotations
 
@@ -97,6 +108,11 @@ def activo() -> bool:
     return interruptor.interruptor_activo()
 
 
+def _informe(cambio: bool) -> dict:
+    """La respuesta de activar/reanudar: el freno COMPLETO (con la heredada)."""
+    return {"activo": activo(), "cambio": cambio, "heredada": interruptor._heredada_activa()}
+
+
 def _escribir(ruta, contenido: str) -> bool:
     try:
         return interruptor.escribir_pausa(ruta, contenido)
@@ -136,7 +152,7 @@ async def _reponer_de_emergencia(ruta, usuario: AuthUser, motivo: str) -> None:
     try:
         await asyncio.to_thread(_escribir, ruta, _contenido("reactivado_sin_auditoria", usuario))
     except InterruptorNoEscribible as repo_exc:  # fail-soft: se logea; el fallo (real o aparente) de REPONER no debe tapar la auditoría fallida real que sigue en el except que llamó a esto
-        if interruptor.interruptor_activo(ruta):
+        if interruptor.pausa_presente(ruta):
             logger.error(
                 "kill switch: reanudar de user_id=%s (%s) repuso el freno pese al error de fsync: %r",
                 usuario.user_id, motivo, repo_exc)
@@ -155,7 +171,7 @@ async def estado() -> dict:
     ultimo = None if fila is None else {
         "accion": fila[0], "user_id": fila[1], "email": fila[2], "at": iso_utc(fila[3]),
     }
-    return {"activo": activo(), "ultimo": ultimo}
+    return {"activo": activo(), "heredada": interruptor._heredada_activa(), "ultimo": ultimo}
 
 
 async def activar(usuario: AuthUser) -> dict:
@@ -168,7 +184,9 @@ async def activar(usuario: AuthUser) -> dict:
         # auditoría + cambio=True sobre un estado que ya era así antes de
         # que esta llamada empezara (hallazgo del re-review, reproducido con
         # freno ya puesto + directorio sin permiso de escritura).
-        antes = interruptor.interruptor_activo(ruta)
+        # R13: sólo el archivo propio; la heredada no es algo que esta
+        # llamada ponga ni quite.
+        antes = interruptor.pausa_presente(ruta)
         try:
             puesto = await asyncio.to_thread(_escribir, ruta, _contenido("activar", usuario))
         except InterruptorNoEscribible:
@@ -179,17 +197,17 @@ async def activar(usuario: AuthUser) -> dict:
             # sería mentir: seguimos el camino de cambio real. Cuenta como
             # cambio de ESTA llamada solo si "antes" era False: si ya estaba
             # puesto, que el archivo siga ahí después no prueba que esta
-            # llamada haya hecho nada. Si tras el fallo `interruptor_activo`
+            # llamada haya hecho nada. Si tras el fallo `pausa_presente`
             # da True por fail-closed (ni pudo mirar el archivo) también
             # cuenta como cambio a propósito cuando "antes" era False: el
             # resto de JAX (LAS MANOS, Jacobs, REPL) ya lo va a leer como
             # frenado igual en ese mismo instante, así que "no cambió nada"
             # sería la mentira peor.
-            if antes or not interruptor.interruptor_activo(ruta):
+            if antes or not interruptor.pausa_presente(ruta):
                 raise
             puesto = True
         if not puesto:
-            return {"activo": True, "cambio": False}
+            return _informe(False)
         await event_bus.publicar_a_todos(EVENTO_ACTIVADO, {"activo": True})
         try:
             async with transaccion(AISLAMIENTO_ADMIN) as cur:
@@ -197,14 +215,14 @@ async def activar(usuario: AuthUser) -> dict:
         except Exception as exc:  # fail-closed: el freno ya quedó puesto; la falta de auditoría se relanza como 500 y queda en el journal
             logger.error("kill switch ACTIVADO por user_id=%s sin auditoría: %r", usuario.user_id, exc)
             raise AuditoriaDelInterruptorFallida("activar") from exc
-        return {"activo": True, "cambio": True}
+        return _informe(True)
 
 
 async def reanudar(usuario: AuthUser) -> dict:
     async with _cambio:
         ruta = interruptor.ruta_del_interruptor()
-        if not interruptor.interruptor_activo(ruta):
-            return {"activo": False, "cambio": False}
+        if not interruptor.pausa_presente(ruta):
+            return _informe(False)
         quitado = False
         try:
             async with transaccion(AISLAMIENTO_ADMIN) as cur:
@@ -213,7 +231,7 @@ async def reanudar(usuario: AuthUser) -> dict:
                 if not quitado:
                     raise _NadaQueQuitar
         except _NadaQueQuitar:
-            return {"activo": False, "cambio": False}
+            return _informe(False)
         except InterruptorNoEscribible as exc:
             # R9 (fix round 1): el archivo es la verdad. `borrar_pausa` hace
             # os.unlink y DESPUÉS fsync del directorio -- si el unlink ya
@@ -223,7 +241,7 @@ async def reanudar(usuario: AuthUser) -> dict:
             # archivo en vez de confiar en esa variable. Si sigue puesto
             # (el unlink ni llegó a correr, p. ej. permiso denegado), se
             # relanza tal cual: no cambió nada de verdad.
-            if interruptor.interruptor_activo(ruta):
+            if interruptor.pausa_presente(ruta):
                 raise
             await _reponer_de_emergencia(ruta, usuario, "fsync roto tras borrar")
             logger.error(
@@ -249,8 +267,10 @@ async def reanudar(usuario: AuthUser) -> dict:
             logger.error("kill switch: reanudar de user_id=%s sin auditoría, freno repuesto=%s: %r",
                          usuario.user_id, quitado, exc)
             raise AuditoriaDelInterruptorFallida("reanudar") from exc
-        await event_bus.publicar_a_todos(EVENTO_LIBERADO, {"activo": False})
-        return {"activo": False, "cambio": True}
+        informe = _informe(True)
+        if not informe["activo"]:
+            await event_bus.publicar_a_todos(EVENTO_LIBERADO, {"activo": False})
+        return informe
 
 
 async def exigir_mesa_libre(user: AuthUser = Depends(get_current_user)) -> AuthUser:

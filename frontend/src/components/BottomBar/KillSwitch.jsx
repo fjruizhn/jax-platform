@@ -18,6 +18,11 @@ import ConfirmacionSuma from '../ConfirmacionSuma'
 // PROPIA que cambia de rama, el disparador del diálogo ya no existe y Dialogo
 // no puede devolverle el foco: se lleva al control de la rama nueva (el aviso
 // del freno o KILL). Un cambio externo no mueve el foco.
+//
+// Task H (2026-09-17): la ruta vieja del freno sigue frenando y la plataforma
+// no la borra. Si reanudar responde activo: true con heredada: true, el badge
+// sigue y se avisa por qué (killSwitchHeredada), con el mismo aviso atado al
+// estado: si el freno se suelta por otro camino, el aviso desaparece.
 const ERRORES = {
   kill_switch_no_escribible: 'killSwitchErrorNoEscribible',
   kill_switch_auditoria_fallida: 'killSwitchErrorAuditoria',
@@ -47,8 +52,10 @@ function KillSwitch() {
     setError(null)
     setEnviando(true)
     try {
-      await accion()
-      focoPendiente.current = useJaxStore.getState().killSwitchActive
+      const data = await accion()
+      const activoAhora = useJaxStore.getState().killSwitchActive
+      focoPendiente.current = activoAhora
+      if (activoAhora && data?.heredada === true) setError({ clave: 'killSwitchHeredada', activo: true })
     } catch (err) {
       setError({ clave: ERRORES[codigoDe(err)] ?? claveGenerica, activo: useJaxStore.getState().killSwitchActive })
     } finally {

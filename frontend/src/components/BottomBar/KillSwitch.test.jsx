@@ -166,6 +166,49 @@ describe('KillSwitch -- el aviso pertenece al estado que describe', () => {
   })
 })
 
+// Task H (2026-09-17, requisito del controlador principal): la ruta vieja del
+// freno sigue frenando. Reanudar quita el archivo propio pero, si la heredada
+// sigue puesta, el backend responde activo: true, heredada: true. El badge
+// sigue y se dice por qué, con el mismo aviso atado al estado.
+describe('KillSwitch -- la ruta heredada sigue frenando', () => {
+  function reanudarCon(data) {
+    como('superadmin', true)
+    api.post.mockResolvedValue({ data })
+    pintar()
+    fireEvent.click(screen.getByRole('button', { name: es.killResumeButton }))
+    const dialogo = screen.getByRole('dialog', { name: es.killResumeTitle })
+    sumaCorrecta(dialogo)
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.killResumeConfirm }))
+  }
+
+  it('reanudar con la heredada puesta: el badge sigue y se ve el aviso', async () => {
+    reanudarCon({ activo: true, cambio: false, heredada: true })
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.killSwitchHeredada)
+    expect(screen.getByText(es.killSwitchActive)).toBeInTheDocument()
+    expect(useJaxStore.getState().killSwitchActive).toBe(true)
+  })
+
+  it('el aviso de la heredada desaparece cuando el freno se suelta por otro camino', async () => {
+    reanudarCon({ activo: true, cambio: true, heredada: true })
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.killSwitchHeredada)
+    act(() => useJaxStore.getState().handleEvent({ event_type: 'kill_switch_released', payload: { activo: false } }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('reanudar sin heredada no muestra el aviso', async () => {
+    reanudarCon({ activo: false, cambio: true, heredada: false })
+    await waitFor(() => expect(useJaxStore.getState().killSwitchActive).toBe(false))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('killSwitchHeredada existe en es y en, nombra la ruta vieja y no está vacía', () => {
+    for (const dic of [es, en]) {
+      expect(typeof dic.killSwitchHeredada === 'string' && dic.killSwitchHeredada.trim() !== '').toBe(true)
+      expect(dic.killSwitchHeredada).toContain('/etc/jax/PAUSE')
+    }
+  })
+})
+
 describe('KillSwitch -- foco tras la acción propia', () => {
   it('activar con éxito deja el foco en el aviso del freno, no en body', async () => {
     como('superadmin')

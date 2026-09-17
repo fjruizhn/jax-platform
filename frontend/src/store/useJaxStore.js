@@ -585,9 +585,12 @@ export const useJaxStore = create((set, get) => {
     set({ killSwitchActive: data.activo === true })
   },
 
+  // Task H (2026-09-17): devuelve la respuesta para que KillSwitch avise si
+  // el freno sigue puesto por la ruta heredada (heredada: true).
   reanudarKillSwitch: async () => {
     const { data } = await _postDelFreno('/admin/kill-switch/reanudar', set)
     set({ killSwitchActive: data.activo === true })
+    return data
   },
 
   loadState: async () => {

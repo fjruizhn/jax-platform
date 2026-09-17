@@ -152,6 +152,7 @@ export default {
   killSwitchErrorReanudar: 'Could not resume',
   killSwitchErrorNoEscribible: 'The server cannot write the switch: nothing changed',
   killSwitchErrorAuditoria: 'The brake stayed on, but the audit failed: check the server log',
+  killSwitchHeredada: 'The brake is still on through the old path /etc/jax/PAUSE: remove it on the server',
 
   // Store event toasts (WS handleEvent)
   humanGateRequestedToast: (id) => `Jacobs is waiting for approval — pipeline ${id}`,

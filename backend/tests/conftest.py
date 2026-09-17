@@ -536,6 +536,22 @@ def ajustes_en_db(client):
 
 
 @pytest.fixture(autouse=True)
+def _ruta_heredada_del_freno_aislada(monkeypatch, tmp_path_factory):
+    """La ruta vieja del freno (Task H del frente B, 2026-09-17) es una
+    constante de `interruptor`, no una variable (ruling R15): se desvía acá,
+    en CADA test, a un temporal que no existe. Sin esto, un host con la ruta
+    vieja puesta daría vuelta todos los tests de "freno suelto" (y la Mesa
+    respondería 423 en toda la suite). También se reinicia el anti-spam del
+    WARNING para que un test no herede el aviso de otro. Un test que necesite
+    la heredada la apunta a su tmp_path con monkeypatch. La barrera de sesión
+    de abajo no cambia."""
+    import interruptor
+
+    monkeypatch.setattr(interruptor, "RUTA_HEREDADA", tmp_path_factory.mktemp("jax-test-heredada") / "PAUSE")
+    monkeypatch.setattr(interruptor, "_heredada_avisada", False)
+
+
+@pytest.fixture(autouse=True)
 def _freno_suelto_entre_tests():
     """Ningún test hereda el freno puesto por otro. Estructural, como el
     aislamiento del sello."""
