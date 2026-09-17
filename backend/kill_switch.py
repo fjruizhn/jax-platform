@@ -15,6 +15,8 @@ archivo. Reglas:
   frente B). Un caché lo retrasaría su TTL.
 - exigir_mesa_libre: dependencia de las rutas que ejecutan (RUTAS_FRENADAS);
   423 `kill_switch_activo`.
+- exigir_freno_suelto: chequeo compartido del middleware adjuntos/limite_de_subidas.py y
+  la ruta POST /api/chat/upload; mismo 423 que exigir_mesa_libre.
 - R9 (fix round 1, 2026-09-17): el archivo es la verdad, nunca la excepción.
   `escribir_pausa`/`borrar_pausa` hacen la operación real (link/unlink) y
   DESPUÉS el fsync del directorio -- si el fsync explota pero la operación

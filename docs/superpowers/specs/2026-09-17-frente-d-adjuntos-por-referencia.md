@@ -200,7 +200,7 @@ FUERZA `JAX_ADJUNTOS_DIR` a un `mkdtemp` propio, FUERZA el disco libre mínimo a
 `JAX_ADJUNTOS_RECHAZO_ESPERA_MS` a 0 (los tests de la espera sustituyen `_dormir`).
 
 **Deploy (principal), además de las 14 líneas:** `limit_req` de nginx para
-`/api/chat/upload`. Cómo nginx retransmite el 429 y el 401 retenidos (Ruling R30: los dos esperan
+`/api/chat/upload`. Cómo nginx retransmite el 401, el 423 y el 429 retenidos (Ruling R30: los tres esperan
 `JAX_ADJUNTOS_RECHAZO_ESPERA_MS`) se mide en el deploy.
 
 ## 7. Contrato de `POST /api/chat/upload`
@@ -403,7 +403,7 @@ uvicorn.
 - Este límite protege el event loop, `TMPDIR` y el disco de adjuntos, no el ancho de banda ni el
   disco temporal de nginx.
 - **Paso de deploy (principal):** `limit_req` de nginx para `/api/chat/upload`.
-- **Se mide en el deploy:** cómo nginx retransmite el 429 y el 401, los dos retenidos (R30).
+- **Se mide en el deploy:** cómo nginx retransmite el 401, el 423 y el 429, los tres retenidos (R30).
 
 Camino de una subida:
 0. (RD7) `LimiteDeSubidas`, antes de leer el cuerpo: 401, 423 del kill switch, 429.
@@ -547,7 +547,7 @@ cuota 500 MB, `RECHAZO_ESPERA_MS=1000`) salvo donde se indica.
   con el PDF ya corriendo retiene el lugar hasta que el worker termine o venza su presupuesto
   (entonces recicla, igual que sin cancelación).
 - **Pendiente de deploy (principal):** `TMPDIR` del unit en disco real, `limit_req` de nginx y
-  medir cómo nginx retransmite el 401 y el 429 retenidos.
+  medir cómo nginx retransmite el 401, el 423 y el 429 retenidos.
 - **No medido:** el chat con un proveedor real lento (retención de ~13,4 MB de base64 por chat en
   vuelo; estimado ~335 MB a c=25) y `TMPDIR` en tmpfs.
 
