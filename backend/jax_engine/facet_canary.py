@@ -22,6 +22,7 @@ from facet_health import (
     SOURCE_CANARY_REBIND,
 )
 from facet_resolver import invalidate_facet_cache
+import kill_switch
 from redaccion import texto_de_error
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,16 @@ CANARY_MESSAGE = "Respondé únicamente con la palabra: listo."
 # enlatada, no hay nada que medir.
 _NOT_DISPATCHED = frozenset({"hyde"})
 
+# Con el freno puesto la sonda no sale (2026-09-17, ruling del controlador
+# principal sobre R19 del frente B): el freno significa que JAX no invoca
+# musculos, y cada sonda es una invocacion PAGA a un proveedor. Se devuelve
+# este valor en lugar de sondear. NO es un outcome de facet_health a
+# proposito: un salto no es una caida, y no se escribe ninguna fila -- una
+# fila de error haria que el reaper alertara facetas sanas. El rastro queda
+# en el log (WARNING). Se mira el freno en CADA facet: un freno puesto a
+# mitad de un barrido corta el resto.
+SALTADA_POR_FRENO = "saltada_por_freno"
+
 
 def _running_under_pytest() -> bool:
     return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
@@ -103,7 +114,15 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
     Cuando la invocacion falla, NO escribe: la capa de abajo ya registro el
     evento clasificado. Devuelve 'probe_error' igual, como valor de
     retorno, para que probe_all pueda contar sondeos fallidos sin consultar
-    la DB."""
+    la DB.
+
+    Con el freno puesto no invoca ni escribe: devuelve SALTADA_POR_FRENO y
+    lo deja en el log."""
+    if kill_switch.activo():
+        logger.warning(
+            "facet_canary: sonda de %s (%s) saltada: el freno esta puesto, "
+            "JAX no invoca proveedores", facet, source)
+        return SALTADA_POR_FRENO
     try:
         await _invoke_facet(facet, config, CANARY_USER_ID, CANARY_MESSAGE,
                             source=source)
