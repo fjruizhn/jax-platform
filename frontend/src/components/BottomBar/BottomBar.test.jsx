@@ -183,7 +183,7 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:u1')
   })
 
-  it('una subida que termina después de salir del modo chat no adjunta, y revoca su object URL (minor RD2)', async () => {
+  it('una subida que termina después de salir del modo chat no adjunta ni crea object URL (minor RD2)', async () => {
     let resolverSubida
     api.post.mockImplementationOnce(() => new Promise((r) => { resolverSubida = r }))
     const { container } = renderBar()
@@ -192,9 +192,59 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
     // Sale del chat MIENTRAS la subida sigue en vuelo.
     fireEvent.click(screen.getByRole('button', { name: es.modeComando }))
     resolverSubida({ data: SUBIDA_IMAGEN })
-    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:u1'))
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1))
+    // El chequeo de generación va ANTES de crear el object URL -- nunca se
+    // crea uno para descartarlo enseguida.
+    expect(URL.createObjectURL).not.toHaveBeenCalled()
     expect(screen.queryByAltText('f.png')).not.toBeInTheDocument()
+  })
+
+  // Fix round 1 (review de ca8bb15): mirar solo el modo ACTUAL no alcanza --
+  // si el modo vuelve a 'chat' antes de que la subida resuelva, el chequeo
+  // viejo la aceptaba igual. Hace falta un contador de generación que se
+  // invalide en CADA salida del chat, no sólo "¿el modo de ahora es chat?".
+  it('chat → comando → chat mientras la subida sigue en vuelo: la respuesta tardía no adjunta nada ni crea object URL', async () => {
+    let resolverSubida
+    api.post.mockImplementationOnce(() => new Promise((r) => { resolverSubida = r }))
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    fireEvent.click(screen.getByRole('button', { name: es.modeComando }))
+    fireEvent.click(screen.getByRole('button', { name: es.modeChat }))
+    resolverSubida({ data: SUBIDA_IMAGEN })
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1))
+    expect(URL.createObjectURL).not.toHaveBeenCalled()
+    expect(screen.queryByAltText('f.png')).not.toBeInTheDocument()
+  })
+
+  it('desmontar mientras una subida está en vuelo no crea ni deja un object URL', async () => {
+    let resolverSubida
+    api.post.mockImplementationOnce(() => new Promise((r) => { resolverSubida = r }))
+    const { container, unmount } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    unmount()
+    resolverSubida({ data: SUBIDA_IMAGEN })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(URL.createObjectURL).not.toHaveBeenCalled()
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+  })
+
+  it('un error del chat que no es 404 conserva el adjunto (no hay por qué descartarlo)', async () => {
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+      .mockRejectedValueOnce({ response: { status: 502, data: { detail: { code: 'faceta_error', facet: 'hipatia', motivo: 'timeout' } } } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await screen.findByAltText('f.png')
+    fireEvent.change(container.querySelector('textarea'), { target: { value: 'describí' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar' }))
+    await waitFor(() => {
+      const ultimo = useJaxStore.getState().messages.at(-1)
+      expect(ultimo.content).toContain(es.erroresMesa.faceta_error({ facet: 'hipatia' }))
+    })
+    expect(screen.getByAltText('f.png')).toBeInTheDocument()
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
   })
 
   it('enviar: el compositor revoca su object URL; el mensaje se queda con uno propio', async () => {

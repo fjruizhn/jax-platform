@@ -53,13 +53,20 @@ function BottomBar() {
   // RD4 (2026-09-17): la vista previa de la imagen adjunta es un object URL
   // local (URL.createObjectURL del File elegido); este ref es el único dueño
   // de ESE URL puntual (el mensaje enviado se queda con el suyo propio, ver
-  // adjuntos.js). modeRef existe para el minor de RD2: si el modo cambia
-  // mientras una subida está en vuelo, la respuesta que llega tarde no debe
-  // adjuntar nada -- se lee en la promesa, no en el render.
+  // adjuntos.js).
   const attachmentPreviewUrlRef = useRef(null)
-  const modeRef = useRef(mode)
+  // Fix round 1 (review de ca8bb15): mirar solo "¿el modo ACTUAL es chat?"
+  // no alcanza -- si el usuario sale del chat y vuelve antes de que la
+  // subida resuelva, el modo de ahora vuelve a ser 'chat' y la respuesta
+  // tardía se adjuntaba igual. uploadGenRef es un contador de generación:
+  // se incrementa cada vez que el adjunto en curso deja de ser válido
+  // (se sale del chat, se quita, se reemplaza por una subida nueva, se
+  // desmonta). handleFileSelected captura el valor vigente ANTES de subir
+  // y sólo adjunta si nadie lo movió mientras esperaba la red.
+  const uploadGenRef = useRef(0)
 
   function descartarAdjuntoComposer() {
+    uploadGenRef.current++
     if (attachmentPreviewUrlRef.current) {
       URL.revokeObjectURL(attachmentPreviewUrlRef.current)
       attachmentPreviewUrlRef.current = null
@@ -68,8 +75,10 @@ function BottomBar() {
   }
 
   // Al desmontar (p.ej. se sale de la pantalla de chat), un adjunto sin
-  // enviar no debe dejar su object URL vivo para siempre.
+  // enviar no debe dejar su object URL vivo para siempre, y una subida
+  // todavía en vuelo no debe crear uno cuando responda tarde.
   useEffect(() => () => {
+    uploadGenRef.current++
     if (attachmentPreviewUrlRef.current) URL.revokeObjectURL(attachmentPreviewUrlRef.current)
   }, [])
 
@@ -140,22 +149,23 @@ function BottomBar() {
       addToast({ message: t.erroresMesa.adjunto_demasiado_grande({ max_bytes: politica.max_bytes }), type: 'error' })
       return
     }
+    // Reemplazo o subida nueva: invalida cualquier subida anterior todavía
+    // en vuelo (ver uploadGenRef arriba).
+    uploadGenRef.current++
+    const miGeneracion = uploadGenRef.current
     setUploading(true)
     const formData = new FormData()
     formData.append('file', file)
     try {
       // A-21: sin Content-Type a mano -- el navegador pone el boundary.
       const { data } = await api.post('/chat/upload', formData)
-      // RD4/RD2-minor: si el modo cambió mientras la subida estaba en vuelo,
-      // esta respuesta llegó tarde -- no se adjunta, y su object URL (si se
-      // llegó a crear) se revoca en el momento.
-      const previewUrl = data.tipo === 'imagen' ? URL.createObjectURL(file) : null
-      if (modeRef.current !== 'chat') {
-        if (previewUrl) URL.revokeObjectURL(previewUrl)
-        return
-      }
-      // Reemplazo: si ya había un adjunto sin enviar, su object URL se descarta.
+      // Generación vieja: se salió del chat (y volvió o no), se quitó el
+      // adjunto, se reemplazó por otra subida, o el componente se
+      // desmontó. El chequeo va ANTES de crear el object URL -- nunca se
+      // crea uno para descartarlo enseguida.
+      if (uploadGenRef.current !== miGeneracion) return
       if (attachmentPreviewUrlRef.current) URL.revokeObjectURL(attachmentPreviewUrlRef.current)
+      const previewUrl = data.tipo === 'imagen' ? URL.createObjectURL(file) : null
       attachmentPreviewUrlRef.current = previewUrl
       setAttachment({ ...data, archivo: file, previewUrl })
     } catch (err) {
@@ -167,7 +177,6 @@ function BottomBar() {
 
   function elegirModo(m) {
     setMode(m)
-    modeRef.current = m
     // Solo el chat manda adjuntos: al salir se quitan, no se pierden callados.
     if (m !== 'chat') descartarAdjuntoComposer()
   }

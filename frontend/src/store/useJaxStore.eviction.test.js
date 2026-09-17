@@ -110,4 +110,39 @@ describe('unbounded growth caps (long-session memory leaks)', () => {
     expect(result['p0']).toBeDefined() // reinsertada al final -> no es la más vieja
     expect(result['p1']).toBeUndefined() // ahora p1 es la terminada más vieja -> evictada
   })
+
+  // Fix round 1 (review de ca8bb15, RD4): vistaDeAdjunto() le da a cada
+  // mensaje de imagen su propio object URL. logout() no es el único lugar
+  // que hace desaparecer un mensaje sin que el usuario lo vea de nuevo --
+  // _capMessages también los descarta en una sesión larga.
+  describe('_capMessages revoca los object URL de los mensajes que descarta', () => {
+    afterEach(() => vi.unstubAllGlobals())
+
+    it('revoca el blob: de un adjunto de imagen descartado por el tope', () => {
+      vi.stubGlobal('URL', { ...URL, revokeObjectURL: vi.fn() })
+      useJaxStore.getState().addMessage({
+        id: 'm-con-imagen', facet: 'user', content: 'hola', timestamp: 't0',
+        attachment: { type: 'image', filename: 'f.png', base64: 'blob:viejo' },
+      })
+      for (let i = 0; i < 200; i++) {
+        useJaxStore.getState().addMessage({ id: `m${i}`, facet: 'jax_local', content: `msg ${i}`, timestamp: `t${i}` })
+      }
+      expect(useJaxStore.getState().messages.find((m) => m.id === 'm-con-imagen')).toBeUndefined()
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:viejo')
+      expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1)
+    })
+
+    it('nunca revoca un valor que no empiece con blob: (otro origen, no un object URL local)', () => {
+      vi.stubGlobal('URL', { ...URL, revokeObjectURL: vi.fn() })
+      useJaxStore.getState().addMessage({
+        id: 'm-remota', facet: 'user', content: 'hola', timestamp: 't0',
+        attachment: { type: 'image', filename: 'f.png', base64: 'https://otra-cosa/img.png' },
+      })
+      for (let i = 0; i < 200; i++) {
+        useJaxStore.getState().addMessage({ id: `m${i}`, facet: 'jax_local', content: `msg ${i}`, timestamp: `t${i}` })
+      }
+      expect(useJaxStore.getState().messages.find((m) => m.id === 'm-remota')).toBeUndefined()
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+    })
+  })
 })

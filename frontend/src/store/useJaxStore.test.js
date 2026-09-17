@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../api/client', () => ({
   default: {
@@ -119,6 +119,11 @@ describe('logout', () => {
     vi.clearAllMocks()
   })
 
+  // Fix round 1 (review de ca8bb15): si el stub se restaura al final del
+  // cuerpo del test, una aserción que tira ANTES de llegar ahí lo deja filtrado
+  // a los tests siguientes. afterEach corre siempre, incluso con el test roto.
+  afterEach(() => vi.unstubAllGlobals())
+
   it('llama a /auth/logout una vez, con la sesión todavía puesta, y después limpia', async () => {
     let tokenAlLlamar
     api.post.mockImplementation(() => {
@@ -184,7 +189,6 @@ describe('logout', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:def')
     expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2)
     expect(useJaxStore.getState().messages).toEqual([])
-    vi.unstubAllGlobals()
   })
 })
 

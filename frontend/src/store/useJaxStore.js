@@ -28,6 +28,23 @@ const RESULTS_FETCH_RETRY_DELAY_MS = 2000
 const MAX_MESSAGES = 200
 const MAX_TRACKED_PIPELINES = 50
 
+// RD4 (2026-09-17, Ruling R23-4): la miniatura de un adjunto de imagen en el
+// historial es un object URL propio (adjuntos.js: vistaDeAdjunto), no uno que
+// el compositor gestione. Dos lugares hacen desaparecer un mensaje de
+// `messages` sin que el usuario lo vea de nuevo -- logout() (lo vacía todo) y
+// _capMessages, abajo (recorta los más viejos en una sesión larga) -- los dos
+// tienen que revocar ANTES de soltar la referencia, o el object URL queda
+// colgado para siempre. Solo se toca un valor que empiece con "blob:": una
+// URL de otro origen (o cualquier otra cosa) se deja intacta.
+function _revocarObjectURLsDeAdjuntos(messages) {
+  for (const m of messages) {
+    const url = m.attachment?.base64
+    if (m.attachment?.type === 'image' && typeof url === 'string' && url.startsWith('blob:')) {
+      URL.revokeObjectURL(url)
+    }
+  }
+}
+
 // Nunca descarta un mensaje 'running' (comando/tarea todavía en curso en el
 // backend) aunque sea el más viejo — perderlo acá pierde el resultado para
 // siempre (ver applyResult, que sólo lo escribe si el placeholder sigue en
@@ -35,13 +52,17 @@ const MAX_TRACKED_PIPELINES = 50
 function _capMessages(messages) {
   if (messages.length <= MAX_MESSAGES) return messages
   let toDrop = messages.length - MAX_MESSAGES
-  return messages.filter((m) => {
+  const descartados = []
+  const conservados = messages.filter((m) => {
     if (toDrop > 0 && m.status !== 'running') {
       toDrop--
+      descartados.push(m)
       return false
     }
     return true
   })
+  _revocarObjectURLsDeAdjuntos(descartados)
+  return conservados
 }
 
 // Descarta las pipelines más viejas que ya terminaron (nunca una corriendo
@@ -152,19 +173,6 @@ export const useJaxStore = create((set, get) => {
   const _resolverComando = (msgId, taskId, content, status) => {
     set((s) => ({ messages: s.messages.map((m) => (m.id === msgId ? { ...m, content, status } : m)) }))
     _savePendingIds(_loadPendingIds().filter((id) => id !== taskId))
-  }
-
-  // RD4 (2026-09-17, Ruling R23-4): la miniatura de un adjunto de imagen en
-  // el historial es un object URL propio (adjuntos.js: vistaDeAdjunto), no
-  // uno que el compositor gestione -- logout() es el único punto que vacía
-  // `messages`, así que es el único hook de reseteo de sesión que puede
-  // dejarlos colgados; se revocan ANTES de vaciar.
-  const _revocarObjectURLsDeAdjuntos = (messages) => {
-    for (const m of messages) {
-      if (m.attachment?.type === 'image' && typeof m.attachment.base64 === 'string') {
-        URL.revokeObjectURL(m.attachment.base64)
-      }
-    }
   }
 
   return {
