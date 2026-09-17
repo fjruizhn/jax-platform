@@ -583,8 +583,8 @@ jobs:
             // +2 (una misión que ya terminó relee /estado y la lista aunque no hubiera sondeo; la que
             // sigue en curso no relee /estado en cada vuelta). Visto en rojo; mutación con cmp previo
             // (quitar cargarEstado del cierre) -> rojo. Medido: 620 passed, 0 fallidos, 72 archivos.
-            // 620 -> 655 el 2026-09-17 (frente D, adjuntos por referencia, rebase sobre
-            // 369fa5a): +9 adjuntos.test.js, +5 FileAttachment.test.jsx, +18
+            // 620 -> 655 el 2026-09-17 (frente D, adjuntos por referencia, re-medido tras el
+            // rebase sobre 369fa5a, que trae el refresco al terminar del Ejecutor): +9 adjuntos.test.js, +5 FileAttachment.test.jsx, +18
             // BottomBar.test.jsx (A-21 FormData, adjuntos: [{id}] en el cuerpo, 415, 422
             // imagen_no_soportada y 423 kill_switch_activo del upload traducidos, 404 limpia
             // el adjunto, aviso de faceta sin visión, sin política no se adjunta, object URL
@@ -592,7 +592,8 @@ jobs:
             // +2 useJaxStore.eviction.test.js y +1 useJaxStore.test.js (revocar los blob: del
             // historial descartado o vaciado). Vistos en rojo antes de verde, salvo el 423
             // del upload, que fija un camino ya traducido por textoDeErrorDeMesa. Medido dos
-            // veces con vitest run tras el rebase: 655 passed, 0 fallidos.
+            // veces con vitest run tras el rebase sobre 369fa5a: 655 passed, 0 fallidos,
+            // 74 archivos (620 de master + 35).
             if (r.numFailedTests !== 0 || r.numPassedTests !== 655) {
               console.error("PISO ROTO: se esperaban 655 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
@@ -1597,21 +1598,24 @@ jobs:
           #   jax_memory_test: 1605 passed + 1 fallo ambiental de semillas de motores compartidas.
           #   Si el runner da otro número, manda el runner. (PR #107, master.)
           # 1607 -> 2050 el 2026-09-17 (frente D, adjuntos por referencia, rebase sobre
-          #   8d9cb73 -- master con PR #107 encima): mismos +444 / -1 con DB que ya
-          #   traía el frente sobre 5a0832d (test_adjuntos_almacen 65,
-          #   _limite_de_subidas 69 con el kill switch 401 -> 423 -> 429 sin leer el
-          #   cuerpo, _cuota 55, _limites 39, _pdf_pool 32, _carpetas 31,
-          #   _chat_endpoint 24, _upload 24, _tipos 21, _memoria 17, _contrato 13,
-          #   _rechazos_del_cuerpo 13, _modalidades 9, _subidas_en_proceso 8, _pdf 6,
-          #   _transportes 5, _turno 3, _errores 2, _i18n_backend 2, _politica 2,
-          #   _conftest_limpieza 1, test_admin_usuarios_baja +2, test_mesa_codigos +1;
-          #   se va test_mesa_codigos::test_archivo_demasiado_grande_es_un_codigo (el
-          #   código pasó a adjunto_demasiado_grande); test_kill_switch_mesa no suma.
-          #   Encadenado sobre el piso nuevo de master (1607 + 443 = 2050), no sobre
-          #   el viejo (1606 + 443 = 2049). Medido local dos veces con la suite
-          #   completa contra jax_memory_test: ver el número exacto y su +1 por el
-          #   modelo extra del runner en el comentario de abajo (regla del frente).
-          #   Si el runner da otro número, manda el runner.
+          #   8d9cb73 -- master con PR #107 encima, que ya incluye 369fa5a/#106): mismos
+          #   +444 / -1 con DB que ya traía el frente sobre 5a0832d y sobre 369fa5a
+          #   (test_adjuntos_almacen 65, _limite_de_subidas 69 con el kill switch
+          #   401 -> 423 -> 429 sin leer el cuerpo, _cuota 55, _limites 39, _pdf_pool 32,
+          #   _carpetas 31, _chat_endpoint 24, _upload 24, _tipos 21, _memoria 17,
+          #   _contrato 13, _rechazos_del_cuerpo 13, _modalidades 9,
+          #   _subidas_en_proceso 8, _pdf 6, _transportes 5, _turno 3, _errores 2,
+          #   _i18n_backend 2, _politica 2, _conftest_limpieza 1,
+          #   test_admin_usuarios_baja +2, test_mesa_codigos +1; se va
+          #   test_mesa_codigos::test_archivo_demasiado_grande_es_un_codigo (el código
+          #   pasó a adjunto_demasiado_grande); test_kill_switch_mesa no suma. #106 no
+          #   sumaba tests de backend, así que el re-medido de esa ronda (2049) seguía
+          #   sobre el piso viejo de master (1606); #107 sí suma +1, así que ahora se
+          #   encadena sobre el piso nuevo de master (1607 + 443 = 2050), no sobre el
+          #   viejo (1606 + 443 = 2049). Medido local dos veces con la suite completa
+          #   contra jax_memory_test: ver el número exacto y su +1 por el modelo extra
+          #   del runner en el comentario de abajo (regla del frente). Si el runner da
+          #   otro número, manda el runner.
           PISO_PASSED = 2050
           MAX_SKIPS = 1
 
@@ -2192,12 +2196,13 @@ jobs:
       # y +7 puros de test_ejecutor_misiones.py (el runner real no se puede lanzar desde la
       # suite, variables sin defaults, compuerta ilegible = cerrada); sus otros 27 piden
       # `client` (+27 skips). Medido con JAX_CI_NO_DB=1, env -i: 959 passed / 647 skipped.
-      # 959 -> 1346 el 2026-09-17 (frente D, adjuntos por referencia, rebase sobre
-      # 5a0832d, con el kill switch en la subida): +388 / -1 puros (los mismos archivos
+      # 959 -> 1346 el 2026-09-17 (frente D, adjuntos por referencia, re-medido tras el
+      # rebase sobre 369fa5a, con el kill switch en la subida): +388 / -1 puros (los mismos archivos
       # test_adjuntos_* que con DB, menos los tests que piden `client`; los 6 del kill
       # switch en la subida son puros y cuentan; se va test_archivo_demasiado_grande_es_un_codigo).
       # Skips 647 -> 703. Los 14 JAX_ADJUNTO(S)_* salen de conftest. Medido dos veces
-      # con JAX_CI_NO_DB=1 JAX_JWT_SECRET=ci-dummy: 1346 passed / 703 skipped / 0 failed.
+      # con JAX_CI_NO_DB=1 JAX_JWT_SECRET=ci-dummy tras el rebase sobre 369fa5a: 1346 passed
+      # / 703 skipped / 0 failed.
       JAX_CI_MIN_PASSED: "1346"
     steps:
       - uses: actions/checkout@v4
