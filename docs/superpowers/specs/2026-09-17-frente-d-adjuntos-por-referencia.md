@@ -153,7 +153,7 @@ espacios, sin signo y sin ceros a la izquierda.
 | 11 | `JAX_ADJUNTOS_CUOTA_BYTES_USUARIO` | solo dígitos (`[1-9][0-9]{0,15}`), **1048576..1099511627776** (1 MiB..1 TiB) y **≥ `JAX_ADJUNTO_MAX_BYTES`** | `524288000` |
 | 12 | `JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES` | solo dígitos (`[1-9][0-9]{0,15}`), **1073741824..1099511627776** (1 GiB..1 TiB) | `53687091200` |
 | 13 | `JAX_ADJUNTOS_SUBIDAS_POR_MINUTO` (RD7) | solo dígitos (`[1-9][0-9]{0,2}`), **1..600**; ventana deslizante fija de 60 s | `30` |
-| 14 | `JAX_ADJUNTOS_RECHAZO_ESPERA_MS` (RD7 fix round; rige el 401 y el 429 del middleware) | solo dígitos (`0\|[1-9][0-9]{0,3}`), **0..5000** (0 permitido) | `1000` |
+| 14 | `JAX_ADJUNTOS_RECHAZO_ESPERA_MS` (RD7 fix round; rige el 401, el 423 y el 429 del middleware) | solo dígitos (`0\|[1-9][0-9]{0,3}`), **0..5000** (0 permitido) | `1000` |
 
 Fuera de `/etc/jax/.env`, en la unidad de systemd de jax-platform: **`TMPDIR=/srv/jax-data/tmp`**
 (0700, disco real). Starlette vuelca ahí el cuerpo de cada subida antes del handler (R25), y
@@ -227,6 +227,8 @@ Texto o PDF:
   `adjuntos_sin_espacio` (sin números: el estado del disco no es asunto del cliente).
 - Código nuevo de RD7 (es/en): 429 `adjuntos_subidas_limite` (con `retry_after`) y cabecera
   `Retry-After` (§7.2).
+- **Kill switch (Principal Ruling 2026-09-17):** con el freno puesto, 423 `kill_switch_activo`
+  como el resto de la Mesa (código del frente B, ya en es/en; §7.2).
 
 ### 7.1 Cuota por usuario y disco libre (RD6, Principal Ruling "quota", 2026-09-17)
 
@@ -323,9 +325,12 @@ mandando cuerpos de 10 MB, y Starlette los volcaba antes del 413: 23–25 volcad
   `CORSMiddleware`, para que el 429 lleve sus cabeceras. Solo actúa en `POST /api/chat/upload`:
   1. Lee `Authorization` y verifica firma y vencimiento del JWT de acceso con `decode_token`
      (HS256, sin base).
-  2. Pasa la clave `user_id` por `SlidingWindowLimiter`, la misma clase del login y del SMTP,
+  2. **Kill switch (Principal Ruling 2026-09-17):** con el freno puesto, espera
+     `JAX_ADJUNTOS_RECHAZO_ESPERA_MS` y responde el 423 `kill_switch_activo` sin llamar a
+     `receive()` y sin gastar cupo (detalle abajo).
+  3. Pasa la clave `user_id` por `SlidingWindowLimiter`, la misma clase del login y del SMTP,
      con 60 s de ventana. Un intento rechazado no cuenta.
-  3. Si el usuario se pasó, **espera `JAX_ADJUNTOS_RECHAZO_ESPERA_MS`** (deploy 1000) y responde
+  4. Si el usuario se pasó, **espera `JAX_ADJUNTOS_RECHAZO_ESPERA_MS`** (deploy 1000) y responde
      429 **sin llamar a `receive()`**.
 - **Sin token de acceso válido (Ruling R28, enmendado por R30):** el middleware responde,
   después de la misma espera `JAX_ADJUNTOS_RECHAZO_ESPERA_MS` que el 429, **exactamente el 401 que
@@ -335,6 +340,22 @@ mandando cuerpos de 10 MB, y Starlette los volcaba antes del 413: 23–25 volcad
   `user_id`/`tv` que no son enteros. Reusa `auth.middleware.bearer`, `decode_token`,
   `auth.middleware.validar_payload` (la parte de `verificar_sesion` que no mira la base) y el
   manejador de `HTTPException` de FastAPI. Los tests comparan contra la ruta sin middleware.
+- **Kill switch en la subida (Principal Ruling 2026-09-17).** La subida es una ruta frenada del
+  frente B: `("POST", "/api/chat/upload")` está en `kill_switch.RUTAS_FRENADAS` y la ruta depende
+  de `exigir_mesa_libre` (lo fija `test_las_rutas_que_ejecutan_piden_la_mesa_libre`). Como esa
+  dependencia llega con el cuerpo ya leído, el middleware da el 423 antes:
+  - **Orden de rechazos:** 401 → 423 → 429 del límite → rechazos de la ruta (413 tamaño, 413
+    cuota, 507 disco, 415, 422, 503).
+  - **Una sola verdad:** el middleware y la dependencia llaman a la misma
+    `kill_switch.exigir_freno_suelto()` (lectura `activo()`, sin caché, con la ruta heredada) y
+    reciben la misma `HTTPException`; el manejador de FastAPI arma la respuesta. Status, cuerpo
+    y cabeceras son idénticos a los de la ruta (test contra la ruta sin middleware).
+  - **Retenido y sin cuerpo:** espera `JAX_ADJUNTOS_RECHAZO_ESPERA_MS`, cero `receive()`. Un 423
+    no gasta cupo: frenado, un usuario pasado del límite recibe el 423 y no el 429.
+  - **Fail-closed como el frente B:** un `stat` que falla por algo que no es "no existe" cuenta
+    como freno PUESTO (423). Sin `JAX_KILL_SWITCH_PATH`, `InterruptorSinConfigurar` sube igual que
+    en la ruta (500, nada corre), sin leer el cuerpo ni gastar cupo.
+  - Sin freno, el camino no cambia.
 - **Aceptado: la autenticación va primero.** Un cuerpo multipart roto **y** sin token ahora es 401
   y no el 400 de parseo.
 - **Riesgo aceptado (principal):** un token con firma válida pasa a la ruta sin mirar la base.
@@ -385,7 +406,7 @@ uvicorn.
 - **Se mide en el deploy:** cómo nginx retransmite el 429 y el 401, los dos retenidos (R30).
 
 Camino de una subida:
-0. (RD7) `LimiteDeSubidas`, antes de leer el cuerpo.
+0. (RD7) `LimiteDeSubidas`, antes de leer el cuerpo: 401, 423 del kill switch, 429.
 1. Starlette ya parseó el multipart. Hasta 1 MB queda en memoria; el resto va a un archivo de
    `TMPDIR`.
 2. `copiar_subida` corre en un hilo y copia de a 1 MB a `.subiendo-*`, cortando en
