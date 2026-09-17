@@ -589,6 +589,21 @@ CREATE TABLE IF NOT EXISTS user_admin_audit (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# Auditoría del kill switch (2026-09-16, frente B). Una fila por CAMBIO real
+# del freno (poner o quitar), no por pedido. Sin FK a jax_users, como
+# user_admin_audit: la historia sobrevive a la baja del usuario. `at` en UTC
+# explícito (UTC_TIMESTAMP(6)); el último cambio sale por idx_kill_switch_audit_at.
+CREATE_KILL_SWITCH_AUDIT = """
+CREATE TABLE IF NOT EXISTS kill_switch_audit (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  accion VARCHAR(10) NOT NULL,
+  user_id INT NOT NULL,
+  at DATETIME(6) NOT NULL,
+  CONSTRAINT chk_kill_switch_audit_accion CHECK (accion IN ('activar', 'reanudar')),
+  INDEX idx_kill_switch_audit_at (at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
@@ -615,6 +630,7 @@ _TABLES = [
     ("facet_health_event", CREATE_FACET_HEALTH_EVENT),
     ("facet_health_alert", CREATE_FACET_HEALTH_ALERT),
     ("user_admin_audit", CREATE_USER_ADMIN_AUDIT),    # sin FK a propósito
+    ("kill_switch_audit", CREATE_KILL_SWITCH_AUDIT),  # sin FK a propósito
 ]
 
 # transport, requires_tool_use, auto_selectable — valores actuales reales

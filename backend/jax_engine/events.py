@@ -32,5 +32,29 @@ class EventBus:
         except Exception:  # fail-soft: aislar el fallo de un subscriber de WS del resto del event bus; los demas subscribers no deben verse afectados por uno roto
             pass
 
+    async def publicar_a_todos(self, event_type: str, payload: dict) -> int:
+        """Un evento para CADA suscriptor del bus, WS y SSE (kill switch,
+        2026-09-16). `publish` enruta a un solo usuario a propósito; esto es
+        solo para estado global. Devuelve cuántos lo recibieron.
+
+        Sin lock (frente A, A-24, ya quitó `self._lock` de esta clase): la
+        foto de `_subscribers` se toma directo, sin `await` entre leer y
+        copiar, así que en asyncio corre sin interrupción -- mismo criterio
+        que `subscribe`/`unsubscribe` de arriba."""
+        destinos = [
+            (tenant_id, user_id, cb)
+            for tenant_id, suscriptores in self._subscribers.items()
+            for user_id, cb in suscriptores.items()
+        ]
+        recibidos = 0
+        for tenant_id, user_id, cb in destinos:
+            evento = JAXEvent(event_type=event_type, tenant_id=tenant_id, user_id=user_id, payload=payload)
+            try:
+                await cb(evento)
+                recibidos += 1
+            except Exception:  # fail-soft: un suscriptor roto (socket muerto) no impide que el resto se entere del freno; el estado real igual llega por /api/state
+                continue
+        return recibidos
+
 
 event_bus = EventBus()
