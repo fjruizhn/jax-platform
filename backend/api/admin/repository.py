@@ -21,16 +21,35 @@ ALLOWED_FOLDERS = {"missions", "pipelines", "documents", "images"}
 IMAGENES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 
 
+def _carpeta(base: Path, nombre: str) -> Path:
+    """La carpeta permitida, resuelta; 400 si un symlink la saca del repo."""
+    carpeta = (base / nombre).resolve()
+    if carpeta.parent != base or carpeta.name not in ALLOWED_FOLDERS:
+        raise HTTPException(status_code=400, detail="ruta_invalida")
+    return carpeta
+
+
+def _dentro(destino: Path, carpeta: Path) -> bool:
+    return destino != carpeta and destino.is_relative_to(carpeta)
+
+
 def _resolve(path: str) -> Path:
     """La única validación de rutas (A-26). A-40 (2026-09-16): antes era
     `realpath(...).startswith(base)` sin separador, y `documents/../../repo-x/…`
-    salía del repositorio. is_relative_to compara por componentes."""
+    salía del repositorio. is_relative_to compara por componentes.
+    Ronda final (2026-09-16): la contención es contra la CARPETA permitida, no
+    contra la base (`documents/../privado/x` se leía y se borraba), y un NUL en
+    la ruta es 400, no un ValueError sin atrapar (500)."""
     partes = path.replace("\\", "/").split("/", 1)
     if len(partes) < 2 or partes[0] not in ALLOWED_FOLDERS:
         raise HTTPException(status_code=400, detail="ruta_invalida")
     base = Path(REPO_BASE).resolve()
-    destino = (base / partes[0] / partes[1]).resolve()
-    if not destino.is_relative_to(base):
+    try:
+        carpeta = _carpeta(base, partes[0])
+        destino = (carpeta / partes[1]).resolve()
+    except ValueError:  # NUL en la ruta: os.lstat lo rechaza
+        raise HTTPException(status_code=400, detail="ruta_invalida") from None
+    if not _dentro(destino, carpeta):
         raise HTTPException(status_code=400, detail="ruta_invalida")
     if not destino.is_file():
         raise HTTPException(status_code=404, detail="archivo_no_encontrado")
@@ -38,10 +57,12 @@ def _resolve(path: str) -> Path:
 
 
 def _file_info(path: Path) -> dict:
+    # La ruta propia de la entrada, no la de su destino: un symlink no expone
+    # a dónde apunta. El stat sí sigue el enlace (tamaño y fecha reales).
     stat = path.stat()
     return {
         "name": path.name,
-        "path": os.path.relpath(path, Path(REPO_BASE).resolve()),
+        "path": os.path.relpath(path, Path(REPO_BASE)),
         "size": stat.st_size,
         "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
     }
@@ -49,11 +70,18 @@ def _file_info(path: Path) -> dict:
 
 def _listar() -> dict:
     base = Path(REPO_BASE)
+    base_real = base.resolve()
     result = {}
     for folder in ALLOWED_FOLDERS:
-        carpeta = base / folder
-        carpeta.mkdir(parents=True, exist_ok=True)
-        result[folder] = [_file_info(p.resolve()) for p in sorted(carpeta.iterdir()) if p.is_file()]
+        (base / folder).mkdir(parents=True, exist_ok=True)
+        try:
+            carpeta = _carpeta(base_real, folder)
+        except HTTPException:  # la carpeta misma sale del repo: no se lista nada
+            result[folder] = []
+            continue
+        # Lo que resuelve fuera de su carpeta no se lista (lo mismo que _resolve rechaza).
+        result[folder] = [_file_info(p) for p in sorted((base / folder).iterdir())
+                          if p.is_file() and _dentro(p.resolve(), carpeta)]
     return {"folders": result}
 
 

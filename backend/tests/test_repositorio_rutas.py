@@ -102,3 +102,85 @@ def test_save_no_existe():
 def test_sin_parametros_por_defecto_muertos():
     assert list(inspect.signature(repo._file_info).parameters) == ["path"]
     assert not hasattr(repo, "_safe_path")
+
+
+# Ronda final (2026-09-16): la contencion era solo contra REPO_BASE, no contra
+# la carpeta permitida. `documents/../privado/x` salia de la carpeta y se leia o
+# BORRABA; un NUL en la ruta era un ValueError sin atrapar (500); el listado
+# resolvia symlinks y mostraba rutas `../..` del destino.
+@pytest.fixture
+def privado(raiz):
+    (raiz / "privado").mkdir()
+    secreto = raiz / "privado" / "secreto.txt"
+    secreto.write_text("no deberia salir")
+    return secreto
+
+
+@pytest.mark.parametrize("ruta", [
+    "documents/../privado/secreto.txt",
+    "documents/../images/../privado/secreto.txt",
+])
+def test_leer_fuera_de_la_carpeta_dentro_del_repo_es_400(privado, ruta):
+    e = _error(repo.get_file(path=ruta, user=ADMIN))
+    assert (e.status_code, e.detail) == (400, "ruta_invalida")
+
+
+def test_saltar_a_otra_carpeta_permitida_es_400(raiz):
+    (raiz / "images" / "a.md").write_text("x")
+    e = _error(repo.get_file(path="documents/../images/a.md", user=ADMIN))
+    assert (e.status_code, e.detail) == (400, "ruta_invalida")
+
+
+def test_borrar_fuera_de_la_carpeta_es_400_y_no_borra(privado):
+    e = _error(repo.delete_file(path="documents/../privado/secreto.txt", user=ADMIN))
+    assert (e.status_code, e.detail) == (400, "ruta_invalida")
+    assert privado.exists()
+
+
+@pytest.mark.parametrize("ruta", ["documents/a\x00.md", "documents\x00/a.md", "documents/\x00"])
+def test_un_nul_en_la_ruta_es_400(raiz, ruta):
+    e = _error(repo.get_file(path=ruta, user=ADMIN))
+    assert (e.status_code, e.detail) == (400, "ruta_invalida")
+    e = _error(repo.delete_file(path=ruta, user=ADMIN))
+    assert (e.status_code, e.detail) == (400, "ruta_invalida")
+
+
+def test_ruta_absoluta_es_400(raiz, privado):
+    for ruta in (f"documents/{privado}", str(privado)):
+        e = _error(repo.get_file(path=ruta, user=ADMIN))
+        assert (e.status_code, e.detail) == (400, "ruta_invalida")
+
+
+def test_symlink_fuera_de_la_carpeta_no_se_lee_ni_borra_ni_lista(raiz, privado):
+    enlace = raiz / "documents" / "enlace.txt"
+    enlace.symlink_to(privado)
+    (raiz / "documents" / "propio.md").write_text("x")
+    e = _error(repo.get_file(path="documents/enlace.txt", user=ADMIN))
+    assert (e.status_code, e.detail) == (400, "ruta_invalida")
+    e = _error(repo.delete_file(path="documents/enlace.txt", user=ADMIN))
+    assert (e.status_code, e.detail) == (400, "ruta_invalida")
+    assert privado.exists() and enlace.is_symlink()
+    listado = asyncio.run(repo.list_repo(user=ADMIN))["folders"]["documents"]
+    assert [a["path"] for a in listado] == ["documents/propio.md"]
+    assert not any(".." in a["path"] for carpeta in asyncio.run(repo.list_repo(user=ADMIN))["folders"].values()
+                   for a in carpeta)
+
+
+def test_carpeta_permitida_que_es_symlink_fuera_del_repo_es_400(tmp_path, monkeypatch):
+    base = tmp_path / "repo"
+    base.mkdir()
+    afuera = tmp_path / "afuera"
+    afuera.mkdir()
+    (afuera / "x.md").write_text("x")
+    (base / "documents").symlink_to(afuera)
+    monkeypatch.setattr(repo, "REPO_BASE", base)
+    e = _error(repo.get_file(path="documents/x.md", user=ADMIN))
+    assert (e.status_code, e.detail) == (400, "ruta_invalida")
+
+
+def test_symlink_dentro_de_la_carpeta_se_lista_con_su_propia_ruta(raiz):
+    (raiz / "documents" / "real.md").write_text("hola")
+    (raiz / "documents" / "alias.md").symlink_to(raiz / "documents" / "real.md")
+    listado = asyncio.run(repo.list_repo(user=ADMIN))["folders"]["documents"]
+    assert sorted(a["path"] for a in listado) == ["documents/alias.md", "documents/real.md"]
+    assert _leer("documents/alias.md")["content"] == "hola"

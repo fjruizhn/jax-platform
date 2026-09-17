@@ -97,16 +97,31 @@ def test_el_cupo_sirve_en_loops_distintos(monkeypatch, raiz):
 
 
 def test_una_ruta_invalida_no_espera_el_cupo(monkeypatch, raiz):
-    lote, _ = _medir_concurrencia(monkeypatch, raiz, n=3)
+    """Ronda final (2026-09-16): antes media `espera < 0.03` s, fragil en un
+    runner compartido. Ahora sin reloj: la lectura que tiene el cupo queda
+    BLOQUEADA hasta que llega el 400; si el 400 hiciera fila detras del cupo,
+    llegaria recien cuando la lectura se rinde (timeout) y ya habria terminado."""
+    (raiz / "documents" / "a.md").write_text("x")
+    adentro, soltar, termino = threading.Event(), threading.Event(), threading.Event()
+
+    def bloqueada(destino):
+        adentro.set()
+        soltar.wait(timeout=5)
+        termino.set()
+        return b"{}"
+
+    monkeypatch.setattr(repo, "_leer", bloqueada)
 
     async def mezcla():
-        t = asyncio.create_task(lote())
-        await asyncio.sleep(0.005)
-        t0 = time.perf_counter()
-        with pytest.raises(HTTPException) as e:
-            await repo.get_file(path="otra/x.md", user=ADMIN)
-        assert e.value.status_code == 400
-        espera = time.perf_counter() - t0
-        await t
-        return espera
-    assert asyncio.run(mezcla()) < 0.03
+        lectura = asyncio.create_task(repo.get_file(path="documents/a.md", user=ADMIN))
+        while not adentro.is_set():
+            await asyncio.sleep(0.001)
+        try:
+            with pytest.raises(HTTPException) as e:
+                await repo.get_file(path="otra/x.md", user=ADMIN)
+            assert e.value.status_code == 400
+            return termino.is_set()
+        finally:
+            soltar.set()
+            await lectura
+    assert asyncio.run(mezcla()) is False
