@@ -21,9 +21,14 @@ class PdfSinTexto(ValueError):
     """Se leyó, pero no tiene texto extraíble."""
 
 
-def extraer_texto(datos: bytes, max_paginas: int, max_chars: int) -> tuple[str, bool]:
+def extraer_texto(datos: bytes | str, max_paginas: int, max_chars: int) -> tuple[str, bool]:
+    """`datos`: los bytes del PDF o la RUTA (str) al archivo. RD2
+    (2026-09-17): la subida le pasa la ruta del temporal a este worker del
+    ProcessPoolExecutor -- lo que viaja entre procesos es una cadena corta,
+    no 10 MB serializados, y el proceso web nunca tiene el PDF en memoria.
+    pypdf abre la ruta él mismo, dentro del worker."""
     try:
-        lector = PdfReader(io.BytesIO(datos))
+        lector = PdfReader(datos if isinstance(datos, str) else io.BytesIO(datos))
         if lector.is_encrypted:
             raise PdfIlegible("cifrado")
         paginas = lector.pages

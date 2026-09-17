@@ -5,7 +5,9 @@ Allowlist cerrada, fail-closed: imagen PNG/JPEG/WebP por firma, PDF por
 TipoNoPermitido (415). SVG es texto: XML activo, no entrada de visión.
 GIF queda fuera: Gemini no lo acepta como imagen (Discrepancia 4 del plan).
 """
+import codecs
 import unicodedata
+from dataclasses import dataclass
 from typing import Literal
 
 MIMES_DE_IMAGEN: tuple[str, ...] = ("image/png", "image/jpeg", "image/webp")
@@ -45,29 +47,72 @@ def mime_de_imagen(datos: bytes) -> str | None:
     return None
 
 
-def clasificar(datos: bytes) -> tuple[Clase, str, str | None]:
-    """(clase, mime, texto). `texto` solo viene para la clase "texto", ya
-    decodificado, para no decodificar 10 MB dos veces. Síncrona: el llamador
-    la corre en asyncio.to_thread."""
-    if not datos:
-        raise AdjuntoVacio()
-    mime = mime_de_imagen(datos)
-    if mime is not None:
-        return "imagen", mime, None
-    if datos.startswith(b"%PDF-"):
-        return "pdf", MIME_PDF, None
-    # Rechazo de formatos binarios conocidos que no se aceptan: GIF
-    # (Gemini no lo soporta como imagen). La firma de GIF es de 6 bytes:
-    # GIF87a o GIF89a, no solo "GIF" (3 bytes).
-    if datos.startswith(b"GIF87a") or datos.startswith(b"GIF89a"):
-        raise TipoNoPermitido("binario (GIF)")
-    if b"\x00" in datos:
-        raise TipoNoPermitido("binario (NUL)")
-    try:
-        texto = datos.decode("utf-8")
-    except UnicodeDecodeError as e:
-        raise TipoNoPermitido("no es UTF-8") from e
-    return "texto", "text/plain", texto
+# RD2 (2026-09-17): el texto se valida por bloques, sin cargar el archivo
+# entero. 256 KB: el mismo tramo que ya usan los escaneos del loop (R18).
+BLOQUE_DE_TEXTO = 256 * 1024
+_CABECERA = 12  # lo que necesita la firma más larga (WebP: RIFF....WEBP)
+
+
+@dataclass(frozen=True)
+class Clasificacion:
+    clase: Clase
+    mime: str
+    texto: str | None  # solo "texto": ya recortado a max_chars
+    recortado: bool
+
+
+def _leer_bloque(f, n: int) -> bytes:
+    return f.read(n)
+
+
+def clasificar_archivo(ruta, max_chars: int) -> Clasificacion:
+    """Clasifica el archivo subido por sus bytes. SÍNCRONA: el llamador la
+    corre en asyncio.to_thread.
+
+    Imagen y PDF se deciden por la cabecera (12 bytes). El texto se valida
+    ENTERO -- UTF-8 estricto y sin NUL en todo el archivo, no solo en lo que
+    se guarda -- con un decodificador incremental de a BLOQUE_DE_TEXTO, y
+    solo se retienen los primeros max_chars caracteres. Memoria: un bloque
+    y el recorte, nunca los 10 MB."""
+    with open(ruta, "rb") as f:
+        cabecera = _leer_bloque(f, _CABECERA)
+        if not cabecera:
+            raise AdjuntoVacio()
+        mime = mime_de_imagen(cabecera)
+        if mime is not None:
+            return Clasificacion("imagen", mime, None, False)
+        if cabecera.startswith(b"%PDF-"):
+            return Clasificacion("pdf", MIME_PDF, None, False)
+        # Rechazo de formatos binarios conocidos que no se aceptan: GIF
+        # (Gemini no lo soporta como imagen). La firma de GIF es de 6 bytes:
+        # GIF87a o GIF89a, no solo "GIF" (3 bytes).
+        if cabecera.startswith(b"GIF87a") or cabecera.startswith(b"GIF89a"):
+            raise TipoNoPermitido("binario (GIF)")
+        decodificador = codecs.getincrementaldecoder("utf-8")("strict")
+        partes: list[str] = []
+        retenidos = 0
+        recortado = False
+        bloque = cabecera
+        while True:
+            if b"\x00" in bloque:
+                raise TipoNoPermitido("binario (NUL)")
+            try:
+                trozo = decodificador.decode(bloque, final=not bloque)
+            except UnicodeDecodeError as e:
+                raise TipoNoPermitido("no es UTF-8") from e
+            if trozo and not recortado:
+                falta = max_chars - retenidos
+                if len(trozo) > falta:
+                    partes.append(trozo[:falta])
+                    retenidos = max_chars
+                    recortado = True
+                else:
+                    partes.append(trozo)
+                    retenidos += len(trozo)
+            if not bloque:
+                break
+            bloque = _leer_bloque(f, BLOQUE_DE_TEXTO)
+    return Clasificacion("texto", "text/plain", "".join(partes), recortado)
 
 
 def nombre_seguro(crudo: str | None) -> str:

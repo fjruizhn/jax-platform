@@ -242,7 +242,9 @@ def _confirmar(directorio: Path, meta: dict) -> dict:
                           json.dumps(meta, ensure_ascii=False).encode("utf-8"))
         _fsync_directorio(directorio)
     except BaseException:
-        (directorio / f"{id_}{SUFIJO_DATO}").unlink(missing_ok=True)
+        # Sidecar incluido: si lo que falló fue el fsync del directorio, el
+        # replace ya lo dejó en su lugar y un adjunto a medias no se confirma.
+        _borrar_adjunto(directorio, id_)
         raise
     return meta
 

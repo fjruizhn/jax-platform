@@ -79,7 +79,7 @@ def _subir_a_la_vez(archivos):
 @pytest.mark.parametrize("tope", [1, 2])
 def test_las_subidas_de_imagen_respetan_el_tope(monkeypatch, tope):
     monkeypatch.setenv("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", str(tope))
-    estado = _espiar_trabajo(monkeypatch, "clasificar")
+    estado = _espiar_trabajo(monkeypatch, "clasificar_archivo")
     resultados = _subir_a_la_vez([lambda: _archivo(PNG, "f.png", "image/png")] * 5)
     assert estado["maximo"] == tope
     assert all(r["tipo"] == "imagen" and r["bytes"] == len(PNG) for r in resultados)
@@ -92,7 +92,7 @@ def test_las_subidas_de_pdf_respetan_el_tope_tambien_en_pypdf(monkeypatch, tope)
     pdf = pdf_con_texto(["hola"])
     resultados = _subir_a_la_vez([lambda: _archivo(pdf, "i.pdf", "application/pdf")] * 5)
     assert estado["maximo"] == tope
-    assert all(r["origen"] == "pdf" and "hola" in r["contenido"] for r in resultados)
+    assert all(r["origen"] == "pdf" and "hola" in r["vista_previa"] for r in resultados)
 
 
 def test_el_turno_se_libera_si_la_subida_falla(monkeypatch):

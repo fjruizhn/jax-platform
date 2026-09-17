@@ -323,12 +323,14 @@ async def _reciclar(pool_sospechoso: ProcessPoolExecutor) -> None:
 
 
 async def extraer_texto_en_pool(
-    datos: bytes, max_paginas: int, max_chars: int
+    datos: bytes | str, max_paginas: int, max_chars: int
 ) -> tuple[str, bool]:
     """Corre `adjuntos.pdf.extraer_texto` (pypdf) en el ProcessPoolExecutor,
     con timeout (JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS). El límite de páginas y de
     caracteres los sigue aplicando `extraer_texto` DENTRO del worker -- este
-    módulo solo decide dónde corre y cuánto tiempo se le da.
+    módulo solo decide dónde corre y cuánto tiempo se le da. `datos` son
+    los bytes o la ruta del PDF (RD2: api/upload.py pasa la ruta, así no
+    serializa 10 MB hacia el worker).
 
     Timeout, worker muerto (BrokenProcessPool), submit sobre un pool
     cerrado (RuntimeError puntual) y cancelación inducida por el pool se

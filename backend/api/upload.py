@@ -1,16 +1,39 @@
-"""Subida de adjuntos del chat (frente D, 2026-09-16).
+"""Subida de adjuntos del chat (frente D, 2026-09-16; RD2 2026-09-17: por
+referencia).
 
-El tipo lo deciden los bytes (adjuntos/tipos.py), no el content_type ni la
-extensión que manda el cliente. Clasificar/decodificar 10 MB y base64 corren
-en asyncio.to_thread; pypdf corre en el ProcessPoolExecutor acotado de
-adjuntos/pdf_pool.py (RD1, 2026-09-17), no en un hilo -- retiene el GIL
-incluso ahí (medido). Errores con código estable.
+DECISIÓN (principal, 2026-09-17): el archivo se guarda en JAX_ADJUNTOS_DIR
+(adjuntos/almacen.py) y la respuesta es un JSON chico con su id; el chat lo
+pide por id (RD3). Nunca base64, nunca el texto completo.
+
+Camino de una subida:
+
+1. Starlette ya recibió el cuerpo multipart ANTES de llamar a este handler:
+   python-multipart lo parsea en streaming y Starlette escribe la parte del
+   archivo en un SpooledTemporaryFile (en memoria hasta 1 MB, después a un
+   archivo de TMPDIR). Acá no se vuelve a leer entero: `copiar_subida` lo
+   copia en un hilo, de a 1 MB, a un temporal 0600 dentro de
+   JAX_ADJUNTOS_DIR, contando bytes; pasado max_bytes corta y es 413.
+2. El tipo lo deciden los bytes del temporal (adjuntos/tipos.py), en un hilo:
+   firma de imagen o PDF por la cabecera; texto validado entero por bloques
+   con un decodificador incremental.
+3. PDF: pypdf corre en el ProcessPoolExecutor de adjuntos/pdf_pool.py (RD1)
+   y recibe la RUTA del temporal, no los bytes.
+4. Se guarda: la imagen se renombra al dato; del texto/PDF se guarda solo el
+   texto extraído y recortado. El sidecar (dueño, vencimiento) es el commit.
+5. El temporal se borra en `finally`: ningún rechazo, error ni cancelación
+   deja archivos (lo que un hilo ya lanzado escriba después lo levanta el
+   limpiador por edad).
+
+Clasificar y extraer van dentro de turno_de_subida
+(JAX_ADJUNTO_SUBIDAS_EN_PROCESO); la copia no, es I/O de disco en un hilo.
+Errores con código estable.
 """
 import asyncio
-import base64
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
+from adjuntos import almacen
 from adjuntos.errores import AdjuntoRechazado
 from adjuntos.limites import cargar_limites
 from adjuntos.pdf import PdfIlegible, PdfSinTexto
@@ -18,12 +41,17 @@ from adjuntos.pdf_pool import extraer_texto_en_pool
 from adjuntos.politica import facetas_con_imagen
 from adjuntos.turno import turno_de_subida
 from adjuntos.tipos import (AdjuntoVacio, EXTENSIONES_DE_TEXTO, MIME_PDF,
-                             MIMES_DE_IMAGEN, TipoNoPermitido, clasificar,
+                             MIMES_DE_IMAGEN, TipoNoPermitido, clasificar_archivo,
                              nombre_seguro)
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 
 router = APIRouter(prefix="/api/chat")
+
+# Cuánto texto vuelve para que la interfaz muestre de qué se trata. Acotado a
+# propósito: el texto completo ya está en el servidor, y devolverlo invitaría
+# a que el cliente lo reenvíe en el chat -- justo lo que RD3 deja de aceptar.
+VISTA_PREVIA_CARACTERES = 200
 
 
 def _rechazo(status: int, code: str, **extra) -> HTTPException:
@@ -38,44 +66,55 @@ async def upload_file(
     user: AuthUser = Depends(get_current_user),
 ):
     limites = cargar_limites()
-    # Un byte de más alcanza para saber que se pasó, sin leer el resto.
-    datos = await file.read(limites.max_bytes + 1)
-    if len(datos) > limites.max_bytes:
-        raise _rechazo(413, "adjunto_demasiado_grande", max_bytes=limites.max_bytes)
+    directorio = almacen.cargar_directorio()
+    ttl_horas = almacen.cargar_ttl_horas()
     nombre = nombre_seguro(file.filename)
-    # El trabajo pesado va en hilos pero retiene el GIL: el turno limita
-    # cuántas subidas lo hacen a la vez (adjuntos/turno.py). Se libera con
-    # cualquier salida, también con los rechazos.
-    async with turno_de_subida():
+    temporal: Path = directorio / almacen.nombre_temporal()
+    try:
         try:
-            clase, mime, texto = await asyncio.to_thread(clasificar, datos)
-        except AdjuntoVacio:
-            raise _rechazo(422, "adjunto_vacio") from None
-        except TipoNoPermitido:
-            raise _rechazo(415, "adjunto_tipo_no_permitido") from None
+            tamano = await asyncio.to_thread(almacen.copiar_subida, file.file, temporal, limites.max_bytes)
+        except almacen.SubidaDemasiadoGrande:
+            raise _rechazo(413, "adjunto_demasiado_grande", max_bytes=limites.max_bytes) from None
 
-        if clase == "imagen":
-            codificado = await asyncio.to_thread(base64.b64encode, datos)
-            return {"tipo": "imagen", "nombre": nombre, "mime": mime,
-                    "bytes": len(datos), "base64": codificado.decode("ascii")}
-
-        if clase == "pdf":
+        # Clasificar 10 MB de texto y pypdf compiten por CPU/GIL: el turno
+        # limita cuántas subidas lo hacen a la vez (adjuntos/turno.py). Se
+        # libera con cualquier salida, también con los rechazos.
+        async with turno_de_subida():
             try:
-                # RD1 (2026-09-17): pypdf corre en un ProcessPoolExecutor
-                # aparte, no en un hilo -- no le disputa el GIL al event
-                # loop (adjuntos/pdf_pool.py).
-                texto, recortado = await extraer_texto_en_pool(
-                    datos, limites.max_paginas, limites.max_chars)
-            except PdfSinTexto:
-                raise _rechazo(422, "pdf_sin_texto") from None
-            except PdfIlegible:
-                raise _rechazo(422, "pdf_ilegible") from None
-            return {"tipo": "texto", "origen": "pdf", "nombre": nombre,
-                    "bytes": len(datos), "contenido": texto, "recortado": recortado}
+                clase = await asyncio.to_thread(clasificar_archivo, temporal, limites.max_chars)
+            except AdjuntoVacio:
+                raise _rechazo(422, "adjunto_vacio") from None
+            except TipoNoPermitido:
+                raise _rechazo(415, "adjunto_tipo_no_permitido") from None
 
-    return {"tipo": "texto", "origen": "texto", "nombre": nombre, "bytes": len(datos),
-            "contenido": texto[: limites.max_chars],
-            "recortado": len(texto) > limites.max_chars}
+            if clase.clase == "pdf":
+                try:
+                    texto, recortado = await extraer_texto_en_pool(
+                        str(temporal), limites.max_paginas, limites.max_chars)
+                except PdfSinTexto:
+                    raise _rechazo(422, "pdf_sin_texto") from None
+                except PdfIlegible:
+                    raise _rechazo(422, "pdf_ilegible") from None
+                origen = "pdf"
+            else:
+                texto, recortado, origen = clase.texto, clase.recortado, "texto"
+
+        if clase.clase == "imagen":
+            meta = await asyncio.to_thread(
+                almacen.guardar_imagen, directorio, temporal, user=user, mime=clase.mime,
+                nombre=nombre, bytes_=tamano, ttl_horas=ttl_horas)
+            return {"id": meta["id"], "tipo": "imagen", "nombre": nombre, "mime": clase.mime,
+                    "bytes": tamano}
+
+        meta = await asyncio.to_thread(
+            almacen.guardar_texto, directorio, texto, user=user, origen=origen, nombre=nombre,
+            bytes_=tamano, recortado=recortado, ttl_horas=ttl_horas)
+        return {"id": meta["id"], "tipo": "texto", "origen": origen, "nombre": nombre,
+                "bytes": tamano, "caracteres": meta["caracteres"], "recortado": recortado,
+                "vista_previa": texto[:VISTA_PREVIA_CARACTERES]}
+    finally:
+        # La imagen guardada ya no está acá (se renombró): idempotente.
+        await asyncio.to_thread(almacen.borrar_temporal, temporal)
 
 
 @router.get("/adjuntos")
