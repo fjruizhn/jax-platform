@@ -16,10 +16,11 @@ Por eso es un middleware ASGI puro, montado DENTRO de CORSMiddleware (para
 que el 429 lleve sus cabeceras) y antes del router: para POST
 /api/chat/upload lee la cabecera Authorization, verifica la firma y el
 vencimiento del JWT (auth.jwt.decode_token: HS256, sin base) y, si el
-usuario ya gastó su cupo, responde 429 SIN llamar a receive(): el cuerpo no
-se lee, no se parsea y no se vuelca. Qué pasa con los bytes que el cliente
-igual manda lo decide el servidor HTTP (uvicorn); medido en RD7
-(rd6-report.md): TMPDIR no recibe nada.
+usuario ya gastó su cupo, frena FRENO_ANTES_DEL_429_SEGUNDOS y responde 429
+SIN llamar a receive(): el cuerpo no se parsea con python-multipart ni se
+vuelca (medido en RD7: 0 volcados en TMPDIR durante el flood). Lo que el
+cliente igual manda lo lee y descarta uvicorn después del 429 para mantener
+la conexión: ese es el costo que acota el freno (ver la constante).
 
 IDENTIDAD. Solo la firma del token de ACCESO: sin base, a propósito (una
 lectura por PK por request sería el costo que se quiere evitar). Un token
@@ -38,6 +39,7 @@ ESTADO. En memoria del proceso: jax-platform es UN proceso
 (20.000, LRU). El limitador se rehace si cambia el valor configurado (el
 entorno de producción no cambia en caliente; los tests sí lo cambian).
 """
+import asyncio
 import json
 import math
 import os
@@ -63,6 +65,20 @@ MAX_CLAVES = 20_000
 
 _ENTERO = re.compile(r"[1-9][0-9]{0,2}")
 _limitador: SlidingWindowLimiter | None = None
+# Freno antes del 429 (RD7, medido con upload_imagen_max c=25 de un usuario,
+# 10 MB, staging): sin freno el cliente reintenta al instante y uvicorn lee y
+# descarta ~540 cuerpos/s en el event loop después de cada 429 (keep-alive)
+# -> health p95 37-40 ms. Con `Connection: close`, health p95 6,2 ms pero el
+# 19 % de las respuestas llegó al cliente como reset, no como 429. Frenando
+# 0,25 s: 97 rechazos/s, health p95 0,37 ms; 1 s: 25 rechazos/s, health p95
+# 0,30 ms, 0 resets. Mientras frena no se llama a receive(): uvicorn lee
+# hasta 64 KB y pausa la lectura, y TCP frena al cliente. Se elige 1 s por
+# margen (4 veces menos bytes descartados que 0,25 s con los mismos
+# atacantes). No es env: es un margen técnico medido sobre el comportamiento
+# de uvicorn, no una política; se cambia con otra medición.
+FRENO_ANTES_DEL_429_SEGUNDOS = 1.0
+# Referencia propia para que un test la sustituya sin tocar asyncio.sleep global.
+_dormir = asyncio.sleep
 
 
 def cargar_subidas_por_minuto() -> int:
@@ -135,6 +151,7 @@ class LimiteDeSubidas:
         if espera is None:
             await self.app(scope, receive, send)
             return
+        await _dormir(FRENO_ANTES_DEL_429_SEGUNDOS)
         segundos = max(1, math.ceil(espera))
         cuerpo = json.dumps({"detail": {"code": CODIGO, "retry_after": segundos}}).encode()
         await send({"type": "http.response.start", "status": 429, "headers": [

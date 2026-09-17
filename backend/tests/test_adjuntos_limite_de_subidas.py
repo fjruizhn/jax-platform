@@ -82,7 +82,13 @@ class _Interna:
 def limite(monkeypatch):
     monkeypatch.setenv("JAX_ADJUNTOS_SUBIDAS_POR_MINUTO", "2")
     mod.reiniciar()
-    yield
+    frenos = []
+
+    async def dormir(segundos):
+        frenos.append(segundos)
+
+    monkeypatch.setattr(mod, "_dormir", dormir)
+    yield frenos
     mod.reiniciar()
 
 
@@ -277,3 +283,21 @@ def test_por_http_la_tercera_subida_es_429_con_retry_after(client, monkeypatch):
         assert client.post(RUTA, files={"file": ("n.txt", b"hola", "text/plain")}, headers=otro).status_code == 200
     finally:
         mod.reiniciar()
+
+
+def test_el_429_se_frena_un_segundo_sin_leer_el_cuerpo_y_sin_cortar_la_conexion(limite):
+    """Medido en RD7 (flood c=25, un usuario, 10 MB): responder el 429 al
+    instante dejaba a uvicorn leyendo y descartando ~540 cuerpos/s en el
+    event loop (health p95 37-40 ms); con `Connection: close` el 19 % de los
+    clientes recibía un reset en vez del 429 (health p95 6,2 ms); frenando
+    1 s antes de responder, sin leer el cuerpo (TCP frena al cliente),
+    health p95 0,30 ms y 0 resets."""
+    interna = _Interna()
+    app = mod.LimiteDeSubidas(interna)
+    for _ in range(2):
+        _llamar(app, token_para(5))
+    assert limite == []  # lo permitido no se frena
+    status, headers, _, canal = _llamar(app, token_para(5))
+    assert status == 429 and canal.leidos == 0
+    assert limite == [mod.FRENO_ANTES_DEL_429_SEGUNDOS] and mod.FRENO_ANTES_DEL_429_SEGUNDOS == 1.0
+    assert b"connection" not in headers
