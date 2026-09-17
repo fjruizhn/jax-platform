@@ -610,8 +610,11 @@ jobs:
             // 74 archivos (620 de master + 35).
             // 655 -> 780 el 2026-09-17 (pre-vuelo y continuar, tras mergear master
             // con adjuntos y B1.4): los 125 de esta rama. Medido: 780 passed, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 780) {
-              console.error("PISO ROTO: se esperaban 780 tests de vitest CORRIDOS y 0 fallidos.");
+            // 780 -> 781 el 2026-09-17 (limite de profundidad JSON): +1 en
+            // frontend/src/api/errores.test.js (el 422 de profundidad se traduce
+            // y no cae al mensaje generico). Medido con vitest run: 781 passed.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 781) {
+              console.error("PISO ROTO: se esperaban 781 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1670,7 +1673,10 @@ jobs:
           # 2062 -> 2297 el 2026-09-17 (pre-vuelo y continuar, tras mergear master con
           # adjuntos y B1.4). Medido contra jax_memory_test: 2297 passed / 0 failed /
           # 1 skipped.
-          PISO_PASSED = 2297
+          # 2297 -> 2320 el 2026-09-17 (limite global de profundidad JSON): +23
+          #   con DB, SUMADO al piso que dejaron el frente D, B1.4 y el pre-vuelo.
+          #   Si el runner da otro numero, manda el runner.
+          PISO_PASSED = 2320
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2274,7 +2280,9 @@ jobs:
       # runner. Sumar deltas con las otras ramas del dia, no elegir un lado.
       # 1356 -> 1563 el 2026-09-17 (mismo merge): +207 puros de esta rama.
       # Medido con JAX_CI_NO_DB=1: 1563 passed / 735 skipped.
-      JAX_CI_MIN_PASSED: "1563"
+      # 1563 -> 1582 el 2026-09-17 (limite de profundidad JSON): +19 puros y +4
+      # skips, SUMADO a los pisos anteriores del dia.
+      JAX_CI_MIN_PASSED: "1582"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

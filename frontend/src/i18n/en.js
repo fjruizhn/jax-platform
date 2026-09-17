@@ -185,6 +185,10 @@ export default {
     pdf_sin_texto: () => 'The PDF has no extractable text (is it a scan?).',
     // Frente B (2026-09-17): 423 from chat, image, command and pipelines with the brake on.
     kill_switch_activo: () => 'Kill switch active: JAX is stopped',
+    // Límite global de profundidad JSON (2026-09-17): 422 de cualquier
+    // endpoint ante un cuerpo con demasiado anidamiento. El backend manda el
+    // límite; el texto vive acá, nunca en la respuesta.
+    json_demasiado_profundo: (d) => `The content sent is nested more than ${d.limite} levels deep and the server will not accept it.`,
   },
   reglasPrevuelo: {
     tope_insuficiente: (v) => `${lugarDelPaso(v)}: the model's output limit is not enough for this task.`,
