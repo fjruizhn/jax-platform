@@ -10,7 +10,6 @@ from tests.identidades import sql
 
 
 def test_el_escritor_conoce_el_source_preflight():
-    assert False, 'CANARIO: rojo a propósito, se revierte en el commit siguiente'
     assert facet_health.SOURCE_PREFLIGHT == "preflight"
     assert "preflight" in facet_health.SOURCES
 

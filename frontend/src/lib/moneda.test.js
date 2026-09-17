@@ -5,7 +5,7 @@ import { formatearUsd, OPCIONES_USD } from './moneda'
 // "$" pegado a mano. Llegan como string decimal desde el backend.
 describe('formatearUsd', () => {
   it('formatea en inglés con símbolo y dos decimales', () => {
-    expect(formatearUsd('0.5', 'en')).toBe('$9.99')
+    expect(formatearUsd('0.5', 'en')).toBe('$0.50')
     expect(formatearUsd('1234.5', 'en')).toBe('$1,234.50')
   })
 
