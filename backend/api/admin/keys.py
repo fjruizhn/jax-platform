@@ -1,8 +1,6 @@
-import os
 import time
 import logging
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from crypto_secrets import encrypt_secret, decrypt_secret, decrypt_db_secret
@@ -14,6 +12,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin")
 
 ENV_PATH = "/etc/jax/.env"
+# SOLO LECTURA (B1.4, 2026-09-17). Este modulo escribia el archivo con un
+# volcado del diccionario parseado: perdia comentarios y estructura, y
+# reintroducia las *_API_KEY que B1.4 retira. Las llaves vivas se rotan y
+# revocan por /api/admin/credentials, contra la tabla `credential`.
 
 # Sin modelo (PR-L ronda 2, 2026-09-14): el modelo de cada faceta sale SOLO de
 # facet_binding (_get_binding_models_batch). Los literales que vivían acá
@@ -47,17 +49,6 @@ def _load_env() -> dict:
     except FileNotFoundError:  # fail-soft: mismo patron que chat.py/image.py: FileNotFoundError acotado a 'no existe .env todavia', no oculta otros errores de lectura
         pass
     return env
-
-
-def _write_env_key(env_key: str, value: str):
-    env = _load_env()
-    # En disco siempre cifrado (o vacío al borrar); en memoria queda el
-    # valor plano para que el proceso actual siga funcionando sin reinicio.
-    env[env_key] = encrypt_secret(value) if value else value
-    lines = [f"{k}={v}\n" for k, v in env.items()]
-    with open(ENV_PATH, "w") as f:
-        f.writelines(lines)
-    os.environ[env_key] = value
 
 
 async def _seed_keys_from_env(pool, user_id: int = USUARIO_LLAVES_LEGADO):
@@ -200,50 +191,3 @@ async def test_key(provider_id: str, user: AuthUser = Depends(require_superadmin
                 "error": None if r.status_code < 400 else redactar_secretos(r.text, [api_key])[:100]}
     except Exception as e:  # fail-soft: el fallo del test ES el resultado (ok=False con error) que se le muestra al superadmin
         return {"ok": False, "latency_ms": None, "error": redactar_secretos(str(e), [api_key])[:100]}
-
-
-class UpdateKeyRequest(BaseModel):
-    api_key: str
-
-
-@router.put("/keys/{provider_id}")
-async def update_key(
-    provider_id: str,
-    req: UpdateKeyRequest,
-    user: AuthUser = Depends(require_superadmin),
-):
-    prov = _PROVIDER_MAP.get(provider_id)
-    if not prov:
-        raise HTTPException(status_code=404, detail="Provider no encontrado")
-
-    encrypted = encrypt_secret(req.api_key)
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "INSERT INTO user_api_keys (user_id, provider_id, env_key, encrypted_value) "
-                "VALUES (%s, %s, %s, %s) "
-                "ON DUPLICATE KEY UPDATE encrypted_value = VALUES(encrypted_value), updated_at = NOW()",
-                (USUARIO_LLAVES_LEGADO, provider_id, prov["env_key"], encrypted),
-            )
-
-    _write_env_key(prov["env_key"], req.api_key)
-    return {"ok": True}
-
-
-@router.delete("/keys/{provider_id}")
-async def delete_key(provider_id: str, user: AuthUser = Depends(require_superadmin)):
-    prov = _PROVIDER_MAP.get(provider_id)
-    if not prov:
-        raise HTTPException(status_code=404, detail="Provider no encontrado")
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "DELETE FROM user_api_keys WHERE user_id = %s AND provider_id = %s",
-                (USUARIO_LLAVES_LEGADO, provider_id),
-            )
-
-    _write_env_key(prov["env_key"], "")
-    return {"ok": True}

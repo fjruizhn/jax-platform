@@ -4,7 +4,7 @@ from pydantic import BaseModel
 import httpx
 from auth.models import AuthUser
 from kill_switch import exigir_mesa_libre
-from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
+from credential_resolver import resolve_credential, CredentialUnavailableError
 from http_client import get_http_client
 from api.admin.usage import record_usage, validar_ids_de_uso
 from redaccion import recortar_redactado
@@ -26,7 +26,7 @@ async def generate_image(req: ImageRequest, user: AuthUser = Depends(exigir_mesa
     # Task 7: antes de la credencial y del proveedor (0,04 USD por imagen).
     validar_ids_de_uso(user.user_id, user.tenant_id)
     try:
-        api_key = await resolve_credential_instrumented("openai")
+        api_key = await resolve_credential("openai")
     except CredentialUnavailableError:
         raise HTTPException(status_code=503, detail={"code": "credencial_no_disponible", "provider": "openai"})
 

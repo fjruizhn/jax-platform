@@ -128,7 +128,7 @@ def _generar(monkeypatch, exc) -> HTTPException:
     async def cliente():
         return _ClienteQueFalla(exc)
 
-    monkeypatch.setattr(image_mod, "resolve_credential_instrumented", credencial)
+    monkeypatch.setattr(image_mod, "resolve_credential", credencial)
     monkeypatch.setattr(image_mod, "get_http_client", cliente)
     user = AuthUser(user_id="5", tenant_id="1", role="operator")
 

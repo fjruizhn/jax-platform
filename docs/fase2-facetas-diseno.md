@@ -53,9 +53,20 @@ CREATE TABLE facet_binding (
 
 ## C1.3 — Resolver único
 
+> **Nota 2026-09-17 (B1.4 cerrado).** Este documento decía `resolve_credential_instrumented`
+> en 6 lugares. Esa función era la ventana de doble lectura DB→env de la Fase 1 y **se
+> retiró** al cumplirse su criterio de salida: 30 días de journal de `jax-platform`, 2.760
+> líneas `source=db`, **0** líneas `source=env_fallback`, con una rotación real de la llave
+> de Gemini el 2026-09-15 dentro de la ventana. Las referencias de acá en adelante dicen
+> `resolve_credential`, que es lo que hay en el código. La semántica que le importa a la
+> Fase 2 no cambia: sin credencial activa en la DB, `CredentialUnavailableError` —
+> fail-closed. Lo que ya no existe es la caída silenciosa a las `*_API_KEY` del entorno.
+> Detalle en `docs/fase1-credenciales-diseno.md` §4.
+
+
 ```python
 # facet_resolver.py — espejado en jax-platform, jax/core, las_manos (mismo
-# patron que credential_resolver.py). Consume resolve_credential_instrumented,
+# patron que credential_resolver.py). Consume resolve_credential,
 # no lo reimplementa.
 
 FACET_CACHE_TTL_SECONDS = 30      # mismo criterio que credenciales
@@ -74,7 +85,7 @@ async def resolve_facet(facet_key: str) -> ResolvedFacet:
     # SELECT facet.*, facet_binding.provider_id, facet_binding.model_id, facet_binding.params
     # FROM facet JOIN facet_binding ON facet_binding.facet_key = facet.key
     # WHERE facet.key=%s AND facet.status='active' AND facet_binding.role='primary'
-    # credential = await resolve_credential_instrumented(provider_id)  -- Fase 1, sin reimplementar
+    # credential = await resolve_credential(provider_id)  -- Fase 1, sin reimplementar
     # cache TTL 30s / stale 300s, identico a B1.2
 ```
 
@@ -106,7 +117,7 @@ Importable por los 3 despachadores — un solo módulo, no tres espejos de *lóg
 **`_invoke_jekyll` — ANTES** (`executor.py:331-359`, transporte openai-compatible):
 ```python
 async def _invoke_jekyll(prompt: str, timeout: int) -> dict:
-    api_key = await resolve_credential_instrumented("deepseek")
+    api_key = await resolve_credential("deepseek")
     model   = "deepseek-v4-flash"
     url     = "https://api.deepseek.com/chat/completions"
     ...
@@ -127,7 +138,7 @@ async def _invoke_http_openai_compat(f: ResolvedFacet, prompt: str, timeout: int
 **`_invoke_hipatia` — ANTES** (`executor.py:260-326`, formato Gemini + grounding, no colapsa con el openai-compat por el formato de request/response distinto):
 ```python
 async def _invoke_hipatia(prompt: str, timeout: int) -> dict:
-    api_key = await resolve_credential_instrumented("gemini")
+    api_key = await resolve_credential("gemini")
     model   = "gemini-2.5-flash"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     ...
@@ -248,7 +259,7 @@ Captura **best-effort, fire-and-forget** — mismo patrón que la escritura de `
 
 ## D1.3 — Sincronización en tres capas + regla de oro
 
-**a) `/v1/models` del proveedor** (`provider.models_list_url`, credencial vía `resolve_credential_instrumented` — Fase 1, sin reimplementar). Única verdad de disponibilidad para esta cuenta. Upsert en `model` con `source='provider_api'`.
+**a) `/v1/models` del proveedor** (`provider.models_list_url`, credencial vía `resolve_credential` — Fase 1, sin reimplementar). Única verdad de disponibilidad para esta cuenta. Upsert en `model` con `source='provider_api'`.
 
 **b) `models.dev`** (`https://models.dev/api.json`) — enriquecimiento: precio, contexto, tool_use, modalidades, `deprecation_date`. Match por `provider_id`+`model_id` normalizado (minúsculas, sin espacios); sin match → los campos de metadata quedan `NULL`, **nunca bloquea el upsert de (a)**. Todo campo que llegue de aquí se guarda con `source='models_dev'` — si (a) ya trajo el mismo dato con `source='provider_api'`, (a) gana siempre. `axioma_usage`/costo real quedan **fuera de alcance** (ver abajo): esta tabla no alimenta ninguna decisión de costo todavía, solo se muestra como referencia con su procedencia visible.
 
@@ -311,7 +322,7 @@ Aplica la paleta y componentes ya existentes del proyecto (dark/light por CSS va
 - **`axioma_usage`/costos** — roto: `tokens_in`/`tokens_out` siempre en 0, `cost_usd` 0.00 en el 100% de las filas. El precio de `models.dev` (D1.3-b) no sirve para decisiones de costo hasta que se capturen tokens reales. Se muestra en el catálogo solo como referencia con su `source` visible, nunca como base de cálculo.
 - **Retención de backups en R2** (forget+prune fallando en R2) — sin relación con este bloque, no se toca.
 - **Código muerto en `jax/_director_patch/`** — no se toca.
-- **Capa de credenciales de Fase 1** — D1.3 solo la **consume** (`resolve_credential_instrumented`), no se modifica `credential_resolver.py` ni las tablas `provider`/`credential` salvo la extensión aditiva de D1.1 (`api_key_transport`, `models_list_url`), que no cambia semántica existente ni rompe consumidores actuales.
+- **Capa de credenciales de Fase 1** — D1.3 solo la **consume** (`resolve_credential`), no se modifica `credential_resolver.py` ni las tablas `provider`/`credential` salvo la extensión aditiva de D1.1 (`api_key_transport`, `models_list_url`), que no cambia semántica existente ni rompe consumidores actuales.
 
 ---
 

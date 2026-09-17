@@ -24,6 +24,54 @@ for _k, _v in _load_env().items():
 
 os.environ["JAX_DB_NAME"] = "jax_memory_test"
 
+# El runner de CI no tiene /etc/jax/.env, asi que no tiene FERNET_KEY, y sin
+# ella no se pueden sembrar credenciales cifradas en la base de tests. Se
+# genera una por sesion SOLO si falta (en hall9000 sale del .env). setdefault
+# a proposito: los tests que ejercitan una FERNET_KEY ausente o malformada la
+# fijan ellos con monkeypatch.
+if not os.environ.get("FERNET_KEY"):
+    # Sin importar cryptography: dos jobs de CI (no-fail-open-except,
+    # invoke-facet-envoltorio) corren este conftest SIN instalar
+    # requirements.txt, y un import de nivel de modulo los tumba con
+    # ModuleNotFoundError. Una llave Fernet es exactamente 32 bytes al azar
+    # en base64 urlsafe, asi que se arma con la biblioteca estandar.
+    import base64
+
+    os.environ["FERNET_KEY"] = base64.urlsafe_b64encode(os.urandom(32)).decode()
+
+# BARRERA DE ESCRITURA A ARCHIVOS DE PRODUCCIÓN (2026-09-17).
+# Incidente real de ese día: un test llamó a PUT /api/admin/keys/{proveedor},
+# que reescribía /etc/jax/.env con un volcado del diccionario parseado. El
+# archivo de PRODUCCIÓN perdió 28 líneas de comentarios y la llave de OpenAI
+# quedó vacía. Se restauró desde respaldo, pero la lección es que la barrera
+# de la base no cubría los archivos. Fail-closed: cualquier apertura para
+# escritura de un archivo de producción revienta el test que la intenta, con
+# el nombre del archivo, en vez de tocarlo.
+_ARCHIVOS_DE_PRODUCCION = frozenset({ENV_PATH, "/etc/jax/config.toml"})
+_open_real = open
+
+
+class EscrituraEnProduccion(RuntimeError):
+    """Un test intentó escribir un archivo de producción."""
+
+
+def _open_vigilado(file, mode="r", *args, **kwargs):
+    if isinstance(file, (str, bytes, os.PathLike)):
+        ruta = os.fspath(file)
+        if isinstance(ruta, bytes):
+            ruta = ruta.decode("utf-8", "replace")
+        if ruta in _ARCHIVOS_DE_PRODUCCION and any(c in mode for c in "wxa+"):
+            raise EscrituraEnProduccion(
+                f"la suite intentó abrir {ruta} en modo {mode!r}: es un archivo "
+                "de producción. Parcheá la ruta con monkeypatch/tmp_path."
+            )
+    return _open_real(file, mode, *args, **kwargs)
+
+
+import builtins as _builtins  # noqa: E402
+
+_builtins.open = _open_vigilado
+
 # Revisión final del frente E (2026-09-16): el lifespan de la app no arranca sin
 # una JAX_OLLAMA_URL válida, y el fixture `client` lo levanta. Se FIJA (no
 # setdefault) a un host `.invalid` (RFC 6761, nunca resuelve), después de cargar
@@ -51,6 +99,55 @@ os.environ["JAX_PLATFORM_URL"] = DESTINO_DE_SERVICIO_INVALIDO
 # lleve la credencial de producción en sus pedidos (aunque vayan a :9).
 import secrets as _secrets  # noqa: E402
 os.environ["JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA"] = _secrets.token_urlsafe(32)
+# Límites de adjuntos (frente D, 2026-09-16): el lifespan no arranca sin
+# ellos. setdefault y DESPUÉS de cargar /etc/jax/.env: en hall9000 rigen los
+# de producción; en un runner, los de hoy. Los tests que dependen de un valor
+# concreto lo fijan con monkeypatch.setenv.
+for _variable, _valor in (("JAX_ADJUNTO_MAX_BYTES", "10485760"),
+                          ("JAX_ADJUNTO_MAX_CHARS", "8000"),
+                          ("JAX_ADJUNTO_MAX_PAGINAS", "20"),
+                          ("JAX_ADJUNTO_MAX_POR_MENSAJE", "1"),
+                          ("JAX_ADJUNTO_IMAGENES_EN_PROCESO", "1"),
+                          ("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", "1"),
+                          # RD1 (2026-09-17): ProcessPoolExecutor de pypdf.
+                          # El timeout en 5 s (no 1, como el tamaño del pool):
+                          # un spawn arranca un intérprete de Python nuevo, y
+                          # en un runner cargado 1 s de margen sería un falso
+                          # positivo, no una prueba de nada.
+                          ("JAX_ADJUNTO_PDF_PROCESOS", "1"),
+                          ("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "5")):
+    os.environ.setdefault(_variable, _valor)
+
+# Almacén de adjuntos por referencia (RD2, 2026-09-17): directorio aislado
+# para TODA la sesión y FORZADO (no setdefault), por la misma razón que el
+# respaldo de uso más abajo: cuando /etc/jax/.env traiga el directorio real
+# de producción, un test no puede escribir ni limpiar ahí. mkdtemp ya lo crea
+# 0700. El TTL sí es setdefault: rige el de producción si está.
+import tempfile as _tempfile  # noqa: E402
+
+# Final fix wave #2, item 7: la sesión borra ESTE directorio al terminar
+# (pytest_sessionfinish, abajo) y solo este: los `jax-test-adjuntos-*` de otras
+# sesiones (otro worktree corriendo a la vez, restos viejos) no son suyos.
+_ADJUNTOS_DE_LA_SESION = _tempfile.mkdtemp(prefix="jax-test-adjuntos-")
+os.environ["JAX_ADJUNTOS_DIR"] = _ADJUNTOS_DE_LA_SESION
+os.environ.setdefault("JAX_ADJUNTOS_TTL_HORAS", "24")
+# Cuota por usuario (RD6, 2026-09-17): setdefault con el valor de deploy del
+# principal (500 MB), como el resto de los límites. El disco libre mínimo, en
+# cambio, FORZADO al piso del rango (1 GiB): se mide sobre el filesystem del
+# mkdtemp de arriba, no sobre el de producción, y con el valor de producción
+# (50 GB) la suite daría 507 en cualquier máquina con menos libre en /tmp.
+# Los tests de la guarda simulan shutil.disk_usage.
+os.environ.setdefault("JAX_ADJUNTOS_CUOTA_BYTES_USUARIO", "524288000")
+os.environ["JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES"] = "1073741824"
+# Límite de subidas por usuario (RD7): FORZADO al techo del rango (600/min).
+# Los tests de HTTP suben con unos pocos usuarios de prueba dentro del mismo
+# minuto; con el valor de producción en /etc/jax/.env darían 429 según el
+# orden de la suite. Los tests del límite lo fijan con monkeypatch.setenv.
+os.environ["JAX_ADJUNTOS_SUBIDAS_POR_MINUTO"] = "600"
+# Espera antes de un rechazo 401/429 (RD7 fix round): FORZADA a 0 ms. Los tests de HTTP que
+# llegan al 429 no deberían dormir; los que prueban la espera sustituyen
+# `_dormir` y fijan el valor con monkeypatch.setenv.
+os.environ["JAX_ADJUNTOS_RECHAZO_ESPERA_MS"] = "0"
 
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
 # aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture
@@ -211,6 +308,52 @@ def _envolver_portal_call(portal_call):
     return envuelto
 
 
+# Credenciales FICTICIAS en la tabla `credential`, no en variables de entorno
+# (B1.4, 2026-09-17). Antes el job de CI exportaba OPENAI_API_KEY y cuatro
+# hermanas con valores de mentira, y 18 tests pasaban gracias al FALLBACK
+# DB->env. Al retirar el fallback esos 18 se pusieron rojos y mostraron lo que
+# tapaban: el CI nunca ejercito el camino real, que es resolver la credencial
+# contra la base. Ahora se siembra donde produccion la lee.
+#
+# El valor no se usa nunca: los tests stubean la llamada HTTP. Solo tiene que
+# existir y estar activo.
+_CREDENCIALES_DE_PRUEBA = [
+    ("openai", "OPENAI_API_KEY"),
+    ("deepseek", "DEEPSEEK_API_KEY"),
+    ("gemini", "GEMINI_API_KEY"),
+    ("moonshot", "KIMI_API_KEY"),
+    ("zhipu", "ZAI_API_KEY"),
+]
+
+
+def _sembrar_credenciales_de_prueba(c) -> None:
+    from crypto_secrets import encrypt_secret
+    from db.connection import get_pool
+
+    cifrada = encrypt_secret("ci-dummy-not-a-real-key")
+
+    async def _sembrar():
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                for provider_id, env_key in _CREDENCIALES_DE_PRUEBA:
+                    await cur.execute(
+                        "SELECT id FROM credential "
+                        "WHERE provider_id = %s AND state = 'active' LIMIT 1",
+                        (provider_id,),
+                    )
+                    if await cur.fetchone():
+                        continue
+                    await cur.execute(
+                        "INSERT INTO credential "
+                        "(provider_id, env_key, encrypted_value, state, activated_at) "
+                        "VALUES (%s, %s, %s, 'active', NOW())",
+                        (provider_id, env_key, cifrada),
+                    )
+
+    c.portal.call(_sembrar)
+
+
 @pytest.fixture(scope="session")
 def client():
     from fastapi.testclient import TestClient
@@ -218,6 +361,7 @@ def client():
 
     with TestClient(app) as c:
         c.portal.call = _envolver_portal_call(c.portal.call)
+        _sembrar_credenciales_de_prueba(c)
         yield c
 
 
@@ -256,6 +400,20 @@ if _CI_NO_DB:
     os.environ.setdefault("JAX_DB_PORT", "3308")
 
 _NO_DB_REASON = "requiere MariaDB; este runner no tiene DB (JAX_CI_NO_DB=1)"
+
+
+def _borrar_adjuntos_de_la_sesion():
+    """Borra el JAX_ADJUNTOS_DIR que creó esta sesión (item 7). Por la ruta
+    guardada al crearlo, no por os.environ: un test pudo cambiar la variable.
+    Si ya no está, no hay nada que borrar; cualquier otro error se ve.
+    La llama el único pytest_sessionfinish (abajo): pytest registra un solo
+    hook por nombre en el módulo, y el rebase sobre el frente B había dejado
+    dos definiciones, donde la segunda tapaba a esta en silencio."""
+    import shutil
+    try:
+        shutil.rmtree(_ADJUNTOS_DE_LA_SESION)
+    except FileNotFoundError:  # fail-soft: ya no existe, no queda nada que borrar
+        pass
 
 
 def pytest_collection_modifyitems(config, items):
@@ -661,3 +819,4 @@ def pytest_sessionfinish(session, exitstatus):
         print(f"\nBARRERA DEL KILL SWITCH: la suite tocó el freno de producción: {cambios}",
               file=__import__("sys").stderr)
         session.exitstatus = 1
+    _borrar_adjuntos_de_la_sesion()

@@ -168,6 +168,21 @@ export default {
     plan_inconsistente: () => 'El plan guardado del pipeline es inconsistente: no se puede continuar.',
     no_existe: () => 'El pipeline no existe en Jacobs.',
     kill_switch: () => 'El kill switch está activo: no se corre nada hasta que se desactive.',
+    adjunto_demasiado_grande: (d) => `El archivo supera el máximo de ${Math.floor((d?.max_bytes || 0) / 1048576)} MB.`,
+    adjunto_tipo_no_permitido: () => 'Ese tipo de archivo no se puede adjuntar. Se aceptan imágenes PNG, JPEG o WebP, PDF y texto UTF-8.',
+    adjunto_vacio: () => 'El archivo está vacío.',
+    adjunto_no_encontrado: () => 'El adjunto ya no está disponible. Vuelve a adjuntarlo.',
+    adjuntos_demasiados: (d) => (d?.max === 1
+      ? 'Se puede adjuntar hasta 1 archivo por mensaje.'
+      : `Se pueden adjuntar hasta ${d?.max} archivos por mensaje.`),
+    adjuntos_cuota_excedida: (d) => `Llegaste al máximo de ${Math.floor((d?.cuota_bytes || 0) / 1048576)} MB de adjuntos guardados. Los adjuntos vencen solos: vuelve a intentarlo más tarde.`,
+    adjuntos_sin_espacio: () => 'El servidor no tiene espacio para guardar el adjunto ahora. Vuelve a intentarlo más tarde.',
+    adjuntos_subidas_limite: (d) => `Subiste demasiados archivos seguidos. Espera ${d?.retry_after || 60} s y vuelve a intentarlo.`,
+    adjuntos_reintentar: () => 'No se pudo guardar el adjunto en este momento. Vuelve a intentarlo.',
+    adjuntos_no_soportados: () => 'Hyde no recibe adjuntos en el chat: usa el modo Comando.',
+    imagen_no_soportada: () => 'El modelo de esta faceta no acepta imágenes. Elige otra faceta o quita la imagen.',
+    pdf_ilegible: () => 'No se pudo leer el PDF: está dañado o protegido con contraseña.',
+    pdf_sin_texto: () => 'El PDF no tiene texto que se pueda extraer (¿es un escaneo?).',
     // Frente B (2026-09-17): 423 de chat, imagen, comando y pipelines con el freno puesto.
     kill_switch_activo: () => 'Kill switch activo: JAX está detenido',
   },
@@ -411,6 +426,9 @@ export default {
   attachUploading: 'Subiendo…',
   attachError: 'Error al subir archivo',
   attachReady: '✓ listo',
+  adjuntoPoliticaNoDisponible: 'No se pudo cargar qué archivos se aceptan: adjuntar está desactivado.',
+  adjuntoImagenSinSoporte: (faceta) => `${faceta} no acepta imágenes: elige otra faceta o quita la imagen.`,
+  adjuntoRecortado: 'Recortado al máximo de caracteres',
 
   // Admin module
   adminTitle: 'Administración',

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../api/client', () => ({
   default: {
@@ -119,6 +119,11 @@ describe('logout', () => {
     vi.clearAllMocks()
   })
 
+  // Fix round 1 (review de ca8bb15): si el stub se restaura al final del
+  // cuerpo del test, una aserción que tira ANTES de llegar ahí lo deja filtrado
+  // a los tests siguientes. afterEach corre siempre, incluso con el test roto.
+  afterEach(() => vi.unstubAllGlobals())
+
   it('llama a /auth/logout una vez, con la sesión todavía puesta, y después limpia', async () => {
     let tokenAlLlamar
     api.post.mockImplementation(() => {
@@ -162,6 +167,28 @@ describe('logout', () => {
     expect(api.post).toHaveBeenCalledTimes(1)
     expect(useJaxStore.getState().token).toBeNull()
     expect(useJaxStore.getState().user).toBeNull()
+  })
+
+  // RD4 (2026-09-17, Ruling R23-4): la miniatura de un adjunto de imagen en
+  // el historial usa su propio object URL (adjuntos.js: vistaDeAdjunto).
+  // logout() es el único hook de reseteo de sesión que vacía `messages` --
+  // tiene que revocarlos ANTES de vaciar, o quedan colgados para siempre.
+  it('revoca los object URL de las miniaturas del historial antes de vaciarlo', async () => {
+    vi.stubGlobal('URL', { ...URL, revokeObjectURL: vi.fn() })
+    useJaxStore.setState({
+      messages: [
+        { id: '1', facet: 'user', content: 'hola', attachment: { type: 'image', filename: 'f.png', base64: 'blob:abc' } },
+        { id: '2', facet: 'user', content: 'otra', attachment: { type: 'image', filename: 'g.png', base64: 'blob:def' } },
+        { id: '3', facet: 'user', content: 'texto', attachment: { type: 'text', filename: 'i.pdf' } },
+        { id: '4', facet: 'thot', content: 'sin adjunto' },
+      ],
+    })
+    api.post.mockResolvedValue({ data: { ok: true } })
+    await useJaxStore.getState().logout()
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:abc')
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:def')
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2)
+    expect(useJaxStore.getState().messages).toEqual([])
   })
 })
 

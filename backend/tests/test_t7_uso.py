@@ -161,7 +161,7 @@ def test_imagen_con_tenant_vacio_no_resuelve_credencial_ni_llama(monkeypatch):
         llamadas.append("cliente")
         raise AssertionError("no se llega al proveedor")
 
-    monkeypatch.setattr(image_mod, "resolve_credential_instrumented", credencial)
+    monkeypatch.setattr(image_mod, "resolve_credential", credencial)
     monkeypatch.setattr(image_mod, "get_http_client", cliente)
     with pytest.raises(HTTPException) as e:
         asyncio.run(image_mod.generate_image(image_mod.ImageRequest(prompt="gato"), user=_usuario("")))

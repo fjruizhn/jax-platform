@@ -205,8 +205,12 @@ CREATE TABLE IF NOT EXISTS shadow_vocab_hits (
 
 # Fase 1 — DB como fuente de verdad para credenciales de proveedor (R3).
 # Ver jax-platform/docs/fase1-credenciales-diseno.md. user_api_keys NO se
-# toca — sigue siendo la red de seguridad hasta que el corte de B1.4 esté
-# verificado (7 dias sin lecturas source=env_fallback).
+# toca. El corte de B1.4 quedó verificado el 2026-09-17 (30 dias de journal,
+# 2.760 lineas source=db, CERO source=env_fallback, con rotacion real de la
+# llave de Gemini el 2026-09-15) y el fallback a las env vars se retiró: la
+# resolucion lee SOLO de `credential`. user_api_keys sigue existiendo para el
+# admin legacy (api/admin/keys.py); retirarlo o dejarlo en solo lectura es la
+# decision aparte que anota B1.5.
 CREATE_PROVIDER = """
 CREATE TABLE IF NOT EXISTS provider (
   id VARCHAR(50) NOT NULL PRIMARY KEY,

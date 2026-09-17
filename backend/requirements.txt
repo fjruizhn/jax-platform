@@ -21,3 +21,8 @@ psutil>=5.9
 # del repo `jax`, que lee YAML: si un dia uvicorn deja de traerlo, el backend
 # no arranca por una dependencia que nunca dijimos que necesitabamos.
 PyYAML>=6.0
+# Extracción de texto de PDF adjuntos (frente D, 2026-09-16). Versión FIJADA
+# tras revisar licencia (BSD-3-Clause), soporte de Python 3.14 y CHANGELOG de
+# seguridad en PyPI/GitHub -- ver el ledger del frente D. Reemplaza la rama
+# `import pdfplumber`, que nunca estuvo instalada (todo PDF daba 422).
+pypdf==6.19.0

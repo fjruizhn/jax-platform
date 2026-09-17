@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 import user_audit
+from adjuntos import almacen as almacen_de_adjuntos
 import smtp_config
 from api import auth as auth_api
 from auth import rate_limit
@@ -547,4 +548,21 @@ async def dar_de_baja(user_id: int, request: Request, user: AuthUser = Depends(r
         await cur.execute("DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE", (user_id,))
         await user_audit.registrar(cur, actor_id, user_id, "baja", {"email": email_actual}, _ip(request))
     await _cortar_conexiones(user_id)
+    await _borrar_adjuntos(user_id)
     return {"ok": True}
+
+
+async def _borrar_adjuntos(user_id: int) -> None:
+    """RD2 (2026-09-17): los adjuntos subidos por un dado de baja se borran
+    ya, sin esperar a su vencimiento. Tras el commit y best-effort: la baja
+    ya está hecha, y lo que no se pueda borrar acá lo borra el limpiador al
+    vencer (JAX_ADJUNTOS_TTL_HORAS); nadie más puede leerlo mientras tanto,
+    porque la lectura exige al dueño y el dueño ya no tiene sesión."""
+    try:
+        borrados = await asyncio.to_thread(
+            almacen_de_adjuntos.borrar_de_usuario, almacen_de_adjuntos.cargar_directorio(), str(user_id))
+        if borrados:
+            logger.info("baja de %s: %s archivo(s) de adjuntos borrados", user_id, borrados)
+    except Exception:  # fail-soft: la baja ya se confirmó en la base; los adjuntos que queden vencen por TTL y solo su dueño (sin sesión) podría leerlos
+        logger.warning("baja de %s: no se pudieron borrar sus adjuntos; quedan hasta su vencimiento",
+                       user_id, exc_info=True)

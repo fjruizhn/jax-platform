@@ -1,7 +1,7 @@
 """
 Resolver de facetas — Bloque C (facet/facet_binding como fuente unica
 faceta->modelo). Espejo minimo en jax-platform, jax/core, las_manos, mismo
-patron que credential_resolver.py. Consume resolve_credential_instrumented,
+patron que credential_resolver.py. Consume resolve_credential,
 no reimplementa Fase 1. Ver jax-platform/docs/fase2-facetas-diseno.md.
 """
 import logging
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import aiomysql
 
-from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
+from credential_resolver import resolve_credential, CredentialUnavailableError
 from db_connect_config import db_connect_timeout_seconds
 
 logger = logging.getLogger("facet_resolver")
@@ -78,6 +78,13 @@ class ResolvedFacet:
     # default aca: el dispatch falla ruidoso (ver _max_output_tokens_value() en
     # api/chat.py).
     max_output_tokens: int | None
+    # input_modalities (frente D, 2026-09-16): MISMA DIVERGENCIA DELIBERADA
+    # que max_tokens_param/max_output_tokens -- existe solo en la copia de
+    # jax-platform, su unico consumidor es api/chat.py (adjuntos de imagen).
+    # Viene de model.input_modalities por el MISMO JOIN de _query_facet.
+    # Default vacio = "no acepta imagen": fail-closed, y los llamadores que
+    # construyen ResolvedFacet sin el campo (tests, sonda) no cambian.
+    input_modalities: frozenset[str] = frozenset()
 
 
 class _CacheEntry:
@@ -251,13 +258,25 @@ async def _db_conn() -> aiomysql.Connection:
     )
 
 
+def _modalidades(valor) -> frozenset[str]:
+    """model.input_modalities es un SET de MariaDB: el driver lo puede
+    entregar como 'text,image' o como un set de Python. Se normaliza aca."""
+    if not valor:
+        return frozenset()
+    if isinstance(valor, (set, frozenset)):
+        return frozenset(valor)
+    return frozenset(p for p in str(valor).split(",") if p)
+
+
 async def _query_facet(facet_key: str) -> ResolvedFacet:
     """DIVERGENCIA DELIBERADA DE LOS ESPEJOS -- leer antes de "sincronizar".
-    Esta copia selecciona ademas m.max_tokens_param y m.max_output_tokens y
-    los pasa a ResolvedFacet; las copias de jax/core y las_manos NO, porque
-    ese campo solo lo consume el envoltorio HTTP de jax-platform (ver el
-    comentario homonimo en ResolvedFacet). La ausencia en las otras dos NO es
-    drift accidental. `scripts/check_facet_resolver_sync.py` reconoce este
+    Esta copia selecciona ademas m.max_tokens_param, m.max_output_tokens y
+    m.input_modalities y los pasa a ResolvedFacet; las copias de jax/core y
+    las_manos NO, porque ese campo solo lo consume el envoltorio HTTP de
+    jax-platform (ver el comentario homonimo en ResolvedFacet). Frente D
+    (2026-09-16): tambien m.input_modalities, por el mismo motivo. La
+    ausencia en las otras dos NO es drift accidental.
+    `scripts/check_facet_resolver_sync.py` reconoce este
     marcador y no reporta esta funcion como drift; si el dia de manana la
     divergencia deja de ser deliberada, se borra el marcador y el checker
     vuelve a gritar.
@@ -272,7 +291,7 @@ async def _query_facet(facet_key: str) -> ResolvedFacet:
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT f.transport, f.persona, p.base_url, b.provider_id, m.model_id, b.params, "
-                "m.max_tokens_param, m.max_output_tokens "
+                "m.max_tokens_param, m.max_output_tokens, m.input_modalities "
                 "FROM facet f "
                 "JOIN facet_binding b ON b.facet_key = f.`key` AND b.role = 'primary' "
                 "JOIN provider p ON p.id = b.provider_id "
@@ -286,12 +305,12 @@ async def _query_facet(facet_key: str) -> ResolvedFacet:
     if not row:
         raise FacetUnavailableError(f"sin binding activo para facet '{facet_key}'")
     (transport, persona, base_url, provider_id, model_id, params,
-     max_tokens_param, max_output_tokens) = row
+     max_tokens_param, max_output_tokens, input_modalities) = row
 
     credential = ""
     if transport not in ("ollama", "subprocess"):  # ollama/subprocess no usan credencial de proveedor gestionada aqui
         try:
-            credential = await resolve_credential_instrumented(provider_id)
+            credential = await resolve_credential(provider_id)
         except CredentialUnavailableError as e:
             raise FacetUnavailableError(f"facet '{facet_key}': {e}") from e
 
@@ -299,6 +318,7 @@ async def _query_facet(facet_key: str) -> ResolvedFacet:
         key=facet_key, provider_id=provider_id, base_url=base_url, model=model_id,
         credential=credential, transport=transport, persona=persona, params=params,
         max_tokens_param=max_tokens_param, max_output_tokens=max_output_tokens,
+        input_modalities=_modalidades(input_modalities),
     )
 
 
