@@ -5,6 +5,7 @@ import os
 from tiempo import utc_ahora
 import httpx
 from http_client import get_http_client
+from credencial_las_manos import encabezados_las_manos
 from db.connection import get_pool
 from .schemas import (
     EcosystemState, FacetState, PipelineState, PipelineStep, UserSession, JAXEvent
@@ -192,7 +193,8 @@ class JAXEngineState:
 
     async def _poll_one_pipeline(self, client: httpx.AsyncClient, pid: str, pipeline: PipelineState):
         try:
-            r = await client.get(f"{LAS_MANOS_URL}/jacobs/pipeline/{pid}", timeout=5.0)
+            r = await client.get(f"{LAS_MANOS_URL}/jacobs/pipeline/{pid}", timeout=5.0,
+                                 headers=encabezados_las_manos())
             if r.status_code != 200:
                 return
             data = r.json()

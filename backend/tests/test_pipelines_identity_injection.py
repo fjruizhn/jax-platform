@@ -4,7 +4,10 @@ real -- create_pipeline dependia de lo que mandara el front (hasta
 backend), resume_pipeline lo hardcodeaba en Python directamente. Ninguno de
 los dos debe confiar en identidad que venga del cliente para algo que se
 usa para atribuir costo."""
+import os
+
 from auth.jwt import create_access_token
+from credencial_las_manos import ENCABEZADO, VARIABLE
 
 USER_ID = "1"
 TENANT_ID = "test-pipelines-identity-tenant"
@@ -19,15 +22,16 @@ def test_create_pipeline_inyecta_identidad_real(client, monkeypatch):
     captured = {}
 
     class _FakeClient:
-        async def post(self, url, json=None, timeout=None):
+        async def post(self, url, json=None, timeout=None, headers=None):
             captured["url"] = url
             captured["json"] = json
+            captured["headers"] = headers
             class _R:
                 status_code = 200
                 def json(self):
                     return {"pipeline_id": None}
             return _R()
-        async def get(self, url, timeout=None):
+        async def get(self, url, timeout=None, headers=None):
             class _R:
                 def json(self):
                     return {}
@@ -59,14 +63,19 @@ def test_create_pipeline_inyecta_identidad_real(client, monkeypatch):
     # tanda A (2026-09-14): invoked_by es un ROL que pone el backend, igual que
     # la identidad; lo que mande el cliente se pisa.
     assert captured["json"]["invoked_by"] == "plataforma"
+    # 2026-09-17: LAS MANOS exige la credencial de servicio de la plataforma
+    # (la fija conftest por sesión); el pedido sin ella no puede salir.
+    assert captured["headers"] is not None
+    assert captured["headers"].get(ENCABEZADO) == os.environ[VARIABLE]
 
 
 def test_resume_pipeline_inyecta_identidad_real(client, monkeypatch):
     captured = {}
 
     class _FakeClient:
-        async def post(self, url, json=None, timeout=None):
+        async def post(self, url, json=None, timeout=None, headers=None):
             captured["json"] = json
+            captured["headers"] = headers
             class _R:
                 def json(self):
                     return {"ok": True}
@@ -94,3 +103,7 @@ def test_resume_pipeline_inyecta_identidad_real(client, monkeypatch):
     assert captured["json"]["invoked_by"] == "plataforma"
     assert captured["json"]["user_id"] != "Fernando"
     assert captured["json"]["tenant_id"] != "Fernando"
+    # 2026-09-17: LAS MANOS exige la credencial de servicio de la plataforma
+    # (la fija conftest por sesión); el pedido sin ella no puede salir.
+    assert captured["headers"] is not None
+    assert captured["headers"].get(ENCABEZADO) == os.environ[VARIABLE]

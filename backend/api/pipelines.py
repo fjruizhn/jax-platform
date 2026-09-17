@@ -8,6 +8,7 @@ from auth.models import AuthUser
 from kill_switch import exigir_mesa_libre
 from db.connection import get_pool
 from http_client import get_http_client
+from credencial_las_manos import encabezados_las_manos
 from jax_engine.resource_manager import resource_manager
 from jax_engine.state import engine_state
 from jax_engine.schemas import PipelineState
@@ -129,7 +130,8 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(exigir_mesa
     body["invoked_by"] = INVOKED_BY_PLATAFORMA
     client = await get_http_client()
     try:
-        r = await client.post(f"{JACOBS_URL}/pipeline", json=body, timeout=JACOBS_PIPELINE_TIMEOUT)
+        r = await client.post(f"{JACOBS_URL}/pipeline", json=body, timeout=JACOBS_PIPELINE_TIMEOUT,
+                              headers=encabezados_las_manos())
         data = r.json()
         if r.status_code != 200:
             # Jacobs rechazó el pipeline (ej. 422 límite de concurrentes,
@@ -166,7 +168,8 @@ async def get_pipeline_results(pipeline_id: str, user: AuthUser = Depends(get_cu
     await _require_pipeline_owner(pipeline_id, user)
     client = await get_http_client()
     try:
-        r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}/results", timeout=10.0)
+        r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}/results", timeout=10.0,
+                             headers=encabezados_las_manos())
         return r.json()
     except Exception as e:
         raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
@@ -177,7 +180,8 @@ async def get_pipeline(pipeline_id: str, user: AuthUser = Depends(get_current_us
     await _require_pipeline_owner(pipeline_id, user)
     client = await get_http_client()
     try:
-        r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}", timeout=5.0)
+        r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}", timeout=5.0,
+                             headers=encabezados_las_manos())
         return r.json()
     except Exception as e:
         raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
@@ -195,6 +199,7 @@ async def resume_pipeline(
             f"{JACOBS_URL}/pipeline/{pipeline_id}/resume",
             json={"invoked_by": INVOKED_BY_PLATAFORMA, "user_id": user.user_id, "tenant_id": user.tenant_id},
             timeout=10.0,
+            headers=encabezados_las_manos(),
         )
         return r.json()
     except Exception as e:
@@ -209,7 +214,8 @@ async def cancel_pipeline(
     await _require_pipeline_owner(pipeline_id, user)
     client = await get_http_client()
     try:
-        r = await client.post(f"{JACOBS_URL}/pipeline/{pipeline_id}/cancel", timeout=10.0)
+        r = await client.post(f"{JACOBS_URL}/pipeline/{pipeline_id}/cancel", timeout=10.0,
+                              headers=encabezados_las_manos())
         if r.status_code == 200:
             engine_state.remove_pipeline(pipeline_id)
             await resource_manager.release_pipeline(user.tenant_id, pipeline_id)
