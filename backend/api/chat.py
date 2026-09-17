@@ -78,20 +78,6 @@ CONFIG_PATH = os.getenv(
     "JAX_CONFIG_PATH", os.path.expanduser("~/jax/config/config.toml")
 )
 
-# Carga el .env de JAX una vez al importar el módulo
-def _load_jax_env():
-    try:
-        with open("/etc/jax/.env") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    os.environ.setdefault(k.strip(), v.strip())
-    except FileNotFoundError:  # fail-soft: FileNotFoundError acotado a 'no existe .env' — no oculta otros errores de lectura, y cada os.getenv() de abajo ya trae su propio default explicito
-        pass
-
-_load_jax_env()
-
 # --- Memoria semántica COMPARTIDA con el REPL (MISMA MariaDB jax_memory) ----
 # Reutiliza la clase MemoryDB del núcleo (~/jax) — no duplica memoria ni lógica.
 # Degrada elegante: si no carga o la base cae, el chat sigue SIN memoria.

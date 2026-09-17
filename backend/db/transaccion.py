@@ -12,7 +12,9 @@ from .connection import get_pool
 # `aislamiento` (fix ronda 1 de la Task 2, 2026-09-15): nivel para ESTA
 # transacción sola (`SET TRANSACTION`, sin SESSION: la conexión vuelve al pool
 # con el nivel por defecto). Lista cerrada: el valor va interpolado en el SQL.
-AISLAMIENTOS = frozenset({"READ COMMITTED", "REPEATABLE READ"})
+# Frente A (2026-09-16, A-28): solo READ COMMITTED -- ningún llamador pidió
+# otro nivel (U33); uno nuevo se agrega acá cuando exista quien lo use.
+AISLAMIENTOS = frozenset({"READ COMMITTED"})
 
 # READ COMMITTED: bloquea solo filas, sin huecos. Nació para las escrituras de
 # admin sobre jax_users (el porqué, en api/admin/users.py, que lo reexporta con

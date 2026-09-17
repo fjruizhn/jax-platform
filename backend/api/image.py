@@ -1,5 +1,4 @@
 import base64
-import os
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import httpx
@@ -13,21 +12,6 @@ from api.admin.usage import record_usage, validar_ids_de_uso
 from redaccion import recortar_redactado
 
 router = APIRouter(prefix="/api")
-
-
-def _load_jax_env():
-    try:
-        with open("/etc/jax/.env") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    os.environ.setdefault(k.strip(), v.strip())
-    except FileNotFoundError:  # fail-soft: mismo patron que chat.py: FileNotFoundError acotado, no oculta otros errores, defaults explicitos aguas abajo
-        pass
-
-
-_load_jax_env()
 
 
 class ImageRequest(BaseModel):

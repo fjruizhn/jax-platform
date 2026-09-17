@@ -55,7 +55,6 @@ def _steps_fingerprint(steps: list[PipelineStep]) -> str:
 class JAXEngineState:
     def __init__(self):
         self._state = EcosystemState()
-        self._user_tenant_map: dict[str, str] = {}
         self._init_facets()
         self._poller_task: asyncio.Task | None = None
 
@@ -74,11 +73,9 @@ class JAXEngineState:
         self._state.connected_users[user_id] = UserSession(
             user_id=user_id, tenant_id=tenant_id, role=role
         )
-        self._user_tenant_map[user_id] = tenant_id
 
     def unregister_user(self, user_id: str):
         self._state.connected_users.pop(user_id, None)
-        self._user_tenant_map.pop(user_id, None)
 
     async def set_facet_status(self, facet: str, status: str, tenant_id: str, user_id: str, message: str = ""):
         if facet not in self._state.facets:
@@ -212,10 +209,7 @@ class JAXEngineState:
                     event_type="human_gate_requested",
                     tenant_id=pipeline.tenant_id,
                     user_id=updated.user_id,
-                    payload={
-                        "pipeline_id": pid,
-                        "message": "Jacobs espera aprobación para continuar",
-                    },
+                    payload={"pipeline_id": pid},
                 )
                 await event_bus.publish(gate_event)
 

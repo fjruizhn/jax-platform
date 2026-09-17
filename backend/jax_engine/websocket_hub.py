@@ -12,8 +12,6 @@ class WebSocketHub:
         self._lock = asyncio.Lock()
 
     async def connect(self, user_id: str, websocket: WebSocket) -> str:
-        if getattr(getattr(websocket, "application_state", None), "name", "") != "CONNECTED":
-            await websocket.accept()
         connection_id = str(uuid.uuid4())
         async with self._lock:
             self._connections.setdefault(user_id, {})[connection_id] = websocket

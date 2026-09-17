@@ -99,10 +99,9 @@ CREATE TABLE IF NOT EXISTS user_api_keys (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
-# NOTA: la exclusividad de is_active (un solo modelo activo por faceta) NO se
-# aplica con un trigger — MariaDB rechaza (ERROR 1442) que un trigger
-# modifique la misma tabla que lo disparó. Se aplica a nivel de aplicación
-# en api/admin/facet_models.py (transacción con 2 UPDATE).
+# NOTA: la exclusividad de is_active (un solo modelo activo por faceta) la
+# aplicaba el router legado de facet_models, borrado el 2026-09-16 (frente A,
+# A-34); la tabla queda como dato histórico sin escritor.
 CREATE_FACET_MODELS = """
 CREATE TABLE IF NOT EXISTS facet_models (
   id INT AUTO_INCREMENT PRIMARY KEY,

@@ -115,7 +115,7 @@ cd ~/jax-platform/frontend && npm install
 - **Python 3.12 + venv** por servicio:
 ```bash
 cd ~/jax-platform/backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-# (requirements ahora incluye aiosmtplib + psutil de la feature auth/admin)
+# (requirements ahora incluye psutil de la feature auth/admin)
 ```
 - **Ollama models** (~16 GB, requieren GPU RX 9060 XT / Vulkan):
 ```bash
