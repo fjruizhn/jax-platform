@@ -544,7 +544,7 @@ CREATE TABLE IF NOT EXISTS facet_health_event (
     outcome ENUM('ok','provider_error','gate_denied','gate_unreachable',
                  'unbound','unsupported_transport','probe_error',
                  'config_error') NOT NULL,
-    source  ENUM('chat','canary_periodic','canary_rebind') NOT NULL,
+    source  ENUM('chat','canary_periodic','canary_rebind','preflight') NOT NULL,
     detail  VARCHAR(255) NULL,
     ts      DOUBLE NOT NULL,
     KEY idx_facet_ts (facet, ts),
@@ -1458,6 +1458,12 @@ _COLUMNS = [
     # 2026-09-14 (ver spec §0 v3), conservando los valores.
     ("capability", "mode",
      "ALTER TABLE capability ADD COLUMN mode VARCHAR(16) NULL"),
+    # Pre-vuelo (spec 2026-09-17 §4.4): tokens de salida que una capability
+    # necesita como mínimo. Jacobs compara el tope efectivo del paso contra
+    # esto y rechaza con `tope_insuficiente`. 0 = sin mínimo declarado. La
+    # semilla MEDIDA la pone _semilla_min_output_tokens_v1.
+    ("capability", "min_output_tokens",
+     "ALTER TABLE capability ADD COLUMN min_output_tokens INT NOT NULL DEFAULT 0"),
 ]
 
 
@@ -1525,6 +1531,14 @@ _ENUM_EXTENSIONS = [
         "provider", "api_key_transport", "header_goog_api_key",
         "ALTER TABLE provider MODIFY COLUMN api_key_transport "
         "ENUM('header_bearer','query_param','header_goog_api_key') NOT NULL DEFAULT 'header_bearer'",
+    ),
+    # Pre-vuelo (spec 2026-09-17 §4.5): la sonda de Jacobs registra su
+    # resultado con source='preflight', así el próximo pre-vuelo dentro de la
+    # ventana de salud no vuelve a sondear. Lista COMPLETA de valores.
+    (
+        "facet_health_event", "source", "preflight",
+        "ALTER TABLE facet_health_event MODIFY COLUMN source "
+        "ENUM('chat','canary_periodic','canary_rebind','preflight') NOT NULL",
     ),
 ]
 
