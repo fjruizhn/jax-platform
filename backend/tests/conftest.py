@@ -51,6 +51,15 @@ os.environ["JAX_PLATFORM_URL"] = DESTINO_DE_SERVICIO_INVALIDO
 # lleve la credencial de producción en sus pedidos (aunque vayan a :9).
 import secrets as _secrets  # noqa: E402
 os.environ["JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA"] = _secrets.token_urlsafe(32)
+# Límites de adjuntos (frente D, 2026-09-16): el lifespan no arranca sin
+# ellos. setdefault y DESPUÉS de cargar /etc/jax/.env: en hall9000 rigen los
+# de producción; en un runner, los de hoy. Los tests que dependen de un valor
+# concreto lo fijan con monkeypatch.setenv.
+for _variable, _valor in (("JAX_ADJUNTO_MAX_BYTES", "10485760"),
+                          ("JAX_ADJUNTO_MAX_CHARS", "8000"),
+                          ("JAX_ADJUNTO_MAX_PAGINAS", "20"),
+                          ("JAX_ADJUNTO_MAX_POR_MENSAJE", "1")):
+    os.environ.setdefault(_variable, _valor)
 
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
 # aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture

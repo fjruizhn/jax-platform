@@ -47,6 +47,7 @@ _cred_logger.addHandler(_cred_handler)
 _cred_logger.propagate = False
 
 import ajustes
+from adjuntos import limites as limites_de_adjuntos
 from db.connection import get_pool, close_pool
 from http_client import get_http_client, close_http_client
 from db.migrations import run_migrations
@@ -105,6 +106,10 @@ async def lifespan(app: FastAPI):
     # SP3 del Ejecutor (2026-09-17): sin directorio del carril la Mesa no puede tomar su
     # prioridad sobre el Ejecutor. Mismo criterio que JAX_OLLAMA_URL: no arranca.
     _raiz_del_carril()
+    # Frente D (2026-09-16): sin límites de adjuntos configurados no se
+    # arranca. Antes que la base: es config, no depende de nada. Por atributo
+    # del módulo (no `from ... import`) para que el test lo pueda sustituir.
+    limites_de_adjuntos.cargar_limites()
     await get_pool()
     await get_http_client()
     await run_migrations()
