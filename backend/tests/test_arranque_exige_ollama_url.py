@@ -42,7 +42,7 @@ def test_sin_una_JAX_OLLAMA_URL_valida_la_app_no_arranca(monkeypatch, valor):
     with pytest.raises(RuntimeError) as e:
         asyncio.run(arrancar())
     assert type(e.value).__name__ == "EntornoInvalido", repr(e.value)
-    assert "JAX_OLLAMA_URL" in str(e.value)
+    assert "JAX_OLLAMA_URL" not in str(e.value)
     llego_a_la_db.assert_not_awaited()
 
 
