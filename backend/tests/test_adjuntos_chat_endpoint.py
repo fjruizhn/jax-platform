@@ -311,6 +311,38 @@ def test_ajeno_vencido_desconocido_y_roto_son_el_mismo_404_sin_efectos(client, g
     assert espias.estados == []          # nunca "thinking"
 
 
+def test_una_imagen_ajena_o_desconocida_a_faceta_sin_vision_es_el_404_y_no_el_422(client, grabador, monkeypatch):
+    """Ruling R26 (2), fijado en el Final fix wave #2: el chequeo de visión usa
+    el `tipo` del sidecar, así que solo puede correr DESPUÉS de una búsqueda
+    atada al dueño. Un id bien formado de una imagen AJENA, o uno desconocido,
+    mandado a una faceta SIN visión tiene que dar el mismo 404
+    `adjunto_no_encontrado` byte a byte: un 422 `imagen_no_soportada` diría
+    "existe y es una imagen". Sin memoria, sin estado, sin authorize-facet ni
+    proveedor, y sin leer la imagen. Control: la misma clase de imagen, del
+    propio usuario, sí es 422 (si no, el test no distinguiría nada)."""
+    _resolver(monkeypatch, "http_openai_compat", frozenset({"text"}))
+    espias = _Espias(monkeypatch)
+
+    async def prohibido(*a, **k):
+        raise AssertionError("no se lee ninguna imagen en un rechazo")
+
+    monkeypatch.setattr(almacen, "leer_imagen_en_base64", prohibido)
+    ajena = _guardar_imagen(AuthUser(user_id="999999992", tenant_id="1", role="operator"))["id"]
+    desconocida = almacen.nuevo_id()
+    cuerpo_404 = json.dumps({"detail": {"code": "adjunto_no_encontrado"}}, separators=(",", ":")).encode()
+    for id_ in (ajena, desconocida):
+        r = _chat(client, [{"id": id_}], facet="jekyll", message="mirá")
+        assert r.status_code == 404, r.text
+        assert r.content == cuerpo_404
+    assert grabador.pedidos == []
+    assert espias.memoria == [] and espias.estados == []
+
+    propia = _guardar_imagen(_duenio(client))["id"]
+    control = _chat(client, [{"id": propia}], facet="jekyll", message="mirá")
+    assert control.status_code == 422, control.text
+    assert control.json()["detail"]["code"] == "imagen_no_soportada"
+
+
 def test_el_404_no_dice_cual_de_los_ids_fallo(client, grabador, monkeypatch):
     monkeypatch.setenv("JAX_ADJUNTO_MAX_POR_MENSAJE", "2")
     _resolver(monkeypatch)
