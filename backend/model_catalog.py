@@ -178,6 +178,21 @@ async def sync_provider_models(provider_id: str) -> dict:
     return {"provider_id": provider_id, "fetched": len(seen_ids)}
 
 
+async def _capacidades_ollama(url_show: str, model_id: str) -> list[str] | None:
+    """capabilities de POST /api/show (p. ej. ["completion","vision"]).
+    None si no se pudo saber: el llamador NO toca input_modalities en ese
+    caso (no se degrada un dato bueno por un show caido)."""
+    client = await get_http_client()
+    try:
+        resp = await client.post(url_show, json={"model": model_id}, timeout=15.0)
+        resp.raise_for_status()
+        caps = resp.json().get("capabilities")
+    except Exception as e:  # fail-soft: sin /api/show no se sabe la modalidad; se devuelve None y la fila conserva su valor, logueado con el tipo
+        logger.warning(f"model_catalog ollama show fallo model={model_id} reason={type(e).__name__}")
+        return None
+    return caps if isinstance(caps, list) else None
+
+
 async def _sync_ollama_models(url: str) -> dict:
     """Ollama es local, sin API key (provider.auth_type='none') — /api/tags
     no lleva ningun header, a diferencia de todos los demas providers.
@@ -205,6 +220,17 @@ async def _sync_ollama_models(url: str) -> dict:
     seen = {m["model"]: m.get("digest") for m in entries}
     seen_ids = set(seen.keys())
 
+    # Frente D (2026-09-16): la modalidad de entrada sale de /api/show, ANTES
+    # de tomar la conexion (no se retiene una conexion del pool durante HTTP).
+    # Misma base que models_list_url (la fila `provider` de ollama), no una
+    # URL nueva.
+    url_show = url.rsplit("/api/tags", 1)[0] + "/api/show"
+    modalidades: dict[str, str] = {}
+    for model_id in seen:
+        caps = await _capacidades_ollama(url_show, model_id)
+        if caps is not None:
+            modalidades[model_id] = "text,image" if "vision" in caps else "text"
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -231,6 +257,13 @@ async def _sync_ollama_models(url: str) -> dict:
                     + (", digest_changed_at=NOW()" if digest_changed else ""),
                     (model_id, digest),
                 )
+
+                if model_id in modalidades:
+                    await cur.execute(
+                        "UPDATE model SET input_modalities=%s "
+                        "WHERE provider_id='ollama' AND model_id=%s",
+                        (modalidades[model_id], model_id),
+                    )
 
             await cur.execute(
                 "SELECT id, model_id, consecutive_misses FROM model "
