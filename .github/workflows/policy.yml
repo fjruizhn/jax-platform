@@ -1453,7 +1453,13 @@ jobs:
           # token_version ni password_hash). Mismo hueco ambiental (1 failed de
           # grounding), 1 skip. Medido dos veces: 1386 passed / 1 failed / 1
           # skipped.
-          PISO_PASSED = 1386
+          # 1386 -> 1392 el 2026-09-17 (migraciones sin JWT): +6 en
+          # test_migraciones_sin_jwt.py (auth/constantes.py sin efectos al
+          # importarse; el job jacobs-gobernanza-db de jax corre las
+          # migraciones sin JAX_JWT_SECRET). Vistos en rojo contra accc641.
+          # Mismo hueco ambiental (1 failed de grounding), 1 skip. Medido dos
+          # veces: 1392 passed / 1 failed / 1 skipped.
+          PISO_PASSED = 1392
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1969,7 +1975,13 @@ jobs:
       # 2026-09-17 (frente C, revisión final): los 5 tests nuevos piden
       # `client`, así que el piso no se mueve y los skips suben 596 -> 601.
       # Medido con JAX_CI_NO_DB=1: 787 passed / 601 skipped.
-      JAX_CI_MIN_PASSED: "787"
+      # 787 -> 793 el 2026-09-17 (migraciones sin JWT): +6 puros en
+      # test_migraciones_sin_jwt.py (db.migrations, ajustes y auth.constantes
+      # se importan sin JAX_JWT_SECRET con el env del job jacobs-gobernanza-db
+      # de jax; auth.jwt y main siguen fallando cerrado; una sola vida del
+      # access token). Vistos en rojo contra accc641 (4 failed / 2 passed).
+      # Skips sin cambio. Medido con JAX_CI_NO_DB=1: 793 passed / 601 skipped.
+      JAX_CI_MIN_PASSED: "793"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
