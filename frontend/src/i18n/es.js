@@ -96,7 +96,6 @@ export default {
     adjunto_demasiado_grande: (d) => `El archivo supera el máximo de ${Math.floor((d?.max_bytes || 0) / 1048576)} MB.`,
     adjunto_tipo_no_permitido: () => 'Ese tipo de archivo no se puede adjuntar. Se aceptan imágenes PNG, JPEG o WebP, PDF y texto UTF-8.',
     adjunto_vacio: () => 'El archivo está vacío.',
-    adjunto_invalido: () => 'El adjunto llegó dañado. Vuelve a adjuntarlo.',
     adjunto_no_encontrado: () => 'El adjunto ya no está disponible. Vuelve a adjuntarlo.',
     adjuntos_demasiados: (d) => (d?.max === 1
       ? 'Se puede adjuntar hasta 1 archivo por mensaje.'
