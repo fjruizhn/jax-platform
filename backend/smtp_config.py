@@ -428,9 +428,11 @@ def probar_conexion(host: str, port: int, encryption: str, user: str, password: 
 def http_de_fallo_de_envio(exc, registro, contexto: str, destinatario: str) -> HTTPException:
     """Las dos ramas de fallo de envío que comparten /smtp/test y "Enviar
     enlace" (frente A, A-39, 2026-09-16). El ValueError NO pasa por acá: en
-    smtp.py sale de construir_mensaje en otro try, y en users.py va entre
-    estas dos ramas. El orden de captura en el llamador: esta tupla ANTES de
-    ValueError (UnicodeEncodeError es subclase de ValueError).
+    smtp.py sale de construir_mensaje en otro try, y en users.py va en su
+    propio except, DESPUÉS de esta tupla. El orden de captura en el llamador:
+    esta tupla ANTES de ValueError -- UnicodeEncodeError es subclase de
+    ValueError, así que si ValueError fuera primero se comería ese caso y
+    daría 503 smtp_config_corrupta en vez del 502 correcto.
 
     NUNCA se interpola `exc` en el UnicodeEncodeError: smtplib codifica el
     AUTH en ascii y `exc.object` trae la contraseña entera (medido)."""

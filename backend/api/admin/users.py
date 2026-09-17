@@ -401,10 +401,12 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
             raise HTTPException(status_code=409, detail="usuario_no_activo")
         token, enlace = await auth_api._crear_enlace_de_recuperacion(cur, user_id, ip)
     # Mismo juego de excepciones que /smtp/test (etapa 1, api/admin/smtp.py):
-    # ValueError ANTES que (OSError, SMTPException), y UnicodeEncodeError
-    # ANTES que ValueError -- es subclase suya (smtplib codifica el AUTH en
-    # ascii). En los tres casos: el enlace recién creado no puede quedar vivo
-    # (fix ronda 1) y no se audita un envío que no salió.
+    # la tupla común (UnicodeEncodeError, OSError, SMTPException) va ANTES que
+    # ValueError -- UnicodeEncodeError es subclase suya (smtplib codifica el
+    # AUTH en ascii); si ValueError fuera primero, se comería ese caso y daría
+    # 503 smtp_config_corrupta en vez de 502. En los tres casos: el enlace
+    # recién creado no puede quedar vivo (fix ronda 1) y no se audita un
+    # envío que no salió.
     # Las dos ramas comunes las traduce smtp_config.http_de_fallo_de_envio (A-39).
     #
     # Fix ronda 2 (2026-09-15, hallazgo 3): la limpieza se movió a un
