@@ -31,6 +31,87 @@ JACOBS_PIPELINE_TIMEOUT = float(os.getenv("JACOBS_PIPELINE_TIMEOUT", "60.0"))
 # la pone este backend; el rol también -- nunca se toma del cliente.
 INVOKED_BY_PLATAFORMA = "plataforma"
 
+# --- Respuestas de Jacobs (spec 2026-09-17 §6.1) ---------------------------
+# Hasta hoy get/results/resume/cancel devolvían 200 con el cuerpo de error de
+# Jacobs y el aviso de rechazo nunca aparecía. Un solo lugar decide qué hacer
+# con cualquier respuesta: dict si salió bien; si no, la HTTPException con el
+# MISMO status.
+#
+# Códigos propios que Jacobs devuelve con datos que la Mesa tiene que mostrar
+# (desvío DV-6 del plan; lista ampliada por la ENMIENDA DE CONTRATO del
+# controlador, 2026-09-17, ítem 3): pasan con su status y SÓLO los campos
+# declarados. Cualquier otro rechazo es jacobs_rechazo con el motivo
+# recortado y redactado.
+CODIGOS_DE_JACOBS = frozenset({
+    "prevuelo_rechazado", "costo_supera_lo_aceptado", "reasignacion_invalida",
+    "prevuelo_no_disponible", "estado_no_continuable",
+    "limite_de_activos", "plan_rechazado", "plan_inconsistente", "no_existe",
+})
+# ENMIENDA ítem 2: estado_no_continuable trae {code, status, mensaje} -- NO
+# status_actual. "status" reemplaza a "status_actual"; se agregan "mensaje",
+# "detalle", "hay_no_acotados", "sondeadas" y "ok" (ítems 2 y 4).
+_CAMPOS_DE_CODIGO = (
+    "violaciones", "costo_max_usd", "pasos_costo", "costo_max_aceptado_usd",
+    "status", "mensaje", "detalle", "hay_no_acotados", "sondeadas", "ok",
+)
+MOTIVO_MAX = 200
+DETALLE_MAX = 300
+
+
+def _violaciones_redactadas(violaciones) -> list[dict]:
+    """Sólo los cuatro campos del contrato; el detalle puede traer el error de
+    una sonda y se redacta antes de salir hacia el navegador."""
+    if not isinstance(violaciones, list):
+        return []
+    return [
+        {"paso": v.get("paso"), "faceta": v.get("faceta"), "regla": v.get("regla"),
+         "detalle": recortar_redactado(str(v.get("detalle") or ""), DETALLE_MAX)}
+        for v in violaciones if isinstance(v, dict)
+    ]
+
+
+def _rechazo_de_jacobs(status_code: int, cuerpo, texto: str) -> HTTPException:
+    detalle_de_jacobs = cuerpo.get("detail") if isinstance(cuerpo, dict) else None
+    if isinstance(detalle_de_jacobs, dict) and detalle_de_jacobs.get("code") in CODIGOS_DE_JACOBS:
+        detalle = {"code": detalle_de_jacobs["code"]}
+        for campo in _CAMPOS_DE_CODIGO:
+            if campo not in detalle_de_jacobs:
+                continue
+            valor = detalle_de_jacobs[campo]
+            if campo == "violaciones":
+                valor = _violaciones_redactadas(valor)
+            elif campo == "detalle" and valor is not None:
+                valor = recortar_redactado(str(valor), DETALLE_MAX)
+            elif campo == "mensaje" and valor is not None:
+                valor = recortar_redactado(str(valor), MOTIVO_MAX)
+            detalle[campo] = valor
+        return HTTPException(status_code=status_code, detail=detalle)
+    if isinstance(cuerpo, dict):
+        crudo = str(cuerpo.get("detail", ""))
+    elif cuerpo is None:
+        crudo = texto
+    else:
+        crudo = str(cuerpo)
+    detalle = {"code": "jacobs_rechazo", "status": status_code, "motivo": recortar_redactado(crudo, MOTIVO_MAX)}
+    return HTTPException(status_code=status_code, detail=detalle)
+
+
+def _json_de_jacobs(r) -> dict:
+    """La respuesta de Jacobs como dict. status >= 400 -> _rechazo_de_jacobs
+    con el mismo status (también si el cuerpo no es JSON). Un 2xx/3xx que no
+    es un objeto JSON -> 502 jacobs_no_responde con el texto redactado."""
+    try:
+        cuerpo = r.json()
+    except ValueError:
+        cuerpo = None  # no-JSON: se decide abajo por status, nunca se traga
+    if r.status_code >= 400:
+        raise _rechazo_de_jacobs(r.status_code, cuerpo, r.text)
+    if not isinstance(cuerpo, dict):
+        detalle = {"code": "jacobs_no_responde", "motivo": recortar_redactado(r.text, MOTIVO_MAX)}
+        raise HTTPException(status_code=502, detail=detalle)
+    return cuerpo
+
+
 # engine_state.active_pipelines (memoria) se descarta apenas la pipeline
 # termina -- justo cuando normalmente se pide /results. owner_ack_at en
 # jacobs_pipelines (misma DB fisica jax_memory que ya comparten ambos
@@ -166,7 +247,9 @@ async def get_pipeline_results(pipeline_id: str, user: AuthUser = Depends(get_cu
     client = await get_http_client()
     try:
         r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}/results", timeout=10.0)
-        return r.json()
+        return _json_de_jacobs(r)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
 
@@ -177,7 +260,9 @@ async def get_pipeline(pipeline_id: str, user: AuthUser = Depends(get_current_us
     client = await get_http_client()
     try:
         r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}", timeout=5.0)
-        return r.json()
+        return _json_de_jacobs(r)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
 
@@ -195,7 +280,9 @@ async def resume_pipeline(
             json={"invoked_by": INVOKED_BY_PLATAFORMA, "user_id": user.user_id, "tenant_id": user.tenant_id},
             timeout=10.0,
         )
-        return r.json()
+        return _json_de_jacobs(r)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
 
@@ -209,9 +296,11 @@ async def cancel_pipeline(
     client = await get_http_client()
     try:
         r = await client.post(f"{JACOBS_URL}/pipeline/{pipeline_id}/cancel", timeout=10.0)
-        if r.status_code == 200:
-            engine_state.remove_pipeline(pipeline_id)
-            await resource_manager.release_pipeline(user.tenant_id, pipeline_id)
-        return r.json()
+        data = _json_de_jacobs(r)
+        engine_state.remove_pipeline(pipeline_id)
+        await resource_manager.release_pipeline(user.tenant_id, pipeline_id)
+        return data
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
