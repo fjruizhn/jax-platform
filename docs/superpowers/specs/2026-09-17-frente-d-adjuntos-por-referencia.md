@@ -268,9 +268,10 @@ siempre si el disco se cuelga.
   - se sueltan reserva y candado;
   - se loguea `TimeoutError` sin id;
   - la subida recibe 503 `adjuntos_reintentar`.
-- **Si el hilo escribe tarde:** el adjunto queda sin id conocido y vence por TTL. Una subida
-  siguiente del mismo usuario puede no haberlo contado: se acepta, a cambio de no dejar al
-  usuario sin subir hasta reiniciar.
+- **Aceptado: una escritura que termina después del plazo puede pasar la cuota por un archivo.**
+  El adjunto queda sin id conocido, y una subida siguiente del mismo usuario puede no haberlo
+  contado. Ese exceso dura hasta que lo borran el limpiador o el TTL. Se acepta a cambio de no
+  dejar al usuario sin subir hasta reiniciar.
 - La cancelación repetida sigue esperando, pero dentro del plazo.
 
 **Por qué un candado en memoria alcanza:** jax-platform es **un solo proceso**.
@@ -298,15 +299,16 @@ mandando cuerpos de 10 MB, y Starlette los volcaba antes del 413: 23–25 volcad
      con 60 s de ventana. Un intento rechazado no cuenta.
   3. Si el usuario se pasó, **espera `JAX_ADJUNTOS_429_ESPERA_MS`** (deploy 1000) y responde
      429 **sin llamar a `receive()`**.
-- **Sin token de acceso válido (Ruling R28):** el middleware responde al instante **exactamente
-  el 401 que daría la ruta** (mismo status, cuerpo y cabeceras, incluido `WWW-Authenticate:
+- **Sin token de acceso válido (Ruling R28, enmendado por R30):** el middleware responde,
+  después de la misma espera `JAX_ADJUNTOS_429_ESPERA_MS` que el 429, **exactamente el 401 que
+  daría la ruta** (mismo status, cuerpo y cabeceras, incluido `WWW-Authenticate:
   Bearer` cuando corresponde), sin leer el cuerpo y sin gastar cupo. Cubre estos casos: sin
   cabecera, otro esquema, sin credenciales, firma inválida, vencido, token de refresh, y
   `user_id`/`tv` que no son enteros. Reusa `auth.middleware.bearer`, `decode_token`,
   `auth.middleware.validar_payload` (la parte de `verificar_sesion` que no mira la base) y el
   manejador de `HTTPException` de FastAPI. Los tests comparan contra la ruta sin middleware.
-  Única diferencia de precedencia: un cuerpo multipart roto **y** sin token ahora es 401 y no el
-  400 de parseo.
+- **Aceptado: la autenticación va primero.** Un cuerpo multipart roto **y** sin token ahora es 401
+  y no el 400 de parseo.
 - **Riesgo aceptado (principal):** un token con firma válida pasa a la ruta sin mirar la base.
   Un token revocado pero no vencido (≤ 15 min) solo gasta el cupo de **su dueño** en el
   middleware; la autenticación de la ruta, con base, lo sigue rechazando con 401.
@@ -338,16 +340,13 @@ mandando cuerpos de 10 MB, y Starlette los volcaba antes del 413: 23–25 volcad
   proceso y, en producción, nginx (conexiones y `limit_req`).
 - **Medido en el fix round** (`2b80433`, un usuario, c=25): health p95 0,29 ms, 750 × 429 y 0 fds
   en `TMPDIR`.
-- **PENDIENTE DE DECISIÓN: el 401 inmediato de R28 reabre el costo de descartar cuerpos.** Flood
-  anónimo a c=25 con 10 MB por pedido:
-  - `2b80433` responde 16.904 × 401 en 30 s (p50 39 ms), con 0 fds en `TMPDIR`, pero **health
-    p95 36,0 ms**. Es el mismo mecanismo que el 429 sin espera: uvicorn descarta el cuerpo en el
-    loop.
-  - Aplicando la misma espera de 1000 ms antes del 401 (experimento local, no commiteado):
-    750 × 401 y health p95 0,29 ms.
-  - Antes de R28, el anónimo llegaba a la ruta, que volcaba el cuerpo antes del 401. Es el mismo
-    camino que el flood de cuota de RD6 (health p95 2,6–2,8 ms); no se re-midió.
-  - Lo decide el principal/controller: espera también en el 401, u otro mecanismo.
+- **La espera vale para los dos rechazos del middleware (Ruling R30):** el 429 del límite y el
+  401 sin token de acceso válido. Por qué, medido con un flood anónimo a c=25 y 10 MB por pedido:
+  - con el 401 inmediato (`2b80433`): 16.904 × 401 en 30 s, 0 fds en `TMPDIR`, pero **health p95
+    36,0 ms**. Es el mismo mecanismo que el 429 sin espera: uvicorn descarta en el loop el resto
+    de cada cuerpo;
+  - con la espera de 1000 ms (`610f1ed`): 750 × 401 (p95 1022 ms), 0 fds en `TMPDIR`, **health
+    p95 0,29 ms**.
 
 **Producción (nginx):** delante está nginx con `client_max_body_size 50m` y, por defecto,
 `proxy_request_buffering on`. nginx recibe el cuerpo entero del cliente antes de hablar con
