@@ -105,6 +105,53 @@ def test_explain_de_pipelines_completados_va_por_idx_pipelines_status(client):
     assert fila["key"] == "idx_pipelines_status", fila
 
 
+MARCA_BLOQUEO = "test-bloqueo-indice-"
+
+
+async def _sembrar_cuentas(n):
+    """n cuentas descartables (tenant 1 por la FK), 1 de cada 50 bloqueada:
+    con las pocas filas de jax_memory_test el optimizador elige ALL aunque el
+    indice exista, y en produccion la tabla crece."""
+    from datetime import timezone
+    ahora = datetime.now(timezone.utc).replace(tzinfo=None)
+    filas = [(f"{MARCA_BLOQUEO}{i}@example.invalid", ahora + timedelta(hours=1) if i % 50 == 0 else None)
+             for i in range(n)]
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.executemany(
+                "INSERT INTO jax_users (tenant_id, email, password_hash, role, status, locked_until) "
+                "VALUES (1, %s, 'x', 'viewer', 'active', %s)", filas)
+            await cur.execute("ANALYZE TABLE jax_users")
+            await cur.fetchall()
+
+
+async def _borrar_cuentas():
+    return await sql("DELETE FROM jax_users WHERE email LIKE %s", (MARCA_BLOQUEO + "%",))
+
+
+def test_existe_el_indice_de_locked_until(client):
+    filas = client.portal.call(
+        sql, "SELECT SEQ_IN_INDEX, COLUMN_NAME FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'jax_users' "
+        "AND INDEX_NAME = 'idx_jax_users_locked_until' ORDER BY SEQ_IN_INDEX", (), True)
+    assert [tuple(f) for f in filas] == [(1, "locked_until")]
+
+
+def test_explain_de_cuentas_bloqueadas_va_por_idx_jax_users_locked_until(client):
+    """Task 15 R12(c): la consulta REAL del tablero, con 3.000 cuentas."""
+    assert "FROM jax_users WHERE locked_until > %s" in dashboard.SQL_CUENTAS_BLOQUEADAS
+    client.portal.call(_borrar_cuentas)
+    try:
+        client.portal.call(_sembrar_cuentas, 3000)
+        (fila,) = client.portal.call(_explain, dashboard.SQL_CUENTAS_BLOQUEADAS, (datetime.now(),))
+        assert fila["key"] == "idx_jax_users_locked_until", fila
+        assert fila["type"] == "range", fila
+    finally:
+        client.portal.call(_borrar_cuentas)
+
+
 def test_el_tablero_trae_los_numeros_reales(client, monkeypatch):
     monkeypatch.delenv("JAX_PLATFORM_URL", raising=False)
     hoy = date.today()

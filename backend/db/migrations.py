@@ -1559,9 +1559,17 @@ _COLUMN_WIDENS = [
 # invariante (api/admin/users.py::otros_superadmins_activos) filtra por
 # role y status, con FOR UPDATE (2026-09-12, admin usuarios etapa 3).
 # EXPLAIN en tests/test_user_audit.py.
+# idx_jax_users_locked_until: el conteo de cuentas bloqueadas del tablero
+# (api/admin/dashboard.py::SQL_CUENTAS_BLOQUEADAS) era `ALL` sobre jax_users
+# (Task 15 R12c, 2026-09-16). En linea, como idx_axioma_usage_periodo: si no
+# se puede INPLACE/LOCK=NONE, falla en vez de bloquear los login. EXPLAIN en
+# tests/test_tablero.py.
 _INDEXES = [
     ("jax_users", "idx_jax_users_role_status",
      "ALTER TABLE jax_users ADD INDEX idx_jax_users_role_status (role, status)"),
+    ("jax_users", "idx_jax_users_locked_until",
+     "ALTER TABLE jax_users ADD INDEX idx_jax_users_locked_until (locked_until), "
+     "ALGORITHM=INPLACE, LOCK=NONE"),
 ]
 
 

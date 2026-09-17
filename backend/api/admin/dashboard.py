@@ -32,6 +32,9 @@ SQL_LLAVES = (
 # A-49: total de completados (spec: status='completed', sin ventana). Índice
 # idx_pipelines_status, creado por jax/jacobs/store.py::init_tables().
 SQL_PIPELINES_COMPLETADOS = "SELECT COUNT(*) FROM jacobs_pipelines WHERE status = 'completed'"
+# Task 15 R12(c) (2026-09-16): la carga G midio `ALL` sobre jax_users.
+# Rango sobre idx_jax_users_locked_until (db/migrations.py::_INDEXES).
+SQL_CUENTAS_BLOQUEADAS = "SELECT COUNT(*) FROM jax_users WHERE locked_until > %s"
 
 
 def _rango_del_dia(dia: date) -> tuple[datetime, datetime]:
@@ -88,7 +91,7 @@ async def get_dashboard(user: AuthUser = Depends(require_superadmin)):
             messages_today, images_today = await cur.fetchone()
             await cur.execute("SELECT COUNT(*) FROM jax_users WHERE status = 'active'")
             (users_active,) = await cur.fetchone()
-            await cur.execute("SELECT COUNT(*) FROM jax_users WHERE locked_until > %s", (utc_ahora(),))
+            await cur.execute(SQL_CUENTAS_BLOQUEADAS, (utc_ahora(),))
             (users_locked,) = await cur.fetchone()
             await cur.execute(SQL_LLAVES)
             keys_total, keys_configured = await cur.fetchone()
