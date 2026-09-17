@@ -25,6 +25,30 @@ describe('formatearUsd', () => {
   it('acepta número y string de punto fijo con muchos decimales', () => {
     expect(formatearUsd(0.6, 'en')).toBe('$0.60')
     expect(formatearUsd('0.60', 'en')).toBe('$0.60')
-    expect(formatearUsd('0.0000001', 'en')).toBe('$0.00')
+    expect(formatearUsd('0.0000001', 'en')).toBe('$0.0001')
+  })
+
+  // Revisión final, menor 6a: el consentimiento nunca muestra $0 para un monto
+  // mayor que cero; se redondea hacia arriba (mostrar menos que el máximo
+  // sería aparentar un tope más bajo que el real).
+  it('redondea hacia arriba y nunca muestra $0 para un monto positivo', () => {
+    expect(formatearUsd('0.000040', 'en')).toBe('$0.0001')
+    expect(formatearUsd('0.123401', 'en')).toBe('$0.1235')
+    expect(formatearUsd('0.000000', 'en')).toBe('$0.00')
+    expect(formatearUsd('0.600000', 'en')).toBe('$0.60')
+  })
+
+  it('sin soporte de roundingMode en el navegador, un monto positivo chico sigue sin verse como $0', () => {
+    const Original = Intl.NumberFormat
+    const sinRedondeo = function (locale, opciones = {}) {
+      const { roundingMode: _ignorado, ...resto } = opciones
+      return new Original(locale, resto)
+    }
+    Intl.NumberFormat = sinRedondeo
+    try {
+      expect(formatearUsd('0.000040', 'en')).toBe('$0.0001')
+    } finally {
+      Intl.NumberFormat = Original
+    }
   })
 })
