@@ -102,7 +102,14 @@ Dentro de cada carpeta:
   - Mientras una subida vive, su temporal está dentro de la carpeta, así que no está vacía.
   - La subida que preparó su carpeta y todavía no abrió nada la recrea (0700) al abrir su primer
     archivo (`_crear_exclusivo`, hasta 3 intentos).
-  - En la raíz solo se tocan temporales viejos.
+  - En la raíz solo se tocan temporales viejos. Un archivo suelto con forma de la disposición plana
+    anterior (`<id>.json`/`<id>.dato` en la raíz) se **ignora**: esa disposición nunca se
+    desplegó, así que no hay nada que limpiar ahí.
+  - Si el limpiador borra la carpeta entre el `mkdir` de la subida y su chequeo, o entre el
+    chequeo y el primer `open`, la subida reintenta el tramo entero (3 intentos). Si pierde los
+    3, responde 503 `adjuntos_reintentar` (es/en), nunca un 500.
+- **La baja no sigue symlinks:** antes de listar, `borrar_de_usuario` hace el mismo chequeo de
+  carpeta propia que la lectura. Una carpeta `5 -> 6` plantada no borra los archivos del 6.
   - **Ruling R24 del controller (2026-09-17):** no va dentro del bucle de `owner_cleanup`. Ese bucle
     duerme 6 h porque retiene 30 días; con un TTL mínimo de 1 h, un vencido quedaría en disco
     hasta 7 veces su vida.
@@ -143,7 +150,8 @@ espacios, sin signo y sin ceros a la izquierda.
 | 10 | `JAX_ADJUNTOS_TTL_HORAS` | solo dígitos (`[1-9][0-9]{0,3}`), **1..168** | `24` |
 | 11 | `JAX_ADJUNTOS_CUOTA_BYTES_USUARIO` | solo dígitos (`[1-9][0-9]{0,15}`), **1048576..1099511627776** (1 MiB..1 TiB) y **≥ `JAX_ADJUNTO_MAX_BYTES`** | `524288000` |
 | 12 | `JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES` | solo dígitos (`[1-9][0-9]{0,15}`), **1073741824..1099511627776** (1 GiB..1 TiB) | `53687091200` |
-| 13 | `JAX_ADJUNTOS_SUBIDAS_POR_MINUTO` (RD7) | solo dígitos (`[1-9][0-9]{0,2}`), **1..600**; ventana deslizante fija de 60 s | propuesto `30` (lo decide el principal) |
+| 13 | `JAX_ADJUNTOS_SUBIDAS_POR_MINUTO` (RD7) | solo dígitos (`[1-9][0-9]{0,2}`), **1..600**; ventana deslizante fija de 60 s | `30` |
+| 14 | `JAX_ADJUNTOS_429_ESPERA_MS` (RD7 fix round) | solo dígitos (`0\|[1-9][0-9]{0,3}`), **0..5000** (0 permitido) | `1000` |
 
 Fuera de `/etc/jax/.env`, en la unidad de systemd de jax-platform: **`TMPDIR=/srv/jax-data/tmp`**
 (0700, disco real). Starlette vuelca ahí el cuerpo de cada subida antes del handler (R25), y
@@ -159,6 +167,11 @@ Motivos de los rangos:
 - CUOTA: piso 1 MiB (menos no deja subir una foto de teléfono), techo 1 TiB ("sin límite" con
   más ceros); menor que el tope por archivo rechazaría con el código equivocado archivos que el
   tope admite.
+- 429_ESPERA_MS: 0 está permitido, porque apagar la espera es válido si nginx (`limit_req`) ya
+  frena antes. Su costo está medido (§7.2): health p95 37–40 ms con 25 clientes que reintentan
+  sin pausa. Techo 5000 ms: cada rechazo en espera retiene un socket y una corrutina; esperar más
+  no frena más a un cliente que reintenta, y acerca la espera a los timeouts de clientes y
+  proxies.
 - SUBIDAS_POR_MINUTO: piso 1 (0 es apagar la función, no un límite). Techo 600 (10/s): una
   subida de imagen de 10 MB tarda p50 ~0,22–0,27 s en staging, así que un cliente sin freno hace
   ~4/s. Propuesta de 30, medida en RD7:
@@ -173,7 +186,12 @@ Motivos de los rangos:
 Tests: `conftest.py` fija 1..8 y la cuota con `setdefault` (rigen los del `.env` si están),
 FUERZA `JAX_ADJUNTOS_DIR` a un `mkdtemp` propio, FUERZA el disco libre mínimo a 1073741824
 (mide el disco del `mkdtemp`, no el de producción) y FUERZA `JAX_ADJUNTOS_SUBIDAS_POR_MINUTO` a
-600 (los tests de HTTP suben varias veces por minuto con pocos usuarios).
+600 (los tests de HTTP suben varias veces por minuto con pocos usuarios) y FUERZA
+`JAX_ADJUNTOS_429_ESPERA_MS` a 0 (los tests de la espera sustituyen `_dormir`).
+
+**Deploy (principal), además de las 14 líneas:** `limit_req` de nginx para
+`/api/chat/upload`. Cómo nginx retransmite el 429 retenido (y el 401 inmediato) se mide en el
+deploy.
 
 ## 7. Contrato de `POST /api/chat/upload`
 
@@ -241,6 +259,20 @@ en el commit deja el adjunto guardado**. Cuenta en la cuota del usuario hasta ve
 cliente nunca recibe su id, así que nadie lo puede usar; lo borra el limpiador al vencer. Una
 cancelación antes del commit (copia, clasificación, lectura de la cuota) no deja nada contado.
 
+**Plazo del commit (Ruling R29):** esperar la escritura no tiene que retener el candado para
+siempre si el disco se cuelga.
+- **Plazo:** `max(60 s, JAX_ADJUNTO_MAX_BYTES / 256 KiB/s)`, que da 60 s con el tope de
+  producción. Sin variable nueva: sale del tope por archivo y de un disco degradado declarado en
+  `cuota.py`.
+- **Vencido el plazo:**
+  - se sueltan reserva y candado;
+  - se loguea `TimeoutError` sin id;
+  - la subida recibe 503 `adjuntos_reintentar`.
+- **Si el hilo escribe tarde:** el adjunto queda sin id conocido y vence por TTL. Una subida
+  siguiente del mismo usuario puede no haberlo contado: se acepta, a cambio de no dejar al
+  usuario sin subir hasta reiniciar.
+- La cancelación repetida sigue esperando, pero dentro del plazo.
+
 **Por qué un candado en memoria alcanza:** jax-platform es **un solo proceso**.
 `auth/rate_limit.py::exigir_un_solo_proceso` aborta el arranque con `--workers` o
 `WEB_CONCURRENCY` > 1. Si algún día hay más de un proceso, la cuota necesita un candado
@@ -264,11 +296,23 @@ mandando cuerpos de 10 MB, y Starlette los volcaba antes del 413: 23–25 volcad
      (HS256, sin base).
   2. Pasa la clave `user_id` por `SlidingWindowLimiter`, la misma clase del login y del SMTP,
      con 60 s de ventana. Un intento rechazado no cuenta.
-  3. Si el usuario se pasó, **frena 1 s** (`FRENO_ANTES_DEL_429_SEGUNDOS`) y responde 429
-     **sin llamar a `receive()`**.
-- **Sin token de acceso válido** (sin token, inválido, de refresh o con `user_id` malformado),
-  no hay a quién limitar: pasa sin contar y la ruta da su 401.
-- **Un token revocado pero no vencido** (≤ 15 min) solo gasta el cupo de su propio usuario.
+  3. Si el usuario se pasó, **espera `JAX_ADJUNTOS_429_ESPERA_MS`** (deploy 1000) y responde
+     429 **sin llamar a `receive()`**.
+- **Sin token de acceso válido (Ruling R28):** el middleware responde al instante **exactamente
+  el 401 que daría la ruta** (mismo status, cuerpo y cabeceras, incluido `WWW-Authenticate:
+  Bearer` cuando corresponde), sin leer el cuerpo y sin gastar cupo. Cubre estos casos: sin
+  cabecera, otro esquema, sin credenciales, firma inválida, vencido, token de refresh, y
+  `user_id`/`tv` que no son enteros. Reusa `auth.middleware.bearer`, `decode_token`,
+  `auth.middleware.validar_payload` (la parte de `verificar_sesion` que no mira la base) y el
+  manejador de `HTTPException` de FastAPI. Los tests comparan contra la ruta sin middleware.
+  Única diferencia de precedencia: un cuerpo multipart roto **y** sin token ahora es 401 y no el
+  400 de parseo.
+- **Riesgo aceptado (principal):** un token con firma válida pasa a la ruta sin mirar la base.
+  Un token revocado pero no vencido (≤ 15 min) solo gasta el cupo de **su dueño** en el
+  middleware; la autenticación de la ruta, con base, lo sigue rechazando con 401.
+- **El límite cuenta intentos**, también los que la ruta rechaza después (401 por revocación,
+  413 de cuota o de tamaño, 415, 422). Solo gastan el cupo del que llama (test
+  `test_cuota_y_limite_juntos_los_rechazos_de_la_ruta_gastan_cupo`).
 - **Estado en memoria**, un proceso (`exigir_un_solo_proceso`), hasta 20.000 claves (LRU). El
   limitador se rehace si cambia el valor configurado.
 
@@ -288,14 +332,30 @@ mandando cuerpos de 10 MB, y Starlette los volcaba antes del 413: 23–25 volcad
 | **freno 1 s (elegido)** | ~25 | **0,32 / 0,30 ms** | 0 |
 
 - Se elige 1 s por margen: descarta 4 veces menos bytes que 0,25 s con los mismos atacantes.
-- No es una variable de entorno: es un margen técnico medido sobre uvicorn, igual que
-  `ORFANO_MAX_SEGUNDOS`.
+- Por decisión del principal, la espera es la variable `JAX_ADJUNTOS_429_ESPERA_MS` (deploy 1000).
+- **Costo declarado de las esperas concurrentes:** cada rechazo en espera retiene un socket y una
+  corrutina durante la espera. No hay tope propio; lo acotan las conexiones que acepta el
+  proceso y, en producción, nginx (conexiones y `limit_req`).
+- **Medido en el fix round** (`2b80433`, un usuario, c=25): health p95 0,29 ms, 750 × 429 y 0 fds
+  en `TMPDIR`.
+- **PENDIENTE DE DECISIÓN: el 401 inmediato de R28 reabre el costo de descartar cuerpos.** Flood
+  anónimo a c=25 con 10 MB por pedido:
+  - `2b80433` responde 16.904 × 401 en 30 s (p50 39 ms), con 0 fds en `TMPDIR`, pero **health
+    p95 36,0 ms**. Es el mismo mecanismo que el 429 sin espera: uvicorn descarta el cuerpo en el
+    loop.
+  - Aplicando la misma espera de 1000 ms antes del 401 (experimento local, no commiteado):
+    750 × 401 y health p95 0,29 ms.
+  - Antes de R28, el anónimo llegaba a la ruta, que volcaba el cuerpo antes del 401. Es el mismo
+    camino que el flood de cuota de RD6 (health p95 2,6–2,8 ms); no se re-midió.
+  - Lo decide el principal/controller: espera también en el 401, u otro mecanismo.
 
-**Límite conocido (producción):** delante está nginx con `client_max_body_size 50m` y, por
-defecto, `proxy_request_buffering on`. nginx recibe el cuerpo entero del cliente antes de hablar
-con uvicorn. El límite protege el event loop, `TMPDIR` y el disco de adjuntos, pero **no** el
-ancho de banda ni el disco temporal de nginx. Para eso hace falta `limit_req` en nginx (no
-medido; no está en este repo).
+**Producción (nginx):** delante está nginx con `client_max_body_size 50m` y, por defecto,
+`proxy_request_buffering on`. nginx recibe el cuerpo entero del cliente antes de hablar con
+uvicorn.
+- Este límite protege el event loop, `TMPDIR` y el disco de adjuntos, no el ancho de banda ni el
+  disco temporal de nginx.
+- **Paso de deploy (principal):** `limit_req` de nginx para `/api/chat/upload`.
+- **Se mide en el deploy:** cómo nginx retransmite el 429 retenido y el 401 inmediato.
 
 Camino de una subida:
 0. (RD7) `LimiteDeSubidas`, antes de leer el cuerpo.
