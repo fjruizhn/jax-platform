@@ -88,6 +88,27 @@ describe('client.js -- aviso de por qué se cerró la sesión', () => {
     })
   })
 
+  // Frente C, revisión final (2026-09-17): un 5xx del refresh (p.ej. 503
+  // ajuste_ilegible) no es una sesión vencida: decirlo manda a la persona a
+  // reloguearse y el login vuelve a fallar igual.
+  it('refresh falla con 503 ajuste_ilegible -> avisoSesion ajuste_ilegible, no sesion_expirada', async () => {
+    axiosPostMock.mockRejectedValue({
+      response: { status: 503, data: { detail: { code: 'ajuste_ilegible', clave: 'session_lifetime_seconds' } } },
+    })
+
+    await expect(onRejected(err401())).rejects.toBeTruthy()
+
+    expect(setStateMock).toHaveBeenCalledWith({ token: null, user: null, avisoSesion: 'ajuste_ilegible' })
+  })
+
+  it('refresh falla con otro 5xx -> avisoSesion error_del_servidor', async () => {
+    axiosPostMock.mockRejectedValue({ response: { status: 502, data: {} } })
+
+    await expect(onRejected(err401())).rejects.toBeTruthy()
+
+    expect(setStateMock).toHaveBeenCalledWith({ token: null, user: null, avisoSesion: 'error_del_servidor' })
+  })
+
   it('refresh anda -> reintenta el request original y no toca avisoSesion', async () => {
     axiosPostMock.mockResolvedValue({ data: { access_token: 'nuevo' } })
 

@@ -238,6 +238,10 @@ export default {
   // de api/client.js borraba la sesión en silencio ante un refresh fallido.
   sesion_invalida: 'Tu sesión se cerró: se inició sesión en otro lugar, o tu acceso cambió. Iniciá sesión de nuevo.',
   sesion_expirada: 'Tu sesión venció. Iniciá sesión de nuevo.',
+  // Frente C (2026-09-17): el login o el refresh responden 5xx. No son
+  // credenciales ni una sesión vencida: es el servidor.
+  ajuste_ilegible: 'El servidor tiene un ajuste inválido. Avisa al administrador.',
+  error_del_servidor: 'El servidor no pudo atender el pedido. Intenta de nuevo en un momento.',
   accountLocked: 'Cuenta bloqueada. Revisa tu correo.',
   accountLockedMinutes: (min) => `Cuenta bloqueada. Intenta de nuevo en ${min} minuto(s).`,
   tooManyAttempts: 'Demasiados intentos. Espera un momento y vuelve a intentarlo.',

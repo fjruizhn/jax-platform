@@ -4,6 +4,7 @@ import { useJaxStore } from '../store/useJaxStore'
 import { useI18n } from '../i18n/index.jsx'
 import { useNombreDelSistema } from '../store/useApariencia'
 import api from '../api/client'
+import { codigoDe } from '../api/errores'
 import PasswordInput from '../components/PasswordInput'
 import AlertaError from '../components/AlertaError'
 import HalEye from '../components/HalEye/HalEye'
@@ -52,6 +53,12 @@ export default function Login() {
         // credenciales, es "esperá". El backend manda Retry-After en segundos.
         const seconds = parseInt(err.response?.headers?.['retry-after'], 10)
         setError(Number.isFinite(seconds) ? t.tooManyAttemptsSeconds(seconds) : t.tooManyAttempts)
+      } else if (codigoDe(err) === 'ajuste_ilegible') {
+        // Frente C (2026-09-17): la vida de la sesión es un ajuste de la DB;
+        // si no se puede leer, el backend responde 503. No es la contraseña.
+        setError(t.ajuste_ilegible)
+      } else if (status >= 500) {
+        setError(t.error_del_servidor)
       } else {
         setError(t.loginError)
       }

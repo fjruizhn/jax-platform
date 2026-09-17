@@ -235,6 +235,10 @@ export default {
   // api/client.js used to silently clear the session on a failed refresh.
   sesion_invalida: 'Your session was closed: someone signed in somewhere else, or your access changed. Please sign in again.',
   sesion_expirada: 'Your session expired. Please sign in again.',
+  // Frente C (2026-09-17): login or refresh answered 5xx. Not credentials
+  // nor an expired session: it is the server.
+  ajuste_ilegible: 'The server has an invalid setting. Contact the administrator.',
+  error_del_servidor: 'The server could not handle the request. Try again in a moment.',
   accountLocked: 'Account locked. Check your email.',
   accountLockedMinutes: (min) => `Account locked. Try again in ${min} minute(s).`,
   tooManyAttempts: 'Too many attempts. Wait a moment and try again.',
