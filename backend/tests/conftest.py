@@ -77,7 +77,11 @@ for _variable, _valor in (("JAX_ADJUNTO_MAX_BYTES", "10485760"),
 # 0700. El TTL sí es setdefault: rige el de producción si está.
 import tempfile as _tempfile  # noqa: E402
 
-os.environ["JAX_ADJUNTOS_DIR"] = _tempfile.mkdtemp(prefix="jax-test-adjuntos-")
+# Final fix wave #2, item 7: la sesión borra ESTE directorio al terminar
+# (pytest_sessionfinish, abajo) y solo este: los `jax-test-adjuntos-*` de otras
+# sesiones (otro worktree corriendo a la vez, restos viejos) no son suyos.
+_ADJUNTOS_DE_LA_SESION = _tempfile.mkdtemp(prefix="jax-test-adjuntos-")
+os.environ["JAX_ADJUNTOS_DIR"] = _ADJUNTOS_DE_LA_SESION
 os.environ.setdefault("JAX_ADJUNTOS_TTL_HORAS", "24")
 # Cuota por usuario (RD6, 2026-09-17): setdefault con el valor de deploy del
 # principal (500 MB), como el resto de los límites. El disco libre mínimo, en
@@ -301,6 +305,20 @@ if _CI_NO_DB:
     os.environ.setdefault("JAX_DB_PORT", "3308")
 
 _NO_DB_REASON = "requiere MariaDB; este runner no tiene DB (JAX_CI_NO_DB=1)"
+
+
+def _borrar_adjuntos_de_la_sesion():
+    """Borra el JAX_ADJUNTOS_DIR que creó esta sesión (item 7). Por la ruta
+    guardada al crearlo, no por os.environ: un test pudo cambiar la variable.
+    Si ya no está, no hay nada que borrar; cualquier otro error se ve.
+    La llama el único pytest_sessionfinish (abajo): pytest registra un solo
+    hook por nombre en el módulo, y el rebase sobre el frente B había dejado
+    dos definiciones, donde la segunda tapaba a esta en silencio."""
+    import shutil
+    try:
+        shutil.rmtree(_ADJUNTOS_DE_LA_SESION)
+    except FileNotFoundError:  # fail-soft: ya no existe, no queda nada que borrar
+        pass
 
 
 def pytest_collection_modifyitems(config, items):
@@ -705,3 +723,4 @@ def pytest_sessionfinish(session, exitstatus):
         print(f"\nBARRERA DEL KILL SWITCH: la suite tocó el freno de producción: {cambios}",
               file=__import__("sys").stderr)
         session.exitstatus = 1
+    _borrar_adjuntos_de_la_sesion()
