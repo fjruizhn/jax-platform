@@ -457,10 +457,30 @@ def test_el_plazo_del_commit_sale_del_tope_por_archivo_con_piso(monkeypatch):
 
 @pytest.mark.parametrize("modo", ["sin_cancelar", "cancelada_repetida"])
 def test_un_commit_colgado_suelta_candado_y_reserva_y_da_un_codigo(directorio, monkeypatch, caplog, modo):
-    monkeypatch.setattr(cuota, "plazo_de_escritura_segundos", lambda: 0.3)
+    """El plazo lo decide un `asyncio.Event` que este test controla (vía
+    `cuota._temporizador_de_plazo`), no el reloj real: en el diseño viejo el
+    test corría un plazo de 0,3 s contra un tope de espera de 5 s, y en el
+    runner de CI (más lento y compartido) esa carrera de relojes reales podía
+    vencer antes o después de lo esperado. Acá "vencido" se dispara a mano
+    justo después de confirmar que el commit sigue colgado (`entro.is_set()`),
+    así que el resultado no depende de cuánta CPU real haya disponible."""
     entro, soltar, termino = _frenar(monkeypatch, "commit")
 
     async def correr():
+        vencido = asyncio.Event()
+        temporizador_real = cuota._temporizador_de_plazo
+        primer_commit = [True]
+
+        def temporizador_falso(plazo):
+            # Solo el commit colgado (el primero) usa el vencimiento a mano;
+            # el de la subida "otra", más abajo, no está colgado y no debe
+            # dispararse solo porque `vencido` ya quedó en set().
+            if primer_commit[0]:
+                primer_commit[0] = False
+                return asyncio.ensure_future(vencido.wait())
+            return temporizador_real(plazo)
+
+        monkeypatch.setattr(cuota, "_temporizador_de_plazo", temporizador_falso)
         tarea = asyncio.create_task(upload_mod.upload_file(file=_archivo(_png(len(PNG))), user=USUARIO))
         while not entro.is_set():
             await asyncio.sleep(0.005)
@@ -468,12 +488,15 @@ def test_un_commit_colgado_suelta_candado_y_reserva_y_da_un_codigo(directorio, m
             for _ in range(20):
                 tarea.cancel()
                 await asyncio.sleep(0.005)
-        # Sin plazo la tarea no terminaría: se espera acotado para que eso
-        # falle en vez de colgar la suite.
+        # El commit está confirmadamente colgado (entro.is_set()): se dispara
+        # el vencimiento del plazo a mano, sin esperar al reloj.
+        vencido.set()
+        # Tope de emergencia contra un cuelgue real de la suite -- no decide
+        # el resultado, solo evita que un bug la deje esperando para siempre.
         await asyncio.wait({tarea}, timeout=5)
         if not tarea.done():
             soltar.set()
-            raise AssertionError("el commit colgado no soltó dentro del plazo")
+            raise AssertionError("el commit colgado no soltó tras vencer el plazo")
         if modo == "cancelada_repetida":
             with pytest.raises(asyncio.CancelledError):
                 await tarea

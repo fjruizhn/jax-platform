@@ -103,6 +103,15 @@ def plazo_de_escritura_segundos() -> float:
                math.ceil(cargar_limites().max_bytes / DISCO_LENTO_BYTES_POR_SEGUNDO))
 
 
+def _temporizador_de_plazo(plazo: float) -> "asyncio.Task[None]":
+    """Tarea que se resuelve cuando vence `plazo`. Separada de `confirmar`
+    para que los tests puedan sustituirla por un `asyncio.Event` bajo su
+    propio control -- verificar "si el commit no termina a tiempo, se
+    libera la cuota" sin correr contra el reloj real ni contra la carga de
+    la máquina que corre la suite."""
+    return asyncio.ensure_future(asyncio.sleep(plazo))
+
+
 # Plazo de la lectura del uso (Final fix wave #2, item 6). `almacen.uso_de_usuario`
 # corre en un hilo BAJO el candado del usuario, dos veces por subida (reserva y
 # confirmación): colgada sin plazo, ese usuario no volvía a subir hasta
@@ -276,20 +285,20 @@ class Reserva:
             if usado + (cuenta.reservado - self.bytes) + tamano > self._cuota:
                 raise CuotaExcedida(self._cuota)
             plazo = plazo_de_escritura_segundos()
-            loop = asyncio.get_running_loop()
-            vence = loop.time() + plazo
             escritura = asyncio.ensure_future(guardar())
+            vencimiento = _temporizador_de_plazo(plazo)
             cancelacion = None
-            while not escritura.done():
-                restante = vence - loop.time()
-                if restante <= 0:
-                    break
-                try:
-                    # asyncio.wait no cancela `escritura` al cancelarse él ni
-                    # al vencer su timeout.
-                    await asyncio.wait({escritura}, timeout=restante)
-                except asyncio.CancelledError as e:
-                    cancelacion = e
+            try:
+                while not escritura.done() and not vencimiento.done():
+                    try:
+                        # asyncio.wait no cancela `escritura` ni `vencimiento`
+                        # al cancelarse él ni al vencer su plazo.
+                        await asyncio.wait({escritura, vencimiento}, return_when=asyncio.FIRST_COMPLETED)
+                    except asyncio.CancelledError as e:
+                        cancelacion = e
+            finally:
+                if not vencimiento.done():
+                    vencimiento.cancel()
             # Escrito, fallido o fuera de plazo: se suelta la reserva (y al
             # salir del `async with`, el candado).
             self._soltar()
