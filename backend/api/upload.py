@@ -56,6 +56,7 @@ from adjuntos.tipos import (AdjuntoVacio, EXTENSIONES_DE_TEXTO, MIME_PDF,
                              nombre_seguro)
 from auth.middleware import get_current_user
 from auth.models import AuthUser
+from kill_switch import exigir_mesa_libre
 
 router = APIRouter(prefix="/api/chat")
 
@@ -87,7 +88,10 @@ def _tamano_recibido(archivo) -> int:
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
-    user: AuthUser = Depends(get_current_user),
+    # Kill switch (ruling del principal 2026-09-17): 423 como el resto de la
+    # Mesa. En producción lo responde antes el middleware de subidas, sin leer
+    # el cuerpo; la dependencia deja la ruta en RUTAS_FRENADAS y la cubre sola.
+    user: AuthUser = Depends(exigir_mesa_libre),
 ):
     limites = cargar_limites()
     directorio = almacen.cargar_directorio()

@@ -72,6 +72,10 @@ RUTAS_FRENADAS = frozenset({
     ("POST", "/api/command"),
     ("POST", "/api/pipelines"),
     ("POST", "/api/pipelines/{pipeline_id}/resume"),
+    # Ruling del principal (2026-09-17, frente D): la subida de adjuntos también
+    # frena. El 423 lo da antes el middleware adjuntos/limite_de_subidas.py (sin
+    # leer el cuerpo) con `exigir_freno_suelto`; la dependencia queda igual.
+    ("POST", "/api/chat/upload"),
 })
 
 SQL_REGISTRAR = "INSERT INTO kill_switch_audit (accion, user_id, at) VALUES (%s, %s, UTC_TIMESTAMP(6))"
@@ -292,9 +296,17 @@ async def reanudar(usuario: AuthUser) -> dict:
         return informe
 
 
+def exigir_freno_suelto() -> None:
+    """El 423 del freno, en UN solo lugar: lo usan `exigir_mesa_libre` y el
+    middleware de subidas (adjuntos/limite_de_subidas.py), que corre antes de
+    que FastAPI lea el cuerpo. Misma lectura (`activo()`, fail-closed) y misma
+    excepción para los dos."""
+    if activo():
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=KILL_SWITCH_ACTIVO)
+
+
 async def exigir_mesa_libre(user: AuthUser = Depends(get_current_user)) -> AuthUser:
     """Dependencia de las rutas que EJECUTAN (RUTAS_FRENADAS). Después de la
     autenticación: un anónimo recibe 401, no el estado del freno."""
-    if activo():
-        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=KILL_SWITCH_ACTIVO)
+    exigir_freno_suelto()
     return user

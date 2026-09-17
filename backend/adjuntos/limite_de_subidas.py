@@ -34,6 +34,14 @@ de SU dueño en el middleware. El límite cuenta intentos, también los que la
 ruta rechaza después (401 por revocación, 413, 415, 422): solo gastan el cupo
 del que llama.
 
+KILL SWITCH (ruling del principal, 2026-09-17). Con token de acceso válido y
+el freno puesto responde, tras la misma espera, el MISMO 423
+`kill_switch_activo` que la dependencia `exigir_mesa_libre` de la ruta (la
+subida está en kill_switch.RUTAS_FRENADAS): las dos llaman a
+`kill_switch.exigir_freno_suelto`, sin leer el cuerpo y ANTES de gastar cupo.
+Orden: 401 -> 423 -> 429. Un stat que falla cuenta como PUESTO; sin
+JAX_KILL_SWITCH_PATH la excepción sube como en la ruta.
+
 CUÁNTO. JAX_ADJUNTOS_SUBIDAS_POR_MINUTO (1..600, sin default: fail-closed),
 ventana deslizante de 60 s (auth.rate_limit.SlidingWindowLimiter, la misma
 clase del login y del SMTP). Un intento rechazado no se cuenta. Retry-After =
@@ -176,6 +184,20 @@ class LimiteDeSubidas:
             # R28): con la MISMA espera que el 429. Flood anónimo c=25 con
             # 10 MB: 401 inmediato -> health p95 36 ms (uvicorn descarta
             # ~560 cuerpos/s en el loop); con 1000 ms -> 0,29 ms.
+            await _dormir(cargar_espera_de_rechazo_ms() / 1000)
+            respuesta = await http_exception_handler(Request(scope), e)
+            await respuesta(scope, receive, send)
+            return
+        try:
+            # Kill switch (ruling del principal 2026-09-17): orden 401 -> 423 ->
+            # límite. Después del token, ANTES de gastar cupo y sin leer el
+            # cuerpo, con la misma espera. La lectura y el 423 son los de
+            # `exigir_mesa_libre` (kill_switch.exigir_freno_suelto): un stat que
+            # falla cuenta como PUESTO, y sin JAX_KILL_SWITCH_PATH la excepción
+            # sube como en la ruta (500, nada corre).
+            from kill_switch import exigir_freno_suelto
+            exigir_freno_suelto()
+        except HTTPException as e:
             await _dormir(cargar_espera_de_rechazo_ms() / 1000)
             respuesta = await http_exception_handler(Request(scope), e)
             await respuesta(scope, receive, send)

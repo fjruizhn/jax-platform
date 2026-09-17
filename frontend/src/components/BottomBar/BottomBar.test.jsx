@@ -112,6 +112,17 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
     await waitFor(() => expect(toast).toHaveBeenCalledWith({ message: es.erroresMesa.adjunto_tipo_no_permitido(), type: 'error' }))
   })
 
+  // Kill switch en la subida (ruling del principal 2026-09-17): 423 con detail
+  // de texto, el mismo código que el resto de la Mesa. Nunca el código crudo.
+  it('un 423 del kill switch en el upload se muestra traducido, no queda adjunto', async () => {
+    api.post.mockRejectedValueOnce({ response: { status: 423, data: { detail: 'kill_switch_activo' } } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await waitFor(() => expect(toast).toHaveBeenCalledWith({ message: es.erroresMesa.kill_switch_activo(), type: 'error' }))
+    expect(screen.queryByAltText('f.png')).toBeNull()
+  })
+
   it('manda adjuntos: [{id}] en el cuerpo del chat (RD4, nunca bytes ni base64)', async () => {
     api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
       .mockResolvedValueOnce({ data: { facet: 'hipatia', response: 'ok', timestamp: 't' } })

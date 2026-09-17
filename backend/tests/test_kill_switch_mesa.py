@@ -29,6 +29,8 @@ def test_las_rutas_que_ejecutan_piden_la_mesa_libre():
     }
     assert frenadas == set(kill_switch.RUTAS_FRENADAS)
     assert ("POST", "/api/pipelines/{pipeline_id}/cancel") not in frenadas
+    # Ruling del principal (2026-09-17, frente D): la subida de adjuntos también frena.
+    assert ("POST", "/api/chat/upload") in frenadas
 
 
 def test_peor_caso_en_la_mesa(client, usuarios, monkeypatch):
@@ -67,6 +69,8 @@ def test_peor_caso_en_la_mesa(client, usuarios, monkeypatch):
     for ruta, cuerpo in casos:
         r = client.post(ruta, json=cuerpo, headers=operador)
         assert (r.status_code, r.json().get("detail")) == (423, "kill_switch_activo"), ruta
+    r = client.post("/api/chat/upload", files={"file": ("n.txt", b"hola", "text/plain")}, headers=operador)
+    assert (r.status_code, r.json().get("detail")) == (423, "kill_switch_activo"), "/api/chat/upload"
 
     assert client.post("/api/admin/kill-switch/reanudar", headers=admin).status_code == 200
     r = client.post("/api/chat", json={"message": "hola", "facet": "__no_existe__"}, headers=operador)

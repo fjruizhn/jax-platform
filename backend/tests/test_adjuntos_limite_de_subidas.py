@@ -459,3 +459,124 @@ def test_el_401_del_middleware_espera_lo_configurado_y_no_lee_el_cuerpo(limite, 
     status, _, _, canal = _llamar(mod.LimiteDeSubidas(interna), autorizacion="Bearer basura")
     assert (status, canal.leidos, interna.llamadas) == (401, 0, 0)
     assert limite == [segundos]
+
+
+# ------------------- kill switch en la subida (ruling del principal 2026-09-17)
+# Con el freno puesto, /api/chat/upload responde 423 `kill_switch_activo` como
+# el resto de la Mesa, por el mecanismo del frente B (RUTAS_FRENADAS +
+# exigir_mesa_libre). Orden: 401 -> 423 -> límite de subidas. En el middleware
+# el 423 va después de validar el token, antes de gastar cupo y sin leer el
+# cuerpo, con la misma espera JAX_ADJUNTOS_RECHAZO_ESPERA_MS.
+
+def _poner_freno():
+    import interruptor
+    ruta = interruptor.ruta_del_interruptor()
+    ruta.write_text("{}")  # _freno_suelto_entre_tests lo quita al terminar
+    return ruta
+
+
+def _ruta_frenable_sola():
+    """La ruta real con su dependencia del freno y el usuario ya resuelto
+    (sin base): su 423 es la referencia."""
+    from auth.middleware import get_current_user
+    from auth.models import AuthUser
+    app = _ruta_sola()
+    app.dependency_overrides[get_current_user] = lambda: AuthUser(user_id="5", tenant_id="1", role="operator")
+    return app
+
+
+def test_frenado_sin_token_es_el_401_con_espera(limite):
+    import main
+    _poner_freno()
+    status, _, _, canal = _llamar(main.app, autorizacion=None)
+    assert (status, canal.leidos) == (401, 0)
+    assert limite == [1.0]
+
+
+def test_frenado_con_token_valido_el_middleware_da_el_mismo_423_que_la_ruta_sin_leer_el_cuerpo(limite):
+    import main
+    _poner_freno()
+    ref_status, ref_headers, ref_cuerpo, ref_canal = _llamar(_ruta_frenable_sola(), token_para(5))
+    assert ref_status == 423 and json.loads(ref_cuerpo) == {"detail": "kill_switch_activo"}
+    assert ref_canal.leidos > 0  # la ruta lee el cuerpo antes de sus dependencias
+    status, headers, cuerpo, canal = _llamar(main.app, token_para(5))
+    assert (status, headers, cuerpo) == (ref_status, ref_headers, ref_cuerpo)
+    assert canal.leidos == 0
+    assert limite == [1.0]
+
+
+def test_frenado_pasado_el_limite_es_423_y_no_gasta_cupo(limite):
+    interna = _Interna()
+    app = mod.LimiteDeSubidas(interna)
+    token = token_para(5)
+    ruta = _poner_freno()
+    for _ in range(5):
+        status, _, _, canal = _llamar(app, token)
+        assert (status, canal.leidos) == (423, 0)
+    ruta.unlink()
+    for _ in range(2):
+        assert _llamar(app, token)[0] == 200  # los 423 no gastaron cupo
+    _poner_freno()
+    assert _llamar(app, token)[0] == 423  # pasado el límite, frenado manda el 423, no el 429
+    ruta.unlink()
+    assert _llamar(app, token)[0] == 429
+    assert interna.llamadas == 2
+    assert limite == [1.0] * 7
+
+
+def test_sin_freno_la_subida_sigue_su_camino(limite):
+    interna = _Interna()
+    status, _, _, canal = _llamar(mod.LimiteDeSubidas(interna), token_para(5))
+    assert (status, canal.leidos, interna.llamadas) == (200, LIMITE_CHUNKS + 2, 1)
+    assert limite == []
+
+
+def test_freno_ilegible_es_423_como_la_ruta(limite, monkeypatch):
+    """Fail-closed del frente B: un stat que falla por algo que no es "no
+    existe" (permiso, E/S) cuenta como freno PUESTO."""
+    import interruptor
+    import main
+    stat_real = interruptor.os.stat
+    freno = str(interruptor.ruta_del_interruptor())
+
+    def stat(ruta, *a, **k):
+        if str(ruta) == freno:
+            raise PermissionError(13, "sin permiso")
+        return stat_real(ruta, *a, **k)
+
+    monkeypatch.setattr(interruptor.os, "stat", stat)
+    ref = _llamar(_ruta_frenable_sola(), token_para(5))
+    assert ref[0] == 423
+    status, headers, cuerpo, canal = _llamar(main.app, token_para(5))
+    assert (status, headers, cuerpo) == ref[:3]
+    assert canal.leidos == 0
+
+
+def test_freno_sin_configurar_falla_cerrado_como_la_ruta_sin_leer_el_cuerpo_ni_gastar_cupo(limite, monkeypatch):
+    """JAX_KILL_SWITCH_PATH ausente: la dependencia de la ruta lanza
+    InterruptorSinConfigurar (500, nada corre). El middleware lanza lo mismo
+    antes de leer el cuerpo, sin llegar a la ruta y sin gastar cupo."""
+    import interruptor
+    interna = _Interna()
+    app = mod.LimiteDeSubidas(interna)
+    monkeypatch.delenv("JAX_KILL_SWITCH_PATH")
+    with pytest.raises(interruptor.InterruptorSinConfigurar):
+        _llamar(_ruta_frenable_sola(), token_para(5))
+    canales = []
+    original = _Canal.__init__
+
+    def init(self, p):
+        original(self, p)
+        canales.append(self)
+
+    monkeypatch.setattr(_Canal, "__init__", init)
+    for _ in range(3):
+        with pytest.raises(interruptor.InterruptorSinConfigurar):
+            _llamar(app, token_para(5))
+    assert [c.leidos for c in canales] == [0, 0, 0] and interna.llamadas == 0
+    monkeypatch.undo()
+    monkeypatch.setenv("JAX_ADJUNTOS_SUBIDAS_POR_MINUTO", "2")
+    monkeypatch.setenv("JAX_ADJUNTOS_RECHAZO_ESPERA_MS", "1000")
+    monkeypatch.setattr(mod, "_dormir", lambda s: asyncio.sleep(0))
+    for _ in range(2):
+        assert _llamar(app, token_para(5))[0] == 200  # no gastó cupo
