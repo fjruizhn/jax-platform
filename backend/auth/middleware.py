@@ -43,14 +43,21 @@ def _rechazo() -> HTTPException:
     return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=SESION_INVALIDA)
 
 
-async def verificar_sesion(payload: dict, tipo: str, *, admite_cambio_pendiente: bool = False) -> AuthUser:
+def validar_payload(payload: dict, tipo: str) -> tuple[int, int]:
+    """La parte de verificar_sesion que no mira la base: tipo de token y
+    user_id/tv enteros. Lanza el mismo 401. La usa también el límite de
+    subidas (adjuntos/limite_de_subidas.py, Ruling R28) para responder el
+    MISMO 401 que la ruta antes de leer el cuerpo."""
     if payload.get("type") != tipo:
         raise _rechazo()
     try:
-        user_id = int(payload["user_id"])
-        tv_token = int(payload.get("tv", 0))
+        return int(payload["user_id"]), int(payload.get("tv", 0))
     except (KeyError, TypeError, ValueError):
         raise _rechazo() from None
+
+
+async def verificar_sesion(payload: dict, tipo: str, *, admite_cambio_pendiente: bool = False) -> AuthUser:
+    user_id, tv_token = validar_payload(payload, tipo)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:

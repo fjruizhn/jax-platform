@@ -93,8 +93,21 @@ export default {
     pipeline_no_encontrado: () => 'The pipeline does not exist.',
     jacobs_rechazo: (d) => `Jacobs rejected the pipeline (${d.status}).`,
     jacobs_no_responde: () => 'Jacobs did not respond.',
-    archivo_demasiado_grande: (d) => `The file exceeds the ${Math.round(d.max_bytes / 1048576)} MB maximum.`,
-    pdf_ilegible: () => 'The PDF could not be read.',
+    adjunto_demasiado_grande: (d) => `The file exceeds the ${Math.floor((d?.max_bytes || 0) / 1048576)} MB limit.`,
+    adjunto_tipo_no_permitido: () => 'That file type cannot be attached. PNG, JPEG or WebP images, PDF and UTF-8 text are accepted.',
+    adjunto_vacio: () => 'The file is empty.',
+    adjunto_no_encontrado: () => 'The attachment is no longer available. Attach it again.',
+    adjuntos_demasiados: (d) => (d?.max === 1
+      ? 'You can attach up to 1 file per message.'
+      : `You can attach up to ${d?.max} files per message.`),
+    adjuntos_cuota_excedida: (d) => `You reached the ${Math.floor((d?.cuota_bytes || 0) / 1048576)} MB limit of stored attachments. Attachments expire on their own: try again later.`,
+    adjuntos_sin_espacio: () => 'The server has no space to store the attachment right now. Try again later.',
+    adjuntos_subidas_limite: (d) => `Too many uploads in a row. Wait ${d?.retry_after || 60} s and try again.`,
+    adjuntos_reintentar: () => 'The attachment could not be saved right now. Try again.',
+    adjuntos_no_soportados: () => 'Hyde does not take attachments in chat: use Command mode.',
+    imagen_no_soportada: () => "This facet's model does not accept images. Pick another facet or remove the image.",
+    pdf_ilegible: () => 'The PDF could not be read: it is damaged or password-protected.',
+    pdf_sin_texto: () => 'The PDF has no extractable text (is it a scan?).',
     // Frente B (2026-09-17): 423 from chat, image, command and pipelines with the brake on.
     kill_switch_activo: () => 'Kill switch active: JAX is stopped',
   },
@@ -297,6 +310,9 @@ export default {
   attachUploading: 'Uploading…',
   attachError: 'Error uploading file',
   attachReady: '✓ ready',
+  adjuntoPoliticaNoDisponible: 'Could not load which files are accepted: attaching is disabled.',
+  adjuntoImagenSinSoporte: (facet) => `${facet} does not accept images: pick another facet or remove the image.`,
+  adjuntoRecortado: 'Trimmed to the character limit',
 
   // Admin module
   adminTitle: 'Administration',

@@ -1,20 +1,9 @@
 import { useRef } from 'react'
-import { useI18n } from '../../i18n/index.jsx'
 
-const ACCEPT = [
-  'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
-  'application/pdf',
-  'text/plain', 'text/markdown', 'text/csv', 'application/json',
-  '.py', '.js', '.jsx', '.ts', '.tsx', '.html', '.css', '.toml', '.yml', '.yaml', '.sh',
-].join(',')
-
-export default function AttachButton({ onFileSelected, disabled }) {
-  const { t } = useI18n()
+// Frente D (2026-09-16): `accept` y `title` vienen de BottomBar (política del
+// servidor y texto i18n). Nada de listas de tipos fijas acá.
+export default function AttachButton({ onFileSelected, disabled, accept, title }) {
   const inputRef = useRef(null)
-
-  function handleClick() {
-    inputRef.current?.click()
-  }
 
   function handleChange(e) {
     const file = e.target.files?.[0]
@@ -26,19 +15,12 @@ export default function AttachButton({ onFileSelected, disabled }) {
 
   return (
     <>
-      <input
-        ref={inputRef}
-        type="file"
-        accept={ACCEPT}
-        className="hidden"
-        onChange={handleChange}
-        disabled={disabled}
-      />
+      <input ref={inputRef} type="file" accept={accept} className="hidden" onChange={handleChange} disabled={disabled} />
       <button
         type="button"
-        onClick={handleClick}
+        onClick={() => inputRef.current?.click()}
         disabled={disabled}
-        title={t.attachTooltip}
+        title={title}
         className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-superficie hover:bg-superficie-2 text-texto-suave hover:text-texto disabled:opacity-40 transition-colors border border-borde text-lg font-bold"
       >
         +

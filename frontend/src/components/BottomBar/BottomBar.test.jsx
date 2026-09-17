@@ -1,5 +1,5 @@
 import { render, screen, fireEvent } from '@testing-library/react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import '@testing-library/jest-dom'
 
 vi.mock('../../api/client', () => ({
@@ -9,6 +9,9 @@ vi.mock('../../api/client', () => ({
 import BottomBar from './BottomBar'
 import { I18nProvider } from '../../i18n/index.jsx'
 import { useJaxStore } from '../../store/useJaxStore'
+import { waitFor } from '@testing-library/react'
+import api from '../../api/client'
+import es from '../../i18n/es.js'
 
 function renderBar() {
   return render(
@@ -55,5 +58,277 @@ describe('BottomBar -- botón Enviar en modo chat', () => {
     expect(estilo).toContain('border-color: rgb(var(--faceta-hyde) / 1)')
     expect(estilo).not.toContain('background')
     expect(boton.className).toContain('bg-superficie')
+  })
+})
+
+const POLITICA = {
+  max_bytes: 1048576, max_chars: 8000, max_por_mensaje: 1,
+  mimes_de_imagen: ['image/png', 'image/jpeg', 'image/webp'],
+  accept: ['image/png', 'image/jpeg', 'image/webp', 'application/pdf', '.md'],
+  facetas_con_imagen: ['hipatia'],
+}
+// RD4 (2026-09-17): /api/chat/upload responde por referencia -- id, tipo,
+// nombre, bytes -- nunca base64 ni el texto completo.
+const SUBIDA_IMAGEN = { id: 'img-id-1', tipo: 'imagen', nombre: 'f.png', mime: 'image/png', bytes: 3 }
+const SUBIDA_IMAGEN_2 = { id: 'img-id-2', tipo: 'imagen', nombre: 'g.png', mime: 'image/png', bytes: 3 }
+
+function adjuntar(container, archivo) {
+  const input = container.querySelector('input[type="file"]')
+  fireEvent.change(input, { target: { files: [archivo] } })
+}
+
+describe('BottomBar -- adjuntos cableados (frente D)', () => {
+  let toast
+  beforeEach(() => {
+    toast = vi.fn()
+    useJaxStore.setState({ activeFacet: 'hipatia', messages: [], addToast: toast })
+    api.get.mockImplementation((url) => Promise.resolve({ data: url === '/chat/adjuntos' ? POLITICA : {} }))
+    api.post.mockReset()
+    // RD4: previewUrl/vistaDeAdjunto usan URL.createObjectURL/revokeObjectURL
+    // (jsdom no las implementa). Cada llamada devuelve un blob distinto y
+    // numerado para poder distinguir el del compositor del del mensaje.
+    let n = 0
+    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => `blob:u${++n}`), revokeObjectURL: vi.fn() })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('A-21: sube con FormData y sin Content-Type a mano', async () => {
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toContain('application/pdf'))
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalled())
+    const [url, cuerpo, opciones] = api.post.mock.calls[0]
+    expect(url).toBe('/chat/upload')
+    expect(cuerpo).toBeInstanceOf(FormData)
+    expect(opciones).toBeUndefined()
+  })
+
+  it('un 415 del upload se muestra traducido', async () => {
+    api.post.mockRejectedValueOnce({ response: { data: { detail: { code: 'adjunto_tipo_no_permitido' } } } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['x'], 'x.exe'))
+    await waitFor(() => expect(toast).toHaveBeenCalledWith({ message: es.erroresMesa.adjunto_tipo_no_permitido(), type: 'error' }))
+  })
+
+  // Kill switch en la subida (ruling del principal 2026-09-17): 423 con detail
+  // de texto, el mismo código que el resto de la Mesa. Nunca el código crudo.
+  it('un 423 del kill switch en el upload se muestra traducido, no queda adjunto', async () => {
+    api.post.mockRejectedValueOnce({ response: { status: 423, data: { detail: 'kill_switch_activo' } } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await waitFor(() => expect(toast).toHaveBeenCalledWith({ message: es.erroresMesa.kill_switch_activo(), type: 'error' }))
+    expect(screen.queryByAltText('f.png')).toBeNull()
+  })
+
+  it('manda adjuntos: [{id}] en el cuerpo del chat (RD4, nunca bytes ni base64)', async () => {
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+      .mockResolvedValueOnce({ data: { facet: 'hipatia', response: 'ok', timestamp: 't' } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await screen.findByAltText('f.png')
+    fireEvent.change(container.querySelector('textarea'), { target: { value: 'describí' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2))
+    expect(api.post.mock.calls[1]).toEqual(['/chat', {
+      message: 'describí', facet: 'hipatia', origin: 'web',
+      adjuntos: [{ id: 'img-id-1' }],
+    }])
+  })
+
+  it('la vista previa de la imagen subida usa un object URL local del compositor', async () => {
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    const img = await screen.findByAltText('f.png')
+    expect(img).toHaveAttribute('src', 'blob:u1')
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1)
+  })
+
+  it('reemplazar el adjunto revoca el object URL viejo y crea uno nuevo', async () => {
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN }).mockResolvedValueOnce({ data: SUBIDA_IMAGEN_2 })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await screen.findByAltText('f.png')
+    adjuntar(container, new File(['def'], 'g.png', { type: 'image/png' }))
+    const img = await screen.findByAltText('g.png')
+    expect(img).toHaveAttribute('src', 'blob:u2')
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:u1')
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:u2')
+  })
+
+  it('quitar el adjunto revoca su object URL', async () => {
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await screen.findByAltText('f.png')
+    fireEvent.click(screen.getByTitle(es.attachRemove))
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:u1')
+    expect(screen.queryByAltText('f.png')).not.toBeInTheDocument()
+  })
+
+  it('salir del modo chat revoca el object URL del adjunto sin enviar', async () => {
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await screen.findByAltText('f.png')
+    fireEvent.click(screen.getByRole('button', { name: es.modeComando }))
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:u1')
+    expect(screen.queryByAltText('f.png')).not.toBeInTheDocument()
+  })
+
+  it('desmontar con un adjunto sin enviar revoca su object URL', async () => {
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+    const { container, unmount } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await screen.findByAltText('f.png')
+    unmount()
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:u1')
+  })
+
+  it('una subida que termina después de salir del modo chat no adjunta ni crea object URL (minor RD2)', async () => {
+    let resolverSubida
+    api.post.mockImplementationOnce(() => new Promise((r) => { resolverSubida = r }))
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    // Sale del chat MIENTRAS la subida sigue en vuelo.
+    fireEvent.click(screen.getByRole('button', { name: es.modeComando }))
+    resolverSubida({ data: SUBIDA_IMAGEN })
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1))
+    // El chequeo de generación va ANTES de crear el object URL -- nunca se
+    // crea uno para descartarlo enseguida.
+    expect(URL.createObjectURL).not.toHaveBeenCalled()
+    expect(screen.queryByAltText('f.png')).not.toBeInTheDocument()
+  })
+
+  // Fix round 1 (review de ca8bb15): mirar solo el modo ACTUAL no alcanza --
+  // si el modo vuelve a 'chat' antes de que la subida resuelva, el chequeo
+  // viejo la aceptaba igual. Hace falta un contador de generación que se
+  // invalide en CADA salida del chat, no sólo "¿el modo de ahora es chat?".
+  it('chat → comando → chat mientras la subida sigue en vuelo: la respuesta tardía no adjunta nada ni crea object URL', async () => {
+    let resolverSubida
+    api.post.mockImplementationOnce(() => new Promise((r) => { resolverSubida = r }))
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    fireEvent.click(screen.getByRole('button', { name: es.modeComando }))
+    fireEvent.click(screen.getByRole('button', { name: es.modeChat }))
+    resolverSubida({ data: SUBIDA_IMAGEN })
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1))
+    expect(URL.createObjectURL).not.toHaveBeenCalled()
+    expect(screen.queryByAltText('f.png')).not.toBeInTheDocument()
+  })
+
+  it('desmontar mientras una subida está en vuelo no crea ni deja un object URL', async () => {
+    let resolverSubida
+    api.post.mockImplementationOnce(() => new Promise((r) => { resolverSubida = r }))
+    const { container, unmount } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    unmount()
+    resolverSubida({ data: SUBIDA_IMAGEN })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(URL.createObjectURL).not.toHaveBeenCalled()
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+  })
+
+  it('un error del chat que no es 404 conserva el adjunto (no hay por qué descartarlo)', async () => {
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+      .mockRejectedValueOnce({ response: { status: 502, data: { detail: { code: 'faceta_error', facet: 'hipatia', motivo: 'timeout' } } } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await screen.findByAltText('f.png')
+    fireEvent.change(container.querySelector('textarea'), { target: { value: 'describí' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar' }))
+    await waitFor(() => {
+      const ultimo = useJaxStore.getState().messages.at(-1)
+      expect(ultimo.content).toContain(es.erroresMesa.faceta_error({ facet: 'hipatia' }))
+    })
+    expect(screen.getByAltText('f.png')).toBeInTheDocument()
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+  })
+
+  it('enviar: el compositor revoca su object URL; el mensaje se queda con uno propio', async () => {
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+      .mockResolvedValueOnce({ data: { facet: 'hipatia', response: 'ok', timestamp: 't' } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await screen.findByAltText('f.png')
+    fireEvent.change(container.querySelector('textarea'), { target: { value: 'describí' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2))
+    const mensajeUsuario = useJaxStore.getState().messages[0]
+    expect(mensajeUsuario.attachment.base64).toBe('blob:u2')
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:u1')
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:u2')
+  })
+
+  it('un 404 adjunto_no_encontrado en el chat limpia el adjunto para poder re-adjuntar', async () => {
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+      .mockRejectedValueOnce({ response: { data: { detail: { code: 'adjunto_no_encontrado' } } } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await screen.findByAltText('f.png')
+    fireEvent.change(container.querySelector('textarea'), { target: { value: 'describí' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar' }))
+    await waitFor(() => {
+      const ultimo = useJaxStore.getState().messages.at(-1)
+      expect(ultimo.content).toContain(es.erroresMesa.adjunto_no_encontrado())
+    })
+    expect(screen.queryByAltText('f.png')).not.toBeInTheDocument()
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:u1')
+  })
+
+  it('imagen con una faceta que no ve imágenes: aviso y Enviar deshabilitado', async () => {
+    useJaxStore.setState({ activeFacet: 'jekyll' })
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    const aviso = await screen.findByRole('status')
+    expect(aviso.textContent).toMatch(/no acepta imágenes/)
+    fireEvent.change(container.querySelector('textarea'), { target: { value: 'describí' } })
+    expect(screen.getByRole('button', { name: 'Enviar' })).toBeDisabled()
+
+    // Fix round 1: Enter en el textarea llama a handleSend() directo, sin
+    // pasar por el disabled del botón -- tiene que frenar igual.
+    fireEvent.keyDown(container.querySelector('textarea'), { key: 'Enter' })
+    expect(api.post).toHaveBeenCalledTimes(1) // solo la subida, nunca /chat
+    expect(useJaxStore.getState().messages).toHaveLength(0)
+  })
+
+  it('sin política no se puede adjuntar', async () => {
+    api.get.mockImplementation((url) => (url === '/chat/adjuntos' ? Promise.reject(new Error('caído')) : Promise.resolve({ data: {} })))
+    const { container } = renderBar()
+    await waitFor(() => expect(screen.getByTitle(es.adjuntoPoliticaNoDisponible)).toBeDisabled())
+    expect(container.querySelector('input[type="file"]')).toBeDisabled()
+  })
+
+  it('un 422 imagen_no_soportada del chat se muestra traducido', async () => {
+    useJaxStore.setState({ activeFacet: 'hipatia' })
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+      .mockRejectedValueOnce({ response: { data: { detail: { code: 'imagen_no_soportada', facet: 'hipatia' } } } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await screen.findByAltText('f.png')
+    fireEvent.change(container.querySelector('textarea'), { target: { value: 'describí' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar' }))
+    await waitFor(() => {
+      const ultimo = useJaxStore.getState().messages.at(-1)
+      expect(ultimo.content).toContain(es.erroresMesa.imagen_no_soportada())
+    })
   })
 })

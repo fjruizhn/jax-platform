@@ -7,7 +7,8 @@ import PipelineModal from './PipelineModal'
 import AttachButton from '../chat/AttachButton'
 import FileAttachment from '../chat/FileAttachment'
 import api from '../../api/client'
-import { textoDeErrorDeMesa, textoDeAviso } from '../../api/errores'
+import { textoDeErrorDeMesa, textoDeAviso, codigoDe } from '../../api/errores'
+import { cuerpoDeAdjunto, vistaDeAdjunto, faltaSoporteDeImagen } from '../chat/adjuntos'
 import { alturaInput } from './alturaInput'
 import { colorToken } from '../../tema/tokens'
 
@@ -38,6 +39,8 @@ function BottomBar() {
   const [pipelineObjective, setPipelineObjective] = useState('')
   const [attachment, setAttachment] = useState(null)
   const [uploading, setUploading] = useState(false)
+  const [politica, setPolitica] = useState(null)
+  const [politicaFallo, setPoliticaFallo] = useState(false)
   const addMessage = useJaxStore((s) => s.addMessage)
   const updateMessage = useJaxStore((s) => s.updateMessage)
   const activeFacet = useJaxStore((s) => s.activeFacet)
@@ -47,6 +50,37 @@ function BottomBar() {
   const setGeneratingImage = useJaxStore((s) => s.setGeneratingImage)
   const { t } = useI18n()
   const textareaRef = useRef(null)
+  // RD4 (2026-09-17): la vista previa de la imagen adjunta es un object URL
+  // local (URL.createObjectURL del File elegido); este ref es el único dueño
+  // de ESE URL puntual (el mensaje enviado se queda con el suyo propio, ver
+  // adjuntos.js).
+  const attachmentPreviewUrlRef = useRef(null)
+  // Fix round 1 (review de ca8bb15): mirar solo "¿el modo ACTUAL es chat?"
+  // no alcanza -- si el usuario sale del chat y vuelve antes de que la
+  // subida resuelva, el modo de ahora vuelve a ser 'chat' y la respuesta
+  // tardía se adjuntaba igual. uploadGenRef es un contador de generación:
+  // se incrementa cada vez que el adjunto en curso deja de ser válido
+  // (se sale del chat, se quita, se reemplaza por una subida nueva, se
+  // desmonta). handleFileSelected captura el valor vigente ANTES de subir
+  // y sólo adjunta si nadie lo movió mientras esperaba la red.
+  const uploadGenRef = useRef(0)
+
+  function descartarAdjuntoComposer() {
+    uploadGenRef.current++
+    if (attachmentPreviewUrlRef.current) {
+      URL.revokeObjectURL(attachmentPreviewUrlRef.current)
+      attachmentPreviewUrlRef.current = null
+    }
+    setAttachment(null)
+  }
+
+  // Al desmontar (p.ej. se sale de la pantalla de chat), un adjunto sin
+  // enviar no debe dejar su object URL vivo para siempre, y una subida
+  // todavía en vuelo no debe crear uno cuando responda tarde.
+  useEffect(() => () => {
+    uploadGenRef.current++
+    if (attachmentPreviewUrlRef.current) URL.revokeObjectURL(attachmentPreviewUrlRef.current)
+  }, [])
 
   useEffect(() => {
     if (!esSuperadmin && ejecutorActivo) setEjecutorActivo(false)
@@ -78,6 +112,16 @@ function BottomBar() {
     el.style.overflowY = conScroll ? 'auto' : 'hidden'
   }, [input])
 
+  // Frente D: qué se puede adjuntar lo dice el servidor. Si no responde, no
+  // se adjunta (fail-closed) y el botón lo explica.
+  useEffect(() => {
+    let vivo = true
+    api.get('/chat/adjuntos')
+      .then(({ data }) => { if (vivo) setPolitica(data) })
+      .catch(() => { if (vivo) setPoliticaFallo(true) })
+    return () => { vivo = false }
+  }, [])
+
   const MODES = [
     { id: 'chat',     label: t.modeChat },
     { id: 'comando',  label: t.modeComando },
@@ -101,24 +145,47 @@ function BottomBar() {
   }
 
   async function handleFileSelected(file) {
+    if (politica && file.size > politica.max_bytes) {
+      addToast({ message: t.erroresMesa.adjunto_demasiado_grande({ max_bytes: politica.max_bytes }), type: 'error' })
+      return
+    }
+    // Reemplazo o subida nueva: invalida cualquier subida anterior todavía
+    // en vuelo (ver uploadGenRef arriba).
+    uploadGenRef.current++
+    const miGeneracion = uploadGenRef.current
     setUploading(true)
     const formData = new FormData()
     formData.append('file', file)
     try {
-      const { data } = await api.post('/chat/upload', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })
-      setAttachment(data)
-    } catch {
-      addToast({ message: t.attachError, type: 'error' })
+      // A-21: sin Content-Type a mano -- el navegador pone el boundary.
+      const { data } = await api.post('/chat/upload', formData)
+      // Generación vieja: se salió del chat (y volvió o no), se quitó el
+      // adjunto, se reemplazó por otra subida, o el componente se
+      // desmontó. El chequeo va ANTES de crear el object URL -- nunca se
+      // crea uno para descartarlo enseguida.
+      if (uploadGenRef.current !== miGeneracion) return
+      if (attachmentPreviewUrlRef.current) URL.revokeObjectURL(attachmentPreviewUrlRef.current)
+      const previewUrl = data.tipo === 'imagen' ? URL.createObjectURL(file) : null
+      attachmentPreviewUrlRef.current = previewUrl
+      setAttachment({ ...data, archivo: file, previewUrl })
+    } catch (err) {
+      addToast({ message: textoDeErrorDeMesa(t, err, t.attachError), type: 'error' })
     } finally {
       setUploading(false)
     }
   }
 
+  function elegirModo(m) {
+    setMode(m)
+    // Solo el chat manda adjuntos: al salir se quitan, no se pierden callados.
+    if (m !== 'chat') descartarAdjuntoComposer()
+  }
+
+  const imagenSinSoporte = mode === 'chat' && faltaSoporteDeImagen(attachment, politica, activeFacet)
+
   async function handleSend() {
     const text = input.trim()
-    if (!text || sending) return
+    if (!text || sending || imagenSinSoporte) return
 
     if (mode === 'pipeline') {
       setPipelineObjective(text)
@@ -144,7 +211,7 @@ function BottomBar() {
       id: Date.now().toString(),
       facet: 'user',
       content: text,
-      attachment: attachment ? { ...attachment } : null,
+      attachment: mode === 'chat' && attachment ? vistaDeAdjunto(attachment) : null,
       timestamp: new Date().toISOString(),
     })
 
@@ -165,14 +232,7 @@ function BottomBar() {
     // Modo chat
     try {
       const chatBody = { message: text, facet: activeFacet, origin: 'web' }
-      if (attachment) {
-        if (attachment.type === 'image') {
-          chatBody.image_base64 = attachment.base64
-          chatBody.image_filename = attachment.filename
-        } else {
-          chatBody.file_context = `[Archivo adjunto: ${attachment.filename}]\n\n${attachment.content || ''}`
-        }
-      }
+      if (attachment) chatBody.adjuntos = [cuerpoDeAdjunto(attachment)]
       const { data } = await api.post('/chat', chatBody)
       addMessage({
         id: Date.now().toString() + '_resp',
@@ -181,9 +241,15 @@ function BottomBar() {
         timestamp: data.timestamp,
         contract_degraded: data.contract_degraded ?? false,
       })
-      setAttachment(null)
+      // El mensaje del usuario ya se armó con vistaDeAdjunto() más arriba,
+      // que le dio su PROPIO object URL (adjuntos.js) -- el del compositor
+      // ya no lo necesita nadie.
+      descartarAdjuntoComposer()
     } catch (err) {
       agregarError(activeFacet, Date.now().toString() + '_err', 'errorPrefix', textoDeErrorDeMesa(t, err, t.errorFacet))
+      // El id ya no existe (venció o lo borraron): no hay nada para
+      // reintentar con ÉL, así que se limpia para poder re-adjuntar.
+      if (codigoDe(err) === 'adjunto_no_encontrado') descartarAdjuntoComposer()
     } finally {
       setSending(false)
       textareaRef.current?.focus()
@@ -327,12 +393,18 @@ function BottomBar() {
         )}
 
         {/* File attachment preview */}
-        {(attachment || uploading) && (
+        {mode === 'chat' && (attachment || uploading) && (
           <FileAttachment
             attachment={attachment}
             uploading={uploading}
-            onRemove={() => setAttachment(null)}
+            onRemove={descartarAdjuntoComposer}
           />
+        )}
+
+        {imagenSinSoporte && (
+          <div role="status" className="mb-2 text-xs text-aviso font-semibold">
+            {t.adjuntoImagenSinSoporte(activeFacetObj.label)}
+          </div>
         )}
 
         <div className="flex items-end gap-3">
@@ -341,7 +413,7 @@ function BottomBar() {
             {MODES.map(({ id: m, label }) => (
               <button
                 key={m}
-                onClick={() => setMode(m)}
+                onClick={() => elegirModo(m)}
                 className={`px-2 py-1 rounded text-xs font-semibold transition-colors ${
                   mode === m
                     ? m === 'comando'
@@ -365,7 +437,9 @@ function BottomBar() {
           {mode !== 'ejecutor' && (
             <AttachButton
               onFileSelected={handleFileSelected}
-              disabled={sending || uploading}
+              disabled={sending || uploading || mode !== 'chat' || !politica?.accept}
+              accept={politica?.accept?.join(',')}
+              title={politicaFallo ? t.adjuntoPoliticaNoDisponible : t.attachTooltip}
             />
           )}
 
@@ -396,7 +470,7 @@ function BottomBar() {
               disabled, así que disabled:opacity-40 hace de estado "enviando". */}
           <button
             onClick={handleSend}
-            disabled={!input.trim() || sending}
+            disabled={!input.trim() || sending || imagenSinSoporte}
             className={`flex-shrink-0 px-4 py-2 rounded-lg border disabled:opacity-40 text-sm font-semibold transition-colors ${
               mode === 'comando' ? 'border-transparent bg-modo-comando text-sobre-color'
                 : mode === 'pipeline' ? 'border-transparent bg-texto-fuerte text-fondo'

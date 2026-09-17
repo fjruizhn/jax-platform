@@ -51,6 +51,55 @@ os.environ["JAX_PLATFORM_URL"] = DESTINO_DE_SERVICIO_INVALIDO
 # lleve la credencial de producción en sus pedidos (aunque vayan a :9).
 import secrets as _secrets  # noqa: E402
 os.environ["JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA"] = _secrets.token_urlsafe(32)
+# Límites de adjuntos (frente D, 2026-09-16): el lifespan no arranca sin
+# ellos. setdefault y DESPUÉS de cargar /etc/jax/.env: en hall9000 rigen los
+# de producción; en un runner, los de hoy. Los tests que dependen de un valor
+# concreto lo fijan con monkeypatch.setenv.
+for _variable, _valor in (("JAX_ADJUNTO_MAX_BYTES", "10485760"),
+                          ("JAX_ADJUNTO_MAX_CHARS", "8000"),
+                          ("JAX_ADJUNTO_MAX_PAGINAS", "20"),
+                          ("JAX_ADJUNTO_MAX_POR_MENSAJE", "1"),
+                          ("JAX_ADJUNTO_IMAGENES_EN_PROCESO", "1"),
+                          ("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", "1"),
+                          # RD1 (2026-09-17): ProcessPoolExecutor de pypdf.
+                          # El timeout en 5 s (no 1, como el tamaño del pool):
+                          # un spawn arranca un intérprete de Python nuevo, y
+                          # en un runner cargado 1 s de margen sería un falso
+                          # positivo, no una prueba de nada.
+                          ("JAX_ADJUNTO_PDF_PROCESOS", "1"),
+                          ("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "5")):
+    os.environ.setdefault(_variable, _valor)
+
+# Almacén de adjuntos por referencia (RD2, 2026-09-17): directorio aislado
+# para TODA la sesión y FORZADO (no setdefault), por la misma razón que el
+# respaldo de uso más abajo: cuando /etc/jax/.env traiga el directorio real
+# de producción, un test no puede escribir ni limpiar ahí. mkdtemp ya lo crea
+# 0700. El TTL sí es setdefault: rige el de producción si está.
+import tempfile as _tempfile  # noqa: E402
+
+# Final fix wave #2, item 7: la sesión borra ESTE directorio al terminar
+# (pytest_sessionfinish, abajo) y solo este: los `jax-test-adjuntos-*` de otras
+# sesiones (otro worktree corriendo a la vez, restos viejos) no son suyos.
+_ADJUNTOS_DE_LA_SESION = _tempfile.mkdtemp(prefix="jax-test-adjuntos-")
+os.environ["JAX_ADJUNTOS_DIR"] = _ADJUNTOS_DE_LA_SESION
+os.environ.setdefault("JAX_ADJUNTOS_TTL_HORAS", "24")
+# Cuota por usuario (RD6, 2026-09-17): setdefault con el valor de deploy del
+# principal (500 MB), como el resto de los límites. El disco libre mínimo, en
+# cambio, FORZADO al piso del rango (1 GiB): se mide sobre el filesystem del
+# mkdtemp de arriba, no sobre el de producción, y con el valor de producción
+# (50 GB) la suite daría 507 en cualquier máquina con menos libre en /tmp.
+# Los tests de la guarda simulan shutil.disk_usage.
+os.environ.setdefault("JAX_ADJUNTOS_CUOTA_BYTES_USUARIO", "524288000")
+os.environ["JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES"] = "1073741824"
+# Límite de subidas por usuario (RD7): FORZADO al techo del rango (600/min).
+# Los tests de HTTP suben con unos pocos usuarios de prueba dentro del mismo
+# minuto; con el valor de producción en /etc/jax/.env darían 429 según el
+# orden de la suite. Los tests del límite lo fijan con monkeypatch.setenv.
+os.environ["JAX_ADJUNTOS_SUBIDAS_POR_MINUTO"] = "600"
+# Espera antes de un rechazo 401/429 (RD7 fix round): FORZADA a 0 ms. Los tests de HTTP que
+# llegan al 429 no deberían dormir; los que prueban la espera sustituyen
+# `_dormir` y fijan el valor con monkeypatch.setenv.
+os.environ["JAX_ADJUNTOS_RECHAZO_ESPERA_MS"] = "0"
 
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
 # aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture
@@ -256,6 +305,20 @@ if _CI_NO_DB:
     os.environ.setdefault("JAX_DB_PORT", "3308")
 
 _NO_DB_REASON = "requiere MariaDB; este runner no tiene DB (JAX_CI_NO_DB=1)"
+
+
+def _borrar_adjuntos_de_la_sesion():
+    """Borra el JAX_ADJUNTOS_DIR que creó esta sesión (item 7). Por la ruta
+    guardada al crearlo, no por os.environ: un test pudo cambiar la variable.
+    Si ya no está, no hay nada que borrar; cualquier otro error se ve.
+    La llama el único pytest_sessionfinish (abajo): pytest registra un solo
+    hook por nombre en el módulo, y el rebase sobre el frente B había dejado
+    dos definiciones, donde la segunda tapaba a esta en silencio."""
+    import shutil
+    try:
+        shutil.rmtree(_ADJUNTOS_DE_LA_SESION)
+    except FileNotFoundError:  # fail-soft: ya no existe, no queda nada que borrar
+        pass
 
 
 def pytest_collection_modifyitems(config, items):
@@ -660,3 +723,4 @@ def pytest_sessionfinish(session, exitstatus):
         print(f"\nBARRERA DEL KILL SWITCH: la suite tocó el freno de producción: {cambios}",
               file=__import__("sys").stderr)
         session.exitstatus = 1
+    _borrar_adjuntos_de_la_sesion()

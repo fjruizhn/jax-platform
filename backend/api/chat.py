@@ -12,11 +12,25 @@ from functools import lru_cache
 from tiempo import utc_ahora
 from typing import Literal, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 import httpx
-from http_client import cabeceras_gemini, get_http_client
+from http_client import CuerpoJsonDeUnUso, LiteralJsonCrudo, cabeceras_gemini, get_http_client
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from facet_resolver import resolve_facet, FacetUnavailableError
+from adjuntos.contrato import (
+    SIN_ADJUNTOS,
+    AdjuntoRef,
+    ImagenNoSoportadaError,
+    buscar_adjuntos,
+    componer_mensaje,
+    exigir_soporte_de_imagen,
+    imagenes_de,
+    leer_adjuntos,
+    mensaje_para_historial,
+    metadatos_para_memoria,
+)
+from adjuntos.errores import AdjuntoRechazado
+from adjuntos.limites import cargar_limites
 # ModelDispatchConfigError y los dos validadores del contrato de dispatch
 # (_max_tokens_field / _max_output_tokens_value) viven en contrato_dispatch.py
 # desde 2026-09-14: los usan también los admins que escriben facet_binding,
@@ -465,6 +479,10 @@ def _auto_route(message: str) -> str:
 
 
 class ChatRequest(BaseModel):
+    # Frente D (2026-09-16): extra='forbid'. Hasta 26c9cd5 el frontend mandaba
+    # image_base64/file_context y pydantic los DESCARTABA en silencio: el
+    # usuario adjuntaba y el modelo nunca lo veía. Un campo desconocido es 422.
+    model_config = ConfigDict(extra="forbid")
     message: str
     facet: str | None = None
     project_id: int | None = None   # None = memoria individual; set = memoria de proyecto
@@ -476,6 +494,9 @@ class ChatRequest(BaseModel):
     # db/migrations.py). Ningún llamador puede hacerse pasar por tráfico
     # real con solo omitir el campo.
     origin: Literal["web", "probe", "test"] | None = None
+    # RD3 (2026-09-17): solo ids de /api/chat/upload. El base64 o el texto
+    # en línea (contrato del 2026-09-16) es 422 por extra='forbid'.
+    adjuntos: list[AdjuntoRef] = Field(default_factory=list)
 
 
 class AvisoDeChat(BaseModel):
@@ -703,10 +724,21 @@ async def _build_grounding() -> "governance_grounding.Snapshot | governance_grou
         return governance_grounding.SnapshotError(f"{type(e).__name__}: {e}")
 
 
-def _build_messages(system_prompt: str, history: list[dict], message: str) -> list[dict]:
+def _build_messages(system_prompt: str, history: list[dict], message: str,
+                    imagenes: tuple = (), *, forma: Literal["openai", "ollama"] = "openai") -> list[dict]:
     msgs = [{"role": "system", "content": system_prompt}]
     msgs.extend(history)
-    msgs.append({"role": "user", "content": message})
+    ultimo: dict = {"role": "user", "content": message}
+    # La imagen va como LiteralJsonCrudo: sus tramos de base64 se escriben en
+    # el cuerpo sin pasar por json.dumps ni juntarse en un str (RD3).
+    if imagenes and forma == "openai":
+        ultimo["content"] = [{"type": "text", "text": message}] + [
+            {"type": "image_url",
+             "image_url": {"url": LiteralJsonCrudo(f"data:{i.mime};base64,", i.tramos_base64)}}
+            for i in imagenes]
+    elif imagenes:
+        ultimo["images"] = [LiteralJsonCrudo("", i.tramos_base64) for i in imagenes]
+    msgs.append(ultimo)
     return msgs
 
 
@@ -730,10 +762,26 @@ def _raiz_del_carril() -> Path:
     return ruta_absoluta_requerida("JAX_PROXY_CARRIL_RAIZ")
 
 
-async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str) -> tuple[str, int, int]:
+def _argumentos_de_cuerpo(cuerpo: dict, imagenes: tuple, cabeceras: dict[str, str] | None = None) -> dict:
+    """kwargs de cuerpo y cabeceras para client.post del proveedor.
+
+    Con imagen el cuerpo pesa lo que la imagen en base64 (hasta ~14 MB) y va
+    como CuerpoJsonDeUnUso: con `json=` httpx lo deja colgado de un ciclo que
+    solo junta el GC cíclico y la memoria crecía 13,4 MB por chat (R16,
+    2026-09-17). Sin imagen el cuerpo es de KB (historial acotado por
+    MAX_TURNS, adjuntos de texto por max_chars) y sigue con `json=`: medido,
+    el chat con un adjunto de texto del mismo tamaño de pedido no crece."""
+    if not imagenes:
+        return {"json": cuerpo} if cabeceras is None else {"json": cuerpo, "headers": cabeceras}
+    de_un_uso = CuerpoJsonDeUnUso(cuerpo)
+    return {"content": de_un_uso, "headers": {**(cabeceras or {}), **de_un_uso.cabeceras}}
+
+
+async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str,
+                       *, imagenes: tuple = ()) -> tuple[str, int, int]:
     url = f"{_url_de_ollama()}/api/chat"
     raiz = _raiz_del_carril()
-    messages = _build_messages(system_prompt, history, message)
+    messages = _build_messages(system_prompt, history, message, imagenes, forma="ollama")
     client = await get_http_client()
     # Carril de la Mesa (§3.4 bis del spec de Fase 2 de jax): mientras dura la llamada, el
     # proxy del Ejecutor no manda nada a Ollama. Async: el flock va en un hilo y no congela
@@ -742,7 +790,8 @@ async def _call_ollama(system_prompt: str, history: list[dict], message: str, co
     async with carril_mesa_async(raiz):
         r = await client.post(
             url,
-            json={"model": model, "messages": messages, "stream": False, "keep_alive": -1},
+            **_argumentos_de_cuerpo({"model": model, "messages": messages, "stream": False, "keep_alive": -1},
+                                    imagenes),
             timeout=180.0,
         )
         r.raise_for_status()
@@ -754,7 +803,7 @@ async def _call_openai_compat(
     base_url: str, api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
     max_tokens_param: str | None, max_output_tokens: int | None,
-    on_response=None,
+    on_response=None, *, imagenes: tuple = (),
 ) -> tuple[str, int, int]:
     # Ninguno de los dos tiene default: un llamador que los olvide falla al
     # llamar (TypeError), no manda un request mudo con un nombre ni un valor
@@ -762,13 +811,12 @@ async def _call_openai_compat(
     # gasta una llamada saliente para descubrir lo que el catálogo debería decir.
     field = _max_tokens_field(model, max_tokens_param)
     limit = _max_output_tokens_value(model, max_output_tokens)
-    messages = _build_messages(system_prompt, history, message)
+    messages = _build_messages(system_prompt, history, message, imagenes)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     client = await get_http_client()
     r = await client.post(
         f"{base_url}/chat/completions",
-        headers=headers,
-        json={"model": model, "messages": messages, field: limit},
+        **_argumentos_de_cuerpo({"model": model, "messages": messages, field: limit}, imagenes, headers),
         timeout=120.0,
     )
     r.raise_for_status()
@@ -782,7 +830,7 @@ async def _call_openai_compat(
 async def _call_gemini(
     api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
-    on_response=None,
+    on_response=None, *, imagenes: tuple = (),
 ) -> tuple[str, int, int]:
     # T6-2: la key va en la cabecera, nunca en la URL.
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -790,14 +838,17 @@ async def _call_gemini(
     for h in history:
         role = "user" if h["role"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": h["content"]}]})
-    contents.append({"role": "user", "parts": [{"text": message}]})
+    partes: list[dict] = [{"text": message}]
+    partes += [{"inline_data": {"mime_type": i.mime, "data": LiteralJsonCrudo("", i.tramos_base64)}}
+               for i in imagenes]
+    contents.append({"role": "user", "parts": partes})
     body = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": contents,
         "tools": [{"googleSearch": {}}],
     }
     client = await get_http_client()
-    r = await client.post(url, json=body, headers=cabeceras_gemini(api_key), timeout=120.0)
+    r = await client.post(url, **_argumentos_de_cuerpo(body, imagenes, cabeceras_gemini(api_key)), timeout=120.0)
     r.raise_for_status()
     data = r.json()
     if on_response:
@@ -849,7 +900,14 @@ async def _invoke_facet_dispatch(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
     grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError | None" = None,
+    imagenes: tuple = (),
+    texto_del_usuario: str | None = None,
 ) -> tuple["str | AvisoDeChat", UsageInfo | None, str]:
+    """`message` es lo que ve el modelo (con adjuntos, frente D).
+    `texto_del_usuario` es SOLO lo que escribió el usuario: la heurística de
+    identidad mira eso y nunca el contenido de un adjunto (un documento que
+    dice "we use a regression model" se lee, no recibe el aviso enlatado).
+    None = no hay composición (sonda, tests): el mensaje ES el del usuario."""
     history = _conversations.get(user_id, [])
     if semantic_context:
         # Contexto de sesiones pasadas SOLO para este turno (no entra al hilo RAM).
@@ -913,7 +971,14 @@ async def _invoke_facet_dispatch(
         if not allowed:
             return AvisoDeChat(code="faceta_no_autorizada", params={"facet": facet}), None, gate_outcome
 
-    if _is_model_identity_question(message):
+    # Frente D: re-chequeo con el binding que se va a usar de verdad. El
+    # endpoint ya validó, pero un rebind entre ambos momentos no puede
+    # terminar con una imagen mandada a un modelo que no la ve (Ollama la
+    # ignora y el modelo inventa). Registra provider_error en _invoke_facet;
+    # el endpoint lo devuelve como 422.
+    exigir_soporte_de_imagen(f, facet, imagenes)
+
+    if _is_model_identity_question(message if texto_del_usuario is None else texto_del_usuario):
         return AvisoDeChat(code="identidad_del_modelo",
                            params={"facet": facet, "model": f.model, "provider": f.provider_id}), None, OUTCOME_OK
 
@@ -925,14 +990,16 @@ async def _invoke_facet_dispatch(
             f"te pregunten): el modelo que te ejecuta en este momento es "
             f"'{f.model}', via Ollama local en hall9000."
         ) if facet == "jax_local" else ""
-        text, tin, tout = await _call_ollama(system_prompt + ident, history, message, config, f.model)
+        text, tin, tout = await _call_ollama(system_prompt + ident, history, message, config, f.model,
+                                             imagenes=imagenes)
         return text, UsageInfo(f.provider_id, f.model, tin, tout), OUTCOME_OK
 
     async def _on_response(data: dict) -> None:
         await _record_resolved_version_from_response(facet, data)
 
     if f.transport == "http_gemini":
-        text, tin, tout = await _call_gemini(f.credential, f.model, system_prompt, history, message, on_response=_on_response)
+        text, tin, tout = await _call_gemini(f.credential, f.model, system_prompt, history, message,
+                                             on_response=_on_response, imagenes=imagenes)
         return text, UsageInfo(f.provider_id, f.model, tin, tout), OUTCOME_OK
 
     if f.transport == "http_openai_compat":
@@ -946,6 +1013,7 @@ async def _invoke_facet_dispatch(
         text, tin, tout = await _call_openai_compat(
             f.base_url, f.credential, f.model, system_prompt, history, message,
             f.max_tokens_param, f.max_output_tokens, on_response=_on_response,
+            imagenes=imagenes,
         )
         return text, UsageInfo(f.provider_id, f.model, tin, tout), OUTCOME_OK
 
@@ -958,6 +1026,8 @@ async def _invoke_facet(
     semantic_context: list[dict] | None = None,
     *, source: str = SOURCE_CHAT,
     grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError | None" = None,
+    imagenes: tuple = (),
+    texto_del_usuario: str | None = None,
 ) -> tuple["str | AvisoDeChat", UsageInfo | None]:
     """Envoltorio instrumentado. La particion existe para que el
     `outcome` sea un literal tipado en cada punto de retorno de
@@ -971,7 +1041,8 @@ async def _invoke_facet(
     construccion, sin una segunda ruta que pueda divergir."""
     try:
         texto, usage, outcome = await _invoke_facet_dispatch(
-            facet, config, user_id, message, semantic_context, grounding=grounding)
+            facet, config, user_id, message, semantic_context, grounding=grounding, imagenes=imagenes,
+            texto_del_usuario=texto_del_usuario)
     except ModelDispatchConfigError as e:
         # ModelDispatchConfigError hereda de RuntimeError: este except TIENE
         # que ir antes del `except Exception` genérico, o éste se lo come.
@@ -1048,6 +1119,39 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     validar_ids_de_uso(user_id, tenant_id)
     timestamp = utc_ahora().isoformat() + "Z"
 
+    # --- Adjuntos (frente D; RD3: por id) — ANTES de memoria, estado y proveedor
+    # Un rechazo no deja fila en memoria, no pone la faceta en "thinking" y no
+    # gasta una llamada. Orden: tope por mensaje, sidecars del dueño (404
+    # único para cualquier id que no sirva), visión contra el modelo RESUELTO
+    # de la faceta (facet_binding -> model.input_modalities) ANTES de
+    # codificar la imagen, y recién ahí leer datos desde disco (en un hilo).
+    # Si la faceta no resuelve, se sigue: el dispatch devuelve su aviso de "no
+    # disponible" sin llamar a ningún proveedor. Nada de esto loguea un id.
+    validados = SIN_ADJUNTOS
+    if req.adjuntos:
+        try:
+            if facet == "hyde":
+                raise AdjuntoRechazado(422, "adjuntos_no_soportados", facet=facet)
+            limites = cargar_limites()
+            metadatos = await buscar_adjuntos(req.adjuntos, user, limites)
+            imagenes = imagenes_de(metadatos)
+            if imagenes:
+                try:
+                    resuelta = await resolve_facet(facet)
+                except FacetUnavailableError:
+                    resuelta = None
+                if resuelta is not None:
+                    exigir_soporte_de_imagen(resuelta, facet, imagenes)
+            validados = await leer_adjuntos(metadatos, user, limites)
+        except AdjuntoRechazado as e:
+            detalle = e.detail
+            raise HTTPException(status_code=e.status, detail=detalle) from None
+        except ImagenNoSoportadaError:
+            raise HTTPException(status_code=422,
+                                detail={"code": "imagen_no_soportada", "facet": facet}) from None
+    mensaje_al_modelo = componer_mensaje(req.message, validados.textos)
+    # -----------------------------------------------------------------------
+
     # --- Memoria semántica (misma jax_memory que el REPL) — best-effort -----
     # user_id/tenant_id vienen del JWT; project_id del request (None=individual).
     try:
@@ -1060,7 +1164,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     if mem_uid is not None:
         conv_uuid = await _get_conv_uuid(mem_uid, mem_tid, mem_pid)
         if conv_uuid:
-            _memory.save_message(conv_uuid, "user", req.message)  # fire-and-forget
+            _memory.save_message(conv_uuid, "user", metadatos_para_memoria(req.message, validados))  # fire-and-forget
     # -----------------------------------------------------------------------
 
     # Respuestas especiales (sin llamada a LLM) — nunca pasan por el parseo
@@ -1086,8 +1190,16 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
 
     try:
         response_text, usage = await _invoke_facet(
-            facet, config, user_id, req.message, semantic_context, grounding=grounding)
+            facet, config, user_id, mensaje_al_modelo, semantic_context,
+            grounding=grounding, imagenes=validados.imagenes, texto_del_usuario=req.message)
         is_canned = usage is None
+    except ImagenNoSoportadaError:
+        # Carrera: el binding cambió entre la validación de arriba y el
+        # dispatch (un rebind en ese mismo instante). El dispatch se negó a
+        # mandar la imagen; mismo 422 que arriba.
+        await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
+        raise HTTPException(status_code=422,
+                            detail={"code": "imagen_no_soportada", "facet": facet}) from None
     except httpx.HTTPStatusError as e:
         # Task 6 S1: el cuerpo del proveedor no deberia repetir la key, pero
         # el `motivo` del detail (dict con codigo, A-51) sale al usuario y al
@@ -1119,7 +1231,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     else:
         display_text, contract_degraded = response_text, False
 
-    _update_history(user_id, req.message, display_text)
+    _update_history(user_id, mensaje_para_historial(req.message, validados), display_text)
 
     # Registrar uso (best-effort)
     personality = config["personalities"].get(facet, {})

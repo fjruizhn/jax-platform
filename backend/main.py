@@ -47,6 +47,11 @@ _cred_logger.addHandler(_cred_handler)
 _cred_logger.propagate = False
 
 import ajustes
+from adjuntos import limites as limites_de_adjuntos
+from adjuntos import almacen as almacen_de_adjuntos
+from adjuntos import cuota as cuota_de_adjuntos
+from adjuntos import limite_de_subidas
+from adjuntos import pdf_pool
 from db.connection import get_pool, close_pool
 from http_client import get_http_client, close_http_client
 from db.migrations import run_migrations
@@ -105,6 +110,33 @@ async def lifespan(app: FastAPI):
     # SP3 del Ejecutor (2026-09-17): sin directorio del carril la Mesa no puede tomar su
     # prioridad sobre el Ejecutor. Mismo criterio que JAX_OLLAMA_URL: no arranca.
     _raiz_del_carril()
+    # Frente D (2026-09-16): sin límites de adjuntos configurados no se
+    # arranca. Antes que la base: es config, no depende de nada. Por atributo
+    # del módulo (no `from ... import`) para que el test lo pueda sustituir.
+    limites_de_adjuntos.cargar_limites()
+    limites_de_adjuntos.cargar_imagenes_en_proceso()
+    limites_de_adjuntos.cargar_subidas_en_proceso()
+    limites_de_adjuntos.cargar_procesos_de_pdf()
+    limites_de_adjuntos.cargar_timeout_de_pdf()
+    # RD2 (2026-09-17): almacén de adjuntos por referencia. Directorio
+    # absoluto, 0700 y escribible, y TTL en rango; si no, no se arranca
+    # (adjuntos/almacen.py). También antes de la base y del pool de pypdf.
+    almacen_de_adjuntos.cargar_ttl_horas()
+    await asyncio.to_thread(almacen_de_adjuntos.preparar_directorio)
+    # RD6 (2026-09-17): cuota por usuario y disco libre mínimo, en rango, y
+    # la cuota no menor que el tope por archivo (adjuntos/cuota.py).
+    cuota_de_adjuntos.validar_configuracion()
+    # RD7: límite de subidas por usuario (adjuntos/limite_de_subidas.py).
+    limite_de_subidas.cargar_subidas_por_minuto()
+    limite_de_subidas.cargar_espera_de_rechazo_ms()
+    # RD1 (2026-09-17): el ProcessPoolExecutor de pypdf se crea acá, antes de
+    # la base y el cliente HTTP -- mismo criterio que los límites de arriba,
+    # config primero, nada que dependa de otra cosa (ver adjuntos/pdf_pool.py).
+    pdf_pool.crear_pool()
+    # Ronda de corrección 1, item 5: precalentar antes de servir requests,
+    # para que el timeout de la primera extracción real no incluya spawn +
+    # import de pypdf. Best-effort (ver adjuntos/pdf_pool.py::precalentar_pool).
+    await pdf_pool.precalentar_pool()
     await get_pool()
     await get_http_client()
     await run_migrations()
@@ -118,6 +150,9 @@ async def lifespan(app: FastAPI):
     await engine_state.cargar_nombres_de_facetas()
     engine_state.start_background_tasks()
     asyncio.create_task(start_owner_file_cleanup())
+    # RD2: vencidos y huérfanos de JAX_ADJUNTOS_DIR. Tarea hermana, no dentro
+    # del bucle de owner_cleanup (6 h): ver almacen.INTERVALO_DE_LIMPIEZA.
+    asyncio.create_task(almacen_de_adjuntos.start_limpieza_de_adjuntos())
     asyncio.create_task(start_facet_canary())
     # Drenaje del respaldo de uso (2026-09-15, Task 3): reinserta las filas
     # de axioma_usage que quedaron en disco cuando la base no respondió.
@@ -134,6 +169,7 @@ async def lifespan(app: FastAPI):
             print(f"[memoria] {n} conversación(es) web cerradas en shutdown", flush=True)
     except Exception:  # fail-soft: flush de conversaciones en shutdown, best-effort documentado — el proceso ya esta cerrando, nada depende de este resultado
         pass
+    await pdf_pool.cerrar_pool()
     await close_http_client()
     await close_pool()
 
@@ -146,6 +182,11 @@ app.add_exception_handler(ajustes.AjusteIlegible, ajustes.respuesta_de_ajuste_il
 
 # Frente A (2026-09-16, A-18): el dev es mismo origen (proxy de Vite para /api
 # y /ws) y producción también (nginx de la VM dev). Solo el origen declarado.
+# RD7 (2026-09-17): límite de subidas por usuario ANTES de leer el cuerpo
+# (adjuntos/limite_de_subidas.py). Se agrega ANTES que CORS a propósito: en
+# Starlette el último agregado es el de afuera, así que CORS envuelve al 429.
+app.add_middleware(limite_de_subidas.LimiteDeSubidas)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o for o in [os.getenv("FRONTEND_ORIGIN", "")] if o],
