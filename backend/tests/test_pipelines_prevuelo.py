@@ -452,6 +452,24 @@ def test_crear_reenvia_el_objetivo_al_prevuelo_interno(monkeypatch):
     assert prevuelo["objective"] == creacion["objective"] == "investigar X"
 
 
+@pytest.mark.parametrize("cuerpo_extra", [{"objective": None}, {}], ids=["objective-null", "objective-ausente"])
+def test_crear_con_objective_null_o_ausente_normaliza_a_string_vacio_en_preflight_y_pipeline(monkeypatch, cuerpo_extra):
+    """Bug real: `_objetivo_valido` deja pasar el pre-vuelo con "" cuando el
+    body trae `objective: null` (o ni lo trae), pero el body ORIGINAL --sin
+    normalizar-- es el que se reenviaba tal cual a POST /jacobs/pipeline:
+    Jacobs exige `objective: str` y devuelve 422 sobre un `null`. El valor
+    que llega al pre-vuelo y el que llega a la creación tienen que ser EL
+    MISMO (create_pipeline en api/pipelines.py)."""
+    falso = JacobsFalso({**_prevuelo(veredicto(costo="0.10")),
+                         ("POST", "/pipeline"): respuesta(200, {"pipeline_id": None})})
+    preparar(monkeypatch, falso)
+    _crear({"name": "x", "steps": PASOS, **cuerpo_extra})
+    (prevuelo,) = falso.cuerpos("POST", "/preflight")
+    (creacion,) = falso.cuerpos("POST", "/pipeline")
+    assert prevuelo["objective"] == ""
+    assert creacion["objective"] == ""
+
+
 @pytest.mark.parametrize("objetivo_malo", [5, ["x"], {"a": 1}, True])
 def test_preflight_objetivo_no_texto_es_422_y_no_llama_a_jacobs(monkeypatch, objetivo_malo):
     falso = JacobsFalso()

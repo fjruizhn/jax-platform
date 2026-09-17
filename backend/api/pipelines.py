@@ -817,6 +817,11 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
     # plan); mismo criterio que /preflight (fix round 1 ítem 5).
     _exigir_pasos_validos(steps)
     objetivo = _objetivo_valido(body.get("objective"))
+    # El body se reenvía tal cual a POST /jacobs/pipeline (abajo): sin esta
+    # normalización, `objective: null` (o ausente) pasaba el pre-vuelo como
+    # "" pero llegaba a Jacobs como null -- Jacobs exige `objective: str` y
+    # responde 422. Mismo valor validado en los dos lugares.
+    body["objective"] = objetivo
     confirmado = _confirmado_del_cliente(body.pop("costo_confirmado_usd", None))
     body["user_id"] = user.user_id
     body["tenant_id"] = user.tenant_id
