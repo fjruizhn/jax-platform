@@ -95,6 +95,8 @@ export default {
     jacobs_no_responde: () => 'Jacobs did not respond.',
     archivo_demasiado_grande: (d) => `The file exceeds the ${Math.round(d.max_bytes / 1048576)} MB maximum.`,
     pdf_ilegible: () => 'The PDF could not be read.',
+    // Frente B (2026-09-17): 423 from chat, image, command and pipelines with the brake on.
+    kill_switch_activo: () => 'Kill switch active: JAX is stopped',
   },
   avisosChat: {
     faceta_sin_binding: (p) => `⚠️ ${p.facet} is not available: no active binding configured.`,
@@ -131,7 +133,6 @@ export default {
 
   // Kill switch
   killSwitchActive: 'KILL SWITCH ACTIVE',
-  killConfirm: 'Confirm?',
   killConfirmYes: 'YES, STOP ALL',
   // Product term (like eyeKillSwitch): same value in both languages.
   killButton: 'KILL',
@@ -140,7 +141,17 @@ export default {
   cancel: 'Cancel',
   killTitle: 'Kill Switch — stops all processes',
   killSwitchToast: 'KILL SWITCH ACTIVATED',
-  killSwitchStoppedToast: 'KILL SWITCH ACTIVATED — all processes stopped',
+  killConfirmTitle: 'Stop everything',
+  killConfirmMessage: 'The Mesa and everything running in LAS MANOS and Jacobs stop. Work in flight is aborted.',
+  killResumeButton: 'Resume',
+  killResumeTitle: 'Resume JAX',
+  killResumeMessage: 'The Mesa, LAS MANOS and Jacobs accept work again. Aborted work does not resume by itself.',
+  killResumeConfirm: 'Yes, resume',
+  killSwitchReleasedToast: 'Kill switch released: JAX accepts work',
+  killSwitchErrorActivar: 'Could not activate the kill switch',
+  killSwitchErrorReanudar: 'Could not resume',
+  killSwitchErrorNoEscribible: 'The server cannot write the switch: nothing changed',
+  killSwitchErrorAuditoria: 'The brake stayed on, but the audit failed: check the server log',
 
   // Store event toasts (WS handleEvent)
   humanGateRequestedToast: (id) => `Jacobs is waiting for approval — pipeline ${id}`,

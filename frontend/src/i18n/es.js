@@ -95,6 +95,8 @@ export default {
     jacobs_no_responde: () => 'Jacobs no respondió.',
     archivo_demasiado_grande: (d) => `El archivo supera el máximo de ${Math.round(d.max_bytes / 1048576)} MB.`,
     pdf_ilegible: () => 'No se pudo leer el PDF.',
+    // Frente B (2026-09-17): 423 de chat, imagen, comando y pipelines con el freno puesto.
+    kill_switch_activo: () => 'Kill switch activo: JAX está detenido',
   },
   avisosChat: {
     faceta_sin_binding: (p) => `⚠️ ${p.facet} no está disponible: sin binding activo configurado.`,
@@ -131,7 +133,6 @@ export default {
 
   // Kill switch
   killSwitchActive: 'KILL SWITCH ACTIVO',
-  killConfirm: '¿Confirmar?',
   killConfirmYes: 'SÍ, DETENER TODO',
   // Término del producto (como eyeKillSwitch): igual en los dos idiomas.
   killButton: 'KILL',
@@ -139,11 +140,19 @@ export default {
   wsLabel: 'WS',
   cancel: 'Cancelar',
   killTitle: 'Kill Switch — detiene todos los procesos',
-  // killSwitchActive: badge persistente en la UI. killSwitchToast: toast al
-  // recibir el evento de WS (otro usuario/proceso lo activó). killSwitchStoppedToast:
-  // toast tras activarlo uno mismo desde este cliente (activateKillSwitch).
+  // killSwitchActive: aviso persistente. killSwitchToast / killSwitchReleasedToast: el evento de WS (llega a todas las pestañas, también a quien lo activó).
   killSwitchToast: 'KILL SWITCH ACTIVADO',
-  killSwitchStoppedToast: 'KILL SWITCH ACTIVADO — todos los procesos detenidos',
+  killConfirmTitle: 'Detener todo',
+  killConfirmMessage: 'Se detienen la Mesa y todo lo que corre en LAS MANOS y en Jacobs. Lo que esté en vuelo se aborta.',
+  killResumeButton: 'Reanudar',
+  killResumeTitle: 'Reanudar JAX',
+  killResumeMessage: 'La Mesa, LAS MANOS y Jacobs vuelven a aceptar trabajo. Lo abortado no se reanuda solo.',
+  killResumeConfirm: 'Sí, reanudar',
+  killSwitchReleasedToast: 'Kill switch liberado: JAX acepta trabajo',
+  killSwitchErrorActivar: 'No se pudo activar el kill switch',
+  killSwitchErrorReanudar: 'No se pudo reanudar',
+  killSwitchErrorNoEscribible: 'El servidor no puede escribir el interruptor: nada cambió',
+  killSwitchErrorAuditoria: 'El freno quedó puesto, pero la auditoría falló: revisá el registro del servidor',
 
   // Store event toasts (WS handleEvent)
   humanGateRequestedToast: (id) => `Jacobs espera aprobación — pipeline ${id}`,

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import api from '../api/client'
+import { codigoDe } from '../api/errores'
 import { diccionarioActivo } from '../i18n/index.jsx'
 import { EYE_ESTADO_REPOSO } from './eyeRestState'
 import { tokenDeFaceta } from '../tema/tokens'
@@ -102,6 +103,20 @@ function _facetaDelServidor(clave, base, datos) {
 // Se purgan los restos de sesiones previas a este cambio.
 localStorage.removeItem('jax_token')
 localStorage.removeItem('jax_user')
+
+// Ruling R5 (frente B, 2026-09-17): el POST de activar/reanudar el freno. Si el
+// backend responde kill_switch_auditoria_fallida (500), el freno quedó PUESTO
+// (P1 de Fernando): se enciende el estado y se propaga el error igual.
+const KILL_SWITCH_AUDITORIA_FALLIDA = 'kill_switch_auditoria_fallida'
+
+async function _postDelFreno(url, set) {
+  try {
+    return await api.post(url)
+  } catch (err) {
+    if (codigoDe(err) === KILL_SWITCH_AUDITORIA_FALLIDA) set({ killSwitchActive: true })
+    throw err
+  }
+}
 
 export const useJaxStore = create((set, get) => {
   // Varios escritores async (fetch de resultados de pipeline, polling de
@@ -313,6 +328,11 @@ export const useJaxStore = create((set, get) => {
     if (event_type === 'kill_switch_activated') {
       set({ killSwitchActive: true })
       get().addToast({ type: 'error', message: diccionarioActivo().killSwitchToast })
+    }
+
+    if (event_type === 'kill_switch_released') {
+      set({ killSwitchActive: false })
+      get().addToast({ type: 'success', message: diccionarioActivo().killSwitchReleasedToast })
     }
 
     if (event_type === 'human_gate_requested') {
@@ -554,12 +574,20 @@ export const useJaxStore = create((set, get) => {
 
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
-  activateKillSwitch: async () => {
-    set({ killSwitchActive: true })
-    try {
-      await api.post('/kill-switch')
-    } catch {}
-    get().addToast({ type: 'error', message: diccionarioActivo().killSwitchStoppedToast })
+  // Kill switch real (2026-09-16, frente B). El estado sale de la respuesta
+  // (o del evento de WS), nunca antes: si falla, no se finge que se detuvo.
+  // El error se propaga para que KillSwitch lo muestre.
+  // Ruling R5 (P1 de Fernando): un 500 kill_switch_auditoria_fallida dice que
+  // el freno QUEDÓ PUESTO, tanto al activar como al reanudar: el estado lo
+  // refleja antes de propagar. Cualquier otro error no toca el estado.
+  activarKillSwitch: async () => {
+    const { data } = await _postDelFreno('/admin/kill-switch/activar', set)
+    set({ killSwitchActive: data.activo === true })
+  },
+
+  reanudarKillSwitch: async () => {
+    const { data } = await _postDelFreno('/admin/kill-switch/reanudar', set)
+    set({ killSwitchActive: data.activo === true })
   },
 
   loadState: async () => {
@@ -574,6 +602,7 @@ export const useJaxStore = create((set, get) => {
         },
         activePipelines: _evictOldFinishedPipelines(data.active_pipelines || {}),
         lasManos: data.las_manos_alive,
+        killSwitchActive: data.kill_switch_active === true,
       })
     } catch {}
   },
