@@ -469,3 +469,47 @@ def usuarios(client):
     yield crear
     for user_id in creados:
         client.portal.call(borrar_usuario, user_id)
+
+
+@pytest.fixture
+def ajustes_en_db(client):
+    """Las cinco filas de los ajustes que mandan (frente C, 2026-09-16), con
+    restauración: guarda lo que había, deja escribir/quitar filas y al final
+    las repone tal cual. Invalida el caché de `ajustes` en cada cambio, así
+    ningún test ve un valor de otro. Pide `client`: sin DB se salta sola."""
+    from types import SimpleNamespace
+
+    import ajustes
+    from tests.identidades import sql
+
+    marcadores = ", ".join(["%s"] * len(ajustes.CLAVES))
+    seleccion = f"SELECT config_key, config_value FROM axioma_config WHERE config_key IN ({marcadores})"
+    antes = dict(client.portal.call(sql, seleccion, ajustes.CLAVES, True))
+
+    def poner(**valores):
+        for clave, valor in valores.items():
+            client.portal.call(
+                sql,
+                "INSERT INTO axioma_config (config_key, config_value) VALUES (%s, %s) "
+                "ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)",
+                (clave, valor),
+            )
+        ajustes.invalidar()
+
+    def quitar(clave):
+        client.portal.call(sql, "DELETE FROM axioma_config WHERE config_key = %s", (clave,))
+        ajustes.invalidar()
+
+    def filas():
+        return dict(client.portal.call(sql, seleccion, ajustes.CLAVES, True))
+
+    ajustes.invalidar()
+    yield SimpleNamespace(
+        poner=poner, quitar=quitar, filas=filas,
+        validos={"session_timeout_min": "10080", "max_pipelines": "3",
+                 "web_task_retention_days": "30", "lang_default": "es", "system_name": "Axioma"},
+    )
+    client.portal.call(sql, f"DELETE FROM axioma_config WHERE config_key IN ({marcadores})", ajustes.CLAVES)
+    for clave, valor in antes.items():
+        client.portal.call(sql, "INSERT INTO axioma_config (config_key, config_value) VALUES (%s, %s)", (clave, valor))
+    ajustes.invalidar()
