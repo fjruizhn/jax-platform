@@ -1,28 +1,28 @@
-import os
+"""Subida de adjuntos del chat (frente D, 2026-09-16).
+
+El tipo lo deciden los bytes (adjuntos/tipos.py), no el content_type ni la
+extensión que manda el cliente. Todo lo pesado (clasificar/decodificar 10 MB,
+base64, pypdf) corre en asyncio.to_thread. Errores con código estable.
+"""
+import asyncio
 import base64
-import uuid
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+
+from adjuntos.errores import AdjuntoRechazado
+from adjuntos.limites import cargar_limites
+from adjuntos.pdf import PdfIlegible, PdfSinTexto, extraer_texto
+from adjuntos.tipos import AdjuntoVacio, TipoNoPermitido, clasificar, nombre_seguro
 from auth.middleware import get_current_user
 from auth.models import AuthUser
-from redaccion import recortar_redactado
 
 router = APIRouter(prefix="/api/chat")
 
-ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml"}
-ALLOWED_TEXT_TYPES = {"text/plain", "text/markdown", "text/csv", "application/json"}
-ALLOWED_CODE_EXT = {".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".toml", ".yml", ".yaml", ".sh"}
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
-
-def _detect_type(filename: str, content_type: str) -> str:
-    if content_type in ALLOWED_IMAGE_TYPES or content_type.startswith("image/"):
-        return "image"
-    if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
-        return "pdf"
-    ext = os.path.splitext(filename.lower())[1]
-    if ext in ALLOWED_CODE_EXT:
-        return "code"
-    return "text"
+def _rechazo(status: int, code: str, **extra) -> HTTPException:
+    e = AdjuntoRechazado(status, code, **extra)
+    detalle = e.detail
+    return HTTPException(status_code=e.status, detail=detalle)
 
 
 @router.post("/upload")
@@ -30,58 +30,35 @@ async def upload_file(
     file: UploadFile = File(...),
     user: AuthUser = Depends(get_current_user),
 ):
-    content = await file.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail={"code": "archivo_demasiado_grande", "max_bytes": MAX_FILE_SIZE})
-
-    file_type = _detect_type(file.filename or "", file.content_type or "")
-    file_id = str(uuid.uuid4())[:8]
-
-    if file_type == "image":
-        b64 = base64.b64encode(content).decode()
-        mime = file.content_type or "image/jpeg"
-        return {
-            "file_id": file_id,
-            "type": "image",
-            "filename": file.filename,
-            "mime_type": mime,
-            "base64": f"data:{mime};base64,{b64}",
-            "content_preview": f"[Imagen: {file.filename}]",
-            "ready": True,
-        }
-
-    if file_type == "pdf":
-        try:
-            import pdfplumber
-            import io
-            text = ""
-            with pdfplumber.open(io.BytesIO(content)) as pdf:
-                for page in pdf.pages[:20]:  # max 20 páginas
-                    text += page.extract_text() or ""
-            return {
-                "file_id": file_id,
-                "type": "pdf",
-                "filename": file.filename,
-                "mime_type": "application/pdf",
-                "content": text[:8000],  # max 8k chars
-                "content_preview": text[:200],
-                "ready": True,
-            }
-        except Exception as e:
-            raise HTTPException(status_code=422, detail={"code": "pdf_ilegible", "motivo": recortar_redactado(str(e), 200)})
-
-    # text or code
+    limites = cargar_limites()
+    # Un byte de más alcanza para saber que se pasó, sin leer el resto.
+    datos = await file.read(limites.max_bytes + 1)
+    if len(datos) > limites.max_bytes:
+        raise _rechazo(413, "adjunto_demasiado_grande", max_bytes=limites.max_bytes)
+    nombre = nombre_seguro(file.filename)
     try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        text = content.decode("latin-1", errors="replace")
+        clase, mime, texto = await asyncio.to_thread(clasificar, datos)
+    except AdjuntoVacio:
+        raise _rechazo(422, "adjunto_vacio") from None
+    except TipoNoPermitido:
+        raise _rechazo(415, "adjunto_tipo_no_permitido") from None
 
-    return {
-        "file_id": file_id,
-        "type": file_type,
-        "filename": file.filename,
-        "mime_type": file.content_type or "text/plain",
-        "content": text[:8000],
-        "content_preview": text[:200],
-        "ready": True,
-    }
+    if clase == "imagen":
+        codificado = await asyncio.to_thread(base64.b64encode, datos)
+        return {"tipo": "imagen", "nombre": nombre, "mime": mime,
+                "bytes": len(datos), "base64": codificado.decode("ascii")}
+
+    if clase == "pdf":
+        try:
+            texto, recortado = await asyncio.to_thread(
+                extraer_texto, datos, limites.max_paginas, limites.max_chars)
+        except PdfSinTexto:
+            raise _rechazo(422, "pdf_sin_texto") from None
+        except PdfIlegible:
+            raise _rechazo(422, "pdf_ilegible") from None
+        return {"tipo": "texto", "origen": "pdf", "nombre": nombre,
+                "bytes": len(datos), "contenido": texto, "recortado": recortado}
+
+    return {"tipo": "texto", "origen": "texto", "nombre": nombre, "bytes": len(datos),
+            "contenido": texto[: limites.max_chars],
+            "recortado": len(texto) > limites.max_chars}

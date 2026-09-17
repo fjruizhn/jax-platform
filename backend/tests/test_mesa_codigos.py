@@ -16,6 +16,7 @@ import httpx
 import pytest
 from fastapi import HTTPException, UploadFile
 
+from adjuntos.limites import cargar_limites
 from api import command as command_mod
 from api import image as image_mod
 from api import pipelines as pipelines_mod
@@ -246,11 +247,12 @@ def test_pipeline_id_invalido_es_un_codigo():
     assert (e.status_code, e.detail) == (400, "pipeline_id_invalido")
 
 
-def test_archivo_demasiado_grande_es_un_codigo():
-    grande = UploadFile(file=io.BytesIO(b"x" * (upload_mod.MAX_FILE_SIZE + 1)), filename="a.txt")
+def test_adjunto_demasiado_grande_es_un_codigo():
+    max_bytes = cargar_limites().max_bytes
+    grande = UploadFile(file=io.BytesIO(b"x" * (max_bytes + 1)), filename="a.txt")
     e = _error(upload_mod.upload_file(file=grande, user=USUARIO))
-    assert (e.status_code, e.detail) == (413, {"code": "archivo_demasiado_grande",
-                                               "max_bytes": upload_mod.MAX_FILE_SIZE})
+    assert (e.status_code, e.detail) == (413, {"code": "adjunto_demasiado_grande",
+                                               "max_bytes": max_bytes})
 
 
 def test_sin_archivo_de_duenio_el_fallo_se_publica_igual_y_hyde_vuelve_a_idle(tmp_path, monkeypatch):
