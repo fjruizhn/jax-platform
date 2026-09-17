@@ -1,0 +1,147 @@
+[
+  {"codigo": "canario_c1", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
+   "patron": "ejecutor-canario-c1", "ambito_host": null, "ambito_roles": [], "es_canario": true,
+   "origen": "spec 2026-09-15 §4: canario permanente de C1",
+   "ejemplos_coincide": [{"tool_name": "Bash", "tool_input": {"command": "echo ejecutor-canario-c1"}}],
+   "ejemplos_no_coincide": [{"tool_name": "Bash", "tool_input": {"command": "echo ejecutor-canario"}}]},
+  {"codigo": "ssh_sin_tt", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
+   "patron": "(?:^|[;&|(]|\\bsudo|\\bnohup|\\bexec|\\benv|\\btimeout\\s+\\S+)\\s*(?:\\S*/)?ssh(?=\\s)(?![^;&|\\n]*\\s-tt(?=\\s|$))",
+   "ambito_host": null, "ambito_roles": [], "es_canario": false,
+   "origen": "C4: sin pty, matar el cliente ssh no manda SIGHUP al remoto (LAS MANOS, 2026-06-14)",
+   "ejemplos_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -p 58291 axioma@atemai uptime"}},
+     {"tool_name": "Bash", "tool_input": {"command": "uptime; ssh axioma@prod df -h"}},
+     {"tool_name": "Bash", "tool_input": {"command": "sudo ssh axioma@bridge uptime"}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt -p 58291 axioma@atemai uptime"}},
+     {"tool_name": "Bash", "tool_input": {"command": "grep ssh /var/log/auth.log"}},
+     {"tool_name": "Bash", "tool_input": {"command": "systemctl status ssh"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ls /etc/ssh -la"}}]},
+  {"codigo": "apt_full_upgrade_bridge", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
+   "patron": "\\bapt(?:-get)?\\s+(?:-\\S+\\s+)*(?:full-upgrade|dist-upgrade)\\b",
+   "ambito_host": "bridge", "ambito_roles": [], "es_canario": false,
+   "origen": "spec 2026-09-15 §4 semilla: apt full-upgrade en .20",
+   "ejemplos_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@bridge 'sudo apt full-upgrade -y'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@bridge 'sudo apt-get -y dist-upgrade'"}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@bridge 'apt list --upgradable'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@atemai 'sudo apt full-upgrade -y'"}}]},
+  {"codigo": "migrate_fresh_produccion", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
+   "patron": "\\bmigrate:fresh\\b", "ambito_host": null, "ambito_roles": ["produccion", "clientes"], "es_canario": false,
+   "origen": "spec 2026-09-15 §4 semilla; Principio III: nunca migrate:fresh en producción",
+   "ejemplos_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'cd /www/app && php artisan migrate:fresh --force'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@bridge 'php artisan migrate:fresh'"}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@atemai 'php artisan migrate:fresh'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'php artisan migrate:status'"}}]},
+  {"codigo": "sed_i_env", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
+   "patron": "\\bsed\\b(?:'[^']*'|\"[^\"]*\"|[^;&|\\n'\"])*?\\s(?:-[a-zA-Z]*i\\S*|--in-place\\S*)(?:'[^']*'|\"[^\"]*\"|[^;&|\\n'\"])*?\\.env\\b",
+   "ambito_host": null, "ambito_roles": [], "es_canario": false,
+   "origen": "spec 2026-09-15 §4 semilla: sed -i sobre un .env",
+   "ejemplos_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "sed -i 's/^DEBUG=.*/DEBUG=false/' /www/app/.env"}},
+     {"tool_name": "Bash", "tool_input": {"command": "sed -i 's/a/b/;s/c/d/' .env"}},
+     {"tool_name": "Bash", "tool_input": {"command": "sed --in-place 's/a/b/' .env"}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "sed -n '1,5p' /www/app/.env"}},
+     {"tool_name": "Bash", "tool_input": {"command": "sed -i 's/a/b/' /etc/nginx/nginx.conf"}},
+     {"tool_name": "Bash", "tool_input": {"command": "sed -i 's/a/b/' /www/app/.environment"}}]},
+  {"codigo": "pure_ftpd_parar_atemai", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
+   "patron": "\\b(?:systemctl\\s+(?:-\\S+\\s+)*(?:stop|disable|mask|kill)\\s+(?:\\S+\\s+)*pure-ftpd|service\\s+pure-ftpd\\s+stop)\\b",
+   "ambito_host": "atemai", "ambito_roles": [], "es_canario": false,
+   "origen": "spec 2026-09-15 §4 semilla: parar, deshabilitar o enmascarar pure-ftpd en .11",
+   "ejemplos_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@atemai 'sudo systemctl stop pure-ftpd'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@atemai 'sudo systemctl disable --now pure-ftpd.service'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@atemai 'sudo service pure-ftpd stop'"}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@atemai 'systemctl status pure-ftpd'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'sudo systemctl stop pure-ftpd'"}}]},
+  {"codigo": "respaldos_borrar", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
+   "patron": "\\brestic\\b[^\\n]*\\s(?:forget|prune)\\b|\\bzfs\\s+destroy\\b|\\bmidclt\\s+call\\s+(?:pool\\.snapshottask|replication|pool\\.dataset)\\.(?:update|delete)\\b|\\brm\\s+[^\\n]*/srv/backup-adata",
+   "ambito_host": null, "ambito_roles": [], "es_canario": false,
+   "origen": "spec 2026-09-15 §4 y §7: borrar respaldos o acortar retenciones",
+   "ejemplos_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "restic -r /srv/backup-adata/restic forget --keep-last 1 --prune"}},
+     {"tool_name": "Bash", "tool_input": {"command": "sudo zfs destroy tank/backups@auto-2026-09-01"}},
+     {"tool_name": "Bash", "tool_input": {"command": "rm -rf /srv/backup-adata/staging"}},
+     {"tool_name": "Bash", "tool_input": {"command": "midclt call pool.snapshottask.update 3 '{\"lifetime_value\": 1}'"}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "restic -r /srv/backup-adata/restic snapshots"}},
+     {"tool_name": "Bash", "tool_input": {"command": "zfs list -t snapshot"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ls -la /srv/backup-adata"}}]},
+  {"codigo": "ajustes_claude_code", "tipo": "prohibido", "herramientas": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+   "campo": "cualquiera", "patron": "\\.claude/settings(?:\\.local)?\\.json|managed-settings\\.json|disableAllHooks|\\.claude\\.json",
+   "ambito_host": null, "ambito_roles": [], "es_canario": false,
+   "origen": "C1: disableAllHooks en cualquier nivel apaga los ganchos (documentación oficial, 2026-09-17)",
+   "ejemplos_coincide": [
+     {"tool_name": "Write", "tool_input": {"file_path": "/home/axioma/.claude/settings.json", "content": "{}"}},
+     {"tool_name": "Bash", "tool_input": {"command": "echo '{\"disableAllHooks\": true}' > .claude/settings.local.json"}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Read", "tool_input": {"file_path": "/home/axioma/.claude/settings.json"}},
+     {"tool_name": "Write", "tool_input": {"file_path": "/home/axioma/notas.md", "content": "x"}}]},
+  {"codigo": "borrar_archivos", "tipo": "destructivo", "herramientas": "Bash", "campo": "command",
+   "patron": "\\b(?:rm|unlink|shred)\\s|\\bfind\\b[^\\n]*\\s-delete\\b|\\btruncate\\s+(?:-\\S+\\s+)*-s\\b",
+   "ambito_host": null, "ambito_roles": [], "es_canario": false, "origen": "spec 2026-09-15 §4 C2: borrar datos",
+   "ejemplos_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "rm -rf /tmp/build"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'rm /www/app/storage/logs/laravel.log'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "find /var/log/app -name '*.gz' -delete"}},
+     {"tool_name": "Bash", "tool_input": {"command": "truncate -s 0 /var/log/syslog"}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "ls -la /tmp"}},
+     {"tool_name": "Bash", "tool_input": {"command": "echo confirm yes"}}]},
+  {"codigo": "sql_destructivo", "tipo": "destructivo", "herramientas": "Bash", "campo": "command",
+   "patron": "(?i)\\b(?:drop\\s+(?:table|database|schema|user)|truncate\\s+table|delete\\s+from)\\b",
+   "ambito_host": null, "ambito_roles": [], "es_canario": false, "origen": "spec 2026-09-15 §4 C2: DROP",
+   "ejemplos_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "mysql -e 'DROP TABLE clientes'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@bridge \"mysql app -e 'delete from users where id=3'\""}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "mysql -e 'SELECT COUNT(*) FROM users'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "mysql -e 'SHOW TABLES'"}}]},
+  {"codigo": "dns_correo", "tipo": "destructivo", "herramientas": "Bash", "campo": "command",
+   "patron": "\\bnsupdate\\b|\\bpdnsutil\\s+(?:delete-rrset|replace-rrset|add-record|delete-zone|edit-zone)\\b|\\brndc\\s+(?:freeze|thaw|reload|delzone|modzone)\\b|dns_records[^\\n]*-X\\s*(?:DELETE|PUT|PATCH|POST)|-X\\s*(?:DELETE|PUT|PATCH|POST)[^\\n]*dns_records|\\bpostconf\\s+-e\\b|\\bpostsuper\\s+-d\\b|\\bexim\\s+-Mrm\\b",
+   "ambito_host": null, "ambito_roles": [], "es_canario": false, "origen": "spec 2026-09-15 §4 C2: DNS/MX",
+   "ejemplos_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "nsupdate -k /etc/bind/k.key cambios.txt"}},
+     {"tool_name": "Bash", "tool_input": {"command": "curl -X DELETE https://api.cloudflare.com/client/v4/zones/Z/dns_records/R"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@atemai 'sudo postconf -e relayhost=smtp:587'"}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "dig MX axioma-ia.io"}},
+     {"tool_name": "Bash", "tool_input": {"command": "curl https://api.cloudflare.com/client/v4/zones/Z/dns_records"}}]},
+  {"codigo": "parar_servicio", "tipo": "destructivo", "herramientas": "Bash", "campo": "command",
+   "patron": "\\bsystemctl\\s+(?:-\\S+\\s+)*(?:stop|disable|mask|kill|reboot|poweroff|halt)\\b|\\bservice\\s+\\S+\\s+stop\\b|(?:^|[;&|(]|\\bsudo)\\s*(?:shutdown|poweroff|halt|reboot)\\b",
+   "ambito_host": null, "ambito_roles": [], "es_canario": false, "origen": "spec 2026-09-15 §4 C2: parar servicio",
+   "ejemplos_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "sudo systemctl stop nginx"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'sudo systemctl disable --now php8.3-fpm'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "sudo reboot"}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "systemctl status nginx"}},
+     {"tool_name": "Bash", "tool_input": {"command": "grep -i shutdown /var/log/syslog"}}]},
+  {"codigo": "quitar_paquetes", "tipo": "destructivo", "herramientas": "Bash", "campo": "command",
+   "patron": "\\b(?:apt|apt-get|aptitude)\\s+(?:-\\S+\\s+)*(?:remove|purge|autoremove|full-upgrade|dist-upgrade)\\b|\\bdpkg\\s+(?:-\\S+\\s+)*(?:-r|-P|--remove|--purge)\\b|\\bsnap\\s+remove\\b|\\bpip3?\\s+uninstall\\b",
+   "ambito_host": null, "ambito_roles": [], "es_canario": false, "origen": "spec 2026-09-15 §4 C2: quitar paquetes",
+   "ejemplos_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "sudo apt-get -y purge exim4"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@bridge 'sudo apt autoremove'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "sudo dpkg -P paquete"}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "apt list --installed"}},
+     {"tool_name": "Bash", "tool_input": {"command": "sudo apt install htop"}}]},
+  {"codigo": "disco", "tipo": "destructivo", "herramientas": "Bash", "campo": "command",
+   "patron": "\\bmkfs(?:\\.\\w+)?\\b|\\bdd\\s+[^\\n]*\\bof=/dev/|\\bwipefs\\b|\\b(?:lvremove|vgremove|pvremove)\\b|\\bvirsh\\s+(?:undefine|destroy|vol-delete)\\b",
+   "ambito_host": null, "ambito_roles": [], "es_canario": false, "origen": "spec 2026-09-15 §4 C2: borrar datos (discos y VMs)",
+   "ejemplos_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "sudo mkfs.ext4 /dev/sdb1"}},
+     {"tool_name": "Bash", "tool_input": {"command": "sudo dd if=imagen.img of=/dev/sdb bs=4M"}},
+     {"tool_name": "Bash", "tool_input": {"command": "sudo lvremove -f vg_vms/dev_root_snap"}},
+     {"tool_name": "Bash", "tool_input": {"command": "virsh destroy dev"}}],
+   "ejemplos_no_coincide": [
+     {"tool_name": "Bash", "tool_input": {"command": "lsblk"}},
+     {"tool_name": "Bash", "tool_input": {"command": "sudo dd if=/dev/vg_vms/prod_root_snap bs=4M status=none"}},
+     {"tool_name": "Bash", "tool_input": {"command": "virsh list --all"}}]}
+]

@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+from pathlib import Path
 
 import aiomysql
 
@@ -604,6 +606,61 @@ CREATE TABLE IF NOT EXISTS kill_switch_audit (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# Ejecutor SP1 (plan 1, 2026-09-17). Catálogos que no crecen (inventario y reglas:
+# decenas de filas) y una tabla que sí (puntos de restauración, con índice para la
+# única consulta que la lee: el último verificado por máquina).
+CREATE_EJECUTOR_HOST = """
+CREATE TABLE IF NOT EXISTS ejecutor_host (
+  nombre VARCHAR(50) NOT NULL PRIMARY KEY,
+  ip VARCHAR(45) NOT NULL,
+  puerto INT NOT NULL,
+  rol ENUM('hypervisor','desarrollo','produccion','clientes','respaldo') NOT NULL,
+  es_local BOOLEAN NOT NULL DEFAULT FALSE,
+  machine_id CHAR(32) NULL,
+  con_datos_de_clientes BOOLEAN NOT NULL DEFAULT TRUE,
+  sudo BOOLEAN NOT NULL DEFAULT FALSE,
+  api_only BOOLEAN NOT NULL DEFAULT FALSE,
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at DATETIME DEFAULT NOW(),
+  UNIQUE KEY uk_ejecutor_host_ip_puerto (ip, puerto)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+CREATE_EJECUTOR_REGLA = """
+CREATE TABLE IF NOT EXISTS ejecutor_regla (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  codigo VARCHAR(80) NOT NULL,
+  tipo ENUM('prohibido','destructivo') NOT NULL,
+  herramientas VARCHAR(200) NOT NULL,
+  campo ENUM('command','file_path','cualquiera') NOT NULL,
+  patron VARCHAR(1000) NOT NULL,
+  ambito_host VARCHAR(50) NULL,
+  ambito_roles SET('hypervisor','desarrollo','produccion','clientes','respaldo') NULL,
+  es_canario BOOLEAN NOT NULL DEFAULT FALSE,
+  activa BOOLEAN NOT NULL DEFAULT TRUE,
+  origen VARCHAR(300) NOT NULL,
+  ejemplos_coincide JSON NOT NULL,
+  ejemplos_no_coincide JSON NOT NULL,
+  created_at DATETIME DEFAULT NOW(),
+  UNIQUE KEY uk_ejecutor_regla_codigo (codigo)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+CREATE_EJECUTOR_PUNTO_RESTAURACION = """
+CREATE TABLE IF NOT EXISTS ejecutor_punto_restauracion (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  host_nombre VARCHAR(50) NOT NULL,
+  referencia VARCHAR(255) NOT NULL,
+  metodo VARCHAR(50) NOT NULL,
+  restaurado_y_verificado_at DATETIME NOT NULL COMMENT 'UTC: momento en que se RESTAURÓ y verificó, no en que se respaldó',
+  verificado_por VARCHAR(100) NOT NULL,
+  evidencia VARCHAR(500) NOT NULL,
+  created_at DATETIME DEFAULT NOW(),
+  INDEX idx_ejecutor_punto_host_fecha (host_nombre, restaurado_y_verificado_at),
+  FOREIGN KEY (host_nombre) REFERENCES ejecutor_host(nombre)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
@@ -631,6 +688,9 @@ _TABLES = [
     ("facet_health_alert", CREATE_FACET_HEALTH_ALERT),
     ("user_admin_audit", CREATE_USER_ADMIN_AUDIT),    # sin FK a propósito
     ("kill_switch_audit", CREATE_KILL_SWITCH_AUDIT),  # sin FK a propósito
+    ("ejecutor_host", CREATE_EJECUTOR_HOST),                            # antes de punto_restauracion (FK)
+    ("ejecutor_regla", CREATE_EJECUTOR_REGLA),
+    ("ejecutor_punto_restauracion", CREATE_EJECUTOR_PUNTO_RESTAURACION),
 ]
 
 # transport, requires_tool_use, auto_selectable — valores actuales reales
@@ -2234,6 +2294,78 @@ async def _ajustes_que_mandan_v1(cur) -> None:
     await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_AJUSTES_V1,))
 
 
+MIGRACION_EJECUTOR_REGLAS_V1 = "ejecutor_reglas_v1"
+MIGRACION_EJECUTOR_INVENTARIO_V1 = "ejecutor_inventario_v1"
+_SEMILLA_EJECUTOR_REGLAS = Path(__file__).with_name("semilla_ejecutor_reglas.json")
+_ROLES_EJECUTOR = ("hypervisor", "desarrollo", "produccion", "clientes", "respaldo")
+_OPCIONES_INVENTARIO = frozenset({"local", "sin_clientes"})
+
+
+async def _marcada(cur, nombre: str) -> bool:
+    await cur.execute("SELECT 1 FROM axioma_migracion_de_datos WHERE nombre = %s", (nombre,))
+    return await cur.fetchone() is not None
+
+
+async def _ejecutor_reglas_v1(cur) -> None:
+    """Siembra las reglas del Ejecutor UNA vez (una desactivada por el admin no
+    revive) y la edad máxima de un punto de restauración para C2 (sin pisar)."""
+    await cur.execute(
+        "INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES ('ejecutor.c2_edad_max_s', '86400')")
+    if await _marcada(cur, MIGRACION_EJECUTOR_REGLAS_V1):
+        return
+    for r in json.loads(_SEMILLA_EJECUTOR_REGLAS.read_text(encoding="utf-8")):
+        await cur.execute(
+            "INSERT IGNORE INTO ejecutor_regla (codigo, tipo, herramientas, campo, patron, ambito_host, "
+            "ambito_roles, es_canario, origen, ejemplos_coincide, ejemplos_no_coincide) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (r["codigo"], r["tipo"], r["herramientas"], r["campo"], r["patron"], r["ambito_host"],
+             ",".join(r["ambito_roles"]) or None, r["es_canario"], r["origen"],
+             json.dumps(r["ejemplos_coincide"], ensure_ascii=False),
+             json.dumps(r["ejemplos_no_coincide"], ensure_ascii=False)))
+    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_EJECUTOR_REGLAS_V1,))
+
+
+def parsear_inventario(texto: str) -> list[dict]:
+    """`nombre:ip:puerto:rol[:opcion+opcion]` separados por coma. Sin espacios ni
+    comillas: systemd (EnvironmentFile) y bash lo leen igual."""
+    filas, nombres = [], set()
+    for entrada in texto.split(","):
+        partes = entrada.split(":")
+        if len(partes) not in (4, 5) or not all(partes[:4]):
+            raise ValueError("inventario_mal_formado")
+        nombre, ip, puerto_txt, rol = partes[:4]
+        opciones = set(partes[4].split("+")) if len(partes) == 5 else set()
+        if not puerto_txt.isdigit() or not 0 < int(puerto_txt) < 65536:
+            raise ValueError("inventario_puerto_invalido")
+        if rol not in _ROLES_EJECUTOR or not opciones <= _OPCIONES_INVENTARIO or nombre in nombres:
+            raise ValueError("inventario_valor_invalido")
+        nombres.add(nombre)
+        filas.append({"nombre": nombre, "ip": ip, "puerto": int(puerto_txt), "rol": rol,
+                      "es_local": "local" in opciones, "con_datos_de_clientes": "sin_clientes" not in opciones})
+    return filas
+
+
+async def _ejecutor_inventario_v1(cur) -> None:
+    """Las máquinas registradas en la Fase 0 (GO de Fernando por máquina, 2026-09-15),
+    desde JAX_EJECUTOR_INVENTARIO. Sin la variable o mal formada, NO se marca: se
+    reintenta en el próximo arranque."""
+    if await _marcada(cur, MIGRACION_EJECUTOR_INVENTARIO_V1):
+        return
+    texto = os.environ.get("JAX_EJECUTOR_INVENTARIO", "").strip()
+    if not texto:
+        return
+    try:
+        filas = parsear_inventario(texto)
+    except ValueError as exc:  # fail-soft: sin inventario la política no se exporta y el Ejecutor no arranca (cerrado); tumbar la plataforma por esto dejaría a la Mesa sin servicio
+        logger.error("ejecutor_inventario_invalido codigo=%s", exc)
+        return
+    for f in filas:
+        await cur.execute(
+            "INSERT IGNORE INTO ejecutor_host (nombre, ip, puerto, rol, es_local, con_datos_de_clientes) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (f["nombre"], f["ip"], f["puerto"], f["rol"], f["es_local"], f["con_datos_de_clientes"]))
+    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_EJECUTOR_INVENTARIO_V1,))
+
 async def _indices_de_model_binding_proposal(cur) -> None:
     """PR-L ronda 2: los índices de list_proposals en una base donde la tabla
     ya existía sin ellos (en una base nueva los trae el CREATE). Idempotente."""
@@ -2276,6 +2408,8 @@ async def run_migrations():
 
             await _drop_axioma_artifacts(cur)
             await _ajustes_que_mandan_v1(cur)
+            await _ejecutor_reglas_v1(cur)
+            await _ejecutor_inventario_v1(cur)
             await _seed_providers(cur)
             await _migrate_user_api_keys_to_credential(cur)
             await _seed_facets(cur)

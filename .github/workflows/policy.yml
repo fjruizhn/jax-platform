@@ -1507,7 +1507,14 @@ jobs:
           # skipped. El failed es el mismo hueco ambiental de la nota anterior
           # (test_seed_kimi_y_ada_como_motor, dato de `kimi` en el esquema
           # persistente local) y no entra al piso.
-          PISO_PASSED = 1486
+          # 1486 -> 1499 el 2026-09-17 (Ejecutor SP1 plan 1): +13 en
+          # test_ejecutor_tablas.py (tablas ejecutor_host/regla/
+          # punto_restauracion, semilla de 14 reglas UNA vez, edad de C2 sin
+          # pisar, inventario desde JAX_EJECUTOR_INVENTARIO sin tumbar ni
+          # marcar si falta o está mal, EXPLAIN con idx_ejecutor_punto_host_fecha).
+          # Medido local: 1499 passed / 1 failed / 1 skipped (el failed, el
+          # mismo hueco ambiental de test_seed_kimi_y_ada_como_motor).
+          PISO_PASSED = 1499
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2054,7 +2061,11 @@ jobs:
       # test_facet_canary_freno; los skips suben 601 -> 609 (tests con
       # `client`). Re-medido dos veces tras el rebase con JAX_CI_NO_DB=1,
       # idéntico: 879 passed / 609 skipped.
-      JAX_CI_MIN_PASSED: "879"
+      # 879 -> 885 el 2026-09-17 (Ejecutor SP1 plan 1, tablas de C1/C2): +6
+      # puros en test_ejecutor_tablas.py (parsear_inventario rechaza lo mal
+      # formado); los otros 7 del archivo piden `client` y suben los skips
+      # 609 -> 616. Medido con JAX_CI_NO_DB=1: 885 passed / 616 skipped.
+      JAX_CI_MIN_PASSED: "885"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
