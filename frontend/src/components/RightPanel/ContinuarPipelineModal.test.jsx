@@ -272,6 +272,28 @@ describe('ContinuarPipelineModal -- continuar y confirmar el costo', () => {
     expect(botonContinuar()).not.toBeDisabled()
   })
 
+  // Revisión final, menor 6b.
+  it('409 confirmacion_de_costo DESPUÉS de confirmar, con un costo mayor, reabre con el aviso de que subió', async () => {
+    const rechazo = { response: { status: 409, data: { detail: {
+      code: 'confirmacion_de_costo', costo_max_usd: '0.90', umbral_usd: '0.50',
+      pasos_costo: [{ paso: 4, faceta: 'kimi', usd_max: '0.90', motivo: 'acotado' }],
+    } } } }
+    let intentos = 0
+    api.post.mockImplementation((url) => {
+      if (esPrevio(url)) return Promise.resolve({ data: CARO })
+      intentos += 1
+      return intentos === 1 ? Promise.reject(rechazo) : Promise.resolve({ data: CONTINUADO })
+    })
+    await listo()
+    fireEvent.click(botonContinuar())
+    let dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.confirmarCostoBoton }))
+    await waitFor(() => expect(intentos).toBe(1))
+    dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    await waitFor(() => expect(dialogo).toHaveTextContent(usd('0.90')))
+    expect(within(dialogo).getByRole('alert')).toHaveTextContent(es.erroresMesa.costo_supera_lo_aceptado({}))
+  })
+
   it('409 costo_supera_lo_aceptado reabre la confirmación con el costo nuevo y lo manda al confirmar', async () => {
     const rechazo = { response: { status: 409, data: { detail: {
       code: 'costo_supera_lo_aceptado', costo_max_usd: '0.90', costo_max_aceptado_usd: '0.30',

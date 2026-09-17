@@ -531,6 +531,24 @@ describe('PipelineModal -- pre-vuelo y confirmación de costo', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
   })
 
+  // Revisión final, menor 6b.
+  it('409 confirmacion_de_costo DESPUÉS de confirmar, con un costo mayor, reabre con el aviso de que subió', async () => {
+    api.post.mockResolvedValue({ data: CARO })
+    const rechazo = { response: { status: 409, data: { detail: {
+      code: 'confirmacion_de_costo', costo_max_usd: '0.90', umbral_usd: '0.50',
+      pasos_costo: [{ paso: 4, faceta: 'kimi', usd_max: '0.90', motivo: 'acotado' }],
+    } } } }
+    const onSubmit = vi.fn().mockRejectedValueOnce(rechazo).mockResolvedValueOnce()
+    await listo({ onSubmit })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    let dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.confirmarCostoBoton }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    await waitFor(() => expect(dialogo).toHaveTextContent(usd('0.90')))
+    expect(within(dialogo).getByRole('alert')).toHaveTextContent(es.erroresMesa.costo_supera_lo_aceptado({}))
+  })
+
   it('409 confirmacion_de_costo al crear también abre la confirmación', async () => {
     const rechazo = { response: { status: 409, data: { detail: {
       code: 'confirmacion_de_costo', costo_max_usd: '0.70', umbral_usd: '0.50',

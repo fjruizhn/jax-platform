@@ -319,6 +319,22 @@ describe('clasificarRechazo', () => {
     expect(falta).toEqual({ tipo: 'costo', veredicto: { costo_max_usd: '0.70', pasos_costo: [], umbral_usd: '0.50' }, aviso: null })
   })
 
+  // Revisión final, menor 6b: el costo subió entre /preflight y el pre-vuelo
+  // interno de crear/continuar DESPUÉS de que el usuario confirmó: el backend
+  // responde confirmacion_de_costo (no costo_supera_lo_aceptado) y el aviso
+  // tiene que aparecer igual.
+  it('409 confirmacion_de_costo tras una confirmación con un costo mayor -> aviso de que subió', () => {
+    const previo = { costo_max_usd: '0.60', pasos_costo: [], umbral_usd: '0.50' }
+    const subio = clasificarRechazo(es, rechazo(409, { code: 'confirmacion_de_costo', costo_max_usd: '0.90', umbral_usd: '0.50' }), previo, 'G')
+    expect(subio.tipo).toBe('costo')
+    expect(subio.veredicto.costo_max_usd).toBe('0.90')
+    expect(subio.aviso).toBe(es.erroresMesa.costo_supera_lo_aceptado({}))
+    for (const igualOMenor of ['0.60', '0.600000', '0.40']) {
+      const r = clasificarRechazo(es, rechazo(409, { code: 'confirmacion_de_costo', costo_max_usd: igualOMenor }), previo, 'G')
+      expect(r.aviso, igualOMenor).toBeNull()
+    }
+  })
+
   it('un 409 de costo sin costo legible, u otro error, -> texto traducido o genérico', () => {
     expect(clasificarRechazo(es, rechazo(409, { code: 'costo_supera_lo_aceptado' }), null, 'G'))
       .toEqual({ tipo: 'error', texto: es.erroresMesa.costo_supera_lo_aceptado({}) })

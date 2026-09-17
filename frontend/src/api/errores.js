@@ -127,8 +127,20 @@ export function textoDeCausa(t, causa) {
 // - confirmacion_de_costo / costo_supera_lo_aceptado con un costo legible ->
 //   {tipo: 'costo'}: se vuelve a pedir la confirmación con el costo que
 //   devolvió el backend (`previo` = el veredicto que se había confirmado, para
-//   lo que el rechazo no traiga). `aviso` sólo si el costo subió.
+//   lo que el rechazo no traiga). `aviso` sólo si el costo subió
+//   (costo_supera_lo_aceptado, o confirmacion_de_costo tras confirmar).
 // - cualquier otro -> {tipo: 'error', texto} traducido, o `generico`.
+// Revisión final (menor 6b): un 409 confirmacion_de_costo que llega DESPUÉS de
+// confirmar (`previo` con costo) significa que el costo subió entre /preflight
+// y el pre-vuelo interno de crear/continuar: lleva el mismo aviso que
+// costo_supera_lo_aceptado. Igual o menor no avisa. Los montos son strings de
+// punto fijo del backend; Number alcanza para comparar a 6 decimales.
+function subioTrasConfirmar(previo, costoNuevo) {
+  const antes = Number(previo?.costo_max_usd)
+  const ahora = Number(costoNuevo)
+  return typeof previo?.costo_max_usd === 'string' && Number.isFinite(antes) && Number.isFinite(ahora) && ahora > antes
+}
+
 export function clasificarRechazo(t, err, previo, generico) {
   const code = codigoDe(err)
   const detail = err?.response?.data?.detail
@@ -145,7 +157,11 @@ export function clasificarRechazo(t, err, previo, generico) {
         pasos_costo: Array.isArray(datos.pasos_costo) ? datos.pasos_costo : (previo?.pasos_costo || []),
         umbral_usd: datos.umbral_usd ?? previo?.umbral_usd ?? null,
       },
-      aviso: code === 'costo_supera_lo_aceptado' ? textoDeErrorDeMesa(t, err, generico) : null,
+      aviso: code === 'costo_supera_lo_aceptado'
+        ? textoDeErrorDeMesa(t, err, generico)
+        : (subioTrasConfirmar(previo, datos.costo_max_usd)
+          ? textoDeDetalleDeMesa(t, { code: 'costo_supera_lo_aceptado' }, generico)
+          : null),
     }
   }
   return { tipo: 'error', texto: textoDeErrorDeMesa(t, err, generico) }
