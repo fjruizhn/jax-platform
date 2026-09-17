@@ -1912,6 +1912,15 @@ _MODEL_MAX_OUTPUT_TOKENS_SEED = [
     # en contrato_dispatch.TRANSPORTS_CON_CONTRATO_DE_DISPATCH), así que no se
     # siembra un nombre de parámetro que nadie usa. WHERE IS NULL como el resto.
     ("ollama",   "qwen3.6:35b-a3b-q4_K_M", 262144),
+    # Pre-vuelo (spec 2026-09-17 §7 F): medido 2026-09-17 con
+    # GET https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash
+    # (x-goog-api-key, metadata sin costo) -> outputTokenLimit=65536.
+    ("gemini",   "gemini-2.5-flash",   65536),
+    # Pre-vuelo (spec 2026-09-17 §7 F): medido 2026-09-17 con
+    # GET https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash
+    # (x-goog-api-key, metadata sin costo) -> outputTokenLimit=65536. Es el
+    # binding primario de hipatia en producción (tabla B, max_output_tokens NULL).
+    ("gemini",   "gemini-3.8-flash",   65536),
 ]
 
 
@@ -1936,6 +1945,41 @@ async def _seed_model_max_output_tokens(cur) -> None:
             "WHERE provider_id = %s AND model_id = %s AND max_output_tokens IS NULL",
             (limit, provider_id, model_id),
         )
+
+
+MIGRACION_MIN_OUTPUT_TOKENS_V1 = "capability_min_output_tokens_v1"
+# Pre-vuelo (spec 2026-09-17 §4.4): tokens de SALIDA que cada capability
+# necesitó como máximo en corridas COMPLETADAS, redondeado hacia arriba a
+# múltiplo de 1024. MEDIDO 2026-09-17 contra jax_memory (producción), sesión
+# READ ONLY: pasos HTTP de Jacobs = axioma_usage.tokens_out unido a
+# jacobs_steps completados por faceta y ventana [started_at, finished_at+5 s]
+# (filas ambiguas entre capabilities excluidas); pasos de Motor Registry =
+# _usage.completion_tokens de las_manos/logs/motor_jobs.jsonl (último registro
+# por job_id, status completed). Script y salida: ver el commit que agrega
+# esta constante. Una capability sin corridas medibles no está acá y queda en
+# 0 (sin mínimo), declarado en el mismo commit.
+MIN_OUTPUT_TOKENS_MEDIDOS_2026_09_17: dict[str, int] = {
+    "analysis": 16384,  # max=15618, corridas=4
+    "critique": 13312,  # max=12426, corridas=7
+    "design": 14336,  # max=14293, corridas=6
+    "file_write": 2048,  # max=1301, corridas=7
+    "generate": 14336,  # max=14006, corridas=6
+    "reconcile": 21504,  # max=20664, corridas=5
+    "research": 7168,  # max=6790, corridas=9
+    "validate_consistency": 3072,  # max=3018, corridas=5
+}
+
+
+async def _semilla_min_output_tokens_v1(cur) -> None:
+    """UNA vez (marcador): después, lo que el admin cambie no se pisa al
+    arrancar. Sin marcador y a medias, la próxima corrida la completa: cada
+    sentencia fija el mismo valor."""
+    await cur.execute("SELECT 1 FROM axioma_migracion_de_datos WHERE nombre = %s", (MIGRACION_MIN_OUTPUT_TOKENS_V1,))
+    if await cur.fetchone() is not None:
+        return
+    for clave, minimo in MIN_OUTPUT_TOKENS_MEDIDOS_2026_09_17.items():
+        await cur.execute("UPDATE capability SET min_output_tokens = %s WHERE `key` = %s", (minimo, clave))
+    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_MIN_OUTPUT_TOKENS_V1,))
 
 
 async def _migrate_kimi_chat_transport(cur) -> None:
@@ -2311,6 +2355,9 @@ async def run_migrations():
             # que existir para poder actualizarlas.
             await _seed_model_max_tokens_param(cur)
             await _seed_model_max_output_tokens(cur)
+            # Después de _asegurar_forma_de_capability_mode y de la columna de
+            # _COLUMNS: las filas de capability existen con su forma final.
+            await _semilla_min_output_tokens_v1(cur)
             # Requiere la columna contract_raw/grounding_snapshot ya creadas
             # arriba (bucle de _COLUMNS): idempotente, así que el orden solo
             # importa para que la columna exista, no para el contenido.
