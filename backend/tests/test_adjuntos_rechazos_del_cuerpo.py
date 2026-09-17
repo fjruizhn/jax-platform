@@ -66,17 +66,18 @@ def _casos(bueno: str) -> dict:
             (422, (("extra_forbidden", ("body", "adjuntos", 0, "base64")),))),
         "clave_desconocida_arriba": (
             _cuerpo(_ref(bueno), b',"file_context":"x"'), (422, (("extra_forbidden", ("body", "file_context")),))),
-        # Anidado profundo en una clave desconocida. Medido en c449587 (parseo
-        # normal): hasta ~950 niveles, 422 extra_forbidden; desde ~980, 500
-        # (RecursionError de FastAPI al serializar el `input` del error). El
-        # 500 es un defecto PREVIO de todos los endpoints JSON; lo arregla el
-        # principal en un PR aparte (ruling 2026-09-17). Acá se fija "igual
-        # que el parseo normal", no se lo bendice como contrato.
+        # Anidado profundo en una clave desconocida. ESTE ES EL PR APARTE que el
+        # frente D anunciaba (ruling 2026-09-17): antes, 900 niveles daban 422
+        # extra_forbidden y 5.000 daban 500 (RecursionError de FastAPI al
+        # serializar el `input` del error). Ahora el limite global de
+        # profundidad los corta ANTES de parsear, con el mismo codigo y el
+        # limite declarado, en los dos casos. El 500 ya no es alcanzable.
         "anidado_900_en_clave_desconocida": (
             _cuerpo(_ref(bueno), b',"x":' + b"[" * 900 + b"]" * 900),
-            (422, (("extra_forbidden", ("body", "x")),))),
+            (422, "json_demasiado_profundo")),
         "anidado_5000_en_clave_desconocida": (
-            _cuerpo(_ref(bueno), b',"x":' + b"[" * 5000 + b"]" * 5000), (500, "error_interno_previo")),
+            _cuerpo(_ref(bueno), b',"x":' + b"[" * 5000 + b"]" * 5000),
+            (422, "json_demasiado_profundo")),
         # id que no es string
         "id_numero": (_cuerpo(_ref(12345)), (422, (("string_type", ("body", "adjuntos", 0, "id")),))),
         "id_lista": (_cuerpo(_ref([bueno])), (422, (("string_type", ("body", "adjuntos", 0, "id")),))),
