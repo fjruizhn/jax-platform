@@ -4,7 +4,9 @@ A-55: AUDIT_LOG, MISSIONS_DIR, JAX_BIN, REPO_BASE y el sys.path de ~/jax
 estaban atados a $HOME sin variable. JAX_REPO_PATH y JAX_CONFIG_PATH tenian
 default ~/jax (produccion corria con el default: no estan en /etc/jax/.env,
 inventario 2026-08-09). Ahora las seis son obligatorias: sin la variable el
-modulo no se importa y el servicio no arranca (fail-closed).
+modulo no se importa y el servicio no arranca (fail-closed). La regla
+(config_entorno.ruta_absoluta_requerida) se prueba en
+test_config_entorno_fuente_unica.py.
 A-41: el audit se lee desde el FINAL del archivo (sin cargarlo entero), filtrando
 vacias ANTES de contar las 20, en un hilo.
 A-54: email y tenant de la semilla desde el entorno; si faltan y hay que
@@ -22,27 +24,9 @@ import pytest
 
 import api.audit as audit_mod
 from auth.models import AuthUser
-from config_de_entorno import ruta_requerida
 
 BACKEND = Path(__file__).resolve().parent.parent
 SUPER = AuthUser(user_id="1", tenant_id="1", role="superadmin")
-
-
-def test_ruta_requerida_sin_variable_es_error_con_el_nombre(monkeypatch):
-    monkeypatch.delenv("JAX_PRUEBA_RUTA", raising=False)
-    with pytest.raises(RuntimeError, match="JAX_PRUEBA_RUTA"):
-        ruta_requerida("JAX_PRUEBA_RUTA")
-
-
-def test_ruta_requerida_relativa_es_error(monkeypatch):
-    monkeypatch.setenv("JAX_PRUEBA_RUTA", "jax/repo")
-    with pytest.raises(RuntimeError, match="absoluta"):
-        ruta_requerida("JAX_PRUEBA_RUTA")
-
-
-def test_ruta_requerida_absoluta_se_devuelve(monkeypatch, tmp_path):
-    monkeypatch.setenv("JAX_PRUEBA_RUTA", str(tmp_path))
-    assert ruta_requerida("JAX_PRUEBA_RUTA") == tmp_path
 
 
 @pytest.mark.parametrize("modulo, variable", [

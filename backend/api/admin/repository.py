@@ -12,11 +12,11 @@ from fastapi.responses import Response
 
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
-from config_de_entorno import ruta_requerida
+from config_entorno import ruta_absoluta_requerida
 
 router = APIRouter(prefix="/api/admin")
 
-REPO_BASE = ruta_requerida("JAX_REPO_BASE")
+REPO_BASE = ruta_absoluta_requerida("JAX_REPO_BASE")
 ALLOWED_FOLDERS = {"missions", "pipelines", "documents", "images"}
 IMAGENES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 

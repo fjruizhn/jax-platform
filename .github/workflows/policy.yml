@@ -661,15 +661,17 @@ jobs:
       # aca tambien para que el paso del esquema de Jacobs (que no pasa por
       # conftest) apunte a la misma base y no a `jax_memory`.
       JAX_DB_NAME: jax_memory_test
-      # api/chat.py lee el config.toml del repo `jax`. Por default lo busca en
-      # ~/jax/config/config.toml, que existe en hall9000 y no en un runner --
-      # 30 tests caian con FileNotFoundError hasta que se hizo configurable.
-      # Apunta al clon que hace el paso de mas abajo.
+      # api/chat.py lee el config.toml del repo `jax`. Obligatoria y absoluta
+      # desde el 2026-09-16 (config_entorno.ruta_absoluta_requerida): sin ella
+      # api/chat.py no se importa. Antes tenia default ~/jax/config/config.toml,
+      # que existe en hall9000 y no en un runner (30 tests caian con
+      # FileNotFoundError). Apunta al clon que hace el paso de mas abajo.
       JAX_CONFIG_PATH: /tmp/jax/config/config.toml
       # shadow_validation.py importa policy/governance/ del repo `jax` por
       # sys.path. Mismo caso que JAX_CONFIG_PATH: sin esto son 9 tests con
       # "ModuleNotFoundError: No module named 'claims'".
       JAX_REPO_PATH: /tmp/jax
+      JAX_OLLAMA_URL: http://127.0.0.1:11434
       # Credenciales FICTICIAS, a proposito. `_query_facet` resuelve la
       # credencial del proveedor para todo transport que no sea ollama o
       # subprocess; sin ninguna, 12 tests reciben "sin binding activo
@@ -1459,7 +1461,22 @@ jobs:
           # migraciones sin JAX_JWT_SECRET). Vistos en rojo contra accc641.
           # Mismo hueco ambiental (1 failed de grounding), 1 skip. Medido dos
           # veces: 1392 passed / 1 failed / 1 skipped.
-          PISO_PASSED = 1392
+          # 1392 -> 1403 el 2026-09-17 (frente E, rebase sobre 2bb90b2): +11 en
+          # test_arranque_exige_ollama_url.py (lifespan valida JAX_OLLAMA_URL
+          # antes de abrir el pool, url_requerida rechaza path/query/esquema,
+          # control del conftest); no se solapa con migraciones sin JWT
+          # (archivo distinto). Mismo hueco ambiental (1 failed de
+          # grounding), 1 skip. Re-medido dos veces tras el rebase (no sumado
+          # a ojo): 1403 passed / 1 failed / 1 skipped.
+          # 1403 -> 1423 el 2026-09-17 (unificación config_de_entorno ->
+          # config_entorno, rebase sobre 2bb90b2): +23 en
+          # test_config_entorno_fuente_unica.py (política sin el módulo
+          # viejo, con controles del escaneo, y equivalencia de
+          # ruta_requerida contra ruta_absoluta_requerida) y -3 movidos desde
+          # test_rutas_de_entorno.py (neto +20). Re-medido dos veces tras el
+          # rebase (no sumado a ojo); el +1 de grounding, si aparece, sigue
+          # sin entrar al piso por ser ambiental.
+          PISO_PASSED = 1423
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1526,6 +1543,7 @@ jobs:
       # Obligatoria desde el 2026-09-16 (frente A, A-55): api/chat.py no se
       # importa sin ella. Apunta al clon del paso "Traer el repo jax".
       JAX_CONFIG_PATH: /tmp/jax/config/config.toml
+      JAX_OLLAMA_URL: http://127.0.0.1:11434
       # Piso de cobertura. Si baja de acá, el job falla (ver el paso final).
       # Subido de 85 a 93 en Task 4 (sonda activa de facets, 2026-08-27):
       # backend/tests/test_facet_canary.py agrega 8 tests sin DB, medido
@@ -1981,7 +1999,17 @@ jobs:
       # de jax; auth.jwt y main siguen fallando cerrado; una sola vida del
       # access token). Vistos en rojo contra accc641 (4 failed / 2 passed).
       # Skips sin cambio. Medido con JAX_CI_NO_DB=1: 793 passed / 601 skipped.
-      JAX_CI_MIN_PASSED: "793"
+      # 793 -> 804 el 2026-09-17 (frente E, rebase sobre 2bb90b2): +11 puros en
+      # test_arranque_exige_ollama_url.py; no se solapa con migraciones sin
+      # JWT (archivo distinto); ninguno pide `client`, los skips no se
+      # mueven. Re-medido dos veces tras el rebase (no sumado a ojo): 804
+      # passed / 601 skipped.
+      # 804 -> 824 el 2026-09-17 (unificación config_de_entorno ->
+      # config_entorno, rebase sobre 2bb90b2): +23 puros en
+      # test_config_entorno_fuente_unica.py, -3 puros movidos desde
+      # test_rutas_de_entorno.py (neto +20); los skips no se mueven.
+      # Re-medido dos veces tras el rebase (no sumado a ojo).
+      JAX_CI_MIN_PASSED: "824"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

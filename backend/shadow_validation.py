@@ -70,7 +70,7 @@ import json
 import logging
 import sys
 
-from config_de_entorno import ruta_requerida
+from config_entorno import ruta_absoluta_requerida
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +80,8 @@ logger = logging.getLogger(__name__)
 # usuario, que hacia imposible correr esta parte de la suite fuera de la
 # maquina de Fernando (9 tests con ModuleNotFoundError: No module named
 # 'claims', medido en un contenedor limpio el 2026-09-01). Desde el
-# 2026-09-16 no hay default: ver config_de_entorno.py.
-JAX_REPO = ruta_requerida("JAX_REPO_PATH")
+# 2026-09-16 no hay default: ver config_entorno.py.
+JAX_REPO = ruta_absoluta_requerida("JAX_REPO_PATH")
 if str(JAX_REPO) not in sys.path:
     sys.path.insert(0, str(JAX_REPO))
 if str(JAX_REPO / "policy" / "governance") not in sys.path:

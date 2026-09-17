@@ -23,14 +23,15 @@ class _FakeClient:
         return self._response
 
 
-async def test_call_ollama_uses_the_shared_client():
+async def test_call_ollama_uses_the_shared_client(monkeypatch):
+    monkeypatch.setenv("JAX_OLLAMA_URL", "http://127.0.0.1:11434")
     fake = _FakeClient(_FakeResponse({"message": {"content": "hola"}}))
     original = http_client._client
     http_client._client = fake
     try:
         result, _tin, _tout = await _call_ollama(
             "system prompt", [], "hola",
-            {"personalities": {"jax_local": {"api_url": "http://127.0.0.1:11434/api/chat"}}},
+            {"personalities": {"jax_local": {}}},
             "qwen3-coder:30b",
         )
     finally:

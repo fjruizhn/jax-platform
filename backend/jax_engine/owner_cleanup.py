@@ -12,7 +12,9 @@ This replaces the old design (an external retention script,
 ~/jax/scripts/cleanup.sh, pruned mission/result and this reaper only
 followed by deleting an orphaned owner, plus its own age fallback since
 that script had no scheduler) -- the age cutoff above is a self-sufficient
-rule now: there is no external script to stay in sync with.
+rule now: there is no external script to stay in sync with. That script
+never had a scheduler and was retired from jax on 2026-09-16 (audit
+finding E-07).
 
 Pipelines: ronda 5 (2026-08-20, T1) movió el ownership de un sidecar file
 (pipelines_dir/{id}_owner.json) a la columna owner_ack_at en

@@ -1,7 +1,7 @@
 """
 Resolver de credenciales de proveedor — Fase 1 (DB como fuente de verdad).
 
-Espejo minimo en los 3 codebases (jax-platform, jax/core, las_manos), mismo
+Espejo minimo en dos archivos reales (este y jax/core en jax; las_manos/ lo ve por symlink desde 2026-09-16), mismo
 patron que crypto_secrets.py: repos/venvs independientes, no justifica un
 paquete compartido en esta fase.
 
