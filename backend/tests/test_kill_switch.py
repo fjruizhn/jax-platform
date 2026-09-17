@@ -12,6 +12,7 @@ from fastapi import HTTPException
 import interruptor
 import kill_switch
 from auth.models import AuthUser
+from jax_engine import events as events_mod
 from jax_engine.events import EventBus
 from jax_engine.schemas import JAXEvent
 
@@ -188,3 +189,156 @@ async def test_publicar_a_todos_llega_a_cada_suscriptor_y_uno_roto_no_corta():
 
 def test_el_evento_liberado_es_un_tipo_valido():
     JAXEvent(event_type="kill_switch_released", tenant_id="1", user_id="1")
+
+
+# --- Fix round 1 (revisión del controlador): R9, "el archivo es la verdad" ---
+
+
+async def test_reanudar_con_fsync_roto_tras_borrar_repone_el_freno_y_marca_auditoria_fallida(entorno, monkeypatch):
+    """`borrar_pausa` hace os.unlink y DESPUÉS _sincronizar_directorio: si el
+    unlink surtió efecto y el fsync del directorio explota, el freno ya está
+    afuera de verdad -- decir "nada cambió" (503) sería mentir. R9: se repone
+    el freno (ante la duda, frenado) y se avisa como auditoría fallida (500),
+    nunca como InterruptorNoEscribible."""
+    ruta, eventos, base = entorno
+    interruptor.escribir_pausa(ruta, "{}")
+
+    def _fsync_roto(_directorio):
+        raise OSError("fsync roto")
+
+    monkeypatch.setattr(interruptor, "_sincronizar_directorio", _fsync_roto)
+    with pytest.raises(kill_switch.AuditoriaDelInterruptorFallida):
+        await kill_switch.reanudar(ADMIN)
+    # el unlink SÍ surtió efecto y R9 repuso el freno con contenido nuevo
+    assert interruptor.interruptor_activo(ruta)
+    assert eventos == []
+    # el INSERT quedó pendiente dentro de la transacción que la excepción
+    # abortó -- el fake nunca llega a "confirmar" (mismo criterio que el
+    # commit fallido: sin fila, porque no hubo auditoría real).
+    assert base.filas == []
+
+
+@pytest.mark.skipif(ES_ROOT, reason="root atraviesa cualquier permiso")
+async def test_reanudar_con_fsync_roto_sin_haber_borrado_no_repone_nada(entorno, monkeypatch):
+    """Si `_sincronizar_directorio` explota ANTES de que el unlink real haya
+    surtido efecto (permiso denegado sobre el propio archivo, no sobre el
+    directorio), el freno sigue puesto -- R9 no debe reponer lo que nunca se
+    quitó, solo relanzar."""
+    ruta, eventos, base = entorno
+    interruptor.escribir_pausa(ruta, "{}")
+    ruta.parent.chmod(0o500)
+    try:
+        with pytest.raises(kill_switch.InterruptorNoEscribible):
+            await kill_switch.reanudar(ADMIN)
+    finally:
+        ruta.parent.chmod(0o700)
+    assert interruptor.interruptor_activo(ruta)
+    assert eventos == [] and base.filas == []
+
+
+async def test_activar_con_fsync_roto_tras_poner_el_freno_sigue_el_camino_de_cambio_real(entorno, monkeypatch):
+    """`escribir_pausa` hace os.link y DESPUÉS _sincronizar_directorio: si el
+    link surtió efecto (el freno YA está puesto de verdad) y el fsync del
+    directorio explota, activar no debe tratarlo como "no escribible" -- el
+    freno está puesto, así que sigue el camino de cambio real: difusión +
+    auditoría, cambio=True."""
+    ruta, eventos, base = entorno
+
+    def _fsync_roto(_directorio):
+        raise OSError("fsync roto")
+
+    monkeypatch.setattr(interruptor, "_sincronizar_directorio", _fsync_roto)
+    assert await kill_switch.activar(ADMIN) == {"activo": True, "cambio": True}
+    assert interruptor.interruptor_activo(ruta)
+    assert eventos == [("kill_switch_activated", {"activo": True})]
+    assert base.filas == [("activar", 7)]
+
+
+@pytest.mark.skipif(ES_ROOT, reason="root atraviesa cualquier permiso")
+async def test_activar_con_fsync_roto_y_el_freno_realmente_no_puesto_relanza(entorno, monkeypatch):
+    """Si el link ni siquiera llegó a surtir efecto (el freno sigue sin
+    estar puesto), R9 no debe inventar un cambio -- se relanza
+    InterruptorNoEscribible tal cual."""
+    ruta, eventos, base = entorno
+    ruta.parent.chmod(0o500)
+    try:
+        with pytest.raises(kill_switch.InterruptorNoEscribible):
+            await kill_switch.activar(ADMIN)
+    finally:
+        ruta.parent.chmod(0o700)
+    assert not interruptor.interruptor_activo(ruta)
+    assert eventos == [] and base.filas == []
+
+
+async def test_reanudar_si_reponer_el_freno_tambien_falla_igual_se_lanza_auditoria_fallida(entorno, monkeypatch):
+    """Si el intento de REPONER el freno (dentro del except genérico) también
+    lanza InterruptorNoEscribible, esa excepción de reposición no debe
+    reemplazar a AuditoriaDelInterruptorFallida -- se logea y se sigue de
+    largo con el tipo correcto, encadenada a la causa original."""
+    ruta, eventos, base = entorno
+    interruptor.escribir_pausa(ruta, "{}")
+    base.falla_commit = RuntimeError("commit perdido")
+
+    def _escribir_roto(_ruta, _contenido):
+        raise kill_switch.InterruptorNoEscribible("no se pudo reponer")
+
+    monkeypatch.setattr(kill_switch, "_escribir", _escribir_roto)
+    with pytest.raises(kill_switch.AuditoriaDelInterruptorFallida):
+        await kill_switch.reanudar(ADMIN)
+    assert eventos == [] and base.filas == []
+    # el borrado real SÍ surtió efecto y la reposición (mockeada) fracasó:
+    # el freno queda afuera -- doble falla real, sin invención de un estado.
+    assert not interruptor.interruptor_activo(ruta)
+
+
+# --- Fix round 1: R8, difusión concurrente con timeout por suscriptor ---
+
+
+async def test_publicar_a_todos_no_se_cuelga_con_un_suscriptor_colgado(monkeypatch):
+    """Un suscriptor colgado (WS sin ping, ~40 s) no puede retener
+    `publicar_a_todos` -- cada suscriptor tiene un tope propio
+    (TIEMPO_MAXIMO_POR_SUSCRIPTOR) y se manda a todos CONCURRENTE, no en
+    serie."""
+    monkeypatch.setattr(events_mod, "TIEMPO_MAXIMO_POR_SUSCRIPTOR", 0.05)
+    bus = EventBus()
+    recibidos = []
+
+    async def bien(evento):
+        recibidos.append(evento.user_id)
+
+    async def colgado(evento):
+        await asyncio.sleep(999)
+
+    await bus.subscribe("t1", "u1", bien)
+    await bus.subscribe("t1", "u2", colgado)
+    inicio = asyncio.get_event_loop().time()
+    resultado = await asyncio.wait_for(
+        bus.publicar_a_todos("kill_switch_released", {"activo": False}), timeout=3)
+    duracion = asyncio.get_event_loop().time() - inicio
+    assert resultado == 1
+    assert recibidos == ["u1"]
+    # muy por debajo del límite duro de la prueba; generoso sobre el tope
+    # por suscriptor mockeado, para no ser frágil bajo carga de CI.
+    assert duracion < events_mod.TIEMPO_MAXIMO_POR_SUSCRIPTOR * 20
+
+
+async def test_activar_reanudar_activar_no_se_cuelgan_con_un_suscriptor_colgado(entorno, monkeypatch):
+    """Con el bus REAL (no el de mentira del fixture `entorno`) y un
+    suscriptor colgado, la secuencia activar/reanudar/activar completa
+    rápido -- ni siquiera el primer `activar` puede quedar retenido por un
+    WS muerto antes de terminar de escribir el freno de emergencia."""
+    monkeypatch.setattr(events_mod, "TIEMPO_MAXIMO_POR_SUSCRIPTOR", 0.05)
+    bus_real = EventBus()
+
+    async def colgado(evento):
+        await asyncio.sleep(999)
+
+    await bus_real.subscribe("1", "9", colgado)
+    monkeypatch.setattr(kill_switch, "event_bus", bus_real)
+
+    async def secuencia():
+        await kill_switch.activar(ADMIN)
+        await kill_switch.reanudar(ADMIN)
+        await kill_switch.activar(ADMIN)
+
+    await asyncio.wait_for(secuencia(), timeout=3)

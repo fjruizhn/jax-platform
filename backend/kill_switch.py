@@ -15,6 +15,15 @@ archivo. Reglas:
   frente B). Un caché lo retrasaría su TTL.
 - exigir_mesa_libre: dependencia de las rutas que ejecutan (RUTAS_FRENADAS);
   423 `kill_switch_activo`.
+- R9 (fix round 1, 2026-09-17): el archivo es la verdad, nunca la excepción.
+  `escribir_pausa`/`borrar_pausa` hacen la operación real (link/unlink) y
+  DESPUÉS el fsync del directorio -- si el fsync explota pero la operación
+  real ya surtió efecto, `activar`/`reanudar` vuelven a mirar el archivo en
+  vez de asumir "nada cambió" por el tipo de excepción.
+- R8 (fix round 1, 2026-09-17): la difusión (`event_bus.publicar_a_todos`)
+  sigue DENTRO de `_cambio` a propósito (mantiene el orden
+  activated/released), pero ya no puede retenerlo: cada suscriptor tiene su
+  propio tope y se manda a todos a la vez (ver jax_engine/events.py).
 """
 from __future__ import annotations
 
@@ -117,7 +126,18 @@ async def estado() -> dict:
 async def activar(usuario: AuthUser) -> dict:
     async with _cambio:
         ruta = interruptor.ruta_del_interruptor()
-        puesto = await asyncio.to_thread(_escribir, ruta, _contenido("activar", usuario))
+        try:
+            puesto = await asyncio.to_thread(_escribir, ruta, _contenido("activar", usuario))
+        except InterruptorNoEscribible:
+            # R9 (fix round 1): el archivo es la verdad, no la excepción.
+            # `escribir_pausa` hace os.link y DESPUÉS fsync del directorio --
+            # si el link ya surtió efecto (el freno está PUESTO de verdad) y
+            # solo el fsync explotó, tratar esto como "nada cambió" (503)
+            # sería mentir: seguimos el camino de cambio real. Si el freno
+            # de verdad no quedó puesto, se relanza tal cual.
+            if not interruptor.interruptor_activo(ruta):
+                raise
+            puesto = True
         if not puesto:
             return {"activo": True, "cambio": False}
         await event_bus.publicar_a_todos(EVENTO_ACTIVADO, {"activo": True})
@@ -144,11 +164,50 @@ async def reanudar(usuario: AuthUser) -> dict:
                     raise _NadaQueQuitar
         except _NadaQueQuitar:
             return {"activo": False, "cambio": False}
-        except InterruptorNoEscribible:
-            raise
-        except Exception as exc:  # fail-closed: si se borró y no se pudo confirmar la auditoría, el freno se vuelve a poner antes de relanzar
+        except InterruptorNoEscribible as exc:
+            # R9 (fix round 1): el archivo es la verdad. `borrar_pausa` hace
+            # os.unlink y DESPUÉS fsync del directorio -- si el unlink ya
+            # surtió efecto (el freno está AFUERA de verdad) y solo el fsync
+            # explotó, `quitado` nunca se llegó a asignar (la excepción
+            # interrumpió esa línea), así que hay que volver a mirar el
+            # archivo en vez de confiar en esa variable. Si sigue puesto
+            # (el unlink ni llegó a correr, p. ej. permiso denegado), se
+            # relanza tal cual: no cambió nada de verdad.
+            if interruptor.interruptor_activo(ruta):
+                raise
+            try:
+                await asyncio.to_thread(
+                    _escribir, ruta, _contenido("reactivado_sin_auditoria", usuario))
+            except InterruptorNoEscribible as repo_exc:  # fail-soft: se logea; el fallo de REPONER no debe tapar la auditoría fallida real que sigue abajo
+                logger.error(
+                    "kill switch: reanudar de user_id=%s no pudo reponer el freno tras fsync roto: %r",
+                    usuario.user_id, repo_exc)
+            logger.error(
+                "kill switch: reanudar de user_id=%s dejó el freno afuera sin auditoría (fsync roto tras borrar): %r",
+                usuario.user_id, exc)
+            raise AuditoriaDelInterruptorFallida("reanudar") from exc
+        except Exception as exc:
+            # fail-closed: si se borró y no se pudo confirmar la auditoría,
+            # el freno se vuelve a poner antes de relanzar (ante la duda,
+            # frenado). Nota (fix round 1): si `conn.rollback()` DENTRO de
+            # `transaccion()` fallara a su vez, esa excepción de rollback
+            # reemplazaría a esta (`raise` sin argumento pierde la original)
+            # -- el estado del freno igual queda correcto (se repone acá
+            # abajo), pero el `AuditoriaDelInterruptorFallida` que se relanza
+            # llevaría la causa del rollback, no la del commit. Y si el
+            # COMMIT real del servidor tuvo éxito pero la confirmación se
+            # perdió en el cliente (red cortada después), puede quedar una
+            # fila de auditoría "reanudar" en la base con el freno repuesto
+            # acá -- se erra hacia frenado a propósito; se logea para que
+            # quede visible en el journal, no se intenta reconciliar solo.
             if quitado:
-                await asyncio.to_thread(_escribir, ruta, _contenido("reactivado_sin_auditoria", usuario))
+                try:
+                    await asyncio.to_thread(
+                        _escribir, ruta, _contenido("reactivado_sin_auditoria", usuario))
+                except InterruptorNoEscribible as repo_exc:  # fail-soft: se logea; el fallo de REPONER no debe tapar la auditoría fallida real que sigue abajo
+                    logger.error(
+                        "kill switch: reanudar de user_id=%s no pudo reponer el freno: %r",
+                        usuario.user_id, repo_exc)
             logger.error("kill switch: reanudar de user_id=%s sin auditoría, freno repuesto=%s: %r",
                          usuario.user_id, quitado, exc)
             raise AuditoriaDelInterruptorFallida("reanudar") from exc

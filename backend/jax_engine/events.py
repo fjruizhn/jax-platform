@@ -1,8 +1,18 @@
+import asyncio
 from collections import defaultdict
 from typing import Callable, Awaitable
 from .schemas import JAXEvent
 
 Callback = Callable[[JAXEvent], Awaitable[None]]
+
+# Tope por suscriptor en `publicar_a_todos` (fix round 1 del kill switch,
+# 2026-09-17, ruling R8). Un WS colgado no detecta el socket muerto hasta el
+# timeout de ping (~40 s); sin este tope, `kill_switch.activar`/`reanudar`
+# quedarían esperando esos 40 s ANTES de auditar, con `_cambio` retenido --
+# una emergencia real (frenar la Mesa) bloqueada por un cliente colgado. 2.0
+# segundos es generoso para un callback normal (WS/SSE en el mismo proceso)
+# y corto frente a los 40 s del peor caso.
+TIEMPO_MAXIMO_POR_SUSCRIPTOR = 2.0
 
 
 class EventBus:
@@ -40,21 +50,33 @@ class EventBus:
         Sin lock (frente A, A-24, ya quitó `self._lock` de esta clase): la
         foto de `_subscribers` se toma directo, sin `await` entre leer y
         copiar, así que en asyncio corre sin interrupción -- mismo criterio
-        que `subscribe`/`unsubscribe` de arriba."""
+        que `subscribe`/`unsubscribe` de arriba.
+
+        CONCURRENTE, no en serie (fix round 1, ruling R8): cada suscriptor
+        corre bajo su propio `asyncio.wait_for(TIEMPO_MAXIMO_POR_SUSCRIPTOR)`
+        y todos se lanzan juntos con `asyncio.gather`. `kill_switch.activar`/
+        `reanudar` llaman a esto DENTRO de `_cambio` a propósito (para no
+        mezclar el orden de activated/released); si el envío fuera en serie
+        y sin tope, un solo WS colgado retendría ese lock -- y con él, la
+        próxima activación de emergencia -- hasta su propio timeout de ping
+        (~40 s). Un timeout o una excepción cuentan como "no recibido", igual
+        que antes."""
         destinos = [
             (tenant_id, user_id, cb)
             for tenant_id, suscriptores in self._subscribers.items()
             for user_id, cb in suscriptores.items()
         ]
-        recibidos = 0
-        for tenant_id, user_id, cb in destinos:
+
+        async def _entregar(tenant_id, user_id, cb) -> bool:
             evento = JAXEvent(event_type=event_type, tenant_id=tenant_id, user_id=user_id, payload=payload)
             try:
-                await cb(evento)
-                recibidos += 1
-            except Exception:  # fail-soft: un suscriptor roto (socket muerto) no impide que el resto se entere del freno; el estado real igual llega por /api/state
-                continue
-        return recibidos
+                await asyncio.wait_for(cb(evento), timeout=TIEMPO_MAXIMO_POR_SUSCRIPTOR)
+                return True
+            except Exception:  # fail-soft: un suscriptor roto o colgado (socket muerto, WS sin ping) no impide que el resto se entere del freno ni retiene _cambio; el estado real igual llega por /api/state
+                return False
+
+        resultados = await asyncio.gather(*(_entregar(t, u, cb) for t, u, cb in destinos))
+        return sum(resultados)
 
 
 event_bus = EventBus()
