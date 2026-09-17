@@ -89,9 +89,16 @@ def cabeceras(client, etiqueta, role="operator", tenant_id="1"):
     return auth(token_de(client, etiqueta, role, tenant_id))
 
 
+# Vida de los refresh que firman los tests (frente C, 2026-09-16: la firma
+# exige decirla). 7 días = la vida vigente; los tests que la miden fijan el
+# ajuste por su cuenta (tests/test_ajuste_sesion.py).
+VIDA_DE_REFRESH_EN_TESTS_S = 7 * 24 * 3600
+
+
 def token_para(user_id, role="operator", tv=0, tenant_id="1", tipo="access"):
-    fabrica = create_access_token if tipo == "access" else create_refresh_token
-    return fabrica(str(user_id), tenant_id, role, tv)
+    if tipo == "access":
+        return create_access_token(str(user_id), tenant_id, role, tv)
+    return create_refresh_token(str(user_id), tenant_id, role, tv, vida_segundos=VIDA_DE_REFRESH_EN_TESTS_S)
 
 
 def auth(token):
