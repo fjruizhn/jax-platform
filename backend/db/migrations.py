@@ -2299,6 +2299,26 @@ async def _ajustes_que_mandan_v1(cur) -> None:
     await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_AJUSTES_V1,))
 
 
+MIGRACION_AJUSTE_CONFIRMAR_USD_V1 = "ajuste_pipeline_confirmar_usd_v1"
+# Valor inicial decidido en el spec 2026-09-17 §6.1 (Fernando, GO autónomo).
+VALOR_INICIAL_CONFIRMAR_USD = "0.50"
+
+
+async def _ajuste_confirmar_costo_v1(cur) -> None:
+    """Siembra el umbral de confirmación de costo UNA vez (marcador). INSERT
+    IGNORE: una fila que ya exista (puesta a mano) se conserva."""
+    await cur.execute("SELECT 1 FROM axioma_migracion_de_datos WHERE nombre = %s",
+                      (MIGRACION_AJUSTE_CONFIRMAR_USD_V1,))
+    if await cur.fetchone() is not None:
+        return
+    await cur.execute(
+        "INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES (%s, %s)",
+        (ajustes.CONFIRMAR_USD, VALOR_INICIAL_CONFIRMAR_USD),
+    )
+    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
+                      (MIGRACION_AJUSTE_CONFIRMAR_USD_V1,))
+
+
 async def _indices_de_model_binding_proposal(cur) -> None:
     """PR-L ronda 2: los índices de list_proposals en una base donde la tabla
     ya existía sin ellos (en una base nueva los trae el CREATE). Idempotente."""
@@ -2341,6 +2361,7 @@ async def run_migrations():
 
             await _drop_axioma_artifacts(cur)
             await _ajustes_que_mandan_v1(cur)
+            await _ajuste_confirmar_costo_v1(cur)
             await _seed_providers(cur)
             await _migrate_user_api_keys_to_credential(cur)
             await _seed_facets(cur)

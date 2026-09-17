@@ -25,10 +25,12 @@ import asyncio
 import logging
 import math
 import os
+import re
 import sys
 import time
 import weakref
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Awaitable, Callable
 
 from fastapi.responses import JSONResponse
@@ -56,7 +58,11 @@ MAX_PIPELINES = "max_pipelines"
 RETENCION = "web_task_retention_days"
 IDIOMA = "lang_default"
 NOMBRE = "system_name"
-CLAVES = (SESION, MAX_PIPELINES, RETENCION, IDIOMA, NOMBRE)
+# Umbral de confirmación de costo de un pipeline (spec 2026-09-17 §6.1): por
+# encima de este costo máximo, o con un paso sin precio, la Mesa pide
+# confirmación en ventana propia. 0 = confirmar siempre.
+CONFIRMAR_USD = "pipeline_confirmar_usd"
+CLAVES = (SESION, MAX_PIPELINES, RETENCION, IDIOMA, NOMBRE, CONFIRMAR_USD)
 
 IDIOMAS = ("es", "en")
 NOMBRE_MAX = 60
@@ -68,6 +74,10 @@ NOMBRE_MAX = 60
 SESION_MIN = ACCESS_EXPIRE_SECONDS // 60
 SESION_MAX = 10080  # 7 días: la vida que el código hacía cumplir el 2026-09-16
 RETENCION_MAX = 365
+CONFIRMAR_USD_MAX = "999999.99"
+CONFIRMAR_USD_DECIMALES = 2
+# Canónico: sin ceros a la izquierda, punto decimal, hasta 2 decimales, ASCII.
+_MONTO_USD = re.compile(r"(0|[1-9][0-9]{0,5})(\.[0-9]{1,2})?")
 
 CONSULTA = (
     "SELECT config_key, config_value FROM axioma_config WHERE config_key IN ("
@@ -97,6 +107,12 @@ def _entero(minimo: int, maximo: int) -> Callable[[str], int]:
     return interpretar
 
 
+def _monto_usd(texto: str) -> Decimal:
+    if not texto.isascii() or not _MONTO_USD.fullmatch(texto):
+        raise ValorInvalido(texto)
+    return Decimal(texto)
+
+
 def _idioma(texto: str) -> str:
     if texto not in IDIOMAS:
         raise ValorInvalido(texto)
@@ -112,7 +128,7 @@ def _nombre(texto: str) -> str:
 
 @dataclass(frozen=True)
 class Definicion:
-    interpretar: Callable[[str], int | str]
+    interpretar: Callable[[str], int | str | Decimal]
     limites: dict
 
 
@@ -122,10 +138,13 @@ DEFINICIONES: dict[str, Definicion] = {
     RETENCION: Definicion(_entero(1, RETENCION_MAX), {"min": 1, "max": RETENCION_MAX}),
     IDIOMA: Definicion(_idioma, {"opciones": list(IDIOMAS)}),
     NOMBRE: Definicion(_nombre, {"max_largo": NOMBRE_MAX}),
+    # Los montos viajan como string: un float de JSON no es un monto exacto.
+    CONFIRMAR_USD: Definicion(_monto_usd, {"min": "0", "max": CONFIRMAR_USD_MAX,
+                                           "decimales": CONFIRMAR_USD_DECIMALES}),
 }
 
 
-def interpretar(clave: str, texto: str) -> int | str:
+def interpretar(clave: str, texto: str) -> int | str | Decimal:
     return DEFINICIONES[clave].interpretar(texto)
 
 
@@ -204,7 +223,7 @@ def invalidar() -> None:
     _cache.invalidar()
 
 
-async def valor(clave: str) -> int | str:
+async def valor(clave: str) -> int | str | Decimal:
     filas = await _cache.filas()
     if clave not in filas:
         raise AjusteIlegible(clave, "ausente")

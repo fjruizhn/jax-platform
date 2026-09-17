@@ -507,7 +507,8 @@ def ajustes_en_db(client):
     yield SimpleNamespace(
         poner=poner, quitar=quitar, filas=filas,
         validos={"session_timeout_min": "10080", "max_pipelines": "3",
-                 "web_task_retention_days": "30", "lang_default": "es", "system_name": "Axioma"},
+                 "web_task_retention_days": "30", "lang_default": "es", "system_name": "Axioma",
+                 "pipeline_confirmar_usd": "0.50"},
     )
     client.portal.call(sql, f"DELETE FROM axioma_config WHERE config_key IN ({marcadores})", ajustes.CLAVES)
     for clave, valor in antes.items():

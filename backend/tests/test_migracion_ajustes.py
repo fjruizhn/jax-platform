@@ -31,11 +31,14 @@ def sin_marca(client, ajustes_en_db):
 
 def test_primera_corrida_fija_lo_que_el_codigo_hacia_cumplir(client, sin_marca):
     sin_marca.poner(session_timeout_min="60", max_pipelines="1", web_task_retention_days="7",
-                    lang_default="en", system_name="Mi Sistema")
+                    lang_default="en", system_name="Mi Sistema", pipeline_confirmar_usd="0.50")
     client.portal.call(_migrar)
     assert sin_marca.filas() == {
         "session_timeout_min": "10080", "max_pipelines": "3", "web_task_retention_days": "30",
         "lang_default": "es", "system_name": "Mi Sistema",
+        # La fila del umbral la pone OTRA migración (_ajuste_confirmar_costo_v1)
+        # y ésta no la toca: sigue con el valor que tenía.
+        "pipeline_confirmar_usd": "0.50",
     }
     assert client.portal.call(sql, "SELECT COUNT(*) FROM axioma_migracion_de_datos WHERE nombre = %s",
                               (MIGRACION_AJUSTES_V1,), True) == ((1,),)
