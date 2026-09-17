@@ -211,7 +211,7 @@ def test_model_identity_question_short_circuits_before_ollama(client):
             f"model-identity question must short-circuit before Ollama, "
             f"got {mock_post.call_count} call(s)"
         )
-        assert SENTINEL_MODEL in resp.json()["response"], (
+        assert resp.json()["aviso"]["params"]["model"] == SENTINEL_MODEL, (
             "short-circuit reply does not name the resolved DB-active model"
         )
     finally:

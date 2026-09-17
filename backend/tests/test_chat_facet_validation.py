@@ -35,7 +35,7 @@ def test_chat_endpoint_rejects_overlong_unknown_facet(client):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 400
-    assert "faceta desconocida" in resp.json()["detail"]
+    assert resp.json()["detail"]["code"] == "faceta_desconocida"
 
 
 def test_chat_endpoint_rejects_short_but_unrecognized_facet(client):
@@ -49,7 +49,7 @@ def test_chat_endpoint_rejects_short_but_unrecognized_facet(client):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 400
-    assert "faceta desconocida" in resp.json()["detail"]
+    assert resp.json()["detail"]["code"] == "faceta_desconocida"
 
 
 def test_chat_endpoint_accepts_known_facet_and_round_trips_it(client):
@@ -132,7 +132,7 @@ def test_chat_endpoint_denies_hipatia_when_authorize_facet_returns_false(client)
     finally:
         http_client._client = original
     assert resp.status_code == 200
-    assert "no autorizado" in resp.json()["response"] or "no disponible" in resp.json()["response"]
+    assert resp.json()["aviso"]["code"] == "faceta_no_autorizada"
 
 
 def test_chat_endpoint_denies_hipatia_logs_the_reason_from_authorize_facet(client, caplog):
@@ -177,8 +177,7 @@ def test_chat_endpoint_denies_hipatia_when_las_manos_is_down(client):
     finally:
         http_client._client = original
     assert resp.status_code == 200
-    body = resp.json()["response"]
-    assert "no autorizado" in body or "no disponible" in body
+    assert resp.json()["aviso"]["code"] == "faceta_no_autorizada"
 
 
 def test_chat_endpoint_allows_hipatia_when_authorize_facet_returns_true(client):
@@ -330,4 +329,4 @@ def test_a_new_http_transport_facet_is_governed_even_if_unnamed(monkeypatch):
     # Denegado => ni una sola llamada al proveedor real.
     assert len(fake.urls) == 1, fake.urls
     assert usage is None
-    assert "no autorizado" in texto or "no disponible" in texto
+    assert texto == chat_mod.AvisoDeChat(code="faceta_no_autorizada", params={"facet": "facet_http_nuevo"})
