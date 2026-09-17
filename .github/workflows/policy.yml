@@ -1544,7 +1544,16 @@ jobs:
           #   test_credencial_las_manos.py: 12 passed (vistos en rojo sin el arreglo).
           #   La suite completa local sigue sin medir por el mismo dato ajeno en
           #   jax_memory_test (43 failed por capability delegate/integrate sin mode).
-          PISO_PASSED = 1532
+          # 1532 -> 1533 el 2026-09-17 (test_capability_mode.py sin romper filas
+          #   ajenas de la base compartida): +1 con DB,
+          #   test_un_diario_dejado_por_un_kill_se_restaura_al_arrancar (visto en
+          #   rojo: NameError, y con la mutación "sin recuperación al arrancar":
+          #   1050 table exists). Medido local contra jax_memory_test, dos veces:
+          #   1532 passed / 1 skipped / 0 failed; el skip es ambiental
+          #   (test_model_max_output_tokens.py: gpt-5.6-terra no está en esa DB) y
+          #   el runner lo corre, como en el conteo del PR #101 (1530+2 = 1532
+          #   colectados, 0 skips). Si el runner da otro número, manda el runner.
+          PISO_PASSED = 1533
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2114,6 +2123,9 @@ jobs:
       # Mutaciones: quitar la cabecera de authorize-facet -> 1 rojo; del sondeo -> 2;
       # aceptar una credencial corta -> 2. Medido dos veces con JAX_CI_NO_DB=1: 915
       # passed / 617 skipped (test_hallazgos_limpieza.py: el cliente falso acepta headers).
+      # 915 sin cambio el 2026-09-17 (test_capability_mode.py con respaldo de filas
+      # ajenas): el test nuevo pide `client`, así que sin DB suma un skip. Medido con
+      # JAX_CI_NO_DB=1: 915 passed / 618 skipped.
       JAX_CI_MIN_PASSED: "915"
     steps:
       - uses: actions/checkout@v4

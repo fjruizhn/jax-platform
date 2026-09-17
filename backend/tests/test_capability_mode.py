@@ -19,7 +19,9 @@ valor fuera del conjunto -> 4025 (CONSTRAINT chk_capability_mode failed);
 NULL -> 1048. Ver spec §0 v3.
 
 Los dos primeros son PUROS. El resto usa `client` (base migrada) y, cuando
-rompe el esquema a propósito, lo deja como estaba con run_migrations().
+rompe el esquema a propósito, lo hace dentro de `_esquema_roto_con_respaldo`
+(respaldo en diario, filas ajenas apartadas, restauración verificada y
+recuperación ante un kill; ver el bloque de ese helper).
 
 Nunca `pytest.raises(...)` DENTRO de una corrutina corrida por
 `client.portal.call`: `Failed` es `BaseException` y mata el `BlockingPortal`
@@ -32,6 +34,7 @@ que el fixture `client` (conftest.py) captura y relanza cualquier
 """
 from __future__ import annotations
 
+import contextlib
 import uuid
 import warnings
 
@@ -82,6 +85,160 @@ async def _sql(sentencia, args=None):
         async with conn.cursor() as cur:
             await cur.execute(sentencia, args)
             return await cur.fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Respaldo de `capability` alrededor de una ruptura de esquema (2026-09-17)
+# ---------------------------------------------------------------------------
+# `jax_memory_test` es COMPARTIDA en hall9000 (varias sesiones y ramas a la
+# vez) y `jax_user` no puede crear otra base. El DDL de columna toca TODAS las
+# filas, y run_migrations() sólo sabe rellenar las claves de SU
+# _CAPABILITY_MODE: una fila que sembró otra rama (p.ej. `delegate`) quedaba
+# con `mode` NULL tras el DROP COLUMN y la migración abortaba para todos
+# (503 en todo pre-vuelo de jax, `client` roto en cualquier suite).
+#
+# Diseño:
+#  1. Antes del primer DDL destructivo se copian TODAS las filas de
+#     `capability` al diario `_DIARIO` (con la marca `ajena`), y las filas de
+#     `capability_motor` de las ajenas a `_DIARIO_MOTOR`. `_DIARIO` se crea
+#     ÚLTIMO: su existencia es la señal de "hay algo que restaurar".
+#  2. Las ajenas se APARTAN (se borran de `capability_motor` y `capability`
+#     en una sola transacción): la migración bajo prueba ve sólo lo que el
+#     test controla.
+#  3. Al salir (o al arrancar el próximo test si un kill no dejó correr el
+#     `finally`) `_recuperar_diario_si_existe` repone: migra con lo
+#     controlado, reinserta las ajenas y sus motores, repone los modos, vuelve
+#     a migrar, VERIFICA contra el diario y recién entonces lo borra.
+# Límite declarado: no protege contra otra sesión que siembre filas DURANTE
+# la ventana del test (eso sólo lo resuelve una base propia, fuera de alcance).
+_FILAS_PROPIAS_DE_LOS_TESTS = ("zz_huerfana", "zz_modo_raro")
+
+
+async def _tabla_existe(nombre):
+    return bool(await _sql(
+        "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() "
+        "AND TABLE_NAME = %s", (nombre,)
+    ))
+
+
+async def _en_transaccion(sentencias):
+    """[(sql, args), ...] en UNA transacción (el pool es autocommit)."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("START TRANSACTION")
+            try:
+                for sentencia, args in sentencias:
+                    await cur.execute(sentencia, args)
+            except BaseException:
+                await conn.rollback()
+                raise
+            await conn.commit()
+
+
+async def _columnas(tabla):
+    filas = await _sql(
+        "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+        "AND TABLE_NAME = %s ORDER BY ORDINAL_POSITION", (tabla,)
+    )
+    return [fila[0] for fila in filas]
+
+
+async def _recuperar_diario_si_existe(*, por_kill=True):
+    """Restaura `capability` desde el diario si existe. Devuelve True si
+    restauró. `por_kill` sólo decide el warning: al arrancar, un diario
+    presente significa que una corrida anterior murió sin su `finally`."""
+    if not await _tabla_existe(_DIARIO):
+        # Un kill entre la copia de motores y la de capability: nada se
+        # apartó todavía, la copia parcial sobra.
+        await _sql(f"DROP TABLE IF EXISTS {_DIARIO_MOTOR}")
+        return False
+    if por_kill:
+        warnings.warn(
+            f"{_DIARIO} existe en {await _nombre_de_base()}: una corrida anterior de "
+            "test_capability_mode.py murió a mitad. Se restaura capability desde el diario.",
+            stacklevel=2,
+        )
+    ajenas = [fila[0] for fila in await _sql(f"SELECT `key` FROM {_DIARIO} WHERE ajena")]
+
+    # Si el kill cayó antes de apartar, las ajenas siguen en capability (y
+    # quizá sin modo): están completas en el diario, se sacan para migrar.
+    borrar = list(_FILAS_PROPIAS_DE_LOS_TESTS) + ajenas
+    marcas = ", ".join(["%s"] * len(borrar))
+    await _en_transaccion([
+        (f"DELETE FROM capability_motor WHERE capability_key IN ({marcas})", borrar),
+        (f"DELETE FROM capability WHERE `key` IN ({marcas})", borrar),
+    ])
+    await migrations.run_migrations()
+
+    comunes = [c for c in await _columnas(_DIARIO) if c in set(await _columnas("capability"))]
+    lista = ", ".join(f"`{c}`" for c in comunes)
+    sentencias = [(
+        f"INSERT INTO capability ({lista}) SELECT {lista} FROM {_DIARIO} WHERE ajena", None
+    )]
+    if await _tabla_existe(_DIARIO_MOTOR):
+        sentencias.append((
+            "INSERT IGNORE INTO capability_motor (capability_key, motor_key, priority) "
+            f"SELECT capability_key, motor_key, priority FROM {_DIARIO_MOTOR}", None
+        ))
+    sentencias.append((
+        f"UPDATE capability c JOIN {_DIARIO} d ON d.`key` = c.`key` "
+        "SET c.mode = d.mode WHERE NOT d.ajena AND d.mode IS NOT NULL", None
+    ))
+    await _en_transaccion(sentencias)
+    await migrations.run_migrations()
+
+    # Verificación ANTES de borrar el diario: cada fila con su modo y cada
+    # motor de las ajenas de vuelta. Si falta algo, el diario queda.
+    faltan = await _sql(
+        f"SELECT d.`key`, d.mode, c.mode FROM {_DIARIO} d "
+        "LEFT JOIN capability c ON c.`key` = d.`key` "
+        "WHERE c.`key` IS NULL OR NOT (c.mode <=> d.mode)"
+    )
+    if await _tabla_existe(_DIARIO_MOTOR):
+        faltan += await _sql(
+            f"SELECT m.capability_key, m.motor_key, NULL FROM {_DIARIO_MOTOR} m "
+            "LEFT JOIN capability_motor c ON c.capability_key = m.capability_key "
+            "AND c.motor_key = m.motor_key WHERE c.capability_key IS NULL"
+        )
+    if faltan:
+        raise RuntimeError(
+            f"La restauración de capability desde {_DIARIO} no cuadra: {faltan}. "
+            "El diario NO se borró; restaurar a mano desde él."
+        )
+    await _sql(f"DROP TABLE IF EXISTS {_DIARIO_MOTOR}")
+    await _sql(f"DROP TABLE {_DIARIO}")
+    return True
+
+
+async def _nombre_de_base():
+    return (await _sql("SELECT DATABASE()"))[0][0]
+
+
+@contextlib.asynccontextmanager
+async def _esquema_roto_con_respaldo():
+    """Envuelve TODA ruptura de esquema de `capability` en estos tests."""
+    await _recuperar_diario_si_existe(por_kill=True)
+    claves = list(migrations._CAPABILITY_MODE)
+    marcas = ", ".join(["%s"] * len(claves))
+    await _sql(f"DROP TABLE IF EXISTS {_DIARIO_MOTOR}")
+    await _sql(
+        f"CREATE TABLE {_DIARIO_MOTOR} AS SELECT * FROM capability_motor "
+        f"WHERE capability_key NOT IN ({marcas})", claves,
+    )
+    await _sql(
+        f"CREATE TABLE {_DIARIO} AS SELECT c.*, (c.`key` NOT IN ({marcas})) AS ajena "
+        "FROM capability c", claves,
+    )
+    await _en_transaccion([
+        (f"DELETE FROM capability_motor WHERE capability_key NOT IN ({marcas})", claves),
+        (f"DELETE FROM capability WHERE `key` NOT IN ({marcas})", claves),
+    ])
+    try:
+        yield
+    finally:
+        await _recuperar_diario_si_existe(por_kill=False)
 
 
 @pytest.fixture
@@ -200,22 +357,23 @@ def test_una_base_vieja_queda_rellenada_y_not_null(client, fila_ajena):
     dejarlo así documenta la intención real: reproducir una base vieja SIN
     columna Y SIN CHECK, no confiar en un efecto colateral del motor)."""
     async def correr():
-        await _sql("ALTER TABLE capability DROP CONSTRAINT chk_capability_mode")
-        await _sql("ALTER TABLE capability DROP COLUMN mode")
-        try:
-            await migrations.run_migrations()
-            return (
-                await _sql(_INFO_MODE),
-                await _sql(_INFO_CHECK),
-                dict(await _sql("SELECT `key`, mode FROM capability")),
-            )
-        finally:
-            # Si algo de arriba (incluido run_migrations()) falla a mitad de
-            # camino, la base de la SESIÓN quedaría con la columna a medio
-            # reponer para el resto de los tests. run_migrations() es
-            # idempotente: repetirla acá no hace daño si ya salió bien, y
-            # repara si no.
-            await migrations.run_migrations()
+        async with _esquema_roto_con_respaldo():
+            await _sql("ALTER TABLE capability DROP CONSTRAINT chk_capability_mode")
+            await _sql("ALTER TABLE capability DROP COLUMN mode")
+            try:
+                await migrations.run_migrations()
+                return (
+                    await _sql(_INFO_MODE),
+                    await _sql(_INFO_CHECK),
+                    dict(await _sql("SELECT `key`, mode FROM capability")),
+                )
+            finally:
+                # Si algo de arriba (incluido run_migrations()) falla a mitad de
+                # camino, la base de la SESIÓN quedaría con la columna a medio
+                # reponer para el resto de los tests. run_migrations() es
+                # idempotente: repetirla acá no hace daño si ya salió bien, y
+                # repara si no.
+                await migrations.run_migrations()
 
     info, check, filas = client.portal.call(correr)
     assert info == (("NO", None, "varchar(16)"),)
@@ -240,19 +398,20 @@ def test_la_columna_enum_de_produccion_queda_convertida(client, fila_ajena):
     (agregar el CHECK que falta): la aserción `len(check) == 1` de abajo
     sería un no-op, verde incluso si el paso (c) estuviera roto."""
     async def correr():
-        await _sql("ALTER TABLE capability DROP CONSTRAINT chk_capability_mode")
-        await _sql("ALTER TABLE capability MODIFY COLUMN mode ENUM('read_only','mutating') NOT NULL")
-        try:
-            await migrations.run_migrations()
-            return (
-                await _sql(_INFO_MODE),
-                await _sql(_INFO_CHECK),
-                dict(await _sql("SELECT `key`, mode FROM capability")),
-            )
-        finally:
-            # Misma razón que en test_una_base_vieja_...: dejar la base de
-            # la sesión reparada aunque algo de arriba falle a mitad.
-            await migrations.run_migrations()
+        async with _esquema_roto_con_respaldo():
+            await _sql("ALTER TABLE capability DROP CONSTRAINT chk_capability_mode")
+            await _sql("ALTER TABLE capability MODIFY COLUMN mode ENUM('read_only','mutating') NOT NULL")
+            try:
+                await migrations.run_migrations()
+                return (
+                    await _sql(_INFO_MODE),
+                    await _sql(_INFO_CHECK),
+                    dict(await _sql("SELECT `key`, mode FROM capability")),
+                )
+            finally:
+                # Misma razón que en test_una_base_vieja_...: dejar la base de
+                # la sesión reparada aunque algo de arriba falle a mitad.
+                await migrations.run_migrations()
 
     info, check, filas = client.portal.call(correr)
     assert info == (("NO", None, "varchar(16)"),)
@@ -265,21 +424,22 @@ def test_una_capability_no_sembrada_sin_modo_frena_la_migracion(client, fila_aje
     """Una fila que ninguna migración sembró (SQL a mano) no recibe un modo
     inventado: la migración falla con su nombre y jax-platform no arranca."""
     async def correr():
-        await _sql("ALTER TABLE capability MODIFY COLUMN mode VARCHAR(16) NULL")
-        await _sql(
-            "INSERT INTO capability (`key`, risk_level, max_execution_minutes, allowed_callers) "
-            "VALUES ('zz_huerfana', 'low', 5, '[]')"
-        )
-        try:
-            await migrations.run_migrations()
-        except RuntimeError as error:
-            resultado = str(error)
-        else:
-            resultado = None
-        finally:
-            await _sql("DELETE FROM capability WHERE `key` = 'zz_huerfana'")
-            await migrations.run_migrations()
-        return resultado, await _sql(_INFO_MODE)
+        async with _esquema_roto_con_respaldo():
+            await _sql("ALTER TABLE capability MODIFY COLUMN mode VARCHAR(16) NULL")
+            await _sql(
+                "INSERT INTO capability (`key`, risk_level, max_execution_minutes, allowed_callers) "
+                "VALUES ('zz_huerfana', 'low', 5, '[]')"
+            )
+            try:
+                await migrations.run_migrations()
+            except RuntimeError as error:
+                resultado = str(error)
+            else:
+                resultado = None
+            finally:
+                await _sql("DELETE FROM capability WHERE `key` = 'zz_huerfana'")
+                await migrations.run_migrations()
+            return resultado, await _sql(_INFO_MODE)
 
     resultado, info = client.portal.call(correr)
     assert resultado is not None and "zz_huerfana" in resultado
@@ -298,21 +458,22 @@ def test_un_modo_invalido_sin_check_frena_la_migracion_con_su_nombre(client, fil
     capability_mode` la revisa antes y declara su nombre (mismo criterio
     que la fila huérfana del paso (a))."""
     async def correr():
-        await _sql("ALTER TABLE capability DROP CONSTRAINT chk_capability_mode")
-        await _sql(
-            "INSERT INTO capability (`key`, risk_level, max_execution_minutes, allowed_callers, mode) "
-            "VALUES ('zz_modo_raro', 'low', 5, '[]', 'escritura')"
-        )
-        try:
-            await migrations.run_migrations()
-        except RuntimeError as error:
-            resultado = str(error)
-        else:
-            resultado = None
-        finally:
-            await _sql("DELETE FROM capability WHERE `key` = 'zz_modo_raro'")
-            await migrations.run_migrations()
-        return resultado, await _sql(_INFO_CHECK)
+        async with _esquema_roto_con_respaldo():
+            await _sql("ALTER TABLE capability DROP CONSTRAINT chk_capability_mode")
+            await _sql(
+                "INSERT INTO capability (`key`, risk_level, max_execution_minutes, allowed_callers, mode) "
+                "VALUES ('zz_modo_raro', 'low', 5, '[]', 'escritura')"
+            )
+            try:
+                await migrations.run_migrations()
+            except RuntimeError as error:
+                resultado = str(error)
+            else:
+                resultado = None
+            finally:
+                await _sql("DELETE FROM capability WHERE `key` = 'zz_modo_raro'")
+                await migrations.run_migrations()
+            return resultado, await _sql(_INFO_CHECK)
 
     resultado, check = client.portal.call(correr)
     assert resultado is not None and "zz_modo_raro" in resultado
@@ -347,9 +508,11 @@ def test_un_diario_dejado_por_un_kill_se_restaura_al_arrancar(client, fila_ajena
         try:
             with warnings.catch_warnings(record=True) as avisos:
                 warnings.simplefilter("always")
-                recuperado = await _recuperar_diario_si_existe()
+                # El ARRANQUE del helper es el que tiene que reparar: entrar y
+                # salir sin tocar nada.
+                async with _esquema_roto_con_respaldo():
+                    pass
             return (
-                recuperado,
                 [str(a.message) for a in avisos],
                 await _sql(f"SHOW TABLES LIKE '{_DIARIO_PREFIJO}%'"),
                 await _sql(_INFO_MODE),
@@ -360,8 +523,7 @@ def test_un_diario_dejado_por_un_kill_se_restaura_al_arrancar(client, fila_ajena
             await _sql(f"DROP TABLE IF EXISTS {_DIARIO_MOTOR}")
             await _sql(f"DROP TABLE IF EXISTS {_DIARIO}")
 
-    recuperado, avisos, diarios, info, check, filas = client.portal.call(correr)
-    assert recuperado is True
+    avisos, diarios, info, check, filas = client.portal.call(correr)
     assert any(_DIARIO in aviso for aviso in avisos)
     assert diarios == ()
     assert info == (("NO", None, "varchar(16)"),)
