@@ -156,6 +156,9 @@ export default {
       return 'This pipeline cannot be continued in its current state.'
     },
     pasos_requeridos: () => 'The pipeline has no steps.',
+    reasignacion_fuera_de_forma: (d) => (Number.isInteger(d.max_pasos)
+      ? `The reassignment is not valid: up to ${d.max_pasos} steps, each with a facet name.`
+      : 'The reassignment is not valid.'),
     objetivo_invalido: (d) => (Number.isInteger(d.max)
       ? `The objective is not valid: it must be text of up to ${d.max.toLocaleString('en')} characters.`
       : 'The objective is not valid.'),

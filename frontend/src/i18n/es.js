@@ -156,6 +156,9 @@ export default {
       return 'Este pipeline no se puede continuar en su estado actual.'
     },
     pasos_requeridos: () => 'El pipeline no tiene pasos.',
+    reasignacion_fuera_de_forma: (d) => (Number.isInteger(d.max_pasos)
+      ? `La reasignación no es válida: hasta ${d.max_pasos} pasos, cada uno con el nombre de una faceta.`
+      : 'La reasignación no es válida.'),
     objetivo_invalido: (d) => (Number.isInteger(d.max)
       ? `El objetivo no es válido: tiene que ser un texto de hasta ${d.max.toLocaleString('es')} caracteres.`
       : 'El objetivo no es válido.'),

@@ -376,6 +376,50 @@ def test_la_causa_es_la_del_ultimo_evento(eventos, esperado):
     assert mod.causa_de(eventos) == esperado
 
 
+# Revisión final, menor 7b: sólo un error de texto es detalle; nunca str() de
+# un objeto (un dict o una lista saldría como su repr de Python).
+@pytest.mark.parametrize("error", [{"anidado": "api_key=sk-x"}, ["a", "b"], 42, True])
+def test_la_causa_con_error_no_texto_sale_sin_detalle(error):
+    eventos = [(1, "STEP_FAILED", json.dumps({"step_index": 2, "error": error}))]
+    assert mod.causa_de(eventos) == {"tipo": "fallo", "paso": 2}
+
+
+# Revisión final, menor 7a: reasignar con tope (20 pasos, el límite duro de
+# Jacobs) y claves/valores de texto acotados; si no, 422 propio sin llamar.
+@pytest.mark.parametrize("reasignar", [
+    {str(i): "ada" for i in range(21)},
+    {"4": "x" * 51},
+    {"x" * 51: "ada"},
+    {"4": 7},
+    ["4", "ada"],
+    "4=ada",
+])
+@pytest.mark.parametrize("modelo, llamar", [
+    (mod.PedidoDeContinuarPrevuelo, _preflight), (mod.PedidoDeContinuar, _continuar)])
+def test_reasignar_fuera_de_forma_es_422_sin_llamar_a_jacobs(monkeypatch, reasignar, modelo, llamar):
+    falso = JacobsFalso()
+    preparar(monkeypatch, falso)
+    r = _correr(llamar(modelo(reasignar=reasignar)))
+    assert (r.status_code, r.detail) == (422, {"code": "reasignacion_fuera_de_forma",
+                                               "max_pasos": mod.REASIGNAR_MAX_PASOS, "max_largo": mod.FACETA_MAX})
+    assert falso.llamadas == []
+
+
+def test_reasignar_en_el_tope_pasa_a_jacobs(monkeypatch):
+    reasignar = {str(i): "a" * mod.FACETA_MAX for i in range(mod.REASIGNAR_MAX_PASOS)}
+    falso = JacobsFalso(_previa(v=veredicto(costo="0.30")))
+    preparar(monkeypatch, falso)
+    _correr(_preflight(mod.PedidoDeContinuarPrevuelo(reasignar=reasignar)))
+    assert falso.cuerpos("POST", RUTA_PREVIA)[0]["reasignar"] == reasignar
+
+
+def test_reasignar_por_http_con_valor_no_texto_es_el_codigo_propio(client):
+    r = client.post(f"/api/pipelines/{PID}/continue/preflight", json={"reasignar": {"4": 7}},
+                    headers=cabeceras(client, "continuar-reasignar-forma"))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "reasignacion_fuera_de_forma"
+
+
 # ---------------------------------------------------------------- fix round 1
 
 def test_codigo_desconocido_sale_igual_en_preflight_y_en_continue(monkeypatch):

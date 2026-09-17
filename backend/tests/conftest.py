@@ -473,7 +473,7 @@ def usuarios(client):
 
 @pytest.fixture
 def ajustes_en_db(client):
-    """Las cinco filas de los ajustes que mandan (frente C, 2026-09-16), con
+    """Las seis filas de los ajustes que mandan (ajustes.CLAVES; frente C, 2026-09-16), con
     restauración: guarda lo que había, deja escribir/quitar filas y al final
     las repone tal cual. Invalida el caché de `ajustes` en cada cambio, así
     ningún test ve un valor de otro. Pide `client`: sin DB se salta sola."""

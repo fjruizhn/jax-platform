@@ -470,8 +470,33 @@ class PedidoDePrevuelo(BaseModel):
 
 
 # --- Continuar (spec 2026-09-17 §5.1, §6.1, §6.2) --------------------------
+# Revisión final, menor 7a: `reasignar` con tope. REASIGNAR_MAX_PASOS es el
+# límite duro de pasos de Jacobs (jacobs/routes.py y models.py: 20); FACETA_MAX
+# es el largo de facet.key / facet_binding.facet_key (VARCHAR(50),
+# db/migrations.py) -- una clave de paso ("0".."19") entra holgada.
+REASIGNAR_MAX_PASOS = 20
+FACETA_MAX = 50
+
+
+def _reasignar_valido(reasignar) -> dict[str, str] | None:
+    """null/ausente, o un objeto de hasta REASIGNAR_MAX_PASOS entradas con
+    clave y valor string de 1..FACETA_MAX caracteres. Si no, 422
+    reasignacion_fuera_de_forma sin llamar a Jacobs. Que el índice sea un paso
+    a correr y la faceta exista lo decide Jacobs (reasignacion_invalida)."""
+    if reasignar is None:
+        return None
+    if (not isinstance(reasignar, dict) or len(reasignar) > REASIGNAR_MAX_PASOS
+            or any(not isinstance(v, str) or not 0 < len(k) <= FACETA_MAX or not 0 < len(v) <= FACETA_MAX
+                   for k, v in reasignar.items())):
+        raise HTTPException(status_code=422, detail={
+            "code": "reasignacion_fuera_de_forma", "max_pasos": REASIGNAR_MAX_PASOS, "max_largo": FACETA_MAX})
+    return reasignar
+
+
 class PedidoDeContinuarPrevuelo(BaseModel):
-    reasignar: dict[str, str] | None = None
+    # `Any` (no dict[str, str]): pydantic respondería SU 422 con otra forma;
+    # `_reasignar_valido` decide con el código propio, igual en los dos.
+    reasignar: Any = None
 
 
 class PedidoDeContinuar(PedidoDeContinuarPrevuelo):
@@ -732,8 +757,11 @@ def causa_de(eventos: list[tuple[int, str, str | None]]) -> dict:
             paso = datos.get("step_index")
             if isinstance(paso, int) and not isinstance(paso, bool):
                 causa["paso"] = paso
-            if datos.get("error"):
-                causa["detalle"] = recortar_redactado(str(datos["error"]), MOTIVO_MAX)
+            # Revisión final, menor 7b: sólo texto; otro tipo no tiene forma
+            # declarada y la causa sale sin detalle (nunca el repr de un objeto).
+            error = datos.get("error")
+            if isinstance(error, str) and error:
+                causa["detalle"] = recortar_redactado(error, MOTIVO_MAX)
     return causa
 
 
@@ -894,11 +922,12 @@ async def cancel_pipeline(
 @router.post("/{pipeline_id}/continue/preflight")
 async def continue_preflight(pipeline_id: str, pedido: PedidoDeContinuarPrevuelo,
                              user: AuthUser = Depends(get_current_user)):
+    reasignar = _reasignar_valido(pedido.reasignar)
     await _require_pipeline_owner(pipeline_id, user)
     umbral = await ajustes.valor(ajustes.CONFIRMAR_USD)
     client = await get_http_client()
     try:
-        return await _continuable(client, pipeline_id, user, pedido.reasignar, umbral)
+        return await _continuable(client, pipeline_id, user, reasignar, umbral)
     except HTTPException:
         raise
     except Exception as e:
@@ -908,6 +937,7 @@ async def continue_preflight(pipeline_id: str, pedido: PedidoDeContinuarPrevuelo
 @router.post("/{pipeline_id}/continue")
 async def continue_pipeline(pipeline_id: str, pedido: PedidoDeContinuar,
                             user: AuthUser = Depends(get_current_user)):
+    reasignar = _reasignar_valido(pedido.reasignar)
     nombre = await _require_pipeline_owner(pipeline_id, user)
     # Continuar ocupa un cupo del tenant, igual que crear (desvío DV-11).
     limite = await ajustes.valor(ajustes.MAX_PIPELINES)
@@ -920,11 +950,11 @@ async def continue_pipeline(pipeline_id: str, pedido: PedidoDeContinuar,
     umbral = await ajustes.valor(ajustes.CONFIRMAR_USD)
     client = await get_http_client()
     try:
-        estado = await _continuable(client, pipeline_id, user, pedido.reasignar, umbral)
+        estado = await _continuable(client, pipeline_id, user, reasignar, umbral)
         if not estado["continuable"]:
             raise _no_continuable(estado)
         _exigir_consentimiento(estado["veredicto"], confirmado)
-        cuerpo = _cuerpo_de_continuar(user, pedido.reasignar)
+        cuerpo = _cuerpo_de_continuar(user, reasignar)
         # Siempre (desvío DV-7), igual que crear: Jacobs responde 409
         # costo_supera_lo_aceptado sin continuar si su pre-vuelo da más.
         cuerpo["costo_max_aceptado_usd"] = _monto_texto(confirmado if confirmado is not None else umbral)
