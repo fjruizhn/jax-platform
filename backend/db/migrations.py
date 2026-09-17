@@ -2295,8 +2295,10 @@ async def _ajustes_que_mandan_v1(cur) -> None:
 
 
 MIGRACION_EJECUTOR_REGLAS_V1 = "ejecutor_reglas_v1"
+MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1 = "ejecutor_reglas_envoltorios_v1"
 MIGRACION_EJECUTOR_INVENTARIO_V1 = "ejecutor_inventario_v1"
 _SEMILLA_EJECUTOR_REGLAS = Path(__file__).with_name("semilla_ejecutor_reglas.json")
+_SEMILLA_EJECUTOR_REGLAS_ENVOLTORIOS = Path(__file__).with_name("semilla_ejecutor_reglas_envoltorios.json")
 _ROLES_EJECUTOR = ("hypervisor", "desarrollo", "produccion", "clientes", "respaldo")
 _OPCIONES_INVENTARIO = frozenset({"local", "sin_clientes"})
 
@@ -2311,9 +2313,15 @@ async def _ejecutor_reglas_v1(cur) -> None:
     revive) y la edad máxima de un punto de restauración para C2 (sin pisar)."""
     await cur.execute(
         "INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES ('ejecutor.c2_edad_max_s', '86400')")
-    if await _marcada(cur, MIGRACION_EJECUTOR_REGLAS_V1):
+    await _sembrar_reglas_una_vez(cur, MIGRACION_EJECUTOR_REGLAS_V1, _SEMILLA_EJECUTOR_REGLAS)
+
+
+async def _sembrar_reglas_una_vez(cur, marca: str, semilla: Path) -> None:
+    """Inserta las reglas de `semilla` UNA vez por `marca`: una regla desactivada por el
+    admin no revive, y un código que ya existe no se pisa (INSERT IGNORE por codigo)."""
+    if await _marcada(cur, marca):
         return
-    for r in json.loads(_SEMILLA_EJECUTOR_REGLAS.read_text(encoding="utf-8")):
+    for r in json.loads(semilla.read_text(encoding="utf-8")):
         await cur.execute(
             "INSERT IGNORE INTO ejecutor_regla (codigo, tipo, herramientas, campo, patron, ambito_host, "
             "ambito_roles, es_canario, origen, ejemplos_coincide, ejemplos_no_coincide) "
@@ -2322,7 +2330,16 @@ async def _ejecutor_reglas_v1(cur) -> None:
              ",".join(r["ambito_roles"]) or None, r["es_canario"], r["origen"],
              json.dumps(r["ejemplos_coincide"], ensure_ascii=False),
              json.dumps(r["ejemplos_no_coincide"], ensure_ascii=False)))
-    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_EJECUTOR_REGLAS_V1,))
+    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (marca,))
+
+
+async def _ejecutor_reglas_envoltorios_v1(cur) -> None:
+    """C1 contra envoltorios que desacoplan el proceso o esconden el comando (tmux, screen,
+    setsid, nohup, disown, script -c, at/batch, systemd-run, sh -c/eval/xargs con ssh,
+    dangerouslyDisableSandbox). Visto 2026-09-17 en la misión real contra la VM desechable:
+    `tmux new-session -d '… ssh …'` pasó C1 (ssh_sin_tt no lo ve) y sólo lo atrapó C5.
+    Falsos positivos decididos: ver el `origen` de cada regla y la Biblioteca de jax."""
+    await _sembrar_reglas_una_vez(cur, MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1, _SEMILLA_EJECUTOR_REGLAS_ENVOLTORIOS)
 
 
 def parsear_inventario(texto: str) -> list[dict]:
@@ -2431,6 +2448,7 @@ async def run_migrations():
             await _drop_axioma_artifacts(cur)
             await _ajustes_que_mandan_v1(cur)
             await _ejecutor_reglas_v1(cur)
+            await _ejecutor_reglas_envoltorios_v1(cur)
             await _ejecutor_inventario_v1(cur)
             await _ejecutor_config_c5_v1(cur)
             await _seed_providers(cur)

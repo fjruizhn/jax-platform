@@ -1553,7 +1553,14 @@ jobs:
           #   (test_model_max_output_tokens.py: gpt-5.6-terra no está en esa DB) y
           #   el runner lo corre, como en el conteo del PR #101 (1530+2 = 1532
           #   colectados, 0 skips). Si el runner da otro número, manda el runner.
-          PISO_PASSED = 1533
+          # 1533 -> 1560 el 2026-09-17 (C1 contra envoltorios del Ejecutor): +25 puros de
+          #   test_ejecutor_reglas_envoltorios.py (también corren con DB) y +2 con DB en
+          #   test_ejecutor_tablas.py (la migración nueva siembra 7 reglas una sola vez, y
+          #   entra sobre una v1 ya corrida). Vistos en rojo con 12 mutaciones (cmp previo,
+          #   PYTHONDONTWRITEBYTECODE=1). Medido local dos veces contra jax_memory_test:
+          #   1559 passed / 1 skipped (el mismo skip ambiental de gpt-5.6-terra que el
+          #   runner corre) -> 1560 en el runner. Si el runner da otro número, manda el runner.
+          PISO_PASSED = 1560
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2126,7 +2133,10 @@ jobs:
       # 915 sin cambio el 2026-09-17 (test_capability_mode.py con respaldo de filas
       # ajenas): el test nuevo pide `client`, así que sin DB suma un skip. Medido con
       # JAX_CI_NO_DB=1: 915 passed / 618 skipped.
-      JAX_CI_MIN_PASSED: "915"
+      # 915 -> 940 el 2026-09-17 (C1 contra envoltorios del Ejecutor): +25 puros de
+      # test_ejecutor_reglas_envoltorios.py; los 2 nuevos de test_ejecutor_tablas.py piden
+      # `client` (+2 skips). Medido dos veces con JAX_CI_NO_DB=1: 940 passed / 620 skipped.
+      JAX_CI_MIN_PASSED: "940"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
