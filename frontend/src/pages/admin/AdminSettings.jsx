@@ -48,7 +48,7 @@ export default function AdminSettings() {
       // El nuevo predeterminado se ve en este navegador sin recargar (spec
       // §5.2.4). Decisión de Fernando (2026-09-14): acá también fija la
       // elección del propio admin, aunque tuviera otra -- los demás usuarios
-      // conservan la suya (sincronizarPredeterminado no cambia).
+      // conservan la suya (sincronizarApariencia no cambia).
       useTema.getState().fijarPredeterminadoComoEleccion(config.theme_default)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
