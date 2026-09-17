@@ -27,6 +27,9 @@ QUÉ PUEDE ROMPER UN POOL Y CÓMO SE MAPEA (todo al mismo código estable
    de una extracción patológica recicle el pool y alcance a otras EN VUELO en
    el mismo pool (punto 5); y que la primera extracción tras un reciclado
    espere el spawn que el precalentado de fondo no llegó a adelantar.
+   Ruling R34: la espera de ese semáforo tiene plazo, el mismo
+   JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS (a lo sumo una corrida entera); vencido,
+   `TurnoDePdfSinLugar` = 503 `adjuntos_reintentar`, sin tomar lugar.
 1. TIMEOUT (JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS): `asyncio.wait_for` corta la
    espera. concurrent.futures.ProcessPoolExecutor NO tiene forma de
    interrumpir una tarea que ya empezó a correr en un worker
@@ -135,6 +138,7 @@ from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 
 from adjuntos import limites
+from adjuntos.errores import AdjuntoRechazado
 from adjuntos.pdf import PdfIlegible, extraer_texto
 from adjuntos.turno import turno_de_pdf
 
@@ -169,6 +173,36 @@ _tareas_de_vigilancia: set = set()
 # (mismo patrón que adjuntos/turno.py, mismo motivo).
 _LocksPorLoop = "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]"
 _locks_por_loop: _LocksPorLoop = weakref.WeakKeyDictionary()
+
+
+class TurnoDePdfSinLugar(AdjuntoRechazado):
+    """Ruling R34 (2026-09-17): la espera del turno de pdf venció sin que se
+    liberara un lugar. 503 `adjuntos_reintentar`: el PDF no es ilegible, el
+    servidor está ocupado y el cliente reintenta. No se tomó nada."""
+
+    def __init__(self):
+        super().__init__(503, "adjuntos_reintentar")
+
+
+async def _tomar_turno(turno: asyncio.Semaphore, plazo: float) -> None:
+    """Toma un lugar del turno de pdf esperando a lo sumo `plazo` segundos
+    (Ruling R34). Sin plazo, la cola del semáforo no tenía tope: Starlette no
+    cancela el handler cuando el cliente se desconecta, así que un solo
+    usuario (acotado sólo por su cuota ÷ max_bytes) podía encolar decenas de
+    PDFs y dejar a TODOS los usuarios esperando detrás.
+
+    `asyncio.wait_for` sobre `Semaphore.acquire()` no pierde lugares: si el
+    vencimiento llega cuando el lugar ya se había concedido, `acquire()` lo
+    devuelve antes de relanzar la cancelación (asyncio/locks.py). Una
+    cancelación REAL de la tarea mientras espera sigue saliendo como
+    `CancelledError` (asyncio.timeout distingue la suya de una ajena)."""
+    try:
+        await asyncio.wait_for(turno.acquire(), timeout=plazo)
+    except TimeoutError:
+        logger.warning(
+            "extraccion de pdf: sin lugar en el pool tras esperar %s s, 503 adjuntos_reintentar",
+            plazo)
+        raise TurnoDePdfSinLugar() from None
 
 
 def _lock_de_reciclado() -> asyncio.Lock:
@@ -397,8 +431,10 @@ async def extraer_texto_en_pool(
     `adjuntos.turno.turno_de_pdf()`, un semáforo del tamaño del pool. Así
     nunca hay más extracciones enviadas que workers, ninguna espera dentro
     del pool y el `wait_for` mide SOLO la corrida. La espera en el semáforo
-    no tiene timeout propio (la acota el trabajo de las que corren, cada una
-    con el suyo) y cancelarla no toma ni retiene nada.
+    tiene su propio plazo (Ruling R34): el mismo
+    JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS, es decir, a lo sumo una corrida entera.
+    Vencido, `TurnoDePdfSinLugar` (503 `adjuntos_reintentar`) sin haber tomado
+    nada; cancelarla tampoco toma ni retiene nada.
 
     Timeout, worker muerto (BrokenProcessPool), submit sobre un pool
     cerrado (RuntimeError puntual) y cancelación inducida por el pool se
@@ -412,7 +448,7 @@ async def extraer_texto_en_pool(
     timeout = limites.cargar_timeout_de_pdf()
     loop = asyncio.get_running_loop()
     turno = turno_de_pdf()
-    await turno.acquire()
+    await _tomar_turno(turno, timeout)
     soltar = True
     futuro = None
     try:

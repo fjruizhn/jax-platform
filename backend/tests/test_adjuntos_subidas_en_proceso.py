@@ -91,17 +91,22 @@ def _espiar_envios_al_pool(monkeypatch):
     (submit hecho, future sin terminar). Final fix wave #2 (I1): eso es lo que
     acota el turno de pdf; lo que corre de verdad ya lo acota el pool."""
     import adjuntos.pdf_pool as pdf_pool
+    # El done-callback corre en el hilo de gestión del executor, el submit en
+    # el del loop: el contador se toca bajo candado (R34, minor del re-review).
+    candado = threading.Lock()
     estado = {"activos": 0, "maximo": 0}
     pool = pdf_pool.crear_pool()
     original = pool.submit
 
     def espia(*a, **k):
         futuro = original(*a, **k)
-        estado["activos"] += 1
-        estado["maximo"] = max(estado["maximo"], estado["activos"])
+        with candado:
+            estado["activos"] += 1
+            estado["maximo"] = max(estado["maximo"], estado["activos"])
 
         def listo(_):
-            estado["activos"] -= 1
+            with candado:
+                estado["activos"] -= 1
         futuro.add_done_callback(listo)
         return futuro
 
@@ -192,3 +197,64 @@ def test_sin_tope_configurado_la_subida_falla_cerrado(monkeypatch):
     monkeypatch.delenv("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", raising=False)
     with pytest.raises(LimitesDeAdjuntosInvalidos):
         _subir_a_la_vez([lambda: _archivo(PNG, "f.png", "image/png")])
+
+
+def test_con_el_pool_saturado_la_subida_de_pdf_sale_503_sin_temporal_ni_reserva(
+        monkeypatch, tmp_path, _pool_de_pdf_limpio):
+    """Ruling R34: N workers ocupados más allá del plazo. La subida siguiente
+    espera el turno de pdf a lo sumo JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS y recibe
+    503 `adjuntos_reintentar`: sin temporal, sin reserva de cuota retenida
+    (`_cuentas == {}`) y con el semáforo exactamente en N. Cuando los workers
+    se liberan, un PDF nuevo entra."""
+    import functools
+    from fastapi import HTTPException
+    import adjuntos.pdf_pool as pdf_pool
+    from adjuntos import almacen, cuota
+    from adjuntos.turno import turno_de_pdf
+    from tests import adjuntos_pdf_pool_fixtures as fixtures
+    directorio = tmp_path / "adjuntos"
+    directorio.mkdir(mode=0o700)
+    monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(directorio))
+    monkeypatch.setenv("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", "4")
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", "2")
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "10")
+    monkeypatch.setattr(pdf_pool, "extraer_texto", functools.partial(fixtures.trabajar, 2.5))
+    cuota._cuentas.clear()
+    pdf = pdf_con_texto(["hola"])
+
+    def subir():
+        return upload_mod.upload_file(file=_archivo(pdf, "i.pdf", "application/pdf"), user=_USUARIO)
+
+    async def correr():
+        await pdf_pool._pool_actual()
+        await pdf_pool.precalentar_pool()
+        ocupadas = [asyncio.ensure_future(subir()) for _ in range(2)]
+        limite = time.monotonic() + 5
+        while turno_de_pdf()._value > 0:
+            assert time.monotonic() < limite, "los PDFs nunca llegaron al pool"
+            await asyncio.sleep(0.01)
+        monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "1")
+        inicio = time.monotonic()
+        with pytest.raises(HTTPException) as e:
+            await asyncio.wait_for(subir(), 5)
+        demora = time.monotonic() - inicio
+        assert (e.value.status_code, e.value.detail) == (503, {"code": "adjuntos_reintentar"})
+        assert 0.9 <= demora < 1.8, demora
+        # Solo quedan los temporales y las reservas de las dos que corren.
+        temporales = [p for p in directorio.rglob("*") if p.name.startswith(almacen.PREFIJO_SUBIDA)]
+        assert len(temporales) == 2, temporales
+        cuenta = cuota._cuentas["5"]
+        assert (cuenta.en_uso, cuenta.reservado) == (2, 2 * len(pdf))
+        monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "10")
+        hechas = await asyncio.gather(*ocupadas)
+        assert all(r["origen"] == "pdf" for r in hechas)
+        assert turno_de_pdf()._value == 2
+        assert cuota._cuentas == {}
+        assert not [p for p in directorio.rglob("*") if p.name.startswith(almacen.PREFIJO_SUBIDA)]
+        nueva = await subir()
+        assert nueva["origen"] == "pdf"
+        assert turno_de_pdf()._value == 2
+
+    asyncio.run(correr())
+    assert cuota._cuentas == {}
+    assert not [p for p in directorio.rglob("*") if p.name.startswith(almacen.PREFIJO_SUBIDA)]

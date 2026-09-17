@@ -753,3 +753,47 @@ def test_una_cancelacion_real_de_un_pdf_colgado_no_deja_el_lugar_tomado_para_sie
         assert pdf_pool._pool is not pool  # el presupuesto vencido recicló
 
     asyncio.run(escenario())
+
+
+# =============================================================================
+# Ruling R34 (2026-09-17): la espera del turno de pdf tiene plazo
+# =============================================================================
+
+def test_la_espera_del_turno_de_pdf_vence_con_el_timeout_y_no_toma_lugar(monkeypatch):
+    """R34: con los N workers ocupados más allá del plazo, la extracción que
+    espera el semáforo no espera sin cota (una cola sin tope es un bloqueo
+    entre usuarios: Starlette no cancela el handler si el cliente se va).
+    Espera a lo sumo JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS y sale con 503
+    `adjuntos_reintentar`; no tomó nada, así que el semáforo sigue en N y las
+    que corrían terminan bien, sin reciclado."""
+    from adjuntos.errores import AdjuntoRechazado
+    from adjuntos.turno import turno_de_pdf
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", "2")
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "10")
+    monkeypatch.setattr(pdf_pool, "extraer_texto", _trabajo(2.5))
+
+    async def escenario():
+        pool = await pdf_pool._pool_actual()
+        await pdf_pool.precalentar_pool()
+        corriendo = [asyncio.ensure_future(
+            pdf_pool.extraer_texto_en_pool(b"a", max_paginas=20, max_chars=8000)) for _ in range(2)]
+        await asyncio.sleep(0.2)
+        assert turno_de_pdf()._value == 0
+        monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "1")
+        inicio = time.monotonic()
+        with pytest.raises(AdjuntoRechazado) as e:
+            await asyncio.wait_for(
+                pdf_pool.extraer_texto_en_pool(b"b", max_paginas=20, max_chars=8000), 5)
+        demora = time.monotonic() - inicio
+        assert (e.value.status, e.value.detail) == (503, {"code": "adjuntos_reintentar"})
+        assert 0.9 <= demora < 1.8, demora
+        monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "10")
+        resultados = await asyncio.gather(*corriendo)
+        assert all(t.startswith("ok") for t, _ in resultados)
+        assert turno_de_pdf()._value == 2
+        assert pdf_pool._pool is pool
+        texto, _ = await pdf_pool.extraer_texto_en_pool(b"c", max_paginas=20, max_chars=8000)
+        assert texto.startswith("ok")
+        assert turno_de_pdf()._value == 2
+
+    asyncio.run(escenario())

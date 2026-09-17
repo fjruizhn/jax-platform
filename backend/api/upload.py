@@ -27,7 +27,10 @@ Camino de una subida:
 Clasificar va dentro de turno_de_subida (JAX_ADJUNTO_SUBIDAS_EN_PROCESO); la
 copia no, es I/O de disco en un hilo; pypdf tampoco (Final fix wave #2, I1):
 espera turno_de_pdf (JAX_ADJUNTO_PDF_PROCESOS) con el turno de subida ya
-suelto, y su timeout mide solo la corrida.
+suelto, y su timeout mide solo la corrida. Esa espera tiene plazo (Ruling
+R34): JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS; vencido, 503 `adjuntos_reintentar`
+(un AdjuntoRechazado: la reserva se suelta al salir de `cuota.reserva` y el
+temporal se borra en el `finally`).
 Errores con código estable.
 
 RD6 (2026-09-17): antes de copiar, en este orden, tope por archivo (413
@@ -163,7 +166,8 @@ async def upload_file(
                     "bytes": tamano, "caracteres": meta["caracteres"], "recortado": recortado,
                     "vista_previa": texto[:VISTA_PREVIA_CARACTERES]}
     except AdjuntoRechazado as e:
-        # Cuota (413 adjuntos_cuota_excedida) y disco (507 adjuntos_sin_espacio).
+        # Cuota (413 adjuntos_cuota_excedida), disco (507 adjuntos_sin_espacio)
+        # y sin lugar en el pool de pdf a tiempo (503 adjuntos_reintentar, R34).
         raise _http(e) from None
     finally:
         # La imagen guardada ya no está acá (se renombró): idempotente.
