@@ -197,3 +197,136 @@ def test_preflight_por_http_usa_el_umbral_del_ajuste(client, ajustes_en_db, monk
     r = client.post("/api/pipelines/preflight", json={"steps": PASOS}, headers=cabeceras(client, "prevuelo-http"))
     assert r.status_code == 200, r.text
     assert (r.json()["umbral_usd"], r.json()["requiere_confirmacion"]) == ("0.05", True)
+
+
+def test_preflight_con_ajuste_ilegible_es_503_y_no_llama_a_jacobs(client, ajustes_en_db, monkeypatch):
+    """El ajuste se lee FUERA del try de preflight_pipeline: un
+    pipeline_confirmar_usd ilegible es 503 ajuste_ilegible (handler de
+    main.py), nunca un 502 de Jacobs -- y Jacobs no se llega a llamar
+    (fix round 1 ítem 2)."""
+    ajustes_en_db.poner(**{**ajustes_en_db.validos, "pipeline_confirmar_usd": "no-es-un-monto"})
+    falso = JacobsFalso()  # ninguna ruta declarada: si se llama, AssertionError
+
+    async def cliente():
+        return falso
+
+    monkeypatch.setattr(mod, "get_http_client", cliente)
+    monkeypatch.setattr(mod, "JACOBS_URL", "http://jacobs.test/jacobs")
+    r = client.post("/api/pipelines/preflight", json={"steps": PASOS},
+                     headers=cabeceras(client, "prevuelo-ajuste-ilegible"))
+    assert r.status_code == 503, r.text
+    assert r.json()["detail"] == {"code": "ajuste_ilegible", "clave": "pipeline_confirmar_usd"}
+    assert falso.llamadas == []
+
+
+# ------------------------------------------- montos: forma fija, no float (fix round 1 ítem 1)
+
+def test_preflight_acepta_montos_de_jacobs_como_numero_json_y_devuelve_string(monkeypatch):
+    v = veredicto(costo=0.6, pasos_costo=[paso_costo(usd=0.1)])
+    preparar(monkeypatch, JacobsFalso(_prevuelo(v)))
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    # 0.6 > 0.50 (umbral por defecto de `preparar`): Decimal, no float -- una
+    # comparación en punto flotante de estos valores también daría True acá,
+    # pero el punto es que costo_max_usd/usd_max NUNCA salen como float.
+    assert (r["costo_max_usd"], r["pasos_costo"][0]["usd_max"], r["requiere_confirmacion"]) == ("0.6", "0.1", True)
+    assert isinstance(r["costo_max_usd"], str) and isinstance(r["pasos_costo"][0]["usd_max"], str)
+
+
+@pytest.mark.parametrize("costo_malo", ["no-es-un-monto", "-1", True])
+def test_preflight_costo_max_usd_invalido_es_prevuelo_no_disponible(monkeypatch, costo_malo):
+    v = veredicto()
+    v["costo_max_usd"] = costo_malo
+    preparar(monkeypatch, JacobsFalso(_prevuelo(v)))
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert (r.status_code, r.detail) == (502, {"code": "prevuelo_no_disponible"})
+
+
+# ------------------------------------------- violaciones/sondeadas mal formadas (fix round 1 ítem 4)
+
+def test_preflight_violaciones_no_lista_es_prevuelo_no_disponible(monkeypatch):
+    v = veredicto()
+    v["violaciones"] = "no-es-lista"
+    preparar(monkeypatch, JacobsFalso(_prevuelo(v)))
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert (r.status_code, r.detail) == (502, {"code": "prevuelo_no_disponible"})
+
+
+def test_preflight_violaciones_con_item_no_dict_es_prevuelo_no_disponible(monkeypatch):
+    v = veredicto(violaciones=[1])
+    preparar(monkeypatch, JacobsFalso(_prevuelo(v)))
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert (r.status_code, r.detail) == (502, {"code": "prevuelo_no_disponible"})
+
+
+def test_preflight_sondeadas_no_lista_es_prevuelo_no_disponible(monkeypatch):
+    v = veredicto()
+    v["sondeadas"] = "no-es-lista"
+    preparar(monkeypatch, JacobsFalso(_prevuelo(v)))
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert (r.status_code, r.detail) == (502, {"code": "prevuelo_no_disponible"})
+
+
+def test_preflight_sondeadas_con_item_no_str_es_prevuelo_no_disponible(monkeypatch):
+    v = veredicto()
+    v["sondeadas"] = ["kimi", 5]
+    preparar(monkeypatch, JacobsFalso(_prevuelo(v)))
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert (r.status_code, r.detail) == (502, {"code": "prevuelo_no_disponible"})
+
+
+# ------------------------------------------- pasos inválidos: un solo criterio (fix round 1 ítem 5)
+
+@pytest.mark.parametrize("steps_malos", [[], [1]])
+def test_preflight_pasos_invalidos_es_422_y_no_llama_a_jacobs(monkeypatch, steps_malos):
+    falso = JacobsFalso()
+    preparar(monkeypatch, falso)
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=steps_malos), user=USUARIO))
+    assert (r.status_code, r.detail) == (422, {"code": "pasos_requeridos"})
+    assert falso.llamadas == []
+
+
+@pytest.mark.parametrize("steps_malos", [[], [1]])
+def test_crear_pasos_invalidos_es_422_y_no_llama_a_jacobs(monkeypatch, steps_malos):
+    falso = JacobsFalso()
+    preparar(monkeypatch, falso)
+    r = _crear({"name": "x", "steps": steps_malos})
+    assert (r.status_code, r.detail) == (422, {"code": "pasos_requeridos"})
+    assert falso.llamadas == []
+
+
+# ------------------------------------------- costo_confirmado_usd: JSON number y forma estricta (fix round 1 ítems 2 y 3)
+
+def test_crear_costo_confirmado_como_numero_json_es_aceptado(monkeypatch):
+    pid = "22222222-2222-2222-2222-222222222222"
+    falso = JacobsFalso({**_prevuelo(veredicto(costo="0.60")),
+                         ("POST", "/pipeline"): respuesta(200, {"pipeline_id": pid})})
+    preparar(monkeypatch, falso)
+    r = _crear({"name": "x", "steps": PASOS, "costo_confirmado_usd": 0.6})
+    (cuerpo,) = falso.cuerpos("POST", "/pipeline")
+    assert cuerpo["costo_max_aceptado_usd"] == "0.6"
+    assert r["pipeline_id"] == pid
+
+
+def test_crear_confirmado_al_costo_exacto_con_paso_sin_precio_deja_pasar(monkeypatch):
+    """requiere_confirmacion puede venir SÓLO de un paso sin precio (no del
+    umbral); confirmar al menos el costo_max_usd alcanza igual (fix round 1
+    ítem 2)."""
+    v = veredicto(costo="0.10", pasos_costo=[paso_costo(usd="0.10"), paso_costo(paso=1, usd=None, motivo="sin_precio")])
+    pid = "33333333-3333-3333-3333-333333333333"
+    falso = JacobsFalso({**_prevuelo(v), ("POST", "/pipeline"): respuesta(200, {"pipeline_id": pid})})
+    preparar(monkeypatch, falso)
+    r = _crear({"name": "x", "steps": PASOS, "costo_confirmado_usd": "0.10"})
+    (cuerpo,) = falso.cuerpos("POST", "/pipeline")
+    assert cuerpo["costo_max_aceptado_usd"] == "0.10"
+    assert r["pipeline_id"] == pid
+
+
+@pytest.mark.parametrize("crudo", ["1e-7", "1e3", "-0", " 0.6 ", "1_000"])
+def test_crear_costo_confirmado_string_no_canonico_es_422(monkeypatch, crudo):
+    """`Decimal()` entiende estas formas -- el cliente no puede mandarlas: el
+    string tiene que ser canónico (fix round 1 ítem 3)."""
+    falso = JacobsFalso()
+    preparar(monkeypatch, falso)
+    r = _crear({"name": "x", "steps": PASOS, "costo_confirmado_usd": crudo})
+    assert (r.status_code, r.detail) == (422, {"code": "costo_confirmado_invalido"})
+    assert falso.llamadas == []

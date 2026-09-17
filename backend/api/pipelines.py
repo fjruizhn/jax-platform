@@ -1,11 +1,13 @@
+import math
 import os
+import re
 import time
 import uuid
 from decimal import Decimal, InvalidOperation
 
 import ajustes
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from auth.middleware import get_current_user
 from auth.models import AuthUser
@@ -163,7 +165,10 @@ def _json_de_jacobs(r) -> dict:
 
 # --- Pre-vuelo (spec 2026-09-17 §6.1) --------------------------------------
 def _monto(valor) -> Decimal:
-    """Monto de Jacobs o del cliente: string decimal o número JSON, finito y >= 0."""
+    """Monto de Jacobs: string decimal o número JSON, finito y >= 0. Más
+    permisivo que `_monto_cliente` (notación científica, guiones bajos, etc.
+    de un `Decimal(str(...))` normal) porque Jacobs es un servicio interno
+    de confianza, no el cliente HTTP."""
     if isinstance(valor, bool) or not isinstance(valor, (str, int, float)):
         raise ValueError(valor)
     try:
@@ -175,15 +180,66 @@ def _monto(valor) -> Decimal:
     return monto
 
 
+_MONTO_CLIENTE_CANONICO = re.compile(r"(0|[1-9][0-9]*)(\.[0-9]+)?")
+
+
+def _monto_cliente(valor) -> Decimal:
+    """Monto que manda el cliente (`costo_confirmado_usd`): más estricto que
+    `_monto` -- un número JSON finito (no bool), o un string en forma
+    CANÓNICA únicamente (sin notación científica, sin espacios, sin guiones
+    bajos, sin signo). Fix round 1 ítem 3: "1e-7", "1e3", "-0", " 0.6 " y
+    "1_000" como string se rechazan acá aunque `Decimal()` los entendiera."""
+    if isinstance(valor, bool):
+        raise ValueError(valor)
+    if isinstance(valor, str):
+        if not valor.isascii() or not _MONTO_CLIENTE_CANONICO.fullmatch(valor):
+            raise ValueError(valor)
+        monto = Decimal(valor)
+    elif isinstance(valor, float):
+        if not math.isfinite(valor):
+            raise ValueError(valor)
+        monto = Decimal(str(valor))
+    elif isinstance(valor, int):
+        monto = Decimal(valor)
+    else:
+        raise ValueError(valor)
+    if not monto.is_finite() or monto < 0:
+        raise ValueError(valor)
+    return monto
+
+
+def _monto_texto(monto: Decimal) -> str:
+    """Salida SIEMPRE en punto fijo, nunca notación científica (`format`
+    con formato "f" respeta los dígitos del Decimal, sin reescribir
+    "1E-7" a "0.0000001" quedaría raro -- exactamente lo que se quiere).
+    -0 (y -0.0, -0.00, ...) se normaliza a la forma positiva: fix round 1
+    ítem 1. Se usa para costo_max_usd, umbral_usd, cada usd_max de paso, y
+    costo_max_aceptado_usd que se manda a Jacobs."""
+    texto = format(monto, "f")
+    if texto.startswith("-") and monto == 0:
+        texto = texto[1:]
+    return texto
+
+
 def _prevuelo_no_disponible() -> HTTPException:
     detalle = {"code": "prevuelo_no_disponible"}
     return HTTPException(status_code=502, detail=detalle)
 
 
+def _exigir_pasos_validos(steps) -> None:
+    """Un solo criterio para /preflight y la creación (fix round 1 ítem 5):
+    lista no vacía de objetos. Nunca llama a Jacobs si no se cumple."""
+    if not isinstance(steps, list) or not steps or any(not isinstance(s, dict) for s in steps):
+        raise HTTPException(status_code=422, detail={"code": "pasos_requeridos"})
+
+
 def _evaluar_veredicto(crudo, umbral: Decimal) -> dict:
-    """Fail-closed: un veredicto sin `ok` booleano, sin costo legible o con
-    pasos de costo mal formados NO es un pre-vuelo aprobado. Un paso con
-    usd_max null es "no acotado" (sin precio): siempre pide confirmación.
+    """Fail-closed: un veredicto sin `ok` booleano, sin costo legible, con
+    pasos de costo mal formados, con una violación que no es un objeto, o
+    con `sondeadas` presente y no una lista de strings, NO es un pre-vuelo
+    aprobado (fix round 1 ítem 4 -- antes esas formas se descartaban en
+    silencio en vez de fallar cerrado). Un paso con usd_max null es "no
+    acotado" (sin precio): siempre pide confirmación.
 
     ENMIENDA ítem 4 (2026-09-17): si Jacobs manda `hay_no_acotados`, tiene
     que ser bool (si no, fail-closed 502) y se OR-ea con la recomputación
@@ -196,6 +252,14 @@ def _evaluar_veredicto(crudo, umbral: Decimal) -> dict:
         violaciones = crudo["violaciones"]
         if not isinstance(ok, bool) or not isinstance(pasos, list) or not isinstance(violaciones, list):
             raise ValueError("forma del veredicto")
+        if any(not isinstance(v, dict) for v in violaciones):
+            raise ValueError("violacion mal formada")
+        if "sondeadas" in crudo:
+            sondeadas_crudas = crudo["sondeadas"]
+            if not isinstance(sondeadas_crudas, list) or any(not isinstance(s, str) for s in sondeadas_crudas):
+                raise ValueError("sondeadas mal formada")
+        else:
+            sondeadas_crudas = []
         no_acotado = False
         for paso in pasos:
             if paso["usd_max"] is None:
@@ -209,16 +273,21 @@ def _evaluar_veredicto(crudo, umbral: Decimal) -> dict:
             no_acotado = no_acotado or declarado
     except (KeyError, TypeError, ValueError):
         raise _prevuelo_no_disponible() from None
+    # Ruling del controlador (Task 6): sólo los campos declarados llegan al
+    # navegador -- se reutilizan los saneadores de Task 5, no los crudos de
+    # Jacobs. usd_max ya se validó arriba: re-parsear acá sólo reformatea a
+    # punto fijo (fix round 1 ítem 1), no puede fallar.
+    pasos_saneados = _pasos_costo_saneados(pasos)
+    for item in pasos_saneados:
+        if item["usd_max"] is not None:
+            item["usd_max"] = _monto_texto(_monto(item["usd_max"]))
     return {
         "ok": ok,
         "violaciones": _violaciones_redactadas(violaciones),
-        "costo_max_usd": str(costo),
-        # Ruling del controlador (Task 6): sólo los campos declarados llegan
-        # al navegador -- se reutilizan los saneadores de Task 5, no los
-        # crudos de Jacobs.
-        "pasos_costo": _pasos_costo_saneados(pasos),
-        "sondeadas": _sondeadas_saneadas(crudo.get("sondeadas", [])),
-        "umbral_usd": str(umbral),
+        "costo_max_usd": _monto_texto(costo),
+        "pasos_costo": pasos_saneados,
+        "sondeadas": _sondeadas_saneadas(sondeadas_crudas),
+        "umbral_usd": _monto_texto(umbral),
         "requiere_confirmacion": costo > umbral or no_acotado,
     }
 
@@ -249,7 +318,11 @@ def _exigir_consentimiento(veredicto: dict, confirmado: Decimal | None) -> None:
 
 
 class PedidoDePrevuelo(BaseModel):
-    steps: list[dict] = Field(min_length=1)
+    # Sin restricción de tipo/tamaño acá (fix round 1 ítem 5): un solo
+    # criterio para /preflight y la creación es `_exigir_pasos_validos`, no
+    # dos formas de 422 distintas (la de pydantic para [] y un 500/502 para
+    # [1] que sí llegaba a Jacobs).
+    steps: list = []
 
 
 # engine_state.active_pipelines (memoria) se descarta apenas la pipeline
@@ -337,6 +410,7 @@ async def list_pipelines(user: AuthUser = Depends(get_current_user)):
 
 @router.post("/preflight")
 async def preflight_pipeline(pedido: PedidoDePrevuelo, user: AuthUser = Depends(get_current_user)):
+    _exigir_pasos_validos(pedido.steps)
     # El ajuste se lee FUERA del try: un ajuste ilegible es 503 ajuste_ilegible
     # (handler de main.py), no un 502 de Jacobs.
     umbral = await ajustes.valor(ajustes.CONFIRMAR_USD)
@@ -360,12 +434,12 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
     umbral = await ajustes.valor(ajustes.CONFIRMAR_USD)
     body = await request.json()
     steps = body.get("steps") if isinstance(body, dict) else None
-    # Sin pasos no hay pre-vuelo ni costo que confirmar (desvío DV-8 del plan).
-    if not isinstance(steps, list) or not steps:
-        raise HTTPException(status_code=422, detail={"code": "pasos_requeridos"})
+    # Sin pasos no hay pre-vuelo ni costo que confirmar (desvío DV-8 del
+    # plan); mismo criterio que /preflight (fix round 1 ítem 5).
+    _exigir_pasos_validos(steps)
     try:
         crudo = body.pop("costo_confirmado_usd", None)
-        confirmado = None if crudo is None else _monto(crudo)
+        confirmado = None if crudo is None else _monto_cliente(crudo)
     except ValueError:
         raise HTTPException(status_code=422, detail={"code": "costo_confirmado_invalido"}) from None
     body["user_id"] = user.user_id
@@ -378,7 +452,7 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
         # Siempre (desvío DV-7): el confirmado, o el umbral como consentimiento
         # previo del admin. Jacobs responde 409 costo_supera_lo_aceptado sin
         # crear si su pre-vuelo interno da más.
-        body["costo_max_aceptado_usd"] = str(confirmado if confirmado is not None else umbral)
+        body["costo_max_aceptado_usd"] = _monto_texto(confirmado if confirmado is not None else umbral)
         r = await client.post(f"{JACOBS_URL}/pipeline", json=body, timeout=JACOBS_PIPELINE_TIMEOUT)
         data = _json_de_jacobs(r)
         pipeline_id = data.get("pipeline_id")

@@ -26,10 +26,19 @@ class _FakeResponse:
 
 
 class _FakeClient:
+    """`response` es lo que devuelve la CREACIÓN (POST /pipeline); el
+    pre-vuelo (POST /preflight) siempre aprueba -- así el 422 que afirman
+    los tests de este archivo sale de la creación real, no del pre-vuelo
+    (fix round 1 ítem 6)."""
+    APROBADO = _FakeResponse({"ok": True, "violaciones": [], "costo_max_usd": "0.00",
+                              "pasos_costo": [], "sondeadas": []}, 200)
+
     def __init__(self, response):
         self._response = response
 
     async def post(self, url, **kwargs):
+        if url.endswith("/preflight"):
+            return self.APROBADO
         return self._response
 
 

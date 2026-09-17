@@ -207,8 +207,17 @@ class _Request:
 
 
 def _cliente_jacobs(monkeypatch, respuesta=None, excepcion=None):
+    """`respuesta`/`excepcion` son lo que devuelve/lanza la llamada de
+    CREACIÓN (POST /pipeline); el pre-vuelo (POST /preflight) siempre
+    aprueba acá -- así el status/código que afirma cada test sale del sitio
+    que su nombre dice, no del pre-vuelo (fix round 1 ítem 6)."""
+    aprobado = httpx.Response(200, json={"ok": True, "violaciones": [], "costo_max_usd": "0.00",
+                                         "pasos_costo": [], "sondeadas": []})
+
     class _C:
-        async def post(self, *a, **k):
+        async def post(self, url, *a, **k):
+            if url.endswith("/preflight"):
+                return aprobado
             if excepcion:
                 raise excepcion
             return respuesta
