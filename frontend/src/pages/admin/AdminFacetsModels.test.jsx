@@ -62,4 +62,27 @@ describe('AdminFacetsModels -- credenciales (A-23)', () => {
     fireEvent.click(await screen.findByRole('button', { name: es.adminKeyTest }))
     expect(await screen.findByText(`${es.adminKeyFail}: ${es.adminKeyTestError}`)).toBeInTheDocument()
   })
+
+  // R11 (fix round 1, Task 13, 2026-09-16): handleRevoke limpia `revokeConfirm`
+  // (cierra el Dialogo/ConfirmacionSuma) y `revoking` (rehabilita este mismo
+  // botón) en el mismo tramo de setState tras el `await api.post`. Es el
+  // mismo patrón que rompía en AdminSmtp.jsx: Dialogo intenta devolver el
+  // foco al disparador en el instante en que React todavía no aplicó, en ese
+  // commit, la mutación que lo saca de `disabled` -- sin el arreglo en
+  // Dialogo, el foco se pierde en el body.
+  it('revocar con éxito devuelve el foco al botón que abrió el diálogo, aunque quede disabled en el mismo commit que cierra', async () => {
+    api.post.mockResolvedValue({ data: {} })
+    render(<I18nProvider><AdminFacetsModels /></I18nProvider>)
+    const disparador = await screen.findByRole('button', { name: es.adminKeyRevoke })
+    // fireEvent.click no simula el foco-al-clic de un navegador real (jsdom);
+    // se enfoca a mano, mismo patrón que Dialogo.test.jsx y AdminUsers.test.jsx.
+    disparador.focus()
+    fireEvent.click(disparador)
+    const dialogo = screen.getByRole('dialog')
+    resolverSuma(dialogo)
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.adminKeyRevoke }))
+    await waitFor(() => expect(api.post).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(disparador).toHaveFocus())
+  })
 })

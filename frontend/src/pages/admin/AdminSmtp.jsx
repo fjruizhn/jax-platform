@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { flushSync } from 'react-dom'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { codigoDe } from '../../api/errores'
@@ -125,14 +124,6 @@ export default function AdminSmtp() {
     setDialogo((d) => ({ ...d, error: null }))
     try {
       const { data } = await api.post('/admin/smtp/test', { to: dialogo.to })
-      // El disparador está disabled={ocupado !== null}: si se cierra el
-      // diálogo con `ocupado` todavía en 'prueba', React aplica la mutación
-      // del atributo `disabled` DESPUÉS del cleanup del Dialogo que se
-      // desmonta (commit en el mismo render mixto), y `Dialogo` no puede
-      // devolver el foco a un botón que en ese instante sigue disabled. Se
-      // fuerza a un commit propio con `ocupado` ya en null (disparador ya
-      // habilitado en el DOM) antes de cerrar el diálogo (A-23).
-      flushSync(() => setOcupado(null))
       setDialogo(DIALOGO_CERRADO)
       setResultado({ ok: true, texto: t.smtpTestSent(data?.to) })
     } catch (err) {
