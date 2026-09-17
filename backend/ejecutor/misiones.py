@@ -307,18 +307,24 @@ async def _anotar(mision_id: str, turno, evento: str, datos) -> None:
             await cur.execute(SQL_BITACORA_INSERTAR, (mision_id, turno, evento, json.dumps(datos, ensure_ascii=False)))
 
 
-async def _cerrar_turno(mision_id: str, n: int, estado_t: str, codigo, resultado: dict) -> bool:
-    """Sólo cierra un turno que sigue `en_curso`: uno ya reconciliado no se pisa."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE ejecutor_turno SET estado = %s, codigo = %s, resultado = %s, sesion_iniciada = %s, "
-                "terminado_at = UTC_TIMESTAMP(6) WHERE mision_id = %s AND n = %s AND estado = 'en_curso'",
-                (estado_t, codigo, json.dumps(resultado, ensure_ascii=False),
-                 bool(resultado.get("sesion_iniciada")), mision_id, n))
-            cerrado = cur.rowcount == 1
-            await cur.execute("UPDATE ejecutor_mision SET updated_at = UTC_TIMESTAMP(6) WHERE id = %s", (mision_id,))
+async def _cerrar_turno(mision_id: str, n: int, estado_t: str, codigo, resultado: dict, evento=None) -> bool:
+    """Sólo cierra un turno que sigue `en_curso`: uno ya reconciliado no se pisa.
+
+    `evento` = (nombre, datos) del cierre. Va en la MISMA transacción: si se anotara después del
+    commit, quien lea en esa ventana ve la misión ya terminal con la bitácora un evento atrás
+    (carrera vista en CI el 2026-09-17). El evento se escribe sólo si este llamador cerró el turno.
+    """
+    async with transaccion() as cur:
+        await cur.execute(
+            "UPDATE ejecutor_turno SET estado = %s, codigo = %s, resultado = %s, sesion_iniciada = %s, "
+            "terminado_at = UTC_TIMESTAMP(6) WHERE mision_id = %s AND n = %s AND estado = 'en_curso'",
+            (estado_t, codigo, json.dumps(resultado, ensure_ascii=False),
+             bool(resultado.get("sesion_iniciada")), mision_id, n))
+        cerrado = cur.rowcount == 1
+        await cur.execute("UPDATE ejecutor_mision SET updated_at = UTC_TIMESTAMP(6) WHERE id = %s", (mision_id,))
+        if cerrado and evento is not None:
+            nombre, datos = evento
+            await cur.execute(SQL_BITACORA_INSERTAR, (mision_id, n, nombre, json.dumps(datos, ensure_ascii=False)))
     return cerrado
 
 
@@ -368,14 +374,15 @@ async def _correr_turno(mision_id: str, n: int, pedido: dict, runner) -> None:
             estado_t, codigo = "fallido", "runner_salida_invalida"
         else:
             estado_t, codigo = resultado["estado"], resultado.get("codigo")
-        if await _cerrar_turno(mision_id, n, estado_t, codigo, resultado) and not terminal_visto:
-            await _anotar(mision_id, n, "turno_rechazado" if estado_t == "rechazado" else
-                          "turno_completado" if estado_t == "completado" else "turno_fallido", {"codigo": codigo})
+        nombre = ("turno_rechazado" if estado_t == "rechazado" else
+                  "turno_completado" if estado_t == "completado" else "turno_fallido")
+        await _cerrar_turno(mision_id, n, estado_t, codigo, resultado,
+                            None if terminal_visto else (nombre, {"codigo": codigo}))
     except Exception:  # fail-soft: la tarea de fondo no puede morir callada; el turno queda FALLIDO con código y el traceback en el journal
         logger.exception("ejecutor: el turno %s de la misión %s reventó", n, mision_id)
         try:
-            if await _cerrar_turno(mision_id, n, "fallido", "runner_error", {}):
-                await _anotar(mision_id, n, "turno_fallido", {"codigo": "runner_error"})
+            await _cerrar_turno(mision_id, n, "fallido", "runner_error", {},
+                                ("turno_fallido", {"codigo": "runner_error"}))
         except Exception:  # fail-soft: sin base no se puede anotar; al reiniciar, reconciliar_al_arrancar lo cierra como interrumpido
             logger.exception("ejecutor: no se pudo cerrar el turno %s de la misión %s", n, mision_id)
 

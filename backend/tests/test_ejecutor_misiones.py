@@ -509,3 +509,33 @@ def test_las_consultas_del_sondeo_usan_indice_sin_filesort(client, superadmin, m
         plan = _plan(client, consulta, args)
         assert [f for f in plan if f[2] == tabla][0][5] == indice, plan
         assert all("filesort" not in (f[9] or "") and "temporary" not in (f[9] or "") for f in plan), plan
+
+
+def test_el_evento_de_cierre_va_con_el_cierre_del_turno(client, superadmin, maquinas, runner, monkeypatch):
+    """Carrera real vista en CI (2026-09-17, PR #105 de otra sesión): el turno se cerraba en una
+    transacción y el evento de cierre se anotaba DESPUÉS del commit. Quien leía en esa ventana veía
+    la misión ya terminal con la bitácora un evento atrás, y la comparación de la lista completa
+    fallaba. El cierre y su evento van juntos: si el evento no se puede escribir, el turno no queda
+    cerrado a medias."""
+    import ejecutor.misiones as M
+    runner.guion({"lineas": [_ev("turno_lanzado"), "esto no es json"], "rc": 3})
+    vistos = []
+    cerrar = M._cerrar_turno
+
+    async def espia(mision_id, n, estado_t, codigo, resultado, evento=None):
+        # Al volver de cerrar, el estado y la bitácora ya tienen que estar de acuerdo.
+        ok = await cerrar(mision_id, n, estado_t, codigo, resultado, evento)
+        vistos.append((ok, evento))
+        return ok
+    monkeypatch.setattr(M, "_cerrar_turno", espia)
+    mision_id = _crear(client, h_de(superadmin)).json()["id"]
+    d = _esperar(client, h_de(superadmin), mision_id)
+    eventos = [e["evento"] for e in client.get(f"{BASE}/misiones/{mision_id}/bitacora",
+                                               headers=h_de(superadmin)).json()["eventos"]]
+    assert d["estado"] == "fallida"
+    assert eventos == ["mision_creada", "turno_lanzado", "runner_salida_invalida", "turno_fallido"]
+    assert vistos and vistos[0][1] == ("turno_fallido", {"codigo": "runner_sin_cierre"})
+
+
+def h_de(superadmin):
+    return superadmin[1]
