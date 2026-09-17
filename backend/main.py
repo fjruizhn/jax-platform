@@ -119,6 +119,10 @@ async def lifespan(app: FastAPI):
     # la base y el cliente HTTP -- mismo criterio que los límites de arriba,
     # config primero, nada que dependa de otra cosa (ver adjuntos/pdf_pool.py).
     pdf_pool.crear_pool()
+    # Ronda de corrección 1, item 5: precalentar antes de servir requests,
+    # para que el timeout de la primera extracción real no incluya spawn +
+    # import de pypdf. Best-effort (ver adjuntos/pdf_pool.py::precalentar_pool).
+    await pdf_pool.precalentar_pool()
     await get_pool()
     await get_http_client()
     await run_migrations()
