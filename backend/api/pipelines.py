@@ -4,6 +4,7 @@ import re
 import time
 import uuid
 from decimal import Decimal, InvalidOperation
+from typing import Any
 
 import ajustes
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -84,7 +85,12 @@ _CAMPOS_DE_PASO_COSTO = (
 def _pasos_costo_saneados(pasos) -> list[dict]:
     """Sólo los ocho campos del contrato por paso (Task 6 reutiliza este
     helper para /continue/preflight y /continue). motivo puede traer texto de
-    un proveedor y se redacta antes de salir hacia el navegador."""
+    un proveedor y se redacta antes de salir hacia el navegador. usd_max sale
+    en punto fijo cuando es legible (fix round 2 ítem 5, `_monto_texto`) --
+    un solo lugar formatea para el veredicto (ya fail-closed más arriba, acá
+    nunca falla) Y para un rechazo de Jacobs (best-effort, sin la validación
+    previa del veredicto: un usd_max ilegible en un paso de un rechazo se
+    deja en null, nunca rompe el rechazo completo)."""
     if not isinstance(pasos, list):
         return []
     saneados = []
@@ -94,6 +100,11 @@ def _pasos_costo_saneados(pasos) -> list[dict]:
         item = {campo: p.get(campo) for campo in _CAMPOS_DE_PASO_COSTO}
         if isinstance(item["motivo"], str):
             item["motivo"] = recortar_redactado(item["motivo"], MOTIVO_MAX)
+        if item["usd_max"] is not None:
+            try:
+                item["usd_max"] = _monto_texto(_monto(item["usd_max"]))
+            except ValueError:  # fail-soft: usd_max ilegible en un rechazo -- se deja null, no rompe el rechazo
+                item["usd_max"] = None
         saneados.append(item)
     return saneados
 
@@ -121,6 +132,14 @@ def _rechazo_de_jacobs(status_code: int, cuerpo, texto: str) -> HTTPException:
                 valor = _pasos_costo_saneados(valor)
             elif campo == "sondeadas":
                 valor = _sondeadas_saneadas(valor)
+            elif campo in ("costo_max_usd", "costo_max_aceptado_usd"):
+                # Ruling del controlador (fix round 2 ítem 5): mismo formato
+                # de punto fijo que el veredicto; un monto ilegible en un
+                # rechazo se OMITE, nunca rompe el rechazo completo.
+                try:
+                    valor = _monto_texto(_monto(valor))
+                except ValueError:  # fail-soft: monto ilegible en un rechazo de Jacobs -- se omite el campo
+                    continue
             elif campo == "detalle" and valor is not None:
                 valor = recortar_redactado(str(valor), DETALLE_MAX)
             elif campo == "mensaje" and valor is not None:
@@ -209,11 +228,11 @@ def _monto_cliente(valor) -> Decimal:
 
 
 def _monto_texto(monto: Decimal) -> str:
-    """Salida SIEMPRE en punto fijo, nunca notación científica (`format`
-    con formato "f" respeta los dígitos del Decimal, sin reescribir
-    "1E-7" a "0.0000001" quedaría raro -- exactamente lo que se quiere).
-    -0 (y -0.0, -0.00, ...) se normaliza a la forma positiva: fix round 1
-    ítem 1. Se usa para costo_max_usd, umbral_usd, cada usd_max de paso, y
+    """Salida SIEMPRE en punto fijo, nunca notación científica: un monto
+    que Jacobs mandó como "1E-7" sale como "0.0000001" (`format(monto, "f")`
+    reescribe cualquier exponente a la forma decimal completa). -0 (y -0.0,
+    -0.00, ...) se normaliza a la forma positiva: fix round 1 ítem 1. Se usa
+    para costo_max_usd, umbral_usd, cada usd_max de paso, y
     costo_max_aceptado_usd que se manda a Jacobs."""
     texto = format(monto, "f")
     if texto.startswith("-") and monto == 0:
@@ -275,17 +294,15 @@ def _evaluar_veredicto(crudo, umbral: Decimal) -> dict:
         raise _prevuelo_no_disponible() from None
     # Ruling del controlador (Task 6): sólo los campos declarados llegan al
     # navegador -- se reutilizan los saneadores de Task 5, no los crudos de
-    # Jacobs. usd_max ya se validó arriba: re-parsear acá sólo reformatea a
-    # punto fijo (fix round 1 ítem 1), no puede fallar.
-    pasos_saneados = _pasos_costo_saneados(pasos)
-    for item in pasos_saneados:
-        if item["usd_max"] is not None:
-            item["usd_max"] = _monto_texto(_monto(item["usd_max"]))
+    # Jacobs. usd_max ya se validó arriba: `_pasos_costo_saneados` lo
+    # reformatea a punto fijo (fix round 1 ítem 1, movido a un único lugar
+    # compartido en fix round 2 ítem 5), no puede fallar acá porque ya se
+    # probó legible en el loop de arriba.
     return {
         "ok": ok,
         "violaciones": _violaciones_redactadas(violaciones),
         "costo_max_usd": _monto_texto(costo),
-        "pasos_costo": pasos_saneados,
+        "pasos_costo": _pasos_costo_saneados(pasos),
         "sondeadas": _sondeadas_saneadas(sondeadas_crudas),
         "umbral_usd": _monto_texto(umbral),
         "requiere_confirmacion": costo > umbral or no_acotado,
@@ -318,11 +335,14 @@ def _exigir_consentimiento(veredicto: dict, confirmado: Decimal | None) -> None:
 
 
 class PedidoDePrevuelo(BaseModel):
-    # Sin restricción de tipo/tamaño acá (fix round 1 ítem 5): un solo
-    # criterio para /preflight y la creación es `_exigir_pasos_validos`, no
-    # dos formas de 422 distintas (la de pydantic para [] y un 500/502 para
-    # [1] que sí llegaba a Jacobs).
-    steps: list = []
+    # `Any`, no `list` (fix round 2 ítem 3): con `list`, pydantic seguía
+    # respondiendo SU PROPIO 422 (forma distinta a `{"code":
+    # "pasos_requeridos"}`) para `{"steps": "x"}`/`{"steps": {}}`, aunque ya
+    # dejara pasar `[]`/`[1]` -- el comentario del fix round 1 decía "un
+    # solo criterio" pero no lo era del todo. Con `Any`, CUALQUIER JSON
+    # llega intacto y `_exigir_pasos_validos` es el ÚNICO lugar que decide,
+    # exactamente igual en /preflight y en la creación.
+    steps: Any = None
 
 
 # engine_state.active_pipelines (memoria) se descarta apenas la pipeline
@@ -455,6 +475,18 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
         body["costo_max_aceptado_usd"] = _monto_texto(confirmado if confirmado is not None else umbral)
         r = await client.post(f"{JACOBS_URL}/pipeline", json=body, timeout=JACOBS_PIPELINE_TIMEOUT)
         data = _json_de_jacobs(r)
+        # Ruling del controlador (fix round 2 ítem 5): mismo formato de
+        # punto fijo que el veredicto y el rechazo -- el pipeline YA se creó,
+        # así que un costo_max_usd ilegible se omite (no se rompe la
+        # respuesta por eso); pasos_costo pasa por el mismo saneador
+        # (campos declarados, usd_max formateado).
+        if "costo_max_usd" in data:
+            try:
+                data["costo_max_usd"] = _monto_texto(_monto(data["costo_max_usd"]))
+            except ValueError:  # fail-soft: costo_max_usd ilegible en la respuesta de creación -- se omite el campo
+                del data["costo_max_usd"]
+        if "pasos_costo" in data:
+            data["pasos_costo"] = _pasos_costo_saneados(data["pasos_costo"])
         pipeline_id = data.get("pipeline_id")
         if pipeline_id:
             # Antes de admitir el recurso o publicar el evento de WS

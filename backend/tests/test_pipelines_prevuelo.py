@@ -3,6 +3,7 @@ si se puede y cuánto costaría como máximo, pide consentimiento por encima del
 umbral o con un paso sin precio, y la condición la hace cumplir quien gasta
 (costo_max_aceptado_usd). Puros salvo el último (HTTP real con auth y ajuste)."""
 import asyncio
+from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
@@ -330,3 +331,98 @@ def test_crear_costo_confirmado_string_no_canonico_es_422(monkeypatch, crudo):
     r = _crear({"name": "x", "steps": PASOS, "costo_confirmado_usd": crudo})
     assert (r.status_code, r.detail) == (422, {"code": "costo_confirmado_invalido"})
     assert falso.llamadas == []
+
+
+# ------------------------------------------- fix round 2 -------------------------------------------
+
+# ítem 1: -0 y notación científica en la salida de _monto_texto
+
+def test_monto_texto_normaliza_menos_cero():
+    assert mod._monto_texto(Decimal("-0")) == "0"
+    assert mod._monto_texto(Decimal("-0.00")) == "0.00"
+    assert mod._monto_texto(Decimal("-0.0000001")) != mod._monto_texto(Decimal("0.0000001"))  # sanity: signo SÍ importa si no es cero
+    assert mod._monto_texto(Decimal("0")) == "0"
+
+
+def test_preflight_costo_de_jacobs_en_notacion_cientifica_sale_en_punto_fijo(monkeypatch):
+    v = veredicto(costo="1E-7")
+    preparar(monkeypatch, JacobsFalso(_prevuelo(v)))
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert r["costo_max_usd"] == "0.0000001"
+    assert "E" not in r["costo_max_usd"] and "e" not in r["costo_max_usd"]
+
+
+# ítem 2: comparación con Decimal, no con float (umbral de confirmación)
+
+def test_preflight_costo_igual_al_umbral_numero_json_no_requiere_confirmacion(monkeypatch):
+    preparar(monkeypatch, JacobsFalso(_prevuelo(veredicto(costo=0.5))))
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert r["requiere_confirmacion"] is False
+
+
+def test_preflight_costo_igual_al_umbral_string_no_requiere_confirmacion(monkeypatch):
+    preparar(monkeypatch, JacobsFalso(_prevuelo(veredicto(costo="0.50"))))
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert r["requiere_confirmacion"] is False
+
+
+def test_evaluar_veredicto_compara_costo_y_umbral_con_decimal_no_con_float():
+    """Prueba de mutación a mano (fix round 2 ítem 2, ver Fix round 2 en
+    task-6-report.md para el comando/salida): cambiar `costo > umbral` por
+    `float(costo) > float(umbral)` hace FALLAR este test -- 21 dígitos
+    decimales no entran en un float de 64 bits, la comparación en punto
+    flotante redondea a igualdad y se saltaría una confirmación que sí hace
+    falta."""
+    crudo = veredicto(costo="0.30000000000000000001")
+    r = mod._evaluar_veredicto(crudo, Decimal("0.3"))
+    assert r["requiere_confirmacion"] is True
+
+
+# ítem 3: PedidoDePrevuelo.steps acepta cualquier JSON, decide _exigir_pasos_validos
+
+def test_preflight_por_http_con_steps_no_lista_es_pasos_requeridos(client):
+    r = client.post("/api/pipelines/preflight", json={"steps": "x"},
+                     headers=cabeceras(client, "prevuelo-steps-no-lista"))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"code": "pasos_requeridos"}
+
+
+def test_preflight_por_http_sin_steps_es_pasos_requeridos(client):
+    r = client.post("/api/pipelines/preflight", json={},
+                     headers=cabeceras(client, "prevuelo-sin-steps"))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"code": "pasos_requeridos"}
+
+
+def test_preflight_por_http_con_steps_como_dict_es_pasos_requeridos(client):
+    r = client.post("/api/pipelines/preflight", json={"steps": {}},
+                     headers=cabeceras(client, "prevuelo-steps-dict"))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"code": "pasos_requeridos"}
+
+
+# ítem 5 (ruling del controlador): la respuesta 200 de creación también sale saneada
+
+def test_crear_200_con_costo_como_numero_json_y_paso_con_clave_extra(monkeypatch):
+    pid = "44444444-4444-4444-4444-444444444444"
+    falso = JacobsFalso({**_prevuelo(veredicto(costo="0.10")),
+                         ("POST", "/pipeline"): respuesta(200, {
+                             "pipeline_id": pid, "costo_max_usd": 0.1,
+                             "pasos_costo": [{**paso_costo(usd=0.1), "clave_extra": "no_pasa"}],
+                         })})
+    preparar(monkeypatch, falso)
+    r = _crear({"name": "x", "steps": PASOS})
+    assert r["pipeline_id"] == pid
+    assert r["costo_max_usd"] == "0.1"
+    assert r["pasos_costo"][0]["usd_max"] == "0.1"
+    assert "clave_extra" not in r["pasos_costo"][0]
+
+
+def test_crear_200_con_costo_max_usd_ilegible_omite_el_campo_sin_romper(monkeypatch):
+    pid = "66666666-6666-6666-6666-666666666666"
+    falso = JacobsFalso({**_prevuelo(veredicto(costo="0.10")),
+                         ("POST", "/pipeline"): respuesta(200, {"pipeline_id": pid, "costo_max_usd": "no-es-un-monto"})})
+    preparar(monkeypatch, falso)
+    r = _crear({"name": "x", "steps": PASOS})
+    assert r["pipeline_id"] == pid
+    assert "costo_max_usd" not in r

@@ -229,3 +229,37 @@ def test_pasos_costo_no_lista_cae_a_lista_vacia():
     cuerpo = {"detail": {"code": "prevuelo_rechazado", "costo_max_usd": "1.00", "pasos_costo": "no es lista"}}
     exc = mod._rechazo_de_jacobs(422, cuerpo, "")
     assert exc.detail["pasos_costo"] == []
+
+
+# --- Fix round 2, ítem 5: montos de un rechazo también salen en punto fijo ---
+
+def test_rechazo_con_montos_como_numero_json_sale_en_punto_fijo():
+    """costo_max_usd/costo_max_aceptado_usd/usd_max de un rechazo de Jacobs
+    pasan por el mismo `_monto_texto` que el veredicto -- nunca salen como
+    float ni notación científica, aunque Jacobs los mande como número JSON."""
+    cuerpo = {"detail": {
+        "code": "costo_supera_lo_aceptado", "costo_max_usd": 0.7, "costo_max_aceptado_usd": 0.6,
+        "pasos_costo": [{"paso": 0, "faceta": "jekyll", "modelo": "m", "llamadas_max": 1,
+                         "tokens_in_max": 100, "tokens_out_max": 1000, "usd_max": 0.1, "motivo": None}],
+    }}
+    exc = mod._rechazo_de_jacobs(409, cuerpo, "")
+    assert exc.detail["costo_max_usd"] == "0.7"
+    assert exc.detail["costo_max_aceptado_usd"] == "0.6"
+    assert exc.detail["pasos_costo"][0]["usd_max"] == "0.1"
+
+
+def test_rechazo_con_costo_max_usd_ilegible_omite_el_campo_sin_romper():
+    cuerpo = {"detail": {"code": "prevuelo_rechazado", "costo_max_usd": "no-es-un-monto",
+                         "pasos_costo": [], "violaciones": []}}
+    exc = mod._rechazo_de_jacobs(422, cuerpo, "")
+    assert exc.detail["code"] == "prevuelo_rechazado"
+    assert "costo_max_usd" not in exc.detail
+
+
+def test_rechazo_con_usd_max_de_un_paso_ilegible_lo_deja_null_sin_romper():
+    cuerpo = {"detail": {"code": "prevuelo_rechazado", "costo_max_usd": "1.00", "violaciones": [],
+                         "pasos_costo": [{"paso": 0, "faceta": "jekyll", "modelo": "m", "llamadas_max": 1,
+                                         "tokens_in_max": 100, "tokens_out_max": 1000,
+                                         "usd_max": "no-es-un-monto", "motivo": None}]}}
+    exc = mod._rechazo_de_jacobs(422, cuerpo, "")
+    assert exc.detail["pasos_costo"][0]["usd_max"] is None
