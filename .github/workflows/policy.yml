@@ -1580,7 +1580,13 @@ jobs:
           #   test_ejecutor_pausa.py (sin DB). Vistos en rojo; 6 mutaciones con cmp previo, todas
           #   en rojo. Medido local contra jax_memory_test: 1605 passed / 1 skipped (el mismo skip
           #   ambiental) -> 1606 en el runner. Si el runner da otro número, manda el runner.
-          PISO_PASSED = 1606
+          # 1606 -> 1607 el 2026-09-17 (la bitácora no queda atrás del estado): +1 de
+          #   test_ejecutor_misiones.py (el evento de cierre va en la misma transacción que el cierre
+          #   del turno). Visto en rojo; mutación (cmp previo): no escribir el evento -> 2 rojos.
+          #   Origen: carrera real vista en el CI del PR #105 de otra sesión. Medido local contra
+          #   jax_memory_test: 1605 passed + 1 fallo ambiental de semillas de motores compartidas.
+          #   Si el runner da otro número, manda el runner.
+          PISO_PASSED = 1607
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
