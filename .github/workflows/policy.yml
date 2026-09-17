@@ -538,8 +538,19 @@ jobs:
             // Dialogo.test.jsx (+1, reintento de foco aislado). Vistos en rojo
             // (o con el control mutado) antes de verde. Medido dos veces: 503
             // passed, 0 fallidos, 62 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 503) {
-              console.error("PISO ROTO: se esperaban 503 tests de vitest CORRIDOS y 0 fallidos.");
+            // 503 -> 504 el 2026-09-16 (R16, ronda de arreglo post-review
+            // final): +1 en useJaxStore.commandPolling.test.js -- un 500 de
+            // GET /command/{id} (resultado ilegible en el backend) no puede
+            // tratarse como el 404/400 de "tarea ajena/inexistente": tiene
+            // que reintentarse, nunca resolverse como exito falso (A-44). El
+            // store (useJaxStore.js:484) ya distinguia 404/400 de cualquier
+            // otro status; el test nuevo fija ese caso puntual (500) en vez
+            // de dejarlo cubierto solo por el caso generico "sin .response"
+            // de la red. Sin cambio de codigo de store: RED/GREEN via
+            // mutacion temporal del propio if (ver r16-report.md). Medido
+            // dos veces: 504 passed, 0 fallidos, 62 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 504) {
+              console.error("PISO ROTO: se esperaban 504 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1395,7 +1406,21 @@ jobs:
           # test_rutas_de_entorno.py (+10, escaneo AST de defaults de
           # entorno). Mismo hueco ambiental (1 failed de grounding), 1 skip.
           # Medido dos veces: 1332 passed / 1 failed / 1 skipped.
-          PISO_PASSED = 1332
+          # 1332 -> 1334 el 2026-09-16 (R16, ronda de arreglo post-review
+          # final): +2 en test_command_ownership.py -- GET /command/{id}
+          # separa la lectura del dueño (OSError/ValueError -> 404, sin
+          # cambios) de la lectura del RESULTADO en un to_thread aparte
+          # (OSError/ValueError ahi -> 500, nunca 404): un 404 lo trata el
+          # store del frontend como "completada sin resultado" y saca la
+          # tarea de pendientes para siempre (A-44), y un resultado
+          # ilegible (permisos, encoding, un directorio en el lugar del
+          # archivo) no es "tarea ajena/inexistente". RED contra el codigo
+          # de e5656f2 (IsADirectoryError y UnicodeDecodeError daban 404),
+          # GREEN tras separar los to_thread (ver r16-report.md). Mismo
+          # hueco ambiental (1 failed de grounding), 1 skip, sin cambio en
+          # ningun otro archivo. Medido dos veces: 1334 passed / 1 failed /
+          # 1 skipped.
+          PISO_PASSED = 1334
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1896,7 +1921,12 @@ jobs:
       # test_mesa_codigos.py (+5), test_rutas_de_entorno.py (+10); ninguno
       # pide `client`, los skips no se mueven. Medido dos veces con
       # JAX_CI_NO_DB=1: 762 passed / 572 skipped.
-      JAX_CI_MIN_PASSED: "762"
+      # 762 -> 764 el 2026-09-16 (R16, ronda de arreglo post-review final):
+      # +2 puros en test_command_ownership.py (owner ok, resultado
+      # ilegible -> 500, no 404 -- IsADirectoryError y UnicodeDecodeError);
+      # ninguno pide `client`, los skips no se mueven. Medido dos veces con
+      # JAX_CI_NO_DB=1: 764 passed / 572 skipped.
+      JAX_CI_MIN_PASSED: "764"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

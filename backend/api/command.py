@@ -61,12 +61,23 @@ def _registrar_tarea(task_id: str, mission_file: Path, comando: str, tenant_id: 
     _owner_file(task_id).write_text(json.dumps({"tenant_id": tenant_id, "user_id": user_id}))
 
 
-def _leer_tarea(task_id: str) -> tuple[object, str | None]:
-    """(contenido del archivo de dueño, texto del resultado o None si no hay).
-    OSError/ValueError del dueño se propagan: el handler los vuelve 404."""
-    owner = json.loads(_owner_file(task_id).read_text())
+def _leer_duenio(task_id: str) -> object:
+    """Contenido del archivo de dueño. OSError/ValueError (archivo ausente,
+    JSON corrupto) se propagan: el handler los vuelve 404 -- tarea ajena o
+    inexistente, sin confirmarle nada a quien no es su dueño."""
+    return json.loads(_owner_file(task_id).read_text())
+
+
+def _leer_resultado_get(task_id: str) -> str | None:
+    """Texto del resultado, o None si la tarea sigue corriendo (sin result
+    file todavía). R16 (2026-09-16): esto va en un to_thread APARTE del
+    dueño -- un OSError/ValueError acá (permisos, encoding, un directorio en
+    vez de archivo) NO puede mapearse a 404: el store del frontend trata 404
+    como "tarea completada sin resultado" y la saca de pendientes para
+    siempre (A-44); un error de LECTURA del resultado se propaga tal cual y
+    el handler lo vuelve 500, que el store sí reintenta."""
     result_file = _result_file(task_id)
-    return owner, (result_file.read_text() if result_file.exists() else None)
+    return result_file.read_text() if result_file.exists() else None
 
 
 def _simular(task_id: str, mission_file: Path, result_file: Path) -> str:
@@ -126,7 +137,7 @@ async def get_command_result(task_id: str, user: AuthUser = Depends(get_current_
     # Tareas creadas antes de este cambio no tienen owner file y también
     # devuelven 404 — costo único de la migración, no un bug.
     try:
-        owner, texto = await asyncio.to_thread(_leer_tarea, task_id)
+        owner = await asyncio.to_thread(_leer_duenio, task_id)
     except (OSError, ValueError):
         raise HTTPException(status_code=404, detail="tarea_no_encontrada")
     if (
@@ -139,6 +150,17 @@ async def get_command_result(task_id: str, user: AuthUser = Depends(get_current_
     fallo = owner.get("fallo")
     if isinstance(fallo, dict):
         return {"status": "failed", "code": fallo.get("code"), "motivo": fallo.get("motivo", "")}
+
+    # R16 (2026-09-16): lectura del RESULTADO en un to_thread separado del
+    # dueño -- un fallo acá (permisos, encoding, un directorio en vez de
+    # archivo) no es "tarea no encontrada": es un error de lectura real, y
+    # se propaga como 500 para que el store del frontend reintente en vez de
+    # darla por completada sin resultado para siempre (A-44).
+    try:
+        texto = await asyncio.to_thread(_leer_resultado_get, task_id)
+    except (OSError, ValueError):
+        raise HTTPException(status_code=500, detail="tarea_resultado_ilegible")
+
     if texto is not None:
         if owner.get("simulado") is True:
             return {"status": "completed", "result": texto, "code": "comando_simulado"}
