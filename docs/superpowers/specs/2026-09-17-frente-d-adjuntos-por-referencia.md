@@ -143,19 +143,42 @@ real, porque `/tmp` es tmpfs en hall9000.
 Pico medido con tracemalloc para 10 MB: parseo ≈ 1,3–1,8 MB y handler ≈ 2,1 MB, contra
 10 + 14 + 14 MB de antes.
 
-## 8. Qué cambia después
+## 8. Contrato de `POST /api/chat` (RD3, hecho)
 
-- **RD3 (chat):** `/api/chat` recibe `adjuntos: [{"id": …}]` (`extra=forbid`) y deja de
-  aceptar el contrato en línea (base64/contenido). Además:
-  - lee con `almacen.leer` (to_thread, dueño);
-  - aplica el tope por mensaje;
-  - un id ajeno o vencido da el 404 de arriba;
-  - empalma el base64 en el cuerpo del proveedor.
+```json
+{"message": "resumí", "facet": "jax_local", "adjuntos": [{"id": "…32…"}]}
+```
 
-  Hasta RD3 el contrato en línea sigue vivo y probado. La interfaz actual espera
-  `base64`/`contenido` en la respuesta de subida, así que queda rota entre RD2 y RD4: la rama no
-  se mergea en ese estado.
+- `AdjuntoRef` con `extra=forbid`; el id se valida en el borde con el largo y el alfabeto del
+  almacén (`almacen.PATRON_ID`). Un id malformado es **422 de pydantic** y no llega al disco. El
+  contrato en línea (`base64`, `contenido`, `tipo`, `nombre`) es 422 `extra_forbidden`.
+- Orden en `chat()`, antes de memoria, estado y proveedor:
+  1. hyde con adjuntos → 422 `adjuntos_no_soportados`;
+  2. tope `JAX_ADJUNTO_MAX_POR_MENSAJE` → 422 `adjuntos_demasiados`, sin tocar el almacén;
+  3. `buscar_adjuntos`: el sidecar de cada id (dueño, vigente). Cualquier "no" → 404
+     `adjunto_no_encontrado`, el mismo cuerpo, sin decir qué id falló;
+  4. si hay imagen: visión contra la faceta resuelta → 422 `imagen_no_soportada`, **antes** de
+     leer la imagen. El re-chequeo del dispatch sigue igual;
+  5. `leer_adjuntos`: el texto con `almacen.leer` (en un hilo; un dato borrado entre medio es el
+     mismo 404) y la imagen con `almacen.leer_imagen_en_base64`.
+- **Imagen:** se lee y codifica en un hilo, de a 262.143 bytes, dentro de `turno_de_imagen`
+  (`JAX_ADJUNTO_IMAGENES_EN_PROCESO`). Los tramos van al cuerpo del proveedor como
+  `http_client.LiteralJsonCrudo`: `CuerpoJsonDeUnUso` los entrega como partes, sin `json.dumps`
+  y sin juntarlos. Nunca existe un `str` con el base64.
+  - **HISTORIA** (medido 2026-09-17, tic de 1 ms en el loop, 25 imágenes de 10 MB): las 25 a la
+    vez atrasan el tic p95 60 ms; de a una, 0,35 ms. Por eso el tope se queda, con este nuevo
+    trabajo.
+  - Pico por chat con imagen de 10 MB (tracemalloc): 14,1 MB; residual tras el despacho: 0,1 MB.
+- **Memoria y logs:** memoria persistente con las líneas `[adjunto nombre=… tipo=… …]` del
+  sidecar; historial en RAM con el texto y la línea de la imagen. Ni el base64 ni el id van a
+  logs, memoria, historial o bus de estado. Los logs del limpiador y de la baja muestran una
+  huella (`id#<12 hex>`), no el id.
+
+## 9. Qué falta
+
 - **RD4 (frontend):** `AttachButton`/`FileAttachment`/`BottomBar` trabajan por id. La vista
-  previa de la imagen usa un object URL local (R23-4), y los textos van en i18n es/en.
+  previa de la imagen usa un object URL local (R23-4), y los textos van en i18n es/en. Hasta RD4
+  la interfaz manda el contrato en línea y recibe 422: la rama no se mergea en ese estado.
 - **RD5 (carga):** health con 5 VUs, solo y junto a `upload_imagen_max`, `upload_pdf_max` y
-  `chat_imagen_max` a c=25. Criterio: p95 ≤ 10 ms y RSS acotado.
+  `chat_imagen_max` a c=25. Criterio: p95 ≤ 10 ms y RSS acotado. `loadtest/adjuntos.js` (en jax)
+  tiene que subir primero y chatear por id.
