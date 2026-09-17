@@ -61,7 +61,7 @@ from api.state import router as state_router
 from api.facets import router as facets_router
 from api.pipelines import router as pipelines_router
 from api.events import router as events_router
-from api.chat import router as chat_router
+from api.chat import router as chat_router, _url_de_ollama
 from api.command import router as command_router
 from api.audit import router as audit_router
 from api.image import router as image_router
@@ -87,6 +87,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Revisión final del frente E (2026-09-16): JAX_OLLAMA_URL se valida ANTES
+    # de abrir nada. Antes solo se leía en el turno del chat (y el embedding de
+    # la memoria tragaba el error): el servicio arrancaba sano y fallaba delante
+    # del usuario. Sin una URL base válida, EntornoInvalido y no arranca.
+    _url_de_ollama()
     await get_pool()
     await get_http_client()
     await run_migrations()

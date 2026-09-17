@@ -24,6 +24,14 @@ for _k, _v in _load_env().items():
 
 os.environ["JAX_DB_NAME"] = "jax_memory_test"
 
+# Revisión final del frente E (2026-09-16): el lifespan de la app no arranca sin
+# una JAX_OLLAMA_URL válida, y el fixture `client` lo levanta. Se FIJA (no
+# setdefault) a un host `.invalid` (RFC 6761, nunca resuelve), después de cargar
+# /etc/jax/.env: con el valor de producción, un test que olvide parchear el
+# transporte le pegaría al Ollama vivo; así falla con un error de DNS. Un test
+# que necesite otro valor hace monkeypatch.setenv.
+os.environ["JAX_OLLAMA_URL"] = "http://ollama.invalid:11434"
+
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
 # aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture
 # `client` es de sesión y arranca la app -- y con ella run_migrations, que

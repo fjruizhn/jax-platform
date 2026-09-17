@@ -36,6 +36,7 @@ from jax_engine.state import engine_state, LAS_MANOS_URL
 from api.admin.usage import record_usage, validar_ids_de_uso
 from db.connection import get_pool
 from redaccion import recortar_redactado, texto_de_error
+from config_entorno import url_requerida
 from facet_health import (
     record_facet_health,
     OUTCOME_OK,
@@ -709,11 +710,12 @@ def _url_de_ollama() -> str:
     """E-21 (2026-09-16): el host de Ollama sale de JAX_OLLAMA_URL (/etc/jax/.env),
     la misma variable que usan Jacobs, el REPL y la memoria de jax. Antes se leía
     de personalities.jax_local.api_url del config.toml de jax, que ya no la trae.
-    Sin la variable: error explícito, no un default a localhost."""
-    valor = os.environ.get("JAX_OLLAMA_URL", "").strip().rstrip("/")
-    if not valor:
-        raise RuntimeError("JAX_OLLAMA_URL no está seteada: agregala a /etc/jax/.env.")
-    return valor
+    Sin la variable: error explícito, no un default a localhost.
+
+    Revisión final del frente E: con la MISMA regla que jax (url_requerida:
+    http(s), con host, sin path, query ni fragmento) y validada también al
+    arrancar, en el lifespan de main.py, no recién en el primer turno."""
+    return url_requerida("JAX_OLLAMA_URL")
 
 
 async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str) -> tuple[str, int, int]:
