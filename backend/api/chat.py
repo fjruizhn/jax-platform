@@ -720,10 +720,18 @@ async def _build_grounding() -> "governance_grounding.Snapshot | governance_grou
         return governance_grounding.SnapshotError(f"{type(e).__name__}: {e}")
 
 
-def _build_messages(system_prompt: str, history: list[dict], message: str) -> list[dict]:
+def _build_messages(system_prompt: str, history: list[dict], message: str,
+                    imagenes: tuple = (), *, forma: Literal["openai", "ollama"] = "openai") -> list[dict]:
     msgs = [{"role": "system", "content": system_prompt}]
     msgs.extend(history)
-    msgs.append({"role": "user", "content": message})
+    ultimo: dict = {"role": "user", "content": message}
+    if imagenes and forma == "openai":
+        ultimo["content"] = [{"type": "text", "text": message}] + [
+            {"type": "image_url", "image_url": {"url": f"data:{i.mime};base64,{i.base64}"}}
+            for i in imagenes]
+    elif imagenes:
+        ultimo["images"] = [i.base64 for i in imagenes]
+    msgs.append(ultimo)
     return msgs
 
 
@@ -747,10 +755,11 @@ def _raiz_del_carril() -> Path:
     return ruta_absoluta_requerida("JAX_PROXY_CARRIL_RAIZ")
 
 
-async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str) -> tuple[str, int, int]:
+async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str,
+                       *, imagenes: tuple = ()) -> tuple[str, int, int]:
     url = f"{_url_de_ollama()}/api/chat"
     raiz = _raiz_del_carril()
-    messages = _build_messages(system_prompt, history, message)
+    messages = _build_messages(system_prompt, history, message, imagenes, forma="ollama")
     client = await get_http_client()
     # Carril de la Mesa (§3.4 bis del spec de Fase 2 de jax): mientras dura la llamada, el
     # proxy del Ejecutor no manda nada a Ollama. Async: el flock va en un hilo y no congela
@@ -771,7 +780,7 @@ async def _call_openai_compat(
     base_url: str, api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
     max_tokens_param: str | None, max_output_tokens: int | None,
-    on_response=None,
+    on_response=None, *, imagenes: tuple = (),
 ) -> tuple[str, int, int]:
     # Ninguno de los dos tiene default: un llamador que los olvide falla al
     # llamar (TypeError), no manda un request mudo con un nombre ni un valor
@@ -779,7 +788,7 @@ async def _call_openai_compat(
     # gasta una llamada saliente para descubrir lo que el catálogo debería decir.
     field = _max_tokens_field(model, max_tokens_param)
     limit = _max_output_tokens_value(model, max_output_tokens)
-    messages = _build_messages(system_prompt, history, message)
+    messages = _build_messages(system_prompt, history, message, imagenes)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     client = await get_http_client()
     r = await client.post(
@@ -799,7 +808,7 @@ async def _call_openai_compat(
 async def _call_gemini(
     api_key: str, model: str,
     system_prompt: str, history: list[dict], message: str,
-    on_response=None,
+    on_response=None, *, imagenes: tuple = (),
 ) -> tuple[str, int, int]:
     # T6-2: la key va en la cabecera, nunca en la URL.
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -807,7 +816,9 @@ async def _call_gemini(
     for h in history:
         role = "user" if h["role"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": h["content"]}]})
-    contents.append({"role": "user", "parts": [{"text": message}]})
+    partes: list[dict] = [{"text": message}]
+    partes += [{"inline_data": {"mime_type": i.mime, "data": i.base64}} for i in imagenes]
+    contents.append({"role": "user", "parts": partes})
     body = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": contents,
@@ -931,6 +942,13 @@ async def _invoke_facet_dispatch(
         if not allowed:
             return AvisoDeChat(code="faceta_no_autorizada", params={"facet": facet}), None, gate_outcome
 
+    # Frente D: re-chequeo con el binding que se va a usar de verdad. El
+    # endpoint ya validó, pero un rebind entre ambos momentos no puede
+    # terminar con una imagen mandada a un modelo que no la ve (Ollama la
+    # ignora y el modelo inventa). Registra provider_error en _invoke_facet;
+    # el endpoint lo devuelve como 422.
+    exigir_soporte_de_imagen(f, facet, imagenes)
+
     if _is_model_identity_question(message):
         return AvisoDeChat(code="identidad_del_modelo",
                            params={"facet": facet, "model": f.model, "provider": f.provider_id}), None, OUTCOME_OK
@@ -943,14 +961,16 @@ async def _invoke_facet_dispatch(
             f"te pregunten): el modelo que te ejecuta en este momento es "
             f"'{f.model}', via Ollama local en hall9000."
         ) if facet == "jax_local" else ""
-        text, tin, tout = await _call_ollama(system_prompt + ident, history, message, config, f.model)
+        text, tin, tout = await _call_ollama(system_prompt + ident, history, message, config, f.model,
+                                             imagenes=imagenes)
         return text, UsageInfo(f.provider_id, f.model, tin, tout), OUTCOME_OK
 
     async def _on_response(data: dict) -> None:
         await _record_resolved_version_from_response(facet, data)
 
     if f.transport == "http_gemini":
-        text, tin, tout = await _call_gemini(f.credential, f.model, system_prompt, history, message, on_response=_on_response)
+        text, tin, tout = await _call_gemini(f.credential, f.model, system_prompt, history, message,
+                                             on_response=_on_response, imagenes=imagenes)
         return text, UsageInfo(f.provider_id, f.model, tin, tout), OUTCOME_OK
 
     if f.transport == "http_openai_compat":
@@ -964,6 +984,7 @@ async def _invoke_facet_dispatch(
         text, tin, tout = await _call_openai_compat(
             f.base_url, f.credential, f.model, system_prompt, history, message,
             f.max_tokens_param, f.max_output_tokens, on_response=_on_response,
+            imagenes=imagenes,
         )
         return text, UsageInfo(f.provider_id, f.model, tin, tout), OUTCOME_OK
 

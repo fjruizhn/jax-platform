@@ -104,3 +104,57 @@ def test_adjunto_de_texto_llega_al_modelo_delimitado(client, grabador, monkeypat
     ultimo = cuerpo["messages"][-1]
     assert ultimo["role"] == "user"
     assert ultimo["content"] == 'resumí\n\n<<<ADJUNTO nombre="i.pdf" origen="pdf">>>\nventas 42\n<<<FIN ADJUNTO>>>'
+
+
+def test_imagen_a_faceta_con_vision_llega_y_el_base64_no_queda_en_logs_memoria_ni_historial(
+        client, grabador, monkeypatch, caplog):
+    import logging
+
+    import shadow_validation
+
+    b64 = base64.b64encode(PNG + b"MARCA-UNICA-DEL-BASE64-FRENTE-D" * 8).decode()
+    guardados: list[str] = []
+
+    class _Memoria:
+        def save_message(self, conv_uuid, role, content, **kw):
+            guardados.append(content)
+
+    async def resolver(_key):
+        return _resuelta("jax_local", "ollama", frozenset({"text", "image"}))
+
+    async def conversacion(*a, **k):
+        return "conv-test-frente-d"
+
+    async def sin_contexto(*a, **k):
+        return []
+
+    async def sin_shadow(*a, **k):
+        return None
+
+    estados: list[str] = []
+
+    async def espia_estado(facet, status, tenant_id, user_id, message=""):
+        estados.append(message)
+
+    monkeypatch.setattr(chat_mod, "resolve_facet", resolver)
+    monkeypatch.setattr(chat_mod, "_get_conv_uuid", conversacion)
+    monkeypatch.setattr(chat_mod, "_semantic_context", sin_contexto)
+    monkeypatch.setattr(chat_mod, "_memory", _Memoria())
+    monkeypatch.setattr(chat_mod.engine_state, "set_facet_status", espia_estado)
+    monkeypatch.setattr(shadow_validation, "run_shadow_validation", sin_shadow)
+    caplog.set_level(logging.DEBUG)
+
+    imagen = {"tipo": "imagen", "nombre": "f.png", "mime": "image/png", "base64": b64}
+    r = client.post("/api/chat", json={"message": "describí", "facet": "jax_local", "adjuntos": [imagen]},
+                    headers=cabeceras(client, "test-adjuntos-chat"))
+    assert r.status_code == 200, r.text
+
+    (_, cuerpo), = grabador.pedidos
+    assert cuerpo["messages"][-1]["images"] == [b64]          # llegó al proveedor
+    muestra = b64[40:120]
+    assert muestra not in caplog.text                        # logs
+    assert all(muestra not in g for g in guardados)          # memoria
+    assert guardados[0].endswith("tipo=\"image/png\" bytes=%d]" % len(base64.b64decode(b64)))
+    assert all(muestra not in (m or "") for m in estados)    # bus de estado
+    turnos = [h for v in chat_mod._conversations.values() for h in v if "describí" in h["content"]]
+    assert turnos and all(muestra not in h["content"] for h in turnos)   # historial
