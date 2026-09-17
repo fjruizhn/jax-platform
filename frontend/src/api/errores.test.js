@@ -67,7 +67,9 @@ describe('pre-vuelo y continuar (spec 2026-09-17)', () => {
   const CODIGOS = ['prevuelo_rechazado', 'confirmacion_de_costo', 'costo_supera_lo_aceptado', 'reasignacion_invalida',
     'prevuelo_no_disponible', 'estado_no_continuable', 'pasos_requeridos', 'costo_confirmado_invalido',
     // Adenda Task 8 ítem 4 (enmienda 3) y el motivo kill_switch de continue/preflight.
-    'limite_de_activos', 'plan_rechazado', 'plan_inconsistente', 'no_existe', 'kill_switch']
+    'limite_de_activos', 'plan_rechazado', 'plan_inconsistente', 'no_existe', 'kill_switch',
+    // Revisión final, crítico 1: el objetivo va al pre-vuelo con tope.
+    'objetivo_invalido']
 
   it('cada código nuevo se traduce en los dos idiomas y no sale crudo', () => {
     for (const d of [es, en]) {

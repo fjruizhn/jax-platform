@@ -3,7 +3,9 @@
 Respeta EXACTAMENTE el contrato del plan (sección "Contrato con Jacobs" y su
 ENMIENDA en task-5-brief.md, que implementa el plan J en el repo jax):
 errores con el envoltorio de FastAPI {"detail": {...}} y montos como string
-decimal. Si el contrato cambia, se cambia acá y en api/pipelines.py, en
+decimal. POST /preflight recibe {invoked_by, user_id, tenant_id, steps,
+objective} (objective "" si el cliente no lo mandó; revisión final, crítico 1:
+Jacobs cuenta el objetivo en el costo). Si el contrato cambia, se cambia acá y en api/pipelines.py, en
 ningún otro lado.
 
 No es un test (no empieza con test_): pytest no lo colecta."""

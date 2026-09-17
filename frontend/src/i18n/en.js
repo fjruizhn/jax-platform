@@ -156,6 +156,9 @@ export default {
       return 'This pipeline cannot be continued in its current state.'
     },
     pasos_requeridos: () => 'The pipeline has no steps.',
+    objetivo_invalido: (d) => (Number.isInteger(d.max)
+      ? `The objective is not valid: it must be text of up to ${d.max.toLocaleString('en')} characters.`
+      : 'The objective is not valid.'),
     costo_confirmado_invalido: () => 'The confirmed cost is not valid.',
     limite_de_activos: () => 'Jacobs already has the maximum of active pipelines: wait for one to finish.',
     plan_rechazado: () => 'The pipeline plan is not valid.',

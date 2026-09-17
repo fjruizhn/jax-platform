@@ -319,6 +319,33 @@ def _exigir_pasos_validos(steps) -> None:
         raise HTTPException(status_code=422, detail={"code": "pasos_requeridos"})
 
 
+# Objetivo del pipeline (revisión final de la rama, crítico 1): Jacobs lo
+# cuenta en los tokens de entrada de cada paso (jacobs/executor.py
+# `_build_context_input` + `_enrich_prompt` agregan "Objetivo del pipeline:
+# ..."), así que el pre-vuelo de la Mesa lo manda en /preflight y en el
+# pre-vuelo interno de la creación -- sin él la Mesa pediría consentimiento
+# sobre un costo menor al que Jacobs aplica al crear.
+# Tope: Jacobs NO declara uno (PreflightRequest.objective: str = "",
+# PipelineCreateRequest.objective: str). El de la Mesa es propio: 32.000
+# caracteres (~8.000 tokens) acota el cuerpo que se reenvía y lo que el
+# objetivo suma a CADA uno de hasta 20 pasos (el límite duro de Jacobs), y
+# queda holgado para un objetivo escrito a mano. Configurable por entorno,
+# igual que LISTA_PIPELINES_MAX.
+OBJETIVO_MAX = int(os.getenv("JAX_OBJETIVO_MAX", "32000"))
+
+
+def _objetivo_valido(objetivo) -> str:
+    """String de hasta OBJETIVO_MAX caracteres, o ausente/null (sale ""), el
+    default de Jacobs. Otro tipo o más largo -> 422 objetivo_invalido, sin
+    llamar a Jacobs (su sonda se paga). Mismo criterio en /preflight y en la
+    creación."""
+    if objetivo is None:
+        return ""
+    if not isinstance(objetivo, str) or len(objetivo) > OBJETIVO_MAX:
+        raise HTTPException(status_code=422, detail={"code": "objetivo_invalido", "max": OBJETIVO_MAX})
+    return objetivo
+
+
 def _evaluar_veredicto(crudo, umbral: Decimal) -> dict:
     """Fail-closed: un veredicto sin `ok` booleano, sin costo legible, con
     pasos de costo mal formados, con una violación que no es un objeto, o
@@ -376,11 +403,14 @@ def _evaluar_veredicto(crudo, umbral: Decimal) -> dict:
     }
 
 
-async def _prevuelo(client, steps: list, user: AuthUser, umbral: Decimal) -> dict:
+async def _prevuelo(client, steps: list, objetivo: str, user: AuthUser, umbral: Decimal) -> dict:
+    """POST /jacobs/preflight con {invoked_by, user_id, tenant_id, steps,
+    objective} (spec §4.7/§6.1 enmendado por el plan J, R21: objective viaja
+    para que el costo cuente los mismos tokens que la creación)."""
     r = await client.post(
         f"{JACOBS_URL}/preflight",
         json={"invoked_by": INVOKED_BY_PLATAFORMA, "user_id": user.user_id,
-              "tenant_id": user.tenant_id, "steps": steps},
+              "tenant_id": user.tenant_id, "steps": steps, "objective": objetivo},
         # Puede sondear facetas (en paralelo, con timeout propio en Jacobs).
         timeout=JACOBS_PIPELINE_TIMEOUT,
     )
@@ -434,6 +464,9 @@ class PedidoDePrevuelo(BaseModel):
     # llega intacto y `_exigir_pasos_validos` es el ÚNICO lugar que decide,
     # exactamente igual en /preflight y en la creación.
     steps: Any = None
+    # `Any` por la misma razón: `_objetivo_valido` decide (422
+    # objetivo_invalido con el código propio, no el de pydantic).
+    objective: Any = None
 
 
 # --- Continuar (spec 2026-09-17 §5.1, §6.1, §6.2) --------------------------
@@ -723,12 +756,13 @@ async def list_pipelines(user: AuthUser = Depends(get_current_user)):
 @router.post("/preflight")
 async def preflight_pipeline(pedido: PedidoDePrevuelo, user: AuthUser = Depends(get_current_user)):
     _exigir_pasos_validos(pedido.steps)
+    objetivo = _objetivo_valido(pedido.objective)
     # El ajuste se lee FUERA del try: un ajuste ilegible es 503 ajuste_ilegible
     # (handler de main.py), no un 502 de Jacobs.
     umbral = await ajustes.valor(ajustes.CONFIRMAR_USD)
     client = await get_http_client()
     try:
-        return await _prevuelo(client, pedido.steps, user, umbral)
+        return await _prevuelo(client, pedido.steps, objetivo, user, umbral)
     except HTTPException:
         raise
     except Exception as e:
@@ -749,13 +783,14 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
     # Sin pasos no hay pre-vuelo ni costo que confirmar (desvío DV-8 del
     # plan); mismo criterio que /preflight (fix round 1 ítem 5).
     _exigir_pasos_validos(steps)
+    objetivo = _objetivo_valido(body.get("objective"))
     confirmado = _confirmado_del_cliente(body.pop("costo_confirmado_usd", None))
     body["user_id"] = user.user_id
     body["tenant_id"] = user.tenant_id
     body["invoked_by"] = INVOKED_BY_PLATAFORMA
     client = await get_http_client()
     try:
-        veredicto = await _prevuelo(client, steps, user, umbral)
+        veredicto = await _prevuelo(client, steps, objetivo, user, umbral)
         _exigir_consentimiento(veredicto, confirmado)
         # Siempre (desvío DV-7): el confirmado, o el umbral como consentimiento
         # previo del admin. Jacobs responde 409 costo_supera_lo_aceptado sin

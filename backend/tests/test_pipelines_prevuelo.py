@@ -47,7 +47,7 @@ def test_preflight_reenvia_identidad_y_pasos_y_agrega_umbral(monkeypatch):
     preparar(monkeypatch, falso)
     r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
     assert falso.cuerpos("POST", "/preflight") == [
-        {"invoked_by": "plataforma", "user_id": "5", "tenant_id": "1", "steps": PASOS}]
+        {"invoked_by": "plataforma", "user_id": "5", "tenant_id": "1", "steps": PASOS, "objective": ""}]
     assert (r["ok"], r["costo_max_usd"], r["umbral_usd"], r["requiere_confirmacion"]) == (True, "0.10", "0.50", False)
 
 
@@ -426,3 +426,72 @@ def test_crear_200_con_costo_max_usd_ilegible_omite_el_campo_sin_romper(monkeypa
     r = _crear({"name": "x", "steps": PASOS})
     assert r["pipeline_id"] == pid
     assert "costo_max_usd" not in r
+
+
+# ---------------------------------------------------------------- objective (revisión final, crítico 1)
+# Jacobs cuenta el objetivo en los tokens de entrada de cada paso
+# (jacobs/executor.py `_build_context_input`/`_enrich_prompt`) y su pre-vuelo
+# interno de POST /jacobs/pipeline lo recibe: el pre-vuelo de la Mesa tiene que
+# mandarlo también, si no subestima el costo que Jacobs aplica al crear.
+
+def test_preflight_reenvia_el_objetivo_a_jacobs(monkeypatch):
+    falso = JacobsFalso(_prevuelo(veredicto(costo="0.10")))
+    preparar(monkeypatch, falso)
+    _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS, objective="investigar X"), user=USUARIO))
+    (cuerpo,) = falso.cuerpos("POST", "/preflight")
+    assert cuerpo["objective"] == "investigar X"
+
+
+def test_crear_reenvia_el_objetivo_al_prevuelo_interno(monkeypatch):
+    falso = JacobsFalso({**_prevuelo(veredicto(costo="0.10")),
+                         ("POST", "/pipeline"): respuesta(200, {"pipeline_id": None})})
+    preparar(monkeypatch, falso)
+    _crear({"name": "x", "objective": "investigar X", "steps": PASOS})
+    (prevuelo,) = falso.cuerpos("POST", "/preflight")
+    (creacion,) = falso.cuerpos("POST", "/pipeline")
+    assert prevuelo["objective"] == creacion["objective"] == "investigar X"
+
+
+@pytest.mark.parametrize("objetivo_malo", [5, ["x"], {"a": 1}, True])
+def test_preflight_objetivo_no_texto_es_422_y_no_llama_a_jacobs(monkeypatch, objetivo_malo):
+    falso = JacobsFalso()
+    preparar(monkeypatch, falso)
+    r = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS, objective=objetivo_malo), user=USUARIO))
+    assert (r.status_code, r.detail) == (422, {"code": "objetivo_invalido", "max": mod.OBJETIVO_MAX})
+    assert falso.llamadas == []
+
+
+def test_preflight_objetivo_demasiado_largo_es_422_y_el_tope_exacto_pasa(monkeypatch):
+    falso = JacobsFalso(_prevuelo(veredicto(costo="0.10")))
+    preparar(monkeypatch, falso)
+    r = _correr(mod.preflight_pipeline(
+        pedido=mod.PedidoDePrevuelo(steps=PASOS, objective="x" * (mod.OBJETIVO_MAX + 1)), user=USUARIO))
+    assert (r.status_code, r.detail) == (422, {"code": "objetivo_invalido", "max": mod.OBJETIVO_MAX})
+    assert falso.llamadas == []
+    r = _correr(mod.preflight_pipeline(
+        pedido=mod.PedidoDePrevuelo(steps=PASOS, objective="x" * mod.OBJETIVO_MAX), user=USUARIO))
+    assert r["ok"] is True
+
+
+@pytest.mark.parametrize("objetivo_malo", [5, ["x"]])
+def test_crear_objetivo_invalido_es_422_y_no_llama_a_jacobs(monkeypatch, objetivo_malo):
+    falso = JacobsFalso()
+    preparar(monkeypatch, falso)
+    r = _crear({"name": "x", "objective": objetivo_malo, "steps": PASOS})
+    assert (r.status_code, r.detail) == (422, {"code": "objetivo_invalido", "max": mod.OBJETIVO_MAX})
+    assert falso.llamadas == []
+
+
+def test_crear_objetivo_demasiado_largo_es_422_y_no_llama_a_jacobs(monkeypatch):
+    falso = JacobsFalso()
+    preparar(monkeypatch, falso)
+    r = _crear({"name": "x", "objective": "x" * (mod.OBJETIVO_MAX + 1), "steps": PASOS})
+    assert (r.status_code, r.detail["code"]) == (422, "objetivo_invalido")
+    assert falso.llamadas == []
+
+
+def test_preflight_por_http_con_objetivo_no_texto_es_objetivo_invalido(client):
+    r = client.post("/api/pipelines/preflight", json={"steps": PASOS, "objective": 5},
+                    headers=cabeceras(client, "prevuelo-objetivo-numero"))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "objetivo_invalido"

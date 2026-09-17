@@ -224,7 +224,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
     setErrorEnvio(null)
     await conGuardia(async () => {
       try {
-        const { data } = await api.post('/pipelines/preflight', { steps: body.steps })
+        const { data } = await api.post('/pipelines/preflight', { steps: body.steps, objective: body.objective })
         if (!data.ok) {
           setViolaciones(Array.isArray(data.violaciones) ? data.violaciones : [])
           return

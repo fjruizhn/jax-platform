@@ -408,6 +408,18 @@ describe('PipelineModal -- pre-vuelo y confirmación de costo', () => {
     expect(onSubmit.mock.calls[0][0]).not.toHaveProperty('costo_confirmado_usd')
   })
 
+  // Revisión final, crítico 1: Jacobs cuenta el objetivo en el costo; el
+  // pre-vuelo tiene que llevar el MISMO objetivo que la creación.
+  it('el pre-vuelo manda el mismo objective que la creación', async () => {
+    const onSubmit = vi.fn(() => Promise.resolve())
+    await listo({ onSubmit })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    const [, cuerpo] = api.post.mock.calls[0]
+    expect(cuerpo.objective).toBe('probar el picker de motor')
+    expect(cuerpo.objective).toBe(onSubmit.mock.calls[0][0].objective)
+  })
+
   it('con violaciones las muestra en el modal, no crea y no cierra', async () => {
     const v = { paso: 4, faceta: 'kimi', regla: 'tope_insuficiente', detalle: 'tope 8000 < 16384' }
     api.post.mockResolvedValue({ data: { ...VEREDICTO_OK, ok: false, violaciones: [v] } })
