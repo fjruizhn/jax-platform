@@ -1386,6 +1386,9 @@ jobs:
       # Este job no clonaba `jax` -- el de DB si. Apunta al clon del paso de
       # mas abajo.
       JAX_REPO_PATH: /tmp/jax
+      # Obligatoria desde el 2026-09-16 (frente A, A-55): api/chat.py no se
+      # importa sin ella. Apunta al clon del paso "Traer el repo jax".
+      JAX_CONFIG_PATH: /tmp/jax/config/config.toml
       # Piso de cobertura. Si baja de acá, el job falla (ver el paso final).
       # Subido de 85 a 93 en Task 4 (sonda activa de facets, 2026-08-27):
       # backend/tests/test_facet_canary.py agrega 8 tests sin DB, medido

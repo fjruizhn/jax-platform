@@ -30,7 +30,7 @@ from api.chat import _CONTRACT_PROMPT_SUFFIX, _render_contract_suffix
 
 sys.path.insert(
     0,
-    str(Path(os.getenv("JAX_REPO_PATH", os.path.expanduser("~/jax"))) / "policy" / "governance"),
+    str(Path(os.environ["JAX_REPO_PATH"]) / "policy" / "governance"),
 )
 import loaders as governance_loaders  # noqa: E402
 

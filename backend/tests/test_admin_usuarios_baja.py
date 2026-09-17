@@ -6,6 +6,7 @@ sale de la lista y libera el correo; se conserva el historial. Nada de DELETE:
 dejaba memoria, costos y pipelines huérfanos o fallaba (spec §1, hallazgo 7).
 """
 import json
+import os
 import uuid
 from datetime import date
 
@@ -303,7 +304,7 @@ def test_lista_de_bajas_devuelve_solo_los_dados_de_baja_con_email_original_y_qui
     assert fila["email_original"] == email_ido
     assert fila["role"] == "operator"
     assert fila["deleted_by"] == 1
-    assert fila["deleted_by_email"] == "fernando@rich-hn.com"  # el superadmin sembrado (user_id=1)
+    assert fila["deleted_by_email"] == os.environ["JAX_SEED_SUPERADMIN_EMAIL"]  # el superadmin sembrado (user_id=1)
     assert fila["deleted_at"] is not None
     # el vivo no aparece en la lista de bajas, ni el dado de baja en la normal
     ids_normales = [x["user_id"] for x in client.get("/api/admin/users", headers=_admin()).json()["users"]]

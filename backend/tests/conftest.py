@@ -46,6 +46,23 @@ os.environ["JAX_FACET_SEAL_PATH"] = os.path.join(
 # que quiera su propio directorio igual puede hacer monkeypatch.setenv.
 os.environ["JAX_USAGE_SPOOL_DIR"] = tempfile.mkdtemp(prefix="jax-test-respaldo-uso-")
 
+# Rutas de datos aisladas (2026-09-16, frente A, A-55), por la misma razón
+# que el sello y el respaldo de uso: api/command.py, api/audit.py y
+# api/admin/repository.py las leen AL IMPORTARSE. Antes eran ~/jax/... REALES
+# y test_command_path_traversal escribía en ~/jax/missions de producción.
+# Forzadas (no setdefault): un /etc/jax/.env con las rutas reales no puede
+# ganarles. JAX_REPO_PATH y JAX_CONFIG_PATH NO se fijan acá: apuntan al repo
+# `jax` de verdad (vocabulario, config) y las pone el job de CI o quien corre.
+_RUTAS_DE_PRUEBA = tempfile.mkdtemp(prefix="jax-test-rutas-")
+os.environ["JAX_MISSIONS_DIR"] = os.path.join(_RUTAS_DE_PRUEBA, "missions")
+os.environ["JAX_REPO_BASE"] = os.path.join(_RUTAS_DE_PRUEBA, "repo")
+os.environ["JAX_AUDIT_LOG_PATH"] = os.path.join(_RUTAS_DE_PRUEBA, "audit.jsonl")
+os.environ["JAX_BIN"] = os.path.join(_RUTAS_DE_PRUEBA, "bin", "jax")
+# Semilla (A-54): en una base vacía (CI) hay que sembrar user_id=1. Valores de
+# prueba salvo que el .env traiga los reales.
+os.environ.setdefault("JAX_SEED_SUPERADMIN_EMAIL", "superadmin-semilla@example.invalid")
+os.environ.setdefault("JAX_SEED_TENANT_NAME", "Tenant de la semilla de prueba")
+
 
 def _envolver_portal_call(portal_call):
     """Envuelve `BlockingPortal.call` (tanda A, hallazgo de Tarea 1,

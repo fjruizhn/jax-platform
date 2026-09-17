@@ -9,10 +9,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
+from config_de_entorno import ruta_requerida
 
 router = APIRouter(prefix="/api/admin")
 
-REPO_BASE = os.path.expanduser("~/jax/repo")
+REPO_BASE = ruta_requerida("JAX_REPO_BASE")
 ALLOWED_FOLDERS = {"missions", "pipelines", "documents", "images"}
 IMAGENES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 

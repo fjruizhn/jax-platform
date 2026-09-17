@@ -29,6 +29,7 @@ from contrato_dispatch import (
 import model_catalog
 from auth.middleware import get_current_user
 from auth.models import AuthUser
+from config_de_entorno import ruta_requerida
 from jax_engine.schemas import JAXEvent
 from jax_engine.events import event_bus
 from jax_engine.state import engine_state, LAS_MANOS_URL
@@ -72,11 +73,10 @@ _JAX_PLATFORM_CHAT_CALLER = "jax_platform_chat"
 # nada mas, una ruta hardcodeada a otro repo relativa al $HOME del usuario.
 # Eso hacia IMPOSIBLE correr la suite fuera de la maquina de Fernando: en un
 # runner limpio el archivo no existe y 30 tests caen con FileNotFoundError
-# (medido en CI el 2026-09-01, no supuesto). El default se conserva para no
-# cambiar el comportamiento de produccion, que es donde esa ruta si existe.
-CONFIG_PATH = os.getenv(
-    "JAX_CONFIG_PATH", os.path.expanduser("~/jax/config/config.toml")
-)
+# (medido en CI el 2026-09-01, no supuesto). Desde el 2026-09-16 no hay
+# default: ver config_de_entorno.py.
+CONFIG_PATH = str(ruta_requerida("JAX_CONFIG_PATH"))
+JAX_REPO = ruta_requerida("JAX_REPO_PATH")
 
 # --- Memoria semántica COMPARTIDA con el REPL (MISMA MariaDB jax_memory) ----
 # Reutiliza la clase MemoryDB del núcleo (~/jax) — no duplica memoria ni lógica.
@@ -88,7 +88,7 @@ CONFIG_PATH = os.getenv(
 # por un ImportError de la función auxiliar — degradando TODA la memoria
 # semántica (y con ella shadow validation, que no encola sin conv_uuid) en
 # vez de degradar solo el bypass de completeness. Cada import falla solo.
-sys.path.insert(0, os.path.expanduser("~/jax"))
+sys.path.insert(0, str(JAX_REPO))
 def _importar_memorydb():
     """Task 3 (2026-09-15, clase b): antes era `except Exception` MUDO -- un
     error dentro de jax.memory.db dejaba MemoryDB = None sin rastro. Ahora
@@ -608,17 +608,15 @@ def _build_display_response(contract: ContractResult) -> tuple[str, bool]:
 # separando. Si el vocabulario gana un predicado, el prompt lo sigue solo
 # (tests/test_chat_contract_prompt.py se pone rojo si divergen).
 #
-# Ruta configurable por JAX_REPO_PATH, igual que shadow_validation.py — no
-# el `~/jax` hardcodeado del import de MemoryDB de más arriba. Y a
+# Ruta configurable por JAX_REPO_PATH, igual que shadow_validation.py — la
+# misma JAX_REPO del import de MemoryDB de más arriba. Y a
 # diferencia de aquel, este NO degrada: si el vocabulario no carga, el
 # proceso no arranca. Un prompt sin predicados es invisible desde afuera
 # —el chat responde igual, el contrato parsea igual, y el canal de claims
 # queda mudo— y es exactamente el estado que produjo 22 de 22 mensajes sin
 # un solo claim entre el 2026-08-18 y el 2026-09-01. Tiene que ser un
 # fallo ruidoso al arrancar, no uno silencioso en producción.
-_GOVERNANCE_DIR = os.path.join(
-    os.getenv("JAX_REPO_PATH", os.path.expanduser("~/jax")), "policy", "governance"
-)
+_GOVERNANCE_DIR = os.path.join(str(JAX_REPO), "policy", "governance")
 if _GOVERNANCE_DIR not in sys.path:
     sys.path.insert(0, _GOVERNANCE_DIR)
 import loaders as governance_loaders  # noqa: E402

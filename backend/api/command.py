@@ -8,14 +8,15 @@ from pydantic import BaseModel
 
 from auth.middleware import get_current_user
 from auth.models import AuthUser
+from config_de_entorno import ruta_requerida
 from jax_engine.events import event_bus
 from jax_engine.schemas import JAXEvent
 from jax_engine.state import engine_state
 
 router = APIRouter(prefix="/api")
 
-MISSIONS_DIR = Path.home() / "jax" / "missions"
-JAX_BIN = Path.home() / ".local" / "bin" / "jax"
+MISSIONS_DIR = ruta_requerida("JAX_MISSIONS_DIR")
+JAX_BIN = ruta_requerida("JAX_BIN")
 
 
 def _owner_file(task_id: str) -> Path:
