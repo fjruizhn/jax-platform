@@ -584,7 +584,13 @@ export const useJaxStore = create((set, get) => {
         activePipelines: _evictOldFinishedPipelines(data.active_pipelines || {}),
         lasManos: data.las_manos_alive,
       })
-    } catch {}
+    } catch (err) {
+      // Revisión final 8b: sostiene la resincronización del panel al
+      // reconectar. Un fallo deja el último estado conocido (no se borra lo
+      // que se ve) y el rastro en consola, como los demás fallos de carga del
+      // store; la próxima reconexión o montaje lo vuelve a pedir.
+      console.error('loadState failed', err)
+    }
   },
   }
 })
