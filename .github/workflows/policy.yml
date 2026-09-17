@@ -1514,7 +1514,14 @@ jobs:
           # marcar si falta o está mal, EXPLAIN con idx_ejecutor_punto_host_fecha).
           # Medido local: 1499 passed / 1 failed / 1 skipped (el failed, el
           # mismo hueco ambiental de test_seed_kimi_y_ada_como_motor).
-          PISO_PASSED = 1499
+          # 1499 -> 1507 el 2026-09-17 (fix/interruptor-stat-explicito): +8 en
+          # test_interruptor_stat.py (directorio del freno y de la heredada
+          # ilegibles, os.stat con EACCES/EIO/ELOOP => PUESTO, ausente =>
+          # SUELTO). Vistos en rojo con `pausa_presente` mutado a
+          # `Path.exists()` (7 failed / 1 passed, 3.14). Medido local contra
+          # jax_memory_test: 1507 passed / 1 failed / 1 skipped (el failed, el
+          # mismo hueco ambiental de test_seed_kimi_y_ada_como_motor).
+          PISO_PASSED = 1507
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2065,7 +2072,10 @@ jobs:
       # puros en test_ejecutor_tablas.py (parsear_inventario rechaza lo mal
       # formado); los otros 7 del archivo piden `client` y suben los skips
       # 609 -> 616. Medido con JAX_CI_NO_DB=1: 885 passed / 616 skipped.
-      JAX_CI_MIN_PASSED: "885"
+      # 885 -> 893 el 2026-09-17 (fix/interruptor-stat-explicito): +8 puros
+      # en test_interruptor_stat.py; ninguno pide `client`, los skips no se
+      # mueven. Medido dos veces con JAX_CI_NO_DB=1: 893 passed / 616 skipped.
+      JAX_CI_MIN_PASSED: "893"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
