@@ -270,7 +270,61 @@ async def test_activar_con_fsync_roto_y_el_freno_realmente_no_puesto_relanza(ent
     assert eventos == [] and base.filas == []
 
 
-async def test_reanudar_si_reponer_el_freno_tambien_falla_igual_se_lanza_auditoria_fallida(entorno, monkeypatch):
+# --- Fix round 2 (re-revisión del controlador): R10, "antes" se mide antes de escribir ---
+
+
+@pytest.mark.skipif(ES_ROOT, reason="root atraviesa cualquier permiso")
+async def test_activar_con_el_freno_ya_puesto_y_directorio_sin_permiso_no_inventa_un_cambio(entorno):
+    """Hallazgo del re-review: si el freno YA estaba puesto antes de esta
+    llamada y la escritura falla ANTES de tocar el archivo real (mkstemp sin
+    permiso de escritura en el directorio), el archivo sigue ahí por la
+    misma razón de SIEMPRE (estaba puesto de antes), no porque esta llamada
+    lo haya puesto. R10: "antes" se mide ANTES de escribir -- si "antes" ya
+    era True, no hay cambio real que anunciar, se relanza tal cual."""
+    ruta, eventos, base = entorno
+    interruptor.escribir_pausa(ruta, "{}")
+    ruta.parent.chmod(0o500)
+    try:
+        with pytest.raises(kill_switch.InterruptorNoEscribible):
+            await kill_switch.activar(ADMIN)
+    finally:
+        ruta.parent.chmod(0o700)
+    assert interruptor.interruptor_activo(ruta)
+    assert eventos == [] and base.filas == []
+
+
+async def test_activar_con_fail_closed_solo_tras_el_fallo_de_escritura_cuenta_como_cambio(entorno, monkeypatch):
+    """R10, el caso opuesto explícito de la ruling: si "antes" se pudo medir
+    limpio (freno SUELTO) y el fallo posterior de `interruptor_activo` (la
+    relectura DESPUÉS del error de escritura) da True por fail-closed --no
+    pudo ni mirar el archivo, no que lo haya visto puesto-- igual cuenta
+    como cambio real a propósito: cualquier otro lector de JAX en ese mismo
+    instante también lo vería fail-closed (frenado), así que "no cambió
+    nada" sería la mentira peor. Se mockea `_escribir` (falla siempre) y
+    `interruptor.os.stat` (primera llamada limpia -> False; segunda llamada
+    en adelante -> OSError generico -> fail-closed) para separar las dos
+    lecturas sin depender de permisos reales de archivo."""
+    ruta, eventos, base = entorno
+    llamadas = {"n": 0}
+
+    def _escribir_roto(_ruta, _contenido):
+        raise kill_switch.InterruptorNoEscribible("disco caído a mitad de camino")
+
+    def _stat_limpio_y_luego_fail_closed(_ruta_arg, *a, **kw):
+        llamadas["n"] += 1
+        if llamadas["n"] == 1:
+            raise FileNotFoundError()
+        raise OSError("nfs caído")  # ni FileNotFoundError: interruptor_activo lo lee fail-closed
+
+    monkeypatch.setattr(interruptor.os, "stat", _stat_limpio_y_luego_fail_closed)
+    monkeypatch.setattr(kill_switch, "_escribir", _escribir_roto)
+    resultado = await kill_switch.activar(ADMIN)
+    assert resultado == {"activo": True, "cambio": True}
+    assert eventos == [("kill_switch_activated", {"activo": True})]
+    assert base.filas == [("activar", 7)]
+
+
+async def test_reanudar_si_reponer_el_freno_tambien_falla_igual_se_lanza_auditoria_fallida(entorno, monkeypatch, caplog):
     """Si el intento de REPONER el freno (dentro del except genérico) también
     lanza InterruptorNoEscribible, esa excepción de reposición no debe
     reemplazar a AuditoriaDelInterruptorFallida -- se logea y se sigue de
@@ -283,12 +337,42 @@ async def test_reanudar_si_reponer_el_freno_tambien_falla_igual_se_lanza_auditor
         raise kill_switch.InterruptorNoEscribible("no se pudo reponer")
 
     monkeypatch.setattr(kill_switch, "_escribir", _escribir_roto)
-    with pytest.raises(kill_switch.AuditoriaDelInterruptorFallida):
-        await kill_switch.reanudar(ADMIN)
+    with caplog.at_level("ERROR"):
+        with pytest.raises(kill_switch.AuditoriaDelInterruptorFallida):
+            await kill_switch.reanudar(ADMIN)
     assert eventos == [] and base.filas == []
     # el borrado real SÍ surtió efecto y la reposición (mockeada) fracasó:
     # el freno queda afuera -- doble falla real, sin invención de un estado.
     assert not interruptor.interruptor_activo(ruta)
+    # fix round 2 (Minor): la reposición NO surtió efecto de verdad (el mock
+    # nunca escribe nada) -- el log tiene que decir "NO pudo reponer", no
+    # "repuso el freno".
+    assert any("NO pudo reponer" in m for m in caplog.messages)
+    assert not any("repuso el freno" in m for m in caplog.messages)
+
+
+async def test_reanudar_si_el_reintento_de_reponer_igual_pone_el_freno_el_log_lo_dice(entorno, monkeypatch, caplog):
+    """Fix round 2 (Minor): si la reposición de emergencia también choca con
+    un fsync roto pero su `os.link` SÍ surte efecto, el freno queda puesto
+    de verdad -- el log tiene que decirlo ("repuso el freno"), no "no pudo
+    reponer" (que sería mentir, mismo principio R9 aplicado al mensaje)."""
+    ruta, eventos, base = entorno
+    interruptor.escribir_pausa(ruta, "{}")
+
+    def _fsync_siempre_roto(_directorio):
+        raise OSError("fsync roto")
+
+    monkeypatch.setattr(interruptor, "_sincronizar_directorio", _fsync_siempre_roto)
+    with caplog.at_level("ERROR"):
+        with pytest.raises(kill_switch.AuditoriaDelInterruptorFallida):
+            await kill_switch.reanudar(ADMIN)
+    # el unlink original surtió efecto, y el link de la reposición TAMBIÉN
+    # -- el freno queda puesto de verdad, aunque las dos veces el fsync haya
+    # fallado.
+    assert interruptor.interruptor_activo(ruta)
+    assert eventos == []
+    assert any("repuso el freno" in m for m in caplog.messages)
+    assert not any("NO pudo reponer" in m for m in caplog.messages)
 
 
 # --- Fix round 1: R8, difusión concurrente con timeout por suscriptor ---

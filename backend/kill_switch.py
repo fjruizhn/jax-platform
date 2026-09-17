@@ -24,6 +24,11 @@ archivo. Reglas:
   sigue DENTRO de `_cambio` a propósito (mantiene el orden
   activated/released), pero ya no puede retenerlo: cada suscriptor tiene su
   propio tope y se manda a todos a la vez (ver jax_engine/events.py).
+- R10 (fix round 2, 2026-09-17): en `activar`, "antes" (¿ya estaba puesto?)
+  se mide ANTES de escribir, no después del fallo. Un fallo de escritura
+  con el freno YA puesto de antes nunca cuenta como cambio de ESA llamada,
+  aunque el archivo siga estando ahí después -- eso no prueba que esta
+  llamada lo haya puesto.
 """
 from __future__ import annotations
 
@@ -76,7 +81,12 @@ class InterruptorNoEscribible(RuntimeError):
 
 
 class AuditoriaDelInterruptorFallida(RuntimeError):
-    """El cambio no quedó auditado; el freno quedó PUESTO."""
+    """El cambio no quedó auditado. El freno queda PUESTO -- salvo que el
+    log diga lo contrario: si la reposición de emergencia de `reanudar`
+    también fracasó DE VERDAD (el freno realmente no quedó puesto, no solo
+    que `_escribir` haya lanzado), el mensaje de error asociado lo dice
+    explícitamente ("NO pudo reponer") en vez de esconder ese caso extremo
+    detrás de este mismo tipo de excepción."""
 
 
 class _NadaQueQuitar(Exception):
@@ -111,6 +121,31 @@ async def _registrar(cur, accion: str, user_id) -> None:
     await cur.execute(SQL_REGISTRAR, (accion, int(user_id)))
 
 
+async def _reponer_de_emergencia(ruta, usuario: AuthUser, motivo: str) -> None:
+    """Reintenta poner el freno tras un fallo de auditoría en `reanudar`
+    (ante la duda, frenado) -- SOLO logea, nunca relanza: quien llama a esto
+    ya está manejando la excepción real y tiene que seguir hasta
+    AuditoriaDelInterruptorFallida sin que un segundo fallo la tape.
+
+    Fix round 2 (Minor): el mensaje se decide mirando el archivo DESPUÉS
+    del intento, no el tipo de excepción -- mismo principio R9. `_escribir`
+    puede lanzar InterruptorNoEscribible con el link YA puesto (solo el
+    fsync del directorio explotó de nuevo); en ese caso el freno SÍ quedó
+    repuesto, y decir "no pudo reponer" sería la misma mentira que R9 ya
+    corrigió del lado de `activar`/el primer fallo de `reanudar`."""
+    try:
+        await asyncio.to_thread(_escribir, ruta, _contenido("reactivado_sin_auditoria", usuario))
+    except InterruptorNoEscribible as repo_exc:  # fail-soft: se logea; el fallo (real o aparente) de REPONER no debe tapar la auditoría fallida real que sigue en el except que llamó a esto
+        if interruptor.interruptor_activo(ruta):
+            logger.error(
+                "kill switch: reanudar de user_id=%s (%s) repuso el freno pese al error de fsync: %r",
+                usuario.user_id, motivo, repo_exc)
+        else:
+            logger.error(
+                "kill switch: reanudar de user_id=%s (%s) NO pudo reponer el freno: %r",
+                usuario.user_id, motivo, repo_exc)
+
+
 async def estado() -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -126,6 +161,14 @@ async def estado() -> dict:
 async def activar(usuario: AuthUser) -> dict:
     async with _cambio:
         ruta = interruptor.ruta_del_interruptor()
+        # R10 (fix round 2): "antes" se mide ANTES de escribir. Sin esto, un
+        # fallo de escritura (mkstemp/chmod/fsync) con el freno YA puesto de
+        # ANTES deja el archivo intacto -- y mirar solo el DESPUÉS lo
+        # confundía con "esta llamada lo puso", inventando difusión +
+        # auditoría + cambio=True sobre un estado que ya era así antes de
+        # que esta llamada empezara (hallazgo del re-review, reproducido con
+        # freno ya puesto + directorio sin permiso de escritura).
+        antes = interruptor.interruptor_activo(ruta)
         try:
             puesto = await asyncio.to_thread(_escribir, ruta, _contenido("activar", usuario))
         except InterruptorNoEscribible:
@@ -133,9 +176,16 @@ async def activar(usuario: AuthUser) -> dict:
             # `escribir_pausa` hace os.link y DESPUÉS fsync del directorio --
             # si el link ya surtió efecto (el freno está PUESTO de verdad) y
             # solo el fsync explotó, tratar esto como "nada cambió" (503)
-            # sería mentir: seguimos el camino de cambio real. Si el freno
-            # de verdad no quedó puesto, se relanza tal cual.
-            if not interruptor.interruptor_activo(ruta):
+            # sería mentir: seguimos el camino de cambio real. Cuenta como
+            # cambio de ESTA llamada solo si "antes" era False: si ya estaba
+            # puesto, que el archivo siga ahí después no prueba que esta
+            # llamada haya hecho nada. Si tras el fallo `interruptor_activo`
+            # da True por fail-closed (ni pudo mirar el archivo) también
+            # cuenta como cambio a propósito cuando "antes" era False: el
+            # resto de JAX (LAS MANOS, Jacobs, REPL) ya lo va a leer como
+            # frenado igual en ese mismo instante, así que "no cambió nada"
+            # sería la mentira peor.
+            if antes or not interruptor.interruptor_activo(ruta):
                 raise
             puesto = True
         if not puesto:
@@ -175,15 +225,9 @@ async def reanudar(usuario: AuthUser) -> dict:
             # relanza tal cual: no cambió nada de verdad.
             if interruptor.interruptor_activo(ruta):
                 raise
-            try:
-                await asyncio.to_thread(
-                    _escribir, ruta, _contenido("reactivado_sin_auditoria", usuario))
-            except InterruptorNoEscribible as repo_exc:  # fail-soft: se logea; el fallo de REPONER no debe tapar la auditoría fallida real que sigue abajo
-                logger.error(
-                    "kill switch: reanudar de user_id=%s no pudo reponer el freno tras fsync roto: %r",
-                    usuario.user_id, repo_exc)
+            await _reponer_de_emergencia(ruta, usuario, "fsync roto tras borrar")
             logger.error(
-                "kill switch: reanudar de user_id=%s dejó el freno afuera sin auditoría (fsync roto tras borrar): %r",
+                "kill switch: reanudar de user_id=%s dejó el freno sin auditoría (fsync roto tras borrar): %r",
                 usuario.user_id, exc)
             raise AuditoriaDelInterruptorFallida("reanudar") from exc
         except Exception as exc:
@@ -201,13 +245,7 @@ async def reanudar(usuario: AuthUser) -> dict:
             # acá -- se erra hacia frenado a propósito; se logea para que
             # quede visible en el journal, no se intenta reconciliar solo.
             if quitado:
-                try:
-                    await asyncio.to_thread(
-                        _escribir, ruta, _contenido("reactivado_sin_auditoria", usuario))
-                except InterruptorNoEscribible as repo_exc:  # fail-soft: se logea; el fallo de REPONER no debe tapar la auditoría fallida real que sigue abajo
-                    logger.error(
-                        "kill switch: reanudar de user_id=%s no pudo reponer el freno: %r",
-                        usuario.user_id, repo_exc)
+                await _reponer_de_emergencia(ruta, usuario, "commit/auditoría fallida")
             logger.error("kill switch: reanudar de user_id=%s sin auditoría, freno repuesto=%s: %r",
                          usuario.user_id, quitado, exc)
             raise AuditoriaDelInterruptorFallida("reanudar") from exc
