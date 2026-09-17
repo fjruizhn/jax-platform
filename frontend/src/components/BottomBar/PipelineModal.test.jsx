@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -540,29 +540,93 @@ describe('PipelineModal -- pre-vuelo y confirmación de costo', () => {
     expect(await screen.findByText(textoDeViolacion(es, v))).toBeInTheDocument()
   })
 
-  // Adenda ítem 5: doble clic no manda dos pre-vuelos ni dos creaciones.
-  it('doble clic no manda dos pre-vuelos ni dos creaciones', async () => {
+  // Adenda ítem 5 (fix round 1 ítem 4): los dos clics dentro del MISMO act,
+  // antes de que React vuelva a renderizar: el `disabled` por estado todavía
+  // no llegó, sólo la guardia síncrona impide la segunda llamada.
+  it('doble clic antes del re-render no manda dos pre-vuelos ni dos creaciones', async () => {
     const onSubmit = vi.fn(() => Promise.resolve())
     await listo({ onSubmit })
     const boton = screen.getByText(/Planificar y ejecutar/i)
-    fireEvent.click(boton)
-    fireEvent.click(boton)
+    await act(async () => { boton.click(); boton.click() })
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(api.post).toHaveBeenCalledTimes(1)
   })
 
-  it('doble clic en Confirmar no manda dos creaciones', async () => {
+  it('doble clic en Confirmar antes del re-render no manda dos creaciones', async () => {
     api.post.mockResolvedValue({ data: CARO })
     const onSubmit = vi.fn(() => new Promise(() => {}))
     await listo({ onSubmit })
     fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
     const dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
     const confirmar = within(dialogo).getByRole('button', { name: es.confirmarCostoBoton })
-    fireEvent.click(confirmar)
-    fireEvent.click(confirmar)
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    await act(async () => { confirmar.click(); confirmar.click() })
     await waitFor(() => expect(confirmar).toBeDisabled())
     expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  // Fix round 1 ítem 1: Dialogo sólo vuelve inert a #root; los dos diálogos son
+  // portales hermanos. Con la confirmación abierta, el modal padre no puede
+  // volver a lanzar el pre-vuelo ni cambiar el cuerpo que se va a crear.
+  it('con la confirmación abierta el modal padre queda inert y no cambia lo que se crea', async () => {
+    api.post.mockResolvedValue({ data: CARO })
+    const onSubmit = vi.fn(() => Promise.resolve())
+    const onClose = vi.fn()
+    await listo({ onSubmit, onClose })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    const dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    const padre = screen.getByRole('dialog', { name: es.newPipelineTitle })
+    const selector = within(padre).getAllByRole('combobox')[0]
+    expect(selector.closest('[inert]')).not.toBeNull()
+    const otra = Array.from(selector.options).map((o) => o.value).find((v) => v !== selector.value)
+    fireEvent.change(selector, { target: { value: otra } })
+    fireEvent.click(within(padre).getByText(/En paralelo/i))
+    fireEvent.click(within(padre).getByText(/Planificar y ejecutar/i))
+    fireEvent.click(within(padre).getByRole('button', { name: es.cancel }))
+    expect(api.post).toHaveBeenCalledTimes(1)
+    expect(onClose).not.toHaveBeenCalled()
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.confirmarCostoBoton }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0][0].steps).toEqual(api.post.mock.calls[0][1].steps)
+  })
+
+  // Fix round 1 ítem 2: mientras se crea, cancelar no puede cerrar la
+  // confirmación (el pipeline se crearía igual).
+  it('mientras se crea, Cancelar está deshabilitado y Escape no cierra la confirmación', async () => {
+    api.post.mockResolvedValue({ data: CARO })
+    const onSubmit = vi.fn(() => new Promise(() => {}))
+    const onClose = vi.fn()
+    await listo({ onSubmit, onClose })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    const dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.confirmarCostoBoton }))
+    await waitFor(() => expect(within(dialogo).getByRole('button', { name: es.cancel })).toBeDisabled())
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.getByRole('dialog', { name: es.confirmarCostoTitulo })).toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  // Fix round 1 ítem 3: lo que dijo el pre-vuelo es de la forma que se probó;
+  // al editarla, deja de valer.
+  it('editar la forma o las facetas borra las violaciones y el error anteriores', async () => {
+    const v = { paso: 4, faceta: 'kimi', regla: 'tope_insuficiente', detalle: '' }
+    api.post.mockResolvedValueOnce({ data: { ...VEREDICTO_OK, ok: false, violaciones: [v] } })
+    await listo()
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    expect(await screen.findByText(textoDeViolacion(es, v))).toBeInTheDocument()
+    const selector = screen.getAllByRole('combobox')[0]
+    const original = selector.value
+    const otra = Array.from(selector.options).map((o) => o.value).find((x) => x !== original)
+    fireEvent.change(selector, { target: { value: otra } })
+    await waitFor(() => expect(screen.queryByText(textoDeViolacion(es, v))).not.toBeInTheDocument())
+    // Volver a la cadena válida para poder enviar otra vez.
+    fireEvent.change(selector, { target: { value: original } })
+    await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+
+    api.post.mockRejectedValueOnce(new Error('network'))
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.errorPipeline)
+    fireEvent.click(screen.getByText(/En paralelo/i))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
   })
 
   it('si el pre-vuelo no responde, el error se ve en el modal y el botón vuelve', async () => {

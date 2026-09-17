@@ -156,13 +156,28 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   // todavía"), aunque la causa sea distinta.
   const catalogReady = motorsByKey !== null && !catalogFailed
 
-  function toggleFacet(id) {
-    setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id])
-  }
+  // Con la confirmación de costo abierta el modal padre queda congelado (fix
+  // round 1 Task 9): Dialogo sólo vuelve inert a #root y los dos diálogos son
+  // portales hermanos, así que con Tab se llegaba al padre y se podía cambiar
+  // el plan (y confirmar crearía el cuerpo viejo) o relanzar el pre-vuelo. El
+  // contenido del padre lleva `inert` y cada acción se niega además en JS.
+  const bloqueado = pendiente !== null
+  const siLibre = (fn) => (...args) => { if (!bloqueado) fn(...args) }
 
-  function setMotorFor(facetId, motorKey) {
+  // Lo que dijo el pre-vuelo (o el error de crear) es de la forma que se
+  // probó: al editarla deja de valer y se borra (fix round 1 ítem 3).
+  useEffect(() => {
+    setViolaciones([])
+    setErrorEnvio(null)
+  }, [chainFacets, selected, layout, motorChoices])
+
+  const toggleFacet = siLibre((id) => {
+    setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id])
+  })
+
+  const setMotorFor = siLibre((facetId, motorKey) => {
     setMotorChoices(m => ({ ...m, [facetId]: motorKey }))
-  }
+  })
 
   const facetLabel = (id) => FACET_OPTIONS.find(f => f.id === id)?.label || id
   const violations = cleanroomViolations(chainFacets)
@@ -220,7 +235,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   }
 
   async function handleSubmit() {
-    if (!catalogReady || enviandoRef.current) return
+    if (!catalogReady || bloqueado || enviandoRef.current) return
     if (layout === 'chain' ? chainBlocked : selected.length === 0) return
     const body = armarCuerpo()
     enviandoRef.current = true
@@ -270,7 +285,8 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   return (
     <Dialogo idTitulo="pipeline-modal-titulo" titulo={t.newPipelineTitle}
       claseTitulo="text-sm font-bold text-texto uppercase tracking-widest" onCerrar={onClose}
-      cerrable={!pendiente}>
+      cerrable={!bloqueado}>
+      <div inert={bloqueado}>
       <p className="text-xs text-texto-tenue -mt-3 mb-4 truncate">
         {t.objectiveLabel}: {objective}
       </p>
@@ -282,7 +298,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
             {PIPELINE_MODES.map(({ id: m, label }) => (
               <button
                 key={m}
-                onClick={() => { setMode(m); setModeTouched(true) }}
+                onClick={siLibre(() => { setMode(m); setModeTouched(true) })}
                 className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                   mode === m
                     ? m === 'autonomous'
@@ -304,10 +320,10 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
             {[['chain', t.layoutChain], ['parallel', t.layoutParallel]].map(([id, label]) => (
               <button
                 key={id}
-                onClick={() => {
+                onClick={siLibre(() => {
                   setLayout(id)
                   if (!modeTouched) setMode(DEFAULT_MODE_BY_LAYOUT[id])
-                }}
+                })}
                 aria-pressed={layout === id}
                 className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                   layout === id
@@ -337,7 +353,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
                     aria-label={t.chainRoles[role.id]}
                     className="text-xs bg-hundido border border-borde-control rounded px-2 py-1 text-texto focus:outline-none focus:border-foco"
                     value={chainFacets[role.id]}
-                    onChange={(e) => setChainFacets(f => ({ ...f, [role.id]: e.target.value }))}
+                    onChange={siLibre((e) => setChainFacets(f => ({ ...f, [role.id]: e.target.value })))}
                   >
                     {facetOptionsFor(role, capabilities).map(fid => (
                       <option key={fid} value={fid}>{facetLabel(fid)}</option>
@@ -446,7 +462,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
         {/* Botones */}
         <div className="flex gap-2">
           <button
-            onClick={onClose}
+            onClick={siLibre(onClose)}
             className="flex-1 py-2 rounded-lg text-xs font-semibold bg-hundido text-texto-suave hover:text-texto border border-borde transition-colors"
           >
             {t.cancel}
@@ -462,6 +478,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
             {submitting ? t.starting : t.planAndExecute}
           </button>
         </div>
+      </div>
         {pendiente && (
           <ConfirmarCostoDialogo veredicto={pendiente.veredicto} enviando={submitting} aviso={pendiente.aviso}
             onConfirmar={confirmarCosto} onCancelar={() => setPendiente(null)} />

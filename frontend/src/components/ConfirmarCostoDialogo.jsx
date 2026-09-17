@@ -8,6 +8,8 @@ import { textoDeMotivoDeCosto } from '../api/errores'
 // no una acción destructiva: sin suma (no es ConfirmacionSuma). Va sobre
 // Dialogo (portal, inert, foco, Escape = cancelar). Quien la abre encima de
 // otro Dialogo le pasa cerrable={false} mientras está abierta (desvío DV-12).
+// Mientras `enviando`, ni Cancelar ni Escape la cierran: la creación ya salió
+// y se completaría igual (fix round 1 Task 9).
 //
 // Un paso sin costo acotado es el que no trae un monto legible (usd_max null
 // o ilegible): se avisa con su motivo traducido, nunca con el código crudo.
@@ -23,7 +25,8 @@ export default function ConfirmarCostoDialogo({ veredicto, enviando, aviso, onCo
   const maximo = formatearUsd(veredicto.costo_max_usd, lang)
   return (
     <Dialogo idTitulo="confirmar-costo-titulo" titulo={t.confirmarCostoTitulo}
-      claseTitulo="text-sm font-semibold text-texto mb-2" onCerrar={onCancelar}>
+      claseTitulo="text-sm font-semibold text-texto mb-2" onCerrar={onCancelar}
+      cerrable={!enviando}>
       {aviso && <AlertaError className="text-xs mb-2">{aviso}</AlertaError>}
       <p className="text-sm text-texto-suave mb-3">
         {t.confirmarCostoMensaje(maximo, umbral)}
@@ -42,8 +45,8 @@ export default function ConfirmarCostoDialogo({ veredicto, enviando, aviso, onCo
       </ul>
       {hayNoAcotados && <p className="text-xs text-aviso mb-3">{t.confirmarCostoNoAcotado}</p>}
       <div className="flex gap-2 justify-end pt-2">
-        <button type="button" onClick={onCancelar}
-          className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">
+        <button type="button" onClick={onCancelar} disabled={enviando}
+          className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto disabled:opacity-50 transition-colors">
           {t.cancel}
         </button>
         <button type="button" onClick={onConfirmar} disabled={enviando}
