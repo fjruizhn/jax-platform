@@ -2213,10 +2213,12 @@ jobs:
       # Skips 647 -> 703. Los 14 JAX_ADJUNTO(S)_* salen de conftest. Medido dos veces
       # con JAX_CI_NO_DB=1 JAX_JWT_SECRET=ci-dummy tras el rebase sobre 369fa5a: 1346 passed
       # / 703 skipped / 0 failed.
-      # 1346 -> 1358 el 2026-09-17: mismos deltas que arriba (+8 de B1.4, +2 puros
-      # de test_admin_keys_sin_escritura.py y +2 que piden `client`, o sea +2 skips).
-      # Sumar deltas, no elegir un lado.
-      JAX_CI_MIN_PASSED: "1358"
+      # 1346 -> 1356 el 2026-09-17: +8 de B1.4 y +2 puros de
+      # test_admin_keys_sin_escritura.py; sus otros 2 piden `client`, asi que
+      # suman SKIPS (703 -> 706), no passed. Puse 1358 por contarlos como puros
+      # y el runner me corrigio: "PISO ROTO: 1356 passed < 1358". Manda el
+      # runner. Sumar deltas con las otras ramas del dia, no elegir un lado.
+      JAX_CI_MIN_PASSED: "1356"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
