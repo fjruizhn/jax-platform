@@ -241,3 +241,38 @@ def test_la_imagen_se_valida_en_el_loop_cediendo_entre_tramos(monkeypatch):
     v, ticks = asyncio.run(correr())
     assert v.imagenes[0].bytes == len(PNG) + 3_000_000
     assert ticks >= tramos
+
+
+# --- Bordes de tramo de 256 KB (revisión de 3ba4630) --------------------------
+
+def _b64_de_tramos(n_tramos: float) -> str:
+    n = int(c._TRAMO_DE_ALFABETO * n_tramos) // 4 * 4
+    b64 = base64.b64encode(PNG + bytes(n)).decode()
+    return b64[: len(b64) // 4 * 4] if len(b64) % 4 == 0 else b64
+
+
+def _validar_async(b64: str):
+    grande = LimitesDeAdjuntos(max_bytes=10_485_760, max_chars=10, max_paginas=20, max_por_mensaje=1)
+    return _validar([c.AdjuntoImagen(tipo="imagen", nombre="f.png", mime="image/png", base64=b64)], grande)
+
+
+def test_valido_que_cruza_varios_tramos_se_acepta():
+    b64 = _b64_de_tramos(2.6)
+    assert len(b64) > 2 * c._TRAMO_DE_ALFABETO
+    assert _validar_async(b64).imagenes[0].bytes == len(base64.b64decode(b64))
+
+
+@pytest.mark.parametrize("corrimiento", [-1, 0, 1])
+@pytest.mark.parametrize("borde", [1, 2])
+@pytest.mark.parametrize("caracter", ["!", "=", "-"])
+def test_caracter_invalido_en_el_borde_de_un_tramo_es_adjunto_invalido(borde, corrimiento, caracter):
+    b64 = list(_b64_de_tramos(2.6))
+    b64[borde * c._TRAMO_DE_ALFABETO + corrimiento] = caracter
+    with pytest.raises(AdjuntoRechazado) as e:
+        _validar_async("".join(b64))
+    assert (e.value.status, e.value.detail["code"]) == (422, "adjunto_invalido")
+
+
+def test_el_tope_del_base64_sale_de_un_solo_lugar():
+    lim = LimitesDeAdjuntos(max_bytes=10, max_chars=10, max_paginas=20, max_por_mensaje=1)
+    assert c._largo_maximo_base64(lim) == 16

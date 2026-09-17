@@ -1,13 +1,14 @@
 """Turno para el trabajo pesado de una imagen en el event loop (R16, 2026-09-17).
 
-Parsear el cuerpo de 14 MB y validar el alfabeto del base64 corren en el loop
-cediendo por tramos (en un hilo le disputarían el GIL al loop: medido, peor).
-Cediendo, 25 imágenes a la vez se intercalan y cada pedido chico espera la
-vuelta completa: /api/health a 5 VUs tuvo p95 17,2 ms bajo chat_imagen_max a
-c=25. Con este turno (JAX_ADJUNTO_IMAGENES_EN_PROCESO=1), 2,5 ms.
+La validación del alfabeto del base64 corre en el loop cediendo por tramos
+(en un hilo le disputaría el GIL al loop: medido, peor). Cediendo, muchas
+imágenes a la vez se intercalan y cada pedido chico espera la vuelta completa.
+Este turno (JAX_ADJUNTO_IMAGENES_EN_PROCESO) limita cuántas validan a la vez.
+Números medidos en task-11-memoria-report.md (el parseo del cuerpo es el
+normal de FastAPI desde el ruling del principal sobre 3ba4630).
 
-El turno cubre SOLO esas pasadas (decenas de ms), nunca la espera al
-proveedor: un LLM lento no frena a las otras imágenes.
+El turno cubre SOLO esa pasada (ms), nunca la espera al proveedor: un LLM
+lento no frena a las otras imágenes.
 
 Un semáforo por event loop (asyncio.Semaphore se ata al loop que lo usa; los
 tests abren uno por asyncio.run). El tope se lee una vez por loop: el entorno

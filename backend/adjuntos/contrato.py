@@ -81,13 +81,22 @@ def exigir_soporte_de_imagen(f, facet: str, imagenes) -> None:
 # guarda estado por repetición y medido fueron 445 MB y 119 ms para 10 MB.
 _BASE64_ESTRICTO = re.compile(r"[A-Za-z0-9+/]*={0,2}")
 _BASE64_ALFABETO = re.compile(r"[A-Za-z0-9+/]*")
-# Bloqueo del event loop (R16): re retiene el GIL durante toda la llamada, y
-# una sola pasada sobre 14 MB son ~8 ms en los que el loop no corre aunque
-# esto viva en to_thread. Por tramos de 256 KB (múltiplo de 4) el GIL se
-# puede soltar entre uno y otro; el último tramo lleva el relleno.
+# Bloqueo del event loop (R16; Ruling R18 del controller): re retiene el GIL
+# durante toda la llamada, y una sola pasada sobre 14 MB son ~8 ms en los que
+# el loop no corre, AUNQUE corra en asyncio.to_thread (medido: el hilo le
+# disputa el GIL al loop y la latencia de los demás pedidos empeora). Por eso
+# el escaneo va EN el loop, de a tramos de 256 KB (múltiplo de 4), cediendo
+# entre uno y otro; el último tramo lleva el relleno. No moverlo a un hilo.
 _TRAMO_DE_ALFABETO = 256 * 1024
 # 16 caracteres dan 12 bytes: alcanza para la firma más larga (WEBP, 12).
 _PREFIJO_DE_FIRMA = 16
+
+
+def _largo_maximo_base64(limites: LimitesDeAdjuntos) -> int:
+    """Largo máximo del base64 de max_bytes: 4 caracteres por cada 3 bytes,
+    redondeado hacia arriba. Un solo lugar para el tope, así el orden de los
+    chequeos en validar_adjuntos y _validar_imagen no puede divergir."""
+    return ((limites.max_bytes + 2) // 3) * 4
 
 
 def _tramos_de_alfabeto(b64: str):
@@ -116,9 +125,8 @@ async def _alfabeto_estricto_cooperativo(b64: str) -> bool:
 
 def _validar_imagen(a: AdjuntoImagen, limites: LimitesDeAdjuntos,
                     alfabeto_ok: bool | None = None) -> ImagenValidada:
-    # Tope del base64 de max_bytes ANTES de mirar nada: 4 caracteres por
-    # cada 3 bytes, redondeado hacia arriba.
-    if len(a.base64) > ((limites.max_bytes + 2) // 3) * 4:
+    # Tope del base64 de max_bytes ANTES de mirar nada.
+    if len(a.base64) > _largo_maximo_base64(limites):
         raise AdjuntoRechazado(413, "adjunto_demasiado_grande", max_bytes=limites.max_bytes)
     # R16 (2026-09-17): sin decodificar la imagen entera. Decodificar 10 MB
     # para mirar 12 bytes de firma y un largo costaba ~23 MB de pico por
@@ -147,7 +155,7 @@ async def validar_adjuntos(adjuntos: list, limites: LimitesDeAdjuntos) -> Adjunt
     imagenes: list[ImagenValidada] = []
     for a in adjuntos:
         if isinstance(a, AdjuntoImagen):
-            revisar = len(a.base64) % 4 == 0 and len(a.base64) <= ((limites.max_bytes + 2) // 3) * 4
+            revisar = len(a.base64) % 4 == 0 and len(a.base64) <= _largo_maximo_base64(limites)
             if revisar:
                 async with turno_de_imagen():
                     alfabeto_ok = await _alfabeto_estricto_cooperativo(a.base64)
