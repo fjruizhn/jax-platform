@@ -206,3 +206,16 @@ Decisión de Fernando: texto + imágenes + PDF.
 Fichas y veredictos de terceros, 2026-09-16, sobre `26c9cd5` (copiados al PR de docs):
 `anexo-a/green-fichas.md`, `anexo-a/green-verif-*.md`, `anexo-a/ponytail-hallazgos.txt`,
 `anexo-a/ponytail-verif-*.md`.
+
+---
+
+## Decisiones de Fernando al GO de ejecución (2026-09-16, chat)
+
+- **C · re-login:** el refresh token lleva `iat`; se acepta un re-login único de todas las sesiones tras el deploy.
+- **C/E · retención de web-tasks:** `owner_cleanup` borra owner, misión y resultado juntos al vencer `web_task_retention_days` (30). Una sola regla, visible en el admin.
+- **B · freno sin DB:** activar pone el freno aunque la auditoría falle (la respuesta lo avisa); reanudar exige auditoría en la misma transacción.
+- **B · turno en vuelo:** un turno de chat/imagen que ya salió al proveedor termina (sin efecto en el mundo). *Recomendación del plan, aceptada por defecto.*
+- **A-17:** la fila `ws_notifications` de producción la borra el frente C dentro de su migración con dump.
+- **A-48:** `display_name` se lee al arrancar; el reinicio es la invalidación (solo migraciones escriben `facet`).
+- **E-25 vs A.5:** B1.4 se mide hoy; si está limpio se retira en los dos repos; si no, se trae el consumidor a Fernando antes de tocar. Sustituye la fila de §A.5.
+- **Orden de merge:** jax: E → B → F → G. jax-platform: A → C → B → D. Cada rama que llega después rebasea y vuelve a medir sus pisos de CI en el runner.
