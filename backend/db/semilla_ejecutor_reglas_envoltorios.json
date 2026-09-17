@@ -1,0 +1,445 @@
+[
+  {
+    "codigo": "envoltorio_tmux_screen",
+    "tipo": "prohibido",
+    "herramientas": "Bash",
+    "campo": "command",
+    "patron": "(?:^|[;&|({`'\\\"]|\\$\\(|\\b(?:then|do|else)\\s)\\s*(?:(?:sudo|env|exec|command|time|nice|ionice|stdbuf|timeout)\\b(?:\\s+-\\S+)*(?:\\s+\\w+=\\S*)*(?:\\s+\\d\\S*)?\\s+)*(?:\\S*/)?(?:tmux|screen|byobu)(?=\\s|$)(?!\\s+(?:-[LSf]\\s+\\S+\\s+)*(?:ls|list-\\w+|has-session|has|capture-pane|show-\\w+|display-message|-V|-v|-ls|-list|-version)(?=[\\s'\\\";&|)]|$))",
+    "ambito_host": null,
+    "ambito_roles": [],
+    "es_canario": false,
+    "origen": "C1 2026-09-17: misión real contra ejecutor-prueba, el cerebro esquivó ssh_sin_tt con tmux (lo atrapó C5, no C1): tmux/screen desacoplan el proceso de la pty y esconden el comando al lector de destinos",
+    "ejemplos_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "tmux new-session -d -s ssh-test 'ssh -p 58291 axioma@atemai hostname; sleep 2' && tmux capture-pane -t ssh-test -p && tmux kill-session -t ssh-test"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "tmux 'ssh -p 58291 axioma@atemai hostname'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "screen -dmS x ssh -tt -p 58291 axioma@atemai uptime"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt axioma@atemai 'tmux new -d ./largo.sh'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "/usr/bin/tmux send-keys -t 0 'ssh axioma@prod' Enter"
+        }
+      }
+    ],
+    "ejemplos_no_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt axioma@atemai 'tmux ls'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt axioma@atemai 'screen -ls'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "tmux list-sessions"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt axioma@atemai 'ps aux | grep -E \"tmux|screen|nohup\"'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "apt list --installed tmux"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "grep -r tmux /etc/profile.d"
+        }
+      }
+    ]
+  },
+  {
+    "codigo": "envoltorio_desacopla",
+    "tipo": "prohibido",
+    "herramientas": "Bash",
+    "campo": "command",
+    "patron": "(?:^|[;&|({`'\\\"]|\\$\\(|\\b(?:then|do|else)\\s)\\s*(?:(?:sudo|env|exec|command|time|nice|ionice|stdbuf|timeout)\\b(?:\\s+-\\S+)*(?:\\s+\\w+=\\S*)*(?:\\s+\\d\\S*)?\\s+)*(?:\\S*/)?(?:(?:setsid|nohup|daemonize)\\s+\\S|disown(?=\\s|$|[;&|)'\\\"]))",
+    "ambito_host": null,
+    "ambito_roles": [],
+    "es_canario": false,
+    "origen": "C1 2026-09-17: misión real contra ejecutor-prueba, el cerebro esquivó ssh_sin_tt con tmux (lo atrapó C5, no C1): setsid/nohup/disown sobreviven al SIGHUP que ssh -tt garantiza",
+    "ejemplos_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "setsid ssh -p 58291 axioma@atemai hostname"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "setsid ssh -tt -p 58291 axioma@atemai hostname"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "nohup ssh -tt -p 58291 axioma@atemai uptime &"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt -p 58291 axioma@atemai uptime & disown"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt axioma@prod 'nohup ./largo.sh > /dev/null 2>&1 &'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "sudo setsid -f ./servidor"
+        }
+      }
+    ],
+    "ejemplos_no_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "grep -r setsid /etc/init.d"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt axioma@atemai 'ps -eo pid,sid,cmd'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "man nohup | head"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt axioma@atemai 'cat nohup.out'"
+        }
+      }
+    ]
+  },
+  {
+    "codigo": "envoltorio_script_c",
+    "tipo": "prohibido",
+    "herramientas": "Bash",
+    "campo": "command",
+    "patron": "(?:^|[;&|({`'\\\"]|\\$\\(|\\b(?:then|do|else)\\s)\\s*(?:(?:sudo|env|exec|command|time|nice|ionice|stdbuf|timeout)\\b(?:\\s+-\\S+)*(?:\\s+\\w+=\\S*)*(?:\\s+\\d\\S*)?\\s+)*(?:\\S*/)?script\\s+(?:-\\S+\\s+)*(?:-\\w*c\\w*|--command)(?=[\\s=])",
+    "ambito_host": null,
+    "ambito_roles": [],
+    "es_canario": false,
+    "origen": "C1 2026-09-17: misión real contra ejecutor-prueba, el cerebro esquivó ssh_sin_tt con tmux (lo atrapó C5, no C1): script -c corre el comando en una pty propia, escondido del lector de destinos",
+    "ejemplos_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "script -qc 'ssh -p 58291 axioma@atemai uptime' /dev/null"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "script -q -c \"ssh axioma@prod df -h\" /dev/null"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "script --command='ssh axioma@bridge uptime' /dev/null"
+        }
+      }
+    ],
+    "ejemplos_no_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "python3 script.py -c config.yml"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "cat /tmp/script -c"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ls ~/scripts"
+        }
+      }
+    ]
+  },
+  {
+    "codigo": "envoltorio_at_batch",
+    "tipo": "prohibido",
+    "herramientas": "Bash",
+    "campo": "command",
+    "patron": "(?:^|[;&|({`'\\\"]|\\$\\(|\\b(?:then|do|else)\\s)\\s*(?:(?:sudo|env|exec|command|time|nice|ionice|stdbuf|timeout)\\b(?:\\s+-\\S+)*(?:\\s+\\w+=\\S*)*(?:\\s+\\d\\S*)?\\s+)*(?:\\S*/)?at\\s+(?:-(?!l\\b)\\S+\\s+)*(?:now|noon|midnight|teatime|tomorrow|today|\\d)|\\|\\s*(?:\\S*/)?batch(?![-\\w.])|(?:^|[;&(`]|\\$\\()\\s*(?:sudo\\s+)?(?:\\S*/)?batch(?=\\s*(?:$|[;&|)<]))",
+    "ambito_host": null,
+    "ambito_roles": [],
+    "es_canario": false,
+    "origen": "C1 2026-09-17: misión real contra ejecutor-prueba, el cerebro esquivó ssh_sin_tt con tmux (lo atrapó C5, no C1): at/batch programan el comando fuera de la misión (el freno ya no lo ve correr)",
+    "ejemplos_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "echo 'ssh -tt -p 58291 axioma@atemai uptime' | at now"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "echo uptime | batch"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "at now + 1 minute < tarea.sh"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt axioma@prod 'echo reboot | at 03:00'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "batch < tarea.sh"
+        }
+      }
+    ],
+    "ejemplos_no_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "atq"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "at -l"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "echo 'look at the logs'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "grep batch_size config.yml"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt axioma@atemai 'systemctl status atd'"
+        }
+      }
+    ]
+  },
+  {
+    "codigo": "envoltorio_systemd_run",
+    "tipo": "prohibido",
+    "herramientas": "Bash",
+    "campo": "command",
+    "patron": "(?:^|[;&|({`'\\\"]|\\$\\(|\\b(?:then|do|else)\\s)\\s*(?:(?:sudo|env|exec|command|time|nice|ionice|stdbuf|timeout)\\b(?:\\s+-\\S+)*(?:\\s+\\w+=\\S*)*(?:\\s+\\d\\S*)?\\s+)*(?:\\S*/)?systemd-run(?=\\s|$)",
+    "ambito_host": null,
+    "ambito_roles": [],
+    "es_canario": false,
+    "origen": "C1 2026-09-17: misión real contra ejecutor-prueba, el cerebro esquivó ssh_sin_tt con tmux (lo atrapó C5, no C1): systemd-run lanza el comando como unidad aparte, fuera del proceso de la herramienta",
+    "ejemplos_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "systemd-run --user ssh -tt -p 58291 axioma@atemai uptime"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "sudo systemd-run --scope ./largo.sh"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt axioma@prod 'systemd-run --on-active=60 reboot'"
+        }
+      }
+    ],
+    "ejemplos_no_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "man systemd-run | head"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "systemctl list-units 'run-*'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "grep systemd-run /var/log/syslog"
+        }
+      }
+    ]
+  },
+  {
+    "codigo": "envoltorio_ssh_escondido",
+    "tipo": "prohibido",
+    "herramientas": "Bash",
+    "campo": "command",
+    "patron": "(?:^|[\\s;&|(`'\\\"/])(?:ba|da|z|k|fi)?sh\\s+(?:-\\S+\\s+)*-\\w*c\\w*\\s+(?:'[^']*|\\\"[^\\\"]*|[^\\s;&|]*)\\bssh\\b|\\beval\\s+[^;&|\\n]*\\bssh\\b|\\bxargs\\s+[^;&|\\n]*\\bssh\\b",
+    "ambito_host": null,
+    "ambito_roles": [],
+    "es_canario": false,
+    "origen": "C1 2026-09-17: misión real contra ejecutor-prueba, el cerebro esquivó ssh_sin_tt con tmux (lo atrapó C5, no C1): bash -c/sh -c/eval/xargs con ssh adentro esconden el ssh al lector de destinos y a ssh_sin_tt",
+    "ejemplos_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "bash -c 'ssh -tt -p 58291 axioma@atemai uptime'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "sh -c \"ssh -p 58291 axioma@atemai uptime\""
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "sudo bash -lc 'ssh axioma@prod df -h'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "eval \"ssh axioma@bridge uptime\""
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "echo atemai | xargs -I{} ssh -tt axioma@{} uptime"
+        }
+      }
+    ],
+    "ejemplos_no_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "sudo bash -c 'df -h > /tmp/df.txt'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt -p 58291 axioma@atemai 'bash -lc uptime'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "bash -c 'echo hola'"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "git log --oneline -3"
+        }
+      }
+    ]
+  },
+  {
+    "codigo": "sandbox_desactivado",
+    "tipo": "prohibido",
+    "herramientas": "Bash",
+    "campo": "cualquiera",
+    "patron": "\\\"dangerouslyDisableSandbox\\\":\\s*true\\b",
+    "ambito_host": null,
+    "ambito_roles": [],
+    "es_canario": false,
+    "origen": "C1 2026-09-17: misión real contra ejecutor-prueba, el cerebro esquivó ssh_sin_tt con tmux (lo atrapó C5, no C1): el cerebro pidió dangerouslyDisableSandbox tras un bloqueo; nunca es una salida legítima",
+    "ejemplos_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt -p 58291 axioma@atemai uptime",
+          "dangerouslyDisableSandbox": true
+        }
+      }
+    ],
+    "ejemplos_no_coincide": [
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ssh -tt -p 58291 axioma@atemai uptime",
+          "dangerouslyDisableSandbox": false
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "echo '\"dangerouslyDisableSandbox\": true' > notas.txt"
+        }
+      },
+      {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "uptime"
+        }
+      }
+    ]
+  }
+]
