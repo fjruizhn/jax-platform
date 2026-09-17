@@ -641,3 +641,42 @@ def test_el_forgot_password_sale_despues_del_commit_y_sin_la_fila_tomada(client,
     vistas_de[email] = u
     client.portal.call(auth_mod._procesar_recuperacion, email, "203.0.113.5")
     assert vistas == [(email, (1, "libre"))]
+
+
+# ------------------------------------------------ adjuntos en la baja (RD2)
+
+def _adjunto_de(directorio, user_id):
+    from adjuntos import almacen
+    from auth.models import AuthUser
+    return almacen.guardar_texto(directorio, "hola", user=AuthUser(user_id=str(user_id), tenant_id="1",
+                                                                   role="operator"),
+                                 origen="texto", nombre="n.txt", bytes_=4, recortado=False, ttl_horas=24)
+
+
+def test_la_baja_borra_los_adjuntos_del_usuario_y_no_los_ajenos(client, usuarios, tmp_path, monkeypatch):
+    """RD2 (2026-09-17): los adjuntos de un dado de baja no esperan al TTL."""
+    d = tmp_path / "adjuntos"
+    d.mkdir(mode=0o700)
+    monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(d))
+    u, _ = usuarios()
+    otro, _ = usuarios()
+    _adjunto_de(d, u)
+    _adjunto_de(d, u)
+    ajeno = _adjunto_de(d, otro)
+    assert _baja(client, u).status_code == 200
+    assert sorted(p.name for p in d.iterdir()) == sorted([f"{ajeno['id']}.json", f"{ajeno['id']}.dato"])
+
+
+def test_si_borrar_adjuntos_falla_la_baja_sale_igual(client, usuarios, monkeypatch):
+    """Best-effort: la baja ya está confirmada en la base; el TTL cubre lo que
+    quede."""
+    from adjuntos import almacen
+
+    def rompe(*a, **k):
+        raise OSError("disco")
+
+    monkeypatch.setattr(almacen, "borrar_de_usuario", rompe)
+    u, _ = usuarios()
+    r = _baja(client, u)
+    assert r.status_code == 200, r.text
+    assert client.portal.call(_fila, u)[2] == "deleted"
