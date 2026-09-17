@@ -22,6 +22,7 @@ from facet_health import (
     SOURCE_CANARY_REBIND,
 )
 from facet_resolver import invalidate_facet_cache
+import kill_switch
 from redaccion import texto_de_error
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,14 @@ CANARY_INTERVAL_SECONDS = int(os.getenv("CANARY_INTERVAL_SECONDS", "3600"))
 # otras cuatro, y con 900 el margen caia de ~32% a ~11% sin que nadie lo
 # decidiera. Si cambia el conjunto de facets o un timeout de
 # _invoke_facet_dispatch, este numero se recalcula.
-CANARY_SWEEP_TIMEOUT_SECONDS = 1080
+#
+# 1080 -> 1180 el 2026-09-17 (SP3 del Ejecutor): la sonda de jax_local entra
+# por _call_ollama, que ahora toma el carril de la Mesa, y ese carril puede
+# estar tomado por un turno de chat de jax_local (hasta su timeout de 180s).
+# Peor caso legitimo: 5*125 + 180 (esperar el carril) + 180 = 985s. Con 1080
+# el margen caia a ~10%. 1180 deja ~20% y sigue por debajo de un tercio del
+# intervalo (1200s).
+CANARY_SWEEP_TIMEOUT_SECONDS = 1180
 
 CANARY_USER_ID = "__canary__"
 # NO puede parecer una pregunta de identidad de modelo: _is_model_identity_question()
@@ -66,6 +74,16 @@ CANARY_MESSAGE = "Respondé únicamente con la palabra: listo."
 # hyde no se sondea: chat() lo corta antes del dispatch con una respuesta
 # enlatada, no hay nada que medir.
 _NOT_DISPATCHED = frozenset({"hyde"})
+
+# Con el freno puesto la sonda no sale (2026-09-17, ruling del controlador
+# principal sobre R19 del frente B): el freno significa que JAX no invoca
+# musculos, y cada sonda es una invocacion PAGA a un proveedor. Se devuelve
+# este valor en lugar de sondear. NO es un outcome de facet_health a
+# proposito: un salto no es una caida, y no se escribe ninguna fila -- una
+# fila de error haria que el reaper alertara facetas sanas. El rastro queda
+# en el log (WARNING). Se mira el freno en CADA facet: un freno puesto a
+# mitad de un barrido corta el resto.
+SALTADA_POR_FRENO = "saltada_por_freno"
 
 
 def _running_under_pytest() -> bool:
@@ -103,7 +121,15 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
     Cuando la invocacion falla, NO escribe: la capa de abajo ya registro el
     evento clasificado. Devuelve 'probe_error' igual, como valor de
     retorno, para que probe_all pueda contar sondeos fallidos sin consultar
-    la DB."""
+    la DB.
+
+    Con el freno puesto no invoca ni escribe: devuelve SALTADA_POR_FRENO y
+    lo deja en el log."""
+    if kill_switch.activo():
+        logger.warning(
+            "facet_canary: sonda de %s (%s) saltada: el freno esta puesto, "
+            "JAX no invoca proveedores", facet, source)
+        return SALTADA_POR_FRENO
     try:
         await _invoke_facet(facet, config, CANARY_USER_ID, CANARY_MESSAGE,
                             source=source)

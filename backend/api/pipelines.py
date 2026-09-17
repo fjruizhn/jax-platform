@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from auth.middleware import get_current_user
 from auth.models import AuthUser
+from kill_switch import exigir_mesa_libre
 from db.connection import get_pool
 from http_client import get_http_client
 from jax_engine.resource_manager import resource_manager
@@ -803,7 +804,7 @@ async def preflight_pipeline(pedido: PedidoDePrevuelo, user: AuthUser = Depends(
 
 
 @router.post("")
-async def create_pipeline(request: Request, user: AuthUser = Depends(get_current_user)):
+async def create_pipeline(request: Request, user: AuthUser = Depends(exigir_mesa_libre)):
     limite = await ajustes.valor(ajustes.MAX_PIPELINES)
     if not await resource_manager.can_start_pipeline(user.tenant_id, limite):
         raise HTTPException(
@@ -888,7 +889,7 @@ async def get_pipeline(pipeline_id: str, user: AuthUser = Depends(get_current_us
 @router.post("/{pipeline_id}/resume")
 async def resume_pipeline(
     pipeline_id: str,
-    user: AuthUser = Depends(get_current_user),
+    user: AuthUser = Depends(exigir_mesa_libre),
 ):
     await _require_pipeline_owner(pipeline_id, user)
     client = await get_http_client()

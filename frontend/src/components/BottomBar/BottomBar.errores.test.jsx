@@ -51,6 +51,16 @@ describe('BottomBar -- errores y avisos con código', () => {
     expect(useJaxStore.getState().messages[1].content).toBe(es.avisosChat.faceta_sin_binding({ facet: 'thot' }))
   })
 
+  // Frente B, Task 9 (2026-09-17, Ruling R4): con el freno puesto la Mesa
+  // responde 423 kill_switch_activo; el chat lo dice traducido, nunca el código.
+  it('un 423 del kill switch se muestra traducido, no el código', async () => {
+    api.post.mockRejectedValue({ response: { status: 423, data: { detail: 'kill_switch_activo' } } })
+    enviarChat('hola')
+    await waitFor(() => expect(
+      useJaxStore.getState().messages.some((m) => m.content.includes(es.erroresMesa.kill_switch_activo()))).toBe(true))
+    expect(useJaxStore.getState().messages.some((m) => m.content.includes('kill_switch_activo'))).toBe(false)
+  })
+
   it('sin prefijos literales ni mapa de lambdas', () => {
     // Indirección vía `base` (como Login.test.jsx): Vite reescribe
     // `new URL('./x', import.meta.url)` inline y no sirve un file:// en jsdom.

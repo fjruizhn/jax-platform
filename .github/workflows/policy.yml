@@ -564,36 +564,24 @@ jobs:
             // AdminSettings (+2, config_valor_invalido sin clave cae en el
             // genérico). Vistos en rojo. Medido dos veces: 535 passed, 0
             // fallidos, 67 archivos.
-            // 535 -> 646 el 2026-09-17 (pre-vuelo y continuar, spec
-            // 2026-09-17): api/errores (+26), PipelineModal pre-vuelo y
-            // confirmación (+24), ContinuarPipelineModal (+33, nuevo),
-            // RightPanel detenidos (+10), lib/moneda (+5, nuevo), store
-            // pipelineContinued (+4, nuevo), AdminSettings umbral (+3),
-            // pipelineChain clean-room por pasos (+2), useWebSocket recarga al
-            // reconectar (+2, nuevo), BottomBar.errores relanza (+1),
-            // RightPanel.continuar (+1, nuevo). Delta por archivo medido con el
-            // reporter json contra 442da49. Vistos en rojo contra accc641.
-            // Medido dos veces: 646 passed, 0 fallidos, 72 archivos.
-            // 646 -> 658 el 2026-09-17 (revisión final de pre-vuelo y
-            // continuar): api/errores (+2, 6b costo que subió tras confirmar;
-            // 6d sin detalle de texto de Jacobs), PipelineModal (+2, objective
-            // al pre-vuelo; 6b), ContinuarPipelineModal (+2, 6b; 6c nombre
-            // visible), lib/moneda (+2, 6a hacia arriba y sin roundingMode),
-            // api/websocket (+2, 8a nada tras close()), lib/nombreDeFaceta (+1,
-            // nuevo), store facetTokens (+1, 8b loadState deja rastro). Delta
-            // por archivo con el reporter json contra a1f21a2. Vistos en rojo
-            // (o por mutación). Medido: 658 passed, 0 fallidos, 73 archivos.
-            // 658 -> 660 el 2026-09-17 (residuos de la ronda final, ítem e):
-            // +1 en api/websocket.test.js (un JSON invalido en onmessage no
-            // llega al llamador y queda rastro en consola.error -- antes el
-            // catch era mudo) y +1 en store/useJaxStore.test.js
-            // (activateKillSwitch: si el POST falla, marca killSwitchActive,
-            // avisa igual y deja rastro en consola -- mismo patron que
-            // loadState). Los 2 vistos en rojo contra el catch {} anterior
-            // (revertido a mano para confirmarlo, luego restaurado). Medido:
-            // 660 passed, 0 fallidos, 73 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 660) {
-              console.error("PISO ROTO: se esperaban 660 tests de vitest CORRIDOS y 0 fallidos.");
+            // 535 -> 569 el 2026-09-17 (frente B, kill switch real, rebasado
+            // sobre c414eba): KillSwitch.test.jsx (2 -> 13), useJaxStore.killSwitch
+            // (+8, Ruling R5), client.killSwitch (+3), BottomBar.errores (+1, 423
+            // traducido), RightPanel (+1, 423 al reanudar), aviso de error que
+            // sigue al freno, foco y ruta heredada (Tasks 9/H y revisión final).
+            // Re-medido dos veces tras el rebase (no sumado a ojo): 569 passed,
+            // 0 fallidos, 69 archivos.
+            // 569 -> 693 el 2026-09-17 (pre-vuelo y continuar, spec
+            // 2026-09-17, merge de master con frente B): +125 de la rama
+            // (api/errores, PipelineModal pre-vuelo y confirmación,
+            // ContinuarPipelineModal, RightPanel detenidos, lib/moneda,
+            // lib/nombreDeFaceta, store pipelineContinued, AdminSettings umbral,
+            // pipelineChain clean-room por pasos, useWebSocket recarga al
+            // reconectar, api/websocket) y -1: el test de activateKillSwitch de
+            // la rama se borró porque el frente B eliminó esa acción. Medido tras
+            // el merge: 693 passed, 0 fallidos, 75 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 693) {
+              console.error("PISO ROTO: se esperaban 693 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -689,15 +677,17 @@ jobs:
       # aca tambien para que el paso del esquema de Jacobs (que no pasa por
       # conftest) apunte a la misma base y no a `jax_memory`.
       JAX_DB_NAME: jax_memory_test
-      # api/chat.py lee el config.toml del repo `jax`. Por default lo busca en
-      # ~/jax/config/config.toml, que existe en hall9000 y no en un runner --
-      # 30 tests caian con FileNotFoundError hasta que se hizo configurable.
-      # Apunta al clon que hace el paso de mas abajo.
+      # api/chat.py lee el config.toml del repo `jax`. Obligatoria y absoluta
+      # desde el 2026-09-16 (config_entorno.ruta_absoluta_requerida): sin ella
+      # api/chat.py no se importa. Antes tenia default ~/jax/config/config.toml,
+      # que existe en hall9000 y no en un runner (30 tests caian con
+      # FileNotFoundError). Apunta al clon que hace el paso de mas abajo.
       JAX_CONFIG_PATH: /tmp/jax/config/config.toml
       # shadow_validation.py importa policy/governance/ del repo `jax` por
       # sys.path. Mismo caso que JAX_CONFIG_PATH: sin esto son 9 tests con
       # "ModuleNotFoundError: No module named 'claims'".
       JAX_REPO_PATH: /tmp/jax
+      JAX_OLLAMA_URL: http://127.0.0.1:11434
       # Credenciales FICTICIAS, a proposito. `_query_facet` resuelve la
       # credencial del proveedor para todo transport que no sea ollama o
       # subprocess; sin ninguna, 12 tests reciben "sin binding activo
@@ -1481,40 +1471,81 @@ jobs:
           # token_version ni password_hash). Mismo hueco ambiental (1 failed de
           # grounding), 1 skip. Medido dos veces: 1386 passed / 1 failed / 1
           # skipped.
-          # 1386 -> 1581 el 2026-09-17 (pre-vuelo y continuar): +194
-          # colectados contra 442da49 (--collect-only por archivo):
-          # test_pipelines_continuar (+84), test_pipelines_prevuelo (+48),
-          # test_pipelines_propagacion (+31), test_ajuste_confirmar_costo
-          # (+17), test_motor_tope_catalogo (+5), test_prevuelo_esquema (+5),
-          # test_prevuelo_datos_medidos (+4). La base 442da49 ya medía 1387
-          # passed / 0 failed / 1 skipped (el failed de grounding dejó de
-          # fallar): 1387 + 194 = 1581. Vistos en rojo contra accc641.
-          # Medido dos veces en hall9000: 1577 passed / 4 failed / 1 skipped;
-          # los 4 (test_chat_facet_validation x2, test_facet_model_wiring x2,
-          # 502 faceta_error 'api_url') fallan también solos y sin otro pytest
-          # sobre la DB: jax 3b2887d (E-21) sacó api_url del config.toml y el
-          # arreglo del lado plataforma (JAX_OLLAMA_URL) está en master c53ef30
-          # (#92), que esta rama recibe al rebasar. Con el config.toml de jax
-          # 3b2887d^ la suite entera da 1581 passed / 0 failed / 1 skipped.
-          # 1581 -> 1615 el 2026-09-17 (revisión final de pre-vuelo y
-          # continuar), por junit contra la medición de la Task 12:
-          # test_pipelines_continuar (+19: reasignar con tope, causa sin repr,
-          # EXPLAIN con idx_events_pipeline_tipo) y test_pipelines_prevuelo
-          # (+15: objective al pre-vuelo, montos de 6 decimales, 403 con
-          # detalle texto). Medido en hall9000: 1611 passed / 4 failed / 1
-          # skipped; los 4 son los mismos de api_url de arriba (se arreglan
-          # con el rebase sobre c53ef30), así que el piso es 1611 + 4 = 1615.
-          # 1615 -> 1617 el 2026-09-17 (residuos de la ronda final, ítem d):
-          # +2 en test_pipelines_prevuelo.py, parametrizado (objective null y
-          # objective ausente normalizan a "" tanto en /preflight como en el
-          # body que se manda a POST /jacobs/pipeline -- antes el body sin
-          # normalizar reenviaba null y Jacobs respondía 422). Ninguno pide
-          # `client`. Visto en rojo contra el create_pipeline anterior
-          # (None/KeyError donde se esperaba ""). Medido con DB (sin
-          # JAX_CI_NO_DB): 65 passed en test_pipelines_prevuelo.py (59 + 6
-          # que antes se saltaban sin DB), archivo suelto -- el piso de la
-          # suite completa sube igual: 1615 + 2 = 1617.
-          PISO_PASSED = 1617
+          # 1386 -> 1392 el 2026-09-17 (migraciones sin JWT): +6 en
+          # test_migraciones_sin_jwt.py (auth/constantes.py sin efectos al
+          # importarse; el job jacobs-gobernanza-db de jax corre las
+          # migraciones sin JAX_JWT_SECRET). Vistos en rojo contra accc641.
+          # Mismo hueco ambiental (1 failed de grounding), 1 skip. Medido dos
+          # veces: 1392 passed / 1 failed / 1 skipped.
+          # 1392 -> 1403 el 2026-09-17 (frente E, rebase sobre 2bb90b2): +11 en
+          # test_arranque_exige_ollama_url.py (lifespan valida JAX_OLLAMA_URL
+          # antes de abrir el pool, url_requerida rechaza path/query/esquema,
+          # control del conftest); no se solapa con migraciones sin JWT
+          # (archivo distinto). Mismo hueco ambiental (1 failed de
+          # grounding), 1 skip. Re-medido dos veces tras el rebase (no sumado
+          # a ojo): 1403 passed / 1 failed / 1 skipped.
+          # 1403 -> 1423 el 2026-09-17 (unificación config_de_entorno ->
+          # config_entorno, rebase sobre 2bb90b2): +23 en
+          # test_config_entorno_fuente_unica.py (política sin el módulo
+          # viejo, con controles del escaneo, y equivalencia de
+          # ruta_requerida contra ruta_absoluta_requerida) y -3 movidos desde
+          # test_rutas_de_entorno.py (neto +20). Re-medido dos veces tras el
+          # rebase (no sumado a ojo); el +1 de grounding, si aparece, sigue
+          # sin entrar al piso por ser ambiental.
+          # 1423 -> 1426 el 2026-09-17 (fix/fijar-pymysql, incidente
+          # escape_dict): +3 en test_pymysql_escape_dict_pin.py (pin exacto
+          # de aiomysql==0.3.2/PyMySQL==1.2.0 + tripwire de import), ninguno
+          # pide `client` así que corren igual con DB. Medido localmente
+          # contra jax_memory_test (esquema de desarrollo, no producción):
+          # 1426 passed / 1 failed / 1 skipped -- el failed es un hueco
+          # ambiental de ESTA base local (test_seed_kimi_y_ada_como_motor,
+          # dato de motor `kimi` corrido por sesiones anteriores en este
+          # mismo esquema persistente, no un esquema fresco como el del
+          # runner de CI) y no se le suma holgura al piso por él: el
+          # controlador que corra esto en un esquema fresco lo vuelve a
+          # medir. Skip count sin cambios (1: gpt-5.6-terra).
+          # 1426 -> 1486 el 2026-09-17 (frente B, kill switch real, rebasado
+          # sobre c414eba): test_interruptor_arranque, test_kill_switch,
+          # test_kill_switch_endpoints, test_kill_switch_mesa,
+          # test_kill_switch_heredada y la revisión final (Tasks 2/6/7/8/H),
+          # más test_conftest_sin_servicios_de_produccion (+2: la suite ya no
+          # sondea LAS MANOS :7777 ni la plataforma :8080 de producción) y
+          # test_facet_canary_freno (+5: con el freno puesto la sonda de
+          # facetas no llama a proveedores). Re-medido dos veces tras el
+          # rebase (no sumado a ojo), idéntico: 1486 passed / 1 failed / 1
+          # skipped. El failed es el mismo hueco ambiental de la nota anterior
+          # (test_seed_kimi_y_ada_como_motor, dato de `kimi` en el esquema
+          # persistente local) y no entra al piso.
+          # 1486 -> 1499 el 2026-09-17 (Ejecutor SP1 plan 1): +13 en
+          # test_ejecutor_tablas.py (tablas ejecutor_host/regla/
+          # punto_restauracion, semilla de 14 reglas UNA vez, edad de C2 sin
+          # pisar, inventario desde JAX_EJECUTOR_INVENTARIO sin tumbar ni
+          # marcar si falta o está mal, EXPLAIN con idx_ejecutor_punto_host_fecha).
+          # Medido local: 1499 passed / 1 failed / 1 skipped (el failed, el
+          # mismo hueco ambiental de test_seed_kimi_y_ada_como_motor).
+          # 1499 -> 1507 el 2026-09-17 (fix/interruptor-stat-explicito): +8 en
+          # test_interruptor_stat.py (directorio del freno y de la heredada
+          # ilegibles, os.stat con EACCES/EIO/ELOOP => PUESTO, ausente =>
+          # SUELTO). Vistos en rojo con `pausa_presente` mutado a
+          # `Path.exists()` (7 failed / 1 passed, 3.14). Medido local contra
+          # jax_memory_test: 1507 passed / 1 failed / 1 skipped (el failed, el
+          # mismo hueco ambiental de test_seed_kimi_y_ada_como_motor).
+          # 1507 -> 1509 el 2026-09-17 (Ejecutor SP1 plan 4, config de C5, rebase
+          # sobre #98): +2 en test_ejecutor_config_c5.py (semilla sin pisar con
+          # `client`; compuerta de datos de clientes nace cerrada, puro). Visto en
+          # rojo con dos mutaciones (compuerta en "true"; REPLACE en vez de INSERT IGNORE).
+          # 1509 -> 1520 el 2026-09-17 (Ejecutor SP3, carril de la Mesa): los +11
+          # puros de test_carril_mesa.py también corren con DB. Medido local contra
+          # jax_memory_test: 1520 passed / 1 failed / 1 skipped (el failed, el mismo
+          # hueco ambiental de test_seed_kimi_y_ada_como_motor).
+          # 1520 -> 1751 el 2026-09-17 (pre-vuelo y continuar, merge de master):
+          # +231 de la rama (test_pipelines_continuar, test_pipelines_prevuelo,
+          # test_pipelines_propagacion, test_ajuste_confirmar_costo,
+          # test_motor_tope_catalogo, test_prevuelo_esquema,
+          # test_prevuelo_datos_medidos y ajustes de tests existentes), vistos en
+          # rojo contra accc641. Medido tras el merge contra jax_memory_test:
+          # 1751 passed / 0 failed / 1 skipped.
+          PISO_PASSED = 1751
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1581,6 +1612,7 @@ jobs:
       # Obligatoria desde el 2026-09-16 (frente A, A-55): api/chat.py no se
       # importa sin ella. Apunta al clon del paso "Traer el repo jax".
       JAX_CONFIG_PATH: /tmp/jax/config/config.toml
+      JAX_OLLAMA_URL: http://127.0.0.1:11434
       # Piso de cobertura. Si baja de acá, el job falla (ver el paso final).
       # Subido de 85 a 93 en Task 4 (sonda activa de facets, 2026-08-27):
       # backend/tests/test_facet_canary.py agrega 8 tests sin DB, medido
@@ -2030,28 +2062,56 @@ jobs:
       # 2026-09-17 (frente C, revisión final): los 5 tests nuevos piden
       # `client`, así que el piso no se mueve y los skips suben 596 -> 601.
       # Medido con JAX_CI_NO_DB=1: 787 passed / 601 skipped.
-      # 787 -> 958 el 2026-09-17 (pre-vuelo y continuar): +171 puros por
-      # junit contra 442da49 -- test_pipelines_continuar (+77),
-      # test_pipelines_prevuelo (+43), test_pipelines_propagacion (+31),
-      # test_ajuste_confirmar_costo (+14), test_prevuelo_esquema (+3),
-      # test_prevuelo_datos_medidos (+2), test_motor_tope_catalogo (+1); los
-      # que piden `client` se saltean (skips 601 -> 624, +23). Vistos en rojo
-      # contra accc641. Medido dos veces con JAX_CI_NO_DB=1: 958 passed / 624
-      # skipped.
-      # 958 -> 989 el 2026-09-17 (revisión final de pre-vuelo y continuar),
-      # por junit contra la Task 12: test_pipelines_continuar (+17) y
-      # test_pipelines_prevuelo (+14); los 3 nuevos que piden `client`
-      # (EXPLAIN con el índice compuesto, reasignar y objetivo por HTTP) se
-      # saltean (skips 624 -> 627). Medido con JAX_CI_NO_DB=1: 989 passed /
-      # 627 skipped.
-      # 989 -> 991 el 2026-09-17 (residuos de la ronda final, ítem d): +2 en
-      # test_pipelines_prevuelo.py (objective null/ausente normaliza a "" en
-      # /preflight y en el body de POST /jacobs/pipeline), parametrizado,
-      # ninguno pide `client` (usan _crear -> mod.create_pipeline directo,
-      # puro). Medido con JAX_CI_NO_DB=1 sobre el archivo suelto: 59 passed /
-      # 6 skipped (antes 57 / 6); los skips no se mueven, así que el piso de
-      # la suite sube igual: 989 + 2 = 991.
-      JAX_CI_MIN_PASSED: "991"
+      # 787 -> 793 el 2026-09-17 (migraciones sin JWT): +6 puros en
+      # test_migraciones_sin_jwt.py (db.migrations, ajustes y auth.constantes
+      # se importan sin JAX_JWT_SECRET con el env del job jacobs-gobernanza-db
+      # de jax; auth.jwt y main siguen fallando cerrado; una sola vida del
+      # access token). Vistos en rojo contra accc641 (4 failed / 2 passed).
+      # Skips sin cambio. Medido con JAX_CI_NO_DB=1: 793 passed / 601 skipped.
+      # 793 -> 804 el 2026-09-17 (frente E, rebase sobre 2bb90b2): +11 puros en
+      # test_arranque_exige_ollama_url.py; no se solapa con migraciones sin
+      # JWT (archivo distinto); ninguno pide `client`, los skips no se
+      # mueven. Re-medido dos veces tras el rebase (no sumado a ojo): 804
+      # passed / 601 skipped.
+      # 804 -> 824 el 2026-09-17 (unificación config_de_entorno ->
+      # config_entorno, rebase sobre 2bb90b2): +23 puros en
+      # test_config_entorno_fuente_unica.py, -3 puros movidos desde
+      # test_rutas_de_entorno.py (neto +20); los skips no se mueven.
+      # Re-medido dos veces tras el rebase (no sumado a ojo).
+      # 824 -> 827 el 2026-09-17 (fix/fijar-pymysql, incidente escape_dict):
+      # +3 puros en test_pymysql_escape_dict_pin.py (pin exacto de
+      # aiomysql==0.3.2/PyMySQL==1.2.0 en requirements.txt + tripwire de que
+      # import aiomysql no truena y pymysql.converters.escape_dict existe).
+      # Ninguno pide `client`, los skips no se mueven. Medido con
+      # JAX_CI_NO_DB=1: 827 passed / 601 skipped.
+      # 827 -> 879 el 2026-09-17 (frente B, kill switch real, rebasado sobre
+      # c414eba): +45 puros de las Tasks 2/6/8/H y la revisión final
+      # (test_interruptor_arranque, test_kill_switch, test_kill_switch_mesa,
+      # test_kill_switch_heredada), +2 en
+      # test_conftest_sin_servicios_de_produccion y +5 en
+      # test_facet_canary_freno; los skips suben 601 -> 609 (tests con
+      # `client`). Re-medido dos veces tras el rebase con JAX_CI_NO_DB=1,
+      # idéntico: 879 passed / 609 skipped.
+      # 879 -> 885 el 2026-09-17 (Ejecutor SP1 plan 1, tablas de C1/C2): +6
+      # puros en test_ejecutor_tablas.py (parsear_inventario rechaza lo mal
+      # formado); los otros 7 del archivo piden `client` y suben los skips
+      # 609 -> 616. Medido con JAX_CI_NO_DB=1: 885 passed / 616 skipped.
+      # 885 -> 893 el 2026-09-17 (fix/interruptor-stat-explicito): +8 puros
+      # en test_interruptor_stat.py; ninguno pide `client`, los skips no se
+      # mueven. Medido dos veces con JAX_CI_NO_DB=1: 893 passed / 616 skipped.
+      # 893 -> 894 el 2026-09-17 (Ejecutor SP1 plan 4, config de C5, rebase sobre
+      # #98): +1 puro en test_ejecutor_config_c5.py; el otro pide `client` y sube
+      # los skips 616 -> 617.
+      # 894 -> 905 el 2026-09-17 (Ejecutor SP3, carril de la Mesa, rebase sobre C5):
+      # +11 puros en test_carril_mesa.py (la llamada a Ollama va dentro del carril y
+      # lo suelta, también si falla; espera a otro PROCESO sin congelar el loop; sin
+      # JAX_PROXY_CARRIL_RAIZ no hay llamada ni arranque; toda llamada a Ollama del
+      # backend dentro del carril; conftest aísla el carril de producción; copia de
+      # Motivo). Vistos en rojo antes.
+      # 905 -> 1109 el 2026-09-17 (pre-vuelo y continuar, merge de master): +204
+      # puros de la rama (los que piden `client` se saltean). Medido tras el merge
+      # con JAX_CI_NO_DB=1: 1109 passed / 643 skipped.
+      JAX_CI_MIN_PASSED: "1109"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

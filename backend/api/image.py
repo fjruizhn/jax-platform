@@ -2,8 +2,8 @@ import base64
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import httpx
-from auth.middleware import get_current_user
 from auth.models import AuthUser
+from kill_switch import exigir_mesa_libre
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from http_client import get_http_client
 from api.admin.usage import record_usage, validar_ids_de_uso
@@ -22,7 +22,7 @@ class ImageResponse(BaseModel):
 
 
 @router.post("/image/generate", response_model=ImageResponse)
-async def generate_image(req: ImageRequest, user: AuthUser = Depends(get_current_user)):
+async def generate_image(req: ImageRequest, user: AuthUser = Depends(exigir_mesa_libre)):
     # Task 7: antes de la credencial y del proveedor (0,04 USD por imagen).
     validar_ids_de_uso(user.user_id, user.tenant_id)
     try:

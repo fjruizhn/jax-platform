@@ -168,6 +168,8 @@ export default {
     plan_inconsistente: () => 'The saved pipeline plan is inconsistent: it cannot be continued.',
     no_existe: () => 'The pipeline does not exist in Jacobs.',
     kill_switch: () => 'The kill switch is active: nothing runs until it is turned off.',
+    // Frente B (2026-09-17): 423 from chat, image, command and pipelines with the brake on.
+    kill_switch_activo: () => 'Kill switch active: JAX is stopped',
   },
   reglasPrevuelo: {
     tope_insuficiente: (v) => `${lugarDelPaso(v)}: the model's output limit is not enough for this task.`,
@@ -232,7 +234,6 @@ export default {
 
   // Kill switch
   killSwitchActive: 'KILL SWITCH ACTIVE',
-  killConfirm: 'Confirm?',
   killConfirmYes: 'YES, STOP ALL',
   // Product term (like eyeKillSwitch): same value in both languages.
   killButton: 'KILL',
@@ -241,7 +242,18 @@ export default {
   cancel: 'Cancel',
   killTitle: 'Kill Switch — stops all processes',
   killSwitchToast: 'KILL SWITCH ACTIVATED',
-  killSwitchStoppedToast: 'KILL SWITCH ACTIVATED — all processes stopped',
+  killConfirmTitle: 'Stop everything',
+  killConfirmMessage: 'The Mesa and everything running in LAS MANOS and Jacobs stop. Work in flight is aborted.',
+  killResumeButton: 'Resume',
+  killResumeTitle: 'Resume JAX',
+  killResumeMessage: 'The Mesa, LAS MANOS and Jacobs accept work again. Aborted work does not resume by itself.',
+  killResumeConfirm: 'Yes, resume',
+  killSwitchReleasedToast: 'Kill switch released: JAX accepts work',
+  killSwitchErrorActivar: 'Could not activate the kill switch',
+  killSwitchErrorReanudar: 'Could not resume',
+  killSwitchErrorNoEscribible: 'The server cannot write the switch: nothing changed',
+  killSwitchErrorAuditoria: 'The brake stayed on, but the audit failed: check the server log',
+  killSwitchHeredada: 'The brake is still on through the old path /etc/jax/PAUSE: remove it on the server',
 
   // Store event toasts (WS handleEvent)
   humanGateRequestedToast: (id) => `Jacobs is waiting for approval — pipeline ${id}`,

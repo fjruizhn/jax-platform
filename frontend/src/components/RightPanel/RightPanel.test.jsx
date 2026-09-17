@@ -10,7 +10,7 @@ vi.mock('../../api/client', () => ({ default: { post: vi.fn(), get: vi.fn() } })
 
 import api from '../../api/client'
 import RightPanel from './RightPanel'
-import { I18nProvider } from '../../i18n/index.jsx'
+import { I18nProvider, useI18n } from '../../i18n/index.jsx'
 import { useJaxStore } from '../../store/useJaxStore'
 import es from '../../i18n/es.js'
 import en from '../../i18n/en.js'
@@ -87,6 +87,24 @@ describe('RightPanel -- los fallos de Aprobar y Cancelar se ven', () => {
     renderPanel()
     fireEvent.click(screen.getByRole('button', { name: es.approve }))
     expect(await screen.findByRole('alert')).toHaveTextContent(es.approveError)
+  })
+
+  // Frente B, Task 9 (2026-09-17, Ruling R4): reanudar con el freno puesto
+  // responde 423 kill_switch_activo. Se dice traducido (y sigue el idioma).
+  it('si /resume responde 423 del kill switch, el aviso lo dice traducido y sigue al idioma', async () => {
+    api.post.mockRejectedValue({ response: { status: 423, data: { detail: 'kill_switch_activo' } } })
+    let cambiarIdioma
+    function Idioma() {
+      cambiarIdioma = useI18n().setLang
+      return null
+    }
+    render(<I18nProvider><Idioma /><RightPanel /></I18nProvider>)
+    fireEvent.click(screen.getByRole('button', { name: es.approve }))
+    const alerta = await screen.findByRole('alert')
+    expect(alerta).toHaveTextContent(es.erroresMesa.kill_switch_activo())
+    expect(alerta).not.toHaveTextContent('kill_switch_activo')
+    act(() => cambiarIdioma('en'))
+    expect(screen.getByRole('alert')).toHaveTextContent(en.erroresMesa.kill_switch_activo())
   })
 
   it('si /cancel falla, aparece el aviso', async () => {

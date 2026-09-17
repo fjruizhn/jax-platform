@@ -6,6 +6,13 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+# El freno primero (2026-09-16, frente B): sin JAX_KILL_SWITCH_PATH la
+# plataforma no sabe dónde escribir ni dónde mirar el kill switch, y una Mesa
+# sin freno no arranca. Lanza InterruptorSinConfigurar y uvicorn sale con
+# error: systemd lo muestra en el journal.
+import interruptor
+interruptor.ruta_del_interruptor()
+
 # Debe correr antes de importar cualquier router: systemd carga
 # /etc/jax/.env vía EnvironmentFile con las API keys de proveedor ya
 # cifradas (ver crypto_secrets.py); esto las deja en texto plano en
@@ -61,7 +68,7 @@ from api.state import router as state_router
 from api.facets import router as facets_router
 from api.pipelines import router as pipelines_router
 from api.events import router as events_router
-from api.chat import router as chat_router
+from api.chat import router as chat_router, _raiz_del_carril, _url_de_ollama
 from api.command import router as command_router
 from api.audit import router as audit_router
 from api.image import router as image_router
@@ -80,6 +87,7 @@ from api.admin import (
     facet_bindings_router,
     admin_motors_router,
     smtp_router,
+    kill_switch_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +95,14 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Revisión final del frente E (2026-09-16): JAX_OLLAMA_URL se valida ANTES
+    # de abrir nada. Antes solo se leía en el turno del chat (y el embedding de
+    # la memoria tragaba el error): el servicio arrancaba sano y fallaba delante
+    # del usuario. Sin una URL base válida, EntornoInvalido y no arranca.
+    _url_de_ollama()
+    # SP3 del Ejecutor (2026-09-17): sin directorio del carril la Mesa no puede tomar su
+    # prioridad sobre el Ejecutor. Mismo criterio que JAX_OLLAMA_URL: no arranca.
+    _raiz_del_carril()
     await get_pool()
     await get_http_client()
     await run_migrations()
@@ -159,6 +175,7 @@ ROUTERS = (
     facet_bindings_router,
     admin_motors_router,
     smtp_router,
+    kill_switch_router,
     apariencia_router,
 )
 for _router in ROUTERS:

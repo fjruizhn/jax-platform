@@ -44,6 +44,10 @@ async function tokenTrasCambioDePassword(config) {
 // backend niega todo salvo /me, /me/password, /refresh y /logout con este 403.
 const CAMBIO_REQUERIDO = 'cambio_de_password_requerido'
 
+// Kill switch (2026-09-16, frente B): chat, imagen, comando y pipelines
+// responden 423 con este código cuando el freno está puesto.
+const KILL_SWITCH_ACTIVO = 'kill_switch_activo'
+
 const api = axios.create({
   baseURL: '/api',
   withCredentials: true,
@@ -63,6 +67,12 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
+    // Kill switch (2026-09-16, frente B): cualquier pedido frenado enciende el
+    // aviso, aunque el WS se haya perdido el evento. Sin reintento.
+    if (err.response?.status === 423 && codigoDe(err) === KILL_SWITCH_ACTIVO) {
+      useJaxStore.setState({ killSwitchActive: true })
+      return Promise.reject(err)
+    }
     // U34: sin refresh ni reintento (el token vale; reintentar daría otro 403).
     // Se prende la marca y RequireAuth desmonta la app y muestra el cambio
     // obligatorio: ya no sale ningún pedido más, así que no hay bucle.

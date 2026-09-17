@@ -122,9 +122,9 @@ import math
 import os
 import sys
 
-from config_de_entorno import ruta_requerida
+from config_entorno import ruta_absoluta_requerida
 
-JAX_REPO = ruta_requerida("JAX_REPO_PATH")
+JAX_REPO = ruta_absoluta_requerida("JAX_REPO_PATH")
 if str(JAX_REPO) not in sys.path:
     sys.path.insert(0, str(JAX_REPO))
 if str(JAX_REPO / "policy" / "governance") not in sys.path:

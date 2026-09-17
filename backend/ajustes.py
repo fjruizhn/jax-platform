@@ -35,7 +35,7 @@ from typing import Awaitable, Callable
 
 from fastapi.responses import JSONResponse
 
-from auth.jwt import ACCESS_EXPIRE_SECONDS
+from auth.constantes import ACCESS_EXPIRE_SECONDS
 from auth.rate_limit import exigir_un_solo_proceso
 from db.connection import get_pool
 from validacion import tiene_caracteres_de_control

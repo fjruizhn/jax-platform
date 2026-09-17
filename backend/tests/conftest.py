@@ -24,6 +24,28 @@ for _k, _v in _load_env().items():
 
 os.environ["JAX_DB_NAME"] = "jax_memory_test"
 
+# Revisión final del frente E (2026-09-16): el lifespan de la app no arranca sin
+# una JAX_OLLAMA_URL válida, y el fixture `client` lo levanta. Se FIJA (no
+# setdefault) a un host `.invalid` (RFC 6761, nunca resuelve), después de cargar
+# /etc/jax/.env: con el valor de producción, un test que olvide parchear el
+# transporte le pegaría al Ollama vivo; así falla con un error de DNS. Un test
+# que necesite otro valor hace monkeypatch.setenv.
+os.environ["JAX_OLLAMA_URL"] = "http://ollama.invalid:11434"
+
+# Servicios que la app sondea (2026-09-17, hallazgo de la carga del frente B):
+# el fixture `client` arranca el lifespan, que lanza `_poll_las_manos`
+# (GET {LAS_MANOS_URL}/health cada 30 s) y `_poll_pipelines`; el tablero de
+# admin sondea JAX_PLATFORM_URL. Con el setdefault de arriba eran LAS MANOS
+# (:7777) y la plataforma (:8080) de PRODUCCIÓN. Se FIJAN (no setdefault) a un
+# puerto local donde no escucha nada (9, discard): la conexión se rechaza al
+# instante, sin salir del host ni dejar TIME-WAIT. Van antes de cualquier
+# import: jax_engine.state y api.pipelines leen la variable al importarse.
+# Control: tests/test_conftest_sin_servicios_de_produccion.py.
+DESTINO_DE_SERVICIO_INVALIDO = "http://127.0.0.1:9"
+os.environ["LAS_MANOS_URL"] = DESTINO_DE_SERVICIO_INVALIDO
+os.environ["JACOBS_URL"] = f"{DESTINO_DE_SERVICIO_INVALIDO}/jacobs"
+os.environ["JAX_PLATFORM_URL"] = DESTINO_DE_SERVICIO_INVALIDO
+
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
 # aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture
 # `client` es de sesión y arranca la app -- y con ella run_migrations, que
@@ -45,6 +67,33 @@ os.environ["JAX_FACET_SEAL_PATH"] = os.path.join(
 # cualquier import: cola.py lee la variable en cada llamada, así que un test
 # que quiera su propio directorio igual puede hacer monkeypatch.setenv.
 os.environ["JAX_USAGE_SPOOL_DIR"] = tempfile.mkdtemp(prefix="jax-test-respaldo-uso-")
+
+# Carril de la Mesa aislado para TODA la sesión (2026-09-17, SP3 del Ejecutor),
+# por la misma razón que el sello y el respaldo: /etc/jax/.env define
+# JAX_PROXY_CARRIL_RAIZ=/var/lib/jax-carril, el directorio REAL que sondea el
+# proxy del Ejecutor. Un test que llame a _call_ollama tomaría ese mesa.lock y
+# frenaría al Ejecutor de producción mientras dura. Asignación, no setdefault.
+# Control: tests/test_carril_mesa.py::test_los_tests_no_usan_el_carril_de_produccion.
+RAIZ_DEL_CARRIL_DE_PRUEBA = tempfile.mkdtemp(prefix="jax-test-carril-")
+os.environ["JAX_PROXY_CARRIL_RAIZ"] = RAIZ_DEL_CARRIL_DE_PRUEBA
+
+# Kill switch aislado para TODA la sesión (2026-09-16, frente B), por la misma
+# razón que el sello y el respaldo: /etc/jax/.env define JAX_KILL_SWITCH_PATH
+# y el setdefault de arriba la cargaría. Un test que active el freno contra
+# esa ruta detendría LAS MANOS, Jacobs y el REPL de producción. Asignación,
+# no setdefault. main.py exige la variable al importarse.
+RUTA_DEL_FRENO_DE_PRUEBA = os.path.join(
+    tempfile.mkdtemp(prefix="jax-test-interruptor-"), "PAUSE")
+os.environ["JAX_KILL_SWITCH_PATH"] = RUTA_DEL_FRENO_DE_PRUEBA
+FRENO_DE_PRODUCCION = "/etc/jax/interruptor"
+import time as _time  # noqa: E402
+INICIO_DE_SESION = _time.time()
+# La ruta heredada del freno (Task H), tomada del módulo ANTES de que el
+# fixture de abajo la desvíe en cada test. Es un ARCHIVO, no un directorio:
+# se anota si existía al empezar para distinguir "apareció" de "ya estaba".
+import interruptor as _interruptor  # noqa: E402
+HEREDADA_DE_PRODUCCION = str(_interruptor.RUTA_HEREDADA)
+HEREDADA_EXISTIA_AL_INICIO = os.path.lexists(HEREDADA_DE_PRODUCCION)
 
 # Rutas de datos aisladas (2026-09-16, frente A, A-55), por la misma razón
 # que el sello y el respaldo de uso: api/command.py, api/audit.py y
@@ -514,3 +563,76 @@ def ajustes_en_db(client):
     for clave, valor in antes.items():
         client.portal.call(sql, "INSERT INTO axioma_config (config_key, config_value) VALUES (%s, %s)", (clave, valor))
     ajustes.invalidar()
+
+
+@pytest.fixture(autouse=True)
+def _ruta_heredada_del_freno_aislada(monkeypatch, tmp_path_factory):
+    """La ruta vieja del freno (Task H del frente B, 2026-09-17) es una
+    constante de `interruptor`, no una variable (ruling R15): se desvía acá,
+    en CADA test, a un temporal que no existe. Sin esto, un host con la ruta
+    vieja puesta daría vuelta todos los tests de "freno suelto" (y la Mesa
+    respondería 423 en toda la suite). También se reinicia el anti-spam del
+    WARNING para que un test no herede el aviso de otro. Un test que necesite
+    la heredada la apunta a su tmp_path con monkeypatch. La barrera de sesión
+    de abajo no cambia."""
+    import interruptor
+
+    monkeypatch.setattr(interruptor, "RUTA_HEREDADA", tmp_path_factory.mktemp("jax-test-heredada") / "PAUSE")
+    monkeypatch.setattr(interruptor, "_heredada_avisada", False)
+
+
+@pytest.fixture(autouse=True)
+def _freno_suelto_entre_tests():
+    """Ningún test hereda el freno puesto por otro. Estructural, como el
+    aislamiento del sello."""
+    yield
+    try:
+        os.unlink(RUTA_DEL_FRENO_DE_PRUEBA)
+    except FileNotFoundError:  # fail-soft: el test no puso el freno; no hay nada que quitar
+        pass
+
+
+def cambios_del_freno_de_produccion(directorio, archivo, inicio, archivo_existia):
+    """Qué tocó la sesión en el freno de producción. Sólo LEE (stat/scandir):
+    nunca crea nada. Revisión final del frente B (2026-09-17): antes se miraba
+    sólo el directorio; la ruta heredada es un archivo suelto y quedaba afuera.
+
+    - `directorio`: su propio mtime (altas y bajas de entradas) y el de cada
+      entrada. Que no exista son 0 cambios (el runner de CI).
+    - `archivo`: apareció (no existía al inicio), desapareció, o su mtime
+      es de esta sesión."""
+    cambios = []
+    try:
+        propio = os.stat(directorio)
+    except FileNotFoundError:
+        propio = None
+    if propio is not None:
+        if propio.st_mtime >= inicio:
+            cambios.append(str(directorio))
+        try:
+            entradas = list(os.scandir(directorio))
+        except PermissionError:  # fail-soft: sin permiso de listar, el mtime del directorio (ya mirado) delata altas y bajas
+            entradas = []
+        cambios += [e.path for e in entradas
+                    if e.stat(follow_symlinks=False).st_mtime >= inicio]
+    try:
+        estado = os.lstat(archivo)
+    except FileNotFoundError:
+        if archivo_existia:
+            cambios.append(f"{archivo} (desapareció)")
+        return cambios
+    if not archivo_existia or estado.st_mtime >= inicio:
+        cambios.append(str(archivo))
+    return cambios
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Barrera verificable: si durante la sesión apareció o cambió algo en el
+    freno de producción (el directorio del interruptor o la ruta heredada),
+    la corrida falla. En el runner no existen (0 cambios, no un error)."""
+    cambios = cambios_del_freno_de_produccion(
+        FRENO_DE_PRODUCCION, HEREDADA_DE_PRODUCCION, INICIO_DE_SESION, HEREDADA_EXISTIA_AL_INICIO)
+    if cambios:
+        print(f"\nBARRERA DEL KILL SWITCH: la suite tocó el freno de producción: {cambios}",
+              file=__import__("sys").stderr)
+        session.exitstatus = 1

@@ -6,7 +6,7 @@ import AuditLog from './AuditLog'
 import api from '../../api/client'
 import AlertaError from '../AlertaError'
 import ContinuarPipelineModal from './ContinuarPipelineModal'
-import { textoDeCausa } from '../../api/errores'
+import { textoDeCausa, textoDeErrorDeMesa } from '../../api/errores'
 
 // Estados que se pueden continuar (spec 2026-09-17 §5.2 regla 2).
 const CONTINUABLES = ['aborted', 'expired']
@@ -46,9 +46,12 @@ function RightPanel() {
   const [tab, setTab] = useState('pipelines')
   const [cancelling, setCancelling] = useState(false)
   // Último fallo de Aprobar/Cancelar (2026-09-14): antes solo iba a
-  // console.error y en la interfaz no pasaba nada. Guarda la clave de i18n
-  // (no el texto, para que un cambio de idioma lo traduzca) y el pipeline al
-  // que pertenece: sobre otro pipeline no significa nada.
+  // console.error y en la interfaz no pasaba nada. Guarda la clave de i18n y
+  // el error (no el texto, para que un cambio de idioma lo traduzca) y el
+  // pipeline al que pertenece: sobre otro pipeline no significa nada.
+  // Frente B (2026-09-17, Ruling R4): el error se traduce con
+  // textoDeErrorDeMesa, así un 423 kill_switch_activo (o cualquier código de
+  // la Mesa) se dice con su texto; la clave queda como genérico.
   const [aviso, setAviso] = useState(null)
 
   // Pipelines detenidos que se pueden continuar (spec 2026-09-17 §6.2).
@@ -95,7 +98,7 @@ function RightPanel() {
       await api.post(`/pipelines/${pipelineId}/resume`)
     } catch (e) {
       console.error('resume failed', e)
-      setAviso({ pipelineId, clave: 'approveError' })
+      setAviso({ pipelineId, clave: 'approveError', error: e })
     }
   }
 
@@ -106,7 +109,7 @@ function RightPanel() {
       await api.post(`/pipelines/${pipelineId}/cancel`)
     } catch (e) {
       console.error('cancel failed', e)
-      setAviso({ pipelineId, clave: 'cancelError' })
+      setAviso({ pipelineId, clave: 'cancelError', error: e })
     } finally {
       setCancelling(false)
     }
@@ -201,7 +204,7 @@ function RightPanel() {
 
               {avisoVigente && (
                 <AlertaError className="mt-2 text-xs">
-                  {t[avisoVigente.clave] ?? t.statusError}
+                  {textoDeErrorDeMesa(t, avisoVigente.error, t[avisoVigente.clave] ?? t.statusError)}
                 </AlertaError>
               )}
 

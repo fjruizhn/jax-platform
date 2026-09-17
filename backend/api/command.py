@@ -10,7 +10,8 @@ from pydantic import BaseModel
 
 from auth.middleware import get_current_user
 from auth.models import AuthUser
-from config_de_entorno import ruta_requerida
+from kill_switch import exigir_mesa_libre
+from config_entorno import ruta_absoluta_requerida
 from jax_engine.events import event_bus
 from jax_engine.schemas import JAXEvent
 from jax_engine.state import engine_state
@@ -20,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
-MISSIONS_DIR = ruta_requerida("JAX_MISSIONS_DIR")
-JAX_BIN = ruta_requerida("JAX_BIN")
+MISSIONS_DIR = ruta_absoluta_requerida("JAX_MISSIONS_DIR")
+JAX_BIN = ruta_absoluta_requerida("JAX_BIN")
 
 
 def _owner_file(task_id: str) -> Path:
@@ -103,7 +104,7 @@ class CommandRequest(BaseModel):
 
 
 @router.post("/command")
-async def create_command(req: CommandRequest, user: AuthUser = Depends(get_current_user)):
+async def create_command(req: CommandRequest, user: AuthUser = Depends(exigir_mesa_libre)):
     task_id = str(uuid.uuid4())
     mission_file = MISSIONS_DIR / f"web-task-{task_id}.md"
     result_file = MISSIONS_DIR / f"web-task-{task_id}_result.md"
