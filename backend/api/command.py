@@ -48,6 +48,44 @@ def _escribir_fallo(task_id: str, motivo: str) -> None:
     _anotar_en_duenio(task_id, "fallo", {"code": "comando_fallo", "motivo": motivo})
 
 
+# Ronda final M5 (2026-09-16): todo el disco de este modulo (mision, dueño,
+# resultado) va en un hilo -- LAS CUATRO, async: nada bloqueante dentro de un
+# async def. Cada funcion de abajo es UN salto a to_thread por paso del handler.
+def _registrar_tarea(task_id: str, mission_file: Path, comando: str, tenant_id: str, user_id: str) -> None:
+    MISSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    mission_file.write_text(f"---\nfaceta: hyde\n---\n\n{comando}\n")
+    # Registro de dueño en disco (no sólo en memoria): GET /command/{task_id}
+    # no tenía NINGÚN chequeo de autorización — cualquier usuario autenticado
+    # que conociera (o adivinara/leyera del localStorage de otro) un task_id
+    # ajeno podía leer su resultado completo. Ver ese endpoint más abajo.
+    _owner_file(task_id).write_text(json.dumps({"tenant_id": tenant_id, "user_id": user_id}))
+
+
+def _leer_tarea(task_id: str) -> tuple[object, str | None]:
+    """(contenido del archivo de dueño, texto del resultado o None si no hay).
+    OSError/ValueError del dueño se propagan: el handler los vuelve 404."""
+    owner = json.loads(_owner_file(task_id).read_text())
+    result_file = _result_file(task_id)
+    return owner, (result_file.read_text() if result_file.exists() else None)
+
+
+def _simular(task_id: str, mission_file: Path, result_file: Path) -> str:
+    texto = mission_file.read_text()
+    # Antes que el resultado: GET no ve un result_file sin la marca (R8).
+    _anotar_en_duenio(task_id, "simulado", True)
+    result_file.write_text(texto)
+    return texto
+
+
+def _leer_resultado(result_file: Path) -> str:
+    # JAX escribe el resultado en result_file internamente.
+    # No sobreescribir — solo leer (o dejarlo vacío si no escribió nada).
+    if result_file.exists():
+        return result_file.read_text()
+    result_file.write_text("")
+    return ""
+
+
 class CommandRequest(BaseModel):
     command: str
     mode: str = "execute"
@@ -59,16 +97,9 @@ async def create_command(req: CommandRequest, user: AuthUser = Depends(get_curre
     mission_file = MISSIONS_DIR / f"web-task-{task_id}.md"
     result_file = MISSIONS_DIR / f"web-task-{task_id}_result.md"
 
-    MISSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    mission_file.write_text(f"---\nfaceta: hyde\n---\n\n{req.command}\n")
-
     tenant_id = user.tenant_id
     user_id = user.user_id
-    # Registro de dueño en disco (no sólo en memoria): GET /command/{task_id}
-    # no tenía NINGÚN chequeo de autorización — cualquier usuario autenticado
-    # que conociera (o adivinara/leyera del localStorage de otro) un task_id
-    # ajeno podía leer su resultado completo. Ver ese endpoint más abajo.
-    _owner_file(task_id).write_text(json.dumps({"tenant_id": tenant_id, "user_id": user_id}))
+    await asyncio.to_thread(_registrar_tarea, task_id, mission_file, req.command, tenant_id, user_id)
 
     await engine_state.set_facet_status("hyde", "thinking", tenant_id, user_id, req.command[:100])
 
@@ -95,7 +126,7 @@ async def get_command_result(task_id: str, user: AuthUser = Depends(get_current_
     # Tareas creadas antes de este cambio no tienen owner file y también
     # devuelven 404 — costo único de la migración, no un bug.
     try:
-        owner = json.loads(_owner_file(task_id).read_text())
+        owner, texto = await asyncio.to_thread(_leer_tarea, task_id)
     except (OSError, ValueError):
         raise HTTPException(status_code=404, detail="tarea_no_encontrada")
     if (
@@ -108,9 +139,7 @@ async def get_command_result(task_id: str, user: AuthUser = Depends(get_current_
     fallo = owner.get("fallo")
     if isinstance(fallo, dict):
         return {"status": "failed", "code": fallo.get("code"), "motivo": fallo.get("motivo", "")}
-    result_file = _result_file(task_id)
-    if result_file.exists():
-        texto = result_file.read_text()
+    if texto is not None:
         if owner.get("simulado") is True:
             return {"status": "completed", "result": texto, "code": "comando_simulado"}
         return {"status": "completed", "result": texto} if texto else {
@@ -131,10 +160,7 @@ async def _run_command(
     try:
         codigo = None
         if mode == "dry_run":
-            texto = mission_file.read_text()
-            # Antes que el resultado: GET no ve un result_file sin la marca.
-            _anotar_en_duenio(task_id, "simulado", True)
-            result_file.write_text(texto)
+            texto = await asyncio.to_thread(_simular, task_id, mission_file, result_file)
             codigo = "comando_simulado"
         else:
             proc = await asyncio.create_subprocess_exec(
@@ -144,19 +170,13 @@ async def _run_command(
                 cwd=str(Path.home()),
             )
             await proc.wait()
-            # JAX escribe el resultado en result_file internamente.
-            # No sobreescribir — solo leer.
-            if result_file.exists():
-                texto = result_file.read_text()
-            else:
-                texto = ""
-                result_file.write_text("")
+            texto = await asyncio.to_thread(_leer_resultado, result_file)
             if not texto:
                 codigo = "comando_sin_resultado"
     except Exception as e:  # fail-soft: tarea de fondo: el fallo se publica como command_completed status='failed' con código y queda en el archivo de dueño; no hay falso éxito
         motivo = recortar_redactado(str(e), 400)
         try:
-            _escribir_fallo(task_id, motivo)
+            await asyncio.to_thread(_escribir_fallo, task_id, motivo)
         except (OSError, ValueError):  # fail-soft: sin archivo de dueño legible GET da 404 o running, pero el evento failed y el estado idle salen igual; queda en el log
             logger.exception("command %s: no se pudo registrar el fallo en el archivo de dueño", task_id)
         await event_bus.publish(JAXEvent(

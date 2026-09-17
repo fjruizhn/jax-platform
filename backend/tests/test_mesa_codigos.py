@@ -291,3 +291,74 @@ def test_dry_run_por_get_tambien_es_simulado(misiones):
     tid, _, _ = _correr(tmp, eventos, "dry_run")
     assert asyncio.run(command_mod.get_command_result(tid, user=USUARIO)) == {
         "status": "completed", "result": "---\nfaceta: hyde\n---\n\nlistar\n", "code": "comando_simulado"}
+
+
+# Ronda final M5 (2026-09-16): command.py leia y escribia el archivo de dueño,
+# la mision y el resultado DENTRO de async def (bloqueante en el loop). Se
+# registra en que hilo corre cada operacion de disco sobre MISSIONS_DIR
+# mientras corren los handlers: ninguna puede ser del hilo del loop.
+@pytest.fixture
+def disco_en_el_loop(misiones, monkeypatch):
+    import os as os_mod
+    import pathlib
+    import threading
+
+    tmp, _ = misiones
+    activo, en_el_loop = [False], []
+
+    def vigilar(nombre, original, ruta_de):
+        def envoltura(*a, **k):
+            ruta = str(ruta_de(*a))
+            if activo[0] and ruta.startswith(str(tmp)) and threading.current_thread() is threading.main_thread():
+                en_el_loop.append((nombre, os_mod.path.basename(ruta)))
+            return original(*a, **k)
+        return envoltura
+
+    for nombre in ("read_text", "write_text", "exists", "mkdir"):
+        monkeypatch.setattr(pathlib.Path, nombre, vigilar(nombre, getattr(pathlib.Path, nombre), lambda p, *r: p))
+    monkeypatch.setattr(command_mod.os, "replace", vigilar("os.replace", os_mod.replace, lambda a, *r: a))
+
+    def correr(corutina):
+        activo[0] = True
+        try:
+            return asyncio.run(corutina)
+        finally:
+            activo[0] = False
+    return tmp, correr, en_el_loop
+
+
+def test_crear_y_consultar_un_comando_no_tocan_el_disco_en_el_loop(disco_en_el_loop, monkeypatch):
+    tmp, correr, en_el_loop = disco_en_el_loop
+
+    async def sin_correr(*a, **k):
+        return None
+
+    monkeypatch.setattr(command_mod, "_run_command", sin_correr)
+    tid = correr(command_mod.create_command(command_mod.CommandRequest(command="x"), user=USUARIO))["task_id"]
+    assert correr(command_mod.get_command_result(tid, user=USUARIO)) == {"status": "running"}
+    (tmp / f"web-task-{tid}_result.md").write_text("hecho")
+    assert correr(command_mod.get_command_result(tid, user=USUARIO)) == {"status": "completed", "result": "hecho"}
+    assert en_el_loop == []
+
+
+@pytest.mark.parametrize("modo, cuerpo", [
+    ("dry_run", None),
+    ("execute", 'printf hecho > "$(dirname "$2")/$(basename "$2" .md)_result.md"'),
+    ("execute", "exit 0"),
+    ("execute", "__no_existe__"),
+])
+def test_correr_un_comando_no_toca_el_disco_en_el_loop(disco_en_el_loop, monkeypatch, modo, cuerpo):
+    tmp, correr, en_el_loop = disco_en_el_loop
+    if cuerpo == "__no_existe__":
+        monkeypatch.setattr(command_mod, "JAX_BIN", tmp / "no-existe")
+    elif cuerpo:
+        monkeypatch.setattr(command_mod, "JAX_BIN", _binario(tmp, cuerpo))
+    tid = "77777777-aaaa-4aaa-8aaa-000000000007"
+    mision = tmp / f"web-task-{tid}.md"
+    mision.write_text("x\n")
+    (tmp / f"web-task-{tid}_owner.json").write_text(json.dumps({"tenant_id": "1", "user_id": "5"}))
+    correr(command_mod._run_command(tid, mision, tmp / f"web-task-{tid}_result.md", "1", "5", modo))
+    assert en_el_loop == []
+    esperado = {"dry_run": "comando_simulado", "__no_existe__": "comando_fallo", "exit 0": "comando_sin_resultado"}
+    consulta = asyncio.run(command_mod.get_command_result(tid, user=USUARIO))
+    assert consulta.get("code") == esperado.get(modo if modo == "dry_run" else cuerpo)
