@@ -67,10 +67,10 @@ class _ClientInstantiationCounter:
 
 
 def test_pipeline_endpoints_do_not_create_a_new_client_per_request(client, owned_pipeline_id, monkeypatch):
-    """LAS MANOS may or may not be reachable in the environment this runs
-    in (connection refused -> 502, or a real response -> 200) — either way
-    this only pins that no NEW httpx.AsyncClient() is instantiated per
-    request now that all 6 sites share the app-startup client.
+    """JACOBS_URL is forced (below) to a discard port that refuses the
+    connection, so the by-id requests always 502 -- this only pins that no
+    NEW httpx.AsyncClient() is instantiated per request now that all 6 sites
+    share the app-startup client.
 
     Uses a real owner row (owner_ack_at populated) for this test's own
     identity so the by-id requests actually reach the shared client (past

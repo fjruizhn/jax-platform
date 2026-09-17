@@ -123,3 +123,109 @@ def test_campos_no_declarados_se_descartan():
     assert "status_actual" not in exc.detail
     assert "extra_que_no_pasa" not in exc.detail
     assert "otro_mas" not in exc.detail
+
+
+# --- Fix round 2, finding 1: orden de cancel y el camino 2xx ---------------
+
+CUERPO_OK = {"pipeline": {"id": PID}, "steps": []}
+
+
+@pytest.mark.parametrize("nombre, metodo, sufijo", ENDPOINTS)
+def test_un_2xx_devuelve_el_cuerpo_de_jacobs_tal_cual(monkeypatch, nombre, metodo, sufijo):
+    falso = JacobsFalso({(metodo, f"/pipeline/{PID}{sufijo}"): respuesta(200, CUERPO_OK)})
+    preparar(monkeypatch, falso)
+    resultado = _correr(getattr(mod, nombre)(pipeline_id=PID, user=USUARIO))
+    assert resultado == CUERPO_OK
+
+
+def test_cancel_no_libera_ni_remueve_si_jacobs_rechaza(monkeypatch):
+    falso = JacobsFalso({("POST", f"/pipeline/{PID}/cancel"): respuesta(409, {"detail": "ya finalizado"})})
+    registro = preparar(monkeypatch, falso)
+    resultado = _correr(mod.cancel_pipeline(pipeline_id=PID, user=USUARIO))
+    assert isinstance(resultado, HTTPException), resultado
+    assert registro.removidos == []
+    assert registro.liberados == []
+
+
+def test_cancel_no_libera_ni_remueve_si_jacobs_no_responde(monkeypatch):
+    falso = JacobsFalso({("POST", f"/pipeline/{PID}/cancel"): respuesta(500, texto="boom")})
+    registro = preparar(monkeypatch, falso)
+    resultado = _correr(mod.cancel_pipeline(pipeline_id=PID, user=USUARIO))
+    assert isinstance(resultado, HTTPException), resultado
+    assert registro.removidos == []
+    assert registro.liberados == []
+
+
+def test_cancel_libera_y_remueve_solo_al_confirmar_con_jacobs(monkeypatch):
+    falso = JacobsFalso({("POST", f"/pipeline/{PID}/cancel"): respuesta(200, CUERPO_OK)})
+    registro = preparar(monkeypatch, falso)
+    resultado = _correr(mod.cancel_pipeline(pipeline_id=PID, user=USUARIO))
+    assert resultado == CUERPO_OK
+    assert registro.removidos == [PID]
+    assert registro.liberados == [(USUARIO.tenant_id, PID)]
+
+
+# --- Fix round 2, finding 2: motivo de jacobs_rechazo con detail dict/lista
+
+def test_motivo_de_un_codigo_ajeno_usa_su_detalle_redactado():
+    """Un code fuera de CODIGOS_DE_JACOBS (p.ej. kill_switch, enmienda ítem
+    1/6) cae en jacobs_rechazo; el motivo sale de detalle/mensaje/code, no
+    del repr de Python del dict completo."""
+    cuerpo = {"detail": {"code": "kill_switch", "detalle": "corte de emergencia, api_key=sk-FAKE-kill fin"}}
+    exc = mod._rechazo_de_jacobs(423, cuerpo, "")
+    assert exc.detail == {"code": "jacobs_rechazo", "status": 423,
+                          "motivo": "corte de emergencia, api_key=*** fin"}
+
+
+def test_motivo_de_un_codigo_ajeno_sin_detalle_usa_mensaje():
+    cuerpo = {"detail": {"code": "otro_code", "mensaje": "algo paso, api_key=sk-FAKE-otro fin"}}
+    exc = mod._rechazo_de_jacobs(500, cuerpo, "")
+    assert exc.detail["motivo"] == "algo paso, api_key=*** fin"
+
+
+def test_motivo_de_un_codigo_ajeno_sin_detalle_ni_mensaje_usa_el_code():
+    cuerpo = {"detail": {"code": "otro_code"}}
+    exc = mod._rechazo_de_jacobs(500, cuerpo, "")
+    assert exc.detail["motivo"] == "otro_code"
+
+
+def test_motivo_con_detail_lista_usa_el_texto_crudo():
+    """422 de validación de FastAPI: detail es una lista, no un dict."""
+    cuerpo = {"detail": [{"loc": ["body", "x"], "msg": "field required"}]}
+    exc = mod._rechazo_de_jacobs(422, cuerpo, "texto crudo de la respuesta")
+    assert exc.detail["motivo"] == "texto crudo de la respuesta"
+
+
+def test_motivo_con_body_dict_sin_detail_usa_el_texto_crudo():
+    cuerpo = {"otra_cosa": "sin detail"}
+    exc = mod._rechazo_de_jacobs(500, cuerpo, "texto crudo")
+    assert exc.detail["motivo"] == "texto crudo"
+
+
+# --- Fix round 2, finding 3: pasos_costo y sondeadas saneados --------------
+
+def test_pasos_costo_pasa_saneado_y_motivo_redactado():
+    cuerpo = {"detail": {
+        "code": "prevuelo_rechazado", "costo_max_usd": "1.00",
+        "pasos_costo": [{
+            "paso": 0, "faceta": "jekyll", "modelo": "m", "llamadas_max": 1,
+            "tokens_in_max": 100, "tokens_out_max": 1000, "usd_max": "0.10",
+            "motivo": "sonda: api_key=sk-FAKE-paso fin", "extra_que_no_pasa": "x",
+        }],
+        "sondeadas": ["jekyll", 123, "kimi"],
+        "violaciones": [],
+    }}
+    exc = mod._rechazo_de_jacobs(422, cuerpo, "")
+    assert exc.detail["pasos_costo"] == [{
+        "paso": 0, "faceta": "jekyll", "modelo": "m", "llamadas_max": 1,
+        "tokens_in_max": 100, "tokens_out_max": 1000, "usd_max": "0.10",
+        "motivo": "sonda: api_key=*** fin",
+    }]
+    assert "extra_que_no_pasa" not in exc.detail["pasos_costo"][0]
+    assert exc.detail["sondeadas"] == ["jekyll", "kimi"]
+
+
+def test_pasos_costo_no_lista_cae_a_lista_vacia():
+    cuerpo = {"detail": {"code": "prevuelo_rechazado", "costo_max_usd": "1.00", "pasos_costo": "no es lista"}}
+    exc = mod._rechazo_de_jacobs(422, cuerpo, "")
+    assert exc.detail["pasos_costo"] == []

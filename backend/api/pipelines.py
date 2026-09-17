@@ -70,6 +70,37 @@ def _violaciones_redactadas(violaciones) -> list[dict]:
     ]
 
 
+_CAMPOS_DE_PASO_COSTO = (
+    "paso", "faceta", "modelo", "llamadas_max", "tokens_in_max", "tokens_out_max", "usd_max", "motivo",
+)
+
+
+def _pasos_costo_saneados(pasos) -> list[dict]:
+    """Sólo los ocho campos del contrato por paso (Task 6 reutiliza este
+    helper para /continue/preflight y /continue). motivo puede traer texto de
+    un proveedor y se redacta antes de salir hacia el navegador."""
+    if not isinstance(pasos, list):
+        return []
+    saneados = []
+    for p in pasos:
+        if not isinstance(p, dict):
+            continue
+        item = {campo: p.get(campo) for campo in _CAMPOS_DE_PASO_COSTO}
+        if isinstance(item["motivo"], str):
+            item["motivo"] = recortar_redactado(item["motivo"], MOTIVO_MAX)
+        saneados.append(item)
+    return saneados
+
+
+def _sondeadas_saneadas(sondeadas) -> list[str]:
+    """sondeadas es la lista de facetas que Jacobs efectivamente consultó;
+    sólo strings pasan (defensa contra un elemento mal formado, no texto de
+    proveedor que necesite redacción)."""
+    if not isinstance(sondeadas, list):
+        return []
+    return [s for s in sondeadas if isinstance(s, str)]
+
+
 def _rechazo_de_jacobs(status_code: int, cuerpo, texto: str) -> HTTPException:
     detalle_de_jacobs = cuerpo.get("detail") if isinstance(cuerpo, dict) else None
     if isinstance(detalle_de_jacobs, dict) and detalle_de_jacobs.get("code") in CODIGOS_DE_JACOBS:
@@ -80,18 +111,32 @@ def _rechazo_de_jacobs(status_code: int, cuerpo, texto: str) -> HTTPException:
             valor = detalle_de_jacobs[campo]
             if campo == "violaciones":
                 valor = _violaciones_redactadas(valor)
+            elif campo == "pasos_costo":
+                valor = _pasos_costo_saneados(valor)
+            elif campo == "sondeadas":
+                valor = _sondeadas_saneadas(valor)
             elif campo == "detalle" and valor is not None:
                 valor = recortar_redactado(str(valor), DETALLE_MAX)
             elif campo == "mensaje" and valor is not None:
                 valor = recortar_redactado(str(valor), MOTIVO_MAX)
             detalle[campo] = valor
         return HTTPException(status_code=status_code, detail=detalle)
-    if isinstance(cuerpo, dict):
-        crudo = str(cuerpo.get("detail", ""))
-    elif cuerpo is None:
-        crudo = texto
+    if isinstance(detalle_de_jacobs, str):
+        # Forma vieja/simple: {"detail": "texto"} (ej. el 409 de un doble
+        # resume/approve, sin code -- FastAPI se lo pone así solo).
+        crudo = detalle_de_jacobs
+    elif isinstance(detalle_de_jacobs, dict):
+        # Un code propio de Jacobs que NO está en CODIGOS_DE_JACOBS (ej.
+        # kill_switch, enmienda ítem 1/6): el mejor texto disponible, nunca
+        # el repr de Python del dict completo.
+        crudo = str(detalle_de_jacobs.get("detalle") or detalle_de_jacobs.get("mensaje")
+                    or detalle_de_jacobs.get("code") or "")
     else:
-        crudo = str(cuerpo)
+        # "detail" ausente, o no es ni string ni dict (la lista de un 422 de
+        # validación de FastAPI, u otro tipo), o el cuerpo mismo no era un
+        # dict (JSON no-objeto): nada estructurado que mostrar -- se usa el
+        # texto crudo de la respuesta.
+        crudo = texto
     detalle = {"code": "jacobs_rechazo", "status": status_code, "motivo": recortar_redactado(crudo, MOTIVO_MAX)}
     return HTTPException(status_code=status_code, detail=detalle)
 

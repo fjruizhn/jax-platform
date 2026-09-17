@@ -75,7 +75,7 @@ def preparar(monkeypatch, falso: JacobsFalso, umbral: str = "0.50", maximo: int 
     cupo, dueño, recurso y eventos de WS quedan en memoria y se registran."""
     import api.pipelines as mod
 
-    registro = SimpleNamespace(admitidos=[], publicados=[], duenios=[])
+    registro = SimpleNamespace(admitidos=[], publicados=[], duenios=[], removidos=[], liberados=[])
     valores = {mod.ajustes.MAX_PIPELINES: maximo, mod.ajustes.CONFIRMAR_USD: Decimal(umbral)}
 
     async def cliente():
@@ -97,6 +97,12 @@ def preparar(monkeypatch, falso: JacobsFalso, umbral: str = "0.50", maximo: int 
     async def admitir(tenant_id, pipeline_id):
         registro.admitidos.append((tenant_id, pipeline_id))
 
+    def remover(pipeline_id):
+        registro.removidos.append(pipeline_id)
+
+    async def liberar(tenant_id, pipeline_id):
+        registro.liberados.append((tenant_id, pipeline_id))
+
     async def upsert(pipeline, _tenant_id, _user_id):
         registro.publicados.append(("pipeline_step_changed", pipeline.pipeline_id, {}))
 
@@ -108,6 +114,8 @@ def preparar(monkeypatch, falso: JacobsFalso, umbral: str = "0.50", maximo: int 
     monkeypatch.setattr(mod.ajustes, "valor", valor)
     monkeypatch.setattr(mod.resource_manager, "can_start_pipeline", cupo)
     monkeypatch.setattr(mod.resource_manager, "admit_pipeline", admitir)
+    monkeypatch.setattr(mod.engine_state, "remove_pipeline", remover)
+    monkeypatch.setattr(mod.resource_manager, "release_pipeline", liberar)
     monkeypatch.setattr(mod, "_require_pipeline_owner", duenio)
     monkeypatch.setattr(mod, "_record_pipeline_owner", registrar_duenio)
     monkeypatch.setattr(mod.engine_state, "upsert_pipeline", upsert)
