@@ -1504,7 +1504,17 @@ jobs:
           # detalle texto). Medido en hall9000: 1611 passed / 4 failed / 1
           # skipped; los 4 son los mismos de api_url de arriba (se arreglan
           # con el rebase sobre c53ef30), así que el piso es 1611 + 4 = 1615.
-          PISO_PASSED = 1615
+          # 1615 -> 1617 el 2026-09-17 (residuos de la ronda final, ítem d):
+          # +2 en test_pipelines_prevuelo.py, parametrizado (objective null y
+          # objective ausente normalizan a "" tanto en /preflight como en el
+          # body que se manda a POST /jacobs/pipeline -- antes el body sin
+          # normalizar reenviaba null y Jacobs respondía 422). Ninguno pide
+          # `client`. Visto en rojo contra el create_pipeline anterior
+          # (None/KeyError donde se esperaba ""). Medido con DB (sin
+          # JAX_CI_NO_DB): 65 passed en test_pipelines_prevuelo.py (59 + 6
+          # que antes se saltaban sin DB), archivo suelto -- el piso de la
+          # suite completa sube igual: 1615 + 2 = 1617.
+          PISO_PASSED = 1617
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2034,7 +2044,14 @@ jobs:
       # (EXPLAIN con el índice compuesto, reasignar y objetivo por HTTP) se
       # saltean (skips 624 -> 627). Medido con JAX_CI_NO_DB=1: 989 passed /
       # 627 skipped.
-      JAX_CI_MIN_PASSED: "989"
+      # 989 -> 991 el 2026-09-17 (residuos de la ronda final, ítem d): +2 en
+      # test_pipelines_prevuelo.py (objective null/ausente normaliza a "" en
+      # /preflight y en el body de POST /jacobs/pipeline), parametrizado,
+      # ninguno pide `client` (usan _crear -> mod.create_pipeline directo,
+      # puro). Medido con JAX_CI_NO_DB=1 sobre el archivo suelto: 59 passed /
+      # 6 skipped (antes 57 / 6); los skips no se mueven, así que el piso de
+      # la suite sube igual: 989 + 2 = 991.
+      JAX_CI_MIN_PASSED: "991"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
