@@ -2366,6 +2366,28 @@ async def _ejecutor_inventario_v1(cur) -> None:
             (f["nombre"], f["ip"], f["puerto"], f["rol"], f["es_local"], f["con_datos_de_clientes"]))
     await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_EJECUTOR_INVENTARIO_V1,))
 
+_EJECUTOR_CONFIG_C5 = (
+    ("ejecutor.cerebro_faceta", "ejecutor"),
+    ("ejecutor.auditor_faceta", "thot"),
+    ("ejecutor.c5_lote_max", "20"),
+    ("ejecutor.c5_intervalo_s", "15"),
+    # El tope que usó U4 de la Fase 0 (scripts/ejecutor_fase0/auditor_costo.py).
+    ("ejecutor.c5_max_tokens", "4000"),
+    # Nace CERRADA: con el cerebro local todo auditor de otro proveedor es de nube, y la
+    # Fase 0 prohibió que la nube vea datos de clientes. Abrirla es DECISIÓN de Fernando
+    # (índice de SP1, punto 1 de «lo que el spec dice mal»). Cerrada, una misión que toca
+    # una máquina con datos de clientes no arranca.
+    ("ejecutor.c5_auditor_admite_datos_de_clientes", "false"),
+)
+
+
+async def _ejecutor_config_c5_v1(cur) -> None:
+    """Configuración de C5 (auditor en vivo del Ejecutor). INSERT IGNORE: lo que el
+    admin cambió no se pisa en el próximo arranque."""
+    for clave, valor in _EJECUTOR_CONFIG_C5:
+        await cur.execute("INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES (%s, %s)", (clave, valor))
+
+
 async def _indices_de_model_binding_proposal(cur) -> None:
     """PR-L ronda 2: los índices de list_proposals en una base donde la tabla
     ya existía sin ellos (en una base nueva los trae el CREATE). Idempotente."""
@@ -2410,6 +2432,7 @@ async def run_migrations():
             await _ajustes_que_mandan_v1(cur)
             await _ejecutor_reglas_v1(cur)
             await _ejecutor_inventario_v1(cur)
+            await _ejecutor_config_c5_v1(cur)
             await _seed_providers(cur)
             await _migrate_user_api_keys_to_credential(cur)
             await _seed_facets(cur)
