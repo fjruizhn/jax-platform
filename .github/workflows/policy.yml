@@ -1476,7 +1476,19 @@ jobs:
           # test_rutas_de_entorno.py (neto +20). Re-medido dos veces tras el
           # rebase (no sumado a ojo); el +1 de grounding, si aparece, sigue
           # sin entrar al piso por ser ambiental.
-          PISO_PASSED = 1423
+          # 1423 -> 1426 el 2026-09-17 (fix/fijar-pymysql, incidente
+          # escape_dict): +3 en test_pymysql_escape_dict_pin.py (pin exacto
+          # de aiomysql==0.3.2/PyMySQL==1.2.0 + tripwire de import), ninguno
+          # pide `client` así que corren igual con DB. Medido localmente
+          # contra jax_memory_test (esquema de desarrollo, no producción):
+          # 1426 passed / 1 failed / 1 skipped -- el failed es un hueco
+          # ambiental de ESTA base local (test_seed_kimi_y_ada_como_motor,
+          # dato de motor `kimi` corrido por sesiones anteriores en este
+          # mismo esquema persistente, no un esquema fresco como el del
+          # runner de CI) y no se le suma holgura al piso por él: el
+          # controlador que corra esto en un esquema fresco lo vuelve a
+          # medir. Skip count sin cambios (1: gpt-5.6-terra).
+          PISO_PASSED = 1426
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2009,7 +2021,13 @@ jobs:
       # test_config_entorno_fuente_unica.py, -3 puros movidos desde
       # test_rutas_de_entorno.py (neto +20); los skips no se mueven.
       # Re-medido dos veces tras el rebase (no sumado a ojo).
-      JAX_CI_MIN_PASSED: "824"
+      # 824 -> 827 el 2026-09-17 (fix/fijar-pymysql, incidente escape_dict):
+      # +3 puros en test_pymysql_escape_dict_pin.py (pin exacto de
+      # aiomysql==0.3.2/PyMySQL==1.2.0 en requirements.txt + tripwire de que
+      # import aiomysql no truena y pymysql.converters.escape_dict existe).
+      # Ninguno pide `client`, los skips no se mueven. Medido con
+      # JAX_CI_NO_DB=1: 827 passed / 601 skipped.
+      JAX_CI_MIN_PASSED: "827"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
