@@ -21,9 +21,9 @@ EXTENSIONES_DE_TEXTO: tuple[str, ...] = (
 _NOMBRE_MAX = 255  # NAME_MAX de los sistemas de archivos: el nombre es de archivo
 # Tope del nombre CRUDO (antes de limpiar). Cuatro veces NAME_MAX: deja pasar
 # un nombre de 255 caracteres aunque traiga comillas, controles o una ruta
-# corta delante, y acota el trabajo del filtro carácter a carácter. Lo usan
-# el contrato de /api/chat (max_length, 422 antes de cualquier trabajo) y
-# nombre_seguro (recorte previo, que cubre también file.filename del upload).
+# corta delante, y acota el trabajo del filtro carácter a carácter. Lo usa
+# nombre_seguro (recorte previo de file.filename del upload). Desde RD3 el
+# chat ya no recibe nombres: los toma del sidecar.
 NOMBRE_CRUDO_MAX = 1024
 
 Clase = Literal["imagen", "pdf", "texto"]

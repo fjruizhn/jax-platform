@@ -14,18 +14,20 @@ from typing import Literal, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, ConfigDict, Field
 import httpx
-from http_client import CuerpoJsonDeUnUso, cabeceras_gemini, get_http_client
+from http_client import CuerpoJsonDeUnUso, LiteralJsonCrudo, cabeceras_gemini, get_http_client
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from facet_resolver import resolve_facet, FacetUnavailableError
 from adjuntos.contrato import (
     SIN_ADJUNTOS,
-    Adjunto,
+    AdjuntoRef,
     ImagenNoSoportadaError,
+    buscar_adjuntos,
     componer_mensaje,
     exigir_soporte_de_imagen,
+    hay_imagenes,
+    leer_adjuntos,
     mensaje_para_historial,
     metadatos_para_memoria,
-    validar_adjuntos,
 )
 from adjuntos.errores import AdjuntoRechazado
 from adjuntos.limites import cargar_limites
@@ -492,7 +494,9 @@ class ChatRequest(BaseModel):
     # db/migrations.py). Ningún llamador puede hacerse pasar por tráfico
     # real con solo omitir el campo.
     origin: Literal["web", "probe", "test"] | None = None
-    adjuntos: list[Adjunto] = Field(default_factory=list)
+    # RD3 (2026-09-17): solo ids de /api/chat/upload. El base64 o el texto
+    # en línea (contrato del 2026-09-16) es 422 por extra='forbid'.
+    adjuntos: list[AdjuntoRef] = Field(default_factory=list)
 
 
 class AvisoDeChat(BaseModel):
@@ -725,12 +729,15 @@ def _build_messages(system_prompt: str, history: list[dict], message: str,
     msgs = [{"role": "system", "content": system_prompt}]
     msgs.extend(history)
     ultimo: dict = {"role": "user", "content": message}
+    # La imagen va como LiteralJsonCrudo: sus tramos de base64 se escriben en
+    # el cuerpo sin pasar por json.dumps ni juntarse en un str (RD3).
     if imagenes and forma == "openai":
         ultimo["content"] = [{"type": "text", "text": message}] + [
-            {"type": "image_url", "image_url": {"url": f"data:{i.mime};base64,{i.base64}"}}
+            {"type": "image_url",
+             "image_url": {"url": LiteralJsonCrudo(f"data:{i.mime};base64,", i.tramos_base64)}}
             for i in imagenes]
     elif imagenes:
-        ultimo["images"] = [i.base64 for i in imagenes]
+        ultimo["images"] = [LiteralJsonCrudo("", i.tramos_base64) for i in imagenes]
     msgs.append(ultimo)
     return msgs
 
@@ -766,7 +773,7 @@ def _argumentos_de_cuerpo(cuerpo: dict, imagenes: tuple, cabeceras: dict[str, st
     el chat con un adjunto de texto del mismo tamaño de pedido no crece."""
     if not imagenes:
         return {"json": cuerpo} if cabeceras is None else {"json": cuerpo, "headers": cabeceras}
-    de_un_uso = CuerpoJsonDeUnUso(cuerpo, literales_seguros=tuple(i.base64 for i in imagenes))
+    de_un_uso = CuerpoJsonDeUnUso(cuerpo)
     return {"content": de_un_uso, "headers": {**(cabeceras or {}), **de_un_uso.cabeceras}}
 
 
@@ -832,7 +839,8 @@ async def _call_gemini(
         role = "user" if h["role"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": h["content"]}]})
     partes: list[dict] = [{"text": message}]
-    partes += [{"inline_data": {"mime_type": i.mime, "data": i.base64}} for i in imagenes]
+    partes += [{"inline_data": {"mime_type": i.mime, "data": LiteralJsonCrudo("", i.tramos_base64)}}
+               for i in imagenes]
     contents.append({"role": "user", "parts": partes})
     body = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
@@ -1111,25 +1119,29 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     validar_ids_de_uso(user_id, tenant_id)
     timestamp = utc_ahora().isoformat() + "Z"
 
-    # --- Adjuntos (frente D) — ANTES de memoria, estado y proveedor --------
+    # --- Adjuntos (frente D; RD3: por id) — ANTES de memoria, estado y proveedor
     # Un rechazo no deja fila en memoria, no pone la faceta en "thinking" y no
-    # gasta una llamada. La imagen se chequea contra el modelo RESUELTO de la
-    # faceta (facet_binding -> model.input_modalities). Si la faceta no
-    # resuelve, se sigue: el dispatch devuelve su aviso de "no disponible" sin
-    # llamar a ningún proveedor.
+    # gasta una llamada. Orden: tope por mensaje, sidecars del dueño (404
+    # único para cualquier id que no sirva), visión contra el modelo RESUELTO
+    # de la faceta (facet_binding -> model.input_modalities) ANTES de
+    # codificar la imagen, y recién ahí leer datos desde disco (en un hilo).
+    # Si la faceta no resuelve, se sigue: el dispatch devuelve su aviso de "no
+    # disponible" sin llamar a ningún proveedor. Nada de esto loguea un id.
     validados = SIN_ADJUNTOS
     if req.adjuntos:
         try:
             if facet == "hyde":
                 raise AdjuntoRechazado(422, "adjuntos_no_soportados", facet=facet)
-            validados = await validar_adjuntos(req.adjuntos, cargar_limites())
-            if validados.imagenes:
+            limites = cargar_limites()
+            metadatos = await buscar_adjuntos(req.adjuntos, user, limites)
+            if hay_imagenes(metadatos):
                 try:
                     resuelta = await resolve_facet(facet)
                 except FacetUnavailableError:
                     resuelta = None
                 if resuelta is not None:
-                    exigir_soporte_de_imagen(resuelta, facet, validados.imagenes)
+                    exigir_soporte_de_imagen(resuelta, facet, True)
+            validados = await leer_adjuntos(metadatos, user, limites)
         except AdjuntoRechazado as e:
             detalle = e.detail
             raise HTTPException(status_code=e.status, detail=detalle) from None

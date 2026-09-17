@@ -1,14 +1,15 @@
-"""Turno para el trabajo pesado de una imagen en el event loop (R16, 2026-09-17).
+"""Turnos para el trabajo pesado de los adjuntos (R16, 2026-09-17; RD3 el mismo día).
 
-La validación del alfabeto del base64 corre en el loop cediendo por tramos
-(en un hilo le disputaría el GIL al loop: medido, peor). Cediendo, muchas
-imágenes a la vez se intercalan y cada pedido chico espera la vuelta completa.
-Este turno (JAX_ADJUNTO_IMAGENES_EN_PROCESO) limita cuántas validan a la vez.
-Números medidos en task-11-memoria-report.md (el parseo del cuerpo es el
-normal de FastAPI desde el ruling del principal sobre 3ba4630).
+`turno_de_imagen` (JAX_ADJUNTO_IMAGENES_EN_PROCESO): cuántas imágenes se leen
+de disco y se codifican a base64 a la vez para mandarlas al proveedor
+(adjuntos/contrato.py::leer_adjuntos). Corre en un hilo, pero binascii
+retiene el GIL durante cada tramo de 256 KB: medido en hall9000 (tic de 1 ms
+en el loop, 25 imágenes de 10 MB), las 25 a la vez atrasan el tic p95 60 ms;
+de a una, 0,35 ms. Antes de RD3 este mismo turno cubría el barrido del
+alfabeto del base64 que mandaba el cliente, que ya no existe.
 
-El turno cubre SOLO esa pasada (ms), nunca la espera al proveedor: un LLM
-lento no frena a las otras imágenes.
+El turno cubre SOLO la lectura y la codificación (ms), nunca la espera al
+proveedor: un LLM lento no frena a las otras imágenes.
 
 Un semáforo por event loop (asyncio.Semaphore se ata al loop que lo usa; los
 tests abren uno por asyncio.run). El tope se lee una vez por loop: el entorno

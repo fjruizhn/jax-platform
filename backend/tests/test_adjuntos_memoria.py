@@ -28,8 +28,11 @@ from adjuntos.contrato import ImagenValidada
 
 _GRANDE = 1_000_000
 _DATOS = b"\x89PNG\r\n\x1a\n" + bytes(2_000_000)
-_B64 = base64.b64encode(_DATOS).decode()
-IMG = (ImagenValidada("f.png", "image/png", _B64, len(_DATOS)),)
+# RD3: la imagen llega como tramos de bytes (almacen.leer_imagen_en_base64).
+# Uno solo de 2,7 MB, para que el test de buffers >= 1 MB lo vea.
+_TRAMO = base64.b64encode(_DATOS)
+_B64 = _TRAMO.decode()
+IMG = (ImagenValidada("f.png", "image/png", (_TRAMO,), len(_DATOS)),)
 _CONFIG = {"personalities": {"jax_local": {"api_url": "http://ollama.invalid/api/chat"}}}
 
 _TRANSPORTES = {
@@ -137,11 +140,11 @@ def test_el_base64_no_queda_colgado_de_basura_despues_del_despacho(transporte):
     # empalmar el cuerpo dejaba una lista con el base64 en un ciclo; a c=25
     # llegaron a juntarse 456 copias (5,9 GB) antes de que pasara el GC.
     gc.collect()
-    antes = len(gc.get_referrers(_B64))
+    antes = len(gc.get_referrers(_TRAMO))
     gc.disable()
     try:
         _despachar(transporte)
-        despues = len(gc.get_referrers(_B64))
+        despues = len(gc.get_referrers(_TRAMO))
     finally:
         gc.enable()
         gc.collect()
@@ -170,8 +173,9 @@ def test_el_cuerpo_de_un_uso_no_se_puede_mandar_dos_veces():
 
 # --- Bloqueo del event loop (R16, 2026-09-17) --------------------------------
 # json.dumps de un str de 14 MB es UNA llamada en C que retiene el GIL ~20 ms:
-# medido, ni en asyncio.to_thread deja correr al loop. El base64 ya validado
-# no necesita escape JSON: se empalma como bytes y dumps solo ve lo chico.
+# medido, ni en asyncio.to_thread deja correr al loop. El base64 que produjo
+# b64encode no necesita escape JSON: sus tramos se empalman como bytes y dumps
+# solo ve lo chico (RD3: nunca existe como str).
 
 def _strings_grandes(obj, umbral=100_000):
     if isinstance(obj, str):
@@ -199,18 +203,57 @@ def test_el_cuerpo_con_imagen_no_pasa_la_imagen_por_json_dumps(transporte, monke
 
 
 def test_el_cuerpo_empalmado_es_identico_a_json_dumps():
-    b64 = base64.b64encode(bytes(range(256)) * 40).decode()
-    raro = 'comillas " y \\ y ñ y ' + chr(0) + " y " + chr(0x2028) + " y JAXADJ"
-    cuerpo = {"model": "m", "messages": [
-        {"role": "system", "content": raro},
-        {"role": "user", "content": [{"type": "text", "text": "mirá"},
-                                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}],
-         "images": [b64]}]}
-    esperado = json.dumps(cuerpo, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+    datos = bytes(range(256)) * 400
+    b64 = base64.b64encode(datos).decode()
+    tramos = tuple(base64.b64encode(datos[i:i + 999]) for i in range(0, len(datos), 999))
+    assert b"".join(tramos).decode() == b64
+    raro = 'comillas " y \\ y ñ y ' + chr(0) + " y " + chr(0x2028) + " y JAXEMPALME"
+    def cuerpo(url, imagen):
+        return {"model": "m", "messages": [
+            {"role": "system", "content": raro},
+            {"role": "user", "content": [{"type": "text", "text": "mirá"},
+                                         {"type": "image_url", "image_url": {"url": url}}],
+             "images": [imagen, imagen]}]}
+    esperado = json.dumps(cuerpo(f"data:image/png;base64,{b64}", b64),
+                          ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+
+    async def leer(c):
+        return [p async for p in c]
+
+    de_un_uso = http_client.CuerpoJsonDeUnUso(cuerpo(
+        http_client.LiteralJsonCrudo('data:image/png;base64,', tramos),
+        http_client.LiteralJsonCrudo("", tramos)))
+    partes = asyncio.run(leer(de_un_uso))
+    assert b"".join(partes) == esperado
+    assert de_un_uso.cabeceras["Content-Length"] == str(len(esperado))
+    # Los tramos van tal cual: el mismo objeto, sin copiarse a un buffer grande.
+    assert all(any(p is t for p in partes) for t in tramos)
+    assert max(len(p) for p in partes) < len(b64)
+
+
+def test_un_prefijo_con_caracteres_a_escapar_se_escapa():
+    cuerpo = {"x": http_client.LiteralJsonCrudo('a"b\\', (b"QUJD",))}
 
     async def leer(c):
         return b"".join([p async for p in c])
 
-    de_un_uso = http_client.CuerpoJsonDeUnUso(cuerpo, literales_seguros=(b64,))
-    assert asyncio.run(leer(de_un_uso)) == esperado
-    assert de_un_uso.cabeceras["Content-Length"] == str(len(esperado))
+    assert asyncio.run(leer(http_client.CuerpoJsonDeUnUso(cuerpo))) == json.dumps(
+        {"x": 'a"b\\QUJD'}, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def test_un_literal_crudo_con_json_normal_es_un_error_ruidoso():
+    with pytest.raises(TypeError):
+        json.dumps({"x": http_client.LiteralJsonCrudo("", (b"QUJD",))})
+
+
+def test_una_marca_repetida_en_el_cuerpo_falla_cerrado(monkeypatch):
+    # Si el texto del cuerpo trajera la marca (un uuid4 adivinado), el
+    # empalme sería ambiguo: se niega en vez de mandar un JSON corrupto.
+    class _Fijo:
+        hex = "0" * 32
+
+    monkeypatch.setattr(http_client.uuid, "uuid4", lambda: _Fijo())
+    marca = "JAXEMPALME" + "0" * 32 + "_0_"
+    cuerpo = {"texto": marca, "imagen": http_client.LiteralJsonCrudo("", (b"QUJD",))}
+    with pytest.raises(ValueError):
+        http_client.CuerpoJsonDeUnUso(cuerpo)

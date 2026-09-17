@@ -1,35 +1,31 @@
-"""/api/chat rechaza y acepta el cuerpo EXACTAMENTE como el parseo normal de FastAPI (R16, 2026-09-17).
+"""/api/chat rechaza y acepta el cuerpo EXACTAMENTE como el parseo normal de FastAPI (R16, 2026-09-17; RD3).
 
-Ruling del principal sobre 3ba4630: fuera el parser propio que saltaba el
-literal del base64. Este test fija el comportamiento de c449587 (parseo
-normal: json.loads de Starlette + pydantic con extra='forbid') con cuerpos
-GRANDES, que son los que un segundo parser tocaría: JSON roto, claves
-duplicadas (json.loads se queda con la ÚLTIMA), claves desconocidas y un
-base64 que no es string. Un parser distinto en cualquiera de esos casos
-cambia el código o la forma del error y rompe acá.
-
-Verificado: pasa igual contra una copia de c449587 (git archive).
+Ruling del principal sobre 3ba4630: fuera el parser propio. Este test fija
+el comportamiento del parseo normal (json.loads de Starlette + pydantic con
+extra='forbid') en los casos que un segundo parser tocaría: JSON roto,
+claves duplicadas (json.loads se queda con la ÚLTIMA), claves desconocidas,
+un id que no es string y anidado profundo. Desde RD3 el adjunto es
+`{"id": ...}`; el contrato en línea (base64) es una clave desconocida más.
 """
-import base64
 import json
 
 import pytest
 
 import api.chat as chat_mod
 import http_client
-from tests.adjuntos_muestras import PNG
-from tests.identidades import cabeceras
+from adjuntos import almacen
+from auth.models import AuthUser
+from tests.identidades import cabeceras, uid
 from tests.test_adjuntos_chat_endpoint import _Grabador, _resuelta
 
 pytestmark = pytest.mark.usefixtures("chat_sin_memoria")
 
-_BUENO = base64.b64encode(PNG + bytes(300_000)).decode()   # > 64 KB: lo que tocaba el parser propio
-_MALO_GRANDE = "A" * 400_001 + "!"                           # largo múltiplo de 4, alfabeto roto
+_ETIQUETA = "test-rechazos-cuerpo"
+_OTRO_ID = "B" * almacen.LARGO_ID   # bien formado, no existe: 404
 
 
-def _img(b64) -> bytes:
-    return json.dumps({"tipo": "imagen", "nombre": "f.png", "mime": "image/png", "base64": b64},
-                      separators=(",", ":")).encode()
+def _ref(id_) -> bytes:
+    return json.dumps({"id": id_}, separators=(",", ":")).encode()
 
 
 def _cuerpo(adjuntos: bytes, extra: bytes = b"") -> bytes:
@@ -49,76 +45,82 @@ def _forma(r) -> tuple:
     return (r.status_code, detalle["code"])
 
 
-_CASOS = {
-    # JSON roto
-    "byte_de_control_crudo_en_el_base64": (
-        _cuerpo(_img(_BUENO + "Z").replace(b'Z"', bytes([1]) + b'"')),
-        (422, (("json_invalid", ("body", 422_000)),))),
-    "json_cortado": (_cuerpo(_img(_BUENO))[:-2], (422, (("json_invalid", ("body", None)),))),
-    "comilla_sin_cerrar": (_cuerpo(_img(_BUENO)[:-2] + b"}"), (422, (("json_invalid", ("body", None)),))),
-    # Claves duplicadas: gana la última
-    "base64_duplicado_gana_el_ultimo_invalido": (
-        _cuerpo(_img(_BUENO)[:-2] + b'","base64":"no es base64!!"}'), (422, "adjunto_invalido")),
-    "base64_duplicado_gana_el_ultimo_valido": (
-        _cuerpo(b'{"tipo":"imagen","nombre":"f.png","mime":"image/png","base64":"' + _MALO_GRANDE.encode()
-                + b'","base64":"' + _BUENO.encode() + b'"}'), (200, None)),
-    "adjuntos_duplicado_gana_el_ultimo": (
-        _cuerpo(_img(_BUENO)) [:-2] + b'],"adjuntos":[' + _img(_MALO_GRANDE) + b"]}", (422, "adjunto_invalido")),
-    # Claves desconocidas (extra='forbid')
-    "clave_desconocida_en_el_adjunto": (
-        _cuerpo(_img(_BUENO)[:-1] + b',"image_base64":"x"}'),
-        (422, (("extra_forbidden", ("body", "adjuntos", 0, "imagen", "image_base64")),))),
-    "clave_desconocida_arriba": (
-        _cuerpo(_img(_BUENO), b',"file_context":"x"'), (422, (("extra_forbidden", ("body", "file_context")),))),
-    # Anidado profundo en una clave desconocida. Medido en c449587 (parseo
-    # normal): hasta ~950 niveles, 422 extra_forbidden; desde ~980, 500
-    # (RecursionError de FastAPI al serializar el `input` del error; json.loads
-    # sí acepta 5000). El parser propio de 3ba4630 daba 400 desde ~980. El
-    # 500 es un defecto PREVIO, reportado al principal: acá se fija "igual que
-    # el parseo normal", no se lo bendice como contrato.
-    "anidado_900_en_clave_desconocida": (
-        _cuerpo(_img(_BUENO), b',"x":' + b"[" * 900 + b"]" * 900),
-        (422, (("extra_forbidden", ("body", "x")),))),
-    "anidado_5000_en_clave_desconocida": (
-        _cuerpo(_img(_BUENO), b',"x":' + b"[" * 5000 + b"]" * 5000), (500, "error_interno_previo")),
-    # base64 que no es string
-    "base64_numero": (_cuerpo(_img(12345)), (422, (("string_type", ("body", "adjuntos", 0, "imagen", "base64")),))),
-    "base64_lista": (_cuerpo(_img([_BUENO])), (422, (("string_type", ("body", "adjuntos", 0, "imagen", "base64")),))),
-    # Escapes JSON válidos dentro del base64: \/ es "/" para json.loads
-    "base64_con_barra_escapada": (
-        _cuerpo(_img(_BUENO)[:1000] + _img(_BUENO)[1000:].replace(b"AAAA", b"AA\\/A", 1)), None),
-}
+def _casos(bueno: str) -> dict:
+    return {
+        # JSON roto
+        "byte_de_control_crudo_en_el_id": (
+            _cuerpo(_ref(bueno).replace(bueno[-1].encode() + b'"', bytes([1]) + b'"')),
+            (422, (("json_invalid", ("body", 0)),))),
+        "json_cortado": (_cuerpo(_ref(bueno))[:-2], (422, (("json_invalid", ("body", None)),))),
+        "comilla_sin_cerrar": (_cuerpo(_ref(bueno)[:-2] + b"}"), (422, (("json_invalid", ("body", None)),))),
+        # Claves duplicadas: gana la última
+        "id_duplicado_gana_el_ultimo_que_no_existe": (
+            _cuerpo(_ref(bueno)[:-1] + b',"id":"' + _OTRO_ID.encode() + b'"}'), (404, "adjunto_no_encontrado")),
+        "id_duplicado_gana_el_ultimo_que_existe": (
+            _cuerpo(_ref(_OTRO_ID)[:-1] + b',"id":"' + bueno.encode() + b'"}'), (200, None)),
+        "adjuntos_duplicado_gana_el_ultimo": (
+            _cuerpo(_ref(bueno))[:-2] + b'],"adjuntos":[' + _ref(_OTRO_ID) + b"]}", (404, "adjunto_no_encontrado")),
+        # Claves desconocidas (extra='forbid'), incluido el contrato en línea viejo
+        "base64_en_el_adjunto": (
+            _cuerpo(_ref(bueno)[:-1] + b',"base64":"QUJD"}'),
+            (422, (("extra_forbidden", ("body", "adjuntos", 0, "base64")),))),
+        "clave_desconocida_arriba": (
+            _cuerpo(_ref(bueno), b',"file_context":"x"'), (422, (("extra_forbidden", ("body", "file_context")),))),
+        # Anidado profundo en una clave desconocida. Medido en c449587 (parseo
+        # normal): hasta ~950 niveles, 422 extra_forbidden; desde ~980, 500
+        # (RecursionError de FastAPI al serializar el `input` del error). El
+        # 500 es un defecto PREVIO de todos los endpoints JSON; lo arregla el
+        # principal en un PR aparte (ruling 2026-09-17). Acá se fija "igual
+        # que el parseo normal", no se lo bendice como contrato.
+        "anidado_900_en_clave_desconocida": (
+            _cuerpo(_ref(bueno), b',"x":' + b"[" * 900 + b"]" * 900),
+            (422, (("extra_forbidden", ("body", "x")),))),
+        "anidado_5000_en_clave_desconocida": (
+            _cuerpo(_ref(bueno), b',"x":' + b"[" * 5000 + b"]" * 5000), (500, "error_interno_previo")),
+        # id que no es string
+        "id_numero": (_cuerpo(_ref(12345)), (422, (("string_type", ("body", "adjuntos", 0, "id")),))),
+        "id_lista": (_cuerpo(_ref([bueno])), (422, (("string_type", ("body", "adjuntos", 0, "id")),))),
+        # Escape JSON válido dentro del id: una letra escrita como \uXXXX es esa letra para json.loads
+        "id_con_escape_unicode": (
+            _cuerpo(_ref(bueno).replace(b':"' + bueno[:1].encode(), b':"\\u%04x' % ord(bueno[0]), 1)), (200, None)),
+    }
 
 
-@pytest.mark.parametrize("caso", sorted(_CASOS))
+_NOMBRES = sorted(_casos("A" * almacen.LARGO_ID))
+
+
+@pytest.mark.parametrize("caso", _NOMBRES)
 def test_el_cuerpo_se_rechaza_como_el_parseo_normal(client, monkeypatch, caso):
+    import copy
+
     from fastapi.testclient import TestClient
     from main import app
 
-    body, esperado = _CASOS[caso]
+    user = AuthUser(user_id=uid(client, _ETIQUETA), tenant_id="1", role="operator")
+    bueno = almacen.guardar_texto(almacen.cargar_directorio(), "ventas 42", user=user, origen="texto",
+                                  nombre="n.txt", bytes_=9, recortado=False, ttl_horas=1)["id"]
+    body, esperado = _casos(bueno)[caso]
     grabador = _Grabador()
     monkeypatch.setattr(http_client, "_client", grabador)
+    config = copy.deepcopy(chat_mod._load_config())
+    config["personalities"]["jax_local"]["api_url"] = "http://ollama.invalid/api/chat"
+    monkeypatch.setattr(chat_mod, "_load_config", lambda: config)
 
     async def resolver(_key):
-        return _resuelta("jax_local", "ollama", frozenset({"text", "image"}))
+        return _resuelta("jax_local", "ollama", frozenset({"text"}))
 
     monkeypatch.setattr(chat_mod, "resolve_facet", resolver)
-    hdrs = {**cabeceras(client, "test-rechazos-cuerpo"), "Content-Type": "application/json"}
+    hdrs = {**cabeceras(client, _ETIQUETA), "Content-Type": "application/json"}
     # Sin relanzar excepciones del servidor: el status que ve el cliente real.
     r = TestClient(app, raise_server_exceptions=False).post("/api/chat", content=body, headers=hdrs)
     forma = _forma(r)
-    if esperado is None:
-        # Referencia calculada con json.loads, no con el endpoint.
-        valor = json.loads(body)["adjuntos"][0]["base64"]
-        assert forma == (200, None), r.text
-        (_, enviado), = grabador.pedidos
-        assert enviado["messages"][-1]["images"] == [valor]
-        return
     if forma[0] == 422 and isinstance(forma[1], tuple) and forma[1][0][0] == "json_invalid":
         # La posición del error depende del largo exacto: se compara el tipo.
         assert (forma[0], forma[1][0][0]) == (esperado[0], esperado[1][0][0]), r.text
         return
     assert forma == esperado, r.text
     if forma == (200, None):
-        (_, enviado), = grabador.pedidos
-        assert enviado["messages"][-1]["images"] == [json.loads(body)["adjuntos"][-1]["base64"]]
+        (_, enviado), = grabador.al_proveedor
+        assert "ventas 42" in enviado["messages"][-1]["content"]
+    else:
+        assert grabador.pedidos == []

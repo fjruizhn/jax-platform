@@ -75,8 +75,9 @@ def _cargar_tope(variable: str, que: str) -> int:
 
 
 def cargar_imagenes_en_proceso() -> int:
-    """Cuántas imágenes validan su base64 a la vez en el event loop (R16,
-    2026-09-17; adjuntos/turno.py). Sin default, como los otros límites: si
+    """Cuántas imágenes guardadas se leen y codifican a base64 a la vez para
+    el proveedor (R16, 2026-09-17; RD3: antes, cuántas validaban el base64
+    del cliente; adjuntos/turno.py). Sin default, como los otros límites: si
     falta, el servicio no arranca."""
     return _cargar_tope(VARIABLE_DE_IMAGENES_EN_PROCESO, "imágenes")
 

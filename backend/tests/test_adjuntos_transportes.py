@@ -9,7 +9,8 @@ import http_client
 from adjuntos.contrato import ImagenNoSoportadaError, ImagenValidada
 from facet_resolver import ResolvedFacet
 
-IMG = (ImagenValidada("f.png", "image/png", "QUJD", 3),)
+# Dos tramos: el cuerpo los escribe seguidos, sin juntarlos antes (RD3).
+IMG = (ImagenValidada("f.png", "image/png", (b"QU", b"JD"), 3),)
 
 
 class _Grabador:
