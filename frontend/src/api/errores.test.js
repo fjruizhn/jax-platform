@@ -20,6 +20,15 @@ describe('textoDeErrorDeMesa (A-51)', () => {
     expect(textoDeErrorDeMesa(es, err({ code: 'limite_de_pipelines', max: 4 }), es.errorPipeline)).toContain('4')
   })
 
+  // Frente C (2026-09-16): el máximo es el ajuste max_pipelines, no un 3 fijo;
+  // el texto sale traducido en los dos idiomas con el número que mandó el backend.
+  it('el límite de pipelines se traduce con el número del ajuste, en español y en inglés', () => {
+    expect(textoDeErrorDeMesa(es, err({ code: 'limite_de_pipelines', max: 2 }), es.errorPipeline))
+      .toBe('Ya hay 2 pipelines en curso: espera a que termine uno.')
+    expect(textoDeErrorDeMesa(en, err({ code: 'limite_de_pipelines', max: 1 }), en.errorPipeline))
+      .toBe('1 pipelines are already running: wait for one to finish.')
+  })
+
   it('un código desconocido o un texto libre caen al genérico, nunca crudo', () => {
     expect(textoDeErrorDeMesa(es, err({ code: 'otro_codigo' }), es.errorFacet)).toBe(es.errorFacet)
     expect(textoDeErrorDeMesa(es, err('Límite de 3 pipelines concurrentes alcanzado'), es.errorPipeline)).toBe(es.errorPipeline)

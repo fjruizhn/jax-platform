@@ -94,11 +94,14 @@ def test_los_tokens_conservan_su_payload(monkeypatch):
     from auth import jwt as jwt_mod
     monkeypatch.setattr(jwt_mod.time, "time", lambda: 1_000_000)
     acceso = jose_jwt.get_unverified_claims(jwt_mod.create_access_token("7", "1", "operator", 3))
-    refresco = jose_jwt.get_unverified_claims(jwt_mod.create_refresh_token("7", "1", "operator", 3))
+    # Frente C (2026-09-16): el refresh vive lo que diga session_timeout_min
+    # (vida_segundos obligatorio) y lleva `iat`; el access no cambia.
+    refresco = jose_jwt.get_unverified_claims(
+        jwt_mod.create_refresh_token("7", "1", "operator", 3, vida_segundos=7 * 24 * 3600))
     assert acceso == {"user_id": "7", "tenant_id": "1", "role": "operator", "tv": 3,
                       "exp": 1_000_000 + 15 * 60, "type": "access"}
     assert refresco == {"user_id": "7", "tenant_id": "1", "role": "operator", "tv": 3,
-                        "exp": 1_000_000 + 7 * 24 * 3600, "type": "refresh"}
+                        "iat": 1_000_000, "exp": 1_000_000 + 7 * 24 * 3600, "type": "refresh"}
 
 
 def test_los_dos_tokens_salen_de_un_solo_constructor():

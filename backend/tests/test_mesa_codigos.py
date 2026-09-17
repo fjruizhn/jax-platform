@@ -185,12 +185,19 @@ def test_task_id_invalido_es_un_codigo():
 
 
 def test_el_limite_de_pipelines_es_un_codigo_con_el_maximo(monkeypatch):
-    async def lleno(_t):
+    # Frente C (2026-09-16): el máximo es el ajuste max_pipelines leído por
+    # request (ajustes.valor), no una constante del módulo.
+    async def ajuste(clave):
+        assert clave == pipelines_mod.ajustes.MAX_PIPELINES
+        return 5
+
+    async def lleno(_t, limite):
+        assert limite == 5
         return False
+    monkeypatch.setattr(pipelines_mod.ajustes, "valor", ajuste)
     monkeypatch.setattr(pipelines_mod.resource_manager, "can_start_pipeline", lleno)
     e = _error(pipelines_mod.create_pipeline(request=None, user=USUARIO))
-    assert (e.status_code, e.detail) == (429, {"code": "limite_de_pipelines",
-                                               "max": pipelines_mod.MAX_PIPELINES_PER_TENANT})
+    assert (e.status_code, e.detail) == (429, {"code": "limite_de_pipelines", "max": 5})
 
 
 class _Request:
@@ -208,9 +215,15 @@ def _cliente_jacobs(monkeypatch, respuesta=None, excepcion=None):
     async def cliente():
         return _C()
 
-    async def libre(_t):
+    # Frente C (2026-09-16): create_pipeline lee el ajuste max_pipelines antes
+    # del cupo; estos tests miran a Jacobs, no el cupo, y no tocan la DB.
+    async def ajuste(_clave):
+        return 3
+
+    async def libre(_t, _limite):
         return True
 
+    monkeypatch.setattr(pipelines_mod.ajustes, "valor", ajuste)
     monkeypatch.setattr(pipelines_mod, "get_http_client", cliente)
     monkeypatch.setattr(pipelines_mod.resource_manager, "can_start_pipeline", libre)
 

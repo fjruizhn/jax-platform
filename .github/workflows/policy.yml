@@ -549,8 +549,23 @@ jobs:
             // de la red. Sin cambio de codigo de store: RED/GREEN via
             // mutacion temporal del propio if (ver r16-report.md). Medido
             // dos veces: 504 passed, 0 fallidos, 62 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 504) {
-              console.error("PISO ROTO: se esperaban 504 tests de vitest CORRIDOS y 0 fallidos.");
+            // 504 -> 528 el 2026-09-17 (frente C, ajustes que mandan):
+            // sincronizarApariencia (+5), idioma (+5), i18n/index (+4),
+            // nombreDelSistema (+1), useApariencia (+4, 4 mudados de
+            // useTema, que baja 8 -> 4), AdminSettings (+5), Login (+1),
+            // LogoAxioma (+1), AdminSidebar (+1), api/errores (+1, límite de
+            // pipelines con el número del ajuste en es/en; errorDePipeline.js
+            // se borró al rebasar sobre 6e50959). Vistos en rojo contra
+            // 26c9cd5 y rebasados sobre 6e50959. Medido dos veces: 528
+            // passed, 0 fallidos, 67 archivos.
+            // 528 -> 535 el 2026-09-17 (frente C, revisión final): Login (+3,
+            // 503 ajuste_ilegible y otro 5xx no son credenciales; claves es/en),
+            // api/client (+2, un 5xx del refresh no es sesion_expirada),
+            // AdminSettings (+2, config_valor_invalido sin clave cae en el
+            // genérico). Vistos en rojo. Medido dos veces: 535 passed, 0
+            // fallidos, 67 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 535) {
+              console.error("PISO ROTO: se esperaban 535 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1420,7 +1435,25 @@ jobs:
           # hueco ambiental (1 failed de grounding), 1 skip, sin cambio en
           # ningun otro archivo. Medido dos veces: 1334 passed / 1 failed /
           # 1 skipped.
-          PISO_PASSED = 1334
+          # 1334 -> 1381 el 2026-09-17 (frente C, ajustes que mandan): ajustes.py
+          # (validación, caché con invalidación, proceso único, 503), migración
+          # única, PUT validado por collation, vida del refresh por iat, cupo
+          # de pipelines y retención por ajuste, /api/apariencia con idioma y
+          # nombre. Por archivo: test_ajustes (+16), test_migracion_ajustes
+          # (+6), test_config_admin_ajustes (+5), test_ajuste_sesion (+9),
+          # test_ajuste_max_pipelines (+3), test_owner_cleanup (+5),
+          # test_apariencia (+3). Vistos en rojo contra 26c9cd5, rebasados
+          # sobre 6e50959. Mismo hueco ambiental (1 failed de grounding, falla
+          # igual en 6e50959), 1 skip. Medido dos veces: 1381 passed / 1
+          # failed / 1 skipped.
+          # 1381 -> 1386 el 2026-09-17 (frente C, revisión final): test_ajustes
+          # (+3, chequeo del arranque: claves_ilegibles y su ERROR sin el
+          # valor, vistos en rojo) y test_ajuste_sesion (+2 guardas: 503
+          # ajuste_ilegible en /auth/refresh y /auth/me/password sin tocar
+          # token_version ni password_hash). Mismo hueco ambiental (1 failed de
+          # grounding), 1 skip. Medido dos veces: 1386 passed / 1 failed / 1
+          # skipped.
+          PISO_PASSED = 1386
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1926,7 +1959,17 @@ jobs:
       # ilegible -> 500, no 404 -- IsADirectoryError y UnicodeDecodeError);
       # ninguno pide `client`, los skips no se mueven. Medido dos veces con
       # JAX_CI_NO_DB=1: 764 passed / 572 skipped.
-      JAX_CI_MIN_PASSED: "764"
+      # 764 -> 787 el 2026-09-17 (frente C, ajustes que mandan): +23 puros --
+      # test_ajustes (+12), test_migracion_ajustes (+2), test_ajuste_sesion
+      # (+3), test_ajuste_max_pipelines (+1), test_owner_cleanup (+5); los
+      # skips suben 24 (tests con `client` de esos archivos y de
+      # test_config_admin_ajustes y test_apariencia). Vistos en rojo contra
+      # 26c9cd5, rebasados sobre 6e50959. Medido dos veces con
+      # JAX_CI_NO_DB=1: 787 passed / 596 skipped.
+      # 2026-09-17 (frente C, revisión final): los 5 tests nuevos piden
+      # `client`, así que el piso no se mueve y los skips suben 596 -> 601.
+      # Medido con JAX_CI_NO_DB=1: 787 passed / 601 skipped.
+      JAX_CI_MIN_PASSED: "787"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

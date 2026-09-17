@@ -1,7 +1,5 @@
 from collections import defaultdict
 
-MAX_PIPELINES_PER_TENANT = 3
-
 
 class ResourceManager:
     """Sin lock (frente A, A-24): cada método es una lectura o escritura de un
@@ -11,8 +9,10 @@ class ResourceManager:
     def __init__(self):
         self._active: dict[str, set[str]] = defaultdict(set)
 
-    async def can_start_pipeline(self, tenant_id: str) -> bool:
-        return len(self._active[tenant_id]) < MAX_PIPELINES_PER_TENANT
+    async def can_start_pipeline(self, tenant_id: str, limite: int) -> bool:
+        # El límite lo decide el ajuste max_pipelines (frente C, 2026-09-16),
+        # leído por request en api/pipelines.py: este objeto no toca la DB.
+        return len(self._active[tenant_id]) < limite
 
     async def admit_pipeline(self, tenant_id: str, pipeline_id: str):
         self._active[tenant_id].add(pipeline_id)

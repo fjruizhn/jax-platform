@@ -22,6 +22,8 @@ import api from '../api/client'
 import Login from './Login'
 import { I18nProvider } from '../i18n/index.jsx'
 import en from '../i18n/en.js'
+import es from '../i18n/es.js'
+import { useApariencia } from '../store/useApariencia'
 
 function renderLogin() {
   return render(
@@ -44,6 +46,7 @@ beforeEach(() => {
   clearAvisoSesionMock.mockReset()
   avisoSesion = null
   localStorage.clear()
+  useApariencia.setState({ systemName: null, langDefault: null })
 })
 
 describe('Login -- límite de intentos', () => {
@@ -67,6 +70,37 @@ describe('Login -- límite de intentos', () => {
     renderLogin()
     enviar()
     await waitFor(() => expect(screen.getByText(/Usuario o contraseña incorrectos/i)).toBeInTheDocument())
+  })
+
+  // Frente C, revisión final (2026-09-17): un ajuste ilegible (vida de la
+  // sesión) hace que el login responda 503 ajuste_ilegible. Mostrar
+  // "contraseña incorrecta" manda a la persona a reintentar algo que no falla.
+  it('un 503 ajuste_ilegible dice que el servidor tiene un ajuste inválido, no credenciales', async () => {
+    loginMock.mockRejectedValue({
+      response: { status: 503, headers: {}, data: { detail: { code: 'ajuste_ilegible', clave: 'session_lifetime_seconds' } } },
+    })
+    renderLogin()
+    enviar()
+    await waitFor(() => expect(screen.getByText(es.ajuste_ilegible)).toBeInTheDocument())
+    expect(screen.queryByText(/Usuario o contraseña incorrectos/i)).not.toBeInTheDocument()
+  })
+
+  it('otro 5xx es un error del servidor, no credenciales', async () => {
+    loginMock.mockRejectedValue({ response: { status: 500, headers: {}, data: {} } })
+    renderLogin()
+    enviar()
+    await waitFor(() => expect(screen.getByText(es.error_del_servidor)).toBeInTheDocument())
+    expect(screen.queryByText(/Usuario o contraseña incorrectos/i)).not.toBeInTheDocument()
+  })
+
+  it('las claves ajuste_ilegible y error_del_servidor existen en es y en', () => {
+    for (const claves of [es, en]) {
+      expect(typeof claves.ajuste_ilegible).toBe('string')
+      expect(claves.ajuste_ilegible.length).toBeGreaterThan(0)
+      expect(typeof claves.error_del_servidor).toBe('string')
+      expect(claves.error_del_servidor.length).toBeGreaterThan(0)
+    }
+    expect(es.ajuste_ilegible).not.toBe(en.ajuste_ilegible)
   })
 })
 
@@ -198,7 +232,7 @@ describe('Login -- cuenta bloqueada (A-50)', () => {
     renderLogin()
     fireEvent.change(screen.getByPlaceholderText(en.emailPlaceholder), { target: { value: 'a@b.c' } })
     fireEvent.change(screen.getByPlaceholderText('••••••••'), { target: { value: 'x' } })
-    fireEvent.click(screen.getByRole('button', { name: en.loginButton }))
+    fireEvent.click(screen.getByRole('button', { name: en.loginButton(en.brandName) }))
     await waitFor(() => expect(screen.getByText('Account locked. Try again in 2 minute(s).')).toBeInTheDocument())
   })
 
@@ -216,5 +250,16 @@ describe('Login -- cuenta bloqueada (A-50)', () => {
     const base = import.meta.url
     const fuente = readFileSync(new URL('./Login.jsx', base), 'utf8')
     expect(fuente).not.toMatch(/minuto/)
+  })
+})
+
+// system_name (frente C, 2026-09-16): el título y el botón de entrar ya no
+// llevan "Axioma" fijo -- muestran el nombre configurado en Admin.
+describe('Login -- nombre del sistema', () => {
+  it('el título y el botón usan el nombre del sistema', () => {
+    useApariencia.setState({ systemName: 'Hal' })
+    renderLogin()
+    expect(screen.getByRole('heading', { name: 'Hal' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: es.loginButton('Hal') })).toBeInTheDocument()
   })
 })

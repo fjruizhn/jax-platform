@@ -39,6 +39,7 @@ _cred_handler.setFormatter(logging.Formatter("%(levelname)s credential_resolver:
 _cred_logger.addHandler(_cred_handler)
 _cred_logger.propagate = False
 
+import ajustes
 from db.connection import get_pool, close_pool
 from http_client import get_http_client, close_http_client
 from db.migrations import run_migrations
@@ -89,6 +90,9 @@ async def lifespan(app: FastAPI):
     await get_pool()
     await get_http_client()
     await run_migrations()
+    # Ruling R16 (2026-09-17): nombra en ERROR cada ajuste ilegible (p.ej. tras
+    # cambiar ACCESS_EXPIRE_SECONDS o MAX_PARALLEL_PIPELINES); no aborta.
+    await ajustes.avisar_claves_ilegibles()
     await run_seed()
     await engine_state.cargar_nombres_de_facetas()
     engine_state.start_background_tasks()
@@ -114,6 +118,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="JAX Platform", version="0.1.0", lifespan=lifespan)
+
+# Frente C (2026-09-16): un ajuste de admin ilegible es un 503 con código, en
+# cualquier endpoint que lo lea -- nunca un default silencioso (ajustes.py).
+app.add_exception_handler(ajustes.AjusteIlegible, ajustes.respuesta_de_ajuste_ilegible)
 
 # Frente A (2026-09-16, A-18): el dev es mismo origen (proxy de Vite para /api
 # y /ws) y producción también (nginx de la VM dev). Solo el origen declarado.

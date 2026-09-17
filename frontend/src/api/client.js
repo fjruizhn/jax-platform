@@ -101,10 +101,17 @@ api.interceptors.response.use(
         // explícito -- en el 401 original o en el refresh fallido -- porque
         // es la única causa que amerita un mensaje distinto ("te desactivaron
         // / te cambiaron el acceso") de un simple vencimiento por tiempo.
+        // Frente C (2026-09-17): un 5xx del refresh no es una sesión vencida
+        // (p.ej. 503 ajuste_ilegible: la vida de la sesión no se puede leer).
+        // Se dice que es el servidor; el 401 sigue igual.
         const avisoSesion =
           codigoDe(refreshErr) === SESION_INVALIDA || codigoDe(err) === SESION_INVALIDA
             ? 'sesion_invalida'
-            : 'sesion_expirada'
+            : codigoDe(refreshErr) === 'ajuste_ilegible'
+              ? 'ajuste_ilegible'
+              : refreshErr?.response?.status >= 500
+                ? 'error_del_servidor'
+                : 'sesion_expirada'
         useJaxStore.setState({ token: null, user: null, avisoSesion })
       }
     }

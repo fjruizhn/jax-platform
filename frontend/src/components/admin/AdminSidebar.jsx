@@ -1,5 +1,6 @@
 import { NavLink, Link } from 'react-router-dom'
 import { useI18n } from '../../i18n/index.jsx'
+import { useNombreDelSistema } from '../../store/useApariencia'
 
 const NAV_ITEMS = [
   { path: 'dashboard', labelKey: 'adminDashboard', icon: '◈' },
@@ -13,6 +14,7 @@ const NAV_ITEMS = [
 
 export default function AdminSidebar() {
   const { t } = useI18n()
+  const nombre = useNombreDelSistema(t)
 
   return (
     <aside className="w-52 flex-shrink-0 bg-fondo border-r border-borde flex flex-col">
@@ -20,10 +22,9 @@ export default function AdminSidebar() {
         <div className="text-xs font-bold text-acento-texto uppercase tracking-widest">
           {t.adminTitle}
         </div>
-        {/* I-1 (revisión final PR 2, 2026-09-14): versión desde package.json
-            (define __APP_VERSION__ en vite.config.js), no un dato fijo.
-            "Axioma" es marca, no texto a traducir (igual que brandName). */}
-        <div className="text-xs text-texto-tenue mt-0.5">Axioma v{__APP_VERSION__}</div>
+        {/* Versión desde package.json (__APP_VERSION__, vite.config.js); el
+            nombre es system_name (frente C, 2026-09-16). */}
+        <div className="text-xs text-texto-tenue mt-0.5">{nombre} v{__APP_VERSION__}</div>
       </div>
 
       <nav className="flex-1 py-3">
@@ -51,7 +52,7 @@ export default function AdminSidebar() {
           className="text-xs text-texto-tenue hover:text-texto transition-colors flex items-center gap-1.5"
         >
           <span>←</span>
-          <span>{t.adminBack}</span>
+          <span>{t.adminBack(nombre)}</span>
         </Link>
       </div>
     </aside>

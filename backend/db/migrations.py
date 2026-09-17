@@ -3,6 +3,8 @@ import logging
 
 import aiomysql
 
+import ajustes
+
 from .connection import get_pool
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,16 @@ CREATE TABLE IF NOT EXISTS axioma_config (
   config_key VARCHAR(100) PRIMARY KEY,
   config_value TEXT NOT NULL,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+# Migraciones de DATOS que corren una sola vez (frente C, 2026-09-16). Las de
+# esquema son idempotentes por inspección; una de datos que fija valores no lo
+# es: correrla en cada arranque pisaría lo que el admin cambió después.
+CREATE_AXIOMA_MIGRACION_DE_DATOS = """
+CREATE TABLE IF NOT EXISTS axioma_migracion_de_datos (
+  nombre VARCHAR(100) PRIMARY KEY,
+  aplicada_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -581,6 +593,7 @@ _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
     ("axioma_config", CREATE_AXIOMA_CONFIG),
+    ("axioma_migracion_de_datos", CREATE_AXIOMA_MIGRACION_DE_DATOS),
     ("axioma_usage", CREATE_AXIOMA_USAGE),
     ("password_reset_tokens", CREATE_PASSWORD_RESET_TOKENS),
     ("user_api_keys", CREATE_USER_API_KEYS),
@@ -2163,6 +2176,48 @@ async def _migrar_gemini_a_cabecera(cur) -> None:
     )
 
 
+MIGRACION_AJUSTES_V1 = "ajustes_que_mandan_v1"
+# Lo que el CÓDIGO hacía cumplir en master 26c9cd5 (2026-09-16), no lo que
+# mostraba DEFAULT_CONFIG (60 / 1 / 7, que nadie leía):
+VALORES_QUE_RIGEN_2026_09_16 = {
+    ajustes.SESION: "10080",   # auth/jwt.py: REFRESH_EXPIRE_SECONDS = 7 * 24 * 3600
+    ajustes.MAX_PIPELINES: "3",  # jax_engine/resource_manager.py: reemplazó la constante fija por este ajuste (frente C)
+    ajustes.RETENCION: "30",   # jax_engine/owner_cleanup.py: COMMAND_OWNER_MAX_AGE_SECONDS
+    ajustes.IDIOMA: "es",      # frontend/src/i18n/index.jsx: jax_lang || 'es'
+}
+# El nombre que la UI mostraba (i18n brandName). La fila, si existe, se conserva:
+# el deploy verifica antes que diga esto (plan frente C, Task 16).
+NOMBRE_QUE_SE_MOSTRABA_2026_09_16 = "Axioma"
+# A-17 (decisión de Fernando, 2026-09-16): ws_notifications sale de
+# DEFAULT_CONFIG (nadie lo leía) y su fila de producción la borra esta
+# migración, una sola vez.
+CLAVE_RETIRADA_WS_NOTIFICATIONS = "ws_notifications"
+
+
+async def _ajustes_que_mandan_v1(cur) -> None:
+    """Frente C (2026-09-16): los ajustes de admin pasan a mandar con el valor
+    que ya regía. UNA vez (marcador en axioma_migracion_de_datos): después,
+    lo que el admin guarde no se pisa al arrancar. Sin marcador y a medias
+    (caída entre sentencias), la próxima corrida la completa: cada sentencia
+    fija el mismo valor. De paso (A-17), borra la fila retirada
+    ws_notifications -- también una sola vez, bajo el mismo marcador."""
+    await cur.execute("SELECT 1 FROM axioma_migracion_de_datos WHERE nombre = %s", (MIGRACION_AJUSTES_V1,))
+    if await cur.fetchone() is not None:
+        return
+    for clave, valor in VALORES_QUE_RIGEN_2026_09_16.items():
+        await cur.execute(
+            "INSERT INTO axioma_config (config_key, config_value) VALUES (%s, %s) "
+            "ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)",
+            (clave, valor),
+        )
+    await cur.execute(
+        "INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES (%s, %s)",
+        (ajustes.NOMBRE, NOMBRE_QUE_SE_MOSTRABA_2026_09_16),
+    )
+    await cur.execute("DELETE FROM axioma_config WHERE config_key = %s", (CLAVE_RETIRADA_WS_NOTIFICATIONS,))
+    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_AJUSTES_V1,))
+
+
 async def _indices_de_model_binding_proposal(cur) -> None:
     """PR-L ronda 2: los índices de list_proposals en una base donde la tabla
     ya existía sin ellos (en una base nueva los trae el CREATE). Idempotente."""
@@ -2204,6 +2259,7 @@ async def run_migrations():
             await _respaldo_de_uso(cur)
 
             await _drop_axioma_artifacts(cur)
+            await _ajustes_que_mandan_v1(cur)
             await _seed_providers(cur)
             await _migrate_user_api_keys_to_credential(cur)
             await _seed_facets(cur)

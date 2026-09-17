@@ -223,19 +223,22 @@ export default {
   // Login
   brandName: 'Axioma',
   brandTagline: 'Personal Cognitive Infrastructure',
-  loginTitle: 'Axioma',
   loginTagline: 'In memory of Jairo Urbina',
   emailLabel: 'Email',
   passwordLabel: 'Password',
   loginError: 'Invalid username or password',
   loggingIn: 'Signing in…',
-  loginButton: 'Enter Axioma',
+  loginButton: (nombre) => `Enter ${nombre}`,
   showPassword: 'Show password',
   hidePassword: 'Hide password',
   // Session-close reason (2026-09-14, Task 4b): the interceptor in
   // api/client.js used to silently clear the session on a failed refresh.
   sesion_invalida: 'Your session was closed: someone signed in somewhere else, or your access changed. Please sign in again.',
   sesion_expirada: 'Your session expired. Please sign in again.',
+  // Frente C (2026-09-17): login or refresh answered 5xx. Not credentials
+  // nor an expired session: it is the server.
+  ajuste_ilegible: 'The server has an invalid setting. Contact the administrator.',
+  error_del_servidor: 'The server could not handle the request. Try again in a moment.',
   accountLocked: 'Account locked. Check your email.',
   accountLockedMinutes: (min) => `Account locked. Try again in ${min} minute(s).`,
   tooManyAttempts: 'Too many attempts. Wait a moment and try again.',
@@ -291,7 +294,7 @@ export default {
   adminRepo: 'Repository',
   adminSettings: 'Settings',
   adminCosts: 'Costs',
-  adminBack: 'Back to Axioma',
+  adminBack: (nombre) => `Back to ${nombre}`,
 
   // Admin dashboard
   adminServicesTitle: 'Service Status',
@@ -498,11 +501,15 @@ export default {
   adminSettingsLoadError: 'The configuration could not be loaded.',
   config_clave_reservada: 'One of the keys is reserved and cannot be changed from this screen. Nothing was saved.',
   config_collation_desconocida: 'The database could not verify the reserved keys, so nothing was saved.',
+  config_valor_invalido: (campo) => `The value of "${campo}" is outside the allowed range. Nothing was saved.`,
   adminSettingsLang: 'Default language',
   adminSettingsTheme: 'Default theme',
-  adminSettingsTimeout: 'Session timeout (min)',
-  adminSettingsMaxPipelines: 'Max simultaneous pipelines',
-  adminSettingsRetention: 'Web-task retention (days)',
+  adminSettingsTimeout: 'Session length (min)',
+  adminSettingsTimeoutAyuda: 'From sign-in until signing in again is required. Using it does not extend it.',
+  adminSettingsMaxPipelines: 'Active pipelines at once',
+  adminSettingsMaxPipelinesAyuda: (tope) => `Per organization. Jacobs runs no more than ${tope} in total.`,
+  adminSettingsRetention: 'Web task retention (days)',
+  adminSettingsRetentionAyuda: 'Days a web task (mission, result and owner) is kept before it is deleted.',
   adminSettingsSystemName: 'System name',
   adminSettingsDark: 'Dark',
   adminSettingsLight: 'Light',
@@ -553,7 +560,7 @@ export default {
   // Outgoing email (SMTP) — AdminSmtp.jsx (2026-09-12, user admin stage 1)
   adminSmtp: 'Email (SMTP)',
   smtpTitle: 'Outgoing email (SMTP)',
-  smtpDesc: 'Server Axioma uses to send password recovery links.',
+  smtpDesc: (nombre) => `Server ${nombre} uses to send password recovery links.`,
   smtpHost: 'Server',
   smtpPort: 'Port',
   smtpEncryption: 'Encryption',

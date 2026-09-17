@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useJaxStore } from '../store/useJaxStore'
 import { useI18n } from '../i18n/index.jsx'
+import { useNombreDelSistema } from '../store/useApariencia'
 import api from '../api/client'
+import { codigoDe } from '../api/errores'
 import PasswordInput from '../components/PasswordInput'
 import AlertaError from '../components/AlertaError'
 import HalEye from '../components/HalEye/HalEye'
@@ -12,6 +14,7 @@ export default function Login() {
   const avisoSesion = useJaxStore((s) => s.avisoSesion)
   const clearAvisoSesion = useJaxStore((s) => s.clearAvisoSesion)
   const { lang, setLang, t } = useI18n()
+  const nombre = useNombreDelSistema(t)
   const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -50,6 +53,12 @@ export default function Login() {
         // credenciales, es "esperá". El backend manda Retry-After en segundos.
         const seconds = parseInt(err.response?.headers?.['retry-after'], 10)
         setError(Number.isFinite(seconds) ? t.tooManyAttemptsSeconds(seconds) : t.tooManyAttempts)
+      } else if (codigoDe(err) === 'ajuste_ilegible') {
+        // Frente C (2026-09-17): la vida de la sesión es un ajuste de la DB;
+        // si no se puede leer, el backend responde 503. No es la contraseña.
+        setError(t.ajuste_ilegible)
+      } else if (status >= 500) {
+        setError(t.error_del_servidor)
       } else {
         setError(t.loginError)
       }
@@ -157,7 +166,7 @@ export default function Login() {
           <HalEye size={150} reposo />
         </div>
 
-        <h1 className="text-center text-2xl font-bold text-texto mb-1">{t.loginTitle}</h1>
+        <h1 className="text-center text-2xl font-bold text-texto mb-1">{nombre}</h1>
         <p className="text-center text-xs text-texto-tenue mb-8">{t.loginTagline}</p>
 
         {avisoSesion && (
@@ -206,7 +215,7 @@ export default function Login() {
             disabled={loading}
             className="w-full py-2.5 rounded-lg bg-accion hover:bg-accion-hover disabled:opacity-50 text-sobre-color font-semibold transition-colors"
           >
-            {loading ? t.loggingIn : t.loginButton}
+            {loading ? t.loggingIn : t.loginButton(nombre)}
           </button>
 
           <div className="text-center">

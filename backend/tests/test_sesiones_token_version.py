@@ -26,7 +26,7 @@ def test_access_token_lleva_la_version():
 
 
 def test_refresh_token_lleva_la_version():
-    payload = decode_token(create_refresh_token("5", "1", "operator", 7))
+    payload = decode_token(create_refresh_token("5", "1", "operator", 7, vida_segundos=3600))
     assert (payload["tv"], payload["type"]) == (7, "refresh")
 
 

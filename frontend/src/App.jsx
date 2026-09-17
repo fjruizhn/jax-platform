@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useJaxStore } from './store/useJaxStore'
-import { useTema } from './store/useTema'
+import { sincronizarApariencia } from './apariencia/sincronizarApariencia'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Admin from './pages/Admin'
@@ -16,18 +16,17 @@ function RequireSuperadmin({ children }) {
 
 export default function App() {
   const restoreSession = useJaxStore((s) => s.restoreSession)
-  const sincronizarTema = useTema((s) => s.sincronizarPredeterminado)
 
   useEffect(() => {
     restoreSession()
   }, [restoreSession])
 
   useEffect(() => {
-    // Una vez por carga, también en Login y Reset (no hay sesión). Si falla, se
-    // queda el último predeterminado conocido que ya aplicó el script de
-    // index.html: es una preferencia visual, no una autorización (spec §5.2).
-    sincronizarTema().catch(() => {})
-  }, [sincronizarTema])
+    // Una vez por carga, también en Login y Reset (no hay sesión). Si falla,
+    // se quedan el tema, el idioma y el nombre últimos conocidos: es
+    // presentación, no autorización (spec 2026-09-14 §5.2; frente C).
+    sincronizarApariencia().catch(() => {})
+  }, [])
 
   return (
     <BrowserRouter>

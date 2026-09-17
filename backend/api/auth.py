@@ -5,14 +5,16 @@ import logging
 import math
 import secrets
 import os
+import time
 from datetime import timedelta
 from tiempo import utc_ahora
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, Cookie, status
 from pydantic import BaseModel, Field
 
+import ajustes
 from auth.models import AuthUser, LoginRequest, LoginResponse, MeResponse, RefreshResponse
-from auth.jwt import REFRESH_EXPIRE_SECONDS, create_access_token, create_refresh_token, decode_token
+from auth.jwt import create_access_token, create_refresh_token, decode_token
 from auth.middleware import get_current_user_con_cambio_pendiente, verificar_sesion
 from auth import rate_limit
 from auth.password_rules import problema_de_password
@@ -30,6 +32,24 @@ router = APIRouter(prefix="/api/auth")
 
 MAX_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
+
+SESION_EXPIRADA = "sesion_expirada"
+
+
+async def vida_de_sesion_segundos() -> int:
+    """session_timeout_min en segundos. AjusteIlegible -> 503 (main.py)."""
+    return await ajustes.valor(ajustes.SESION) * 60
+
+
+def sesion_vencida(payload: dict, vida_segundos: int, ahora: float) -> bool:
+    """Vida ABSOLUTA desde la emisión (el refresh no se rota). Sin `iat`
+    entero, el token es anterior al frente C y no hay con qué medirlo: vencido
+    (una sola vez, al desplegar, cada sesión vuelve a entrar)."""
+    iat = payload.get("iat")
+    if not isinstance(iat, int) or isinstance(iat, bool):
+        return True
+    return ahora - iat > vida_segundos
+
 
 # Sin la contraseña correcta, el login responde SIEMPRE esto (2026-09-12).
 # Antes delataba qué cuentas existen: email inexistente -> 401 sin bcrypt
@@ -57,17 +77,19 @@ def _cuenta_bloqueada(locked_until, ahora) -> HTTPException:
     )
 
 
-def _emitir_tokens(response: Response, user_id: str, tenant_id: str, role: str, token_version: int) -> str:
+def _emitir_tokens(response: Response, user_id: str, tenant_id: str, role: str, token_version: int,
+                   vida_segundos: int) -> str:
     """Emite access + refresh con la versión vigente; el refresh va en la
-    cookie HttpOnly. Lo usan el login y, desde la etapa 4, el cambio de
-    contraseña propio (que sube la versión y tiene que dejarle a ESTA sesión
-    tokens nuevos)."""
-    refresh_token = create_refresh_token(user_id, tenant_id, role, token_version)
+    cookie HttpOnly y vive lo que diga session_timeout_min (frente C). Lo
+    usan el login y el cambio de contraseña propio. `vida_segundos` se lee
+    ANTES de escribir nada: un ajuste ilegible no puede dejar la versión
+    subida y la sesión sin tokens."""
+    refresh_token = create_refresh_token(user_id, tenant_id, role, token_version, vida_segundos=vida_segundos)
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        max_age=REFRESH_EXPIRE_SECONDS,
+        max_age=vida_segundos,
         samesite="lax",
     )
     return create_access_token(user_id, tenant_id, role, token_version)
@@ -78,6 +100,8 @@ async def login(req: LoginRequest, request: Request, response: Response):
     # Antes de la DB y del bcrypt: sin límite, cada intento (exista o no el
     # email) le cuesta ~155 ms de CPU al servidor. Ver auth/rate_limit.py.
     rate_limit.check_login_rate(request, req.email)
+    # Antes de la DB, del bcrypt y del bump de token_version (frente C).
+    vida = await vida_de_sesion_segundos()
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -166,7 +190,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
     # Ruling U9: después del commit, fail-soft. Cierra el WS/SSE de la sesión
     # vieja ya mismo (si no, seguirían abiertos hasta su próxima verificación).
     await _cortar_conexiones(user_id)
-    access = _emitir_tokens(response, str(user_id), str(tenant_id), role, token_version)
+    access = _emitir_tokens(response, str(user_id), str(tenant_id), role, token_version, vida)
 
     return LoginResponse(
         access_token=access,
@@ -185,13 +209,18 @@ async def refresh(refresh_token: str = Cookie(None)):
     # La misma verificación que cada request (etapa 2): un refresh de un
     # usuario desactivado o con la versión vieja ya no reemite nada. El access
     # nuevo lleva el rol y la versión de la BASE, no los del refresh.
-    # La cookie NO se rota: rotarla haría deslizante la sesión de 7 días, y la
-    # versión ya invalida el refresh viejo cuando hace falta.
+    # La cookie NO se rota: rotarla haría deslizante la sesión, y la versión
+    # ya invalida el refresh viejo cuando hace falta.
     # U34: la renovación se admite con la marca; sin ella, el access de 15 min
     # vence en medio del cambio obligatorio. El access nuevo no lleva la marca:
     # la lee verificar_sesion de la base en cada request, así que se vuelve a
     # hacer cumplir en el siguiente.
-    user = await verificar_sesion(decode_token(refresh_token), "refresh", admite_cambio_pendiente=True)
+    payload = decode_token(refresh_token)
+    user = await verificar_sesion(payload, "refresh", admite_cambio_pendiente=True)
+    # Frente C: la vida se mide contra el ajuste VIGENTE, no contra el exp con
+    # que se emitió -- acortar session_timeout_min alcanza a esta sesión.
+    if sesion_vencida(payload, await vida_de_sesion_segundos(), time.time()):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=SESION_EXPIRADA)
     access = create_access_token(user.user_id, user.tenant_id, user.role, user.token_version)
     return RefreshResponse(access_token=access)
 
@@ -274,6 +303,7 @@ async def cambiar_mi_password(
     un token robado sirve para adivinar la contraseña a velocidad de CPU).
     Sube token_version: se cierran las OTRAS sesiones, y esta recibe tokens
     nuevos (access en la respuesta, refresh en la cookie)."""
+    vida = await vida_de_sesion_segundos()  # antes de la transacción que sube la versión (frente C)
     user_id = int(user.user_id)
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -340,7 +370,7 @@ async def cambiar_mi_password(
     # Ruling U9 (spec §3.2): después del commit, fail-soft. Se corta también
     # la pestaña que hizo el cambio: reconecta sola con el token nuevo.
     await _cortar_conexiones(user_id)
-    access = _emitir_tokens(response, user.user_id, user.tenant_id, user.role, nueva_version)
+    access = _emitir_tokens(response, user.user_id, user.tenant_id, user.role, nueva_version, vida)
     return RefreshResponse(access_token=access)
 
 

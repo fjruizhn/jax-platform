@@ -226,19 +226,22 @@ export default {
   // Login
   brandName: 'Axioma',
   brandTagline: 'Infraestructura Cognitiva Personal',
-  loginTitle: 'Axioma',
   loginTagline: 'En memoria de Jairo Urbina',
   emailLabel: 'Email',
   passwordLabel: 'Contraseña',
   loginError: 'Usuario o contraseña incorrectos',
   loggingIn: 'Iniciando…',
-  loginButton: 'Entrar a Axioma',
+  loginButton: (nombre) => `Entrar a ${nombre}`,
   showPassword: 'Mostrar contraseña',
   hidePassword: 'Ocultar contraseña',
   // Motivo del cierre de sesión (2026-09-14, Task 4b): antes el interceptor
   // de api/client.js borraba la sesión en silencio ante un refresh fallido.
   sesion_invalida: 'Tu sesión se cerró: se inició sesión en otro lugar, o tu acceso cambió. Iniciá sesión de nuevo.',
   sesion_expirada: 'Tu sesión venció. Iniciá sesión de nuevo.',
+  // Frente C (2026-09-17): el login o el refresh responden 5xx. No son
+  // credenciales ni una sesión vencida: es el servidor.
+  ajuste_ilegible: 'El servidor tiene un ajuste inválido. Avisa al administrador.',
+  error_del_servidor: 'El servidor no pudo atender el pedido. Intenta de nuevo en un momento.',
   accountLocked: 'Cuenta bloqueada. Revisa tu correo.',
   accountLockedMinutes: (min) => `Cuenta bloqueada. Intenta de nuevo en ${min} minuto(s).`,
   tooManyAttempts: 'Demasiados intentos. Espera un momento y vuelve a intentarlo.',
@@ -294,7 +297,7 @@ export default {
   adminRepo: 'Repositorio',
   adminSettings: 'Configuración',
   adminCosts: 'Costos',
-  adminBack: 'Volver a Axioma',
+  adminBack: (nombre) => `Volver a ${nombre}`,
 
   // Admin dashboard
   adminServicesTitle: 'Estado de Servicios',
@@ -501,11 +504,15 @@ export default {
   adminSettingsLoadError: 'No se pudo cargar la configuración.',
   config_clave_reservada: 'Una de las claves está reservada y no se puede cambiar desde esta pantalla. No se guardó nada.',
   config_collation_desconocida: 'La base no permitió verificar las claves reservadas, así que no se guardó nada.',
+  config_valor_invalido: (campo) => `El valor de "${campo}" está fuera de lo permitido. No se guardó nada.`,
   adminSettingsLang: 'Idioma por defecto',
   adminSettingsTheme: 'Tema por defecto',
-  adminSettingsTimeout: 'Timeout sesión (min)',
-  adminSettingsMaxPipelines: 'Max pipelines simultáneos',
-  adminSettingsRetention: 'Retención web-tasks (días)',
+  adminSettingsTimeout: 'Duración de la sesión (min)',
+  adminSettingsTimeoutAyuda: 'Desde que se inicia sesión hasta que hay que volver a entrar. Usarla no la alarga.',
+  adminSettingsMaxPipelines: 'Pipelines activos a la vez',
+  adminSettingsMaxPipelinesAyuda: (tope) => `Por organización. Jacobs no corre más de ${tope} en total.`,
+  adminSettingsRetention: 'Retención de tareas web (días)',
+  adminSettingsRetentionAyuda: 'Días que se guarda una tarea web (misión, resultado y dueño) antes de borrarse.',
   adminSettingsSystemName: 'Nombre del sistema',
   adminSettingsDark: 'Oscuro',
   adminSettingsLight: 'Claro',
@@ -562,7 +569,7 @@ export default {
   // Correo saliente (SMTP) — AdminSmtp.jsx (2026-09-12, admin usuarios etapa 1)
   adminSmtp: 'Correo (SMTP)',
   smtpTitle: 'Correo saliente (SMTP)',
-  smtpDesc: 'Servidor con el que Axioma envía los enlaces de recuperación de contraseña.',
+  smtpDesc: (nombre) => `Servidor con el que ${nombre} envía los enlaces de recuperación de contraseña.`,
   smtpHost: 'Servidor',
   smtpPort: 'Puerto',
   smtpEncryption: 'Cifrado',

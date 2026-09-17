@@ -1,12 +1,13 @@
 import os
 import time
 import uuid
+import ajustes
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from db.connection import get_pool
 from http_client import get_http_client
-from jax_engine.resource_manager import MAX_PIPELINES_PER_TENANT, resource_manager
+from jax_engine.resource_manager import resource_manager
 from jax_engine.state import engine_state
 from jax_engine.schemas import PipelineState
 from redaccion import recortar_redactado
@@ -115,10 +116,11 @@ async def list_pipelines(user: AuthUser = Depends(get_current_user)):
 
 @router.post("")
 async def create_pipeline(request: Request, user: AuthUser = Depends(get_current_user)):
-    if not await resource_manager.can_start_pipeline(user.tenant_id):
+    limite = await ajustes.valor(ajustes.MAX_PIPELINES)
+    if not await resource_manager.can_start_pipeline(user.tenant_id, limite):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={"code": "limite_de_pipelines", "max": MAX_PIPELINES_PER_TENANT},
+            detail={"code": "limite_de_pipelines", "max": limite},
         )
     body = await request.json()
     body["user_id"] = user.user_id

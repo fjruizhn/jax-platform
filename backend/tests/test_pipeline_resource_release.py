@@ -1,8 +1,8 @@
 """cancel_pipeline() already released a tenant's concurrency slot
 (resource_manager.release_pipeline) on explicit cancel, but a pipeline that
 finishes on its own (completed/failed, detected by the poller) never did --
-every non-cancelled pipeline permanently consumed one of the tenant's 3
-concurrent slots (jax_engine/resource_manager.py MAX_PIPELINES_PER_TENANT).
+every non-cancelled pipeline permanently consumed one of the tenant's
+concurrent slots (max_pipelines, ajustes.py -- era una constante hasta el frente C).
 """
 from jax_engine.resource_manager import resource_manager
 from jax_engine.schemas import PipelineState
