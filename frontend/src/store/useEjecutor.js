@@ -117,7 +117,10 @@ export const useEjecutor = create((set, get) => {
         })
         if (mision.estado === 'en_curso') {
           get().iniciarPolling(id)
-        } else if (temporizador) {
+        } else {
+          // Una misión terminada cambia la pausa (C5 pudo ponerla al cerrar el turno) y el estado de
+          // la lista. Se relee SIEMPRE, no sólo cuando había sondeo: visto en real 2026-09-17 11:23,
+          // la pantalla mostraba «En curso» y «pausa no puesta» con el turno fallido y la pausa puesta.
           get().detenerPolling()
           get().cargarEstado()
           get().cargarMisiones()
