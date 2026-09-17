@@ -110,7 +110,13 @@ def _entero(minimo: int, maximo: int) -> Callable[[str], int]:
 def _monto_usd(texto: str) -> Decimal:
     if not texto.isascii() or not _MONTO_USD.fullmatch(texto):
         raise ValorInvalido(texto)
-    return Decimal(texto)
+    monto = Decimal(texto)
+    # El regex fija la FORMA (canónico, hasta 2 decimales); el rango se
+    # compara explícito contra la constante, igual que _entero, para que no
+    # pueda divergir en silencio de lo que limites() publica.
+    if not Decimal("0") <= monto <= Decimal(CONFIRMAR_USD_MAX):
+        raise ValorInvalido(texto)
+    return monto
 
 
 def _idioma(texto: str) -> str:

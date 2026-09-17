@@ -26,6 +26,18 @@ def test_limites_publicados_del_umbral():
     assert ajustes.limites()["pipeline_confirmar_usd"] == {"min": "0", "max": "999999.99", "decimales": 2}
 
 
+def test_la_validacion_real_respeta_el_maximo_publicado(monkeypatch):
+    """Regresión: el máximo hoy sólo lo hacía cumplir la CANTIDAD de dígitos
+    del regex (coincidencia, no una comparación). Si alguien cambia
+    CONFIRMAR_USD_MAX sin tocar el regex, limites() (lo que muestra el panel)
+    y la validación real divergen en silencio."""
+    interpretar = ajustes.DEFINICIONES[ajustes.CONFIRMAR_USD].interpretar
+    monkeypatch.setattr(ajustes, "CONFIRMAR_USD_MAX", "100.00")
+    assert interpretar("100.00") == Decimal("100.00")
+    with pytest.raises(ajustes.ValorInvalido):
+        interpretar("100.01")
+
+
 async def _migrar():
     from db.connection import get_pool
     pool = await get_pool()
