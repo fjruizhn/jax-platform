@@ -242,6 +242,19 @@ export default {
   facetsLabel: 'Facetas',
   starting: 'Iniciando…',
   planAndExecute: 'Planificar y ejecutar',
+  // Pre-vuelo y confirmación de costo (spec 2026-09-17 §6.2). El lugar del
+  // paso sale de lugarDelPaso, igual que las violaciones (adenda Task 9).
+  prevueloTitulo: 'El pre-vuelo encontró problemas. No se gastó nada:',
+  confirmarCostoTitulo: 'Confirmar costo máximo',
+  confirmarCostoMensaje: (monto, umbral) => (umbral
+    ? `Esto puede costar hasta ${monto}. Se pide confirmación por encima de ${umbral} o cuando un paso no tiene costo acotado.`
+    : `Esto puede costar hasta ${monto}.`),
+  confirmarCostoPaso: (p, monto) => `${lugarDelPaso(p)}: hasta ${monto}`,
+  confirmarCostoPasoNoAcotado: (p, motivo) => (motivo
+    ? `${lugarDelPaso(p)}: sin costo acotado. ${motivo}`
+    : `${lugarDelPaso(p)}: sin costo acotado`),
+  confirmarCostoNoAcotado: 'Hay pasos sin costo acotado: el costo real puede superar el máximo mostrado.',
+  confirmarCostoBoton: 'Confirmar y correr',
   descJaxLocal: 'Razonamiento local (Qwen3)',
   descHipatia: 'Investigación web',
   descJekyll: 'Análisis reflexivo',
@@ -252,7 +265,6 @@ export default {
   facetUngoverned: 'Sin gobernanza de Motor Registry — no se valida contra capabilities reales.',
   catalogLoadingHint: 'Cargando catálogo de motores…',
   catalogFailedHint: 'No se pudo cargar el catálogo de motores — no se puede planificar hasta que cargue.',
-  errorPipelinePrefix: 'Error pipeline',
   layoutLabel: 'Forma',
   layoutChain: 'En cadena',
   layoutParallel: 'En paralelo',

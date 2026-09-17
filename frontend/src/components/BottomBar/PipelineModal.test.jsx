@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -12,6 +12,7 @@ import '@testing-library/jest-dom'
 vi.mock('../../api/client', () => ({
   default: {
     get: vi.fn(),
+    post: vi.fn(),
   },
 }))
 
@@ -20,6 +21,19 @@ import PipelineModal from './PipelineModal'
 import { I18nProvider } from '../../i18n/index.jsx'
 import es from '../../i18n/es.js'
 import en from '../../i18n/en.js'
+import { formatearUsd } from '../../lib/moneda'
+import { textoDeViolacion, textoDeMotivoDeCosto } from '../../api/errores'
+
+// toHaveTextContent colapsa los espacios del DOM (incluido el espacio duro que
+// Intl pone entre "USD" y el número en es-HN) pero no los del esperado.
+const usd = (monto) => formatearUsd(monto, 'es').replace(/\s+/g, ' ')
+const texto = (s) => s.replace(/\s+/g, ' ')
+
+// Pre-vuelo aprobado y barato: el camino de todos los tests viejos.
+const VEREDICTO_OK = {
+  ok: true, violaciones: [], costo_max_usd: '0.10', umbral_usd: '0.50', requiere_confirmacion: false,
+  pasos_costo: [{ paso: 0, faceta: 'hipatia', usd_max: '0.10', motivo: 'acotado' }],
+}
 
 // La cadena es la forma por defecto desde 2026-09-12. Los tests del picker
 // en paralelo (los de abajo) cambian de forma explícitamente al renderizar.
@@ -174,6 +188,7 @@ function mockCatalog({ kimiHasTools = false, jaxLocalHasTools = true } = {}) {
 beforeEach(() => {
   vi.clearAllMocks()
   mockCatalog()
+  api.post.mockResolvedValue({ data: VEREDICTO_OK })
 })
 
 describe('PipelineModal -- picker de motor (R4 + T5)', () => {
@@ -366,5 +381,195 @@ describe('PipelineModal -- es un Dialogo (A-23)', () => {
     expect(onClose).not.toHaveBeenCalled()
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Spec 2026-09-17 §6.2: nada se crea sin pre-vuelo; violaciones y rechazos se
+// quedan DENTRO del modal; la confirmación de costo va en ventana propia.
+describe('PipelineModal -- pre-vuelo y confirmación de costo', () => {
+  const CARO = {
+    ...VEREDICTO_OK, costo_max_usd: '0.60', requiere_confirmacion: true,
+    pasos_costo: [{ paso: 4, faceta: 'kimi', usd_max: '0.60', motivo: 'acotado' }],
+  }
+
+  async function listo(props = {}) {
+    renderModal(props, { layout: 'chain' })
+    await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+  }
+
+  it('pregunta el pre-vuelo con los mismos pasos y, sin confirmación, crea sin costo_confirmado_usd', async () => {
+    const onSubmit = vi.fn(() => Promise.resolve())
+    await listo({ onSubmit })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    const [url, cuerpo] = api.post.mock.calls[0]
+    expect(url).toBe('/pipelines/preflight')
+    expect(cuerpo.steps).toEqual(onSubmit.mock.calls[0][0].steps)
+    expect(onSubmit.mock.calls[0][0]).not.toHaveProperty('costo_confirmado_usd')
+  })
+
+  it('con violaciones las muestra en el modal, no crea y no cierra', async () => {
+    const v = { paso: 4, faceta: 'kimi', regla: 'tope_insuficiente', detalle: 'tope 8000 < 16384' }
+    api.post.mockResolvedValue({ data: { ...VEREDICTO_OK, ok: false, violaciones: [v] } })
+    const onSubmit = vi.fn()
+    const onClose = vi.fn()
+    await listo({ onSubmit, onClose })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    expect(await screen.findByText(textoDeViolacion(es, v))).toBeInTheDocument()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled()
+  })
+
+  it('por encima del umbral pide confirmación en ventana propia y crea con el costo confirmado', async () => {
+    api.post.mockResolvedValue({ data: CARO })
+    const onSubmit = vi.fn(() => Promise.resolve())
+    await listo({ onSubmit })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    const dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    expect(dialogo).toHaveTextContent(usd('0.60'))
+    expect(onSubmit).not.toHaveBeenCalled()
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.confirmarCostoBoton }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0][0].costo_confirmado_usd).toBe('0.60')
+  })
+
+  it('cancelar la confirmación no crea y deja el modal abierto', async () => {
+    api.post.mockResolvedValue({ data: CARO })
+    const onSubmit = vi.fn()
+    await listo({ onSubmit })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    const dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.cancel }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: es.confirmarCostoTitulo })).not.toBeInTheDocument())
+    expect(screen.getByRole('dialog', { name: es.newPipelineTitle })).toBeInTheDocument()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('Escape con la confirmación abierta cierra sólo la confirmación (DV-12)', async () => {
+    api.post.mockResolvedValue({ data: CARO })
+    const onClose = vi.fn()
+    await listo({ onClose })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: es.confirmarCostoTitulo })).not.toBeInTheDocument())
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: es.newPipelineTitle })).toBeInTheDocument()
+  })
+
+  // Adenda Task 9 ítems 1 y 2: lugar del paso con el mismo helper que las
+  // violaciones, y el motivo traducido, nunca el código crudo.
+  it('un paso sin costo acotado se avisa con su motivo traducido', async () => {
+    const paso = { paso: 1, faceta: 'ada', usd_max: null, motivo: 'herramientas_sin_tope' }
+    api.post.mockResolvedValue({ data: { ...CARO, pasos_costo: [paso] } })
+    await listo()
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    const dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    expect(dialogo).toHaveTextContent(es.confirmarCostoNoAcotado)
+    expect(dialogo).toHaveTextContent(es.confirmarCostoPasoNoAcotado(paso))
+    expect(dialogo).toHaveTextContent('Paso 2 (ada)')
+    expect(dialogo).toHaveTextContent(textoDeMotivoDeCosto(es, 'herramientas_sin_tope'))
+    expect(dialogo).not.toHaveTextContent('herramientas_sin_tope')
+  })
+
+  it('una faceta que no es texto no llega a la pantalla', async () => {
+    const paso = { paso: 'x', faceta: { raro: 1 }, usd_max: '0.60', motivo: 'acotado' }
+    api.post.mockResolvedValue({ data: { ...CARO, pasos_costo: [paso] } })
+    await listo()
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    const dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    expect(dialogo).toHaveTextContent(texto(es.confirmarCostoPaso(paso, formatearUsd('0.60', 'es'))))
+    expect(dialogo).toHaveTextContent(es.unPaso)
+    expect(dialogo).not.toHaveTextContent('[object Object]')
+  })
+
+  it('si la creación falla, el error se ve en el modal y se puede reintentar', async () => {
+    const rechazo = { response: { status: 429, data: { detail: { code: 'limite_de_activos', detalle: 'tope' } } } }
+    const onSubmit = vi.fn(() => Promise.reject(rechazo))
+    const onClose = vi.fn()
+    await listo({ onSubmit, onClose })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.erroresMesa.limite_de_activos({}))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled()
+  })
+
+  // Adenda ítem 4: el costo subió entre el pre-vuelo y la creación.
+  it('409 costo_supera_lo_aceptado reabre la confirmación con el costo nuevo y lo manda al confirmar', async () => {
+    api.post.mockResolvedValue({ data: CARO })
+    const rechazo = { response: { status: 409, data: { detail: {
+      code: 'costo_supera_lo_aceptado', costo_max_usd: '0.90', costo_max_aceptado_usd: '0.60',
+      pasos_costo: [{ paso: 4, faceta: 'kimi', usd_max: '0.90', motivo: 'acotado' }],
+    } } } }
+    const onSubmit = vi.fn().mockRejectedValueOnce(rechazo).mockResolvedValueOnce()
+    const onClose = vi.fn()
+    await listo({ onSubmit, onClose })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    let dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.confirmarCostoBoton }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    await waitFor(() => expect(dialogo).toHaveTextContent(usd('0.90')))
+    expect(within(dialogo).getByRole('alert')).toHaveTextContent(es.erroresMesa.costo_supera_lo_aceptado({}))
+    expect(onClose).not.toHaveBeenCalled()
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.confirmarCostoBoton }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2))
+    expect(onSubmit.mock.calls[1][0].costo_confirmado_usd).toBe('0.90')
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+  })
+
+  it('409 confirmacion_de_costo al crear también abre la confirmación', async () => {
+    const rechazo = { response: { status: 409, data: { detail: {
+      code: 'confirmacion_de_costo', costo_max_usd: '0.70', umbral_usd: '0.50',
+      pasos_costo: [{ paso: 0, faceta: 'hipatia', usd_max: '0.70', motivo: 'acotado' }],
+    } } } }
+    const onSubmit = vi.fn().mockRejectedValueOnce(rechazo)
+    await listo({ onSubmit })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    const dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    expect(dialogo).toHaveTextContent(usd('0.70'))
+  })
+
+  it('422 prevuelo_rechazado al crear muestra las violaciones en el modal', async () => {
+    const v = { paso: 0, faceta: 'hipatia', regla: 'faceta_caida', detalle: '' }
+    const rechazo = { response: { status: 422, data: { detail: { code: 'prevuelo_rechazado', violaciones: [v] } } } }
+    const onSubmit = vi.fn(() => Promise.reject(rechazo))
+    await listo({ onSubmit })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    expect(await screen.findByText(textoDeViolacion(es, v))).toBeInTheDocument()
+  })
+
+  // Adenda ítem 5: doble clic no manda dos pre-vuelos ni dos creaciones.
+  it('doble clic no manda dos pre-vuelos ni dos creaciones', async () => {
+    const onSubmit = vi.fn(() => Promise.resolve())
+    await listo({ onSubmit })
+    const boton = screen.getByText(/Planificar y ejecutar/i)
+    fireEvent.click(boton)
+    fireEvent.click(boton)
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(api.post).toHaveBeenCalledTimes(1)
+  })
+
+  it('doble clic en Confirmar no manda dos creaciones', async () => {
+    api.post.mockResolvedValue({ data: CARO })
+    const onSubmit = vi.fn(() => new Promise(() => {}))
+    await listo({ onSubmit })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    const dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    const confirmar = within(dialogo).getByRole('button', { name: es.confirmarCostoBoton })
+    fireEvent.click(confirmar)
+    fireEvent.click(confirmar)
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(confirmar).toBeDisabled())
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('si el pre-vuelo no responde, el error se ve en el modal y el botón vuelve', async () => {
+    api.post.mockRejectedValue(new Error('network'))
+    await listo()
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.errorPipeline)
+    expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled()
   })
 })

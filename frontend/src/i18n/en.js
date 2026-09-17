@@ -239,6 +239,19 @@ export default {
   facetsLabel: 'Facets',
   starting: 'Starting…',
   planAndExecute: 'Plan and execute',
+  // Preflight and cost confirmation (spec 2026-09-17 §6.2). The step place
+  // comes from lugarDelPaso, like the violations (Task 9 addendum).
+  prevueloTitulo: 'The preflight found problems. Nothing was spent:',
+  confirmarCostoTitulo: 'Confirm maximum cost',
+  confirmarCostoMensaje: (monto, umbral) => (umbral
+    ? `This can cost up to ${monto}. Confirmation is required above ${umbral} or when a step has no bounded cost.`
+    : `This can cost up to ${monto}.`),
+  confirmarCostoPaso: (p, monto) => `${lugarDelPaso(p)}: up to ${monto}`,
+  confirmarCostoPasoNoAcotado: (p, motivo) => (motivo
+    ? `${lugarDelPaso(p)}: no bounded cost. ${motivo}`
+    : `${lugarDelPaso(p)}: no bounded cost`),
+  confirmarCostoNoAcotado: 'Some steps have no bounded cost: the real cost can exceed the maximum shown.',
+  confirmarCostoBoton: 'Confirm and run',
   descJaxLocal: 'Local reasoning (Qwen3)',
   descHipatia: 'Web research',
   descJekyll: 'Reflective analysis',
@@ -249,7 +262,6 @@ export default {
   facetUngoverned: 'No Motor Registry governance — not validated against real capabilities.',
   catalogLoadingHint: 'Loading motor catalog…',
   catalogFailedHint: 'Could not load the motor catalog — planning is blocked until it loads.',
-  errorPipelinePrefix: 'Pipeline error',
   layoutLabel: 'Shape',
   layoutChain: 'Chained',
   layoutParallel: 'In parallel',

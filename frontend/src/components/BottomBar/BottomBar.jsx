@@ -208,25 +208,24 @@ function BottomBar() {
     }
   }
 
+  // PipelineModal muestra los errores de la creación dentro de sí mismo
+  // (spec 2026-09-17 §6.2): acá sólo se crea y se anuncia. Un fallo se
+  // relanza para que el modal no se cierre ni el chat se ensucie.
   async function handlePipelineSubmit(pipelineBody) {
+    const { data } = await api.post('/pipelines', pipelineBody)
     addMessage({
       id: Date.now().toString(),
       facet: 'user',
       content: pipelineObjective,
       timestamp: new Date().toISOString(),
     })
-    try {
-      const { data } = await api.post('/pipelines', pipelineBody)
-      const pid = (data.pipeline_id || '').slice(0, 12)
-      addMessage({
-        id: `pipeline-${data.pipeline_id || Date.now()}`,
-        facet: 'jacobs',
-        content: t.pipelineStarted(pid, pipelineBody.mode, pipelineBody.steps?.length || 'auto'),
-        timestamp: new Date().toISOString(),
-      })
-    } catch (err) {
-      agregarError('jacobs', `pipeline-err-${Date.now()}`, 'errorPipelinePrefix', textoDeErrorDeMesa(t, err, t.errorPipeline))
-    }
+    const pid = (data.pipeline_id || '').slice(0, 12)
+    addMessage({
+      id: `pipeline-${data.pipeline_id || Date.now()}`,
+      facet: 'jacobs',
+      content: t.pipelineStarted(pid, pipelineBody.mode, pipelineBody.steps?.length || 'auto'),
+      timestamp: new Date().toISOString(),
+    })
   }
 
   function handleKeyDown(e) {

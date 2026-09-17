@@ -7,6 +7,11 @@ vi.mock('../../api/client', () => ({
   default: { get: vi.fn(() => Promise.resolve({ data: {} })), post: vi.fn() },
 }))
 
+// El modal real no importa acá: se capturan sus props para llamar a onSubmit.
+vi.mock('./PipelineModal', () => ({
+  default: (props) => { globalThis.__propsDelModalDePipeline = props; return null },
+}))
+
 import api from '../../api/client'
 import BottomBar from './BottomBar'
 import { I18nProvider } from '../../i18n/index.jsx'
@@ -53,5 +58,21 @@ describe('BottomBar -- errores y avisos con código', () => {
     const fuente = readFileSync(new URL('./BottomBar.jsx', base), 'utf8')
     expect(fuente).not.toContain('**Error:**')
     expect(fuente).not.toContain('PLACEHOLDERS')
+  })
+})
+
+describe('BottomBar -- crear pipeline (spec 2026-09-17 §6.2)', () => {
+  it('si crear falla, relanza el error para el modal y no ensucia el chat', async () => {
+    globalThis.__propsDelModalDePipeline = undefined
+    render(<I18nProvider><BottomBar /></I18nProvider>)
+    fireEvent.click(screen.getByRole('button', { name: es.modePipeline }))
+    const caja = screen.getByRole('textbox')
+    fireEvent.change(caja, { target: { value: 'investigar leyes' } })
+    fireEvent.keyDown(caja, { key: 'Enter' })
+    await waitFor(() => expect(globalThis.__propsDelModalDePipeline).toBeTruthy())
+    const rechazo = { response: { status: 409, data: { detail: { code: 'confirmacion_de_costo' } } } }
+    api.post.mockRejectedValue(rechazo)
+    await expect(globalThis.__propsDelModalDePipeline.onSubmit({ steps: [], mode: 'autonomous' })).rejects.toBe(rechazo)
+    expect(useJaxStore.getState().messages).toEqual([])
   })
 })
