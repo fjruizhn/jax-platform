@@ -59,7 +59,6 @@ acá las llama api/upload.py (y RD3) a través de to_thread; `obtener` y
 """
 import asyncio
 import base64
-import contextlib
 import errno
 import hashlib
 import json
@@ -182,8 +181,16 @@ def preparar_directorio() -> Path:
     otro: se avisa) o si este proceso no puede escribir en él (se prueba
     escribiendo, no preguntando)."""
     directorio = cargar_directorio()
+    existia = os.path.lexists(directorio)
     try:
         os.makedirs(directorio, mode=0o700, exist_ok=True)
+        if not existia:
+            # makedirs aplica mode & ~umask: si el umask del proceso resta
+            # bits (p.ej. 022 quita nada acá, pero un umask más ancho sí),
+            # el modo queda fijo en 0700 sin depender de él. Solo cuando LO
+            # CREAMOS nosotros: un directorio que ya existía y puso otro no
+            # se toca (se avisa más abajo si está mal).
+            os.chmod(directorio, 0o700)
         info = os.stat(directorio)
     except OSError as e:
         raise LimitesDeAdjuntosInvalidos(
@@ -197,7 +204,10 @@ def preparar_directorio() -> Path:
     prueba = directorio / f"{PREFIJO_ESCRITURA}arranque-{secrets.token_hex(8)}"
     try:
         fd = os.open(prueba, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(fd)
+        try:
+            os.fchmod(fd, 0o600)  # el modo lo fija el fchmod, no el umask del proceso
+        finally:
+            os.close(fd)
         os.unlink(prueba)
     except OSError as e:
         raise LimitesDeAdjuntosInvalidos(
@@ -241,11 +251,16 @@ def _exigir_carpeta_real(directorio: Path, carpeta: Path) -> None:
 
 def _crear_carpeta_si_falta(carpeta: Path) -> None:
     """mkdir 0700 idempotente. Que ya exista (otra subida la creó primero)
-    no es un error: quien llama verifica después que sea un directorio propio."""
+    no es un error: quien llama verifica después que sea un directorio propio,
+    y no le tocamos el modo -- el chmod de abajo es solo sobre la que ACABAMOS
+    de crear, para fijar 0700 sin depender del umask del proceso."""
     # os.mkdir y no makedirs: si faltara la raíz, makedirs la recrearía con
     # el umask (no 0700); mkdir falla y la subida también (fail-closed).
-    with contextlib.suppress(FileExistsError):
+    try:
         os.mkdir(carpeta, 0o700)
+    except FileExistsError:
+        return
+    os.chmod(carpeta, 0o700)
 
 
 # Carrera con el limpiador (RD7 fix round, R28/menor 7): la carpeta vacía se
@@ -286,13 +301,21 @@ def preparar_carpeta(directorio: Path, user_id) -> Path:
 
 
 def _crear_exclusivo(ruta: Path) -> int:
-    """os.open O_EXCL 0600. Si la carpeta desapareció (el limpiador la borró
-    vacía entre preparar_carpeta y este open), la recrea 0700 y reintenta."""
+    """os.open O_EXCL 0600 + fchmod 0600 (el modo del open lo puede recortar
+    el umask del proceso; el fchmod lo fija igual, sin depender de él). Si la
+    carpeta desapareció (el limpiador la borró vacía entre preparar_carpeta y
+    este open), la recrea 0700 y reintenta."""
     for intento in range(_REINTENTOS_DE_CARPETA):
         try:
             if intento:
                 _asegurar_carpeta(ruta.parent.parent, ruta.parent)
-            return os.open(ruta, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            fd = os.open(ruta, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+            except BaseException:
+                os.close(fd)
+                raise
+            return fd
         except FileNotFoundError:
             continue  # carpeta borrada entre medio (open, mkdir o chequeo): se reintenta
     raise CarpetaInestable()
@@ -430,6 +453,11 @@ def guardar_imagen(directorio: Path, temporal: Path, *, user, mime: str, nombre:
     carpeta = preparar_carpeta(directorio, user.user_id)
     with open(temporal, "rb") as f:
         os.fsync(f.fileno())
+    # El modo del .dato final NO depende de cómo haya creado `temporal` quien
+    # llamó (copiar_subida ya usa _crear_exclusivo con 0600, pero acá no lo
+    # confiamos: se fija explícito, sin depender del umask del proceso ni del
+    # origen del archivo).
+    os.chmod(temporal, 0o600)
     # El mtime del temporal es el del fin de la copia, antes de la cola: sin
     # esto, el dato recién renombrado (aún sin sidecar) podría parecerle
     # huérfano viejo al limpiador (ver ORFANO_MAX_SEGUNDOS).

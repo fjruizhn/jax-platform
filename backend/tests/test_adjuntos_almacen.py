@@ -102,7 +102,19 @@ def test_el_nombre_del_cliente_nunca_esta_en_una_ruta(directorio):
     assert all("secreto" not in p.name for p in directorio.rglob("*"))
 
 
-def test_modos_archivos_0600_y_directorio_0700(directorio):
+@pytest.fixture
+def umask_022():
+    """Fija el umask del proceso en 0o022 (el del runner de CI) para que este
+    test no dependa del umask heredado del entorno donde corre -- en local
+    (umask 077) pasaba por casualidad, aunque el código dependiera de él."""
+    anterior = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(anterior)
+
+
+def test_modos_archivos_0600_y_directorio_0700(directorio, umask_022):
     meta = _guardar_imagen(directorio)
     _guardar_texto(directorio)
     assert stat.S_IMODE((directorio / "5").stat().st_mode) == 0o700
