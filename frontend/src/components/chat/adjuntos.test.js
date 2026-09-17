@@ -1,39 +1,72 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import es from '../../i18n/es.js'
 import en from '../../i18n/en.js'
 import { textoDeErrorDeMesa } from '../../api/errores'
 import { cuerpoDeAdjunto, vistaDeAdjunto, faltaSoporteDeImagen } from './adjuntos'
 
-const IMAGEN = { tipo: 'imagen', nombre: 'f.png', mime: 'image/png', bytes: 3, base64: 'QUJD' }
-const TEXTO = { tipo: 'texto', origen: 'pdf', nombre: 'i.pdf', bytes: 9, contenido: 'ventas', recortado: true }
+// RD4 (2026-09-17): /api/chat/upload devuelve {id, tipo, nombre, bytes, ...} sin
+// base64 ni texto completo (docs/superpowers/specs/2026-09-17-frente-d-adjuntos-por-referencia.md).
+// El compositor guarda el File elegido junto a esa respuesta.
+const IMAGEN = {
+  id: 'abcDEF012345abcDEF012345abcDEF0', tipo: 'imagen', nombre: 'f.png', mime: 'image/png', bytes: 3,
+  archivo: new File(['x'], 'f.png', { type: 'image/png' }),
+}
+const TEXTO = {
+  id: 'ghiJKL678901ghiJKL678901ghiJKL6', tipo: 'texto', origen: 'pdf', nombre: 'i.pdf', bytes: 9,
+  caracteres: 6, recortado: true, vista_previa: 'ventas',
+}
 
 const err = (detail) => ({ response: { data: { detail } } })
 
-describe('adjuntos -- contrato con /api/chat', () => {
-  it('imagen: solo tipo, nombre, mime y base64', () => {
-    expect(cuerpoDeAdjunto(IMAGEN)).toEqual({ tipo: 'imagen', nombre: 'f.png', mime: 'image/png', base64: 'QUJD' })
+describe('adjuntos -- contrato con /api/chat por id (RD4)', () => {
+  it('cuerpoDeAdjunto manda solo el id, nunca bytes ni contenido', () => {
+    expect(cuerpoDeAdjunto(IMAGEN)).toEqual({ id: IMAGEN.id })
+    expect(cuerpoDeAdjunto(TEXTO)).toEqual({ id: TEXTO.id })
   })
-  it('texto: solo tipo, origen, nombre y contenido (extra=forbid en el servidor)', () => {
-    expect(cuerpoDeAdjunto(TEXTO)).toEqual({ tipo: 'texto', origen: 'pdf', nombre: 'i.pdf', contenido: 'ventas' })
+
+  describe('vistaDeAdjunto -- object URL propio del mensaje enviado', () => {
+    beforeEach(() => {
+      let n = 0
+      vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => `blob:mensaje-${++n}`), revokeObjectURL: vi.fn() })
+    })
+    afterEach(() => vi.unstubAllGlobals())
+
+    it('imagen: crea un object URL a partir del File guardado (forma que Message.jsx ya lee)', () => {
+      expect(vistaDeAdjunto(IMAGEN)).toEqual({ type: 'image', filename: 'f.png', base64: 'blob:mensaje-1' })
+      expect(URL.createObjectURL).toHaveBeenCalledWith(IMAGEN.archivo)
+    })
+
+    it('cada llamada obtiene su PROPIO object URL -- no reusa el del compositor', () => {
+      const a = vistaDeAdjunto(IMAGEN)
+      const b = vistaDeAdjunto(IMAGEN)
+      expect(a.base64).not.toBe(b.base64)
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(2)
+    })
+
+    it('texto: solo type y filename, sin base64 ni contenido', () => {
+      expect(vistaDeAdjunto(TEXTO)).toEqual({ type: 'text', filename: 'i.pdf' })
+      expect(URL.createObjectURL).not.toHaveBeenCalled()
+    })
   })
-  it('la vista para el mensaje usa la forma que ya lee Message.jsx', () => {
-    expect(vistaDeAdjunto(IMAGEN)).toEqual({ type: 'image', filename: 'f.png', base64: 'data:image/png;base64,QUJD' })
-    expect(vistaDeAdjunto(TEXTO)).toEqual({ type: 'text', filename: 'i.pdf' })
-  })
+
   it('los códigos de adjuntos se traducen vía erroresMesa/textoDeErrorDeMesa, con y sin datos', () => {
     expect(textoDeErrorDeMesa(es, err({ code: 'adjunto_demasiado_grande', max_bytes: 10485760 }), 'x'))
       .toBe('El archivo supera el máximo de 10 MB.')
     expect(textoDeErrorDeMesa(en, err({ code: 'imagen_no_soportada', facet: 'jekyll' }), 'x'))
       .toBe(en.erroresMesa.imagen_no_soportada())
+    expect(textoDeErrorDeMesa(es, err({ code: 'adjunto_no_encontrado' }), 'x'))
+      .toBe(es.erroresMesa.adjunto_no_encontrado())
     expect(textoDeErrorDeMesa(es, err('faceta desconocida'), 'generico')).toBe('generico')
     expect(textoDeErrorDeMesa(es, {}, 'generico')).toBe('generico')
   })
+
   it('adjuntos_demasiados concuerda en número con el máximo', () => {
     expect(es.erroresMesa.adjuntos_demasiados({ max: 1 })).toBe('Se puede adjuntar hasta 1 archivo por mensaje.')
     expect(es.erroresMesa.adjuntos_demasiados({ max: 3 })).toBe('Se pueden adjuntar hasta 3 archivos por mensaje.')
     expect(en.erroresMesa.adjuntos_demasiados({ max: 1 })).toBe('You can attach up to 1 file per message.')
     expect(en.erroresMesa.adjuntos_demasiados({ max: 3 })).toBe('You can attach up to 3 files per message.')
   })
+
   it('falta soporte solo con imagen y faceta fuera de la lista', () => {
     const politica = { facetas_con_imagen: ['hipatia'] }
     expect(faltaSoporteDeImagen(IMAGEN, politica, 'jekyll')).toBe(true)
@@ -41,7 +74,8 @@ describe('adjuntos -- contrato con /api/chat', () => {
     expect(faltaSoporteDeImagen(TEXTO, politica, 'jekyll')).toBe(false)
     expect(faltaSoporteDeImagen(IMAGEN, null, 'hipatia')).toBe(true)
   })
-  it('las claves nuevas de adjuntos existen en es y en (parity de erroresMesa la cubre paridad.test.js)', () => {
+
+  it('las claves nuevas de adjuntos existen en es y en (paridad de erroresMesa la cubre paridad.test.js)', () => {
     for (const k of ['adjuntoPoliticaNoDisponible', 'adjuntoImagenSinSoporte', 'adjuntoRecortado']) {
       expect(es[k]).toBeTruthy()
       expect(en[k]).toBeTruthy()

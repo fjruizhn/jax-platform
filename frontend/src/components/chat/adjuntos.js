@@ -1,19 +1,24 @@
-// Frente D (2026-09-16): lo que /api/chat/upload devuelve y lo que /api/chat
-// acepta NO son la misma forma. El servidor tiene extra='forbid': solo viaja
-// lo que el contrato declara (ni `bytes` ni `recortado`). Los errores se
-// traducen con el mecanismo compartido de la Mesa (erroresMesa /
-// textoDeErrorDeMesa, api/errores.js) -- no hay traductor propio de adjuntos.
+// Frente D (2026-09-17, RD4): /api/chat/upload devuelve un adjunto por
+// referencia -- {id, tipo, nombre, bytes, mime?, origen?, caracteres?,
+// recortado?, vista_previa?} -- nunca base64 ni el texto completo (contrato
+// en docs/superpowers/specs/2026-09-17-frente-d-adjuntos-por-referencia.md).
+// El compositor guarda además el File que el usuario eligió (`archivo`) y,
+// para imagenes, un object URL local de vista previa (`previewUrl`); ninguno
+// de los dos viaja al servidor. Los errores se traducen con el mecanismo
+// compartido de la Mesa (erroresMesa / textoDeErrorDeMesa, api/errores.js).
 export function cuerpoDeAdjunto(a) {
-  if (a.tipo === 'imagen') {
-    return { tipo: 'imagen', nombre: a.nombre, mime: a.mime, base64: a.base64 }
-  }
-  return { tipo: 'texto', origen: a.origen, nombre: a.nombre, contenido: a.contenido }
+  return { id: a.id }
 }
 
-// Forma que Message.jsx ya dibuja (type/filename/base64 como data URI).
+// Forma que Message.jsx ya dibuja (type/filename/base64). Para la imagen, el
+// mensaje enviado se queda con SU PROPIO object URL -- distinto del que usa
+// el compositor para la vista previa -- creado a partir del mismo File, así
+// que removerlo/reemplazarlo en el compositor nunca rompe la miniatura ya
+// mandada. Ese URL lo revoca el store al resetear la sesión (si hay hook),
+// no el compositor.
 export function vistaDeAdjunto(a) {
   return a.tipo === 'imagen'
-    ? { type: 'image', filename: a.nombre, base64: `data:${a.mime};base64,${a.base64}` }
+    ? { type: 'image', filename: a.nombre, base64: URL.createObjectURL(a.archivo) }
     : { type: 'text', filename: a.nombre }
 }
 
