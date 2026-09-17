@@ -24,7 +24,7 @@ la conexión: ese es el costo que acota la espera (ver ESPERA_429_MS_*).
 
 IDENTIDAD (Ruling R28). Sin token de ACCESO válido -- sin cabecera, esquema
 que no es Bearer, firma inválida, vencido, de refresh, user_id o tv que no
-son enteros -- responde al instante el MISMO 401 que la dependencia de la
+son enteros -- responde, tras la misma espera que el 429 (R30), el MISMO 401 que la dependencia de la
 ruta (mismo status, cuerpo y cabeceras; reusa `auth.middleware.bearer`,
 `decode_token` y `validar_payload`), sin leer el cuerpo y sin gastar cupo.
 Con firma válida no mira la base, a propósito: pasa a la ruta, cuya
@@ -172,7 +172,11 @@ class LimiteDeSubidas:
             user_id = _usuario_del_token(scope)
         except HTTPException as e:
             # R28: el mismo 401 que daría la ruta (mismo manejador de FastAPI),
-            # al instante, sin leer el cuerpo y sin gastar cupo de nadie.
+            # sin leer el cuerpo y sin gastar cupo de nadie. R30 (enmienda
+            # R28): con la MISMA espera que el 429. Flood anónimo c=25 con
+            # 10 MB: 401 inmediato -> health p95 36 ms (uvicorn descarta
+            # ~560 cuerpos/s en el loop); con 1000 ms -> 0,29 ms.
+            await _dormir(cargar_espera_429_ms() / 1000)
             respuesta = await http_exception_handler(Request(scope), e)
             await respuesta(scope, receive, send)
             return

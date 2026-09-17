@@ -223,7 +223,8 @@ def test_sin_token_de_acceso_valido_el_middleware_da_el_mismo_401_que_la_ruta_si
     status, headers, cuerpo, canal = _llamar(main.app, autorizacion=autorizacion)
     assert (status, headers, cuerpo) == (ref_status, ref_headers, ref_cuerpo)
     assert canal.leidos == 0
-    assert limite == []  # sin freno: el 401 sale al instante
+    # R30: el 401 del middleware espera lo mismo que el 429 (1000 ms en el fixture).
+    assert limite == [1.0]
 
 
 def test_el_401_del_middleware_no_gasta_cupo(limite):
@@ -447,3 +448,14 @@ def test_cuota_y_limite_juntos_los_rechazos_de_la_ruta_gastan_cupo(client, monke
         assert client.post(RUTA, files={"file": ("n.txt", b"x", "text/plain")}, headers=otro).status_code == 200
     finally:
         mod.reiniciar()
+
+
+@pytest.mark.parametrize("ms,segundos", [("0", 0.0), ("250", 0.25), ("5000", 5.0)])
+def test_el_401_del_middleware_espera_lo_configurado_y_no_lee_el_cuerpo(limite, monkeypatch, ms, segundos):
+    """R30 (enmienda R28): flood anónimo c=25 con 10 MB, health p95 36 ms con
+    el 401 inmediato contra 0,29 ms con la espera de 1000 ms."""
+    monkeypatch.setenv("JAX_ADJUNTOS_429_ESPERA_MS", ms)
+    interna = _Interna()
+    status, _, _, canal = _llamar(mod.LimiteDeSubidas(interna), autorizacion="Bearer basura")
+    assert (status, canal.leidos, interna.llamadas) == (401, 0, 0)
+    assert limite == [segundos]
