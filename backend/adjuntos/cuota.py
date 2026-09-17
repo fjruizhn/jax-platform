@@ -177,9 +177,13 @@ class Reserva:
     async def confirmar(self, tamano: int, guardar):
         """Segundo chequeo y commit bajo el candado. `guardar` es una función
         sin argumentos que devuelve el awaitable que escribe el sidecar (en un
-        hilo). Si la tarea se cancela durante la escritura, el hilo no se
-        puede interrumpir: se espera a que termine antes de soltar candado y
-        reserva, para que nadie cuente de menos un adjunto que igual aparece."""
+        hilo). Si la tarea se cancela durante la escritura -- una vez o
+        muchas --, el hilo no se puede interrumpir: se sigue esperando hasta
+        que termine y recién ahí se relanza la cancelación, con el candado y
+        la reserva todavía tomados. Así nadie cuenta de menos un adjunto que
+        igual aparece. Consecuencia (documentada en el diseño §7.1): un
+        cancelado en el commit deja el adjunto guardado; cuenta en la cuota
+        hasta vencer y el cliente nunca recibe su id."""
         cuenta = self._cuenta
         async with cuenta.candado:
             usado = await asyncio.to_thread(almacen.uso_de_usuario, self._directorio,
@@ -187,14 +191,21 @@ class Reserva:
             if usado + (cuenta.reservado - self.bytes) + tamano > self._cuota:
                 raise CuotaExcedida(self._cuota)
             escritura = asyncio.ensure_future(guardar())
-            try:
-                meta = await asyncio.shield(escritura)
-            finally:
-                if not escritura.done():
+            cancelacion = None
+            while not escritura.done():
+                try:
+                    # asyncio.wait no cancela `escritura` al cancelarse él.
                     await asyncio.wait({escritura})
-            # Ya es un adjunto vigente en disco: la reserva sobra.
+                except asyncio.CancelledError as e:
+                    cancelacion = e
+            # Escrito (o fallido): el adjunto, si existe, ya es vigente en
+            # disco y la reserva sobra.
             self._soltar()
-            return meta
+            if cancelacion is not None:
+                if not escritura.cancelled():
+                    escritura.exception()  # recuperada: si falló, manda la cancelación
+                raise cancelacion
+            return escritura.result()
 
 
 @asynccontextmanager

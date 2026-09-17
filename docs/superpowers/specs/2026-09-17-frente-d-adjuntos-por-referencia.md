@@ -92,18 +92,52 @@ ProcessPoolExecutor acotado (c, hecho en RD1). Se mantiene `JAX_ADJUNTO_SUBIDAS_
   - lo reciente (una subida en curso);
   - lo que no reconoce.
 
-## 6. Variables de entorno (fail-closed; el lifespan no arranca sin ellas)
+## 6. Variables de entorno: referencia ÚNICA de deploy
 
-| Variable | Rango | Motivo |
-|---|---|---|
-| `JAX_ADJUNTOS_DIR` | ruta absoluta; directorio 0700 (sin bits de grupo/otros), escribible por el servicio; se crea 0700 si falta | Una ruta relativa depende del cwd. Un directorio abierto a otros no se corrige solo: se avisa |
-| `JAX_ADJUNTOS_TTL_HORAS` | entero **1..168**, solo dígitos y sin ceros a la izquierda | Piso: un adjunto se sube mientras se escribe el mensaje. Techo: 7 días; es entrada de un turno, no un archivo del usuario |
-| `JAX_ADJUNTOS_CUOTA_BYTES_USUARIO` (RD6) | entero **1048576..1099511627776** (1 MiB..1 TiB), solo dígitos y sin ceros a la izquierda; además **≥ `JAX_ADJUNTO_MAX_BYTES`** (lo exige el lifespan). Deploy: **524288000** (500 MB); también el default de `conftest.py` | Piso: menos no deja subir una foto de teléfono. Techo: más es "sin límite" con más ceros. Menor que el tope por archivo rechazaría con el código equivocado archivos que el tope admite |
-| `JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES` (RD6) | entero **1073741824..1099511627776** (1 GiB..1 TiB), mismo formato. Deploy: **53687091200** (50 GB). `conftest.py` lo FUERZA a 1073741824: mide el disco del `mkdtemp` de los tests, no el de producción | Piso: por debajo, lo demás que vive en ese filesystem se queda sin aire antes de que la guarda corte. Techo: un mínimo mayor que el disco es "nunca aceptar", y tiene que verse al arrancar |
+Todas fail-closed: si falta una o está fuera de rango, el lifespan no arranca (antes de abrir la
+base). Rangos leídos del código (`adjuntos/limites.py`, `adjuntos/almacen.py`,
+`adjuntos/cuota.py`). Valores de deploy: decisión del principal (2026-09-17).
 
-**PENDIENTE (deploy, principal):** agregar las cuatro líneas (las dos de arriba y las dos de RD6) a `/etc/jax/.env` y crear el
-directorio 0700, propiedad del usuario del servicio, en un disco real (no tmpfs). Ejemplo:
-`/srv/jax-data/adjuntos`. Los tests fuerzan un `mkdtemp` propio (`conftest.py`).
+"`int()` > 0" = lo que acepta `int()` de Python (admite espacios alrededor, signo `+` y `_`
+entre dígitos) y mayor que 0, sin techo. "Solo dígitos" = regex `[1-9][0-9]{0,N}`: sin
+espacios, sin signo y sin ceros a la izquierda.
+
+| # | Variable | Rango exacto (código) | Deploy (`/etc/jax/.env`) |
+|---|---|---|---|
+| 1 | `JAX_ADJUNTO_MAX_BYTES` | `int()` > 0 | `10485760` |
+| 2 | `JAX_ADJUNTO_MAX_CHARS` | `int()` > 0 | `8000` |
+| 3 | `JAX_ADJUNTO_MAX_PAGINAS` | `int()` > 0 | `20` |
+| 4 | `JAX_ADJUNTO_MAX_POR_MENSAJE` | `int()` > 0 | `1` |
+| 5 | `JAX_ADJUNTO_IMAGENES_EN_PROCESO` | `int()` > 0 | `1` |
+| 6 | `JAX_ADJUNTO_SUBIDAS_EN_PROCESO` | `int()` > 0 | `1` |
+| 7 | `JAX_ADJUNTO_PDF_PROCESOS` | `int()` **1..8** (`LIMITE_PROCESOS_DE_PDF`) | `1` |
+| 8 | `JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS` | `int()` **1..60** (`LIMITE_TIMEOUT_DE_PDF_SEGUNDOS`) | `30` |
+| 9 | `JAX_ADJUNTOS_DIR` | ruta absoluta; directorio 0700 (sin bits de grupo/otros), escribible por el servicio; se crea 0700 si falta | `/srv/jax-data/adjuntos` (0700, dueño `fruiz`, disco real) |
+| 10 | `JAX_ADJUNTOS_TTL_HORAS` | solo dígitos (`[1-9][0-9]{0,3}`), **1..168** | `24` |
+| 11 | `JAX_ADJUNTOS_CUOTA_BYTES_USUARIO` | solo dígitos (`[1-9][0-9]{0,15}`), **1048576..1099511627776** (1 MiB..1 TiB) y **≥ `JAX_ADJUNTO_MAX_BYTES`** | `524288000` |
+| 12 | `JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES` | solo dígitos (`[1-9][0-9]{0,15}`), **1073741824..1099511627776** (1 GiB..1 TiB) | `53687091200` |
+
+Fuera de `/etc/jax/.env`, en la unidad de systemd de jax-platform: **`TMPDIR=/srv/jax-data/tmp`**
+(0700, disco real). Starlette vuelca ahí el cuerpo de cada subida antes del handler (R25), y
+`/tmp` es tmpfs en hall9000.
+
+Motivos de los rangos:
+- PDF_PROCESOS 1..8: más procesos de pypdf no suman throughput en una instancia y reservan
+  memoria de más. PDF_TIMEOUT 1..60: MAX_PAGINAS ya acota el trabajo, y 60 s no deja un worker
+  ocupado más de un minuto.
+- DIR: una ruta relativa depende del cwd; un directorio abierto a otros no se corrige solo, se
+  avisa. TTL: piso 1 h (un adjunto se sube mientras se escribe el mensaje), techo 7 días (es
+  entrada de un turno, no un archivo del usuario).
+- CUOTA: piso 1 MiB (menos no deja subir una foto de teléfono), techo 1 TiB ("sin límite" con
+  más ceros); menor que el tope por archivo rechazaría con el código equivocado archivos que el
+  tope admite.
+- DISCO_LIBRE: piso 1 GiB (lo demás del filesystem se queda sin aire antes de que la guarda
+  corte), techo 1 TiB (un mínimo mayor que el disco es "nunca aceptar" y tiene que verse al
+  arrancar).
+
+Tests: `conftest.py` fija 1..8 y la cuota con `setdefault` (rigen los del `.env` si están),
+FUERZA `JAX_ADJUNTOS_DIR` a un `mkdtemp` propio y FUERZA el disco libre mínimo a 1073741824
+(mide el disco del `mkdtemp`, no el de producción).
 
 ## 7. Contrato de `POST /api/chat/upload`
 
@@ -161,6 +195,13 @@ convierte la reserva en adjunto. Si la tarea se cancela durante la escritura, es
 antes de soltar. La reserva se libera al salir por cualquier camino, sin `await`. Dos subidas
 del mismo usuario que juntas se pasan: la segunda ve la reserva de la primera y es 413 antes de
 copiar (test con la lectura lenta y vigilada: sin candado, las dos reservan).
+
+**Cancelación durante el commit:** el hilo que escribe el sidecar no se puede interrumpir.
+`confirmar` sigue esperándolo aunque la tarea se cancele una o muchas veces, y recién cuando
+terminó suelta candado y reserva y relanza la cancelación. Consecuencia: **una subida cancelada
+en el commit deja el adjunto guardado**. Cuenta en la cuota del usuario hasta vencer (TTL) y el
+cliente nunca recibe su id, así que nadie lo puede usar; lo borra el limpiador al vencer. Una
+cancelación antes del commit (copia, clasificación, lectura de la cuota) no deja nada contado.
 
 **Por qué un candado en memoria alcanza:** jax-platform es **un solo proceso**.
 `auth/rate_limit.py::exigir_un_solo_proceso` aborta el arranque con `--workers` o

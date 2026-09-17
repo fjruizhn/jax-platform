@@ -43,7 +43,11 @@ def directorio(tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_ADJUNTOS_CUOTA_BYTES_USUARIO", str(MIB))
     monkeypatch.setenv("JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES", str(cuota.DISCO_LIBRE_MIN))
     monkeypatch.setenv("JAX_ADJUNTO_MAX_BYTES", str(10 * MIB))
-    return d
+    # Estado de módulo: una fuga de un test no contamina al siguiente (cada
+    # test que la puede causar la afirma él mismo).
+    cuota._cuentas.clear()
+    yield d
+    cuota._cuentas.clear()
 
 
 def _png(n: int) -> bytes:
@@ -151,15 +155,18 @@ def test_dos_subidas_que_juntas_se_pasan_solo_entra_una(directorio, monkeypatch)
     # leerían a la vez, las dos verían 0 usado y 0 reservado, y las dos
     # reservarían (mutación verificada en RD6).
     real, en_curso, pico = almacen.uso_de_usuario, [0], [0]
+    contadores = threading.Lock()  # la lectura corre en hilos de to_thread
 
     def lento(*a, **k):
-        en_curso[0] += 1
-        pico[0] = max(pico[0], en_curso[0])
+        with contadores:
+            en_curso[0] += 1
+            pico[0] = max(pico[0], en_curso[0])
         try:
             time.sleep(0.05)
             return real(*a, **k)
         finally:
-            en_curso[0] -= 1
+            with contadores:
+                en_curso[0] -= 1
 
     monkeypatch.setattr(almacen, "uso_de_usuario", lento)
 
@@ -336,3 +343,102 @@ def test_subir_sin_cuota_configurada_falla_cerrado(directorio, monkeypatch):
     with pytest.raises(LimitesDeAdjuntosInvalidos):
         _subir(_png(len(PNG)))
     assert _archivos(directorio) == []
+
+
+# ------------------------------------- la reserva se libera por todas las salidas
+# Fix round 1 (RD6). Cada salida deja `_cuentas` vacío y la subida siguiente
+# del mismo usuario llena la cuota entera (menos lo que SÍ quedó guardado).
+# "repetida": la tarea se cancela una y otra vez hasta terminar -- un `await`
+# en el finally de reserva() la dejaría a mitad de liberar, y un commit que no
+# espera su hilo soltaría candado y reserva antes de que aparezca el sidecar.
+
+_PUNTOS = {
+    "copia": (almacen, "copiar_subida"),
+    "lectura_de_cuota": (almacen, "uso_de_usuario"),
+    "commit": (almacen, "guardar_imagen"),
+}
+
+
+def _frenar(monkeypatch, punto):
+    """Sustituye la función del punto por una que avisa al entrar, espera
+    `soltar` y recién ahí llama a la real; `termino` queda marcado cuando la
+    real devolvió."""
+    modulo, nombre = _PUNTOS[punto]
+    real = getattr(modulo, nombre)
+    entro, soltar, termino = threading.Event(), threading.Event(), threading.Event()
+    primera = [True]
+    candado = threading.Lock()
+
+    def frenada(*a, **k):
+        with candado:
+            frenar, primera[0] = primera[0], False
+        if frenar:
+            entro.set()
+            assert soltar.wait(10)
+        try:
+            return real(*a, **k)
+        finally:
+            if frenar:
+                termino.set()
+
+    monkeypatch.setattr(modulo, nombre, frenada)
+    return entro, soltar, termino
+
+
+def _usado(directorio):
+    return almacen.uso_de_usuario(directorio, USUARIO.user_id)
+
+
+@pytest.mark.parametrize("modo", ["una", "repetida"])
+@pytest.mark.parametrize("punto", ["copia", "lectura_de_cuota", "commit"])
+def test_cancelar_la_subida_libera_la_reserva(directorio, monkeypatch, punto, modo):
+    entro, soltar, termino = _frenar(monkeypatch, punto)
+
+    async def correr():
+        tarea = asyncio.create_task(upload_mod.upload_file(file=_archivo(_png(len(PNG))), user=USUARIO))
+        while not entro.is_set():
+            await asyncio.sleep(0.005)
+        if modo == "una":
+            tarea.cancel()
+            await asyncio.sleep(0.05)
+            soltar.set()
+        else:
+            for i in range(10**6):
+                if tarea.done():
+                    break
+                tarea.cancel()
+                await asyncio.sleep(0)
+                if i == 50:
+                    soltar.set()
+        soltar.set()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+        if punto == "commit":
+            # El hilo del commit no se interrumpe: la tarea no termina antes
+            # que él (si no, candado y reserva se sueltan con el sidecar en
+            # camino y otra subida cuenta de menos).
+            assert termino.is_set()
+        assert cuota._cuentas == {}
+
+    asyncio.run(correr())
+    monkeypatch.undo()
+    monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(directorio))
+    monkeypatch.setenv("JAX_ADJUNTOS_CUOTA_BYTES_USUARIO", str(MIB))
+    monkeypatch.setenv("JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES", str(cuota.DISCO_LIBRE_MIN))
+    usado = _usado(directorio)
+    # Cancelado en el commit, el adjunto quedó guardado y cuenta; en los demás, nada.
+    assert usado == (len(PNG) if punto == "commit" else 0)
+    assert _subir(_png(MIB - usado))["bytes"] == MIB - usado
+    assert cuota._cuentas == {}
+
+
+@pytest.mark.parametrize("datos,status,code", [
+    (b"MZ\x90\x00\x03\x00\x00\x00", 415, "adjunto_tipo_no_permitido"),
+    (b"%PDF-1.4 basura" * 5, 422, "pdf_ilegible"),
+])
+def test_un_rechazo_despues_de_reservar_libera_la_reserva(directorio, datos, status, code):
+    e = _rechazo(datos, nombre="x.bin")
+    assert (e.status_code, e.detail) == (status, {"code": code})
+    assert cuota._cuentas == {}
+    assert _archivos(directorio) == []
+    assert _subir(_png(MIB))["bytes"] == MIB
