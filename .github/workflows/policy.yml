@@ -1613,9 +1613,17 @@ jobs:
           #   sobre el piso viejo de master (1606); #107 sí suma +1, así que ahora se
           #   encadena sobre el piso nuevo de master (1607 + 443 = 2050), no sobre el
           #   viejo (1606 + 443 = 2049). Medido local dos veces con la suite completa
-          #   contra jax_memory_test: ver el número exacto y su +1 por el modelo extra
-          #   del runner en el comentario de abajo (regla del frente). Si el runner da
-          #   otro número, manda el runner.
+          #   contra jax_memory_test: 2047 passed / 2 failed / 1 skipped las dos
+          #   corridas. Los 2 failed son ambientales, no del frente D -- ninguno de
+          #   sus archivos toca test_motor_migrations.py ni test_tablero.py -- y se
+          #   verificaron también en rojo sobre origin/master puro (8d9cb73) contra la
+          #   misma jax_memory_test compartida: motor.kimi.max_tokens en 0 en vez de
+          #   8000 (semilla de otra sesión concurrente) y el EXPLAIN de
+          #   SQL_PIPELINES_COMPLETADOS elige idx_jacobs_pipelines_cola en vez de
+          #   idx_pipelines_status (índice nuevo de otra rama sobre la misma tabla
+          #   compartida). Sin esos 2, el limpio es 2049; +1 por el modelo extra del
+          #   runner (test_model_max_output_tokens.py:324, el skip que el runner no
+          #   tiene) -> 2050. Si el runner da otro número, manda el runner.
           PISO_PASSED = 2050
           MAX_SKIPS = 1
 
