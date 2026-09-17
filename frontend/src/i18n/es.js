@@ -97,7 +97,9 @@ export default {
     adjunto_tipo_no_permitido: () => 'Ese tipo de archivo no se puede adjuntar. Se aceptan imágenes PNG, JPEG o WebP, PDF y texto UTF-8.',
     adjunto_vacio: () => 'El archivo está vacío.',
     adjunto_invalido: () => 'El adjunto llegó dañado. Vuelve a adjuntarlo.',
-    adjuntos_demasiados: (d) => `Se puede adjuntar hasta ${d?.max} archivo por mensaje.`,
+    adjuntos_demasiados: (d) => (d?.max === 1
+      ? 'Se puede adjuntar hasta 1 archivo por mensaje.'
+      : `Se pueden adjuntar hasta ${d?.max} archivos por mensaje.`),
     adjuntos_no_soportados: () => 'Hyde no recibe adjuntos en el chat: usa el modo Comando.',
     imagen_no_soportada: () => 'El modelo de esta faceta no acepta imágenes. Elige otra faceta o quita la imagen.',
     pdf_ilegible: () => 'No se pudo leer el PDF: está dañado o protegido con contraseña.',

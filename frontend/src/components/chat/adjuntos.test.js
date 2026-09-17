@@ -28,6 +28,12 @@ describe('adjuntos -- contrato con /api/chat', () => {
     expect(textoDeErrorDeMesa(es, err('faceta desconocida'), 'generico')).toBe('generico')
     expect(textoDeErrorDeMesa(es, {}, 'generico')).toBe('generico')
   })
+  it('adjuntos_demasiados concuerda en número con el máximo', () => {
+    expect(es.erroresMesa.adjuntos_demasiados({ max: 1 })).toBe('Se puede adjuntar hasta 1 archivo por mensaje.')
+    expect(es.erroresMesa.adjuntos_demasiados({ max: 3 })).toBe('Se pueden adjuntar hasta 3 archivos por mensaje.')
+    expect(en.erroresMesa.adjuntos_demasiados({ max: 1 })).toBe('You can attach up to 1 file per message.')
+    expect(en.erroresMesa.adjuntos_demasiados({ max: 3 })).toBe('You can attach up to 3 files per message.')
+  })
   it('falta soporte solo con imagen y faceta fuera de la lista', () => {
     const politica = { facetas_con_imagen: ['hipatia'] }
     expect(faltaSoporteDeImagen(IMAGEN, politica, 'jekyll')).toBe(true)

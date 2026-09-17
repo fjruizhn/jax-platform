@@ -97,7 +97,9 @@ export default {
     adjunto_tipo_no_permitido: () => 'That file type cannot be attached. PNG, JPEG or WebP images, PDF and UTF-8 text are accepted.',
     adjunto_vacio: () => 'The file is empty.',
     adjunto_invalido: () => 'The attachment arrived damaged. Attach it again.',
-    adjuntos_demasiados: (d) => `You can attach up to ${d?.max} file per message.`,
+    adjuntos_demasiados: (d) => (d?.max === 1
+      ? 'You can attach up to 1 file per message.'
+      : `You can attach up to ${d?.max} files per message.`),
     adjuntos_no_soportados: () => 'Hyde does not take attachments in chat: use Command mode.',
     imagen_no_soportada: () => "This facet's model does not accept images. Pick another facet or remove the image.",
     pdf_ilegible: () => 'The PDF could not be read: it is damaged or password-protected.',
