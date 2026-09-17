@@ -43,6 +43,7 @@ acá las llama api/upload.py (y RD3) a través de to_thread; `obtener` y
 `leer` ya lo hacen adentro.
 """
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -101,6 +102,16 @@ ORFANO_MAX_SEGUNDOS = 6 * 3600
 INTERVALO_DE_LIMPIEZA_SEGUNDOS = 15 * 60
 
 _TAMANO_DE_BLOQUE = 1024 * 1024
+
+# RD3 (2026-09-17): la imagen se codifica a base64 de a tramos de 262.143
+# bytes (múltiplo de 3: cada tramo codifica sin relleno y la concatenación es
+# el base64 del archivo entero). binascii retiene el GIL durante cada
+# llamada; medido en hall9000 (loop con un tic de 1 ms, 25 imágenes de 10 MB,
+# de a una por vez): de a 10 MB enteros el tic se atrasa p95 9,1 ms; de a
+# 768 KB, 1,4 ms; de a 256 KB, 0,35 ms. Los tramos van tal cual al cuerpo
+# del proveedor (http_client.LiteralJsonCrudo): nunca se juntan en un solo
+# buffer ni en un str.
+TRAMO_DE_BASE64 = 3 * 87_381
 
 # Referencia propia para que un test la sustituya sin tocar asyncio.sleep global.
 _dormir = asyncio.sleep
@@ -349,6 +360,30 @@ def _leer(directorio: Path, id_: str, user, ahora: datetime) -> tuple[dict, byte
         raise AdjuntoNoEncontrado() from None
 
 
+def _leer_imagen_en_base64(directorio: Path, id_: str, user, ahora: datetime) -> tuple[dict, tuple[bytes, ...]]:
+    """Síncrona (to_thread). Lee el dato de una IMAGEN de a TRAMO_DE_BASE64
+    bytes y codifica cada tramo: en memoria hay un tramo crudo a la vez más
+    el base64 que se va juntando (~4/3 del archivo), nunca el archivo crudo
+    entero. Un adjunto que no es imagen, o cuyo dato no mide lo que dice el
+    sidecar (truncado, reemplazado), es el mismo AdjuntoNoEncontrado."""
+    meta = _cargar_sidecar(directorio, id_, user, ahora)
+    esperado = meta.get("bytes")
+    if meta.get("tipo") != "imagen" or not isinstance(esperado, int):
+        raise AdjuntoNoEncontrado()
+    tramos: list[bytes] = []
+    total = 0
+    try:
+        with open(_ruta(directorio, id_, SUFIJO_DATO), "rb") as f:
+            while total <= esperado and (crudo := f.read(TRAMO_DE_BASE64)):
+                total += len(crudo)
+                tramos.append(base64.b64encode(crudo))
+    except OSError:
+        raise AdjuntoNoEncontrado() from None
+    if total != esperado:
+        raise AdjuntoNoEncontrado()
+    return meta, tuple(tramos)
+
+
 async def obtener(id_, user, *, ahora: datetime | None = None) -> dict:
     """Metadatos de un adjunto del `user`, vigente. Cualquier otro caso:
     AdjuntoNoEncontrado. El id se valida en el loop (una regex sobre <= 32
@@ -364,6 +399,16 @@ async def leer(id_, user, *, ahora: datetime | None = None) -> tuple[dict, bytes
     if not id_valido(id_):
         raise AdjuntoNoEncontrado()
     return await asyncio.to_thread(_leer, cargar_directorio(), id_, user, ahora or _ahora())
+
+
+async def leer_imagen_en_base64(id_, user, *, ahora: datetime | None = None) -> tuple[dict, tuple[bytes, ...]]:
+    """Metadatos y base64 por tramos de una imagen del `user` (RD3: el chat
+    la manda al proveedor). Mismas reglas de dueño y vencimiento que `leer`;
+    el tope de cuántas se codifican a la vez lo pone el llamador
+    (adjuntos/turno.py::turno_de_imagen)."""
+    if not id_valido(id_):
+        raise AdjuntoNoEncontrado()
+    return await asyncio.to_thread(_leer_imagen_en_base64, cargar_directorio(), id_, user, ahora or _ahora())
 
 
 # ------------------------------------------------------------------- limpieza

@@ -458,3 +458,55 @@ def test_el_margen_de_huerfanos_cubre_la_cola_de_subidas():
     ORFANO_MAX_SEGUNDOS."""
     from adjuntos.limites import LIMITE_TIMEOUT_DE_PDF_SEGUNDOS
     assert almacen.ORFANO_MAX_SEGUNDOS >= 200 * (LIMITE_TIMEOUT_DE_PDF_SEGUNDOS + 30)
+
+
+# -------------------------------------- RD3: imagen leída como base64 por tramos
+
+def test_la_imagen_se_lee_como_base64_en_tramos_que_concatenados_son_el_base64(directorio):
+    import base64
+    cuerpo = b"\x89PNG\r\n\x1a\n" + os.urandom(3 * almacen.TRAMO_DE_BASE64 + 7)
+    meta = _guardar_imagen(directorio, datos=cuerpo)
+    leido, tramos = asyncio.run(almacen.leer_imagen_en_base64(meta["id"], DUENIO, ahora=AHORA))
+    assert leido == meta
+    assert isinstance(tramos, tuple) and all(isinstance(t, bytes) for t in tramos)
+    assert len(tramos) == 4
+    # Cada tramo sale de un múltiplo de 3 bytes: sin relleno en el medio.
+    assert almacen.TRAMO_DE_BASE64 % 3 == 0
+    assert all(len(t) == almacen.TRAMO_DE_BASE64 // 3 * 4 for t in tramos[:-1])
+    assert b"".join(tramos) == base64.b64encode(cuerpo)
+
+
+def test_la_imagen_en_base64_se_codifica_en_un_hilo(directorio, monkeypatch):
+    meta = _guardar_imagen(directorio)
+    hilos = []
+    real = asyncio.to_thread
+
+    async def espia(funcion, *a, **k):
+        hilos.append(funcion.__name__)
+        return await real(funcion, *a, **k)
+
+    monkeypatch.setattr(almacen.asyncio, "to_thread", espia)
+    asyncio.run(almacen.leer_imagen_en_base64(meta["id"], DUENIO, ahora=AHORA))
+    assert hilos == ["_leer_imagen_en_base64"]
+
+
+def test_imagen_en_base64_mismos_404_que_leer(directorio):
+    meta = _guardar_imagen(directorio)
+    texto = _guardar_texto(directorio)
+    sin_dato = _guardar_imagen(directorio)
+    (directorio / f"{sin_dato['id']}.dato").unlink()
+    truncada = _guardar_imagen(directorio, datos=b"\x89PNG\r\n\x1a\n" + b"x" * 100)
+    (directorio / f"{truncada['id']}.dato").write_bytes(b"\x89PNG")
+    leer = almacen.leer_imagen_en_base64
+    casos = {
+        "ajeno": leer(meta["id"], AJENO, ahora=AHORA),
+        "vencido": leer(meta["id"], DUENIO, ahora=AHORA + timedelta(hours=24)),
+        "desconocido": leer(almacen.nuevo_id(), DUENIO, ahora=AHORA),
+        "malformado": leer("../" + meta["id"], DUENIO, ahora=AHORA),
+        "texto_no_es_imagen": leer(texto["id"], DUENIO, ahora=AHORA),
+        "dato_borrado": leer(sin_dato["id"], DUENIO, ahora=AHORA),
+        "dato_de_otro_tamano": leer(truncada["id"], DUENIO, ahora=AHORA),
+    }
+    errores = {k: _no_encontrado(c) for k, c in casos.items()}
+    assert {(e.status, json.dumps(e.detail)) for e in errores.values()} == {
+        (404, '{"code": "adjunto_no_encontrado"}')}
