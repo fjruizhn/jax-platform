@@ -145,10 +145,26 @@ describe('pre-vuelo y continuar (spec 2026-09-17)', () => {
     }
   })
 
-  // Adenda ítem 3: `detalle` string o lista normalizada, siempre como dato.
+  // Adenda ítem 3: `detalle` string o lista normalizada, como dato.
   it('un detalle de texto se muestra como dato', () => {
-    const texto = textoDeErrorDeMesa(es, err({ code: 'limite_de_activos', detalle: 'tope global 8' }), 'G')
-    expect(texto).toBe(`${es.erroresMesa.limite_de_activos({})} ${es.detalleDelPrevuelo('tope global 8')}`)
+    const texto = textoDeErrorDeMesa(es, err({ code: 'plan_rechazado', detalle: '21 pasos excede el límite duro (20)' }), 'G')
+    expect(texto).toBe(`${es.erroresMesa.plan_rechazado({})} ${es.detalleDelPrevuelo('21 pasos excede el límite duro (20)')}`)
+  })
+
+  // Revisión final, menor 6d: para los códigos cuyo texto de la Mesa ya dice
+  // todo, el `detalle` de texto libre de Jacobs (español técnico: "ver
+  // `veredicto`") no se agrega; las listas por paso sí.
+  it('prevuelo_rechazado, limite_de_activos y kill_switch no muestran el detalle de texto de Jacobs', () => {
+    for (const d of [es, en]) {
+      for (const code of ['prevuelo_rechazado', 'limite_de_activos', 'kill_switch']) {
+        const texto = textoDeErrorDeMesa(d, err({ code, detalle: 'ver `veredicto`' }), 'G')
+        expect(texto, code).toBe(d.erroresMesa[code]({}))
+        expect(texto, code).not.toContain('veredicto`')
+      }
+      const lista = [{ paso: 1, faceta: 'ada', motivo: 'no existe' }]
+      expect(textoDeErrorDeMesa(d, err({ code: 'plan_rechazado', detalle: lista }), 'G'))
+        .toContain(d.detalleDelPrevuelo(d.detalleDePaso(lista[0])))
+    }
   })
 
   it('un detalle en lista se lee paso por paso, nunca como objeto crudo', () => {

@@ -61,10 +61,19 @@ export function textoDeDetalleDeMesa(t, detail, generico) {
   const statusConocido = code === 'estado_no_continuable' && typeof datos.status === 'string'
     && Object.hasOwn(t.pipelineStatusLabels, datos.status)
   if (typeof datos.mensaje === 'string' && datos.mensaje && !statusConocido) partes.push(t.respuestaDelServicio(datos.mensaje))
-  const detalle = textoDeDetalle(t, datos.detalle)
+  const detalle = CODIGOS_SIN_DETALLE_DE_TEXTO.has(code) && typeof datos.detalle === 'string'
+    ? null
+    : textoDeDetalle(t, datos.detalle)
   if (detalle) partes.push(t.detalleDelPrevuelo(detalle))
   return partes.join(' ')
 }
+
+// Revisión final (menor 6d): códigos cuyo texto de la Mesa ya lo dice todo; el
+// `detalle` de TEXTO libre que Jacobs les pone es español técnico para otro
+// servicio ("ver `veredicto`") y no se muestra. Una lista por paso sí se
+// muestra siempre (reasignacion_invalida, plan_rechazado), y plan_rechazado
+// conserva su detalle de texto (la razón del rechazo del plan).
+const CODIGOS_SIN_DETALLE_DE_TEXTO = new Set(['prevuelo_rechazado', 'limite_de_activos', 'kill_switch'])
 
 // `detalle` de un rechazo del pre-vuelo (adenda Task 8 ítem 3): texto, o lista
 // normalizada [{paso, faceta|null, motivo}] (reasignacion_invalida,
