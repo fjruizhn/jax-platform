@@ -1,0 +1,33 @@
+17. PARTIAL — The three blocks exist at the cited lines (BottomBar.jsx:149-156, 207-214, 236-243), but they are not the same. The id suffix differs (`_err`, `_img_err`, `pipeline-err-`), and so does the facet (activeFacet, `'dalle'`, `'jacobs'`) and the prefix: `**Error:**` versus `**${t.errorPipelinePrefix}:**`. A helper needs at least facet, id and prefix, not just `(facet, detail)`. It should also move the hardcoded `Error:` at lines 154 and 212 into i18n, which breaks the i18n rule today.
+
+18. PARTIAL — Both classes are plain holders and nothing changes their fields after creation, so `NamedTuple` would work in principle. But in facet_resolver the class documents a deliberate two-clock design (facet_resolver.py:88-94). `tests/test_facet_resolver_seal.py:193-194` checks `"fetched_at" in fr._CacheEntry.__slots__`, and a NamedTuple has `__slots__ = ()`, so that test would fail. That test says it exists "para que nadie 'simplifique'". Low gain for the change; if done, the test and comment need rework. The credential_resolver.py:47-52 part is fine on its own.
+
+19. PARTIAL — The three sites are not the same. The first (useJaxStore.js:320-332) sets `status: msgStatus`, which can be `'failed'`. It also has a same-session check and a "message still exists" check before removing the task from the pending list, so a message dropped by `_capMessages` can still be recovered later. The other two sites hardcode `'completed'`. The proposed `(msgId, taskId, content)` has no status and would lose `'failed'`. A helper needs a status argument, and the checks must stay at the first site.
+
+20. VALID — jwt.py:18-39: the two functions differ only in `exp` and `type`. A private `_token` is safe as long as the public `create_access_token`/`create_refresh_token` names stay as wrappers (called at api/auth.py:53, 61, 187 and in tests). The finding misspells the name as "refshresh".
+
+21. VALID — Every locked section in events.py:15-30, websocket_hub.py:18-67 and resource_manager.py:12-26 only touches dicts or sets, with no await inside. All awaits (`accept`, `send_json`, `close`, `cb(event)`) are already outside the lock. Under asyncio these sections already run without interruption, so the locks are never contended and protect nothing. The check-then-admit gap in pipelines.py:117→142 has awaits in between and is not covered by the lock today either, so removing it changes nothing there. Removal also avoids the "bound to a different event loop" test problem noted in commit b65b1f8. The public `async def` signatures must stay, and the separate `lifecycle_lock` must not be touched.
+
+22. VALID — models.py:44-61: `_MODEL_FIELDS` is built by splitting `_MODEL_COLUMNS` and is used only at lines 65 and 92. A tuple joined with `", "` gives the same result. The incident comments for max_tokens_param and max_output_tokens (2026-08-27) must be kept next to the tuple entries.
+
+23. PARTIAL — The only production caller, HalEye.jsx:23, passes every label. Removing the hardcoded default strings (useJaxStore.js:594-603) actually fits the i18n rule better. But the suggestion is incomplete: several tests rely on the defaults and would break. These include useJaxStore.eyeState.test.js:12, 30-34 (which assert `'KILL SWITCH'`, `'DALL-E 3'` and the rest) and 56-62, plus useJaxStore.facetTokens.test.js:42 and 67. They must be rewritten in the same change.
+
+24. VALID — repository.py:50-56 and 77-83 repeat the same split, allow-list check and `_safe_path` call, and a shared `_resolve(path)` keeps the checks and their order. Side note, not part of the finding: the check at line 17, `target.startswith(base)` with no path separator, is a separate weakness.
+
+25. HARMFUL — Removing `cabeceras_gemini` and writing the `{"x-goog-api-key": key}` literal in each place undoes a documented decision. http_client.py:14-19 says the four Gemini callers build the header there on purpose: "un solo nombre, no cuatro literales" (T6-2, a fix that keeps the key out of URLs and logs). That would put back four hardcoded copies. It is true that `get_http_client` never awaits, but making it sync touches about 20 call sites and tests that patch it with async fakes (test_fix_wave_final.py:132, test_t7_uso.py:165, test_http_client.py:14).
+
+26. VALID — BottomBar.jsx:67-76: the lambdas only forward to `t.*`. A ternary works if it still falls back to `''` for an unknown mode, as `PLACEHOLDERS[mode]?.(...) || ''` does now. Cosmetic.
+
+27. VALID — `_user_tenant_map` is written at state.py:58, 77 and 81 and read nowhere in jax-platform or /home/fruiz/jax. The only reader is the assert at tests/test_sse_isolation.py:178. `connected_users` already stores `tenant_id` in `UserSession`. That assert must be dropped in the same change.
+
+28. HARMFUL — The facts hold: BottomBar.jsx:178 is the only caller, it always sends `execute`, and no test uses `dry_run`. But `CommandRequest` is a pydantic model with the default `extra='ignore'`. If `mode` is deleted, any client that sends `{"mode":"dry_run"}` (curl, or an old bundle) would have the field silently ignored and the command would really run through the `jax --task` subprocess. That is fail-open. The branch can only go if unknown fields are rejected (`extra='forbid'`) or `mode` becomes `Literal["execute"]`.
+
+29. VALID — `TokenPayload` (auth/models.py:5-9) has no references in jax-platform or /home/fruiz/jax; it only appears in the initial commits 5e28e9e and c9a0b82.
+
+30. VALID — The only caller, useWebSocket.js:36-47, uses only `.close()`. Nothing in frontend/src calls `.send`; the only other "send" is the i18n key. The `onerror` handler at websocket.js:46-48 does nothing, and reconnection is handled in `onclose`. The tests do not use `send` or `onerror`.
+
+31. PARTIAL — True that only tests use it (test_pipeline_resource_release.py:51, 63). But "Nothing replaces it" is wrong: those tests are regression tests for the per-tenant limit of 3 pipelines, checking that the slot is freed. They would need another way to observe the count, such as `can_start_pipeline` or reading `_active` directly, or they would lose coverage.
+
+32. VALID — Every call site passes `AISLAMIENTO_ADMIN` ("READ COMMITTED"): auth.py:141, 237, 449 and users.py:271, 329, 344, 391, 498. None passes "REPEATABLE READ". Narrowing the closed list keeps its protection against SQL injection, and the test at test_admin_usuarios_guardas.py:483 uses an invalid value, so it still passes.
+
+VALID: 9 (20, 21, 22, 24, 26, 27, 29, 30, 32) · PARTIAL: 5 (17, 18, 19, 23, 31) · FALSE: 0 · HARMFUL: 2 (25, 28)
