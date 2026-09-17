@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 
+from fastapi import HTTPException
+
 from crypto_secrets import decrypt_db_secret, encrypt_secret
 from db.connection import get_pool
 from validacion import direccion_unica_valida, tiene_caracteres_de_control
@@ -421,3 +423,23 @@ def probar_conexion(host: str, port: int, encryption: str, user: str, password: 
         raise SmtpPasoFallido("smtp_conexion_fallida", str(exc)) from exc
     finally:
         _cerrar(servidor)
+
+
+def http_de_fallo_de_envio(exc, registro, contexto: str, destinatario: str) -> HTTPException:
+    """Las dos ramas de fallo de envío que comparten /smtp/test y "Enviar
+    enlace" (frente A, A-39, 2026-09-16). El ValueError NO pasa por acá: en
+    smtp.py sale de construir_mensaje en otro try, y en users.py va en su
+    propio except, DESPUÉS de esta tupla. El orden de captura en el llamador:
+    esta tupla ANTES de ValueError -- UnicodeEncodeError es subclase de
+    ValueError, así que si ValueError fuera primero se comería ese caso y
+    daría 503 smtp_config_corrupta en vez del 502 correcto.
+
+    NUNCA se interpola `exc` en el UnicodeEncodeError: smtplib codifica el
+    AUTH en ascii y `exc.object` trae la contraseña entera (medido)."""
+    if isinstance(exc, UnicodeEncodeError):
+        registro.warning("%s a %s: la contraseña SMTP guardada no es ASCII (AUTH)", contexto, destinatario)
+        return HTTPException(status_code=502, detail={"code": "smtp_password_no_ascii", "server": ""})
+    if isinstance(exc, (OSError, smtplib.SMTPException)):
+        registro.warning("%s a %s falló: %s", contexto, destinatario, exc)
+        return HTTPException(status_code=502, detail={"code": "smtp_envio_fallido", "server": str(exc)})
+    raise TypeError(f"http_de_fallo_de_envio no traduce {type(exc).__name__}")

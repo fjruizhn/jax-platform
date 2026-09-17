@@ -1,5 +1,4 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
-import { useI18n } from '../i18n/index.jsx'
 import AdminSidebar from '../components/admin/AdminSidebar'
 import Toast from '../components/Notifications/Toast'
 import AdminDashboard from './admin/AdminDashboard'
@@ -11,8 +10,6 @@ import AdminCosts from './admin/AdminCosts'
 import AdminSmtp from './admin/AdminSmtp'
 
 export default function Admin() {
-  const { t } = useI18n()
-
   return (
     <div className="flex h-dvh bg-fondo text-texto">
       <AdminSidebar />

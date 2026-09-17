@@ -20,7 +20,8 @@ function HalEye({ size = 220, reposo = false }) {
   const { t } = useI18n()
   const eye = reposo
     ? { ...EYE_ESTADO_REPOSO, label: t.eyeIdle }
-    : getEyeState(facets, activePipelines, lasManos, killSwitchActive, generatingImage, t.eyeIdle, {
+    : getEyeState(facets, activePipelines, lasManos, killSwitchActive, generatingImage, {
+        reposo: t.eyeIdle,
         killSwitch: t.eyeKillSwitch,
         dalle: t.eyeDallE3,
         lasManosDown: t.eyeLasManosDown,

@@ -1,108 +1,150 @@
+import asyncio
+import binascii
+import json
+import mimetypes
 import os
+import weakref
 from datetime import datetime
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from fastapi.responses import Response
+
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
+from config_de_entorno import ruta_requerida
 
 router = APIRouter(prefix="/api/admin")
 
-REPO_BASE = os.path.expanduser("~/jax/repo")
+REPO_BASE = ruta_requerida("JAX_REPO_BASE")
 ALLOWED_FOLDERS = {"missions", "pipelines", "documents", "images"}
+IMAGENES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 
 
-def _safe_path(folder: str, filename: str = "") -> str:
-    base = os.path.realpath(REPO_BASE)
-    target = os.path.realpath(os.path.join(base, folder, filename))
-    if not target.startswith(base):
-        raise HTTPException(status_code=400, detail="Ruta inválida")
-    return target
+def _carpeta(base: Path, nombre: str) -> Path:
+    """La carpeta permitida, resuelta; 400 si un symlink la saca del repo."""
+    carpeta = (base / nombre).resolve()
+    if carpeta.parent != base or carpeta.name not in ALLOWED_FOLDERS:
+        raise HTTPException(status_code=400, detail="ruta_invalida")
+    return carpeta
 
 
-def _file_info(path: str, base: str) -> dict:
-    stat = os.stat(path)
-    rel = os.path.relpath(path, base)
+def _dentro(destino: Path, carpeta: Path) -> bool:
+    return destino != carpeta and destino.is_relative_to(carpeta)
+
+
+def _resolve(path: str) -> Path:
+    """La única validación de rutas (A-26). A-40 (2026-09-16): antes era
+    `realpath(...).startswith(base)` sin separador, y `documents/../../repo-x/…`
+    salía del repositorio. is_relative_to compara por componentes.
+    Ronda final (2026-09-16): la contención es contra la CARPETA permitida, no
+    contra la base (`documents/../privado/x` se leía y se borraba), y un NUL en
+    la ruta es 400, no un ValueError sin atrapar (500)."""
+    partes = path.replace("\\", "/").split("/", 1)
+    if len(partes) < 2 or partes[0] not in ALLOWED_FOLDERS:
+        raise HTTPException(status_code=400, detail="ruta_invalida")
+    base = Path(REPO_BASE).resolve()
+    try:
+        carpeta = _carpeta(base, partes[0])
+        destino = (carpeta / partes[1]).resolve()
+    except ValueError:  # NUL en la ruta: os.lstat lo rechaza
+        raise HTTPException(status_code=400, detail="ruta_invalida") from None
+    if not _dentro(destino, carpeta):
+        raise HTTPException(status_code=400, detail="ruta_invalida")
+    if not destino.is_file():
+        raise HTTPException(status_code=404, detail="archivo_no_encontrado")
+    return destino
+
+
+def _file_info(path: Path) -> dict:
+    # La ruta propia de la entrada, no la de su destino: un symlink no expone
+    # a dónde apunta. El stat sí sigue el enlace (tamaño y fecha reales).
+    stat = path.stat()
     return {
-        "name": os.path.basename(path),
-        "path": rel,
+        "name": path.name,
+        "path": os.path.relpath(path, Path(REPO_BASE)),
         "size": stat.st_size,
         "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
     }
 
 
-@router.get("/repo")
-async def list_repo(user: AuthUser = Depends(require_superadmin)):
+def _listar() -> dict:
+    base = Path(REPO_BASE)
+    base_real = base.resolve()
     result = {}
     for folder in ALLOWED_FOLDERS:
-        folder_path = os.path.join(REPO_BASE, folder)
-        os.makedirs(folder_path, exist_ok=True)
-        files = []
-        for fname in sorted(os.listdir(folder_path)):
-            fpath = os.path.join(folder_path, fname)
-            if os.path.isfile(fpath):
-                files.append(_file_info(fpath, REPO_BASE))
-        result[folder] = files
+        (base / folder).mkdir(parents=True, exist_ok=True)
+        try:
+            carpeta = _carpeta(base_real, folder)
+        except HTTPException:  # la carpeta misma sale del repo: no se lista nada
+            result[folder] = []
+            continue
+        # Lo que resuelve fuera de su carpeta no se lista (lo mismo que _resolve rechaza).
+        result[folder] = [_file_info(p) for p in sorted((base / folder).iterdir())
+                          if p.is_file() and _dentro(p.resolve(), carpeta)]
     return {"folders": result}
+
+
+def _json(valor) -> bytes:
+    # Igual que el JSONResponse de FastAPI: el contrato del cuerpo no cambia.
+    return json.dumps(valor, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+# Multiplo de 3: cada trozo codifica sin relleno y se concatena tal cual.
+_TROZO_B64 = 3 * 64 * 1024
+
+
+def _leer(destino: Path) -> bytes:
+    """El cuerpo JSON YA ARMADO, en el hilo (Task 15 R12b, 2026-09-16): antes
+    se devolvia un dict y FastAPI serializaba 2,7 MB en el loop. El base64 va
+    en trozos para soltar el GIL entre uno y otro."""
+    nombre = _json(destino.name)
+    if destino.suffix.lower() in IMAGENES:
+        mime = mimetypes.guess_type(destino.name)[0]
+        datos = destino.read_bytes()
+        b64 = b"".join(binascii.b2a_base64(datos[i:i + _TROZO_B64], newline=False)
+                       for i in range(0, len(datos), _TROZO_B64))
+        prefijo = _json(f"data:{mime};base64,")[:-1]  # sin la comilla de cierre
+        return b'{"name":' + nombre + b',"type":"image","base64":' + prefijo + b64 + b'"}'
+    contenido = destino.read_text(encoding="utf-8", errors="replace")
+    tipo = "markdown" if destino.suffix.lower() == ".md" else "text"
+    return _json({"name": destino.name, "type": tipo, "content": contenido})
+
+
+# Task 15 R12b (2026-09-16): de a UNA lectura por loop. La carga I midio que
+# 25 hilos leyendo y codificando un png de 2 MB hacen convoy con el loop por el
+# GIL (p95 de /api/health 70-90 ms, reposo 0,6); con cupo 1 quedo en 2,7-3,9x
+# el reposo y el endpoint rindio el doble (con cupo 2: 5,6-7,5x; con 4: 16-17x).
+# Un Semaphore por loop: uno de modulo queda atado al primer loop que lo
+# disputa. Sin invalidacion: vive y muere con su loop (WeakKeyDictionary).
+_LECTURAS_SIMULTANEAS = 1
+_cupos: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+
+
+def _cupo() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    cupo = _cupos.get(loop)
+    if cupo is None:
+        cupo = _cupos[loop] = asyncio.Semaphore(_LECTURAS_SIMULTANEAS)
+    return cupo
+
+
+# Disco en un hilo (LAS CUATRO, async).
+@router.get("/repo")
+async def list_repo(user: AuthUser = Depends(require_superadmin)):
+    return await asyncio.to_thread(_listar)
 
 
 @router.get("/repo/file")
 async def get_file(path: str = Query(...), user: AuthUser = Depends(require_superadmin)):
-    parts = path.replace("\\", "/").split("/", 1)
-    if len(parts) < 2 or parts[0] not in ALLOWED_FOLDERS:
-        raise HTTPException(status_code=400, detail="Ruta inválida")
-
-    full_path = _safe_path(parts[0], parts[1])
-    if not os.path.isfile(full_path):
-        raise HTTPException(status_code=404, detail="Archivo no encontrado")
-
-    ext = os.path.splitext(full_path)[1].lower()
-    img_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
-
-    if ext in img_exts:
-        import base64
-        with open(full_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
-        mime = "image/png" if ext == ".png" else "image/jpeg"
-        return {"name": os.path.basename(full_path), "type": "image", "base64": f"data:{mime};base64,{b64}"}
-
-    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
-        content = f.read()
-
-    ftype = "markdown" if ext == ".md" else "text"
-    return {"name": os.path.basename(full_path), "type": ftype, "content": content}
+    destino = await asyncio.to_thread(_resolve, path)  # fuera del cupo: un 400/404 no hace fila
+    async with _cupo():
+        cuerpo = await asyncio.to_thread(_leer, destino)
+    return Response(cuerpo, media_type="application/json")
 
 
 @router.delete("/repo/file")
 async def delete_file(path: str = Query(...), user: AuthUser = Depends(require_superadmin)):
-    parts = path.replace("\\", "/").split("/", 1)
-    if len(parts) < 2 or parts[0] not in ALLOWED_FOLDERS:
-        raise HTTPException(status_code=400, detail="Ruta inválida")
-
-    full_path = _safe_path(parts[0], parts[1])
-    if not os.path.isfile(full_path):
-        raise HTTPException(status_code=404, detail="Archivo no encontrado")
-    os.remove(full_path)
+    destino = await asyncio.to_thread(_resolve, path)
+    await asyncio.to_thread(destino.unlink)
     return {"ok": True}
-
-
-class SaveFileRequest(BaseModel):
-    name: str
-    content: str
-    folder: str = "documents"
-
-
-@router.post("/repo/save")
-async def save_file(req: SaveFileRequest, user: AuthUser = Depends(require_superadmin)):
-    if req.folder not in ALLOWED_FOLDERS:
-        raise HTTPException(status_code=400, detail="Carpeta inválida")
-
-    safe_name = os.path.basename(req.name)
-    folder_path = os.path.join(REPO_BASE, req.folder)
-    os.makedirs(folder_path, exist_ok=True)
-    full_path = os.path.join(folder_path, safe_name)
-
-    with open(full_path, "w", encoding="utf-8") as f:
-        f.write(req.content)
-
-    rel = os.path.join(req.folder, safe_name)
-    return {"ok": True, "path": rel}

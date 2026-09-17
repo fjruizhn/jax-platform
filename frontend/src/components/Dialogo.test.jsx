@@ -172,3 +172,34 @@ describe('Dialogo -- cerrable={false}', () => {
     expect(screen.getByLabelText('campo')).toHaveFocus()
   })
 })
+
+// Ronda final M6 (2026-09-16): el reintento de foco en un microtask (R11),
+// aislado. El disparador queda disabled mientras el diálogo está abierto y el
+// MISMO setState que cierra lo rehabilita: en el cleanup del layout effect el
+// botón todavía está disabled y el primer focus() no toma.
+function PruebaDisparadorDeshabilitado() {
+  const [abierto, setAbierto] = useState(false)
+  return (
+    <>
+      <button disabled={abierto} onClick={() => setAbierto(true)}>abrir</button>
+      {abierto && (
+        <Dialogo idTitulo="dlg-titulo" titulo="Título" onCerrar={() => setAbierto(false)}>
+          <button onClick={() => setAbierto(false)}>cerrar</button>
+        </Dialogo>
+      )}
+    </>
+  )
+}
+
+describe('Dialogo -- reintento de foco (R11)', () => {
+  it('el foco vuelve al disparador aunque siga disabled en el commit que cierra', async () => {
+    render(<PruebaDisparadorDeshabilitado />, { container: root })
+    const disparador = screen.getByText('abrir')
+    disparador.focus()
+    fireEvent.click(disparador)
+    fireEvent.click(screen.getByText('cerrar'))
+    expect(disparador).not.toBeDisabled()
+    await Promise.resolve()
+    expect(disparador).toHaveFocus()
+  })
+})

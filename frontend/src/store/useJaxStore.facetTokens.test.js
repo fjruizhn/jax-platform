@@ -11,6 +11,7 @@ import api from '../api/client'
 import { useJaxStore, getEyeState } from './useJaxStore'
 
 const INITIAL_STATE = useJaxStore.getState()
+const ETIQUETAS = { reposo: 'r', killSwitch: 'k', dalle: 'd', lasManosDown: 'l', gate: 'g', jacobs: 'j' }
 
 // Task 20, ronda de arreglos 1 (revisión de e31e3dc): /api/state y el evento
 // facet_status_changed mandan cada faceta SIN `token` (con el `color` hex
@@ -39,7 +40,7 @@ describe('el token de faceta se deriva de la clave, no de los datos del servidor
     expect(facets.hyde.last_message).toBe('x')
     expect(facets.hyde).not.toHaveProperty('color')
     expect(facets.jekyll.token).toBe('faceta-jekyll') // las que no vinieron siguen con el default
-    expect(getEyeState(facets, activePipelines, lasManos, killSwitchActive).token).toBe('faceta-hyde')
+    expect(getEyeState(facets, activePipelines, lasManos, killSwitchActive, false, ETIQUETAS).token).toBe('faceta-hyde')
   })
 
   it('loadState: una faceta que el tema no conoce cae en el respaldo, no en undefined', async () => {
@@ -64,6 +65,14 @@ describe('el token de faceta se deriva de la clave, no de los datos del servidor
     expect(facets.jekyll.token).toBe('faceta-jekyll')
     expect(facets.jekyll.status).toBe('thinking')
     expect(facets.jekyll.last_message).toBe('hola')
-    expect(getEyeState(facets, {}, true, false).token).toBe('faceta-jekyll')
+    expect(getEyeState(facets, {}, true, false, false, ETIQUETAS).token).toBe('faceta-jekyll')
+  })
+
+  it('loadState: el display_name del servidor queda en la faceta (A-48)', async () => {
+    api.get.mockResolvedValueOnce({
+      data: { facets: { hipatia: { name: 'hipatia', status: 'idle', display_name: 'Hipatia' } }, active_pipelines: {}, las_manos_alive: true },
+    })
+    await useJaxStore.getState().loadState()
+    expect(useJaxStore.getState().facets.hipatia.display_name).toBe('Hipatia')
   })
 })

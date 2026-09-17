@@ -24,7 +24,7 @@ async def list_facets(user: AuthUser = Depends(get_current_user)):
         if key in facets:
             facets[key]["display_name"] = display_name
             facets[key]["icon"] = icon
-            facets[key]["color"] = color_hex or facets[key].get("color")
+            facets[key]["color"] = color_hex
     return {"facets": facets}
 
 

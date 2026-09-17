@@ -80,7 +80,7 @@ def test_run_seed_reseeds_admin_from_env_var_on_empty_db(client, monkeypatch):
         row = client.portal.call(_fetch_seeded_user, 1)
         assert row is not None
         email, role, password_hash = row
-        assert email == "fernando@rich-hn.com"
+        assert email == os.environ["JAX_SEED_SUPERADMIN_EMAIL"]
         assert role == "superadmin"
         assert client.portal.call(_verify, "verificacion-seed-vacio-2026", password_hash)
         assert not client.portal.call(_verify, "***REMOVED-SEE-JAX-RONDA9-2026-08-20***", password_hash)

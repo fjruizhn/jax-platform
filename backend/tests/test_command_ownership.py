@@ -99,3 +99,38 @@ async def test_owner_file_with_non_dict_json_fails_closed(_isolated_missions_dir
         await get_command_result(task_id=task_id, user=user)
 
     assert exc.value.status_code == 404
+
+
+# R16 (2026-09-16): _leer_tarea leia el owner file Y el result file en el
+# mismo to_thread y mapeaba CUALQUIER OSError/ValueError de las dos lecturas
+# a 404 tarea_no_encontrada. El store del frontend trata 404 como "tarea
+# completada sin resultado" y la saca de pendientes para siempre (A-44) --
+# un error transitorio o de encoding al leer el RESULTADO (no el dueño) se
+# volvia asi un exito falso permanente. El dueño (existe/es tuyo) sigue
+# siendo 404; el resultado ilegible tiene que ser 500 (el store reintenta).
+async def test_owner_ok_but_result_file_unreadable_is_500_not_a_false_success(_isolated_missions_dir):
+    task_id = str(uuid.uuid4())
+    _owner_file(task_id).write_text(json.dumps({"tenant_id": "1", "user_id": "owner-user"}))
+    result_file = _isolated_missions_dir / f"web-task-{task_id}_result.md"
+    result_file.mkdir()  # .exists() da True; .read_text() tira IsADirectoryError (OSError)
+    user = AuthUser(user_id="owner-user", tenant_id="1", role="operator")
+
+    with pytest.raises(HTTPException) as exc:
+        await get_command_result(task_id=task_id, user=user)
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail != "tarea_no_encontrada"
+
+
+async def test_owner_ok_but_result_file_bad_encoding_is_500_not_a_false_success(_isolated_missions_dir):
+    task_id = str(uuid.uuid4())
+    _owner_file(task_id).write_text(json.dumps({"tenant_id": "1", "user_id": "owner-user"}))
+    result_file = _isolated_missions_dir / f"web-task-{task_id}_result.md"
+    result_file.write_bytes(b"\xff\xfe\x00\x01 bytes invalidos como utf-8")
+    user = AuthUser(user_id="owner-user", tenant_id="1", role="operator")
+
+    with pytest.raises(HTTPException) as exc:
+        await get_command_result(task_id=task_id, user=user)
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail != "tarea_no_encontrada"

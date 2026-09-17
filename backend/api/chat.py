@@ -29,12 +29,13 @@ from contrato_dispatch import (
 import model_catalog
 from auth.middleware import get_current_user
 from auth.models import AuthUser
+from config_de_entorno import ruta_requerida
 from jax_engine.schemas import JAXEvent
 from jax_engine.events import event_bus
 from jax_engine.state import engine_state, LAS_MANOS_URL
 from api.admin.usage import record_usage, validar_ids_de_uso
 from db.connection import get_pool
-from redaccion import recortar_redactado, redactar_secretos, texto_de_error
+from redaccion import recortar_redactado, texto_de_error
 from facet_health import (
     record_facet_health,
     OUTCOME_OK,
@@ -72,25 +73,10 @@ _JAX_PLATFORM_CHAT_CALLER = "jax_platform_chat"
 # nada mas, una ruta hardcodeada a otro repo relativa al $HOME del usuario.
 # Eso hacia IMPOSIBLE correr la suite fuera de la maquina de Fernando: en un
 # runner limpio el archivo no existe y 30 tests caen con FileNotFoundError
-# (medido en CI el 2026-09-01, no supuesto). El default se conserva para no
-# cambiar el comportamiento de produccion, que es donde esa ruta si existe.
-CONFIG_PATH = os.getenv(
-    "JAX_CONFIG_PATH", os.path.expanduser("~/jax/config/config.toml")
-)
-
-# Carga el .env de JAX una vez al importar el módulo
-def _load_jax_env():
-    try:
-        with open("/etc/jax/.env") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    os.environ.setdefault(k.strip(), v.strip())
-    except FileNotFoundError:  # fail-soft: FileNotFoundError acotado a 'no existe .env' — no oculta otros errores de lectura, y cada os.getenv() de abajo ya trae su propio default explicito
-        pass
-
-_load_jax_env()
+# (medido en CI el 2026-09-01, no supuesto). Desde el 2026-09-16 no hay
+# default: ver config_de_entorno.py.
+CONFIG_PATH = str(ruta_requerida("JAX_CONFIG_PATH"))
+JAX_REPO = ruta_requerida("JAX_REPO_PATH")
 
 # --- Memoria semántica COMPARTIDA con el REPL (MISMA MariaDB jax_memory) ----
 # Reutiliza la clase MemoryDB del núcleo (~/jax) — no duplica memoria ni lógica.
@@ -102,7 +88,7 @@ _load_jax_env()
 # por un ImportError de la función auxiliar — degradando TODA la memoria
 # semántica (y con ella shadow validation, que no encola sin conv_uuid) en
 # vez de degradar solo el bypass de completeness. Cada import falla solo.
-sys.path.insert(0, os.path.expanduser("~/jax"))
+sys.path.insert(0, str(JAX_REPO))
 def _importar_memorydb():
     """Task 3 (2026-09-15, clase b): antes era `except Exception` MUDO -- un
     error dentro de jax.memory.db dejaba MemoryDB = None sin rastro. Ahora
@@ -332,9 +318,13 @@ def _sin_tildes(s: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
-# Keywords por faceta — misma lógica que router.py de consola.
+# Keywords por faceta — ESPEJO de jax/core/router.py (A-22, 2026-09-16).
+# Copia a propósito: importar jax.core.router arrastra contrato_dispatch ->
+# facet_resolver y rompe CI (verificado por terceros). La vigila
+# jax/scripts/check_mirror_sync.py, familia `router_keywords`: un cambio acá
+# se hace también allá, en el mismo paso.
 # Hyde NO es destino del auto-routing: es ejecutor, no conversador.
-_KIMI_KW = frozenset((
+KIMI_KW = frozenset((
     "codigo", "programar", "programa", "script", "funcion", "clase", "metodo",
     "modulo", "libreria", "api", "endpoint", "backend", "frontend",
     "implementar", "implementa", "construir", "refactor", "refactorizar",
@@ -343,12 +333,12 @@ _KIMI_KW = frozenset((
     "regex", "fastapi", "react", "typescript", "javascript", "python", "sql",
     "docker", "nginx", "commit", "branch", "merge",
 ))
-_KIMI_STRONG = frozenset((
+KIMI_STRONG = frozenset((
     "refactor", "refactoriza", "implementar", "debug", "depurar", "pytest",
     "fastapi", "docker", "nginx", "endpoint",
 ))
 
-_HIPATIA_KW = frozenset((
+HIPATIA_KW = frozenset((
     "busca", "buscar", "investiga", "investigar", "verifica", "verificar",
     "fuentes", "fuente", "citas", "referencias", "noticias", "noticia",
     "actualidad", "reciente", "ultima", "ultimo", "vigente", "precio",
@@ -356,12 +346,12 @@ _HIPATIA_KW = frozenset((
     "paper", "papers", "estudio", "informe", "estadistica", "lanzamiento",
     "version actual", "quien es",
 ))
-_HIPATIA_STRONG = frozenset((
+HIPATIA_STRONG = frozenset((
     "busca", "buscar", "investiga", "investigar", "noticias", "fuentes",
     "version actual",
 ))
 
-_JEKYLL_KW = frozenset((
+JEKYLL_KW = frozenset((
     "poesia", "poema", "cuento", "novela", "literatura", "ensayo", "arte",
     "pintura", "musica", "filosofia", "etica", "estetica", "humanidades",
     "barroco", "renacimiento", "romanticismo", "mito", "mitologia", "simbolo",
@@ -369,12 +359,12 @@ _JEKYLL_KW = frozenset((
     "interpretacion", "sentido", "significado", "reflexion", "reflexiona",
     "contempla", "humanista", "cultura", "historia del arte", "historia cultural",
 ))
-_JEKYLL_STRONG = frozenset((
+JEKYLL_STRONG = frozenset((
     "poema", "poesia", "filosofia", "literatura", "mitologia",
     "historia del arte", "barroco",
 ))
 
-_THOT_KW = frozenset((
+THOT_KW = frozenset((
     "audita", "auditar", "auditoria", "critica", "criticar", "criticamente",
     "cuestiona", "cuestionar", "adversarial", "abogado del diablo", "riesgo",
     "riesgos", "falla", "fallas", "debilidad", "debilidades", "vulnerabilidad",
@@ -383,12 +373,12 @@ _THOT_KW = frozenset((
     "supuesto", "supuestos", "contraargumento", "refuta", "refutar",
     "no-go", "revisa criticamente",
 ))
-_THOT_STRONG = frozenset((
+THOT_STRONG = frozenset((
     "audita", "auditar", "auditoria", "vulnerabilidad", "vulnerabilidades",
     "threat model", "adversarial", "refuta",
 ))
 
-_ADA_KW = frozenset((
+ADA_KW = frozenset((
     "formaliza", "formalizar", "formalizacion", "modelo formal", "pseudocodigo",
     "logica", "demuestra", "demostrar", "demostracion", "prueba formal",
     "teorema", "lema", "corolario", "axioma", "proposicion", "invariante",
@@ -398,20 +388,20 @@ _ADA_KW = frozenset((
     "funcion objetivo", "matematica", "calculo", "algebra", "probabilidad",
     "determinista", "induccion", "algoritmo",
 ))
-_ADA_STRONG = frozenset((
+ADA_STRONG = frozenset((
     "formaliza", "formalizar", "demuestra", "demostrar", "teorema",
     "invariante", "invariantes", "precondicion", "postcondicion",
     "complejidad", "maquina de estados",
 ))
 
-_WEB_KW_SETS = {
-    "kimi":    (_KIMI_KW,    _KIMI_STRONG),
-    "hipatia": (_HIPATIA_KW, _HIPATIA_STRONG),
-    "jekyll":  (_JEKYLL_KW,  _JEKYLL_STRONG),
-    "thot":    (_THOT_KW,    _THOT_STRONG),
-    "ada":     (_ADA_KW,     _ADA_STRONG),
+_KW_SETS = {
+    "kimi":    (KIMI_KW,    KIMI_STRONG),
+    "hipatia": (HIPATIA_KW, HIPATIA_STRONG),
+    "jekyll":  (JEKYLL_KW,  JEKYLL_STRONG),
+    "thot":    (THOT_KW,    THOT_STRONG),
+    "ada":     (ADA_KW,     ADA_STRONG),
 }
-_WEB_TIEBREAK = ("hipatia", "thot", "ada", "kimi", "jekyll")
+_TIEBREAK = ("hipatia", "thot", "ada", "kimi", "jekyll")
 
 
 def _auto_route(message: str) -> str:
@@ -419,7 +409,7 @@ def _auto_route(message: str) -> str:
 
     Regla:
     - score[f] = n° de keywords de f que matchean.
-    - top = faceta con mayor score (desempate: _WEB_TIEBREAK).
+    - top = faceta con mayor score (desempate: _TIEBREAK).
     - score >= 2 → enrutar a top.
     - score == 1 y keyword STRONG → enrutar a top.
     - else → jax_local (fallback; en fase 2 se evaluará clasificador LLM).
@@ -428,7 +418,7 @@ def _auto_route(message: str) -> str:
     scores: dict[str, int] = {}
     hit_strong: dict[str, bool] = {}
 
-    for faceta, (kws, strong) in _WEB_KW_SETS.items():
+    for faceta, (kws, strong) in _KW_SETS.items():
         score = 0
         is_strong = False
         for kw in kws:
@@ -449,7 +439,7 @@ def _auto_route(message: str) -> str:
 
     if max_score > 0:
         top: str | None = None
-        for f in _WEB_TIEBREAK:
+        for f in _TIEBREAK:
             if scores[f] == max_score:
                 top = f
                 break
@@ -483,15 +473,31 @@ class ChatRequest(BaseModel):
     origin: Literal["web", "probe", "test"] | None = None
 
 
+class AvisoDeChat(BaseModel):
+    """Respuesta enlatada (sin LLM) como CÓDIGO + datos (A-53, 2026-09-16). El
+    texto visible lo arma el frontend con i18n (t.avisosChat[code]).
+    `como_texto()` es la marca sin idioma que va al historial del hilo y a la
+    memoria: registra QUÉ pasó sin fijar un idioma en la base."""
+    code: Literal["faceta_sin_binding", "faceta_no_autorizada", "transporte_no_soportado",
+                  "identidad_del_modelo", "hyde_usa_modo_comando"]
+    params: dict[str, str] = {}
+
+    def como_texto(self) -> str:
+        datos = " ".join(f"{k}={v}" for k, v in sorted(self.params.items()))
+        return f"[{self.code}{' ' + datos if datos else ''}]"
+
+
 class ChatResponse(BaseModel):
     facet: str
     response: str
     timestamp: str
     # True cuando _parse_contract_response no pudo parsear el JSON de
     # contrato de una respuesta real de LLM (degradación auditada) — False
-    # para respuestas enlatadas (usage is None) y para el intercept de hyde,
+    # para respuestas enlatadas (aviso) y para el intercept de hyde,
     # que nunca pasan por el parseo de contrato.
     contract_degraded: bool = False
+    # A-53: presente en las respuestas enlatadas; el frontend muestra t.avisosChat[aviso.code].
+    aviso: AvisoDeChat | None = None
 
 
 @lru_cache(maxsize=1)
@@ -609,7 +615,7 @@ def _build_display_response(contract: ContractResult) -> tuple[str, bool]:
     return contract.analysis, False
 
 
-# _invoke_facet devuelve tuple[str, UsageInfo | None]; "usage is None"
+# _invoke_facet devuelve tuple[str | AvisoDeChat, UsageInfo | None]; "usage is None"
 # distingue respuesta enlatada (is_canned, derivado en el call site) de
 # llamada real al LLM, en vez de comparar response_text contra los strings
 # enlatados conocidos — evita que un futuro edit de esos strings rompa la
@@ -622,17 +628,15 @@ def _build_display_response(contract: ContractResult) -> tuple[str, bool]:
 # separando. Si el vocabulario gana un predicado, el prompt lo sigue solo
 # (tests/test_chat_contract_prompt.py se pone rojo si divergen).
 #
-# Ruta configurable por JAX_REPO_PATH, igual que shadow_validation.py — no
-# el `~/jax` hardcodeado del import de MemoryDB de más arriba. Y a
+# Ruta configurable por JAX_REPO_PATH, igual que shadow_validation.py — la
+# misma JAX_REPO del import de MemoryDB de más arriba. Y a
 # diferencia de aquel, este NO degrada: si el vocabulario no carga, el
 # proceso no arranca. Un prompt sin predicados es invisible desde afuera
 # —el chat responde igual, el contrato parsea igual, y el canal de claims
 # queda mudo— y es exactamente el estado que produjo 22 de 22 mensajes sin
 # un solo claim entre el 2026-08-18 y el 2026-09-01. Tiene que ser un
 # fallo ruidoso al arrancar, no uno silencioso en producción.
-_GOVERNANCE_DIR = os.path.join(
-    os.getenv("JAX_REPO_PATH", os.path.expanduser("~/jax")), "policy", "governance"
-)
+_GOVERNANCE_DIR = os.path.join(str(JAX_REPO), "policy", "governance")
 if _GOVERNANCE_DIR not in sys.path:
     sys.path.insert(0, _GOVERNANCE_DIR)
 import loaders as governance_loaders  # noqa: E402
@@ -796,24 +800,6 @@ def _is_model_identity_question(message: str) -> bool:
     return any(re.search(rf"\b{v}\b", text) for v in _MODEL_IDENTITY_SELF_REF)
 
 
-_MODEL_IDENTITY_HOSTING = {
-    "jax_local": "vía Ollama local en hall9000",
-    "jekyll": "vía la API de DeepSeek",
-    "hipatia": "vía la API de Gemini (Google)",
-    "thot": "vía la API de OpenAI",
-    "kimi": "vía la API de Moonshot",
-    "ada": "vía la API de Zhipu (GLM)",
-}
-
-
-def _model_identity_reply(model: str, facet: str) -> str:
-    hosting = _MODEL_IDENTITY_HOSTING.get(facet, "vía la API configurada para esta faceta")
-    return (
-        f"Corro con '{model}' {hosting} — dato leído en vivo del selector de "
-        f"modelos activo, no de memoria."
-    )
-
-
 async def _record_resolved_version_from_response(facet_key: str, data: dict) -> None:
     """Bloque D (D1.2) — best-effort real: la excepcion se atrapa aca, nunca
     sube a _invoke_facet. resolved_version viene del campo que cada API usa
@@ -832,7 +818,7 @@ async def _invoke_facet_dispatch(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
     grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError | None" = None,
-) -> tuple[str, UsageInfo | None, str]:
+) -> tuple["str | AvisoDeChat", UsageInfo | None, str]:
     history = _conversations.get(user_id, [])
     if semantic_context:
         # Contexto de sesiones pasadas SOLO para este turno (no entra al hilo RAM).
@@ -854,7 +840,7 @@ async def _invoke_facet_dispatch(
     try:
         f = await resolve_facet(facet)
     except FacetUnavailableError:
-        return f"⚠️ {facet} no está disponible: sin binding activo configurado.", None, OUTCOME_UNBOUND
+        return AvisoDeChat(code="faceta_sin_binding", params={"facet": facet}), None, OUTCOME_UNBOUND
 
     # El gate va DESPUÉS de resolve_facet() a propósito: es ahí donde
     # `f.transport` existe, y el transporte es lo mismo que decide el
@@ -893,23 +879,21 @@ async def _invoke_facet_dispatch(
                 f"error={type(e).__name__}: {e} -- denegado fail-closed"
             )
         if not allowed:
-            return f"⚠️ {facet} no está disponible: acceso no autorizado.", None, gate_outcome
+            return AvisoDeChat(code="faceta_no_autorizada", params={"facet": facet}), None, gate_outcome
 
     if _is_model_identity_question(message):
-        return _model_identity_reply(f.model, facet), None, OUTCOME_OK
+        return AvisoDeChat(code="identidad_del_modelo",
+                           params={"facet": facet, "model": f.model, "provider": f.provider_id}), None, OUTCOME_OK
 
     if f.transport == "ollama":
-        if facet == "jax_local":
-            # Bug 3: jax_local no sabia con que modelo corre y confabulaba su
-            # identidad. Le damos el dato real como contexto informativo.
-            ident = (
-                f"\n\nDato tecnico (para tu propia referencia, no lo repitas sin que "
-                f"te pregunten): el modelo que te ejecuta en este momento es "
-                f"'{f.model}', via Ollama local en hall9000."
-            )
-            text, tin, tout = await _call_ollama(system_prompt + ident, history, message, config, f.model)
-        else:
-            text, tin, tout = await _call_ollama(system_prompt, history, message, config, f.model)
+        # Bug 3: jax_local no sabia con que modelo corre y confabulaba su
+        # identidad. Le damos el dato real como contexto informativo.
+        ident = (
+            f"\n\nDato tecnico (para tu propia referencia, no lo repitas sin que "
+            f"te pregunten): el modelo que te ejecuta en este momento es "
+            f"'{f.model}', via Ollama local en hall9000."
+        ) if facet == "jax_local" else ""
+        text, tin, tout = await _call_ollama(system_prompt + ident, history, message, config, f.model)
         return text, UsageInfo(f.provider_id, f.model, tin, tout), OUTCOME_OK
 
     async def _on_response(data: dict) -> None:
@@ -933,7 +917,8 @@ async def _invoke_facet_dispatch(
         )
         return text, UsageInfo(f.provider_id, f.model, tin, tout), OUTCOME_OK
 
-    return f"⚠️ {facet} no está disponible: transporte '{f.transport}' no soportado en la Mesa web.", None, OUTCOME_UNSUPPORTED_TRANSPORT
+    return AvisoDeChat(code="transporte_no_soportado",
+                       params={"facet": facet, "transport": f.transport}), None, OUTCOME_UNSUPPORTED_TRANSPORT
 
 
 async def _invoke_facet(
@@ -941,7 +926,7 @@ async def _invoke_facet(
     semantic_context: list[dict] | None = None,
     *, source: str = SOURCE_CHAT,
     grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError | None" = None,
-) -> tuple[str, UsageInfo | None]:
+) -> tuple["str | AvisoDeChat", UsageInfo | None]:
     """Envoltorio instrumentado. La particion existe para que el
     `outcome` sea un literal tipado en cada punto de retorno de
     _invoke_facet_dispatch, en vez de deducirse del texto de la respuesta.
@@ -987,13 +972,16 @@ async def _invoke_facet(
     return texto, usage
 
 
-def _detalle_502_http(facet: str, e: httpx.HTTPStatusError) -> str:
-    """Texto del 502 que ve el usuario (y que va al bus) cuando el proveedor
-    responde con error. Fix round 1 (review de 3bed155): REDACTAR y DESPUÉS
-    recortar -- recortando antes, una key que cruzaba el caracter 200 quedaba
-    cortada, sin forma reconocible, y su prefijo salía en claro."""
-    cuerpo = recortar_redactado(e.response.text, 200)
-    return f"Error HTTP {e.response.status_code} en {facet}: {cuerpo}"
+def _detalle_502_http(facet: str, e: httpx.HTTPStatusError) -> dict:
+    """detail del 502 cuando el proveedor responde con error. Código estable
+    (A-51); `motivo` es lo que dijo el proveedor, REDACTADO y DESPUÉS recortado
+    (fix round 1 de 3bed155: al revés, una key que cruza el corte sale en claro)."""
+    return {"code": "proveedor_error_http", "facet": facet, "status": e.response.status_code,
+            "motivo": recortar_redactado(e.response.text, 200)}
+
+
+def _detalle_502_generico(facet: str, e: Exception) -> dict:
+    return {"code": "faceta_error", "facet": facet, "motivo": recortar_redactado(str(e), 200)}
 
 
 def _update_history(user_id: str, user_msg: str, assistant_msg: str):
@@ -1019,7 +1007,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # shadow_messages.facet VARCHAR(30) (finding 1 de la revisión final).
     # Rechazar acá, antes de cualquier otro efecto secundario.
     if req.facet is not None and req.facet not in config["personalities"]:
-        raise HTTPException(status_code=400, detail=f"faceta desconocida: {req.facet!r}")
+        raise HTTPException(status_code=400, detail={"code": "faceta_desconocida", "facet": req.facet[:50]})
     facet = req.facet if req.facet else _auto_route(req.message)
     tenant_id = user.tenant_id
     user_id = user.user_id
@@ -1046,9 +1034,10 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # Respuestas especiales (sin llamada a LLM) — nunca pasan por el parseo
     # de contrato, igual que usage=None (is_canned=True) dentro de _invoke_facet.
     if facet == "hyde":
-        resp = "Hyde opera en modo tarea autónoma — usá el modo Comando para ejecutar tareas técnicas."
-        await _fire_completed(facet, tenant_id, user_id, resp)
-        return ChatResponse(facet=facet, response=resp, timestamp=timestamp, contract_degraded=False)
+        aviso = AvisoDeChat(code="hyde_usa_modo_comando")
+        await _fire_completed(facet, tenant_id, user_id)
+        return ChatResponse(facet=facet, response=aviso.como_texto(), timestamp=timestamp,
+                            contract_degraded=False, aviso=aviso)
 
     # Señal: faceta pensando
     await engine_state.set_facet_status(facet, "thinking", tenant_id, user_id, req.message[:100])
@@ -1069,18 +1058,21 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         is_canned = usage is None
     except httpx.HTTPStatusError as e:
         # Task 6 S1: el cuerpo del proveedor no deberia repetir la key, pero
-        # este texto sale al usuario y al bus -- se redacta igual (y antes de
-        # recortar: ver _detalle_502_http).
+        # el `motivo` del detail (dict con codigo, A-51) sale al usuario y al
+        # bus -- se redacta igual (y antes de recortar: ver _detalle_502_http).
         detail = _detalle_502_http(facet, e)
-        await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail[:100])
+        await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail["motivo"][:100])
         await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
         raise HTTPException(status_code=502, detail=detail)
     except Exception as e:
-        motivo = redactar_secretos(str(e))
-        detail = f"Error en {facet}: {motivo[:200]}"
-        await engine_state.set_facet_status(facet, "error", tenant_id, user_id, motivo[:100])
+        detail = _detalle_502_generico(facet, e)
+        await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail["motivo"][:100])
         await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
         raise HTTPException(status_code=502, detail=detail)
+
+    aviso = response_text if isinstance(response_text, AvisoDeChat) else None
+    if aviso is not None:
+        response_text = aviso.como_texto()
 
     # shadow_message_id: id propio de shadow validation, nunca un id de
     # `messages` (que no existe — _memory.save_message() es fire-and-forget).
@@ -1109,7 +1101,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         _memory.save_message(conv_uuid, facet, display_text,
                              facet=facet, model=model_name)
 
-    await _fire_completed(facet, tenant_id, user_id, display_text)
+    await _fire_completed(facet, tenant_id, user_id)
     await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
 
     # Encolar shadow validation es un efecto secundario de medición, no
@@ -1135,19 +1127,13 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
 
     return ChatResponse(
         facet=facet, response=display_text, timestamp=timestamp,
-        contract_degraded=contract_degraded,
+        contract_degraded=contract_degraded, aviso=aviso,
     )
 
 
-async def _fire_completed(facet: str, tenant_id: str, user_id: str, response_text: str):
-    event = JAXEvent(
-        event_type="facet_response_completed",
-        tenant_id=tenant_id,
-        user_id=user_id,
-        payload={
-            "facet": facet,
-            "content": response_text,
-            "message_preview": response_text[:100],
-        },
-    )
+async def _fire_completed(facet: str, tenant_id: str, user_id: str):
+    # A-13 (2026-09-16): el único lector (useJaxStore) mira el event_type; la
+    # respuesta ya viaja por HTTP. No se repite por el bus.
+    event = JAXEvent(event_type="facet_response_completed", tenant_id=tenant_id,
+                     user_id=user_id, payload={"facet": facet})
     await event_bus.publish(event)

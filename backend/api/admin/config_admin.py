@@ -15,7 +15,6 @@ DEFAULT_CONFIG = {
     "session_timeout_min": "60",
     "max_pipelines": "1",
     "web_task_retention_days": "7",
-    "ws_notifications": "true",
     "system_name": "Axioma",
 }
 

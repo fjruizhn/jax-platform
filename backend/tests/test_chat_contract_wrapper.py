@@ -271,7 +271,7 @@ async def _call_invoke_facet_jax_local_identity_question():
 
 def test_invoke_facet_identity_question_returns_usage_none(client):
     """Camino usage=None (pregunta de identidad de modelo): la respuesta
-    enlatada de _model_identity_reply nunca pasa por un transporte real,
+    enlatada (AvisoDeChat) nunca pasa por un transporte real,
     así que _invoke_facet debe devolver usage=None — la señal que el
     endpoint usa (is_canned = usage is None) para nunca llamar a
     _parse_contract_response sobre una respuesta enlatada que no es JSON.
@@ -282,10 +282,12 @@ def test_invoke_facet_identity_question_returns_usage_none(client):
     del fixture `client` en vez de abrir uno propio (un event loop propio
     deja el pool de aiomysql atado a un loop que se cierra al terminar el
     test, envenenando la conexión para el resto de la suite)."""
+    from api import chat as chat_mod
     from api.chat import _parse_contract_response
 
     text, usage = client.portal.call(_call_invoke_facet_jax_local_identity_question)
     assert usage is None
+    assert isinstance(text, chat_mod.AvisoDeChat)
     is_canned = usage is None
     # Confirma que, aplicando la regla del endpoint (parsear solo si
     # not is_canned), esta respuesta jamás pasaría por el parser.

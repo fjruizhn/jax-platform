@@ -32,7 +32,7 @@ _TEST_URLS = {
     "deepseek": "https://api.deepseek.com/v1/models",
     "moonshot": "https://api.moonshot.ai/v1/models",
     "zhipu":    "https://api.z.ai/api/paas/v4/models",
-    "gemini":   None,  # requiere key en query string, caso especial abajo
+    "gemini":   None,  # la key va en la cabecera x-goog-api-key (T6-2), caso especial abajo
 }
 
 _MAX_ACTIVE_PER_PROVIDER = 2  # solapamiento acotado — nunca ilimitado

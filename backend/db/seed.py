@@ -33,6 +33,22 @@ async def verify_password(plain: str, hashed: str) -> bool:
     return await asyncio.to_thread(bcrypt.checkpw, plain.encode()[:BCRYPT_MAX_BYTES], hashed.encode())
 
 
+def email_de_semilla() -> str:
+    """A-54 (2026-09-16): el superadmin sembrado sale del entorno. Solo se
+    pide cuando hay que sembrar (user_id=1 no existe)."""
+    valor = os.environ.get("JAX_SEED_SUPERADMIN_EMAIL", "").strip()
+    if not valor:
+        raise RuntimeError("JAX_SEED_SUPERADMIN_EMAIL no configurada: hace falta para sembrar user_id=1")
+    return valor
+
+
+def tenant_de_semilla() -> str:
+    valor = os.environ.get("JAX_SEED_TENANT_NAME", "").strip()
+    if not valor:
+        raise RuntimeError("JAX_SEED_TENANT_NAME no configurada: hace falta para sembrar tenant_id=1")
+    return valor
+
+
 def _resolve_seed_admin_password() -> str:
     """JAX_SEED_ADMIN_PASSWORD (mismo prefijo JAX_ que el resto de config de
     infra, ver /etc/jax/.env) fija la contraseña del seed. Sin ella, se
@@ -46,7 +62,7 @@ def _resolve_seed_admin_password() -> str:
     generated = secrets.token_urlsafe(18)
     logger.warning(
         "db.seed: JAX_SEED_ADMIN_PASSWORD no seteada -- generada contraseña "
-        f"aleatoria para user_id=1 (fernando@rich-hn.com): {generated} "
+        f"aleatoria para user_id=1: {generated} "
         "-- anotarla ahora, no se vuelve a mostrar"
     )
     return generated
@@ -63,7 +79,8 @@ async def run_seed():
             if count == 0:
                 await cur.execute(
                     "INSERT INTO jax_tenants (tenant_id, name, plan, status) "
-                    "VALUES (1, 'Inversiones Diamante Negro', 'superadmin', 'active')"
+                    "VALUES (1, %s, 'superadmin', 'active')",
+                    (tenant_de_semilla(),),
                 )
 
             await cur.execute(
@@ -75,8 +92,8 @@ async def run_seed():
                 await cur.execute(
                     "INSERT INTO jax_users "
                     "(user_id, tenant_id, email, password_hash, role, status) "
-                    "VALUES (1, 1, 'fernando@rich-hn.com', %s, 'superadmin', 'active')",
-                    (hashed,),
+                    "VALUES (1, 1, %s, %s, 'superadmin', 'active')",
+                    (email_de_semilla(), hashed),
                 )
 
             await cur.execute("SELECT COUNT(*) FROM facet_models")

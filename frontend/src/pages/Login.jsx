@@ -40,12 +40,11 @@ export default function Login() {
       navigate('/')
     } catch (err) {
       const status = err.response?.status
-      const detail = err.response?.data?.detail || ''
 
       if (status === 423) {
-        setError(t.accountLocked)
-        const match = detail.match(/(\d+)\s*minuto/)
-        if (match) setError(t.accountLockedMinutes(match[1]))
+        // A-50: segundos del backend (detail.retry_after_seconds), nunca texto.
+        const segundos = err.response?.data?.detail?.retry_after_seconds
+        setError(Number.isFinite(segundos) ? t.accountLockedMinutes(Math.ceil(segundos / 60)) : t.accountLocked)
       } else if (status === 429) {
         // Límite de intentos por IP/email (2026-09-12): no es un error de
         // credenciales, es "esperá". El backend manda Retry-After en segundos.

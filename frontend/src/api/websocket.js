@@ -43,10 +43,6 @@ export function createWebSocket(userId, token, onMessage, onStatusChange) {
       } catch {}
     }
 
-    ws.onerror = () => {
-      // onclose fires immediately after — status handled there
-    }
-
     ws.onclose = (event) => {
       authenticated = false
 
@@ -75,6 +71,5 @@ export function createWebSocket(userId, token, onMessage, onStatusChange) {
       clearTimeout(reconnectTimer)
       ws?.close()
     },
-    send: (data) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(data)),
   }
 }

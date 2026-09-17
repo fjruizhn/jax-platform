@@ -191,18 +191,7 @@ async def enviar_prueba_smtp(req: Optional[SmtpPrueba] = None,
         # La prueba se ESPERA a propósito (quien la pide quiere el veredicto),
         # pero en un hilo: smtplib no toca el event loop.
         await asyncio.to_thread(smtp_config.enviar, settings, mensaje)
-    except UnicodeEncodeError as exc:
-        # smtplib codifica el AUTH en ascii: una contraseña guardada no ASCII
-        # (fila anterior a la validación) daba 500. Mismo formato que el 502
-        # de abajo, sin respuesta del servidor porque no la hubo.
-        # Fix ronda 2 (2026-09-15, mismo hallazgo en send_reset_link,
-        # api/admin/users.py): NUNCA se loguea `exc` -- `exc.object` trae el
-        # valor completo que no pudo codificarse (medido: para una contraseña
-        # con un caracter no ASCII, es la contraseña entera). Mensaje fijo.
-        logger.warning("Correo de prueba SMTP a %s: la contraseña SMTP guardada no es ASCII (AUTH)", destinatario)
-        raise HTTPException(status_code=502, detail={"code": "smtp_password_no_ascii", "server": ""}) from exc
-    except (OSError, smtplib.SMTPException) as exc:
-        logger.warning("Correo de prueba SMTP a %s falló: %s", destinatario, exc)
-        raise HTTPException(status_code=502, detail={"code": "smtp_envio_fallido", "server": str(exc)}) from exc
+    except (UnicodeEncodeError, OSError, smtplib.SMTPException) as exc:
+        raise smtp_config.http_de_fallo_de_envio(exc, logger, "Correo de prueba SMTP", destinatario) from exc
     logger.info("Correo de prueba SMTP enviado a %s por user_id=%s", destinatario, user.user_id)
     return {"ok": True, "to": destinatario}

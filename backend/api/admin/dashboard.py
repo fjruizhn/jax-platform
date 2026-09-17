@@ -1,22 +1,47 @@
 import os
+from datetime import date, datetime, time, timedelta
+from urllib.parse import urlsplit
+
 import psutil
-from datetime import date
-from tiempo import utc_ahora
 from fastapi import APIRouter, Depends
+
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
 from http_client import get_http_client
+from jax_engine.state import LAS_MANOS_URL
+from tiempo import utc_ahora
 
 router = APIRouter(prefix="/api/admin")
 
-_PROVIDERS_KEYS = [
-    "OPENAI_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "GEMINI_API_KEY",
-    "KIMI_API_KEY",
-    "ZAI_API_KEY",
-]
+# A-37 (2026-09-16): una consulta, rango sargable sobre idx_axioma_usage_periodo.
+# SUM sin filas es NULL: COALESCE. EXPLAIN no distingue DATE(col) de un rango
+# en MariaDB >= 11.1; tests/test_tablero.py fija el texto del WHERE.
+SQL_USO_DEL_DIA = (
+    "SELECT COUNT(*), COALESCE(SUM(request_type = 'imagen'), 0) FROM axioma_usage "
+    "WHERE created_at >= %s AND created_at < %s"
+)
+# A-35: la verdad de las llaves es `credential` (credential_resolver), no el
+# .env. Total = proveedores activos que usan api_key; configurados = los que
+# tienen al menos una credencial activa (idx_provider_state).
+SQL_LLAVES = (
+    "SELECT COUNT(*), COALESCE(SUM(EXISTS (SELECT 1 FROM credential c "
+    "WHERE c.provider_id = p.id AND c.state = 'active')), 0) "
+    "FROM provider p WHERE p.auth_type = 'api_key' AND p.status = 'active'"
+)
+# A-49: total de completados (spec: status='completed', sin ventana). Índice
+# idx_pipelines_status, creado por jax/jacobs/store.py::init_tables().
+SQL_PIPELINES_COMPLETADOS = "SELECT COUNT(*) FROM jacobs_pipelines WHERE status = 'completed'"
+# Task 15 R12(c) (2026-09-16): la carga G midio `ALL` sobre jax_users.
+# Rango sobre idx_jax_users_locked_until (db/migrations.py::
+# _indice_de_cuentas_bloqueadas, DDL acotado; no esta en _INDEXES).
+SQL_CUENTAS_BLOQUEADAS = "SELECT COUNT(*) FROM jax_users WHERE locked_until > %s"
+
+
+def _rango_del_dia(dia: date) -> tuple[datetime, datetime]:
+    """Los dos límites salen de la MISMA fecha: [00:00 del día, 00:00 del siguiente)."""
+    inicio = datetime.combine(dia, time.min)
+    return inicio, inicio + timedelta(days=1)
 
 
 async def _check_http(url: str) -> dict:
@@ -25,9 +50,24 @@ async def _check_http(url: str) -> dict:
         t0 = utc_ahora()
         r = await client.get(url, timeout=3.0)
         ms = int((utc_ahora() - t0).total_seconds() * 1000)
-        return {"status": "alive" if r.status_code < 500 else "down", "latency_ms": ms}
+        # A-36: solo un 200 es vivo (igual que el poller de jax_engine/state.py).
+        return {"status": "alive" if r.status_code == 200 else "down", "latency_ms": ms}
     except Exception:  # fail-soft: cualquier error del ping ES 'down' en el tablero
         return {"status": "down", "latency_ms": None}
+
+
+async def _servicio(nombre: str, base_url: str | None, ruta: str) -> dict:
+    """Sin base configurada no se inventa un estado: `sin_configurar`. Una base
+    mal formada (puerto no numerico o fuera de rango, IPv6 sin cerrar) tampoco
+    es una base: antes el ValueError de urlsplit tiraba el tablero entero (500)."""
+    sin_configurar = {"name": nombre, "port": None, "status": "sin_configurar", "latency_ms": None}
+    if not base_url:
+        return sin_configurar
+    try:
+        puerto = urlsplit(base_url).port
+    except ValueError:
+        return sin_configurar
+    return {"name": nombre, "port": puerto, **await _check_http(f"{base_url}{ruta}")}
 
 
 async def _check_db() -> dict:
@@ -41,93 +81,46 @@ async def _check_db() -> dict:
         return {"status": "error"}
 
 
-def _count_configured_keys() -> dict:
-    env_path = "/etc/jax/.env"
-    env = {}
-    try:
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    env[k.strip()] = v.strip()
-    # Corregido en triage de P10 (2026-08-19): esto era `except Exception: pass`
-    # — un error de lectura real (permisos, encoding) quedaba indistinguible
-    # de ".env no existe todavía", y el dashboard mostraba "0 de N
-    # configuradas" como si fuera un hecho verificado en vez de un fallo
-    # silencioso — el superadmin que lo mira actúa creyendo que no hay keys,
-    # cuando puede ser que la lectura falló. Acotado a FileNotFoundError,
-    # mismo patrón que chat.py/image.py/admin/keys.py; cualquier otro error
-    # ahora se propaga de verdad en vez de mentir con un 0.
-    except FileNotFoundError:  # fail-soft: acotado a "no existe .env todavía", no oculta otros errores de lectura (ver comentario arriba)
-        pass
-
-    configured = sum(1 for k in _PROVIDERS_KEYS if env.get(k))
-    return {"configured": configured, "total": len(_PROVIDERS_KEYS)}
-
-
 @router.get("/dashboard")
 async def get_dashboard(user: AuthUser = Depends(require_superadmin)):
-    las_manos = await _check_http("http://127.0.0.1:7777/health")
-    jax_engine = await _check_http("http://127.0.0.1:8080/health")
-    db_status = await _check_db()
-
     services = [
-        {"name": "LAS MANOS", "port": 7777, **las_manos},
-        {"name": "JAX Engine", "port": 8080, **jax_engine},
+        await _servicio("LAS MANOS", LAS_MANOS_URL, "/health"),
+        await _servicio("JAX Engine", os.environ.get("JAX_PLATFORM_URL"), "/api/health"),
         # Sin default: este panel MUESTRA el puerto, no conecta. Un "3306"
         # inventado no rompe nada -- miente, y en un tablero de estado eso es
         # peor: la instancia :3306 esta muerta y la real es :3308.
-        {"name": "MariaDB", "port": os.environ.get("JAX_DB_PORT"), **db_status},
+        {"name": "MariaDB", "port": os.environ.get("JAX_DB_PORT"), **await _check_db()},
     ]
 
     pool = await get_pool()
-    today = date.today().isoformat()
-    now = utc_ahora()
-
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT COUNT(*) FROM axioma_usage WHERE DATE(created_at) = %s",
-                (today,),
-            )
-            (messages_today,) = await cur.fetchone()
-
-            await cur.execute(
-                "SELECT COUNT(*) FROM axioma_usage WHERE request_type='imagen' AND DATE(created_at) = %s",
-                (today,),
-            )
-            (images_today,) = await cur.fetchone()
-
-            await cur.execute(
-                "SELECT COUNT(*) FROM jax_users WHERE status = 'active'"
-            )
+            await cur.execute(SQL_USO_DEL_DIA, _rango_del_dia(date.today()))
+            messages_today, images_today = await cur.fetchone()
+            await cur.execute("SELECT COUNT(*) FROM jax_users WHERE status = 'active'")
             (users_active,) = await cur.fetchone()
-
-            await cur.execute(
-                "SELECT COUNT(*) FROM jax_users WHERE locked_until > %s",
-                (now,),
-            )
+            await cur.execute(SQL_CUENTAS_BLOQUEADAS, (utc_ahora(),))
             (users_locked,) = await cur.fetchone()
-
-    api_keys = _count_configured_keys()
+            await cur.execute(SQL_LLAVES)
+            keys_total, keys_configured = await cur.fetchone()
+            await cur.execute(SQL_PIPELINES_COMPLETADOS)
+            (pipelines_completed,) = await cur.fetchone()
 
     mem = psutil.virtual_memory()
-    ram = {
-        "total_mb": round(mem.total / 1024 / 1024),
-        "used_mb": round(mem.used / 1024 / 1024),
-        "percent": mem.percent,
+    return {
+        "services": services,
+        "stats": {
+            "messages_today": messages_today,
+            "images_generated": int(images_today),
+            "pipelines_completed": pipelines_completed,
+            "users_active": users_active,
+            "users_locked": users_locked,
+            "api_keys_configured": int(keys_configured),
+            "api_keys_total": keys_total,
+            "ram": {
+                "total_mb": round(mem.total / 1024 / 1024),
+                "used_mb": round(mem.used / 1024 / 1024),
+                "percent": mem.percent,
+            },
+        },
     }
-
-    stats = {
-        "messages_today": messages_today,
-        "images_generated": images_today,
-        "pipelines_completed": 0,
-        "users_active": users_active,
-        "users_locked": users_locked,
-        "api_keys_configured": api_keys["configured"],
-        "api_keys_total": api_keys["total"],
-        "ram": ram,
-    }
-
-    return {"services": services, "stats": stats, "recent_events": []}

@@ -27,8 +27,8 @@ class _FakeWebSocket:
     """Stand-in for a starlette WebSocket, for exercising main.py's
     connect/disconnect orchestration without a real transport.
 
-    ws_hub.connect() skips calling .accept() when application_state is
-    already "CONNECTED"; send_json just needs to be awaitable.
+    main.py's websocket_endpoint accepts the socket before ws_hub.connect();
+    send_json just needs to be awaitable.
     """
 
     def __init__(self):

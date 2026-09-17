@@ -90,6 +90,7 @@ async def lifespan(app: FastAPI):
     await get_http_client()
     await run_migrations()
     await run_seed()
+    await engine_state.cargar_nombres_de_facetas()
     engine_state.start_background_tasks()
     asyncio.create_task(start_owner_file_cleanup())
     asyncio.create_task(start_facet_canary())
@@ -114,46 +115,46 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="JAX Platform", version="0.1.0", lifespan=lifespan)
 
-ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:8080",
-    os.getenv("FRONTEND_ORIGIN", ""),
-]
-
+# Frente A (2026-09-16, A-18): el dev es mismo origen (proxy de Vite para /api
+# y /ws) y producción también (nginx de la VM dev). Solo el origen declarado.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o for o in ALLOWED_ORIGINS if o],
+    allow_origins=[o for o in [os.getenv("FRONTEND_ORIGIN", "")] if o],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
-app.include_router(health_router)
-app.include_router(auth_router)
-app.include_router(state_router)
-app.include_router(facets_router)
-app.include_router(pipelines_router)
-app.include_router(events_router)
-app.include_router(chat_router)
-app.include_router(command_router)
-app.include_router(audit_router)
-app.include_router(image_router)
-app.include_router(upload_router)
-app.include_router(motors_router)
-app.include_router(dashboard_router)
-app.include_router(keys_router)
-app.include_router(credentials_router)
-app.include_router(users_router)
-app.include_router(repository_router)
-app.include_router(config_router)
-app.include_router(usage_router)
-# facet_models_router desregistrado — ver api/admin/__init__.py
-app.include_router(models_router)
-app.include_router(facet_bindings_router)
-app.include_router(admin_motors_router)
-app.include_router(smtp_router)
-app.include_router(apariencia_router)
+ROUTERS = (
+    health_router,
+    auth_router,
+    state_router,
+    facets_router,
+    pipelines_router,
+    events_router,
+    chat_router,
+    command_router,
+    audit_router,
+    image_router,
+    upload_router,
+    motors_router,
+    dashboard_router,
+    keys_router,
+    credentials_router,
+    users_router,
+    repository_router,
+    config_router,
+    usage_router,
+    # facet_models_router desregistrado (2026-08-10) y su módulo borrado
+    # (2026-09-16, frente A): ver api/admin/__init__.py. La tabla queda.
+    models_router,
+    facet_bindings_router,
+    admin_motors_router,
+    smtp_router,
+    apariencia_router,
+)
+for _router in ROUTERS:
+    app.include_router(_router)
 
 
 # ws_hub and event_bus each guard their own state with their own lock, so a

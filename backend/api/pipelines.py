@@ -6,9 +6,10 @@ from auth.middleware import get_current_user
 from auth.models import AuthUser
 from db.connection import get_pool
 from http_client import get_http_client
-from jax_engine.resource_manager import resource_manager
+from jax_engine.resource_manager import MAX_PIPELINES_PER_TENANT, resource_manager
 from jax_engine.state import engine_state
 from jax_engine.schemas import PipelineState
+from redaccion import recortar_redactado
 
 router = APIRouter(prefix="/api/pipelines")
 
@@ -70,7 +71,7 @@ async def _require_pipeline_owner(pipeline_id: str, user: AuthUser):
     try:
         uuid.UUID(pipeline_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="pipeline_id inválido")
+        raise HTTPException(status_code=400, detail="pipeline_id_invalido")
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -80,7 +81,7 @@ async def _require_pipeline_owner(pipeline_id: str, user: AuthUser):
             )
             row = await cur.fetchone()
     if row is None or row[2] is None or not es_del_usuario(row[0], row[1], user):
-        raise HTTPException(status_code=404, detail="Pipeline no encontrado")
+        raise HTTPException(status_code=404, detail="pipeline_no_encontrado")
 
 
 # T6-5a (2026-09-15): la lista sale de jacobs_pipelines con la MISMA regla de
@@ -117,7 +118,7 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
     if not await resource_manager.can_start_pipeline(user.tenant_id):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Límite de 3 pipelines concurrentes alcanzado",
+            detail={"code": "limite_de_pipelines", "max": MAX_PIPELINES_PER_TENANT},
         )
     body = await request.json()
     body["user_id"] = user.user_id
@@ -131,7 +132,9 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
             # Jacobs rechazó el pipeline (ej. 422 límite de concurrentes,
             # 423 kill switch) — propagar el error real en vez de
             # reenviarlo como 200 con el body de error de Jacobs.
-            raise HTTPException(status_code=r.status_code, detail=data.get("detail", "Error de Jacobs"))
+            raise HTTPException(status_code=r.status_code, detail={
+                "code": "jacobs_rechazo", "status": r.status_code,
+                "motivo": recortar_redactado(str(data.get("detail", "")), 200)})
         pipeline_id = data.get("pipeline_id")
         if pipeline_id:
             # Antes de admitir el recurso o publicar el evento de WS
@@ -152,7 +155,7 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
 
 
 @router.get("/{pipeline_id}/results")
@@ -163,7 +166,7 @@ async def get_pipeline_results(pipeline_id: str, user: AuthUser = Depends(get_cu
         r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}/results", timeout=10.0)
         return r.json()
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
 
 
 @router.get("/{pipeline_id}")
@@ -174,7 +177,7 @@ async def get_pipeline(pipeline_id: str, user: AuthUser = Depends(get_current_us
         r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}", timeout=5.0)
         return r.json()
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
 
 
 @router.post("/{pipeline_id}/resume")
@@ -192,7 +195,7 @@ async def resume_pipeline(
         )
         return r.json()
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
 
 
 @router.post("/{pipeline_id}/cancel")
@@ -209,4 +212,4 @@ async def cancel_pipeline(
             await resource_manager.release_pipeline(user.tenant_id, pipeline_id)
         return r.json()
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})

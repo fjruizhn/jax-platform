@@ -31,3 +31,32 @@ export function textoDeDetalleDeBinding(t, detail) {
   }
   return null
 }
+
+// Errores de la Mesa (frente A, A-51, 2026-09-16): chat, comando, imagen,
+// pipelines y subida responden un código estable. Nunca se muestra el código
+// crudo ni un texto del backend; `motivo` (lo que dijo un servicio externo,
+// ya redactado por el backend) se agrega como dato, igual que smtpServerSaid.
+export function textoDeErrorDeMesa(t, err, generico) {
+  const code = codigoDe(err)
+  // Object.hasOwn (ronda final M4): un código `constructor` o `toString` no es
+  // una clave del diccionario, es una propiedad heredada de Object.
+  const traducir = typeof code === 'string' && Object.hasOwn(t.erroresMesa, code) && t.erroresMesa[code]
+  if (!traducir) return generico
+  const detail = err?.response?.data?.detail
+  const datos = detail && typeof detail === 'object' ? detail : {}
+  const base = traducir(datos)
+  return datos.motivo ? `${base} ${t.respuestaDelServicio(datos.motivo)}` : base
+}
+
+// Respuestas enlatadas del chat (A-53): `aviso` con código y params.
+export function textoDeAviso(t, aviso) {
+  const code = aviso?.code
+  if (typeof code !== 'string' || !Object.hasOwn(t.avisosChat, code)) return t.avisoDesconocido
+  const traducir = t.avisosChat[code]
+  const params = aviso.params || {}
+  if (code === 'identidad_del_modelo') {
+    const hosting = typeof params.provider === 'string' && Object.hasOwn(t.hostingDeProveedor, params.provider)
+    return traducir(params, hosting ? t.hostingDeProveedor[params.provider] : t.hostingGenerico)
+  }
+  return traducir(params)
+}

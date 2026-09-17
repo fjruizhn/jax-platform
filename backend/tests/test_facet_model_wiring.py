@@ -172,6 +172,9 @@ def test_degrades_explicitly_when_facet_unavailable(client):
     assert mock_post.call_count == 0, (
         "sin binding activo no debe invocar Ollama en absoluto (fail-closed)"
     )
+    # Ronda final M6 (2026-09-16): el contrato HTTP de la degradacion es un
+    # aviso con codigo (A-53), no un texto: el frontend lo traduce.
+    assert resp.json()["aviso"] == {"code": "faceta_sin_binding", "params": {"facet": "jax_local"}}
 
 
 def test_jax_local_system_prompt_states_resolved_model(client):
@@ -211,7 +214,7 @@ def test_model_identity_question_short_circuits_before_ollama(client):
             f"model-identity question must short-circuit before Ollama, "
             f"got {mock_post.call_count} call(s)"
         )
-        assert SENTINEL_MODEL in resp.json()["response"], (
+        assert resp.json()["aviso"]["params"]["model"] == SENTINEL_MODEL, (
             "short-circuit reply does not name the resolved DB-active model"
         )
     finally:

@@ -504,8 +504,53 @@ jobs:
             // 444 -> 448 el 2026-09-16 (fila venenosa): el cuarto aviso de
             // AdminCosts (filas que la base rechazo y quedaron en cuarentena),
             // en los dos idiomas y con singular/plural. Medido dos veces: 448.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 448) {
-              console.error("PISO ROTO: se esperaban 448 tests de vitest CORRIDOS y 0 fallidos.");
+            // 448 -> 488 el 2026-09-16 (frente A de la auditoria, Task 16): +40
+            // por archivo -- src/api/errores.test.js (+6, archivo nuevo),
+            // src/components/BottomBar/BottomBar.errores.test.jsx (+3, archivo
+            // nuevo), src/components/BottomBar/PipelineModal.test.jsx (+1),
+            // src/i18n/paridad.test.js (+2, archivo nuevo),
+            // src/limpieza.test.js (+7, archivo nuevo -- sin heroicons, ws sin
+            // send, claves muertas fuera), src/pages/Login.test.jsx (+4),
+            // src/pages/admin/AdminDashboard.test.jsx (+4, archivo nuevo),
+            // src/pages/admin/AdminFacetsModels.test.jsx (+5, archivo nuevo),
+            // src/pages/admin/AdminMotors.test.jsx (+1, archivo nuevo),
+            // src/pages/admin/AdminSmtp.test.jsx (+1),
+            // src/politica/modales.test.js (+1, archivo nuevo -- los cinco
+            // modales a mano pasan a Dialogo/ConfirmacionSuma),
+            // src/store/useJaxStore.comandos.test.js (+7, archivo nuevo),
+            // src/store/useJaxStore.facetTokens.test.js (+1). Un archivo BAJA:
+            // src/store/useJaxStore.eyeState.test.js (6 -> 3, -3) por A-45 (sin
+            // hardcoding de defaults): getEyeState ya no acepta `idleLabel` ni
+            // etiquetas opcionales con texto en espanol hardcodeado -- las dos
+            // describe() que probaban esos defaults ("sin idleLabel cae a
+            // reposo", "sin labels usa KILL SWITCH hardcodeado") se BORRARON
+            // porque el comportamiento que probaban ya no existe (el parametro
+            // `etiquetas` es obligatorio), no porque se haya perdido cobertura:
+            // sus casos utiles se consolidaron en un solo it() con las 6
+            // aserciones de siempre. Vistos en rojo antes de verde. Medido dos
+            // veces contra este arbol: 488 passed, 0 fallidos, 62 archivos.
+            // 488 -> 503 el 2026-09-16: +15 por archivo, ronda final de
+            // revision -- AdminDashboard.test.jsx (+3, 0/0 llaves no es verde),
+            // api/errores.test.js (+5, Object.hasOwn), useJaxStore.comandos
+            // (+2, fallo sin motivo es/en), limpieza.test.js (+1, idioma leido
+            // una vez), AdminSettings.test.jsx (+1, "Guardando…"),
+            // AdminFacetsModels.test.jsx (+2, toasts de rotar/revocar),
+            // Dialogo.test.jsx (+1, reintento de foco aislado). Vistos en rojo
+            // (o con el control mutado) antes de verde. Medido dos veces: 503
+            // passed, 0 fallidos, 62 archivos.
+            // 503 -> 504 el 2026-09-16 (R16, ronda de arreglo post-review
+            // final): +1 en useJaxStore.commandPolling.test.js -- un 500 de
+            // GET /command/{id} (resultado ilegible en el backend) no puede
+            // tratarse como el 404/400 de "tarea ajena/inexistente": tiene
+            // que reintentarse, nunca resolverse como exito falso (A-44). El
+            // store (useJaxStore.js:484) ya distinguia 404/400 de cualquier
+            // otro status; el test nuevo fija ese caso puntual (500) en vez
+            // de dejarlo cubierto solo por el caso generico "sin .response"
+            // de la red. Sin cambio de codigo de store: RED/GREEN via
+            // mutacion temporal del propio if (ver r16-report.md). Medido
+            // dos veces: 504 passed, 0 fallidos, 62 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 504) {
+              console.error("PISO ROTO: se esperaban 504 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1322,7 +1367,60 @@ jobs:
           # con el lock grande de antes (len(pico) == 25). Los otros son red:
           # ya pasaban con el lock grande, que era mas estricto.
           # Medido dos veces: 1175 / 1.
-          PISO_PASSED = 1175
+          # 1175 -> 1303 el 2026-09-16 (frente A de la auditoria, Task 16): +129
+          # tests nuevos colectados (pytest --collect-only, comparacion segura
+          # sin tocar la DB, contra el arbol base 26c9cd5), por archivo --
+          # tests/test_admin_recortes.py (+7, archivo nuevo), test_audit_cola.py
+          # (+12, archivo nuevo), test_chat_codigos.py (+13, archivo nuevo),
+          # test_facetas_nombres.py (+5, archivo nuevo),
+          # test_hallazgos_limpieza.py (+14, archivo nuevo),
+          # test_locks_sin_await.py (+4, archivo nuevo -- A-24, sin
+          # asyncio.Lock donde no hay await entre chequeo y accion),
+          # test_login_bloqueo.py (+2, archivo nuevo), test_mesa_codigos.py
+          # (+21, archivo nuevo), test_repositorio_carga.py (+6, archivo
+          # nuevo), test_repositorio_rutas.py (+13, archivo nuevo, incluye un
+          # parametrize de 5 casos de MIME real), test_rutas_de_entorno.py
+          # (+16, archivo nuevo -- A-41/54/55, incluye un parametrize de 6
+          # casos de "sin la variable el modulo no importa"), test_tablero.py
+          # (+16, archivo nuevo). Suman 129 colectados. El PASSED medido es
+          # 1303, no 1175+129=1304: en ESTE runner local, 1 test preexistente
+          # (test_grounding_config_revalidation.py::
+          # test_turno_completo_con_config_rota_deja_los_veredictos_GROUNDING_UNAVAILABLE,
+          # ya presente sin cambios en 26c9cd5) falla con
+          # "TypeError: 'NoneType' object is not iterable" en api/chat.py --
+          # causa verificada: jax_memory_test en esta maquina no tiene las
+          # tablas `conversations`/`messages`, un hueco ambiental de esta DB
+          # local, no un defecto de este branch ni de sus tests nuevos (el
+          # mismo test, sin tocar, pasaba en la DB completa que dejo el piso
+          # anterior en 1175). El piso se fija en el PASSED que de verdad se
+          # midio (1303), no en el numero optimista sin ese hueco -- el
+          # controlador principal vuelve a medir en el runner de CI, donde
+          # jax_memory_test se crea de cero con el esquema completo. Skip
+          # count sin cambios (1: gpt-5.6-terra). Medido dos veces contra este
+          # arbol: 1303 passed / 1 failed / 1 skipped, identico en ambas
+          # corridas.
+          # 1303 -> 1332 el 2026-09-16: +29 por archivo, ronda final de
+          # revision -- test_repositorio_rutas.py (+11, contencion contra la
+          # carpeta, NUL, symlinks), test_tablero.py (+3, base mal formada),
+          # test_mesa_codigos.py (+5, disco de command.py fuera del loop),
+          # test_rutas_de_entorno.py (+10, escaneo AST de defaults de
+          # entorno). Mismo hueco ambiental (1 failed de grounding), 1 skip.
+          # Medido dos veces: 1332 passed / 1 failed / 1 skipped.
+          # 1332 -> 1334 el 2026-09-16 (R16, ronda de arreglo post-review
+          # final): +2 en test_command_ownership.py -- GET /command/{id}
+          # separa la lectura del dueño (OSError/ValueError -> 404, sin
+          # cambios) de la lectura del RESULTADO en un to_thread aparte
+          # (OSError/ValueError ahi -> 500, nunca 404): un 404 lo trata el
+          # store del frontend como "completada sin resultado" y saca la
+          # tarea de pendientes para siempre (A-44), y un resultado
+          # ilegible (permisos, encoding, un directorio en el lugar del
+          # archivo) no es "tarea ajena/inexistente". RED contra el codigo
+          # de e5656f2 (IsADirectoryError y UnicodeDecodeError daban 404),
+          # GREEN tras separar los to_thread (ver r16-report.md). Mismo
+          # hueco ambiental (1 failed de grounding), 1 skip, sin cambio en
+          # ningun otro archivo. Medido dos veces: 1334 passed / 1 failed /
+          # 1 skipped.
+          PISO_PASSED = 1334
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1386,6 +1484,9 @@ jobs:
       # Este job no clonaba `jax` -- el de DB si. Apunta al clon del paso de
       # mas abajo.
       JAX_REPO_PATH: /tmp/jax
+      # Obligatoria desde el 2026-09-16 (frente A, A-55): api/chat.py no se
+      # importa sin ella. Apunta al clon del paso "Traer el repo jax".
+      JAX_CONFIG_PATH: /tmp/jax/config/config.toml
       # Piso de cobertura. Si baja de acá, el job falla (ver el paso final).
       # Subido de 85 a 93 en Task 4 (sonda activa de facets, 2026-08-27):
       # backend/tests/test_facet_canary.py agrega 8 tests sin DB, medido
@@ -1796,7 +1897,36 @@ jobs:
       # por defecto es 500). Ninguno pide `client`, asi que el piso sube lo
       # mismo en los dos modos y los skips no se mueven.
       # Medido dos veces con JAX_CI_NO_DB=1: 597 / 561.
-      JAX_CI_MIN_PASSED: "614"
+      # 614 -> 733 el 2026-09-16 (frente A de la auditoria, Task 16): +119
+      # puros, por archivo -- test_admin_recortes.py (+7, archivo nuevo),
+      # test_audit_cola.py (+12, archivo nuevo, ninguno pide `client`),
+      # test_chat_codigos.py (+12 puros de 13 colectados; 1 pide `client` y
+      # se saltea), test_facetas_nombres.py (+4 puros de 5; 1 pide `client`),
+      # test_hallazgos_limpieza.py (+14, archivo nuevo, todos puros),
+      # test_locks_sin_await.py (+4, archivo nuevo, todos puros),
+      # test_login_bloqueo.py (+2, archivo nuevo, todos puros),
+      # test_mesa_codigos.py (+21, archivo nuevo, todos puros),
+      # test_repositorio_carga.py (+6, archivo nuevo, todos puros),
+      # test_repositorio_rutas.py (+13, archivo nuevo, todos puros, incluye
+      # el parametrize de 5 casos de MIME), test_rutas_de_entorno.py (+15 de
+      # 16; el parametrize de 6 casos de "sin la variable no importa" corre
+      # en subprocess propio y no pide `client`, pero uno de los 6 modulos
+      # que importa si lo pide y se saltea), test_tablero.py (+9 de 16; 7
+      # piden `client`). Suman 119 puros; los 10 restantes de lo colectado
+      # (129 - 119) quedan como skip sin DB (562 -> 572). Medido dos veces
+      # con JAX_CI_NO_DB=1 contra este arbol: 733 passed / 572 skipped,
+      # identico en ambas corridas.
+      # 733 -> 762 el 2026-09-16: +29 puros por archivo, ronda final de
+      # revision -- test_repositorio_rutas.py (+11), test_tablero.py (+3),
+      # test_mesa_codigos.py (+5), test_rutas_de_entorno.py (+10); ninguno
+      # pide `client`, los skips no se mueven. Medido dos veces con
+      # JAX_CI_NO_DB=1: 762 passed / 572 skipped.
+      # 762 -> 764 el 2026-09-16 (R16, ronda de arreglo post-review final):
+      # +2 puros en test_command_ownership.py (owner ok, resultado
+      # ilegible -> 500, no 404 -- IsADirectoryError y UnicodeDecodeError);
+      # ninguno pide `client`, los skips no se mueven. Medido dos veces con
+      # JAX_CI_NO_DB=1: 764 passed / 572 skipped.
+      JAX_CI_MIN_PASSED: "764"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

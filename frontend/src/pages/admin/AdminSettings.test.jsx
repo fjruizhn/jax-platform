@@ -39,6 +39,19 @@ beforeEach(() => {
   aplicarTema('dark')
 })
 
+describe('AdminSettings -- el botón mientras guarda (ronda final M8)', () => {
+  it('dice "Guardando…", no el texto de subir adjuntos', async () => {
+    api.get.mockResolvedValue(CONFIG)
+    let soltar
+    api.put.mockReturnValue(new Promise((resolve) => { soltar = resolve }))
+    renderSettings()
+    await guardar()
+    expect(await screen.findByRole('button', { name: es.adminBindingsSaving })).toBeDisabled()
+    expect(screen.queryByText(es.attachUploading)).not.toBeInTheDocument()
+    soltar({ data: {} })
+  })
+})
+
 describe('AdminSettings -- los errores del guardado se ven', () => {
   it('los textos existen en los dos idiomas', () => {
     for (const clave of ['config_clave_reservada', 'config_collation_desconocida', 'adminSettingsSaveError', 'adminSettingsLoadError']) {

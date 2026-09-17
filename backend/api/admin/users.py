@@ -401,10 +401,13 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
             raise HTTPException(status_code=409, detail="usuario_no_activo")
         token, enlace = await auth_api._crear_enlace_de_recuperacion(cur, user_id, ip)
     # Mismo juego de excepciones que /smtp/test (etapa 1, api/admin/smtp.py):
-    # ValueError ANTES que (OSError, SMTPException), y UnicodeEncodeError
-    # ANTES que ValueError -- es subclase suya (smtplib codifica el AUTH en
-    # ascii). En los tres casos: el enlace recién creado no puede quedar vivo
-    # (fix ronda 1) y no se audita un envío que no salió.
+    # la tupla común (UnicodeEncodeError, OSError, SMTPException) va ANTES que
+    # ValueError -- UnicodeEncodeError es subclase suya (smtplib codifica el
+    # AUTH en ascii); si ValueError fuera primero, se comería ese caso y daría
+    # 503 smtp_config_corrupta en vez de 502. En los tres casos: el enlace
+    # recién creado no puede quedar vivo (fix ronda 1) y no se audita un
+    # envío que no salió.
+    # Las dos ramas comunes las traduce smtp_config.http_de_fallo_de_envio (A-39).
     #
     # Fix ronda 2 (2026-09-15, hallazgo 3): la limpieza se movió a un
     # `finally` con la bandera `enviado`, en vez de repetirla en cada except.
@@ -418,22 +421,13 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
     try:
         await asyncio.to_thread(auth_api._send_reset_email, settings, email, enlace)
         enviado = True
-    except UnicodeEncodeError as exc:
-        # NUNCA se loguea `exc` acá -- smtplib codifica el AUTH (usuario Y
-        # CONTRASEÑA) en ascii, y `exc.object` trae el valor completo que no
-        # pudo codificarse (medido: para una contraseña con un caracter no
-        # ASCII, `exc.object` es la contraseña entera). Mensaje fijo, sin
-        # interpolar la excepción.
-        logger.warning("Enlace de recuperación (admin) a %s: la contraseña SMTP guardada no es ASCII (AUTH)", email)
-        raise HTTPException(status_code=502, detail={"code": "smtp_password_no_ascii", "server": ""}) from exc
+    except (UnicodeEncodeError, OSError, smtplib.SMTPException) as exc:
+        raise smtp_config.http_de_fallo_de_envio(exc, logger, "Enlace de recuperación (admin)", email) from exc
     except ValueError as exc:
         # construir_mensaje rechaza encabezados con caracteres de control:
         # misma red de estado corrupto que /smtp/test, mismo código.
         logger.warning("Enlace de recuperación (admin): no se pudo armar el mensaje: %s", exc)
         raise HTTPException(status_code=503, detail="smtp_config_corrupta") from exc
-    except (OSError, smtplib.SMTPException) as exc:
-        logger.warning("Enlace de recuperación (admin) a %s falló: %s", email, exc)
-        raise HTTPException(status_code=502, detail={"code": "smtp_envio_fallido", "server": str(exc)}) from exc
     finally:
         if not enviado:
             try:

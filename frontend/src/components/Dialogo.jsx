@@ -18,6 +18,14 @@ import { useCerrarConEscape } from '../lib/useCerrarConEscape'
 // - Al cerrar o desmontar se quita el inert PRIMERO y después se devuelve el
 //   foco al elemento que lo tenía al abrir (si sigue en el documento): un
 //   elemento dentro de un subárbol inert no puede tomar el foco.
+// - Si ese elemento sigue disabled en el mismo instante (R11, fix round 1,
+//   Task 13, 2026-09-16: un llamador puede limpiar, en el mismo tramo de
+//   setState que cierra el diálogo, tanto la condición que lo desmonta como
+//   la que deshabilitaba a su disparador -- p.ej. revocar una credencial),
+//   el primer intento de foco no hace nada: React corre el cleanup de ESTE
+//   layout effect antes de aplicar, en el mismo commit, la mutación de
+//   atributos de un hermano. Se reintenta una vez en un microtask, cuando el
+//   commit ya terminó y el DOM refleja el estado final.
 // - Escape cierra (useCerrarConEscape). Un clic en el fondo NO: un clic
 //   accidental no debe perder lo escrito (Ruling U24).
 // - `cerrable={false}` (cambio obligatorio, U34): Escape no cierra; el modal
@@ -53,8 +61,16 @@ export default function Dialogo({ idTitulo, titulo, claseTitulo = 'text-sm font-
     return () => {
       abiertos -= 1
       if (abiertos === 0) raiz()?.removeAttribute('inert')
-      if (previo && previo !== document.body && previo.isConnected && typeof previo.focus === 'function') {
+      const puedeEnfocar = () => (
+        previo && previo !== document.body && previo.isConnected && typeof previo.focus === 'function'
+      )
+      if (puedeEnfocar()) {
         previo.focus()
+        // Si no tomó (seguía disabled en este commit), reintentar una vez
+        // apenas termine -- ver nota de arriba (R11).
+        if (document.activeElement !== previo) {
+          queueMicrotask(() => { if (puedeEnfocar()) previo.focus() })
+        }
       }
     }
   }, [])

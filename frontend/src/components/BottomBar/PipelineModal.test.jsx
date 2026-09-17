@@ -354,3 +354,17 @@ describe('PipelineModal -- etiquetas de modo desde i18n (I-1)', () => {
     expect(screen.queryByText('🧪 Dry run')).not.toBeInTheDocument()
   })
 })
+
+describe('PipelineModal -- es un Dialogo (A-23)', () => {
+  it('diálogo modal con nombre; el clic en el fondo no cierra y Escape sí', async () => {
+    api.get.mockResolvedValue({ data: { capabilities: [], motors: [] } })
+    const onClose = vi.fn()
+    render(<I18nProvider><PipelineModal objective="x" onClose={onClose} onSubmit={() => Promise.resolve()} /></I18nProvider>)
+    const dialogo = screen.getByRole('dialog')
+    expect(dialogo).toHaveAccessibleName(es.newPipelineTitle)
+    fireEvent.click(dialogo.parentElement)
+    expect(onClose).not.toHaveBeenCalled()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})

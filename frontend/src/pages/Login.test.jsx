@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
+import { readFileSync } from 'node:fs'
 import '@testing-library/jest-dom'
 
 // Límite de intentos de login (2026-09-12): el backend responde 429 con
@@ -20,6 +21,7 @@ vi.mock('../api/client', () => ({ default: { post: vi.fn() } }))
 import api from '../api/client'
 import Login from './Login'
 import { I18nProvider } from '../i18n/index.jsx'
+import en from '../i18n/en.js'
 
 function renderLogin() {
   return render(
@@ -179,5 +181,40 @@ describe('Login -- placeholder del email', () => {
     renderLogin()
     expect(screen.getByPlaceholderText(en.emailPlaceholder)).toBeInTheDocument()
     expect(en.emailPlaceholder).toBe('name@company.com')
+  })
+})
+
+describe('Login -- cuenta bloqueada (A-50)', () => {
+  it('un 423 con código usa los segundos del backend, no una regex del texto', async () => {
+    loginMock.mockRejectedValue({ response: { status: 423, headers: {}, data: { detail: { code: 'cuenta_bloqueada', retry_after_seconds: 540 } } } })
+    renderLogin()
+    enviar()
+    await waitFor(() => expect(screen.getByText('Cuenta bloqueada. Intenta de nuevo en 9 minuto(s).')).toBeInTheDocument())
+  })
+
+  it('en inglés también, sin texto del backend', async () => {
+    localStorage.setItem('jax_lang', 'en')
+    loginMock.mockRejectedValue({ response: { status: 423, headers: {}, data: { detail: { code: 'cuenta_bloqueada', retry_after_seconds: 61 } } } })
+    renderLogin()
+    fireEvent.change(screen.getByPlaceholderText(en.emailPlaceholder), { target: { value: 'a@b.c' } })
+    fireEvent.change(screen.getByPlaceholderText('••••••••'), { target: { value: 'x' } })
+    fireEvent.click(screen.getByRole('button', { name: en.loginButton }))
+    await waitFor(() => expect(screen.getByText('Account locked. Try again in 2 minute(s).')).toBeInTheDocument())
+  })
+
+  it('sin segundos, el mensaje genérico de bloqueo', async () => {
+    loginMock.mockRejectedValue({ response: { status: 423, headers: {}, data: { detail: { code: 'cuenta_bloqueada' } } } })
+    renderLogin()
+    enviar()
+    await waitFor(() => expect(screen.getByText('Cuenta bloqueada. Revisa tu correo.')).toBeInTheDocument())
+  })
+
+  it('Login.jsx no interpreta texto del backend', () => {
+    // Indirección vía `base`, como en AdminDashboard.test.jsx: Vite reescribe
+    // `new URL('./x', import.meta.url)` inline para el bundler, y esa
+    // reescritura no sirve un file:// bajo jsdom -- readFileSync lo exige.
+    const base = import.meta.url
+    const fuente = readFileSync(new URL('./Login.jsx', base), 'utf8')
+    expect(fuente).not.toMatch(/minuto/)
   })
 })

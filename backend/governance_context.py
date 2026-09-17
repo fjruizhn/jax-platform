@@ -121,9 +121,10 @@ import asyncio
 import math
 import os
 import sys
-from pathlib import Path
 
-JAX_REPO = Path(os.getenv("JAX_REPO_PATH", os.path.expanduser("~/jax")))
+from config_de_entorno import ruta_requerida
+
+JAX_REPO = ruta_requerida("JAX_REPO_PATH")
 if str(JAX_REPO) not in sys.path:
     sys.path.insert(0, str(JAX_REPO))
 if str(JAX_REPO / "policy" / "governance") not in sys.path:

@@ -44,6 +44,4 @@ export function useWebSocket() {
       wsRef.current?.close()
     }
   }, [token, user?.user_id])
-
-  return wsRef.current
 }

@@ -68,20 +68,20 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
-from pathlib import Path
+
+from config_de_entorno import ruta_requerida
 
 logger = logging.getLogger(__name__)
 
 # Ruta al repo `jax` (repo vecino, de donde salen policy/governance/). Igual
-# que CONFIG_PATH en api/chat.py: configurable por entorno, con el MISMO
-# default de siempre. Era `~/jax` y nada mas -- una ruta hardcodeada a otro
-# repo, relativa al $HOME del usuario, que hacia imposible correr esta parte
-# de la suite fuera de la maquina de Fernando (9 tests con
-# ModuleNotFoundError: No module named 'claims', medido en un contenedor
-# limpio el 2026-09-01).
-JAX_REPO = Path(os.getenv("JAX_REPO_PATH", os.path.expanduser("~/jax")))
+# que CONFIG_PATH en api/chat.py: configurable por entorno. Era `~/jax` y
+# nada mas -- una ruta hardcodeada a otro repo, relativa al $HOME del
+# usuario, que hacia imposible correr esta parte de la suite fuera de la
+# maquina de Fernando (9 tests con ModuleNotFoundError: No module named
+# 'claims', medido en un contenedor limpio el 2026-09-01). Desde el
+# 2026-09-16 no hay default: ver config_de_entorno.py.
+JAX_REPO = ruta_requerida("JAX_REPO_PATH")
 if str(JAX_REPO) not in sys.path:
     sys.path.insert(0, str(JAX_REPO))
 if str(JAX_REPO / "policy" / "governance") not in sys.path:

@@ -111,7 +111,7 @@ export default function AdminSettings() {
             disabled={saving || !cargado}
             className="px-5 py-2 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold disabled:opacity-50 transition-colors"
           >
-            {saved ? `✓ ${t.adminSettingsSaved}` : saving ? t.attachUploading : t.adminSettingsSave}
+            {saved ? `✓ ${t.adminSettingsSaved}` : saving ? t.adminBindingsSaving : t.adminSettingsSave}
           </button>
         </div>
       </div>

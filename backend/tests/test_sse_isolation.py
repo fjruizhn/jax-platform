@@ -153,7 +153,7 @@ async def test_ws_disconnect_unregisters_presence_even_with_sse_still_open():
     api/health.py reports len(state.connected_users) as a live metric. If
     unregister_user is (wrongly) gated on "no SSE connections either", a
     user with a WS tab AND an SSE connection who closes just the WS tab
-    stays stuck in connected_users/_user_tenant_map forever: nothing ever
+    stays stuck in connected_users forever: nothing ever
     calls unregister_user for them afterwards, since SSE's own disconnect
     path never calls register_user/unregister_user at all.
     """
@@ -175,7 +175,6 @@ async def test_ws_disconnect_unregisters_presence_even_with_sse_still_open():
         "-- this leaks a stale entry into api/health.py's connected_users "
         "count until process restart"
     )
-    assert user_id not in engine_state._user_tenant_map
 
     # The event_bus subscription itself must still be alive for SSE though
     # -- that gate IS supposed to be cross-channel, unlike presence.

@@ -41,11 +41,11 @@ router = APIRouter(prefix="/api/admin/models")
 # (provider.auth_type='none') — ver ramas explicitas en model_catalog.py.
 _SYNCABLE_PROVIDERS = ["openai", "deepseek", "gemini", "moonshot", "zhipu", "anthropic", "ollama"]
 
-_MODEL_COLUMNS = (
-    "id, provider_id, model_id, is_alias, context_window, supports_tool_use, "
-    "supports_structured_output, input_modalities, price_input_per_1m_usd, "
-    "price_output_per_1m_usd, price_cache_per_1m_usd, release_date, "
-    "deprecation_date, status, source, source_checked_at, consecutive_misses, "
+_MODEL_FIELDS = (
+    "id", "provider_id", "model_id", "is_alias", "context_window", "supports_tool_use",
+    "supports_structured_output", "input_modalities", "price_input_per_1m_usd",
+    "price_output_per_1m_usd", "price_cache_per_1m_usd", "release_date",
+    "deprecation_date", "status", "source", "source_checked_at", "consecutive_misses",
     # max_tokens_param (2026-08-27, incidente thot): visible para el superadmin
     # porque NULL es el estado que rompe el dispatch de esa fila
     # (api/chat.py::_max_tokens_field falla ruidoso) — un operador tiene que
@@ -56,9 +56,9 @@ _MODEL_COLUMNS = (
     # (api/chat.py::_max_output_tokens_value falla ruidoso). Se muestra al lado
     # del anterior a proposito: son un par (como se llama el parametro / que
     # valor admite) y un operador tiene que poder ver los dos huecos de una.
-    "max_tokens_param, max_output_tokens"
+    "max_tokens_param", "max_output_tokens",
 )
-_MODEL_FIELDS = [c.strip() for c in _MODEL_COLUMNS.split(",")]
+_MODEL_COLUMNS = ", ".join(_MODEL_FIELDS)
 
 
 def _row_to_model(row) -> dict:

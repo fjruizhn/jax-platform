@@ -30,14 +30,15 @@ class _ClientInstantiationCounter:
 
 
 def test_dashboard_health_checks_do_not_create_new_clients(client):
-    """get_dashboard() calls _check_http() twice per request (LAS MANOS +
-    JAX Engine health). Both services are unreachable in the test env, so
+    """get_dashboard() probes LAS MANOS (/health) and, if JAX_PLATFORM_URL is
+    set, JAX Engine (/api/health). Both are unreachable in the test env, so
     this only pins zero new httpx.AsyncClient() instantiations."""
     with _ClientInstantiationCounter() as counter:
         resp = client.get("/api/admin/dashboard", headers=_superadmin_headers(client))
         assert resp.status_code == 200
 
     assert counter.count == 0, (
-        f"expected 0 new httpx.AsyncClient() instantiations for 2 internal "
-        f"health checks per dashboard request, got {counter.count}"
+        f"expected 0 new httpx.AsyncClient() instantiations for the internal "
+        f"health checks per dashboard request (1, or 2 with JAX_PLATFORM_URL "
+        f"set), got {counter.count}"
     )

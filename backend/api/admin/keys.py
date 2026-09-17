@@ -29,6 +29,11 @@ PROVIDERS = [
 
 _PROVIDER_MAP = {p["id"]: p for p in PROVIDERS}
 
+# El almacén legado `user_api_keys` guarda las llaves de proveedor a nombre
+# del superadmin sembrado (id 1, ver db/seed.py), no del que hace el
+# pedido: es la "red de seguridad" de credentials.py:4 (A-46, 2026-09-16).
+USUARIO_LLAVES_LEGADO = 1
+
 
 def _load_env() -> dict:
     env = {}
@@ -55,7 +60,7 @@ def _write_env_key(env_key: str, value: str):
     os.environ[env_key] = value
 
 
-async def _seed_keys_from_env(pool, user_id: int = 1):
+async def _seed_keys_from_env(pool, user_id: int = USUARIO_LLAVES_LEGADO):
     env = _load_env()
     rows = []
     for p in PROVIDERS:
@@ -134,9 +139,10 @@ async def _get_binding_models_batch(pool, facets: list) -> dict:
 @router.get("/keys")
 async def list_keys(user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
-    await _seed_keys_from_env(pool, user_id=1)
+    await _seed_keys_from_env(pool, user_id=USUARIO_LLAVES_LEGADO)
 
-    keys_by_provider = await _get_db_keys_batch(pool, user_id=1, provider_ids=[p["id"] for p in PROVIDERS])
+    keys_by_provider = await _get_db_keys_batch(
+        pool, user_id=USUARIO_LLAVES_LEGADO, provider_ids=[p["id"] for p in PROVIDERS])
     binding_models_by_facet = await _get_binding_models_batch(pool, facets=[p["facet"] for p in PROVIDERS])
 
     result = []
@@ -165,7 +171,7 @@ async def test_key(provider_id: str, user: AuthUser = Depends(require_superadmin
         raise HTTPException(status_code=404, detail="Provider no encontrado")
 
     pool = await get_pool()
-    api_key = await _get_db_key(pool, user_id=1, provider_id=provider_id)
+    api_key = await _get_db_key(pool, user_id=USUARIO_LLAVES_LEGADO, provider_id=provider_id)
     if not api_key:
         return {"ok": False, "latency_ms": None, "error": "API key no configurada"}
 
@@ -216,9 +222,9 @@ async def update_key(
         async with conn.cursor() as cur:
             await cur.execute(
                 "INSERT INTO user_api_keys (user_id, provider_id, env_key, encrypted_value) "
-                "VALUES (1, %s, %s, %s) "
+                "VALUES (%s, %s, %s, %s) "
                 "ON DUPLICATE KEY UPDATE encrypted_value = VALUES(encrypted_value), updated_at = NOW()",
-                (provider_id, prov["env_key"], encrypted),
+                (USUARIO_LLAVES_LEGADO, provider_id, prov["env_key"], encrypted),
             )
 
     _write_env_key(prov["env_key"], req.api_key)
@@ -235,8 +241,8 @@ async def delete_key(provider_id: str, user: AuthUser = Depends(require_superadm
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "DELETE FROM user_api_keys WHERE user_id = 1 AND provider_id = %s",
-                (provider_id,),
+                "DELETE FROM user_api_keys WHERE user_id = %s AND provider_id = %s",
+                (USUARIO_LLAVES_LEGADO, provider_id),
             )
 
     _write_env_key(prov["env_key"], "")

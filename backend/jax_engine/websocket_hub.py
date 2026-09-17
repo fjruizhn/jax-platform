@@ -1,4 +1,3 @@
-import asyncio
 import uuid
 from fastapi import WebSocket
 from .schemas import JAXEvent
@@ -9,32 +8,25 @@ class WebSocketHub:
         # user_id -> {connection_id -> websocket}. One user may hold several
         # live connections at once (e.g. multiple browser tabs).
         self._connections: dict[str, dict[str, WebSocket]] = {}
-        self._lock = asyncio.Lock()
 
     async def connect(self, user_id: str, websocket: WebSocket) -> str:
-        if getattr(getattr(websocket, "application_state", None), "name", "") != "CONNECTED":
-            await websocket.accept()
         connection_id = str(uuid.uuid4())
-        async with self._lock:
-            self._connections.setdefault(user_id, {})[connection_id] = websocket
+        self._connections.setdefault(user_id, {})[connection_id] = websocket
         return connection_id
 
     async def disconnect(self, user_id: str, connection_id: str):
-        async with self._lock:
-            conns = self._connections.get(user_id)
-            if conns is None:
-                return
-            conns.pop(connection_id, None)
-            if not conns:
-                self._connections.pop(user_id, None)
+        conns = self._connections.get(user_id)
+        if conns is None:
+            return
+        conns.pop(connection_id, None)
+        if not conns:
+            self._connections.pop(user_id, None)
 
     async def has_connections(self, user_id: str) -> bool:
-        async with self._lock:
-            return bool(self._connections.get(user_id))
+        return bool(self._connections.get(user_id))
 
     async def send_to_user(self, user_id: str, event: JAXEvent):
-        async with self._lock:
-            conns = list(self._connections.get(user_id, {}).items())
+        conns = list(self._connections.get(user_id, {}).items())
         for connection_id, ws in conns:
             try:
                 await ws.send_json(event.model_dump())
@@ -47,13 +39,12 @@ class WebSocketHub:
         handshake, así que una pestaña de un usuario degradado, desactivado o
         borrado seguiría recibiendo eventos hasta reconectar.
 
-        Las conexiones se leen bajo `_lock` y se cierran FUERA de él (un close
-        es I/O de red). Las entradas no se borran acá: el `finally` del
-        endpoint (main.py::_ws_disconnect_and_maybe_unsubscribe, bajo
-        lifecycle_lock) hace disconnect/unregister/unsubscribe al salir del
-        receive. Devuelve cuántas cerró."""
-        async with self._lock:
-            conns = list(self._connections.get(user_id, {}).values())
+        Las conexiones se copian a una lista antes del primer await: un close
+        que desconecta no altera el recorrido. Las entradas no se borran acá:
+        el `finally` del endpoint (main.py::_ws_disconnect_and_maybe_unsubscribe,
+        bajo lifecycle_lock) hace disconnect/unregister/unsubscribe al salir
+        del receive. Devuelve cuántas cerró."""
+        conns = list(self._connections.get(user_id, {}).values())
         cerradas = 0
         for ws in conns:
             try:
@@ -64,8 +55,7 @@ class WebSocketHub:
         return cerradas
 
     async def connected_user_ids(self) -> list[str]:
-        async with self._lock:
-            return list(self._connections.keys())
+        return list(self._connections.keys())
 
 
 ws_hub = WebSocketHub()

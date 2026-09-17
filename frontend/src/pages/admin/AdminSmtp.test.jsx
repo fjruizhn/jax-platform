@@ -190,6 +190,17 @@ describe('AdminSmtp', () => {
     expect(api.post).not.toHaveBeenCalled()
   })
 
+  it('el diálogo de prueba es el Dialogo común: portal fuera del formulario y el fondo no cierra (A-23)', async () => {
+    api.get.mockResolvedValue({ data: { ...GUARDADA, test_to: 'pruebas@rich-hn.com' } })
+    renderSmtp()
+    await screen.findByDisplayValue('mail.axioma-ia.io')
+    fireEvent.click(screen.getByRole('button', { name: es.smtpSendTest }))
+    const dialogo = await screen.findByRole('dialog')
+    expect(dialogo.closest('form[class]')).toBeNull()
+    fireEvent.click(dialogo.parentElement)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
   it('sin destinatario por defecto, el diálogo se prellena con el correo de la sesión', async () => {
     api.get.mockResolvedValue({ data: GUARDADA })
     renderSmtp()
@@ -257,12 +268,19 @@ describe('AdminSmtp', () => {
     renderSmtp()
     await screen.findByDisplayValue('mail.axioma-ia.io')
     const disparador = screen.getByRole('button', { name: es.smtpSendTest })
+    // Dialogo captura el foco al montar (previo = document.activeElement):
+    // en un navegador real un clic ya deja el botón enfocado, pero
+    // fireEvent.click no simula esa parte, así que se enfoca a mano (mismo
+    // patrón que Dialogo.test.jsx y AdminUsers.test.jsx).
+    disparador.focus()
     fireEvent.click(disparador)
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: es.smtpCancel }))
     expect(disparador).toHaveFocus()
+    disparador.focus()
     fireEvent.click(disparador)
     fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Escape' })
     expect(disparador).toHaveFocus()
+    disparador.focus()
     fireEvent.click(disparador)
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: es.smtpTestSendButton }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())

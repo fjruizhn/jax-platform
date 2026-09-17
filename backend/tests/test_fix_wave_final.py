@@ -154,22 +154,22 @@ def test_el_502_de_imagen_no_deja_un_pedazo_de_key_AIza_que_cruza_el_corte(monke
     cuerpo = "e" * 190 + " " + KEY + " fin"          # la key empieza en el 191
     assert KEY[:9] in cuerpo[:200]                    # control: el corte cae dentro
     detail = _generar(monkeypatch, _status_error(cuerpo)).detail
-    assert detail.startswith("Image API error 400: ")
-    assert "AIza" not in detail
-    assert len(detail) <= len("Image API error 400: ") + 200
+    assert (detail["code"], detail["status"]) == ("imagen_error_http", 400)
+    assert "AIza" not in detail["motivo"]
+    assert len(detail["motivo"]) <= 200
 
 
 def test_el_502_de_imagen_tapa_la_credencial_conocida_que_cruza_el_corte(monkeypatch):
     cuerpo = "e" * 190 + " " + CRED
     assert CRED[:9] in cuerpo[:200]
-    detail = _generar(monkeypatch, _status_error(cuerpo)).detail
-    assert "sk-FAKE" not in detail
-    assert "***" in detail
+    motivo = _generar(monkeypatch, _status_error(cuerpo)).detail["motivo"]
+    assert "sk-FAKE" not in motivo
+    assert "***" in motivo
 
 
 def test_el_error_generico_de_imagen_redacta_antes_de_recortar(monkeypatch):
     mensaje = "x" * 190 + " " + CRED + " fin"
     detail = _generar(monkeypatch, RuntimeError(mensaje)).detail
-    assert detail.startswith("Error generando imagen: ")
-    assert "sk-FAKE" not in detail
-    assert len(detail) <= len("Error generando imagen: ") + 200
+    assert detail["code"] == "imagen_error"
+    assert "sk-FAKE" not in detail["motivo"]
+    assert len(detail["motivo"]) <= 200
