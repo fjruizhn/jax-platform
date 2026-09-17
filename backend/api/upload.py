@@ -12,7 +12,10 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from adjuntos.errores import AdjuntoRechazado
 from adjuntos.limites import cargar_limites
 from adjuntos.pdf import PdfIlegible, PdfSinTexto, extraer_texto
-from adjuntos.tipos import AdjuntoVacio, TipoNoPermitido, clasificar, nombre_seguro
+from adjuntos.politica import facetas_con_imagen
+from adjuntos.tipos import (AdjuntoVacio, EXTENSIONES_DE_TEXTO, MIME_PDF,
+                             MIMES_DE_IMAGEN, TipoNoPermitido, clasificar,
+                             nombre_seguro)
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 
@@ -62,3 +65,18 @@ async def upload_file(
     return {"tipo": "texto", "origen": "texto", "nombre": nombre, "bytes": len(datos),
             "contenido": texto[: limites.max_chars],
             "recortado": len(texto) > limites.max_chars}
+
+
+@router.get("/adjuntos")
+async def politica_de_adjuntos(user: AuthUser = Depends(get_current_user)):
+    """Lo que el frontend necesita para no adivinar: límites, `accept` del
+    <input> y qué facetas ven imágenes. El servidor sigue validando todo."""
+    limites = cargar_limites()
+    return {
+        "max_bytes": limites.max_bytes,
+        "max_chars": limites.max_chars,
+        "max_por_mensaje": limites.max_por_mensaje,
+        "mimes_de_imagen": list(MIMES_DE_IMAGEN),
+        "accept": [*MIMES_DE_IMAGEN, MIME_PDF, *EXTENSIONES_DE_TEXTO],
+        "facetas_con_imagen": await facetas_con_imagen(),
+    }
