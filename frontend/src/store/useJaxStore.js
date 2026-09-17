@@ -1,16 +1,8 @@
 import { create } from 'zustand'
 import api from '../api/client'
-import es from '../i18n/es.js'
-import en from '../i18n/en.js'
+import { diccionarioActivo } from '../i18n/index.jsx'
 import { EYE_ESTADO_REPOSO } from './eyeRestState'
 import { tokenDeFaceta } from '../tema/tokens'
-
-// Este módulo no es un componente — no puede usar el hook useI18n(). Lee la
-// misma fuente que I18nProvider (localStorage 'jax_lang') para los mensajes
-// que se generan acá (eventos de WS), fuera de cualquier árbol de React.
-function _t() {
-  return localStorage.getItem('jax_lang') === 'en' ? en : es
-}
 
 // A-53 (2026-09-16): el resultado de un comando llega con código cuando no hay
 // texto que mostrar (sin output, fallo o simulación). Lo usan el evento de WS
@@ -315,11 +307,11 @@ export const useJaxStore = create((set, get) => {
 
     if (event_type === 'kill_switch_activated') {
       set({ killSwitchActive: true })
-      get().addToast({ type: 'error', message: _t().killSwitchToast })
+      get().addToast({ type: 'error', message: diccionarioActivo().killSwitchToast })
     }
 
     if (event_type === 'human_gate_requested') {
-      get().addToast({ type: 'warning', message: _t().humanGateRequestedToast(payload.pipeline_id?.slice(0, 8)) })
+      get().addToast({ type: 'warning', message: diccionarioActivo().humanGateRequestedToast(payload.pipeline_id?.slice(0, 8)) })
     }
 
     if (event_type === 'facet_response_completed') {
@@ -343,18 +335,18 @@ export const useJaxStore = create((set, get) => {
       }
 
       if (payload.result || payload.code) {
-        applyResult(contenidoDeComando(_t(), payload))
+        applyResult(contenidoDeComando(diccionarioActivo(), payload))
       } else if (task_id) {
         // resultado completo en archivo — pedir al backend. Los dos
         // argumentos de .then() separan "el fetch falló" (sin resultado)
         // de "el fetch anduvo pero applyResult tiró" (bug real, no debe
         // aplicar "sin resultado" como si fuera la respuesta válida).
         api.get(`/command/${task_id}`).then(
-          ({ data }) => applyResult(contenidoDeComando(_t(), data)),
-          () => applyResult(_t().commandNoResult)
+          ({ data }) => applyResult(contenidoDeComando(diccionarioActivo(), data)),
+          () => applyResult(diccionarioActivo().commandNoResult)
         ).catch((err) => console.error('command result render failed', err))
       } else {
-        applyResult(_t().commandNoResult)
+        applyResult(diccionarioActivo().commandNoResult)
       }
     }
 
@@ -383,7 +375,7 @@ export const useJaxStore = create((set, get) => {
         })
         get().addToast({
           type: 'error',
-          message: _t().pipelineResultsError(pipeline_id?.slice(0, 8)),
+          message: diccionarioActivo().pipelineResultsError(pipeline_id?.slice(0, 8)),
         })
       }
 
@@ -416,7 +408,7 @@ export const useJaxStore = create((set, get) => {
           const completedSteps = allSteps.filter((s) => s.status === 'completed')
           const ts = new Date().toISOString()
 
-          const t = _t()
+          const t = diccionarioActivo()
           const newMessages = completedSteps.map((step) => {
             const header = t.pipelineStepHeader(step.facet, step.capability)
             const body = step.result || t.pipelineNoResult
@@ -478,7 +470,7 @@ export const useJaxStore = create((set, get) => {
         // A-44: un fallo o un completado sin texto (con código) también
         // resuelven; antes solo `completed` con `result` salía de "running".
         if (data.status === 'completed' || data.status === 'failed') {
-          _resolverComando(msg.id, taskId, contenidoDeComando(_t(), data), data.status)
+          _resolverComando(msg.id, taskId, contenidoDeComando(diccionarioActivo(), data), data.status)
         } else {
           stillRunning++
         }
@@ -490,7 +482,7 @@ export const useJaxStore = create((set, get) => {
           // esto, restorePendingTasks() lo recrea como placeholder
           // "verificando estado…" para siempre en cada reload, un zombie
           // que nunca se resuelve. Se resuelve acá y se saca de la lista.
-          _resolverComando(msg.id, taskId, _t().commandNoResult, 'completed')
+          _resolverComando(msg.id, taskId, diccionarioActivo().commandNoResult, 'completed')
         } else {
           stillRunning++ // error transitorio (red, 5xx) — reintentar en el próximo ciclo
         }
@@ -528,7 +520,7 @@ export const useJaxStore = create((set, get) => {
         .map((taskId) => ({
           id: `cmd-${taskId}`,
           facet: 'hyde',
-          content: _t().taskRestoring(taskId.slice(0, 8)),
+          content: diccionarioActivo().taskRestoring(taskId.slice(0, 8)),
           status: 'running',
           timestamp: ts,
         }))
@@ -562,7 +554,7 @@ export const useJaxStore = create((set, get) => {
     try {
       await api.post('/kill-switch')
     } catch {}
-    get().addToast({ type: 'error', message: _t().killSwitchStoppedToast })
+    get().addToast({ type: 'error', message: diccionarioActivo().killSwitchStoppedToast })
   },
 
   loadState: async () => {
@@ -583,46 +575,28 @@ export const useJaxStore = create((set, get) => {
   }
 })
 
-// M5 (revisión de código, 2026-09-14, fix vivo): las etiquetas visibles
-// (KILL SWITCH, DALL-E 3, LAS MANOS DOWN, GATE, Jacobs) venían escritas a
-// mano acá dentro -- hardcoding de i18n, igual que idleLabel antes de pasar
-// a ser parámetro. `labels` sigue el mismo patrón: quien llama (HalEye.jsx)
-// las pasa desde t.eye*; sin el parámetro caen en el mismo texto de
-// siempre, así que una llamada vieja (o un test) que no lo pase no cambia
-// de comportamiento. Son nombres propios/técnicos del ecosistema JAX, no
-// prosa -- i18n/es.js y en.js documentan por qué valen igual en los dos
-// idiomas.
-export function getEyeState(
-  facets, activePipelines, lasManos, killSwitchActive, generatingImage = false,
-  idleLabel = 'reposo', labels = {},
-) {
-  const {
-    killSwitch = 'KILL SWITCH',
-    dalle = 'DALL-E 3',
-    lasManosDown = 'LAS MANOS DOWN',
-    gate = 'GATE',
-    jacobs = 'Jacobs',
-  } = labels
+// A-45 (2026-09-16): las etiquetas del ojo son TODAS requeridas y salen de i18n
+// (HalEye las pasa desde t.eye*). Antes caían a un texto fijo en el código.
+const ETIQUETAS_DEL_OJO = ['reposo', 'killSwitch', 'dalle', 'lasManosDown', 'gate', 'jacobs']
 
-  if (killSwitchActive) return { token: 'peligro', animation: 'none', label: killSwitch }
-
-  if (generatingImage) return { token: 'faceta-imagen', animation: 'pulse-fast', label: dalle }
-
+export function getEyeState(facets, activePipelines, lasManos, killSwitchActive, generatingImage, etiquetas) {
+  for (const clave of ETIQUETAS_DEL_OJO) {
+    if (typeof etiquetas?.[clave] !== 'string') throw new Error(`getEyeState: falta la etiqueta ${clave}`)
+  }
+  if (killSwitchActive) return { token: 'peligro', animation: 'none', label: etiquetas.killSwitch }
+  if (generatingImage) return { token: 'faceta-imagen', animation: 'pulse-fast', label: etiquetas.dalle }
   // Thinking toma prioridad sobre todo — incluso si lasManos está abajo
   const thinking = Object.entries(facets).find(([, f]) => f.status === 'thinking')
   if (thinking) {
     const [name, f] = thinking
-    const anim = name === 'hyde' ? 'pulse-fast' : 'pulse-slow'
-    return { token: f.token, animation: anim, label: name }
+    return { token: f.token, animation: name === 'hyde' ? 'pulse-fast' : 'pulse-slow', label: name }
   }
-
-  if (!lasManos) return { token: 'texto-tenue', animation: 'none', label: lasManosDown }
-
-  const hasGate = Object.values(activePipelines).some(p => p.status === 'waiting_gate')
-  if (hasGate) return { token: 'aviso', animation: 'blink', label: gate }
-
-  const hasRunning = Object.values(activePipelines).some(p => p.status === 'running')
-  if (hasRunning) return { token: 'faceta-jacobs', animation: 'pulse-slow', label: jacobs }
-
-  return { ...EYE_ESTADO_REPOSO, label: idleLabel }
+  if (!lasManos) return { token: 'texto-tenue', animation: 'none', label: etiquetas.lasManosDown }
+  if (Object.values(activePipelines).some((p) => p.status === 'waiting_gate')) {
+    return { token: 'aviso', animation: 'blink', label: etiquetas.gate }
+  }
+  if (Object.values(activePipelines).some((p) => p.status === 'running')) {
+    return { token: 'faceta-jacobs', animation: 'pulse-slow', label: etiquetas.jacobs }
+  }
+  return { ...EYE_ESTADO_REPOSO, label: etiquetas.reposo }
 }

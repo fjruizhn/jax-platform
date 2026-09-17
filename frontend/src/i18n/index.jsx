@@ -13,10 +13,18 @@ export function localeFor(lang) {
   return LOCALES[lang] || LOCALES.es
 }
 
+// Idioma guardado y su diccionario (A-29, 2026-09-16): una sola regla para el
+// proveedor y para el store, que no es un componente y no puede usar el hook.
+export function idiomaGuardado() {
+  return LANGS[localStorage.getItem('jax_lang')] ? localStorage.getItem('jax_lang') : 'es'
+}
+
+export function diccionarioActivo() {
+  return LANGS[idiomaGuardado()]
+}
+
 export function I18nProvider({ children }) {
-  const [lang, setLangState] = useState(
-    () => localStorage.getItem('jax_lang') || 'es'
-  )
+  const [lang, setLangState] = useState(() => idiomaGuardado())
 
   function setLang(l) {
     setLangState(l)

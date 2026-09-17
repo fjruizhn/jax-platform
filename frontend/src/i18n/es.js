@@ -279,19 +279,14 @@ export default {
   adminPanel: 'Administración',
 
   // File attachments
-  attachFile: 'Adjuntar archivo',
   attachTooltip: 'Adjuntar imagen, PDF o texto',
   attachRemove: 'Quitar adjunto',
   attachUploading: 'Subiendo…',
   attachError: 'Error al subir archivo',
-  attachTooLarge: 'Archivo demasiado grande (máx 10MB)',
-  attachTypes: 'Imágenes, PDF, texto, código',
-  attachedFile: (name) => `Adjunto: ${name}`,
   attachReady: '✓ listo',
 
   // Admin module
   adminTitle: 'Administración',
-  adminNav: 'Admin',
   adminDashboard: 'Dashboard',
   adminFacetsModels: 'Facetas & Modelos',
   adminUsers: 'Usuarios',
@@ -303,7 +298,6 @@ export default {
   // Admin dashboard
   adminServicesTitle: 'Estado de Servicios',
   adminStatsTitle: 'Estadísticas de Hoy',
-  adminEventsTitle: 'Últimos Eventos',
   serviceAlive: 'activo',
   serviceDown: 'caído',
   serviceConnected: 'conectado',
@@ -314,7 +308,6 @@ export default {
   statImages: 'Imágenes',
   statUsersActive: 'Usuarios activos',
   statUsersLocked: 'Bloqueados',
-  statApiKeys: (c, t) => `API Keys: ${c}/${t}`,
   statRam: 'RAM',
   // I-1 (revisión final PR 2, 2026-09-14): AdminDashboard.jsx tenía
   // label="API Keys" fijo. "API Keys" es el mismo término en los dos
@@ -323,8 +316,6 @@ export default {
 
   // Admin API keys
   adminKeyProvider: 'Proveedor',
-  adminKeyModel: 'Modelo',
-  adminKeyFacet: 'Faceta',
   adminKeyValue: 'Key',
   adminKeyStatus: 'Estado',
   adminKeyTest: 'Probar',
@@ -344,17 +335,6 @@ export default {
   adminKeySave: 'Guardar',
   adminKeyEnter: 'Ingresá la nueva key para',
   adminKeyLatency: (ms) => `${ms}ms`,
-  adminKeyAddModel: 'Agregar modelo',
-  adminKeyModelProvider: 'Provider ID',
-  adminKeyModelName: 'Nombre del modelo',
-  adminKeyModelAdd: 'Agregar',
-  adminKeyModelDelete: 'Eliminar modelo',
-  adminKeyModelDeleteActive: 'No se puede eliminar el modelo activo',
-  adminKeyModelDeleteConfirmTitle: (name) => `Confirmá la eliminación de "${name}"`,
-  adminKeyModelDeleteConfirmSum: (a, b) => `Resolvé ${a} + ${b} = ? para confirmar`,
-  adminKeyModelDeleteConfirmPlaceholder: 'Resultado',
-  adminKeyModelDeleteConfirmButton: 'Eliminar',
-  adminKeyModelDeleteConfirmWrong: 'Resultado incorrecto',
 
   // Admin — pestañas Bloque D (catálogo de modelos y facetas/bindings)
   adminTabProviders: 'Proveedores y Credenciales',
@@ -387,7 +367,6 @@ export default {
   adminProposalsTitle: 'Cambios propuestos',
   adminProposalsEmpty: 'Sin propuestas pendientes.',
   adminProposalsFacet: 'Faceta',
-  adminProposalsCurrent: 'Modelo actual',
   adminProposalsProposed: 'Modelo propuesto',
   adminProposalsReason: 'Motivo',
   adminProposalsDetail: 'Detalle',
@@ -482,8 +461,6 @@ export default {
   adminUserInactive: 'inactivo',
   adminUserLocked: 'bloqueado',
   adminUserUnlock: 'Desbloquear',
-  adminUserResetPwd: 'Reset pwd',
-  adminUserChangeRole: 'Cambiar rol',
   adminCreateTitle: 'Crear Usuario',
   adminCreatePassword: 'Contraseña temporal',
   adminCreateSubmit: 'Crear',
@@ -526,7 +503,6 @@ export default {
   adminSettingsMaxPipelines: 'Max pipelines simultáneos',
   adminSettingsRetention: 'Retención web-tasks (días)',
   adminSettingsSystemName: 'Nombre del sistema',
-  adminSettingsWsNotif: 'Notificaciones WS',
   adminSettingsDark: 'Oscuro',
   adminSettingsLight: 'Claro',
 
@@ -538,7 +514,6 @@ export default {
   adminCostsTokensOut: 'Tokens salida',
   adminCostsCost: 'Costo USD',
   adminCostsRequests: 'Requests',
-  adminCostsPeriod: 'Período',
   adminCostsDay: 'Hoy',
   adminCostsWeek: 'Semana',
   adminCostsMonth: 'Mes',

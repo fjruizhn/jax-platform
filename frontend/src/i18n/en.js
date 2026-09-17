@@ -276,19 +276,14 @@ export default {
   adminPanel: 'Administration',
 
   // File attachments
-  attachFile: 'Attach file',
   attachTooltip: 'Attach image, PDF or text',
   attachRemove: 'Remove attachment',
   attachUploading: 'Uploading…',
   attachError: 'Error uploading file',
-  attachTooLarge: 'File too large (max 10MB)',
-  attachTypes: 'Images, PDF, text, code',
-  attachedFile: (name) => `Attached: ${name}`,
   attachReady: '✓ ready',
 
   // Admin module
   adminTitle: 'Administration',
-  adminNav: 'Admin',
   adminDashboard: 'Dashboard',
   adminFacetsModels: 'Facets & Models',
   adminUsers: 'Users',
@@ -300,7 +295,6 @@ export default {
   // Admin dashboard
   adminServicesTitle: 'Service Status',
   adminStatsTitle: "Today's Statistics",
-  adminEventsTitle: 'Recent Events',
   serviceAlive: 'online',
   serviceDown: 'offline',
   serviceConnected: 'connected',
@@ -311,7 +305,6 @@ export default {
   statImages: 'Images',
   statUsersActive: 'Active users',
   statUsersLocked: 'Locked',
-  statApiKeys: (c, t) => `API Keys: ${c}/${t}`,
   statRam: 'RAM',
   // I-1 (final review PR 2, 2026-09-14): AdminDashboard.jsx had a fixed
   // label="API Keys". "API Keys" is the same term in both languages
@@ -320,8 +313,6 @@ export default {
 
   // Admin API keys
   adminKeyProvider: 'Provider',
-  adminKeyModel: 'Model',
-  adminKeyFacet: 'Facet',
   adminKeyValue: 'Key',
   adminKeyStatus: 'Status',
   adminKeyTest: 'Test',
@@ -341,17 +332,6 @@ export default {
   adminKeySave: 'Save',
   adminKeyEnter: 'Enter the new key for',
   adminKeyLatency: (ms) => `${ms}ms`,
-  adminKeyAddModel: 'Add model',
-  adminKeyModelProvider: 'Provider ID',
-  adminKeyModelName: 'Model name',
-  adminKeyModelAdd: 'Add',
-  adminKeyModelDelete: 'Delete model',
-  adminKeyModelDeleteActive: "Can't delete the active model",
-  adminKeyModelDeleteConfirmTitle: (name) => `Confirm deletion of "${name}"`,
-  adminKeyModelDeleteConfirmSum: (a, b) => `Solve ${a} + ${b} = ? to confirm`,
-  adminKeyModelDeleteConfirmPlaceholder: 'Result',
-  adminKeyModelDeleteConfirmButton: 'Delete',
-  adminKeyModelDeleteConfirmWrong: 'Wrong result',
 
   // Admin — Bloque D tabs (model catalog and facets/bindings)
   adminTabProviders: 'Providers & Credentials',
@@ -384,7 +364,6 @@ export default {
   adminProposalsTitle: 'Proposed changes',
   adminProposalsEmpty: 'No pending proposals.',
   adminProposalsFacet: 'Facet',
-  adminProposalsCurrent: 'Current model',
   adminProposalsProposed: 'Proposed model',
   adminProposalsReason: 'Reason',
   adminProposalsDetail: 'Detail',
@@ -479,8 +458,6 @@ export default {
   adminUserInactive: 'inactive',
   adminUserLocked: 'locked',
   adminUserUnlock: 'Unlock',
-  adminUserResetPwd: 'Reset pwd',
-  adminUserChangeRole: 'Change role',
   adminCreateTitle: 'Create User',
   adminCreatePassword: 'Temporary password',
   adminCreateSubmit: 'Create',
@@ -523,7 +500,6 @@ export default {
   adminSettingsMaxPipelines: 'Max simultaneous pipelines',
   adminSettingsRetention: 'Web-task retention (days)',
   adminSettingsSystemName: 'System name',
-  adminSettingsWsNotif: 'WS notifications',
   adminSettingsDark: 'Dark',
   adminSettingsLight: 'Light',
 
@@ -535,7 +511,6 @@ export default {
   adminCostsTokensOut: 'Output tokens',
   adminCostsCost: 'Cost USD',
   adminCostsRequests: 'Requests',
-  adminCostsPeriod: 'Period',
   adminCostsDay: 'Today',
   adminCostsWeek: 'Week',
   adminCostsMonth: 'Month',
