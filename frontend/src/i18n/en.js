@@ -79,6 +79,7 @@ export default {
   continuarPipeline: 'Continue',
   continuarTitulo: 'Continue pipeline',
   continuarCargando: 'Loading steps and cost…',
+  continuarError: 'Could not confirm that the pipeline continued; check the panel before retrying.',
   continuarErrorCarga: 'The continuation could not be prepared.',
   continuarPasoReusado: (n, faceta) => `✓ Step ${n} · ${faceta}: ready, reused`,
   continuarPasoACorrer: (n, capability) => `Step ${n} · ${capability}`,

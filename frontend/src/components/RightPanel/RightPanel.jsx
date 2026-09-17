@@ -55,11 +55,13 @@ function RightPanel() {
   const [detenidos, setDetenidos] = useState([])
   const [errorDetenidos, setErrorDetenidos] = useState(false)
   const [aContinuar, setAContinuar] = useState(null)
-  const [recarga, setRecarga] = useState(0)
 
   const pipelines = Object.values(activePipelines)
   // La lista se vuelve a pedir cuando cambia el estado de algún pipeline del
-  // store (termina, se aborta, llega pipeline_continued) o tras continuar.
+  // store (termina, se aborta, llega pipeline_continued). Tras continuar NO se
+  // recarga a mano (adenda Task 10 regla 5, fix round 1 ítem 5): el evento
+  // pipeline_continued cambia la huella y eso ya pide la lista; una recarga
+  // más serían dos GET /pipelines por continuación.
   const huella = pipelines.map((p) => `${p.pipeline_id}:${p.status}`).join('|')
 
   useEffect(() => {
@@ -73,7 +75,10 @@ function RightPanel() {
       })
       .catch(() => { if (vigente) setErrorDetenidos(true) })
     return () => { vigente = false }
-  }, [huella, recarga])
+  }, [huella])
+
+  const cerrarContinuarDe = (pipelineId) => () =>
+    setAContinuar((abierta) => (abierta?.pipeline_id === pipelineId ? null : abierta))
 
   // El store (eventos en vivo) es más nuevo que la lista: uno que ya corre no
   // se ofrece aunque la lista todavía no se haya vuelto a pedir.
@@ -231,8 +236,11 @@ function RightPanel() {
         </div>
       )}
       {aContinuar && (
-        <ContinuarPipelineModal pipeline={aContinuar} onClose={() => setAContinuar(null)}
-          onContinuado={() => setRecarga((n) => n + 1)} />
+        // key por pipeline: otro pipeline es otra ventana, con su estado propio.
+        // El cierre tiene alcance (fix round 1 ítem 1): el onClose de la ventana
+        // de A sólo cierra si la abierta sigue siendo la de A.
+        <ContinuarPipelineModal key={aContinuar.pipeline_id} pipeline={aContinuar}
+          onClose={cerrarContinuarDe(aContinuar.pipeline_id)} />
       )}
     </div>
   )

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -261,5 +261,35 @@ describe('RightPanel -- pipelines detenidos que se pueden continuar (spec 2026-0
     const [boton] = await screen.findAllByRole('button', { name: es.continuarPipeline })
     fireEvent.click(boton)
     expect(await screen.findByRole('dialog', { name: es.continuarTitulo })).toBeInTheDocument()
+  })
+})
+
+// Fix round 1 Task 10 ítem 5 (adenda regla 5): tras continuar, el panel se
+// refresca por el evento pipeline_continued del store, no con una recarga
+// manual además (serían dos GET /pipelines).
+describe('RightPanel -- refresco tras continuar', () => {
+  it('continuar pide la lista una sola vez, cuando llega el evento', async () => {
+    const LISTA = { pipelines: [{ pipeline_id: 'p-ab', name: 'leyes', status: 'aborted', causa: { tipo: 'expirado' } }] }
+    api.get.mockImplementation((url) => Promise.resolve({ data: url === '/pipelines' ? LISTA
+      : url === '/motors/capabilities' ? { capabilities: [], motors: [] }
+      : { pipeline: {}, steps: [{ step_index: 0, facet: 'hipatia', capability: 'research', depends_on: [], status: 'failed' }] } }))
+    api.post.mockImplementation((url) => Promise.resolve({ data: url.endsWith('/preflight')
+      ? { continuable: true, motivo: null, pasos_a_correr: [0], pasos_reusados: [], veredicto: { ok: true, violaciones: [], costo_max_usd: '0.01', umbral_usd: '0.50', requiere_confirmacion: false, pasos_costo: [] } }
+      : { pipeline_id: 'p-ab', status: 'running' } }))
+    const pedidosDeLista = () => api.get.mock.calls.filter(([u]) => u === '/pipelines').length
+    renderPanel()
+    fireEvent.click(await screen.findByRole('button', { name: es.continuarPipeline }))
+    const dialogo = await screen.findByRole('dialog', { name: es.continuarTitulo })
+    const continuar = within(dialogo).getByRole('button', { name: es.continuarBoton })
+    await waitFor(() => expect(continuar).not.toBeDisabled())
+    const antes = pedidosDeLista()
+    fireEvent.click(continuar)
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: es.continuarTitulo })).not.toBeInTheDocument())
+    await act(async () => {})
+    expect(pedidosDeLista()).toBe(antes)
+    act(() => useJaxStore.setState({ activePipelines: { ...EN_ESPERA, 'p-ab': { pipeline_id: 'p-ab', name: 'leyes', status: 'running', steps: [] } } }))
+    await waitFor(() => expect(pedidosDeLista()).toBe(antes + 1))
+    await act(async () => {})
+    expect(pedidosDeLista()).toBe(antes + 1)
   })
 })

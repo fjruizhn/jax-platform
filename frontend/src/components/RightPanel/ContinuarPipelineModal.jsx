@@ -35,6 +35,9 @@ export default function ContinuarPipelineModal({ pipeline, onClose, onContinuado
   const [capabilities, setCapabilities] = useState(null)
   const [errorCarga, setErrorCarga] = useState(false)
   const [reasignar, setReasignar] = useState({})
+  // {clave, data}: el pre-vuelo junto con la reasignación que lo produjo. Sólo
+  // vale mientras esa clave sea la vigente (fix round 1 ítem 4): en el render
+  // que sigue a elegir otra faceta, el veredicto viejo ya no habilita Continuar.
   const [estado, setEstado] = useState(null)
   const [errorPrevio, setErrorPrevio] = useState(null)
   // Mientras se recalcula tras una reasignación, la lista queda a la vista
@@ -45,7 +48,7 @@ export default function ContinuarPipelineModal({ pipeline, onClose, onContinuado
   const pedido = useRef(0)
   const {
     pendiente, abrirConfirmacion, cerrarConfirmacion, enviando, enviandoRef,
-    bloqueado, siLibre, conGuardia, botonPrincipalRef,
+    bloqueado, cerrable, siLibre, conGuardia, botonPrincipalRef,
   } = useConfirmacionDeCosto()
 
   useEffect(() => {
@@ -68,6 +71,7 @@ export default function ContinuarPipelineModal({ pipeline, onClose, onContinuado
   // forma que se probó: al cambiar una faceta deja de valer.
   const claveReasignar = JSON.stringify(reasignar)
   useEffect(() => {
+    const clave = claveReasignar
     const numero = ++pedido.current
     setCalculando(true)
     setErrorPrevio(null)
@@ -76,7 +80,7 @@ export default function ContinuarPipelineModal({ pipeline, onClose, onContinuado
     api.post(`/pipelines/${id}/continue/preflight`, { reasignar })
       .then(({ data }) => {
         if (numero !== pedido.current) return
-        setEstado(data && typeof data === 'object' ? data : null)
+        setEstado({ clave, data: data && typeof data === 'object' ? data : null })
         setCalculando(false)
       })
       .catch((err) => {
@@ -93,8 +97,8 @@ export default function ContinuarPipelineModal({ pipeline, onClose, onContinuado
   }))
   const cleanroom = cleanroomViolationsDePasos(vigentes)
   // El estado mostrado es el de la reasignación vigente sólo si ya llegó y no falló.
-  const estadoVigente = !calculando && !errorPrevio ? estado : null
-  const reusados = new Set(Array.isArray(estado?.pasos_reusados) ? estado.pasos_reusados : [])
+  const estadoVigente = !calculando && !errorPrevio && estado?.clave === claveReasignar ? estado.data : null
+  const reusados = new Set(Array.isArray(estado?.data?.pasos_reusados) ? estado.data.pasos_reusados : [])
   const veredicto = estadoVigente?.veredicto && typeof estadoVigente.veredicto === 'object' ? estadoVigente.veredicto : null
   const violacionesPrevio = veredicto && !veredicto.ok && Array.isArray(veredicto.violaciones) ? veredicto.violaciones : []
   const violacionesVisibles = violaciones.length > 0 ? violaciones : violacionesPrevio
@@ -103,7 +107,6 @@ export default function ContinuarPipelineModal({ pipeline, onClose, onContinuado
   const continuarDeshabilitado = enviando || !listo || !estadoVigente?.continuable || !veredicto?.ok || cleanroom.length > 0
 
   const elegir = siLibre((paso, faceta) => {
-    if (enviandoRef.current) return
     setReasignar((r) => {
       const siguiente = { ...r }
       if (faceta === paso.facet) delete siguiente[String(paso.step_index)]
@@ -126,10 +129,12 @@ export default function ContinuarPipelineModal({ pipeline, onClose, onContinuado
       try {
         const cuerpo = costo == null ? { reasignar: cuerpoReasignar } : { reasignar: cuerpoReasignar, costo_confirmado_usd: costo }
         const { data } = await api.post(`/pipelines/${id}/continue`, cuerpo)
-        onContinuado(data)
+        onContinuado?.(data)
         onClose()
       } catch (err) {
-        const r = clasificarRechazo(t, err, previo, t.continuarErrorCarga)
+        // Genérico propio (fix round 1 ítem 2): tras un fallo de red o un
+        // timeout el pipeline pudo haber continuado igual.
+        const r = clasificarRechazo(t, err, previo, t.continuarError)
         if (r.tipo === 'costo') {
           abrirConfirmacion({ reasignar: cuerpoReasignar, veredicto: r.veredicto, aviso: r.aviso })
           return
@@ -141,13 +146,17 @@ export default function ContinuarPipelineModal({ pipeline, onClose, onContinuado
     })
   }
 
-  function alPulsarContinuar() {
-    if (bloqueado || enviandoRef.current || continuarDeshabilitado) return
+  // Sin guarda propia (fix round 1 ítem 3): el botón deshabilitado
+  // (continuarDeshabilitado, con el veredicto atado a su reasignación) cubre
+  // "no se puede continuar", conGuardia el doble clic y siLibre la
+  // confirmación abierta (un clic en el padre no la reemplaza por el veredicto
+  // viejo). Cada uno tiene su test que falla sin él.
+  const alPulsarContinuar = siLibre(() => {
     setViolaciones([])
     setErrorEnvio(null)
     if (veredicto.requiere_confirmacion) abrirConfirmacion({ reasignar, veredicto, aviso: null })
     else continuar(reasignar, null, null)
-  }
+  })
 
   function confirmarCosto() {
     if (!pendiente) return
@@ -156,7 +165,7 @@ export default function ContinuarPipelineModal({ pipeline, onClose, onContinuado
 
   return (
     <Dialogo idTitulo="continuar-pipeline-titulo" titulo={t.continuarTitulo} onCerrar={onClose}
-      cerrable={!bloqueado} className="max-w-lg">
+      cerrable={cerrable} className="max-w-lg">
       <div inert={bloqueado}>
         <p className="text-xs text-texto-tenue -mt-3 mb-4 truncate">{pipeline.name}</p>
 
@@ -219,8 +228,8 @@ export default function ContinuarPipelineModal({ pipeline, onClose, onContinuado
         {errorEnvio && <AlertaError className="mb-2 text-xs">{errorEnvio}</AlertaError>}
 
         <div className="flex gap-2">
-          <button type="button" onClick={siLibre(onClose)}
-            className="flex-1 py-2 rounded-lg text-xs font-semibold bg-hundido text-texto-suave hover:text-texto border border-borde transition-colors">
+          <button type="button" onClick={siLibre(onClose)} disabled={!cerrable}
+            className="flex-1 py-2 rounded-lg text-xs font-semibold bg-hundido text-texto-suave hover:text-texto border border-borde transition-colors disabled:opacity-40">
             {t.cancel}
           </button>
           <button type="button" ref={botonPrincipalRef} onClick={alPulsarContinuar} disabled={continuarDeshabilitado}

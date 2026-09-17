@@ -10,6 +10,12 @@ import { useEffect, useRef, useState } from 'react'
 //   queda congelado (fix round 1 Task 9). Dialogo sólo vuelve inert a #root y
 //   los dos diálogos son portales hermanos, así que el padre lleva `inert` en
 //   su contenido y cada acción se niega además en JS (jsdom ignora inert).
+//   `siLibre` también niega mientras un pedido está en vuelo.
+// - `cerrable`: false con la confirmación abierta O con un pedido en vuelo
+//   (fix round 1 Task 10). Un pre-vuelo, una creación o un continue que ya
+//   salió se completa igual en el servidor: cerrar la ventana no lo frena y el
+//   cierre tardío del éxito caería sobre lo que se abrió después. El padre pasa
+//   `cerrable` a Dialogo y `disabled={!cerrable}` a su Cancelar.
 // - `conGuardia(accion)`: guardia SÍNCRONA contra el doble clic (adenda Task 9
 //   ítem 5). `enviando` deshabilita el botón recién en el próximo render; dos
 //   clics seguidos llegan antes y mandarían dos pedidos.
@@ -32,7 +38,8 @@ export function useConfirmacionDeCosto() {
   }, [pendiente])
 
   const bloqueado = pendiente !== null
-  const siLibre = (fn) => (...args) => { if (!bloqueado) fn(...args) }
+  const cerrable = !bloqueado && !enviando
+  const siLibre = (fn) => (...args) => { if (!bloqueado && !enviandoRef.current) fn(...args) }
 
   // Corre `accion` si no hay otra en curso; el estado `enviando` vuelve a
   // false pase lo que pase (try/finally).
@@ -55,6 +62,7 @@ export function useConfirmacionDeCosto() {
     enviando,
     enviandoRef,
     bloqueado,
+    cerrable,
     siLibre,
     conGuardia,
     botonPrincipalRef,

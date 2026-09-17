@@ -130,7 +130,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   // vuelta a Planificar y ejecutar.
   const {
     pendiente, abrirConfirmacion, cerrarConfirmacion, enviando: submitting, enviandoRef,
-    bloqueado, siLibre, conGuardia, botonPrincipalRef: botonEnviarRef,
+    bloqueado, cerrable, siLibre, conGuardia, botonPrincipalRef: botonEnviarRef,
   } = useConfirmacionDeCosto()
 
   useEffect(() => {
@@ -261,7 +261,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   return (
     <Dialogo idTitulo="pipeline-modal-titulo" titulo={t.newPipelineTitle}
       claseTitulo="text-sm font-bold text-texto uppercase tracking-widest" onCerrar={onClose}
-      cerrable={!bloqueado}>
+      cerrable={cerrable}>
       <div inert={bloqueado}>
       <p className="text-xs text-texto-tenue -mt-3 mb-4 truncate">
         {t.objectiveLabel}: {objective}
@@ -439,7 +439,8 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
         <div className="flex gap-2">
           <button
             onClick={siLibre(onClose)}
-            className="flex-1 py-2 rounded-lg text-xs font-semibold bg-hundido text-texto-suave hover:text-texto border border-borde transition-colors"
+            disabled={!cerrable}
+            className="flex-1 py-2 rounded-lg text-xs font-semibold bg-hundido text-texto-suave hover:text-texto border border-borde transition-colors disabled:opacity-40"
           >
             {t.cancel}
           </button>

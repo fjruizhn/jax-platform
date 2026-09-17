@@ -696,4 +696,26 @@ describe('PipelineModal -- pre-vuelo y confirmación de costo', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(es.errorPipeline)
     expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled()
   })
+
+  // Fix round 1 Task 10 ítem 1: mientras el pre-vuelo o la creación están en
+  // vuelo (sin confirmación), ni Cancelar ni Escape cierran: el servidor crearía
+  // el pipeline igual y el cierre tardío no tiene a quién pertenecer.
+  for (const [nombre, enVuelo] of [
+    ['el pre-vuelo', () => { api.post.mockReturnValue(new Promise(() => {})); return vi.fn(() => Promise.resolve()) }],
+    ['la creación', () => vi.fn(() => new Promise(() => {}))],
+  ]) {
+    it(`con ${nombre} en vuelo, Cancelar está deshabilitado y ni Cancelar ni Escape cierran`, async () => {
+      const onSubmit = enVuelo()
+      const onClose = vi.fn()
+      await listo({ onSubmit, onClose })
+      fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+      const cancelar = screen.getByRole('button', { name: es.cancel })
+      await waitFor(() => expect(cancelar).toBeDisabled())
+      fireEvent.click(cancelar)
+      await act(async () => { cancelar.click() })
+      fireEvent.keyDown(document, { key: 'Escape' })
+      expect(onClose).not.toHaveBeenCalled()
+      expect(screen.getByRole('dialog', { name: es.newPipelineTitle })).toBeInTheDocument()
+    })
+  }
 })

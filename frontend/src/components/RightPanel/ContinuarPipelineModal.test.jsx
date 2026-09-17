@@ -402,3 +402,66 @@ describe('ContinuarPipelineModal -- diálogo anidado', () => {
     })
   }
 })
+
+describe('ContinuarPipelineModal -- fix round 1', () => {
+  // Ítem 1: un continue sin confirmación ya salió; cerrar la ventana no lo frena.
+  it('con continue en vuelo sin confirmación, Cancelar está deshabilitado y ni Cancelar ni Escape cierran', async () => {
+    api.post.mockImplementation((url) => (esPrevio(url) ? Promise.resolve({ data: CONTINUABLE }) : new Promise(() => {})))
+    const { onClose } = await listo()
+    fireEvent.click(botonContinuar())
+    const cancelar = screen.getByRole('button', { name: es.cancel })
+    await waitFor(() => expect(cancelar).toBeDisabled())
+    await act(async () => { cancelar.click() })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: es.continuarTitulo })).toBeInTheDocument()
+  })
+
+  // Ítem 2: tras un fallo de red el pipeline pudo haber continuado igual.
+  it('si continue falla por red, dice que revises el panel antes de reintentar', async () => {
+    api.post.mockImplementation((url) => (esPrevio(url) ? Promise.resolve({ data: CONTINUABLE }) : Promise.reject(new Error('timeout'))))
+    await listo()
+    fireEvent.click(botonContinuar())
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.continuarError)
+    expect(screen.getByRole('alert')).not.toHaveTextContent(es.continuarErrorCarga)
+  })
+
+  // Ítems 3 y 4: el veredicto a la vista es de la reasignación que lo produjo.
+  // Cambiar una faceta y pulsar Continuar en el mismo tick (antes de que React
+  // vuelva a renderizar) no continúa con el veredicto de la faceta anterior.
+  it('cambiar una faceta y pulsar Continuar enseguida no manda continue', async () => {
+    api.post.mockImplementation((url, cuerpo) => (esPrevio(url)
+      ? (Object.keys(cuerpo.reasignar).length ? new Promise(() => {}) : Promise.resolve({ data: CONTINUABLE }))
+      : Promise.resolve({ data: CONTINUADO })))
+    await listo()
+    const selector = selectDe(5, 'generate')
+    const boton = botonContinuar()
+    await act(async () => {
+      fireEvent.change(selector, { target: { value: 'ada' } })
+      boton.click()
+    })
+    expect(llamadasA(CONTINUAR)).toHaveLength(0)
+    expect(botonContinuar()).toBeDisabled()
+  })
+
+  // Ítem 3: siLibre en Continuar. Con la confirmación reabierta con un costo
+  // nuevo, un clic en el padre (jsdom no respeta inert) no la reemplaza por el
+  // veredicto viejo del pre-vuelo.
+  it('con la confirmación reabierta, Continuar del padre no vuelve al costo viejo', async () => {
+    const rechazo = { response: { status: 409, data: { detail: {
+      code: 'costo_supera_lo_aceptado', costo_max_usd: '0.90', pasos_costo: [],
+    } } } }
+    api.post.mockImplementation((url) => (esPrevio(url) ? Promise.resolve({ data: CARO }) : Promise.reject(rechazo)))
+    await listo()
+    fireEvent.click(botonContinuar())
+    let dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.confirmarCostoBoton }))
+    dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+    await waitFor(() => expect(dialogo).toHaveTextContent(usd('0.90')))
+    const padre = screen.getByRole('dialog', { name: es.continuarTitulo })
+    await act(async () => { within(padre).getByRole('button', { name: es.continuarBoton }).click() })
+    dialogo = screen.getByRole('dialog', { name: es.confirmarCostoTitulo })
+    expect(dialogo).toHaveTextContent(usd('0.90'))
+    expect(within(dialogo).getByRole('alert')).toHaveTextContent(es.erroresMesa.costo_supera_lo_aceptado({}))
+  })
+})
