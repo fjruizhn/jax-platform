@@ -11,6 +11,7 @@ Puros: llaman a los handlers directo sobre un tmp_path."""
 import asyncio
 import base64
 import inspect
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -41,6 +42,12 @@ def _error(corutina) -> HTTPException:
     raise AssertionError("se esperaba HTTPException")
 
 
+def _leer(ruta) -> dict:
+    # Task 15 R12b: el handler devuelve el JSON ya armado en bytes; el cuerpo
+    # HTTP es el mismo de antes.
+    return json.loads(asyncio.run(repo.get_file(path=ruta, user=ADMIN)).body)
+
+
 def test_leer_una_carpeta_hermana_que_empieza_igual_es_400(raiz):
     e = _error(repo.get_file(path="documents/../../repo-x/secreto.txt", user=ADMIN))
     assert (e.status_code, e.detail) == (400, "ruta_invalida")
@@ -68,7 +75,7 @@ def test_archivo_inexistente_es_404(raiz):
 ])
 def test_el_mime_de_la_imagen_es_el_real(raiz, nombre, mime):
     (raiz / "images" / nombre).write_bytes(b"\x00\x01")
-    datos = asyncio.run(repo.get_file(path=f"images/{nombre}", user=ADMIN))
+    datos = _leer(f"images/{nombre}")
     assert datos["type"] == "image"
     assert datos["base64"] == f"data:{mime};base64,{base64.b64encode(b'\x00\x01').decode()}"
 
@@ -76,9 +83,9 @@ def test_el_mime_de_la_imagen_es_el_real(raiz, nombre, mime):
 def test_markdown_y_texto_se_leen_igual_que_antes(raiz):
     (raiz / "documents" / "nota.md").write_text("# hola")
     (raiz / "documents" / "nota.txt").write_text("hola")
-    assert asyncio.run(repo.get_file(path="documents/nota.md", user=ADMIN)) == {
+    assert _leer("documents/nota.md") == {
         "name": "nota.md", "type": "markdown", "content": "# hola"}
-    assert asyncio.run(repo.get_file(path="documents/nota.txt", user=ADMIN))["type"] == "text"
+    assert _leer("documents/nota.txt")["type"] == "text"
 
 
 def test_borrar_un_archivo_propio_funciona(raiz):

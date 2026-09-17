@@ -1,11 +1,14 @@
 import asyncio
-import base64
+import binascii
+import json
 import mimetypes
 import os
+import weakref
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
@@ -54,17 +57,51 @@ def _listar() -> dict:
     return {"folders": result}
 
 
-def _leer(destino: Path) -> dict:
+def _json(valor) -> bytes:
+    # Igual que el JSONResponse de FastAPI: el contrato del cuerpo no cambia.
+    return json.dumps(valor, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+# Multiplo de 3: cada trozo codifica sin relleno y se concatena tal cual.
+_TROZO_B64 = 3 * 64 * 1024
+
+
+def _leer(destino: Path) -> bytes:
+    """El cuerpo JSON YA ARMADO, en el hilo (Task 15 R12b, 2026-09-16): antes
+    se devolvia un dict y FastAPI serializaba 2,7 MB en el loop. El base64 va
+    en trozos para soltar el GIL entre uno y otro."""
+    nombre = _json(destino.name)
     if destino.suffix.lower() in IMAGENES:
         mime = mimetypes.guess_type(destino.name)[0]
-        b64 = base64.b64encode(destino.read_bytes()).decode()
-        return {"name": destino.name, "type": "image", "base64": f"data:{mime};base64,{b64}"}
+        datos = destino.read_bytes()
+        b64 = b"".join(binascii.b2a_base64(datos[i:i + _TROZO_B64], newline=False)
+                       for i in range(0, len(datos), _TROZO_B64))
+        prefijo = _json(f"data:{mime};base64,")[:-1]  # sin la comilla de cierre
+        return b'{"name":' + nombre + b',"type":"image","base64":' + prefijo + b64 + b'"}'
     contenido = destino.read_text(encoding="utf-8", errors="replace")
     tipo = "markdown" if destino.suffix.lower() == ".md" else "text"
-    return {"name": destino.name, "type": tipo, "content": contenido}
+    return _json({"name": destino.name, "type": tipo, "content": contenido})
 
 
-# Disco en un hilo (LAS CUATRO, async): un archivo grande no congela el loop.
+# Task 15 R12b (2026-09-16): de a UNA lectura por loop. La carga I midio que
+# 25 hilos leyendo y codificando un png de 2 MB hacen convoy con el loop por el
+# GIL (p95 de /api/health 70-90 ms, reposo 0,6); con cupo 1 quedo en 2,7-3,9x
+# el reposo y el endpoint rindio el doble (con cupo 2: 5,6-7,5x; con 4: 16-17x).
+# Un Semaphore por loop: uno de modulo queda atado al primer loop que lo
+# disputa. Sin invalidacion: vive y muere con su loop (WeakKeyDictionary).
+_LECTURAS_SIMULTANEAS = 1
+_cupos: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+
+
+def _cupo() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    cupo = _cupos.get(loop)
+    if cupo is None:
+        cupo = _cupos[loop] = asyncio.Semaphore(_LECTURAS_SIMULTANEAS)
+    return cupo
+
+
+# Disco en un hilo (LAS CUATRO, async).
 @router.get("/repo")
 async def list_repo(user: AuthUser = Depends(require_superadmin)):
     return await asyncio.to_thread(_listar)
@@ -72,8 +109,10 @@ async def list_repo(user: AuthUser = Depends(require_superadmin)):
 
 @router.get("/repo/file")
 async def get_file(path: str = Query(...), user: AuthUser = Depends(require_superadmin)):
-    destino = await asyncio.to_thread(_resolve, path)
-    return await asyncio.to_thread(_leer, destino)
+    destino = await asyncio.to_thread(_resolve, path)  # fuera del cupo: un 400/404 no hace fila
+    async with _cupo():
+        cuerpo = await asyncio.to_thread(_leer, destino)
+    return Response(cuerpo, media_type="application/json")
 
 
 @router.delete("/repo/file")
