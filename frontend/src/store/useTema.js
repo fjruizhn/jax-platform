@@ -2,33 +2,14 @@ import { create } from 'zustand'
 import {
   CLAVE_ELECCION, CLAVE_PREDETERMINADO, esTema, temaInicial, aplicarTema,
 } from '../tema/aplicarTema'
+import { leer, escribir } from './almacenamiento'
 
 // Tema de la app (spec 2026-09-14-tema-tokens §5). Store y no useState: lo
 // usan apariencia/sincronizarApariencia.js (el predeterminado al montar) y
 // BarraUsuario (el interruptor), y dos estados locales se desalinearían.
 // Misma interfaz que el useTheme de antes ({ theme, toggleTheme }) más
-// `predeterminado`.
-// M-4 (revisión final del PR 1, 2026-09-14): con el almacenamiento bloqueado
-// (Safari con cookies bloqueadas, iframe con sandbox), localStorage.getItem/
-// setItem lanzan SecurityError. `leer`/`escribir` son fail-soft: si el
-// almacenamiento no responde, el tema sigue funcionando en memoria para esta
-// carga (no hay pantalla en blanco), simplemente no persiste.
-function leer(clave) {
-  try {
-    return localStorage.getItem(clave)
-  } catch {
-    return null
-  }
-}
-
-function escribir(clave, valor) {
-  try {
-    localStorage.setItem(clave, valor)
-  } catch {
-    // fail-soft: sin almacenamiento, el cambio de tema sigue en memoria
-  }
-}
-
+// `predeterminado`. `leer`/`escribir` (fail-soft en localStorage, ver
+// almacenamiento.js) son compartidas con useApariencia.js.
 function predeterminadoGuardado() {
   const v = leer(CLAVE_PREDETERMINADO)
   return esTema(v) ? v : null

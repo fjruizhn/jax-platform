@@ -1,29 +1,15 @@
 import { create } from 'zustand'
 import { CLAVE_IDIOMA_PREDETERMINADO, esIdioma } from '../i18n/idioma'
+import { leer, escribir } from './almacenamiento'
 
 // Nombre del sistema e idioma predeterminado (frente C, 2026-09-16), desde
 // GET /apariencia (apariencia/sincronizarApariencia.js). Sin import de
 // api/client a propósito: I18nProvider usa este store y lo renderizan casi
 // todos los tests. El último valor conocido se guarda en este navegador para
-// titular la pestaña antes de la respuesta; el almacenamiento es fail-soft
-// (Safari con cookies bloqueadas, iframe con sandbox), como useTema.
+// titular la pestaña antes de la respuesta; `leer`/`escribir` (fail-soft en
+// localStorage: Safari con cookies bloqueadas, iframe con sandbox) están en
+// almacenamiento.js, compartidas con useTema.js.
 export const CLAVE_NOMBRE = 'jax_system_name'
-
-function leer(clave) {
-  try {
-    return localStorage.getItem(clave)
-  } catch {
-    return null
-  }
-}
-
-function escribir(clave, valor) {
-  try {
-    localStorage.setItem(clave, valor)
-  } catch {
-    // fail-soft: sin almacenamiento, el valor vive en memoria esta carga
-  }
-}
 
 export function esNombre(valor) {
   return typeof valor === 'string' && valor.trim() !== ''
