@@ -135,6 +135,12 @@ _pool: ProcessPoolExecutor | None = None
 # producción un proceso corre el lifespan una sola vez.
 _cerrado = False
 
+# Precalentados lanzados en segundo plano por `_reciclar` (RD3, minor de
+# RD1). asyncio guarda solo una referencia débil a cada tarea: sin esta
+# referencia fuerte, una tarea puede desaparecer a mitad sin aviso. Cada una
+# se quita sola al terminar (done-callback).
+_tareas_de_precalentado: set = set()
+
 # Un asyncio.Lock por event loop (no uno solo a nivel de módulo): desde
 # Python 3.10 el Lock no exige un loop corriendo al crearse, pero SÍ se ata
 # al primer loop donde se usa y explota si un loop DISTINTO lo vuelve a usar
@@ -210,8 +216,11 @@ async def precalentar_pool() -> None:
         return
     tamano = limites.cargar_procesos_de_pdf()
     loop = asyncio.get_running_loop()
-    futuros = [loop.run_in_executor(pool, _precalentar) for _ in range(tamano)]
     try:
+        # El submit va DENTRO del try (RD3, minor de RD1): run_in_executor
+        # llama a pool.submit sincrónicamente y sobre un pool que se cerró o
+        # rompió entre medio lanza RuntimeError/BrokenProcessPool ahí mismo.
+        futuros = [loop.run_in_executor(pool, _precalentar) for _ in range(tamano)]
         await asyncio.wait_for(asyncio.gather(*futuros), timeout=10)
     except TimeoutError:
         logger.warning(
@@ -299,8 +308,10 @@ async def _reciclar(pool_sospechoso: ProcessPoolExecutor) -> None:
     fail-closed, ver item 4.
 
     Si esta tarea se cancela MIENTRAS espera `_matar_pool` (ronda de
-    corrección 2, item 3), `crear_pool()` nunca corre y `_pool` queda en
-    `None` -- deliberado, sin `asyncio.shield`: la detección de
+    corrección 2, item 3), ni `_pool = None` ni `crear_pool()` llegan a
+    correr: `_pool` SIGUE apuntando al pool ya matado (corregido en RD3: este
+    docstring decía que quedaba en `None`). Deliberado, sin `asyncio.shield`:
+    ese pool está cerrado, así que `_esta_roto_o_cerrado` lo detecta y
     `_pool_actual` (arriba) se autocura sola en la SIGUIENTE llamada,
     sin necesitar que ESTA tarea cancelada termine su trabajo (ver
     test_cancelar_mientras_reciclar_espera_matar_pool_se_autocura)."""
@@ -319,7 +330,9 @@ async def _reciclar(pool_sospechoso: ProcessPoolExecutor) -> None:
     # extracción llega antes de que termine, paga el costo de spawn que el
     # precalentado no llegó a adelantar -- ni mejor ni peor que sin
     # precalentado, nunca una regresión.
-    asyncio.create_task(precalentar_pool())
+    tarea = asyncio.create_task(precalentar_pool())
+    _tareas_de_precalentado.add(tarea)
+    tarea.add_done_callback(_tareas_de_precalentado.discard)
 
 
 async def extraer_texto_en_pool(

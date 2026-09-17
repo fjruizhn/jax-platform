@@ -336,6 +336,42 @@ def test_precalentar_pool_sin_pool_no_falla():
     asyncio.run(pdf_pool.precalentar_pool())
 
 
+def test_precalentar_un_pool_ya_cerrado_no_revienta(monkeypatch):
+    # RD3 (minor diferido de RD1): el submit de precalentar_pool estaba FUERA
+    # del try. Sobre un pool cerrado, run_in_executor lanza RuntimeError de
+    # forma sincrónica; en la tarea de fondo de _reciclar eso era un "Task
+    # exception was never retrieved".
+    pool = pdf_pool.crear_pool()
+    pool.shutdown(wait=True)
+    asyncio.run(pdf_pool.precalentar_pool())
+
+
+def test_el_precalentado_de_fondo_queda_referenciado_hasta_terminar(monkeypatch):
+    # asyncio guarda solo una referencia débil a una tarea: sin una fuerte,
+    # el precalentado de _reciclar puede desaparecer a mitad sin aviso.
+    monkeypatch.setattr(pdf_pool, "extraer_texto", fixtures.dormir)
+    termina = []
+
+    async def precalentar_lento():
+        await asyncio.sleep(0.2)
+        termina.append(True)
+
+    monkeypatch.setattr(pdf_pool, "precalentar_pool", precalentar_lento)
+
+    async def escenario():
+        with pytest.raises(PdfIlegible):
+            await pdf_pool.extraer_texto_en_pool(b"x", max_paginas=20, max_chars=8000)
+        vivas = set(pdf_pool._tareas_de_precalentado)
+        assert len(vivas) == 1
+        await asyncio.gather(*vivas)
+        await asyncio.sleep(0)
+        return vivas
+
+    vivas = asyncio.run(escenario())
+    assert termina == [True]
+    assert not (vivas & pdf_pool._tareas_de_precalentado)
+
+
 def test_cerrar_pool_sin_pool_creado_no_falla():
     asyncio.run(pdf_pool.cerrar_pool())
 
@@ -518,8 +554,6 @@ def test_reciclar_no_bloquea_el_lock_durante_el_precalentado(monkeypatch):
     # arriba pasa "gratis" (no hay nada que bloquee) sin probar nada -- por
     # eso hace falta confirmar que SÍ se disparó.
     assert llamadas, "_reciclar nunca llamó a precalentar_pool tras recrear el pool"
-
-    asyncio.run(escenario())
 
 
 def test_lifespan_crea_y_cierra_el_pool(monkeypatch):
