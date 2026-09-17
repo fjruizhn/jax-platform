@@ -46,6 +46,7 @@ esa es la medición que obliga a indexar por usuario.
 """
 import asyncio
 import logging
+import math
 import os
 import re
 import shutil
@@ -78,6 +79,46 @@ DISCO_LIBRE_MIN = 1024 ** 3
 DISCO_LIBRE_MAX = 1024 ** 4
 
 _ENTERO = re.compile(r"[1-9][0-9]{0,15}")
+
+
+# Plazo del commit (RD7 fix round, Ruling R29). El commit escribe en un hilo
+# que no se puede interrumpir: si el disco se cuelga (EIO, almacenamiento
+# trabado), esperar sin tope retenía el candado del usuario para siempre y ese
+# usuario no volvía a subir hasta reiniciar. Lo más pesado del commit es el
+# fsync de la imagen entera (<= JAX_ADJUNTO_MAX_BYTES) más el sidecar y el
+# fsync del directorio. Plazo = tope por archivo a 256 KiB/s (un disco
+# degradado: un HDD sano escribe >= 100 MiB/s, uno en reintentos de EIO puede
+# bajar a KB/s), con piso de 60 s para cubrir la cola de fsync cuando muchas
+# subidas confirman a la vez (RD5: 14 GB escritos en 30 s). Con el tope de
+# producción (10 MiB) da 60 s. Sin variable nueva: se deriva de un límite que
+# ya existe y de una cota física declarada acá.
+PLAZO_DE_ESCRITURA_PISO_SEGUNDOS = 60
+DISCO_LENTO_BYTES_POR_SEGUNDO = 256 * 1024
+
+
+def plazo_de_escritura_segundos() -> float:
+    return max(PLAZO_DE_ESCRITURA_PISO_SEGUNDOS,
+               math.ceil(cargar_limites().max_bytes / DISCO_LENTO_BYTES_POR_SEGUNDO))
+
+
+class EscrituraSinTerminar(AdjuntoRechazado):
+    """El commit no terminó dentro del plazo: 503, el cliente reintenta."""
+
+    def __init__(self):
+        super().__init__(503, "adjuntos_reintentar")
+
+
+def _registrar_escritura_tardia(escritura) -> None:
+    """Callback de la escritura abandonada por plazo: si al final falla, se
+    loguea el tipo (y la excepción queda recuperada); si termina bien, el
+    adjunto existe sin que nadie tenga su id y lo borra el limpiador al vencer."""
+    if escritura.cancelled():
+        return
+    error = escritura.exception()
+    if error is not None:
+        logger.error("adjuntos: la escritura abandonada por plazo terminó con error (%s)", type(error).__name__)
+    else:
+        logger.warning("adjuntos: la escritura abandonada por plazo terminó tarde; el adjunto vence por TTL")
 
 
 class CuotaExcedida(AdjuntoRechazado):
@@ -190,17 +231,35 @@ class Reserva:
                                             str(self._user.user_id))
             if usado + (cuenta.reservado - self.bytes) + tamano > self._cuota:
                 raise CuotaExcedida(self._cuota)
+            plazo = plazo_de_escritura_segundos()
+            loop = asyncio.get_running_loop()
+            vence = loop.time() + plazo
             escritura = asyncio.ensure_future(guardar())
             cancelacion = None
             while not escritura.done():
+                restante = vence - loop.time()
+                if restante <= 0:
+                    break
                 try:
-                    # asyncio.wait no cancela `escritura` al cancelarse él.
-                    await asyncio.wait({escritura})
+                    # asyncio.wait no cancela `escritura` al cancelarse él ni
+                    # al vencer su timeout.
+                    await asyncio.wait({escritura}, timeout=restante)
                 except asyncio.CancelledError as e:
                     cancelacion = e
-            # Escrito (o fallido): el adjunto, si existe, ya es vigente en
-            # disco y la reserva sobra.
+            # Escrito, fallido o fuera de plazo: se suelta la reserva (y al
+            # salir del `async with`, el candado).
             self._soltar()
+            if not escritura.done():
+                # R29: el hilo sigue colgado. Lo que escriba tarde queda como
+                # adjunto sin id conocido (lo borra el limpiador al vencer) y
+                # puede no haberse contado en una subida siguiente: se acepta
+                # a cambio de no dejar al usuario sin subir hasta reiniciar.
+                logger.error("adjuntos: el commit no terminó en %s s (TimeoutError); se libera la cuota "
+                             "del usuario", plazo)
+                escritura.add_done_callback(_registrar_escritura_tardia)
+                if cancelacion is not None:
+                    raise cancelacion
+                raise EscrituraSinTerminar()
             if cancelacion is not None:
                 if not escritura.cancelled():
                     escritura.exception()  # recuperada: si falló, manda la cancelación

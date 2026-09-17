@@ -444,3 +444,53 @@ def test_un_rechazo_despues_de_reservar_libera_la_reserva(directorio, datos, sta
     assert cuota._cuentas == {}
     assert _archivos(directorio) == []
     assert _subir(_png(MIB))["bytes"] == MIB
+
+
+# ---------------------------------------- RD7 fix round (R29): commit acotado
+
+def test_el_plazo_del_commit_sale_del_tope_por_archivo_con_piso(monkeypatch):
+    monkeypatch.setenv("JAX_ADJUNTO_MAX_BYTES", str(10 * MIB))
+    assert cuota.plazo_de_escritura_segundos() == cuota.PLAZO_DE_ESCRITURA_PISO_SEGUNDOS == 60
+    monkeypatch.setenv("JAX_ADJUNTO_MAX_BYTES", str(100 * MIB))
+    assert cuota.plazo_de_escritura_segundos() == 100 * MIB // cuota.DISCO_LENTO_BYTES_POR_SEGUNDO == 400
+
+
+@pytest.mark.parametrize("modo", ["sin_cancelar", "cancelada_repetida"])
+def test_un_commit_colgado_suelta_candado_y_reserva_y_da_un_codigo(directorio, monkeypatch, caplog, modo):
+    monkeypatch.setattr(cuota, "plazo_de_escritura_segundos", lambda: 0.3)
+    entro, soltar, termino = _frenar(monkeypatch, "commit")
+
+    async def correr():
+        tarea = asyncio.create_task(upload_mod.upload_file(file=_archivo(_png(len(PNG))), user=USUARIO))
+        while not entro.is_set():
+            await asyncio.sleep(0.005)
+        if modo == "cancelada_repetida":
+            for _ in range(20):
+                tarea.cancel()
+                await asyncio.sleep(0.005)
+        # Sin plazo la tarea no terminaría: se espera acotado para que eso
+        # falle en vez de colgar la suite.
+        await asyncio.wait({tarea}, timeout=5)
+        if not tarea.done():
+            soltar.set()
+            raise AssertionError("el commit colgado no soltó dentro del plazo")
+        if modo == "cancelada_repetida":
+            with pytest.raises(asyncio.CancelledError):
+                await tarea
+        else:
+            with pytest.raises(HTTPException) as e:
+                await tarea
+            assert (e.value.status_code, e.value.detail) == (503, {"code": "adjuntos_reintentar"})
+        assert not termino.is_set()  # el hilo sigue colgado: igual se soltó
+        assert cuota._cuentas == {}
+        # El mismo usuario sube otra vez mientras el primer hilo sigue colgado.
+        otra = await upload_mod.upload_file(file=_archivo(_png(len(PNG))), user=USUARIO)
+        assert otra["bytes"] == len(PNG)
+        soltar.set()
+        while not termino.is_set():
+            await asyncio.sleep(0.005)
+
+    with caplog.at_level(logging.ERROR, logger="adjuntos.cuota"):
+        asyncio.run(correr())
+    assert "TimeoutError" in caplog.text
+    assert cuota._cuentas == {}
