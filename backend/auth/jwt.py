@@ -3,11 +3,12 @@ import time
 from jose import jwt, JWTError
 from fastapi import HTTPException, status
 
+from auth.constantes import ACCESS_EXPIRE_SECONDS
+
 SECRET = os.getenv("JAX_JWT_SECRET", "")
 if not SECRET:
     raise RuntimeError("JAX_JWT_SECRET no configurada en /etc/jax/.env")
 ALGORITHM = "HS256"
-ACCESS_EXPIRE_SECONDS = 15 * 60
 
 
 # `con_iat` (frente C, 2026-09-16): el refresh lleva `iat` para que
