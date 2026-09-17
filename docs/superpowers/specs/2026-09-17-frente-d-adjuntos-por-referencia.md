@@ -23,7 +23,23 @@ ProcessPoolExecutor acotado (c, hecho en RD1). Se mantiene `JAX_ADJUNTO_SUBIDAS_
 
 ## 2. Disposición en disco
 
-`JAX_ADJUNTOS_DIR` (absoluto, 0700):
+`JAX_ADJUNTOS_DIR` (absoluto, 0700) tiene **una carpeta por usuario**,
+`JAX_ADJUNTOS_DIR/<user_id>/` (0700). Esto es de RD7 (decisión del principal, 2026-09-17).
+- **Solo `user_id`, sin tenant:** `user_id` es la PK global de `jax_users`, y la baja ya borraba
+  por `user_id`. El sidecar sigue guardando `tenant_id`, y la búsqueda sigue exigiendo los dos.
+- **La carpeta no es el control de acceso:** sirve para que la cuota y la búsqueda sean
+  O(archivos del usuario). Quién es el dueño lo sigue decidiendo el sidecar; un sidecar ajeno
+  copiado a la carpeta de otro sigue siendo 404 para ese otro.
+- **El `user_id` se valida** (`[1-9][0-9]{0,19}`) antes de armar una ruta, aunque venga del JWT
+  firmado.
+  - Al escribir, uno malformado es `UsuarioInvalido` y no se crea nada.
+  - Al leer, es el 404 de siempre.
+- **La carpeta tiene que ser un directorio propio:** no un symlink y colgando directo de la
+  raíz. Si no lo es, leer es 404 y escribir falla.
+- **Sin migración:** el almacén es nuevo y no se desplegó con la disposición plana, así que no
+  hay nada que migrar.
+
+Dentro de cada carpeta:
 
 | Archivo | Contenido |
 |---|---|
@@ -32,7 +48,9 @@ ProcessPoolExecutor acotado (c, hecho en RD1). Se mantiene `JAX_ADJUNTO_SUBIDAS_
 | `.subiendo-<hex>` | temporal de una subida en curso |
 | `.tmp-<hex>` | temporal de una escritura atómica |
 
-- Archivos 0600. Escritura atómica: temporal en el mismo directorio, fsync, `os.replace`.
+- Archivos 0600. Escritura atómica: temporal en la misma carpeta, fsync, `os.replace`. El
+  temporal de la subida también vive en la carpeta del usuario, así que el rename de la imagen
+  queda en el mismo filesystem.
 - El dato se escribe primero y el sidecar después. **El sidecar es el commit**: sin sidecar, el
   adjunto no existe.
 - **DECISIÓN de controlador (R23-2):** metadatos en sidecar JSON y no en una tabla, porque no
@@ -45,8 +63,10 @@ ProcessPoolExecutor acotado (c, hecho en RD1). Se mantiene `JAX_ADJUNTO_SUBIDAS_
 
 ## 3. Modelo de dueño
 
-- `almacen.obtener(id, user)` / `almacen.leer(id, user)` devuelven el adjunto solo si
-  `user_id` y `tenant_id` coinciden y `vence` es posterior a ahora.
+- `almacen.obtener(id, user)` / `almacen.leer(id, user)` buscan **solo en la carpeta del que
+  pide** (RD7). Nunca listan ni abren la de otro; lo fija un test que graba `scandir`, `open` y
+  `stat`. Devuelven el adjunto solo si `user_id` y `tenant_id` del sidecar coinciden y `vence`
+  es posterior a ahora.
 - Todos los demás casos lanzan la **misma** `AdjuntoNoEncontrado` → 404
   `{"code": "adjunto_no_encontrado"}`, sin extras. Esos casos son: id desconocido, ajeno, de
   otro tenant, vencido, malformado, traversal, symlink que sale del directorio, sidecar
@@ -56,8 +76,8 @@ ProcessPoolExecutor acotado (c, hecho en RD1). Se mantiene `JAX_ADJUNTO_SUBIDAS_
 - Borrar es seguro frente a lecturas concurrentes. Se hace unlink del sidecar primero y del dato
   después. Un lector que ya abrió el dato lo lee entero (el inodo vive hasta el close); uno que
   llega después recibe 404.
-- **Baja de usuario:** `POST /api/admin/users/{id}/baja`, después del commit, borra los
-  adjuntos de ese `user_id`. Es best-effort (`# fail-soft:`); el TTL cubre lo que no se pueda
+- **Baja de usuario:** `POST /api/admin/users/{id}/baja`, después del commit, borra la carpeta
+  de ese `user_id`: sidecars primero, después datos y temporales, y al final la carpeta. Es best-effort (`# fail-soft:`); el TTL cubre lo que no se pueda
   borrar.
 - **Baja que se cruza con una subida en vuelo:** si el sidecar de esa subida se confirma después
   de que la baja recorrió el directorio, ese adjunto sobrevive hasta su TTL. Nadie puede leerlo:
@@ -76,6 +96,13 @@ ProcessPoolExecutor acotado (c, hecho en RD1). Se mantiene `JAX_ADJUNTO_SUBIDAS_
 - `vence = creado + JAX_ADJUNTOS_TTL_HORAS`, fijado al subir.
 - `start_limpieza_de_adjuntos` es una tarea del lifespan, hermana de `start_owner_file_cleanup`.
   Pasa al arrancar y después cada 15 min.
+- **Recorre las carpetas (RD7).** Una carpeta ilegible se saltea y se loguea.
+- **Borra la carpeta que quedó vacía** con `os.rmdir`, que es atómico y falla si hay algo
+  adentro. Esto no pisa una subida en curso:
+  - Mientras una subida vive, su temporal está dentro de la carpeta, así que no está vacía.
+  - La subida que preparó su carpeta y todavía no abrió nada la recrea (0700) al abrir su primer
+    archivo (`_crear_exclusivo`, hasta 3 intentos).
+  - En la raíz solo se tocan temporales viejos.
   - **Ruling R24 del controller (2026-09-17):** no va dentro del bucle de `owner_cleanup`. Ese bucle
     duerme 6 h porque retiene 30 días; con un TTL mínimo de 1 h, un vencido quedaría en disco
     hasta 7 veces su vida.
@@ -116,6 +143,7 @@ espacios, sin signo y sin ceros a la izquierda.
 | 10 | `JAX_ADJUNTOS_TTL_HORAS` | solo dígitos (`[1-9][0-9]{0,3}`), **1..168** | `24` |
 | 11 | `JAX_ADJUNTOS_CUOTA_BYTES_USUARIO` | solo dígitos (`[1-9][0-9]{0,15}`), **1048576..1099511627776** (1 MiB..1 TiB) y **≥ `JAX_ADJUNTO_MAX_BYTES`** | `524288000` |
 | 12 | `JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES` | solo dígitos (`[1-9][0-9]{0,15}`), **1073741824..1099511627776** (1 GiB..1 TiB) | `53687091200` |
+| 13 | `JAX_ADJUNTOS_SUBIDAS_POR_MINUTO` (RD7) | solo dígitos (`[1-9][0-9]{0,2}`), **1..600**; ventana deslizante fija de 60 s | propuesto `30` (lo decide el principal) |
 
 Fuera de `/etc/jax/.env`, en la unidad de systemd de jax-platform: **`TMPDIR=/srv/jax-data/tmp`**
 (0700, disco real). Starlette vuelca ahí el cuerpo de cada subida antes del handler (R25), y
@@ -131,13 +159,21 @@ Motivos de los rangos:
 - CUOTA: piso 1 MiB (menos no deja subir una foto de teléfono), techo 1 TiB ("sin límite" con
   más ceros); menor que el tope por archivo rechazaría con el código equivocado archivos que el
   tope admite.
+- SUBIDAS_POR_MINUTO: piso 1 (0 es apagar la función, no un límite). Techo 600 (10/s): una
+  subida de imagen de 10 MB tarda p50 ~0,22–0,27 s en staging, así que un cliente sin freno hace
+  ~4/s. Propuesta de 30, medida en RD7:
+  - la interfaz manda 1 adjunto por mensaje (`MAX_POR_MENSAJE=1`);
+  - con 30/min un usuario ingresa como mucho 300 MB/min, contra ~0,5 GB/s sin límite (RD5), y
+    tarda ≥ 100 s en llenar la cuota de 500 MB;
+  - bajo flood, health p95 queda en 0,30–0,32 ms.
 - DISCO_LIBRE: piso 1 GiB (lo demás del filesystem se queda sin aire antes de que la guarda
   corte), techo 1 TiB (un mínimo mayor que el disco es "nunca aceptar" y tiene que verse al
   arrancar).
 
 Tests: `conftest.py` fija 1..8 y la cuota con `setdefault` (rigen los del `.env` si están),
-FUERZA `JAX_ADJUNTOS_DIR` a un `mkdtemp` propio y FUERZA el disco libre mínimo a 1073741824
-(mide el disco del `mkdtemp`, no el de producción).
+FUERZA `JAX_ADJUNTOS_DIR` a un `mkdtemp` propio, FUERZA el disco libre mínimo a 1073741824
+(mide el disco del `mkdtemp`, no el de producción) y FUERZA `JAX_ADJUNTOS_SUBIDAS_POR_MINUTO` a
+600 (los tests de HTTP suben varias veces por minuto con pocos usuarios).
 
 ## 7. Contrato de `POST /api/chat/upload`
 
@@ -161,6 +197,8 @@ Texto o PDF:
 - Código nuevo: 404 `adjunto_no_encontrado` (es/en).
 - Códigos nuevos de RD6 (es/en): 413 `adjuntos_cuota_excedida` (con `cuota_bytes`) y 507
   `adjuntos_sin_espacio` (sin números: el estado del disco no es asunto del cliente).
+- Código nuevo de RD7 (es/en): 429 `adjuntos_subidas_limite` (con `retry_after`) y cabecera
+  `Retry-After` (§7.2).
 
 ### 7.1 Cuota por usuario y disco libre (RD6, Principal Ruling "quota", 2026-09-17)
 
@@ -208,7 +246,59 @@ cancelación antes del commit (copia, clasificación, lectura de la cuota) no de
 `WEB_CONCURRENCY` > 1. Si algún día hay más de un proceso, la cuota necesita un candado
 compartido (flock sobre el directorio o la base) antes de subir workers.
 
+### 7.2 Límite de subidas por usuario (RD7, decisión del principal, 2026-09-17)
+
+La cuota acota lo **guardado**, no lo **recibido**. En RD6, un usuario sobre su cuota seguía
+mandando cuerpos de 10 MB, y Starlette los volcaba antes del 413: 23–25 volcados en vuelo, hasta
+166 MB, y health p95 de ~1 a ~2,7 ms. Código: `adjuntos/limite_de_subidas.py`.
+
+**Dónde corre, y por qué no es un `Depends`.**
+- FastAPI 0.139 (`fastapi/routing.py::get_request_handler`) hace `await request.form()` antes
+  de `solve_dependencies`. Ese `form()` es python-multipart parseando el cuerpo entero y
+  Starlette volcando el archivo.
+- Un `Depends`, `get_current_user` incluido, llega con el cuerpo ya leído. Lo fija
+  `test_fastapi_lee_el_multipart_entero_antes_de_resolver_las_dependencias`.
+- Por eso es un **middleware ASGI puro** (`LimiteDeSubidas`), montado **dentro** de
+  `CORSMiddleware`, para que el 429 lleve sus cabeceras. Solo actúa en `POST /api/chat/upload`:
+  1. Lee `Authorization` y verifica firma y vencimiento del JWT de acceso con `decode_token`
+     (HS256, sin base).
+  2. Pasa la clave `user_id` por `SlidingWindowLimiter`, la misma clase del login y del SMTP,
+     con 60 s de ventana. Un intento rechazado no cuenta.
+  3. Si el usuario se pasó, **frena 1 s** (`FRENO_ANTES_DEL_429_SEGUNDOS`) y responde 429
+     **sin llamar a `receive()`**.
+- **Sin token de acceso válido** (sin token, inválido, de refresh o con `user_id` malformado),
+  no hay a quién limitar: pasa sin contar y la ruta da su 401.
+- **Un token revocado pero no vencido** (≤ 15 min) solo gasta el cupo de su propio usuario.
+- **Estado en memoria**, un proceso (`exigir_un_solo_proceso`), hasta 20.000 claves (LRU). El
+  limitador se rehace si cambia el valor configurado.
+
+**¿Un rechazado sigue volcando su cuerpo?**
+- **No.** Medido en staging: 0 fds en `TMPDIR` durante el flood, contra 23–25 en RD6.
+- Pero los bytes que el cliente ya manda no desaparecen. Después del 429, uvicorn 0.51 (keep-alive)
+  **lee y descarta** el resto del cuerpo en el event loop.
+- Por eso el freno: mientras frena, uvicorn lee hasta 64 KB y pausa la lectura, y TCP frena al
+  cliente.
+- Medido con `upload_imagen_max` a c=25, un usuario y 10 MB:
+
+| Variante | Rechazos/s | health p95 | Clientes que no ven el 429 |
+|---|---|---|---|
+| 429 inmediato | ~540 | **37,5 / 40,1 ms** | 0 |
+| 429 inmediato + `Connection: close` | ~800 | 6,2 ms | **19 %** (reset) |
+| freno 0,25 s | ~97 | 0,37 ms | 0 |
+| **freno 1 s (elegido)** | ~25 | **0,32 / 0,30 ms** | 0 |
+
+- Se elige 1 s por margen: descarta 4 veces menos bytes que 0,25 s con los mismos atacantes.
+- No es una variable de entorno: es un margen técnico medido sobre uvicorn, igual que
+  `ORFANO_MAX_SEGUNDOS`.
+
+**Límite conocido (producción):** delante está nginx con `client_max_body_size 50m` y, por
+defecto, `proxy_request_buffering on`. nginx recibe el cuerpo entero del cliente antes de hablar
+con uvicorn. El límite protege el event loop, `TMPDIR` y el disco de adjuntos, pero **no** el
+ancho de banda ni el disco temporal de nginx. Para eso hace falta `limit_req` en nginx (no
+medido; no está en este repo).
+
 Camino de una subida:
+0. (RD7) `LimiteDeSubidas`, antes de leer el cuerpo.
 1. Starlette ya parseó el multipart. Hasta 1 MB queda en memoria; el resto va a un archivo de
    `TMPDIR`.
 2. `copiar_subida` corre en un hilo y copia de a 1 MB a `.subiendo-*`, cortando en
