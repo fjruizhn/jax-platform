@@ -15,7 +15,6 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, ConfigDict, Field
 import httpx
 from http_client import CuerpoJsonDeUnUso, LiteralJsonCrudo, cabeceras_gemini, get_http_client
-from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from facet_resolver import resolve_facet, FacetUnavailableError
 from adjuntos.contrato import (
     SIN_ADJUNTOS,
@@ -922,7 +921,7 @@ async def _invoke_facet_dispatch(
         system_prompt += "\n\n" + governance_grounding.render(grounding)
 
     # Bloque C: resolve_facet() reemplaza _resolve_active_model +
-    # resolve_credential_instrumented sueltos — mismo resolver que usa
+    # resolve_credential sueltos — mismo resolver que usa
     # Jacobs (facet_resolver.py), garantiza que Mesa web y Jacobs resuelvan
     # la MISMA faceta al MISMO modelo. FAIL-CLOSED: sin binding activo,
     # mensaje de degradacion explicito, nunca una llamada con modelo vacio.

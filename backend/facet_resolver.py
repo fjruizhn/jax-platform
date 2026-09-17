@@ -1,7 +1,7 @@
 """
 Resolver de facetas — Bloque C (facet/facet_binding como fuente unica
 faceta->modelo). Espejo minimo en jax-platform, jax/core, las_manos, mismo
-patron que credential_resolver.py. Consume resolve_credential_instrumented,
+patron que credential_resolver.py. Consume resolve_credential,
 no reimplementa Fase 1. Ver jax-platform/docs/fase2-facetas-diseno.md.
 """
 import logging
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import aiomysql
 
-from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
+from credential_resolver import resolve_credential, CredentialUnavailableError
 from db_connect_config import db_connect_timeout_seconds
 
 logger = logging.getLogger("facet_resolver")
@@ -310,7 +310,7 @@ async def _query_facet(facet_key: str) -> ResolvedFacet:
     credential = ""
     if transport not in ("ollama", "subprocess"):  # ollama/subprocess no usan credencial de proveedor gestionada aqui
         try:
-            credential = await resolve_credential_instrumented(provider_id)
+            credential = await resolve_credential(provider_id)
         except CredentialUnavailableError as e:
             raise FacetUnavailableError(f"facet '{facet_key}': {e}") from e
 

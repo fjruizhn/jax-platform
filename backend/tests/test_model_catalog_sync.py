@@ -66,12 +66,12 @@ async def _fetch_scalar(sql, params=()):
 def _patch_credential(monkeypatch, value):
     async def fake_credential(provider_id):
         return value
-    monkeypatch.setattr(model_catalog, "resolve_credential_instrumented", fake_credential)
+    monkeypatch.setattr(model_catalog, "resolve_credential", fake_credential)
 
 
 def test_sync_provider_models_upserts_openai_compatible_response(client, monkeypatch):
     """capa (a): /v1/models OpenAI-compatible (moonshot), sin credencial real
-    (resolve_credential_instrumented se fake-ea aparte). Usa moonshot (no
+    (resolve_credential se fake-ea aparte). Usa moonshot (no
     deepseek) para no compartir fila con el test de deprecacion (D1.4), que
     corre en la misma DB de sesion completa (jax_memory_test)."""
     _patch_credential(monkeypatch, "sk-fake")

@@ -105,10 +105,10 @@ def test_generate_image_registra_uso_con_costo_plano(client, monkeypatch):
         return "sk-fake"
 
     # Patchear en api.image (donde el nombre quedo bindeado por el `from
-    # credential_resolver import resolve_credential_instrumented` de ese
+    # credential_resolver import resolve_credential` de ese
     # modulo), no en credential_resolver (el modulo fuente) — patchear la
     # fuente no afecta la referencia ya bindeada en api.image.
-    monkeypatch.setattr(image_module, "resolve_credential_instrumented", fake_credential)
+    monkeypatch.setattr(image_module, "resolve_credential", fake_credential)
 
     fake = _FakeClient(_FakeResponse({
         "data": [{"b64_json": "ZmFrZQ==", "revised_prompt": "un gato"}]

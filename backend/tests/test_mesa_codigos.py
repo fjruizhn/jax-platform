@@ -66,7 +66,7 @@ def test_los_eventos_sin_consumidor_no_existen():
 def test_imagen_sin_credencial_es_503_con_codigo(monkeypatch):
     async def sin_credencial(_p):
         raise CredentialUnavailableError("openai")
-    monkeypatch.setattr(image_mod, "resolve_credential_instrumented", sin_credencial)
+    monkeypatch.setattr(image_mod, "resolve_credential", sin_credencial)
     e = _error(image_mod.generate_image(image_mod.ImageRequest(prompt="x"), user=USUARIO))
     assert (e.status_code, e.detail) == (503, {"code": "credencial_no_disponible", "provider": "openai"})
 
@@ -97,7 +97,7 @@ def test_la_imagen_no_publica_un_evento(monkeypatch):
     async def uso(*a, **k):
         return None
 
-    monkeypatch.setattr(image_mod, "resolve_credential_instrumented", credencial)
+    monkeypatch.setattr(image_mod, "resolve_credential", credencial)
     monkeypatch.setattr(image_mod, "get_http_client", cliente)
     monkeypatch.setattr(image_mod, "record_usage", uso)
     # image.py ya no importa event_bus: se parcha el bus compartido, asi cualquier

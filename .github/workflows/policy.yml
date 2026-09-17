@@ -1624,7 +1624,15 @@ jobs:
           #   compartida). Sin esos 2, el limpio es 2049; +1 por el modelo extra del
           #   runner (test_model_max_output_tokens.py:324, el skip que el runner no
           #   tiene) -> 2050. Si el runner da otro número, manda el runner.
-          PISO_PASSED = 2050
+          # 2050 -> 2062 el 2026-09-17, sumando dos ramas del mismo dia sobre el
+          #   piso que dejo el frente D: +8 de B1.4 (test_retiro_fallback_env.py:
+          #   sin credencial en la DB y CON la env var puesta, los 4 consumidores
+          #   fallan cerrado; 7 de los 8 vistos EN ROJO contra 8d9cb73) y +4 de
+          #   test_admin_keys_sin_escritura.py (PUT y DELETE /api/admin/keys ya no
+          #   existen, el modulo no escribe /etc/jax/.env, y la barrera del conftest
+          #   muerde). Sumar deltas, no elegir un lado. Si el runner da otro numero,
+          #   manda el runner.
+          PISO_PASSED = 2062
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2211,7 +2219,10 @@ jobs:
       # Skips 647 -> 703. Los 14 JAX_ADJUNTO(S)_* salen de conftest. Medido dos veces
       # con JAX_CI_NO_DB=1 JAX_JWT_SECRET=ci-dummy tras el rebase sobre 369fa5a: 1346 passed
       # / 703 skipped / 0 failed.
-      JAX_CI_MIN_PASSED: "1346"
+      # 1346 -> 1358 el 2026-09-17: mismos deltas que arriba (+8 de B1.4, +2 puros
+      # de test_admin_keys_sin_escritura.py y +2 que piden `client`, o sea +2 skips).
+      # Sumar deltas, no elegir un lado.
+      JAX_CI_MIN_PASSED: "1358"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

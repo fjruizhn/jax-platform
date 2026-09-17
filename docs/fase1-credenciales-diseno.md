@@ -154,15 +154,60 @@ async def resolve_credential_instrumented(provider_id: str) -> str:
         return env_value
 ```
 
+> **CERRADO — criterio cumplido y fallback RETIRADO el 2026-09-17.** El bloque de
+> arriba queda como registro histórico de lo que existió durante la ventana; ya no
+> está en el código. Ver el cierre al final de esta sección.
+
+
 **Criterio de salida (medible, no una fecha arbitraria)**: **7 días consecutivos con cero líneas `source=env_fallback`** en los logs de los 4 procesos de B0.2, y esa ventana debe incluir **al menos una rotación real** ejecutada desde el admin (para probar que el camino DB efectivamente se ejercita en el escenario que más importa, no solo en lectura estable). Se mide con `journalctl | grep credential_resolution | grep env_fallback` sobre la ventana.
 
 Si a los 7 días siguen apareciendo `env_fallback`, significa que hay un consumidor no mapeado en B0.2 (o un bug en el resolver) — se investiga ese caso puntual, **no se fuerza el corte quitando el fallback a ciegas**. Esto no es una solución temporal disfrazada de permanente: tiene una condición de salida definida y su función es medir, no tapar.
 
 Al cumplirse el criterio: se retira `resolve_credential_instrumented` en favor de `resolve_credential` directo, y recién ahí se justifica retirar las 5 `*_API_KEY` de `/etc/jax/.env`.
 
+### Cierre de B1.4 — 2026-09-17 (medido, no supuesto)
+
+**VERDAD OPERACIONAL — medición.** 30 días de journal de `jax-platform`:
+
+| Métrica | Valor medido |
+|---|---|
+| Líneas `credential_resolution ... source=db` | **2.760** |
+| Líneas `credential_resolution ... source=env_fallback` | **0** |
+| Rotación real dentro de la ventana | **sí** — llave de Gemini, 2026-09-15 |
+
+El criterio pedía 7 días consecutivos sin ninguna línea `source=env_fallback` con al
+menos una rotación real adentro. Se midieron 30 días, no 7, y la rotación de Gemini
+del 2026-09-15 cae dentro de la ventana: el camino DB se ejercitó en el escenario que
+más importa, no solo en lectura estable.
+
+**DECISIÓN (Fernando, 2026-09-17): se retira el fallback.** Lo que se hizo:
+
+- Se eliminaron `resolve_credential_instrumented` y `_PROVIDER_ENV_KEY_MAP` de
+  `backend/credential_resolver.py`. No queda ninguna lectura de `os.environ` en el
+  camino de resolución de credenciales.
+- Los consumidores (`facet_resolver.py`, `model_catalog.py`, `api/image.py`) llaman
+  directo a `resolve_credential()`. `api/chat.py` tenía el import sin uso (resuelve
+  vía `resolve_facet()`) y se quitó.
+- **El comportamiento sin credencial activa en la DB sigue siendo FAIL-CLOSED**:
+  `CredentialUnavailableError`. Lo que cambia es que ahora no hay red debajo — y ese
+  era el punto: una red que en 30 días y 2.760 resoluciones no atajó nada no es una
+  red, es una lectura de `os.environ` esperando a que alguien la olvide ahí.
+- Se conserva la línea `source=db` (ahora emitida en `resolve_credential` al traer el
+  valor de la DB, no en los aciertos de caché): con el fallback retirado el camino DB
+  es el único que hay, así que la confirmación positiva importa más, no menos.
+- Control: `backend/tests/test_retiro_fallback_env.py`, verificado FALLANDO contra el
+  árbol anterior (7 rojos: con la credencial ausente en la DB y la env var presente,
+  el código viejo devolvía el valor de la env var).
+
+**PENDIENTE, fuera de este cambio:** retirar las 5 `*_API_KEY` de `/etc/jax/.env` —
+lo hace Fernando a mano después del despliegue. Ojo con el admin **legacy** de llaves
+(`api/admin/keys.py`): sigue leyendo y **escribiendo** esas variables en el archivo, así
+que puede volver a ponerlas. Es la decisión aparte que B1.5 ya dejaba anotada (retirarlo
+o dejarlo en solo lectura).
+
 ## 5. B1.5 — Rollback
 
-`user_api_keys` **no se borra, no se altera** en ningún punto de B2. Sigue siendo la tabla que consume el admin legacy (`api/admin/keys.py`) hasta que el criterio de B1.4 se cumpla — en ese momento, y como decisión aparte (fuera del alcance de esta fase, es trabajo de una fase 2), se decide si el admin legacy se retira o se deja como vista de solo lectura. Mientras tanto, si `credential`/`provider`/`credential_audit` mostraran cualquier problema, el rollback es: dejar de invocar `resolve_credential_instrumented` (revertir el código a leer `os.environ` directo, como hoy) — `user_api_keys` sigue intacta y el sistema vuelve exactamente al estado actual sin pérdida de nada, porque nunca dejó de existir.
+`user_api_keys` **no se borra, no se altera** en ningún punto de B2. Sigue siendo la tabla que consume el admin legacy (`api/admin/keys.py`) hasta que el criterio de B1.4 se cumpla — en ese momento, y como decisión aparte (fuera del alcance de esta fase, es trabajo de una fase 2), se decide si el admin legacy se retira o se deja como vista de solo lectura. Mientras tanto, si `credential`/`provider`/`credential_audit` mostraran cualquier problema, el rollback era: dejar de invocar `resolve_credential_instrumented` (revertir el código a leer `os.environ` directo) — **caducado el 2026-09-17**, cuando el criterio de B1.4 se cumplió y el fallback se retiró; el rollback de hoy es revertir el commit del retiro — `user_api_keys` sigue intacta y el sistema vuelve exactamente al estado actual sin pérdida de nada, porque nunca dejó de existir.
 
 ## 6. B1.6 — Plan de pruebas (diseño; se ejecuta en B2 con evidencia real)
 
