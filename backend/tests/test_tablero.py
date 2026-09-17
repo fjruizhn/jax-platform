@@ -183,3 +183,73 @@ def test_el_tablero_trae_los_numeros_reales(client, monkeypatch):
     assert (s["api_keys_configured"], s["api_keys_total"]) == (int(configuradas), total)
     (motor,) = [sv for sv in datos["services"] if sv["name"] == "JAX Engine"]
     assert motor["status"] == "sin_configurar"
+
+
+# --- Task 15 R12c, ronda 2: el indice va por el DDL ACOTADO -----------------
+# jax_users la lee cada request autenticado (auth/middleware.py); un ALTER con
+# el lock_wait_timeout por defecto (86400 s) esperando su MDL encola TODAS las
+# lecturas nuevas detras. Tiene que ir por _crear_indice_acotado (30 s).
+import ast  # noqa: E402
+
+from db import migrations  # noqa: E402
+
+
+class _CurDeMigracion:
+    def __init__(self, existe: bool):
+        self.existe = existe
+        self.sqls = []
+        self._ultimo = ""
+
+    async def execute(self, consulta, args=None):
+        self.sqls.append((consulta, args))
+        self._ultimo = consulta
+
+    async def fetchone(self):
+        if "information_schema.STATISTICS" in self._ultimo:
+            return (1 if self.existe else 0,)
+        if "@@SESSION.lock_wait_timeout" in self._ultimo:
+            return (86400,)
+        raise AssertionError(f"fetchone inesperado tras {self._ultimo!r}")
+
+
+def test_indice_locked_until_se_crea_con_el_ddl_acotado():
+    cur = _CurDeMigracion(existe=False)
+    asyncio.run(migrations._indice_de_cuentas_bloqueadas(cur))
+    ddl = [q for q, _ in cur.sqls if q.startswith("ALTER TABLE")]
+    assert ddl == [migrations.DDL_INDICE_CUENTAS_BLOQUEADAS]
+    assert "idx_jax_users_locked_until (locked_until)" in ddl[0]
+    assert "ALGORITHM=INPLACE" in ddl[0] and "LOCK=NONE" in ddl[0]
+    i = [q for q, _ in cur.sqls].index(ddl[0])
+    assert cur.sqls[i - 1] == ("SET SESSION lock_wait_timeout=%s", (30,))
+    assert cur.sqls[i + 1] == ("SET SESSION lock_wait_timeout=%s", (86400,))
+
+
+def test_indice_locked_until_ya_creado_no_toca_nada():
+    cur = _CurDeMigracion(existe=True)
+    asyncio.run(migrations._indice_de_cuentas_bloqueadas(cur))
+    assert len(cur.sqls) == 1 and "information_schema.STATISTICS" in cur.sqls[0][0]
+
+
+def test_indice_locked_until_no_esta_en_la_lista_sin_cota():
+    assert all(indice != "idx_jax_users_locked_until" for _, indice, _ in migrations._INDEXES)
+    arbol = ast.parse(Path(migrations.__file__).read_text(encoding="utf-8"))
+    (run,) = [n for n in ast.walk(arbol) if isinstance(n, ast.AsyncFunctionDef) and n.name == "run_migrations"]
+    llamadas = [n for n in ast.walk(run)
+                if isinstance(n, ast.Await) and isinstance(n.value, ast.Call)
+                and isinstance(n.value.func, ast.Name) and n.value.func.id == "_indice_de_cuentas_bloqueadas"]
+    assert len(llamadas) == 1
+
+
+def test_run_migrations_dos_veces_deja_el_indice_locked_until(client):
+    """Idempotente sobre la DB real de tests: el client ya corrio run_migrations
+    al arrancar; una segunda corrida no falla y el indice sigue."""
+    import warnings
+    with warnings.catch_warnings():
+        # Los seeds son INSERT IGNORE: en la segunda corrida MariaDB avisa
+        # "Duplicate entry" por cada fila ya sembrada. Es lo esperado.
+        warnings.simplefilter("ignore")
+        client.portal.call(migrations.run_migrations)
+    ((n,),) = client.portal.call(
+        sql, "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() "
+        "AND TABLE_NAME = 'jax_users' AND INDEX_NAME = 'idx_jax_users_locked_until'", (), True)
+    assert n == 1

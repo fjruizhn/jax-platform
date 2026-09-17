@@ -1553,23 +1553,19 @@ _COLUMN_WIDENS = [
 ]
 
 
-# (tabla, índice, DDL) -- agrega un índice a una tabla EXISTENTE si falta.
-# Las tablas nuevas lo declaran en su CREATE TABLE.
+# (tabla, índice, DDL) -- agrega un índice a una tabla EXISTENTE si falta,
+# con un execute SIN cota de espera (lock_wait_timeout por defecto, 86400 s).
+# Un índice nuevo sobre una tabla caliente NO va acá: va por
+# _crear_indice_acotado (ver _indice_de_uso_por_periodo y
+# _indice_de_cuentas_bloqueadas). Las tablas nuevas declaran sus índices en
+# su CREATE TABLE.
 # idx_jax_users_role_status: el conteo de superadmins activos de la
 # invariante (api/admin/users.py::otros_superadmins_activos) filtra por
 # role y status, con FOR UPDATE (2026-09-12, admin usuarios etapa 3).
 # EXPLAIN en tests/test_user_audit.py.
-# idx_jax_users_locked_until: el conteo de cuentas bloqueadas del tablero
-# (api/admin/dashboard.py::SQL_CUENTAS_BLOQUEADAS) era `ALL` sobre jax_users
-# (Task 15 R12c, 2026-09-16). En linea, como idx_axioma_usage_periodo: si no
-# se puede INPLACE/LOCK=NONE, falla en vez de bloquear los login. EXPLAIN en
-# tests/test_tablero.py.
 _INDEXES = [
     ("jax_users", "idx_jax_users_role_status",
      "ALTER TABLE jax_users ADD INDEX idx_jax_users_role_status (role, status)"),
-    ("jax_users", "idx_jax_users_locked_until",
-     "ALTER TABLE jax_users ADD INDEX idx_jax_users_locked_until (locked_until), "
-     "ALGORITHM=INPLACE, LOCK=NONE"),
 ]
 
 
@@ -1638,6 +1634,27 @@ async def _indice_de_uso_por_periodo(cur) -> None:
     if not await _index_exists(cur, "axioma_usage", "idx_axioma_usage_periodo"):
         await _crear_indice_acotado(
             cur, "axioma_usage", "idx_axioma_usage_periodo", DDL_INDICE_USO_POR_PERIODO)
+
+
+# Task 15 R12c (2026-09-16): el conteo de cuentas bloqueadas del tablero
+# (api/admin/dashboard.py::SQL_CUENTAS_BLOQUEADAS) era `ALL` sobre jax_users.
+# jax_users la lee CADA request autenticado (auth/middleware.py,
+# SQL_ESTADO_DE_SESION): un ALTER esperando su metadata lock exclusivo encola
+# detrás todas las lecturas nuevas. Por eso va por _crear_indice_acotado (30 s
+# y el arranque sigue sin el índice si vence), igual que
+# idx_axioma_usage_periodo; INPLACE/LOCK=NONE explícitos para que falle en vez
+# de caer a COPY. EXPLAIN en tests/test_tablero.py.
+DDL_INDICE_CUENTAS_BLOQUEADAS = (
+    "ALTER TABLE jax_users ADD INDEX idx_jax_users_locked_until (locked_until), "
+    "ALGORITHM=INPLACE, LOCK=NONE"
+)
+
+
+async def _indice_de_cuentas_bloqueadas(cur) -> None:
+    """Idempotente: solo crea idx_jax_users_locked_until si falta."""
+    if not await _index_exists(cur, "jax_users", "idx_jax_users_locked_until"):
+        await _crear_indice_acotado(
+            cur, "jax_users", "idx_jax_users_locked_until", DDL_INDICE_CUENTAS_BLOQUEADAS)
 
 
 # Cola durable para el registro de uso (2026-09-15, Task 2 del plan
@@ -2183,6 +2200,7 @@ async def run_migrations():
                 if not await _index_exists(cur, table_name, index_name):
                     await cur.execute(ddl)
             await _indice_de_uso_por_periodo(cur)
+            await _indice_de_cuentas_bloqueadas(cur)
             await _respaldo_de_uso(cur)
 
             await _drop_axioma_artifacts(cur)
