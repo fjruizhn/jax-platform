@@ -403,6 +403,17 @@ def test_codigo_desconocido_en_preflight_usa_el_mejor_texto(monkeypatch, m, mens
     assert _correr(_preflight())["motivo"] == {"code": "estado_no_continuable", "mensaje": mensaje}
 
 
+def test_code_sin_ningun_texto_omite_el_mensaje_en_los_dos_endpoints(monkeypatch):
+    """Fix round 2 ítem 2: sin texto no vacío, estado_no_continuable sale sin
+    mensaje (el frontend muestra el texto genérico)."""
+    m = motivo("", "", mensaje="")
+    preparar(monkeypatch, JacobsFalso(_previa(motivo_=m)))
+    assert _correr(_preflight())["motivo"] == {"code": "estado_no_continuable"}
+    preparar(monkeypatch, JacobsFalso(_previa(motivo_=m)))
+    r = _correr(_continuar())
+    assert (r.status_code, r.detail) == (409, {"code": "estado_no_continuable"})
+
+
 def test_kill_switch_pasa_en_preflight_con_su_code(monkeypatch):
     preparar(monkeypatch, JacobsFalso(_previa(motivo_=motivo("kill_switch", "Kill switch activo"))))
     assert _correr(_preflight())["motivo"] == {"code": "kill_switch", "detalle": "Kill switch activo"}
@@ -427,6 +438,8 @@ def test_detalle_declarado_exige_el_tipo_de_cada_campo(campos, esperado):
     ({"run_epoch": "2"}, "run_epoch"),
     ({"pasos_reusados": [0, "1"]}, "pasos_reusados"),
     ({"pasos_a_correr": "4,5"}, "pasos_a_correr"),
+    ({"pipeline_id": 22}, "pipeline_id"),
+    ({"status": ["running"]}, "status"),
 ])
 def test_el_200_de_continuar_solo_trae_claves_declaradas_y_validas(monkeypatch, cambio, fuera):
     """Ítem 4: Jacobs ya lanzó el pipeline -- la respuesta no se rompe, pero

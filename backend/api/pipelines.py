@@ -506,7 +506,11 @@ def _motivo_permitido(motivo: dict) -> dict:
     if motivo["code"] in CODIGOS_DE_MOTIVO:
         return motivo
     textos = [motivo.get(c) for c in ("detalle", "mensaje", "code")]
-    mejor = next((t for t in textos if isinstance(t, str) and t), "")
+    mejor = next((t for t in textos if isinstance(t, str) and t), None)
+    # Fix round 2 ítem 2: sin ningún texto no vacío no se inventa un mensaje
+    # vacío; el frontend muestra el texto genérico de estado_no_continuable.
+    if mejor is None:
+        return {"code": "estado_no_continuable"}
     return {"code": "estado_no_continuable", "mensaje": recortar_redactado(mejor, MOTIVO_MAX)}
 
 
