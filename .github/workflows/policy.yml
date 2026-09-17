@@ -1536,7 +1536,15 @@ jobs:
           # del fixture `client` abortan antes de correr nada; no se toca esa base
           # compartida. Los +10 son los mismos que suma el job sin DB (905 -> 915,
           # medido dos veces). Si el runner da otro numero, manda el runner.
-          PISO_PASSED = 1530
+          # 1530 -> 1532 el 2026-09-17: el runner del PR #101 contó 1530 passed y
+          #   2 failed (test_pipelines_identity_injection.py:57 y :90, KeyError
+          #   'json': el cliente falso no aceptaba `headers=`). El falso ahora acepta
+          #   `headers` y los dos tests afirman que viaja X-Jax-Credencial-Servicio
+          #   con la credencial de la sesión: 1530 + 2. Local, ese archivo y
+          #   test_credencial_las_manos.py: 12 passed (vistos en rojo sin el arreglo).
+          #   La suite completa local sigue sin medir por el mismo dato ajeno en
+          #   jax_memory_test (43 failed por capability delegate/integrate sin mode).
+          PISO_PASSED = 1532
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
