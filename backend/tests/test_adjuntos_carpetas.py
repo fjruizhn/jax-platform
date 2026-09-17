@@ -245,3 +245,69 @@ def test_la_baja_borra_la_carpeta_del_usuario_y_nada_mas(directorio):
 
 def test_la_baja_de_un_usuario_sin_carpeta_no_falla(directorio):
     assert almacen.borrar_de_usuario(directorio, "5") == 0
+
+
+# ------------------------------------------------ RD7 fix round (R28 y menores)
+
+def test_la_baja_no_sigue_una_carpeta_symlink_hacia_otro_usuario(directorio):
+    """Carpeta 5 plantada como symlink a la 6: borrar al 5 no toca los
+    archivos del 6 (el mismo chequeo de carpeta propia que usa la lectura)."""
+    ajeno = _texto(directorio, user=AJENO)
+    os.symlink(directorio / "6", directorio / "5")
+    antes = _archivos(directorio / "6")
+    with pytest.raises(NotADirectoryError):
+        almacen.borrar_de_usuario(directorio, "5")
+    assert _archivos(directorio / "6") == antes == sorted([f"{ajeno['id']}.dato", f"{ajeno['id']}.json"])
+    assert os.path.islink(directorio / "5")
+
+
+def _rmdir_despues_de_crear(monkeypatch, veces):
+    """Inyecta la carrera: el limpiador borra la carpeta justo después de que
+    la subida la crea y antes de que la use. `veces` = cuántas veces seguidas."""
+    real = almacen._crear_carpeta_si_falta
+    quedan = [veces]
+
+    def crear_y_perder(carpeta):
+        real(carpeta)
+        if quedan[0] > 0:
+            quedan[0] -= 1
+            os.rmdir(carpeta)
+
+    monkeypatch.setattr(almacen, "_crear_carpeta_si_falta", crear_y_perder)
+    return quedan
+
+
+def test_preparar_carpeta_reintenta_si_el_limpiador_la_borra_entre_mkdir_y_el_chequeo(directorio, monkeypatch):
+    _rmdir_despues_de_crear(monkeypatch, almacen._REINTENTOS_DE_CARPETA - 1)
+    carpeta = almacen.preparar_carpeta(directorio, "5")
+    assert carpeta.is_dir()
+
+
+def test_crear_exclusivo_reintenta_si_la_carpeta_desaparece_tras_recrearla(directorio, monkeypatch):
+    carpeta = almacen.preparar_carpeta(directorio, "5")
+    os.rmdir(carpeta)
+    _rmdir_despues_de_crear(monkeypatch, almacen._REINTENTOS_DE_CARPETA - 2)
+    destino = carpeta / almacen.nombre_temporal()
+    assert almacen.copiar_subida(io.BytesIO(PNG), destino, 10 * 1024 * 1024) == len(PNG)
+
+
+def test_si_la_carpeta_se_pierde_en_todos_los_intentos_es_un_codigo_estable(directorio, monkeypatch):
+    _rmdir_despues_de_crear(monkeypatch, 10 ** 6)
+    with pytest.raises(almacen.CarpetaInestable) as e:
+        almacen.preparar_carpeta(directorio, "5")
+    assert (e.value.status, e.value.detail) == (503, {"code": "adjuntos_reintentar"})
+    with pytest.raises(almacen.CarpetaInestable):
+        _texto(directorio)
+
+
+def test_una_subida_que_pierde_su_carpeta_siempre_recibe_503_con_codigo_no_500(directorio, monkeypatch):
+    from fastapi import HTTPException
+    monkeypatch.setenv("JAX_ADJUNTOS_CUOTA_BYTES_USUARIO", str(1024 * 1024))
+    _rmdir_despues_de_crear(monkeypatch, 10 ** 6)
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(upload_mod.upload_file(
+            file=UploadFile(io.BytesIO(PNG), filename="f.png", headers=Headers({"content-type": "image/png"})),
+            user=DUENIO))
+    assert (e.value.status_code, e.value.detail) == (503, {"code": "adjuntos_reintentar"})
+    assert _archivos(directorio) == []
+    assert cuota._cuentas == {}

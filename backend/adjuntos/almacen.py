@@ -241,16 +241,41 @@ def _crear_carpeta_si_falta(carpeta: Path) -> None:
         os.mkdir(carpeta, 0o700)
 
 
+# Carrera con el limpiador (RD7 fix round, R28/menor 7): la carpeta vacía se
+# puede borrar (os.rmdir) entre el mkdir de una subida y su chequeo, o entre
+# el chequeo y el primer open. Cada FileNotFoundError de ese tramo reintenta
+# el tramo entero. 3 intentos: perder la carrera exige que una pasada del
+# limpiador (cada 15 min) caiga tres veces seguidas en una ventana de
+# microsegundos; si igual pasa, la subida recibe 503 `adjuntos_reintentar`
+# (nunca un 500) y el cliente puede volver a intentar.
+_REINTENTOS_DE_CARPETA = 3
+
+
+class CarpetaInestable(AdjuntoRechazado):
+    """La carpeta del usuario desapareció en todos los intentos."""
+
+    def __init__(self):
+        super().__init__(503, "adjuntos_reintentar")
+
+
+def _asegurar_carpeta(directorio: Path, carpeta: Path) -> None:
+    """mkdir + chequeo de carpeta propia. FileNotFoundError si el limpiador
+    la borró entre medio (quien llama reintenta)."""
+    _crear_carpeta_si_falta(carpeta)
+    _exigir_carpeta_real(directorio, carpeta)
+
+
 def preparar_carpeta(directorio: Path, user_id) -> Path:
     """Síncrona (to_thread). Crea la carpeta 0700 si falta y comprueba que es
     un directorio propio. Devuelve su ruta."""
     carpeta = carpeta_de_usuario(directorio, user_id)
-    _crear_carpeta_si_falta(carpeta)
-    _exigir_carpeta_real(directorio, carpeta)
-    return carpeta
-
-
-_REINTENTOS_DE_CARPETA = 3
+    for _ in range(_REINTENTOS_DE_CARPETA):
+        try:
+            _asegurar_carpeta(directorio, carpeta)
+            return carpeta
+        except FileNotFoundError:
+            continue  # el limpiador la borró entre el mkdir y el chequeo: se reintenta
+    raise CarpetaInestable()
 
 
 def _crear_exclusivo(ruta: Path) -> int:
@@ -258,13 +283,12 @@ def _crear_exclusivo(ruta: Path) -> int:
     vacía entre preparar_carpeta y este open), la recrea 0700 y reintenta."""
     for intento in range(_REINTENTOS_DE_CARPETA):
         try:
+            if intento:
+                _asegurar_carpeta(ruta.parent.parent, ruta.parent)
             return os.open(ruta, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileNotFoundError:
-            if intento == _REINTENTOS_DE_CARPETA - 1:
-                raise
-            _crear_carpeta_si_falta(ruta.parent)
-            _exigir_carpeta_real(ruta.parent.parent, ruta.parent)
-    raise AssertionError("inalcanzable")
+            continue  # carpeta borrada entre medio (open, mkdir o chequeo): se reintenta
+    raise CarpetaInestable()
 
 
 # ---------------------------------------------------------------------- ids
@@ -670,6 +694,10 @@ def borrar_de_usuario(directorio: Path, user_id: str) -> int:
     carpeta = carpeta_de_usuario(directorio, user_id)
     borrados = 0
     try:
+        # El mismo chequeo que la lectura: una carpeta symlink (plantada hacia
+        # la de otro usuario) NO se sigue; NotADirectoryError sube a la baja,
+        # que lo loguea (best-effort).
+        _exigir_carpeta_real(directorio, carpeta)
         entradas = _listar(carpeta)
     except FileNotFoundError:
         return 0

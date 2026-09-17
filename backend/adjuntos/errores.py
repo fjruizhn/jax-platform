@@ -12,6 +12,7 @@ CODIGOS: tuple[str, ...] = (
     "adjuntos_cuota_excedida",
     "adjuntos_sin_espacio",
     "adjuntos_subidas_limite",
+    "adjuntos_reintentar",
     "adjuntos_no_soportados",
     "imagen_no_soportada",
     "pdf_ilegible",
