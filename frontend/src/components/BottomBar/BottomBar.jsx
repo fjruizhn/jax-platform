@@ -142,7 +142,7 @@ function BottomBar() {
 
   async function handleSend() {
     const text = input.trim()
-    if (!text || sending) return
+    if (!text || sending || imagenSinSoporte) return
 
     if (mode === 'pipeline') {
       setPipelineObjective(text)

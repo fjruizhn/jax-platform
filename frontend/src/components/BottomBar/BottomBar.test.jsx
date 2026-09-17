@@ -129,6 +129,12 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
     expect(aviso.textContent).toMatch(/no acepta imágenes/)
     fireEvent.change(container.querySelector('textarea'), { target: { value: 'describí' } })
     expect(screen.getByRole('button', { name: 'Enviar' })).toBeDisabled()
+
+    // Fix round 1: Enter en el textarea llama a handleSend() directo, sin
+    // pasar por el disabled del botón -- tiene que frenar igual.
+    fireEvent.keyDown(container.querySelector('textarea'), { key: 'Enter' })
+    expect(api.post).toHaveBeenCalledTimes(1) // solo la subida, nunca /chat
+    expect(useJaxStore.getState().messages).toHaveLength(0)
   })
 
   it('sin política no se puede adjuntar', async () => {
