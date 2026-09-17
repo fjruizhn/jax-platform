@@ -9,13 +9,16 @@ from db.connection import get_pool
 
 router = APIRouter(prefix="/api/admin")
 
+# Frente C (2026-09-16): los cinco ajustes que mandan (session_timeout_min,
+# max_pipelines, web_task_retention_days, lang_default, system_name) NO van
+# acá. Sus filas las crea una vez db/migrations.py::_ajustes_que_mandan_v1, y
+# si faltan, la respuesta es 503 ajuste_ilegible (ajustes.py): un GET de esta
+# pantalla no puede recrearlas en silencio con un default.
+# ws_notifications tampoco: se retiró (A-17, 2026-09-16) y su fila la borra,
+# una sola vez, la misma migración -- si siguiera acá, _ensure_defaults la
+# recrearía en cada GET.
 DEFAULT_CONFIG = {
-    "lang_default": "es",
     "theme_default": "dark",
-    "session_timeout_min": "60",
-    "max_pipelines": "1",
-    "web_task_retention_days": "7",
-    "system_name": "Axioma",
 }
 
 
