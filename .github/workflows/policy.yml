@@ -564,8 +564,15 @@ jobs:
             // AdminSettings (+2, config_valor_invalido sin clave cae en el
             // genérico). Vistos en rojo. Medido dos veces: 535 passed, 0
             // fallidos, 67 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 535) {
-              console.error("PISO ROTO: se esperaban 535 tests de vitest CORRIDOS y 0 fallidos.");
+            // 535 -> 569 el 2026-09-17 (frente B, kill switch real, rebasado
+            // sobre c414eba): KillSwitch.test.jsx (2 -> 13), useJaxStore.killSwitch
+            // (+8, Ruling R5), client.killSwitch (+3), BottomBar.errores (+1, 423
+            // traducido), RightPanel (+1, 423 al reanudar), aviso de error que
+            // sigue al freno, foco y ruta heredada (Tasks 9/H y revisión final).
+            // Re-medido dos veces tras el rebase (no sumado a ojo): 569 passed,
+            // 0 fallidos, 69 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 569) {
+              console.error("PISO ROTO: se esperaban 569 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1488,7 +1495,19 @@ jobs:
           # runner de CI) y no se le suma holgura al piso por él: el
           # controlador que corra esto en un esquema fresco lo vuelve a
           # medir. Skip count sin cambios (1: gpt-5.6-terra).
-          PISO_PASSED = 1426
+          # 1426 -> 1486 el 2026-09-17 (frente B, kill switch real, rebasado
+          # sobre c414eba): test_interruptor_arranque, test_kill_switch,
+          # test_kill_switch_endpoints, test_kill_switch_mesa,
+          # test_kill_switch_heredada y la revisión final (Tasks 2/6/7/8/H),
+          # más test_conftest_sin_servicios_de_produccion (+2: la suite ya no
+          # sondea LAS MANOS :7777 ni la plataforma :8080 de producción) y
+          # test_facet_canary_freno (+5: con el freno puesto la sonda de
+          # facetas no llama a proveedores). Re-medido dos veces tras el
+          # rebase (no sumado a ojo), idéntico: 1486 passed / 1 failed / 1
+          # skipped. El failed es el mismo hueco ambiental de la nota anterior
+          # (test_seed_kimi_y_ada_como_motor, dato de `kimi` en el esquema
+          # persistente local) y no entra al piso.
+          PISO_PASSED = 1486
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2027,7 +2046,15 @@ jobs:
       # import aiomysql no truena y pymysql.converters.escape_dict existe).
       # Ninguno pide `client`, los skips no se mueven. Medido con
       # JAX_CI_NO_DB=1: 827 passed / 601 skipped.
-      JAX_CI_MIN_PASSED: "827"
+      # 827 -> 879 el 2026-09-17 (frente B, kill switch real, rebasado sobre
+      # c414eba): +45 puros de las Tasks 2/6/8/H y la revisión final
+      # (test_interruptor_arranque, test_kill_switch, test_kill_switch_mesa,
+      # test_kill_switch_heredada), +2 en
+      # test_conftest_sin_servicios_de_produccion y +5 en
+      # test_facet_canary_freno; los skips suben 601 -> 609 (tests con
+      # `client`). Re-medido dos veces tras el rebase con JAX_CI_NO_DB=1,
+      # idéntico: 879 passed / 609 skipped.
+      JAX_CI_MIN_PASSED: "879"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

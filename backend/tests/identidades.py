@@ -55,7 +55,8 @@ async def crear_usuario(role="operator", status="active", password=None, token_v
 
 
 async def borrar_usuario(user_id):
-    # La auditoría no tiene FK (a propósito): se limpia a mano lo que dejó el test.
+    # Las dos auditorías son sin FK (a propósito): se limpia a mano lo que dejó el test.
+    await sql("DELETE FROM kill_switch_audit WHERE user_id = %s", (user_id,))
     await sql("DELETE FROM user_admin_audit WHERE target_user_id = %s OR actor_user_id = %s", (user_id, user_id))
     await sql("DELETE FROM password_reset_tokens WHERE user_id = %s", (user_id,))
     await sql("DELETE FROM jax_users WHERE user_id = %s", (user_id,))

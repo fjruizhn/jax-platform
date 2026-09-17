@@ -6,6 +6,13 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+# El freno primero (2026-09-16, frente B): sin JAX_KILL_SWITCH_PATH la
+# plataforma no sabe dónde escribir ni dónde mirar el kill switch, y una Mesa
+# sin freno no arranca. Lanza InterruptorSinConfigurar y uvicorn sale con
+# error: systemd lo muestra en el journal.
+import interruptor
+interruptor.ruta_del_interruptor()
+
 # Debe correr antes de importar cualquier router: systemd carga
 # /etc/jax/.env vía EnvironmentFile con las API keys de proveedor ya
 # cifradas (ver crypto_secrets.py); esto las deja en texto plano en
@@ -80,6 +87,7 @@ from api.admin import (
     facet_bindings_router,
     admin_motors_router,
     smtp_router,
+    kill_switch_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -164,6 +172,7 @@ ROUTERS = (
     facet_bindings_router,
     admin_motors_router,
     smtp_router,
+    kill_switch_router,
     apariencia_router,
 )
 for _router in ROUTERS:

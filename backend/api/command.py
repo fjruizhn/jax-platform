@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from auth.middleware import get_current_user
 from auth.models import AuthUser
+from kill_switch import exigir_mesa_libre
 from config_entorno import ruta_absoluta_requerida
 from jax_engine.events import event_bus
 from jax_engine.schemas import JAXEvent
@@ -103,7 +104,7 @@ class CommandRequest(BaseModel):
 
 
 @router.post("/command")
-async def create_command(req: CommandRequest, user: AuthUser = Depends(get_current_user)):
+async def create_command(req: CommandRequest, user: AuthUser = Depends(exigir_mesa_libre)):
     task_id = str(uuid.uuid4())
     mission_file = MISSIONS_DIR / f"web-task-{task_id}.md"
     result_file = MISSIONS_DIR / f"web-task-{task_id}_result.md"

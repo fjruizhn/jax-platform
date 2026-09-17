@@ -8,6 +8,7 @@ EventType = Literal[
     "pipeline_step_changed",
     "human_gate_requested",
     "kill_switch_activated",
+    "kill_switch_released",
     "las_manos_health_changed",
     "facet_response_completed",
     "heartbeat",

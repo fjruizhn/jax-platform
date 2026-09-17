@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends
+
+import kill_switch
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from api.pipelines import es_del_usuario
@@ -37,4 +39,8 @@ async def get_ecosystem_state(user: AuthUser = Depends(get_current_user)):
         if propia is not None and propia.tenant_id == user.tenant_id
         else {}
     )
+    # Global, para todos los roles (2026-09-16, frente B): quien no es
+    # superadmin tiene que saber que la Mesa está frenada. Un stat por pedido,
+    # sin caché (el freno no espera un TTL).
+    datos["kill_switch_active"] = kill_switch.activo()
     return datos
