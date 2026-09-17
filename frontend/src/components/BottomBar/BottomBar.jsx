@@ -9,8 +9,8 @@ import api from '../../api/client'
 import { alturaInput } from './alturaInput'
 import { colorToken } from '../../tema/tokens'
 
-// Solo orden de despliegue — label viene de /api/facets (tabla `facet`,
-// Bloque C) y el token de color del store; no se duplican aca.
+// Solo orden de despliegue — label viene de /api/state (display_name de la tabla
+// `facet`, Bloque C) y el token de color del store; no se duplican aca.
 const FACET_ORDER = ['jax_local', 'jekyll', 'hipatia', 'thot', 'kimi', 'hyde', 'ada']
 
 function BottomBar() {

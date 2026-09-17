@@ -66,4 +66,12 @@ describe('el token de faceta se deriva de la clave, no de los datos del servidor
     expect(facets.jekyll.last_message).toBe('hola')
     expect(getEyeState(facets, {}, true, false).token).toBe('faceta-jekyll')
   })
+
+  it('loadState: el display_name del servidor queda en la faceta (A-48)', async () => {
+    api.get.mockResolvedValueOnce({
+      data: { facets: { hipatia: { name: 'hipatia', status: 'idle', display_name: 'Hipatia' } }, active_pipelines: {}, las_manos_alive: true },
+    })
+    await useJaxStore.getState().loadState()
+    expect(useJaxStore.getState().facets.hipatia.display_name).toBe('Hipatia')
+  })
 })

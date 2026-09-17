@@ -35,7 +35,9 @@ class FacetState(BaseModel):
     status: FacetStatus = "idle"
     last_message: str = ""
     last_update: str = Field(default_factory=lambda: utc_ahora().isoformat() + "Z")
-    color: str = "#3b82f6"
+    # Tabla `facet` (Bloque C), cargado al arrancar (A-48). El color no vive
+    # acá: el frontend deriva el token de la clave (tema-tokens §7.3, A-42).
+    display_name: str | None = None
 
 
 class PipelineStep(BaseModel):

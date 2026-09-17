@@ -5,6 +5,7 @@ import os
 from tiempo import utc_ahora
 import httpx
 from http_client import get_http_client
+from db.connection import get_pool
 from .schemas import (
     EcosystemState, FacetState, PipelineState, PipelineStep, UserSession, JAXEvent
 )
@@ -13,18 +14,9 @@ from .resource_manager import resource_manager
 
 logger = logging.getLogger(__name__)
 
-FACET_COLORS = {
-    "jax_local": "#3b82f6",
-    "jekyll":    "#6366f1",
-    "hyde":      "#f97316",
-    "hipatia":   "#10b981",
-    "thot":      "#f59e0b",
-    "kimi":      "#06b6d4",
-    "ada":       "#7c3aed",
-    "jacobs":    "#ffffff",
-}
-
-DEFAULT_FACETS = list(FACET_COLORS.keys())
+# Solo el orden y el conjunto de facetas conocidas; identidad y color viven en
+# la tabla `facet` (display_name) y en el tema del frontend (token).
+DEFAULT_FACETS = ["jax_local", "jekyll", "hyde", "hipatia", "thot", "kimi", "ada", "jacobs"]
 
 LAS_MANOS_URL = os.getenv("LAS_MANOS_URL", "http://127.0.0.1:7777")
 
@@ -60,11 +52,23 @@ class JAXEngineState:
 
     def _init_facets(self):
         for name in DEFAULT_FACETS:
-            self._state.facets[name] = FacetState(
-                name=name,
-                status="idle",
-                color=FACET_COLORS[name],
-            )
+            self._state.facets[name] = FacetState(name=name, status="idle")
+
+    async def cargar_nombres_de_facetas(self):
+        """A-48. Una lectura al arrancar (main.py lifespan, después de
+        run_migrations). Invalidación: reinicio -- el único escritor de
+        facet.display_name son las migraciones del arranque
+        (tests/test_facetas_nombres.py lo fija). Sin base, el lifespan ya
+        falló antes: no hay estado sin nombres que servir."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT `key`, display_name FROM facet")
+                filas = await cur.fetchall()
+        for clave, nombre in filas:
+            faceta = self._state.facets.get(clave)
+            if faceta is not None:
+                faceta.display_name = nombre
 
     def get_state(self) -> EcosystemState:
         return self._state
@@ -79,9 +83,7 @@ class JAXEngineState:
 
     async def set_facet_status(self, facet: str, status: str, tenant_id: str, user_id: str, message: str = ""):
         if facet not in self._state.facets:
-            self._state.facets[facet] = FacetState(
-                name=facet, color=FACET_COLORS.get(facet, "#6b7280")
-            )
+            self._state.facets[facet] = FacetState(name=facet)
         self._state.facets[facet].status = status
         self._state.facets[facet].last_message = message
         self._state.facets[facet].last_update = utc_ahora().isoformat() + "Z"

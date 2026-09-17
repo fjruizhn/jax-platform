@@ -14,7 +14,7 @@ import {
 } from './pipelineChain'
 
 // capability/desc son de otro sistema (las_manos, tablas motor/capability/
-// capability_motor -- R4) -- label y token vienen de facetsState (/api/facets).
+// capability_motor -- R4) -- label y token vienen de facetsState (/api/state).
 function getFacetOptions(t, facetsState) {
   return [
     { id: 'jax_local', capability: 'reasoning',       desc: t.descJaxLocal },

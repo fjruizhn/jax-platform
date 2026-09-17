@@ -90,6 +90,7 @@ async def lifespan(app: FastAPI):
     await get_http_client()
     await run_migrations()
     await run_seed()
+    await engine_state.cargar_nombres_de_facetas()
     engine_state.start_background_tasks()
     asyncio.create_task(start_owner_file_cleanup())
     asyncio.create_task(start_facet_canary())
