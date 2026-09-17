@@ -574,8 +574,17 @@ jobs:
             // RightPanel.continuar (+1, nuevo). Delta por archivo medido con el
             // reporter json contra 442da49. Vistos en rojo contra accc641.
             // Medido dos veces: 646 passed, 0 fallidos, 72 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 646) {
-              console.error("PISO ROTO: se esperaban 646 tests de vitest CORRIDOS y 0 fallidos.");
+            // 646 -> 658 el 2026-09-17 (revisión final de pre-vuelo y
+            // continuar): api/errores (+2, 6b costo que subió tras confirmar;
+            // 6d sin detalle de texto de Jacobs), PipelineModal (+2, objective
+            // al pre-vuelo; 6b), ContinuarPipelineModal (+2, 6b; 6c nombre
+            // visible), lib/moneda (+2, 6a hacia arriba y sin roundingMode),
+            // api/websocket (+2, 8a nada tras close()), lib/nombreDeFaceta (+1,
+            // nuevo), store facetTokens (+1, 8b loadState deja rastro). Delta
+            // por archivo con el reporter json contra a1f21a2. Vistos en rojo
+            // (o por mutación). Medido: 658 passed, 0 fallidos, 73 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 658) {
+              console.error("PISO ROTO: se esperaban 658 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1478,7 +1487,15 @@ jobs:
           # arreglo del lado plataforma (JAX_OLLAMA_URL) está en master c53ef30
           # (#92), que esta rama recibe al rebasar. Con el config.toml de jax
           # 3b2887d^ la suite entera da 1581 passed / 0 failed / 1 skipped.
-          PISO_PASSED = 1581
+          # 1581 -> 1615 el 2026-09-17 (revisión final de pre-vuelo y
+          # continuar), por junit contra la medición de la Task 12:
+          # test_pipelines_continuar (+19: reasignar con tope, causa sin repr,
+          # EXPLAIN con idx_events_pipeline_tipo) y test_pipelines_prevuelo
+          # (+15: objective al pre-vuelo, montos de 6 decimales, 403 con
+          # detalle texto). Medido en hall9000: 1611 passed / 4 failed / 1
+          # skipped; los 4 son los mismos de api_url de arriba (se arreglan
+          # con el rebase sobre c53ef30), así que el piso es 1611 + 4 = 1615.
+          PISO_PASSED = 1615
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2002,7 +2019,13 @@ jobs:
       # que piden `client` se saltean (skips 601 -> 624, +23). Vistos en rojo
       # contra accc641. Medido dos veces con JAX_CI_NO_DB=1: 958 passed / 624
       # skipped.
-      JAX_CI_MIN_PASSED: "958"
+      # 958 -> 989 el 2026-09-17 (revisión final de pre-vuelo y continuar),
+      # por junit contra la Task 12: test_pipelines_continuar (+17) y
+      # test_pipelines_prevuelo (+14); los 3 nuevos que piden `client`
+      # (EXPLAIN con el índice compuesto, reasignar y objetivo por HTTP) se
+      # saltean (skips 624 -> 627). Medido con JAX_CI_NO_DB=1: 989 passed /
+      # 627 skipped.
+      JAX_CI_MIN_PASSED: "989"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
