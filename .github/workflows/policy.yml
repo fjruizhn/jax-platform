@@ -529,8 +529,17 @@ jobs:
             // sus casos utiles se consolidaron en un solo it() con las 6
             // aserciones de siempre. Vistos en rojo antes de verde. Medido dos
             // veces contra este arbol: 488 passed, 0 fallidos, 62 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 488) {
-              console.error("PISO ROTO: se esperaban 488 tests de vitest CORRIDOS y 0 fallidos.");
+            // 488 -> 503 el 2026-09-16: +15 por archivo, ronda final de
+            // revision -- AdminDashboard.test.jsx (+3, 0/0 llaves no es verde),
+            // api/errores.test.js (+5, Object.hasOwn), useJaxStore.comandos
+            // (+2, fallo sin motivo es/en), limpieza.test.js (+1, idioma leido
+            // una vez), AdminSettings.test.jsx (+1, "Guardando…"),
+            // AdminFacetsModels.test.jsx (+2, toasts de rotar/revocar),
+            // Dialogo.test.jsx (+1, reintento de foco aislado). Vistos en rojo
+            // (o con el control mutado) antes de verde. Medido dos veces: 503
+            // passed, 0 fallidos, 62 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 503) {
+              console.error("PISO ROTO: se esperaban 503 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1379,7 +1388,14 @@ jobs:
           # count sin cambios (1: gpt-5.6-terra). Medido dos veces contra este
           # arbol: 1303 passed / 1 failed / 1 skipped, identico en ambas
           # corridas.
-          PISO_PASSED = 1303
+          # 1303 -> 1332 el 2026-09-16: +29 por archivo, ronda final de
+          # revision -- test_repositorio_rutas.py (+11, contencion contra la
+          # carpeta, NUL, symlinks), test_tablero.py (+3, base mal formada),
+          # test_mesa_codigos.py (+5, disco de command.py fuera del loop),
+          # test_rutas_de_entorno.py (+10, escaneo AST de defaults de
+          # entorno). Mismo hueco ambiental (1 failed de grounding), 1 skip.
+          # Medido dos veces: 1332 passed / 1 failed / 1 skipped.
+          PISO_PASSED = 1332
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1875,7 +1891,12 @@ jobs:
       # (129 - 119) quedan como skip sin DB (562 -> 572). Medido dos veces
       # con JAX_CI_NO_DB=1 contra este arbol: 733 passed / 572 skipped,
       # identico en ambas corridas.
-      JAX_CI_MIN_PASSED: "733"
+      # 733 -> 762 el 2026-09-16: +29 puros por archivo, ronda final de
+      # revision -- test_repositorio_rutas.py (+11), test_tablero.py (+3),
+      # test_mesa_codigos.py (+5), test_rutas_de_entorno.py (+10); ninguno
+      # pide `client`, los skips no se mueven. Medido dos veces con
+      # JAX_CI_NO_DB=1: 762 passed / 572 skipped.
+      JAX_CI_MIN_PASSED: "762"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
