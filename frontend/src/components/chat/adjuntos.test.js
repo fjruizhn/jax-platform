@@ -60,6 +60,19 @@ describe('adjuntos -- contrato con /api/chat por id (RD4)', () => {
     expect(textoDeErrorDeMesa(es, {}, 'generico')).toBe('generico')
   })
 
+  it('cuota, disco y límite de subidas (RD6/RD7) se traducen con sus datos, en es y en', () => {
+    expect(textoDeErrorDeMesa(es, err({ code: 'adjuntos_cuota_excedida', cuota_bytes: 524288000 }), 'x'))
+      .toBe('Llegaste al máximo de 500 MB de adjuntos guardados. Los adjuntos vencen solos: vuelve a intentarlo más tarde.')
+    expect(textoDeErrorDeMesa(en, err({ code: 'adjuntos_cuota_excedida', cuota_bytes: 524288000 }), 'x'))
+      .toBe('You reached the 500 MB limit of stored attachments. Attachments expire on their own: try again later.')
+    expect(textoDeErrorDeMesa(es, err({ code: 'adjuntos_sin_espacio' }), 'x')).toBe(es.erroresMesa.adjuntos_sin_espacio())
+    expect(textoDeErrorDeMesa(en, err({ code: 'adjuntos_sin_espacio' }), 'x')).toBe(en.erroresMesa.adjuntos_sin_espacio())
+    expect(textoDeErrorDeMesa(es, err({ code: 'adjuntos_subidas_limite', retry_after: 35 }), 'x'))
+      .toBe('Subiste demasiados archivos seguidos. Espera 35 s y vuelve a intentarlo.')
+    expect(textoDeErrorDeMesa(en, err({ code: 'adjuntos_subidas_limite', retry_after: 35 }), 'x'))
+      .toBe('Too many uploads in a row. Wait 35 s and try again.')
+  })
+
   it('adjuntos_demasiados concuerda en número con el máximo', () => {
     expect(es.erroresMesa.adjuntos_demasiados({ max: 1 })).toBe('Se puede adjuntar hasta 1 archivo por mensaje.')
     expect(es.erroresMesa.adjuntos_demasiados({ max: 3 })).toBe('Se pueden adjuntar hasta 3 archivos por mensaje.')

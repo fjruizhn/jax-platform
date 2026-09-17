@@ -50,6 +50,7 @@ import ajustes
 from adjuntos import limites as limites_de_adjuntos
 from adjuntos import almacen as almacen_de_adjuntos
 from adjuntos import cuota as cuota_de_adjuntos
+from adjuntos import limite_de_subidas
 from adjuntos import pdf_pool
 from db.connection import get_pool, close_pool
 from http_client import get_http_client, close_http_client
@@ -125,6 +126,8 @@ async def lifespan(app: FastAPI):
     # RD6 (2026-09-17): cuota por usuario y disco libre mínimo, en rango, y
     # la cuota no menor que el tope por archivo (adjuntos/cuota.py).
     cuota_de_adjuntos.validar_configuracion()
+    # RD7: límite de subidas por usuario (adjuntos/limite_de_subidas.py).
+    limite_de_subidas.cargar_subidas_por_minuto()
     # RD1 (2026-09-17): el ProcessPoolExecutor de pypdf se crea acá, antes de
     # la base y el cliente HTTP -- mismo criterio que los límites de arriba,
     # config primero, nada que dependa de otra cosa (ver adjuntos/pdf_pool.py).
@@ -178,6 +181,11 @@ app.add_exception_handler(ajustes.AjusteIlegible, ajustes.respuesta_de_ajuste_il
 
 # Frente A (2026-09-16, A-18): el dev es mismo origen (proxy de Vite para /api
 # y /ws) y producción también (nginx de la VM dev). Solo el origen declarado.
+# RD7 (2026-09-17): límite de subidas por usuario ANTES de leer el cuerpo
+# (adjuntos/limite_de_subidas.py). Se agrega ANTES que CORS a propósito: en
+# Starlette el último agregado es el de afuera, así que CORS envuelve al 429.
+app.add_middleware(limite_de_subidas.LimiteDeSubidas)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o for o in [os.getenv("FRONTEND_ORIGIN", "")] if o],

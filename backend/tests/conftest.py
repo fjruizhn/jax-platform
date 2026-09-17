@@ -87,6 +87,11 @@ os.environ.setdefault("JAX_ADJUNTOS_TTL_HORAS", "24")
 # Los tests de la guarda simulan shutil.disk_usage.
 os.environ.setdefault("JAX_ADJUNTOS_CUOTA_BYTES_USUARIO", "524288000")
 os.environ["JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES"] = "1073741824"
+# Límite de subidas por usuario (RD7): FORZADO al techo del rango (600/min).
+# Los tests de HTTP suben con unos pocos usuarios de prueba dentro del mismo
+# minuto; con el valor de producción en /etc/jax/.env darían 429 según el
+# orden de la suite. Los tests del límite lo fijan con monkeypatch.setenv.
+os.environ["JAX_ADJUNTOS_SUBIDAS_POR_MINUTO"] = "600"
 
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
 # aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture
