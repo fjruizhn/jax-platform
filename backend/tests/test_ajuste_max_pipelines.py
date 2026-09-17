@@ -40,7 +40,7 @@ async def test_el_cupo_lo_decide_el_limite_que_se_pasa():
     rm = ResourceManager()
     await rm.admit_pipeline("t", "p1")
     await rm.admit_pipeline("t", "p2")
-    assert await rm.can_start_pipeline("t", 2) is True
+    assert await rm.can_start_pipeline("t", 2) is False
     assert await rm.can_start_pipeline("t", 3) is True
     assert await rm.can_start_pipeline("otro", 1) is True
 
