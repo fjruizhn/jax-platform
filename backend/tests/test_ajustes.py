@@ -212,3 +212,28 @@ def test_explain_de_la_consulta_real_va_por_primary(client, ajustes_en_db):
     assert plan["key"] == "PRIMARY", plan
     extra = plan.get("Extra") or ""
     assert "filesort" not in extra and "temporary" not in extra, plan
+
+
+# Chequeo al arrancar (revisión final, ruling R16, 2026-09-17): bajar
+# ACCESS_EXPIRE_SECONDS o MAX_PARALLEL_PIPELINES puede dejar ilegible un valor
+# ya guardado. El arranque no se cae, pero nombra cada clave en un ERROR.
+def test_claves_ilegibles_nombra_cada_una_con_su_motivo(client, ajustes_en_db):
+    ajustes_en_db.poner(**{**ajustes_en_db.validos, "max_pipelines": "9"})
+    ajustes_en_db.quitar("system_name")
+    assert client.portal.call(ajustes.claves_ilegibles) == [
+        ("max_pipelines", "invalido"), ("system_name", "ausente"),
+    ]
+
+
+def test_claves_ilegibles_vacia_con_los_cinco_validos(client, ajustes_en_db):
+    ajustes_en_db.poner(**ajustes_en_db.validos)
+    assert client.portal.call(ajustes.claves_ilegibles) == []
+
+
+def test_avisar_claves_ilegibles_loguea_error_sin_el_valor(client, ajustes_en_db, caplog):
+    ajustes_en_db.poner(**{**ajustes_en_db.validos, "session_timeout_min": "valor-secreto-99"})
+    with caplog.at_level("ERROR", logger="ajustes"):
+        assert client.portal.call(ajustes.avisar_claves_ilegibles) == [("session_timeout_min", "invalido")]
+    errores = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any("session_timeout_min" in m and "invalido" in m for m in errores), errores
+    assert not any("valor-secreto-99" in m for m in errores), errores

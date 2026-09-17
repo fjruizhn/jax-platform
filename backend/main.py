@@ -90,6 +90,9 @@ async def lifespan(app: FastAPI):
     await get_pool()
     await get_http_client()
     await run_migrations()
+    # Ruling R16 (2026-09-17): nombra en ERROR cada ajuste ilegible (p.ej. tras
+    # cambiar ACCESS_EXPIRE_SECONDS o MAX_PARALLEL_PIPELINES); no aborta.
+    await ajustes.avisar_claves_ilegibles()
     await run_seed()
     await engine_state.cargar_nombres_de_facetas()
     engine_state.start_background_tasks()

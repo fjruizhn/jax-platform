@@ -61,6 +61,10 @@ CLAVES = (SESION, MAX_PIPELINES, RETENCION, IDIOMA, NOMBRE)
 IDIOMAS = ("es", "en")
 NOMBRE_MAX = 60
 # Un refresh que viva menos que el access no se llegaría a usar.
+# OJO: subir ACCESS_EXPIRE_SECONDS sube SESION_MIN y puede dejar ilegible un
+# session_timeout_min ya guardado; lo mismo bajar MAX_PARALLEL_PIPELINES con
+# max_pipelines. El arranque lo nombra en un ERROR (avisar_claves_ilegibles,
+# main.py) y el endpoint que lo lea responde 503.
 SESION_MIN = ACCESS_EXPIRE_SECONDS // 60
 SESION_MAX = 10080  # 7 días: la vida que el código hacía cumplir el 2026-09-16
 RETENCION_MAX = 365
@@ -208,6 +212,28 @@ async def valor(clave: str) -> int | str:
         return interpretar(clave, filas[clave])
     except ValorInvalido:
         raise AjusteIlegible(clave, "invalido") from None
+
+
+async def claves_ilegibles() -> list[tuple[str, str]]:
+    """(clave, motivo) de cada ajuste que hoy no se puede leer, en el orden de
+    CLAVES. Un error de la base NO se traga: sube."""
+    ilegibles = []
+    for clave in CLAVES:
+        try:
+            await valor(clave)
+        except AjusteIlegible as exc:
+            ilegibles.append((exc.clave, exc.motivo))
+    return ilegibles
+
+
+async def avisar_claves_ilegibles() -> list[tuple[str, str]]:
+    """Chequeo del arranque (ruling R16, 2026-09-17): un ERROR por clave
+    ilegible, con clave y motivo -- nunca el valor. No tumba el arranque: el
+    503 de cada endpoint ya es fail-closed; esto lo hace visible antes."""
+    ilegibles = await claves_ilegibles()
+    for clave, motivo in ilegibles:
+        logger.error("arranque: ajuste %s ilegible en axioma_config (%s)", clave, motivo)
+    return ilegibles
 
 
 async def respuesta_de_ajuste_ilegible(request, exc: AjusteIlegible) -> JSONResponse:
