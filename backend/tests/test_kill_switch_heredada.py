@@ -108,6 +108,25 @@ async def test_activar_y_reanudar_sin_heredada_la_informan_en_false(entorno):
     assert await kill_switch.reanudar(ADMIN) == {"activo": False, "cambio": True, "heredada": False}
 
 
+async def test_el_informe_mira_la_heredada_una_sola_vez(entorno, vieja, monkeypatch):
+    """Revisión final del frente B (hallazgo 9): `_informe` miraba la ruta
+    heredada dos veces (`activo()` y `_heredada_activa()`). Un solo stat, y
+    el resultado no cambia."""
+    ruta, _, _ = entorno
+    vieja.write_text("")
+    miradas = []
+    real = interruptor.pausa_presente
+
+    def contar(objetivo):
+        if str(objetivo) == str(vieja):
+            miradas.append(objetivo)
+        return real(objetivo)
+
+    monkeypatch.setattr(interruptor, "pausa_presente", contar)
+    assert kill_switch._informe(False) == {"activo": True, "cambio": False, "heredada": True}
+    assert len(miradas) == 1
+
+
 async def test_estado_incluye_heredada(entorno, vieja, monkeypatch):
     class _Cur:
         async def execute(self, *a):
@@ -144,10 +163,11 @@ async def test_heredada_ilegible_frena_la_mesa(entorno, vieja):
     vieja.write_text("")
     vieja.parent.chmod(0)
     try:
-        with pytest.raises(HTTPException):
+        with pytest.raises(HTTPException) as frenada:
             await kill_switch.exigir_mesa_libre(OPERADOR)
     finally:
         vieja.parent.chmod(0o700)
+    assert (frenada.value.status_code, frenada.value.detail) == (423, "kill_switch_activo")
 
 
 async def test_el_warning_nombra_las_dos_rutas_una_vez(entorno, vieja, caplog):
@@ -159,3 +179,70 @@ async def test_el_warning_nombra_las_dos_rutas_una_vez(entorno, vieja, caplog):
     avisos = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(avisos) == 1
     assert str(vieja) in avisos[0].getMessage() and str(ruta) in avisos[0].getMessage()
+
+
+# --- Barrera de sesión sobre el freno de producción (revisión final del
+# frente B, 2026-09-17). Antes miraba sólo el directorio del interruptor; la
+# ruta heredada es un ARCHIVO suelto y un test que la creara o la borrara
+# pasaba en verde. Sólo tmp_path: la barrera real nunca se ejercita contra /etc.
+
+def test_la_barrera_vigila_la_ruta_heredada_real():
+    import conftest
+    assert conftest.HEREDADA_DE_PRODUCCION == LITERAL_VIEJO
+    assert conftest.FRENO_DE_PRODUCCION == "/etc/jax/interruptor"
+
+
+def _pasado(*rutas):
+    import time
+    viejo = time.time() - 100
+    for r in rutas:
+        os.utime(r, (viejo, viejo))
+
+
+def test_barrera_sin_nada_en_disco_son_cero_cambios(tmp_path):
+    import conftest
+    import time
+    assert conftest.cambios_del_freno_de_produccion(
+        tmp_path / "no-dir", tmp_path / "no-PAUSE", time.time() - 1, False) == []
+
+
+def test_barrera_detecta_la_heredada_que_aparece(tmp_path):
+    import conftest
+    import time
+    inicio = time.time() - 1
+    archivo = tmp_path / "PAUSE"
+    archivo.write_text("")
+    _pasado(archivo)  # aunque el mtime mienta: no existía al empezar
+    assert conftest.cambios_del_freno_de_produccion(
+        tmp_path / "no-dir", archivo, inicio, False) == [str(archivo)]
+
+
+def test_barrera_detecta_la_heredada_que_cambia_o_desaparece(tmp_path):
+    import conftest
+    import time
+    inicio = time.time() - 1
+    archivo = tmp_path / "PAUSE"
+    archivo.write_text("")
+    _pasado(archivo)
+    assert conftest.cambios_del_freno_de_produccion(tmp_path / "no-dir", archivo, inicio, True) == []
+    os.utime(archivo, (inicio + 10, inicio + 10))
+    assert conftest.cambios_del_freno_de_produccion(
+        tmp_path / "no-dir", archivo, inicio, True) == [str(archivo)]
+    archivo.unlink()
+    assert conftest.cambios_del_freno_de_produccion(
+        tmp_path / "no-dir", archivo, inicio, True) == [f"{archivo} (desapareció)"]
+
+
+def test_barrera_detecta_altas_en_el_directorio(tmp_path):
+    import conftest
+    import time
+    directorio = tmp_path / "interruptor"
+    directorio.mkdir()
+    viejo = directorio / "viejo"
+    viejo.write_text("")
+    _pasado(viejo, directorio)
+    inicio = time.time() - 1
+    assert conftest.cambios_del_freno_de_produccion(directorio, tmp_path / "no-PAUSE", inicio, False) == []
+    (directorio / "PAUSE").write_text("")
+    cambios = conftest.cambios_del_freno_de_produccion(directorio, tmp_path / "no-PAUSE", inicio, False)
+    assert str(directorio / "PAUSE") in cambios

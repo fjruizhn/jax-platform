@@ -65,6 +65,12 @@ os.environ["JAX_KILL_SWITCH_PATH"] = RUTA_DEL_FRENO_DE_PRUEBA
 FRENO_DE_PRODUCCION = "/etc/jax/interruptor"
 import time as _time  # noqa: E402
 INICIO_DE_SESION = _time.time()
+# La ruta heredada del freno (Task H), tomada del módulo ANTES de que el
+# fixture de abajo la desvíe en cada test. Es un ARCHIVO, no un directorio:
+# se anota si existía al empezar para distinguir "apareció" de "ya estaba".
+import interruptor as _interruptor  # noqa: E402
+HEREDADA_DE_PRODUCCION = str(_interruptor.RUTA_HEREDADA)
+HEREDADA_EXISTIA_AL_INICIO = os.path.lexists(HEREDADA_DE_PRODUCCION)
 
 # Rutas de datos aisladas (2026-09-16, frente A, A-55), por la misma razón
 # que el sello y el respaldo de uso: api/command.py, api/audit.py y
@@ -562,16 +568,47 @@ def _freno_suelto_entre_tests():
         pass
 
 
+def cambios_del_freno_de_produccion(directorio, archivo, inicio, archivo_existia):
+    """Qué tocó la sesión en el freno de producción. Sólo LEE (stat/scandir):
+    nunca crea nada. Revisión final del frente B (2026-09-17): antes se miraba
+    sólo el directorio; la ruta heredada es un archivo suelto y quedaba afuera.
+
+    - `directorio`: su propio mtime (altas y bajas de entradas) y el de cada
+      entrada. Que no exista son 0 cambios (el runner de CI).
+    - `archivo`: apareció (no existía al inicio), desapareció, o su mtime
+      es de esta sesión."""
+    cambios = []
+    try:
+        propio = os.stat(directorio)
+    except FileNotFoundError:
+        propio = None
+    if propio is not None:
+        if propio.st_mtime >= inicio:
+            cambios.append(str(directorio))
+        try:
+            entradas = list(os.scandir(directorio))
+        except PermissionError:  # fail-soft: sin permiso de listar, el mtime del directorio (ya mirado) delata altas y bajas
+            entradas = []
+        cambios += [e.path for e in entradas
+                    if e.stat(follow_symlinks=False).st_mtime >= inicio]
+    try:
+        estado = os.lstat(archivo)
+    except FileNotFoundError:
+        if archivo_existia:
+            cambios.append(f"{archivo} (desapareció)")
+        return cambios
+    if not archivo_existia or estado.st_mtime >= inicio:
+        cambios.append(str(archivo))
+    return cambios
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Barrera verificable: si durante la sesión apareció o cambió algo en el
-    directorio del freno de producción, la corrida falla. En el runner no
-    existe (0 escrituras, no un error)."""
-    try:
-        cambios = [p.name for p in os.scandir(FRENO_DE_PRODUCCION)
-                   if p.stat(follow_symlinks=False).st_mtime >= INICIO_DE_SESION]
-    except FileNotFoundError:
-        return
+    freno de producción (el directorio del interruptor o la ruta heredada),
+    la corrida falla. En el runner no existen (0 cambios, no un error)."""
+    cambios = cambios_del_freno_de_produccion(
+        FRENO_DE_PRODUCCION, HEREDADA_DE_PRODUCCION, INICIO_DE_SESION, HEREDADA_EXISTIA_AL_INICIO)
     if cambios:
-        print(f"\nBARRERA DEL KILL SWITCH: la suite tocó {FRENO_DE_PRODUCCION}: {cambios}",
+        print(f"\nBARRERA DEL KILL SWITCH: la suite tocó el freno de producción: {cambios}",
               file=__import__("sys").stderr)
         session.exitstatus = 1

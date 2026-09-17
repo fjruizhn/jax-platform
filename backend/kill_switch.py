@@ -108,9 +108,22 @@ def activo() -> bool:
     return interruptor.interruptor_activo()
 
 
+def _freno_completo() -> tuple[bool, bool]:
+    """(activo, heredada) mirando la ruta heredada UNA sola vez. Antes
+    `activo()` y `_heredada_activa()` la miraban por separado: dos stat por
+    informe, y entre uno y otro el archivo podía aparecer o irse, dando un
+    `activo=False, heredada=True` imposible (revisión final del frente B,
+    2026-09-17). Mismo resultado que `interruptor_activo()`, con el WARNING
+    anti-spam intacto: sale de `_heredada_activa`."""
+    heredada = interruptor._heredada_activa()
+    activo_ahora = interruptor.pausa_presente(interruptor.ruta_del_interruptor()) or heredada
+    return activo_ahora, heredada
+
+
 def _informe(cambio: bool) -> dict:
     """La respuesta de activar/reanudar: el freno COMPLETO (con la heredada)."""
-    return {"activo": activo(), "cambio": cambio, "heredada": interruptor._heredada_activa()}
+    activo_ahora, heredada = _freno_completo()
+    return {"activo": activo_ahora, "cambio": cambio, "heredada": heredada}
 
 
 def _escribir(ruta, contenido: str) -> bool:
@@ -171,7 +184,8 @@ async def estado() -> dict:
     ultimo = None if fila is None else {
         "accion": fila[0], "user_id": fila[1], "email": fila[2], "at": iso_utc(fila[3]),
     }
-    return {"activo": activo(), "heredada": interruptor._heredada_activa(), "ultimo": ultimo}
+    activo_ahora, heredada = _freno_completo()
+    return {"activo": activo_ahora, "heredada": heredada, "ultimo": ultimo}
 
 
 async def activar(usuario: AuthUser) -> dict:
@@ -264,8 +278,13 @@ async def reanudar(usuario: AuthUser) -> dict:
             # quede visible en el journal, no se intenta reconciliar solo.
             if quitado:
                 await _reponer_de_emergencia(ruta, usuario, "commit/auditoría fallida")
-            logger.error("kill switch: reanudar de user_id=%s sin auditoría, freno repuesto=%s: %r",
-                         usuario.user_id, quitado, exc)
+            # Revisión final del frente B (2026-09-17): el estado REAL del
+            # archivo del freno después de reponer, no `quitado` (que decía
+            # "repuesto=True" aunque la reposición hubiera fracasado, al lado
+            # del "NO pudo reponer" de _reponer_de_emergencia). Sólo el
+            # archivo propio: la heredada no la pone ni la quita la plataforma.
+            logger.error("kill switch: reanudar de user_id=%s sin auditoría, freno puesto ahora=%s: %r",
+                         usuario.user_id, interruptor.pausa_presente(ruta), exc)
             raise AuditoriaDelInterruptorFallida("reanudar") from exc
         informe = _informe(True)
         if not informe["activo"]:

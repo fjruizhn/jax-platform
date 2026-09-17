@@ -2,7 +2,6 @@ import base64
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import httpx
-from auth.middleware import get_current_user
 from auth.models import AuthUser
 from kill_switch import exigir_mesa_libre
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError

@@ -43,9 +43,12 @@ class EventBus:
             pass
 
     async def publicar_a_todos(self, event_type: str, payload: dict) -> int:
-        """Un evento para CADA suscriptor del bus, WS y SSE (kill switch,
-        2026-09-16). `publish` enruta a un solo usuario a propósito; esto es
-        solo para estado global. Devuelve cuántos lo recibieron.
+        """Un evento para CADA suscriptor registrado en el bus (kill switch,
+        2026-09-16). El bus guarda UN callback por usuario (tenant -> user ->
+        callback): si el mismo usuario tiene abiertos un WS y un SSE, recibe
+        sólo el último que se suscribió. `publish` enruta a un solo usuario a
+        propósito; esto es solo para estado global. Devuelve cuántos
+        callbacks lo recibieron.
 
         Sin lock (frente A, A-24, ya quitó `self._lock` de esta clase): la
         foto de `_subscribers` se toma directo, sin `await` entre leer y
@@ -60,7 +63,7 @@ class EventBus:
         y sin tope, un solo WS colgado retendría ese lock -- y con él, la
         próxima activación de emergencia -- hasta su propio timeout de ping
         (~40 s). Un timeout o una excepción cuentan como "no recibido", igual
-        que antes."""
+        que antes; también un evento que no valida para ese suscriptor."""
         destinos = [
             (tenant_id, user_id, cb)
             for tenant_id, suscriptores in self._subscribers.items()
@@ -68,8 +71,11 @@ class EventBus:
         ]
 
         async def _entregar(tenant_id, user_id, cb) -> bool:
-            evento = JAXEvent(event_type=event_type, tenant_id=tenant_id, user_id=user_id, payload=payload)
             try:
+                # Adentro del try (revisión final del frente B, 2026-09-17): un
+                # id que no valida es un suscriptor más que no recibe, no un
+                # error que escapa del gather y deja a `activar` sin auditar.
+                evento = JAXEvent(event_type=event_type, tenant_id=tenant_id, user_id=user_id, payload=payload)
                 await asyncio.wait_for(cb(evento), timeout=TIEMPO_MAXIMO_POR_SUSCRIPTOR)
                 return True
             except Exception:  # fail-soft: un suscriptor roto o colgado (socket muerto, WS sin ping) no impide que el resto se entere del freno ni retiene _cambio; el estado real igual llega por /api/state

@@ -187,6 +187,25 @@ async def test_publicar_a_todos_llega_a_cada_suscriptor_y_uno_roto_no_corta():
     ]
 
 
+async def test_publicar_a_todos_un_evento_invalido_no_corta_la_difusion():
+    """Revisión final del frente B (2026-09-17, hallazgo 2): el JAXEvent se
+    construía FUERA del try de cada suscriptor. Un id que no valida (acá un
+    user_id entero, que pydantic no convierte a str) hacía escapar la
+    ValidationError del gather: nadie recibía el aviso y `activar` se
+    saltaba la auditoría. Ahora cuenta como no entregado."""
+    bus = EventBus()
+    recibidos = []
+
+    async def bien(evento):
+        recibidos.append((evento.tenant_id, evento.user_id))
+
+    await bus.subscribe("t1", "u1", bien)
+    await bus.subscribe("t1", 42, bien)
+    await bus.subscribe("t2", "u3", bien)
+    assert await bus.publicar_a_todos("kill_switch_activated", {"activo": True}) == 2
+    assert sorted(recibidos) == [("t1", "u1"), ("t2", "u3")]
+
+
 def test_el_evento_liberado_es_un_tipo_valido():
     JAXEvent(event_type="kill_switch_released", tenant_id="1", user_id="1")
 
@@ -355,6 +374,11 @@ async def test_reanudar_si_reponer_el_freno_tambien_falla_igual_se_lanza_auditor
     # "repuso el freno".
     assert any("NO pudo reponer" in m for m in caplog.messages)
     assert not any("repuso el freno" in m for m in caplog.messages)
+    # Revisión final del frente B (hallazgo 7): el log del except genérico
+    # decía "freno repuesto=True" (imprimía `quitado`) justo al lado de "NO
+    # pudo reponer". Ahora imprime el estado real del archivo del freno.
+    finales = [m for m in caplog.messages if "sin auditoría" in m]
+    assert len(finales) == 1 and "freno puesto ahora=False" in finales[0]
 
 
 async def test_reanudar_si_el_reintento_de_reponer_igual_pone_el_freno_el_log_lo_dice(entorno, monkeypatch, caplog):
