@@ -564,8 +564,18 @@ jobs:
             // AdminSettings (+2, config_valor_invalido sin clave cae en el
             // genérico). Vistos en rojo. Medido dos veces: 535 passed, 0
             // fallidos, 67 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 535) {
-              console.error("PISO ROTO: se esperaban 535 tests de vitest CORRIDOS y 0 fallidos.");
+            // 535 -> 646 el 2026-09-17 (pre-vuelo y continuar, spec
+            // 2026-09-17): api/errores (+26), PipelineModal pre-vuelo y
+            // confirmación (+24), ContinuarPipelineModal (+33, nuevo),
+            // RightPanel detenidos (+10), lib/moneda (+5, nuevo), store
+            // pipelineContinued (+4, nuevo), AdminSettings umbral (+3),
+            // pipelineChain clean-room por pasos (+2), useWebSocket recarga al
+            // reconectar (+2, nuevo), BottomBar.errores relanza (+1),
+            // RightPanel.continuar (+1, nuevo). Delta por archivo medido con el
+            // reporter json contra 442da49. Vistos en rojo contra accc641.
+            // Medido dos veces: 646 passed, 0 fallidos, 72 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 646) {
+              console.error("PISO ROTO: se esperaban 646 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1453,7 +1463,22 @@ jobs:
           # token_version ni password_hash). Mismo hueco ambiental (1 failed de
           # grounding), 1 skip. Medido dos veces: 1386 passed / 1 failed / 1
           # skipped.
-          PISO_PASSED = 1386
+          # 1386 -> 1581 el 2026-09-17 (pre-vuelo y continuar): +194
+          # colectados contra 442da49 (--collect-only por archivo):
+          # test_pipelines_continuar (+84), test_pipelines_prevuelo (+48),
+          # test_pipelines_propagacion (+31), test_ajuste_confirmar_costo
+          # (+17), test_motor_tope_catalogo (+5), test_prevuelo_esquema (+5),
+          # test_prevuelo_datos_medidos (+4). La base 442da49 ya medía 1387
+          # passed / 0 failed / 1 skipped (el failed de grounding dejó de
+          # fallar): 1387 + 194 = 1581. Vistos en rojo contra accc641.
+          # Medido dos veces en hall9000: 1577 passed / 4 failed / 1 skipped;
+          # los 4 (test_chat_facet_validation x2, test_facet_model_wiring x2,
+          # 502 faceta_error 'api_url') fallan también solos y sin otro pytest
+          # sobre la DB: jax 3b2887d (E-21) sacó api_url del config.toml y el
+          # arreglo del lado plataforma (JAX_OLLAMA_URL) está en master c53ef30
+          # (#92), que esta rama recibe al rebasar. Con el config.toml de jax
+          # 3b2887d^ la suite entera da 1581 passed / 0 failed / 1 skipped.
+          PISO_PASSED = 1581
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1969,7 +1994,15 @@ jobs:
       # 2026-09-17 (frente C, revisión final): los 5 tests nuevos piden
       # `client`, así que el piso no se mueve y los skips suben 596 -> 601.
       # Medido con JAX_CI_NO_DB=1: 787 passed / 601 skipped.
-      JAX_CI_MIN_PASSED: "787"
+      # 787 -> 958 el 2026-09-17 (pre-vuelo y continuar): +171 puros por
+      # junit contra 442da49 -- test_pipelines_continuar (+77),
+      # test_pipelines_prevuelo (+43), test_pipelines_propagacion (+31),
+      # test_ajuste_confirmar_costo (+14), test_prevuelo_esquema (+3),
+      # test_prevuelo_datos_medidos (+2), test_motor_tope_catalogo (+1); los
+      # que piden `client` se saltean (skips 601 -> 624, +23). Vistos en rojo
+      # contra accc641. Medido dos veces con JAX_CI_NO_DB=1: 958 passed / 624
+      # skipped.
+      JAX_CI_MIN_PASSED: "958"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
