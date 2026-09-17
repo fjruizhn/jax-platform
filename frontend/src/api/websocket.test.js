@@ -46,3 +46,26 @@ describe('createWebSocket -- reconexión', () => {
     expect(FakeWS.instancias).toHaveLength(2)
   })
 })
+
+// Revisión final, 8a: un mensaje que ya estaba encolado cuando el llamador
+// cerró el socket (desmontaje, cambio de token) no dispara nada: ni
+// 'connected' (que en useWebSocket recarga el estado de una sesión que se
+// fue) ni eventos.
+describe('createWebSocket -- después de close()', () => {
+  it('un auth_ok encolado no marca connected', () => {
+    const onStatus = vi.fn()
+    const conexion = createWebSocket('5', 'tok', vi.fn(), onStatus)
+    conexion.close()
+    FakeWS.instancias[0].onmessage({ data: JSON.stringify({ type: 'auth_ok' }) })
+    expect(onStatus).not.toHaveBeenCalledWith('connected')
+  })
+
+  it('un evento encolado de una conexión autenticada no llega al llamador', () => {
+    const onMessage = vi.fn()
+    const conexion = createWebSocket('5', 'tok', onMessage, vi.fn())
+    FakeWS.instancias[0].onmessage({ data: JSON.stringify({ type: 'auth_ok' }) })
+    conexion.close()
+    FakeWS.instancias[0].onmessage({ data: JSON.stringify({ event_type: 'facet_status_changed' }) })
+    expect(onMessage).not.toHaveBeenCalled()
+  })
+})

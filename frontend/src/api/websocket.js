@@ -26,6 +26,9 @@ export function createWebSocket(userId, token, onMessage, onStatusChange) {
     }
 
     ws.onmessage = (e) => {
+      // Revisión final 8a: close() no vacía los mensajes que el navegador ya
+      // encoló; tras cerrar, nada de este socket llega al llamador.
+      if (shouldStop) return
       try {
         const event = JSON.parse(e.data)
 
