@@ -79,6 +79,9 @@ class ImagenNoSoportadaError(ValueError):
 
 
 def exigir_soporte_de_imagen(f, facet: str, imagenes) -> None:
+    """`imagenes`: las imágenes de este turno, en cualquier forma con
+    verdad de colección -- los metadatos de sidecar (`imagenes_de`, antes de
+    leerlas) o las `ImagenValidada` ya leídas (dispatch). Vacía, no exige."""
     if imagenes and "image" not in f.input_modalities:
         raise ImagenNoSoportadaError(facet, f.model)
 
@@ -93,8 +96,11 @@ async def buscar_adjuntos(refs: list[AdjuntoRef], user, limites: LimitesDeAdjunt
     return [await almacen.obtener(ref.id, user) for ref in refs]
 
 
-def hay_imagenes(metadatos: list[dict]) -> bool:
-    return any(m.get("tipo") == "imagen" for m in metadatos)
+def imagenes_de(metadatos: list[dict]) -> list[dict]:
+    """Los metadatos de sidecar que son imágenes (Final fix wave #2, item 9:
+    antes `hay_imagenes` devolvía un bool y /api/chat le pasaba `True` a
+    `exigir_soporte_de_imagen`)."""
+    return [m for m in metadatos if m.get("tipo") == "imagen"]
 
 
 async def leer_adjuntos(metadatos: list[dict], user, limites: LimitesDeAdjuntos) -> AdjuntosValidados:

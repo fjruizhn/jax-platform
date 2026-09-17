@@ -95,7 +95,7 @@ def test_un_dato_de_texto_que_no_es_utf8_es_el_mismo_404(directorio):
 def test_imagen_leida_trae_los_tramos_y_los_metadatos_del_sidecar(directorio):
     meta = _imagen(directorio)
     metas = asyncio.run(c.buscar_adjuntos([c.AdjuntoRef(id=meta["id"])], DUENIO, LIM))
-    assert c.hay_imagenes(metas)
+    assert c.imagenes_de(metas) == metas
     v = asyncio.run(c.leer_adjuntos(metas, DUENIO, LIM))
     (i,) = v.imagenes
     assert (i.nombre, i.mime, i.bytes) == ("f.png", "image/png", len(PNG))

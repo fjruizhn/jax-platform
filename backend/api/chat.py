@@ -24,7 +24,7 @@ from adjuntos.contrato import (
     buscar_adjuntos,
     componer_mensaje,
     exigir_soporte_de_imagen,
-    hay_imagenes,
+    imagenes_de,
     leer_adjuntos,
     mensaje_para_historial,
     metadatos_para_memoria,
@@ -1134,13 +1134,14 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
                 raise AdjuntoRechazado(422, "adjuntos_no_soportados", facet=facet)
             limites = cargar_limites()
             metadatos = await buscar_adjuntos(req.adjuntos, user, limites)
-            if hay_imagenes(metadatos):
+            imagenes = imagenes_de(metadatos)
+            if imagenes:
                 try:
                     resuelta = await resolve_facet(facet)
                 except FacetUnavailableError:
                     resuelta = None
                 if resuelta is not None:
-                    exigir_soporte_de_imagen(resuelta, facet, True)
+                    exigir_soporte_de_imagen(resuelta, facet, imagenes)
             validados = await leer_adjuntos(metadatos, user, limites)
         except AdjuntoRechazado as e:
             detalle = e.detail
