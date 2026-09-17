@@ -1,0 +1,138 @@
+"""Frente A (2026-09-16): GET /api/admin/dashboard afirmaba datos que no medía.
+A-36: "JAX Engine" pingueaba /health (no existe) y `status_code < 500` daba
+alive con un 404. A-35: "API Keys" contaba el .env, la verdad es `credential`.
+A-49: pipelines_completed era 0 fijo. A-37: dos COUNT con DATE(created_at).
+A-05/A-06: URL literal de LAS MANOS y recent_events constante."""
+import asyncio
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
+
+import aiomysql
+import pytest
+
+from api.admin import dashboard
+from tests.identidades import cabeceras, sql
+
+BACKEND = Path(__file__).resolve().parent.parent
+
+
+def _fuente():
+    return (BACKEND / "api/admin/dashboard.py").read_text(encoding="utf-8")
+
+
+class _Resp:
+    def __init__(self, codigo):
+        self.status_code = codigo
+
+
+def _cliente(codigo, urls):
+    class _C:
+        async def get(self, url, timeout=None):
+            urls.append(url)
+            return _Resp(codigo)
+
+    async def fabrica():
+        return _C()
+    return fabrica
+
+
+def test_un_404_no_es_alive(monkeypatch):
+    monkeypatch.setattr(dashboard, "get_http_client", _cliente(404, []))
+    assert asyncio.run(dashboard._check_http("http://127.0.0.1:1/api/health"))["status"] == "down"
+
+
+def test_jax_engine_sondea_api_health_de_la_base_configurada(monkeypatch):
+    urls = []
+    monkeypatch.setattr(dashboard, "get_http_client", _cliente(200, urls))
+    servicio = asyncio.run(dashboard._servicio("JAX Engine", "http://127.0.0.1:18080", "/api/health"))
+    assert urls == ["http://127.0.0.1:18080/api/health"]
+    assert servicio == {"name": "JAX Engine", "port": 18080, "status": "alive",
+                        "latency_ms": servicio["latency_ms"]}
+
+
+def test_sin_base_configurada_nunca_es_alive():
+    assert asyncio.run(dashboard._servicio("JAX Engine", None, "/api/health")) == {
+        "name": "JAX Engine", "port": None, "status": "sin_configurar", "latency_ms": None}
+
+
+def test_sin_literales_ni_restos():
+    fuente = _fuente()
+    for resto in ("127.0.0.1:7777", "127.0.0.1:8080", "recent_events", "_count_configured_keys",
+                  "_PROVIDERS_KEYS", "/etc/jax/.env", "DATE(created_at)"):
+        assert resto not in fuente, resto
+
+
+def test_el_rango_del_dia_sale_de_la_misma_fecha():
+    assert dashboard._rango_del_dia(date(2026, 9, 16)) == (
+        datetime(2026, 9, 16, 0, 0), datetime(2026, 9, 17, 0, 0))
+
+
+def test_el_where_del_uso_es_un_rango_sin_funcion():
+    # EXPLAIN no distingue DATE(col) de un rango en MariaDB >= 11.1: se fija el texto.
+    assert "created_at >= %s AND created_at < %s" in dashboard.SQL_USO_DEL_DIA
+    assert "COALESCE(" in dashboard.SQL_USO_DEL_DIA
+
+
+# --- con DB -------------------------------------------------------------------
+async def _explain(consulta, args):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute("EXPLAIN " + consulta, args)
+            return await cur.fetchall()
+
+
+def test_explain_del_uso_del_dia_usa_el_indice_cubriente(client):
+    filas = client.portal.call(_explain, dashboard.SQL_USO_DEL_DIA, dashboard._rango_del_dia(date.today()))
+    (fila,) = filas
+    assert fila["key"] == "idx_axioma_usage_periodo", fila
+    assert fila["type"] == "range", fila
+    assert "filesort" not in (fila["Extra"] or "") and "temporary" not in (fila["Extra"] or ""), fila
+
+
+def test_explain_de_llaves_va_por_el_indice_de_credential(client):
+    """provider es un catálogo que solo crece por migración (hoy 7 filas): se
+    acepta recorrerlo. Lo que crece es credential, y va por idx_provider_state."""
+    filas = client.portal.call(_explain, dashboard.SQL_LLAVES, ())
+    (cred,) = [f for f in filas if f["table"] in ("c", "credential")]
+    assert cred["key"] == "idx_provider_state", filas
+    assert all("filesort" not in (f["Extra"] or "") and "temporary" not in (f["Extra"] or "") for f in filas), filas
+
+
+def test_explain_de_pipelines_completados_va_por_idx_pipelines_status(client):
+    (fila,) = client.portal.call(_explain, dashboard.SQL_PIPELINES_COMPLETADOS, ())
+    assert fila["key"] == "idx_pipelines_status", fila
+
+
+def test_el_tablero_trae_los_numeros_reales(client, monkeypatch):
+    monkeypatch.delenv("JAX_PLATFORM_URL", raising=False)
+    hoy = date.today()
+    medianoche = datetime.combine(hoy, time.min)
+    ids = [
+        client.portal.call(sql, "INSERT INTO axioma_usage (tenant_id, user_id, facet, model, tokens_in, tokens_out, "
+                           "cost_usd, request_type, created_at) VALUES (1, 1, 'tablero-t', 'm', 1, 1, 0, %s, %s)",
+                           (tipo, cuando))
+        for tipo, cuando in (("chat", medianoche), ("imagen", medianoche + timedelta(seconds=5)),
+                             ("chat", medianoche - timedelta(seconds=1)))
+    ]
+    try:
+        resp = client.get("/api/admin/dashboard", headers=cabeceras(client, "tablero-t", "superadmin"))
+        ((mensajes, imagenes),) = client.portal.call(
+            sql, "SELECT COUNT(*), SUM(request_type='imagen') FROM axioma_usage WHERE DATE(created_at) = %s",
+            (hoy.isoformat(),), True)
+        ((completados,),) = client.portal.call(
+            sql, "SELECT COUNT(*) FROM jacobs_pipelines WHERE status = 'completed'", (), True)
+        ((total, configuradas),) = client.portal.call(sql, dashboard.SQL_LLAVES, (), True)
+    finally:
+        for i in ids:
+            client.portal.call(sql, "DELETE FROM axioma_usage WHERE id = %s", (i,))
+    assert resp.status_code == 200, resp.text
+    datos = resp.json()
+    assert set(datos) == {"services", "stats"}
+    s = datos["stats"]
+    assert (s["messages_today"], s["images_generated"]) == (mensajes, int(imagenes or 0))
+    assert s["pipelines_completed"] == completados
+    assert (s["api_keys_configured"], s["api_keys_total"]) == (int(configuradas), total)
+    (motor,) = [sv for sv in datos["services"] if sv["name"] == "JAX Engine"]
+    assert motor["status"] == "sin_configurar"

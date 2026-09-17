@@ -269,13 +269,14 @@ export default {
   serviceDown: 'caído',
   serviceConnected: 'conectado',
   serviceError: 'error',
+  serviceNotConfigured: 'Sin configurar',
   statMessages: 'Mensajes',
   statPipelines: 'Pipelines',
   statImages: 'Imágenes',
   statUsersActive: 'Usuarios activos',
   statUsersLocked: 'Bloqueados',
   statApiKeys: (c, t) => `API Keys: ${c}/${t}`,
-  statRam: (pct) => `RAM: ${pct}%`,
+  statRam: 'RAM',
   // I-1 (revisión final PR 2, 2026-09-14): AdminDashboard.jsx tenía
   // label="API Keys" fijo. "API Keys" es el mismo término en los dos
   // idiomas (nombre técnico), como brandName o eyeKillSwitch.
