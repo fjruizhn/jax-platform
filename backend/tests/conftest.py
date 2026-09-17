@@ -30,9 +30,14 @@ os.environ["JAX_DB_NAME"] = "jax_memory_test"
 # a proposito: los tests que ejercitan una FERNET_KEY ausente o malformada la
 # fijan ellos con monkeypatch.
 if not os.environ.get("FERNET_KEY"):
-    from cryptography.fernet import Fernet as _Fernet
+    # Sin importar cryptography: dos jobs de CI (no-fail-open-except,
+    # invoke-facet-envoltorio) corren este conftest SIN instalar
+    # requirements.txt, y un import de nivel de modulo los tumba con
+    # ModuleNotFoundError. Una llave Fernet es exactamente 32 bytes al azar
+    # en base64 urlsafe, asi que se arma con la biblioteca estandar.
+    import base64
 
-    os.environ["FERNET_KEY"] = _Fernet.generate_key().decode()
+    os.environ["FERNET_KEY"] = base64.urlsafe_b64encode(os.urandom(32)).decode()
 
 # BARRERA DE ESCRITURA A ARCHIVOS DE PRODUCCIÓN (2026-09-17).
 # Incidente real de ese día: un test llamó a PUT /api/admin/keys/{proveedor},
