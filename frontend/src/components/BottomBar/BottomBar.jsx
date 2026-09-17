@@ -8,6 +8,7 @@ import AttachButton from '../chat/AttachButton'
 import FileAttachment from '../chat/FileAttachment'
 import api from '../../api/client'
 import { textoDeErrorDeMesa, textoDeAviso } from '../../api/errores'
+import { cuerpoDeAdjunto, vistaDeAdjunto, faltaSoporteDeImagen } from '../chat/adjuntos'
 import { alturaInput } from './alturaInput'
 import { colorToken } from '../../tema/tokens'
 
@@ -38,6 +39,8 @@ function BottomBar() {
   const [pipelineObjective, setPipelineObjective] = useState('')
   const [attachment, setAttachment] = useState(null)
   const [uploading, setUploading] = useState(false)
+  const [politica, setPolitica] = useState(null)
+  const [politicaFallo, setPoliticaFallo] = useState(false)
   const addMessage = useJaxStore((s) => s.addMessage)
   const updateMessage = useJaxStore((s) => s.updateMessage)
   const activeFacet = useJaxStore((s) => s.activeFacet)
@@ -78,6 +81,16 @@ function BottomBar() {
     el.style.overflowY = conScroll ? 'auto' : 'hidden'
   }, [input])
 
+  // Frente D: qué se puede adjuntar lo dice el servidor. Si no responde, no
+  // se adjunta (fail-closed) y el botón lo explica.
+  useEffect(() => {
+    let vivo = true
+    api.get('/chat/adjuntos')
+      .then(({ data }) => { if (vivo) setPolitica(data) })
+      .catch(() => { if (vivo) setPoliticaFallo(true) })
+    return () => { vivo = false }
+  }, [])
+
   const MODES = [
     { id: 'chat',     label: t.modeChat },
     { id: 'comando',  label: t.modeComando },
@@ -101,20 +114,31 @@ function BottomBar() {
   }
 
   async function handleFileSelected(file) {
+    if (politica && file.size > politica.max_bytes) {
+      addToast({ message: t.erroresMesa.adjunto_demasiado_grande({ max_bytes: politica.max_bytes }), type: 'error' })
+      return
+    }
     setUploading(true)
     const formData = new FormData()
     formData.append('file', file)
     try {
-      const { data } = await api.post('/chat/upload', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })
+      // A-21: sin Content-Type a mano -- el navegador pone el boundary.
+      const { data } = await api.post('/chat/upload', formData)
       setAttachment(data)
-    } catch {
-      addToast({ message: t.attachError, type: 'error' })
+    } catch (err) {
+      addToast({ message: textoDeErrorDeMesa(t, err, t.attachError), type: 'error' })
     } finally {
       setUploading(false)
     }
   }
+
+  function elegirModo(m) {
+    setMode(m)
+    // Solo el chat manda adjuntos: al salir se quitan, no se pierden callados.
+    if (m !== 'chat') setAttachment(null)
+  }
+
+  const imagenSinSoporte = mode === 'chat' && faltaSoporteDeImagen(attachment, politica, activeFacet)
 
   async function handleSend() {
     const text = input.trim()
@@ -144,7 +168,7 @@ function BottomBar() {
       id: Date.now().toString(),
       facet: 'user',
       content: text,
-      attachment: attachment ? { ...attachment } : null,
+      attachment: mode === 'chat' && attachment ? vistaDeAdjunto(attachment) : null,
       timestamp: new Date().toISOString(),
     })
 
@@ -165,14 +189,7 @@ function BottomBar() {
     // Modo chat
     try {
       const chatBody = { message: text, facet: activeFacet, origin: 'web' }
-      if (attachment) {
-        if (attachment.type === 'image') {
-          chatBody.image_base64 = attachment.base64
-          chatBody.image_filename = attachment.filename
-        } else {
-          chatBody.file_context = `[Archivo adjunto: ${attachment.filename}]\n\n${attachment.content || ''}`
-        }
-      }
+      if (attachment) chatBody.adjuntos = [cuerpoDeAdjunto(attachment)]
       const { data } = await api.post('/chat', chatBody)
       addMessage({
         id: Date.now().toString() + '_resp',
@@ -327,12 +344,18 @@ function BottomBar() {
         )}
 
         {/* File attachment preview */}
-        {(attachment || uploading) && (
+        {mode === 'chat' && (attachment || uploading) && (
           <FileAttachment
             attachment={attachment}
             uploading={uploading}
             onRemove={() => setAttachment(null)}
           />
+        )}
+
+        {imagenSinSoporte && (
+          <div role="status" className="mb-2 text-xs text-aviso font-semibold">
+            {t.adjuntoImagenSinSoporte(activeFacetObj.label)}
+          </div>
         )}
 
         <div className="flex items-end gap-3">
@@ -341,7 +364,7 @@ function BottomBar() {
             {MODES.map(({ id: m, label }) => (
               <button
                 key={m}
-                onClick={() => setMode(m)}
+                onClick={() => elegirModo(m)}
                 className={`px-2 py-1 rounded text-xs font-semibold transition-colors ${
                   mode === m
                     ? m === 'comando'
@@ -365,7 +388,9 @@ function BottomBar() {
           {mode !== 'ejecutor' && (
             <AttachButton
               onFileSelected={handleFileSelected}
-              disabled={sending || uploading}
+              disabled={sending || uploading || mode !== 'chat' || !politica?.accept}
+              accept={politica?.accept?.join(',')}
+              title={politicaFallo ? t.adjuntoPoliticaNoDisponible : t.attachTooltip}
             />
           )}
 
@@ -396,7 +421,7 @@ function BottomBar() {
               disabled, así que disabled:opacity-40 hace de estado "enviando". */}
           <button
             onClick={handleSend}
-            disabled={!input.trim() || sending}
+            disabled={!input.trim() || sending || imagenSinSoporte}
             className={`flex-shrink-0 px-4 py-2 rounded-lg border disabled:opacity-40 text-sm font-semibold transition-colors ${
               mode === 'comando' ? 'border-transparent bg-modo-comando text-sobre-color'
                 : mode === 'pipeline' ? 'border-transparent bg-texto-fuerte text-fondo'

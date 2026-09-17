@@ -93,8 +93,15 @@ export default {
     pipeline_no_encontrado: () => 'El pipeline no existe.',
     jacobs_rechazo: (d) => `Jacobs rechazó el pipeline (${d.status}).`,
     jacobs_no_responde: () => 'Jacobs no respondió.',
-    archivo_demasiado_grande: (d) => `El archivo supera el máximo de ${Math.round(d.max_bytes / 1048576)} MB.`,
-    pdf_ilegible: () => 'No se pudo leer el PDF.',
+    adjunto_demasiado_grande: (d) => `El archivo supera el máximo de ${Math.floor((d?.max_bytes || 0) / 1048576)} MB.`,
+    adjunto_tipo_no_permitido: () => 'Ese tipo de archivo no se puede adjuntar. Se aceptan imágenes PNG, JPEG o WebP, PDF y texto UTF-8.',
+    adjunto_vacio: () => 'El archivo está vacío.',
+    adjunto_invalido: () => 'El adjunto llegó dañado. Vuelve a adjuntarlo.',
+    adjuntos_demasiados: (d) => `Se puede adjuntar hasta ${d?.max} archivo por mensaje.`,
+    adjuntos_no_soportados: () => 'Hyde no recibe adjuntos en el chat: usa el modo Comando.',
+    imagen_no_soportada: () => 'El modelo de esta faceta no acepta imágenes. Elige otra faceta o quita la imagen.',
+    pdf_ilegible: () => 'No se pudo leer el PDF: está dañado o protegido con contraseña.',
+    pdf_sin_texto: () => 'El PDF no tiene texto que se pueda extraer (¿es un escaneo?).',
     // Frente B (2026-09-17): 423 de chat, imagen, comando y pipelines con el freno puesto.
     kill_switch_activo: () => 'Kill switch activo: JAX está detenido',
   },
@@ -298,6 +305,9 @@ export default {
   attachUploading: 'Subiendo…',
   attachError: 'Error al subir archivo',
   attachReady: '✓ listo',
+  adjuntoPoliticaNoDisponible: 'No se pudo cargar qué archivos se aceptan: adjuntar está desactivado.',
+  adjuntoImagenSinSoporte: (faceta) => `${faceta} no acepta imágenes: elige otra faceta o quita la imagen.`,
+  adjuntoRecortado: 'Recortado al máximo de caracteres',
 
   // Admin module
   adminTitle: 'Administración',

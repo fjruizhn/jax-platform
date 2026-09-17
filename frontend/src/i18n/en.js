@@ -93,8 +93,15 @@ export default {
     pipeline_no_encontrado: () => 'The pipeline does not exist.',
     jacobs_rechazo: (d) => `Jacobs rejected the pipeline (${d.status}).`,
     jacobs_no_responde: () => 'Jacobs did not respond.',
-    archivo_demasiado_grande: (d) => `The file exceeds the ${Math.round(d.max_bytes / 1048576)} MB maximum.`,
-    pdf_ilegible: () => 'The PDF could not be read.',
+    adjunto_demasiado_grande: (d) => `The file exceeds the ${Math.floor((d?.max_bytes || 0) / 1048576)} MB limit.`,
+    adjunto_tipo_no_permitido: () => 'That file type cannot be attached. PNG, JPEG or WebP images, PDF and UTF-8 text are accepted.',
+    adjunto_vacio: () => 'The file is empty.',
+    adjunto_invalido: () => 'The attachment arrived damaged. Attach it again.',
+    adjuntos_demasiados: (d) => `You can attach up to ${d?.max} file per message.`,
+    adjuntos_no_soportados: () => 'Hyde does not take attachments in chat: use Command mode.',
+    imagen_no_soportada: () => "This facet's model does not accept images. Pick another facet or remove the image.",
+    pdf_ilegible: () => 'The PDF could not be read: it is damaged or password-protected.',
+    pdf_sin_texto: () => 'The PDF has no extractable text (is it a scan?).',
     // Frente B (2026-09-17): 423 from chat, image, command and pipelines with the brake on.
     kill_switch_activo: () => 'Kill switch active: JAX is stopped',
   },
@@ -297,6 +304,9 @@ export default {
   attachUploading: 'Uploading…',
   attachError: 'Error uploading file',
   attachReady: '✓ ready',
+  adjuntoPoliticaNoDisponible: 'Could not load which files are accepted: attaching is disabled.',
+  adjuntoImagenSinSoporte: (facet) => `${facet} does not accept images: pick another facet or remove the image.`,
+  adjuntoRecortado: 'Trimmed to the character limit',
 
   // Admin module
   adminTitle: 'Administration',
