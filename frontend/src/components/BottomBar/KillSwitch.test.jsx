@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -112,6 +112,89 @@ describe('KillSwitch -- reanudar con suma', () => {
     fireEvent.change(within(dialogo).getByLabelText(etiqueta), { target: { value: '-1' } })
     expect(within(dialogo).getByRole('button', { name: es.killResumeConfirm })).toBeDisabled()
     expect(api.post).not.toHaveBeenCalled()
+  })
+})
+
+// Fix round 1 de la Task 9 (2026-09-17). Un aviso de error describe un estado
+// del freno: si el estado cambia por otro camino (WS, loadState, el 423 del
+// interceptor), el aviso deja de aplicar. Y tras una acción propia que cambia
+// de rama, el foco no se pierde en <body>.
+function activarConFallo(rechazo) {
+  api.post.mockRejectedValue(rechazo)
+  fireEvent.click(screen.getByRole('button', { name: new RegExp(es.killButton) }))
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: es.killConfirmYes }))
+}
+
+function sumaCorrecta(dialogo) {
+  const etiqueta = dialogo.querySelector('label[for="confirmacion-suma-respuesta"]').textContent
+  const [, a, b] = etiqueta.match(/(\d+) \+ (\d+)/)
+  fireEvent.change(within(dialogo).getByLabelText(etiqueta), { target: { value: String(Number(a) + Number(b)) } })
+}
+
+describe('KillSwitch -- el aviso pertenece al estado que describe', () => {
+  it('activar falla (503) y otro admin lo activa: no queda "nada cambió" junto al badge', async () => {
+    como('superadmin')
+    pintar()
+    activarConFallo({ response: { status: 503, data: { detail: 'kill_switch_no_escribible' } } })
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.killSwitchErrorNoEscribible)
+    act(() => useJaxStore.getState().handleEvent({ event_type: 'kill_switch_activated', payload: {} }))
+    expect(screen.getByText(es.killSwitchActive)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('activar con auditoría fallida: aviso en la rama activa; al liberarse, desaparece', async () => {
+    como('superadmin')
+    pintar()
+    activarConFallo({ response: { status: 500, data: { detail: 'kill_switch_auditoria_fallida' } } })
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.killSwitchErrorAuditoria)
+    expect(screen.getByText(es.killSwitchActive)).toBeInTheDocument()
+    act(() => useJaxStore.getState().handleEvent({ event_type: 'kill_switch_released', payload: { activo: false } }))
+    expect(screen.getByRole('button', { name: new RegExp(es.killButton) })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('reanudar falla sin código: muestra el genérico de reanudar', async () => {
+    como('superadmin', true)
+    api.post.mockRejectedValue(new Error('red caída'))
+    pintar()
+    fireEvent.click(screen.getByRole('button', { name: es.killResumeButton }))
+    const dialogo = screen.getByRole('dialog', { name: es.killResumeTitle })
+    sumaCorrecta(dialogo)
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.killResumeConfirm }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.killSwitchErrorReanudar)
+    expect(useJaxStore.getState().killSwitchActive).toBe(true)
+  })
+})
+
+describe('KillSwitch -- foco tras la acción propia', () => {
+  it('activar con éxito deja el foco en el aviso del freno, no en body', async () => {
+    como('superadmin')
+    api.post.mockResolvedValue({ data: { activo: true, cambio: true } })
+    pintar()
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(es.killButton) }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: es.killConfirmYes }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText(es.killSwitchActive).closest('[tabindex="-1"]')))
+  })
+
+  it('reanudar con éxito deja el foco en KILL', async () => {
+    como('superadmin', true)
+    api.post.mockResolvedValue({ data: { activo: false, cambio: true } })
+    pintar()
+    fireEvent.click(screen.getByRole('button', { name: es.killResumeButton }))
+    const dialogo = screen.getByRole('dialog', { name: es.killResumeTitle })
+    sumaCorrecta(dialogo)
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.killResumeConfirm }))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: new RegExp(es.killButton) })))
+  })
+
+  it('un cambio externo del estado no mueve el foco', () => {
+    como('superadmin')
+    pintar()
+    const kill = screen.getByRole('button', { name: new RegExp(es.killButton) })
+    kill.blur()
+    act(() => useJaxStore.getState().handleEvent({ event_type: 'kill_switch_activated', payload: {} }))
+    expect(document.activeElement).toBe(document.body)
   })
 })
 

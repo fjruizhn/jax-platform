@@ -1,4 +1,4 @@
-import { memo, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 import { codigoDe } from '../../api/errores'
@@ -10,6 +10,14 @@ import ConfirmacionSuma from '../ConfirmacionSuma'
 // activa y reanuda (el backend lo exige); cualquiera ve el aviso. Activar es
 // rápido (Dialogo); reanudar pide la suma (ConfirmacionSuma). Si la llamada
 // falla, se dice: no hay catch vacío.
+//
+// Fix round 1 (2026-09-17): el aviso de error guarda el estado del freno al
+// que pertenece (leído del store DESPUÉS del fallo, con R5 ya aplicado) y sólo
+// se pinta mientras ese estado siga vigente: si el freno cambia por otro
+// camino (WS, loadState, 423), el aviso ya no describe nada. Y tras una acción
+// PROPIA que cambia de rama, el disparador del diálogo ya no existe y Dialogo
+// no puede devolverle el foco: se lleva al control de la rama nueva (el aviso
+// del freno o KILL). Un cambio externo no mueve el foco.
 const ERRORES = {
   kill_switch_no_escribible: 'killSwitchErrorNoEscribible',
   kill_switch_auditoria_fallida: 'killSwitchErrorAuditoria',
@@ -24,14 +32,25 @@ function KillSwitch() {
   const [dialogo, setDialogo] = useState(null)
   const [enviando, setEnviando] = useState(false)
   const [error, setError] = useState(null)
+  const avisoDelFreno = useRef(null)
+  const botonKill = useRef(null)
+  // Estado del freno en el que tiene que quedar el foco tras la acción propia.
+  const focoPendiente = useRef(null)
+
+  useEffect(() => {
+    if (focoPendiente.current === null || dialogo) return
+    if (focoPendiente.current === activo) (activo ? avisoDelFreno : botonKill).current?.focus()
+    focoPendiente.current = null
+  })
 
   async function ejecutar(accion, claveGenerica) {
     setError(null)
     setEnviando(true)
     try {
       await accion()
+      focoPendiente.current = useJaxStore.getState().killSwitchActive
     } catch (err) {
-      setError(ERRORES[codigoDe(err)] ?? claveGenerica)
+      setError({ clave: ERRORES[codigoDe(err)] ?? claveGenerica, activo: useJaxStore.getState().killSwitchActive })
     } finally {
       setEnviando(false)
       setDialogo(null)
@@ -43,12 +62,12 @@ function KillSwitch() {
     setDialogo(cual)
   }
 
-  const aviso = error && <span role="alert" className="text-xs text-peligro">{t[error]}</span>
+  const aviso = error && error.activo === activo && <span role="alert" className="text-xs text-peligro">{t[error.clave]}</span>
 
   if (activo) {
     return (
       <div className="flex items-center gap-2">
-        <div className="flex items-center gap-2 px-3 py-1 rounded-lg bg-peligro-fondo border border-peligro-solido text-peligro text-xs font-bold">
+        <div ref={avisoDelFreno} tabIndex={-1} className="flex items-center gap-2 px-3 py-1 rounded-lg bg-peligro-fondo border border-peligro-solido text-peligro text-xs font-bold">
           <span className="w-2 h-2 rounded-full bg-peligro-solido" />
           {t.killSwitchActive}
         </div>
@@ -80,6 +99,7 @@ function KillSwitch() {
   return (
     <div className="flex items-center gap-2">
       <button
+        ref={botonKill}
         type="button"
         onClick={() => abrir('activar')}
         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-peligro-fondo border border-peligro-borde hover:border-peligro-solido text-peligro text-xs font-bold uppercase tracking-widest transition-all"
