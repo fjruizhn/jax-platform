@@ -61,14 +61,28 @@ def cargar_limites() -> LimitesDeAdjuntos:
 VARIABLE_DE_IMAGENES_EN_PROCESO = "JAX_ADJUNTO_IMAGENES_EN_PROCESO"
 
 
+VARIABLE_DE_SUBIDAS_EN_PROCESO = "JAX_ADJUNTO_SUBIDAS_EN_PROCESO"
+
+
+def _cargar_tope(variable: str, que: str) -> int:
+    crudo = os.environ.get(variable)
+    valor = _entero_positivo(crudo)
+    if valor is None:
+        raise LimitesDeAdjuntosInvalidos(
+            f"tope de {que} en proceso sin configurar o inválido (entero > 0 en "
+            f"/etc/jax/.env): {variable}={crudo!r}")
+    return valor
+
+
 def cargar_imagenes_en_proceso() -> int:
     """Cuántas imágenes validan su base64 a la vez en el event loop (R16,
     2026-09-17; adjuntos/turno.py). Sin default, como los otros límites: si
     falta, el servicio no arranca."""
-    crudo = os.environ.get(VARIABLE_DE_IMAGENES_EN_PROCESO)
-    valor = _entero_positivo(crudo)
-    if valor is None:
-        raise LimitesDeAdjuntosInvalidos(
-            "tope de imágenes en proceso sin configurar o inválido (entero > 0 en "
-            f"/etc/jax/.env): {VARIABLE_DE_IMAGENES_EN_PROCESO}={crudo!r}")
-    return valor
+    return _cargar_tope(VARIABLE_DE_IMAGENES_EN_PROCESO, "imágenes")
+
+
+def cargar_subidas_en_proceso() -> int:
+    """Cuántas subidas de /api/chat/upload hacen su trabajo pesado a la vez
+    (clasificar, b64encode, pypdf; revisión final 2026-09-17, adjuntos/turno.py).
+    Sin default: si falta, el servicio no arranca."""
+    return _cargar_tope(VARIABLE_DE_SUBIDAS_EN_PROCESO, "subidas")

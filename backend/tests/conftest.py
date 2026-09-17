@@ -59,7 +59,8 @@ for _variable, _valor in (("JAX_ADJUNTO_MAX_BYTES", "10485760"),
                           ("JAX_ADJUNTO_MAX_CHARS", "8000"),
                           ("JAX_ADJUNTO_MAX_PAGINAS", "20"),
                           ("JAX_ADJUNTO_MAX_POR_MENSAJE", "1"),
-                          ("JAX_ADJUNTO_IMAGENES_EN_PROCESO", "1")):
+                          ("JAX_ADJUNTO_IMAGENES_EN_PROCESO", "1"),
+                          ("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", "1")):
     os.environ.setdefault(_variable, _valor)
 
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del

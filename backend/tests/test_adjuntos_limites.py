@@ -108,3 +108,45 @@ def test_lifespan_valida_el_tope_de_imagenes_antes_de_abrir_la_base(monkeypatch)
     with pytest.raises(mod.LimitesDeAdjuntosInvalidos):
         asyncio.run(arrancar())
     assert llamadas == ["tope"]
+
+
+# --- Revisión final (2026-09-17): tope de subidas pesadas en proceso a la vez --
+
+@pytest.mark.parametrize("valor", [None, "0", "-1", "uno"])
+def test_tope_de_subidas_en_proceso_ausente_o_invalido_no_arranca(monkeypatch, valor):
+    if valor is None:
+        monkeypatch.delenv("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", raising=False)
+    else:
+        monkeypatch.setenv("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", valor)
+    with pytest.raises(mod.LimitesDeAdjuntosInvalidos) as e:
+        mod.cargar_subidas_en_proceso()
+    assert "JAX_ADJUNTO_SUBIDAS_EN_PROCESO" in str(e.value)
+
+
+def test_tope_de_subidas_en_proceso_se_lee(monkeypatch):
+    monkeypatch.setenv("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", "3")
+    assert mod.cargar_subidas_en_proceso() == 3
+
+
+def test_lifespan_valida_el_tope_de_subidas_antes_de_abrir_la_base(monkeypatch):
+    import main
+
+    llamadas = []
+
+    def sin_tope():
+        llamadas.append("tope")
+        raise mod.LimitesDeAdjuntosInvalidos("JAX_ADJUNTO_SUBIDAS_EN_PROCESO=None")
+
+    async def pool_espia():
+        llamadas.append("pool")
+
+    monkeypatch.setattr(mod, "cargar_subidas_en_proceso", sin_tope, raising=False)
+    monkeypatch.setattr(main, "get_pool", pool_espia)
+
+    async def arrancar():
+        async with main.lifespan(main.app):
+            pass
+
+    with pytest.raises(mod.LimitesDeAdjuntosInvalidos):
+        asyncio.run(arrancar())
+    assert llamadas == ["tope"]

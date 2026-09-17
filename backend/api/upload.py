@@ -13,6 +13,7 @@ from adjuntos.errores import AdjuntoRechazado
 from adjuntos.limites import cargar_limites
 from adjuntos.pdf import PdfIlegible, PdfSinTexto, extraer_texto
 from adjuntos.politica import facetas_con_imagen
+from adjuntos.turno import turno_de_subida
 from adjuntos.tipos import (AdjuntoVacio, EXTENSIONES_DE_TEXTO, MIME_PDF,
                              MIMES_DE_IMAGEN, TipoNoPermitido, clasificar,
                              nombre_seguro)
@@ -39,28 +40,32 @@ async def upload_file(
     if len(datos) > limites.max_bytes:
         raise _rechazo(413, "adjunto_demasiado_grande", max_bytes=limites.max_bytes)
     nombre = nombre_seguro(file.filename)
-    try:
-        clase, mime, texto = await asyncio.to_thread(clasificar, datos)
-    except AdjuntoVacio:
-        raise _rechazo(422, "adjunto_vacio") from None
-    except TipoNoPermitido:
-        raise _rechazo(415, "adjunto_tipo_no_permitido") from None
-
-    if clase == "imagen":
-        codificado = await asyncio.to_thread(base64.b64encode, datos)
-        return {"tipo": "imagen", "nombre": nombre, "mime": mime,
-                "bytes": len(datos), "base64": codificado.decode("ascii")}
-
-    if clase == "pdf":
+    # El trabajo pesado va en hilos pero retiene el GIL: el turno limita
+    # cuántas subidas lo hacen a la vez (adjuntos/turno.py). Se libera con
+    # cualquier salida, también con los rechazos.
+    async with turno_de_subida():
         try:
-            texto, recortado = await asyncio.to_thread(
-                extraer_texto, datos, limites.max_paginas, limites.max_chars)
-        except PdfSinTexto:
-            raise _rechazo(422, "pdf_sin_texto") from None
-        except PdfIlegible:
-            raise _rechazo(422, "pdf_ilegible") from None
-        return {"tipo": "texto", "origen": "pdf", "nombre": nombre,
-                "bytes": len(datos), "contenido": texto, "recortado": recortado}
+            clase, mime, texto = await asyncio.to_thread(clasificar, datos)
+        except AdjuntoVacio:
+            raise _rechazo(422, "adjunto_vacio") from None
+        except TipoNoPermitido:
+            raise _rechazo(415, "adjunto_tipo_no_permitido") from None
+
+        if clase == "imagen":
+            codificado = await asyncio.to_thread(base64.b64encode, datos)
+            return {"tipo": "imagen", "nombre": nombre, "mime": mime,
+                    "bytes": len(datos), "base64": codificado.decode("ascii")}
+
+        if clase == "pdf":
+            try:
+                texto, recortado = await asyncio.to_thread(
+                    extraer_texto, datos, limites.max_paginas, limites.max_chars)
+            except PdfSinTexto:
+                raise _rechazo(422, "pdf_sin_texto") from None
+            except PdfIlegible:
+                raise _rechazo(422, "pdf_ilegible") from None
+            return {"tipo": "texto", "origen": "pdf", "nombre": nombre,
+                    "bytes": len(datos), "contenido": texto, "recortado": recortado}
 
     return {"tipo": "texto", "origen": "texto", "nombre": nombre, "bytes": len(datos),
             "contenido": texto[: limites.max_chars],

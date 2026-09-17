@@ -111,6 +111,7 @@ async def lifespan(app: FastAPI):
     # del módulo (no `from ... import`) para que el test lo pueda sustituir.
     limites_de_adjuntos.cargar_limites()
     limites_de_adjuntos.cargar_imagenes_en_proceso()
+    limites_de_adjuntos.cargar_subidas_en_proceso()
     await get_pool()
     await get_http_client()
     await run_migrations()

@@ -19,12 +19,27 @@ import weakref
 
 from adjuntos import limites
 
-_por_loop: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+_Semaforos = "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]"
+_por_loop: _Semaforos = weakref.WeakKeyDictionary()
+_subidas_por_loop: _Semaforos = weakref.WeakKeyDictionary()
+
+
+def _turno(tabla, cargar) -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    semaforo = tabla.get(loop)
+    if semaforo is None:
+        semaforo = tabla[loop] = asyncio.Semaphore(cargar())
+    return semaforo
 
 
 def turno_de_imagen() -> asyncio.Semaphore:
-    loop = asyncio.get_running_loop()
-    semaforo = _por_loop.get(loop)
-    if semaforo is None:
-        semaforo = _por_loop[loop] = asyncio.Semaphore(limites.cargar_imagenes_en_proceso())
-    return semaforo
+    return _turno(_por_loop, limites.cargar_imagenes_en_proceso)
+
+
+def turno_de_subida() -> asyncio.Semaphore:
+    """Tope de /api/chat/upload (JAX_ADJUNTO_SUBIDAS_EN_PROCESO, revisión final
+    2026-09-17). Su trabajo corre en asyncio.to_thread, pero b64encode de 10 MB
+    y pypdf retienen el GIL: 25 hilos a la vez se lo disputaban al event loop
+    (health p95 65 ms con imágenes y 244 ms con PDFs a c=25, contra 0,3 ms
+    solo). Mismo patrón que el de imágenes: por loop, leído una vez."""
+    return _turno(_subidas_por_loop, limites.cargar_subidas_en_proceso)
