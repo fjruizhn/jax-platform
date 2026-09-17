@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from config_de_entorno import ruta_requerida
 from jax_engine.events import event_bus
 from jax_engine.schemas import JAXEvent
 from jax_engine.state import engine_state
+from redaccion import recortar_redactado
 
 router = APIRouter(prefix="/api")
 
@@ -21,6 +23,21 @@ JAX_BIN = ruta_requerida("JAX_BIN")
 
 def _owner_file(task_id: str) -> Path:
     return MISSIONS_DIR / f"web-task-{task_id}_owner.json"
+
+
+def _result_file(task_id: str) -> Path:
+    return MISSIONS_DIR / f"web-task-{task_id}_result.md"
+
+
+def _escribir_fallo(task_id: str, motivo: str) -> None:
+    """El fallo de la tarea queda en el archivo de dueño que ya lee GET (A-51),
+    escrito atómico: un GET concurrente nunca lee JSON a medias."""
+    duenio = _owner_file(task_id)
+    datos = json.loads(duenio.read_text())
+    datos["fallo"] = {"code": "comando_fallo", "motivo": motivo}
+    temporal = duenio.with_suffix(".json.tmp")
+    temporal.write_text(json.dumps(datos))
+    os.replace(temporal, duenio)
 
 
 class CommandRequest(BaseModel):
@@ -45,14 +62,6 @@ async def create_command(req: CommandRequest, user: AuthUser = Depends(get_curre
     # ajeno podía leer su resultado completo. Ver ese endpoint más abajo.
     _owner_file(task_id).write_text(json.dumps({"tenant_id": tenant_id, "user_id": user_id}))
 
-    start_event = JAXEvent(
-        event_type="command_started",
-        tenant_id=tenant_id,
-        user_id=user_id,
-        payload={"task_id": task_id, "command_preview": req.command[:100]},
-    )
-    await event_bus.publish(start_event)
-
     await engine_state.set_facet_status("hyde", "thinking", tenant_id, user_id, req.command[:100])
 
     asyncio.create_task(
@@ -72,7 +81,7 @@ async def get_command_result(task_id: str, user: AuthUser = Depends(get_current_
     try:
         uuid.UUID(task_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="task_id inválido")
+        raise HTTPException(status_code=400, detail="task_id_invalido")
 
     # 404 (no 403) para no confirmarle a un no-dueño que el task_id existe.
     # Tareas creadas antes de este cambio no tienen owner file y también
@@ -80,17 +89,22 @@ async def get_command_result(task_id: str, user: AuthUser = Depends(get_current_
     try:
         owner = json.loads(_owner_file(task_id).read_text())
     except (OSError, ValueError):
-        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+        raise HTTPException(status_code=404, detail="tarea_no_encontrada")
     if (
         not isinstance(owner, dict)
         or owner.get("user_id") != user.user_id
         or owner.get("tenant_id") != user.tenant_id
     ):
-        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+        raise HTTPException(status_code=404, detail="tarea_no_encontrada")
 
-    result_file = MISSIONS_DIR / f"web-task-{task_id}_result.md"
+    fallo = owner.get("fallo")
+    if isinstance(fallo, dict):
+        return {"status": "failed", "code": fallo.get("code"), "motivo": fallo.get("motivo", "")}
+    result_file = _result_file(task_id)
     if result_file.exists():
-        return {"status": "completed", "result": result_file.read_text()}
+        texto = result_file.read_text()
+        return {"status": "completed", "result": texto} if texto else {
+            "status": "completed", "result": "", "code": "comando_sin_resultado"}
     return {"status": "running"}
 
 
@@ -103,8 +117,11 @@ async def _run_command(
     mode: str,
 ):
     try:
+        codigo = None
         if mode == "dry_run":
-            result_file.write_text(f"[DRY RUN] Tarea registrada:\n\n{mission_file.read_text()}")
+            texto = mission_file.read_text()
+            result_file.write_text(texto)
+            codigo = "comando_simulado"
         else:
             proc = await asyncio.create_subprocess_exec(
                 str(JAX_BIN), "--task", str(mission_file),
@@ -115,40 +132,25 @@ async def _run_command(
             await proc.wait()
             # JAX escribe el resultado en result_file internamente.
             # No sobreescribir — solo leer.
-
-        if result_file.exists():
-            result_text = result_file.read_text()
-        else:
-            result_text = "[Sin resultado — JAX no produjo output]"
-            result_file.write_text(result_text)
-
-        done_event = JAXEvent(
-            event_type="command_completed",
-            tenant_id=tenant_id,
-            user_id=user_id,
-            payload={
-                "task_id": task_id,
-                "status": "completed",
-                "result": result_text,
-                "result_preview": result_text[:500],
-            },
-        )
-        await event_bus.publish(done_event)
+            if result_file.exists():
+                texto = result_file.read_text()
+            else:
+                texto = ""
+                result_file.write_text("")
+            if not texto:
+                codigo = "comando_sin_resultado"
+        payload = {"task_id": task_id, "status": "completed", "result": texto}
+        if codigo:
+            payload["code"] = codigo
+        await event_bus.publish(JAXEvent(event_type="command_completed", tenant_id=tenant_id,
+                                         user_id=user_id, payload=payload))
         await engine_state.set_facet_status("hyde", "idle", tenant_id, user_id)
 
-    except Exception as e:  # fail-soft: tarea de fondo: el fallo se publica como command_completed status='failed' y se escribe en result_file; no hay falso éxito
-        err = str(e)
-        result_file.write_text(f"Error ejecutando tarea: {err}")
-        fail_event = JAXEvent(
-            event_type="command_completed",
-            tenant_id=tenant_id,
-            user_id=user_id,
-            payload={
-                "task_id": task_id,
-                "status": "failed",
-                "result": f"Error: {err}",
-                "result_preview": f"Error: {err[:400]}",
-            },
-        )
-        await event_bus.publish(fail_event)
+    except Exception as e:  # fail-soft: tarea de fondo: el fallo se publica como command_completed status='failed' con código y queda en el archivo de dueño; no hay falso éxito
+        motivo = recortar_redactado(str(e), 400)
+        _escribir_fallo(task_id, motivo)
+        await event_bus.publish(JAXEvent(
+            event_type="command_completed", tenant_id=tenant_id, user_id=user_id,
+            payload={"task_id": task_id, "status": "failed", "code": "comando_fallo",
+                     "result": "", "motivo": motivo}))
         await engine_state.set_facet_status("hyde", "idle", tenant_id, user_id)

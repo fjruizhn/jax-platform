@@ -4,9 +4,7 @@ from pydantic import BaseModel
 import httpx
 from auth.middleware import get_current_user
 from auth.models import AuthUser
-from jax_engine.schemas import JAXEvent
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
-from jax_engine.events import event_bus
 from http_client import get_http_client
 from api.admin.usage import record_usage, validar_ids_de_uso
 from redaccion import recortar_redactado
@@ -30,7 +28,7 @@ async def generate_image(req: ImageRequest, user: AuthUser = Depends(get_current
     try:
         api_key = await resolve_credential_instrumented("openai")
     except CredentialUnavailableError:
-        raise HTTPException(status_code=503, detail="Sin credencial válida configurada para openai")
+        raise HTTPException(status_code=503, detail={"code": "credencial_no_disponible", "provider": "openai"})
 
     client = await get_http_client()
     try:
@@ -56,14 +54,12 @@ async def generate_image(req: ImageRequest, user: AuthUser = Depends(get_current
     # secreto conocido: recortando primero, un secreto que cruzaba el
     # caracter 200 quedaba partido, sin forma reconocible, y salia en claro.
     except httpx.HTTPStatusError as e:
-        cuerpo = recortar_redactado(e.response.text, 200, (api_key,))
-        raise HTTPException(
-            status_code=502,
-            detail=f"Image API error {e.response.status_code}: {cuerpo}",
-        )
+        raise HTTPException(status_code=502, detail={
+            "code": "imagen_error_http", "status": e.response.status_code,
+            "motivo": recortar_redactado(e.response.text, 200, (api_key,))})
     except Exception as e:
-        motivo = recortar_redactado(str(e), 200, (api_key,))
-        raise HTTPException(status_code=502, detail=f"Error generando imagen: {motivo}")
+        raise HTTPException(status_code=502, detail={
+            "code": "imagen_error", "motivo": recortar_redactado(str(e), 200, (api_key,))})
 
     data = r.json()
     item = data["data"][0]
@@ -75,21 +71,9 @@ async def generate_image(req: ImageRequest, user: AuthUser = Depends(get_current
     else:
         url = item.get("url", "")
 
-    revised_prompt = req.prompt  # gpt-image-1 no incluye revised_prompt
-
-    tenant_id = user.tenant_id
-    user_id = user.user_id
-    event = JAXEvent(
-        event_type="image_generated",
-        tenant_id=tenant_id,
-        user_id=user_id,
-        payload={"prompt": req.prompt},
-    )
-    await event_bus.publish(event)
-
     await record_usage(
         user.user_id, user.tenant_id, "thot_image", "openai", "gpt-image-1",
         0, 0, "imagen", cost_usd_override=0.04,
     )
-
-    return ImageResponse(url=url, revised_prompt=revised_prompt)
+    # gpt-image-1 no incluye revised_prompt
+    return ImageResponse(url=url, revised_prompt=req.prompt)

@@ -11,9 +11,7 @@ EventType = Literal[
     "las_manos_health_changed",
     "facet_response_completed",
     "heartbeat",
-    "command_started",
     "command_completed",
-    "image_generated",
 ]
 
 FacetStatus = Literal["idle", "thinking", "error", "offline"]

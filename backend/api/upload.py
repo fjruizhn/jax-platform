@@ -4,6 +4,7 @@ import uuid
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from auth.middleware import get_current_user
 from auth.models import AuthUser
+from redaccion import recortar_redactado
 
 router = APIRouter(prefix="/api/chat")
 
@@ -31,7 +32,7 @@ async def upload_file(
 ):
     content = await file.read()
     if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="Archivo demasiado grande (máx 10MB)")
+        raise HTTPException(status_code=413, detail={"code": "archivo_demasiado_grande", "max_bytes": MAX_FILE_SIZE})
 
     file_type = _detect_type(file.filename or "", file.content_type or "")
     file_id = str(uuid.uuid4())[:8]
@@ -67,7 +68,7 @@ async def upload_file(
                 "ready": True,
             }
         except Exception as e:
-            raise HTTPException(status_code=422, detail=f"No se pudo leer el PDF: {e}")
+            raise HTTPException(status_code=422, detail={"code": "pdf_ilegible", "motivo": recortar_redactado(str(e), 200)})
 
     # text or code
     try:
