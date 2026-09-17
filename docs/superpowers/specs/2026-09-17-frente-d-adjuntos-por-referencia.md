@@ -200,8 +200,8 @@ FUERZA `JAX_ADJUNTOS_DIR` a un `mkdtemp` propio, FUERZA el disco libre mínimo a
 `JAX_ADJUNTOS_RECHAZO_ESPERA_MS` a 0 (los tests de la espera sustituyen `_dormir`).
 
 **Deploy (principal), además de las 14 líneas:** `limit_req` de nginx para
-`/api/chat/upload`. Cómo nginx retransmite el 429 retenido (y el 401 inmediato) se mide en el
-deploy.
+`/api/chat/upload`. Cómo nginx retransmite el 429 y el 401 retenidos (Ruling R30: los dos esperan
+`JAX_ADJUNTOS_RECHAZO_ESPERA_MS`) se mide en el deploy.
 
 ## 7. Contrato de `POST /api/chat/upload`
 
@@ -278,9 +278,10 @@ siempre si el disco se cuelga.
   - se sueltan reserva y candado;
   - se loguea `TimeoutError` sin id;
   - la subida recibe 503 `adjuntos_reintentar`.
-- **Aceptado: una escritura que termina después del plazo puede pasar la cuota por un archivo.**
-  El adjunto queda sin id conocido, y una subida siguiente del mismo usuario puede no haberlo
-  contado. Ese exceso dura hasta que lo borran el limpiador o el TTL. Se acepta a cambio de no
+- **Aceptado: una escritura que termina después del plazo puede pasar la cuota por un archivo
+  por cada vencimiento de plazo.** El adjunto queda sin id conocido, y una subida siguiente del
+  mismo usuario puede no haberlo contado; si el plazo vence varias veces, el exceso es de un
+  archivo por vez. Ese exceso dura hasta que lo borran el limpiador o el TTL. Se acepta a cambio de no
   dejar al usuario sin subir hasta reiniciar.
 - La cancelación repetida sigue esperando, pero dentro del plazo.
 
@@ -381,7 +382,7 @@ uvicorn.
 - Este límite protege el event loop, `TMPDIR` y el disco de adjuntos, no el ancho de banda ni el
   disco temporal de nginx.
 - **Paso de deploy (principal):** `limit_req` de nginx para `/api/chat/upload`.
-- **Se mide en el deploy:** cómo nginx retransmite el 429 retenido y el 401 inmediato.
+- **Se mide en el deploy:** cómo nginx retransmite el 429 y el 401, los dos retenidos (R30).
 
 Camino de una subida:
 0. (RD7) `LimiteDeSubidas`, antes de leer el cuerpo.
@@ -391,7 +392,9 @@ Camino de una subida:
    `max_bytes`.
 3. `clasificar_archivo` corre en un hilo. Lee la cabecera para imagen o PDF, y valida el texto
    entero por bloques de 256 KB con un decodificador incremental.
-4. pypdf recibe **la ruta** en el pool de RD1.
+4. Con el turno de subida ya suelto, pypdf espera `turno_de_pdf` (un semáforo del tamaño de
+   `JAX_ADJUNTO_PDF_PROCESOS`, tomado antes del submit) y recibe **la ruta** en el pool de RD1. El
+   timeout mide solo la corrida (Final fix wave #2, I1; §9.4).
 5. Se guarda.
 6. `finally` borra el temporal.
 
@@ -434,11 +437,87 @@ Pico medido con tracemalloc para 10 MB: parseo ≈ 1,3–1,8 MB y handler ≈ 2,
   logs, memoria, historial o bus de estado. Los logs del limpiador y de la baja muestran una
   huella (`id#<12 hex>`), no el id.
 
-## 9. Qué falta
+## 9. Mediciones de carga
 
-- **RD4 (frontend):** `AttachButton`/`FileAttachment`/`BottomBar` trabajan por id. La vista
-  previa de la imagen usa un object URL local (R23-4), y los textos van en i18n es/en. Hasta RD4
-  la interfaz manda el contrato en línea y recibe 422: la rama no se mergea en ese estado.
-- **RD5 (carga):** health con 5 VUs, solo y junto a `upload_imagen_max`, `upload_pdf_max` y
-  `chat_imagen_max` a c=25. Criterio: p95 ≤ 10 ms y RSS acotado. `loadtest/adjuntos.js` (en jax)
-  tiene que subir primero y chatear por id.
+Todas en staging aislado (receta de `rd5-report.md`): `env -i`, `JAX_DB_NAME=jax_memory_test`,
+uvicorn en 127.0.0.1:18080 recién arrancado por corrida, `TMPDIR` y `JAX_ADJUNTOS_DIR` en disco
+real 0700, sin claves de proveedores, `ss -s` muestreado cada 5 s con aborto sobre 10.000
+TIME-WAIT, conexiones a 3308 acotadas por el pool, ningún puerto de producción. Health = 5 VUs
+contra `/api/health` durante 26 s, junto a la carga a c=25 durante 30 s. **Criterio: health p95
+≤ 10 ms.** Tiempos en ms.
+
+### 9.1 RD5 (2026-09-17, jax-platform `8491eac`; jax `71eb762`)
+
+Por referencia, un usuario sin límite ni cuota (anteriores a RD6/RD7), `SUBIDAS_EN_PROCESO=1`,
+`PDF_PROCESOS=1`, `IMAGENES_EN_PROCESO=1`. Dos corridas por fila.
+
+| Corrida | health p95 | Carga p95 | RSS máx. |
+|---|---|---|---|
+| health solo | **0,3 / 0,3** | — | 86 / 86 MB |
+| con `upload_imagen_max` c=25 | **1,2 / 0,4** | 2207 / 2498 | 177 / 172 MB |
+| con `upload_pdf_max` c=25 | **0,4 / 0,4** | 3899 / 3831 | 138 / 127 MB (hijos pypdf 215 / 224 MB) |
+| con `chat_imagen_max` c=25 | **0,9 / 1,3** | 1535 / 1517 | 137 / 142 MB |
+
+- **Chat por id:** p95 191 ms a c=10 y 1516–1535 ms a c=25 (0 % de errores; el stub recibió cada
+  imagen entera). Contra el contrato en línea: 274 ms a c=10 y 911–1153 ms a c=25; a c=25 es el
+  costo de `IMAGENES_EN_PROCESO=1`, a cambio de health p95 3,1–3,7 → ~1 ms.
+- **RSS:** máximo 177 MB bajo carga (en línea: 865–1514 MB).
+- **500 chats secuenciales** sobre el mismo id: +11 MB (en línea: +48 MB), sin tendencia lineal
+  (93 MB a los 25, 95 a los 225, 98 a los 475); p95 23,5 ms; 0 respuestas malas.
+- **TMPDIR:** Starlette vuelca cada subida ahí antes del handler: hasta 25 fds abiertos y
+  250 MB (imágenes) / 240 MB (PDFs) a c=25, archivos anónimos (0 entradas visibles). Se vacía a
+  los 3 s. En tmpfs serían RAM fuera del RSS: por eso `TMPDIR` va a disco real (§6).
+- **Disco:** `upload_imagen_max` a c=25 escribió 14,0 GB en 30 s en `JAX_ADJUNTOS_DIR` sin
+  cuota. Motivó la cuota y el límite por usuario.
+
+### 9.2 Floods (RD6, RD7 y Ruling R30, 2026-09-17)
+
+Un usuario (un token) salvo el anónimo, imágenes de 10 MB, c=25.
+
+| Flood | Commit | Respuestas | health p95 |
+|---|---|---|---|
+| Corte de cuota (300 MiB, sin límite por minuto) | `c88fc44` | 30 × 200, luego 4009 / 3753 × 413 `adjuntos_cuota_excedida` | **2,63 / 2,84** |
+| Límite por minuto, 429 inmediato | `9d7718c` | 30 × 200, 16.252 / 15.849 × 429 | 37,5 / 40,1 (no cumple) |
+| Límite por minuto, 429 retenido 1 s | `9d80953` | 30 × 200, 750 / 750 × 429 | **0,32 / 0,30** |
+| Límite por minuto, fix round | `2b80433` | 30 × 200, 750 × 429 | **0,29** |
+| Anónimo, 401 inmediato | `2b80433` | 16.904 × 401 | 36,0 (no cumple) |
+| Anónimo, 401 retenido 1 s (R30) | `610f1ed` | 750 × 401 (p95 1022) | **0,29** |
+
+En el corte de cuota, el disco se quedó en 300 MiB desde el primer segundo y Starlette siguió
+volcando 23–25 cuerpos en `TMPDIR`: eso motivó el límite en el middleware (§7.2), que no lee el
+cuerpo (0 fds en `TMPDIR` en todos los floods con límite o sin token).
+
+### 9.3 Final fix wave #2 (2026-09-17, jax-platform `a8cff58`; jax `eab3483`, `2a04d76` en cuota-2)
+
+Mismo recipe, con el `loadtest/adjuntos.js` commiteado. Perfil de deploy (`SUBIDAS_POR_MINUTO=30`,
+cuota 500 MB, `RECHAZO_ESPERA_MS=1000`) salvo donde se indica.
+
+| Corrida | health p50 / p95 / p99 | Carga | RSS máx. |
+|---|---|---|---|
+| solo-1 / solo-2 | 0,23 / **0,28** / 0,35 · 0,23 / **0,29** / 0,36 | — | 86 MB |
+| pdf-1 / pdf-2: `upload_pdf_max` c=25 (perfil throughput: 600/min, cuota 1 TiB) | 0,26 / **0,43** / 0,59 · 0,26 / **0,40** / 0,53 | 231 / 232 × 200, 0 % errores, p95 4044 / 4129 | 139 / 144 MB (hijo pypdf 223 MB) |
+| pdf-cola: igual, con `SUBIDAS_EN_PROCESO=4` y **`PDF_TIMEOUT_SEGUNDOS=1`** | 0,26 / **0,40** / 0,55 | 229 × 200, 0 % errores, 0 líneas de timeout ni reciclado | 128 MB |
+| flood-1 / flood-2: `flood_limite` c=25 | 0,24 / **0,30** / 0,58 · 0,24 / **0,30** / 0,55 | 30 × 200 y 750 × 429 retenidos (p95 1004 / 1009) | 123 / 130 MB |
+| anon-1: `flood_anonimo` c=25 | 0,24 / **0,30** / 0,57 | 750 × 401 retenidos | 94 MB |
+| cuota-2: `flood_cuota` c=25 (perfil cuota: 600/min, 300 MiB) | 0,24 / **0,31** / 1,51 | 30 × 200, 570 × 413, 650 × 429 | 121 MB |
+
+- Todas las corridas: 0 violaciones de red, 0 abortos, TIME-WAIT máx. 1062, conexiones a 3308 ≤ 5,
+  `TMPDIR` vacío a los 3 s.
+- **pdf-cola:** 25 subidas esperan el turno de pdf con un worker y timeout de 1 s. Cada
+  extracción dura ~0,15 s y la cola entera ~3,75 s, así que antes del arreglo la espera se habría
+  contado en el timeout. Con el turno tomado antes del submit, ninguna venció.
+- **cuota-2:** el límite por minuto cuenta también los 413 (§7.2). Con 600/min, después de 600
+  intentos el resto es 429.
+
+### 9.4 Qué cambió en el Final fix wave #2 y sigue pendiente
+
+- **I1:** el timeout de pypdf medía también la espera en la cola del pool (1 worker, timeout 2 s,
+  dos extracciones válidas de 1,5 s: la segunda salía `pdf_ilegible:timeout` y el reciclado mataba
+  a la primera), y `turno_de_subida` quedaba tomado durante pypdf. Ahora `turno_de_pdf` se toma
+  antes del submit y el turno de subida se suelta al terminar de clasificar. Una cancelación real
+  con el PDF ya corriendo retiene el lugar hasta que el worker termine o venza su presupuesto
+  (entonces recicla, igual que sin cancelación).
+- **Pendiente de deploy (principal):** `TMPDIR` del unit en disco real, `limit_req` de nginx y
+  medir cómo nginx retransmite el 401 y el 429 retenidos.
+- **No medido:** el chat con un proveedor real lento (retención de ~13,4 MB de base64 por chat en
+  vuelo; estimado ~335 MB a c=25) y `TMPDIR` en tmpfs.
