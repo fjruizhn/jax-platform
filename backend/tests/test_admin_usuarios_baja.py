@@ -6,7 +6,6 @@ sale de la lista y libera el correo; se conserva el historial. Nada de DELETE:
 dejaba memoria, costos y pipelines huérfanos o fallaba (spec §1, hallazgo 7).
 """
 import json
-import os
 import uuid
 from datetime import date
 
@@ -304,7 +303,15 @@ def test_lista_de_bajas_devuelve_solo_los_dados_de_baja_con_email_original_y_qui
     assert fila["email_original"] == email_ido
     assert fila["role"] == "operator"
     assert fila["deleted_by"] == 1
-    assert fila["deleted_by_email"] == os.environ["JAX_SEED_SUPERADMIN_EMAIL"]  # el superadmin sembrado (user_id=1)
+    # El test fija "quién hizo la baja" (user_id=1, el superadmin sembrado), no
+    # qué correo tiene hoy: se lee de la DB en vez de comparar contra la
+    # variable JAX_SEED_SUPERADMIN_EMAIL (ronda de revisión de la Task 5,
+    # frente A, 2026-09-16) -- jax_memory_test puede tener a user_id=1
+    # sembrado con un correo de una corrida anterior, distinto del que traiga
+    # la variable en /etc/jax/.env (Task 16), y esta comparación dependía del
+    # orden de colección con test_seed_admin_password (el único que resiembra).
+    email_superadmin = client.portal.call(sql, "SELECT email FROM jax_users WHERE user_id = 1", (), True)[0][0]
+    assert fila["deleted_by_email"] == email_superadmin
     assert fila["deleted_at"] is not None
     # el vivo no aparece en la lista de bajas, ni el dado de baja en la normal
     ids_normales = [x["user_id"] for x in client.get("/api/admin/users", headers=_admin()).json()["users"]]
