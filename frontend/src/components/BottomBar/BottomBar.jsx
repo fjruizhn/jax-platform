@@ -7,7 +7,7 @@ import PipelineModal from './PipelineModal'
 import AttachButton from '../chat/AttachButton'
 import FileAttachment from '../chat/FileAttachment'
 import api from '../../api/client'
-import { textoDeErrorDeMesa, textoDeAviso } from '../../api/errores'
+import { textoDeErrorDeMesa, textoDeAviso, codigoDe } from '../../api/errores'
 import { cuerpoDeAdjunto, vistaDeAdjunto, faltaSoporteDeImagen } from '../chat/adjuntos'
 import { alturaInput } from './alturaInput'
 import { colorToken } from '../../tema/tokens'
@@ -50,6 +50,28 @@ function BottomBar() {
   const setGeneratingImage = useJaxStore((s) => s.setGeneratingImage)
   const { t } = useI18n()
   const textareaRef = useRef(null)
+  // RD4 (2026-09-17): la vista previa de la imagen adjunta es un object URL
+  // local (URL.createObjectURL del File elegido); este ref es el único dueño
+  // de ESE URL puntual (el mensaje enviado se queda con el suyo propio, ver
+  // adjuntos.js). modeRef existe para el minor de RD2: si el modo cambia
+  // mientras una subida está en vuelo, la respuesta que llega tarde no debe
+  // adjuntar nada -- se lee en la promesa, no en el render.
+  const attachmentPreviewUrlRef = useRef(null)
+  const modeRef = useRef(mode)
+
+  function descartarAdjuntoComposer() {
+    if (attachmentPreviewUrlRef.current) {
+      URL.revokeObjectURL(attachmentPreviewUrlRef.current)
+      attachmentPreviewUrlRef.current = null
+    }
+    setAttachment(null)
+  }
+
+  // Al desmontar (p.ej. se sale de la pantalla de chat), un adjunto sin
+  // enviar no debe dejar su object URL vivo para siempre.
+  useEffect(() => () => {
+    if (attachmentPreviewUrlRef.current) URL.revokeObjectURL(attachmentPreviewUrlRef.current)
+  }, [])
 
   useEffect(() => {
     if (!esSuperadmin && ejecutorActivo) setEjecutorActivo(false)
@@ -124,7 +146,18 @@ function BottomBar() {
     try {
       // A-21: sin Content-Type a mano -- el navegador pone el boundary.
       const { data } = await api.post('/chat/upload', formData)
-      setAttachment(data)
+      // RD4/RD2-minor: si el modo cambió mientras la subida estaba en vuelo,
+      // esta respuesta llegó tarde -- no se adjunta, y su object URL (si se
+      // llegó a crear) se revoca en el momento.
+      const previewUrl = data.tipo === 'imagen' ? URL.createObjectURL(file) : null
+      if (modeRef.current !== 'chat') {
+        if (previewUrl) URL.revokeObjectURL(previewUrl)
+        return
+      }
+      // Reemplazo: si ya había un adjunto sin enviar, su object URL se descarta.
+      if (attachmentPreviewUrlRef.current) URL.revokeObjectURL(attachmentPreviewUrlRef.current)
+      attachmentPreviewUrlRef.current = previewUrl
+      setAttachment({ ...data, archivo: file, previewUrl })
     } catch (err) {
       addToast({ message: textoDeErrorDeMesa(t, err, t.attachError), type: 'error' })
     } finally {
@@ -134,8 +167,9 @@ function BottomBar() {
 
   function elegirModo(m) {
     setMode(m)
+    modeRef.current = m
     // Solo el chat manda adjuntos: al salir se quitan, no se pierden callados.
-    if (m !== 'chat') setAttachment(null)
+    if (m !== 'chat') descartarAdjuntoComposer()
   }
 
   const imagenSinSoporte = mode === 'chat' && faltaSoporteDeImagen(attachment, politica, activeFacet)
@@ -198,9 +232,15 @@ function BottomBar() {
         timestamp: data.timestamp,
         contract_degraded: data.contract_degraded ?? false,
       })
-      setAttachment(null)
+      // El mensaje del usuario ya se armó con vistaDeAdjunto() más arriba,
+      // que le dio su PROPIO object URL (adjuntos.js) -- el del compositor
+      // ya no lo necesita nadie.
+      descartarAdjuntoComposer()
     } catch (err) {
       agregarError(activeFacet, Date.now().toString() + '_err', 'errorPrefix', textoDeErrorDeMesa(t, err, t.errorFacet))
+      // El id ya no existe (venció o lo borraron): no hay nada para
+      // reintentar con ÉL, así que se limpia para poder re-adjuntar.
+      if (codigoDe(err) === 'adjunto_no_encontrado') descartarAdjuntoComposer()
     } finally {
       setSending(false)
       textareaRef.current?.focus()
@@ -348,7 +388,7 @@ function BottomBar() {
           <FileAttachment
             attachment={attachment}
             uploading={uploading}
-            onRemove={() => setAttachment(null)}
+            onRemove={descartarAdjuntoComposer}
           />
         )}
 
