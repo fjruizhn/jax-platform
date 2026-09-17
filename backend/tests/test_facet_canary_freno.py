@@ -59,7 +59,7 @@ def test_probe_facet_con_el_freno_puesto_no_invoca_ni_registra(espias, caplog):
     with caplog.at_level(logging.WARNING):
         out = asyncio.run(facet_canary.probe_facet("thot", _config(), facet_canary.SOURCE_CANARY_PERIODIC))
 
-    assert espias["invoke"] == [], "la sonda llamó al proveedor con el freno puesto"
+    assert not espias["invoke"] == [], "la sonda llamó al proveedor con el freno puesto"
     assert espias["record"] == [], "un salto por freno no es una caída: no se escribe fila"
     assert out == _saltada()
     assert any("thot" in r.getMessage() and "freno" in r.getMessage() for r in caplog.records), \
