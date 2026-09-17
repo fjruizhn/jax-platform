@@ -5,11 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
-from config_de_entorno import ruta_requerida
+from config_entorno import ruta_absoluta_requerida
 
 router = APIRouter(prefix="/api")
 
-AUDIT_LOG = ruta_requerida("JAX_AUDIT_LOG_PATH")
+AUDIT_LOG = ruta_absoluta_requerida("JAX_AUDIT_LOG_PATH")
 
 
 _BLOQUE = 64 * 1024

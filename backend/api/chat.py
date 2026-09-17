@@ -29,14 +29,13 @@ from contrato_dispatch import (
 import model_catalog
 from auth.middleware import get_current_user
 from auth.models import AuthUser
-from config_de_entorno import ruta_requerida
+from config_entorno import ruta_absoluta_requerida, url_requerida
 from jax_engine.schemas import JAXEvent
 from jax_engine.events import event_bus
 from jax_engine.state import engine_state, LAS_MANOS_URL
 from api.admin.usage import record_usage, validar_ids_de_uso
 from db.connection import get_pool
 from redaccion import recortar_redactado, texto_de_error
-from config_entorno import url_requerida
 from facet_health import (
     record_facet_health,
     OUTCOME_OK,
@@ -69,15 +68,16 @@ router = APIRouter(prefix="/api")
 _GOVERNED_TRANSPORTS = frozenset({"http_gemini", "http_openai_compat"})
 _JAX_PLATFORM_CHAT_CALLER = "jax_platform_chat"
 
-# Ruta al config.toml del repo `jax` (repo vecino). Configurable por entorno,
-# con el mismo default de siempre -- antes era `~/jax/config/config.toml` y
-# nada mas, una ruta hardcodeada a otro repo relativa al $HOME del usuario.
-# Eso hacia IMPOSIBLE correr la suite fuera de la maquina de Fernando: en un
-# runner limpio el archivo no existe y 30 tests caen con FileNotFoundError
-# (medido en CI el 2026-09-01, no supuesto). Desde el 2026-09-16 no hay
-# default: ver config_de_entorno.py.
-CONFIG_PATH = str(ruta_requerida("JAX_CONFIG_PATH"))
-JAX_REPO = ruta_requerida("JAX_REPO_PATH")
+# Ruta al config.toml del repo `jax` (repo vecino). Obligatoria y absoluta,
+# sin default (frente A, 2026-09-16): sin JAX_CONFIG_PATH el modulo no se
+# importa y el servicio no arranca. Historia: primero fue
+# `~/jax/config/config.toml` fijo, relativo al $HOME del usuario, y eso hacia
+# IMPOSIBLE correr la suite fuera de la maquina de Fernando (en un runner
+# limpio 30 tests caian con FileNotFoundError, medido en CI el 2026-09-01);
+# despues fue configurable con ese mismo default. La regla vive en
+# config_entorno.py (espejo de jax/core/config_entorno.py).
+CONFIG_PATH = str(ruta_absoluta_requerida("JAX_CONFIG_PATH"))
+JAX_REPO = ruta_absoluta_requerida("JAX_REPO_PATH")
 
 # --- Memoria semántica COMPARTIDA con el REPL (MISMA MariaDB jax_memory) ----
 # Reutiliza la clase MemoryDB del núcleo (~/jax) — no duplica memoria ni lógica.

@@ -661,10 +661,11 @@ jobs:
       # aca tambien para que el paso del esquema de Jacobs (que no pasa por
       # conftest) apunte a la misma base y no a `jax_memory`.
       JAX_DB_NAME: jax_memory_test
-      # api/chat.py lee el config.toml del repo `jax`. Por default lo busca en
-      # ~/jax/config/config.toml, que existe en hall9000 y no en un runner --
-      # 30 tests caian con FileNotFoundError hasta que se hizo configurable.
-      # Apunta al clon que hace el paso de mas abajo.
+      # api/chat.py lee el config.toml del repo `jax`. Obligatoria y absoluta
+      # desde el 2026-09-16 (config_entorno.ruta_absoluta_requerida): sin ella
+      # api/chat.py no se importa. Antes tenia default ~/jax/config/config.toml,
+      # que existe en hall9000 y no en un runner (30 tests caian con
+      # FileNotFoundError). Apunta al clon que hace el paso de mas abajo.
       JAX_CONFIG_PATH: /tmp/jax/config/config.toml
       # shadow_validation.py importa policy/governance/ del repo `jax` por
       # sys.path. Mismo caso que JAX_CONFIG_PATH: sin esto son 9 tests con
@@ -1467,7 +1468,15 @@ jobs:
           # (archivo distinto). Mismo hueco ambiental (1 failed de
           # grounding), 1 skip. Re-medido dos veces tras el rebase (no sumado
           # a ojo): 1403 passed / 1 failed / 1 skipped.
-          PISO_PASSED = 1403
+          # 1403 -> 1423 el 2026-09-17 (unificación config_de_entorno ->
+          # config_entorno, rebase sobre 2bb90b2): +23 en
+          # test_config_entorno_fuente_unica.py (política sin el módulo
+          # viejo, con controles del escaneo, y equivalencia de
+          # ruta_requerida contra ruta_absoluta_requerida) y -3 movidos desde
+          # test_rutas_de_entorno.py (neto +20). Re-medido dos veces tras el
+          # rebase (no sumado a ojo); el +1 de grounding, si aparece, sigue
+          # sin entrar al piso por ser ambiental.
+          PISO_PASSED = 1423
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1995,7 +2004,12 @@ jobs:
       # JWT (archivo distinto); ninguno pide `client`, los skips no se
       # mueven. Re-medido dos veces tras el rebase (no sumado a ojo): 804
       # passed / 601 skipped.
-      JAX_CI_MIN_PASSED: "804"
+      # 804 -> 824 el 2026-09-17 (unificación config_de_entorno ->
+      # config_entorno, rebase sobre 2bb90b2): +23 puros en
+      # test_config_entorno_fuente_unica.py, -3 puros movidos desde
+      # test_rutas_de_entorno.py (neto +20); los skips no se mueven.
+      # Re-medido dos veces tras el rebase (no sumado a ojo).
+      JAX_CI_MIN_PASSED: "824"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
