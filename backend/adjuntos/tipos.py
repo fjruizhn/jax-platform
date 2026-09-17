@@ -125,7 +125,9 @@ def nombre_seguro(crudo: str | None) -> str:
     La entrada se recorta a NOMBRE_CRUDO_MAX ANTES de todo: el filtro va
     carácter a carácter en Python y un nombre de 10 MB bloqueaba el loop
     ~455 ms. Es un prefijo: un nombre crudo más largo que el tope ya no es un
-    nombre de archivo razonable, y /api/chat lo rechaza antes con 422."""
+    nombre de archivo razonable. Desde RD3 el nombre solo entra por la subida
+    (el filename del multipart; /api/chat recibe ids, no nombres), y ahí no
+    hay un rechazo previo por largo: se recorta y la subida sigue."""
     base = (crudo or "")[:NOMBRE_CRUDO_MAX].replace("\\", "/").rsplit("/", 1)[-1]
     limpio = "".join(
         c for c in base

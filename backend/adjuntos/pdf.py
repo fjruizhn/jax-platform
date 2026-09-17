@@ -1,6 +1,8 @@
 """Texto de un PDF adjunto (frente D, 2026-09-16), con pypdf.
 
-SÍNCRONA y CPU-bound: el llamador la corre en asyncio.to_thread. Acotada por
+SÍNCRONA y CPU-bound: el llamador (adjuntos/pdf_pool.py::extraer_texto_en_pool)
+la corre en un worker del ProcessPoolExecutor, nunca en el proceso web (RD1:
+pypdf retiene el GIL aun en un hilo). Acotada por
 JAX_ADJUNTO_MAX_PAGINAS (páginas leídas) y JAX_ADJUNTO_MAX_CHARS (se corta
 en cuanto se juntan suficientes caracteres). Nunca devuelve "" como éxito:
 un PDF sin texto es PdfSinTexto (un escaneo no se le manda vacío al modelo).
