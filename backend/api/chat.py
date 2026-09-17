@@ -29,6 +29,7 @@ from contrato_dispatch import (
 import model_catalog
 from auth.middleware import get_current_user
 from auth.models import AuthUser
+from kill_switch import exigir_mesa_libre
 from config_entorno import ruta_absoluta_requerida, url_requerida
 from jax_engine.schemas import JAXEvent
 from jax_engine.events import event_bus
@@ -1011,7 +1012,7 @@ def _update_history(user_id: str, user_msg: str, assistant_msg: str):
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUser = Depends(get_current_user)):
+async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUser = Depends(exigir_mesa_libre)):
     config = _load_config()
     # req.facet es input de usuario sin validar: si no está en la whitelist
     # de config["personalities"], hoy _invoke_facet caía en silencio al
