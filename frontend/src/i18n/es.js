@@ -1,5 +1,30 @@
-// Lugar de un paso en los textos del pre-vuelo: "Paso 5 (kimi)".
-const lugarDelPaso = (v) => (Number.isInteger(v?.paso) ? `Paso ${v.paso + 1}${v.faceta ? ` (${v.faceta})` : ''}` : `${v?.faceta ?? ''}`)
+// Etiquetas del estado de un pipeline (jacobs/models.py::PipelineStatus).
+// Se comparten con estado_no_continuable: el status nunca se muestra crudo.
+const ETIQUETAS_DE_ESTADO = {
+  pending: 'Pendiente',
+  running: 'En curso',
+  waiting_gate: 'Esperando aprobación',
+  completed: 'Completado',
+  failed: 'Fallido',
+  aborted: 'Abortado',
+  interrupted: 'Interrumpido',
+  expired: 'Vencido',
+}
+
+const UN_PASO = 'Un paso'
+// Posición humana de un paso: sólo un entero o un string de dígitos.
+const posicionDelPaso = (paso) => {
+  if (Number.isInteger(paso) && paso >= 0) return paso + 1
+  if (typeof paso === 'string' && /^\d+$/.test(paso)) return Number(paso) + 1
+  return null
+}
+// Lugar de un paso en los textos del pre-vuelo: "Paso 5 (kimi)". Sin posición
+// válida, "Un paso"; la faceta sólo si es texto (fix round 1 Task 8).
+const lugarDelPaso = (v) => {
+  const n = posicionDelPaso(v?.paso)
+  const base = n === null ? UN_PASO : `Paso ${n}`
+  return typeof v?.faceta === 'string' && v.faceta ? `${base} (${v.faceta})` : base
+}
 
 export default {
   // Top bar
@@ -35,13 +60,7 @@ export default {
   // (jax_engine/schemas.py::PipelineStatus) se mostraba crudo. Un valor que
   // el backend agregue y el diccionario no conozca cae en el dato crudo
   // (RightPanel.jsx).
-  pipelineStatusLabels: {
-    pending: 'Pendiente',
-    running: 'En curso',
-    waiting_gate: 'Esperando aprobación',
-    completed: 'Completado',
-    failed: 'Fallido',
-  },
+  pipelineStatusLabels: ETIQUETAS_DE_ESTADO,
   pipelinesAdditional: (n) => `+${n} pipeline(s) adicional(es)`,
   approve: '✓ Aprobar',
   cancelling: 'Cancelando…',
@@ -104,9 +123,18 @@ export default {
     costo_supera_lo_aceptado: () => 'El costo máximo subió por encima de lo que confirmaste. Revísalo y vuelve a confirmar.',
     reasignacion_invalida: () => 'La reasignación de facetas no es válida para este plan.',
     prevuelo_no_disponible: () => 'El pre-vuelo no está disponible: sin él no se corre nada.',
-    estado_no_continuable: (d) => (typeof d.status === 'string' && d.status
-      ? `Este pipeline no se puede continuar: su estado es «${d.status}».`
-      : 'Este pipeline no se puede continuar en su estado actual.'),
+    estado_no_continuable: (d) => {
+      if (d.status === null || d.status === undefined) {
+        return 'Otro pedido cambió este pipeline mientras tanto: recarga la página para ver su estado.'
+      }
+      if (d.status === 'interrupted') {
+        return `Este pipeline está «${ETIQUETAS_DE_ESTADO.interrupted}»: hay que reanudarlo, no continuarlo.`
+      }
+      if (typeof d.status === 'string' && Object.hasOwn(ETIQUETAS_DE_ESTADO, d.status)) {
+        return `Este pipeline no se puede continuar: su estado es «${ETIQUETAS_DE_ESTADO[d.status]}».`
+      }
+      return 'Este pipeline no se puede continuar en su estado actual.'
+    },
     pasos_requeridos: () => 'El pipeline no tiene pasos.',
     costo_confirmado_invalido: () => 'El costo confirmado no es válido.',
     limite_de_activos: () => 'Jacobs ya tiene el máximo de pipelines activos: espera a que termine alguno.',
@@ -124,7 +152,8 @@ export default {
   },
   reglaPrevueloDesconocida: (v) => `${lugarDelPaso(v)}: el pre-vuelo lo rechazó por una regla que esta versión no conoce.`,
   detalleDelPrevuelo: (texto) => `Detalle: ${texto}`,
-  detalleDePaso: (d) => `${lugarDelPaso(d)}: ${d.motivo ?? ''}`,
+  unPaso: UN_PASO,
+  detalleDePaso: (d) => (typeof d?.motivo === 'string' && d.motivo ? `${lugarDelPaso(d)}: ${d.motivo}` : lugarDelPaso(d)),
   motivosDeCosto: {
     acotado: 'Costo acotado por el tope de salida del modelo.',
     sin_precio: 'El modelo no tiene precio cargado: el costo no se puede acotar.',

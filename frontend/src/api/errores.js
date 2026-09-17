@@ -47,8 +47,12 @@ export function textoDeErrorDeMesa(t, err, generico) {
   const partes = [traducir(datos)]
   if (datos.motivo) partes.push(t.respuestaDelServicio(datos.motivo))
   // `mensaje` (estado_no_continuable, spec 2026-09-17): texto de Jacobs ya
-  // redactado por el backend; va como dato, igual que `motivo`.
-  if (typeof datos.mensaje === 'string' && datos.mensaje) partes.push(t.respuestaDelServicio(datos.mensaje))
+  // redactado por el backend; va como dato, igual que `motivo`. Fix round 1:
+  // si el status es uno que la Mesa sabe nombrar, el texto propio alcanza y
+  // el mensaje de Jacobs no se agrega.
+  const statusConocido = code === 'estado_no_continuable' && typeof datos.status === 'string'
+    && Object.hasOwn(t.pipelineStatusLabels, datos.status)
+  if (typeof datos.mensaje === 'string' && datos.mensaje && !statusConocido) partes.push(t.respuestaDelServicio(datos.mensaje))
   const detalle = textoDeDetalle(t, datos.detalle)
   if (detalle) partes.push(t.detalleDelPrevuelo(detalle))
   return partes.join(' ')
@@ -93,4 +97,14 @@ export function textoDeViolacion(t, v) {
 export function textoDeMotivoDeCosto(t, motivo) {
   if (typeof motivo === 'string' && Object.hasOwn(t.motivosDeCosto, motivo)) return t.motivosDeCosto[motivo]
   return t.motivoDeCostoDesconocido
+}
+
+// Causa del aborto de un pipeline (GET /api/pipelines → `causa`, spec
+// 2026-09-17): se lee por su `tipo`; uno desconocido o heredado cae en
+// `desconocida`. Sólo un `paso` entero llega al texto.
+export function textoDeCausa(t, causa) {
+  const tipo = causa && typeof causa === 'object' ? causa.tipo : undefined
+  const conocida = typeof tipo === 'string' && Object.hasOwn(t.causasDeAborto, tipo)
+  const datos = Number.isInteger(causa?.paso) ? { paso: causa.paso } : {}
+  return (conocida ? t.causasDeAborto[tipo] : t.causasDeAborto.desconocida)(datos)
 }

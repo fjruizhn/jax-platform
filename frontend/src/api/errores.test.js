@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { textoDeErrorDeMesa, textoDeAviso, textoDeViolacion, textoDeMotivoDeCosto } from './errores'
+import { textoDeErrorDeMesa, textoDeAviso, textoDeViolacion, textoDeMotivoDeCosto, textoDeCausa } from './errores'
 import es from '../i18n/es.js'
 import en from '../i18n/en.js'
 
@@ -95,15 +95,50 @@ describe('pre-vuelo y continuar (spec 2026-09-17)', () => {
   })
 
   // Adenda ítem 4 / enmienda 2: estado_no_continuable trae {status, mensaje}.
-  it('estado_no_continuable usa el status si viene y un texto genérico si es null', () => {
+  // Fix round 1 ítems 1-2: el status nunca sale crudo; se traduce con la tabla
+  // de etiquetas y el texto cambia según el estado.
+  const noContinuable = (d, status, mensaje) =>
+    textoDeErrorDeMesa(d, err({ code: 'estado_no_continuable', status, mensaje }), 'G')
+
+  it('un status conocido se muestra con su etiqueta, nunca crudo, y sin el mensaje', () => {
     for (const d of [es, en]) {
-      expect(d.erroresMesa.estado_no_continuable({ status: 'completed' })).toContain('completed')
-      const generico = d.erroresMesa.estado_no_continuable({ status: null })
-      expect(generico).not.toContain('null')
-      expect(generico).not.toContain('undefined')
+      for (const status of ['completed', 'failed', 'running']) {
+        const texto = noContinuable(d, status, 'texto de jacobs')
+        expect(texto, status).toContain(d.pipelineStatusLabels[status])
+        expect(texto, status).not.toContain(status)
+        expect(texto, status).not.toContain('texto de jacobs')
+      }
     }
-    const texto = textoDeErrorDeMesa(es, err({ code: 'estado_no_continuable', status: null, mensaje: 'ya corre' }), 'G')
-    expect(texto).toBe(`${es.erroresMesa.estado_no_continuable({ status: null })} ${es.respuestaDelServicio('ya corre')}`)
+  })
+
+  it('interrupted manda a reanudar, sin el mensaje', () => {
+    expect(noContinuable(es, 'interrupted', 'x-msg')).toMatch(/reanud/i)
+    expect(noContinuable(en, 'interrupted', 'x-msg')).toMatch(/resum/i)
+    for (const d of [es, en]) {
+      expect(noContinuable(d, 'interrupted', 'x-msg')).not.toContain('interrupted')
+      expect(noContinuable(d, 'interrupted', 'x-msg')).not.toContain('x-msg')
+    }
+  })
+
+  it('status null: otro pedido cambió el pipeline, recargar; con el mensaje como dato', () => {
+    expect(noContinuable(es, null)).toMatch(/recarg/i)
+    expect(noContinuable(en, null)).toMatch(/reload/i)
+    for (const d of [es, en]) {
+      expect(noContinuable(d, null, 'ya corre')).toBe(`${d.erroresMesa.estado_no_continuable({ status: null })} ${d.respuestaDelServicio('ya corre')}`)
+      expect(noContinuable(d, null)).not.toContain('null')
+    }
+  })
+
+  it('un status desconocido o heredado cae en el genérico, sin crudo, con el mensaje', () => {
+    for (const d of [es, en]) {
+      for (const status of ['zzz_raro', 'constructor', 7]) {
+        const texto = noContinuable(d, status, 'dato')
+        expect(texto).toBe(`${d.erroresMesa.estado_no_continuable({ status: 'zzz_raro' })} ${d.respuestaDelServicio('dato')}`)
+        expect(texto).not.toContain(String(status))
+      }
+      const textos = new Set([null, 'interrupted', 'completed', 'zzz_raro'].map(s => d.erroresMesa.estado_no_continuable({ status: s })))
+      expect(textos.size).toBe(4)
+    }
   })
 
   // Adenda ítem 3: `detalle` string o lista normalizada, siempre como dato.
@@ -121,9 +156,23 @@ describe('pre-vuelo y continuar (spec 2026-09-17)', () => {
       expect(texto).toContain('ada')
       expect(texto).toContain('no existe')
       expect(texto).toContain('clean-room')
-      expect(texto).toContain('2')
-      expect(texto).toContain('3')
       expect(texto).toContain(d.detalleDelPrevuelo(`${d.detalleDePaso(detalle[0])}; ${d.detalleDePaso(detalle[1])}`))
+    }
+  })
+
+  // Fix round 1 ítem 3: posición y faceta sólo si tienen la forma esperada.
+  it('un paso sin posición ni faceta válidas usa el texto genérico y omite el motivo vacío', () => {
+    expect(es.detalleDePaso({ paso: null, faceta: null, motivo: '' })).toBe(es.unPaso)
+    expect(en.detalleDePaso({ paso: null, faceta: null, motivo: '' })).toBe(en.unPaso)
+    expect(es.detalleDePaso({ paso: '3x', faceta: 'ada', motivo: 'm' })).toBe(`${es.unPaso} (ada): m`)
+    expect(es.detalleDePaso({ paso: 1, faceta: { a: 1 }, motivo: 'm' })).toBe('Paso 2: m')
+    expect(en.detalleDePaso({ paso: '3', faceta: 'ada', motivo: 'm' })).toBe('Step 4 (ada): m')
+    expect(en.detalleDePaso({ paso: 0, faceta: 'ada', motivo: 5 })).toBe('Step 1 (ada)')
+    for (const d of [es, en]) {
+      const texto = d.reglaPrevueloDesconocida({ paso: '3x', faceta: { a: 1 } })
+      expect(texto.startsWith(`${d.unPaso}:`)).toBe(true)
+      expect(texto).not.toContain('[object Object]')
+      expect(texto).not.toContain('3x')
     }
   })
 
@@ -166,5 +215,26 @@ describe('causasDeAborto (spec 2026-09-17)', () => {
       }
       expect(d.causasDeAborto.fallo({ tipo: 'fallo', paso: 2 })).toContain('3')
     }
+  })
+})
+
+// Fix round 1 ítem 7: la causa del aborto se lee por su tipo, nunca cruda.
+describe('textoDeCausa', () => {
+  it('una causa conocida usa su texto y el fallo nombra el paso', () => {
+    for (const d of [es, en]) {
+      expect(textoDeCausa(d, { tipo: 'fallo', paso: 2 })).toBe(d.causasDeAborto.fallo({ paso: 2 }))
+      expect(textoDeCausa(d, { tipo: 'expirado' })).toBe(d.causasDeAborto.expirado({}))
+    }
+  })
+
+  it('tipo desconocido, heredado, no string o causa null cae en desconocida', () => {
+    for (const causa of [{ tipo: 'otro' }, { tipo: 'constructor' }, { tipo: 5 }, null, undefined, 'fallo']) {
+      expect(textoDeCausa(es, causa)).toBe(es.causasDeAborto.desconocida({}))
+    }
+  })
+
+  it('un paso no entero en un fallo no se inventa', () => {
+    expect(textoDeCausa(es, { tipo: 'fallo', paso: '2' })).toBe(es.causasDeAborto.fallo({}))
+    expect(textoDeCausa(es, { tipo: 'fallo', paso: { x: 1 } })).not.toContain('[object Object]')
   })
 })

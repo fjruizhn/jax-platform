@@ -292,10 +292,18 @@ export const useJaxStore = create((set, get) => {
     }
 
     // pipeline_continued (spec 2026-09-17 §6.2): mismo refresco del panel.
-    if (event_type === 'pipeline_step_changed' || event_type === 'pipeline_continued') {
+    // Un evento sin pipeline_id string no se registra (fix round 1 Task 8):
+    // una key "undefined" o "5" sería un pipeline fantasma en el panel.
+    const esEventoDePipeline = event_type === 'pipeline_step_changed' || event_type === 'pipeline_continued'
+    if (esEventoDePipeline && typeof payload?.pipeline_id === 'string') {
       set((s) => {
         const prevPipeline = s.activePipelines[payload.pipeline_id]
-        const steps = _reconcileSteps(prevPipeline?.steps, payload.steps || [])
+        const pasosDelEvento = Array.isArray(payload.steps) ? payload.steps : []
+        // Ruling fix round 1: el backend arma pipeline_continued con un
+        // PipelineState nuevo (steps vacíos); sin esto el panel perdería los
+        // pasos, incluidos los reusados, hasta el próximo step_changed.
+        const conservarPasos = event_type === 'pipeline_continued' && pasosDelEvento.length === 0 && prevPipeline?.steps
+        const steps = conservarPasos ? prevPipeline.steps : _reconcileSteps(prevPipeline?.steps, pasosDelEvento)
         // delete + set (no sólo sobreescribir) para que la key pase al final
         // del orden de inserción — _evictOldFinishedPipelines lee ese orden
         // como "más vieja primero", y una key existente reasignada in-place
@@ -356,7 +364,7 @@ export const useJaxStore = create((set, get) => {
       }
     }
 
-    if (event_type === 'pipeline_step_changed' && payload.status === 'completed') {
+    if (event_type === 'pipeline_step_changed' && typeof payload?.pipeline_id === 'string' && payload.status === 'completed') {
       const { pipeline_id } = payload
       const shown = get()._pipelineCompletedShown
       if (shown.has(pipeline_id)) return
