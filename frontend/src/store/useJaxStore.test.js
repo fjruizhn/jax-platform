@@ -163,6 +163,29 @@ describe('logout', () => {
     expect(useJaxStore.getState().token).toBeNull()
     expect(useJaxStore.getState().user).toBeNull()
   })
+
+  // RD4 (2026-09-17, Ruling R23-4): la miniatura de un adjunto de imagen en
+  // el historial usa su propio object URL (adjuntos.js: vistaDeAdjunto).
+  // logout() es el único hook de reseteo de sesión que vacía `messages` --
+  // tiene que revocarlos ANTES de vaciar, o quedan colgados para siempre.
+  it('revoca los object URL de las miniaturas del historial antes de vaciarlo', async () => {
+    vi.stubGlobal('URL', { ...URL, revokeObjectURL: vi.fn() })
+    useJaxStore.setState({
+      messages: [
+        { id: '1', facet: 'user', content: 'hola', attachment: { type: 'image', filename: 'f.png', base64: 'blob:abc' } },
+        { id: '2', facet: 'user', content: 'otra', attachment: { type: 'image', filename: 'g.png', base64: 'blob:def' } },
+        { id: '3', facet: 'user', content: 'texto', attachment: { type: 'text', filename: 'i.pdf' } },
+        { id: '4', facet: 'thot', content: 'sin adjunto' },
+      ],
+    })
+    api.post.mockResolvedValue({ data: { ok: true } })
+    await useJaxStore.getState().logout()
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:abc')
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:def')
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2)
+    expect(useJaxStore.getState().messages).toEqual([])
+    vi.unstubAllGlobals()
+  })
 })
 
 // Etapa 5 (2026-09-15, Task 4): el JWT no lleva el correo y la barra de

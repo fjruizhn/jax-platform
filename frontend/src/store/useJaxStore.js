@@ -154,6 +154,19 @@ export const useJaxStore = create((set, get) => {
     _savePendingIds(_loadPendingIds().filter((id) => id !== taskId))
   }
 
+  // RD4 (2026-09-17, Ruling R23-4): la miniatura de un adjunto de imagen en
+  // el historial es un object URL propio (adjuntos.js: vistaDeAdjunto), no
+  // uno que el compositor gestione -- logout() es el único punto que vacía
+  // `messages`, así que es el único hook de reseteo de sesión que puede
+  // dejarlos colgados; se revocan ANTES de vaciar.
+  const _revocarObjectURLsDeAdjuntos = (messages) => {
+    for (const m of messages) {
+      if (m.attachment?.type === 'image' && typeof m.attachment.base64 === 'string') {
+        URL.revokeObjectURL(m.attachment.base64)
+      }
+    }
+  }
+
   return {
   token: null,
   user: null,
@@ -234,6 +247,7 @@ export const useJaxStore = create((set, get) => {
       } catch {
         // sin sesión viva en el servidor o sin red: igual se sale localmente
       }
+      _revocarObjectURLsDeAdjuntos(get().messages)
       set({ token: null, user: null, messages: [], _pipelineCompletedShown: new Set(), avisoSesion: null, saliendo: null })
       bumpSessionEpoch()
     })()
