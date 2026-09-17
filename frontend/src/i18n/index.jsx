@@ -1,6 +1,9 @@
 import { createContext, useContext, useState } from 'react'
 import es from './es.js'
 import en from './en.js'
+import { CLAVE_ELECCION_IDIOMA, IDIOMA_DE_RESPALDO, esIdioma, idiomaInicial } from './idioma'
+import { useApariencia } from '../store/useApariencia'
+import { leer, escribir } from '../store/almacenamiento'
 
 const LANGS = { es, en }
 const I18nContext = createContext(null)
@@ -13,24 +16,30 @@ export function localeFor(lang) {
   return LOCALES[lang] || LOCALES.es
 }
 
-// Idioma guardado y su diccionario (A-29, 2026-09-16): una sola regla para el
-// proveedor y para el store, que no es un componente y no puede usar el hook.
-export function idiomaGuardado() {
-  // Una sola lectura; Object.hasOwn: `constructor` no es un idioma (ronda final M9).
-  const guardado = localStorage.getItem('jax_lang')
-  return typeof guardado === 'string' && Object.hasOwn(LANGS, guardado) ? guardado : 'es'
+// Diccionario activo fuera de React (A-29, 2026-09-16): el store no es un
+// componente y no puede usar el hook. Frente C (2026-09-16): usa la misma
+// regla que el proveedor, en un solo lugar (idioma.js::idiomaInicial):
+// elección de la persona > lang_default del sistema > español.
+export function diccionarioActivo() {
+  return LANGS[idiomaInicial()]
 }
 
-export function diccionarioActivo() {
-  return LANGS[idiomaGuardado()]
+function eleccionGuardada() {
+  const valor = leer(CLAVE_ELECCION_IDIOMA)
+  return esIdioma(valor) ? valor : null
 }
 
 export function I18nProvider({ children }) {
-  const [lang, setLangState] = useState(() => idiomaGuardado())
+  // Frente C (2026-09-16): la ELECCIÓN de la persona (jax_lang) gana; si no
+  // eligió, manda lang_default del sistema (useApariencia), y si todavía no se
+  // conoce, español. Solo setLang escribe una elección.
+  const [eleccion, setEleccion] = useState(eleccionGuardada)
+  const langDefault = useApariencia((s) => s.langDefault)
+  const lang = eleccion ?? (esIdioma(langDefault) ? langDefault : IDIOMA_DE_RESPALDO)
 
   function setLang(l) {
-    setLangState(l)
-    localStorage.setItem('jax_lang', l)
+    setEleccion(l)
+    escribir(CLAVE_ELECCION_IDIOMA, l)
   }
 
   return (
