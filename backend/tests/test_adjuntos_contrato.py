@@ -183,3 +183,61 @@ def test_la_imagen_no_se_decodifica_entera(monkeypatch):
     v = _validar([c.AdjuntoImagen(tipo="imagen", nombre="f.png", mime="image/png", base64=b64)], grande)
     assert v.imagenes[0].bytes == len(PNG) + 3_000_000
     assert max(decodificados, default=0) <= 64, decodificados
+
+
+def test_el_alfabeto_se_revisa_por_tramos_cortos(monkeypatch):
+    # Bloqueo del event loop (R16): una sola pasada de re sobre 14 MB retiene
+    # el GIL ~8 ms aunque corra en to_thread. Por tramos, el GIL se suelta
+    # entre uno y otro.
+    tramos: list[int] = []
+
+    class Espia:
+        def __init__(self, patron):
+            self._p = patron
+
+        def fullmatch(self, s, pos=0, endpos=None):
+            fin = len(s) if endpos is None else endpos
+            tramos.append(fin - pos)
+            return self._p.fullmatch(s, pos, fin)
+
+    for nombre in [n for n in dir(c) if n.startswith("_BASE64")]:
+        monkeypatch.setattr(c, nombre, Espia(getattr(c, nombre)))
+    grande = LimitesDeAdjuntos(max_bytes=10_485_760, max_chars=10, max_paginas=20, max_por_mensaje=1)
+    b64 = base64.b64encode(PNG + bytes(3_000_000)).decode()
+    v = _validar([c.AdjuntoImagen(tipo="imagen", nombre="f.png", mime="image/png", base64=b64)], grande)
+    assert v.imagenes[0].bytes == len(PNG) + 3_000_000
+    assert tramos and max(tramos) <= c._TRAMO_DE_ALFABETO <= 1_048_576
+    assert sum(tramos) == len(b64)
+
+
+def test_la_imagen_se_valida_en_el_loop_cediendo_entre_tramos(monkeypatch):
+    # Medido en staging (R16): en asyncio.to_thread el hilo le disputa el GIL
+    # al loop y /api/health empeora. Se valida en el loop, cediendo por tramo.
+    async def sin_hilos(*a, **k):
+        raise AssertionError("validar una imagen no usa asyncio.to_thread")
+
+    monkeypatch.setattr(asyncio, "to_thread", sin_hilos)
+    grande = LimitesDeAdjuntos(max_bytes=10_485_760, max_chars=10, max_paginas=20, max_por_mensaje=1)
+    b64 = base64.b64encode(PNG + bytes(3_000_000)).decode()
+    tramos = len(b64) // c._TRAMO_DE_ALFABETO
+
+    async def correr():
+        ticks = 0
+        fin = asyncio.Event()
+
+        async def tic():
+            nonlocal ticks
+            while not fin.is_set():
+                ticks += 1
+                await asyncio.sleep(0)
+
+        t = asyncio.create_task(tic())
+        await asyncio.sleep(0)
+        v = await c.validar_adjuntos([c.AdjuntoImagen(tipo="imagen", nombre="f.png", mime="image/png", base64=b64)], grande)
+        fin.set()
+        await t
+        return v, ticks
+
+    v, ticks = asyncio.run(correr())
+    assert v.imagenes[0].bytes == len(PNG) + 3_000_000
+    assert ticks >= tramos

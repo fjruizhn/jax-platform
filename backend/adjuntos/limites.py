@@ -56,3 +56,20 @@ def cargar_limites() -> LimitesDeAdjuntos:
             "límites de adjuntos sin configurar o inválidos (enteros > 0 en "
             "/etc/jax/.env): " + ", ".join(problemas))
     return LimitesDeAdjuntos(**valores)
+
+
+VARIABLE_DE_IMAGENES_EN_PROCESO = "JAX_ADJUNTO_IMAGENES_EN_PROCESO"
+
+
+def cargar_imagenes_en_proceso() -> int:
+    """Cuántas imágenes pesadas se parsean/validan a la vez en el event loop
+    (R16, 2026-09-17). Medido en staging con chat_imagen_max a c=25: sin tope,
+    el p95 de /api/health en paralelo fue 17,2 ms; con 1, 2,5 ms. Sin default,
+    como los otros límites: si falta, el servicio no arranca."""
+    crudo = os.environ.get(VARIABLE_DE_IMAGENES_EN_PROCESO)
+    valor = _entero_positivo(crudo)
+    if valor is None:
+        raise LimitesDeAdjuntosInvalidos(
+            "tope de imágenes en proceso sin configurar o inválido (entero > 0 en "
+            f"/etc/jax/.env): {VARIABLE_DE_IMAGENES_EN_PROCESO}={crudo!r}")
+    return valor

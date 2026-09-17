@@ -11,7 +11,8 @@ from collections import OrderedDict
 from functools import lru_cache
 from tiempo import utc_ahora
 from typing import Literal, NamedTuple
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 import httpx
 from http_client import CuerpoJsonDeUnUso, cabeceras_gemini, get_http_client
@@ -27,6 +28,7 @@ from adjuntos.contrato import (
     metadatos_para_memoria,
     validar_adjuntos,
 )
+from adjuntos import json_grande
 from adjuntos.errores import AdjuntoRechazado
 from adjuntos.limites import cargar_limites
 # ModelDispatchConfigError y los dos validadores del contrato de dispatch
@@ -64,7 +66,27 @@ from facet_health import (
     SOURCE_CHAT,
 )
 
-router = APIRouter(prefix="/api")
+class _RequestConJsonGrande(Request):
+    """Request de este router: json() parsea el base64 de la imagen sin
+    escanearlo en el event loop (adjuntos/json_grande.py, R16). Mismo
+    resultado y mismos errores que Request.json()."""
+
+    async def json(self):
+        if not hasattr(self, "_json"):
+            self._json = await json_grande.cargar(await self.body())
+        return self._json
+
+
+class _RutaConJsonGrande(APIRoute):
+    def get_route_handler(self):
+        manejador = super().get_route_handler()
+
+        async def con_json_grande(request: Request):
+            return await manejador(_RequestConJsonGrande(request.scope, request.receive))
+        return con_json_grande
+
+
+router = APIRouter(prefix="/api", route_class=_RutaConJsonGrande)
 
 # El gate de gobernanza se llavea por TRANSPORTE, no por nombre de facet.
 # Antes era un frozenset de nombres ({"hipatia","jekyll","thot","ada"}) --
@@ -766,7 +788,7 @@ def _argumentos_de_cuerpo(cuerpo: dict, imagenes: tuple, cabeceras: dict[str, st
     el chat con un adjunto de texto del mismo tamaño de pedido no crece."""
     if not imagenes:
         return {"json": cuerpo} if cabeceras is None else {"json": cuerpo, "headers": cabeceras}
-    de_un_uso = CuerpoJsonDeUnUso(cuerpo)
+    de_un_uso = CuerpoJsonDeUnUso(cuerpo, literales_seguros=tuple(i.base64 for i in imagenes))
     return {"content": de_un_uso, "headers": {**(cabeceras or {}), **de_un_uso.cabeceras}}
 
 

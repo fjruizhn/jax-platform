@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from adjuntos.errores import AdjuntoRechazado
 from adjuntos.limites import LimitesDeAdjuntos
+from adjuntos.turno import turno_de_imagen
 from adjuntos.tipos import MIMES_DE_IMAGEN, mime_de_imagen, nombre_seguro
 
 _APERTURA = '<<<ADJUNTO nombre="{nombre}" origen="{origen}">>>'
@@ -79,11 +80,42 @@ def exigir_soporte_de_imagen(f, facet: str, imagenes) -> None:
 # (eso se mira aparte). Sin grupos repetidos: con `(?:x{4})*` el motor de re
 # guarda estado por repetición y medido fueron 445 MB y 119 ms para 10 MB.
 _BASE64_ESTRICTO = re.compile(r"[A-Za-z0-9+/]*={0,2}")
+_BASE64_ALFABETO = re.compile(r"[A-Za-z0-9+/]*")
+# Bloqueo del event loop (R16): re retiene el GIL durante toda la llamada, y
+# una sola pasada sobre 14 MB son ~8 ms en los que el loop no corre aunque
+# esto viva en to_thread. Por tramos de 256 KB (múltiplo de 4) el GIL se
+# puede soltar entre uno y otro; el último tramo lleva el relleno.
+_TRAMO_DE_ALFABETO = 256 * 1024
 # 16 caracteres dan 12 bytes: alcanza para la firma más larga (WEBP, 12).
 _PREFIJO_DE_FIRMA = 16
 
 
-def _validar_imagen(a: AdjuntoImagen, limites: LimitesDeAdjuntos) -> ImagenValidada:
+def _tramos_de_alfabeto(b64: str):
+    """Un bool por tramo: el alfabeto base64 estricto, de a 256 KB."""
+    ultimo = max(0, len(b64) - 4)
+    for inicio in range(0, ultimo, _TRAMO_DE_ALFABETO):
+        yield _BASE64_ALFABETO.fullmatch(b64, inicio, min(inicio + _TRAMO_DE_ALFABETO, ultimo)) is not None
+    yield _BASE64_ESTRICTO.fullmatch(b64, ultimo, len(b64)) is not None
+
+
+def _alfabeto_estricto(b64: str) -> bool:
+    return all(_tramos_de_alfabeto(b64))
+
+
+async def _alfabeto_estricto_cooperativo(b64: str) -> bool:
+    # Bloqueo del event loop (R16): en el loop, cediendo entre tramos. Medido
+    # en staging: en asyncio.to_thread el hilo le disputa el GIL al loop y el
+    # p95 de /api/health bajo carga EMPEORA (70 -> 87 ms); por tramos en el
+    # loop cada corte es de ~0,15 ms.
+    for ok in _tramos_de_alfabeto(b64):
+        if not ok:
+            return False
+        await asyncio.sleep(0)
+    return True
+
+
+def _validar_imagen(a: AdjuntoImagen, limites: LimitesDeAdjuntos,
+                    alfabeto_ok: bool | None = None) -> ImagenValidada:
     # Tope del base64 de max_bytes ANTES de mirar nada: 4 caracteres por
     # cada 3 bytes, redondeado hacia arriba.
     if len(a.base64) > ((limites.max_bytes + 2) // 3) * 4:
@@ -93,7 +125,9 @@ def _validar_imagen(a: AdjuntoImagen, limites: LimitesDeAdjuntos) -> ImagenValid
     # pedido en el hilo. La validez se verifica con la expresión (no copia),
     # el largo sale del largo y el relleno, y se decodifica solo el prefijo.
     # Mismo contrato que b64decode(validate=True): lo fija un test diferencial.
-    if len(a.base64) % 4 or _BASE64_ESTRICTO.fullmatch(a.base64) is None:
+    if alfabeto_ok is None:
+        alfabeto_ok = _alfabeto_estricto(a.base64)
+    if len(a.base64) % 4 or not alfabeto_ok:
         raise AdjuntoRechazado(422, "adjunto_invalido")
     relleno = 2 if a.base64.endswith("==") else 1 if a.base64.endswith("=") else 0
     largo = len(a.base64) // 4 * 3 - relleno
@@ -113,7 +147,13 @@ async def validar_adjuntos(adjuntos: list, limites: LimitesDeAdjuntos) -> Adjunt
     imagenes: list[ImagenValidada] = []
     for a in adjuntos:
         if isinstance(a, AdjuntoImagen):
-            imagenes.append(await asyncio.to_thread(_validar_imagen, a, limites))
+            revisar = len(a.base64) % 4 == 0 and len(a.base64) <= ((limites.max_bytes + 2) // 3) * 4
+            if revisar:
+                async with turno_de_imagen():
+                    alfabeto_ok = await _alfabeto_estricto_cooperativo(a.base64)
+            else:
+                alfabeto_ok = False
+            imagenes.append(_validar_imagen(a, limites, alfabeto_ok))
         else:
             textos.append(TextoValidado(nombre_seguro(a.nombre), a.origen, a.contenido[: limites.max_chars]))
     return AdjuntosValidados(tuple(textos), tuple(imagenes))

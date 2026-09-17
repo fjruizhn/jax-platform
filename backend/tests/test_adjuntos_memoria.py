@@ -60,6 +60,17 @@ def _bytes_grandes_alcanzables() -> int:
     )
 
 
+def _contiene_b64(obj) -> bool:
+    # Sin json.dumps: un test de abajo espía dumps y no tiene que verse a sí mismo.
+    if isinstance(obj, str):
+        return obj.endswith(_B64)
+    if isinstance(obj, dict):
+        return any(_contiene_b64(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_contiene_b64(v) for v in obj)
+    return False
+
+
 class _TransporteQueConsume(httpx.AsyncBaseTransport):
     def __init__(self, manejador):
         self._manejador = manejador
@@ -83,9 +94,8 @@ def _despachar(transporte: str) -> dict:
             partes.append(parte)
         cuerpo = json.loads(b"".join(partes))
         del partes
-        texto = json.dumps(cuerpo)
-        visto["imagen_intacta"] = _B64 in texto
-        del cuerpo, texto
+        visto["imagen_intacta"] = _contiene_b64(cuerpo)
+        del cuerpo
         visto["recibido"] = recibido
         visto["content_length"] = request.headers.get("content-length")
         visto["transfer_encoding"] = request.headers.get("transfer-encoding")
@@ -122,6 +132,23 @@ def test_el_cuerpo_con_imagen_no_queda_vivo_despues_del_despacho(transporte):
 
 
 @pytest.mark.parametrize("transporte", sorted(_TRANSPORTES))
+def test_el_base64_no_queda_colgado_de_basura_despues_del_despacho(transporte):
+    # Medido en staging (R16, bloqueo del loop): una closure recursiva al
+    # empalmar el cuerpo dejaba una lista con el base64 en un ciclo; a c=25
+    # llegaron a juntarse 456 copias (5,9 GB) antes de que pasara el GC.
+    gc.collect()
+    antes = len(gc.get_referrers(_B64))
+    gc.disable()
+    try:
+        _despachar(transporte)
+        despues = len(gc.get_referrers(_B64))
+    finally:
+        gc.enable()
+        gc.collect()
+    assert despues == antes
+
+
+@pytest.mark.parametrize("transporte", sorted(_TRANSPORTES))
 def test_el_cuerpo_de_un_uso_declara_su_largo_y_no_va_en_chunks(transporte):
     visto = _despachar(transporte)
     assert visto["transfer_encoding"] is None
@@ -139,3 +166,51 @@ def test_el_cuerpo_de_un_uso_no_se_puede_mandar_dos_veces():
     assert asyncio.run(leer()) == ['{"a":"ñ"}'.encode()]
     with pytest.raises(httpx.StreamConsumed):
         asyncio.run(leer())
+
+
+# --- Bloqueo del event loop (R16, 2026-09-17) --------------------------------
+# json.dumps de un str de 14 MB es UNA llamada en C que retiene el GIL ~20 ms:
+# medido, ni en asyncio.to_thread deja correr al loop. El base64 ya validado
+# no necesita escape JSON: se empalma como bytes y dumps solo ve lo chico.
+
+def _strings_grandes(obj, umbral=100_000):
+    if isinstance(obj, str):
+        return [len(obj)] if len(obj) >= umbral else []
+    if isinstance(obj, dict):
+        return [n for v in obj.values() for n in _strings_grandes(v, umbral)]
+    if isinstance(obj, (list, tuple)):
+        return [n for v in obj for n in _strings_grandes(v, umbral)]
+    return []
+
+
+@pytest.mark.parametrize("transporte", sorted(_TRANSPORTES))
+def test_el_cuerpo_con_imagen_no_pasa_la_imagen_por_json_dumps(transporte, monkeypatch):
+    vistos: list[int] = []
+    original = http_client.json.dumps
+
+    def dumps_espia(obj, *a, **k):
+        vistos.extend(_strings_grandes(obj))
+        return original(obj, *a, **k)
+
+    monkeypatch.setattr(http_client.json, "dumps", dumps_espia)
+    visto = _despachar(transporte)
+    assert visto["imagen_intacta"] is True
+    assert vistos == []
+
+
+def test_el_cuerpo_empalmado_es_identico_a_json_dumps():
+    b64 = base64.b64encode(bytes(range(256)) * 40).decode()
+    raro = 'comillas " y \\ y ñ y ' + chr(0) + " y " + chr(0x2028) + " y JAXADJ"
+    cuerpo = {"model": "m", "messages": [
+        {"role": "system", "content": raro},
+        {"role": "user", "content": [{"type": "text", "text": "mirá"},
+                                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}],
+         "images": [b64]}]}
+    esperado = json.dumps(cuerpo, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+
+    async def leer(c):
+        return b"".join([p async for p in c])
+
+    de_un_uso = http_client.CuerpoJsonDeUnUso(cuerpo, literales_seguros=(b64,))
+    assert asyncio.run(leer(de_un_uso)) == esperado
+    assert de_un_uso.cabeceras["Content-Length"] == str(len(esperado))

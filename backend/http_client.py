@@ -1,4 +1,5 @@
 import json
+import uuid
 
 import httpx
 
@@ -42,9 +43,8 @@ class CuerpoJsonDeUnUso:
     Una segunda lectura no manda un cuerpo vacío en silencio: StreamConsumed.
     """
 
-    def __init__(self, cuerpo: object):
-        self._datos: bytes | None = json.dumps(
-            cuerpo, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    def __init__(self, cuerpo: object, literales_seguros: tuple[str, ...] = ()):
+        self._datos: bytes | None = _codificar(cuerpo, literales_seguros)
         self.cabeceras = {"Content-Type": "application/json", "Content-Length": str(len(self._datos))}
 
     async def __aiter__(self):
@@ -52,6 +52,64 @@ class CuerpoJsonDeUnUso:
             raise httpx.StreamConsumed()
         datos, self._datos = self._datos, None
         yield datos
+
+
+_MINIMO_PARA_EMPALMAR = 64 * 1024
+_MAXIMO_PREFIJO = 256
+
+
+def _marcar_literales(v, seguros: list[str], marca: str, empalmes: list[str]):
+    """Copia del cuerpo con cada literal seguro cambiado por marca+índice.
+    Función de módulo y no closure recursiva: una closure que se llama a sí
+    misma es un ciclo (función <-> celda) que retenía `empalmes`, con el
+    base64 adentro, hasta la próxima pasada del GC (medido: 5,9 GB a c=25)."""
+    if isinstance(v, dict):
+        return {k: _marcar_literales(x, seguros, marca, empalmes) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_marcar_literales(x, seguros, marca, empalmes) for x in v]
+    if isinstance(v, str) and len(v) >= _MINIMO_PARA_EMPALMAR:
+        for literal in seguros:
+            sobra = len(v) - len(literal)
+            if v is literal or (0 <= sobra <= _MAXIMO_PREFIJO and v.endswith(literal)):
+                empalmes.append(literal)
+                return v[:sobra] + f"{marca}{len(empalmes) - 1}_"
+    return v
+
+
+def _codificar(cuerpo: object, literales_seguros: tuple[str, ...]) -> bytes:
+    """json.dumps(cuerpo, ensure_ascii=False, separators=(",", ":")) en UTF-8,
+    sin pasar por dumps los literales grandes que no necesitan escape.
+
+    Bloqueo del event loop (R16, 2026-09-17): dumps de un str de 14 MB es una
+    sola llamada en C que retiene el GIL ~20 ms, y medido, ni en
+    asyncio.to_thread deja correr al loop. `literales_seguros` son strings que
+    el llamador YA verificó que no llevan nada que JSON escape (el base64 de
+    una imagen, validado por alfabeto en adjuntos/contrato.py). Cada valor del
+    cuerpo que ES uno de ellos, o que termina en uno con un prefijo corto (la
+    data URI de OpenAI), se reemplaza por una marca aleatoria, se codifica lo
+    chico y la marca se cambia por los bytes del literal (una copia ASCII).
+    Si una marca no aparece exactamente una vez, se codifica todo como antes:
+    el resultado es siempre el mismo que dumps."""
+    def plano() -> bytes:
+        return json.dumps(cuerpo, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+    seguros = [l for l in literales_seguros if len(l) >= _MINIMO_PARA_EMPALMAR]
+    if not seguros:
+        return plano()
+    marca = f"JAXEMPALME{uuid.uuid4().hex}_"
+    empalmes: list[str] = []
+    chico = json.dumps(_marcar_literales(cuerpo, seguros, marca, empalmes), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    partes: list[bytes] = []
+    resto = chico
+    for i, literal in enumerate(empalmes):
+        token = f"{marca}{i}_"
+        if chico.count(token) != 1:
+            return plano()
+        antes, resto = resto.split(token, 1)
+        partes.append(antes.encode("utf-8"))
+        partes.append(literal.encode("ascii"))
+    partes.append(resto.encode("utf-8"))
+    return b"".join(partes)
 
 
 async def get_http_client() -> httpx.AsyncClient:
