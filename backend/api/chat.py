@@ -12,11 +12,23 @@ from functools import lru_cache
 from tiempo import utc_ahora
 from typing import Literal, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 import httpx
 from http_client import cabeceras_gemini, get_http_client
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from facet_resolver import resolve_facet, FacetUnavailableError
+from adjuntos.contrato import (
+    SIN_ADJUNTOS,
+    Adjunto,
+    ImagenNoSoportadaError,
+    componer_mensaje,
+    exigir_soporte_de_imagen,
+    mensaje_para_historial,
+    metadatos_para_memoria,
+    validar_adjuntos,
+)
+from adjuntos.errores import AdjuntoRechazado
+from adjuntos.limites import cargar_limites
 # ModelDispatchConfigError y los dos validadores del contrato de dispatch
 # (_max_tokens_field / _max_output_tokens_value) viven en contrato_dispatch.py
 # desde 2026-09-14: los usan también los admins que escriben facet_binding,
@@ -465,6 +477,10 @@ def _auto_route(message: str) -> str:
 
 
 class ChatRequest(BaseModel):
+    # Frente D (2026-09-16): extra='forbid'. Hasta 26c9cd5 el frontend mandaba
+    # image_base64/file_context y pydantic los DESCARTABA en silencio: el
+    # usuario adjuntaba y el modelo nunca lo veía. Un campo desconocido es 422.
+    model_config = ConfigDict(extra="forbid")
     message: str
     facet: str | None = None
     project_id: int | None = None   # None = memoria individual; set = memoria de proyecto
@@ -476,6 +492,7 @@ class ChatRequest(BaseModel):
     # db/migrations.py). Ningún llamador puede hacerse pasar por tráfico
     # real con solo omitir el campo.
     origin: Literal["web", "probe", "test"] | None = None
+    adjuntos: list[Adjunto] = Field(default_factory=list)
 
 
 class AvisoDeChat(BaseModel):
@@ -849,6 +866,7 @@ async def _invoke_facet_dispatch(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
     grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError | None" = None,
+    imagenes: tuple = (),
 ) -> tuple["str | AvisoDeChat", UsageInfo | None, str]:
     history = _conversations.get(user_id, [])
     if semantic_context:
@@ -958,6 +976,7 @@ async def _invoke_facet(
     semantic_context: list[dict] | None = None,
     *, source: str = SOURCE_CHAT,
     grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError | None" = None,
+    imagenes: tuple = (),
 ) -> tuple["str | AvisoDeChat", UsageInfo | None]:
     """Envoltorio instrumentado. La particion existe para que el
     `outcome` sea un literal tipado en cada punto de retorno de
@@ -971,7 +990,7 @@ async def _invoke_facet(
     construccion, sin una segunda ruta que pueda divergir."""
     try:
         texto, usage, outcome = await _invoke_facet_dispatch(
-            facet, config, user_id, message, semantic_context, grounding=grounding)
+            facet, config, user_id, message, semantic_context, grounding=grounding, imagenes=imagenes)
     except ModelDispatchConfigError as e:
         # ModelDispatchConfigError hereda de RuntimeError: este except TIENE
         # que ir antes del `except Exception` genérico, o éste se lo come.
@@ -1048,6 +1067,34 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     validar_ids_de_uso(user_id, tenant_id)
     timestamp = utc_ahora().isoformat() + "Z"
 
+    # --- Adjuntos (frente D) — ANTES de memoria, estado y proveedor --------
+    # Un rechazo no deja fila en memoria, no pone la faceta en "thinking" y no
+    # gasta una llamada. La imagen se chequea contra el modelo RESUELTO de la
+    # faceta (facet_binding -> model.input_modalities). Si la faceta no
+    # resuelve, se sigue: el dispatch devuelve su aviso de "no disponible" sin
+    # llamar a ningún proveedor.
+    validados = SIN_ADJUNTOS
+    if req.adjuntos:
+        try:
+            if facet == "hyde":
+                raise AdjuntoRechazado(422, "adjuntos_no_soportados", facet=facet)
+            validados = await validar_adjuntos(req.adjuntos, cargar_limites())
+            if validados.imagenes:
+                try:
+                    resuelta = await resolve_facet(facet)
+                except FacetUnavailableError:
+                    resuelta = None
+                if resuelta is not None:
+                    exigir_soporte_de_imagen(resuelta, facet, validados.imagenes)
+        except AdjuntoRechazado as e:
+            detalle = e.detail
+            raise HTTPException(status_code=e.status, detail=detalle) from None
+        except ImagenNoSoportadaError:
+            raise HTTPException(status_code=422,
+                                detail={"code": "imagen_no_soportada", "facet": facet}) from None
+    mensaje_al_modelo = componer_mensaje(req.message, validados.textos)
+    # -----------------------------------------------------------------------
+
     # --- Memoria semántica (misma jax_memory que el REPL) — best-effort -----
     # user_id/tenant_id vienen del JWT; project_id del request (None=individual).
     try:
@@ -1060,7 +1107,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     if mem_uid is not None:
         conv_uuid = await _get_conv_uuid(mem_uid, mem_tid, mem_pid)
         if conv_uuid:
-            _memory.save_message(conv_uuid, "user", req.message)  # fire-and-forget
+            _memory.save_message(conv_uuid, "user", metadatos_para_memoria(req.message, validados))  # fire-and-forget
     # -----------------------------------------------------------------------
 
     # Respuestas especiales (sin llamada a LLM) — nunca pasan por el parseo
@@ -1086,8 +1133,16 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
 
     try:
         response_text, usage = await _invoke_facet(
-            facet, config, user_id, req.message, semantic_context, grounding=grounding)
+            facet, config, user_id, mensaje_al_modelo, semantic_context,
+            grounding=grounding, imagenes=validados.imagenes)
         is_canned = usage is None
+    except ImagenNoSoportadaError:
+        # Carrera: el binding cambió entre la validación de arriba y el
+        # dispatch (un rebind en ese mismo instante). El dispatch se negó a
+        # mandar la imagen; mismo 422 que arriba.
+        await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
+        raise HTTPException(status_code=422,
+                            detail={"code": "imagen_no_soportada", "facet": facet}) from None
     except httpx.HTTPStatusError as e:
         # Task 6 S1: el cuerpo del proveedor no deberia repetir la key, pero
         # el `motivo` del detail (dict con codigo, A-51) sale al usuario y al
@@ -1119,7 +1174,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     else:
         display_text, contract_degraded = response_text, False
 
-    _update_history(user_id, req.message, display_text)
+    _update_history(user_id, mensaje_para_historial(req.message, validados), display_text)
 
     # Registrar uso (best-effort)
     personality = config["personalities"].get(facet, {})
