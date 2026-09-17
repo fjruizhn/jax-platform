@@ -48,6 +48,7 @@ _cred_logger.propagate = False
 
 import ajustes
 from adjuntos import limites as limites_de_adjuntos
+from adjuntos import pdf_pool
 from db.connection import get_pool, close_pool
 from http_client import get_http_client, close_http_client
 from db.migrations import run_migrations
@@ -112,6 +113,12 @@ async def lifespan(app: FastAPI):
     limites_de_adjuntos.cargar_limites()
     limites_de_adjuntos.cargar_imagenes_en_proceso()
     limites_de_adjuntos.cargar_subidas_en_proceso()
+    limites_de_adjuntos.cargar_procesos_de_pdf()
+    limites_de_adjuntos.cargar_timeout_de_pdf()
+    # RD1 (2026-09-17): el ProcessPoolExecutor de pypdf se crea acá, antes de
+    # la base y el cliente HTTP -- mismo criterio que los límites de arriba,
+    # config primero, nada que dependa de otra cosa (ver adjuntos/pdf_pool.py).
+    pdf_pool.crear_pool()
     await get_pool()
     await get_http_client()
     await run_migrations()
@@ -141,6 +148,7 @@ async def lifespan(app: FastAPI):
             print(f"[memoria] {n} conversación(es) web cerradas en shutdown", flush=True)
     except Exception:  # fail-soft: flush de conversaciones en shutdown, best-effort documentado — el proceso ya esta cerrando, nada depende de este resultado
         pass
+    await pdf_pool.cerrar_pool()
     await close_http_client()
     await close_pool()
 

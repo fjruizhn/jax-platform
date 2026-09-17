@@ -60,7 +60,14 @@ for _variable, _valor in (("JAX_ADJUNTO_MAX_BYTES", "10485760"),
                           ("JAX_ADJUNTO_MAX_PAGINAS", "20"),
                           ("JAX_ADJUNTO_MAX_POR_MENSAJE", "1"),
                           ("JAX_ADJUNTO_IMAGENES_EN_PROCESO", "1"),
-                          ("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", "1")):
+                          ("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", "1"),
+                          # RD1 (2026-09-17): ProcessPoolExecutor de pypdf.
+                          # El timeout en 5 s (no 1, como el tamaño del pool):
+                          # un spawn arranca un intérprete de Python nuevo, y
+                          # en un runner cargado 1 s de margen sería un falso
+                          # positivo, no una prueba de nada.
+                          ("JAX_ADJUNTO_PDF_PROCESOS", "1"),
+                          ("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "5")):
     os.environ.setdefault(_variable, _valor)
 
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del

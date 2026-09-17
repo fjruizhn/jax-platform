@@ -46,6 +46,30 @@ def _espiar_trabajo(monkeypatch, nombre):
     return estado
 
 
+def _espiar_trabajo_async(monkeypatch, nombre):
+    """Igual que `_espiar_trabajo`, pero para una función pesada que ahora es
+    una corutina (RD1, 2026-09-17: `extraer_texto_en_pool` ya no corre pypdf
+    en un hilo del proceso web -- lo manda al ProcessPoolExecutor de
+    adjuntos/pdf_pool.py -- así que ya no hay hilos reales del proceso web
+    que contar; el conteo de "cuántas a la vez" se hace en concurrencia de
+    corutinas del event loop, que es exactamente lo que sigue acotando
+    turno_de_subida)."""
+    estado = {"activos": 0, "maximo": 0}
+    original = getattr(upload_mod, nombre)
+
+    async def espia(*a, **k):
+        estado["activos"] += 1
+        estado["maximo"] = max(estado["maximo"], estado["activos"])
+        try:
+            await asyncio.sleep(0.05)
+            return await original(*a, **k)
+        finally:
+            estado["activos"] -= 1
+
+    monkeypatch.setattr(upload_mod, nombre, espia)
+    return estado
+
+
 def _subir_a_la_vez(archivos):
     async def correr():
         return await asyncio.gather(*(upload_mod.upload_file(file=f(), user=_USUARIO) for f in archivos))
@@ -64,7 +88,7 @@ def test_las_subidas_de_imagen_respetan_el_tope(monkeypatch, tope):
 @pytest.mark.parametrize("tope", [1, 2])
 def test_las_subidas_de_pdf_respetan_el_tope_tambien_en_pypdf(monkeypatch, tope):
     monkeypatch.setenv("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", str(tope))
-    estado = _espiar_trabajo(monkeypatch, "extraer_texto")
+    estado = _espiar_trabajo_async(monkeypatch, "extraer_texto_en_pool")
     pdf = pdf_con_texto(["hola"])
     resultados = _subir_a_la_vez([lambda: _archivo(pdf, "i.pdf", "application/pdf")] * 5)
     assert estado["maximo"] == tope

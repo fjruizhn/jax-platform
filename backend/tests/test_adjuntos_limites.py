@@ -150,3 +150,108 @@ def test_lifespan_valida_el_tope_de_subidas_antes_de_abrir_la_base(monkeypatch):
     with pytest.raises(mod.LimitesDeAdjuntosInvalidos):
         asyncio.run(arrancar())
     assert llamadas == ["tope"]
+
+
+# --- RD1 (2026-09-17): tamaño del ProcessPoolExecutor de pypdf y timeout ----
+# de cada extracción. Los dos acotados por arriba (no solo "entero > 0"): un
+# valor sin techo es tan fail-open como uno ausente -- un .env con un cero de
+# más arrancaría un pool que se come toda la máquina o un timeout que nunca
+# corta un PDF patológico.
+
+@pytest.mark.parametrize("valor", [None, "0", "-1", "uno"])
+def test_tope_de_procesos_de_pdf_ausente_o_invalido_no_arranca(monkeypatch, valor):
+    if valor is None:
+        monkeypatch.delenv("JAX_ADJUNTO_PDF_PROCESOS", raising=False)
+    else:
+        monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", valor)
+    with pytest.raises(mod.LimitesDeAdjuntosInvalidos) as e:
+        mod.cargar_procesos_de_pdf()
+    assert "JAX_ADJUNTO_PDF_PROCESOS" in str(e.value)
+
+
+def test_tope_de_procesos_de_pdf_por_encima_del_maximo_no_arranca(monkeypatch):
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", str(mod.LIMITE_PROCESOS_DE_PDF + 1))
+    with pytest.raises(mod.LimitesDeAdjuntosInvalidos) as e:
+        mod.cargar_procesos_de_pdf()
+    assert "JAX_ADJUNTO_PDF_PROCESOS" in str(e.value)
+
+
+def test_tope_de_procesos_de_pdf_en_el_maximo_arranca(monkeypatch):
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", str(mod.LIMITE_PROCESOS_DE_PDF))
+    assert mod.cargar_procesos_de_pdf() == mod.LIMITE_PROCESOS_DE_PDF
+
+
+def test_tope_de_procesos_de_pdf_se_lee(monkeypatch):
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", "2")
+    assert mod.cargar_procesos_de_pdf() == 2
+
+
+def test_lifespan_valida_el_tope_de_procesos_de_pdf_antes_de_abrir_la_base(monkeypatch):
+    import main
+
+    llamadas = []
+
+    def sin_tope():
+        llamadas.append("tope")
+        raise mod.LimitesDeAdjuntosInvalidos("JAX_ADJUNTO_PDF_PROCESOS=None")
+
+    async def pool_espia():
+        llamadas.append("pool")
+
+    monkeypatch.setattr(mod, "cargar_procesos_de_pdf", sin_tope, raising=False)
+    monkeypatch.setattr(main, "get_pool", pool_espia)
+
+    async def arrancar():
+        async with main.lifespan(main.app):
+            pass
+
+    with pytest.raises(mod.LimitesDeAdjuntosInvalidos):
+        asyncio.run(arrancar())
+    assert llamadas == ["tope"]
+
+
+@pytest.mark.parametrize("valor", [None, "0", "-1", "uno"])
+def test_timeout_de_pdf_ausente_o_invalido_no_arranca(monkeypatch, valor):
+    if valor is None:
+        monkeypatch.delenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", raising=False)
+    else:
+        monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", valor)
+    with pytest.raises(mod.LimitesDeAdjuntosInvalidos) as e:
+        mod.cargar_timeout_de_pdf()
+    assert "JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS" in str(e.value)
+
+
+def test_timeout_de_pdf_por_encima_del_maximo_no_arranca(monkeypatch):
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", str(mod.LIMITE_TIMEOUT_DE_PDF_SEGUNDOS + 1))
+    with pytest.raises(mod.LimitesDeAdjuntosInvalidos) as e:
+        mod.cargar_timeout_de_pdf()
+    assert "JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS" in str(e.value)
+
+
+def test_timeout_de_pdf_se_lee(monkeypatch):
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "7")
+    assert mod.cargar_timeout_de_pdf() == 7
+
+
+def test_lifespan_valida_el_timeout_de_pdf_antes_de_abrir_la_base(monkeypatch):
+    import main
+
+    llamadas = []
+
+    def sin_tope():
+        llamadas.append("tope")
+        raise mod.LimitesDeAdjuntosInvalidos("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS=None")
+
+    async def pool_espia():
+        llamadas.append("pool")
+
+    monkeypatch.setattr(mod, "cargar_timeout_de_pdf", sin_tope, raising=False)
+    monkeypatch.setattr(main, "get_pool", pool_espia)
+
+    async def arrancar():
+        async with main.lifespan(main.app):
+            pass
+
+    with pytest.raises(mod.LimitesDeAdjuntosInvalidos):
+        asyncio.run(arrancar())
+    assert llamadas == ["tope"]

@@ -1,8 +1,10 @@
 """Subida de adjuntos del chat (frente D, 2026-09-16).
 
 El tipo lo deciden los bytes (adjuntos/tipos.py), no el content_type ni la
-extensión que manda el cliente. Todo lo pesado (clasificar/decodificar 10 MB,
-base64, pypdf) corre en asyncio.to_thread. Errores con código estable.
+extensión que manda el cliente. Clasificar/decodificar 10 MB y base64 corren
+en asyncio.to_thread; pypdf corre en el ProcessPoolExecutor acotado de
+adjuntos/pdf_pool.py (RD1, 2026-09-17), no en un hilo -- retiene el GIL
+incluso ahí (medido). Errores con código estable.
 """
 import asyncio
 import base64
@@ -11,7 +13,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from adjuntos.errores import AdjuntoRechazado
 from adjuntos.limites import cargar_limites
-from adjuntos.pdf import PdfIlegible, PdfSinTexto, extraer_texto
+from adjuntos.pdf import PdfIlegible, PdfSinTexto
+from adjuntos.pdf_pool import extraer_texto_en_pool
 from adjuntos.politica import facetas_con_imagen
 from adjuntos.turno import turno_de_subida
 from adjuntos.tipos import (AdjuntoVacio, EXTENSIONES_DE_TEXTO, MIME_PDF,
@@ -58,8 +61,11 @@ async def upload_file(
 
         if clase == "pdf":
             try:
-                texto, recortado = await asyncio.to_thread(
-                    extraer_texto, datos, limites.max_paginas, limites.max_chars)
+                # RD1 (2026-09-17): pypdf corre en un ProcessPoolExecutor
+                # aparte, no en un hilo -- no le disputa el GIL al event
+                # loop (adjuntos/pdf_pool.py).
+                texto, recortado = await extraer_texto_en_pool(
+                    datos, limites.max_paginas, limites.max_chars)
             except PdfSinTexto:
                 raise _rechazo(422, "pdf_sin_texto") from None
             except PdfIlegible:
