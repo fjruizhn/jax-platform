@@ -105,7 +105,8 @@ def test_facet_response_completed_solo_lleva_la_faceta(monkeypatch):
 async def _capturar_prompts(monkeypatch, faceta):
     prompts = []
 
-    async def ollama(system_prompt, history, message, config, model):
+    async def ollama(system_prompt, history, message, config, model, *, imagenes=()):
+        assert imagenes == ()   # un turno sin adjuntos no manda imágenes
         prompts.append(system_prompt)
         return "ok", 1, 1
 

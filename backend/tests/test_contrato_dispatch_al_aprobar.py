@@ -330,7 +330,8 @@ def test_el_dispatch_real_sigue_logueando_dispatch_abortado_con_el_update(client
     import logging
     import api.chat as chat
 
-    async def dispatch(facet, config, user_id, message, semantic_context, grounding=None):
+    async def dispatch(facet, config, user_id, message, semantic_context, grounding=None, imagenes=(),
+                       texto_del_usuario=None):
         await chat._call_openai_compat(
             "https://api.example.com/v1", "sk-fake", _MODELO_SIN_SEMBRAR,
             "system", [], "hola", None, 4096,

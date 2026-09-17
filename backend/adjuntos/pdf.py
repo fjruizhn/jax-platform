@@ -41,7 +41,12 @@ def extraer_texto(datos: bytes, max_paginas: int, max_chars: int) -> tuple[str, 
                 break
     except PdfIlegible:
         raise
-    except Exception as e:  # fail-soft: un PDF malformado puede reventar pypdf con casi cualquier excepción
+    except Exception as e:
+        # Fail-closed: re-lanza como PdfIlegible (422 pdf_ilegible), nunca
+        # sigue con texto parcial. Amplio porque un PDF malformado puede
+        # reventar pypdf con casi cualquier excepción. Solo se loguea el TIPO:
+        # el mensaje de la excepción puede traer fragmentos del archivo del
+        # usuario, y el archivo no va a los logs.
         logger.warning("pdf adjunto ilegible: %s", type(e).__name__)
         raise PdfIlegible(type(e).__name__) from e
     texto = "\n\n".join(partes).strip()
