@@ -44,6 +44,7 @@ acá las llama api/upload.py (y RD3) a través de to_thread; `obtener` y
 """
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -73,7 +74,8 @@ TTL_HORAS_MAX = 168
 # caracteres del alfabeto base64 urlsafe, sin relleno.
 BYTES_DE_ENTROPIA = 24
 LARGO_ID = 32
-_ID = re.compile(r"[A-Za-z0-9_-]{%d}" % LARGO_ID)
+PATRON_ID = r"[A-Za-z0-9_-]{%d}" % LARGO_ID
+_ID = re.compile(PATRON_ID)
 
 SUFIJO_DATO = ".dato"
 SUFIJO_SIDECAR = ".json"
@@ -413,6 +415,19 @@ async def leer_imagen_en_base64(id_, user, *, ahora: datetime | None = None) -> 
 
 # ------------------------------------------------------------------- limpieza
 
+def _para_log(nombre: str) -> str:
+    """Nombre de una entrada apto para el log (RD3). El id es, para su dueño,
+    la llave de su adjunto: al log va una huella corta (12 hex de sha256) que
+    permite correlacionar líneas sin poder pedir el adjunto con ella."""
+    for sufijo in (SUFIJO_SIDECAR, SUFIJO_DATO):
+        if nombre.endswith(sufijo) and id_valido(nombre[:-len(sufijo)]):
+            huella = hashlib.sha256(nombre[:-len(sufijo)].encode()).hexdigest()[:12]
+            return f"id#{huella}{sufijo}"
+    if nombre.startswith((PREFIJO_SUBIDA, PREFIJO_ESCRITURA)):
+        return nombre
+    return f"entrada#{hashlib.sha256(nombre.encode()).hexdigest()[:12]}"
+
+
 def _borrar(ruta: Path) -> int:
     try:
         ruta.unlink()
@@ -450,7 +465,7 @@ def limpiar(directorio: Path, ahora: datetime | None = None) -> int:
         try:
             borrados += _limpiar_entrada(directorio, entrada, nombres, ahora, limite_orfano)
         except OSError as e:  # fail-soft: una entrada rota (directorio con nombre de adjunto, sin permiso, EIO) no puede abortar la pasada para los demás usuarios; se loguea y el próximo ciclo la reintenta
-            logger.warning("adjuntos: limpieza salteó %r (%s)", nombre, type(e).__name__)
+            logger.warning("adjuntos: limpieza salteó %s (%s)", _para_log(nombre), type(e).__name__)
     if borrados:
         logger.info("adjuntos: limpieza borró %s archivo(s)", borrados)
     return borrados
@@ -504,7 +519,7 @@ def borrar_de_usuario(directorio: Path, user_id: str) -> int:
             try:
                 borrados += _borrar_adjunto(directorio, nombre[:-len(SUFIJO_SIDECAR)])
             except OSError as e:  # fail-soft: un adjunto que no se deja borrar no frena el borrado del resto; su sidecar ya no está o vence por TTL, y se loguea
-                logger.warning("adjuntos: baja de %s no pudo borrar %r (%s)", user_id, nombre, type(e).__name__)
+                logger.warning("adjuntos: baja de %s no pudo borrar %s (%s)", user_id, _para_log(nombre), type(e).__name__)
     return borrados
 
 

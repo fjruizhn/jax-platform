@@ -510,3 +510,25 @@ def test_imagen_en_base64_mismos_404_que_leer(directorio):
     errores = {k: _no_encontrado(c) for k, c in casos.items()}
     assert {(e.status, json.dumps(e.detail)) for e in errores.values()} == {
         (404, '{"code": "adjunto_no_encontrado"}')}
+
+
+# --------------------------- RD3: el id no se loguea (para su dueño es una llave)
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root lee archivos 000")
+def test_los_logs_del_limpiador_y_de_la_baja_no_llevan_ids(directorio, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.DEBUG)
+    carpeta = directorio / f"{almacen.nuevo_id()}.json"
+    carpeta.mkdir()
+    _scandir_con_primero(monkeypatch, {carpeta.name})
+    almacen.limpiar(directorio, ahora=AHORA)
+    roto = _guardar_texto(directorio)
+
+    def falla(ruta):
+        raise PermissionError("sin permiso")
+
+    monkeypatch.setattr(almacen, "_borrar", falla)
+    almacen.borrar_de_usuario(directorio, "5")
+    assert "salteó" in caplog.text and "no pudo borrar" in caplog.text
+    for id_ in (carpeta.name[:-len(".json")], roto["id"]):
+        assert id_ not in caplog.text
