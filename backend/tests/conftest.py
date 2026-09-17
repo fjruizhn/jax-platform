@@ -24,6 +24,16 @@ for _k, _v in _load_env().items():
 
 os.environ["JAX_DB_NAME"] = "jax_memory_test"
 
+# El runner de CI no tiene /etc/jax/.env, asi que no tiene FERNET_KEY, y sin
+# ella no se pueden sembrar credenciales cifradas en la base de tests. Se
+# genera una por sesion SOLO si falta (en hall9000 sale del .env). setdefault
+# a proposito: los tests que ejercitan una FERNET_KEY ausente o malformada la
+# fijan ellos con monkeypatch.
+if not os.environ.get("FERNET_KEY"):
+    from cryptography.fernet import Fernet as _Fernet
+
+    os.environ["FERNET_KEY"] = _Fernet.generate_key().decode()
+
 # BARRERA DE ESCRITURA A ARCHIVOS DE PRODUCCIÓN (2026-09-17).
 # Incidente real de ese día: un test llamó a PUT /api/admin/keys/{proveedor},
 # que reescribía /etc/jax/.env con un volcado del diccionario parseado. El
@@ -293,6 +303,52 @@ def _envolver_portal_call(portal_call):
     return envuelto
 
 
+# Credenciales FICTICIAS en la tabla `credential`, no en variables de entorno
+# (B1.4, 2026-09-17). Antes el job de CI exportaba OPENAI_API_KEY y cuatro
+# hermanas con valores de mentira, y 18 tests pasaban gracias al FALLBACK
+# DB->env. Al retirar el fallback esos 18 se pusieron rojos y mostraron lo que
+# tapaban: el CI nunca ejercito el camino real, que es resolver la credencial
+# contra la base. Ahora se siembra donde produccion la lee.
+#
+# El valor no se usa nunca: los tests stubean la llamada HTTP. Solo tiene que
+# existir y estar activo.
+_CREDENCIALES_DE_PRUEBA = [
+    ("openai", "OPENAI_API_KEY"),
+    ("deepseek", "DEEPSEEK_API_KEY"),
+    ("gemini", "GEMINI_API_KEY"),
+    ("moonshot", "KIMI_API_KEY"),
+    ("zhipu", "ZAI_API_KEY"),
+]
+
+
+def _sembrar_credenciales_de_prueba(c) -> None:
+    from crypto_secrets import encrypt_secret
+    from db.connection import get_pool
+
+    cifrada = encrypt_secret("ci-dummy-not-a-real-key")
+
+    async def _sembrar():
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                for provider_id, env_key in _CREDENCIALES_DE_PRUEBA:
+                    await cur.execute(
+                        "SELECT id FROM credential "
+                        "WHERE provider_id = %s AND state = 'active' LIMIT 1",
+                        (provider_id,),
+                    )
+                    if await cur.fetchone():
+                        continue
+                    await cur.execute(
+                        "INSERT INTO credential "
+                        "(provider_id, env_key, encrypted_value, state, activated_at) "
+                        "VALUES (%s, %s, %s, 'active', NOW())",
+                        (provider_id, env_key, cifrada),
+                    )
+
+    c.portal.call(_sembrar)
+
+
 @pytest.fixture(scope="session")
 def client():
     from fastapi.testclient import TestClient
@@ -300,6 +356,7 @@ def client():
 
     with TestClient(app) as c:
         c.portal.call = _envolver_portal_call(c.portal.call)
+        _sembrar_credenciales_de_prueba(c)
         yield c
 
 

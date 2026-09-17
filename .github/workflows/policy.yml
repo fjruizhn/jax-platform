@@ -702,18 +702,12 @@ jobs:
       # "ModuleNotFoundError: No module named 'claims'".
       JAX_REPO_PATH: /tmp/jax
       JAX_OLLAMA_URL: http://127.0.0.1:11434
-      # Credenciales FICTICIAS, a proposito. `_query_facet` resuelve la
-      # credencial del proveedor para todo transport que no sea ollama o
-      # subprocess; sin ninguna, 12 tests reciben "sin binding activo
-      # configurado" -- un mensaje que ademas MIENTE sobre la causa (el binding
-      # existe; lo que falta es la credencial). Los tests stubean la llamada
-      # HTTP, asi que el valor no se usa nunca: solo tiene que existir. Este job
-      # NO debe necesitar ningun secret real del repo.
-      OPENAI_API_KEY: ci-dummy-not-a-real-key
-      DEEPSEEK_API_KEY: ci-dummy-not-a-real-key
-      GEMINI_API_KEY: ci-dummy-not-a-real-key
-      KIMI_API_KEY: ci-dummy-not-a-real-key
-      ZAI_API_KEY: ci-dummy-not-a-real-key
+      # Las credenciales ficticias YA NO van aca (B1.4, 2026-09-17). Estaban
+      # como variables de entorno y 18 tests pasaban gracias al fallback
+      # DB->env; al retirar el fallback se pusieron rojos y mostraron que este
+      # job nunca ejercito el camino real. Ahora el conftest las siembra en la
+      # tabla `credential`, que es donde produccion las lee. Este job sigue sin
+      # necesitar ningun secret real del repo.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
