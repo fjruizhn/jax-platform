@@ -119,3 +119,28 @@ def test_cambiar_la_contrasena_emite_la_cookie_con_la_vida_del_ajuste(client, us
         client.cookies.clear()
     assert r.status_code == 200, r.text
     assert _max_age(r) == 5400
+
+
+# Guardas (revisión final 2026-09-17): los otros dos lectores de la vida de la
+# sesión también responden 503 con el ajuste ilegible y no tocan nada.
+def test_con_el_ajuste_ilegible_el_refresh_responde_503(client, usuarios, ajustes_en_db):
+    ajustes_en_db.poner(**{**ajustes_en_db.validos, "session_timeout_min": "abc"})
+    u, _ = usuarios()
+    r = _refresh(client, _refresh_emitido_hace(u, 60))
+    assert (r.status_code, r.json()) == (503, {"detail": {"code": "ajuste_ilegible", "clave": "session_timeout_min"}})
+
+
+def test_con_el_ajuste_ilegible_cambiar_la_contrasena_responde_503_y_no_cambia_nada(client, usuarios, ajustes_en_db):
+    ajustes_en_db.poner(**{**ajustes_en_db.validos, "session_timeout_min": "abc"})
+    u, _ = usuarios(password=CLAVE, token_version=4)
+    consulta = "SELECT token_version, password_hash FROM jax_users WHERE user_id = %s"
+    antes = client.portal.call(sql, consulta, (u,), True)
+    try:
+        r = client.post("/api/auth/me/password",
+                        json={"current_password": CLAVE, "new_password": "Otra-clave-bien-larga-2026"},
+                        headers=auth(token_para(u, tv=4)))
+    finally:
+        client.cookies.clear()
+    assert (r.status_code, r.json()) == (503, {"detail": {"code": "ajuste_ilegible", "clave": "session_timeout_min"}})
+    assert antes[0][0] == 4
+    assert client.portal.call(sql, consulta, (u,), True) == antes
