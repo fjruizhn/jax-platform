@@ -670,6 +670,7 @@ jobs:
       # sys.path. Mismo caso que JAX_CONFIG_PATH: sin esto son 9 tests con
       # "ModuleNotFoundError: No module named 'claims'".
       JAX_REPO_PATH: /tmp/jax
+      JAX_OLLAMA_URL: http://127.0.0.1:11434
       # Credenciales FICTICIAS, a proposito. `_query_facet` resuelve la
       # credencial del proveedor para todo transport que no sea ollama o
       # subprocess; sin ninguna, 12 tests reciben "sin binding activo
@@ -1526,6 +1527,7 @@ jobs:
       # Obligatoria desde el 2026-09-16 (frente A, A-55): api/chat.py no se
       # importa sin ella. Apunta al clon del paso "Traer el repo jax".
       JAX_CONFIG_PATH: /tmp/jax/config/config.toml
+      JAX_OLLAMA_URL: http://127.0.0.1:11434
       # Piso de cobertura. Si baja de acá, el job falla (ver el paso final).
       # Subido de 85 a 93 en Task 4 (sonda activa de facets, 2026-08-27):
       # backend/tests/test_facet_canary.py agrega 8 tests sin DB, medido

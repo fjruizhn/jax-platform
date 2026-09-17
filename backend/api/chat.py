@@ -705,8 +705,19 @@ def _build_messages(system_prompt: str, history: list[dict], message: str) -> li
     return msgs
 
 
+def _url_de_ollama() -> str:
+    """E-21 (2026-09-16): el host de Ollama sale de JAX_OLLAMA_URL (/etc/jax/.env),
+    la misma variable que usan Jacobs, el REPL y la memoria de jax. Antes se leía
+    de personalities.jax_local.api_url del config.toml de jax, que ya no la trae.
+    Sin la variable: error explícito, no un default a localhost."""
+    valor = os.environ.get("JAX_OLLAMA_URL", "").strip().rstrip("/")
+    if not valor:
+        raise RuntimeError("JAX_OLLAMA_URL no está seteada: agregala a /etc/jax/.env.")
+    return valor
+
+
 async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str) -> tuple[str, int, int]:
-    url = config["personalities"]["jax_local"]["api_url"]
+    url = f"{_url_de_ollama()}/api/chat"
     messages = _build_messages(system_prompt, history, message)
     client = await get_http_client()
     r = await client.post(

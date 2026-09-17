@@ -62,7 +62,8 @@ def test_call_gemini_devuelve_tokens_reales(client):
     assert tokens_out == 8
 
 
-def test_call_ollama_devuelve_tokens_reales(client):
+def test_call_ollama_devuelve_tokens_reales(client, monkeypatch):
+    monkeypatch.setenv("JAX_OLLAMA_URL", "http://localhost:11434")
     fake = _FakePostClient(_FakeResponse({
         "message": {"content": "hola"},
         "prompt_eval_count": 31,
@@ -73,7 +74,7 @@ def test_call_ollama_devuelve_tokens_reales(client):
     try:
         text, tokens_in, tokens_out = client.portal.call(
             _call_ollama, "system", [], "hola",
-            {"personalities": {"jax_local": {"api_url": "http://localhost:11434/api/chat"}}},
+            {"personalities": {"jax_local": {}}},
             "qwen3-coder:30b",
         )
     finally:
