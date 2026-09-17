@@ -59,34 +59,43 @@ def cargar_limites() -> LimitesDeAdjuntos:
 
 
 VARIABLE_DE_IMAGENES_EN_PROCESO = "JAX_ADJUNTO_IMAGENES_EN_PROCESO"
-
-
 VARIABLE_DE_SUBIDAS_EN_PROCESO = "JAX_ADJUNTO_SUBIDAS_EN_PROCESO"
 
-
-def _cargar_tope(variable: str, que: str) -> int:
-    crudo = os.environ.get(variable)
-    valor = _entero_positivo(crudo)
-    if valor is None:
-        raise LimitesDeAdjuntosInvalidos(
-            f"tope de {que} en proceso sin configurar o inválido (entero > 0 en "
-            f"/etc/jax/.env): {variable}={crudo!r}")
-    return valor
+# Final fix wave #2 (2026-09-17), item 8: techo 4 para los dos topes en
+# proceso (antes "entero > 0" sin techo). Los dos acotan trabajo que corre en
+# un hilo del proceso web reteniendo el GIL por tramo (base64 de la imagen,
+# decodificación del texto); más lugares no suman núcleos, suman contienda
+# con el event loop. Medido: 25 codificaciones de 10 MB a la vez atrasan el
+# tic del loop p95 60 ms y una sola, 0,35 ms (adjuntos/turno.py); 25 subidas
+# con base64 a la vez, health p95 65 ms (diseño §1). A ~2,4-2,6 ms por lugar,
+# 4 lugares rondan los 10 ms del criterio de health p95. Eso es una
+# EXTRAPOLACIÓN lineal de dos puntos medidos, no una medición de 4: el techo
+# no es un valor recomendado (el deploy es 1, medido en RD5), es el punto a
+# partir del cual un .env con un dígito de más ya no se toma en silencio.
+LIMITE_IMAGENES_EN_PROCESO = 4
+LIMITE_SUBIDAS_EN_PROCESO = 4
 
 
 def cargar_imagenes_en_proceso() -> int:
     """Cuántas imágenes guardadas se leen y codifican a base64 a la vez para
     el proveedor (R16, 2026-09-17; RD3: antes, cuántas validaban el base64
-    del cliente; adjuntos/turno.py). Sin default, como los otros límites: si
-    falta, el servicio no arranca."""
-    return _cargar_tope(VARIABLE_DE_IMAGENES_EN_PROCESO, "imágenes")
+    del cliente; adjuntos/turno.py). Rango 1..LIMITE_IMAGENES_EN_PROCESO. Sin
+    default, como los otros límites: si falta o se pasa del techo, el
+    servicio no arranca."""
+    return _cargar_tope_acotado(
+        VARIABLE_DE_IMAGENES_EN_PROCESO, "imágenes en proceso", LIMITE_IMAGENES_EN_PROCESO)
 
 
 def cargar_subidas_en_proceso() -> int:
-    """Cuántas subidas de /api/chat/upload hacen su trabajo pesado a la vez
-    (clasificar, b64encode, pypdf; revisión final 2026-09-17, adjuntos/turno.py).
-    Sin default: si falta, el servicio no arranca."""
-    return _cargar_tope(VARIABLE_DE_SUBIDAS_EN_PROCESO, "subidas")
+    """Cuántas subidas de /api/chat/upload clasifican su archivo a la vez
+    (adjuntos/tipos.py::clasificar_archivo en un hilo: firma de imagen o PDF
+    y, para texto, hasta JAX_ADJUNTO_MAX_BYTES validados como UTF-8 por
+    bloques, reteniendo el GIL por bloque; adjuntos/turno.py). No acota pypdf:
+    corre en otro proceso (RD1) y espera su propio turno, JAX_ADJUNTO_PDF_PROCESOS
+    (Final fix wave #2, I1). Rango 1..LIMITE_SUBIDAS_EN_PROCESO. Sin default:
+    si falta o se pasa del techo, el servicio no arranca."""
+    return _cargar_tope_acotado(
+        VARIABLE_DE_SUBIDAS_EN_PROCESO, "subidas en proceso", LIMITE_SUBIDAS_EN_PROCESO)
 
 
 # --- RD1 (2026-09-17): ProcessPoolExecutor de pypdf (adjuntos/pdf_pool.py) --
@@ -97,7 +106,7 @@ def cargar_subidas_en_proceso() -> int:
 # núcleos tiene la máquina (le resta CPU al resto del servicio sin comprar
 # throughput); uno de más en JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS deja un PDF
 # patológico ocupando un worker minutos enteros antes de que el reciclado
-# (pdf_pool._reciclar_tras_timeout) lo note.
+# (pdf_pool._reciclar) lo note.
 
 VARIABLE_DE_PROCESOS_DE_PDF = "JAX_ADJUNTO_PDF_PROCESOS"
 VARIABLE_DE_TIMEOUT_DE_PDF = "JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS"

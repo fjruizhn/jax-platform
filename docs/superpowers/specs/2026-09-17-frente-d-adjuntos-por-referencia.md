@@ -116,8 +116,10 @@ Dentro de cada carpeta:
 - Qué borra:
   - vencidos;
   - sidecars corruptos, datos sin sidecar y temporales con más de 6 h (`ORFANO_MAX_SEGUNDOS`).
-    El margen cubre la espera en cola de `turno_de_subida`: el temporal toma su mtime antes de
-    esa espera. Son 240 subidas de peor caso (60 s de pypdf + 30 s). Un huérfano no tiene
+    El margen cubre la espera en cola de `turno_de_subida` y, para un PDF, de `turno_de_pdf`: el
+    temporal toma su mtime antes de esas esperas. Con los dos topes en su piso (1), el drenaje más
+    lento, son 240 subidas de peor caso delante (30 s de clasificación + 60 s de pypdf). Los
+    techos (SUBIDAS 4, PDF 8) solo drenan más rápido y no achican el margen. Un huérfano no tiene
     sidecar, así que nadie lo lee. El `.dato` renombrado refresca su mtime.
 - Una entrada rota (un directorio con nombre de adjunto, un archivo sin permiso, EIO) se loguea
   y se saltea. No aborta la pasada para los demás usuarios. Lo mismo vale en la baja.
@@ -142,8 +144,8 @@ espacios, sin signo y sin ceros a la izquierda.
 | 2 | `JAX_ADJUNTO_MAX_CHARS` | `int()` > 0 | `8000` |
 | 3 | `JAX_ADJUNTO_MAX_PAGINAS` | `int()` > 0 | `20` |
 | 4 | `JAX_ADJUNTO_MAX_POR_MENSAJE` | `int()` > 0 | `1` |
-| 5 | `JAX_ADJUNTO_IMAGENES_EN_PROCESO` | `int()` > 0 | `1` |
-| 6 | `JAX_ADJUNTO_SUBIDAS_EN_PROCESO` | `int()` > 0 | `1` |
+| 5 | `JAX_ADJUNTO_IMAGENES_EN_PROCESO` | `int()` **1..4** (`LIMITE_IMAGENES_EN_PROCESO`) | `1` |
+| 6 | `JAX_ADJUNTO_SUBIDAS_EN_PROCESO` | `int()` **1..4** (`LIMITE_SUBIDAS_EN_PROCESO`) | `1` |
 | 7 | `JAX_ADJUNTO_PDF_PROCESOS` | `int()` **1..8** (`LIMITE_PROCESOS_DE_PDF`) | `1` |
 | 8 | `JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS` | `int()` **1..60** (`LIMITE_TIMEOUT_DE_PDF_SEGUNDOS`) | `30` |
 | 9 | `JAX_ADJUNTOS_DIR` | ruta absoluta; directorio 0700 (sin bits de grupo/otros), escribible por el servicio; se crea 0700 si falta | `/srv/jax-data/adjuntos` (0700, dueño `fruiz`, disco real) |
@@ -158,6 +160,14 @@ Fuera de `/etc/jax/.env`, en la unidad de systemd de jax-platform: **`TMPDIR=/sr
 `/tmp` es tmpfs en hall9000.
 
 Motivos de los rangos:
+- IMAGENES_EN_PROCESO y SUBIDAS_EN_PROCESO 1..4 (Final fix wave #2, 2026-09-17): acotan trabajo que
+  corre en un hilo del proceso web reteniendo el GIL por tramo (base64 de la imagen; validar el
+  texto de la subida). Más lugares no suman núcleos, suman contienda con el event loop. Medido:
+  25 a la vez atrasan el tic del loop p95 60 ms (imágenes) y dan health p95 65 ms (subidas con
+  base64, §1); una sola, 0,35 ms. A ~2,5 ms por lugar, 4 rondan el criterio de 10 ms. Es una
+  extrapolación lineal de esos dos puntos, no una medición de 4: el deploy sigue en 1 (medido en
+  RD5) y el techo solo impide que un dígito de más pase en silencio. SUBIDAS_EN_PROCESO acota solo
+  la clasificación: pypdf espera su propio turno, del tamaño de PDF_PROCESOS (§7).
 - PDF_PROCESOS 1..8: más procesos de pypdf no suman throughput en una instancia y reservan
   memoria de más. PDF_TIMEOUT 1..60: MAX_PAGINAS ya acota el trabajo, y 60 s no deja un worker
   ocupado más de un minuto.

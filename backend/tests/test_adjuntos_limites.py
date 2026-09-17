@@ -255,3 +255,49 @@ def test_lifespan_valida_el_timeout_de_pdf_antes_de_abrir_la_base(monkeypatch):
     with pytest.raises(mod.LimitesDeAdjuntosInvalidos):
         asyncio.run(arrancar())
     assert llamadas == ["tope"]
+
+
+# --- Final fix wave #2 (2026-09-17), item 8: techo de los dos topes en proceso -
+
+_TOPES_CON_TECHO = (
+    ("JAX_ADJUNTO_IMAGENES_EN_PROCESO", "cargar_imagenes_en_proceso", "LIMITE_IMAGENES_EN_PROCESO"),
+    ("JAX_ADJUNTO_SUBIDAS_EN_PROCESO", "cargar_subidas_en_proceso", "LIMITE_SUBIDAS_EN_PROCESO"),
+)
+
+
+@pytest.mark.parametrize("variable,cargar,limite", _TOPES_CON_TECHO)
+def test_tope_en_proceso_por_encima_del_techo_no_arranca(monkeypatch, variable, cargar, limite):
+    monkeypatch.setenv(variable, str(getattr(mod, limite) + 1))
+    with pytest.raises(mod.LimitesDeAdjuntosInvalidos) as e:
+        getattr(mod, cargar)()
+    assert variable in str(e.value)
+
+
+@pytest.mark.parametrize("variable,cargar,limite", _TOPES_CON_TECHO)
+def test_tope_en_proceso_en_el_techo_arranca(monkeypatch, variable, cargar, limite):
+    monkeypatch.setenv(variable, str(getattr(mod, limite)))
+    assert getattr(mod, cargar)() == getattr(mod, limite) == 4
+
+
+@pytest.mark.parametrize("variable,cargar,limite", _TOPES_CON_TECHO)
+def test_lifespan_no_arranca_con_un_tope_en_proceso_sobre_el_techo(monkeypatch, variable, cargar, limite):
+    """Con el cargador REAL (no sustituido): el valor fuera de rango corta el
+    arranque antes de abrir la base."""
+    import main
+
+    llamadas = []
+
+    async def pool_espia():
+        llamadas.append("pool")
+
+    monkeypatch.setenv(variable, "1000")
+    monkeypatch.setattr(main, "get_pool", pool_espia)
+
+    async def arrancar():
+        async with main.lifespan(main.app):
+            pass
+
+    with pytest.raises(mod.LimitesDeAdjuntosInvalidos) as e:
+        asyncio.run(arrancar())
+    assert variable in str(e.value)
+    assert llamadas == []

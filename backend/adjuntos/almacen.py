@@ -103,16 +103,23 @@ PREFIJO_ESCRITURA = ".tmp-"
 # subida que murió (proceso caído, cliente cancelado a mitad). Fix round 1
 # (2026-09-17): el margen tiene que cubrir también la ESPERA EN COLA. El
 # temporal `.subiendo-*` toma su mtime al terminar la copia, ANTES de esperar
-# turno_de_subida (JAX_ADJUNTO_SUBIDAS_EN_PROCESO, 1 en producción), y
-# Starlette no cancela el handler cuando el cliente se va: una subida puede
-# esperar detrás de todas las anteriores. Cada una tarda como mucho el
-# timeout de pypdf (<= 60 s, LIMITE_TIMEOUT_DE_PDF_SEGUNDOS) más la
-# clasificación de <= 10 MB (holgado: 30 s). 6 h cubren 240 subidas de peor
-# caso en cola, muy por encima de la concurrencia real del servicio. El costo
-# de un margen largo es solo disco: un huérfano no tiene sidecar, así que
-# nadie puede leerlo, y es 0600. El .dato renombrado NO hereda la edad del
-# temporal: guardar_imagen le refresca el mtime antes del rename. No es env:
-# es un margen técnico sobre esos límites, no una política.
+# turno_de_subida (JAX_ADJUNTO_SUBIDAS_EN_PROCESO, rango 1..4) y, si es PDF,
+# turno_de_pdf (JAX_ADJUNTO_PDF_PROCESOS, rango 1..8; Final fix wave #2, I1:
+# pypdf ya no espera dentro del turno de subida). Starlette no cancela el
+# handler cuando el cliente se va: una subida puede esperar detrás de todas
+# las anteriores. Cada una de delante ocupa como mucho la clasificación de
+# <= 10 MB (holgado: 30 s) en la cola de subidas y el timeout de pypdf
+# (<= 60 s, LIMITE_TIMEOUT_DE_PDF_SEGUNDOS) en la de pdf. El drenaje más lento
+# es con los dos topes en su PISO (1 lugar cada uno): ahí 6 h cubren 240
+# subidas de peor caso delante, muy por encima de la concurrencia real del
+# servicio. Los techos (SUBIDAS 4, limites.LIMITE_SUBIDAS_EN_PROCESO; PDF 8)
+# solo drenan más rápido, así que no achican este margen; el de SUBIDAS acota
+# cuántos temporales se clasifican a la vez, no cuántos esperan (eso lo
+# acotan el límite de subidas por usuario y nginx). El costo de un margen
+# largo es solo disco: un huérfano no tiene sidecar, así que nadie puede
+# leerlo, y es 0600. El .dato renombrado NO hereda la edad del temporal:
+# guardar_imagen le refresca el mtime antes del rename. No es env: es un
+# margen técnico sobre esos límites, no una política.
 ORFANO_MAX_SEGUNDOS = 6 * 3600
 
 # Cada 15 minutos. owner_cleanup corre cada 6 h porque retiene 30 días; acá
