@@ -1557,7 +1557,9 @@ jobs:
           # 1761 -> 1763 el 2026-09-17: +2 controles en test_pipelines_propagacion.py
           # (resume propaga prevuelo_rechazado con violaciones y prevuelo_no_disponible;
           # Jacobs corre el pre-vuelo en resume/approve-step). Pasan con el helper único.
-          PISO_PASSED = 1763
+          # 1763 -> 1764 el 2026-09-17 (Ruling R54 del plan J): el 423 kill_switch
+          # de /jacobs/preflight se muestra con su texto, no como rechazo genérico.
+          PISO_PASSED = 1764
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2127,7 +2129,8 @@ jobs:
       # puros de test_credencial_las_manos.py. Medido con JAX_CI_NO_DB=1: 1119
       # passed / 643 skipped.
       # 1119 -> 1121 el 2026-09-17: los mismos +2 controles puros de resume.
-      JAX_CI_MIN_PASSED: "1121"
+      # 1121 -> 1122 el 2026-09-17 (Ruling R54): el mismo test puro del 423.
+      JAX_CI_MIN_PASSED: "1122"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

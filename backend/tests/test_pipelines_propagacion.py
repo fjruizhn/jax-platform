@@ -168,10 +168,13 @@ def test_cancel_libera_y_remueve_solo_al_confirmar_con_jacobs(monkeypatch):
 # --- Fix round 2, finding 2: motivo de jacobs_rechazo con detail dict/lista
 
 def test_motivo_de_un_codigo_ajeno_usa_su_detalle_redactado():
-    """Un code fuera de CODIGOS_DE_JACOBS (p.ej. kill_switch, enmienda ítem
-    1/6) cae en jacobs_rechazo; el motivo sale de detalle/mensaje/code, no
-    del repr de Python del dict completo."""
-    cuerpo = {"detail": {"code": "kill_switch", "detalle": "corte de emergencia, api_key=sk-FAKE-kill fin"}}
+    """Un code fuera de CODIGOS_DE_JACOBS cae en jacobs_rechazo; el motivo sale
+    de detalle/mensaje/code, no del repr de Python del dict completo.
+
+    El ejemplo era `kill_switch` hasta que el Ruling R54 del plan J lo sumó a
+    la lista (el pre-vuelo mira el freno y su 423 se muestra con su texto): el
+    caso ajeno se prueba con un código que Jacobs no emite."""
+    cuerpo = {"detail": {"code": "codigo_que_no_existe", "detalle": "corte de emergencia, api_key=sk-FAKE-kill fin"}}
     exc = mod._rechazo_de_jacobs(423, cuerpo, "")
     assert exc.detail == {"code": "jacobs_rechazo", "status": 423,
                           "motivo": "corte de emergencia, api_key=*** fin"}

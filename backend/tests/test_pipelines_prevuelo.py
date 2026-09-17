@@ -550,3 +550,15 @@ def test_preflight_403_invocador_no_autorizado_con_detalle_texto_es_jacobs_recha
     assert r.detail["motivo"].startswith("invoked_by 'plataforma' no autorizado")
     assert "sk-secreto123456" not in r.detail["motivo"]
     assert set(r.detail) == {"code", "status", "motivo"}
+
+
+# Ruling R54 del plan J (2026-09-17): /jacobs/preflight pasa a mirar el kill
+# switch, porque su sonda es una llamada paga. La Mesa tiene que mostrar ese
+# 423 con su texto, no como un rechazo genérico.
+def test_el_prevuelo_propaga_el_kill_switch_con_su_codigo(monkeypatch):
+    falso = JacobsFalso({("POST", "/preflight"): respuesta(
+        423, {"detail": {"code": "kill_switch", "detalle": "freno puesto"}})})
+    preparar(monkeypatch, falso)
+    resultado = _correr(mod.preflight_pipeline(pedido=mod.PedidoDePrevuelo(steps=PASOS), user=USUARIO))
+    assert isinstance(resultado, HTTPException), resultado
+    assert (resultado.status_code, resultado.detail["code"]) == (423, "kill_switch")

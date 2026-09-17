@@ -57,6 +57,9 @@ CODIGOS_DE_JACOBS = frozenset({
     "prevuelo_rechazado", "costo_supera_lo_aceptado", "reasignacion_invalida",
     "prevuelo_no_disponible", "estado_no_continuable",
     "limite_de_activos", "plan_rechazado", "plan_inconsistente", "no_existe",
+    # Ruling R54 del plan J (2026-09-17): /jacobs/preflight mira el kill switch
+    # porque su sonda es una llamada paga. Su 423 se muestra con su texto.
+    "kill_switch",
 })
 # ENMIENDA ítem 2: estado_no_continuable trae {code, status, mensaje} -- NO
 # status_actual. "status" reemplaza a "status_actual"; se agregan "mensaje",
