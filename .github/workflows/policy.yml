@@ -1460,7 +1460,14 @@ jobs:
           # migraciones sin JAX_JWT_SECRET). Vistos en rojo contra accc641.
           # Mismo hueco ambiental (1 failed de grounding), 1 skip. Medido dos
           # veces: 1392 passed / 1 failed / 1 skipped.
-          PISO_PASSED = 1392
+          # 1392 -> 1403 el 2026-09-17 (frente E, rebase sobre 2bb90b2): +11 en
+          # test_arranque_exige_ollama_url.py (lifespan valida JAX_OLLAMA_URL
+          # antes de abrir el pool, url_requerida rechaza path/query/esquema,
+          # control del conftest); no se solapa con migraciones sin JWT
+          # (archivo distinto). Mismo hueco ambiental (1 failed de
+          # grounding), 1 skip. Re-medido dos veces tras el rebase (no sumado
+          # a ojo): 1403 passed / 1 failed / 1 skipped.
+          PISO_PASSED = 1403
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -1983,7 +1990,12 @@ jobs:
       # de jax; auth.jwt y main siguen fallando cerrado; una sola vida del
       # access token). Vistos en rojo contra accc641 (4 failed / 2 passed).
       # Skips sin cambio. Medido con JAX_CI_NO_DB=1: 793 passed / 601 skipped.
-      JAX_CI_MIN_PASSED: "793"
+      # 793 -> 804 el 2026-09-17 (frente E, rebase sobre 2bb90b2): +11 puros en
+      # test_arranque_exige_ollama_url.py; no se solapa con migraciones sin
+      # JWT (archivo distinto); ninguno pide `client`, los skips no se
+      # mueven. Re-medido dos veces tras el rebase (no sumado a ojo): 804
+      # passed / 601 skipped.
+      JAX_CI_MIN_PASSED: "804"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
