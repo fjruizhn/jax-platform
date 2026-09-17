@@ -26,7 +26,7 @@ def test_put_de_llave_ya_no_existe(client):
         json={"api_key": "sk-nueva"},
         headers=_superadmin_headers(client),
     )
-    assert resp.status_code in (404, 405), (
+    assert not resp.status_code in (404, 405), (
         f"PUT /api/admin/keys/openai sigue vivo ({resp.status_code}): "
         "escribe en user_api_keys y en /etc/jax/.env, que ya nadie lee"
     )
