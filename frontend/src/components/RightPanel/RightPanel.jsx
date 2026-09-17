@@ -1,10 +1,23 @@
-import { memo, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 import StepCard from './StepCard'
 import AuditLog from './AuditLog'
 import api from '../../api/client'
 import AlertaError from '../AlertaError'
+import ContinuarPipelineModal from './ContinuarPipelineModal'
+import { textoDeCausa } from '../../api/errores'
+
+// Estados que se pueden continuar (spec 2026-09-17 §5.2 regla 2).
+const CONTINUABLES = ['aborted', 'expired']
+
+// Status del pipeline traducido (M-2). Ruling del ledger (Task 10): leído con
+// Object.hasOwn; un status que esta versión no conoce (o `constructor`, que
+// sin hasOwn leería una función heredada) va al texto genérico, nunca crudo.
+function textoDeStatus(t, status) {
+  return typeof status === 'string' && Object.hasOwn(t.pipelineStatusLabels, status)
+    ? t.pipelineStatusLabels[status] : t.pipelineStatusDesconocido
+}
 
 function ProgressBar({ steps, t }) {
   if (!steps || steps.length === 0) return null
@@ -38,7 +51,36 @@ function RightPanel() {
   // que pertenece: sobre otro pipeline no significa nada.
   const [aviso, setAviso] = useState(null)
 
+  // Pipelines detenidos que se pueden continuar (spec 2026-09-17 §6.2).
+  const [detenidos, setDetenidos] = useState([])
+  const [errorDetenidos, setErrorDetenidos] = useState(false)
+  const [aContinuar, setAContinuar] = useState(null)
+  const [recarga, setRecarga] = useState(0)
+
   const pipelines = Object.values(activePipelines)
+  // La lista se vuelve a pedir cuando cambia el estado de algún pipeline del
+  // store (termina, se aborta, llega pipeline_continued) o tras continuar.
+  const huella = pipelines.map((p) => `${p.pipeline_id}:${p.status}`).join('|')
+
+  useEffect(() => {
+    let vigente = true
+    api.get('/pipelines')
+      .then(({ data }) => {
+        if (!vigente) return
+        setErrorDetenidos(false)
+        const lista = Array.isArray(data?.pipelines) ? data.pipelines : []
+        setDetenidos(lista.filter((p) => p && CONTINUABLES.includes(p.status)))
+      })
+      .catch(() => { if (vigente) setErrorDetenidos(true) })
+    return () => { vigente = false }
+  }, [huella, recarga])
+
+  // El store (eventos en vivo) es más nuevo que la lista: uno que ya corre no
+  // se ofrece aunque la lista todavía no se haya vuelto a pedir.
+  const continuables = detenidos.filter((p) => {
+    const enStore = activePipelines[p.pipeline_id]
+    return !enStore || CONTINUABLES.includes(enStore.status)
+  })
   const activePipeline = pipelines.find(p => ['running', 'waiting_gate'].includes(p.status))
     || pipelines[0]
 
@@ -123,7 +165,7 @@ function RightPanel() {
                     ? 'text-info'
                     : 'text-texto-suave'
                 }`}>
-                  {t.pipelineStatusLabels[activePipeline.status] || activePipeline.status}
+                  {textoDeStatus(t, activePipeline.status)}
                 </div>
               </div>
 
@@ -165,11 +207,32 @@ function RightPanel() {
               )}
             </div>
           )}
+
+          {(continuables.length > 0 || errorDetenidos) && (
+            <div className="p-3 border-t border-borde">
+              <p className="text-xs font-semibold text-texto-suave uppercase tracking-wider mb-2">{t.continuablesTitulo}</p>
+              {errorDetenidos && <AlertaError className="mb-2 text-xs">{t.continuablesError}</AlertaError>}
+              {continuables.map((p) => (
+                <div key={p.pipeline_id} className="mb-2 p-2 rounded-lg border border-borde bg-superficie">
+                  <div className="text-xs font-semibold text-texto truncate">{p.name}</div>
+                  <div className="text-xs text-peligro mt-0.5">{textoDeCausa(t, p.causa)}</div>
+                  <button type="button" onClick={() => setAContinuar(p)}
+                    className="mt-2 w-full py-1.5 rounded-lg bg-accion hover:bg-accion-hover text-sobre-color text-xs font-semibold transition-colors">
+                    {t.continuarPipeline}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       ) : (
         <div className="flex-1 overflow-hidden">
           <AuditLog />
         </div>
+      )}
+      {aContinuar && (
+        <ContinuarPipelineModal pipeline={aContinuar} onClose={() => setAContinuar(null)}
+          onContinuado={() => setRecarga((n) => n + 1)} />
       )}
     </div>
   )

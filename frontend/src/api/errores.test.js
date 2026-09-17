@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { textoDeErrorDeMesa, textoDeAviso, textoDeViolacion, textoDeMotivoDeCosto, textoDeCausa } from './errores'
+import { textoDeErrorDeMesa, textoDeDetalleDeMesa, textoDeAviso, textoDeViolacion, textoDeMotivoDeCosto, textoDeCausa, clasificarRechazo } from './errores'
 import es from '../i18n/es.js'
 import en from '../i18n/en.js'
 
@@ -256,5 +256,68 @@ describe('datos del servicio con forma rara', () => {
       expect(texto).toBe(es.reglasPrevuelo.faceta_caida(v))
       expect(texto).not.toContain('[object Object]')
     }
+  })
+})
+
+// Task 10 (2026-09-17): la causa trae el `detalle` redactado del paso que
+// falló; va como dato del servicio. Sólo un string no vacío.
+describe('textoDeCausa con detalle', () => {
+  it('un detalle string se agrega como respuesta del servicio', () => {
+    for (const d of [es, en]) {
+      expect(textoDeCausa(d, { tipo: 'fallo', paso: 4, detalle: 'Salida cortada' }))
+        .toBe(`${d.causasDeAborto.fallo({ paso: 4 })} ${d.respuestaDelServicio('Salida cortada')}`)
+    }
+  })
+
+  it('un detalle vacío o que no es string no se agrega', () => {
+    for (const detalle of ['', { x: 1 }, ['a'], 5]) {
+      expect(textoDeCausa(es, { tipo: 'fallo', paso: 4, detalle })).toBe(es.causasDeAborto.fallo({ paso: 4 }))
+    }
+  })
+})
+
+// Task 10: el `motivo` de continue/preflight es un `detail` sin respuesta HTTP
+// alrededor; se traduce con la misma lógica que un rechazo.
+describe('textoDeDetalleDeMesa', () => {
+  it('traduce un detail por su code, igual que textoDeErrorDeMesa', () => {
+    const detail = { code: 'reasignacion_invalida', detalle: [{ paso: 4, faceta: 'ada', motivo: 'no admite' }] }
+    expect(textoDeDetalleDeMesa(es, detail, 'G')).toBe(textoDeErrorDeMesa(es, { response: { data: { detail } } }, 'G'))
+    expect(textoDeDetalleDeMesa(es, detail, 'G')).toContain(es.detalleDePaso(detail.detalle[0]))
+  })
+
+  it('null, un code desconocido o heredado caen en el genérico', () => {
+    for (const detail of [null, undefined, { code: 'otro' }, { code: 'constructor' }, 'toString', {}]) {
+      expect(textoDeDetalleDeMesa(es, detail, 'G')).toBe('G')
+    }
+  })
+})
+
+// Task 10: la lógica de rechazos que PipelineModal y ContinuarPipelineModal
+// comparten (una sola copia).
+describe('clasificarRechazo', () => {
+  const rechazo = (status, detail) => ({ response: { status, data: { detail } } })
+
+  it('422 prevuelo_rechazado con violaciones -> violaciones', () => {
+    const v = [{ paso: 0, regla: 'faceta_caida' }]
+    expect(clasificarRechazo(es, rechazo(422, { code: 'prevuelo_rechazado', violaciones: v }), null, 'G'))
+      .toEqual({ tipo: 'violaciones', violaciones: v })
+  })
+
+  it('409 de costo con costo legible -> reconfirmar, con aviso sólo si el costo subió', () => {
+    const pasos = [{ paso: 4, usd_max: '0.90' }]
+    const subio = clasificarRechazo(es, rechazo(409, { code: 'costo_supera_lo_aceptado', costo_max_usd: '0.90', pasos_costo: pasos }), { umbral_usd: '0.50' }, 'G')
+    expect(subio).toEqual({
+      tipo: 'costo',
+      veredicto: { costo_max_usd: '0.90', pasos_costo: pasos, umbral_usd: '0.50' },
+      aviso: es.erroresMesa.costo_supera_lo_aceptado({}),
+    })
+    const falta = clasificarRechazo(es, rechazo(409, { code: 'confirmacion_de_costo', costo_max_usd: '0.70', umbral_usd: '0.50' }), null, 'G')
+    expect(falta).toEqual({ tipo: 'costo', veredicto: { costo_max_usd: '0.70', pasos_costo: [], umbral_usd: '0.50' }, aviso: null })
+  })
+
+  it('un 409 de costo sin costo legible, u otro error, -> texto traducido o genérico', () => {
+    expect(clasificarRechazo(es, rechazo(409, { code: 'costo_supera_lo_aceptado' }), null, 'G'))
+      .toEqual({ tipo: 'error', texto: es.erroresMesa.costo_supera_lo_aceptado({}) })
+    expect(clasificarRechazo(es, new Error('network'), null, 'G')).toEqual({ tipo: 'error', texto: 'G' })
   })
 })

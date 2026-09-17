@@ -66,12 +66,26 @@ export default {
   // (jacobs/models.py::PipelineStatus). Readers use Object.hasOwn and, when the
   // value is missing, a generic text: never the raw value.
   pipelineStatusLabels: ETIQUETAS_DE_ESTADO,
+  pipelineStatusDesconocido: 'Unknown status',
   pipelinesAdditional: (n) => `+${n} additional pipeline(s)`,
   approve: '✓ Approve',
   cancelling: 'Cancelling…',
   cancelPipeline: 'Cancel pipeline',
   approveError: 'The step could not be approved. Try again.',
   cancelError: 'The pipeline could not be cancelled. Try again.',
+  // Continue a stopped pipeline (spec 2026-09-17 §6.2)
+  continuablesTitulo: 'Stopped',
+  continuablesError: 'The list of stopped pipelines could not be loaded.',
+  continuarPipeline: 'Continue',
+  continuarTitulo: 'Continue pipeline',
+  continuarCargando: 'Loading steps and cost…',
+  continuarErrorCarga: 'The continuation could not be prepared.',
+  continuarPasoReusado: (n, faceta) => `✓ Step ${n} · ${faceta}: ready, reused`,
+  continuarPasoACorrer: (n, capability) => `Step ${n} · ${capability}`,
+  continuarCostoMax: (monto) => `Maximum cost of what is left: ${monto}`,
+  continuarCleanroom: (n, faceta, dep) => `Step ${n}: ${faceta} cannot audit what it produced in step ${dep}. Choose another facet.`,
+  continuarNoContinuable: 'This pipeline cannot be continued in its current state.',
+  continuarBoton: 'Continue',
   // Nombre guardado del pipeline: el objetivo, recortado a 50 caracteres.
   pipelineName: (objetivo) => `Pipeline: ${objetivo.slice(0, 50)}`,
 

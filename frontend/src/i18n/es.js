@@ -66,12 +66,26 @@ export default {
   // estado_no_continuable (jacobs/models.py::PipelineStatus). Quien lo lea usa
   // Object.hasOwn y, si el valor no está, un texto genérico: nunca el dato crudo.
   pipelineStatusLabels: ETIQUETAS_DE_ESTADO,
+  pipelineStatusDesconocido: 'Estado desconocido',
   pipelinesAdditional: (n) => `+${n} pipeline(s) adicional(es)`,
   approve: '✓ Aprobar',
   cancelling: 'Cancelando…',
   cancelPipeline: 'Cancelar pipeline',
   approveError: 'No se pudo aprobar el paso. Probá de nuevo.',
   cancelError: 'No se pudo cancelar el pipeline. Probá de nuevo.',
+  // Continuar un pipeline detenido (spec 2026-09-17 §6.2)
+  continuablesTitulo: 'Detenidos',
+  continuablesError: 'No se pudo cargar la lista de pipelines detenidos.',
+  continuarPipeline: 'Continuar',
+  continuarTitulo: 'Continuar pipeline',
+  continuarCargando: 'Cargando pasos y costo…',
+  continuarErrorCarga: 'No se pudo preparar la continuación.',
+  continuarPasoReusado: (n, faceta) => `✓ Paso ${n} · ${faceta}: listo, se reutiliza`,
+  continuarPasoACorrer: (n, capability) => `Paso ${n} · ${capability}`,
+  continuarCostoMax: (monto) => `Costo máximo de lo que falta: ${monto}`,
+  continuarCleanroom: (n, faceta, dep) => `Paso ${n}: ${faceta} no puede auditar lo que produjo en el paso ${dep}. Elige otra faceta.`,
+  continuarNoContinuable: 'Este pipeline no se puede continuar en su estado actual.',
+  continuarBoton: 'Continuar',
   // Nombre guardado del pipeline: el objetivo, recortado a 50 caracteres.
   pipelineName: (objetivo) => `Pipeline: ${objetivo.slice(0, 50)}`,
 

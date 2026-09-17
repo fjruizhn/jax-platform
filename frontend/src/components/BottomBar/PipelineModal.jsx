@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import { useJaxStore } from '../../store/useJaxStore'
 import api from '../../api/client'
@@ -6,7 +6,8 @@ import { colorToken } from '../../tema/tokens'
 import Dialogo from '../Dialogo'
 import AlertaError from '../AlertaError'
 import ConfirmarCostoDialogo from '../ConfirmarCostoDialogo'
-import { codigoDe, textoDeErrorDeMesa, textoDeViolacion } from '../../api/errores'
+import { clasificarRechazo, textoDeViolacion } from '../../api/errores'
+import { useConfirmacionDeCosto } from '../../lib/useConfirmacionDeCosto'
 import {
   GOVERNED_FACETS,
   CHAIN_ROLES,
@@ -113,7 +114,6 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   const [modeTouched, setModeTouched] = useState(false)
   const [chainFacets, setChainFacets] = useState(defaultFacetsByRole)
   const [selected, setSelected] = useState(['hipatia', 'jekyll', 'thot'])
-  const [submitting, setSubmitting] = useState(false)
   const [capabilities, setCapabilities] = useState({})  // {capability_key: [motor_key, ...]}
   // T5: null = catálogo todavía no resolvió (fail-closed mientras carga);
   // {} tras un fetch exitoso (aunque vacío) es un estado válido, distinto
@@ -124,13 +124,14 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   // Pre-vuelo (spec 2026-09-17 §6.2): lo que devolvió y lo que falta confirmar.
   const [violaciones, setViolaciones] = useState([])
   const [errorEnvio, setErrorEnvio] = useState(null)
-  const [pendiente, setPendiente] = useState(null)  // {body, veredicto, aviso} esperando confirmación
-  // Guardia síncrona contra el doble clic (adenda Task 9 ítem 5): `submitting`
-  // deshabilita el botón recién en el próximo render; dos clics seguidos
-  // llegan antes y mandarían dos pre-vuelos o dos creaciones.
-  const enviandoRef = useRef(false)
-  const botonEnviarRef = useRef(null)
-  const pendienteAnteriorRef = useRef(null)
+  // Confirmación de costo sobre este modal (lib/useConfirmacionDeCosto, Task 9;
+  // compartido con ContinuarPipelineModal): `pendiente` = {body, veredicto,
+  // aviso}, congelamiento del padre, guardia contra el doble clic y foco de
+  // vuelta a Planificar y ejecutar.
+  const {
+    pendiente, abrirConfirmacion, cerrarConfirmacion, enviando: submitting, enviandoRef,
+    bloqueado, siLibre, conGuardia, botonPrincipalRef: botonEnviarRef,
+  } = useConfirmacionDeCosto()
 
   useEffect(() => {
     // api.get (no fetch crudo) -- el interceptor de src/api/client.js inyecta
@@ -159,12 +160,8 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   const catalogReady = motorsByKey !== null && !catalogFailed
 
   // Con la confirmación de costo abierta el modal padre queda congelado (fix
-  // round 1 Task 9): Dialogo sólo vuelve inert a #root y los dos diálogos son
-  // portales hermanos, así que con Tab se llegaba al padre y se podía cambiar
-  // el plan (y confirmar crearía el cuerpo viejo) o relanzar el pre-vuelo. El
-  // contenido del padre lleva `inert` y cada acción se niega además en JS.
-  const bloqueado = pendiente !== null
-  const siLibre = (fn) => (...args) => { if (!bloqueado) fn(...args) }
+  // round 1 Task 9): sin esto, con Tab se llegaba al padre y se podía cambiar
+  // el plan (y confirmar crearía el cuerpo viejo) o relanzar el pre-vuelo.
 
   // Lo que dijo el pre-vuelo (o el error de crear) es de la forma que se
   // probó: al editarla deja de valer y se borra (fix round 1 ítem 3).
@@ -172,17 +169,6 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
     setViolaciones([])
     setErrorEnvio(null)
   }, [chainFacets, selected, layout, motorChoices])
-
-  // Fix round 2 (b): el commit que abre la confirmación vuelve inert al
-  // envoltorio del botón enfocado, así que Dialogo registra `body` como
-  // elemento previo y no devuelve el foco. Cuando la confirmación se cierra y
-  // este modal sigue abierto, el foco va explícitamente al botón de enviar
-  // (este efecto corre después del cleanup de Dialogo y con el inert ya quitado).
-  useEffect(() => {
-    const habiaPendiente = pendienteAnteriorRef.current !== null
-    pendienteAnteriorRef.current = pendiente
-    if (habiaPendiente && pendiente === null) botonEnviarRef.current?.focus()
-  }, [pendiente])
 
   const toggleFacet = siLibre((id) => {
     setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id])
@@ -209,35 +195,18 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   }
 
   // Los rechazos se quedan DENTRO del modal: cerrarlo perdería lo elegido.
-  // - prevuelo_rechazado: las violaciones, como las del pre-vuelo.
-  // - confirmacion_de_costo / costo_supera_lo_aceptado (el costo cambió entre
-  //   el pre-vuelo y la creación, adenda ítem 4): se vuelve a pedir la
-  //   confirmación con el costo que devolvió el backend. Sin un costo legible
-  //   no hay qué confirmar y cae en el error genérico traducido.
+  // clasificarRechazo (api/errores.js) decide: violaciones del pre-vuelo,
+  // volver a pedir la confirmación con el costo nuevo (adenda ítem 4) o el
+  // error traducido.
   function mostrarError(err, body, previo) {
-    const code = codigoDe(err)
-    const detail = err?.response?.data?.detail
-    const datos = detail && typeof detail === 'object' ? detail : {}
-    if (code === 'prevuelo_rechazado' && Array.isArray(datos.violaciones)) {
-      setPendiente(null)
-      setViolaciones(datos.violaciones)
+    const r = clasificarRechazo(t, err, previo, t.errorPipeline)
+    if (r.tipo === 'costo') {
+      abrirConfirmacion({ body, veredicto: r.veredicto, aviso: r.aviso })
       return
     }
-    const esDeCosto = code === 'confirmacion_de_costo' || code === 'costo_supera_lo_aceptado'
-    if (esDeCosto && typeof datos.costo_max_usd === 'string' && datos.costo_max_usd) {
-      setPendiente({
-        body,
-        veredicto: {
-          costo_max_usd: datos.costo_max_usd,
-          pasos_costo: Array.isArray(datos.pasos_costo) ? datos.pasos_costo : (previo?.pasos_costo || []),
-          umbral_usd: datos.umbral_usd ?? previo?.umbral_usd ?? null,
-        },
-        aviso: code === 'costo_supera_lo_aceptado' ? textoDeErrorDeMesa(t, err, t.errorPipeline) : null,
-      })
-      return
-    }
-    setPendiente(null)
-    setErrorEnvio(textoDeErrorDeMesa(t, err, t.errorPipeline))
+    cerrarConfirmacion()
+    if (r.tipo === 'violaciones') setViolaciones(r.violaciones)
+    else setErrorEnvio(r.texto)
   }
 
   // onSubmit rechaza si la creación falla (BottomBar.handlePipelineSubmit).
@@ -251,42 +220,36 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
     if (!catalogReady || bloqueado || enviandoRef.current) return
     if (layout === 'chain' ? chainBlocked : selected.length === 0) return
     const body = armarCuerpo()
-    enviandoRef.current = true
-    setSubmitting(true)
     setViolaciones([])
     setErrorEnvio(null)
-    try {
-      const { data } = await api.post('/pipelines/preflight', { steps: body.steps })
-      if (!data.ok) {
-        setViolaciones(Array.isArray(data.violaciones) ? data.violaciones : [])
-        return
+    await conGuardia(async () => {
+      try {
+        const { data } = await api.post('/pipelines/preflight', { steps: body.steps })
+        if (!data.ok) {
+          setViolaciones(Array.isArray(data.violaciones) ? data.violaciones : [])
+          return
+        }
+        if (data.requiere_confirmacion) {
+          abrirConfirmacion({ body, veredicto: data, aviso: null })
+          return
+        }
+        await crear(body, null)
+      } catch (err) {
+        mostrarError(err, body, null)
       }
-      if (data.requiere_confirmacion) {
-        setPendiente({ body, veredicto: data, aviso: null })
-        return
-      }
-      await crear(body, null)
-    } catch (err) {
-      mostrarError(err, body, null)
-    } finally {
-      enviandoRef.current = false
-      setSubmitting(false)
-    }
+    })
   }
 
   async function confirmarCosto() {
-    if (!pendiente || enviandoRef.current) return
+    if (!pendiente) return
     const { body, veredicto } = pendiente
-    enviandoRef.current = true
-    setSubmitting(true)
-    try {
-      await crear(body, veredicto.costo_max_usd)
-    } catch (err) {
-      mostrarError(err, body, veredicto)
-    } finally {
-      enviandoRef.current = false
-      setSubmitting(false)
-    }
+    await conGuardia(async () => {
+      try {
+        await crear(body, veredicto.costo_max_usd)
+      } catch (err) {
+        mostrarError(err, body, veredicto)
+      }
+    })
   }
 
   const PIPELINE_MODES = [
@@ -495,7 +458,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
       </div>
         {pendiente && (
           <ConfirmarCostoDialogo veredicto={pendiente.veredicto} enviando={submitting} aviso={pendiente.aviso}
-            onConfirmar={confirmarCosto} onCancelar={() => setPendiente(null)} />
+            onConfirmar={confirmarCosto} onCancelar={cerrarConfirmacion} />
         )}
     </Dialogo>
   )
