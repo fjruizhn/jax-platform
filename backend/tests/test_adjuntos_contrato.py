@@ -86,7 +86,7 @@ def test_texto_leido_se_recorta_otra_vez_si_el_limite_bajo(directorio):
 
 def test_un_dato_de_texto_que_no_es_utf8_es_el_mismo_404(directorio):
     meta = _texto(directorio)
-    (directorio / f"{meta['id']}.dato").write_bytes(b"\xff\xfe")
+    (directorio / "5" / f"{meta['id']}.dato").write_bytes(b"\xff\xfe")
     metas = asyncio.run(c.buscar_adjuntos([c.AdjuntoRef(id=meta["id"])], DUENIO, LIM))
     with pytest.raises(almacen.AdjuntoNoEncontrado):
         asyncio.run(c.leer_adjuntos(metas, DUENIO, LIM))

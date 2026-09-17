@@ -99,14 +99,14 @@ def test_el_nombre_del_cliente_nunca_esta_en_una_ruta(directorio):
     temporal.write_bytes(b"x")
     almacen.guardar_imagen(directorio, temporal, user=DUENIO, mime="image/png", nombre="secreto.png",
                            bytes_=1, ttl_horas=1, ahora=AHORA)
-    assert all("secreto" not in p.name for p in directorio.iterdir())
+    assert all("secreto" not in p.name for p in directorio.rglob("*"))
 
 
 def test_modos_archivos_0600_y_directorio_0700(directorio):
     meta = _guardar_imagen(directorio)
     _guardar_texto(directorio)
-    assert stat.S_IMODE(directorio.stat().st_mode) == 0o700
-    archivos = list(directorio.iterdir())
+    assert stat.S_IMODE((directorio / "5").stat().st_mode) == 0o700
+    archivos = list((directorio / "5").iterdir())
     assert len(archivos) == 4 and meta["id"] + ".json" in {p.name for p in archivos}
     for p in archivos:
         assert stat.S_IMODE(p.stat().st_mode) == 0o600, p.name
@@ -115,7 +115,7 @@ def test_modos_archivos_0600_y_directorio_0700(directorio):
 def test_no_quedan_temporales_tras_guardar(directorio):
     _guardar_imagen(directorio)
     _guardar_texto(directorio)
-    assert [p.name for p in directorio.iterdir() if p.name.startswith(".")] == []
+    assert [p.name for p in directorio.rglob("*") if p.name.startswith(".")] == []
 
 
 # ------------------------------------------- todos los "no" son el mismo 404
@@ -149,13 +149,13 @@ def test_un_symlink_con_nombre_de_id_que_sale_del_directorio_es_404(directorio, 
     fuera = tmp_path / "fuera.json"
     fuera.write_text(json.dumps({"user_id": "5", "tenant_id": "1", "vence": "2999-01-01T00:00:00Z"}))
     falso = "A" * almacen.LARGO_ID
-    os.symlink(fuera, directorio / f"{falso}.json")
+    os.symlink(fuera, almacen.preparar_carpeta(directorio, "5") / f"{falso}.json")
     _no_encontrado(almacen.obtener(falso, DUENIO, ahora=AHORA))
 
 
 def test_sidecar_corrupto_es_404(directorio):
     meta = _guardar_imagen(directorio)
-    (directorio / f"{meta['id']}.json").write_text("{no es json")
+    (directorio / "5" / f"{meta['id']}.json").write_text("{no es json")
     _no_encontrado(almacen.obtener(meta["id"], DUENIO, ahora=AHORA))
 
 
@@ -168,7 +168,7 @@ def test_obtener_valida_el_id_antes_de_tocar_el_disco(directorio, monkeypatch):
 
 def test_vencido_es_404_aunque_el_limpiador_no_haya_corrido(directorio):
     meta = _guardar_imagen(directorio, ttl=1)
-    assert (directorio / f"{meta['id']}.json").exists()
+    assert (directorio / "5" / f"{meta['id']}.json").exists()
     _no_encontrado(almacen.leer(meta["id"], DUENIO, ahora=AHORA + timedelta(hours=1, seconds=1)))
 
 
@@ -188,9 +188,9 @@ def test_dos_guardados_concurrentes_dan_ids_distintos_y_archivos_correctos(direc
 def test_un_lector_abierto_lee_completo_tras_el_borrado(directorio):
     cuerpo = b"\x89PNG\r\n\x1a\n" + b"z" * 100_000
     meta = _guardar_imagen(directorio, datos=cuerpo)
-    with open(directorio / f"{meta['id']}.dato", "rb") as f:
+    with open(directorio / "5" / f"{meta['id']}.dato", "rb") as f:
         almacen.limpiar(directorio, ahora=AHORA + timedelta(days=2))
-        assert not (directorio / f"{meta['id']}.dato").exists()
+        assert not (directorio / "5" / f"{meta['id']}.dato").exists()
         assert f.read() == cuerpo
     _no_encontrado(almacen.obtener(meta["id"], DUENIO, ahora=AHORA))
 
@@ -206,27 +206,27 @@ def test_limpiar_borra_vencidos_y_huerfanos_y_deja_los_vigentes(directorio):
     vigente = _guardar_imagen(directorio, ttl=48)
     vencido = _guardar_texto(directorio, ttl=1)
     # Huérfanos viejos: dato sin sidecar, temporales de subida y de escritura.
-    huerfano = directorio / f"{almacen.nuevo_id()}.dato"
+    huerfano = directorio / "5" / f"{almacen.nuevo_id()}.dato"
     huerfano.write_bytes(b"x")
-    subida_vieja = directorio / almacen.nombre_temporal()
+    subida_vieja = directorio / "5" / almacen.nombre_temporal()
     subida_vieja.write_bytes(b"x")
-    escritura_vieja = directorio / ".tmp-abandonado"
+    escritura_vieja = directorio / "5" / ".tmp-abandonado"
     escritura_vieja.write_bytes(b"x")
-    corrupto = directorio / f"{almacen.nuevo_id()}.json"
+    corrupto = directorio / "5" / f"{almacen.nuevo_id()}.json"
     corrupto.write_text("{roto")
     for p in (huerfano, subida_vieja, escritura_vieja, corrupto):
         _envejecer(p, almacen.ORFANO_MAX_SEGUNDOS + 60)
     # Huérfanos RECIENTES (una subida en curso): se quedan.
-    subida_en_curso = directorio / almacen.nombre_temporal()
+    subida_en_curso = directorio / "5" / almacen.nombre_temporal()
     subida_en_curso.write_bytes(b"x")
-    dato_sin_sidecar_aun = directorio / f"{almacen.nuevo_id()}.dato"
+    dato_sin_sidecar_aun = directorio / "5" / f"{almacen.nuevo_id()}.dato"
     dato_sin_sidecar_aun.write_bytes(b"x")
-    ajeno_al_almacen = directorio / "LEEME.txt"
+    ajeno_al_almacen = directorio / "5" / "LEEME.txt"
     ajeno_al_almacen.write_text("no es nuestro")
 
     borrados = almacen.limpiar(directorio, ahora=AHORA + timedelta(hours=2))
 
-    quedan = {p.name for p in directorio.iterdir()}
+    quedan = {p.name for p in (directorio / "5").iterdir()}
     assert quedan == {f"{vigente['id']}.json", f"{vigente['id']}.dato", subida_en_curso.name,
                       dato_sin_sidecar_aun.name, "LEEME.txt"}
     assert borrados == 6  # vencido (2 archivos) + 4 huérfanos
@@ -265,7 +265,7 @@ def test_borrar_de_usuario_borra_solo_lo_suyo(directorio):
     suyo_b = _guardar_texto(directorio, user=OTRO_TENANT)  # mismo user_id, otro tenant: el user_id es único
     ajeno = _guardar_imagen(directorio, user=AJENO)
     assert almacen.borrar_de_usuario(directorio, "5") == 4
-    assert {p.name for p in directorio.iterdir()} == {f"{ajeno['id']}.json", f"{ajeno['id']}.dato"}
+    assert {str(p.relative_to(directorio)) for p in directorio.rglob("*") if p.is_file()} == {f"6/{ajeno['id']}.json", f"6/{ajeno['id']}.dato"}
     del suyo_a, suyo_b
 
 
@@ -390,18 +390,18 @@ def _scandir_con_primero(monkeypatch, primeros):
 @pytest.mark.skipif(os.geteuid() == 0, reason="root lee archivos 000")
 def test_una_entrada_rota_no_aborta_la_limpieza_de_los_demas(directorio, monkeypatch):
     vencido = _guardar_texto(directorio, ttl=1)
-    carpeta_sidecar = directorio / f"{almacen.nuevo_id()}.json"
+    carpeta_sidecar = directorio / "5" / f"{almacen.nuevo_id()}.json"
     carpeta_sidecar.mkdir()
-    carpeta_dato = directorio / f"{almacen.nuevo_id()}.dato"
+    carpeta_dato = directorio / "5" / f"{almacen.nuevo_id()}.dato"
     carpeta_dato.mkdir()
     _envejecer(carpeta_dato, almacen.ORFANO_MAX_SEGUNDOS + 60)
-    ilegible = directorio / f"{almacen.nuevo_id()}.json"
+    ilegible = directorio / "5" / f"{almacen.nuevo_id()}.json"
     ilegible.write_text("{}")
     os.chmod(ilegible, 0)
     _scandir_con_primero(monkeypatch, {carpeta_sidecar.name, carpeta_dato.name, ilegible.name})
     try:
         almacen.limpiar(directorio, ahora=AHORA + timedelta(hours=2))
-        quedan = {p.name for p in directorio.iterdir()}
+        quedan = {p.name for p in (directorio / "5").iterdir()}
     finally:
         os.chmod(ilegible, 0o600)
     assert f"{vencido['id']}.json" not in quedan and f"{vencido['id']}.dato" not in quedan
@@ -411,11 +411,11 @@ def test_una_entrada_rota_no_aborta_la_limpieza_de_los_demas(directorio, monkeyp
 def test_borrar_de_usuario_sigue_si_un_borrado_falla(directorio, monkeypatch):
     roto = _guardar_texto(directorio)
     sano = _guardar_texto(directorio)
-    (directorio / f"{roto['id']}.dato").unlink()
-    (directorio / f"{roto['id']}.dato").mkdir()  # unlink -> IsADirectoryError
+    (directorio / "5" / f"{roto['id']}.dato").unlink()
+    (directorio / "5" / f"{roto['id']}.dato").mkdir()  # unlink -> IsADirectoryError
     _scandir_con_primero(monkeypatch, {f"{roto['id']}.json"})
     almacen.borrar_de_usuario(directorio, "5")
-    quedan = {p.name for p in directorio.iterdir()}
+    quedan = {p.name for p in (directorio / "5").iterdir()}
     assert f"{sano['id']}.json" not in quedan and f"{sano['id']}.dato" not in quedan
 
 
@@ -430,12 +430,13 @@ def test_un_sidecar_escrito_despues_del_scandir_salva_al_dato(directorio, monkey
     """Segunda guarda del limpiador: la foto de scandir no tiene el sidecar,
     pero el sidecar ya existe cuando se decide borrar el dato."""
     id_ = almacen.nuevo_id()
-    dato = directorio / f"{id_}.dato"
+    almacen.preparar_carpeta(directorio, "5")
+    dato = directorio / "5" / f"{id_}.dato"
     dato.write_bytes(b"x")
     _envejecer(dato, almacen.ORFANO_MAX_SEGUNDOS + 60)
-    foto = list(os.scandir(directorio))
-    (directorio / f"{id_}.json").write_text("{}")
-    monkeypatch.setattr(almacen, "_listar", lambda d: foto)
+    foto = list(os.scandir(directorio / "5"))
+    (directorio / "5" / f"{id_}.json").write_text("{}")
+    monkeypatch.setattr(almacen, "_listar", lambda d, real=almacen._listar: foto if d == directorio / "5" else real(d))
     almacen.limpiar(directorio, ahora=AHORA)
     assert dato.exists()
 
@@ -449,7 +450,7 @@ def test_el_dato_renombrado_no_hereda_la_edad_de_la_subida(directorio):
     _envejecer(temporal, 10 * almacen.ORFANO_MAX_SEGUNDOS)
     meta = almacen.guardar_imagen(directorio, temporal, user=DUENIO, mime="image/png", nombre="f.png",
                                   bytes_=9, ttl_horas=1, ahora=AHORA)
-    assert time.time() - (directorio / f"{meta['id']}.dato").stat().st_mtime < 60
+    assert time.time() - (directorio / "5" / f"{meta['id']}.dato").stat().st_mtime < 60
 
 
 def test_el_margen_de_huerfanos_cubre_la_cola_de_subidas():
@@ -494,9 +495,9 @@ def test_imagen_en_base64_mismos_404_que_leer(directorio):
     meta = _guardar_imagen(directorio)
     texto = _guardar_texto(directorio)
     sin_dato = _guardar_imagen(directorio)
-    (directorio / f"{sin_dato['id']}.dato").unlink()
+    (directorio / "5" / f"{sin_dato['id']}.dato").unlink()
     truncada = _guardar_imagen(directorio, datos=b"\x89PNG\r\n\x1a\n" + b"x" * 100)
-    (directorio / f"{truncada['id']}.dato").write_bytes(b"\x89PNG")
+    (directorio / "5" / f"{truncada['id']}.dato").write_bytes(b"\x89PNG")
     leer = almacen.leer_imagen_en_base64
     casos = {
         "ajeno": leer(meta["id"], AJENO, ahora=AHORA),
@@ -518,7 +519,7 @@ def test_imagen_en_base64_mismos_404_que_leer(directorio):
 def test_los_logs_del_limpiador_y_de_la_baja_no_llevan_ids(directorio, monkeypatch, caplog):
     import logging
     caplog.set_level(logging.DEBUG)
-    carpeta = directorio / f"{almacen.nuevo_id()}.json"
+    carpeta = almacen.preparar_carpeta(directorio, "5") / f"{almacen.nuevo_id()}.json"
     carpeta.mkdir()
     _scandir_con_primero(monkeypatch, {carpeta.name})
     almacen.limpiar(directorio, ahora=AHORA)

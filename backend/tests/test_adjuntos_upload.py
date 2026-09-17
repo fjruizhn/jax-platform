@@ -56,7 +56,8 @@ def _rechazo_directo(datos, nombre="f"):
 
 
 def _archivos(directorio: Path):
-    return sorted(p.name for p in directorio.iterdir())
+    # RD7: los archivos viven en la carpeta de cada usuario.
+    return sorted(p.name for p in directorio.rglob("*") if p.is_file())
 
 
 # ------------------------------------------------------------ por HTTP (DB)
@@ -133,8 +134,9 @@ def test_la_imagen_queda_en_disco_atada_al_duenio(directorio):
     meta, datos = asyncio.run(almacen.leer(r["id"], USUARIO))
     assert datos == PNG
     assert (meta["user_id"], meta["tenant_id"], meta["tipo"], meta["nombre"]) == ("5", "1", "imagen", "foto.png")
-    for p in directorio.iterdir():
-        assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    for p in directorio.rglob("*"):
+        assert stat.S_IMODE(p.stat().st_mode) == (0o700 if p.is_dir() else 0o600)
+    assert [p.name for p in directorio.iterdir()] == ["5"]
 
 
 def test_el_texto_guardado_es_el_extraido_y_la_respuesta_esta_acotada(directorio, monkeypatch):
@@ -166,7 +168,7 @@ def test_el_pdf_viaja_al_pool_como_ruta_no_como_bytes(directorio, monkeypatch):
     monkeypatch.setattr(upload_mod, "extraer_texto_en_pool", espia)
     _directo(pdf_con_texto(["hola"]), "i.pdf")
     (origen,) = vistos
-    assert isinstance(origen, str) and Path(origen).parent == directorio
+    assert isinstance(origen, str) and Path(origen).parent == directorio / USUARIO.user_id
     assert Path(origen).name.startswith(almacen.PREFIJO_SUBIDA)
 
 
@@ -254,7 +256,7 @@ def test_una_subida_cancelada_no_deja_el_temporal(directorio, monkeypatch):
         tarea = asyncio.create_task(upload_mod.upload_file(file=_archivo(PNG, "f.png"), user=USUARIO))
         for _ in range(50):
             await asyncio.sleep(0.01)
-            if any(n.startswith(almacen.PREFIJO_SUBIDA) for n in os.listdir(directorio)):
+            if any(n.startswith(almacen.PREFIJO_SUBIDA) for n in (p.name for p in directorio.rglob("*"))):
                 break
         tarea.cancel()
         with pytest.raises(asyncio.CancelledError):

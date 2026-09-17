@@ -101,10 +101,14 @@ async def upload_file(
     if recibido > limites.max_bytes:
         raise _rechazo(413, "adjunto_demasiado_grande", max_bytes=limites.max_bytes)
 
-    temporal: Path = directorio / almacen.nombre_temporal()
+    # RD7: el temporal vive en la carpeta del usuario (mismo filesystem que su
+    # dato: el rename de la imagen es atómico). La carpeta se crea después de
+    # los rechazos de cuota y disco, que no escriben nada.
+    temporal: Path = almacen.carpeta_de_usuario(directorio, user.user_id) / almacen.nombre_temporal()
     try:
         async with cuota.reserva(directorio, user, recibido, cuota_bytes) as reserva:
             await cuota.exigir_disco_libre(directorio, recibido)
+            await asyncio.to_thread(almacen.preparar_carpeta, directorio, user.user_id)
             try:
                 tamano = await asyncio.to_thread(almacen.copiar_subida, file.file, temporal, limites.max_bytes)
             except almacen.SubidaDemasiadoGrande:

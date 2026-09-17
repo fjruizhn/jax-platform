@@ -277,15 +277,15 @@ def _caso_de_404(client, caso):
         return almacen.nuevo_id()
     if caso == "sidecar_corrupto":
         id_ = _guardar_texto(user)["id"]
-        (directorio / f"{id_}.json").write_text("{no es json")
+        (almacen.carpeta_de_usuario(directorio, user.user_id) / f"{id_}.json").write_text("{no es json")
         return id_
     if caso == "dato_de_texto_borrado":
         id_ = _guardar_texto(user)["id"]
-        (directorio / f"{id_}.dato").unlink()
+        (almacen.carpeta_de_usuario(directorio, user.user_id) / f"{id_}.dato").unlink()
         return id_
     if caso == "dato_de_imagen_borrado":
         id_ = _guardar_imagen(user)["id"]
-        (directorio / f"{id_}.dato").unlink()
+        (almacen.carpeta_de_usuario(directorio, user.user_id) / f"{id_}.dato").unlink()
         return id_
     raise AssertionError(caso)
 
@@ -331,7 +331,7 @@ def test_un_adjunto_que_borro_el_limpiador_entre_la_subida_y_el_chat_es_404(clie
     id_ = subida.json()["id"]
     horas = almacen.cargar_ttl_horas()
     almacen.limpiar(almacen.cargar_directorio(), ahora=almacen._ahora() + timedelta(hours=horas + 1))
-    assert not (almacen.cargar_directorio() / f"{id_}.json").exists()
+    assert not list(almacen.cargar_directorio().rglob(f"{id_}.json"))
     r = _chat(client, [{"id": id_}])
     assert r.status_code == 404, r.text
     assert r.json()["detail"] == {"code": "adjunto_no_encontrado"}

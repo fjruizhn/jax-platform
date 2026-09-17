@@ -664,7 +664,9 @@ def test_la_baja_borra_los_adjuntos_del_usuario_y_no_los_ajenos(client, usuarios
     _adjunto_de(d, u)
     ajeno = _adjunto_de(d, otro)
     assert _baja(client, u).status_code == 200
-    assert sorted(p.name for p in d.iterdir()) == sorted([f"{ajeno['id']}.json", f"{ajeno['id']}.dato"])
+    assert sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.is_file()) == sorted(
+        [f"{otro}/{ajeno['id']}.json", f"{otro}/{ajeno['id']}.dato"])
+    assert not (d / str(u)).exists()
 
 
 def test_si_borrar_adjuntos_falla_la_baja_sale_igual(client, usuarios, monkeypatch):

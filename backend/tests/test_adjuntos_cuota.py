@@ -72,7 +72,8 @@ def _rechazo(datos, user=USUARIO, nombre="f.png") -> HTTPException:
 
 
 def _archivos(d: Path):
-    return sorted(p.name for p in d.iterdir())
+    # RD7: los archivos viven en la carpeta de cada usuario.
+    return sorted(p.name for p in d.rglob("*") if p.is_file())
 
 
 # ------------------------------------------------------------- cuota exacta
@@ -112,7 +113,8 @@ def test_lo_vencido_no_cuenta(directorio, monkeypatch):
 
 
 def test_un_sidecar_corrupto_no_cuenta_ni_rompe(directorio):
-    (directorio / f"{'A' * 32}.json").write_bytes(b"{no es json")
+    almacen.preparar_carpeta(directorio, USUARIO.user_id)
+    (directorio / USUARIO.user_id / f"{'A' * 32}.json").write_bytes(b"{no es json")
     assert _subir(_png(MIB))["bytes"] == MIB
 
 
