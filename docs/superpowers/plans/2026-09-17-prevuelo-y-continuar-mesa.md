@@ -74,6 +74,26 @@ Errores con el envoltorio de FastAPI `{"detail": {...}}`. Montos como string dec
 
 Si el plan J cambia una forma, se adapta en un solo lugar de cada lado: `api/pipelines.py` (`_evaluar_veredicto`, `_continuable`, `CODIGOS_DE_JACOBS`, `_CAMPOS_DE_CODIGO`) y `tests/jacobs_falso.py`.
 
+### ENMIENDA DE CONTRATO (controlador, 2026-09-17) — MANDA sobre el contrato de arriba y sobre el código de las Tasks 5, 6, 7, 8 y 10
+
+Se cotejó este plan contra el plan J (`jax/docs/superpowers/plans/2026-09-17-prevuelo-y-continuar-jacobs.md`, que se verificó contra el código real). El lado Jacobs es el canónico. Diferencias y cómo se resuelven ACÁ:
+
+1. **Forma general de los rechazos de Jacobs:** `{"detail": {"code": <str>, **campos}}` cuando el detalle es dict, y `{"detail": {"code": <str>, "detalle": <str>}}` cuando es texto. Los 409 de doble `resume`/`approve` siguen con `detail` de texto plano (sin `code`): van por `jacobs_rechazo`.
+2. **`estado_no_continuable`** trae `{"code", "status": <str|null>, "mensaje": <str>}` — NO `status_actual`. En `_CAMPOS_DE_CODIGO` se reemplaza `"status_actual"` por `"status"` y se agregan `"mensaje"`, `"detalle"`, `"hay_no_acotados"`, `"sondeadas"`, `"ok"`. El i18n de `erroresMesa.estado_no_continuable` recibe el `status` (puede ser null → texto genérico).
+3. **`CODIGOS_DE_JACOBS`** suma: `"limite_de_activos"` (429, `{code, detalle}`: tope global de Jacobs), `"plan_rechazado"` (422, `{code, detalle}`: validación del plan sin reasignación), `"plan_inconsistente"` (409), `"no_existe"` (404). Cada uno con su clave en `erroresMesa` es/en.
+4. **Veredicto** trae además `"hay_no_acotados": bool`. `_evaluar_veredicto` lo usa si viene (y lo recalcula si no), sin cambiar su salida.
+5. **`continue/preflight`: `motivo` es un DICT** `{"code": <str>, "detalle": <str>}` o `null`, NO un string. Y **`veredicto` viene aunque `continuable` sea false cuando `motivo.code` es `prevuelo_rechazado` o `limite_de_activos`** (es `null` sólo cuando el pipeline no se pudo analizar: estado no continuable, plan inconsistente, reasignación inválida, kill switch). `_continuable` de la Mesa:
+   - devuelve `"motivo": {"code": motivo["code"], "detalle": recortar_redactado(str(motivo.get("detalle", "")), MOTIVO_MAX)}` (o `None`);
+   - devuelve `"veredicto": _evaluar_veredicto(data["veredicto"], umbral)` siempre que `data["veredicto"]` no sea null.
+6. **`POST /api/pipelines/{id}/continue` cuando `continuable` es false** mapea por `motivo.code`, sin inventar `estado_no_continuable` para todo:
+   - `prevuelo_rechazado` → 422 `{"code": "prevuelo_rechazado", "violaciones", "costo_max_usd", "pasos_costo"}` (del veredicto);
+   - `limite_de_activos` → 429 `{"code": "limite_de_activos", "detalle"}`;
+   - `reasignacion_invalida` → 422 con sus `violaciones`/`detalle`; `kill_switch` o 423 → 423 `jacobs_rechazo`;
+   - cualquier otro code → 409 `{"code": <code>, "detalle"}` si está en `CODIGOS_DE_JACOBS`, si no 409 `estado_no_continuable` con `mensaje`.
+   `jacobs_falso.py` reproduce exactamente estas formas. Los tests de la Task 7 que afirmaban `motivo: "status completed"` pasan a afirmar el dict.
+7. **Frontend (Tasks 8 y 10):** `ContinuarPipelineModal` muestra `motivo` con `erroresMesa[motivo.code]` y, si hay `veredicto`, las violaciones y el costo aunque no sea continuable.
+8. Si al implementar aparece OTRA diferencia contra el código de la rama de jax (`/home/fruiz/worktrees/jax-prevuelo`, rama `feat/prevuelo-y-continuar`), manda el código de jax: se registra como Ruling en el ledger y se ajusta sólo `api/pipelines.py` y `tests/jacobs_falso.py`.
+
 ---
 
 ## File Structure
