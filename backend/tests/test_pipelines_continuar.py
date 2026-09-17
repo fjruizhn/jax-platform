@@ -541,10 +541,63 @@ def test_la_consulta_de_causa_usa_el_indice_de_eventos(client, abortado_con_even
         client.portal.call(sql, "ANALYZE TABLE jacobs_events", (), True)
         filas = client.portal.call(sql, "EXPLAIN " + mod.sql_eventos_de_causa(2),
                                    (*abortado_con_eventos, *mod.EVENTOS_DE_CAUSA), True)
-        ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
-        assert tabla == "jacobs_events"
-        assert clave == "idx_events_pipeline", filas
-        assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
+        _exigir_plan_por_indice_de_eventos(filas)
     finally:
         for pid in relleno:
             client.portal.call(sql, "DELETE FROM jacobs_events WHERE pipeline_id = %s", (pid,))
+
+
+# Revisión final, importante 3: el plan J (R20) agrega idx_events_pipeline_tipo
+# ON jacobs_events (pipeline_id, event_type) y conserva idx_events_pipeline.
+# Cuando exista, el optimizador puede elegirlo: los dos nombres son válidos,
+# lo que no se acepta es un plan sin índice o con filesort/temporary.
+INDICES_DE_EVENTOS = ("idx_events_pipeline_tipo", "idx_events_pipeline")
+
+
+def _exigir_plan_por_indice_de_eventos(filas):
+    ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
+    assert tabla == "jacobs_events"
+    assert clave in INDICES_DE_EVENTOS, filas
+    assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
+    return clave
+
+
+async def _explain_con_el_indice_compuesto(ids):
+    """EXPLAIN de la consulta real contra una TABLA TEMPORARIA con el esquema
+    de jacobs_events más el índice compuesto del plan J. La temporaria tapa a
+    la real sólo en ESTA conexión: la base compartida jax_memory_test no se
+    toca (otras instancias la usan)."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            # MariaDB no deja `CREATE TEMPORARY TABLE t LIKE t` con el mismo
+            # nombre (1066): se copia la definición real de SHOW CREATE TABLE.
+            await cur.execute("SHOW CREATE TABLE jacobs_events")
+            ((_tabla, definicion),) = await cur.fetchall()
+            await cur.execute(definicion.replace("CREATE TABLE", "CREATE TEMPORARY TABLE", 1))
+            try:
+                await cur.execute("ALTER TABLE jacobs_events ADD INDEX idx_events_pipeline_tipo (pipeline_id, event_type)")
+                # La forma del peor caso medido (Task 12): muchos eventos que
+                # NO son de causa por pipeline; con ellos el compuesto es el
+                # más selectivo y el optimizador lo elige.
+                relleno = [(str(uuid.uuid4()), "STEP_STARTED") for _ in range(80)]
+                ruido = [(pid, tipo) for pid in ids for _ in range(20) for tipo in ("STEP_STARTED", "STEP_DONE")]
+                objetivo = [(pid, tipo) for pid in ids for tipo in ("STEP_FAILED", "PIPELINE_ABORTED")]
+                await cur.executemany(
+                    "INSERT INTO jacobs_events (pipeline_id, step_id, event_type, payload, ts) VALUES (%s, NULL, %s, '{}', 1)",
+                    relleno + ruido + objetivo)
+                await cur.execute("ANALYZE TABLE jacobs_events")
+                await cur.fetchall()
+                await cur.execute("EXPLAIN " + mod.sql_eventos_de_causa(len(ids)), (*ids, *mod.EVENTOS_DE_CAUSA))
+                return await cur.fetchall()
+            finally:
+                await cur.execute("DROP TEMPORARY TABLE IF EXISTS jacobs_events")
+
+
+def test_la_consulta_de_causa_acepta_el_indice_compuesto_del_plan_j(client):
+    ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    filas = client.portal.call(_explain_con_el_indice_compuesto, ids)
+    # Con el índice del plan J presente, ES el que se usa: el test viejo
+    # (clave == "idx_events_pipeline") se rompía acá.
+    assert _exigir_plan_por_indice_de_eventos(filas) == "idx_events_pipeline_tipo", filas

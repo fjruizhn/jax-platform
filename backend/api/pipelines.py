@@ -682,9 +682,14 @@ ESTADOS_CONTINUABLES = ("aborted", "expired")
 
 
 def sql_eventos_de_causa(n_ids: int) -> str:
-    """Una consulta por lista, por idx_events_pipeline (jax/jacobs/store.py).
-    Sin ORDER BY a propósito: el orden por id se hace en Python sobre pocas
-    filas y así el plan no necesita filesort (EXPLAIN en
+    """Una consulta por lista, por índice de jacobs_events (jax/jacobs/store.py):
+    idx_events_pipeline (pipeline_id) hoy; idx_events_pipeline_tipo
+    (pipeline_id, event_type) cuando el plan J (R20) lo cree -- con él el
+    filtro por event_type deja de leer fila por fila los eventos que no son de
+    causa (peor caso medido 2026-09-17: 11.050 filas examinadas para 1.050
+    devueltas sin el compuesto). Los dos planes son válidos. Sin ORDER BY a
+    propósito: el orden por id se hace en Python sobre pocas filas y así el
+    plan no necesita filesort (EXPLAIN con los dos índices en
     tests/test_pipelines_continuar.py)."""
     ids = ", ".join(["%s"] * n_ids)
     tipos = ", ".join(["%s"] * len(EVENTOS_DE_CAUSA))
