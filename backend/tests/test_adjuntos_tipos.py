@@ -50,3 +50,35 @@ def test_nombre_seguro_quita_rutas_control_y_comillas():
     assert tipos.nombre_seguro("../../etc/passwd") == "passwd"
     assert tipos.nombre_seguro(None) == ""
     assert len(tipos.nombre_seguro("a" * 400)) == 255
+
+
+def test_nombre_seguro_quita_corchetes_para_no_fingir_una_linea_de_memoria():
+    # Revisión final: la memoria guarda '[adjunto nombre="..." ...]'; un nombre
+    # con corchetes podía cerrar esa línea y abrir otra inventada.
+    assert tipos.nombre_seguro('x] [adjunto nombre=falso tipo=pdf].txt') == "x adjunto nombre=falso tipo=pdf.txt"
+
+
+def test_nombre_seguro_acota_el_trabajo_antes_de_filtrar(monkeypatch):
+    # Revisión final (I2): el filtro carácter a carácter corría sobre la
+    # entrada entera y recién después se cortaba a 255.
+    import unicodedata
+
+    vistos = 0
+    original = unicodedata.category
+
+    def contar(c):
+        nonlocal vistos
+        vistos += 1
+        return original(c)
+
+    monkeypatch.setattr(tipos.unicodedata, "category", contar)
+    resultado = tipos.nombre_seguro("a" * 1_000_000)
+    assert vistos <= tipos.NOMBRE_CRUDO_MAX
+    assert resultado == "a" * 255
+
+
+def test_el_tope_crudo_deja_un_nombre_de_255_tras_limpiar():
+    # 255 caracteres visibles con comillas y controles intercalados entran.
+    crudo = "".join("b\"\x01" for _ in range(255))
+    assert len(crudo) <= tipos.NOMBRE_CRUDO_MAX
+    assert tipos.nombre_seguro(crudo) == "b" * 255

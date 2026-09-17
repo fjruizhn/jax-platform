@@ -17,6 +17,12 @@ EXTENSIONES_DE_TEXTO: tuple[str, ...] = (
     ".html", ".css", ".toml", ".yml", ".yaml", ".sh", ".svg",
 )
 _NOMBRE_MAX = 255  # NAME_MAX de los sistemas de archivos: el nombre es de archivo
+# Tope del nombre CRUDO (antes de limpiar). Cuatro veces NAME_MAX: deja pasar
+# un nombre de 255 caracteres aunque traiga comillas, controles o una ruta
+# corta delante, y acota el trabajo del filtro carácter a carácter. Lo usan
+# el contrato de /api/chat (max_length, 422 antes de cualquier trabajo) y
+# nombre_seguro (recorte previo, que cubre también file.filename del upload).
+NOMBRE_CRUDO_MAX = 1024
 
 Clase = Literal["imagen", "pdf", "texto"]
 
@@ -66,12 +72,18 @@ def clasificar(datos: bytes) -> tuple[Clase, str, str | None]:
 
 def nombre_seguro(crudo: str | None) -> str:
     """Solo el último componente, sin caracteres de control ni comillas ni
-    <>: el nombre viaja dentro de delimitadores del prompt y de la línea de
-    metadatos de memoria. Vacío si no queda nada (el frontend muestra su
-    texto i18n en ese caso)."""
-    base = (crudo or "").replace("\\", "/").rsplit("/", 1)[-1]
+    <> ni []: el nombre viaja dentro de delimitadores del prompt y de la línea
+    de metadatos de memoria ('[adjunto nombre="..." ...]'; un corchete podría
+    cerrarla y fingir otra). Vacío si no queda nada (el frontend muestra su
+    texto i18n en ese caso).
+
+    La entrada se recorta a NOMBRE_CRUDO_MAX ANTES de todo: el filtro va
+    carácter a carácter en Python y un nombre de 10 MB bloqueaba el loop
+    ~455 ms. Es un prefijo: un nombre crudo más largo que el tope ya no es un
+    nombre de archivo razonable, y /api/chat lo rechaza antes con 422."""
+    base = (crudo or "")[:NOMBRE_CRUDO_MAX].replace("\\", "/").rsplit("/", 1)[-1]
     limpio = "".join(
         c for c in base
-        if unicodedata.category(c)[0] != "C" and c not in '"<>'
+        if unicodedata.category(c)[0] != "C" and c not in '"<>[]'
     )
     return limpio.strip()[:_NOMBRE_MAX]

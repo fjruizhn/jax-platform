@@ -164,3 +164,73 @@ def test_imagen_a_faceta_con_vision_llega_y_el_base64_no_queda_en_logs_memoria_n
     assert all(muestra not in (m or "") for m in estados)    # bus de estado
     turnos = [h for v in chat_mod._conversations.values() for h in v if "describí" in h["content"]]
     assert turnos and all(muestra not in h["content"] for h in turnos)   # historial
+
+
+def test_el_adjunto_que_habla_de_un_modelo_se_lee_y_no_dispara_el_aviso_de_identidad(
+        client, grabador, monkeypatch):
+    # Revisión final (I1): la heurística de identidad miraba el mensaje YA
+    # compuesto con el adjunto. Un documento que dice "we use a linear
+    # regression model" recibía el aviso enlatado en vez de leerse.
+    contenido = "We are using a linear regression model for the forecast."
+    assert chat_mod._is_model_identity_question(contenido)       # el contenido sí dispara
+    assert not chat_mod._is_model_identity_question("resumí")    # el mensaje del usuario no
+
+    async def resolver(_key):
+        return _resuelta("jax_local", "ollama", frozenset({"text"}))
+
+    llamadas: list[str] = []
+
+    async def ollama(system_prompt, history, message, config, model, *, imagenes=()):
+        llamadas.append(message)
+        return _CONTRATO, 1, 1
+
+    monkeypatch.setattr(chat_mod, "resolve_facet", resolver)
+    monkeypatch.setattr(chat_mod, "_call_ollama", ollama)
+    texto = {"tipo": "texto", "origen": "texto", "nombre": "informe.txt", "contenido": contenido}
+    r = client.post("/api/chat", json={"message": "resumí", "facet": "jax_local", "adjuntos": [texto]},
+                    headers=cabeceras(client, "test-adjuntos-chat"))
+    assert r.status_code == 200, r.text
+    assert r.json().get("aviso") is None
+    assert llamadas == [f'resumí\n\n<<<ADJUNTO nombre="informe.txt" origen="texto">>>\n{contenido}\n<<<FIN ADJUNTO>>>']
+
+
+def test_la_pregunta_de_identidad_del_usuario_sigue_recibiendo_el_aviso_con_adjunto(
+        client, grabador, monkeypatch):
+    # Contracara de la anterior: el usuario sí pregunta; el adjunto no lo tapa.
+    async def resolver(_key):
+        return _resuelta("jax_local", "ollama", frozenset({"text"}))
+
+    async def ollama(*a, **k):
+        raise AssertionError("la pregunta de identidad no llama al proveedor")
+
+    monkeypatch.setattr(chat_mod, "resolve_facet", resolver)
+    monkeypatch.setattr(chat_mod, "_call_ollama", ollama)
+    texto = {"tipo": "texto", "origen": "texto", "nombre": "n.txt", "contenido": "ventas 42"}
+    r = client.post("/api/chat", json={"message": "que modelo sos", "facet": "jax_local", "adjuntos": [texto]},
+                    headers=cabeceras(client, "test-adjuntos-chat"))
+    assert r.status_code == 200, r.text
+    assert r.json()["aviso"]["code"] == "identidad_del_modelo"
+
+
+@pytest.mark.parametrize("tipo", ["texto", "imagen"])
+def test_nombre_de_adjunto_desmedido_es_422_antes_de_cualquier_trabajo(client, grabador, monkeypatch, tipo):
+    # Revisión final (I2): sin max_length, un nombre de 10 MB llegaba a
+    # nombre_seguro y bloqueaba el loop ~455 ms filtrando carácter a carácter.
+    from adjuntos import contrato, tipos
+
+    def no_llamar(*a, **k):
+        raise AssertionError("nombre_seguro no debe correr con un nombre desmedido")
+
+    monkeypatch.setattr(contrato, "nombre_seguro", no_llamar)
+    nombre = "a" * (tipos.NOMBRE_CRUDO_MAX + 1)
+    if tipo == "texto":
+        adjunto = {"tipo": "texto", "origen": "texto", "nombre": nombre, "contenido": "x"}
+    else:
+        adjunto = {**_imagen(), "nombre": nombre}
+    r = client.post("/api/chat", json={"message": "hola", "facet": "jax_local", "adjuntos": [adjunto]},
+                    headers=cabeceras(client, "test-adjuntos-chat"))
+    assert r.status_code == 422, r.text
+    (error,) = r.json()["detail"]
+    assert error["type"] == "string_too_long"
+    assert error["loc"][-1] == "nombre"
+    assert grabador.pedidos == []

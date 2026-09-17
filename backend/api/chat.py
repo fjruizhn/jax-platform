@@ -893,7 +893,13 @@ async def _invoke_facet_dispatch(
     semantic_context: list[dict] | None = None,
     grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError | None" = None,
     imagenes: tuple = (),
+    texto_del_usuario: str | None = None,
 ) -> tuple["str | AvisoDeChat", UsageInfo | None, str]:
+    """`message` es lo que ve el modelo (con adjuntos, frente D).
+    `texto_del_usuario` es SOLO lo que escribió el usuario: la heurística de
+    identidad mira eso y nunca el contenido de un adjunto (un documento que
+    dice "we use a regression model" se lee, no recibe el aviso enlatado).
+    None = no hay composición (sonda, tests): el mensaje ES el del usuario."""
     history = _conversations.get(user_id, [])
     if semantic_context:
         # Contexto de sesiones pasadas SOLO para este turno (no entra al hilo RAM).
@@ -964,7 +970,7 @@ async def _invoke_facet_dispatch(
     # el endpoint lo devuelve como 422.
     exigir_soporte_de_imagen(f, facet, imagenes)
 
-    if _is_model_identity_question(message):
+    if _is_model_identity_question(message if texto_del_usuario is None else texto_del_usuario):
         return AvisoDeChat(code="identidad_del_modelo",
                            params={"facet": facet, "model": f.model, "provider": f.provider_id}), None, OUTCOME_OK
 
@@ -1013,6 +1019,7 @@ async def _invoke_facet(
     *, source: str = SOURCE_CHAT,
     grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError | None" = None,
     imagenes: tuple = (),
+    texto_del_usuario: str | None = None,
 ) -> tuple["str | AvisoDeChat", UsageInfo | None]:
     """Envoltorio instrumentado. La particion existe para que el
     `outcome` sea un literal tipado en cada punto de retorno de
@@ -1026,7 +1033,8 @@ async def _invoke_facet(
     construccion, sin una segunda ruta que pueda divergir."""
     try:
         texto, usage, outcome = await _invoke_facet_dispatch(
-            facet, config, user_id, message, semantic_context, grounding=grounding, imagenes=imagenes)
+            facet, config, user_id, message, semantic_context, grounding=grounding, imagenes=imagenes,
+            texto_del_usuario=texto_del_usuario)
     except ModelDispatchConfigError as e:
         # ModelDispatchConfigError hereda de RuntimeError: este except TIENE
         # que ir antes del `except Exception` genérico, o éste se lo come.
@@ -1170,7 +1178,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     try:
         response_text, usage = await _invoke_facet(
             facet, config, user_id, mensaje_al_modelo, semantic_context,
-            grounding=grounding, imagenes=validados.imagenes)
+            grounding=grounding, imagenes=validados.imagenes, texto_del_usuario=req.message)
         is_canned = usage is None
     except ImagenNoSoportadaError:
         # Carrera: el binding cambió entre la validación de arriba y el

@@ -1,8 +1,11 @@
 """Contrato del adjunto dentro de /api/chat (frente D, 2026-09-16).
 
 El cliente devuelve lo que le dio /api/chat/upload, pero NADA se le cree: el
-texto se recorta de nuevo, el base64 se decodifica estricto, la firma tiene
-que coincidir con el mime declarado y el tamaño con el límite. El base64
+texto se recorta de nuevo, el nombre tiene tope (NOMBRE_CRUDO_MAX, 422) y se
+limpia, y el base64 NO se decodifica entero (R16): se decodifica solo el
+prefijo que alcanza para mirar la firma, que tiene que coincidir con el mime
+declarado; el resto se valida con un barrido estricto del alfabeto en tramos
+de 256 KB sobre el loop (R18), y el tamaño sale del largo, contra el límite. El base64
 viaja solo hacia el proveedor: ni logs, ni memoria, ni historial.
 """
 import asyncio
@@ -15,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from adjuntos.errores import AdjuntoRechazado
 from adjuntos.limites import LimitesDeAdjuntos
 from adjuntos.turno import turno_de_imagen
-from adjuntos.tipos import MIMES_DE_IMAGEN, mime_de_imagen, nombre_seguro
+from adjuntos.tipos import MIMES_DE_IMAGEN, NOMBRE_CRUDO_MAX, mime_de_imagen, nombre_seguro
 
 _APERTURA = '<<<ADJUNTO nombre="{nombre}" origen="{origen}">>>'
 _CIERRE = "<<<FIN ADJUNTO>>>"
@@ -25,14 +28,14 @@ class AdjuntoTexto(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tipo: Literal["texto"]
     origen: Literal["texto", "pdf"]
-    nombre: str
+    nombre: str = Field(max_length=NOMBRE_CRUDO_MAX)
     contenido: str
 
 
 class AdjuntoImagen(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tipo: Literal["imagen"]
-    nombre: str
+    nombre: str = Field(max_length=NOMBRE_CRUDO_MAX)
     mime: Literal[MIMES_DE_IMAGEN]
     base64: str
 
