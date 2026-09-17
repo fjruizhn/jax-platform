@@ -69,3 +69,18 @@ describe('createWebSocket -- después de close()', () => {
     expect(onMessage).not.toHaveBeenCalled()
   })
 })
+
+// P10/ítem (e): el catch de onmessage se tragaba un JSON inválido sin dejar
+// rastro. No puede tirar el socket, pero tampoco puede desaparecer en
+// silencio.
+describe('createWebSocket -- mensaje malformado', () => {
+  it('un JSON inválido no llega al llamador y queda rastro en consola', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onMessage = vi.fn()
+    createWebSocket('5', 'tok', onMessage, vi.fn())
+    FakeWS.instancias[0].onmessage({ data: '{no es json' })
+    expect(onMessage).not.toHaveBeenCalled()
+    expect(spy).toHaveBeenCalled()
+    spy.mockRestore()
+  })
+})

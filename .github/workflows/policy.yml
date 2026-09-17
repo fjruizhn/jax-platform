@@ -583,8 +583,17 @@ jobs:
             // nuevo), store facetTokens (+1, 8b loadState deja rastro). Delta
             // por archivo con el reporter json contra a1f21a2. Vistos en rojo
             // (o por mutación). Medido: 658 passed, 0 fallidos, 73 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 658) {
-              console.error("PISO ROTO: se esperaban 658 tests de vitest CORRIDOS y 0 fallidos.");
+            // 658 -> 660 el 2026-09-17 (residuos de la ronda final, ítem e):
+            // +1 en api/websocket.test.js (un JSON invalido en onmessage no
+            // llega al llamador y queda rastro en consola.error -- antes el
+            // catch era mudo) y +1 en store/useJaxStore.test.js
+            // (activateKillSwitch: si el POST falla, marca killSwitchActive,
+            // avisa igual y deja rastro en consola -- mismo patron que
+            // loadState). Los 2 vistos en rojo contra el catch {} anterior
+            // (revertido a mano para confirmarlo, luego restaurado). Medido:
+            // 660 passed, 0 fallidos, 73 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 660) {
+              console.error("PISO ROTO: se esperaban 660 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

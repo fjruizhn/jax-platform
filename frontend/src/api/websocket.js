@@ -43,7 +43,12 @@ export function createWebSocket(userId, token, onMessage, onStatusChange) {
         if (authenticated) {
           onMessage(event)
         }
-      } catch {}
+      } catch (err) {
+        // Un mensaje de WS que no parsea (o que revienta en onMessage) no
+        // puede tirar el socket: se traga y queda rastro en consola, mismo
+        // patrón que los demás fallos de carga del store (loadState).
+        console.error('mensaje de WS inválido', err)
+      }
     }
 
     ws.onclose = (event) => {

@@ -567,7 +567,13 @@ export const useJaxStore = create((set, get) => {
     set({ killSwitchActive: true })
     try {
       await api.post('/kill-switch')
-    } catch {}
+    } catch (err) {
+      // fail-soft: killSwitchActive ya se marcó local (bloquea el panel) y
+      // el toast de abajo avisa igual -- un POST que no llega no puede
+      // dejar a la persona sin el aviso de que apretó el botón, pero
+      // tampoco puede desaparecer en silencio (mismo patrón que loadState).
+      console.error('activateKillSwitch failed', err)
+    }
     get().addToast({ type: 'error', message: diccionarioActivo().killSwitchStoppedToast })
   },
 

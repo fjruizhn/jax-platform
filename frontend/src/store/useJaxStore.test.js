@@ -184,3 +184,26 @@ describe('actualizarMiEmail', () => {
     expect(useJaxStore.getState().user.email).toBe('viejo@x.io')
   })
 })
+
+// P10/ítem (e): el catch de activateKillSwitch se tragaba el fallo del POST
+// sin dejar rastro. killSwitchActive ya se marca local y el toast igual se
+// muestra -- lo que cambia es que ahora queda registrado en consola.
+describe('activateKillSwitch', () => {
+  beforeEach(() => {
+    useJaxStore.setState(INITIAL_STATE, true)
+    vi.clearAllMocks()
+  })
+
+  it('si el POST falla, marca killSwitchActive, avisa y deja rastro en consola', async () => {
+    const error = new Error('red caída')
+    api.post.mockRejectedValueOnce(error)
+    const consola = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await useJaxStore.getState().activateKillSwitch()
+
+    expect(useJaxStore.getState().killSwitchActive).toBe(true)
+    expect(useJaxStore.getState().toasts).toHaveLength(1)
+    expect(consola).toHaveBeenCalledWith('activateKillSwitch failed', error)
+    consola.mockRestore()
+  })
+})
