@@ -1,5 +1,6 @@
 """Cada transporte manda la imagen en SU formato (frente D, 2026-09-16)."""
 import asyncio
+import json
 
 import pytest
 
@@ -17,7 +18,12 @@ class _Grabador:
         self.cuerpos: list[dict] = []
 
     async def post(self, url, **kwargs):
-        self.cuerpos.append(kwargs["json"])
+        if "json" in kwargs:
+            self.cuerpos.append(kwargs["json"])
+        else:
+            # Con imagen el cuerpo va de un solo uso (R16): se lee como lo
+            # leería httpx, del stream.
+            self.cuerpos.append(json.loads(b"".join([p async for p in kwargs["content"]])))
         datos = self.respuesta
 
         class _R:

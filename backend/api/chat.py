@@ -14,7 +14,7 @@ from typing import Literal, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, ConfigDict, Field
 import httpx
-from http_client import cabeceras_gemini, get_http_client
+from http_client import CuerpoJsonDeUnUso, cabeceras_gemini, get_http_client
 from credential_resolver import resolve_credential_instrumented, CredentialUnavailableError
 from facet_resolver import resolve_facet, FacetUnavailableError
 from adjuntos.contrato import (
@@ -755,6 +755,21 @@ def _raiz_del_carril() -> Path:
     return ruta_absoluta_requerida("JAX_PROXY_CARRIL_RAIZ")
 
 
+def _argumentos_de_cuerpo(cuerpo: dict, imagenes: tuple, cabeceras: dict[str, str] | None = None) -> dict:
+    """kwargs de cuerpo y cabeceras para client.post del proveedor.
+
+    Con imagen el cuerpo pesa lo que la imagen en base64 (hasta ~14 MB) y va
+    como CuerpoJsonDeUnUso: con `json=` httpx lo deja colgado de un ciclo que
+    solo junta el GC cíclico y la memoria crecía 13,4 MB por chat (R16,
+    2026-09-17). Sin imagen el cuerpo es de KB (historial acotado por
+    MAX_TURNS, adjuntos de texto por max_chars) y sigue con `json=`: medido,
+    el chat con un adjunto de texto del mismo tamaño de pedido no crece."""
+    if not imagenes:
+        return {"json": cuerpo} if cabeceras is None else {"json": cuerpo, "headers": cabeceras}
+    de_un_uso = CuerpoJsonDeUnUso(cuerpo)
+    return {"content": de_un_uso, "headers": {**(cabeceras or {}), **de_un_uso.cabeceras}}
+
+
 async def _call_ollama(system_prompt: str, history: list[dict], message: str, config: dict, model: str,
                        *, imagenes: tuple = ()) -> tuple[str, int, int]:
     url = f"{_url_de_ollama()}/api/chat"
@@ -768,7 +783,8 @@ async def _call_ollama(system_prompt: str, history: list[dict], message: str, co
     async with carril_mesa_async(raiz):
         r = await client.post(
             url,
-            json={"model": model, "messages": messages, "stream": False, "keep_alive": -1},
+            **_argumentos_de_cuerpo({"model": model, "messages": messages, "stream": False, "keep_alive": -1},
+                                    imagenes),
             timeout=180.0,
         )
         r.raise_for_status()
@@ -793,8 +809,7 @@ async def _call_openai_compat(
     client = await get_http_client()
     r = await client.post(
         f"{base_url}/chat/completions",
-        headers=headers,
-        json={"model": model, "messages": messages, field: limit},
+        **_argumentos_de_cuerpo({"model": model, "messages": messages, field: limit}, imagenes, headers),
         timeout=120.0,
     )
     r.raise_for_status()
@@ -825,7 +840,7 @@ async def _call_gemini(
         "tools": [{"googleSearch": {}}],
     }
     client = await get_http_client()
-    r = await client.post(url, json=body, headers=cabeceras_gemini(api_key), timeout=120.0)
+    r = await client.post(url, **_argumentos_de_cuerpo(body, imagenes, cabeceras_gemini(api_key)), timeout=120.0)
     r.raise_for_status()
     data = r.json()
     if on_response:

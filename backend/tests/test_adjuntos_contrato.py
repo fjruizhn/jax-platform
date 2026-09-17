@@ -101,3 +101,85 @@ def test_exigir_soporte_de_imagen():
     assert (e.value.facet, e.value.model) == ("jekyll", "modelo-x")
     c.exigir_soporte_de_imagen(_faceta(frozenset({"text", "image"})), "jekyll", img)
     c.exigir_soporte_de_imagen(_faceta(frozenset()), "jekyll", ())
+
+
+# --- R16 (2026-09-17): validar sin decodificar la imagen entera -------------
+# Decodificar 10 MB solo para mirar la firma y el tamaño dejaba, por pedido,
+# ~23 MB de picos en el hilo de to_thread (copia ASCII del str + los bytes).
+# El contrato no cambia: mismas respuestas que b64decode(validate=True).
+
+def _referencia(b64: str, mime: str, limites) -> tuple:
+    """Lo que hacía _validar_imagen decodificando todo (fuente de verdad)."""
+    import binascii
+    if len(b64) > ((limites.max_bytes + 2) // 3) * 4:
+        return (413, "adjunto_demasiado_grande")
+    try:
+        datos = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        return (422, "adjunto_invalido")
+    if not datos:
+        return (422, "adjunto_vacio")
+    if len(datos) > limites.max_bytes:
+        return (413, "adjunto_demasiado_grande")
+    from adjuntos.tipos import mime_de_imagen
+    if mime_de_imagen(datos) != mime:
+        return (422, "adjunto_invalido")
+    return ("ok", len(datos))
+
+
+def _resultado(b64: str, mime: str, limites) -> tuple:
+    a = c.AdjuntoImagen.model_construct(tipo="imagen", nombre="f.png", mime=mime, base64=b64)
+    try:
+        return ("ok", c._validar_imagen(a, limites).bytes)
+    except AdjuntoRechazado as e:
+        return (e.status, e.detail["code"])
+
+
+def _casos():
+    import random
+    rnd = random.Random(20260917)
+    cuerpos = [PNG, JPEG, b"", b"\x89", b"\x89PNG\r\n\x1a", PNG[:9], PNG[:10], PNG[:11], PNG + b"x" * 40]
+    casos = []
+    for datos in cuerpos:
+        b64 = base64.b64encode(datos).decode()
+        casos += [b64, b64.rstrip("="), b64 + "=", b64 + "==", "=" + b64, b64[:-1],
+                  b64 + "\n", " " + b64, b64.replace("A", "-", 1), b64 + "QQ==",
+                  b64[:4] + "=" + b64[5:] if len(b64) > 5 else b64, b64 + "ñ"]
+    for _ in range(400):
+        n = rnd.randrange(0, 70)
+        datos = (PNG if rnd.random() < 0.5 else JPEG)[: rnd.randrange(0, 12)] + bytes(rnd.randrange(256) for _ in range(n))
+        b64 = list(base64.b64encode(datos).decode())
+        for _ in range(rnd.choice([0, 0, 1, 2])):
+            if b64:
+                b64[rnd.randrange(len(b64))] = rnd.choice("A=+/_-.\n ñ")
+        casos.append("".join(b64))
+    return casos
+
+
+def test_la_validacion_da_lo_mismo_que_decodificar_todo():
+    for limites in (LIM, LimitesDeAdjuntos(max_bytes=31, max_chars=10, max_paginas=20, max_por_mensaje=2)):
+        for b64 in _casos():
+            for mime in ("image/png", "image/jpeg"):
+                assert _resultado(b64, mime, limites) == _referencia(b64, mime, limites), (b64, mime)
+
+
+def test_la_imagen_no_se_decodifica_entera(monkeypatch):
+    import binascii
+    decodificados: list[int] = []
+    originales = (base64.b64decode, binascii.a2b_base64)
+
+    def b64decode(s, *a, **k):
+        decodificados.append(len(s))
+        return originales[0](s, *a, **k)
+
+    def a2b_base64(s, *a, **k):
+        decodificados.append(len(s))
+        return originales[1](s, *a, **k)
+
+    monkeypatch.setattr(base64, "b64decode", b64decode)
+    monkeypatch.setattr(binascii, "a2b_base64", a2b_base64)
+    grande = LimitesDeAdjuntos(max_bytes=10_485_760, max_chars=10, max_paginas=20, max_por_mensaje=1)
+    b64 = base64.b64encode(PNG + bytes(3_000_000)).decode()
+    v = _validar([c.AdjuntoImagen(tipo="imagen", nombre="f.png", mime="image/png", base64=b64)], grande)
+    assert v.imagenes[0].bytes == len(PNG) + 3_000_000
+    assert max(decodificados, default=0) <= 64, decodificados

@@ -7,7 +7,7 @@ viaja solo hacia el proveedor: ni logs, ni memoria, ni historial.
 """
 import asyncio
 import base64
-import binascii
+import re
 from typing import Annotated, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -74,22 +74,36 @@ def exigir_soporte_de_imagen(f, facet: str, imagenes) -> None:
         raise ImagenNoSoportadaError(facet, f.model)
 
 
+# base64 estricto (lo mismo que acepta b64decode(validate=True)): solo el
+# alfabeto, relleno solo al final y de a lo sumo 2, y largo múltiplo de 4
+# (eso se mira aparte). Sin grupos repetidos: con `(?:x{4})*` el motor de re
+# guarda estado por repetición y medido fueron 445 MB y 119 ms para 10 MB.
+_BASE64_ESTRICTO = re.compile(r"[A-Za-z0-9+/]*={0,2}")
+# 16 caracteres dan 12 bytes: alcanza para la firma más larga (WEBP, 12).
+_PREFIJO_DE_FIRMA = 16
+
+
 def _validar_imagen(a: AdjuntoImagen, limites: LimitesDeAdjuntos) -> ImagenValidada:
-    # Tope del base64 de max_bytes ANTES de decodificar: 4 caracteres por
+    # Tope del base64 de max_bytes ANTES de mirar nada: 4 caracteres por
     # cada 3 bytes, redondeado hacia arriba.
     if len(a.base64) > ((limites.max_bytes + 2) // 3) * 4:
         raise AdjuntoRechazado(413, "adjunto_demasiado_grande", max_bytes=limites.max_bytes)
-    try:
-        datos = base64.b64decode(a.base64, validate=True)
-    except (binascii.Error, ValueError):
-        raise AdjuntoRechazado(422, "adjunto_invalido") from None
-    if not datos:
-        raise AdjuntoRechazado(422, "adjunto_vacio")
-    if len(datos) > limites.max_bytes:
-        raise AdjuntoRechazado(413, "adjunto_demasiado_grande", max_bytes=limites.max_bytes)
-    if mime_de_imagen(datos) != a.mime:
+    # R16 (2026-09-17): sin decodificar la imagen entera. Decodificar 10 MB
+    # para mirar 12 bytes de firma y un largo costaba ~23 MB de pico por
+    # pedido en el hilo. La validez se verifica con la expresión (no copia),
+    # el largo sale del largo y el relleno, y se decodifica solo el prefijo.
+    # Mismo contrato que b64decode(validate=True): lo fija un test diferencial.
+    if len(a.base64) % 4 or _BASE64_ESTRICTO.fullmatch(a.base64) is None:
         raise AdjuntoRechazado(422, "adjunto_invalido")
-    return ImagenValidada(nombre_seguro(a.nombre), a.mime, a.base64, len(datos))
+    relleno = 2 if a.base64.endswith("==") else 1 if a.base64.endswith("=") else 0
+    largo = len(a.base64) // 4 * 3 - relleno
+    if largo == 0:
+        raise AdjuntoRechazado(422, "adjunto_vacio")
+    if largo > limites.max_bytes:
+        raise AdjuntoRechazado(413, "adjunto_demasiado_grande", max_bytes=limites.max_bytes)
+    if mime_de_imagen(base64.b64decode(a.base64[:_PREFIJO_DE_FIRMA])) != a.mime:
+        raise AdjuntoRechazado(422, "adjunto_invalido")
+    return ImagenValidada(nombre_seguro(a.nombre), a.mime, a.base64, largo)
 
 
 async def validar_adjuntos(adjuntos: list, limites: LimitesDeAdjuntos) -> AdjuntosValidados:

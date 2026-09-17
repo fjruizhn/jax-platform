@@ -2,6 +2,7 @@
 no declaraba nada de esto y pydantic descartaba image_base64/file_context en
 silencio (green-verif-notocar-regla.md, punto 2)."""
 import base64
+import json
 
 import pytest
 
@@ -23,7 +24,12 @@ class _Grabador:
         self.pedidos: list[tuple[str, dict]] = []
 
     async def post(self, url, **kwargs):
-        self.pedidos.append((url, kwargs.get("json")))
+        if "content" in kwargs:
+            # Con imagen el cuerpo va de un solo uso (R16): se lee del stream.
+            cuerpo = json.loads(b"".join([p async for p in kwargs["content"]]))
+        else:
+            cuerpo = kwargs.get("json")
+        self.pedidos.append((url, cuerpo))
 
         class _R:
             def raise_for_status(self):
