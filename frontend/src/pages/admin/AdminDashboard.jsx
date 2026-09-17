@@ -81,7 +81,7 @@ export default function AdminDashboard() {
               <StatCard
                 label={t.statApiKeysLabel}
                 value={`${s.api_keys_configured}/${s.api_keys_total}`}
-                tono={s.api_keys_configured === s.api_keys_total ? 'text-exito' : 'text-aviso'}
+                tono={s.api_keys_total > 0 && s.api_keys_configured === s.api_keys_total ? 'text-exito' : 'text-aviso'}
               />
               {s.ram && (
                 <StatCard

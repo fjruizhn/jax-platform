@@ -59,4 +59,16 @@ describe('AdminDashboard (frente A)', () => {
     const etiqueta = await screen.findByText(es.statPipelines)
     expect(within(etiqueta.parentElement).getByText('5')).toBeInTheDocument()
   })
+
+  it.each([
+    [0, 0, 'text-aviso'],
+    [4, 5, 'text-aviso'],
+    [5, 5, 'text-exito'],
+  ])('llaves %i/%i se pintan %s (0/0 no es verde)', async (configuradas, total, tono) => {
+    api.get.mockResolvedValue({ data: { ...DATOS, stats: {
+      ...DATOS.stats, api_keys_configured: configuradas, api_keys_total: total } } })
+    render(<I18nProvider><AdminDashboard /></I18nProvider>)
+    const etiqueta = await screen.findByText(es.statApiKeysLabel)
+    expect(within(etiqueta.parentElement).getByText(`${configuradas}/${total}`).className).toContain(tono)
+  })
 })

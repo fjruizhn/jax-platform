@@ -55,6 +55,17 @@ def test_sin_base_configurada_nunca_es_alive():
         "name": "JAX Engine", "port": None, "status": "sin_configurar", "latency_ms": None}
 
 
+@pytest.mark.parametrize("base", ["http://127.0.0.1:abc", "http://127.0.0.1:99999", "http://[::1"])
+def test_una_base_mal_formada_es_sin_configurar_y_no_tira_el_tablero(monkeypatch, base):
+    """Ronda final M3 (2026-09-16): urlsplit(...).port afuera de todo try
+    levantaba ValueError y el tablero entero devolvia 500."""
+    urls = []
+    monkeypatch.setattr(dashboard, "get_http_client", _cliente(200, urls))
+    assert asyncio.run(dashboard._servicio("JAX Engine", base, "/api/health")) == {
+        "name": "JAX Engine", "port": None, "status": "sin_configurar", "latency_ms": None}
+    assert urls == []
+
+
 def test_sin_literales_ni_restos():
     fuente = _fuente()
     for resto in ("127.0.0.1:7777", "127.0.0.1:8080", "recent_events", "_count_configured_keys",

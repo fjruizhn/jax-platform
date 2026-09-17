@@ -33,7 +33,8 @@ SQL_LLAVES = (
 # idx_pipelines_status, creado por jax/jacobs/store.py::init_tables().
 SQL_PIPELINES_COMPLETADOS = "SELECT COUNT(*) FROM jacobs_pipelines WHERE status = 'completed'"
 # Task 15 R12(c) (2026-09-16): la carga G midio `ALL` sobre jax_users.
-# Rango sobre idx_jax_users_locked_until (db/migrations.py::_INDEXES).
+# Rango sobre idx_jax_users_locked_until (db/migrations.py::
+# _indice_de_cuentas_bloqueadas, DDL acotado; no esta en _INDEXES).
 SQL_CUENTAS_BLOQUEADAS = "SELECT COUNT(*) FROM jax_users WHERE locked_until > %s"
 
 
@@ -56,10 +57,17 @@ async def _check_http(url: str) -> dict:
 
 
 async def _servicio(nombre: str, base_url: str | None, ruta: str) -> dict:
-    """Sin base configurada no se inventa un estado: `sin_configurar`."""
+    """Sin base configurada no se inventa un estado: `sin_configurar`. Una base
+    mal formada (puerto no numerico o fuera de rango, IPv6 sin cerrar) tampoco
+    es una base: antes el ValueError de urlsplit tiraba el tablero entero (500)."""
+    sin_configurar = {"name": nombre, "port": None, "status": "sin_configurar", "latency_ms": None}
     if not base_url:
-        return {"name": nombre, "port": None, "status": "sin_configurar", "latency_ms": None}
-    return {"name": nombre, "port": urlsplit(base_url).port, **await _check_http(f"{base_url}{ruta}")}
+        return sin_configurar
+    try:
+        puerto = urlsplit(base_url).port
+    except ValueError:
+        return sin_configurar
+    return {"name": nombre, "port": puerto, **await _check_http(f"{base_url}{ruta}")}
 
 
 async def _check_db() -> dict:
