@@ -1,4 +1,5 @@
 import { useI18n } from '../i18n/index.jsx'
+import { useNombreDelSistema } from '../store/useApariencia'
 // La fuente de la marca va en el bundle (@fontsource, OFL), no desde Google
 // Fonts: cada visita le avisaría a un tercero. Solo el subset latin y los dos
 // pesos que usa el logotipo.
@@ -14,12 +15,16 @@ import '@fontsource/ibm-plex-serif/latin-300-italic.css'
 // pantallas angostas queda solo "Axioma". Los dorados son tokens (oro,
 // oro-claro, oro-oscuro en src/tema/tokens.css): en claro ya vienen
 // oscurecidos para leerse sobre blanco.
+//
+// Desde el frente C (2026-09-16) el texto es system_name (Admin →
+// Configuración); antes de conocerlo, la marca de i18n.
 export default function LogoAxioma() {
   const { t } = useI18n()
+  const nombre = useNombreDelSistema(t)
   return (
     <span className="flex items-baseline gap-2 leading-none select-none">
       <span className="font-marca font-semibold text-lg tracking-wide text-oro">
-        {t.brandName}
+        {nombre}
       </span>
       <span aria-hidden="true" className="hidden sm:inline font-marca text-sm text-oro-oscuro">
         ·

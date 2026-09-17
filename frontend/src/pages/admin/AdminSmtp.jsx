@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
+import { useNombreDelSistema } from '../../store/useApariencia'
 import api from '../../api/client'
 import { codigoDe } from '../../api/errores'
 import PasswordInput from '../../components/PasswordInput'
@@ -24,6 +25,7 @@ const BOTON = 'px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors di
 
 export default function AdminSmtp() {
   const { t } = useI18n()
+  const nombre = useNombreDelSistema(t)
   const [form, setForm] = useState(VACIO)
   const [estado, setEstado] = useState({ corrupta: false, motivo: null })
   const [ocupado, setOcupado] = useState(null)
@@ -137,7 +139,7 @@ export default function AdminSmtp() {
   return (
     <div>
       <h1 className="text-xl font-bold text-texto-fuerte mb-1">{t.smtpTitle}</h1>
-      <p className="text-xs text-texto-tenue mb-6">{t.smtpDesc}</p>
+      <p className="text-xs text-texto-tenue mb-6">{t.smtpDesc(nombre)}</p>
 
       {estado.corrupta && (
         <div role="alert" className="max-w-lg mb-4 text-sm text-peligro bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2">

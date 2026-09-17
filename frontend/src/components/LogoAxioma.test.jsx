@@ -8,10 +8,14 @@ import '@testing-library/jest-dom'
 // la misma de la portada de Six Impossible Things (IBM Plex Serif, dorado).
 import LogoAxioma from './LogoAxioma'
 import { I18nProvider } from '../i18n/index.jsx'
+import { useApariencia } from '../store/useApariencia'
 
 const renderCon = () => render(<I18nProvider><LogoAxioma /></I18nProvider>)
 
-beforeEach(() => localStorage.clear())
+beforeEach(() => {
+  localStorage.clear()
+  useApariencia.setState({ systemName: null, langDefault: null })
+})
 
 describe('LogoAxioma', () => {
   it('muestra la marca y el lema en español', () => {
@@ -33,5 +37,13 @@ describe('LogoAxioma', () => {
     const punto = [...container.querySelectorAll('span')].find((s) => s.textContent.trim() === '·')
     expect(punto).toBeTruthy()
     expect(punto).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('con un nombre del sistema configurado, el logotipo lo muestra en lugar de la marca', () => {
+    useApariencia.setState({ systemName: 'Hal' })
+    renderCon()
+    expect(screen.getByText('Hal')).toBeInTheDocument()
+    expect(screen.queryByText('Axioma')).not.toBeInTheDocument()
+    expect(screen.getByText('Infraestructura Cognitiva Personal')).toBeInTheDocument()
   })
 })

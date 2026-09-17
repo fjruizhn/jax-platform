@@ -223,13 +223,12 @@ export default {
   // Login
   brandName: 'Axioma',
   brandTagline: 'Personal Cognitive Infrastructure',
-  loginTitle: 'Axioma',
   loginTagline: 'In memory of Jairo Urbina',
   emailLabel: 'Email',
   passwordLabel: 'Password',
   loginError: 'Invalid username or password',
   loggingIn: 'Signing in…',
-  loginButton: 'Enter Axioma',
+  loginButton: (nombre) => `Enter ${nombre}`,
   showPassword: 'Show password',
   hidePassword: 'Hide password',
   // Session-close reason (2026-09-14, Task 4b): the interceptor in
@@ -291,7 +290,7 @@ export default {
   adminRepo: 'Repository',
   adminSettings: 'Settings',
   adminCosts: 'Costs',
-  adminBack: 'Back to Axioma',
+  adminBack: (nombre) => `Back to ${nombre}`,
 
   // Admin dashboard
   adminServicesTitle: 'Service Status',
@@ -553,7 +552,7 @@ export default {
   // Outgoing email (SMTP) — AdminSmtp.jsx (2026-09-12, user admin stage 1)
   adminSmtp: 'Email (SMTP)',
   smtpTitle: 'Outgoing email (SMTP)',
-  smtpDesc: 'Server Axioma uses to send password recovery links.',
+  smtpDesc: (nombre) => `Server ${nombre} uses to send password recovery links.`,
   smtpHost: 'Server',
   smtpPort: 'Port',
   smtpEncryption: 'Encryption',
