@@ -51,8 +51,9 @@ def clasificar(datos: bytes) -> tuple[Clase, str, str | None]:
     if datos.startswith(b"%PDF-"):
         return "pdf", MIME_PDF, None
     # Rechazo de formatos binarios conocidos que no se aceptan: GIF
-    # (Gemini no lo soporta como imagen)
-    if datos.startswith(b"GIF"):
+    # (Gemini no lo soporta como imagen). La firma de GIF es de 6 bytes:
+    # GIF87a o GIF89a, no solo "GIF" (3 bytes).
+    if datos.startswith(b"GIF87a") or datos.startswith(b"GIF89a"):
         raise TipoNoPermitido("binario (GIF)")
     if b"\x00" in datos:
         raise TipoNoPermitido("binario (NUL)")

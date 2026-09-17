@@ -1,6 +1,7 @@
 """Códigos estables de los errores de adjuntos (frente D, 2026-09-16).
-Cerrados: el frontend los traduce desde t.adjuntoErrores (es.js/en.js) y
-tests/test_adjuntos_i18n_backend.py exige que cada uno esté en los dos."""
+Cerrados: el frontend los traduce desde t.erroresMesa (es.js/en.js) vía
+textoDeErrorDeMesa (frontend/src/api/errores.js). tests/test_adjuntos_i18n_backend.py
+exige que cada código esté en es.js y en.js."""
 CODIGOS: tuple[str, ...] = (
     "adjunto_demasiado_grande",
     "adjunto_tipo_no_permitido",

@@ -27,6 +27,13 @@ def test_svg_es_texto_nunca_imagen():
     assert tipos.clasificar(svg)[0] == "texto"
 
 
+def test_texto_que_empieza_con_gif_es_texto_no_rechazado():
+    # GIF format tiene firma de 6 bytes (GIF87a o GIF89a), no de 3.
+    # "GIF is a format" debe pasar como texto.
+    datos = b"GIF is a format for images"
+    assert tipos.clasificar(datos) == ("texto", "text/plain", "GIF is a format for images")
+
+
 @pytest.mark.parametrize("datos", [GIF, b"MZ\x90\x00\x03", "cafe\xe9".encode("latin-1")])
 def test_lo_no_permitido_se_rechaza(datos):
     with pytest.raises(tipos.TipoNoPermitido):
