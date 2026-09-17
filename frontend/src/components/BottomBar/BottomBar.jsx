@@ -6,6 +6,7 @@ import PipelineModal from './PipelineModal'
 import AttachButton from '../chat/AttachButton'
 import FileAttachment from '../chat/FileAttachment'
 import api from '../../api/client'
+import { textoDeErrorDeMesa, textoDeAviso } from '../../api/errores'
 import { alturaInput } from './alturaInput'
 import { colorToken } from '../../tema/tokens'
 
@@ -64,15 +65,18 @@ function BottomBar() {
     { id: 'imagen',   label: t.modeImagen },
   ]
 
-  const PLACEHOLDERS = {
-    chat:     (label) => t.placeholderChat(label),
-    comando:  () => t.placeholderComando(),
-    pipeline: () => t.placeholderPipeline(),
-    imagen:   () => t.placeholderImagen(),
-  }
-
   const activeFacetObj = FACETS.find((f) => f.id === activeFacet) || FACETS[0]
-  const placeholder = PLACEHOLDERS[mode]?.(activeFacetObj.label) || ''
+  const placeholder = mode === 'chat' ? t.placeholderChat(activeFacetObj.label)
+    : mode === 'comando' ? t.placeholderComando()
+    : mode === 'pipeline' ? t.placeholderPipeline()
+    : mode === 'imagen' ? t.placeholderImagen()
+    : ''
+
+  // A-43 (2026-09-16): los tres errores de la Mesa se arman igual. El prefijo
+  // es una clave de i18n; el detalle ya viene traducido (textoDeErrorDeMesa).
+  function agregarError(facet, id, prefijoClave, detalle) {
+    addMessage({ id, facet, content: `**${t[prefijoClave]}:** ${detalle}`, timestamp: new Date().toISOString() })
+  }
 
   async function handleFileSelected(file) {
     setUploading(true)
@@ -141,19 +145,13 @@ function BottomBar() {
       addMessage({
         id: Date.now().toString() + '_resp',
         facet: data.facet,
-        content: data.response,
+        content: data.aviso ? textoDeAviso(t, data.aviso) : data.response,
         timestamp: data.timestamp,
         contract_degraded: data.contract_degraded ?? false,
       })
       setAttachment(null)
     } catch (err) {
-      const detail = err.response?.data?.detail || t.errorFacet
-      addMessage({
-        id: Date.now().toString() + '_err',
-        facet: activeFacet,
-        content: `**Error:** ${detail}`,
-        timestamp: new Date().toISOString(),
-      })
+      agregarError(activeFacet, Date.now().toString() + '_err', 'errorPrefix', textoDeErrorDeMesa(t, err, t.errorFacet))
     } finally {
       setSending(false)
       textareaRef.current?.focus()
@@ -185,9 +183,8 @@ function BottomBar() {
       })
       registerPendingCommand(taskId, sessionEpoch)
     } catch (err) {
-      const detail = err.response?.data?.detail || t.errorTask
       updateMessage(msgId, {
-        content: `**Error:** ${detail}`,
+        content: `**${t.errorPrefix}:** ${textoDeErrorDeMesa(t, err, t.errorTask)}`,
         status: 'completed',
       })
     }
@@ -205,13 +202,7 @@ function BottomBar() {
         timestamp: new Date().toISOString(),
       })
     } catch (err) {
-      const detail = err.response?.data?.detail || t.errorImagen
-      addMessage({
-        id: Date.now().toString() + '_img_err',
-        facet: 'dalle',
-        content: `**Error:** ${detail}`,
-        timestamp: new Date().toISOString(),
-      })
+      agregarError('dalle', Date.now().toString() + '_img_err', 'errorPrefix', textoDeErrorDeMesa(t, err, t.errorImagen))
     } finally {
       setGeneratingImage(false)
     }
@@ -234,13 +225,7 @@ function BottomBar() {
         timestamp: new Date().toISOString(),
       })
     } catch (err) {
-      const detail = err.response?.data?.detail || t.errorPipeline
-      addMessage({
-        id: `pipeline-err-${Date.now()}`,
-        facet: 'jacobs',
-        content: `**${t.errorPipelinePrefix}:** ${detail}`,
-        timestamp: new Date().toISOString(),
-      })
+      agregarError('jacobs', `pipeline-err-${Date.now()}`, 'errorPipelinePrefix', textoDeErrorDeMesa(t, err, t.errorPipeline))
     }
   }
 

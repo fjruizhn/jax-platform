@@ -12,6 +12,15 @@ function _t() {
   return localStorage.getItem('jax_lang') === 'en' ? en : es
 }
 
+// A-53 (2026-09-16): el resultado de un comando llega con código cuando no hay
+// texto que mostrar (sin output, fallo o simulación). Lo usan el evento de WS
+// y la consulta de pendientes: un solo lugar decide el texto.
+export function contenidoDeComando(t, datos) {
+  if (datos?.code === 'comando_fallo') return t.commandFailed(datos.motivo || '')
+  if (datos?.code === 'comando_simulado') return t.commandDryRun(datos.result || '')
+  return datos?.result || t.commandNoResult
+}
+
 const RESULTS_FETCH_MAX_ATTEMPTS = 2
 // Tope del POST /auth/logout: salir nunca espera más que esto a la red.
 const LOGOUT_TIMEOUT_MS = 5000
@@ -124,6 +133,13 @@ export const useJaxStore = create((set, get) => {
   }
   const _savePendingIds = (ids) => {
     localStorage.setItem('jax_pending_cmds', JSON.stringify({ owner: get().user?.user_id ?? null, ids }))
+  }
+  // A-44 (2026-09-16): "resolver un comando" (contenido, estado, sacarlo de
+  // pendientes) en un solo lugar. Quien llama conserva sus chequeos (sesión
+  // vigente, mensaje que todavía existe) ANTES de llamarlo.
+  const _resolverComando = (msgId, taskId, content, status) => {
+    set((s) => ({ messages: s.messages.map((m) => (m.id === msgId ? { ...m, content, status } : m)) }))
+    _savePendingIds(_loadPendingIds().filter((id) => id !== taskId))
   }
 
   return {
@@ -311,10 +327,9 @@ export const useJaxStore = create((set, get) => {
     }
 
     if (event_type === 'command_completed') {
-      const { task_id, result, result_preview, status } = payload
+      const { task_id, status } = payload
       const msgId = `cmd-${task_id}`
       const msgStatus = status === 'failed' ? 'failed' : 'completed'
-      const noResult = _t().commandNoResult
       const sessionEpoch = get()._sessionEpoch
 
       const applyResult = (content) => {
@@ -324,27 +339,22 @@ export const useJaxStore = create((set, get) => {
         // restorePendingTasks lo recupera en el próximo reload en vez de
         // perder el resultado para siempre.
         if (!get().messages.some((m) => m.id === msgId)) return
-        set((s) => ({
-          messages: s.messages.map((m) =>
-            m.id === msgId ? { ...m, content, status: msgStatus } : m
-          ),
-        }))
-        _savePendingIds(_loadPendingIds().filter(id => id !== task_id))
+        _resolverComando(msgId, task_id, content, msgStatus)
       }
 
-      if (result) {
-        applyResult(result)
+      if (payload.result || payload.code) {
+        applyResult(contenidoDeComando(_t(), payload))
       } else if (task_id) {
         // resultado completo en archivo — pedir al backend. Los dos
-        // argumentos de .then() separan "el fetch falló" (usar el preview)
+        // argumentos de .then() separan "el fetch falló" (sin resultado)
         // de "el fetch anduvo pero applyResult tiró" (bug real, no debe
-        // aplicar el preview como si fuera un resultado válido).
+        // aplicar "sin resultado" como si fuera la respuesta válida).
         api.get(`/command/${task_id}`).then(
-          ({ data }) => applyResult(data.result || result_preview || noResult),
-          () => applyResult(result_preview || noResult)
+          ({ data }) => applyResult(contenidoDeComando(_t(), data)),
+          () => applyResult(_t().commandNoResult)
         ).catch((err) => console.error('command result render failed', err))
       } else {
-        applyResult(result_preview || noResult)
+        applyResult(_t().commandNoResult)
       }
     }
 
@@ -465,13 +475,10 @@ export const useJaxStore = create((set, get) => {
       try {
         const { data } = await api.get(`/command/${taskId}`)
         if (!isSameSession(sessionEpoch)) return
-        if (data.status === 'completed' && data.result) {
-          set((s) => ({
-            messages: s.messages.map((m) =>
-              m.id === msg.id ? { ...m, content: data.result, status: 'completed' } : m
-            ),
-          }))
-          _savePendingIds(_loadPendingIds().filter(id => id !== taskId))
+        // A-44: un fallo o un completado sin texto (con código) también
+        // resuelven; antes solo `completed` con `result` salía de "running".
+        if (data.status === 'completed' || data.status === 'failed') {
+          _resolverComando(msg.id, taskId, contenidoDeComando(_t(), data), data.status)
         } else {
           stillRunning++
         }
@@ -483,12 +490,7 @@ export const useJaxStore = create((set, get) => {
           // esto, restorePendingTasks() lo recrea como placeholder
           // "verificando estado…" para siempre en cada reload, un zombie
           // que nunca se resuelve. Se resuelve acá y se saca de la lista.
-          set((s) => ({
-            messages: s.messages.map((m) =>
-              m.id === msg.id ? { ...m, content: _t().commandNoResult, status: 'completed' } : m
-            ),
-          }))
-          _savePendingIds(_loadPendingIds().filter(id => id !== taskId))
+          _resolverComando(msg.id, taskId, _t().commandNoResult, 'completed')
         } else {
           stillRunning++ // error transitorio (red, 5xx) — reintentar en el próximo ciclo
         }

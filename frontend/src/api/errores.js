@@ -31,3 +31,28 @@ export function textoDeDetalleDeBinding(t, detail) {
   }
   return null
 }
+
+// Errores de la Mesa (frente A, A-51, 2026-09-16): chat, comando, imagen,
+// pipelines y subida responden un código estable. Nunca se muestra el código
+// crudo ni un texto del backend; `motivo` (lo que dijo un servicio externo,
+// ya redactado por el backend) se agrega como dato, igual que smtpServerSaid.
+export function textoDeErrorDeMesa(t, err, generico) {
+  const code = codigoDe(err)
+  const traducir = code && t.erroresMesa[code]
+  if (!traducir) return generico
+  const detail = err?.response?.data?.detail
+  const datos = detail && typeof detail === 'object' ? detail : {}
+  const base = traducir(datos)
+  return datos.motivo ? `${base} ${t.respuestaDelServicio(datos.motivo)}` : base
+}
+
+// Respuestas enlatadas del chat (A-53): `aviso` con código y params.
+export function textoDeAviso(t, aviso) {
+  const traducir = t.avisosChat[aviso?.code]
+  if (!traducir) return t.avisoDesconocido
+  const params = aviso.params || {}
+  if (aviso.code === 'identidad_del_modelo') {
+    return traducir(params, t.hostingDeProveedor[params.provider] || t.hostingGenerico)
+  }
+  return traducir(params)
+}
