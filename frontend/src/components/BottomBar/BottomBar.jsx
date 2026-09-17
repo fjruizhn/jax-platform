@@ -11,6 +11,7 @@ import { textoDeErrorDeMesa, textoDeAviso, codigoDe } from '../../api/errores'
 import { cuerpoDeAdjunto, vistaDeAdjunto, faltaSoporteDeImagen } from '../chat/adjuntos'
 import { alturaInput } from './alturaInput'
 import { colorToken } from '../../tema/tokens'
+import { nombreDeFaceta } from '../../lib/nombreDeFaceta'
 
 // Solo orden de despliegue — label viene de /api/state (display_name de la tabla
 // `facet`, Bloque C) y el token de color del store; no se duplican aca.
@@ -20,7 +21,7 @@ function BottomBar() {
   const facetsState = useJaxStore((s) => s.facets)
   const FACETS = FACET_ORDER.map((id) => ({
     id,
-    label: facetsState[id]?.display_name || facetsState[id]?.name || id,
+    label: nombreDeFaceta(facetsState, id),
     token: facetsState[id]?.token || 'texto-suave',
   }))
   const [input, setInput] = useState('')
@@ -306,25 +307,24 @@ function BottomBar() {
     }
   }
 
+  // PipelineModal muestra los errores de la creación dentro de sí mismo
+  // (spec 2026-09-17 §6.2): acá sólo se crea y se anuncia. Un fallo se
+  // relanza para que el modal no se cierre ni el chat se ensucie.
   async function handlePipelineSubmit(pipelineBody) {
+    const { data } = await api.post('/pipelines', pipelineBody)
     addMessage({
       id: Date.now().toString(),
       facet: 'user',
       content: pipelineObjective,
       timestamp: new Date().toISOString(),
     })
-    try {
-      const { data } = await api.post('/pipelines', pipelineBody)
-      const pid = (data.pipeline_id || '').slice(0, 12)
-      addMessage({
-        id: `pipeline-${data.pipeline_id || Date.now()}`,
-        facet: 'jacobs',
-        content: t.pipelineStarted(pid, pipelineBody.mode, pipelineBody.steps?.length || 'auto'),
-        timestamp: new Date().toISOString(),
-      })
-    } catch (err) {
-      agregarError('jacobs', `pipeline-err-${Date.now()}`, 'errorPipelinePrefix', textoDeErrorDeMesa(t, err, t.errorPipeline))
-    }
+    const pid = (data.pipeline_id || '').slice(0, 12)
+    addMessage({
+      id: `pipeline-${data.pipeline_id || Date.now()}`,
+      facet: 'jacobs',
+      content: t.pipelineStarted(pid, pipelineBody.mode, pipelineBody.steps?.length || 'auto'),
+      timestamp: new Date().toISOString(),
+    })
   }
 
   function handleKeyDown(e) {

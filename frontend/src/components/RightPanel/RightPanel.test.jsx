@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -40,7 +40,8 @@ describe('RightPanel -- la pestaña de auditoría es solo para superadmin', () =
       renderPanel()
       expect(screen.queryByRole('button', { name: es.tabAudit })).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: es.tabDirectorJacobs })).toBeInTheDocument()
-      expect(api.get).not.toHaveBeenCalled()
+      // 2026-09-17: el panel pide GET /pipelines (detenidos); /audit sigue sin pedirse.
+      expect(api.get).not.toHaveBeenCalledWith('/audit')
     })
   }
 
@@ -104,6 +105,22 @@ describe('RightPanel -- los fallos de Aprobar y Cancelar se ven', () => {
     expect(alerta).not.toHaveTextContent('kill_switch_activo')
     act(() => cambiarIdioma('en'))
     expect(screen.getByRole('alert')).toHaveTextContent(en.erroresMesa.kill_switch_activo())
+  })
+
+  // Plan J, Ruling de la sesión principal (2026-09-17): resume y approve-step
+  // también pasan por el pre-vuelo. Un rechazo dice que no se gastó nada Y
+  // cuáles son los problemas, por paso, traducidos (nunca la regla cruda).
+  it('si /resume responde 422 prevuelo_rechazado, el aviso lista las violaciones traducidas', async () => {
+    const violacion = { paso: 4, faceta: 'kimi', regla: 'credencial_ausente', detalle: '' }
+    api.post.mockRejectedValue({ response: { status: 422, data: { detail: {
+      code: 'prevuelo_rechazado', violaciones: [violacion], costo_max_usd: '0.000000', pasos_costo: [],
+    } } } })
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: es.approve }))
+    const alerta = await screen.findByRole('alert')
+    expect(alerta).toHaveTextContent(es.erroresMesa.prevuelo_rechazado({ violaciones: [violacion] }))
+    expect(alerta).toHaveTextContent(es.reglasPrevuelo.credencial_ausente(violacion))
+    expect(alerta).not.toHaveTextContent('credencial_ausente')
   })
 
   it('si /cancel falla, aparece el aviso', async () => {
@@ -179,13 +196,19 @@ describe('RightPanel -- status del pipeline traducido (M-2)', () => {
     expect(screen.queryByText('waiting_gate')).not.toBeInTheDocument()
   })
 
-  it('un status desconocido cae de vuelta en el valor crudo (fallback seguro)', () => {
-    useJaxStore.setState({
-      activePipelines: { p1: { pipeline_id: 'p1-0000-0000', name: 'probar', status: 'a_new_backend_status', steps: [] } },
+  // Ruling del ledger (asignado a la Task 10, 2026-09-17): el fallback era el
+  // valor crudo, y `constructor` leía una función heredada de Object. Un
+  // status que esta versión no conoce se muestra con un texto genérico.
+  for (const status of ['a_new_backend_status', 'constructor', 'toString']) {
+    it(`un status desconocido (${status}) muestra el texto genérico, nunca el crudo`, () => {
+      useJaxStore.setState({
+        activePipelines: { p1: { pipeline_id: 'p1-0000-0000', name: 'probar', status, steps: [] } },
+      })
+      renderPanel()
+      expect(screen.getByText(es.pipelineStatusDesconocido)).toBeInTheDocument()
+      expect(screen.queryByText(status)).not.toBeInTheDocument()
     })
-    renderPanel()
-    expect(screen.getByText('a_new_backend_status')).toBeInTheDocument()
-  })
+  }
 })
 
 // M-3 (Ruling 37, revisión final PR 3, 2026-09-14): la pista de la barra de
@@ -209,5 +232,98 @@ describe('RightPanel -- pista de la barra de progreso (M-3)', () => {
     const pista = container.querySelector('.h-1')
     expect(pista).toHaveClass('bg-borde')
     expect(pista).not.toHaveClass('bg-superficie')
+  })
+})
+
+describe('RightPanel -- pipelines detenidos que se pueden continuar (spec 2026-09-17 §6.2)', () => {
+  const CAUSA_FALLO = { tipo: 'fallo', paso: 4, detalle: 'Salida cortada' }
+  const LISTA = { pipelines: [
+    { pipeline_id: 'p-ab', name: 'leyes', status: 'aborted', causa: CAUSA_FALLO },
+    { pipeline_id: 'p-ex', name: 'vencido', status: 'expired', causa: { tipo: 'expirado' } },
+    { pipeline_id: 'p-ok', name: 'terminado', status: 'completed', causa: null },
+  ] }
+
+  beforeEach(() => {
+    api.get.mockImplementation((url) => Promise.resolve({ data: url === '/pipelines' ? LISTA : { events: [] } }))
+  })
+
+  it('un abortado muestra su causa y el botón Continuar; un completado no aparece', async () => {
+    renderPanel()
+    expect(await screen.findByText(`${es.causasDeAborto.fallo(CAUSA_FALLO)} ${es.respuestaDelServicio('Salida cortada')}`)).toBeInTheDocument()
+    expect(screen.getByText(es.continuablesTitulo)).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: es.continuarPipeline })).toHaveLength(2)
+    expect(screen.queryByText('terminado')).not.toBeInTheDocument()
+  })
+
+  it('un vencido muestra la causa expirado', async () => {
+    renderPanel()
+    expect(await screen.findByText(es.causasDeAborto.expirado({ tipo: 'expirado' }))).toBeInTheDocument()
+  })
+
+  it('una causa de tipo desconocido no se muestra cruda', async () => {
+    api.get.mockImplementation((url) => Promise.resolve({ data: url === '/pipelines'
+      ? { pipelines: [{ pipeline_id: 'p-x', name: 'raro', status: 'aborted', causa: { tipo: 'constructor' } }] }
+      : { events: [] } }))
+    renderPanel()
+    expect(await screen.findByText(es.causasDeAborto.desconocida({}))).toBeInTheDocument()
+  })
+
+  it('si la lista no se puede cargar, lo dice', async () => {
+    api.get.mockImplementation((url) => (url === '/pipelines' ? Promise.reject(new Error('502')) : Promise.resolve({ data: { events: [] } })))
+    renderPanel()
+    expect(await screen.findByText(es.continuablesError)).toBeInTheDocument()
+  })
+
+  it('un detenido que el store ya ve corriendo no se ofrece para continuar', async () => {
+    useJaxStore.setState({ activePipelines: { 'p-ab': { pipeline_id: 'p-ab', name: 'leyes', status: 'running', steps: [] } } })
+    renderPanel()
+    await screen.findByText(es.causasDeAborto.expirado({}))
+    expect(screen.getAllByRole('button', { name: es.continuarPipeline })).toHaveLength(1)
+  })
+
+  it('la lista se vuelve a pedir cuando cambia el estado de un pipeline del store', async () => {
+    renderPanel()
+    await screen.findByText(es.causasDeAborto.expirado({}))
+    const antes = api.get.mock.calls.filter(([u]) => u === '/pipelines').length
+    act(() => useJaxStore.setState({ activePipelines: { p1: { ...EN_ESPERA.p1, status: 'aborted' } } }))
+    await waitFor(() => expect(api.get.mock.calls.filter(([u]) => u === '/pipelines').length).toBe(antes + 1))
+  })
+
+  it('Continuar abre la ventana de continuar', async () => {
+    api.post.mockReturnValue(new Promise(() => {}))
+    renderPanel()
+    const [boton] = await screen.findAllByRole('button', { name: es.continuarPipeline })
+    fireEvent.click(boton)
+    expect(await screen.findByRole('dialog', { name: es.continuarTitulo })).toBeInTheDocument()
+  })
+})
+
+// Fix round 1 Task 10 ítem 5 (adenda regla 5): tras continuar, el panel se
+// refresca por el evento pipeline_continued del store, no con una recarga
+// manual además (serían dos GET /pipelines).
+describe('RightPanel -- refresco tras continuar', () => {
+  it('continuar pide la lista una sola vez, cuando llega el evento', async () => {
+    const LISTA = { pipelines: [{ pipeline_id: 'p-ab', name: 'leyes', status: 'aborted', causa: { tipo: 'expirado' } }] }
+    api.get.mockImplementation((url) => Promise.resolve({ data: url === '/pipelines' ? LISTA
+      : url === '/motors/capabilities' ? { capabilities: [], motors: [] }
+      : { pipeline: {}, steps: [{ step_index: 0, facet: 'hipatia', capability: 'research', depends_on: [], status: 'failed' }] } }))
+    api.post.mockImplementation((url) => Promise.resolve({ data: url.endsWith('/preflight')
+      ? { continuable: true, motivo: null, pasos_a_correr: [0], pasos_reusados: [], veredicto: { ok: true, violaciones: [], costo_max_usd: '0.01', umbral_usd: '0.50', requiere_confirmacion: false, pasos_costo: [] } }
+      : { pipeline_id: 'p-ab', status: 'running' } }))
+    const pedidosDeLista = () => api.get.mock.calls.filter(([u]) => u === '/pipelines').length
+    renderPanel()
+    fireEvent.click(await screen.findByRole('button', { name: es.continuarPipeline }))
+    const dialogo = await screen.findByRole('dialog', { name: es.continuarTitulo })
+    const continuar = within(dialogo).getByRole('button', { name: es.continuarBoton })
+    await waitFor(() => expect(continuar).not.toBeDisabled())
+    const antes = pedidosDeLista()
+    fireEvent.click(continuar)
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: es.continuarTitulo })).not.toBeInTheDocument())
+    await act(async () => {})
+    expect(pedidosDeLista()).toBe(antes)
+    act(() => useJaxStore.setState({ activePipelines: { ...EN_ESPERA, 'p-ab': { pipeline_id: 'p-ab', name: 'leyes', status: 'running', steps: [] } } }))
+    await waitFor(() => expect(pedidosDeLista()).toBe(antes + 1))
+    await act(async () => {})
+    expect(pedidosDeLista()).toBe(antes + 1)
   })
 })

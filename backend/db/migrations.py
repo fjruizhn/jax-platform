@@ -550,7 +550,7 @@ CREATE TABLE IF NOT EXISTS facet_health_event (
     outcome ENUM('ok','provider_error','gate_denied','gate_unreachable',
                  'unbound','unsupported_transport','probe_error',
                  'config_error') NOT NULL,
-    source  ENUM('chat','canary_periodic','canary_rebind') NOT NULL,
+    source  ENUM('chat','canary_periodic','canary_rebind','preflight') NOT NULL,
     detail  VARCHAR(255) NULL,
     ts      DOUBLE NOT NULL,
     KEY idx_facet_ts (facet, ts),
@@ -822,12 +822,14 @@ _FACET_PERSONAS = {
 # `model` no es estable entre instalaciones.
 _MOTOR_SEED = [
     # key,   provider_id, model_id,   transport,             max_tokens, timeout, reasoning, visibility,    sandbox
-    ("kimi", "moonshot", "kimi-k3",   "http_openai_compat",  8000,       600,     True,      "audit_only",  True),
+    # max_tokens 0 (D1 de Fernando, spec 2026-09-17 §1): sin tope propio, manda
+    # model.max_output_tokens. Los 8000 cortaron el pipeline ef9b2d6e.
+    ("kimi", "moonshot", "kimi-k3",   "http_openai_compat",  0,          600,     True,      "audit_only",  True),
     # glm-5.3 (PR-L ronda 1): el mismo modelo que el binding semilla de ada.
     # Con glm-5.2, en una base vacía la fila de `model` ya no existe (se
     # deriva de los bindings) y _seed_motors_and_capabilities salteaba el
     # motor ada en silencio.
-    ("ada",  "zhipu",    "glm-5.3",   "http_openai_compat",  8000,       600,     True,      "audit_only",  True),
+    ("ada",  "zhipu",    "glm-5.3",   "http_openai_compat",  0,          600,     True,      "audit_only",  True),
 ]
 
 # key, risk_level, sandbox_only, requires_human_gate, max_exec_min, max_recursion,
@@ -1349,6 +1351,36 @@ async def _raise_generate_execution_ceiling(cur) -> None:
     )
 
 
+MIGRACION_MOTOR_TOPE_AL_CATALOGO_V1 = "motor_max_tokens_al_catalogo_v1"
+MOTORES_AL_TOPE_DEL_CATALOGO = ("kimi", "ada")
+#: El tope de partida de 2026-08-10 ("ajustar si se repite un corte", CONTEXT.md)
+#: que cortó el pipeline ef9b2d6e el 2026-09-16. Es el único valor que se corrige.
+TOPE_VIEJO_DE_RAZONAMIENTO = 8000
+
+
+async def _motor_max_tokens_al_catalogo_v1(cur) -> None:
+    """D1 de Fernando (spec 2026-09-17 §1 y §7 A): kimi y ada pasan a
+    motor.max_tokens=0 -- el tope efectivo es model.max_output_tokens del
+    catálogo (worker._limite_del_motor: 0 = sin tope propio). El seed usa
+    INSERT IGNORE, así que la tupla nueva sólo alcanza a bases nuevas; esto
+    corrige las existentes UNA vez (marcador): un ajuste posterior desde Admin
+    no se pisa al arrancar.
+
+    2026-09-17 (merge de master): el marcador NO alcanza en una base donde las
+    filas de `motor` se vuelven a crear (los tests de migraciones las borran y
+    resiembran; el seed viejo ponía 8000). Corrige en CADA arranque con el
+    guard `max_tokens=8000` — el mismo criterio que
+    `_raise_generate_execution_ceiling` y `_fix_anthropic_sonnet_alias`:
+    corrige el valor VIEJO y no pisa ningún otro valor puesto desde Admin."""
+    marcas = ", ".join(["%s"] * len(MOTORES_AL_TOPE_DEL_CATALOGO))
+    await cur.execute(
+        f"UPDATE motor SET max_tokens = 0 WHERE `key` IN ({marcas}) AND max_tokens = %s",
+        (*MOTORES_AL_TOPE_DEL_CATALOGO, TOPE_VIEJO_DE_RAZONAMIENTO),
+    )
+    await cur.execute("INSERT IGNORE INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
+                      (MIGRACION_MOTOR_TOPE_AL_CATALOGO_V1,))
+
+
 async def _fix_anthropic_sonnet_alias(cur) -> None:
     """Correccion puntual (2026-08-10): _seed_models_and_backfill sembro
     anthropic/sonnet con is_alias=FALSE junto a los otros 6 bindings de
@@ -1603,6 +1635,12 @@ _COLUMNS = [
     # 2026-09-14 (ver spec §0 v3), conservando los valores.
     ("capability", "mode",
      "ALTER TABLE capability ADD COLUMN mode VARCHAR(16) NULL"),
+    # Pre-vuelo (spec 2026-09-17 §4.4): tokens de salida que una capability
+    # necesita como mínimo. Jacobs compara el tope efectivo del paso contra
+    # esto y rechaza con `tope_insuficiente`. 0 = sin mínimo declarado. La
+    # semilla MEDIDA la pone _semilla_min_output_tokens_v1.
+    ("capability", "min_output_tokens",
+     "ALTER TABLE capability ADD COLUMN min_output_tokens INT NOT NULL DEFAULT 0"),
 ]
 
 
@@ -1670,6 +1708,14 @@ _ENUM_EXTENSIONS = [
         "provider", "api_key_transport", "header_goog_api_key",
         "ALTER TABLE provider MODIFY COLUMN api_key_transport "
         "ENUM('header_bearer','query_param','header_goog_api_key') NOT NULL DEFAULT 'header_bearer'",
+    ),
+    # Pre-vuelo (spec 2026-09-17 §4.5): la sonda de Jacobs registra su
+    # resultado con source='preflight', así el próximo pre-vuelo dentro de la
+    # ventana de salud no vuelve a sondear. Lista COMPLETA de valores.
+    (
+        "facet_health_event", "source", "preflight",
+        "ALTER TABLE facet_health_event MODIFY COLUMN source "
+        "ENUM('chat','canary_periodic','canary_rebind','preflight') NOT NULL",
     ),
 ]
 
@@ -2043,6 +2089,15 @@ _MODEL_MAX_OUTPUT_TOKENS_SEED = [
     # en contrato_dispatch.TRANSPORTS_CON_CONTRATO_DE_DISPATCH), así que no se
     # siembra un nombre de parámetro que nadie usa. WHERE IS NULL como el resto.
     ("ollama",   "qwen3.6:35b-a3b-q4_K_M", 262144),
+    # Pre-vuelo (spec 2026-09-17 §7 F): medido 2026-09-17 con
+    # GET https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash
+    # (x-goog-api-key, metadata sin costo) -> outputTokenLimit=65536.
+    ("gemini",   "gemini-2.5-flash",   65536),
+    # Pre-vuelo (spec 2026-09-17 §7 F): medido 2026-09-17 con
+    # GET https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash
+    # (x-goog-api-key, metadata sin costo) -> outputTokenLimit=65536. Es el
+    # binding primario de hipatia en producción (tabla B, max_output_tokens NULL).
+    ("gemini",   "gemini-3.8-flash",   65536),
 ]
 
 
@@ -2067,6 +2122,41 @@ async def _seed_model_max_output_tokens(cur) -> None:
             "WHERE provider_id = %s AND model_id = %s AND max_output_tokens IS NULL",
             (limit, provider_id, model_id),
         )
+
+
+MIGRACION_MIN_OUTPUT_TOKENS_V1 = "capability_min_output_tokens_v1"
+# Pre-vuelo (spec 2026-09-17 §4.4): tokens de SALIDA que cada capability
+# necesitó como máximo en corridas COMPLETADAS, redondeado hacia arriba a
+# múltiplo de 1024. MEDIDO 2026-09-17 contra jax_memory (producción), sesión
+# READ ONLY: pasos HTTP de Jacobs = axioma_usage.tokens_out unido a
+# jacobs_steps completados por faceta y ventana [started_at, finished_at+5 s]
+# (filas ambiguas entre capabilities excluidas); pasos de Motor Registry =
+# _usage.completion_tokens de las_manos/logs/motor_jobs.jsonl (último registro
+# por job_id, status completed). Script y salida: ver el commit que agrega
+# esta constante. Una capability sin corridas medibles no está acá y queda en
+# 0 (sin mínimo), declarado en el mismo commit.
+MIN_OUTPUT_TOKENS_MEDIDOS_2026_09_17: dict[str, int] = {
+    "analysis": 16384,  # max=15618, corridas=4
+    "critique": 13312,  # max=12426, corridas=7
+    "design": 14336,  # max=14293, corridas=6
+    "file_write": 2048,  # max=1301, corridas=7
+    "generate": 14336,  # max=14006, corridas=6
+    "reconcile": 21504,  # max=20664, corridas=5
+    "research": 7168,  # max=6790, corridas=9
+    "validate_consistency": 3072,  # max=3018, corridas=5
+}
+
+
+async def _semilla_min_output_tokens_v1(cur) -> None:
+    """UNA vez (marcador): después, lo que el admin cambie no se pisa al
+    arrancar. Sin marcador y a medias, la próxima corrida la completa: cada
+    sentencia fija el mismo valor."""
+    await cur.execute("SELECT 1 FROM axioma_migracion_de_datos WHERE nombre = %s", (MIGRACION_MIN_OUTPUT_TOKENS_V1,))
+    if await cur.fetchone() is not None:
+        return
+    for clave, minimo in MIN_OUTPUT_TOKENS_MEDIDOS_2026_09_17.items():
+        await cur.execute("UPDATE capability SET min_output_tokens = %s WHERE `key` = %s", (minimo, clave))
+    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_MIN_OUTPUT_TOKENS_V1,))
 
 
 async def _migrate_kimi_chat_transport(cur) -> None:
@@ -2363,6 +2453,30 @@ async def _ajustes_que_mandan_v1(cur) -> None:
     await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_AJUSTES_V1,))
 
 
+MIGRACION_AJUSTE_CONFIRMAR_USD_V1 = "ajuste_pipeline_confirmar_usd_v1"
+# Valor inicial decidido en el spec 2026-09-17 §6.1 (Fernando, GO autónomo).
+VALOR_INICIAL_CONFIRMAR_USD = "0.50"
+
+
+async def _ajuste_confirmar_costo_v1(cur) -> None:
+    """Repone el umbral de confirmación de costo en CADA arranque, con INSERT
+    IGNORE: nunca pisa el valor que puso el admin.
+
+    Antes iba una sola vez, con marcador. El 2026-09-17, al mergear master, la
+    fila había desaparecido de `jax_memory_test` (otra suite la borró) y el
+    marcador impedía reponerla: `ajustes.valor()` es fail-closed sin default
+    silencioso, así que `POST /api/pipelines` respondía 503 `ajuste_ilegible`
+    para siempre. El umbral es un ajuste REQUERIDO por el consentimiento de
+    costo (spec 2026-09-17 §6.1): se siembra como la config de C5, sin
+    marcador. El marcador se conserva escrito para no reusar su nombre."""
+    await cur.execute(
+        "INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES (%s, %s)",
+        (ajustes.CONFIRMAR_USD, VALOR_INICIAL_CONFIRMAR_USD),
+    )
+    await cur.execute("INSERT IGNORE INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
+                      (MIGRACION_AJUSTE_CONFIRMAR_USD_V1,))
+
+
 MIGRACION_EJECUTOR_REGLAS_V1 = "ejecutor_reglas_v1"
 MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1 = "ejecutor_reglas_envoltorios_v1"
 MIGRACION_EJECUTOR_INVENTARIO_V1 = "ejecutor_inventario_v1"
@@ -2516,6 +2630,7 @@ async def run_migrations():
 
             await _drop_axioma_artifacts(cur)
             await _ajustes_que_mandan_v1(cur)
+            await _ajuste_confirmar_costo_v1(cur)
             await _ejecutor_reglas_v1(cur)
             await _ejecutor_reglas_envoltorios_v1(cur)
             await _ejecutor_inventario_v1(cur)
@@ -2534,6 +2649,7 @@ async def run_migrations():
             await _seed_file_tools_capabilities(cur)
             await _fix_file_write_gate_and_auditor(cur)
             await _raise_generate_execution_ceiling(cur)
+            await _motor_max_tokens_al_catalogo_v1(cur)
             # Después de TODAS las semillas de capability: las filas nuevas ya
             # entraron con su modo; las viejas se rellenan y la columna queda
             # VARCHAR(16) NOT NULL + CHECK. Una fila huérfana frena acá (ver
@@ -2557,6 +2673,9 @@ async def run_migrations():
             # que existir para poder actualizarlas.
             await _seed_model_max_tokens_param(cur)
             await _seed_model_max_output_tokens(cur)
+            # Después de _asegurar_forma_de_capability_mode y de la columna de
+            # _COLUMNS: las filas de capability existen con su forma final.
+            await _semilla_min_output_tokens_v1(cur)
             # Requiere la columna contract_raw/grounding_snapshot ya creadas
             # arriba (bucle de _COLUMNS): idempotente, así que el orden solo
             # importa para que la columna exista, no para el contenido.

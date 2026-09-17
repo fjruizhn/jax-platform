@@ -19,6 +19,7 @@ const ETIQUETAS = {
   web_task_retention_days: 'adminSettingsRetention',
   lang_default: 'adminSettingsLang',
   system_name: 'adminSettingsSystemName',
+  pipeline_confirmar_usd: 'adminSettingsConfirmarUsd',
 }
 
 const CLASE_ETIQUETA = 'block text-xs font-semibold text-texto-suave uppercase tracking-wider mb-1'
@@ -42,10 +43,12 @@ function textoDeError(t, error) {
 }
 
 function CampoNumero({ id, etiqueta, ayuda, valor, limite, onChange }) {
+  // Montos (spec 2026-09-17): el servidor dice cuántos decimales admite.
+  const paso = Number.isInteger(limite?.decimales) ? String(10 ** -limite.decimales) : undefined
   return (
     <div>
       <label htmlFor={id} className={CLASE_ETIQUETA}>{etiqueta}</label>
-      <input id={id} type="number" min={limite?.min} max={limite?.max} value={valor ?? ''}
+      <input id={id} type="number" min={limite?.min} max={limite?.max} step={paso} value={valor ?? ''}
         onChange={e => onChange(e.target.value)} className={CLASE_CAMPO} />
       {ayuda && <p className={CLASE_AYUDA}>{ayuda}</p>}
     </div>
@@ -142,6 +145,9 @@ export default function AdminSettings() {
         <CampoNumero id="ajuste-retencion" etiqueta={t.adminSettingsRetention} ayuda={t.adminSettingsRetentionAyuda}
           valor={config.web_task_retention_days} limite={limites.web_task_retention_days}
           onChange={v => set('web_task_retention_days', v)} />
+        <CampoNumero id="ajuste-confirmar-usd" etiqueta={t.adminSettingsConfirmarUsd} ayuda={t.adminSettingsConfirmarUsdAyuda}
+          valor={config.pipeline_confirmar_usd} limite={limites.pipeline_confirmar_usd}
+          onChange={v => set('pipeline_confirmar_usd', v)} />
 
         {error && (
           <AlertaError className="text-sm">{textoDeError(t, error)}</AlertaError>

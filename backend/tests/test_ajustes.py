@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -143,6 +144,7 @@ def test_limites_publicos_y_tope_espejado_de_jacobs():
         "web_task_retention_days": {"min": 1, "max": 365},
         "lang_default": {"opciones": ["es", "en"]},
         "system_name": {"max_largo": 60},
+        "pipeline_confirmar_usd": {"min": "0", "max": "999999.99", "decimales": 2},
     }
 
 
@@ -189,7 +191,7 @@ def test_lee_los_valores_tipados_de_la_tabla(client, ajustes_en_db):
     ajustes_en_db.poner(**{**ajustes_en_db.validos, "max_pipelines": "2", "lang_default": "en"})
     assert client.portal.call(_leer_todos) == {
         "session_timeout_min": 10080, "max_pipelines": 2, "web_task_retention_days": 30,
-        "lang_default": "en", "system_name": "Axioma",
+        "lang_default": "en", "system_name": "Axioma", "pipeline_confirmar_usd": Decimal("0.50"),
     }
 
 

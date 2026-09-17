@@ -107,6 +107,18 @@ class JAXEngineState:
         )
         await event_bus.publish(event)
 
+    async def continuar_pipeline(self, pipeline: PipelineState, tenant_id: str, user_id: str, continuacion: dict):
+        """Spec 2026-09-17 §6.2: vuelve a la lista de activos (el poller lo
+        sigue) y publica pipeline_continued con la época y los pasos reusados."""
+        self._state.active_pipelines[pipeline.pipeline_id] = pipeline
+        event = JAXEvent(
+            event_type="pipeline_continued",
+            tenant_id=tenant_id,
+            user_id=user_id,
+            payload={**pipeline.model_dump(), **continuacion},
+        )
+        await event_bus.publish(event)
+
     def remove_pipeline(self, pipeline_id: str):
         self._state.active_pipelines.pop(pipeline_id, None)
 

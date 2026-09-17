@@ -3,7 +3,12 @@ import { useI18n } from '../../i18n/index.jsx'
 import { useJaxStore } from '../../store/useJaxStore'
 import api from '../../api/client'
 import { colorToken } from '../../tema/tokens'
+import { nombreDeFaceta } from '../../lib/nombreDeFaceta'
 import Dialogo from '../Dialogo'
+import AlertaError from '../AlertaError'
+import ConfirmarCostoDialogo from '../ConfirmarCostoDialogo'
+import { clasificarRechazo, textoDeViolacion } from '../../api/errores'
+import { useConfirmacionDeCosto } from '../../lib/useConfirmacionDeCosto'
 import {
   GOVERNED_FACETS,
   CHAIN_ROLES,
@@ -26,7 +31,7 @@ function getFacetOptions(t, facetsState) {
     { id: 'ada',       capability: 'analysis',         desc: t.descAda },
   ].map(f => ({
     ...f,
-    label: facetsState[f.id]?.display_name || facetsState[f.id]?.name || f.id,
+    label: nombreDeFaceta(facetsState, f.id),
     token: facetsState[f.id]?.token || 'texto-suave',
   }))
 }
@@ -110,7 +115,6 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   const [modeTouched, setModeTouched] = useState(false)
   const [chainFacets, setChainFacets] = useState(defaultFacetsByRole)
   const [selected, setSelected] = useState(['hipatia', 'jekyll', 'thot'])
-  const [submitting, setSubmitting] = useState(false)
   const [capabilities, setCapabilities] = useState({})  // {capability_key: [motor_key, ...]}
   // T5: null = catálogo todavía no resolvió (fail-closed mientras carga);
   // {} tras un fetch exitoso (aunque vacío) es un estado válido, distinto
@@ -118,6 +122,17 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   const [motorsByKey, setMotorsByKey] = useState(null)  // {motor_key: {has_tool_access}}
   const [catalogFailed, setCatalogFailed] = useState(false)
   const [motorChoices, setMotorChoices] = useState({})  // {facet_id: motor_key | ''}
+  // Pre-vuelo (spec 2026-09-17 §6.2): lo que devolvió y lo que falta confirmar.
+  const [violaciones, setViolaciones] = useState([])
+  const [errorEnvio, setErrorEnvio] = useState(null)
+  // Confirmación de costo sobre este modal (lib/useConfirmacionDeCosto, Task 9;
+  // compartido con ContinuarPipelineModal): `pendiente` = {body, veredicto,
+  // aviso}, congelamiento del padre, guardia contra el doble clic y foco de
+  // vuelta a Planificar y ejecutar.
+  const {
+    pendiente, abrirConfirmacion, cerrarConfirmacion, enviando: submitting, enviandoRef,
+    bloqueado, cerrable, siLibre, conGuardia, botonPrincipalRef: botonEnviarRef,
+  } = useConfirmacionDeCosto()
 
   useEffect(() => {
     // api.get (no fetch crudo) -- el interceptor de src/api/client.js inyecta
@@ -145,13 +160,24 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   // todavía"), aunque la causa sea distinta.
   const catalogReady = motorsByKey !== null && !catalogFailed
 
-  function toggleFacet(id) {
-    setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id])
-  }
+  // Con la confirmación de costo abierta el modal padre queda congelado (fix
+  // round 1 Task 9): sin esto, con Tab se llegaba al padre y se podía cambiar
+  // el plan (y confirmar crearía el cuerpo viejo) o relanzar el pre-vuelo.
 
-  function setMotorFor(facetId, motorKey) {
+  // Lo que dijo el pre-vuelo (o el error de crear) es de la forma que se
+  // probó: al editarla deja de valer y se borra (fix round 1 ítem 3).
+  useEffect(() => {
+    setViolaciones([])
+    setErrorEnvio(null)
+  }, [chainFacets, selected, layout, motorChoices])
+
+  const toggleFacet = siLibre((id) => {
+    setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id])
+  })
+
+  const setMotorFor = siLibre((facetId, motorKey) => {
     setMotorChoices(m => ({ ...m, [facetId]: motorKey }))
-  }
+  })
 
   const facetLabel = (id) => FACET_OPTIONS.find(f => f.id === id)?.label || id
   const violations = cleanroomViolations(chainFacets)
@@ -162,35 +188,69 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
     : []
   const chainBlocked = violations.length > 0 || invalidRoles.length > 0
 
-  async function handleSubmit() {
-    if (!catalogReady) return
-    if (layout === 'chain') {
-      if (chainBlocked) return
-      setSubmitting(true)
-      const steps = buildChainSteps(objective, chainFacets, t.chainInstructions)
-      await onSubmit({
-        name: t.pipelineName(objective),
-        objective,
-        mode,
-        max_steps: steps.length,
-        steps,
-      })
-      setSubmitting(false)
-      onClose()
+  function armarCuerpo() {
+    const steps = layout === 'chain'
+      ? buildChainSteps(objective, chainFacets, t.chainInstructions)
+      : buildSteps(selected, objective, FACET_OPTIONS, motorChoices, motorsByKey)
+    return { name: t.pipelineName(objective), objective, mode, max_steps: steps.length, steps }
+  }
+
+  // Los rechazos se quedan DENTRO del modal: cerrarlo perdería lo elegido.
+  // clasificarRechazo (api/errores.js) decide: violaciones del pre-vuelo,
+  // volver a pedir la confirmación con el costo nuevo (adenda ítem 4) o el
+  // error traducido.
+  function mostrarError(err, body, previo) {
+    const r = clasificarRechazo(t, err, previo, t.errorPipeline)
+    if (r.tipo === 'costo') {
+      abrirConfirmacion({ body, veredicto: r.veredicto, aviso: r.aviso })
       return
     }
-    if (selected.length === 0) return
-    setSubmitting(true)
-    const steps = buildSteps(selected, objective, FACET_OPTIONS, motorChoices, motorsByKey)
-    await onSubmit({
-      name: t.pipelineName(objective),
-      objective,
-      mode,
-      max_steps: steps.length,
-      steps,
-    })
-    setSubmitting(false)
+    cerrarConfirmacion()
+    if (r.tipo === 'violaciones') setViolaciones(r.violaciones)
+    else setErrorEnvio(r.texto)
+  }
+
+  // onSubmit rechaza si la creación falla (BottomBar.handlePipelineSubmit).
+  // `costo` es el string costo_max_usd del veredicto confirmado, nunca un float.
+  async function crear(body, costo) {
+    await onSubmit(costo == null ? body : { ...body, costo_confirmado_usd: costo })
     onClose()
+  }
+
+  async function handleSubmit() {
+    if (!catalogReady || bloqueado || enviandoRef.current) return
+    if (layout === 'chain' ? chainBlocked : selected.length === 0) return
+    const body = armarCuerpo()
+    setViolaciones([])
+    setErrorEnvio(null)
+    await conGuardia(async () => {
+      try {
+        const { data } = await api.post('/pipelines/preflight', { steps: body.steps, objective: body.objective })
+        if (!data.ok) {
+          setViolaciones(Array.isArray(data.violaciones) ? data.violaciones : [])
+          return
+        }
+        if (data.requiere_confirmacion) {
+          abrirConfirmacion({ body, veredicto: data, aviso: null })
+          return
+        }
+        await crear(body, null)
+      } catch (err) {
+        mostrarError(err, body, null)
+      }
+    })
+  }
+
+  async function confirmarCosto() {
+    if (!pendiente) return
+    const { body, veredicto } = pendiente
+    await conGuardia(async () => {
+      try {
+        await crear(body, veredicto.costo_max_usd)
+      } catch (err) {
+        mostrarError(err, body, veredicto)
+      }
+    })
   }
 
   const PIPELINE_MODES = [
@@ -201,7 +261,9 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
 
   return (
     <Dialogo idTitulo="pipeline-modal-titulo" titulo={t.newPipelineTitle}
-      claseTitulo="text-sm font-bold text-texto uppercase tracking-widest" onCerrar={onClose}>
+      claseTitulo="text-sm font-bold text-texto uppercase tracking-widest" onCerrar={onClose}
+      cerrable={cerrable}>
+      <div inert={bloqueado}>
       <p className="text-xs text-texto-tenue -mt-3 mb-4 truncate">
         {t.objectiveLabel}: {objective}
       </p>
@@ -213,7 +275,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
             {PIPELINE_MODES.map(({ id: m, label }) => (
               <button
                 key={m}
-                onClick={() => { setMode(m); setModeTouched(true) }}
+                onClick={siLibre(() => { setMode(m); setModeTouched(true) })}
                 className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                   mode === m
                     ? m === 'autonomous'
@@ -235,10 +297,10 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
             {[['chain', t.layoutChain], ['parallel', t.layoutParallel]].map(([id, label]) => (
               <button
                 key={id}
-                onClick={() => {
+                onClick={siLibre(() => {
                   setLayout(id)
                   if (!modeTouched) setMode(DEFAULT_MODE_BY_LAYOUT[id])
-                }}
+                })}
                 aria-pressed={layout === id}
                 className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                   layout === id
@@ -268,7 +330,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
                     aria-label={t.chainRoles[role.id]}
                     className="text-xs bg-hundido border border-borde-control rounded px-2 py-1 text-texto focus:outline-none focus:border-foco"
                     value={chainFacets[role.id]}
-                    onChange={(e) => setChainFacets(f => ({ ...f, [role.id]: e.target.value }))}
+                    onChange={siLibre((e) => setChainFacets(f => ({ ...f, [role.id]: e.target.value })))}
                   >
                     {facetOptionsFor(role, capabilities).map(fid => (
                       <option key={fid} value={fid}>{facetLabel(fid)}</option>
@@ -364,15 +426,27 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
           <p className="mb-2 text-[11px] text-texto-tenue">{t.catalogLoadingHint}</p>
         )}
 
+        {violaciones.length > 0 && (
+          <div role="alert" className="mb-3">
+            <p className="text-[11px] font-semibold text-peligro mb-1">{t.prevueloTitulo}</p>
+            {violaciones.map((v, i) => (
+              <p key={i} className="text-[11px] text-peligro">{textoDeViolacion(t, v)}</p>
+            ))}
+          </div>
+        )}
+        {errorEnvio && <AlertaError className="mb-2 text-[11px]">{errorEnvio}</AlertaError>}
+
         {/* Botones */}
         <div className="flex gap-2">
           <button
-            onClick={onClose}
-            className="flex-1 py-2 rounded-lg text-xs font-semibold bg-hundido text-texto-suave hover:text-texto border border-borde transition-colors"
+            onClick={siLibre(onClose)}
+            disabled={!cerrable}
+            className="flex-1 py-2 rounded-lg text-xs font-semibold bg-hundido text-texto-suave hover:text-texto border border-borde transition-colors disabled:opacity-40"
           >
             {t.cancel}
           </button>
           <button
+            ref={botonEnviarRef}
             onClick={handleSubmit}
             disabled={
               submitting || !catalogReady
@@ -383,6 +457,11 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
             {submitting ? t.starting : t.planAndExecute}
           </button>
         </div>
+      </div>
+        {pendiente && (
+          <ConfirmarCostoDialogo veredicto={pendiente.veredicto} enviando={submitting} aviso={pendiente.aviso}
+            onConfirmar={confirmarCosto} onCancelar={cerrarConfirmacion} />
+        )}
     </Dialogo>
   )
 }

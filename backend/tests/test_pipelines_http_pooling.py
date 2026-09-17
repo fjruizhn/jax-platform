@@ -66,24 +66,29 @@ class _ClientInstantiationCounter:
         httpx.AsyncClient.__init__ = self._original
 
 
-def test_pipeline_endpoints_do_not_create_a_new_client_per_request(client, owned_pipeline_id):
-    """LAS MANOS may or may not be reachable in the environment this runs
-    in (connection refused -> 502, or a real response -> 200) — either way
-    this only pins that no NEW httpx.AsyncClient() is instantiated per
-    request now that all 6 sites share the app-startup client.
+def test_pipeline_endpoints_do_not_create_a_new_client_per_request(client, owned_pipeline_id, monkeypatch):
+    """JACOBS_URL is forced (below) to a discard port that refuses the
+    connection, so the by-id requests always 502 -- this only pins that no
+    NEW httpx.AsyncClient() is instantiated per request now that all 6 sites
+    share the app-startup client.
 
     Uses a real owner row (owner_ack_at populated) for this test's own
     identity so the by-id requests actually reach the shared client (past
     the ownership check) instead of short-circuiting at a 404."""
+    # 2026-09-17: con la propagación de errores, el 404 del Jacobs REAL (que
+    # no conoce esta fila de jax_memory_test) ya no se devuelve como 200. Y un
+    # test no debe llamar a :7777: puerto 9 (discard) rechaza la conexión.
+    import api.pipelines as pipelines_mod
+    monkeypatch.setattr(pipelines_mod, "JACOBS_URL", "http://127.0.0.1:9/jacobs")
     with _ClientInstantiationCounter() as counter:
         resp = client.get("/api/pipelines", headers=_headers(client))
         assert resp.status_code == 200
 
         resp = client.get(f"/api/pipelines/{owned_pipeline_id}", headers=_headers(client))
-        assert resp.status_code in (200, 502)
+        assert resp.status_code == 502
 
         resp = client.get(f"/api/pipelines/{owned_pipeline_id}/results", headers=_headers(client))
-        assert resp.status_code in (200, 502)
+        assert resp.status_code == 502
 
     assert counter.count == 0, (
         f"expected 0 new httpx.AsyncClient() instantiations across 3 pipeline "

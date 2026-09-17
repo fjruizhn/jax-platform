@@ -28,6 +28,10 @@ OUTCOMES = frozenset({
 SOURCE_CHAT = "chat"
 SOURCE_CANARY_PERIODIC = "canary_periodic"
 SOURCE_CANARY_REBIND = "canary_rebind"
+# Pre-vuelo (spec 2026-09-17 §4.5): la sonda de Jacobs registra su resultado
+# con este source. La plataforma no lo escribe, pero el conjunto espeja el
+# ENUM de la DB (test_prevuelo_esquema.py).
+SOURCE_PREFLIGHT = "preflight"
 
 # Ronda de corrección 1 de Task 4 (2026-08-27), Hallazgo 3: "canary_periodic"
 # vivía como literal suelto en facet_canary.py, sin constante ni guarda que
@@ -35,7 +39,7 @@ SOURCE_CANARY_REBIND = "canary_rebind"
 # había cerrado para `outcome`, un casillero al lado sin cerrar. Si diverge,
 # record_facet_health lanza ValueError, y lo hace DESDE ADENTRO del except
 # de probe_facet: en vez de degradar, aborta el barrido entero.
-SOURCES = frozenset({SOURCE_CHAT, SOURCE_CANARY_PERIODIC, SOURCE_CANARY_REBIND})
+SOURCES = frozenset({SOURCE_CHAT, SOURCE_CANARY_PERIODIC, SOURCE_CANARY_REBIND, SOURCE_PREFLIGHT})
 
 _DETAIL_MAX = 255
 

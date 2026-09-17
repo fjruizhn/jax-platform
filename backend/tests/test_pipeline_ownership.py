@@ -52,6 +52,10 @@ class _FakeClient:
         return self._response
 
     async def post(self, url, **kwargs):
+        # Spec 2026-09-17: la creación pregunta el pre-vuelo antes de crear.
+        if url.endswith("/preflight"):
+            return _FakeResponse({"ok": True, "violaciones": [], "costo_max_usd": "0.00",
+                                  "pasos_costo": [], "sondeadas": []})
         return self._response
 
 
@@ -185,7 +189,8 @@ def test_create_pipeline_acks_the_owner_row(client):
     original = http_client._client
     http_client._client = _FakeClient(_FakeResponse({"pipeline_id": fake_pipeline_id}))
     try:
-        client.portal.call(_call_create_pipeline, _FakeRequest({"name": "test"}), user)
+        client.portal.call(_call_create_pipeline, _FakeRequest(
+            {"name": "test", "steps": [{"facet": "thot", "capability": "critique", "prompt": "x"}]}), user)
         owner_ack_at = client.portal.call(_select_owner_ack_at, fake_pipeline_id)
         assert owner_ack_at is not None
     finally:

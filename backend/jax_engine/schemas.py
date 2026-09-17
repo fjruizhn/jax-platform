@@ -6,6 +6,9 @@ import uuid
 EventType = Literal[
     "facet_status_changed",
     "pipeline_step_changed",
+    # Spec 2026-09-17 §6.2: un pipeline abortado vuelve a correr; el panel lo
+    # refresca igual que pipeline_step_changed (useJaxStore.js).
+    "pipeline_continued",
     "human_gate_requested",
     "kill_switch_activated",
     "kill_switch_released",

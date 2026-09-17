@@ -571,6 +571,17 @@ jobs:
             // sigue al freno, foco y ruta heredada (Tasks 9/H y revisión final).
             // Re-medido dos veces tras el rebase (no sumado a ojo): 569 passed,
             // 0 fallidos, 69 archivos.
+            // 569 -> 693 el 2026-09-17 (pre-vuelo y continuar, spec
+            // 2026-09-17, merge de master con frente B): +125 de la rama
+            // (api/errores, PipelineModal pre-vuelo y confirmación,
+            // ContinuarPipelineModal, RightPanel detenidos, lib/moneda,
+            // lib/nombreDeFaceta, store pipelineContinued, AdminSettings umbral,
+            // pipelineChain clean-room por pasos, useWebSocket recarga al
+            // reconectar, api/websocket) y -1: el test de activateKillSwitch de
+            // la rama se borró porque el frente B eliminó esa acción. Medido tras
+            // el merge: 693 passed, 0 fallidos, 75 archivos.
+            // 693 -> 694 el 2026-09-17: +1 en RightPanel.test.jsx (resume con 422
+            // prevuelo_rechazado lista las violaciones traducidas). Visto en rojo.
             // 569 -> 618 el 2026-09-17 (Ejecutor SP2, modo Ejecutor): useEjecutor.test.js
             // (store: sondeo que corre y se detiene, bitácora incremental sin duplicar, sesión),
             // PanelEjecutor.test.jsx (un test por estado visible: compuerta, pausa puesta /
@@ -583,6 +594,9 @@ jobs:
             // +2 (una misión que ya terminó relee /estado y la lista aunque no hubiera sondeo; la que
             // sigue en curso no relee /estado en cada vuelta). Visto en rojo; mutación con cmp previo
             // (quitar cargarEstado del cierre) -> rojo. Medido: 620 passed, 0 fallidos, 72 archivos.
+            // 620 -> 745 el 2026-09-17 (pre-vuelo y continuar, tras mergear master):
+            // los 125 de esta rama. Medido dos veces tras el merge: 745 passed,
+            // 0 fallidos, 78 archivos.
             // 620 -> 655 el 2026-09-17 (frente D, adjuntos por referencia, re-medido tras el
             // rebase sobre 369fa5a, que trae el refresco al terminar del Ejecutor): +9 adjuntos.test.js, +5 FileAttachment.test.jsx, +18
             // BottomBar.test.jsx (A-21 FormData, adjuntos: [{id}] en el cuerpo, 415, 422
@@ -594,8 +608,10 @@ jobs:
             // del upload, que fija un camino ya traducido por textoDeErrorDeMesa. Medido dos
             // veces con vitest run tras el rebase sobre 369fa5a: 655 passed, 0 fallidos,
             // 74 archivos (620 de master + 35).
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 655) {
-              console.error("PISO ROTO: se esperaban 655 tests de vitest CORRIDOS y 0 fallidos.");
+            // 655 -> 780 el 2026-09-17 (pre-vuelo y continuar, tras mergear master
+            // con adjuntos y B1.4): los 125 de esta rama. Medido: 780 passed, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 780) {
+              console.error("PISO ROTO: se esperaban 780 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1546,6 +1562,25 @@ jobs:
           # puros de test_carril_mesa.py también corren con DB. Medido local contra
           # jax_memory_test: 1520 passed / 1 failed / 1 skipped (el failed, el mismo
           # hueco ambiental de test_seed_kimi_y_ada_como_motor).
+          # 1520 -> 1751 el 2026-09-17 (pre-vuelo y continuar, merge de master):
+          # +231 de la rama (test_pipelines_continuar, test_pipelines_prevuelo,
+          # test_pipelines_propagacion, test_ajuste_confirmar_costo,
+          # test_motor_tope_catalogo, test_prevuelo_esquema,
+          # test_prevuelo_datos_medidos y ajustes de tests existentes), vistos en
+          # rojo contra accc641. Medido tras el merge contra jax_memory_test:
+          # 1751 passed / 0 failed / 1 skipped.
+          # 1751 -> 1761 el 2026-09-17 (merge de master con la credencial de
+          # servicio ante LAS MANOS, #101): +10 de test_credencial_las_manos.py.
+          # Al medir apareció un rojo real: el test del índice compuesto
+          # idx_events_pipeline_tipo daba 1061 cuando el esquema de Jacobs YA trae
+          # el índice (pasa en cuanto se mergee el plan J en jax); ahora sólo lo
+          # agrega si la copia de SHOW CREATE TABLE no lo tiene. Medido contra
+          # jax_memory_test: 1761 passed / 0 failed / 1 skipped.
+          # 1761 -> 1763 el 2026-09-17: +2 controles en test_pipelines_propagacion.py
+          # (resume propaga prevuelo_rechazado con violaciones y prevuelo_no_disponible;
+          # Jacobs corre el pre-vuelo en resume/approve-step). Pasan con el helper único.
+          # 1763 -> 1764 el 2026-09-17 (Ruling R54 del plan J): el 423 kill_switch
+          # de /jacobs/preflight se muestra con su texto, no como rechazo genérico.
           # 1520 -> 1530 el 2026-09-17 (credencial de servicio ante LAS MANOS): +10
           # puros de test_credencial_las_manos.py, que también corren con DB. NO
           # medido local con DB: jax_memory_test de hall9000 hoy tiene capability
@@ -1585,6 +1620,12 @@ jobs:
           #   test_ejecutor_pausa.py (sin DB). Vistos en rojo; 6 mutaciones con cmp previo, todas
           #   en rojo. Medido local contra jax_memory_test: 1605 passed / 1 skipped (el mismo skip
           #   ambiental) -> 1606 en el runner. Si el runner da otro número, manda el runner.
+          # 1606 -> 1839 el 2026-09-17 (pre-vuelo y continuar, tras mergear master):
+          # +233 de esta rama, incluidos los dos nuevos de reposición de semillas
+          # (umbral de confirmación y tope de kimi/ada). Medido contra
+          # jax_memory_test: 1839 passed / 1 skipped; los 2 failed restantes son
+          # ajenos a la rama (dato de otra sesión y un índice del frente G que no
+          # está en jax master, así que el runner no los ve).
           # 1606 -> 1607 el 2026-09-17 (la bitácora no queda atrás del estado): +1 de
           #   test_ejecutor_misiones.py (el evento de cierre va en la misma transacción que el cierre
           #   del turno). Visto en rojo; mutación (cmp previo): no escribir el evento -> 2 rojos.
@@ -1626,7 +1667,10 @@ jobs:
           #   existen, el modulo no escribe /etc/jax/.env, y la barrera del conftest
           #   muerde). Sumar deltas, no elegir un lado. Si el runner da otro numero,
           #   manda el runner.
-          PISO_PASSED = 2062
+          # 2062 -> 2297 el 2026-09-17 (pre-vuelo y continuar, tras mergear master con
+          # adjuntos y B1.4). Medido contra jax_memory_test: 2297 passed / 0 failed /
+          # 1 skipped.
+          PISO_PASSED = 2297
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2189,6 +2233,14 @@ jobs:
       # JAX_PROXY_CARRIL_RAIZ no hay llamada ni arranque; toda llamada a Ollama del
       # backend dentro del carril; conftest aísla el carril de producción; copia de
       # Motivo). Vistos en rojo antes.
+      # 905 -> 1109 el 2026-09-17 (pre-vuelo y continuar, merge de master): +204
+      # puros de la rama (los que piden `client` se saltean). Medido tras el merge
+      # con JAX_CI_NO_DB=1: 1109 passed / 643 skipped.
+      # 1109 -> 1119 el 2026-09-17 (merge de master, credencial de servicio): +10
+      # puros de test_credencial_las_manos.py. Medido con JAX_CI_NO_DB=1: 1119
+      # passed / 643 skipped.
+      # 1119 -> 1121 el 2026-09-17: los mismos +2 controles puros de resume.
+      # 1121 -> 1122 el 2026-09-17 (Ruling R54): el mismo test puro del 423.
       # 905 -> 915 el 2026-09-17 (credencial de servicio ante LAS MANOS): +10 puros en
       # test_credencial_las_manos.py (todo pedido del backend a LAS MANOS salvo /health
       # lleva headers=encabezados_las_manos(); fail-closed sin la variable; el sondeo de
@@ -2206,6 +2258,8 @@ jobs:
       # y +7 puros de test_ejecutor_misiones.py (el runner real no se puede lanzar desde la
       # suite, variables sin defaults, compuerta ilegible = cerrada); sus otros 27 piden
       # `client` (+27 skips). Medido con JAX_CI_NO_DB=1, env -i: 959 passed / 647 skipped.
+      # 959 -> 1166 el 2026-09-17 (pre-vuelo y continuar, tras mergear master):
+      # +207 puros. Medido con JAX_CI_NO_DB=1: 1166 passed / 676 skipped.
       # 959 -> 1346 el 2026-09-17 (frente D, adjuntos por referencia, re-medido tras el
       # rebase sobre 369fa5a, con el kill switch en la subida): +388 / -1 puros (los mismos archivos
       # test_adjuntos_* que con DB, menos los tests que piden `client`; los 6 del kill
@@ -2218,7 +2272,9 @@ jobs:
       # suman SKIPS (703 -> 706), no passed. Puse 1358 por contarlos como puros
       # y el runner me corrigio: "PISO ROTO: 1356 passed < 1358". Manda el
       # runner. Sumar deltas con las otras ramas del dia, no elegir un lado.
-      JAX_CI_MIN_PASSED: "1356"
+      # 1356 -> 1563 el 2026-09-17 (mismo merge): +207 puros de esta rama.
+      # Medido con JAX_CI_NO_DB=1: 1563 passed / 735 skipped.
+      JAX_CI_MIN_PASSED: "1563"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

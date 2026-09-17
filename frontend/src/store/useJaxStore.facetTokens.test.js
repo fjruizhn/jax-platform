@@ -76,3 +76,23 @@ describe('el token de faceta se deriva de la clave, no de los datos del servidor
     expect(useJaxStore.getState().facets.hipatia.display_name).toBe('Hipatia')
   })
 })
+
+// Revisión final, 8b: loadState sostiene la resincronización del panel al
+// reconectar; un fallo no se traga en silencio.
+describe('loadState -- fallo', () => {
+  beforeEach(() => {
+    useJaxStore.setState({ ...INITIAL_STATE, token: 'test-token', user: { user_id: 1 } }, true)
+    vi.clearAllMocks()
+  })
+
+  it('deja rastro con el error y no toca el estado que había', async () => {
+    const error = new Error('red caída')
+    api.get.mockRejectedValueOnce(error)
+    const consola = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const antes = useJaxStore.getState().facets
+    await expect(useJaxStore.getState().loadState()).resolves.toBeUndefined()
+    expect(consola).toHaveBeenCalledWith('loadState failed', error)
+    expect(useJaxStore.getState().facets).toBe(antes)
+    consola.mockRestore()
+  })
+})

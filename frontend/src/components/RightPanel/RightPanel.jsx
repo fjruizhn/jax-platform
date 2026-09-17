@@ -1,11 +1,31 @@
-import { memo, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 import StepCard from './StepCard'
 import AuditLog from './AuditLog'
 import api from '../../api/client'
 import AlertaError from '../AlertaError'
-import { textoDeErrorDeMesa } from '../../api/errores'
+import ContinuarPipelineModal from './ContinuarPipelineModal'
+import { textoDeCausa, textoDeErrorDeMesa, textoDeViolacion } from '../../api/errores'
+
+// Violaciones de un 422 prevuelo_rechazado al reanudar o aprobar (resume y
+// approve-step también pasan por el pre-vuelo, Ruling de la sesión principal
+// 2026-09-17). Cualquier otra forma no se muestra.
+function violacionesDe(error) {
+  const detail = error?.response?.data?.detail
+  return detail?.code === 'prevuelo_rechazado' && Array.isArray(detail.violaciones) ? detail.violaciones : []
+}
+
+// Estados que se pueden continuar (spec 2026-09-17 §5.2 regla 2).
+const CONTINUABLES = ['aborted', 'expired']
+
+// Status del pipeline traducido (M-2). Ruling del ledger (Task 10): leído con
+// Object.hasOwn; un status que esta versión no conoce (o `constructor`, que
+// sin hasOwn leería una función heredada) va al texto genérico, nunca crudo.
+function textoDeStatus(t, status) {
+  return typeof status === 'string' && Object.hasOwn(t.pipelineStatusLabels, status)
+    ? t.pipelineStatusLabels[status] : t.pipelineStatusDesconocido
+}
 
 function ProgressBar({ steps, t }) {
   if (!steps || steps.length === 0) return null
@@ -42,7 +62,41 @@ function RightPanel() {
   // la Mesa) se dice con su texto; la clave queda como genérico.
   const [aviso, setAviso] = useState(null)
 
+  // Pipelines detenidos que se pueden continuar (spec 2026-09-17 §6.2).
+  const [detenidos, setDetenidos] = useState([])
+  const [errorDetenidos, setErrorDetenidos] = useState(false)
+  const [aContinuar, setAContinuar] = useState(null)
+
   const pipelines = Object.values(activePipelines)
+  // La lista se vuelve a pedir cuando cambia el estado de algún pipeline del
+  // store (termina, se aborta, llega pipeline_continued). Tras continuar NO se
+  // recarga a mano (adenda Task 10 regla 5, fix round 1 ítem 5): el evento
+  // pipeline_continued cambia la huella y eso ya pide la lista; una recarga
+  // más serían dos GET /pipelines por continuación.
+  const huella = pipelines.map((p) => `${p.pipeline_id}:${p.status}`).join('|')
+
+  useEffect(() => {
+    let vigente = true
+    api.get('/pipelines')
+      .then(({ data }) => {
+        if (!vigente) return
+        setErrorDetenidos(false)
+        const lista = Array.isArray(data?.pipelines) ? data.pipelines : []
+        setDetenidos(lista.filter((p) => p && CONTINUABLES.includes(p.status)))
+      })
+      .catch(() => { if (vigente) setErrorDetenidos(true) })
+    return () => { vigente = false }
+  }, [huella])
+
+  const cerrarContinuarDe = (pipelineId) => () =>
+    setAContinuar((abierta) => (abierta?.pipeline_id === pipelineId ? null : abierta))
+
+  // El store (eventos en vivo) es más nuevo que la lista: uno que ya corre no
+  // se ofrece aunque la lista todavía no se haya vuelto a pedir.
+  const continuables = detenidos.filter((p) => {
+    const enStore = activePipelines[p.pipeline_id]
+    return !enStore || CONTINUABLES.includes(enStore.status)
+  })
   const activePipeline = pipelines.find(p => ['running', 'waiting_gate'].includes(p.status))
     || pipelines[0]
 
@@ -127,7 +181,7 @@ function RightPanel() {
                     ? 'text-info'
                     : 'text-texto-suave'
                 }`}>
-                  {t.pipelineStatusLabels[activePipeline.status] || activePipeline.status}
+                  {textoDeStatus(t, activePipeline.status)}
                 </div>
               </div>
 
@@ -159,6 +213,13 @@ function RightPanel() {
               {avisoVigente && (
                 <AlertaError className="mt-2 text-xs">
                   {textoDeErrorDeMesa(t, avisoVigente.error, t[avisoVigente.clave] ?? t.statusError)}
+                  {violacionesDe(avisoVigente.error).length > 0 && (
+                    <ul className="mt-1 list-disc pl-4">
+                      {violacionesDe(avisoVigente.error).map((v, i) => (
+                        <li key={i}>{textoDeViolacion(t, v)}</li>
+                      ))}
+                    </ul>
+                  )}
                 </AlertaError>
               )}
 
@@ -169,11 +230,35 @@ function RightPanel() {
               )}
             </div>
           )}
+
+          {(continuables.length > 0 || errorDetenidos) && (
+            <div className="p-3 border-t border-borde">
+              <p className="text-xs font-semibold text-texto-suave uppercase tracking-wider mb-2">{t.continuablesTitulo}</p>
+              {errorDetenidos && <AlertaError className="mb-2 text-xs">{t.continuablesError}</AlertaError>}
+              {continuables.map((p) => (
+                <div key={p.pipeline_id} className="mb-2 p-2 rounded-lg border border-borde bg-superficie">
+                  <div className="text-xs font-semibold text-texto truncate">{p.name}</div>
+                  <div className="text-xs text-peligro mt-0.5">{textoDeCausa(t, p.causa)}</div>
+                  <button type="button" onClick={() => setAContinuar(p)}
+                    className="mt-2 w-full py-1.5 rounded-lg bg-accion hover:bg-accion-hover text-sobre-color text-xs font-semibold transition-colors">
+                    {t.continuarPipeline}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       ) : (
         <div className="flex-1 overflow-hidden">
           <AuditLog />
         </div>
+      )}
+      {aContinuar && (
+        // key por pipeline: otro pipeline es otra ventana, con su estado propio.
+        // El cierre tiene alcance (fix round 1 ítem 1): el onClose de la ventana
+        // de A sólo cierra si la abierta sigue siendo la de A.
+        <ContinuarPipelineModal key={aContinuar.pipeline_id} pipeline={aContinuar}
+          onClose={cerrarContinuarDe(aContinuar.pipeline_id)} />
       )}
     </div>
   )

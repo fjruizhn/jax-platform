@@ -37,15 +37,54 @@ export function textoDeDetalleDeBinding(t, detail) {
 // crudo ni un texto del backend; `motivo` (lo que dijo un servicio externo,
 // ya redactado por el backend) se agrega como dato, igual que smtpServerSaid.
 export function textoDeErrorDeMesa(t, err, generico) {
-  const code = codigoDe(err)
+  return textoDeDetalleDeMesa(t, err?.response?.data?.detail, generico)
+}
+
+// Lo mismo desde el `detail` solo (Task 10, 2026-09-17): el `motivo` de
+// POST /pipelines/{id}/continue/preflight es un detail `{code, ...}` que llega
+// en un 200, sin respuesta de error alrededor.
+export function textoDeDetalleDeMesa(t, detail, generico) {
+  const code = typeof detail === 'string' ? detail : detail?.code
   // Object.hasOwn (ronda final M4): un código `constructor` o `toString` no es
   // una clave del diccionario, es una propiedad heredada de Object.
   const traducir = typeof code === 'string' && Object.hasOwn(t.erroresMesa, code) && t.erroresMesa[code]
   if (!traducir) return generico
-  const detail = err?.response?.data?.detail
   const datos = detail && typeof detail === 'object' ? detail : {}
-  const base = traducir(datos)
-  return datos.motivo ? `${base} ${t.respuestaDelServicio(datos.motivo)}` : base
+  const partes = [traducir(datos)]
+  // Sólo un string no vacío va como dato (fix round 2): un objeto sería
+  // "[object Object]" en pantalla.
+  if (typeof datos.motivo === 'string' && datos.motivo) partes.push(t.respuestaDelServicio(datos.motivo))
+  // `mensaje` (estado_no_continuable, spec 2026-09-17): texto de Jacobs ya
+  // redactado por el backend; va como dato, igual que `motivo`. Fix round 1:
+  // si el status es uno que la Mesa sabe nombrar, el texto propio alcanza y
+  // el mensaje de Jacobs no se agrega.
+  const statusConocido = code === 'estado_no_continuable' && typeof datos.status === 'string'
+    && Object.hasOwn(t.pipelineStatusLabels, datos.status)
+  if (typeof datos.mensaje === 'string' && datos.mensaje && !statusConocido) partes.push(t.respuestaDelServicio(datos.mensaje))
+  const detalle = CODIGOS_SIN_DETALLE_DE_TEXTO.has(code) && typeof datos.detalle === 'string'
+    ? null
+    : textoDeDetalle(t, datos.detalle)
+  if (detalle) partes.push(t.detalleDelPrevuelo(detalle))
+  return partes.join(' ')
+}
+
+// Revisión final (menor 6d): códigos cuyo texto de la Mesa ya lo dice todo; el
+// `detalle` de TEXTO libre que Jacobs les pone es español técnico para otro
+// servicio ("ver `veredicto`") y no se muestra. Una lista por paso sí se
+// muestra siempre (reasignacion_invalida, plan_rechazado), y plan_rechazado
+// conserva su detalle de texto (la razón del rechazo del plan).
+const CODIGOS_SIN_DETALLE_DE_TEXTO = new Set(['prevuelo_rechazado', 'limite_de_activos', 'kill_switch'])
+
+// `detalle` de un rechazo del pre-vuelo (adenda Task 8 ítem 3): texto, o lista
+// normalizada [{paso, faceta|null, motivo}] (reasignacion_invalida,
+// plan_rechazado). Cualquier otra forma no se muestra: nunca un objeto crudo.
+function textoDeDetalle(t, detalle) {
+  if (typeof detalle === 'string') return detalle || null
+  if (!Array.isArray(detalle)) return null
+  const items = detalle
+    .filter((d) => d && typeof d === 'object')
+    .map((d) => t.detalleDePaso(d))
+  return items.length ? items.join('; ') : null
 }
 
 // Respuestas enlatadas del chat (A-53): `aviso` con código y params.
@@ -59,4 +98,80 @@ export function textoDeAviso(t, aviso) {
     return traducir(params, hosting ? t.hostingDeProveedor[params.provider] : t.hostingGenerico)
   }
   return traducir(params)
+}
+
+// Violación del pre-vuelo (spec 2026-09-17 §4.1): se lee por su `regla`; una
+// regla que esta versión no conoce cae en un texto genérico, nunca cruda. El
+// `detalle` (redactado por el backend) va como dato.
+export function textoDeViolacion(t, v) {
+  const conocida = typeof v?.regla === 'string' && Object.hasOwn(t.reglasPrevuelo, v.regla)
+  const base = (conocida ? t.reglasPrevuelo[v.regla] : t.reglaPrevueloDesconocida)(v || {})
+  return typeof v?.detalle === 'string' && v.detalle ? `${base} ${t.detalleDelPrevuelo(v.detalle)}` : base
+}
+
+// Motivo por paso de `pasos_costo` (adenda Task 8 ítem 6): por qué el costo de
+// ese paso es el que es. Desconocido o null → texto genérico, nunca crudo.
+export function textoDeMotivoDeCosto(t, motivo) {
+  if (typeof motivo === 'string' && Object.hasOwn(t.motivosDeCosto, motivo)) return t.motivosDeCosto[motivo]
+  return t.motivoDeCostoDesconocido
+}
+
+// Causa del aborto de un pipeline (GET /api/pipelines → `causa`, spec
+// 2026-09-17): se lee por su `tipo`; uno desconocido o heredado cae en
+// `desconocida`. Sólo un `paso` entero llega al texto.
+export function textoDeCausa(t, causa) {
+  const tipo = causa && typeof causa === 'object' ? causa.tipo : undefined
+  const conocida = typeof tipo === 'string' && Object.hasOwn(t.causasDeAborto, tipo)
+  const datos = Number.isInteger(causa?.paso) ? { paso: causa.paso } : {}
+  const base = (conocida ? t.causasDeAborto[tipo] : t.causasDeAborto.desconocida)(datos)
+  // `detalle` (Task 10): el error del paso, ya redactado por el backend; va
+  // como dato del servicio y sólo si es un string no vacío.
+  return typeof causa?.detalle === 'string' && causa.detalle ? `${base} ${t.respuestaDelServicio(causa.detalle)}` : base
+}
+
+// Rechazo de crear o continuar un pipeline (Task 9, compartido desde la Task
+// 10 por PipelineModal y ContinuarPipelineModal). Los rechazos se quedan
+// dentro del modal:
+// - prevuelo_rechazado con violaciones -> {tipo: 'violaciones'}.
+// - confirmacion_de_costo / costo_supera_lo_aceptado con un costo legible ->
+//   {tipo: 'costo'}: se vuelve a pedir la confirmación con el costo que
+//   devolvió el backend (`previo` = el veredicto que se había confirmado, para
+//   lo que el rechazo no traiga). `aviso` sólo si el costo subió
+//   (costo_supera_lo_aceptado, o confirmacion_de_costo tras confirmar).
+// - cualquier otro -> {tipo: 'error', texto} traducido, o `generico`.
+// Revisión final (menor 6b): un 409 confirmacion_de_costo que llega DESPUÉS de
+// confirmar (`previo` con costo) significa que el costo subió entre /preflight
+// y el pre-vuelo interno de crear/continuar: lleva el mismo aviso que
+// costo_supera_lo_aceptado. Igual o menor no avisa. Los montos son strings de
+// punto fijo del backend; Number alcanza para comparar a 6 decimales.
+function subioTrasConfirmar(previo, costoNuevo) {
+  const antes = Number(previo?.costo_max_usd)
+  const ahora = Number(costoNuevo)
+  return typeof previo?.costo_max_usd === 'string' && Number.isFinite(antes) && Number.isFinite(ahora) && ahora > antes
+}
+
+export function clasificarRechazo(t, err, previo, generico) {
+  const code = codigoDe(err)
+  const detail = err?.response?.data?.detail
+  const datos = detail && typeof detail === 'object' ? detail : {}
+  if (code === 'prevuelo_rechazado' && Array.isArray(datos.violaciones)) {
+    return { tipo: 'violaciones', violaciones: datos.violaciones }
+  }
+  const esDeCosto = code === 'confirmacion_de_costo' || code === 'costo_supera_lo_aceptado'
+  if (esDeCosto && typeof datos.costo_max_usd === 'string' && datos.costo_max_usd) {
+    return {
+      tipo: 'costo',
+      veredicto: {
+        costo_max_usd: datos.costo_max_usd,
+        pasos_costo: Array.isArray(datos.pasos_costo) ? datos.pasos_costo : (previo?.pasos_costo || []),
+        umbral_usd: datos.umbral_usd ?? previo?.umbral_usd ?? null,
+      },
+      aviso: code === 'costo_supera_lo_aceptado'
+        ? textoDeErrorDeMesa(t, err, generico)
+        : (subioTrasConfirmar(previo, datos.costo_max_usd)
+          ? textoDeDetalleDeMesa(t, { code: 'costo_supera_lo_aceptado' }, generico)
+          : null),
+    }
+  }
+  return { tipo: 'error', texto: textoDeErrorDeMesa(t, err, generico) }
 }

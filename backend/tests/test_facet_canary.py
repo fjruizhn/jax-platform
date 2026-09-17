@@ -146,7 +146,7 @@ def test_source_constants_pertenecen_a_SOURCES_con_literales(monkeypatch):
     assert fh.SOURCE_CHAT == "chat"
     assert fh.SOURCE_CANARY_PERIODIC == "canary_periodic"
     assert fh.SOURCE_CANARY_REBIND == "canary_rebind"
-    assert fh.SOURCES == {"chat", "canary_periodic", "canary_rebind"}
+    assert fh.SOURCES == {"chat", "canary_periodic", "canary_rebind", "preflight"}
     assert facet_canary.SOURCE_CANARY_PERIODIC in fh.SOURCES
 
 

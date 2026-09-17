@@ -1,3 +1,34 @@
+// Labels for a pipeline status: the panel one
+// (backend/jax_engine/schemas.py::PipelineStatus, includes waiting_gate) and
+// the raw Jacobs one (jacobs/models.py::PipelineStatus, includes aborted,
+// interrupted and expired). Read with Object.hasOwn; an unknown value goes to
+// a generic text, never raw.
+const ETIQUETAS_DE_ESTADO = {
+  pending: 'Pending',
+  running: 'Running',
+  waiting_gate: 'Waiting for approval',
+  completed: 'Completed',
+  failed: 'Failed',
+  aborted: 'Aborted',
+  interrupted: 'Interrupted',
+  expired: 'Expired',
+}
+
+const UN_PASO = 'A step'
+// Human position of a step: only an integer or a string of digits.
+const posicionDelPaso = (paso) => {
+  if (Number.isInteger(paso) && paso >= 0) return paso + 1
+  if (typeof paso === 'string' && /^\d+$/.test(paso)) return Number(paso) + 1
+  return null
+}
+// Where a step is in the preflight texts: "Step 5 (kimi)". Without a valid
+// position, "A step"; the facet only when it is text (fix round 1 Task 8).
+const lugarDelPaso = (v) => {
+  const n = posicionDelPaso(v?.paso)
+  const base = n === null ? UN_PASO : `Step ${n}`
+  return typeof v?.faceta === 'string' && v.faceta ? `${base} (${v.faceta})` : base
+}
+
 export default {
   // Top bar
   logout: 'Sign out',
@@ -28,23 +59,34 @@ export default {
   tabAudit: 'Audit',
   stepsLabel: 'steps',
   noPipelinesActive: 'No active pipelines',
-  // M-2 (final review PR 3, 2026-09-14): activePipeline.status
-  // (jax_engine/schemas.py::PipelineStatus) was shown raw. A value the
-  // backend adds that the dictionary doesn't know falls back to the raw
-  // value (RightPanel.jsx).
-  pipelineStatusLabels: {
-    pending: 'Pending',
-    running: 'Running',
-    waiting_gate: 'Waiting for approval',
-    completed: 'Completed',
-    failed: 'Failed',
-  },
+  // M-2 (final review PR 3, 2026-09-14): activePipeline.status was shown
+  // raw. The keys (ETIQUETAS_DE_ESTADO, above) cover two sources: the panel
+  // status (backend/jax_engine/schemas.py::PipelineStatus, already mapped by
+  // jax_engine/state.py) and the raw Jacobs status in estado_no_continuable
+  // (jacobs/models.py::PipelineStatus). Readers use Object.hasOwn and, when the
+  // value is missing, a generic text: never the raw value.
+  pipelineStatusLabels: ETIQUETAS_DE_ESTADO,
+  pipelineStatusDesconocido: 'Unknown status',
   pipelinesAdditional: (n) => `+${n} additional pipeline(s)`,
   approve: '✓ Approve',
   cancelling: 'Cancelling…',
   cancelPipeline: 'Cancel pipeline',
   approveError: 'The step could not be approved. Try again.',
   cancelError: 'The pipeline could not be cancelled. Try again.',
+  // Continue a stopped pipeline (spec 2026-09-17 §6.2)
+  continuablesTitulo: 'Stopped',
+  continuablesError: 'The list of stopped pipelines could not be loaded.',
+  continuarPipeline: 'Continue',
+  continuarTitulo: 'Continue pipeline',
+  continuarCargando: 'Loading steps and cost…',
+  continuarError: 'Could not confirm that the pipeline continued; check the panel before retrying.',
+  continuarErrorCarga: 'The continuation could not be prepared.',
+  continuarPasoReusado: (n, faceta) => `✓ Step ${n} · ${faceta}: ready, reused`,
+  continuarPasoACorrer: (n, capability) => `Step ${n} · ${capability}`,
+  continuarCostoMax: (monto) => `Maximum cost of what is left: ${monto}`,
+  continuarCleanroom: (n, faceta, dep) => `Step ${n}: ${faceta} cannot audit what it produced in step ${dep}. Choose another facet.`,
+  continuarNoContinuable: 'This pipeline cannot be continued in its current state.',
+  continuarBoton: 'Continue',
   // Nombre guardado del pipeline: el objetivo, recortado a 50 caracteres.
   pipelineName: (objetivo) => `Pipeline: ${objetivo.slice(0, 50)}`,
 
@@ -93,6 +135,39 @@ export default {
     pipeline_no_encontrado: () => 'The pipeline does not exist.',
     jacobs_rechazo: (d) => `Jacobs rejected the pipeline (${d.status}).`,
     jacobs_no_responde: () => 'Jacobs did not respond.',
+    archivo_demasiado_grande: (d) => `The file exceeds the ${Math.round(d.max_bytes / 1048576)} MB maximum.`,
+    pdf_ilegible: () => 'The PDF could not be read.',
+    // Preflight and continue (spec 2026-09-17)
+    prevuelo_rechazado: (d) => `The preflight rejected the pipeline (${(d.violaciones || []).length} problem(s)). Nothing was spent.`,
+    confirmacion_de_costo: () => 'The maximum cost must be confirmed before running.',
+    costo_supera_lo_aceptado: () => 'The maximum cost rose above what you confirmed. Review it and confirm again.',
+    reasignacion_invalida: () => 'The facet reassignment is not valid for this plan.',
+    prevuelo_no_disponible: () => 'The preflight is not available: nothing runs without it.',
+    estado_no_continuable: (d) => {
+      if (d.status === null || d.status === undefined) {
+        return 'Another request changed this pipeline in the meantime: reload the page to see its status.'
+      }
+      if (d.status === 'interrupted') {
+        return `This pipeline's status is "${ETIQUETAS_DE_ESTADO.interrupted}": resume it instead of continuing it.`
+      }
+      if (typeof d.status === 'string' && Object.hasOwn(ETIQUETAS_DE_ESTADO, d.status)) {
+        return `This pipeline cannot be continued: its status is "${ETIQUETAS_DE_ESTADO[d.status]}".`
+      }
+      return 'This pipeline cannot be continued in its current state.'
+    },
+    pasos_requeridos: () => 'The pipeline has no steps.',
+    reasignacion_fuera_de_forma: (d) => (Number.isInteger(d.max_pasos)
+      ? `The reassignment is not valid: up to ${d.max_pasos} steps, each with a facet name.`
+      : 'The reassignment is not valid.'),
+    objetivo_invalido: (d) => (Number.isInteger(d.max)
+      ? `The objective is not valid: it must be text of up to ${d.max.toLocaleString('en')} characters.`
+      : 'The objective is not valid.'),
+    costo_confirmado_invalido: () => 'The confirmed cost is not valid.',
+    limite_de_activos: () => 'Jacobs already has the maximum of active pipelines: wait for one to finish.',
+    plan_rechazado: () => 'The pipeline plan is not valid.',
+    plan_inconsistente: () => 'The saved pipeline plan is inconsistent: it cannot be continued.',
+    no_existe: () => 'The pipeline does not exist in Jacobs.',
+    kill_switch: () => 'The kill switch is active: nothing runs until it is turned off.',
     adjunto_demasiado_grande: (d) => `The file exceeds the ${Math.floor((d?.max_bytes || 0) / 1048576)} MB limit.`,
     adjunto_tipo_no_permitido: () => 'That file type cannot be attached. PNG, JPEG or WebP images, PDF and UTF-8 text are accepted.',
     adjunto_vacio: () => 'The file is empty.',
@@ -110,6 +185,34 @@ export default {
     pdf_sin_texto: () => 'The PDF has no extractable text (is it a scan?).',
     // Frente B (2026-09-17): 423 from chat, image, command and pipelines with the brake on.
     kill_switch_activo: () => 'Kill switch active: JAX is stopped',
+  },
+  reglasPrevuelo: {
+    tope_insuficiente: (v) => `${lugarDelPaso(v)}: the model's output limit is not enough for this task.`,
+    sin_contrato_de_salida: (v) => `${lugarDelPaso(v)}: the model does not declare its output limit, so the cost cannot be bounded.`,
+    credencial_ausente: (v) => `${lugarDelPaso(v)}: there is no active credential for the provider.`,
+    faceta_caida: (v) => `${lugarDelPaso(v)}: the facet did not answer the probe.`,
+    faceta_inexistente: (v) => `${lugarDelPaso(v)}: the facet does not exist or is not active.`,
+  },
+  reglaPrevueloDesconocida: (v) => `${lugarDelPaso(v)}: the preflight rejected it by a rule this version does not know.`,
+  detalleDelPrevuelo: (texto) => `Detail: ${texto}`,
+  detalleDePaso: (d) => (typeof d?.motivo === 'string' && d.motivo ? `${lugarDelPaso(d)}: ${d.motivo}` : lugarDelPaso(d)),
+  motivosDeCosto: {
+    acotado: 'Cost bounded by the model output limit.',
+    sin_precio: 'The model has no price loaded: the cost cannot be bounded.',
+    local: 'Local model: no per-use cost.',
+    suscripcion: 'Covered by the subscription: no per-use cost.',
+    mecanico: 'Mechanical step: it does not call a model.',
+    sin_contrato_de_salida: 'The model does not declare its output limit: the cost cannot be bounded.',
+    faceta_inexistente: 'The facet does not exist: the cost could not be computed.',
+    herramientas_sin_tope: 'It uses tools on a paid provider: the history grows with no limit and the cost cannot be bounded.',
+  },
+  motivoDeCostoDesconocido: 'No explanation for this step cost.',
+  causasDeAborto: {
+    fallo: (c) => (Number.isInteger(c.paso) ? `Stopped: step ${c.paso + 1} failed.` : 'Stopped: a step failed.'),
+    cancelado: () => 'Stopped: it was cancelled.',
+    kill_switch: () => 'Stopped: the kill switch was activated.',
+    expirado: () => 'Expired: it went too long without progress.',
+    desconocida: () => 'Stopped for a reason that was not recorded.',
   },
   avisosChat: {
     faceta_sin_binding: (p) => `⚠️ ${p.facet} is not available: no active binding configured.`,
@@ -183,6 +286,19 @@ export default {
   facetsLabel: 'Facets',
   starting: 'Starting…',
   planAndExecute: 'Plan and execute',
+  // Preflight and cost confirmation (spec 2026-09-17 §6.2). The step place
+  // comes from lugarDelPaso, like the violations (Task 9 addendum).
+  prevueloTitulo: 'The preflight found problems. Nothing was spent:',
+  confirmarCostoTitulo: 'Confirm maximum cost',
+  confirmarCostoMensaje: (monto, umbral) => (umbral
+    ? `This can cost up to ${monto}. Confirmation is required above ${umbral} or when a step has no bounded cost.`
+    : `This can cost up to ${monto}.`),
+  confirmarCostoPaso: (p, monto) => `${lugarDelPaso(p)}: up to ${monto}`,
+  confirmarCostoPasoNoAcotado: (p, motivo) => (motivo
+    ? `${lugarDelPaso(p)}: no bounded cost. ${motivo}`
+    : `${lugarDelPaso(p)}: no bounded cost`),
+  confirmarCostoNoAcotado: 'Some steps have no bounded cost: the real cost can exceed the maximum shown.',
+  confirmarCostoBoton: 'Confirm and run',
   descJaxLocal: 'Local reasoning (Qwen3)',
   descHipatia: 'Web research',
   descJekyll: 'Reflective analysis',
@@ -193,7 +309,6 @@ export default {
   facetUngoverned: 'No Motor Registry governance — not validated against real capabilities.',
   catalogLoadingHint: 'Loading motor catalog…',
   catalogFailedHint: 'Could not load the motor catalog — planning is blocked until it loads.',
-  errorPipelinePrefix: 'Pipeline error',
   layoutLabel: 'Shape',
   layoutChain: 'Chained',
   layoutParallel: 'In parallel',
@@ -539,6 +654,8 @@ export default {
   adminSettingsRetention: 'Web task retention (days)',
   adminSettingsRetentionAyuda: 'Days a web task (mission, result and owner) is kept before it is deleted.',
   adminSettingsSystemName: 'System name',
+  adminSettingsConfirmarUsd: 'Confirm pipelines from (USD)',
+  adminSettingsConfirmarUsdAyuda: 'Above this maximum cost, or with a step without price, confirmation is required before running. 0 = always confirm.',
   adminSettingsDark: 'Dark',
   adminSettingsLight: 'Light',
 
