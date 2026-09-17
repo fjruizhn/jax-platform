@@ -133,7 +133,7 @@ export default {
     mecanico: 'Mechanical step: it does not call a model.',
     sin_contrato_de_salida: 'The model does not declare its output limit: the cost cannot be bounded.',
     faceta_inexistente: 'The facet does not exist: the cost could not be computed.',
-    herramientas_sin_tope: 'It uses tools with no call limit: the cost cannot be bounded.',
+    herramientas_sin_tope: 'It uses tools on a paid provider: the history grows with no limit and the cost cannot be bounded.',
   },
   motivoDeCostoDesconocido: 'No explanation for this step cost.',
   causasDeAborto: {

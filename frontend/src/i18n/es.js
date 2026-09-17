@@ -133,7 +133,7 @@ export default {
     mecanico: 'Paso mecánico: no llama a un modelo.',
     sin_contrato_de_salida: 'El modelo no declara su tope de salida: el costo no se puede acotar.',
     faceta_inexistente: 'La faceta no existe: no se pudo calcular el costo.',
-    herramientas_sin_tope: 'Usa herramientas sin tope de llamadas: el costo no se puede acotar.',
+    herramientas_sin_tope: 'Usa herramientas en un proveedor que cobra: el historial crece sin tope y el costo no se puede acotar.',
   },
   motivoDeCostoDesconocido: 'Sin explicación del costo de este paso.',
   causasDeAborto: {
