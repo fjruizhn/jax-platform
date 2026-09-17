@@ -48,6 +48,41 @@ def veredicto(ok: bool = True, costo: str = "0.10", violaciones=(), pasos_costo=
     return v
 
 
+def invalida(paso=5, motivo: str = "solo se reasignan pasos a correr, no los reusados") -> dict:
+    """Un elemento del `detalle` de reasignacion_invalida cuando el índice o
+    la faceta no sirven (jax: jacobs/continuar.py `analizar`)."""
+    return {"paso": paso, "motivo": motivo}
+
+
+def violacion_de_plan(step_index: int = 4, facet: str = "ada", motor: str | None = None,
+                      capability: str = "web_search", reason: str = "clean-room: ada no puede web_search") -> dict:
+    """PlanViolation.to_dict() de jax (jacobs/plan.py): el `detalle` de
+    reasignacion_invalida o plan_rechazado cuando falla clean-room o capability."""
+    return {"step_index": step_index, "facet": facet, "motor": motor, "capability": capability, "reason": reason}
+
+
+def motivo(code: str, detalle=None, **campos) -> dict:
+    """ContinuarRechazado.cuerpo() de jax: {code, **dict} o {code, detalle}."""
+    cuerpo = {"code": code, **campos}
+    if detalle is not None:
+        cuerpo["detalle"] = detalle
+    return cuerpo
+
+
+# Con estos motivos Jacobs SÍ analizó el pipeline y trae pasos y veredicto
+# (jacobs/continuar.py `previsualizar`); con cualquier otro, no.
+MOTIVOS_CON_VEREDICTO = ("prevuelo_rechazado", "limite_de_activos")
+
+
+def previsualizacion(v=None, motivo_=None, a_correr=(4, 5), reusados=(0, 1, 2, 3)) -> dict:
+    """200 de POST /pipeline/{id}/continue/preflight, con la forma exacta de jax."""
+    if motivo_ is not None and motivo_.get("code") not in MOTIVOS_CON_VEREDICTO:
+        return {"continuable": False, "motivo": motivo_, "pasos_a_correr": [], "pasos_reusados": [],
+                "veredicto": None}
+    return {"continuable": motivo_ is None, "motivo": motivo_, "pasos_a_correr": list(a_correr),
+            "pasos_reusados": list(reusados), "veredicto": v}
+
+
 class JacobsFalso:
     """rutas: {("POST", "/preflight"): httpx.Response | callable(cuerpo) -> httpx.Response}.
     Una ruta no declarada lanza AssertionError (la Mesa la convierte en 502:

@@ -1,8 +1,10 @@
+import json
 import math
 import os
 import re
 import time
 import uuid
+from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -60,6 +62,8 @@ CODIGOS_DE_JACOBS = frozenset({
 _CAMPOS_DE_CODIGO = (
     "violaciones", "costo_max_usd", "pasos_costo", "costo_max_aceptado_usd",
     "status", "mensaje", "detalle", "hay_no_acotados", "sondeadas", "ok",
+    # Ruling B (Task 7): el 503 prevuelo_no_disponible de Jacobs trae motivo.
+    "motivo",
 )
 MOTIVO_MAX = 200
 DETALLE_MAX = 300
@@ -85,8 +89,8 @@ _CAMPOS_DE_PASO_COSTO = (
 def _pasos_costo_saneados(pasos) -> list[dict]:
     """Sólo los ocho campos del contrato por paso. Usado hoy por el
     veredicto (`_evaluar_veredicto`), un rechazo de Jacobs
-    (`_rechazo_de_jacobs`) y el 200 de creación (`create_pipeline`) -- NO
-    todavía por /continue/preflight ni /continue, que Task 7 agrega.
+    (`_rechazo_de_jacobs`, también el `motivo` de /continue/preflight vía
+    `_detalle_declarado`) y el 200 de crear y de continuar (`_costos_saneados`).
     motivo puede traer texto de un proveedor y se redacta antes de salir
     hacia el navegador. usd_max sale en punto fijo cuando es legible (fix
     round 2 ítem 5, `_monto_texto`): un solo lugar formatea para los tres
@@ -127,33 +131,78 @@ def _sondeadas_saneadas(sondeadas) -> list[str]:
     return [s for s in sondeadas if isinstance(s, str)]
 
 
+def _texto_o_nada(valor, limite: int) -> str | None:
+    return recortar_redactado(valor, limite) if isinstance(valor, str) else None
+
+
+def _items_de_detalle(items: list) -> list[dict]:
+    """`detalle` como lista (plan J, jacobs/continuar.py `analizar`): una
+    reasignación inválida manda {paso, motivo}; un fallo de clean-room o de
+    capability manda PlanViolation.to_dict() {step_index, facet, motor,
+    capability, reason}. Las dos formas salen como {paso, faceta, motivo}:
+    sólo esos campos, textos redactados, elementos que no son objeto fuera.
+    paso puede ser str (el índice que mandó el cliente no era un entero)."""
+    normalizados = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        paso = item.get("paso", item.get("step_index"))
+        if isinstance(paso, bool) or not isinstance(paso, (int, str)):
+            paso = None
+        elif isinstance(paso, str):
+            paso = recortar_redactado(paso, MOTIVO_MAX)
+        motivo = item.get("motivo", item.get("reason"))
+        normalizados.append({
+            "paso": paso,
+            "faceta": _texto_o_nada(item.get("faceta", item.get("facet")), MOTIVO_MAX),
+            "motivo": recortar_redactado(motivo, MOTIVO_MAX) if isinstance(motivo, str) else "",
+        })
+    return normalizados
+
+
+def _detalle_declarado(detalle_de_jacobs: dict) -> dict:
+    """Un solo saneador para el `{code, **campos}` de Jacobs: lo usan los
+    rechazos (`_rechazo_de_jacobs`) y el `motivo` de continue/preflight
+    (`_continuable`). Sale `code` y SÓLO los campos declarados, cada uno
+    saneado; lo que no se puede sanear se omite, nunca rompe la respuesta."""
+    detalle = {"code": detalle_de_jacobs.get("code")}
+    for campo in _CAMPOS_DE_CODIGO:
+        if campo not in detalle_de_jacobs:
+            continue
+        valor = detalle_de_jacobs[campo]
+        if campo == "violaciones":
+            valor = _violaciones_redactadas(valor)
+        elif campo == "pasos_costo":
+            valor = _pasos_costo_saneados(valor)
+        elif campo == "sondeadas":
+            valor = _sondeadas_saneadas(valor)
+        elif campo in ("costo_max_usd", "costo_max_aceptado_usd"):
+            # Ruling del controlador (fix round 2 ítem 5): mismo formato
+            # de punto fijo que el veredicto; un monto ilegible en un
+            # rechazo se OMITE, nunca rompe el rechazo completo.
+            try:
+                valor = _monto_texto(_monto(valor))
+            except ValueError:  # fail-soft: monto ilegible en un rechazo de Jacobs -- se omite el campo
+                continue
+        elif campo == "detalle":
+            # Texto o lista (Ruling B del controlador, Task 7); otro tipo
+            # (dict, número, null) no tiene forma declarada y se omite.
+            if isinstance(valor, str):
+                valor = recortar_redactado(valor, DETALLE_MAX)
+            elif isinstance(valor, list):
+                valor = _items_de_detalle(valor)
+            else:
+                continue
+        elif campo in ("mensaje", "motivo") and valor is not None:
+            valor = recortar_redactado(str(valor), MOTIVO_MAX)
+        detalle[campo] = valor
+    return detalle
+
+
 def _rechazo_de_jacobs(status_code: int, cuerpo, texto: str) -> HTTPException:
     detalle_de_jacobs = cuerpo.get("detail") if isinstance(cuerpo, dict) else None
     if isinstance(detalle_de_jacobs, dict) and detalle_de_jacobs.get("code") in CODIGOS_DE_JACOBS:
-        detalle = {"code": detalle_de_jacobs["code"]}
-        for campo in _CAMPOS_DE_CODIGO:
-            if campo not in detalle_de_jacobs:
-                continue
-            valor = detalle_de_jacobs[campo]
-            if campo == "violaciones":
-                valor = _violaciones_redactadas(valor)
-            elif campo == "pasos_costo":
-                valor = _pasos_costo_saneados(valor)
-            elif campo == "sondeadas":
-                valor = _sondeadas_saneadas(valor)
-            elif campo in ("costo_max_usd", "costo_max_aceptado_usd"):
-                # Ruling del controlador (fix round 2 ítem 5): mismo formato
-                # de punto fijo que el veredicto; un monto ilegible en un
-                # rechazo se OMITE, nunca rompe el rechazo completo.
-                try:
-                    valor = _monto_texto(_monto(valor))
-                except ValueError:  # fail-soft: monto ilegible en un rechazo de Jacobs -- se omite el campo
-                    continue
-            elif campo == "detalle" and valor is not None:
-                valor = recortar_redactado(str(valor), DETALLE_MAX)
-            elif campo == "mensaje" and valor is not None:
-                valor = recortar_redactado(str(valor), MOTIVO_MAX)
-            detalle[campo] = valor
+        detalle = _detalle_declarado(detalle_de_jacobs)
         return HTTPException(status_code=status_code, detail=detalle)
     if isinstance(detalle_de_jacobs, str):
         # Forma vieja/simple: {"detail": "texto"} (ej. el 409 de un doble
@@ -162,9 +211,9 @@ def _rechazo_de_jacobs(status_code: int, cuerpo, texto: str) -> HTTPException:
     elif isinstance(detalle_de_jacobs, dict):
         # Un code propio de Jacobs que NO está en CODIGOS_DE_JACOBS (ej.
         # kill_switch, enmienda ítem 1/6): el mejor texto disponible, nunca
-        # el repr de Python del dict completo.
-        crudo = str(detalle_de_jacobs.get("detalle") or detalle_de_jacobs.get("mensaje")
-                    or detalle_de_jacobs.get("code") or "")
+        # el repr de Python del dict completo (ni de un `detalle` lista, Task 7).
+        textos = [detalle_de_jacobs.get(c) for c in ("detalle", "mensaje", "code")]
+        crudo = next((t for t in textos if isinstance(t, str) and t), "")
     else:
         # "detail" ausente, o no es ni string ni dict (la lista de un 422 de
         # validación de FastAPI, u otro tipo), o el cuerpo mismo no era un
@@ -343,6 +392,30 @@ def _exigir_consentimiento(veredicto: dict, confirmado: Decimal | None) -> None:
         raise HTTPException(status_code=409, detail=detalle)
 
 
+def _costos_saneados(data: dict) -> dict:
+    """El 200 de crear y de continuar (Ruling E, Task 7). Ruling del
+    controlador (fix round 2 ítem 5): mismo formato de punto fijo que el
+    veredicto y el rechazo -- el pipeline YA se creó o ya se continuó, así
+    que un costo_max_usd ilegible se omite (no se rompe la respuesta por
+    eso); pasos_costo pasa por el mismo saneador (campos declarados, usd_max
+    formateado)."""
+    if "costo_max_usd" in data:
+        try:
+            data["costo_max_usd"] = _monto_texto(_monto(data["costo_max_usd"]))
+        except ValueError:  # fail-soft: costo_max_usd ilegible en un 200 de Jacobs -- el pipeline ya corre, se omite el campo
+            del data["costo_max_usd"]
+    if "pasos_costo" in data:
+        data["pasos_costo"] = _pasos_costo_saneados(data["pasos_costo"])
+    return data
+
+
+def _confirmado_del_cliente(crudo) -> Decimal | None:
+    try:
+        return None if crudo is None else _monto_cliente(crudo)
+    except ValueError:
+        raise HTTPException(status_code=422, detail={"code": "costo_confirmado_invalido"}) from None
+
+
 class PedidoDePrevuelo(BaseModel):
     # `Any`, no `list` (fix round 2 ítem 3): con `list`, pydantic seguía
     # respondiendo SU PROPIO 422 (forma distinta a `{"code":
@@ -352,6 +425,93 @@ class PedidoDePrevuelo(BaseModel):
     # llega intacto y `_exigir_pasos_validos` es el ÚNICO lugar que decide,
     # exactamente igual en /preflight y en la creación.
     steps: Any = None
+
+
+# --- Continuar (spec 2026-09-17 §5.1, §6.1, §6.2) --------------------------
+class PedidoDeContinuarPrevuelo(BaseModel):
+    reasignar: dict[str, str] | None = None
+
+
+class PedidoDeContinuar(PedidoDeContinuarPrevuelo):
+    # `Any` y `_monto_cliente` (Ruling E, Task 7), no `Decimal`: pydantic
+    # acepta "1e3" o " 0.6 " como Decimal; el criterio estricto es el mismo
+    # que en la creación.
+    costo_confirmado_usd: Any = None
+
+
+def _cuerpo_de_continuar(user: AuthUser, reasignar: dict[str, str] | None) -> dict:
+    cuerpo = {"invoked_by": INVOKED_BY_PLATAFORMA, "user_id": user.user_id, "tenant_id": user.tenant_id}
+    if reasignar:
+        cuerpo["reasignar"] = reasignar
+    return cuerpo
+
+
+def _lista_de_pasos(valor) -> bool:
+    return isinstance(valor, list) and all(isinstance(p, int) and not isinstance(p, bool) for p in valor)
+
+
+async def _continuable(client, pipeline_id: str, user: AuthUser,
+                       reasignar: dict[str, str] | None, umbral: Decimal) -> dict:
+    """Fail-closed (plan J, jacobs/continuar.py `previsualizar`): continuable
+    es bool; los pasos, listas de enteros; continuable=True exige motivo
+    null y veredicto; continuable=False exige motivo {code: str, ...}. El
+    veredicto se evalúa siempre que venga (Jacobs lo manda también con
+    prevuelo_rechazado y limite_de_activos). Cualquier otra forma no es un
+    pre-vuelo: 502 prevuelo_no_disponible."""
+    r = await client.post(f"{JACOBS_URL}/pipeline/{pipeline_id}/continue/preflight",
+                          json=_cuerpo_de_continuar(user, reasignar), timeout=JACOBS_PIPELINE_TIMEOUT)
+    data = _json_de_jacobs(r)
+    try:
+        continuable = data["continuable"]
+        a_correr = data["pasos_a_correr"]
+        reusados = data["pasos_reusados"]
+        motivo = data["motivo"]
+        crudo = data["veredicto"]
+        if not isinstance(continuable, bool) or not _lista_de_pasos(a_correr) or not _lista_de_pasos(reusados):
+            raise ValueError("forma de continue/preflight")
+        if continuable and (motivo is not None or crudo is None):
+            raise ValueError("continuable sin veredicto o con motivo")
+        if not continuable and (not isinstance(motivo, dict) or not isinstance(motivo.get("code"), str)):
+            raise ValueError("no continuable sin motivo")
+    except (KeyError, ValueError):
+        raise _prevuelo_no_disponible() from None
+    return {
+        "continuable": continuable,
+        "motivo": _detalle_declarado(motivo) if motivo is not None else None,
+        "pasos_a_correr": a_correr,
+        "pasos_reusados": reusados,
+        "veredicto": _evaluar_veredicto(crudo, umbral) if crudo is not None else None,
+    }
+
+
+def _no_continuable(estado: dict) -> HTTPException:
+    """ENMIENDA ítem 6 + Ruling D (Task 7): el rechazo de /continue cuando el
+    pre-vuelo dice continuable=false, por motivo.code -- nunca se inventa
+    estado_no_continuable para todo. Nada de esto llama a /continue."""
+    motivo = estado["motivo"]
+    code = motivo["code"]
+    if code == "prevuelo_rechazado":
+        veredicto = estado["veredicto"]
+        if veredicto is None:
+            return _prevuelo_no_disponible()
+        detalle = {"code": "prevuelo_rechazado", "violaciones": veredicto["violaciones"],
+                   "costo_max_usd": veredicto["costo_max_usd"], "pasos_costo": veredicto["pasos_costo"]}
+        return HTTPException(status_code=422, detail=detalle)
+    texto = motivo.get("detalle") if isinstance(motivo.get("detalle"), str) else None
+    if code == "limite_de_activos":
+        detalle = {"code": "limite_de_activos", "detalle": texto}
+        return HTTPException(status_code=429, detail=detalle)
+    if code in ("reasignacion_invalida", "plan_rechazado"):
+        detalle = {"code": code, "detalle": motivo.get("detalle")}
+        return HTTPException(status_code=422, detail=detalle)
+    mejor_texto = texto or motivo.get("mensaje") or code
+    if code == "kill_switch":
+        detalle = {"code": "jacobs_rechazo", "status": 423, "motivo": recortar_redactado(mejor_texto, MOTIVO_MAX)}
+        return HTTPException(status_code=423, detail=detalle)
+    if code in CODIGOS_DE_JACOBS:
+        return HTTPException(status_code=409, detail=motivo)
+    detalle = {"code": "estado_no_continuable", "mensaje": recortar_redactado(mejor_texto, MOTIVO_MAX)}
+    return HTTPException(status_code=409, detail=detalle)
 
 
 # engine_state.active_pipelines (memoria) se descarta apenas la pipeline
@@ -387,7 +547,7 @@ def es_del_usuario(user_id: str, tenant_id: str, user: AuthUser) -> bool:
     return user_id == user.user_id and tenant_id == user.tenant_id
 
 
-async def _require_pipeline_owner(pipeline_id: str, user: AuthUser):
+async def _require_pipeline_owner(pipeline_id: str, user: AuthUser) -> str | None:
     # 404 (no 403) para no confirmarle a un no-dueño que el pipeline_id
     # existe. Pipelines creadas antes de esta migración no tienen
     # owner_ack_at poblado y también devuelven 404 -- costo único de la
@@ -400,12 +560,14 @@ async def _require_pipeline_owner(pipeline_id: str, user: AuthUser):
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT user_id, tenant_id, owner_ack_at FROM jacobs_pipelines WHERE pipeline_id=%s",
+                "SELECT user_id, tenant_id, owner_ack_at, name FROM jacobs_pipelines WHERE pipeline_id=%s",
                 (pipeline_id,),
             )
             row = await cur.fetchone()
     if row is None or row[2] is None or not es_del_usuario(row[0], row[1], user):
         raise HTTPException(status_code=404, detail="pipeline_no_encontrado")
+    # El nombre lo usa continue para el estado del panel (sin otra consulta).
+    return row[3]
 
 
 # T6-5a (2026-09-15): la lista sale de jacobs_pipelines con la MISMA regla de
@@ -423,6 +585,57 @@ SQL_PIPELINES_DEL_USUARIO = (
 LISTA_PIPELINES_MAX = int(os.getenv("JAX_LISTA_PIPELINES_MAX", "50"))
 
 
+# Causa de un pipeline detenido (desvío DV-9 del plan): el último de estos
+# eventos de jacobs_events manda. paso/detalle salen del último STEP_FAILED.
+EVENTOS_DE_CAUSA = {
+    "STEP_FAILED": "fallo",
+    "PIPELINE_ABORTED": "fallo",
+    "PIPELINE_CANCELLED": "cancelado",
+    "KILL_SWITCH_ABORTED": "kill_switch",
+    "REAPED": "expirado",
+}
+ESTADOS_CONTINUABLES = ("aborted", "expired")
+
+
+def sql_eventos_de_causa(n_ids: int) -> str:
+    """Una consulta por lista, por idx_events_pipeline (jax/jacobs/store.py).
+    Sin ORDER BY a propósito: el orden por id se hace en Python sobre pocas
+    filas y así el plan no necesita filesort (EXPLAIN en
+    tests/test_pipelines_continuar.py)."""
+    ids = ", ".join(["%s"] * n_ids)
+    tipos = ", ".join(["%s"] * len(EVENTOS_DE_CAUSA))
+    return (f"SELECT pipeline_id, id, event_type, payload FROM jacobs_events "
+            f"WHERE pipeline_id IN ({ids}) AND event_type IN ({tipos})")
+
+
+def _payload(crudo) -> dict:
+    if isinstance(crudo, dict):
+        return crudo
+    try:
+        datos = json.loads(crudo) if crudo else {}
+    except ValueError:
+        return {}  # payload ilegible: la causa sale sin paso ni detalle; nunca se inventan
+    return datos if isinstance(datos, dict) else {}
+
+
+def causa_de(eventos: list[tuple[int, str, str | None]]) -> dict:
+    """eventos: (id, event_type, payload) de UN pipeline."""
+    if not eventos:
+        return {"tipo": "desconocida"}
+    ordenados = sorted(eventos, key=lambda e: e[0])
+    causa = {"tipo": EVENTOS_DE_CAUSA[ordenados[-1][1]]}
+    if causa["tipo"] == "fallo":
+        fallos = [e for e in ordenados if e[1] == "STEP_FAILED"]
+        if fallos:
+            datos = _payload(fallos[-1][2])
+            paso = datos.get("step_index")
+            if isinstance(paso, int) and not isinstance(paso, bool):
+                causa["paso"] = paso
+            if datos.get("error"):
+                causa["detalle"] = recortar_redactado(str(datos["error"]), MOTIVO_MAX)
+    return causa
+
+
 @router.get("")
 async def list_pipelines(user: AuthUser = Depends(get_current_user)):
     pool = await get_pool()
@@ -431,8 +644,15 @@ async def list_pipelines(user: AuthUser = Depends(get_current_user)):
             await cur.execute(SQL_PIPELINES_DEL_USUARIO,
                               (user.user_id, user.tenant_id, LISTA_PIPELINES_MAX))
             filas = await cur.fetchall()
+            detenidos = [pid for pid, _n, st, _c, _u in filas if st in ESTADOS_CONTINUABLES]
+            eventos = defaultdict(list)
+            if detenidos:
+                await cur.execute(sql_eventos_de_causa(len(detenidos)), (*detenidos, *EVENTOS_DE_CAUSA))
+                for pid, evento_id, tipo, payload in await cur.fetchall():
+                    eventos[pid].append((evento_id, tipo, payload))
     return {"pipelines": [
-        {"pipeline_id": pid, "name": name, "status": st, "created_at": c, "updated_at": u}
+        {"pipeline_id": pid, "name": name, "status": st, "created_at": c, "updated_at": u,
+         "causa": causa_de(eventos[pid]) if st in ESTADOS_CONTINUABLES else None}
         for pid, name, st, c, u in filas
     ]}
 
@@ -466,11 +686,7 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
     # Sin pasos no hay pre-vuelo ni costo que confirmar (desvío DV-8 del
     # plan); mismo criterio que /preflight (fix round 1 ítem 5).
     _exigir_pasos_validos(steps)
-    try:
-        crudo = body.pop("costo_confirmado_usd", None)
-        confirmado = None if crudo is None else _monto_cliente(crudo)
-    except ValueError:
-        raise HTTPException(status_code=422, detail={"code": "costo_confirmado_invalido"}) from None
+    confirmado = _confirmado_del_cliente(body.pop("costo_confirmado_usd", None))
     body["user_id"] = user.user_id
     body["tenant_id"] = user.tenant_id
     body["invoked_by"] = INVOKED_BY_PLATAFORMA
@@ -483,19 +699,7 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(get_current
         # crear si su pre-vuelo interno da más.
         body["costo_max_aceptado_usd"] = _monto_texto(confirmado if confirmado is not None else umbral)
         r = await client.post(f"{JACOBS_URL}/pipeline", json=body, timeout=JACOBS_PIPELINE_TIMEOUT)
-        data = _json_de_jacobs(r)
-        # Ruling del controlador (fix round 2 ítem 5): mismo formato de
-        # punto fijo que el veredicto y el rechazo -- el pipeline YA se creó,
-        # así que un costo_max_usd ilegible se omite (no se rompe la
-        # respuesta por eso); pasos_costo pasa por el mismo saneador
-        # (campos declarados, usd_max formateado).
-        if "costo_max_usd" in data:
-            try:
-                data["costo_max_usd"] = _monto_texto(_monto(data["costo_max_usd"]))
-            except ValueError:  # fail-soft: costo_max_usd ilegible en la respuesta de creación -- se omite el campo
-                del data["costo_max_usd"]
-        if "pasos_costo" in data:
-            data["pasos_costo"] = _pasos_costo_saneados(data["pasos_costo"])
+        data = _costos_saneados(_json_de_jacobs(r))
         pipeline_id = data.get("pipeline_id")
         if pipeline_id:
             # Antes de admitir el recurso o publicar el evento de WS
@@ -582,3 +786,57 @@ async def cancel_pipeline(
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
+
+
+@router.post("/{pipeline_id}/continue/preflight")
+async def continue_preflight(pipeline_id: str, pedido: PedidoDeContinuarPrevuelo,
+                             user: AuthUser = Depends(get_current_user)):
+    await _require_pipeline_owner(pipeline_id, user)
+    umbral = await ajustes.valor(ajustes.CONFIRMAR_USD)
+    client = await get_http_client()
+    try:
+        return await _continuable(client, pipeline_id, user, pedido.reasignar, umbral)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), MOTIVO_MAX)})
+
+
+@router.post("/{pipeline_id}/continue")
+async def continue_pipeline(pipeline_id: str, pedido: PedidoDeContinuar,
+                            user: AuthUser = Depends(get_current_user)):
+    nombre = await _require_pipeline_owner(pipeline_id, user)
+    # Continuar ocupa un cupo del tenant, igual que crear (desvío DV-11).
+    limite = await ajustes.valor(ajustes.MAX_PIPELINES)
+    if not await resource_manager.can_start_pipeline(user.tenant_id, limite):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"code": "limite_de_pipelines", "max": limite},
+        )
+    confirmado = _confirmado_del_cliente(pedido.costo_confirmado_usd)
+    umbral = await ajustes.valor(ajustes.CONFIRMAR_USD)
+    client = await get_http_client()
+    try:
+        estado = await _continuable(client, pipeline_id, user, pedido.reasignar, umbral)
+        if not estado["continuable"]:
+            raise _no_continuable(estado)
+        _exigir_consentimiento(estado["veredicto"], confirmado)
+        cuerpo = _cuerpo_de_continuar(user, pedido.reasignar)
+        # Siempre (desvío DV-7), igual que crear: Jacobs responde 409
+        # costo_supera_lo_aceptado sin continuar si su pre-vuelo da más.
+        cuerpo["costo_max_aceptado_usd"] = _monto_texto(confirmado if confirmado is not None else umbral)
+        r = await client.post(f"{JACOBS_URL}/pipeline/{pipeline_id}/continue", json=cuerpo,
+                              timeout=JACOBS_PIPELINE_TIMEOUT)
+        data = _costos_saneados(_json_de_jacobs(r))
+        await resource_manager.admit_pipeline(user.tenant_id, pipeline_id)
+        await engine_state.continuar_pipeline(
+            PipelineState(pipeline_id=pipeline_id, tenant_id=user.tenant_id, user_id=user.user_id,
+                          name=nombre or "", status="running"),
+            user.tenant_id, user.user_id,
+            {"run_epoch": data.get("run_epoch"), "pasos_reusados": data.get("pasos_reusados", [])},
+        )
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), MOTIVO_MAX)})
