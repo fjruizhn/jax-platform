@@ -56,7 +56,14 @@ CANARY_INTERVAL_SECONDS = int(os.getenv("CANARY_INTERVAL_SECONDS", "3600"))
 # otras cuatro, y con 900 el margen caia de ~32% a ~11% sin que nadie lo
 # decidiera. Si cambia el conjunto de facets o un timeout de
 # _invoke_facet_dispatch, este numero se recalcula.
-CANARY_SWEEP_TIMEOUT_SECONDS = 1080
+#
+# 1080 -> 1180 el 2026-09-17 (SP3 del Ejecutor): la sonda de jax_local entra
+# por _call_ollama, que ahora toma el carril de la Mesa, y ese carril puede
+# estar tomado por un turno de chat de jax_local (hasta su timeout de 180s).
+# Peor caso legitimo: 5*125 + 180 (esperar el carril) + 180 = 985s. Con 1080
+# el margen caia a ~10%. 1180 deja ~20% y sigue por debajo de un tercio del
+# intervalo (1200s).
+CANARY_SWEEP_TIMEOUT_SECONDS = 1180
 
 CANARY_USER_ID = "__canary__"
 # NO puede parecer una pregunta de identidad de modelo: _is_model_identity_question()

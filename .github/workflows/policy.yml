@@ -1525,7 +1525,11 @@ jobs:
           # sobre #98): +2 en test_ejecutor_config_c5.py (semilla sin pisar con
           # `client`; compuerta de datos de clientes nace cerrada, puro). Visto en
           # rojo con dos mutaciones (compuerta en "true"; REPLACE en vez de INSERT IGNORE).
-          PISO_PASSED = 1509
+          # 1509 -> 1520 el 2026-09-17 (Ejecutor SP3, carril de la Mesa): los +11
+          # puros de test_carril_mesa.py también corren con DB. Medido local contra
+          # jax_memory_test: 1520 passed / 1 failed / 1 skipped (el failed, el mismo
+          # hueco ambiental de test_seed_kimi_y_ada_como_motor).
+          PISO_PASSED = 1520
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2082,7 +2086,13 @@ jobs:
       # 893 -> 894 el 2026-09-17 (Ejecutor SP1 plan 4, config de C5, rebase sobre
       # #98): +1 puro en test_ejecutor_config_c5.py; el otro pide `client` y sube
       # los skips 616 -> 617.
-      JAX_CI_MIN_PASSED: "894"
+      # 894 -> 905 el 2026-09-17 (Ejecutor SP3, carril de la Mesa, rebase sobre C5):
+      # +11 puros en test_carril_mesa.py (la llamada a Ollama va dentro del carril y
+      # lo suelta, también si falla; espera a otro PROCESO sin congelar el loop; sin
+      # JAX_PROXY_CARRIL_RAIZ no hay llamada ni arranque; toda llamada a Ollama del
+      # backend dentro del carril; conftest aísla el carril de producción; copia de
+      # Motivo). Vistos en rojo antes.
+      JAX_CI_MIN_PASSED: "905"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
