@@ -248,3 +248,36 @@ describe('AdminSettings -- ajustes que mandan', () => {
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/apariencia'))
   })
 })
+
+describe('AdminSettings -- umbral de confirmación de costo (spec 2026-09-17 §6.1)', () => {
+  const CON_UMBRAL = { data: {
+    config: [{ key: 'system_name', value: 'Axioma' }, { key: 'pipeline_confirmar_usd', value: '0.50' }],
+    limites: { ...LIMITES, pipeline_confirmar_usd: { min: '0', max: '999999.99', decimales: 2 } },
+  } }
+
+  it('el campo toma mínimo, máximo y paso del servidor', async () => {
+    api.get.mockResolvedValue(CON_UMBRAL)
+    renderSettings()
+    const campo = await screen.findByLabelText(es.adminSettingsConfirmarUsd)
+    expect(campo).toHaveValue(0.5)
+    expect(campo).toHaveAttribute('min', '0')
+    expect(campo).toHaveAttribute('max', '999999.99')
+    expect(campo).toHaveAttribute('step', '0.01')
+  })
+
+  it('un umbral fuera de rango se nombra con la etiqueta del campo', async () => {
+    api.get.mockResolvedValue(CON_UMBRAL)
+    api.put.mockRejectedValue(rechazo(400, { code: 'config_valor_invalido', clave: 'pipeline_confirmar_usd' }))
+    renderSettings()
+    await guardar()
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.config_valor_invalido(es.adminSettingsConfirmarUsd))
+  })
+
+  it('la etiqueta y la ayuda existen en los dos idiomas y difieren', () => {
+    for (const clave of ['adminSettingsConfirmarUsd', 'adminSettingsConfirmarUsdAyuda']) {
+      expect(es[clave], `es.${clave}`).toBeTruthy()
+      expect(en[clave], `en.${clave}`).toBeTruthy()
+      expect(es[clave]).not.toBe(en[clave])
+    }
+  })
+})

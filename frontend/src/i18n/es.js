@@ -622,6 +622,8 @@ export default {
   adminSettingsRetention: 'Retención de tareas web (días)',
   adminSettingsRetentionAyuda: 'Días que se guarda una tarea web (misión, resultado y dueño) antes de borrarse.',
   adminSettingsSystemName: 'Nombre del sistema',
+  adminSettingsConfirmarUsd: 'Confirmar pipelines desde (USD)',
+  adminSettingsConfirmarUsdAyuda: 'Por encima de este costo máximo, o con un paso sin precio, se pide confirmación antes de correr. 0 = confirmar siempre.',
   adminSettingsDark: 'Oscuro',
   adminSettingsLight: 'Claro',
 

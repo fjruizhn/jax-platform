@@ -619,6 +619,8 @@ export default {
   adminSettingsRetention: 'Web task retention (days)',
   adminSettingsRetentionAyuda: 'Days a web task (mission, result and owner) is kept before it is deleted.',
   adminSettingsSystemName: 'System name',
+  adminSettingsConfirmarUsd: 'Confirm pipelines from (USD)',
+  adminSettingsConfirmarUsdAyuda: 'Above this maximum cost, or with a step without price, confirmation is required before running. 0 = always confirm.',
   adminSettingsDark: 'Dark',
   adminSettingsLight: 'Light',
 
