@@ -87,6 +87,7 @@ from api.admin import (
     facet_bindings_router,
     admin_motors_router,
     smtp_router,
+    kill_switch_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -171,6 +172,7 @@ ROUTERS = (
     facet_bindings_router,
     admin_motors_router,
     smtp_router,
+    kill_switch_router,
     apariencia_router,
 )
 for _router in ROUTERS:

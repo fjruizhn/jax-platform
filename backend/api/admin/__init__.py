@@ -9,6 +9,7 @@ from .models import router as models_router
 from .facet_bindings import router as facet_bindings_router
 from .motors import router as admin_motors_router
 from .smtp import router as smtp_router
+from .kill_switch import router as kill_switch_router
 
 # facet_models_router (legacy, tabla `facet_models`) DESREGISTRADO el
 # 2026-08-10: desde Bloque C nadie invoca con facet_models (la fuente es
@@ -28,4 +29,5 @@ __all__ = [
     "facet_bindings_router",
     "admin_motors_router",
     "smtp_router",
+    "kill_switch_router",
 ]
