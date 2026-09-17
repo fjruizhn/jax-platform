@@ -579,8 +579,12 @@ jobs:
             // traducida, en), BottomBar.ejecutor.test.jsx (modo sólo para superadmin) y
             // contraste.test.js (token modo-ejecutor, 5.47:1). Vistos en rojo; 10 mutaciones con
             // cmp previo, todas en rojo. Medido dos veces: 618 passed, 0 fallidos, 72 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 618) {
-              console.error("PISO ROTO: se esperaban 618 tests de vitest CORRIDOS y 0 fallidos.");
+            // 618 -> 620 el 2026-09-17 (misión terminada: la pantalla se refresca): useEjecutor.test.js
+            // +2 (una misión que ya terminó relee /estado y la lista aunque no hubiera sondeo; la que
+            // sigue en curso no relee /estado en cada vuelta). Visto en rojo; mutación con cmp previo
+            // (quitar cargarEstado del cierre) -> rojo. Medido: 620 passed, 0 fallidos, 72 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 620) {
+              console.error("PISO ROTO: se esperaban 620 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

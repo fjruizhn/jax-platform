@@ -204,3 +204,23 @@ describe('useEjecutor -- pausa del Ejecutor', () => {
     expect(api.get).toHaveBeenCalledWith('/ejecutor/estado')
   })
 })
+
+describe('useEjecutor -- una misión que ya terminó relee /estado y la lista', () => {
+  it('sin sondeo en marcha, abrir una misión terminada refresca pausa y lista', async () => {
+    // Visto en real (2026-09-17 11:23, Fernando): el turno falló con la pausa de C5 puesta, y la
+    // pantalla siguió mostrando «En curso» y «pausa no puesta» porque el refresco sólo releía
+    // /estado cuando había un temporizador corriendo.
+    responderGet(() => mision('fallida'))
+    await useEjecutor.getState().abrirMision('m1')
+    const rutas = api.get.mock.calls.map(([u]) => u)
+    expect(rutas).toContain('/ejecutor/estado')
+    expect(rutas).toContain('/ejecutor/misiones')
+  })
+
+  it('la misión que sigue en curso no relee /estado en cada vuelta', async () => {
+    responderGet(() => mision('en_curso'))
+    await useEjecutor.getState().abrirMision('m1')
+    useEjecutor.getState().detenerPolling()
+    expect(api.get.mock.calls.filter(([u]) => u === '/ejecutor/estado')).toHaveLength(0)
+  })
+})
