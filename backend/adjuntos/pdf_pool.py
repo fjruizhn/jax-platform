@@ -1,5 +1,6 @@
 """ProcessPoolExecutor acotado para pypdf (RD1, 2026-09-17; ronda de
-corrección 1 el mismo día, sobre 1834fa3).
+corrección 1 el mismo día sobre 1834fa3; ronda de corrección 2 sobre
+1404ba7).
 
 pypdf es CPU-bound y retiene el GIL incluso corriendo en un hilo
 (asyncio.to_thread no alcanza: medido en Task 11 -- health p95 244 ms con
@@ -23,21 +24,56 @@ QUÉ PUEDE ROMPER UN POOL Y CÓMO SE MAPEA (todo al mismo código estable
    con "dejarlo correr en el fondo": hay que matar el pool entero (`_matar_pool`)
    y levantar uno nuevo (`_reciclar`).
 2. WORKER MUERTO SIN AVISAR (OOM, segfault de pypdf, `os._exit`): el
-   ProcessPoolExecutor lo detecta solo y marca TODO el pool `BrokenProcessPool`
-   -- cualquier submit posterior, y cualquier future que estuviera corriendo
-   o en cola en ese momento, sale con esa excepción. Se mapea igual que un
-   timeout (mismo `_reciclar`).
-3. CANCELACIÓN QUE SE ORIGINA EN EL POOL, NO EN EL REQUEST: cuando UNA
-   extracción recicla el pool (por 1 o 2), CUALQUIER OTRA que estuviera en
-   cola en ese mismo pool (todavía no despachada a un worker) puede salir
-   con `CancelledError` en vez de `BrokenProcessPool` (variable según timing;
-   ver el fix report). Point importante: una cancelación REAL de este
-   request -- alguien llamó `.cancel()` sobre ESTA tarea, p. ej. el cliente
-   se desconectó -- tiene que seguir siendo `CancelledError` de verdad, no
-   convertirse en `pdf_ilegible`. Se distinguen con `Task.cancelling()`
-   (Python 3.11+): >0 sólo cuando ALGUIEN pidió cancelar ESTA tarea
-   puntualmente, no cuando lo que se canceló es el future que esta tarea
-   esperaba por otra razón (ver `extraer_texto_en_pool`).
+   ProcessPoolExecutor lo detecta solo (un hilo de gestión interno) y marca
+   TODO el pool roto (`_broken`) -- cualquier submit posterior, y cualquier
+   future que estuviera corriendo o en cola en ese momento, sale con
+   `BrokenProcessPool`. Se mapea igual que un timeout.
+3. NADIE ESPERÓ EL FUTURE QUE MURIÓ (ronda de corrección 2, hallazgo NUEVO):
+   si a un request lo cancelan (el worker sigue corriendo) y ESE worker
+   muere un poco después, no queda NADIE despierto para notar la muerte y
+   disparar `_reciclar` -- sin nada más, el pool queda roto PARA SIEMPRE
+   (todo submit futuro revienta con `BrokenProcessPool`, un wedge
+   permanente). `_pool_actual` chequea proactivamente, ANTES de devolver el
+   pool a un request nuevo, si sigue sirviendo (`_esta_roto_o_cerrado`) y si
+   no, lo recicla ahí mismo -- así el PRÓXIMO request (no uno que ya estaba
+   en vuelo) repara el wedge solo.
+4. SUBMIT SOBRE UN POOL ROTO/CERRADO (ronda de corrección 2, item 1):
+   `loop.run_in_executor(pool, ...)` llama a `pool.submit(...)`
+   SINCRÓNICAMENTE -- si el pool ya está roto o en shutdown, `submit()`
+   revienta ANTES de devolver ningún future, con `BrokenProcessPool` o con
+   un `RuntimeError('cannot schedule new futures after shutdown')` (no hay
+   una excepción dedicada para esto último). El `try` de
+   `extraer_texto_en_pool` cubre TAMBIÉN esa línea (antes quedaba afuera, y
+   esos dos escapaban crudos como 500 durante la ventana de un reciclado en
+   curso). El chequeo proactivo de `_pool_actual` (punto 3) reduce la
+   ventana pero no la cierra del todo -- el hilo de gestión del executor
+   puede marcar el pool roto en cualquier momento, en OTRO hilo, entre ese
+   chequeo y el `submit()` real -- por eso el catch reactivo sigue
+   haciendo falta como respaldo.
+5. CANCELACIÓN QUE SE ORIGINA EN EL POOL, NO EN EL REQUEST: cuando UNA
+   extracción recicla el pool (por 1, 2 o 4), CUALQUIER OTRA que estuviera
+   en cola en ese mismo pool (todavía no despachada a un worker) puede
+   salir con `CancelledError` en vez de `BrokenProcessPool` (variable según
+   timing). Importante: una cancelación REAL de este request -- alguien
+   llamó `.cancel()` sobre ESTA tarea, p. ej. el cliente se desconectó --
+   tiene que seguir siendo `CancelledError` de verdad, no convertirse en
+   `pdf_ilegible`, y NO dispara un reciclado (no hay que castigar a otras
+   extracciones en vuelo por un cliente ajeno que se fue -- costo aceptado:
+   ese worker puntual puede quedar corriendo hasta que algo MÁS lo note,
+   ver el fix report). Se distinguen con `Task.cancelling()` (Python
+   3.11+): >0 sólo cuando ALGUIEN pidió cancelar ESTA tarea puntualmente,
+   no cuando lo que se canceló es el future que esta tarea esperaba por
+   otra razón (ver `extraer_texto_en_pool`).
+
+NI `_esta_roto_o_cerrado` NI EL `RuntimeError` DE SUBMIT TIENEN UNA SEÑAL
+PÚBLICA: `ProcessPoolExecutor` no expone una propiedad "¿sigo sirviendo?" --
+el propio `submit()` (ver `concurrent/futures/process.py` en la stdlib) lee
+`self._broken`/`self._shutdown_thread` (privados) para decidir qué excepción
+lanzar, y el mensaje del `RuntimeError` es el único identificador que existe
+para ese caso. `_esta_roto_o_cerrado` es el ÚNICO lugar de este módulo que
+toca esos atributos, con un test dedicado (`test_esta_roto_o_cerrado_...`) --
+si una versión futura de Python les cambia el nombre, se rompe ahí primero,
+no en silencio.
 
 MATAR UN POOL, SIN EL ATRIBUTO PRIVADO `_processes` (ronda de corrección 1,
 item 3): Python 3.14 agregó `ProcessPoolExecutor.terminate_workers()`
@@ -58,14 +94,26 @@ un intérprete de Python limpio que solo importa lo que su función necesita
 (adjuntos.pdf, es decir pypdf), nunca el estado de la app (sin DB, sin
 FastAPI, sin loop) -- ver la nota del brief sobre el worker.
 
-PRECALENTADO (ronda de corrección 1, item 5): `crear_pool()` no arranca
-procesos reales -- ProcessPoolExecutor los arranca perezosamente recién
-cuando le llega el primer trabajo. Sin precalentar, el PRIMER timeout real
-de cada worker incluiría el costo fijo de spawn (arrancar un intérprete de
-Python) + importar pypdf, no solo el trabajo de pypdf. `precalentar_pool()`
-manda una tarea trivial por cada worker configurado y la espera con un
-límite acotado (best-effort, no fail-closed: si tarda o falla, el arranque
-del servicio sigue igual -- es una optimización, no un contrato)."""
+PRECALENTADO (ronda de corrección 1, item 5; ronda 2 lo extiende a
+`_reciclar`): `crear_pool()` no arranca procesos reales -- ProcessPoolExecutor
+los arranca perezosamente recién cuando le llega el primer trabajo. Sin
+precalentar, el PRIMER timeout real de cada worker (en el arranque, o
+después de CUALQUIER reciclado) incluiría el costo fijo de spawn + import de
+pypdf. `precalentar_pool()` manda una tarea trivial por cada worker
+configurado, acotada y best-effort (si tarda o falla, no tumba nada -- es
+una optimización, no un contrato). `_reciclar` la dispara en BACKGROUND
+(`asyncio.create_task`, sin awaitarla) después de soltar el lock de
+reciclado -- si la esperara ADENTRO del lock, cualquier otra extracción que
+necesite ese mismo lock (otro reciclado, `_pool_actual`) quedaría bloqueada
+hasta 10 s en vez de la fracción de segundo que toma matar+crear (ver
+`test_reciclar_no_bloquea_el_lock_durante_el_precalentado`).
+
+CIERRE FAIL-CLOSED (ronda de corrección 2, item 4): `cerrar_pool()` (el
+shutdown del lifespan) marca `_cerrado = True` ANTES de matar el pool.
+Mientras `_cerrado`, ni `_pool_actual` ni `_reciclar` vuelven a crear un pool
+-- un request que seguía en vuelo durante el shutdown no puede "revivir" un
+pool que después nadie va a volver a cerrar. Ese request sale con
+`pdf_ilegible` en vez de con un pool fantasma."""
 import asyncio
 import logging
 import multiprocessing
@@ -81,6 +129,11 @@ logger = logging.getLogger(__name__)
 _MP_CONTEXT = multiprocessing.get_context("spawn")
 
 _pool: ProcessPoolExecutor | None = None
+
+# Ronda de corrección 2, item 4: una vez cerrado, no se vuelve a crear nada.
+# Reseteado a False sólo por los tests (ver conftest de este archivo); en
+# producción un proceso corre el lifespan una sola vez.
+_cerrado = False
 
 # Un asyncio.Lock por event loop (no uno solo a nivel de módulo): desde
 # Python 3.10 el Lock no exige un loop corriendo al crearse, pero SÍ se ata
@@ -100,8 +153,26 @@ def _lock_de_reciclado() -> asyncio.Lock:
     return lock
 
 
+def _esta_roto_o_cerrado(pool: ProcessPoolExecutor) -> bool:
+    """¿Este executor ya no puede aceptar trabajo? No hay una propiedad
+    pública para esto (ver el docstring del módulo) -- `submit()` mismo lee
+    estos dos atributos privados para decidir si revienta. Único lugar del
+    módulo que los toca; con test dedicado."""
+    return bool(pool._broken) or pool._shutdown_thread
+
+
+def _runtime_error_de_pool_cerrado(error: RuntimeError) -> bool:
+    """El único mensaje que `ProcessPoolExecutor.submit()` usa para "no
+    puedo aceptar más trabajo" (más allá de `BrokenProcessPool`) es un
+    `RuntimeError` con este texto -- no hay una excepción dedicada (ver
+    `concurrent/futures/process.py::submit`, citado en el fix report).
+    Cualquier OTRO `RuntimeError` (de `extraer_texto`, de cualquier otra
+    parte) tiene que seguir de largo, no convertirse en `pdf_ilegible`."""
+    return "cannot schedule new futures" in str(error)
+
+
 def _precalentar() -> None:
-    """Tarea trivial de precalentado (item 5): fuerza, en un worker recién
+    """Tarea trivial de precalentado: fuerza, en un worker recién
     arrancado, el import de `adjuntos.pdf` (que a su vez importa pypdf a
     nivel de módulo) antes de que llegue la primera extracción real."""
     import adjuntos.pdf  # noqa: F401
@@ -109,11 +180,15 @@ def _precalentar() -> None:
 
 def crear_pool() -> ProcessPoolExecutor:
     """Crea (o reemplaza) el pool global. Lo llama el lifespan al arrancar
-    (después de validar JAX_ADJUNTO_PDF_PROCESOS) y `_reciclar` tras matar un
-    pool colgado/roto. Síncrona y sin bloquear: ProcessPoolExecutor no
-    arranca procesos reales en el constructor, los arranca de a uno según
-    hace falta cuando se le manda trabajo (submit/run_in_executor) -- por
-    eso `precalentar_pool()` existe aparte."""
+    (después de validar JAX_ADJUNTO_PDF_PROCESOS) y `_reciclar`/`_pool_actual`
+    tras matar un pool colgado/roto/cerrado. Síncrona y sin bloquear:
+    ProcessPoolExecutor no arranca procesos reales en el constructor, los
+    arranca de a uno según hace falta cuando se le manda trabajo
+    (submit/run_in_executor) -- por eso `precalentar_pool()` existe aparte.
+
+    NO chequea `_cerrado`: es una primitiva de bajo nivel, sin opinión sobre
+    cuándo es válido llamarla -- esa decisión vive en `_pool_actual` y
+    `_reciclar`, los únicos dos lugares que la invocan después del arranque."""
     global _pool
     tamano = limites.cargar_procesos_de_pdf()
     _pool = ProcessPoolExecutor(max_workers=tamano, mp_context=_MP_CONTEXT)
@@ -165,25 +240,45 @@ async def cerrar_pool() -> None:
     worker colgado -- o este shutdown mata el pool viejo ENTERO antes de que
     el reciclado llegue a crear uno nuevo (y no queda nada corriendo), o el
     reciclado termina primero y este shutdown mata el pool YA reciclado.
-    Sin pool creado, no hace nada -- no es fail-open: no hay nada que
-    cerrar."""
-    global _pool
+
+    Marca `_cerrado = True` (ronda de corrección 2, item 4) ANTES de matar:
+    ningún reciclado ni ninguna creación perezosa posterior puede volver a
+    levantar un pool que nadie va a cerrar de nuevo -- un request que sigue
+    en vuelo cuando el lifespan está bajando sale con pdf_ilegible, no con
+    un pool fantasma. Sin pool creado, no hace nada -- no es fail-open: no
+    hay nada que cerrar."""
+    global _pool, _cerrado
     async with _lock_de_reciclado():
+        _cerrado = True
         pool, _pool = _pool, None
         if pool is not None:
             await _matar_pool(pool)
 
 
 async def _pool_actual() -> ProcessPoolExecutor:
-    """Creación perezosa, protegida contra la carrera con un reciclado que
-    esté a mitad de camino (ver `_reciclar`): sin el lock, una request nueva
-    que llega mientras `_pool` está en None (durante el apagado del pool
-    colgado) podría crear SU PROPIO pool nuevo, que el reciclado pisaría sin
-    apagar al terminar -- un ProcessPoolExecutor perdido (fuga, aunque
-    acotada: sin submits nunca llegó a levantar procesos reales)."""
-    if _pool is not None:
-        return _pool
+    """Devuelve un pool que sigue sirviendo -- crea uno si no hay
+    (perezoso), o lo reemplaza si el que había quedó roto/cerrado por fuera
+    de este módulo (ronda de corrección 2, item 1: el hallazgo del wedge
+    permanente -- nadie esperó el future que mató al worker, así que nadie
+    llamó a `_reciclar` por las buenas). El chequeo se hace ANTES de que
+    `extraer_texto_en_pool` intente un submit que reventaría crudo.
+
+    Fail-closed durante el shutdown (item 4): si `_cerrado`, no crea nada --
+    levanta `PdfIlegible` directo, la misma familia de errores que ya usa
+    el resto del módulo."""
+    pool = _pool
+    if pool is not None and not _esta_roto_o_cerrado(pool):
+        return pool
+    if pool is not None:
+        # Roto/cerrado por fuera -- el mismo camino de matar+recrear que un
+        # timeout, con la MISMA guarda contra dobles reciclados.
+        await _reciclar(pool)
+        if _pool is not None:
+            return _pool
+        raise PdfIlegible("cerrado")
     async with _lock_de_reciclado():
+        if _cerrado:
+            raise PdfIlegible("cerrado")
         if _pool is None:
             crear_pool()
         return _pool
@@ -191,18 +286,40 @@ async def _pool_actual() -> ProcessPoolExecutor:
 
 async def _reciclar(pool_sospechoso: ProcessPoolExecutor) -> None:
     """Descarta `pool_sospechoso` y levanta un pool nuevo en su lugar --
-    ante un timeout, un BrokenProcessPool (un worker murió de verdad) o una
-    cancelación que se originó en el pool mismo (ver el docstring del
-    módulo). La guarda evita que dos llamadas casi simultáneas reciclen dos
-    veces: la primera en tomar el lock gana, pone `_pool` en el pool nuevo,
-    y la segunda, al entrar, ve que el pool global ya no es el que ella vio
-    sospechoso y no hace nada (ver
-    test_dos_timeouts_simultaneos_no_duplican_el_reciclado)."""
+    ante un timeout, un BrokenProcessPool (un worker murió de verdad), un
+    RuntimeError de submit sobre un pool cerrado, o una cancelación que se
+    originó en el pool mismo (ver el docstring del módulo). La guarda evita
+    que dos llamadas casi simultáneas reciclen dos veces: la primera en
+    tomar el lock gana, pone `_pool` en el pool nuevo, y la segunda, al
+    entrar, ve que el pool global ya no es el que ella vio sospechoso y no
+    hace nada (ver test_dos_timeouts_simultaneos_no_duplican_el_reciclado).
+
+    Si `_cerrado` (el lifespan está bajando, ver `cerrar_pool`), mata el
+    pool sospechoso IGUAL (no dejarlo colgado) pero NO crea uno nuevo --
+    fail-closed, ver item 4.
+
+    Si esta tarea se cancela MIENTRAS espera `_matar_pool` (ronda de
+    corrección 2, item 3), `crear_pool()` nunca corre y `_pool` queda en
+    `None` -- deliberado, sin `asyncio.shield`: la detección de
+    `_pool_actual` (arriba) se autocura sola en la SIGUIENTE llamada,
+    sin necesitar que ESTA tarea cancelada termine su trabajo (ver
+    test_cancelar_mientras_reciclar_espera_matar_pool_se_autocura)."""
+    global _pool
     async with _lock_de_reciclado():
         if _pool is not pool_sospechoso:
             return  # otra llamada ya reciclo por este mismo pool
         await _matar_pool(pool_sospechoso)
+        _pool = None
+        if _cerrado:
+            return  # apagado en curso -- no revivir el pool (item 4)
         crear_pool()
+    # Fuera del lock (item 6): precalentar puede tardar hasta 10 s
+    # (best-effort); adentro del lock bloquearía a cualquier otra extracción
+    # o reciclado que necesite el mismo lock. En background: si otra
+    # extracción llega antes de que termine, paga el costo de spawn que el
+    # precalentado no llegó a adelantar -- ni mejor ni peor que sin
+    # precalentado, nunca una regresión.
+    asyncio.create_task(precalentar_pool())
 
 
 async def extraer_texto_en_pool(
@@ -213,19 +330,24 @@ async def extraer_texto_en_pool(
     caracteres los sigue aplicando `extraer_texto` DENTRO del worker -- este
     módulo solo decide dónde corre y cuánto tiempo se le da.
 
-    Timeout, worker muerto (BrokenProcessPool) y cancelación inducida por el
-    pool se mapean los tres al mismo PdfIlegible que ya usa el endpoint para
-    "PDF ilegible" (código estable `pdf_ilegible`, sin agregar uno nuevo) y
+    Timeout, worker muerto (BrokenProcessPool), submit sobre un pool
+    cerrado (RuntimeError puntual) y cancelación inducida por el pool se
+    mapean los cuatro al mismo PdfIlegible que ya usa el endpoint para "PDF
+    ilegible" (código estable `pdf_ilegible`, sin agregar uno nuevo) y
     disparan el reciclado del pool. Una cancelación REAL de este request
     (alguien llamó `.cancel()` sobre esta tarea puntualmente) se relanza tal
-    cual -- no se recicla el pool por eso: no hay que castigar a las demás
-    extracciones en vuelo por un client que se desconectó (ver el fix
-    report, concern del worker que queda colgado en ese caso)."""
+    cual -- no se recicla el pool por eso (ver el docstring del módulo,
+    punto 5)."""
     timeout = limites.cargar_timeout_de_pdf()
     loop = asyncio.get_running_loop()
     pool = await _pool_actual()
-    future = loop.run_in_executor(pool, extraer_texto, datos, max_paginas, max_chars)
     try:
+        # El submit real (ronda de corrección 2, item 1) va DENTRO del try:
+        # `run_in_executor` llama a `pool.submit(...)` SINCRÓNICAMENTE, y
+        # eso puede reventar (BrokenProcessPool/RuntimeError) antes de
+        # devolver ningún future si el pool se rompió/cerró entre el chequeo
+        # de `_pool_actual` y esta línea (otro hilo, otra ventana).
+        future = loop.run_in_executor(pool, extraer_texto, datos, max_paginas, max_chars)
         return await asyncio.wait_for(future, timeout=timeout)
     except asyncio.TimeoutError:
         logger.warning(
@@ -237,6 +359,13 @@ async def extraer_texto_en_pool(
     except BrokenProcessPool:
         logger.warning(
             "extraccion de pdf: pool roto (un worker murió sin avisar), reciclando")
+        await _reciclar(pool)
+        raise PdfIlegible("pool_roto") from None
+    except RuntimeError as e:
+        if not _runtime_error_de_pool_cerrado(e):
+            raise
+        logger.warning(
+            "extraccion de pdf: submit sobre un pool ya cerrado/roto, reciclando")
         await _reciclar(pool)
         raise PdfIlegible("pool_roto") from None
     except asyncio.CancelledError:

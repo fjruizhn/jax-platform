@@ -21,8 +21,15 @@ from tests.adjuntos_muestras import pdf_con_texto
 def _entorno_del_pool(monkeypatch):
     monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", "2")
     monkeypatch.setenv("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "1")
+    # Ronda de corrección 2, item 4: `_cerrado` es estado de MÓDULO (no de
+    # loop, no de pool) -- sin resetearlo, un test que llama a la
+    # `cerrar_pool()` real deja a TODOS los tests siguientes de la sesión
+    # con el módulo fail-closed para siempre (cualquier _pool_actual/
+    # _reciclar posterior se niega a crear nada).
+    pdf_pool._cerrado = False
     yield
     asyncio.run(pdf_pool.cerrar_pool())
+    pdf_pool._cerrado = False
 
 
 def test_la_extraccion_corre_en_un_proceso_distinto_del_servidor():
@@ -256,24 +263,55 @@ def test_matar_pool_no_usa_el_atributo_privado_processes():
 # --- item 4: cerrar_pool() no puede dejar un huérfano si compite con un ----
 # reciclado
 
-def test_cerrar_pool_race_con_un_reciclado_no_deja_huerfano(monkeypatch):
+def test_cerrar_pool_race_con_un_reciclado_en_curso_no_deja_huerfano(monkeypatch):
+    """Carrera DE VERDAD, no una donde `cerrar_pool()` gana trivialmente
+    porque es lo único que corre: se agranda a propósito la ventana dentro
+    de `_matar_pool` (con un sleep, después del kill real -- así el pool
+    del timeout YA está roto de verdad cuando cae el sleep) para que
+    `cerrar_pool()` tenga que esperar el MISMO lock mientras el reciclado
+    sigue en curso. El único resultado aceptado por el contrato es
+    pdf_ilegible en la extracción, y `None` (sin excepción) en
+    `cerrar_pool()` -- nunca un BrokenProcessPool/CancelledError sin
+    traducir (ronda de corrección 2, item 4 -- antes esta prueba aceptaba
+    esos dos como válidos, que era exactamente lo que había que corregir)."""
+    monkeypatch.setenv("JAX_ADJUNTO_PDF_PROCESOS", "1")
     monkeypatch.setattr(pdf_pool, "extraer_texto", fixtures.dormir)
+    real_matar = pdf_pool._matar_pool
+
+    async def matar_mas_lento(pool_muerto):
+        await real_matar(pool_muerto)  # el kill de verdad ya corrió
+        await asyncio.sleep(0.3)  # ensancha la ventana a propósito para el test
+
+    monkeypatch.setattr(pdf_pool, "_matar_pool", matar_mas_lento)
 
     async def escenario():
-        await pdf_pool._pool_actual()  # asegura que ya hay un pool antes de la carrera
+        tarea = asyncio.ensure_future(
+            pdf_pool.extraer_texto_en_pool(b"x", max_paginas=20, max_chars=8000))
+        # Que el timeout (1 s) ya haya disparado y _reciclar esté DENTRO del
+        # sleep agrandado de _matar_pool (kill real ya hecho, todavía sin
+        # soltar el lock) antes de arrancar cerrar_pool().
+        await asyncio.sleep(1.1)
+        resultados = await asyncio.gather(tarea, pdf_pool.cerrar_pool(), return_exceptions=True)
+        assert isinstance(resultados[0], PdfIlegible), resultados
+        assert resultados[1] is None, resultados  # cerrar_pool() no puede fallar
 
-        async def intentar_extraer():
-            with pytest.raises((PdfIlegible, BrokenProcessPool, asyncio.CancelledError)):
-                await pdf_pool.extraer_texto_en_pool(b"x", max_paginas=20, max_chars=8000)
+    asyncio.run(escenario())
 
-        await asyncio.gather(intentar_extraer(), pdf_pool.cerrar_pool())
 
-        # Sin huérfanos: el sistema sigue sirviendo -- crea un pool nuevo
-        # solo, sin quedar en un estado roto ni con un executor sin apagar.
-        monkeypatch.setattr(pdf_pool, "extraer_texto", _extraer_texto_real)
-        texto, _ = await pdf_pool.extraer_texto_en_pool(
-            pdf_con_texto(["ok"]), max_paginas=20, max_chars=8000)
-        assert "ok" in texto
+def test_tras_cerrar_pool_no_revive_un_pool_nuevo(monkeypatch):
+    """Ronda de corrección 2, item 4: un request en vuelo durante el
+    shutdown del lifespan no puede revivir un pool que nadie va a volver a
+    cerrar. Antes de esta ronda, `_pool_actual` creaba uno nuevo sin más --
+    esta prueba fija que, una vez cerrado, el módulo se queda fail-closed."""
+    monkeypatch.setattr(pdf_pool, "extraer_texto", _extraer_texto_real)
+
+    async def escenario():
+        await pdf_pool._pool_actual()  # asegura que había un pool antes de cerrar
+        await pdf_pool.cerrar_pool()
+        with pytest.raises(PdfIlegible):
+            await pdf_pool.extraer_texto_en_pool(
+                pdf_con_texto(["ok"]), max_paginas=20, max_chars=8000)
+        assert pdf_pool._pool is None  # no se creó nada nuevo por debajo
 
     asyncio.run(escenario())
 
@@ -300,6 +338,188 @@ def test_precalentar_pool_sin_pool_no_falla():
 
 def test_cerrar_pool_sin_pool_creado_no_falla():
     asyncio.run(pdf_pool.cerrar_pool())
+
+
+# =============================================================================
+# Ronda de corrección 2 (2026-09-17), sobre 1404ba7
+# =============================================================================
+
+# --- item 1: submit() dentro del try; _pool_actual detecta roto/cerrado ----
+
+def test_esta_roto_o_cerrado_detecta_broken_y_shutdown(monkeypatch):
+    """`_esta_roto_o_cerrado` es el ÚNICO lugar de este módulo que lee los
+    atributos privados `_broken`/`_shutdown_thread` -- no hay señal pública
+    para "¿este executor sigue sirviendo?" (ver el docstring de la función y
+    el fix report: `submit()` mismo los lee para decidir qué excepción
+    lanzar). Wrappeado en una función, con este test, para que un cambio de
+    nombre en una versión futura de Python se note en un solo lugar."""
+    pool = pdf_pool.crear_pool()
+    assert pdf_pool._esta_roto_o_cerrado(pool) is False
+    pool.shutdown(wait=False)
+    assert pdf_pool._esta_roto_o_cerrado(pool) is True
+
+
+def test_submit_sobre_un_pool_ya_cerrado_por_fuera_se_mapea_a_pdf_ilegible(monkeypatch):
+    """Alguien (en este test, el test mismo) cierra el pool SIN pasar por
+    `pdf_pool.cerrar_pool()` -- simulando la ventana de carrera del item 1:
+    el módulo todavía no se entera. `_pool_actual` tiene que notar que el
+    pool que tiene guardado ya no sirve (`_esta_roto_o_cerrado`) y
+    reemplazarlo bajo el lock ANTES de que `extraer_texto_en_pool` intente
+    un submit que reventaría con un RuntimeError crudo."""
+    monkeypatch.setattr(pdf_pool, "extraer_texto", _extraer_texto_real)
+
+    async def escenario():
+        pool_viejo = await pdf_pool._pool_actual()
+        pool_viejo.shutdown(wait=False)  # deja _shutdown_thread=True por fuera del módulo
+
+        texto, _ = await pdf_pool.extraer_texto_en_pool(
+            pdf_con_texto(["ok"]), max_paginas=20, max_chars=8000)
+        assert "ok" in texto
+
+        pool_nuevo = await pdf_pool._pool_actual()
+        assert pool_nuevo is not pool_viejo
+
+    asyncio.run(escenario())
+
+
+def test_el_catch_reactivo_alrededor_del_submit_alcanza_aunque_la_deteccion_proactiva_no_vea_nada(monkeypatch):
+    """Si por lo que sea la detección proactiva de `_pool_actual` no lo
+    notó (se desactiva a propósito acá, simulando esa ventana), el catch
+    alrededor del `submit()` real (movido DENTRO del try, item 1) tiene que
+    alcanzar igual -- las dos capas son independientes."""
+    monkeypatch.setattr(pdf_pool, "extraer_texto", _extraer_texto_real)
+    monkeypatch.setattr(pdf_pool, "_esta_roto_o_cerrado", lambda pool: False)
+
+    async def escenario():
+        pool_viejo = await pdf_pool._pool_actual()
+        pool_viejo.shutdown(wait=False)
+
+        with pytest.raises(PdfIlegible):
+            await pdf_pool.extraer_texto_en_pool(
+                pdf_con_texto(["x"]), max_paginas=20, max_chars=8000)
+
+    asyncio.run(escenario())
+
+
+def test_un_runtimeerror_ajeno_al_pool_no_se_traduce(monkeypatch):
+    """Sólo el RuntimeError PUNTUAL de `submit()` sobre un pool cerrado se
+    traduce -- cualquier otro (de `extraer_texto`, de cualquier otra parte)
+    tiene que seguir de largo tal cual, no convertirse en pdf_ilegible."""
+    monkeypatch.setattr(pdf_pool, "extraer_texto", fixtures.revienta_con_runtime_error)
+
+    async def escenario():
+        with pytest.raises(RuntimeError, match="algo totalmente distinto"):
+            await pdf_pool.extraer_texto_en_pool(b"x", max_paginas=20, max_chars=8000)
+
+    asyncio.run(escenario())
+
+
+# --- item 2 (NUEVO, reproducido): wedge permanente ---------------------------
+
+def test_worker_que_muere_despues_de_una_cancelacion_no_deja_un_wedge_permanente(monkeypatch):
+    """El hallazgo nuevo: cancelan un request (el worker sigue corriendo),
+    y ESE worker muere solo un poco después (os._exit). Nadie esperó ese
+    future, así que nadie recicló por las buenas -- sin la detección de
+    `_pool_actual` (item 1), TODO submit posterior daría BrokenProcessPool
+    para siempre. Se piden 3 extracciones válidas después, no una sola, para
+    no dejar pasar un "se arregla la primera vez pero no de verdad"."""
+    monkeypatch.setattr(pdf_pool, "extraer_texto", fixtures.dormir_y_morir)
+
+    async def escenario():
+        tarea = asyncio.ensure_future(
+            pdf_pool.extraer_texto_en_pool(b"x", max_paginas=20, max_chars=8000))
+        await asyncio.sleep(0.05)  # que ya esté corriendo en el worker
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+        # Tiempo real a que el worker muera (duerme 0.3 s) y el executor lo note.
+        await asyncio.sleep(1.0)
+
+        monkeypatch.setattr(pdf_pool, "extraer_texto", _extraer_texto_real)
+        for _ in range(3):
+            texto, _ = await pdf_pool.extraer_texto_en_pool(
+                pdf_con_texto(["ok"]), max_paginas=20, max_chars=8000)
+            assert "ok" in texto
+
+    asyncio.run(escenario())
+
+
+# --- item 3: cancelar mientras _reciclar espera _matar_pool ------------------
+
+def test_cancelar_mientras_reciclar_espera_matar_pool_se_autocura(monkeypatch):
+    """Si cancelan la tarea que disparó `_reciclar` justo mientras espera el
+    `to_thread` de `_matar_pool`, `crear_pool()` nunca corre -- `_pool`
+    queda apuntando a un executor que, por debajo, YA está muerto de verdad
+    (el kill real corre primero en el mock, rápido; el sleep de abajo sólo
+    ensancha la ventana para el test). No hace falta un `asyncio.shield`: la
+    detección de `_pool_actual` (item 1) se autocura sola en la SIGUIENTE
+    llamada."""
+    monkeypatch.setattr(pdf_pool, "extraer_texto", fixtures.dormir)
+    real_matar = pdf_pool._matar_pool
+
+    async def matar_lento(pool_muerto):
+        await real_matar(pool_muerto)  # el kill de verdad ya corrió, rápido
+        await asyncio.sleep(1.0)  # ensancha la ventana a propósito para el test
+
+    monkeypatch.setattr(pdf_pool, "_matar_pool", matar_lento)
+
+    async def escenario():
+        tarea = asyncio.ensure_future(
+            pdf_pool.extraer_texto_en_pool(b"x", max_paginas=20, max_chars=8000))
+        # Que el timeout (1 s) ya haya disparado y _reciclar esté DENTRO del
+        # sleep agrandado de _matar_pool.
+        await asyncio.sleep(1.2)
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+        # crear_pool() nunca corrió -- _pool sigue apuntando al sospechoso,
+        # que el kill real (arriba, antes del sleep) ya rompió de verdad.
+        assert pdf_pool._esta_roto_o_cerrado(pdf_pool._pool)
+
+        monkeypatch.setattr(pdf_pool, "extraer_texto", _extraer_texto_real)
+        texto, _ = await pdf_pool.extraer_texto_en_pool(
+            pdf_con_texto(["ok"]), max_paginas=20, max_chars=8000)
+        assert "ok" in texto
+
+    asyncio.run(escenario())
+
+
+# --- item 6: el precalentado del pool reciclado no bloquea el lock ---------
+
+def test_reciclar_no_bloquea_el_lock_durante_el_precalentado(monkeypatch):
+    """El precalentado del pool NUEVO (tras un reciclado) corre en
+    background, no dentro del lock de reciclado -- si lo estuviera, otra
+    llamada que necesita el mismo lock (`_pool_actual`, otro reciclado)
+    esperaría hasta los 10 s del precalentado en vez de la fracción de
+    segundo que toma matar+crear."""
+    monkeypatch.setattr(pdf_pool, "extraer_texto", fixtures.dormir)
+    llamadas = []
+
+    async def precalentar_lento():
+        llamadas.append(time.monotonic())
+        await asyncio.sleep(2)
+
+    monkeypatch.setattr(pdf_pool, "precalentar_pool", precalentar_lento)
+
+    async def escenario():
+        with pytest.raises(PdfIlegible):
+            await pdf_pool.extraer_texto_en_pool(b"x", max_paginas=20, max_chars=8000)
+
+        inicio = time.monotonic()
+        await pdf_pool._pool_actual()
+        duracion = time.monotonic() - inicio
+        assert duracion < 1.0, (
+            f"_pool_actual esperó {duracion:.2f}s -- el lock quedó retenido por el precalentado")
+
+    asyncio.run(escenario())
+    # Si `_reciclar` nunca llegó a llamar `precalentar_pool`, la prueba de
+    # arriba pasa "gratis" (no hay nada que bloquee) sin probar nada -- por
+    # eso hace falta confirmar que SÍ se disparó.
+    assert llamadas, "_reciclar nunca llamó a precalentar_pool tras recrear el pool"
+
+    asyncio.run(escenario())
 
 
 def test_lifespan_crea_y_cierra_el_pool(monkeypatch):

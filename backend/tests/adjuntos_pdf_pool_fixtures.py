@@ -46,3 +46,22 @@ def pid_como_texto(datos: bytes, max_paginas: int, max_chars: int) -> tuple[str,
     pool en crudo), que la extracción corrió en otro proceso (ronda de
     corrección 1, item 6)."""
     return str(os.getpid()), False
+
+
+def revienta_con_runtime_error(datos: bytes, max_paginas: int, max_chars: int) -> tuple[str, bool]:
+    """Un RuntimeError que NO tiene nada que ver con un pool cerrado --
+    tiene que seguir de largo tal cual, no traducirse a pdf_ilegible (ronda
+    de corrección 2, item 1: sólo el mensaje puntual de
+    `ProcessPoolExecutor.submit()` se traduce)."""
+    raise RuntimeError("algo totalmente distinto")
+
+
+def dormir_y_morir(datos: bytes, max_paginas: int, max_chars: int) -> tuple[str, bool]:
+    """Simula el hallazgo NUEVO de la ronda de corrección 2: un worker que
+    sigue corriendo un rato (para que a ESTE request lo puedan cancelar
+    ANTES de que muera) y recién después se cae solo, sin avisar. Nadie
+    esperó su future (se canceló antes), así que nadie recicla por las
+    buenas -- el pool queda BrokenProcessPool sin que este proceso lo haya
+    hecho a propósito."""
+    time.sleep(0.3)
+    os._exit(1)
