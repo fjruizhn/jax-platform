@@ -219,6 +219,19 @@ describe('AdminSettings -- ajustes que mandan', () => {
     expect(en.config_valor_invalido(en.adminSettingsMaxPipelines)).toContain(en.adminSettingsMaxPipelines)
   })
 
+  // Revisión final (2026-09-17): sin `clave` el texto decía "undefined".
+  for (const [nombre, detail] of [['como texto', 'config_valor_invalido'], ['sin clave', { code: 'config_valor_invalido' }]]) {
+    it(`config_valor_invalido ${nombre} cae en el texto genérico, no en "undefined"`, async () => {
+      api.get.mockResolvedValue(CONFIG)
+      api.put.mockRejectedValue(rechazo(400, detail))
+      renderSettings()
+      await guardar()
+      const alerta = await screen.findByRole('alert')
+      expect(alerta).toHaveTextContent(es.adminSettingsSaveError)
+      expect(alerta).not.toHaveTextContent('undefined')
+    })
+  }
+
   it('las ayudas existen en los dos idiomas', () => {
     for (const t of [es, en]) {
       expect(t.adminSettingsTimeoutAyuda).toBeTruthy()

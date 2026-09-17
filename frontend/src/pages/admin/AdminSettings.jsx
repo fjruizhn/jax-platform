@@ -27,7 +27,10 @@ const CLASE_AYUDA = 'text-xs text-texto-tenue mt-1'
 
 function errorDeGuardado(err) {
   const codigo = codigoDe(err)
-  if (codigo === 'config_valor_invalido') return { codigo, clave: err.response.data.detail.clave }
+  // Sin `clave` (detail como texto, u objeto incompleto) no hay campo que
+  // nombrar: cae en el genérico, nunca en "undefined" (revisión final 2026-09-17).
+  const clave = err?.response?.data?.detail?.clave
+  if (codigo === 'config_valor_invalido' && typeof clave === 'string') return { codigo, clave }
   return { codigo: CODIGOS_CONOCIDOS.has(codigo) ? codigo : 'adminSettingsSaveError' }
 }
 
