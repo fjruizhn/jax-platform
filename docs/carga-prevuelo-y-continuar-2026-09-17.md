@@ -4,7 +4,7 @@ Rama `feat/prevuelo-y-continuar` (jax-platform). LAS CUATRO DEL RENDIMIENTO, #4:
 sin número medido no hay GO. Registrado por Mr. Hyde. Todas las horas en CST
 (hall9000). Los números salen de las corridas; ninguno es estimado.
 
-## Método de aislamiento (igual en las tres tandas)
+## Método de aislamiento (la base y Jacobs falso, iguales en las tres tandas; el spool de uso, no)
 
 - Base `jax_memory_test` (nunca `jax_memory`); servicios de producción :7777 y
   :8080 sin tocar.
@@ -15,10 +15,12 @@ sin número medido no hay GO. Registrado por Mr. Hyde. Todas las horas en CST
 - Backend desde el worktree en `127.0.0.1:18080`, un solo proceso uvicorn.
   `/proc/<pid>/environ` verificado ANTES de cargar: `JAX_DB_NAME=jax_memory_test`,
   `JACOBS_URL=http://127.0.0.1:17777/jacobs`, `LAS_MANOS_URL=http://127.0.0.1:17777`,
-  `CANARY_INTERVAL_SECONDS=0`, `JAX_MISSIONS_DIR` en un directorio temporal. En la
-  tanda de continuar además `JAX_USAGE_SPOOL_DIR` temporal (el default es el
-  respaldo de producción `/srv/jax-data/usage-spool`, que el drenaje de uso
-  vaciaría hacia la base de tests).
+  `CANARY_INTERVAL_SECONDS=0`, `JAX_MISSIONS_DIR` en un directorio temporal. Las
+  tandas de pre-vuelo (§1) y de `GET /api/pipelines` (§2, Tarea 12) NO
+  aislaron `JAX_USAGE_SPOOL_DIR`: corrieron contra el default de producción
+  `/srv/jax-data/usage-spool`. Sólo la tanda de continuar (§3) lo aisló en un
+  directorio temporal (el default habría vaciado el drenaje de uso hacia la
+  base de tests).
 - Usuario operator desechable (tenant 1) y sus pipelines creados en
   `jax_memory_test` y BORRADOS después (conteo 0 verificado); token de acceso
   firmado para ese usuario.
@@ -117,6 +119,23 @@ Lectura: 0 errores a c=25 y c=50 en los dos endpoints. `/continue` hace dos
 llamadas a Jacobs (pre-vuelo y continue) y dos lecturas de DB (sesión, dueño):
 ~2× el costo de `continue/preflight`, que es lo esperado. Con un solo worker
 uvicorn la latencia a c=25/50 es cola, no trabajo por pedido (c=1 p95 < 3 ms).
+
+## VERDAD OPERACIONAL — spool de uso sin tocar por las tandas sin aislar (verificado 2026-09-17 06:24 CST)
+
+Las tandas de pre-vuelo (§1) y de `GET /api/pipelines` (§2) no aislaron
+`JAX_USAGE_SPOOL_DIR` (ver Método de aislamiento). Se verificó que, pese a
+eso, no dejaron rastro en el spool de producción ni en la tabla de uso de
+tests:
+
+- `ls -la /srv/jax-data/usage-spool`: directorio vacío, mtime del directorio
+  2026-09-16 13:31:56 (`stat`), anterior a las corridas de hoy (§1 05:17 CST,
+  §2 05:17/05:24 CST, §3 06:17 CST).
+- `SELECT COUNT(*) FROM axioma_usage WHERE spool_id IS NOT NULL AND
+  created_at >= '2026-09-16 12:00:00'` contra `jax_memory_test`: 0 filas (de
+  4.198 filas totales en la tabla).
+
+Verificado leyendo directamente el filesystem y con un SELECT de solo
+lectura contra `jax_memory_test` (nunca `jax_memory`).
 
 ## VERDAD OPERACIONAL pendiente
 
