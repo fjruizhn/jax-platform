@@ -167,7 +167,7 @@ Motivos de los rangos:
   base64, §1); una sola, 0,35 ms. A ~2,5 ms por lugar, 4 rondan el criterio de 10 ms. Es una
   extrapolación lineal de esos dos puntos, no una medición de 4: el deploy sigue en 1 (medido en
   RD5) y el techo solo impide que un dígito de más pase en silencio. SUBIDAS_EN_PROCESO acota solo
-  la clasificación: pypdf espera su propio turno, del tamaño de PDF_PROCESOS (§7).
+  la clasificación: pypdf espera su propio turno, del tamaño de PDF_PROCESOS (§7.2).
 - PDF_PROCESOS 1..8: más procesos de pypdf no suman throughput en una instancia y reservan
   memoria de más. PDF_TIMEOUT 1..60: MAX_PAGINAS ya acota el trabajo, y 60 s no deja un worker
   ocupado más de un minuto.
@@ -395,6 +395,14 @@ Camino de una subida:
 4. Con el turno de subida ya suelto, pypdf espera `turno_de_pdf` (un semáforo del tamaño de
    `JAX_ADJUNTO_PDF_PROCESOS`, tomado antes del submit) y recibe **la ruta** en el pool de RD1. El
    timeout mide solo la corrida (Final fix wave #2, I1; §9.4).
+   **Cota de la espera (Ruling R34):** quien espera el turno espera a lo sumo
+   `JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS` (una corrida entera) y después recibe 503
+   `adjuntos_reintentar`, sin temporal y con la reserva de cuota suelta; no tomó lugar. Sin ese
+   plazo la cola no tenía tope: Starlette no cancela el handler cuando el cliente se desconecta,
+   así que las subidas en cola de un usuario solo las acotaba su cuota ÷ `max_bytes` (≈ 50 con
+   500 MB y 10 MB) y podían dejar a los PDFs de todos los usuarios esperando detrás. Fuera de ese
+   plazo, lo que un usuario tiene en cola sigue acotado por cuota ÷ `max_bytes` y por
+   `SUBIDAS_POR_MINUTO`.
 5. Se guarda.
 6. `finally` borra el temporal.
 
@@ -521,3 +529,28 @@ cuota 500 MB, `RECHAZO_ESPERA_MS=1000`) salvo donde se indica.
   medir cómo nginx retransmite el 401 y el 429 retenidos.
 - **No medido:** el chat con un proveedor real lento (retención de ~13,4 MB de base64 por chat en
   vuelo; estimado ~335 MB a c=25) y `TMPDIR` en tmpfs.
+
+### 9.5 Ruling R34: plazo en la espera del turno de pdf (2026-09-17, jax-platform `098cb85`; jax `f9186d5`)
+
+- **Qué faltaba:** después del Final fix wave #2 la cola de `turno_de_pdf` no tenía tope. Starlette
+  no cancela el handler cuando el cliente se va, así que un usuario (acotado solo por cuota ÷
+  `max_bytes`, ≈ 50 subidas) podía dejar los PDFs de todos esperando ~25 min, reteniendo ~500 MB de
+  temporales. El informe del Final fix wave #2 la daba por acotada por el límite por usuario, nginx y
+  las conexiones: no alcanzaba.
+- **Arreglo:** la espera del semáforo tiene plazo `JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS` (sin variable
+  nueva); vencido, 503 `adjuntos_reintentar`, sin temporal, con la reserva suelta y sin lugar tomado
+  (§7.2, paso 4).
+- **Medición** (mismo recipe; la cola de pdf-cola de §9.3 con el script nuevo): `upload_pdf_max` c=25,
+  perfil throughput (600/min, cuota 1 TiB), `SUBIDAS_EN_PROCESO=4`, `PDF_PROCESOS=1`,
+  **`PDF_TIMEOUT_SEGUNDOS=1`**, 25 subidas contra un worker:
+
+| Corrida | health p50 / p95 / p99 | Carga | RSS máx. |
+|---|---|---|---|
+| pdf-plazo | 0,30 / **0,65** / 1,46 | 195 × 200, 405 × 503 `adjuntos_reintentar`, 43 × 429, 0 otros; p95 1439 (antes, pdf-cola: 229 × 200, p95 4373) | 152 MB |
+
+- 0 líneas de timeout ni de reciclado: ninguna extracción venció, las 405 vencieron esperando turno.
+- Los 429 aparecen porque el límite por minuto cuenta también los intentos rechazados por la ruta
+  (§7.2): 643 intentos en 31 s pasan de 600.
+- Tras la corrida: `TMPDIR` vacío, 0 temporales `.subiendo-*`, 0 violaciones de red, 0 abortos,
+  TIME-WAIT máx. 17, conexiones a 3308 ≤ 5. los dos procesos de k6 (carga y health) salieron con 0 (threshold de
+  health `p(95)<=10`).
