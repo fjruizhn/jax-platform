@@ -83,14 +83,23 @@ _CAMPOS_DE_PASO_COSTO = (
 
 
 def _pasos_costo_saneados(pasos) -> list[dict]:
-    """Sólo los ocho campos del contrato por paso (Task 6 reutiliza este
-    helper para /continue/preflight y /continue). motivo puede traer texto de
-    un proveedor y se redacta antes de salir hacia el navegador. usd_max sale
-    en punto fijo cuando es legible (fix round 2 ítem 5, `_monto_texto`) --
-    un solo lugar formatea para el veredicto (ya fail-closed más arriba, acá
-    nunca falla) Y para un rechazo de Jacobs (best-effort, sin la validación
-    previa del veredicto: un usd_max ilegible en un paso de un rechazo se
-    deja en null, nunca rompe el rechazo completo)."""
+    """Sólo los ocho campos del contrato por paso. Usado hoy por el
+    veredicto (`_evaluar_veredicto`), un rechazo de Jacobs
+    (`_rechazo_de_jacobs`) y el 200 de creación (`create_pipeline`) -- NO
+    todavía por /continue/preflight ni /continue, que Task 7 agrega.
+    motivo puede traer texto de un proveedor y se redacta antes de salir
+    hacia el navegador. usd_max sale en punto fijo cuando es legible (fix
+    round 2 ítem 5, `_monto_texto`): un solo lugar formatea para los tres
+    caminos de arriba.
+
+    En el veredicto, `_evaluar_veredicto` ya probó cada usd_max legible más
+    arriba (fail-closed: si no lo era, ni siquiera se llega acá), así que
+    acá nunca falla. En un rechazo de Jacobs o en el 200 de creación NO hay
+    esa validación previa -- ninguno de los dos es el camino del veredicto
+    ni el de `_exigir_consentimiento` (que sólo mira lo que ya devolvió
+    `_evaluar_veredicto`), así que un usd_max ilegible en esos dos caminos
+    se deja en `null` (lectura conservadora: "no acotado"/sin precio, fix
+    round 3), nunca revienta el rechazo o la respuesta de creación."""
     if not isinstance(pasos, list):
         return []
     saneados = []
@@ -103,7 +112,7 @@ def _pasos_costo_saneados(pasos) -> list[dict]:
         if item["usd_max"] is not None:
             try:
                 item["usd_max"] = _monto_texto(_monto(item["usd_max"]))
-            except ValueError:  # fail-soft: usd_max ilegible en un rechazo -- se deja null, no rompe el rechazo
+            except ValueError:  # fail-soft: usd_max ilegible en un rechazo o en el 200 de creación -- null, conservador, no rompe la respuesta
                 item["usd_max"] = None
         saneados.append(item)
     return saneados
