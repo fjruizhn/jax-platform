@@ -101,6 +101,8 @@ export default {
     adjuntos_demasiados: (d) => (d?.max === 1
       ? 'You can attach up to 1 file per message.'
       : `You can attach up to ${d?.max} files per message.`),
+    adjuntos_cuota_excedida: (d) => `You reached the ${Math.floor((d?.cuota_bytes || 0) / 1048576)} MB limit of stored attachments. Attachments expire on their own: try again later.`,
+    adjuntos_sin_espacio: () => 'The server has no space to store the attachment right now. Try again later.',
     adjuntos_no_soportados: () => 'Hyde does not take attachments in chat: use Command mode.',
     imagen_no_soportada: () => "This facet's model does not accept images. Pick another facet or remove the image.",
     pdf_ilegible: () => 'The PDF could not be read: it is damaged or password-protected.',

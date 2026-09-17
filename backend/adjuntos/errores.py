@@ -9,6 +9,8 @@ CODIGOS: tuple[str, ...] = (
     "adjunto_invalido",
     "adjunto_no_encontrado",
     "adjuntos_demasiados",
+    "adjuntos_cuota_excedida",
+    "adjuntos_sin_espacio",
     "adjuntos_no_soportados",
     "imagen_no_soportada",
     "pdf_ilegible",

@@ -101,6 +101,8 @@ export default {
     adjuntos_demasiados: (d) => (d?.max === 1
       ? 'Se puede adjuntar hasta 1 archivo por mensaje.'
       : `Se pueden adjuntar hasta ${d?.max} archivos por mensaje.`),
+    adjuntos_cuota_excedida: (d) => `Llegaste al máximo de ${Math.floor((d?.cuota_bytes || 0) / 1048576)} MB de adjuntos guardados. Los adjuntos vencen solos: vuelve a intentarlo más tarde.`,
+    adjuntos_sin_espacio: () => 'El servidor no tiene espacio para guardar el adjunto ahora. Vuelve a intentarlo más tarde.',
     adjuntos_no_soportados: () => 'Hyde no recibe adjuntos en el chat: usa el modo Comando.',
     imagen_no_soportada: () => 'El modelo de esta faceta no acepta imágenes. Elige otra faceta o quita la imagen.',
     pdf_ilegible: () => 'No se pudo leer el PDF: está dañado o protegido con contraseña.',

@@ -79,6 +79,14 @@ import tempfile as _tempfile  # noqa: E402
 
 os.environ["JAX_ADJUNTOS_DIR"] = _tempfile.mkdtemp(prefix="jax-test-adjuntos-")
 os.environ.setdefault("JAX_ADJUNTOS_TTL_HORAS", "24")
+# Cuota por usuario (RD6, 2026-09-17): setdefault con el valor de deploy del
+# principal (500 MB), como el resto de los límites. El disco libre mínimo, en
+# cambio, FORZADO al piso del rango (1 GiB): se mide sobre el filesystem del
+# mkdtemp de arriba, no sobre el de producción, y con el valor de producción
+# (50 GB) la suite daría 507 en cualquier máquina con menos libre en /tmp.
+# Los tests de la guarda simulan shutil.disk_usage.
+os.environ.setdefault("JAX_ADJUNTOS_CUOTA_BYTES_USUARIO", "524288000")
+os.environ["JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES"] = "1073741824"
 
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
 # aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture

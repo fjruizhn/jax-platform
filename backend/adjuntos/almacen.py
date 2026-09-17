@@ -386,6 +386,29 @@ def _leer_imagen_en_base64(directorio: Path, id_: str, user, ahora: datetime) ->
     return meta, tuple(tramos)
 
 
+def uso_de_usuario(directorio: Path, user_id: str, ahora: datetime | None = None) -> int:
+    """Síncrona (to_thread). Suma de `bytes` de los adjuntos VIGENTES de
+    `user_id` (RD6, adjuntos/cuota.py). Vigente = lo que `obtener` le
+    devolvería a su dueño: sidecar legible, suyo y sin vencer. Un sidecar
+    ilegible o corrupto no es de nadie para `obtener` (404) y tampoco cuenta
+    acá; su disco lo cubre la guarda global de disco libre y lo borra
+    `limpiar` por edad. Por user_id solo, como `borrar_de_usuario`."""
+    ahora = ahora or _ahora()
+    total = 0
+    for entrada in _listar(directorio):
+        nombre = entrada.name
+        if not (nombre.endswith(SUFIJO_SIDECAR) and id_valido(nombre[:-len(SUFIJO_SIDECAR)])):
+            continue
+        try:
+            meta = json.loads(Path(entrada.path).read_bytes())
+        except (OSError, ValueError):
+            continue  # borrado entre medio, ilegible o corrupto: no es vigente para nadie
+        if (isinstance(meta, dict) and meta.get("user_id") == str(user_id)
+                and isinstance(meta.get("bytes"), int) and not _vencido(meta, ahora)):
+            total += meta["bytes"]
+    return total
+
+
 async def obtener(id_, user, *, ahora: datetime | None = None) -> dict:
     """Metadatos de un adjunto del `user`, vigente. Cualquier otro caso:
     AdjuntoNoEncontrado. El id se valida en el loop (una regex sobre <= 32
