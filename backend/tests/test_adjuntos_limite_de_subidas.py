@@ -44,11 +44,13 @@ class _Canal:
         await asyncio.sleep(3600)
 
 
-def _llamar(app, token=None, path=RUTA, method="POST"):
+def _llamar(app, token=None, path=RUTA, method="POST", autorizacion=None):
     tipo, partes = _multipart()
     headers = [(b"content-type", tipo.encode())]
     if token is not None:
         headers.append((b"authorization", f"Bearer {token}".encode()))
+    elif autorizacion is not None:
+        headers.append((b"authorization", autorizacion.encode()))
     scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method,
              "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"",
              "root_path": "", "headers": headers, "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 80)}
@@ -81,6 +83,7 @@ class _Interna:
 @pytest.fixture
 def limite(monkeypatch):
     monkeypatch.setenv("JAX_ADJUNTOS_SUBIDAS_POR_MINUTO", "2")
+    monkeypatch.setenv("JAX_ADJUNTOS_429_ESPERA_MS", "1000")
     mod.reiniciar()
     frenos = []
 
@@ -167,18 +170,84 @@ def test_el_limite_es_por_usuario(limite):
     assert _llamar(app, token_para(6))[0] == 200
 
 
-@pytest.mark.parametrize("token", [None, "no-es-un-jwt", "refresh"])
-def test_sin_token_de_acceso_valido_pasa_de_largo_y_no_cuenta(limite, token):
-    """Sin identidad no hay a quién limitar: la ruta responde su 401 de
-    siempre. Tampoco consume el cupo de nadie."""
-    if token == "refresh":
-        token = token_para(5, tipo="refresh")
+# ---------------------- R28: sin token de acceso válido, el 401 de la ruta
+
+def _token_vencido():
+    import time as _t
+    from jose import jwt as _jwt
+    from auth.jwt import ALGORITHM, SECRET
+    return _jwt.encode({"user_id": "5", "tenant_id": "1", "role": "operator", "tv": 0,
+                        "exp": int(_t.time()) - 30, "type": "access"}, SECRET, algorithm=ALGORITHM)
+
+
+def _firmado(**payload):
+    import time as _t
+    from jose import jwt as _jwt
+    from auth.jwt import ALGORITHM, SECRET
+    base = {"user_id": "5", "tenant_id": "1", "role": "operator", "tv": 0, "exp": int(_t.time()) + 600,
+            "type": "access"}
+    base.update(payload)
+    return _jwt.encode({k: v for k, v in base.items() if v is not None}, SECRET, algorithm=ALGORITHM)
+
+
+_SIN_ACCESO_VALIDO = {
+    "sin_cabecera": lambda: None,
+    "cabecera_vacia": lambda: "",
+    "otro_esquema": lambda: "Basic YTpi",
+    "bearer_sin_token": lambda: "Bearer ",
+    "token_basura": lambda: "Bearer no-es-un-jwt",
+    "firma_ajena": lambda: "Bearer " + token_para(5)[:-3] + "AAA",
+    "vencido": lambda: "Bearer " + _token_vencido(),
+    "de_refresh": lambda: "Bearer " + token_para(5, tipo="refresh"),
+    "sin_user_id": lambda: "Bearer " + _firmado(user_id=None),
+    "user_id_no_entero": lambda: "Bearer " + _firmado(user_id="../5"),
+    "tv_no_entero": lambda: "Bearer " + _firmado(tv="x"),
+}
+
+
+def _ruta_sola():
+    """La ruta real con su dependencia de auth, SIN el middleware: su 401 es
+    la referencia."""
+    import api.upload as upload_mod
+    app = FastAPI()
+    app.include_router(upload_mod.router)
+    return app
+
+
+@pytest.mark.parametrize("caso", sorted(_SIN_ACCESO_VALIDO))
+def test_sin_token_de_acceso_valido_el_middleware_da_el_mismo_401_que_la_ruta_sin_leer_el_cuerpo(limite, caso):
+    import main
+    autorizacion = _SIN_ACCESO_VALIDO[caso]()
+    ref_status, ref_headers, ref_cuerpo, ref_canal = _llamar(_ruta_sola(), autorizacion=autorizacion)
+    assert ref_status == 401 and ref_canal.leidos > 0  # la ruta lee el cuerpo antes de su 401
+    status, headers, cuerpo, canal = _llamar(main.app, autorizacion=autorizacion)
+    assert (status, headers, cuerpo) == (ref_status, ref_headers, ref_cuerpo)
+    assert canal.leidos == 0
+    assert limite == []  # sin freno: el 401 sale al instante
+
+
+def test_el_401_del_middleware_no_gasta_cupo(limite):
+    app = mod.LimiteDeSubidas(_Interna())
+    for _ in range(5):
+        assert _llamar(app, autorizacion="Bearer basura")[0] == 401
+    for _ in range(2):
+        assert _llamar(app, token_para(5))[0] == 200
+    assert _llamar(app, token_para(5))[0] == 429
+
+
+def test_un_token_con_firma_valida_pasa_a_la_ruta_que_revisa_la_revocacion(limite):
+    """El middleware no mira la base: un token firmado de un usuario dado de
+    baja (o con token_version vieja) llega a la ruta, que es la que lo
+    rechaza con la base."""
     interna = _Interna()
     app = mod.LimiteDeSubidas(interna)
-    for _ in range(5):
-        assert _llamar(app, token)[0] == 200
-    assert interna.llamadas == 5
-    assert _llamar(app, token_para(5))[0] == 200
+    assert _llamar(app, token_para(987654321, tv=99))[0] == 200
+    assert interna.llamadas == 1
+
+
+def test_el_codigo_del_limite_esta_declarado():
+    from adjuntos.errores import CODIGOS
+    assert mod.CODIGO in CODIGOS
 
 
 @pytest.mark.parametrize("path,method", [("/api/chat", "POST"), ("/api/chat/adjuntos", "GET"),
@@ -187,14 +256,6 @@ def test_otras_rutas_no_se_limitan(limite, path, method):
     app = mod.LimiteDeSubidas(_Interna())
     for _ in range(5):
         assert _llamar(app, token_para(5), path=path, method=method)[0] == 200
-
-
-def test_un_user_id_malformado_en_el_token_pasa_de_largo(limite):
-    from auth.jwt import create_access_token
-    app = mod.LimiteDeSubidas(_Interna())
-    token = create_access_token("../5", "1", "operator")
-    for _ in range(5):
-        assert _llamar(app, token)[0] == 200
 
 
 def test_cambiar_el_valor_rehace_el_limitador(limite, monkeypatch):
@@ -299,5 +360,90 @@ def test_el_429_se_frena_un_segundo_sin_leer_el_cuerpo_y_sin_cortar_la_conexion(
     assert limite == []  # lo permitido no se frena
     status, headers, _, canal = _llamar(app, token_para(5))
     assert status == 429 and canal.leidos == 0
-    assert limite == [mod.FRENO_ANTES_DEL_429_SEGUNDOS] and mod.FRENO_ANTES_DEL_429_SEGUNDOS == 1.0
+    assert limite == [1.0]  # JAX_ADJUNTOS_429_ESPERA_MS=1000
     assert b"connection" not in headers
+
+
+@pytest.mark.parametrize("ms,segundos", [("0", 0.0), ("250", 0.25), ("5000", 5.0)])
+def test_la_espera_del_429_usa_el_valor_configurado(limite, monkeypatch, ms, segundos):
+    monkeypatch.setenv("JAX_ADJUNTOS_429_ESPERA_MS", ms)
+    app = mod.LimiteDeSubidas(_Interna())
+    for _ in range(3):
+        _llamar(app, token_para(5))
+    assert limite == [segundos]
+
+
+@pytest.mark.parametrize("valor", [None, "", "-1", "5001", "abc", "01000", " 1000", "1000.0", "1e3"])
+def test_espera_del_429_ausente_o_fuera_de_rango_no_arranca(monkeypatch, valor):
+    if valor is None:
+        monkeypatch.delenv("JAX_ADJUNTOS_429_ESPERA_MS", raising=False)
+    else:
+        monkeypatch.setenv("JAX_ADJUNTOS_429_ESPERA_MS", valor)
+    with pytest.raises(LimitesDeAdjuntosInvalidos) as e:
+        mod.cargar_espera_429_ms()
+    assert "JAX_ADJUNTOS_429_ESPERA_MS" in str(e.value)
+
+
+@pytest.mark.parametrize("valor", ["0", "1", "1000", "5000"])
+def test_espera_del_429_en_rango(monkeypatch, valor):
+    monkeypatch.setenv("JAX_ADJUNTOS_429_ESPERA_MS", valor)
+    assert mod.cargar_espera_429_ms() == int(valor)
+    assert (mod.ESPERA_429_MS_MIN, mod.ESPERA_429_MS_MAX) == (0, 5000)
+
+
+def test_sin_espera_configurada_un_rechazo_falla_cerrado(limite, monkeypatch):
+    app = mod.LimiteDeSubidas(_Interna())
+    for _ in range(2):
+        _llamar(app, token_para(5))
+    monkeypatch.delenv("JAX_ADJUNTOS_429_ESPERA_MS")
+    with pytest.raises(LimitesDeAdjuntosInvalidos):
+        _llamar(app, token_para(5))
+
+
+def test_lifespan_valida_la_espera_del_429_antes_de_abrir_la_base(monkeypatch):
+    import main
+
+    llamadas = []
+
+    async def pool_espia():
+        llamadas.append("pool")
+
+    monkeypatch.delenv("JAX_ADJUNTOS_429_ESPERA_MS", raising=False)
+    monkeypatch.setattr(main, "get_pool", pool_espia)
+
+    async def arrancar():
+        async with main.lifespan(main.app):
+            pass
+
+    with pytest.raises(LimitesDeAdjuntosInvalidos) as e:
+        asyncio.run(arrancar())
+    assert "JAX_ADJUNTOS_429_ESPERA_MS" in str(e.value)
+    assert llamadas == []
+
+
+# ------------------------------ menor 9: cuota y límite en la misma ventana
+
+def test_cuota_y_limite_juntos_los_rechazos_de_la_ruta_gastan_cupo(client, monkeypatch):
+    """El límite cuenta intentos, también los que la ruta rechaza después
+    (413 de cuota): solo gastan el cupo del propio usuario."""
+    monkeypatch.setenv("JAX_ADJUNTOS_SUBIDAS_POR_MINUTO", "4")
+    monkeypatch.setenv("JAX_ADJUNTOS_429_ESPERA_MS", "0")
+    monkeypatch.setenv("JAX_ADJUNTOS_CUOTA_BYTES_USUARIO", str(1024 * 1024))
+    mod.reiniciar()
+    hdrs = cabeceras(client, "test-limite-y-cuota")
+    from tests.adjuntos_muestras import PNG
+    lleno = PNG + b"\x00" * (1024 * 1024 - len(PNG))
+    try:
+        estados = []
+        r = client.post(RUTA, files={"file": ("f.png", lleno, "image/png")}, headers=hdrs)
+        estados.append(r.status_code)
+        for _ in range(3):
+            r = client.post(RUTA, files={"file": ("n.txt", b"x", "text/plain")}, headers=hdrs)
+            estados.append((r.status_code, r.json()["detail"]["code"]))
+        r = client.post(RUTA, files={"file": ("n.txt", b"x", "text/plain")}, headers=hdrs)
+        estados.append((r.status_code, r.json()["detail"]["code"]))
+        assert estados == [200] + [(413, "adjuntos_cuota_excedida")] * 3 + [(429, "adjuntos_subidas_limite")]
+        otro = cabeceras(client, "test-limite-y-cuota-otro")
+        assert client.post(RUTA, files={"file": ("n.txt", b"x", "text/plain")}, headers=otro).status_code == 200
+    finally:
+        mod.reiniciar()

@@ -16,18 +16,23 @@ Por eso es un middleware ASGI puro, montado DENTRO de CORSMiddleware (para
 que el 429 lleve sus cabeceras) y antes del router: para POST
 /api/chat/upload lee la cabecera Authorization, verifica la firma y el
 vencimiento del JWT (auth.jwt.decode_token: HS256, sin base) y, si el
-usuario ya gastó su cupo, frena FRENO_ANTES_DEL_429_SEGUNDOS y responde 429
+usuario ya gastó su cupo, espera JAX_ADJUNTOS_429_ESPERA_MS y responde 429
 SIN llamar a receive(): el cuerpo no se parsea con python-multipart ni se
 vuelca (medido en RD7: 0 volcados en TMPDIR durante el flood). Lo que el
 cliente igual manda lo lee y descarta uvicorn después del 429 para mantener
-la conexión: ese es el costo que acota el freno (ver la constante).
+la conexión: ese es el costo que acota la espera (ver ESPERA_429_MS_*).
 
-IDENTIDAD. Solo la firma del token de ACCESO: sin base, a propósito (una
-lectura por PK por request sería el costo que se quiere evitar). Un token
-revocado pero no vencido (<= 15 min) solo puede gastar el cupo de SU propio
-usuario; la ruta lo sigue rechazando con 401 como siempre. Sin token, con uno
-inválido, de refresh o con un user_id malformado, no hay a quién limitar: se
-deja pasar sin contar y la ruta responde su 401.
+IDENTIDAD (Ruling R28). Sin token de ACCESO válido -- sin cabecera, esquema
+que no es Bearer, firma inválida, vencido, de refresh, user_id o tv que no
+son enteros -- responde al instante el MISMO 401 que la dependencia de la
+ruta (mismo status, cuerpo y cabeceras; reusa `auth.middleware.bearer`,
+`decode_token` y `validar_payload`), sin leer el cuerpo y sin gastar cupo.
+Con firma válida no mira la base, a propósito: pasa a la ruta, cuya
+autenticación con base rechaza un token revocado. RIESGO ACEPTADO por el
+principal: un token revocado pero no vencido (<= 15 min) solo gasta el cupo
+de SU dueño en el middleware. El límite cuenta intentos, también los que la
+ruta rechaza después (401 por revocación, 413, 415, 422): solo gastan el cupo
+del que llama.
 
 CUÁNTO. JAX_ADJUNTOS_SUBIDAS_POR_MINUTO (1..600, sin default: fail-closed),
 ventana deslizante de 60 s (auth.rate_limit.SlidingWindowLimiter, la misma
@@ -46,12 +51,17 @@ import os
 import re
 import time
 
+from fastapi import HTTPException
+from fastapi.exception_handlers import http_exception_handler
+from starlette.requests import Request
+
+from adjuntos.errores import AdjuntoRechazado
 from adjuntos.limites import LimitesDeAdjuntosInvalidos
 from auth.rate_limit import SlidingWindowLimiter
 
 VARIABLE = "JAX_ADJUNTOS_SUBIDAS_POR_MINUTO"
 RUTA = "/api/chat/upload"
-CODIGO = "adjuntos_subidas_limite"
+CODIGO = AdjuntoRechazado(429, "adjuntos_subidas_limite").detail["code"]  # falla al importar si no está en CODIGOS
 
 # 1..600 por minuto. Piso 1: 0 sería "no se puede adjuntar", eso no es un
 # límite sino apagar la función. Techo 600 (10/s): medido en RD5/RD6, una
@@ -65,18 +75,25 @@ MAX_CLAVES = 20_000
 
 _ENTERO = re.compile(r"[1-9][0-9]{0,2}")
 _limitador: SlidingWindowLimiter | None = None
-# Freno antes del 429 (RD7, medido con upload_imagen_max c=25 de un usuario,
-# 10 MB, staging): sin freno el cliente reintenta al instante y uvicorn lee y
-# descarta ~540 cuerpos/s en el event loop después de cada 429 (keep-alive)
-# -> health p95 37-40 ms. Con `Connection: close`, health p95 6,2 ms pero el
-# 19 % de las respuestas llegó al cliente como reset, no como 429. Frenando
-# 0,25 s: 97 rechazos/s, health p95 0,37 ms; 1 s: 25 rechazos/s, health p95
-# 0,30 ms, 0 resets. Mientras frena no se llama a receive(): uvicorn lee
-# hasta 64 KB y pausa la lectura, y TCP frena al cliente. Se elige 1 s por
-# margen (4 veces menos bytes descartados que 0,25 s con los mismos
-# atacantes). No es env: es un margen técnico medido sobre el comportamiento
-# de uvicorn, no una política; se cambia con otra medición.
-FRENO_ANTES_DEL_429_SEGUNDOS = 1.0
+# Espera antes del 429 (RD7; RD7 fix round: sale del código a
+# JAX_ADJUNTOS_429_ESPERA_MS por decisión del principal, deploy 1000). Medido
+# con upload_imagen_max c=25 de un usuario, 10 MB, en staging: sin espera el
+# cliente reintenta al instante y uvicorn lee y descarta ~540 cuerpos/s en el
+# event loop después de cada 429 (keep-alive) -> health p95 37-40 ms. Con
+# `Connection: close`, 6,2 ms pero el 19 % de las respuestas llegó como reset.
+# 250 ms: 97 rechazos/s, health p95 0,37 ms; 1000 ms: 25 rechazos/s, 0,30 ms,
+# 0 resets. Mientras espera no se llama a receive(): uvicorn lee hasta 64 KB y
+# pausa la lectura, y TCP frena al cliente.
+#
+# Rango 0..5000 ms. 0 SÍ está permitido: apagar la espera es una decisión
+# válida si nginx (limit_req) ya frena antes, y su costo está medido arriba.
+# Techo 5 s: cada rechazo en espera retiene un socket y una corrutina; más
+# largo no frena más a un cliente que reintenta (Retry-After ya lo dice) y
+# acerca la espera a los timeouts de clientes y proxies.
+VARIABLE_ESPERA = "JAX_ADJUNTOS_429_ESPERA_MS"
+ESPERA_429_MS_MIN = 0
+ESPERA_429_MS_MAX = 5000
+_ENTERO_MS = re.compile(r"0|[1-9][0-9]{0,3}")
 # Referencia propia para que un test la sustituya sin tocar asyncio.sleep global.
 _dormir = asyncio.sleep
 
@@ -89,6 +106,17 @@ def cargar_subidas_por_minuto() -> int:
             f"límite de subidas de adjuntos sin configurar o fuera de rango (entero "
             f"{SUBIDAS_POR_MINUTO_MIN}..{SUBIDAS_POR_MINUTO_MAX}, solo dígitos, en /etc/jax/.env): "
             f"{VARIABLE}={crudo!r}")
+    return valor
+
+
+def cargar_espera_429_ms() -> int:
+    crudo = os.environ.get(VARIABLE_ESPERA)
+    valor = int(crudo) if crudo is not None and _ENTERO_MS.fullmatch(crudo) else None
+    if valor is None or not ESPERA_429_MS_MIN <= valor <= ESPERA_429_MS_MAX:
+        raise LimitesDeAdjuntosInvalidos(
+            f"espera antes del 429 de subidas sin configurar o fuera de rango (entero "
+            f"{ESPERA_429_MS_MIN}..{ESPERA_429_MS_MAX} ms, solo dígitos, en /etc/jax/.env): "
+            f"{VARIABLE_ESPERA}={crudo!r}")
     return valor
 
 
@@ -107,30 +135,27 @@ def reiniciar() -> None:
     _limitador = None
 
 
-def _usuario_del_token(scope) -> str | None:
-    from fastapi import HTTPException
+def _usuario_del_token(scope) -> str:
+    """Ruling R28: la MISMA cadena que la dependencia de la ruta, sin la base
+    y sin leer el cuerpo. Lanza la misma HTTPException que la ruta:
+    - sin cabecera, esquema que no es Bearer o sin credenciales: el 401 de
+      `auth.middleware.bearer` (HTTPBearer, con WWW-Authenticate: Bearer);
+    - firma inválida o vencido: el de `auth.jwt.decode_token`;
+    - token que no es de acceso, o user_id/tv que no son enteros: el de
+      `auth.middleware.validar_payload`.
+    Devuelve el user_id normalizado (str(int)) como clave del limitador."""
+    from fastapi.security.utils import get_authorization_scheme_param
+    from starlette.datastructures import Headers
 
-    from adjuntos.almacen import user_id_valido
     from auth.jwt import decode_token
+    from auth.middleware import bearer, validar_payload
 
-    autorizacion = None
-    for nombre, valor in scope.get("headers", ()):
-        if nombre == b"authorization":
-            autorizacion = valor.decode("latin-1")
-            break
-    if not autorizacion:
-        return None
-    esquema, _, token = autorizacion.partition(" ")
-    if esquema.lower() != "bearer" or not token.strip():
-        return None
-    try:
-        payload = decode_token(token.strip())
-    except HTTPException:
-        return None  # firma o vencimiento inválidos: la ruta responde su 401
-    if not isinstance(payload, dict) or payload.get("type") != "access":
-        return None
-    user_id = payload.get("user_id")
-    return user_id if user_id_valido(user_id) else None
+    autorizacion = Headers(scope=scope).get("Authorization")
+    esquema, credenciales = get_authorization_scheme_param(autorizacion)
+    if not (autorizacion and esquema and credenciales) or esquema.lower() != "bearer":
+        raise bearer.make_not_authenticated_error()
+    user_id, _ = validar_payload(decode_token(credenciales), "access")
+    return str(user_id)
 
 
 class LimiteDeSubidas:
@@ -143,15 +168,19 @@ class LimiteDeSubidas:
         if scope.get("type") != "http" or scope.get("method") != "POST" or scope.get("path") != RUTA:
             await self.app(scope, receive, send)
             return
-        user_id = _usuario_del_token(scope)
-        if user_id is None:
-            await self.app(scope, receive, send)
+        try:
+            user_id = _usuario_del_token(scope)
+        except HTTPException as e:
+            # R28: el mismo 401 que daría la ruta (mismo manejador de FastAPI),
+            # al instante, sin leer el cuerpo y sin gastar cupo de nadie.
+            respuesta = await http_exception_handler(Request(scope), e)
+            await respuesta(scope, receive, send)
             return
         espera = _limitador_vigente().hit(user_id, now=time.monotonic())
         if espera is None:
             await self.app(scope, receive, send)
             return
-        await _dormir(FRENO_ANTES_DEL_429_SEGUNDOS)
+        await _dormir(cargar_espera_429_ms() / 1000)
         segundos = max(1, math.ceil(espera))
         cuerpo = json.dumps({"detail": {"code": CODIGO, "retry_after": segundos}}).encode()
         await send({"type": "http.response.start", "status": 429, "headers": [

@@ -128,6 +128,7 @@ async def lifespan(app: FastAPI):
     cuota_de_adjuntos.validar_configuracion()
     # RD7: límite de subidas por usuario (adjuntos/limite_de_subidas.py).
     limite_de_subidas.cargar_subidas_por_minuto()
+    limite_de_subidas.cargar_espera_429_ms()
     # RD1 (2026-09-17): el ProcessPoolExecutor de pypdf se crea acá, antes de
     # la base y el cliente HTTP -- mismo criterio que los límites de arriba,
     # config primero, nada que dependa de otra cosa (ver adjuntos/pdf_pool.py).

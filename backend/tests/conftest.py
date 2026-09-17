@@ -92,6 +92,10 @@ os.environ["JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES"] = "1073741824"
 # minuto; con el valor de producción en /etc/jax/.env darían 429 según el
 # orden de la suite. Los tests del límite lo fijan con monkeypatch.setenv.
 os.environ["JAX_ADJUNTOS_SUBIDAS_POR_MINUTO"] = "600"
+# Espera antes del 429 (RD7 fix round): FORZADA a 0 ms. Los tests de HTTP que
+# llegan al 429 no deberían dormir; los que prueban la espera sustituyen
+# `_dormir` y fijan el valor con monkeypatch.setenv.
+os.environ["JAX_ADJUNTOS_429_ESPERA_MS"] = "0"
 
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
 # aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture
