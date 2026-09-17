@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   CHAIN_ROLES,
+  cleanroomViolationsDePasos,
   facetOptionsFor,
   buildChainSteps,
   cleanroomViolations,
@@ -120,5 +121,24 @@ describe('pipelineChain -- la cadena en línea', () => {
     // Mide contra la crítica misma, no contra lo que el plan dice de ella.
     expect(es.chainInstructions.audit).toMatch(/crítica original/i)
     expect(en.chainInstructions.audit).toMatch(/original critique/i)
+  })
+})
+
+describe('cleanroomViolationsDePasos (continuar, spec 2026-09-17 §6.2)', () => {
+  it('marca un paso de auditoría con la misma faceta que una de sus dependencias', () => {
+    const pasos = [
+      { facet: 'hipatia', capability: 'research', depends_on: [] },
+      { facet: 'ada', capability: 'generate', depends_on: [0] },
+      { facet: 'ada', capability: 'validate_consistency', depends_on: [0, 1] },
+    ]
+    expect(cleanroomViolationsDePasos(pasos)).toEqual([{ paso: 2, facet: 'ada', dependsOn: 1 }])
+  })
+
+  it('sin capability de auditoría o sin coincidencia no marca nada', () => {
+    expect(cleanroomViolationsDePasos([
+      { facet: 'ada', capability: 'research', depends_on: [] },
+      { facet: 'ada', capability: 'generate', depends_on: [0] },
+      { facet: 'thot', capability: 'critique', depends_on: [0, 1] },
+    ])).toEqual([])
   })
 })

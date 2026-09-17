@@ -44,8 +44,26 @@ export function textoDeErrorDeMesa(t, err, generico) {
   if (!traducir) return generico
   const detail = err?.response?.data?.detail
   const datos = detail && typeof detail === 'object' ? detail : {}
-  const base = traducir(datos)
-  return datos.motivo ? `${base} ${t.respuestaDelServicio(datos.motivo)}` : base
+  const partes = [traducir(datos)]
+  if (datos.motivo) partes.push(t.respuestaDelServicio(datos.motivo))
+  // `mensaje` (estado_no_continuable, spec 2026-09-17): texto de Jacobs ya
+  // redactado por el backend; va como dato, igual que `motivo`.
+  if (typeof datos.mensaje === 'string' && datos.mensaje) partes.push(t.respuestaDelServicio(datos.mensaje))
+  const detalle = textoDeDetalle(t, datos.detalle)
+  if (detalle) partes.push(t.detalleDelPrevuelo(detalle))
+  return partes.join(' ')
+}
+
+// `detalle` de un rechazo del pre-vuelo (adenda Task 8 ítem 3): texto, o lista
+// normalizada [{paso, faceta|null, motivo}] (reasignacion_invalida,
+// plan_rechazado). Cualquier otra forma no se muestra: nunca un objeto crudo.
+function textoDeDetalle(t, detalle) {
+  if (typeof detalle === 'string') return detalle || null
+  if (!Array.isArray(detalle)) return null
+  const items = detalle
+    .filter((d) => d && typeof d === 'object')
+    .map((d) => t.detalleDePaso(d))
+  return items.length ? items.join('; ') : null
 }
 
 // Respuestas enlatadas del chat (A-53): `aviso` con código y params.
@@ -59,4 +77,20 @@ export function textoDeAviso(t, aviso) {
     return traducir(params, hosting ? t.hostingDeProveedor[params.provider] : t.hostingGenerico)
   }
   return traducir(params)
+}
+
+// Violación del pre-vuelo (spec 2026-09-17 §4.1): se lee por su `regla`; una
+// regla que esta versión no conoce cae en un texto genérico, nunca cruda. El
+// `detalle` (redactado por el backend) va como dato.
+export function textoDeViolacion(t, v) {
+  const conocida = typeof v?.regla === 'string' && Object.hasOwn(t.reglasPrevuelo, v.regla)
+  const base = (conocida ? t.reglasPrevuelo[v.regla] : t.reglaPrevueloDesconocida)(v || {})
+  return v?.detalle ? `${base} ${t.detalleDelPrevuelo(v.detalle)}` : base
+}
+
+// Motivo por paso de `pasos_costo` (adenda Task 8 ítem 6): por qué el costo de
+// ese paso es el que es. Desconocido o null → texto genérico, nunca crudo.
+export function textoDeMotivoDeCosto(t, motivo) {
+  if (typeof motivo === 'string' && Object.hasOwn(t.motivosDeCosto, motivo)) return t.motivosDeCosto[motivo]
+  return t.motivoDeCostoDesconocido
 }

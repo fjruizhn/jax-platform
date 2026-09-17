@@ -1,3 +1,6 @@
+// Where a step is in the preflight texts: "Step 5 (kimi)".
+const lugarDelPaso = (v) => (Number.isInteger(v?.paso) ? `Step ${v.paso + 1}${v.faceta ? ` (${v.faceta})` : ''}` : `${v?.faceta ?? ''}`)
+
 export default {
   // Top bar
   logout: 'Sign out',
@@ -95,6 +98,50 @@ export default {
     jacobs_no_responde: () => 'Jacobs did not respond.',
     archivo_demasiado_grande: (d) => `The file exceeds the ${Math.round(d.max_bytes / 1048576)} MB maximum.`,
     pdf_ilegible: () => 'The PDF could not be read.',
+    // Preflight and continue (spec 2026-09-17)
+    prevuelo_rechazado: (d) => `The preflight rejected the pipeline (${(d.violaciones || []).length} problem(s)). Nothing was spent.`,
+    confirmacion_de_costo: () => 'The maximum cost must be confirmed before running.',
+    costo_supera_lo_aceptado: () => 'The maximum cost rose above what you confirmed. Review it and confirm again.',
+    reasignacion_invalida: () => 'The facet reassignment is not valid for this plan.',
+    prevuelo_no_disponible: () => 'The preflight is not available: nothing runs without it.',
+    estado_no_continuable: (d) => (typeof d.status === 'string' && d.status
+      ? `This pipeline cannot be continued: its status is "${d.status}".`
+      : 'This pipeline cannot be continued in its current state.'),
+    pasos_requeridos: () => 'The pipeline has no steps.',
+    costo_confirmado_invalido: () => 'The confirmed cost is not valid.',
+    limite_de_activos: () => 'Jacobs already has the maximum of active pipelines: wait for one to finish.',
+    plan_rechazado: () => 'The pipeline plan is not valid.',
+    plan_inconsistente: () => 'The saved pipeline plan is inconsistent: it cannot be continued.',
+    no_existe: () => 'The pipeline does not exist in Jacobs.',
+    kill_switch: () => 'The kill switch is active: nothing runs until it is turned off.',
+  },
+  reglasPrevuelo: {
+    tope_insuficiente: (v) => `${lugarDelPaso(v)}: the model's output limit is not enough for this task.`,
+    sin_contrato_de_salida: (v) => `${lugarDelPaso(v)}: the model does not declare its output limit, so the cost cannot be bounded.`,
+    credencial_ausente: (v) => `${lugarDelPaso(v)}: there is no active credential for the provider.`,
+    faceta_caida: (v) => `${lugarDelPaso(v)}: the facet did not answer the probe.`,
+    faceta_inexistente: (v) => `${lugarDelPaso(v)}: the facet does not exist or is not active.`,
+  },
+  reglaPrevueloDesconocida: (v) => `${lugarDelPaso(v)}: the preflight rejected it by a rule this version does not know.`,
+  detalleDelPrevuelo: (texto) => `Detail: ${texto}`,
+  detalleDePaso: (d) => `${lugarDelPaso(d)}: ${d.motivo ?? ''}`,
+  motivosDeCosto: {
+    acotado: 'Cost bounded by the model output limit.',
+    sin_precio: 'The model has no price loaded: the cost cannot be bounded.',
+    local: 'Local model: no per-use cost.',
+    suscripcion: 'Covered by the subscription: no per-use cost.',
+    mecanico: 'Mechanical step: it does not call a model.',
+    sin_contrato_de_salida: 'The model does not declare its output limit: the cost cannot be bounded.',
+    faceta_inexistente: 'The facet does not exist: the cost could not be computed.',
+    herramientas_sin_tope: 'It uses tools with no call limit: the cost cannot be bounded.',
+  },
+  motivoDeCostoDesconocido: 'No explanation for this step cost.',
+  causasDeAborto: {
+    fallo: (c) => (Number.isInteger(c.paso) ? `Stopped: step ${c.paso + 1} failed.` : 'Stopped: a step failed.'),
+    cancelado: () => 'Stopped: it was cancelled.',
+    kill_switch: () => 'Stopped: the kill switch was activated.',
+    expirado: () => 'Expired: it went too long without progress.',
+    desconocida: () => 'Stopped for a reason that was not recorded.',
   },
   avisosChat: {
     faceta_sin_binding: (p) => `⚠️ ${p.facet} is not available: no active binding configured.`,

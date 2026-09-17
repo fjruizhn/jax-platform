@@ -1,3 +1,6 @@
+// Lugar de un paso en los textos del pre-vuelo: "Paso 5 (kimi)".
+const lugarDelPaso = (v) => (Number.isInteger(v?.paso) ? `Paso ${v.paso + 1}${v.faceta ? ` (${v.faceta})` : ''}` : `${v?.faceta ?? ''}`)
+
 export default {
   // Top bar
   logout: 'Salir',
@@ -95,6 +98,50 @@ export default {
     jacobs_no_responde: () => 'Jacobs no respondió.',
     archivo_demasiado_grande: (d) => `El archivo supera el máximo de ${Math.round(d.max_bytes / 1048576)} MB.`,
     pdf_ilegible: () => 'No se pudo leer el PDF.',
+    // Pre-vuelo y continuar (spec 2026-09-17)
+    prevuelo_rechazado: (d) => `El pre-vuelo rechazó el pipeline (${(d.violaciones || []).length} problema(s)). No se gastó nada.`,
+    confirmacion_de_costo: () => 'Hace falta confirmar el costo máximo antes de correr.',
+    costo_supera_lo_aceptado: () => 'El costo máximo subió por encima de lo que confirmaste. Revísalo y vuelve a confirmar.',
+    reasignacion_invalida: () => 'La reasignación de facetas no es válida para este plan.',
+    prevuelo_no_disponible: () => 'El pre-vuelo no está disponible: sin él no se corre nada.',
+    estado_no_continuable: (d) => (typeof d.status === 'string' && d.status
+      ? `Este pipeline no se puede continuar: su estado es «${d.status}».`
+      : 'Este pipeline no se puede continuar en su estado actual.'),
+    pasos_requeridos: () => 'El pipeline no tiene pasos.',
+    costo_confirmado_invalido: () => 'El costo confirmado no es válido.',
+    limite_de_activos: () => 'Jacobs ya tiene el máximo de pipelines activos: espera a que termine alguno.',
+    plan_rechazado: () => 'El plan del pipeline no es válido.',
+    plan_inconsistente: () => 'El plan guardado del pipeline es inconsistente: no se puede continuar.',
+    no_existe: () => 'El pipeline no existe en Jacobs.',
+    kill_switch: () => 'El kill switch está activo: no se corre nada hasta que se desactive.',
+  },
+  reglasPrevuelo: {
+    tope_insuficiente: (v) => `${lugarDelPaso(v)}: el tope de salida del modelo no alcanza para esta tarea.`,
+    sin_contrato_de_salida: (v) => `${lugarDelPaso(v)}: el modelo no declara su tope de salida, así que no se puede acotar el costo.`,
+    credencial_ausente: (v) => `${lugarDelPaso(v)}: no hay una credencial activa para el proveedor.`,
+    faceta_caida: (v) => `${lugarDelPaso(v)}: la faceta no respondió a la sonda.`,
+    faceta_inexistente: (v) => `${lugarDelPaso(v)}: la faceta no existe o no está activa.`,
+  },
+  reglaPrevueloDesconocida: (v) => `${lugarDelPaso(v)}: el pre-vuelo lo rechazó por una regla que esta versión no conoce.`,
+  detalleDelPrevuelo: (texto) => `Detalle: ${texto}`,
+  detalleDePaso: (d) => `${lugarDelPaso(d)}: ${d.motivo ?? ''}`,
+  motivosDeCosto: {
+    acotado: 'Costo acotado por el tope de salida del modelo.',
+    sin_precio: 'El modelo no tiene precio cargado: el costo no se puede acotar.',
+    local: 'Modelo local: no tiene costo por uso.',
+    suscripcion: 'Cubierto por la suscripción: no tiene costo por uso.',
+    mecanico: 'Paso mecánico: no llama a un modelo.',
+    sin_contrato_de_salida: 'El modelo no declara su tope de salida: el costo no se puede acotar.',
+    faceta_inexistente: 'La faceta no existe: no se pudo calcular el costo.',
+    herramientas_sin_tope: 'Usa herramientas sin tope de llamadas: el costo no se puede acotar.',
+  },
+  motivoDeCostoDesconocido: 'Sin explicación del costo de este paso.',
+  causasDeAborto: {
+    fallo: (c) => (Number.isInteger(c.paso) ? `Se detuvo: falló el paso ${c.paso + 1}.` : 'Se detuvo: falló un paso.'),
+    cancelado: () => 'Se detuvo: lo cancelaron.',
+    kill_switch: () => 'Se detuvo: se activó el kill switch.',
+    expirado: () => 'Venció: estuvo demasiado tiempo sin avanzar.',
+    desconocida: () => 'Se detuvo por una causa que no quedó registrada.',
   },
   avisosChat: {
     faceta_sin_binding: (p) => `⚠️ ${p.facet} no está disponible: sin binding activo configurado.`,

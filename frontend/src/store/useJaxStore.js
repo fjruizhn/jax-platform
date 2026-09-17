@@ -291,7 +291,8 @@ export const useJaxStore = create((set, get) => {
       })
     }
 
-    if (event_type === 'pipeline_step_changed') {
+    // pipeline_continued (spec 2026-09-17 §6.2): mismo refresco del panel.
+    if (event_type === 'pipeline_step_changed' || event_type === 'pipeline_continued') {
       set((s) => {
         const prevPipeline = s.activePipelines[payload.pipeline_id]
         const steps = _reconcileSteps(prevPipeline?.steps, payload.steps || [])

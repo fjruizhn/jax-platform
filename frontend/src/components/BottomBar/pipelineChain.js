@@ -77,17 +77,26 @@ export function buildChainSteps(objective, facetsByRole, instructions) {
 }
 
 // Espejo de jacobs/plan.py::_check_cleanroom: quien produce no aprueba. El
-// servidor rechaza igual (422); esto avisa ANTES de enviar.
-export function cleanroomViolations(facetsByRole) {
+// servidor rechaza igual (422); esto avisa ANTES de enviar. Sobre pasos
+// arbitrarios (continuar, spec 2026-09-17 §6.2): índices = posición.
+export function cleanroomViolationsDePasos(pasos) {
   const violations = []
-  for (const role of CHAIN_ROLES) {
-    if (!AUDIT_CAPABILITIES.has(role.capability)) continue
-    for (const dep of role.dependsOn) {
-      const depRole = CHAIN_ROLES[dep]
-      if (facetsByRole[depRole.id] === facetsByRole[role.id]) {
-        violations.push({ role: role.id, facet: facetsByRole[role.id], dependsOnRole: depRole.id })
+  pasos.forEach((paso, i) => {
+    if (!AUDIT_CAPABILITIES.has(paso.capability)) return
+    for (const dep of paso.depends_on || []) {
+      if (pasos[dep] && pasos[dep].facet === paso.facet) {
+        violations.push({ paso: i, facet: paso.facet, dependsOn: dep })
       }
     }
-  }
+  })
   return violations
+}
+
+export function cleanroomViolations(facetsByRole) {
+  const pasos = CHAIN_ROLES.map(role => ({
+    facet: facetsByRole[role.id], capability: role.capability, depends_on: role.dependsOn,
+  }))
+  return cleanroomViolationsDePasos(pasos).map(v => ({
+    role: CHAIN_ROLES[v.paso].id, facet: v.facet, dependsOnRole: CHAIN_ROLES[v.dependsOn].id,
+  }))
 }
