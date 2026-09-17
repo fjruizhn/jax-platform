@@ -2,6 +2,7 @@ import asyncio
 import html as html_lib
 import uuid
 import logging
+import math
 import secrets
 import os
 from datetime import timedelta
@@ -43,6 +44,17 @@ _HASH_DE_RELLENO = _hash(secrets.token_urlsafe(18))
 
 def _credenciales_invalidas() -> HTTPException:
     return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_CREDENCIALES_INVALIDAS)
+
+
+def _cuenta_bloqueada(locked_until, ahora) -> HTTPException:
+    """423 con código y segundos (A-50, 2026-09-16), igual que el 429 del
+    limitador: el frontend no interpreta texto."""
+    segundos = max(1, math.ceil((locked_until - ahora).total_seconds()))
+    return HTTPException(
+        status_code=status.HTTP_423_LOCKED,
+        detail={"code": "cuenta_bloqueada", "retry_after_seconds": segundos},
+        headers={"Retry-After": str(segundos)},
+    )
 
 
 def _emitir_tokens(response: Response, user_id: str, tenant_id: str, role: str, token_version: int) -> str:
@@ -112,11 +124,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
 
     if bloqueada:
-        remaining = int((locked_until - now).total_seconds() / 60) + 1
-        raise HTTPException(
-            status_code=status.HTTP_423_LOCKED,
-            detail=f"Cuenta bloqueada. Intenta de nuevo en {remaining} minuto(s).",
-        )
+        raise _cuenta_bloqueada(locked_until, now)
 
     # Sesión única (2026-09-15, Task 3b, Ruling F2): el login EXITOSO -- y
     # sólo él; ningún camino de error de arriba escribe token_version -- sube

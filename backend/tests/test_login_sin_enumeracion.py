@@ -103,7 +103,8 @@ def test_cuenta_bloqueada_sin_contrasena_correcta_no_se_revela(client):
     try:
         assert _login(client, email, "mala") == GENERICO
         status, detail = _login(client, email, CLAVE)
-        assert status == 423 and "bloqueada" in detail.lower(), (status, detail)
+        assert status == 423 and detail["code"] == "cuenta_bloqueada", (status, detail)
+        assert 0 < detail["retry_after_seconds"] <= 600, detail
     finally:
         client.portal.call(_borrar, email)
 
