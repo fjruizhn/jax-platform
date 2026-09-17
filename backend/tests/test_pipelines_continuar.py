@@ -348,28 +348,105 @@ def test_continuar_pipeline_publica_el_estado_con_la_continuacion(monkeypatch):
      {"tipo": "kill_switch"}),
     ([(3, "REAPED", json.dumps({"prev_status": "running", "reason": "sin avance"}))], {"tipo": "expirado"}),
     ([], {"tipo": "desconocida"}),
+    # Fix round 1 ítem 1: un STEP_FAILED de un paso skip_on_fail DESPUÉS del
+    # real; PIPELINE_ABORTED nombra el que abortó (failed_steps, errores).
+    ([(1, "STEP_FAILED", json.dumps({"step_index": 3, "error": "api_key=sk-FAKE-real cortado"})),
+      (2, "STEP_FAILED", json.dumps({"step_index": 5, "error": "opcional"})),
+      (3, "PIPELINE_ABORTED", json.dumps({"at_wave": 2, "failed_steps": [4, 3],
+                                          "errores": {"3": "api_key=sk-FAKE-real cortado", "4": "otro"}}))],
+     {"tipo": "fallo", "paso": 3, "detalle": "api_key=*** cortado"}),
+    ([(3, "PIPELINE_ABORTED", json.dumps({"failed_steps": [2], "errores": {"2": None}}))],
+     {"tipo": "fallo", "paso": 2}),
+    ([(3, "PIPELINE_ABORTED", json.dumps({"failed_steps": [2]})),
+      (1, "STEP_FAILED", json.dumps({"step_index": 5, "error": "de otro paso"}))],
+     {"tipo": "fallo", "paso": 2}),
+    ([(1, "STEP_FAILED", json.dumps({"step_index": 3, "error": "real"})),
+      (2, "STEP_FAILED", json.dumps({"step_index": 5, "error": "opcional"})),
+      (3, "PIPELINE_ABORTED", json.dumps({"failed_steps": "3", "errores": {}}))],
+     {"tipo": "fallo", "paso": 5, "detalle": "opcional"}),
+    ([(2, "STEP_FAILED", json.dumps({"step_index": 5, "error": "opcional"})),
+      (3, "PIPELINE_ABORTED", json.dumps({"failed_steps": [True, "1"]}))],
+     {"tipo": "fallo", "paso": 5, "detalle": "opcional"}),
+    ([(2, "STEP_FAILED", json.dumps({"step_index": 5, "error": "opcional"})),
+      (3, "PIPELINE_ABORTED", json.dumps({"failed_steps": []}))],
+     {"tipo": "fallo", "paso": 5, "detalle": "opcional"}),
     ([(2, "PIPELINE_ABORTED", "{no json"), (1, "STEP_FAILED", "[1]")], {"tipo": "fallo"}),
 ])
 def test_la_causa_es_la_del_ultimo_evento(eventos, esperado):
     assert mod.causa_de(eventos) == esperado
 
 
+# ---------------------------------------------------------------- fix round 1
+
+def test_codigo_desconocido_sale_igual_en_preflight_y_en_continue(monkeypatch):
+    """Ítem 2: allowlist = CODIGOS_DE_JACOBS ∪ {kill_switch}; la misma
+    respuesta de Jacobs da el mismo motivo en los dos endpoints."""
+    m = motivo("invento_nuevo", "algo api_key=sk-FAKE-nuevo", status="x")
+    esperado = {"code": "estado_no_continuable", "mensaje": "algo api_key=***"}
+    preparar(monkeypatch, JacobsFalso(_previa(motivo_=m)))
+    r = _correr(_preflight())
+    assert (r["continuable"], r["motivo"], r["veredicto"]) == (False, esperado, None)
+    falso = JacobsFalso(_previa(motivo_=m))
+    preparar(monkeypatch, falso)
+    r = _correr(_continuar())
+    assert (r.status_code, r.detail) == (409, esperado)
+    assert falso.cuerpos("POST", RUTA) == []
+
+
+@pytest.mark.parametrize("m, mensaje", [
+    (motivo("otro", mensaje="api_key=sk-FAKE-m"), "api_key=***"),
+    (motivo("otro"), "otro"),
+    (motivo("otro", [invalida()]), "otro"),
+])
+def test_codigo_desconocido_en_preflight_usa_el_mejor_texto(monkeypatch, m, mensaje):
+    preparar(monkeypatch, JacobsFalso(_previa(motivo_=m)))
+    assert _correr(_preflight())["motivo"] == {"code": "estado_no_continuable", "mensaje": mensaje}
+
+
+def test_kill_switch_pasa_en_preflight_con_su_code(monkeypatch):
+    preparar(monkeypatch, JacobsFalso(_previa(motivo_=motivo("kill_switch", "Kill switch activo"))))
+    assert _correr(_preflight())["motivo"] == {"code": "kill_switch", "detalle": "Kill switch activo"}
+
+
+@pytest.mark.parametrize("campos, esperado", [
+    ({"status": 3, "mensaje": ["x"], "motivo": {"a": 1}, "ok": "true", "hay_no_acotados": 1}, {}),
+    ({"status": None, "mensaje": None, "motivo": None}, {"status": None, "mensaje": None, "motivo": None}),
+    ({"status": "aborted", "mensaje": "m", "motivo": "r", "ok": False, "hay_no_acotados": True},
+     {"status": "aborted", "mensaje": "m", "motivo": "r", "ok": False, "hay_no_acotados": True}),
+])
+def test_detalle_declarado_exige_el_tipo_de_cada_campo(campos, esperado):
+    """Ítem 3: status/mensaje/motivo str o null; ok/hay_no_acotados bool; si
+    no, se omiten (nunca el repr)."""
+    exc = mod._rechazo_de_jacobs(409, {"detail": {"code": "estado_no_continuable", **campos}}, "")
+    assert exc.detail == {"code": "estado_no_continuable", **esperado}
+
+
+@pytest.mark.parametrize("cambio, fuera", [
+    ({}, None),
+    ({"run_epoch": True}, "run_epoch"),
+    ({"run_epoch": "2"}, "run_epoch"),
+    ({"pasos_reusados": [0, "1"]}, "pasos_reusados"),
+    ({"pasos_a_correr": "4,5"}, "pasos_a_correr"),
+])
+def test_el_200_de_continuar_solo_trae_claves_declaradas_y_validas(monkeypatch, cambio, fuera):
+    """Ítem 4: Jacobs ya lanzó el pipeline -- la respuesta no se rompe, pero
+    un campo mal formado no sale ni llega al evento de WS."""
+    ok = {"pipeline_id": PID, "status": "running", "run_epoch": 2, "pasos_a_correr": [4, 5],
+          "pasos_reusados": [0, 1, 2, 3], "costo_max_usd": "0.10", "pasos_costo": [], "secreto": "api_key=sk-FAKE-x",
+          **cambio}
+    falso = JacobsFalso({**_previa(v=veredicto()), ("POST", RUTA): respuesta(200, ok)})
+    registro = preparar(monkeypatch, falso)
+    r = _correr(_continuar())
+    declaradas = {"pipeline_id", "status", "run_epoch", "pasos_a_correr", "pasos_reusados", "costo_max_usd", "pasos_costo"}
+    assert set(r) == declaradas - {fuera}
+    assert registro.admitidos == [("1", PID)]
+    ((_evento, _pid, continuacion),) = registro.publicados
+    esperado_ws = {"run_epoch": 2, "pasos_reusados": [0, 1, 2, 3]}
+    esperado_ws.pop(fuera, None)
+    assert continuacion == esperado_ws
+
+
 # ---------------------------------------------------------------- con DB
-
-@pytest.mark.parametrize("nombre", ["continue_preflight", "continue_pipeline"])
-def test_continuar_exige_ser_el_duenio(client, nombre):
-    funcion = getattr(mod, nombre)
-
-    async def llamar():
-        try:
-            await funcion(pipeline_id=str(uuid.uuid4()), pedido=mod.PedidoDeContinuar(),
-                          user=AuthUser(user_id="intruso", tenant_id="1", role="operator"))
-        except HTTPException as exc:
-            return exc.status_code
-        return None
-
-    assert client.portal.call(llamar) == 404
-
 
 @pytest.fixture
 def abortado_con_eventos(client):
@@ -392,6 +469,39 @@ def abortado_con_eventos(client):
     for pid in (abortado, corriendo):
         client.portal.call(sql, "DELETE FROM jacobs_events WHERE pipeline_id = %s", (pid,))
         client.portal.call(sql, "DELETE FROM jacobs_pipelines WHERE pipeline_id = %s", (pid,))
+
+
+@pytest.mark.parametrize("nombre", ["continue_preflight", "continue_pipeline"])
+@pytest.mark.parametrize("intruso", [AuthUser(user_id="intruso", tenant_id="TENANT-CONT", role="operator"),
+                                     "mismo usuario, otro tenant"])
+def test_continuar_exige_ser_el_duenio(client, monkeypatch, abortado_con_eventos, nombre, intruso):
+    """Un pipeline QUE EXISTE y es de otro: 404, sin llamar a Jacobs y sin
+    consultar el cupo (el dueño va primero)."""
+    abortado, _ = abortado_con_eventos
+    if isinstance(intruso, str):
+        intruso = AuthUser(user_id=uid(client, "continuar-causa", "operator"), tenant_id="OTRO", role="operator")
+    duenio_real = mod._require_pipeline_owner
+    falso = JacobsFalso()
+    preparar(monkeypatch, falso)
+    monkeypatch.setattr(mod, "_require_pipeline_owner", duenio_real)
+    cupos = []
+
+    async def cupo(tenant, limite):
+        cupos.append(tenant)
+        return True
+
+    monkeypatch.setattr(mod.resource_manager, "can_start_pipeline", cupo)
+    funcion = getattr(mod, nombre)
+
+    async def llamar():
+        try:
+            await funcion(pipeline_id=abortado, pedido=mod.PedidoDeContinuar(), user=intruso)
+        except HTTPException as exc:
+            return exc.status_code, exc.detail
+        return None
+
+    assert client.portal.call(llamar) == (404, "pipeline_no_encontrado")
+    assert falso.llamadas == [] and cupos == []
 
 
 def test_el_duenio_real_devuelve_el_nombre(client, abortado_con_eventos):

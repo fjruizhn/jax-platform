@@ -193,8 +193,17 @@ def _detalle_declarado(detalle_de_jacobs: dict) -> dict:
                 valor = _items_de_detalle(valor)
             else:
                 continue
-        elif campo in ("mensaje", "motivo") and valor is not None:
-            valor = recortar_redactado(str(valor), MOTIVO_MAX)
+        elif campo in ("status", "mensaje", "motivo"):
+            # Fix round 1 ítem 3: texto o null; otro tipo se omite (nunca
+            # str() de un objeto).
+            if valor is None:
+                pass
+            elif isinstance(valor, str):
+                valor = recortar_redactado(valor, MOTIVO_MAX)
+            else:
+                continue
+        elif campo in ("ok", "hay_no_acotados") and not isinstance(valor, bool):
+            continue
         detalle[campo] = valor
     return detalle
 
@@ -477,11 +486,28 @@ async def _continuable(client, pipeline_id: str, user: AuthUser,
         raise _prevuelo_no_disponible() from None
     return {
         "continuable": continuable,
-        "motivo": _detalle_declarado(motivo) if motivo is not None else None,
+        "motivo": _motivo_permitido(_detalle_declarado(motivo)) if motivo is not None else None,
         "pasos_a_correr": a_correr,
         "pasos_reusados": reusados,
         "veredicto": _evaluar_veredicto(crudo, umbral) if crudo is not None else None,
     }
+
+
+# Fix round 1 ítem 2: los code que la Mesa sabe mostrar en el motivo de
+# continuar. kill_switch no es un rechazo con campos (va por jacobs_rechazo en
+# /continue) pero el modal lo muestra con su propio texto.
+CODIGOS_DE_MOTIVO = CODIGOS_DE_JACOBS | {"kill_switch"}
+
+
+def _motivo_permitido(motivo: dict) -> dict:
+    """Un code fuera de CODIGOS_DE_MOTIVO sale como estado_no_continuable con
+    el mejor texto redactado -- igual en /continue/preflight y en /continue
+    (que lo recibe ya normalizado de `_continuable`)."""
+    if motivo["code"] in CODIGOS_DE_MOTIVO:
+        return motivo
+    textos = [motivo.get(c) for c in ("detalle", "mensaje", "code")]
+    mejor = next((t for t in textos if isinstance(t, str) and t), "")
+    return {"code": "estado_no_continuable", "mensaje": recortar_redactado(mejor, MOTIVO_MAX)}
 
 
 def _no_continuable(estado: dict) -> HTTPException:
@@ -504,14 +530,30 @@ def _no_continuable(estado: dict) -> HTTPException:
     if code in ("reasignacion_invalida", "plan_rechazado"):
         detalle = {"code": code, "detalle": motivo.get("detalle")}
         return HTTPException(status_code=422, detail=detalle)
-    mejor_texto = texto or motivo.get("mensaje") or code
     if code == "kill_switch":
+        mejor_texto = texto or motivo.get("mensaje") or code
         detalle = {"code": "jacobs_rechazo", "status": 423, "motivo": recortar_redactado(mejor_texto, MOTIVO_MAX)}
         return HTTPException(status_code=423, detail=detalle)
-    if code in CODIGOS_DE_JACOBS:
-        return HTTPException(status_code=409, detail=motivo)
-    detalle = {"code": "estado_no_continuable", "mensaje": recortar_redactado(mejor_texto, MOTIVO_MAX)}
-    return HTTPException(status_code=409, detail=detalle)
+    # `_continuable` ya dejó sólo CODIGOS_DE_MOTIVO (un code desconocido llega
+    # como estado_no_continuable): el resto es un code de Jacobs con sus campos.
+    return HTTPException(status_code=409, detail=motivo)
+
+
+# Fix round 1 ítem 4: el 200 de /continue con SÓLO las claves del contrato.
+def _respuesta_de_continuar(data: dict) -> dict:
+    """Jacobs ya lanzó el pipeline: un campo mal formado se omite (no se
+    rompe la respuesta) y tampoco llega al evento de WS."""
+    data = _costos_saneados(data)
+    validos = {
+        "pipeline_id": lambda v: isinstance(v, str),
+        "status": lambda v: isinstance(v, str),
+        "run_epoch": lambda v: isinstance(v, int) and not isinstance(v, bool),
+        "pasos_a_correr": _lista_de_pasos,
+        "pasos_reusados": _lista_de_pasos,
+        "costo_max_usd": lambda v: True,   # ya saneado u omitido por _costos_saneados
+        "pasos_costo": lambda v: True,     # idem
+    }
+    return {clave: data[clave] for clave, valido in validos.items() if clave in data and valido(data[clave])}
 
 
 # engine_state.active_pipelines (memoria) se descarta apenas la pipeline
@@ -586,7 +628,12 @@ LISTA_PIPELINES_MAX = int(os.getenv("JAX_LISTA_PIPELINES_MAX", "50"))
 
 
 # Causa de un pipeline detenido (desvío DV-9 del plan): el último de estos
-# eventos de jacobs_events manda. paso/detalle salen del último STEP_FAILED.
+# eventos de jacobs_events manda el tipo. paso/detalle (fix round 1 ítem 1):
+# si el último es PIPELINE_ABORTED con `failed_steps` legible (lista no vacía
+# de enteros; jax jacobs/executor.py lo escribe con {at_wave, failed_steps,
+# errores}), el paso es el menor de failed_steps y el detalle su `errores`.
+# Si no, el último STEP_FAILED -- que puede ser de un paso skip_on_fail que
+# NO causó el aborto, por eso es sólo el respaldo.
 EVENTOS_DE_CAUSA = {
     "STEP_FAILED": "fallo",
     "PIPELINE_ABORTED": "fallo",
@@ -624,6 +671,18 @@ def causa_de(eventos: list[tuple[int, str, str | None]]) -> dict:
         return {"tipo": "desconocida"}
     ordenados = sorted(eventos, key=lambda e: e[0])
     causa = {"tipo": EVENTOS_DE_CAUSA[ordenados[-1][1]]}
+    if ordenados[-1][1] == "PIPELINE_ABORTED":
+        datos = _payload(ordenados[-1][2])
+        fallidos = datos.get("failed_steps")
+        if (isinstance(fallidos, list) and fallidos
+                and all(isinstance(i, int) and not isinstance(i, bool) for i in fallidos)):
+            causa["paso"] = min(fallidos)
+            errores = datos.get("errores")
+            if isinstance(errores, dict):
+                error = errores.get(str(causa["paso"]), errores.get(causa["paso"]))
+                if isinstance(error, str) and error:
+                    causa["detalle"] = recortar_redactado(error, MOTIVO_MAX)
+            return causa
     if causa["tipo"] == "fallo":
         fallos = [e for e in ordenados if e[1] == "STEP_FAILED"]
         if fallos:
@@ -827,13 +886,13 @@ async def continue_pipeline(pipeline_id: str, pedido: PedidoDeContinuar,
         cuerpo["costo_max_aceptado_usd"] = _monto_texto(confirmado if confirmado is not None else umbral)
         r = await client.post(f"{JACOBS_URL}/pipeline/{pipeline_id}/continue", json=cuerpo,
                               timeout=JACOBS_PIPELINE_TIMEOUT)
-        data = _costos_saneados(_json_de_jacobs(r))
+        data = _respuesta_de_continuar(_json_de_jacobs(r))
         await resource_manager.admit_pipeline(user.tenant_id, pipeline_id)
         await engine_state.continuar_pipeline(
             PipelineState(pipeline_id=pipeline_id, tenant_id=user.tenant_id, user_id=user.user_id,
                           name=nombre or "", status="running"),
             user.tenant_id, user.user_id,
-            {"run_epoch": data.get("run_epoch"), "pasos_reusados": data.get("pasos_reusados", [])},
+            {clave: data[clave] for clave in ("run_epoch", "pasos_reusados") if clave in data},
         )
         return data
     except HTTPException:
