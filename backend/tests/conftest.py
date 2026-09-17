@@ -70,6 +70,16 @@ for _variable, _valor in (("JAX_ADJUNTO_MAX_BYTES", "10485760"),
                           ("JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS", "5")):
     os.environ.setdefault(_variable, _valor)
 
+# Almacén de adjuntos por referencia (RD2, 2026-09-17): directorio aislado
+# para TODA la sesión y FORZADO (no setdefault), por la misma razón que el
+# respaldo de uso más abajo: cuando /etc/jax/.env traiga el directorio real
+# de producción, un test no puede escribir ni limpiar ahí. mkdtemp ya lo crea
+# 0700. El TTL sí es setdefault: rige el de producción si está.
+import tempfile as _tempfile  # noqa: E402
+
+os.environ["JAX_ADJUNTOS_DIR"] = _tempfile.mkdtemp(prefix="jax-test-adjuntos-")
+os.environ.setdefault("JAX_ADJUNTOS_TTL_HORAS", "24")
+
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
 # aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture
 # `client` es de sesión y arranca la app -- y con ella run_migrations, que

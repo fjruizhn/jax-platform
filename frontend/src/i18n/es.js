@@ -97,6 +97,7 @@ export default {
     adjunto_tipo_no_permitido: () => 'Ese tipo de archivo no se puede adjuntar. Se aceptan imágenes PNG, JPEG o WebP, PDF y texto UTF-8.',
     adjunto_vacio: () => 'El archivo está vacío.',
     adjunto_invalido: () => 'El adjunto llegó dañado. Vuelve a adjuntarlo.',
+    adjunto_no_encontrado: () => 'El adjunto ya no está disponible. Vuelve a adjuntarlo.',
     adjuntos_demasiados: (d) => (d?.max === 1
       ? 'Se puede adjuntar hasta 1 archivo por mensaje.'
       : `Se pueden adjuntar hasta ${d?.max} archivos por mensaje.`),

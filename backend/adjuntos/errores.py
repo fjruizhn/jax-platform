@@ -7,6 +7,7 @@ CODIGOS: tuple[str, ...] = (
     "adjunto_tipo_no_permitido",
     "adjunto_vacio",
     "adjunto_invalido",
+    "adjunto_no_encontrado",
     "adjuntos_demasiados",
     "adjuntos_no_soportados",
     "imagen_no_soportada",

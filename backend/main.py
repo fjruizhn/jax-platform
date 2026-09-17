@@ -48,6 +48,7 @@ _cred_logger.propagate = False
 
 import ajustes
 from adjuntos import limites as limites_de_adjuntos
+from adjuntos import almacen as almacen_de_adjuntos
 from adjuntos import pdf_pool
 from db.connection import get_pool, close_pool
 from http_client import get_http_client, close_http_client
@@ -115,6 +116,11 @@ async def lifespan(app: FastAPI):
     limites_de_adjuntos.cargar_subidas_en_proceso()
     limites_de_adjuntos.cargar_procesos_de_pdf()
     limites_de_adjuntos.cargar_timeout_de_pdf()
+    # RD2 (2026-09-17): almacén de adjuntos por referencia. Directorio
+    # absoluto, 0700 y escribible, y TTL en rango; si no, no se arranca
+    # (adjuntos/almacen.py). También antes de la base y del pool de pypdf.
+    almacen_de_adjuntos.cargar_ttl_horas()
+    await asyncio.to_thread(almacen_de_adjuntos.preparar_directorio)
     # RD1 (2026-09-17): el ProcessPoolExecutor de pypdf se crea acá, antes de
     # la base y el cliente HTTP -- mismo criterio que los límites de arriba,
     # config primero, nada que dependa de otra cosa (ver adjuntos/pdf_pool.py).
@@ -136,6 +142,9 @@ async def lifespan(app: FastAPI):
     await engine_state.cargar_nombres_de_facetas()
     engine_state.start_background_tasks()
     asyncio.create_task(start_owner_file_cleanup())
+    # RD2: vencidos y huérfanos de JAX_ADJUNTOS_DIR. Tarea hermana, no dentro
+    # del bucle de owner_cleanup (6 h): ver almacen.INTERVALO_DE_LIMPIEZA.
+    asyncio.create_task(almacen_de_adjuntos.start_limpieza_de_adjuntos())
     asyncio.create_task(start_facet_canary())
     # Drenaje del respaldo de uso (2026-09-15, Task 3): reinserta las filas
     # de axioma_usage que quedaron en disco cuando la base no respondió.

@@ -97,6 +97,7 @@ export default {
     adjunto_tipo_no_permitido: () => 'That file type cannot be attached. PNG, JPEG or WebP images, PDF and UTF-8 text are accepted.',
     adjunto_vacio: () => 'The file is empty.',
     adjunto_invalido: () => 'The attachment arrived damaged. Attach it again.',
+    adjunto_no_encontrado: () => 'The attachment is no longer available. Attach it again.',
     adjuntos_demasiados: (d) => (d?.max === 1
       ? 'You can attach up to 1 file per message.'
       : `You can attach up to ${d?.max} files per message.`),
