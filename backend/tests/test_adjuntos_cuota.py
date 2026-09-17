@@ -51,7 +51,7 @@ def directorio(tmp_path, monkeypatch):
 
 
 def _png(n: int) -> bytes:
-    assert not n >= len(PNG)
+    assert n >= len(PNG)
     return PNG + b"\x00" * (n - len(PNG))
 
 
