@@ -582,8 +582,23 @@ jobs:
             // el merge: 693 passed, 0 fallidos, 75 archivos.
             // 693 -> 694 el 2026-09-17: +1 en RightPanel.test.jsx (resume con 422
             // prevuelo_rechazado lista las violaciones traducidas). Visto en rojo.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 694) {
-              console.error("PISO ROTO: se esperaban 694 tests de vitest CORRIDOS y 0 fallidos.");
+            // 569 -> 618 el 2026-09-17 (Ejecutor SP2, modo Ejecutor): useEjecutor.test.js
+            // (store: sondeo que corre y se detiene, bitácora incremental sin duplicar, sesión),
+            // PanelEjecutor.test.jsx (un test por estado visible: compuerta, pausa puesta /
+            // ilegible / quitar con la suma, afirmación con la línea literal completa, crudas sin
+            // afirmaciones, rechazo y fallos traducidos, código desconocido crudo, bitácora
+            // traducida, en), BottomBar.ejecutor.test.jsx (modo sólo para superadmin) y
+            // contraste.test.js (token modo-ejecutor, 5.47:1). Vistos en rojo; 10 mutaciones con
+            // cmp previo, todas en rojo. Medido dos veces: 618 passed, 0 fallidos, 72 archivos.
+            // 618 -> 620 el 2026-09-17 (misión terminada: la pantalla se refresca): useEjecutor.test.js
+            // +2 (una misión que ya terminó relee /estado y la lista aunque no hubiera sondeo; la que
+            // sigue en curso no relee /estado en cada vuelta). Visto en rojo; mutación con cmp previo
+            // (quitar cargarEstado del cierre) -> rojo. Medido: 620 passed, 0 fallidos, 72 archivos.
+            // 620 -> 745 el 2026-09-17 (pre-vuelo y continuar, tras mergear master):
+            // los 125 de esta rama. Medido dos veces tras el merge: 745 passed,
+            // 0 fallidos, 78 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 745) {
+              console.error("PISO ROTO: se esperaban 745 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1559,7 +1574,52 @@ jobs:
           # Jacobs corre el pre-vuelo en resume/approve-step). Pasan con el helper único.
           # 1763 -> 1764 el 2026-09-17 (Ruling R54 del plan J): el 423 kill_switch
           # de /jacobs/preflight se muestra con su texto, no como rechazo genérico.
-          PISO_PASSED = 1764
+          # 1520 -> 1530 el 2026-09-17 (credencial de servicio ante LAS MANOS): +10
+          # puros de test_credencial_las_manos.py, que también corren con DB. NO
+          # medido local con DB: jax_memory_test de hall9000 hoy tiene capability
+          # `delegate`/`integrate` sin mode (dato de otra sesión) y las migraciones
+          # del fixture `client` abortan antes de correr nada; no se toca esa base
+          # compartida. Los +10 son los mismos que suma el job sin DB (905 -> 915,
+          # medido dos veces). Si el runner da otro numero, manda el runner.
+          # 1530 -> 1532 el 2026-09-17: el runner del PR #101 contó 1530 passed y
+          #   2 failed (test_pipelines_identity_injection.py:57 y :90, KeyError
+          #   'json': el cliente falso no aceptaba `headers=`). El falso ahora acepta
+          #   `headers` y los dos tests afirman que viaja X-Jax-Credencial-Servicio
+          #   con la credencial de la sesión: 1530 + 2. Local, ese archivo y
+          #   test_credencial_las_manos.py: 12 passed (vistos en rojo sin el arreglo).
+          #   La suite completa local sigue sin medir por el mismo dato ajeno en
+          #   jax_memory_test (43 failed por capability delegate/integrate sin mode).
+          # 1532 -> 1533 el 2026-09-17 (test_capability_mode.py sin romper filas
+          #   ajenas de la base compartida): +1 con DB,
+          #   test_un_diario_dejado_por_un_kill_se_restaura_al_arrancar (visto en
+          #   rojo: NameError, y con la mutación "sin recuperación al arrancar":
+          #   1050 table exists). Medido local contra jax_memory_test, dos veces:
+          #   1532 passed / 1 skipped / 0 failed; el skip es ambiental
+          #   (test_model_max_output_tokens.py: gpt-5.6-terra no está en esa DB) y
+          #   el runner lo corre, como en el conteo del PR #101 (1530+2 = 1532
+          #   colectados, 0 skips). Si el runner da otro número, manda el runner.
+          # 1533 -> 1560 el 2026-09-17 (C1 contra envoltorios del Ejecutor): +25 puros de
+          #   test_ejecutor_reglas_envoltorios.py (también corren con DB) y +2 con DB en
+          #   test_ejecutor_tablas.py (la migración nueva siembra 7 reglas una sola vez, y
+          #   entra sobre una v1 ya corrida). Vistos en rojo con 12 mutaciones (cmp previo,
+          #   PYTHONDONTWRITEBYTECODE=1). Medido local dos veces contra jax_memory_test:
+          #   1559 passed / 1 skipped (el mismo skip ambiental de gpt-5.6-terra que el
+          #   runner corre) -> 1560 en el runner. Si el runner da otro número, manda el runner.
+          # 1560 -> 1606 el 2026-09-17 (Ejecutor SP2, modo Ejecutor): +34 de
+          #   test_ejecutor_misiones.py (con DB: compuerta visible, 403/409/422/423/503 sin
+          #   escribir nada, ciclo completo con runner falso del mismo protocolo, sesión retomada
+          #   por id, un turno a la vez, reconciliación al arrancar, pausa con auditoría y
+          #   reposición, EXPLAIN con volumen de las consultas del sondeo) y +12 de
+          #   test_ejecutor_pausa.py (sin DB). Vistos en rojo; 6 mutaciones con cmp previo, todas
+          #   en rojo. Medido local contra jax_memory_test: 1605 passed / 1 skipped (el mismo skip
+          #   ambiental) -> 1606 en el runner. Si el runner da otro número, manda el runner.
+          # 1606 -> 1839 el 2026-09-17 (pre-vuelo y continuar, tras mergear master):
+          # +233 de esta rama, incluidos los dos nuevos de reposición de semillas
+          # (umbral de confirmación y tope de kimi/ada). Medido contra
+          # jax_memory_test: 1839 passed / 1 skipped; los 2 failed restantes son
+          # ajenos a la rama (dato de otra sesión y un índice del frente G que no
+          # está en jax master, así que el runner no los ve).
+          PISO_PASSED = 1839
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2130,7 +2190,26 @@ jobs:
       # passed / 643 skipped.
       # 1119 -> 1121 el 2026-09-17: los mismos +2 controles puros de resume.
       # 1121 -> 1122 el 2026-09-17 (Ruling R54): el mismo test puro del 423.
-      JAX_CI_MIN_PASSED: "1122"
+      # 905 -> 915 el 2026-09-17 (credencial de servicio ante LAS MANOS): +10 puros en
+      # test_credencial_las_manos.py (todo pedido del backend a LAS MANOS salvo /health
+      # lleva headers=encabezados_las_manos(); fail-closed sin la variable; el sondeo de
+      # pipelines la presenta). Vistos en rojo contra 7c84291: 7 pedidos sin credencial.
+      # Mutaciones: quitar la cabecera de authorize-facet -> 1 rojo; del sondeo -> 2;
+      # aceptar una credencial corta -> 2. Medido dos veces con JAX_CI_NO_DB=1: 915
+      # passed / 617 skipped (test_hallazgos_limpieza.py: el cliente falso acepta headers).
+      # 915 sin cambio el 2026-09-17 (test_capability_mode.py con respaldo de filas
+      # ajenas): el test nuevo pide `client`, así que sin DB suma un skip. Medido con
+      # JAX_CI_NO_DB=1: 915 passed / 618 skipped.
+      # 915 -> 940 el 2026-09-17 (C1 contra envoltorios del Ejecutor): +25 puros de
+      # test_ejecutor_reglas_envoltorios.py; los 2 nuevos de test_ejecutor_tablas.py piden
+      # `client` (+2 skips). Medido dos veces con JAX_CI_NO_DB=1: 940 passed / 620 skipped.
+      # 940 -> 959 el 2026-09-17 (Ejecutor SP2, modo Ejecutor): +12 de test_ejecutor_pausa.py
+      # y +7 puros de test_ejecutor_misiones.py (el runner real no se puede lanzar desde la
+      # suite, variables sin defaults, compuerta ilegible = cerrada); sus otros 27 piden
+      # `client` (+27 skips). Medido con JAX_CI_NO_DB=1, env -i: 959 passed / 647 skipped.
+      # 959 -> 1166 el 2026-09-17 (pre-vuelo y continuar, tras mergear master):
+      # +207 puros. Medido con JAX_CI_NO_DB=1: 1166 passed / 676 skipped.
+      JAX_CI_MIN_PASSED: "1166"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

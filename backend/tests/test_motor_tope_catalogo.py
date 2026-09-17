@@ -80,3 +80,28 @@ def test_post_rechaza_max_tokens_negativo(client):
     finally:
         client.portal.call(sql, "DELETE FROM capability_motor WHERE motor_key = 'test-tope-negativo'", ())
         client.portal.call(sql, "DELETE FROM motor WHERE `key` = 'test-tope-negativo'", ())
+
+
+# 2026-09-17 (merge de master): en jax_memory_test las filas de `motor` se
+# habían vuelto a crear con 8000 (los tests de migraciones las borran y
+# resiembran) y el marcador impedía corregirlas. El arreglo corre en cada
+# arranque con guard sobre el valor viejo.
+def test_el_tope_viejo_se_corrige_aunque_la_migracion_ya_este_marcada(client):
+    async def correr():
+        await sql("UPDATE motor SET max_tokens = 8000 WHERE `key` IN ('kimi', 'ada')")
+        await migrations.run_migrations()
+        return await sql("SELECT `key`, max_tokens FROM motor WHERE `key` IN ('kimi','ada') ORDER BY `key`",
+                         fetch=True)
+
+    assert client.portal.call(correr) == (("ada", 0), ("kimi", 0))
+
+
+def test_un_tope_puesto_a_mano_no_se_pisa(client):
+    async def correr():
+        await sql("UPDATE motor SET max_tokens = 4321 WHERE `key` = 'kimi'")
+        await migrations.run_migrations()
+        fila = await sql("SELECT max_tokens FROM motor WHERE `key` = 'kimi'", fetch=True)
+        await sql("UPDATE motor SET max_tokens = 0 WHERE `key` = 'kimi'")
+        return fila
+
+    assert client.portal.call(correr) == ((4321,),)

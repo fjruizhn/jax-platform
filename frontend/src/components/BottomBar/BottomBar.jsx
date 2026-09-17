@@ -1,5 +1,6 @@
-import { memo, useState, useRef, useLayoutEffect } from 'react'
+import { memo, useState, useRef, useLayoutEffect, useEffect } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
+import { useEjecutor } from '../../store/useEjecutor'
 import { useI18n } from '../../i18n/index.jsx'
 import KillSwitch from './KillSwitch'
 import PipelineModal from './PipelineModal'
@@ -23,7 +24,16 @@ function BottomBar() {
     token: facetsState[id]?.token || 'texto-suave',
   }))
   const [input, setInput] = useState('')
-  const [mode, setMode] = useState('chat')
+  const [modoBase, setModoBase] = useState('chat')
+  // Modo Ejecutor (SP2, 2026-09-17): el flag vive en su store porque
+  // CenterPanel también lo lee (muestra el panel en vez de los mensajes).
+  // Sólo superadmin: si el rol cambia, el modo se apaga.
+  const esSuperadmin = useJaxStore((s) => s.user?.role === 'superadmin')
+  const ejecutorActivo = useEjecutor((s) => s.activo)
+  const setEjecutorActivo = useEjecutor((s) => s.setActivo)
+  const enviarEjecutor = useEjecutor((s) => s.enviar)
+  const ejecutorContinua = useEjecutor((s) => s.misionActiva?.puede_continuar === true)
+  const mode = esSuperadmin && ejecutorActivo ? 'ejecutor' : modoBase
   const [sending, setSending] = useState(false)
   const [showPipelineModal, setShowPipelineModal] = useState(false)
   const [pipelineObjective, setPipelineObjective] = useState('')
@@ -38,6 +48,16 @@ function BottomBar() {
   const setGeneratingImage = useJaxStore((s) => s.setGeneratingImage)
   const { t } = useI18n()
   const textareaRef = useRef(null)
+
+  useEffect(() => {
+    if (!esSuperadmin && ejecutorActivo) setEjecutorActivo(false)
+  }, [esSuperadmin, ejecutorActivo, setEjecutorActivo])
+
+  function setMode(m) {
+    setEjecutorActivo(m === 'ejecutor')
+    if (m !== 'ejecutor') setModoBase(m)
+    else setAttachment(null)
+  }
 
   // La caja crece con el texto hasta MAX_LINEAS_INPUT y recién ahí hace scroll
   // (2026-09-12): antes quedaba en una línea y un prompt largo no se leía.
@@ -64,6 +84,7 @@ function BottomBar() {
     { id: 'comando',  label: t.modeComando },
     { id: 'pipeline', label: t.modePipeline },
     { id: 'imagen',   label: t.modeImagen },
+    ...(esSuperadmin ? [{ id: 'ejecutor', label: t.ejecutor.modo }] : []),
   ]
 
   const activeFacetObj = FACETS.find((f) => f.id === activeFacet) || FACETS[0]
@@ -71,6 +92,7 @@ function BottomBar() {
     : mode === 'comando' ? t.placeholderComando()
     : mode === 'pipeline' ? t.placeholderPipeline()
     : mode === 'imagen' ? t.placeholderImagen()
+    : mode === 'ejecutor' ? (ejecutorContinua ? t.ejecutor.placeholderTurno : t.ejecutor.placeholderNueva)
     : ''
 
   // A-43 (2026-09-16): los tres errores de la Mesa se arman igual. El prefijo
@@ -108,6 +130,16 @@ function BottomBar() {
 
     setSending(true)
     setInput('')
+
+    // Ejecutor: nada va al chat. Si el backend no la acepta, el texto vuelve a
+    // la caja y el error se ve traducido en el panel.
+    if (mode === 'ejecutor') {
+      const aceptada = await enviarEjecutor(text)
+      if (!aceptada) setInput(text)
+      setSending(false)
+      textareaRef.current?.focus()
+      return
+    }
 
     addMessage({
       id: Date.now().toString(),
@@ -287,6 +319,13 @@ function BottomBar() {
           </div>
         )}
 
+        {mode === 'ejecutor' && (
+          <div className="mb-2 text-xs text-texto-fuerte font-semibold flex items-center gap-1">
+            <span>▶</span>
+            <span>{t.ejecutor.hint}</span>
+          </div>
+        )}
+
         {/* File attachment preview */}
         {(attachment || uploading) && (
           <FileAttachment
@@ -311,6 +350,8 @@ function BottomBar() {
                       ? 'bg-texto-fuerte text-fondo'
                       : m === 'imagen'
                       ? 'bg-acento text-sobre-color'
+                      : m === 'ejecutor'
+                      ? 'bg-modo-ejecutor text-sobre-color'
                       : 'bg-accion text-sobre-color'
                     : 'bg-superficie text-texto-suave hover:text-texto'
                 }`}
@@ -320,11 +361,13 @@ function BottomBar() {
             ))}
           </div>
 
-          {/* Attach button */}
-          <AttachButton
-            onFileSelected={handleFileSelected}
-            disabled={sending || uploading}
-          />
+          {/* Attach button — sin adjuntos en el modo Ejecutor */}
+          {mode !== 'ejecutor' && (
+            <AttachButton
+              onFileSelected={handleFileSelected}
+              disabled={sending || uploading}
+            />
+          )}
 
           {/* Input */}
           <textarea
@@ -342,6 +385,7 @@ function BottomBar() {
               borderColor: mode === 'comando' ? colorToken('modo-comando', 0.5)
                 : mode === 'pipeline' ? colorToken('texto-fuerte', 0.25)
                 : mode === 'imagen' ? colorToken('faceta-imagen', 0.5)
+                : mode === 'ejecutor' ? colorToken('modo-ejecutor', 0.5)
                 : sending ? colorToken(activeFacetObj.token, 0.5) : undefined,
             }}
           />
@@ -357,9 +401,10 @@ function BottomBar() {
               mode === 'comando' ? 'border-transparent bg-modo-comando text-sobre-color'
                 : mode === 'pipeline' ? 'border-transparent bg-texto-fuerte text-fondo'
                 : mode === 'imagen' ? 'border-transparent bg-acento text-sobre-color'
+                : mode === 'ejecutor' ? 'border-transparent bg-modo-ejecutor text-sobre-color'
                 : 'bg-superficie'
             }`}
-            style={['comando', 'pipeline', 'imagen'].includes(mode) ? undefined : {
+            style={['comando', 'pipeline', 'imagen', 'ejecutor'].includes(mode) ? undefined : {
               borderColor: colorToken(activeFacetObj.token),
               color: colorToken(activeFacetObj.token),
             }}

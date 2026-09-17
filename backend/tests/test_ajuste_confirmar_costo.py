@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 import ajustes
+from db import migrations
 from db.migrations import MIGRACION_AJUSTE_CONFIRMAR_USD_V1, _ajuste_confirmar_costo_v1
 from tests.identidades import cabeceras, sql
 
@@ -79,3 +80,18 @@ def test_el_put_de_admin_valida_y_guarda_el_umbral(client, ajustes_en_db):
     bueno = client.put("/api/admin/config", json=[{"key": "pipeline_confirmar_usd", "value": "1.25"}], headers=encabezados)
     assert bueno.status_code == 200
     assert client.portal.call(ajustes.valor, ajustes.CONFIRMAR_USD) == Decimal("1.25")
+
+
+# 2026-09-17, merge de master: la fila del umbral había desaparecido de
+# jax_memory_test (otra suite la borró) y el marcador de la migración impedía
+# volver a sembrarla: `POST /api/pipelines` respondía 503 ajuste_ilegible para
+# siempre. El umbral es un ajuste REQUERIDO: se repone en cada arranque, con
+# INSERT IGNORE, igual que la config de C5 (nunca pisa lo que puso el admin).
+def test_el_umbral_se_repone_si_alguien_borro_la_fila(client):
+    async def correr():
+        await sql("DELETE FROM axioma_config WHERE config_key = %s", (ajustes.CONFIRMAR_USD,))
+        await migrations.run_migrations()
+        return await sql("SELECT config_value FROM axioma_config WHERE config_key = %s",
+                         (ajustes.CONFIRMAR_USD,), fetch=True)
+
+    assert client.portal.call(correr) == ((migrations.VALOR_INICIAL_CONFIRMAR_USD,),)

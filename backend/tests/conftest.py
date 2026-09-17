@@ -92,6 +92,21 @@ RUTA_DEL_FRENO_DE_PRUEBA = os.path.join(
     tempfile.mkdtemp(prefix="jax-test-interruptor-"), "PAUSE")
 os.environ["JAX_KILL_SWITCH_PATH"] = RUTA_DEL_FRENO_DE_PRUEBA
 FRENO_DE_PRODUCCION = "/etc/jax/interruptor"
+
+# Pausa del Ejecutor y su runner aislados para TODA la sesión (2026-09-17, SP2 del
+# Ejecutor), por la misma razón que el kill switch: /etc/jax/.env define
+# JAX_EJECUTOR_PAUSA junto al interruptor de producción, y un test que la pusiera
+# frenaría al Ejecutor real (el proxy de C3 respondería 423). JAX_EJECUTOR_PYTHON se
+# fija a un intérprete que NO existe: con el de producción, un test que olvide
+# reemplazar el runner lanzaría una misión real (cuenta axioma, VM, proxy) con el
+# entorno de producción. Asignación, no setdefault. Control:
+# tests/test_ejecutor_pausa.py::test_la_suite_no_usa_la_pausa_de_produccion y
+# tests/test_ejecutor_misiones.py::test_la_suite_no_puede_lanzar_el_runner_real.
+RUTA_DE_LA_PAUSA_DEL_EJECUTOR_DE_PRUEBA = os.path.join(
+    tempfile.mkdtemp(prefix="jax-test-pausa-ejecutor-"), "PAUSA")
+os.environ["JAX_EJECUTOR_PAUSA"] = RUTA_DE_LA_PAUSA_DEL_EJECUTOR_DE_PRUEBA
+os.environ["JAX_EJECUTOR_PYTHON"] = os.path.join(
+    tempfile.mkdtemp(prefix="jax-test-runner-"), "no-existe", "python")
 import time as _time  # noqa: E402
 INICIO_DE_SESION = _time.time()
 # La ruta heredada del freno (Task H), tomada del módulo ANTES de que el
@@ -595,6 +610,10 @@ def _freno_suelto_entre_tests():
     try:
         os.unlink(RUTA_DEL_FRENO_DE_PRUEBA)
     except FileNotFoundError:  # fail-soft: el test no puso el freno; no hay nada que quitar
+        pass
+    try:
+        os.unlink(RUTA_DE_LA_PAUSA_DEL_EJECUTOR_DE_PRUEBA)
+    except FileNotFoundError:  # fail-soft: el test no puso la pausa del Ejecutor; no hay nada que quitar
         pass
 
 

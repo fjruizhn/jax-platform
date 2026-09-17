@@ -661,6 +661,67 @@ CREATE TABLE IF NOT EXISTS ejecutor_punto_restauracion (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# Ejecutor SP2 (2026-09-17): el modo Ejecutor de la plataforma. Estas SÍ crecen (una misión
+# por lanzamiento, decenas de eventos por turno): cada consulta del sondeo tiene su índice y
+# su EXPLAIN en tests/test_ejecutor_misiones.py. Sin FK a ejecutor_host a propósito: la
+# misión guarda los NOMBRES con que se lanzó, aunque la máquina se dé de baja después.
+CREATE_EJECUTOR_MISION = """
+CREATE TABLE IF NOT EXISTS ejecutor_mision (
+  id CHAR(36) NOT NULL PRIMARY KEY,
+  user_id INT NOT NULL,
+  objetivo TEXT NOT NULL,
+  maquinas JSON NOT NULL,
+  sesion_id CHAR(36) NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  INDEX idx_ejecutor_mision_actualizada (updated_at),
+  INDEX idx_ejecutor_mision_usuario (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+CREATE_EJECUTOR_TURNO = """
+CREATE TABLE IF NOT EXISTS ejecutor_turno (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  mision_id CHAR(36) NOT NULL,
+  n INT NOT NULL,
+  instruccion TEXT NOT NULL,
+  estado VARCHAR(16) NOT NULL,
+  codigo VARCHAR(80) NULL,
+  resultado JSON NULL,
+  sesion_iniciada BOOLEAN NOT NULL DEFAULT FALSE,
+  iniciado_at DATETIME(6) NOT NULL,
+  terminado_at DATETIME(6) NULL,
+  CONSTRAINT chk_ejecutor_turno_estado CHECK (estado IN ('en_curso', 'completado', 'rechazado', 'fallido', 'interrumpido')),
+  UNIQUE KEY uk_ejecutor_turno_mision_n (mision_id, n),
+  INDEX idx_ejecutor_turno_estado (estado),
+  FOREIGN KEY (mision_id) REFERENCES ejecutor_mision(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+CREATE_EJECUTOR_BITACORA = """
+CREATE TABLE IF NOT EXISTS ejecutor_bitacora (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  mision_id CHAR(36) NOT NULL,
+  turno INT NULL,
+  evento VARCHAR(60) NOT NULL,
+  datos JSON NOT NULL,
+  at DATETIME(6) NOT NULL,
+  INDEX idx_ejecutor_bitacora_mision (mision_id, id),
+  FOREIGN KEY (mision_id) REFERENCES ejecutor_mision(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+CREATE_EJECUTOR_PAUSA_AUDIT = """
+CREATE TABLE IF NOT EXISTS ejecutor_pausa_audit (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  accion VARCHAR(10) NOT NULL,
+  user_id INT NOT NULL,
+  at DATETIME(6) NOT NULL,
+  CONSTRAINT chk_ejecutor_pausa_audit_accion CHECK (accion IN ('poner', 'quitar')),
+  INDEX idx_ejecutor_pausa_audit_at (at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
@@ -691,6 +752,10 @@ _TABLES = [
     ("ejecutor_host", CREATE_EJECUTOR_HOST),                            # antes de punto_restauracion (FK)
     ("ejecutor_regla", CREATE_EJECUTOR_REGLA),
     ("ejecutor_punto_restauracion", CREATE_EJECUTOR_PUNTO_RESTAURACION),
+    ("ejecutor_mision", CREATE_EJECUTOR_MISION),                        # antes de turno y bitácora (FK)
+    ("ejecutor_turno", CREATE_EJECUTOR_TURNO),
+    ("ejecutor_bitacora", CREATE_EJECUTOR_BITACORA),
+    ("ejecutor_pausa_audit", CREATE_EJECUTOR_PAUSA_AUDIT),              # sin FK a propósito, como kill_switch_audit
 ]
 
 # transport, requires_tool_use, auto_selectable — valores actuales reales
@@ -1284,6 +1349,9 @@ async def _raise_generate_execution_ceiling(cur) -> None:
 
 MIGRACION_MOTOR_TOPE_AL_CATALOGO_V1 = "motor_max_tokens_al_catalogo_v1"
 MOTORES_AL_TOPE_DEL_CATALOGO = ("kimi", "ada")
+#: El tope de partida de 2026-08-10 ("ajustar si se repite un corte", CONTEXT.md)
+#: que cortó el pipeline ef9b2d6e el 2026-09-16. Es el único valor que se corrige.
+TOPE_VIEJO_DE_RAZONAMIENTO = 8000
 
 
 async def _motor_max_tokens_al_catalogo_v1(cur) -> None:
@@ -1292,14 +1360,20 @@ async def _motor_max_tokens_al_catalogo_v1(cur) -> None:
     catálogo (worker._limite_del_motor: 0 = sin tope propio). El seed usa
     INSERT IGNORE, así que la tupla nueva sólo alcanza a bases nuevas; esto
     corrige las existentes UNA vez (marcador): un ajuste posterior desde Admin
-    no se pisa al arrancar."""
-    await cur.execute("SELECT 1 FROM axioma_migracion_de_datos WHERE nombre = %s",
-                      (MIGRACION_MOTOR_TOPE_AL_CATALOGO_V1,))
-    if await cur.fetchone() is not None:
-        return
+    no se pisa al arrancar.
+
+    2026-09-17 (merge de master): el marcador NO alcanza en una base donde las
+    filas de `motor` se vuelven a crear (los tests de migraciones las borran y
+    resiembran; el seed viejo ponía 8000). Corrige en CADA arranque con el
+    guard `max_tokens=8000` — el mismo criterio que
+    `_raise_generate_execution_ceiling` y `_fix_anthropic_sonnet_alias`:
+    corrige el valor VIEJO y no pisa ningún otro valor puesto desde Admin."""
     marcas = ", ".join(["%s"] * len(MOTORES_AL_TOPE_DEL_CATALOGO))
-    await cur.execute(f"UPDATE motor SET max_tokens = 0 WHERE `key` IN ({marcas})", MOTORES_AL_TOPE_DEL_CATALOGO)
-    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
+    await cur.execute(
+        f"UPDATE motor SET max_tokens = 0 WHERE `key` IN ({marcas}) AND max_tokens = %s",
+        (*MOTORES_AL_TOPE_DEL_CATALOGO, TOPE_VIEJO_DE_RAZONAMIENTO),
+    )
+    await cur.execute("INSERT IGNORE INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
                       (MIGRACION_MOTOR_TOPE_AL_CATALOGO_V1,))
 
 
@@ -2381,23 +2455,29 @@ VALOR_INICIAL_CONFIRMAR_USD = "0.50"
 
 
 async def _ajuste_confirmar_costo_v1(cur) -> None:
-    """Siembra el umbral de confirmación de costo UNA vez (marcador). INSERT
-    IGNORE: una fila que ya exista (puesta a mano) se conserva."""
-    await cur.execute("SELECT 1 FROM axioma_migracion_de_datos WHERE nombre = %s",
-                      (MIGRACION_AJUSTE_CONFIRMAR_USD_V1,))
-    if await cur.fetchone() is not None:
-        return
+    """Repone el umbral de confirmación de costo en CADA arranque, con INSERT
+    IGNORE: nunca pisa el valor que puso el admin.
+
+    Antes iba una sola vez, con marcador. El 2026-09-17, al mergear master, la
+    fila había desaparecido de `jax_memory_test` (otra suite la borró) y el
+    marcador impedía reponerla: `ajustes.valor()` es fail-closed sin default
+    silencioso, así que `POST /api/pipelines` respondía 503 `ajuste_ilegible`
+    para siempre. El umbral es un ajuste REQUERIDO por el consentimiento de
+    costo (spec 2026-09-17 §6.1): se siembra como la config de C5, sin
+    marcador. El marcador se conserva escrito para no reusar su nombre."""
     await cur.execute(
         "INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES (%s, %s)",
         (ajustes.CONFIRMAR_USD, VALOR_INICIAL_CONFIRMAR_USD),
     )
-    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
+    await cur.execute("INSERT IGNORE INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
                       (MIGRACION_AJUSTE_CONFIRMAR_USD_V1,))
 
 
 MIGRACION_EJECUTOR_REGLAS_V1 = "ejecutor_reglas_v1"
+MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1 = "ejecutor_reglas_envoltorios_v1"
 MIGRACION_EJECUTOR_INVENTARIO_V1 = "ejecutor_inventario_v1"
 _SEMILLA_EJECUTOR_REGLAS = Path(__file__).with_name("semilla_ejecutor_reglas.json")
+_SEMILLA_EJECUTOR_REGLAS_ENVOLTORIOS = Path(__file__).with_name("semilla_ejecutor_reglas_envoltorios.json")
 _ROLES_EJECUTOR = ("hypervisor", "desarrollo", "produccion", "clientes", "respaldo")
 _OPCIONES_INVENTARIO = frozenset({"local", "sin_clientes"})
 
@@ -2412,9 +2492,15 @@ async def _ejecutor_reglas_v1(cur) -> None:
     revive) y la edad máxima de un punto de restauración para C2 (sin pisar)."""
     await cur.execute(
         "INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES ('ejecutor.c2_edad_max_s', '86400')")
-    if await _marcada(cur, MIGRACION_EJECUTOR_REGLAS_V1):
+    await _sembrar_reglas_una_vez(cur, MIGRACION_EJECUTOR_REGLAS_V1, _SEMILLA_EJECUTOR_REGLAS)
+
+
+async def _sembrar_reglas_una_vez(cur, marca: str, semilla: Path) -> None:
+    """Inserta las reglas de `semilla` UNA vez por `marca`: una regla desactivada por el
+    admin no revive, y un código que ya existe no se pisa (INSERT IGNORE por codigo)."""
+    if await _marcada(cur, marca):
         return
-    for r in json.loads(_SEMILLA_EJECUTOR_REGLAS.read_text(encoding="utf-8")):
+    for r in json.loads(semilla.read_text(encoding="utf-8")):
         await cur.execute(
             "INSERT IGNORE INTO ejecutor_regla (codigo, tipo, herramientas, campo, patron, ambito_host, "
             "ambito_roles, es_canario, origen, ejemplos_coincide, ejemplos_no_coincide) "
@@ -2423,7 +2509,16 @@ async def _ejecutor_reglas_v1(cur) -> None:
              ",".join(r["ambito_roles"]) or None, r["es_canario"], r["origen"],
              json.dumps(r["ejemplos_coincide"], ensure_ascii=False),
              json.dumps(r["ejemplos_no_coincide"], ensure_ascii=False)))
-    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_EJECUTOR_REGLAS_V1,))
+    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (marca,))
+
+
+async def _ejecutor_reglas_envoltorios_v1(cur) -> None:
+    """C1 contra envoltorios que desacoplan el proceso o esconden el comando (tmux, screen,
+    setsid, nohup, disown, script -c, at/batch, systemd-run, sh -c/eval/xargs con ssh,
+    dangerouslyDisableSandbox). Visto 2026-09-17 en la misión real contra la VM desechable:
+    `tmux new-session -d '… ssh …'` pasó C1 (ssh_sin_tt no lo ve) y sólo lo atrapó C5.
+    Falsos positivos decididos: ver el `origen` de cada regla y la Biblioteca de jax."""
+    await _sembrar_reglas_una_vez(cur, MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1, _SEMILLA_EJECUTOR_REGLAS_ENVOLTORIOS)
 
 
 def parsear_inventario(texto: str) -> list[dict]:
@@ -2533,6 +2628,7 @@ async def run_migrations():
             await _ajustes_que_mandan_v1(cur)
             await _ajuste_confirmar_costo_v1(cur)
             await _ejecutor_reglas_v1(cur)
+            await _ejecutor_reglas_envoltorios_v1(cur)
             await _ejecutor_inventario_v1(cur)
             await _ejecutor_config_c5_v1(cur)
             await _seed_providers(cur)

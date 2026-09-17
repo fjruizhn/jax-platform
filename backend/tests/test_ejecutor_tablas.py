@@ -7,8 +7,8 @@ import json
 import pytest
 
 from db.migrations import (
-    MIGRACION_EJECUTOR_INVENTARIO_V1, MIGRACION_EJECUTOR_REGLAS_V1, _ejecutor_inventario_v1,
-    _ejecutor_reglas_v1, parsear_inventario,
+    MIGRACION_EJECUTOR_INVENTARIO_V1, MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1, MIGRACION_EJECUTOR_REGLAS_V1,
+    _ejecutor_inventario_v1, _ejecutor_reglas_envoltorios_v1, _ejecutor_reglas_v1, parsear_inventario,
 )
 from tests.identidades import sql
 
@@ -16,6 +16,10 @@ _SEMILLA_CODIGOS = {
     "canario_c1", "ssh_sin_tt", "apt_full_upgrade_bridge", "migrate_fresh_produccion", "sed_i_env",
     "pure_ftpd_parar_atemai", "respaldos_borrar", "ajustes_claude_code", "borrar_archivos",
     "sql_destructivo", "dns_correo", "parar_servicio", "quitar_paquetes", "disco",
+}
+_ENVOLTORIOS_CODIGOS = {
+    "envoltorio_tmux_screen", "envoltorio_desacopla", "envoltorio_script_c", "envoltorio_at_batch",
+    "envoltorio_systemd_run", "envoltorio_ssh_escondido", "sandbox_desactivado",
 }
 
 
@@ -29,7 +33,8 @@ async def _correr(funcion):
 
 
 def _vaciar(client):
-    for nombre in (MIGRACION_EJECUTOR_REGLAS_V1, MIGRACION_EJECUTOR_INVENTARIO_V1):
+    for nombre in (MIGRACION_EJECUTOR_REGLAS_V1, MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1,
+                   MIGRACION_EJECUTOR_INVENTARIO_V1):
         client.portal.call(sql, "DELETE FROM axioma_migracion_de_datos WHERE nombre = %s", (nombre,))
     client.portal.call(sql, "DELETE FROM ejecutor_punto_restauracion")
     client.portal.call(sql, "DELETE FROM ejecutor_regla")
@@ -59,6 +64,29 @@ def test_la_semilla_corre_una_sola_vez(client, sin_marcas):
     client.portal.call(sql, "UPDATE ejecutor_regla SET activa = 0 WHERE codigo = 'sed_i_env'")
     client.portal.call(_correr, _ejecutor_reglas_v1)
     assert client.portal.call(sql, "SELECT activa FROM ejecutor_regla WHERE codigo = 'sed_i_env'", None, True) == ((0,),)
+
+
+def test_los_envoltorios_se_suman_a_la_semilla_una_sola_vez(client, sin_marcas):
+    client.portal.call(_correr, _ejecutor_reglas_v1)
+    client.portal.call(_correr, _ejecutor_reglas_envoltorios_v1)
+    filas = client.portal.call(sql, "SELECT codigo, tipo, es_canario, activa FROM ejecutor_regla", None, True)
+    assert {f[0] for f in filas} == _SEMILLA_CODIGOS | _ENVOLTORIOS_CODIGOS
+    assert sum(1 for f in filas if f[2]) == 1
+    assert all(f[1] == "prohibido" and f[3] == 1 for f in filas if f[0] in _ENVOLTORIOS_CODIGOS)
+    client.portal.call(sql, "UPDATE ejecutor_regla SET activa = 0 WHERE codigo = 'envoltorio_at_batch'")
+    client.portal.call(_correr, _ejecutor_reglas_envoltorios_v1)
+    assert client.portal.call(sql, "SELECT activa FROM ejecutor_regla WHERE codigo = 'envoltorio_at_batch'",
+                              None, True) == ((0,),)
+    assert client.portal.call(sql, "SELECT COUNT(*) FROM axioma_migracion_de_datos WHERE nombre = %s",
+                              (MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1,), True) == ((1,),)
+
+
+def test_los_envoltorios_llegan_aunque_la_semilla_v1_ya_estuviera(client, sin_marcas):
+    """Producción: v1 corrió el 2026-09-17 04:4x; la migración nueva tiene que entrar sola."""
+    client.portal.call(_correr, _ejecutor_reglas_v1)
+    antes = client.portal.call(sql, "SELECT COUNT(*) FROM ejecutor_regla", None, True)[0][0]
+    client.portal.call(_correr, _ejecutor_reglas_envoltorios_v1)
+    assert client.portal.call(sql, "SELECT COUNT(*) FROM ejecutor_regla", None, True)[0][0] == antes + 7
 
 
 def test_la_edad_maxima_de_c2_se_siembra_sin_pisar(client, sin_marcas):
