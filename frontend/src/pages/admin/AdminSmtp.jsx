@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
+import { flushSync } from 'react-dom'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { codigoDe } from '../../api/errores'
 import PasswordInput from '../../components/PasswordInput'
+import Dialogo from '../../components/Dialogo'
 
 // Correo saliente (2026-09-12, etapa 1 de administración de usuarios): copia
 // del comportamiento de AteneaERP. La contraseña nunca vuelve del backend: si
@@ -29,20 +31,9 @@ export default function AdminSmtp() {
   const [resultado, setResultado] = useState(null)
   const [emailSesion, setEmailSesion] = useState('')
   const [dialogo, setDialogo] = useState(DIALOGO_CERRADO)
-  // Al cerrar el diálogo el foco vuelve al botón que lo abrió (revisión). UN
-  // solo camino para Cancelar, Escape, fondo y envío exitoso: el efecto de
-  // abajo, en la transición abierto -> cerrado y con el botón ya habilitado
-  // (mientras ocupado está deshabilitado y no toma el foco).
-  const disparadorPrueba = useRef(null)
-  const dialogoEstabaAbierto = useRef(false)
-  useEffect(() => {
-    if (dialogo.abierto) {
-      dialogoEstabaAbierto.current = true
-    } else if (dialogoEstabaAbierto.current && ocupado === null) {
-      dialogoEstabaAbierto.current = false
-      disparadorPrueba.current?.focus()
-    }
-  }, [dialogo.abierto, ocupado])
+  // El foco al cerrar (Cancelar, Escape o envío exitoso) lo devuelve
+  // components/Dialogo.jsx al elemento que lo tenía al abrir -- ya no hace
+  // falta un ref ni un efecto propios acá (A-23).
 
   function mensaje(err) {
     const code = codigoDe(err)
@@ -134,6 +125,14 @@ export default function AdminSmtp() {
     setDialogo((d) => ({ ...d, error: null }))
     try {
       const { data } = await api.post('/admin/smtp/test', { to: dialogo.to })
+      // El disparador está disabled={ocupado !== null}: si se cierra el
+      // diálogo con `ocupado` todavía en 'prueba', React aplica la mutación
+      // del atributo `disabled` DESPUÉS del cleanup del Dialogo que se
+      // desmonta (commit en el mismo render mixto), y `Dialogo` no puede
+      // devolver el foco a un botón que en ese instante sigue disabled. Se
+      // fuerza a un commit propio con `ocupado` ya en null (disparador ya
+      // habilitado en el DOM) antes de cerrar el diálogo (A-23).
+      flushSync(() => setOcupado(null))
       setDialogo(DIALOGO_CERRADO)
       setResultado({ ok: true, texto: t.smtpTestSent(data?.to) })
     } catch (err) {
@@ -215,47 +214,38 @@ export default function AdminSmtp() {
           <button type="button" onClick={probarConexion} disabled={ocupado !== null} className={`${BOTON} bg-superficie-2 text-texto hover:text-texto-fuerte`}>
             {ocupado === 'conexion' ? t.smtpTesting : t.smtpTestConnection}
           </button>
-          <button type="button" ref={disparadorPrueba} onClick={abrirDialogo} disabled={ocupado !== null} className={`${BOTON} bg-superficie-2 text-texto hover:text-texto-fuerte`}>
+          <button type="button" onClick={abrirDialogo} disabled={ocupado !== null} className={`${BOTON} bg-superficie-2 text-texto hover:text-texto-fuerte`}>
             {t.smtpSendTest}
           </button>
         </div>
       </form>
 
       {dialogo.abierto && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-fondo/70 p-4" onClick={cerrarDialogo}>
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="smtp-test-titulo"
-            className="w-full max-w-md bg-superficie border border-borde rounded-lg p-5"
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => { if (e.key === 'Escape') cerrarDialogo() }}
-          >
-            <h2 id="smtp-test-titulo" className="text-base font-bold text-texto-fuerte mb-4">{t.smtpTestModalTitle}</h2>
-            <form onSubmit={enviarPrueba} className="space-y-3">
-              <div>
-                <label className={LABEL} htmlFor="smtp-test-to">{t.smtpTestRecipient}</label>
-                <input
-                  id="smtp-test-to" type="email" required autoFocus className={INPUT} value={dialogo.to}
-                  onChange={(e) => setDialogo((d) => ({ ...d, to: e.target.value, error: null }))}
-                />
+        <Dialogo idTitulo="smtp-test-titulo" titulo={t.smtpTestModalTitle}
+          claseTitulo="text-base font-bold text-texto-fuerte mb-4" onCerrar={cerrarDialogo}>
+          <form onSubmit={enviarPrueba} className="space-y-3">
+            <div>
+              <label className={LABEL} htmlFor="smtp-test-to">{t.smtpTestRecipient}</label>
+              <input
+                id="smtp-test-to" type="email" required className={INPUT} value={dialogo.to}
+                onChange={(e) => setDialogo((d) => ({ ...d, to: e.target.value, error: null }))}
+              />
+            </div>
+            {dialogo.error && (
+              <div role="alert" className="text-sm text-peligro bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2">
+                {dialogo.error}
               </div>
-              {dialogo.error && (
-                <div role="alert" className="text-sm text-peligro bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2">
-                  {dialogo.error}
-                </div>
-              )}
-              <div className="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={cerrarDialogo} disabled={ocupado === 'prueba'} className={`${BOTON} bg-superficie-2 text-texto hover:text-texto-fuerte`}>
-                  {t.smtpCancel}
-                </button>
-                <button type="submit" disabled={ocupado === 'prueba' || !dialogo.to.trim()} className={`${BOTON} bg-acento hover:bg-acento-hover text-sobre-color`}>
-                  {ocupado === 'prueba' ? t.smtpSending : t.smtpTestSendButton}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={cerrarDialogo} disabled={ocupado === 'prueba'} className={`${BOTON} bg-superficie-2 text-texto hover:text-texto-fuerte`}>
+                {t.smtpCancel}
+              </button>
+              <button type="submit" disabled={ocupado === 'prueba' || !dialogo.to.trim()} className={`${BOTON} bg-acento hover:bg-acento-hover text-sobre-color`}>
+                {ocupado === 'prueba' ? t.smtpSending : t.smtpTestSendButton}
+              </button>
+            </div>
+          </form>
+        </Dialogo>
       )}
     </div>
   )

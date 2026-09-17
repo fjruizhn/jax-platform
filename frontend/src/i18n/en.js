@@ -332,6 +332,9 @@ export default {
   adminKeySave: 'Save',
   adminKeyEnter: 'Enter the new key for',
   adminKeyLatency: (ms) => `${ms}ms`,
+  adminKeyTestError: 'The credential could not be tested.',
+  adminKeyRotateError: 'The credential could not be rotated.',
+  adminKeyRevokeError: 'The credential could not be revoked.',
 
   // Admin — Bloque D tabs (model catalog and facets/bindings)
   adminTabProviders: 'Providers & Credentials',

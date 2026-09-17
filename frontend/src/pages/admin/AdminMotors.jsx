@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
+import Dialogo from '../../components/Dialogo'
 
 // Espejo de _DISPATCHABLE_TRANSPORTS en backend/api/admin/motors.py -- solo
 // para el badge informativo antes de que el backend responda; el backend
@@ -153,10 +154,8 @@ export default function AdminMotors() {
       </div>
 
       {creating && (
-        <div className="fixed inset-0 bg-fondo/70 flex items-center justify-center z-50">
-          <div className="bg-superficie border border-borde rounded-xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
-            <h2 className="text-sm font-semibold text-texto mb-4">{t.adminMotorsCreateTitle}</h2>
-
+        <Dialogo idTitulo="motor-crear-titulo" titulo={t.adminMotorsCreateTitle}
+          onCerrar={() => setCreating(false)} className="max-w-lg max-h-[90vh] overflow-y-auto">
             <label className="block text-xs text-texto-suave mb-1">{t.adminMotorsKey}</label>
             <input
               type="text"
@@ -280,8 +279,7 @@ export default function AdminMotors() {
                 {saving ? t.adminBindingsSaving : t.adminMotorsSave}
               </button>
             </div>
-          </div>
-        </div>
+        </Dialogo>
       )}
     </div>
   )

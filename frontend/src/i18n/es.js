@@ -335,6 +335,9 @@ export default {
   adminKeySave: 'Guardar',
   adminKeyEnter: 'Ingresá la nueva key para',
   adminKeyLatency: (ms) => `${ms}ms`,
+  adminKeyTestError: 'No se pudo probar la credencial.',
+  adminKeyRotateError: 'No se pudo rotar la credencial.',
+  adminKeyRevokeError: 'No se pudo revocar la credencial.',
 
   // Admin — pestañas Bloque D (catálogo de modelos y facetas/bindings)
   adminTabProviders: 'Proveedores y Credenciales',

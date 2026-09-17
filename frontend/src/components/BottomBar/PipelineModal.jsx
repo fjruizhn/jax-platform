@@ -3,6 +3,7 @@ import { useI18n } from '../../i18n/index.jsx'
 import { useJaxStore } from '../../store/useJaxStore'
 import api from '../../api/client'
 import { colorToken } from '../../tema/tokens'
+import Dialogo from '../Dialogo'
 import {
   GOVERNED_FACETS,
   CHAIN_ROLES,
@@ -185,8 +186,8 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
       name: t.pipelineName(objective),
       objective,
       mode,
-      max_steps: Math.max(steps.length, 1),
-      steps: steps.length > 0 ? steps : null,
+      max_steps: steps.length,
+      steps,
     })
     setSubmitting(false)
     onClose()
@@ -199,19 +200,11 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   ]
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-fondo/70"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
-    >
-      <div className="bg-superficie border border-borde rounded-xl p-5 w-full max-w-md shadow-2xl">
-        <div className="mb-4">
-          <h2 className="text-sm font-bold text-texto uppercase tracking-widest">
-            {t.newPipelineTitle}
-          </h2>
-          <p className="text-xs text-texto-tenue mt-1 truncate">
-            {t.objectiveLabel}: {objective}
-          </p>
-        </div>
+    <Dialogo idTitulo="pipeline-modal-titulo" titulo={t.newPipelineTitle}
+      claseTitulo="text-sm font-bold text-texto uppercase tracking-widest" onCerrar={onClose}>
+      <p className="text-xs text-texto-tenue -mt-3 mb-4 truncate">
+        {t.objectiveLabel}: {objective}
+      </p>
 
         {/* Modo */}
         <div className="mb-4">
@@ -390,7 +383,6 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
             {submitting ? t.starting : t.planAndExecute}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialogo>
   )
 }

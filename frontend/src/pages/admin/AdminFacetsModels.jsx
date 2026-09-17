@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
+import { useJaxStore } from '../../store/useJaxStore'
 import AdminModelCatalog from './AdminModelCatalog'
 import AdminFacetBindings from './AdminFacetBindings'
 import AdminMotors from './AdminMotors'
 import PasswordInput from '../../components/PasswordInput'
+import Dialogo from '../../components/Dialogo'
+import ConfirmacionSuma from '../../components/ConfirmacionSuma'
 
 const TABS = [
   { key: 'providers', labelKey: 'adminTabProviders' },
@@ -15,6 +18,7 @@ const TABS = [
 
 export default function AdminFacetsModels() {
   const { t } = useI18n()
+  const addToast = useJaxStore((s) => s.addToast)
   const [activeTab, setActiveTab] = useState('providers')
   const [providers, setProviders] = useState([])
   const [credentialsById, setCredentialsById] = useState({})
@@ -47,7 +51,7 @@ export default function AdminFacetsModels() {
       setTestResult(p => ({ ...p, [id]: data }))
       loadCredentials()  // salud persistida — refleja lo que quedó en DB
     } catch {
-      setTestResult(p => ({ ...p, [id]: { ok: false, error: 'Error' } }))
+      setTestResult(p => ({ ...p, [id]: { ok: false, error: t.adminKeyTestError } }))
     } finally {
       setTesting(p => ({ ...p, [id]: false }))
     }
@@ -66,6 +70,7 @@ export default function AdminFacetsModels() {
       setProviders(data.providers)
       loadCredentials()
     } catch {
+      addToast({ type: 'error', message: t.adminKeyRotateError })
     } finally {
       setSaving(false)
     }
@@ -81,6 +86,7 @@ export default function AdminFacetsModels() {
       setRevokeConfirm(null)
       loadCredentials()
     } catch {
+      addToast({ type: 'error', message: t.adminKeyRevokeError })
     } finally {
       setRevoking(null)
     }
@@ -201,50 +207,37 @@ export default function AdminFacetsModels() {
 
       {/* Modal rotación */}
       {rotating && (
-        <div className="fixed inset-0 bg-fondo/70 flex items-center justify-center z-50">
-          <div className="bg-superficie border border-borde rounded-xl p-6 w-full max-w-md shadow-2xl">
-            <h2 className="text-sm font-semibold text-texto mb-4">
-              {t.adminKeyEnter} {providers.find(p => p.id === rotating)?.name}
-            </h2>
-            <PasswordInput
-              value={newKey}
-              onChange={e => setNewKey(e.target.value)}
-              placeholder={t.adminKeyNewValue}
-              wrapperClassName="mb-4"
-              className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco font-mono"
-            />
-            <div className="flex gap-2 justify-end">
-              <button onClick={() => setRotating(null)} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminCreateCancel}</button>
-              <button
-                onClick={() => handleRotate(rotating)}
-                disabled={saving || !newKey.trim()}
-                className="px-4 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold disabled:opacity-50 transition-colors"
-              >
-                {saving ? t.attachUploading : t.adminKeySave}
-              </button>
-            </div>
+        <Dialogo idTitulo="llave-rotar-titulo" titulo={`${t.adminKeyEnter} ${providers.find(p => p.id === rotating)?.name ?? ''}`}
+          onCerrar={() => setRotating(null)}>
+          <PasswordInput
+            value={newKey}
+            onChange={e => setNewKey(e.target.value)}
+            placeholder={t.adminKeyNewValue}
+            wrapperClassName="mb-4"
+            className="w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco font-mono"
+          />
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => setRotating(null)} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminCreateCancel}</button>
+            <button
+              onClick={() => handleRotate(rotating)}
+              disabled={saving || !newKey.trim()}
+              className="px-4 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color text-sm font-semibold disabled:opacity-50 transition-colors"
+            >
+              {saving ? t.adminBindingsSaving : t.adminKeySave}
+            </button>
           </div>
-        </div>
+        </Dialogo>
       )}
 
-      {/* Modal confirmación de revocación — corte inmediato, sin gracia */}
+      {/* Revocación: corte inmediato, sin gracia -- destructivo: ConfirmacionSuma */}
       {revokeConfirm && (
-        <div className="fixed inset-0 bg-fondo/70 flex items-center justify-center z-50">
-          <div className="bg-superficie border border-borde rounded-xl p-6 w-full max-w-md shadow-2xl">
-            <h2 className="text-sm font-semibold text-peligro mb-2">{t.adminKeyRevokeConfirmTitle}</h2>
-            <p className="text-xs text-texto-suave mb-4">{t.adminKeyRevokeConfirmBody}</p>
-            <div className="flex gap-2 justify-end">
-              <button onClick={() => setRevokeConfirm(null)} className="px-3 py-1.5 rounded-lg text-sm text-texto-suave hover:text-texto transition-colors">{t.adminCreateCancel}</button>
-              <button
-                onClick={() => handleRevoke(revokeConfirm)}
-                disabled={revoking === revokeConfirm}
-                className="px-4 py-1.5 rounded-lg bg-peligro-solido hover:bg-peligro-solido-hover text-sobre-color text-sm font-semibold disabled:opacity-50 transition-colors"
-              >
-                {t.adminKeyRevoke}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmacionSuma
+          titulo={t.adminKeyRevokeConfirmTitle}
+          mensaje={t.adminKeyRevokeConfirmBody}
+          textoConfirmar={t.adminKeyRevoke}
+          onConfirmar={() => handleRevoke(revokeConfirm)}
+          onCancelar={() => setRevokeConfirm(null)}
+        />
       )}
     </div>
   )
