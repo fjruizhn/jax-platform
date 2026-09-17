@@ -16,15 +16,15 @@ Por eso es un middleware ASGI puro, montado DENTRO de CORSMiddleware (para
 que el 429 lleve sus cabeceras) y antes del router: para POST
 /api/chat/upload lee la cabecera Authorization, verifica la firma y el
 vencimiento del JWT (auth.jwt.decode_token: HS256, sin base) y, si el
-usuario ya gastó su cupo, espera JAX_ADJUNTOS_429_ESPERA_MS y responde 429
+usuario ya gastó su cupo, espera JAX_ADJUNTOS_RECHAZO_ESPERA_MS y responde 429
 SIN llamar a receive(): el cuerpo no se parsea con python-multipart ni se
 vuelca (medido en RD7: 0 volcados en TMPDIR durante el flood). Lo que el
 cliente igual manda lo lee y descarta uvicorn después del 429 para mantener
-la conexión: ese es el costo que acota la espera (ver ESPERA_429_MS_*).
+la conexión: ese es el costo que acota la espera (ver ESPERA_DE_RECHAZO_MS_*).
 
 IDENTIDAD (Ruling R28). Sin token de ACCESO válido -- sin cabecera, esquema
 que no es Bearer, firma inválida, vencido, de refresh, user_id o tv que no
-son enteros -- responde, tras la misma espera que el 429 (R30), el MISMO 401 que la dependencia de la
+son enteros -- responde, tras la misma espera JAX_ADJUNTOS_RECHAZO_ESPERA_MS que el 429 (R30), el MISMO 401 que la dependencia de la
 ruta (mismo status, cuerpo y cabeceras; reusa `auth.middleware.bearer`,
 `decode_token` y `validar_payload`), sin leer el cuerpo y sin gastar cupo.
 Con firma válida no mira la base, a propósito: pasa a la ruta, cuya
@@ -75,8 +75,8 @@ MAX_CLAVES = 20_000
 
 _ENTERO = re.compile(r"[1-9][0-9]{0,2}")
 _limitador: SlidingWindowLimiter | None = None
-# Espera antes del 429 (RD7; RD7 fix round: sale del código a
-# JAX_ADJUNTOS_429_ESPERA_MS por decisión del principal, deploy 1000). Medido
+# Espera antes de un rechazo del middleware, 429 y 401 (RD7; RD7 fix round: sale del código a
+# JAX_ADJUNTOS_RECHAZO_ESPERA_MS por decisión del principal, deploy 1000). Medido
 # con upload_imagen_max c=25 de un usuario, 10 MB, en staging: sin espera el
 # cliente reintenta al instante y uvicorn lee y descarta ~540 cuerpos/s en el
 # event loop después de cada 429 (keep-alive) -> health p95 37-40 ms. Con
@@ -90,9 +90,9 @@ _limitador: SlidingWindowLimiter | None = None
 # Techo 5 s: cada rechazo en espera retiene un socket y una corrutina; más
 # largo no frena más a un cliente que reintenta (Retry-After ya lo dice) y
 # acerca la espera a los timeouts de clientes y proxies.
-VARIABLE_ESPERA = "JAX_ADJUNTOS_429_ESPERA_MS"
-ESPERA_429_MS_MIN = 0
-ESPERA_429_MS_MAX = 5000
+VARIABLE_ESPERA = "JAX_ADJUNTOS_RECHAZO_ESPERA_MS"
+ESPERA_DE_RECHAZO_MS_MIN = 0
+ESPERA_DE_RECHAZO_MS_MAX = 5000
 _ENTERO_MS = re.compile(r"0|[1-9][0-9]{0,3}")
 # Referencia propia para que un test la sustituya sin tocar asyncio.sleep global.
 _dormir = asyncio.sleep
@@ -109,13 +109,13 @@ def cargar_subidas_por_minuto() -> int:
     return valor
 
 
-def cargar_espera_429_ms() -> int:
+def cargar_espera_de_rechazo_ms() -> int:
     crudo = os.environ.get(VARIABLE_ESPERA)
     valor = int(crudo) if crudo is not None and _ENTERO_MS.fullmatch(crudo) else None
-    if valor is None or not ESPERA_429_MS_MIN <= valor <= ESPERA_429_MS_MAX:
+    if valor is None or not ESPERA_DE_RECHAZO_MS_MIN <= valor <= ESPERA_DE_RECHAZO_MS_MAX:
         raise LimitesDeAdjuntosInvalidos(
-            f"espera antes del 429 de subidas sin configurar o fuera de rango (entero "
-            f"{ESPERA_429_MS_MIN}..{ESPERA_429_MS_MAX} ms, solo dígitos, en /etc/jax/.env): "
+            f"espera antes de un rechazo de subidas (401/429) sin configurar o fuera de rango (entero "
+            f"{ESPERA_DE_RECHAZO_MS_MIN}..{ESPERA_DE_RECHAZO_MS_MAX} ms, solo dígitos, en /etc/jax/.env): "
             f"{VARIABLE_ESPERA}={crudo!r}")
     return valor
 
@@ -176,7 +176,7 @@ class LimiteDeSubidas:
             # R28): con la MISMA espera que el 429. Flood anónimo c=25 con
             # 10 MB: 401 inmediato -> health p95 36 ms (uvicorn descarta
             # ~560 cuerpos/s en el loop); con 1000 ms -> 0,29 ms.
-            await _dormir(cargar_espera_429_ms() / 1000)
+            await _dormir(cargar_espera_de_rechazo_ms() / 1000)
             respuesta = await http_exception_handler(Request(scope), e)
             await respuesta(scope, receive, send)
             return
@@ -184,7 +184,7 @@ class LimiteDeSubidas:
         if espera is None:
             await self.app(scope, receive, send)
             return
-        await _dormir(cargar_espera_429_ms() / 1000)
+        await _dormir(cargar_espera_de_rechazo_ms() / 1000)
         segundos = max(1, math.ceil(espera))
         cuerpo = json.dumps({"detail": {"code": CODIGO, "retry_after": segundos}}).encode()
         await send({"type": "http.response.start", "status": 429, "headers": [

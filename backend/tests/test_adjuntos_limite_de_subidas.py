@@ -83,7 +83,7 @@ class _Interna:
 @pytest.fixture
 def limite(monkeypatch):
     monkeypatch.setenv("JAX_ADJUNTOS_SUBIDAS_POR_MINUTO", "2")
-    monkeypatch.setenv("JAX_ADJUNTOS_429_ESPERA_MS", "1000")
+    monkeypatch.setenv("JAX_ADJUNTOS_RECHAZO_ESPERA_MS", "1000")
     mod.reiniciar()
     frenos = []
 
@@ -347,7 +347,7 @@ def test_por_http_la_tercera_subida_es_429_con_retry_after(client, monkeypatch):
         mod.reiniciar()
 
 
-def test_el_429_se_frena_un_segundo_sin_leer_el_cuerpo_y_sin_cortar_la_conexion(limite):
+def test_el_429_espera_un_segundo_sin_leer_el_cuerpo_y_sin_cortar_la_conexion(limite):
     """Medido en RD7 (flood c=25, un usuario, 10 MB): responder el 429 al
     instante dejaba a uvicorn leyendo y descartando ~540 cuerpos/s en el
     event loop (health p95 37-40 ms); con `Connection: close` el 19 % de los
@@ -361,13 +361,13 @@ def test_el_429_se_frena_un_segundo_sin_leer_el_cuerpo_y_sin_cortar_la_conexion(
     assert limite == []  # lo permitido no se frena
     status, headers, _, canal = _llamar(app, token_para(5))
     assert status == 429 and canal.leidos == 0
-    assert limite == [1.0]  # JAX_ADJUNTOS_429_ESPERA_MS=1000
+    assert limite == [1.0]  # JAX_ADJUNTOS_RECHAZO_ESPERA_MS=1000
     assert b"connection" not in headers
 
 
 @pytest.mark.parametrize("ms,segundos", [("0", 0.0), ("250", 0.25), ("5000", 5.0)])
-def test_la_espera_del_429_usa_el_valor_configurado(limite, monkeypatch, ms, segundos):
-    monkeypatch.setenv("JAX_ADJUNTOS_429_ESPERA_MS", ms)
+def test_la_espera_de_rechazo_del_429_usa_el_valor_configurado(limite, monkeypatch, ms, segundos):
+    monkeypatch.setenv("JAX_ADJUNTOS_RECHAZO_ESPERA_MS", ms)
     app = mod.LimiteDeSubidas(_Interna())
     for _ in range(3):
         _llamar(app, token_para(5))
@@ -375,33 +375,33 @@ def test_la_espera_del_429_usa_el_valor_configurado(limite, monkeypatch, ms, seg
 
 
 @pytest.mark.parametrize("valor", [None, "", "-1", "5001", "abc", "01000", " 1000", "1000.0", "1e3"])
-def test_espera_del_429_ausente_o_fuera_de_rango_no_arranca(monkeypatch, valor):
+def test_espera_de_rechazo_ausente_o_fuera_de_rango_no_arranca(monkeypatch, valor):
     if valor is None:
-        monkeypatch.delenv("JAX_ADJUNTOS_429_ESPERA_MS", raising=False)
+        monkeypatch.delenv("JAX_ADJUNTOS_RECHAZO_ESPERA_MS", raising=False)
     else:
-        monkeypatch.setenv("JAX_ADJUNTOS_429_ESPERA_MS", valor)
+        monkeypatch.setenv("JAX_ADJUNTOS_RECHAZO_ESPERA_MS", valor)
     with pytest.raises(LimitesDeAdjuntosInvalidos) as e:
-        mod.cargar_espera_429_ms()
-    assert "JAX_ADJUNTOS_429_ESPERA_MS" in str(e.value)
+        mod.cargar_espera_de_rechazo_ms()
+    assert "JAX_ADJUNTOS_RECHAZO_ESPERA_MS" in str(e.value)
 
 
 @pytest.mark.parametrize("valor", ["0", "1", "1000", "5000"])
-def test_espera_del_429_en_rango(monkeypatch, valor):
-    monkeypatch.setenv("JAX_ADJUNTOS_429_ESPERA_MS", valor)
-    assert mod.cargar_espera_429_ms() == int(valor)
-    assert (mod.ESPERA_429_MS_MIN, mod.ESPERA_429_MS_MAX) == (0, 5000)
+def test_espera_de_rechazo_en_rango(monkeypatch, valor):
+    monkeypatch.setenv("JAX_ADJUNTOS_RECHAZO_ESPERA_MS", valor)
+    assert mod.cargar_espera_de_rechazo_ms() == int(valor)
+    assert (mod.ESPERA_DE_RECHAZO_MS_MIN, mod.ESPERA_DE_RECHAZO_MS_MAX) == (0, 5000)
 
 
 def test_sin_espera_configurada_un_rechazo_falla_cerrado(limite, monkeypatch):
     app = mod.LimiteDeSubidas(_Interna())
     for _ in range(2):
         _llamar(app, token_para(5))
-    monkeypatch.delenv("JAX_ADJUNTOS_429_ESPERA_MS")
+    monkeypatch.delenv("JAX_ADJUNTOS_RECHAZO_ESPERA_MS")
     with pytest.raises(LimitesDeAdjuntosInvalidos):
         _llamar(app, token_para(5))
 
 
-def test_lifespan_valida_la_espera_del_429_antes_de_abrir_la_base(monkeypatch):
+def test_lifespan_valida_la_espera_de_rechazo_antes_de_abrir_la_base(monkeypatch):
     import main
 
     llamadas = []
@@ -409,7 +409,7 @@ def test_lifespan_valida_la_espera_del_429_antes_de_abrir_la_base(monkeypatch):
     async def pool_espia():
         llamadas.append("pool")
 
-    monkeypatch.delenv("JAX_ADJUNTOS_429_ESPERA_MS", raising=False)
+    monkeypatch.delenv("JAX_ADJUNTOS_RECHAZO_ESPERA_MS", raising=False)
     monkeypatch.setattr(main, "get_pool", pool_espia)
 
     async def arrancar():
@@ -418,7 +418,7 @@ def test_lifespan_valida_la_espera_del_429_antes_de_abrir_la_base(monkeypatch):
 
     with pytest.raises(LimitesDeAdjuntosInvalidos) as e:
         asyncio.run(arrancar())
-    assert "JAX_ADJUNTOS_429_ESPERA_MS" in str(e.value)
+    assert "JAX_ADJUNTOS_RECHAZO_ESPERA_MS" in str(e.value)
     assert llamadas == []
 
 
@@ -428,7 +428,7 @@ def test_cuota_y_limite_juntos_los_rechazos_de_la_ruta_gastan_cupo(client, monke
     """El límite cuenta intentos, también los que la ruta rechaza después
     (413 de cuota): solo gastan el cupo del propio usuario."""
     monkeypatch.setenv("JAX_ADJUNTOS_SUBIDAS_POR_MINUTO", "4")
-    monkeypatch.setenv("JAX_ADJUNTOS_429_ESPERA_MS", "0")
+    monkeypatch.setenv("JAX_ADJUNTOS_RECHAZO_ESPERA_MS", "0")
     monkeypatch.setenv("JAX_ADJUNTOS_CUOTA_BYTES_USUARIO", str(1024 * 1024))
     mod.reiniciar()
     hdrs = cabeceras(client, "test-limite-y-cuota")
@@ -454,7 +454,7 @@ def test_cuota_y_limite_juntos_los_rechazos_de_la_ruta_gastan_cupo(client, monke
 def test_el_401_del_middleware_espera_lo_configurado_y_no_lee_el_cuerpo(limite, monkeypatch, ms, segundos):
     """R30 (enmienda R28): flood anónimo c=25 con 10 MB, health p95 36 ms con
     el 401 inmediato contra 0,29 ms con la espera de 1000 ms."""
-    monkeypatch.setenv("JAX_ADJUNTOS_429_ESPERA_MS", ms)
+    monkeypatch.setenv("JAX_ADJUNTOS_RECHAZO_ESPERA_MS", ms)
     interna = _Interna()
     status, _, _, canal = _llamar(mod.LimiteDeSubidas(interna), autorizacion="Bearer basura")
     assert (status, canal.leidos, interna.llamadas) == (401, 0, 0)
