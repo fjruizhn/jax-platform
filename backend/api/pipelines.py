@@ -17,6 +17,7 @@ from auth.models import AuthUser
 from kill_switch import exigir_mesa_libre
 from db.connection import get_pool
 from http_client import get_http_client
+from credencial_las_manos import encabezados_las_manos
 from jax_engine.resource_manager import resource_manager
 from jax_engine.state import engine_state
 from jax_engine.schemas import PipelineState
@@ -414,6 +415,7 @@ async def _prevuelo(client, steps: list, objetivo: str, user: AuthUser, umbral: 
               "tenant_id": user.tenant_id, "steps": steps, "objective": objetivo},
         # Puede sondear facetas (en paralelo, con timeout propio en Jacobs).
         timeout=JACOBS_PIPELINE_TIMEOUT,
+        headers=encabezados_las_manos(),
     )
     return _evaluar_veredicto(_json_de_jacobs(r), umbral)
 
@@ -527,7 +529,8 @@ async def _continuable(client, pipeline_id: str, user: AuthUser,
     prevuelo_rechazado y limite_de_activos). Cualquier otra forma no es un
     pre-vuelo: 502 prevuelo_no_disponible."""
     r = await client.post(f"{JACOBS_URL}/pipeline/{pipeline_id}/continue/preflight",
-                          json=_cuerpo_de_continuar(user, reasignar), timeout=JACOBS_PIPELINE_TIMEOUT)
+                          json=_cuerpo_de_continuar(user, reasignar), timeout=JACOBS_PIPELINE_TIMEOUT,
+                          headers=encabezados_las_manos())
     data = _json_de_jacobs(r)
     try:
         continuable = data["continuable"]
@@ -835,7 +838,8 @@ async def create_pipeline(request: Request, user: AuthUser = Depends(exigir_mesa
         # previo del admin. Jacobs responde 409 costo_supera_lo_aceptado sin
         # crear si su pre-vuelo interno da más.
         body["costo_max_aceptado_usd"] = _monto_texto(confirmado if confirmado is not None else umbral)
-        r = await client.post(f"{JACOBS_URL}/pipeline", json=body, timeout=JACOBS_PIPELINE_TIMEOUT)
+        r = await client.post(f"{JACOBS_URL}/pipeline", json=body, timeout=JACOBS_PIPELINE_TIMEOUT,
+                              headers=encabezados_las_manos())
         data = _costos_saneados(_json_de_jacobs(r))
         pipeline_id = data.get("pipeline_id")
         if pipeline_id:
@@ -865,7 +869,8 @@ async def get_pipeline_results(pipeline_id: str, user: AuthUser = Depends(get_cu
     await _require_pipeline_owner(pipeline_id, user)
     client = await get_http_client()
     try:
-        r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}/results", timeout=10.0)
+        r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}/results", timeout=10.0,
+                             headers=encabezados_las_manos())
         return _json_de_jacobs(r)
     except HTTPException:
         raise
@@ -878,7 +883,8 @@ async def get_pipeline(pipeline_id: str, user: AuthUser = Depends(get_current_us
     await _require_pipeline_owner(pipeline_id, user)
     client = await get_http_client()
     try:
-        r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}", timeout=5.0)
+        r = await client.get(f"{JACOBS_URL}/pipeline/{pipeline_id}", timeout=5.0,
+                             headers=encabezados_las_manos())
         return _json_de_jacobs(r)
     except HTTPException:
         raise
@@ -898,6 +904,7 @@ async def resume_pipeline(
             f"{JACOBS_URL}/pipeline/{pipeline_id}/resume",
             json={"invoked_by": INVOKED_BY_PLATAFORMA, "user_id": user.user_id, "tenant_id": user.tenant_id},
             timeout=10.0,
+            headers=encabezados_las_manos(),
         )
         return _json_de_jacobs(r)
     except HTTPException:
@@ -914,7 +921,8 @@ async def cancel_pipeline(
     await _require_pipeline_owner(pipeline_id, user)
     client = await get_http_client()
     try:
-        r = await client.post(f"{JACOBS_URL}/pipeline/{pipeline_id}/cancel", timeout=10.0)
+        r = await client.post(f"{JACOBS_URL}/pipeline/{pipeline_id}/cancel", timeout=10.0,
+                              headers=encabezados_las_manos())
         data = _json_de_jacobs(r)
         engine_state.remove_pipeline(pipeline_id)
         await resource_manager.release_pipeline(user.tenant_id, pipeline_id)
@@ -965,7 +973,7 @@ async def continue_pipeline(pipeline_id: str, pedido: PedidoDeContinuar,
         # costo_supera_lo_aceptado sin continuar si su pre-vuelo da más.
         cuerpo["costo_max_aceptado_usd"] = _monto_texto(confirmado if confirmado is not None else umbral)
         r = await client.post(f"{JACOBS_URL}/pipeline/{pipeline_id}/continue", json=cuerpo,
-                              timeout=JACOBS_PIPELINE_TIMEOUT)
+                              timeout=JACOBS_PIPELINE_TIMEOUT, headers=encabezados_las_manos())
         data = _respuesta_de_continuar(_json_de_jacobs(r))
         await resource_manager.admit_pipeline(user.tenant_id, pipeline_id)
         await engine_state.continuar_pipeline(

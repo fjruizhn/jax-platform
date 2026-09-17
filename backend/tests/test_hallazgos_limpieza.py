@@ -64,7 +64,7 @@ async def test_human_gate_requested_solo_lleva_el_pipeline_id(monkeypatch):
             return {"pipeline": {"status": "interrupted"}, "steps": []}
 
     class _Cliente:
-        async def get(self, url, timeout=None):
+        async def get(self, url, timeout=None, headers=None):
             return _Respuesta()
 
     estado = state_mod.JAXEngineState()

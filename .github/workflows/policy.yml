@@ -1545,7 +1545,14 @@ jobs:
           # test_prevuelo_datos_medidos y ajustes de tests existentes), vistos en
           # rojo contra accc641. Medido tras el merge contra jax_memory_test:
           # 1751 passed / 0 failed / 1 skipped.
-          PISO_PASSED = 1751
+          # 1751 -> 1761 el 2026-09-17 (merge de master con la credencial de
+          # servicio ante LAS MANOS, #101): +10 de test_credencial_las_manos.py.
+          # Al medir apareció un rojo real: el test del índice compuesto
+          # idx_events_pipeline_tipo daba 1061 cuando el esquema de Jacobs YA trae
+          # el índice (pasa en cuanto se mergee el plan J en jax); ahora sólo lo
+          # agrega si la copia de SHOW CREATE TABLE no lo tiene. Medido contra
+          # jax_memory_test: 1761 passed / 0 failed / 1 skipped.
+          PISO_PASSED = 1761
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2111,7 +2118,10 @@ jobs:
       # 905 -> 1109 el 2026-09-17 (pre-vuelo y continuar, merge de master): +204
       # puros de la rama (los que piden `client` se saltean). Medido tras el merge
       # con JAX_CI_NO_DB=1: 1109 passed / 643 skipped.
-      JAX_CI_MIN_PASSED: "1109"
+      # 1109 -> 1119 el 2026-09-17 (merge de master, credencial de servicio): +10
+      # puros de test_credencial_las_manos.py. Medido con JAX_CI_NO_DB=1: 1119
+      # passed / 643 skipped.
+      JAX_CI_MIN_PASSED: "1119"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -36,6 +36,7 @@ from ejecutor.prioridad import carril_mesa_async
 from jax_engine.schemas import JAXEvent
 from jax_engine.events import event_bus
 from jax_engine.state import engine_state, LAS_MANOS_URL
+from credencial_las_manos import encabezados_las_manos
 from api.admin.usage import record_usage, validar_ids_de_uso
 from db.connection import get_pool
 from redaccion import recortar_redactado, texto_de_error
@@ -884,6 +885,7 @@ async def _invoke_facet_dispatch(
                 f"{LAS_MANOS_URL}/motor/authorize-facet",
                 json={"caller": _JAX_PLATFORM_CHAT_CALLER, "facet": facet},
                 timeout=5.0,
+                headers=encabezados_las_manos(),
             )
             resp.raise_for_status()
             body = resp.json()

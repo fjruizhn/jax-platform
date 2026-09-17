@@ -103,10 +103,21 @@ class JacobsFalso:
             raise AssertionError(f"Jacobs falso: ruta no declarada {metodo} {ruta}")
         return r(cuerpo) if callable(r) else r
 
-    async def post(self, url, json=None, timeout=None):
+    @staticmethod
+    def _exigir_credencial(headers):
+        # LAS MANOS real (jax las_manos/auth_servicio.py) rechaza todo pedido
+        # sin la credencial de servicio: el falso tampoco lo deja pasar.
+        import os
+        from credencial_las_manos import ENCABEZADO, VARIABLE
+        assert headers and headers.get(ENCABEZADO) == os.environ[VARIABLE], \
+            "Jacobs falso: pedido sin la credencial de servicio de la plataforma"
+
+    async def post(self, url, json=None, timeout=None, headers=None):
+        self._exigir_credencial(headers)
         return self._responder("POST", url, json)
 
-    async def get(self, url, timeout=None):
+    async def get(self, url, timeout=None, headers=None):
+        self._exigir_credencial(headers)
         return self._responder("GET", url, None)
 
     def cuerpos(self, metodo: str, ruta: str) -> list:

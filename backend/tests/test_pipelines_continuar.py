@@ -621,7 +621,11 @@ async def _explain_con_el_indice_compuesto(ids):
             ((_tabla, definicion),) = await cur.fetchall()
             await cur.execute(definicion.replace("CREATE TABLE", "CREATE TEMPORARY TABLE", 1))
             try:
-                await cur.execute("ALTER TABLE jacobs_events ADD INDEX idx_events_pipeline_tipo (pipeline_id, event_type)")
+                # Cuando el esquema de Jacobs ya trae el índice (jax con el plan J
+                # mergeado, o una base donde corrió su init_tables), la copia de
+                # SHOW CREATE TABLE ya lo tiene: agregarlo de nuevo es 1061.
+                if "idx_events_pipeline_tipo" not in definicion:
+                    await cur.execute("ALTER TABLE jacobs_events ADD INDEX idx_events_pipeline_tipo (pipeline_id, event_type)")
                 # La forma del peor caso medido (Task 12): muchos eventos que
                 # NO son de causa por pipeline; con ellos el compuesto es el
                 # más selectivo y el optimizador lo elige.

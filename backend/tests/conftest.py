@@ -46,6 +46,12 @@ os.environ["LAS_MANOS_URL"] = DESTINO_DE_SERVICIO_INVALIDO
 os.environ["JACOBS_URL"] = f"{DESTINO_DE_SERVICIO_INVALIDO}/jacobs"
 os.environ["JAX_PLATFORM_URL"] = DESTINO_DE_SERVICIO_INVALIDO
 
+# Credencial de servicio ante LAS MANOS (2026-09-17): se FIJA a un valor de
+# prueba por sesión, después de cargar /etc/jax/.env, para que la suite nunca
+# lleve la credencial de producción en sus pedidos (aunque vayan a :9).
+import secrets as _secrets  # noqa: E402
+os.environ["JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA"] = _secrets.token_urlsafe(32)
+
 # Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
 # aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture
 # `client` es de sesión y arranca la app -- y con ella run_migrations, que
