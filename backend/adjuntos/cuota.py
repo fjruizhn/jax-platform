@@ -37,12 +37,14 @@ rechaza igual (fail-closed): no saber cuánto queda no es permiso para
 escribir. 507 `adjuntos_sin_espacio`, sin números en el cuerpo (el estado
 del disco del servidor no es asunto del cliente).
 
-Sin caché del uso: se relee el directorio en cada reserva y en cada commit.
-Es la fuente de verdad (sidecars) y no hay nada que invalidar cuando el
-limpiador, la baja o el vencimiento cambian el uso. Costo: un scandir + un
-json chico por adjunto vigente de TODOS los usuarios, en un hilo; medido en
-RD6 (rd6-report.md). Si el directorio crece a decenas de miles de entradas,
-esa es la medición que obliga a indexar por usuario.
+Sin caché del uso: se relee la carpeta del usuario en cada reserva y en cada
+commit. Es la fuente de verdad (sidecars) y no hay nada que invalidar cuando
+el limpiador, la baja o el vencimiento cambian el uso. Costo: un scandir + un
+json chico por entrada de la carpeta DE ESE USUARIO (RD7: una carpeta por
+user_id; nunca la raíz ni la de otro), en un hilo. RD6 midió el barrido
+cuando todavía era de todos los usuarios: ~6 us por sidecar en ext4 (10.000
+en 60 ms). Con plazo (Final fix wave #2, item 6: `_uso_acotado`): un disco
+trabado no retiene el candado del usuario para siempre.
 """
 import asyncio
 import logging
@@ -99,6 +101,49 @@ DISCO_LENTO_BYTES_POR_SEGUNDO = 256 * 1024
 def plazo_de_escritura_segundos() -> float:
     return max(PLAZO_DE_ESCRITURA_PISO_SEGUNDOS,
                math.ceil(cargar_limites().max_bytes / DISCO_LENTO_BYTES_POR_SEGUNDO))
+
+
+# Plazo de la lectura del uso (Final fix wave #2, item 6). `almacen.uso_de_usuario`
+# corre en un hilo BAJO el candado del usuario, dos veces por subida (reserva y
+# confirmación): colgada sin plazo, ese usuario no volvía a subir hasta
+# reiniciar -- el mismo modo de falla que R29 cerró para el commit. Es una
+# lectura: abandonarla no deja nada a medio escribir, así que al vencer se
+# suelta el candado sin esperar al hilo. Por qué 60 s: RD6 midió el barrido a
+# ~6 us por sidecar en ext4 (10.000 en 60 ms, p95 62 ms) y desde RD7 recorre
+# solo la carpeta del usuario. Con el límite de deploy (30 subidas/min) y el
+# TTL máximo (168 h), un usuario junta como mucho 302.400 sidecars: ~1,8 s.
+# 60 s deja más de 30 veces de margen (con el techo del rango, 600/min, serían
+# ~6 millones y ~36 s: sigue adentro); pasarlo es un disco trabado, no una
+# carpeta grande. Sin variable nueva: es un margen técnico, igual que el piso
+# del commit.
+PLAZO_DE_LECTURA_DE_USO_SEGUNDOS = 60
+
+
+def plazo_de_lectura_de_uso_segundos() -> float:
+    return PLAZO_DE_LECTURA_DE_USO_SEGUNDOS
+
+
+async def _uso_acotado(directorio: Path, clave: str) -> int:
+    """`almacen.uso_de_usuario` en un hilo, con plazo. Vencido: loguea
+    TimeoutError (sin rutas ni ids) y 503 `adjuntos_reintentar`; el llamador
+    está dentro del `async with` del candado, así que la excepción lo suelta.
+    El hilo abandonado sigue en el pool por defecto hasta que el disco
+    responda (ver el diseño §7.1)."""
+    plazo = plazo_de_lectura_de_uso_segundos()
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(almacen.uso_de_usuario, directorio, clave), timeout=plazo)
+    except TimeoutError:
+        logger.error("adjuntos: leer el uso del usuario no terminó en %s s (TimeoutError); "
+                     "se suelta su candado", plazo)
+        raise LecturaDeUsoSinTerminar() from None
+
+
+class LecturaDeUsoSinTerminar(AdjuntoRechazado):
+    """La lectura del uso no terminó dentro del plazo: 503, el cliente reintenta."""
+
+    def __init__(self):
+        super().__init__(503, "adjuntos_reintentar")
 
 
 class EscrituraSinTerminar(AdjuntoRechazado):
@@ -227,8 +272,7 @@ class Reserva:
         hasta vencer y el cliente nunca recibe su id."""
         cuenta = self._cuenta
         async with cuenta.candado:
-            usado = await asyncio.to_thread(almacen.uso_de_usuario, self._directorio,
-                                            str(self._user.user_id))
+            usado = await _uso_acotado(self._directorio, str(self._user.user_id))
             if usado + (cuenta.reservado - self.bytes) + tamano > self._cuota:
                 raise CuotaExcedida(self._cuota)
             plazo = plazo_de_escritura_segundos()
@@ -281,7 +325,7 @@ async def reserva(directorio: Path, user, declarado: int, cuota: int):
     r = Reserva(cuenta, directorio, user, 0, cuota)
     try:
         async with cuenta.candado:
-            usado = await asyncio.to_thread(almacen.uso_de_usuario, directorio, clave)
+            usado = await _uso_acotado(directorio, clave)
             if usado + cuenta.reservado + declarado > cuota:
                 raise CuotaExcedida(cuota)
             cuenta.reservado += declarado

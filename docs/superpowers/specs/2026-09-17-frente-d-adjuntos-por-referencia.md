@@ -284,6 +284,23 @@ siempre si el disco se cuelga.
   dejar al usuario sin subir hasta reiniciar.
 - La cancelación repetida sigue esperando, pero dentro del plazo.
 
+**Plazo de la lectura del uso (Final fix wave #2, 2026-09-17):** `almacen.uso_de_usuario` también
+corre bajo el candado del usuario, en la reserva y en la confirmación. Colgada, retenía el candado
+igual que el commit antes de R29.
+- **Plazo:** 60 s (`PLAZO_DE_LECTURA_DE_USO_SEGUNDOS`, sin variable nueva). RD6 midió ~6 µs por
+  sidecar; con 30 subidas/min y TTL de 168 h un usuario junta como mucho 302.400 sidecars (~1,8 s),
+  y con el techo de 600/min, ~36 s.
+- **Vencido:** se loguea `TimeoutError`, se sueltan candado y reserva, y la subida recibe 503
+  `adjuntos_reintentar`. A diferencia del commit, no se espera al hilo: es una lectura y no deja
+  nada a medio escribir.
+
+**Disco trabado de forma persistente (costo declarado):** los dos plazos sueltan el candado del
+usuario, pero no el hilo. Cada subida que vence deja un hilo abandonado en el pool por defecto de
+`asyncio.to_thread` (`min(32, núcleos + 4)` hilos) hasta que el disco responda. Si el disco no
+vuelve, esos hilos se acumulan y las siguientes operaciones de `to_thread` del proceso esperan
+detrás. El borrado del temporal en el `finally` de la subida también corre en un hilo y puede
+quedar bloqueado en el mismo disco. El candado de cada usuario sí se suelta.
+
 **Por qué un candado en memoria alcanza:** jax-platform es **un solo proceso**.
 `auth/rate_limit.py::exigir_un_solo_proceso` aborta el arranque con `--workers` o
 `WEB_CONCURRENCY` > 1. Si algún día hay más de un proceso, la cuota necesita un candado

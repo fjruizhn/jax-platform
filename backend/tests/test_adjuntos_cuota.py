@@ -494,3 +494,65 @@ def test_un_commit_colgado_suelta_candado_y_reserva_y_da_un_codigo(directorio, m
         asyncio.run(correr())
     assert "TimeoutError" in caplog.text
     assert cuota._cuentas == {}
+
+
+# ------------------- Final fix wave #2, item 6: lectura del uso acotada (R29)
+
+def test_el_plazo_de_la_lectura_del_uso_es_el_declarado():
+    assert cuota.plazo_de_lectura_de_uso_segundos() == cuota.PLAZO_DE_LECTURA_DE_USO_SEGUNDOS == 60
+
+
+@pytest.mark.parametrize("llamada", [1, 2], ids=["en_la_reserva", "en_la_confirmacion"])
+def test_una_lectura_del_uso_colgada_suelta_el_candado_y_da_un_codigo(directorio, monkeypatch, caplog, llamada):
+    """`almacen.uso_de_usuario` corre en un hilo bajo el candado del usuario,
+    dos veces por subida (reserva y confirmación). Colgada sin plazo (disco
+    trabado), ese usuario no volvía a subir hasta reiniciar: el mismo modo de
+    falla que R29 cerró para el commit. Con plazo: 503 adjuntos_reintentar,
+    candado y reserva sueltos, y el mismo usuario sube otra vez con el hilo
+    todavía colgado."""
+    monkeypatch.setattr(cuota, "plazo_de_lectura_de_uso_segundos", lambda: 0.3)
+    real = almacen.uso_de_usuario
+    entro, soltar, termino = threading.Event(), threading.Event(), threading.Event()
+    cuenta = [0]
+    candado = threading.Lock()
+
+    def frenada(*a, **k):
+        with candado:
+            cuenta[0] += 1
+            frenar = cuenta[0] == llamada
+        if frenar:
+            entro.set()
+            assert soltar.wait(10)
+        try:
+            return real(*a, **k)
+        finally:
+            if frenar:
+                termino.set()
+
+    monkeypatch.setattr(almacen, "uso_de_usuario", frenada)
+
+    async def correr():
+        tarea = asyncio.create_task(upload_mod.upload_file(file=_archivo(_png(len(PNG))), user=USUARIO))
+        while not entro.is_set():
+            await asyncio.sleep(0.005)
+        await asyncio.wait({tarea}, timeout=5)
+        if not tarea.done():
+            soltar.set()
+            raise AssertionError("la lectura colgada no soltó dentro del plazo")
+        with pytest.raises(HTTPException) as e:
+            await tarea
+        assert (e.value.status_code, e.value.detail) == (503, {"code": "adjuntos_reintentar"})
+        assert not termino.is_set()
+        assert cuota._cuentas == {}
+        otra = await upload_mod.upload_file(file=_archivo(_png(len(PNG))), user=USUARIO)
+        assert otra["bytes"] == len(PNG)
+        soltar.set()
+        while not termino.is_set():
+            await asyncio.sleep(0.005)
+
+    with caplog.at_level(logging.ERROR, logger="adjuntos.cuota"):
+        asyncio.run(correr())
+    assert "TimeoutError" in caplog.text
+    assert cuota._cuentas == {}
+    # Sin archivos del intento fallido: solo la subida que sí entró.
+    assert len([n for n in _archivos(directorio) if n.endswith(".json")]) == 1
