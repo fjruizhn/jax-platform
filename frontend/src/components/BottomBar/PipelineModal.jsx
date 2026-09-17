@@ -129,6 +129,8 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   // deshabilita el botón recién en el próximo render; dos clics seguidos
   // llegan antes y mandarían dos pre-vuelos o dos creaciones.
   const enviandoRef = useRef(false)
+  const botonEnviarRef = useRef(null)
+  const pendienteAnteriorRef = useRef(null)
 
   useEffect(() => {
     // api.get (no fetch crudo) -- el interceptor de src/api/client.js inyecta
@@ -170,6 +172,17 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
     setViolaciones([])
     setErrorEnvio(null)
   }, [chainFacets, selected, layout, motorChoices])
+
+  // Fix round 2 (b): el commit que abre la confirmación vuelve inert al
+  // envoltorio del botón enfocado, así que Dialogo registra `body` como
+  // elemento previo y no devuelve el foco. Cuando la confirmación se cierra y
+  // este modal sigue abierto, el foco va explícitamente al botón de enviar
+  // (este efecto corre después del cleanup de Dialogo y con el inert ya quitado).
+  useEffect(() => {
+    const habiaPendiente = pendienteAnteriorRef.current !== null
+    pendienteAnteriorRef.current = pendiente
+    if (habiaPendiente && pendiente === null) botonEnviarRef.current?.focus()
+  }, [pendiente])
 
   const toggleFacet = siLibre((id) => {
     setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id])
@@ -468,6 +481,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
             {t.cancel}
           </button>
           <button
+            ref={botonEnviarRef}
             onClick={handleSubmit}
             disabled={
               submitting || !catalogReady

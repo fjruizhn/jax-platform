@@ -629,6 +629,66 @@ describe('PipelineModal -- pre-vuelo y confirmación de costo', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
   })
 
+  // Fix round 2 (a): cada dependencia del efecto que borra tiene su test.
+  it('elegir otra faceta (en paralelo) borra las violaciones y el error anteriores', async () => {
+    const v = { paso: 0, faceta: 'hipatia', regla: 'faceta_caida', detalle: '' }
+    api.post.mockResolvedValueOnce({ data: { ...VEREDICTO_OK, ok: false, violaciones: [v] } })
+    renderModal()
+    await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    expect(await screen.findByText(textoDeViolacion(es, v))).toBeInTheDocument()
+    fireEvent.click(screen.getByText(/Razonamiento local/i))
+    await waitFor(() => expect(screen.queryByText(textoDeViolacion(es, v))).not.toBeInTheDocument())
+
+    api.post.mockRejectedValueOnce(new Error('network'))
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.errorPipeline)
+    fireEvent.click(screen.getByText(/Razonamiento local/i))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  it('elegir otro motor borra las violaciones y el error anteriores', async () => {
+    const v = { paso: 0, faceta: 'kimi', regla: 'faceta_caida', detalle: '' }
+    renderModal()
+    await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+    fireEvent.click(screen.getByText(/Implementación técnica/i))
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument())
+    api.post.mockResolvedValueOnce({ data: { ...VEREDICTO_OK, ok: false, violaciones: [v] } })
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    expect(await screen.findByText(textoDeViolacion(es, v))).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: '' } })
+    await waitFor(() => expect(screen.queryByText(textoDeViolacion(es, v))).not.toBeInTheDocument())
+
+    api.post.mockRejectedValueOnce(new Error('network'))
+    fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.errorPipeline)
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'kimi' } })
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  // Fix round 2 (b): el mismo commit que abre la confirmación vuelve inert al
+  // envoltorio del botón enfocado, así que Dialogo no tiene a quién devolver
+  // el foco. Al cerrarse la confirmación con el modal abierto, el foco va al
+  // botón de enviar, sin depender del inert de jsdom.
+  for (const [nombre, cerrar] of [
+    ['Cancelar', (d) => fireEvent.click(within(d).getByRole('button', { name: es.cancel }))],
+    ['Escape', () => fireEvent.keyDown(document, { key: 'Escape' })],
+  ]) {
+    it(`al cerrar la confirmación con ${nombre} el foco vuelve a Planificar y ejecutar`, async () => {
+      api.post.mockResolvedValue({ data: CARO })
+      await listo()
+      // Como en el navegador: al abrir la confirmación el botón ya quedó bajo
+      // inert y Dialogo registra `body` como elemento previo (fireEvent.click
+      // no enfoca, así que acá también es `body`).
+      document.activeElement?.blur?.()
+      fireEvent.click(screen.getByRole('button', { name: es.planAndExecute }))
+      const dialogo = await screen.findByRole('dialog', { name: es.confirmarCostoTitulo })
+      cerrar(dialogo)
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: es.confirmarCostoTitulo })).not.toBeInTheDocument())
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: es.planAndExecute })))
+    })
+  }
+
   it('si el pre-vuelo no responde, el error se ve en el modal y el botón vuelve', async () => {
     api.post.mockRejectedValue(new Error('network'))
     await listo()
