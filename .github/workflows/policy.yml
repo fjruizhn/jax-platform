@@ -1521,7 +1521,11 @@ jobs:
           # `Path.exists()` (7 failed / 1 passed, 3.14). Medido local contra
           # jax_memory_test: 1507 passed / 1 failed / 1 skipped (el failed, el
           # mismo hueco ambiental de test_seed_kimi_y_ada_como_motor).
-          PISO_PASSED = 1507
+          # 1507 -> 1509 el 2026-09-17 (Ejecutor SP1 plan 4, config de C5, rebase
+          # sobre #98): +2 en test_ejecutor_config_c5.py (semilla sin pisar con
+          # `client`; compuerta de datos de clientes nace cerrada, puro). Visto en
+          # rojo con dos mutaciones (compuerta en "true"; REPLACE en vez de INSERT IGNORE).
+          PISO_PASSED = 1509
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2075,7 +2079,10 @@ jobs:
       # 885 -> 893 el 2026-09-17 (fix/interruptor-stat-explicito): +8 puros
       # en test_interruptor_stat.py; ninguno pide `client`, los skips no se
       # mueven. Medido dos veces con JAX_CI_NO_DB=1: 893 passed / 616 skipped.
-      JAX_CI_MIN_PASSED: "893"
+      # 893 -> 894 el 2026-09-17 (Ejecutor SP1 plan 4, config de C5, rebase sobre
+      # #98): +1 puro en test_ejecutor_config_c5.py; el otro pide `client` y sube
+      # los skips 616 -> 617.
+      JAX_CI_MIN_PASSED: "894"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
