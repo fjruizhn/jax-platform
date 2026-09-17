@@ -372,3 +372,89 @@ def test_lifespan_valida_el_ttl(monkeypatch):
 
     with pytest.raises(LimitesDeAdjuntosInvalidos):
         asyncio.run(correr())
+
+
+# ------------------------------------------------ RD2 fix round 1 (2026-09-17)
+
+def _scandir_con_primero(monkeypatch, primeros):
+    """scandir determinista: las entradas problemáticas van PRIMERO, así un
+    fallo que aborte la pasada se nota siempre, no según el orden del FS."""
+    real = almacen._listar
+
+    def ordenado(d):
+        return sorted(real(d), key=lambda e: e.name not in primeros)
+
+    monkeypatch.setattr(almacen, "_listar", ordenado)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root lee archivos 000")
+def test_una_entrada_rota_no_aborta_la_limpieza_de_los_demas(directorio, monkeypatch):
+    vencido = _guardar_texto(directorio, ttl=1)
+    carpeta_sidecar = directorio / f"{almacen.nuevo_id()}.json"
+    carpeta_sidecar.mkdir()
+    carpeta_dato = directorio / f"{almacen.nuevo_id()}.dato"
+    carpeta_dato.mkdir()
+    _envejecer(carpeta_dato, almacen.ORFANO_MAX_SEGUNDOS + 60)
+    ilegible = directorio / f"{almacen.nuevo_id()}.json"
+    ilegible.write_text("{}")
+    os.chmod(ilegible, 0)
+    _scandir_con_primero(monkeypatch, {carpeta_sidecar.name, carpeta_dato.name, ilegible.name})
+    try:
+        almacen.limpiar(directorio, ahora=AHORA + timedelta(hours=2))
+        quedan = {p.name for p in directorio.iterdir()}
+    finally:
+        os.chmod(ilegible, 0o600)
+    assert f"{vencido['id']}.json" not in quedan and f"{vencido['id']}.dato" not in quedan
+    assert {carpeta_sidecar.name, carpeta_dato.name, ilegible.name} <= quedan
+
+
+def test_borrar_de_usuario_sigue_si_un_borrado_falla(directorio, monkeypatch):
+    roto = _guardar_texto(directorio)
+    sano = _guardar_texto(directorio)
+    (directorio / f"{roto['id']}.dato").unlink()
+    (directorio / f"{roto['id']}.dato").mkdir()  # unlink -> IsADirectoryError
+    _scandir_con_primero(monkeypatch, {f"{roto['id']}.json"})
+    almacen.borrar_de_usuario(directorio, "5")
+    quedan = {p.name for p in directorio.iterdir()}
+    assert f"{sano['id']}.json" not in quedan and f"{sano['id']}.dato" not in quedan
+
+
+@pytest.mark.parametrize("valor", ["0024", "024", "01"])
+def test_ttl_con_ceros_a_la_izquierda_falla_cerrado(monkeypatch, valor):
+    monkeypatch.setenv("JAX_ADJUNTOS_TTL_HORAS", valor)
+    with pytest.raises(LimitesDeAdjuntosInvalidos):
+        almacen.cargar_ttl_horas()
+
+
+def test_un_sidecar_escrito_despues_del_scandir_salva_al_dato(directorio, monkeypatch):
+    """Segunda guarda del limpiador: la foto de scandir no tiene el sidecar,
+    pero el sidecar ya existe cuando se decide borrar el dato."""
+    id_ = almacen.nuevo_id()
+    dato = directorio / f"{id_}.dato"
+    dato.write_bytes(b"x")
+    _envejecer(dato, almacen.ORFANO_MAX_SEGUNDOS + 60)
+    foto = list(os.scandir(directorio))
+    (directorio / f"{id_}.json").write_text("{}")
+    monkeypatch.setattr(almacen, "_listar", lambda d: foto)
+    almacen.limpiar(directorio, ahora=AHORA)
+    assert dato.exists()
+
+
+def test_el_dato_renombrado_no_hereda_la_edad_de_la_subida(directorio):
+    """El mtime de un .dato renombrado sería el del temporal (fin de la
+    copia, antes de la cola): guardar_imagen lo refresca, así la ventana
+    dato-sin-sidecar nunca parece vieja."""
+    temporal = directorio / almacen.nombre_temporal()
+    temporal.write_bytes(b"\x89PNG\r\n\x1a\nx")
+    _envejecer(temporal, 10 * almacen.ORFANO_MAX_SEGUNDOS)
+    meta = almacen.guardar_imagen(directorio, temporal, user=DUENIO, mime="image/png", nombre="f.png",
+                                  bytes_=9, ttl_horas=1, ahora=AHORA)
+    assert time.time() - (directorio / f"{meta['id']}.dato").stat().st_mtime < 60
+
+
+def test_el_margen_de_huerfanos_cubre_la_cola_de_subidas():
+    """Peor espera de cola razonable: tope 1, cada subida hasta el timeout
+    máximo de pypdf (60 s) + copia/clasificación; ver el comentario de
+    ORFANO_MAX_SEGUNDOS."""
+    from adjuntos.limites import LIMITE_TIMEOUT_DE_PDF_SEGUNDOS
+    assert almacen.ORFANO_MAX_SEGUNDOS >= 200 * (LIMITE_TIMEOUT_DE_PDF_SEGUNDOS + 30)

@@ -59,6 +59,9 @@ ProcessPoolExecutor acotado (c, hecho en RD1). Se mantiene `JAX_ADJUNTO_SUBIDAS_
 - **Baja de usuario:** `POST /api/admin/users/{id}/baja`, después del commit, borra los
   adjuntos de ese `user_id`. Es best-effort (`# fail-soft:`); el TTL cubre lo que no se pueda
   borrar.
+- **Baja que se cruza con una subida en vuelo:** si el sidecar de esa subida se confirma después
+  de que la baja recorrió el directorio, ese adjunto sobrevive hasta su TTL. Nadie puede leerlo:
+  la lectura exige al dueño, y el dueño ya no tiene sesión.
 
 ## 4. Ids
 
@@ -73,12 +76,17 @@ ProcessPoolExecutor acotado (c, hecho en RD1). Se mantiene `JAX_ADJUNTO_SUBIDAS_
 - `vence = creado + JAX_ADJUNTOS_TTL_HORAS`, fijado al subir.
 - `start_limpieza_de_adjuntos` es una tarea del lifespan, hermana de `start_owner_file_cleanup`.
   Pasa al arrancar y después cada 15 min.
-  - **DECISIÓN de controlador (RD2):** no va dentro del bucle de `owner_cleanup`. Ese bucle
+  - **Ruling R24 del controller (2026-09-17):** no va dentro del bucle de `owner_cleanup`. Ese bucle
     duerme 6 h porque retiene 30 días; con un TTL mínimo de 1 h, un vencido quedaría en disco
     hasta 7 veces su vida.
 - Qué borra:
   - vencidos;
-  - sidecars corruptos, datos sin sidecar y temporales con más de 1 h (`ORFANO_MAX_SEGUNDOS`).
+  - sidecars corruptos, datos sin sidecar y temporales con más de 6 h (`ORFANO_MAX_SEGUNDOS`).
+    El margen cubre la espera en cola de `turno_de_subida`: el temporal toma su mtime antes de
+    esa espera. Son 240 subidas de peor caso (60 s de pypdf + 30 s). Un huérfano no tiene
+    sidecar, así que nadie lo lee. El `.dato` renombrado refresca su mtime.
+- Una entrada rota (un directorio con nombre de adjunto, un archivo sin permiso, EIO) se loguea
+  y se saltea. No aborta la pasada para los demás usuarios. Lo mismo vale en la baja.
 - Qué deja:
   - lo vigente;
   - lo reciente (una subida en curso);
@@ -89,7 +97,7 @@ ProcessPoolExecutor acotado (c, hecho en RD1). Se mantiene `JAX_ADJUNTO_SUBIDAS_
 | Variable | Rango | Motivo |
 |---|---|---|
 | `JAX_ADJUNTOS_DIR` | ruta absoluta; directorio 0700 (sin bits de grupo/otros), escribible por el servicio; se crea 0700 si falta | Una ruta relativa depende del cwd. Un directorio abierto a otros no se corrige solo: se avisa |
-| `JAX_ADJUNTOS_TTL_HORAS` | entero **1..168** | Piso: un adjunto se sube mientras se escribe el mensaje. Techo: 7 días; es entrada de un turno, no un archivo del usuario |
+| `JAX_ADJUNTOS_TTL_HORAS` | entero **1..168**, solo dígitos y sin ceros a la izquierda | Piso: un adjunto se sube mientras se escribe el mensaje. Techo: 7 días; es entrada de un turno, no un archivo del usuario |
 
 **PENDIENTE (deploy, principal):** agregar las dos líneas a `/etc/jax/.env` y crear el
 directorio 0700, propiedad del usuario del servicio, en un disco real (no tmpfs). Ejemplo:
@@ -109,7 +117,7 @@ Texto o PDF:
 ```
 
 - Nunca devuelve base64 ni el texto completo.
-- **DECISIÓN de controlador (RD2):** devolver una vista previa acotada y no el texto. El texto
+- **Ruling R24 del controller (2026-09-17):** devolver una vista previa acotada y no el texto. El texto
   ya está en el servidor, y devolverlo invitaría a reenviarlo en el chat.
 - `mime` en la imagen sirve para que la interfaz sepa qué faceta la acepta.
 - Errores sin cambio: 413 `adjunto_demasiado_grande` (con `max_bytes`), 415
@@ -126,6 +134,11 @@ Camino de una subida:
 4. pypdf recibe **la ruta** en el pool de RD1.
 5. Se guarda.
 6. `finally` borra el temporal.
+
+**Ruling R25 del controller (2026-09-17):** Starlette recibe y vuelca el cuerpo entero antes
+de llamar al handler, así que el 413 llega después de la ingesta. Lo acota nginx
+(`client_max_body_size 50m`). **PENDIENTE (deploy, principal):** `TMPDIR` del unit en disco
+real, porque `/tmp` es tmpfs en hall9000.
 
 Pico medido con tracemalloc para 10 MB: parseo ≈ 1,3–1,8 MB y handler ≈ 2,1 MB, contra
 10 + 14 + 14 MB de antes.

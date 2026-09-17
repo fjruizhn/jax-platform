@@ -80,12 +80,20 @@ PREFIJO_SUBIDA = ".subiendo-"
 PREFIJO_ESCRITURA = ".tmp-"
 
 # Un temporal o un dato sin sidecar más viejo que esto es basura de una
-# subida que murió (proceso caído, cliente cancelado a mitad). Una subida
-# viva no dura tanto: el cuerpo ya llegó entero antes del handler, la copia
-# es de <= JAX_ADJUNTO_MAX_BYTES a disco local y pypdf tiene timeout de <= 60
-# s; el proxy corta al cliente mucho antes de una hora. No es env: no es una
-# política, es un margen técnico sobre esos límites.
-ORFANO_MAX_SEGUNDOS = 3600
+# subida que murió (proceso caído, cliente cancelado a mitad). Fix round 1
+# (2026-09-17): el margen tiene que cubrir también la ESPERA EN COLA. El
+# temporal `.subiendo-*` toma su mtime al terminar la copia, ANTES de esperar
+# turno_de_subida (JAX_ADJUNTO_SUBIDAS_EN_PROCESO, 1 en producción), y
+# Starlette no cancela el handler cuando el cliente se va: una subida puede
+# esperar detrás de todas las anteriores. Cada una tarda como mucho el
+# timeout de pypdf (<= 60 s, LIMITE_TIMEOUT_DE_PDF_SEGUNDOS) más la
+# clasificación de <= 10 MB (holgado: 30 s). 6 h cubren 240 subidas de peor
+# caso en cola, muy por encima de la concurrencia real del servicio. El costo
+# de un margen largo es solo disco: un huérfano no tiene sidecar, así que
+# nadie puede leerlo, y es 0600. El .dato renombrado NO hereda la edad del
+# temporal: guardar_imagen le refresca el mtime antes del rename. No es env:
+# es un margen técnico sobre esos límites, no una política.
+ORFANO_MAX_SEGUNDOS = 6 * 3600
 
 # Cada 15 minutos. owner_cleanup corre cada 6 h porque retiene 30 días; acá
 # el TTL mínimo es 1 h, y a 6 h un adjunto vencido quedaría en disco hasta 7
@@ -122,7 +130,7 @@ def cargar_directorio() -> Path:
 
 def cargar_ttl_horas() -> int:
     crudo = os.environ.get(VARIABLE_TTL_HORAS)
-    valor = int(crudo) if crudo is not None and re.fullmatch(r"[0-9]{1,4}", crudo) else None
+    valor = int(crudo) if crudo is not None and re.fullmatch(r"[1-9][0-9]{0,3}", crudo) else None
     if valor is None or not TTL_HORAS_MIN <= valor <= TTL_HORAS_MAX:
         raise LimitesDeAdjuntosInvalidos(
             f"vencimiento de adjuntos sin configurar o fuera de rango (entero "
@@ -286,6 +294,10 @@ def guardar_imagen(directorio: Path, temporal: Path, *, user, mime: str, nombre:
     subida): fsync y se renombra al dato, sin copiarla otra vez."""
     with open(temporal, "rb") as f:
         os.fsync(f.fileno())
+    # El mtime del temporal es el del fin de la copia, antes de la cola: sin
+    # esto, el dato recién renombrado (aún sin sidecar) podría parecerle
+    # huérfano viejo al limpiador (ver ORFANO_MAX_SEGUNDOS).
+    os.utime(temporal)
     id_ = nuevo_id()
     os.replace(temporal, directorio / f"{id_}{SUFIJO_DATO}")
     return _confirmar(directorio, _metadatos(id_, user, "imagen", nombre, bytes_, ttl_horas, ahora,
@@ -369,6 +381,13 @@ def _borrar_adjunto(directorio: Path, id_: str) -> int:
     return _borrar(directorio / f"{id_}{SUFIJO_SIDECAR}") + _borrar(directorio / f"{id_}{SUFIJO_DATO}")
 
 
+def _listar(directorio: Path) -> list:
+    """Foto del directorio (una sola lectura). Función propia para que un
+    test fije el orden sin tocar os.scandir global."""
+    with os.scandir(directorio) as it:
+        return list(it)
+
+
 def limpiar(directorio: Path, ahora: datetime | None = None) -> int:
     """Síncrona (to_thread). Borra adjuntos vencidos, sidecars corruptos
     viejos, datos sin sidecar viejos y temporales viejos. Deja todo lo demás,
@@ -377,35 +396,47 @@ def limpiar(directorio: Path, ahora: datetime | None = None) -> int:
     limite_orfano = time.time() - ORFANO_MAX_SEGUNDOS
     borrados = 0
     try:
-        entradas = list(os.scandir(directorio))
+        entradas = _listar(directorio)
     except FileNotFoundError:
         return 0
     nombres = {e.name for e in entradas}
     for entrada in entradas:
         nombre = entrada.name
         try:
-            viejo = entrada.stat(follow_symlinks=False).st_mtime < limite_orfano
-            if nombre.startswith((PREFIJO_SUBIDA, PREFIJO_ESCRITURA)):
-                if viejo:
-                    borrados += _borrar(Path(entrada.path))
-            elif nombre.endswith(SUFIJO_SIDECAR) and id_valido(nombre[:-len(SUFIJO_SIDECAR)]):
-                id_ = nombre[:-len(SUFIJO_SIDECAR)]
-                try:
-                    meta = json.loads(Path(entrada.path).read_bytes())
-                    corrupto = not isinstance(meta, dict)
-                except ValueError:
-                    corrupto = True
-                if (corrupto and viejo) or (not corrupto and _vencido(meta, ahora)):
-                    borrados += _borrar_adjunto(directorio, id_)
-            elif nombre.endswith(SUFIJO_DATO) and id_valido(nombre[:-len(SUFIJO_DATO)]):
-                if viejo and f"{nombre[:-len(SUFIJO_DATO)]}{SUFIJO_SIDECAR}" not in nombres \
-                        and not (directorio / f"{nombre[:-len(SUFIJO_DATO)]}{SUFIJO_SIDECAR}").exists():
-                    borrados += _borrar(Path(entrada.path))
-        except FileNotFoundError:  # fail-soft: carrera benigna con otra limpieza o un borrado concurrente; el archivo ya no está, que es lo que se buscaba
-            continue
+            borrados += _limpiar_entrada(directorio, entrada, nombres, ahora, limite_orfano)
+        except OSError as e:  # fail-soft: una entrada rota (directorio con nombre de adjunto, sin permiso, EIO) no puede abortar la pasada para los demás usuarios; se loguea y el próximo ciclo la reintenta
+            logger.warning("adjuntos: limpieza salteó %r (%s)", nombre, type(e).__name__)
     if borrados:
         logger.info("adjuntos: limpieza borró %s archivo(s)", borrados)
     return borrados
+
+
+def _limpiar_entrada(directorio: Path, entrada, nombres: set, ahora: datetime, limite_orfano: float) -> int:
+    """Una entrada de `limpiar`. Cualquier OSError que no sea "ya no está"
+    sube al bucle, que la saltea y sigue con las demás."""
+    nombre = entrada.name
+    try:
+        viejo = entrada.stat(follow_symlinks=False).st_mtime < limite_orfano
+        if nombre.startswith((PREFIJO_SUBIDA, PREFIJO_ESCRITURA)):
+            return _borrar(Path(entrada.path)) if viejo else 0
+        if nombre.endswith(SUFIJO_SIDECAR) and id_valido(nombre[:-len(SUFIJO_SIDECAR)]):
+            try:
+                meta = json.loads(Path(entrada.path).read_bytes())
+                corrupto = not isinstance(meta, dict)
+            except ValueError:
+                corrupto = True
+            if (corrupto and viejo) or (not corrupto and _vencido(meta, ahora)):
+                return _borrar_adjunto(directorio, nombre[:-len(SUFIJO_SIDECAR)])
+            return 0
+        if nombre.endswith(SUFIJO_DATO) and id_valido(nombre[:-len(SUFIJO_DATO)]):
+            sidecar = f"{nombre[:-len(SUFIJO_DATO)]}{SUFIJO_SIDECAR}"
+            # Dos guardas: la foto de scandir y el disco AHORA (un sidecar
+            # escrito después de la foto salva al dato).
+            if viejo and sidecar not in nombres and not (directorio / sidecar).exists():
+                return _borrar(Path(entrada.path))
+        return 0
+    except FileNotFoundError:  # fail-soft: carrera benigna con otra limpieza o un borrado concurrente; el archivo ya no está, que es lo que se buscaba
+        return 0
 
 
 def borrar_de_usuario(directorio: Path, user_id: str) -> int:
@@ -413,7 +444,7 @@ def borrar_de_usuario(directorio: Path, user_id: str) -> int:
     api/admin/users.py). Por user_id solo: es la PK global de jax_users."""
     borrados = 0
     try:
-        entradas = list(os.scandir(directorio))
+        entradas = _listar(directorio)
     except FileNotFoundError:
         return 0
     for entrada in entradas:
@@ -425,7 +456,10 @@ def borrar_de_usuario(directorio: Path, user_id: str) -> int:
         except (OSError, ValueError):
             continue  # corrupto o ya borrado: lo levanta limpiar() por edad
         if isinstance(meta, dict) and meta.get("user_id") == str(user_id):
-            borrados += _borrar_adjunto(directorio, nombre[:-len(SUFIJO_SIDECAR)])
+            try:
+                borrados += _borrar_adjunto(directorio, nombre[:-len(SUFIJO_SIDECAR)])
+            except OSError as e:  # fail-soft: un adjunto que no se deja borrar no frena el borrado del resto; su sidecar ya no está o vence por TTL, y se loguea
+                logger.warning("adjuntos: baja de %s no pudo borrar %r (%s)", user_id, nombre, type(e).__name__)
     return borrados
 
 
