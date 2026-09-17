@@ -111,7 +111,9 @@ class CreateMotorRequest(BaseModel):
     provider_id: str
     model_id: str
     transport: str
-    max_tokens: int = 0
+    # >= 0 (spec 2026-09-17 §7 A): un negativo llega al proveedor como tope
+    # inválido. 0 = sin tope propio (manda model.max_output_tokens).
+    max_tokens: int = Field(default=0, ge=0)
     default_timeout_seconds: int = 600
     supports_reasoning: bool = False
     reasoning_default_visibility: str = "audit_only"
@@ -229,7 +231,7 @@ class UpdateMotorRequest(BaseModel):
     provider_id: str | None = None
     model_id: str | None = None
     transport: str | None = None
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, ge=0)
     default_timeout_seconds: int | None = None
     supports_reasoning: bool | None = None
     reasoning_default_visibility: str | None = None

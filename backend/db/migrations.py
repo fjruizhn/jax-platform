@@ -677,12 +677,14 @@ _FACET_PERSONAS = {
 # `model` no es estable entre instalaciones.
 _MOTOR_SEED = [
     # key,   provider_id, model_id,   transport,             max_tokens, timeout, reasoning, visibility,    sandbox
-    ("kimi", "moonshot", "kimi-k3",   "http_openai_compat",  8000,       600,     True,      "audit_only",  True),
+    # max_tokens 0 (D1 de Fernando, spec 2026-09-17 §1): sin tope propio, manda
+    # model.max_output_tokens. Los 8000 cortaron el pipeline ef9b2d6e.
+    ("kimi", "moonshot", "kimi-k3",   "http_openai_compat",  0,          600,     True,      "audit_only",  True),
     # glm-5.3 (PR-L ronda 1): el mismo modelo que el binding semilla de ada.
     # Con glm-5.2, en una base vacía la fila de `model` ya no existe (se
     # deriva de los bindings) y _seed_motors_and_capabilities salteaba el
     # motor ada en silencio.
-    ("ada",  "zhipu",    "glm-5.3",   "http_openai_compat",  8000,       600,     True,      "audit_only",  True),
+    ("ada",  "zhipu",    "glm-5.3",   "http_openai_compat",  0,          600,     True,      "audit_only",  True),
 ]
 
 # key, risk_level, sandbox_only, requires_human_gate, max_exec_min, max_recursion,
@@ -1202,6 +1204,27 @@ async def _raise_generate_execution_ceiling(cur) -> None:
         "UPDATE capability SET max_execution_minutes=15 "
         "WHERE `key`='generate' AND max_execution_minutes=5"
     )
+
+
+MIGRACION_MOTOR_TOPE_AL_CATALOGO_V1 = "motor_max_tokens_al_catalogo_v1"
+MOTORES_AL_TOPE_DEL_CATALOGO = ("kimi", "ada")
+
+
+async def _motor_max_tokens_al_catalogo_v1(cur) -> None:
+    """D1 de Fernando (spec 2026-09-17 §1 y §7 A): kimi y ada pasan a
+    motor.max_tokens=0 -- el tope efectivo es model.max_output_tokens del
+    catálogo (worker._limite_del_motor: 0 = sin tope propio). El seed usa
+    INSERT IGNORE, así que la tupla nueva sólo alcanza a bases nuevas; esto
+    corrige las existentes UNA vez (marcador): un ajuste posterior desde Admin
+    no se pisa al arrancar."""
+    await cur.execute("SELECT 1 FROM axioma_migracion_de_datos WHERE nombre = %s",
+                      (MIGRACION_MOTOR_TOPE_AL_CATALOGO_V1,))
+    if await cur.fetchone() is not None:
+        return
+    marcas = ", ".join(["%s"] * len(MOTORES_AL_TOPE_DEL_CATALOGO))
+    await cur.execute(f"UPDATE motor SET max_tokens = 0 WHERE `key` IN ({marcas})", MOTORES_AL_TOPE_DEL_CATALOGO)
+    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
+                      (MIGRACION_MOTOR_TOPE_AL_CATALOGO_V1,))
 
 
 async def _fix_anthropic_sonnet_alias(cur) -> None:
@@ -2332,6 +2355,7 @@ async def run_migrations():
             await _seed_file_tools_capabilities(cur)
             await _fix_file_write_gate_and_auditor(cur)
             await _raise_generate_execution_ceiling(cur)
+            await _motor_max_tokens_al_catalogo_v1(cur)
             # Después de TODAS las semillas de capability: las filas nuevas ya
             # entraron con su modo; las viejas se rellenan y la columna queda
             # VARCHAR(16) NOT NULL + CHECK. Una fila huérfana frena acá (ver

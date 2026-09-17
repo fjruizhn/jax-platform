@@ -63,7 +63,9 @@ def test_seed_kimi_y_ada_como_motor(client):
     by_key = {r[0]: r for r in rows}
     assert set(by_key) == {"kimi", "ada"}
     assert by_key["kimi"][1] == "http_openai_compat"
-    assert by_key["kimi"][2] == 8000
+    # D1 de Fernando (spec 2026-09-17): sin tope propio, manda el catálogo.
+    assert by_key["kimi"][2] == 0
+    assert by_key["ada"][2] == 0
     assert by_key["ada"][1] == "http_openai_compat"
 
 
