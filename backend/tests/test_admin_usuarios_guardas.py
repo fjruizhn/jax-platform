@@ -161,17 +161,14 @@ def test_cuenta_los_otros_superadmins_activos(client, usuarios):
 # ------------------------------------------- Step 4b: el hub cierra el WS
 
 class _SocketQueCierra:
-    """Stand-in de WebSocket que registra el cierre (y si el lock del hub
-    estaba tomado en ese momento)."""
+    """Stand-in de WebSocket que registra el cierre."""
 
-    def __init__(self, hub, falla=False):
+    def __init__(self, falla=False):
         self.application_state = type("_State", (), {"name": "CONNECTED"})()
-        self._hub, self._falla = hub, falla
+        self._falla = falla
         self.cerrado_con = None
-        self.lock_tomado_al_cerrar = None
 
     async def close(self, code=1000):
-        self.lock_tomado_al_cerrar = self._hub._lock.locked()
         if self._falla:
             raise RuntimeError("el socket ya estaba cerrado")
         self.cerrado_con = code
@@ -179,7 +176,7 @@ class _SocketQueCierra:
 
 async def test_close_user_cierra_todas_las_conexiones_del_usuario_con_4001_y_no_las_de_otro():
     hub = WebSocketHub()
-    a1, a2, b = _SocketQueCierra(hub), _SocketQueCierra(hub), _SocketQueCierra(hub)
+    a1, a2, b = _SocketQueCierra(), _SocketQueCierra(), _SocketQueCierra()
     await hub.connect("u-a", a1)
     await hub.connect("u-a", a2)
     await hub.connect("u-b", b)
@@ -191,14 +188,13 @@ async def test_close_user_cierra_todas_las_conexiones_del_usuario_con_4001_y_no_
     assert await hub.has_connections("u-a")
 
 
-async def test_close_user_cierra_fuera_del_lock_y_un_fallo_no_frena_a_las_demas():
+async def test_close_user_un_fallo_no_frena_a_las_demas():
     hub = WebSocketHub()
-    rota, sana = _SocketQueCierra(hub, falla=True), _SocketQueCierra(hub)
+    rota, sana = _SocketQueCierra(falla=True), _SocketQueCierra()
     await hub.connect("u-a", rota)
     await hub.connect("u-a", sana)
     assert await hub.close_user("u-a") == 1
     assert sana.cerrado_con == 4001
-    assert (rota.lock_tomado_al_cerrar, sana.lock_tomado_al_cerrar) == (False, False)
 
 
 async def test_close_user_de_un_usuario_sin_conexiones_no_hace_nada():

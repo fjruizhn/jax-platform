@@ -221,7 +221,7 @@ class JAXEngineState:
                 # para siempre.
                 # Sin try propio (Task 3, 2026-09-15, clase c del triage):
                 # release_pipeline es un set.discard sobre un defaultdict(set)
-                # bajo un asyncio.Lock (resource_manager.py) -- no puede lanzar
+                # (resource_manager.py) -- no puede lanzar
                 # Exception. El try que habia aca describia un riesgo que el
                 # codigo no tiene.
                 await resource_manager.release_pipeline(pipeline.tenant_id, pid)
