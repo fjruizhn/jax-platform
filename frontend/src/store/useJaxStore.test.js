@@ -161,6 +161,28 @@ describe('logout', () => {
     expect(useJaxStore.getState().avisoSesion).toBeNull()
   })
 
+  // Bloqueante 1 (revisión final, 2026-09-18): logout() vaciaba `messages`
+  // pero no `historial`. Escenario real: alguien cierra sesión, otro usuario
+  // entra en LA MISMA pestaña (no hay location.reload en el camino de login)
+  // y va a /historial -- vería nombres, estados, costos y causas del usuario
+  // anterior hasta que cargarHistorial() reemplace la lista (y si la petición
+  // falla, quedan ahí para siempre).
+  it('vacía historial: un usuario nuevo en la misma pestaña no ve la lista del anterior', async () => {
+    useJaxStore.setState({
+      historial: {
+        pipelines: [{ pipeline_id: 'p1', name: 'secreto del usuario anterior' }],
+        hasMore: true,
+        cargando: false,
+        error: false,
+      },
+    })
+    api.post.mockResolvedValue({ data: { ok: true } })
+    await useJaxStore.getState().logout()
+    expect(useJaxStore.getState().historial).toEqual({
+      pipelines: [], hasMore: false, cargando: false, error: false,
+    })
+  })
+
   it('si el pedido falla, limpia igual y no reintenta', async () => {
     api.post.mockRejectedValue(new Error('red caída'))
     await useJaxStore.getState().logout()

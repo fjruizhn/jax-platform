@@ -21,6 +21,7 @@ import api from '../api/client'
 import Historial from './Historial'
 import { I18nProvider } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
+import es from '../i18n/es.js'
 
 const INICIAL = useJaxStore.getState()
 
@@ -102,12 +103,47 @@ describe('Historial', () => {
     expect(celdaDuracion).toHaveTextContent('10.2s')
   })
 
-  it('costo_usd sale "desconocido" (limitación de esquema conocida, no se muestra como $0)', async () => {
+  // Menor 5 (revisión final, 2026-09-18): costo_usd null YA NO es "limitación
+  // de esquema conocida" -- desde la Task 7b (misma rama) es real cuando hay
+  // uso cargado por pipeline_id, y null sólo para pipelines viejos sin ese
+  // dato. El fixture (PIPELINES[0]) es uno de esos viejos.
+  it('costo_usd sale "desconocido" cuando es null (pipeline sin dato de costo, no se muestra como $0)', async () => {
     api.get.mockResolvedValue({ data: { pipelines: [PIPELINES[0]], has_more: false } })
     renderHistorial()
     const fila = (await screen.findByText('plan de leyes')).closest('tr')
     const celdaCosto = fila.querySelector('[data-campo="costo"]')
     expect(celdaCosto).toHaveTextContent('desconocido')
+  })
+
+  it('costo_usd real se muestra en dólares con seis decimales, no como "desconocido"', async () => {
+    api.get.mockResolvedValue({ data: { pipelines: [{ ...PIPELINES[0], costo_usd: 0.001234 }], has_more: false } })
+    renderHistorial()
+    const fila = (await screen.findByText('plan de leyes')).closest('tr')
+    const celdaCosto = fila.querySelector('[data-campo="costo"]')
+    expect(celdaCosto).toHaveTextContent('$0.001234')
+  })
+
+  // Menor 10 (revisión final, 2026-09-18): 's' y '$' salían escritos a mano
+  // en el componente (`${...}s`, `$${...}`) en vez de vivir en i18n --
+  // único lugar de la pantalla que rompía la regla de cero texto fuera de
+  // i18n (el detalle ya usaba detalleStepDuration/detalleTotalDuration).
+  it('la duración y el costo pasan por t.historialDuration/t.historialCost, no por un literal armado en el componente', async () => {
+    // Espiar la función del diccionario (no sólo comparar el texto renderizado):
+    // un literal hardcodeado en el componente puede coincidir por casualidad
+    // con lo que la función de i18n devolvería -- lo que prueba que el
+    // componente NO tiene el texto escrito a mano es que la llamó.
+    const spyDuracion = vi.spyOn(es, 'historialDuration')
+    const spyCosto = vi.spyOn(es, 'historialCost')
+    api.get.mockResolvedValue({
+      data: { pipelines: [{ ...PIPELINES[0], duracion_s: 10.2, costo_usd: 0.001234 }], has_more: false },
+    })
+    renderHistorial()
+    await screen.findByText('plan de leyes')
+
+    expect(spyDuracion).toHaveBeenCalledWith('10.2')
+    expect(spyCosto).toHaveBeenCalledWith('0.001234')
+    spyDuracion.mockRestore()
+    spyCosto.mockRestore()
   })
 
   it('sin pipelines, muestra el estado vacío', async () => {
@@ -206,6 +242,29 @@ describe('Historial', () => {
 
     expect(screen.getByTestId('ruta')).toHaveTextContent('/historial')
     expect(screen.queryByText('Detalle — plan de leyes')).not.toBeInTheDocument()
+  })
+
+  // Recomendado 3 (revisión final, 2026-09-18): los avisos de fin de pipeline
+  // (correo, Telegram) enlazan a /historial/:id, y el detalle se renderizaba
+  // DESPUÉS de la tabla completa -- con 600 pipelines había que bajar 50
+  // filas para ver el detalle al que el enlace mandaba. El Ruling 15 dice
+  // "un aviso que no lleva al resultado repite el problema con más pasos":
+  // técnicamente llevaba, en la práctica no. El detalle pasa a renderizarse
+  // ANTES de la tabla -- se ve sin scrollear con cualquier volumen, y la
+  // lista sigue "ahí debajo" (el comportamiento que los tests de arriba ya
+  // fijan, sin pantalla aparte).
+  it('el detalle se renderiza ANTES de la tabla, no después: no hace falta bajar para verlo', async () => {
+    api.get.mockImplementation((url) => {
+      if (url === '/pipelines') return Promise.resolve({ data: { pipelines: PIPELINES, has_more: false } })
+      if (url === '/pipelines/p1/results') return Promise.resolve({ data: RESULTADO_P1 })
+      return Promise.reject(new Error(`url inesperada: ${url}`))
+    })
+    renderHistorial('/historial/p1')
+    const detalle = await screen.findByText('Detalle — plan de leyes')
+    const filaDeLaLista = await screen.findByText('otro plan')
+
+    // eslint-disable-next-line no-bitwise
+    expect(detalle.compareDocumentPosition(filaDeLaLista) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('un pipelineId ajeno o inexistente (404 del backend) muestra un estado vacío decente, no rompe la pantalla', async () => {

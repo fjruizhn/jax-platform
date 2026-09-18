@@ -644,8 +644,22 @@ jobs:
             // "Ese pipeline no aparece en tu historial.", nunca el error genérico).
             // Vistos en rojo contra el código con estado interno (setSeleccionado).
             // Medido con vitest run: 822 passed, 0 fallidos, 84 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 822) {
-              console.error("PISO ROTO: se esperaban 822 tests de vitest CORRIDOS y 0 fallidos.");
+            // 822 -> 834 el 2026-09-18 (tanda final de arreglos de la revisión), +12:
+            // +6 en components/BottomBar/pipelineChain.test.js (sala limpia del árbitro:
+            //   ARBITRO_FACETA, arbitroViolations, seleccionIncluyeArbitro, y el default
+            //   de "audit" deja de ser thot -- Bloqueante A) + +2 en
+            //   components/BottomBar/PipelineModal.test.jsx (thot bloqueado como
+            //   productor, en cadena y en paralelo) + +3 en pages/Historial.test.jsx
+            //   (costo_usd real se muestra en dólares, duración/costo pasan por
+            //   t.historialDuration/t.historialCost -- menor 10 --, y el detalle se
+            //   renderiza ANTES de la tabla -- recomendado 3) + +1 en
+            //   components/historial/DetallePipeline.test.jsx (depends_on AUSENTE sale
+            //   "desconocido", no como un NO -- menor 4) + +1 en
+            //   store/useJaxStore.test.js (logout() vacía historial -- bloqueante 1).
+            // Vistos en rojo contra el código de antes de esta tanda. Medido con
+            // vitest run: 834 passed, 0 fallidos, 84 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 834) {
+              console.error("PISO ROTO: se esperaban 834 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1790,7 +1804,17 @@ jobs:
           #   (test_costo_usd_no_se_inventa_ni_con_un_registro_de_uso_parecido) se
           #   mantiene sin cambios y sigue en verde. Medido local contra jax_memory_test:
           #   2368 passed, 1 skipped, 0 fallidos.
-          PISO_PASSED = 2368
+          # 2368 -> 2372 el 2026-09-18 (tanda final de arreglos de la revisión): +4 tests
+          #   puros, ninguno toca la base (tests/test_pipeline_resource_release.py +3 --
+          #   _poll_one_pipeline con status "expired" y con el aviso reventando antes de
+          #   liberar el cupo del tenant -- y tests/test_cola_uso.py +1 -- una fila de
+          #   trece campos sin pipeline_id no cae a corruptos/). DERIVADO, no medido en
+          #   vivo contra jax_memory_test (este runner no tiene credenciales de DB):
+          #   verificado que ninguno de los 4 llama get_pool ni nada de db/, y que los 4
+          #   pasan igual bajo JAX_CI_NO_DB=1 (1598 -> 1602, medido ahí sí). Si el runner
+          #   real con DB da otro número, manda el runner -- que es exactamente lo que
+          #   este chequeo existe para atrapar.
+          PISO_PASSED = 2372
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2399,10 +2423,23 @@ jobs:
       # 1582 -> 1598 el 2026-09-18 (Task 8, aviso por correo al terminar un pipeline):
       # +16 con JAX_CI_NO_DB=1 medido contra este arbol (6 de los 14 tests nuevos de
       # tests/test_aviso_pipeline.py no tocan la DB y corren acá; los otros 8 se
-      # saltan solos por la Regla 1, ver conftest.py). El resto del delta es
-      # variacion normal de este runner sin DB frente al valor anterior, no
-      # atribuible a esta tarea -- medido en verde, no restado.
-      JAX_CI_MIN_PASSED: "1598"
+      # saltan solos por la Regla 1, ver conftest.py). CAUSA VERIFICADA (menor 6,
+      # revisión final 2026-09-18 -- el comentario anterior decia "variacion normal
+      # de este runner", sin medir): el delta propio de la Task 8 es +6 (sus 6 tests
+      # sin DB); los otros +10 son deuda preexistente -- el piso "1582" ya estaba
+      # stale ANTES de esta tarea, rastreado hasta el commit 26fb26c/PR#109, donde
+      # quedo sin actualizar. No hay tests que antes fallaran o se saltearan y ahora
+      # se consagren: el revisor midio los dos arboles (con y sin el commit de esta
+      # tarea) y confirmo el reparto 6+10.
+      # 1598 -> 1602 el 2026-09-18 (tanda final de arreglos de la revisión): +4 tests
+      # puros (ver el piso con DB, mas arriba, para el detalle de cuales). Medido con
+      # JAX_CI_NO_DB=1 /opt/jax/venv/bin/python -m pytest -q: 1602 passed, 771 skipped,
+      # 0 fallidos -- corrida completa, no solo los archivos tocados. La corrida
+      # tambien destapo test_no_fail_open_except.py roto por loadtest/historial_orquestar.py
+      # (4 except sin marcar '# fail-soft:', deuda del commit 1de2407 de la Task 10,
+      # anterior a esta tanda) -- arreglado en el mismo commit para que el piso de acá
+      # abajo sea real y no un numero sobre una suite roja.
+      JAX_CI_MIN_PASSED: "1602"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -15,6 +15,9 @@ import {
   facetOptionsFor,
   buildChainSteps,
   cleanroomViolations,
+  arbitroViolations,
+  seleccionIncluyeArbitro,
+  ARBITRO_FACETA,
   defaultFacetsByRole,
   DEFAULT_MODE_BY_LAYOUT,
 } from './pipelineChain'
@@ -114,7 +117,11 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
   const [mode, setMode] = useState(DEFAULT_MODE_BY_LAYOUT.chain)
   const [modeTouched, setModeTouched] = useState(false)
   const [chainFacets, setChainFacets] = useState(defaultFacetsByRole)
-  const [selected, setSelected] = useState(['hipatia', 'jekyll', 'thot'])
+  // 'thot' NO puede ir acá (fix bloqueante 2026-09-18): el servidor la
+  // reserva para el árbitro que agrega solo al final de cualquier plan de
+  // 2+ pasos, y rechaza (422) todo plan donde ya aparezca como productor --
+  // ver ARBITRO_FACETA en pipelineChain.js.
+  const [selected, setSelected] = useState(['hipatia', 'jekyll', 'ada'])
   const [capabilities, setCapabilities] = useState({})  // {capability_key: [motor_key, ...]}
   // T5: null = catálogo todavía no resolvió (fail-closed mientras carga);
   // {} tras un fetch exitoso (aunque vacío) es un estado válido, distinto
@@ -181,12 +188,21 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
 
   const facetLabel = (id) => FACET_OPTIONS.find(f => f.id === id)?.label || id
   const violations = cleanroomViolations(chainFacets)
+  // Sala limpia del árbitro (fix bloqueante 2026-09-18): INCONDICIONAL,
+  // aparte del cleanroom de arriba -- ver ARBITRO_FACETA en pipelineChain.js.
+  const arbitroBlockers = arbitroViolations(chainFacets)
   // Solo con el catálogo cargado: antes, las opciones de motor no existen y
   // todo parecería inválido.
   const invalidRoles = catalogReady
     ? CHAIN_ROLES.filter(r => !facetOptionsFor(r, capabilities).includes(chainFacets[r.id]))
     : []
-  const chainBlocked = violations.length > 0 || invalidRoles.length > 0
+  const chainBlocked = violations.length > 0 || arbitroBlockers.length > 0 || invalidRoles.length > 0
+  // Mismo bloqueo para paralelo: acá cada faceta elegida ES el productor,
+  // sin roles ni depends_on -- alcanza con mirar si la del árbitro está
+  // entre las elegidas.
+  const selectedIncludesArbitro = seleccionIncluyeArbitro(selected)
+  const parallelBlocked = selected.length === 0 || selectedIncludesArbitro
+  const submitBlocked = layout === 'chain' ? chainBlocked : parallelBlocked
 
   function armarCuerpo() {
     const steps = layout === 'chain'
@@ -219,7 +235,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
 
   async function handleSubmit() {
     if (!catalogReady || bloqueado || enviandoRef.current) return
-    if (layout === 'chain' ? chainBlocked : selected.length === 0) return
+    if (submitBlocked) return
     const body = armarCuerpo()
     setViolaciones([])
     setErrorEnvio(null)
@@ -344,6 +360,11 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
                 {t.chainCleanroomWarning(t.chainRoles[v.role], facetLabel(v.facet), t.chainRoles[v.dependsOnRole])}
               </p>
             ))}
+            {arbitroBlockers.map(v => (
+              <p key={`arbitro-${v.role}`} className="mt-2 text-[11px] text-peligro">
+                {t.chainArbitroWarning(t.chainRoles[v.role], facetLabel(v.facet))}
+              </p>
+            ))}
             {invalidRoles.map(r => (
               <p key={`invalid-${r.id}`} className="mt-2 text-[11px] text-peligro">
                 {t.chainInvalidFacet(t.chainRoles[r.id])}
@@ -414,6 +435,11 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
               )
             })}
           </div>
+          {selectedIncludesArbitro && (
+            <p className="mt-2 text-[11px] text-peligro">
+              {t.parallelArbitroWarning(facetLabel(ARBITRO_FACETA))}
+            </p>
+          )}
         </div>
         )}
 
@@ -450,7 +476,7 @@ export default function PipelineModal({ objective, onClose, onSubmit }) {
             onClick={handleSubmit}
             disabled={
               submitting || !catalogReady
-              || (layout === 'chain' ? chainBlocked : selected.length === 0)
+              || submitBlocked
             }
             className="flex-1 py-2 rounded-lg text-xs font-bold bg-accion hover:bg-accion-hover text-sobre-color transition-colors disabled:opacity-40"
           >

@@ -65,7 +65,9 @@ describe('PipelineModal -- cadena en línea', () => {
     expect(submitted.steps.map(s => s.capability)).toEqual([
       'research', 'design', 'critique', 'reconcile', 'generate', 'validate_consistency',
     ])
-    expect(submitted.steps.map(s => s.depends_on)).toEqual([[], [0], [0, 1], [1, 2], [3], [0, 2, 3, 4]])
+    // audit ya no depende de unify (paso 3, fix bloqueante 2026-09-18): ver
+    // el comentario de CHAIN_ROLES en pipelineChain.js.
+    expect(submitted.steps.map(s => s.depends_on)).toEqual([[], [0], [0, 1], [1, 2], [3], [0, 2, 4]])
     expect(submitted.max_steps).toBe(6)
     expect(submitted.steps[4]).toMatchObject({ facet: 'kimi', motor: 'kimi' })
     submitted.steps.forEach(s => expect(s).not.toHaveProperty('timeout_seconds'))
@@ -145,9 +147,28 @@ describe('PipelineModal -- cadena en línea', () => {
     await waitFor(() => expect(api.get).toHaveBeenCalled())
     await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
 
-    fireEvent.change(screen.getByLabelText('Producir'), { target: { value: 'thot' } })
+    // El auditor por defecto es ada (2026-09-18: thot quedó reservado al
+    // árbitro, ver el describe de abajo) -- para reproducir la colisión
+    // vieja de cleanroom hace falta que Producir use la MISMA faceta.
+    fireEvent.change(screen.getByLabelText('Producir'), { target: { value: 'ada' } })
 
     expect(screen.getByText(/no puede auditar lo que produjo/i)).toBeInTheDocument()
+    expect(screen.getByText(/Planificar y ejecutar/i)).toBeDisabled()
+  })
+
+  it('la faceta árbitro (thot) no puede ser productora: avisa incondicionalmente y no deja enviar', async () => {
+    // Bloqueante 2026-09-18: el servidor agrega thot SOLO, al final, como
+    // árbitro -- si ya aparece como productor en cualquier rol, rechaza el
+    // plan entero (422), sin importar capability ni depends_on. 'Investigar'
+    // no audita nada y no depende de nadie: el cleanroom viejo lo dejaría
+    // pasar. Esta regla no.
+    renderModal({}, { layout: 'chain' })
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+
+    fireEvent.change(screen.getByLabelText('Investigar'), { target: { value: 'thot' } })
+
+    expect(screen.getByText(/está reservada para el árbitro/i)).toBeInTheDocument()
     expect(screen.getByText(/Planificar y ejecutar/i)).toBeDisabled()
   })
 
@@ -208,15 +229,29 @@ describe('PipelineModal -- picker de motor (R4 + T5)', () => {
     })
   })
 
-  it('no muestra select de motor para facetas no gobernadas (thot, seleccionado por default)', async () => {
+  it('no muestra select de motor para facetas no gobernadas (ada, seleccionado por default)', async () => {
     renderModal()
 
-    // Selección inicial (hipatia/jekyll/thot) no incluye ninguna faceta
+    // Selección inicial (hipatia/jekyll/ada -- 2026-09-18: ya no thot, ver
+    // el describe de la sala limpia del árbitro) no incluye ninguna faceta
     // gobernada -- ningun <select> debe aparecer aunque el catalogo ya
     // haya cargado.
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/motors/capabilities'))
 
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+  })
+
+  it('en paralelo, elegir la faceta árbitro (thot) avisa y no deja enviar', async () => {
+    // Mismo bloqueante que en cadena (ver describe de arriba), pero en
+    // paralelo no hay roles ni depends_on: la faceta elegida ES el
+    // productor directo, así que alcanza con marcarla.
+    renderModal()
+    await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
+
+    fireEvent.click(screen.getByText(/Auditoría crítica/i))  // desc de thot
+
+    expect(screen.getByText(/está reservada para el árbitro/i)).toBeInTheDocument()
+    expect(screen.getByText(/Planificar y ejecutar/i)).toBeDisabled()
   })
 
   // T5: el bug real encontrado en la verificación de T1-T3 -- un step

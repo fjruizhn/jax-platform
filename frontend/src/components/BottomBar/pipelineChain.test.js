@@ -6,6 +6,9 @@ import {
   buildChainSteps,
   cleanroomViolations,
   defaultFacetsByRole,
+  ARBITRO_FACETA,
+  arbitroViolations,
+  seleccionIncluyeArbitro,
 } from './pipelineChain'
 import es from '../../i18n/es.js'
 import en from '../../i18n/en.js'
@@ -39,8 +42,12 @@ describe('pipelineChain -- la cadena en línea', () => {
     // ella medía contra lo que el plan DECLARABA haber aceptado, no contra lo
     // que la crítica dijo (E2E b2d87971: "no se proporcionó el texto de la
     // crítica original").
+    // audit YA NO depende de unify (paso 3, fix bloqueante 2026-09-18): el
+    // catálogo real de capability_motor solo admite {thot, ada} para
+    // validate_consistency, thot está prohibido (sala limpia del árbitro) y
+    // 'ada' es la misma faceta que unify -- ver el comentario de CHAIN_ROLES.
     expect(CHAIN_ROLES.map(r => r.dependsOn)).toEqual([
-      [], [0], [0, 1], [1, 2], [3], [0, 2, 3, 4],
+      [], [0], [0, 1], [1, 2], [3], [0, 2, 4],
     ])
     CHAIN_ROLES.forEach((r, i) => r.dependsOn.forEach(d => expect(d).toBeLessThan(i)))
   })
@@ -82,22 +89,30 @@ describe('pipelineChain -- la cadena en línea', () => {
   })
 
   it('avisa si el auditor es la misma faceta que produjo algo que audita', () => {
-    const facets = { ...defaultFacetsByRole(), produce: 'thot' }
+    // audit depende de produce (índice 4): si se le asigna a mano la MISMA
+    // faceta que produce, colisiona -- sin tocar produce, que ya no puede
+    // ser 'thot' de prueba porque 'thot' está prohibido categóricamente
+    // (ver describe de abajo, no es un caso de cleanroom "normal").
+    const facets = { ...defaultFacetsByRole(), audit: 'kimi' }
     const v = cleanroomViolations(facets)
-    expect(v).toEqual([{ role: 'audit', facet: 'thot', dependsOnRole: 'produce' }])
+    expect(v).toEqual([{ role: 'audit', facet: 'kimi', dependsOnRole: 'produce' }])
   })
 
-  it('por defecto critica jekyll y audita thot: el auditor ya no puede ser quien criticó', () => {
+  it('por defecto critica jekyll y audita ada: thot queda reservado al árbitro que agrega el servidor', () => {
     // Al depender de la crítica, crítica y auditoría no pueden compartir
-    // faceta (auditoría independiente). thot queda de auditor.
+    // faceta (auditoría independiente). 'thot' está prohibido por la sala
+    // limpia del árbitro (fix bloqueante 2026-09-18) y el catálogo real de
+    // capability_motor solo admite {thot, ada} para validate_consistency
+    // (ver CAPS arriba) -- 'ada' es la única opción, y por eso "audit" ya no
+    // depende de "unify" (misma faceta 'ada'; ver CHAIN_ROLES).
     const d = defaultFacetsByRole()
     expect(d.critique).toBe('jekyll')
-    expect(d.audit).toBe('thot')
+    expect(d.audit).toBe('ada')
   })
 
   it('si crítica y auditoría son la misma faceta, avisa', () => {
-    const v = cleanroomViolations({ ...defaultFacetsByRole(), critique: 'thot' })
-    expect(v).toEqual([{ role: 'audit', facet: 'thot', dependsOnRole: 'critique' }])
+    const v = cleanroomViolations({ ...defaultFacetsByRole(), audit: 'jekyll' })
+    expect(v).toEqual([{ role: 'audit', facet: 'jekyll', dependsOnRole: 'critique' }])
   })
 
   it('las instrucciones existen en los dos idiomas para cada rol', () => {
@@ -121,6 +136,39 @@ describe('pipelineChain -- la cadena en línea', () => {
     // Mide contra la crítica misma, no contra lo que el plan dice de ella.
     expect(es.chainInstructions.audit).toMatch(/crítica original/i)
     expect(en.chainInstructions.audit).toMatch(/original critique/i)
+  })
+})
+
+describe('sala limpia del árbitro (ARBITRO_FACETA, bloqueante 2026-09-18)', () => {
+  it('ARBITRO_FACETA es thot', () => {
+    expect(ARBITRO_FACETA).toBe('thot')
+  })
+
+  it('la cadena por defecto no usa la faceta árbitro en ningún rol', () => {
+    expect(arbitroViolations(defaultFacetsByRole())).toEqual([])
+  })
+
+  it('avisa INCONDICIONALMENTE si un rol usa la faceta árbitro como productor, sin importar capability ni dependencia', () => {
+    // 'research' no depende de nada y su capability no es de auditoría --
+    // el cleanroom viejo lo dejaría pasar. La regla nueva no mira ninguna
+    // de las dos cosas: alcanza con que la faceta sea la del árbitro.
+    const facets = { ...defaultFacetsByRole(), research: 'thot' }
+    expect(cleanroomViolations(facets)).toEqual([])  // el cleanroom viejo no lo ve
+    expect(arbitroViolations(facets)).toEqual([{ role: 'research', facet: 'thot' }])
+  })
+
+  it('marca cada rol que use la faceta árbitro, no solo el primero', () => {
+    const facets = { ...defaultFacetsByRole(), plan: 'thot', produce: 'thot' }
+    expect(arbitroViolations(facets)).toEqual([
+      { role: 'plan', facet: 'thot' },
+      { role: 'produce', facet: 'thot' },
+    ])
+  })
+
+  it('seleccionIncluyeArbitro: true si la faceta árbitro está entre las elegidas (paralelo)', () => {
+    expect(seleccionIncluyeArbitro(['hipatia', 'jekyll', 'thot'])).toBe(true)
+    expect(seleccionIncluyeArbitro(['hipatia', 'jekyll', 'jax_local'])).toBe(false)
+    expect(seleccionIncluyeArbitro([])).toBe(false)
   })
 })
 

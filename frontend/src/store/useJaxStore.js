@@ -279,7 +279,16 @@ export const useJaxStore = create((set, get) => {
         // sin sesión viva en el servidor o sin red: igual se sale localmente
       }
       _revocarObjectURLsDeAdjuntos(get().messages)
-      set({ token: null, user: null, messages: [], _pipelineCompletedShown: new Set(), avisoSesion: null, saliendo: null })
+      set({
+        token: null, user: null, messages: [], _pipelineCompletedShown: new Set(),
+        avisoSesion: null, saliendo: null,
+        // Bloqueante 1 (revisión final, 2026-09-18): faltaba. Sin esto, otro
+        // usuario que entra en la MISMA pestaña (no hay location.reload en el
+        // camino de login) y va a /historial veía nombres, estados, costos y
+        // causas del usuario anterior hasta que cargarHistorial() reemplazara
+        // la lista -- y si esa petición fallaba, quedaban ahí para siempre.
+        historial: { pipelines: [], hasMore: false, cargando: false, error: false },
+      })
       bumpSessionEpoch()
     })()
     set({ saliendo: promesa })

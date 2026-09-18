@@ -29,6 +29,15 @@ _JACOBS_STATUS_MAP = {
     "failed":      "failed",
     "interrupted": "waiting_gate",
     "aborted":     "failed",
+    # Importante B (revisión final, 2026-09-18): faltaba -- .get(jacobs_status,
+    # "running") dejaba un pipeline expired (jacobs/reaper.py, T4 2026-08-19)
+    # mapeado a "running" para siempre. El poller nunca entraba al `if
+    # updated.status in ("completed", "failed")`: remove_pipeline() no
+    # corría, el cupo del tenant quedaba fugado para siempre, y no había
+    # aviso por correo/Telegram -- justo el pipeline que murió solo, que es
+    # el caso que nadie mira. Mismo trato que "aborted": terminó sin éxito,
+    # no por decisión humana explícita, pero terminó.
+    "expired":     "failed",
 }
 
 _STEP_STATUS_MAP = {
@@ -231,12 +240,6 @@ class JAXEngineState:
                 await event_bus.publish(gate_event)
 
             if updated.status in ("completed", "failed"):
-                # Task 8 (2026-09-18): aviso por correo al dueño. Síncrona y
-                # no bloqueante -- dispara su propia Task y suelta el
-                # control ya mismo (ver aviso_pipeline.py); un SMTP lento no
-                # puede frenar este tick ni los de las demás pipelines.
-                aviso_pipeline.encolar_aviso_fin_pipeline(
-                    pid, pipeline.tenant_id, updated.user_id, updated.status, updated.name)
                 self.remove_pipeline(pid)
                 # cancel_pipeline() ya liberaba el slot del tenant; una
                 # pipeline que termina SOLA (no cancelada) nunca lo hacía,
@@ -248,8 +251,27 @@ class JAXEngineState:
                 # Exception. El try que habia aca describia un riesgo que el
                 # codigo no tiene.
                 await resource_manager.release_pipeline(pipeline.tenant_id, pid)
+                # Bloqueante 2 (revisión final, 2026-09-18): este aviso vivía
+                # ANTES de remove_pipeline/release_pipeline, dentro del MISMO
+                # except Exception: pass de abajo. encolar_aviso_fin_pipeline
+                # SÍ puede lanzar (asyncio.create_task sin loop corriendo,
+                # una excepción de _TAREAS_EN_VUELO.add) -- a diferencia de
+                # release_pipeline, que el comentario de arriba describe
+                # correctamente. Si lanzaba ahí, el except se lo tragaba
+                # ANTES de liberar el cupo: el pipeline nunca soltaba su
+                # lugar, el defecto exacto que este mismo bloque ya había
+                # arreglado una vez (Task 3, 2026-09-15). Movido a DESPUÉS de
+                # liberar el cupo: si esto lanza, el cupo ya es libre y el
+                # fail-soft de abajo solo pierde el aviso de esta corrida, no
+                # el cupo del tenant.
+                # Task 8 (2026-09-18): aviso por correo al dueño. Síncrona y
+                # no bloqueante -- dispara su propia Task y suelta el
+                # control ya mismo (ver aviso_pipeline.py); un SMTP lento no
+                # puede frenar este tick ni los de las demás pipelines.
+                aviso_pipeline.encolar_aviso_fin_pipeline(
+                    pid, pipeline.tenant_id, updated.user_id, updated.status, updated.name)
 
-        except Exception:  # fail-soft: cubre fetch/parse HTTP de UNA pipeline en _poll_one_pipeline; un fallo transitorio no debe tumbar el polling de las demás pipelines activas en este ciclo — la liberación de cupo de arriba es en memoria y no lanza (resource_manager.py)
+        except Exception:  # fail-soft: cubre fetch/parse HTTP de UNA pipeline en _poll_one_pipeline; un fallo transitorio no debe tumbar el polling de las demás pipelines activas en este ciclo — la liberación de cupo de arriba es en memoria y no lanza (resource_manager.py), y ahora corre ANTES del aviso (bloqueante 2, 2026-09-18)
             pass
 
     def start_background_tasks(self):

@@ -348,6 +348,36 @@ async def test_un_archivo_de_doce_campos_va_a_corruptos_nombrando_los_que_faltan
     assert "status" in caplog.text and "job_id" in caplog.text
 
 
+async def test_una_fila_de_trece_campos_sin_pipeline_id_no_es_corrupta_y_pipeline_id_sale_none(
+    respaldo_aislado, caplog
+):
+    """Bloqueante C (revisión final, 2026-09-18): `pipeline_id` se sumó al
+    contrato en ESTA ronda (Task 7b). Un archivo encolado por una copia VIEJA
+    del módulo -- por ejemplo durante una caída de la base ANTES de que este
+    deploy corriera -- no tiene esa clave, y no es lo mismo que un archivo
+    roto: el dato en sí (el cobro) está completo, sólo falta el campo NUEVO.
+    Perder la traza (status/job_id, decisión de Fernando 2026-09-15, opción
+    (b)) es una cosa; perder el IMPORTE de una fila entera (cost_usd,
+    tokens_in/out) por un campo que ni existía cuando se escribió es otra --
+    eso es plata real que se iría a `corruptos/` en vez de a `axioma_usage`.
+    """
+    respaldo_aislado.mkdir(parents=True)
+    trece = {c: FILA.get(c) for c in cola.CAMPOS if c != "pipeline_id"}
+    trece["spool_id"] = "11111111-2222-3333-4444-555555555555"
+    trece["created_at"] = "2026-09-15T10:00:00.000+00:00"
+    (respaldo_aislado / f"{trece['spool_id']}.json").write_text(
+        json.dumps(trece), encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        filas = await cola.leer_pendientes(10)
+
+    assert cola.estadisticas()["corruptos"] == 0
+    assert [f["spool_id"] for f in filas] == [trece["spool_id"]]
+    assert filas[0].get("pipeline_id") is None
+    directorio_corruptos = respaldo_aislado / cola.SUBDIRECTORIO_CORRUPTOS
+    assert not directorio_corruptos.exists() or list(directorio_corruptos.iterdir()) == []
+
+
 async def test_un_json_valido_sin_spool_id_es_corrupto(respaldo_aislado):
     respaldo_aislado.mkdir(parents=True)
     (respaldo_aislado / "sin-id.json").write_text(json.dumps({"facet": "hyde"}), "utf-8")

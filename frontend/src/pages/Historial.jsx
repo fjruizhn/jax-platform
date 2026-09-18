@@ -55,6 +55,23 @@ export default function Historial() {
           </Link>
         </div>
 
+        {/* Recomendado 3 (revisión final, 2026-09-18): el detalle va ANTES de
+            la lista, no después. Los avisos de fin de pipeline (correo,
+            Telegram) enlazan a /historial/:id -- con la lista completa
+            arriba, había que bajar 50 filas (o 600) para ver el resultado al
+            que el enlace mandaba. La lista sigue "ahí debajo", como ya fijan
+            los tests de esta pantalla: no es una pantalla aparte, sólo
+            cambia el orden. */}
+        {pipelineId && (
+          <div className="mb-6">
+            <DetallePipeline
+              pipelineId={pipelineId}
+              nombre={location.state?.name}
+              onClose={() => navigate('/historial')}
+            />
+          </div>
+        )}
+
         {error && (
           <div className="mb-4 flex items-center gap-3">
             <AlertaError className="text-sm">{t.historialError}</AlertaError>
@@ -95,10 +112,10 @@ export default function Historial() {
                       {typeof p.created_at === 'number' ? new Date(p.created_at * 1000).toLocaleString(localeFor(lang)) : '—'}
                     </td>
                     <td data-campo="duracion" className="px-4 py-3 text-xs text-texto">
-                      {typeof p.duracion_s === 'number' ? `${p.duracion_s.toFixed(1)}s` : t.historialUnknown}
+                      {typeof p.duracion_s === 'number' ? t.historialDuration(p.duracion_s.toFixed(1)) : t.historialUnknown}
                     </td>
                     <td data-campo="costo" className="px-4 py-3 text-xs text-texto-tenue">
-                      {typeof p.costo_usd === 'number' ? `$${p.costo_usd.toFixed(6)}` : t.historialUnknown}
+                      {typeof p.costo_usd === 'number' ? t.historialCost(p.costo_usd.toFixed(6)) : t.historialUnknown}
                     </td>
                     <td className="px-4 py-3 text-xs text-texto-tenue">{p.causa ? textoDeCausa(t, p.causa) : '—'}</td>
                     <td className="px-4 py-3 text-right">
@@ -128,14 +145,6 @@ export default function Historial() {
               {cargando ? t.historialLoadingMore : t.historialLoadMore}
             </button>
           </div>
-        )}
-
-        {pipelineId && (
-          <DetallePipeline
-            pipelineId={pipelineId}
-            nombre={location.state?.name}
-            onClose={() => navigate('/historial')}
-          />
         )}
       </div>
     </div>

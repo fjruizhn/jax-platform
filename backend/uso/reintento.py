@@ -122,8 +122,11 @@ _CODIGOS_DE_RECHAZO_DE_DATO = frozenset({
 #: acoplado entre jax y jax-platform, para siempre.
 _intentos: dict[str, int] = {}
 
-#: Las catorce columnas del INSERT, en el orden de `cola.CAMPOS` menos `origen`
-#: (Task 7b, 2026-09-18: se suma `pipeline_id`).
+#: Las trece columnas del INSERT, en el orden de `cola.CAMPOS` menos `origen`
+#: (Task 7b, 2026-09-18: se suma `pipeline_id`; las catorce de `cola.CAMPOS`
+#: menos `origen`, que no se inserta -- identifica al proceso que depositó,
+#: no al gasto. Menor 7, revisión final 2026-09-18: el comentario decía
+#: "catorce" y contaba origen de más; la tupla de abajo siempre tuvo trece).
 COLUMNAS = (
     "spool_id", "created_at", "tenant_id", "user_id", "facet", "model",
     "tokens_in", "tokens_out", "cost_usd", "request_type", "status", "job_id",

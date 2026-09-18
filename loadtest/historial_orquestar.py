@@ -172,7 +172,7 @@ def esperar_http_ok(url: str, timeout: float = 40.0) -> httpx.Response:
             r = httpx.get(url, timeout=3.0)
             if r.status_code < 500:
                 return r
-        except Exception as e:  # noqa: BLE001 -- reintento hasta el timeout
+        except Exception as e:  # fail-soft: sonda de arranque, reintenta hasta el timeout -- el error se guarda y se reporta en el RuntimeError si nunca responde
             ultimo = e
         time.sleep(0.3)
     raise RuntimeError(f"{url} no respondió 2xx/4xx en {timeout}s (último error: {ultimo})")
@@ -186,7 +186,7 @@ async def _una(cliente: httpx.AsyncClient, metodo: str, url: str, headers: dict)
         if r.status_code >= 500:
             return None, True, r.status_code, 0
         return ms, False, r.status_code, len(r.content)
-    except Exception:
+    except Exception:  # fail-soft: una petición de la carga que se cae (red, timeout) cuenta como error del turno y no debe tumbar el resto de la corrida
         return None, True, None, 0
 
 
@@ -341,7 +341,7 @@ async def main_async() -> None:
                 continue
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except ProcessLookupError:
+            except ProcessLookupError:  # fail-soft: el grupo de procesos ya no existe (terminó solo) -- nada que matar
                 pass
         for proc in (proc_backend, proc_jacobs):
             if proc is None:
@@ -351,7 +351,7 @@ async def main_async() -> None:
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except ProcessLookupError:
+                except ProcessLookupError:  # fail-soft: el SIGTERM de arriba ya lo tumbó entre el timeout y este SIGKILL -- nada que matar
                     pass
         log_jacobs.close()
         log_backend.close()

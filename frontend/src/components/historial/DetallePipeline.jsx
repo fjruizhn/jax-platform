@@ -37,9 +37,14 @@ function Paso({ step, t }) {
   // un decimal siempre, mismo criterio que StepCard.jsx.
   const duracion = typeof step.duration_seconds === 'number'
     ? t.detalleStepDuration(step.duration_seconds.toFixed(1)) : t.detalleStepDurationUnknown
-  const dependeTexto = Array.isArray(step.depends_on) && step.depends_on.length > 0
-    ? t.detalleStepDependsOn(step.depends_on.map((i) => t.detalleStepNumber(i + 1)).join(', '))
-    : t.detalleStepDependsOnNone
+  // Menor 4 (revisión final, 2026-09-18): `[]` (paralelo explícito, el plan
+  // LO DECIDIÓ) y ausente (paso de antes de que la columna existiera, "no
+  // sé") ya no comparten texto -- sólo `[]` afirma el NO.
+  const dependeTexto = !Array.isArray(step.depends_on)
+    ? t.detalleStepDependsOnUnknown
+    : step.depends_on.length > 0
+      ? t.detalleStepDependsOn(step.depends_on.map((i) => t.detalleStepNumber(i + 1)).join(', '))
+      : t.detalleStepDependsOnNone
 
   return (
     <li className="rounded-lg border border-borde bg-hundido p-3">

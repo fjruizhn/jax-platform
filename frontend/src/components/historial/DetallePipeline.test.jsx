@@ -120,6 +120,22 @@ describe('DetallePipeline', () => {
     expect(screen.getByText('Depende de: Paso 1')).toBeInTheDocument()
   })
 
+  // Menor 4 (revisión final, 2026-09-18): un paso de ANTES de que la columna
+  // `depends_on` existiera (store.py:1070-1075, agregada Task 1 de esta
+  // ronda) no trae la clave -- `undefined`, no `[]`. `[]` es "paralelo
+  // explícito" (el plan LO DECIDIÓ así); ausente es "no sé". Antes las dos
+  // caían en el mismo texto ("No depende de otro paso"), afirmando un NO
+  // sobre un dato que no existe -- el único campo del detalle que hacía
+  // eso: modelo_real/costo_usd ausentes ya dicen "desconocido".
+  it('depends_on AUSENTE (paso viejo, sin la columna) se muestra "desconocido", no como un NO', async () => {
+    const { depends_on, ...pasoSinDependsOn } = RESULTADO.steps[0]
+    api.get.mockResolvedValue({ data: { ...RESULTADO, steps: [pasoSinDependsOn] } })
+    renderDetalle()
+    await screen.findByText('thot')
+    expect(screen.queryByText('No depende de otro paso')).not.toBeInTheDocument()
+    expect(screen.getByText('Dependencias desconocidas')).toBeInTheDocument()
+  })
+
   it('el bloque del prompt y del resultado arrancan colapsados (details cerrado)', async () => {
     api.get.mockResolvedValue({ data: RESULTADO })
     const { container } = renderDetalle()

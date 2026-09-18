@@ -270,6 +270,8 @@ export default {
   historialColCost: 'Cost',
   historialColCause: 'Cause',
   historialUnknown: 'unknown',
+  historialDuration: (secs) => `${secs}s`,
+  historialCost: (usd) => `$${usd}`,
   historialLoadMore: 'Load more',
   historialLoadingMore: 'Loading more…',
   historialViewDetail: 'View detail',
@@ -295,6 +297,7 @@ export default {
   detalleStepDurationUnknown: 'unknown duration',
   detalleStepDependsOn: (pasos) => `Depends on: ${pasos}`,
   detalleStepDependsOnNone: "Doesn't depend on another step",
+  detalleStepDependsOnUnknown: 'Dependencies unknown',
   detalleStepNumber: (n) => `Step ${n}`,
 
   stepStatusLabels: {
@@ -385,6 +388,10 @@ export default {
   },
   chainCleanroomWarning: (role, facet, depRole) =>
     `${role}: ${facet} cannot audit what it produced in “${depRole}”. Pick another facet.`,
+  chainArbitroWarning: (role, facet) =>
+    `${role}: ${facet} is reserved for the arbiter Jacobs appends on its own at the end of the plan — it can't also be a producer. Pick another facet.`,
+  parallelArbitroWarning: (facet) =>
+    `${facet} is reserved for the arbiter Jacobs appends on its own at the end of the plan — it can't be picked as a producer. Uncheck it to submit.`,
   chainInvalidFacet: (role) => `${role}: the selected facet is not allowed for this step by the catalog.`,
   // Instructions each model receives. They follow the interface language.
   chainInstructions: {
