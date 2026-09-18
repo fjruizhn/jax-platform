@@ -55,8 +55,13 @@ SUBDIRECTORIO_CORRUPTOS = "corruptos"
 CAMPOS = (
     "spool_id", "created_at", "tenant_id", "user_id", "facet", "model",
     "tokens_in", "tokens_out", "cost_usd", "request_type", "origen",
-    "status", "job_id",
+    "status", "job_id", "pipeline_id",
 )
+#: Task 7b (2026-09-18): `pipeline_id` se suma al final -- lo llenan los DOS
+#: escritores de jax cuando el uso viene de un pipeline (jacobs/usage_writer.py,
+#: las_manos/motor_registry/usage_writer.py), None cuando no. Sin esto, una
+#: fila recuperada del respaldo entra a `axioma_usage` sin poder sumarse al
+#: costo de ningún pipeline en api/pipelines.py::list_pipelines().
 #: `spool_id` y `created_at` los completa el módulo si el llamador no los trae;
 #: `status` y `job_id` son opcionales PARA EL LLAMADOR (sólo `motor_registry`
 #: los tiene) y `_normalizar` los deja en `None`. El resto son obligatorios.
@@ -68,7 +73,7 @@ CAMPOS = (
 #: la puede emparejar: se recupera el cobro y se pierde la trazabilidad.
 CAMPOS_OBLIGATORIOS = tuple(
     c for c in CAMPOS
-    if c not in ("spool_id", "created_at", "status", "job_id")
+    if c not in ("spool_id", "created_at", "status", "job_id", "pipeline_id")
 )
 ORIGENES = frozenset({"platform", "jacobs", "motor_registry"})
 
@@ -194,11 +199,11 @@ def _ahora_iso() -> str:
 
 
 def _normalizar(fila) -> dict:
-    """Devuelve la fila con los trece campos del contrato, o lanza ValueError.
+    """Devuelve la fila con los catorce campos del contrato, o lanza ValueError.
 
     Los que el llamador no trae quedan en `None` por la comprensión sobre
-    `CAMPOS` de más abajo: hoy eso alcanza para `status` y `job_id`, que sólo
-    tiene `motor_registry`.
+    `CAMPOS` de más abajo: hoy eso alcanza para `status`, `job_id` y
+    `pipeline_id`, que no todos los llamadores tienen.
     """
     if not isinstance(fila, dict):
         raise ValueError(f"la fila no es un diccionario: {type(fila).__name__}")
@@ -218,16 +223,39 @@ def _normalizar(fila) -> dict:
     return normalizada
 
 
+#: Campos que se sumaron al contrato DESPUÉS de que el formato original ya
+#: tenía escritores en producción -- así que un archivo que ya estaba en el
+#: respaldo cuando el campo se agregó puede no traerlo, y eso no es lo mismo
+#: que un archivo roto. Bloqueante C (revisión final, 2026-09-18): antes,
+#: `_motivo_de_corrupcion` exigía los CATORCE por igual (mismo trato que
+#: `status`/`job_id`, que si faltan SÍ son fail-closed a propósito -- ver
+#: abajo), así que una fila de trece campos encolada por una caída de la base
+#: ANTES de desplegar Task 7b (que sumó `pipeline_id`) caía a `corruptos/` al
+#: drenar DESPUÉS del deploy. Perder la traza (status/job_id, decisión de
+#: Fernando 2026-09-15, opción (b)) es un límite conocido y aceptado; perder
+#: el IMPORTE de una fila completa (cost_usd, tokens_in/out) por un campo que
+#: ni existía cuando se escribió es otra cosa -- eso es plata real, y es lo
+#: que dispara toda esta ronda ("hemos botado mucho dinero"). Ausente acá,
+#: sale en `None` (ver `_leer_lote`/`reintento._valores`, que ya usan `.get`).
+CAMPOS_QUE_PUEDEN_FALTAR_EN_FILAS_VIEJAS = frozenset({"pipeline_id"})
+
+
 def _motivo_de_corrupcion(datos) -> str | None:
     if not isinstance(datos, dict):
         return f"el contenido no es un objeto JSON ({type(datos).__name__})"
-    # Se exigen los TRECE, no sólo los obligatorios del llamador, y es a
-    # propósito: fail-closed. Un archivo escrito por una copia VIEJA del módulo
-    # (once campos, sin `status`/`job_id`) cae en `corruptos/` en vez de entrar
-    # a medias -- entraría con esas dos columnas en NULL y sin manera de saber,
-    # después, que faltaban. El que encola completa el archivo; el que drena
-    # exige el archivo completo.
-    faltantes = [c for c in CAMPOS if c not in datos]
+    # Se exigen los del contrato ACTUAL menos los de
+    # CAMPOS_QUE_PUEDEN_FALTAR_EN_FILAS_VIEJAS, no sólo los obligatorios del
+    # llamador, y es a propósito: fail-closed. Un archivo escrito por una
+    # copia VIEJA del módulo de ANTES de que `status`/`job_id` existieran cae
+    # en `corruptos/` en vez de entrar a medias -- entraría con esas dos
+    # columnas en NULL y sin manera de saber, después, que faltaban. El que
+    # encola completa el archivo con lo que el contrato de SU version tenía;
+    # el que drena exige el archivo completo salvo los campos declarados
+    # arriba como agregados después.
+    faltantes = [
+        c for c in CAMPOS
+        if c not in datos and c not in CAMPOS_QUE_PUEDEN_FALTAR_EN_FILAS_VIEJAS
+    ]
     if faltantes:
         return f"faltan campos del contrato: {', '.join(faltantes)}"
     if not _id_seguro(datos.get("spool_id")):

@@ -253,6 +253,64 @@ export default {
   pipelineSources: 'Sources',
   pipelineNoResult: '_(no result)_',
 
+  // Pipeline history (Task 9, 2026-09-18): its own screen to see a
+  // pipeline's result after the chat makes it scroll away for good -- name,
+  // status, when, how long it took, and per step the EXACT prompt, the REAL
+  // model, and which steps it depended on.
+  historialTitle: 'Pipeline history',
+  historialBack: (nombre) => `Back to ${nombre}`,
+  historialLoading: 'Loading…',
+  historialError: 'Could not load the history. Try again.',
+  historialRetry: 'Retry',
+  historialEmpty: "You haven't run any pipelines yet.",
+  historialColName: 'Name',
+  historialColStatus: 'Status',
+  historialColCreated: 'Created',
+  historialColDuration: 'Duration',
+  historialColCost: 'Cost',
+  historialColCause: 'Cause',
+  historialUnknown: 'unknown',
+  historialDuration: (secs) => `${secs}s`,
+  historialCost: (usd) => `$${usd}`,
+  historialLoadMore: 'Load more',
+  historialLoadingMore: 'Loading more…',
+  historialViewDetail: 'View detail',
+  historialCloseDetail: 'Close detail',
+
+  detalleTitle: (nombre) => `Detail — ${nombre}`,
+  detalleLoading: 'Loading detail…',
+  detalleError: "Could not load this pipeline's detail.",
+  // Fix round 1 (2026-09-18): the backend returns 404 ON PURPOSE for a
+  // non-owner (so it doesn't confirm the pipeline_id exists) -- same text
+  // for "doesn't exist" and "belongs to someone else", never "not yours".
+  detalleNotFound: "That pipeline isn't in your history.",
+  detalleTotalDuration: (secs) => `Total duration: ${secs}s`,
+  detalleTotalDurationUnknown: 'Total duration: unknown',
+  detalleStepPrompt: 'Prompt',
+  detalleStepPromptEmpty: '(no prompt)',
+  detalleStepModel: 'Model',
+  detalleStepModelUnknown: 'unknown',
+  detalleStepResult: 'Result',
+  detalleStepResultEmpty: '(no result)',
+  detalleStepResultUnavailable: (motivo) => `This step's result could not be read: ${motivo}`,
+  detalleStepDuration: (secs) => `${secs}s`,
+  detalleStepDurationUnknown: 'unknown duration',
+  detalleStepDependsOn: (pasos) => `Depends on: ${pasos}`,
+  detalleStepDependsOnNone: "Doesn't depend on another step",
+  detalleStepDependsOnUnknown: 'Dependencies unknown',
+  detalleStepNumber: (n) => `Step ${n}`,
+
+  stepStatusLabels: {
+    pending: 'Pending',
+    running: 'Running',
+    completed: 'Completed',
+    failed: 'Failed',
+    skipped: 'Skipped',
+    blocked: 'Blocked',
+    blocked_human_gate: 'Awaiting approval',
+  },
+  stepStatusDesconocido: 'Unknown status',
+
   // Kill switch
   killSwitchActive: 'KILL SWITCH ACTIVE',
   killConfirmYes: 'YES, STOP ALL',
@@ -326,10 +384,13 @@ export default {
     critique: 'Critique the plan',
     unify: 'Merge plan and critique',
     produce: 'Produce',
-    audit: 'Audit',
   },
   chainCleanroomWarning: (role, facet, depRole) =>
     `${role}: ${facet} cannot audit what it produced in “${depRole}”. Pick another facet.`,
+  chainArbitroWarning: (role, facet) =>
+    `${role}: ${facet} is reserved for the arbiter Jacobs appends on its own at the end of the plan — it can't also be a producer. Pick another facet.`,
+  parallelArbitroWarning: (facet) =>
+    `${facet} is reserved for the arbiter Jacobs appends on its own at the end of the plan — it can't be picked as a producer. Uncheck it to submit.`,
   chainInvalidFacet: (role) => `${role}: the selected facet is not allowed for this step by the catalog.`,
   // Instructions each model receives. They follow the interface language.
   chainInstructions: {
@@ -350,15 +411,12 @@ export default {
     produce:
       'Role: producer. Using the merged plan, produce the complete deliverable. Follow it; if you deviate, ' +
       'say where and why.',
-    audit:
-      'Role: independent auditor. Your only source of truth is the research and the objective: do not accept ' +
-      'the plan, the critique or the product as sources. ' +
-      '1) Mark as NOT VERIFIED every claim in the product that the research does not support, and every ' +
-      'quote that does not appear in it. ' +
-      '2) Point out contradictions between the product and the merged plan. ' +
-      '3) Measurement against the original critique (not against what the plan says about it): for each ' +
-      'numbered critique finding, say whether it reached the product, whether the merged plan rejected it ' +
-      'with a reason, or whether it was lost without explanation. Close with the count of each case.',
+    // The "audit" role (independent auditor, 2026-09-12 round) was removed
+    // from the chain in the 2026-09-18 fix round: the arbiter Jacobs appends
+    // on its own at the end of any 2+ step plan (jacobs/plan.py::_con_arbitro)
+    // depends on ALL steps -- not just research+critique+product, like this
+    // one -- and does that job with more context. See the full comment on
+    // CHAIN_ROLES in components/BottomBar/pipelineChain.js.
   },
 
   // Center panel

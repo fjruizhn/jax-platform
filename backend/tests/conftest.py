@@ -665,6 +665,29 @@ def chat_sin_memoria(monkeypatch):
     monkeypatch.setattr(chat_mod, "MemoryDB", None)
 
 
+@pytest.fixture(autouse=True)
+def _aviso_pipeline_no_dispara_solo(monkeypatch):
+    """Autouse (Task 8, 2026-09-18): sin este freno, CUALQUIER test que
+    ejercite `_poll_one_pipeline` con una transición a completed/failed --y
+    ya hay varios que lo hacen directo, con pids y user_ids de mentira,
+    test_pipeline_resource_release.py entre ellos-- dispararía una Task de
+    fondo de `aviso_pipeline` que golpea jax_memory_test: reclama una fila en
+    pipeline_aviso_enviado que nadie borra y busca un email por un user_id
+    que no existe. Se vuelve no-op acá para TODOS, igual que
+    `_limites_de_login_limpios` aísla el rate limiter. El test que sí quiere
+    ejercitar el aviso (tests/test_aviso_pipeline.py) hace su propio
+    monkeypatch.setattr sobre aviso_pipeline DESPUÉS de que este fixture ya
+    corrió -- pisa este no-op para la duración de ese test, y monkeypatch
+    revierte los dos cambios al terminar, en orden inverso."""
+    try:
+        import aviso_pipeline
+    except ImportError:  # fail-soft: jobs de CI que solo instalan pytest (sin fastapi) no importan este módulo
+        yield
+        return
+    monkeypatch.setattr(aviso_pipeline, "encolar_aviso_fin_pipeline", lambda *a, **k: None)
+    yield
+
+
 @pytest.fixture
 def usuarios(client):
     """Fábrica de usuarios REALES en jax_users que se borran al terminar el

@@ -198,6 +198,12 @@ export const useJaxStore = create((set, get) => {
   sessionRestoring: true,
   facets: DEFAULT_FACETS,
   activePipelines: {},
+  // Task 9 (2026-09-18, historial-y-arreglos-de-pipeline): a diferencia de
+  // activePipelines (sólo los de ESTA sesión, en memoria), historial es la
+  // lista persistida que trae GET /pipelines (Task 7) -- lo que llena
+  // pages/Historial.jsx. `pipelines` empieza vacío y `cargarHistorial()` lo
+  // llena; `hasMore` decide si hay botón de "cargar más".
+  historial: { pipelines: [], hasMore: false, cargando: false, error: false },
   lasManos: false,
   wsStatus: 'disconnected',
   messages: [],
@@ -273,7 +279,16 @@ export const useJaxStore = create((set, get) => {
         // sin sesión viva en el servidor o sin red: igual se sale localmente
       }
       _revocarObjectURLsDeAdjuntos(get().messages)
-      set({ token: null, user: null, messages: [], _pipelineCompletedShown: new Set(), avisoSesion: null, saliendo: null })
+      set({
+        token: null, user: null, messages: [], _pipelineCompletedShown: new Set(),
+        avisoSesion: null, saliendo: null,
+        // Bloqueante 1 (revisión final, 2026-09-18): faltaba. Sin esto, otro
+        // usuario que entra en la MISMA pestaña (no hay location.reload en el
+        // camino de login) y va a /historial veía nombres, estados, costos y
+        // causas del usuario anterior hasta que cargarHistorial() reemplazara
+        // la lista -- y si esa petición fallaba, quedaban ahí para siempre.
+        historial: { pipelines: [], hasMore: false, cargando: false, error: false },
+      })
       bumpSessionEpoch()
     })()
     set({ saliendo: promesa })
@@ -661,6 +676,30 @@ export const useJaxStore = create((set, get) => {
       // que se ve) y el rastro en consola, como los demás fallos de carga del
       // store; la próxima reconexión o montaje lo vuelve a pedir.
       console.error('loadState failed', err)
+    }
+  },
+
+  // Task 9: offset 0 (o sin argumento) REEMPLAZA la lista -- es una carga
+  // inicial o una recarga explícita, nunca un duplicado. offset > 0 es
+  // "cargar más" y AGREGA al final, en el mismo orden que ya trae el backend
+  // (created_at DESC, Task 7). Un fallo de red deja lo que ya había: no se
+  // borra lo que el usuario ya estaba viendo por un error de un reintento.
+  cargarHistorial: async ({ offset = 0 } = {}) => {
+    set((s) => ({ historial: { ...s.historial, cargando: true, error: false } }))
+    try {
+      const { data } = await api.get('/pipelines', { params: { offset } })
+      const nuevos = Array.isArray(data?.pipelines) ? data.pipelines : []
+      set((s) => ({
+        historial: {
+          pipelines: offset === 0 ? nuevos : [...s.historial.pipelines, ...nuevos],
+          hasMore: data?.has_more === true,
+          cargando: false,
+          error: false,
+        },
+      }))
+    } catch (err) {
+      console.error('cargarHistorial failed', err)
+      set((s) => ({ historial: { ...s.historial, cargando: false, error: true } }))
     }
   },
   }

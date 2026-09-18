@@ -4,6 +4,7 @@ import { useJaxStore } from './store/useJaxStore'
 import { sincronizarApariencia } from './apariencia/sincronizarApariencia'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
+import Historial from './pages/Historial'
 import Admin from './pages/Admin'
 import ResetPassword from './pages/ResetPassword'
 import RequireAuth from './components/RequireAuth'
@@ -38,6 +39,35 @@ export default function App() {
           element={
             <RequireAuth>
               <Dashboard />
+            </RequireAuth>
+          }
+        />
+        {/* Task 9 (2026-09-18): ruta propia, hermana de "/" -- Dashboard es
+            un layout fijo de 3 paneles sin sub-rutas (a diferencia de Admin,
+            que sí las tiene), así que anidar acá habría pedido reestructurar
+            Dashboard.jsx sólo para esta pantalla. Cualquier usuario logueado
+            entra, no sólo superadmin. */}
+        {/* Ronda de arreglo 1 (2026-09-18): /historial/:pipelineId es una
+            ruta de verdad -- los avisos de fin de pipeline (correo y
+            Telegram, jax-platform/backend/aviso_pipeline.py:175 y
+            jax/jacobs/aviso.py:80) arman el enlace como
+            {origen}/historial/{pipeline_id} y esperan que ABRA ese pipeline,
+            no que caiga en la lista sin decir cuál era. Misma pantalla
+            (Historial.jsx lee :pipelineId con useParams) para las dos rutas:
+            sin id, sólo la lista; con id, la lista + el detalle abierto. */}
+        <Route
+          path="/historial"
+          element={
+            <RequireAuth>
+              <Historial />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/historial/:pipelineId"
+          element={
+            <RequireAuth>
+              <Historial />
             </RequireAuth>
           }
         />

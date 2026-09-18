@@ -54,6 +54,18 @@ function IconoEngranaje() {
   )
 }
 
+// Reloj con historial (Task 9, 2026-09-18): trazo de Lucide (licencia ISC),
+// mismo criterio que el engranaje de arriba.
+function IconoHistorial() {
+  return (
+    <svg className={ICONO} {...trazo}>
+      <path d="M3 3v5h5" />
+      <path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" />
+      <path d="M12 7v5l4 2" />
+    </svg>
+  )
+}
+
 function IconoSalir() {
   return (
     <svg className={ICONO} {...trazo}>
@@ -108,6 +120,12 @@ export default function BarraUsuario() {
         <button type="button" onClick={toggleTheme} aria-label={etiquetaTema} title={etiquetaTema} className={BOTON_NEUTRO}>
           {theme === 'dark' ? <IconoSol /> : <IconoLuna />}
         </button>
+
+        {/* Task 9: a diferencia del engranaje de abajo, esto lo ve CUALQUIER
+            usuario logueado -- es su propio historial, no administración. */}
+        <Link to="/historial" aria-label={t.historialTitle} title={t.historialTitle} className={BOTON_NEUTRO}>
+          <IconoHistorial />
+        </Link>
 
         {user?.role === 'superadmin' && (
           <Link to="/admin" aria-label={t.adminPanel} title={t.adminPanel} className={BOTON_NEUTRO}>

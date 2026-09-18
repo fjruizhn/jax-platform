@@ -25,7 +25,7 @@ Dos decisiones que no son de estilo:
   recuperar las otras diez mil.
 
 `origen` NO se inserta: identifica al proceso que depositó, no al gasto, y
-`axioma_usage` no tiene esa columna. Son las trece del archivo menos ésa.
+`axioma_usage` no tiene esa columna. Son las catorce del archivo menos ésa (Task 7b, 2026-09-18: pipeline_id se suma a las trece de antes).
 """
 import asyncio
 import logging
@@ -122,10 +122,15 @@ _CODIGOS_DE_RECHAZO_DE_DATO = frozenset({
 #: acoplado entre jax y jax-platform, para siempre.
 _intentos: dict[str, int] = {}
 
-#: Las doce columnas del INSERT, en el orden de `cola.CAMPOS` menos `origen`.
+#: Las trece columnas del INSERT, en el orden de `cola.CAMPOS` menos `origen`
+#: (Task 7b, 2026-09-18: se suma `pipeline_id`; las catorce de `cola.CAMPOS`
+#: menos `origen`, que no se inserta -- identifica al proceso que depositó,
+#: no al gasto. Menor 7, revisión final 2026-09-18: el comentario decía
+#: "catorce" y contaba origen de más; la tupla de abajo siempre tuvo trece).
 COLUMNAS = (
     "spool_id", "created_at", "tenant_id", "user_id", "facet", "model",
     "tokens_in", "tokens_out", "cost_usd", "request_type", "status", "job_id",
+    "pipeline_id",
 )
 _MARCAS = ", ".join(
     "FROM_UNIXTIME(%s)" if c == "created_at" else "%s" for c in COLUMNAS)
@@ -224,6 +229,7 @@ def _valores(fila: dict) -> tuple:
         fila.get("request_type"),
         fila.get("status"),
         fila.get("job_id"),
+        fila.get("pipeline_id"),
     )
 
 

@@ -255,6 +255,85 @@ export default {
   pipelineSources: 'Fuentes',
   pipelineNoResult: '_(sin resultado)_',
 
+  // Historial de pipelines (Task 9, 2026-09-18): pantalla propia para ver el
+  // resultado de un pipeline después de que el chat lo hace desaparecer hacia
+  // arriba -- nombre, estado, cuándo, cuánto duró, y por paso el prompt
+  // EXACTO, el modelo REAL y de qué pasos dependía.
+  historialTitle: 'Historial de pipelines',
+  historialBack: (nombre) => `Volver a ${nombre}`,
+  historialLoading: 'Cargando…',
+  historialError: 'No se pudo cargar el historial. Probá de nuevo.',
+  historialRetry: 'Reintentar',
+  historialEmpty: 'Todavía no corriste ningún pipeline.',
+  historialColName: 'Nombre',
+  historialColStatus: 'Estado',
+  historialColCreated: 'Creado',
+  historialColDuration: 'Duración',
+  historialColCost: 'Costo',
+  historialColCause: 'Causa',
+  // duracion_s/costo_usd null: desconocido, NUNCA cero. costo_usd es real
+  // desde la Task 7b (2026-09-18, backend/api/pipelines.py::list_pipelines
+  // suma axioma_usage por pipeline_id) y sale null sólo para pipelines VIEJOS
+  // que corrieron antes de que esa columna existiera -- ahí el dato no
+  // existe y no se fabrica (menor 5, revisión final 2026-09-18: este
+  // comentario decía "costo_usd es null SIEMPRE", falso desde dos commits
+  // después en esta misma rama). duracion_s es null mientras el pipeline
+  // pueda seguir corriendo (Ruling 10 del ledger).
+  historialUnknown: 'desconocido',
+  // Menor 10 (revisión final, 2026-09-18): 's' y '$' vivían escritos a mano
+  // en pages/Historial.jsx (`${...}s`, `$${...}`) -- la regla de la casa es
+  // cero texto visible fuera de i18n, y el detalle (DetallePipeline.jsx) ya
+  // lo hacía bien con detalleStepDuration/detalleTotalDuration. Mismo patrón
+  // acá: el literal vive en el diccionario, no en el componente.
+  historialDuration: (secs) => `${secs}s`,
+  historialCost: (usd) => `$${usd}`,
+  historialLoadMore: 'Cargar más',
+  historialLoadingMore: 'Cargando más…',
+  historialViewDetail: 'Ver detalle',
+  historialCloseDetail: 'Cerrar detalle',
+
+  detalleTitle: (nombre) => `Detalle — ${nombre}`,
+  detalleLoading: 'Cargando el detalle…',
+  detalleError: 'No se pudo cargar el detalle de este pipeline.',
+  // Ronda de arreglo 1 (2026-09-18): el backend da 404 A PROPÓSITO al que no
+  // es dueño (para no confirmarle que el pipeline_id existe) -- mismo texto
+  // para "no existe" y para "es de otro", nunca "no es tuyo".
+  detalleNotFound: 'Ese pipeline no aparece en tu historial.',
+  detalleTotalDuration: (secs) => `Duración total: ${secs}s`,
+  detalleTotalDurationUnknown: 'Duración total: desconocida',
+  detalleStepPrompt: 'Prompt',
+  detalleStepPromptEmpty: '(sin prompt)',
+  detalleStepModel: 'Modelo',
+  detalleStepModelUnknown: 'desconocido',
+  detalleStepResult: 'Resultado',
+  detalleStepResultEmpty: '(sin resultado)',
+  detalleStepResultUnavailable: (motivo) => `El resultado de este paso no se pudo leer: ${motivo}`,
+  detalleStepDuration: (secs) => `${secs}s`,
+  detalleStepDurationUnknown: 'duración desconocida',
+  detalleStepDependsOn: (pasos) => `Depende de: ${pasos}`,
+  detalleStepDependsOnNone: 'No depende de otro paso',
+  // Menor 4 (revisión final, 2026-09-18): un paso de ANTES de que la columna
+  // `depends_on` existiera no trae la clave (`undefined`, no `[]`). `[]` es
+  // "paralelo explícito" -- el plan lo decidió así; ausente es "no sé", y es
+  // el único campo del detalle que convertía un "no sé" en un "no"
+  // (modelo_real/costo_usd ausentes ya dicen "desconocido").
+  detalleStepDependsOnUnknown: 'Dependencias desconocidas',
+  detalleStepNumber: (n) => `Paso ${n}`,
+
+  // StepStatus (jax/jacobs/models.py), no el status del pipeline entero
+  // (arriba, ETIQUETAS_DE_ESTADO): un paso puede quedar 'skipped' o
+  // 'blocked' sin que el pipeline entero tenga esos estados.
+  stepStatusLabels: {
+    pending: 'Pendiente',
+    running: 'En curso',
+    completed: 'Completado',
+    failed: 'Fallido',
+    skipped: 'Salteado',
+    blocked: 'Bloqueado',
+    blocked_human_gate: 'Esperando aprobación',
+  },
+  stepStatusDesconocido: 'Estado desconocido',
+
   // Kill switch
   killSwitchActive: 'KILL SWITCH ACTIVO',
   killConfirmYes: 'SÍ, DETENER TODO',
@@ -329,10 +408,13 @@ export default {
     critique: 'Criticar el plan',
     unify: 'Unificar plan y crítica',
     produce: 'Producir',
-    audit: 'Auditar',
   },
   chainCleanroomWarning: (role, facet, depRole) =>
     `${role}: ${facet} no puede auditar lo que produjo en «${depRole}». Elige otra faceta.`,
+  chainArbitroWarning: (role, facet) =>
+    `${role}: ${facet} está reservada para el árbitro que Jacobs agrega solo al final del plan — no puede ser también productora. Elige otra faceta.`,
+  parallelArbitroWarning: (facet) =>
+    `${facet} está reservada para el árbitro que Jacobs agrega solo al final del plan — no puede elegirse como productora. Desmárcala para poder enviar.`,
   chainInvalidFacet: (role) => `${role}: la faceta elegida no está permitida para este paso según el catálogo.`,
   // Instrucciones que recibe cada modelo. Van en el idioma de la interfaz.
   chainInstructions: {
@@ -353,15 +435,13 @@ export default {
     produce:
       'Rol: productor. Con el plan unificado, produce el entregable completo. Síguelo; si te apartas de él, ' +
       'di dónde y por qué.',
-    audit:
-      'Rol: auditor independiente. Tu única fuente de verdad es la investigación y el objetivo: no aceptes ' +
-      'como fuente el plan, la crítica ni el producto. ' +
-      '1) Marca como NO VERIFICADA toda afirmación del producto que no esté respaldada por la investigación, ' +
-      'y toda cita que no aparezca en ella. ' +
-      '2) Señala las contradicciones entre el producto y el plan unificado. ' +
-      '3) Medición contra la crítica original (no contra lo que el plan dice de ella): para cada hallazgo ' +
-      'numerado de la crítica, di si llegó al producto, si el plan unificado lo rechazó con una razón, o si se ' +
-      'perdió sin explicación. Cierra con el conteo de cada caso.',
+    // El rol "audit" (auditor independiente, ronda 2026-09-12) se sacó de la
+    // cadena en la ronda de arreglo del 2026-09-18: el árbitro que Jacobs
+    // agrega SOLO al final de cualquier plan de 2+ pasos
+    // (jacobs/plan.py::_con_arbitro) depende de TODOS los pasos -- no sólo
+    // de investigación+crítica+producto, como éste -- y hace ese trabajo
+    // con más contexto. Ver el comentario completo en
+    // components/BottomBar/pipelineChain.js sobre CHAIN_ROLES.
   },
 
   // Center panel

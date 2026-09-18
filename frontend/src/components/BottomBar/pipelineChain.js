@@ -20,23 +20,65 @@ export const HTTP_FACETS = ['hipatia', 'jekyll', 'thot', 'ada']
 // Espejo de jacobs/plan.py::_AUDIT_CAPABILITIES (las que usa la cadena).
 const AUDIT_CAPABILITIES = new Set(['critique', 'validate_consistency'])
 
+// Espejo de jacobs/plan.py::PlanBuilder._con_arbitro, regla "sala limpia"
+// (Ruling 2/11 del ledger 2026-09-18): el servidor agrega SOLO, al final de
+// CUALQUIER plan de 2+ pasos, un step árbitro con esta faceta -- hoy 'thot',
+// leída en el servidor de axioma_config.ejecutor.auditor_faceta. Si esa
+// faceta YA aparece como productor en el plan (cadena o paralelo, CUALQUIER
+// capability, con o sin depends_on), el plan entero se rechaza con 422
+// arbitro_no_disponible/sala-limpia -- "quien produce no arbitra", sin
+// excepción de largo de plan.
+// Deuda declarada, misma clase que GOVERNED_FACETS/HTTP_FACETS arriba: no
+// hay endpoint que exponga axioma_config desde este repo (T5, 2026-08-22),
+// así que queda hardcodeada acá también. Si se reconfigura el árbitro en el
+// servidor sin tocar esta constante, esta pantalla vuelve a mentir -- igual
+// que ya mintió una vez (bloqueante de la ronda 2026-09-18: el layout de
+// cadena traía 'thot' fijo en el paso "audit" y el paralelo lo traía
+// preseleccionado, los dos auto-rechazados por el servidor sin aviso previo
+// porque este archivo todavía espejaba la regla VIEJA de cleanroom, que es
+// más angosta -- ver cleanroomViolationsDePasos abajo).
+export const ARBITRO_FACETA = 'thot'
+
 // dependsOn es el contexto MÍNIMO de cada paso: cada dependencia reenvía su
 // salida entera al modelo, y eso se paga en cada llamada (blueprint de
-// Ricardo §9/§11). La auditoría recibe la investigación (su única fuente de
-// verdad), la crítica, el plan unificado y el producto -- no el borrador.
+// Ricardo §9/§11).
 //
-// La crítica entra a la auditoría desde 2026-09-12 (decisión de Fernando):
-// sin ella el auditor medía contra lo que el plan DECLARABA haber aceptado,
-// no contra lo que la crítica dijo (E2E b2d87971). Consecuencia: crítica y
-// auditoría ya no pueden ser la misma faceta (auditoría independiente), así
-// que por defecto critica jekyll y audita thot.
+// La crítica entra a "unify" desde 2026-09-12 (decisión de Fernando): sin
+// ella la reconciliación medía contra lo que el plan DECLARABA haber
+// aceptado, no contra lo que la crítica dijo (E2E b2d87971).
+//
+// EL PASO "audit" SE SACÓ de la cadena por defecto (fix bloqueante
+// 2026-09-18, ronda de arreglo del historial). Historia completa, para que
+// nadie lo reponga de buena fe creyendo que fue un olvido:
+//
+// Esta misma ronda agregó, del lado del servidor (jacobs/plan.py::_con_arbitro),
+// un paso árbitro que Jacobs agrega SOLO al final de CUALQUIER plan de 2+
+// pasos -- hoy siempre 'thot' (ARBITRO_FACETA arriba) -- que depende de
+// TODOS los pasos anteriores y produce una decisión donde cada punto cita
+// el paso que lo sostiene. Eso es estrictamente MÁS de lo que "audit" hacía:
+// "audit" miraba investigación+crítica+producto (tres de cinco pasos); el
+// árbitro los mira TODOS.
+// Mantener "audit" habría exigido mutilarlo para esquivar dos reglas a la
+// vez: la sala limpia (prohíbe 'thot', que es el único no-productor de la
+// cadena) y la auditoría independiente (con 'ada' -- la única otra faceta
+// que el catálogo real de capability_motor admite para
+// `validate_consistency`, medido contra pipelineChain.test.js::CAPS --
+// "audit" no podía seguir dependiendo de "unify", que también es 'ada').
+// El resultado hubiera sido un control con la FORMA de "audit" pero que ve
+// menos de lo que dice ver -- peor que no tenerlo, porque parece que alguien
+// revisó. Mismo razonamiento con el que esta ronda ya sacó el paso fijo de
+// validación de consistencia (thot) del prompt modular de Ada del lado del
+// servidor: las dos piezas se solapaban en propósito, y la que sobrevive es
+// la que ve más.
+// Si en el futuro hace falta una revisión INTERMEDIA (no al final, con
+// menos contexto que el árbitro) es una necesidad nueva, no la resurrección
+// de este paso -- hay que diseñarla de cero contra las reglas de hoy.
 export const CHAIN_ROLES = [
   { id: 'research', capability: 'research',             defaultFacet: 'hipatia', dependsOn: [] },
   { id: 'plan',     capability: 'design',               defaultFacet: 'ada',     dependsOn: [0] },
   { id: 'critique', capability: 'critique',             defaultFacet: 'jekyll',  dependsOn: [0, 1] },
   { id: 'unify',    capability: 'reconcile',            defaultFacet: 'ada',     dependsOn: [1, 2] },
   { id: 'produce',  capability: 'generate',             defaultFacet: 'kimi',    dependsOn: [3] },
-  { id: 'audit',    capability: 'validate_consistency', defaultFacet: 'thot',    dependsOn: [0, 2, 3, 4] },
 ]
 
 // Modo por defecto según la forma (decisión de Fernando, 2026-09-12). En
@@ -99,4 +141,22 @@ export function cleanroomViolations(facetsByRole) {
   return cleanroomViolationsDePasos(pasos).map(v => ({
     role: CHAIN_ROLES[v.paso].id, facet: v.facet, dependsOnRole: CHAIN_ROLES[v.dependsOn].id,
   }))
+}
+
+// Espejo de la regla sala-limpia de _con_arbitro (ver ARBITRO_FACETA arriba):
+// INCONDICIONAL -- a diferencia de cleanroomViolationsDePasos, no importa la
+// capability ni si depende de algo; la sola presencia de la faceta árbitro
+// como productor en el plan (cadena, acá por rol) alcanza para el rechazo.
+export function arbitroViolations(facetsByRole, arbitroFaceta = ARBITRO_FACETA) {
+  return CHAIN_ROLES
+    .filter(role => facetsByRole[role.id] === arbitroFaceta)
+    .map(role => ({ role: role.id, facet: arbitroFaceta }))
+}
+
+// Misma regla, para la selección en paralelo (frontend/src/components/BottomBar/
+// PipelineModal.jsx layout='parallel'): ahí cada faceta elegida ES el
+// productor directo, sin roles ni depends_on -- alcanza con mirar si la
+// faceta árbitro está entre las elegidas.
+export function seleccionIncluyeArbitro(seleccionadas, arbitroFaceta = ARBITRO_FACETA) {
+  return seleccionadas.includes(arbitroFaceta)
 }

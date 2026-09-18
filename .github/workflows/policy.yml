@@ -617,8 +617,62 @@ jobs:
             // (el reintento del fetch de resultados respeta Retry-After del 503 de
             // contención, cae a la demora fija sin cabecera legible y tiene techo
             // propio de 30 s). Vistos en rojo contra 7dca2ca.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 784) {
-              console.error("PISO ROTO: se esperaban 784 tests de vitest CORRIDOS y 0 fallidos.");
+            // 784 -> 817 el 2026-09-18 (Task 9, historial de pipelines): +6 en
+            // useJaxStore.historial.test.js (cargarHistorial: offset 0 reemplaza,
+            // offset > 0 agrega, un fallo de red no borra lo ya cargado, forma
+            // inválida no revienta, cargando en vuelo), +16 en
+            // components/historial/DetallePipeline.test.jsx (prompt EXACTO y
+            // modelo REAL por paso, depends_on, result_unavailable con su motivo,
+            // bloques largos colapsados por default, fuentes, cerrar, refetch al
+            // cambiar de pipeline) y +10 en pages/Historial.test.jsx (lista,
+            // estado traducido, duracion_s/costo_usd null como "desconocido" no
+            // como 0, vacío, error con reintentar, "cargar más", abrir/cerrar
+            // detalle) y +1 en BarraUsuario.test.jsx (el ícono de historial lo ve
+            // cualquier rol, no sólo superadmin). Todos vistos en rojo antes del
+            // código (módulo/función inexistente) contra b72002e (jax) +
+            // este commit. Medido con vitest run: 817 passed, 0 fallidos, 84 archivos.
+            // 817 -> 822 el 2026-09-18 (ronda de arreglo 1: el detalle es una ruta de
+            // verdad, /historial/:pipelineId, no estado interno -- los avisos de fin
+            // de pipeline por correo y Telegram arman el enlace como
+            // {origen}/historial/{pipeline_id} y esperaban que abriera ese pipeline).
+            // +4 en pages/Historial.test.jsx (duracion_s a un decimal, "Ver detalle"
+            // navega y la URL refleja la selección, entrar directo por la URL abre el
+            // detalle sin pasar por la lista, cerrar vuelve a /historial sin recargar
+            // la lista, el botón "atrás" del navegador -- navigate(-1)/popstate --
+            // vuelve a la lista, un 404 ajeno o inexistente muestra el estado vacío)
+            // y +1 en components/historial/DetallePipeline.test.jsx (un 404 muestra
+            // "Ese pipeline no aparece en tu historial.", nunca el error genérico).
+            // Vistos en rojo contra el código con estado interno (setSeleccionado).
+            // Medido con vitest run: 822 passed, 0 fallidos, 84 archivos.
+            // 822 -> 834 el 2026-09-18 (tanda final de arreglos de la revisión), +12:
+            // +6 en components/BottomBar/pipelineChain.test.js (sala limpia del árbitro:
+            //   ARBITRO_FACETA, arbitroViolations, seleccionIncluyeArbitro, y el default
+            //   de "audit" deja de ser thot -- Bloqueante A) + +2 en
+            //   components/BottomBar/PipelineModal.test.jsx (thot bloqueado como
+            //   productor, en cadena y en paralelo) + +3 en pages/Historial.test.jsx
+            //   (costo_usd real se muestra en dólares, duración/costo pasan por
+            //   t.historialDuration/t.historialCost -- menor 10 --, y el detalle se
+            //   renderiza ANTES de la tabla -- recomendado 3) + +1 en
+            //   components/historial/DetallePipeline.test.jsx (depends_on AUSENTE sale
+            //   "desconocido", no como un NO -- menor 4) + +1 en
+            //   store/useJaxStore.test.js (logout() vacía historial -- bloqueante 1).
+            // Vistos en rojo contra el código de antes de esta tanda. Medido con
+            // vitest run: 834 passed, 0 fallidos, 84 archivos.
+            // 834 -> 832 el 2026-09-18 (mismo commit, ruling del coordinador: el paso
+            // "audit" se saca de la cadena por defecto, no se mutila -- el árbitro final
+            // ya hace ese trabajo con más contexto). -4 tests que probaban contenido de
+            // un rol que ya no existe (colisión audit-vs-produce, el default "audita
+            // ada", colisión crítica-vs-auditoría, y el contenido de
+            // chainInstructions.audit) + +2 tests nuevos (colisión cleanroom reescrita
+            // sobre "critique" -- rol que sigue existiendo -- y el pedido explícito del
+            // coordinador: la cadena por defecto se crea sin ningún rechazo, ni
+            // cleanroom ni sala limpia del árbitro, con cada faceta default válida
+            // contra el catálogo real -- viendo ANTES que ese mismo test fallaba con
+            // "arbitroViolations is not a function" al revertir el archivo a la versión
+            // previa a esta tanda). Medido con vitest run: 832 passed, 0 fallidos, 84
+            // archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 832) {
+              console.error("PISO ROTO: se esperaban 832 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1726,7 +1780,54 @@ jobs:
           #   ve la forma prohibida). Origen: la semilla del tema importaba api.admin.config_admin, que
           #   arrastra auth/jwt y su JAX_JWT_SECRET, y el job de jax que sólo construye el esquema moría
           #   antes de crear una tabla. Medido local: 2340 passed, 1 skipped, 0 fallidos.
-          PISO_PASSED = 2340
+          # 2340 -> 2346 el 2026-09-18 (Task 7, historial-y-arreglos-de-pipeline): +6 de
+          #   tests/test_historial_pipelines.py (duracion_s, costo_usd null verificado incluso
+          #   con un registro de uso parecido en axioma_usage, paginado con limite/offset y
+          #   has_more, el 422 del tope maximo, y el EXPLAIN de la consulta paginada sin
+          #   filesort/temporary). Los 6 vistos en rojo contra el pipelines.py de master
+          #   (0485018): KeyError en duracion_s/costo_usd, AssertionError en el orden/tamaño
+          #   de la pagina, 200 en vez de 422 sin el `le=` de limite, y el EXPLAIN con un
+          #   placeholder de mas (la consulta vieja no tenia OFFSET). test_t6_seguimiento.py
+          #   se ajusta al mismo cambio de firma (LIMIT %s OFFSET %s) sin sumar ni restar
+          #   tests. Medido local contra jax_memory_test: 2346 passed, 1 skipped, 0 fallidos.
+          # 2346 -> 2351 el 2026-09-18 (Task 7, ronda de arreglo 1): +5 netos.
+          #   ESTADOS_NO_TERMINALES (solo pending/running) no cubría interrupted
+          #   (donde un pipeline supervised PAUSA entre olas, jax/jacobs/executor.py:1173,
+          #   mismo conjunto no-terminal que jax/jacobs/reaper.py) ni los continuables
+          #   aborted/expired (un /continue los reanuda sobre la misma fila: la duración
+          #   que mostrábamos dejaba de ser cierta al continuar). Pasa a
+          #   ESTADOS_SIN_DURACION_DEFINITIVA = {pending,running,interrupted} | ESTADOS_CONTINUABLES;
+          #   solo completed/failed quedan con duracion_s. test_duracion_s_null_si_el_pipeline_no_termino
+          #   (1 test) se reemplaza por test_duracion_s_null_si_el_pipeline_puede_seguir_corriendo,
+          #   parametrizado sobre los 5 estados (+5 tests), y se suma
+          #   test_duracion_s_se_calcula_para_failed_igual_que_completed (+1 test): neto +5.
+          #   Los 3 casos nuevos (interrupted/aborted/expired) vistos en rojo contra el
+          #   pipelines.py de la Task 7 (c6166c8): `assert 4.0 is None` -- duracion_s
+          #   seguía saliendo numérico. Medido local contra jax_memory_test: 2351 passed,
+          #   1 skipped, 0 fallidos.
+          # 2351 -> 2365 el 2026-09-18 (Task 8, aviso por correo al terminar un pipeline):
+          #   +14 tests nuevos en tests/test_aviso_pipeline.py, medidos en verde contra
+          #   jax_memory_test (aviso_pipeline.py + la tabla pipeline_aviso_enviado).
+          # 2365 -> 2368 el 2026-09-18 (Task 7b, costo_usd real del historial): agrega
+          #   axioma_usage.pipeline_id (db/migrations.py, columna + idx_axioma_usage_pipeline)
+          #   y hace que list_pipelines() sume cost_usd por pipeline_id en vez de devolver
+          #   null siempre. +3 tests en tests/test_historial_pipelines.py
+          #   (suma real, suma parcial con una fila sin precio, EXPLAIN del índice nuevo);
+          #   el test que fija que NO se inventa un cruce por ventana de tiempo
+          #   (test_costo_usd_no_se_inventa_ni_con_un_registro_de_uso_parecido) se
+          #   mantiene sin cambios y sigue en verde. Medido local contra jax_memory_test:
+          #   2368 passed, 1 skipped, 0 fallidos.
+          # 2368 -> 2372 el 2026-09-18 (tanda final de arreglos de la revisión): +4 tests
+          #   puros, ninguno toca la base (tests/test_pipeline_resource_release.py +3 --
+          #   _poll_one_pipeline con status "expired" y con el aviso reventando antes de
+          #   liberar el cupo del tenant -- y tests/test_cola_uso.py +1 -- una fila de
+          #   trece campos sin pipeline_id no cae a corruptos/). DERIVADO, no medido en
+          #   vivo contra jax_memory_test (este runner no tiene credenciales de DB):
+          #   verificado que ninguno de los 4 llama get_pool ni nada de db/, y que los 4
+          #   pasan igual bajo JAX_CI_NO_DB=1 (1598 -> 1602, medido ahí sí). Si el runner
+          #   real con DB da otro número, manda el runner -- que es exactamente lo que
+          #   este chequeo existe para atrapar.
+          PISO_PASSED = 2372
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2332,7 +2433,26 @@ jobs:
       # Medido con JAX_CI_NO_DB=1: 1563 passed / 735 skipped.
       # 1563 -> 1582 el 2026-09-17 (limite de profundidad JSON): +19 puros y +4
       # skips, SUMADO a los pisos anteriores del dia.
-      JAX_CI_MIN_PASSED: "1582"
+      # 1582 -> 1598 el 2026-09-18 (Task 8, aviso por correo al terminar un pipeline):
+      # +16 con JAX_CI_NO_DB=1 medido contra este arbol (6 de los 14 tests nuevos de
+      # tests/test_aviso_pipeline.py no tocan la DB y corren acá; los otros 8 se
+      # saltan solos por la Regla 1, ver conftest.py). CAUSA VERIFICADA (menor 6,
+      # revisión final 2026-09-18 -- el comentario anterior decia "variacion normal
+      # de este runner", sin medir): el delta propio de la Task 8 es +6 (sus 6 tests
+      # sin DB); los otros +10 son deuda preexistente -- el piso "1582" ya estaba
+      # stale ANTES de esta tarea, rastreado hasta el commit 26fb26c/PR#109, donde
+      # quedo sin actualizar. No hay tests que antes fallaran o se saltearan y ahora
+      # se consagren: el revisor midio los dos arboles (con y sin el commit de esta
+      # tarea) y confirmo el reparto 6+10.
+      # 1598 -> 1602 el 2026-09-18 (tanda final de arreglos de la revisión): +4 tests
+      # puros (ver el piso con DB, mas arriba, para el detalle de cuales). Medido con
+      # JAX_CI_NO_DB=1 /opt/jax/venv/bin/python -m pytest -q: 1602 passed, 771 skipped,
+      # 0 fallidos -- corrida completa, no solo los archivos tocados. La corrida
+      # tambien destapo test_no_fail_open_except.py roto por loadtest/historial_orquestar.py
+      # (4 except sin marcar '# fail-soft:', deuda del commit 1de2407 de la Task 10,
+      # anterior a esta tanda) -- arreglado en el mismo commit para que el piso de acá
+      # abajo sea real y no un numero sobre una suite roja.
+      JAX_CI_MIN_PASSED: "1602"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

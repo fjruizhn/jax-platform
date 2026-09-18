@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import ajustes
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from auth.middleware import get_current_user
@@ -687,12 +687,20 @@ async def _require_pipeline_owner(pipeline_id: str, user: AuthUser) -> str | Non
 # Jacobs no tiene (405 devuelto como 200) y que no filtraba nada: el día que
 # existiera, entregaba todos los pipelines a cualquier sesión.
 # Índice idx_jacobs_pipelines_duenio (user_id, tenant_id, created_at), creado
-# en db/migrations.py; EXPLAIN en tests/test_t6_seguimiento.py.
+# en db/migrations.py; EXPLAIN en tests/test_t6_seguimiento.py y en
+# test_historial_pipelines.py (Task 7, 2026-09-18: paginado con LIMIT/OFFSET,
+# el índice sigue cubriendo el WHERE + ORDER BY -- el OFFSET no agrega
+# filesort ni temporary, solo salta filas dentro del mismo rango del índice).
 SQL_PIPELINES_DEL_USUARIO = (
     "SELECT pipeline_id, name, status, created_at, updated_at FROM jacobs_pipelines "
     "WHERE user_id=%s AND tenant_id=%s AND owner_ack_at IS NOT NULL "
-    "ORDER BY created_at DESC LIMIT %s"
+    "ORDER BY created_at DESC LIMIT %s OFFSET %s"
 )
+# Tope MÁXIMO de página, no un corte fijo del historial (Task 7, 2026-09-18):
+# antes era el único LIMIT posible y un historial con más filas que esto
+# quedaba inalcanzable. Ahora es el `le=` de `limite` en list_pipelines() y
+# el default cuando el caller no pide uno -- el historial completo se
+# recorre con `offset` creciente.
 LISTA_PIPELINES_MAX = int(os.getenv("JAX_LISTA_PIPELINES_MAX", "50"))
 
 
@@ -712,6 +720,19 @@ EVENTOS_DE_CAUSA = {
 }
 ESTADOS_CONTINUABLES = ("aborted", "expired")
 
+# Ronda de arreglo 1 (Task 7, 2026-09-18): duracion_s es duración DEFINITIVA
+# o nada -- un número que después cambia es peor que un guion. Van a null
+# los estados que TODAVÍA pueden tocar created_at/updated_at:
+#   - pending/running/interrupted: el pipeline puede seguir corriendo. Mismo
+#     conjunto no-terminal que define jax/jacobs/reaper.py -- interrupted es
+#     donde un pipeline `supervised` PAUSA entre olas esperando /resume
+#     (jax/jacobs/executor.py:1173), no un estado de reposo.
+#   - aborted/expired (ESTADOS_CONTINUABLES): un /continue los reanuda sobre
+#     la MISMA fila. Mostrar una duración acá tendría pinta de definitiva y
+#     dejaría de ser cierta en cuanto alguien continúe el pipeline.
+# Solo completed/failed quedan afuera: ahí no hay camino de vuelta a correr.
+ESTADOS_SIN_DURACION_DEFINITIVA = frozenset({"pending", "running", "interrupted"}) | frozenset(ESTADOS_CONTINUABLES)
+
 
 def sql_eventos_de_causa(n_ids: int) -> str:
     """Una consulta por lista, por índice de jacobs_events (jax/jacobs/store.py):
@@ -727,6 +748,22 @@ def sql_eventos_de_causa(n_ids: int) -> str:
     tipos = ", ".join(["%s"] * len(EVENTOS_DE_CAUSA))
     return (f"SELECT pipeline_id, id, event_type, payload FROM jacobs_events "
             f"WHERE pipeline_id IN ({ids}) AND event_type IN ({tipos})")
+
+
+def sql_costo_por_pipeline(n_ids: int) -> str:
+    """Una consulta por lista, por `idx_axioma_usage_pipeline` (Task 7b,
+    migrations.py). Sin ORDER BY a propósito, igual que
+    `sql_eventos_de_causa`: el scan por rango sobre el índice ya entrega las
+    filas ordenadas por pipeline_id, así que el GROUP BY no necesita
+    filesort ni una tabla temporal -- EXPLAIN en test_historial_pipelines.py
+    (medido contra jax_memory_test, 2026-09-18, ~2,86M filas): type=range,
+    key=idx_axioma_usage_pipeline, Extra="Using index condition", sin
+    filesort/temporary. SUM() ignora los NULL de fila (precio no resuelto):
+    un total parcial real, no uno inventado -- si NINGUNA fila del pipeline
+    tiene pipeline_id (pipelines de antes de esta migración), la fila ni
+    aparece en el resultado y costo_usd sale None."""
+    ids = ", ".join(["%s"] * n_ids)
+    return f"SELECT pipeline_id, SUM(cost_usd) FROM axioma_usage WHERE pipeline_id IN ({ids}) GROUP BY pipeline_id"
 
 
 def _payload(crudo) -> dict:
@@ -773,24 +810,60 @@ def causa_de(eventos: list[tuple[int, str, str | None]]) -> dict:
 
 
 @router.get("")
-async def list_pipelines(user: AuthUser = Depends(get_current_user)):
+async def list_pipelines(
+    user: AuthUser = Depends(get_current_user),
+    limite: int = Query(LISTA_PIPELINES_MAX, ge=1, le=LISTA_PIPELINES_MAX),
+    offset: int = Query(0, ge=0),
+):
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            # Se pide una fila de más (limite+1) para saber si hay una página
+            # siguiente sin un segundo COUNT(*) -- LAS CUATRO/cache: no se
+            # recalcula lo que ya se puede leer de la misma consulta.
             await cur.execute(SQL_PIPELINES_DEL_USUARIO,
-                              (user.user_id, user.tenant_id, LISTA_PIPELINES_MAX))
+                              (user.user_id, user.tenant_id, limite + 1, offset))
             filas = await cur.fetchall()
+            hay_mas = len(filas) > limite
+            filas = filas[:limite]
             detenidos = [pid for pid, _n, st, _c, _u in filas if st in ESTADOS_CONTINUABLES]
             eventos = defaultdict(list)
             if detenidos:
                 await cur.execute(sql_eventos_de_causa(len(detenidos)), (*detenidos, *EVENTOS_DE_CAUSA))
                 for pid, evento_id, tipo, payload in await cur.fetchall():
                     eventos[pid].append((evento_id, tipo, payload))
-    return {"pipelines": [
-        {"pipeline_id": pid, "name": name, "status": st, "created_at": c, "updated_at": u,
-         "causa": causa_de(eventos[pid]) if st in ESTADOS_CONTINUABLES else None}
-        for pid, name, st, c, u in filas
-    ]}
+            # costo_usd (Task 7b, 2026-09-18): NO se recalcula ni se estima
+            # (Principio VIII). Sale de SUM(axioma_usage.cost_usd) cruzado
+            # por pipeline_id -- columna que agrega la migración de esta
+            # misma ronda (db/migrations.py) y que los DOS escritores de jax
+            # (jacobs/usage_writer.py::record_direct_usage,
+            # las_manos/motor_registry/usage_writer.py::record_motor_usage)
+            # mandan explícito. Un pipeline sin NINGUNA fila que lo
+            # referencie -- todo pipeline de antes de esta migración, o uno
+            # cuyo uso se perdió y nunca se escribió -- no aparece en
+            # `costos` y su costo_usd sale None: ese dato no existe y no se
+            # fabrica por ventana de tiempo ni por ningún otro heurístico
+            # (ver el hallazgo original de Task 7 en
+            # test_historial_pipelines.py).
+            costos = {}
+            ids_de_pagina = [pid for pid, _n, _st, _c, _u in filas]
+            if ids_de_pagina:
+                await cur.execute(sql_costo_por_pipeline(len(ids_de_pagina)), ids_de_pagina)
+                for pid, suma in await cur.fetchall():
+                    if suma is not None:
+                        costos[pid] = round(float(suma), 6)
+    return {
+        "pipelines": [
+            {
+                "pipeline_id": pid, "name": name, "status": st, "created_at": c, "updated_at": u,
+                "duracion_s": None if st in ESTADOS_SIN_DURACION_DEFINITIVA else round(u - c, 3),
+                "costo_usd": costos.get(pid),
+                "causa": causa_de(eventos[pid]) if st in ESTADOS_CONTINUABLES else None,
+            }
+            for pid, name, st, c, u in filas
+        ],
+        "has_more": hay_mas,
+    }
 
 
 @router.post("/preflight")
