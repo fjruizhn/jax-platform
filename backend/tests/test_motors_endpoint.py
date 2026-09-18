@@ -43,10 +43,23 @@ def test_capabilities_expone_has_tool_access_por_motor(client):
     `motor` (single source of truth), y este endpoint la expone para que el
     picker del frontend (PipelineModal.jsx) pueda consultarla en vez de
     usar el mapa hardcodeado GOVERNED_FACET_CAPABILITY que causo el
-    incidente. jax_local es el unico motor con tools hoy (worker.py:488,
-    GAP2 Fase1) -- kimi tiene filas en capability_motor para file_write pero
-    NO recibe el catalogo de tools, exactamente la contradiccion diagnosticada
-    en T2 de la sesion anterior."""
+    incidente.
+
+    Task 5 (2026-09-18, historial-y-arreglos-de-pipeline): `jax_local` dejo
+    de ser el unico. `jacobs` ya tenia 'jacobs' en `capability.allowed_
+    callers` de file_read/file_write desde GAP2 Fase2 (2026-08-19) -- el
+    hueco real era que `ada`/`kimi`/`thot` nunca recibian el catalogo de
+    tools (`has_tool_access=0`), asi que el permiso del caller nunca llegaba
+    a importar para ellos. Medido con una llamada real por faceta contra su
+    proveedor real: `ada` (glm-5.3, zhipu) y `kimi` (kimi-k3, moonshot)
+    devuelven HTTP 200 y llaman a `read_file`; `thot` (gpt-6-astra, openai)
+    devuelve HTTP 400 ("Function tools with reasoning_effort are not
+    supported for gpt-6-astra in /v1/chat/completions") -- prendersela no
+    habilitaria nada, solo agregaria un 400 al dispatch. `thot` ademas es la
+    faceta arbitro (juzga lo que otros steps produjeron, no necesita leer el
+    workspace). `_seed_ada_kimi_has_tool_access` (migrations.py) sube
+    `ada`/`kimi` a TRUE y deja `thot` explicitamente afuera, con esa
+    evidencia citada en el docstring."""
     resp = client.get("/api/motors/capabilities", headers=_auth_headers())
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -54,5 +67,9 @@ def test_capabilities_expone_has_tool_access_por_motor(client):
     by_key = {m["key"]: m for m in body["motors"]}
     assert "jax_local" in by_key, by_key
     assert by_key["jax_local"]["has_tool_access"] is True, by_key["jax_local"]
+    assert "ada" in by_key, by_key
+    assert by_key["ada"]["has_tool_access"] is True, by_key["ada"]
     assert "kimi" in by_key, by_key
-    assert by_key["kimi"]["has_tool_access"] is False, by_key["kimi"]
+    assert by_key["kimi"]["has_tool_access"] is True, by_key["kimi"]
+    assert "thot" in by_key, by_key
+    assert by_key["thot"]["has_tool_access"] is False, by_key["thot"]

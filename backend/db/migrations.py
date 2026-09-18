@@ -1118,6 +1118,49 @@ async def _seed_jax_local_has_tool_access(cur) -> None:
     await cur.execute("UPDATE motor SET has_tool_access=TRUE WHERE `key`='jax_local'")
 
 
+async def _seed_ada_kimi_has_tool_access(cur) -> None:
+    """Task 5 (2026-09-18, historial-y-arreglos-de-pipeline): `jacobs` ya
+    tenia 'jacobs' en `capability.allowed_callers` de `file_read`/`file_write`
+    desde GAP2 Fase2 (2026-08-19) -- verificado contra `jax_memory` real, no
+    supuesto -- pero de los 4 motores que corren pipelines solo `jax_local`
+    tenia `has_tool_access=1`. `jacobs/plan.py` rechaza un step de
+    file_read/file_write si el motor asignado no tiene `has_tool_access`
+    (_TOOL_CAPABILITIES), asi que a `ada`/`kimi`/`thot` nunca se les ofrecia
+    el tool -- el permiso del caller era irrelevante para ellos. Esa es la
+    causa real de las invenciones que motivo esta tarea, no un hueco de
+    `allowed_callers`.
+
+    Medido hoy, una llamada real por faceta contra su proveedor real (no un
+    mock), con las credenciales de produccion:
+      - ada    (glm-5.3, zhipu)      -> HTTP 200, llamo a read_file.
+      - kimi   (kimi-k3, moonshot)   -> HTTP 200, llamo a read_file.
+      - thot   (gpt-6-astra, openai) -> HTTP 400: "Function tools with
+        reasoning_effort are not supported for gpt-6-astra in
+        /v1/chat/completions".
+
+    `thot` se deja afuera A PROPOSITO, dos razones independientes, cualquiera
+    de las dos alcanza:
+      1. Su proveedor RECHAZA la llamada -- prenderle tools hoy no habilita
+         nada, solo agrega un 400 al camino de dispatch de esa faceta.
+      2. `thot` es la faceta arbitro (ver `governance["arbitro_faceta"]` en
+         `jacobs/store.py::get_motor_governance()` y
+         `jacobs/plan.py::_con_arbitro`): juzga lo que OTROS steps
+         produjeron, no necesita leer el workspace para eso.
+    No "arreglar" esto agregando thot sin volver a medir contra su proveedor
+    real -- el 400 de arriba es la evidencia, no una suposicion.
+
+    UPDATE sin condicion de "solo si FALSE", mismo criterio que
+    `_seed_jax_local_has_tool_access`: correr esto de nuevo con ada/kimi ya
+    en TRUE es un no-op idempotente, no un riesgo. Corre DESPUES de
+    `_seed_motors_and_capabilities` (crea las filas `motor` de ada/kimi si
+    faltan) en la misma llamada a `run_migrations()`; si alguna de las dos
+    filas no existe todavia (orden invertido en el futuro), el UPDATE
+    actualiza cero filas sin error y la proxima corrida de run_migrations()
+    la agarra -- mismo comportamiento fail-soft que el resto de estos
+    backfills idempotentes."""
+    await cur.execute("UPDATE motor SET has_tool_access=TRUE WHERE `key` IN ('ada', 'kimi')")
+
+
 async def _seed_file_tools_capabilities(cur) -> None:
     """GAP2 Fase2 (2026-08-19, jax/las_manos/motor_registry/tool_authority.py):
     capabilities dedicadas para read_file/write_file -- ninguna de las 12
@@ -2699,6 +2742,7 @@ async def run_migrations():
             await _seed_motors_and_capabilities(cur)
             await _seed_jax_local_motor(cur)
             await _seed_jax_local_has_tool_access(cur)
+            await _seed_ada_kimi_has_tool_access(cur)
             await _seed_thot_motor(cur)
             await _seed_file_tools_capabilities(cur)
             await _fix_file_write_gate_and_auditor(cur)
