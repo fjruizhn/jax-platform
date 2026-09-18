@@ -749,6 +749,21 @@ CREATE TABLE IF NOT EXISTS ejecutor_pausa_audit (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# Task 8 (2026-09-18): dedup del aviso por correo al terminar un pipeline.
+# pipeline_id es la PK -- el INSERT IGNORE de aviso_pipeline._reclamar()
+# reclama el pipeline ANTES de resolver el email o mandar el correo, así que
+# dos observaciones de la misma transición (reinicio del servicio entre
+# ticks del poller, /continue que vuelve a terminar) solo ganan una. Sin FK
+# a propósito: jacobs_pipelines es del repo jax (ver el comentario del
+# bucle de _TABLES sobre idx_jacobs_pipelines_duenio), y esta tabla tiene
+# que poder reclamar un pipeline_id aunque la fila de jax ya no exista.
+CREATE_PIPELINE_AVISO_ENVIADO = """
+CREATE TABLE IF NOT EXISTS pipeline_aviso_enviado (
+  pipeline_id VARCHAR(64) PRIMARY KEY,
+  reclamado_at DATETIME DEFAULT NOW()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 _TABLES = [
     ("jax_tenants", CREATE_TENANTS),
     ("jax_users", CREATE_USERS),
@@ -784,6 +799,7 @@ _TABLES = [
     ("ejecutor_turno", CREATE_EJECUTOR_TURNO),
     ("ejecutor_bitacora", CREATE_EJECUTOR_BITACORA),
     ("ejecutor_pausa_audit", CREATE_EJECUTOR_PAUSA_AUDIT),              # sin FK a propósito, como kill_switch_audit
+    ("pipeline_aviso_enviado", CREATE_PIPELINE_AVISO_ENVIADO),          # sin FK a propósito, ver comentario arriba
 ]
 
 # transport, requires_tool_use, auto_selectable — valores actuales reales

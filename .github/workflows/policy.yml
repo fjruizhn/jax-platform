@@ -1751,7 +1751,10 @@ jobs:
           #   pipelines.py de la Task 7 (c6166c8): `assert 4.0 is None` -- duracion_s
           #   seguía saliendo numérico. Medido local contra jax_memory_test: 2351 passed,
           #   1 skipped, 0 fallidos.
-          PISO_PASSED = 2351
+          # 2351 -> 2365 el 2026-09-18 (Task 8, aviso por correo al terminar un pipeline):
+          #   +14 tests nuevos en tests/test_aviso_pipeline.py, medidos en verde contra
+          #   jax_memory_test (aviso_pipeline.py + la tabla pipeline_aviso_enviado).
+          PISO_PASSED = 2365
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2357,7 +2360,13 @@ jobs:
       # Medido con JAX_CI_NO_DB=1: 1563 passed / 735 skipped.
       # 1563 -> 1582 el 2026-09-17 (limite de profundidad JSON): +19 puros y +4
       # skips, SUMADO a los pisos anteriores del dia.
-      JAX_CI_MIN_PASSED: "1582"
+      # 1582 -> 1598 el 2026-09-18 (Task 8, aviso por correo al terminar un pipeline):
+      # +16 con JAX_CI_NO_DB=1 medido contra este arbol (6 de los 14 tests nuevos de
+      # tests/test_aviso_pipeline.py no tocan la DB y corren acá; los otros 8 se
+      # saltan solos por la Regla 1, ver conftest.py). El resto del delta es
+      # variacion normal de este runner sin DB frente al valor anterior, no
+      # atribuible a esta tarea -- medido en verde, no restado.
+      JAX_CI_MIN_PASSED: "1598"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

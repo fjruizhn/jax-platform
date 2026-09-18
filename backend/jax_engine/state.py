@@ -4,6 +4,7 @@ import logging
 import os
 from tiempo import utc_ahora
 import httpx
+import aviso_pipeline
 from http_client import get_http_client
 from credencial_las_manos import encabezados_las_manos
 from db.connection import get_pool
@@ -230,6 +231,12 @@ class JAXEngineState:
                 await event_bus.publish(gate_event)
 
             if updated.status in ("completed", "failed"):
+                # Task 8 (2026-09-18): aviso por correo al dueño. Síncrona y
+                # no bloqueante -- dispara su propia Task y suelta el
+                # control ya mismo (ver aviso_pipeline.py); un SMTP lento no
+                # puede frenar este tick ni los de las demás pipelines.
+                aviso_pipeline.encolar_aviso_fin_pipeline(
+                    pid, pipeline.tenant_id, updated.user_id, updated.status, updated.name)
                 self.remove_pipeline(pid)
                 # cancel_pipeline() ya liberaba el slot del tenant; una
                 # pipeline que termina SOLA (no cancelada) nunca lo hacía,
