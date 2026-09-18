@@ -8,13 +8,14 @@ import os
 import smtplib
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 import smtp_config
 from crypto_secrets import clave_de_cifrado_utilizable
 from auth.middleware import SESION_INVALIDA, require_superadmin
 from auth.models import AuthUser
+from auth import rate_limit
 from auth.rate_limit import SlidingWindowLimiter, parse_rate
 from db.connection import get_pool
 from validacion import EMAIL_MAX, direccion_unica_valida, tiene_caracteres_de_control
@@ -100,7 +101,7 @@ def _validar_entrada(req: SmtpConexion) -> None:
 
 
 @router.put("/smtp")
-async def guardar_smtp(req: SmtpUpdate, user: AuthUser = Depends(require_superadmin)):
+async def guardar_smtp(req: SmtpUpdate, request: Request, user: AuthUser = Depends(require_superadmin)):
     # Antes de leer o cifrar nada: sin FERNET_KEY (o con una malformada) no se
     # puede ni verificar la guardada ni cifrar una nueva -- nunca en claro.
     if not clave_de_cifrado_utilizable():
@@ -121,7 +122,8 @@ async def guardar_smtp(req: SmtpUpdate, user: AuthUser = Depends(require_superad
     except (smtp_config.SmtpExigeContrasena, smtp_config.SmtpReescribirContrasena) as exc:
         # 422 y no 500: quien opera lo resuelve volviendo a escribir la contraseña.
         raise HTTPException(status_code=422, detail=exc.codigo) from exc
-    await smtp_config.guardar_filas(filas)
+    await smtp_config.guardar_filas(filas, int(user.user_id),
+                                    rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES))
     if motivo_previo is not None:
         logger.warning("SMTP reconfigurado sobre un estado corrupto (motivo anterior: %s) por user_id=%s",
                        motivo_previo, user.user_id)

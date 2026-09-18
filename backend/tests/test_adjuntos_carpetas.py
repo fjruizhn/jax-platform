@@ -101,7 +101,12 @@ def test_la_cuota_no_lista_ni_abre_la_carpeta_de_otro_usuario(directorio, monkey
     assert len(rutas_ajenas) == 100
     _texto(directorio)
     grabador = _Grabador(monkeypatch)
-    assert almacen.uso_de_usuario(directorio, "5") == 4
+    # `ahora=AHORA`, como el resto del archivo (2026-09-18): los adjuntos se
+    # guardan con AHORA = 2026-09-17 12:00 UTC y TTL de 24 h, pero esta llamada
+    # usaba el reloj REAL. A partir del 2026-09-18 12:00 UTC los contaba
+    # vencidos y daba 0: el test se ponía rojo solo, por la fecha, sin que
+    # cambiara una línea de código. Bomba de tiempo, no una regresión.
+    assert almacen.uso_de_usuario(directorio, "5", ahora=AHORA) == 4
     tocadas = set(grabador.rutas)
     assert tocadas.isdisjoint(rutas_ajenas)
     assert grabador.tocadas_bajo(directorio / "6") == []

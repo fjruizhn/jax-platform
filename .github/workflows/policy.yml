@@ -749,7 +749,10 @@ jobs:
         # pydantic ademas de aiomysql: jacobs.store importa jacobs.models.
         run: |
           pip install aiomysql pydantic
-          PYTHONPATH=/tmp/jax python -c "import asyncio; from jacobs import store; asyncio.run(store.init_tables())"
+          # `las_manos` en el PYTHONPATH: desde el frente B (2026-09-17), jacobs.policy importa
+          # `interruptor`, que vive en jax/core y se expone como las_manos/interruptor.py. Sin eso
+          # el paso muere con ModuleNotFoundError y el job no llega ni a correr un test.
+          PYTHONPATH=/tmp/jax:/tmp/jax/las_manos python -c "import asyncio; from jacobs import store; asyncio.run(store.init_tables())"
 
       - name: Suite backend (con DB)
         run: python -m pytest -q -rs --junitxml=junit-db.xml
@@ -1685,7 +1688,22 @@ jobs:
           #   no esta, y el sembrado legado de /api/admin/keys no revienta sin permiso). Vistos en rojo.
           #   Medido local contra jax_memory_test como fruiz: 2324 passed, 1 skipped, 0 fallidos.
           #   Si el runner da otro numero, manda el runner.
-          PISO_PASSED = 2324
+          # 2324 -> 2338 el 2026-09-18 (auditoria de TODA escritura de configuracion):
+          #   +14 de tests/test_config_audit.py (quien/que/cuando de cada cambio de
+          #   axioma_config, la clave REAL que pisa la collation, una fila por cambio
+          #   REAL, fail-closed en la misma transaccion, redaccion de smtp.password,
+          #   EXPLAIN del historial y el detector de escritores fuera del camino
+          #   auditado). Los 14 vistos en rojo contra origin/master (4cc1eb2) y cada
+          #   uno ejercitado con una mutacion del codigo nuevo.
+          #   OJO: master medido el mismo dia daba 2323, no 2324 -- no es un test que
+          #   falte, es tests/test_adjuntos_carpetas.py::test_la_cuota_no_lista_ni_abre_
+          #   la_carpeta_de_otro_usuario, que llamaba a uso_de_usuario con el reloj REAL
+          #   mientras guardaba los adjuntos con AHORA=2026-09-17 12:00 y TTL 24 h: a
+          #   partir del 2026-09-18 12:00 UTC se ponia rojo SOLO, por la fecha. Esta
+          #   rama le pasa ahora=AHORA, como el resto del archivo, y vuelve a los 2324.
+          #   Medido local contra jax_memory_test como fruiz: 2338 passed, 1 skipped,
+          #   0 fallidos. Si el runner da otro numero, manda el runner.
+          PISO_PASSED = 2338
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
