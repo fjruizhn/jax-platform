@@ -143,6 +143,10 @@ export default {
     costo_supera_lo_aceptado: () => 'El costo máximo subió por encima de lo que confirmaste. Revísalo y vuelve a confirmar.',
     reasignacion_invalida: () => 'La reasignación de facetas no es válida para este plan.',
     prevuelo_no_disponible: () => 'El pre-vuelo no está disponible: sin él no se corre nada.',
+    // jax 2026-09-17: el cupo lo hace cumplir una condición dentro de la
+    // escritura, y bajo carga dos escrituras pueden trabarse entre sí. No es un
+    // error del sistema ni un pedido inválido: es «volvé a intentar».
+    contencion_al_reservar: () => 'La base está muy pedida en este momento y no se pudo reservar el lugar. No se creó nada: volvé a intentar en un momento.',
     estado_no_continuable: (d) => {
       if (d.status === null || d.status === undefined) {
         return 'Otro pedido cambió este pipeline mientras tanto: recarga la página para ver su estado.'
