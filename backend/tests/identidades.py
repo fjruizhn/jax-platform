@@ -63,6 +63,7 @@ async def borrar_usuario(user_id):
     await sql(f"DELETE FROM ejecutor_turno WHERE mision_id IN ({misiones})", (user_id,))
     await sql("DELETE FROM ejecutor_mision WHERE user_id = %s", (user_id,))
     await sql("DELETE FROM user_admin_audit WHERE target_user_id = %s OR actor_user_id = %s", (user_id, user_id))
+    await sql("DELETE FROM axioma_config_audit WHERE actor_user_id = %s", (user_id,))
     await sql("DELETE FROM password_reset_tokens WHERE user_id = %s", (user_id,))
     await sql("DELETE FROM jax_users WHERE user_id = %s", (user_id,))
 

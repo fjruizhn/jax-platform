@@ -33,6 +33,9 @@ async def _sql(q, args=(), fetch=False):
 
 async def _borrar_smtp():
     await _sql("DELETE FROM axioma_config WHERE config_key LIKE %s", ("smtp.%",))
+    # Desde el 2026-09-18 guardar SMTP deja auditoría (config_audit): la tabla
+    # no tiene FK, así que la limpia quien la ensucia.
+    await _sql("DELETE FROM axioma_config_audit WHERE config_key LIKE %s", ("smtp.%",))
 
 
 async def _filas_smtp():
@@ -412,7 +415,7 @@ def test_guardar_filas_es_atomico(client, monkeypatch):
     monkeypatch.setattr(aiomysql.Cursor, "execute", falla_en_la_contrasena)
     with pytest.raises(aiomysql.OperationalError):
         client.portal.call(smtp_config.guardar_filas, smtp_config.filas_a_guardar(
-            antes, _config(host="nuevo.example.test", password="otra-clave")))
+            antes, _config(host="nuevo.example.test", password="otra-clave")), 1)
     monkeypatch.setattr(aiomysql.Cursor, "execute", original)
     assert client.portal.call(_filas_smtp) == antes
 
@@ -528,7 +531,7 @@ def test_guardar_filas_fallido_deshace_y_restaura_el_autocommit(client, monkeypa
     monkeypatch.setattr(aiomysql.Cursor, "execute", falla_en_la_contrasena)
     monkeypatch.setattr(aiomysql.Connection, "rollback", espia_rollback)
     with pytest.raises(aiomysql.OperationalError):
-        client.portal.call(smtp_config.guardar_filas, smtp_config.filas_a_guardar(antes, _cambios_nuevos()))
+        client.portal.call(smtp_config.guardar_filas, smtp_config.filas_a_guardar(antes, _cambios_nuevos()), 1)
     monkeypatch.setattr(aiomysql.Cursor, "execute", original)
     (conn,) = conexiones
     assert not conn.closed and conn.get_autocommit() is True  # vuelve al pool como estaba
@@ -557,7 +560,7 @@ def test_guardar_filas_con_rollback_que_falla_propaga_el_error_original(client, 
     monkeypatch.setattr(aiomysql.Cursor, "execute", falla_en_la_contrasena)
     monkeypatch.setattr(aiomysql.Connection, "rollback", rollback_roto)
     with pytest.raises(aiomysql.OperationalError):
-        client.portal.call(smtp_config.guardar_filas, smtp_config.filas_a_guardar(antes, _cambios_nuevos()))
+        client.portal.call(smtp_config.guardar_filas, smtp_config.filas_a_guardar(antes, _cambios_nuevos()), 1)
     monkeypatch.undo()
     (conn,) = conexiones
     assert conn.closed

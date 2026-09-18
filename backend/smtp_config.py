@@ -33,6 +33,7 @@ from email.utils import formataddr, formatdate, make_msgid
 
 from fastapi import HTTPException
 
+import config_audit
 from crypto_secrets import decrypt_db_secret, encrypt_secret
 from db.connection import get_pool
 from validacion import direccion_unica_valida, tiene_caracteres_de_control
@@ -268,23 +269,24 @@ async def leer_filas() -> dict[str, str]:
             return {clave: valor for clave, valor in await cur.fetchall()}
 
 
-async def guardar_filas(filas: dict[str, str]) -> None:
+async def guardar_filas(filas: dict[str, str], actor_user_id: int, ip: str | None = None) -> None:
     """Todas las filas en UNA transacción. Con el autocommit del pool, un
     INSERT por fila dejaba unos ms el host nuevo con la contraseña vieja
     (smtp.password va última): un envío en esa ventana autenticaba contra el
-    host nuevo con la contraseña vieja (revisión final, 2026-09-13)."""
+    host nuevo con la contraseña vieja (revisión final, 2026-09-13).
+
+    Desde el 2026-09-18 escribe por config_audit: smtp.* es configuración y
+    también tiene que decir quién la cambió. Va en la MISMA transacción, así
+    que si la auditoría falla no queda el cambio sin rastro. smtp.password se
+    audita REDACTADA (config_audit.CLAVES_REDACTADAS): en la tabla va cifrada
+    y la auditoría no necesita una segunda copia del secreto."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         autocommit_previo = conn.get_autocommit()
         await conn.autocommit(False)
         try:
             async with conn.cursor() as cur:
-                for clave, valor in filas.items():
-                    await cur.execute(
-                        "INSERT INTO axioma_config (config_key, config_value) VALUES (%s, %s) "
-                        "ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)",
-                        (clave, valor),
-                    )
+                await config_audit.escribir(cur, filas, actor_user_id, "smtp", ip)
             await conn.commit()
         except BaseException:
             # _deshacer no lanza: el error que se propaga es SIEMPRE el original.

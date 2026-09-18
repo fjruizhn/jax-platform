@@ -610,6 +610,29 @@ CREATE TABLE IF NOT EXISTS kill_switch_audit (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# Auditoría de TODA escritura de configuración (2026-09-18). Origen: el
+# 2026-09-17 la compuerta ejecutor.c5_auditor_admite_datos_de_clientes apareció
+# en `true` y por la base no se podía saber quién la había cambiado.
+# Sin FK a jax_users, como user_admin_audit y kill_switch_audit: la historia
+# sobrevive a la baja del usuario. `ts` en UTC explícito (lo escribe
+# config_audit.escribir, el único escritor). config_key VARCHAR(100), igual que
+# axioma_config. valor_anterior NULL = la clave no existía. El historial de una
+# clave sale por idx_axioma_config_audit_key_ts (EXPLAIN en los tests).
+CREATE_AXIOMA_CONFIG_AUDIT = """
+CREATE TABLE IF NOT EXISTS axioma_config_audit (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  ts DATETIME(6) NOT NULL,
+  actor_user_id INT NOT NULL,
+  config_key VARCHAR(100) NOT NULL,
+  valor_anterior TEXT NULL,
+  valor_nuevo TEXT NOT NULL,
+  origen VARCHAR(10) NOT NULL,
+  ip VARCHAR(45) NULL,
+  CONSTRAINT chk_axioma_config_audit_origen CHECK (origen IN ('config', 'smtp')),
+  INDEX idx_axioma_config_audit_key_ts (config_key, ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 # Ejecutor SP1 (plan 1, 2026-09-17). Catálogos que no crecen (inventario y reglas:
 # decenas de filas) y una tabla que sí (puntos de restauración, con índice para la
 # única consulta que la lee: el último verificado por máquina).
@@ -753,6 +776,7 @@ _TABLES = [
     ("facet_health_alert", CREATE_FACET_HEALTH_ALERT),
     ("user_admin_audit", CREATE_USER_ADMIN_AUDIT),    # sin FK a propósito
     ("kill_switch_audit", CREATE_KILL_SWITCH_AUDIT),  # sin FK a propósito
+    ("axioma_config_audit", CREATE_AXIOMA_CONFIG_AUDIT),  # sin FK a propósito
     ("ejecutor_host", CREATE_EJECUTOR_HOST),                            # antes de punto_restauracion (FK)
     ("ejecutor_regla", CREATE_EJECUTOR_REGLA),
     ("ejecutor_punto_restauracion", CREATE_EJECUTOR_PUNTO_RESTAURACION),
@@ -2588,6 +2612,19 @@ async def _ejecutor_config_c5_v1(cur) -> None:
         await cur.execute("INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES (%s, %s)", (clave, valor))
 
 
+# Tema por defecto de la instancia (2026-09-18). Antes lo sembraba, con INSERT
+# IGNORE, el GET de /api/admin/config: una LECTURA que escribía configuración
+# por fuera del camino auditado. La semilla vive acá, como la de C5, con la
+# misma regla: INSERT IGNORE en cada arranque, nunca pisa lo que puso el admin.
+# El valor sigue siendo el de api.admin.config_admin.DEFAULT_CONFIG, que es
+# también el respaldo de GET /api/apariencia cuando la fila no está.
+async def _apariencia_default_v1(cur) -> None:
+    from api.admin.config_admin import DEFAULT_CONFIG
+
+    for clave, valor in DEFAULT_CONFIG.items():
+        await cur.execute("INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES (%s, %s)", (clave, valor))
+
+
 async def _indices_de_model_binding_proposal(cur) -> None:
     """PR-L ronda 2: los índices de list_proposals en una base donde la tabla
     ya existía sin ellos (en una base nueva los trae el CREATE). Idempotente."""
@@ -2635,6 +2672,7 @@ async def run_migrations():
             await _ejecutor_reglas_envoltorios_v1(cur)
             await _ejecutor_inventario_v1(cur)
             await _ejecutor_config_c5_v1(cur)
+            await _apariencia_default_v1(cur)
             await _seed_providers(cur)
             await _migrate_user_api_keys_to_credential(cur)
             await _seed_facets(cur)

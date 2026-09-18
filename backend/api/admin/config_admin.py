@@ -1,12 +1,15 @@
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import List
 import ajustes
+import config_audit
+from auth import rate_limit
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
+from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 
 router = APIRouter(prefix="/api/admin")
 
@@ -18,18 +21,15 @@ router = APIRouter(prefix="/api/admin")
 # ws_notifications tampoco: se retiró (A-17, 2026-09-16) y su fila la borra,
 # una sola vez, la misma migración -- si siguiera acá, _ensure_defaults la
 # recrearía en cada GET.
+# theme_default tampoco lo siembra este módulo desde el 2026-09-18: la fila la
+# pone db/migrations.py::_apariencia_default_v1 en cada arranque (INSERT
+# IGNORE, sin pisar lo del admin). Antes la creaba el GET de acá -- una LECTURA
+# que escribía configuración por fuera del camino auditado, que es justo lo que
+# esta rama cerró. Si la fila faltara, GET /api/apariencia sigue respondiendo
+# con este mismo valor de respaldo.
 DEFAULT_CONFIG = {
     "theme_default": "dark",
 }
-
-
-async def _ensure_defaults(conn):
-    async with conn.cursor() as cur:
-        for k, v in DEFAULT_CONFIG.items():
-            await cur.execute(
-                "INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES (%s, %s)",
-                (k, v),
-            )
 
 
 # smtp.* tiene su propia pantalla (api/admin/smtp.py): la contraseña va
@@ -45,7 +45,6 @@ PREFIJO_RESERVADO = "smtp."
 async def get_config(user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await _ensure_defaults(conn)
         async with conn.cursor() as cur:
             # Tabla chica de configuración, recorrida por la PK para el ORDER BY.
             # Antes filtraba con NOT LIKE 'smtp.%', que compara carácter a
@@ -126,7 +125,8 @@ async def _reservadas_para_la_base(cur, claves: list[str]) -> set[str]:
 
 
 @router.put("/config")
-async def update_config(items: List[ConfigItem], user: AuthUser = Depends(require_superadmin)):
+async def update_config(items: List[ConfigItem], request: Request,
+                        user: AuthUser = Depends(require_superadmin)):
     # Antes de escribir NADA: un lote con una clave reservada no se aplica a
     # medias. Primero el filtro barato (mayúsculas, espacios alrededor); la
     # autoridad es la base, con su collation.
@@ -134,9 +134,14 @@ async def update_config(items: List[ConfigItem], user: AuthUser = Depends(requir
         raise HTTPException(status_code=400, detail="config_clave_reservada")
     if not items:
         return {"ok": True}
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
+    # Todo en UNA transacción (2026-09-18): el cambio y su auditoría, o
+    # ninguno. Si el INSERT de config_audit falla, el UPDATE se revierte con
+    # él -- fail-closed, sin try/except que lo tape. Las guardas de abajo
+    # también revierten: `transaccion` deshace ante CUALQUIER excepción,
+    # incluida la HTTPException. READ COMMITTED, como el resto de las
+    # escrituras de admin.
+    try:
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
             claves = [item.key for item in items]
             if await _reservadas_para_la_base(cur, claves):
                 raise HTTPException(status_code=400, detail="config_clave_reservada")
@@ -151,14 +156,13 @@ async def update_config(items: List[ConfigItem], user: AuthUser = Depends(requir
                 except ajustes.ValorInvalido:
                     raise HTTPException(status_code=400,
                                         detail={"code": "config_valor_invalido", "clave": canonica}) from None
-            try:
-                for item in items:
-                    await cur.execute(
-                        "INSERT INTO axioma_config (config_key, config_value) VALUES (%s, %s) "
-                        "ON DUPLICATE KEY UPDATE config_value = %s",
-                        (item.key, item.value, item.value),
-                    )
-            finally:
-                # Incluso a medias: lo que sí se escribió se tiene que ver ya.
-                ajustes.invalidar()
+            await config_audit.escribir(
+                cur, {item.key: item.value for item in items}, int(user.user_id), "config",
+                rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES))
+    finally:
+        # FUERA del `async with`: adentro correría ANTES del commit, y una
+        # lectura en esa ventana volvería a cachear el valor viejo. Acá corre
+        # con la transacción ya cerrada, haya confirmado o revertido -- en los
+        # dos casos el caché tiene que dejar de mandar.
+        ajustes.invalidar()
     return {"ok": True}
