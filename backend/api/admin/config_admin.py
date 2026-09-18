@@ -27,9 +27,9 @@ router = APIRouter(prefix="/api/admin")
 # que escribía configuración por fuera del camino auditado, que es justo lo que
 # esta rama cerró. Si la fila faltara, GET /api/apariencia sigue respondiendo
 # con este mismo valor de respaldo.
-DEFAULT_CONFIG = {
-    "theme_default": "dark",
-}
+# El valor vive en config_defaults (sin capa de API): la migración que lo siembra no puede
+# importar este módulo, porque arrastra auth/jwt y su JAX_JWT_SECRET.
+from config_defaults import DEFAULT_CONFIG  # noqa: E402
 
 
 # smtp.* tiene su propia pantalla (api/admin/smtp.py): la contraseña va
