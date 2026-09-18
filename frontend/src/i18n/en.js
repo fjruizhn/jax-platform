@@ -384,7 +384,6 @@ export default {
     critique: 'Critique the plan',
     unify: 'Merge plan and critique',
     produce: 'Produce',
-    audit: 'Audit',
   },
   chainCleanroomWarning: (role, facet, depRole) =>
     `${role}: ${facet} cannot audit what it produced in “${depRole}”. Pick another facet.`,
@@ -412,15 +411,12 @@ export default {
     produce:
       'Role: producer. Using the merged plan, produce the complete deliverable. Follow it; if you deviate, ' +
       'say where and why.',
-    audit:
-      'Role: independent auditor. Your only source of truth is the research and the objective: do not accept ' +
-      'the plan, the critique or the product as sources. ' +
-      '1) Mark as NOT VERIFIED every claim in the product that the research does not support, and every ' +
-      'quote that does not appear in it. ' +
-      '2) Point out contradictions between the product and the merged plan. ' +
-      '3) Measurement against the original critique (not against what the plan says about it): for each ' +
-      'numbered critique finding, say whether it reached the product, whether the merged plan rejected it ' +
-      'with a reason, or whether it was lost without explanation. Close with the count of each case.',
+    // The "audit" role (independent auditor, 2026-09-12 round) was removed
+    // from the chain in the 2026-09-18 fix round: the arbiter Jacobs appends
+    // on its own at the end of any 2+ step plan (jacobs/plan.py::_con_arbitro)
+    // depends on ALL steps -- not just research+critique+product, like this
+    // one -- and does that job with more context. See the full comment on
+    // CHAIN_ROLES in components/BottomBar/pipelineChain.js.
   },
 
   // Center panel

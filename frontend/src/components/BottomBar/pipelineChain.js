@@ -41,40 +41,44 @@ export const ARBITRO_FACETA = 'thot'
 
 // dependsOn es el contexto MÍNIMO de cada paso: cada dependencia reenvía su
 // salida entera al modelo, y eso se paga en cada llamada (blueprint de
-// Ricardo §9/§11). La auditoría recibe la investigación (su única fuente de
-// verdad), la crítica y el producto -- no el borrador.
+// Ricardo §9/§11).
 //
-// La crítica entra a la auditoría desde 2026-09-12 (decisión de Fernando):
-// sin ella el auditor medía contra lo que el plan DECLARABA haber aceptado,
-// no contra lo que la crítica dijo (E2E b2d87971). Consecuencia: crítica y
-// auditoría ya no pueden ser la misma faceta (auditoría independiente).
+// La crítica entra a "unify" desde 2026-09-12 (decisión de Fernando): sin
+// ella la reconciliación medía contra lo que el plan DECLARABA haber
+// aceptado, no contra lo que la crítica dijo (E2E b2d87971).
 //
-// El paso "audit" YA NO puede ser 'thot' por defecto (fix bloqueante
-// 2026-09-18, ver ARBITRO_FACETA arriba): el servidor reserva esa faceta
-// para el árbitro que agrega solo, al final, y rechaza el plan entero si
-// aparece como productor. Medido contra el catálogo real de capability_motor
-// (pipelineChain.test.js::CAPS, "forma real de GET /api/motors/capabilities"):
-// validate_consistency solo admite {thot, ada} -- jax_local NO está en la
-// lista (lo intenté primero; el propio catálogo de test lo rechazó:
-// "Auditar: la faceta elegida no está permitida... según el catálogo").
-// 'thot' está prohibido por la sala limpia, así que 'ada' es la ÚNICA
-// faceta que el catálogo real permite para esta capability.
-// 'ada' choca con la auditoría independiente si "audit" sigue dependiendo de
-// "unify" (mismo defaultFacet 'ada') -- así que ese vínculo se saca de
-// dependsOn acá. Se pierde la comparación directa contra el plan unificado
-// en bruto (dato: "unify" ya se lo pasa a "produce", así que su esencia
-// sigue llegando, indirecta, vía el producto). Cambia el contrato del
-// 2026-09-12 citado arriba -- PARA FERNANDO: si "el plan unificado" tiene
-// que seguir siendo una entrada DIRECTA de la auditoría, hace falta otra
-// faceta bindeada a validate_consistency en capability_motor (hoy solo
-// thot/ada) o mover "unify" a otra faceta que no sea 'ada'.
+// EL PASO "audit" SE SACÓ de la cadena por defecto (fix bloqueante
+// 2026-09-18, ronda de arreglo del historial). Historia completa, para que
+// nadie lo reponga de buena fe creyendo que fue un olvido:
+//
+// Esta misma ronda agregó, del lado del servidor (jacobs/plan.py::_con_arbitro),
+// un paso árbitro que Jacobs agrega SOLO al final de CUALQUIER plan de 2+
+// pasos -- hoy siempre 'thot' (ARBITRO_FACETA arriba) -- que depende de
+// TODOS los pasos anteriores y produce una decisión donde cada punto cita
+// el paso que lo sostiene. Eso es estrictamente MÁS de lo que "audit" hacía:
+// "audit" miraba investigación+crítica+producto (tres de cinco pasos); el
+// árbitro los mira TODOS.
+// Mantener "audit" habría exigido mutilarlo para esquivar dos reglas a la
+// vez: la sala limpia (prohíbe 'thot', que es el único no-productor de la
+// cadena) y la auditoría independiente (con 'ada' -- la única otra faceta
+// que el catálogo real de capability_motor admite para
+// `validate_consistency`, medido contra pipelineChain.test.js::CAPS --
+// "audit" no podía seguir dependiendo de "unify", que también es 'ada').
+// El resultado hubiera sido un control con la FORMA de "audit" pero que ve
+// menos de lo que dice ver -- peor que no tenerlo, porque parece que alguien
+// revisó. Mismo razonamiento con el que esta ronda ya sacó el paso fijo de
+// validación de consistencia (thot) del prompt modular de Ada del lado del
+// servidor: las dos piezas se solapaban en propósito, y la que sobrevive es
+// la que ve más.
+// Si en el futuro hace falta una revisión INTERMEDIA (no al final, con
+// menos contexto que el árbitro) es una necesidad nueva, no la resurrección
+// de este paso -- hay que diseñarla de cero contra las reglas de hoy.
 export const CHAIN_ROLES = [
   { id: 'research', capability: 'research',             defaultFacet: 'hipatia', dependsOn: [] },
   { id: 'plan',     capability: 'design',               defaultFacet: 'ada',     dependsOn: [0] },
   { id: 'critique', capability: 'critique',             defaultFacet: 'jekyll',  dependsOn: [0, 1] },
   { id: 'unify',    capability: 'reconcile',            defaultFacet: 'ada',     dependsOn: [1, 2] },
   { id: 'produce',  capability: 'generate',             defaultFacet: 'kimi',    dependsOn: [3] },
-  { id: 'audit',    capability: 'validate_consistency', defaultFacet: 'ada',     dependsOn: [0, 2, 4] },
 ]
 
 // Modo por defecto según la forma (decisión de Fernando, 2026-09-12). En

@@ -53,7 +53,11 @@ function renderModal(props = {}, { layout = 'parallel' } = {}) {
 }
 
 describe('PipelineModal -- cadena en línea', () => {
-  it('la cadena es la forma por defecto y manda 6 pasos encadenados por depends_on', async () => {
+  it('la cadena es la forma por defecto y manda 5 pasos encadenados por depends_on', async () => {
+    // "audit" se sacó de la cadena en la ronda de arreglo (2026-09-18): el
+    // árbitro que Jacobs agrega SOLO al final de cualquier plan de 2+ pasos
+    // ve TODOS los pasos, más de lo que "audit" veía -- ver el comentario
+    // completo sobre CHAIN_ROLES en pipelineChain.js.
     let submitted = null
     renderModal({ onSubmit: (p) => { submitted = p; return Promise.resolve() } }, { layout: 'chain' })
     await waitFor(() => expect(api.get).toHaveBeenCalled())
@@ -63,12 +67,10 @@ describe('PipelineModal -- cadena en línea', () => {
 
     await waitFor(() => expect(submitted).not.toBeNull())
     expect(submitted.steps.map(s => s.capability)).toEqual([
-      'research', 'design', 'critique', 'reconcile', 'generate', 'validate_consistency',
+      'research', 'design', 'critique', 'reconcile', 'generate',
     ])
-    // audit ya no depende de unify (paso 3, fix bloqueante 2026-09-18): ver
-    // el comentario de CHAIN_ROLES en pipelineChain.js.
-    expect(submitted.steps.map(s => s.depends_on)).toEqual([[], [0], [0, 1], [1, 2], [3], [0, 2, 4]])
-    expect(submitted.max_steps).toBe(6)
+    expect(submitted.steps.map(s => s.depends_on)).toEqual([[], [0], [0, 1], [1, 2], [3]])
+    expect(submitted.max_steps).toBe(5)
     expect(submitted.steps[4]).toMatchObject({ facet: 'kimi', motor: 'kimi' })
     submitted.steps.forEach(s => expect(s).not.toHaveProperty('timeout_seconds'))
   })
@@ -142,15 +144,17 @@ describe('PipelineModal -- cadena en línea', () => {
     expect(submitted.mode).toBe('supervised')
   })
 
-  it('si el auditor coincide con quien produjo, avisa y no deja enviar', async () => {
+  it('si un paso coincide con la faceta de algo de lo que depende, avisa y no deja enviar (cleanroom)', async () => {
+    // "audit" se sacó de la cadena (ronda de arreglo 2026-09-18, el árbitro
+    // que agrega el servidor ya hace ese trabajo -- ver pipelineChain.js).
+    // "Criticar el plan" sigue dependiendo de "Maquetar y planificar"
+    // (default 'ada'): reproduce la misma colisión de cleanroom con un rol
+    // que sigue existiendo.
     renderModal({}, { layout: 'chain' })
     await waitFor(() => expect(api.get).toHaveBeenCalled())
     await waitFor(() => expect(screen.getByText(/Planificar y ejecutar/i)).not.toBeDisabled())
 
-    // El auditor por defecto es ada (2026-09-18: thot quedó reservado al
-    // árbitro, ver el describe de abajo) -- para reproducir la colisión
-    // vieja de cleanroom hace falta que Producir use la MISMA faceta.
-    fireEvent.change(screen.getByLabelText('Producir'), { target: { value: 'ada' } })
+    fireEvent.change(screen.getByLabelText('Criticar el plan'), { target: { value: 'ada' } })
 
     expect(screen.getByText(/no puede auditar lo que produjo/i)).toBeInTheDocument()
     expect(screen.getByText(/Planificar y ejecutar/i)).toBeDisabled()

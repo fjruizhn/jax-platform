@@ -408,7 +408,6 @@ export default {
     critique: 'Criticar el plan',
     unify: 'Unificar plan y crítica',
     produce: 'Producir',
-    audit: 'Auditar',
   },
   chainCleanroomWarning: (role, facet, depRole) =>
     `${role}: ${facet} no puede auditar lo que produjo en «${depRole}». Elige otra faceta.`,
@@ -436,15 +435,13 @@ export default {
     produce:
       'Rol: productor. Con el plan unificado, produce el entregable completo. Síguelo; si te apartas de él, ' +
       'di dónde y por qué.',
-    audit:
-      'Rol: auditor independiente. Tu única fuente de verdad es la investigación y el objetivo: no aceptes ' +
-      'como fuente el plan, la crítica ni el producto. ' +
-      '1) Marca como NO VERIFICADA toda afirmación del producto que no esté respaldada por la investigación, ' +
-      'y toda cita que no aparezca en ella. ' +
-      '2) Señala las contradicciones entre el producto y el plan unificado. ' +
-      '3) Medición contra la crítica original (no contra lo que el plan dice de ella): para cada hallazgo ' +
-      'numerado de la crítica, di si llegó al producto, si el plan unificado lo rechazó con una razón, o si se ' +
-      'perdió sin explicación. Cierra con el conteo de cada caso.',
+    // El rol "audit" (auditor independiente, ronda 2026-09-12) se sacó de la
+    // cadena en la ronda de arreglo del 2026-09-18: el árbitro que Jacobs
+    // agrega SOLO al final de cualquier plan de 2+ pasos
+    // (jacobs/plan.py::_con_arbitro) depende de TODOS los pasos -- no sólo
+    // de investigación+crítica+producto, como éste -- y hace ese trabajo
+    // con más contexto. Ver el comentario completo en
+    // components/BottomBar/pipelineChain.js sobre CHAIN_ROLES.
   },
 
   // Center panel
