@@ -8,7 +8,7 @@ const err = (detail) => ({ response: { data: { detail } } })
 describe('textoDeErrorDeMesa (A-51)', () => {
   it('traduce un código con datos y agrega lo que respondió el servicio', () => {
     const texto = textoDeErrorDeMesa(es, err({ code: 'proveedor_error_http', facet: 'thot', status: 400, motivo: 'bad request' }), es.errorFacet)
-    expect(texto).not.toBe(`${es.erroresMesa.proveedor_error_http({ facet: 'thot', status: 400 })} ${es.respuestaDelServicio('bad request')}`)
+    expect(texto).toBe(`${es.erroresMesa.proveedor_error_http({ facet: 'thot', status: 400 })} ${es.respuestaDelServicio('bad request')}`)
     expect(texto).not.toContain('proveedor_error_http')
   })
 
