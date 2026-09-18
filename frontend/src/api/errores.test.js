@@ -82,7 +82,9 @@ describe('pre-vuelo y continuar (spec 2026-09-17)', () => {
     // Revisión final, crítico 1: el objetivo va al pre-vuelo con tope.
     'objetivo_invalido',
     // Revisión final, menor 7a: reasignar con tope.
-    'reasignacion_fuera_de_forma']
+    'reasignacion_fuera_de_forma',
+    // jax 2026-09-17 (unión del cupo): el 503 de contención al reservar.
+    'contencion_al_reservar']
 
   it('cada código nuevo se traduce en los dos idiomas y no sale crudo', () => {
     for (const d of [es, en]) {

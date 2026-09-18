@@ -143,6 +143,8 @@ export default {
     costo_supera_lo_aceptado: () => 'The maximum cost rose above what you confirmed. Review it and confirm again.',
     reasignacion_invalida: () => 'The facet reassignment is not valid for this plan.',
     prevuelo_no_disponible: () => 'The preflight is not available: nothing runs without it.',
+    // jax 2026-09-17: see es.js -- contention, not a failure and not a bad request.
+    contencion_al_reservar: () => 'The database is busy right now and the slot could not be reserved. Nothing was created: try again in a moment.',
     estado_no_continuable: (d) => {
       if (d.status === null || d.status === undefined) {
         return 'Another request changed this pipeline in the meantime: reload the page to see its status.'
