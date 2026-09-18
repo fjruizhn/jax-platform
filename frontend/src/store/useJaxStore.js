@@ -23,6 +23,23 @@ const RESULTS_FETCH_MAX_ATTEMPTS = 2
 const LOGOUT_TIMEOUT_MS = 5000
 const RESULTS_FETCH_RETRY_DELAY_MS = 2000
 
+// Techo propio para `Retry-After` (2026-09-17): un servidor que pida una espera
+// absurda no puede dejar el reintento colgado media hora.
+const RESULTS_FETCH_RETRY_MAX_MS = 30000
+
+// Espera antes del reintento del fetch de resultados. Jacobs responde 503
+// `contencion_al_reservar` con `Retry-After` en segundos cuando dos escrituras
+// pelean por el cupo (PR 212 de jax): se respeta lo que pide el servidor, acotado por
+// el techo de arriba. Sin cabecera legible, la demora fija de siempre -- un
+// cliente con demora fija no se entera si el techo de espera del servidor
+// cambia, que es justo lo que este reintento tiene que poder seguir.
+function esperaDeReintento(err) {
+  const crudo = err?.response?.headers?.['retry-after'] ?? err?.response?.headers?.['Retry-After']
+  const segundos = Number(crudo)
+  if (!Number.isFinite(segundos) || segundos <= 0) return RESULTS_FETCH_RETRY_DELAY_MS
+  return Math.min(segundos * 1000, RESULTS_FETCH_RETRY_MAX_MS)
+}
+
 // Cotas de memoria para sesiones largas — sin esto, `messages` y
 // `activePipelines` crecen sin límite durante toda la vida de la pestaña.
 const MAX_MESSAGES = 200
@@ -418,10 +435,10 @@ export const useJaxStore = create((set, get) => {
       // permita reintentar más tarde. Por eso el fetch se reintenta acá mismo
       // antes de rendirse; el mark sólo se libera (para permitir un reintento
       // manual futuro, si alguna vez existe un disparador) tras agotar los intentos.
-      const onFetchFailure = (attempt) => {
+      const onFetchFailure = (attempt, err) => {
         if (!isSameSession(sessionEpoch)) return
         if (attempt < RESULTS_FETCH_MAX_ATTEMPTS) {
-          setTimeout(() => fetchResults(attempt + 1), RESULTS_FETCH_RETRY_DELAY_MS)
+          setTimeout(() => fetchResults(attempt + 1), esperaDeReintento(err))
           return
         }
         set((s) => {
@@ -498,7 +515,7 @@ export const useJaxStore = create((set, get) => {
             const toAppend = newMessages.filter((m) => !existingIds.has(m.id))
             return toAppend.length ? { messages: _capMessages([...s.messages, ...toAppend]) } : s
           })
-        }, () => onFetchFailure(attempt))
+        }, (err) => onFetchFailure(attempt, err))
           // Cubre sólo bugs reales al construir los mensajes (no el fetch
           // en sí, ya manejado arriba) — se loguea y no se reintenta: un
           // toast de "resultados" sería engañoso para un bug de render, y
