@@ -284,6 +284,10 @@ export default {
   detalleTitle: (nombre) => `Detalle — ${nombre}`,
   detalleLoading: 'Cargando el detalle…',
   detalleError: 'No se pudo cargar el detalle de este pipeline.',
+  // Ronda de arreglo 1 (2026-09-18): el backend da 404 A PROPÓSITO al que no
+  // es dueño (para no confirmarle que el pipeline_id existe) -- mismo texto
+  // para "no existe" y para "es de otro", nunca "no es tuyo".
+  detalleNotFound: 'Ese pipeline no aparece en tu historial.',
   detalleTotalDuration: (secs) => `Duración total: ${secs}s`,
   detalleTotalDurationUnknown: 'Duración total: desconocida',
   detalleStepPrompt: 'Prompt',

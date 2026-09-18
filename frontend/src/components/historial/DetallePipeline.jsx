@@ -32,8 +32,11 @@ function Paso({ step, t }) {
   const modelo = step.modelo_real || t.detalleStepModelUnknown
   const prompt = step.prompt || t.detalleStepPromptEmpty
   const resultado = step.result || t.detalleStepResultEmpty
+  // Menor del revisor (ronda de arreglo 1): sin formatear, un round(...,2/3)
+  // del backend podía imprimirse "10.234s" o, al revés, "3s" para un 3.0 --
+  // un decimal siempre, mismo criterio que StepCard.jsx.
   const duracion = typeof step.duration_seconds === 'number'
-    ? t.detalleStepDuration(step.duration_seconds) : t.detalleStepDurationUnknown
+    ? t.detalleStepDuration(step.duration_seconds.toFixed(1)) : t.detalleStepDurationUnknown
   const dependeTexto = Array.isArray(step.depends_on) && step.depends_on.length > 0
     ? t.detalleStepDependsOn(step.depends_on.map((i) => t.detalleStepNumber(i + 1)).join(', '))
     : t.detalleStepDependsOnNone
@@ -95,25 +98,33 @@ function Paso({ step, t }) {
 // ve una vez, volcado al chat, antes de irse hacia arriba para siempre.
 export default function DetallePipeline({ pipelineId, nombre, onClose }) {
   const { t } = useI18n()
-  const [estado, setEstado] = useState({ data: null, cargando: true, error: false })
+  const [estado, setEstado] = useState({ data: null, cargando: true, error: false, notFound: false })
 
   useEffect(() => {
     let vigente = true
-    setEstado({ data: null, cargando: true, error: false })
+    setEstado({ data: null, cargando: true, error: false, notFound: false })
     api.get(`/pipelines/${pipelineId}/results`)
-      .then(({ data }) => { if (vigente) setEstado({ data, cargando: false, error: false }) })
+      .then(({ data }) => { if (vigente) setEstado({ data, cargando: false, error: false, notFound: false }) })
       .catch((err) => {
-        console.error('DetallePipeline fetch failed', err)
-        if (vigente) setEstado({ data: null, cargando: false, error: true })
+        // Ronda de arreglo 1 (2026-09-18): _require_pipeline_owner
+        // (jax-platform/backend/api/pipelines.py) devuelve 404 A PROPÓSITO
+        // tanto si el pipeline_id no existe como si es de otro dueño -- para
+        // no confirmarle a quien pregunta cuál de los dos es. La pantalla
+        // respeta esa ambigüedad: un estado vacío propio, no el error
+        // genérico (que sugiere reintentar -- un 404 no se arregla así) ni
+        // ningún detalle de por qué.
+        const esNotFound = err?.response?.status === 404
+        if (!esNotFound) console.error('DetallePipeline fetch failed', err)
+        if (vigente) setEstado({ data: null, cargando: false, error: !esNotFound, notFound: esNotFound })
       })
     return () => { vigente = false }
   }, [pipelineId])
 
-  const { data, cargando, error } = estado
+  const { data, cargando, error, notFound } = estado
   const titulo = t.detalleTitle(nombre || data?.name || pipelineId)
   const pasos = Array.isArray(data?.steps) ? [...data.steps].sort((a, b) => a.step_index - b.step_index) : []
   const duracionTotal = typeof data?.total_duration_seconds === 'number'
-    ? t.detalleTotalDuration(data.total_duration_seconds) : t.detalleTotalDurationUnknown
+    ? t.detalleTotalDuration(data.total_duration_seconds.toFixed(1)) : t.detalleTotalDurationUnknown
 
   return (
     <div className="rounded-lg border border-borde bg-fondo p-4">
@@ -134,6 +145,7 @@ export default function DetallePipeline({ pipelineId, nombre, onClose }) {
 
       {cargando && <p className="text-xs text-texto-tenue">{t.detalleLoading}</p>}
       {error && <AlertaError className="text-xs">{t.detalleError}</AlertaError>}
+      {notFound && <p className="text-xs text-texto-tenue">{t.detalleNotFound}</p>}
 
       {!cargando && !error && data && (
         <>

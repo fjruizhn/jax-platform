@@ -64,6 +64,20 @@ describe('DetallePipeline', () => {
     expect(await screen.findByText('No se pudo cargar el detalle de este pipeline.')).toBeInTheDocument()
   })
 
+  // Ronda de arreglo 1 (2026-09-18): el backend responde 404 A PROPÓSITO al
+  // que no es dueño (_require_pipeline_owner, jax-platform/backend/api/
+  // pipelines.py) -- para no confirmarle que el pipeline_id existe. Un id
+  // ajeno y uno inexistente dan la MISMA respuesta, así que la pantalla
+  // tiene que decir lo mismo para los dos: ni "no existe" ni "no es tuyo",
+  // sólo "no aparece en tu historial". Distinto texto del error genérico
+  // (que sí puede sugerir reintentar -- un 404 no se arregla reintentando).
+  it('un 404 (ajeno o inexistente) muestra el estado vacío, no el error genérico', async () => {
+    api.get.mockRejectedValue(Object.assign(new Error('not found'), { response: { status: 404 } }))
+    renderDetalle()
+    expect(await screen.findByText('Ese pipeline no aparece en tu historial.')).toBeInTheDocument()
+    expect(screen.queryByText('No se pudo cargar el detalle de este pipeline.')).not.toBeInTheDocument()
+  })
+
   it('muestra el modelo REAL de cada paso', async () => {
     api.get.mockResolvedValue({ data: RESULTADO })
     renderDetalle()
@@ -127,12 +141,16 @@ describe('DetallePipeline', () => {
     expect(screen.getByText('El resultado de este paso no se pudo leer: el resultado de este paso no se pudo leer: boom')).toBeInTheDocument()
   })
 
-  it('duración total y por paso se muestran; sin datos, "desconocida"', async () => {
+  // Menor del revisor (ronda de arreglo 1): antes se interpolaba el número
+  // crudo (round(...,2)/round(...,3) del backend imprime "3s" para un 3.0
+  // pero también podría imprimir "10.234s"). Un decimal siempre, mismo
+  // criterio que StepCard.jsx.
+  it('duración total y por paso se muestran con un decimal; sin datos, "desconocida"', async () => {
     api.get.mockResolvedValue({ data: RESULTADO })
     renderDetalle()
     expect(await screen.findByText('Duración total: 4.5s')).toBeInTheDocument()
     expect(screen.getByText('1.5s')).toBeInTheDocument()
-    expect(screen.getByText('3s')).toBeInTheDocument()
+    expect(screen.getByText('3.0s')).toBeInTheDocument()
   })
 
   it('sin total_duration_seconds, "Duración total: desconocida"', async () => {

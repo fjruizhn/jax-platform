@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import '@testing-library/jest-dom'
 
 // Task 9 (2026-09-18, historial-y-arreglos-de-pipeline): "debería haber una
@@ -8,6 +8,13 @@ import '@testing-library/jest-dom'
 // pipelines que se hicieron" (pedido textual de Fernando). GET /api/pipelines
 // ya existe completo (Task 7): esta pantalla sólo lo lista y, por fila, abre
 // el detalle completo (DetallePipeline).
+//
+// Ronda de arreglo 1 (2026-09-18): el detalle tiene que ser una ruta de
+// verdad, /historial/:pipelineId -- los avisos de fin de pipeline (correo y
+// Telegram, otras dos tareas de la misma ronda) arman el enlace como
+// {origen}/historial/{pipeline_id} y esperan que ABRA ese pipeline. Con
+// estado interno (versión anterior), ese enlace caía en la lista sin decir
+// cuál era: el mismo problema ("terminó y no supe qué hacer") con más pasos.
 vi.mock('../api/client', () => ({ default: { get: vi.fn() } }))
 
 import api from '../api/client'
@@ -17,14 +24,40 @@ import { useJaxStore } from '../store/useJaxStore'
 
 const INICIAL = useJaxStore.getState()
 
-function renderHistorial() {
-  return render(<I18nProvider><MemoryRouter><Historial /></MemoryRouter></I18nProvider>)
+// Arnés de rutas: las dos rutas reales de App.jsx (mismo componente,
+// Historial.jsx lee :pipelineId con useParams), más un botón que dispara
+// navigate(-1) -- lo que el botón "atrás" del navegador también dispara vía
+// popstate -- para probar que volver funciona como se espera, no sólo el
+// botón "Cerrar" propio de la pantalla.
+function BotonVolverDelNavegador() {
+  const navigate = useNavigate()
+  return <button onClick={() => navigate(-1)}>simular-atrás-del-navegador</button>
+}
+function MuestraRuta() {
+  return <div data-testid="ruta">{useLocation().pathname}</div>
+}
+
+function renderHistorial(rutaInicial = '/historial') {
+  return render(
+    <I18nProvider>
+      <MemoryRouter initialEntries={['/historial', rutaInicial]} initialIndex={1}>
+        <BotonVolverDelNavegador />
+        <MuestraRuta />
+        <Routes>
+          <Route path="/historial" element={<Historial />} />
+          <Route path="/historial/:pipelineId" element={<Historial />} />
+        </Routes>
+      </MemoryRouter>
+    </I18nProvider>
+  )
 }
 
 const PIPELINES = [
   { pipeline_id: 'p1', name: 'plan de leyes', status: 'completed', created_at: 1758000000, updated_at: 1758000010, causa: null, duracion_s: 10.2, costo_usd: null },
   { pipeline_id: 'p2', name: 'otro plan', status: 'running', created_at: 1758000100, updated_at: 1758000100, causa: null, duracion_s: null, costo_usd: null },
 ]
+
+const RESULTADO_P1 = { pipeline_id: 'p1', name: 'plan de leyes', status: 'completed', total_duration_seconds: 10.2, steps: [] }
 
 beforeEach(() => {
   useJaxStore.setState({ ...INICIAL, token: 't' }, true)
@@ -56,6 +89,17 @@ describe('Historial', () => {
     const celdaDuracion = fila.querySelector('[data-campo="duracion"]')
     expect(celdaDuracion).toHaveTextContent('desconocido')
     expect(within(fila).queryByText('0')).not.toBeInTheDocument()
+  })
+
+  // Menor del revisor (ronda de arreglo 1): duracion_s se imprimía crudo
+  // ("10.234s" si el backend manda 3 decimales, round(u-c,3) en
+  // pipelines.py). Un decimal, mismo criterio que StepCard.jsx.
+  it('duracion_s se formatea a un decimal', async () => {
+    api.get.mockResolvedValue({ data: { pipelines: [{ ...PIPELINES[0], duracion_s: 10.234 }], has_more: false } })
+    renderHistorial()
+    const fila = (await screen.findByText('plan de leyes')).closest('tr')
+    const celdaDuracion = fila.querySelector('[data-campo="duracion"]')
+    expect(celdaDuracion).toHaveTextContent('10.2s')
   })
 
   it('costo_usd sale "desconocido" (limitación de esquema conocida, no se muestra como $0)', async () => {
@@ -103,35 +147,79 @@ describe('Historial', () => {
     expect(screen.queryByRole('button', { name: 'Cargar más' })).not.toBeInTheDocument()
   })
 
-  it('"Ver detalle" en una fila abre el detalle de ESE pipeline', async () => {
-    api.get.mockResolvedValue({ data: { pipelines: PIPELINES, has_more: false } })
+  it('"Ver detalle" en una fila navega a /historial/:id -- la URL refleja la selección', async () => {
+    api.get.mockResolvedValueOnce({ data: { pipelines: PIPELINES, has_more: false } })
     renderHistorial()
     await screen.findByText('plan de leyes')
+    expect(screen.getByTestId('ruta')).toHaveTextContent('/historial')
 
-    api.get.mockResolvedValue({
-      data: { pipeline_id: 'p1', name: 'plan de leyes', status: 'completed', total_duration_seconds: 10.2, steps: [] },
-    })
+    api.get.mockResolvedValueOnce({ data: RESULTADO_P1 })
     const fila = screen.getByText('plan de leyes').closest('tr')
     fireEvent.click(within(fila).getByRole('button', { name: 'Ver detalle' }))
 
     expect(await screen.findByText('Detalle — plan de leyes')).toBeInTheDocument()
+    expect(screen.getByTestId('ruta')).toHaveTextContent('/historial/p1')
     expect(api.get).toHaveBeenLastCalledWith('/pipelines/p1/results')
   })
 
-  it('cerrar el detalle lo saca de la pantalla sin recargar la lista', async () => {
-    api.get.mockResolvedValue({ data: { pipelines: PIPELINES, has_more: false } })
+  it('entrar directo por la URL con :pipelineId abre ese detalle sin pasar por la lista', async () => {
+    api.get.mockImplementation((url) => {
+      if (url === '/pipelines') return Promise.resolve({ data: { pipelines: PIPELINES, has_more: false } })
+      if (url === '/pipelines/p1/results') return Promise.resolve({ data: RESULTADO_P1 })
+      return Promise.reject(new Error(`url inesperada: ${url}`))
+    })
+    renderHistorial('/historial/p1')
+    expect(await screen.findByText('Detalle — plan de leyes')).toBeInTheDocument()
+    // La lista sigue ahí debajo -- no es una pantalla aparte.
+    expect(await screen.findByText('otro plan')).toBeInTheDocument()
+  })
+
+  it('cerrar el detalle vuelve a /historial sin recargar la lista', async () => {
+    api.get.mockImplementation((url) => {
+      if (url === '/pipelines') return Promise.resolve({ data: { pipelines: PIPELINES, has_more: false } })
+      if (url === '/pipelines/p1/results') return Promise.resolve({ data: RESULTADO_P1 })
+      return Promise.reject(new Error(`url inesperada: ${url}`))
+    })
+    renderHistorial('/historial/p1')
+    await screen.findByText('Detalle — plan de leyes')
+    const llamadasAntes = api.get.mock.calls.filter((c) => c[0] === '/pipelines').length
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar detalle' }))
+
+    expect(screen.queryByText('Detalle — plan de leyes')).not.toBeInTheDocument()
+    expect(screen.getByText('plan de leyes')).toBeInTheDocument()
+    expect(screen.getByTestId('ruta')).toHaveTextContent('/historial')
+    expect(api.get.mock.calls.filter((c) => c[0] === '/pipelines').length).toBe(llamadasAntes)
+  })
+
+  it('el botón "atrás" del navegador (popstate/navigate(-1)) vuelve a la lista', async () => {
+    api.get.mockResolvedValueOnce({ data: { pipelines: PIPELINES, has_more: false } })
     renderHistorial()
     await screen.findByText('plan de leyes')
 
-    api.get.mockResolvedValue({
-      data: { pipeline_id: 'p1', name: 'plan de leyes', status: 'completed', total_duration_seconds: 10.2, steps: [] },
-    })
+    api.get.mockResolvedValueOnce({ data: RESULTADO_P1 })
     const fila = screen.getByText('plan de leyes').closest('tr')
     fireEvent.click(within(fila).getByRole('button', { name: 'Ver detalle' }))
     await screen.findByText('Detalle — plan de leyes')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cerrar detalle' }))
+    fireEvent.click(screen.getByRole('button', { name: 'simular-atrás-del-navegador' }))
+
+    expect(screen.getByTestId('ruta')).toHaveTextContent('/historial')
     expect(screen.queryByText('Detalle — plan de leyes')).not.toBeInTheDocument()
-    expect(screen.getByText('plan de leyes')).toBeInTheDocument()
+  })
+
+  it('un pipelineId ajeno o inexistente (404 del backend) muestra un estado vacío decente, no rompe la pantalla', async () => {
+    const error404 = Object.assign(new Error('not found'), { response: { status: 404 } })
+    api.get.mockImplementation((url) => {
+      if (url === '/pipelines') return Promise.resolve({ data: { pipelines: PIPELINES, has_more: false } })
+      if (url === '/pipelines/ajeno/results') return Promise.reject(error404)
+      return Promise.reject(new Error(`url inesperada: ${url}`))
+    })
+    renderHistorial('/historial/ajeno')
+    expect(await screen.findByText('Ese pipeline no aparece en tu historial.')).toBeInTheDocument()
+    // No confirma ni niega que exista -- mismo texto para "no existe" y "es de otro dueño".
+    expect(screen.queryByText('No se pudo cargar el detalle de este pipeline.')).not.toBeInTheDocument()
+    // La lista de al lado sigue funcionando.
+    expect(await screen.findByText('plan de leyes')).toBeInTheDocument()
   })
 })

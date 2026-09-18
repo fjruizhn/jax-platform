@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect } from 'react'
+import { Link, useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useJaxStore } from '../store/useJaxStore'
 import { useI18n, localeFor } from '../i18n/index.jsx'
 import { useNombreDelSistema } from '../store/useApariencia'
@@ -19,12 +19,23 @@ function textoDeStatus(t, status) {
 // se listen los pipelines que se hicieron y se pueda leer el prompt que
 // generaste" -- pedido textual de Fernando. GET /api/pipelines (Task 7) ya
 // trae todo lo que esta pantalla necesita; sólo faltaba dónde mostrarlo.
+//
+// Ronda de arreglo 1 (2026-09-18): el detalle es la URL /historial/:pipelineId
+// (App.jsx tiene las dos rutas, "/historial" y "/historial/:pipelineId",
+// apuntando las dos acá) -- NO estado interno. Los avisos de fin de pipeline
+// por correo y Telegram (otras dos tareas de la misma ronda,
+// jax-platform/backend/aviso_pipeline.py:175 y jax/jacobs/aviso.py:80) arman
+// el enlace como {origen}/historial/{pipeline_id} y esperan que abra ESE
+// pipeline al entrar directo por la URL -- con estado interno no hay forma
+// de que un link externo abra nada.
 export default function Historial() {
   const historial = useJaxStore((s) => s.historial)
   const cargarHistorial = useJaxStore((s) => s.cargarHistorial)
   const { t, lang } = useI18n()
   const nombre = useNombreDelSistema(t)
-  const [seleccionado, setSeleccionado] = useState(null)
+  const navigate = useNavigate()
+  const location = useLocation()
+  const { pipelineId } = useParams()
 
   useEffect(() => {
     cargarHistorial()
@@ -84,7 +95,7 @@ export default function Historial() {
                       {typeof p.created_at === 'number' ? new Date(p.created_at * 1000).toLocaleString(localeFor(lang)) : '—'}
                     </td>
                     <td data-campo="duracion" className="px-4 py-3 text-xs text-texto">
-                      {typeof p.duracion_s === 'number' ? `${p.duracion_s}s` : t.historialUnknown}
+                      {typeof p.duracion_s === 'number' ? `${p.duracion_s.toFixed(1)}s` : t.historialUnknown}
                     </td>
                     <td data-campo="costo" className="px-4 py-3 text-xs text-texto-tenue">
                       {typeof p.costo_usd === 'number' ? `$${p.costo_usd.toFixed(6)}` : t.historialUnknown}
@@ -93,7 +104,7 @@ export default function Historial() {
                     <td className="px-4 py-3 text-right">
                       <button
                         type="button"
-                        onClick={() => setSeleccionado({ pipeline_id: p.pipeline_id, name: p.name })}
+                        onClick={() => navigate(`/historial/${p.pipeline_id}`, { state: { name: p.name } })}
                         className="text-xs font-semibold text-acento-texto hover:underline"
                       >
                         {t.historialViewDetail}
@@ -119,11 +130,11 @@ export default function Historial() {
           </div>
         )}
 
-        {seleccionado && (
+        {pipelineId && (
           <DetallePipeline
-            pipelineId={seleccionado.pipeline_id}
-            nombre={seleccionado.name}
-            onClose={() => setSeleccionado(null)}
+            pipelineId={pipelineId}
+            nombre={location.state?.name}
+            onClose={() => navigate('/historial')}
           />
         )}
       </div>

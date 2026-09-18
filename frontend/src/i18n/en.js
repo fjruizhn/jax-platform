@@ -278,6 +278,10 @@ export default {
   detalleTitle: (nombre) => `Detail — ${nombre}`,
   detalleLoading: 'Loading detail…',
   detalleError: "Could not load this pipeline's detail.",
+  // Fix round 1 (2026-09-18): the backend returns 404 ON PURPOSE for a
+  // non-owner (so it doesn't confirm the pipeline_id exists) -- same text
+  // for "doesn't exist" and "belongs to someone else", never "not yours".
+  detalleNotFound: "That pipeline isn't in your history.",
   detalleTotalDuration: (secs) => `Total duration: ${secs}s`,
   detalleTotalDurationUnknown: 'Total duration: unknown',
   detalleStepPrompt: 'Prompt',

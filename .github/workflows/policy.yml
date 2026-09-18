@@ -631,8 +631,21 @@ jobs:
             // cualquier rol, no sólo superadmin). Todos vistos en rojo antes del
             // código (módulo/función inexistente) contra b72002e (jax) +
             // este commit. Medido con vitest run: 817 passed, 0 fallidos, 84 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 817) {
-              console.error("PISO ROTO: se esperaban 817 tests de vitest CORRIDOS y 0 fallidos.");
+            // 817 -> 822 el 2026-09-18 (ronda de arreglo 1: el detalle es una ruta de
+            // verdad, /historial/:pipelineId, no estado interno -- los avisos de fin
+            // de pipeline por correo y Telegram arman el enlace como
+            // {origen}/historial/{pipeline_id} y esperaban que abriera ese pipeline).
+            // +4 en pages/Historial.test.jsx (duracion_s a un decimal, "Ver detalle"
+            // navega y la URL refleja la selección, entrar directo por la URL abre el
+            // detalle sin pasar por la lista, cerrar vuelve a /historial sin recargar
+            // la lista, el botón "atrás" del navegador -- navigate(-1)/popstate --
+            // vuelve a la lista, un 404 ajeno o inexistente muestra el estado vacío)
+            // y +1 en components/historial/DetallePipeline.test.jsx (un 404 muestra
+            // "Ese pipeline no aparece en tu historial.", nunca el error genérico).
+            // Vistos en rojo contra el código con estado interno (setSeleccionado).
+            // Medido con vitest run: 822 passed, 0 fallidos, 84 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 822) {
+              console.error("PISO ROTO: se esperaban 822 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
