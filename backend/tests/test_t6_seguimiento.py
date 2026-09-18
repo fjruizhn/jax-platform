@@ -278,7 +278,7 @@ def test_T6_5a_la_consulta_usa_el_indice_de_duenio(client, pipelines_de_dos_tena
     """LAS CUATRO (indexing): EXPLAIN sobre la consulta REAL. El indice lo crea
     jax/jacobs/store.py (ver el test de arriba), no la plataforma."""
     filas = client.portal.call(sql, "EXPLAIN " + pipelines_mod.SQL_PIPELINES_DEL_USUARIO,
-                               ("x", "TENANT-A", pipelines_mod.LISTA_PIPELINES_MAX), True)
+                               ("x", "TENANT-A", pipelines_mod.LISTA_PIPELINES_MAX, 0), True)
     ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
     assert tabla == "jacobs_pipelines"
     assert clave == "idx_jacobs_pipelines_duenio", filas

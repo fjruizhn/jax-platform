@@ -1726,7 +1726,17 @@ jobs:
           #   ve la forma prohibida). Origen: la semilla del tema importaba api.admin.config_admin, que
           #   arrastra auth/jwt y su JAX_JWT_SECRET, y el job de jax que sólo construye el esquema moría
           #   antes de crear una tabla. Medido local: 2340 passed, 1 skipped, 0 fallidos.
-          PISO_PASSED = 2340
+          # 2340 -> 2346 el 2026-09-18 (Task 7, historial-y-arreglos-de-pipeline): +6 de
+          #   tests/test_historial_pipelines.py (duracion_s, costo_usd null verificado incluso
+          #   con un registro de uso parecido en axioma_usage, paginado con limite/offset y
+          #   has_more, el 422 del tope maximo, y el EXPLAIN de la consulta paginada sin
+          #   filesort/temporary). Los 6 vistos en rojo contra el pipelines.py de master
+          #   (0485018): KeyError en duracion_s/costo_usd, AssertionError en el orden/tamaño
+          #   de la pagina, 200 en vez de 422 sin el `le=` de limite, y el EXPLAIN con un
+          #   placeholder de mas (la consulta vieja no tenia OFFSET). test_t6_seguimiento.py
+          #   se ajusta al mismo cambio de firma (LIMIT %s OFFSET %s) sin sumar ni restar
+          #   tests. Medido local contra jax_memory_test: 2346 passed, 1 skipped, 0 fallidos.
+          PISO_PASSED = 2346
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

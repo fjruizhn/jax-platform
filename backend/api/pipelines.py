@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import ajustes
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from auth.middleware import get_current_user
@@ -687,13 +687,27 @@ async def _require_pipeline_owner(pipeline_id: str, user: AuthUser) -> str | Non
 # Jacobs no tiene (405 devuelto como 200) y que no filtraba nada: el día que
 # existiera, entregaba todos los pipelines a cualquier sesión.
 # Índice idx_jacobs_pipelines_duenio (user_id, tenant_id, created_at), creado
-# en db/migrations.py; EXPLAIN en tests/test_t6_seguimiento.py.
+# en db/migrations.py; EXPLAIN en tests/test_t6_seguimiento.py y en
+# test_historial_pipelines.py (Task 7, 2026-09-18: paginado con LIMIT/OFFSET,
+# el índice sigue cubriendo el WHERE + ORDER BY -- el OFFSET no agrega
+# filesort ni temporary, solo salta filas dentro del mismo rango del índice).
 SQL_PIPELINES_DEL_USUARIO = (
     "SELECT pipeline_id, name, status, created_at, updated_at FROM jacobs_pipelines "
     "WHERE user_id=%s AND tenant_id=%s AND owner_ack_at IS NOT NULL "
-    "ORDER BY created_at DESC LIMIT %s"
+    "ORDER BY created_at DESC LIMIT %s OFFSET %s"
 )
+# Tope MÁXIMO de página, no un corte fijo del historial (Task 7, 2026-09-18):
+# antes era el único LIMIT posible y un historial con más filas que esto
+# quedaba inalcanzable. Ahora es el `le=` de `limite` en list_pipelines() y
+# el default cuando el caller no pide uno -- el historial completo se
+# recorre con `offset` creciente.
 LISTA_PIPELINES_MAX = int(os.getenv("JAX_LISTA_PIPELINES_MAX", "50"))
+
+# Estados en los que el pipeline TODAVÍA puede tocar created_at/updated_at
+# (no terminó): mostrar una "duración" ahí sería el tiempo transcurrido
+# HASTA AHORA, no cuánto tardó -- un número real pero que miente sobre lo
+# que dice ser. duracion_s sale null mientras el status esté acá.
+ESTADOS_NO_TERMINALES = frozenset({"pending", "running"})
 
 
 # Causa de un pipeline detenido (desvío DV-9 del plan): el último de estos
@@ -773,24 +787,55 @@ def causa_de(eventos: list[tuple[int, str, str | None]]) -> dict:
 
 
 @router.get("")
-async def list_pipelines(user: AuthUser = Depends(get_current_user)):
+async def list_pipelines(
+    user: AuthUser = Depends(get_current_user),
+    limite: int = Query(LISTA_PIPELINES_MAX, ge=1, le=LISTA_PIPELINES_MAX),
+    offset: int = Query(0, ge=0),
+):
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            # Se pide una fila de más (limite+1) para saber si hay una página
+            # siguiente sin un segundo COUNT(*) -- LAS CUATRO/cache: no se
+            # recalcula lo que ya se puede leer de la misma consulta.
             await cur.execute(SQL_PIPELINES_DEL_USUARIO,
-                              (user.user_id, user.tenant_id, LISTA_PIPELINES_MAX))
+                              (user.user_id, user.tenant_id, limite + 1, offset))
             filas = await cur.fetchall()
+            hay_mas = len(filas) > limite
+            filas = filas[:limite]
             detenidos = [pid for pid, _n, st, _c, _u in filas if st in ESTADOS_CONTINUABLES]
             eventos = defaultdict(list)
             if detenidos:
                 await cur.execute(sql_eventos_de_causa(len(detenidos)), (*detenidos, *EVENTOS_DE_CAUSA))
                 for pid, evento_id, tipo, payload in await cur.fetchall():
                     eventos[pid].append((evento_id, tipo, payload))
-    return {"pipelines": [
-        {"pipeline_id": pid, "name": name, "status": st, "created_at": c, "updated_at": u,
-         "causa": causa_de(eventos[pid]) if st in ESTADOS_CONTINUABLES else None}
-        for pid, name, st, c, u in filas
-    ]}
+    return {
+        "pipelines": [
+            {
+                "pipeline_id": pid, "name": name, "status": st, "created_at": c, "updated_at": u,
+                "duracion_s": None if st in ESTADOS_NO_TERMINALES else round(u - c, 3),
+                # costo_usd: NO se recalcula ni se estima (Principio VIII). Sale
+                # del registro de uso real (axioma_usage) cruzado por el
+                # identificador del pipeline -- y ese cruce hoy NO EXISTE:
+                # verificado contra el esquema real (jax_memory_test, 2026-09-18)
+                # que axioma_usage tiene id/tenant_id/user_id/facet/model/
+                # tokens_in/tokens_out/cost_usd/request_type/created_at/status/
+                # job_id/spool_id, NINGUNA columna con trace_id ni pipeline_id.
+                # Los escritores tampoco lo mandan: jacobs/usage_writer.py::
+                # record_direct_usage() y las_manos/motor_registry/
+                # usage_writer.py::record_motor_usage() no reciben trace_id ni
+                # pipeline_id -- `job_id` en esa tabla es el id de un job de
+                # Motor Registry, no el trace_id de un paso de Jacobs. Sin esa
+                # columna no hay registro que cruzar: costo_usd sale null para
+                # TODO pipeline hasta que una ronda futura (fuera de esta tarea,
+                # cruza el repo jax) escriba esa identidad en axioma_usage.
+                "costo_usd": None,
+                "causa": causa_de(eventos[pid]) if st in ESTADOS_CONTINUABLES else None,
+            }
+            for pid, name, st, c, u in filas
+        ],
+        "has_more": hay_mas,
+    }
 
 
 @router.post("/preflight")
