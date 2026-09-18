@@ -5,6 +5,22 @@ RENDIMIENTO #4: sin número medido no hay GO. Registrado por Mr. Hyde. Todas
 las horas en CST (hall9000), corrida ~09:56–09:58 CST. Los números salen de
 las corridas; ninguno es estimado.
 
+**Herramienta (ronda de arreglo 1, 2026-09-18): `loadtest/historial_orquestar.py`.**
+Reproduce esta corrida completa — siembra el peor caso, levanta Jacobs falso
+y el backend real, mide, limpia — con un solo comando desde la raíz del
+repo: `python3 loadtest/historial_orquestar.py`. Las constantes del peor
+caso (600 pipelines, 50 abortados, 2.860.000 filas de relleno, 6 pasos de
+80.000 caracteres, niveles de concurrencia 1/25/50/100/150/200) están arriba
+de ese archivo, no enterradas en el cuerpo; el generador de datos vive en
+`loadtest/historial_seed.py` y la limpieza en `loadtest/historial_limpiar.py`
+(esta última corre SIEMPRE al terminar, incluso si la carga revienta a mitad
+de camino). El script se niega a arrancar si detecta que apunta a
+`jax_memory`, o a los puertos de producción `:7777`/`:8080` — ver
+`_verificar_no_apunta_a_produccion()`. Los números de este documento son los
+de la corrida original; volver a correr el script no los reemplaza sin
+actualizar este archivo con fecha nueva (una medición vieja es una VERDAD
+OPERACIONAL caducada).
+
 ## Qué se midió y por qué
 
 - `GET /api/pipelines` — el listado del historial (Task 7/7b: trae
