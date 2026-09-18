@@ -2619,7 +2619,7 @@ async def _ejecutor_config_c5_v1(cur) -> None:
 # El valor sigue siendo el de api.admin.config_admin.DEFAULT_CONFIG, que es
 # también el respaldo de GET /api/apariencia cuando la fila no está.
 async def _apariencia_default_v1(cur) -> None:
-    from api.admin.config_admin import DEFAULT_CONFIG
+    from config_defaults import DEFAULT_CONFIG
 
     for clave, valor in DEFAULT_CONFIG.items():
         await cur.execute("INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES (%s, %s)", (clave, valor))

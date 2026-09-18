@@ -1703,7 +1703,12 @@ jobs:
           #   rama le pasa ahora=AHORA, como el resto del archivo, y vuelve a los 2324.
           #   Medido local contra jax_memory_test como fruiz: 2338 passed, 1 skipped,
           #   0 fallidos. Si el runner da otro numero, manda el runner.
-          PISO_PASSED = 2338
+          # 2338 -> 2340 el 2026-09-18 (una migración no importa la API): +2 de
+          #   tests/test_migraciones_sin_api.py (db/migrations.py no importa api/auth/main; y el control
+          #   ve la forma prohibida). Origen: la semilla del tema importaba api.admin.config_admin, que
+          #   arrastra auth/jwt y su JAX_JWT_SECRET, y el job de jax que sólo construye el esquema moría
+          #   antes de crear una tabla. Medido local: 2340 passed, 1 skipped, 0 fallidos.
+          PISO_PASSED = 2340
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
