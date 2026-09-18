@@ -19,10 +19,15 @@ brief no existe en el esquema. Documentado también en pipelines.py junto al
 campo. NO se implementó ningún cruce heurístico (por ventana de tiempo/
 facet/modelo) a propósito: el brief pide explícitamente no recalcular ni
 estimar (Principio VIII), y esa clase de cruce ya está probada ambigua en
-jax/jacobs/reaper.py (comentario junto a `axioma_usage es de la plataforma`).
+jax-platform/backend/db/migrations.py:2151-2157 (medición puntual de
+min_output_tokens, 2026-09-17: join por ventana de tiempo [started_at,
+finished_at+5s] + facet + modelo, "filas ambiguas entre capabilities
+excluidas").
 """
 import time
 import uuid
+
+import pytest
 
 from api import pipelines as mod
 from tests.identidades import cabeceras, sql, uid
@@ -77,17 +82,41 @@ def test_el_listado_trae_duracion_costo_y_pagina(client):
         client.portal.call(_borrar_pipelines, [pid])
 
 
-def test_duracion_s_null_si_el_pipeline_no_termino(client):
-    """running/pending todavía pueden tocar updated_at: mostrar una
-    'duración' ahí sería tiempo transcurrido hasta ahora, no cuánto tardó."""
-    duenio = uid(client, "hist-corriendo", "operator")
+@pytest.mark.parametrize("status", ["pending", "running", "interrupted", "aborted", "expired"])
+def test_duracion_s_null_si_el_pipeline_puede_seguir_corriendo(client, status):
+    """Ronda de arreglo 1 (2026-09-18): duracion_s es duración DEFINITIVA o
+    nada. Van a null tanto los que todavía pueden avanzar solos
+    (pending/running/interrupted -- interrupted es donde un pipeline
+    supervised PAUSA entre olas esperando /resume, jax/jacobs/executor.py:1173,
+    no un reposo) como los que pueden RETOMAR sobre la misma fila
+    (aborted/expired: un /continue los reanuda). Mostrar una duración ahí
+    tendría pinta de definitiva y dejaría de ser cierta en cuanto el
+    pipeline avance o se continúe."""
+    duenio = uid(client, f"hist-no-final-{status}", "operator")
     ahora = time.time()
     pid = str(uuid.uuid4())
-    client.portal.call(_insertar_pipeline, pid, duenio, TENANT, "running", ahora - 5, ahora - 1)
+    client.portal.call(_insertar_pipeline, pid, duenio, TENANT, status, ahora - 5, ahora - 1)
     try:
-        resp = client.get("/api/pipelines", headers=cabeceras(client, "hist-corriendo", "operator", tenant_id=TENANT))
+        resp = client.get("/api/pipelines",
+                          headers=cabeceras(client, f"hist-no-final-{status}", "operator", tenant_id=TENANT))
         fila = next(p for p in resp.json()["pipelines"] if p["pipeline_id"] == pid)
         assert fila["duracion_s"] is None
+    finally:
+        client.portal.call(_borrar_pipelines, [pid])
+
+
+def test_duracion_s_se_calcula_para_failed_igual_que_completed(client):
+    """completed y failed son los ÚNICOS estados sin camino de vuelta a
+    correr (ESTADOS_CONTINUABLES no los incluye): ahí sí hay una duración
+    definitiva que mostrar."""
+    duenio = uid(client, "hist-failed", "operator")
+    ahora = time.time()
+    pid = str(uuid.uuid4())
+    client.portal.call(_insertar_pipeline, pid, duenio, TENANT, "failed", ahora - 7.25, ahora)
+    try:
+        resp = client.get("/api/pipelines", headers=cabeceras(client, "hist-failed", "operator", tenant_id=TENANT))
+        fila = next(p for p in resp.json()["pipelines"] if p["pipeline_id"] == pid)
+        assert fila["duracion_s"] == 7.25
     finally:
         client.portal.call(_borrar_pipelines, [pid])
 

@@ -703,12 +703,6 @@ SQL_PIPELINES_DEL_USUARIO = (
 # recorre con `offset` creciente.
 LISTA_PIPELINES_MAX = int(os.getenv("JAX_LISTA_PIPELINES_MAX", "50"))
 
-# Estados en los que el pipeline TODAVÍA puede tocar created_at/updated_at
-# (no terminó): mostrar una "duración" ahí sería el tiempo transcurrido
-# HASTA AHORA, no cuánto tardó -- un número real pero que miente sobre lo
-# que dice ser. duracion_s sale null mientras el status esté acá.
-ESTADOS_NO_TERMINALES = frozenset({"pending", "running"})
-
 
 # Causa de un pipeline detenido (desvío DV-9 del plan): el último de estos
 # eventos de jacobs_events manda el tipo. paso/detalle (fix round 1 ítem 1):
@@ -725,6 +719,19 @@ EVENTOS_DE_CAUSA = {
     "REAPED": "expirado",
 }
 ESTADOS_CONTINUABLES = ("aborted", "expired")
+
+# Ronda de arreglo 1 (Task 7, 2026-09-18): duracion_s es duración DEFINITIVA
+# o nada -- un número que después cambia es peor que un guion. Van a null
+# los estados que TODAVÍA pueden tocar created_at/updated_at:
+#   - pending/running/interrupted: el pipeline puede seguir corriendo. Mismo
+#     conjunto no-terminal que define jax/jacobs/reaper.py -- interrupted es
+#     donde un pipeline `supervised` PAUSA entre olas esperando /resume
+#     (jax/jacobs/executor.py:1173), no un estado de reposo.
+#   - aborted/expired (ESTADOS_CONTINUABLES): un /continue los reanuda sobre
+#     la MISMA fila. Mostrar una duración acá tendría pinta de definitiva y
+#     dejaría de ser cierta en cuanto alguien continúe el pipeline.
+# Solo completed/failed quedan afuera: ahí no hay camino de vuelta a correr.
+ESTADOS_SIN_DURACION_DEFINITIVA = frozenset({"pending", "running", "interrupted"}) | frozenset(ESTADOS_CONTINUABLES)
 
 
 def sql_eventos_de_causa(n_ids: int) -> str:
@@ -813,7 +820,7 @@ async def list_pipelines(
         "pipelines": [
             {
                 "pipeline_id": pid, "name": name, "status": st, "created_at": c, "updated_at": u,
-                "duracion_s": None if st in ESTADOS_NO_TERMINALES else round(u - c, 3),
+                "duracion_s": None if st in ESTADOS_SIN_DURACION_DEFINITIVA else round(u - c, 3),
                 # costo_usd: NO se recalcula ni se estima (Principio VIII). Sale
                 # del registro de uso real (axioma_usage) cruzado por el
                 # identificador del pipeline -- y ese cruce hoy NO EXISTE:

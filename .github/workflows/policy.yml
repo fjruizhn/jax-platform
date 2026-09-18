@@ -1736,7 +1736,22 @@ jobs:
           #   placeholder de mas (la consulta vieja no tenia OFFSET). test_t6_seguimiento.py
           #   se ajusta al mismo cambio de firma (LIMIT %s OFFSET %s) sin sumar ni restar
           #   tests. Medido local contra jax_memory_test: 2346 passed, 1 skipped, 0 fallidos.
-          PISO_PASSED = 2346
+          # 2346 -> 2351 el 2026-09-18 (Task 7, ronda de arreglo 1): +5 netos.
+          #   ESTADOS_NO_TERMINALES (solo pending/running) no cubría interrupted
+          #   (donde un pipeline supervised PAUSA entre olas, jax/jacobs/executor.py:1173,
+          #   mismo conjunto no-terminal que jax/jacobs/reaper.py) ni los continuables
+          #   aborted/expired (un /continue los reanuda sobre la misma fila: la duración
+          #   que mostrábamos dejaba de ser cierta al continuar). Pasa a
+          #   ESTADOS_SIN_DURACION_DEFINITIVA = {pending,running,interrupted} | ESTADOS_CONTINUABLES;
+          #   solo completed/failed quedan con duracion_s. test_duracion_s_null_si_el_pipeline_no_termino
+          #   (1 test) se reemplaza por test_duracion_s_null_si_el_pipeline_puede_seguir_corriendo,
+          #   parametrizado sobre los 5 estados (+5 tests), y se suma
+          #   test_duracion_s_se_calcula_para_failed_igual_que_completed (+1 test): neto +5.
+          #   Los 3 casos nuevos (interrupted/aborted/expired) vistos en rojo contra el
+          #   pipelines.py de la Task 7 (c6166c8): `assert 4.0 is None` -- duracion_s
+          #   seguía saliendo numérico. Medido local contra jax_memory_test: 2351 passed,
+          #   1 skipped, 0 fallidos.
+          PISO_PASSED = 2351
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
