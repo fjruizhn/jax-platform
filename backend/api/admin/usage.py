@@ -259,6 +259,9 @@ async def _encolar_la_fila_perdida(
             # una decisión y no un campo que se olvidó de mandar.
             "status": None,
             "job_id": None,
+            # el chat de la Mesa (record_usage) nunca es un pipeline de Jacobs
+            # -- Task 7b, 2026-09-18.
+            "pipeline_id": None,
         })
     except Exception as e:  # fail-soft: el respaldo es la red de seguridad, no puede ser lo que tire el turno; si falla, el camino de abajo cuenta la perdida y deja el WARNING
         logger.warning("record_usage: el respaldo de uso falló: %s", texto_de_error(e)[:_ERROR_MAX])

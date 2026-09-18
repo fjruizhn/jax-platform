@@ -750,6 +750,22 @@ def sql_eventos_de_causa(n_ids: int) -> str:
             f"WHERE pipeline_id IN ({ids}) AND event_type IN ({tipos})")
 
 
+def sql_costo_por_pipeline(n_ids: int) -> str:
+    """Una consulta por lista, por `idx_axioma_usage_pipeline` (Task 7b,
+    migrations.py). Sin ORDER BY a propósito, igual que
+    `sql_eventos_de_causa`: el scan por rango sobre el índice ya entrega las
+    filas ordenadas por pipeline_id, así que el GROUP BY no necesita
+    filesort ni una tabla temporal -- EXPLAIN en test_historial_pipelines.py
+    (medido contra jax_memory_test, 2026-09-18, ~2,86M filas): type=range,
+    key=idx_axioma_usage_pipeline, Extra="Using index condition", sin
+    filesort/temporary. SUM() ignora los NULL de fila (precio no resuelto):
+    un total parcial real, no uno inventado -- si NINGUNA fila del pipeline
+    tiene pipeline_id (pipelines de antes de esta migración), la fila ni
+    aparece en el resultado y costo_usd sale None."""
+    ids = ", ".join(["%s"] * n_ids)
+    return f"SELECT pipeline_id, SUM(cost_usd) FROM axioma_usage WHERE pipeline_id IN ({ids}) GROUP BY pipeline_id"
+
+
 def _payload(crudo) -> dict:
     if isinstance(crudo, dict):
         return crudo
@@ -816,27 +832,32 @@ async def list_pipelines(
                 await cur.execute(sql_eventos_de_causa(len(detenidos)), (*detenidos, *EVENTOS_DE_CAUSA))
                 for pid, evento_id, tipo, payload in await cur.fetchall():
                     eventos[pid].append((evento_id, tipo, payload))
+            # costo_usd (Task 7b, 2026-09-18): NO se recalcula ni se estima
+            # (Principio VIII). Sale de SUM(axioma_usage.cost_usd) cruzado
+            # por pipeline_id -- columna que agrega la migración de esta
+            # misma ronda (db/migrations.py) y que los DOS escritores de jax
+            # (jacobs/usage_writer.py::record_direct_usage,
+            # las_manos/motor_registry/usage_writer.py::record_motor_usage)
+            # mandan explícito. Un pipeline sin NINGUNA fila que lo
+            # referencie -- todo pipeline de antes de esta migración, o uno
+            # cuyo uso se perdió y nunca se escribió -- no aparece en
+            # `costos` y su costo_usd sale None: ese dato no existe y no se
+            # fabrica por ventana de tiempo ni por ningún otro heurístico
+            # (ver el hallazgo original de Task 7 en
+            # test_historial_pipelines.py).
+            costos = {}
+            ids_de_pagina = [pid for pid, _n, _st, _c, _u in filas]
+            if ids_de_pagina:
+                await cur.execute(sql_costo_por_pipeline(len(ids_de_pagina)), ids_de_pagina)
+                for pid, suma in await cur.fetchall():
+                    if suma is not None:
+                        costos[pid] = round(float(suma), 6)
     return {
         "pipelines": [
             {
                 "pipeline_id": pid, "name": name, "status": st, "created_at": c, "updated_at": u,
                 "duracion_s": None if st in ESTADOS_SIN_DURACION_DEFINITIVA else round(u - c, 3),
-                # costo_usd: NO se recalcula ni se estima (Principio VIII). Sale
-                # del registro de uso real (axioma_usage) cruzado por el
-                # identificador del pipeline -- y ese cruce hoy NO EXISTE:
-                # verificado contra el esquema real (jax_memory_test, 2026-09-18)
-                # que axioma_usage tiene id/tenant_id/user_id/facet/model/
-                # tokens_in/tokens_out/cost_usd/request_type/created_at/status/
-                # job_id/spool_id, NINGUNA columna con trace_id ni pipeline_id.
-                # Los escritores tampoco lo mandan: jacobs/usage_writer.py::
-                # record_direct_usage() y las_manos/motor_registry/
-                # usage_writer.py::record_motor_usage() no reciben trace_id ni
-                # pipeline_id -- `job_id` en esa tabla es el id de un job de
-                # Motor Registry, no el trace_id de un paso de Jacobs. Sin esa
-                # columna no hay registro que cruzar: costo_usd sale null para
-                # TODO pipeline hasta que una ronda futura (fuera de esta tarea,
-                # cruza el repo jax) escriba esa identidad en axioma_usage.
-                "costo_usd": None,
+                "costo_usd": costos.get(pid),
                 "causa": causa_de(eventos[pid]) if st in ESTADOS_CONTINUABLES else None,
             }
             for pid, name, st, c, u in filas

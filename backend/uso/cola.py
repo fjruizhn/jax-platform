@@ -55,8 +55,13 @@ SUBDIRECTORIO_CORRUPTOS = "corruptos"
 CAMPOS = (
     "spool_id", "created_at", "tenant_id", "user_id", "facet", "model",
     "tokens_in", "tokens_out", "cost_usd", "request_type", "origen",
-    "status", "job_id",
+    "status", "job_id", "pipeline_id",
 )
+#: Task 7b (2026-09-18): `pipeline_id` se suma al final -- lo llenan los DOS
+#: escritores de jax cuando el uso viene de un pipeline (jacobs/usage_writer.py,
+#: las_manos/motor_registry/usage_writer.py), None cuando no. Sin esto, una
+#: fila recuperada del respaldo entra a `axioma_usage` sin poder sumarse al
+#: costo de ningún pipeline en api/pipelines.py::list_pipelines().
 #: `spool_id` y `created_at` los completa el módulo si el llamador no los trae;
 #: `status` y `job_id` son opcionales PARA EL LLAMADOR (sólo `motor_registry`
 #: los tiene) y `_normalizar` los deja en `None`. El resto son obligatorios.
@@ -68,7 +73,7 @@ CAMPOS = (
 #: la puede emparejar: se recupera el cobro y se pierde la trazabilidad.
 CAMPOS_OBLIGATORIOS = tuple(
     c for c in CAMPOS
-    if c not in ("spool_id", "created_at", "status", "job_id")
+    if c not in ("spool_id", "created_at", "status", "job_id", "pipeline_id")
 )
 ORIGENES = frozenset({"platform", "jacobs", "motor_registry"})
 
@@ -194,11 +199,11 @@ def _ahora_iso() -> str:
 
 
 def _normalizar(fila) -> dict:
-    """Devuelve la fila con los trece campos del contrato, o lanza ValueError.
+    """Devuelve la fila con los catorce campos del contrato, o lanza ValueError.
 
     Los que el llamador no trae quedan en `None` por la comprensión sobre
-    `CAMPOS` de más abajo: hoy eso alcanza para `status` y `job_id`, que sólo
-    tiene `motor_registry`.
+    `CAMPOS` de más abajo: hoy eso alcanza para `status`, `job_id` y
+    `pipeline_id`, que no todos los llamadores tienen.
     """
     if not isinstance(fila, dict):
         raise ValueError(f"la fila no es un diccionario: {type(fila).__name__}")

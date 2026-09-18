@@ -348,10 +348,10 @@ async def test_el_ciclo_siguiente_recupera_lo_que_la_caida_dejo(
 
 
 async def test_el_insert_nombra_las_columnas_del_contrato(respaldo, monkeypatch):
-    """Las trece del archivo menos `origen`, que NO es una columna de
-    `axioma_usage` (identifica al proceso que depositó, no al gasto): doce
-    columnas, `created_at` explícito -- nunca el DEFAULT -- y `status`/`job_id`
-    incluidas."""
+    """Las catorce del archivo menos `origen`, que NO es una columna de
+    `axioma_usage` (identifica al proceso que depositó, no al gasto): trece
+    columnas, `created_at` explícito -- nunca el DEFAULT -- y
+    `status`/`job_id`/`pipeline_id` incluidas."""
     pool = _pool_de_mentira(monkeypatch)
     await cola.encolar(_fila(_facet()))
 

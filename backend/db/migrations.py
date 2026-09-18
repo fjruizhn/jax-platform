@@ -1675,6 +1675,24 @@ _COLUMNS = [
     # aproximado. Con job_id, el join es exacto -- lo que T3 (chequeo de
     # reconciliacion) necesita para no dar falsos positivos.
     ("axioma_usage", "job_id", "ALTER TABLE axioma_usage ADD COLUMN job_id VARCHAR(36) NULL"),
+    # Task 7b (2026-09-18, historial-y-arreglos-de-pipeline): sin esto,
+    # costo_usd del historial (api/pipelines.py::list_pipelines) sale NULL
+    # SIEMPRE -- verificado contra el esquema real (Task 7) que axioma_usage
+    # no tenia ninguna columna que apuntara a un pipeline: job_id es el id de
+    # un job de Motor Registry, un espacio de ids distinto del pipeline_id de
+    # Jacobs, y el intento de cruzar por job_id contra jacobs_steps.trace_id
+    # dio 0 filas (29 filas de motor, 0 coincidencias). VARCHAR(36): mismo
+    # ancho que Pipeline.pipeline_id (jax/jacobs/models.py, uuid4 con
+    # guiones). NULL, sin DEFAULT: los DOS escritores de jax
+    # (jacobs/usage_writer.py::record_direct_usage,
+    # las_manos/motor_registry/usage_writer.py::record_motor_usage) lo mandan
+    # EXPLICITO -- None cuando el uso no viene de un pipeline (el chat de la
+    # Mesa via api/admin/usage.py::record_usage, que tampoco lo manda), no un
+    # hueco. Las filas viejas (de antes de esta migracion) quedan NULL para
+    # siempre: ese costo no existe y no se fabrica por ventana de tiempo
+    # (Principio VIII) -- ver el HALLAZGO documentado en
+    # test_historial_pipelines.py.
+    ("axioma_usage", "pipeline_id", "ALTER TABLE axioma_usage ADD COLUMN pipeline_id VARCHAR(36) NULL"),
     # SP3 grounding (2026-09-03). shadow_messages: qué vio el modelo y su
     # hash. Tres estados distinguibles a propósito (spec §5.4): NULL = turno
     # anterior a esta migración; 'ERROR' = el snapshot falló al construirse;
@@ -1942,6 +1960,30 @@ async def _indice_de_cuentas_bloqueadas(cur) -> None:
     if not await _index_exists(cur, "jax_users", "idx_jax_users_locked_until"):
         await _crear_indice_acotado(
             cur, "jax_users", "idx_jax_users_locked_until", DDL_INDICE_CUENTAS_BLOQUEADAS)
+
+
+# Task 7b (2026-09-18, historial-y-arreglos-de-pipeline): api/pipelines.py::
+# list_pipelines suma cost_usd por pipeline_id (WHERE pipeline_id IN (...)
+# GROUP BY pipeline_id) para el historial -- sin indice, un scan completo de
+# axioma_usage en cada pedido, igual que el defecto que motivo
+# idx_axioma_usage_periodo. Medido contra jax_memory_test (2026-09-18, ~2,86M
+# filas): EXPLAIN de esa consulta con el indice da type=range,
+# key=idx_axioma_usage_pipeline, Extra="Using index condition" -- SIN
+# filesort ni temporary (el scan por rango llega ya ordenado por pipeline_id,
+# asi que el GROUP BY no necesita materializar). Mismo criterio que
+# idx_axioma_usage_periodo: acotado (30 s) e INPLACE/LOCK=NONE, tabla
+# caliente que jax escribe en el camino del usuario.
+DDL_INDICE_USO_POR_PIPELINE = (
+    "ALTER TABLE axioma_usage ADD INDEX idx_axioma_usage_pipeline (pipeline_id), "
+    "ALGORITHM=INPLACE, LOCK=NONE"
+)
+
+
+async def _indice_de_uso_por_pipeline(cur) -> None:
+    """Idempotente: solo crea idx_axioma_usage_pipeline si falta."""
+    if not await _index_exists(cur, "axioma_usage", "idx_axioma_usage_pipeline"):
+        await _crear_indice_acotado(
+            cur, "axioma_usage", "idx_axioma_usage_pipeline", DDL_INDICE_USO_POR_PIPELINE)
 
 
 # Cola durable para el registro de uso (2026-09-15, Task 2 del plan
@@ -2722,6 +2764,7 @@ async def run_migrations():
                     await cur.execute(ddl)
             await _indice_de_uso_por_periodo(cur)
             await _indice_de_cuentas_bloqueadas(cur)
+            await _indice_de_uso_por_pipeline(cur)
             await _respaldo_de_uso(cur)
 
             await _drop_axioma_artifacts(cur)

@@ -6,23 +6,29 @@ LISTA_PIPELINES_MAX horneado en la consulta, sin forma de pedir la página
 siguiente). Los tres se agregan sin tocar la regla de dueño (user_id Y
 tenant_id, 404 al que no lo es) ni el orden (created_at DESC).
 
-costo_usd -- HALLAZGO (verificado contra el esquema real de jax_memory_test,
-2026-09-18, `SHOW CREATE TABLE axioma_usage`): la tabla NO tiene columna
-trace_id ni pipeline_id. Ningún escritor la manda tampoco -- ni
-jax/jacobs/usage_writer.py::record_direct_usage() ni
-jax/las_manos/motor_registry/usage_writer.py::record_motor_usage() reciben
-trace_id o pipeline_id; el `job_id` que sí guarda axioma_usage es el id de un
-job de Motor Registry, un espacio de ids distinto del trace_id de un paso de
-Jacobs. No hay registro que cruzar por trace_id: costo_usd sale `null` para
-TODO pipeline hoy, no como estimación sino porque el cruce que pediría el
-brief no existe en el esquema. Documentado también en pipelines.py junto al
-campo. NO se implementó ningún cruce heurístico (por ventana de tiempo/
-facet/modelo) a propósito: el brief pide explícitamente no recalcular ni
-estimar (Principio VIII), y esa clase de cruce ya está probada ambigua en
+costo_usd -- HALLAZGO original de Task 7 (verificado contra el esquema real
+de jax_memory_test, 2026-09-18, `SHOW CREATE TABLE axioma_usage`): la tabla
+NO tenía columna trace_id ni pipeline_id, y ningún escritor la mandaba --
+costo_usd salía `null` para TODO pipeline, documentado abajo en
+`test_costo_usd_no_se_inventa_ni_con_un_registro_de_uso_parecido`. NO se
+implementó ningún cruce heurístico (por ventana de tiempo/facet/modelo) a
+propósito: esa clase de cruce ya está probada ambigua en
 jax-platform/backend/db/migrations.py:2151-2157 (medición puntual de
-min_output_tokens, 2026-09-17: join por ventana de tiempo [started_at,
-finished_at+5s] + facet + modelo, "filas ambiguas entre capabilities
-excluidas").
+min_output_tokens, 2026-09-17, "filas ambiguas entre capabilities
+excluidas") -- Principio VIII.
+
+Task 7b (2026-09-18, MISMA ronda, cruza jax + jax-platform): agrega
+`axioma_usage.pipeline_id` (migrations.py) y hace que los DOS escritores de
+`jax` lo llenen (jacobs/usage_writer.py::record_direct_usage,
+las_manos/motor_registry/usage_writer.py::record_motor_usage) -- pasa a
+existir el cruce EXACTO que Task 7 no tenía. `costo_usd` ahora suma
+`axioma_usage.cost_usd` por `pipeline_id` para los pipelines que SÍ tienen
+uso referenciado. Los pipelines de ANTES de esta migración (o cualquier fila
+de uso que un escritor viejo, sin esta ronda, haya dejado sin la columna)
+siguen `null` -- honesto: ese dato no existe y no se fabrica por ventana de
+tiempo ni por ningún otro heurístico. La prueba de que NO se arma un cruce
+heurístico por casualidad (mismo tenant/época, sin `pipeline_id`) se
+conserva tal cual -- ver `test_costo_usd_no_se_inventa_ni_con_un_registro_de_uso_parecido`.
 """
 import time
 import uuid
@@ -49,6 +55,17 @@ async def _insertar_uso(tenant_id, user_id, facet, model, creado_ts):
         "(tenant_id, user_id, facet, model, tokens_in, tokens_out, cost_usd, request_type, created_at) "
         "VALUES (%s, %s, %s, %s, 100, 50, 0.012345, 'pipeline', FROM_UNIXTIME(%s))",
         (tenant_id, user_id, facet, model, creado_ts))
+
+
+async def _insertar_uso_de_pipeline(pipeline_id, tenant_id, user_id, facet, model, cost, creado_ts):
+    """Como `_insertar_uso`, pero con `pipeline_id` -- lo que los escritores
+    de la Task 7b mandan de verdad. `cost` puede ser None (precio no
+    resuelto, mismo caso que un escritor sin base de precios)."""
+    await sql(
+        "INSERT INTO axioma_usage "
+        "(tenant_id, user_id, facet, model, tokens_in, tokens_out, cost_usd, request_type, created_at, pipeline_id) "
+        "VALUES (%s, %s, %s, %s, 100, 50, %s, 'pipeline', FROM_UNIXTIME(%s), %s)",
+        (tenant_id, user_id, facet, model, cost, creado_ts, pipeline_id))
 
 
 async def _borrar_pipelines(ids):
@@ -141,6 +158,66 @@ def test_costo_usd_no_se_inventa_ni_con_un_registro_de_uso_parecido(client):
     finally:
         client.portal.call(_borrar_pipelines, [pid])
         client.portal.call(_borrar_uso, tenant_num)
+
+
+def test_costo_usd_suma_el_uso_real_del_pipeline_por_pipeline_id(client):
+    """Task 7b: con `pipeline_id` en axioma_usage y los escritores de jax
+    llenándolo, costo_usd deja de ser null siempre -- suma SOLO las filas de
+    ESE pipeline, no las de un pipeline vecino con el mismo tenant."""
+    duenio = uid(client, "hist-costo-real", "operator")
+    tenant_num = int(duenio)  # axioma_usage.tenant_id es INT; no participa del
+                              # cruce (que es por pipeline_id), así que alcanza
+                              # con un número propio de este test para poder
+                              # limpiarlo después.
+    ahora = time.time()
+    pid = str(uuid.uuid4())
+    otro_pid = str(uuid.uuid4())
+    client.portal.call(_insertar_pipeline, pid, duenio, TENANT, "completed", ahora - 5, ahora)
+    client.portal.call(_insertar_pipeline, otro_pid, duenio, TENANT, "completed", ahora - 5, ahora)
+    client.portal.call(_insertar_uso_de_pipeline, pid, tenant_num, int(duenio), "jekyll", "m1", 0.01, ahora - 4)
+    client.portal.call(_insertar_uso_de_pipeline, pid, tenant_num, int(duenio), "jekyll", "m1", 0.02, ahora - 3)
+    client.portal.call(_insertar_uso_de_pipeline, otro_pid, tenant_num, int(duenio), "jekyll", "m1", 9.0, ahora - 3)
+    try:
+        resp = client.get("/api/pipelines", headers=cabeceras(client, "hist-costo-real", "operator", tenant_id=TENANT))
+        assert resp.status_code == 200, resp.text
+        fila = next(p for p in resp.json()["pipelines"] if p["pipeline_id"] == pid)
+        assert fila["costo_usd"] == pytest.approx(0.03)
+    finally:
+        client.portal.call(_borrar_pipelines, [pid, otro_pid])
+        client.portal.call(_borrar_uso, tenant_num)
+
+
+def test_costo_usd_suma_lo_que_conoce_cuando_una_fila_no_tiene_precio(client):
+    """cost_usd NULL en una fila individual (precio no resuelto, mismo caso
+    que documenta record_direct_usage/record_motor_usage) no tira el total a
+    null -- SUM() lo ignora y suma lo que SÍ se sabe. Es un total parcial
+    real, no un total inventado."""
+    duenio = uid(client, "hist-costo-parcial", "operator")
+    tenant_num = int(duenio)
+    ahora = time.time()
+    pid = str(uuid.uuid4())
+    client.portal.call(_insertar_pipeline, pid, duenio, TENANT, "completed", ahora - 5, ahora)
+    client.portal.call(_insertar_uso_de_pipeline, pid, tenant_num, int(duenio), "jekyll", "m1", 0.05, ahora - 4)
+    client.portal.call(_insertar_uso_de_pipeline, pid, tenant_num, int(duenio), "jekyll", "m1", None, ahora - 3)
+    try:
+        resp = client.get("/api/pipelines", headers=cabeceras(client, "hist-costo-parcial", "operator", tenant_id=TENANT))
+        fila = next(p for p in resp.json()["pipelines"] if p["pipeline_id"] == pid)
+        assert fila["costo_usd"] == pytest.approx(0.05)
+    finally:
+        client.portal.call(_borrar_pipelines, [pid])
+        client.portal.call(_borrar_uso, tenant_num)
+
+
+def test_la_consulta_de_costo_usa_el_indice_de_pipeline_sin_filesort_ni_temporary(client):
+    """LAS CUATRO (indexing): mismo criterio que la consulta de dueño -- el
+    plan REAL, no que el índice exista."""
+    filas = client.portal.call(
+        sql, "EXPLAIN " + mod.sql_costo_por_pipeline(3),
+        ("pid-explain-a", "pid-explain-b", "pid-explain-c"), True)
+    ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
+    assert tabla == "axioma_usage"
+    assert clave == "idx_axioma_usage_pipeline", filas
+    assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
 
 
 def test_el_tope_fijo_ya_no_corta_el_historial__pagina_con_limite_y_offset(client):

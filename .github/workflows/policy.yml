@@ -1781,7 +1781,16 @@ jobs:
           # 2351 -> 2365 el 2026-09-18 (Task 8, aviso por correo al terminar un pipeline):
           #   +14 tests nuevos en tests/test_aviso_pipeline.py, medidos en verde contra
           #   jax_memory_test (aviso_pipeline.py + la tabla pipeline_aviso_enviado).
-          PISO_PASSED = 2365
+          # 2365 -> 2368 el 2026-09-18 (Task 7b, costo_usd real del historial): agrega
+          #   axioma_usage.pipeline_id (db/migrations.py, columna + idx_axioma_usage_pipeline)
+          #   y hace que list_pipelines() sume cost_usd por pipeline_id en vez de devolver
+          #   null siempre. +3 tests en tests/test_historial_pipelines.py
+          #   (suma real, suma parcial con una fila sin precio, EXPLAIN del índice nuevo);
+          #   el test que fija que NO se inventa un cruce por ventana de tiempo
+          #   (test_costo_usd_no_se_inventa_ni_con_un_registro_de_uso_parecido) se
+          #   mantiene sin cambios y sigue en verde. Medido local contra jax_memory_test:
+          #   2368 passed, 1 skipped, 0 fallidos.
+          PISO_PASSED = 2368
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
