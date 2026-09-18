@@ -749,7 +749,10 @@ jobs:
         # pydantic ademas de aiomysql: jacobs.store importa jacobs.models.
         run: |
           pip install aiomysql pydantic
-          PYTHONPATH=/tmp/jax python -c "import asyncio; from jacobs import store; asyncio.run(store.init_tables())"
+          # `las_manos` en el PYTHONPATH: desde el frente B (2026-09-17), jacobs.policy importa
+          # `interruptor`, que vive en jax/core y se expone como las_manos/interruptor.py. Sin eso
+          # el paso muere con ModuleNotFoundError y el job no llega ni a correr un test.
+          PYTHONPATH=/tmp/jax:/tmp/jax/las_manos python -c "import asyncio; from jacobs import store; asyncio.run(store.init_tables())"
 
       - name: Suite backend (con DB)
         run: python -m pytest -q -rs --junitxml=junit-db.xml
