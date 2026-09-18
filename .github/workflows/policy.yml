@@ -613,8 +613,12 @@ jobs:
             // 780 -> 781 el 2026-09-17 (limite de profundidad JSON): +1 en
             // frontend/src/api/errores.test.js (el 422 de profundidad se traduce
             // y no cae al mensaje generico). Medido con vitest run: 781 passed.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 781) {
-              console.error("PISO ROTO: se esperaban 781 tests de vitest CORRIDOS y 0 fallidos.");
+            // 781 -> 784 el 2026-09-17: +3 en useJaxStore.resultsRetryAfter.test.js
+            // (el reintento del fetch de resultados respeta Retry-After del 503 de
+            // contención, cae a la demora fija sin cabecera legible y tiene techo
+            // propio de 30 s). Vistos en rojo contra 7dca2ca.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 784) {
+              console.error("PISO ROTO: se esperaban 784 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
