@@ -1676,7 +1676,12 @@ jobs:
           # 2297 -> 2320 el 2026-09-17 (limite global de profundidad JSON): +23
           #   con DB, SUMADO al piso que dejaron el frente D, B1.4 y el pre-vuelo.
           #   Si el runner da otro numero, manda el runner.
-          PISO_PASSED = 2320
+          # 2320 -> 2324 el 2026-09-17 (el .env ya no lo abre el operador): +4 de
+          #   tests/test_entorno_de_produccion.py (lo lee con `sudo -n cat`, lo dice si no puede, vacio si
+          #   no esta, y el sembrado legado de /api/admin/keys no revienta sin permiso). Vistos en rojo.
+          #   Medido local contra jax_memory_test como fruiz: 2324 passed, 1 skipped, 0 fallidos.
+          #   Si el runner da otro numero, manda el runner.
+          PISO_PASSED = 2324
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

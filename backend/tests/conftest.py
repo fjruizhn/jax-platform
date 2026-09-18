@@ -2,24 +2,12 @@ import os
 
 import pytest
 
+from tests.entorno_de_produccion import cargar
+
 ENV_PATH = "/etc/jax/.env"
 
 
-def _load_env() -> dict:
-    env = {}
-    try:
-        with open(ENV_PATH) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    env[k.strip()] = v.strip()
-    except FileNotFoundError:  # fail-soft: carga de .env para tests; FileNotFoundError acotado, un .env ausente hace fallar los tests ruidosamente mas adelante, no en silencio
-        pass
-    return env
-
-
-for _k, _v in _load_env().items():
+for _k, _v in cargar(ENV_PATH).items():
     os.environ.setdefault(_k, _v)
 
 os.environ["JAX_DB_NAME"] = "jax_memory_test"

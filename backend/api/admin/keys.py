@@ -46,7 +46,7 @@ def _load_env() -> dict:
                 if line and not line.startswith("#") and "=" in line:
                     k, _, v = line.partition("=")
                     env[k.strip()] = v.strip()
-    except FileNotFoundError:  # fail-soft: mismo patron que chat.py/image.py: FileNotFoundError acotado a 'no existe .env todavia', no oculta otros errores de lectura
+    except (FileNotFoundError, PermissionError):  # fail-soft: 'no existe todavia' o 'no es mio' (desde 2026-09-17 el .env es root:jaxsvc 640 y solo lo lee el servicio). En los dos casos no hay llaves que sembrar: la base es la unica fuente desde B1.4
         pass
     return env
 
