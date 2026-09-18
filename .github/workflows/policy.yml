@@ -644,6 +644,17 @@ jobs:
   # archivo, que es donde se puede verificar. A proposito NO se repite aca el
   # numero de mutaciones: es una consecuencia, no una medida, y un conteo en
   # un comentario de YAML no lo verifica nadie (ya estuvo mal dos veces).
+  ci-usa-la-mariadb-de-produccion:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Sin dependencias: lee los YAML de este mismo repo. Sale != 0 si algun
+      # workflow levanta una MariaDB distinta a la de produccion.
+      - run: python3 scripts/ci_mariadb_de_produccion.py
+
   invoke-facet-envoltorio:
     runs-on: ubuntu-latest
     defaults:
@@ -689,6 +700,13 @@ jobs:
   # ademas destapo un bug real de producto que la DB de desarrollo escondia
   # (provider.base_url de ollama sin /v1 en toda instalacion nueva), arreglado
   # en db/migrations.py en este mismo PR.
+  #
+  # 2026-09-18: la imagen paso de mariadb:11.8 a mariadb:12.3.3, el tag EXACTO
+  # que corre produccion (`docker inspect mariadb-12-3-jax`). CI con otra
+  # version que produccion no falla ruidoso: da VERDE sobre un plan de consulta
+  # que produccion no usa -- ya nos costo un test de EXPLAIN que media la
+  # version del optimizador en vez de nuestro cambio. Si se mueve produccion,
+  # se mueve esta linea en el mismo commit.
   backend-tests-con-db:
     runs-on: ubuntu-latest
     defaults:
@@ -696,7 +714,7 @@ jobs:
         working-directory: backend
     services:
       mariadb:
-        image: mariadb:11.8
+        image: mariadb:12.3.3
         env:
           MARIADB_ROOT_PASSWORD: ci
           MARIADB_DATABASE: jax_memory_test
