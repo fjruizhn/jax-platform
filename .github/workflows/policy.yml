@@ -617,8 +617,22 @@ jobs:
             // (el reintento del fetch de resultados respeta Retry-After del 503 de
             // contención, cae a la demora fija sin cabecera legible y tiene techo
             // propio de 30 s). Vistos en rojo contra 7dca2ca.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 784) {
-              console.error("PISO ROTO: se esperaban 784 tests de vitest CORRIDOS y 0 fallidos.");
+            // 784 -> 817 el 2026-09-18 (Task 9, historial de pipelines): +6 en
+            // useJaxStore.historial.test.js (cargarHistorial: offset 0 reemplaza,
+            // offset > 0 agrega, un fallo de red no borra lo ya cargado, forma
+            // inválida no revienta, cargando en vuelo), +16 en
+            // components/historial/DetallePipeline.test.jsx (prompt EXACTO y
+            // modelo REAL por paso, depends_on, result_unavailable con su motivo,
+            // bloques largos colapsados por default, fuentes, cerrar, refetch al
+            // cambiar de pipeline) y +10 en pages/Historial.test.jsx (lista,
+            // estado traducido, duracion_s/costo_usd null como "desconocido" no
+            // como 0, vacío, error con reintentar, "cargar más", abrir/cerrar
+            // detalle) y +1 en BarraUsuario.test.jsx (el ícono de historial lo ve
+            // cualquier rol, no sólo superadmin). Todos vistos en rojo antes del
+            // código (módulo/función inexistente) contra b72002e (jax) +
+            // este commit. Medido con vitest run: 817 passed, 0 fallidos, 84 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 817) {
+              console.error("PISO ROTO: se esperaban 817 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

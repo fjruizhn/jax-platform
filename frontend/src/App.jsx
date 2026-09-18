@@ -4,6 +4,7 @@ import { useJaxStore } from './store/useJaxStore'
 import { sincronizarApariencia } from './apariencia/sincronizarApariencia'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
+import Historial from './pages/Historial'
 import Admin from './pages/Admin'
 import ResetPassword from './pages/ResetPassword'
 import RequireAuth from './components/RequireAuth'
@@ -38,6 +39,19 @@ export default function App() {
           element={
             <RequireAuth>
               <Dashboard />
+            </RequireAuth>
+          }
+        />
+        {/* Task 9 (2026-09-18): ruta propia, hermana de "/" -- Dashboard es
+            un layout fijo de 3 paneles sin sub-rutas (a diferencia de Admin,
+            que sí las tiene), así que anidar acá habría pedido reestructurar
+            Dashboard.jsx sólo para esta pantalla. Cualquier usuario logueado
+            entra, no sólo superadmin. */}
+        <Route
+          path="/historial"
+          element={
+            <RequireAuth>
+              <Historial />
             </RequireAuth>
           }
         />

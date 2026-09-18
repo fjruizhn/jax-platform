@@ -255,6 +255,64 @@ export default {
   pipelineSources: 'Fuentes',
   pipelineNoResult: '_(sin resultado)_',
 
+  // Historial de pipelines (Task 9, 2026-09-18): pantalla propia para ver el
+  // resultado de un pipeline después de que el chat lo hace desaparecer hacia
+  // arriba -- nombre, estado, cuándo, cuánto duró, y por paso el prompt
+  // EXACTO, el modelo REAL y de qué pasos dependía.
+  historialTitle: 'Historial de pipelines',
+  historialBack: (nombre) => `Volver a ${nombre}`,
+  historialLoading: 'Cargando…',
+  historialError: 'No se pudo cargar el historial. Probá de nuevo.',
+  historialRetry: 'Reintentar',
+  historialEmpty: 'Todavía no corriste ningún pipeline.',
+  historialColName: 'Nombre',
+  historialColStatus: 'Estado',
+  historialColCreated: 'Creado',
+  historialColDuration: 'Duración',
+  historialColCost: 'Costo',
+  historialColCause: 'Causa',
+  // duracion_s/costo_usd null: desconocido, NUNCA cero -- costo_usd es null
+  // SIEMPRE por ahora (backend/api/pipelines.py, limitación de esquema
+  // conocida, tiene su propia tarea) y duracion_s es null mientras el
+  // pipeline pueda seguir corriendo.
+  historialUnknown: 'desconocido',
+  historialLoadMore: 'Cargar más',
+  historialLoadingMore: 'Cargando más…',
+  historialViewDetail: 'Ver detalle',
+  historialCloseDetail: 'Cerrar detalle',
+
+  detalleTitle: (nombre) => `Detalle — ${nombre}`,
+  detalleLoading: 'Cargando el detalle…',
+  detalleError: 'No se pudo cargar el detalle de este pipeline.',
+  detalleTotalDuration: (secs) => `Duración total: ${secs}s`,
+  detalleTotalDurationUnknown: 'Duración total: desconocida',
+  detalleStepPrompt: 'Prompt',
+  detalleStepPromptEmpty: '(sin prompt)',
+  detalleStepModel: 'Modelo',
+  detalleStepModelUnknown: 'desconocido',
+  detalleStepResult: 'Resultado',
+  detalleStepResultEmpty: '(sin resultado)',
+  detalleStepResultUnavailable: (motivo) => `El resultado de este paso no se pudo leer: ${motivo}`,
+  detalleStepDuration: (secs) => `${secs}s`,
+  detalleStepDurationUnknown: 'duración desconocida',
+  detalleStepDependsOn: (pasos) => `Depende de: ${pasos}`,
+  detalleStepDependsOnNone: 'No depende de otro paso',
+  detalleStepNumber: (n) => `Paso ${n}`,
+
+  // StepStatus (jax/jacobs/models.py), no el status del pipeline entero
+  // (arriba, ETIQUETAS_DE_ESTADO): un paso puede quedar 'skipped' o
+  // 'blocked' sin que el pipeline entero tenga esos estados.
+  stepStatusLabels: {
+    pending: 'Pendiente',
+    running: 'En curso',
+    completed: 'Completado',
+    failed: 'Fallido',
+    skipped: 'Salteado',
+    blocked: 'Bloqueado',
+    blocked_human_gate: 'Esperando aprobación',
+  },
+  stepStatusDesconocido: 'Estado desconocido',
+
   // Kill switch
   killSwitchActive: 'KILL SWITCH ACTIVO',
   killConfirmYes: 'SÍ, DETENER TODO',

@@ -70,6 +70,19 @@ describe('BarraUsuario', () => {
     expect(screen.queryByRole('link', { name: 'Administración' })).not.toBeInTheDocument()
   })
 
+  // Task 9 (2026-09-18, historial-y-arreglos-de-pipeline): a diferencia del
+  // engranaje de administración, el historial de pipelines lo ve CUALQUIER
+  // usuario logueado, no sólo superadmin -- es su propio trabajo el que
+  // quiere volver a ver, no una pantalla de administración.
+  it('el ícono de historial lleva a /historial y lo ve cualquier rol', () => {
+    const { unmount } = renderBarra()
+    expect(screen.getByRole('link', { name: 'Historial de pipelines' })).toHaveAttribute('href', '/historial')
+    unmount()
+    usuario = { email: 'otro@example.com', role: 'operator' }
+    renderBarra()
+    expect(screen.getByRole('link', { name: 'Historial de pipelines' })).toHaveAttribute('href', '/historial')
+  })
+
   it('salir es un ícono con nombre accesible y cierra la sesión', () => {
     renderBarra()
     fireEvent.click(screen.getByRole('button', { name: 'Salir' }))
