@@ -1843,7 +1843,19 @@ jobs:
           #   drift de otra sesión). Un runner de CI en frío recrea ese índice desde el
           #   jax master real (paso "Crear el esquema de Jacobs", más arriba en este
           #   mismo job) y no debería reproducir el fallo -- si lo hace, manda el runner.
-          PISO_PASSED = 2382
+          # 2382 -> 2385 (2026-09-18, ronda de arreglo de la revisión del auditor local):
+          #   +3 en test_ejecutor_auditor_local.py -- el binding resuelve model_ref SIN
+          #   depender de que _seed_models_and_backfill corra después en la lista
+          #   (hallazgo MEDIO: las dos semillas estaban acopladas por orden y en
+          #   producción quedó a medias), la reparación de un binding que ya haya
+          #   quedado con model_ref NULL, y que un cambio de JAX_OLLAMA_CPU_URL
+          #   actualice base_url en el próximo arranque (hallazgo BAJO: INSERT IGNORE
+          #   congelaba el puerto del primer arranque para siempre). La tautológica
+          #   (comparaba la constante consigo misma) se reemplazó por un grep real del
+          #   árbol -- incremento neto de tests, no de archivos. Medido local contra
+          #   jax_memory_test: 2384 passed, mismo 1 fallo preexistente y ajeno de
+          #   siempre (test_tablero.py, índice de jacobs_pipelines).
+          PISO_PASSED = 2385
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

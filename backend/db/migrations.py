@@ -1359,12 +1359,21 @@ _ENV_OLLAMA_CPU_URL = "JAX_OLLAMA_CPU_URL"
 
 
 async def _seed_ollama_cpu_provider(cur) -> None:
+    """ON DUPLICATE KEY UPDATE, no INSERT IGNORE (hallazgo BAJO de la revisión,
+    2026-09-18): con INSERT IGNORE, si JAX_OLLAMA_CPU_URL cambiara (el puerto se mueve,
+    la unidad pasa a otra máquina), `base_url` se quedaría congelado en el valor del
+    primer arranque para siempre -- silencioso, sin error. El entorno es la fuente de
+    verdad de ESTE campo (a diferencia de credenciales o preferencias de admin, nadie
+    edita `base_url` de un proveedor 100% gestionado por infraestructura), así que se
+    actualiza en cada arranque, igual que _ejecutor_config_c5_v1 hace con sus claves --
+    salvo que ahí el admin SÍ puede pisar el valor y acá no hay UI que lo permita."""
     base_url = os.environ.get(_ENV_OLLAMA_CPU_URL, "").strip()
     if not base_url:
         return
     await cur.execute(
-        "INSERT IGNORE INTO provider (id, display_name, base_url, auth_type, is_local) "
-        "VALUES (%s, %s, %s, 'none', TRUE)",
+        "INSERT INTO provider (id, display_name, base_url, auth_type, is_local) "
+        "VALUES (%s, %s, %s, 'none', TRUE) "
+        "ON DUPLICATE KEY UPDATE base_url = VALUES(base_url)",
         (_PROVIDER_ID_OLLAMA_CPU, "Ollama CPU (auditor local)", base_url.rstrip("/") + "/v1"),
     )
 
@@ -1383,7 +1392,17 @@ async def _seed_auditor_local_facet(cur) -> None:
     ('ollama', 'subprocess'); jax/ejecutor/contratos/auditor_cliente.py acepta los dos
     (TRANSPORTES_SOPORTADOS). El binding sólo se siembra si el proveedor ya existe (ver
     _seed_ollama_cpu_provider): sin eso, la FK de facet_binding reventaría en una base sin
-    JAX_OLLAMA_CPU_URL (p.ej. CI)."""
+    JAX_OLLAMA_CPU_URL (p.ej. CI).
+
+    `model_ref` se resuelve ACÁ, sin depender de que `_seed_models_and_backfill` corra
+    después en la lista de `run_migrations` (hallazgo MEDIO de la revisión, 2026-09-18):
+    con las dos semillas acopladas por ORDEN, la corrida manual contra producción dejó el
+    binding con `model_ref` NULL y sin fila en `model` -- `resolve_facet('auditor_local')`
+    reventaba con FacetUnavailableError (el JOIN contra `model` no encontraba nada),
+    mientras `misiones.py` (que sólo mira `provider.is_local`, no si el binding resuelve)
+    decía "elegible": las dos mitades en desacuerdo, fail-closed pero opaco. El UPDATE de
+    más abajo además REPARA una fila que ya haya quedado así -- no sólo evita el caso
+    nuevo."""
     await cur.execute(
         "INSERT IGNORE INTO facet (`key`, display_name, icon, color_hex, transport, auto_selectable) "
         "VALUES ('auditor_local', 'Auditor local (C5)', '🔒', '#64748b', 'ollama', FALSE)"
@@ -1392,9 +1411,22 @@ async def _seed_auditor_local_facet(cur) -> None:
     if await cur.fetchone() is None:
         return
     await cur.execute(
-        "INSERT IGNORE INTO facet_binding (facet_key, provider_id, model_id, role) "
-        "VALUES ('auditor_local', %s, %s, 'primary')",
+        "INSERT IGNORE INTO model (provider_id, model_id, is_alias, status, source, source_checked_at) "
+        "VALUES (%s, %s, FALSE, 'available', 'manual', NOW())",
         (_PROVIDER_ID_OLLAMA_CPU, _MODELO_AUDITOR_LOCAL),
+    )
+    await cur.execute("SELECT id FROM model WHERE provider_id = %s AND model_id = %s",
+                      (_PROVIDER_ID_OLLAMA_CPU, _MODELO_AUDITOR_LOCAL))
+    (model_ref,) = await cur.fetchone()
+    await cur.execute(
+        "INSERT IGNORE INTO facet_binding (facet_key, provider_id, model_id, model_ref, role) "
+        "VALUES ('auditor_local', %s, %s, %s, 'primary')",
+        (_PROVIDER_ID_OLLAMA_CPU, _MODELO_AUDITOR_LOCAL, model_ref),
+    )
+    # Repara una fila preexistente (de una corrida vieja, desacoplada) con model_ref NULL.
+    await cur.execute(
+        "UPDATE facet_binding SET model_ref = %s WHERE facet_key = 'auditor_local' AND model_ref IS NULL",
+        (model_ref,),
     )
 
 
