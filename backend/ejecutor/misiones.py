@@ -8,9 +8,17 @@ proxy de C3, cita literal y auditor. El runner emite eventos (una línea JSON) y
 `resultado`; la plataforma, dueña de estas tablas, los guarda: bitácora y turno.
 
 Reglas:
-- Sólo máquinas ELEGIBLES: activas y sin datos de clientes, salvo que la compuerta de C5
-  (`ejecutor.c5_auditor_admite_datos_de_clientes`) esté abierta. Ilegible = cerrada. La
-  compuerta se revalida en CADA turno (el arranque del runner la vuelve a exigir igual).
+- Sólo máquinas ELEGIBLES: activas y, si cargan datos de clientes, sólo si la compuerta de
+  C5 (`ejecutor.c5_auditor_admite_datos_de_clientes`) está abierta O el auditor local está
+  disponible de verdad (spec 2026-09-18-auditor-local-opcion.md §4: DECISIÓN DE FERNANDO --
+  el auditor se elige según la máquina de la misión, ver `jax/ejecutor/contratos/
+  eleccion_c5.py::elegir_auditor_faceta`). «Disponible de verdad» es
+  `provider.is_local` del proveedor bindeado a `ejecutor.auditor_faceta_local`, NUNCA el
+  nombre de la faceta: la compuerta no se borra, sigue gobernando el caso que de verdad
+  importa -- que un auditor DE NUBE termine viendo datos de clientes porque el auditor
+  local quedó mal bindeado. Ilegible = ni compuerta abierta ni auditor local disponible. La
+  compuerta (y el auditor local) se revalidan en CADA turno (el arranque del runner los
+  vuelve a exigir igual, vía `eleccion_c5.validar_eleccion`).
 - Un turno a la vez en toda la plataforma: el registro de C3, el latido del vigía y la pausa
   son uno solo (arranque.py lo exige también: `vigia_ya_activo`).
 - Con la pausa del Ejecutor puesta no se lanza nada (423).
@@ -48,6 +56,17 @@ LIMITE_DE_LISTA = 100
 
 SQL_MAQUINAS = ("SELECT nombre, rol, con_datos_de_clientes, activo FROM ejecutor_host ORDER BY nombre")
 SQL_COMPUERTA = "SELECT config_value FROM axioma_config WHERE config_key = %s"
+# ¿El auditor local (`ejecutor.auditor_faceta_local`) está bindeado a un proveedor
+# REALMENTE local? Mira `provider.is_local`, nunca el nombre de la faceta: un
+# 'auditor_local' bindeado por error a un proveedor de nube no debe abrir esta puerta. Sin
+# fila (config ausente, o la faceta sin binding 'primary') → NULL → False en Python, fail
+# closed: la compuerta sigue siendo la única puerta.
+SQL_AUDITOR_LOCAL_DISPONIBLE = (
+    "SELECT p.is_local FROM axioma_config c "
+    "JOIN facet_binding b ON b.facet_key = c.config_value AND b.role = 'primary' "
+    "JOIN provider p ON p.id = b.provider_id "
+    "WHERE c.config_key = 'ejecutor.auditor_faceta_local'"
+)
 SQL_TURNO_EN_CURSO = "SELECT mision_id, n FROM ejecutor_turno WHERE estado = 'en_curso' LIMIT 1"
 SQL_MISION = "SELECT id, objetivo, maquinas, sesion_id, created_at, updated_at FROM ejecutor_mision WHERE id = %s"
 SQL_TURNOS = ("SELECT n, instruccion, estado, codigo, resultado, sesion_iniciada, iniciado_at, terminado_at "
@@ -129,14 +148,26 @@ async def _consultar(consulta: str, args=(), una=False):
             return await (cur.fetchone() if una else cur.fetchall())
 
 
+async def _auditor_local_disponible() -> bool:
+    """¿Hay un auditor local REALMENTE local bindeado? Ver el comentario de
+    SQL_AUDITOR_LOCAL_DISPONIBLE: mira provider.is_local, nunca el nombre de la faceta."""
+    fila = await _consultar(SQL_AUDITOR_LOCAL_DISPONIBLE, una=True)
+    return bool(fila and fila[0])
+
+
 async def maquinas() -> list[dict]:
     filas = await _consultar(SQL_MAQUINAS)
     compuerta = await _consultar(SQL_COMPUERTA, (CLAVE_COMPUERTA,), una=True)
     abierta = compuerta_abierta(compuerta[0] if compuerta else None)
+    # Spec 2026-09-18-auditor-local-opcion.md §4: la compuerta deja de ser el ÚNICO camino
+    # -- una máquina con datos de clientes también es elegible si el auditor que se va a
+    # usar es local de verdad. La compuerta NO se borra: sigue gobernando el caso que de
+    # verdad importa (auditor local mal bindeado a un proveedor de nube).
+    cubierto = abierta or await _auditor_local_disponible()
     salida = []
     for nombre, rol, con_clientes, activo in filas:
         motivo = ("maquina_inactiva" if not activo
-                  else "maquina_con_datos_de_clientes" if con_clientes and not abierta else None)
+                  else "maquina_con_datos_de_clientes" if con_clientes and not cubierto else None)
         salida.append({"nombre": nombre, "rol": rol, "con_datos_de_clientes": bool(con_clientes),
                        "activo": bool(activo), "elegible": motivo is None, "motivo_no_elegible": motivo})
     return salida
@@ -155,6 +186,7 @@ async def _turno_en_curso() -> dict | None:
 async def estado() -> dict:
     ruta = _ruta_de_la_pausa()
     return {"pausa": await asyncio.to_thread(pausa.leer_pausa, ruta), "compuerta_datos_de_clientes": await _compuerta(),
+            "auditor_local_disponible": await _auditor_local_disponible(),
             "maquinas": await maquinas(), "turno_en_curso": await _turno_en_curso()}
 
 

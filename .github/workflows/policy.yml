@@ -1827,7 +1827,23 @@ jobs:
           #   pasan igual bajo JAX_CI_NO_DB=1 (1598 -> 1602, medido ahí sí). Si el runner
           #   real con DB da otro número, manda el runner -- que es exactamente lo que
           #   este chequeo existe para atrapar.
-          PISO_PASSED = 2372
+          # 2372 -> 2382 (2026-09-18, auditor local de C5): +10 tests -- +1 en
+          #   test_ejecutor_config_c5.py (la clave nueva ejecutor.auditor_faceta_local no
+          #   está hardcodeada a una sola faceta), +7 en test_ejecutor_auditor_local.py
+          #   (siembra del proveedor 'ollama_cpu' -- sólo con JAX_OLLAMA_CPU_URL, sin
+          #   puerto hardcodeado -- y de la faceta/binding 'auditor_local', idempotencia
+          #   incluida) y +2 en test_ejecutor_misiones.py (una máquina con datos de
+          #   clientes es elegible con auditor local REAL -- provider.is_local --, y el
+          #   PEOR CASO: un 'auditor_local' mal bindeado a un proveedor de nube NO abre
+          #   nada con la compuerta cerrada). Medido local contra jax_memory_test: 2381
+          #   passed, 1 fallo -- test_tablero.py::test_explain_..._idx_pipelines_status,
+          #   PREEXISTENTE y AJENO a este cambio (índice de jacobs_pipelines creado por
+          #   jax/jacobs/store.py::init_tables(), que esta rama no toca; la base
+          #   compartida jax_memory_test de este host tenía un índice con otro nombre,
+          #   drift de otra sesión). Un runner de CI en frío recrea ese índice desde el
+          #   jax master real (paso "Crear el esquema de Jacobs", más arriba en este
+          #   mismo job) y no debería reproducir el fallo -- si lo hace, manda el runner.
+          PISO_PASSED = 2382
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2452,7 +2468,13 @@ jobs:
       # (4 except sin marcar '# fail-soft:', deuda del commit 1de2407 de la Task 10,
       # anterior a esta tanda) -- arreglado en el mismo commit para que el piso de acá
       # abajo sea real y no un numero sobre una suite roja.
-      JAX_CI_MIN_PASSED: "1602"
+      # 1602 -> 1604 (2026-09-18, auditor local de C5): +1 puro
+      # (test_ejecutor_auditor_local.py::test_el_modelo_del_auditor_local_no_esta_duplicado_en_otro_lugar,
+      # no toca `client` ni get_pool). Los otros 9 tests nuevos de esta ronda (ver el piso
+      # con DB, mas arriba) piden `client` y se saltean acá -- eso explica el resto del
+      # delta de SKIPS, no un passed perdido. Medido con JAX_CI_NO_DB=1
+      # .venv/bin/python -m pytest -q: 1604 passed, 0 fallidos.
+      JAX_CI_MIN_PASSED: "1604"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

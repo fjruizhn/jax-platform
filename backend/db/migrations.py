@@ -1345,6 +1345,59 @@ _PROVIDER_SYNC_SEED = [
 ]
 
 
+# Auditor local de C5 (spec jax 2026-09-18-auditor-local-opcion.md). Segundo Ollama,
+# SOLO CPU, proceso y puerto propios (ops/ejecutor/ollama-cpu.service en el repo jax):
+# lo que audita nunca sale de hall9000. base_url sale de JAX_OLLAMA_CPU_URL -- sin la
+# variable, NO se siembra el proveedor (fail-soft, se reintenta en el próximo arranque),
+# mismo criterio que _ejecutor_inventario_v1: un puerto hardcodeado acá sobreviviría a
+# cualquier cambio de infraestructura sin que nadie se entere. En CI (sin la variable)
+# el proveedor y el binding quedan sin sembrar a propósito -- los tests que necesitan un
+# auditor local siembran su propia fila sintética (ver tests/test_ejecutor_auditor_local.py),
+# igual que la fixture `maquinas` de test_ejecutor_misiones.py siembra ejecutor_host.
+_PROVIDER_ID_OLLAMA_CPU = "ollama_cpu"
+_ENV_OLLAMA_CPU_URL = "JAX_OLLAMA_CPU_URL"
+
+
+async def _seed_ollama_cpu_provider(cur) -> None:
+    base_url = os.environ.get(_ENV_OLLAMA_CPU_URL, "").strip()
+    if not base_url:
+        return
+    await cur.execute(
+        "INSERT IGNORE INTO provider (id, display_name, base_url, auth_type, is_local) "
+        "VALUES (%s, %s, %s, 'none', TRUE)",
+        (_PROVIDER_ID_OLLAMA_CPU, "Ollama CPU (auditor local)", base_url.rstrip("/") + "/v1"),
+    )
+
+
+# El modelo medido 6/6 contra los seis canarios reales de C5, CPU (spec §3): ninguna otra
+# parte del código nombra este modelo -- sale de acá y de axioma_config
+# (ejecutor.auditor_faceta_local -> facet 'auditor_local' -> este binding), nunca hardcodeado
+# en un segundo lugar.
+_MODELO_AUDITOR_LOCAL = "qwen3:14b"
+
+
+async def _seed_auditor_local_facet(cur) -> None:
+    """Faceta 'auditor_local' del Ejecutor. transport='ollama', NO 'http_openai_compat':
+    mismo motivo que jax_local -- provider.auth_type='none' (sin credencial gestionada) y
+    facet_resolver._query_facet sólo exime de `credential` a los transportes
+    ('ollama', 'subprocess'); jax/ejecutor/contratos/auditor_cliente.py acepta los dos
+    (TRANSPORTES_SOPORTADOS). El binding sólo se siembra si el proveedor ya existe (ver
+    _seed_ollama_cpu_provider): sin eso, la FK de facet_binding reventaría en una base sin
+    JAX_OLLAMA_CPU_URL (p.ej. CI)."""
+    await cur.execute(
+        "INSERT IGNORE INTO facet (`key`, display_name, icon, color_hex, transport, auto_selectable) "
+        "VALUES ('auditor_local', 'Auditor local (C5)', '🔒', '#64748b', 'ollama', FALSE)"
+    )
+    await cur.execute("SELECT 1 FROM provider WHERE id = %s", (_PROVIDER_ID_OLLAMA_CPU,))
+    if await cur.fetchone() is None:
+        return
+    await cur.execute(
+        "INSERT IGNORE INTO facet_binding (facet_key, provider_id, model_id, role) "
+        "VALUES ('auditor_local', %s, %s, 'primary')",
+        (_PROVIDER_ID_OLLAMA_CPU, _MODELO_AUDITOR_LOCAL),
+    )
+
+
 async def _seed_provider_sync_config(cur) -> None:
     """Idempotente pero NO 'set once + nunca tocar': el guard es
     models_list_url IS NULL, para no pisar un valor editado a mano despues
@@ -2694,6 +2747,10 @@ async def _ejecutor_inventario_v1(cur) -> None:
 _EJECUTOR_CONFIG_C5 = (
     ("ejecutor.cerebro_faceta", "ejecutor"),
     ("ejecutor.auditor_faceta", "thot"),
+    # Spec 2026-09-18-auditor-local-opcion.md §4: auditor de una máquina CON datos de
+    # clientes. eleccion_c5.elegir_auditor_faceta (repo jax) decide entre esta clave y la
+    # de arriba según si la misión toca máquinas con datos de clientes -- nunca al revés.
+    ("ejecutor.auditor_faceta_local", "auditor_local"),
     ("ejecutor.c5_lote_max", "20"),
     ("ejecutor.c5_intervalo_s", "15"),
     # El tope que usó U4 de la Fase 0 (scripts/ejecutor_fase0/auditor_costo.py).
@@ -2776,8 +2833,14 @@ async def run_migrations():
             await _ejecutor_config_c5_v1(cur)
             await _apariencia_default_v1(cur)
             await _seed_providers(cur)
+            await _seed_ollama_cpu_provider(cur)
             await _migrate_user_api_keys_to_credential(cur)
             await _seed_facets(cur)
+            # Después de _seed_ollama_cpu_provider (la FK de facet_binding exige el
+            # proveedor ya insertado) y de _seed_facets (agrega su propio binding con
+            # INSERT IGNORE por (facet_key, role); no depende del guard "sólo si la tabla
+            # está vacía" de _seed_facets, que es sólo para el lote inicial de Bloque C).
+            await _seed_auditor_local_facet(cur)
             await _seed_provider_sync_config(cur)
             await _migrar_gemini_a_cabecera(cur)
             await _seed_models_and_backfill(cur)
