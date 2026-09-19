@@ -12,6 +12,11 @@ const ETIQUETAS_DE_ESTADO = {
   aborted: 'Aborted',
   interrupted: 'Interrupted',
   expired: 'Expired',
+  // `feat/estado-disputed` round (2026-09-18): the arbiter ran out of
+  // returns with an UNRESOLVED objection -- neither approved nor failed,
+  // needs Fernando's call. Deliberately distinct from "Completed" and
+  // "Failed": a disputed pipeline is neither.
+  disputed: 'Unresolved objection',
 }
 
 const UN_PASO = 'A step'

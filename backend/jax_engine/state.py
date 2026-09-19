@@ -38,6 +38,18 @@ _JACOBS_STATUS_MAP = {
     # el caso que nadie mira. Mismo trato que "aborted": terminó sin éxito,
     # no por decisión humana explícita, pero terminó.
     "expired":     "failed",
+    # Ronda `feat/estado-disputed` (2026-09-18, repo jax rama
+    # feat/arbitro-devuelve, sin mergear todavía): el árbitro agotó el tope
+    # de devoluciones con una objeción SIN RESOLVER (jacobs/devolucion.py).
+    # MISMO defecto exacto que `expired` tuvo hasta hoy si esta entrada
+    # falta: .get(jacobs_status, "running") deja el pipeline pegado en
+    # "running" para siempre, el cupo del tenant se fuga, y no hay aviso.
+    # A diferencia de aborted/expired, NO se mapea a "failed": es terminal
+    # pero no es un fallo genérico -- tiene su propio status en el panel
+    # (jax_engine/schemas.py::PipelineStatus) para que el Historial y el
+    # correo (aviso_pipeline.py) lo puedan mostrar como lo que es, "requiere
+    # tu decisión", no como completado ni como un error cualquiera.
+    "disputed":    "disputed",
 }
 
 _STEP_STATUS_MAP = {
@@ -239,7 +251,7 @@ class JAXEngineState:
                 )
                 await event_bus.publish(gate_event)
 
-            if updated.status in ("completed", "failed"):
+            if updated.status in ("completed", "failed", "disputed"):
                 self.remove_pipeline(pid)
                 # cancel_pipeline() ya liberaba el slot del tenant; una
                 # pipeline que termina SOLA (no cancelada) nunca lo hacía,

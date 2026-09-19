@@ -12,6 +12,11 @@ const ETIQUETAS_DE_ESTADO = {
   aborted: 'Abortado',
   interrupted: 'Interrumpido',
   expired: 'Vencido',
+  // Ronda `feat/estado-disputed` (2026-09-18): el árbitro agotó el tope de
+  // devoluciones con una objeción SIN RESOLVER -- ni aprobado ni fallido,
+  // requiere la decisión de Fernando. Distinto a propósito de "Completado"
+  // y de "Fallido": un pipeline disputed no es ninguno de los dos.
+  disputed: 'Con objeción sin resolver',
 }
 
 const UN_PASO = 'Un paso'
