@@ -7,16 +7,23 @@ import '@testing-library/jest-dom'
 // estaban fijos, sin pasar por i18n -- en inglés la tabla salía en español.
 vi.mock('../../api/client', () => ({ default: { get: vi.fn(), delete: vi.fn() } }))
 
-// Task 1 (2026-09-15): borrar pasa por ConfirmacionSuma, que necesita
-// addToast del store para el toast de error (mismo patrón que AdminUsers).
-const addToastMock = vi.fn()
-vi.mock('../../store/useJaxStore', () => ({
-  useJaxStore: (selector) => selector({ addToast: addToastMock }),
-}))
-
 import api from '../../api/client'
 import AdminRepository from './AdminRepository'
 import { I18nProvider } from '../../i18n/index.jsx'
+// Ronda de arreglo 2 (2026-09-18): la pestaña "Pipelines" monta
+// HistorialContenido, que lee `historial`/`cargarHistorial` de useJaxStore
+// -- y la pestaña "Misiones" monta PanelEjecutor, que (vía useEjecutor.js)
+// llama a `useJaxStore.getState()`/`.subscribe()` a nivel de módulo. Un mock
+// que reemplaza useJaxStore por una función suelta (el patrón viejo de este
+// archivo) rompe esa importación con "subscribe is not a function" apenas
+// AdminRepository.jsx importa a PanelEjecutor. Se usa el store REAL,
+// mismo patrón que PanelEjecutor.test.jsx: snapshot de INICIAL + setState
+// por test para lo que cada uno necesita.
+import { useJaxStore } from '../../store/useJaxStore'
+import es from '../../i18n/es.js'
+
+const JAX_INICIAL = useJaxStore.getState()
+const addToastMock = vi.fn()
 
 // Resuelve la suma al azar del diálogo, igual que en AdminUsers.test.jsx.
 function resolverSuma(dialogo) {
@@ -27,8 +34,8 @@ function resolverSuma(dialogo) {
 const ARCHIVO = { path: 'documents/informe.pdf', name: 'informe.pdf', size: 2048, modified: '2026-03-14T18:30:00Z' }
 const FOLDERS = { missions: [], pipelines: [], documents: [ARCHIVO], images: [] }
 
-function renderRepo() {
-  return render(<I18nProvider><AdminRepository /></I18nProvider>)
+function renderRepo(opciones) {
+  return render(<I18nProvider><AdminRepository /></I18nProvider>, opciones)
 }
 
 beforeEach(() => {
@@ -37,6 +44,7 @@ beforeEach(() => {
   api.delete.mockReset()
   addToastMock.mockReset()
   localStorage.clear()
+  useJaxStore.setState({ ...JAX_INICIAL, addToast: addToastMock }, true)
 })
 
 describe('AdminRepository -- i18n (I-1)', () => {
@@ -68,6 +76,89 @@ describe('AdminRepository -- i18n (I-1)', () => {
   })
 })
 
+// Ronda de arreglo 2 (2026-09-18): Fernando esperaba encontrar el historial
+// de pipelines acá ("Repositorio → Pipelines") -- y la pestaña estaba
+// SIEMPRE vacía: no hay código que escriba archivos en esa carpeta, el
+// historial de corridas vive en la DB (GET /pipelines), no en el repo de
+// archivos. Decisión de Fernando: NO redirige -- muestra el historial ahí
+// mismo, reusando HistorialContenido (el mismo cuerpo que /historial).
+describe('AdminRepository -- la pestaña "Pipelines" muestra el historial ahí mismo (no redirige, ya no es una carpeta vacía)', () => {
+  it('activar "Pipelines" pide el historial y lo muestra en la pestaña -- no la carpeta de archivos (siempre vacía)', async () => {
+    const cargarHistorialMock = vi.fn()
+    useJaxStore.setState({
+      historial: {
+        pipelines: [{ pipeline_id: 'p1', name: 'mi pipeline', status: 'completed', created_at: 1758000000, duracion_s: 5.2, costo_usd: null, causa: null }],
+        hasMore: false, cargando: false, error: false,
+      },
+      cargarHistorial: cargarHistorialMock,
+    })
+    renderRepo()
+    await screen.findByText('informe.pdf')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pipelines' }))
+
+    expect(cargarHistorialMock).toHaveBeenCalled()
+    expect(await screen.findByText('mi pipeline')).toBeInTheDocument()
+    // La carpeta de archivos (siempre vacía para "pipelines") ya no se
+    // muestra: ni la tabla de archivos ni "Sin archivos".
+    expect(screen.queryByText(es.adminRepoEmpty)).not.toBeInTheDocument()
+  })
+
+  it('sin pipelines, dice "todavía no corriste ninguno" -- el mismo texto que /historial, no "Sin archivos"', async () => {
+    useJaxStore.setState({
+      historial: { pipelines: [], hasMore: false, cargando: false, error: false },
+      cargarHistorial: vi.fn(),
+    })
+    renderRepo()
+    await screen.findByText('informe.pdf')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pipelines' }))
+
+    expect(await screen.findByText(es.historialEmpty)).toBeInTheDocument()
+    expect(screen.queryByText(es.adminRepoEmpty)).not.toBeInTheDocument()
+  })
+
+  // El historial es POR USUARIO (backend filtra por user_id Y tenant_id) --
+  // esto vive bajo Administración, así que sin aclarar, "Pipelines" podría
+  // leerse como "todos los del tenant". El dato está bien filtrado (no se
+  // toca); lo que se ajusta es el texto.
+  it('aclara que es el historial personal, no el de todo el tenant', async () => {
+    useJaxStore.setState({
+      historial: { pipelines: [], hasMore: false, cargando: false, error: false },
+      cargarHistorial: vi.fn(),
+    })
+    renderRepo()
+    await screen.findByText('informe.pdf')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pipelines' }))
+
+    expect(await screen.findByText(es.adminRepoPipelinesScope)).toBeInTheDocument()
+  })
+
+  it('las otras pestañas (Documentos, etc.) siguen siendo la carpeta de archivos de siempre', async () => {
+    renderRepo()
+    await screen.findByText('informe.pdf')
+    expect(screen.getByRole('button', { name: 'Documentos' })).toBeInTheDocument()
+  })
+})
+
+// Misiones estaba igual de vacía -- mismo motivo (no hay código que escriba
+// ahí). PanelEjecutor.jsx ya es un panel autocontenido (sin props, lee su
+// propio store useEjecutor y hace su propio polling) que hoy sólo se monta
+// en CenterPanel mientras el modo Ejecutor está activo -- reusarlo acá es
+// sin cirugía: no necesita props ni contexto de routing.
+describe('AdminRepository -- la pestaña "Misiones" monta el panel del Ejecutor (reusado sin cirugía)', () => {
+  it('activar "Misiones" muestra el panel del Ejecutor, no la carpeta de archivos', async () => {
+    renderRepo()
+    await screen.findByText('informe.pdf')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Misiones' }))
+
+    expect(await screen.findByRole('heading', { name: es.ejecutor.titulo })).toBeInTheDocument()
+    expect(screen.queryByText(es.adminRepoEmpty)).not.toBeInTheDocument()
+  })
+})
+
 // M-3 (revisión final PR 2, 2026-09-14): prose-invert es de
 // @tailwindcss/typography, que no está instalado (plugins: [] en
 // tailwind.config.js) -- hoy no hace nada, pero forzaría texto claro en el
@@ -96,7 +187,7 @@ describe('AdminRepository -- preview markdown sin prose-invert (M-3)', () => {
 describe('AdminRepository -- borrar pasa por ConfirmacionSuma, no por window.confirm', () => {
   it('borrar exige la suma antes de llamar a la API', async () => {
     api.delete.mockResolvedValue({})
-    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    renderRepo()
     fireEvent.click(await screen.findByRole('button', { name: 'Eliminar' }))
     const dialogo = screen.getByRole('dialog', { name: 'Eliminar informe.pdf' })
     const confirmar = within(dialogo).getByRole('button', { name: 'Eliminar' })
@@ -109,7 +200,7 @@ describe('AdminRepository -- borrar pasa por ConfirmacionSuma, no por window.con
   })
 
   it('Cancelar no borra', async () => {
-    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    renderRepo()
     fireEvent.click(await screen.findByRole('button', { name: 'Eliminar' }))
     const dialogo = screen.getByRole('dialog')
     fireEvent.click(within(dialogo).getByRole('button', { name: 'Cancelar' }))
@@ -118,7 +209,7 @@ describe('AdminRepository -- borrar pasa por ConfirmacionSuma, no por window.con
   })
 
   it('Escape no borra', async () => {
-    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    renderRepo()
     fireEvent.click(await screen.findByRole('button', { name: 'Eliminar' }))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     fireEvent.keyDown(document, { key: 'Escape' })
@@ -128,7 +219,7 @@ describe('AdminRepository -- borrar pasa por ConfirmacionSuma, no por window.con
 
   it('si hay error, el diálogo sigue abierto y avisa traducido', async () => {
     api.delete.mockRejectedValue({ response: { status: 500 } })
-    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    renderRepo()
     fireEvent.click(await screen.findByRole('button', { name: 'Eliminar' }))
     const dialogo = screen.getByRole('dialog')
     resolverSuma(dialogo)
@@ -151,7 +242,7 @@ describe('AdminRepository -- borrar pasa por ConfirmacionSuma, no por window.con
     let resolverX
     const promesaX = new Promise((resolve) => { resolverX = resolve })
     api.delete.mockImplementation((url) => (url.includes('informe.pdf') ? promesaX : Promise.resolve({})))
-    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    renderRepo()
     const botones = await screen.findAllByRole('button', { name: 'Eliminar' })
     fireEvent.click(botones[0])
     const dialogoX = screen.getByRole('dialog', { name: 'Eliminar informe.pdf' })
@@ -185,7 +276,7 @@ describe('AdminRepository -- Preview sobre Dialogo, un modal a la vez (K1)', () 
 
   it('Preview es un diálogo etiquetado con el nombre del archivo', async () => {
     servirPreview()
-    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    renderRepo()
     fireEvent.click(await screen.findByRole('button', { name: 'Preview' }))
     const dialogo = await screen.findByRole('dialog', { name: 'informe.pdf' })
     expect(dialogo).toHaveAttribute('aria-modal', 'true')
@@ -193,7 +284,7 @@ describe('AdminRepository -- Preview sobre Dialogo, un modal a la vez (K1)', () 
 
   it('Escape cierra el Preview', async () => {
     servirPreview()
-    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    renderRepo()
     fireEvent.click(await screen.findByRole('button', { name: 'Preview' }))
     await screen.findByRole('dialog', { name: 'informe.pdf' })
     fireEvent.keyDown(document, { key: 'Escape' })
@@ -202,7 +293,7 @@ describe('AdminRepository -- Preview sobre Dialogo, un modal a la vez (K1)', () 
 
   it('abrir Eliminar con Preview abierto deja un solo diálogo (el de borrado)', async () => {
     servirPreview()
-    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    renderRepo()
     fireEvent.click(await screen.findByRole('button', { name: 'Preview' }))
     await screen.findByRole('dialog', { name: 'informe.pdf' })
     fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }))
@@ -215,7 +306,7 @@ describe('AdminRepository -- Preview sobre Dialogo, un modal a la vez (K1)', () 
 
   it('abrir Preview con Eliminar abierto deja un solo diálogo (el de Preview)', async () => {
     servirPreview()
-    render(<I18nProvider><AdminRepository /></I18nProvider>)
+    renderRepo()
     fireEvent.click(await screen.findByRole('button', { name: 'Eliminar' }))
     expect(screen.getAllByRole('dialog')).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
@@ -237,7 +328,7 @@ describe('AdminRepository -- Preview sobre Dialogo, un modal a la vez (K1)', () 
     root.id = 'root'
     document.body.appendChild(root)
     try {
-      render(<I18nProvider><AdminRepository /></I18nProvider>, { container: root })
+      renderRepo({ container: root })
       const disparador = await screen.findByRole('button', { name: 'Preview' })
       expect(root).not.toHaveAttribute('inert')
 

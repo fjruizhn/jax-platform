@@ -79,15 +79,23 @@ function Paso({ step, t }) {
       )}
 
       {Array.isArray(step.sources) && step.sources.length > 0 && (
-        <div className="mt-2 text-xs">
-          <span className="text-texto-tenue">{t.pipelineSources}: </span>
+        // Ronda de arreglo 2 (2026-09-18): con ~30 fuentes (investigación de
+        // mercado real, captura de Fernando) la lista se salía del borde de
+        // la tarjeta y seguía hasta fuera de la pantalla. `flex flex-wrap` en
+        // el contenedor (antes texto inline con `mr-2`, sin ancho declarado)
+        // + `break-all` en cada enlace (una URL sin espacios es un solo
+        // token: el wrap normal corta en espacios, no adentro de la palabra)
+        // cubre los dos casos que pidió: muchas fuentes cortas Y una sola
+        // URL larguísima sin espacios.
+        <div className="mt-2 text-xs flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="text-texto-tenue">{t.pipelineSources}:</span>
           {step.sources.map((s, i) => (
             <a
               key={i}
               href={s.url}
               target="_blank"
               rel="noreferrer"
-              className="text-acento-texto hover:underline mr-2"
+              className="text-acento-texto hover:underline break-all"
             >
               {s.title || s.url}
             </a>

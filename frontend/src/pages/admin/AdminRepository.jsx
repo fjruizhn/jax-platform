@@ -5,6 +5,8 @@ import { useJaxStore } from '../../store/useJaxStore'
 import ConfirmacionSuma from '../../components/ConfirmacionSuma'
 import Dialogo from '../../components/Dialogo'
 import ReactMarkdown from 'react-markdown'
+import HistorialContenido from '../../components/historial/HistorialContenido'
+import PanelEjecutor from '../../components/Ejecutor/PanelEjecutor'
 
 const FOLDER_LABELS = {
   missions: 'adminRepoMissions',
@@ -26,6 +28,10 @@ export default function AdminRepository() {
   // se haya abierto mientras tanto.
   const [borrando, setBorrandoState] = useState(null)
   const borrandoRef = useRef(null)
+  // Ronda de arreglo 2 (2026-09-18, pedido de Fernando): la pestaña
+  // "Pipelines" no tiene ruta propia (no es /historial) -- la selección del
+  // detalle vive en estado local de esta pantalla, no en la URL.
+  const [pipelineSeleccionado, setPipelineSeleccionado] = useState(null)
   function fijarBorrando(f) {
     borrandoRef.current = f
     setBorrandoState(f)
@@ -105,37 +111,63 @@ export default function AdminRepository() {
         ))}
       </div>
 
-      <div className="rounded-lg border border-borde overflow-hidden">
-        {files.length === 0 ? (
-          <div className="px-4 py-8 text-center text-texto-tenue text-sm">{t.adminRepoEmpty}</div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-hundido border-b border-borde">
-              <tr>
-                {[t.adminRepoColName, t.adminRepoColSize, t.adminRepoColModified, ''].map((h, i) => (
-                  <th key={i} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-borde/50">
-              {files.map(f => (
-                <tr key={f.path} className="bg-hundido hover:bg-superficie transition-colors">
-                  <td className="px-4 py-3 text-texto font-mono text-xs">{f.name}</td>
-                  <td className="px-4 py-3 text-texto-tenue text-xs">{t.adminRepoSize(f.size)}</td>
-                  <td className="px-4 py-3 text-texto-tenue text-xs">{new Date(f.modified).toLocaleString(localeFor(lang))}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => handlePreview(f)} className="text-xs px-2 py-0.5 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors">{t.adminRepoPreview}</button>
-                      <button onClick={() => handleDownload(f)} className="text-xs px-2 py-0.5 rounded bg-info-fondo text-info border border-transparent hover:border-info transition-colors">{t.adminRepoDownload}</button>
-                      <button onClick={() => handleDelete(f)} className="text-xs px-2 py-0.5 rounded bg-peligro-fondo text-peligro border border-transparent hover:border-peligro-borde transition-colors">{t.adminRepoDelete}</button>
-                    </div>
-                  </td>
+      {/* Ronda de arreglo 2 (2026-09-18, pedido de Fernando): "Pipelines" y
+          "Misiones" estaban SIEMPRE vacías -- no hay código que escriba
+          archivos en esas dos carpetas, viven en otro lado (el historial de
+          corridas en la DB, GET /pipelines; las misiones del Ejecutor en su
+          propio store). En vez de una carpeta muerta, cada una muestra el
+          contenido real: la pestaña deja de estar vacía CON CONTENIDO, no
+          con un cartel que manda a otro lado. Fuera de la tarjeta
+          `rounded-lg border` de la tabla de archivos -- no es una tabla. */}
+      {activeFolder === 'pipelines' ? (
+        <div>
+          {/* El historial es por usuario (el backend filtra por user_id Y
+              tenant_id) -- esto vive bajo Administración, sin aclarar podría
+              leerse como "todos los del tenant". El filtro está bien como
+              está; lo que se ajusta es el texto. */}
+          <p className="text-xs text-texto-tenue mb-3">{t.adminRepoPipelinesScope}</p>
+          <HistorialContenido
+            pipelineId={pipelineSeleccionado?.id}
+            nombreSeleccionado={pipelineSeleccionado?.nombre}
+            onSelect={(id, nombreSeleccionado) => setPipelineSeleccionado({ id, nombre: nombreSeleccionado })}
+            onCloseDetail={() => setPipelineSeleccionado(null)}
+          />
+        </div>
+      ) : activeFolder === 'missions' ? (
+        <PanelEjecutor />
+      ) : (
+        <div className="rounded-lg border border-borde overflow-hidden">
+          {files.length === 0 ? (
+            <div className="px-4 py-8 text-center text-texto-tenue text-sm">{t.adminRepoEmpty}</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-hundido border-b border-borde">
+                <tr>
+                  {[t.adminRepoColName, t.adminRepoColSize, t.adminRepoColModified, ''].map((h, i) => (
+                    <th key={i} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+              </thead>
+              <tbody className="divide-y divide-borde/50">
+                {files.map(f => (
+                  <tr key={f.path} className="bg-hundido hover:bg-superficie transition-colors">
+                    <td className="px-4 py-3 text-texto font-mono text-xs">{f.name}</td>
+                    <td className="px-4 py-3 text-texto-tenue text-xs">{t.adminRepoSize(f.size)}</td>
+                    <td className="px-4 py-3 text-texto-tenue text-xs">{new Date(f.modified).toLocaleString(localeFor(lang))}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => handlePreview(f)} className="text-xs px-2 py-0.5 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors">{t.adminRepoPreview}</button>
+                        <button onClick={() => handleDownload(f)} className="text-xs px-2 py-0.5 rounded bg-info-fondo text-info border border-transparent hover:border-info transition-colors">{t.adminRepoDownload}</button>
+                        <button onClick={() => handleDelete(f)} className="text-xs px-2 py-0.5 rounded bg-peligro-fondo text-peligro border border-transparent hover:border-peligro-borde transition-colors">{t.adminRepoDelete}</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
 
       {borrando && (
         <ConfirmacionSuma

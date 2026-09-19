@@ -11,8 +11,18 @@ body {
   font-family: 'Inter', 'Segoe UI', sans-serif;
   margin: 0;
   padding: 0;
-  overflow: hidden;
 }
+
+/* Ronda de arreglo 2 (2026-09-18): esta regla vivía acá, en `body`, GLOBAL --
+   correcta para la Mesa y para Admin (los dos layouts fijos de un viewport,
+   con su propio scroll interno) pero hacía IMPOSIBLE leer el Historial, que
+   es un documento largo: con 7 pasos no había forma de llegar al final.
+   La regla es de las pantallas que la necesitan, no del body -- Dashboard.jsx
+   y Admin.jsx YA se declaran a sí mismas con `h-dvh` + su propio overflow
+   (Dashboard en su raíz; Admin en el <main> que scrollea), así que sacarla de
+   acá no les cambia nada. Historial.jsx usa `min-h-dvh` (documento que crece
+   con el contenido, como Login y ResetPassword): con el body libre, scrollea
+   como cualquier página. Ver src/layoutScroll.test.js. */
 
 /* I-1 (revisión final del PR 1 de tema, 2026-09-14): sin esta regla, el
    placeholder de un input migrado sale del preflight de Tailwind
