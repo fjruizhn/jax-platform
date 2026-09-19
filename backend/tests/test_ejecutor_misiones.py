@@ -91,9 +91,21 @@ def maquinas(client):
         client.portal.call(sql, "DELETE FROM ejecutor_host WHERE nombre = %s", (f[0],))
         client.portal.call(sql, "INSERT INTO ejecutor_host (nombre, ip, puerto, rol, con_datos_de_clientes, activo) "
                                 "VALUES (%s, %s, %s, %s, %s, %s)", f)
+    # Sin esto, la elegibilidad de 't-sp2-clientes' dependería de si ESTA base ya tiene el
+    # binding real de 'auditor_local' (sembrado si JAX_OLLAMA_CPU_URL está en el entorno de
+    # la sesión) -- no determinista, ajeno a este test. Se guarda y se restaura: no se
+    # ASUME ausencia, se la fuerza acá y se devuelve lo que había al terminar.
+    previo = client.portal.call(
+        sql, "SELECT facet_key, provider_id, model_id, role FROM facet_binding WHERE facet_key = 'auditor_local'",
+        (), True)
+    client.portal.call(sql, "DELETE FROM facet_binding WHERE facet_key = 'auditor_local'")
     yield
     for f in filas:
         client.portal.call(sql, "DELETE FROM ejecutor_host WHERE nombre = %s", (f[0],))
+    client.portal.call(sql, "DELETE FROM facet_binding WHERE facet_key = 'auditor_local'")
+    for fila in previo:
+        client.portal.call(sql, "INSERT INTO facet_binding (facet_key, provider_id, model_id, role) "
+                                "VALUES (%s, %s, %s, %s)", fila)
 
 
 @pytest.fixture
@@ -193,6 +205,64 @@ def test_maquina_con_datos_de_clientes_no_es_elegible(client, superadmin, maquin
                                                           "maquina": "t-sp2-clientes",
                                                           "motivo": "maquina_con_datos_de_clientes"})
     assert _misiones_de(client, user_id) == ()
+
+
+# --- auditor local (spec 2026-09-18-auditor-local-opcion.md §4) ----------------------------
+
+@pytest.fixture
+def auditor_local_bindeado(client):
+    """Faceta 'auditor_local' → un proveedor sintético con `is_local`. La faceta la trae la
+    migración (siempre); acá sólo se agrega el binding de prueba -- se retira al final, la
+    faceta se deja (la migración la vuelve a sembrar con INSERT IGNORE de cualquier forma)."""
+    def _armar(*, is_local: bool):
+        client.portal.call(sql, "DELETE FROM facet_binding WHERE facet_key = 'auditor_local'")
+        client.portal.call(sql, "DELETE FROM provider WHERE id = 't-sp2-auditor'")
+        client.portal.call(sql, "INSERT INTO provider (id, display_name, auth_type, is_local) "
+                                "VALUES ('t-sp2-auditor', 'auditor de prueba', 'none', %s)", (is_local,))
+        client.portal.call(sql, "INSERT INTO facet_binding (facet_key, provider_id, model_id, role) "
+                                "VALUES ('auditor_local', 't-sp2-auditor', 'modelo-x', 'primary')")
+    yield _armar
+    client.portal.call(sql, "DELETE FROM facet_binding WHERE facet_key = 'auditor_local'")
+    # `model` antes que `provider`: ver el comentario homónimo en
+    # test_ejecutor_auditor_local.py::_limpiar -- _seed_models_and_backfill puede haber
+    # derivado una fila de catálogo mientras este binding sintético estaba vivo.
+    client.portal.call(sql, "DELETE FROM model WHERE provider_id = 't-sp2-auditor'")
+    client.portal.call(sql, "DELETE FROM provider WHERE id = 't-sp2-auditor'")
+
+
+def test_con_auditor_local_disponible_la_maquina_de_clientes_es_elegible(
+        client, superadmin, maquinas, runner, auditor_local_bindeado):
+    """El corazón de la decisión: la compuerta deja de ser el ÚNICO camino -- un auditor
+    local REAL (provider.is_local=1) también habilita una máquina con datos de clientes,
+    sin tocar la compuerta (sigue cerrada)."""
+    auditor_local_bindeado(is_local=True)
+    assert (_estado(client, superadmin)["compuerta_datos_de_clientes"]) == "cerrada"
+    assert _estado(client, superadmin)["auditor_local_disponible"] is True
+    user_id, h = superadmin
+    r = _crear(client, h, maquinas=("t-sp2-vm", "t-sp2-clientes"))
+    assert r.status_code == 202
+    assert _misiones_de(client, user_id) != ()
+
+
+def test_peor_caso_auditor_local_mal_bindeado_a_un_proveedor_de_nube_no_abre_nada(
+        client, superadmin, maquinas, runner, auditor_local_bindeado):
+    """Freno sin prueba no es freno (Principio VII): si 'auditor_local' quedó bindeado a un
+    proveedor que NO es local (is_local=0 -- un error de configuración, o alguien apuntó la
+    clave al proveedor equivocado), la compuerta sigue siendo la única puerta. Con la
+    compuerta cerrada, la misión se rechaza igual que sin ningún auditor local."""
+    auditor_local_bindeado(is_local=False)
+    assert _estado(client, superadmin)["auditor_local_disponible"] is False
+    user_id, h = superadmin
+    r = _crear(client, h, maquinas=("t-sp2-vm", "t-sp2-clientes"))
+    assert (r.status_code, r.json()["detail"]) == (403, {"codigo": "ejecutor_maquina_no_elegible",
+                                                          "maquina": "t-sp2-clientes",
+                                                          "motivo": "maquina_con_datos_de_clientes"})
+    assert _misiones_de(client, user_id) == ()
+
+
+def _estado(client, superadmin):
+    _, h = superadmin
+    return client.get(f"{BASE}/estado", headers=h).json()
 
 
 @pytest.mark.parametrize("cuerpo, estado, detalle", [
