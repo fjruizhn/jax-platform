@@ -82,6 +82,24 @@ describe('Historial', () => {
     expect(screen.getByText('En curso')).toBeInTheDocument()
   })
 
+  // Ronda `feat/estado-disputed` (2026-09-18): un pipeline `disputed`
+  // terminó con una objeción del árbitro SIN RESOLVER -- ni aprobado ni
+  // fallido, pide la decisión de Fernando. Antes de esta ronda no tenía
+  // entrada propia en pipelineStatusLabels y caía indistinguible de
+  // "Completado" (backend/jax_engine/state.py, antes de mapear disputed a
+  // su propio status). Tiene que leerse distinto de los dos, y nunca como
+  // el texto genérico "Estado desconocido".
+  it('un pipeline disputed se muestra con su propia etiqueta, no como completado ni como desconocido', async () => {
+    const disputado = { ...PIPELINES[0], pipeline_id: 'p-disputed', name: 'plan con objeción', status: 'disputed' }
+    api.get.mockResolvedValue({ data: { pipelines: [disputado], has_more: false } })
+    renderHistorial()
+    await screen.findByText('plan con objeción')
+    expect(screen.getByText(es.pipelineStatusLabels.disputed)).toBeInTheDocument()
+    expect(screen.queryByText('Completado')).not.toBeInTheDocument()
+    expect(screen.queryByText(es.pipelineStatusDesconocido)).not.toBeInTheDocument()
+    expect(screen.queryByText('disputed')).not.toBeInTheDocument()
+  })
+
   it('duracion_s null se muestra como "desconocido", nunca como 0', async () => {
     api.get.mockResolvedValue({ data: { pipelines: PIPELINES, has_more: false } })
     renderHistorial()

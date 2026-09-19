@@ -20,7 +20,13 @@ EventType = Literal[
 
 FacetStatus = Literal["idle", "thinking", "error", "offline"]
 
-PipelineStatus = Literal["pending", "running", "waiting_gate", "completed", "failed"]
+# "disputed" (rama `feat/estado-disputed`, 2026-09-18): el árbitro agotó el
+# tope de devoluciones con una objeción SIN RESOLVER -- terminal, no ocupa
+# cupo, y DISTINTO de "completed" (aprobado) y de "failed" (genérico): un
+# pipeline disputed necesita la decisión de Fernando, no un usuario que lo
+# lea como "listo" o como "un fallo cualquiera". _JACOBS_STATUS_MAP
+# (jax_engine/state.py) lo mapea a su propio "disputed", no a "failed".
+PipelineStatus = Literal["pending", "running", "waiting_gate", "completed", "failed", "disputed"]
 
 
 class JAXEvent(BaseModel):

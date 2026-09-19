@@ -671,8 +671,13 @@ jobs:
             // "arbitroViolations is not a function" al revertir el archivo a la versión
             // previa a esta tanda). Medido con vitest run: 832 passed, 0 fallidos, 84
             // archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 843) {
-              console.error("PISO ROTO: se esperaban 843 tests de vitest CORRIDOS y 0 fallidos.");
+            // 843 -> 844 el 2026-09-18 (rama feat/estado-disputed): +1 en
+            // pages/Historial.test.jsx (un pipeline disputed se muestra con su propia
+            // etiqueta -- pipelineStatusLabels.disputed --, no como "Completado" ni
+            // como el texto genérico de estado desconocido). Medido con vitest run:
+            // 844 passed, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 844) {
+              console.error("PISO ROTO: se esperaban 844 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1855,7 +1860,28 @@ jobs:
           #   árbol -- incremento neto de tests, no de archivos. Medido local contra
           #   jax_memory_test: 2384 passed, mismo 1 fallo preexistente y ajeno de
           #   siempre (test_tablero.py, índice de jacobs_pipelines).
-          PISO_PASSED = 2385
+          # 2372 -> 2380 el 2026-09-18 (rama feat/estado-disputed): +8 tests puros,
+          #   ninguno toca la base (tests/test_pipeline_resource_release.py +2 --
+          #   _poll_one_pipeline con status "disputed", libera el cupo y dispara el
+          #   aviso con SU PROPIO status, no "failed" --, tests/test_aviso_pipeline.py
+          #   +4 -- asunto y cuerpo del correo distinguen "disputed" de
+          #   completed/failed, sin pisarle el texto a los dos casos que ya existían
+          #   --, tests/test_jacobs_status_mapeo_completo.py +2, nuevo -- guarda
+          #   contra que _JACOBS_STATUS_MAP se quede corto en silencio, importa el
+          #   PipelineStatus REAL de jax vía JAX_REPO_PATH, mismo mecanismo que
+          #   test_chat_contract_prompt.py). Medido en vivo, no derivado: 2379 passed
+          #   / 1 failed / 1 skipped contra jax_memory_test en hall9000 -- el failed
+          #   es test_tablero.py::test_explain_de_pipelines_completados_va_por_idx_
+          #   pipelines_status, preexistente, sin relación (un EXPLAIN que en esta
+          #   base persistente local elige un índice distinto al esperado; no lo
+          #   toca esta rama, y una DB fresca como la del runner no debería
+          #   arrastrar el índice extra que lo causa). El piso de acá sube por el
+          #   delta verificado (+8 sobre el piso viejo), no por el passed crudo de
+          #   esta corrida local.
+          # MERGE 2026-09-18: las dos ramas subieron el piso desde la MISMA base
+          #   (2372): auditor local +13, estado disputed +8. Al juntarlas, el piso
+          #   es la suma de los dos deltas, no el mayor de los dos numeros.
+          PISO_PASSED = 2393
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2486,7 +2512,13 @@ jobs:
       # con DB, mas arriba) piden `client` y se saltean acá -- eso explica el resto del
       # delta de SKIPS, no un passed perdido. Medido con JAX_CI_NO_DB=1
       # .venv/bin/python -m pytest -q: 1604 passed, 0 fallidos.
-      JAX_CI_MIN_PASSED: "1604"
+      # 1602 -> 1610 el 2026-09-18 (rama feat/estado-disputed): mismos +8 tests puros
+      # que el piso con DB de mas arriba (ninguno pide `client`/DB). Medido con
+      # JAX_CI_NO_DB=1 contra este arbol: 1610 passed / 771 skipped / 0 fallidos --
+      # corrida completa.
+      # MERGE 2026-09-18: suma de los dos deltas sobre la base 1602
+      #   (auditor local +2, estado disputed +8).
+      JAX_CI_MIN_PASSED: "1612"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

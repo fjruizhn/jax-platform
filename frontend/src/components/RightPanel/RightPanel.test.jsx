@@ -183,8 +183,11 @@ describe('RightPanel -- jerarquía visual del gate', () => {
 // M-2 (revisión final PR 3, 2026-09-14): activePipeline.status
 // (jax_engine/schemas.py::PipelineStatus) se mostraba crudo, sin traducir.
 describe('RightPanel -- status del pipeline traducido (M-2)', () => {
-  it('las claves de los 5 estados existen en es y en', () => {
-    for (const clave of ['pending', 'running', 'waiting_gate', 'completed', 'failed']) {
+  // Ronda `feat/estado-disputed` (2026-09-18): 6 estados, no 5 --
+  // jax_engine/schemas.py::PipelineStatus sumó "disputed" (objeción del
+  // árbitro sin resolver, terminal, distinto de completed/failed).
+  it('las claves de los 6 estados existen en es y en', () => {
+    for (const clave of ['pending', 'running', 'waiting_gate', 'completed', 'failed', 'disputed']) {
       expect(es.pipelineStatusLabels[clave], `es.pipelineStatusLabels.${clave}`).toBeTruthy()
       expect(en.pipelineStatusLabels[clave], `en.pipelineStatusLabels.${clave}`).toBeTruthy()
     }
