@@ -671,8 +671,8 @@ jobs:
             // "arbitroViolations is not a function" al revertir el archivo a la versión
             // previa a esta tanda). Medido con vitest run: 832 passed, 0 fallidos, 84
             // archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 832) {
-              console.error("PISO ROTO: se esperaban 832 tests de vitest CORRIDOS y 0 fallidos.");
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 843) {
+              console.error("PISO ROTO: se esperaban 843 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

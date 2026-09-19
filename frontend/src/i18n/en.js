@@ -688,6 +688,7 @@ export default {
   adminRepoDocuments: 'Documents',
   adminRepoImages: 'Images',
   adminRepoEmpty: 'No files',
+  adminRepoPipelinesScope: 'Your pipeline history: only yours, not the whole tenant\'s.',
   // I-1 (final review PR 2, 2026-09-14): repository table headers
   // (AdminRepository.jsx:79), previously fixed in Spanish.
   adminRepoColName: 'Name',

@@ -713,6 +713,14 @@ export default {
   adminRepoDocuments: 'Documentos',
   adminRepoImages: 'Imágenes',
   adminRepoEmpty: 'Sin archivos',
+  // Ronda de arreglo 2 (2026-09-18): la pestaña "Pipelines" muestra el
+  // historial de pipelines AHÍ MISMO (mismo cuerpo que /historial, ver
+  // HistorialContenido.jsx) -- pero está bajo Administración, y el historial
+  // es por usuario (el backend filtra por user_id Y tenant_id). Un admin que
+  // no sepa esto podría leer "Pipelines" del Repositorio como "todos los del
+  // tenant". El filtro está bien como está (decisión de Fernando); lo que se
+  // ajusta es el texto, no el dato.
+  adminRepoPipelinesScope: 'Tu historial de pipelines: sólo los tuyos, no los de todo el tenant.',
   // I-1 (revisión final PR 2, 2026-09-14): encabezados de la tabla del
   // repositorio (AdminRepository.jsx:79), antes fijos en español.
   adminRepoColName: 'Nombre',

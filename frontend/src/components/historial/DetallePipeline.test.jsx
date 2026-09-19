@@ -182,6 +182,42 @@ describe('DetallePipeline', () => {
     expect(link).toHaveAttribute('href', 'https://x')
   })
 
+  // Ronda de arreglo 2 (2026-09-18): con ~30 fuentes (una investigación de
+  // mercado real), la lista se salía del borde de la tarjeta y seguía hasta
+  // fuera de la pantalla (captura de Fernando, paso 3). jsdom no hace layout
+  // -- no puede medir un desborde real -- así que esto prueba el CONTRATO
+  // (el contenedor declara que puede partir en varias líneas), no el pixel.
+  // La verificación de que se ve bien se hizo a mano con el dev server (ver
+  // REPORTE.md).
+  it('con muchas fuentes, el contenedor declara que puede partir en varias líneas (flex-wrap), no una sola línea infinita', async () => {
+    const muchas = Array.from({ length: 30 }, (_, i) => ({ title: '', url: `https://dominio${i}.com` }))
+    api.get.mockResolvedValue({
+      data: { ...RESULTADO, steps: [{ ...RESULTADO.steps[1], sources: muchas }] },
+    })
+    renderDetalle()
+    const primerLink = await screen.findByRole('link', { name: 'https://dominio0.com' })
+    const contenedor = primerLink.closest('div')
+    expect(contenedor.className).toMatch(/flex-wrap/)
+    // Las 30 siguen presentes, ninguna se pierde al envolver.
+    expect(screen.getAllByRole('link')).toHaveLength(30)
+  })
+
+  // Una URL sin espacios es UN solo token: el wrap normal (que corta en
+  // espacios) no la parte -- necesita `break-all` (corta dentro de la
+  // palabra) para no desbordar. Sin esto, aunque el contenedor tenga
+  // flex-wrap, ESTE ítem seguiría siendo más ancho que la tarjeta.
+  it('una URL larguísima sin espacios se puede partir dentro de la palabra (break-all) y no se recorta el texto', async () => {
+    const urlLarga = `https://${'sub.'.repeat(20)}dominio-muy-largo.com/una/ruta/tambien/larga/sin/espacios`
+    api.get.mockResolvedValue({
+      data: { ...RESULTADO, steps: [{ ...RESULTADO.steps[1], sources: [{ title: '', url: urlLarga }] }] },
+    })
+    renderDetalle()
+    const link = await screen.findByRole('link', { name: urlLarga })
+    expect(link.className).toMatch(/break-all/)
+    // Nada de truncar con "…" ni recortar: el texto completo sigue en el DOM.
+    expect(link.textContent).toBe(urlLarga)
+  })
+
   it('onClose (si se pasa) se llama al hacer click en cerrar', async () => {
     api.get.mockResolvedValue({ data: RESULTADO })
     const onClose = vi.fn()
