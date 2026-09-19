@@ -163,6 +163,13 @@ async def _correo_del_dueno(user_id: str) -> str | None:
 
 
 def _asunto(status: str) -> str:
+    # "disputed" (ronda feat/estado-disputed, 2026-09-18): el árbitro agotó
+    # el tope de devoluciones con una objeción SIN RESOLVER -- ni aprobado ni
+    # fallido, pide la decisión de Fernando. Un asunto genérico ("terminó")
+    # lo hace indistinguible de un pipeline que salió bien; el pedido
+    # explícito es que el correo diga que hay una objeción sin resolver.
+    if status == "disputed":
+        return "Tu pipeline tiene una objeción sin resolver — Axioma"
     if status == "failed":
         return "Tu pipeline falló — Axioma"
     return "Tu pipeline terminó — Axioma"
@@ -180,7 +187,16 @@ def _enviar_aviso(settings: smtp_config.SmtpSettings, to_email: str, pid: str, s
     """Bloqueante (smtplib): se llama dentro de asyncio.to_thread. LANZA si
     el servidor falla -- `_procesar_aviso` lo registra y no reintenta."""
     enlace = _enlace_detalle(pid)
-    estado_legible = "falló" if status == "failed" else "terminó"
+    # "disputed": mismo criterio que _asunto -- el pedido explícito es que
+    # el correo diga que hay una objeción sin resolver, no un genérico
+    # "terminó"/"falló" que lo confunda con un pipeline aprobado o con un
+    # error cualquiera.
+    if status == "disputed":
+        estado_legible = "terminó con una objeción del árbitro sin resolver — necesita tu decisión"
+    elif status == "failed":
+        estado_legible = "falló"
+    else:
+        estado_legible = "terminó"
     texto = (
         f'Tu pipeline "{nombre}" {estado_legible}.\n\n'
         f"Podés ver el detalle acá:\n{enlace}\n"

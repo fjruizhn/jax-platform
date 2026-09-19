@@ -300,3 +300,58 @@ def test_enlace_detalle_sin_url_hardcodeada(monkeypatch):
 
 def test_asunto_distingue_completado_de_fallido():
     assert aviso_pipeline._asunto("completed") != aviso_pipeline._asunto("failed")
+
+
+# Ronda `feat/estado-disputed` (2026-09-18): un pipeline `disputed` terminó
+# con una objeción del árbitro SIN RESOLVER -- ni aprobado ni fallido, pide
+# la decisión de Fernando. El brief pide explícito que el correo lo diga,
+# "no un genérico": _asunto("disputed") tiene que ser DISTINTO de
+# _asunto("failed") y _asunto("completed"), y el cuerpo tiene que nombrar la
+# objeción sin resolver, no "falló"/"terminó" a secas.
+def test_asunto_de_disputed_es_distinto_de_completado_y_fallido():
+    asunto = aviso_pipeline._asunto("disputed")
+    assert asunto != aviso_pipeline._asunto("completed")
+    assert asunto != aviso_pipeline._asunto("failed")
+
+
+def test_asunto_de_disputed_menciona_la_objecion():
+    assert "objeción" in aviso_pipeline._asunto("disputed").lower()
+
+
+def test_enviar_aviso_disputed_menciona_objecion_sin_resolver_no_generico(monkeypatch):
+    capturado = {}
+    monkeypatch.setattr(
+        smtp_config, "enviar",
+        lambda settings, mensaje: capturado.__setitem__("mensaje", mensaje),
+    )
+
+    aviso_pipeline._enviar_aviso(
+        _settings_de_prueba(), "destino@example.test", "pid-disputed-1", "disputed", "Mi Pipeline",
+    )
+
+    mensaje = capturado["mensaje"]
+    cuerpo = mensaje.get_body(preferencelist=("plain",)).get_content()
+    assert "objeción" in cuerpo.lower()
+    assert "sin resolver" in cuerpo.lower()
+    # No es el texto genérico de completed/failed ("terminó."/"falló."
+    # a secas, sin más contexto):
+    assert "terminó.\n" not in cuerpo
+    assert "falló.\n" not in cuerpo
+
+
+def test_enviar_aviso_completed_y_failed_no_cambian_de_texto(monkeypatch):
+    """Guarda de no-regresión: el branch nuevo de "disputed" no le pisa el
+    texto a los dos casos que ya existían."""
+    capturados = {}
+
+    def _capturar(settings, mensaje):
+        capturados[mensaje["Subject"]] = mensaje.get_body(preferencelist=("plain",)).get_content()
+
+    monkeypatch.setattr(smtp_config, "enviar", _capturar)
+
+    aviso_pipeline._enviar_aviso(_settings_de_prueba(), "d@example.test", "pid-c", "completed", "P")
+    aviso_pipeline._enviar_aviso(_settings_de_prueba(), "d@example.test", "pid-f", "failed", "P")
+
+    textos = list(capturados.values())
+    assert any("terminó" in t and "objeción" not in t for t in textos)
+    assert any("falló" in t and "objeción" not in t for t in textos)

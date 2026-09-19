@@ -130,3 +130,49 @@ async def test_poll_one_pipeline_dispara_el_aviso_para_expired_igual_que_complet
     await state._poll_one_pipeline(client, pid, pipeline)
 
     assert llamados == ["failed"]  # expired se mapea a failed para el poller local (mismo trato que aborted)
+
+
+# Ronda `feat/estado-disputed` (2026-09-18): jax agrega `disputed` -- el
+# árbitro agotó el tope de devoluciones con una objeción SIN RESOLVER
+# (jacobs/devolucion.py, rama feat/arbitro-devuelve). Terminal, no ocupa
+# cupo, y DISTINTO de completed/failed genérico: por eso NO se mapea a
+# "failed" como aborted/expired -- tiene su propio status "disputed" en el
+# panel (jax_engine/schemas.py::PipelineStatus), así el Historial y el
+# correo lo pueden mostrar como lo que es, no como un fallo cualquiera. El
+# defecto que este test evita es el MISMO que _JACOBS_STATUS_MAP ya tuvo con
+# `expired`: sin la entrada, .get(jacobs_status, "running") deja el pipeline
+# pegado en "running" para siempre.
+async def test_poll_one_pipeline_releases_the_resource_slot_on_disputed():
+    pid = "pid-release-6"
+    state = _make_state_with_pipeline(pid)
+    pipeline = state._state.active_pipelines[pid]
+    await resource_manager.admit_pipeline(TENANT_ID, pid)
+
+    client = _FakeClient(_FakeResponse(200, {"pipeline": {"status": "disputed"}, "steps": []}))
+    await state._poll_one_pipeline(client, pid, pipeline)
+
+    assert pid not in state._state.active_pipelines
+    assert await resource_manager.active_count(TENANT_ID) == 0
+
+
+async def test_poll_one_pipeline_dispara_el_aviso_para_disputed_con_su_propio_status(monkeypatch):
+    import aviso_pipeline
+
+    llamados = []
+    monkeypatch.setattr(
+        aviso_pipeline, "encolar_aviso_fin_pipeline",
+        lambda pid, tenant_id, user_id, status, nombre: llamados.append(status),
+    )
+
+    pid = "pid-release-7"
+    state = _make_state_with_pipeline(pid)
+    pipeline = state._state.active_pipelines[pid]
+    await resource_manager.admit_pipeline(TENANT_ID, pid)
+
+    client = _FakeClient(_FakeResponse(200, {"pipeline": {"status": "disputed"}, "steps": []}))
+    await state._poll_one_pipeline(client, pid, pipeline)
+
+    # "disputed", NO "failed": aviso_pipeline._asunto/_enviar_aviso necesitan
+    # el status crudo para escribir "objeción sin resolver" en vez de un
+    # correo genérico de fallo (ver test_aviso_pipeline.py).
+    assert llamados == ["disputed"]
