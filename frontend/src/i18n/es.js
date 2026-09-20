@@ -1184,11 +1184,15 @@ export default {
     aprobados: (n) => (n === 1 ? '1 hecho aprobado.' : `${n} hechos aprobados.`),
     aprobar: 'Aprobar',
     casiDuplicados: (n) => `Estos ${n} hechos dicen lo mismo`,
-    fundir: 'Aprobar el más reciente y caducar el resto',
-    fundirTitulo: 'Fusionar casi-duplicados',
-    fundirMensaje: 'Se aprueba la redacción más reciente y las demás quedan caducadas: no se borra ninguna.',
-    fundirConfirmar: 'Fusionar',
-    fundido: 'Casi-duplicados resueltos.',
+    // Decisión de Fernando (2026-09-20): fundir SUPERA, no caduca -- "esto
+    // fue reemplazado por aquello", no "esto dejó de valer". `POST
+    // /hechos/fundir` (backend/api/admin/memoria.py) reemplaza al composite
+    // aprobar+caducar que usaba esta pantalla antes.
+    fundir: 'Fundir en el más reciente',
+    fundirTitulo: 'Fundir casi-duplicados',
+    fundirMensaje: 'La redacción más reciente queda aprobada; el resto queda marcado como superado por ella. No se borra nada: la cadena de reemplazo queda registrada.',
+    fundirConfirmar: 'Fundir',
+    fundido: 'Casi-duplicados fundidos: el resto quedó superado.',
     corregir: 'Corregir',
     corregirTitulo: (id) => `Corregir hecho #${id}`,
     corregirTexto: 'Texto corregido',
@@ -1222,6 +1226,18 @@ export default {
     vence: (fecha) => `Vence ${fecha}`,
     sinVencimiento: 'No caduca',
     superadoPor: (id) => `Superado por #${id}`,
+    // Sección «Vencidos» (decisión de Fernando 2026-09-20): caducar no borra
+    // -- "el hecho sigue, deja de pesar" -- pero sin una forma de VERLO y de
+    // deshacerlo, en la práctica sí era borrar. `vencidoDesde` es a propósito
+    // un texto distinto de `vence` (arriba): acá la fecha ya pasó.
+    vencidosResumen: (n) => (n === 1 ? '1 hecho vencido' : `${n} hechos vencidos`),
+    vencidoDesde: (fecha) => `Venció el ${fecha}`,
+    // Accesibilidad (2.4.6/3.3.2, mismo criterio que seleccionarHecho más
+    // arriba): con varios "Quitar caducidad" en la lista, un lector de
+    // pantalla los anuncia todos igual. Empieza con el texto visible a
+    // propósito (2.5.3, "Label in Name"): quien usa control por voz dice
+    // "quitar caducidad" y tiene que encontrar el botón.
+    quitarCaducidadDe: (id) => `Quitar caducidad al hecho #${id}`,
     tipos: {
       user: 'Usuario',
       technical: 'Técnico',

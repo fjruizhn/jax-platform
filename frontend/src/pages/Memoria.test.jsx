@@ -51,6 +51,15 @@ const HECHO_201 = {
   creado_at: '2026-09-09T08:00:00', superado_por: null,
   procedencia: { mensaje_id: 900, faceta: 'thot' },
 }
+// Un hecho caducado en una sesión anterior: sólo sale de `incluir_vencidos=true`
+// (sección Vencidos), no del listado por defecto ni de ningún grupo.
+const HECHO_VENCIDO = {
+  id: 301, texto: 'JAX corre sólo en hall9000.', tipo: 'technical', confianza: 0.6,
+  verificado: true, verificado_por: 3, verificado_at: '2026-08-01T09:00:00',
+  vence_at: '2026-08-15T00:00:00', vencido: true,
+  creado_at: '2026-07-01T08:00:00', superado_por: null,
+  procedencia: { mensaje_id: 700, faceta: 'thot' },
+}
 
 const GRUPOS_DOS_TEMAS = {
   grupos: [
@@ -64,11 +73,25 @@ function renderMemoria() {
   return render(<I18nProvider><MemoryRouter><Memoria /></MemoryRouter></I18nProvider>)
 }
 
-// GET por URL, como AdminUsers.test.jsx.
+// GET por URL, como AdminUsers.test.jsx. Memoria.jsx pide /hechos dos veces
+// (el listado activo y, aparte, `incluir_vencidos=true` para la sección
+// Vencidos) -- por defecto las dos devuelven `hechos` (ningún fixture trae
+// vencido:true), así que la sección Vencidos queda vacía salvo que el test
+// use `servirGetConVencidos`.
 function servirGet(grupos, hechos) {
   api.get.mockImplementation((url) => {
     if (url === '/admin/memoria/grupos') return Promise.resolve({ data: grupos })
     if (url === '/admin/memoria/hechos') return Promise.resolve({ data: hechos })
+    return Promise.reject(new Error(`url no mockeada: ${url}`))
+  })
+}
+
+function servirGetConVencidos(grupos, hechosActivos, hechosVencidos) {
+  api.get.mockImplementation((url, config) => {
+    if (url === '/admin/memoria/grupos') return Promise.resolve({ data: grupos })
+    if (url === '/admin/memoria/hechos') {
+      return Promise.resolve({ data: config?.params?.incluir_vencidos ? hechosVencidos : hechosActivos })
+    }
     return Promise.reject(new Error(`url no mockeada: ${url}`))
   })
 }
@@ -119,7 +142,7 @@ describe('Memoria', () => {
   })
 
   it('sin confirm/alert/prompt, ni desnudos ni con window.', () => {
-    for (const archivo of ['src/pages/Memoria.jsx', 'src/components/Memoria/GrupoDeHechos.jsx', 'src/components/Memoria/FichaDeHecho.jsx']) {
+    for (const archivo of ['src/pages/Memoria.jsx', 'src/components/Memoria/GrupoDeHechos.jsx', 'src/components/Memoria/FichaDeHecho.jsx', 'src/components/Memoria/SeccionVencidos.jsx']) {
       const fuente = readFileSync(archivo, 'utf8')
       expect(fuente).not.toMatch(/(^|[^.a-zA-Z])(confirm|alert|prompt)\(/)
     }
@@ -218,11 +241,55 @@ describe('Memoria', () => {
     expect(await screen.findByText(es.memoria.vencido)).toBeInTheDocument()
   })
 
+  it('fundir pide confirmacion en ventana propia y llama al endpoint de fusion, no a caducar', async () => {
+    servirGet(GRUPOS_DOS_TEMAS, HECHOS_DOS_TEMAS)
+    api.post.mockResolvedValue({ data: { aprobados: 1, superados: 2 } })
+    renderMemoria()
+    const grupo = await screen.findByTestId('grupo-0')
+    fireEvent.click(within(grupo).getByRole('button', { name: es.memoria.fundir }))
+    const confirmacion = await screen.findByRole('dialog')
+    fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
+    fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.fundirConfirmar }))
+    // grupo.hechos = [139, 138, 136] (creado_at DESC): 139 es el más reciente.
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith(
+      '/admin/memoria/hechos/fundir', { superviviente_id: 139, absorbidos: [138, 136] },
+    ))
+    expect(api.post).not.toHaveBeenCalledWith(expect.stringMatching(/\/caducar$/), expect.anything())
+    expect(await screen.findByText(es.memoria.fundido)).toBeInTheDocument()
+  })
+
+  it('la seccion Vencidos no aparece cuando no hay hechos vencidos', async () => {
+    servirGet(GRUPOS_DOS_TEMAS, HECHOS_DOS_TEMAS)
+    renderMemoria()
+    await screen.findByTestId('grupo-0')
+    expect(screen.queryByTestId(/^vencido-/)).not.toBeInTheDocument()
+  })
+
+  it('la seccion Vencidos lista los hechos vencidos, cerrada por defecto, y deja quitarles la caducidad', async () => {
+    servirGetConVencidos({ grupos: [] }, { hechos: [], total: 0 }, { hechos: [HECHO_VENCIDO], total: 1 })
+    api.post.mockResolvedValue({ data: { ok: true } })
+    renderMemoria()
+    const fila = await screen.findByTestId('vencido-301')
+    expect(within(fila).getByText(HECHO_VENCIDO.texto)).toBeInTheDocument()
+    const detalle = fila.closest('details')
+    expect(detalle).not.toHaveAttribute('open')
+    // Accesibilidad: varios "Quitar caducidad" en la lista se distinguen por
+    // el hecho al que corresponden (aria-label), no sólo por el texto visible.
+    fireEvent.click(within(fila).getByRole('button', { name: es.memoria.quitarCaducidadDe(301) }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith(
+      '/admin/memoria/hechos/301/caducar', { vence_at: null },
+    ))
+    expect(await screen.findByText(es.memoria.caducidadQuitada)).toBeInTheDocument()
+  })
+
   it('los textos nuevos de memoria tienen es y en', () => {
     for (const t of [es, en]) {
       expect(typeof t.memoria.titulo).toBe('string')
       expect(typeof t.memoria.casiDuplicados(3)).toBe('string')
       expect(typeof t.memoria.errores.hecho_no_encontrado).toBe('string')
+      expect(typeof t.memoria.vencidosResumen(1)).toBe('string')
+      expect(typeof t.memoria.vencidoDesde('2026-08-15')).toBe('string')
+      expect(typeof t.memoria.quitarCaducidadDe(1)).toBe('string')
     }
   })
 })

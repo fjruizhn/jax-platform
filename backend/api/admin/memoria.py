@@ -270,6 +270,73 @@ async def corregir_hecho(fact_id: int, body: CorregirBody,
     return {"nuevo_id": nuevo_id}
 
 
+class FundirBody(BaseModel):
+    superviviente_id: int
+    absorbidos: list[int]
+
+
+@router.post("/hechos/fundir")
+async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_superadmin)):
+    """Fundir casi-duplicados es SUPERSEDER, no caducar (decision de
+    Fernando, 2026-09-20): caducar dice "esto dejo de valer"; superar dice
+    "esto fue reemplazado POR AQUELLO". Tres hechos que dicen lo mismo no son
+    tres hechos vencidos -- son uno con tres redacciones, y `superseded_by`
+    reconstruye esa cadena.
+
+    Mismo par de columnas que `MemoryDB.supersede_fact(old_fact_id,
+    new_fact_id, superseded_by_user)` (jax/memory/db.py -- esa aridad esta
+    pensada justo para este llamador humano, ver su propio docstring: "el
+    humano (la pantalla de Memoria)"). A proposito NO se compone el metodo:
+    abre y confirma SU PROPIA conexion (`self.pool.acquire()` sobre el pool
+    de MemoryDB), un pool DISTINTO al de esta transaccion (`db/transaccion.py`,
+    sobre `db.connection.get_pool()`) aunque los dos apunten a la misma base
+    fisica -- exactamente la misma razon por la que `corregir_hecho` de
+    arriba tampoco compone `MemoryDB.save_fact`/`supersede_fact`
+    (jax-platform#107: cada uno abre y confirma su propia conexion). Llamar a
+    `supersede_fact` una vez por absorbido dejaria "fundir a medias" posible
+    si algo fallara a mitad del lote -- lo que este endpoint existe para
+    evitar. Por eso van los UPDATE a mano, con el MISMO SQL que
+    `supersede_fact` ejecuta, sobre el MISMO cursor, dentro de la MISMA
+    transaccion con `FOR UPDATE` (mismo patron que `corregir_hecho`).
+    """
+    # Sin duplicados, mismo orden de llegada: absorbidos=[7, 7, 8] funde una
+    # sola vez al 7.
+    absorbidos = list(dict.fromkeys(body.absorbidos))
+    if not absorbidos:
+        return {"superados": 0}
+    # Un hecho superado por si mismo es un ciclo: rechazarlo es mas barato
+    # que explicarlo despues.
+    if body.superviviente_id in absorbidos:
+        raise HTTPException(status_code=400, detail="superviviente_en_absorbidos")
+    autor = int(user.user_id)
+    ids = [body.superviviente_id, *absorbidos]
+
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        marcadores = ", ".join(["%s"] * len(ids))
+        await cur.execute(
+            f"SELECT id, superseded_by FROM facts WHERE id IN ({marcadores}) FOR UPDATE",
+            ids,
+        )
+        estado = {fila[0]: fila[1] for fila in await cur.fetchall()}
+        if any(i not in estado for i in ids):
+            raise HTTPException(status_code=404, detail="hecho_no_encontrado")
+        # Encadenar sobre una cadena rota confunde la historia: ni el
+        # superviviente ni ningun absorbido pueden estar ya superados. Todo o
+        # nada: esta comprobacion corre para TODOS los ids ANTES de escribir
+        # el primer UPDATE, así que un solo hecho ya superado en el lote
+        # basta para que NINGUNO cambie.
+        if any(estado[i] is not None for i in ids):
+            raise HTTPException(status_code=409, detail="hecho_ya_superado")
+
+        for absorbido_id in absorbidos:
+            await cur.execute(
+                "UPDATE facts SET superseded_by = %s, superseded_at = NOW(), "
+                "superseded_by_user = %s WHERE id = %s",
+                (body.superviviente_id, autor, absorbido_id),
+            )
+    return {"superados": len(absorbidos)}
+
+
 class CaducarBody(BaseModel):
     vence_at: Optional[str] = None
 

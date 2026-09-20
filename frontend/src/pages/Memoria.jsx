@@ -9,6 +9,7 @@ import Dialogo from '../components/Dialogo'
 import ConfirmacionSuma from '../components/ConfirmacionSuma'
 import Toast from '../components/Notifications/Toast'
 import GrupoDeHechos from '../components/Memoria/GrupoDeHechos'
+import SeccionVencidos from '../components/Memoria/SeccionVencidos'
 
 // Pantalla de Memoria (Task 6, plan 2026-09-20-memoria-admin.md; spec
 // 2026-09-18-memoria-admin-design.md). El criterio de éxito del spec §6 es de
@@ -25,8 +26,7 @@ import GrupoDeHechos from '../components/Memoria/GrupoDeHechos'
 //      Task 5) arrancan SIN seleccionar en el lote por defecto -- aprobar el
 //      grupo entero de un click aprobaría a la vez tres redacciones que dicen
 //      lo mismo, exactamente el problema que la pantalla viene a resolver. Se
-//      resuelven con el botón "Fundir" del cluster (aprueba el más reciente,
-//      caduca el resto) o a mano, ficha por ficha.
+//      resuelven con el botón "Fundir" del cluster o a mano, ficha por ficha.
 //
 // GET /grupos (Task 5) sólo trae ids; esta pantalla junta esos ids con
 // GET /hechos (Task 3, límite máximo del backend: 500) para tener el dato
@@ -34,16 +34,21 @@ import GrupoDeHechos from '../components/Memoria/GrupoDeHechos'
 // coinciden, así que todo id de un grupo se encuentra siempre en
 // `hechosPorId`.
 //
-// LÍMITE CONOCIDO, documentado y no resuelto acá (fuera del alcance de esta
-// tarea sin decisión de Fernando): GET /grupos arma sus clusters SÓLO con
-// hechos activos (`superseded_by IS NULL AND (expires_at IS NULL OR
-// expires_at > NOW())`, ver backend/api/admin/memoria.py::SQL_ACTIVOS_CON_VECTOR).
-// Un hecho que ya estaba vencido ANTES de abrir esta pantalla no aparece en
-// ningún grupo, así que esta pantalla no lo muestra ni ofrece "quitar
-// caducidad" sobre él -- sólo sobre uno que el propio Fernando caducó en esta
-// misma sesión (que se mantiene visible, optimista, con esa acción). Revivir
-// vencidos viejos necesitaría una sección aparte ("Vencidos", sin agrupar,
-// vía `incluir_vencidos=true`) que el plan no pidió.
+// Fundir (decisión de Fernando, 2026-09-20): SUPERA, no caduca -- "esto fue
+// reemplazado POR AQUELLO", no "esto dejó de valer". Tres hechos que dicen
+// lo mismo no son tres hechos vencidos: son uno con tres redacciones, y
+// `superseded_by` (POST /hechos/fundir) reconstruye esa cadena, cosa que
+// `expires_at` no puede. El más reciente del cluster se aprueba aparte
+// (POST /hechos/aprobar, igual que antes); el resto queda superado por él.
+//
+// GET /grupos arma sus clusters SÓLO con hechos activos (`superseded_by IS
+// NULL AND (expires_at IS NULL OR expires_at > NOW())`, ver
+// backend/api/admin/memoria.py::SQL_ACTIVOS_CON_VECTOR): un hecho ya vencido
+// no aparece en ningún grupo. Por eso la sección Vencidos (abajo del todo,
+// SeccionVencidos.jsx) pide `incluir_vencidos=true` por separado y filtra
+// del lado del cliente -- es la única forma de volver a VER y de quitarle la
+// caducidad a un hecho que caducó en una sesión anterior (sin esto, caducar
+// por error y recargar la pantalla era, en la práctica, borrar).
 const emptySet = () => new Set()
 
 function mensajeDeError(t, err) {
@@ -61,6 +66,7 @@ export default function Memoria() {
   const [error, setError] = useState(false)
   const [grupos, setGrupos] = useState([])
   const [hechosPorId, setHechosPorId] = useState({})
+  const [vencidos, setVencidos] = useState([])
   const [seleccionados, setSeleccionados] = useState(emptySet)
   const [procesando, setProcesando] = useState(emptySet)
 
@@ -75,9 +81,10 @@ export default function Memoria() {
     setCargando(true)
     setError(false)
     try {
-      const [rGrupos, rHechos] = await Promise.all([
+      const [rGrupos, rHechos, rVencidos] = await Promise.all([
         api.get('/admin/memoria/grupos'),
         api.get('/admin/memoria/hechos', { params: { limite: 500 } }),
+        api.get('/admin/memoria/hechos', { params: { limite: 500, incluir_vencidos: true } }),
       ])
       const porId = {}
       for (const h of rHechos.data.hechos) porId[h.id] = h
@@ -85,6 +92,9 @@ export default function Memoria() {
       const idsDeCluster = new Set(rGrupos.data.grupos.flatMap((g) => (g.casi_duplicados || []).flat()))
       setGrupos(rGrupos.data.grupos)
       setHechosPorId(porId)
+      // incluir_vencidos=true trae vencidos Y activos juntos (ver nota de
+      // módulo): acá se filtra sólo lo vencido, para la sección aparte.
+      setVencidos(rVencidos.data.hechos.filter((h) => h.vencido))
       setSeleccionados(new Set(
         rHechos.data.hechos.filter((h) => !h.verificado && !idsDeCluster.has(h.id)).map((h) => h.id),
       ))
@@ -174,6 +184,7 @@ export default function Memoria() {
     try {
       await api.post(`/admin/memoria/hechos/${id}/caducar`, { vence_at: null })
       actualizarHecho(id, { vencido: false, vence_at: null })
+      setVencidos((prev) => prev.filter((h) => h.id !== id))
       addToast({ type: 'success', message: t.memoria.caducidadQuitada })
     } catch (err) {
       addToast({ type: 'error', message: mensajeDeError(t, err) })
@@ -212,24 +223,27 @@ export default function Memoria() {
     }
   }
 
-  // Fundir (casi-duplicados, spec §2.1: "un botón para fundirlos", compuesto
-  // con los endpoints que ya existen -- no hay un endpoint de fusión):
-  // aprueba el más reciente del cluster y caduca el resto. Destructivo
-  // (caduca) -> ConfirmacionSuma.
+  // Fundir (casi-duplicados, spec §2.1: "un botón para fundirlos"): aprueba
+  // el más reciente del cluster y SUPERA el resto (POST /hechos/fundir --
+  // ver nota de módulo). Sigue siendo destructivo (cambia el estado de
+  // varios hechos a la vez, sin vuelta atrás desde acá) -> ConfirmacionSuma.
   function abrirFundir(ids) {
     setFundiendo(ids)
   }
 
   async function confirmarFundir() {
+    // item.ids viene ordenado created_at DESC (GrupoDeHechos.jsx): el
+    // primero es el más reciente.
     const [masReciente, ...resto] = fundiendo
     marcarProcesando(fundiendo, true)
     try {
       await api.post('/admin/memoria/hechos/aprobar', { ids: [masReciente] })
-      const vence_at = new Date().toISOString()
-      await Promise.all(resto.map((id) => api.post(`/admin/memoria/hechos/${id}/caducar`, { vence_at })))
+      await api.post('/admin/memoria/hechos/fundir', {
+        superviviente_id: masReciente, absorbidos: resto,
+      })
       setFundiendo(null)
       addToast({ type: 'success', message: t.memoria.fundido })
-      await cargar()
+      await cargar() // cambio estructural (superseded_by en varios hechos): recargar, igual que corregir.
     } catch (err) {
       addToast({ type: 'error', message: mensajeDeError(t, err) })
     } finally {
@@ -286,6 +300,10 @@ export default function Memoria() {
             onAbrirFundir={abrirFundir}
           />
         ))}
+
+        {!cargando && !error && (
+          <SeccionVencidos vencidos={vencidos} procesando={procesando} onQuitarCaducidad={quitarCaducidad} />
+        )}
       </div>
 
       {corrigiendo && (
