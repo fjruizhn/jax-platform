@@ -67,6 +67,20 @@ export default function Memoria() {
   const [grupos, setGrupos] = useState([])
   const [hechosPorId, setHechosPorId] = useState({})
   const [vencidos, setVencidos] = useState([])
+  // Verdad de escala (M. Ruiz, 2026-09-20): a 116 hechos, "lo que se cargó"
+  // y "lo que hay" coinciden y nadie nota la diferencia. A 10.000 no --
+  // medido con la base de carga: la cabecera decía "467 sin verificar"
+  // mientras la base tenía 8.000, porque contaba sólo los ids que entraron
+  // en el límite de 500 de GET /hechos. `totalSinVerificarReal` guarda lo
+  // que la base tiene DE VERDAD (GET /hechos ya devuelve `total`, contado
+  // en el servidor con SQL_CONTAR -- no hace falta traer las filas para
+  // saber cuántas hay). `vencidosTotalReal` sale de la misma idea sin pedir
+  // un tercer endpoint: `rVencidos.total` (activos+vencidos) menos
+  // `rHechos.total` (sólo activos) es, por construcción de SQL_CONTAR, la
+  // cuenta de vencidos -- las dos comparten el mismo filtro salvo
+  // `incluir_vencidos`.
+  const [totalSinVerificarReal, setTotalSinVerificarReal] = useState(0)
+  const [vencidosTotalReal, setVencidosTotalReal] = useState(0)
   const [seleccionados, setSeleccionados] = useState(emptySet)
   const [procesando, setProcesando] = useState(emptySet)
 
@@ -81,10 +95,14 @@ export default function Memoria() {
     setCargando(true)
     setError(false)
     try {
-      const [rGrupos, rHechos, rVencidos] = await Promise.all([
+      const [rGrupos, rHechos, rVencidos, rSinVerificarReal] = await Promise.all([
         api.get('/admin/memoria/grupos'),
         api.get('/admin/memoria/hechos', { params: { limite: 500 } }),
         api.get('/admin/memoria/hechos', { params: { limite: 500, incluir_vencidos: true } }),
+        // limite=1: no interesan las filas, sólo el `total` que ya calcula
+        // SQL_CONTAR en el servidor -- pedir 500 filas para tirarlas sería
+        // trabajo de más, no una cuenta más verdadera.
+        api.get('/admin/memoria/hechos', { params: { verificado: false, limite: 1 } }),
       ])
       const porId = {}
       for (const h of rHechos.data.hechos) porId[h.id] = h
@@ -95,6 +113,8 @@ export default function Memoria() {
       // incluir_vencidos=true trae vencidos Y activos juntos (ver nota de
       // módulo): acá se filtra sólo lo vencido, para la sección aparte.
       setVencidos(rVencidos.data.hechos.filter((h) => h.vencido))
+      setTotalSinVerificarReal(rSinVerificarReal.data.total)
+      setVencidosTotalReal(Math.max(0, rVencidos.data.total - rHechos.data.total))
       setSeleccionados(new Set(
         rHechos.data.hechos.filter((h) => !h.verificado && !idsDeCluster.has(h.id)).map((h) => h.id),
       ))
@@ -251,7 +271,13 @@ export default function Memoria() {
     }
   }
 
-  const totalSinVerificar = Object.values(hechosPorId).filter((h) => !h.verificado).length
+  // Lo cargado (lo que hay fichas para aprobar en pantalla AHORA) puede ser
+  // menos que lo real -- el cap de 500 de GET /hechos. Cuando coinciden (la
+  // escala de hoy, 116 hechos) el texto es el de siempre, sin ruido nuevo;
+  // cuando no, decirlo explícito es la diferencia entre informar y mentir
+  // con confianza (mismo patrón que el 404 de "no encontrado" con la base
+  // caída, y el /fact verify que no encontraba un hecho que sí existía).
+  const totalSinVerificarCargados = Object.values(hechosPorId).filter((h) => !h.verificado).length
 
   return (
     <div className="min-h-dvh bg-fondo text-texto p-6">
@@ -268,7 +294,11 @@ export default function Memoria() {
         </div>
 
         {!cargando && !error && (
-          <p className="text-xs text-texto-suave">{t.memoria.totalSinVerificar(totalSinVerificar)}</p>
+          <p className="text-xs text-texto-suave">
+            {totalSinVerificarCargados === totalSinVerificarReal
+              ? t.memoria.totalSinVerificar(totalSinVerificarReal)
+              : t.memoria.totalSinVerificarSubconjunto(totalSinVerificarCargados, totalSinVerificarReal)}
+          </p>
         )}
 
         {cargando && <p className="text-sm text-texto-tenue">{t.memoria.cargando}</p>}
@@ -302,7 +332,7 @@ export default function Memoria() {
         ))}
 
         {!cargando && !error && (
-          <SeccionVencidos vencidos={vencidos} procesando={procesando} onQuitarCaducidad={quitarCaducidad} />
+          <SeccionVencidos vencidos={vencidos} totalReal={vencidosTotalReal} procesando={procesando} onQuitarCaducidad={quitarCaducidad} />
         )}
       </div>
 

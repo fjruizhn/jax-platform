@@ -69,6 +69,22 @@ const GRUPOS_DOS_TEMAS = {
 }
 const HECHOS_DOS_TEMAS = { hechos: [HECHO_136, HECHO_138, HECHO_139, HECHO_201], total: 4 }
 
+// Escenario a escala, mismo patrón que la base de carga de 10.000 hechos
+// (docs/carga-memoria-2026-09-20.md): un grupo cuyo `sin_verificar` real
+// (contado por el backend sobre TODOS sus miembros activos, sin el cap de
+// GET /hechos) es mucho mayor que lo que esta pantalla llegó a cargar --
+// exactamente el defecto medido por Fernando (la cabecera decía "467 sin
+// verificar" con la base en 8.000).
+const GRUPO_A_ESCALA = {
+  grupos: [{ tema: HECHO_136.texto, hechos: [136], sin_verificar: 5000, casi_duplicados: [] }],
+}
+// `total` de cada respuesta es el que SQL_CONTAR calcula server-side, no el
+// largo de `hechos`: 9.000 vigentes en total, 9.500 vigentes+vencidos --
+// Memoria.jsx resta las dos para sacar 500 vencidos reales, sin pedir un
+// tercer endpoint (ver el comentario de módulo en Memoria.jsx).
+const HECHOS_A_ESCALA = { hechos: [HECHO_136], total: 9000 }
+const VENCIDOS_A_ESCALA = { hechos: [HECHO_VENCIDO], total: 9500 }
+
 function renderMemoria() {
   return render(<I18nProvider><MemoryRouter><Memoria /></MemoryRouter></I18nProvider>)
 }
@@ -91,6 +107,28 @@ function servirGetConVencidos(grupos, hechosActivos, hechosVencidos) {
     if (url === '/admin/memoria/grupos') return Promise.resolve({ data: grupos })
     if (url === '/admin/memoria/hechos') {
       return Promise.resolve({ data: config?.params?.incluir_vencidos ? hechosVencidos : hechosActivos })
+    }
+    return Promise.reject(new Error(`url no mockeada: ${url}`))
+  })
+}
+
+// Distingue las CUATRO llamadas de verdad que hace Memoria.jsx (a diferencia
+// de los dos helpers de arriba, que sirven la misma data a cualquier GET
+// /hechos): el listado activo, `incluir_vencidos=true`, y el conteo liviano
+// `verificado=false&limite=1` que alimenta el total real de la cabecera.
+// Sin esto no se puede probar la diferencia entre "lo cargado" y "lo real"
+// -- que es exactamente lo que este defecto necesita, medido con la base de
+// carga (10.000 hechos): la cabecera decía 467, la base tenía 8.000.
+function servirGetEscala({ grupos, hechosActivos, hechosVencidos = { hechos: [], total: 0 }, totalSinVerificarReal }) {
+  api.get.mockImplementation((url, config) => {
+    if (url === '/admin/memoria/grupos') return Promise.resolve({ data: grupos })
+    if (url === '/admin/memoria/hechos') {
+      const params = config?.params || {}
+      if (params.verificado === false && params.limite === 1) {
+        return Promise.resolve({ data: { hechos: [], total: totalSinVerificarReal } })
+      }
+      if (params.incluir_vencidos) return Promise.resolve({ data: hechosVencidos })
+      return Promise.resolve({ data: hechosActivos })
     }
     return Promise.reject(new Error(`url no mockeada: ${url}`))
   })
@@ -282,12 +320,80 @@ describe('Memoria', () => {
     expect(await screen.findByText(es.memoria.caducidadQuitada)).toBeInTheDocument()
   })
 
+  // Defecto medido por Fernando en la base de carga (10.000 hechos, 8.000
+  // sin verificar): la cabecera decía "467 sin verificar" -- contaba lo que
+  // el cap de 500 de GET /hechos alcanzó a cargar, no lo que había. Los
+  // tres tests de acá prueban que ESE número chico ya no puede salir a
+  // secas cuando hay más de verdad.
+  it('la cabecera dice la verdad: si hay más sin verificar de los que cargó, no muestra el número chico a secas', async () => {
+    servirGetEscala({
+      grupos: GRUPO_A_ESCALA,
+      hechosActivos: HECHOS_A_ESCALA,
+      totalSinVerificarReal: 8000,
+    })
+    renderMemoria()
+    await screen.findByTestId('grupo-0')
+    // Lo cargado (1 hecho, HECHO_136) no puede presentarse como si fuera
+    // el total: tiene que decir explícitamente que es un subconjunto.
+    expect(screen.queryByText(es.memoria.totalSinVerificar(1))).not.toBeInTheDocument()
+    expect(screen.getByText(es.memoria.totalSinVerificarSubconjunto(1, 8000))).toBeInTheDocument()
+  })
+
+  it('el contador de un grupo no miente: si el grupo tiene más miembros sin verificar de los que se cargaron, lo dice', async () => {
+    servirGetEscala({
+      grupos: GRUPO_A_ESCALA,
+      hechosActivos: HECHOS_A_ESCALA,
+      totalSinVerificarReal: 8000,
+    })
+    renderMemoria()
+    const grupo = await screen.findByTestId('grupo-0')
+    // El grupo trae sin_verificar:5000 del backend (Task 5, sobre TODOS sus
+    // miembros activos), pero esta pantalla sólo cargó 1 -- ni el número
+    // chico solo ni "Todos verificados" serían ciertos acá.
+    expect(within(grupo).queryByText(es.memoria.totalSinVerificar(1))).not.toBeInTheDocument()
+    expect(within(grupo).queryByText(es.memoria.grupoTodosVerificados)).not.toBeInTheDocument()
+    expect(within(grupo).getByText(es.memoria.totalSinVerificarSubconjunto(1, 5000))).toBeInTheDocument()
+  })
+
+  it('cuando lo cargado coincide con lo real, la cabecera usa el texto simple de siempre', async () => {
+    servirGetEscala({
+      grupos: GRUPOS_DOS_TEMAS,
+      hechosActivos: HECHOS_DOS_TEMAS,
+      hechosVencidos: { hechos: [], total: HECHOS_DOS_TEMAS.total },
+      totalSinVerificarReal: 3,
+    })
+    renderMemoria()
+    await screen.findByTestId('grupo-0')
+    // Aparece dos veces con el texto simple: la cabecera (3 de 3 reales) y
+    // el grupo 0 (sin_verificar:3, los 3 cargados) -- ninguna de las dos
+    // necesita la variante "mostrando X de Y".
+    expect(screen.getAllByText(es.memoria.totalSinVerificar(3))).toHaveLength(2)
+    expect(screen.queryByText(/mostrando/)).not.toBeInTheDocument()
+  })
+
+  it('la seccion Vencidos no se conforma con lo que cargó: si hay más vencidos reales, lo dice', async () => {
+    servirGetEscala({
+      grupos: { grupos: [] },
+      hechosActivos: HECHOS_A_ESCALA,
+      hechosVencidos: VENCIDOS_A_ESCALA,
+      totalSinVerificarReal: 8000,
+    })
+    renderMemoria()
+    // 9.500 (vigentes+vencidos) menos 9.000 (vigentes) = 500 vencidos
+    // reales; la llamada trajo sólo 1 -- Memoria.jsx los resta sin pedir un
+    // tercer endpoint (ver comentario de módulo).
+    expect(await screen.findByText(es.memoria.vencidosResumenSubconjunto(1, 500))).toBeInTheDocument()
+    expect(screen.queryByText(es.memoria.vencidosResumen(1))).not.toBeInTheDocument()
+  })
+
   it('los textos nuevos de memoria tienen es y en', () => {
     for (const t of [es, en]) {
       expect(typeof t.memoria.titulo).toBe('string')
       expect(typeof t.memoria.casiDuplicados(3)).toBe('string')
       expect(typeof t.memoria.errores.hecho_no_encontrado).toBe('string')
       expect(typeof t.memoria.vencidosResumen(1)).toBe('string')
+      expect(typeof t.memoria.vencidosResumenSubconjunto(1, 500)).toBe('string')
+      expect(typeof t.memoria.totalSinVerificarSubconjunto(1, 8000)).toBe('string')
       expect(typeof t.memoria.vencidoDesde('2026-08-15')).toBe('string')
       expect(typeof t.memoria.quitarCaducidadDe(1)).toBe('string')
     }

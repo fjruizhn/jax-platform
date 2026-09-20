@@ -1134,6 +1134,7 @@ export default {
     errorCarga: 'Could not load the memory.',
     vacio: 'No active facts to review.',
     totalSinVerificar: (n) => `${n} unverified`,
+    totalSinVerificarSubconjunto: (cargados, total) => `showing ${cargados} of ${total} unverified`,
     grupoTodosVerificados: 'All verified',
     seleccionarTodos: 'Select all',
     seleccionarNinguno: 'None',
@@ -1184,6 +1185,7 @@ export default {
     sinVencimiento: 'Never expires',
     superadoPor: (id) => `Superseded by #${id}`,
     vencidosResumen: (n) => (n === 1 ? '1 expired fact' : `${n} expired facts`),
+    vencidosResumenSubconjunto: (cargados, total) => `showing ${cargados} of ${total} expired facts`,
     vencidoDesde: (fecha) => `Expired on ${fecha}`,
     quitarCaducidadDe: (id) => `Remove expiration from fact #${id}`,
     tipos: {

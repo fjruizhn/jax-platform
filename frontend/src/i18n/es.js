@@ -1173,6 +1173,10 @@ export default {
     errorCarga: 'No se pudo cargar la memoria.',
     vacio: 'No hay hechos activos para revisar.',
     totalSinVerificar: (n) => `${n} sin verificar`,
+    // Cuando la pantalla cargó menos de los que hay de verdad (cap de 500
+    // en GET /hechos): decirlo, no mostrar el número chico como si fuera
+    // el total. Mismo patrón en la cabecera, por grupo y en Vencidos.
+    totalSinVerificarSubconjunto: (cargados, total) => `mostrando ${cargados} de ${total} sin verificar`,
     grupoTodosVerificados: 'Todos verificados',
     seleccionarTodos: 'Seleccionar todos',
     seleccionarNinguno: 'Ninguno',
@@ -1231,6 +1235,7 @@ export default {
     // deshacerlo, en la práctica sí era borrar. `vencidoDesde` es a propósito
     // un texto distinto de `vence` (arriba): acá la fecha ya pasó.
     vencidosResumen: (n) => (n === 1 ? '1 hecho vencido' : `${n} hechos vencidos`),
+    vencidosResumenSubconjunto: (cargados, total) => `mostrando ${cargados} de ${total} hechos vencidos`,
     vencidoDesde: (fecha) => `Venció el ${fecha}`,
     // Accesibilidad (2.4.6/3.3.2, mismo criterio que seleccionarHecho más
     // arriba): con varios "Quitar caducidad" en la lista, un lector de

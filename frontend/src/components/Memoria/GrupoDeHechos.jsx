@@ -43,6 +43,14 @@ export default function GrupoDeHechos({
   const sinVerificarIds = idsDelGrupo.filter((id) => !hechosPorId[id].verificado)
   const seleccionadosDelGrupo = sinVerificarIds.filter((id) => seleccionados.has(id))
   const loteOcupado = seleccionadosDelGrupo.some((id) => procesando.has(id))
+  // El backend arma `grupo.hechos` con TODOS los miembros activos del tema
+  // (backend/api/admin/memoria.py::agrupar_por_tema, sin el cap de 500 de
+  // GET /hechos) y ya trae `sin_verificar` contado sobre esos miembros
+  // completos -- es la cuenta real del grupo, no la de lo que esta pantalla
+  // alcanzó a cargar. `sinVerificarIds.length` (arriba) sigue siendo lo que
+  // gobierna qué se puede seleccionar/aprobar en lote, porque sólo se puede
+  // accionar sobre lo que SÍ está cargado.
+  const sinVerificarReal = grupo.sin_verificar ?? sinVerificarIds.length
 
   const items = agruparParaRenderizar(grupo)
 
@@ -52,7 +60,11 @@ export default function GrupoDeHechos({
         <div className="min-w-0">
           <h2 className="text-sm font-semibold text-texto-fuerte break-words">{grupo.tema}</h2>
           <p className="text-xs text-texto-tenue mt-0.5">
-            {sinVerificarIds.length > 0 ? t.memoria.totalSinVerificar(sinVerificarIds.length) : t.memoria.grupoTodosVerificados}
+            {sinVerificarReal === 0
+              ? t.memoria.grupoTodosVerificados
+              : sinVerificarIds.length === sinVerificarReal
+                ? t.memoria.totalSinVerificar(sinVerificarReal)
+                : t.memoria.totalSinVerificarSubconjunto(sinVerificarIds.length, sinVerificarReal)}
           </p>
         </div>
         {sinVerificarIds.length > 0 && (
