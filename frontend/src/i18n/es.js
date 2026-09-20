@@ -759,6 +759,8 @@ export default {
   adminSettingsSystemName: 'Nombre del sistema',
   adminSettingsConfirmarUsd: 'Confirmar pipelines desde (USD)',
   adminSettingsConfirmarUsdAyuda: 'Por encima de este costo máximo, o con un paso sin precio, se pide confirmación antes de correr. 0 = confirmar siempre.',
+  adminSettingsTopeDevoluciones: 'Devoluciones del árbitro',
+  adminSettingsTopeDevolucionesAyuda: 'Cuántas veces puede el árbitro devolver un pipeline para que se rehaga. Al agotarlo con una objeción sin resolver, el pipeline termina con objeción y requiere tu decisión. 0 no lo apaga: el árbitro sigue objetando, pero la primera objeción termina el pipeline.',
   adminSettingsDark: 'Oscuro',
   adminSettingsLight: 'Claro',
 
@@ -1095,6 +1097,10 @@ export default {
       auditor_ilegible: 'No se pudo leer al auditor',
       turno_ilegible: 'No se pudo leer el turno',
       runner_error: 'Error del runner',
+      // 2026-09-20: un turno que no entrega NINGUNA afirmación --nada propuesto y nada
+      // descartado-- dejó de reportarse como completado. Dos misiones salieron
+      // "completada" con cero y nadie las miró.
+      sin_afirmaciones: 'El turno no entregó ninguna afirmación',
     },
     eventos: {
       mision_creada: 'Misión creada',

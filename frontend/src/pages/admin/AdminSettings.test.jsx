@@ -281,3 +281,46 @@ describe('AdminSettings -- umbral de confirmación de costo (spec 2026-09-17 §6
     }
   })
 })
+
+describe('AdminSettings -- tope de devoluciones del árbitro (2026-09-20)', () => {
+  // El numero existia en axioma_config desde jax-platform#121 pero NO en la
+  // pantalla: la unica forma de cambiarlo era un UPDATE a mano, que
+  // config_audit prohibe. Un numero de gobernanza que nadie podia tocar.
+  const CON_TOPE = { data: {
+    config: [{ key: 'system_name', value: 'Axioma' }, { key: 'jacobs.tope_devoluciones', value: '2' }],
+    limites: { ...LIMITES, 'jacobs.tope_devoluciones': { min: 0, max: 5 } },
+  } }
+
+  it('el campo toma mínimo y máximo del servidor, no del código', async () => {
+    api.get.mockResolvedValue(CON_TOPE)
+    renderSettings()
+    const campo = await screen.findByLabelText(es.adminSettingsTopeDevoluciones)
+    expect(campo).toHaveValue(2)
+    expect(campo).toHaveAttribute('min', '0')
+    expect(campo).toHaveAttribute('max', '5')
+  })
+
+  it('un valor fuera de rango se nombra con la etiqueta del campo, no con la clave técnica', async () => {
+    api.get.mockResolvedValue(CON_TOPE)
+    api.put.mockRejectedValue(rechazo(400, { code: 'config_valor_invalido', clave: 'jacobs.tope_devoluciones' }))
+    renderSettings()
+    await guardar()
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.config_valor_invalido(es.adminSettingsTopeDevoluciones))
+  })
+
+  it('la etiqueta y la ayuda existen en los dos idiomas y difieren', () => {
+    for (const clave of ['adminSettingsTopeDevoluciones', 'adminSettingsTopeDevolucionesAyuda']) {
+      expect(es[clave], `es.${clave}`).toBeTruthy()
+      expect(en[clave], `en.${clave}`).toBeTruthy()
+      expect(es[clave]).not.toBe(en[clave])
+    }
+  })
+
+  it('la ayuda explica qué significa CERO, que es el caso que confunde', () => {
+    // Cero no es "apagado": el arbitro puede objetar pero no devuelve, y la
+    // primera objecion termina el pipeline en `disputed`. Si la ayuda no lo
+    // dice, alguien va a poner 0 creyendo que desactiva el arbitro.
+    expect(es.adminSettingsTopeDevolucionesAyuda.toLowerCase()).toContain('0')
+    expect(en.adminSettingsTopeDevolucionesAyuda.toLowerCase()).toContain('0')
+  })
+})
