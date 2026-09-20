@@ -272,6 +272,11 @@ def _estado(client, superadmin):
     ({"objetivo": "x", "maquinas": []}, 422, "ejecutor_sin_maquinas"),
     ({"objetivo": "x", "maquinas": ["t-sp2-vm", "t-sp2-vm"]}, 422, "ejecutor_sin_maquinas"),
     ({"objetivo": "x", "maquinas": ["no-existe"]}, 422, {"codigo": "ejecutor_maquina_desconocida", "maquina": "no-existe"}),
+    # Un elemento NO HASHEABLE es dato mal tipado del cliente, no una falla del servidor:
+    # `len(set(pedidas))` lo evaluaba antes del `isinstance` y reventaba con TypeError -> 500.
+    ({"objetivo": "x", "maquinas": [{"host": "t-sp2-vm"}]}, 422, "ejecutor_sin_maquinas"),
+    ({"objetivo": "x", "maquinas": [["t-sp2-vm"]]}, 422, "ejecutor_sin_maquinas"),
+    ({"objetivo": "x", "maquinas": ["t-sp2-vm", {"host": "t-sp2-vm"}]}, 422, "ejecutor_sin_maquinas"),
 ])
 def test_pedidos_invalidos(client, superadmin, maquinas, runner, cuerpo, estado, detalle):
     user_id, h = superadmin

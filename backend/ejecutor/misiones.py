@@ -277,8 +277,13 @@ async def crear(user_id, objetivo, pedidas) -> dict:
     objetivo = objetivo.strip() if isinstance(objetivo, str) else ""
     if not objetivo:
         raise ErrorDelEjecutor(422, "ejecutor_objetivo_vacio")
-    if (not isinstance(pedidas, list) or not pedidas or len(set(pedidas)) != len(pedidas)
-            or not all(isinstance(m, str) and m.strip() == m and m for m in pedidas)):
+    # El orden importa: `set(pedidas)` revienta con TypeError si un elemento no es
+    # hasheable (un dict, una lista), y eso salia como 500 -- un dato mal tipado del
+    # cliente contado como falla del servidor. El `all(isinstance(...))` va PRIMERO,
+    # asi cuando se construye el set ya se sabe que todos son str.
+    if (not isinstance(pedidas, list) or not pedidas
+            or not all(isinstance(m, str) and m.strip() == m and m for m in pedidas)
+            or len(set(pedidas)) != len(pedidas)):
         raise ErrorDelEjecutor(422, "ejecutor_sin_maquinas")
     runner = _runner_o_503()
     ruta_pausa = _ruta_de_la_pausa()
