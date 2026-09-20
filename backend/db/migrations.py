@@ -2802,6 +2802,41 @@ async def _ejecutor_config_c5_v1(cur) -> None:
         await cur.execute("INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES (%s, %s)", (clave, valor))
 
 
+# El tope de vueltas del árbitro de Jacobs (2026-09-20).
+#
+# `jacobs.` y NO `ejecutor.`: es cuántas veces puede devolver el árbitro del
+# orquestador, no una clave del Ejecutor de Contratos. El nombre lo fija
+# `jacobs/store.py::_CONFIG_KEY_TOPE_DEVOLUCIONES` en el repo jax; con otro
+# prefijo la semilla no la leería nadie.
+#
+# Por qué hace falta sembrarla: `store.get_tope_devoluciones()` es fail-closed
+# y sin la fila el tope es CERO. Cero no es un default neutro -- con cero, la
+# PRIMERA objeción del árbitro cae en la rama `RESULTADO_TOPE` de
+# `jacobs/devolucion.py` y el pipeline termina en `disputed` sin que el trabajo
+# se rehaga nunca. Medido el 2026-09-20 contra producción: no existía ninguna
+# clave `jacobs.*`, con el árbitro ya vivo en master desde el 18-09 (`a91b1ad`).
+#
+# El 2 sale del spec `2026-09-18-arbitro-devuelve-design.md` §3.3, literal:
+# «Dos devoluciones por pipeline. A la tercera, el pipeline para y avisa,
+# entregando las dos versiones para que Fernando decida.» El riesgo de gasto que
+# justificaría un tope menor ya está cerrado por §3.4: la devolución cabe dentro
+# del `costo_max_aceptado_usd` que el humano ya aceptó, o no ocurre.
+CLAVE_TOPE_DEVOLUCIONES = "jacobs.tope_devoluciones"
+VALOR_INICIAL_TOPE_DEVOLUCIONES = "2"
+
+
+async def _jacobs_tope_devoluciones_v1(cur) -> None:
+    """Siembra el tope de devoluciones. INSERT IGNORE en cada arranque, SIN
+    marcador -- misma regla que la config de C5 y que el umbral de costo: si la
+    fila desaparece (otra suite la borra, base nueva), se repone sola, y lo que
+    cambió el admin nunca se pisa. El marcador fue justamente lo que dejó a
+    `pipeline_confirmar_usd` sin reponer el 2026-09-17."""
+    await cur.execute(
+        "INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES (%s, %s)",
+        (CLAVE_TOPE_DEVOLUCIONES, VALOR_INICIAL_TOPE_DEVOLUCIONES),
+    )
+
+
 # Tema por defecto de la instancia (2026-09-18). Antes lo sembraba, con INSERT
 # IGNORE, el GET de /api/admin/config: una LECTURA que escribía configuración
 # por fuera del camino auditado. La semilla vive acá, como la de C5, con la
@@ -2863,6 +2898,7 @@ async def run_migrations():
             await _ejecutor_reglas_envoltorios_v1(cur)
             await _ejecutor_inventario_v1(cur)
             await _ejecutor_config_c5_v1(cur)
+            await _jacobs_tope_devoluciones_v1(cur)
             await _apariencia_default_v1(cur)
             await _seed_providers(cur)
             await _seed_ollama_cpu_provider(cur)

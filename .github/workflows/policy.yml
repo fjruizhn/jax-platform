@@ -1881,7 +1881,20 @@ jobs:
           # MERGE 2026-09-18: las dos ramas subieron el piso desde la MISMA base
           #   (2372): auditor local +13, estado disputed +8. Al juntarlas, el piso
           #   es la suma de los dos deltas, no el mayor de los dos numeros.
-          PISO_PASSED = 2393
+          # 2393 -> 2397 (2026-09-20, tope-devoluciones): +4, semilla de
+          #   `jacobs.tope_devoluciones` = 2 en axioma_config. Medido en vivo
+          #   contra jax_memory_test, el MISMO comando en las dos ramas:
+          #   master 2393 passed / 1 skipped / 0 fallidos, rama 2397 / 1 / 0.
+          #   Delta +4 exacto, sin regresion.
+          #   Por que hacia falta: store.get_tope_devoluciones() (repo jax) es
+          #   fail-closed y sin la fila el tope es CERO -- y cero no es neutro:
+          #   la PRIMERA objecion del arbitro cae en RESULTADO_TOPE y el
+          #   pipeline termina en `disputed` sin rehacer nada. Medido el
+          #   2026-09-20 contra produccion: no existia NINGUNA clave `jacobs.*`,
+          #   con el arbitro ya vivo en master desde el 18-09 (a91b1ad).
+          #   El 2 sale del spec 2026-09-18-arbitro-devuelve-design §3.3, no de
+          #   una eleccion de esta rama.
+          PISO_PASSED = 2397
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
