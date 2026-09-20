@@ -20,6 +20,7 @@ const ETIQUETAS = {
   lang_default: 'adminSettingsLang',
   system_name: 'adminSettingsSystemName',
   pipeline_confirmar_usd: 'adminSettingsConfirmarUsd',
+  'jacobs.tope_devoluciones': 'adminSettingsTopeDevoluciones',
 }
 
 const CLASE_ETIQUETA = 'block text-xs font-semibold text-texto-suave uppercase tracking-wider mb-1'
@@ -148,6 +149,9 @@ export default function AdminSettings() {
         <CampoNumero id="ajuste-confirmar-usd" etiqueta={t.adminSettingsConfirmarUsd} ayuda={t.adminSettingsConfirmarUsdAyuda}
           valor={config.pipeline_confirmar_usd} limite={limites.pipeline_confirmar_usd}
           onChange={v => set('pipeline_confirmar_usd', v)} />
+        <CampoNumero id="ajuste-tope-devoluciones" etiqueta={t.adminSettingsTopeDevoluciones} ayuda={t.adminSettingsTopeDevolucionesAyuda}
+          valor={config['jacobs.tope_devoluciones']} limite={limites['jacobs.tope_devoluciones']}
+          onChange={v => set('jacobs.tope_devoluciones', v)} />
 
         {error && (
           <AlertaError className="text-sm">{textoDeError(t, error)}</AlertaError>
