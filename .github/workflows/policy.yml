@@ -1899,7 +1899,24 @@ jobs:
           #   `ejecutor.c5_auditor_admite_mismo_proveedor`, sembrada CERRADA.
           #   Medido en vivo, MISMO comando en las dos ramas contra jax_memory_test:
           #   master 2397 passed / 1 skipped / 0 fallidos -> rama 2403 / 1 / 0.
-          PISO_PASSED = 2403
+          # 2403 -> 2425 (2026-09-20, aislar la base de tests, causa raiz): +22,
+          #   tests/test_base_por_sesion.py (nuevo, port de jax). `conftest.py:13`
+          #   fijaba JAX_DB_NAME = "jax_memory_test" a secas, sin NINGUN
+          #   aislamiento -- ni siquiera el opt-in que `jax` ya tenia desde el
+          #   2026-09-17. Medido el mismo dia: dos worktrees corriendo la suite a
+          #   la vez, ninguno con sufijo, se pisaban contra la MISMA base fisica
+          #   (que ademas comparten los dos repos). Reemplazado por
+          #   fijar_base_de_test()/asegurar_base_de_test() de
+          #   backend/base_de_test.py (espejo de jax, familia `base_de_test` en
+          #   scripts/check_mirror_sync.py de jax): sin sufijo Y fuera de CI cada
+          #   proceso genera uno propio y lo borra solo al salir (atexit); CI
+          #   (variable CI=true) sigue con la compartida sin cambios -- el unico
+          #   job que toca la base ya corre contra su propio contenedor MariaDB
+          #   efimero. Medido en vivo, MISMO comando (`python -m pytest -q -rs`)
+          #   en las dos ramas contra jax_memory_test: master 2403 passed / 1
+          #   skipped -> rama 2425 / 1 skipped (0 fallidos las dos). Si el runner
+          #   da otro numero, manda el runner.
+          PISO_PASSED = 2425
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2536,7 +2553,15 @@ jobs:
       # corrida completa.
       # MERGE 2026-09-18: suma de los dos deltas sobre la base 1602
       #   (auditor local +2, estado disputed +8).
-      JAX_CI_MIN_PASSED: "1612"
+      # 1612 -> 1634 (2026-09-20, aislar la base de tests, causa raiz): +22,
+      #   tests/test_base_por_sesion.py (nuevo, port de jax) -- ninguno pide
+      #   `client`/DB, así que corre completo acá también (mismos 787 skips que
+      #   el master local, sin cambio). Ver el piso con DB, más arriba, para el
+      #   porqué del cambio. Medido con JAX_CI_NO_DB=1 .venv/bin/python -m
+      #   pytest -q, MISMO comando en las dos ramas: master local 1617 passed /
+      #   787 skipped -> rama 1639 / 787 (0 fallidos las dos; el piso declarado
+      #   sube por el delta verificado, +22, no por el passed crudo local).
+      JAX_CI_MIN_PASSED: "1634"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
