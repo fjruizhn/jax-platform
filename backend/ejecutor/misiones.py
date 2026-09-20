@@ -273,12 +273,50 @@ def _runner_o_503():
         raise ErrorDelEjecutor(503, "ejecutor_sin_configurar") from exc
 
 
+#: `objetivo` e `instruccion` van a columnas TEXT: el tope son 65.535 BYTES,
+#: no caracteres. No es una politica inventada aca -- es lo que la base puede
+#: guardar (`db/migrations.py`, `ejecutor_mision.objetivo` y
+#: `ejecutor_turno.instruccion`).
+LIMITE_TEXTO_BYTES = 65535
+
+
+def _texto_guardable(valor, codigo_vacio: str, codigo_ilegible: str, codigo_largo: str) -> str:
+    """Texto del cliente que va a una columna TEXT: lo devuelve listo o da 422.
+
+    Sin esto el error salia del DRIVER y llegaba al cliente como 500 (auditoria
+    adversarial del 2026-09-20). Dos caminos, los dos con dato del cliente:
+
+      * mas de 65.535 bytes -> `pymysql.err.DataError (1406, "Data too long")`;
+      * un surrogate solitario (el escape JSON de un medio par, que
+        `json.loads` ACEPTA) ->
+        `UnicodeEncodeError: surrogates not allowed` al codificar la consulta.
+
+    Un texto que la base no puede guardar es un dato malo del cliente (422), no
+    una falla del servidor (500). Se mide en bytes codificados, no en `len()`:
+    un texto de 30.000 caracteres con tildes pasa de 65.535 bytes.
+    """
+    texto = valor.strip() if isinstance(valor, str) else ""
+    if not texto:
+        raise ErrorDelEjecutor(422, codigo_vacio)
+    try:
+        crudo = texto.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ErrorDelEjecutor(422, codigo_ilegible) from exc
+    if len(crudo) > LIMITE_TEXTO_BYTES:
+        raise ErrorDelEjecutor(422, codigo_largo)
+    return texto
+
+
 async def crear(user_id, objetivo, pedidas) -> dict:
-    objetivo = objetivo.strip() if isinstance(objetivo, str) else ""
-    if not objetivo:
-        raise ErrorDelEjecutor(422, "ejecutor_objetivo_vacio")
-    if (not isinstance(pedidas, list) or not pedidas or len(set(pedidas)) != len(pedidas)
-            or not all(isinstance(m, str) and m.strip() == m and m for m in pedidas)):
+    objetivo = _texto_guardable(objetivo, "ejecutor_objetivo_vacio",
+                                "ejecutor_objetivo_ilegible", "ejecutor_objetivo_largo")
+    # El orden importa: `set(pedidas)` revienta con TypeError si un elemento no es
+    # hasheable (un dict, una lista), y eso salia como 500 -- un dato mal tipado del
+    # cliente contado como falla del servidor. El `all(isinstance(...))` va PRIMERO,
+    # asi cuando se construye el set ya se sabe que todos son str.
+    if (not isinstance(pedidas, list) or not pedidas
+            or not all(isinstance(m, str) and m.strip() == m and m for m in pedidas)
+            or len(set(pedidas)) != len(pedidas)):
         raise ErrorDelEjecutor(422, "ejecutor_sin_maquinas")
     runner = _runner_o_503()
     ruta_pausa = _ruta_de_la_pausa()
@@ -302,9 +340,8 @@ async def crear(user_id, objetivo, pedidas) -> dict:
 
 
 async def continuar(user_id, mision_id: str, instruccion) -> dict:
-    instruccion = instruccion.strip() if isinstance(instruccion, str) else ""
-    if not instruccion:
-        raise ErrorDelEjecutor(422, "ejecutor_instruccion_vacia")
+    instruccion = _texto_guardable(instruccion, "ejecutor_instruccion_vacia",
+                                   "ejecutor_instruccion_ilegible", "ejecutor_instruccion_larga")
     runner = _runner_o_503()
     ruta_pausa = _ruta_de_la_pausa()
     async with _lanzamiento:

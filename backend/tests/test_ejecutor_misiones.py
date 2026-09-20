@@ -272,12 +272,66 @@ def _estado(client, superadmin):
     ({"objetivo": "x", "maquinas": []}, 422, "ejecutor_sin_maquinas"),
     ({"objetivo": "x", "maquinas": ["t-sp2-vm", "t-sp2-vm"]}, 422, "ejecutor_sin_maquinas"),
     ({"objetivo": "x", "maquinas": ["no-existe"]}, 422, {"codigo": "ejecutor_maquina_desconocida", "maquina": "no-existe"}),
+    # Un elemento NO HASHEABLE es dato mal tipado del cliente, no una falla del servidor:
+    # `len(set(pedidas))` lo evaluaba antes del `isinstance` y reventaba con TypeError -> 500.
+    ({"objetivo": "x", "maquinas": [{"host": "t-sp2-vm"}]}, 422, "ejecutor_sin_maquinas"),
+    ({"objetivo": "x", "maquinas": [["t-sp2-vm"]]}, 422, "ejecutor_sin_maquinas"),
+    ({"objetivo": "x", "maquinas": ["t-sp2-vm", {"host": "t-sp2-vm"}]}, 422, "ejecutor_sin_maquinas"),
 ])
 def test_pedidos_invalidos(client, superadmin, maquinas, runner, cuerpo, estado, detalle):
     user_id, h = superadmin
     r = client.post(f"{BASE}/misiones", headers=h, json=cuerpo)
     assert (r.status_code, r.json()["detail"]) == (estado, detalle)
     assert _misiones_de(client, user_id) == ()
+
+
+# --- texto del cliente que salia como 500 (auditoria adversarial 2026-09-20) -----------------
+#
+# Las tres entradas de abajo daban 500, no 422: `objetivo` e `instruccion` van a columnas
+# TEXT (65.535 bytes) sin tope declarado, y un surrogate solitario -- que `json.loads`
+# acepta -- revienta al codificar a utf-8 en el driver. Es el MISMO defecto que el 422 de
+# `maquinas`: dato del cliente contado como falla del servidor.
+
+LARGO = "A" * 70000
+
+#: JSON CRUDO en ASCII: `json.loads` del servidor lo convierte en un surrogate
+#: solitario. No se puede mandar con `json=` porque httpx no logra codificarlo
+#: del lado del cliente -- y un cliente que no sea httpx lo manda sin esfuerzo.
+CUERPO_SURROGATE = b'{"objetivo": "hola \\ud800 mundo", "maquinas": ["t-sp2-vm"]}'
+TURNO_SURROGATE = b'{"instruccion": "hola \\ud800 mundo"}'
+JSON = {"content-type": "application/json"}
+
+
+def test_objetivo_mas_largo_que_la_columna_es_422(client, superadmin, maquinas, runner):
+    user_id, h = superadmin
+    r = client.post(f"{BASE}/misiones", headers=h, json={"objetivo": LARGO, "maquinas": ["t-sp2-vm"]})
+    assert (r.status_code, r.json()["detail"]) == (422, "ejecutor_objetivo_largo")
+    assert _misiones_de(client, user_id) == ()
+
+
+def test_objetivo_con_surrogate_solitario_es_422(client, superadmin, maquinas, runner):
+    user_id, h = superadmin
+    r = client.post(f"{BASE}/misiones", headers={**h, **JSON}, content=CUERPO_SURROGATE)
+    assert (r.status_code, r.json()["detail"]) == (422, "ejecutor_objetivo_ilegible")
+    assert _misiones_de(client, user_id) == ()
+
+
+def test_instruccion_mas_larga_que_la_columna_es_422(client, superadmin, maquinas, runner):
+    _, h = superadmin
+    runner.guion(GUION_BUENO)
+    mision_id = _crear(client, h).json()["id"]
+    _esperar(client, h, mision_id)
+    r = client.post(f"{BASE}/misiones/{mision_id}/turnos", headers=h, json={"instruccion": LARGO})
+    assert (r.status_code, r.json()["detail"]) == (422, "ejecutor_instruccion_larga")
+
+
+def test_instruccion_con_surrogate_solitario_es_422(client, superadmin, maquinas, runner):
+    _, h = superadmin
+    runner.guion(GUION_BUENO)
+    mision_id = _crear(client, h).json()["id"]
+    _esperar(client, h, mision_id)
+    r = client.post(f"{BASE}/misiones/{mision_id}/turnos", headers={**h, **JSON}, content=TURNO_SURROGATE)
+    assert (r.status_code, r.json()["detail"]) == (422, "ejecutor_instruccion_ilegible")
 
 
 def test_con_la_pausa_puesta_no_se_lanza(client, superadmin, maquinas, runner):

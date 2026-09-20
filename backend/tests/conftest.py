@@ -10,7 +10,24 @@ ENV_PATH = "/etc/jax/.env"
 for _k, _v in cargar(ENV_PATH).items():
     os.environ.setdefault(_k, _v)
 
-os.environ["JAX_DB_NAME"] = "jax_memory_test"
+# Base de tests por sesión (2026-09-20, port de `base_de_test.py` de `jax`,
+# family `base_de_test` en `scripts/check_mirror_sync.py`). Antes esta línea
+# era `os.environ["JAX_DB_NAME"] = "jax_memory_test"` a secas: SIN ningún
+# aislamiento, ni siquiera el opt-in que `jax` ya tenía desde el
+# 2026-09-17 -- dos worktrees corriendo la suite a la vez se pisaban contra
+# la misma base. `fijar_base_de_test()` es el reemplazo exacto (mismo
+# override incondicional) respetando `JAX_TEST_DB_SUFIJO`; sin la variable y
+# fuera de CI genera una propia del proceso y la deja lista.
+# `asegurar_base_de_test()` crea la base de la sesión con el esquema clonado
+# de `jax_memory_test` + `run_migrations()` de este repo si no existía. Sin
+# sufijo (CI, o `JAX_DB_HOST` ausente) no hace nada.
+from base_de_test import (  # noqa: E402
+    asegurar_base_de_test,
+    fijar_base_de_test,
+)
+
+fijar_base_de_test()
+asegurar_base_de_test()
 
 # El runner de CI no tiene /etc/jax/.env, asi que no tiene FERNET_KEY, y sin
 # ella no se pueden sembrar credenciales cifradas en la base de tests. Se
