@@ -32,6 +32,8 @@ RUNNER_FALSO = textwrap.dedent('''
     guion = json.load(open(os.environ["GUION_EJECUTOR"]))
     pedido = sys.stdin.read()
     open(os.environ["GUION_EJECUTOR"] + ".pedido." + str(json.loads(pedido)["n"]), "w").write(pedido)
+    for linea in guion.get("stderr", []):
+        print(linea, file=sys.stderr, flush=True)
     for linea in guion.get("lineas", []):
         if linea == "@esperar":
             while not os.path.exists(os.environ["GUION_EJECUTOR"] + ".seguir"):
@@ -609,3 +611,49 @@ def test_el_evento_de_cierre_va_con_el_cierre_del_turno(client, superadmin, maqu
 
 def h_de(superadmin):
     return superadmin[1]
+
+
+# --- El stderr del runner no se tira a la basura (2026-09-20) ----------------------------------
+# `_correr_turno` lanzaba el runner con `stderr=asyncio.subprocess.DEVNULL`. Cuando el
+# runner muere sin resultado, el turno queda en `runner_sin_cierre` y NO hay una sola
+# linea para investigar. Mismo defecto que el vigia (jax#231) y misma familia que las dos
+# veces anteriores del mismo dia.
+#
+# Igual que alli, NO alcanza con cambiar DEVNULL por PIPE: el stdout ya se drena en el
+# bucle, pero un stderr sin drenar llena el pipe (~64 KB) y cuelga al runner. Se drena en
+# continuo, con tope, conservando la COLA -- la traza esta al final.
+
+def test_el_stderr_del_runner_llega_a_la_bitacora_cuando_no_hay_cierre(client, superadmin, maquinas, runner):
+    _, h = superadmin
+    runner.guion({"lineas": [_ev("turno_lanzado")],
+                  "stderr": ["ModuleNotFoundError: No module named 'jax.ejecutor'"], "rc": 1})
+    mision_id = _crear(client, h).json()["id"]
+    d = _esperar(client, h, mision_id)
+    (t,) = d["turnos"]
+    assert t["codigo"] == "runner_sin_cierre"
+    eventos = client.get(f"{BASE}/misiones/{mision_id}/bitacora", headers=h).json()["eventos"]
+    err = [e for e in eventos if e["evento"] == "runner_stderr"]
+    assert err, [e["evento"] for e in eventos]
+    assert "ModuleNotFoundError" in err[0]["datos"].get("stderr", "")
+
+
+def test_el_stderr_NO_ensucia_la_bitacora_cuando_el_turno_cierra_bien(client, superadmin, maquinas, runner):
+    """Un log que siempre grita es un log que nadie lee."""
+    runner.guion({"lineas": [_ev("turno_lanzado"), _ev("turno_completado"), _resultado()],
+                  "stderr": ["INFO: ruido que no importa"], "rc": 0})
+    _, h = superadmin
+    mision_id = _crear(client, h).json()["id"]
+    _esperar(client, h, mision_id)
+    eventos = [e["evento"] for e in client.get(f"{BASE}/misiones/{mision_id}/bitacora", headers=h).json()["eventos"]]
+    assert "runner_stderr" not in eventos, eventos
+
+
+def test_un_runner_que_escribe_MUCHO_en_stderr_no_se_cuelga(client, superadmin, maquinas, runner):
+    """La prueba del diseno: sin drenaje el runner se bloquea al llenar el pipe y el
+    turno no termina nunca."""
+    runner.guion({"lineas": [_ev("turno_lanzado"), _ev("turno_completado"), _resultado()],
+                  "stderr": ["INFO:httpx:HTTP Request: POST ... 200 OK"] * 4000, "rc": 0})
+    _, h = superadmin
+    d = _esperar(client, h, _crear(client, h).json()["id"])
+    (t,) = d["turnos"]
+    assert t["estado"] == "completado", t

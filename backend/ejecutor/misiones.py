@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+
+import redaccion
 import logging
 import os
 import uuid
@@ -370,13 +372,37 @@ def _linea(cruda: bytes):
     return doc
 
 
+#: Cuanto stderr del runner se conserva. La COLA, no la cabeza: la traza aparece DESPUES
+#: de las lineas de INFO, asi que la cabeza es el ruido y la cola el diagnostico.
+TOPE_STDERR_RUNNER = 8192
+
+
+async def _drenar(flujo, tope: int) -> bytes:
+    """Lee `flujo` hasta EOF conservando los ultimos `tope` bytes.
+
+    No alcanza con `stderr=PIPE`: sin drenar, el pipe del sistema (~64 KB) se llena y el
+    proceso se cuelga en su propio `write`. Mismo diseno que el vigia (jax#231)."""
+    cola = bytearray()
+    while True:
+        trozo = await flujo.read(4096)
+        if not trozo:
+            return bytes(cola)
+        cola.extend(trozo)
+        if len(cola) > tope:
+            del cola[:-tope]
+
+
 async def _correr_turno(mision_id: str, n: int, pedido: dict, runner) -> None:
     argv, cwd, entorno = runner
     resultado, terminal_visto = None, False
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv, cwd=cwd, env=entorno, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL, limit=LIMITE_DE_LINEA_BYTES)
+            stderr=asyncio.subprocess.PIPE, limit=LIMITE_DE_LINEA_BYTES)
+        # El drenaje arranca YA. Con `stderr=PIPE` y nadie leyendo, el pipe del sistema
+        # (~64 KB) se llena y el runner se cuelga en su propio `write` -- el stdout ya se
+        # drena en el bucle de abajo, pero el stderr no. Ver `_drenar`.
+        drenaje = asyncio.create_task(_drenar(proc.stderr, TOPE_STDERR_RUNNER))
         proc.stdin.write(json.dumps(pedido).encode())
         await proc.stdin.drain()
         proc.stdin.close()
@@ -400,6 +426,11 @@ async def _correr_turno(mision_id: str, n: int, pedido: dict, runner) -> None:
             turno = doc.get("turno") if isinstance(doc.get("turno"), int) else n
             await _anotar(mision_id, turno, doc["evento"], doc["datos"])
         await proc.wait()
+        err = ""
+        try:
+            err = redaccion.redactar_secretos((await asyncio.wait_for(drenaje, 5)).decode(errors="replace")) or ""
+        except (asyncio.TimeoutError, asyncio.CancelledError):  # fail-soft: sin stderr se sigue; el resultado manda
+            drenaje.cancel()
         if resultado is None:
             estado_t, codigo, resultado = "fallido", "runner_sin_cierre", {}
         elif resultado.get("estado") not in ESTADOS_TERMINALES:
@@ -408,6 +439,11 @@ async def _correr_turno(mision_id: str, n: int, pedido: dict, runner) -> None:
             estado_t, codigo = resultado["estado"], resultado.get("codigo")
         nombre = ("turno_rechazado" if estado_t == "rechazado" else
                   "turno_completado" if estado_t == "completado" else "turno_fallido")
+        # El stderr SOLO cuando el turno no cerro bien: en el camino feliz es ruido, y un
+        # log que siempre grita es un log que nadie lee. El 2026-09-20 un turno quedo en
+        # `runner_sin_cierre` sin una sola linea para investigar.
+        if codigo is not None and err.strip():
+            await _anotar(mision_id, n, "runner_stderr", {"stderr": err[-2000:]})
         await _cerrar_turno(mision_id, n, estado_t, codigo, resultado,
                             None if terminal_visto else (nombre, {"codigo": codigo}))
     except Exception:  # fail-soft: la tarea de fondo no puede morir callada; el turno queda FALLIDO con código y el traceback en el journal

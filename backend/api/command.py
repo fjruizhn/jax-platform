@@ -103,6 +103,33 @@ class CommandRequest(BaseModel):
     mode: str = "execute"
 
 
+
+async def _correr_binario(mission_file, result_file) -> str:
+    """Corre `JAX_BIN --task ...` y devuelve su stderr redactado.
+
+    Antes iba con stdout Y stderr en DEVNULL: si el binario moria antes de escribir
+    el resultado, el turno salia `comando_sin_resultado` y no habia UNA linea que
+    dijera por que. Cuarto caso del mismo patron el 2026-09-20.
+
+    Aca `communicate()` SI sirve --a diferencia del vigia y del runner del Ejecutor,
+    donde otras tareas ya leen los flujos--: nadie mas los lee y `communicate()` los
+    drena solo, asi que no hay riesgo de llenar el pipe.
+
+    El stderr va al LOG, nunca a la respuesta: la respuesta la ve el usuario y una
+    traza puede traer rutas o secretos. Redactado igual, por si acaso."""
+    proc = await asyncio.create_subprocess_exec(
+        str(JAX_BIN), "--task", str(mission_file),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(Path.home()),
+    )
+    _, err = await proc.communicate()
+    texto = recortar_redactado((err or b"").decode(errors="replace"), 2000) or ""
+    if proc.returncode != 0 and texto.strip():
+        logger.error("command: el binario salio con %s -- stderr: %s", proc.returncode, texto)
+    return texto
+
+
 @router.post("/command")
 async def create_command(req: CommandRequest, user: AuthUser = Depends(exigir_mesa_libre)):
     task_id = str(uuid.uuid4())
@@ -186,13 +213,7 @@ async def _run_command(
             texto = await asyncio.to_thread(_simular, task_id, mission_file, result_file)
             codigo = "comando_simulado"
         else:
-            proc = await asyncio.create_subprocess_exec(
-                str(JAX_BIN), "--task", str(mission_file),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-                cwd=str(Path.home()),
-            )
-            await proc.wait()
+            await _correr_binario(mission_file, result_file)
             texto = await asyncio.to_thread(_leer_resultado, result_file)
             if not texto:
                 codigo = "comando_sin_resultado"
