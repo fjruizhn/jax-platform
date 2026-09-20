@@ -6,6 +6,7 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Historial from './pages/Historial'
 import Admin from './pages/Admin'
+import Memoria from './pages/Memoria'
 import ResetPassword from './pages/ResetPassword'
 import RequireAuth from './components/RequireAuth'
 
@@ -77,6 +78,23 @@ export default function App() {
             <RequireAuth>
               <RequireSuperadmin>
                 <Admin />
+              </RequireSuperadmin>
+            </RequireAuth>
+          }
+        />
+        {/* Task 6 (2026-09-20, memoria-admin): ruta propia hermana de
+            "/historial", no anidada bajo /admin/* -- mismo patrón de
+            components/Memoria/ (carpeta propia, no components/admin/).
+            Sigue gateada por RequireSuperadmin: el spec (§1) es explícito en
+            que la memoria es superadmin-only ("lo único que el sistema
+            acumula sobre nosotros"), como ya exige el backend
+            (require_superadmin en backend/api/admin/memoria.py). */}
+        <Route
+          path="/memoria"
+          element={
+            <RequireAuth>
+              <RequireSuperadmin>
+                <Memoria />
               </RequireSuperadmin>
             </RequireAuth>
           }

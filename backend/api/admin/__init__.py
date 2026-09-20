@@ -5,6 +5,7 @@ from .users import router as users_router
 from .repository import router as repository_router
 from .config_admin import router as config_router
 from .usage import router as usage_router
+from .memoria import router as memoria_router
 from .models import router as models_router
 from .facet_bindings import router as facet_bindings_router
 from .motors import router as admin_motors_router
@@ -25,6 +26,7 @@ __all__ = [
     "repository_router",
     "config_router",
     "usage_router",
+    "memoria_router",
     "models_router",
     "facet_bindings_router",
     "admin_motors_router",

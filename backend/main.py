@@ -106,6 +106,7 @@ from api.admin import (
     repository_router,
     config_router,
     usage_router,
+    memoria_router,
     models_router,
     facet_bindings_router,
     admin_motors_router,
@@ -250,6 +251,7 @@ ROUTERS = (
     kill_switch_router,
     apariencia_router,
     ejecutor_router,
+    memoria_router,
 )
 for _router in ROUTERS:
     app.include_router(_router)

@@ -10,6 +10,10 @@ const NAV_ITEMS = [
   { path: 'settings',  labelKey: 'adminSettings',  icon: '⚙' },
   { path: 'smtp',      labelKey: 'adminSmtp',      icon: '✉' },
   { path: 'costs',     labelKey: 'adminCosts',     icon: '💰' },
+  // Task 6 (2026-09-20, memoria-admin): "/memoria" es una ruta propia de
+  // App.jsx, hermana de "/admin/*" (no un sub-path suyo) -- ver el comentario
+  // de esa ruta. `absoluto` evita el prefijo "/admin/" que arman las demás.
+  { path: 'memoria',   labelKey: 'adminMemoria',   icon: '🧩', absoluto: true },
 ]
 
 export default function AdminSidebar() {
@@ -31,7 +35,7 @@ export default function AdminSidebar() {
         {NAV_ITEMS.map((item) => (
           <NavLink
             key={item.path}
-            to={`/admin/${item.path}`}
+            to={item.absoluto ? `/${item.path}` : `/admin/${item.path}`}
             className={({ isActive }) =>
               `flex items-center gap-2.5 px-4 py-2.5 text-sm transition-colors ${
                 isActive

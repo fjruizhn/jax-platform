@@ -531,6 +531,7 @@ export default {
   adminRepo: 'Repositorio',
   adminSettings: 'Configuración',
   adminCosts: 'Costos',
+  adminMemoria: 'Memoria',
   adminBack: (nombre) => `Volver a ${nombre}`,
 
   // Admin dashboard
@@ -1166,6 +1167,107 @@ export default {
       prueba_ausente: 'Falta la prueba',
       prueba_reventada: 'La prueba reventó',
       auditor_no_admite_datos_de_clientes: 'El auditor no admite máquinas con datos de clientes',
+    },
+  },
+
+  // Pantalla de Memoria — Task 6, plan 2026-09-20-memoria-admin.md, spec
+  // 2026-09-18-memoria-admin-design.md. «La memoria sin procedencia es otra
+  // forma de suposición» -- procedencia se muestra SIEMPRE, aunque venga
+  // vacía (§2.1). Caducar y corregir son destructivos (Global Constraints
+  // del plan): van con ConfirmacionSuma, nunca confirm()/alert()/prompt().
+  memoria: {
+    titulo: 'Memoria',
+    subtitulo: (nombre) => `Lo que ${nombre} cree saber: revisá, corregí o caducá cada hecho.`,
+    volver: (nombre) => `Volver a ${nombre}`,
+    cargando: 'Cargando…',
+    errorCarga: 'No se pudo cargar la memoria.',
+    vacio: 'No hay hechos activos para revisar.',
+    totalSinVerificar: (n) => `${n} sin verificar`,
+    // Cuando la pantalla cargó menos de los que hay de verdad (cap de 500
+    // en GET /hechos): decirlo, no mostrar el número chico como si fuera
+    // el total. Mismo patrón en la cabecera, por grupo y en Vencidos.
+    totalSinVerificarSubconjunto: (cargados, total) => `mostrando ${cargados} de ${total} sin verificar`,
+    grupoTodosVerificados: 'Todos verificados',
+    seleccionarTodos: 'Seleccionar todos',
+    seleccionarNinguno: 'Ninguno',
+    aprobarSeleccionados: (n) => `Aprobar seleccionados (${n})`,
+    // Accesibilidad (2.4.6/3.3.2): el checkbox de cada ficha necesita decir
+    // PARA QUÉ selecciona, no sólo el número de hecho a secas.
+    seleccionarHecho: (id) => `Seleccionar hecho #${id} para aprobar en lote`,
+    aprobando: 'Aprobando…',
+    aprobados: (n) => (n === 1 ? '1 hecho aprobado.' : `${n} hechos aprobados.`),
+    aprobar: 'Aprobar',
+    casiDuplicados: (n) => `Estos ${n} hechos dicen lo mismo`,
+    // Decisión de Fernando (2026-09-20): fundir SUPERA, no caduca -- "esto
+    // fue reemplazado por aquello", no "esto dejó de valer". `POST
+    // /hechos/fundir` (backend/api/admin/memoria.py) reemplaza al composite
+    // aprobar+caducar que usaba esta pantalla antes.
+    fundir: 'Fundir en el más reciente',
+    fundirTitulo: 'Fundir casi-duplicados',
+    fundirMensaje: 'La redacción más reciente queda aprobada; el resto queda marcado como superado por ella. No se borra nada: la cadena de reemplazo queda registrada.',
+    fundirConfirmar: 'Fundir',
+    fundido: 'Casi-duplicados fundidos: el resto quedó superado.',
+    corregir: 'Corregir',
+    corregirTitulo: (id) => `Corregir hecho #${id}`,
+    corregirTexto: 'Texto corregido',
+    corregirGuardar: 'Continuar',
+    corregirCancelar: 'Cancelar',
+    corregirVacio: 'Escribí el texto corregido.',
+    corregirConfirmarTitulo: 'Confirmar corrección',
+    corregirConfirmarMensaje: 'El hecho actual queda marcado como superado, no se borra: la versión nueva entra sin verificar.',
+    corregirConfirmarBoton: 'Corregir',
+    corregido: 'Hecho corregido.',
+    caducar: 'Caducar',
+    caducarTitulo: 'Caducar hecho',
+    caducarMensaje: 'El hecho deja de pesar en la búsqueda. No se borra: sigue viéndose, marcado como vencido.',
+    caducarConfirmar: 'Caducar',
+    caducado: 'Hecho caducado.',
+    quitarCaducidad: 'Quitar caducidad',
+    caducidadQuitada: 'Caducidad quitada.',
+    procedencia: {
+      mensaje: 'Mensaje',
+      faceta: 'Faceta',
+      sinMensaje: 'sin mensaje de origen',
+      sinFaceta: 'sin faceta registrada',
+    },
+    tipo: 'Tipo',
+    confianza: 'Confianza',
+    creado: 'Creado',
+    verificadoPor: (id) => `Verificado por #${id}`,
+    verificado: 'Verificado',
+    sinVerificar: 'Sin verificar',
+    vencido: 'Vencido',
+    vence: (fecha) => `Vence ${fecha}`,
+    sinVencimiento: 'No caduca',
+    superadoPor: (id) => `Superado por #${id}`,
+    // Sección «Vencidos» (decisión de Fernando 2026-09-20): caducar no borra
+    // -- "el hecho sigue, deja de pesar" -- pero sin una forma de VERLO y de
+    // deshacerlo, en la práctica sí era borrar. `vencidoDesde` es a propósito
+    // un texto distinto de `vence` (arriba): acá la fecha ya pasó.
+    vencidosResumen: (n) => (n === 1 ? '1 hecho vencido' : `${n} hechos vencidos`),
+    vencidosResumenSubconjunto: (cargados, total) => `mostrando ${cargados} de ${total} hechos vencidos`,
+    vencidoDesde: (fecha) => `Venció el ${fecha}`,
+    // Accesibilidad (2.4.6/3.3.2, mismo criterio que seleccionarHecho más
+    // arriba): con varios "Quitar caducidad" en la lista, un lector de
+    // pantalla los anuncia todos igual. Empieza con el texto visible a
+    // propósito (2.5.3, "Label in Name"): quien usa control por voz dice
+    // "quitar caducidad" y tiene que encontrar el botón.
+    quitarCaducidadDe: (id) => `Quitar caducidad al hecho #${id}`,
+    tipos: {
+      user: 'Usuario',
+      technical: 'Técnico',
+      social: 'Social',
+      preference: 'Preferencia',
+      project: 'Proyecto',
+      financial: 'Financiero',
+    },
+    errorGenerico: 'No se pudo completar la acción.',
+    errores: {
+      hecho_no_encontrado: 'El hecho ya no existe: recargá la pantalla.',
+      hecho_ya_superado: 'Ya fue corregido por otra persona: recargá la pantalla.',
+      texto_vacio: 'Escribí un texto.',
+      vence_at_invalido: 'La fecha no es válida.',
+      memoria_no_disponible: 'La memoria no está disponible ahora mismo.',
     },
   },
 }
