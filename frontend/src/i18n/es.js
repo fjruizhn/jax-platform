@@ -1096,6 +1096,10 @@ export default {
       auditor_ilegible: 'No se pudo leer al auditor',
       turno_ilegible: 'No se pudo leer el turno',
       runner_error: 'Error del runner',
+      // 2026-09-20: un turno que no entrega NINGUNA afirmación --nada propuesto y nada
+      // descartado-- dejó de reportarse como completado. Dos misiones salieron
+      // "completada" con cero y nadie las miró.
+      sin_afirmaciones: 'El turno no entregó ninguna afirmación',
     },
     eventos: {
       mision_creada: 'Misión creada',

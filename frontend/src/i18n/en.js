@@ -1058,6 +1058,7 @@ export default {
       auditor_ilegible: 'The auditor could not be read',
       turno_ilegible: 'The turn could not be read',
       runner_error: 'Runner error',
+      sin_afirmaciones: 'The turn delivered no claim',
     },
     eventos: {
       mision_creada: 'Mission created',
