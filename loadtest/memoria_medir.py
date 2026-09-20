@@ -38,7 +38,7 @@ async def _una(cliente: httpx.AsyncClient, url: str, params: dict, headers: dict
         if r.status_code >= 400:
             return None, True, r.status_code, 0
         return ms, False, r.status_code, len(r.content)
-    except Exception:
+    except Exception:  # fail-soft: una peticion de carga que revienta (timeout, conexion cerrada) cuenta como fallo de esa peticion, no aborta el resto de la medicion -- el llamador ya interpreta (None, True, ...) como error
         return None, True, None, 0
 
 

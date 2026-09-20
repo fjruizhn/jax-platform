@@ -152,7 +152,7 @@ def main() -> None:
             r = httpx.get(f"{BACKEND_URL}/api/health", timeout=3.0)
             if r.status_code < 500:
                 break
-        except Exception:
+        except Exception:  # fail-soft: el backend todavia esta arrancando, la conexion rechazada es esperable dentro de la ventana de 30s -- se reintenta hasta el timeout, no hay nada que loguear en cada intento
             pass
         time.sleep(0.5)
 

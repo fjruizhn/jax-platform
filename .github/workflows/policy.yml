@@ -683,8 +683,15 @@ jobs:
             // existen en los dos idiomas y difieren, y la ayuda explica
             // que significa CERO (que no apaga el arbitro). Medido: 848
             // passed / 0 fallidos, contra 844 en master.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 848) {
-              console.error("PISO ROTO: se esperaban 848 tests de vitest CORRIDOS y 0 fallidos.");
+            // 848 -> 868 el 2026-09-20 (merge de master en feat/memoria-admin,
+            // PR #127): +20 tests propios de esta rama (admin de hechos --
+            // listar/aprobar/corregir/fundir/caducar/vencidos -- con su
+            // procedencia y su i18n) sobre el piso de 848 que ya traia master
+            // por feat/tope-en-configuracion. Medido con vitest run tras el
+            // merge, y verificado contra el numero real que reporto el
+            // propio runner del PR: 868 passed, 0 fallidos, 86 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 868) {
+              console.error("PISO ROTO: se esperaban 868 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
