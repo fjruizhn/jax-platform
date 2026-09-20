@@ -81,3 +81,47 @@ def test_los_vencidos_no_salen_salvo_que_se_pidan(client_superadmin):
     con = client_superadmin.get("/api/admin/memoria/hechos?limite=200&incluir_vencidos=true").json()["hechos"]
     assert len(con) >= len(sin)
     assert all(not h["vencido"] for h in sin)
+
+
+def test_aprobar_en_lote_registra_quien(client_superadmin):
+    """Spec §2.2: aprobar en lote, porque revisar 115 de a uno no lo hace
+    nadie -- y una funcion que nadie usa es igual a no tenerla."""
+    ids = [h["id"] for h in client_superadmin.get(
+        "/api/admin/memoria/hechos?verificado=false&limite=3").json()["hechos"]]
+    r = client_superadmin.post("/api/admin/memoria/hechos/aprobar", json={"ids": ids})
+    assert r.status_code == 200 and r.json()["aprobados"] == len(ids)
+    for h in client_superadmin.get("/api/admin/memoria/hechos?limite=200").json()["hechos"]:
+        if h["id"] in ids:
+            assert h["verificado"] is True
+            assert h["verificado_por"] is not None, "aprobado sin dueno"
+
+
+def test_corregir_no_borra_marca_como_superado(client_superadmin):
+    """Spec §2.3 y el Protocolo de la Memoria Viva: una memoria falsa no se
+    borra en silencio, se marca como corregida, con version nueva."""
+    viejo = client_superadmin.get("/api/admin/memoria/hechos?limite=1").json()["hechos"][0]
+    r = client_superadmin.post(f"/api/admin/memoria/hechos/{viejo['id']}/corregir",
+                               json={"texto": "version corregida de prueba"})
+    assert r.status_code == 200
+    nuevo_id = r.json()["nuevo_id"]
+    todos = client_superadmin.get(
+        "/api/admin/memoria/hechos?limite=500&incluir_superados=true").json()["hechos"]
+    por_id = {h["id"]: h for h in todos}
+    assert por_id[viejo["id"]]["superado_por"] == nuevo_id
+    assert viejo["id"] in por_id, "el hecho viejo desaparecio: eso es borrar"
+
+
+def test_no_existe_endpoint_de_borrado(client_superadmin):
+    """Fuera de alcance por decision del spec §5: borrar es perder la historia
+    de lo que creimos. Este test ata esa decision."""
+    r = client_superadmin.delete("/api/admin/memoria/hechos/1")
+    assert r.status_code in (404, 405)
+
+
+def test_nadie_puede_aprobar_automaticamente(client_superadmin):
+    """Spec §2.2: no hay aprobacion automatica. Si el sistema se aprueba a si
+    mismo, is_verified deja de significar algo."""
+    import inspect
+    from api.admin import memoria
+    fuente = inspect.getsource(memoria)
+    assert "auto_aprobar" not in fuente and "aprobar_todo" not in fuente
