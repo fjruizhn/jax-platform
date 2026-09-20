@@ -878,8 +878,11 @@ jobs:
         # USE a jax_memory_test -- el UNICO recorte al archivo; ninguna
         # sentencia CREATE TABLE se toca.
         run: |
+          # El USE se reescribe a $JAX_DB_NAME y NO a 'jax_memory_test' literal:
+          # el cliente se conecta a $JAX_DB_NAME, y si los dos se separan las
+          # tablas terminan en una base y los tests en otra.
           sed -e '/^CREATE DATABASE IF NOT EXISTS jax_memory$/,/;$/d' \
-              -e 's/^USE jax_memory;$/USE jax_memory_test;/' \
+              -e "s/^USE jax_memory;$/USE \`$JAX_DB_NAME\`;/" \
               /tmp/jax/jax_memory_schema.sql \
             | mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" "$JAX_DB_NAME"
 
