@@ -334,6 +334,55 @@ def test_instruccion_con_surrogate_solitario_es_422(client, superadmin, maquinas
     assert (r.status_code, r.json()["detail"]) == (422, "ejecutor_instruccion_ilegible")
 
 
+# --- los dos MINOR de la auditoria adversarial del 2026-09-20 --------------------------------
+
+
+def test_el_nombre_de_maquina_del_error_va_recortado(client, superadmin, maquinas, runner):
+    """El 422 no se hace eco del pedido entero.
+
+    Con un nombre de 5.000 caracteres la respuesta medida era del tamano del
+    pedido: el endpoint devolvia `nombre` tal cual. No es un 500 y exige
+    superadmin, pero un error no tiene por que repetir lo que le mandaron.
+    """
+    _, h = superadmin
+    r = client.post(f"{BASE}/misiones", headers=h, json={"objetivo": "x", "maquinas": ["z" * 5000]})
+    assert r.status_code == 422
+    detalle = r.json()["detail"]
+    assert detalle["codigo"] == "ejecutor_maquina_desconocida"
+    assert len(detalle["maquina"]) <= misiones.LIMITE_ECO, len(detalle["maquina"])
+
+
+@pytest.mark.parametrize("objetivo", ["hola\x00mundo", "hola\x07mundo", "hola\x1bmundo"])
+def test_objetivo_con_caracteres_de_control_es_422(client, superadmin, maquinas, runner, objetivo):
+    """Un `\x00` se aceptaba (202), se guardaba, volvia en el detalle y viajaba
+    al runner por stdin. No es inyeccion -- va como JSON, nunca por un shell --
+    pero es basura que ensucia la bitacora y la interfaz."""
+    user_id, h = superadmin
+    r = client.post(f"{BASE}/misiones", headers=h, json={"objetivo": objetivo, "maquinas": ["t-sp2-vm"]})
+    assert r.status_code == 422, f"se acepto un objetivo con control: {r.status_code} {r.text[:200]}"
+    assert r.json()["detail"] == "ejecutor_objetivo_ilegible"
+    assert _misiones_de(client, user_id) == ()
+
+
+def test_el_salto_de_linea_y_el_tab_siguen_siendo_texto_valido(client, superadmin, maquinas, runner):
+    """El control de arriba no puede pasarse de listo: un objetivo de varias
+    lineas es legitimo y tiene que seguir entrando."""
+    _, h = superadmin
+    runner.guion(GUION_BUENO)
+    r = _crear(client, h, objetivo="primera linea\nsegunda\tcon tab")
+    assert r.status_code == 202, r.json()
+
+
+def test_instruccion_con_caracteres_de_control_es_422(client, superadmin, maquinas, runner):
+    _, h = superadmin
+    runner.guion(GUION_BUENO)
+    mision_id = _crear(client, h).json()["id"]
+    _esperar(client, h, mision_id)
+    r = client.post(f"{BASE}/misiones/{mision_id}/turnos", headers=h,
+                    json={"instruccion": "sigue\x00ahora"})
+    assert (r.status_code, r.json()["detail"]) == (422, "ejecutor_instruccion_ilegible")
+
+
 def test_con_la_pausa_puesta_no_se_lanza(client, superadmin, maquinas, runner):
     user_id, h = superadmin
     pausa.poner_pausa(pausa.ruta_de_la_pausa(), {"origen": "c5", "motivo": "prohibido"})

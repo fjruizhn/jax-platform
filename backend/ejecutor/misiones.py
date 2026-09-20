@@ -252,10 +252,12 @@ async def _validar_maquinas(pedidas: list[str]) -> None:
     for nombre in pedidas:
         m = por_nombre.get(nombre)
         if m is None:
-            raise ErrorDelEjecutor(422, {"codigo": "ejecutor_maquina_desconocida", "maquina": nombre})
+            raise ErrorDelEjecutor(422, {"codigo": "ejecutor_maquina_desconocida",
+                                         "maquina": _eco(nombre)})
         if not m["elegible"]:
-            raise ErrorDelEjecutor(403, {"codigo": "ejecutor_maquina_no_elegible", "maquina": nombre,
-                                         "motivo": m["motivo_no_elegible"]})
+            raise ErrorDelEjecutor(403, {"codigo": "ejecutor_maquina_no_elegible",
+                                         "maquina": _eco(nombre),
+                                         "motivo": _eco(m["motivo_no_elegible"])})
 
 
 async def _barreras_de_lanzamiento(ruta_pausa: Path) -> None:
@@ -279,6 +281,29 @@ def _runner_o_503():
 #: `ejecutor_turno.instruccion`).
 LIMITE_TEXTO_BYTES = 65535
 
+#: Caracteres de control que NO pueden ir en un texto del cliente. Se dejan
+#: pasar `\n`, `\t` y `\r`: un objetivo de varias lineas es legitimo. El resto
+#: (`\x00`, `\x07`, `\x1b`...) es basura que se guardaba, volvia en el detalle
+#: y viajaba al runner. NO era inyeccion -- el pedido va por stdin como JSON,
+#: nunca por un shell -- pero ensucia la bitacora y la interfaz.
+_CONTROL_PROHIBIDO = frozenset(
+    chr(c) for c in list(range(0x00, 0x20)) + [0x7F] if chr(c) not in "\n\t\r")
+
+#: Tope del eco de un nombre de maquina en un error. Un nombre real tiene ocho
+#: caracteres (`t-sp2-vm`); 120 es holgado. Sin esto, un pedido con un nombre de
+#: 2 MB devolvia un 422 de 2 MB: un error no repite lo que le mandaron.
+LIMITE_ECO = 120
+
+
+def _eco(valor) -> str:
+    """Un dato del cliente que vuelve dentro de un error, acotado.
+
+    Usa `redaccion.recortar_redactado`, que redacta ANTES de recortar: al reves,
+    un secreto que cruza el corte queda partido, pierde la forma que reconocen
+    las reglas y se filtra en claro.
+    """
+    return redaccion.recortar_redactado(str(valor), LIMITE_ECO) or ""
+
 
 def _texto_guardable(valor, codigo_vacio: str, codigo_ilegible: str, codigo_largo: str) -> str:
     """Texto del cliente que va a una columna TEXT: lo devuelve listo o da 422.
@@ -298,6 +323,8 @@ def _texto_guardable(valor, codigo_vacio: str, codigo_ilegible: str, codigo_larg
     texto = valor.strip() if isinstance(valor, str) else ""
     if not texto:
         raise ErrorDelEjecutor(422, codigo_vacio)
+    if any(c in _CONTROL_PROHIBIDO for c in texto):
+        raise ErrorDelEjecutor(422, codigo_ilegible)
     try:
         crudo = texto.encode("utf-8")
     except UnicodeEncodeError as exc:
