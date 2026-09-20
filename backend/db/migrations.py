@@ -1358,6 +1358,59 @@ _PROVIDER_ID_OLLAMA_CPU = "ollama_cpu"
 _ENV_OLLAMA_CPU_URL = "JAX_OLLAMA_CPU_URL"
 
 
+async def _seed_el_juez_facet(cur) -> None:
+    """Faceta `el_juez`: el auditor de C5 que usa el MISMO modelo que el cerebro.
+
+    Medido el 2026-09-20 con los canarios reales: ningún auditor de proveedor
+    separado servía (qwen3:14b 7/8 a ~250 s, qwen3.6:35b-a3b 6/8 a ~286 s,
+    granite4.2:8b 2/4 a 412-717 s). El único que pasa todo es `thot`, de nube, que
+    sacaría de la casa la salida de comandos de máquinas con datos de clientes. El
+    modelo del cerebro, ya cargado en GPU, dio 8/8 con mediana 80 s.
+
+    SIGUE al cerebro en vez de nombrar un modelo: el punto es que sea el mismo
+    modelo que produce, no un modelo concreto. Fijar el nombre acá sería una
+    segunda fuente de verdad que se desincroniza en silencio cuando la Mesa cambie
+    de motor -- el mismo defecto que dejó `depends_on` de jacobs_steps existiendo
+    sólo en producción. Por eso el binding se REESCRIBE en cada arranque con lo que
+    tenga el cerebro.
+
+    `auto_selectable=FALSE`: el juez no puede aparecer como productor en un plan.
+    Si pudiera, produciría y aprobaría lo suyo, y la sala limpia que hace cumplir
+    `_con_arbitro` dejaría de significar algo.
+
+    Esto NO abre ninguna compuerta. `el_juez` comparte proveedor con el cerebro, así
+    que el arranque lo sigue RECHAZANDO hasta que se abra
+    `ejecutor.c5_auditor_admite_mismo_proveedor`. Sembrar la faceta y permitir su uso
+    son dos decisiones distintas, a propósito."""
+    await cur.execute(
+        "INSERT IGNORE INTO facet (`key`, display_name, icon, color_hex, transport, auto_selectable) "
+        "VALUES ('el_juez', 'El Juez (auditor C5)', '\u2696\ufe0f', '#7c3aed', 'ollama', FALSE)"
+    )
+    # El binding del cerebro es la fuente. Si no hay, no se inventa uno: se sale.
+    await cur.execute("SELECT provider_id, model_id, model_ref FROM facet_binding "
+                      "WHERE facet_key = 'jax_local' AND role = 'primary'")
+    fila = await cur.fetchone()
+    if fila is None:
+        return
+    provider_id, model_id, model_ref = fila
+    if model_ref is None:
+        # Sin `model_ref` resuelto, resolve_facet revienta con FacetUnavailableError
+        # mientras misiones.py sigue diciendo "elegible" (hallazgo MEDIO 2026-09-18).
+        await cur.execute("SELECT id FROM model WHERE provider_id = %s AND model_id = %s",
+                          (provider_id, model_id))
+        ref = await cur.fetchone()
+        if ref is None:
+            return
+        (model_ref,) = ref
+    await cur.execute(
+        "INSERT INTO facet_binding (facet_key, provider_id, model_id, model_ref, role) "
+        "VALUES ('el_juez', %s, %s, %s, 'primary') "
+        "ON DUPLICATE KEY UPDATE provider_id = VALUES(provider_id), model_id = VALUES(model_id), "
+        "model_ref = VALUES(model_ref)",
+        (provider_id, model_id, model_ref),
+    )
+
+
 async def _seed_ollama_cpu_provider(cur) -> None:
     """ON DUPLICATE KEY UPDATE, no INSERT IGNORE (hallazgo BAJO de la revisión,
     2026-09-18): con INSERT IGNORE, si JAX_OLLAMA_CPU_URL cambiara (el puerto se mueve,
@@ -2792,6 +2845,11 @@ _EJECUTOR_CONFIG_C5 = (
     # (índice de SP1, punto 1 de «lo que el spec dice mal»). Cerrada, una misión que toca
     # una máquina con datos de clientes no arranca.
     ("ejecutor.c5_auditor_admite_datos_de_clientes", "false"),
+    # Compuerta del MISMO proveedor (2026-09-20). Nace CERRADA: sembrarla abierta
+    # convertiría una decisión de Fernando en un default. La exige
+    # `eleccion_c5.config_desde_filas` -- sin la fila, el Ejecutor no arranca
+    # (fail-closed), por eso tiene que estar acá y no sólo en el repo jax.
+    ("ejecutor.c5_auditor_admite_mismo_proveedor", "false"),
 )
 
 
@@ -2904,6 +2962,9 @@ async def run_migrations():
             await _seed_ollama_cpu_provider(cur)
             await _migrate_user_api_keys_to_credential(cur)
             await _seed_facets(cur)
+            # Después de _seed_facets: el juez copia el binding del cerebro,
+            # que esa semilla acaba de asegurar.
+            await _seed_el_juez_facet(cur)
             # Después de _seed_ollama_cpu_provider (la FK de facet_binding exige el
             # proveedor ya insertado) y de _seed_facets (agrega su propio binding con
             # INSERT IGNORE por (facet_key, role); no depende del guard "sólo si la tabla

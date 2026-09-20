@@ -1894,7 +1894,12 @@ jobs:
           #   con el arbitro ya vivo en master desde el 18-09 (a91b1ad).
           #   El 2 sale del spec 2026-09-18-arbitro-devuelve-design §3.3, no de
           #   una eleccion de esta rama.
-          PISO_PASSED = 2397
+          # 2397 -> 2403 (2026-09-20, el-juez): +6. Faceta `el_juez` (el auditor
+          #   de C5 que usa EL MISMO modelo que el cerebro) y la compuerta
+          #   `ejecutor.c5_auditor_admite_mismo_proveedor`, sembrada CERRADA.
+          #   Medido en vivo, MISMO comando en las dos ramas contra jax_memory_test:
+          #   master 2397 passed / 1 skipped / 0 fallidos -> rama 2403 / 1 / 0.
+          PISO_PASSED = 2403
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
