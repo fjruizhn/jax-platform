@@ -726,6 +726,8 @@ export default {
   adminSettingsSystemName: 'System name',
   adminSettingsConfirmarUsd: 'Confirm pipelines from (USD)',
   adminSettingsConfirmarUsdAyuda: 'Above this maximum cost, or with a step without price, confirmation is required before running. 0 = always confirm.',
+  adminSettingsTopeDevoluciones: 'Arbiter send-backs',
+  adminSettingsTopeDevolucionesAyuda: 'How many times the arbiter may send a pipeline back to be redone. Once exhausted with an unresolved objection, the pipeline ends as disputed and needs your decision. 0 does not turn it off: the arbiter still objects, but the first objection ends the pipeline.',
   adminSettingsDark: 'Dark',
   adminSettingsLight: 'Light',
 
