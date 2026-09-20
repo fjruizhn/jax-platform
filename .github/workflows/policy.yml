@@ -845,6 +845,44 @@ jobs:
           # el paso muere con ModuleNotFoundError y el job no llega ni a correr un test.
           PYTHONPATH=/tmp/jax:/tmp/jax/las_manos python -c "import asyncio; from jacobs import store; asyncio.run(store.init_tables())"
 
+      - name: Crear el esquema de MEMORIA con la fuente de verdad de jax (facts/messages/conversations)
+        working-directory: .
+        # El clon de mas arriba trae /tmp/jax/jax_memory_schema.sql, el DDL
+        # real (9 CREATE TABLE: conversations, messages, facts, decisions,
+        # projects, errors, people, action_items, jax_metadata) del que
+        # backend/tests/test_memoria_api.py depende -- `facts` incluye
+        # verified_by/superseded_by_user, de jax#235. Hasta esta rama ningun
+        # test de jax-platform tocaba `facts`, asi que este job nunca la
+        # creaba: 21 fallos con
+        # "Table 'jax_memory_test.facts' doesn't exist".
+        #
+        # El cliente `mysql` viene preinstalado en el runner ubuntu-latest
+        # (Ubuntu 24.04 trae MySQL 8.0 client tools de fabrica, ver
+        # actions/runner-images/.../Ubuntu2404-Readme.md); no hace falta
+        # instalar nada.
+        #
+        # NO se parsea el .sql a mano: partirlo por ';' en Python da basura
+        # (hay ';' dentro de sentencias, p.ej. el DEFAULT del vector cero de
+        # `embedding_bge_m3`). Se le pasa el archivo entero al cliente
+        # mysql/mariadb, que es quien sabe partir sentencias de verdad.
+        #
+        # El archivo, tal cual vive en jax, arranca con
+        # `CREATE DATABASE IF NOT EXISTS jax_memory; USE jax_memory;` --
+        # crea y selecciona SIEMPRE `jax_memory`, sin importar contra que
+        # base te conectes por linea de comando. Probado en vivo (contenedor
+        # descartable mariadb:12.3.3, mismo tag que este job): pasado sin
+        # filtrar, las tablas terminan en `jax_memory`, NO en
+        # `jax_memory_test`, y el job seguiria rojo igual con el mismo error.
+        # El sed de abajo quita el CREATE DATABASE (la base ya la crea
+        # `services.mariadb.env.MARIADB_DATABASE` de este job) y cambia el
+        # USE a jax_memory_test -- el UNICO recorte al archivo; ninguna
+        # sentencia CREATE TABLE se toca.
+        run: |
+          sed -e '/^CREATE DATABASE IF NOT EXISTS jax_memory$/,/;$/d' \
+              -e 's/^USE jax_memory;$/USE jax_memory_test;/' \
+              /tmp/jax/jax_memory_schema.sql \
+            | mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" "$JAX_DB_NAME"
+
       - name: Suite backend (con DB)
         run: python -m pytest -q -rs --junitxml=junit-db.xml
 
