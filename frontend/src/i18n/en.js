@@ -1029,6 +1029,8 @@ export default {
     },
     errores: {
       ejecutor_objetivo_vacio: () => 'The goal cannot be empty.',
+      ejecutor_objetivo_largo: () => 'The goal is too long: the limit is 65,535 bytes.',
+      ejecutor_objetivo_ilegible: () => 'The goal has characters that cannot be stored. Check the pasted text.',
       ejecutor_sin_maquinas: () => 'Select at least one machine.',
       ejecutor_maquina_desconocida: (d) => `Machine “${d.maquina}” is not in the inventory.`,
       ejecutor_maquina_no_elegible: (d) => `Machine “${d.maquina}” is not eligible: ${d.motivo}.`,
@@ -1037,6 +1039,8 @@ export default {
       ejecutor_sin_configurar: () => 'The Executor is not configured on this server.',
       ejecutor_mision_inexistente: () => 'The mission does not exist.',
       ejecutor_instruccion_vacia: () => 'The instruction cannot be empty.',
+      ejecutor_instruccion_larga: () => 'The instruction is too long: the limit is 65,535 bytes.',
+      ejecutor_instruccion_ilegible: () => 'The instruction has characters that cannot be stored. Check the pasted text.',
       ejecutor_mision_sin_sesion: () => 'This mission has no started session: it takes no more turns.',
       ejecutor_pausa_no_escribible: () => 'The pause could not be written: nothing changed.',
       ejecutor_pausa_auditoria_fallida: () => 'The pause changed but could not be audited. Check the status.',
