@@ -62,7 +62,24 @@ NOMBRE = "system_name"
 # encima de este costo máximo, o con un paso sin precio, la Mesa pide
 # confirmación en ventana propia. 0 = confirmar siempre.
 CONFIRMAR_USD = "pipeline_confirmar_usd"
-CLAVES = (SESION, MAX_PIPELINES, RETENCION, IDIOMA, NOMBRE, CONFIRMAR_USD)
+# Cuántas veces puede el árbitro de Jacobs DEVOLVER un pipeline antes de
+# rendirse y terminarlo en `disputed` (spec 2026-09-18-arbitro-devuelve §3.3).
+# El nombre canónico lo fija `jacobs/store.py::_CONFIG_KEY_TOPE_DEVOLUCIONES`
+# en el repo jax, que es quien lo LEE; acá sólo se administra. Prefijo
+# `jacobs.` y no `ejecutor.`: es del orquestador, no del Ejecutor de Contratos.
+#
+# CERO es válido y no es un error: es el estado fail-closed que impone
+# `get_tope_devoluciones()` cuando falta la fila -- el árbitro puede objetar
+# pero no devuelve, y la primera objeción termina el pipeline en `disputed`.
+TOPE_DEVOLUCIONES = "jacobs.tope_devoluciones"
+CLAVES = (SESION, MAX_PIPELINES, RETENCION, IDIOMA, NOMBRE, CONFIRMAR_USD, TOPE_DEVOLUCIONES)
+
+# Baranda ELEGIDA EN ESTA RAMA (2026-09-20), no en el spec: el spec fija el
+# valor inicial en 2 y explica el porqué del tope --«sin tope, dos modelos
+# pueden discutir toda la noche gastando dinero real»-- pero no pone un techo.
+# Cinco vueltas ya son una discusión larga; si alguna vez hace falta más, se
+# sube acá con su motivo escrito, no con un UPDATE a mano.
+TOPE_DEVOLUCIONES_MAX = 5
 
 IDIOMAS = ("es", "en")
 NOMBRE_MAX = 60
@@ -147,6 +164,8 @@ DEFINICIONES: dict[str, Definicion] = {
     # Los montos viajan como string: un float de JSON no es un monto exacto.
     CONFIRMAR_USD: Definicion(_monto_usd, {"min": "0", "max": CONFIRMAR_USD_MAX,
                                            "decimales": CONFIRMAR_USD_DECIMALES}),
+    TOPE_DEVOLUCIONES: Definicion(_entero(0, TOPE_DEVOLUCIONES_MAX),
+                                  {"min": 0, "max": TOPE_DEVOLUCIONES_MAX}),
 }
 
 

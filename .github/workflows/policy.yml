@@ -675,9 +675,16 @@ jobs:
             // pages/Historial.test.jsx (un pipeline disputed se muestra con su propia
             // etiqueta -- pipelineStatusLabels.disputed --, no como "Completado" ni
             // como el texto genérico de estado desconocido). Medido con vitest run:
-            // 844 passed, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 844) {
-              console.error("PISO ROTO: se esperaban 844 tests de vitest CORRIDOS y 0 fallidos.");
+            // 848 passed, 0 fallidos.
+            // 844 -> 848 el 2026-09-20 (rama feat/tope-en-configuracion):
+            // +4 en AdminSettings.test.jsx -- el campo del tope de
+            // devoluciones toma min/max del SERVIDOR, el error fuera de
+            // rango nombra la etiqueta y no la clave tecnica, los textos
+            // existen en los dos idiomas y difieren, y la ayuda explica
+            // que significa CERO (que no apaga el arbitro). Medido: 848
+            // passed / 0 fallidos, contra 844 en master.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 848) {
+              console.error("PISO ROTO: se esperaban 848 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1899,6 +1906,26 @@ jobs:
           #   `ejecutor.c5_auditor_admite_mismo_proveedor`, sembrada CERRADA.
           #   Medido en vivo, MISMO comando en las dos ramas contra jax_memory_test:
           #   master 2397 passed / 1 skipped / 0 fallidos -> rama 2403 / 1 / 0.
+          # 2397 -> 2412 (2026-09-20, tope-en-configuracion): +15. El numero ya
+          #   existia en axioma_config pero NO en ajustes.CLAVES, asi que no salia
+          #   en la pantalla de Configuracion y la unica forma de cambiarlo era un
+          #   UPDATE a mano -- que config_audit prohibe y el detector
+          #   test_ningun_otro_modulo_escribe_axioma_config hace cumplir. Un numero
+          #   de gobernanza que nadie podia tocar sin un PR.
+          #   Medido en vivo, MISMO comando en las dos ramas, contra jax_memory_test:
+          #   master 2397 passed / 1 skipped / 0 fallidos -> rama 2412 / 1 / 0.
+          #   Los 15 vistos ROJOS contra el codigo de antes de este commit.
+          # Al juntar las dos ramas desde la MISMA base (2397): el-juez +6 y
+          #   tope-en-configuracion +15. El piso es la SUMA de los dos deltas,
+          #   no el mayor de los dos numeros -- el mayor consagraria que los
+          #   tests de la otra rama no corren. Remedido tras el merge.
+          # 2418 -> 2423 (2026-09-20, stderr-no-se-tira): +5. El stderr del runner
+          #   de contratos y el del binario de /command iban a DEVNULL: un turno en
+          #   `runner_sin_cierre` o un `comando_sin_resultado` no dejaban UNA linea para
+          #   investigar. +3 runner (llega a la bitacora cuando no cierra, NO ensucia
+          #   cuando si, y un runner que escribe MUCHO no se cuelga) y +2 command (el
+          #   stderr queda en el log, no en la respuesta del usuario).
+          #   Medido en vivo, mismo comando en las dos ramas: master 2418 -> rama 2423.
           # 2403 -> 2425 (2026-09-20, aislar la base de tests, causa raiz): +22,
           #   tests/test_base_por_sesion.py (nuevo, port de jax). `conftest.py:13`
           #   fijaba JAX_DB_NAME = "jax_memory_test" a secas, sin NINGUN
@@ -1916,7 +1943,7 @@ jobs:
           #   en las dos ramas contra jax_memory_test: master 2403 passed / 1
           #   skipped -> rama 2425 / 1 skipped (0 fallidos las dos). Si el runner
           #   da otro numero, manda el runner.
-          PISO_PASSED = 2425
+          PISO_PASSED = 2445
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

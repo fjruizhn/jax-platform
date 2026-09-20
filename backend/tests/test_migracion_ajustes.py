@@ -36,6 +36,10 @@ def test_primera_corrida_fija_lo_que_el_codigo_hacia_cumplir(client, sin_marca):
     assert sin_marca.filas() == {
         "session_timeout_min": "10080", "max_pipelines": "3", "web_task_retention_days": "30",
         "lang_default": "es", "system_name": "Mi Sistema",
+        # El tope de devoluciones lo pone OTRA migración
+        # (_jacobs_tope_devoluciones_v1, 2026-09-20) y ésta tampoco lo toca --
+        # mismo caso que el umbral de abajo.
+        "jacobs.tope_devoluciones": "2",
         # La fila del umbral la pone OTRA migración (_ajuste_confirmar_costo_v1)
         # y ésta no la toca: sigue con el valor que tenía.
         "pipeline_confirmar_usd": "0.50",

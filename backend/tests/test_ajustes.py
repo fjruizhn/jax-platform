@@ -143,6 +143,10 @@ def test_limites_publicos_y_tope_espejado_de_jacobs():
         "max_pipelines": {"min": 1, "max": 3},
         "web_task_retention_days": {"min": 1, "max": 365},
         "lang_default": {"opciones": ["es", "en"]},
+        # Tope de devoluciones del arbitro (2026-09-20): CERO es valido -- es el
+        # estado fail-closed de store.get_tope_devoluciones(). El maximo 5 es una
+        # baranda de ajustes.py, no un numero del spec.
+        "jacobs.tope_devoluciones": {"min": 0, "max": 5},
         "system_name": {"max_largo": 60},
         "pipeline_confirmar_usd": {"min": "0", "max": "999999.99", "decimales": 2},
     }
@@ -192,6 +196,9 @@ def test_lee_los_valores_tipados_de_la_tabla(client, ajustes_en_db):
     assert client.portal.call(_leer_todos) == {
         "session_timeout_min": 10080, "max_pipelines": 2, "web_task_retention_days": 30,
         "lang_default": "en", "system_name": "Axioma", "pipeline_confirmar_usd": Decimal("0.50"),
+        # Su fila la siembra db/migrations.py::_jacobs_tope_devoluciones_v1 con el
+        # valor del spec (2); este test lee, no siembra.
+        "jacobs.tope_devoluciones": 2,
     }
 
 
