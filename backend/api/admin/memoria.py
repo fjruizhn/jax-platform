@@ -197,7 +197,16 @@ async def aprobar_hechos(body: AprobarBody, user: AuthUser = Depends(require_sup
     autor = int(user.user_id)
     aprobados = 0
     for fact_id in body.ids:
-        if await memoria.verify_fact(fact_id, autor):
+        ok = await memoria.verify_fact(fact_id, autor)
+        # M1 (auditoria adversarial 2026-09-20): verify_fact devuelve None
+        # cuando la base no respondio (contrato de tres estados, jax/memory/
+        # db.py), no cuando el id no existe. Antes esto sumaba 0 en silencio
+        # y el lote terminaba en 200 {"aprobados": N} de MENOS, sin que el
+        # superadmin tuviera forma de saber que el resto del lote NUNCA se
+        # intento -- fail-closed: se corta el lote y se avisa.
+        if ok is None:
+            raise HTTPException(status_code=503, detail="memoria_no_disponible")
+        if ok:
             aprobados += 1
     return {"aprobados": aprobados}
 
@@ -276,6 +285,12 @@ async def caducar_hecho(fact_id: int, body: CaducarBody,
         except ValueError:
             raise HTTPException(status_code=400, detail="vence_at_invalido") from None
     ok = await memoria.expire_fact(fact_id, expira)
+    # M1 (auditoria adversarial 2026-09-20): mismo contrato de tres estados
+    # que aprobar_hechos -- None es "la base no respondio", nunca "no
+    # encontrado". Antes un None se leia como 404, una mentira sobre un
+    # hecho que SI existe.
+    if ok is None:
+        raise HTTPException(status_code=503, detail="memoria_no_disponible")
     if not ok:
         raise HTTPException(status_code=404, detail="hecho_no_encontrado")
     return {"ok": True}

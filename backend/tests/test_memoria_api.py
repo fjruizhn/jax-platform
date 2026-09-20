@@ -125,3 +125,59 @@ def test_nadie_puede_aprobar_automaticamente(client_superadmin):
     from api.admin import memoria
     fuente = inspect.getsource(memoria)
     assert "auto_aprobar" not in fuente and "aprobar_todo" not in fuente
+
+
+# ---------------------------------------------------------------------------
+# M1 (auditoria adversarial 2026-09-20 sobre feat/memoria-admin): el contrato
+# de tres estados de verify_fact/expire_fact (jax/memory/db.py) -- True =
+# existe, False = no existe, None = no se pudo -- se aplastaba en los
+# consumidores de este archivo. `None` (la base no respondio a MITAD del
+# pedido) se leia igual que `False` (el hecho no existe): un 404 sobre un
+# hecho que SI existe (caducar), o un 200 {"aprobados": 0} silencioso sin que
+# el superadmin supiera que el resto del lote NUNCA se intento (aprobar).
+# ---------------------------------------------------------------------------
+
+def test_aprobar_con_la_base_caida_a_mitad_del_lote_no_es_200_silencioso(
+        client_superadmin, monkeypatch):
+    from api.admin import memoria as memoria_mod
+    from unittest.mock import AsyncMock
+
+    # Forzar que _chat_mod._memory ya este conectado, sin depender del orden
+    # de la suite.
+    client_superadmin.get("/api/admin/memoria/hechos?limite=1")
+    memoria = memoria_mod._chat_mod._memory
+    assert memoria is not None, "la memoria no se conecto -- el test no probaria nada"
+
+    monkeypatch.setattr(memoria, "verify_fact", AsyncMock(return_value=None))
+    r = client_superadmin.post("/api/admin/memoria/hechos/aprobar", json={"ids": [1]})
+    assert r.status_code == 503, (
+        f"esperaba 503 (memoria_no_disponible), no {r.status_code}: un None "
+        "de verify_fact es 'la base no respondio', no 'el id no existe', y "
+        "un 200 con aprobados de menos no avisa que el resto del lote nunca "
+        "se intento")
+
+
+def test_caducar_con_la_base_caida_no_es_404_sobre_un_hecho_que_existe(
+        client_superadmin, monkeypatch):
+    from api.admin import memoria as memoria_mod
+    from unittest.mock import AsyncMock
+
+    client_superadmin.get("/api/admin/memoria/hechos?limite=1")
+    memoria = memoria_mod._chat_mod._memory
+    assert memoria is not None, "la memoria no se conecto -- el test no probaria nada"
+
+    monkeypatch.setattr(memoria, "expire_fact", AsyncMock(return_value=None))
+    r = client_superadmin.post("/api/admin/memoria/hechos/1/caducar", json={})
+    assert r.status_code == 503, (
+        f"esperaba 503 (memoria_no_disponible), no {r.status_code}: un None "
+        "de expire_fact es 'la base no respondio', y ANTES de este arreglo "
+        "se leia como 404 'hecho_no_encontrado' sobre un hecho que SI existe")
+
+
+def test_caducar_un_id_que_de_verdad_no_existe_sigue_dando_404(client_superadmin):
+    """Control del arreglo de arriba: el chequeo de `ok is None` va ANTES del
+    de `not ok`, pero el 404 real (hecho que de verdad no existe, `expire_fact`
+    devolviendo `False`) tiene que seguir intacto."""
+    r = client_superadmin.post(
+        "/api/admin/memoria/hechos/999999999/caducar", json={})
+    assert r.status_code == 404
