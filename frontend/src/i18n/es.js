@@ -1067,6 +1067,8 @@ export default {
     },
     errores: {
       ejecutor_objetivo_vacio: () => 'El objetivo no puede estar vacío.',
+      ejecutor_objetivo_largo: () => 'El objetivo es demasiado largo: el máximo son 65.535 bytes.',
+      ejecutor_objetivo_ilegible: () => 'El objetivo tiene caracteres que no se pueden guardar. Revisá el texto pegado.',
       ejecutor_sin_maquinas: () => 'Elegí al menos una máquina.',
       ejecutor_maquina_desconocida: (d) => `La máquina «${d.maquina}» no está en el inventario.`,
       ejecutor_maquina_no_elegible: (d) => `La máquina «${d.maquina}» no es elegible: ${d.motivo}.`,
@@ -1075,6 +1077,8 @@ export default {
       ejecutor_sin_configurar: () => 'El Ejecutor no está configurado en este servidor.',
       ejecutor_mision_inexistente: () => 'La misión no existe.',
       ejecutor_instruccion_vacia: () => 'La instrucción no puede estar vacía.',
+      ejecutor_instruccion_larga: () => 'La instrucción es demasiado larga: el máximo son 65.535 bytes.',
+      ejecutor_instruccion_ilegible: () => 'La instrucción tiene caracteres que no se pueden guardar. Revisá el texto pegado.',
       ejecutor_mision_sin_sesion: () => 'Esta misión no tiene una sesión iniciada: no admite otro turno.',
       ejecutor_pausa_no_escribible: () => 'No se pudo escribir la pausa: nada cambió.',
       ejecutor_pausa_auditoria_fallida: () => 'La pausa cambió pero no se pudo auditar. Revisá el estado.',
