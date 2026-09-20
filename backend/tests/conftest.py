@@ -710,6 +710,50 @@ def usuarios(client):
         client.portal.call(borrar_usuario, user_id)
 
 
+class _ClienteConCabecerasFijas:
+    """Envoltorio delgado sobre `client` (TestClient) que inyecta las mismas
+    cabeceras de autorización en cada verbo. NO es un fixture nuevo inventado:
+    esta casa no tiene `client_superadmin` (el plan de memoria-admin lo daba
+    por hecho y era humo, medido 2026-09-20) -- el patrón real es `client` +
+    `cabeceras(client, etiqueta, role=...)`, el mismo que usa
+    tests/test_config_admin_ajustes.py. Esto sólo evita repetir
+    `headers=cabeceras(...)` en cada llamada de los tests de memoria.
+    `.portal` es el MISMO objeto que `client.portal`: nada se duplica."""
+
+    def __init__(self, base, headers):
+        self._base = base
+        self._headers = headers
+        self.portal = base.portal
+
+    def _con_headers(self, kwargs):
+        kwargs = dict(kwargs)
+        kwargs["headers"] = {**self._headers, **kwargs.get("headers", {})}
+        return kwargs
+
+    def get(self, url, **kwargs):
+        return self._base.get(url, **self._con_headers(kwargs))
+
+    def post(self, url, **kwargs):
+        return self._base.post(url, **self._con_headers(kwargs))
+
+    def put(self, url, **kwargs):
+        return self._base.put(url, **self._con_headers(kwargs))
+
+    def delete(self, url, **kwargs):
+        return self._base.delete(url, **self._con_headers(kwargs))
+
+
+@pytest.fixture
+def client_superadmin(client):
+    """`client` autenticado como superadmin, construido sobre los fixtures
+    reales (`client` + `tests.identidades.cabeceras`), no inventado. Ver
+    `_ClienteConCabecerasFijas`."""
+    from tests.identidades import cabeceras
+
+    headers = cabeceras(client, "memoria-superadmin", role="superadmin")
+    return _ClienteConCabecerasFijas(client, headers)
+
+
 @pytest.fixture
 def ajustes_en_db(client):
     """Las seis filas de los ajustes que mandan (ajustes.CLAVES; frente C, 2026-09-16), con
