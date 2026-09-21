@@ -178,7 +178,17 @@ def _borrar_al_salir(nombre: str) -> None:
     Cualquier error (red caída, timeout) queda silenciado a propósito: es un
     best-effort de limpieza al cerrar, no una condición de salida del
     proceso; lo que esto no llegue a borrar lo barre después
-    `scripts/limpiar_bases_de_test.py`."""
+    `scripts/limpiar_bases_de_test.py`.
+
+    DIVERGENCIA DELIBERADA con jax: el guard de `_en_ci_sin_db()` es propio de
+    este repo. jax no tiene modo "CI sin base" -- cada job suyo que toca la
+    base levanta su propio contenedor MariaDB efímero (`services: mariadb:` en
+    su policy.yml), así que allá `JAX_DB_HOST` ausente ya distingue bien los
+    dos casos. Acá no alcanzaba: `tests/conftest.py` recarga `/etc/jax/.env` en
+    cada import y REPONE `JAX_DB_HOST`, así que el modo sin base quedaba
+    "configurado y caído" y esta función intentaba conectar de verdad --
+    con el puerto real habría creado un clon en la MariaDB compartida, que es
+    justo lo que ese modo promete que no pasa (jax-platform#142, 2026-09-21)."""
     if _en_ci_sin_db() or not os.environ.get("JAX_DB_HOST"):
         return
     import asyncio
