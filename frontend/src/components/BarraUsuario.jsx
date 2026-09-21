@@ -99,6 +99,12 @@ export default function BarraUsuario() {
   // (expires_at IS NULL OR expires_at > NOW()).
   const [sinVerificar, setSinVerificar] = useState(0)
   const esSuperadmin = user?.role === 'superadmin'
+  // La etiqueta cambia con el estado: en 0 no es "0 hechos sin verificar"
+  // (que se lee como un pendiente de cero) sino "al día" -- que es lo que
+  // de verdad significa, y lo que un lector de pantalla tiene que decir.
+  const etiquetaMemoria = sinVerificar > 0
+    ? t.barraMemoriaSinVerificar(sinVerificar)
+    : t.barraMemoriaAlDia
 
   useEffect(() => {
     if (!esSuperadmin) return
@@ -146,15 +152,23 @@ export default function BarraUsuario() {
           <IconoHistorial />
         </Link>
 
-        {/* Oculto en 0 (para que cuando aparece signifique algo de verdad) y
-            sólo para superadmin: es quien puede actuar y el único que entra
-            a /admin/memoria. */}
-        {esSuperadmin && sinVerificar > 0 && (
+        {/* SIEMPRE visible, también en 0 (corrección de Fernando, 2026-09-20).
+            Antes se ocultaba en 0 "para que cuando aparezca signifique algo",
+            y el razonamiento estaba al revés: un indicador que sólo existe
+            cuando hay problemas no deja saber si está funcionando. "0
+            pendientes" es la información de que la memoria está al día.
+            El color hace el trabajo que hacía la ausencia: apagado al día,
+            `aviso` cuando hay algo esperando. Los dos tokens están vetados
+            como texto sobre los fondos base en tema claro y oscuro
+            (tokens.js::TEXTOS_SOBRE_BASE) -- no es un color elegido a ojo.
+            Sólo superadmin: es quien puede actuar y el único que entra a
+            /admin/memoria. */}
+        {esSuperadmin && (
           <Link
             to="/admin/memoria"
-            aria-label={t.barraMemoriaSinVerificar(sinVerificar)}
-            title={t.barraMemoriaSinVerificar(sinVerificar)}
-            className={BOTON_NEUTRO}
+            aria-label={etiquetaMemoria}
+            title={etiquetaMemoria}
+            className={`${BOTON} ${sinVerificar > 0 ? 'text-aviso hover:text-aviso' : 'hover:text-texto'}`}
           >
             <span aria-hidden="true">🧩</span>
             <span className="text-xs font-bold">{sinVerificar}</span>

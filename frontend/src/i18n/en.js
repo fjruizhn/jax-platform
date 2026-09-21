@@ -491,6 +491,7 @@ export default {
   // name, not just the number -- a screen reader has to say WHAT those N
   // are. Same data as /admin/memoria?verificado=false.
   barraMemoriaSinVerificar: (n) => `${n} unverified memory facts`,
+  barraMemoriaAlDia: 'memory up to date, nothing to review',
 
   // File attachments
   attachTooltip: 'Attach image, PDF or text',

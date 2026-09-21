@@ -138,11 +138,30 @@ describe('BarraUsuario — memoria sin verificar', () => {
     expect(link).toHaveTextContent('3')
   })
 
-  it('en 0 el contador no se muestra -- para que cuando aparece signifique algo', async () => {
+  // 2026-09-20, corrección de Fernando: antes se ocultaba en 0. Lo pidió
+  // SIEMPRE visible, y tiene razón -- un indicador que sólo existe cuando hay
+  // problemas no deja saber si está funcionando. "0 pendientes" es
+  // información, y es la que dice que la memoria está al día.
+  it('en 0 el contador SE MUESTRA, apagado y diciendo que está al día', async () => {
     api.get.mockResolvedValue({ data: { total: 0 } })
     renderBarra()
-    await waitFor(() => expect(api.get).toHaveBeenCalled())
-    expect(screen.queryByRole('link', { name: /hechos de memoria sin verificar/ })).not.toBeInTheDocument()
+    const link = await screen.findByRole('link', { name: 'memoria al día, sin hechos por revisar' })
+    expect(link).toHaveAttribute('href', '/admin/memoria')
+    expect(link).toHaveTextContent('0')
+  })
+
+  it('en 0 va en color apagado; con pendientes cambia a aviso', async () => {
+    api.get.mockResolvedValue({ data: { total: 0 } })
+    const { unmount } = renderBarra()
+    const enCero = await screen.findByRole('link', { name: /al día/ })
+    expect(enCero.className).toContain('text-texto-tenue')
+    expect(enCero.className).not.toContain('text-aviso')
+    unmount()
+
+    api.get.mockResolvedValue({ data: { total: 3 } })
+    renderBarra()
+    const conPendientes = await screen.findByRole('link', { name: /3 hechos/ })
+    expect(conPendientes.className).toContain('text-aviso')
   })
 
   it('un operator no ve el contador ni pide el dato (el endpoint es sólo de superadmin)', async () => {
