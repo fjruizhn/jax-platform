@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import '@testing-library/jest-dom'
 
 // U34 (fix round 1 del review de dd47d82): tras el cambio obligatorio de
@@ -22,5 +22,42 @@ describe('Admin', () => {
     const main = screen.getByRole('main')
     expect(main).toHaveAttribute('data-foco-inicial')
     expect(main).toHaveAttribute('tabindex', '-1')
+  })
+})
+
+// Observación de Fernando (2026-09-20): Memoria quedaba ruteada FUERA del
+// caparazón (/memoria, hermana de /admin/*, App.jsx), así que no tenía
+// sidebar y su única salida era "Volver a Axioma" -- al inicio, no a
+// Administración. Ahora "memoria" es una ruta anidada más, igual que
+// dashboard/keys/users/etc: la barra lateral queda SIEMPRE visible, y desde
+// ahí se llega a cualquier otra pantalla de Administración sin pasar por "/".
+// Admin.jsx usa rutas relativas ("memoria", "dashboard", ...) que se
+// resuelven contra el prefijo del <Route> padre -- igual que en App.jsx real
+// (path="/admin/*"). Sin ese padre, "memoria" no matchea "/admin/memoria"
+// (medido: "No routes matched location").
+function renderAdminBajoAdminStar(ruta) {
+  return render(
+    <I18nProvider>
+      <MemoryRouter initialEntries={[ruta]}>
+        <Routes>
+          <Route path="/admin/*" element={<Admin />} />
+        </Routes>
+      </MemoryRouter>
+    </I18nProvider>
+  )
+}
+
+describe('Admin > ruta "memoria" (2026-09-20)', () => {
+  it('vive dentro del caparazón: la barra lateral de Administración está presente junto a Memoria', async () => {
+    renderAdminBajoAdminStar('/admin/memoria')
+    expect(screen.getByText('Administración')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Memoria' })).toBeInTheDocument()
+  })
+
+  it('desde Memoria se llega a otra pantalla de Administración sin pasar por el inicio', async () => {
+    renderAdminBajoAdminStar('/admin/memoria')
+    await screen.findByRole('heading', { name: 'Memoria' })
+    const enlaceDashboard = screen.getByRole('link', { name: /Dashboard/ })
+    expect(enlaceDashboard).toHaveAttribute('href', '/admin/dashboard')
   })
 })

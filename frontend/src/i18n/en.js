@@ -1136,7 +1136,6 @@ export default {
   memoria: {
     titulo: 'Memory',
     subtitulo: (nombre) => `What ${nombre} thinks it knows: review, correct or expire each fact.`,
-    volver: (nombre) => `Back to ${nombre}`,
     cargando: 'Loading…',
     errorCarga: 'Could not load the memory.',
     vacio: 'No active facts to review.',

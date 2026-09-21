@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { useI18n } from '../i18n/index.jsx'
 import { useNombreDelSistema } from '../store/useApariencia'
 import { useJaxStore } from '../store/useJaxStore'
@@ -7,7 +6,6 @@ import api from '../api/client'
 import { codigoDe } from '../api/errores'
 import Dialogo from '../components/Dialogo'
 import ConfirmacionSuma from '../components/ConfirmacionSuma'
-import Toast from '../components/Notifications/Toast'
 import GrupoDeHechos from '../components/Memoria/GrupoDeHechos'
 import SeccionVencidos from '../components/Memoria/SeccionVencidos'
 
@@ -49,6 +47,19 @@ import SeccionVencidos from '../components/Memoria/SeccionVencidos'
 // del lado del cliente -- es la única forma de volver a VER y de quitarle la
 // caducidad a un hecho que caducó en una sesión anterior (sin esto, caducar
 // por error y recargar la pantalla era, en la práctica, borrar).
+//
+// Corrección (2026-09-20, observación de Fernando): esta pantalla vivía como
+// ruta suelta de App.jsx, hermana de /admin/*, SIN el caparazón de
+// Administración -- por eso montaba su propio <Toast/> y un enlace "Volver a
+// Axioma" al inicio (la única salida posible). Ahora es una ruta anidada más
+// de Admin.jsx (ver Admin.jsx y AdminSidebar.jsx), que ya provee las dos
+// cosas: la barra lateral es la salida (ninguna de las otras 7 pantallas de
+// admin lleva un "volver" propio -- mismo patrón acá) y <Toast/> ya está
+// montado una vez en Admin.jsx; montarlo también acá duplicaría el overlay
+// fijo de avisos. El wrapper externo (min-h-dvh/bg-fondo/p-6) también salió:
+// ahora vive dentro del <main> de Admin.jsx, que ya pone su propio fondo y
+// padding -- doble padding no es un detalle menor cuando el contenido tiene
+// que caber en el panel central, no en toda la pantalla.
 const emptySet = () => new Set()
 
 function mensajeDeError(t, err) {
@@ -280,17 +291,11 @@ export default function Memoria() {
   const totalSinVerificarCargados = Object.values(hechosPorId).filter((h) => !h.verificado).length
 
   return (
-    <div className="min-h-dvh bg-fondo text-texto p-6">
+    <div>
       <div className="max-w-4xl mx-auto space-y-4">
-        <div className="flex items-center justify-between mb-2">
-          <div>
-            <h1 className="text-xl font-bold text-texto-fuerte">{t.memoria.titulo}</h1>
-            <p className="text-xs text-texto-tenue mt-0.5">{t.memoria.subtitulo(nombre)}</p>
-          </div>
-          <Link to="/" className="text-xs text-texto-tenue hover:text-texto transition-colors flex items-center gap-1.5 flex-shrink-0">
-            <span>←</span>
-            <span>{t.memoria.volver(nombre)}</span>
-          </Link>
+        <div className="mb-2">
+          <h1 className="text-xl font-bold text-texto-fuerte">{t.memoria.titulo}</h1>
+          <p className="text-xs text-texto-tenue mt-0.5">{t.memoria.subtitulo(nombre)}</p>
         </div>
 
         {!cargando && !error && (
@@ -397,8 +402,6 @@ export default function Memoria() {
           onCancelar={() => setFundiendo(null)}
         />
       )}
-
-      <Toast />
     </div>
   )
 }

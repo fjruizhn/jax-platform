@@ -690,8 +690,18 @@ jobs:
             // por feat/tope-en-configuracion. Medido con vitest run tras el
             // merge, y verificado contra el numero real que reporto el
             // propio runner del PR: 868 passed, 0 fallidos, 86 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 868) {
-              console.error("PISO ROTO: se esperaban 868 tests de vitest CORRIDOS y 0 fallidos.");
+            // 868 -> 874 el 2026-09-20 (fix/memoria-admin-shell, observacion
+            // de Fernando: "Volver a Axioma" mandaba al inicio en vez de a
+            // Administracion, y Memoria no era el 2o item del menu). Memoria
+            // se movio de ruta suelta (/memoria, App.jsx) a ruta anidada de
+            // Admin.jsx (/admin/memoria), con redireccion de la URL vieja:
+            // +2 AdminSidebar.test.jsx (posicion 2, ruta relativa), +2
+            // Admin.test.jsx (vive dentro del caparazon, se llega a otra
+            // pantalla sin pasar por el inicio), +2 App.test.jsx (la
+            // redireccion de /memoria, la navegacion cruzada). Medido con
+            // vitest run: 874 passed, 0 fallidos, 87 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 874) {
+              console.error("PISO ROTO: se esperaban 874 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

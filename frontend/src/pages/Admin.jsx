@@ -8,6 +8,7 @@ import AdminRepository from './admin/AdminRepository'
 import AdminSettings from './admin/AdminSettings'
 import AdminCosts from './admin/AdminCosts'
 import AdminSmtp from './admin/AdminSmtp'
+import Memoria from './Memoria'
 
 export default function Admin() {
   return (
@@ -26,6 +27,10 @@ export default function Admin() {
           <Route path="settings" element={<AdminSettings />} />
           <Route path="costs" element={<AdminCosts />} />
           <Route path="smtp" element={<AdminSmtp />} />
+          {/* Corrección (2026-09-20): Memoria vive acá, como cualquier otra
+              pantalla de Administración -- antes era una ruta suelta de
+              App.jsx sin sidebar (ver App.jsx y AdminSidebar.jsx). */}
+          <Route path="memoria" element={<Memoria />} />
         </Routes>
       </main>
       {/* Etapa 3 (2026-09-15): los toasts solo se montaban en Dashboard; en
