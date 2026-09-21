@@ -84,6 +84,122 @@ def test_el_where_del_uso_es_un_rango_sin_funcion():
     assert "COALESCE(" in dashboard.SQL_USO_DEL_DIA
 
 
+# --- Restricción dura (2026-09-20): "sin verificar" en el tablero -----------
+# La pantalla de Memoria (api/admin/memoria.py::SQL_CONTAR) define QUÉ es un
+# hecho pendiente de revisión de verdad: is_verified=0 AND superseded_by IS
+# NULL AND (expires_at IS NULL OR expires_at > NOW()). Un `is_verified=0` a
+# secas cuenta también lo FUNDIDO (superado por otro hecho a propósito -- no
+# se aprueba algo que se está reemplazando) y lo VENCIDO. Medido en
+# producción: la consulta floja da 37, el pendiente real es 0. El tablero
+# tiene que usar el mismo filtro EXACTO, no una aproximación.
+def test_el_filtro_de_sin_verificar_es_exactamente_el_de_memoria():
+    assert "is_verified = 0" in dashboard.SQL_HECHOS_SIN_VERIFICAR
+    assert "superseded_by IS NULL" in dashboard.SQL_HECHOS_SIN_VERIFICAR
+    assert "expires_at IS NULL OR expires_at > NOW()" in dashboard.SQL_HECHOS_SIN_VERIFICAR
+
+
+MARCA_SIN_VERIFICAR = "test-tablero-sin-verificar-"
+
+
+async def _sembrar_tres_hechos_sin_verificar():
+    """Los TRES con is_verified=0: uno activo (pendiente de verdad), uno
+    fundido (superseded_by apunta a un superviviente) y uno vencido. El
+    filtro flojo (is_verified=0 a secas) los cuenta a los tres; el correcto
+    sólo debe contar el activo."""
+    superviviente = await sql(
+        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified) "
+        "VALUES (UUID(), %s, 'technical', 1)",
+        (MARCA_SIN_VERIFICAR + "superviviente",))
+    activo = await sql(
+        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified) "
+        "VALUES (UUID(), %s, 'technical', 0)",
+        (MARCA_SIN_VERIFICAR + "activo",))
+    fundido = await sql(
+        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, superseded_by) "
+        "VALUES (UUID(), %s, 'technical', 0, %s)",
+        (MARCA_SIN_VERIFICAR + "fundido", superviviente))
+    vencido = await sql(
+        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, expires_at) "
+        "VALUES (UUID(), %s, 'technical', 0, '2020-01-01 00:00:00')",
+        (MARCA_SIN_VERIFICAR + "vencido",))
+    return [superviviente, activo, fundido, vencido]
+
+
+async def _borrar_hechos_sin_verificar(ids):
+    marcadores = ", ".join(["%s"] * len(ids))
+    await sql(f"DELETE FROM facts WHERE id IN ({marcadores})", ids)
+
+
+def test_sin_verificar_cuenta_solo_lo_pendiente_de_verdad(client):
+    """Ata el filtro con un test real (no sólo el texto del SQL): sembrados 1
+    activo + 1 fundido + 1 vencido -- los 3 sin verificar -- el contador
+    correcto sube en 1, no en 3. Control en el mismo test: el filtro flojo
+    (is_verified=0 a secas) SÍ sube en 3 -- así se ve, contra el mismo dato,
+    por qué la restricción existe."""
+    base_correcto = client.portal.call(sql, dashboard.SQL_HECHOS_SIN_VERIFICAR, (), True)[0][0]
+    base_flojo = client.portal.call(
+        sql, "SELECT COUNT(*) FROM facts WHERE is_verified = 0", (), True)[0][0]
+    ids = client.portal.call(_sembrar_tres_hechos_sin_verificar)
+    try:
+        correcto = client.portal.call(sql, dashboard.SQL_HECHOS_SIN_VERIFICAR, (), True)[0][0]
+        flojo = client.portal.call(
+            sql, "SELECT COUNT(*) FROM facts WHERE is_verified = 0", (), True)[0][0]
+        assert correcto - base_correcto == 1, "sólo el activo es trabajo pendiente de verdad"
+        assert flojo - base_flojo == 3, "control: el filtro flojo cuenta también fundido y vencido"
+    finally:
+        client.portal.call(_borrar_hechos_sin_verificar, ids)
+
+
+MARCA_EXPLAIN_SIN_VERIFICAR = "test-explain-sin-verificar-"
+
+
+async def _sembrar_hechos_verificados(n):
+    """n hechos YA verificados (is_verified=1, superseded_by NULL): con pocas
+    filas en jax_memory_test el optimizador puede elegir cualquier índice de
+    `possible_keys` -- medido a mano: con la tabla vacía eligió
+    idx_facts_active en vez de idx_facts_revision. El sesgo real (pocos
+    hechos sin verificar sobre muchos ya verificados) es el que hace que
+    is_verified sea la columna selectiva de verdad, igual que
+    _sembrar_cuentas de arriba para idx_jax_users_locked_until."""
+    filas = [(f"{MARCA_EXPLAIN_SIN_VERIFICAR}{i}",) for i in range(n)]
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.executemany(
+                "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified) "
+                "VALUES (UUID(), %s, 'technical', 1)", filas)
+            await cur.execute("ANALYZE TABLE facts")
+            await cur.fetchall()
+
+
+async def _borrar_hechos_verificados():
+    return await sql("DELETE FROM facts WHERE fact_text LIKE %s", (MARCA_EXPLAIN_SIN_VERIFICAR + "%",))
+
+
+def test_explain_de_sin_verificar_usa_el_indice_de_revision(client):
+    """La consulta REAL del tablero, con 3.000 hechos ya verificados de por
+    medio (mismo criterio que Task 15 R12c para jax_users)."""
+    client.portal.call(_borrar_hechos_verificados)
+    try:
+        client.portal.call(_sembrar_hechos_verificados, 3000)
+        (fila,) = client.portal.call(_explain, dashboard.SQL_HECHOS_SIN_VERIFICAR, ())
+        assert fila["key"] == "idx_facts_revision", fila
+        assert fila["type"] == "range", fila
+        assert "filesort" not in (fila["Extra"] or "") and "temporary" not in (fila["Extra"] or ""), fila
+    finally:
+        client.portal.call(_borrar_hechos_verificados)
+
+
+def test_el_tablero_trae_hechos_sin_verificar_como_entero(client, monkeypatch):
+    monkeypatch.delenv("JAX_PLATFORM_URL", raising=False)
+    resp = client.get("/api/admin/dashboard", headers=cabeceras(client, "tablero-sv", "superadmin"))
+    assert resp.status_code == 200, resp.text
+    s = resp.json()["stats"]
+    esperado = client.portal.call(sql, dashboard.SQL_HECHOS_SIN_VERIFICAR, (), True)[0][0]
+    assert s["facts_unverified"] == esperado
+
+
 # --- con DB -------------------------------------------------------------------
 async def _explain(consulta, args):
     from db.connection import get_pool

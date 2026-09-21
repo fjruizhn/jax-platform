@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useJaxStore } from '../store/useJaxStore'
 import { useTema } from '../store/useTema'
 import { useI18n } from '../i18n/index.jsx'
 import MiCuentaModal from './MiCuentaModal'
+import api from '../api/client'
 
 // Barra superior derecha (2026-09-12, pedido de Fernando):
 //   Usuario: <correo>  │  🌐 ES   ☀   ⚙ (solo superadmin)   ⏻
@@ -90,6 +91,24 @@ export default function BarraUsuario() {
   const { lang, setLang, t } = useI18n()
   const [miCuenta, setMiCuenta] = useState(false)
 
+  // Contador de memoria sin verificar (2026-09-20, restricción dura): sólo
+  // superadmin puede actuar sobre /admin/memoria y es el único que ve esta
+  // pantalla -- pedirlo para cualquier otro rol sólo generaría 401 de más.
+  // El `total` YA viene con el filtro correcto (SQL_CONTAR en
+  // api/admin/memoria.py): is_verified=0 AND superseded_by IS NULL AND
+  // (expires_at IS NULL OR expires_at > NOW()).
+  const [sinVerificar, setSinVerificar] = useState(0)
+  const esSuperadmin = user?.role === 'superadmin'
+
+  useEffect(() => {
+    if (!esSuperadmin) return
+    let vigente = true
+    api.get('/admin/memoria/hechos', { params: { verificado: false, limite: 1 } })
+      .then((r) => { if (vigente) setSinVerificar(r.data.total) })
+      .catch(() => {}) // fail-soft: sin el dato, el contador simplemente no aparece
+    return () => { vigente = false }
+  }, [esSuperadmin])
+
   const otroIdioma = lang === 'es' ? 'en' : 'es'
   const etiquetaIdioma = t.switchLanguage(NOMBRE_IDIOMA[otroIdioma])
   const etiquetaTema = theme === 'dark' ? t.lightMode : t.darkMode
@@ -127,7 +146,22 @@ export default function BarraUsuario() {
           <IconoHistorial />
         </Link>
 
-        {user?.role === 'superadmin' && (
+        {/* Oculto en 0 (para que cuando aparece signifique algo de verdad) y
+            sólo para superadmin: es quien puede actuar y el único que entra
+            a /admin/memoria. */}
+        {esSuperadmin && sinVerificar > 0 && (
+          <Link
+            to="/admin/memoria"
+            aria-label={t.barraMemoriaSinVerificar(sinVerificar)}
+            title={t.barraMemoriaSinVerificar(sinVerificar)}
+            className={BOTON_NEUTRO}
+          >
+            <span aria-hidden="true">🧩</span>
+            <span className="text-xs font-bold">{sinVerificar}</span>
+          </Link>
+        )}
+
+        {esSuperadmin && (
           <Link to="/admin" aria-label={t.adminPanel} title={t.adminPanel} className={BOTON_NEUTRO}>
             <IconoEngranaje />
           </Link>

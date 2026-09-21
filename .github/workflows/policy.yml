@@ -700,8 +700,19 @@ jobs:
             // pantalla sin pasar por el inicio), +2 App.test.jsx (la
             // redireccion de /memoria, la navegacion cruzada). Medido con
             // vitest run: 874 passed, 0 fallidos, 87 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 874) {
-              console.error("PISO ROTO: se esperaban 874 tests de vitest CORRIDOS y 0 fallidos.");
+            // 874 -> 884 el 2026-09-20 (tres cambios aprobados por Fernando
+            // sobre el tablero de admin y la barra de usuario): +6
+            // AdminDashboard.test.jsx ("Peticiones hoy" con las imagenes
+            // como subconjunto en vez de tarjeta hermana -- A-5x -- y la
+            // tarjeta "Sin verificar", siempre visible incluso en 0, con el
+            // MISMO filtro que la pantalla de Memoria) y +4
+            // BarraUsuario.test.jsx (el contador 🧩 N: pide el dato correcto,
+            // se ve con nombre accesible y lleva a /admin/memoria, se
+            // esconde en 0, y no lo pide ni lo muestra un rol que no es
+            // superadmin). Medido con vitest run: 884 passed, 0 fallidos, 87
+            // archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 884) {
+              console.error("PISO ROTO: se esperaban 884 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

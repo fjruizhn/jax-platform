@@ -512,6 +512,10 @@ export default {
   darkMode: 'Modo oscuro',
   switchLanguage: (idioma) => `Cambiar idioma a ${idioma}`,
   adminPanel: 'Administración',
+  // Contador 🧩 N de BarraUsuario (2026-09-20, restricción dura): nombre
+  // accesible completo, no sólo el número -- un lector de pantalla tiene que
+  // decir QUÉ son esos N. Mismo dato que /admin/memoria?verificado=false.
+  barraMemoriaSinVerificar: (n) => `${n} hechos de memoria sin verificar`,
 
   // File attachments
   attachTooltip: 'Adjuntar imagen, PDF o texto',
@@ -542,12 +546,22 @@ export default {
   serviceConnected: 'conectado',
   serviceError: 'error',
   serviceNotConfigured: 'Sin configurar',
-  statMessages: 'Mensajes',
+  // A-5x (2026-09-20): "Mensajes" contaba TODAS las peticiones del día
+  // (imágenes incluidas -- COUNT(*) sobre axioma_usage) y las imágenes se
+  // veían otra vez, aparte, en su propia tarjeta: doble conteo y etiqueta
+  // falsa. La consulta no cambió, sólo el nombre y cómo se muestra: las
+  // imágenes pasan a subconjunto de esta misma tarjeta (prop `sub`).
+  statRequestsToday: 'Peticiones hoy',
+  statImagesSub: (n) => `de ellas, imágenes: ${n}`,
   statPipelines: 'Pipelines',
-  statImages: 'Imágenes',
   statUsersActive: 'Usuarios activos',
   statUsersLocked: 'Bloqueados',
   statRam: 'RAM',
+  // Restricción dura (2026-09-20): mismo filtro que la pantalla de Memoria
+  // (is_verified=0 AND superseded_by IS NULL AND (expires_at IS NULL OR
+  // expires_at > NOW())) -- fundidos y vencidos no son pendiente. Siempre
+  // visible, incluso en 0: el 0 es la señal de estar al día.
+  statFactsUnverified: 'Sin verificar',
   // I-1 (revisión final PR 2, 2026-09-14): AdminDashboard.jsx tenía
   // label="API Keys" fijo. "API Keys" es el mismo término en los dos
   // idiomas (nombre técnico), como brandName o eyeKillSwitch.

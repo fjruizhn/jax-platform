@@ -17,8 +17,8 @@ const DATOS = {
     { name: 'JAX Engine', port: null, status: 'sin_configurar', latency_ms: null },
   ],
   stats: {
-    messages_today: 12, images_generated: 2, pipelines_completed: 5, users_active: 3,
-    users_locked: 0, api_keys_configured: 4, api_keys_total: 5,
+    messages_today: 12, images_generated: 2, facts_unverified: 7, pipelines_completed: 5,
+    users_active: 3, users_locked: 0, api_keys_configured: 4, api_keys_total: 5,
     ram: { total_mb: 1000, used_mb: 900, percent: 90 },
   },
 }
@@ -70,5 +70,57 @@ describe('AdminDashboard (frente A)', () => {
     render(<I18nProvider><AdminDashboard /></I18nProvider>)
     const etiqueta = await screen.findByText(es.statApiKeysLabel)
     expect(within(etiqueta.parentElement).getByText(`${configuradas}/${total}`).className).toContain(tono)
+  })
+})
+
+// A-5x (2026-09-20): "Mensajes" contaba TODAS las peticiones (COUNT(*) sobre
+// axioma_usage del día en SQL_USO_DEL_DIA, backend/api/admin/dashboard.py) --
+// las imágenes iban DENTRO de ese número y otra vez en su propia tarjeta:
+// doble conteo, y la etiqueta mentía sobre qué medía. La consulta no cambió
+// (el número estaba bien); lo que cambia es que "Mensajes" pasa a decir
+// "Peticiones hoy" y las imágenes se ven como SUBCONJUNTO (prop `sub` de
+// StatCard, no una tarjeta hermana nueva).
+describe('AdminDashboard — peticiones e imágenes (A-5x)', () => {
+  it('"Peticiones hoy" muestra el total y las imágenes como subconjunto, sin tarjeta propia', async () => {
+    render(<I18nProvider><AdminDashboard /></I18nProvider>)
+    const etiqueta = await screen.findByText(es.statRequestsToday)
+    const tarjeta = etiqueta.parentElement
+    expect(within(tarjeta).getByText('12')).toBeInTheDocument()
+    expect(within(tarjeta).getByText(es.statImagesSub(2))).toBeInTheDocument()
+    // Ya no existe una tarjeta hermana rotulada "Imágenes": el único lugar
+    // donde aparece el número de imágenes es el subconjunto de arriba. Las
+    // claves viejas (statMessages/statImages) se retiraron de i18n -- se
+    // busca el texto literal, no la clave (que ya no existe).
+    expect(screen.queryByText('Imágenes')).not.toBeInTheDocument()
+  })
+
+  it('la etiqueta vieja "Mensajes" ya no se usa', async () => {
+    render(<I18nProvider><AdminDashboard /></I18nProvider>)
+    await screen.findByText(es.statRequestsToday)
+    expect(screen.queryByText('Mensajes')).not.toBeInTheDocument()
+  })
+})
+
+// Restricción dura (2026-09-20): "sin verificar" tiene que usar el MISMO
+// filtro que la pantalla de Memoria (backend, is_verified=0 AND
+// superseded_by IS NULL AND (expires_at IS NULL OR expires_at > NOW())) --
+// acá sólo se verifica que el frontend RENDERICE el número que manda el
+// backend, siempre visible, incluso en 0 (a diferencia de "Bloqueados").
+describe('AdminDashboard — «Sin verificar» (restricción dura)', () => {
+  it.each([0, 7])('se muestra siempre, incluso en 0 (a diferencia de «Bloqueados»)', async (n) => {
+    api.get.mockResolvedValue({ data: { ...DATOS, stats: { ...DATOS.stats, facts_unverified: n } } })
+    render(<I18nProvider><AdminDashboard /></I18nProvider>)
+    const etiqueta = await screen.findByText(es.statFactsUnverified)
+    expect(within(etiqueta.parentElement).getByText(String(n))).toBeInTheDocument()
+  })
+
+  it.each([
+    [0, 'text-exito'],
+    [7, 'text-aviso'],
+  ])('en %i se pinta %s -- el 0 es la señal de estar al día', async (n, tono) => {
+    api.get.mockResolvedValue({ data: { ...DATOS, stats: { ...DATOS.stats, facts_unverified: n } } })
+    render(<I18nProvider><AdminDashboard /></I18nProvider>)
+    const etiqueta = await screen.findByText(es.statFactsUnverified)
+    expect(within(etiqueta.parentElement).getByText(String(n)).className).toContain(tono)
   })
 })
