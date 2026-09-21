@@ -228,14 +228,15 @@ export default function BarraUsuario() {
 
         {/* Segundo contador (2026-09-21): mismo patrón que el de memoria de
             arriba -- siempre visible, forma e ícono cambian con el estado.
-            Lleva a /admin/keys, pestaña "Catálogo de modelos"
+            Lleva a /admin/keys?tab=models, pestaña "Catálogo de modelos"
             (AdminModelCatalog), que es donde se aprueba o rechaza cada
-            propuesta; no hay una vista dedicada como /admin/memoria, así que
-            no se puede llevar directo a la pestaña. Sólo superadmin: es quien
-            puede aprobar/rechazar y el único que entra a /admin/keys. */}
+            propuesta -- de una sola vista, sin un clic más para encontrar la
+            pestaña (AdminFacetsModels lee el `?tab` al montar). Sólo
+            superadmin: es quien puede aprobar/rechazar y el único que entra
+            a /admin/keys. */}
         {esSuperadmin && (
           <Link
-            to="/admin/keys"
+            to="/admin/keys?tab=models"
             aria-label={etiquetaPropuestas}
             title={etiquetaPropuestas}
             className={`${BOTON} ${propuestasPendientes > 0 ? 'text-aviso hover:text-aviso' : 'hover:text-texto'}`}

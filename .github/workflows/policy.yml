@@ -728,8 +728,17 @@ jobs:
           // estado (trazo/emoji), color cambia (apagado/aviso), y no lo pide
           // ni lo muestra un rol que no es superadmin. Medido con
           // `npx vitest run`: 894 passed, 0 fallidos, 87 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 894) {
-              console.error("PISO ROTO: se esperaban 894 tests de vitest CORRIDOS y 0 fallidos.");
+          // 894 -> 897 (2026-09-21, mismo dia): el contador de propuestas
+          // pasa a llevar directo a la pestaña "Catálogo de modelos"
+          // (/admin/keys?tab=models), no sólo a /admin/keys -- "de una sola
+          // vista" tal cual lo pidió Fernando para el de memoria. +3
+          // AdminFacetsModels.test.jsx: sin `?tab` sigue abriendo en
+          // "Proveedores" (el default de siempre, sin romper nada), con
+          // `?tab=models` abre directo en el Catálogo, y un `?tab`
+          // desconocido cae al default sin romper. Medido con
+          // `npx vitest run`: 897 passed, 0 fallidos, 87 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 897) {
+              console.error("PISO ROTO: se esperaban 897 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

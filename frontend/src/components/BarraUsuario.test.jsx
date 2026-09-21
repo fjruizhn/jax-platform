@@ -219,11 +219,11 @@ describe('BarraUsuario — propuestas de modelo pendientes', () => {
       '/admin/models/proposals', { params: { status: 'pending' } }))
   })
 
-  it('con N>0 muestra el contador con nombre accesible y lleva a /admin/keys', async () => {
+  it('con N>0 muestra el contador con nombre accesible y lleva directo a la pestaña "Catálogo de modelos"', async () => {
     mockApiGet({ propuestas: [{}, {}, {}] })
     renderBarra()
     const link = await screen.findByRole('link', { name: '3 propuestas de modelo pendientes' })
-    expect(link).toHaveAttribute('href', '/admin/keys')
+    expect(link).toHaveAttribute('href', '/admin/keys?tab=models')
     expect(link).toHaveTextContent('3')
   })
 
@@ -233,7 +233,7 @@ describe('BarraUsuario — propuestas de modelo pendientes', () => {
     mockApiGet({ propuestas: [] })
     renderBarra()
     const link = await screen.findByRole('link', { name: 'modelos al día, sin propuestas pendientes' })
-    expect(link).toHaveAttribute('href', '/admin/keys')
+    expect(link).toHaveAttribute('href', '/admin/keys?tab=models')
     expect(link).toHaveTextContent('0')
   })
 
