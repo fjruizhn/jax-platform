@@ -50,9 +50,26 @@
 // (`text-xs px-2 py-0.5`, no `text-xs px-2 py-1`) que tamanoDeToque.test.js
 // no busca.
 //
+// `flex-shrink-0` (hallazgo de revisión, 2026-09-21): en un flex item, el
+// `min-width` por DEFECTO del navegador es `auto` (el tamaño del contenido),
+// lo que en la práctica IMPIDE encoger por debajo del texto -- fijar
+// `min-w-6` a un valor más chico que eso hace lo contrario de lo que parece:
+// HABILITA que el botón encoja hasta 24px bajo presión de un contenedor
+// `flex-wrap` angosto, y como no hay `white-space: nowrap`, el texto se
+// envuelve en vez de desbordar (medido con Chrome real vía CDP: a un ancho
+// de contenedor razonable -- 350px, seis botones, un rótulo largo -- CON o
+// SIN min-w-6 dan el MISMO resultado, el navegador ya envolvía el botón a su
+// propia línea antes de necesitar encoger; recién a un ancho absurdo, 15px,
+// aparece la diferencia real). Dos consumidores reales usan esta constante
+// dentro de un `flex-wrap` con texto de largo variable (BottomBar.jsx, el
+// selector de faceta con display_name configurable por admin; FichaDeHecho.jsx,
+// los botones de acción con texto de i18n) -- `flex-shrink-0` cierra el
+// riesgo en los dos de una vez, sin tocar cada consumidor por separado: el
+// botón nunca encoge por debajo de su contenido, con o sin espacio de sobra.
+//
 // Guardado por politica/tamanoDeToque.test.js: el patrón `text-xs px-2 py-1`
 // solo puede vivir acá.
-export const TAMANO_BOTON_ACCION = 'text-xs px-2 py-1 min-h-6 min-w-6 inline-flex items-center justify-center'
+export const TAMANO_BOTON_ACCION = 'text-xs px-2 py-1 min-h-6 min-w-6 flex-shrink-0 inline-flex items-center justify-center'
 
 // Piso de 24×24 desnudo, sin opinar de fuente/ícono ni de color -- eso varía
 // entre llamadores (text-lg, text-sm, text-xs; un <svg>, un glifo de texto o
@@ -73,4 +90,4 @@ export const TAMANO_BOTON_ACCION = 'text-xs px-2 py-1 min-h-6 min-w-6 inline-fle
 // ícono/glifo suelto -- ver ahí el alcance exacto de lo que ese detector
 // puede y no puede cubrir (no cubre el selector de idioma: su tamaño depende
 // de un array en runtime, no de texto literal en el código fuente).
-export const TAMANO_MINIMO_TOQUE = 'min-h-6 min-w-6 inline-flex items-center justify-center'
+export const TAMANO_MINIMO_TOQUE = 'min-h-6 min-w-6 flex-shrink-0 inline-flex items-center justify-center'

@@ -24,10 +24,6 @@ import { useEffect, useRef, useState } from 'react'
 //   elemento previo y no devuelve el foco. Cuando la confirmación se cierra y
 //   el padre sigue abierto, el foco va explícitamente a este botón (este
 //   efecto corre después del cleanup de Dialogo y con el inert ya quitado).
-//   Mismo reintento que Dialogo.jsx (R11, fix round 1 Task 13): un botón
-//   `disabled` en el instante exacto de este efecto no toma el foco y un
-//   elemento no enfocable no lo devuelve como activeElement -- se reintenta
-//   una vez en un microtask, cuando el commit terminó de verdad.
 export function useConfirmacionDeCosto() {
   const [pendiente, setPendiente] = useState(null)
   const [enviando, setEnviando] = useState(false)
@@ -38,13 +34,7 @@ export function useConfirmacionDeCosto() {
   useEffect(() => {
     const habiaPendiente = pendienteAnteriorRef.current !== null
     pendienteAnteriorRef.current = pendiente
-    if (!habiaPendiente || pendiente !== null) return
-    const boton = botonPrincipalRef.current
-    if (!boton) return
-    boton.focus()
-    if (document.activeElement !== boton) {
-      queueMicrotask(() => { if (botonPrincipalRef.current === boton) boton.focus() })
-    }
+    if (habiaPendiente && pendiente === null) botonPrincipalRef.current?.focus()
   }, [pendiente])
 
   const bloqueado = pendiente !== null

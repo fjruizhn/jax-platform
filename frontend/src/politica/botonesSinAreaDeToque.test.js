@@ -90,9 +90,46 @@ describe('detector de botones de ícono/glifo sin área de toque', () => {
     expect(hallazgos).toHaveLength(1)
   })
 
-  it('NO marca cuando el className referencia TAMANO_MINIMO_TOQUE o TAMANO_BOTON_ACCION', () => {
-    expect(hallazgosEnFuente('<button className={`${TAMANO_MINIMO_TOQUE} text-lg font-bold`}>×</button>', 'g.jsx')).toEqual([])
-    expect(hallazgosEnFuente('<button className={`ml-2 ${TAMANO_BOTON_ACCION} rounded`}>×</button>', 'h.jsx')).toEqual([])
+  it('NO marca cuando el archivo IMPORTA TAMANO_MINIMO_TOQUE/TAMANO_BOTON_ACCION de tema/botones.js', () => {
+    const g = [
+      "import { TAMANO_MINIMO_TOQUE } from '../../tema/botones';",
+      ';<button className={`${TAMANO_MINIMO_TOQUE} text-lg font-bold`}>×</button>',
+    ].join('\n')
+    const h = [
+      "import { TAMANO_BOTON_ACCION } from '../tema/botones';",
+      ';<button className={`ml-2 ${TAMANO_BOTON_ACCION} rounded`}>×</button>',
+    ].join('\n')
+    expect(hallazgosEnFuente(g, 'g.jsx')).toEqual([])
+    expect(hallazgosEnFuente(h, 'h.jsx')).toEqual([])
+  })
+
+  it('SIGUE MARCANDO cuando el nombre coincide pero NO viene de un import real de tema/botones.js (hallazgo de revisión, reproducido)', () => {
+    // Antes: se confiaba en el NOMBRE del identificador. Una constante
+    // local con el mismo nombre que un token de tema/botones.js, pero sin
+    // importarlo de ahí, pasaba igual -- 0 hallazgos, con el archivo sin
+    // importar tema/botones.js para nada. Ahora se resuelve por CONTENIDO:
+    // esta "TAMANO_MINIMO_TOQUE" de mentira no trae ninguna clase de tamaño
+    // real, y se marca.
+    const codigo = [
+      "const TAMANO_MINIMO_TOQUE = 'text-lg font-bold';",
+      ';<button className={`${TAMANO_MINIMO_TOQUE} rounded`}>×</button>',
+    ].join('\n')
+    expect(hallazgosEnFuente(codigo, 'trampa.jsx')).toHaveLength(1)
+  })
+
+  it('un token NUEVO agregado a tema/botones.js queda cubierto sin tocar este detector', () => {
+    // No se prueba agregando un tercer export de verdad (ensuciaría
+    // tema/botones.js sólo para el test) -- se prueba que CUALQUIER export
+    // de tipo string del módulo real funciona igual, no sólo los dos que
+    // existían cuando se escribió la primera versión de este detector: no
+    // hay una lista de nombres a mano que mantener.
+    for (const nombre of ['TAMANO_BOTON_ACCION', 'TAMANO_MINIMO_TOQUE']) {
+      const codigo = [
+        `import { ${nombre} } from '../tema/botones';`,
+        `;<button className={${nombre}}>×</button>`,
+      ].join('\n')
+      expect(hallazgosEnFuente(codigo, 'cualquiera.jsx'), nombre).toEqual([])
+    }
   })
 
   it('NO marca un botón con ícono Y texto visible (BarraUsuario real: no es "sólo ícono")', () => {
@@ -134,6 +171,54 @@ describe('detector de botones de ícono/glifo sin área de toque', () => {
       ';<button className={`${SIN_TAMANO} text-lg font-bold`}>×</button>',
     ].join('\n')
     expect(hallazgosEnFuente(codigo, 'x.jsx')).toHaveLength(1)
+  })
+
+  it('marca un glifo como EXPRESIÓN, `{\'×\'}`, no sólo como texto literal (hueco declarado, corregido)', () => {
+    expect(hallazgosEnFuente("<button className=\"text-lg\">{'×'}</button>", 'expr.jsx')).toHaveLength(1)
+  })
+
+  it('con className duplicado, usa el ÚLTIMO (el que JSX aplica de verdad), no el primero', () => {
+    // Antes: .find() se quedaba con el primero. Acá el primero SÍ trae
+    // tamaño y el último (el que gana en el DOM real) no -- si el detector
+    // mirara el primero, no marcaría; con el último, sí.
+    const codigo = '<button className="min-h-6 min-w-6" className="text-lg font-bold">×</button>'
+    expect(hallazgosEnFuente(codigo, 'dup.jsx')).toHaveLength(1)
+  })
+
+  it('una clase de tamaño SÓLO en variante (sm:/hover:/disabled:) no cuenta -- es condicional (hueco declarado, corregido)', () => {
+    expect(hallazgosEnFuente('<button className="sm:p-2 text-lg">×</button>', 'variante1.jsx')).toHaveLength(1)
+    expect(hallazgosEnFuente('<button className="hover:p-2 text-lg">×</button>', 'variante2.jsx')).toHaveLength(1)
+    // Con la clase SIN variante presente TAMBIÉN, sí cuenta (la de variante
+    // no hace falta que aporte nada).
+    expect(hallazgosEnFuente('<button className="p-2 sm:p-4 text-lg">×</button>', 'variante3.jsx')).toEqual([])
+  })
+
+  it('un valor de CERO (p-0, w-0) no cuenta como clase de tamaño (hueco declarado, corregido)', () => {
+    expect(hallazgosEnFuente('<button className="p-0 w-0 text-lg">×</button>', 'cero.jsx')).toHaveLength(1)
+    // p-0.5 SÍ cuenta (no es cero, aunque no alcance el mínimo -- ver el
+    // "Límite conocido" sobre no calcular la caja completa).
+    expect(hallazgosEnFuente('<button className="p-0.5 text-lg">×</button>', 'nocero.jsx')).toEqual([])
+  })
+
+  it('`<button {...props}>` no se marca "sin className": el spread podría traerlo (hueco declarado, corregido)', () => {
+    expect(hallazgosEnFuente('<button {...props}>×</button>', 'spread.jsx')).toEqual([])
+  })
+
+  it('una interpolación irresoluble (ternario) invalida TODO el className -- no se marca en falso (hueco declarado, corregido)', () => {
+    const codigo = '<button className={`${activo ? "a" : "b"} text-lg`}>×</button>'
+    expect(hallazgosEnFuente(codigo, 'ternario.jsx')).toEqual([])
+  })
+
+  it('una constante importada de OTRO archivo (no tema/botones.js) dentro de un template invalida TODO el className, no sólo esa parte (MINOR corregido)', () => {
+    // Antes: la interpolación irresoluble se trataba como texto vacío y el
+    // resto SÍ se evaluaba -- si el único tamaño real viniera de esa
+    // constante no resuelta, marcaba en falso. Ahora, igual que un
+    // Identifier suelto irresoluble, TODO el className queda irresoluble.
+    const codigo = [
+      "import { OTRO } from './otroArchivo';",
+      ';<button className={`${OTRO} rounded`}>×</button>',
+    ].join('\n')
+    expect(hallazgosEnFuente(codigo, 'importada.jsx')).toEqual([])
   })
 
   it('un archivo que no se puede parsear es una violación, no un salto', () => {

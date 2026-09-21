@@ -502,6 +502,11 @@ export default {
   barraPropuestasPendientes: (n) => `${n} pending model proposals`,
   barraPropuestasAlDia: 'models up to date, no pending proposals',
 
+  // Toast (2026-09-21 review finding: the dismiss button had no aria-label
+  // or title -- its accessible name was the glyph "×", which a screen
+  // reader announces as "multiplication sign", not "close").
+  toastCerrar: 'Dismiss notification',
+
   // File attachments
   attachTooltip: 'Attach image, PDF or text',
   attachRemove: 'Remove attachment',

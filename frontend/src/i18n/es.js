@@ -527,6 +527,11 @@ export default {
   barraPropuestasPendientes: (n) => `${n} propuestas de modelo pendientes`,
   barraPropuestasAlDia: 'modelos al día, sin propuestas pendientes',
 
+  // Toast (hallazgo de revisión 2026-09-21: el botón de cerrar no tenía
+  // aria-label ni title -- su nombre accesible era el glifo "×", que un
+  // lector de pantalla anuncia como "multiplicación", no "cerrar").
+  toastCerrar: 'Cerrar aviso',
+
   // File attachments
   attachTooltip: 'Adjuntar imagen, PDF o texto',
   attachRemove: 'Quitar adjunto',

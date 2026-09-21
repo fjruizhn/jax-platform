@@ -1,5 +1,6 @@
 import { memo } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
+import { useI18n } from '../../i18n/index.jsx'
 import { TAMANO_MINIMO_TOQUE } from '../../tema/botones'
 
 const TYPE_STYLES = {
@@ -10,6 +11,7 @@ const TYPE_STYLES = {
 }
 
 function Toast() {
+  const { t } = useI18n()
   const toasts = useJaxStore((s) => s.toasts)
   const dismissToast = useJaxStore((s) => s.dismissToast)
 
@@ -26,7 +28,9 @@ function Toast() {
         >
           <span className="flex-1">{toast.message}</span>
           <button
+            type="button"
             onClick={() => dismissToast(toast.id)}
+            aria-label={t.toastCerrar}
             className={`${TAMANO_MINIMO_TOQUE} flex-shrink-0 opacity-60 hover:opacity-100 text-lg leading-none`}
           >
             ×
