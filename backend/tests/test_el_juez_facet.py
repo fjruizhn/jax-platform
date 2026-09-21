@@ -21,7 +21,17 @@ con el cerebro, así que el arranque lo sigue RECHAZANDO hasta que Fernando abra
 queda en `axioma_config_audit`. Sembrar la faceta y permitir su uso son dos
 decisiones distintas, a propósito.
 """
-from db.migrations import _EJECUTOR_CONFIG_C5, _seed_el_juez_facet
+import asyncio
+import os
+import secrets
+
+import aiomysql
+import pytest
+
+from base_de_test import BASE_COMPARTIDA, _parametros_de_conexion, es_base_de_test
+from db.connection import close_pool, get_pool
+from db.migrations import _EJECUTOR_CONFIG_C5, _seed_el_juez_facet, run_migrations
+from db_connect_config import db_connect_timeout_seconds
 from tests.identidades import sql
 
 CLAVE_COMPUERTA = "ejecutor.c5_auditor_admite_mismo_proveedor"
@@ -102,3 +112,89 @@ def test_el_binding_queda_con_model_ref_resuelto(client):
     filas = client.portal.call(
         sql, "SELECT model_ref FROM facet_binding WHERE facet_key='el_juez' AND role='primary'", (), True)
     assert filas and filas[0][0] is not None, "model_ref quedó NULL"
+
+
+# ---------------------------------------------------------------------------
+# La base VIRGEN (2026-09-21). Los tests de arriba usan `client`, cuyo fixture
+# de sesión (`asegurar_base_de_test()`) clona la base con los DATOS de las
+# tablas chicas de la plantilla `jax_memory_test` -- `facet_binding`/`model`
+# YA vienen resueltos ahí, así que llamar a `_seed_el_juez_facet` suelto,
+# después, nunca ejercita el defecto real: el orden de `run_migrations()`.
+#
+# Antes del fix: `_seed_el_juez_facet` corría en la línea de `run_migrations`
+# ANTES que `_seed_models_and_backfill` -- en una base sin una sola fila de
+# `model`, se rendía con un `return` silencioso y `el_juez` nacía SIN
+# `facet_binding`. Esto crea una base física nueva (sin clonar nada, cero
+# tablas) y corre `run_migrations()` COMPLETO, tal como arranca una
+# instalación de cero.
+# ---------------------------------------------------------------------------
+
+def _nombre_base_virgen() -> str:
+    nombre = f"{BASE_COMPARTIDA}_virgenjuez{secrets.token_hex(4)}"
+    assert es_base_de_test(nombre)
+    return nombre
+
+
+async def _crear_base_virgen(nombre: str) -> None:
+    conn = await aiomysql.connect(
+        db=BASE_COMPARTIDA, connect_timeout=db_connect_timeout_seconds(),
+        **_parametros_de_conexion())
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(f"CREATE DATABASE `{nombre}`")
+    finally:
+        conn.close()
+
+
+async def _dropear_base_virgen(nombre: str) -> None:
+    conn = await aiomysql.connect(
+        db=BASE_COMPARTIDA, connect_timeout=db_connect_timeout_seconds(),
+        **_parametros_de_conexion())
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(f"DROP DATABASE IF EXISTS `{nombre}`")
+    finally:
+        conn.close()
+
+
+async def _migrar_y_leer_bindings():
+    """`run_migrations()` COMPLETO -- no sólo `_seed_el_juez_facet` suelto --
+    contra la base que `JAX_DB_NAME` apunte en ESTE momento. El pool queda
+    atado al loop de este `asyncio.run()`, aislado del pool de la sesión
+    (`db/connection.py`: un pool por event loop)."""
+    await run_migrations()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT provider_id, model_id, model_ref FROM facet_binding "
+                "WHERE facet_key='jax_local' AND role='primary'")
+            cerebro = await cur.fetchone()
+            await cur.execute(
+                "SELECT provider_id, model_id, model_ref FROM facet_binding "
+                "WHERE facet_key='el_juez' AND role='primary'")
+            juez = await cur.fetchone()
+    await close_pool()
+    return cerebro, juez
+
+
+@pytest.mark.skipif(not os.environ.get("JAX_DB_HOST"), reason="sin MariaDB a mano no hay base que crear")
+def test_una_base_virgen_nace_con_el_juez_bindeado(monkeypatch):
+    """El corazón de este archivo. Antes del fix (2026-09-21): esto daba
+    `juez is None` -- `el_juez` no llegaba a tener NINGÚN `facet_binding` en
+    una instalación de cero, porque `_seed_el_juez_facet` corría antes que
+    `_seed_models_and_backfill` en `run_migrations` y se rendía en silencio."""
+    nombre = _nombre_base_virgen()
+    asyncio.run(_crear_base_virgen(nombre))
+    monkeypatch.setenv("JAX_DB_NAME", nombre)
+    try:
+        cerebro, juez = asyncio.run(_migrar_y_leer_bindings())
+    finally:
+        asyncio.run(_dropear_base_virgen(nombre))
+    assert cerebro is not None, "el cerebro (jax_local) no se sembró: el test no puede afirmar nada"
+    assert juez is not None, "el_juez nació SIN facet_binding en una base virgen"
+    provider_cerebro, model_cerebro, _ = cerebro
+    provider_juez, model_juez, model_ref_juez = juez
+    assert (provider_juez, model_juez) == (provider_cerebro, model_cerebro), (
+        f"juez={(provider_juez, model_juez)} cerebro={(provider_cerebro, model_cerebro)}")
+    assert model_ref_juez is not None, "el_juez quedó con model_ref NULL en una base virgen"

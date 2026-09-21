@@ -1381,25 +1381,65 @@ async def _seed_el_juez_facet(cur) -> None:
     Esto NO abre ninguna compuerta. `el_juez` comparte proveedor con el cerebro, así
     que el arranque lo sigue RECHAZANDO hasta que se abra
     `ejecutor.c5_auditor_admite_mismo_proveedor`. Sembrar la faceta y permitir su uso
-    son dos decisiones distintas, a propósito."""
+    son dos decisiones distintas, a propósito.
+
+    `model_ref` se resuelve ACÁ, sin depender de que `_seed_models_and_backfill`
+    corra después en la lista de `run_migrations` (hallazgo 2026-09-21, mismo
+    patrón que `_seed_auditor_local_facet` ya documenta y ya cerró para SU propio
+    binding): en una base NUEVA, cuando esta función corre no existe todavía la
+    fila de `model` para el par (provider_id, model_id) del cerebro -- la crea
+    `_seed_models_and_backfill`, que corre DESPUÉS en `run_migrations`. Con las
+    dos funciones acopladas por ORDEN, esta se rendía con un `return` silencioso
+    y `el_juez` nacía SIN `facet_binding`: toda instalación nueva arrancaba con
+    el juez sin bindear, y en producción la fila sólo existía porque alguien la
+    cargó a mano desde la pantalla de administración. Verificado corriendo
+    `run_migrations()` completo contra una base virgen ANTES de este fix:
+    `SELECT ... FROM facet_binding WHERE facet_key='el_juez'` no devolvía fila.
+    El UPDATE de más abajo además REPARA una fila que ya haya quedado con
+    `model_ref` NULL -- no sólo evita el caso nuevo."""
     await cur.execute(
         "INSERT IGNORE INTO facet (`key`, display_name, icon, color_hex, transport, auto_selectable) "
         "VALUES ('el_juez', 'El Juez (auditor C5)', '\u2696\ufe0f', '#7c3aed', 'ollama', FALSE)"
     )
-    # El binding del cerebro es la fuente. Si no hay, no se inventa uno: se sale.
+    # El binding del cerebro es la fuente. Si no hay, no se inventa uno: se sale,
+    # pero dejando rastro -- un return silencioso acá es el mismo patrón de "un
+    # control que contesta que sí a una pregunta que no era" que esta casa
+    # persigue. En el orden real de run_migrations esto no debería pasar nunca
+    # (_seed_facets, que crea el binding del cerebro, corre antes); si pasa, es
+    # una instalación con el orden roto o una base a medio migrar.
     await cur.execute("SELECT provider_id, model_id, model_ref FROM facet_binding "
                       "WHERE facet_key = 'jax_local' AND role = 'primary'")
     fila = await cur.fetchone()
     if fila is None:
+        logger.warning(
+            "run_migrations: no se sembró facet_binding de el_juez -- el cerebro "
+            "(jax_local/primary) todavía no tiene binding. Se reintenta en el "
+            "próximo arranque."
+        )
         return
     provider_id, model_id, model_ref = fila
     if model_ref is None:
-        # Sin `model_ref` resuelto, resolve_facet revienta con FacetUnavailableError
-        # mientras misiones.py sigue diciendo "elegible" (hallazgo MEDIO 2026-09-18).
+        # Autosuficiente: NO depende de que _seed_models_and_backfill ya haya
+        # corrido. INSERT IGNORE porque esa misma función puede correr después
+        # y sembrar la MISMA fila (misma clave única provider_id+model_id) --
+        # el IGNORE la deja como no-op cuando ya existe, sin duplicar ni pisar.
+        await cur.execute(
+            "INSERT IGNORE INTO model (provider_id, model_id, is_alias, status, source, source_checked_at) "
+            "VALUES (%s, %s, FALSE, 'available', 'manual', NOW())",
+            (provider_id, model_id),
+        )
         await cur.execute("SELECT id FROM model WHERE provider_id = %s AND model_id = %s",
                           (provider_id, model_id))
         ref = await cur.fetchone()
         if ref is None:
+            # No debería pasar nunca: se acaba de insertar (o ya existía). Si
+            # pasa, es un FK roto (provider_id sin fila en `provider`) y hay
+            # que verlo en el log, no perderlo en un return mudo.
+            logger.error(
+                "run_migrations: no se pudo resolver ni crear la fila de `model` "
+                "para el binding del cerebro (provider_id=%s, model_id=%s) -- "
+                "el_juez queda SIN facet_binding.", provider_id, model_id,
+            )
             return
         (model_ref,) = ref
     await cur.execute(
