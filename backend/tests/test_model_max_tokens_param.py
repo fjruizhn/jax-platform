@@ -256,19 +256,62 @@ def test_seed_is_idempotent_and_does_not_overwrite_a_manual_value(client):
         client.portal.call(_run_seed)
 
 
+_MODELO_NO_VERIFICADO = "test-modelo-no-verificado-max-tokens-param"
+
+
 def test_seed_leaves_unverified_models_null(client):
     """No se adivina por proveedor: un modelo fuera de la lista verificada
-    queda NULL y falla ruidoso cuando alguien lo bindee. gpt-5.5 (el modelo
-    ANTERIOR de thot, todavia en el catalogo) es el caso real."""
-    rows = client.portal.call(
-        _fetch,
-        "SELECT max_tokens_param FROM model WHERE provider_id='openai' AND model_id='gpt-5.5'",
-    )
-    if rows:
-        assert rows[0][0] is None, (
-            "gpt-5.5 no esta en la lista verificada: sembrarlo por parecido de "
-            "proveedor es exactamente la suposicion que esta columna elimina"
+    queda NULL y falla ruidoso cuando alguien lo bindee.
+
+    Antes (hasta 2026-09-21) esto se afirmaba sobre 'openai'/'gpt-5.5', una
+    fila REAL con historial: nace en el seed original de Bloque C0
+    (2026-08-09, cuando thot todavia usaba gpt-5.5) y en algun momento
+    posterior alguien le puso max_tokens_param='max_completion_tokens' con un
+    UPDATE SQL directo contra la base fisica `jax_memory_test` -- comprobado
+    que NO fue por la app: `model_catalog_audit` (donde el UNICO camino de la
+    app que escribe esta columna fuera de una semilla, PUT
+    /api/admin/models/{id}/contrato-dispatch, deja rastro obligatorio en la
+    MISMA transaccion) no tiene ninguna fila para ese `model.id`, y
+    `_MODEL_MAX_TOKENS_PARAM_SEED` nunca listo a gpt-5.5 en ningun commit de
+    este repo (`git log -S`). El test dependia de que esa escritura manual,
+    de hace semanas, siguiera sin limpiarse en la base fisica de la que la
+    sesion clona su catalogo -- pasaba o fallaba segun el historial ajeno,
+    no segun el codigo.
+
+    Ahora crea su PROPIA fila, con un model_id que nunca va a estar en la
+    lista verificada, y la limpia -- mismo patron que
+    `test_seed_siembra_los_deepseek_vigentes_en_la_db_sin_pisar_valores` mas
+    abajo en este archivo."""
+    existia = bool(client.portal.call(
+        _fetch, "SELECT id FROM model WHERE provider_id='openai' AND model_id=%s",
+        (_MODELO_NO_VERIFICADO,)))
+    if not existia:
+        client.portal.call(
+            _commit,
+            "INSERT INTO model (provider_id, model_id, source, source_checked_at) "
+            "VALUES ('openai', %s, 'manual', NOW())", (_MODELO_NO_VERIFICADO,),
         )
+    try:
+        client.portal.call(
+            _commit, "UPDATE model SET max_tokens_param=NULL WHERE provider_id='openai' AND model_id=%s",
+            (_MODELO_NO_VERIFICADO,))
+        client.portal.call(_run_seed)
+        (valor,), = client.portal.call(
+            _fetch, "SELECT max_tokens_param FROM model WHERE provider_id='openai' AND model_id=%s",
+            (_MODELO_NO_VERIFICADO,))
+        assert valor is None, (
+            f"{_MODELO_NO_VERIFICADO} no esta en la lista verificada: sembrarlo por "
+            "parecido de proveedor es exactamente la suposicion que esta columna elimina"
+        )
+    finally:
+        if existia:
+            client.portal.call(
+                _commit, "UPDATE model SET max_tokens_param=NULL WHERE provider_id='openai' AND model_id=%s",
+                (_MODELO_NO_VERIFICADO,))
+        else:
+            client.portal.call(
+                _commit, "DELETE FROM model WHERE provider_id='openai' AND model_id=%s",
+                (_MODELO_NO_VERIFICADO,))
 
 
 # --------------------------------------------------------------------------
