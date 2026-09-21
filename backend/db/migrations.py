@@ -1411,10 +1411,22 @@ async def _seed_el_juez_facet(cur) -> None:
                       "WHERE facet_key = 'jax_local' AND role = 'primary'")
     fila = await cur.fetchone()
     if fila is None:
+        # NO decir "se reintenta en el próximo arranque": es falso y medido.
+        # _seed_facets (arriba) es el ÚNICO camino que repone facet_binding
+        # de jax_local, y sale temprano apenas la tabla tiene UNA fila
+        # cualquiera (`if n > 0: return`, más arriba en este archivo) -- con
+        # las otras ocho facetas ya sembradas, esa condición nunca vuelve a
+        # ser falsa sola. Sin intervención, cada arranque futuro encuentra
+        # exactamente este mismo `fila is None` y loguea lo mismo para
+        # siempre, con el_juez pegado al modelo con el que se quedó.
         logger.warning(
             "run_migrations: no se sembró facet_binding de el_juez -- el cerebro "
-            "(jax_local/primary) todavía no tiene binding. Se reintenta en el "
-            "próximo arranque."
+            "(jax_local/primary) no tiene binding. Esto NO se autocorrige en el "
+            "próximo arranque (_seed_facets no repone jax_local mientras "
+            "facet_binding tenga cualquier otra fila, y las otras 8 facetas ya "
+            "la tienen). Remedio: INSERT manual en facet_binding "
+            "(facet_key='jax_local', role='primary', provider_id, model_id del "
+            "modelo real) antes de que el_juez pueda sembrarse."
         )
         return
     provider_id, model_id, model_ref = fila

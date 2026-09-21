@@ -16,6 +16,11 @@ Los tests que tocan DB pasan por `client.portal.call(...)` a proposito: el
 pool de aiomysql de la app vive en el loop del portal de esa sesion, y
 tocarlo desde otro loop da el RuntimeError de "attached to a different loop"
 que ya afecta a otras suites de este repo.
+
+Sobre las filas sintéticas de `model` que algunos tests de abajo crean y
+borran en un `finally` (nombres con prefijo `test-`): mismo criterio, misma
+limitación de fondo (nada sobrevive a un SIGKILL/OOM) que documenta el
+docstring de módulo de `test_model_max_output_tokens.py`.
 """
 import http_client
 import pytest
@@ -201,19 +206,47 @@ def test_column_exists_after_run_migrations(client):
 
 def test_seed_populates_every_verified_model_present_in_the_catalog(client):
     """Los 3 modelos que HOY pasan por _call_openai_compat (gpt-5.6-terra,
-    deepseek-v4-flash, glm-5.3) mas kimi-k3. Se afirma sobre las filas que
-    existen en esta DB: jax_memory_test no tiene todo el catalogo de
-    produccion, pero ninguna fila sembrable puede quedar NULL."""
-    client.portal.call(_run_seed)
-    for provider_id, model_id, expected in _MODEL_MAX_TOKENS_PARAM_SEED:
-        rows = client.portal.call(
-            _fetch,
-            "SELECT max_tokens_param FROM model WHERE provider_id = %s AND model_id = %s",
-            (provider_id, model_id),
-        )
-        if not rows:
-            continue  # esa fila del catalogo no existe en esta DB
-        assert rows[0][0] == expected, f"{provider_id}/{model_id}"
+    deepseek-v4-flash, glm-5.3) mas kimi-k3. Se afirma sobre TODOS los
+    modelos de la lista verificada -- inclusive thot, el de nube de
+    producción.
+
+    Antes (hasta 2026-09-21) un `if not rows: continue` se comía en silencio
+    cualquier entrada cuya fila no existiera ya en `jax_memory_test`. En esta
+    máquina la fila real de thot es `openai/gpt-5.6-sol`, no
+    `openai/gpt-5.6-terra` (el de esta lista) -- el `continue` significaba que
+    el modelo de PRODUCCIÓN nunca se afirmaba en una corrida local: cambiar
+    su valor sembrado no ponía rojo a este test. Mismo defecto de fondo que
+    'gpt-5.5' en `test_seed_leaves_unverified_models_null`: la cobertura
+    dependía de qué trajera la plantilla, no del código.
+
+    Ahora crea la fila que falte (fuera de la lista de arriba a propósito, no
+    se toca ninguna fila real) y la limpia -- mismo patrón que
+    `test_seed_siembra_los_deepseek_vigentes_en_la_db_sin_pisar_valores` más
+    abajo en este archivo."""
+    insertadas = []
+    for provider_id, model_id, _expected in _MODEL_MAX_TOKENS_PARAM_SEED:
+        if not client.portal.call(
+            _fetch, "SELECT id FROM model WHERE provider_id=%s AND model_id=%s", (provider_id, model_id),
+        ):
+            client.portal.call(
+                _commit,
+                "INSERT INTO model (provider_id, model_id, source, source_checked_at) "
+                "VALUES (%s, %s, 'manual', NOW())", (provider_id, model_id),
+            )
+            insertadas.append((provider_id, model_id))
+    try:
+        client.portal.call(_run_seed)
+        for provider_id, model_id, expected in _MODEL_MAX_TOKENS_PARAM_SEED:
+            rows = client.portal.call(
+                _fetch,
+                "SELECT max_tokens_param FROM model WHERE provider_id = %s AND model_id = %s",
+                (provider_id, model_id),
+            )
+            assert rows and rows[0][0] == expected, f"{provider_id}/{model_id}"
+    finally:
+        for provider_id, model_id in insertadas:
+            client.portal.call(
+                _commit, "DELETE FROM model WHERE provider_id=%s AND model_id=%s", (provider_id, model_id))
 
 
 def test_seed_covers_deepseek_and_thot_specifically(client):

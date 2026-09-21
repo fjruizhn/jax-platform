@@ -28,11 +28,30 @@ import secrets
 import aiomysql
 import pytest
 
+import conftest as _conftest
 from base_de_test import BASE_COMPARTIDA, _parametros_de_conexion, es_base_de_test
 from db.connection import close_pool, get_pool
 from db.migrations import _EJECUTOR_CONFIG_C5, _seed_el_juez_facet, run_migrations
 from db_connect_config import db_connect_timeout_seconds
 from tests.identidades import sql
+
+# Sin MariaDB a mano: la Regla 2 de conftest.py (JAX_CI_NO_DB=1) SIMULA
+# "configurado pero caído" -- pone JAX_DB_HOST a un valor con pinta de válido
+# (conftest.py:403-405) y confía en que cada test llegue a aiomysql.create_pool()
+# para que el parche de _skip_on_db_access lo intercepte. Este archivo crea la
+# base con aiomysql.connect() DIRECTO (para poder crearla/borrarla fuera del
+# pool de la app) y el test no pide el fixture `client`: ninguna de las dos
+# redes de conftest.py lo alcanza. Por eso el guard pregunta lo mismo que
+# conftest._CI_NO_DB pregunta -- MariaDB reconocida como ausente por este
+# runner -- en vez de "¿hay una variable puesta?", que es cierto incluso en
+# modo sin-DB. `not JAX_DB_HOST` se mantiene aparte: cubre el caso legítimo y
+# distinto de un runner que de verdad no tiene la variable configurada (ver
+# `asegurar_base_de_test()` en base_de_test.py), no el de JAX_CI_NO_DB.
+_SIN_MARIADB = _conftest._CI_NO_DB or not os.environ.get("JAX_DB_HOST")
+_RAZON_SIN_MARIADB = (
+    _conftest._NO_DB_REASON if _conftest._CI_NO_DB
+    else "sin MariaDB a mano no hay base que crear"
+)
 
 CLAVE_COMPUERTA = "ejecutor.c5_auditor_admite_mismo_proveedor"
 
@@ -161,29 +180,43 @@ async def _migrar_y_leer_bindings():
     """`run_migrations()` COMPLETO -- no sólo `_seed_el_juez_facet` suelto --
     contra la base que `JAX_DB_NAME` apunte en ESTE momento. El pool queda
     atado al loop de este `asyncio.run()`, aislado del pool de la sesión
-    (`db/connection.py`: un pool por event loop)."""
-    await run_migrations()
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT provider_id, model_id, model_ref FROM facet_binding "
-                "WHERE facet_key='jax_local' AND role='primary'")
-            cerebro = await cur.fetchone()
-            await cur.execute(
-                "SELECT provider_id, model_id, model_ref FROM facet_binding "
-                "WHERE facet_key='el_juez' AND role='primary'")
-            juez = await cur.fetchone()
-    await close_pool()
+    (`db/connection.py`: un pool por event loop).
+
+    `close_pool()` va en `finally`: si `run_migrations()` revienta, dejar el
+    pool huérfano significa que el `DROP DATABASE` del llamador (afuera, en su
+    propio `finally`) corre con conexiones todavía abiertas contra esa base --
+    en el mejor caso lo bloquea, en el peor tapa el error original detrás de
+    uno de MariaDB sobre el DROP."""
+    try:
+        await run_migrations()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT provider_id, model_id, model_ref FROM facet_binding "
+                    "WHERE facet_key='jax_local' AND role='primary'")
+                cerebro = await cur.fetchone()
+                await cur.execute(
+                    "SELECT provider_id, model_id, model_ref FROM facet_binding "
+                    "WHERE facet_key='el_juez' AND role='primary'")
+                juez = await cur.fetchone()
+    finally:
+        await close_pool()
     return cerebro, juez
 
 
-@pytest.mark.skipif(not os.environ.get("JAX_DB_HOST"), reason="sin MariaDB a mano no hay base que crear")
+@pytest.mark.skipif(_SIN_MARIADB, reason=_RAZON_SIN_MARIADB)
 def test_una_base_virgen_nace_con_el_juez_bindeado(monkeypatch):
     """El corazón de este archivo. Antes del fix (2026-09-21): esto daba
     `juez is None` -- `el_juez` no llegaba a tener NINGÚN `facet_binding` en
     una instalación de cero, porque `_seed_el_juez_facet` corría antes que
-    `_seed_models_and_backfill` en `run_migrations` y se rendía en silencio."""
+    `_seed_models_and_backfill` en `run_migrations` y se rendía en silencio.
+
+    El `skipif` de arriba decide ANTES de que el cuerpo corra -- ni
+    `_crear_base_virgen` ni ningún otro DDL se ejecuta cuando este runner no
+    tiene MariaDB. Un test "sin DB" que hiciera la base física primero y
+    recién después descubriera que tiene que saltarse sería el mismo defecto
+    que esto existe para evitar."""
     nombre = _nombre_base_virgen()
     asyncio.run(_crear_base_virgen(nombre))
     monkeypatch.setenv("JAX_DB_NAME", nombre)
