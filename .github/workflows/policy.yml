@@ -2012,7 +2012,20 @@ jobs:
           #   en las dos ramas contra jax_memory_test: master 2403 passed / 1
           #   skipped -> rama 2425 / 1 skipped (0 fallidos las dos). Si el runner
           #   da otro numero, manda el runner.
-          PISO_PASSED = 2445
+          # 2445 -> 2452 (2026-09-20, JAX busca hechos por similitud en cada
+          #   turno): +7, los mismos tests de tests/test_semantic_context_facts_por_similitud.py
+          #   que suben el piso sin-DB, mas abajo -- son puros, asi que corren
+          #   completos aca tambien. Medido en vivo contra jax_memory_test,
+          #   MISMO comando en las dos ramas (worktree local, no runner
+          #   limpio -- hay 7 fallas preexistentes AJENAS a este cambio en
+          #   tests/test_command_stderr.py y tests/test_mesa_codigos.py,
+          #   IDENTICAS antes y despues, reportadas y no tocadas por estar
+          #   fuera de este encargo): master local 2491 passed / 1 skipped /
+          #   7 failed -> rama 2498 / 1 / 7 (0 fallas nuevas). El piso
+          #   declarado sube por el delta verificado (+7), no por el passed
+          #   crudo local. Si el runner (limpio, sin esas 7 fallas) da otro
+          #   numero, manda el runner.
+          PISO_PASSED = 2452
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2657,7 +2670,16 @@ jobs:
       #   pytest -q, MISMO comando en las dos ramas: master local 1617 passed /
       #   787 skipped -> rama 1639 / 787 (0 fallidos las dos; el piso declarado
       #   sube por el delta verificado, +22, no por el passed crudo local).
-      JAX_CI_MIN_PASSED: "1634"
+      # 1634 -> 1641 (2026-09-20, JAX busca hechos por similitud en cada
+      #   turno): +7, tests/test_semantic_context_facts_por_similitud.py
+      #   (archivo nuevo) -- el cableado de `search_similar_facts` en
+      #   `_semantic_context` (backend/api/chat.py). Los 7 son puros (una
+      #   `_MemoriaFalsa` con monkeypatch, sin DB real), corren completos
+      #   acá. Medido con JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q,
+      #   MISMO comando en las dos ramas: master local 1669 passed / 830
+      #   skipped -> rama 1676 / 830 (0 fallidos las dos; el piso declarado
+      #   sube por el delta verificado, +7, no por el passed crudo local).
+      JAX_CI_MIN_PASSED: "1641"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

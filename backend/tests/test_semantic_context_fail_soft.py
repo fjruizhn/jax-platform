@@ -28,6 +28,9 @@ class _MemoriaFalsa:
     async def get_facts(self, *_args, **_kwargs):
         return []
 
+    async def search_similar_facts(self, *_args, **_kwargs):
+        return []
+
 
 def _con_memoria(monkeypatch, filas):
     async def _lista():
