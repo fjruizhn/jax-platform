@@ -174,7 +174,8 @@ def test_solo_un_superadmin(client):
 
 # --- estado: la compuerta se ve, no se esconde ----------------------------------------------
 
-def test_estado_lista_todas_las_maquinas_con_su_elegibilidad(client, superadmin, maquinas):
+def test_estado_lista_todas_las_maquinas_con_su_elegibilidad(client, superadmin, maquinas,
+                                                            sin_auditor_local):
     _, h = superadmin
     d = client.get(f"{BASE}/estado", headers=h).json()
     por_nombre = {m["nombre"]: m for m in d["maquinas"]}
@@ -200,7 +201,34 @@ def _misiones_de(client, user_id):
     return client.portal.call(sql, "SELECT id FROM ejecutor_mision WHERE user_id = %s", (user_id,), True)
 
 
-def test_maquina_con_datos_de_clientes_no_es_elegible(client, superadmin, maquinas, runner):
+@pytest.fixture
+def sin_auditor_local(client):
+    """Garantiza que NO hay auditor local disponible, y lo repone al salir.
+
+    Los tests de "la compuerta cerrada deja fuera a las máquinas con datos de
+    clientes" daban por sentado que el entorno no tenía auditor local. Dejó de
+    ser cierto cuando la semilla pasó a `el_juez` (2026-09-20), que SÍ tiene
+    binding local: la máquina pasaba a ser elegible y el test caía por el
+    ambiente, no por el código. Un test que afirma sobre la compuerta tiene que
+    poner la compuerta, no heredarla.
+    """
+    faceta = client.portal.call(
+        sql, "SELECT config_value FROM axioma_config "
+             "WHERE config_key = 'ejecutor.auditor_faceta_local'", (), True)[0][0]
+    original = client.portal.call(
+        sql, "SELECT provider_id, model_id FROM facet_binding "
+             "WHERE facet_key = %s AND role = 'primary'", (faceta,), True)
+    client.portal.call(sql, "DELETE FROM facet_binding WHERE facet_key = %s", (faceta,))
+    yield
+    if original:
+        client.portal.call(sql, "INSERT IGNORE INTO facet_binding "
+                                "(facet_key, provider_id, model_id, role) "
+                                "VALUES (%s, %s, %s, 'primary')",
+                           (faceta, original[0][0], original[0][1]))
+
+
+def test_maquina_con_datos_de_clientes_no_es_elegible(client, superadmin, maquinas, runner,
+                                                    sin_auditor_local):
     user_id, h = superadmin
     r = _crear(client, h, maquinas=("t-sp2-vm", "t-sp2-clientes"))
     assert (r.status_code, r.json()["detail"]) == (403, {"codigo": "ejecutor_maquina_no_elegible",
@@ -213,21 +241,43 @@ def test_maquina_con_datos_de_clientes_no_es_elegible(client, superadmin, maquin
 
 @pytest.fixture
 def auditor_local_bindeado(client):
-    """Faceta 'auditor_local' → un proveedor sintético con `is_local`. La faceta la trae la
-    migración (siempre); acá sólo se agrega el binding de prueba -- se retira al final, la
-    faceta se deja (la migración la vuelve a sembrar con INSERT IGNORE de cualquier forma)."""
+    """Bindea LA FACETA QUE LA CONFIG NOMBRA a un proveedor sintético con `is_local`.
+
+    **No usa el nombre 'auditor_local' a mano, y ése era el defecto.** El código
+    de producción resuelve por `ejecutor.auditor_faceta_local` y por
+    `provider.is_local` -- "nunca el nombre de la faceta", dice su propio
+    comentario -- y este fixture hacía justo lo contrario. Cuando la config pasó
+    a `el_juez`, estos tests quedaban bindeando una faceta que ya no manda: el
+    del PEOR CASO de seguridad daba verde sin probar nada.
+
+    Guarda y RESTAURA el binding original. Antes no hacía falta porque
+    'auditor_local' no tenía otro; `el_juez` sí lo tiene -- lo copia del cerebro
+    `_seed_el_juez_facet` -- y borrarlo sin reponerlo dejaría al Ejecutor sin
+    auditor local para todo lo que corriera después en la misma sesión.
+    """
+    faceta = client.portal.call(
+        sql, "SELECT config_value FROM axioma_config "
+             "WHERE config_key = 'ejecutor.auditor_faceta_local'", (), True)[0][0]
+    original = client.portal.call(
+        sql, "SELECT provider_id, model_id FROM facet_binding "
+             "WHERE facet_key = %s AND role = 'primary'", (faceta,), True)
+
     def _armar(*, is_local: bool):
-        client.portal.call(sql, "DELETE FROM facet_binding WHERE facet_key = 'auditor_local'")
+        client.portal.call(sql, "DELETE FROM facet_binding WHERE facet_key = %s", (faceta,))
         client.portal.call(sql, "DELETE FROM provider WHERE id = 't-sp2-auditor'")
         client.portal.call(sql, "INSERT INTO provider (id, display_name, auth_type, is_local) "
                                 "VALUES ('t-sp2-auditor', 'auditor de prueba', 'none', %s)", (is_local,))
         client.portal.call(sql, "INSERT INTO facet_binding (facet_key, provider_id, model_id, role) "
-                                "VALUES ('auditor_local', 't-sp2-auditor', 'modelo-x', 'primary')")
+                                "VALUES (%s, 't-sp2-auditor', 'modelo-x', 'primary')", (faceta,))
     yield _armar
-    client.portal.call(sql, "DELETE FROM facet_binding WHERE facet_key = 'auditor_local'")
+
+    client.portal.call(sql, "DELETE FROM facet_binding WHERE facet_key = %s", (faceta,))
+    if original:
+        client.portal.call(sql, "INSERT INTO facet_binding (facet_key, provider_id, model_id, role) "
+                                "VALUES (%s, %s, %s, 'primary')",
+                           (faceta, original[0][0], original[0][1]))
     # `model` antes que `provider`: ver el comentario homónimo en
-    # test_ejecutor_auditor_local.py::_limpiar -- _seed_models_and_backfill puede haber
-    # derivado una fila de catálogo mientras este binding sintético estaba vivo.
+    # test_ejecutor_auditor_local.py::_limpiar.
     client.portal.call(sql, "DELETE FROM model WHERE provider_id = 't-sp2-auditor'")
     client.portal.call(sql, "DELETE FROM provider WHERE id = 't-sp2-auditor'")
 
@@ -520,7 +570,7 @@ def test_continuar_valida_la_instruccion_la_mision_y_la_pausa(client, superadmin
     assert client.get(f"{BASE}/misiones/{uuid.uuid4()}", headers=h).status_code == 404
 
 
-def test_continuar_revalida_la_compuerta(client, superadmin, maquinas, runner):
+def test_continuar_revalida_la_compuerta(client, superadmin, maquinas, runner, sin_auditor_local):
     _, h = superadmin
     runner.guion(GUION_BUENO)
     mision_id = _crear(client, h).json()["id"]

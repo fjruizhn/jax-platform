@@ -210,11 +210,106 @@ def test_el_modelo_del_auditor_local_no_esta_duplicado_en_otro_lugar():
 
 def test_run_migrations_real_siembra_la_faceta_y_la_clave_de_config(client):
     """El wiring real (run_migrations, no la función suelta): la fixture `client`
-    (session-scoped) ya la corrió una vez al levantar la app -- la faceta 'auditor_local'
-    y la clave de config tienen que existir aunque este test nunca haya llamado a las
-    funciones de arriba directamente."""
+    (session-scoped) ya la corrió al levantar la app.
+
+    **La clave existe; su VALOR no se afirma acá.** En una base nueva la semilla
+    pone `el_juez`; en una que ya venía usando `auditor_local`, el `INSERT
+    IGNORE` respeta lo que hay -- las dos cosas son correctas y dependen de la
+    base, no del código. El valor de la SEMILLA lo ata
+    `test_ejecutor_config_c5.py`, y la relación config↔faceta la ata
+    `test_la_faceta_que_la_config_nombra_nunca_esta_retirada`. Afirmarlo también
+    acá era atar el ambiente: pasaba local (base vieja) y fallaba en CI (base
+    nueva), que es exactamente lo que se busca no tener.
+    """
     fila = client.portal.call(sql, "SELECT config_value FROM axioma_config WHERE config_key = "
                                    "'ejecutor.auditor_faceta_local'", (), True)
-    assert fila and fila[0][0] == "auditor_local"
+    assert fila and fila[0][0], "run_migrations no sembró la clave de config"
     existe = client.portal.call(sql, "SELECT 1 FROM facet WHERE `key` = 'auditor_local'", (), True)
-    assert existe != (), "run_migrations no sembró la faceta 'auditor_local'"
+    assert existe != (), "la faceta vieja no está: tiene que quedar, retirada"
+
+
+# --- retiro de la faceta vieja y semilla al día (2026-09-20) ----------------------------------
+
+def _config_auditor_local(client):
+    return client.portal.call(
+        sql, "SELECT config_value FROM axioma_config "
+             "WHERE config_key = 'ejecutor.auditor_faceta_local'", (), True)[0][0]
+
+
+def _estado_facet(client, clave):
+    fila = client.portal.call(sql, "SELECT status FROM facet WHERE `key` = %s", (clave,), True)
+    return fila[0][0] if fila else None
+
+
+def test_la_faceta_vieja_se_retira_SOLO_si_la_config_ya_no_la_nombra(client):
+    """Las dos ramas de `_retirar_auditor_local_facet`, no la que toque el ambiente.
+
+    `auditor_local` fue el primer auditor de C5 (`qwen3:14b` sobre CPU) y la
+    reemplazó `el_juez`. Se retira con `status='disabled'` y no con DELETE:
+    `jacobs/store.py` arma con `facet.status='active'` el conjunto de facetas que
+    el planner ACEPTA como destino, y un DELETE perdería contra su propia semilla
+    en la primera base nueva.
+
+    Pero NO se retira si la config todavía la nombra: la semilla nueva es
+    `INSERT IGNORE` y no pisa lo que ya existe, así que una base que sigue
+    usándola quedaría apuntando a una faceta `disabled` -- y la consulta de
+    elegibilidad no mira `status`. La primera versión de esta migración tenía
+    ese defecto; lo encontró el test de abajo.
+    """
+    previo = _config_auditor_local(client)
+    previo_estado = _estado_facet(client, "auditor_local")
+    try:
+        # Rama 1: la config la nombra -> se queda activa.
+        client.portal.call(sql, "UPDATE axioma_config SET config_value = 'auditor_local' "
+                                "WHERE config_key = 'ejecutor.auditor_faceta_local'")
+        client.portal.call(sql, "UPDATE facet SET status = 'active' WHERE `key` = 'auditor_local'")
+        client.portal.call(_correr_retiro)
+        assert _estado_facet(client, "auditor_local") == "active", (
+            "se retiró la faceta que la config todavía nombra")
+
+        # Rama 2: la config nombra otra -> se retira.
+        client.portal.call(sql, "UPDATE axioma_config SET config_value = 'el_juez' "
+                                "WHERE config_key = 'ejecutor.auditor_faceta_local'")
+        client.portal.call(_correr_retiro)
+        assert _estado_facet(client, "auditor_local") == "disabled"
+
+        # Y no se borró.
+        existe = client.portal.call(
+            sql, "SELECT 1 FROM facet WHERE `key` = 'auditor_local'", (), True)
+        assert existe, "la faceta se BORRÓ: tiene que quedar, retirada"
+    finally:
+        client.portal.call(sql, "UPDATE axioma_config SET config_value = %s "
+                                "WHERE config_key = 'ejecutor.auditor_faceta_local'", (previo,))
+        client.portal.call(sql, "UPDATE facet SET status = %s WHERE `key` = 'auditor_local'",
+                           (previo_estado,))
+
+
+async def _correr_retiro():
+    from db.connection import get_pool
+    from db.migrations import _retirar_auditor_local_facet
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await _retirar_auditor_local_facet(cur)
+
+
+def test_la_faceta_que_la_config_nombra_nunca_esta_retirada(client):
+    """El invariante que casi rompo: retirar una faceta y dejar la config
+    apuntándole.
+
+    `ejecutor.auditor_faceta_local` es lo que el Ejecutor usa para auditar
+    máquinas con datos de clientes. Si esa faceta queda `disabled`, el sistema
+    apunta a algo retirado -- y la consulta de elegibilidad NO mira `status`,
+    así que la puerta seguiría abriéndose contra una faceta que el planner ya
+    no acepta. Se comprueba la relación, no un nombre: sirve igual el día que
+    la config apunte a otra cosa.
+    """
+    faceta = client.portal.call(
+        sql, "SELECT config_value FROM axioma_config "
+             "WHERE config_key = 'ejecutor.auditor_faceta_local'", (), True)[0][0]
+    estado = client.portal.call(
+        sql, "SELECT status FROM facet WHERE `key` = %s", (faceta,), True)
+    assert estado, f"la config apunta a la faceta {faceta!r}, que NO existe"
+    assert estado[0][0] == "active", (
+        f"la config apunta a {faceta!r} y está en {estado[0][0]!r}: el auditor local "
+        "de las máquinas con datos de clientes es una faceta retirada")
