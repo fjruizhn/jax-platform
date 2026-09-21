@@ -210,14 +210,22 @@ def test_el_modelo_del_auditor_local_no_esta_duplicado_en_otro_lugar():
 
 def test_run_migrations_real_siembra_la_faceta_y_la_clave_de_config(client):
     """El wiring real (run_migrations, no la función suelta): la fixture `client`
-    (session-scoped) ya la corrió una vez al levantar la app -- la faceta 'auditor_local'
-    y la clave de config tienen que existir aunque este test nunca haya llamado a las
-    funciones de arriba directamente."""
+    (session-scoped) ya la corrió al levantar la app.
+
+    **La clave existe; su VALOR no se afirma acá.** En una base nueva la semilla
+    pone `el_juez`; en una que ya venía usando `auditor_local`, el `INSERT
+    IGNORE` respeta lo que hay -- las dos cosas son correctas y dependen de la
+    base, no del código. El valor de la SEMILLA lo ata
+    `test_ejecutor_config_c5.py`, y la relación config↔faceta la ata
+    `test_la_faceta_que_la_config_nombra_nunca_esta_retirada`. Afirmarlo también
+    acá era atar el ambiente: pasaba local (base vieja) y fallaba en CI (base
+    nueva), que es exactamente lo que se busca no tener.
+    """
     fila = client.portal.call(sql, "SELECT config_value FROM axioma_config WHERE config_key = "
                                    "'ejecutor.auditor_faceta_local'", (), True)
-    assert fila and fila[0][0] == "auditor_local"
+    assert fila and fila[0][0], "run_migrations no sembró la clave de config"
     existe = client.portal.call(sql, "SELECT 1 FROM facet WHERE `key` = 'auditor_local'", (), True)
-    assert existe != (), "run_migrations no sembró la faceta 'auditor_local'"
+    assert existe != (), "la faceta vieja no está: tiene que quedar, retirada"
 
 
 # --- retiro de la faceta vieja y semilla al día (2026-09-20) ----------------------------------
