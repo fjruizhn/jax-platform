@@ -1178,7 +1178,6 @@ export default {
   memoria: {
     titulo: 'Memoria',
     subtitulo: (nombre) => `Lo que ${nombre} cree saber: revisá, corregí o caducá cada hecho.`,
-    volver: (nombre) => `Volver a ${nombre}`,
     cargando: 'Cargando…',
     errorCarga: 'No se pudo cargar la memoria.',
     vacio: 'No hay hechos activos para revisar.',

@@ -2,18 +2,19 @@ import { NavLink, Link } from 'react-router-dom'
 import { useI18n } from '../../i18n/index.jsx'
 import { useNombreDelSistema } from '../../store/useApariencia'
 
+// Orden pedido por Fernando (2026-09-20): Memoria es el 2º ítem, justo
+// después de Dashboard. Ruta relativa como las demás -- "memoria" ahora es
+// una sub-ruta más de Admin.jsx, no una ruta suelta de App.jsx (ver el
+// comentario de esa ruta y el de Admin.jsx).
 const NAV_ITEMS = [
   { path: 'dashboard', labelKey: 'adminDashboard', icon: '◈' },
+  { path: 'memoria',   labelKey: 'adminMemoria',   icon: '🧩' },
   { path: 'keys',      labelKey: 'adminFacetsModels', icon: '🧠' },
   { path: 'users',     labelKey: 'adminUsers',     icon: '👤' },
   { path: 'repo',      labelKey: 'adminRepo',      icon: '📁' },
   { path: 'settings',  labelKey: 'adminSettings',  icon: '⚙' },
   { path: 'smtp',      labelKey: 'adminSmtp',      icon: '✉' },
   { path: 'costs',     labelKey: 'adminCosts',     icon: '💰' },
-  // Task 6 (2026-09-20, memoria-admin): "/memoria" es una ruta propia de
-  // App.jsx, hermana de "/admin/*" (no un sub-path suyo) -- ver el comentario
-  // de esa ruta. `absoluto` evita el prefijo "/admin/" que arman las demás.
-  { path: 'memoria',   labelKey: 'adminMemoria',   icon: '🧩', absoluto: true },
 ]
 
 export default function AdminSidebar() {
@@ -35,7 +36,7 @@ export default function AdminSidebar() {
         {NAV_ITEMS.map((item) => (
           <NavLink
             key={item.path}
-            to={item.absoluto ? `/${item.path}` : `/admin/${item.path}`}
+            to={`/admin/${item.path}`}
             className={({ isActive }) =>
               `flex items-center gap-2.5 px-4 py-2.5 text-sm transition-colors ${
                 isActive

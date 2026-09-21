@@ -12,16 +12,22 @@ vi.mock('../api/client', () => ({ default: { get: vi.fn(), post: vi.fn() } }))
 
 import api from '../api/client'
 import Memoria from './Memoria'
+import Toast from '../components/Notifications/Toast'
 import { I18nProvider } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
 import es from '../i18n/es.js'
 import en from '../i18n/en.js'
 
-// Store REAL, no mockeado: Memoria.jsx monta su propio <Toast/> (como
-// Admin.jsx), y los avisos de éxito/error se verifican leyendo lo que ese
-// Toast pinta de verdad -- mockear el store entero dejaría <Toast/> sin
+// Store REAL, no mockeado: los avisos de éxito/error se verifican leyendo lo
+// que <Toast/> pinta de verdad -- mockear el store entero lo dejaría sin
 // `toasts`/`dismissToast` y rompería el árbol (medido: TypeError en
 // Toast.jsx al mockear sólo addToast/user).
+//
+// Corrección (2026-09-20): Memoria.jsx YA NO monta su propio <Toast/> --
+// ahora es una ruta anidada de Admin.jsx, que lo monta una sola vez para
+// todas sus pantallas (ver el comentario de módulo en Memoria.jsx). Este
+// test simula esa parte del caparazón montando <Toast/> junto a <Memoria/>,
+// igual que hace Admin.jsx de verdad.
 const usuario = { user_id: 7, email: 'fernando@rich-hn.com', role: 'superadmin' }
 
 // Hechos 136/138/139: el ejemplo real del spec §1 -- "JAX no tiene capacidad
@@ -86,7 +92,7 @@ const HECHOS_A_ESCALA = { hechos: [HECHO_136], total: 9000 }
 const VENCIDOS_A_ESCALA = { hechos: [HECHO_VENCIDO], total: 9500 }
 
 function renderMemoria() {
-  return render(<I18nProvider><MemoryRouter><Memoria /></MemoryRouter></I18nProvider>)
+  return render(<I18nProvider><MemoryRouter><Memoria /><Toast /></MemoryRouter></I18nProvider>)
 }
 
 // GET por URL, como AdminUsers.test.jsx. Memoria.jsx pide /hechos dos veces

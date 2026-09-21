@@ -47,3 +47,27 @@ describe('AdminSidebar', () => {
     expect(screen.getByText(es.adminBack('Hal'))).toBeInTheDocument()
   })
 })
+
+// Observación de Fernando (2026-09-20): Memoria tiene que ser el 2º ítem del
+// menú. Memoria.jsx quedó ruteada como hermana de /admin/* con la marca
+// `absoluto: true` -- de ahí salían las dos quejas (ver App.test.jsx y
+// Admin.test.jsx). Acá se ata el orden; el candado de ruta relativa
+// (sin `absoluto`) se ata abajo.
+describe('AdminSidebar -- posición de Memoria (2026-09-20)', () => {
+  it('Memoria es el 2º ítem del menú, justo después de Dashboard', () => {
+    renderSidebar()
+    // Cada enlace lleva un ícono antes del texto (span aparte); el texto
+    // visible es lo que importa para el orden, no el ícono.
+    const enlaces = screen.getAllByRole('link').map((a) => a.textContent)
+    // El primer enlace de la lista es "Dashboard"; el 2º tiene que ser
+    // "Memoria" -- no el último, como estaba antes.
+    expect(enlaces[0]).toContain(es.adminDashboard)
+    expect(enlaces[1]).toContain(es.adminMemoria)
+  })
+
+  it('Memoria es una ruta relativa del caparazón (/admin/memoria), no absoluta', () => {
+    renderSidebar()
+    const enlaceMemoria = screen.getByRole('link', { name: new RegExp(es.adminMemoria) })
+    expect(enlaceMemoria).toHaveAttribute('href', '/admin/memoria')
+  })
+})

@@ -6,7 +6,6 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Historial from './pages/Historial'
 import Admin from './pages/Admin'
-import Memoria from './pages/Memoria'
 import ResetPassword from './pages/ResetPassword'
 import RequireAuth from './components/RequireAuth'
 
@@ -82,23 +81,21 @@ export default function App() {
             </RequireAuth>
           }
         />
-        {/* Task 6 (2026-09-20, memoria-admin): ruta propia hermana de
-            "/historial", no anidada bajo /admin/* -- mismo patrón de
-            components/Memoria/ (carpeta propia, no components/admin/).
-            Sigue gateada por RequireSuperadmin: el spec (§1) es explícito en
-            que la memoria es superadmin-only ("lo único que el sistema
-            acumula sobre nosotros"), como ya exige el backend
-            (require_superadmin en backend/api/admin/memoria.py). */}
-        <Route
-          path="/memoria"
-          element={
-            <RequireAuth>
-              <RequireSuperadmin>
-                <Memoria />
-              </RequireSuperadmin>
-            </RequireAuth>
-          }
-        />
+        {/* Corrección (2026-09-20): Memoria vivía acá, hermana de /admin/*,
+            SIN el caparazón de administración (AdminSidebar) -- de ahí las
+            dos quejas de Fernando: "Volver a Axioma" mandaba al inicio (la
+            única salida posible sin sidebar) y el ítem no se podía ordenar
+            con los demás. Ahora es una ruta anidada más de Admin.jsx
+            (Route path="memoria"), igual que dashboard/keys/users/etc.
+            El candado sigue siendo el mismo: /admin/* ya está envuelto en
+            RequireAuth + RequireSuperadmin, así que /admin/memoria hereda
+            exactamente la misma guardia que tenía acá (superadmin-only,
+            spec §1 / backend/api/admin/memoria.py::require_superadmin) --
+            mover la ruta no debilita el permiso.
+            Redirección de la URL vieja: la pantalla ya estuvo en producción
+            en /memoria y puede haber un enlace guardado -- que no muera con
+            un 404 mudo. */}
+        <Route path="/memoria" element={<Navigate to="/admin/memoria" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
