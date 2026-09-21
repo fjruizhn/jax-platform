@@ -12,8 +12,8 @@ sembrada que `carga-memoria-2026-09-20.md` (9.000 hechos activos de 10.000).
 
 | Fase | Antes | % | Después | |
 |---|---|---|---|---|
-| `SQL_ACTIVOS_CON_VECTOR` (98,3 MB de vectores en texto) | 0,599 s | 9 % | 0,615 s | sin cambio |
-| 9.000 × `SQL_VECINOS` (el N+1) | 1,817 s | 27 % | 1,981 s | sin cambio |
+| `SQL_ACTIVOS_CON_VECTOR` (98,3 MB de vectores en texto) | 0,599 s | 9 % | 0,615 s | +3 % (ruido) |
+| 9.000 × `SQL_VECINOS` (el N+1) | 1,817 s | 27 % | 1,981 s | +9 % (ruido) |
 | union-find del grafo de temas | 0,012 s | 0,2 % | — | despreciable |
 | **`_casi_duplicados_del_grupo`** | **4,291 s** | **64 %** | **0,878 s** | **4,9×** |
 | **TOTAL** | **6,706 s** | | **3,474 s** | **1,93×** |
@@ -30,8 +30,7 @@ las 94.695 distancias coseno        4,122 s   (43,5 us por par)
 ## 2 · Las dos causas, las dos dentro de `_distancia_coseno`
 
 1. **El producto punto en Python puro.** `sum(x*y for x,y in zip(a,b))` sobre
-   1.024 dimensiones. `math.sumprod` (stdlib, en C) da **el mismo resultado
-   hasta el último dígito** y es mucho más rápido.
+   1.024 dimensiones. `math.sumprod` (stdlib, en C) es mucho más rápido.
 2. **La norma recomputada en cada par.** `_distancia_coseno` calculaba
    `norma_a` y `norma_b` adentro. En un grupo de 90 miembros, la norma de cada
    vector se recalculaba **89 veces**: 8.010 raíces en vez de 90.
@@ -47,17 +46,41 @@ Medido aparte, 4.005 pares de 1.024 dimensiones:
 Se eligió la segunda, no la tercera: gana lo mismo y **no cambia el contrato**
 de `_distancia_coseno` para quien la llame con dos vectores sueltos.
 
-## 3 · Que el resultado NO cambia
+## 3 · Que ninguna decisión cambia — y por qué, con el número correcto
 
-El arreglo es de velocidad. Si cambiara un dígito, cambiarían los grupos que ve
-Fernando:
+> **Corrección.** La primera versión de este documento decía que `math.sumprod`
+> daba «el mismo resultado hasta el último dígito». **Es falso**, y lo refutó una
+> auditoría adversarial: `sumprod` acumula compensado. Medido sobre los **94.435
+> pares reales** de la base de carga, el **2,87 %** difiere en los últimos bits.
 
-- **40 de 40 casos sintéticos idénticos** entre la implementación vieja y la
-  nueva (grupos de 2 a 90 miembros, clusters a distintas distancias del umbral
-  más ruido, 1.024 dimensiones), incluido el degenerado de un vector en ceros.
-- Tres tests nuevos: la norma se calcula **una vez por vector** (contando
-  llamadas, no midiendo tiempo — un test de reloj sería un flake), la distancia
-  coincide con la fórmula ingenua, y un vector en ceros sigue dando infinito.
+Lo que hace seguro el cambio no es una identidad que no existe, es el **margen**:
+
+| | |
+|---|---|
+| Error máximo entre la vieja y la nueva | **3,3 × 10⁻¹⁶** |
+| Distancia real más cercana al umbral 0,25 | **2,94 × 10⁻²** |
+| El margen es el error multiplicado por | **8,8 × 10¹³** |
+| Pares reales cuya decisión cambia | **0** |
+
+Catorce órdenes de magnitud. Tiene sentido: el hueco entre «mismo tema»
+(0,097-0,145, medido sobre redacciones reales) y «tema distinto» (~0,77) es
+enorme comparado con el último bit de un `float`.
+
+**La red que lo defiende, en el repo y no en un scratchpad:**
+
+- `_casi_duplicados_ingenuo()` — la implementación anterior al arreglo, versionada
+  como referencia — y siete casos parametrizados que comparan contra ella el
+  **camino de producción** (el de cuatro argumentos, el único que corre), con
+  grupos de 2 a 90 miembros y dos casos con normas muy dispares entre sí.
+- Un centinela del cableado: cruzar la norma de `a` con la de `b` tiene que
+  cambiar el resultado.
+- La norma se calcula una vez por vector, **contando llamadas** y no midiendo
+  tiempo: un test de reloj sería un flake y además no diría por qué.
+
+Esa red nació de un agujero real. La primera versión sólo probaba la firma de
+**dos** argumentos y el conteo de normas; la auditoría mutó el cableado a
+`normas[a], normas[a]` y **los 28 tests siguieron en verde con los grupos
+saliendo mal**. Con los tests de ahora, esa misma mutación cae en tres.
 
 ## 4 · Bajo carga
 
@@ -78,10 +101,14 @@ p50 10,0 ms a c=1 y 165 ms a c=25, sin errores; `/hechos` sin filtro 15,0 ms y
 
 - **El N+1 se queda.** Se midió la hipótesis obvia —que el costo fuera pedir una
   conexión del pool 9.000 veces— y **es falsa**: reusar una conexión por
-  trabajador sale **0,9×**, o sea peor. Las 9.000 consultas son genuinamente de
+  trabajador sale **0,9×**, o sea peor. *(Medición de una corrida, con un guion
+  de scratchpad que no quedó versionado: tómese como HECHO de una sola
+  observación, no como resultado reproducible desde el repo.)* Las 9.000 consultas son genuinamente de
   0,22 ms cada una; con concurrencia 6 eso son ~2 s y es su piso con este diseño.
-- **No se subió la concurrencia.** Medido: 4 → 2,63 s · 6 → 2,17 s · 8 → 1,76 s ·
-  10 → 1,49 s. Pero el pool tiene `maxsize=10`: ir a 10 es quedarse con el pool
+- **No se subió la concurrencia.** Medido **sobre la fase de vecinos sola**, no
+  sobre el endpoint entero: 4 → 2,63 s · 6 → 2,17 s · 8 → 1,76 s · 10 → 1,49 s.
+  (El valor de hoy es 6; la fase mide 1,98 s en la tabla §1 y 2,17 s acá porque
+  son corridas distintas.) Pero el pool tiene `maxsize=10`: ir a 10 es quedarse con el pool
   entero y hambrear a las demás peticiones. Ganaría esta pantalla a costa del
   resto, y bajo concurrencia real sería peor, no mejor. La decisión de dejar 4
   conexiones libres sigue siendo la correcta.

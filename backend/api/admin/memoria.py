@@ -462,15 +462,33 @@ def _distancia_coseno(a: list, b: list,
     dentro de un grupo ya pequeño -- sin volver a golpear la DB por cada par,
     reusando los vectores que agrupar_por_tema() ya trajo.
 
-    `math.sumprod` (stdlib, C) en vez de `sum(x*y for ...)`: mismo resultado
-    hasta el último dígito y 8,2x más rápido, medido a 1.024 dimensiones sobre
-    4.005 pares (47,4 us -> 5,8 us por par). A 10.000 hechos esta función se
-    llama 94.695 veces por request, así que ese factor es el 61 % del tiempo
-    del endpoint.
+    `math.sumprod` (stdlib, C) en vez de `sum(x*y for ...)`: 8,2x más rápido,
+    medido a 1.024 dimensiones sobre 4.005 pares (47,4 us -> 5,8 us por par). A
+    10.000 hechos esta función se llama 94.695 veces por request, así que ese
+    factor es el 61 % del tiempo del endpoint.
+
+    **NO da el mismo bit que `sum(generador)`**, y conviene decirlo con el
+    número: `sumprod` acumula compensado, y sobre los 94.435 pares REALES de la
+    base de carga el 2,87 % difiere en los últimos bits, con un error máximo de
+    3,3e-16. Lo que hace seguro el cambio no es una identidad que no existe,
+    sino el MARGEN: la distancia real más cercana al umbral 0,25 está a
+    2,94e-02, o sea **8,8e13 veces el error**. Ninguna decisión de agrupamiento
+    puede darse vuelta por eso. (Medido el 2026-09-20; la identidad bit a bit
+    se afirmó primero y una auditoría adversarial la refutó.)
 
     `norma_a`/`norma_b` se aceptan ya calculadas: quien compara m vectores
     par a par las calcula una vez cada una y no m-1 veces.
     """
+    if len(a) != len(b):
+        # `math.sumprod` levanta ValueError donde `zip` truncaba en silencio.
+        # Hoy no es alcanzable (`embedding_bge_m3` es VECTOR(1024) NOT NULL: la
+        # dimensión la impone MariaDB), pero en una migración de embeddings
+        # conviven dos columnas de distinta dimensión -- ya pasó el 2026-09-12.
+        # Comparar vectores de distinto largo no tiene respuesta correcta, así
+        # que se dice en vez de truncar o de reventar con un error del stdlib.
+        raise ValueError(
+            f"vectores de distinta dimensión: {len(a)} y {len(b)}. "
+            "¿Quedaron dos columnas de embeddings conviviendo?")
     na = _norma(a) if norma_a is None else norma_a
     nb = _norma(b) if norma_b is None else norma_b
     if na == 0 or nb == 0:

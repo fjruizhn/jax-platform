@@ -117,7 +117,12 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
         # medidor que no puede autenticarse mide un 401 rapido -- justo lo que
         # la verificacion previa de mas abajo existe para impedir.
         cur.execute("SELECT token_version, role FROM jax_users WHERE user_id = 1")
-        (token_version, rol) = cur.fetchone()
+        fila_usuario = cur.fetchone()
+    if fila_usuario is None:
+        raise RuntimeError(
+            f"{base_de_prueba} no tiene user_id=1 -- ¿corriste "
+            "memoria_levantar_entorno.py, que crea el superadmin?")
+    (token_version, rol) = fila_usuario
     conn.close()
     if n_facts < 9000:
         raise RuntimeError(f"{base_de_prueba} tiene solo {n_facts} facts -- ¿corriste memoria_seed.py?")
