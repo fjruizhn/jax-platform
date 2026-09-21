@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { useJaxStore } from '../../store/useJaxStore'
+import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 import AdminModelCatalog from './AdminModelCatalog'
 import AdminFacetBindings from './AdminFacetBindings'
 import AdminMotors from './AdminMotors'
@@ -189,20 +190,20 @@ export default function AdminFacetsModels() {
                       <button
                         onClick={() => handleTest(p.id)}
                         disabled={testing[p.id] || !p.has_key}
-                        className="text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte disabled:opacity-40 transition-colors"
+                        className={`${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte disabled:opacity-40 transition-colors`}
                       >
                         {testing[p.id] ? t.adminKeyTesting : t.adminKeyTest}
                       </button>
                       <button
                         onClick={() => { setRotating(p.id); setNewKey('') }}
-                        className="text-xs px-2 py-1 rounded bg-acento-fondo text-acento-texto border border-transparent hover:border-acento transition-colors"
+                        className={`${TAMANO_BOTON_ACCION} rounded bg-acento-fondo text-acento-texto border border-transparent hover:border-acento transition-colors`}
                       >
                         {t.adminKeyRotate}
                       </button>
                       <button
                         onClick={() => setRevokeConfirm(p.id)}
                         disabled={revoking === p.id || !(credentialsById[p.id]?.credentials || []).some(c => c.state === 'active')}
-                        className="text-xs px-2 py-1 rounded bg-peligro-fondo text-peligro border border-transparent hover:border-peligro-borde disabled:opacity-30 transition-colors"
+                        className={`${TAMANO_BOTON_ACCION} rounded bg-peligro-fondo text-peligro border border-transparent hover:border-peligro-borde disabled:opacity-30 transition-colors`}
                       >
                         {revoking === p.id ? t.adminKeyRevoking : t.adminKeyRevoke}
                       </button>

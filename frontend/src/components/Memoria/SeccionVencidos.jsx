@@ -1,4 +1,5 @@
 import { useI18n, localeFor } from '../../i18n/index.jsx'
+import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 
 // Sección «Vencidos» (decisión de Fernando, 2026-09-20). Hoy un hecho
 // vencido desaparece de la pantalla y no se le puede quitar la caducidad:
@@ -47,7 +48,7 @@ export default function SeccionVencidos({ vencidos, totalReal, procesando, onQui
               aria-label={t.memoria.quitarCaducidadDe(hecho.id)}
               disabled={procesando.has(hecho.id)}
               onClick={() => onQuitarCaducidad(hecho.id)}
-              className="text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors disabled:opacity-50 disabled:pointer-events-none flex-shrink-0"
+              className={`${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors disabled:opacity-50 disabled:pointer-events-none flex-shrink-0`}
             >
               {t.memoria.quitarCaducidad}
             </button>
