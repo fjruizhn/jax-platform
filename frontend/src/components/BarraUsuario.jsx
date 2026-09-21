@@ -78,6 +78,20 @@ function IconoPieza() {
   )
 }
 
+// Segundo contador (2026-09-21): flechas de intercambio, trazo de Lucide
+// (licencia ISC), mismo criterio que el resto -- AL DIA se ve como un ícono
+// más de la barra, no como una alarma permanente.
+function IconoIntercambio() {
+  return (
+    <svg className={ICONO} {...trazo}>
+      <path d="m16 3 4 4-4 4" />
+      <path d="M4 7h16" />
+      <path d="m8 21-4-4 4-4" />
+      <path d="M20 17H4" />
+    </svg>
+  )
+}
+
 function IconoSalir() {
   return (
     <svg className={ICONO} {...trazo}>
@@ -122,6 +136,27 @@ export default function BarraUsuario() {
     let vigente = true
     api.get('/admin/memoria/hechos', { params: { verificado: false, limite: 1 } })
       .then((r) => { if (vigente) setSinVerificar(r.data.total) })
+      .catch(() => {}) // fail-soft: sin el dato, el contador simplemente no aparece
+    return () => { vigente = false }
+  }, [esSuperadmin])
+
+  // Segundo contador (2026-09-21, pedido de Fernando): propuestas de cambio
+  // de modelo (`model_binding_proposal.status='pending'`) sin decidir. El
+  // hueco que esto cierra: la propuesta #18 estuvo pendiente más de 6 horas y
+  // sólo se vio porque se miró a mano -- nada avisaba. El endpoint no trae un
+  // `total` aparte (a diferencia de /admin/memoria/hechos): se cuenta el
+  // mismo array que ya lista AdminModelCatalog con este filtro
+  // (?status=pending, pestaña "models" de /admin/keys).
+  const [propuestasPendientes, setPropuestasPendientes] = useState(0)
+  const etiquetaPropuestas = propuestasPendientes > 0
+    ? t.barraPropuestasPendientes(propuestasPendientes)
+    : t.barraPropuestasAlDia
+
+  useEffect(() => {
+    if (!esSuperadmin) return
+    let vigente = true
+    api.get('/admin/models/proposals', { params: { status: 'pending' } })
+      .then((r) => { if (vigente) setPropuestasPendientes(r.data.proposals.length) })
       .catch(() => {}) // fail-soft: sin el dato, el contador simplemente no aparece
     return () => { vigente = false }
   }, [esSuperadmin])
@@ -188,6 +223,28 @@ export default function BarraUsuario() {
               ? <span aria-hidden="true">🧩</span>
               : <IconoPieza />}
             <span className="text-xs font-bold">{sinVerificar}</span>
+          </Link>
+        )}
+
+        {/* Segundo contador (2026-09-21): mismo patrón que el de memoria de
+            arriba -- siempre visible, forma e ícono cambian con el estado.
+            Lleva a /admin/keys?tab=models, pestaña "Catálogo de modelos"
+            (AdminModelCatalog), que es donde se aprueba o rechaza cada
+            propuesta -- de una sola vista, sin un clic más para encontrar la
+            pestaña (AdminFacetsModels lee el `?tab` al montar). Sólo
+            superadmin: es quien puede aprobar/rechazar y el único que entra
+            a /admin/keys. */}
+        {esSuperadmin && (
+          <Link
+            to="/admin/keys?tab=models"
+            aria-label={etiquetaPropuestas}
+            title={etiquetaPropuestas}
+            className={`${BOTON} ${propuestasPendientes > 0 ? 'text-aviso hover:text-aviso' : 'hover:text-texto'}`}
+          >
+            {propuestasPendientes > 0
+              ? <span aria-hidden="true">🔀</span>
+              : <IconoIntercambio />}
+            <span className="text-xs font-bold">{propuestasPendientes}</span>
           </Link>
         )}
 

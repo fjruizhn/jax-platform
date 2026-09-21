@@ -14,9 +14,11 @@ vi.mock('../store/useJaxStore', () => ({
   useJaxStore: (selector) => selector({ user: usuario, logout: logoutMock, cambiarMiPassword: vi.fn(), saliendo }),
 }))
 
-// Contador de memoria sin verificar (2026-09-20, restricción dura): sólo
-// superadmin lo pide, así que hay que mockear api/client acá o los tests de
-// arriba (que no lo mencionan) le pegarían a axios de verdad.
+// Contador de memoria sin verificar (2026-09-20) y contador de propuestas de
+// modelo pendientes (2026-09-21, pedido de Fernando: "segundo contador en la
+// barra"): los dos son sólo-superadmin, así que hay que mockear api/client
+// acá o los tests de arriba (que no lo mencionan) le pegarían a axios de
+// verdad.
 vi.mock('../api/client', () => ({ default: { get: vi.fn() } }))
 
 import BarraUsuario from './BarraUsuario'
@@ -35,6 +37,16 @@ function renderBarra() {
   )
 }
 
+// Los dos contadores llaman a api.get con URLs distintas: un solo
+// mockResolvedValue no alcanza para dar respuestas distintas a cada uno sin
+// que un test de un contador tenga que preocuparse por el otro.
+function mockApiGet({ memoriaTotal = 0, propuestas = [] } = {}) {
+  api.get.mockImplementation((url) => {
+    if (url === '/admin/models/proposals') return Promise.resolve({ data: { proposals: propuestas } })
+    return Promise.resolve({ data: { total: memoriaTotal } })
+  })
+}
+
 beforeEach(() => {
   logoutMock.mockReset()
   localStorage.clear()
@@ -45,7 +57,7 @@ beforeEach(() => {
   usuario = { email: 'fruiztorres@me.com', role: 'superadmin' }
   saliendo = null
   api.get.mockReset()
-  api.get.mockResolvedValue({ data: { total: 0 } })
+  mockApiGet()
 })
 
 describe('BarraUsuario', () => {
@@ -131,7 +143,7 @@ describe('BarraUsuario — memoria sin verificar', () => {
   })
 
   it('con N>0 muestra el contador con nombre accesible y lleva a /admin/memoria', async () => {
-    api.get.mockResolvedValue({ data: { total: 3 } })
+    mockApiGet({ memoriaTotal: 3 })
     renderBarra()
     const link = await screen.findByRole('link', { name: '3 hechos de memoria sin verificar' })
     expect(link).toHaveAttribute('href', '/admin/memoria')
@@ -143,7 +155,7 @@ describe('BarraUsuario — memoria sin verificar', () => {
   // problemas no deja saber si está funcionando. "0 pendientes" es
   // información, y es la que dice que la memoria está al día.
   it('en 0 el contador SE MUESTRA, apagado y diciendo que está al día', async () => {
-    api.get.mockResolvedValue({ data: { total: 0 } })
+    mockApiGet({ memoriaTotal: 0 })
     renderBarra()
     const link = await screen.findByRole('link', { name: 'memoria al día, sin hechos por revisar' })
     expect(link).toHaveAttribute('href', '/admin/memoria')
@@ -156,29 +168,29 @@ describe('BarraUsuario — memoria sin verificar', () => {
   // aunque no haya nada que hacer. Entonces: al día, la pieza dibujada como
   // sus hermanos; con pendientes, el emoji, que resalta a propósito.
   it('en 0 usa el ícono de trazo, como los demás de la barra -- sin emoji', async () => {
-    api.get.mockResolvedValue({ data: { total: 0 } })
+    mockApiGet({ memoriaTotal: 0 })
     renderBarra()
-    const link = await screen.findByRole('link', { name: /al día/ })
+    const link = await screen.findByRole('link', { name: /memoria al día/ })
     expect(link.querySelector('svg')).toBeTruthy()
     expect(link).not.toHaveTextContent('🧩')
   })
 
   it('con pendientes usa el emoji, que resalta', async () => {
-    api.get.mockResolvedValue({ data: { total: 3 } })
+    mockApiGet({ memoriaTotal: 3 })
     renderBarra()
     const link = await screen.findByRole('link', { name: /3 hechos/ })
     expect(link).toHaveTextContent('🧩')
   })
 
   it('en 0 va en color apagado; con pendientes cambia a aviso', async () => {
-    api.get.mockResolvedValue({ data: { total: 0 } })
+    mockApiGet({ memoriaTotal: 0 })
     const { unmount } = renderBarra()
-    const enCero = await screen.findByRole('link', { name: /al día/ })
+    const enCero = await screen.findByRole('link', { name: /memoria al día/ })
     expect(enCero.className).toContain('text-texto-tenue')
     expect(enCero.className).not.toContain('text-aviso')
     unmount()
 
-    api.get.mockResolvedValue({ data: { total: 3 } })
+    mockApiGet({ memoriaTotal: 3 })
     renderBarra()
     const conPendientes = await screen.findByRole('link', { name: /3 hechos/ })
     expect(conPendientes.className).toContain('text-aviso')
@@ -189,5 +201,75 @@ describe('BarraUsuario — memoria sin verificar', () => {
     renderBarra()
     expect(screen.queryByRole('link', { name: /hechos de memoria sin verificar/ })).not.toBeInTheDocument()
     expect(api.get).not.toHaveBeenCalledWith('/admin/memoria/hechos', expect.anything())
+  })
+})
+
+// Segundo contador (2026-09-21, pedido de Fernando): mismo patrón que el de
+// memoria arriba, pero para propuestas de modelo pendientes
+// (`model_binding_proposal.status = 'pending'`). El hueco que motiva esto: la
+// propuesta #18 estuvo pendiente más de 6 horas y sólo se vio porque se miró
+// a mano -- nada avisaba. GET /admin/models/proposals?status=pending ya
+// existe y ya lo usa AdminModelCatalog (pestaña "models" de /admin/keys, que
+// es donde se aprueba o rechaza); el contador cuenta el mismo array que esa
+// pantalla lista, no un total aparte del servidor.
+describe('BarraUsuario — propuestas de modelo pendientes', () => {
+  it('superadmin pide el dato correcto (status=pending)', async () => {
+    renderBarra()
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith(
+      '/admin/models/proposals', { params: { status: 'pending' } }))
+  })
+
+  it('con N>0 muestra el contador con nombre accesible y lleva directo a la pestaña "Catálogo de modelos"', async () => {
+    mockApiGet({ propuestas: [{}, {}, {}] })
+    renderBarra()
+    const link = await screen.findByRole('link', { name: '3 propuestas de modelo pendientes' })
+    expect(link).toHaveAttribute('href', '/admin/keys?tab=models')
+    expect(link).toHaveTextContent('3')
+  })
+
+  // Siempre visible, también en 0: un indicador que sólo existe cuando hay
+  // problemas no deja saber si está funcionando (misma decisión que memoria).
+  it('en 0 el contador SE MUESTRA, apagado y diciendo que está al día', async () => {
+    mockApiGet({ propuestas: [] })
+    renderBarra()
+    const link = await screen.findByRole('link', { name: 'modelos al día, sin propuestas pendientes' })
+    expect(link).toHaveAttribute('href', '/admin/keys?tab=models')
+    expect(link).toHaveTextContent('0')
+  })
+
+  it('en 0 usa el ícono de trazo, como los demás de la barra -- sin emoji', async () => {
+    mockApiGet({ propuestas: [] })
+    renderBarra()
+    const link = await screen.findByRole('link', { name: /modelos al día/ })
+    expect(link.querySelector('svg')).toBeTruthy()
+    expect(link).not.toHaveTextContent('🔀')
+  })
+
+  it('con pendientes usa el emoji, que resalta', async () => {
+    mockApiGet({ propuestas: [{}] })
+    renderBarra()
+    const link = await screen.findByRole('link', { name: /1 propuestas/ })
+    expect(link).toHaveTextContent('🔀')
+  })
+
+  it('en 0 va en color apagado; con pendientes cambia a aviso', async () => {
+    mockApiGet({ propuestas: [] })
+    const { unmount } = renderBarra()
+    const enCero = await screen.findByRole('link', { name: /modelos al día/ })
+    expect(enCero.className).toContain('text-texto-tenue')
+    expect(enCero.className).not.toContain('text-aviso')
+    unmount()
+
+    mockApiGet({ propuestas: [{}, {}] })
+    renderBarra()
+    const conPendientes = await screen.findByRole('link', { name: /2 propuestas/ })
+    expect(conPendientes.className).toContain('text-aviso')
+  })
+
+  it('un operator no ve el contador ni pide el dato (el endpoint es sólo de superadmin)', async () => {
+    usuario = { email: 'otro@example.com', role: 'operator' }
+    renderBarra()
+    expect(screen.queryByRole('link', { name: /propuestas de modelo pendientes/ })).not.toBeInTheDocument()
+    expect(api.get).not.toHaveBeenCalledWith('/admin/models/proposals', expect.anything())
   })
 })

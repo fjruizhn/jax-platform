@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { useJaxStore } from '../../store/useJaxStore'
@@ -19,7 +20,17 @@ const TABS = [
 export default function AdminFacetsModels() {
   const { t } = useI18n()
   const addToast = useJaxStore((s) => s.addToast)
-  const [activeTab, setActiveTab] = useState('providers')
+  // Pestaña inicial por query param (2026-09-21, pedido de Fernando): el
+  // contador de propuestas de BarraUsuario lleva a /admin/keys?tab=models --
+  // "de una sola vista" quiere decir aterrizar ahí, no obligar a un clic más.
+  // Sólo se lee al montar (useState, no useEffect): cambiar de pestaña a mano
+  // sigue siendo el mismo estado local de siempre, sin que la URL lo pise
+  // después. `tab` inválido o ausente cae al default de hoy, "providers".
+  const [searchParams] = useSearchParams()
+  const [activeTab, setActiveTab] = useState(() => {
+    const tab = searchParams.get('tab')
+    return TABS.some((candidata) => candidata.key === tab) ? tab : 'providers'
+  })
   const [providers, setProviders] = useState([])
   const [credentialsById, setCredentialsById] = useState({})
   const [testing, setTesting] = useState({})

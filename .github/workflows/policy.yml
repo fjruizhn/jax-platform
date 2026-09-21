@@ -719,8 +719,26 @@ jobs:
           // 885 -> 887 (2026-09-20): el icono de memoria cambia de forma segun
           // el estado (trazo al dia / emoji con pendientes), +2 tests. Medido
           // con `npx vitest run`: 887 passed, 0 fallidos, 87 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 887) {
-              console.error("PISO ROTO: se esperaban 884 tests de vitest CORRIDOS y 0 fallidos.");
+          // 887 -> 894 (2026-09-21, pedido de Fernando: segundo contador en
+          // la barra): +7 BarraUsuario.test.jsx -- propuestas de modelo
+          // pendientes (GET /admin/models/proposals?status=pending), mismo
+          // patron que el contador de memoria: pide el dato correcto, se ve
+          // con nombre accesible y lleva a /admin/keys, siempre visible
+          // (tambien en 0, "modelos al dia"), forma e icono cambian con el
+          // estado (trazo/emoji), color cambia (apagado/aviso), y no lo pide
+          // ni lo muestra un rol que no es superadmin. Medido con
+          // `npx vitest run`: 894 passed, 0 fallidos, 87 archivos.
+          // 894 -> 897 (2026-09-21, mismo dia): el contador de propuestas
+          // pasa a llevar directo a la pestaña "Catálogo de modelos"
+          // (/admin/keys?tab=models), no sólo a /admin/keys -- "de una sola
+          // vista" tal cual lo pidió Fernando para el de memoria. +3
+          // AdminFacetsModels.test.jsx: sin `?tab` sigue abriendo en
+          // "Proveedores" (el default de siempre, sin romper nada), con
+          // `?tab=models` abre directo en el Catálogo, y un `?tab`
+          // desconocido cae al default sin romper. Medido con
+          // `npx vitest run`: 897 passed, 0 fallidos, 87 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 897) {
+              console.error("PISO ROTO: se esperaban 897 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

@@ -495,6 +495,12 @@ export default {
   // are. Same data as /admin/memoria?verificado=false.
   barraMemoriaSinVerificar: (n) => `${n} unverified memory facts`,
   barraMemoriaAlDia: 'memory up to date, nothing to review',
+  // BarraUsuario's second counter (2026-09-21, Fernando's request): pending
+  // model-change proposals (model_binding_proposal, GET
+  // /admin/models/proposals?status=pending). Same full-accessible-name
+  // criterion as the memory one above.
+  barraPropuestasPendientes: (n) => `${n} pending model proposals`,
+  barraPropuestasAlDia: 'models up to date, no pending proposals',
 
   // File attachments
   attachTooltip: 'Attach image, PDF or text',
