@@ -243,11 +243,18 @@ async def _semantic_context(user_text: str, user_id: int, project_id,
     Si user_text es una pregunta de completeness ("que proyectos tenes
     activos?"), suma ADEMAS todos los facts de esa categoria via get_facts()
     — la similitud vectorial contra un solo fact no basta para "dame todo
-    lo que sepas de X" (item #4 del roadmap)."""
+    lo que sepas de X" (item #4 del roadmap).
+
+    Para cualquier otra pregunta, busca facts por similitud vectorial via
+    search_similar_facts() (jax/memory/db.py) — sin esto, "jax sabes a que
+    me dedico?" no traía el hecho de ocupación guardado y verificado, porque
+    no matchea ninguna categoría de completeness y nadie más buscaba facts
+    al leer (2026-09-20, decisión de Fernando tras ese fallo real)."""
     if not await _ensure_memory():
         return []
 
     bloques = []
+    ids_de_facts_ya_incluidos: set[int] = set()
 
     tipo_completeness = detect_completeness_intent(user_text)
     if tipo_completeness:
@@ -259,11 +266,38 @@ async def _semantic_context(user_text: str, user_id: int, project_id,
             logger.warning("get_facts (completeness) falló: turno sin bloque de facts", exc_info=True)
             facts = None
         if facts:
+            ids_de_facts_ya_incluidos = {f["id"] for f in facts}
             lineas_facts = [f"- {f['fact_text']}" for f in facts]
             bloques.append(
                 f"Todos los hechos guardados de tipo '{tipo_completeness}':\n"
                 + "\n".join(lineas_facts)
             )
+
+    # Facts por similitud vectorial (2026-09-20, decision de Fernando tras un
+    # fallo real): "jax sabes a que me dedico?" no matchea ninguna categoria
+    # de completeness (arriba) y hasta esta ronda NINGUN turno buscaba facts
+    # por similitud al LEER -- el hecho de ocupacion de Fernando (fact #7)
+    # estaba guardado y verificado, pero nadie lo miraba. search_similar_facts()
+    # (jax/memory/db.py) ya aplica su propio umbral de similitud
+    # (FACT_SIMILARITY_THRESHOLD, documentado ahi con las mediciones reales
+    # que lo justifican) y excluye SIEMPRE facts superados/vencidos -- este
+    # llamador no repite ese criterio, solo lo consume.
+    try:
+        similares_facts = await _memory.search_similar_facts(
+            user_text, user_id=user_id, project_id=project_id,
+            recent_history=recent_history)
+    except Exception:  # fail-soft: sin facts por similitud el turno responde sin ese bloque; no se inventa contenido
+        logger.warning("search_similar_facts falló: turno sin bloque de facts por similitud", exc_info=True)
+        similares_facts = []
+    # No duplicar: un fact que la rama de completeness YA trajo completo
+    # (arriba) no vuelve a aparecer acá -- dos copias del mismo hecho en el
+    # prompt no suman contexto, solo gastan tokens.
+    facts_nuevos = [
+        f for f in (similares_facts or []) if f["id"] not in ids_de_facts_ya_incluidos
+    ]
+    if facts_nuevos:
+        lineas_similares = [f"- {f['fact_text']}" for f in facts_nuevos]
+        bloques.append("Hechos relacionados con la consulta:\n" + "\n".join(lineas_similares))
 
     try:
         similares = await _memory.search_similar_messages(
