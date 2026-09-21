@@ -6,6 +6,7 @@ import PausaEjecutor from './PausaEjecutor'
 import DetalleMision from './DetalleMision'
 import Bitacora from './Bitacora'
 import { textoDeErrorEjecutor, traducir } from './textos'
+import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 
 // Panel del modo Ejecutor (SP2, 2026-09-17). Ocupa el centro en lugar de los
 // mensajes mientras el modo está activo (CenterPanel). Al montar lee /estado
@@ -52,7 +53,7 @@ function PanelEjecutor() {
       <section aria-labelledby="ejecutor-misiones" className="rounded-lg border border-borde bg-superficie p-3">
         <div className="flex items-center justify-between mb-2">
           <h3 id="ejecutor-misiones" className="text-xs font-semibold text-texto-fuerte">{tx.misionesTitulo}</h3>
-          <button type="button" onClick={nuevaMision} className="px-2 py-0.5 rounded bg-superficie-2 text-texto hover:text-texto-fuerte text-xs font-semibold">
+          <button type="button" onClick={nuevaMision} className={`${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte font-semibold`}>
             {tx.nuevaMision}
           </button>
         </div>

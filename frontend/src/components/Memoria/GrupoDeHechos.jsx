@@ -1,4 +1,5 @@
 import { useI18n } from '../../i18n/index.jsx'
+import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 import FichaDeHecho from './FichaDeHecho'
 
 // Un grupo = un tema (agrupado por cercanía semántica, backend Task 5).
@@ -119,7 +120,7 @@ export default function GrupoDeHechos({
                   type="button"
                   disabled={ocupadoCluster}
                   onClick={() => onAbrirFundir(item.ids)}
-                  className="text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors disabled:opacity-50 disabled:pointer-events-none"
+                  className={`${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors disabled:opacity-50 disabled:pointer-events-none`}
                 >
                   {t.memoria.fundir}
                 </button>

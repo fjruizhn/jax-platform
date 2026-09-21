@@ -4,6 +4,7 @@ import api from '../../api/client'
 import { codigoDe, textoDeDetalleDeBinding, textoDeErrorDeBinding } from '../../api/errores'
 import AlertaError from '../../components/AlertaError'
 import FormContratoDispatch from './FormContratoDispatch'
+import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 
 // El único rechazo del guard que se arregla declarando el contrato de la fila
 // (PR-L). `modelo_de_otro_proveedor` no: su remedio es otro modelo o el PUT
@@ -139,7 +140,7 @@ export default function AdminModelCatalog() {
             <button
               type="button"
               onClick={() => abrirContrato(detalleDecideError.model_ref)}
-              className="ml-2 text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors"
+              className={`ml-2 ${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors`}
             >
               {t.adminContratoDeclarar}
             </button>
@@ -193,7 +194,7 @@ export default function AdminModelCatalog() {
                             <button
                               type="button"
                               onClick={() => abrirContrato(p.ultimo_rechazo.model_ref)}
-                              className="ml-2 text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors"
+                              className={`ml-2 ${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors`}
                             >
                               {t.adminContratoDeclarar}
                             </button>
@@ -206,14 +207,14 @@ export default function AdminModelCatalog() {
                         <button
                           onClick={() => decide(p.id, 'approve')}
                           disabled={!!deciding}
-                          className="text-xs px-2 py-1 rounded bg-exito-fondo text-exito border border-transparent hover:border-exito-borde disabled:opacity-40 transition-colors"
+                          className={`${TAMANO_BOTON_ACCION} rounded bg-exito-fondo text-exito border border-transparent hover:border-exito-borde disabled:opacity-40 transition-colors`}
                         >
                           {deciding === `${p.id}-approve` ? t.adminProposalsApproving : t.adminProposalsApprove}
                         </button>
                         <button
                           onClick={() => decide(p.id, 'reject')}
                           disabled={!!deciding}
-                          className="text-xs px-2 py-1 rounded bg-peligro-fondo text-peligro border border-transparent hover:border-peligro-borde disabled:opacity-40 transition-colors"
+                          className={`${TAMANO_BOTON_ACCION} rounded bg-peligro-fondo text-peligro border border-transparent hover:border-peligro-borde disabled:opacity-40 transition-colors`}
                         >
                           {deciding === `${p.id}-reject` ? t.adminProposalsRejecting : t.adminProposalsReject}
                         </button>
@@ -260,7 +261,7 @@ export default function AdminModelCatalog() {
                   <button
                     type="button"
                     onClick={() => abrirContrato(m.id)}
-                    className="ml-2 text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors"
+                    className={`ml-2 ${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors`}
                   >
                     {t.adminContratoDeclarar}
                   </button>

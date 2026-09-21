@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useI18n } from '../i18n/index.jsx'
+import { TAMANO_MINIMO_TOQUE } from '../tema/botones'
 
 // Caja de contraseña con ojito para ver u ocultar lo escrito (2026-09-12,
 // pedido de Fernando: toda caja de contraseña de la UI lo tiene).
@@ -26,7 +27,7 @@ export default function PasswordInput({ className = '', wrapperClassName = '', .
         aria-label={etiqueta}
         aria-pressed={visible}
         title={etiqueta}
-        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-texto-tenue hover:text-texto transition-colors"
+        className={`${TAMANO_MINIMO_TOQUE} absolute right-2.5 top-1/2 -translate-y-1/2 text-texto-tenue hover:text-texto transition-colors`}
       >
         {visible ? (
           <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">

@@ -4,6 +4,7 @@ import { useI18n } from '../i18n/index.jsx'
 import api from '../api/client'
 import PasswordInput from '../components/PasswordInput'
 import { problemaDePassword } from '../lib/reglasPassword'
+import { TAMANO_MINIMO_TOQUE } from '../tema/botones'
 
 export default function ResetPassword() {
   const { lang, setLang, t } = useI18n()
@@ -69,7 +70,7 @@ export default function ResetPassword() {
         <div className="flex justify-end gap-1 mb-4">
           {['es', 'en'].map((l) => (
             <button key={l} onClick={() => setLang(l)}
-              className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${lang === l ? 'bg-accion text-sobre-color' : 'text-texto-tenue hover:text-texto'}`}>
+              className={`${TAMANO_MINIMO_TOQUE} px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${lang === l ? 'bg-accion text-sobre-color' : 'text-texto-tenue hover:text-texto'}`}>
               {l}
             </button>
           ))}

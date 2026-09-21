@@ -7,6 +7,7 @@ import Dialogo from '../../components/Dialogo'
 import ReactMarkdown from 'react-markdown'
 import HistorialContenido from '../../components/historial/HistorialContenido'
 import PanelEjecutor from '../../components/Ejecutor/PanelEjecutor'
+import { TAMANO_MINIMO_TOQUE, TAMANO_BOTON_ACCION } from '../../tema/botones'
 
 const FOLDER_LABELS = {
   missions: 'adminRepoMissions',
@@ -156,9 +157,9 @@ export default function AdminRepository() {
                     <td className="px-4 py-3 text-texto-tenue text-xs">{new Date(f.modified).toLocaleString(localeFor(lang))}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <button onClick={() => handlePreview(f)} className="text-xs px-2 py-0.5 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors">{t.adminRepoPreview}</button>
-                        <button onClick={() => handleDownload(f)} className="text-xs px-2 py-0.5 rounded bg-info-fondo text-info border border-transparent hover:border-info transition-colors">{t.adminRepoDownload}</button>
-                        <button onClick={() => handleDelete(f)} className="text-xs px-2 py-0.5 rounded bg-peligro-fondo text-peligro border border-transparent hover:border-peligro-borde transition-colors">{t.adminRepoDelete}</button>
+                        <button onClick={() => handlePreview(f)} className={`${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors`}>{t.adminRepoPreview}</button>
+                        <button onClick={() => handleDownload(f)} className={`${TAMANO_BOTON_ACCION} rounded bg-info-fondo text-info border border-transparent hover:border-info transition-colors`}>{t.adminRepoDownload}</button>
+                        <button onClick={() => handleDelete(f)} className={`${TAMANO_BOTON_ACCION} rounded bg-peligro-fondo text-peligro border border-transparent hover:border-peligro-borde transition-colors`}>{t.adminRepoDelete}</button>
                       </div>
                     </td>
                   </tr>
@@ -186,7 +187,7 @@ export default function AdminRepository() {
       {preview && (
         <Dialogo idTitulo="repo-preview-titulo" titulo={preview.filename} onCerrar={() => setPreview(null)} className="max-w-3xl">
           <div className="flex justify-end -mt-2 mb-2">
-            <button onClick={() => setPreview(null)} aria-label={t.adminHistoryClose} className="text-texto-tenue hover:text-texto text-lg font-bold">×</button>
+            <button onClick={() => setPreview(null)} aria-label={t.adminHistoryClose} className={`${TAMANO_MINIMO_TOQUE} text-texto-tenue hover:text-texto text-lg font-bold`}>×</button>
           </div>
           <div className="max-h-[60vh] overflow-y-auto">
             {preview.type === 'image' ? (

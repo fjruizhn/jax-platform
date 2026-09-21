@@ -8,6 +8,7 @@ import { codigoDe } from '../api/errores'
 import PasswordInput from '../components/PasswordInput'
 import AlertaError from '../components/AlertaError'
 import HalEye from '../components/HalEye/HalEye'
+import { TAMANO_MINIMO_TOQUE } from '../tema/botones'
 
 export default function Login() {
   const login = useJaxStore((s) => s.login)
@@ -95,7 +96,7 @@ export default function Login() {
           <div className="flex justify-end gap-1 mb-4">
             {['es', 'en'].map((l) => (
               <button key={l} onClick={() => setLang(l)}
-                className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${lang === l ? 'bg-accion text-sobre-color' : 'text-texto-tenue hover:text-texto'}`}>
+                className={`${TAMANO_MINIMO_TOQUE} px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${lang === l ? 'bg-accion text-sobre-color' : 'text-texto-tenue hover:text-texto'}`}>
                 {l}
               </button>
             ))}
@@ -156,7 +157,7 @@ export default function Login() {
         <div className="flex justify-end gap-1 mb-4">
           {['es', 'en'].map((l) => (
             <button key={l} onClick={() => setLang(l)}
-              className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${lang === l ? 'bg-accion text-sobre-color' : 'text-texto-tenue hover:text-texto'}`}>
+              className={`${TAMANO_MINIMO_TOQUE} px-1.5 py-0.5 rounded text-xs font-bold uppercase transition-colors ${lang === l ? 'bg-accion text-sobre-color' : 'text-texto-tenue hover:text-texto'}`}>
               {l}
             </button>
           ))}

@@ -9,10 +9,13 @@ import FijarPasswordModal from '../../components/admin/FijarPasswordModal'
 import ConfirmacionSuma from '../../components/ConfirmacionSuma'
 import { mensajeDeError } from './erroresAdmin'
 import { codigoDe } from '../../api/errores'
+import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 
 // Botón neutro de la fila (texto/superficie-2 y texto-fuerte/superficie-2 son
 // pares declarados en PARES).
-const ACCION_NEUTRA = 'text-xs px-2 py-0.5 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors'
+// Hallazgo de revisión, 2026-09-21: media 20px de alto (text-xs + py-0.5,
+// medido) -- bajo el mínimo, misma familia que TAMANO_BOTON_ACCION.
+const ACCION_NEUTRA = `${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors`
 
 // Etapa 3 (2026-09-15): cada acción muestra su error traducido en un toast
 // (antes todas terminaban en `.catch(() => {})` y el admin no se enteraba).
@@ -353,7 +356,7 @@ export default function AdminUsers() {
                       // difiere y aviso/superficie es un par declarado en PARES.
                       <button
                         onClick={() => handleUnlock(u)}
-                        className="text-xs px-2 py-0.5 rounded bg-superficie text-aviso border border-aviso-borde hover:border-aviso focus:outline-none focus-visible:ring-2 focus-visible:ring-foco transition-colors"
+                        className={`${TAMANO_BOTON_ACCION} rounded bg-superficie text-aviso border border-aviso-borde hover:border-aviso focus:outline-none focus-visible:ring-2 focus-visible:ring-foco transition-colors`}
                       >
                         {t.adminUserUnlock}
                       </button>
@@ -367,7 +370,7 @@ export default function AdminUsers() {
                     {!esPropia && (
                       <button
                         onClick={() => abrirBaja(u)}
-                        className="text-xs px-2 py-0.5 rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors"
+                        className={`${TAMANO_BOTON_ACCION} rounded bg-peligro-fondo border border-transparent hover:border-peligro-borde text-peligro transition-colors`}
                       >
                         {t.adminUserBaja}
                       </button>

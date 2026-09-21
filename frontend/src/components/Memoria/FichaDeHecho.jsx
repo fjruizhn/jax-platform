@@ -1,4 +1,5 @@
 import { useI18n, localeFor } from '../../i18n/index.jsx'
+import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 
 // Una ficha = un hecho, con su procedencia SIEMPRE visible (spec §2.1: «la
 // memoria sin procedencia es otra forma de suposición») -- si `mensaje_id` o
@@ -11,8 +12,8 @@ import { useI18n, localeFor } from '../../i18n/index.jsx'
 // de acá sólo abre el paso 1 (texto / confirmación); el padre decide la
 // ventana.
 const BADGE = 'inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold uppercase tracking-wide'
-const ACCION = 'text-xs px-2 py-1 rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors disabled:opacity-50 disabled:pointer-events-none'
-const ACCION_ACENTO = 'text-xs px-2 py-1 rounded bg-acento hover:bg-acento-hover text-sobre-color font-semibold transition-colors disabled:opacity-50 disabled:pointer-events-none'
+const ACCION = `${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors disabled:opacity-50 disabled:pointer-events-none`
+const ACCION_ACENTO = `${TAMANO_BOTON_ACCION} rounded bg-acento hover:bg-acento-hover text-sobre-color font-semibold transition-colors disabled:opacity-50 disabled:pointer-events-none`
 
 function EstadoBadge({ hecho, t }) {
   if (hecho.vencido) return <span className={`${BADGE} bg-peligro-fondo text-peligro border border-peligro-borde`}>{t.memoria.vencido}</span>
