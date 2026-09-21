@@ -6,7 +6,8 @@ from tests.identidades import sql
 
 CLAVES = {
     "ejecutor.cerebro_faceta": "ejecutor", "ejecutor.auditor_faceta": "thot",
-    "ejecutor.auditor_faceta_local": "auditor_local", "ejecutor.c5_lote_max": "20",
+    # `el_juez` desde 2026-09-20: ver el comentario de la semilla en migrations.py.
+    "ejecutor.auditor_faceta_local": "el_juez", "ejecutor.c5_lote_max": "20",
     "ejecutor.c5_intervalo_s": "15", "ejecutor.c5_max_tokens": "4000",
     "ejecutor.c5_auditor_admite_datos_de_clientes": "false",
 }
@@ -42,7 +43,9 @@ def test_el_auditor_local_no_esta_hardcodeado_a_una_sola_clave():
     auditor local -- distinta de la de nube, las dos leídas de axioma_config."""
     from db.migrations import _EJECUTOR_CONFIG_C5
     valores = dict(_EJECUTOR_CONFIG_C5)
-    assert valores["ejecutor.auditor_faceta_local"] == "auditor_local"
+    # `el_juez` desde 2026-09-20: una base nueva tiene que nacer como está
+    # producción, no como estaba hace dos días (ver el comentario de la semilla).
+    assert valores["ejecutor.auditor_faceta_local"] == "el_juez"
     assert valores["ejecutor.auditor_faceta_local"] != valores["ejecutor.auditor_faceta"]
 
 

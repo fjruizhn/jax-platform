@@ -1483,6 +1483,34 @@ async def _seed_auditor_local_facet(cur) -> None:
     )
 
 
+
+async def _retirar_auditor_local_facet(cur) -> None:
+    """Deja la faceta `auditor_local` en `disabled`. NO la borra.
+
+    Fue el primer auditor local de C5 (2026-09-18, `qwen3:14b` sobre
+    `ollama_cpu`); la reemplazó `el_juez` dos días después. `disabled` y no
+    DELETE por dos motivos: `jacobs/store.py` arma con `facet.status='active'`
+    el conjunto de facetas que el planner ACEPTA como destino de un paso --
+    mientras siga activa, un plan puede mandarle trabajo al candidato viejo --
+    y un DELETE perdería contra su propia semilla en la primera base nueva.
+
+    Sólo toca la fila si sigue `active`: si alguien la reactiva a propósito,
+    esta migración no se la pisa de vuelta.
+    """
+    await cur.execute(
+        "UPDATE facet SET status = 'disabled' "
+        "WHERE `key` = 'auditor_local' AND status = 'active' "
+        # ... y SÓLO si la config ya no la nombra. En una base que todavía la usa
+        # --la semilla nueva es INSERT IGNORE, así que no pisa lo que ya existe--
+        # retirarla la dejaría apuntando a una faceta `disabled`, y la consulta de
+        # elegibilidad NO mira `status`: la puerta seguiría abriéndose contra algo
+        # que el planner ya no acepta. Lo encontró
+        # `test_la_faceta_que_la_config_nombra_nunca_esta_retirada`, que falló con
+        # la primera versión de esta migración.
+        "AND (SELECT config_value FROM axioma_config "
+        "     WHERE config_key = 'ejecutor.auditor_faceta_local') <> 'auditor_local'")
+
+
 async def _seed_provider_sync_config(cur) -> None:
     """Idempotente pero NO 'set once + nunca tocar': el guard es
     models_list_url IS NULL, para no pisar un valor editado a mano despues
@@ -2835,7 +2863,13 @@ _EJECUTOR_CONFIG_C5 = (
     # Spec 2026-09-18-auditor-local-opcion.md §4: auditor de una máquina CON datos de
     # clientes. eleccion_c5.elegir_auditor_faceta (repo jax) decide entre esta clave y la
     # de arriba según si la misión toca máquinas con datos de clientes -- nunca al revés.
-    ("ejecutor.auditor_faceta_local", "auditor_local"),
+    # CAMBIADO 2026-09-20: era "auditor_local" (qwen3:14b sobre CPU). Producción ya
+    # apunta a `el_juez` desde ese día -- se cambió por la pantalla, con su fila de
+    # auditoría -- pero la SEMILLA seguía en el viejo: una base NUEVA habría auditado
+    # datos de clientes con el candidato que sacó 2 de 4 en la medición que eligió a
+    # `el_juez` (8 de 8). El `INSERT IGNORE` no pisa lo que ya existe, así que esto NO
+    # toca producción: endereza el arranque de un entorno nuevo.
+    ("ejecutor.auditor_faceta_local", "el_juez"),
     ("ejecutor.c5_lote_max", "20"),
     ("ejecutor.c5_intervalo_s", "15"),
     # El tope que usó U4 de la Fase 0 (scripts/ejecutor_fase0/auditor_costo.py).
@@ -2970,6 +3004,10 @@ async def run_migrations():
             # INSERT IGNORE por (facet_key, role); no depende del guard "sólo si la tabla
             # está vacía" de _seed_facets, que es sólo para el lote inicial de Bloque C).
             await _seed_auditor_local_facet(cur)
+            # DESPUÉS de sembrarla: la semilla la repone si falta (base nueva) y
+            # ésta la deja retirada. Al revés, una base nueva nacería con la
+            # faceta vieja activa.
+            await _retirar_auditor_local_facet(cur)
             await _seed_provider_sync_config(cur)
             await _migrar_gemini_a_cabecera(cur)
             await _seed_models_and_backfill(cur)
