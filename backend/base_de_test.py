@@ -149,15 +149,37 @@ def _sufijo_automatico_de_sesion() -> str:
     return sufijo
 
 
+def _en_ci_sin_db() -> bool:
+    """¿Este proceso corre en modo "CI sin base de datos"
+    (`JAX_CI_NO_DB=1`, ver `tests/conftest.py`)? Bajo ese modo no hay
+    MariaDB real a mano, punto -- sin importar qué diga `JAX_DB_HOST`.
+
+    Hace falta esta pregunta APARTE de `not os.environ.get("JAX_DB_HOST")`:
+    en cualquier máquina con `/etc/jax/.env` (hall9000 entre ellas),
+    `tests/conftest.py` carga ese archivo con `setdefault` ANTES de que
+    `JAX_CI_NO_DB` se evalúe ahí (conftest.py:393, después de la línea 30
+    que llama a `fijar_base_de_test()`/`asegurar_base_de_test()`), así que
+    `JAX_DB_HOST` queda puesto igual. La causa raíz medida el 2026-09-21:
+    `asegurar_base_de_test()` sólo miraba `JAX_DB_HOST` y terminaba
+    intentando clonar el esquema de verdad bajo `JAX_CI_NO_DB=1`, explotando
+    contra el puerto que el modo "sin DB" usa para simular una MariaDB
+    configurada pero caída. Mismo criterio que
+    `tests/test_el_juez_facet.py::_SIN_MARIADB` en la rama
+    `fix/semilla-el-juez`: la pregunta es "¿hay MariaDB reconocida como
+    ausente por este runner?", no "¿hay una variable puesta?"."""
+    return os.environ.get("JAX_CI_NO_DB") == "1"
+
+
 def _borrar_al_salir(nombre: str) -> None:
     """Registrado en `atexit` SOLO para una base auto-generada (nunca para
-    una pasada por `JAX_TEST_DB_SUFIJO` a mano). Sin `JAX_DB_HOST` no hay
-    MariaDB a mano y no hay nada que borrar -- mismo criterio que
-    `asegurar_base_de_test()`. Cualquier error (red caída, timeout) queda
-    silenciado a propósito: es un best-effort de limpieza al cerrar, no una
-    condición de salida del proceso; lo que esto no llegue a borrar lo
-    barre después `scripts/limpiar_bases_de_test.py`."""
-    if not os.environ.get("JAX_DB_HOST"):
+    una pasada por `JAX_TEST_DB_SUFIJO` a mano). Sin `JAX_DB_HOST`, o bajo
+    `JAX_CI_NO_DB=1` (ver `_en_ci_sin_db()`), no hay MariaDB a mano y no hay
+    nada que borrar -- mismo criterio que `asegurar_base_de_test()`.
+    Cualquier error (red caída, timeout) queda silenciado a propósito: es un
+    best-effort de limpieza al cerrar, no una condición de salida del
+    proceso; lo que esto no llegue a borrar lo barre después
+    `scripts/limpiar_bases_de_test.py`."""
+    if _en_ci_sin_db() or not os.environ.get("JAX_DB_HOST"):
         return
     import asyncio
     try:
@@ -427,14 +449,15 @@ def asegurar_base_de_test(nombre: str | None = None) -> str:
     """Deja lista la base de esta sesión: la crea con el esquema de la
     plantilla si no existía, y le corre `run_migrations()` del repo.
 
-    Sin `JAX_DB_HOST` no hay MariaDB a mano (los jobs de tests puros del CI):
-    no se crea nada y no es un error.
+    Sin `JAX_DB_HOST`, o bajo `JAX_CI_NO_DB=1` (ver `_en_ci_sin_db()`), no
+    hay MariaDB a mano (los jobs de tests puros del CI, y cualquier corrida
+    local que simule ese modo): no se crea nada y no es un error.
     """
     import asyncio
 
     nombre = nombre or nombre_base_de_test()
     _verificar_que_no_es_produccion(nombre)
-    if nombre == BASE_COMPARTIDA or not os.environ.get("JAX_DB_HOST"):
+    if nombre == BASE_COMPARTIDA or _en_ci_sin_db() or not os.environ.get("JAX_DB_HOST"):
         return nombre
 
     anterior = os.environ.get(VARIABLE_DE_LA_BASE)
