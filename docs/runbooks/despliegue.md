@@ -131,6 +131,35 @@ curl -s -o /dev/null -w "%{http_code}\n" https://axioma-ia.io/api/health
 
 ## Las trampas, todas medidas
 
+- **Los dos checkouts tienen DUEÑOS DISTINTOS, y eso cambia el comando.**
+  Medido el 2026-09-20:
+
+  | checkout | dueño | cómo se actualiza |
+  |---|---|---|
+  | `/srv/jax-prod/jax-platform` | `fruiz` | `git` normal, **sin sudo** |
+  | `/srv/jax-prod/jax` | **`jaxsvc`** | ver abajo |
+
+  En el de `jax` **nadie puede hacer `fetch` solo**: `jaxsvc` y `root` no tienen
+  llave de GitHub, y el remoto es SSH. Falla con `Permission denied (publickey)`.
+  La única vía es prestarle la llave de `fruiz`:
+
+  ```bash
+  sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" \
+    git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax pull --ff-only origin master
+  ```
+
+- **⚠️ Después de ese pull hay que DEVOLVER EL DUEÑO.** Correr como root deja
+  archivos de `root` dentro de un repo de `jaxsvc`. Medido en el despliegue del
+  2026-09-20: **45 objetos en `.git` y 6 en el árbol de trabajo**, y entre esos
+  seis estaba **`jax/memory/db.py` — el archivo que el servicio lee**. El
+  servicio arrancó igual esa vez, pero el siguiente reinicio podía fallar por
+  permisos con un error que no menciona nada de esto.
+
+  ```bash
+  sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax
+  sudo find /srv/jax-prod/jax -user root | wc -l   # tiene que dar 0
+  ```
+
 - **`sudo git` sobre `/srv/jax-prod/*` falla y engaña.** Los checkouts son de
   `fruiz`: como root da `dubious ownership`, y peor — el `fetch` falla con
   `Permission denied (publickey)` (el remoto es SSH y root no tiene la llave)

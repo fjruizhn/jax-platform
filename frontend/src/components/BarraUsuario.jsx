@@ -67,6 +67,17 @@ function IconoHistorial() {
   )
 }
 
+// Pieza de rompecabezas: la memoria son piezas sueltas hasta que alguien las
+// revisa. Trazo en currentColor como el resto de la barra, para que AL DIA se
+// vea como un icono mas y no como una alarma permanente.
+function IconoPieza() {
+  return (
+    <svg className={ICONO} {...trazo}>
+      <path d="M9 4h2a2 2 0 1 1 4 0h2a1 1 0 0 1 1 1v3a2 2 0 1 0 0 4v6a1 1 0 0 1-1 1h-4a2 2 0 1 0-4 0H5a1 1 0 0 1-1-1v-4a2 2 0 1 1 0-4V5a1 1 0 0 1 1-1z" />
+    </svg>
+  )
+}
+
 function IconoSalir() {
   return (
     <svg className={ICONO} {...trazo}>
@@ -170,7 +181,12 @@ export default function BarraUsuario() {
             title={etiquetaMemoria}
             className={`${BOTON} ${sinVerificar > 0 ? 'text-aviso hover:text-aviso' : 'hover:text-texto'}`}
           >
-            <span aria-hidden="true">🧩</span>
+            {/* Con pendientes, el emoji a color: resalta a proposito. Al dia,
+                la pieza de trazo, que toma el token y se ve como sus hermanos.
+                Pedido de Fernando: distinguirlo "de una sola vista". */}
+            {sinVerificar > 0
+              ? <span aria-hidden="true">🧩</span>
+              : <IconoPieza />}
             <span className="text-xs font-bold">{sinVerificar}</span>
           </Link>
         )}
