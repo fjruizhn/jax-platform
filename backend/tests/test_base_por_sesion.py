@@ -28,6 +28,7 @@ from base_de_test import (
     BASE_COMPARTIDA,
     BASE_DE_PRODUCCION,
     BaseDeTestInvalida,
+    asegurar_base_de_test,
     _borrar_al_salir,
     _dropear_base_de_sesion,
     _sufijo_automatico_de_sesion,
@@ -211,6 +212,48 @@ def test_el_borrado_al_salir_no_hace_nada_sin_jax_db_host(monkeypatch):
 
     monkeypatch.setattr(asyncio, "run", _run_prohibido)
     _borrar_al_salir(f"{BASE_COMPARTIDA}_lo_que_sea")  # no debe lanzar
+
+
+def test_el_borrado_al_salir_no_hace_nada_bajo_ci_sin_db(monkeypatch):
+    """El caso real medido en hall9000: `JAX_DB_HOST` SÍ está puesto (lo deja
+    `/etc/jax/.env`, que `tests/conftest.py` carga con `setdefault` en cada
+    corrida local) aunque la sesión corra en modo `JAX_CI_NO_DB=1`. Ese modo
+    dice "no hay MariaDB a mano para este runner" -- que haya una variable
+    con pinta de host válida no lo cambia.
+
+    Un `AssertionError` levantado desde `asyncio.run` NO sirve acá para
+    detectar la llamada: `_borrar_al_salir` envuelve ese `asyncio.run` en un
+    `except Exception: pass` a propósito (fail-soft de limpieza), así que se
+    tragaría el `AssertionError` igual que cualquier otro error real -- un
+    control así da verde contra el código viejo sin haber probado nada. Por
+    eso acá se GRABA la llamada en vez de reventarla."""
+    monkeypatch.setenv("JAX_CI_NO_DB", "1")
+    monkeypatch.setenv("JAX_DB_HOST", "127.0.0.1")
+
+    llamadas = []
+    monkeypatch.setattr(asyncio, "run", lambda *a, **k: llamadas.append((a, k)))
+    _borrar_al_salir(f"{BASE_COMPARTIDA}_lo_que_sea")  # no debe lanzar
+    assert llamadas == [], (
+        "asyncio.run() se llamó bajo JAX_CI_NO_DB=1: intentó tocar la base"
+    )
+
+
+def test_asegurar_base_de_test_no_toca_nada_bajo_ci_sin_db(monkeypatch):
+    """La causa raíz de los 3 rojos de este archivo bajo
+    `JAX_CI_NO_DB=1 CI=true JAX_DB_PORT=3306`: `asegurar_base_de_test()`
+    sólo miraba `JAX_DB_HOST` para decidir si hay MariaDB a mano, y
+    `JAX_DB_HOST` SIGUE puesto en modo CI-sin-DB en cualquier máquina con
+    `/etc/jax/.env` (hall9000 entre ellas) -- así que intentaba clonar el
+    esquema de verdad y explotaba contra un puerto muerto/inexistente."""
+    monkeypatch.setenv("JAX_CI_NO_DB", "1")
+    monkeypatch.setenv("JAX_DB_HOST", "127.0.0.1")
+
+    def _run_prohibido(*_a, **_k):
+        raise AssertionError("no debería intentar correr nada bajo JAX_CI_NO_DB=1")
+
+    monkeypatch.setattr(asyncio, "run", _run_prohibido)
+    nombre = f"{BASE_COMPARTIDA}_zz_ci_sin_db"
+    assert asegurar_base_de_test(nombre) == nombre  # no debe lanzar ni conectar
 
 
 def test_el_sufijo_automatico_se_registra_para_borrarse_al_salir(monkeypatch):
