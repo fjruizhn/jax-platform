@@ -21,8 +21,37 @@ con el cerebro, así que el arranque lo sigue RECHAZANDO hasta que Fernando abra
 queda en `axioma_config_audit`. Sembrar la faceta y permitir su uso son dos
 decisiones distintas, a propósito.
 """
-from db.migrations import _EJECUTOR_CONFIG_C5, _seed_el_juez_facet
+import asyncio
+import os
+import secrets
+
+import aiomysql
+import pytest
+
+import conftest as _conftest
+from base_de_test import BASE_COMPARTIDA, _parametros_de_conexion, es_base_de_test
+from db.connection import close_pool, get_pool
+from db.migrations import _EJECUTOR_CONFIG_C5, _seed_el_juez_facet, run_migrations
+from db_connect_config import db_connect_timeout_seconds
 from tests.identidades import sql
+
+# Sin MariaDB a mano: la Regla 2 de conftest.py (JAX_CI_NO_DB=1) SIMULA
+# "configurado pero caído" -- pone JAX_DB_HOST a un valor con pinta de válido
+# (conftest.py:403-405) y confía en que cada test llegue a aiomysql.create_pool()
+# para que el parche de _skip_on_db_access lo intercepte. Este archivo crea la
+# base con aiomysql.connect() DIRECTO (para poder crearla/borrarla fuera del
+# pool de la app) y el test no pide el fixture `client`: ninguna de las dos
+# redes de conftest.py lo alcanza. Por eso el guard pregunta lo mismo que
+# conftest._CI_NO_DB pregunta -- MariaDB reconocida como ausente por este
+# runner -- en vez de "¿hay una variable puesta?", que es cierto incluso en
+# modo sin-DB. `not JAX_DB_HOST` se mantiene aparte: cubre el caso legítimo y
+# distinto de un runner que de verdad no tiene la variable configurada (ver
+# `asegurar_base_de_test()` en base_de_test.py), no el de JAX_CI_NO_DB.
+_SIN_MARIADB = _conftest._CI_NO_DB or not os.environ.get("JAX_DB_HOST")
+_RAZON_SIN_MARIADB = (
+    _conftest._NO_DB_REASON if _conftest._CI_NO_DB
+    else "sin MariaDB a mano no hay base que crear"
+)
 
 CLAVE_COMPUERTA = "ejecutor.c5_auditor_admite_mismo_proveedor"
 
@@ -102,3 +131,158 @@ def test_el_binding_queda_con_model_ref_resuelto(client):
     filas = client.portal.call(
         sql, "SELECT model_ref FROM facet_binding WHERE facet_key='el_juez' AND role='primary'", (), True)
     assert filas and filas[0][0] is not None, "model_ref quedó NULL"
+
+
+# ---------------------------------------------------------------------------
+# La base VIRGEN (2026-09-21). Los tests de arriba usan `client`, cuyo fixture
+# de sesión (`asegurar_base_de_test()`) clona la base con los DATOS de las
+# tablas chicas de la plantilla `jax_memory_test` -- `facet_binding`/`model`
+# YA vienen resueltos ahí, así que llamar a `_seed_el_juez_facet` suelto,
+# después, nunca ejercita el defecto real: el orden de `run_migrations()`.
+#
+# Antes del fix: `_seed_el_juez_facet` corría en la línea de `run_migrations`
+# ANTES que `_seed_models_and_backfill` -- en una base sin una sola fila de
+# `model`, se rendía con un `return` silencioso y `el_juez` nacía SIN
+# `facet_binding`. Esto crea una base física nueva (sin clonar nada, cero
+# tablas) y corre `run_migrations()` COMPLETO, tal como arranca una
+# instalación de cero.
+# ---------------------------------------------------------------------------
+
+def _nombre_base_virgen() -> str:
+    nombre = f"{BASE_COMPARTIDA}_virgenjuez{secrets.token_hex(4)}"
+    assert es_base_de_test(nombre)
+    return nombre
+
+
+async def _crear_base_virgen(nombre: str) -> None:
+    conn = await aiomysql.connect(
+        db=BASE_COMPARTIDA, connect_timeout=db_connect_timeout_seconds(),
+        **_parametros_de_conexion())
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(f"CREATE DATABASE `{nombre}`")
+    finally:
+        conn.close()
+
+
+async def _dropear_base_virgen(nombre: str) -> None:
+    conn = await aiomysql.connect(
+        db=BASE_COMPARTIDA, connect_timeout=db_connect_timeout_seconds(),
+        **_parametros_de_conexion())
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(f"DROP DATABASE IF EXISTS `{nombre}`")
+    finally:
+        conn.close()
+
+
+async def _migrar_y_leer_bindings():
+    """`run_migrations()` COMPLETO -- no sólo `_seed_el_juez_facet` suelto --
+    contra la base que `JAX_DB_NAME` apunte en ESTE momento. El pool queda
+    atado al loop de este `asyncio.run()`, aislado del pool de la sesión
+    (`db/connection.py`: un pool por event loop).
+
+    `close_pool()` va en `finally`: si `run_migrations()` revienta, dejar el
+    pool huérfano significa que el `DROP DATABASE` del llamador (afuera, en su
+    propio `finally`) corre con conexiones todavía abiertas contra esa base --
+    en el mejor caso lo bloquea, en el peor tapa el error original detrás de
+    uno de MariaDB sobre el DROP."""
+    try:
+        await run_migrations()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT provider_id, model_id, model_ref FROM facet_binding "
+                    "WHERE facet_key='jax_local' AND role='primary'")
+                cerebro = await cur.fetchone()
+                await cur.execute(
+                    "SELECT provider_id, model_id, model_ref FROM facet_binding "
+                    "WHERE facet_key='el_juez' AND role='primary'")
+                juez = await cur.fetchone()
+    finally:
+        await close_pool()
+    return cerebro, juez
+
+
+@pytest.mark.skipif(_SIN_MARIADB, reason=_RAZON_SIN_MARIADB)
+def test_una_base_virgen_nace_con_el_juez_bindeado(monkeypatch):
+    """El corazón de este archivo. Antes del fix (2026-09-21): esto daba
+    `juez is None` -- `el_juez` no llegaba a tener NINGÚN `facet_binding` en
+    una instalación de cero, porque `_seed_el_juez_facet` corría antes que
+    `_seed_models_and_backfill` en `run_migrations` y se rendía en silencio.
+
+    El `skipif` de arriba decide ANTES de que el cuerpo corra -- ni
+    `_crear_base_virgen` ni ningún otro DDL se ejecuta cuando este runner no
+    tiene MariaDB. Un test "sin DB" que hiciera la base física primero y
+    recién después descubriera que tiene que saltarse sería el mismo defecto
+    que esto existe para evitar."""
+    nombre = _nombre_base_virgen()
+    asyncio.run(_crear_base_virgen(nombre))
+    monkeypatch.setenv("JAX_DB_NAME", nombre)
+    try:
+        cerebro, juez = asyncio.run(_migrar_y_leer_bindings())
+    finally:
+        asyncio.run(_dropear_base_virgen(nombre))
+    assert cerebro is not None, "el cerebro (jax_local) no se sembró: el test no puede afirmar nada"
+    assert juez is not None, "el_juez nació SIN facet_binding en una base virgen"
+    provider_cerebro, model_cerebro, _ = cerebro
+    provider_juez, model_juez, model_ref_juez = juez
+    assert (provider_juez, model_juez) == (provider_cerebro, model_cerebro), (
+        f"juez={(provider_juez, model_juez)} cerebro={(provider_cerebro, model_cerebro)}")
+    assert model_ref_juez is not None, "el_juez quedó con model_ref NULL en una base virgen"
+
+
+async def _migrar_y_leer_ids_de_model():
+    """Como `_migrar_y_leer_bindings`, pero devuelve los `model.id` que
+    quedan tras `run_migrations()` completo. Mismo criterio de `finally` para
+    `close_pool()` (ver esa función)."""
+    try:
+        await run_migrations()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT id FROM model ORDER BY id")
+                ids = [fila[0] for fila in await cur.fetchall()]
+    finally:
+        await close_pool()
+    return ids
+
+
+@pytest.mark.skipif(_SIN_MARIADB, reason=_RAZON_SIN_MARIADB)
+def test_una_base_virgen_no_deja_huecos_en_los_ids_de_model(monkeypatch):
+    """Hallazgo del PR #140 (CI, job `backend-tests-con-db`, 2026-09-21,
+    reportado por el auditor -- no reproducía en hall9000).
+
+    `_seed_el_juez_facet` (autosuficiente, arriba en este archivo) inserta la
+    fila de `model` del cerebro TEMPRANO en `run_migrations`. Sin
+    `_ensure_model_row`, más abajo en la MISMA corrida `_seed_models_and_backfill`
+    la volvía a intentar con su propio `INSERT IGNORE` -- sin saber que ya
+    existía, y sin que tenga que saberlo: no se acopla a el_juez a
+    propósito -- y esa colisión de clave duplicada CONSUMÍA un id de
+    AUTO_INCREMENT que MariaDB reserva ANTES de revisar la clave única y
+    nunca reusa, aunque la fila no se llegue a crear.
+
+    Antes de este fix (reproducido con `db.migrations.run_migrations()`
+    contra una base virgen real, sin la plantilla de hall9000 de por medio):
+    `model.id` quedaba en (1, 3, 4, 5, 6, 7, 8) -- sin el 2. Con la plantilla
+    clonada de hall9000 (16 filas de catálogo ya sembradas) esto es invisible:
+    la rama que inserta de `_seed_el_juez_facet` casi nunca se ejercita ahí.
+
+    El síntoma real: `test_admin_models_endpoints.py::
+    test_raw_write_to_motor_model_ref_cannot_produce_observable_divergence`
+    asumía un `model.id` chico y contiguo (`2 if binding_ref != 2 else 3`) y
+    reventaba con `IntegrityError 1452` contra ese hueco -- sólo en CI. Ese
+    test ahora crea su propia fila en vez de adivinar un id (fix aparte,
+    mismo commit), pero el hueco en sí era el defecto de fondo: ningún código
+    -- de este repo o futuro -- debería poder toparse con uno."""
+    nombre = _nombre_base_virgen()
+    asyncio.run(_crear_base_virgen(nombre))
+    monkeypatch.setenv("JAX_DB_NAME", nombre)
+    try:
+        ids = asyncio.run(_migrar_y_leer_ids_de_model())
+    finally:
+        asyncio.run(_dropear_base_virgen(nombre))
+    assert ids, "una base virgen tendría que terminar con filas en `model`"
+    esperado = list(range(ids[0], ids[0] + len(ids)))
+    assert ids == esperado, f"model.id tiene huecos: {ids}"

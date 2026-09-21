@@ -26,6 +26,17 @@ Los tests que tocan DB pasan por `client.portal.call(...)` a proposito: el
 pool de aiomysql de la app vive en el loop del portal de esa sesion, y
 tocarlo desde otro loop da el RuntimeError de "attached to a different loop"
 que ya afecta a otras suites de este repo.
+
+Varios tests de abajo crean su propia fila sintética de `model` (nombres con
+prefijo `test-` a propósito, mismo criterio que `SIN_CONTRATO` en
+`test_contrato_dispatch_admin.py`) y la borran en un `finally`. Eso no
+sobrevive a un SIGKILL/OOM a mitad de la corrida -- ningún `finally` de
+Python lo hace -- y si eso pasara corriendo contra la base física compartida
+(en vez de la base por sesión que usa `client` normalmente), la fila
+quedaría ahí para clonarse a futuras sesiones. No hay arreglo de código para
+eso: es la misma limitación que ya asume `base_de_test.py` con su borrado
+por `atexit`. La mitigación real es el nombre `test-*`, fácil de detectar y
+barrer si alguna vez hace falta.
 """
 import http_client
 import pytest
@@ -231,9 +242,23 @@ def test_column_exists_after_run_migrations(client):
 
 
 def test_seed_populates_every_verified_model_present_in_the_catalog(client):
-    """Se afirma sobre las filas que existen en esta DB: jax_memory_test no
-    tiene todo el catalogo de produccion, pero ninguna fila sembrable puede
-    quedar NULL.
+    """Se afirma sobre TODOS los modelos de la lista verificada -- inclusive
+    thot, el de nube de producción, y sin importar qué filas traiga la base
+    física compartida de la que esta sesión clonó su catálogo.
+
+    Antes (hasta 2026-09-21) un `if not rows: continue` se comía en silencio
+    cualquier entrada cuya fila no existiera ya en `jax_memory_test`. En esta
+    máquina la fila real de thot es `openai/gpt-5.6-sol`, no
+    `openai/gpt-5.6-terra` (el de esta lista) -- el `continue` significaba que
+    el modelo de PRODUCCIÓN de la lista nunca se afirmaba en una corrida
+    local: cambiar su valor sembrado no ponía rojo a este test. Mismo defecto
+    de fondo que 'gpt-5.5' en `test_seed_leaves_unverified_models_null`: la
+    cobertura dependía de qué trajera la plantilla, no del código.
+
+    Ahora crea la fila que falte (fuera de la lista de arriba a propósito, no
+    se toca ninguna fila real) y la limpia -- mismo patrón que
+    `test_seed_siembra_los_deepseek_vigentes_en_la_db_sin_pisar_valores` más
+    abajo en este archivo.
 
     Arranca con esas filas en NULL (PR-L ronda 2, 2026-09-14): la semilla
     solo llena NULL a propósito (no pisa un valor manual), así que afirmar
@@ -241,20 +266,34 @@ def test_seed_populates_every_verified_model_present_in_the_catalog(client):
     escribió antes -- la prueba de carga de PR-L dejó deepseek-v4-flash en
     393216 y este test falló sin que la semilla cambiara. Así se prueba la
     semilla de verdad, y la fila queda en su valor sembrado."""
+    insertadas = []
     for provider_id, model_id, _expected in _MODEL_MAX_OUTPUT_TOKENS_SEED:
-        client.portal.call(
-            _commit, "UPDATE model SET max_output_tokens = NULL WHERE provider_id = %s AND model_id = %s",
-            (provider_id, model_id))
-    client.portal.call(_run_seed)
-    for provider_id, model_id, expected in _MODEL_MAX_OUTPUT_TOKENS_SEED:
-        rows = client.portal.call(
-            _fetch,
-            "SELECT max_output_tokens FROM model WHERE provider_id = %s AND model_id = %s",
-            (provider_id, model_id),
-        )
-        if not rows:
-            continue  # esa fila del catalogo no existe en esta DB
-        assert rows[0][0] == expected, f"{provider_id}/{model_id}"
+        if not client.portal.call(
+            _fetch, "SELECT id FROM model WHERE provider_id=%s AND model_id=%s", (provider_id, model_id),
+        ):
+            client.portal.call(
+                _commit,
+                "INSERT INTO model (provider_id, model_id, source, source_checked_at) "
+                "VALUES (%s, %s, 'manual', NOW())", (provider_id, model_id),
+            )
+            insertadas.append((provider_id, model_id))
+    try:
+        for provider_id, model_id, _expected in _MODEL_MAX_OUTPUT_TOKENS_SEED:
+            client.portal.call(
+                _commit, "UPDATE model SET max_output_tokens = NULL WHERE provider_id = %s AND model_id = %s",
+                (provider_id, model_id))
+        client.portal.call(_run_seed)
+        for provider_id, model_id, expected in _MODEL_MAX_OUTPUT_TOKENS_SEED:
+            rows = client.portal.call(
+                _fetch,
+                "SELECT max_output_tokens FROM model WHERE provider_id = %s AND model_id = %s",
+                (provider_id, model_id),
+            )
+            assert rows and rows[0][0] == expected, f"{provider_id}/{model_id}"
+    finally:
+        for provider_id, model_id in insertadas:
+            client.portal.call(
+                _commit, "DELETE FROM model WHERE provider_id=%s AND model_id=%s", (provider_id, model_id))
 
 
 def test_seed_covers_thot_with_its_lower_cap_and_leaves_the_rest_at_131072(client):
@@ -294,46 +333,103 @@ def test_seed_is_idempotent_and_does_not_overwrite_a_manual_value(client):
         client.portal.call(_run_seed)
 
 
+_MODELO_NO_VERIFICADO = "test-modelo-no-verificado-max-output"
+
+
 def test_seed_leaves_unverified_models_null(client):
     """No se adivina, ni por proveedor ni por context_window: un modelo fuera
     de la lista verificada queda NULL y falla ruidoso cuando alguien lo bindee.
-    gpt-5.5 (el modelo ANTERIOR de thot, todavia en el catalogo) es el caso
-    real."""
-    rows = client.portal.call(
-        _fetch,
-        "SELECT max_output_tokens FROM model WHERE provider_id='openai' AND model_id='gpt-5.5'",
-    )
-    if rows:
-        assert rows[0][0] is None, (
-            "gpt-5.5 no esta en la lista verificada: sembrarlo por parecido de "
-            "proveedor es exactamente la suposicion que esta columna elimina"
+
+    Antes (hasta 2026-09-21) esto se afirmaba sobre 'openai'/'gpt-5.5', una
+    fila REAL con historial: nace en el seed original de Bloque C0
+    (2026-08-09, cuando thot todavia usaba gpt-5.5) y en algun momento
+    posterior alguien le puso max_output_tokens=16384 con un UPDATE SQL
+    directo contra la base fisica `jax_memory_test` -- comprobado que NO fue
+    por la app: `model_catalog_audit` (donde el UNICO camino de la app que
+    escribe esta columna fuera de una semilla, PUT
+    /api/admin/models/{id}/contrato-dispatch, deja rastro obligatorio en la
+    MISMA transaccion) no tiene ninguna fila para ese `model.id`, y
+    `_MODEL_MAX_OUTPUT_TOKENS_SEED` nunca listo a gpt-5.5 en ningun commit de
+    este repo (`git log -S`). El test dependia de que esa escritura manual,
+    de hace semanas, siguiera sin limpiarse en la base fisica de la que la
+    sesion clona su catalogo -- pasaba o fallaba segun el historial ajeno,
+    no segun el codigo.
+
+    Ahora crea su PROPIA fila, con un model_id que nunca va a estar en la
+    lista verificada, y la limpia -- mismo patron que
+    `test_seed_siembra_los_deepseek_vigentes_en_la_db_sin_pisar_valores` mas
+    abajo en este archivo."""
+    existia = bool(client.portal.call(
+        _fetch, "SELECT id FROM model WHERE provider_id='openai' AND model_id=%s",
+        (_MODELO_NO_VERIFICADO,)))
+    if not existia:
+        client.portal.call(
+            _commit,
+            "INSERT INTO model (provider_id, model_id, source, source_checked_at) "
+            "VALUES ('openai', %s, 'manual', NOW())", (_MODELO_NO_VERIFICADO,),
         )
+    try:
+        client.portal.call(
+            _commit, "UPDATE model SET max_output_tokens=NULL WHERE provider_id='openai' AND model_id=%s",
+            (_MODELO_NO_VERIFICADO,))
+        client.portal.call(_run_seed)
+        (valor,), = client.portal.call(
+            _fetch, "SELECT max_output_tokens FROM model WHERE provider_id='openai' AND model_id=%s",
+            (_MODELO_NO_VERIFICADO,))
+        assert valor is None, (
+            f"{_MODELO_NO_VERIFICADO} no esta en la lista verificada: sembrarlo por "
+            "parecido de proveedor es exactamente la suposicion que esta columna elimina"
+        )
+    finally:
+        if existia:
+            client.portal.call(
+                _commit, "UPDATE model SET max_output_tokens=NULL WHERE provider_id='openai' AND model_id=%s",
+                (_MODELO_NO_VERIFICADO,))
+        else:
+            client.portal.call(
+                _commit, "DELETE FROM model WHERE provider_id='openai' AND model_id=%s",
+                (_MODELO_NO_VERIFICADO,))
 
 
 def test_the_cap_is_not_derivable_from_context_window(client):
     """El dato clave que justifica una columna nueva en vez de una formula.
     Si algun dia alguien propone 'derivarlo de context_window', este test dice
     por que no: para el mismo modelo, los dos numeros no coinciden ni por
-    fraccion fija."""
-    rows = client.portal.call(
-        _fetch,
-        "SELECT context_window, max_output_tokens FROM model "
-        "WHERE provider_id='openai' AND model_id='gpt-5.6-terra'",
-    )
-    if not rows:
-        pytest.skip("gpt-5.6-terra no esta en esta DB")
-    client.portal.call(_run_seed)
-    context_window, cap = client.portal.call(
-        _fetch,
-        "SELECT context_window, max_output_tokens FROM model "
-        "WHERE provider_id='openai' AND model_id='gpt-5.6-terra'",
-    )[0]
-    assert cap == 128000
-    if context_window is not None:
-        assert context_window != cap, (
-            "si fueran iguales, mandar context_window habria funcionado y esta "
-            "columna sobraria — no es el caso en produccion (1050000 vs 128000)"
+    fraccion fija.
+
+    Antes (hasta 2026-09-21) un `pytest.skip("gpt-5.6-terra no esta en esta
+    DB")` se comia este test entero cuando faltaba la fila -- y en esta
+    maquina falta de verdad (el modelo real es 'gpt-5.6-sol', no
+    'gpt-5.6-terra'). Ese skip gastaba el UNICO que `MAX_SKIPS = 1` permite en
+    policy.yml, el tope que existe para detectar "se salteo todo". Ahora crea
+    su propia fila con el context_window medido en produccion (1050000,
+    prevuelo 2026-09-17) si hace falta, y la limpia -- nunca se saltea."""
+    provider_id, model_id = "openai", "gpt-5.6-terra"
+    existia = bool(client.portal.call(
+        _fetch, "SELECT id FROM model WHERE provider_id=%s AND model_id=%s", (provider_id, model_id)))
+    if not existia:
+        client.portal.call(
+            _commit,
+            "INSERT INTO model (provider_id, model_id, context_window, source, source_checked_at) "
+            "VALUES (%s, %s, 1050000, 'manual', NOW())", (provider_id, model_id),
         )
+    try:
+        client.portal.call(_run_seed)
+        context_window, cap = client.portal.call(
+            _fetch,
+            "SELECT context_window, max_output_tokens FROM model "
+            "WHERE provider_id=%s AND model_id=%s", (provider_id, model_id),
+        )[0]
+        assert cap == 128000
+        if context_window is not None:
+            assert context_window != cap, (
+                "si fueran iguales, mandar context_window habria funcionado y esta "
+                "columna sobraria — no es el caso en produccion (1050000 vs 128000)"
+            )
+    finally:
+        if not existia:
+            client.portal.call(
+                _commit, "DELETE FROM model WHERE provider_id=%s AND model_id=%s", (provider_id, model_id))
 
 
 # --------------------------------------------------------------------------

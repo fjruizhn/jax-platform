@@ -346,6 +346,43 @@ async def _raw_write_motor_model_ref(motor_key, model_ref):
         await conn.commit()
 
 
+async def _crear_modelo_ajeno(provider_id, model_id):
+    """Un `model.id` REAL y propio de esta prueba, no un entero adivinado.
+
+    Hallazgo 2026-09-21 (CI del PR #140, `backend-tests-con-db`): este test
+    usaba `rogue_ref = 2 if binding_ref != 2 else 3` -- asumía que uno de
+    esos dos ids SIEMPRE existe. `model.id` no es un contrato de nadie:
+    ningún seed promete que sea contiguo ni que empiece bajo, y MariaDB
+    DEJA HUECOS a propósito en AUTO_INCREMENT (un `INSERT IGNORE` que choca
+    con una fila que otro camino ya sembró consume igual un id, y ese id
+    nunca se reusa -- comprobado reproduciendo contra una base virgen real:
+    `model` quedó con ids (1, 3, 4, 5, 6, 7, 8), sin el 2). En la base de
+    sesión de hall9000 (clonada con 16 filas de catálogo) el hueco no se
+    nota porque 2 y 3 casi siempre están ocupados por filas reales; en una
+    base virgen -- exactamente lo que corre en CI -- no hay ninguna garantía.
+    Se crea la fila acá, se usa su id real, y se borra al terminar."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO model (provider_id, model_id, source, source_checked_at) "
+                "VALUES (%s, %s, 'manual', NOW())", (provider_id, model_id),
+            )
+            model_ref = cur.lastrowid
+        await conn.commit()
+    return model_ref
+
+
+async def _borrar_modelo(model_ref):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM model WHERE id=%s", (model_ref,))
+        await conn.commit()
+
+
 def test_raw_write_to_motor_model_ref_cannot_produce_observable_divergence(client):
     """El criterio de cierre real (2026-08-24): un escritor futuro que
     nadie gobierna -- ni guardo, ni sync, ni siquiera un endpoint conocido
@@ -356,23 +393,27 @@ def test_raw_write_to_motor_model_ref_cannot_produce_observable_divergence(clien
     fuera de todo el codigo de aplicacion, como si fuera un script, una
     migracion, o un admin con acceso directo a la DB."""
     binding_ref = client.portal.call(_fetch_binding_model_ref, "jax_local")
-    rogue_ref = 2 if binding_ref != 2 else 3  # cualquier model.id valido, deliberadamente distinto
+    rogue_ref = client.portal.call(_crear_modelo_ajeno, "openai", "test-rogue-ref-motor")
+    assert rogue_ref != binding_ref, "el id sintético coincidió con el del binding -- no prueba nada"
 
-    client.portal.call(_raw_write_motor_model_ref, "jax_local", rogue_ref)
+    try:
+        client.portal.call(_raw_write_motor_model_ref, "jax_local", rogue_ref)
 
-    # la escritura cruda SI se guardo -- no estamos probando un guard que
-    # la rechace, estamos probando que no importa que se haya guardado
-    assert client.portal.call(_fetch_motor_model_ref, "jax_local") == rogue_ref
+        # la escritura cruda SI se guardo -- no estamos probando un guard que
+        # la rechace, estamos probando que no importa que se haya guardado
+        assert client.portal.call(_fetch_motor_model_ref, "jax_local") == rogue_ref
 
-    # pero nada que lea identidad de modelo para 'jax_local' la ve: la
-    # vista sigue resolviendo por facet_binding, ignorando por completo
-    # el valor que se acaba de escribir
-    assert client.portal.call(_fetch_motor_resolved_model_ref, "jax_local") == binding_ref
-    resp = client.get("/api/admin/motors", headers=_superadmin_headers())
-    assert resp.status_code == 200, resp.text
-    jax_local_row = next(m for m in resp.json()["motors"] if m["key"] == "jax_local")
-    assert jax_local_row["model_id"] != None  # sanity: la fila resuelve, no desaparecio
-
-    # limpiar: volver a NULL, estado que la migracion establece
-    client.portal.call(_raw_write_motor_model_ref, "jax_local", None)
+        # pero nada que lea identidad de modelo para 'jax_local' la ve: la
+        # vista sigue resolviendo por facet_binding, ignorando por completo
+        # el valor que se acaba de escribir
+        assert client.portal.call(_fetch_motor_resolved_model_ref, "jax_local") == binding_ref
+        resp = client.get("/api/admin/motors", headers=_superadmin_headers())
+        assert resp.status_code == 200, resp.text
+        jax_local_row = next(m for m in resp.json()["motors"] if m["key"] == "jax_local")
+        assert jax_local_row["model_id"] != None  # sanity: la fila resuelve, no desaparecio
+    finally:
+        # limpiar: volver a NULL, estado que la migracion establece, y borrar
+        # la fila sintética ANTES de que nada más pueda referenciarla (FK).
+        client.portal.call(_raw_write_motor_model_ref, "jax_local", None)
+        client.portal.call(_borrar_modelo, rogue_ref)
     assert client.portal.call(_fetch_motor_model_ref, "jax_local") is None
