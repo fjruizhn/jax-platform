@@ -150,6 +150,26 @@ describe('BarraUsuario — memoria sin verificar', () => {
     expect(link).toHaveTextContent('0')
   })
 
+  // 2026-09-20, pedido de Fernando: "de una sola vista". Los demás íconos de
+  // la barra son SVG de trazo en currentColor, así que toman el token y se ven
+  // como un conjunto. Un emoji a color NO obedece al token y salta siempre,
+  // aunque no haya nada que hacer. Entonces: al día, la pieza dibujada como
+  // sus hermanos; con pendientes, el emoji, que resalta a propósito.
+  it('en 0 usa el ícono de trazo, como los demás de la barra -- sin emoji', async () => {
+    api.get.mockResolvedValue({ data: { total: 0 } })
+    renderBarra()
+    const link = await screen.findByRole('link', { name: /al día/ })
+    expect(link.querySelector('svg')).toBeTruthy()
+    expect(link).not.toHaveTextContent('🧩')
+  })
+
+  it('con pendientes usa el emoji, que resalta', async () => {
+    api.get.mockResolvedValue({ data: { total: 3 } })
+    renderBarra()
+    const link = await screen.findByRole('link', { name: /3 hechos/ })
+    expect(link).toHaveTextContent('🧩')
+  })
+
   it('en 0 va en color apagado; con pendientes cambia a aviso', async () => {
     api.get.mockResolvedValue({ data: { total: 0 } })
     const { unmount } = renderBarra()

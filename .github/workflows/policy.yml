@@ -716,7 +716,10 @@ jobs:
           // se muestra" se reemplazo por dos: que SI se muestre diciendo "al
           // dia", y que el color cambie (apagado / aviso). Neto +1. Medido con
           // `npx vitest run`: 885 passed, 0 fallidos, 87 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 885) {
+          // 885 -> 887 (2026-09-20): el icono de memoria cambia de forma segun
+          // el estado (trazo al dia / emoji con pendientes), +2 tests. Medido
+          // con `npx vitest run`: 887 passed, 0 fallidos, 87 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 887) {
               console.error("PISO ROTO: se esperaban 884 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
