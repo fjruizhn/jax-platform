@@ -520,6 +520,12 @@ export default {
   // decir QUÉ son esos N. Mismo dato que /admin/memoria?verificado=false.
   barraMemoriaSinVerificar: (n) => `${n} hechos de memoria sin verificar`,
   barraMemoriaAlDia: 'memoria al día, sin hechos por revisar',
+  // Segundo contador de BarraUsuario (2026-09-21, pedido de Fernando):
+  // propuestas de cambio de modelo sin decidir (model_binding_proposal,
+  // GET /admin/models/proposals?status=pending). Mismo criterio de nombre
+  // accesible completo que el de memoria arriba.
+  barraPropuestasPendientes: (n) => `${n} propuestas de modelo pendientes`,
+  barraPropuestasAlDia: 'modelos al día, sin propuestas pendientes',
 
   // File attachments
   attachTooltip: 'Adjuntar imagen, PDF o texto',
