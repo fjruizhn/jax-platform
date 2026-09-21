@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import api from '../../api/client'
 import { useI18n } from '../../i18n/index.jsx'
 import { colorToken, tokenDeFaceta } from '../../tema/tokens'
+import { TAMANO_MINIMO_TOQUE } from '../../tema/botones'
 import AlertaError from '../AlertaError'
 
 // StepStatus (jax/jacobs/models.py), distinto del status del pipeline
@@ -149,7 +150,7 @@ export default function DetallePipeline({ pipelineId, nombre, onClose }) {
             onClick={onClose}
             aria-label={t.historialCloseDetail}
             title={t.historialCloseDetail}
-            className="text-xs text-texto-tenue hover:text-texto transition-colors"
+            className={`${TAMANO_MINIMO_TOQUE} text-xs text-texto-tenue hover:text-texto transition-colors`}
           >
             ✕
           </button>

@@ -1,5 +1,6 @@
 import { memo } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
+import { TAMANO_MINIMO_TOQUE } from '../../tema/botones'
 
 const TYPE_STYLES = {
   error:   'bg-peligro-fondo border-peligro-borde text-peligro',
@@ -26,7 +27,7 @@ function Toast() {
           <span className="flex-1">{toast.message}</span>
           <button
             onClick={() => dismissToast(toast.id)}
-            className="flex-shrink-0 opacity-60 hover:opacity-100 text-lg leading-none"
+            className={`${TAMANO_MINIMO_TOQUE} flex-shrink-0 opacity-60 hover:opacity-100 text-lg leading-none`}
           >
             ×
           </button>

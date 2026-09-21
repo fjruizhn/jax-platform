@@ -11,6 +11,7 @@ import { textoDeErrorDeMesa, textoDeAviso, codigoDe } from '../../api/errores'
 import { cuerpoDeAdjunto, vistaDeAdjunto, faltaSoporteDeImagen } from '../chat/adjuntos'
 import { alturaInput } from './alturaInput'
 import { colorToken } from '../../tema/tokens'
+import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 import { nombreDeFaceta } from '../../lib/nombreDeFaceta'
 
 // Solo orden de despliegue — label viene de /api/state (display_name de la tabla
@@ -352,7 +353,7 @@ function BottomBar() {
               <button
                 key={f.id}
                 onClick={() => setActiveFacet(f.id)}
-                className={`px-2 py-0.5 rounded border bg-superficie text-xs font-semibold transition-colors ${
+                className={`${TAMANO_BOTON_ACCION} rounded border bg-superficie font-semibold transition-colors ${
                   activeFacet === f.id
                     ? ''
                     : 'border-transparent text-texto-suave hover:text-texto'

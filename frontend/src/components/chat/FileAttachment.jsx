@@ -1,4 +1,5 @@
 import { useI18n } from '../../i18n/index.jsx'
+import { TAMANO_MINIMO_TOQUE } from '../../tema/botones'
 
 const ICONOS = { pdf: '📄', texto: '📝' }
 
@@ -32,7 +33,7 @@ export default function FileAttachment({ attachment, onRemove, uploading }) {
       </div>
       {!uploading && (
         <button type="button" onClick={onRemove} title={t.attachRemove}
-                className="flex-shrink-0 text-texto-tenue hover:text-peligro transition-colors text-sm font-bold">
+                className={`${TAMANO_MINIMO_TOQUE} flex-shrink-0 text-texto-tenue hover:text-peligro transition-colors text-sm font-bold`}>
           ×
         </button>
       )}
