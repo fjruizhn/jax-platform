@@ -1358,6 +1358,46 @@ _PROVIDER_ID_OLLAMA_CPU = "ollama_cpu"
 _ENV_OLLAMA_CPU_URL = "JAX_OLLAMA_CPU_URL"
 
 
+async def _ensure_model_row(cur, provider_id: str, model_id: str) -> int:
+    """El `model.id` de (provider_id, model_id) -- lo crea si hace falta.
+
+    CHEQUEA ANTES de insertar (`SELECT` primero, `INSERT` sólo si falta), NO
+    `INSERT IGNORE` a ciegas. Hallazgo 2026-09-21 (PR #140, CI
+    `backend-tests-con-db`, invisible en hall9000): un `INSERT IGNORE` que
+    choca con una fila que OTRO seed ya insertó igual CONSUME un valor de
+    AUTO_INCREMENT -- MariaDB lo reserva antes de revisar la clave única, y
+    no lo reusa aunque la fila no se llegue a crear. Con dos seeds
+    autosuficientes que pueden terminar queriendo la MISMA fila --el par
+    (provider_id, model_id) del cerebro es, por diseño, uno de los de
+    `_FACET_BINDING_SEED`, así que `_seed_el_juez_facet` y el bucle de
+    `_seed_models_and_backfill` chocan siempre que corren contra una base
+    virgen-- la colisión estaba GARANTIZADA. Verificado contra una base
+    virgen real: sin este chequeo, `model` quedaba con ids (1, 3, 4, 5, 6, 7,
+    8) -- faltaba el 2 -- y un test que asumía un id chico y contiguo
+    (`test_admin_models_endpoints.py::
+    test_raw_write_to_motor_model_ref_cannot_produce_observable_divergence`)
+    reventaba con IntegrityError 1452 SÓLO en CI: la base de sesión de
+    hall9000 ya clona 16 filas de catálogo real, así que ninguna de las dos
+    ramas de inserción se ejercitaba ahí.
+
+    NO reacopla por orden: da igual cuál de los llamadores corra primero --
+    el segundo encuentra la fila por `SELECT` y no intenta insertarla de
+    nuevo, así que nunca hay una segunda colisión que gastar."""
+    await cur.execute(
+        "SELECT id FROM model WHERE provider_id = %s AND model_id = %s",
+        (provider_id, model_id),
+    )
+    fila = await cur.fetchone()
+    if fila is not None:
+        return fila[0]
+    await cur.execute(
+        "INSERT INTO model (provider_id, model_id, is_alias, status, source, source_checked_at) "
+        "VALUES (%s, %s, FALSE, 'available', 'manual', NOW())",
+        (provider_id, model_id),
+    )
+    return cur.lastrowid
+
+
 async def _seed_el_juez_facet(cur) -> None:
     """Faceta `el_juez`: el auditor de C5 que usa el MISMO modelo que el cerebro.
 
@@ -1396,7 +1436,14 @@ async def _seed_el_juez_facet(cur) -> None:
     `run_migrations()` completo contra una base virgen ANTES de este fix:
     `SELECT ... FROM facet_binding WHERE facet_key='el_juez'` no devolvía fila.
     El UPDATE de más abajo además REPARA una fila que ya haya quedado con
-    `model_ref` NULL -- no sólo evita el caso nuevo."""
+    `model_ref` NULL -- no sólo evita el caso nuevo.
+
+    La fila de `model` la resuelve `_ensure_model_row` (arriba), no un
+    `INSERT IGNORE` propio (coletazo del mismo hallazgo, 2026-09-21, PR #140):
+    ver su docstring para el porqué -- un `INSERT IGNORE` que choca con la
+    misma fila que `_seed_models_and_backfill` inserta después desperdicia un
+    id de AUTO_INCREMENT que rompía un test que asumía ids chicos, sólo en
+    una base virgen (CI)."""
     await cur.execute(
         "INSERT IGNORE INTO facet (`key`, display_name, icon, color_hex, transport, auto_selectable) "
         "VALUES ('el_juez', 'El Juez (auditor C5)', '\u2696\ufe0f', '#7c3aed', 'ollama', FALSE)"
@@ -1432,28 +1479,23 @@ async def _seed_el_juez_facet(cur) -> None:
     provider_id, model_id, model_ref = fila
     if model_ref is None:
         # Autosuficiente: NO depende de que _seed_models_and_backfill ya haya
-        # corrido. INSERT IGNORE porque esa misma función puede correr después
-        # y sembrar la MISMA fila (misma clave única provider_id+model_id) --
-        # el IGNORE la deja como no-op cuando ya existe, sin duplicar ni pisar.
-        await cur.execute(
-            "INSERT IGNORE INTO model (provider_id, model_id, is_alias, status, source, source_checked_at) "
-            "VALUES (%s, %s, FALSE, 'available', 'manual', NOW())",
-            (provider_id, model_id),
-        )
-        await cur.execute("SELECT id FROM model WHERE provider_id = %s AND model_id = %s",
-                          (provider_id, model_id))
-        ref = await cur.fetchone()
-        if ref is None:
-            # No debería pasar nunca: se acaba de insertar (o ya existía). Si
-            # pasa, es un FK roto (provider_id sin fila en `provider`) y hay
-            # que verlo en el log, no perderlo en un return mudo.
+        # corrido. _ensure_model_row chequea antes de insertar -- si esa otra
+        # función corre después y quiere la MISMA fila (misma clave única
+        # provider_id+model_id), la encuentra por SELECT y no la vuelve a
+        # intentar, así que no hay una segunda colisión que gastar un id.
+        try:
+            model_ref = await _ensure_model_row(cur, provider_id, model_id)
+        except aiomysql.IntegrityError:
+            # provider_id sin fila en `provider` (FK rota) -- no debería
+            # pasar nunca en el orden real de run_migrations (_seed_providers
+            # corre antes), pero es mejor verlo en el log que perderlo en un
+            # return mudo.
             logger.error(
-                "run_migrations: no se pudo resolver ni crear la fila de `model` "
-                "para el binding del cerebro (provider_id=%s, model_id=%s) -- "
+                "run_migrations: no se pudo crear la fila de `model` para el "
+                "binding del cerebro (provider_id=%s, model_id=%s) -- "
                 "el_juez queda SIN facet_binding.", provider_id, model_id,
             )
             return
-        (model_ref,) = ref
     await cur.execute(
         "INSERT INTO facet_binding (facet_key, provider_id, model_id, model_ref, role) "
         "VALUES ('el_juez', %s, %s, %s, 'primary') "
@@ -1507,7 +1549,11 @@ async def _seed_auditor_local_facet(cur) -> None:
     mientras `misiones.py` (que sólo mira `provider.is_local`, no si el binding resuelve)
     decía "elegible": las dos mitades en desacuerdo, fail-closed pero opaco. El UPDATE de
     más abajo además REPARA una fila que ya haya quedado así -- no sólo evita el caso
-    nuevo."""
+    nuevo.
+
+    La fila de `model` la resuelve `_ensure_model_row` (coletazo del hallazgo
+    2026-09-21, PR #140: un `INSERT IGNORE` que choca con una fila que otro
+    seed ya insertó desperdicia un id de AUTO_INCREMENT -- ver su docstring)."""
     await cur.execute(
         "INSERT IGNORE INTO facet (`key`, display_name, icon, color_hex, transport, auto_selectable) "
         "VALUES ('auditor_local', 'Auditor local (C5)', '🔒', '#64748b', 'ollama', FALSE)"
@@ -1515,14 +1561,7 @@ async def _seed_auditor_local_facet(cur) -> None:
     await cur.execute("SELECT 1 FROM provider WHERE id = %s", (_PROVIDER_ID_OLLAMA_CPU,))
     if await cur.fetchone() is None:
         return
-    await cur.execute(
-        "INSERT IGNORE INTO model (provider_id, model_id, is_alias, status, source, source_checked_at) "
-        "VALUES (%s, %s, FALSE, 'available', 'manual', NOW())",
-        (_PROVIDER_ID_OLLAMA_CPU, _MODELO_AUDITOR_LOCAL),
-    )
-    await cur.execute("SELECT id FROM model WHERE provider_id = %s AND model_id = %s",
-                      (_PROVIDER_ID_OLLAMA_CPU, _MODELO_AUDITOR_LOCAL))
-    (model_ref,) = await cur.fetchone()
+    model_ref = await _ensure_model_row(cur, _PROVIDER_ID_OLLAMA_CPU, _MODELO_AUDITOR_LOCAL)
     await cur.execute(
         "INSERT IGNORE INTO facet_binding (facet_key, provider_id, model_id, model_ref, role) "
         "VALUES ('auditor_local', %s, %s, %s, 'primary')",
@@ -1583,16 +1622,22 @@ async def _seed_models_and_backfill(cur) -> None:
     (eso es D1.3/model_catalog.py, deliberadamente separado del arranque).
     is_alias=False: ninguno de los 7 bindings actuales usa un puntero movil
     (serian estilo 'deepseek-chat'); todos son versiones fijadas verificadas
-    en Bloque C0. INSERT IGNORE + UPDATE...WHERE model_ref IS NULL: seguro
-    de re-correr, nunca duplica ni pisa un binding ya resuelto a mano."""
+    en Bloque C0. `_ensure_model_row` + UPDATE...WHERE model_ref IS NULL: seguro
+    de re-correr, nunca duplica ni pisa un binding ya resuelto a mano.
+
+    Usa `_ensure_model_row` (no `INSERT IGNORE` directo, coletazo del hallazgo
+    2026-09-21, PR #140) porque este bucle YA puede toparse con una fila que
+    otro seed autosuficiente sembró primero -- `_seed_el_juez_facet` inserta
+    el par (provider_id, model_id) del cerebro, que por diseño es uno de los
+    de `_FACET_BINDING_SEED` -- y un `INSERT IGNORE` sobre una fila que ya
+    existe desperdicia igual un id de AUTO_INCREMENT (MariaDB lo reserva
+    antes de revisar la clave única). Verificado: sin esto, una base virgen
+    quedaba con huecos en `model.id` y un test que asumía un id chico y
+    contiguo reventaba con IntegrityError 1452 -- sólo en CI."""
     await cur.execute("SELECT DISTINCT provider_id, model_id FROM facet_binding")
     pairs = await cur.fetchall()
     for provider_id, model_id in pairs:
-        await cur.execute(
-            "INSERT IGNORE INTO model (provider_id, model_id, is_alias, status, source, source_checked_at) "
-            "VALUES (%s, %s, FALSE, 'available', 'manual', NOW())",
-            (provider_id, model_id),
-        )
+        await _ensure_model_row(cur, provider_id, model_id)
     await cur.execute(
         "UPDATE facet_binding b "
         "JOIN model m ON m.provider_id = b.provider_id AND m.model_id = b.model_id "

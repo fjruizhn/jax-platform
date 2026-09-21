@@ -231,3 +231,58 @@ def test_una_base_virgen_nace_con_el_juez_bindeado(monkeypatch):
     assert (provider_juez, model_juez) == (provider_cerebro, model_cerebro), (
         f"juez={(provider_juez, model_juez)} cerebro={(provider_cerebro, model_cerebro)}")
     assert model_ref_juez is not None, "el_juez quedó con model_ref NULL en una base virgen"
+
+
+async def _migrar_y_leer_ids_de_model():
+    """Como `_migrar_y_leer_bindings`, pero devuelve los `model.id` que
+    quedan tras `run_migrations()` completo. Mismo criterio de `finally` para
+    `close_pool()` (ver esa función)."""
+    try:
+        await run_migrations()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT id FROM model ORDER BY id")
+                ids = [fila[0] for fila in await cur.fetchall()]
+    finally:
+        await close_pool()
+    return ids
+
+
+@pytest.mark.skipif(_SIN_MARIADB, reason=_RAZON_SIN_MARIADB)
+def test_una_base_virgen_no_deja_huecos_en_los_ids_de_model(monkeypatch):
+    """Hallazgo del PR #140 (CI, job `backend-tests-con-db`, 2026-09-21,
+    reportado por el auditor -- no reproducía en hall9000).
+
+    `_seed_el_juez_facet` (autosuficiente, arriba en este archivo) inserta la
+    fila de `model` del cerebro TEMPRANO en `run_migrations`. Sin
+    `_ensure_model_row`, más abajo en la MISMA corrida `_seed_models_and_backfill`
+    la volvía a intentar con su propio `INSERT IGNORE` -- sin saber que ya
+    existía, y sin que tenga que saberlo: no se acopla a el_juez a
+    propósito -- y esa colisión de clave duplicada CONSUMÍA un id de
+    AUTO_INCREMENT que MariaDB reserva ANTES de revisar la clave única y
+    nunca reusa, aunque la fila no se llegue a crear.
+
+    Antes de este fix (reproducido con `db.migrations.run_migrations()`
+    contra una base virgen real, sin la plantilla de hall9000 de por medio):
+    `model.id` quedaba en (1, 3, 4, 5, 6, 7, 8) -- sin el 2. Con la plantilla
+    clonada de hall9000 (16 filas de catálogo ya sembradas) esto es invisible:
+    la rama que inserta de `_seed_el_juez_facet` casi nunca se ejercita ahí.
+
+    El síntoma real: `test_admin_models_endpoints.py::
+    test_raw_write_to_motor_model_ref_cannot_produce_observable_divergence`
+    asumía un `model.id` chico y contiguo (`2 if binding_ref != 2 else 3`) y
+    reventaba con `IntegrityError 1452` contra ese hueco -- sólo en CI. Ese
+    test ahora crea su propia fila en vez de adivinar un id (fix aparte,
+    mismo commit), pero el hueco en sí era el defecto de fondo: ningún código
+    -- de este repo o futuro -- debería poder toparse con uno."""
+    nombre = _nombre_base_virgen()
+    asyncio.run(_crear_base_virgen(nombre))
+    monkeypatch.setenv("JAX_DB_NAME", nombre)
+    try:
+        ids = asyncio.run(_migrar_y_leer_ids_de_model())
+    finally:
+        asyncio.run(_dropear_base_virgen(nombre))
+    assert ids, "una base virgen tendría que terminar con filas en `model`"
+    esperado = list(range(ids[0], ids[0] + len(ids)))
+    assert ids == esperado, f"model.id tiene huecos: {ids}"
