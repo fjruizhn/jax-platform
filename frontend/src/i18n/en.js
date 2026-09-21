@@ -487,6 +487,10 @@ export default {
   darkMode: 'Dark mode',
   switchLanguage: (idioma) => `Switch language to ${idioma}`,
   adminPanel: 'Administration',
+  // BarraUsuario 🧩 N counter (2026-09-20, hard constraint): full accessible
+  // name, not just the number -- a screen reader has to say WHAT those N
+  // are. Same data as /admin/memoria?verificado=false.
+  barraMemoriaSinVerificar: (n) => `${n} unverified memory facts`,
 
   // File attachments
   attachTooltip: 'Attach image, PDF or text',
@@ -517,12 +521,22 @@ export default {
   serviceConnected: 'connected',
   serviceError: 'error',
   serviceNotConfigured: 'Not configured',
-  statMessages: 'Messages',
+  // A-5x (2026-09-20): "Messages" counted ALL requests of the day (images
+  // included -- COUNT(*) over axioma_usage) and images were shown again in
+  // their own card: double counting and a label that lied about what it
+  // measured. The query didn't change, only the name and how it's shown:
+  // images become a subset of this same card (`sub` prop).
+  statRequestsToday: 'Requests today',
+  statImagesSub: (n) => `of which, images: ${n}`,
   statPipelines: 'Pipelines',
-  statImages: 'Images',
   statUsersActive: 'Active users',
   statUsersLocked: 'Locked',
   statRam: 'RAM',
+  // Hard constraint (2026-09-20): same filter as the Memory screen
+  // (is_verified=0 AND superseded_by IS NULL AND (expires_at IS NULL OR
+  // expires_at > NOW())) -- merged and expired facts are not pending.
+  // Always visible, even at 0: 0 is the signal of being up to date.
+  statFactsUnverified: 'Unverified',
   // I-1 (final review PR 2, 2026-09-14): AdminDashboard.jsx had a fixed
   // label="API Keys". "API Keys" is the same term in both languages
   // (technical name), like brandName or eyeKillSwitch.

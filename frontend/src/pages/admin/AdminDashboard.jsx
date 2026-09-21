@@ -71,13 +71,25 @@ export default function AdminDashboard() {
           <section className="mb-6">
             <h2 className="text-sm font-semibold text-texto-suave uppercase tracking-wider mb-3">{t.adminStatsTitle}</h2>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-              <StatCard label={t.statMessages}     value={s.messages_today}      tono="text-info" />
+              <StatCard
+                label={t.statRequestsToday}
+                value={s.messages_today}
+                tono="text-info"
+                sub={t.statImagesSub(s.images_generated)}
+              />
               <StatCard label={t.statPipelines}    value={s.pipelines_completed} tono="text-texto-fuerte" />
-              <StatCard label={t.statImages}       value={s.images_generated}    tono="text-acento-texto" />
               <StatCard label={t.statUsersActive}  value={s.users_active}        tono="text-exito" />
               {s.users_locked > 0 && (
                 <StatCard label={t.statUsersLocked} value={s.users_locked} tono="text-aviso" />
               )}
+              {/* Restricción dura (2026-09-20): siempre visible, incluso en 0
+                  -- a diferencia de "Bloqueados" de arriba, acá el 0 ES la
+                  buena noticia (nada pendiente de revisión de verdad). */}
+              <StatCard
+                label={t.statFactsUnverified}
+                value={s.facts_unverified}
+                tono={s.facts_unverified === 0 ? 'text-exito' : 'text-aviso'}
+              />
               <StatCard
                 label={t.statApiKeysLabel}
                 value={`${s.api_keys_configured}/${s.api_keys_total}`}

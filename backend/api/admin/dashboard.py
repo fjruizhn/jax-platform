@@ -36,6 +36,19 @@ SQL_PIPELINES_COMPLETADOS = "SELECT COUNT(*) FROM jacobs_pipelines WHERE status 
 # Rango sobre idx_jax_users_locked_until (db/migrations.py::
 # _indice_de_cuentas_bloqueadas, DDL acotado; no esta en _INDEXES).
 SQL_CUENTAS_BLOQUEADAS = "SELECT COUNT(*) FROM jax_users WHERE locked_until > %s"
+# Restricción dura (2026-09-20, pedido de Fernando): mismo filtro EXACTO que
+# la pantalla de Memoria (api/admin/memoria.py::SQL_CONTAR, con
+# verificado=False, incluir_superados=False, incluir_vencidos=False) -- un
+# `is_verified = 0` a secas cuenta también lo fundido (superseded_by no
+# nulo: superado a propósito, no es pendiente) y lo vencido. Medido en
+# producción: el filtro flojo da 37, el pendiente real es 0.
+# tests/test_tablero.py ata el filtro con un test que siembra los tres casos.
+# Índice idx_facts_revision (is_verified, expires_at, created_at) -- mismo
+# que usa SQL_CONTAR (jax_memory_schema.sql / jax/memory/migrations.py).
+SQL_HECHOS_SIN_VERIFICAR = (
+    "SELECT COUNT(*) FROM facts WHERE is_verified = 0 AND superseded_by IS NULL "
+    "AND (expires_at IS NULL OR expires_at > NOW())"
+)
 
 
 def _rango_del_dia(dia: date) -> tuple[datetime, datetime]:
@@ -105,6 +118,8 @@ async def get_dashboard(user: AuthUser = Depends(require_superadmin)):
             keys_total, keys_configured = await cur.fetchone()
             await cur.execute(SQL_PIPELINES_COMPLETADOS)
             (pipelines_completed,) = await cur.fetchone()
+            await cur.execute(SQL_HECHOS_SIN_VERIFICAR)
+            (facts_unverified,) = await cur.fetchone()
 
     mem = psutil.virtual_memory()
     return {
@@ -112,6 +127,7 @@ async def get_dashboard(user: AuthUser = Depends(require_superadmin)):
         "stats": {
             "messages_today": messages_today,
             "images_generated": int(images_today),
+            "facts_unverified": facts_unverified,
             "pipelines_completed": pipelines_completed,
             "users_active": users_active,
             "users_locked": users_locked,

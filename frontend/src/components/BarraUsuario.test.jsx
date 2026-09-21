@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import '@testing-library/jest-dom'
@@ -14,10 +14,16 @@ vi.mock('../store/useJaxStore', () => ({
   useJaxStore: (selector) => selector({ user: usuario, logout: logoutMock, cambiarMiPassword: vi.fn(), saliendo }),
 }))
 
+// Contador de memoria sin verificar (2026-09-20, restricción dura): sólo
+// superadmin lo pide, así que hay que mockear api/client acá o los tests de
+// arriba (que no lo mencionan) le pegarían a axios de verdad.
+vi.mock('../api/client', () => ({ default: { get: vi.fn() } }))
+
 import BarraUsuario from './BarraUsuario'
 import { I18nProvider } from '../i18n/index.jsx'
 import { useTema } from '../store/useTema'
 import { aplicarTema } from '../tema/aplicarTema'
+import api from '../api/client'
 
 function renderBarra() {
   return render(
@@ -38,6 +44,8 @@ beforeEach(() => {
   aplicarTema('dark')
   usuario = { email: 'fruiztorres@me.com', role: 'superadmin' }
   saliendo = null
+  api.get.mockReset()
+  api.get.mockResolvedValue({ data: { total: 0 } })
 })
 
 describe('BarraUsuario', () => {
@@ -107,5 +115,40 @@ describe('BarraUsuario -- salir en vuelo', () => {
     const salir = screen.getByRole('button', { name: 'Salir' })
     expect(salir).toBeDisabled()
     expect(salir).toHaveAttribute('aria-busy', 'true')
+  })
+})
+
+// Contador 🧩 N (2026-09-20, restricción dura): sólo superadmin (es quien
+// puede actuar y el único que entra a /admin/memoria), oculto en 0 (para que
+// cuando aparece signifique algo), y con el MISMO dato que la pantalla de
+// Memoria (GET /admin/memoria/hechos?verificado=false&limite=1, que ya
+// aplica el filtro correcto en el servidor -- SQL_CONTAR).
+describe('BarraUsuario — memoria sin verificar', () => {
+  it('superadmin pide el dato correcto (verificado=false, el filtro real)', async () => {
+    renderBarra()
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith(
+      '/admin/memoria/hechos', { params: { verificado: false, limite: 1 } }))
+  })
+
+  it('con N>0 muestra el contador con nombre accesible y lleva a /admin/memoria', async () => {
+    api.get.mockResolvedValue({ data: { total: 3 } })
+    renderBarra()
+    const link = await screen.findByRole('link', { name: '3 hechos de memoria sin verificar' })
+    expect(link).toHaveAttribute('href', '/admin/memoria')
+    expect(link).toHaveTextContent('3')
+  })
+
+  it('en 0 el contador no se muestra -- para que cuando aparece signifique algo', async () => {
+    api.get.mockResolvedValue({ data: { total: 0 } })
+    renderBarra()
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    expect(screen.queryByRole('link', { name: /hechos de memoria sin verificar/ })).not.toBeInTheDocument()
+  })
+
+  it('un operator no ve el contador ni pide el dato (el endpoint es sólo de superadmin)', async () => {
+    usuario = { email: 'otro@example.com', role: 'operator' }
+    renderBarra()
+    expect(screen.queryByRole('link', { name: /hechos de memoria sin verificar/ })).not.toBeInTheDocument()
+    expect(api.get).not.toHaveBeenCalledWith('/admin/memoria/hechos', expect.anything())
   })
 })
