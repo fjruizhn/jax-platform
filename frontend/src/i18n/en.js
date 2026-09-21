@@ -384,6 +384,7 @@ export default {
   chainLabel: 'Chain',
   chainHint: 'Each step receives the output of the earlier steps it needs. If one fails, the chain stops.',
   chainRoles: {
+    read: 'Read the objective files',
     research: 'Research',
     plan: 'Sketch and plan',
     critique: 'Critique the plan',
@@ -399,6 +400,8 @@ export default {
   chainInvalidFacet: (role) => `${role}: the selected facet is not allowed for this step by the catalog.`,
   // Instructions each model receives. They follow the interface language.
   chainInstructions: {
+    read:
+      'Role: reader. If the objective names workspace files, read them with the tool and output their contents verbatim, without summarizing or interpreting: the following steps work on what you return. Cite the path of each file you read. If a file is missing or unreadable, say so with its path and the error -- never invent it. If the objective names none, say there was nothing to read and do nothing else.',
     research:
       'Role: researcher. Research the objective thoroughly with verifiable sources and cite each one. ' +
       'Separate verified facts from assumptions and state explicitly what you could not verify.',

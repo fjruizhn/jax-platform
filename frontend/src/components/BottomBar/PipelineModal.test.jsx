@@ -53,7 +53,7 @@ function renderModal(props = {}, { layout = 'parallel' } = {}) {
 }
 
 describe('PipelineModal -- cadena en línea', () => {
-  it('la cadena es la forma por defecto y manda 5 pasos encadenados por depends_on', async () => {
+  it('la cadena es la forma por defecto y manda 6 pasos encadenados por depends_on', async () => {
     // "audit" se sacó de la cadena en la ronda de arreglo (2026-09-18): el
     // árbitro que Jacobs agrega SOLO al final de cualquier plan de 2+ pasos
     // ve TODOS los pasos, más de lo que "audit" veía -- ver el comentario
@@ -66,12 +66,15 @@ describe('PipelineModal -- cadena en línea', () => {
     fireEvent.click(screen.getByText(/Planificar y ejecutar/i))
 
     await waitFor(() => expect(submitted).not.toBeNull())
+    // `file_read` al frente desde 2026-09-20: sin ese paso la cadena no podía
+    // leer los archivos que el objetivo nombra.
     expect(submitted.steps.map(s => s.capability)).toEqual([
-      'research', 'design', 'critique', 'reconcile', 'generate',
+      'file_read', 'research', 'design', 'critique', 'reconcile', 'generate',
     ])
-    expect(submitted.steps.map(s => s.depends_on)).toEqual([[], [0], [0, 1], [1, 2], [3]])
-    expect(submitted.max_steps).toBe(5)
-    expect(submitted.steps[4]).toMatchObject({ facet: 'kimi', motor: 'kimi' })
+    expect(submitted.steps.map(s => s.depends_on)).toEqual([[], [0], [0, 1], [1, 2], [2, 3], [4]])
+    expect(submitted.max_steps).toBe(6)
+    expect(submitted.steps[0]).toMatchObject({ facet: 'jax_local', motor: 'jax_local' })
+    expect(submitted.steps[5]).toMatchObject({ facet: 'kimi', motor: 'kimi' })
     submitted.steps.forEach(s => expect(s).not.toHaveProperty('timeout_seconds'))
   })
 
@@ -197,6 +200,12 @@ function mockCatalog({ kimiHasTools = false, jaxLocalHasTools = true } = {}) {
   api.get.mockResolvedValue({
     data: {
       capabilities: [
+        // `file_read` desde 2026-09-20: es la capability del primer paso de la
+        // cadena. Sin ella en el catálogo, ese rol no tiene faceta válida y el
+        // modal bloquea el envío -- que es el fail-closed correcto, y por eso
+        // el mock tiene que traerla igual que la trae el endpoint real
+        // (api/motors.py devuelve capability_motor ENTERA, sin filtrar).
+        { key: 'file_read', allowed_motors: ['jax_local', 'kimi'] },
         { key: 'file_write', allowed_motors: ['jax_local'] },
         { key: 'generate', allowed_motors: ['kimi', 'ada', 'jax_local'] },
       ],
