@@ -15,6 +15,7 @@ import en from '../../i18n/en.js'
 
 // Catálogo con la forma real de GET /api/motors/capabilities (capability_motor).
 const CAPS = {
+  file_read: ['jax_local', 'kimi'],
   research: [],
   design: ['ada', 'kimi', 'jax_local'],
   critique: ['thot', 'ada'],
@@ -24,7 +25,7 @@ const CAPS = {
 }
 
 const INSTRUCTIONS = {
-  research: 'INVESTIGA', plan: 'PLANIFICA', critique: 'CRITICA',
+  read: 'LEE', research: 'INVESTIGA', plan: 'PLANIFICA', critique: 'CRITICA',
   unify: 'UNIFICA', produce: 'PRODUCE',
 }
 
@@ -35,8 +36,11 @@ describe('pipelineChain -- la cadena en línea', () => {
     // (jacobs/plan.py::_con_arbitro) depende de TODOS los pasos y hace
     // estrictamente más de lo que "audit" hacía (que sólo veía tres de
     // cinco). Ver el comentario completo sobre CHAIN_ROLES en pipelineChain.js.
+    // `file_read` al frente desde 2026-09-20: sin él la cadena no podía leer
+    // los archivos que el objetivo nombra, y los cinco pasos siguientes
+    // construían sobre documentos que nadie abrió. Ver CHAIN_ROLES.
     expect(CHAIN_ROLES.map(r => r.capability)).toEqual([
-      'research', 'design', 'critique', 'reconcile', 'generate',
+      'file_read', 'research', 'design', 'critique', 'reconcile', 'generate',
     ])
   })
 
@@ -47,15 +51,18 @@ describe('pipelineChain -- la cadena en línea', () => {
     // 2026-09-12: sin ella medía contra lo que el plan DECLARABA haber
     // aceptado, no contra lo que la crítica dijo (E2E b2d87971: "no se
     // proporcionó el texto de la crítica original").
+    // Corrido un índice desde 2026-09-20: `read` entró al frente y todos los
+    // demás pasan a depender también de él (paso 0), que es quien trae el
+    // contenido real de los archivos del objetivo.
     expect(CHAIN_ROLES.map(r => r.dependsOn)).toEqual([
-      [], [0], [0, 1], [1, 2], [3],
+      [], [0], [0, 1], [1, 2], [2, 3], [4],
     ])
     CHAIN_ROLES.forEach((r, i) => r.dependsOn.forEach(d => expect(d).toBeLessThan(i)))
   })
 
   it('arma un step por rol, con depends_on y sin timeout_seconds (lo pone la DB)', () => {
     const steps = buildChainSteps('un ERP', defaultFacetsByRole(), INSTRUCTIONS)
-    expect(steps).toHaveLength(5)
+    expect(steps).toHaveLength(6)
     steps.forEach((s, i) => {
       expect(s.capability).toBe(CHAIN_ROLES[i].capability)
       expect(s.depends_on).toEqual(CHAIN_ROLES[i].dependsOn)
@@ -63,26 +70,29 @@ describe('pipelineChain -- la cadena en línea', () => {
       expect(s.skip_on_fail).toBe(false)
       expect(s.prompt).toContain('un ERP')
     })
-    expect(steps[0].prompt).toContain('INVESTIGA')
-    expect(steps[4].prompt).toContain('PRODUCE')
+    expect(steps[0].prompt).toContain('LEE')
+    expect(steps[1].prompt).toContain('INVESTIGA')
+    expect(steps[5].prompt).toContain('PRODUCE')
   })
 
   it('fija motor=faceta para kimi/jax_local y no manda motor para las facetas HTTP', () => {
     const steps = buildChainSteps('x', defaultFacetsByRole(), INSTRUCTIONS)
-    expect(steps[4]).toMatchObject({ facet: 'kimi', motor: 'kimi' })
-    expect(steps[0]).not.toHaveProperty('motor')  // hipatia
+    expect(steps[5]).toMatchObject({ facet: 'kimi', motor: 'kimi' })
+    // `read` va a jax_local, que es motor gobernado: lleva motor explícito.
+    expect(steps[0]).toMatchObject({ facet: 'jax_local', motor: 'jax_local' })
+    expect(steps[1]).not.toHaveProperty('motor')  // hipatia
     expect(steps[1]).not.toHaveProperty('motor')  // ada
   })
 
   it('ofrece motores solo donde capability_motor los permite; las HTTP siempre', () => {
-    const research = facetOptionsFor(CHAIN_ROLES[0], CAPS)
+    const research = facetOptionsFor(CHAIN_ROLES[1], CAPS)
     expect(research).not.toContain('kimi')
     expect(research).not.toContain('jax_local')
     expect(research).toContain('hipatia')
-    expect(facetOptionsFor(CHAIN_ROLES[4], CAPS)).toEqual(
+    expect(facetOptionsFor(CHAIN_ROLES[5], CAPS)).toEqual(
       expect.arrayContaining(['kimi', 'jax_local', 'ada']),
     )
-    expect(facetOptionsFor(CHAIN_ROLES[2], CAPS)).not.toContain('kimi')  // critique
+    expect(facetOptionsFor(CHAIN_ROLES[3], CAPS)).not.toContain('kimi')  // critique
   })
 
   it('la cadena por defecto no tiene ningún rol que comparta faceta con una dependencia directa', () => {

@@ -408,6 +408,7 @@ export default {
   chainLabel: 'Cadena',
   chainHint: 'Cada paso recibe la salida de los pasos anteriores que necesita. Si uno falla, la cadena se detiene.',
   chainRoles: {
+    read: 'Leer los archivos del objetivo',
     research: 'Investigar',
     plan: 'Maquetar y planificar',
     critique: 'Criticar el plan',
@@ -423,6 +424,8 @@ export default {
   chainInvalidFacet: (role) => `${role}: la faceta elegida no está permitida para este paso según el catálogo.`,
   // Instrucciones que recibe cada modelo. Van en el idioma de la interfaz.
   chainInstructions: {
+    read:
+      'Rol: lector. Si el objetivo nombra archivos del workspace, leélos con la herramienta y volcá su contenido tal cual, sin resumir ni interpretar: los pasos siguientes trabajan sobre lo que devuelvas. Citá la ruta de cada archivo que leíste. Si un archivo no existe o no se puede leer, decilo con su ruta y el error, nunca lo inventes. Si el objetivo no nombra ninguno, decí que no había nada que leer y no hagas nada más.',
     research:
       'Rol: investigador. Investiga a fondo el objetivo con fuentes verificables y cita cada una. ' +
       'Separa los hechos verificados de los supuestos y declara explícitamente lo que no pudiste verificar.',

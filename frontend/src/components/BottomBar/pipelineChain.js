@@ -73,12 +73,28 @@ export const ARBITRO_FACETA = 'thot'
 // Si en el futuro hace falta una revisión INTERMEDIA (no al final, con
 // menos contexto que el árbitro) es una necesidad nueva, no la resurrección
 // de este paso -- hay que diseñarla de cero contra las reglas de hoy.
+// `read` va PRIMERO y es el paso que la cadena no tenía (2026-09-20). Sin él,
+// un objetivo que nombra archivos del workspace no los podía leer: la
+// capability `file_read` existe, el backend acepta pasos que la usen (el
+// pipeline e570ac1c del 18-sep los tenía) y `capability_motor` la permite para
+// `jax_local` y `kimi` -- pero la cadena del modal no la ofrecía, así que la
+// interfaz no podía expresar algo que el sistema sí sabe hacer. El resultado
+// era silencioso y caro: hipatia declaraba los archivos como INCÓGNITA y los
+// cinco pasos siguientes construían sobre nada.
+//
+// `jax_local` por defecto: es local ($0) y tiene `has_tool_access`. Leer tres
+// archivos entra de sobra en MAX_TOOL_LOOP_ITERATIONS (5).
+//
+// No estorba cuando no hay archivos: si el objetivo no nombra ninguno, el paso
+// lo dice y sigue -- es más barato un paso que informa "no había nada que leer"
+// que cinco que inventan sobre documentos que nunca vieron.
 export const CHAIN_ROLES = [
-  { id: 'research', capability: 'research',             defaultFacet: 'hipatia', dependsOn: [] },
-  { id: 'plan',     capability: 'design',               defaultFacet: 'ada',     dependsOn: [0] },
-  { id: 'critique', capability: 'critique',             defaultFacet: 'jekyll',  dependsOn: [0, 1] },
-  { id: 'unify',    capability: 'reconcile',            defaultFacet: 'ada',     dependsOn: [1, 2] },
-  { id: 'produce',  capability: 'generate',             defaultFacet: 'kimi',    dependsOn: [3] },
+  { id: 'read',     capability: 'file_read',            defaultFacet: 'jax_local', dependsOn: [] },
+  { id: 'research', capability: 'research',             defaultFacet: 'hipatia', dependsOn: [0] },
+  { id: 'plan',     capability: 'design',               defaultFacet: 'ada',     dependsOn: [0, 1] },
+  { id: 'critique', capability: 'critique',             defaultFacet: 'jekyll',  dependsOn: [1, 2] },
+  { id: 'unify',    capability: 'reconcile',            defaultFacet: 'ada',     dependsOn: [2, 3] },
+  { id: 'produce',  capability: 'generate',             defaultFacet: 'kimi',    dependsOn: [4] },
 ]
 
 // Modo por defecto según la forma (decisión de Fernando, 2026-09-12). En
