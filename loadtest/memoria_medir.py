@@ -111,13 +111,26 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM facts")
         (n_facts,) = cur.fetchone()
+        # `token_version` y `role` se LEEN de la base, no se inventan: estaban
+        # fijos en `tv=0` y sin rol, y el token salia 401 en cuanto el usuario
+        # habia iniciado sesion alguna vez (cada login sube la version). Un
+        # medidor que no puede autenticarse mide un 401 rapido -- justo lo que
+        # la verificacion previa de mas abajo existe para impedir.
+        cur.execute("SELECT token_version, role FROM jax_users WHERE user_id = 1")
+        fila_usuario = cur.fetchone()
+    if fila_usuario is None:
+        raise RuntimeError(
+            f"{base_de_prueba} no tiene user_id=1 -- ¿corriste "
+            "memoria_levantar_entorno.py, que crea el superadmin?")
+    (token_version, rol) = fila_usuario
     conn.close()
     if n_facts < 9000:
         raise RuntimeError(f"{base_de_prueba} tiene solo {n_facts} facts -- ¿corriste memoria_seed.py?")
     print(f"[medir] {base_de_prueba}: {n_facts} facts", file=sys.stderr)
 
     token = _jwt.encode(
-        {"user_id": "1", "tenant_id": "1", "tv": 0, "exp": int(time.time()) + 7200, "type": "access"},
+        {"user_id": "1", "tenant_id": "1", "role": rol, "tv": token_version,
+         "exp": int(time.time()) + 7200, "type": "access"},
         env["JAX_JWT_SECRET"], algorithm="HS256",
     )
     headers = {"Authorization": f"Bearer {token}"}

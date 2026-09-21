@@ -124,3 +124,152 @@ def test_el_agrupamiento_usa_el_indice_vectorial(client_superadmin):
     assert "idx_embedding_bge_m3" in texto, f"no usa el indice vectorial: {texto}"
     assert "Using filesort" not in texto, f"ordena en memoria: {texto}"
     assert "Using temporary" not in texto, f"tabla temporal: {texto}"
+
+
+# --- rendimiento del chequeo de casi-duplicados (2026-09-20) -------------------------------
+#
+# Medido a 10.000 hechos: `_casi_duplicados_del_grupo` se llevaba el 61 % del
+# request entero -- 94.695 distancias coseno a 47,4 us cada una = 4,12 s. NO era
+# el N+1 de vecinos, que es el 27 %. Dos causas, las dos dentro de esta funcion:
+# el producto punto en Python puro, y la NORMA de cada vector recomputada en
+# cada par (en un grupo de 90, la norma de un vector se recalculaba 89 veces).
+
+def _grupo_sintetico(n: int, dim: int = 8) -> list:
+    """n miembros con la forma que espera `_casi_duplicados_del_grupo`:
+    (id, fact_text, is_verified, created_at, vector_texto)."""
+    import random
+    r = random.Random(20260920)
+    return [(i, f"hecho {i}", True, None,
+             json.dumps([r.random() for _ in range(dim)])) for i in range(n)]
+
+
+def test_la_norma_se_calcula_una_vez_por_vector_no_una_por_par(monkeypatch):
+    """La comprobacion es DETERMINISTA (se cuentan las llamadas), no de reloj:
+    un test de tiempo seria un flake y ademas no diria por que.
+
+    Con 20 miembros hay 190 pares. Si la norma se calcula dentro del bucle,
+    se llama 380 veces; si se calcula una vez por vector, 20."""
+    miembros = _grupo_sintetico(20)
+    llamadas = []
+    original = memoria._norma
+    monkeypatch.setattr(memoria, "_norma",
+                        lambda v: (llamadas.append(1), original(v))[1])
+
+    memoria._casi_duplicados_del_grupo(miembros)
+
+    assert len(llamadas) == len(miembros), (
+        f"{len(llamadas)} normas para {len(miembros)} vectores "
+        f"({len(miembros)*(len(miembros)-1)//2} pares): se esta recomputando por par")
+
+
+def test_la_distancia_rapida_da_LO_MISMO_que_la_formula_ingenua():
+    """El arreglo es de velocidad, no de resultado. Si cambia un digito,
+    cambian los grupos que ve Fernando."""
+    import math as _m
+    import random
+    r = random.Random(7)
+    for _ in range(50):
+        a = [r.random() for _ in range(64)]
+        b = [r.random() for _ in range(64)]
+        ingenua = 1 - (sum(x * y for x, y in zip(a, b))
+                       / (_m.sqrt(sum(x * x for x in a)) * _m.sqrt(sum(y * y for y in b))))
+        assert memoria._distancia_coseno(a, b) == pytest.approx(ingenua, abs=1e-12)
+
+
+def test_un_vector_en_ceros_no_rompe_ni_se_cuela():
+    """Norma 0: distancia infinita, nunca un ZeroDivisionError ni un 0.0 falso
+    (un 0.0 falso seria 'duplicado exacto')."""
+    assert memoria._distancia_coseno([0.0] * 8, [1.0] * 8) == float("inf")
+    assert memoria._distancia_coseno([1.0] * 8, [0.0] * 8) == float("inf")
+
+
+def _casi_duplicados_ingenuo(miembros: list) -> list[list[int]]:
+    """La implementación de ANTES del arreglo, tal cual, como referencia.
+
+    Vive en el repo a propósito: la afirmación "el arreglo no cambia el
+    resultado" no vale si la comparación se corrió una vez en un scratchpad y
+    no la puede repetir nadie -- ni CI ni un auditor.
+    """
+    import math as _m
+    if len(miembros) < 2 or len(miembros) > memoria._MAX_MIEMBROS_CASI_DUPLICADO:
+        return []
+    vectores = {m[0]: json.loads(m[4]) for m in miembros}
+    ids = list(vectores)
+    uf = memoria._UnionFind(ids)
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            a, b = vectores[ids[i]], vectores[ids[j]]
+            punto = sum(x * y for x, y in zip(a, b))
+            na = _m.sqrt(sum(x * x for x in a))
+            nb = _m.sqrt(sum(y * y for y in b))
+            d = float("inf") if na == 0 or nb == 0 else 1 - punto / (na * nb)
+            if d <= memoria._UMBRAL_MISMO_TEMA:
+                uf.unir(ids[i], ids[j])
+    return [sorted(c) for c in uf.componentes() if len(c) > 1]
+
+
+def _grupo_con_clusters(n: int, semilla: int, dim: int = 128,
+                        escalas: bool = False) -> list:
+    """Miembros repartidos a distintas distancias del umbral, para que el
+    resultado NO sea trivial (ni todos juntos ni todos separados).
+
+    `escalas=True` les da además NORMAS muy distintas entre sí. Hace falta
+    para el centinela del cableado de normas: los embeddings reales son casi
+    unitarios, así que con normas todas ~1 confundir la de `a` con la de `b`
+    no cambia el resultado y el centinela no discriminaría nada.
+    """
+    import math as _m
+    import random
+    r = random.Random(semilla)
+    centro = [r.gauss(0, 1) for _ in range(dim)]
+    nc = _m.sqrt(sum(x * x for x in centro))
+    centro = [x / nc for x in centro]
+    miembros = []
+    for i in range(n):
+        t = r.choice([0.002, 0.01, 0.05, 0.9])  # cerca, medio, lejos del umbral
+        v = [centro[k] * _m.sqrt(1 - t) + r.gauss(0, 1) * _m.sqrt(t) / _m.sqrt(dim)
+             for k in range(dim)]
+        if escalas:
+            factor = r.choice([0.01, 1.0, 7.0, 250.0])
+            v = [x * factor for x in v]
+        miembros.append((i, f"hecho {i}", True, None, json.dumps(v)))
+    return miembros
+
+
+@pytest.mark.parametrize("n, semilla, escalas", [
+    (2, 1, False), (5, 2, False), (17, 3, False), (40, 4, False), (90, 5, False),
+    (25, 6, True), (60, 7, True),  # con normas muy dispares entre si
+])
+def test_el_camino_de_produccion_da_LO_MISMO_que_la_implementacion_vieja(n, semilla, escalas):
+    """Compara el RESULTADO de `_casi_duplicados_del_grupo` -- el camino de 4
+    argumentos, el único que corre en producción -- contra la implementación
+    anterior al arreglo.
+
+    **Por qué existe.** Los otros tests miran la firma de DOS argumentos y
+    CUÁNTAS veces se llama `_norma`. Ninguno miraba el cableado
+    `normas[a], normas[b]`. Una auditoría adversarial lo demostró mutando ese
+    cableado a `normas[a], normas[a]`: los 28 tests seguían en verde con los
+    grupos saliendo mal. Un control que no falla con el defecto presente no
+    valida nada.
+    """
+    miembros = _grupo_con_clusters(n, semilla, escalas=escalas)
+    assert memoria._casi_duplicados_del_grupo(miembros) == _casi_duplicados_ingenuo(miembros)
+
+
+def test_la_norma_de_cada_vector_es_la_SUYA(monkeypatch):
+    """Centinela directo del cableado: si se le pasa la norma de otro vector,
+    la distancia cambia. Con normas cruzadas a propósito, el resultado NO puede
+    coincidir con el ingenuo."""
+    # `escalas=True`: con normas todas ~1 el cruce no cambiaria nada y el
+    # centinela seria de los que nunca fallan.
+    miembros = _grupo_con_clusters(30, semilla=11, escalas=True)
+    correcto = memoria._casi_duplicados_del_grupo(miembros)
+
+    original = memoria._distancia_coseno
+    monkeypatch.setattr(memoria, "_distancia_coseno",
+                        lambda a, b, na=None, nb=None: original(a, b, na, na))
+    cruzado = memoria._casi_duplicados_del_grupo(miembros)
+
+    assert cruzado != correcto, (
+        "usar la norma de `a` como norma de `b` dio el MISMO resultado: "
+        "este grupo no discrimina y el centinela no sirve")
