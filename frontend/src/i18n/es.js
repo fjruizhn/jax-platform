@@ -516,6 +516,7 @@ export default {
   // accesible completo, no sólo el número -- un lector de pantalla tiene que
   // decir QUÉ son esos N. Mismo dato que /admin/memoria?verificado=false.
   barraMemoriaSinVerificar: (n) => `${n} hechos de memoria sin verificar`,
+  barraMemoriaAlDia: 'memoria al día, sin hechos por revisar',
 
   // File attachments
   attachTooltip: 'Adjuntar imagen, PDF o texto',

@@ -711,7 +711,12 @@ jobs:
             // esconde en 0, y no lo pide ni lo muestra un rol que no es
             // superadmin). Medido con vitest run: 884 passed, 0 fallidos, 87
             // archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 884) {
+          // 884 -> 885 (2026-09-20, correccion de Fernando): el contador de
+          // memoria pasa a verse SIEMPRE, tambien en 0. El test de "en 0 no
+          // se muestra" se reemplazo por dos: que SI se muestre diciendo "al
+          // dia", y que el color cambie (apagado / aviso). Neto +1. Medido con
+          // `npx vitest run`: 885 passed, 0 fallidos, 87 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 885) {
               console.error("PISO ROTO: se esperaban 884 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
