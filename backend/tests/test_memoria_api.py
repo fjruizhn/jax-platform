@@ -138,6 +138,52 @@ def test_nadie_puede_aprobar_automaticamente(client_superadmin):
 # el superadmin supiera que el resto del lote NUNCA se intento (aprobar).
 # ---------------------------------------------------------------------------
 
+def test_aprobar_con_la_base_caida_no_es_500_generico(client_superadmin, monkeypatch):
+    """m8 (cierre jax-platform#146, ronda 6, SEGURIDAD): MAJOR N2 (ronda 5)
+    abandono `MemoryDB.verify_fact` -- y con eso el contrato de tres estados
+    de arriba tambien se perdio para este endpoint: el viejo test que lo
+    cubria (`test_aprobar_con_la_base_caida_a_mitad_del_lote_no_es_200_
+    silencioso`, mockeaba `verify_fact`) quedo inalcanzable y se borro
+    (ronda 5). Con la base caida, `transaccion()` (sobre
+    `db.connection.get_pool()`) levanta una excepcion de conexion SIN
+    GUARDA -- FastAPI la convertia en un 500 generico. Se simula la caida
+    en el punto exacto donde pasaba de verdad: `get_pool()` DENTRO de
+    `db.transaccion` (lo que usa `transaccion()` para adquirir la conexion),
+    no un mock de alto nivel."""
+    from db import transaccion as transaccion_mod
+
+    async def _get_pool_caida():
+        raise OSError("Connect call failed ('127.0.0.1', 18080)")
+
+    monkeypatch.setattr(transaccion_mod, "get_pool", _get_pool_caida)
+    r = client_superadmin.post("/api/admin/memoria/hechos/aprobar", json={"ids": [1]})
+    assert r.status_code == 503, (
+        f"esperaba 503 (memoria_no_disponible), no {r.status_code}: un "
+        "fallo al conectar/adquirir la conexion es 'la base no respondio', "
+        "no un 500 generico sin traducir")
+    assert r.json()["detail"] == "memoria_no_disponible"
+
+
+def test_aprobar_con_un_error_real_dentro_de_la_transaccion_no_se_disfraza_de_503(
+        client_superadmin, monkeypatch):
+    """Control del arreglo de arriba: el `except` de m8 atrapa SOLO el fallo
+    de conectar/adquirir (`enter_async_context`), nunca lo que pase DENTRO
+    de la transaccion ya abierta -- un error real ahi tiene que seguir
+    siendo un 500 (o lo que sea), no disfrazarse de 503."""
+    from api.admin import memoria
+
+    id1 = client_superadmin.portal.call(_crear_fact, "aprobar control m8: hecho 1")
+    try:
+        async def _revienta(cur, autor, fact_id):
+            raise RuntimeError("fallo real dentro de la transaccion, no de conexion")
+
+        monkeypatch.setattr(memoria, "_aprobar_en_cursor", _revienta)
+        with pytest.raises(RuntimeError, match="fallo real dentro de la transaccion"):
+            client_superadmin.post("/api/admin/memoria/hechos/aprobar", json={"ids": [id1]})
+    finally:
+        client_superadmin.portal.call(_borrar_fact, id1)
+
+
 def test_aprobar_es_atomico_si_falla_a_mitad_del_lote_no_queda_nada_escrito(
         client_superadmin, monkeypatch):
     """MAJOR N2 (revision adversarial de jax-platform PR 146, ronda 5):

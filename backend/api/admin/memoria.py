@@ -47,9 +47,11 @@ import json
 import logging
 import math
 import sys
+from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from typing import Optional
 
+import aiomysql
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -210,14 +212,31 @@ async def aprobar_hechos(body: AprobarBody, user: AuthUser = Depends(require_sup
     alguno esta vencido o superado, 409 (`hecho_vencido`/`hecho_superado`) y
     NADA se escribe -- todo o nada, ningun UPDATE parcial. `_aprobar_en_cursor`
     ya existia (lo usa `fundir_hechos` para el superviviente sin verificar);
-    ahora tambien lo usa el lote entero de este endpoint."""
+    ahora tambien lo usa el lote entero de este endpoint.
+
+    m8 (cierre jax-platform#146, ronda 6, SEGURIDAD): abandonar
+    `MemoryDB.verify_fact` tambien tiro el contrato de tres estados que
+    traia (None = "la base no respondio", M1 auditoria adversarial
+    2026-09-20) -- con la base caida, `transaccion()` (sobre
+    `db.connection.get_pool()`) levanta una excepcion de conexion SIN
+    GUARDA, y FastAPI la convertia en un 500 generico. Se restituye el 503
+    `memoria_no_disponible` atrapando SOLO el fallo de conectar/adquirir
+    (`stack.enter_async_context`, la parte de `transaccion()` ANTES del
+    primer `yield`) -- nunca lo que pase DENTRO de la transaccion: un
+    404/409 real, o cualquier otro error de verdad, se siguen propagando
+    tal cual, sin que este `except` los trague."""
     # Sin duplicados, mismo patron que `fundir_hechos` (absorbidos=[7,7,8]).
     ids = list(dict.fromkeys(body.ids))
     if not ids:
         return {"aprobados": 0}
     autor = int(user.user_id)
 
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+    async with AsyncExitStack() as pila:
+        try:
+            cur = await pila.enter_async_context(transaccion(AISLAMIENTO_ADMIN))
+        except (OSError, aiomysql.Error) as exc:
+            raise HTTPException(status_code=503, detail="memoria_no_disponible") from exc
+
         marcadores = ", ".join(["%s"] * len(ids))
         await cur.execute(
             f"SELECT id, superseded_by, expires_at FROM facts "
