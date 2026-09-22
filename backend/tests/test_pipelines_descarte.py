@@ -16,12 +16,9 @@ descartado_at (ver jax/jacobs/store.py). Índices: idx_pipelines_descartados
 (user_id, tenant_id, status, descartado_at), idx_pipelines_ocultos (status,
 descartado_at).
 """
-import os
-import sys
 import time
 import uuid
 from functools import partial
-from pathlib import Path
 
 import pytest
 
@@ -32,27 +29,18 @@ from tests.jacobs_falso import JacobsFalso, respuesta
 TENANT = "descarte-t4"
 URL_JACOBS_FALSO = "http://jacobs.test/jacobs"
 
-
-# ---------------------------------------------------------------------------
 # La base de tests LOCAL (jax_memory_test_<sufijo>, clonada de jax_memory_test
 # -- ver base_de_test.py) no tiene status_previo/descartado_por/descartado_at
 # ni idx_pipelines_descartados/idx_pipelines_ocultos: esas columnas/índices
 # los trae `jax` (jacobs/store.py::init_tables(), repo aparte). CI los tiene
 # porque .github/workflows/policy.yml clona jax MASTER y corre su propio
-# init_tables() ANTES de la suite (líneas ~898-908); localmente no hay ese
-# paso. Medido 2026-09-22 contra jax_memory_test real (hall9000): SHOW
-# COLUMNS/SHOW INDEX sin las 3 columnas ni los 2 índices nuevos -- problema
-# de ENTORNO de test, no del código. Mismo remedio, mismo mecanismo que ya
-# usa test_jacobs_status_mapeo_completo.py para leer el PipelineStatus real
-# de jax: JAX_REPO_PATH. init_tables() es idempotente (chequea
-# information_schema antes de cada ALTER/CREATE INDEX) así que correrlo de
-# nuevo en CI (que ya lo corrió) es un no-op medido, no un riesgo.
-@pytest.fixture(scope="session", autouse=True)
-def _esquema_de_descarte_en_la_base_de_test(client):
-    sys.path.insert(0, str(Path(os.environ["JAX_REPO_PATH"])))
-    from jacobs import store as jacobs_store
-
-    client.portal.call(jacobs_store.init_tables)
+# init_tables() ANTES de la suite; localmente no hay ese paso. El remedio
+# -- session fixture que corre jax's init_tables() vía JAX_REPO_PATH -- vive
+# ahora en tests/conftest.py::_esquema_de_jax_en_la_base_de_test (fix round
+# 2, Ruling 16 punto 3): se movió de acá porque desde que
+# SQL_PIPELINES_DEL_USUARIO lleva IGNORE INDEX (Ruling 16 punto 1) el
+# problema dejó de ser sólo de este módulo -- CUALQUIER test que use esa
+# consulta revienta con "Key ... doesn't exist" (1176) si corre antes.
 
 
 async def _insertar_pipeline(pipeline_id, user_id, tenant_id, status, creado=None, actualizado=None,
@@ -493,67 +481,75 @@ def test_ocultos_del_superadmin_trae_los_de_todos_los_usuarios(client, client_su
 # ---------------------------------------------------------------------------
 # Caso 10: EXPLAIN de las tres consultas nuevas/cambiadas.
 # ---------------------------------------------------------------------------
-def test_explain_pipelines_del_usuario_usa_indice_de_tenant_sin_temporary(client):
-    """Fix round 1, Ruling 13(e) -- HALLAZGO, no un bug a esconder.
+async def _insertar_pipelines_bulk(filas):
+    """`cur.executemany` directo (fix round 2, Ruling 16 punto 5): sembrar
+    miles de filas de a una vía `_insertar_pipeline`/`sql()` es demasiado
+    lento para un test que corre en cada CI -- una sola ida y vuelta de red
+    por lote. `filas`: lista de tuplas (pipeline_id, status, created_at,
+    updated_at, user_id, tenant_id, owner_ack_at, status_previo,
+    descartado_por, descartado_at)."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.executemany(
+                "INSERT INTO jacobs_pipelines "
+                "(pipeline_id, name, invoked_by, mode, status, created_at, updated_at, "
+                " user_id, tenant_id, owner_ack_at, status_previo, descartado_por, descartado_at) "
+                "VALUES (%s, 'desc', 'plataforma', 'supervised', %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                filas)
 
-    Con la tabla casi vacía (0-1 filas) SQL_PIPELINES_DEL_USUARIO iba por
-    idx_jacobs_pipelines_duenio sin filesort. Con datos que se PARECEN a
-    producción -- un fondo de OTRAS 300 pipelines repartidas en 30 tenants
-    distintos con estados normales, más 60 descartados y 3 vivos del tenant
-    bajo prueba -- el optimizador cambia de plan y elige
-    `idx_pipelines_descartados` (user_id, tenant_id, status, descartado_at)
-    con `Using filesort`, NO `idx_jacobs_pipelines_duenio`. Medido en 3
-    corridas de este archivo (aislado, después del otro EXPLAIN pesado, y
-    con `ANALYZE TABLE` de por medio): el plan es ESTABLE en
-    `idx_pipelines_descartados`, no una moneda al aire.
 
-    DECIDIDO CON UN NÚMERO, no a ojo (mismo sembrado, `EXPLAIN` +
-    `ANALYZE TABLE`, p50/p95 de 30 corridas cada una, medido 2026-09-22):
+def _filas_pipelines_bulk(tenant_id, n, status, descartado=False, offset=0):
+    ahora = time.time()
+    out = []
+    for i in range(n):
+        pid = str(uuid.uuid4())
+        creado = ahora - (offset + n - i) * 2
+        actualizado = creado + 1.0
+        if descartado:
+            out.append((pid, "discarded", creado, actualizado, "x", tenant_id, creado,
+                        "aborted", "x", creado))
+        else:
+            out.append((pid, status, creado, actualizado, "x", tenant_id, creado, None, None, None))
+    return out
 
-        plan natural (idx_pipelines_descartados, CON filesort):
-            p50 0,069 ms / p95 0,138 ms
-        FORCE INDEX (idx_jacobs_pipelines_duenio, SIN filesort):
-            p50 0,108 ms / p95 0,116 ms
 
-    El plan "impuro" (con filesort) es MÁS RÁPIDO, no más lento -- porque el
-    filesort ordena SÓLO las filas que sobreviven al filtro de status
-    empujado adentro del índice (acotadas por cuántos pipelines VIVOS tiene
-    un tenant, que `ajustes.MAX_PIPELINES` mantiene bajo), mientras que
-    idx_jacobs_pipelines_duenio tiene que LEER las filas descartadas para
-    descartarlas después ("Using where" en motor, no en el índice) -- y la
-    propia spec (§2) dice que los descartados "van a ser muchos en el
-    tiempo": ese es justo el caso que este EXPLAIN tiene que medir, no el
-    caso feliz de una cuenta nueva. Forzar el plan "sin filesort" con
-    FORCE INDEX sería PEOR en producción, no mejor.
-
-    La decisión: NO tocar la consulta ni forzar un índice. La aserción que
-    importa no es "nunca filesort" (ese criterio no sobrevivió a datos
-    reales) sino que el plan siga acotado POR TENANT -- `key` tiene que ser
-    uno de los DOS índices que arrancan con (user_id, tenant_id)
-    (idx_jacobs_pipelines_duenio o idx_pipelines_descartados), nunca
-    idx_pipelines_status (que no tiene user_id/tenant_id y escala con el
-    total de pipelines "vivos" de TODOS los tenants, no sólo el de quien
-    pide la página -- ese sí sería un plan que se degrada con el crecimiento
-    de la tabla). "Using temporary" tampoco puede aparecer: eso sí sería
-    materializar el resultado completo, no sólo ordenar unas pocas filas
-    supervivientes."""
-    INDICES_ACOTADOS_POR_TENANT = {"idx_jacobs_pipelines_duenio", "idx_pipelines_descartados"}
-    ESTADOS_FONDO = ("completed", "failed", "aborted", "expired", "running", "pending")
-    tenant_real = "TENANT-EXPLAIN-T4-mainlist"
-    ids_fondo = [str(uuid.uuid4()) for _ in range(300)]
-    ids_ruido = [str(uuid.uuid4()) for _ in range(60)]
-    ids_vivos = [str(uuid.uuid4()) for _ in range(3)]
+# Fix round 2 (2026-09-22), Ruling 16 del controlador: la aceptación del
+# filesort de la ronda anterior (fix round 1, Ruling 13(e)) NO se sostenía.
+# `MAX_PIPELINES` acota los pipelines CONCURRENTES, no el histórico --
+# `status NOT IN ('discarded','hidden')` incluye TODO lo terminado
+# (completed/failed/aborted/expired), que crece sin techo. Un usuario con
+# 5000 completados y 50 descartados leería 5000 filas para ordenar y servir
+# 50. La medición anterior (363 filas, 1,6x) era ruido a escala de décimas
+# de milisegundo, no evidencia de que el plan con filesort ganara al caso
+# real. `Using temporary` tampoco protegía nada en esta consulta -- nunca
+# apareció, con o sin filesort.
+#
+# La consulta ahora lleva `IGNORE INDEX (idx_pipelines_descartados,
+# idx_pipelines_ocultos)` (api/pipelines.py): el plan vuelve a ser
+# DETERMINISTA -- range scan EN ORDEN por idx_jacobs_pipelines_duenio, sin
+# filesort, que corta en el LIMIT -- sin depender de qué estadísticas tenga
+# la tabla en un momento dado. Medido con número en
+# docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md (método +
+# comando exacto ahí).
+#
+# Las DOS formas de dato que pidió el controlador, ambas verificando el
+# MISMO contrato (idx_jacobs_pipelines_duenio, sin filesort):
+@pytest.mark.parametrize("nombre_forma, n_terminados, n_descartados", [
+    ("historial-largo", 5000, 50),
+    ("muchos-descartados", 3, 60),
+])
+def test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio_sin_filesort(
+        client, nombre_forma, n_terminados, n_descartados):
+    tenant_real = f"TENANT-EXPLAIN-T4-{nombre_forma}"
     try:
-        for i, pid in enumerate(ids_fondo):
-            client.portal.call(partial(
-                _insertar_pipeline, pid, f"fondo-{i % 30}", f"fondo-tenant-{i % 30}",
-                ESTADOS_FONDO[i % len(ESTADOS_FONDO)]))
-        for pid in ids_ruido:
-            client.portal.call(partial(
-                _insertar_pipeline, pid, "x", tenant_real, "discarded",
-                status_previo="aborted", descartado_por="x", descartado_at=time.time()))
-        for pid in ids_vivos:
-            client.portal.call(partial(_insertar_pipeline, pid, "x", tenant_real, "completed"))
+        client.portal.call(
+            _insertar_pipelines_bulk,
+            _filas_pipelines_bulk(tenant_real, n_terminados, "completed"))
+        client.portal.call(
+            _insertar_pipelines_bulk,
+            _filas_pipelines_bulk(tenant_real, n_descartados, "discarded", descartado=True, offset=n_terminados))
         client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
 
         filas = client.portal.call(
@@ -561,10 +557,10 @@ def test_explain_pipelines_del_usuario_usa_indice_de_tenant_sin_temporary(client
             ("x", tenant_real, mod.LISTA_PIPELINES_MAX, 5), True)
         ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
         assert tabla == "jacobs_pipelines"
-        assert clave in INDICES_ACOTADOS_POR_TENANT, filas
-        assert "temporary" not in (extra or ""), filas
+        assert clave == "idx_jacobs_pipelines_duenio", filas
+        assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
     finally:
-        client.portal.call(_borrar_pipelines, ids_fondo + ids_ruido + ids_vivos)
+        client.portal.call(sql, "DELETE FROM jacobs_pipelines WHERE tenant_id=%s", (tenant_real,))
 
 
 def test_explain_descartados_del_usuario_usa_idx_pipelines_descartados(client):
@@ -592,10 +588,10 @@ def test_explain_descartados_del_usuario_usa_idx_pipelines_descartados(client):
                 _insertar_pipeline, pid, "x", tenant_real, "discarded",
                 status_previo="aborted", descartado_por="x", descartado_at=time.time()))
         # Fix round 1, Ruling 13(e): ANALYZE TABLE antes del EXPLAIN, no
-        # sólo el sembrado -- ver el docstring de
-        # test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio
-        # para el porqué (estadísticas persistentes de InnoDB, plan
-        # dependiente de qué corrió antes en la sesión sin esto).
+        # sólo el sembrado -- estadísticas persistentes de InnoDB, el plan
+        # depende de qué corrió antes en la sesión sin esto. Mismo motivo
+        # que test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio_sin_filesort
+        # (fix round 2, Ruling 16).
         client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
 
         filas = client.portal.call(

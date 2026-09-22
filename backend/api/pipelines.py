@@ -762,8 +762,35 @@ async def _estado_de_descarte(pipeline_id: str) -> tuple[str | None, str | None]
 # test_historial_pipelines.py (Task 7, 2026-09-18: paginado con LIMIT/OFFSET,
 # el índice sigue cubriendo el WHERE + ORDER BY -- el OFFSET no agrega
 # filesort ni temporary, solo salta filas dentro del mismo rango del índice).
+#
+# IGNORE INDEX (fix round 2, Ruling 16, 2026-09-22): la aceptación anterior
+# de un plan con `Using filesort` (fix round 1) NO se sostenía -- medía 363
+# filas, 1,6x de diferencia a escala de décimas de milisegundo, ruido, no
+# evidencia. Y el argumento de fondo era falso: `MAX_PIPELINES` acota los
+# pipelines CONCURRENTES, no el histórico -- `status NOT IN (...)` incluye
+# TODO lo terminado (completed/failed/aborted/expired), que no tiene techo.
+# `idx_pipelines_descartados`/`idx_pipelines_ocultos` matchean
+# user_id+tenant_id igual que idx_jacobs_pipelines_duenio (el primero
+# también matchea `status`), así que el optimizador puede preferirlos según
+# las estadísticas del momento -- un plan que, si el filtro de status no
+# reduce lo suficiente ANTES del filesort, tiene que materializar y ordenar
+# un conjunto que crece con el histórico del tenant antes de aplicar el
+# LIMIT. Medido con número en docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md,
+# con las DOS formas que pidió el controlador: con historial realmente
+# largo (5000 terminados + 50 descartados) el optimizador YA elegía
+# idx_jacobs_pipelines_duenio por su cuenta -- las dos formas del plan
+# empatan; con pocos vivos y bastantes descartados (60+3, la forma que
+# mostró filesort en la ronda anterior) el plan CON filesort sigue siendo
+# más rápido a esta escala pequeña. La razón de IGNORE INDEX no es ganar
+# ESTE benchmark: es la DETERMINISTA -- range scan en orden por
+# idx_jacobs_pipelines_duenio, sin filesort, que corta en el LIMIT sin
+# necesidad de materializar nada -- no depende de qué estadísticas tenga la
+# tabla en un momento dado, y no se degrada sin cota con un histórico que
+# crece (a diferencia del plan con filesort, cuyo costo en el peor caso no
+# está acotado por este benchmark).
 SQL_PIPELINES_DEL_USUARIO = (
     "SELECT pipeline_id, name, status, created_at, updated_at FROM jacobs_pipelines "
+    "IGNORE INDEX (idx_pipelines_descartados, idx_pipelines_ocultos) "
     "WHERE user_id=%s AND tenant_id=%s AND owner_ack_at IS NOT NULL "
     "AND status NOT IN ('discarded','hidden') "
     "ORDER BY created_at DESC LIMIT %s OFFSET %s"

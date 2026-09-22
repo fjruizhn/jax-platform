@@ -2161,7 +2161,19 @@ jobs:
           #   porque ese número ya venía inflado por el mismo drift que este
           #   comentario evita perpetuar -- no se perdió ningún test (2557
           #   real sigue siendo el passed medido, ver arriba).
-          PISO_PASSED = 2495
+          # 2495 -> 2496 (2026-09-22, Task 4, fix round 2, Ruling 16). +1
+          #   neto: la vieja test_explain_pipelines_del_usuario_usa_indice_de_tenant_sin_temporary
+          #   (1 test) se reemplazó por la parametrizada
+          #   test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio_sin_filesort
+          #   (2 casos: "historial largo" 5000+50, "muchos descartados"
+          #   60+3) -- ver el hallazgo de Ruling 16 en el reporte de esta
+          #   ronda. tests/test_carga_indice_pipelines_del_usuario.py (medición
+          #   de Ruling 16 punto 5) no suma: sus 2 tests se saltan por
+          #   default (JAX_MEDIR_INDICE_PIPELINES=1 para correrlos). Medido
+          #   con el MISMO comando: 2557 -> 2558 passed / 0 failed / 0
+          #   skipped (+2 skipped de la medición, contados aparte). Delta
+          #   verificado +1 sobre el piso anterior.
+          PISO_PASSED = 2496
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2860,15 +2872,35 @@ jobs:
       #   1642) pese a sumar sus 2 tests puros de Ruling 5. Medido con el
       #   MISMO comando: origin/master (worktree aparte) -> 1681 passed /
       #   843 skipped / 0 failed; esta rama YA MERGEADA -> 1683 / 874 / 0.
-      #   Delta verificado de esta rama sobre master: +2 passed (los mismos
-      #   2 parametrizados de Ruling 5, ya contados en la entrada anterior
-      #   de este piso -- no se duplican). Piso nuevo = piso DECLARADO de
+      #   Delta verificado de esta rama sobre master: +2 passed. Corrección
+      #   (fix round 2, Ruling 16 punto 6): esos 2 NO son de Ruling 5 --
+      #   master (con #148) ya traía los 2 parametrizados de Ruling 5
+      #   (test_poll_one_pipeline_releases_the_resource_slot_on_discard_o_hide).
+      #   El delta de ESTA rama sobre eso son los 2 parametrizados de
+      #   Ruling 12 (test_poll_one_pipeline_no_dispara_aviso_para_discard_o_hide,
+      #   fix round 1 de esta Task), ya contados en la entrada anterior de
+      #   este piso -- no se duplican. Piso nuevo = piso DECLARADO de
       #   master (1642, no los 1681 medidos) + el delta verificado (+2) =
       #   1644. Baja respecto del 1647 anterior por el mismo motivo que el
       #   piso con DB: ese número estaba anclado al drift de ESTA rama
       #   sola, no al de master -- el criterio del archivo es sumar sobre
       #   lo DECLARADO, no sobre lo medido.
-      JAX_CI_MIN_PASSED: "1644"
+      # 1644 -> 1648 (2026-09-22, Task 4, fix round 2, Ruling 16). +4 netos,
+      #   NINGUNO de un test nuevo puro: el fixture de esquema
+      #   (init_tables() de jax) se movió de un `@pytest.fixture(autouse=True)`
+      #   aparte (que le agregaba `client` a los fixturenames de TODA la
+      #   suite -- medido "2560 skipped / 0 passed" con ese diseño, una
+      #   regresión real que no llegó a commitearse) a una llamada DENTRO
+      #   del cuerpo de `client()` (tests/conftest.py) -- sin agregar
+      #   ninguna dependencia nueva. Efecto colateral correcto: los 4 tests
+      #   puros de tests/test_pipelines_descarte.py que NO piden `client`
+      #   directo (`test_transicion_no_permitida_se_propaga_con_su_code_y_status`
+      #   y las otras 3 de `_rechazo_de_jacobs`) ya NO cargan con la
+      #   dependencia transitiva del fixture local que existía en la ronda
+      #   anterior -- ahora corren de verdad bajo JAX_CI_NO_DB=1. Medido con
+      #   el MISMO comando: 1683 -> 1687 passed / 874 -> 873 skipped / 0
+      #   failed. Delta verificado +4 sobre el piso anterior.
+      JAX_CI_MIN_PASSED: "1648"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
