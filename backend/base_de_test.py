@@ -366,7 +366,9 @@ async def _columnas_copiables(cur, esquema: str, tabla: str) -> list[str]:
     todas MENOS las GENERATED (`EXTRA` trae 'STORED GENERATED' o 'VIRTUAL
     GENERATED'). MariaDB rechaza un valor explícito para una columna
     generada con el error 1906 (`The value specified for generated column
-    ... is not allowed`), y `SELECT *`/`INSERT INTO t SELECT * FROM t2` la
+    'col' in table 't' has been ignored` -- texto EXACTO de MariaDB,
+    verificado en vivo, no el de MySQL, que es otro), y
+    `SELECT *`/`INSERT INTO t SELECT * FROM t2` la
     incluye igual que cualquier otra -- fix round 4 de Task 4
     (descartar-pipelines, 2026-09-22, Ruling 18/19): `jacobs_pipelines.visible`
     (GENERATED VIRTUAL, columna que agrega `jax`) es la primera columna

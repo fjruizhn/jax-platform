@@ -418,7 +418,9 @@ def test_columnas_copiables_excluye_solo_las_generadas():
 # `INSERT INTO \`{nombre}\`.\`{tabla}\` SELECT * FROM \`{BASE_PLANTILLA}\`.\`{tabla}\``
 # -- con `_columnas_copiables`/`_copiar_filas` intactas pero sin usar --
 # hace caer este test con `pymysql.err.OperationalError: (1906, "The value
-# specified for generated column ... is not allowed")`.
+# specified for generated column 'visible' in table '...' has been
+# ignored")` -- texto EXACTO de MariaDB (verificado en vivo contra la base
+# real; MySQL usa otra redacción para el mismo código).
 # ---------------------------------------------------------------------------
 
 import base_de_test as _base_de_test_modulo  # noqa: E402
@@ -434,23 +436,31 @@ def test_clonar_esquema_no_revienta_con_1906_si_la_plantilla_tiene_columna_gener
         from db.connection import get_pool
 
         pool = await get_pool()
-        async with pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(f"CREATE DATABASE `{plantilla}`")
-                await cur.execute(
-                    f"CREATE TABLE `{plantilla}`.`{tabla}` ("
-                    "id INT PRIMARY KEY, status VARCHAR(20) NOT NULL, "
-                    "visible TINYINT(1) GENERATED ALWAYS AS "
-                    "(status NOT IN ('discarded','hidden')) VIRTUAL)"
-                )
-                await cur.executemany(
-                    f"INSERT INTO `{plantilla}`.`{tabla}` (id, status) VALUES (%s,%s)",
-                    [(1, "completed"), (2, "discarded")],
-                )
-            await conn.commit()
-
-        monkeypatch.setattr(_base_de_test_modulo, "BASE_PLANTILLA", plantilla)
+        # Cierre (Ruling 23, punto (f)): la creación de `plantilla` vivía
+        # ANTES de este `try` -- si el CREATE DATABASE hubiera tenido éxito
+        # pero el CREATE TABLE o el INSERT que siguen hubieran fallado, el
+        # `finally` de abajo nunca corría y `plantilla` quedaba huérfana en
+        # la base real. Ahora TODO lo que puede fallar después de crear la
+        # base -- create, insert, el clonado, el select de verificación --
+        # está dentro del mismo `try`, así que el `finally` la borra pase lo
+        # que pase.
         try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"CREATE DATABASE `{plantilla}`")
+                    await cur.execute(
+                        f"CREATE TABLE `{plantilla}`.`{tabla}` ("
+                        "id INT PRIMARY KEY, status VARCHAR(20) NOT NULL, "
+                        "visible TINYINT(1) GENERATED ALWAYS AS "
+                        "(status NOT IN ('discarded','hidden')) VIRTUAL)"
+                    )
+                    await cur.executemany(
+                        f"INSERT INTO `{plantilla}`.`{tabla}` (id, status) VALUES (%s,%s)",
+                        [(1, "completed"), (2, "discarded")],
+                    )
+                await conn.commit()
+
+            monkeypatch.setattr(_base_de_test_modulo, "BASE_PLANTILLA", plantilla)
             copiadas = await _base_de_test_modulo._clonar_esquema(destino)
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:

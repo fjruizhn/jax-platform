@@ -768,11 +768,19 @@ async def _estado_de_descarte(pipeline_id: str) -> tuple[str | None, str | None]
 # ESTE repo, había quedado desactualizado contra esa regla.
 #
 # Fix round 5 (2026-09-22): corregido QUIÉN lo usa hoy -- NINGUNA consulta
-# de este repo va por este índice desde el fix round 4 (ver más abajo por
-# qué la lista principal pasó a idx_pipelines_visibles). El único lugar que
-# lo nombra es `test_t6_seguimiento.py::test_T6_6_el_indice_de_duenio_existe_con_sus_columnas`,
-# y sólo para comprobar que EXISTE (`information_schema.STATISTICS`, sin
-# correr ninguna consulta) -- no que algo lo use.
+# de PRODUCCIÓN de este repo va por este índice desde el fix round 4 (ver
+# más abajo por qué la lista principal pasó a idx_pipelines_visibles).
+# Corrección (cierre, Ruling 23, punto (d)): la afirmación anterior decía
+# "ninguna consulta ... lo usa" a secas, y eso era falso -- SÍ hay una que
+# lo usa de verdad, sólo que no es de producción:
+# `test_carga_indice_pipelines_del_usuario.py` (opt-in,
+# JAX_MEDIR_INDICE_PIPELINES=1) define `SQL_FORCE_DUENIO` con
+# `FORCE INDEX (idx_jacobs_pipelines_duenio)` y la CORRE contra la base de
+# test para medir Handler_read/tiempo y dejar constancia de por qué el fix
+# round 4 lo reemplazó por idx_pipelines_visibles (el costo lineal que
+# documenta el bloque de abajo). `test_t6_seguimiento.py::test_T6_6_el_indice_de_duenio_existe_con_sus_columnas`
+# es aparte, y sigue sin ejecutar ninguna consulta: sólo comprueba que el
+# índice EXISTE (`information_schema.STATISTICS`).
 #
 # FORCE INDEX (idx_pipelines_visibles) -- fix round 4, Ruling 18/19,
 # 2026-09-22, reemplaza el FORCE INDEX (idx_jacobs_pipelines_duenio) del
