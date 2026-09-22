@@ -72,11 +72,16 @@ describe('ConfirmacionSuma -- mensaje largo sin espacios', () => {
     expect(parrafo.className).toContain('break-words')
   })
 
-  it('un mensaje largo sin espacios no rompe el render ni los otros usos', () => {
-    // No rompe: sigue montando el diálogo entero, con su formulario y sus
-    // botones, igual que con un mensaje corto (los otros usos de
-    // ConfirmacionSuma -- AdminUsers, AdminRepository, KillSwitch -- pasan
-    // mensajes cortos, y esto confirma que el cambio no les afecta).
+  // MINOR 6 (revisión adversarial de jax-platform PR 146, ronda 4): el
+  // nombre anterior ("no rompe... ni los otros usos") era falso -- este
+  // test NUNCA renderiza AdminUsers/AdminRepository/KillSwitch, así que no
+  // podía probar nada sobre ellos. Lo que sí ejercita de verdad: con un
+  // `mensaje` largo y sin espacios, el diálogo sigue montando su
+  // formulario y sus botones completos (no se corta a la mitad ni deja
+  // de renderizar el resto). Los otros usos, al pasar mensajes cortos, ni
+  // siquiera entran en el camino que este test cubre -- si se quisiera
+  // probar que ESOS tres no se rompen, habría que renderizarlos.
+  it('un mensaje largo sin espacios no le impide al dialogo terminar de montar su formulario y sus botones', () => {
     const largoSinEspacios = 'palabralarguisima'.repeat(30)
     renderSuma({ mensaje: largoSinEspacios })
     expect(screen.getByText(largoSinEspacios)).toBeInTheDocument()

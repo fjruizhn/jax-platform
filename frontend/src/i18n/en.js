@@ -1166,6 +1166,13 @@ export default {
     titulo: 'Memory',
     subtitulo: (nombre) => `What ${nombre} thinks it knows: review, correct or expire each fact.`,
     cargando: 'Loading…',
+    // MAJOR B (jax-platform PR 146 adversarial review, round 4): the reload
+    // that follows approve/expire/correct/merge must not cover the list
+    // with the initial loading screen -- that was exactly what let
+    // "approve selected" re-verify facts Fernando had already unchecked by
+    // hand (the whole list was rebuilt from scratch). Small, non-blocking
+    // notice.
+    actualizando: 'Updating…',
     errorCarga: 'Could not load the memory.',
     vacio: 'No active facts to review.',
     totalSinVerificar: (n) => `${n} unverified`,
@@ -1271,6 +1278,12 @@ export default {
       // from the backend (see memoria.py); no translation is left without a
       // code that uses it.
       fundir_sintesis_con_no_sintesis: 'A synthesis cannot be merged with a fact that is not one: reload the screen.',
+      // MINOR 3 (jax-platform PR 146 adversarial review, round 4): two
+      // syntheses of the SAME type can still be rejected if one cites the
+      // other -- that reason is different from the one above (crossed
+      // type) and needs its own text; reusing the type message here would
+      // be false (they ARE both syntheses).
+      fundir_hechos_relacionados_por_cita: 'One of these facts cites the other: they cannot be merged together. Reload the screen.',
       superviviente_no_es_el_de_la_regla: 'The surviving fact changed (someone else reviewed the group): reload the screen.',
       // Round 146, third pass (MAJOR 2): an expired fact cannot be merged --
       // neither as the survivor nor as an absorbed fact.

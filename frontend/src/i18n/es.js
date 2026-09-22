@@ -1208,6 +1208,13 @@ export default {
     titulo: 'Memoria',
     subtitulo: (nombre) => `Lo que ${nombre} cree saber: revisá, corregí o caducá cada hecho.`,
     cargando: 'Cargando…',
+    // MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): la
+    // recarga que sigue a aprobar/caducar/corregir/fundir NO puede tapar la
+    // lista con la pantalla de carga inicial -- eso era justo lo que dejaba
+    // "aprobar seleccionados" verificando hechos que Fernando ya había
+    // desmarcado a mano (la lista entera se re-armaba desde cero). Este
+    // texto es un aviso chico, no bloqueante.
+    actualizando: 'Actualizando…',
     errorCarga: 'No se pudo cargar la memoria.',
     vacio: 'No hay hechos activos para revisar.',
     totalSinVerificar: (n) => `${n} sin verificar`,
@@ -1332,6 +1339,12 @@ export default {
       // backend (ver memoria.py); no se deja la traducción sin código que
       // la use.
       fundir_sintesis_con_no_sintesis: 'Una síntesis no puede fundirse con un hecho que no lo es: recargá la pantalla.',
+      // MINOR 3 (revisión adversarial de jax-platform PR 146, ronda 4): dos
+      // síntesis del MISMO tipo pueden rechazarse igual, si una cita a la
+      // otra -- ese motivo es distinto del anterior (tipo cruzado) y
+      // necesita su propio texto, no el de "una síntesis no puede fundirse
+      // con un hecho que no lo es" (que sería falso acá: los dos SÍ lo son).
+      fundir_hechos_relacionados_por_cita: 'Uno de estos hechos cita al otro: no pueden fundirse entre sí. Recargá la pantalla.',
       superviviente_no_es_el_de_la_regla: 'El hecho que sobrevive cambió (alguien más revisó el grupo): recargá la pantalla.',
       // Ronda 146, tercera vuelta (MAJOR 2): un hecho vencido no se puede
       // fundir -- ni como superviviente ni como absorbido.

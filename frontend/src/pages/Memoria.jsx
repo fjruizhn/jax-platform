@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '../i18n/index.jsx'
 import { useNombreDelSistema } from '../store/useApariencia'
 import { useJaxStore } from '../store/useJaxStore'
@@ -73,6 +73,14 @@ export default function Memoria() {
   const addToast = useJaxStore((s) => s.addToast)
 
   const [cargando, setCargando] = useState(true)
+  // MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): la
+  // primera carga usa `cargando` (pantalla completa, sin nada que mostrar
+  // todavía) -- las recargas que siguen a una acción (aprobar/caducar/
+  // corregir/fundir, ver `cargar()` más abajo) usan `recargando`, que NO
+  // oculta la lista: Fernando no puede perder de vista lo que ya estaba
+  // revisando cada vez que aprueba un hecho suelto.
+  const [recargando, setRecargando] = useState(false)
+  const yaSeCargoAlgunaVez = useRef(false)
   const [error, setError] = useState(false)
   const [grupos, setGrupos] = useState([])
   const [hechosPorId, setHechosPorId] = useState({})
@@ -92,6 +100,12 @@ export default function Memoria() {
   const [totalSinVerificarReal, setTotalSinVerificarReal] = useState(0)
   const [vencidosTotalReal, setVencidosTotalReal] = useState(0)
   const [seleccionados, setSeleccionados] = useState(emptySet)
+  // MAJOR B: ids que YA estaban en pantalla en la carga anterior -- para
+  // que `cargar()` sepa distinguir "id nuevo, aplicale el default" de "id
+  // conocido, respetá lo que Fernando ya marcó/desmarcó a mano". `useRef`,
+  // no estado: se actualiza dentro del mismo ciclo de `cargar()`, no
+  // necesita disparar un render propio.
+  const idsConocidosRef = useRef(new Set())
   const [procesando, setProcesando] = useState(emptySet)
 
   // Ventanas propias (Global Constraints: nunca los diálogos del navegador).
@@ -102,7 +116,11 @@ export default function Memoria() {
   const [fundiendo, setFundiendo] = useState(null) // { ids, supervivienteId }
 
   const cargar = useCallback(async () => {
-    setCargando(true)
+    // MAJOR B: sólo la PRIMERA carga usa la pantalla completa de "Cargando…"
+    // -- las recargas que siguen a una acción usan `recargando`, que la
+    // lista ignora al decidir si se pinta (ver el JSX más abajo).
+    if (yaSeCargoAlgunaVez.current) setRecargando(true)
+    else setCargando(true)
     setError(false)
     try {
       const [rGrupos, rHechos, rVencidos, rSinVerificarReal] = await Promise.all([
@@ -131,13 +149,35 @@ export default function Memoria() {
       setVencidos(rVencidos.data.hechos.filter((h) => h.vencido))
       setTotalSinVerificarReal(rSinVerificarReal.data.total)
       setVencidosTotalReal(Math.max(0, rVencidos.data.total - rHechos.data.total))
-      setSeleccionados(new Set(
-        rHechos.data.hechos.filter((h) => !h.verificado && !idsDeCluster.has(h.id)).map((h) => h.id),
-      ))
+      // MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): antes
+      // esta línea rearmaba `seleccionados` DESDE CERO en cada recarga --
+      // aprobar un hecho suelto (o cualquier otra acción, todas recargan
+      // desde M2) volvía a marcar hechos que Fernando ya había desmarcado a
+      // mano en OTRO grupo. Ahora: un id que ya estaba en pantalla en la
+      // carga anterior (`idsConocidosRef`) CONSERVA su estado (marcado o
+      // no, tal cual lo dejó Fernando); sólo un id NUEVO (nunca visto) recibe
+      // el default de siempre. Un id que desapareció simplemente no entra al
+      // nuevo Set -- sale solo.
+      const idsConocidosAntes = idsConocidosRef.current
+      const idsNuevos = new Set(rHechos.data.hechos.map((h) => h.id))
+      setSeleccionados((prev) => {
+        const siguiente = new Set()
+        for (const h of rHechos.data.hechos) {
+          if (idsConocidosAntes.has(h.id)) {
+            if (prev.has(h.id)) siguiente.add(h.id)
+          } else if (!h.verificado && !idsDeCluster.has(h.id)) {
+            siguiente.add(h.id)
+          }
+        }
+        return siguiente
+      })
+      idsConocidosRef.current = idsNuevos
     } catch {
       setError(true)
     } finally {
-      setCargando(false)
+      if (yaSeCargoAlgunaVez.current) setRecargando(false)
+      else setCargando(false)
+      yaSeCargoAlgunaVez.current = true
     }
   }, [])
 
@@ -326,6 +366,13 @@ export default function Memoria() {
               ? t.memoria.totalSinVerificar(totalSinVerificarReal)
               : t.memoria.totalSinVerificarSubconjunto(totalSinVerificarCargados, totalSinVerificarReal)}
           </p>
+        )}
+
+        {/* MAJOR B: aviso chico, NO bloqueante -- la lista sigue debajo,
+            tal como estaba, mientras la recarga posterior a una acción
+            todavía está en vuelo. */}
+        {!cargando && recargando && (
+          <p role="status" className="text-xs text-texto-tenue">{t.memoria.actualizando}</p>
         )}
 
         {cargando && <p className="text-sm text-texto-tenue">{t.memoria.cargando}</p>}

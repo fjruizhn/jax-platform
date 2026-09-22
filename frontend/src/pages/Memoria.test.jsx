@@ -101,6 +101,31 @@ const GRUPO_A_ESCALA = {
 const HECHOS_A_ESCALA = { hechos: [HECHO_136], total: 9000 }
 const VENCIDOS_A_ESCALA = { hechos: [HECHO_VENCIDO], total: 9500 }
 
+// MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): fixtures
+// SIN cluster (a diferencia de GRUPOS_DOS_TEMAS, donde 136/138/139 arrancan
+// sin_verificar pero YA excluidos del lote por estar en casi_duplicados) --
+// necesarias para poder deseleccionar a mano y comprobar que la recarga no
+// los vuelve a marcar.
+function hechoDePrueba(id, extra = {}) {
+  return {
+    id, texto: `hecho de prueba ${id}`, tipo: 'technical', confianza: 0.8,
+    verificado: false, verificado_por: null, verificado_at: null, vence_at: null, vencido: false,
+    creado_at: '2026-09-22T10:00:00', superado_por: null,
+    procedencia: { mensaje_id: null, faceta: null },
+    ...extra,
+  }
+}
+const GRUPOS_PRESERVAR = {
+  grupos: [
+    { tema: 'tema A (sin cluster)', hechos: [401, 402, 403, 404, 405], sin_verificar: 5, casi_duplicados: [] },
+    { tema: 'tema B (gatillo)', hechos: [410], sin_verificar: 1, casi_duplicados: [] },
+  ],
+}
+const HECHOS_PRESERVAR = {
+  hechos: [401, 402, 403, 404, 405, 410].map((id) => hechoDePrueba(id)),
+  total: 6,
+}
+
 function renderMemoria() {
   return render(<I18nProvider><MemoryRouter><Memoria /><Toast /></MemoryRouter></I18nProvider>)
 }
@@ -155,6 +180,23 @@ beforeEach(() => {
   api.post.mockReset()
   useJaxStore.setState({ user: usuario, toasts: [] })
 })
+
+// SOSPECHA (revisión adversarial de jax-platform PR 146, ronda 4): varios
+// tests disparaban una acción que recarga (M2: aprobar/caducar/corregir/
+// fundir TODOS llaman a `cargar()` de nuevo) y terminaban sin esperar a que
+// ESA recarga completara -- dejaban una cadena de promesas pendiente que
+// podía resolverse durante el test SIGUIENTE, después de que `beforeEach`
+// ya hubiera limpiado los mocks. `api.get.mockReset()` sólo limpia el
+// historial de llamadas -- no cancela una promesa ya en vuelo de un render
+// que sigue montado (RTL no desmonta entre tests sin `cleanup()` explícito
+// en este archivo). Este helper espera la recarga hasta el final, con la
+// MISMA señal que ya usaba el test M2 (el conteo de llamadas a /grupos).
+async function esperarRecargaCompleta(vecesEsperadas = 2) {
+  await waitFor(() => {
+    const llamadas = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
+    expect(llamadas).toBe(vecesEsperadas)
+  })
+}
 
 describe('Memoria', () => {
   it('cada hecho muestra su procedencia', async () => {
@@ -262,6 +304,10 @@ describe('Memoria', () => {
     fireEvent.click(within(grupo).getByRole('button', { name: es.memoria.aprobarSeleccionados(3) }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/aprobar', { ids: [139, 138, 136] }))
     expect(await screen.findByText(es.memoria.aprobados(3))).toBeInTheDocument()
+    // SOSPECHA: esperar a que la recarga que dispara `aprobar()` (M2)
+    // termine, para no dejar una promesa pendiente que resuelva en el test
+    // siguiente.
+    await esperarRecargaCompleta()
   })
 
   it('aprobar un hecho suelto no abre ninguna ventana', async () => {
@@ -272,6 +318,8 @@ describe('Memoria', () => {
     fireEvent.click(within(ficha).getByRole('button', { name: es.memoria.aprobar }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/aprobar', { ids: [136] }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    // SOSPECHA: ídem -- esperar la recarga completa antes de terminar.
+    await esperarRecargaCompleta()
   })
 
   it('M2: aprobar vuelve a pedir /grupos (is_verified decide quien sobrevive en un cluster)', async () => {
@@ -288,6 +336,104 @@ describe('Memoria', () => {
       const llamadas = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
       expect(llamadas).toBe(2) // la carga inicial + la recarga tras aprobar
     })
+  })
+
+  // MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): la
+  // recarga (M2) reconstruía `seleccionados` incondicionalmente, así que
+  // aprobar un hecho de OTRO grupo -- o cualquier otra acción -- volvía a
+  // marcar hechos que Fernando ya había desmarcado a mano. Los ids que ya
+  // estaban en pantalla tienen que CONSERVAR su estado; sólo los ids NUEVOS
+  // reciben el default.
+  it('la recarga preserva la seleccion que Fernando ya desmarco a mano (no vuelve a marcar ids conocidos)', async () => {
+    let aprobado410 = false
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') return Promise.resolve({ data: GRUPOS_PRESERVAR })
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) return Promise.resolve({ data: { hechos: [], total: 0 } })
+        if (params.verificado === false && params.limite === 1) {
+          return Promise.resolve({ data: { hechos: [], total: aprobado410 ? 5 : 6 } })
+        }
+        const hechos = HECHOS_PRESERVAR.hechos.map((h) => (
+          h.id === 410 && aprobado410 ? { ...h, verificado: true } : h
+        ))
+        return Promise.resolve({ data: { hechos, total: hechos.length } })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockImplementation((url) => {
+      if (url === '/admin/memoria/hechos/aprobar') { aprobado410 = true; return Promise.resolve({ data: { aprobados: 1 } }) }
+      return Promise.reject(new Error(`post no mockeado: ${url}`))
+    })
+    renderMemoria()
+    const grupoA = await screen.findByTestId('grupo-0')
+    // Los 5 arrancan seleccionados (sin verificar, sin cluster -- default).
+    for (const id of [401, 402, 403, 404, 405]) {
+      expect(within(within(grupoA).getByTestId(`hecho-${id}`)).getByRole('checkbox')).toBeChecked()
+    }
+    // Fernando desmarca 404 y 405 a mano.
+    fireEvent.click(within(within(grupoA).getByTestId('hecho-404')).getByRole('checkbox'))
+    fireEvent.click(within(within(grupoA).getByTestId('hecho-405')).getByRole('checkbox'))
+    expect(within(within(grupoA).getByTestId('hecho-404')).getByRole('checkbox')).not.toBeChecked()
+    expect(within(within(grupoA).getByTestId('hecho-405')).getByRole('checkbox')).not.toBeChecked()
+    expect(within(grupoA).getByRole('button', { name: es.memoria.aprobarSeleccionados(3) })).toBeInTheDocument()
+
+    // Aprueba el hecho 410 -- de OTRO grupo -- que dispara la recarga (M2).
+    const grupoB = await screen.findByTestId('grupo-1')
+    fireEvent.click(within(within(grupoB).getByTestId('hecho-410')).getByRole('button', { name: es.memoria.aprobar }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/aprobar', { ids: [410] }))
+    await waitFor(() => {
+      const llamadas = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
+      expect(llamadas).toBe(2)
+    })
+
+    // 404 y 405 SIGUEN desmarcados tras la recarga -- no se re-seleccionaron.
+    const grupoATrasRecarga = screen.getByTestId('grupo-0')
+    expect(within(within(grupoATrasRecarga).getByTestId('hecho-401')).getByRole('checkbox')).toBeChecked()
+    expect(within(within(grupoATrasRecarga).getByTestId('hecho-402')).getByRole('checkbox')).toBeChecked()
+    expect(within(within(grupoATrasRecarga).getByTestId('hecho-403')).getByRole('checkbox')).toBeChecked()
+    expect(within(within(grupoATrasRecarga).getByTestId('hecho-404')).getByRole('checkbox')).not.toBeChecked()
+    expect(within(within(grupoATrasRecarga).getByTestId('hecho-405')).getByRole('checkbox')).not.toBeChecked()
+    expect(within(grupoATrasRecarga).getByRole('button', { name: es.memoria.aprobarSeleccionados(3) })).toBeInTheDocument()
+  })
+
+  // MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): la
+  // recarga posterior a una acción no puede tapar la lista con la pantalla
+  // de "Cargando…" inicial -- Fernando pierde de vista lo que estaba
+  // revisando cada vez que aprueba/caduca/corrige/funde algo.
+  it('la recarga tras una accion no reemplaza la lista por la pantalla completa de carga', async () => {
+    let llamadasGrupos = 0
+    let resolverSegundaLlamada
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') {
+        llamadasGrupos += 1
+        if (llamadasGrupos === 1) return Promise.resolve({ data: GRUPOS_PRESERVAR })
+        return new Promise((resolve) => { resolverSegundaLlamada = resolve })
+      }
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) return Promise.resolve({ data: { hechos: [], total: 0 } })
+        if (params.verificado === false && params.limite === 1) return Promise.resolve({ data: { hechos: [], total: 6 } })
+        return Promise.resolve({ data: HECHOS_PRESERVAR })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockResolvedValue({ data: { aprobados: 1 } })
+    renderMemoria()
+    await screen.findByTestId('grupo-0')
+    const grupoB = screen.getByTestId('grupo-1')
+    fireEvent.click(within(within(grupoB).getByTestId('hecho-410')).getByRole('button', { name: es.memoria.aprobar }))
+
+    // Mientras la segunda llamada a /grupos sigue pendiente (recarga en
+    // curso): la lista sigue en pantalla, y NO aparece el "Cargando…" de
+    // pantalla completa.
+    await waitFor(() => expect(llamadasGrupos).toBe(2))
+    expect(screen.getByTestId('grupo-0')).toBeInTheDocument()
+    expect(screen.queryByText(es.memoria.cargando)).not.toBeInTheDocument()
+    expect(screen.getByText(es.memoria.actualizando)).toBeInTheDocument()
+
+    resolverSegundaLlamada({ data: GRUPOS_PRESERVAR })
+    await waitFor(() => expect(screen.queryByText(es.memoria.actualizando)).not.toBeInTheDocument())
   })
 
   it('un error al aprobar se avisa por toast, con el codigo traducido', async () => {
@@ -318,6 +464,8 @@ describe('Memoria', () => {
     fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
     fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.corregirConfirmarBoton }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/201/corregir', { texto: 'texto corregido de prueba' }))
+    // SOSPECHA: esperar la recarga que dispara `confirmarCorreccion()`.
+    await esperarRecargaCompleta()
   })
 
   it('caducar, confirmado, llama al endpoint con una fecha (no null) y recarga /grupos', async () => {
@@ -356,6 +504,16 @@ describe('Memoria', () => {
       '/admin/memoria/hechos/201/caducar',
       expect.objectContaining({ vence_at: expect.any(String) }),
     ))
+    // MINOR 6 (revisión adversarial de jax-platform PR 146, ronda 4): antes
+    // del arreglo de MAJOR B, esta aserción podía pasar por la razón
+    // EQUIVOCADA -- `cargando` ocultaba TODA la lista durante cualquier
+    // recarga (incluida ésta), así que "grupo-0 no está" podía ser cierto
+    // por estar en la pantalla de "Cargando…" y no porque el dato real ya
+    // hubiera cambiado. Con el arreglo (la recarga usa `recargando`, que NO
+    // oculta la lista -- ver Memoria.jsx), la única forma de que grupo-0
+    // deje de estar es que el dato real (sin el hecho, ya vencido) haya
+    // llegado de verdad.
+    //
     // El grupo (con el único hecho ahora vencido) desaparece de la lista de
     // grupos activos tras la recarga...
     await waitFor(() => expect(screen.queryByTestId('grupo-0')).not.toBeInTheDocument())
@@ -407,6 +565,8 @@ describe('Memoria', () => {
     // "fundir a medias" posible.
     expect(api.post).toHaveBeenCalledTimes(1)
     expect(await screen.findByText(es.memoria.fundido)).toBeInTheDocument()
+    // SOSPECHA: esperar la recarga que dispara `confirmarFundir()`.
+    await esperarRecargaCompleta()
   })
 
   it('fundir muestra cual sobrevive y por que cuando el superviviente esta verificado', async () => {
@@ -452,6 +612,8 @@ describe('Memoria', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith(
       '/admin/memoria/hechos/fundir', { superviviente_id: 138, absorbidos: [139, 136] },
     ))
+    // SOSPECHA: esperar la recarga que dispara `confirmarFundir()`.
+    await esperarRecargaCompleta()
   })
 
   it('la seccion Vencidos no aparece cuando no hay hechos vencidos', async () => {
