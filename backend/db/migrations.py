@@ -638,15 +638,20 @@ CREATE TABLE IF NOT EXISTS axioma_config_audit (
 # decenas de filas) y una tabla que sí (puntos de restauración, con índice para la
 # única consulta que la lee: el último verificado por máquina).
 CREATE_EJECUTOR_HOST = """
+# sudo y machine_id NO están (ronda 3 de la auditoría C2, 2026-09-22 -- decisión de Hyde):
+# ningún lector ni escritor las tocaba en jax ni en jax-platform (confirmado con grep, dos
+# veces), y en producción quedaban en 0/NULL mientras la fuente real de sudo/machine-id es
+# jax/scripts/ejecutor_fase0/maquinas.toml -- dos fuentes de verdad que discrepaban. C2 no
+# depende de esta tabla para sudo: exige la medición en vivo desde la jaula (Correcciones de
+# Hyde al diseño de C2). Ver _eliminar_sudo_y_machine_id_de_ejecutor_host() más abajo, que
+# limpia las instalaciones que ya las tenían.
 CREATE TABLE IF NOT EXISTS ejecutor_host (
   nombre VARCHAR(50) NOT NULL PRIMARY KEY,
   ip VARCHAR(45) NOT NULL,
   puerto INT NOT NULL,
   rol ENUM('hypervisor','desarrollo','produccion','clientes','respaldo') NOT NULL,
   es_local BOOLEAN NOT NULL DEFAULT FALSE,
-  machine_id CHAR(32) NULL,
   con_datos_de_clientes BOOLEAN NOT NULL DEFAULT TRUE,
-  sudo BOOLEAN NOT NULL DEFAULT FALSE,
   api_only BOOLEAN NOT NULL DEFAULT FALSE,
   activo BOOLEAN NOT NULL DEFAULT TRUE,
   created_at DATETIME DEFAULT NOW(),
@@ -2934,6 +2939,22 @@ async def _ejecutor_reglas_envoltorios_v1(cur) -> None:
 # Los 4 métodos de verificación reales del diseño C2 (tabla «Respaldo por máquina»):
 # restauración de la imagen LVM completa, restauración de archivos sueltos por restic,
 # restauración de un volcado de MariaDB, o recreación de una VM desechable desde su seed.
+async def _eliminar_sudo_y_machine_id_de_ejecutor_host(cur) -> None:
+    """ejecutor_host.sudo y ejecutor_host.machine_id (ronda 3 de la auditoría C2, 2026-09-22
+    -- decisión de Hyde): confirmado con grep, DOS veces, que ningún repo (jax, jax-platform:
+    backend, tests, api/admin, frontend) las lee ni las escribe -- los únicos SELECT/INSERT
+    contra ejecutor_host listan columnas explícitas que nunca incluyen estas dos. En
+    producción estaban en 0/NULL mientras la fuente real de sudo/machine-id es
+    jax/scripts/ejecutor_fase0/maquinas.toml: dos fuentes de verdad que discrepaban en
+    silencio. C2 no depende de esta tabla para sudo -- exige la medición en vivo desde la
+    jaula (Correcciones de Hyde al diseño). DROP idempotente, columna por columna: una
+    instalación nueva ya nace sin ellas (ver CREATE_EJECUTOR_HOST); esto limpia las que ya
+    las tenían."""
+    for columna in ("sudo", "machine_id"):
+        if await _column_exists(cur, "ejecutor_host", columna):
+            await cur.execute(f"ALTER TABLE ejecutor_host DROP COLUMN {columna}")
+
+
 _METODOS_PUNTO_RESTAURACION = ("imagen_vm", "restic_ficheros", "volcado_mariadb", "recreacion")
 
 
@@ -3194,6 +3215,7 @@ async def run_migrations():
             await _ajuste_confirmar_costo_v1(cur)
             await _ejecutor_reglas_v1(cur)
             await _ejecutor_reglas_envoltorios_v1(cur)
+            await _eliminar_sudo_y_machine_id_de_ejecutor_host(cur)
             await _asegurar_forma_de_ejecutor_punto_restauracion(cur)
             await _ejecutor_inventario_v1(cur)
             await _ejecutor_config_c5_v1(cur)

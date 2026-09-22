@@ -269,3 +269,51 @@ def test_ya_es_enum_exige_not_null(client, sin_marcas):
     antes, despues = client.portal.call(_romper_y_reparar)
     assert antes == (("YES",),), antes
     assert despues == (("NO",),), despues
+
+
+def test_sudo_y_machine_id_se_eliminan_de_ejecutor_host(client):
+    """Ronda 3 (decisión de Hyde, 2026-09-22): ningún lector ni escritor toca estas dos
+    columnas en jax ni en jax-platform (confirmado con grep, dos veces); la fuente real de
+    sudo/machine-id es jax/scripts/ejecutor_fase0/maquinas.toml. DROP idempotente."""
+    from db.migrations import _eliminar_sudo_y_machine_id_de_ejecutor_host
+
+    async def _sembrar_columnas_viejas_y_eliminar():
+        for columna, ddl in (
+            ("sudo", "ALTER TABLE ejecutor_host ADD COLUMN sudo BOOLEAN NOT NULL DEFAULT FALSE"),
+            ("machine_id", "ALTER TABLE ejecutor_host ADD COLUMN machine_id CHAR(32) NULL"),
+        ):
+            existe = await sql(
+                "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+                "AND TABLE_NAME='ejecutor_host' AND COLUMN_NAME=%s", (columna,), True)
+            if not existe:
+                await sql(ddl)
+        antes = await sql(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_host' AND COLUMN_NAME IN ('sudo','machine_id')", None, True)
+
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await _eliminar_sudo_y_machine_id_de_ejecutor_host(cur)
+            await conn.commit()
+
+        despues = await sql(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_host' AND COLUMN_NAME IN ('sudo','machine_id')", None, True)
+        return antes, despues
+
+    antes, despues = client.portal.call(_sembrar_columnas_viejas_y_eliminar)
+    assert {f[0] for f in antes} == {"sudo", "machine_id"}, antes
+    assert despues == (), despues
+
+
+def test_ejecutor_host_nace_sin_sudo_ni_machine_id(client):
+    """Una instalación NUEVA (CREATE_EJECUTOR_HOST) no las trae -- no hay motivo para crear y
+    después dropear en la misma corrida."""
+    columnas = client.portal.call(
+        sql, "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='ejecutor_host'", None, True)
+    nombres = {f[0] for f in columnas}
+    assert "sudo" not in nombres, nombres
+    assert "machine_id" not in nombres, nombres
