@@ -26,6 +26,12 @@ name: policy
 #   - frontend-tests: los tests de vitest del frontend (2026-09-12). Hasta
 #     entonces NINGÚN job los corría -- Login.test.jsx existía y era una
 #     hipótesis de cobertura, no cobertura.
+#   - loadtest-tests: los tests puros de loadtest/ (2026-09-22, cierre
+#     jax-platform#146). Mismo defecto que Login.test.jsx en 2026-09-12:
+#     `loadtest/test_memoria_medir_fundir.py`/`test_memoria_levantar_
+#     entorno.py` existían y no corrían en NINGÚN job (`backend-tests-*`
+#     tiene `working-directory: backend` y `testpaths = tests` -- nunca
+#     llegaba a `loadtest/`).
 #
 # NO CUBRE -- y esto es la parte importante:
 #   - Los 151 tests que SÍ necesitan MariaDB. En el runner no hay DB, así que
@@ -885,6 +891,49 @@ jobs:
           python-version: "3.12"
       - run: pip install pytest
       - run: python -m pytest tests/test_policy_invoke_facet_envoltorio.py -v
+
+  # --------------------------------------------------------------------------
+  # loadtest-tests (cierre jax-platform#146, ronda 6, hallazgo del coordinador
+  # tras el cierre): `loadtest/test_memoria_medir_fundir.py` y
+  # `loadtest/test_memoria_levantar_entorno.py` (m5/m7 de ese cierre) NO
+  # corrian en NINGUN job -- `backend-tests-con-db`/`backend-tests-no-db`
+  # tienen `working-directory: backend` y `backend/pytest.ini` fija
+  # `testpaths = tests`, asi que ese `python -m pytest` nunca llega a
+  # `loadtest/`. No hay ningun detector en este repo que avise de un archivo
+  # `test_*.py` que no corre en ningun job (se buscó: no existe un
+  # equivalente al "detector de cobertura" de pipelines de `jax` aca) -- este
+  # job se agrega para que esos dos archivos dejen de ser hipotesis de
+  # cobertura, mismo motivo que `frontend-tests` (comentario de arriba, "NO
+  # CUBRE").
+  #
+  # Por que un job PROPIO y no sumarlos a `backend-tests-no-db`: los dos
+  # archivos viven en `loadtest/`, fuera de `backend/`, y sus modulos
+  # (`memoria_medir_fundir.py`/`memoria_levantar_entorno.py`) son SCRIPTS
+  # OPERATIVOS que, corridos de verdad, copian credenciales de PRODUCCION al
+  # entorno que levantan (`_cargar_env_produccion`, `sudo -n cat
+  # /etc/jax/.env`) -- mezclarlos con la suite de `backend/tests/` (que tiene
+  # su propio conftest y barreras contra produccion) es exactamente el tipo
+  # de mezcla que este repo evita. Las funciones que SI se testean aca
+  # (`armar_resultado`, `escribir_info_json`) son puras -- nunca tocan DB,
+  # red, ni `/etc/jax/.env` -- asi que un job minimo, sin MariaDB ni el clon
+  # de `jax`, alcanza. `httpx` se instala aparte porque los dos modulos lo
+  # importan a nivel de módulo (para el resto de sus funciones, que este job
+  # no ejercita) y sin él ni siquiera se puede hacer el import.
+  #
+  # Sin PISO_PASSED propio, mismo estilo que `no-fail-open-except`/
+  # `invoke-facet-envoltorio`: son 4 tests en 2 archivos chicos, y el job
+  # entero es el gate (cualquier fallo lo pone en rojo) -- un numero de piso
+  # aparte no agrega nada que `pytest -v` no de ya. Medido en vivo: 4 passed,
+  # 0 failed.
+  loadtest-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest httpx
+      - run: python -m pytest loadtest/test_memoria_medir_fundir.py loadtest/test_memoria_levantar_entorno.py -v
 
   # --------------------------------------------------------------------------
   # Suite del backend, modo "CON base de datos" -- los 150 tests que el job de
@@ -2376,7 +2425,18 @@ jobs:
           #   real DENTRO de la transacción sigue sin disfrazarse de 503).
           #   Medido en vivo, MISMO comando: ronda 5 (3750181) 2571 passed
           #   -> este cierre 2573 (0 fallidos, 0 skips las dos).
-          PISO_PASSED = 2573
+          # 2573 -> 2575 (2026-09-22, jax-platform#146, mismo cierre --
+          #   hallazgo del coordinador tras m8): `fundir_hechos` tenía el
+          #   MISMO defecto sin guarda que `aprobar_hechos` antes de m8 (no
+          #   estaba en la lista de 8 hallazgos, se reportó al cerrar y el
+          #   coordinador pidió el mismo arreglo). Mismo `AsyncExitStack`,
+          #   mismos 2 tests en test_memoria_fundir.py:
+          #   test_fundir_con_la_base_caida_no_es_500_generico (rojo
+          #   verificado revirtiendo el fix -- reproduce el 500/excepción sin
+          #   traducir) y su control (error real dentro de la transacción no
+          #   se disfraza de 503). Medido en vivo, MISMO comando: 2573 passed
+          #   -> 2575 (0 fallidos, 0 skips las dos).
+          PISO_PASSED = 2575
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3125,6 +3185,11 @@ jobs:
       #   Medido: 1703 passed / 870 skipped (antes: 1703 / 868 -- +2 skips,
       #   0 passed nuevos). El piso declarado sigue en 1666, misma razón que
       #   la ronda 5.
+      # 2026-09-22, mismo cierre, hallazgo del coordinador (fundir_hechos):
+      #   sin cambio en `passed` -- los 2 tests nuevos de test_memoria_
+      #   fundir.py también piden `client_superadmin`/`trio` (DB). Medido:
+      #   1703 passed / 872 skipped (antes: 1703 / 870 -- +2 skips, 0 passed
+      #   nuevos). El piso declarado sigue en 1666, misma razón.
       JAX_CI_MIN_PASSED: "1666"
     steps:
       - uses: actions/checkout@v4
