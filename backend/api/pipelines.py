@@ -1274,6 +1274,54 @@ async def restore_pipeline(pipeline_id: str, user: AuthUser = Depends(require_su
     return await _proxy_descarte(pipeline_id, "restore", user)
 
 
+# 2026-09-22 (cierre de los dos huecos de la revisión final de Descartar
+# Pipelines, punto 2): PIPELINE_DISCARDED/RECOVERED/HIDDEN/RESTORED se
+# escriben en jacobs_events en la MISMA transacción que el CAS (jax,
+# jacobs/routes.py::transicion_descarte), con payload
+# {"user_id", "desde", "a"} -- hasta hoy, ninguna pantalla los mostraba (se
+# leían con `mysql` a mano). Esta consulta trae SÓLO esos cuatro tipos, del
+# más nuevo al más viejo, con `FORCE INDEX (idx_events_pipeline)` -- ver el
+# docstring de tests/test_pipelines_auditoria_descarte.py para el porqué
+# (sin hint, el optimizador prefiere idx_events_pipeline_tipo para el
+# IN(...), pero el ORDER BY id DESC sobre esos 4 rangos separados no le
+# sale gratis: "Using filesort". idx_events_pipeline es un solo rango por
+# pipeline_id, ya en orden de id -- se recorre al revés sin ordenar nada).
+_TIPOS_AUDITORIA_DESCARTE = ("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")
+SQL_AUDITORIA_DESCARTE = (
+    "SELECT event_type, payload, ts FROM jacobs_events FORCE INDEX (idx_events_pipeline) "
+    "WHERE pipeline_id=%s AND event_type IN (%s, %s, %s, %s) "
+    "ORDER BY id DESC"
+)
+
+
+@router.get("/{pipeline_id}/auditoria-descarte")
+async def auditoria_descarte(pipeline_id: str, user: AuthUser = Depends(get_current_user)):
+    # Mismo reparto que recover_pipeline (Task 4): el superadmin no tiene
+    # por qué ser el DUEÑO para auditar -- sólo que el pipeline exista. El
+    # dueño no-superadmin sigue la regla de siempre (_require_pipeline_owner):
+    # un hidden le da 404, igual que a /results y GET/{id}.
+    if _es_superadmin(user):
+        await _require_pipeline_exists(pipeline_id)
+    else:
+        await _require_pipeline_owner(pipeline_id, user)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(SQL_AUDITORIA_DESCARTE, (pipeline_id, *_TIPOS_AUDITORIA_DESCARTE))
+            filas = await cur.fetchall()
+    eventos = []
+    for event_type, payload, ts in filas:
+        datos = _payload(payload)
+        eventos.append({
+            "event_type": event_type,
+            "user_id": datos.get("user_id"),
+            "desde": datos.get("desde"),
+            "a": datos.get("a"),
+            "ts": ts,
+        })
+    return {"eventos": eventos}
+
+
 @router.post("/{pipeline_id}/continue/preflight")
 async def continue_preflight(pipeline_id: str, pedido: PedidoDeContinuarPrevuelo,
                              user: AuthUser = Depends(get_current_user)):

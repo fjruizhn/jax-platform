@@ -241,6 +241,81 @@ describe('DetallePipeline', () => {
     api.get.mockResolvedValue({ data: { ...RESULTADO, pipeline_id: 'p2', name: 'otro', steps: [] } })
     rerender(<I18nProvider><DetallePipeline pipelineId="p2" /></I18nProvider>)
     await screen.findByText('Detalle — otro')
-    expect(api.get).toHaveBeenLastCalledWith('/pipelines/p2/results')
+    // 2026-09-22: ya no es la ÚLTIMA llamada -- desde que se agregó la
+    // auditoría, cada cambio de pipelineId dispara DOS pedidos (/results y
+    // /auditoria-descarte). Se comprueba que la de /results se hizo, no que
+    // sea la más reciente.
+    expect(api.get).toHaveBeenCalledWith('/pipelines/p2/results')
+  })
+})
+
+// 2026-09-22 (cierre de los dos huecos de la revisión final de Descartar
+// Pipelines, punto 2): sección de auditoría -- PIPELINE_DISCARDED/RECOVERED/
+// HIDDEN/RESTORED en palabras, ya ordenados del más nuevo al más viejo por
+// el backend. Si no hay eventos, no se muestra ninguna caja (ni título ni
+// borde vacío) -- distinto de "Cargando…", que sólo tapa mientras la
+// respuesta está en vuelo.
+function mockAuditoria(eventos) {
+  api.get.mockImplementation((url) => {
+    if (url === '/pipelines/p1/results') return Promise.resolve({ data: RESULTADO })
+    if (url === '/pipelines/p1/auditoria-descarte') return Promise.resolve({ data: { eventos } })
+    return Promise.reject(new Error(`url inesperada: ${url}`))
+  })
+}
+
+describe('DetallePipeline > auditoría de descarte', () => {
+  it('pide /pipelines/{id}/auditoria-descarte junto con /results', async () => {
+    mockAuditoria([])
+    renderDetalle()
+    await screen.findByText('thot')
+    expect(api.get).toHaveBeenCalledWith('/pipelines/p1/auditoria-descarte')
+  })
+
+  it('sin eventos, no muestra ninguna caja de auditoría', async () => {
+    mockAuditoria([])
+    renderDetalle()
+    await screen.findByText('thot')
+    expect(screen.queryByText('Historial de descarte')).not.toBeInTheDocument()
+  })
+
+  it('muestra los cuatro tipos en palabras humanas, con el user_id tal cual viene', async () => {
+    mockAuditoria([
+      { event_type: 'PIPELINE_RESTORED', user_id: 'admin-9', desde: 'hidden', a: 'discarded', ts: 1758000900 },
+      { event_type: 'PIPELINE_HIDDEN', user_id: 'admin-9', desde: 'discarded', a: 'hidden', ts: 1758000800 },
+      { event_type: 'PIPELINE_RECOVERED', user_id: 'u-42', desde: 'discarded', a: 'aborted', ts: 1758000700 },
+      { event_type: 'PIPELINE_DISCARDED', user_id: 'u-42', desde: 'aborted', a: 'discarded', ts: 1758000600 },
+    ])
+    renderDetalle()
+    await screen.findByText('thot')
+    expect(screen.getByText('Historial de descarte')).toBeInTheDocument()
+    expect(screen.getByText(/^Restaurado por admin-9 el /)).toBeInTheDocument()
+    expect(screen.getByText(/^Ocultado por admin-9 el /)).toBeInTheDocument()
+    expect(screen.getByText(/^Recuperado por u-42 el /)).toBeInTheDocument()
+    expect(screen.getByText(/^Descartado por u-42 el /)).toBeInTheDocument()
+  })
+
+  it('respeta el orden que manda el backend (más nuevo primero)', async () => {
+    mockAuditoria([
+      { event_type: 'PIPELINE_RECOVERED', user_id: 'u-1', desde: 'discarded', a: 'aborted', ts: 200 },
+      { event_type: 'PIPELINE_DISCARDED', user_id: 'u-1', desde: 'aborted', a: 'discarded', ts: 100 },
+    ])
+    renderDetalle()
+    await screen.findByText('thot')
+    const items = screen.getAllByText(/^(Descartado|Recuperado|Ocultado|Restaurado) por /)
+    expect(items.map((el) => el.textContent)).toEqual([
+      expect.stringMatching(/^Recuperado por u-1 el /),
+      expect.stringMatching(/^Descartado por u-1 el /),
+    ])
+  })
+
+  it('si la auditoría falla, no rompe el resto del detalle ni muestra la caja', async () => {
+    api.get.mockImplementation((url) => {
+      if (url === '/pipelines/p1/results') return Promise.resolve({ data: RESULTADO })
+      if (url === '/pipelines/p1/auditoria-descarte') return Promise.reject(new Error('network'))
+      return Promise.reject(new Error(`url inesperada: ${url}`))
+    })
+    renderDetalle()
+    await screen.findByText('thot')
+    expect(screen.queryByText('Historial de descarte')).not.toBeInTheDocument()
   })
 })

@@ -313,6 +313,9 @@ export default {
   cargarMas: 'Load more',
   pestanaTodos: 'All',
   pestanaDescartados: 'Discarded',
+  // 2026-09-22 (closing the two gaps left by the final review): "Hidden"
+  // tab of Administration → Discarded and hidden pipelines.
+  pestanaOcultos: 'Hidden',
   descartadosColFecha: 'Discarded',
   sinDescartados: 'No discarded pipelines.',
   descartadosError: 'Could not load the discarded list. Try again.',
@@ -320,7 +323,7 @@ export default {
   recuperarError: 'Could not recover the pipeline. Try again.',
   borrarPipeline: 'Delete',
   borrarTitulo: 'Delete pipeline',
-  borrarMensaje: (nombre) => `"${nombre}" stops showing up in any list, including this one. Only a superadmin can restore it from Administration → Hidden pipelines.`,
+  borrarMensaje: (nombre) => `"${nombre}" stops showing up in any list, including this one. Only a superadmin can restore it from Administration → Discarded and hidden pipelines.`,
   borrarError: 'Could not delete the pipeline. Try again.',
 
   detalleTitle: (nombre) => `Detail — ${nombre}`,
@@ -345,6 +348,14 @@ export default {
   detalleStepDependsOnNone: "Doesn't depend on another step",
   detalleStepDependsOnUnknown: 'Dependencies unknown',
   detalleStepNumber: (n) => `Step ${n}`,
+
+  // Discard audit trail in the detail (2026-09-22, closing the two gaps
+  // left by the final review, point 2).
+  auditoriaDescarteTitulo: 'Discard history',
+  auditoriaDescartado: (usuario, fecha) => `Discarded by ${usuario} on ${fecha}`,
+  auditoriaRecuperado: (usuario, fecha) => `Recovered by ${usuario} on ${fecha}`,
+  auditoriaOcultado: (usuario, fecha) => `Hidden by ${usuario} on ${fecha}`,
+  auditoriaRestaurado: (usuario, fecha) => `Restored by ${usuario} on ${fecha}`,
 
   stepStatusLabels: {
     pending: 'Pending',
@@ -567,7 +578,7 @@ export default {
   adminSettings: 'Settings',
   adminCosts: 'Costs',
   adminMemoria: 'Memory',
-  adminPipelinesOcultos: 'Hidden pipelines',
+  adminPipelinesOcultos: 'Discarded and hidden pipelines',
   adminBack: (nombre) => `Back to ${nombre}`,
 
   // Admin dashboard
@@ -778,14 +789,20 @@ export default {
   adminRepoDeleteMessage: 'The file is removed from the repository and cannot be undone.',
   adminRepoSize: (bytes) => bytes < 1024 ? `${bytes}B` : bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`,
 
-  // Administration → Hidden pipelines (Task 7, spec 2026-09-22-descartar-pipelines §5).
-  pipelinesOcultosTitulo: 'Hidden pipelines',
+  // Administration → Discarded and hidden pipelines (Task 7, spec
+  // 2026-09-22-descartar-pipelines §5; renamed 2026-09-22 when closing the
+  // two gaps left by the final review).
+  pipelinesOcultosTitulo: 'Discarded and hidden pipelines',
   pipelinesOcultosColFecha: 'Hidden',
   pipelinesOcultosError: 'Could not load the hidden pipelines.',
   sinOcultos: 'No hidden pipelines.',
   restaurarPipeline: 'Restore',
   restaurarError: 'Could not restore the pipeline. Try again.',
   ocultoDe: (usuario) => `From ${usuario}`,
+  ocultarPipeline: 'Hide',
+  ocultarTitulo: 'Hide pipeline',
+  ocultarMensaje: (nombre) => `"${nombre}" moves to the Hidden tab: it stops showing up in any other list. Only a superadmin can restore it from there.`,
+  ocultarError: 'Could not hide the pipeline. Try again.',
 
   // Admin settings
   adminSettingsTitle: 'System Configuration',
