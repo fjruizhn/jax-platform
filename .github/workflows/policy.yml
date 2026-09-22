@@ -853,8 +853,18 @@ jobs:
           //   `findByRole` no encontraban nada) antes de implementar.
           //   Medido con `npx vitest run`: 967 passed, 0 fallidos, 94
           //   archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 967) {
-              console.error("PISO ROTO: se esperaban 967 tests de vitest CORRIDOS y 0 fallidos.");
+          // 967 -> 973 (2026-09-22, Task 7 de descartar-pipelines): +5 en
+          //   `AdminPipelinesOcultos.test.jsx` (archivo nuevo -- lista
+          //   paginada con nombre/dueño/fecha, "Cargar más", Restaurar SIN
+          //   confirmación -- es reversible, error 403 traducido, estado
+          //   vacío) y +1 en `BarraUsuario.test.jsx` (el enlace a
+          //   /admin/pipelines-ocultos sólo lo ve el superadmin, mismo
+          //   criterio que el engranaje de Administración). Vistos en rojo
+          //   contra el código viejo (el módulo no existía / el enlace no
+          //   estaba) antes de implementar. Medido con `npx vitest run`:
+          //   973 passed, 0 fallidos, 95 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 973) {
+              console.error("PISO ROTO: se esperaban 973 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

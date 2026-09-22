@@ -802,6 +802,18 @@ export default {
   adminRepoDeleteMessage: 'El archivo se borra del repositorio y no se puede deshacer.',
   adminRepoSize: (bytes) => bytes < 1024 ? `${bytes}B` : bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`,
 
+  // Administración → Pipelines ocultos (Task 7, spec
+  // 2026-09-22-descartar-pipelines §5): sólo superadmin -- lista de TODOS
+  // los usuarios (a diferencia de la pestaña Descartados, que es sólo la
+  // propia). Restaurar vuelve a `discarded`: reversible, sin confirmación.
+  pipelinesOcultosTitulo: 'Pipelines ocultos',
+  pipelinesOcultosColFecha: 'Oculto',
+  pipelinesOcultosError: 'No se pudieron cargar los pipelines ocultos.',
+  sinOcultos: 'No hay pipelines ocultos.',
+  restaurarPipeline: 'Restaurar',
+  restaurarError: 'No se pudo restaurar el pipeline. Probá de nuevo.',
+  ocultoDe: (usuario) => `De ${usuario}`,
+
   // Admin settings
   adminSettingsTitle: 'Configuración del Sistema',
   adminSettingsSave: 'Guardar',

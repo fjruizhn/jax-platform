@@ -764,6 +764,15 @@ export default {
   adminRepoDeleteMessage: 'The file is removed from the repository and cannot be undone.',
   adminRepoSize: (bytes) => bytes < 1024 ? `${bytes}B` : bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`,
 
+  // Administration → Hidden pipelines (Task 7, spec 2026-09-22-descartar-pipelines §5).
+  pipelinesOcultosTitulo: 'Hidden pipelines',
+  pipelinesOcultosColFecha: 'Hidden',
+  pipelinesOcultosError: 'Could not load the hidden pipelines.',
+  sinOcultos: 'No hidden pipelines.',
+  restaurarPipeline: 'Restore',
+  restaurarError: 'Could not restore the pipeline. Try again.',
+  ocultoDe: (usuario) => `From ${usuario}`,
+
   // Admin settings
   adminSettingsTitle: 'System Configuration',
   adminSettingsSave: 'Save',

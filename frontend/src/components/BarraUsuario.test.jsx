@@ -90,6 +90,17 @@ describe('BarraUsuario', () => {
     expect(screen.queryByRole('link', { name: 'Administración' })).not.toBeInTheDocument()
   })
 
+  // Task 7 (2026-09-22, spec descartar-pipelines §5): mismo criterio que el
+  // engranaje de arriba -- sólo superadmin, es quien puede restaurar.
+  it('el enlace a Pipelines ocultos lleva a /admin/pipelines-ocultos y solo lo ve el superadmin', () => {
+    const { unmount } = renderBarra()
+    expect(screen.getByRole('link', { name: 'Pipelines ocultos' })).toHaveAttribute('href', '/admin/pipelines-ocultos')
+    unmount()
+    usuario = { email: 'otro@example.com', role: 'operator' }
+    renderBarra()
+    expect(screen.queryByRole('link', { name: 'Pipelines ocultos' })).not.toBeInTheDocument()
+  })
+
   // Task 9 (2026-09-18, historial-y-arreglos-de-pipeline): a diferencia del
   // engranaje de administración, el historial de pipelines lo ve CUALQUIER
   // usuario logueado, no sólo superadmin -- es su propio trabajo el que

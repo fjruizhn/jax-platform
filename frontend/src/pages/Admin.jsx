@@ -8,6 +8,7 @@ import AdminRepository from './admin/AdminRepository'
 import AdminSettings from './admin/AdminSettings'
 import AdminCosts from './admin/AdminCosts'
 import AdminSmtp from './admin/AdminSmtp'
+import AdminPipelinesOcultos from './admin/AdminPipelinesOcultos'
 import Memoria from './Memoria'
 
 export default function Admin() {
@@ -31,6 +32,9 @@ export default function Admin() {
               pantalla de Administración -- antes era una ruta suelta de
               App.jsx sin sidebar (ver App.jsx y AdminSidebar.jsx). */}
           <Route path="memoria" element={<Memoria />} />
+          {/* Task 7 (2026-09-22, spec descartar-pipelines §5): sólo
+              superadmin, misma guardia que el resto de /admin/* (App.jsx). */}
+          <Route path="pipelines-ocultos" element={<AdminPipelinesOcultos />} />
         </Routes>
       </main>
       {/* Etapa 3 (2026-09-15): los toasts solo se montaban en Dashboard; en
