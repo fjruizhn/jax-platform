@@ -1208,6 +1208,13 @@ export default {
     titulo: 'Memoria',
     subtitulo: (nombre) => `Lo que ${nombre} cree saber: revisá, corregí o caducá cada hecho.`,
     cargando: 'Cargando…',
+    // MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): la
+    // recarga que sigue a aprobar/caducar/corregir/fundir NO puede tapar la
+    // lista con la pantalla de carga inicial -- eso era justo lo que dejaba
+    // "aprobar seleccionados" verificando hechos que Fernando ya había
+    // desmarcado a mano (la lista entera se re-armaba desde cero). Este
+    // texto es un aviso chico, no bloqueante.
+    actualizando: 'Actualizando…',
     errorCarga: 'No se pudo cargar la memoria.',
     vacio: 'No hay hechos activos para revisar.',
     totalSinVerificar: (n) => `${n} sin verificar`,
@@ -1226,15 +1233,43 @@ export default {
     aprobados: (n) => (n === 1 ? '1 hecho aprobado.' : `${n} hechos aprobados.`),
     aprobar: 'Aprobar',
     casiDuplicados: (n) => `Estos ${n} hechos dicen lo mismo`,
+    // M3 (revisión adversarial de jax-platform PR 146, tercera vuelta): el
+    // cluster que arma el backend (`grupo.casi_duplicados[].ids`) puede
+    // traer más ids de los que este cap de 500 (`GET /hechos`) llegó a
+    // cargar -- contar sólo `miembros.length` (lo cargado) mentía sobre
+    // cuántos hechos dicen lo mismo. `n` es SIEMPRE el total real; `k`, los
+    // que no están en la lista cargada.
+    casiDuplicadosSubconjunto: (n, k) => `Estos ${n} hechos dicen lo mismo, de los cuales ${k} no ${k === 1 ? 'está' : 'están'} en la lista cargada`,
+    casiDuplicadosNoCargados: (k) => (k === 1
+      ? '1 hecho de este grupo no está en la lista cargada.'
+      : `${k} hechos de este grupo no están en la lista cargada.`),
     // Decisión de Fernando (2026-09-20): fundir SUPERA, no caduca -- "esto
     // fue reemplazado por aquello", no "esto dejó de valer". `POST
     // /hechos/fundir` (backend/api/admin/memoria.py) reemplaza al composite
     // aprobar+caducar que usaba esta pantalla antes.
-    fundir: 'Fundir en el más reciente',
-    fundirTitulo: 'Fundir casi-duplicados',
-    fundirMensaje: 'La redacción más reciente queda aprobada; el resto queda marcado como superado por ella. No se borra nada: la cadena de reemplazo queda registrada.',
+    //
+    // Ronda 2026-09-22 (hallazgo de Fernando): "el más reciente" ya NO es
+    // siempre quien sobrevive -- si hay un verificado en el grupo, ese gana
+    // (backend/api/admin/memoria.py::_elegir_superviviente). El backend
+    // declara quién sobrevive (`superviviente_id` en cada cluster de
+    // `casi_duplicados`); esta pantalla sólo lo muestra, no lo adivina.
+    //
+    // Ronda 146 (revisión adversarial de jax-platform PR 146, D5): el mensaje
+    // se arma con `superviviente_texto`/`superviviente_verificado` --
+    // ambos vienen del cluster (backend), nunca de `hechosPorId` (que sólo
+    // tiene los 500 hechos más recientes que cargó GET /hechos; un cluster
+    // puede incluir ids fuera de ese cap). Si el superviviente no estaba
+    // verificado, el mensaje dice explícitamente que quedará aprobado al
+    // fundir -- "el más reciente" aparece sólo como el criterio de
+    // desempate, nunca como título del botón (D5).
+    fundir: 'Fundir',
+    fundirTitulo: (id) => `Fundir en el hecho #${id}`,
+    fundirMensaje: (texto, verificado) => (verificado
+      ? `Sobrevive el hecho verificado: «${texto}». El resto queda marcado como superado por él. No se borra nada: la cadena de reemplazo queda registrada.`
+      : `Ningún hecho de este grupo está verificado. Sobrevive «${texto}» (el más reciente, el criterio de desempate) y quedará APROBADO como verificado al fundir. El resto queda marcado como superado por él. No se borra nada: la cadena de reemplazo queda registrada.`),
     fundirConfirmar: 'Fundir',
     fundido: 'Casi-duplicados fundidos: el resto quedó superado.',
+    sobrevive: 'Sobrevive',
     corregir: 'Corregir',
     corregirTitulo: (id) => `Corregir hecho #${id}`,
     corregirTexto: 'Texto corregido',
@@ -1297,6 +1332,28 @@ export default {
       vence_at_invalido: 'La fecha no es válida.',
       vence_at_sin_zona: 'La fecha necesita indicar su zona horaria.',
       memoria_no_disponible: 'La memoria no está disponible ahora mismo.',
+      // Ronda 146 (D3): el backend EXIGE la regla -- estos dos códigos
+      // salen si el grupo cambió entre que esta pantalla lo cargó y que
+      // Fernando confirmó fundir (otra persona lo revisó primero). El viejo
+      // `superviviente_no_verificado` quedó redundante y se eliminó del
+      // backend (ver memoria.py); no se deja la traducción sin código que
+      // la use.
+      fundir_sintesis_con_no_sintesis: 'Una síntesis no puede fundirse con un hecho que no lo es: recargá la pantalla.',
+      // MINOR 3 (revisión adversarial de jax-platform PR 146, ronda 4): dos
+      // síntesis del MISMO tipo pueden rechazarse igual, si una cita a la
+      // otra -- ese motivo es distinto del anterior (tipo cruzado) y
+      // necesita su propio texto, no el de "una síntesis no puede fundirse
+      // con un hecho que no lo es" (que sería falso acá: los dos SÍ lo son).
+      fundir_hechos_relacionados_por_cita: 'Uno de estos hechos cita al otro: no pueden fundirse entre sí. Recargá la pantalla.',
+      superviviente_no_es_el_de_la_regla: 'El hecho que sobrevive cambió (alguien más revisó el grupo): recargá la pantalla.',
+      // Ronda 146, tercera vuelta (MAJOR 2): un hecho vencido no se puede
+      // fundir -- ni como superviviente ni como absorbido.
+      hecho_vencido: 'Uno de estos hechos venció mientras tanto: recargá la pantalla.',
+      // MAJOR N2 (revisión adversarial de jax-platform PR 146, ronda 5):
+      // aprobar un lote donde alguno ya fue superado por otro hecho
+      // (fundido, o corregido) -- código propio, distinto de
+      // `hecho_ya_superado` (que usa /corregir sobre UN solo hecho).
+      hecho_superado: 'Uno de estos hechos ya fue superado por otro: recargá la pantalla.',
     },
   },
 }

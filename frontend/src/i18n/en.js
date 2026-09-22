@@ -1166,6 +1166,13 @@ export default {
     titulo: 'Memory',
     subtitulo: (nombre) => `What ${nombre} thinks it knows: review, correct or expire each fact.`,
     cargando: 'Loading…',
+    // MAJOR B (jax-platform PR 146 adversarial review, round 4): the reload
+    // that follows approve/expire/correct/merge must not cover the list
+    // with the initial loading screen -- that was exactly what let
+    // "approve selected" re-verify facts Fernando had already unchecked by
+    // hand (the whole list was rebuilt from scratch). Small, non-blocking
+    // notice.
+    actualizando: 'Updating…',
     errorCarga: 'Could not load the memory.',
     vacio: 'No active facts to review.',
     totalSinVerificar: (n) => `${n} unverified`,
@@ -1181,11 +1188,36 @@ export default {
     aprobados: (n) => (n === 1 ? '1 fact approved.' : `${n} facts approved.`),
     aprobar: 'Approve',
     casiDuplicados: (n) => `These ${n} facts say the same thing`,
-    fundir: 'Merge into the most recent',
-    fundirTitulo: 'Merge near-duplicates',
-    fundirMensaje: 'The most recent wording gets approved; the rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.',
+    // M3 (jax-platform PR 146 adversarial review, third pass): the cluster
+    // the backend builds (`grupo.casi_duplicados[].ids`) can carry more ids
+    // than this 500-fact cap (`GET /hechos`) loaded -- counting only
+    // `miembros.length` (what's loaded) lied about how many facts say the
+    // same thing. `n` is ALWAYS the real total; `k` is how many aren't in
+    // the loaded list.
+    casiDuplicadosSubconjunto: (n, k) => `These ${n} facts say the same thing, of which ${k} ${k === 1 ? 'is' : 'are'} not in the loaded list`,
+    casiDuplicadosNoCargados: (k) => (k === 1
+      ? '1 fact in this group is not in the loaded list.'
+      : `${k} facts in this group are not in the loaded list.`),
+    // Round 2026-09-22: "the most recent" is no longer always the survivor --
+    // a verified fact in the group wins (backend ::_elegir_superviviente).
+    // The backend declares who survives (`superviviente_id` on each
+    // `casi_duplicados` cluster); this screen only shows it, never guesses.
+    //
+    // Round 146 (jax-platform PR 146 adversarial review, D5): the message is
+    // built from `superviviente_texto`/`superviviente_verificado` -- both
+    // come from the cluster (backend), never from `hechosPorId` (which only
+    // holds the 500 most recent facts GET /hechos loaded; a cluster can
+    // include ids outside that cap). If the survivor wasn't verified, the
+    // message says explicitly it will be approved on merge -- "most recent"
+    // only shows up as the tie-break criterion, never as the button title.
+    fundir: 'Merge',
+    fundirTitulo: (id) => `Merge into fact #${id}`,
+    fundirMensaje: (texto, verificado) => (verificado
+      ? `The verified fact survives: "${texto}". The rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.`
+      : `No fact in this group is verified. "${texto}" survives (the most recent, the tie-break criterion) and will be APPROVED as verified on merge. The rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.`),
     fundirConfirmar: 'Merge',
     fundido: 'Near-duplicates merged: the rest is now superseded.',
+    sobrevive: 'Survives',
     corregir: 'Correct',
     corregirTitulo: (id) => `Correct fact #${id}`,
     corregirTexto: 'Corrected text',
@@ -1239,6 +1271,28 @@ export default {
       vence_at_invalido: 'The date is not valid.',
       vence_at_sin_zona: 'The date needs to include its time zone.',
       memoria_no_disponible: 'The memory is not available right now.',
+      // Round 146 (D3): the backend now ENFORCES the rule -- these two
+      // codes show up when the group changed between this screen loading it
+      // and Fernando confirming merge (someone else reviewed it first). The
+      // old `superviviente_no_verificado` became redundant and was removed
+      // from the backend (see memoria.py); no translation is left without a
+      // code that uses it.
+      fundir_sintesis_con_no_sintesis: 'A synthesis cannot be merged with a fact that is not one: reload the screen.',
+      // MINOR 3 (jax-platform PR 146 adversarial review, round 4): two
+      // syntheses of the SAME type can still be rejected if one cites the
+      // other -- that reason is different from the one above (crossed
+      // type) and needs its own text; reusing the type message here would
+      // be false (they ARE both syntheses).
+      fundir_hechos_relacionados_por_cita: 'One of these facts cites the other: they cannot be merged together. Reload the screen.',
+      superviviente_no_es_el_de_la_regla: 'The surviving fact changed (someone else reviewed the group): reload the screen.',
+      // Round 146, third pass (MAJOR 2): an expired fact cannot be merged --
+      // neither as the survivor nor as an absorbed fact.
+      hecho_vencido: 'One of these facts expired in the meantime: reload the screen.',
+      // MAJOR N2 (jax-platform PR 146 adversarial review, round 5):
+      // approving a batch where one was already superseded by another fact
+      // (merged, or corrected) -- own code, distinct from `hecho_ya_superado`
+      // (used by /corregir on a SINGLE fact).
+      hecho_superado: 'One of these facts was already superseded by another: reload the screen.',
     },
   },
 }

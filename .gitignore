@@ -30,3 +30,18 @@ bitacoras/
 
 # Reporte JUnit que genera el job backend-tests-no-db (CI y corridas locales)
 junit.xml
+
+# MINOR 4 (revisión adversarial de jax-platform PR 146, ronda 4):
+# loadtest/_run/ es el checkout de `jax` clonado por
+# loadtest/memoria_levantar_entorno.py, el log y el pid del backend
+# efímero, y `info.json` -- que trae `superadmin_password` en texto plano
+# (de la base de CARGA, nunca de producción, pero igual un secreto
+# utilizable). Nada de esto es código ni resultado versionable: es salida
+# de una corrida local, se regenera sola.
+loadtest/_run/
+
+# m5 (cierre jax-platform#146, ronda 6): salida cruda de memoria_medir.py /
+# memoria_medir_fundir.py -- por convención de este repo nunca se commitea
+# (cada corrida la pisa), pero hasta ahora eso dependía de que nadie
+# corriera `git add .` por descuido. Explicitado acá.
+loadtest/_memoria_resultados*.json

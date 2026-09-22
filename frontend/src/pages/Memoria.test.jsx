@@ -67,9 +67,19 @@ const HECHO_VENCIDO = {
   procedencia: { mensaje_id: 700, faceta: 'thot' },
 }
 
+// Los tres (136/138/139) arrancan sin verificar (ver arriba): con la regla
+// "el verificado gana, si no hay ninguno gana el más reciente"
+// (_elegir_superviviente, backend/api/admin/memoria.py), el superviviente
+// sigue siendo 139 -- el más nuevo de los tres.
 const GRUPOS_DOS_TEMAS = {
   grupos: [
-    { tema: HECHO_139.texto, hechos: [139, 138, 136], sin_verificar: 3, casi_duplicados: [[136, 138, 139]] },
+    {
+      tema: HECHO_139.texto, hechos: [139, 138, 136], sin_verificar: 3,
+      casi_duplicados: [{
+        ids: [136, 138, 139], superviviente_id: 139,
+        superviviente_verificado: false, superviviente_texto: HECHO_139.texto,
+      }],
+    },
     { tema: HECHO_201.texto, hechos: [201], sin_verificar: 0, casi_duplicados: [] },
   ],
 }
@@ -90,6 +100,45 @@ const GRUPO_A_ESCALA = {
 // tercer endpoint (ver el comentario de módulo en Memoria.jsx).
 const HECHOS_A_ESCALA = { hechos: [HECHO_136], total: 9000 }
 const VENCIDOS_A_ESCALA = { hechos: [HECHO_VENCIDO], total: 9500 }
+
+// MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): fixtures
+// SIN cluster (a diferencia de GRUPOS_DOS_TEMAS, donde 136/138/139 arrancan
+// sin_verificar pero YA excluidos del lote por estar en casi_duplicados) --
+// necesarias para poder deseleccionar a mano y comprobar que la recarga no
+// los vuelve a marcar.
+function hechoDePrueba(id, extra = {}) {
+  return {
+    id, texto: `hecho de prueba ${id}`, tipo: 'technical', confianza: 0.8,
+    verificado: false, verificado_por: null, verificado_at: null, vence_at: null, vencido: false,
+    creado_at: '2026-09-22T10:00:00', superado_por: null,
+    procedencia: { mensaje_id: null, faceta: null },
+    ...extra,
+  }
+}
+const GRUPOS_PRESERVAR = {
+  grupos: [
+    { tema: 'tema A (sin cluster)', hechos: [401, 402, 403, 404, 405], sin_verificar: 5, casi_duplicados: [] },
+    { tema: 'tema B (gatillo)', hechos: [410], sin_verificar: 1, casi_duplicados: [] },
+  ],
+}
+const HECHOS_PRESERVAR = {
+  hechos: [401, 402, 403, 404, 405, 410].map((id) => hechoDePrueba(id)),
+  total: 6,
+}
+
+// MAJOR N1 (revisión adversarial de jax-platform PR 146, ronda 5): tres
+// grupos -- A queda quieto, B dispara la recarga lenta (aprobar), C
+// desaparece de verdad con la recarga rápida que le sigue (caducar).
+const GRUPOS_CARRERA_VIEJO = {
+  grupos: [
+    { tema: 'tema A (carrera)', hechos: [501], sin_verificar: 1, casi_duplicados: [] },
+    { tema: 'tema B (gatillo aprobar)', hechos: [510], sin_verificar: 1, casi_duplicados: [] },
+    { tema: 'tema C (gatillo caducar)', hechos: [520], sin_verificar: 1, casi_duplicados: [] },
+  ],
+}
+// estado real tras caducar 520: el grupo C ya no existe.
+const GRUPOS_CARRERA_NUEVO = { grupos: GRUPOS_CARRERA_VIEJO.grupos.slice(0, 2) }
+const HECHOS_CARRERA = { hechos: [501, 510, 520].map((id) => hechoDePrueba(id)), total: 3 }
 
 function renderMemoria() {
   return render(<I18nProvider><MemoryRouter><Memoria /><Toast /></MemoryRouter></I18nProvider>)
@@ -145,6 +194,23 @@ beforeEach(() => {
   api.post.mockReset()
   useJaxStore.setState({ user: usuario, toasts: [] })
 })
+
+// SOSPECHA (revisión adversarial de jax-platform PR 146, ronda 4): varios
+// tests disparaban una acción que recarga (M2: aprobar/caducar/corregir/
+// fundir TODOS llaman a `cargar()` de nuevo) y terminaban sin esperar a que
+// ESA recarga completara -- dejaban una cadena de promesas pendiente que
+// podía resolverse durante el test SIGUIENTE, después de que `beforeEach`
+// ya hubiera limpiado los mocks. `api.get.mockReset()` sólo limpia el
+// historial de llamadas -- no cancela una promesa ya en vuelo de un render
+// que sigue montado (RTL no desmonta entre tests sin `cleanup()` explícito
+// en este archivo). Este helper espera la recarga hasta el final, con la
+// MISMA señal que ya usaba el test M2 (el conteo de llamadas a /grupos).
+async function esperarRecargaCompleta(vecesEsperadas = 2) {
+  await waitFor(() => {
+    const llamadas = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
+    expect(llamadas).toBe(vecesEsperadas)
+  })
+}
 
 describe('Memoria', () => {
   it('cada hecho muestra su procedencia', async () => {
@@ -214,6 +280,35 @@ describe('Memoria', () => {
     }
   })
 
+  it('M3: el aviso y la confirmacion de fundir cuentan TODOS los ids del cluster, no solo los cargados', async () => {
+    // El cluster (y el grupo.hechos que lo contiene -- backend/api/admin/
+    // memoria.py::agrupar_por_tema no tiene el cap de 500) trae un cuarto
+    // id (999) que GET /hechos NO cargó (ni HECHOS_DOS_TEMAS lo tiene) --
+    // el caso real que motiva M3, no un fixture inválido (cluster.ids
+    // siempre es subconjunto de grupo.hechos en el backend real).
+    servirGet(
+      {
+        grupos: [{
+          tema: HECHO_139.texto, hechos: [139, 138, 136, 999], sin_verificar: 4,
+          casi_duplicados: [{
+            ids: [136, 138, 139, 999], superviviente_id: 139,
+            superviviente_verificado: false, superviviente_texto: HECHO_139.texto,
+          }],
+        }],
+      },
+      HECHOS_DOS_TEMAS,
+    )
+    api.post.mockResolvedValue({ data: { superados: 3 } })
+    renderMemoria()
+    const grupo = await screen.findByTestId('grupo-0')
+    expect(within(grupo).getByText(es.memoria.casiDuplicadosSubconjunto(4, 1))).toBeInTheDocument()
+    expect(within(grupo).queryByText(es.memoria.casiDuplicados(3))).not.toBeInTheDocument()
+
+    fireEvent.click(within(grupo).getByRole('button', { name: es.memoria.fundir }))
+    const confirmacion = await screen.findByRole('dialog')
+    expect(confirmacion).toHaveTextContent(es.memoria.casiDuplicadosNoCargados(1))
+  })
+
   it('aprobar en lote desde el grupo manda todos los seleccionados de una vez', async () => {
     servirGet(GRUPOS_DOS_TEMAS, HECHOS_DOS_TEMAS)
     api.post.mockResolvedValue({ data: { aprobados: 3 } })
@@ -223,6 +318,10 @@ describe('Memoria', () => {
     fireEvent.click(within(grupo).getByRole('button', { name: es.memoria.aprobarSeleccionados(3) }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/aprobar', { ids: [139, 138, 136] }))
     expect(await screen.findByText(es.memoria.aprobados(3))).toBeInTheDocument()
+    // SOSPECHA: esperar a que la recarga que dispara `aprobar()` (M2)
+    // termine, para no dejar una promesa pendiente que resuelva en el test
+    // siguiente.
+    await esperarRecargaCompleta()
   })
 
   it('aprobar un hecho suelto no abre ninguna ventana', async () => {
@@ -233,6 +332,328 @@ describe('Memoria', () => {
     fireEvent.click(within(ficha).getByRole('button', { name: es.memoria.aprobar }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/aprobar', { ids: [136] }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    // SOSPECHA: ídem -- esperar la recarga completa antes de terminar.
+    await esperarRecargaCompleta()
+  })
+
+  it('M2: aprobar vuelve a pedir /grupos (is_verified decide quien sobrevive en un cluster)', async () => {
+    servirGet(GRUPOS_DOS_TEMAS, HECHOS_DOS_TEMAS)
+    api.post.mockResolvedValue({ data: { aprobados: 1 } })
+    renderMemoria()
+    await screen.findByTestId('hecho-136')
+    const llamadasAGruposAntes = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
+    expect(llamadasAGruposAntes).toBe(1) // la carga inicial
+    const ficha = await screen.findByTestId('hecho-136')
+    fireEvent.click(within(ficha).getByRole('button', { name: es.memoria.aprobar }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/aprobar', { ids: [136] }))
+    await waitFor(() => {
+      const llamadas = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
+      expect(llamadas).toBe(2) // la carga inicial + la recarga tras aprobar
+    })
+  })
+
+  // MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): la
+  // recarga (M2) reconstruía `seleccionados` incondicionalmente, así que
+  // aprobar un hecho de OTRO grupo -- o cualquier otra acción -- volvía a
+  // marcar hechos que Fernando ya había desmarcado a mano. Los ids que ya
+  // estaban en pantalla tienen que CONSERVAR su estado; sólo los ids NUEVOS
+  // reciben el default.
+  it('la recarga preserva la seleccion que Fernando ya desmarco a mano (no vuelve a marcar ids conocidos)', async () => {
+    let aprobado410 = false
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') return Promise.resolve({ data: GRUPOS_PRESERVAR })
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) return Promise.resolve({ data: { hechos: [], total: 0 } })
+        if (params.verificado === false && params.limite === 1) {
+          return Promise.resolve({ data: { hechos: [], total: aprobado410 ? 5 : 6 } })
+        }
+        const hechos = HECHOS_PRESERVAR.hechos.map((h) => (
+          h.id === 410 && aprobado410 ? { ...h, verificado: true } : h
+        ))
+        return Promise.resolve({ data: { hechos, total: hechos.length } })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockImplementation((url) => {
+      if (url === '/admin/memoria/hechos/aprobar') { aprobado410 = true; return Promise.resolve({ data: { aprobados: 1 } }) }
+      return Promise.reject(new Error(`post no mockeado: ${url}`))
+    })
+    renderMemoria()
+    const grupoA = await screen.findByTestId('grupo-0')
+    // Los 5 arrancan seleccionados (sin verificar, sin cluster -- default).
+    for (const id of [401, 402, 403, 404, 405]) {
+      expect(within(within(grupoA).getByTestId(`hecho-${id}`)).getByRole('checkbox')).toBeChecked()
+    }
+    // Fernando desmarca 404 y 405 a mano.
+    fireEvent.click(within(within(grupoA).getByTestId('hecho-404')).getByRole('checkbox'))
+    fireEvent.click(within(within(grupoA).getByTestId('hecho-405')).getByRole('checkbox'))
+    expect(within(within(grupoA).getByTestId('hecho-404')).getByRole('checkbox')).not.toBeChecked()
+    expect(within(within(grupoA).getByTestId('hecho-405')).getByRole('checkbox')).not.toBeChecked()
+    expect(within(grupoA).getByRole('button', { name: es.memoria.aprobarSeleccionados(3) })).toBeInTheDocument()
+
+    // Aprueba el hecho 410 -- de OTRO grupo -- que dispara la recarga (M2).
+    const grupoB = await screen.findByTestId('grupo-1')
+    fireEvent.click(within(within(grupoB).getByTestId('hecho-410')).getByRole('button', { name: es.memoria.aprobar }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/aprobar', { ids: [410] }))
+    await waitFor(() => {
+      const llamadas = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
+      expect(llamadas).toBe(2)
+    })
+
+    // 404 y 405 SIGUEN desmarcados tras la recarga -- no se re-seleccionaron.
+    const grupoATrasRecarga = screen.getByTestId('grupo-0')
+    expect(within(within(grupoATrasRecarga).getByTestId('hecho-401')).getByRole('checkbox')).toBeChecked()
+    expect(within(within(grupoATrasRecarga).getByTestId('hecho-402')).getByRole('checkbox')).toBeChecked()
+    expect(within(within(grupoATrasRecarga).getByTestId('hecho-403')).getByRole('checkbox')).toBeChecked()
+    expect(within(within(grupoATrasRecarga).getByTestId('hecho-404')).getByRole('checkbox')).not.toBeChecked()
+    expect(within(within(grupoATrasRecarga).getByTestId('hecho-405')).getByRole('checkbox')).not.toBeChecked()
+    expect(within(grupoATrasRecarga).getByRole('button', { name: es.memoria.aprobarSeleccionados(3) })).toBeInTheDocument()
+  })
+
+  // MINOR B-test (revisión adversarial de jax-platform PR 146, ronda 5): el
+  // test de arriba prueba que un id CONOCIDO conserva su estado -- pero
+  // ninguno probaba la otra mitad de la regla: un id GENUINAMENTE NUEVO,
+  // que nunca estuvo en pantalla, tiene que recibir el default aunque
+  // aparezca recién en la SEGUNDA carga (o la tercera, o cualquiera que no
+  // sea la primera). Una mutación que sólo aplicara el default "la primera
+  // vez que carga la pantalla" (en vez de "la primera vez que ESE id se ve")
+  // dejaba pasar la suite completa sin este test.
+  it('un id nuevo que aparece recien en una recarga tambien recibe el marcado por defecto', async () => {
+    let recargado = false
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') {
+        return Promise.resolve({
+          data: {
+            grupos: [{
+              tema: 'tema A', hechos: recargado ? [601, 602] : [601],
+              sin_verificar: recargado ? 2 : 1, casi_duplicados: [],
+            }],
+          },
+        })
+      }
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) return Promise.resolve({ data: { hechos: [], total: 0 } })
+        const hechos = recargado ? [hechoDePrueba(601), hechoDePrueba(602)] : [hechoDePrueba(601)]
+        if (params.verificado === false && params.limite === 1) {
+          return Promise.resolve({ data: { hechos: [], total: hechos.length } })
+        }
+        return Promise.resolve({ data: { hechos, total: hechos.length } })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockImplementation((url) => {
+      if (url === '/admin/memoria/hechos/aprobar') { recargado = true; return Promise.resolve({ data: { aprobados: 1 } }) }
+      return Promise.reject(new Error(`post no mockeado: ${url}`))
+    })
+    renderMemoria()
+    const grupo = await screen.findByTestId('grupo-0')
+    expect(within(within(grupo).getByTestId('hecho-601')).getByRole('checkbox')).toBeChecked()
+
+    // aprobar 601 dispara la recarga (M2): en ESA recarga aparece 602, que
+    // NUNCA estuvo en pantalla -- tiene que recibir el default tambien,
+    // aunque esta ya no sea la primera carga de la pantalla.
+    fireEvent.click(within(within(grupo).getByTestId('hecho-601')).getByRole('button', { name: es.memoria.aprobar }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/aprobar', { ids: [601] }))
+    await esperarRecargaCompleta()
+
+    const grupoTrasRecarga = screen.getByTestId('grupo-0')
+    expect(within(within(grupoTrasRecarga).getByTestId('hecho-602')).getByRole('checkbox')).toBeChecked()
+  })
+
+  // MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): la
+  // recarga posterior a una acción no puede tapar la lista con la pantalla
+  // de "Cargando…" inicial -- Fernando pierde de vista lo que estaba
+  // revisando cada vez que aprueba/caduca/corrige/funde algo.
+  it('la recarga tras una accion no reemplaza la lista por la pantalla completa de carga', async () => {
+    let llamadasGrupos = 0
+    let resolverSegundaLlamada
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') {
+        llamadasGrupos += 1
+        if (llamadasGrupos === 1) return Promise.resolve({ data: GRUPOS_PRESERVAR })
+        return new Promise((resolve) => { resolverSegundaLlamada = resolve })
+      }
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) return Promise.resolve({ data: { hechos: [], total: 0 } })
+        if (params.verificado === false && params.limite === 1) return Promise.resolve({ data: { hechos: [], total: 6 } })
+        return Promise.resolve({ data: HECHOS_PRESERVAR })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockResolvedValue({ data: { aprobados: 1 } })
+    renderMemoria()
+    await screen.findByTestId('grupo-0')
+    const grupoB = screen.getByTestId('grupo-1')
+    fireEvent.click(within(within(grupoB).getByTestId('hecho-410')).getByRole('button', { name: es.memoria.aprobar }))
+
+    // Mientras la segunda llamada a /grupos sigue pendiente (recarga en
+    // curso): la lista sigue en pantalla, y NO aparece el "Cargando…" de
+    // pantalla completa.
+    await waitFor(() => expect(llamadasGrupos).toBe(2))
+    expect(screen.getByTestId('grupo-0')).toBeInTheDocument()
+    expect(screen.queryByText(es.memoria.cargando)).not.toBeInTheDocument()
+    expect(screen.getByText(es.memoria.actualizando)).toBeInTheDocument()
+
+    resolverSegundaLlamada({ data: GRUPOS_PRESERVAR })
+    await waitFor(() => expect(screen.queryByText(es.memoria.actualizando)).not.toBeInTheDocument())
+  })
+
+  // MAJOR N1 (revisión adversarial de jax-platform PR 146, ronda 5): con la
+  // lista visible durante toda recarga (MAJOR B), dos `cargar()` pueden
+  // quedar en vuelo a la vez -- una acción dispara la siguiente antes de
+  // que la anterior responda. Si la primera (más vieja, más lenta)
+  // responde DESPUÉS de la segunda (más nueva, más rápida), no puede pisar
+  // el estado que la segunda ya aplicó: un hecho recién caducado no puede
+  // reaparecer sólo porque la respuesta vieja llegó tarde.
+  it('una recarga vieja que llega tarde no pisa el estado de una recarga mas nueva', async () => {
+    let llamadasGrupos = 0
+    let resolverRecargaLenta
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') {
+        llamadasGrupos += 1
+        if (llamadasGrupos === 1) return Promise.resolve({ data: GRUPOS_CARRERA_VIEJO })
+        // recarga #1 (tras aprobar 510): queda colgada, trae el estado de
+        // ANTES de caducar 520.
+        if (llamadasGrupos === 2) return new Promise((resolve) => { resolverRecargaLenta = resolve })
+        // recarga #2 (tras caducar 520): rápida, trae el estado real.
+        return Promise.resolve({ data: GRUPOS_CARRERA_NUEVO })
+      }
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) return Promise.resolve({ data: { hechos: [], total: 0 } })
+        if (params.verificado === false && params.limite === 1) return Promise.resolve({ data: { hechos: [], total: 3 } })
+        return Promise.resolve({ data: HECHOS_CARRERA })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockResolvedValue({ data: { aprobados: 1, ok: true } })
+    renderMemoria()
+    await screen.findByTestId('grupo-2')
+
+    // aprobar 510 -> dispara la recarga #1 (queda colgada).
+    fireEvent.click(within(screen.getByTestId('hecho-510')).getByRole('button', { name: es.memoria.aprobar }))
+    await waitFor(() => expect(llamadasGrupos).toBe(2))
+
+    // la lista sigue visible (MAJOR B) -> caducar 520 dispara la recarga #2.
+    fireEvent.click(within(screen.getByTestId('hecho-520')).getByRole('button', { name: es.memoria.caducar }))
+    const confirmacion = await screen.findByRole('dialog')
+    fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
+    fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.caducarConfirmar }))
+    await waitFor(() => expect(llamadasGrupos).toBe(3))
+    await waitFor(() => expect(screen.queryByTestId('grupo-2')).not.toBeInTheDocument())
+
+    // llega tarde la recarga #1, con el estado VIEJO (el grupo C todavía
+    // ahí, porque esa respuesta se armó antes de caducar 520).
+    resolverRecargaLenta({ data: GRUPOS_CARRERA_VIEJO })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // no puede resucitar un grupo que la recarga más nueva ya sacó de pantalla.
+    expect(screen.queryByTestId('grupo-2')).not.toBeInTheDocument()
+    // ni dejar "Actualizando…" prendido para siempre (la respuesta vieja
+    // tampoco puede apagarlo tarde si la nueva ya lo había apagado).
+    await waitFor(() => expect(screen.queryByText(es.memoria.actualizando)).not.toBeInTheDocument())
+  })
+
+  // m1 (cierre jax-platform#146, ronda 6): la carrera de arriba sólo cubre
+  // el camino "la vieja llega DESPUÉS de que la nueva ya terminó" -- deja
+  // sin ejercitar los dos frenos que actúan mientras la nueva TODAVÍA sigue
+  // en vuelo (el `if (peticionRef.current === miPeticion)` del `finally` y
+  // del `catch` en Memoria.jsx::cargar()). Escenarios B y C del revisor
+  // (`Carrera6.audit.test.jsx`, ronda 6), traídos a este arnés con las
+  // mismas fixtures de la carrera de arriba.
+  it('una recarga vieja que resuelve mientras la mas nueva sigue en vuelo no apaga Actualizando', async () => {
+    let llamadasGrupos = 0
+    let resolverSegunda
+    let resolverTercera
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') {
+        llamadasGrupos += 1
+        if (llamadasGrupos === 1) return Promise.resolve({ data: GRUPOS_CARRERA_VIEJO })
+        // recarga #1 (tras aprobar 510) y recarga #2 (tras caducar 520):
+        // las DOS quedan colgadas -- a diferencia del test de arriba, acá
+        // ninguna terminó todavía cuando empieza a resolverse la primera.
+        if (llamadasGrupos === 2) return new Promise((resolve) => { resolverSegunda = resolve })
+        return new Promise((resolve) => { resolverTercera = resolve })
+      }
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) return Promise.resolve({ data: { hechos: [], total: 0 } })
+        if (params.verificado === false && params.limite === 1) return Promise.resolve({ data: { hechos: [], total: 3 } })
+        return Promise.resolve({ data: HECHOS_CARRERA })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockResolvedValue({ data: { aprobados: 1, ok: true } })
+    renderMemoria()
+    await screen.findByTestId('grupo-2')
+
+    fireEvent.click(within(screen.getByTestId('hecho-510')).getByRole('button', { name: es.memoria.aprobar }))
+    await waitFor(() => expect(llamadasGrupos).toBe(2))
+
+    fireEvent.click(within(screen.getByTestId('hecho-520')).getByRole('button', { name: es.memoria.caducar }))
+    const confirmacion = await screen.findByRole('dialog')
+    fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
+    fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.caducarConfirmar }))
+    await waitFor(() => expect(llamadasGrupos).toBe(3))
+    expect(screen.getByText(es.memoria.actualizando)).toBeInTheDocument()
+
+    // llega la vieja (recarga #1) PRIMERO -- la #2 (la más nueva) sigue en
+    // vuelo. El freno del `finally` tiene que impedir que esta respuesta
+    // vieja apague "Actualizando…".
+    resolverSegunda({ data: GRUPOS_CARRERA_VIEJO })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(screen.getByText(es.memoria.actualizando)).toBeInTheDocument()
+
+    // recién cuando responde la más nueva se apaga.
+    resolverTercera({ data: GRUPOS_CARRERA_NUEVO })
+    await waitFor(() => expect(screen.queryByText(es.memoria.actualizando)).not.toBeInTheDocument())
+    expect(screen.queryByTestId('grupo-2')).not.toBeInTheDocument()
+  })
+
+  it('una recarga vieja que falla tarde, tras una mas nueva ya OK, no muestra error de carga', async () => {
+    let llamadasGrupos = 0
+    let rechazarSegunda
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') {
+        llamadasGrupos += 1
+        if (llamadasGrupos === 1) return Promise.resolve({ data: GRUPOS_CARRERA_VIEJO })
+        // recarga #1 (tras aprobar 510): queda colgada, y luego FALLA.
+        if (llamadasGrupos === 2) return new Promise((_resolve, reject) => { rechazarSegunda = reject })
+        // recarga #2 (tras caducar 520): responde OK enseguida.
+        return Promise.resolve({ data: GRUPOS_CARRERA_NUEVO })
+      }
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) return Promise.resolve({ data: { hechos: [], total: 0 } })
+        if (params.verificado === false && params.limite === 1) return Promise.resolve({ data: { hechos: [], total: 3 } })
+        return Promise.resolve({ data: HECHOS_CARRERA })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockResolvedValue({ data: { aprobados: 1, ok: true } })
+    renderMemoria()
+    await screen.findByTestId('grupo-2')
+
+    fireEvent.click(within(screen.getByTestId('hecho-510')).getByRole('button', { name: es.memoria.aprobar }))
+    await waitFor(() => expect(llamadasGrupos).toBe(2))
+
+    fireEvent.click(within(screen.getByTestId('hecho-520')).getByRole('button', { name: es.memoria.caducar }))
+    const confirmacion = await screen.findByRole('dialog')
+    fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
+    fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.caducarConfirmar }))
+    await waitFor(() => expect(llamadasGrupos).toBe(3))
+    // la más nueva ya terminó bien.
+    await waitFor(() => expect(screen.queryByText(es.memoria.actualizando)).not.toBeInTheDocument())
+    expect(screen.queryByTestId('grupo-2')).not.toBeInTheDocument()
+
+    // recién ahora falla la vieja -- el freno del `catch` tiene que evitar
+    // que un error tardío de una llamada ya superada se muestre.
+    rechazarSegunda(new Error('red'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(screen.queryByText(es.memoria.errorCarga)).not.toBeInTheDocument()
+    expect(screen.getByTestId('grupo-0')).toBeInTheDocument()
   })
 
   it('un error al aprobar se avisa por toast, con el codigo traducido', async () => {
@@ -263,14 +684,36 @@ describe('Memoria', () => {
     fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
     fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.corregirConfirmarBoton }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/201/corregir', { texto: 'texto corregido de prueba' }))
+    // SOSPECHA: esperar la recarga que dispara `confirmarCorreccion()`.
+    await esperarRecargaCompleta()
   })
 
-  it('caducar, confirmado, llama al endpoint con una fecha (no null) y no borra la ficha', async () => {
-    servirGet(
-      { grupos: [{ tema: HECHO_201.texto, hechos: [201], sin_verificar: 0, casi_duplicados: [] }] },
-      { hechos: [HECHO_201], total: 1 },
-    )
-    api.post.mockResolvedValue({ data: { ok: true } })
+  it('caducar, confirmado, llama al endpoint con una fecha (no null) y recarga /grupos', async () => {
+    // M2 (revisión adversarial de jax-platform PR 146, tercera vuelta):
+    // ahora que caducar recarga, el hecho SALE del grupo (GET /grupos
+    // excluye vencidos, backend/api/admin/memoria.py::SQL_ACTIVOS_CON_
+    // VECTOR) y pasa a la sección Vencidos -- el mock refleja ese cambio de
+    // estado real en la SEGUNDA vuelta de cada endpoint, no la primera.
+    let caducado = false
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') {
+        return Promise.resolve({
+          data: { grupos: caducado ? [] : [{ tema: HECHO_201.texto, hechos: [201], sin_verificar: 0, casi_duplicados: [] }] },
+        })
+      }
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) {
+          return Promise.resolve({ data: { hechos: [{ ...HECHO_201, vencido: caducado }], total: 1 } })
+        }
+        return Promise.resolve({ data: caducado ? { hechos: [], total: 0 } : { hechos: [HECHO_201], total: 1 } })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockImplementation((url) => {
+      if (url === '/admin/memoria/hechos/201/caducar') { caducado = true; return Promise.resolve({ data: { ok: true } }) }
+      return Promise.reject(new Error(`post no mockeado: ${url}`))
+    })
     renderMemoria()
     const ficha = await screen.findByTestId('hecho-201')
     fireEvent.click(within(ficha).getByRole('button', { name: es.memoria.caducar }))
@@ -281,8 +724,22 @@ describe('Memoria', () => {
       '/admin/memoria/hechos/201/caducar',
       expect.objectContaining({ vence_at: expect.any(String) }),
     ))
-    expect(await screen.findByTestId('hecho-201')).toBeInTheDocument()
-    expect(await screen.findByText(es.memoria.vencido)).toBeInTheDocument()
+    // MINOR 6 (revisión adversarial de jax-platform PR 146, ronda 4): antes
+    // del arreglo de MAJOR B, esta aserción podía pasar por la razón
+    // EQUIVOCADA -- `cargando` ocultaba TODA la lista durante cualquier
+    // recarga (incluida ésta), así que "grupo-0 no está" podía ser cierto
+    // por estar en la pantalla de "Cargando…" y no porque el dato real ya
+    // hubiera cambiado. Con el arreglo (la recarga usa `recargando`, que NO
+    // oculta la lista -- ver Memoria.jsx), la única forma de que grupo-0
+    // deje de estar es que el dato real (sin el hecho, ya vencido) haya
+    // llegado de verdad.
+    //
+    // El grupo (con el único hecho ahora vencido) desaparece de la lista de
+    // grupos activos tras la recarga...
+    await waitFor(() => expect(screen.queryByTestId('grupo-0')).not.toBeInTheDocument())
+    // ...y el hecho no se borró: sigue viéndose, en la sección Vencidos
+    // (SeccionVencidos.jsx, no la ficha de un grupo).
+    expect(await screen.findByTestId('vencido-201')).toBeInTheDocument()
   })
 
   // Ronda de arreglo jax-platform#147, hallazgo MINOR 6 (i18n): el backend
@@ -305,21 +762,78 @@ describe('Memoria', () => {
     expect(await screen.findByText(es.memoria.errores.vence_at_sin_zona)).toBeInTheDocument()
   })
 
-  it('fundir pide confirmacion en ventana propia y llama al endpoint de fusion, no a caducar', async () => {
+  it('fundir pide confirmacion en ventana propia y llama SOLO al endpoint de fusion', async () => {
     servirGet(GRUPOS_DOS_TEMAS, HECHOS_DOS_TEMAS)
-    api.post.mockResolvedValue({ data: { aprobados: 1, superados: 2 } })
+    api.post.mockResolvedValue({ data: { superados: 2 } })
     renderMemoria()
     const grupo = await screen.findByTestId('grupo-0')
     fireEvent.click(within(grupo).getByRole('button', { name: es.memoria.fundir }))
     const confirmacion = await screen.findByRole('dialog')
+    // Ninguno de los tres esta verificado (ver GRUPOS_DOS_TEMAS): el motivo
+    // es "el mas reciente", no "el verificado" -- y el mensaje se arma con
+    // el texto/verificado que trae el CLUSTER (D5), no con hechosPorId.
+    expect(confirmacion).toHaveTextContent(es.memoria.fundirMensaje(HECHO_139.texto, false))
     fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
     fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.fundirConfirmar }))
-    // grupo.hechos = [139, 138, 136] (creado_at DESC): 139 es el más reciente.
+    // grupo.hechos = [139, 138, 136] (creado_at DESC); superviviente_id=139
+    // viene del backend (GRUPOS_DOS_TEMAS), esta pantalla no lo recalcula.
     await waitFor(() => expect(api.post).toHaveBeenCalledWith(
       '/admin/memoria/hechos/fundir', { superviviente_id: 139, absorbidos: [138, 136] },
     ))
-    expect(api.post).not.toHaveBeenCalledWith(expect.stringMatching(/\/caducar$/), expect.anything())
+    // Una sola llamada (ronda 2026-09-22): ya no hay un /hechos/aprobar
+    // previo -- la ventana entre dos llamadas era justo lo que dejaba
+    // "fundir a medias" posible.
+    expect(api.post).toHaveBeenCalledTimes(1)
     expect(await screen.findByText(es.memoria.fundido)).toBeInTheDocument()
+    // SOSPECHA: esperar la recarga que dispara `confirmarFundir()`.
+    await esperarRecargaCompleta()
+  })
+
+  it('fundir muestra cual sobrevive y por que cuando el superviviente esta verificado', async () => {
+    // #138 esta verificado (aunque no sea el mas nuevo): el backend lo elige
+    // como superviviente (_elegir_superviviente) -- esta pantalla lo
+    // muestra, no lo recalcula ni asume "el primero de la lista".
+    //
+    // D5 (revision adversarial de jax-platform 146, MAYOR 3): el texto del
+    // cluster (`superviviente_texto`) es a proposito DISTINTO del texto de
+    // HECHO_138 en `hechosPorId` -- si Memoria.jsx armara el mensaje leyendo
+    // hechosPorId en vez del cluster, este test veria el texto VIEJO
+    // (HECHO_138.texto) y fallaria. Simula el caso real: un cluster puede
+    // traer un superviviente que el cap de 500 de GET /hechos dejo afuera.
+    const TEXTO_DEL_CLUSTER = 'JAX carece de capacidad nativa para consultas SQL. (via el cluster, no hechosPorId)'
+    const HECHO_138_VERIFICADO = { ...HECHO_138, verificado: true, verificado_por: 2, verificado_at: '2026-09-05T00:00:00' }
+    servirGet(
+      {
+        grupos: [{
+          tema: HECHO_139.texto, hechos: [139, 138, 136], sin_verificar: 2,
+          casi_duplicados: [{
+            ids: [136, 138, 139], superviviente_id: 138,
+            superviviente_verificado: true, superviviente_texto: TEXTO_DEL_CLUSTER,
+          }],
+        }],
+      },
+      { hechos: [HECHO_136, HECHO_138_VERIFICADO, HECHO_139], total: 3 },
+    )
+    api.post.mockResolvedValue({ data: { superados: 2 } })
+    renderMemoria()
+    const grupo = await screen.findByTestId('grupo-0')
+    // La ficha del superviviente lleva la marca "Sobrevive"; las otras dos, no.
+    const ficha138 = within(grupo).getByTestId('hecho-138')
+    expect(within(ficha138).getByText(es.memoria.sobrevive)).toBeInTheDocument()
+    const ficha139 = within(grupo).getByTestId('hecho-139')
+    expect(within(ficha139).queryByText(es.memoria.sobrevive)).not.toBeInTheDocument()
+
+    fireEvent.click(within(grupo).getByRole('button', { name: es.memoria.fundir }))
+    const confirmacion = await screen.findByRole('dialog')
+    expect(confirmacion).toHaveTextContent(es.memoria.fundirTitulo(138))
+    expect(confirmacion).toHaveTextContent(es.memoria.fundirMensaje(TEXTO_DEL_CLUSTER, true))
+    fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
+    fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.fundirConfirmar }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith(
+      '/admin/memoria/hechos/fundir', { superviviente_id: 138, absorbidos: [139, 136] },
+    ))
+    // SOSPECHA: esperar la recarga que dispara `confirmarFundir()`.
+    await esperarRecargaCompleta()
   })
 
   it('la seccion Vencidos no aparece cuando no hay hechos vencidos', async () => {
@@ -329,7 +843,7 @@ describe('Memoria', () => {
     expect(screen.queryByTestId(/^vencido-/)).not.toBeInTheDocument()
   })
 
-  it('la seccion Vencidos lista los hechos vencidos, cerrada por defecto, y deja quitarles la caducidad', async () => {
+  it('la seccion Vencidos lista los hechos vencidos, cerrada por defecto, deja quitarles la caducidad y recarga /grupos', async () => {
     servirGetConVencidos({ grupos: [] }, { hechos: [], total: 0 }, { hechos: [HECHO_VENCIDO], total: 1 })
     api.post.mockResolvedValue({ data: { ok: true } })
     renderMemoria()
@@ -337,6 +851,7 @@ describe('Memoria', () => {
     expect(within(fila).getByText(HECHO_VENCIDO.texto)).toBeInTheDocument()
     const detalle = fila.closest('details')
     expect(detalle).not.toHaveAttribute('open')
+    const llamadasAGruposAntes = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
     // Accesibilidad: varios "Quitar caducidad" en la lista se distinguen por
     // el hecho al que corresponden (aria-label), no sólo por el texto visible.
     fireEvent.click(within(fila).getByRole('button', { name: es.memoria.quitarCaducidadDe(301) }))
@@ -344,6 +859,12 @@ describe('Memoria', () => {
       '/admin/memoria/hechos/301/caducar', { vence_at: null },
     ))
     expect(await screen.findByText(es.memoria.caducidadQuitada)).toBeInTheDocument()
+    // M2: un hecho reactivado puede volver a aparecer en un grupo -- recarga
+    // /grupos, igual que aprobar/caducar/corregir/fundir.
+    await waitFor(() => {
+      const llamadas = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
+      expect(llamadas).toBe(llamadasAGruposAntes + 1)
+    })
   })
 
   // Defecto medido por Fernando en la base de carga (10.000 hechos, 8.000

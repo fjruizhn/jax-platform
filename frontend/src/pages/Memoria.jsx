@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '../i18n/index.jsx'
 import { useNombreDelSistema } from '../store/useApariencia'
 import { useJaxStore } from '../store/useJaxStore'
@@ -71,9 +71,16 @@ export default function Memoria() {
   const { t } = useI18n()
   const nombre = useNombreDelSistema(t)
   const addToast = useJaxStore((s) => s.addToast)
-  const usuario = useJaxStore((s) => s.user)
 
   const [cargando, setCargando] = useState(true)
+  // MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): la
+  // primera carga usa `cargando` (pantalla completa, sin nada que mostrar
+  // todavía) -- las recargas que siguen a una acción (aprobar/caducar/
+  // corregir/fundir, ver `cargar()` más abajo) usan `recargando`, que NO
+  // oculta la lista: Fernando no puede perder de vista lo que ya estaba
+  // revisando cada vez que aprueba un hecho suelto.
+  const [recargando, setRecargando] = useState(false)
+  const yaSeCargoAlgunaVez = useRef(false)
   const [error, setError] = useState(false)
   const [grupos, setGrupos] = useState([])
   const [hechosPorId, setHechosPorId] = useState({})
@@ -93,17 +100,42 @@ export default function Memoria() {
   const [totalSinVerificarReal, setTotalSinVerificarReal] = useState(0)
   const [vencidosTotalReal, setVencidosTotalReal] = useState(0)
   const [seleccionados, setSeleccionados] = useState(emptySet)
+  // MAJOR B: ids que YA estaban en pantalla en la carga anterior -- para
+  // que `cargar()` sepa distinguir "id nuevo, aplicale el default" de "id
+  // conocido, respetá lo que Fernando ya marcó/desmarcó a mano". `useRef`,
+  // no estado: se actualiza dentro del mismo ciclo de `cargar()`, no
+  // necesita disparar un render propio.
+  const idsConocidosRef = useRef(new Set())
   const [procesando, setProcesando] = useState(emptySet)
+  // MAJOR N1 (revisión adversarial de jax-platform PR 146, ronda 5): con la
+  // lista ya visible durante una recarga (MAJOR B, ronda 4), dos `cargar()`
+  // pueden quedar en vuelo a la vez -- una acción dispara la siguiente antes
+  // de que la anterior responda. Si la primera (más vieja) tarda más y
+  // llega DESPUÉS de la segunda, pisa el estado nuevo con uno vencido (un
+  // hecho que la segunda ya sacó de pantalla vuelve a aparecer). Cada
+  // llamada a `cargar()` se numera; sólo la respuesta de la ÚLTIMA llamada
+  // emitida se aplica (a los datos y al apagado de "Actualizando…") --
+  // mismo patrón que un AbortController, sin depender de que axios/el mock
+  // de test soporte `signal`.
+  const peticionRef = useRef(0)
 
   // Ventanas propias (Global Constraints: nunca los diálogos del navegador).
   // Sólo una a la vez, mismo patrón que AdminUsers/AdminSmtp.
   const [corrigiendo, setCorrigiendo] = useState(null) // { hecho, texto, err }
   const [confirmandoCorreccion, setConfirmandoCorreccion] = useState(null) // { hecho, texto }
   const [caducando, setCaducando] = useState(null) // hecho
-  const [fundiendo, setFundiendo] = useState(null) // ids[]
+  const [fundiendo, setFundiendo] = useState(null) // { ids, supervivienteId }
 
   const cargar = useCallback(async () => {
-    setCargando(true)
+    // MAJOR N1: esta llamada se numera -- si para cuando responde ya salió
+    // una más nueva, su resultado se descarta entero (ni pisa `grupos`/
+    // `hechosPorId`/etc, ni apaga "Actualizando…").
+    const miPeticion = ++peticionRef.current
+    // MAJOR B: sólo la PRIMERA carga usa la pantalla completa de "Cargando…"
+    // -- las recargas que siguen a una acción usan `recargando`, que la
+    // lista ignora al decidir si se pinta (ver el JSX más abajo).
+    if (yaSeCargoAlgunaVez.current) setRecargando(true)
+    else setCargando(true)
     setError(false)
     try {
       const [rGrupos, rHechos, rVencidos, rSinVerificarReal] = await Promise.all([
@@ -115,10 +147,19 @@ export default function Memoria() {
         // trabajo de más, no una cuenta más verdadera.
         api.get('/admin/memoria/hechos', { params: { verificado: false, limite: 1 } }),
       ])
+      // MAJOR N1: si otra llamada más nueva ya se emitió mientras ésta
+      // estaba en vuelo, esta respuesta es vieja -- no toca ningún estado.
+      if (peticionRef.current !== miPeticion) return
       const porId = {}
       for (const h of rHechos.data.hechos) porId[h.id] = h
       // No se preseleccionan los casi-duplicados: ver nota de módulo, punto 3.
-      const idsDeCluster = new Set(rGrupos.data.grupos.flatMap((g) => (g.casi_duplicados || []).flat()))
+      // Ronda 2026-09-22: cada cluster es {ids, superviviente_id} (antes,
+      // una lista de ids a secas) -- `.flat()` sobre objetos no aplanaba
+      // nada y esto dejaba de excluir a los casi-duplicados de la
+      // preselección. Hay que entrar por `.ids`.
+      const idsDeCluster = new Set(
+        rGrupos.data.grupos.flatMap((g) => (g.casi_duplicados || []).flatMap((c) => c.ids)),
+      )
       setGrupos(rGrupos.data.grupos)
       setHechosPorId(porId)
       // incluir_vencidos=true trae vencidos Y activos juntos (ver nota de
@@ -126,13 +167,43 @@ export default function Memoria() {
       setVencidos(rVencidos.data.hechos.filter((h) => h.vencido))
       setTotalSinVerificarReal(rSinVerificarReal.data.total)
       setVencidosTotalReal(Math.max(0, rVencidos.data.total - rHechos.data.total))
-      setSeleccionados(new Set(
-        rHechos.data.hechos.filter((h) => !h.verificado && !idsDeCluster.has(h.id)).map((h) => h.id),
-      ))
+      // MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): antes
+      // esta línea rearmaba `seleccionados` DESDE CERO en cada recarga --
+      // aprobar un hecho suelto (o cualquier otra acción, todas recargan
+      // desde M2) volvía a marcar hechos que Fernando ya había desmarcado a
+      // mano en OTRO grupo. Ahora: un id que ya estaba en pantalla en la
+      // carga anterior (`idsConocidosRef`) CONSERVA su estado (marcado o
+      // no, tal cual lo dejó Fernando); sólo un id NUEVO (nunca visto) recibe
+      // el default de siempre. Un id que desapareció simplemente no entra al
+      // nuevo Set -- sale solo.
+      const idsConocidosAntes = idsConocidosRef.current
+      const idsNuevos = new Set(rHechos.data.hechos.map((h) => h.id))
+      setSeleccionados((prev) => {
+        const siguiente = new Set()
+        for (const h of rHechos.data.hechos) {
+          if (idsConocidosAntes.has(h.id)) {
+            if (prev.has(h.id)) siguiente.add(h.id)
+          } else if (!h.verificado && !idsDeCluster.has(h.id)) {
+            siguiente.add(h.id)
+          }
+        }
+        return siguiente
+      })
+      idsConocidosRef.current = idsNuevos
     } catch {
-      setError(true)
+      // MAJOR N1: un error de una llamada vieja tampoco pisa el estado --
+      // si la última llamada en curso sigue viva, que sea ella la que
+      // decida si hubo error.
+      if (peticionRef.current === miPeticion) setError(true)
     } finally {
-      setCargando(false)
+      // MAJOR N1: sólo la última llamada apaga "Cargando…"/"Actualizando…"
+      // -- una vieja que responde tarde no puede reabrir esa pantalla ni
+      // apagar el aviso de una recarga más nueva que sigue en vuelo.
+      if (peticionRef.current === miPeticion) {
+        if (yaSeCargoAlgunaVez.current) setRecargando(false)
+        else setCargando(false)
+        yaSeCargoAlgunaVez.current = true
+      }
     }
   }, [])
 
@@ -144,10 +215,6 @@ export default function Memoria() {
       for (const id of ids) { if (ocupado) next.add(id); else next.delete(id) }
       return next
     })
-  }
-
-  function actualizarHecho(id, cambios) {
-    setHechosPorId((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], ...cambios } } : prev))
   }
 
   function onToggleSeleccion(id) {
@@ -171,15 +238,23 @@ export default function Memoria() {
   }
 
   // Aprobar: la única acción sin ventana propia (ver nota de módulo, punto 1).
+  //
+  // M2 (revisión adversarial de jax-platform PR 146, tercera vuelta): antes
+  // actualizaba `hechosPorId` a mano (optimista) y ahí se quedaba -- pero
+  // aprobar cambia `is_verified`, que es justo lo que decide quién sobrevive
+  // en un cluster (`_elegir_superviviente`, backend/api/admin/memoria.py).
+  // Sin recargar `/grupos`, la pantalla podía seguir mostrando como
+  // "sobrevive" a un hecho que la regla real ya no elegiría -- el mismo
+  // estado viejo en pantalla que fundir ya resolvía recargando. Ahora las
+  // cuatro acciones que cambian el estado de un hecho (aprobar, caducar,
+  // quitar caducidad, corregir) recargan igual que fundir.
   async function aprobar(ids) {
     if (!ids.length) return
     marcarProcesando(ids, true)
     try {
       const { data } = await api.post('/admin/memoria/hechos/aprobar', { ids })
-      const ahora = new Date().toISOString()
-      for (const id of ids) actualizarHecho(id, { verificado: true, verificado_por: usuario?.user_id ?? null, verificado_at: ahora })
-      onSeleccionarNinguno(ids)
       addToast({ type: 'success', message: t.memoria.aprobados(data.aprobados ?? ids.length) })
+      await cargar()
     } catch (err) {
       addToast({ type: 'error', message: mensajeDeError(t, err) })
     } finally {
@@ -198,9 +273,9 @@ export default function Memoria() {
     try {
       const vence_at = new Date().toISOString()
       await api.post(`/admin/memoria/hechos/${hecho.id}/caducar`, { vence_at })
-      actualizarHecho(hecho.id, { vencido: true, vence_at })
       setCaducando(null)
       addToast({ type: 'success', message: t.memoria.caducado })
+      await cargar() // M2: un hecho caducado sale de todos los grupos -- ver nota de módulo.
     } catch (err) {
       addToast({ type: 'error', message: mensajeDeError(t, err) })
     } finally {
@@ -214,9 +289,8 @@ export default function Memoria() {
     marcarProcesando([id], true)
     try {
       await api.post(`/admin/memoria/hechos/${id}/caducar`, { vence_at: null })
-      actualizarHecho(id, { vencido: false, vence_at: null })
-      setVencidos((prev) => prev.filter((h) => h.id !== id))
       addToast({ type: 'success', message: t.memoria.caducidadQuitada })
+      await cargar() // M2: un hecho reactivado puede volver a aparecer en un grupo -- ver nota de módulo.
     } catch (err) {
       addToast({ type: 'error', message: mensajeDeError(t, err) })
     } finally {
@@ -254,23 +328,37 @@ export default function Memoria() {
     }
   }
 
-  // Fundir (casi-duplicados, spec §2.1: "un botón para fundirlos"): aprueba
-  // el más reciente del cluster y SUPERA el resto (POST /hechos/fundir --
-  // ver nota de módulo). Sigue siendo destructivo (cambia el estado de
-  // varios hechos a la vez, sin vuelta atrás desde acá) -> ConfirmacionSuma.
-  function abrirFundir(ids) {
-    setFundiendo(ids)
+  // Fundir (casi-duplicados, spec §2.1: "un botón para fundirlos"): supera
+  // el resto del cluster con el superviviente que YA ELIGIÓ el backend
+  // (POST /grupos::casi_duplicados[].superviviente_id -- ver nota de módulo
+  // y GrupoDeHechos.jsx). Ronda 2026-09-22 (hallazgo de Fernando): el
+  // superviviente ya NO es "el más reciente" a secas -- si hay un
+  // verificado en el cluster, ese gana, aunque sea más viejo; adivinarlo acá
+  // duplicaría una regla que ya vive en el backend
+  // (_elegir_superviviente). Por eso esta pantalla recibe el id elegido, no
+  // lo calcula. Una sola llamada: `/hechos/fundir` aprueba al superviviente
+  // (si hacía falta) y funde en la MISMA transacción -- ya no hay una
+  // llamada aparte a `/hechos/aprobar` antes (esa ventana entre las dos
+  // llamadas era justo lo que dejaba "fundir a medias" posible).
+  //
+  // Ronda 146 (D5): `supervivienteVerificado`/`supervivienteTexto` vienen
+  // del cluster (GrupoDeHechos.jsx), NO de `hechosPorId` -- ese diccionario
+  // sólo tiene los primeros 500 hechos que cargó GET /hechos, y un cluster
+  // puede incluir ids que ese cap dejó afuera. El motivo del mensaje
+  // (verificado vs. más reciente) y el texto de la ficha salen de ESTOS dos
+  // campos, no de una búsqueda en `hechosPorId` que podría fallar en
+  // silencio.
+  function abrirFundir(ids, supervivienteId, supervivienteVerificado, supervivienteTexto) {
+    setFundiendo({ ids, supervivienteId, supervivienteVerificado, supervivienteTexto })
   }
 
   async function confirmarFundir() {
-    // item.ids viene ordenado created_at DESC (GrupoDeHechos.jsx): el
-    // primero es el más reciente.
-    const [masReciente, ...resto] = fundiendo
-    marcarProcesando(fundiendo, true)
+    const { ids, supervivienteId } = fundiendo
+    const absorbidos = ids.filter((id) => id !== supervivienteId)
+    marcarProcesando(ids, true)
     try {
-      await api.post('/admin/memoria/hechos/aprobar', { ids: [masReciente] })
       await api.post('/admin/memoria/hechos/fundir', {
-        superviviente_id: masReciente, absorbidos: resto,
+        superviviente_id: supervivienteId, absorbidos,
       })
       setFundiendo(null)
       addToast({ type: 'success', message: t.memoria.fundido })
@@ -278,7 +366,7 @@ export default function Memoria() {
     } catch (err) {
       addToast({ type: 'error', message: mensajeDeError(t, err) })
     } finally {
-      marcarProcesando(fundiendo, false)
+      marcarProcesando(ids, false)
     }
   }
 
@@ -304,6 +392,13 @@ export default function Memoria() {
               ? t.memoria.totalSinVerificar(totalSinVerificarReal)
               : t.memoria.totalSinVerificarSubconjunto(totalSinVerificarCargados, totalSinVerificarReal)}
           </p>
+        )}
+
+        {/* MAJOR B: aviso chico, NO bloqueante -- la lista sigue debajo,
+            tal como estaba, mientras la recarga posterior a una acción
+            todavía está en vuelo. */}
+        {!cargando && recargando && (
+          <p role="status" className="text-xs text-texto-tenue">{t.memoria.actualizando}</p>
         )}
 
         {cargando && <p className="text-sm text-texto-tenue">{t.memoria.cargando}</p>}
@@ -395,8 +490,17 @@ export default function Memoria() {
 
       {fundiendo && (
         <ConfirmacionSuma
-          titulo={t.memoria.fundirTitulo}
-          mensaje={t.memoria.fundirMensaje}
+          titulo={t.memoria.fundirTitulo(fundiendo.supervivienteId)}
+          // M3 (revisión adversarial de jax-platform PR 146, tercera
+          // vuelta): "la confirmación... cuenta TODOS los item.ids" -- si
+          // algún miembro del cluster no está en `hechosPorId` (el cap de
+          // 500 de GET /hechos lo dejó afuera), se lo dice explícito acá
+          // también, no sólo en el aviso del panel (GrupoDeHechos.jsx).
+          mensaje={t.memoria.fundirMensaje(fundiendo.supervivienteTexto, fundiendo.supervivienteVerificado)
+            + (() => {
+              const noCargados = fundiendo.ids.filter((id) => !hechosPorId[id]).length
+              return noCargados > 0 ? ` ${t.memoria.casiDuplicadosNoCargados(noCargados)}` : ''
+            })()}
           textoConfirmar={t.memoria.fundirConfirmar}
           onConfirmar={confirmarFundir}
           onCancelar={() => setFundiendo(null)}

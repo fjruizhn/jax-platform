@@ -44,11 +44,14 @@ suite entera, no con el archivo suelto). Por eso acá se fija el mismo
 """
 import asyncio
 import json
+import logging
 import math
 import sys
+from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from typing import Optional
 
+import aiomysql
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -73,6 +76,8 @@ from jax.memory.db import _nonzero_embedding_sql as _embedding_no_cero_sql  # no
 from jax.memory.embedding_config import CONFIG as _EMBED_CFG  # noqa: E402
 
 router = APIRouter(prefix="/api/admin/memoria")
+
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------
 # Listado
@@ -191,24 +196,78 @@ class AprobarBody(BaseModel):
 
 @router.post("/hechos/aprobar")
 async def aprobar_hechos(body: AprobarBody, user: AuthUser = Depends(require_superadmin)):
-    if not body.ids:
+    """MAJOR N2 (revision adversarial de jax-platform PR 146, ronda 5):
+    `MemoryDB.verify_fact` (jax/memory/db.py) no mira `superseded_by` ni
+    `expires_at` -- desde una pantalla de Memoria vieja (otra pestaña, u
+    otro superadmin que no recargo) se podia aprobar un hecho ya vencido o
+    ya superado por otro. El repo jax no se toca (fuera de alcance de esta
+    ronda): el chequeo vive ACA, antes de escribir nada.
+
+    Mismo patron que `fundir_hechos` (y `corregir_hecho`): se abandona
+    `MemoryDB.verify_fact` (que abre y confirma SU PROPIA conexion, un pool
+    DISTINTO al de `db/transaccion.py` -- componerlo con el `FOR UPDATE` de
+    aca adentro autodeadlockearia la misma request) por el mismo par
+    lectura-con-bloqueo + escritura, sobre UN SOLO cursor, dentro de UNA
+    transaccion: se leen TODOS los ids del lote con `FOR UPDATE` primero: si
+    alguno esta vencido o superado, 409 (`hecho_vencido`/`hecho_superado`) y
+    NADA se escribe -- todo o nada, ningun UPDATE parcial. `_aprobar_en_cursor`
+    ya existia (lo usa `fundir_hechos` para el superviviente sin verificar);
+    ahora tambien lo usa el lote entero de este endpoint.
+
+    m8 (cierre jax-platform#146, ronda 6, SEGURIDAD): abandonar
+    `MemoryDB.verify_fact` tambien tiro el contrato de tres estados que
+    traia (None = "la base no respondio", M1 auditoria adversarial
+    2026-09-20) -- con la base caida, `transaccion()` (sobre
+    `db.connection.get_pool()`) levanta una excepcion de conexion SIN
+    GUARDA, y FastAPI la convertia en un 500 generico. Se restituye el 503
+    `memoria_no_disponible` atrapando SOLO el fallo de conectar/adquirir
+    (`stack.enter_async_context`, la parte de `transaccion()` ANTES del
+    primer `yield`) -- nunca lo que pase DENTRO de la transaccion: un
+    404/409 real, o cualquier otro error de verdad, se siguen propagando
+    tal cual, sin que este `except` los trague."""
+    # Sin duplicados, mismo patron que `fundir_hechos` (absorbidos=[7,7,8]).
+    ids = list(dict.fromkeys(body.ids))
+    if not ids:
         return {"aprobados": 0}
-    memoria = await _memoria_conectada()
     autor = int(user.user_id)
-    aprobados = 0
-    for fact_id in body.ids:
-        ok = await memoria.verify_fact(fact_id, autor)
-        # M1 (auditoria adversarial 2026-09-20): verify_fact devuelve None
-        # cuando la base no respondio (contrato de tres estados, jax/memory/
-        # db.py), no cuando el id no existe. Antes esto sumaba 0 en silencio
-        # y el lote terminaba en 200 {"aprobados": N} de MENOS, sin que el
-        # superadmin tuviera forma de saber que el resto del lote NUNCA se
-        # intento -- fail-closed: se corta el lote y se avisa.
-        if ok is None:
-            raise HTTPException(status_code=503, detail="memoria_no_disponible")
-        if ok:
-            aprobados += 1
-    return {"aprobados": aprobados}
+
+    async with AsyncExitStack() as pila:
+        try:
+            cur = await pila.enter_async_context(transaccion(AISLAMIENTO_ADMIN))
+        except (OSError, aiomysql.Error) as exc:
+            raise HTTPException(status_code=503, detail="memoria_no_disponible") from exc
+
+        marcadores = ", ".join(["%s"] * len(ids))
+        await cur.execute(
+            f"SELECT id, superseded_by, expires_at FROM facts "
+            f"WHERE id IN ({marcadores}) FOR UPDATE",
+            ids,
+        )
+        filas = await cur.fetchall()
+        superados_de = {fid: superseded_by for fid, superseded_by, _ in filas}
+        vencidos = {fid: expires_at for fid, _, expires_at in filas}
+
+        if any(i not in superados_de for i in ids):
+            raise HTTPException(status_code=404, detail="hecho_no_encontrado")
+
+        # Todo o nada: esta comprobacion corre para TODOS los ids del lote
+        # ANTES de escribir el primer UPDATE -- un solo hecho ya superado
+        # basta para que NINGUNO se apruebe.
+        if any(superados_de[i] is not None for i in ids):
+            raise HTTPException(status_code=409, detail="hecho_superado")
+
+        # `NOW()` se evalua en la MISMA transaccion que ya trajo la fila con
+        # FOR UPDATE -- no hay ventana entre leer y decidir (mismo patron
+        # que MAJOR 2 de `fundir_hechos`, ronda 3).
+        await cur.execute("SELECT NOW()")
+        (ahora,) = await cur.fetchone()
+        if any(vencidos[i] is not None and vencidos[i] <= ahora for i in ids):
+            raise HTTPException(status_code=409, detail="hecho_vencido")
+
+        for fact_id in ids:
+            await _aprobar_en_cursor(cur, autor, fact_id)
+
+    return {"aprobados": len(ids)}
 
 
 class CorregirBody(BaseModel):
@@ -218,6 +277,14 @@ class CorregirBody(BaseModel):
 @router.post("/hechos/{fact_id}/corregir")
 async def corregir_hecho(fact_id: int, body: CorregirBody,
                          user: AuthUser = Depends(require_superadmin)):
+    """Punto 6 (cierre jax-platform#146, ronda 7, pre-existente -- mismo
+    defecto que tenian `aprobar_hechos`/`fundir_hechos` antes de m8/m8-b):
+    con la base caida, `transaccion()` (sobre `db.connection.get_pool()`)
+    levanta una excepcion de conexion SIN GUARDA -- 500 generico en vez de
+    503 `memoria_no_disponible`. Mismo `AsyncExitStack` que m8: atrapa SOLO
+    el fallo de conectar/adquirir (antes del primer `yield` de
+    `transaccion()`), nunca lo que pase DENTRO de la transaccion ya
+    abierta."""
     texto = body.texto.strip()
     if not texto:
         raise HTTPException(status_code=400, detail="texto_vacio")
@@ -230,7 +297,12 @@ async def corregir_hecho(fact_id: int, body: CorregirBody,
     embedding = await memoria.get_embedding(texto)
     autor = int(user.user_id)
 
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+    async with AsyncExitStack() as pila:
+        try:
+            cur = await pila.enter_async_context(transaccion(AISLAMIENTO_ADMIN))
+        except (OSError, aiomysql.Error) as exc:
+            raise HTTPException(status_code=503, detail="memoria_no_disponible") from exc
+
         await cur.execute(
             "SELECT fact_type, confidence, user_id, project_id, importance, "
             "superseded_by FROM facts WHERE id = %s FOR UPDATE",
@@ -275,6 +347,29 @@ class FundirBody(BaseModel):
     absorbidos: list[int]
 
 
+async def _aprobar_en_cursor(cur, autor: int, fact_id: int) -> None:
+    """Mismo SQL que `MemoryDB.verify_fact` (jax/memory/db.py), sobre ESTE
+    cursor -- ver el docstring de `fundir_hechos` para el porque de no
+    componer el metodo (pool/conexion distintos, jax-platform#107)."""
+    await cur.execute(
+        "UPDATE facts SET is_verified = TRUE, verified_at = NOW(), "
+        "verified_by = %s WHERE id = %s",
+        (autor, fact_id),
+    )
+
+
+async def _superar_en_cursor(cur, autor: int, absorbido_id: int, superviviente_id: int) -> None:
+    """Mismo SQL que `MemoryDB.supersede_fact`, sobre ESTE cursor. Funcion
+    propia (no una linea inline en el bucle de `fundir_hechos`) para que un
+    test pueda monkeypatchear UN absorbido y demostrar la atomicidad de la
+    transaccion completa (ronda 2026-09-22, test_memoria_fundir.py)."""
+    await cur.execute(
+        "UPDATE facts SET superseded_by = %s, superseded_at = NOW(), "
+        "superseded_by_user = %s WHERE id = %s",
+        (superviviente_id, autor, absorbido_id),
+    )
+
+
 @router.post("/hechos/fundir")
 async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_superadmin)):
     """Fundir casi-duplicados es SUPERSEDER, no caducar (decision de
@@ -298,7 +393,78 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
     evitar. Por eso van los UPDATE a mano, con el MISMO SQL que
     `supersede_fact` ejecuta, sobre el MISMO cursor, dentro de la MISMA
     transaccion con `FOR UPDATE` (mismo patron que `corregir_hecho`).
-    """
+
+    Ronda 2026-09-22 (hallazgo de Fernando): "fundir en el mas reciente"
+    podia aprobar una SINTESIS (con partes inventadas por el sintetizador) y
+    con eso SUPERAR a un hecho YA verificado. Si el superviviente todavia no
+    estaba verificado, se aprueba EN esta misma transaccion -- mismo efecto
+    que `/hechos/aprobar`, sin la segunda llamada HTTP que el frontend hacia
+    antes (dos llamadas separadas dejaban una ventana real: si la segunda
+    fallaba, el hecho quedaba aprobado sin fundir).
+
+    Ronda 146 (revision adversarial de jax-platform PR 146, D1/D3, decision de
+    Fernando): el endpoint EXIGE la regla, no solo la propone -- antes un
+    cliente (a mano, o un bug del frontend) podia mandar CUALQUIER
+    `superviviente_id`, y lo unico que se validaba era que no hubiera
+    verificados perdiendo su verificacion. Ahora:
+      - el lote entero (superviviente + absorbidos) tiene que ser
+        compatible PAR A PAR -- mismo `source_facet` (sintesis con sintesis,
+        no-sintesis con no-sintesis) y sin citas cruzadas en
+        `source_fact_ids` -- o 409. Mismo criterio que usa el detector
+        (`_compatibles_para_fundir`, D1): la API no permite a mano lo que el
+        detector ya no propone. MINOR 3 (ronda 4): el codigo de error dice
+        el motivo real -- `fundir_sintesis_con_no_sintesis` sólo si el par
+        es de TIPO cruzado; `fundir_hechos_relacionados_por_cita` (nuevo,
+        `_razon_incompatible_para_fundir`) si el par es del MISMO tipo pero
+        uno cita al otro (directa o transitivamente) -- antes salia
+        SIEMPRE el primero, un mensaje falso cuando el motivo era la cita.
+      - el `superviviente_id` tiene que ser EXACTAMENTE el que calcula
+        `_elegir_superviviente` sobre ese mismo lote (el verificado mas
+        reciente; sin ninguno verificado, el mas reciente a secas; empate
+        de fecha lo desempata el id mayor -- D4), o 409
+        `superviviente_no_es_el_de_la_regla`. Esto DEJA REDUNDANTE al viejo
+        409 `superviviente_no_verificado` de la ronda anterior: si el lote
+        tiene algun verificado, `_elegir_superviviente` SIEMPRE elige uno
+        verificado, asi que un `superviviente_id` sin verificar que coincida
+        con la regla implica que NINGUN miembro del lote esta verificado --
+        el viejo codigo de error ya no es alcanzable, y se elimino (no se
+        dejo como código muerto).
+
+    Tercera vuelta (revision adversarial de jax-platform PR 146): dos
+    hallazgos mas.
+      - MAJOR 1: la compatibilidad de citas ahora usa el CIERRE TRANSITIVO
+        del grafo completo de `source_fact_ids` (`_cierre_transitivo_de_
+        citas`), el MISMO que usa el detector -- no solo la cita directa de
+        CADA fila del lote. Una cita indirecta (A cita a B, B cita a C) deja
+        a A y C incompatibles igual, aunque nunca se hayan citado
+        directamente.
+      - MAJOR 2: un hecho vencido (`expires_at` en el pasado) no puede
+        fundirse -- ni como superviviente ni como absorbido -- 409
+        `hecho_vencido`.
+
+    MAJOR A.5 (revision adversarial de jax-platform PR 146, ronda 5): el
+    cierre de citas (`_cargar_citas_directas`/`_cierre_transitivo_de_citas`)
+    se calcula ANTES de tomar el `FOR UPDATE` del lote, no adentro -- las
+    citas viven en `source_fact_ids`, una columna que fundir NUNCA escribe
+    (fundir toca `superseded_by`/`is_verified`), asi que no hace falta
+    leerlas bajo el mismo candado que protege al lote. El unico riesgo
+    teorico es una sintesis nueva, citando a un miembro del lote, creada en
+    la ventana entre este SELECT y el FOR UPDATE de abajo -- pero esa
+    sintesis nueva no es ELLA MISMA parte de este lote (no esta en `ids`),
+    asi que no puede cambiar el veredicto de compatibilidad de ESTE lote
+    (compara ids[i] contra ids[j], nunca contra un id de afuera). Calcularlo
+    antes tambien acorta la ventana real en la que el lote queda bloqueado:
+    el full scan de `SQL_CITAS` (sin indice sobre `source_fact_ids`, MAJOR A)
+    es el costo mayor de este endpoint.
+
+    m8-b (cierre jax-platform#146, ronda 6, SEGURIDAD -- hallazgo reportado
+    tras m8): mismo defecto que tenia `aprobar_hechos` antes de m8 -- con la
+    base caida, `transaccion()` (sobre `db.connection.get_pool()`) levanta
+    una excepcion de conexion SIN GUARDA, 500 generico en vez de 503
+    `memoria_no_disponible`. Mismo arreglo: `AsyncExitStack` para atrapar
+    SOLO el fallo de conectar/adquirir (antes del primer `yield` de
+    `transaccion()`), nunca lo que pase DENTRO de la transaccion ya
+    abierta."""
     # Sin duplicados, mismo orden de llegada: absorbidos=[7, 7, 8] funde una
     # sola vez al 7.
     absorbidos = list(dict.fromkeys(body.absorbidos))
@@ -311,29 +477,94 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
     autor = int(user.user_id)
     ids = [body.superviviente_id, *absorbidos]
 
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+    async with AsyncExitStack() as pila:
+        try:
+            cur = await pila.enter_async_context(transaccion(AISLAMIENTO_ADMIN))
+        except (OSError, aiomysql.Error) as exc:
+            raise HTTPException(status_code=503, detail="memoria_no_disponible") from exc
+
+        # MAJOR A.5: el cierre de citas corre PRIMERO, antes del SELECT ...
+        # FOR UPDATE de mas abajo -- ver el porque en el docstring de esta
+        # funcion. Mismo cursor, misma transaccion (no abre una segunda
+        # conexion), pero SIN bloquear ninguna fila todavia.
+        citas_directas = await _cargar_citas_directas(cur)
+        cierre_citas = _cierre_transitivo_de_citas(citas_directas)
+
         marcadores = ", ".join(["%s"] * len(ids))
         await cur.execute(
-            f"SELECT id, superseded_by FROM facts WHERE id IN ({marcadores}) FOR UPDATE",
+            f"SELECT id, superseded_by, is_verified, created_at, source_facet, "
+            f"expires_at FROM facts WHERE id IN ({marcadores}) FOR UPDATE",
             ids,
         )
-        estado = {fila[0]: fila[1] for fila in await cur.fetchall()}
-        if any(i not in estado for i in ids):
+        filas = await cur.fetchall()
+        superados_de = {}
+        info = {}
+        facet_por_id = {}
+        vencidos = {}
+        for fid, superseded_by, is_verified, created_at, source_facet, expires_at in filas:
+            superados_de[fid] = superseded_by
+            info[fid] = (bool(is_verified), created_at)
+            facet_por_id[fid] = source_facet
+            vencidos[fid] = expires_at
+
+        if any(i not in superados_de for i in ids):
             raise HTTPException(status_code=404, detail="hecho_no_encontrado")
         # Encadenar sobre una cadena rota confunde la historia: ni el
         # superviviente ni ningun absorbido pueden estar ya superados. Todo o
         # nada: esta comprobacion corre para TODOS los ids ANTES de escribir
         # el primer UPDATE, así que un solo hecho ya superado en el lote
         # basta para que NINGUNO cambie.
-        if any(estado[i] is not None for i in ids):
+        if any(superados_de[i] is not None for i in ids):
             raise HTTPException(status_code=409, detail="hecho_ya_superado")
 
-        for absorbido_id in absorbidos:
-            await cur.execute(
-                "UPDATE facts SET superseded_by = %s, superseded_at = NOW(), "
-                "superseded_by_user = %s WHERE id = %s",
-                (body.superviviente_id, autor, absorbido_id),
+        # MAJOR 2 (revision adversarial de jax-platform PR 146, tercera
+        # vuelta): un hecho vencido no puede fundirse -- ni como
+        # superviviente (resucitaria un hecho que dejo de pesar en la
+        # busqueda, sin pasar por /caducar de vuelta) ni como absorbido
+        # (perderia su propia fecha de vencimiento en silencio, fundida en
+        # otro que no la tiene). `NOW()` se evalua en la MISMA transaccion
+        # que ya trajo la fila con FOR UPDATE -- no hay ventana entre leer y
+        # decidir.
+        await cur.execute("SELECT NOW()")
+        (ahora,) = await cur.fetchone()
+        if any(vencidos[i] is not None and vencidos[i] <= ahora for i in ids):
+            raise HTTPException(status_code=409, detail="hecho_vencido")
+
+        # D3: compatibilidad PAR A PAR de todo el lote -- antes de decidir
+        # quien sobrevive, porque si el lote mezcla tipos la operacion es
+        # invalida sea cual sea el superviviente elegido.
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                razon = _razon_incompatible_para_fundir(ids[i], ids[j], facet_por_id, cierre_citas)
+                if razon == "tipo":
+                    raise HTTPException(status_code=409, detail="fundir_sintesis_con_no_sintesis")
+                if razon == "cita":
+                    # MINOR 3 (revision adversarial de jax-platform PR 146,
+                    # ronda 4): mismo tipo, pero uno cita al otro (directa o
+                    # transitivamente) -- codigo propio, no el de "tipo
+                    # cruzado" (que aca seria falso: los dos SON del mismo
+                    # tipo).
+                    raise HTTPException(status_code=409, detail="fundir_hechos_relacionados_por_cita")
+
+        # D3: el superviviente solicitado tiene que ser el que la regla
+        # calcularia para ESTE lote -- no el grupo entero que vio el
+        # detector, que puede ser mas grande que lo que el cliente decidio
+        # fundir de una vez.
+        superviviente_correcto = _elegir_superviviente(ids, info)
+        if superviviente_correcto != body.superviviente_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "superviviente_no_es_el_de_la_regla",
+                    "superviviente_correcto": superviviente_correcto,
+                },
             )
+
+        if not info[body.superviviente_id][0]:
+            await _aprobar_en_cursor(cur, autor, body.superviviente_id)
+
+        for absorbido_id in absorbidos:
+            await _superar_en_cursor(cur, autor, absorbido_id, body.superviviente_id)
     return {"superados": len(absorbidos)}
 
 
@@ -499,12 +730,25 @@ _MAX_MIEMBROS_CASI_DUPLICADO = 90
 
 SQL_ACTIVOS_CON_VECTOR = (
     "SELECT id, fact_text, is_verified, created_at, "
-    f"VEC_ToText({_COLUMNA_EMBED}) AS vector_texto "
+    f"VEC_ToText({_COLUMNA_EMBED}) AS vector_texto, source_facet "
     "FROM facts "
     "WHERE superseded_by IS NULL "
     "AND (expires_at IS NULL OR expires_at > NOW()) "
     f"AND {_embedding_no_cero_sql(_COLUMNA_EMBED)}"
 )
+# `source_facet` va AL FINAL (índice 5) a propósito: `_casi_duplicados_
+# del_grupo` sigue leyendo el vector en el índice 4 tal cual lo hacía antes
+# de la ronda 2026-09-22, así que las tuplas sintéticas de 5 elementos que
+# ya usan los tests de rendimiento de este archivo (sin facet) siguen
+# funcionando sin tocar -- `len(m) > 5` decide si hay sexto elemento.
+#
+# Ronda 146, tercera vuelta (MAJOR 1): esta consulta YA NO trae
+# `source_fact_ids` -- el criterio de citas dejó de ser "lo que trae CADA
+# fila del grupo" y pasó a ser el CIERRE TRANSITIVO de TODO el grafo de
+# citas (`SQL_CITAS`/`_cierre_transitivo_de_citas`, más abajo), que
+# necesita ver facts fuera de `miembros` (otros grupos, superados,
+# vencidos). Guardar `source_fact_ids` acá también hubiera quedado como
+# dato muerto: nada lo volvía a leer.
 
 # La consulta que agrupar_por_tema() corre DE VERDAD para cada hecho, vecino
 # a vecino -- mismo patrón que _find_nearest_fact() (jax/memory/db.py). El
@@ -607,37 +851,371 @@ class _UnionFind:
         return list(grupos.values())
 
 
-def _casi_duplicados_del_grupo(miembros: list) -> list[list[int]]:
-    """miembros: lista de (id, fact_text, is_verified, created_at, vector).
-    Devuelve subconjuntos (>=2 elementos) cuyos miembros están, par a par,
-    a distancia <= UMBRAL_MISMO_TEMA -- verificación exacta, no la cadena de
-    vecinos-más-cercanos que formó el grupo (que puede conectar A con C vía
-    B sin que A y C estén realmente cerca)."""
+def _parse_fuentes(valor, fact_id) -> frozenset:
+    """`source_fact_ids` es JSON (lista de ids) o NULL -- lo que escribe el
+    worker de síntesis de segundo orden (jax/memory/synthesis_worker.py) para
+    trazar de qué hechos sale un insight (jax/memory/db.py::save_fact). Un
+    hecho normal (extracción directa de conversación) no lo trae, y eso no es
+    un dato malo: es "sin fuentes", frozenset() sin marcar nada.
+
+    Ilegible (JSON roto, no es una lista de números) SÍ es un dato malo --
+    pero fundir no puede colgarse por un problema de trazabilidad ajeno
+    (Principio VIII: un 'no se pudo leer' honesto, no un 500). Se trata como
+    'sin fuentes' Y se registra -- nunca en silencio."""
+    if not valor:
+        return frozenset()
+    try:
+        return frozenset(int(x) for x in json.loads(valor))
+    except (TypeError, ValueError):  # fail-soft: source_fact_ids ilegible se trata como "sin fuentes" (no bloquea el agrupamiento); se cuenta con el WARNING de abajo, nunca en silencio
+        logger.warning(
+            "facts.source_fact_ids ilegible en fact_id=%s: %r", fact_id, valor)
+        return frozenset()
+
+
+SQL_CITAS = "SELECT id, source_fact_ids FROM facts WHERE source_fact_ids IS NOT NULL"
+# Ronda 146, tercera vuelta (MAJOR 1, revisión adversarial de jax-platform
+# PR 146): SIN filtrar por `superseded_by`/`expires_at` a propósito -- una
+# síntesis puede citar a un hecho que después se superó o venció, y la
+# cadena de citas tiene que seguir cerrada igual (una síntesis no deja de
+# ser síntesis DE algo sólo porque ese algo ya no está activo). `EXPLAIN`
+# (test_memoria_grupos.py) confirma que no hay índice útil para
+# `source_fact_ids IS NOT NULL` -- `source_fact_ids` es `longtext`, sin
+# índice (verificado con `SHOW INDEX FROM facts` contra jax_memory_test):
+# full scan, `type=ALL`.
+#
+# MAJOR A (revisión adversarial de jax-platform PR 146, ronda 4): la primera
+# medición (docs/carga-memoria-146-2026-09-22.md) decía "son pocas... el
+# costo absoluto es chico" contra una base de carga que en realidad tenía
+# CERO filas con `source_fact_ids` -- `loadtest/memoria_seed.py` nunca las
+# sembraba, así que esta consulta devolvía 0 filas en esa medición: una
+# verdad vacía, no una medida. Vuelto a medir con 1.400 de 10.000 facts
+# (14 %) con `source_fact_ids` no nulo (10 % en cita plana + cadenas de
+# 2do/3er orden) -- CASO REALISTA, con cadenas cortas (profundidad <=2) y
+# citas al azar entre cualquier hecho, no el peor caso (corregido en ronda
+# 5, MINOR A-texto: este comentario decía antes "el peor caso" y no lo
+# era). `GET /grupos` no muestra degradación medible con ese caso realista
+# (delta de p95 entre −2,9 % y −1,2 %, dentro del ruido) y
+# `POST /hechos/fundir` (que corre esta consulta una vez por request,
+# dentro de la transacción) queda en milisegundos de un dígito a low-teens
+# (p50 7,6→12,2 ms, p95 18,4→19,1 ms) -- ver la sección "RONDA 4" del
+# documento para el método y los números completos.
+#
+# MINOR A-texto (ronda 5): el PEOR caso de verdad -- cadenas LARGAS
+# (profundidad 10) con fuentes VECINAS EN EMBEDDINGS (dentro de un cluster
+# de casi-duplicados real, `loadtest/memoria_seed.py::N_CADENAS_LARGAS`) --
+# se midió aparte: 50 cadenas de profundidad 10 sumadas al caso realista de
+# arriba (1.900 filas con `source_fact_ids` en total sobre 10.000 facts).
+# `POST /hechos/fundir`, 200 llamadas secuenciales: 200/200 ok, p50 11,69 ms,
+# p95 17,99 ms, max 24,56 ms -- sin degradación material frente al caso
+# realista (p50 12,2 ms, p95 19,1 ms). El BFS de `_cierre_transitivo_de_
+# citas` (más abajo) no memoiza entre orígenes -- a profundidad 10 el costo
+# por cadena es O(10) por nodo, ~100 operaciones por cadena, indistinguible
+# del ruido en esta medición; no se memoiza (Regla 2 del rendimiento: no se
+# cachea lo que no se midió caro). Ver la sección "RONDA 5" del documento
+# para el método completo. Decisión: no se optimiza (sin índice sobre
+# `source_facet`, sin acotar el cierre a los ids candidatos, sin memoizar
+# el BFS) -- el costo medido, realista Y peor caso, no lo justifica.
+
+
+async def _cargar_citas_directas(cur) -> dict:
+    """id -> frozenset de ids que ESE id cita directamente (una fila de
+    `source_fact_ids`), para TODOS los facts que tienen ese dato -- activos
+    o no. Un solo SELECT, reusado por el detector (`agrupar_por_tema`, su
+    propia conexión) y por `fundir_hechos` (el cursor de SU transacción,
+    para no abrir una segunda conexión en medio del `FOR UPDATE`)."""
+    await cur.execute(SQL_CITAS)
+    return {fid: _parse_fuentes(raw, fid) for fid, raw in await cur.fetchall()}
+
+
+def _cierre_transitivo_de_citas(citas_directas: dict) -> dict:
+    """id -> frozenset de TODOS los ids que ese id cita, transitivamente
+    (BFS sobre el grafo dirigido "cita a" que arma `citas_directas`).
+
+    MAJOR 1 (revisión adversarial de jax-platform PR 146, tercera vuelta):
+    la exclusión de la ronda anterior sólo miraba la cita DIRECTA -- S1 cita
+    a S2 los separaba, pero S1 citando a S2 que a su vez cita a S3 (segundo
+    grado) no separaba a S1 de S3. Peor: con las tres en el mismo union-find,
+    S1 y S3 (incompatibles, aunque sea indirectamente) podían terminar en el
+    mismo componente igual, conectados vía S2 -- el MISMO bug de bridging
+    que D2 ya había cerrado para el cruce de tipos, reaparecido acá porque
+    la cita sólo se miraba a UN salto. El cierre transitivo (esta función)
+    hace que "A cita a B, aunque sea indirectamente" sea una propiedad
+    ESTABLE del grafo completo, calculada una vez por request -- no algo
+    que dependa de si A y B llegaron a compararse directo."""
+    cierre = {}
+    for origen in citas_directas:
+        visto: set = set()
+        cola = list(citas_directas.get(origen, ()))
+        while cola:
+            actual = cola.pop()
+            if actual in visto:
+                continue
+            visto.add(actual)
+            cola.extend(citas_directas.get(actual, ()))
+        cierre[origen] = frozenset(visto)
+    return cierre
+
+
+def _relacionados_por_cita(a_id, b_id, cierre_citas: dict) -> bool:
+    """True si `a_id` cita a `b_id` o `b_id` cita a `a_id`, a CUALQUIER
+    profundidad (ver `_cierre_transitivo_de_citas`) -- nunca si sólo
+    comparten un ancestro en común (dos síntesis que citan a la MISMA fuente,
+    sin citarse entre sí, siguen siendo compatibles -- D1: "dos síntesis
+    entre sí sí pueden agruparse")."""
+    return b_id in cierre_citas.get(a_id, frozenset()) or a_id in cierre_citas.get(b_id, frozenset())
+
+
+def _tipo_sintesis(facet) -> bool:
+    """`source_facet == 'synthesis'` es la faceta que escribe
+    `jax/memory/synthesis_worker.py` sobre un insight de segundo orden.
+
+    Ronda 146 (D1, decisión de Fernando, revisión adversarial de
+    jax-platform PR 146): la faceta SOLA alcanza para separar síntesis de
+    no-síntesis. La versión anterior (2026-09-22, este mismo archivo) sólo
+    miraba `source_fact_ids`, y eso dejaba tres huecos:
+      - síntesis de SEGUNDO orden (S2 cita a S1, que cita a A -- S2 nunca
+        tiene a A en su PROPIO `source_fact_ids`, así que la exclusión
+        directa no lo veía).
+      - una fuente ya SUPERADA (el id que `source_fact_ids` referencia ya no
+        está activo -- pero da igual: la faceta de la síntesis no cambia
+        aunque su fuente original haya sido reemplazada).
+      - una síntesis con `source_fact_ids` NULL (dato de trazabilidad
+        ausente -- con la versión anterior, eso la dejaba SIN exclusión
+        alguna, agrupable con cualquier no-síntesis cercana).
+    Los tres quedan cerrados de una vez con la faceta, que no depende de que
+    la cadena de ids esté completa ni de que el id referenciado siga vivo."""
+    return facet == "synthesis"
+
+
+def _razon_incompatible_para_fundir(a_id, b_id, facet_por_id: dict, cierre_citas: dict):
+    """Igual regla que `_compatibles_para_fundir`, pero devuelve POR QUÉ un
+    par es incompatible ("tipo" / "cita") en vez de sólo True/False -- MINOR
+    3 (revisión adversarial de jax-platform PR 146, ronda 4): `fundir_hechos`
+    mandaba SIEMPRE `fundir_sintesis_con_no_sintesis`, aunque el rechazo
+    fuera por una cita entre dos síntesis del MISMO tipo -- un mensaje falso
+    sobre el motivo real. `None` significa "compatible"."""
+    if _tipo_sintesis(facet_por_id[a_id]) != _tipo_sintesis(facet_por_id[b_id]):
+        return "tipo"
+    if _relacionados_por_cita(a_id, b_id, cierre_citas):
+        return "cita"
+    return None
+
+
+def _compatibles_para_fundir(a_id, b_id, facet_por_id: dict, cierre_citas: dict) -> bool:
+    """Dos hechos pueden compartir un cluster de casi-duplicados -- y, por
+    extensión, fundirse juntos (D3: `fundir_hechos` exige esta MISMA regla,
+    no sólo la propone) -- sólo si:
+      1. son del MISMO tipo (los dos síntesis, o los dos no) -- D1.
+      2. ninguno cita al otro, a NINGUNA profundidad -- `cierre_citas` (MAJOR
+         1, tercera vuelta) para separar dos síntesis que se citan entre sí,
+         directa O transitivamente (D1: "dos síntesis entre sí sí pueden
+         agruparse", salvo que una cite a la otra).
+
+    Delega en `_razon_incompatible_para_fundir` -- una sola regla, dos
+    formas de leer el resultado (bool para el detector, motivo para el
+    endpoint que arma el 409)."""
+    return _razon_incompatible_para_fundir(a_id, b_id, facet_por_id, cierre_citas) is None
+
+
+def _casi_duplicados_del_grupo(miembros: list, cierre_citas: dict) -> list[list[int]]:
+    """miembros: lista de (id, fact_text, is_verified, created_at, vector[,
+    source_facet]) -- el sexto elemento es opcional (retrocompatible con las
+    tuplas sintéticas de 5 que ya usan los tests de rendimiento de este
+    archivo, que no tocan síntesis). `cierre_citas`: el cierre transitivo
+    de TODO el grafo de citas (`_cierre_transitivo_de_citas`), calculado UNA
+    vez por request -- no se reconstruye acá porque necesita ver facts que
+    pueden no estar en `miembros` (una síntesis puede citar a un hecho de
+    OTRO grupo, o ya superado/vencido). Devuelve subconjuntos (>=2
+    elementos): cada uno es una componente CONEXA del grafo de pares a
+    distancia <= UMBRAL_MISMO_TEMA -- es decir, sus miembros están
+    conectados por una CADENA de saltos, cada uno <= UMBRAL_MISMO_TEMA, pero
+    el PAR en sí puede estar más lejos.
+
+    CORRECCIÓN (ronda 146, revisión adversarial de jax-platform PR 146): el
+    docstring anterior decía "verificación exacta, par a par" -- era FALSO,
+    y lo era desde antes de esta ronda: un componente conexo (union-find)
+    nunca garantizó que TODOS los pares dentro de él estén bajo el umbral,
+    sólo que hay un camino de saltos cortos entre ellos (ver
+    `test_el_camino_de_produccion_da_LO_MISMO_que_la_implementacion_vieja`,
+    que exige justamente esta semántica de componente conexo).
+
+    Ronda 2026-09-22 → 146 (D1/D2, decisión de Fernando): una SÍNTESIS
+    (`source_facet == 'synthesis'`) nunca puede compartir cluster con un
+    hecho que NO lo es -- ni siquiera conectados vía un tercer miembro
+    (bridging). La primera versión de este arreglo (2026-09-22) armaba el
+    componente por distancia y DESPUÉS sacaba a los miembros conflictivos --
+    una revisión adversarial demostró que eso deja pares FALSOS: si A-S y
+    S-C están cerca pero A-C está lejos, sacar a S del componente {A,S,C}
+    devolvía `[[A,C]]` aunque A y C NO estén cerca entre sí (MAYOR 1). La
+    corrección (D2) fue no dejar que una arista incompatible se cree NUNCA:
+    `_compatibles_para_fundir` se consulta ANTES de cada `uf.unir(...)`.
+
+    MAJOR 1, tercera vuelta (revisión adversarial de jax-platform PR 146):
+    esa corrección alcanzaba para tipos cruzados (bloqueo TOTAL, nunca se
+    unen sin importar el puente) pero no para dos síntesis del MISMO tipo
+    con una cita indirecta -- S1 cita a S2 (incompatibles), pero si S3 (sin
+    relación con ninguna) está cerca de las dos, S1 y S2 podían terminar en
+    el MISMO componente igual, conectados vía S3 -- el bridging reaparece
+    cuando la incompatibilidad es puntual (una arista) en vez de total (un
+    tipo entero). Esa vuelta agregó una revalidación PAR A PAR después de
+    `uf.componentes()`: si quedaba algún par incompatible adentro, el
+    componente ENTERO se descartaba -- fail-closed, pero a un costo real
+    (MINOR 1, ver abajo).
+
+    MINOR 1 (revisión adversarial de jax-platform PR 146, ronda 4): descartar
+    el componente entero era demasiado -- 4 casi-duplicados idénticos donde
+    sólo UN par se citaba (p.ej. 20 cita a 23) perdían TAMBIÉN a los otros
+    dos ({21,22}), que sí son casi-duplicados válidos entre sí, sin log ni
+    conteo. Ahora, en vez de descartar, se SACAN del componente los
+    miembros que participan de algún par incompatible (los que citan o son
+    citados, a cualquier profundidad, o los de tipo cruzado), se
+    RECALCULA con union-find sobre lo que queda, y se repite hasta que
+    ningún componente resultante tenga un par incompatible adentro. Termina
+    porque cada vuelta que saca algo saca al MENOS dos miembros (los dos
+    lados de un par incompatible) de un conjunto finito -- y una vuelta sin
+    nada que sacar corta el bucle. La extracción NUNCA agrega miembros a un
+    cluster que el chequeo de compatibilidad no aprobaría (fail-closed sigue
+    valiendo, ahora a nivel de miembro, no de componente entero) -- por eso
+    el caso puente A-S-C (D2, arriba) sigue sin poder dar `[[A,C]]`: ahí el
+    bloqueo es de TIPO, y la compatibilidad se sigue consultando ANTES de
+    cada `unir`, así que A y C ni siquiera llegan a compartir componente."""
     if len(miembros) < 2 or len(miembros) > _MAX_MIEMBROS_CASI_DUPLICADO:
         return []
     vectores = {m[0]: json.loads(m[4]) for m in miembros}
+    facet_por_id = {m[0]: (m[5] if len(m) > 5 else None) for m in miembros}
     # UNA norma por vector, no una por par: con 90 miembros son 90 raíces en
     # vez de 8.010. Es el arreglo medido del 2026-09-20 (61 % del request).
     normas = {i: _norma(v) for i, v in vectores.items()}
-    ids = list(vectores)
-    uf = _UnionFind(ids)
-    for i in range(len(ids)):
-        a = ids[i]
-        for j in range(i + 1, len(ids)):
-            b = ids[j]
-            if _distancia_coseno(vectores[a], vectores[b],
-                                 normas[a], normas[b]) <= _UMBRAL_MISMO_TEMA:
-                uf.unir(a, b)
-    return [sorted(c) for c in uf.componentes() if len(c) > 1]
+
+    def _distancia(a, b):
+        return _distancia_coseno(vectores[a], vectores[b], normas[a], normas[b])
+
+    resultado = []
+    activos = set(vectores)
+    total_descartados = 0
+    while activos:
+        uf = _UnionFind(activos)
+        activos_ordenados = sorted(activos)
+        for i in range(len(activos_ordenados)):
+            a = activos_ordenados[i]
+            for j in range(i + 1, len(activos_ordenados)):
+                b = activos_ordenados[j]
+                # La compatibilidad se consulta ANTES que la distancia: evita
+                # calcular una distancia coseno (la parte cara, medida el
+                # 2026-09-20) para un par que de todos modos no se va a unir
+                # -- pero YA NO es la única garantía (ver la revalidación de
+                # abajo, que sigue haciendo falta por el bridging vía un
+                # tercer miembro).
+                if not _compatibles_para_fundir(a, b, facet_por_id, cierre_citas):
+                    continue
+                if _distancia(a, b) <= _UMBRAL_MISMO_TEMA:
+                    uf.unir(a, b)
+
+        incompatibles_esta_vuelta: set = set()
+        for componente in uf.componentes():
+            if len(componente) < 2:
+                activos.discard(componente[0])
+                continue
+            comp = sorted(componente)
+            pares_malos = [
+                (comp[i], comp[j])
+                for i in range(len(comp)) for j in range(i + 1, len(comp))
+                if not _compatibles_para_fundir(comp[i], comp[j], facet_por_id, cierre_citas)
+            ]
+            if not pares_malos:
+                resultado.append(comp)
+                activos -= set(comp)
+                continue
+            # MINOR 1: se sacan del componente los DOS lados de cada par
+            # incompatible -- el resto (si sobrevive suficiente para formar
+            # un par) se recalcula en la próxima vuelta del `while`.
+            for a, b in pares_malos:
+                incompatibles_esta_vuelta.add(a)
+                incompatibles_esta_vuelta.add(b)
+
+        if not incompatibles_esta_vuelta:
+            break
+        total_descartados += len(incompatibles_esta_vuelta)
+        activos -= incompatibles_esta_vuelta
+
+    if total_descartados:
+        logger.info(
+            "_casi_duplicados_del_grupo: %d miembro(s) descartado(s) por "
+            "incompatibilidad de tipo/cita (MINOR 1) -- el resto de sus "
+            "componentes se propuso igual, no se descartó entero.",
+            total_descartados,
+        )
+    resultado.sort(key=lambda c: c[0])
+    return resultado
 
 
-def _construir_grupos(filas: list, vecinos: list) -> list[dict]:
+def _elegir_superviviente(ids: list, info: dict) -> int:
+    """Decisión de Fernando: el verificado gana al más reciente. Si hay
+    algún verificado entre `ids`, sobrevive el verificado más reciente; si
+    no hay ninguno, sobrevive el más reciente a secas.
+
+    D4 (ronda 146): empate en `created_at` (la columna es un `TIMESTAMP` de
+    precisión de SEGUNDO -- dos hechos sembrados en la misma corrida caen
+    fácil en el mismo segundo) lo desempata el id MAYOR -- el que se
+    insertó después.
+
+    D8 (ronda 146): `created_at` admite NULL (verificado con `SHOW COLUMNS`
+    contra `jax_memory_test`, nunca contra producción). NULL se trata como
+    "el más antiguo posible": nunca le gana a una fecha real, y si TODOS los
+    candidatos tienen NULL el desempate cae sólo en el id.
+
+    `info`: id -> (is_verified, created_at)."""
+    def _clave(i):
+        creado = info[i][1]
+        return (creado if creado is not None else datetime.min, i)
+
+    verificados = [i for i in ids if info[i][0]]
+    candidatos = verificados or ids
+    return max(candidatos, key=_clave)
+
+
+# M4 (revisión adversarial de jax-platform PR 146, tercera vuelta):
+# `superviviente_texto` viaja tal cual desde `fact_text`, que no tiene
+# límite de longitud en el frontend (spec §2.1 no lo impone). Sin recorte,
+# una redacción larga y sin espacios podía desbordar la ventana de
+# `ConfirmacionSuma` (probado con `break-words`, ver FichaDeHecho.jsx/
+# ConfirmacionSuma.jsx). 280 caracteres alcanza para reconocer el hecho sin
+# volver ilegible la ventana.
+_MAX_CARACTERES_TEXTO_SUPERVIVIENTE = 280
+
+
+def _recortar_texto(texto: str) -> str:
+    if len(texto) <= _MAX_CARACTERES_TEXTO_SUPERVIVIENTE:
+        return texto
+    return texto[:_MAX_CARACTERES_TEXTO_SUPERVIVIENTE].rstrip() + "…"
+
+
+def _construir_grupos(filas: list, vecinos: list, cierre_citas: dict) -> list[dict]:
     """CPU pura (sin await): se corre en un hilo aparte (asyncio.to_thread)
     para no bloquear el event loop a escala de 10.000 hechos.
 
-    filas: (id, fact_text, is_verified, created_at, vector) de cada hecho
-    activo. vecinos: [(fact_id, [(vecino_id, distancia), ...]), ...], el
-    resultado de SQL_VECINOS para cada fila."""
+    filas: (id, fact_text, is_verified, created_at, vector, source_facet) de
+    cada hecho activo. vecinos: [(fact_id, [(vecino_id, distancia), ...]),
+    ...], el resultado de SQL_VECINOS para cada fila. `cierre_citas`: el
+    cierre transitivo de TODO el grafo de citas (MAJOR 1, tercera vuelta),
+    calculado UNA vez en `agrupar_por_tema` y pasado tal cual a
+    `_casi_duplicados_del_grupo` para cada componente.
+
+    Ronda 2026-09-22: cada cluster de `casi_duplicados` deja de ser una
+    lista de ids a secas -- pasa a un objeto con `superviviente_id`
+    (`_elegir_superviviente`, el verificado gana al más reciente). El
+    backend declara quién sobrevive UNA sola vez acá; ni el frontend ni
+    `POST /hechos/fundir` vuelven a adivinarlo con "el primero de la
+    lista".
+
+    D5 (ronda 146, revisión adversarial de jax-platform PR 146, MAYOR 3): el
+    cluster también trae `superviviente_verificado` y `superviviente_texto`
+    -- el frontend arma el motivo ("sobrevive el verificado" / "sobrevive el
+    más reciente, quedará aprobado al fundir") y el texto de la ficha con
+    ESTOS datos, no con `hechosPorId` (que sólo tiene los primeros 500
+    hechos cargados por `GET /hechos`; un cluster puede incluir ids que ese
+    cap dejó afuera). `superviviente_texto` viaja recortado (M4, ver
+    `_recortar_texto`)."""
     datos = {f[0]: f for f in filas}
     uf = _UnionFind(datos.keys())
     for fact_id, cercanos in vecinos:
@@ -648,13 +1226,32 @@ def _construir_grupos(filas: list, vecinos: list) -> list[dict]:
 
     grupos = []
     for miembros_ids in uf.componentes():
-        miembros = sorted((datos[i] for i in miembros_ids),
-                          key=lambda f: f[3], reverse=True)  # created_at DESC
+        # D8: `created_at` NULL no puede reventar el ordenamiento (antes,
+        # comparar None contra un datetime real levantaba TypeError) -- se
+        # trata como "el más antiguo posible", igual que en
+        # `_elegir_superviviente`. El id como segundo criterio hace el orden
+        # determinista incluso si dos miembros empatan en fecha.
+        miembros = sorted(
+            (datos[i] for i in miembros_ids),
+            key=lambda f: (f[3] if f[3] is not None else datetime.min, f[0]),
+            reverse=True,
+        )
+        info = {m[0]: (m[2], m[3]) for m in miembros}  # id -> (is_verified, created_at)
+        textos = {m[0]: m[1] for m in miembros}
+        clusters = []
+        for cluster in _casi_duplicados_del_grupo(miembros, cierre_citas):
+            sid = _elegir_superviviente(cluster, info)
+            clusters.append({
+                "ids": cluster,
+                "superviviente_id": sid,
+                "superviviente_verificado": bool(info[sid][0]),
+                "superviviente_texto": _recortar_texto(textos[sid]),
+            })
         grupos.append({
             "tema": miembros[0][1],
             "hechos": [m[0] for m in miembros],
             "sin_verificar": sum(1 for m in miembros if not m[2]),
-            "casi_duplicados": _casi_duplicados_del_grupo(miembros),
+            "casi_duplicados": clusters,
         })
 
     grupos.sort(key=lambda g: len(g["hechos"]), reverse=True)
@@ -673,6 +1270,14 @@ async def agrupar_por_tema() -> list[dict]:
     if not filas:
         return []
 
+    # MAJOR 1, tercera vuelta: el cierre de citas se calcula UNA vez por
+    # request, sobre TODO el grafo (no sólo los miembros de un grupo) --
+    # conexión propia, antes de repartir el trabajo de vecinos.
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            citas_directas = await _cargar_citas_directas(cur)
+    cierre_citas = _cierre_transitivo_de_citas(citas_directas)
+
     semaforo = asyncio.Semaphore(_CONCURRENCIA_VECINOS)
 
     async def _vecinos_de(fact_id, vector_texto):
@@ -687,7 +1292,7 @@ async def agrupar_por_tema() -> list[dict]:
 
     vecinos = await asyncio.gather(*(_vecinos_de(f[0], f[4]) for f in filas))
 
-    return await asyncio.to_thread(_construir_grupos, filas, vecinos)
+    return await asyncio.to_thread(_construir_grupos, filas, vecinos, cierre_citas)
 
 
 @router.get("/grupos")
