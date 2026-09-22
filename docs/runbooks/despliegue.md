@@ -236,6 +236,14 @@ Los dos llegan a `jax-platform` como una excepción de `aiomysql` sin
 capturar -- el handler genérico de FastAPI los convierte en **500**, no en
 un código propio del contrato de la API.
 
+**Escenario que describe la tabla de abajo (cierre, Ruling 23, punto (g)):
+NI jax#257 (descartar-pipelines: `status_previo`/`descartado_por`/
+`descartado_at` + `idx_pipelines_descartados`/`idx_pipelines_ocultos`) NI
+jax#259 (la columna `visible`/`idx_pipelines_visibles`) están desplegados
+todavía** -- el backend nuevo de jax-platform saltó el paso 1 completo, no
+sólo la mitad. Es el peor caso, y el que hay que evitar con el orden de
+arriba.
+
 | Qué | Dónde rompe primero | Por qué |
 |---|---|---|
 | `GET /api/pipelines` (lista principal) | **Local, SQL directo** | `FORCE INDEX (idx_pipelines_visibles)` -- **1176**, el índice no existe |
@@ -246,6 +254,30 @@ un código propio del contrato de la API.
 Sólo la fila de `discard`/`hide`/`restore` "llega al proxy" -- las otras
 tres rompen ANTES, del lado de jax-platform, sin que Jacobs se entere del
 pedido.
+
+**Caso intermedio -- jax#257 desplegado, jax#259 todavía NO (cierre,
+Ruling 23, punto (g)):** un despliegue a medias del paso 1, no todo o
+nada. Acá `status_previo`/`descartado_por`/`descartado_at` y los índices
+de jax#257 YA EXISTEN -- sólo falta `visible`/`idx_pipelines_visibles` de
+jax#259. Eso cambia el cuadro de arriba:
+
+| Qué | Con sólo jax#257 (sin jax#259) |
+|---|---|
+| `GET /api/pipelines` (lista principal) | Sigue en **1176/500** -- `FORCE INDEX (idx_pipelines_visibles)` sigue nombrando un índice que no existe. Es la ÚNICA fila que se queda igual de rota que en el peor caso |
+| `GET /api/pipelines?estado=discarded` ("Descartados") | **Funciona** -- `descartado_at` ya existe con jax#257 solo |
+| `POST /pipelines/{id}/recover`, usuario NO superadmin | **Funciona** -- `descartado_por` ya existe con jax#257 solo |
+| `POST /pipelines/{id}/discard`, `/hide`, `/restore` (y `/recover` de un superadmin) | **Funciona** igual que en el peor caso -- no dependía de ninguna columna nueva |
+
+O sea: con jax#257 desplegado pero no jax#259, el ÚNICO síntoma visible es
+la lista principal en 500 -- todo lo demás (Descartados, recover/discard/
+hide/restore) responde con normalidad, lo que puede confundir a quien
+diagnostique "a medias funciona, no puede ser el paso 1" -- SÍ es el paso
+1, sólo que incompleto. El chequeo de la sección 1 de arriba
+(`SHOW COLUMNS ... LIKE 'visible'` / `SHOW INDEX ... idx_pipelines_visibles`)
+es el que distingue este caso del peor caso: si `visible` ya aparece pero
+`GET /api/pipelines` sigue en 500, revisar el índice aparte -- la columna
+generada puede existir sin que el índice haya terminado de crearse (ver
+`_agregar_columna_acotada`/reintento en `jax/jacobs/store.py`).
 
 **Volver atrás, caso especial:** si este deploy salió en el orden
 incorrecto y `GET /api/pipelines` está en 500, la reversión MÁS RÁPIDA es
