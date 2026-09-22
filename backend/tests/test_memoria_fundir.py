@@ -448,16 +448,27 @@ def test_fundir_con_un_error_real_dentro_de_la_transaccion_no_se_disfraza_de_503
     """Control del arreglo de arriba: el `except` de m8-b atrapa SOLO el
     fallo de conectar/adquirir (`enter_async_context`), nunca lo que pase
     DENTRO de la transaccion ya abierta -- un error real ahi tiene que
-    seguir siendo un 500 (o lo que sea), no disfrazarse de 503."""
+    seguir siendo un 500 (o lo que sea), no disfrazarse de 503.
+
+    MINOR (revision adversarial, ronda 7): la version anterior levantaba
+    `RuntimeError`, que `except (OSError, aiomysql.Error)` NUNCA hubiera
+    atrapado de todas formas -- no probaba el ALCANCE del `except`, solo el
+    TIPO. Ahora levanta `aiomysql.OperationalError` (el MISMO tipo que el
+    `except` SI atrapa) DESDE DENTRO de la transaccion ya abierta -- si el
+    `try` estuviera mal escrito (envolviendo el cuerpo entero, no solo
+    `enter_async_context`), esto SI se disfrazaria de 503. Verificado en
+    rojo mutando el codigo para ensanchar el `try` (ver el reporte de la
+    tarea)."""
     from api.admin import memoria
+    import aiomysql
 
     superviviente, absorbido1, absorbido2 = trio
 
     async def _revienta(cur, autor, absorbido_id, superviviente_id):
-        raise RuntimeError("fallo real dentro de la transaccion, no de conexion")
+        raise aiomysql.OperationalError("fallo real dentro de la transaccion, no de conexion")
 
     monkeypatch.setattr(memoria, "_superar_en_cursor", _revienta)
-    with pytest.raises(RuntimeError, match="fallo real dentro de la transaccion"):
+    with pytest.raises(aiomysql.OperationalError, match="fallo real dentro de la transaccion"):
         client_superadmin.post("/api/admin/memoria/hechos/fundir",
                                json={"superviviente_id": superviviente,
                                      "absorbidos": [absorbido1, absorbido2]})

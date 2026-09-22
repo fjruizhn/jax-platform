@@ -112,6 +112,64 @@ def test_corregir_no_borra_marca_como_superado(client_superadmin):
     assert viejo["id"] in por_id, "el hecho viejo desaparecio: eso es borrar"
 
 
+def test_corregir_con_la_base_caida_no_es_500_generico(client_superadmin, monkeypatch):
+    """Punto 6 (cierre jax-platform#146, ronda 7, pre-existente -- mismo
+    defecto que tenian `aprobar_hechos`/`fundir_hechos` antes de m8/m8-b):
+    con la base caida, `transaccion()` (sobre `db.connection.get_pool()`)
+    levanta una excepcion de conexion SIN GUARDA -- 500 generico en vez de
+    503 `memoria_no_disponible`. Se simula la caida en el punto exacto
+    donde pasaba de verdad: `get_pool()` DENTRO de `db.transaccion`, no un
+    mock de alto nivel."""
+    from db import transaccion as transaccion_mod
+
+    viejo = client_superadmin.portal.call(_crear_fact, "corregir base caida: hecho 1")
+    try:
+        async def _get_pool_caida():
+            raise OSError("Connect call failed ('127.0.0.1', 18080)")
+
+        monkeypatch.setattr(transaccion_mod, "get_pool", _get_pool_caida)
+        r = client_superadmin.post(f"/api/admin/memoria/hechos/{viejo}/corregir",
+                                   json={"texto": "texto de control punto 6"})
+        assert r.status_code == 503, (
+            f"esperaba 503 (memoria_no_disponible), no {r.status_code}: un "
+            "fallo al conectar/adquirir la conexion es 'la base no respondio', "
+            "no un 500 generico sin traducir")
+        assert r.json()["detail"] == "memoria_no_disponible"
+    finally:
+        client_superadmin.portal.call(_borrar_fact, viejo)
+
+
+def test_corregir_con_un_error_real_dentro_de_la_transaccion_no_se_disfraza_de_503(
+        client_superadmin, monkeypatch):
+    """Control del arreglo de arriba: el `except` atrapa SOLO el fallo de
+    conectar/adquirir (`enter_async_context`), nunca lo que pase DENTRO de
+    la transaccion ya abierta. `corregir_hecho` no tiene una funcion propia
+    tipo `_aprobar_en_cursor` para monkeypatchear (los dos `cur.execute` de
+    escritura van a mano) -- se instrumenta el CURSOR real
+    (`aiomysql.Cursor.execute`), mismo patron que
+    `test_fundir_calcula_el_cierre_de_citas_antes_del_for_update`, y se
+    hace fallar SOLO el `UPDATE ... SET superseded_by` (dentro de la
+    transaccion ya abierta) con `aiomysql.OperationalError` -- el MISMO
+    tipo que el `except` SI atrapa, para que el control sea real."""
+    import aiomysql
+
+    viejo = client_superadmin.portal.call(_crear_fact, "corregir control punto6: hecho 1")
+    try:
+        original_execute = aiomysql.Cursor.execute
+
+        async def _execute_instrumentado(self, query, args=None):
+            if "UPDATE facts SET superseded_by" in query:
+                raise aiomysql.OperationalError("fallo real dentro de la transaccion, no de conexion")
+            return await original_execute(self, query, args)
+
+        monkeypatch.setattr(aiomysql.Cursor, "execute", _execute_instrumentado)
+        with pytest.raises(aiomysql.OperationalError, match="fallo real dentro de la transaccion"):
+            client_superadmin.post(f"/api/admin/memoria/hechos/{viejo}/corregir",
+                                   json={"texto": "texto de control punto 6"})
+    finally:
+        client_superadmin.portal.call(_borrar_fact, viejo)
+
+
 def test_no_existe_endpoint_de_borrado(client_superadmin):
     """Fuera de alcance por decision del spec §5: borrar es perder la historia
     de lo que creimos. Este test ata esa decision."""
@@ -169,16 +227,28 @@ def test_aprobar_con_un_error_real_dentro_de_la_transaccion_no_se_disfraza_de_50
     """Control del arreglo de arriba: el `except` de m8 atrapa SOLO el fallo
     de conectar/adquirir (`enter_async_context`), nunca lo que pase DENTRO
     de la transaccion ya abierta -- un error real ahi tiene que seguir
-    siendo un 500 (o lo que sea), no disfrazarse de 503."""
+    siendo un 500 (o lo que sea), no disfrazarse de 503.
+
+    MINOR (revision adversarial, ronda 7): la version anterior de este
+    control levantaba `RuntimeError`, que `except (OSError, aiomysql.Error)`
+    NUNCA hubiera atrapado de todas formas -- el control no probaba nada
+    sobre el ALCANCE del `except`, solo sobre el TIPO. Ahora levanta
+    `aiomysql.OperationalError` (subclase de `aiomysql.Error`, el MISMO tipo
+    que el `except` SI atrapa) DESDE DENTRO de la transaccion ya abierta --
+    si el `try` estuviera mal escrito (envolviendo el cuerpo entero de
+    `AsyncExitStack`, no solo `enter_async_context`), esto SI caeria en el
+    `except` y se disfrazaria de 503. Verificado en rojo mutando el codigo
+    para ensanchar el `try` (ver el reporte de la tarea)."""
     from api.admin import memoria
+    import aiomysql
 
     id1 = client_superadmin.portal.call(_crear_fact, "aprobar control m8: hecho 1")
     try:
         async def _revienta(cur, autor, fact_id):
-            raise RuntimeError("fallo real dentro de la transaccion, no de conexion")
+            raise aiomysql.OperationalError("fallo real dentro de la transaccion, no de conexion")
 
         monkeypatch.setattr(memoria, "_aprobar_en_cursor", _revienta)
-        with pytest.raises(RuntimeError, match="fallo real dentro de la transaccion"):
+        with pytest.raises(aiomysql.OperationalError, match="fallo real dentro de la transaccion"):
             client_superadmin.post("/api/admin/memoria/hechos/aprobar", json={"ids": [id1]})
     finally:
         client_superadmin.portal.call(_borrar_fact, id1)
