@@ -6,6 +6,18 @@ hechos vencidos -- son uno con tres redacciones.
 
 Todo o nada en UNA transaccion (mismo principio que corregir_hecho ya aplica,
 jax-platform#107): fundir a medias deja la memoria peor que antes.
+
+Ronda 2026-09-22 (hallazgo de Fernando en la pantalla de Memoria): "fundir en
+el mas reciente" podia aprobar una SINTESIS (con partes inventadas por el
+sintetizador) y con eso SUPERAR a un hecho ya verificado por Fernando. Dos
+correcciones, las dos en el backend:
+  - el superviviente ya NO es "el mas reciente" a secas: si hay algun
+    verificado en el grupo, gana el verificado mas reciente (_elegir_
+    superviviente, test_memoria_grupos.py).
+  - `fundir_hechos` rechaza (409 `superviviente_no_verificado`) que un
+    absorbido verificado quede superado por un superviviente sin verificar,
+    y aprueba al superviviente EN LA MISMA transaccion si hacia falta --
+    el frontend ya no llama a /hechos/aprobar aparte.
 """
 import pytest
 
@@ -33,6 +45,17 @@ async def _estado(fact_id):
         (fact_id,), True,
     )
     return filas[0] if filas else None
+
+
+async def _verificado_de(fact_id):
+    filas = await sql(
+        "SELECT is_verified, verified_by FROM facts WHERE id = %s",
+        (fact_id,), True,
+    )
+    if not filas:
+        return None
+    is_verified, verified_by = filas[0]
+    return bool(is_verified), verified_by
 
 
 async def _borrar_facts(*ids):
@@ -152,3 +175,90 @@ def test_fundir_rechaza_absorbido_ya_superado_y_no_toca_al_otro(client_superadmi
     assert r.status_code == 409
     superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido1)
     assert superseded_by is None, "fundio a medias: el absorbido sano SI cambio"
+
+
+# --- Ronda 2026-09-22: el superviviente se aprueba EN el fundir, y un
+# verificado nunca puede quedar superado por uno sin verificar -----------
+
+def test_fundir_aprueba_al_superviviente_no_verificado_en_la_misma_llamada(client_superadmin, trio):
+    """El frontend ya NO llama a /hechos/aprobar antes de /hechos/fundir
+    (una sola llamada, decision de esta ronda): fundir_hechos tiene que
+    aprobar al superviviente el mismo, con el MISMO efecto que
+    /hechos/aprobar (is_verified, verified_at, verified_by)."""
+    superviviente, absorbido1, absorbido2 = trio
+    verificado_antes, _ = client_superadmin.portal.call(_verificado_de, superviviente)
+    assert verificado_antes is False, "la fixture trio tiene que arrancar sin verificar"
+
+    r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                               json={"superviviente_id": superviviente,
+                                     "absorbidos": [absorbido1, absorbido2]})
+    assert r.status_code == 200
+    verificado, verificado_por = client_superadmin.portal.call(_verificado_de, superviviente)
+    assert verificado is True
+    assert verificado_por is not None, "verified_by no puede quedar implicito (Protocolo de la Memoria Viva)"
+
+
+def test_fundir_rechaza_absorber_un_verificado_con_superviviente_sin_verificar(client_superadmin, trio):
+    """El hallazgo real (2026-09-22): #161 (sintesis, sin verificar) no puede
+    superar a #160 (fuente, YA verificada por Fernando). Todo o nada: ni el
+    absorbido verificado cambia, ni el superviviente se autoaprueba."""
+    superviviente, absorbido1, absorbido2 = trio
+    client_superadmin.portal.call(sql,
+        "UPDATE facts SET is_verified = TRUE WHERE id = %s", (absorbido1,))
+    r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                               json={"superviviente_id": superviviente,
+                                     "absorbidos": [absorbido1, absorbido2]})
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "superviviente_no_verificado"
+    superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido1)
+    assert superseded_by is None, "fundio a medias: el absorbido verificado SI cambio"
+    superseded_by2, _, _ = client_superadmin.portal.call(_estado, absorbido2)
+    assert superseded_by2 is None, "fundio a medias: el absorbido sano SI cambio"
+    verificado, _ = client_superadmin.portal.call(_verificado_de, superviviente)
+    assert verificado is False, "el superviviente se autoaprobo pese al rechazo"
+
+
+def test_fundir_permite_absorber_hechos_verificados_si_el_superviviente_ya_lo_estaba(client_superadmin):
+    """El caso sano: un superviviente YA verificado sí puede superar a
+    absorbidos verificados (no hay perdida de verificacion)."""
+    superviviente = client_superadmin.portal.call(_crear_fact, "fundir: superviviente ya verificado", True)
+    absorbido = client_superadmin.portal.call(_crear_fact, "fundir: absorbido tambien verificado", True)
+    try:
+        r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                                   json={"superviviente_id": superviviente, "absorbidos": [absorbido]})
+        assert r.status_code == 200
+        superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido)
+        assert superseded_by == superviviente
+    finally:
+        client_superadmin.portal.call(_borrar_facts, superviviente, absorbido)
+
+
+def test_fundir_es_atomico_si_falla_a_mitad_del_lote_no_queda_nada_escrito(
+        client_superadmin, trio, monkeypatch):
+    """Si el UPDATE de `superseded_by` de un absorbido revienta a mitad del
+    lote, la aprobacion del superviviente -- escrita ANTES, en la MISMA
+    transaccion -- tiene que revertirse tambien. Todo o nada, jax-platform#107
+    aplicado tambien a la aprobacion nueva de esta ronda."""
+    from api.admin import memoria
+
+    superviviente, absorbido1, absorbido2 = trio
+    llamadas = []
+    original = memoria._superar_en_cursor
+
+    async def _revienta_en_la_segunda(cur, autor, absorbido_id, superviviente_id):
+        llamadas.append(absorbido_id)
+        if len(llamadas) == 2:
+            raise RuntimeError("fallo simulado a mitad del lote de fundir")
+        await original(cur, autor, absorbido_id, superviviente_id)
+
+    monkeypatch.setattr(memoria, "_superar_en_cursor", _revienta_en_la_segunda)
+
+    with pytest.raises(RuntimeError, match="fallo simulado"):
+        client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                               json={"superviviente_id": superviviente,
+                                     "absorbidos": [absorbido1, absorbido2]})
+
+    verificado, _ = client_superadmin.portal.call(_verificado_de, superviviente)
+    assert verificado is False, "la aprobacion del superviviente NO se revirtio: fundio a medias"
+    superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido1)
+    assert superseded_by is None, "el primer absorbido SI cambio antes de la falla: fundio a medias"

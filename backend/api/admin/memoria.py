@@ -44,6 +44,7 @@ suite entera, no con el archivo suelto). Por eso acá se fija el mismo
 """
 import asyncio
 import json
+import logging
 import math
 import sys
 from datetime import datetime
@@ -73,6 +74,8 @@ from jax.memory.db import _nonzero_embedding_sql as _embedding_no_cero_sql  # no
 from jax.memory.embedding_config import CONFIG as _EMBED_CFG  # noqa: E402
 
 router = APIRouter(prefix="/api/admin/memoria")
+
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------
 # Listado
@@ -275,6 +278,29 @@ class FundirBody(BaseModel):
     absorbidos: list[int]
 
 
+async def _aprobar_en_cursor(cur, autor: int, fact_id: int) -> None:
+    """Mismo SQL que `MemoryDB.verify_fact` (jax/memory/db.py), sobre ESTE
+    cursor -- ver el docstring de `fundir_hechos` para el porque de no
+    componer el metodo (pool/conexion distintos, jax-platform#107)."""
+    await cur.execute(
+        "UPDATE facts SET is_verified = TRUE, verified_at = NOW(), "
+        "verified_by = %s WHERE id = %s",
+        (autor, fact_id),
+    )
+
+
+async def _superar_en_cursor(cur, autor: int, absorbido_id: int, superviviente_id: int) -> None:
+    """Mismo SQL que `MemoryDB.supersede_fact`, sobre ESTE cursor. Funcion
+    propia (no una linea inline en el bucle de `fundir_hechos`) para que un
+    test pueda monkeypatchear UN absorbido y demostrar la atomicidad de la
+    transaccion completa (ronda 2026-09-22, test_memoria_fundir.py)."""
+    await cur.execute(
+        "UPDATE facts SET superseded_by = %s, superseded_at = NOW(), "
+        "superseded_by_user = %s WHERE id = %s",
+        (superviviente_id, autor, absorbido_id),
+    )
+
+
 @router.post("/hechos/fundir")
 async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_superadmin)):
     """Fundir casi-duplicados es SUPERSEDER, no caducar (decision de
@@ -298,6 +324,20 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
     evitar. Por eso van los UPDATE a mano, con el MISMO SQL que
     `supersede_fact` ejecuta, sobre el MISMO cursor, dentro de la MISMA
     transaccion con `FOR UPDATE` (mismo patron que `corregir_hecho`).
+
+    Ronda 2026-09-22 (hallazgo de Fernando): "fundir en el mas reciente"
+    podia aprobar una SINTESIS (con partes inventadas por el sintetizador) y
+    con eso SUPERAR a un hecho YA verificado. Dos cambios:
+      - un absorbido verificado nunca puede quedar superado por un
+        superviviente sin verificar (409 `superviviente_no_verificado`) --
+        un hecho verificado NUNCA pierde su verificacion por el simple
+        hecho de fundirse.
+      - si el superviviente todavia no estaba verificado (y ningun
+        absorbido lo estaba tampoco, o la linea de arriba ya lo habria
+        rechazado), se aprueba EN esta misma transaccion -- mismo efecto que
+        `/hechos/aprobar`, sin la segunda llamada HTTP que el frontend hacia
+        antes (dos llamadas separadas dejaban una ventana real: si la
+        segunda fallaba, el hecho quedaba aprobado sin fundir).
     """
     # Sin duplicados, mismo orden de llegada: absorbidos=[7, 7, 8] funde una
     # sola vez al 7.
@@ -314,10 +354,10 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         marcadores = ", ".join(["%s"] * len(ids))
         await cur.execute(
-            f"SELECT id, superseded_by FROM facts WHERE id IN ({marcadores}) FOR UPDATE",
+            f"SELECT id, superseded_by, is_verified FROM facts WHERE id IN ({marcadores}) FOR UPDATE",
             ids,
         )
-        estado = {fila[0]: fila[1] for fila in await cur.fetchall()}
+        estado = {fila[0]: (fila[1], bool(fila[2])) for fila in await cur.fetchall()}
         if any(i not in estado for i in ids):
             raise HTTPException(status_code=404, detail="hecho_no_encontrado")
         # Encadenar sobre una cadena rota confunde la historia: ni el
@@ -325,15 +365,25 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
         # nada: esta comprobacion corre para TODOS los ids ANTES de escribir
         # el primer UPDATE, así que un solo hecho ya superado en el lote
         # basta para que NINGUNO cambie.
-        if any(estado[i] is not None for i in ids):
+        if any(estado[i][0] is not None for i in ids):
             raise HTTPException(status_code=409, detail="hecho_ya_superado")
 
-        for absorbido_id in absorbidos:
-            await cur.execute(
-                "UPDATE facts SET superseded_by = %s, superseded_at = NOW(), "
-                "superseded_by_user = %s WHERE id = %s",
-                (body.superviviente_id, autor, absorbido_id),
+        superviviente_verificado = estado[body.superviviente_id][1]
+        absorbidos_verificados = [i for i in absorbidos if estado[i][1]]
+        if absorbidos_verificados and not superviviente_verificado:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "superviviente_no_verificado",
+                    "absorbidos_verificados": absorbidos_verificados,
+                },
             )
+
+        if not superviviente_verificado:
+            await _aprobar_en_cursor(cur, autor, body.superviviente_id)
+
+        for absorbido_id in absorbidos:
+            await _superar_en_cursor(cur, autor, absorbido_id, body.superviviente_id)
     return {"superados": len(absorbidos)}
 
 
@@ -414,12 +464,17 @@ _MAX_MIEMBROS_CASI_DUPLICADO = 90
 
 SQL_ACTIVOS_CON_VECTOR = (
     "SELECT id, fact_text, is_verified, created_at, "
-    f"VEC_ToText({_COLUMNA_EMBED}) AS vector_texto "
+    f"VEC_ToText({_COLUMNA_EMBED}) AS vector_texto, source_fact_ids "
     "FROM facts "
     "WHERE superseded_by IS NULL "
     "AND (expires_at IS NULL OR expires_at > NOW()) "
     f"AND {_embedding_no_cero_sql(_COLUMNA_EMBED)}"
 )
+# `source_fact_ids` va AL FINAL (índice 5) a propósito: `_casi_duplicados_
+# del_grupo` sigue leyendo el vector en el índice 4 tal cual lo hacía antes
+# de esta ronda (2026-09-22), así que las tuplas sintéticas de 5 elementos
+# que ya usan los tests de rendimiento de este archivo (sin source_fact_ids)
+# siguen funcionando sin tocar -- `len(m) > 5` decide si hay sexto elemento.
 
 # La consulta que agrupar_por_tema() corre DE VERDAD para cada hecho, vecino
 # a vecino -- mismo patrón que _find_nearest_fact() (jax/memory/db.py). El
@@ -522,15 +577,52 @@ class _UnionFind:
         return list(grupos.values())
 
 
+def _parse_fuentes(valor, fact_id) -> frozenset:
+    """`source_fact_ids` es JSON (lista de ids) o NULL -- lo que escribe el
+    worker de síntesis de segundo orden (jax/memory/synthesis_worker.py) para
+    trazar de qué hechos sale un insight (jax/memory/db.py::save_fact). Un
+    hecho normal (extracción directa de conversación) no lo trae, y eso no es
+    un dato malo: es "sin fuentes", frozenset() sin marcar nada.
+
+    Ilegible (JSON roto, no es una lista de números) SÍ es un dato malo --
+    pero fundir no puede colgarse por un problema de trazabilidad ajeno
+    (Principio VIII: un 'no se pudo leer' honesto, no un 500). Se trata como
+    'sin fuentes' Y se registra -- nunca en silencio."""
+    if not valor:
+        return frozenset()
+    try:
+        return frozenset(int(x) for x in json.loads(valor))
+    except (TypeError, ValueError):  # fail-soft: source_fact_ids ilegible se trata como "sin fuentes" (no bloquea el agrupamiento); se cuenta con el WARNING de abajo, nunca en silencio
+        logger.warning(
+            "facts.source_fact_ids ilegible en fact_id=%s: %r", fact_id, valor)
+        return frozenset()
+
+
 def _casi_duplicados_del_grupo(miembros: list) -> list[list[int]]:
-    """miembros: lista de (id, fact_text, is_verified, created_at, vector).
-    Devuelve subconjuntos (>=2 elementos) cuyos miembros están, par a par,
-    a distancia <= UMBRAL_MISMO_TEMA -- verificación exacta, no la cadena de
-    vecinos-más-cercanos que formó el grupo (que puede conectar A con C vía
-    B sin que A y C estén realmente cerca)."""
+    """miembros: lista de (id, fact_text, is_verified, created_at, vector[,
+    source_fact_ids]) -- el sexto elemento es opcional (retrocompatible con
+    las tuplas sintéticas de 5 que ya usan los tests de rendimiento de este
+    archivo). Devuelve subconjuntos (>=2 elementos) cuyos miembros están, par
+    a par, a distancia <= UMBRAL_MISMO_TEMA -- verificación exacta, no la
+    cadena de vecinos-más-cercanos que formó el grupo (que puede conectar A
+    con C vía B sin que A y C estén realmente cerca).
+
+    Ronda 2026-09-22 (hallazgo de Fernando): una SÍNTESIS (jax/memory/
+    synthesis_worker.py, `source_fact_ids` no vacío) nunca puede salir
+    marcada como casi-duplicado de un hecho DEL QUE ELLA MISMA sale --
+    "fundir en el más reciente" aprobaría una síntesis con partes
+    inventadas por el sintetizador y superaría al hecho fuente, aunque
+    estuviera verificado. Por eso, DESPUÉS de armar los componentes por
+    distancia (sin tocar esa parte), cualquier miembro cuyo `source_fact_ids`
+    apunte a OTRO miembro del mismo componente se saca del subconjunto --
+    nunca al revés (un hecho normal no tiene `source_fact_ids`, así que
+    nunca es él quien se excluye). Sacar sólo al lado que cita, y no a los
+    dos, es lo que permite que un tercer miembro cercano y sin relación de
+    fuente (el "caso de tres" del brief) siga agrupado con la fuente."""
     if len(miembros) < 2 or len(miembros) > _MAX_MIEMBROS_CASI_DUPLICADO:
         return []
     vectores = {m[0]: json.loads(m[4]) for m in miembros}
+    fuentes = {m[0]: _parse_fuentes(m[5] if len(m) > 5 else None, m[0]) for m in miembros}
     # UNA norma por vector, no una por par: con 90 miembros son 90 raíces en
     # vez de 8.010. Es el arreglo medido del 2026-09-20 (61 % del request).
     normas = {i: _norma(v) for i, v in vectores.items()}
@@ -543,16 +635,50 @@ def _casi_duplicados_del_grupo(miembros: list) -> list[list[int]]:
             if _distancia_coseno(vectores[a], vectores[b],
                                  normas[a], normas[b]) <= _UMBRAL_MISMO_TEMA:
                 uf.unir(a, b)
-    return [sorted(c) for c in uf.componentes() if len(c) > 1]
+
+    resultado = []
+    for componente in uf.componentes():
+        if len(componente) < 2:
+            continue
+        comp = set(componente)
+        # Excluir sólo el par directo no alcanza si A y C se unen vía B: el
+        # criterio es sobre el componente FINAL, no sobre cada unión. Un
+        # miembro cuyas fuentes tocan a CUALQUIER otro del mismo componente
+        # se saca entero -- después de sacarlo no puede quedar ningún par
+        # (fuente, síntesis-que-la-cita) junto, porque esa relación sólo
+        # existe del lado de quien tiene `source_fact_ids`.
+        conflictivos = {x for x in comp if fuentes[x] & (comp - {x})}
+        libres = sorted(comp - conflictivos)
+        if len(libres) > 1:
+            resultado.append(libres)
+    return resultado
+
+
+def _elegir_superviviente(ids: list, info: dict) -> int:
+    """Decisión de Fernando (2026-09-22): el verificado gana al más
+    reciente. Si hay algún verificado entre `ids`, sobrevive el verificado
+    más reciente; si no hay ninguno, sobrevive el más reciente a secas.
+
+    `info`: id -> (is_verified, created_at)."""
+    verificados = [i for i in ids if info[i][0]]
+    candidatos = verificados or ids
+    return max(candidatos, key=lambda i: info[i][1])
 
 
 def _construir_grupos(filas: list, vecinos: list) -> list[dict]:
     """CPU pura (sin await): se corre en un hilo aparte (asyncio.to_thread)
     para no bloquear el event loop a escala de 10.000 hechos.
 
-    filas: (id, fact_text, is_verified, created_at, vector) de cada hecho
-    activo. vecinos: [(fact_id, [(vecino_id, distancia), ...]), ...], el
-    resultado de SQL_VECINOS para cada fila."""
+    filas: (id, fact_text, is_verified, created_at, vector, source_fact_ids)
+    de cada hecho activo. vecinos: [(fact_id, [(vecino_id, distancia), ...]),
+    ...], el resultado de SQL_VECINOS para cada fila.
+
+    Ronda 2026-09-22: cada cluster de `casi_duplicados` deja de ser una
+    lista de ids a secas -- pasa a `{"ids": [...], "superviviente_id": ...}`
+    (`_elegir_superviviente`, el verificado gana al más reciente). El
+    backend declara quién sobrevive UNA sola vez acá; ni el frontend ni
+    `POST /hechos/fundir` vuelven a adivinarlo con "el primero de la
+    lista"."""
     datos = {f[0]: f for f in filas}
     uf = _UnionFind(datos.keys())
     for fact_id, cercanos in vecinos:
@@ -565,11 +691,15 @@ def _construir_grupos(filas: list, vecinos: list) -> list[dict]:
     for miembros_ids in uf.componentes():
         miembros = sorted((datos[i] for i in miembros_ids),
                           key=lambda f: f[3], reverse=True)  # created_at DESC
+        info = {m[0]: (m[2], m[3]) for m in miembros}  # id -> (is_verified, created_at)
         grupos.append({
             "tema": miembros[0][1],
             "hechos": [m[0] for m in miembros],
             "sin_verificar": sum(1 for m in miembros if not m[2]),
-            "casi_duplicados": _casi_duplicados_del_grupo(miembros),
+            "casi_duplicados": [
+                {"ids": cluster, "superviviente_id": _elegir_superviviente(cluster, info)}
+                for cluster in _casi_duplicados_del_grupo(miembros)
+            ],
         })
 
     grupos.sort(key=lambda g: len(g["hechos"]), reverse=True)

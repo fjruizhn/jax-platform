@@ -1230,11 +1230,20 @@ export default {
     // fue reemplazado por aquello", no "esto dejó de valer". `POST
     // /hechos/fundir` (backend/api/admin/memoria.py) reemplaza al composite
     // aprobar+caducar que usaba esta pantalla antes.
-    fundir: 'Fundir en el más reciente',
-    fundirTitulo: 'Fundir casi-duplicados',
-    fundirMensaje: 'La redacción más reciente queda aprobada; el resto queda marcado como superado por ella. No se borra nada: la cadena de reemplazo queda registrada.',
+    //
+    // Ronda 2026-09-22 (hallazgo de Fernando): "el más reciente" ya NO es
+    // siempre quien sobrevive -- si hay un verificado en el grupo, ese gana
+    // (backend/api/admin/memoria.py::_elegir_superviviente). El backend
+    // declara quién sobrevive (`superviviente_id` en cada cluster de
+    // `casi_duplicados`); esta pantalla sólo lo muestra, no lo adivina.
+    fundir: 'Fundir',
+    fundirTitulo: (id) => `Fundir en el hecho #${id}`,
+    fundirMensaje: (motivo) => (motivo === 'verificado'
+      ? 'Sobrevive el hecho verificado: el resto queda marcado como superado por él. No se borra nada: la cadena de reemplazo queda registrada.'
+      : 'Ningún hecho de este grupo está verificado: sobrevive el más reciente y el resto queda marcado como superado por él. No se borra nada: la cadena de reemplazo queda registrada.'),
     fundirConfirmar: 'Fundir',
     fundido: 'Casi-duplicados fundidos: el resto quedó superado.',
+    sobrevive: 'Sobrevive',
     corregir: 'Corregir',
     corregirTitulo: (id) => `Corregir hecho #${id}`,
     corregirTexto: 'Texto corregido',
@@ -1296,6 +1305,7 @@ export default {
       texto_vacio: 'Escribí un texto.',
       vence_at_invalido: 'La fecha no es válida.',
       memoria_no_disponible: 'La memoria no está disponible ahora mismo.',
+      superviviente_no_verificado: 'Un hecho verificado no puede quedar superado por uno sin verificar: recargá la pantalla.',
     },
   },
 }

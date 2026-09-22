@@ -100,7 +100,7 @@ export default function Memoria() {
   const [corrigiendo, setCorrigiendo] = useState(null) // { hecho, texto, err }
   const [confirmandoCorreccion, setConfirmandoCorreccion] = useState(null) // { hecho, texto }
   const [caducando, setCaducando] = useState(null) // hecho
-  const [fundiendo, setFundiendo] = useState(null) // ids[]
+  const [fundiendo, setFundiendo] = useState(null) // { ids, supervivienteId }
 
   const cargar = useCallback(async () => {
     setCargando(true)
@@ -118,7 +118,13 @@ export default function Memoria() {
       const porId = {}
       for (const h of rHechos.data.hechos) porId[h.id] = h
       // No se preseleccionan los casi-duplicados: ver nota de módulo, punto 3.
-      const idsDeCluster = new Set(rGrupos.data.grupos.flatMap((g) => (g.casi_duplicados || []).flat()))
+      // Ronda 2026-09-22: cada cluster es {ids, superviviente_id} (antes,
+      // una lista de ids a secas) -- `.flat()` sobre objetos no aplanaba
+      // nada y esto dejaba de excluir a los casi-duplicados de la
+      // preselección. Hay que entrar por `.ids`.
+      const idsDeCluster = new Set(
+        rGrupos.data.grupos.flatMap((g) => (g.casi_duplicados || []).flatMap((c) => c.ids)),
+      )
       setGrupos(rGrupos.data.grupos)
       setHechosPorId(porId)
       // incluir_vencidos=true trae vencidos Y activos juntos (ver nota de
@@ -254,23 +260,29 @@ export default function Memoria() {
     }
   }
 
-  // Fundir (casi-duplicados, spec §2.1: "un botón para fundirlos"): aprueba
-  // el más reciente del cluster y SUPERA el resto (POST /hechos/fundir --
-  // ver nota de módulo). Sigue siendo destructivo (cambia el estado de
-  // varios hechos a la vez, sin vuelta atrás desde acá) -> ConfirmacionSuma.
-  function abrirFundir(ids) {
-    setFundiendo(ids)
+  // Fundir (casi-duplicados, spec §2.1: "un botón para fundirlos"): supera
+  // el resto del cluster con el superviviente que YA ELIGIÓ el backend
+  // (POST /grupos::casi_duplicados[].superviviente_id -- ver nota de módulo
+  // y GrupoDeHechos.jsx). Ronda 2026-09-22 (hallazgo de Fernando): el
+  // superviviente ya NO es "el más reciente" a secas -- si hay un
+  // verificado en el cluster, ese gana, aunque sea más viejo; adivinarlo acá
+  // duplicaría una regla que ya vive en el backend
+  // (_elegir_superviviente). Por eso esta pantalla recibe el id elegido, no
+  // lo calcula. Una sola llamada: `/hechos/fundir` aprueba al superviviente
+  // (si hacía falta) y funde en la MISMA transacción -- ya no hay una
+  // llamada aparte a `/hechos/aprobar` antes (esa ventana entre las dos
+  // llamadas era justo lo que dejaba "fundir a medias" posible).
+  function abrirFundir(ids, supervivienteId) {
+    setFundiendo({ ids, supervivienteId })
   }
 
   async function confirmarFundir() {
-    // item.ids viene ordenado created_at DESC (GrupoDeHechos.jsx): el
-    // primero es el más reciente.
-    const [masReciente, ...resto] = fundiendo
-    marcarProcesando(fundiendo, true)
+    const { ids, supervivienteId } = fundiendo
+    const absorbidos = ids.filter((id) => id !== supervivienteId)
+    marcarProcesando(ids, true)
     try {
-      await api.post('/admin/memoria/hechos/aprobar', { ids: [masReciente] })
       await api.post('/admin/memoria/hechos/fundir', {
-        superviviente_id: masReciente, absorbidos: resto,
+        superviviente_id: supervivienteId, absorbidos,
       })
       setFundiendo(null)
       addToast({ type: 'success', message: t.memoria.fundido })
@@ -278,7 +290,7 @@ export default function Memoria() {
     } catch (err) {
       addToast({ type: 'error', message: mensajeDeError(t, err) })
     } finally {
-      marcarProcesando(fundiendo, false)
+      marcarProcesando(ids, false)
     }
   }
 
@@ -395,8 +407,10 @@ export default function Memoria() {
 
       {fundiendo && (
         <ConfirmacionSuma
-          titulo={t.memoria.fundirTitulo}
-          mensaje={t.memoria.fundirMensaje}
+          titulo={t.memoria.fundirTitulo(fundiendo.supervivienteId)}
+          mensaje={t.memoria.fundirMensaje(
+            hechosPorId[fundiendo.supervivienteId]?.verificado ? 'verificado' : 'reciente',
+          )}
           textoConfirmar={t.memoria.fundirConfirmar}
           onConfirmar={confirmarFundir}
           onCancelar={() => setFundiendo(null)}

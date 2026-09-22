@@ -14,22 +14,30 @@ import FichaDeHecho from './FichaDeHecho'
 // backend/api/admin/memoria.py) se renderizan juntos dentro de un panel
 // marcado -- "estos N hechos dicen lo mismo" -- en vez de mezclados con el
 // resto en orden de fecha.
+//
+// Ronda 2026-09-22: cada cluster es `{ids, superviviente_id}` (antes, una
+// lista de ids a secas) -- el backend declara quién sobrevive
+// (_elegir_superviviente: el verificado gana al más reciente); esta pantalla
+// ya NO asume "el primero de la lista", que era exactamente el hallazgo de
+// Fernando (una síntesis sin verificar podía superar a un hecho verificado).
 function agruparParaRenderizar(grupo) {
   const clusterDeId = new Map()
   for (const cluster of grupo.casi_duplicados || []) {
-    for (const id of cluster) clusterDeId.set(id, cluster)
+    for (const id of cluster.ids) clusterDeId.set(id, cluster)
   }
   const renderizados = new Set()
   const items = []
   for (const id of grupo.hechos) {
     const cluster = clusterDeId.get(id)
     if (!cluster) { items.push({ tipo: 'individual', id }); continue }
-    const clave = cluster.join(',')
+    const clave = cluster.ids.join(',')
     if (renderizados.has(clave)) continue
     renderizados.add(clave)
-    // Mismo orden que grupo.hechos (creado_at DESC, backend) -- el primero
-    // del cluster en ese orden es el más reciente.
-    items.push({ tipo: 'cluster', ids: grupo.hechos.filter((x) => cluster.includes(x)) })
+    items.push({
+      tipo: 'cluster',
+      ids: grupo.hechos.filter((x) => cluster.ids.includes(x)),
+      supervivienteId: cluster.superviviente_id,
+    })
   }
   return items
 }
@@ -119,7 +127,7 @@ export default function GrupoDeHechos({
                 <button
                   type="button"
                   disabled={ocupadoCluster}
-                  onClick={() => onAbrirFundir(item.ids)}
+                  onClick={() => onAbrirFundir(item.ids, item.supervivienteId)}
                   className={`${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors disabled:opacity-50 disabled:pointer-events-none`}
                 >
                   {t.memoria.fundir}
@@ -130,6 +138,7 @@ export default function GrupoDeHechos({
                   key={hecho.id}
                   hecho={hecho}
                   resaltado
+                  esSuperviviente={hecho.id === item.supervivienteId}
                   seleccionado={seleccionados.has(hecho.id)}
                   onToggleSeleccion={() => onToggleSeleccion(hecho.id)}
                   ocupado={procesando.has(hecho.id)}

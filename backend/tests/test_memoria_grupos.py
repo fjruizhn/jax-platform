@@ -27,7 +27,9 @@ produccion) y se sembraron como JSON en el repo -- el test los inserta tal
 cual, sin red.
 """
 import json
+import logging
 import pathlib
+from datetime import datetime
 
 import pytest
 
@@ -82,13 +84,66 @@ def test_listar_grupos_exige_superadmin(client):
 def test_los_casi_duplicados_salen_juntos_y_marcados(client_superadmin,
                                                        casi_duplicados_de_prueba):
     """Spec §2.1: "estos tres dicen lo mismo". Si el agrupamiento no los
-    junta, no sirve."""
+    junta, no sirve.
+
+    Ronda 2026-09-22: cada cluster de `casi_duplicados` ahora es un objeto
+    `{ids, superviviente_id}` (antes, una lista de ids a secas) -- el
+    backend declara quien sobrevive (_elegir_superviviente), el frontend ya
+    no lo adivina con "el primero de la lista"."""
     ids = set(casi_duplicados_de_prueba)
     grupos = client_superadmin.get("/api/admin/memoria/grupos").json()["grupos"]
     juntos = [g for g in grupos if ids <= set(g["hechos"])]
     assert juntos, f"los tres casi-duplicados quedaron en grupos distintos: {grupos}"
-    assert any(ids <= set(d) for d in juntos[0]["casi_duplicados"]), \
-        f"no quedaron marcados como casi-duplicados: {juntos[0]}"
+    cluster = next((d for d in juntos[0]["casi_duplicados"] if ids <= set(d["ids"])), None)
+    assert cluster, f"no quedaron marcados como casi-duplicados: {juntos[0]}"
+    assert cluster["superviviente_id"] in ids
+
+
+def test_el_superviviente_del_casi_duplicado_es_el_verificado_aunque_sea_mas_viejo(
+        client_superadmin, casi_duplicados_de_prueba):
+    """Decision de Fernando (2026-09-22): el verificado gana al mas reciente.
+
+    `created_at` es un `TIMESTAMP` de precision de SEGUNDO (verificado con
+    SHOW COLUMNS): sembrar los tres hechos de la fixture uno tras otro en el
+    mismo test casi siempre los deja con el MISMO segundo -- un control que
+    dependiera de ese orden natural no fallaria con la mutacion "siempre gana
+    el mas reciente" (medido: escapo sin este ajuste). Por eso acá se fuerzan
+    tres `created_at` bien separados a mano, y se verifica que el mas viejo
+    de los TRES (y el unico verificado) sigue ganando al mas nuevo."""
+    ids = casi_duplicados_de_prueba
+    mas_viejo, medio, mas_nuevo = ids
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET created_at = '2020-01-01 00:00:00' WHERE id = %s", (mas_viejo,))
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET created_at = '2022-01-01 00:00:00' WHERE id = %s", (medio,))
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET created_at = '2026-09-22 00:00:00' WHERE id = %s", (mas_nuevo,))
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET is_verified = TRUE WHERE id = %s", (mas_viejo,))
+    grupos = client_superadmin.get("/api/admin/memoria/grupos").json()["grupos"]
+    grupo = next(g for g in grupos if set(ids) <= set(g["hechos"]))
+    cluster = next(d for d in grupo["casi_duplicados"] if set(ids) <= set(d["ids"]))
+    assert cluster["superviviente_id"] == mas_viejo, (
+        f"el verificado (id {mas_viejo}, el mas viejo de los tres) tenia que "
+        f"ganar al mas reciente ({mas_nuevo}): {cluster}")
+
+
+def test_no_propone_fundir_una_sintesis_con_su_propia_fuente(
+        client_superadmin, casi_duplicados_de_prueba):
+    """El hallazgo real de esta ronda: una sintesis construida a partir de un
+    hecho no puede salir marcada como casi-duplicado DE ESE MISMO hecho --
+    "fundir en el mas reciente" aprobaria la sintesis (con partes
+    inventadas) y superaria al hecho fuente, aunque estuviera verificado."""
+    ids = casi_duplicados_de_prueba
+    fuente, sintesis = ids[0], ids[1]
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET source_fact_ids = %s WHERE id = %s",
+        (json.dumps([fuente]), sintesis))
+    grupos = client_superadmin.get("/api/admin/memoria/grupos").json()["grupos"]
+    grupo = next(g for g in grupos if set(ids) <= set(g["hechos"]))
+    for cluster in grupo["casi_duplicados"]:
+        assert not ({fuente, sintesis} <= set(cluster["ids"])), (
+            f"la sintesis {sintesis} quedo agrupada con su propia fuente {fuente}: {cluster}")
 
 
 def test_agrupar_no_bloquea_el_event_loop():
@@ -122,6 +177,20 @@ def test_el_agrupamiento_usa_el_indice_vectorial(client_superadmin):
                                           memoria.ARGS_VECINOS_EJEMPLO)
     texto = " ".join(str(c) for fila in plan for c in fila)
     assert "idx_embedding_bge_m3" in texto, f"no usa el indice vectorial: {texto}"
+    assert "Using filesort" not in texto, f"ordena en memoria: {texto}"
+    assert "Using temporary" not in texto, f"tabla temporal: {texto}"
+
+
+def test_la_consulta_de_activos_sigue_usando_el_indice_tras_agregar_source_fact_ids(client_superadmin):
+    """LAS CUATRO DEL RENDIMIENTO, regla 1 (indexing): `SQL_ACTIVOS_CON_
+    VECTOR` (la consulta que trae las filas del detector de casi-duplicados,
+    ronda 2026-09-22) gano una columna (`source_fact_ids`) para poder excluir
+    sintesis de sus propias fuentes -- se verifica con EXPLAIN, sobre el SQL
+    real, que agregar una columna al SELECT no saco a la consulta de
+    `idx_facts_active` ni metio un filesort/temporal nuevos."""
+    plan = client_superadmin.portal.call(_explain, memoria.SQL_ACTIVOS_CON_VECTOR, ())
+    texto = " ".join(str(c) for fila in plan for c in fila)
+    assert "idx_facts_active" in texto, f"no usa el indice de superseded_by: {texto}"
     assert "Using filesort" not in texto, f"ordena en memoria: {texto}"
     assert "Using temporary" not in texto, f"tabla temporal: {texto}"
 
@@ -273,3 +342,82 @@ def test_la_norma_de_cada_vector_es_la_SUYA(monkeypatch):
     assert cruzado != correcto, (
         "usar la norma de `a` como norma de `b` dio el MISMO resultado: "
         "este grupo no discrimina y el centinela no sirve")
+
+
+# --- Ronda 2026-09-22: una sintesis no se agrupa con su propia fuente ------
+#
+# Hallazgo real de Fernando en la pantalla de Memoria: #160 (extractor,
+# verificado) y #161 (sintesis de #160 y otros seis) salian marcados como
+# casi-duplicados. "Fundir en el mas reciente" habria aprobado #161 (con
+# partes inventadas por el sintetizador) y SUPERADO a #160, ya verificado.
+#
+# `miembros` gana un SEXTO elemento opcional (source_fact_ids, JSON o None) a
+# proposito al FINAL de la tupla -- las tuplas de 5 elementos que usan los
+# tests de arriba (_grupo_sintetico, _grupo_con_clusters) siguen sin tocar,
+# sin source_fact_ids, y su comportamiento no cambia (ver
+# test_el_camino_de_produccion_da_LO_MISMO_que_la_implementacion_vieja, que
+# sigue en verde con tuplas de 5).
+
+def _con_vector_identico(*definiciones):
+    """definiciones: (id, es_sintesis_de_ids_o_None). Los tres miembros
+    comparten el MISMO vector (distancia 0) para que el union-find los una
+    de entrada -- lo que hay que probar es que la exclusion los separa
+    DESPUES, no que la distancia los una."""
+    v = json.dumps([1.0, 0.0, 0.0, 0.0])
+    return [
+        (mid, f"hecho {mid}", True, None, v,
+         json.dumps(list(fuentes)) if fuentes else None)
+        for mid, fuentes in definiciones
+    ]
+
+
+def test_una_sintesis_no_se_agrupa_con_su_propia_fuente():
+    miembros = _con_vector_identico((160, None), (161, [160]))
+    assert memoria._casi_duplicados_del_grupo(miembros) == []
+
+
+def test_caso_de_tres_fuente_sintesis_y_tercero_cercano_a_ambos():
+    """El caso de guardia que el brief pide explicitamente: A (fuente) y B
+    (sintesis de A) no pueden salir juntos, ni siquiera conectados via un
+    tercer miembro C que si esta cerca de los dos."""
+    miembros = _con_vector_identico((160, None), (161, [160]), (162, None))
+    grupos = memoria._casi_duplicados_del_grupo(miembros)
+    for g in grupos:
+        assert not ({160, 161} <= set(g)), f"fuente y sintesis quedaron juntas: {g}"
+
+
+def test_source_fact_ids_ilegible_se_trata_como_vacio_y_se_registra(caplog):
+    """Un dato de trazabilidad roto no bloquea el agrupamiento (Principio
+    VIII: un 'no se pudo leer' honesto, no un fundir que se cuelga) -- pero
+    tampoco se ignora en silencio: queda un WARNING con el fact_id."""
+    v = json.dumps([1.0, 0.0, 0.0, 0.0])
+    a = (1, "a", True, None, v, "{esto no es JSON valido")
+    b = (2, "b", True, None, v, None)
+    with caplog.at_level(logging.WARNING):
+        grupos = memoria._casi_duplicados_del_grupo([a, b])
+    assert grupos == [[1, 2]], "un source_fact_ids ilegible no puede bloquear la agrupacion"
+    avisos = [r.message for r in caplog.records if "source_fact_ids" in r.message]
+    assert avisos and "1" in avisos[0], f"no se registro el dato malo: {caplog.records}"
+
+
+def test_elegir_superviviente_el_verificado_gana_aunque_sea_mas_viejo():
+    info = {
+        1: (False, datetime(2026, 9, 20)),
+        2: (True, datetime(2026, 9, 1)),
+        3: (False, datetime(2026, 9, 22)),
+    }
+    assert memoria._elegir_superviviente([1, 2, 3], info) == 2
+
+
+def test_elegir_superviviente_sin_ninguno_verificado_gana_el_mas_reciente():
+    info = {1: (False, datetime(2026, 9, 20)), 2: (False, datetime(2026, 9, 22))}
+    assert memoria._elegir_superviviente([1, 2], info) == 2
+
+
+def test_elegir_superviviente_con_dos_verificados_gana_el_mas_reciente_de_esos():
+    info = {
+        1: (True, datetime(2026, 9, 1)),
+        2: (True, datetime(2026, 9, 10)),
+        3: (False, datetime(2026, 9, 22)),
+    }
+    assert memoria._elegir_superviviente([1, 2, 3], info) == 2

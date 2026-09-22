@@ -744,8 +744,21 @@ jobs:
           // `?tab=models` abre directo en el Catálogo, y un `?tab`
           // desconocido cae al default sin romper. Medido con
           // `npx vitest run`: 939 passed, 0 fallidos, 91 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 942) {
-              console.error("PISO ROTO: se esperaban 942 tests de vitest CORRIDOS y 0 fallidos.");
+          // 942 -> 943 (2026-09-22, jax-platform: fundir respeta fuentes y
+          //   verificados): +1 Memoria.test.jsx -- "fundir muestra cual
+          //   sobrevive y por que cuando el superviviente esta verificado"
+          //   (la ficha lleva la marca "Sobrevive" y la ConfirmacionSuma dice
+          //   por que). El resto del cambio de esta ronda (el cluster deja de
+          //   asumir "el primero de la lista" y pasa a leer
+          //   `superviviente_id` del backend, una sola llamada a
+          //   /hechos/fundir sin el /hechos/aprobar previo) se cubre
+          //   modificando tests EXISTENTES, no sumando nuevos -- por eso el
+          //   piso sube sólo 1 y no más. Vistos en rojo antes de verde
+          //   (`cluster.ids is not iterable` con la fixture vieja). Medido
+          //   con `npx vitest run`, mismo comando en las dos ramas: master
+          //   942 passed / 92 archivos -> rama 943 / 92 (0 fallidos las dos).
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 943) {
+              console.error("PISO ROTO: se esperaban 943 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -2058,7 +2071,27 @@ jobs:
           #   declarado sube por el delta verificado (+7), no por el passed
           #   crudo local. Si el runner (limpio, sin esas 7 fallas) da otro
           #   numero, manda el runner.
-          PISO_PASSED = 2452
+          # 2452 -> 2465 (2026-09-22, fundir respeta fuentes y verificados):
+          #   +13. La pantalla de Memoria proponia fundir una SINTESIS (con
+          #   partes inventadas por el sintetizador) con su propio hecho
+          #   fuente, y ademas "el mas reciente" podia superar a un hecho YA
+          #   verificado. test_memoria_grupos.py (+9: la exclusion
+          #   fuente/sintesis en _casi_duplicados_del_grupo, el caso de tres,
+          #   source_fact_ids ilegible registrado con WARNING,
+          #   _elegir_superviviente x3, el EXPLAIN de SQL_ACTIVOS_CON_VECTOR
+          #   tras sumarle la columna) y test_memoria_fundir.py (+4: el
+          #   superviviente se aprueba EN la misma transaccion, 409
+          #   `superviviente_no_verificado` si un absorbido verificado
+          #   quedaria superado por uno sin verificar, y la atomicidad de esa
+          #   aprobacion -- revertida si el UPDATE de un absorbido revienta a
+          #   mitad del lote, monkeypatch sobre `_superar_en_cursor`). Vistos
+          #   en rojo antes de verde contra el codigo viejo. Medido en vivo,
+          #   MISMO comando en las dos ramas (`python -m pytest -q`, sin
+          #   contaminacion cruzada -- la primera medicion salio corrupta por
+          #   un `git stash pop` corriendo mientras un pytest de fondo todavia
+          #   leia el archivo del disco, y se remidio limpio): master 2512
+          #   passed / 0 fallidos -> rama 2525 / 0 fallidos.
+          PISO_PASSED = 2465
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2712,7 +2745,20 @@ jobs:
       #   MISMO comando en las dos ramas: master local 1669 passed / 830
       #   skipped -> rama 1676 / 830 (0 fallidos las dos; el piso declarado
       #   sube por el delta verificado, +7, no por el passed crudo local).
-      JAX_CI_MIN_PASSED: "1641"
+      # 1641 -> 1647 (2026-09-22, fundir respeta fuentes y verificados): +6,
+      #   de los 13 tests nuevos de esta ronda (ver el piso con DB, más
+      #   arriba, para el detalle completo) sólo 6 son puros -- los de
+      #   `_casi_duplicados_del_grupo`/`_elegir_superviviente` en
+      #   test_memoria_grupos.py que no piden `client` (la exclusión
+      #   fuente/síntesis, el caso de tres, source_fact_ids ilegible, y las
+      #   tres de `_elegir_superviviente`). Los otros 7 (los de
+      #   `POST /hechos/fundir` y los end-to-end contra `GET /grupos`) piden
+      #   `client`/DB y quedan salteados acá -- por eso los skips también
+      #   suben (+7). Medido con JAX_CI_NO_DB=1 python3 -m pytest -q, MISMO
+      #   comando en las dos ramas: master local 1678 passed / 834 skipped ->
+      #   rama 1684 / 841 (0 fallidos las dos; el piso declarado sube por el
+      #   delta verificado, +6, no por el passed crudo local).
+      JAX_CI_MIN_PASSED: "1647"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

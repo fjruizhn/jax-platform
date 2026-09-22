@@ -1181,11 +1181,18 @@ export default {
     aprobados: (n) => (n === 1 ? '1 fact approved.' : `${n} facts approved.`),
     aprobar: 'Approve',
     casiDuplicados: (n) => `These ${n} facts say the same thing`,
-    fundir: 'Merge into the most recent',
-    fundirTitulo: 'Merge near-duplicates',
-    fundirMensaje: 'The most recent wording gets approved; the rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.',
+    // Round 2026-09-22: "the most recent" is no longer always the survivor --
+    // a verified fact in the group wins (backend ::_elegir_superviviente).
+    // The backend declares who survives (`superviviente_id` on each
+    // `casi_duplicados` cluster); this screen only shows it, never guesses.
+    fundir: 'Merge',
+    fundirTitulo: (id) => `Merge into fact #${id}`,
+    fundirMensaje: (motivo) => (motivo === 'verificado'
+      ? 'The verified fact survives: the rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.'
+      : 'No fact in this group is verified: the most recent one survives and the rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.'),
     fundirConfirmar: 'Merge',
     fundido: 'Near-duplicates merged: the rest is now superseded.',
+    sobrevive: 'Survives',
     corregir: 'Correct',
     corregirTitulo: (id) => `Correct fact #${id}`,
     corregirTexto: 'Corrected text',
@@ -1238,6 +1245,7 @@ export default {
       texto_vacio: 'Write a text.',
       vence_at_invalido: 'The date is not valid.',
       memoria_no_disponible: 'The memory is not available right now.',
+      superviviente_no_verificado: 'A verified fact cannot be superseded by an unverified one: reload the screen.',
     },
   },
 }

@@ -67,9 +67,16 @@ const HECHO_VENCIDO = {
   procedencia: { mensaje_id: 700, faceta: 'thot' },
 }
 
+// Los tres (136/138/139) arrancan sin verificar (ver arriba): con la regla
+// "el verificado gana, si no hay ninguno gana el más reciente"
+// (_elegir_superviviente, backend/api/admin/memoria.py), el superviviente
+// sigue siendo 139 -- el más nuevo de los tres.
 const GRUPOS_DOS_TEMAS = {
   grupos: [
-    { tema: HECHO_139.texto, hechos: [139, 138, 136], sin_verificar: 3, casi_duplicados: [[136, 138, 139]] },
+    {
+      tema: HECHO_139.texto, hechos: [139, 138, 136], sin_verificar: 3,
+      casi_duplicados: [{ ids: [136, 138, 139], superviviente_id: 139 }],
+    },
     { tema: HECHO_201.texto, hechos: [201], sin_verificar: 0, casi_duplicados: [] },
   ],
 }
@@ -285,21 +292,62 @@ describe('Memoria', () => {
     expect(await screen.findByText(es.memoria.vencido)).toBeInTheDocument()
   })
 
-  it('fundir pide confirmacion en ventana propia y llama al endpoint de fusion, no a caducar', async () => {
+  it('fundir pide confirmacion en ventana propia y llama SOLO al endpoint de fusion', async () => {
     servirGet(GRUPOS_DOS_TEMAS, HECHOS_DOS_TEMAS)
-    api.post.mockResolvedValue({ data: { aprobados: 1, superados: 2 } })
+    api.post.mockResolvedValue({ data: { superados: 2 } })
     renderMemoria()
     const grupo = await screen.findByTestId('grupo-0')
     fireEvent.click(within(grupo).getByRole('button', { name: es.memoria.fundir }))
     const confirmacion = await screen.findByRole('dialog')
+    // Ninguno de los tres esta verificado (ver GRUPOS_DOS_TEMAS): el motivo
+    // es "el mas reciente", no "el verificado".
+    expect(confirmacion).toHaveTextContent(es.memoria.fundirMensaje('reciente'))
     fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
     fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.fundirConfirmar }))
-    // grupo.hechos = [139, 138, 136] (creado_at DESC): 139 es el más reciente.
+    // grupo.hechos = [139, 138, 136] (creado_at DESC); superviviente_id=139
+    // viene del backend (GRUPOS_DOS_TEMAS), esta pantalla no lo recalcula.
     await waitFor(() => expect(api.post).toHaveBeenCalledWith(
       '/admin/memoria/hechos/fundir', { superviviente_id: 139, absorbidos: [138, 136] },
     ))
-    expect(api.post).not.toHaveBeenCalledWith(expect.stringMatching(/\/caducar$/), expect.anything())
+    // Una sola llamada (ronda 2026-09-22): ya no hay un /hechos/aprobar
+    // previo -- la ventana entre dos llamadas era justo lo que dejaba
+    // "fundir a medias" posible.
+    expect(api.post).toHaveBeenCalledTimes(1)
     expect(await screen.findByText(es.memoria.fundido)).toBeInTheDocument()
+  })
+
+  it('fundir muestra cual sobrevive y por que cuando el superviviente esta verificado', async () => {
+    // #138 esta verificado (aunque no sea el mas nuevo): el backend lo elige
+    // como superviviente (_elegir_superviviente) -- esta pantalla lo
+    // muestra, no lo recalcula ni asume "el primero de la lista".
+    const HECHO_138_VERIFICADO = { ...HECHO_138, verificado: true, verificado_por: 2, verificado_at: '2026-09-05T00:00:00' }
+    servirGet(
+      {
+        grupos: [{
+          tema: HECHO_139.texto, hechos: [139, 138, 136], sin_verificar: 2,
+          casi_duplicados: [{ ids: [136, 138, 139], superviviente_id: 138 }],
+        }],
+      },
+      { hechos: [HECHO_136, HECHO_138_VERIFICADO, HECHO_139], total: 3 },
+    )
+    api.post.mockResolvedValue({ data: { superados: 2 } })
+    renderMemoria()
+    const grupo = await screen.findByTestId('grupo-0')
+    // La ficha del superviviente lleva la marca "Sobrevive"; las otras dos, no.
+    const ficha138 = within(grupo).getByTestId('hecho-138')
+    expect(within(ficha138).getByText(es.memoria.sobrevive)).toBeInTheDocument()
+    const ficha139 = within(grupo).getByTestId('hecho-139')
+    expect(within(ficha139).queryByText(es.memoria.sobrevive)).not.toBeInTheDocument()
+
+    fireEvent.click(within(grupo).getByRole('button', { name: es.memoria.fundir }))
+    const confirmacion = await screen.findByRole('dialog')
+    expect(confirmacion).toHaveTextContent(es.memoria.fundirTitulo(138))
+    expect(confirmacion).toHaveTextContent(es.memoria.fundirMensaje('verificado'))
+    fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
+    fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.fundirConfirmar }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith(
+      '/admin/memoria/hechos/fundir', { superviviente_id: 138, absorbidos: [139, 136] },
+    ))
   })
 
   it('la seccion Vencidos no aparece cuando no hay hechos vencidos', async () => {
