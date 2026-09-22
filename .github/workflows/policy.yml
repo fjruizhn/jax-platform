@@ -2141,7 +2141,27 @@ jobs:
           #   nuevos en tests/test_pipeline_resource_release.py (Ruling 12:
           #   discarded/hidden NO disparan el aviso por correo). Sin fixes
           #   que arreglaran un rojo esta vez (0 failed antes y después).
-          PISO_PASSED = 2557
+          # 2557 -> 2495 (2026-09-22, MERGE de origin/master tras el fix
+          #   round 1 de Task 4). origin/master trajo #148 (`9d378b7`), que
+          #   extrajo el mapeo discarded/hidden de _JACOBS_STATUS_MAP
+          #   (idéntico al de esta rama) para destrabar su propio CI -- el
+          #   merge lo resolvió limpio (jax_engine/state.py y schemas.py sin
+          #   conflicto; test_pipeline_resource_release.py con un conflicto
+          #   mecánico de una sola línea, resuelto quedándose con AMBOS
+          #   bloques de tests, sin duplicar ninguno). #148 NO actualizó el
+          #   piso de este job (se quedó en 2462) aunque sí sumó tests --
+          #   mismo patrón de piso stale que ya viene arrastrando este
+          #   archivo. Medido con el MISMO comando: origin/master (`9d378b7`,
+          #   worktree aparte) -> 2524 passed / 0 failed / 0 skipped; esta
+          #   rama YA MERGEADA -> 2557 / 0 / 0. Delta verificado de ESTA
+          #   rama sobre master: +33. Piso nuevo = piso DECLARADO de master
+          #   (2462, no los 2524 medidos -- mismo criterio que ya usa este
+          #   archivo en cada entrada: no premiar el drift ajeno) + el delta
+          #   verificado (+33) = 2495. Baja respecto del 2557 anterior
+          #   porque ese número ya venía inflado por el mismo drift que este
+          #   comentario evita perpetuar -- no se perdió ningún test (2557
+          #   real sigue siendo el passed medido, ver arriba).
+          PISO_PASSED = 2495
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2834,7 +2854,21 @@ jobs:
       #   Rulings 13(a)/(b)/(c)) suman a SKIPS (+6, 868->874), no a passed --
       #   mismo motivo que ya documentado arriba (fixture de esquema
       #   autouse, dependencia transitiva de `client`).
-      JAX_CI_MIN_PASSED: "1647"
+      # 1647 -> 1644 (2026-09-22, MERGE de origin/master tras el fix round 1
+      #   de Task 4). Mismo motivo que el piso CON DB, más arriba: #148
+      #   (`9d378b7`, en origin/master) no subió este piso (se quedó en
+      #   1642) pese a sumar sus 2 tests puros de Ruling 5. Medido con el
+      #   MISMO comando: origin/master (worktree aparte) -> 1681 passed /
+      #   843 skipped / 0 failed; esta rama YA MERGEADA -> 1683 / 874 / 0.
+      #   Delta verificado de esta rama sobre master: +2 passed (los mismos
+      #   2 parametrizados de Ruling 5, ya contados en la entrada anterior
+      #   de este piso -- no se duplican). Piso nuevo = piso DECLARADO de
+      #   master (1642, no los 1681 medidos) + el delta verificado (+2) =
+      #   1644. Baja respecto del 1647 anterior por el mismo motivo que el
+      #   piso con DB: ese número estaba anclado al drift de ESTA rama
+      #   sola, no al de master -- el criterio del archivo es sumar sobre
+      #   lo DECLARADO, no sobre lo medido.
+      JAX_CI_MIN_PASSED: "1644"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
