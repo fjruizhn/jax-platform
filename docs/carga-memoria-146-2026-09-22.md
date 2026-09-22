@@ -186,10 +186,23 @@ de la respuesta.
 > `jax_memory`) -- sin señal organica que dar una proporción real, se usó
 > el piso del brief: **10 % del total en cita plana** (1.000 de 10.000,
 > cada una citando a OTRO hecho al azar) **+ 200 cadenas de 2do/3er orden**
-> (base → S2 cita a base → S3 cita a S2, 400 filas más) -- el peor caso que
-> pedía el brief, para ejercitar el BFS de `_cierre_transitivo_de_citas` a
-> más de un salto. Total: **1.400 de 10.000 facts (14 %) con
-> `source_fact_ids` no nulo** en la base "con síntesis". Ver
+> (base → S2 cita a base → S3 cita a S2, 400 filas más), para ejercitar el
+> BFS de `_cierre_transitivo_de_citas` a más de un salto. Total: **1.400 de
+> 10.000 facts (14 %) con `source_fact_ids` no nulo** en la base "con
+> síntesis".
+>
+> **CORRECCIÓN (revisión adversarial de jax-platform PR 146, RONDA 5,
+> MINOR A-texto).** La frase de arriba llamaba a esto "el peor caso que
+> pedía el brief" -- **no lo era**. Citas al azar entre CUALQUIER hecho de
+> los 10.000, con cadenas de profundidad <=2, es un **caso realista**
+> (proporción + forma de las cadenas cortas), no el peor: el peor caso
+> necesita cadenas LARGAS (profundidad de verdad, no 2) y con las fuentes
+> **vecinas en embeddings** (dentro de un mismo cluster de casi-duplicados
+> real, no esparcidas al azar por los 10.000) -- eso es lo que ejercita de
+> verdad la vuelta de MINOR 1 (extraer miembros incompatibles de un
+> componente, recalcular, repetir) sobre un caso real, y el rechazo por
+> cita de `fundir_hechos` dentro de un cluster que el detector de verdad
+> agruparía. Medido aparte, ver la sección "RONDA 5" más abajo. Ver
 > `loadtest/memoria_seed.py::FRACCION_SINTESIS`/`N_CADENAS_SINTESIS`
 > (overridables por entorno -- `MEMORIA_SEED_FRACCION_SINTESIS=0` y
 > `MEMORIA_SEED_N_CADENAS_SINTESIS=0` reproducen la base VIEJA, sin
@@ -273,5 +286,134 @@ de la respuesta.
 > `/hechos` sin filtro (no tocados por este PR, igual que la vuelta
 > anterior) -- se corrieron igual como parte del script (`memoria_medir.py`
 > mide las tres rutas siempre), pero no se transcriben acá por no ser el
-> objeto de esta medición; quedaron en los JSON de la sesión (borrados al
-> cerrar, igual que las bases).
+> objeto de esta medición; quedaron en los JSON de la sesión.
+>
+> **CORRECCIÓN (revisión adversarial de jax-platform PR 146, RONDA 5,
+> MINOR A-texto).** La línea de arriba decía "borrados al cerrar, igual que
+> las bases" -- **falso**: las BASES sí se borraron (`DROP DATABASE`,
+> verificado), pero los JSON de resultados de esa ronda
+> (`_resultados_r4a_sin_sintesis.json`/`_resultados_r4b_con_sintesis.json`)
+> siguen en el scratchpad de la sesión que los generó, nunca se borraron.
+> Corregido acá, no borrado -- misma convención que las otras correcciones
+> de este documento.
+
+## RONDA 5 (revisión adversarial de jax-platform PR 146, MINOR A-texto) --
+## el peor caso de verdad, el sesgo de la comparación de ronda 4, y dónde
+## queda el crudo de `/fundir`
+
+**El sesgo de la ronda 4, declarado.** La comparación "sin síntesis" vs.
+"con síntesis" de arriba usó DOS bases con la MISMA semilla de `numpy`
+pero **distinta cantidad de trabajo real por request**: `n_grupos` salió
+**1.549** en la base sin síntesis y **1.234** en la base con síntesis
+(medido en `_resultados_r4a_sin_sintesis.json`/
+`_resultados_r4b_con_sintesis.json`, campo
+`verificacion.grupos.n_grupos`) -- menos grupos, en promedio más grandes
+cada uno (la fracción de síntesis reduce facts "libres" para formar sus
+propios grupos chicos). El delta de p95 (−2,9 % a −1,2 %) de la sección de
+arriba compara dos corridas que NO hacían la misma cantidad de trabajo por
+petición: "dentro del ruido" es cierto de lo que se midió, pero no prueba
+que el costo de `SQL_CITAS`/cierre transitivo sea nulo en igualdad de
+condiciones -- el sesgo pudo estar enmascarando parte del costo (menos
+grupos que agrupar compensando el costo extra de citas). No se volvió a
+correr esa comparación pareada esta ronda (repetir la siembra hasta
+igualar `n_grupos` exacto entre dos bases no es determinista con este
+generador y está fuera del alcance de este encargo) -- se declara el
+sesgo, como pide el hallazgo, en vez de seguir afirmando "dentro del
+ruido" sin esta salvedad.
+
+**El peor caso de verdad, medido aparte.** `loadtest/memoria_seed.py` gana
+`N_CADENAS_LARGAS`/`PROFUNDIDAD_CADENA_LARGA` (overridables por entorno,
+default 0 -- no cambian la siembra de comparación de arriba salvo que se
+pidan a propósito): cadenas de citas de **profundidad 10** (no 2-3, como
+el caso "realista" de la corrección de ronda 4) cuyas fuentes son
+**vecinas en embeddings de verdad** -- elegidas DENTRO de un mismo cluster
+temático real (`cluster_del_indice`, el mismo agrupamiento por centroide
+que ya arma la siembra), no esparcidas al azar por los 10.000 facts. Esto
+ejercita dos caminos que el caso realista de la ronda 4 no tocaba: el BFS
+de `_cierre_transitivo_de_citas` a profundidad de verdad, y la vuelta de
+MINOR 1 (`_casi_duplicados_del_grupo`: extraer los miembros incompatibles
+de un componente, recalcular, repetir) sobre un cluster REAL que el
+detector agruparía por distancia coseno.
+
+**Base sembrada.** `jax_memory_test_fundir146_r5peor` (clonada por esquema
+desde `jax_memory_test`, nunca la compartida; borrada al terminar de
+medir). 10.000 facts, semilla `np.random.default_rng(20260920)` (la misma
+de siempre), overlay realista de la ronda 4 (10 % cita plana + 200 cadenas
+de 2do/3er orden) **más** `MEMORIA_SEED_N_CADENAS_LARGAS=50
+MEMORIA_SEED_PROFUNDIDAD_CADENA_LARGA=10` -- 50 cadenas de 11 facts cada
+una (10 eslabones), las 50 dentro de clusters reales con >=11 miembros.
+Total: **1.900 de 10.000 facts (19 %) con `source_fact_ids` no nulo**
+(1.000 cita plana + 400 cadenas cortas + 500 cadena larga). Commit de
+`jax` resuelto: `52e2599e19b5a8fcc7728a23a51b071731d5a0c5` (mismo que
+ronda 4 -- `origin/master` no se movió entre las dos mediciones).
+Verificado por `/proc/<pid>/environ` antes de medir (mismo patrón que
+siempre): `JAX_DB_NAME` coincide, `LAS_MANOS_URL`/`JACOBS_URL` apuntan a
+`127.0.0.1:9` (nadie escucha). La base se borró al terminar (`DROP
+DATABASE`, verificado con una consulta a `information_schema` antes de
+soltar la conexión).
+
+**`GET /api/admin/memoria/grupos`, con ≥10 muestras por nivel** (MINOR
+A-texto: los niveles c=1/c=3 de la ronda 4 median con 3 y 6 muestras --
+"p95" ahí era literalmente el máximo de la muestra, no un percentil real;
+`memoria_medir.py` sube los tres niveles a n>=10 desde esta ronda):
+
+| c | n | p50 ms | p95 ms | p99 ms | max ms |
+|---|---|---|---|---|---|
+| 1 | 10 | 1.858,72 | 1.968,49 | 1.968,49 | 1.968,49 |
+| 3 | 12 | 3.910,47 | 4.045,98 | 4.116,70 | 4.116,70 |
+| 5 | 15 | 6.329,11 | 6.726,64 | 6.863,63 | 6.863,63 |
+
+**Esta corrida NO es comparable número a número con la de la ronda 4**
+(máquina/sesión distinta, caché del SO y del pool en otro estado, base
+sembrada con un overlay adicional) -- no se declara "más rápido" ni "más
+lento" que antes; el objeto de esta tabla es el PISO de muestras (>=10),
+no una comparación antes/después. `n_grupos` de esta base: **1.577**
+(campo `verificacion.grupos.n_grupos`, `_resultados_r5_peor_caso_grupos
+.json`) -- ni siquiera cae entre los 1.549/1.234 de la ronda 4, otra
+evidencia de que ese generador no da un `n_grupos` estable entre corridas
+(HNSW aproximado, ya documentado arriba).
+
+**`POST /api/admin/memoria/hechos/fundir`, con el peor caso sembrado**
+(`loadtest/memoria_medir_fundir.py`, script nuevo esta ronda -- ver más
+abajo), 200 llamadas secuenciales (mismo método que ronda 4: cada llamada
+muta filas, necesita un cluster propio sin fundir; 757 clusters
+disponibles, de sobra):
+
+| | Peor caso (19 % síntesis, cadenas de profundidad 10) |
+|---|---|
+| ok / intentados | 200 / 200 |
+| p50 ms | 11,69 |
+| p95 ms | 17,99 |
+| max ms | 24,56 |
+
+Comparado con el caso realista de ronda 4 (p50 12,20 ms, p95 19,12 ms,
+14 % síntesis, cadenas de profundidad <=2): **sin degradación material** --
+p50 y p95 del peor caso quedan LEVEMENTE por debajo del caso realista
+(ruido de medición entre corridas, no una mejora real). El BFS de
+`_cierre_transitivo_de_citas` (`backend/api/admin/memoria.py`) recorre
+desde CADA origen sin memoizar entre ellos -- a profundidad 10 eso es
+~10 pasos por nodo de la cadena, ~100 operaciones totales por cadena de
+11 facts: indistinguible del ruido en esta medición, con 50 cadenas de esa
+profundidad sembradas. **Decisión: no se memoiza** -- Regla 2 del
+rendimiento (cache) de este ecosistema pide no cachear lo que no se midió
+caro, y acá se midió y no lo es.
+
+**Dónde queda el crudo de `/fundir`.** MINOR A-texto pedía dejarlo en el
+mismo lugar que el de `/grupos`, o decir por qué no -- ahora sí: se creó
+`loadtest/memoria_medir_fundir.py` (antes esto era un script ad-hoc del
+scratchpad de la sesión, `medir_fundir.py`, que además leía
+`JAX_JWT_SECRET` de `/etc/jax/.env` -- ver el hallazgo de SEGURIDAD, ya
+corregido). Escribe `loadtest/_memoria_resultados_fundir.json`, mismo
+directorio y misma convención que `loadtest/_memoria_resultados.json` (de
+`/grupos`) -- no está en `.gitignore`, pero por convención de este repo no
+se commitea; esta corrida se copió a
+`_resultados_r5_peor_caso_fundir.json`/`_resultados_r5_peor_caso_grupos
+.json` en el scratchpad de la sesión, igual que las rondas anteriores.
+
+**Qué NO se hizo esta ronda.** No se repitió la comparación pareada
+sin-síntesis/con-síntesis de la ronda 4 controlando `n_grupos` (ver el
+sesgo declarado arriba) -- reproducir dos bases con `n_grupos` idéntico
+con este generador no es determinista de forma simple, y el brief de esta
+ronda pedía declarar el sesgo, no eliminarlo. Tampoco se corrió el peor
+caso a concurrencia >5 en `/grupos` (mismo techo de pool documentado en
+ronda 4, no se repite la medición).

@@ -70,6 +70,22 @@ PESO_USUARIO_PESADO = 0.30   # "el usuario con mas hechos": 30% de los 10.000
 FRACCION_SINTESIS = float(os.environ.get("MEMORIA_SEED_FRACCION_SINTESIS", "0.10"))
 N_CADENAS_SINTESIS = int(os.environ.get("MEMORIA_SEED_N_CADENAS_SINTESIS", "200"))
 
+# MINOR A-texto (revision adversarial de jax-platform PR 146, ronda 5): las
+# "cadenas de 2do/3er orden" de arriba son un caso REALISTA (citas al azar
+# entre CUALQUIER hecho de los 10.000, profundidad <=2) -- memoria.py:796 y
+# el documento de carga las llamaban "el peor caso", y no lo son. El peor
+# caso de verdad son cadenas LARGAS (profundidad configurable, default 10)
+# Y con las fuentes VECINAS EN EMBEDDINGS (dentro del MISMO cluster
+# tematico que arma `agrupar_por_tema`) -- eso hace que la cadena caiga
+# DENTRO de un grupo de casi-duplicados real, ejercitando el BFS de
+# `_cierre_transitivo_de_citas` a la profundidad pedida Y la vuelta de
+# MINOR 1 (extraer los miembros incompatibles de un componente, recalcular,
+# repetir) sobre un caso real -- no uno sintetico aparte. Default 0
+# (desactivado): no cambia la siembra de comparacion de la ronda 4 salvo
+# que se pida a proposito.
+N_CADENAS_LARGAS = int(os.environ.get("MEMORIA_SEED_N_CADENAS_LARGAS", "0"))
+PROFUNDIDAD_CADENA_LARGA = int(os.environ.get("MEMORIA_SEED_PROFUNDIDAD_CADENA_LARGA", "10"))
+
 
 def _cargar_env_produccion() -> dict:
     r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
@@ -348,6 +364,43 @@ def main() -> None:
     print(f"{n_cadenas_reales} cadenas de síntesis de 2do/3er orden sembradas "
           f"({len(lote)} filas síntesis encadenadas)", file=sys.stderr)
 
+    # --- overlay: PEOR CASO DE VERDAD (ronda 5, MINOR A-texto) -- cadenas
+    # LARGAS con fuentes vecinas en embeddings. `cluster_del_indice[i]` es
+    # el cluster tematico de `ids[i]` -- OJO: se usa `ids` (la lista
+    # original, sin barajar), no `ids_np` (barajado en el lugar más arriba,
+    # `rng.shuffle(ids_np)`): usar `ids_np` acá desalinearía el índice del
+    # cluster con el id real.
+    n_cadenas_largas_reales = 0
+    if N_CADENAS_LARGAS > 0:
+        indices_por_cluster: dict[int, list[int]] = {}
+        for i, c in enumerate(cluster_del_indice):
+            indices_por_cluster.setdefault(c, []).append(i)
+        candidatos = [c for c, idxs in indices_por_cluster.items()
+                      if len(idxs) >= PROFUNDIDAD_CADENA_LARGA + 1]
+        if not candidatos:
+            raise RuntimeError(
+                f"ningún cluster tiene {PROFUNDIDAD_CADENA_LARGA + 1} miembros -- "
+                "no se puede sembrar una cadena larga sin repetir ids")
+        with conn.cursor() as cur:
+            lote_largas = []
+            for k in range(N_CADENAS_LARGAS):
+                cluster_idx = candidatos[k % len(candidatos)]
+                elegidos = rng.choice(indices_por_cluster[cluster_idx],
+                                       size=PROFUNDIDAD_CADENA_LARGA + 1, replace=False)
+                ids_cadena = [ids[int(i)] for i in elegidos]
+                for eslabon in range(1, len(ids_cadena)):
+                    lote_largas.append(("synthesis", json.dumps([ids_cadena[eslabon - 1]]), ids_cadena[eslabon]))
+                n_cadenas_largas_reales += 1
+            for i in range(0, len(lote_largas), 500):
+                cur.executemany(
+                    "UPDATE facts SET source_facet = %s, source_fact_ids = %s WHERE id = %s",
+                    lote_largas[i:i + 500],
+                )
+        conn.commit()
+        print(f"{n_cadenas_largas_reales} cadenas LARGAS (profundidad "
+              f"{PROFUNDIDAD_CADENA_LARGA}, fuentes vecinas en embeddings) "
+              f"sembradas dentro de clusters reales ({len(lote_largas)} filas)", file=sys.stderr)
+
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM facts")
         (total,) = cur.fetchone()
@@ -373,7 +426,13 @@ def main() -> None:
         # MAJOR A (ronda 4): antes SIEMPRE 0 -- SQL_CITAS devolvía 0 filas.
         "n_sintesis_plana": len(pool_sintesis_plana),
         "n_cadenas_sintesis": n_cadenas_reales,
-        "n_filas_con_source_fact_ids": len(pool_sintesis_plana) + len(lote),
+        # MINOR A-texto (ronda 5): peor caso de verdad, separado del "realista"
+        # de arriba -- ver el comentario junto a N_CADENAS_LARGAS.
+        "n_cadenas_largas": n_cadenas_largas_reales,
+        "profundidad_cadena_larga": PROFUNDIDAD_CADENA_LARGA if n_cadenas_largas_reales else 0,
+        "n_filas_con_source_fact_ids": (
+            len(pool_sintesis_plana) + n_cadenas_reales * 2 + n_cadenas_largas_reales * PROFUNDIDAD_CADENA_LARGA
+        ),
     }
     with open(salida_path, "w") as f:
         json.dump(resultado, f, indent=2)

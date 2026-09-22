@@ -88,12 +88,13 @@ async def correr_tanda(cliente_factory, url: str, params: dict, headers: dict, c
 
 
 async def main_async(base_de_prueba: str, backend_url: str) -> None:
-    import os
+    import subprocess
 
     import pymysql
     from jose import jwt as _jwt
 
-    import subprocess
+    from memoria_levantar_entorno import RUN_DIR, leer_environ_de_proceso
+
     r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
     env = {}
     for linea in r.stdout.splitlines():
@@ -101,6 +102,23 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
         if linea and not linea.startswith("#") and "=" in linea:
             k, _, v = linea.partition("=")
             env[k.strip()] = v.strip()
+
+    # SEGURIDAD (revision adversarial de jax-platform PR 146, ronda 5): el
+    # backend de carga (memoria_levantar_entorno.py) firma con SU PROPIA
+    # `JAX_JWT_SECRET`, generada al azar -- NUNCA la de produccion, aunque
+    # `env` (arriba) la tenga (vino de /etc/jax/.env, y la sigue necesitando
+    # para las credenciales de conexion a MariaDB, que son las mismas para
+    # cualquier base de esa instancia). El secreto de firma se lee del
+    # proceso YA LEVANTADO -- `info.json` (el mismo que escribe el
+    # lanzador) trae el `pid`; `/proc/<pid>/environ` es la unica fuente que
+    # no requiere volver a escribir el secreto en ningun archivo.
+    info = json.loads((RUN_DIR / "info.json").read_text())
+    environ_de_carga = leer_environ_de_proceso(info["pid"])
+    jwt_secret_de_carga = environ_de_carga["JAX_JWT_SECRET"]
+    assert jwt_secret_de_carga != env.get("JAX_JWT_SECRET"), (
+        "el backend de carga esta firmando con la llave de PRODUCCION -- "
+        "ABORTANDO, no se mide sobre un entorno que puede emitir tokens "
+        "validos tambien contra produccion")
 
     # Barrera dura: no mide si el backend real (segun /proc/<pid>/environ, no
     # esta llamada) no apunta a la base esperada. Se vuelve a verificar por
@@ -131,7 +149,7 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
     token = _jwt.encode(
         {"user_id": "1", "tenant_id": "1", "role": rol, "tv": token_version,
          "exp": int(time.time()) + 7200, "type": "access"},
-        env["JAX_JWT_SECRET"], algorithm="HS256",
+        jwt_secret_de_carga, algorithm="HS256",
     )
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -201,7 +219,13 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
     # /grupos: cada request evalua ~9.000 vecinos con un semaforo interno de 6
     # contra el mismo pool de 10 conexiones -- niveles chicos, a propósito
     # (ver docstring del módulo: ronda anterior, un solo request ya tarda ~7s).
-    for c, n in [(1, 3), (3, 6), (5, 10)]:
+    #
+    # MINOR A-texto (revision adversarial de jax-platform PR 146, ronda 5):
+    # `n` sube a >=10 en los tres niveles -- antes c=1/c=3 median con 3/6
+    # muestras, donde "p95" es literalmente el maximo de la muestra (no un
+    # percentil real). Con >=10 muestras, p95 es el segundo peor valor real,
+    # no el peor de todos.
+    for c, n in [(1, 10), (3, 12), (5, 15)]:
         r = await correr_tanda(None, f"{backend_url}/api/admin/memoria/grupos", {}, headers, c, n)
         print(f"[GRUPOS] c={c} n={n} -> {r}")
         resultados["grupos"].append(r)
