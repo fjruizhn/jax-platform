@@ -417,6 +417,52 @@ def test_fundir_es_atomico_si_falla_a_mitad_del_lote_no_queda_nada_escrito(
     assert superseded_by is None, "el primer absorbido SI cambio antes de la falla: fundio a medias"
 
 
+def test_fundir_con_la_base_caida_no_es_500_generico(client_superadmin, trio, monkeypatch):
+    """m8-b (cierre jax-platform#146, ronda 6, SEGURIDAD -- hallazgo
+    reportado tras m8): `fundir_hechos` tenia el mismo defecto que tenia
+    `aprobar_hechos` antes de m8 -- con la base caida, `transaccion()`
+    (sobre `db.connection.get_pool()`) levanta una excepcion de conexion
+    SIN GUARDA, 500 generico en vez de 503 `memoria_no_disponible`. Se
+    simula la caida en el punto exacto donde pasaba de verdad: `get_pool()`
+    DENTRO de `db.transaccion`, no un mock de alto nivel."""
+    from db import transaccion as transaccion_mod
+
+    superviviente, absorbido1, absorbido2 = trio
+
+    async def _get_pool_caida():
+        raise OSError("Connect call failed ('127.0.0.1', 18080)")
+
+    monkeypatch.setattr(transaccion_mod, "get_pool", _get_pool_caida)
+    r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                               json={"superviviente_id": superviviente,
+                                     "absorbidos": [absorbido1, absorbido2]})
+    assert r.status_code == 503, (
+        f"esperaba 503 (memoria_no_disponible), no {r.status_code}: un "
+        "fallo al conectar/adquirir la conexion es 'la base no respondio', "
+        "no un 500 generico sin traducir")
+    assert r.json()["detail"] == "memoria_no_disponible"
+
+
+def test_fundir_con_un_error_real_dentro_de_la_transaccion_no_se_disfraza_de_503(
+        client_superadmin, trio, monkeypatch):
+    """Control del arreglo de arriba: el `except` de m8-b atrapa SOLO el
+    fallo de conectar/adquirir (`enter_async_context`), nunca lo que pase
+    DENTRO de la transaccion ya abierta -- un error real ahi tiene que
+    seguir siendo un 500 (o lo que sea), no disfrazarse de 503."""
+    from api.admin import memoria
+
+    superviviente, absorbido1, absorbido2 = trio
+
+    async def _revienta(cur, autor, absorbido_id, superviviente_id):
+        raise RuntimeError("fallo real dentro de la transaccion, no de conexion")
+
+    monkeypatch.setattr(memoria, "_superar_en_cursor", _revienta)
+    with pytest.raises(RuntimeError, match="fallo real dentro de la transaccion"):
+        client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                               json={"superviviente_id": superviviente,
+                                     "absorbidos": [absorbido1, absorbido2]})
+
+
 # --- MAJOR 2 (revision adversarial de jax-platform PR 146, tercera vuelta):
 # un hecho vencido no puede fundirse ------------------------------------------
 

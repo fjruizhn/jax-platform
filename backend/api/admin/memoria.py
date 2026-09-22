@@ -443,7 +443,15 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
     antes tambien acorta la ventana real en la que el lote queda bloqueado:
     el full scan de `SQL_CITAS` (sin indice sobre `source_fact_ids`, MAJOR A)
     es el costo mayor de este endpoint.
-    """
+
+    m8-b (cierre jax-platform#146, ronda 6, SEGURIDAD -- hallazgo reportado
+    tras m8): mismo defecto que tenia `aprobar_hechos` antes de m8 -- con la
+    base caida, `transaccion()` (sobre `db.connection.get_pool()`) levanta
+    una excepcion de conexion SIN GUARDA, 500 generico en vez de 503
+    `memoria_no_disponible`. Mismo arreglo: `AsyncExitStack` para atrapar
+    SOLO el fallo de conectar/adquirir (antes del primer `yield` de
+    `transaccion()`), nunca lo que pase DENTRO de la transaccion ya
+    abierta."""
     # Sin duplicados, mismo orden de llegada: absorbidos=[7, 7, 8] funde una
     # sola vez al 7.
     absorbidos = list(dict.fromkeys(body.absorbidos))
@@ -456,7 +464,12 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
     autor = int(user.user_id)
     ids = [body.superviviente_id, *absorbidos]
 
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+    async with AsyncExitStack() as pila:
+        try:
+            cur = await pila.enter_async_context(transaccion(AISLAMIENTO_ADMIN))
+        except (OSError, aiomysql.Error) as exc:
+            raise HTTPException(status_code=503, detail="memoria_no_disponible") from exc
+
         # MAJOR A.5: el cierre de citas corre PRIMERO, antes del SELECT ...
         # FOR UPDATE de mas abajo -- ver el porque en el docstring de esta
         # funcion. Mismo cursor, misma transaccion (no abre una segunda
