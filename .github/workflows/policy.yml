@@ -2326,7 +2326,27 @@ jobs:
           #   para la medición "antes": HEAD (012d315..cbe19ef) 2562 passed
           #   -> esta ronda 2567 (0 fallidos las dos, 0 skips las dos). El
           #   piso declarado sube por el delta verificado (+5).
-          PISO_PASSED = 2567
+          # 2567 -> 2571 (2026-09-22, jax-platform#146, ronda 5 de revisión
+          #   adversarial, ÚLTIMA): +4 -- test_memoria_api.py: el viejo
+          #   test_aprobar_con_la_base_caida_a_mitad_del_lote_no_es_200_
+          #   silencioso (mockeaba `MemoryDB.verify_fact`, que MAJOR N2 dejó
+          #   de usar -- ver el endpoint en memoria.py) se REEMPLAZÓ por 4
+          #   tests nuevos: test_aprobar_es_atomico_si_falla_a_mitad_del_
+          #   lote_no_queda_nada_escrito (mismo principio, mecanismo nuevo:
+          #   FOR UPDATE + `_aprobar_en_cursor` en una sola transacción),
+          #   test_aprobar_rechaza_un_hecho_vencido_con_409,
+          #   test_aprobar_rechaza_un_hecho_ya_superado_con_409 y
+          #   test_aprobar_un_vencido_en_el_lote_tira_el_lote_entero_todo_o_
+          #   nada (1 viejo -> 4 nuevos = +3 neto). test_memoria_fundir.py:
+          #   +1, test_fundir_calcula_el_cierre_de_citas_antes_del_for_
+          #   update (MAJOR A.5, instrumenta aiomysql.Cursor.execute para
+          #   verificar el ORDEN real de las consultas SQL). +3 +1 = +4.
+          #   Medido en vivo, MISMO comando (`python -m pytest -q`): ronda 4
+          #   (3b8c6a8) 2567 passed -> esta ronda 2571 (0 fallidos, 0 skips
+          #   las dos). Los 4 tests nuevos verificados en rojo contra el
+          #   código de la ronda anterior antes de escribir el arreglo (ver
+          #   el reporte de la tarea).
+          PISO_PASSED = 2571
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3061,6 +3081,14 @@ jobs:
       #   el passed crudo local -- que hoy es 1703, bastante más arriba del
       #   piso declarado; esa distancia (37) es anterior a esta ronda (no se
       #   investiga acá -- fuera del alcance de este encargo, se reporta).
+      # 2026-09-22, ronda 5 (ÚLTIMA): sin cambio en `passed` -- los 4 tests
+      #   nuevos/reemplazados de esta ronda (ver el piso CON DB, más arriba)
+      #   piden TODOS `client_superadmin`, así que bajo JAX_CI_NO_DB=1
+      #   quedan salteados, no passed. Medido: 1703 passed / 868 skipped
+      #   (antes de esta ronda: 1703 / 864 -- +4 skips, 0 passed nuevos). El
+      #   piso declarado NO sube (seguiría siendo correcto en 1666; no se
+      #   sube a 1703 por la misma razón que ya documentó la ronda 4: no se
+      #   absorbe la distancia preexistente en silencio).
       JAX_CI_MIN_PASSED: "1666"
     steps:
       - uses: actions/checkout@v4
