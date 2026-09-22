@@ -20,6 +20,7 @@ import time
 import uuid
 from functools import partial
 
+import aiomysql
 import pytest
 
 from api import pipelines as mod
@@ -30,17 +31,21 @@ TENANT = "descarte-t4"
 URL_JACOBS_FALSO = "http://jacobs.test/jacobs"
 
 # La base de tests LOCAL (jax_memory_test_<sufijo>, clonada de jax_memory_test
-# -- ver base_de_test.py) no tiene status_previo/descartado_por/descartado_at
-# ni idx_pipelines_descartados/idx_pipelines_ocultos: esas columnas/índices
-# los trae `jax` (jacobs/store.py::init_tables(), repo aparte). CI los tiene
-# porque .github/workflows/policy.yml clona jax MASTER y corre su propio
-# init_tables() ANTES de la suite; localmente no hay ese paso. El remedio
-# -- session fixture que corre jax's init_tables() vía JAX_REPO_PATH -- vive
-# ahora en tests/conftest.py::_esquema_de_jax_en_la_base_de_test (fix round
-# 2, Ruling 16 punto 3): se movió de acá porque desde que
-# SQL_PIPELINES_DEL_USUARIO lleva IGNORE INDEX (Ruling 16 punto 1) el
-# problema dejó de ser sólo de este módulo -- CUALQUIER test que use esa
-# consulta revienta con "Key ... doesn't exist" (1176) si corre antes.
+# -- ver base_de_test.py) no tiene status_previo/descartado_por/descartado_at,
+# idx_pipelines_descartados/idx_pipelines_ocultos, ni (fix round 4, Ruling
+# 18/19) la columna GENERADA `visible`/idx_pipelines_visibles: esas
+# columnas/índices los trae `jax` (jacobs/store.py::init_tables(), repo
+# aparte). CI los tiene porque .github/workflows/policy.yml clona jax
+# MASTER y corre su propio init_tables() ANTES de la suite; localmente no
+# hay ese paso, y mientras `visible` no esté mergeada a jax master hay que
+# apuntar JAX_REPO_PATH a un checkout que sí la tenga. El remedio -- corre
+# jax's init_tables() vía JAX_REPO_PATH -- vive en
+# tests/conftest.py::_esquema_de_jax_en_la_base_de_test (fix round 2,
+# Ruling 16 punto 3): se movió de acá porque desde que
+# SQL_PIPELINES_DEL_USUARIO lleva un `FORCE INDEX` con nombre (Ruling 16
+# punto 1, después Ruling 18/19) el problema dejó de ser sólo de este
+# módulo -- CUALQUIER test que use esa consulta revienta con
+# "Key ... doesn't exist" (1176) si corre antes.
 
 
 async def _insertar_pipeline(pipeline_id, user_id, tenant_id, status, creado=None, actualizado=None,
@@ -500,128 +505,182 @@ async def _insertar_pipelines_bulk(filas):
                 filas)
 
 
-def _filas_pipelines_bulk(tenant_id, n, status, descartado=False, offset=0):
+def _filas_pipelines_bulk(tenant_id, n, status, descartado=False, offset=0, sin_ack=False):
+    """`sin_ack` (fix round 4, Ruling 18/19): owner_ack_at=NULL -- un hijo
+    de Ada que Jacobs ya devolvió pero que la Mesa todavía no reconoció
+    (T6-5a). `visible` los excluye igual que a los descartados/ocultos
+    (AND owner_ack_at IS NOT NULL en su definición, jax/jacobs/store.py) --
+    es la tercera forma que pidió el controlador, la única que NO se
+    diferencia por `status`."""
     ahora = time.time()
     out = []
     for i in range(n):
         pid = str(uuid.uuid4())
         creado = ahora - (offset + n - i) * 2
         actualizado = creado + 1.0
+        owner_ack_at = None if sin_ack else creado
         if descartado:
-            out.append((pid, "discarded", creado, actualizado, "x", tenant_id, creado,
+            out.append((pid, "discarded", creado, actualizado, "x", tenant_id, owner_ack_at,
                         "aborted", "x", creado))
         else:
-            out.append((pid, status, creado, actualizado, "x", tenant_id, creado, None, None, None))
+            out.append((pid, status, creado, actualizado, "x", tenant_id, owner_ack_at, None, None, None))
     return out
+
+
+async def _explain_y_handler_read(consulta, args):
+    """EXPLAIN (la forma del plan) Y los contadores `Handler_read` reales
+    (lo que el motor leyó DE VERDAD, no la estimación de `rows`) -- MISMO
+    mecanismo que usa jax para probar la misma propiedad
+    (jax/tests/test_jacobs_descarte_db.py::CostoAcotadoPorVisibleDBTest).
+    Los tres pasos van en la MISMA conexión/cursor a propósito:
+    `Handler_read%` es un contador de SESIÓN -- si `FLUSH STATUS` corriera
+    en una conexión y la consulta en otra (como haría `sql()`, que suelta
+    la conexión al pool en cada llamada), estaría midiendo la sesión
+    equivocada."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("EXPLAIN " + consulta, args)
+            cols = [d[0] for d in cur.description]
+            explain_fila = await cur.fetchone()
+            explain = dict(zip(cols, explain_fila))
+
+            await cur.execute("FLUSH STATUS")
+            await cur.execute(consulta, args)
+            filas = await cur.fetchall()
+            await cur.execute("SHOW SESSION STATUS LIKE 'Handler_read%'")
+            handler = {k: int(v) for k, v in await cur.fetchall()}
+    return explain, handler, filas
 
 
 # Fix round 2 (2026-09-22), Ruling 16 del controlador: la aceptación del
 # filesort de la ronda anterior (fix round 1, Ruling 13(e)) NO se sostenía.
 # `MAX_PIPELINES` acota los pipelines CONCURRENTES, no el histórico --
 # `status NOT IN ('discarded','hidden')` incluye TODO lo terminado
-# (completed/failed/aborted/expired), que crece sin techo. Un usuario con
-# 5000 completados y 50 descartados leería 5000 filas para ordenar y servir
-# 50. La medición anterior (363 filas, 1,6x) era ruido a escala de décimas
-# de milisegundo, no evidencia de que el plan con filesort ganara al caso
-# real. `Using temporary` tampoco protegía nada en esta consulta -- nunca
-# apareció, con o sin filesort.
+# (completed/failed/aborted/expired), que crece sin techo.
 #
 # Fix round 3 (2026-09-22), Ruling 17: `IGNORE INDEX` (fix round 2) se
-# reemplazó por `FORCE INDEX (idx_jacobs_pipelines_duenio)` (api/pipelines.py)
-# -- la razón real está en el comentario de ahí, no acá: acopla el deploy a
-# DOS índices de jax que todavía no están desplegados en producción
-# (jax#257 mergeado pero NO desplegado), y no cubría el caso EXTREMO (forma
-# "extremo" de abajo). El plan vuelve a ser DETERMINISTA -- range scan EN
-# ORDEN por idx_jacobs_pipelines_duenio, sin filesort, que corta en el
-# LIMIT -- sin depender de qué estadísticas tenga la tabla en un momento
-# dado NI de qué índices existan además del propio. Medido con número en
-# docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md (método +
-# comando exacto ahí).
+# reemplazó por `FORCE INDEX (idx_jacobs_pipelines_duenio)` -- determinista,
+# pero NO acotado por el LIMIT: con pocas filas vivas entre muchas
+# descartadas, el motor tenía que recorrer casi el histórico completo del
+# tenant (medido: 4,2-4,4 ms con 5000 descartadas y 3 vivas).
 #
-# Las TRES formas de dato que pidió el controlador (las dos originales de
-# Ruling 16 más la extrema que destapó el hallazgo de esa ronda), las tres
-# verificando el MISMO contrato (idx_jacobs_pipelines_duenio, sin filesort):
-@pytest.mark.parametrize("nombre_forma, n_terminados, n_descartados", [
-    ("historial-largo", 5000, 50),
-    ("muchos-descartados", 3, 60),
-    ("extremo", 3, 5000),
+# Fix round 4 (2026-09-22), Ruling 18/19: `jax` agrega una columna GENERADA
+# `visible` e `idx_pipelines_visibles (user_id, tenant_id, visible,
+# created_at)` -- con `visible` DENTRO del índice, el costo real (no sólo
+# el plan) queda acotado por el LIMIT. Acá se prueba la propiedad DIRECTO
+# contra MariaDB real, no sólo la clave del plan: `EXPLAIN` (sin filesort/
+# temporary) Y los contadores `Handler_read` (lecturas ≈ filas devueltas,
+# NO el histórico sembrado) -- las TRES formas que pidió el controlador.
+# Medido con número en docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md.
+#
+# Mutación verificada a mano (revertido después de confirmarlo): volver a
+# `FORCE INDEX (idx_jacobs_pipelines_duenio)` + `status NOT IN (...)` hace
+# que `test_muchos_descartados_el_motor_no_lee_las_descartadas` caiga --
+# Handler_read sube de ~13 a varios miles (el rango completo del tenant).
+@pytest.mark.parametrize("nombre_forma, n_visibles, n_no_visibles, status_no_visible, n_sin_ack", [
+    ("historial-largo", 5000, 50, "discarded", 0),
+    ("muchos-descartados", 3, 5000, "discarded", 0),
+    ("hijos-sin-ack", 3, 0, "discarded", 5000),
 ])
-def test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio_sin_filesort(
-        client, nombre_forma, n_terminados, n_descartados):
-    tenant_real = f"TENANT-EXPLAIN-T4-{nombre_forma}"
+def test_pipelines_del_usuario_el_plan_usa_idx_pipelines_visibles_sin_filesort(
+        client, nombre_forma, n_visibles, n_no_visibles, status_no_visible, n_sin_ack):
+    tenant_real = f"TENANT-VISIBLE-T4-{nombre_forma}"
     try:
-        client.portal.call(
-            _insertar_pipelines_bulk,
-            _filas_pipelines_bulk(tenant_real, n_terminados, "completed"))
-        client.portal.call(
-            _insertar_pipelines_bulk,
-            _filas_pipelines_bulk(tenant_real, n_descartados, "discarded", descartado=True, offset=n_terminados))
+        client.portal.call(_insertar_pipelines_bulk,
+                           _filas_pipelines_bulk(tenant_real, n_visibles, "completed"))
+        if n_no_visibles:
+            client.portal.call(_insertar_pipelines_bulk,
+                               _filas_pipelines_bulk(tenant_real, n_no_visibles, status_no_visible,
+                                                     descartado=True, offset=n_visibles))
+        if n_sin_ack:
+            client.portal.call(_insertar_pipelines_bulk,
+                               _filas_pipelines_bulk(tenant_real, n_sin_ack, "running",
+                                                     offset=n_visibles + n_no_visibles, sin_ack=True))
         client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
 
-        filas = client.portal.call(
-            sql, "EXPLAIN " + mod.SQL_PIPELINES_DEL_USUARIO,
-            ("x", tenant_real, mod.LISTA_PIPELINES_MAX, 5), True)
-        ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
-        assert tabla == "jacobs_pipelines"
-        assert clave == "idx_jacobs_pipelines_duenio", filas
-        assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
+        args = ("x", tenant_real, mod.LISTA_PIPELINES_MAX, 0)
+        explain, _handler, _filas = client.portal.call(_explain_y_handler_read, mod.SQL_PIPELINES_DEL_USUARIO, args)
+        assert explain["table"] == "jacobs_pipelines"
+        assert explain["key"] == "idx_pipelines_visibles", explain
+        assert explain["type"] != "ALL", explain
+        extra = (explain["Extra"] or "").lower()
+        assert "filesort" not in extra and "temporary" not in extra, explain
     finally:
         client.portal.call(sql, "DELETE FROM jacobs_pipelines WHERE tenant_id=%s", (tenant_real,))
 
 
-# Fix round 3, Ruling 17 punto 2: la prueba directa de por qué FORCE INDEX
-# (idx_jacobs_pipelines_duenio) no acopla el deploy -- a diferencia de
-# IGNORE INDEX (fix round 2), que nombraba idx_pipelines_descartados/
-# idx_pipelines_ocultos y por eso rompía si esos dos no existían (error de
-# MariaDB 1176, no un hint que se ignora). Se los borra de la base de TEST
-# de esta sesión -- simulando producción HOY, donde jax#257 está mergeado
-# pero NO desplegado -- se corre la consulta real (EXPLAIN + la ruta HTTP
-# completa), y se los recrea en el `finally` para no dejar la base de la
-# sesión distinta de como la esperan los demás tests de este archivo
-# (varios EXPLAIN de acá dependen de que existan).
-#
-# Mutación verificada a mano: reemplazar el FORCE INDEX de
-# api/pipelines.py por el IGNORE INDEX del fix round 2 hace caer este test
-# con pymysql.err.OperationalError: (1176, "Key 'idx_pipelines_ocultos'
-# doesn't exist in table 'jacobs_pipelines'") -- revertido después de
-# confirmarlo (ver el reporte de esta ronda).
-def test_pipelines_del_usuario_no_rompe_sin_los_indices_de_jax_257(client):
-    ddl_descartados = (
-        "CREATE INDEX idx_pipelines_descartados ON jacobs_pipelines "
-        "(user_id, tenant_id, status, descartado_at) ALGORITHM=INPLACE LOCK=NONE"
-    )
-    ddl_ocultos = (
-        "CREATE INDEX idx_pipelines_ocultos ON jacobs_pipelines "
-        "(status, descartado_at) ALGORITHM=INPLACE LOCK=NONE"
-    )
-    client.portal.call(sql, "DROP INDEX idx_pipelines_descartados ON jacobs_pipelines")
-    client.portal.call(sql, "DROP INDEX idx_pipelines_ocultos ON jacobs_pipelines")
+@pytest.mark.parametrize("nombre_forma, n_visibles, n_no_visibles, status_no_visible, n_sin_ack", [
+    ("historial-largo", 5000, 50, "discarded", 0),
+    ("muchos-descartados", 3, 5000, "discarded", 0),
+    ("hijos-sin-ack", 3, 0, "discarded", 5000),
+])
+def test_muchos_descartados_el_motor_no_lee_las_descartadas(
+        client, nombre_forma, n_visibles, n_no_visibles, status_no_visible, n_sin_ack):
+    """La propiedad REAL, no sólo la clave del plan (mismo criterio que
+    jax): con hasta 5000 filas NO visibles (descartadas o sin ack) y sólo
+    unas pocas -- o hasta LISTA_PIPELINES_MAX -- visibles, el total de
+    `Handler_read` tiene que quedar del orden de las filas DEVUELTAS, no
+    del histórico sembrado."""
+    tenant_real = f"TENANT-HANDLER-T4-{nombre_forma}"
     try:
-        filas = client.portal.call(
-            sql, "EXPLAIN " + mod.SQL_PIPELINES_DEL_USUARIO,
-            ("x", "TENANT-SIN-INDICES-DE-JAX257", mod.LISTA_PIPELINES_MAX, 0), True)
-        ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
-        assert tabla == "jacobs_pipelines"
-        assert clave == "idx_jacobs_pipelines_duenio", filas
-        assert "filesort" not in (extra or ""), filas
+        client.portal.call(_insertar_pipelines_bulk,
+                           _filas_pipelines_bulk(tenant_real, n_visibles, "completed"))
+        if n_no_visibles:
+            client.portal.call(_insertar_pipelines_bulk,
+                               _filas_pipelines_bulk(tenant_real, n_no_visibles, status_no_visible,
+                                                     descartado=True, offset=n_visibles))
+        if n_sin_ack:
+            client.portal.call(_insertar_pipelines_bulk,
+                               _filas_pipelines_bulk(tenant_real, n_sin_ack, "running",
+                                                     offset=n_visibles + n_no_visibles, sin_ack=True))
+        client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
 
-        # La ruta real de la API, de punta a punta -- no sólo el SQL crudo.
-        uid(client, "descarte-sinindices-duenio", "operator")
-        resp = client.get("/api/pipelines",
-                          headers=cabeceras(client, "descarte-sinindices-duenio", "operator"))
-        assert resp.status_code == 200, resp.text
+        args = ("x", tenant_real, mod.LISTA_PIPELINES_MAX, 0)
+        _explain, handler, filas = client.portal.call(_explain_y_handler_read, mod.SQL_PIPELINES_DEL_USUARIO, args)
+        esperadas = min(n_visibles, mod.LISTA_PIPELINES_MAX)
+        assert len(filas) == esperadas, filas
+        total = sum(handler.values())
+        assert total <= esperadas + 10, (
+            f"{total} lecturas Handler_read para {esperadas} filas devueltas -- "
+            f"huele a que el motor está tocando las {n_no_visibles + n_sin_ack} "
+            f"no-visibles (descartadas o sin ack): {handler}"
+        )
     finally:
-        client.portal.call(sql, ddl_descartados)
-        client.portal.call(sql, ddl_ocultos)
-        # Un índice recién creado no tiene estadísticas propias todavía
-        # (las persistentes de InnoDB se recalculan por umbral, no al
-        # crear) -- sin este ANALYZE, los EXPLAIN de otros tests de este
-        # archivo que corren DESPUÉS (test_explain_descartados_del_usuario_usa_idx_pipelines_descartados,
-        # test_explain_ocultos_usa_idx_pipelines_ocultos) heredan estadísticas
-        # triviales de estos dos índices recién recreados, no las que
-        # reflejan los datos reales de la sesión. Ruling 16 punto 3: "si tu
-        # ANALYZE TABLE deja estadísticas que afectan a otros tests,
-        # limpialas" -- este DROP+CREATE es el mismo tipo de efecto lateral.
+        client.portal.call(sql, "DELETE FROM jacobs_pipelines WHERE tenant_id=%s", (tenant_real,))
+
+
+# Fix round 4, Ruling 18/19 punto 2: a diferencia del fix round 3 (donde
+# FORCE INDEX apuntaba a un índice que YA existía en producción), esta
+# consulta ahora DEPENDE de idx_pipelines_visibles -- un índice de la rama
+# `feat/pipelines-visible` de jax, sin mergear a la fecha de este test. Sin
+# él, FORCE INDEX es un ERROR de MariaDB (1176), no un plan peor: la
+# consulta ROMPE. El test viejo ("no rompe sin los índices de jax#257")
+# probaba la propiedad CONTRARIA, que ya no es cierta -- este la reemplaza
+# documentando la dependencia real, no escondiéndola. El DROP va DENTRO del
+# `try` (a diferencia de la ronda anterior): si el DROP mismo fallara, el
+# `finally` igual intenta recrear el índice, sin dejar la sesión peor de
+# como la encontró.
+def test_pipelines_del_usuario_depende_de_idx_pipelines_visibles(client):
+    ddl = (
+        "CREATE INDEX idx_pipelines_visibles ON jacobs_pipelines "
+        "(user_id, tenant_id, visible, created_at) ALGORITHM=INPLACE LOCK=NONE"
+    )
+    try:
+        client.portal.call(sql, "DROP INDEX idx_pipelines_visibles ON jacobs_pipelines")
+        with pytest.raises(aiomysql.OperationalError) as excinfo:
+            client.portal.call(
+                sql, "EXPLAIN " + mod.SQL_PIPELINES_DEL_USUARIO,
+                ("x", "TENANT-SIN-IDX-VISIBLES", mod.LISTA_PIPELINES_MAX, 0), True)
+        assert excinfo.value.args[0] == 1176, excinfo.value
+    finally:
+        client.portal.call(sql, ddl)
+        # Mismo motivo que ya documentó el fix round 3: un índice recién
+        # creado no tiene estadísticas propias hasta el próximo ANALYZE/
+        # umbral de InnoDB -- sin esto, los EXPLAIN de los tests de arriba,
+        # si corrieran DESPUÉS de este en la suite completa, heredarían
+        # estadísticas triviales.
         client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
 
 

@@ -1,36 +1,47 @@
-"""Medición (fix round 3, Ruling 17 punto 3, 2026-09-22): SQL_PIPELINES_DEL_USUARIO
-con FORCE INDEX (idx_jacobs_pipelines_duenio) versus el plan natural (sin
-FORCE INDEX), en las TRES formas de dato que pidió el controlador -- contra
-la base de TEST, nunca contra jax_memory.
+"""Medición (fix round 4, Ruling 18/19 punto 3, 2026-09-22): SQL_PIPELINES_DEL_USUARIO
+con FORCE INDEX (idx_pipelines_visibles) -- la decisión FINAL -- contra el
+plan natural (sin ningún hint) y contra el FORCE INDEX (idx_jacobs_pipelines_
+duenio) del fix round 3 -- la decisión ANTERIOR, que quedó demostrada
+insuficiente. Contra la base de TEST, nunca contra jax_memory.
 
-Historia de esta consulta, para no perder el porqué: fix round 1 (Ruling
-13(e)) aceptó un plan con `Using filesort` a partir de UNA medición floja
-(363 filas, 1,6x, ruido). Fix round 2 (Ruling 16) lo reemplazó por
-`IGNORE INDEX (idx_pipelines_descartados, idx_pipelines_ocultos)` -- medido
-acá abajo como `SQL_IGNORE` -- que SÍ daba el plan determinista, pero tenía
-dos problemas: acoplaba el deploy de jax-platform a una migración de `jax`
-(jax#257) mergeada pero NO desplegada en producción a la fecha de este
-archivo (`IGNORE INDEX` con un nombre que no existe es un ERROR de MariaDB,
-1176, no un hint que se ignora), y no cubría la forma EXTREMA de abajo
-(elegía `idx_pipelines_status`, fuera de la lista de índices ignorados, con
-filesort igual). Fix round 3 (Ruling 17, ESTE archivo) lo reemplaza por
-`FORCE INDEX (idx_jacobs_pipelines_duenio)` -- ese índice lo crea una
-migración de `jax` de una semana ANTES de jax#257 (Ruling T6-6,
-2026-09-15) que sí está desplegada en producción hoy.
+Historia completa de esta consulta (cuatro rondas sobre el MISMO problema,
+para no perder el porqué):
+
+1. **Fix round 1 (Ruling 13(e)):** aceptó un plan con `Using filesort` a
+   partir de una medición floja (363 filas, 1,6x, ruido).
+2. **Fix round 2 (Ruling 16):** `IGNORE INDEX (idx_pipelines_descartados,
+   idx_pipelines_ocultos)` -- determinista, pero acoplaba el deploy a una
+   migración de `jax` (jax#257) mergeada-no-desplegada, y no cubría un caso
+   extremo (elegía `idx_pipelines_status` con filesort igual).
+3. **Fix round 3 (Ruling 17):** `FORCE INDEX (idx_jacobs_pipelines_duenio)`
+   -- sin acoplamiento de deploy (ese índice YA estaba en producción) y
+   cubría el caso extremo, pero **NO acotaba el costo por el LIMIT**: medido
+   4,2-4,4 ms / ~5000 Handler_read con pocas filas vivas entre muchas
+   descartadas -- un recorrido lineal del histórico del tenant, documentado
+   como "costo conocido, no resuelto".
+4. **Fix round 4 (Ruling 18/19, ESTE documento):** `jax` agrega una columna
+   GENERADA `visible` (VIRTUAL, `status NOT IN ('discarded','hidden') AND
+   owner_ack_at IS NOT NULL`) e `idx_pipelines_visibles (user_id, tenant_id,
+   visible, created_at)` -- con `visible` DENTRO del índice, el rango que el
+   motor recorre ya viene filtrado: el costo lo acota el LIMIT, NO el
+   histórico. `FORCE INDEX (idx_pipelines_visibles)` reemplaza al de la
+   ronda anterior. Acopla el deploy a la rama `feat/pipelines-visible` de
+   `jax` (sin mergear a la fecha de este documento) -- ver el runbook de
+   despliegue en docs/.
 
 Por qué esto vive acá y no en loadtest/ (divergencia deliberada, anotada):
 los demás loadtest/*.py son procesos standalone que abren su PROPIA conexión
 a MariaDB fuera de pytest -- correcto para ELLOS porque miden HTTP de punta a
 punta con un backend real levantado aparte. La regla de esta sesión es más
 estricta ("DB tests ONLY through pytest ... Never query MariaDB outside
-pytest"): esta medición es SQL puro (EXPLAIN + tiempo de
-`cur.execute`/`fetchall`), así que corre como test de pytest, con el mismo
-mecanismo de aislamiento (`base_de_test`) que el resto de la suite. El
-"comando exacto" documentado en docs/ es la invocación de pytest, no un
-script aparte.
+pytest"): esta medición es SQL puro (`EXPLAIN` + `Handler_read` + tiempo de
+`cursor.execute`/`fetchall`), así que corre como test de pytest, con el
+mismo aislamiento (`base_de_test`) que el resto de la suite.
 
 Se salta por default (siembra hasta 5000+ filas, no es parte del piso de CI
-normal): correr con JAX_MEDIR_INDICE_PIPELINES=1.
+normal): correr con JAX_MEDIR_INDICE_PIPELINES=1, y `JAX_REPO_PATH` apuntando
+a un checkout de `jax` que YA tenga `visible` (mientras no esté mergeada a
+master, `/home/fruiz/worktrees/jax-visible`).
 """
 import os
 import time
@@ -46,11 +57,7 @@ pytestmark = pytest.mark.skipif(
     reason="medición manual, pesada (siembra 5000+ filas) -- JAX_MEDIR_INDICE_PIPELINES=1 para correrla",
 )
 
-# El plan NATURAL -- SQL_PIPELINES_DEL_USUARIO tal como estaba ANTES del fix
-# round 2 (sin ningún hint de índice). Copia literal, no una
-# reconstrucción: si el texto de mod.SQL_PIPELINES_DEL_USUARIO cambia, este
-# sigue siendo el plan que se está comparando -- el punto de esta medición
-# es esa comparación, no el estado actual del código.
+#: El plan NATURAL -- sin ningún hint de índice.
 SQL_NATURAL = (
     "SELECT pipeline_id, name, status, created_at, updated_at FROM jacobs_pipelines "
     "WHERE user_id=%s AND tenant_id=%s AND owner_ack_at IS NOT NULL "
@@ -58,11 +65,22 @@ SQL_NATURAL = (
     "ORDER BY created_at DESC LIMIT %s OFFSET %s"
 )
 
+#: La decisión del fix round 3 (Ruling 17) -- determinista pero NO acotada
+#: por el LIMIT. Se sigue midiendo para que el documento compare las TRES
+#: decisiones, no sólo la última contra la primera.
+SQL_FORCE_DUENIO = (
+    "SELECT pipeline_id, name, status, created_at, updated_at FROM jacobs_pipelines "
+    "FORCE INDEX (idx_jacobs_pipelines_duenio) "
+    "WHERE user_id=%s AND tenant_id=%s AND owner_ack_at IS NOT NULL "
+    "AND status NOT IN ('discarded','hidden') "
+    "ORDER BY created_at DESC LIMIT %s OFFSET %s"
+)
+
 N_MUESTRAS = 15
 
-# El esquema de jax (columnas/índices nuevos) lo asegura
-# tests/conftest.py::client() (fix round 3, Ruling 16 punto 3 -- ya no hace
-# falta un fixture propio acá).
+# El esquema de jax (columnas/índices nuevos, incluido `visible`) lo asegura
+# tests/conftest.py::client() (fix round 2, Ruling 16 punto 3) -- ya no hace
+# falta un fixture propio acá.
 
 
 async def _insertar_bulk(filas):
@@ -79,8 +97,8 @@ async def _insertar_bulk(filas):
             await cur.executemany(
                 "INSERT INTO jacobs_pipelines "
                 "(pipeline_id, name, invoked_by, mode, status, created_at, updated_at, "
-                " user_id, tenant_id, owner_ack_at, status_previo, descartado_por, descartado_at) "
-                "VALUES (%s, 'carga', 'plataforma', 'supervised', %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                " user_id, tenant_id, owner_ack_at) "
+                "VALUES (%s, 'carga', 'plataforma', 'supervised', %s, %s, %s, %s, %s, %s)",
                 filas,
             )
         await conn.commit()
@@ -90,33 +108,38 @@ async def _borrar_tenant(tenant_id):
     await sql("DELETE FROM jacobs_pipelines WHERE tenant_id=%s", (tenant_id,))
 
 
-def _filas_de(tenant_id, n, status, descartado=False, offset_id=0):
+def _filas(tenant_id, n, status, owner_ack_at_presente=True, offset_id=0):
     ahora = time.time()
     out = []
     for i in range(n):
         pid = str(uuid.uuid4())
         creado = ahora - (offset_id + n - i) * 2
         actualizado = creado + 1.0
-        if descartado:
-            out.append((pid, "discarded", creado, actualizado, "x", tenant_id, creado,
-                        "aborted", "x", creado))
-        else:
-            out.append((pid, status, creado, actualizado, "x", tenant_id, creado,
-                        None, None, None))
+        ack = creado if owner_ack_at_presente else None
+        out.append((pid, status, creado, actualizado, "x", tenant_id, ack))
     return out
 
 
-async def _explain(consulta, args):
+async def _explain_y_handler_read(consulta, args):
+    """Mismos tres pasos en la MISMA conexión que
+    tests/test_pipelines_descarte.py::_explain_y_handler_read --
+    `Handler_read%` es un contador de SESIÓN."""
     from db.connection import get_pool
 
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute("EXPLAIN " + consulta, args)
-            fila = await cur.fetchone()
-    campos = ("id", "select_type", "table", "type", "possible_keys", "key",
-              "key_len", "ref", "rows", "Extra")
-    return dict(zip(campos, fila))
+            cols = [d[0] for d in cur.description]
+            explain_fila = await cur.fetchone()
+            explain = dict(zip(cols, explain_fila))
+
+            await cur.execute("FLUSH STATUS")
+            await cur.execute(consulta, args)
+            filas = await cur.fetchall()
+            await cur.execute("SHOW SESSION STATUS LIKE 'Handler_read%'")
+            handler = {k: int(v) for k, v in await cur.fetchall()}
+    return explain, handler, filas
 
 
 async def _medir(consulta, args, n=N_MUESTRAS):
@@ -140,93 +163,65 @@ def _p(valores, p):
     return round(ordenados[k - 1], 4)
 
 
-def _reportar(nombre_forma, tenant_id, explain_natural, explain_forzado, t_natural, t_forzado):
+def _medir_forma(client, nombre_forma, tenant_id, args):
+    """Corre las TRES variantes (natural, FORCE duenio del round 3, FORCE
+    visibles del round 4 -- SQL_PIPELINES_DEL_USUARIO real) contra el mismo
+    sembrado, imprime EXPLAIN + Handler_read + p50/p95 de cada una."""
     print(f"\n=== {nombre_forma} (tenant={tenant_id}) ===")
-    print(f"EXPLAIN natural: key={explain_natural['key']!r} type={explain_natural['type']} "
-          f"rows={explain_natural['rows']} Extra={explain_natural['Extra']!r}")
-    print(f"EXPLAIN FORCE  : key={explain_forzado['key']!r} type={explain_forzado['type']} "
-          f"rows={explain_forzado['rows']} Extra={explain_forzado['Extra']!r}")
-    print(f"natural (n={len(t_natural)}): p50={_p(t_natural, 50)} ms  p95={_p(t_natural, 95)} ms  "
-          f"min={round(min(t_natural), 4)} max={round(max(t_natural), 4)}")
-    print(f"FORCE   (n={len(t_forzado)}): p50={_p(t_forzado, 50)} ms  p95={_p(t_forzado, 95)} ms  "
-          f"min={round(min(t_forzado), 4)} max={round(max(t_forzado), 4)}")
+    for etiqueta, consulta in [
+        ("natural (sin hint)", SQL_NATURAL),
+        ("FORCE idx_jacobs_pipelines_duenio (round 3)", SQL_FORCE_DUENIO),
+        ("FORCE idx_pipelines_visibles (round 4, DECISIÓN FINAL)", mod.SQL_PIPELINES_DEL_USUARIO),
+    ]:
+        explain, handler, filas = client.portal.call(_explain_y_handler_read, consulta, args)
+        tiempos = client.portal.call(_medir, consulta, args)
+        total_handler = sum(handler.values())
+        print(f"{etiqueta}:")
+        print(f"  EXPLAIN: key={explain['key']!r} type={explain['type']} rows={explain['rows']} "
+              f"Extra={explain['Extra']!r}")
+        print(f"  filas devueltas={len(filas)}  Handler_read total={total_handler}")
+        print(f"  p50={_p(tiempos, 50)} ms  p95={_p(tiempos, 95)} ms  "
+              f"min={round(min(tiempos), 4)}  max={round(max(tiempos), 4)}")
 
 
 def test_medir_historial_largo(client):
-    """Forma (a) del controlador: 5000 pipelines terminados + 50 descartados
-    -- el historial NO tiene techo (a diferencia de MAX_PIPELINES, que sólo
-    acota los CONCURRENTES), así que esta es la forma que crece sin límite
-    en producción real con el tiempo."""
+    """Forma (a) del controlador: 5000 visibles + 50 descartadas."""
     tenant_id = "CARGA-HISTORIAL-LARGO"
     try:
-        client.portal.call(_insertar_bulk, _filas_de(tenant_id, 5000, "completed"))
-        client.portal.call(_insertar_bulk, _filas_de(tenant_id, 50, "discarded", descartado=True, offset_id=5000))
+        client.portal.call(_insertar_bulk, _filas(tenant_id, 5000, "completed"))
+        client.portal.call(_insertar_bulk, _filas(tenant_id, 50, "discarded", offset_id=5000))
         client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
-
         args = ("x", tenant_id, mod.LISTA_PIPELINES_MAX, 0)
-        explain_natural = client.portal.call(_explain, SQL_NATURAL, args)
-        explain_forzado = client.portal.call(_explain, mod.SQL_PIPELINES_DEL_USUARIO, args)
-        t_natural = client.portal.call(_medir, SQL_NATURAL, args)
-        t_forzado = client.portal.call(_medir, mod.SQL_PIPELINES_DEL_USUARIO, args)
-
-        _reportar("historial largo: 5000 terminados + 50 descartados", tenant_id,
-                  explain_natural, explain_forzado, t_natural, t_forzado)
-
-        assert explain_forzado["key"] == "idx_jacobs_pipelines_duenio"
-        assert "filesort" not in (explain_forzado["Extra"] or "")
+        _medir_forma(client, "historial largo: 5000 visibles + 50 descartadas", tenant_id, args)
     finally:
         client.portal.call(_borrar_tenant, tenant_id)
 
 
 def test_medir_muchos_descartados(client):
-    """Forma (b) del controlador: 60 descartados + 3 vivos -- la forma que
-    ya había mostrado `Using filesort` en el plan natural en el fix round 1."""
+    """Forma (b) del controlador: 5000 descartadas + 3 vivas -- la forma
+    que pagaba el costo lineal con FORCE INDEX (idx_jacobs_pipelines_duenio)."""
     tenant_id = "CARGA-MUCHOS-DESCARTADOS"
     try:
-        client.portal.call(_insertar_bulk, _filas_de(tenant_id, 60, "discarded", descartado=True))
-        client.portal.call(_insertar_bulk, _filas_de(tenant_id, 3, "completed", offset_id=60))
+        client.portal.call(_insertar_bulk, _filas(tenant_id, 5000, "discarded"))
+        client.portal.call(_insertar_bulk, _filas(tenant_id, 3, "completed", offset_id=5000))
         client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
-
         args = ("x", tenant_id, mod.LISTA_PIPELINES_MAX, 0)
-        explain_natural = client.portal.call(_explain, SQL_NATURAL, args)
-        explain_forzado = client.portal.call(_explain, mod.SQL_PIPELINES_DEL_USUARIO, args)
-        t_natural = client.portal.call(_medir, SQL_NATURAL, args)
-        t_forzado = client.portal.call(_medir, mod.SQL_PIPELINES_DEL_USUARIO, args)
-
-        _reportar("muchos descartados: 60 descartados + 3 vivos", tenant_id,
-                  explain_natural, explain_forzado, t_natural, t_forzado)
-
-        assert explain_forzado["key"] == "idx_jacobs_pipelines_duenio"
-        assert "filesort" not in (explain_forzado["Extra"] or "")
+        _medir_forma(client, "muchos descartados: 5000 descartadas + 3 vivas", tenant_id, args)
     finally:
         client.portal.call(_borrar_tenant, tenant_id)
 
 
-def test_medir_extremo_muchos_descartados_tenant_aislado(client):
-    """Forma "extrema" (fix round 3, Ruling 17 -- el hallazgo que destapó el
-    fix round 2): 5000 descartados + 3 vivos, en un tenant AISLADO (sin
-    fondo de otros tenants). Con `IGNORE INDEX` (fix round 2) esta forma
-    elegía `idx_pipelines_status` -- fuera de la lista de índices
-    ignorados, sin `user_id`/`tenant_id`, escala con el total de pipelines
-    "vivos" de TODOS los tenants -- con `Using filesort` igual. Es la forma
-    que `FORCE INDEX (idx_jacobs_pipelines_duenio)` sí cubre, nombrando el
-    índice correcto directo en vez de una lista de exclusiones."""
-    tenant_id = "CARGA-EXTREMO-AISLADO"
+def test_medir_hijos_sin_ack(client):
+    """Forma (c) del controlador (nueva en esta ronda): 5000 hijos de Ada
+    sin `owner_ack_at` + 3 vivas -- `visible` los excluye igual que a las
+    descartadas (su definición incluye `owner_ack_at IS NOT NULL`)."""
+    tenant_id = "CARGA-HIJOS-SIN-ACK"
     try:
-        client.portal.call(_insertar_bulk, _filas_de(tenant_id, 5000, "discarded", descartado=True))
-        client.portal.call(_insertar_bulk, _filas_de(tenant_id, 3, "completed", offset_id=5000))
+        client.portal.call(_insertar_bulk,
+                           _filas(tenant_id, 5000, "running", owner_ack_at_presente=False))
+        client.portal.call(_insertar_bulk, _filas(tenant_id, 3, "completed", offset_id=5000))
         client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
-
         args = ("x", tenant_id, mod.LISTA_PIPELINES_MAX, 0)
-        explain_natural = client.portal.call(_explain, SQL_NATURAL, args)
-        explain_forzado = client.portal.call(_explain, mod.SQL_PIPELINES_DEL_USUARIO, args)
-        t_natural = client.portal.call(_medir, SQL_NATURAL, args)
-        t_forzado = client.portal.call(_medir, mod.SQL_PIPELINES_DEL_USUARIO, args)
-
-        _reportar("extremo: 5000 descartados + 3 vivos, tenant aislado", tenant_id,
-                  explain_natural, explain_forzado, t_natural, t_forzado)
-
-        assert explain_forzado["key"] == "idx_jacobs_pipelines_duenio"
-        assert "filesort" not in (explain_forzado["Extra"] or "")
+        _medir_forma(client, "hijos sin ack: 5000 sin ack + 3 vivas", tenant_id, args)
     finally:
         client.portal.call(_borrar_tenant, tenant_id)

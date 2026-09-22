@@ -177,6 +177,64 @@ curl -s -o /dev/null -w "%{http_code}\n" https://axioma-ia.io/api/health
   código viejo. Verificar comportamiento: un endpoint nuevo que devuelva 401 y
   no 404, y el hash del bundle.
 
+## Caso concreto: descartar/recuperar/ocultar pipelines (Task 4, 2026-09-22)
+
+La regla general de arriba ("`jax` va SIEMPRE antes que `jax-platform`") acá
+no es una buena práctica -- es un **hard fail**. `SQL_PIPELINES_DEL_USUARIO`
+(`GET /api/pipelines`, la lista principal) lleva
+`FORCE INDEX (idx_pipelines_visibles)`: si ese índice no existe todavía,
+MariaDB devuelve el error 1176 y el endpoint responde **500**, no un plan
+peor ni una degradación silenciosa.
+
+**Orden exacto, sin margen:**
+
+1. **`jax` primero, con jax#257 (descartar-pipelines) MÁS la columna
+   `visible`** (rama `feat/pipelines-visible` a la fecha de este runbook,
+   todavía sin mergear -- verificar que YA esté en el `master` que se
+   despliega antes de arrancar este paso). Reiniciar `jax-las-manos`
+   (`sudo systemctl restart jax-las-manos`, mismo comando que el paso 1 de
+   arriba): el `init_tables()` de `jax` corre al arrancar el proceso y crea
+   `status_previo`/`descartado_por`/`descartado_at`/`visible` y los cuatro
+   índices nuevos (`idx_pipelines_descartados`, `idx_pipelines_ocultos`,
+   `idx_pipelines_visibles`, más los que ya trajo Task 3). Comprobar en la
+   base, no suponerlo:
+
+   ```sql
+   SHOW COLUMNS FROM jax_memory.jacobs_pipelines LIKE 'visible';
+   SHOW INDEX FROM jax_memory.jacobs_pipelines WHERE Key_name = 'idx_pipelines_visibles';
+   ```
+
+2. **Backend de jax-platform**, recién CON lo anterior confirmado. Antes de
+   este punto, cualquier build de jax-platform que ya incluya este código
+   (aunque sea una versión previa desplegada) seguiría sirviendo con el SQL
+   viejo -- el riesgo es desplegar la VERSIÓN NUEVA del backend (con
+   `FORCE INDEX (idx_pipelines_visibles)`) ANTES que el paso 1. Verificar
+   por comportamiento, no por `is-active`:
+
+   ```bash
+   curl -s http://127.0.0.1:8080/api/pipelines -H "Authorization: Bearer <token>"
+   # 200 con datos = ok. 500 = el paso 1 no terminó de verdad -- revisar
+   # SHOW INDEX antes de reintentar, no reiniciar a ciegas.
+   ```
+
+3. **Frontend** (interno primero, después el sitio público -- pasos 3 y 4
+   de arriba, sin cambios).
+
+**Qué se rompe si se salta el orden:** `GET /api/pipelines` (la pantalla
+principal, no sólo "Detenidos") cae con 500 para TODO usuario, no sólo para
+quien use la función nueva -- es la lista de pipelines de siempre, que
+ahora depende de un índice que Task 4 le agregó. Descartar, recuperar,
+ocultar/restaurar y la vista "Descartados" (`?estado=discarded`) dependen
+de las rutas de `jax` (Task 3) y de sus columnas -- sin `jax` desplegado
+primero, esos endpoints responden con el proxy fallando (Jacobs no tiene
+las rutas) antes de llegar siquiera a la consulta.
+
+**Volver atrás, caso especial:** si este deploy salió en el orden
+incorrecto y `GET /api/pipelines` está en 500, la reversión MÁS RÁPIDA es
+la del backend de jax-platform (paso 2 de la sección "Volver atrás", más
+abajo) al SHA anterior a este cambio -- no hace falta tocar `jax` ni el
+esquema, que es aditivo.
+
 ## Volver atrás
 
 1. **Sitio público:** copiar de vuelta `~/respaldos-sitio/axioma-<fecha>/` en

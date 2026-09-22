@@ -2187,7 +2187,25 @@ jobs:
           #   salta por default igual que los otros dos. Medido con el
           #   MISMO comando: 2558 -> 2560 passed / 0 failed / 2 -> 3
           #   skipped. Delta verificado +2 sobre el piso anterior.
-          PISO_PASSED = 2498
+          # 2498 -> 2503 (2026-09-22, Task 4, fix round 4, Ruling 18/19).
+          #   +5 netos. En tests/test_pipelines_descarte.py: se retiran los
+          #   4 tests del fix round 3 (3 casos EXPLAIN parametrizados +
+          #   test_pipelines_del_usuario_no_rompe_sin_los_indices_de_jax_257,
+          #   que probaba la propiedad CONTRARIA a la de esta ronda) y
+          #   entran 7 -- test_pipelines_del_usuario_el_plan_usa_idx_pipelines_visibles_sin_filesort
+          #   y test_muchos_descartados_el_motor_no_lee_las_descartadas,
+          #   cada uno parametrizado en las TRES formas del controlador
+          #   (historial largo, muchos descartados, hijos sin ack), más
+          #   test_pipelines_del_usuario_depende_de_idx_pipelines_visibles
+          #   (la propiedad nueva: SIN el índice, 1176) -- neto +3.
+          #   tests/test_base_por_sesion.py suma 2 tests nuevos
+          #   (_columnas_copiables/_copiar_filas, el fix del bug 1906 que
+          #   jax ya había arreglado en su gemelo). Medido con el MISMO
+          #   comando: 2560 -> 2565 passed / 0 failed / 3 skipped (sin
+          #   cambio -- test_carga_indice_pipelines_del_usuario.py sigue
+          #   con 3 tests, reescritos pero mismo conteo). Delta verificado
+          #   +5 sobre el piso anterior.
+          PISO_PASSED = 2503
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2921,6 +2939,12 @@ jobs:
       #   conteo de SKIPS SÍ cambia -- 873 -> 876 (+3, uno por cada test
       #   nuevo) -- pero este job no lo gatea, sólo lo imprime. Medido con
       #   JAX_CI_NO_DB=1 (1687 -> 1687 passed, 873 -> 876 skipped).
+      # Sin cambios en el piso (2026-09-22, Task 4, fix round 4, Ruling
+      #   18/19): los 5 tests netos nuevos de esta ronda (ver el piso con
+      #   DB, más arriba) piden todos `client` -- ninguno corre sin DB, el
+      #   piso se queda en 1648. El conteo de SKIPS SÍ cambia -- 876 -> 881
+      #   (+5) -- este job no lo gatea, sólo lo imprime. Medido con
+      #   JAX_CI_NO_DB=1 (1687 -> 1687 passed, 876 -> 881 skipped).
       JAX_CI_MIN_PASSED: "1648"
     steps:
       - uses: actions/checkout@v4

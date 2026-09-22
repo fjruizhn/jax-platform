@@ -757,56 +757,58 @@ async def _estado_de_descarte(pipeline_id: str) -> tuple[str | None, str | None]
 # owner_ack_at poblado). Antes hacía proxy de GET {JACOBS_URL}/pipeline, que
 # Jacobs no tiene (405 devuelto como 200) y que no filtraba nada: el día que
 # existiera, entregaba todos los pipelines a cualquier sesión.
-# Índice idx_jacobs_pipelines_duenio (user_id, tenant_id, created_at), creado
-# en db/migrations.py; EXPLAIN en tests/test_t6_seguimiento.py y en
-# test_historial_pipelines.py (Task 7, 2026-09-18: paginado con LIMIT/OFFSET,
-# el índice sigue cubriendo el WHERE + ORDER BY -- el OFFSET no agrega
-# filesort ni temporary, solo salta filas dentro del mismo rango del índice).
 #
-# FORCE INDEX (fix round 3, Ruling 17, 2026-09-22 -- reemplaza el IGNORE
-# INDEX del fix round 2). La razón real, no una carrera por latencia: un
-# plan con `Using filesort` no tiene el costo acotado por el LIMIT -- si el
-# filtro de status no reduce lo suficiente ANTES de ordenar, el motor tiene
-# que materializar y ordenar un conjunto que crece con el HISTÓRICO del
-# tenant (`status NOT IN (...)` incluye todo lo terminado -- completed/
-# failed/aborted/expired --, que no tiene techo; `MAX_PIPELINES` sólo acota
-# los CONCURRENTES). `idx_jacobs_pipelines_duenio` da un range scan EN
-# ORDEN que corta apenas junta las filas de la página, sin depender de qué
-# estadísticas tenga la tabla en un momento dado -- medido con número en
-# docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md contra TRES
-# formas (historial largo, muchos descartados, y el caso extremo de muchos
-# descartados en un tenant aislado).
+# Índice idx_jacobs_pipelines_duenio (user_id, tenant_id, created_at): lo
+# crea el `init_tables()` de `jax` (repo aparte), NO `db/migrations.py` de
+# ESTE repo -- corrección (fix round 3, 2026-09-22) de un comentario que
+# decía lo contrario desde 2026-09-15. La regla de fondo es de `jax`, de esa
+# misma fecha (Ruling T6-6 de JAX, no de esta tarea: "jacobs_pipelines es
+# del repo jax ... la plataforma no corre DDL sobre tablas de jax", ver
+# jax/jacobs/store.py) -- lo que se corrige acá es que este comentario, en
+# ESTE repo, había quedado desactualizado contra esa regla. Sigue en uso
+# por test_t6_seguimiento.py y test_historial_pipelines.py, que consultan
+# pipelines por id, no por esta lista -- ver más abajo por qué la lista
+# principal ya NO va por este índice.
 #
-# FORCE INDEX, no IGNORE INDEX de los otros dos (decisión anterior,
-# revertida): `IGNORE INDEX` con un nombre que no existe es un ERROR DE
-# MARIADB (1176), no un hint que se ignora -- y `idx_pipelines_descartados`/
-# `idx_pipelines_ocultos` los crea la migración de `jax` (jax#257, YA
-# MERGEADO mas NO DESPLEGADO a la fecha de este comentario: producción
-# corre el jax ANTERIOR, sin esos dos índices). Si jax-platform se
-# desplegara ANTES que esa migración de jax -- dos repos/servicios
-# separados, sin transacción de deploy conjunta -- `GET /api/pipelines`
-# daría 500 en vez de simplemente no usar el hint.
+# FORCE INDEX (idx_pipelines_visibles) -- fix round 4, Ruling 18/19,
+# 2026-09-22, reemplaza el FORCE INDEX (idx_jacobs_pipelines_duenio) del
+# fix round 3. La razón real: `idx_jacobs_pipelines_duenio` NO acota el
+# costo por el LIMIT -- es un range scan por (user_id, tenant_id) en orden
+# de created_at, así que con pocas filas vivas entre muchas descartadas
+# tiene que recorrer casi el histórico ENTERO del tenant para juntar las
+# del LIMIT (medido: 4,2-4,4 ms con 5000 descartadas y 3 vivas, ver
+# docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md -- el fix round
+# 3 diagnosticó esto y lo dejó como "costo conocido, no resuelto").
 #
-# `idx_jacobs_pipelines_duenio` TAMBIÉN lo crea el `init_tables()` de
-# `jax`, no `db/migrations.py` de este repo (Ruling T6-6, 2026-09-15 --
-# "jacobs_pipelines es del repo jax ... la plataforma no corre DDL sobre
-# tablas de jax", ver jax/jacobs/store.py). La diferencia que importa NO es
-# QUIÉN lo crea -- es CUÁNDO: viene de una migración de una semana antes
-# (T6, Task 7 del historial de pipelines, 2026-09-15) que ya está
-# DESPLEGADA -- este mismo repo la usa en producción hoy
-# (test_historial_pipelines.py, Task 7, 2026-09-18) --, a diferencia de
-# jax#257 (2026-09-22, recién mergeado). `FORCE INDEX` sobre un índice que
-# YA EXISTE en producción no tiene el acoplamiento de orden de deploy que
-# sí tenía `IGNORE INDEX` sobre los dos índices nuevos. También cubre el
-# caso extremo que `IGNORE INDEX` NO cubría (muchos descartados en un
-# tenant aislado, que elegía `idx_pipelines_status` -- fuera de la lista de
-# índices ignorados -- con filesort): `FORCE INDEX` nombra el índice
-# correcto directo, no una lista de exclusiones que puede quedar corta.
+# `jax` agrega una columna GENERADA `visible` (VIRTUAL, TINYINT(1),
+# `status NOT IN ('discarded','hidden') AND owner_ack_at IS NOT NULL`) e
+# `idx_pipelines_visibles (user_id, tenant_id, visible, created_at)` --
+# Task 1-bis de jax, Ruling 18/19. Con `visible` DENTRO del índice, el
+# rango que el motor recorre ya viene filtrado a las filas visibles: el
+# costo lo acota el LIMIT, no cuántas descartadas/ocultas/sin-ack haya
+# antes. Probado con EXPLAIN + contadores `Handler_read` reales (no sólo
+# la clave del plan) en tests/test_pipelines_descarte.py, en TRES formas
+# (historial largo, muchos descartados, hijos sin ack). Medido con número
+# en docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md.
+#
+# `status NOT IN (...)`/`owner_ack_at IS NOT NULL` YA NO van en el WHERE:
+# `visible` los incluye a los dos, y mantenerlos acá sería una segunda
+# fuente de la misma regla que se puede desincronizar sola (Regla
+# Absoluta). Verificado con EXPLAIN que quitarlos NO cambia el plan (mismo
+# `key`/`key_len`/`rows`/`Extra` con o sin la redundancia) -- no es una
+# suposición, es lo que decide si esta simplificación es segura.
+#
+# Acoplamiento de deploy (a diferencia del `IGNORE INDEX` del fix round 2,
+# pero IGUAL de real): `idx_pipelines_visibles` todavía NO existe en
+# producción -- vive en la rama `feat/pipelines-visible` de `jax`, sin
+# mergear a la fecha de este comentario. `FORCE INDEX` con un nombre que no
+# existe es un ERROR de MariaDB (1176), no un hint que se ignora: jax CON
+# `visible` tiene que desplegarse ANTES que este código (ver el runbook de
+# despliegue en docs/).
 SQL_PIPELINES_DEL_USUARIO = (
     "SELECT pipeline_id, name, status, created_at, updated_at FROM jacobs_pipelines "
-    "FORCE INDEX (idx_jacobs_pipelines_duenio) "
-    "WHERE user_id=%s AND tenant_id=%s AND owner_ack_at IS NOT NULL "
-    "AND status NOT IN ('discarded','hidden') "
+    "FORCE INDEX (idx_pipelines_visibles) "
+    "WHERE user_id=%s AND tenant_id=%s AND visible = 1 "
     "ORDER BY created_at DESC LIMIT %s OFFSET %s"
 )
 # 2026-09-22 (spec descartar-pipelines §4): la vista "Descartados" -- propia,
