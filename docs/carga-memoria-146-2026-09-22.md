@@ -93,8 +93,12 @@ python3 loadtest/memoria_medir.py jax_memory_test_fundir146c http://127.0.0.1:18
 
 **Dónde queda el JSON de resultados.** `loadtest/memoria_medir.py` escribe
 `loadtest/_memoria_resultados.json` (dentro del checkout desde el que
-corre) -- no está en `.gitignore`, pero por convención de este repo **no
-se commitea** (es un output de medición, no código ni doc): las dos
+corre) -- por convención de este repo **no se commitea** (es un output de
+medición, no código ni doc). **m5 (cierre, ronda 6):** hasta esta ronda
+eso dependía sólo de la convención, sin nada que lo hiciera cumplir -- el
+`.gitignore` no tenía entrada para estos archivos. Ahora sí:
+`loadtest/_memoria_resultados*.json` (verificado con
+`git check-ignore -v`). Las dos
 corridas de esta vuelta se copiaron al scratchpad de la sesión
 (`_resultados_master146c.json`/`_resultados_branch146c.json`) y sus
 números quedan transcritos abajo; el JSON crudo no viaja con el PR, igual
@@ -200,9 +204,21 @@ de la respuesta.
 > **vecinas en embeddings** (dentro de un mismo cluster de casi-duplicados
 > real, no esparcidas al azar por los 10.000) -- eso es lo que ejercita de
 > verdad la vuelta de MINOR 1 (extraer miembros incompatibles de un
-> componente, recalcular, repetir) sobre un caso real, y el rechazo por
-> cita de `fundir_hechos` dentro de un cluster que el detector de verdad
-> agruparía. Medido aparte, ver la sección "RONDA 5" más abajo. Ver
+> componente, recalcular, repetir) sobre un caso real. Medido aparte, ver
+> la sección "RONDA 5" más abajo.
+>
+> **m3 (cierre, ronda 6): el rechazo por cita de `fundir_hechos` NO se
+> ejercitó bajo carga.** Las 200 llamadas de la medición de "RONDA 5" (ver
+> abajo) dieron `codigos: {"200": 200}` -- CERO rechazos
+> (`_resultados_r5_peor_caso_fundir.json`, campo `codigos`). La razón es de
+> diseño, no falta de intentos: los clusters que arma la medición salen de
+> `GET /grupos`, y ese endpoint YA aplica la vuelta de MINOR 1 (extrae los
+> miembros incompatibles de un componente antes de devolverlo) -- por
+> construcción, todo cluster que `GET /grupos` entrega es mutuamente
+> compatible, así que llamar a `POST /fundir` con esos ids nunca puede
+> toparse con el 409 de rechazo por cita. Medir ESE camino (el 409 de
+> verdad, bajo carga) exigiría armar el lote a mano con ids incompatibles
+> -- no se hizo esta ronda; queda fuera de alcance de este cierre. Ver
 > `loadtest/memoria_seed.py::FRACCION_SINTESIS`/`N_CADENAS_SINTESIS`
 > (overridables por entorno -- `MEMORIA_SEED_FRACCION_SINTESIS=0` y
 > `MEMORIA_SEED_N_CADENAS_SINTESIS=0` reproducen la base VIEJA, sin
@@ -355,7 +371,18 @@ soltar la conexión).
 **`GET /api/admin/memoria/grupos`, con ≥10 muestras por nivel** (MINOR
 A-texto: los niveles c=1/c=3 de la ronda 4 median con 3 y 6 muestras --
 "p95" ahí era literalmente el máximo de la muestra, no un percentil real;
-`memoria_medir.py` sube los tres niveles a n>=10 desde esta ronda):
+`memoria_medir.py` sube los tres niveles a n>=10 desde esta ronda).
+
+**m2 (cierre, ronda 6): subir a n>=10 SÍ alcanza para c=3/c=5, pero NO para
+c=1.** `percentil()` usa `k=round(p*n/100)` (redondeo al más cercano, con
+desempate al par -- no `ceil`). Para p=95: `c=1, n=10` da `round(9.5)=10=n`
+-- el 9.5 empata y Python redondea al par (10), así que ahí **p95 sigue
+siendo literalmente el máximo de la muestra** (ver la fila c=1 de la tabla:
+p95 y max son el MISMO valor, 1.968,49). `c=3, n=12` da `round(11.4)=11<n`
+y `c=5, n=15` da `round(14.25)=14<n` -- en esos dos SÍ deja de ser el
+máximo (compárense p95 y max en sus filas: son distintos), aunque tampoco
+es un percentil real por interpolación, es el segundo peor valor de la
+muestra:
 
 | c | n | p50 ms | p95 ms | p99 ms | max ms |
 |---|---|---|---|---|---|
@@ -387,9 +414,15 @@ disponibles, de sobra):
 | max ms | 24,56 |
 
 Comparado con el caso realista de ronda 4 (p50 12,20 ms, p95 19,12 ms,
-14 % síntesis, cadenas de profundidad <=2): **sin degradación material** --
-p50 y p95 del peor caso quedan LEVEMENTE por debajo del caso realista
-(ruido de medición entre corridas, no una mejora real). El BFS de
+14 % síntesis, cadenas de profundidad <=2): **esta corrida NO es
+comparable número a número con la de la ronda 4** (máquina/sesión
+distinta, caché del SO y del pool en otro estado, base sembrada con un
+overlay adicional) -- mismo motivo, y las mismas palabras, que la
+comparación de `/grupos` más arriba. No se declara "sin degradación" ni
+"más lento" que ronda 4; p50 y p95 del peor caso quedan LEVEMENTE por
+debajo del caso realista, pero esa diferencia no prueba nada por sí sola
+con máquina y sesión distintas -- puede ser ruido de medición, no una
+mejora real. El BFS de
 `_cierre_transitivo_de_citas` (`backend/api/admin/memoria.py`) recorre
 desde CADA origen sin memoizar entre ellos -- a profundidad 10 eso es
 ~10 pasos por nodo de la cadena, ~100 operaciones totales por cadena de
@@ -405,8 +438,8 @@ scratchpad de la sesión, `medir_fundir.py`, que además leía
 `JAX_JWT_SECRET` de `/etc/jax/.env` -- ver el hallazgo de SEGURIDAD, ya
 corregido). Escribe `loadtest/_memoria_resultados_fundir.json`, mismo
 directorio y misma convención que `loadtest/_memoria_resultados.json` (de
-`/grupos`) -- no está en `.gitignore`, pero por convención de este repo no
-se commitea; esta corrida se copió a
+`/grupos`) -- **ver m5 más arriba: desde el cierre (ronda 6) los dos están
+en `.gitignore`** (`loadtest/_memoria_resultados*.json`); esta corrida se copió a
 `_resultados_r5_peor_caso_fundir.json`/`_resultados_r5_peor_caso_grupos
 .json` en el scratchpad de la sesión, igual que las rondas anteriores.
 

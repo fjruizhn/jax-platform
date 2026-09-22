@@ -103,22 +103,32 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
             k, _, v = linea.partition("=")
             env[k.strip()] = v.strip()
 
-    # SEGURIDAD (revision adversarial de jax-platform PR 146, ronda 5): el
-    # backend de carga (memoria_levantar_entorno.py) firma con SU PROPIA
-    # `JAX_JWT_SECRET`, generada al azar -- NUNCA la de produccion, aunque
-    # `env` (arriba) la tenga (vino de /etc/jax/.env, y la sigue necesitando
-    # para las credenciales de conexion a MariaDB, que son las mismas para
-    # cualquier base de esa instancia). El secreto de firma se lee del
-    # proceso YA LEVANTADO -- `info.json` (el mismo que escribe el
-    # lanzador) trae el `pid`; `/proc/<pid>/environ` es la unica fuente que
-    # no requiere volver a escribir el secreto en ningun archivo.
+    # SEGURIDAD (revision adversarial de jax-platform PR 146, ronda 5;
+    # comentario corregido en el cierre, ronda 6, m6): el backend de carga
+    # (memoria_levantar_entorno.py) firma con SU PROPIA `JAX_JWT_SECRET`,
+    # generada al azar -- NUNCA la de produccion para FIRMAR ni VERIFICAR
+    # tokens. Pero `env` (arriba) SI parsea el `/etc/jax/.env` entero, y eso
+    # incluye el `JAX_JWT_SECRET` de produccion -- se usa, a proposito, para
+    # el chequeo de abajo: COMPARARLO (con `!=`) contra el del backend de
+    # carga, nunca para firmar ni para imprimirlo. El resto de `env` sigue
+    # haciendo falta para las credenciales de conexion a MariaDB, que son
+    # las mismas para cualquier base de esa instancia. El secreto de firma
+    # se lee del proceso YA LEVANTADO -- `info.json` (el mismo que escribe
+    # el lanzador) trae el `pid`; `/proc/<pid>/environ` es la unica fuente
+    # que no requiere volver a escribir el secreto en ningun archivo.
+    #
+    # `assert` desaparece con `python -O` (PYTHONOPTIMIZE=1): esta barrera
+    # es de seguridad, no un chequeo de desarrollo, asi que aborta con
+    # `SystemExit` en vez de depender de que nadie corra este script
+    # optimizado.
     info = json.loads((RUN_DIR / "info.json").read_text())
     environ_de_carga = leer_environ_de_proceso(info["pid"])
     jwt_secret_de_carga = environ_de_carga["JAX_JWT_SECRET"]
-    assert jwt_secret_de_carga != env.get("JAX_JWT_SECRET"), (
-        "el backend de carga esta firmando con la llave de PRODUCCION -- "
-        "ABORTANDO, no se mide sobre un entorno que puede emitir tokens "
-        "validos tambien contra produccion")
+    if jwt_secret_de_carga == env.get("JAX_JWT_SECRET"):
+        raise SystemExit(
+            "el backend de carga esta firmando con la llave de PRODUCCION -- "
+            "ABORTANDO, no se mide sobre un entorno que puede emitir tokens "
+            "validos tambien contra produccion")
 
     # Barrera dura: no mide si el backend real (segun /proc/<pid>/environ, no
     # esta llamada) no apunta a la base esperada. Se vuelve a verificar por
@@ -223,8 +233,17 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
     # MINOR A-texto (revision adversarial de jax-platform PR 146, ronda 5):
     # `n` sube a >=10 en los tres niveles -- antes c=1/c=3 median con 3/6
     # muestras, donde "p95" es literalmente el maximo de la muestra (no un
-    # percentil real). Con >=10 muestras, p95 es el segundo peor valor real,
-    # no el peor de todos.
+    # percentil real).
+    #
+    # m2 (cierre, ronda 6): `percentil()` usa k=round(p*n/100) (redondeo al
+    # mas cercano, con desempate al par -- NO ceil). Para p=95 eso da:
+    #   c=1, n=10 -> round(9.5)=10=n  -> p95 SIGUE siendo el maximo de la
+    #                muestra (el 9.5 empata y Python redondea al par, 10).
+    #   c=3, n=12 -> round(11.4)=11<n -> p95 es el segundo peor, no el max.
+    #   c=5, n=15 -> round(14.25)=14<n -> idem, segundo peor.
+    # O sea: subir a n>=10 alcanza para c=3/c=5, pero NO para c=1 -- ahi
+    # "p95" sigue siendo literalmente el maximo, documentado asi en el
+    # reporte de carga.
     for c, n in [(1, 10), (3, 12), (5, 15)]:
         r = await correr_tanda(None, f"{backend_url}/api/admin/memoria/grupos", {}, headers, c, n)
         print(f"[GRUPOS] c={c} n={n} -> {r}")
