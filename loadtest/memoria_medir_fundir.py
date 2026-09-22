@@ -43,7 +43,9 @@ import httpx
 
 LOADTEST_DIR = Path(__file__).parent
 
-from memoria_levantar_entorno import RUN_DIR, leer_environ_de_proceso  # noqa: E402
+from memoria_levantar_entorno import (  # noqa: E402
+    RUN_DIR, abortar_si_el_secreto_de_carga_coincide_con_produccion, leer_environ_de_proceso,
+)
 
 
 def percentil(valores, p):
@@ -99,16 +101,16 @@ async def main_async(base_de_prueba: str, backend_url: str, n_max: int) -> None:
     # sólo para COMPARARLO (`!=`) contra el de carga, nunca para firmar ni
     # imprimirlo (mismo patrón y misma nota que `memoria_medir.py`).
     #
-    # `assert` desaparece con `python -O`: esta barrera aborta con
-    # `SystemExit`, no con `assert`.
+    # MINOR (revision adversarial, ronda 8 -- consistencia): el chequeo
+    # ahora vive en `memoria_levantar_entorno.py`, compartido con
+    # `memoria_medir.py`, y tambien rechaza un secreto de CARGA vacio
+    # (antes sólo comparaba contra el de produccion -- un vacio no
+    # coincide con uno no vacio, asi que pasaba).
     info = json.loads((RUN_DIR / "info.json").read_text())
     environ_de_carga = leer_environ_de_proceso(info["pid"])
     jwt_secret_de_carga = environ_de_carga["JAX_JWT_SECRET"]
-    if jwt_secret_de_carga == env.get("JAX_JWT_SECRET"):
-        raise SystemExit(
-            "el backend de carga esta firmando con la llave de PRODUCCION -- "
-            "ABORTANDO, no se mide sobre un entorno que puede emitir tokens "
-            "validos tambien contra produccion")
+    abortar_si_el_secreto_de_carga_coincide_con_produccion(
+        jwt_secret_de_carga, env.get("JAX_JWT_SECRET"))
 
     conn = pymysql.connect(host=env["JAX_DB_HOST"], port=int(env["JAX_DB_PORT"]), user=env["JAX_DB_USER"],
                             password=env["JAX_DB_PASSWORD"], database=base_de_prueba, charset="utf8mb4")

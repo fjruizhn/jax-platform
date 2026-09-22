@@ -216,6 +216,37 @@ def leer_environ_de_proceso(pid: int) -> dict[str, str]:
     return {k.decode(): v.decode() for k, v in pares.items()}
 
 
+def abortar_si_el_secreto_de_carga_coincide_con_produccion(
+        jwt_secret_de_carga: str, jwt_secret_de_produccion: str | None) -> None:
+    """Barrera de seguridad compartida entre `memoria_medir.py` y
+    `memoria_medir_fundir.py` -- función pura (sin I/O) para poder
+    testearla aislada, ver `test_memoria_levantar_entorno.py`. Nunca
+    imprime ninguno de los dos argumentos (ni acá ni en el `raise`).
+
+    MINOR (revisión adversarial, ronda 8 -- consistencia): la versión
+    anterior de este chequeo, duplicada inline en los dos scripts, sólo
+    comparaba `jwt_secret_de_carga == jwt_secret_de_produccion` -- un
+    secreto de CARGA vacío (`environ_de_carga.get("JAX_JWT_SECRET")`
+    devolviendo `""`, p. ej. si `construir_env()` nunca llegó a poner la
+    variable) NO coincide con un secreto de producción no vacío, así que
+    el chequeo lo dejaba pasar: medir con un backend que no firma nada
+    válido (o que cae a algún default silencioso) no es mejor que medir
+    contra producción -- es otra forma de medir sobre un entorno que no
+    es el que se cree que es. `historial_orquestar.py` (punto 7, ronda 7)
+    ya tenía este chequeo completo (`not jwt_secret_de_carga or ...`);
+    esta función lo unifica para los otros dos scripts.
+
+    `assert` desaparece con `python -O` (PYTHONOPTIMIZE=1): esta barrera
+    es de seguridad, no un chequeo de desarrollo, así que aborta con
+    `SystemExit` en vez de depender de que nadie corra estos scripts
+    optimizados."""
+    if not jwt_secret_de_carga or jwt_secret_de_carga == jwt_secret_de_produccion:
+        raise SystemExit(
+            "el backend de carga esta firmando con la llave de PRODUCCION (o "
+            "sin ninguna) -- ABORTANDO, no se mide sobre un entorno que puede "
+            "emitir tokens validos tambien contra produccion")
+
+
 def escribir_info_json(info_path: Path, resultado: dict) -> None:
     """Escribe `info_path` (JSON) SIEMPRE en modo 600, sin ventana y sin
     importar si el archivo ya existía con otro modo. Función pura de I/O,

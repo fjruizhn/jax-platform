@@ -93,7 +93,9 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
     import pymysql
     from jose import jwt as _jwt
 
-    from memoria_levantar_entorno import RUN_DIR, leer_environ_de_proceso
+    from memoria_levantar_entorno import (
+        RUN_DIR, abortar_si_el_secreto_de_carga_coincide_con_produccion, leer_environ_de_proceso,
+    )
 
     r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
     env = {}
@@ -117,18 +119,16 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
     # el lanzador) trae el `pid`; `/proc/<pid>/environ` es la unica fuente
     # que no requiere volver a escribir el secreto en ningun archivo.
     #
-    # `assert` desaparece con `python -O` (PYTHONOPTIMIZE=1): esta barrera
-    # es de seguridad, no un chequeo de desarrollo, asi que aborta con
-    # `SystemExit` en vez de depender de que nadie corra este script
-    # optimizado.
+    # MINOR (revision adversarial, ronda 8 -- consistencia): el chequeo
+    # ahora vive en `memoria_levantar_entorno.py`, compartido con
+    # `memoria_medir_fundir.py`, y tambien rechaza un secreto de CARGA
+    # vacio (antes sólo comparaba contra el de produccion -- un vacio no
+    # coincide con uno no vacio, asi que pasaba).
     info = json.loads((RUN_DIR / "info.json").read_text())
     environ_de_carga = leer_environ_de_proceso(info["pid"])
     jwt_secret_de_carga = environ_de_carga["JAX_JWT_SECRET"]
-    if jwt_secret_de_carga == env.get("JAX_JWT_SECRET"):
-        raise SystemExit(
-            "el backend de carga esta firmando con la llave de PRODUCCION -- "
-            "ABORTANDO, no se mide sobre un entorno que puede emitir tokens "
-            "validos tambien contra produccion")
+    abortar_si_el_secreto_de_carga_coincide_con_produccion(
+        jwt_secret_de_carga, env.get("JAX_JWT_SECRET"))
 
     # Barrera dura: no mide si el backend real (segun /proc/<pid>/environ, no
     # esta llamada) no apunta a la base esperada. Se vuelve a verificar por

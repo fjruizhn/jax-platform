@@ -21,7 +21,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from memoria_levantar_entorno import escribir_info_json  # noqa: E402
+import pytest  # noqa: E402
+
+from memoria_levantar_entorno import (  # noqa: E402
+    abortar_si_el_secreto_de_carga_coincide_con_produccion, escribir_info_json,
+)
 
 
 def _modo(path: Path) -> int:
@@ -83,3 +87,35 @@ def test_un_lector_que_ya_tenia_el_archivo_abierto_no_ve_el_contenido_nuevo():
         contenido_que_ve_el_lector_viejo = lector_viejo.read()
         lector_viejo.close()
         assert "nueva-secreta" not in contenido_que_ve_el_lector_viejo
+
+
+# MINOR (revisión adversarial, ronda 8 -- consistencia): `memoria_medir.py`
+# y `memoria_medir_fundir.py` no rechazaban un secreto de CARGA vacío,
+# mientras que `historial_orquestar.py` (punto 7, ronda 7) sí lo hacía --
+# `abortar_si_el_secreto_de_carga_coincide_con_produccion()` unifica el
+# chequeo completo (vacío, O igual al de producción) para los dos primeros.
+
+def test_abortar_si_coincide_con_produccion_no_lanza_si_son_distintos():
+    # No debe lanzar -- si lanza, el test falla solo.
+    abortar_si_el_secreto_de_carga_coincide_con_produccion(
+        "secreto-de-carga", "secreto-de-produccion")
+
+
+def test_abortar_si_coincide_con_produccion_lanza_si_son_iguales():
+    with pytest.raises(SystemExit):
+        abortar_si_el_secreto_de_carga_coincide_con_produccion(
+            "el-mismo-secreto", "el-mismo-secreto")
+
+
+def test_abortar_si_el_secreto_de_carga_esta_vacio():
+    # El caso que faltaba: un secreto de carga vacío NO coincide con uno de
+    # producción no vacío (comparación directa), pero es igual de peligroso
+    # -- el backend de carga podría no estar firmando nada válido, o caer a
+    # algún default silencioso.
+    with pytest.raises(SystemExit):
+        abortar_si_el_secreto_de_carga_coincide_con_produccion("", "secreto-de-produccion")
+
+
+def test_abortar_si_el_secreto_de_carga_esta_vacio_y_produccion_tambien():
+    with pytest.raises(SystemExit):
+        abortar_si_el_secreto_de_carga_coincide_con_produccion("", None)
