@@ -8,7 +8,9 @@ import pytest
 
 from db.migrations import (
     MIGRACION_EJECUTOR_INVENTARIO_V1, MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1, MIGRACION_EJECUTOR_REGLAS_V1,
-    _ejecutor_inventario_v1, _ejecutor_reglas_envoltorios_v1, _ejecutor_reglas_v1, parsear_inventario,
+    _asegurar_forma_de_ejecutor_punto_restauracion, _ejecutor_inventario_v1,
+    _ejecutor_reglas_envoltorios_v1, _ejecutor_reglas_v1, _METODOS_PUNTO_RESTAURACION,
+    parsear_inventario,
 )
 from tests.identidades import sql
 
@@ -128,13 +130,190 @@ def test_parsear_inventario_rechaza(texto):
         parsear_inventario(texto)
 
 
+async def _sembrar_host_de_prueba(cur_unused=None):
+    """Un host propio para estos dos tests, para que la FK de host_nombre nunca sea la razón
+    de un fallo: lo que se mide es metodo/respaldado_at, no la FK."""
+    await sql(
+        "INSERT IGNORE INTO ejecutor_host (nombre, ip, puerto, rol) "
+        "VALUES ('zz_test_forma_prc', '192.0.2.77', 22, 'clientes')"
+    )
+
+
+def test_metodo_desconocido_no_se_guarda(client, sin_marcas):
+    """C2 (Esquema, diseño 2026-09-22): `metodo` es ENUM de los 4 métodos reales -- un valor
+    fuera de la lista no se guarda, ni truncado ni silencioso."""
+    import pymysql
+
+    async def _intentar():
+        await _sembrar_host_de_prueba()
+        try:
+            await sql(
+                "INSERT INTO ejecutor_punto_restauracion (host_nombre, referencia, metodo, "
+                "respaldado_at, restaurado_y_verificado_at, verificado_por, evidencia) "
+                "VALUES ('zz_test_forma_prc', %s, 'metodo_inventado', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'test', 'test')",
+                ("referencia-1",),
+            )
+            return None
+        except pymysql.err.DataError as exc:
+            return exc.args
+
+    error = client.portal.call(_intentar)
+    assert error is not None, "un metodo fuera del ENUM se guardó -- no debería"
+    filas = client.portal.call(sql, "SELECT COUNT(*) FROM ejecutor_punto_restauracion "
+                                    "WHERE metodo = 'metodo_inventado'", None, True)
+    assert filas == ((0,),)
+
+
+def test_respaldado_at_es_obligatorio(client, sin_marcas):
+    """respaldado_at es la hora del SNAPSHOT (distinta de restaurado_y_verificado_at) --
+    sin ella, la fila no se guarda."""
+    import pymysql
+
+    async def _intentar():
+        await _sembrar_host_de_prueba()
+        try:
+            await sql(
+                "INSERT INTO ejecutor_punto_restauracion (host_nombre, referencia, metodo, "
+                "restaurado_y_verificado_at, verificado_por, evidencia) "
+                "VALUES ('zz_test_forma_prc', %s, 'recreacion', UTC_TIMESTAMP(), 'test', 'test')",
+                ("referencia-2",),
+            )
+            return None
+        except (pymysql.err.OperationalError, pymysql.err.IntegrityError) as exc:
+            return exc.args
+
+    error = client.portal.call(_intentar)
+    assert error is not None, "una fila sin respaldado_at se guardó -- no debería"
+
+
 def test_la_consulta_del_exportador_usa_el_indice(client, sin_marcas, monkeypatch):
     monkeypatch.setenv("JAX_EJECUTOR_INVENTARIO", "a:192.0.2.1:22:clientes,b:192.0.2.2:22:clientes")
     client.portal.call(_correr, _ejecutor_inventario_v1)
     for k in range(200):
         client.portal.call(sql, "INSERT INTO ejecutor_punto_restauracion (host_nombre, referencia, metodo, "
-                                "restaurado_y_verificado_at, verificado_por, evidencia) VALUES (%s, %s, 'prueba', "
-                                "UTC_TIMESTAMP(), 'test', 'test')", ("ab"[k % 2], f"prueba-{k}"))
+                                "respaldado_at, restaurado_y_verificado_at, verificado_por, evidencia) "
+                                "VALUES (%s, %s, 'recreacion', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'test', 'test')",
+                                ("ab"[k % 2], f"prueba-{k}"))
     filas = client.portal.call(sql, "EXPLAIN SELECT host_nombre, MAX(restaurado_y_verificado_at) "
                                     "FROM ejecutor_punto_restauracion GROUP BY host_nombre", None, True)
     assert any("idx_ejecutor_punto_host_fecha" in str(f) for f in filas), filas
+
+
+def test_la_edad_del_respaldo_usa_su_propio_indice(client, sin_marcas, monkeypatch):
+    """C2 (Esquema, diseño 2026-09-22): la edad del PUNTO DE RESTAURACIÓN se mide sobre
+    `respaldado_at` (la hora del snapshot), no sobre `restaurado_y_verificado_at` -- son
+    preguntas distintas y cada una tiene su índice. `idx_ejecutor_punto_host_fecha` (arriba)
+    no cubre esta consulta: MariaDB no puede usar un índice que empieza por
+    (host_nombre, restaurado_y_verificado_at) para ordenar/agrupar por respaldado_at."""
+    monkeypatch.setenv("JAX_EJECUTOR_INVENTARIO", "a:192.0.2.1:22:clientes,b:192.0.2.2:22:clientes")
+    client.portal.call(_correr, _ejecutor_inventario_v1)
+    for k in range(200):
+        client.portal.call(sql, "INSERT INTO ejecutor_punto_restauracion (host_nombre, referencia, metodo, "
+                                "respaldado_at, restaurado_y_verificado_at, verificado_por, evidencia) "
+                                "VALUES (%s, %s, 'recreacion', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'test', 'test')",
+                                ("ab"[k % 2], f"prueba-{k}"))
+    filas = client.portal.call(sql, "EXPLAIN SELECT host_nombre, MAX(respaldado_at) "
+                                    "FROM ejecutor_punto_restauracion GROUP BY host_nombre", None, True)
+    assert any("idx_ejecutor_punto_host_respaldo" in str(f) for f in filas), filas
+
+
+def test_ya_es_enum_exige_el_conjunto_exacto(client, sin_marcas):
+    """Hallazgo de la auditoría adversarial (2026-09-22): `ya_es_enum` comparaba "¿están los 4
+    valores?", no "¿son EXACTAMENTE estos 4?" -- un ENUM con un quinto valor de más pasaba el
+    chequeo viejo y el MODIFY que lo recorta nunca corría. Se siembra a mano un ENUM con un
+    valor extra y se comprueba que la función lo detecta y lo recorta."""
+    async def _romper_y_reparar():
+        enum_con_extra = ",".join(f"'{m}'" for m in (*_METODOS_PUNTO_RESTAURACION, "algo_extra"))
+        await sql(f"ALTER TABLE ejecutor_punto_restauracion MODIFY COLUMN metodo ENUM({enum_con_extra}) NOT NULL")
+        antes = await sql(
+            "SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_punto_restauracion' AND COLUMN_NAME='metodo'", None, True)
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await _asegurar_forma_de_ejecutor_punto_restauracion(cur)
+            await conn.commit()
+        despues = await sql(
+            "SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_punto_restauracion' AND COLUMN_NAME='metodo'", None, True)
+        return antes, despues
+
+    antes, despues = client.portal.call(_romper_y_reparar)
+    assert "algo_extra" in antes[0][0]
+    assert "algo_extra" not in despues[0][0], despues
+
+
+def test_ya_es_enum_exige_not_null(client, sin_marcas):
+    """Mutante B de la re-auditoría (2026-09-22): un ENUM con el conjunto EXACTO de valores
+    pero declarado NULL también tiene que detectarse como "todavía no es la forma final" --
+    si no, el MODIFY COLUMN ... NOT NULL de abajo nunca corre y la columna admite NULL para
+    siempre."""
+    async def _romper_y_reparar():
+        enum_exacto = ",".join(f"'{m}'" for m in _METODOS_PUNTO_RESTAURACION)
+        await sql(f"ALTER TABLE ejecutor_punto_restauracion MODIFY COLUMN metodo ENUM({enum_exacto}) NULL")
+        antes = await sql(
+            "SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_punto_restauracion' AND COLUMN_NAME='metodo'", None, True)
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await _asegurar_forma_de_ejecutor_punto_restauracion(cur)
+            await conn.commit()
+        despues = await sql(
+            "SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_punto_restauracion' AND COLUMN_NAME='metodo'", None, True)
+        return antes, despues
+
+    antes, despues = client.portal.call(_romper_y_reparar)
+    assert antes == (("YES",),), antes
+    assert despues == (("NO",),), despues
+
+
+def test_sudo_y_machine_id_se_eliminan_de_ejecutor_host(client):
+    """Ronda 3 (decisión de Hyde, 2026-09-22): ningún lector ni escritor toca estas dos
+    columnas en jax ni en jax-platform (confirmado con grep, dos veces); la fuente real de
+    sudo/machine-id es jax/scripts/ejecutor_fase0/maquinas.toml. DROP idempotente."""
+    from db.migrations import _eliminar_sudo_y_machine_id_de_ejecutor_host
+
+    async def _sembrar_columnas_viejas_y_eliminar():
+        for columna, ddl in (
+            ("sudo", "ALTER TABLE ejecutor_host ADD COLUMN sudo BOOLEAN NOT NULL DEFAULT FALSE"),
+            ("machine_id", "ALTER TABLE ejecutor_host ADD COLUMN machine_id CHAR(32) NULL"),
+        ):
+            existe = await sql(
+                "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+                "AND TABLE_NAME='ejecutor_host' AND COLUMN_NAME=%s", (columna,), True)
+            if not existe:
+                await sql(ddl)
+        antes = await sql(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_host' AND COLUMN_NAME IN ('sudo','machine_id')", None, True)
+
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await _eliminar_sudo_y_machine_id_de_ejecutor_host(cur)
+            await conn.commit()
+
+        despues = await sql(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_host' AND COLUMN_NAME IN ('sudo','machine_id')", None, True)
+        return antes, despues
+
+    antes, despues = client.portal.call(_sembrar_columnas_viejas_y_eliminar)
+    assert {f[0] for f in antes} == {"sudo", "machine_id"}, antes
+    assert despues == (), despues
+
+
+def test_ejecutor_host_nace_sin_sudo_ni_machine_id(client):
+    """Una instalación NUEVA (CREATE_EJECUTOR_HOST) no las trae -- no hay motivo para crear y
+    después dropear en la misma corrida."""
+    columnas = client.portal.call(
+        sql, "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='ejecutor_host'", None, True)
+    nombres = {f[0] for f in columnas}
+    assert "sudo" not in nombres, nombres
+    assert "machine_id" not in nombres, nombres
