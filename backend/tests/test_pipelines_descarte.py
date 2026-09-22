@@ -16,7 +16,6 @@ descartado_at (ver jax/jacobs/store.py). Índices: idx_pipelines_descartados
 (user_id, tenant_id, status, descartado_at), idx_pipelines_ocultos (status,
 descartado_at).
 """
-import re
 import time
 import uuid
 from functools import partial
@@ -685,59 +684,70 @@ def test_pipelines_del_usuario_depende_de_idx_pipelines_visibles(client):
         client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
 
 
-# Fix round 5 (2026-09-22, re-review) -- el asunto de fondo, no un minor: la
-# regla de "de quién es visible" (owner_ack_at IS NOT NULL) vive AHORA
-# sólo en la definición de la columna generada `visible` de `jax`
-# (jacobs/store.py, jax#259) -- jax-platform ya NO la repite en ningún WHERE
-# (fix round 4 sacó la redundancia). Eso significa que si `jax` cambiara esa
-# expresión -- por ejemplo, si alguien sacara el chequeo de `owner_ack_at` de
-# `visible` sin darse cuenta de que ESTE repo dejó de comprobarlo aparte --
-# `GET /api/pipelines` empezaría a mostrar hijos de Ada sin ack como si
-# fueran visibles, y NADA en jax-platform lo notaría: el contrato que hace
-# ese cruce YA NO ESTÁ ACÁ. Esta prueba lo cierra: lee
-# `information_schema.COLUMNS.GENERATION_EXPRESSION` de
-# `jacobs_pipelines.visible` -- contra el `jax` REAL de CI (clona master,
-# corre su propio `init_tables()`), no una copia local -- y exige que la
-# expresión siga excluyendo descartados/ocultos Y exigiendo `owner_ack_at
-# IS NOT NULL`. Si `jax` cambia la expresión, ESTE test se pone rojo en CI
-# antes de que el cambio llegue a producción sin que nadie lo haya
-# verificado del lado de jax-platform.
-def _normalizar_expresion_sql(expresion: str) -> str:
-    """Sin backticks, espacios de más, ni mayúsculas -- MariaDB devuelve
-    `GENERATION_EXPRESSION` ya renormalizada a su propio estilo (todo en
-    minúsculas, identificadores con backticks, sin espacios extra), pero
-    esta función no depende de ESE estilo puntual: cualquier expresión
-    equivalente pasa igual."""
-    return re.sub(r"\s+", " ", expresion.replace("`", "")).strip().lower()
-
-
-def test_visible_excluye_descartados_ocultos_y_exige_ack_del_dueño(client):
-    filas = client.portal.call(
-        sql,
-        "SELECT GENERATION_EXPRESSION FROM information_schema.COLUMNS "
-        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='jacobs_pipelines' AND COLUMN_NAME='visible'",
-        (), True)
-    assert filas, (
-        "jacobs_pipelines no tiene una columna 'visible' -- ¿jax sin la "
-        "migración de jax#259, o renombraron la columna?"
-    )
-    expresion = _normalizar_expresion_sql(filas[0][0])
-    assert "status" in expresion and "not in" in expresion, expresion
-    assert "'discarded'" in expresion, (
-        f"la expresión de `visible` ya no excluye 'discarded': {expresion!r} -- "
-        "SQL_PIPELINES_DEL_USUARIO (api/pipelines.py) confía en que `visible` "
-        "ya filtra esto, y ya no lo repite en su WHERE (fix round 4)"
-    )
-    assert "'hidden'" in expresion, (
-        f"la expresión de `visible` ya no excluye 'hidden': {expresion!r}"
-    )
-    assert "owner_ack_at" in expresion and "is not null" in expresion, (
-        f"la expresión de `visible` ya no exige owner_ack_at IS NOT NULL: "
-        f"{expresion!r} -- jax-platform NO comprueba esto por su cuenta en "
-        "ningún lado (fix round 4 sacó la redundancia del WHERE): un hijo de "
-        "Ada sin ack pasaría a verse como visible sin que nada de este repo "
-        "lo note"
-    )
+# Cierre (2026-09-22, Ruling 23, MAJOR (c)): esta prueba REEMPLAZA a
+# `test_visible_excluye_descartados_ocultos_y_exige_ack_del_dueño` (fix
+# round 5), que leía `information_schema.COLUMNS.GENERATION_EXPRESSION` y
+# comprobaba que el TEXTO contuviera ciertas palabras ('discarded',
+# 'hidden', 'owner_ack_at', 'is not null'). El re-review del coordinador
+# encontró el hueco: si alguien cambiara el `AND` de la expresión de
+# `visible` (jax/jacobs/store.py) por un `OR`, las cuatro palabras
+# seguirían presentes en el texto -- el test viejo se hubiera quedado en
+# VERDE con la columna rota (un hijo descartado pero con ack pasaría a
+# verse visible=1). Esta versión no lee el texto de la expresión: siembra
+# una fila real por cada combinación relevante de status/owner_ack_at y
+# compara el `visible` que MariaDB computa de verdad contra el valor
+# esperado -- el comportamiento, no la forma del SQL. Se borró
+# `_normalizar_expresion_sql` (y el `import re` que sólo ella usaba): sin
+# lectura de texto, no hace falta normalizar nada.
+#
+# Verificación de mutante (manual, no shippeada -- mismo criterio que el
+# resto de esta tarea: se mide, se reporta, no se deja un segundo test
+# permanente que duplique a éste): se corrió este mismo test contra la
+# base de test con la columna `visible` recreada a mano con
+# `OR owner_ack_at IS NOT NULL` en vez de `AND` (DROP INDEX
+# idx_pipelines_visibles -> ALTER TABLE ... MODIFY COLUMN ... GENERATED
+# ALWAYS AS (...) VIRTUAL -- redefinir una columna VIRTUAL indexada con un
+# ALTER simple choca con el 1846 de MariaDB, documentado en
+# jax/jacobs/store.py junto a `_verificar_expresion_visible`). Con el
+# mutante, el caso (discarded, con ack) computó visible=1 en vez de 0 y el
+# `assert` de abajo lo detectó -- confirmado en rojo. Se restauró la
+# expresión y el índice originales (mismo ALTER con el texto real leído
+# de information_schema antes de mutar, + `CREATE INDEX` +
+# `ANALYZE TABLE`) y se re-corrió: vuelve a verde. El comando y los
+# resultados exactos de las dos corridas están en el reporte de la tarea.
+def test_visible_computa_correctamente_segun_status_y_ack_del_dueno(client):
+    tenant = "TENANT-VISIBLE-BEHAVIOR-T4"
+    # (status, owner_ack_at es NULL, visible esperado) -- las 5 combinaciones
+    # que pidió el coordinador: completed sin ack, completed con ack,
+    # discarded con ack, hidden con ack, running con ack.
+    casos = [
+        ("completed", True, 0),
+        ("completed", False, 1),
+        ("discarded", False, 0),
+        ("hidden", False, 0),
+        ("running", False, 1),
+    ]
+    ids = [str(uuid.uuid4()) for _ in casos]
+    ahora = time.time()
+    filas = [
+        (pid, status, ahora, ahora, "x", tenant, None if sin_ack else ahora, None, None, None)
+        for pid, (status, sin_ack, _esperado) in zip(ids, casos)
+    ]
+    try:
+        client.portal.call(_insertar_pipelines_bulk, filas)
+        placeholders = ",".join(["%s"] * len(ids))
+        resultado = client.portal.call(
+            sql,
+            f"SELECT pipeline_id, visible FROM jacobs_pipelines WHERE pipeline_id IN ({placeholders})",
+            tuple(ids), True)
+        visible_por_id = {fila[0]: fila[1] for fila in resultado}
+        for pid, (status, sin_ack, esperado) in zip(ids, casos):
+            assert visible_por_id[pid] == esperado, (
+                f"status={status!r} owner_ack_at NULL={sin_ack} -> "
+                f"visible={visible_por_id.get(pid)!r}, esperaba {esperado!r}"
+            )
+    finally:
+        client.portal.call(_borrar_pipelines, ids)
 
 
 def test_explain_descartados_del_usuario_usa_idx_pipelines_descartados(client):
