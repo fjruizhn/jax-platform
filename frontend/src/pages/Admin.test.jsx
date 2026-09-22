@@ -61,3 +61,22 @@ describe('Admin > ruta "memoria" (2026-09-20)', () => {
     expect(enlaceDashboard).toHaveAttribute('href', '/admin/dashboard')
   })
 })
+
+// Fix round 1 (MINOR-7, 2026-09-22): "pipelines-ocultos" tenía ruta
+// (Task 7) pero ninguna entrada en el menú -- un superadmin que llegaba
+// desde el enlace de BarraUsuario no podía volver sin salir de
+// Administración. Mismo patrón que el candado de Memoria de arriba.
+describe('Admin > ruta "pipelines-ocultos" (fix round 1, MINOR-7)', () => {
+  it('vive dentro del caparazón: la barra lateral está presente junto a Pipelines ocultos', async () => {
+    renderAdminBajoAdminStar('/admin/pipelines-ocultos')
+    expect(screen.getByText('Administración')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Pipelines ocultos' })).toBeInTheDocument()
+  })
+
+  it('el menú tiene una entrada propia que lleva a /admin/pipelines-ocultos', async () => {
+    renderAdminBajoAdminStar('/admin/pipelines-ocultos')
+    await screen.findByRole('heading', { name: 'Pipelines ocultos' })
+    const enlace = screen.getByRole('link', { name: /Pipelines ocultos/ })
+    expect(enlace).toHaveAttribute('href', '/admin/pipelines-ocultos')
+  })
+})

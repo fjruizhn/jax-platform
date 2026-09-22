@@ -99,8 +99,12 @@ function RightPanel() {
     setAContinuar((abierta) => (abierta?.pipeline_id === pipelineId ? null : abierta))
 
   // Vuelve a pedir /pipelines a pedido (Task 5): tras descartar, la lista se
-  // recarga contra la verdad del backend, además de la baja optimista de la
-  // tarjeta (confirmarDescartar, abajo).
+  // recarga contra la verdad del backend. Fix round 1 (MINOR-5): ÚNICO
+  // mecanismo -- antes también había una baja optimista de la tarjeta
+  // (`setDetenidos` con un filter), y las dos a la vez tapaban cuál de las
+  // dos hacía el trabajo. La recarga es la fuente de verdad: si el backend
+  // por algún motivo todavía devuelve el pipeline (carrera, caché de más
+  // abajo), la tarjeta tiene que seguir ahí, no desaparecer por las dudas.
   function recargarDetenidos() {
     return api.get('/pipelines')
       .then(({ data }) => {
@@ -111,13 +115,26 @@ function RightPanel() {
       .catch(() => setErrorDetenidos(true))
   }
 
+  // Fix round 1 (MINOR-1): errorDescartar sobrevivía al cierre del diálogo,
+  // contaminando la próxima vez que se abría -- se limpia acá, en los tres
+  // disparadores (abrir/empezar la acción, cancelar, cerrar); confirmar ya
+  // se limpiaba a sí mismo.
+  function abrirDescartar(p) {
+    setErrorDescartar(null)
+    setADescartar(p)
+  }
+
+  function cerrarDescartar() {
+    setADescartar(null)
+    setErrorDescartar(null)
+  }
+
   async function confirmarDescartar() {
     const pipelineId = aDescartar.pipeline_id
     setDescartando(true)
     setErrorDescartar(null)
     try {
       await api.post(`/pipelines/${pipelineId}/discard`)
-      setDetenidos((prev) => prev.filter((p) => p.pipeline_id !== pipelineId))
       setADescartar(null)
       await recargarDetenidos()
     } catch (e) {
@@ -279,7 +296,7 @@ function RightPanel() {
                     className="mt-2 w-full py-1.5 rounded-lg bg-accion hover:bg-accion-hover text-sobre-color text-xs font-semibold transition-colors">
                     {t.continuarPipeline}
                   </button>
-                  <button type="button" onClick={() => setADescartar(p)}
+                  <button type="button" onClick={() => abrirDescartar(p)}
                     className="mt-1 w-full py-1.5 rounded-lg border border-borde text-texto-suave hover:text-texto text-xs font-semibold transition-colors">
                     {t.descartarPipeline}
                   </button>
@@ -302,11 +319,11 @@ function RightPanel() {
       )}
       {aDescartar && (
         <Dialogo idTitulo="titulo-descartar" titulo={t.descartarTitulo}
-          onCerrar={() => setADescartar(null)}>
+          onCerrar={cerrarDescartar}>
           <p className="text-sm text-texto mb-4">{t.descartarMensaje(aDescartar.name)}</p>
           {errorDescartar && <AlertaError className="mb-3 text-xs">{errorDescartar}</AlertaError>}
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setADescartar(null)}
+            <button type="button" onClick={cerrarDescartar}
               className="px-3 py-1.5 rounded-lg border border-borde text-sm">{t.cancelar}</button>
             <button type="button" onClick={confirmarDescartar} disabled={descartando}
               className="px-3 py-1.5 rounded-lg bg-accion hover:bg-accion-hover text-sobre-color text-sm font-semibold">

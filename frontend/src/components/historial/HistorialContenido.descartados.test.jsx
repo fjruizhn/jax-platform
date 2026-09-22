@@ -127,4 +127,117 @@ describe('HistorialContenido -- pestaña Descartados (Task 6)', () => {
     fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
     expect(await screen.findByText(es.sinDescartados)).toBeInTheDocument()
   })
+
+  // MAJOR-1 (fix round 1, revisión adversarial): recuperar() sólo quitaba la
+  // fila local -- el store `historial` ("Todos") sólo se pide una vez al
+  // montar, así que un pipeline recién recuperado no aparecía ahí hasta
+  // alguna otra recarga. cargarHistorial() dentro de recuperar() lo arregla.
+  it('recuperar refresca "Todos" -- el pipeline aparece ahí después (MAJOR-1)', async () => {
+    let todos = []
+    api.get.mockImplementation((url, config) => {
+      if (url !== '/pipelines') return Promise.reject(new Error(`url inesperada: ${url}`))
+      if (config?.params?.estado === 'discarded') {
+        return Promise.resolve({ data: { pipelines: DESCARTADOS, has_more: false } })
+      }
+      return Promise.resolve({ data: { pipelines: todos, has_more: false } })
+    })
+    api.post.mockImplementation(async () => {
+      todos = [{ pipeline_id: 'd1', name: 'plan descartado', status: 'aborted', created_at: 1758000000, updated_at: 1758000000, causa: null, duracion_s: null, costo_usd: null }]
+      return { data: { pipeline_id: 'd1', status: 'aborted' } }
+    })
+    renderCuerpo()
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    await screen.findByText('plan descartado')
+
+    fireEvent.click(screen.getByRole('button', { name: es.recuperarPipeline }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/pipelines/d1/recover'))
+
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaTodos }))
+    expect(await screen.findByText('plan descartado')).toBeInTheDocument()
+  })
+
+  // MINOR-4: error de Recuperar traducido, con texto genérico PROPIO
+  // (recuperarError, no descartarError) -- y la fila sigue en la lista.
+  it('recuperar_no_permitido se muestra traducido y la fila sigue', async () => {
+    api.post.mockRejectedValue({ response: { data: { detail: 'recuperar_no_permitido' } } })
+    renderCuerpo()
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    await screen.findByText('plan descartado')
+
+    fireEvent.click(screen.getByRole('button', { name: es.recuperarPipeline }))
+
+    expect(await screen.findByText(es.erroresMesa.recuperar_no_permitido())).toBeInTheDocument()
+    expect(screen.getByText('plan descartado')).toBeInTheDocument()
+  })
+
+  // MINOR-4: un fallo de Borrar muestra su propio texto genérico (borrarError).
+  it('un fallo de Borrar muestra el error traducido con texto propio, no el de Descartar', async () => {
+    useJaxStore.setState({ user: { user_id: '1', role: 'superadmin' } })
+    api.post.mockRejectedValue(new Error('502'))
+    renderCuerpo()
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    await screen.findByText('plan descartado')
+
+    fireEvent.click(screen.getByRole('button', { name: es.borrarPipeline }))
+    const dialogo = screen.getByRole('dialog')
+    const [, a, b] = within(dialogo).getByText(/Resolvé \d+ \+ \d+ = \?/).textContent.match(/(\d+) \+ (\d+)/)
+    fireEvent.change(within(dialogo).getByLabelText(/Resolvé/), { target: { value: String(Number(a) + Number(b)) } })
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.borrarPipeline }))
+
+    expect(await screen.findByText(es.borrarError)).toBeInTheDocument()
+    expect(screen.queryByText(es.descartarError)).not.toBeInTheDocument()
+  })
+
+  // MINOR-1: errorAccion no puede sobrevivir al cambio de pestaña ni
+  // contaminar la acción siguiente.
+  it('el error de una acción se limpia al cambiar de pestaña', async () => {
+    api.post.mockRejectedValue({ response: { data: { detail: 'recuperar_no_permitido' } } })
+    renderCuerpo()
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    await screen.findByText('plan descartado')
+    fireEvent.click(screen.getByRole('button', { name: es.recuperarPipeline }))
+    await screen.findByText(es.erroresMesa.recuperar_no_permitido())
+
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaTodos }))
+    // La sección "Descartados" (con su banner de error) desaparece del DOM
+    // al cambiar de pestaña de cualquier forma -- lo que prueba que el
+    // ESTADO se limpió (no sólo que la sección está oculta) es volver a
+    // "Descartados" y comprobar que el error NO reaparece.
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+
+    expect(screen.queryByText(es.erroresMesa.recuperar_no_permitido())).not.toBeInTheDocument()
+  })
+
+  it('el error de una acción se limpia al empezar otra', async () => {
+    useJaxStore.setState({ user: { user_id: '1', role: 'superadmin' } })
+    api.post.mockRejectedValue({ response: { data: { detail: 'recuperar_no_permitido' } } })
+    renderCuerpo()
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    await screen.findByText('plan descartado')
+    fireEvent.click(screen.getByRole('button', { name: es.recuperarPipeline }))
+    await screen.findByText(es.erroresMesa.recuperar_no_permitido())
+
+    fireEvent.click(screen.getByRole('button', { name: es.borrarPipeline }))
+
+    expect(screen.queryByText(es.erroresMesa.recuperar_no_permitido())).not.toBeInTheDocument()
+  })
+
+  // MINOR-6: el caso real del brief -- una página COMPLETA de 50, no 1.
+  it('con una página completa de 50, "Cargar más" pide offset=50', async () => {
+    const pagina = Array.from({ length: 50 }, (_, i) => ({
+      pipeline_id: `d${i}`, name: `plan ${i}`, status: 'discarded', descartado_at: 1758000000 + i, costo_usd: null,
+    }))
+    mockGet({ discarded: pagina, hayMasDescartados: true })
+    renderCuerpo()
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    await screen.findByText('plan 0')
+
+    mockGet({ discarded: [{ pipeline_id: 'd50', name: 'plan 50', status: 'discarded', descartado_at: 1758000900, costo_usd: null }], hayMasDescartados: false })
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/pipelines', {
+      params: { estado: 'discarded', limite: 50, offset: 50 },
+    }))
+    expect(await screen.findByText('plan 50')).toBeInTheDocument()
+  })
 })

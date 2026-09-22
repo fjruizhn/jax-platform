@@ -17,6 +17,17 @@ const ETIQUETAS_DE_ESTADO = {
   // needs Fernando's call. Deliberately distinct from "Completed" and
   // "Failed": a disputed pipeline is neither.
   disputed: 'Unresolved objection',
+  // Task 4/5/6/7 (2026-09-22, spec descartar-pipelines): two new statuses in
+  // jax. Fix round 1: added here because `transicion_no_permitida`
+  // (erroresMesa, below) can carry `status: 'discarded'`/`'hidden'` -- e.g. a
+  // double recover, or a hide over something already restored -- and without
+  // this entry it fell back to the generic text instead of naming the
+  // status. Every consumer of this dictionary was checked: none shows a
+  // `discarded`/`hidden` outside that case -- `GET /pipelines` with no
+  // filter excludes them, so they never appear in the "All" status column
+  // or as `activePipeline`.
+  discarded: 'Discarded',
+  hidden: 'Hidden',
 }
 
 const UN_PASO = 'A step'
@@ -306,9 +317,11 @@ export default {
   sinDescartados: 'No discarded pipelines.',
   descartadosError: 'Could not load the discarded list. Try again.',
   recuperarPipeline: 'Recover',
+  recuperarError: 'Could not recover the pipeline. Try again.',
   borrarPipeline: 'Delete',
   borrarTitulo: 'Delete pipeline',
   borrarMensaje: (nombre) => `"${nombre}" stops showing up in any list, including this one. Only a superadmin can restore it from Administration → Hidden pipelines.`,
+  borrarError: 'Could not delete the pipeline. Try again.',
 
   detalleTitle: (nombre) => `Detail — ${nombre}`,
   detalleLoading: 'Loading detail…',
@@ -554,6 +567,7 @@ export default {
   adminSettings: 'Settings',
   adminCosts: 'Costs',
   adminMemoria: 'Memory',
+  adminPipelinesOcultos: 'Hidden pipelines',
   adminBack: (nombre) => `Back to ${nombre}`,
 
   // Admin dashboard

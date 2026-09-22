@@ -78,8 +78,17 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
     try {
       await api.post(`/pipelines/${pipelineId}/recover`)
       setDescartados((prev) => prev.filter((p) => p.pipeline_id !== pipelineId))
+      // MAJOR-1 (fix round 1, revisión adversarial): un pipeline recuperado
+      // vuelve a `aborted`/`expired` -- GET /pipelines (sin filtro) SÍ lo
+      // trae de nuevo, pero el store `historial` sólo se pide una vez al
+      // montar. Sin este refresco, "Todos" seguía sin el pipeline hasta que
+      // algo MÁS disparara cargarHistorial() -- mismo patrón que
+      // RightPanel.jsx::confirmarDescartar.
+      await cargarHistorial()
     } catch (e) {
-      setErrorAccion(textoDeErrorDeMesa(t, e, t.descartarError))
+      // MINOR-4: texto genérico PROPIO (recuperarError) -- "no se pudo
+      // descartar" mentiría sobre qué acción falló de verdad.
+      setErrorAccion(textoDeErrorDeMesa(t, e, t.recuperarError))
     }
   }
 
@@ -90,9 +99,29 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
       setDescartados((prev) => prev.filter((p) => p.pipeline_id !== pipelineId))
       setABorrar(null)
     } catch (e) {
-      setErrorAccion(textoDeErrorDeMesa(t, e, t.descartarError))
+      // MINOR-4: texto genérico PROPIO (borrarError).
+      setErrorAccion(textoDeErrorDeMesa(t, e, t.borrarError))
       setABorrar(null)
     }
+  }
+
+  // MINOR-1 (fix round 1): errorAccion sobrevivía al cierre del diálogo y al
+  // cambio de pestaña, contaminando la acción siguiente -- se limpia acá, en
+  // los tres disparadores (cerrar/cancelar, cambiar de pestaña, empezar una
+  // acción nueva); recuperar() ya se limpia a sí misma arriba.
+  function cambiarTab(id) {
+    setErrorAccion(null)
+    setTab(id)
+  }
+
+  function abrirBorrar(p) {
+    setErrorAccion(null)
+    setABorrar(p)
+  }
+
+  function cerrarBorrar() {
+    setABorrar(null)
+    setErrorAccion(null)
   }
 
   return (
@@ -121,7 +150,7 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
           <button
             key={id}
             type="button"
-            onClick={() => setTab(id)}
+            onClick={() => cambiarTab(id)}
             className={`px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
               tab === id ? 'text-info border-b-2 border-info' : 'text-texto-tenue hover:text-texto'
             }`}
@@ -188,7 +217,7 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
                           {esSuperadmin && (
                             <button
                               type="button"
-                              onClick={() => setABorrar(p)}
+                              onClick={() => abrirBorrar(p)}
                               className="text-xs font-semibold text-peligro hover:underline"
                             >
                               {t.borrarPipeline}
@@ -222,7 +251,7 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
               mensaje={t.borrarMensaje(aBorrar.name)}
               textoConfirmar={t.borrarPipeline}
               onConfirmar={confirmarBorrar}
-              onCancelar={() => setABorrar(null)}
+              onCancelar={cerrarBorrar}
             />
           )}
         </>

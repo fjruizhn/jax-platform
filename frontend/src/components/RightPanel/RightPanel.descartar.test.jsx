@@ -97,4 +97,75 @@ describe('RightPanel -- descartar un pipeline detenido (Task 5)', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(api.post).not.toHaveBeenCalled()
   })
+
+  // MINOR-1 (fix round 1, revisión adversarial): errorDescartar sobrevivía
+  // al cierre del diálogo y contaminaba la próxima apertura.
+  it('el error se limpia al cancelar y no reaparece al volver a abrir', async () => {
+    api.post.mockRejectedValue({ response: { data: { detail: 'pipeline_no_encontrado' } } })
+    renderPanel()
+    fireEvent.click(await screen.findByRole('button', { name: es.descartarPipeline }))
+    let dialogo = screen.getByRole('dialog')
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.descartarConfirmar }))
+    await within(dialogo).findByText(es.erroresMesa.pipeline_no_encontrado())
+
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.cancelar }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: es.descartarPipeline }))
+    dialogo = screen.getByRole('dialog')
+    expect(within(dialogo).queryByText(es.erroresMesa.pipeline_no_encontrado())).not.toBeInTheDocument()
+  })
+
+  it('el error se limpia al cerrar con Escape y no reaparece al volver a abrir', async () => {
+    api.post.mockRejectedValue({ response: { data: { detail: 'pipeline_no_encontrado' } } })
+    renderPanel()
+    fireEvent.click(await screen.findByRole('button', { name: es.descartarPipeline }))
+    let dialogo = screen.getByRole('dialog')
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.descartarConfirmar }))
+    await within(dialogo).findByText(es.erroresMesa.pipeline_no_encontrado())
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: es.descartarPipeline }))
+    dialogo = screen.getByRole('dialog')
+    expect(within(dialogo).queryByText(es.erroresMesa.pipeline_no_encontrado())).not.toBeInTheDocument()
+  })
+
+  // MINOR-5 (fix round 1): un único mecanismo de baja -- la recarga contra
+  // el backend, no una quita optimista aparte. Prueba que DISTINGUE las dos
+  // versiones de verdad (la primera, sólo con `api.get` siempre devolviendo
+  // el pipeline, no distinguía nada -- la recarga corría última en los dos
+  // casos y pisaba el resultado de la baja optimista igual): la recarga
+  // queda A PROPÓSITO pendiente después de que el discard ya resolvió. Con
+  // una baja optimista aparte, la tarjeta desaparecería ACÁ, antes de que la
+  // recarga resuelva -- con un único mecanismo, se queda hasta que la
+  // recarga responde de verdad.
+  it('la tarjeta no desaparece antes de que la recarga resuelva -- sin baja optimista aparte', async () => {
+    api.post.mockResolvedValue({ data: { pipeline_id: 'p1', status: 'discarded' } })
+    let primeraLlamada = true
+    let resolverRecarga
+    api.get.mockImplementation((url) => {
+      if (url !== '/pipelines') return Promise.resolve({ data: { events: [] } })
+      if (primeraLlamada) {
+        primeraLlamada = false
+        return Promise.resolve({ data: { pipelines: [PIPELINE] } })
+      }
+      return new Promise((resolve) => { resolverRecarga = () => resolve({ data: { pipelines: [] } }) })
+    })
+    renderPanel()
+    fireEvent.click(await screen.findByRole('button', { name: es.descartarPipeline }))
+    const dialogo = screen.getByRole('dialog')
+
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.descartarConfirmar }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/pipelines/p1/discard'))
+    await waitFor(() => expect(resolverRecarga).toBeTruthy())
+    // El discard ya resolvió y la recarga ya se pidió, pero TODAVÍA no
+    // resolvió -- la tarjeta tiene que seguir ahí.
+    expect(screen.getByText('Plan A')).toBeInTheDocument()
+
+    resolverRecarga()
+    await waitFor(() => expect(screen.queryByText('Plan A')).not.toBeInTheDocument())
+  })
 })

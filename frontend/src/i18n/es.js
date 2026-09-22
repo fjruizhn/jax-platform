@@ -17,6 +17,19 @@ const ETIQUETAS_DE_ESTADO = {
   // requiere la decisión de Fernando. Distinto a propósito de "Completado"
   // y de "Fallido": un pipeline disputed no es ninguno de los dos.
   disputed: 'Con objeción sin resolver',
+  // Task 4/5/6/7 (2026-09-22, spec descartar-pipelines): dos estados nuevos
+  // en jax (jacobs/models.py::PipelineStatus). Revisión fix round 1: se
+  // agregan acá (no sólo en las pantallas propias de Descartados/Ocultos)
+  // porque `transicion_no_permitida` (erroresMesa, abajo) puede traer
+  // `status: 'discarded'` o `'hidden'` -- p.ej. un doble recover, o un hide
+  // sobre algo que ya se restauró -- y sin esta entrada caía al texto
+  // genérico en vez de nombrar el estado. Revisado cada consumidor de este
+  // diccionario (RightPanel.jsx, HistorialContenido.jsx, api/errores.js):
+  // ninguno muestra un `discarded`/`hidden` fuera de este caso -- `GET
+  // /pipelines` sin filtro los excluye, así que nunca aparecen en la
+  // columna de estado de "Todos" ni como `activePipeline`.
+  discarded: 'Descartado',
+  hidden: 'Oculto',
 }
 
 const UN_PASO = 'Un paso'
@@ -325,11 +338,16 @@ export default {
   sinDescartados: 'No hay pipelines descartados.',
   descartadosError: 'No se pudo cargar la lista de descartados. Probá de nuevo.',
   recuperarPipeline: 'Recuperar',
+  // Fix round 1 (MINOR-4): texto genérico PROPIO, no el de Descartar --
+  // "no se pudo descartar" en un fallo de Recuperar mentiría sobre qué acción
+  // falló.
+  recuperarError: 'No se pudo recuperar el pipeline. Probá de nuevo.',
   // "Borrar" = ocultar (spec §2): ninguna fila sale de la base, sólo un
   // superadmin puede restaurarlo (Administración → Pipelines ocultos).
   borrarPipeline: 'Borrar',
   borrarTitulo: 'Borrar pipeline',
   borrarMensaje: (nombre) => `"${nombre}" deja de verse en cualquier lista, incluida esta. Sólo un superadmin puede restaurarlo desde Administración → Pipelines ocultos.`,
+  borrarError: 'No se pudo borrar el pipeline. Probá de nuevo.',
 
   detalleTitle: (nombre) => `Detalle — ${nombre}`,
   detalleLoading: 'Cargando el detalle…',
@@ -585,6 +603,9 @@ export default {
   adminSettings: 'Configuración',
   adminCosts: 'Costos',
   adminMemoria: 'Memoria',
+  // Fix round 1 (MINOR-7): faltaba en AdminSidebar -- el superadmin entraba
+  // por el enlace de BarraUsuario pero no podía volver sin salir de Admin.
+  adminPipelinesOcultos: 'Pipelines ocultos',
   adminBack: (nombre) => `Volver a ${nombre}`,
 
   // Admin dashboard

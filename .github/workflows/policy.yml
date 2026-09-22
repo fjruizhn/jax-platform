@@ -863,8 +863,32 @@ jobs:
           //   contra el código viejo (el módulo no existía / el enlace no
           //   estaba) antes de implementar. Medido con `npx vitest run`:
           //   973 passed, 0 fallidos, 95 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 973) {
-              console.error("PISO ROTO: se esperaban 973 tests de vitest CORRIDOS y 0 fallidos.");
+          // 973 -> 987 (2026-09-22, Tasks 5-7, fix round 1 de la revisión
+          //   adversarial): +3 en `RightPanel.descartar.test.jsx` (MINOR-1:
+          //   errorDescartar se limpia al cancelar y al cerrar con Escape,
+          //   sin reaparecer al reabrir; MINOR-5: la tarjeta ya NO depende
+          //   de una baja optimista aparte -- un test con la recarga a
+          //   propósito pendiente prueba que la tarjeta sigue ahí hasta que
+          //   esa recarga resuelve de verdad) + +6 en
+          //   `HistorialContenido.descartados.test.jsx` (MAJOR-1: recuperar
+          //   ahora refresca "Todos" -- cargarHistorial() dentro de
+          //   recuperar(), mismo patrón que RightPanel; MINOR-4: error-path
+          //   de recuperar_no_permitido y de un fallo de Borrar, cada uno
+          //   con su propio texto genérico; MINOR-1: errorAccion se limpia
+          //   al cambiar de pestaña y al empezar otra acción; MINOR-6: el
+          //   caso real del brief, una página COMPLETA de 50) + +3 en
+          //   `api/errores.test.js` (named risk 2: `transicion_no_permitida`
+          //   con status discarded/hidden ahora nombra el estado, en los dos
+          //   idiomas, en vez de caer al genérico) + +2 en `Admin.test.jsx`
+          //   (MINOR-7: "pipelines-ocultos" ya tiene entrada en
+          //   AdminSidebar -- antes quedaba huérfano, sin forma de volver
+          //   sin salir de Administración). Vistos en rojo contra el código
+          //   de las Tasks 5-7 antes de implementar cada arreglo (revertido
+          //   a mano archivo por archivo, nunca `git stash`, y restaurado
+          //   después de confirmar el rojo). Medido con `npx vitest run`:
+          //   987 passed, 0 fallidos, 95 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 987) {
+              console.error("PISO ROTO: se esperaban 987 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1152,6 +1176,24 @@ jobs:
         # de MAX_SKIPS se queda en 1, no se sube (ese tope sigue sirviendo
         # para detectar la DB caida).
         run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
+
+      - name: Piso -- el archivo ignorado sigue pudiendo colectarse (fix round 1, MINOR-2)
+        # El --ignore de arriba saca test_carga_indice_pipelines_del_usuario.py
+        # de la cuenta de skips, pero TAMBIÉN lo saca de la vista de CI --
+        # nadie más lo corre acá. Un ImportError ahí (una firma que cambia en
+        # api/pipelines.py, un import que se mueve) pasaría desapercibido
+        # hasta que alguien lo corriera a mano con
+        # JAX_MEDIR_INDICE_PIPELINES=1, que puede ser meses después. Este
+        # paso NO ejecuta los tests (siguen siendo medición manual, pesada --
+        # siembra 5000+ filas): sólo confirma que pytest los puede COLECTAR,
+        # los 3, ni uno menos -- barato (sin sembrar nada) y suficiente para
+        # detectar la pudrición del archivo.
+        run: |
+          python -m pytest --collect-only -q tests/test_carga_indice_pipelines_del_usuario.py | tee collect.txt
+          grep -q '^3 tests collected' collect.txt || {
+            echo "El archivo de medicion (ignorado en el paso de arriba) dejo de poder colectarse -- ver la salida arriba (ImportError u otro roto)." >&2
+            exit 1
+          }
 
       - name: Piso -- que "verde" no signifique "se salteo todo"
         # Dos exigencias, no una: el piso de passed, y que el numero de SKIPS
