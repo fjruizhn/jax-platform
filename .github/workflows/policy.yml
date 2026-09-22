@@ -2459,7 +2459,19 @@ jobs:
           #   SET superseded_by falle con aiomysql.OperationalError, sin
           #   disfrazarse de 503). Medido en vivo, MISMO comando: 2575
           #   passed -> 2577 (0 fallidos, 0 skips las dos).
-          PISO_PASSED = 2577
+          # 2577 -> 2579 (2026-09-22, MERGE de origin/master, jax-platform#148
+          #   ya en master -- `9d378b7`): el hotfix "mapear discarded/hidden
+          #   de Jacobs" (`3200490`) agrega 2 tests en
+          #   `test_pipeline_resource_release.py`, SIN tocar ningún archivo
+          #   de esta rama -- `git merge origin/master` (no rebase, pedido
+          #   por el coordinador) fue LIMPIO, cero conflictos. El piso de
+          #   `origin/master` en ese punto era 2462 (bajo el de esta rama,
+          #   2577, porque master no lleva las rondas de este cierre) -- no
+          #   se suman los dos pisos a mano: se mide la suite YA fusionada,
+          #   que por construcción ya contiene los tests de las dos
+          #   historias. Medido en vivo, MISMO comando, después del merge:
+          #   2577 passed -> 2579 (0 fallidos, 0 skips las tres).
+          PISO_PASSED = 2579
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3218,7 +3230,15 @@ jobs:
       #   piden `client_superadmin`. Medido: 1703 passed / 874 skipped
       #   (antes: 1703 / 872 -- +2 skips, 0 passed nuevos). El piso
       #   declarado sigue en 1666, misma razón.
-      JAX_CI_MIN_PASSED: "1666"
+      # 2026-09-22, MERGE de origin/master (jax-platform#148 ya en master,
+      #   `9d378b7`): a diferencia de las rondas anteriores, esta vez SÍ hay
+      #   delta -- los 2 tests nuevos de `test_pipeline_resource_release.py`
+      #   (hotfix `3200490`, mapeo discarded/hidden) NO piden `client`, así
+      #   que corren y pasan también bajo `JAX_CI_NO_DB=1`. Medido en vivo,
+      #   MISMO comando, después del merge: 1703 passed / 874 skipped ->
+      #   1705 / 874 (mismos skips, +2 passed reales -- no absorbidos en
+      #   silencio). El piso declarado sube por el delta verificado (+2).
+      JAX_CI_MIN_PASSED: "1668"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
