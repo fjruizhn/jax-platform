@@ -332,7 +332,13 @@ def test_fundir_rechaza_mezclar_sintesis_con_no_sintesis(client_superadmin, trio
 def test_fundir_rechaza_dos_sintesis_que_se_citan_entre_si(client_superadmin):
     """D1, el caso fino: dos sintesis SI son compatibles entre si por tipo,
     pero si UNA CITA A LA OTRA en source_fact_ids siguen sin poder
-    fundirse -- mismo criterio que el detector."""
+    fundirse -- mismo criterio que el detector.
+
+    MINOR 3 (revision adversarial de jax-platform PR 146, ronda 4): el
+    codigo de error tiene que decir la verdad -- este rechazo NO es por tipo
+    cruzado (los dos son 'synthesis'), es por la cita. `fundir_sintesis_
+    con_no_sintesis` mentiria sobre el motivo; el codigo correcto es
+    `fundir_hechos_relacionados_por_cita`."""
     s1 = client_superadmin.portal.call(_crear_fact, "fundir: sintesis 1")
     s2 = client_superadmin.portal.call(_crear_fact, "fundir: sintesis 2 (cita a s1)")
     client_superadmin.portal.call(_fijar_created_at, s1, "2020-01-01 00:00:00")
@@ -345,7 +351,7 @@ def test_fundir_rechaza_dos_sintesis_que_se_citan_entre_si(client_superadmin):
         r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
                                    json={"superviviente_id": s2, "absorbidos": [s1]})
         assert r.status_code == 409
-        assert r.json()["detail"] == "fundir_sintesis_con_no_sintesis"
+        assert r.json()["detail"] == "fundir_hechos_relacionados_por_cita"
     finally:
         client_superadmin.portal.call(_borrar_facts, s1, s2)
 
@@ -470,7 +476,13 @@ def test_fundir_rechaza_lote_con_cita_transitiva_no_directa(client_superadmin, t
     Los TRES quedan marcados `source_facet='synthesis'` a proposito: si sólo
     A y B lo estuvieran, el rechazo saldria por el chequeo de TIPO (A/B
     síntesis vs C no-síntesis), no por la transitividad de la cita -- que es
-    justo lo que este test tiene que ejercitar."""
+    justo lo que este test tiene que ejercitar.
+
+    MINOR 3 (revision adversarial de jax-platform PR 146, ronda 4): con los
+    TRES del mismo tipo, el unico motivo de rechazo es la cita transitiva --
+    el codigo tiene que ser `fundir_hechos_relacionados_por_cita`, no
+    `fundir_sintesis_con_no_sintesis` (que mentiria: no hay tipo cruzado
+    aca)."""
     superviviente, absorbido1, absorbido2 = trio
     # superviviente cita a absorbido1, absorbido1 cita a absorbido2 -- asi
     # superviviente y absorbido2 quedan relacionados solo por transitividad.
@@ -482,6 +494,48 @@ def test_fundir_rechaza_lote_con_cita_transitiva_no_directa(client_superadmin, t
                                json={"superviviente_id": superviviente,
                                      "absorbidos": [absorbido2]})
     assert r.status_code == 409
-    assert r.json()["detail"] == "fundir_sintesis_con_no_sintesis"
+    assert r.json()["detail"] == "fundir_hechos_relacionados_por_cita"
     superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido2)
     assert superseded_by is None
+
+
+# --- MINOR 2 (revision adversarial de jax-platform PR 146, ronda 4): ningun
+# test fijaba el ALCANCE de SQL_CITAS ------------------------------------
+
+def test_sql_citas_ve_la_cadena_a_traves_de_un_superado_y_un_vencido(client_superadmin, trio):
+    """SQL_CITAS (memoria.py) trae TODOS los facts con `source_fact_ids` no
+    nulo, a proposito SIN filtrar por `superseded_by`/`expires_at` -- una
+    sintesis puede citar a un hecho que despues se supera o vence, y la
+    cadena tiene que seguir cerrada igual (comentario junto a SQL_CITAS).
+    Si alguien le agrega `AND superseded_by IS NULL` (o el equivalente para
+    `expires_at`), este test tiene que caer -- fijado como mutacion, no
+    solo como intencion en un comentario.
+
+    Cadena: superviviente cita a P (que despues se marca SUPERADO); P cita
+    a Q (que despues se marca VENCIDO); Q cita a absorbido2. Ninguno de los
+    dos eslabones (P, Q) participa del lote que se intenta fundir -- sólo
+    del grafo de citas."""
+    superviviente, _absorbido1, absorbido2 = trio
+    p = client_superadmin.portal.call(_crear_fact, "fundir: eslabon P (se superara)")
+    q = client_superadmin.portal.call(_crear_fact, "fundir: eslabon Q (vencera)")
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET source_facet = 'synthesis' WHERE id IN (%s, %s)",
+        (superviviente, absorbido2))
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET source_fact_ids = %s WHERE id = %s", (f"[{p}]", superviviente))
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET source_fact_ids = %s WHERE id = %s", (f"[{q}]", p))
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET source_fact_ids = %s WHERE id = %s", (f"[{absorbido2}]", q))
+    client_superadmin.portal.call(_superar_a_mano, p, absorbido2)
+    client_superadmin.portal.call(_fijar_expires_at, q, "2020-01-01 00:00:00")
+    try:
+        r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                                   json={"superviviente_id": superviviente,
+                                         "absorbidos": [absorbido2]})
+        assert r.status_code == 409, (
+            f"la cadena de citas a traves de P (superado) y Q (vencido) "
+            f"tenia que rechazar el fundir igual: {r.status_code} {r.text}")
+        assert r.json()["detail"] == "fundir_hechos_relacionados_por_cita"
+    finally:
+        client_superadmin.portal.call(_borrar_facts, p, q)

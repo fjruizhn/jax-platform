@@ -341,9 +341,14 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
       - el lote entero (superviviente + absorbidos) tiene que ser
         compatible PAR A PAR -- mismo `source_facet` (sintesis con sintesis,
         no-sintesis con no-sintesis) y sin citas cruzadas en
-        `source_fact_ids` -- o 409 `fundir_sintesis_con_no_sintesis`. Mismo
-        criterio que usa el detector (`_compatibles_para_fundir`, D1): la
-        API no permite a mano lo que el detector ya no propone.
+        `source_fact_ids` -- o 409. Mismo criterio que usa el detector
+        (`_compatibles_para_fundir`, D1): la API no permite a mano lo que el
+        detector ya no propone. MINOR 3 (ronda 4): el codigo de error dice
+        el motivo real -- `fundir_sintesis_con_no_sintesis` sólo si el par
+        es de TIPO cruzado; `fundir_hechos_relacionados_por_cita` (nuevo,
+        `_razon_incompatible_para_fundir`) si el par es del MISMO tipo pero
+        uno cita al otro (directa o transitivamente) -- antes salia
+        SIEMPRE el primero, un mensaje falso cuando el motivo era la cita.
       - el `superviviente_id` tiene que ser EXACTAMENTE el que calcula
         `_elegir_superviviente` sobre ese mismo lote (el verificado mas
         reciente; sin ninguno verificado, el mas reciente a secas; empate
@@ -433,8 +438,16 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
         # invalida sea cual sea el superviviente elegido.
         for i in range(len(ids)):
             for j in range(i + 1, len(ids)):
-                if not _compatibles_para_fundir(ids[i], ids[j], facet_por_id, cierre_citas):
+                razon = _razon_incompatible_para_fundir(ids[i], ids[j], facet_por_id, cierre_citas)
+                if razon == "tipo":
                     raise HTTPException(status_code=409, detail="fundir_sintesis_con_no_sintesis")
+                if razon == "cita":
+                    # MINOR 3 (revision adversarial de jax-platform PR 146,
+                    # ronda 4): mismo tipo, pero uno cita al otro (directa o
+                    # transitivamente) -- codigo propio, no el de "tipo
+                    # cruzado" (que aca seria falso: los dos SON del mismo
+                    # tipo).
+                    raise HTTPException(status_code=409, detail="fundir_hechos_relacionados_por_cita")
 
         # D3: el superviviente solicitado tiene que ser el que la regla
         # calcularia para ESTE lote -- no el grupo entero que vio el
@@ -771,10 +784,23 @@ SQL_CITAS = "SELECT id, source_fact_ids FROM facts WHERE source_fact_ids IS NOT 
 # (test_memoria_grupos.py) confirma que no hay índice útil para
 # `source_fact_ids IS NOT NULL` -- `source_fact_ids` es `longtext`, sin
 # índice (verificado con `SHOW INDEX FROM facts` contra jax_memory_test):
-# full scan, `type=ALL`. Medido contra la base de carga de 10.000 filas
-# (docs/carga-memoria-146-2026-09-22.md): son pocas las filas con
-# `source_fact_ids` no nulo (las síntesis, no todo `facts`), así que el
-# costo absoluto es chico aunque el plan sea un scan completo.
+# full scan, `type=ALL`.
+#
+# MAJOR A (revisión adversarial de jax-platform PR 146, ronda 4): la primera
+# medición (docs/carga-memoria-146-2026-09-22.md) decía "son pocas... el
+# costo absoluto es chico" contra una base de carga que en realidad tenía
+# CERO filas con `source_fact_ids` -- `loadtest/memoria_seed.py` nunca las
+# sembraba, así que esta consulta devolvía 0 filas en esa medición: una
+# verdad vacía, no una medida. Vuelto a medir con 1.400 de 10.000 facts
+# (14 %) con `source_fact_ids` no nulo (10 % en cita plana + cadenas de
+# 2do/3er orden, el peor caso): `GET /grupos` no muestra degradación
+# medible (delta de p95 entre −2,9 % y −1,2 %, dentro del ruido) y
+# `POST /hechos/fundir` (que corre esta consulta una vez por request,
+# dentro de la transacción) queda en milisegundos de un dígito a low-teens
+# (p50 7,6→12,2 ms, p95 18,4→19,1 ms) -- ver la sección "RONDA 4" del
+# documento para el método y los números completos. Decisión: no se
+# optimiza (sin índice sobre `source_facet`, sin acotar el cierre a los
+# ids candidatos) -- el costo medido no lo justifica.
 
 
 async def _cargar_citas_directas(cur) -> dict:
@@ -847,6 +873,20 @@ def _tipo_sintesis(facet) -> bool:
     return facet == "synthesis"
 
 
+def _razon_incompatible_para_fundir(a_id, b_id, facet_por_id: dict, cierre_citas: dict):
+    """Igual regla que `_compatibles_para_fundir`, pero devuelve POR QUÉ un
+    par es incompatible ("tipo" / "cita") en vez de sólo True/False -- MINOR
+    3 (revisión adversarial de jax-platform PR 146, ronda 4): `fundir_hechos`
+    mandaba SIEMPRE `fundir_sintesis_con_no_sintesis`, aunque el rechazo
+    fuera por una cita entre dos síntesis del MISMO tipo -- un mensaje falso
+    sobre el motivo real. `None` significa "compatible"."""
+    if _tipo_sintesis(facet_por_id[a_id]) != _tipo_sintesis(facet_por_id[b_id]):
+        return "tipo"
+    if _relacionados_por_cita(a_id, b_id, cierre_citas):
+        return "cita"
+    return None
+
+
 def _compatibles_para_fundir(a_id, b_id, facet_por_id: dict, cierre_citas: dict) -> bool:
     """Dos hechos pueden compartir un cluster de casi-duplicados -- y, por
     extensión, fundirse juntos (D3: `fundir_hechos` exige esta MISMA regla,
@@ -855,12 +895,12 @@ def _compatibles_para_fundir(a_id, b_id, facet_por_id: dict, cierre_citas: dict)
       2. ninguno cita al otro, a NINGUNA profundidad -- `cierre_citas` (MAJOR
          1, tercera vuelta) para separar dos síntesis que se citan entre sí,
          directa O transitivamente (D1: "dos síntesis entre sí sí pueden
-         agruparse", salvo que una cite a la otra)."""
-    if _tipo_sintesis(facet_por_id[a_id]) != _tipo_sintesis(facet_por_id[b_id]):
-        return False
-    if _relacionados_por_cita(a_id, b_id, cierre_citas):
-        return False
-    return True
+         agruparse", salvo que una cite a la otra).
+
+    Delega en `_razon_incompatible_para_fundir` -- una sola regla, dos
+    formas de leer el resultado (bool para el detector, motivo para el
+    endpoint que arma el 409)."""
+    return _razon_incompatible_para_fundir(a_id, b_id, facet_por_id, cierre_citas) is None
 
 
 def _casi_duplicados_del_grupo(miembros: list, cierre_citas: dict) -> list[list[int]]:
@@ -903,12 +943,28 @@ def _casi_duplicados_del_grupo(miembros: list, cierre_citas: dict) -> list[list[
     relación con ninguna) está cerca de las dos, S1 y S2 podían terminar en
     el MISMO componente igual, conectados vía S3 -- el bridging reaparece
     cuando la incompatibilidad es puntual (una arista) en vez de total (un
-    tipo entero). Por eso ahora, DESPUÉS de `uf.componentes()`, cada
-    componente final se revalida PAR A PAR (no sólo las aristas que se
-    unieron): si queda algún par incompatible adentro, el componente entero
-    se descarta -- fail-closed, el detector propone de menos, nunca de más.
-    Cualquier otra forma de no-transitividad que aparezca en el futuro queda
-    cubierta por este mismo chequeo, sin tener que anticiparla."""
+    tipo entero). Esa vuelta agregó una revalidación PAR A PAR después de
+    `uf.componentes()`: si quedaba algún par incompatible adentro, el
+    componente ENTERO se descartaba -- fail-closed, pero a un costo real
+    (MINOR 1, ver abajo).
+
+    MINOR 1 (revisión adversarial de jax-platform PR 146, ronda 4): descartar
+    el componente entero era demasiado -- 4 casi-duplicados idénticos donde
+    sólo UN par se citaba (p.ej. 20 cita a 23) perdían TAMBIÉN a los otros
+    dos ({21,22}), que sí son casi-duplicados válidos entre sí, sin log ni
+    conteo. Ahora, en vez de descartar, se SACAN del componente los
+    miembros que participan de algún par incompatible (los que citan o son
+    citados, a cualquier profundidad, o los de tipo cruzado), se
+    RECALCULA con union-find sobre lo que queda, y se repite hasta que
+    ningún componente resultante tenga un par incompatible adentro. Termina
+    porque cada vuelta que saca algo saca al MENOS dos miembros (los dos
+    lados de un par incompatible) de un conjunto finito -- y una vuelta sin
+    nada que sacar corta el bucle. La extracción NUNCA agrega miembros a un
+    cluster que el chequeo de compatibilidad no aprobaría (fail-closed sigue
+    valiendo, ahora a nivel de miembro, no de componente entero) -- por eso
+    el caso puente A-S-C (D2, arriba) sigue sin poder dar `[[A,C]]`: ahí el
+    bloqueo es de TIPO, y la compatibilidad se sigue consultando ANTES de
+    cada `unir`, así que A y C ni siquiera llegan a compartir componente."""
     if len(miembros) < 2 or len(miembros) > _MAX_MIEMBROS_CASI_DUPLICADO:
         return []
     vectores = {m[0]: json.loads(m[4]) for m in miembros}
@@ -916,33 +972,66 @@ def _casi_duplicados_del_grupo(miembros: list, cierre_citas: dict) -> list[list[
     # UNA norma por vector, no una por par: con 90 miembros son 90 raíces en
     # vez de 8.010. Es el arreglo medido del 2026-09-20 (61 % del request).
     normas = {i: _norma(v) for i, v in vectores.items()}
-    ids = list(vectores)
-    uf = _UnionFind(ids)
-    for i in range(len(ids)):
-        a = ids[i]
-        for j in range(i + 1, len(ids)):
-            b = ids[j]
-            # La compatibilidad se consulta ANTES que la distancia: evita
-            # calcular una distancia coseno (la parte cara, medida el
-            # 2026-09-20) para un par que de todos modos no se va a unir --
-            # pero YA NO es la única garantía (ver la revalidación de abajo).
-            if not _compatibles_para_fundir(a, b, facet_por_id, cierre_citas):
-                continue
-            if _distancia_coseno(vectores[a], vectores[b],
-                                 normas[a], normas[b]) <= _UMBRAL_MISMO_TEMA:
-                uf.unir(a, b)
+
+    def _distancia(a, b):
+        return _distancia_coseno(vectores[a], vectores[b], normas[a], normas[b])
 
     resultado = []
-    for componente in uf.componentes():
-        if len(componente) < 2:
-            continue
-        comp = sorted(componente)
-        limpio = all(
-            _compatibles_para_fundir(comp[i], comp[j], facet_por_id, cierre_citas)
-            for i in range(len(comp)) for j in range(i + 1, len(comp))
+    activos = set(vectores)
+    total_descartados = 0
+    while activos:
+        uf = _UnionFind(activos)
+        activos_ordenados = sorted(activos)
+        for i in range(len(activos_ordenados)):
+            a = activos_ordenados[i]
+            for j in range(i + 1, len(activos_ordenados)):
+                b = activos_ordenados[j]
+                # La compatibilidad se consulta ANTES que la distancia: evita
+                # calcular una distancia coseno (la parte cara, medida el
+                # 2026-09-20) para un par que de todos modos no se va a unir
+                # -- pero YA NO es la única garantía (ver la revalidación de
+                # abajo, que sigue haciendo falta por el bridging vía un
+                # tercer miembro).
+                if not _compatibles_para_fundir(a, b, facet_por_id, cierre_citas):
+                    continue
+                if _distancia(a, b) <= _UMBRAL_MISMO_TEMA:
+                    uf.unir(a, b)
+
+        incompatibles_esta_vuelta: set = set()
+        for componente in uf.componentes():
+            if len(componente) < 2:
+                activos.discard(componente[0])
+                continue
+            comp = sorted(componente)
+            pares_malos = [
+                (comp[i], comp[j])
+                for i in range(len(comp)) for j in range(i + 1, len(comp))
+                if not _compatibles_para_fundir(comp[i], comp[j], facet_por_id, cierre_citas)
+            ]
+            if not pares_malos:
+                resultado.append(comp)
+                activos -= set(comp)
+                continue
+            # MINOR 1: se sacan del componente los DOS lados de cada par
+            # incompatible -- el resto (si sobrevive suficiente para formar
+            # un par) se recalcula en la próxima vuelta del `while`.
+            for a, b in pares_malos:
+                incompatibles_esta_vuelta.add(a)
+                incompatibles_esta_vuelta.add(b)
+
+        if not incompatibles_esta_vuelta:
+            break
+        total_descartados += len(incompatibles_esta_vuelta)
+        activos -= incompatibles_esta_vuelta
+
+    if total_descartados:
+        logger.info(
+            "_casi_duplicados_del_grupo: %d miembro(s) descartado(s) por "
+            "incompatibilidad de tipo/cita (MINOR 1) -- el resto de sus "
+            "componentes se propuso igual, no se descartó entero.",
+            total_descartados,
         )
-        if limpio:
-            resultado.append(comp)
+    resultado.sort(key=lambda c: c[0])
     return resultado
 
 

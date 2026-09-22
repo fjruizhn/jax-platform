@@ -303,9 +303,10 @@ def test_sql_citas_no_tiene_indice_util_pero_el_costo_es_chico(client_superadmin
     FROM facts` contra jax_memory_test) -- EXPLAIN tiene que dar `type=ALL`
     (full scan), y esto NO es un defecto a esconder: se deja escrito acá, tal
     como pide LAS CUATRO DEL RENDIMIENTO #1 ("buscar Using filesort/Using
-    temporary... y si hay trabajo, decirlo"). El costo absoluto (pocas filas
-    reales -- sólo las síntesis tienen `source_fact_ids`) se midió aparte,
-    contra la base de carga de 10.000 filas: ver
+    temporary... y si hay trabajo, decirlo"). El costo absoluto se midió
+    aparte, con una base de carga que esta vez SÍ tenía filas con
+    `source_fact_ids` (14 % de 10.000 -- la primera medición de esta ronda
+    tenía CERO, MAJOR A): ver la sección "RONDA 4" de
     docs/carga-memoria-146-2026-09-22.md."""
     plan = client_superadmin.portal.call(_explain, memoria.SQL_CITAS, ())
     texto = " ".join(str(c) for fila in plan for c in fila)
@@ -668,9 +669,93 @@ def test_caso_del_revisor_bridging_por_sintesis_mismo_tipo():
     ]
     cierre = _citas({3: [1]})  # S1 (#3) cita a S2 (#1) -- directo
     grupos = memoria._casi_duplicados_del_grupo(miembros, cierre)
+    # MINOR 1 (revision adversarial de jax-platform PR 146, ronda 4): ya no
+    # se descarta el COMPONENTE ENTERO -- se sacan sólo los miembros del par
+    # incompatible (1 y 3) y se recalcula sobre el resto. Acá el resto es
+    # UN solo miembro (#2), que no alcanza para formar un cluster (hacen
+    # falta >=2) -- el resultado sigue siendo [], pero por sobrar de
+    # verdad, no por una regla de "todo o nada" a nivel de componente.
     assert grupos == [], (
-        f"el componente {{1,2,3}} tenia un par incompatible (1,3) y tenia que "
-        f"descartarse ENTERO (fail-closed), no proponerse a medias: {grupos}")
+        f"tras sacar a 1 y 3 (el par incompatible) sólo queda #2 -- no "
+        f"alcanza para un cluster: {grupos}")
+
+
+# --- MINOR 1 (revision adversarial de jax-platform PR 146, ronda 4):
+# extraer a los incompatibles, no descartar el componente entero ------------
+#
+# El caso del hallazgo: 4 casi-duplicados IDENTICOS (distancia 0 entre
+# cualquier par), el 20 cita al 23. Union-find los une a los CUATRO en un
+# solo componente (20~21, 21~22, 21~23 -- puente, igual que el caso de
+# arriba), y la revalidacion final encuentra el par incompatible (20,23).
+# ANTES (memoria.py:940-945, esta misma ronda): se descartaba el componente
+# ENTERO -> [], perdiendo tambien a {21,22}, que SÍ son casi-duplicados
+# validos entre si. AHORA: se sacan del componente los miembros
+# incompatibles (20 y 23 -- los que citan/son citados), se recalcula con
+# union-find sobre el resto ({21,22}), y se revalida -- sin par
+# incompatible, se propone.
+
+def test_minor1_extrae_los_incompatibles_en_vez_de_descartar_el_componente_entero():
+    miembros = _con_vector_identico((20, None), (21, None), (22, None), (23, None))
+    cierre = _citas({20: [23]})
+    grupos = memoria._casi_duplicados_del_grupo(miembros, cierre)
+    assert grupos == [[21, 22]], (
+        f"se esperaba que sobreviviera {{21,22}} tras sacar a 20 y 23 (el par "
+        f"incompatible), en vez de descartar el componente {{20,21,22,23}} "
+        f"entero: {grupos}")
+
+
+def test_minor1_el_caso_puente_del_revisor_sigue_sin_dar_A_C(caplog):
+    """Control de guardia explícito del brief: el caso A-S-C (D2, más
+    arriba) NO puede volver a dar [[A,C]] con el nuevo camino de extracción
+    -- acá el bloqueo es por TIPO cruzado (A/C no-síntesis vs S síntesis), y
+    la compatibilidad se chequea ANTES de unir (nunca llega a unirse A con
+    S ni S con C directo), así que A y C ni siquiera comparten componente
+    con este caso. Mismo vector que test_bridging_por_sintesis_no_produce_
+    un_par_falso, repetido acá para dejar constancia de que el arreglo de
+    MINOR 1 no reabre ese hallazgo."""
+    a_vec, s_vec, c_vec = [1.0, 0.0], [0.8, 0.6], [0.28, 0.96]
+    miembros = [
+        _miembro(1, a_vec, facet=None, verificado=True),
+        _miembro(2, s_vec, facet="synthesis"),
+        _miembro(3, c_vec, facet=None, verificado=False),
+    ]
+    grupos = memoria._casi_duplicados_del_grupo(miembros, {})
+    assert [1, 3] not in grupos
+    assert not any({1, 3} <= set(g) for g in grupos)
+
+
+def test_minor1_registra_cuantos_miembros_se_descartaron_por_incompatibilidad(caplog):
+    """DECISIÓN del brief: 'registrar cuántos se descartaron (logger.info
+    con el conteo)' -- sin esto, un componente que se recorta en silencio es
+    exactamente el tipo de cosa que el Protocolo de la Memoria Viva pide
+    marcar, no callar."""
+    miembros = _con_vector_identico((20, None), (21, None), (22, None), (23, None))
+    cierre = _citas({20: [23]})
+    with caplog.at_level(logging.INFO):
+        grupos = memoria._casi_duplicados_del_grupo(miembros, cierre)
+    assert grupos == [[21, 22]]
+    avisos = [r.message for r in caplog.records
+              if "descart" in r.message.lower() or "incompat" in r.message.lower()]
+    assert avisos, f"no se registró el conteo de miembros descartados: {caplog.records}"
+    assert "2" in avisos[0], f"se descartaron 20 y 23 (2 miembros): {avisos[0]}"
+
+
+def test_minor1_dos_componentes_con_un_incompatible_cada_uno_no_se_mezclan():
+    """Guardia de que la extracción es POR COMPONENTE, no global: dos grupos
+    de casi-duplicados SIN relación entre sí (vectores ortogonales, jamás
+    comparten componente), cada uno con su propio par incompatible -- los
+    sobrevivientes de uno no se cuelan en el otro."""
+    v_grupo1 = [1.0, 0.0, 0.0, 0.0]
+    v_grupo2 = [0.0, 1.0, 0.0, 0.0]
+    miembros = (
+        [_miembro(mid, v_grupo1, facet=None) for mid in (100, 101, 102, 103)]
+        + [_miembro(mid, v_grupo2, facet=None) for mid in (200, 201, 202, 203)]
+    )
+    cierre = _citas({100: [103], 200: [203]})
+    grupos = memoria._casi_duplicados_del_grupo(miembros, cierre)
+    assert sorted(grupos) == [[101, 102], [201, 202]], (
+        f"cada grupo debía perder sólo su par incompatible (100/103 y "
+        f"200/203) y quedarse con el resto, sin mezclarse: {grupos}")
 
 
 def test_cita_de_segundo_grado_a_traves_de_un_puente_no_citado():
