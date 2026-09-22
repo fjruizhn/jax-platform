@@ -1,0 +1,50 @@
+-- C2 «respaldo ANTES DE LA MISIÓN» (diseño 2026-09-22): sentencias EXACTAS
+-- que crean el usuario de SOLO INSERT sobre ejecutor_punto_restauracion.
+--
+-- FUENTE ÚNICA (2026-09-22, corrección de C2 sobre CI, PR #149 de
+-- jax-platform). Antes estas sentencias vivían solo en la cabecera de
+-- claude-skills/bin/verificar-punto-restauracion.sh, y el único test que las
+-- ejercitaba dependía de DOS cosas que CI no tiene: el worktree local
+-- ~/worktrees/cs-verificador (de donde extraía el SQL) y `sudo -n docker` +
+-- la red Docker local de mariadb-12-3-jax. En CI eso se traducía en un skip
+-- de los 2 tests de ese archivo, por encima del piso de 1 skip permitido.
+-- Este archivo es ahora la fuente única: backend/tests/
+-- test_usuario_solo_insert_punto_restauracion.py lo lee y lo ejercita de
+-- verdad contra la base de test de CI (sin Docker); la cabecera del guion de
+-- claude-skills pasará a remitir acá (pendiente, fuera del alcance de este
+-- cambio -- lo hace quien toque ese repo después).
+--
+-- MARCADORES, sustituidos por quien ejecuta -- nunca a mano en un repo:
+--
+--   {USUARIO}       nombre del usuario. En producción, literal
+--                    'ejecutor_verificador' (el nombre que ya usa el guion
+--                    de claude-skills). El test de este repo usa un nombre
+--                    ÚNICO por corrida: el usuario es GLOBAL al servidor
+--                    (mysql.user, no hay "por base de datos"), y varias
+--                    sesiones de test corriendo a la vez contra el mismo
+--                    MariaDB físico -- el mismo motivo que obliga a
+--                    JAX_TEST_DB_SUFIJO en base_de_test.py -- chocarían con
+--                    un nombre fijo.
+--   {BASE}          la base de datos calificando la tabla del GRANT. En
+--                    producción, literal 'jax_memory' -- la única base real.
+--                    El test NUNCA sustituye esto por 'jax_memory': ese
+--                    nombre es la base de PRODUCCIÓN en el mismo servidor
+--                    físico que usan los tests locales (hall9000), y crear
+--                    o otorgar sobre algo llamado así sería tocar
+--                    producción por accidente. El test sustituye su propia
+--                    base de sesión (JAX_DB_NAME: 'jax_memory_test' en CI,
+--                    o 'jax_memory_test_<sufijo>' en local).
+--   {HOST}           host desde el que se acepta la conexión. En
+--                    producción, '172.30.5.%' -- el mismo alcance que
+--                    jax_user (verificado 2026-09-22 con
+--                    SHOW GRANTS FOR CURRENT_USER() contra jax_memory). El
+--                    test lo resuelve en vivo contra su propia conexión
+--                    (USER() del lado del servidor: el host LITERAL por el
+--                    que llegó esa conexión, no el patrón ya emparejado que
+--                    devolvería CURRENT_USER() -- ver el docstring del test
+--                    para la medición que respalda esta elección), para no
+--                    suponer una subred que puede no existir en el runner.
+--   __CONTRASENA__   nunca queda en un repo: se genera aparte, en cada uso.
+CREATE USER '{USUARIO}'@'{HOST}' IDENTIFIED BY '__CONTRASENA__';
+GRANT INSERT ON {BASE}.ejecutor_punto_restauracion TO '{USUARIO}'@'{HOST}';
+FLUSH PRIVILEGES;
