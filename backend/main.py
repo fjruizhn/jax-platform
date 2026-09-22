@@ -112,6 +112,7 @@ from api.admin import (
     admin_motors_router,
     smtp_router,
     kill_switch_router,
+    pipelines_ocultos_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -252,6 +253,7 @@ ROUTERS = (
     apariencia_router,
     ejecutor_router,
     memoria_router,
+    pipelines_ocultos_router,
 )
 for _router in ROUTERS:
     app.include_router(_router)

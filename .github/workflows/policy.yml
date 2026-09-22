@@ -2111,7 +2111,26 @@ jobs:
           #   2522 / 0 / 0. Los 8 vistos en rojo contra el código de antes de
           #   cada arreglo (ver el informe de la tarea), y cada uno con su
           #   mutación (revertida) confirmando que cae si el arreglo se deshace.
-          PISO_PASSED = 2462
+          # 2462 -> 2549 (2026-09-22, Task 4 de descartar-pipelines: proxies
+          #   discard/recover/hide/restore, permisos, filtro de listas). Medido
+          #   dos veces, MISMO comando (`JAX_REPO_PATH=<clon de jax master
+          #   0a37a54> python -m pytest -q -p no:warnings`), contra jax_memory_test:
+          #   commit base 50ed2c2 -> 2521 passed / 1 failed / 0 skipped; esta
+          #   rama -> 2549 passed / 0 failed / 0 skipped. Delta +28 = 27 tests
+          #   nuevos (25 en tests/test_pipelines_descarte.py -- discard/recover/
+          #   hide/restore, guardias, `?estado=discarded`, `/admin/pipelines/
+          #   ocultos`, 3 EXPLAIN, axioma_usage intacto -- + 2 parametrizados en
+          #   tests/test_pipeline_resource_release.py, Ruling 5: discarded/hidden
+          #   liberan el cupo del tenant) + 1 fix (Ruling 5:
+          #   test_todos_los_estados_de_jacobs_tienen_entrada_en_el_mapa, ya
+          #   existente, pasaba de FAILED a PASSED con _JACOBS_STATUS_MAP
+          #   completo -- visto en rojo contra el código viejo ANTES del fix,
+          #   ver commit de jax_engine/state.py). El piso registrado (2462)
+          #   ya estaba muy por debajo de lo medido en la base (2521, +59):
+          #   deuda preexistente, no causada por esta tarea -- mismo patrón
+          #   de drift que ya documentó el job "sin DB" más abajo (repartir
+          #   el delta, no adjudicárselo entero a la rama que lo mide).
+          PISO_PASSED = 2549
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2776,7 +2795,27 @@ jobs:
       #   rama 1679 / 843 (0 fallidos las dos). El piso declarado sube por el
       #   delta verificado (+1) sobre el piso anterior, no por el passed crudo
       #   local.
-      JAX_CI_MIN_PASSED: "1642"
+      # 1642 -> 1645 (2026-09-22, Task 4 de descartar-pipelines): +3 netos.
+      #   Medido dos veces, MISMO comando (`JAX_REPO_PATH=<clon de jax master
+      #   0a37a54> JAX_CI_NO_DB=1 python -m pytest -q -p no:warnings -rs`):
+      #   commit base 50ed2c2 -> 1678 passed / 1 failed / 843 skipped; esta
+      #   rama -> 1681 passed / 0 failed / 868 skipped. El failed de la base
+      #   es Ruling 5 (jax ya trae `discarded`/`hidden` en PipelineStatus,
+      #   este repo todavía no los tenía en _JACOBS_STATUS_MAP) -- arreglado
+      #   acá, +1 passed. Los 2 tests parametrizados nuevos de
+      #   tests/test_pipeline_resource_release.py son puros y suman +2
+      #   passed. Los 25 tests nuevos de tests/test_pipelines_descarte.py
+      #   (Task 4) NO suman a este piso -- los 25 se SALTAN acá (+25 skips,
+      #   868-843=25): el fixture de sesión que nivela el esquema de la base
+      #   de test (columnas/índices que trae `jax`, ver el docstring del
+      #   archivo) depende de `client`, y esa dependencia es TRANSITIVA a
+      #   los 25 tests del módulo vía autouse -- incluidos los 4 que no
+      #   piden `client` directo (`_rechazo_de_jacobs` es puro, pero el
+      #   fixture del módulo igual lo arrastra). El piso declarado sube por
+      #   el delta verificado (+3) sobre el piso anterior, no por el passed
+      #   crudo local (que además arrastra drift preexistente sin relación
+      #   con esta tarea, ver la nota del piso CON DB más arriba).
+      JAX_CI_MIN_PASSED: "1645"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

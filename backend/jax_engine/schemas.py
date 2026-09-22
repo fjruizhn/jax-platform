@@ -26,7 +26,16 @@ FacetStatus = Literal["idle", "thinking", "error", "offline"]
 # pipeline disputed necesita la decisión de Fernando, no un usuario que lo
 # lea como "listo" o como "un fallo cualquiera". _JACOBS_STATUS_MAP
 # (jax_engine/state.py) lo mapea a su propio "disputed", no a "failed".
-PipelineStatus = Literal["pending", "running", "waiting_gate", "completed", "failed", "disputed"]
+# "discarded"/"hidden": Task 4, spec descartar-pipelines (2026-09-22).
+# Transitorios en el panel -- el poller los ve como mucho una vez, si el
+# usuario/superadmin actúa sobre un pipeline que todavía está en
+# active_pipelines (ver _JACOBS_STATUS_MAP en jax_engine/state.py); después
+# remove_pipeline() los saca. Mismo criterio que "disputed": estado propio,
+# no se disfrazan de "failed".
+PipelineStatus = Literal[
+    "pending", "running", "waiting_gate", "completed", "failed", "disputed",
+    "discarded", "hidden",
+]
 
 
 class JAXEvent(BaseModel):

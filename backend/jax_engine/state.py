@@ -50,6 +50,17 @@ _JACOBS_STATUS_MAP = {
     # correo (aviso_pipeline.py) lo puedan mostrar como lo que es, "requiere
     # tu decisión", no como completado ni como un error cualquiera.
     "disputed":    "disputed",
+    # Task 4 (2026-09-22, spec descartar-pipelines, Ruling 5 del
+    # controlador): `discarded`/`hidden` son terminales y SIN cupo
+    # (jax/jacobs/policy.py::ESTADOS_SIN_CUPO). MISMO defecto exacto que
+    # `expired`/`disputed` si faltan acá: si el dueño descarta un `aborted`
+    # (o el superadmin lo oculta) ANTES de que el poller (cada 5 s) haya
+    # sacado el pipeline de active_pipelines, el próximo poll devuelve
+    # `discarded`/`hidden` -- sin entrada, .get(jacobs_status, "running") lo
+    # deja pegado en "running" para siempre y el cupo del tenant se fuga.
+    # Estado propio (no "failed"): son transiciones DECIDIDAS, no un fallo.
+    "discarded":   "discarded",
+    "hidden":      "hidden",
 }
 
 _STEP_STATUS_MAP = {
@@ -251,7 +262,11 @@ class JAXEngineState:
                 )
                 await event_bus.publish(gate_event)
 
-            if updated.status in ("completed", "failed", "disputed"):
+            # discarded/hidden (Task 4, Ruling 5): mismo trato que
+            # completed/failed/disputed -- terminal, libera el cupo del
+            # tenant si el poller lo alcanza a ver en ese estado antes de
+            # que remove_pipeline() ya lo hubiera sacado por otro camino.
+            if updated.status in ("completed", "failed", "disputed", "discarded", "hidden"):
                 self.remove_pipeline(pid)
                 # cancel_pipeline() ya liberaba el slot del tenant; una
                 # pipeline que termina SOLA (no cancelada) nunca lo hacía,
