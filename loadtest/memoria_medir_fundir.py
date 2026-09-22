@@ -43,6 +43,32 @@ def percentil(valores, p):
     return ordenados[k - 1]
 
 
+def armar_resultado(base_de_prueba: str, clusters_disponibles: list, clusters_intentados: list,
+                     latencias: list[float], errores: int, codigos: dict) -> dict:
+    """Arma el JSON de resultado. Función pura (sin red, sin DB) para poder
+    testearla aislada -- ver `test_memoria_medir_fundir.py`.
+
+    m5 (cierre jax-platform#146, ronda 6): `n_clusters_disponibles` se
+    calculaba ANTES de esta corrección con `len(clusters)` DESPUÉS de
+    truncar a `n_max` (`clusters = clusters[:n_max]`) -- con 757 clusters
+    reales y `n_max=200` (el default), el JSON decía "200 disponibles", no
+    757 (reproducido: `_resultados_r5_peor_caso_fundir.json`,
+    `n_clusters_disponibles: 200`). `clusters_disponibles` es la lista
+    COMPLETA que devolvió `/grupos`, ANTES de truncar; `clusters_intentados`
+    es la que de verdad se usó para medir (`clusters_disponibles[:n_max]`)."""
+    return {
+        "base": base_de_prueba,
+        "n_clusters_disponibles": len(clusters_disponibles),
+        "n_intentados": len(clusters_intentados),
+        "ok": len(latencias), "errores": errores, "codigos": codigos,
+        "p50_ms": round(percentil(latencias, 50), 2) if latencias else None,
+        "p95_ms": round(percentil(latencias, 95), 2) if latencias else None,
+        "max_ms": round(max(latencias), 2) if latencias else None,
+        "min_ms": round(min(latencias), 2) if latencias else None,
+        "n_muestras": len(latencias),
+    }
+
+
 async def main_async(base_de_prueba: str, backend_url: str, n_max: int) -> None:
     import pymysql
     from jose import jwt as _jwt
@@ -55,15 +81,23 @@ async def main_async(base_de_prueba: str, backend_url: str, n_max: int) -> None:
             k, _, v = linea.partition("=")
             env[k.strip()] = v.strip()
 
-    # SEGURIDAD (ronda 5): ver el docstring del módulo -- el secreto de
-    # firma sale del proceso de carga YA LEVANTADO, nunca de producción.
+    # SEGURIDAD (ronda 5; comentario corregido en el cierre, ronda 6, m6):
+    # el secreto de FIRMA sale del proceso de carga YA LEVANTADO, nunca de
+    # producción -- pero `env` (arriba) parsea el `/etc/jax/.env` entero, y
+    # eso incluye el `JAX_JWT_SECRET` de producción, usado a propósito acá
+    # sólo para COMPARARLO (`!=`) contra el de carga, nunca para firmar ni
+    # imprimirlo (mismo patrón y misma nota que `memoria_medir.py`).
+    #
+    # `assert` desaparece con `python -O`: esta barrera aborta con
+    # `SystemExit`, no con `assert`.
     info = json.loads((RUN_DIR / "info.json").read_text())
     environ_de_carga = leer_environ_de_proceso(info["pid"])
     jwt_secret_de_carga = environ_de_carga["JAX_JWT_SECRET"]
-    assert jwt_secret_de_carga != env.get("JAX_JWT_SECRET"), (
-        "el backend de carga esta firmando con la llave de PRODUCCION -- "
-        "ABORTANDO, no se mide sobre un entorno que puede emitir tokens "
-        "validos tambien contra produccion")
+    if jwt_secret_de_carga == env.get("JAX_JWT_SECRET"):
+        raise SystemExit(
+            "el backend de carga esta firmando con la llave de PRODUCCION -- "
+            "ABORTANDO, no se mide sobre un entorno que puede emitir tokens "
+            "validos tambien contra produccion")
 
     conn = pymysql.connect(host=env["JAX_DB_HOST"], port=int(env["JAX_DB_PORT"]), user=env["JAX_DB_USER"],
                             password=env["JAX_DB_PASSWORD"], database=base_de_prueba, charset="utf8mb4")
@@ -86,17 +120,20 @@ async def main_async(base_de_prueba: str, backend_url: str, n_max: int) -> None:
     async with httpx.AsyncClient(timeout=60.0) as cliente:
         r = await cliente.get(f"{backend_url}/api/admin/memoria/grupos", headers=headers)
         grupos = r.json()["grupos"]
-    clusters = []
+    clusters_disponibles = []
     for g in grupos:
         for c in g.get("casi_duplicados", []):
-            clusters.append(c)
-    print(f"[fundir] clusters disponibles: {len(clusters)}", file=sys.stderr)
-    if len(clusters) < 10:
+            clusters_disponibles.append(c)
+    print(f"[fundir] clusters disponibles: {len(clusters_disponibles)}", file=sys.stderr)
+    if len(clusters_disponibles) < 10:
         raise RuntimeError(
-            f"sólo {len(clusters)} clusters disponibles -- se necesitan >=10 "
+            f"sólo {len(clusters_disponibles)} clusters disponibles -- se necesitan >=10 "
             "para una muestra con percentiles reales (LAS CUATRO DEL "
             "RENDIMIENTO #4)")
-    clusters = clusters[:n_max]
+    # m5 (cierre jax-platform#146, ronda 6): `clusters_disponibles` es el
+    # total ANTES de truncar -- se guarda entero para `armar_resultado()`.
+    # `clusters` (abajo) es sólo lo que de verdad se intenta fundir.
+    clusters = clusters_disponibles[:n_max]
 
     latencias, errores, codigos = [], 0, {}
     async with httpx.AsyncClient(timeout=60.0) as cliente:
@@ -115,15 +152,7 @@ async def main_async(base_de_prueba: str, backend_url: str, n_max: int) -> None:
             else:
                 errores += 1
 
-    resultado = {
-        "base": base_de_prueba, "n_clusters_disponibles": len(clusters),
-        "n_intentados": len(clusters), "ok": len(latencias), "errores": errores, "codigos": codigos,
-        "p50_ms": round(percentil(latencias, 50), 2) if latencias else None,
-        "p95_ms": round(percentil(latencias, 95), 2) if latencias else None,
-        "max_ms": round(max(latencias), 2) if latencias else None,
-        "min_ms": round(min(latencias), 2) if latencias else None,
-        "n_muestras": len(latencias),
-    }
+    resultado = armar_resultado(base_de_prueba, clusters_disponibles, clusters, latencias, errores, codigos)
     salida = LOADTEST_DIR / "_memoria_resultados_fundir.json"
     salida.write_text(json.dumps(resultado, indent=2, ensure_ascii=False))
     print(json.dumps(resultado, indent=2))

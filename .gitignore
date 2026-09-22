@@ -39,3 +39,9 @@ junit.xml
 # utilizable). Nada de esto es código ni resultado versionable: es salida
 # de una corrida local, se regenera sola.
 loadtest/_run/
+
+# m5 (cierre jax-platform#146, ronda 6): salida cruda de memoria_medir.py /
+# memoria_medir_fundir.py -- por convención de este repo nunca se commitea
+# (cada corrida la pisa), pero hasta ahora eso dependía de que nadie
+# corriera `git add .` por descuido. Explicitado acá.
+loadtest/_memoria_resultados*.json
