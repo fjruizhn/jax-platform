@@ -946,8 +946,16 @@ jobs:
   # venv aislado: `11 passed, 0 failed` -- ESA es la corrida que respalda
   # el número de abajo, no una corrida local con dependencias de sobra.
   #
+  # MINOR (2026-09-22, mismo cierre, ronda 8 -- consistencia): `memoria_
+  # medir.py`/`memoria_medir_fundir.py` sumaron el chequeo compartido
+  # `abortar_si_el_secreto_de_carga_coincide_con_produccion()` (ver
+  # `memoria_levantar_entorno.py`) con 4 tests nuevos en
+  # `test_memoria_levantar_entorno.py` -- 11 -> 15 tests. Medido en el
+  # mismo venv aislado (`pip install pytest httpx pymysql python-jose`):
+  # 15 passed, 0 failed.
+  #
   # Sin PISO_PASSED propio, mismo estilo que `no-fail-open-except`/
-  # `invoke-facet-envoltorio`: son 11 tests en 3 archivos chicos, y el job
+  # `invoke-facet-envoltorio`: son 15 tests en 3 archivos chicos, y el job
   # entero es el gate (cualquier fallo lo pone en rojo) -- un numero de piso
   # aparte no agrega nada que `pytest -v` no de ya.
   loadtest-tests:
