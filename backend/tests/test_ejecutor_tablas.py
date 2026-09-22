@@ -242,3 +242,30 @@ def test_ya_es_enum_exige_el_conjunto_exacto(client, sin_marcas):
     antes, despues = client.portal.call(_romper_y_reparar)
     assert "algo_extra" in antes[0][0]
     assert "algo_extra" not in despues[0][0], despues
+
+
+def test_ya_es_enum_exige_not_null(client, sin_marcas):
+    """Mutante B de la re-auditoría (2026-09-22): un ENUM con el conjunto EXACTO de valores
+    pero declarado NULL también tiene que detectarse como "todavía no es la forma final" --
+    si no, el MODIFY COLUMN ... NOT NULL de abajo nunca corre y la columna admite NULL para
+    siempre."""
+    async def _romper_y_reparar():
+        enum_exacto = ",".join(f"'{m}'" for m in _METODOS_PUNTO_RESTAURACION)
+        await sql(f"ALTER TABLE ejecutor_punto_restauracion MODIFY COLUMN metodo ENUM({enum_exacto}) NULL")
+        antes = await sql(
+            "SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_punto_restauracion' AND COLUMN_NAME='metodo'", None, True)
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await _asegurar_forma_de_ejecutor_punto_restauracion(cur)
+            await conn.commit()
+        despues = await sql(
+            "SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_punto_restauracion' AND COLUMN_NAME='metodo'", None, True)
+        return antes, despues
+
+    antes, despues = client.portal.call(_romper_y_reparar)
+    assert antes == (("YES",),), antes
+    assert despues == (("NO",),), despues

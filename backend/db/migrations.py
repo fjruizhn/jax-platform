@@ -2961,17 +2961,24 @@ async def _asegurar_forma_de_ejecutor_punto_restauracion(cur) -> None:
 
     # (a) metodo -> ENUM
     await cur.execute(
-        "SELECT DATA_TYPE, COLUMN_TYPE FROM information_schema.COLUMNS "
+        "SELECT DATA_TYPE, COLUMN_TYPE, IS_NULLABLE FROM information_schema.COLUMNS "
         "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ejecutor_punto_restauracion' "
         "AND COLUMN_NAME = 'metodo'"
     )
-    data_type, column_type = await cur.fetchone()
+    data_type, column_type, is_nullable = await cur.fetchone()
     # Conjunto EXACTO, no "contiene a todos" (hallazgo de la auditoría, 2026-09-22): un
     # ENUM con un quinto valor de más (agregado a mano, o por una migración vieja que
     # alguien reactivó) pasaría el chequeo anterior y este MODIFY nunca correría -- la
-    # tabla quedaría aceptando métodos que _METODOS_PUNTO_RESTAURACION no declara.
+    # tabla quedaría aceptando métodos que _METODOS_PUNTO_RESTAURACION no declara. Y NOT
+    # NULL, también EXACTO (ronda 2 de la auditoría, mutante B): un `ENUM(...) NULL` con
+    # el conjunto correcto pasaba el chequeo viejo sin que el `MODIFY COLUMN ... NOT NULL`
+    # de abajo corriera nunca -- la columna se quedaba admitiendo NULL para siempre.
     valores_actuales = set(re.findall(r"'((?:[^'\\]|\\.)*)'", column_type or ""))
-    ya_es_enum = data_type == "enum" and valores_actuales == set(_METODOS_PUNTO_RESTAURACION)
+    ya_es_enum = (
+        data_type == "enum"
+        and valores_actuales == set(_METODOS_PUNTO_RESTAURACION)
+        and is_nullable == "NO"
+    )
     if not ya_es_enum:
         if total:
             await cur.execute(
