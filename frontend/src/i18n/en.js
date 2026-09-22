@@ -148,6 +148,14 @@ export default {
     pipeline_no_encontrado: () => 'The pipeline does not exist.',
     jacobs_rechazo: (d) => `Jacobs rejected the pipeline (${d.status}).`,
     jacobs_no_responde: () => 'Jacobs did not respond.',
+    // Discard/recover/hide/restore (Task 4/5/6/7, spec
+    // 2026-09-22-descartar-pipelines §4).
+    recuperar_no_permitido: () => 'Someone else already discarded it: only that person or a superadmin can recover it.',
+    transicion_no_permitida: (d) => (typeof d?.status === 'string' && Object.hasOwn(ETIQUETAS_DE_ESTADO, d.status)
+      ? `That change is not possible: its status is "${ETIQUETAS_DE_ESTADO[d.status]}".`
+      : 'That change is not possible in the pipeline\'s current status.'),
+    cambio_concurrente: () => 'Another request changed this pipeline at the same time. Try again.',
+    estado_previo_invalido: () => 'The pipeline has no valid previous state to go back to.',
     archivo_demasiado_grande: (d) => `The file exceeds the ${Math.round(d.max_bytes / 1048576)} MB maximum.`,
     pdf_ilegible: () => 'The PDF could not be read.',
     // Preflight and continue (spec 2026-09-17)
@@ -289,6 +297,18 @@ export default {
   historialLoadingMore: 'Loading more…',
   historialViewDetail: 'View detail',
   historialCloseDetail: 'Close detail',
+
+  // Discarded tab (Task 6, spec 2026-09-22-descartar-pipelines §5).
+  cargarMas: 'Load more',
+  pestanaTodos: 'All',
+  pestanaDescartados: 'Discarded',
+  descartadosColFecha: 'Discarded',
+  sinDescartados: 'No discarded pipelines.',
+  descartadosError: 'Could not load the discarded list. Try again.',
+  recuperarPipeline: 'Recover',
+  borrarPipeline: 'Delete',
+  borrarTitulo: 'Delete pipeline',
+  borrarMensaje: (nombre) => `"${nombre}" stops showing up in any list, including this one. Only a superadmin can restore it from Administration → Hidden pipelines.`,
 
   detalleTitle: (nombre) => `Detail — ${nombre}`,
   detalleLoading: 'Loading detail…',

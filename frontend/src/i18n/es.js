@@ -150,6 +150,15 @@ export default {
     pipeline_no_encontrado: () => 'El pipeline no existe.',
     jacobs_rechazo: (d) => `Jacobs rechazó el pipeline (${d.status}).`,
     jacobs_no_responde: () => 'Jacobs no respondió.',
+    // Descartar/recuperar/ocultar/restaurar (Task 4/5/6/7, spec
+    // 2026-09-22-descartar-pipelines §4): los 4 codes propios de
+    // discard/recover/hide/restore que jax-platform propaga tal cual.
+    recuperar_no_permitido: () => 'Otro usuario ya lo descartó: sólo esa persona o un superadmin lo puede recuperar.',
+    transicion_no_permitida: (d) => (typeof d?.status === 'string' && Object.hasOwn(ETIQUETAS_DE_ESTADO, d.status)
+      ? `No se puede hacer ese cambio: su estado es «${ETIQUETAS_DE_ESTADO[d.status]}».`
+      : 'No se puede hacer ese cambio en el estado actual del pipeline.'),
+    cambio_concurrente: () => 'Otro pedido cambió este pipeline al mismo tiempo. Volvé a intentar.',
+    estado_previo_invalido: () => 'El pipeline no tiene un estado previo válido al que volver.',
     archivo_demasiado_grande: (d) => `El archivo supera el máximo de ${Math.round(d.max_bytes / 1048576)} MB.`,
     pdf_ilegible: () => 'No se pudo leer el PDF.',
     // Pre-vuelo y continuar (spec 2026-09-17)
@@ -306,6 +315,21 @@ export default {
   historialLoadingMore: 'Cargando más…',
   historialViewDetail: 'Ver detalle',
   historialCloseDetail: 'Cerrar detalle',
+
+  // Pestaña Descartados (Task 6, spec 2026-09-22-descartar-pipelines §5).
+  // `cargarMas` es genérico -- lo comparte la Task 7 (pipelines ocultos).
+  cargarMas: 'Cargar más',
+  pestanaTodos: 'Todos',
+  pestanaDescartados: 'Descartados',
+  descartadosColFecha: 'Descartado',
+  sinDescartados: 'No hay pipelines descartados.',
+  descartadosError: 'No se pudo cargar la lista de descartados. Probá de nuevo.',
+  recuperarPipeline: 'Recuperar',
+  // "Borrar" = ocultar (spec §2): ninguna fila sale de la base, sólo un
+  // superadmin puede restaurarlo (Administración → Pipelines ocultos).
+  borrarPipeline: 'Borrar',
+  borrarTitulo: 'Borrar pipeline',
+  borrarMensaje: (nombre) => `"${nombre}" deja de verse en cualquier lista, incluida esta. Sólo un superadmin puede restaurarlo desde Administración → Pipelines ocultos.`,
 
   detalleTitle: (nombre) => `Detalle — ${nombre}`,
   detalleLoading: 'Cargando el detalle…',

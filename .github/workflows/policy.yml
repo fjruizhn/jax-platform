@@ -842,8 +842,19 @@ jobs:
           //   guarda en el `catch`) antes de confirmar verde. Medido con
           //   `npx vitest run`, 3 veces seguidas: 954/954 las tres, sin
           //   flakiness.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 954) {
-              console.error("PISO ROTO: se esperaban 954 tests de vitest CORRIDOS y 0 fallidos.");
+          // 954 -> 967 (2026-09-22, Tasks 5-6 de descartar-pipelines): +6 en
+          //   `RightPanel.descartar.test.jsx` (archivo nuevo -- botón
+          //   Descartar en Detenidos, confirmación con Dialogo, error
+          //   traducido, Escape sin llamar a la API) y +7 en
+          //   `HistorialContenido.descartados.test.jsx` (archivo nuevo --
+          //   pestaña Descartados, Recuperar, Borrar sólo para superadmin
+          //   con ConfirmacionSuma, "Cargar más", estado vacío). Vistos en
+          //   rojo contra el código viejo (sin el botón/la pestaña, los
+          //   `findByRole` no encontraban nada) antes de implementar.
+          //   Medido con `npx vitest run`: 967 passed, 0 fallidos, 94
+          //   archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 967) {
+              console.error("PISO ROTO: se esperaban 967 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
