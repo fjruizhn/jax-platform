@@ -673,6 +673,23 @@ CREATE TABLE IF NOT EXISTS ejecutor_regla (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# C2 «respaldo ANTES DE LA MISIÓN» (diseño 2026-09-22, Esquema): esta tabla nació con `metodo`
+# como texto libre y sin `respaldado_at` (la hora del SNAPSHOT, distinta de
+# `restaurado_y_verificado_at`, que es cuándo se restauró y verificó). Las dos correcciones
+# viven en _asegurar_forma_de_ejecutor_punto_restauracion() más abajo -- el ALTER, no este
+# CREATE, es el que las trae, siguiendo el mismo patrón que capability.mode
+# (_asegurar_forma_de_capability_mode): el CREATE queda como testigo histórico de la forma con
+# la que la tabla nació y una instalación nueva también pasa por el ALTER, no por un CREATE
+# retocado a mano.
+#
+# El usuario de SOLO INSERT que el diseño pide para escribir en esta tabla NO lo crea esta
+# migración: jax_user (con quien corre run_migrations()) no tiene privilegio para crear
+# usuarios ni para otorgar permisos -- verificado 2026-09-22 con
+# `SHOW GRANTS FOR CURRENT_USER()` contra jax_memory: sólo USAGE en *.* y ALL PRIVILEGES
+# acotado a jax_memory/jax_memory_test/jax_memory_test_%, sin CREATE USER ni GRANT OPTION en
+# ningún alcance. El mecanismo (CREATE USER + GRANT, manual, una sola vez, con el root de
+# MariaDB) queda documentado en la cabecera de claude-skills/bin/verificar-punto-
+# restauracion.sh -- el único escritor real de esta tabla fuera de los tests.
 CREATE_EJECUTOR_PUNTO_RESTAURACION = """
 CREATE TABLE IF NOT EXISTS ejecutor_punto_restauracion (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -2913,6 +2930,87 @@ async def _ejecutor_reglas_envoltorios_v1(cur) -> None:
     await _sembrar_reglas_una_vez(cur, MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1, _SEMILLA_EJECUTOR_REGLAS_ENVOLTORIOS)
 
 
+# Los 4 métodos de verificación reales del diseño C2 (tabla «Respaldo por máquina»):
+# restauración de la imagen LVM completa, restauración de archivos sueltos por restic,
+# restauración de un volcado de MariaDB, o recreación de una VM desechable desde su seed.
+_METODOS_PUNTO_RESTAURACION = ("imagen_vm", "restic_ficheros", "volcado_mariadb", "recreacion")
+
+
+async def _asegurar_forma_de_ejecutor_punto_restauracion(cur) -> None:
+    """Deja `ejecutor_punto_restauracion` en su forma final (C2, diseño 2026-09-22, Esquema):
+
+    (a) `metodo` pasa de VARCHAR(50) (texto libre) a
+        `ENUM('imagen_vm','restic_ficheros','volcado_mariadb','recreacion') NOT NULL` --
+        un método que no está en la lista no se guarda, punto (mismo criterio que
+        chk_capability_mode: fail-closed, no un texto que cualquiera podía escribir).
+    (b) se agrega `respaldado_at DATETIME NOT NULL` -- la hora del SNAPSHOT, que ninguna
+        migración anterior sembró. Sin dato del que derivarla para una fila EXISTENTE: si la
+        tabla ya tiene filas, esto FALLA en vez de inventar una fecha (Principio VIII) --
+        verificado 2026-09-22 contra jax_memory: 0 filas, así que en producción este ALTER
+        corre limpio.
+    (c) se agrega el índice `idx_ejecutor_punto_host_respaldo (host_nombre, respaldado_at)`
+        que exportar.py (repo jax) va a necesitar para la fila más reciente POR host según
+        cuándo se tomó el respaldo -- distinto del índice existente
+        `idx_ejecutor_punto_host_fecha`, que ordena por cuándo se RESTAURÓ y verificó.
+
+    Idempotente en los tres pasos, mismo patrón que _asegurar_forma_de_capability_mode: cada
+    uno se pregunta si ya está hecho antes de tocar nada."""
+    await cur.execute("SELECT COUNT(*) FROM ejecutor_punto_restauracion")
+    (total,) = await cur.fetchone()
+
+    # (a) metodo -> ENUM
+    await cur.execute(
+        "SELECT DATA_TYPE, COLUMN_TYPE FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ejecutor_punto_restauracion' "
+        "AND COLUMN_NAME = 'metodo'"
+    )
+    data_type, column_type = await cur.fetchone()
+    ya_es_enum = data_type == "enum" and all(
+        f"'{m}'" in column_type for m in _METODOS_PUNTO_RESTAURACION
+    )
+    if not ya_es_enum:
+        if total:
+            await cur.execute(
+                "SELECT DISTINCT metodo FROM ejecutor_punto_restauracion WHERE metodo NOT IN "
+                "(%s,%s,%s,%s) ORDER BY metodo",
+                _METODOS_PUNTO_RESTAURACION,
+            )
+            invalidos = [fila[0] for fila in await cur.fetchall()]
+            if invalidos:
+                raise RuntimeError(
+                    f"ejecutor_punto_restauracion tiene filas con metodo fuera de "
+                    f"{_METODOS_PUNTO_RESTAURACION}: {invalidos}. Corregir a mano "
+                    "(UPDATE ... WHERE metodo=...) antes de reintentar -- sin esta revisión, "
+                    "el MODIFY COLUMN de abajo fallaría de forma anónima."
+                )
+        enum_sql = ",".join(f"'{m}'" for m in _METODOS_PUNTO_RESTAURACION)
+        await cur.execute(
+            f"ALTER TABLE ejecutor_punto_restauracion MODIFY COLUMN metodo ENUM({enum_sql}) NOT NULL"
+        )
+
+    # (b) respaldado_at
+    if not await _column_exists(cur, "ejecutor_punto_restauracion", "respaldado_at"):
+        if total:
+            raise RuntimeError(
+                "ejecutor_punto_restauracion tiene filas sin respaldado_at y ninguna migración "
+                "anterior sembró esa fecha: no se puede agregar la columna NOT NULL sin "
+                "inventar un valor (Principio VIII). Vaciar la tabla o completar "
+                "respaldado_at a mano antes de reintentar."
+            )
+        await cur.execute(
+            "ALTER TABLE ejecutor_punto_restauracion ADD COLUMN respaldado_at DATETIME NOT NULL "
+            "COMMENT 'UTC: hora del snapshot restaurado (no restaurado_y_verificado_at)' "
+            "AFTER referencia"
+        )
+
+    # (c) índice (host_nombre, respaldado_at)
+    if not await _index_exists(cur, "ejecutor_punto_restauracion", "idx_ejecutor_punto_host_respaldo"):
+        await cur.execute(
+            "ALTER TABLE ejecutor_punto_restauracion "
+            "ADD INDEX idx_ejecutor_punto_host_respaldo (host_nombre, respaldado_at)"
+        )
+
+
 def parsear_inventario(texto: str) -> list[dict]:
     """`nombre:ip:puerto:rol[:opcion+opcion]` separados por coma. Sin espacios ni
     comillas: systemd (EnvironmentFile) y bash lo leen igual."""
@@ -3085,6 +3183,7 @@ async def run_migrations():
             await _ajuste_confirmar_costo_v1(cur)
             await _ejecutor_reglas_v1(cur)
             await _ejecutor_reglas_envoltorios_v1(cur)
+            await _asegurar_forma_de_ejecutor_punto_restauracion(cur)
             await _ejecutor_inventario_v1(cur)
             await _ejecutor_config_c5_v1(cur)
             await _jacobs_tope_devoluciones_v1(cur)

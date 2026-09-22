@@ -128,13 +128,88 @@ def test_parsear_inventario_rechaza(texto):
         parsear_inventario(texto)
 
 
+async def _sembrar_host_de_prueba(cur_unused=None):
+    """Un host propio para estos dos tests, para que la FK de host_nombre nunca sea la razón
+    de un fallo: lo que se mide es metodo/respaldado_at, no la FK."""
+    await sql(
+        "INSERT IGNORE INTO ejecutor_host (nombre, ip, puerto, rol) "
+        "VALUES ('zz_test_forma_prc', '192.0.2.77', 22, 'clientes')"
+    )
+
+
+def test_metodo_desconocido_no_se_guarda(client, sin_marcas):
+    """C2 (Esquema, diseño 2026-09-22): `metodo` es ENUM de los 4 métodos reales -- un valor
+    fuera de la lista no se guarda, ni truncado ni silencioso."""
+    import pymysql
+
+    async def _intentar():
+        await _sembrar_host_de_prueba()
+        try:
+            await sql(
+                "INSERT INTO ejecutor_punto_restauracion (host_nombre, referencia, metodo, "
+                "respaldado_at, restaurado_y_verificado_at, verificado_por, evidencia) "
+                "VALUES ('zz_test_forma_prc', %s, 'metodo_inventado', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'test', 'test')",
+                ("referencia-1",),
+            )
+            return None
+        except pymysql.err.DataError as exc:
+            return exc.args
+
+    error = client.portal.call(_intentar)
+    assert error is not None, "un metodo fuera del ENUM se guardó -- no debería"
+    filas = client.portal.call(sql, "SELECT COUNT(*) FROM ejecutor_punto_restauracion "
+                                    "WHERE metodo = 'metodo_inventado'", None, True)
+    assert filas == ((0,),)
+
+
+def test_respaldado_at_es_obligatorio(client, sin_marcas):
+    """respaldado_at es la hora del SNAPSHOT (distinta de restaurado_y_verificado_at) --
+    sin ella, la fila no se guarda."""
+    import pymysql
+
+    async def _intentar():
+        await _sembrar_host_de_prueba()
+        try:
+            await sql(
+                "INSERT INTO ejecutor_punto_restauracion (host_nombre, referencia, metodo, "
+                "restaurado_y_verificado_at, verificado_por, evidencia) "
+                "VALUES ('zz_test_forma_prc', %s, 'recreacion', UTC_TIMESTAMP(), 'test', 'test')",
+                ("referencia-2",),
+            )
+            return None
+        except (pymysql.err.OperationalError, pymysql.err.IntegrityError) as exc:
+            return exc.args
+
+    error = client.portal.call(_intentar)
+    assert error is not None, "una fila sin respaldado_at se guardó -- no debería"
+
+
 def test_la_consulta_del_exportador_usa_el_indice(client, sin_marcas, monkeypatch):
     monkeypatch.setenv("JAX_EJECUTOR_INVENTARIO", "a:192.0.2.1:22:clientes,b:192.0.2.2:22:clientes")
     client.portal.call(_correr, _ejecutor_inventario_v1)
     for k in range(200):
         client.portal.call(sql, "INSERT INTO ejecutor_punto_restauracion (host_nombre, referencia, metodo, "
-                                "restaurado_y_verificado_at, verificado_por, evidencia) VALUES (%s, %s, 'prueba', "
-                                "UTC_TIMESTAMP(), 'test', 'test')", ("ab"[k % 2], f"prueba-{k}"))
+                                "respaldado_at, restaurado_y_verificado_at, verificado_por, evidencia) "
+                                "VALUES (%s, %s, 'recreacion', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'test', 'test')",
+                                ("ab"[k % 2], f"prueba-{k}"))
     filas = client.portal.call(sql, "EXPLAIN SELECT host_nombre, MAX(restaurado_y_verificado_at) "
                                     "FROM ejecutor_punto_restauracion GROUP BY host_nombre", None, True)
     assert any("idx_ejecutor_punto_host_fecha" in str(f) for f in filas), filas
+
+
+def test_la_edad_del_respaldo_usa_su_propio_indice(client, sin_marcas, monkeypatch):
+    """C2 (Esquema, diseño 2026-09-22): la edad del PUNTO DE RESTAURACIÓN se mide sobre
+    `respaldado_at` (la hora del snapshot), no sobre `restaurado_y_verificado_at` -- son
+    preguntas distintas y cada una tiene su índice. `idx_ejecutor_punto_host_fecha` (arriba)
+    no cubre esta consulta: MariaDB no puede usar un índice que empieza por
+    (host_nombre, restaurado_y_verificado_at) para ordenar/agrupar por respaldado_at."""
+    monkeypatch.setenv("JAX_EJECUTOR_INVENTARIO", "a:192.0.2.1:22:clientes,b:192.0.2.2:22:clientes")
+    client.portal.call(_correr, _ejecutor_inventario_v1)
+    for k in range(200):
+        client.portal.call(sql, "INSERT INTO ejecutor_punto_restauracion (host_nombre, referencia, metodo, "
+                                "respaldado_at, restaurado_y_verificado_at, verificado_por, evidencia) "
+                                "VALUES (%s, %s, 'recreacion', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'test', 'test')",
+                                ("ab"[k % 2], f"prueba-{k}"))
+    filas = client.portal.call(sql, "EXPLAIN SELECT host_nombre, MAX(respaldado_at) "
+                                    "FROM ejecutor_punto_restauracion GROUP BY host_nombre", None, True)
+    assert any("idx_ejecutor_punto_host_respaldo" in str(f) for f in filas), filas
