@@ -207,6 +207,41 @@ def leer_environ_de_proceso(pid: int) -> dict[str, str]:
     return {k.decode(): v.decode() for k, v in pares.items()}
 
 
+def escribir_info_json(info_path: Path, resultado: dict) -> None:
+    """Escribe `info_path` (JSON) SIEMPRE en modo 600, sin ventana y sin
+    importar si el archivo ya existía con otro modo. Función pura de I/O,
+    separada de `main()` para poder testearla aislada con un archivo
+    temporal -- ver `test_memoria_levantar_entorno.py`.
+
+    MINOR 4 (ronda 4): `info.json` trae `superadmin_password` en texto
+    plano (de la base de CARGA, nunca de producción -- pero igual es un
+    secreto utilizable) -- 600, sólo el dueño puede leerlo.
+
+    SEGURIDAD (ronda 5): `write_text()` + `chmod()` por separado deja una
+    VENTANA real -- el archivo nace con el umask de la sesión (típicamente
+    644, ya con el contenido completo escrito) y sólo DESPUÉS pasa a 600;
+    cualquier lector entre esas dos líneas ve la contraseña. `os.open` con
+    el modo 600 puesto en la LLAMADA que crea el archivo (`O_CREAT`) no
+    tiene esa ventana -- el archivo nunca existe con otro modo.
+
+    m7 (cierre, ronda 6): el `mode` de `os.open()` sólo aplica cuando el
+    archivo se CREA -- si `info_path` ya existía de una corrida anterior
+    (con OTRO modo, p. ej. 664 por el umask de esa sesión), `O_CREAT` sobre
+    un archivo existente lo IGNORA por completo (POSIX open(2)): el archivo
+    queda truncado y reescrito, pero con el modo viejo. Reproducido: un
+    `info.json` previo en 664 seguía en 664 después de esta llamada.
+    `os.fchmod(fd, 0o600)` fuerza el modo sobre el descriptor YA abierto,
+    sin ventana (nunca pasa por una ruta de archivo, no hay TOCTOU) y cubre
+    los dos casos (archivo nuevo o preexistente)."""
+    datos = json.dumps(resultado, indent=2).encode()
+    fd = os.open(info_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, datos)
+    finally:
+        os.close(fd)
+
+
 def esperar_puerto(host: str, port: int, timeout: float = 40.0) -> None:
     import socket
     t0 = time.time()
@@ -274,22 +309,9 @@ def main() -> None:
         "log": str(RUN_DIR / "backend.log"),
     }
     info_path = RUN_DIR / "info.json"
-    # MINOR 4 (ronda 4): `info.json` trae `superadmin_password` en texto
-    # plano (de la base de CARGA, nunca de producción -- pero igual es un
-    # secreto utilizable) -- 600, sólo el dueño puede leerlo.
-    #
-    # SEGURIDAD (ronda 5): `write_text()` + `chmod()` por separado deja una
-    # VENTANA real -- el archivo nace con el umask de la sesión (típicamente
-    # 644, ya con el contenido completo escrito) y sólo DESPUÉS pasa a 600;
-    # cualquier lector entre esas dos líneas ve la contraseña. `os.open` con
-    # el modo 600 puesto en la LLAMADA que crea el archivo (`O_CREAT`) no
-    # tiene esa ventana -- el archivo nunca existe con otro modo.
-    datos = json.dumps(resultado, indent=2).encode()
-    fd = os.open(info_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, datos)
-    finally:
-        os.close(fd)
+    # Ver `escribir_info_json` -- siempre 600, sin ventana, sin depender de
+    # si `info_path` ya existía de una corrida anterior (m7, cierre ronda 6).
+    escribir_info_json(info_path, resultado)
     print(json.dumps(resultado, indent=2))
 
 
