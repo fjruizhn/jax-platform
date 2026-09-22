@@ -732,6 +732,14 @@ jobs:
           //   fila, sobre la caja. +3 BottomBar.layout.test.jsx (fila de modos
           //   separada del textarea, la precede, y la fila de la caja conserva
           //   adjuntar/textarea/enviar/kill). Medido: 942 passed, 0 fallidos, 92 archivos.
+          // 942 -> 943 (jax-platform#147, 2026-09-22, ronda de arreglo -- MINOR 6
+          //   i18n): +1 Memoria.test.jsx ("un error de zona horaria ausente al
+          //   caducar se avisa por toast, con el codigo traducido"). El backend
+          //   agrego 400 vence_at_sin_zona (caducar en hora local, MAJOR/MINOR
+          //   de la revision adversarial); es.js/en.js ganan la clave
+          //   `memoria.errores.vence_at_sin_zona`. Vistos en rojo antes de
+          //   verde (findByText sobre una clave i18n ausente). Medido con
+          //   `npx vitest run`: 943 passed, 0 fallidos, 92 archivos.
           // 897 -> 939 (jax-platform#141, 2026-09-21): tamano de toque WCAG 2.2.
           //   Dos detectores nuevos (botonesSinAreaDeToque, botonesConPocoRelleno)
           //   + resolverClassName + el test de aria-label de Toast.
@@ -744,8 +752,8 @@ jobs:
           // `?tab=models` abre directo en el Catálogo, y un `?tab`
           // desconocido cae al default sin romper. Medido con
           // `npx vitest run`: 939 passed, 0 fallidos, 91 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 942) {
-              console.error("PISO ROTO: se esperaban 942 tests de vitest CORRIDOS y 0 fallidos.");
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 943) {
+              console.error("PISO ROTO: se esperaban 943 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -2069,7 +2077,41 @@ jobs:
           #   master local 2512 passed / 0 skipped / 0 failed -> rama 2514 / 0 / 0.
           #   El piso declarado sube por el delta verificado (+2) sobre el piso
           #   anterior, no por el passed crudo local.
-          PISO_PASSED = 2454
+          # 2454 -> 2462 (2026-09-22, ronda de arreglo jax-platform#147, revision
+          #   adversarial APTO CON CAMBIOS): +8, todos en test_memoria_api.py.
+          #   MAJOR 1 (regresion que no fallaria en cualquier runner): +2,
+          #   test_caducar_con_zona_no_utc_ni_local_deja_el_hecho_vencido_de_inmediato
+          #   (offset +05:00, ni la zona de la base ni UTC -- expone el bug
+          #   original sin importar en que zona corra la MariaDB del job) y
+          #   test_el_bug_original_fallaria_tambien_con_la_base_en_utc (simula
+          #   `SET time_zone='+00:00'` SOLO en esa conexion, prueba de verdad que
+          #   el patron viejo -- datetime con offset directo al UPDATE, sin
+          #   CONVERT_TZ -- falla tambien con la base en UTC). MINOR 3+4
+          #   (CONVERT_TZ NULL / error de red-driver -> 503, no 500 ni
+          #   expire_fact(None)): +2, test_caducar_si_no_se_puede_resolver_la_
+          #   zona_horaria_es_503_y_no_toca_expire_fact (contrato de 3 estados,
+          #   expire_fact no se llega a invocar) y
+          #   test_hora_local_de_base_si_convert_tz_da_null_lanza_zona_no_resuelta
+          #   (la mitad interna: `_hora_local_de_base` levanta la excepcion de
+          #   verdad, con pool/cursor falseados). MINOR 5 (rango de TIMESTAMP,
+          #   1970-01-01 00:00:01 a 2038-01-19 03:14:07 UTC, validado ANTES de
+          #   tocar la base): +3, los dos bordes invalidos (antes de 1970,
+          #   despues de 2038) y el borde valido exacto (control del arreglo).
+          #   Baranda del acoplamiento (HECHO del revisor, sin bug que
+          #   reproducir hoy -- ver el informe): +1,
+          #   test_los_dos_pools_ven_la_misma_zona_horaria (compara
+          #   @@session.time_zone de los DOS pools reales -- el de jax-platform
+          #   y el de la instancia REAL de MemoryDB que usa el endpoint). MAJOR 2
+          #   (aserción simétrica `ABS(TIMESTAMPDIFF(SECOND, expires_at, NOW()))
+          #   <= 5`) no suma tests nuevos: reforzó las aserciones de los 2 tests
+          #   YA contados en el delta de arriba (+2, 2452 -> 2454). Medido en
+          #   vivo, MISMO comando (`python -m pytest -q -rs`) en las dos ramas
+          #   contra el mismo clon de jax_memory_test: rama base (con el fix de
+          #   la ronda anterior) 2514 passed / 0 skipped / 0 failed -> esta rama
+          #   2522 / 0 / 0. Los 8 vistos en rojo contra el código de antes de
+          #   cada arreglo (ver el informe de la tarea), y cada uno con su
+          #   mutación (revertida) confirmando que cae si el arreglo se deshace.
+          PISO_PASSED = 2462
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2723,7 +2765,18 @@ jobs:
       #   MISMO comando en las dos ramas: master local 1669 passed / 830
       #   skipped -> rama 1676 / 830 (0 fallidos las dos; el piso declarado
       #   sube por el delta verificado, +7, no por el passed crudo local).
-      JAX_CI_MIN_PASSED: "1641"
+      # 1641 -> 1642 (2026-09-22, ronda de arreglo jax-platform#147): +1,
+      #   test_hora_local_de_base_si_convert_tz_da_null_lanza_zona_no_resuelta
+      #   (test_memoria_api.py) -- no pide `client`, falsea el pool/cursor a
+      #   mano, corre completo acá. Los otros 7 tests nuevos de esta ronda (ver
+      #   el piso con DB, más arriba) piden `client_superadmin` y se saltean
+      #   (+7 skips, no passed perdido). Medido con JAX_CI_NO_DB=1
+      #   python -m pytest -q -rs, MISMO comando en las dos ramas: rama base
+      #   (con el fix de la ronda anterior) 1678 passed / 836 skipped -> esta
+      #   rama 1679 / 843 (0 fallidos las dos). El piso declarado sube por el
+      #   delta verificado (+1) sobre el piso anterior, no por el passed crudo
+      #   local.
+      JAX_CI_MIN_PASSED: "1642"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

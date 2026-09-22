@@ -5,7 +5,7 @@ memoria es lo unico que el sistema acumula sobre nosotros.
 `client` + `tests.identidades.cabeceras`, que es el patron real de esta casa
 (tests/test_config_admin_ajustes.py). El plan original daba por hecho un
 `client_superadmin` que no existia (2026-09-20)."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import partial
 
 import pytest
@@ -193,6 +193,18 @@ def test_caducar_un_id_que_de_verdad_no_existe_sigue_dando_404(client_superadmin
 # hechos #140 y #15: `expires_at` 354 y 359 minutos DESPUES de `updated_at`).
 # ---------------------------------------------------------------------------
 
+# Margen de la aserción de cercanía (MAJOR 2, revisión adversarial
+# jax-platform#147): un `expires_at <= NOW()` de un solo lado deja pasar
+# una mutación que reste el desfase DOS veces (o cualquier otra que empuje
+# `expires_at` bien atrás en el pasado) -- sigue siendo `<= NOW()`, así que
+# ese control por si solo no prueba que la conversión fue CORRECTA, sólo que
+# no quedó en el futuro. `ABS(TIMESTAMPDIFF(SECOND, expires_at, NOW())) <= 5`
+# exige que el valor converitdo caiga CERCA de "ahora", no en cualquier
+# punto del pasado. 5 segundos: margen generoso sobre la duración real de
+# una request HTTP + un roundtrip a MariaDB local (medido: bajo 100 ms).
+_MARGEN_CERCANIA_SEGUNDOS = 5
+
+
 def test_caducar_con_hora_utc_deja_el_hecho_vencido_de_inmediato(client_superadmin):
     fact_id = client_superadmin.portal.call(
         _crear_fact, "hecho de prueba caducar-hora-utc")
@@ -205,13 +217,119 @@ def test_caducar_con_hora_utc_deja_el_hecho_vencido_de_inmediato(client_superadm
 
         fila = client_superadmin.portal.call(
             sql,
-            "SELECT expires_at <= NOW(), expires_at, NOW() FROM facts WHERE id = %s",
+            "SELECT expires_at <= NOW(), "
+            f"ABS(TIMESTAMPDIFF(SECOND, expires_at, NOW())) <= {_MARGEN_CERCANIA_SEGUNDOS}, "
+            "expires_at, NOW() FROM facts WHERE id = %s",
             (fact_id,), True)
-        vencido_ya, expires_at, ahora = fila[0]
+        vencido_ya, cerca_de_ahora, expires_at, ahora = fila[0]
         assert vencido_ya, (
             f"expires_at ({expires_at}) quedo DESPUES de NOW() de la base "
             f"({ahora}): la hora UTC con 'Z' se escribio sin convertir a la "
             "hora local de la base -- el defecto de las ~6 horas de retraso."
+        )
+        assert cerca_de_ahora, (
+            f"expires_at ({expires_at}) quedo a mas de "
+            f"{_MARGEN_CERCANIA_SEGUNDOS}s de NOW() de la base ({ahora}): "
+            "'vencido ya' no alcanza, la conversion tiene que caer CERCA de "
+            "ahora, no en cualquier punto del pasado (mutacion: restar el "
+            "desfase dos veces seguiria dando <= NOW())."
+        )
+    finally:
+        client_superadmin.portal.call(_borrar_fact, fact_id)
+
+
+def test_caducar_con_zona_no_utc_ni_local_deja_el_hecho_vencido_de_inmediato(
+        client_superadmin):
+    """MAJOR 1 (revision adversarial jax-platform#147): el test de arriba
+    manda SIEMPRE offset +00:00 ('Z'). Si el runner de CI corre su MariaDB
+    en UTC (la imagen oficial de Docker, por default), el bug ORIGINAL de
+    esta pantalla -- pymysql/aiomysql ignoran el `tzinfo` de un `datetime` al
+    escaparlo (`pymysql/converters.py::escape_datetime` sólo mira
+    year/month/day/hour/minute/second, nunca `tzinfo`) y graban las cifras
+    de reloj literales -- TAMBIEN deja `expires_at <= NOW()` ahi: si
+    local=UTC, "grabar la hora UTC como si fuera local" da, por casualidad,
+    el valor correcto. El control de arriba NO fallaria en ESE runner aunque
+    el bug sea real (razonado por escrito acá; probado de verdad en
+    `test_el_bug_original_fallaria_tambien_con_la_base_en_utc`, abajo, que
+    fuerza una sesion en UTC de verdad).
+
+    Mandar una zona que no sea ni la de la base (Honduras, UTC-6) ni UTC
+    (+00:00) rompe esa casualidad: las cifras de reloj de +05:00 no
+    coinciden con la hora de NINGUNA de las dos zonas posibles del runner
+    (Honduras o UTC), asi que el bug queda expuesto sin importar en que zona
+    corra el contenedor de MariaDB del job."""
+    fact_id = client_superadmin.portal.call(
+        _crear_fact, "hecho de prueba caducar-zona-no-utc-ni-local")
+    try:
+        vence_at = datetime.now(timezone(timedelta(hours=5))).isoformat()
+        r = client_superadmin.post(
+            f"/api/admin/memoria/hechos/{fact_id}/caducar",
+            json={"vence_at": vence_at})
+        assert r.status_code == 200, r.text
+
+        fila = client_superadmin.portal.call(
+            sql,
+            "SELECT expires_at <= NOW(), "
+            f"ABS(TIMESTAMPDIFF(SECOND, expires_at, NOW())) <= {_MARGEN_CERCANIA_SEGUNDOS}, "
+            "expires_at, NOW() FROM facts WHERE id = %s",
+            (fact_id,), True)
+        vencido_ya, cerca_de_ahora, expires_at, ahora = fila[0]
+        assert vencido_ya and cerca_de_ahora, (
+            f"expires_at ({expires_at}) no quedo vencido y cerca de NOW() de "
+            f"la base ({ahora}): con offset +05:00 (ni la zona de la base ni "
+            "UTC) el bug original queda expuesto sin importar en que zona "
+            "corra el runner."
+        )
+    finally:
+        client_superadmin.portal.call(_borrar_fact, fact_id)
+
+
+def test_el_bug_original_fallaria_tambien_con_la_base_en_utc(client_superadmin):
+    """Prueba directa del razonamiento de arriba: si la CONEXION (no la base
+    entera -- `SET time_zone` sin `GLOBAL` es de sesion, y se repone antes de
+    soltar la conexion al pool) estuviera en UTC, el patron VIEJO de esta
+    pantalla (un `datetime` CON offset pasado directo a un `UPDATE`, sin
+    `CONVERT_TZ` -- exactamente lo que hacia `datetime.fromisoformat(vence_at)`
+    antes de este arreglo) sigue grabando mal un vence_at en +05:00. No pasa
+    por el endpoint (que ya esta arreglado): ejercita el driver directo,
+    sobre un `fact` real, para no depender de logica que ya no existe en el
+    codigo."""
+    fact_id = client_superadmin.portal.call(
+        _crear_fact, "hecho de prueba bug-original-sesion-utc")
+    try:
+        async def _con_sesion_utc():
+            from db.connection import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SET time_zone = '+00:00'")
+                    try:
+                        vence_at_5 = datetime.now(timezone(timedelta(hours=5)))
+                        # El patron VIEJO: el datetime CON offset va directo
+                        # al UPDATE, sin CONVERT_TZ.
+                        await cur.execute(
+                            "UPDATE facts SET expires_at = %s WHERE id = %s",
+                            (vence_at_5, fact_id))
+                        await cur.execute(
+                            "SELECT expires_at <= NOW(), "
+                            f"ABS(TIMESTAMPDIFF(SECOND, expires_at, NOW())) <= {_MARGEN_CERCANIA_SEGUNDOS}, "
+                            "expires_at, NOW() FROM facts WHERE id = %s",
+                            (fact_id,))
+                        return await cur.fetchone()
+                    finally:
+                        # Nunca se devuelve al pool una conexion con la zona
+                        # de sesion cambiada: otro test la reusaria en UTC.
+                        await cur.execute("SET time_zone = 'SYSTEM'")
+
+        vencido_ya, cerca_de_ahora, expires_at, ahora = client_superadmin.portal.call(
+            _con_sesion_utc)
+        assert not (vencido_ya and cerca_de_ahora), (
+            f"con la SESION en UTC, expires_at ({expires_at}) quedo CERCA y "
+            f"vencido respecto de NOW() ({ahora}) aun con el patron viejo "
+            "(datetime con offset pasado directo, sin CONVERT_TZ) -- si esto "
+            "pasa es porque el driver empezo a respetar tzinfo al escapar "
+            "fechas, y el razonamiento de mas arriba (por que hace falta un "
+            "offset que no sea ni Honduras ni UTC) dejo de aplicar."
         )
     finally:
         client_superadmin.portal.call(_borrar_fact, fact_id)
@@ -231,3 +349,174 @@ def test_caducar_sin_zona_se_rechaza_por_ambigua(client_superadmin):
         assert r.json()["detail"] == "vence_at_sin_zona"
     finally:
         client_superadmin.portal.call(_borrar_fact, fact_id)
+
+
+def test_caducar_si_no_se_puede_resolver_la_zona_horaria_es_503_y_no_toca_expire_fact(
+        client_superadmin, monkeypatch):
+    """MINOR 3+4 (revision adversarial jax-platform#147): un `CONVERT_TZ` que
+    da NULL (o cualquier otro error de `_hora_local_de_base` -- driver, red)
+    es un fallo de infraestructura, no "sin caducidad": `expire_fact(None)`
+    QUITARIA la caducidad en vez de ponerla. Fail-closed: 503
+    memoria_no_disponible, mismo contrato de tres estados (M1) que el resto
+    del endpoint -- y `expire_fact` ni se llega a invocar."""
+    from unittest.mock import AsyncMock
+
+    from api.admin import memoria as memoria_mod
+
+    client_superadmin.get("/api/admin/memoria/hechos?limite=1")
+    memoria = memoria_mod._chat_mod._memory
+    assert memoria is not None, "la memoria no se conecto -- el test no probaria nada"
+
+    monkeypatch.setattr(
+        memoria_mod, "_hora_local_de_base",
+        AsyncMock(side_effect=memoria_mod._ZonaHorariaNoResuelta("CONVERT_TZ devolvio NULL")))
+    expire_fact_llamado = AsyncMock(return_value=True)
+    monkeypatch.setattr(memoria, "expire_fact", expire_fact_llamado)
+
+    r = client_superadmin.post(
+        "/api/admin/memoria/hechos/1/caducar",
+        json={"vence_at": datetime.now(timezone.utc).isoformat()})
+    assert r.status_code == 503, r.text
+    assert r.json()["detail"] == "memoria_no_disponible"
+    expire_fact_llamado.assert_not_called()
+
+
+async def test_hora_local_de_base_si_convert_tz_da_null_lanza_zona_no_resuelta(monkeypatch):
+    """MINOR 3, la mitad INTERNA del arreglo: el test de arriba monkeypatchea
+    `_hora_local_de_base` ENTERA y sólo prueba que el llamador reacciona bien
+    a `_ZonaHorariaNoResuelta` -- no que esta función la levante de verdad
+    cuando `CONVERT_TZ` da `NULL`. Acá se falsea sólo el pool/cursor (nunca
+    la base real -- ni siquiera la de test) para forzar ese `NULL`
+    directamente."""
+    from api.admin import memoria as memoria_mod
+
+    class _CursorFalso:
+        async def execute(self, *a, **k):
+            return None
+
+        async def fetchone(self):
+            return (None,)  # el mismo shape que CONVERT_TZ(...) NULL
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _ConexionFalsa:
+        def cursor(self):
+            return _CursorFalso()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _PoolFalso:
+        def acquire(self):
+            return _ConexionFalsa()
+
+    async def _pool_falso():
+        return _PoolFalso()
+
+    monkeypatch.setattr(memoria_mod, "get_pool", _pool_falso)
+
+    with pytest.raises(memoria_mod._ZonaHorariaNoResuelta):
+        await memoria_mod._hora_local_de_base(datetime.now(timezone.utc))
+
+
+# ---------------------------------------------------------------------------
+# Rango de TIMESTAMP (MINOR 5, revision adversarial jax-platform#147).
+# `expires_at` es TIMESTAMP: rango real 1970-01-01 00:00:01 a
+# 2038-01-19 03:14:07, los dos en UTC. Fuera de ese rango se rechaza con 400
+# vence_at_invalido ANTES de tocar la base -- no se le pide a MariaDB que
+# decida que hacer con un valor que no puede representar.
+# ---------------------------------------------------------------------------
+
+def test_caducar_antes_del_minimo_de_timestamp_es_400_vence_at_invalido(client_superadmin):
+    """Tambien cubre el otro motivo del hallazgo: un año < 1000 (acá 500) no
+    puede llegar a `_hora_local_de_base` -- si llegara, `strftime('%Y', ...)`
+    no garantiza el relleno a 4 digitos en todas las libc. Con la validacion
+    de rango ANTES de la conversion, este caso ni se acerca a esa función."""
+    fact_id = client_superadmin.portal.call(
+        _crear_fact, "hecho de prueba caducar-antes-de-1970")
+    try:
+        r = client_superadmin.post(
+            f"/api/admin/memoria/hechos/{fact_id}/caducar",
+            json={"vence_at": "0500-01-01T00:00:00+00:00"})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "vence_at_invalido"
+    finally:
+        client_superadmin.portal.call(_borrar_fact, fact_id)
+
+
+def test_caducar_despues_del_maximo_de_timestamp_es_400_vence_at_invalido(client_superadmin):
+    fact_id = client_superadmin.portal.call(
+        _crear_fact, "hecho de prueba caducar-despues-de-2038")
+    try:
+        r = client_superadmin.post(
+            f"/api/admin/memoria/hechos/{fact_id}/caducar",
+            json={"vence_at": "2040-01-01T00:00:00+00:00"})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "vence_at_invalido"
+    finally:
+        client_superadmin.portal.call(_borrar_fact, fact_id)
+
+
+def test_caducar_en_el_borde_valido_del_rango_no_es_400(client_superadmin):
+    """Control del arreglo de arriba: el borde EXACTO valido (el minimo real
+    de TIMESTAMP) no se rechaza -- la validacion es `>=`/`<=`, no `>`/`<`."""
+    fact_id = client_superadmin.portal.call(
+        _crear_fact, "hecho de prueba caducar-borde-valido")
+    try:
+        r = client_superadmin.post(
+            f"/api/admin/memoria/hechos/{fact_id}/caducar",
+            json={"vence_at": "1970-01-01T00:00:01+00:00"})
+        assert r.status_code == 200, r.text
+    finally:
+        client_superadmin.portal.call(_borrar_fact, fact_id)
+
+
+def test_los_dos_pools_ven_la_misma_zona_horaria(client_superadmin):
+    """Baranda del acoplamiento (HECHO del revisor, jax-platform#147): el
+    arreglo depende de que el pool de jax-platform
+    (`db.connection.get_pool()`, el que usa `_hora_local_de_base` para
+    `CONVERT_TZ`) y el pool de `MemoryDB` (`jax/memory/db.py`, el que usa
+    `expire_fact` para el `UPDATE` real) vean la MISMA
+    `@@session.time_zone`. Hoy los dos confían en el default del servidor
+    (SYSTEM) sin que nada lo verifique -- si algún día uno de los dos fija
+    un `time_zone` de sesión propio (via `init_command`, o un `SET` en
+    cualquier punto de su ciclo de vida), la caducidad volvería a
+    desincronizarse en silencio, exactamente como el defecto original.
+
+    `memoria` es la instancia REAL de `MemoryDB` que usa el endpoint
+    (`_chat_mod._memory`, la misma que `_memoria_conectada()` devuelve) --
+    no una instanciada aparte para el test: es, literalmente, "como lo hace
+    el endpoint"."""
+    from api.admin import memoria as memoria_mod
+
+    client_superadmin.get("/api/admin/memoria/hechos?limite=1")
+    memoria = memoria_mod._chat_mod._memory
+    assert memoria is not None and memoria.pool is not None, (
+        "la memoria no se conecto -- el test no probaria nada")
+
+    async def _ambas_zonas():
+        from db.connection import get_pool
+
+        async def _tz(pool):
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT @@session.time_zone")
+                    return (await cur.fetchone())[0]
+
+        pool_jax_platform = await get_pool()
+        return await _tz(pool_jax_platform), await _tz(memoria.pool)
+
+    tz_jax_platform, tz_memory_db = client_superadmin.portal.call(_ambas_zonas)
+    assert tz_jax_platform == tz_memory_db, (
+        f"db.connection.get_pool() (usado por _hora_local_de_base) ve "
+        f"{tz_jax_platform!r}, pero el pool de MemoryDB.expire_fact() ve "
+        f"{tz_memory_db!r}: la conversion de _hora_local_de_base apuntaria a "
+        "una zona distinta de la que realmente usa el UPDATE."
+    )
