@@ -69,7 +69,11 @@ describe('HistorialContenido -- pestaña Descartados (Task 6)', () => {
     expect(celdaFecha).not.toHaveTextContent('—')
   })
 
-  it('con has_more, "Cargar más" pide offset=50', async () => {
+  // Fix round 2 (MINOR-2 de la re-revisión): el nombre decía "pide offset=50"
+  // pero la página sembrada acá tiene 1 elemento -- lo que de verdad prueba
+  // es que el offset es la CANTIDAD YA CARGADA (1), no un 50 fijo. El caso
+  // con una página completa de 50 (offset real = 50) está abajo, aparte.
+  it('con has_more, "Cargar más" pide el offset = cantidad ya cargada, y agrega sin perder lo anterior', async () => {
     mockGet({ hayMasDescartados: true })
     renderCuerpo()
     fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
@@ -168,6 +172,24 @@ describe('HistorialContenido -- pestaña Descartados (Task 6)', () => {
 
     expect(await screen.findByText(es.erroresMesa.recuperar_no_permitido())).toBeInTheDocument()
     expect(screen.getByText('plan descartado')).toBeInTheDocument()
+  })
+
+  // Fix round 2 (MINOR-1 de la re-revisión): el test de arriba
+  // (recuperar_no_permitido) usa un error CON código -- textoDeErrorDeMesa
+  // lo traduce directo y nunca toca el fallback genérico, así que una
+  // mutación `recuperarError -> descartarError` en el catch de recuperar()
+  // pasaba desapercibida (13 passed igual). Este test usa un error SIN
+  // código (como el de Borrar) para forzar el fallback genérico de verdad.
+  it('un fallo de Recuperar SIN código muestra el texto genérico propio (recuperarError), no el de Descartar', async () => {
+    api.post.mockRejectedValue(new Error('502'))
+    renderCuerpo()
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    await screen.findByText('plan descartado')
+
+    fireEvent.click(screen.getByRole('button', { name: es.recuperarPipeline }))
+
+    expect(await screen.findByText(es.recuperarError)).toBeInTheDocument()
+    expect(screen.queryByText(es.descartarError)).not.toBeInTheDocument()
   })
 
   // MINOR-4: un fallo de Borrar muestra su propio texto genérico (borrarError).

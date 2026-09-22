@@ -887,8 +887,20 @@ jobs:
           //   a mano archivo por archivo, nunca `git stash`, y restaurado
           //   después de confirmar el rojo). Medido con `npx vitest run`:
           //   987 passed, 0 fallidos, 95 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 987) {
-              console.error("PISO ROTO: se esperaban 987 tests de vitest CORRIDOS y 0 fallidos.");
+          // 987 -> 988 (2026-09-22, re-revisión, punto 1): el test de
+          //   `recuperarError` (ronda 1) usaba un error CON código
+          //   (`recuperar_no_permitido`) -- textoDeErrorDeMesa lo traduce
+          //   directo y nunca toca el fallback genérico, así que mutar
+          //   `recuperarError -> descartarError` en el catch de recuperar()
+          //   dejaba la suite en 13/13 igual (verificado a mano, mutación
+          //   real). +1 test nuevo en
+          //   `HistorialContenido.descartados.test.jsx` con un error SIN
+          //   código (como el de Borrar) que SÍ fuerza el fallback --
+          //   confirmado en rojo con la misma mutación (13 passed / 1
+          //   failed) y en verde restaurando el código. Medido con
+          //   `npx vitest run`: 988 passed, 0 fallidos, 95 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 988) {
+              console.error("PISO ROTO: se esperaban 988 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1190,8 +1202,14 @@ jobs:
         # detectar la pudrición del archivo.
         run: |
           python -m pytest --collect-only -q tests/test_carga_indice_pipelines_del_usuario.py | tee collect.txt
+          # Fix round 2 (re-revisión, punto 3): el texto anterior decía
+          # "dejo de poder colectarse -- ImportError u otro roto" como si
+          # fuera la UNICA causa posible -- un cuarto test de medicion
+          # agregado de buena fe (legitimo) tambien cambia el numero, y ese
+          # diagnostico hubiera sido falso. El mensaje ahora describe el
+          # HECHO (el numero no es 3), no una causa que puede no serlo.
           grep -q '^3 tests collected' collect.txt || {
-            echo "El archivo de medicion (ignorado en el paso de arriba) dejo de poder colectarse -- ver la salida arriba (ImportError u otro roto)." >&2
+            echo "Se esperaban exactamente 3 tests colectados en este archivo y salio otro numero (ver la salida arriba). Si agregaste o borraste un test de medicion a proposito, actualiza el '3' de este paso; si no tocaste el archivo, es un ImportError u otra rotura." >&2
             exit 1
           }
 
