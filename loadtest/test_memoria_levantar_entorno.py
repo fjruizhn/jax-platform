@@ -50,3 +50,36 @@ def test_info_json_preexistente_en_664_queda_forzado_a_600():
 
         assert _modo(destino) == 0o600
         assert json.loads(destino.read_text()) == {"superadmin_password": "y"}
+
+
+def test_un_lector_que_ya_tenia_el_archivo_abierto_no_ve_el_contenido_nuevo():
+    # MINOR (revision adversarial, ronda 7): `os.fchmod(fd, 0o600)` cambia
+    # el MODO del inodo, pero no le quita el descriptor a nadie que YA lo
+    # tuviera abierto -- si un lector abrio `info_path` ANTES de esta
+    # llamada (mientras el archivo todavia tenia el modo viejo, p.ej. 664)
+    # y la escritura reusa el MISMO inodo (como hacia `O_TRUNC` sin
+    # `unlink`), ese lector sigue viendo -- ahora -- el contenido NUEVO (con
+    # la contraseña), sin que el chmod lo afecte para nada: los permisos de
+    # Unix se chequean al ABRIR, no en cada lectura.
+    with tempfile.TemporaryDirectory() as tmp:
+        destino = Path(tmp) / "info.json"
+        destino.write_text('{"superadmin_password": "vieja-no-secreta"}')
+        os.chmod(destino, 0o664)
+
+        lector_viejo = open(destino, "r")
+        inodo_viejo = os.fstat(lector_viejo.fileno()).st_ino
+
+        escribir_info_json(destino, {"superadmin_password": "nueva-secreta"})
+
+        inodo_nuevo = os.stat(destino).st_ino
+        assert inodo_nuevo != inodo_viejo, (
+            "escribir_info_json() reusa el inodo -- un lector que ya tenia "
+            "el archivo abierto terminaria viendo el contenido nuevo")
+
+        # El descriptor del lector viejo sigue apuntando al inodo VIEJO
+        # (ahora huerfano, desconectado del nombre) -- no puede ver el
+        # secreto nuevo aunque vuelva a leer desde el principio.
+        lector_viejo.seek(0)
+        contenido_que_ve_el_lector_viejo = lector_viejo.read()
+        lector_viejo.close()
+        assert "nueva-secreta" not in contenido_que_ve_el_lector_viejo

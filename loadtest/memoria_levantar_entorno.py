@@ -198,10 +198,19 @@ def leer_environ_de_proceso(pid: int) -> dict[str, str]:
     confiable de "con que variables corre de verdad" (un `env` en memoria
     de este script podria divergir si algo lo reescribe entre construirlo y
     lanzar el proceso). La usa `main()` para verificar `JAX_DB_NAME`, y
-    scripts de medicion (memoria_medir.py) para leer `JAX_JWT_SECRET` --
-    NUNCA de `/etc/jax/.env` (SEGURIDAD, ronda 5: esa es la llave de
-    produccion; el entorno de carga tiene la suya propia, generada en
-    `construir_env`)."""
+    scripts de medicion (memoria_medir.py) para leer el `JAX_JWT_SECRET` de
+    CARGA -- el que de verdad FIRMA los tokens de la medicion -- que sale
+    de ACA, nunca de `/etc/jax/.env` (SEGURIDAD, ronda 5: esa es la llave
+    de produccion; el entorno de carga tiene la suya propia, generada en
+    `construir_env`).
+
+    m6/m4 (cierre jax-platform#146, texto corregido en la ronda 7): esto NO
+    significa que los scripts de medicion dejen de leer `/etc/jax/.env` --
+    lo leen entero (`sudo -n cat`), `JAX_JWT_SECRET` de produccion
+    incluido, y ese valor SI se usa, pero sólo para COMPARARLO (`!=`)
+    contra el secreto de carga que devuelve esta función -- nunca para
+    firmar, nunca para imprimir. Es la barrera de seguridad de ronda 5: si
+    algún día coincidieran, el script aborta en vez de medir."""
     environ = Path(f"/proc/{pid}/environ").read_bytes()
     pares = dict(p.split(b"=", 1) for p in environ.split(b"\x00") if b"=" in p)
     return {k.decode(): v.decode() for k, v in pares.items()}
@@ -230,13 +239,35 @@ def escribir_info_json(info_path: Path, resultado: dict) -> None:
     un archivo existente lo IGNORA por completo (POSIX open(2)): el archivo
     queda truncado y reescrito, pero con el modo viejo. Reproducido: un
     `info.json` previo en 664 seguía en 664 después de esta llamada.
-    `os.fchmod(fd, 0o600)` fuerza el modo sobre el descriptor YA abierto,
-    sin ventana (nunca pasa por una ruta de archivo, no hay TOCTOU) y cubre
-    los dos casos (archivo nuevo o preexistente)."""
+
+    MINOR (revisión adversarial, ronda 7): el arreglo de m7 usaba
+    `os.fchmod(fd, 0o600)` sobre el descriptor YA abierto -- correcto para
+    el MODO del archivo, pero `fchmod` no le quita el descriptor a nadie
+    que YA lo tuviera abierto. Si otro proceso abrió `info_path` ANTES de
+    esta llamada (mientras el archivo todavía tenía el modo viejo, p. ej.
+    664), ese descriptor sigue siendo válido -- los permisos de Unix se
+    chequean al ABRIR, no en cada lectura -- y como `O_TRUNC` reusa el
+    MISMO inodo, ese lector viejo sigue viendo (ahora) el contenido NUEVO
+    (con la contraseña), sin que el `fchmod` lo afecte para nada: el
+    `fchmod` cambia el modo del inodo, no revoca descriptores ajenos.
+
+    La solución no es otro `chmod` -- es que el archivo NUEVO sea un INODO
+    NUEVO: `os.unlink()` (si existía) desconecta el nombre del inodo viejo
+    -- cualquier lector que ya lo tuviera abierto se queda con ESE inodo
+    (huérfano, sin más escrituras), nunca ve el contenido nuevo -- y
+    `O_CREAT | O_EXCL` crea un inodo NUEVO con el modo 600 puesto desde el
+    primer instante en que existe, sin ventana. `O_EXCL` además es una
+    barrera honesta: si alguien vuelve a crear el archivo entre el
+    `unlink` y el `open` (carrera real, no esperada en este uso de un solo
+    lanzador), esta llamada FALLA en vez de escribir sobre un archivo
+    ajeno en silencio."""
     datos = json.dumps(resultado, indent=2).encode()
-    fd = os.open(info_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.fchmod(fd, 0o600)
+        os.unlink(info_path)
+    except FileNotFoundError:  # fail-soft: primera corrida, info.json todavia no existe -- nada que desconectar
+        pass
+    fd = os.open(info_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
         os.write(fd, datos)
     finally:
         os.close(fd)
