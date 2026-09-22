@@ -526,19 +526,25 @@ def _filas_pipelines_bulk(tenant_id, n, status, descartado=False, offset=0):
 # real. `Using temporary` tampoco protegía nada en esta consulta -- nunca
 # apareció, con o sin filesort.
 #
-# La consulta ahora lleva `IGNORE INDEX (idx_pipelines_descartados,
-# idx_pipelines_ocultos)` (api/pipelines.py): el plan vuelve a ser
-# DETERMINISTA -- range scan EN ORDEN por idx_jacobs_pipelines_duenio, sin
-# filesort, que corta en el LIMIT -- sin depender de qué estadísticas tenga
-# la tabla en un momento dado. Medido con número en
+# Fix round 3 (2026-09-22), Ruling 17: `IGNORE INDEX` (fix round 2) se
+# reemplazó por `FORCE INDEX (idx_jacobs_pipelines_duenio)` (api/pipelines.py)
+# -- la razón real está en el comentario de ahí, no acá: acopla el deploy a
+# DOS índices de jax que todavía no están desplegados en producción
+# (jax#257 mergeado pero NO desplegado), y no cubría el caso EXTREMO (forma
+# "extremo" de abajo). El plan vuelve a ser DETERMINISTA -- range scan EN
+# ORDEN por idx_jacobs_pipelines_duenio, sin filesort, que corta en el
+# LIMIT -- sin depender de qué estadísticas tenga la tabla en un momento
+# dado NI de qué índices existan además del propio. Medido con número en
 # docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md (método +
 # comando exacto ahí).
 #
-# Las DOS formas de dato que pidió el controlador, ambas verificando el
-# MISMO contrato (idx_jacobs_pipelines_duenio, sin filesort):
+# Las TRES formas de dato que pidió el controlador (las dos originales de
+# Ruling 16 más la extrema que destapó el hallazgo de esa ronda), las tres
+# verificando el MISMO contrato (idx_jacobs_pipelines_duenio, sin filesort):
 @pytest.mark.parametrize("nombre_forma, n_terminados, n_descartados", [
     ("historial-largo", 5000, 50),
     ("muchos-descartados", 3, 60),
+    ("extremo", 3, 5000),
 ])
 def test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio_sin_filesort(
         client, nombre_forma, n_terminados, n_descartados):
@@ -561,6 +567,52 @@ def test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio_sin_files
         assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
     finally:
         client.portal.call(sql, "DELETE FROM jacobs_pipelines WHERE tenant_id=%s", (tenant_real,))
+
+
+# Fix round 3, Ruling 17 punto 2: la prueba directa de por qué FORCE INDEX
+# (idx_jacobs_pipelines_duenio) no acopla el deploy -- a diferencia de
+# IGNORE INDEX (fix round 2), que nombraba idx_pipelines_descartados/
+# idx_pipelines_ocultos y por eso rompía si esos dos no existían (error de
+# MariaDB 1176, no un hint que se ignora). Se los borra de la base de TEST
+# de esta sesión -- simulando producción HOY, donde jax#257 está mergeado
+# pero NO desplegado -- se corre la consulta real (EXPLAIN + la ruta HTTP
+# completa), y se los recrea en el `finally` para no dejar la base de la
+# sesión distinta de como la esperan los demás tests de este archivo
+# (varios EXPLAIN de acá dependen de que existan).
+#
+# Mutación verificada a mano: reemplazar el FORCE INDEX de
+# api/pipelines.py por el IGNORE INDEX del fix round 2 hace caer este test
+# con pymysql.err.OperationalError: (1176, "Key 'idx_pipelines_ocultos'
+# doesn't exist in table 'jacobs_pipelines'") -- revertido después de
+# confirmarlo (ver el reporte de esta ronda).
+def test_pipelines_del_usuario_no_rompe_sin_los_indices_de_jax_257(client):
+    ddl_descartados = (
+        "CREATE INDEX idx_pipelines_descartados ON jacobs_pipelines "
+        "(user_id, tenant_id, status, descartado_at) ALGORITHM=INPLACE LOCK=NONE"
+    )
+    ddl_ocultos = (
+        "CREATE INDEX idx_pipelines_ocultos ON jacobs_pipelines "
+        "(status, descartado_at) ALGORITHM=INPLACE LOCK=NONE"
+    )
+    client.portal.call(sql, "DROP INDEX idx_pipelines_descartados ON jacobs_pipelines")
+    client.portal.call(sql, "DROP INDEX idx_pipelines_ocultos ON jacobs_pipelines")
+    try:
+        filas = client.portal.call(
+            sql, "EXPLAIN " + mod.SQL_PIPELINES_DEL_USUARIO,
+            ("x", "TENANT-SIN-INDICES-DE-JAX257", mod.LISTA_PIPELINES_MAX, 0), True)
+        ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
+        assert tabla == "jacobs_pipelines"
+        assert clave == "idx_jacobs_pipelines_duenio", filas
+        assert "filesort" not in (extra or ""), filas
+
+        # La ruta real de la API, de punta a punta -- no sólo el SQL crudo.
+        uid(client, "descarte-sinindices-duenio", "operator")
+        resp = client.get("/api/pipelines",
+                          headers=cabeceras(client, "descarte-sinindices-duenio", "operator"))
+        assert resp.status_code == 200, resp.text
+    finally:
+        client.portal.call(sql, ddl_descartados)
+        client.portal.call(sql, ddl_ocultos)
 
 
 def test_explain_descartados_del_usuario_usa_idx_pipelines_descartados(client):

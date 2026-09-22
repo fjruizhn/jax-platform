@@ -763,34 +763,48 @@ async def _estado_de_descarte(pipeline_id: str) -> tuple[str | None, str | None]
 # el índice sigue cubriendo el WHERE + ORDER BY -- el OFFSET no agrega
 # filesort ni temporary, solo salta filas dentro del mismo rango del índice).
 #
-# IGNORE INDEX (fix round 2, Ruling 16, 2026-09-22): la aceptación anterior
-# de un plan con `Using filesort` (fix round 1) NO se sostenía -- medía 363
-# filas, 1,6x de diferencia a escala de décimas de milisegundo, ruido, no
-# evidencia. Y el argumento de fondo era falso: `MAX_PIPELINES` acota los
-# pipelines CONCURRENTES, no el histórico -- `status NOT IN (...)` incluye
-# TODO lo terminado (completed/failed/aborted/expired), que no tiene techo.
-# `idx_pipelines_descartados`/`idx_pipelines_ocultos` matchean
-# user_id+tenant_id igual que idx_jacobs_pipelines_duenio (el primero
-# también matchea `status`), así que el optimizador puede preferirlos según
-# las estadísticas del momento -- un plan que, si el filtro de status no
-# reduce lo suficiente ANTES del filesort, tiene que materializar y ordenar
-# un conjunto que crece con el histórico del tenant antes de aplicar el
-# LIMIT. Medido con número en docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md,
-# con las DOS formas que pidió el controlador: con historial realmente
-# largo (5000 terminados + 50 descartados) el optimizador YA elegía
-# idx_jacobs_pipelines_duenio por su cuenta -- las dos formas del plan
-# empatan; con pocos vivos y bastantes descartados (60+3, la forma que
-# mostró filesort en la ronda anterior) el plan CON filesort sigue siendo
-# más rápido a esta escala pequeña. La razón de IGNORE INDEX no es ganar
-# ESTE benchmark: es la DETERMINISTA -- range scan en orden por
-# idx_jacobs_pipelines_duenio, sin filesort, que corta en el LIMIT sin
-# necesidad de materializar nada -- no depende de qué estadísticas tenga la
-# tabla en un momento dado, y no se degrada sin cota con un histórico que
-# crece (a diferencia del plan con filesort, cuyo costo en el peor caso no
-# está acotado por este benchmark).
+# FORCE INDEX (fix round 3, Ruling 17, 2026-09-22 -- reemplaza el IGNORE
+# INDEX del fix round 2). La razón real, no una carrera por latencia: un
+# plan con `Using filesort` no tiene el costo acotado por el LIMIT -- si el
+# filtro de status no reduce lo suficiente ANTES de ordenar, el motor tiene
+# que materializar y ordenar un conjunto que crece con el HISTÓRICO del
+# tenant (`status NOT IN (...)` incluye todo lo terminado -- completed/
+# failed/aborted/expired --, que no tiene techo; `MAX_PIPELINES` sólo acota
+# los CONCURRENTES). `idx_jacobs_pipelines_duenio` da un range scan EN
+# ORDEN que corta apenas junta las filas de la página, sin depender de qué
+# estadísticas tenga la tabla en un momento dado -- medido con número en
+# docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md contra TRES
+# formas (historial largo, muchos descartados, y el caso extremo de muchos
+# descartados en un tenant aislado).
+#
+# FORCE INDEX, no IGNORE INDEX de los otros dos (decisión anterior,
+# revertida): `IGNORE INDEX` con un nombre que no existe es un ERROR DE
+# MARIADB (1176), no un hint que se ignora -- y `idx_pipelines_descartados`/
+# `idx_pipelines_ocultos` los crea la migración de `jax` (jax#257, YA
+# MERGEADO mas NO DESPLEGADO a la fecha de este comentario: producción
+# corre el jax ANTERIOR, sin esos dos índices). Si jax-platform se
+# desplegara ANTES que esa migración de jax -- dos repos/servicios
+# separados, sin transacción de deploy conjunta -- `GET /api/pipelines`
+# daría 500 en vez de simplemente no usar el hint.
+#
+# `idx_jacobs_pipelines_duenio` TAMBIÉN lo crea el `init_tables()` de
+# `jax`, no `db/migrations.py` de este repo (Ruling T6-6, 2026-09-15 --
+# "jacobs_pipelines es del repo jax ... la plataforma no corre DDL sobre
+# tablas de jax", ver jax/jacobs/store.py). La diferencia que importa NO es
+# QUIÉN lo crea -- es CUÁNDO: viene de una migración de una semana antes
+# (T6, Task 7 del historial de pipelines, 2026-09-15) que ya está
+# DESPLEGADA -- este mismo repo la usa en producción hoy
+# (test_historial_pipelines.py, Task 7, 2026-09-18) --, a diferencia de
+# jax#257 (2026-09-22, recién mergeado). `FORCE INDEX` sobre un índice que
+# YA EXISTE en producción no tiene el acoplamiento de orden de deploy que
+# sí tenía `IGNORE INDEX` sobre los dos índices nuevos. También cubre el
+# caso extremo que `IGNORE INDEX` NO cubría (muchos descartados en un
+# tenant aislado, que elegía `idx_pipelines_status` -- fuera de la lista de
+# índices ignorados -- con filesort): `FORCE INDEX` nombra el índice
+# correcto directo, no una lista de exclusiones que puede quedar corta.
 SQL_PIPELINES_DEL_USUARIO = (
     "SELECT pipeline_id, name, status, created_at, updated_at FROM jacobs_pipelines "
-    "IGNORE INDEX (idx_pipelines_descartados, idx_pipelines_ocultos) "
+    "FORCE INDEX (idx_jacobs_pipelines_duenio) "
     "WHERE user_id=%s AND tenant_id=%s AND owner_ack_at IS NOT NULL "
     "AND status NOT IN ('discarded','hidden') "
     "ORDER BY created_at DESC LIMIT %s OFFSET %s"

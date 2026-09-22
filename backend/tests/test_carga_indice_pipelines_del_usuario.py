@@ -1,7 +1,22 @@
-"""Medición (fix round 2, Ruling 16 punto 5, 2026-09-22): SQL_PIPELINES_DEL_USUARIO
-con IGNORE INDEX (idx_pipelines_descartados, idx_pipelines_ocultos) versus el
-plan natural (sin IGNORE INDEX), en las DOS formas de dato que pidió el
-controlador -- contra la base de TEST, nunca contra jax_memory.
+"""Medición (fix round 3, Ruling 17 punto 3, 2026-09-22): SQL_PIPELINES_DEL_USUARIO
+con FORCE INDEX (idx_jacobs_pipelines_duenio) versus el plan natural (sin
+FORCE INDEX), en las TRES formas de dato que pidió el controlador -- contra
+la base de TEST, nunca contra jax_memory.
+
+Historia de esta consulta, para no perder el porqué: fix round 1 (Ruling
+13(e)) aceptó un plan con `Using filesort` a partir de UNA medición floja
+(363 filas, 1,6x, ruido). Fix round 2 (Ruling 16) lo reemplazó por
+`IGNORE INDEX (idx_pipelines_descartados, idx_pipelines_ocultos)` -- medido
+acá abajo como `SQL_IGNORE` -- que SÍ daba el plan determinista, pero tenía
+dos problemas: acoplaba el deploy de jax-platform a una migración de `jax`
+(jax#257) mergeada pero NO desplegada en producción a la fecha de este
+archivo (`IGNORE INDEX` con un nombre que no existe es un ERROR de MariaDB,
+1176, no un hint que se ignora), y no cubría la forma EXTREMA de abajo
+(elegía `idx_pipelines_status`, fuera de la lista de índices ignorados, con
+filesort igual). Fix round 3 (Ruling 17, ESTE archivo) lo reemplaza por
+`FORCE INDEX (idx_jacobs_pipelines_duenio)` -- ese índice lo crea una
+migración de `jax` de una semana ANTES de jax#257 (Ruling T6-6,
+2026-09-15) que sí está desplegada en producción hoy.
 
 Por qué esto vive acá y no en loadtest/ (divergencia deliberada, anotada):
 los demás loadtest/*.py son procesos standalone que abren su PROPIA conexión
@@ -14,7 +29,7 @@ mecanismo de aislamiento (`base_de_test`) que el resto de la suite. El
 "comando exacto" documentado en docs/ es la invocación de pytest, no un
 script aparte.
 
-Se salta por default (siembra 5000+ filas, no es parte del piso de CI
+Se salta por default (siembra hasta 5000+ filas, no es parte del piso de CI
 normal): correr con JAX_MEDIR_INDICE_PIPELINES=1.
 """
 import os
@@ -31,11 +46,11 @@ pytestmark = pytest.mark.skipif(
     reason="medición manual, pesada (siembra 5000+ filas) -- JAX_MEDIR_INDICE_PIPELINES=1 para correrla",
 )
 
-# El plan NATURAL -- SQL_PIPELINES_DEL_USUARIO tal como estaba ANTES de
-# Ruling 16 (sin IGNORE INDEX). Copia literal, no una reconstrucción: si el
-# texto de mod.SQL_PIPELINES_DEL_USUARIO cambia, este sigue siendo el plan
-# que se está comparando -- el punto de esta medición es esa comparación,
-# no el estado actual del código.
+# El plan NATURAL -- SQL_PIPELINES_DEL_USUARIO tal como estaba ANTES del fix
+# round 2 (sin ningún hint de índice). Copia literal, no una
+# reconstrucción: si el texto de mod.SQL_PIPELINES_DEL_USUARIO cambia, este
+# sigue siendo el plan que se está comparando -- el punto de esta medición
+# es esa comparación, no el estado actual del código.
 SQL_NATURAL = (
     "SELECT pipeline_id, name, status, created_at, updated_at FROM jacobs_pipelines "
     "WHERE user_id=%s AND tenant_id=%s AND owner_ack_at IS NOT NULL "
@@ -46,8 +61,8 @@ SQL_NATURAL = (
 N_MUESTRAS = 15
 
 # El esquema de jax (columnas/índices nuevos) lo asegura
-# tests/conftest.py::_esquema_de_jax_en_la_base_de_test (fix round 2,
-# Ruling 16 punto 3) -- ya no hace falta un fixture propio acá.
+# tests/conftest.py::client() (fix round 3, Ruling 16 punto 3 -- ya no hace
+# falta un fixture propio acá).
 
 
 async def _insertar_bulk(filas):
@@ -125,16 +140,16 @@ def _p(valores, p):
     return round(ordenados[k - 1], 4)
 
 
-def _reportar(nombre_forma, tenant_id, args, explain_natural, explain_ignore, t_natural, t_ignore):
+def _reportar(nombre_forma, tenant_id, explain_natural, explain_forzado, t_natural, t_forzado):
     print(f"\n=== {nombre_forma} (tenant={tenant_id}) ===")
-    print(f"EXPLAIN natural : key={explain_natural['key']!r} type={explain_natural['type']} "
+    print(f"EXPLAIN natural: key={explain_natural['key']!r} type={explain_natural['type']} "
           f"rows={explain_natural['rows']} Extra={explain_natural['Extra']!r}")
-    print(f"EXPLAIN IGNORE  : key={explain_ignore['key']!r} type={explain_ignore['type']} "
-          f"rows={explain_ignore['rows']} Extra={explain_ignore['Extra']!r}")
+    print(f"EXPLAIN FORCE  : key={explain_forzado['key']!r} type={explain_forzado['type']} "
+          f"rows={explain_forzado['rows']} Extra={explain_forzado['Extra']!r}")
     print(f"natural (n={len(t_natural)}): p50={_p(t_natural, 50)} ms  p95={_p(t_natural, 95)} ms  "
           f"min={round(min(t_natural), 4)} max={round(max(t_natural), 4)}")
-    print(f"IGNORE  (n={len(t_ignore)}): p50={_p(t_ignore, 50)} ms  p95={_p(t_ignore, 95)} ms  "
-          f"min={round(min(t_ignore), 4)} max={round(max(t_ignore), 4)}")
+    print(f"FORCE   (n={len(t_forzado)}): p50={_p(t_forzado, 50)} ms  p95={_p(t_forzado, 95)} ms  "
+          f"min={round(min(t_forzado), 4)} max={round(max(t_forzado), 4)}")
 
 
 def test_medir_historial_largo(client):
@@ -150,23 +165,22 @@ def test_medir_historial_largo(client):
 
         args = ("x", tenant_id, mod.LISTA_PIPELINES_MAX, 0)
         explain_natural = client.portal.call(_explain, SQL_NATURAL, args)
-        explain_ignore = client.portal.call(_explain, mod.SQL_PIPELINES_DEL_USUARIO, args)
+        explain_forzado = client.portal.call(_explain, mod.SQL_PIPELINES_DEL_USUARIO, args)
         t_natural = client.portal.call(_medir, SQL_NATURAL, args)
-        t_ignore = client.portal.call(_medir, mod.SQL_PIPELINES_DEL_USUARIO, args)
+        t_forzado = client.portal.call(_medir, mod.SQL_PIPELINES_DEL_USUARIO, args)
 
-        _reportar("historial largo: 5000 terminados + 50 descartados", tenant_id, args,
-                  explain_natural, explain_ignore, t_natural, t_ignore)
+        _reportar("historial largo: 5000 terminados + 50 descartados", tenant_id,
+                  explain_natural, explain_forzado, t_natural, t_forzado)
 
-        assert explain_ignore["key"] == "idx_jacobs_pipelines_duenio"
-        assert "filesort" not in (explain_ignore["Extra"] or "")
+        assert explain_forzado["key"] == "idx_jacobs_pipelines_duenio"
+        assert "filesort" not in (explain_forzado["Extra"] or "")
     finally:
         client.portal.call(_borrar_tenant, tenant_id)
 
 
 def test_medir_muchos_descartados(client):
     """Forma (b) del controlador: 60 descartados + 3 vivos -- la forma que
-    ya había mostrado `Using filesort` en el plan natural en la ronda
-    anterior."""
+    ya había mostrado `Using filesort` en el plan natural en el fix round 1."""
     tenant_id = "CARGA-MUCHOS-DESCARTADOS"
     try:
         client.portal.call(_insertar_bulk, _filas_de(tenant_id, 60, "discarded", descartado=True))
@@ -175,14 +189,44 @@ def test_medir_muchos_descartados(client):
 
         args = ("x", tenant_id, mod.LISTA_PIPELINES_MAX, 0)
         explain_natural = client.portal.call(_explain, SQL_NATURAL, args)
-        explain_ignore = client.portal.call(_explain, mod.SQL_PIPELINES_DEL_USUARIO, args)
+        explain_forzado = client.portal.call(_explain, mod.SQL_PIPELINES_DEL_USUARIO, args)
         t_natural = client.portal.call(_medir, SQL_NATURAL, args)
-        t_ignore = client.portal.call(_medir, mod.SQL_PIPELINES_DEL_USUARIO, args)
+        t_forzado = client.portal.call(_medir, mod.SQL_PIPELINES_DEL_USUARIO, args)
 
-        _reportar("muchos descartados: 60 descartados + 3 vivos", tenant_id, args,
-                  explain_natural, explain_ignore, t_natural, t_ignore)
+        _reportar("muchos descartados: 60 descartados + 3 vivos", tenant_id,
+                  explain_natural, explain_forzado, t_natural, t_forzado)
 
-        assert explain_ignore["key"] == "idx_jacobs_pipelines_duenio"
-        assert "filesort" not in (explain_ignore["Extra"] or "")
+        assert explain_forzado["key"] == "idx_jacobs_pipelines_duenio"
+        assert "filesort" not in (explain_forzado["Extra"] or "")
+    finally:
+        client.portal.call(_borrar_tenant, tenant_id)
+
+
+def test_medir_extremo_muchos_descartados_tenant_aislado(client):
+    """Forma "extrema" (fix round 3, Ruling 17 -- el hallazgo que destapó el
+    fix round 2): 5000 descartados + 3 vivos, en un tenant AISLADO (sin
+    fondo de otros tenants). Con `IGNORE INDEX` (fix round 2) esta forma
+    elegía `idx_pipelines_status` -- fuera de la lista de índices
+    ignorados, sin `user_id`/`tenant_id`, escala con el total de pipelines
+    "vivos" de TODOS los tenants -- con `Using filesort` igual. Es la forma
+    que `FORCE INDEX (idx_jacobs_pipelines_duenio)` sí cubre, nombrando el
+    índice correcto directo en vez de una lista de exclusiones."""
+    tenant_id = "CARGA-EXTREMO-AISLADO"
+    try:
+        client.portal.call(_insertar_bulk, _filas_de(tenant_id, 5000, "discarded", descartado=True))
+        client.portal.call(_insertar_bulk, _filas_de(tenant_id, 3, "completed", offset_id=5000))
+        client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
+
+        args = ("x", tenant_id, mod.LISTA_PIPELINES_MAX, 0)
+        explain_natural = client.portal.call(_explain, SQL_NATURAL, args)
+        explain_forzado = client.portal.call(_explain, mod.SQL_PIPELINES_DEL_USUARIO, args)
+        t_natural = client.portal.call(_medir, SQL_NATURAL, args)
+        t_forzado = client.portal.call(_medir, mod.SQL_PIPELINES_DEL_USUARIO, args)
+
+        _reportar("extremo: 5000 descartados + 3 vivos, tenant aislado", tenant_id,
+                  explain_natural, explain_forzado, t_natural, t_forzado)
+
+        assert explain_forzado["key"] == "idx_jacobs_pipelines_duenio"
+        assert "filesort" not in (explain_forzado["Extra"] or "")
     finally:
         client.portal.call(_borrar_tenant, tenant_id)

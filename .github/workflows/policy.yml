@@ -2173,7 +2173,21 @@ jobs:
           #   con el MISMO comando: 2557 -> 2558 passed / 0 failed / 0
           #   skipped (+2 skipped de la medición, contados aparte). Delta
           #   verificado +1 sobre el piso anterior.
-          PISO_PASSED = 2496
+          # 2496 -> 2498 (2026-09-22, Task 4, fix round 3, Ruling 17). +2
+          #   netos: test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio_sin_filesort
+          #   gana un tercer caso parametrizado ("extremo": 5000 descartados
+          #   + 3 vivos en tenant aislado, la forma que el IGNORE INDEX del
+          #   fix round 2 NO cubría) -- +1. Test nuevo
+          #   test_pipelines_del_usuario_no_rompe_sin_los_indices_de_jax_257
+          #   (Ruling 17 punto 2: FORCE INDEX no rompe si
+          #   idx_pipelines_descartados/idx_pipelines_ocultos no existen,
+          #   a diferencia del IGNORE INDEX que reemplaza) -- +1.
+          #   tests/test_carga_indice_pipelines_del_usuario.py gana un
+          #   tercer test de medición (la forma "extremo") -- no suma, se
+          #   salta por default igual que los otros dos. Medido con el
+          #   MISMO comando: 2558 -> 2560 passed / 0 failed / 2 -> 3
+          #   skipped. Delta verificado +2 sobre el piso anterior.
+          PISO_PASSED = 2498
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2900,6 +2914,13 @@ jobs:
       #   anterior -- ahora corren de verdad bajo JAX_CI_NO_DB=1. Medido con
       #   el MISMO comando: 1683 -> 1687 passed / 874 -> 873 skipped / 0
       #   failed. Delta verificado +4 sobre el piso anterior.
+      # Sin cambios en el piso (2026-09-22, Task 4, fix round 3, Ruling 17):
+      #   los 3 tests nuevos de esta ronda (2 en test_pipelines_descarte.py,
+      #   1 en test_carga_indice_pipelines_del_usuario.py) piden todos
+      #   `client` -- ninguno corre sin DB, el piso se queda en 1648. El
+      #   conteo de SKIPS SÍ cambia -- 873 -> 876 (+3, uno por cada test
+      #   nuevo) -- pero este job no lo gatea, sólo lo imprime. Medido con
+      #   JAX_CI_NO_DB=1 (1687 -> 1687 passed, 873 -> 876 skipped).
       JAX_CI_MIN_PASSED: "1648"
     steps:
       - uses: actions/checkout@v4
