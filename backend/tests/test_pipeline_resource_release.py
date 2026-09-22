@@ -4,6 +4,8 @@ finishes on its own (completed/failed, detected by the poller) never did --
 every non-cancelled pipeline permanently consumed one of the tenant's
 concurrent slots (max_pipelines, ajustes.py -- era una constante hasta el frente C).
 """
+import pytest
+
 from jax_engine.resource_manager import resource_manager
 from jax_engine.schemas import PipelineState
 from jax_engine.state import JAXEngineState
@@ -176,3 +178,27 @@ async def test_poll_one_pipeline_dispara_el_aviso_para_disputed_con_su_propio_st
     # el status crudo para escribir "objeción sin resolver" en vez de un
     # correo genérico de fallo (ver test_aviso_pipeline.py).
     assert llamados == ["disputed"]
+
+
+# Task 4 (2026-09-22, descartar-pipelines, Ruling 5 del controlador): `jax`
+# agrega DOS estados terminales nuevos, `discarded` y `hidden` -- MISMO
+# defecto exacto que `expired` y `disputed` tuvieron: sin entrada en
+# _JACOBS_STATUS_MAP, .get(jacobs_status, "running") deja el pipeline pegado
+# en "running" para siempre. El escenario real: el dueño descarta un
+# `aborted` ANTES de que el poller (cada 5 s) haya procesado su transición a
+# terminal -- el pipeline sigue en `active_pipelines`, y el próximo poll
+# devuelve `discarded` (o, más tarde, `hidden` si el superadmin lo oculta
+# mientras sigue ahí). Sin la entrada, el cupo del tenant queda fugado para
+# siempre, igual que le pasó a `expired` hasta el 2026-09-18.
+@pytest.mark.parametrize("status_crudo", ["discarded", "hidden"])
+async def test_poll_one_pipeline_releases_the_resource_slot_on_discard_o_hide(status_crudo):
+    pid = f"pid-release-{status_crudo}"
+    state = _make_state_with_pipeline(pid)
+    pipeline = state._state.active_pipelines[pid]
+    await resource_manager.admit_pipeline(TENANT_ID, pid)
+
+    client = _FakeClient(_FakeResponse(200, {"pipeline": {"status": status_crudo}, "steps": []}))
+    await state._poll_one_pipeline(client, pid, pipeline)
+
+    assert pid not in state._state.active_pipelines
+    assert await resource_manager.active_count(TENANT_ID) == 0
