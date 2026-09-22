@@ -1119,7 +1119,18 @@ jobs:
             | mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" "$JAX_DB_NAME"
 
       - name: Suite backend (con DB)
-        run: python -m pytest -q -rs --junitxml=junit-db.xml
+        # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,
+        # hallazgo del coordinador sobre 81b6ab5): sus 3 tests son medición
+        # MANUAL, opt-in (JAX_MEDIR_INDICE_PIPELINES=1, siembra 5000+ filas) --
+        # nunca corren en este job, siempre se SALTAN. Antes de este cambio
+        # quedaban COLECTADOS y contados como skip, y ese job de verdad tuvo
+        # 3 skips contra un MAX_SKIPS=1 pensado para "la DB no arranco" -- CI
+        # se puso rojo por un motivo que no es ese: no se salteo nada de lo
+        # que este piso vino a vigilar, simplemente estos 3 tests no son parte
+        # de la corrida normal. Se ignoran, no se cuentan como skip -- el tope
+        # de MAX_SKIPS se queda en 1, no se sube (ese tope sigue sirviendo
+        # para detectar la DB caida).
+        run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
 
       - name: Piso -- que "verde" no signifique "se salteo todo"
         # Dos exigencias, no una: el piso de passed, y que el numero de SKIPS
@@ -2629,6 +2640,29 @@ jobs:
           #   propio verificado (+43) = 2622. Se corre la suite YA fusionada
           #   para confirmar -- el runner tiene la última palabra, no la
           #   aritmética (ver el reporte de la tarea para el número real).
+          #
+          # HALLAZGO DEL COORDINADOR (2026-09-22, sobre la corrida real de
+          #   81b6ab5, cierre de Task 4): el job SE PUSO ROJO -- no por un
+          #   test, sino por este mismo guard. La corrida real: 2633 passed /
+          #   0 failed / 3 skipped. Los 3 skips son los 3 tests de
+          #   tests/test_carga_indice_pipelines_del_usuario.py (medición
+          #   MANUAL, opt-in, JAX_MEDIR_INDICE_PIPELINES=1 -- ver el
+          #   docstring del archivo): quedaban COLECTADOS en este job y
+          #   siempre se saltan acá, así que ya sumaban 3 antes de esta
+          #   ronda -- nadie lo había visto en un runner real (medido en
+          #   vivo, sólo local, sin CI de por medio) hasta esta corrida. El
+          #   arreglo NO sube MAX_SKIPS (ese tope existe para pescar "la DB
+          #   no arrancó", no para acomodar tests que nunca corren en este
+          #   job) -- el paso de arriba ahora los excluye con `--ignore`, así
+          #   que dejan de contarse como skip acá (siguen existiendo, se
+          #   corren a mano con JAX_MEDIR_INDICE_PIPELINES=1). Con el
+          #   `--ignore`: 2633 passed sin cambio (eran skips, no passed) / 0
+          #   skipped esperados (el otro skip que este archivo podía
+          #   mostrar -- CREATE USER en test_usuario_solo_insert_punto_restauracion.py --
+          #   es un permiso que SÍ tiene el `root` de este job, según el
+          #   propio mensaje del skip; no aplica acá). PISO_PASSED se queda
+          #   en 2622 -- el `--ignore` no resta ningún test PASSED, sólo saca
+          #   3 SKIPPED de la cuenta.
           PISO_PASSED = 2622
           MAX_SKIPS = 1
 
@@ -3536,7 +3570,18 @@ jobs:
         run: git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
 
       - name: Suite backend (sin DB) -- -rs lista cada skip con su motivo
-        run: python -m pytest -v -rs --junitxml=junit.xml
+        # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,
+        # mismo hallazgo que en el job con DB, ver su comentario): sus 3
+        # tests son medición manual opt-in (JAX_MEDIR_INDICE_PIPELINES=1),
+        # no "esto necesita MariaDB" -- el marcador de módulo los salta ACÁ
+        # igual, con o sin `--ignore` (pytest resuelve el skipif del módulo
+        # antes de pedir el fixture `client`), pero dejarlos colectados
+        # mezclaba su motivo real con el de los demás skips de este job, que
+        # SÍ son "no hay DB". Este job no gatea sobre `skip` (sólo lo
+        # imprime, más abajo), así que este cambio es de exactitud del
+        # mensaje, no de piso: `passed` no se mueve (eran skips, no passed),
+        # no hace falta tocar JAX_CI_MIN_PASSED.
+        run: python -m pytest -v -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit.xml
 
       - name: Piso de cobertura -- que "verde" nunca signifique "no corrió nada"
         # El scanner P10 de jax estuvo verde meses reportando "1 passed" sobre
