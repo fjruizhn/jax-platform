@@ -93,13 +93,34 @@ def _asegurar_checkout_de_jax(tmp: Path, commit: str | None = None) -> tuple[Pat
     (o a `origin/master` si no se pidió ninguno) -- nunca queda un checkout
     viejo sirviendo una medición nueva. Devuelve la ruta Y el commit
     resuelto (`git rev-parse HEAD`), para que el llamador lo deje escrito en
-    `info.json` -- antes ese dato se perdía."""
+    `info.json` -- antes ese dato se perdía.
+
+    SEGURIDAD (ronda 5): `commit`, si se pide, tiene que ser ANCESTRO de
+    `origin/master` -- ver el porqué junto al chequeo, más abajo."""
     destino = tmp / "jax-repo"
     if not (destino / ".git").exists():
         destino.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "clone", JAX_REPO_GIT_URL, str(destino)], check=True)
     subprocess.run(["git", "-C", str(destino), "fetch", "--all", "--prune", "--tags"], check=True)
     ref = commit or "origin/master"
+    # SEGURIDAD (revision adversarial de jax-platform PR 146, ronda 5): este
+    # lanzador copia credenciales de PRODUCCION al entorno del backend que
+    # arranca (`_cargar_env_produccion`) -- sin este chequeo, un
+    # `commit_de_jax` arbitrario (cualquier rama, cualquier fork con acceso
+    # de push, cualquier commit sin revisar) corria CON esas credenciales.
+    # `origin/master` ya esta al dia (el `fetch` de arriba corre siempre
+    # antes). Sin `commit` explicito no hay nada que validar: `ref` ya es
+    # `origin/master`.
+    if commit:
+        ancestro = subprocess.run(
+            ["git", "-C", str(destino), "merge-base", "--is-ancestor", commit, "origin/master"],
+        )
+        if ancestro.returncode != 0:
+            raise RuntimeError(
+                f"commit_de_jax={commit!r} no es ancestro de origin/master -- "
+                "este lanzador copia credenciales de PRODUCCION al entorno "
+                "que arranca; no corre un commit arbitrario sin pasar por "
+                "revision.")
     subprocess.run(["git", "-C", str(destino), "checkout", "--force", "--detach", ref], check=True)
     resuelto = subprocess.run(
         ["git", "-C", str(destino), "rev-parse", "HEAD"],
@@ -113,6 +134,17 @@ def construir_env(base_de_prueba: str, password_superadmin: str, tmp: Path,
     env = dict(os.environ)
     env.update(_cargar_env_produccion())
     env["JAX_DB_NAME"] = base_de_prueba
+    # SEGURIDAD (revision adversarial de jax-platform PR 146, ronda 5):
+    # `_cargar_env_produccion()` copia TODO `/etc/jax/.env`, incluido
+    # `JAX_JWT_SECRET` -- sin esta linea, el backend de carga firmaba (y
+    # verificaba) tokens con la MISMA llave que produccion, y cualquier
+    # script de medicion (memoria_medir.py) podia fabricar un token de
+    # superadmin valido tanto para el backend de carga COMO para
+    # produccion. El entorno de carga genera su PROPIA llave, aleatoria,
+    # nueva en cada corrida -- los scripts de medicion la leen del entorno
+    # del proceso YA LEVANTADO (`/proc/<pid>/environ`, ver `main()` mas
+    # abajo), nunca de `/etc/jax/.env`.
+    env["JAX_JWT_SECRET"] = secrets.token_urlsafe(48)
     ruta_jax, jax_commit_resuelto = _asegurar_checkout_de_jax(tmp, commit_de_jax)
     env["JAX_REPO_PATH"] = str(ruta_jax)
     env["LAS_MANOS_URL"] = "http://127.0.0.1:9"
@@ -159,6 +191,20 @@ def _verificar_no_apunta_a_produccion(env: dict, base_de_prueba: str) -> None:
         puerto = urlparse(env.get(var, "")).port
         if puerto in PUERTOS_DE_PRODUCCION:
             raise RuntimeError(f"{var}={env.get(var)!r} pisa produccion -- ABORTANDO.")
+
+
+def leer_environ_de_proceso(pid: int) -> dict[str, str]:
+    """`/proc/<pid>/environ` del proceso YA LEVANTADO -- la unica fuente
+    confiable de "con que variables corre de verdad" (un `env` en memoria
+    de este script podria divergir si algo lo reescribe entre construirlo y
+    lanzar el proceso). La usa `main()` para verificar `JAX_DB_NAME`, y
+    scripts de medicion (memoria_medir.py) para leer `JAX_JWT_SECRET` --
+    NUNCA de `/etc/jax/.env` (SEGURIDAD, ronda 5: esa es la llave de
+    produccion; el entorno de carga tiene la suya propia, generada en
+    `construir_env`)."""
+    environ = Path(f"/proc/{pid}/environ").read_bytes()
+    pares = dict(p.split(b"=", 1) for p in environ.split(b"\x00") if b"=" in p)
+    return {k.decode(): v.decode() for k, v in pares.items()}
 
 
 def esperar_puerto(host: str, port: int, timeout: float = 40.0) -> None:
@@ -210,9 +256,8 @@ def main() -> None:
             pass
         time.sleep(0.5)
 
-    environ = Path(f"/proc/{proc.pid}/environ").read_bytes()
-    pares = dict(p.split(b"=", 1) for p in environ.split(b"\x00") if b"=" in p)
-    db_name = pares.get(b"JAX_DB_NAME", b"").decode()
+    environ = leer_environ_de_proceso(proc.pid)
+    db_name = environ.get("JAX_DB_NAME", "")
     if db_name != base_de_prueba:
         raise RuntimeError(f"proceso real con JAX_DB_NAME={db_name!r} -- pero sigue vivo, revisar a mano")
 
@@ -229,12 +274,22 @@ def main() -> None:
         "log": str(RUN_DIR / "backend.log"),
     }
     info_path = RUN_DIR / "info.json"
-    info_path.write_text(json.dumps(resultado, indent=2))
     # MINOR 4 (ronda 4): `info.json` trae `superadmin_password` en texto
     # plano (de la base de CARGA, nunca de producción -- pero igual es un
-    # secreto utilizable) -- 600, no el default del proceso (típicamente
-    # 644), y sólo el dueño puede leerlo.
-    info_path.chmod(0o600)
+    # secreto utilizable) -- 600, sólo el dueño puede leerlo.
+    #
+    # SEGURIDAD (ronda 5): `write_text()` + `chmod()` por separado deja una
+    # VENTANA real -- el archivo nace con el umask de la sesión (típicamente
+    # 644, ya con el contenido completo escrito) y sólo DESPUÉS pasa a 600;
+    # cualquier lector entre esas dos líneas ve la contraseña. `os.open` con
+    # el modo 600 puesto en la LLAMADA que crea el archivo (`O_CREAT`) no
+    # tiene esa ventana -- el archivo nunca existe con otro modo.
+    datos = json.dumps(resultado, indent=2).encode()
+    fd = os.open(info_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, datos)
+    finally:
+        os.close(fd)
     print(json.dumps(resultado, indent=2))
 
 
