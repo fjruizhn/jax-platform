@@ -346,6 +346,33 @@ function BottomBar() {
       )}
 
       <div className="flex-shrink-0 border-t border-borde bg-fondo px-4 py-3">
+        {/* Fila 1: modos, en su propia fila arriba de la caja (pedido de
+            Fernando 2026-09-22) -- antes compartía fila con el textarea y le
+            robaba ancho al crecer. */}
+        <div data-testid="fila-modos" className="flex gap-1 mb-2">
+          {MODES.map(({ id: m, label }) => (
+            <button
+              key={m}
+              onClick={() => elegirModo(m)}
+              className={`px-2 py-1 rounded text-xs font-semibold transition-colors ${
+                mode === m
+                  ? m === 'comando'
+                    ? 'bg-modo-comando text-sobre-color'
+                    : m === 'pipeline'
+                    ? 'bg-texto-fuerte text-fondo'
+                    : m === 'imagen'
+                    ? 'bg-acento text-sobre-color'
+                    : m === 'ejecutor'
+                    ? 'bg-modo-ejecutor text-sobre-color'
+                    : 'bg-accion text-sobre-color'
+                  : 'bg-superficie text-texto-suave hover:text-texto'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
         {/* Selector de faceta — solo visible en modo chat */}
         {mode === 'chat' && (
           <div className="flex gap-1 mb-2 flex-wrap">
@@ -408,32 +435,7 @@ function BottomBar() {
           </div>
         )}
 
-        <div className="flex items-end gap-3">
-          {/* Mode selector */}
-          <div className="flex gap-1 flex-shrink-0">
-            {MODES.map(({ id: m, label }) => (
-              <button
-                key={m}
-                onClick={() => elegirModo(m)}
-                className={`px-2 py-1 rounded text-xs font-semibold transition-colors ${
-                  mode === m
-                    ? m === 'comando'
-                      ? 'bg-modo-comando text-sobre-color'
-                      : m === 'pipeline'
-                      ? 'bg-texto-fuerte text-fondo'
-                      : m === 'imagen'
-                      ? 'bg-acento text-sobre-color'
-                      : m === 'ejecutor'
-                      ? 'bg-modo-ejecutor text-sobre-color'
-                      : 'bg-accion text-sobre-color'
-                    : 'bg-superficie text-texto-suave hover:text-texto'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
+        <div data-testid="fila-caja" className="flex items-end gap-3">
           {/* Attach button — sin adjuntos en el modo Ejecutor */}
           {mode !== 'ejecutor' && (
             <AttachButton
