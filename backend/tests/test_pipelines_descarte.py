@@ -613,6 +613,16 @@ def test_pipelines_del_usuario_no_rompe_sin_los_indices_de_jax_257(client):
     finally:
         client.portal.call(sql, ddl_descartados)
         client.portal.call(sql, ddl_ocultos)
+        # Un índice recién creado no tiene estadísticas propias todavía
+        # (las persistentes de InnoDB se recalculan por umbral, no al
+        # crear) -- sin este ANALYZE, los EXPLAIN de otros tests de este
+        # archivo que corren DESPUÉS (test_explain_descartados_del_usuario_usa_idx_pipelines_descartados,
+        # test_explain_ocultos_usa_idx_pipelines_ocultos) heredan estadísticas
+        # triviales de estos dos índices recién recreados, no las que
+        # reflejan los datos reales de la sesión. Ruling 16 punto 3: "si tu
+        # ANALYZE TABLE deja estadísticas que afectan a otros tests,
+        # limpialas" -- este DROP+CREATE es el mismo tipo de efecto lateral.
+        client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
 
 
 def test_explain_descartados_del_usuario_usa_idx_pipelines_descartados(client):
