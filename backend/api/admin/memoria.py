@@ -277,6 +277,14 @@ class CorregirBody(BaseModel):
 @router.post("/hechos/{fact_id}/corregir")
 async def corregir_hecho(fact_id: int, body: CorregirBody,
                          user: AuthUser = Depends(require_superadmin)):
+    """Punto 6 (cierre jax-platform#146, ronda 7, pre-existente -- mismo
+    defecto que tenian `aprobar_hechos`/`fundir_hechos` antes de m8/m8-b):
+    con la base caida, `transaccion()` (sobre `db.connection.get_pool()`)
+    levanta una excepcion de conexion SIN GUARDA -- 500 generico en vez de
+    503 `memoria_no_disponible`. Mismo `AsyncExitStack` que m8: atrapa SOLO
+    el fallo de conectar/adquirir (antes del primer `yield` de
+    `transaccion()`), nunca lo que pase DENTRO de la transaccion ya
+    abierta."""
     texto = body.texto.strip()
     if not texto:
         raise HTTPException(status_code=400, detail="texto_vacio")
@@ -289,7 +297,12 @@ async def corregir_hecho(fact_id: int, body: CorregirBody,
     embedding = await memoria.get_embedding(texto)
     autor = int(user.user_id)
 
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+    async with AsyncExitStack() as pila:
+        try:
+            cur = await pila.enter_async_context(transaccion(AISLAMIENTO_ADMIN))
+        except (OSError, aiomysql.Error) as exc:
+            raise HTTPException(status_code=503, detail="memoria_no_disponible") from exc
+
         await cur.execute(
             "SELECT fact_type, confidence, user_id, project_id, importance, "
             "superseded_by FROM facts WHERE id = %s FOR UPDATE",
