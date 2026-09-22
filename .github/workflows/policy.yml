@@ -800,8 +800,28 @@ jobs:
           //   DESPUES del merge (`git merge origin/master`, sin rebase, la
           //   rama ya estaba pusheada): el runner tiene la ultima palabra, no
           //   la aritmetica.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 948) {
-              console.error("PISO ROTO: se esperaban 948 tests de vitest CORRIDOS y 0 fallidos.");
+          // 948 -> 950 (2026-09-22, jax-platform#146, ronda 4 de revisión
+          //   adversarial): +2 netos. MAJOR B (Memoria.jsx: la recarga
+          //   re-seleccionaba hechos que Fernando ya había desmarcado a
+          //   mano) agrega 2 tests nuevos en Memoria.test.jsx ("la recarga
+          //   preserva la seleccion...", "la recarga tras una accion no
+          //   reemplaza la lista..."). MINOR 6 renombra un test existente de
+          //   ConfirmacionSuma.test.jsx ("...no rompe el render ni los otros
+          //   usos" -> "...no le impide al dialogo terminar de montar su
+          //   formulario y sus botones", el nombre viejo era falso: nunca
+          //   renderizaba los otros usos) -- mismo test, 0 neto. Vistos en
+          //   rojo antes de verde (los dos de MAJOR B fallaban contra
+          //   `cbe19ef`: uno por `TestingLibraryElementError` -- un checkbox
+          //   desmarcado a mano volvía a aparecer `checked` tras la recarga
+          //   -- y el otro porque `grupo-0` desaparecía de pantalla durante
+          //   la recarga, tapada por el "Cargando…" de pantalla completa).
+          //   Medido con `npx vitest run`, MISMO comando, restaurando el
+          //   contenido EXACTO de `cbe19ef` con `git show HEAD:<archivo>`
+          //   (nunca `git stash`) para la medición "antes": HEAD 948 passed
+          //   -> esta ronda 950 (0 fallidos las dos). Repetido 3 veces
+          //   seguidas sin flakiness.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 950) {
+              console.error("PISO ROTO: se esperaban 950 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -2220,9 +2240,24 @@ jobs:
           #   se verificaron ADEMÁS con mutación. Medido en vivo, MISMO
           #   comando, restaurando 93ed016 para la medición "antes": rama en
           #   93ed016 2541 passed / 0 fallidos -> rama con esta ronda 2552 / 0
-          #   fallidos. Este delta (+100 sobre el 2452 de 8ca070a, la base
-          #   comun) es el de ESTA rama (jax-platform#146) sola, medido ANTES
-          #   de traer jax-platform#147.
+          #   fallidos.
+          # CORRECCIÓN (revisión adversarial de jax-platform PR 146, ronda 4,
+          #   MINOR 5): la nota "+100 sobre el 2452 de 8ca070a... es el de
+          #   ESTA rama (jax-platform#146) sola" de arriba era FALSA. El
+          #   aporte REAL de #146 en tests nuevos es 13 + 16 + 11 = **40**
+          #   (las tres rondas de arriba, cada una con su rojo/mutación
+          #   verificados) -- no 100. Los otros **60** son la distancia entre
+          #   el piso que quedó declarado en 8ca070a (2452) y el conteo REAL
+          #   de `master` en el momento en que se midió la primera ronda
+          #   (línea de arriba, 2452→2465: "master 2512 passed" -- 2512, no
+          #   2452): esa distancia es de OTRO trabajo, mergeado a `master`
+          #   entre que se fijó el piso de 8ca070a y que se corrió esta
+          #   medición, y no tiene nada que ver con #146. Sumar los 60 al
+          #   aporte de #146 era contar dos veces trabajo ajeno. El piso
+          #   final de abajo (2562, y su sucesor 2567 de esta ronda) sigue
+          #   siendo correcto -- se calcula sobre el `passed` REAL medido en
+          #   cada punto, nunca sobre esta aritmética -- la corrección es
+          #   sólo de la ATRIBUCIÓN en el comentario, no del número.
           # 2452 -> 2454 (2026-09-22, caducar en hora local): +2,
           #   tests/test_memoria_api.py (2 tests nuevos, piden `client_superadmin`
           #   -> con DB). Arregla el defecto de `caducar_hecho`
@@ -2279,7 +2314,19 @@ jobs:
           #   2562. Confirmado corriendo la suite completa DESPUÉS del merge
           #   (`git merge origin/master`, sin rebase, la rama ya estaba
           #   pusheada): el runner tiene la última palabra, no la aritmética.
-          PISO_PASSED = 2562
+          # 2562 -> 2567 (2026-09-22, jax-platform#146, ronda 4 de revisión
+          #   adversarial): +5 -- MINOR 2 (1 test nuevo con DB: SQL_CITAS ve
+          #   la cadena de citas a través de un hecho SUPERADO y otro
+          #   VENCIDO, fijado con mutación: agregarle `AND superseded_by IS
+          #   NULL` a SQL_CITAS hace caer el test) y MINOR 1 (4 tests nuevos
+          #   SIN DB -- ver el piso sin DB, más abajo -- pero que corren acá
+          #   también, dentro de la suite completa). Medido en vivo, MISMO
+          #   comando (`python -m pytest -q`), restaurando el contenido
+          #   EXACTO de HEAD (`git show HEAD:<archivo>`, nunca `git stash`)
+          #   para la medición "antes": HEAD (012d315..cbe19ef) 2562 passed
+          #   -> esta ronda 2567 (0 fallidos las dos, 0 skips las dos). El
+          #   piso declarado sube por el delta verificado (+5).
+          PISO_PASSED = 2567
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2995,7 +3042,26 @@ jobs:
       #   los mismos tests -- se suman los dos deltas: 1641 + 20 + 1 = 1662.
       #   Confirmado corriendo la suite completa sin DB DESPUÉS del merge: el
       #   runner tiene la última palabra, no la aritmética.
-      JAX_CI_MIN_PASSED: "1662"
+      # 1662 -> 1666 (2026-09-22, jax-platform#146, ronda 4 de revisión
+      #   adversarial, MINOR 1): +4, los cuatro tests nuevos de
+      #   test_memoria_grupos.py que NO piden `client` (funciones puras
+      #   sobre `_casi_duplicados_del_grupo`) -- extraer los miembros
+      #   incompatibles de un componente en vez de descartarlo entero, el
+      #   caso puente del revisor (control de guardia), el registro del
+      #   conteo de descartados (caplog) y dos componentes independientes
+      #   que no se mezclan entre sí. El quinto test nuevo de esta ronda
+      #   (MINOR 2, SQL_CITAS) SÍ pide `client_superadmin` -- se saltea acá
+      #   (+1 skip, no passed perdido; contado en el piso CON DB, más
+      #   arriba). Medido con JAX_CI_NO_DB=1 python -m pytest -q -rs, MISMO
+      #   comando en las dos revisiones (restaurando el contenido EXACTO de
+      #   HEAD con `git show HEAD:<archivo>`, nunca `git stash`, para la
+      #   medición "antes"): HEAD (012d315..cbe19ef, antes de esta ronda)
+      #   1699 passed / 863 skipped -> esta ronda 1703 / 864 (0 fallidos las
+      #   dos). El piso declarado sube por el delta verificado (+4), no por
+      #   el passed crudo local -- que hoy es 1703, bastante más arriba del
+      #   piso declarado; esa distancia (37) es anterior a esta ronda (no se
+      #   investiga acá -- fuera del alcance de este encargo, se reporta).
+      JAX_CI_MIN_PASSED: "1666"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
