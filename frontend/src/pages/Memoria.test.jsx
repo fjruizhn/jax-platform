@@ -126,6 +126,20 @@ const HECHOS_PRESERVAR = {
   total: 6,
 }
 
+// MAJOR N1 (revisión adversarial de jax-platform PR 146, ronda 5): tres
+// grupos -- A queda quieto, B dispara la recarga lenta (aprobar), C
+// desaparece de verdad con la recarga rápida que le sigue (caducar).
+const GRUPOS_CARRERA_VIEJO = {
+  grupos: [
+    { tema: 'tema A (carrera)', hechos: [501], sin_verificar: 1, casi_duplicados: [] },
+    { tema: 'tema B (gatillo aprobar)', hechos: [510], sin_verificar: 1, casi_duplicados: [] },
+    { tema: 'tema C (gatillo caducar)', hechos: [520], sin_verificar: 1, casi_duplicados: [] },
+  ],
+}
+// estado real tras caducar 520: el grupo C ya no existe.
+const GRUPOS_CARRERA_NUEVO = { grupos: GRUPOS_CARRERA_VIEJO.grupos.slice(0, 2) }
+const HECHOS_CARRERA = { hechos: [501, 510, 520].map((id) => hechoDePrueba(id)), total: 3 }
+
 function renderMemoria() {
   return render(<I18nProvider><MemoryRouter><Memoria /><Toast /></MemoryRouter></I18nProvider>)
 }
@@ -397,6 +411,57 @@ describe('Memoria', () => {
     expect(within(grupoATrasRecarga).getByRole('button', { name: es.memoria.aprobarSeleccionados(3) })).toBeInTheDocument()
   })
 
+  // MINOR B-test (revisión adversarial de jax-platform PR 146, ronda 5): el
+  // test de arriba prueba que un id CONOCIDO conserva su estado -- pero
+  // ninguno probaba la otra mitad de la regla: un id GENUINAMENTE NUEVO,
+  // que nunca estuvo en pantalla, tiene que recibir el default aunque
+  // aparezca recién en la SEGUNDA carga (o la tercera, o cualquiera que no
+  // sea la primera). Una mutación que sólo aplicara el default "la primera
+  // vez que carga la pantalla" (en vez de "la primera vez que ESE id se ve")
+  // dejaba pasar la suite completa sin este test.
+  it('un id nuevo que aparece recien en una recarga tambien recibe el marcado por defecto', async () => {
+    let recargado = false
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') {
+        return Promise.resolve({
+          data: {
+            grupos: [{
+              tema: 'tema A', hechos: recargado ? [601, 602] : [601],
+              sin_verificar: recargado ? 2 : 1, casi_duplicados: [],
+            }],
+          },
+        })
+      }
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) return Promise.resolve({ data: { hechos: [], total: 0 } })
+        const hechos = recargado ? [hechoDePrueba(601), hechoDePrueba(602)] : [hechoDePrueba(601)]
+        if (params.verificado === false && params.limite === 1) {
+          return Promise.resolve({ data: { hechos: [], total: hechos.length } })
+        }
+        return Promise.resolve({ data: { hechos, total: hechos.length } })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockImplementation((url) => {
+      if (url === '/admin/memoria/hechos/aprobar') { recargado = true; return Promise.resolve({ data: { aprobados: 1 } }) }
+      return Promise.reject(new Error(`post no mockeado: ${url}`))
+    })
+    renderMemoria()
+    const grupo = await screen.findByTestId('grupo-0')
+    expect(within(within(grupo).getByTestId('hecho-601')).getByRole('checkbox')).toBeChecked()
+
+    // aprobar 601 dispara la recarga (M2): en ESA recarga aparece 602, que
+    // NUNCA estuvo en pantalla -- tiene que recibir el default tambien,
+    // aunque esta ya no sea la primera carga de la pantalla.
+    fireEvent.click(within(within(grupo).getByTestId('hecho-601')).getByRole('button', { name: es.memoria.aprobar }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/aprobar', { ids: [601] }))
+    await esperarRecargaCompleta()
+
+    const grupoTrasRecarga = screen.getByTestId('grupo-0')
+    expect(within(within(grupoTrasRecarga).getByTestId('hecho-602')).getByRole('checkbox')).toBeChecked()
+  })
+
   // MAJOR B (revisión adversarial de jax-platform PR 146, ronda 4): la
   // recarga posterior a una acción no puede tapar la lista con la pantalla
   // de "Cargando…" inicial -- Fernando pierde de vista lo que estaba
@@ -433,6 +498,61 @@ describe('Memoria', () => {
     expect(screen.getByText(es.memoria.actualizando)).toBeInTheDocument()
 
     resolverSegundaLlamada({ data: GRUPOS_PRESERVAR })
+    await waitFor(() => expect(screen.queryByText(es.memoria.actualizando)).not.toBeInTheDocument())
+  })
+
+  // MAJOR N1 (revisión adversarial de jax-platform PR 146, ronda 5): con la
+  // lista visible durante toda recarga (MAJOR B), dos `cargar()` pueden
+  // quedar en vuelo a la vez -- una acción dispara la siguiente antes de
+  // que la anterior responda. Si la primera (más vieja, más lenta)
+  // responde DESPUÉS de la segunda (más nueva, más rápida), no puede pisar
+  // el estado que la segunda ya aplicó: un hecho recién caducado no puede
+  // reaparecer sólo porque la respuesta vieja llegó tarde.
+  it('una recarga vieja que llega tarde no pisa el estado de una recarga mas nueva', async () => {
+    let llamadasGrupos = 0
+    let resolverRecargaLenta
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') {
+        llamadasGrupos += 1
+        if (llamadasGrupos === 1) return Promise.resolve({ data: GRUPOS_CARRERA_VIEJO })
+        // recarga #1 (tras aprobar 510): queda colgada, trae el estado de
+        // ANTES de caducar 520.
+        if (llamadasGrupos === 2) return new Promise((resolve) => { resolverRecargaLenta = resolve })
+        // recarga #2 (tras caducar 520): rápida, trae el estado real.
+        return Promise.resolve({ data: GRUPOS_CARRERA_NUEVO })
+      }
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) return Promise.resolve({ data: { hechos: [], total: 0 } })
+        if (params.verificado === false && params.limite === 1) return Promise.resolve({ data: { hechos: [], total: 3 } })
+        return Promise.resolve({ data: HECHOS_CARRERA })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockResolvedValue({ data: { aprobados: 1, ok: true } })
+    renderMemoria()
+    await screen.findByTestId('grupo-2')
+
+    // aprobar 510 -> dispara la recarga #1 (queda colgada).
+    fireEvent.click(within(screen.getByTestId('hecho-510')).getByRole('button', { name: es.memoria.aprobar }))
+    await waitFor(() => expect(llamadasGrupos).toBe(2))
+
+    // la lista sigue visible (MAJOR B) -> caducar 520 dispara la recarga #2.
+    fireEvent.click(within(screen.getByTestId('hecho-520')).getByRole('button', { name: es.memoria.caducar }))
+    const confirmacion = await screen.findByRole('dialog')
+    fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
+    fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.caducarConfirmar }))
+    await waitFor(() => expect(llamadasGrupos).toBe(3))
+    await waitFor(() => expect(screen.queryByTestId('grupo-2')).not.toBeInTheDocument())
+
+    // llega tarde la recarga #1, con el estado VIEJO (el grupo C todavía
+    // ahí, porque esa respuesta se armó antes de caducar 520).
+    resolverRecargaLenta({ data: GRUPOS_CARRERA_VIEJO })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // no puede resucitar un grupo que la recarga más nueva ya sacó de pantalla.
+    expect(screen.queryByTestId('grupo-2')).not.toBeInTheDocument()
+    // ni dejar "Actualizando…" prendido para siempre (la respuesta vieja
+    // tampoco puede apagarlo tarde si la nueva ya lo había apagado).
     await waitFor(() => expect(screen.queryByText(es.memoria.actualizando)).not.toBeInTheDocument())
   })
 

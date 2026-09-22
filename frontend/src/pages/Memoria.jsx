@@ -107,6 +107,17 @@ export default function Memoria() {
   // necesita disparar un render propio.
   const idsConocidosRef = useRef(new Set())
   const [procesando, setProcesando] = useState(emptySet)
+  // MAJOR N1 (revisión adversarial de jax-platform PR 146, ronda 5): con la
+  // lista ya visible durante una recarga (MAJOR B, ronda 4), dos `cargar()`
+  // pueden quedar en vuelo a la vez -- una acción dispara la siguiente antes
+  // de que la anterior responda. Si la primera (más vieja) tarda más y
+  // llega DESPUÉS de la segunda, pisa el estado nuevo con uno vencido (un
+  // hecho que la segunda ya sacó de pantalla vuelve a aparecer). Cada
+  // llamada a `cargar()` se numera; sólo la respuesta de la ÚLTIMA llamada
+  // emitida se aplica (a los datos y al apagado de "Actualizando…") --
+  // mismo patrón que un AbortController, sin depender de que axios/el mock
+  // de test soporte `signal`.
+  const peticionRef = useRef(0)
 
   // Ventanas propias (Global Constraints: nunca los diálogos del navegador).
   // Sólo una a la vez, mismo patrón que AdminUsers/AdminSmtp.
@@ -116,6 +127,10 @@ export default function Memoria() {
   const [fundiendo, setFundiendo] = useState(null) // { ids, supervivienteId }
 
   const cargar = useCallback(async () => {
+    // MAJOR N1: esta llamada se numera -- si para cuando responde ya salió
+    // una más nueva, su resultado se descarta entero (ni pisa `grupos`/
+    // `hechosPorId`/etc, ni apaga "Actualizando…").
+    const miPeticion = ++peticionRef.current
     // MAJOR B: sólo la PRIMERA carga usa la pantalla completa de "Cargando…"
     // -- las recargas que siguen a una acción usan `recargando`, que la
     // lista ignora al decidir si se pinta (ver el JSX más abajo).
@@ -132,6 +147,9 @@ export default function Memoria() {
         // trabajo de más, no una cuenta más verdadera.
         api.get('/admin/memoria/hechos', { params: { verificado: false, limite: 1 } }),
       ])
+      // MAJOR N1: si otra llamada más nueva ya se emitió mientras ésta
+      // estaba en vuelo, esta respuesta es vieja -- no toca ningún estado.
+      if (peticionRef.current !== miPeticion) return
       const porId = {}
       for (const h of rHechos.data.hechos) porId[h.id] = h
       // No se preseleccionan los casi-duplicados: ver nota de módulo, punto 3.
@@ -173,11 +191,19 @@ export default function Memoria() {
       })
       idsConocidosRef.current = idsNuevos
     } catch {
-      setError(true)
+      // MAJOR N1: un error de una llamada vieja tampoco pisa el estado --
+      // si la última llamada en curso sigue viva, que sea ella la que
+      // decida si hubo error.
+      if (peticionRef.current === miPeticion) setError(true)
     } finally {
-      if (yaSeCargoAlgunaVez.current) setRecargando(false)
-      else setCargando(false)
-      yaSeCargoAlgunaVez.current = true
+      // MAJOR N1: sólo la última llamada apaga "Cargando…"/"Actualizando…"
+      // -- una vieja que responde tarde no puede reabrir esa pantalla ni
+      // apagar el aviso de una recarga más nueva que sigue en vuelo.
+      if (peticionRef.current === miPeticion) {
+        if (yaSeCargoAlgunaVez.current) setRecargando(false)
+        else setCargando(false)
+        yaSeCargoAlgunaVez.current = true
+      }
     }
   }, [])
 
