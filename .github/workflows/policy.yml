@@ -2091,7 +2091,60 @@ jobs:
           #   un `git stash pop` corriendo mientras un pytest de fondo todavia
           #   leia el archivo del disco, y se remidio limpio): master 2512
           #   passed / 0 fallidos -> rama 2525 / 0 fallidos.
-          PISO_PASSED = 2465
+          # CORRECCION (revision adversarial de jax-platform PR 146, D6, ultimo
+          #   punto): la nota de arriba dice "vistos en rojo antes de verde"
+          #   para los 13 sin distinguir DOS motivos de rojo bien distintos --
+          #   corregido acá, no en el commit original:
+          #     - test_la_consulta_de_activos_sigue_usando_el_indice_tras_
+          #       agregar_source_fact_ids es un test de REGRESION, no de
+          #       TDD: agregar una columna al SELECT no cambia el plan de
+          #       EXPLAIN, asi que ese test PASABA igual contra el codigo
+          #       VIEJO (antes de agregar la columna). Sirve para probar que
+          #       el cambio no rompio el indice, no que el cambio exista.
+          #     - los 12 restantes SI fallaban contra el codigo viejo, pero
+          #       varios (los 3 de _elegir_superviviente y los 3 de
+          #       _casi_duplicados_del_grupo/source_fact_ids que dependian de
+          #       funciones nuevas) fallaban con `AttributeError: module
+          #       'api.admin.memoria' has no attribute '_elegir_superviviente'`
+          #       -- roja porque la funcion no existia, no porque la logica
+          #       diera un resultado incorrecto. Es un rojo de TDD legitimo
+          #       igual (Kent Beck: "un test que no puede fallar no prueba
+          #       nada" se cumple aca -- SI podia fallar, y fallo), pero es
+          #       una forma mas debil de rojo que "la logica da mal el
+          #       resultado" -- por eso esta ronda, cuando la funcion YA
+          #       existia, verifico con MUTACIONES (revertir el fragmento de
+          #       codigo especifico) en vez de confiar solo en el primer rojo.
+          # 2525 -> 2541 (2026-09-22, jax-platform PR 146, revision
+          #   adversarial de esta misma rama): +16. D1 (source_facet en vez de
+          #   source_fact_ids solo, 5 tests: dos sintesis que se citan/no se
+          #   citan, sintesis de 2do orden, source_fact_ids NULL, mas el
+          #   integration test con source_facet solo), D2 (recalcular
+          #   componentes tras excluir en vez de reusar el previo -- MAYOR 1,
+          #   1 test con vectores 2D reales, distancias verificadas con la
+          #   formula: dist(A,S)=0.20, dist(S,C)=0.20, dist(A,C)=0.72), D3 (el
+          #   endpoint EXIGE la regla -- 4 tests: 409
+          #   fundir_sintesis_con_no_sintesis x2, 409
+          #   superviviente_no_es_el_de_la_regla, y el ajuste del test que
+          #   antes esperaba superviviente_no_verificado), D4/D6 (desempate
+          #   por id mayor, 2 tests, uno de ellos con el orden de la lista
+          #   deliberadamente distinto del id mayor -- el primer intento de
+          #   este test pasaba SIN el desempate, por como max() resuelve
+          #   empates en orden de iteracion; corregido antes de declarar
+          #   verde), D5 (superviviente_verificado/superviviente_texto en el
+          #   cluster, 1 test), D6 (reaprobar a un ya verificado no pisa
+          #   verified_by/at, 1 test), D8 (created_at NULL, 2 tests unitarios
+          #   + 1 end-to-end). Los 16 vistos en rojo contra el codigo de esta
+          #   misma rama ANTES del cambio (no contra 2026-09-22 a secas). Las
+          #   6 correcciones centrales (D1 tipo, D1 citas, D2, D4, D6 guardia
+          #   de reaprobar, D3 compatibilidad, D3 regla) se verificaron
+          #   ADEMAS con mutacion (revertir el fragmento, confirmar que el
+          #   test cae, restaurar) -- no solo con el rojo inicial. Medido en
+          #   vivo, MISMO comando (`python -m pytest -q`), restaurando el
+          #   contenido EXACTO del commit anterior (`git show 012d315:<archivo>
+          #   > <archivo>`, nunca `git stash`) para la medicion "antes": rama
+          #   en 012d315 2525 passed / 0 fallidos -> rama con esta ronda 2541
+          #   / 0 fallidos.
+          PISO_PASSED = 2541
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2758,7 +2811,21 @@ jobs:
       #   comando en las dos ramas: master local 1678 passed / 834 skipped ->
       #   rama 1684 / 841 (0 fallidos las dos; el piso declarado sube por el
       #   delta verificado, +6, no por el passed crudo local).
-      JAX_CI_MIN_PASSED: "1647"
+      # 1647 -> 1656 (2026-09-22, jax-platform PR 146, revisión adversarial):
+      #   +9 puros, de los 16 nuevos de esta ronda (ver el piso con DB, más
+      #   arriba, para el detalle completo): los 5 de D1 (facet en vez de
+      #   source_fact_ids), el de D2 (bridging con vectores 2D reales), los 2
+      #   de D4/D6 (desempate por id/por created_at) y el de D8
+      #   (created_at NULL en `_elegir_superviviente`, las DOS variantes
+      #   unitarias) -- ninguno pide `client`. Los otros 7 (D3 x4, D5, D6
+      #   guardia de reaprobar, D8 end-to-end) sí lo piden y quedan salteados
+      #   (+7 skips). Medido con JAX_CI_NO_DB=1 python3 -m pytest -q,
+      #   restaurando el contenido exacto de 012d315 para la medición
+      #   "antes" (`git show`, nunca `git stash`): rama en 012d315 1684
+      #   passed / 841 skipped -> rama con esta ronda 1693 / 848 (0 fallidos
+      #   las dos; el piso declarado sube por el delta verificado, +9, no por
+      #   el passed crudo local).
+      JAX_CI_MIN_PASSED: "1656"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

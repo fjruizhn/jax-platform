@@ -75,7 +75,10 @@ const GRUPOS_DOS_TEMAS = {
   grupos: [
     {
       tema: HECHO_139.texto, hechos: [139, 138, 136], sin_verificar: 3,
-      casi_duplicados: [{ ids: [136, 138, 139], superviviente_id: 139 }],
+      casi_duplicados: [{
+        ids: [136, 138, 139], superviviente_id: 139,
+        superviviente_verificado: false, superviviente_texto: HECHO_139.texto,
+      }],
     },
     { tema: HECHO_201.texto, hechos: [201], sin_verificar: 0, casi_duplicados: [] },
   ],
@@ -300,8 +303,9 @@ describe('Memoria', () => {
     fireEvent.click(within(grupo).getByRole('button', { name: es.memoria.fundir }))
     const confirmacion = await screen.findByRole('dialog')
     // Ninguno de los tres esta verificado (ver GRUPOS_DOS_TEMAS): el motivo
-    // es "el mas reciente", no "el verificado".
-    expect(confirmacion).toHaveTextContent(es.memoria.fundirMensaje('reciente'))
+    // es "el mas reciente", no "el verificado" -- y el mensaje se arma con
+    // el texto/verificado que trae el CLUSTER (D5), no con hechosPorId.
+    expect(confirmacion).toHaveTextContent(es.memoria.fundirMensaje(HECHO_139.texto, false))
     fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
     fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.fundirConfirmar }))
     // grupo.hechos = [139, 138, 136] (creado_at DESC); superviviente_id=139
@@ -320,12 +324,23 @@ describe('Memoria', () => {
     // #138 esta verificado (aunque no sea el mas nuevo): el backend lo elige
     // como superviviente (_elegir_superviviente) -- esta pantalla lo
     // muestra, no lo recalcula ni asume "el primero de la lista".
+    //
+    // D5 (revision adversarial de jax-platform 146, MAYOR 3): el texto del
+    // cluster (`superviviente_texto`) es a proposito DISTINTO del texto de
+    // HECHO_138 en `hechosPorId` -- si Memoria.jsx armara el mensaje leyendo
+    // hechosPorId en vez del cluster, este test veria el texto VIEJO
+    // (HECHO_138.texto) y fallaria. Simula el caso real: un cluster puede
+    // traer un superviviente que el cap de 500 de GET /hechos dejo afuera.
+    const TEXTO_DEL_CLUSTER = 'JAX carece de capacidad nativa para consultas SQL. (via el cluster, no hechosPorId)'
     const HECHO_138_VERIFICADO = { ...HECHO_138, verificado: true, verificado_por: 2, verificado_at: '2026-09-05T00:00:00' }
     servirGet(
       {
         grupos: [{
           tema: HECHO_139.texto, hechos: [139, 138, 136], sin_verificar: 2,
-          casi_duplicados: [{ ids: [136, 138, 139], superviviente_id: 138 }],
+          casi_duplicados: [{
+            ids: [136, 138, 139], superviviente_id: 138,
+            superviviente_verificado: true, superviviente_texto: TEXTO_DEL_CLUSTER,
+          }],
         }],
       },
       { hechos: [HECHO_136, HECHO_138_VERIFICADO, HECHO_139], total: 3 },
@@ -342,7 +357,7 @@ describe('Memoria', () => {
     fireEvent.click(within(grupo).getByRole('button', { name: es.memoria.fundir }))
     const confirmacion = await screen.findByRole('dialog')
     expect(confirmacion).toHaveTextContent(es.memoria.fundirTitulo(138))
-    expect(confirmacion).toHaveTextContent(es.memoria.fundirMensaje('verificado'))
+    expect(confirmacion).toHaveTextContent(es.memoria.fundirMensaje(TEXTO_DEL_CLUSTER, true))
     fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
     fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.fundirConfirmar }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith(

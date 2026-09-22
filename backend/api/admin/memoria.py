@@ -327,17 +327,34 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
 
     Ronda 2026-09-22 (hallazgo de Fernando): "fundir en el mas reciente"
     podia aprobar una SINTESIS (con partes inventadas por el sintetizador) y
-    con eso SUPERAR a un hecho YA verificado. Dos cambios:
-      - un absorbido verificado nunca puede quedar superado por un
-        superviviente sin verificar (409 `superviviente_no_verificado`) --
-        un hecho verificado NUNCA pierde su verificacion por el simple
-        hecho de fundirse.
-      - si el superviviente todavia no estaba verificado (y ningun
-        absorbido lo estaba tampoco, o la linea de arriba ya lo habria
-        rechazado), se aprueba EN esta misma transaccion -- mismo efecto que
-        `/hechos/aprobar`, sin la segunda llamada HTTP que el frontend hacia
-        antes (dos llamadas separadas dejaban una ventana real: si la
-        segunda fallaba, el hecho quedaba aprobado sin fundir).
+    con eso SUPERAR a un hecho YA verificado. Si el superviviente todavia no
+    estaba verificado, se aprueba EN esta misma transaccion -- mismo efecto
+    que `/hechos/aprobar`, sin la segunda llamada HTTP que el frontend hacia
+    antes (dos llamadas separadas dejaban una ventana real: si la segunda
+    fallaba, el hecho quedaba aprobado sin fundir).
+
+    Ronda 146 (revision adversarial de jax-platform PR 146, D1/D3, decision de
+    Fernando): el endpoint EXIGE la regla, no solo la propone -- antes un
+    cliente (a mano, o un bug del frontend) podia mandar CUALQUIER
+    `superviviente_id`, y lo unico que se validaba era que no hubiera
+    verificados perdiendo su verificacion. Ahora:
+      - el lote entero (superviviente + absorbidos) tiene que ser
+        compatible PAR A PAR -- mismo `source_facet` (sintesis con sintesis,
+        no-sintesis con no-sintesis) y sin citas cruzadas en
+        `source_fact_ids` -- o 409 `fundir_sintesis_con_no_sintesis`. Mismo
+        criterio que usa el detector (`_compatibles_para_fundir`, D1): la
+        API no permite a mano lo que el detector ya no propone.
+      - el `superviviente_id` tiene que ser EXACTAMENTE el que calcula
+        `_elegir_superviviente` sobre ese mismo lote (el verificado mas
+        reciente; sin ninguno verificado, el mas reciente a secas; empate
+        de fecha lo desempata el id mayor -- D4), o 409
+        `superviviente_no_es_el_de_la_regla`. Esto DEJA REDUNDANTE al viejo
+        409 `superviviente_no_verificado` de la ronda anterior: si el lote
+        tiene algun verificado, `_elegir_superviviente` SIEMPRE elige uno
+        verificado, asi que un `superviviente_id` sin verificar que coincida
+        con la regla implica que NINGUN miembro del lote esta verificado --
+        el viejo codigo de error ya no es alcanzable, y se elimino (no se
+        dejo como código muerto).
     """
     # Sin duplicados, mismo orden de llegada: absorbidos=[7, 7, 8] funde una
     # sola vez al 7.
@@ -354,32 +371,54 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         marcadores = ", ".join(["%s"] * len(ids))
         await cur.execute(
-            f"SELECT id, superseded_by, is_verified FROM facts WHERE id IN ({marcadores}) FOR UPDATE",
+            f"SELECT id, superseded_by, is_verified, created_at, source_facet, "
+            f"source_fact_ids FROM facts WHERE id IN ({marcadores}) FOR UPDATE",
             ids,
         )
-        estado = {fila[0]: (fila[1], bool(fila[2])) for fila in await cur.fetchall()}
-        if any(i not in estado for i in ids):
+        filas = await cur.fetchall()
+        superados_de = {}
+        info = {}
+        facet_por_id = {}
+        fuentes_por_id = {}
+        for fid, superseded_by, is_verified, created_at, source_facet, source_fact_ids in filas:
+            superados_de[fid] = superseded_by
+            info[fid] = (bool(is_verified), created_at)
+            facet_por_id[fid] = source_facet
+            fuentes_por_id[fid] = _parse_fuentes(source_fact_ids, fid)
+
+        if any(i not in superados_de for i in ids):
             raise HTTPException(status_code=404, detail="hecho_no_encontrado")
         # Encadenar sobre una cadena rota confunde la historia: ni el
         # superviviente ni ningun absorbido pueden estar ya superados. Todo o
         # nada: esta comprobacion corre para TODOS los ids ANTES de escribir
         # el primer UPDATE, así que un solo hecho ya superado en el lote
         # basta para que NINGUNO cambie.
-        if any(estado[i][0] is not None for i in ids):
+        if any(superados_de[i] is not None for i in ids):
             raise HTTPException(status_code=409, detail="hecho_ya_superado")
 
-        superviviente_verificado = estado[body.superviviente_id][1]
-        absorbidos_verificados = [i for i in absorbidos if estado[i][1]]
-        if absorbidos_verificados and not superviviente_verificado:
+        # D3: compatibilidad PAR A PAR de todo el lote -- antes de decidir
+        # quien sobrevive, porque si el lote mezcla tipos la operacion es
+        # invalida sea cual sea el superviviente elegido.
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                if not _compatibles_para_fundir(ids[i], ids[j], facet_por_id, fuentes_por_id):
+                    raise HTTPException(status_code=409, detail="fundir_sintesis_con_no_sintesis")
+
+        # D3: el superviviente solicitado tiene que ser el que la regla
+        # calcularia para ESTE lote -- no el grupo entero que vio el
+        # detector, que puede ser mas grande que lo que el cliente decidio
+        # fundir de una vez.
+        superviviente_correcto = _elegir_superviviente(ids, info)
+        if superviviente_correcto != body.superviviente_id:
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "code": "superviviente_no_verificado",
-                    "absorbidos_verificados": absorbidos_verificados,
+                    "code": "superviviente_no_es_el_de_la_regla",
+                    "superviviente_correcto": superviviente_correcto,
                 },
             )
 
-        if not superviviente_verificado:
+        if not info[body.superviviente_id][0]:
             await _aprobar_en_cursor(cur, autor, body.superviviente_id)
 
         for absorbido_id in absorbidos:
@@ -464,17 +503,22 @@ _MAX_MIEMBROS_CASI_DUPLICADO = 90
 
 SQL_ACTIVOS_CON_VECTOR = (
     "SELECT id, fact_text, is_verified, created_at, "
-    f"VEC_ToText({_COLUMNA_EMBED}) AS vector_texto, source_fact_ids "
+    f"VEC_ToText({_COLUMNA_EMBED}) AS vector_texto, source_facet, source_fact_ids "
     "FROM facts "
     "WHERE superseded_by IS NULL "
     "AND (expires_at IS NULL OR expires_at > NOW()) "
     f"AND {_embedding_no_cero_sql(_COLUMNA_EMBED)}"
 )
-# `source_fact_ids` va AL FINAL (índice 5) a propósito: `_casi_duplicados_
-# del_grupo` sigue leyendo el vector en el índice 4 tal cual lo hacía antes
-# de esta ronda (2026-09-22), así que las tuplas sintéticas de 5 elementos
-# que ya usan los tests de rendimiento de este archivo (sin source_fact_ids)
-# siguen funcionando sin tocar -- `len(m) > 5` decide si hay sexto elemento.
+# `source_facet`/`source_fact_ids` van AL FINAL (índices 5 y 6) a propósito:
+# `_casi_duplicados_del_grupo` sigue leyendo el vector en el índice 4 tal
+# cual lo hacía antes de la ronda 2026-09-22, así que las tuplas sintéticas
+# de 5 elementos que ya usan los tests de rendimiento de este archivo (sin
+# facet ni fuentes) siguen funcionando sin tocar -- `len(m) > 5`/`len(m) > 6`
+# deciden si hay quinto/sexto elemento. Ronda 146 (D1): `source_facet`
+# entra ANTES que `source_fact_ids` porque pasa a ser el criterio primario
+# de exclusión (ver `_compatibles_para_fundir`) -- `source_fact_ids` queda
+# como criterio secundario, sólo para separar dos síntesis que se citan
+# entre sí.
 
 # La consulta que agrupar_por_tema() corre DE VERDAD para cada hecho, vecino
 # a vecino -- mismo patrón que _find_nearest_fact() (jax/memory/db.py). El
@@ -598,31 +642,81 @@ def _parse_fuentes(valor, fact_id) -> frozenset:
         return frozenset()
 
 
+def _tipo_sintesis(facet) -> bool:
+    """`source_facet == 'synthesis'` es la faceta que escribe
+    `jax/memory/synthesis_worker.py` sobre un insight de segundo orden.
+
+    Ronda 146 (D1, decisión de Fernando, revisión adversarial de
+    jax-platform PR 146): la faceta SOLA alcanza para separar síntesis de
+    no-síntesis. La versión anterior (2026-09-22, este mismo archivo) sólo
+    miraba `source_fact_ids`, y eso dejaba tres huecos:
+      - síntesis de SEGUNDO orden (S2 cita a S1, que cita a A -- S2 nunca
+        tiene a A en su PROPIO `source_fact_ids`, así que la exclusión
+        directa no lo veía).
+      - una fuente ya SUPERADA (el id que `source_fact_ids` referencia ya no
+        está activo -- pero da igual: la faceta de la síntesis no cambia
+        aunque su fuente original haya sido reemplazada).
+      - una síntesis con `source_fact_ids` NULL (dato de trazabilidad
+        ausente -- con la versión anterior, eso la dejaba SIN exclusión
+        alguna, agrupable con cualquier no-síntesis cercana).
+    Los tres quedan cerrados de una vez con la faceta, que no depende de que
+    la cadena de ids esté completa ni de que el id referenciado siga vivo."""
+    return facet == "synthesis"
+
+
+def _compatibles_para_fundir(a_id, b_id, facet_por_id: dict, fuentes_por_id: dict) -> bool:
+    """Dos hechos pueden compartir un cluster de casi-duplicados -- y, por
+    extensión, fundirse juntos (D3: `fundir_hechos` exige esta MISMA regla,
+    no sólo la propone) -- sólo si:
+      1. son del MISMO tipo (los dos síntesis, o los dos no) -- D1.
+      2. ninguno cita al otro en `source_fact_ids` -- para separar dos
+         síntesis que se citan ENTRE SÍ (D1: "dos síntesis entre sí sí
+         pueden agruparse", salvo que una cite a la otra)."""
+    if _tipo_sintesis(facet_por_id[a_id]) != _tipo_sintesis(facet_por_id[b_id]):
+        return False
+    if b_id in fuentes_por_id.get(a_id, frozenset()) or a_id in fuentes_por_id.get(b_id, frozenset()):
+        return False
+    return True
+
+
 def _casi_duplicados_del_grupo(miembros: list) -> list[list[int]]:
     """miembros: lista de (id, fact_text, is_verified, created_at, vector[,
-    source_fact_ids]) -- el sexto elemento es opcional (retrocompatible con
-    las tuplas sintéticas de 5 que ya usan los tests de rendimiento de este
-    archivo). Devuelve subconjuntos (>=2 elementos) cuyos miembros están, par
-    a par, a distancia <= UMBRAL_MISMO_TEMA -- verificación exacta, no la
-    cadena de vecinos-más-cercanos que formó el grupo (que puede conectar A
-    con C vía B sin que A y C estén realmente cerca).
+    source_facet[, source_fact_ids]]) -- el quinto y sexto elemento son
+    opcionales (retrocompatible con las tuplas sintéticas de 5 que ya usan
+    los tests de rendimiento de este archivo, que no tocan síntesis).
+    Devuelve subconjuntos (>=2 elementos): cada uno es una componente CONEXA
+    del grafo de pares a distancia <= UMBRAL_MISMO_TEMA -- es decir, sus
+    miembros están conectados por una CADENA de saltos, cada uno
+    <= UMBRAL_MISMO_TEMA, pero el PAR en sí puede estar más lejos.
 
-    Ronda 2026-09-22 (hallazgo de Fernando): una SÍNTESIS (jax/memory/
-    synthesis_worker.py, `source_fact_ids` no vacío) nunca puede salir
-    marcada como casi-duplicado de un hecho DEL QUE ELLA MISMA sale --
-    "fundir en el más reciente" aprobaría una síntesis con partes
-    inventadas por el sintetizador y superaría al hecho fuente, aunque
-    estuviera verificado. Por eso, DESPUÉS de armar los componentes por
-    distancia (sin tocar esa parte), cualquier miembro cuyo `source_fact_ids`
-    apunte a OTRO miembro del mismo componente se saca del subconjunto --
-    nunca al revés (un hecho normal no tiene `source_fact_ids`, así que
-    nunca es él quien se excluye). Sacar sólo al lado que cita, y no a los
-    dos, es lo que permite que un tercer miembro cercano y sin relación de
-    fuente (el "caso de tres" del brief) siga agrupado con la fuente."""
+    CORRECCIÓN (ronda 146, revisión adversarial de jax-platform PR 146): el
+    docstring anterior decía "verificación exacta, par a par" -- era FALSO,
+    y lo era desde antes de esta ronda: un componente conexo (union-find)
+    nunca garantizó que TODOS los pares dentro de él estén bajo el umbral,
+    sólo que hay un camino de saltos cortos entre ellos (ver
+    `test_el_camino_de_produccion_da_LO_MISMO_que_la_implementacion_vieja`,
+    que exige justamente esta semántica de componente conexo).
+
+    Ronda 2026-09-22 → 146 (D1/D2, decisión de Fernando): una SÍNTESIS
+    (`source_facet == 'synthesis'`) nunca puede compartir cluster con un
+    hecho que NO lo es -- ni siquiera conectados vía un tercer miembro
+    (bridging). La primera versión de este arreglo (2026-09-22) armaba el
+    componente por distancia y DESPUÉS sacaba a los miembros conflictivos --
+    una revisión adversarial demostró que eso deja pares FALSOS: si A-S y
+    S-C están cerca pero A-C está lejos, sacar a S del componente {A,S,C}
+    devolvía `[[A,C]]` aunque A y C NO estén cerca entre sí (MAYOR 1). La
+    corrección real (D2) no es "recalcular después" -- es no dejar que una
+    arista incompatible se cree NUNCA: `_compatibles_para_fundir` se
+    consulta ANTES de cada `uf.unir(...)`, así que dos miembros
+    incompatibles jamás quedan en el mismo componente, ni siquiera
+    transitivamente. No hace falta un segundo union-find "sobre los
+    miembros que quedan": el primero ya se construye bien, porque nunca deja
+    pasar la arista que causaba el bug."""
     if len(miembros) < 2 or len(miembros) > _MAX_MIEMBROS_CASI_DUPLICADO:
         return []
     vectores = {m[0]: json.loads(m[4]) for m in miembros}
-    fuentes = {m[0]: _parse_fuentes(m[5] if len(m) > 5 else None, m[0]) for m in miembros}
+    facet_por_id = {m[0]: (m[5] if len(m) > 5 else None) for m in miembros}
+    fuentes_por_id = {m[0]: _parse_fuentes(m[6] if len(m) > 6 else None, m[0]) for m in miembros}
     # UNA norma por vector, no una por par: con 90 miembros son 90 raíces en
     # vez de 8.010. Es el arreglo medido del 2026-09-20 (61 % del request).
     normas = {i: _norma(v) for i, v in vectores.items()}
@@ -632,53 +726,66 @@ def _casi_duplicados_del_grupo(miembros: list) -> list[list[int]]:
         a = ids[i]
         for j in range(i + 1, len(ids)):
             b = ids[j]
+            # La compatibilidad se consulta ANTES que la distancia: además
+            # de ser lo que previene el bridging (D2), evita calcular una
+            # distancia coseno (la parte cara, medida el 2026-09-20) para
+            # un par que de todos modos no se va a unir.
+            if not _compatibles_para_fundir(a, b, facet_por_id, fuentes_por_id):
+                continue
             if _distancia_coseno(vectores[a], vectores[b],
                                  normas[a], normas[b]) <= _UMBRAL_MISMO_TEMA:
                 uf.unir(a, b)
-
-    resultado = []
-    for componente in uf.componentes():
-        if len(componente) < 2:
-            continue
-        comp = set(componente)
-        # Excluir sólo el par directo no alcanza si A y C se unen vía B: el
-        # criterio es sobre el componente FINAL, no sobre cada unión. Un
-        # miembro cuyas fuentes tocan a CUALQUIER otro del mismo componente
-        # se saca entero -- después de sacarlo no puede quedar ningún par
-        # (fuente, síntesis-que-la-cita) junto, porque esa relación sólo
-        # existe del lado de quien tiene `source_fact_ids`.
-        conflictivos = {x for x in comp if fuentes[x] & (comp - {x})}
-        libres = sorted(comp - conflictivos)
-        if len(libres) > 1:
-            resultado.append(libres)
-    return resultado
+    return [sorted(c) for c in uf.componentes() if len(c) > 1]
 
 
 def _elegir_superviviente(ids: list, info: dict) -> int:
-    """Decisión de Fernando (2026-09-22): el verificado gana al más
-    reciente. Si hay algún verificado entre `ids`, sobrevive el verificado
-    más reciente; si no hay ninguno, sobrevive el más reciente a secas.
+    """Decisión de Fernando: el verificado gana al más reciente. Si hay
+    algún verificado entre `ids`, sobrevive el verificado más reciente; si
+    no hay ninguno, sobrevive el más reciente a secas.
+
+    D4 (ronda 146): empate en `created_at` (la columna es un `TIMESTAMP` de
+    precisión de SEGUNDO -- dos hechos sembrados en la misma corrida caen
+    fácil en el mismo segundo) lo desempata el id MAYOR -- el que se
+    insertó después.
+
+    D8 (ronda 146): `created_at` admite NULL (verificado con `SHOW COLUMNS`
+    contra `jax_memory_test`, nunca contra producción). NULL se trata como
+    "el más antiguo posible": nunca le gana a una fecha real, y si TODOS los
+    candidatos tienen NULL el desempate cae sólo en el id.
 
     `info`: id -> (is_verified, created_at)."""
+    def _clave(i):
+        creado = info[i][1]
+        return (creado if creado is not None else datetime.min, i)
+
     verificados = [i for i in ids if info[i][0]]
     candidatos = verificados or ids
-    return max(candidatos, key=lambda i: info[i][1])
+    return max(candidatos, key=_clave)
 
 
 def _construir_grupos(filas: list, vecinos: list) -> list[dict]:
     """CPU pura (sin await): se corre en un hilo aparte (asyncio.to_thread)
     para no bloquear el event loop a escala de 10.000 hechos.
 
-    filas: (id, fact_text, is_verified, created_at, vector, source_fact_ids)
-    de cada hecho activo. vecinos: [(fact_id, [(vecino_id, distancia), ...]),
-    ...], el resultado de SQL_VECINOS para cada fila.
+    filas: (id, fact_text, is_verified, created_at, vector, source_facet,
+    source_fact_ids) de cada hecho activo. vecinos: [(fact_id,
+    [(vecino_id, distancia), ...]), ...], el resultado de SQL_VECINOS para
+    cada fila.
 
     Ronda 2026-09-22: cada cluster de `casi_duplicados` deja de ser una
-    lista de ids a secas -- pasa a `{"ids": [...], "superviviente_id": ...}`
+    lista de ids a secas -- pasa a un objeto con `superviviente_id`
     (`_elegir_superviviente`, el verificado gana al más reciente). El
     backend declara quién sobrevive UNA sola vez acá; ni el frontend ni
     `POST /hechos/fundir` vuelven a adivinarlo con "el primero de la
-    lista"."""
+    lista".
+
+    D5 (ronda 146, revisión adversarial de jax-platform PR 146, MAYOR 3): el
+    cluster también trae `superviviente_verificado` y `superviviente_texto`
+    -- el frontend arma el motivo ("sobrevive el verificado" / "sobrevive el
+    más reciente, quedará aprobado al fundir") y el texto de la ficha con
+    ESTOS datos, no con `hechosPorId` (que sólo tiene los primeros 500
+    hechos cargados por `GET /hechos`; un cluster puede incluir ids que ese
+    cap dejó afuera)."""
     datos = {f[0]: f for f in filas}
     uf = _UnionFind(datos.keys())
     for fact_id, cercanos in vecinos:
@@ -689,17 +796,32 @@ def _construir_grupos(filas: list, vecinos: list) -> list[dict]:
 
     grupos = []
     for miembros_ids in uf.componentes():
-        miembros = sorted((datos[i] for i in miembros_ids),
-                          key=lambda f: f[3], reverse=True)  # created_at DESC
+        # D8: `created_at` NULL no puede reventar el ordenamiento (antes,
+        # comparar None contra un datetime real levantaba TypeError) -- se
+        # trata como "el más antiguo posible", igual que en
+        # `_elegir_superviviente`. El id como segundo criterio hace el orden
+        # determinista incluso si dos miembros empatan en fecha.
+        miembros = sorted(
+            (datos[i] for i in miembros_ids),
+            key=lambda f: (f[3] if f[3] is not None else datetime.min, f[0]),
+            reverse=True,
+        )
         info = {m[0]: (m[2], m[3]) for m in miembros}  # id -> (is_verified, created_at)
+        textos = {m[0]: m[1] for m in miembros}
+        clusters = []
+        for cluster in _casi_duplicados_del_grupo(miembros):
+            sid = _elegir_superviviente(cluster, info)
+            clusters.append({
+                "ids": cluster,
+                "superviviente_id": sid,
+                "superviviente_verificado": bool(info[sid][0]),
+                "superviviente_texto": textos[sid],
+            })
         grupos.append({
             "tema": miembros[0][1],
             "hechos": [m[0] for m in miembros],
             "sin_verificar": sum(1 for m in miembros if not m[2]),
-            "casi_duplicados": [
-                {"ids": cluster, "superviviente_id": _elegir_superviviente(cluster, info)}
-                for cluster in _casi_duplicados_del_grupo(miembros)
-            ],
+            "casi_duplicados": clusters,
         })
 
     grupos.sort(key=lambda g: len(g["hechos"]), reverse=True)

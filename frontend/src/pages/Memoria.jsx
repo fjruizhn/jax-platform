@@ -272,8 +272,16 @@ export default function Memoria() {
   // (si hacía falta) y funde en la MISMA transacción -- ya no hay una
   // llamada aparte a `/hechos/aprobar` antes (esa ventana entre las dos
   // llamadas era justo lo que dejaba "fundir a medias" posible).
-  function abrirFundir(ids, supervivienteId) {
-    setFundiendo({ ids, supervivienteId })
+  //
+  // Ronda 146 (D5): `supervivienteVerificado`/`supervivienteTexto` vienen
+  // del cluster (GrupoDeHechos.jsx), NO de `hechosPorId` -- ese diccionario
+  // sólo tiene los primeros 500 hechos que cargó GET /hechos, y un cluster
+  // puede incluir ids que ese cap dejó afuera. El motivo del mensaje
+  // (verificado vs. más reciente) y el texto de la ficha salen de ESTOS dos
+  // campos, no de una búsqueda en `hechosPorId` que podría fallar en
+  // silencio.
+  function abrirFundir(ids, supervivienteId, supervivienteVerificado, supervivienteTexto) {
+    setFundiendo({ ids, supervivienteId, supervivienteVerificado, supervivienteTexto })
   }
 
   async function confirmarFundir() {
@@ -408,9 +416,7 @@ export default function Memoria() {
       {fundiendo && (
         <ConfirmacionSuma
           titulo={t.memoria.fundirTitulo(fundiendo.supervivienteId)}
-          mensaje={t.memoria.fundirMensaje(
-            hechosPorId[fundiendo.supervivienteId]?.verificado ? 'verificado' : 'reciente',
-          )}
+          mensaje={t.memoria.fundirMensaje(fundiendo.supervivienteTexto, fundiendo.supervivienteVerificado)}
           textoConfirmar={t.memoria.fundirConfirmar}
           onConfirmar={confirmarFundir}
           onCancelar={() => setFundiendo(null)}

@@ -1185,11 +1185,19 @@ export default {
     // a verified fact in the group wins (backend ::_elegir_superviviente).
     // The backend declares who survives (`superviviente_id` on each
     // `casi_duplicados` cluster); this screen only shows it, never guesses.
+    //
+    // Round 146 (jax-platform PR 146 adversarial review, D5): the message is
+    // built from `superviviente_texto`/`superviviente_verificado` -- both
+    // come from the cluster (backend), never from `hechosPorId` (which only
+    // holds the 500 most recent facts GET /hechos loaded; a cluster can
+    // include ids outside that cap). If the survivor wasn't verified, the
+    // message says explicitly it will be approved on merge -- "most recent"
+    // only shows up as the tie-break criterion, never as the button title.
     fundir: 'Merge',
     fundirTitulo: (id) => `Merge into fact #${id}`,
-    fundirMensaje: (motivo) => (motivo === 'verificado'
-      ? 'The verified fact survives: the rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.'
-      : 'No fact in this group is verified: the most recent one survives and the rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.'),
+    fundirMensaje: (texto, verificado) => (verificado
+      ? `The verified fact survives: "${texto}". The rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.`
+      : `No fact in this group is verified. "${texto}" survives (the most recent, the tie-break criterion) and will be APPROVED as verified on merge. The rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.`),
     fundirConfirmar: 'Merge',
     fundido: 'Near-duplicates merged: the rest is now superseded.',
     sobrevive: 'Survives',
@@ -1245,7 +1253,14 @@ export default {
       texto_vacio: 'Write a text.',
       vence_at_invalido: 'The date is not valid.',
       memoria_no_disponible: 'The memory is not available right now.',
-      superviviente_no_verificado: 'A verified fact cannot be superseded by an unverified one: reload the screen.',
+      // Round 146 (D3): the backend now ENFORCES the rule -- these two
+      // codes show up when the group changed between this screen loading it
+      // and Fernando confirming merge (someone else reviewed it first). The
+      // old `superviviente_no_verificado` became redundant and was removed
+      // from the backend (see memoria.py); no translation is left without a
+      // code that uses it.
+      fundir_sintesis_con_no_sintesis: 'A synthesis cannot be merged with a fact that is not one: reload the screen.',
+      superviviente_no_es_el_de_la_regla: 'The surviving fact changed (someone else reviewed the group): reload the screen.',
     },
   },
 }

@@ -9,15 +9,28 @@ jax-platform#107): fundir a medias deja la memoria peor que antes.
 
 Ronda 2026-09-22 (hallazgo de Fernando en la pantalla de Memoria): "fundir en
 el mas reciente" podia aprobar una SINTESIS (con partes inventadas por el
-sintetizador) y con eso SUPERAR a un hecho ya verificado por Fernando. Dos
-correcciones, las dos en el backend:
-  - el superviviente ya NO es "el mas reciente" a secas: si hay algun
-    verificado en el grupo, gana el verificado mas reciente (_elegir_
-    superviviente, test_memoria_grupos.py).
-  - `fundir_hechos` rechaza (409 `superviviente_no_verificado`) que un
-    absorbido verificado quede superado por un superviviente sin verificar,
-    y aprueba al superviviente EN LA MISMA transaccion si hacia falta --
-    el frontend ya no llama a /hechos/aprobar aparte.
+sintetizador) y con eso SUPERAR a un hecho ya verificado por Fernando. El
+superviviente ya NO es "el mas reciente" a secas: si hay algun verificado en
+el grupo, gana el verificado mas reciente (_elegir_superviviente,
+test_memoria_grupos.py), y `fundir_hechos` aprueba al superviviente EN LA
+MISMA transaccion si hacia falta -- el frontend ya no llama a
+/hechos/aprobar aparte.
+
+Ronda 146 (revision adversarial de jax-platform PR 146, D3): el endpoint EXIGE
+la regla, no solo la propone. Dos rechazos nuevos, los dos 409:
+  - `fundir_sintesis_con_no_sintesis`: el lote (superviviente + absorbidos)
+    tiene que ser compatible PAR A PAR -- mismo source_facet, sin citas
+    cruzadas en source_fact_ids (_compatibles_para_fundir, la MISMA regla
+    que usa el detector de casi-duplicados).
+  - `superviviente_no_es_el_de_la_regla`: el `superviviente_id` que manda el
+    cliente tiene que coincidir EXACTO con el que calcula
+    `_elegir_superviviente` sobre ese mismo lote. Esto deja redundante (y
+    por eso ELIMINADO, no dejado como codigo muerto) al viejo 409
+    `superviviente_no_verificado` de la ronda anterior: si un absorbido
+    esta verificado, la regla SIEMPRE elige un verificado como
+    superviviente_correcto, asi que un superviviente sin verificar que
+    coincida con la regla implica que NINGUN miembro del lote esta
+    verificado.
 """
 import pytest
 
@@ -63,13 +76,29 @@ async def _borrar_facts(*ids):
         await sql("DELETE FROM facts WHERE id = %s", (fact_id,))
 
 
+async def _fijar_created_at(fact_id, valor):
+    await sql("UPDATE facts SET created_at = %s WHERE id = %s", (valor, fact_id))
+
+
 @pytest.fixture
 def trio(client):
     """Tres hechos frescos: un superviviente y dos absorbidos, ninguno
-    superado todavia."""
+    superado todavia.
+
+    Ronda 146 (D3): `fundir_hechos` ahora EXIGE que `superviviente_id` sea
+    el que `_elegir_superviviente` calcularía para el lote -- sin esto, los
+    tres se crean en la misma llamada y `created_at` (precisión de SEGUNDO)
+    empataría, y la regla desempataría por el id MAYOR (D4), no por el rol
+    semántico "superviviente" que le da nombre a esta fixture. Se fuerza su
+    `created_at` bien por delante de los otros dos para que, en el caso sano
+    (nadie verificado), la regla y el rol coincidan -- tal como coincidían
+    antes de esta ronda, cuando el cliente podía elegir a mano."""
     superviviente = client.portal.call(_crear_fact, "fundir: hecho A (superviviente)")
     absorbido1 = client.portal.call(_crear_fact, "fundir: hecho B (absorbido)")
     absorbido2 = client.portal.call(_crear_fact, "fundir: hecho C (absorbido)")
+    client.portal.call(_fijar_created_at, superviviente, "2026-09-22 12:00:00")
+    client.portal.call(_fijar_created_at, absorbido1, "2020-01-01 00:00:00")
+    client.portal.call(_fijar_created_at, absorbido2, "2020-01-02 00:00:00")
     yield superviviente, absorbido1, absorbido2
     client.portal.call(_borrar_facts, superviviente, absorbido1, absorbido2)
 
@@ -200,8 +229,11 @@ def test_fundir_aprueba_al_superviviente_no_verificado_en_la_misma_llamada(clien
 
 def test_fundir_rechaza_absorber_un_verificado_con_superviviente_sin_verificar(client_superadmin, trio):
     """El hallazgo real (2026-09-22): #161 (sintesis, sin verificar) no puede
-    superar a #160 (fuente, YA verificada por Fernando). Todo o nada: ni el
-    absorbido verificado cambia, ni el superviviente se autoaprueba."""
+    superar a #160 (fuente, YA verificada por Fernando). Ronda 146 (D3): el
+    codigo de error paso a `superviviente_no_es_el_de_la_regla` (el viejo
+    `superviviente_no_verificado` quedo redundante y se elimino -- ver el
+    docstring del modulo). Todo o nada: ni el absorbido verificado cambia,
+    ni el superviviente se autoaprueba."""
     superviviente, absorbido1, absorbido2 = trio
     client_superadmin.portal.call(sql,
         "UPDATE facts SET is_verified = TRUE WHERE id = %s", (absorbido1,))
@@ -209,7 +241,10 @@ def test_fundir_rechaza_absorber_un_verificado_con_superviviente_sin_verificar(c
                                json={"superviviente_id": superviviente,
                                      "absorbidos": [absorbido1, absorbido2]})
     assert r.status_code == 409
-    assert r.json()["detail"]["code"] == "superviviente_no_verificado"
+    detalle = r.json()["detail"]
+    assert detalle["code"] == "superviviente_no_es_el_de_la_regla"
+    assert detalle["superviviente_correcto"] == absorbido1, (
+        "el verificado (absorbido1) tenia que ser el que la regla calcula")
     superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido1)
     assert superseded_by is None, "fundio a medias: el absorbido verificado SI cambio"
     superseded_by2, _, _ = client_superadmin.portal.call(_estado, absorbido2)
@@ -220,15 +255,110 @@ def test_fundir_rechaza_absorber_un_verificado_con_superviviente_sin_verificar(c
 
 def test_fundir_permite_absorber_hechos_verificados_si_el_superviviente_ya_lo_estaba(client_superadmin):
     """El caso sano: un superviviente YA verificado sí puede superar a
-    absorbidos verificados (no hay perdida de verificacion)."""
+    absorbidos verificados (no hay perdida de verificacion). `created_at`
+    explicito (D3, la regla exige coincidencia exacta): los dos se crean en
+    la misma llamada y podrian empatar de segundo -- se fuerza al
+    superviviente a ser claramente el mas reciente para que la regla lo
+    elija a EL, no al absorbido por el desempate de id (D4)."""
     superviviente = client_superadmin.portal.call(_crear_fact, "fundir: superviviente ya verificado", True)
     absorbido = client_superadmin.portal.call(_crear_fact, "fundir: absorbido tambien verificado", True)
+    client_superadmin.portal.call(_fijar_created_at, superviviente, "2026-09-22 12:00:00")
+    client_superadmin.portal.call(_fijar_created_at, absorbido, "2020-01-01 00:00:00")
     try:
         r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
                                    json={"superviviente_id": superviviente, "absorbidos": [absorbido]})
         assert r.status_code == 200
         superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido)
         assert superseded_by == superviviente
+    finally:
+        client_superadmin.portal.call(_borrar_facts, superviviente, absorbido)
+
+
+# --- D3 (revision adversarial de jax-platform PR 146): el endpoint EXIGE la
+# regla, no solo la propone --------------------------------------------------
+
+def test_fundir_rechaza_superviviente_que_no_es_el_de_la_regla_sin_verificados(client_superadmin, trio):
+    """Caso general de la regla (D3), sin que medie verificacion: el cliente
+    pide fundir con un absorbido (mas viejo) como superviviente, en vez del
+    hecho que la regla elegiria (el mas reciente, `trio[0]`)."""
+    superviviente, absorbido1, absorbido2 = trio
+    r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                               json={"superviviente_id": absorbido1,
+                                     "absorbidos": [superviviente, absorbido2]})
+    assert r.status_code == 409
+    detalle = r.json()["detail"]
+    assert detalle["code"] == "superviviente_no_es_el_de_la_regla"
+    assert detalle["superviviente_correcto"] == superviviente
+    # Nada se aplico -- ni siquiera el absorbido2, mas viejo que el
+    # "superviviente" solicitado.
+    superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido2)
+    assert superseded_by is None
+
+
+def test_fundir_rechaza_mezclar_sintesis_con_no_sintesis(client_superadmin, trio):
+    """D1/D3: la API no permite a mano lo que el detector ya no propone. Un
+    absorbido con `source_facet='synthesis'` no puede fundirse junto a un
+    superviviente que no lo es, aunque el resto de las reglas (verificacion,
+    fecha) darian un resultado valido."""
+    superviviente, absorbido1, absorbido2 = trio
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET source_facet = 'synthesis' WHERE id = %s", (absorbido1,))
+    r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                               json={"superviviente_id": superviviente,
+                                     "absorbidos": [absorbido1, absorbido2]})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "fundir_sintesis_con_no_sintesis"
+    superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido2)
+    assert superseded_by is None, "fundio a medias: el absorbido compatible SI cambio"
+
+
+def test_fundir_rechaza_dos_sintesis_que_se_citan_entre_si(client_superadmin):
+    """D1, el caso fino: dos sintesis SI son compatibles entre si por tipo,
+    pero si UNA CITA A LA OTRA en source_fact_ids siguen sin poder
+    fundirse -- mismo criterio que el detector."""
+    s1 = client_superadmin.portal.call(_crear_fact, "fundir: sintesis 1")
+    s2 = client_superadmin.portal.call(_crear_fact, "fundir: sintesis 2 (cita a s1)")
+    client_superadmin.portal.call(_fijar_created_at, s1, "2020-01-01 00:00:00")
+    client_superadmin.portal.call(_fijar_created_at, s2, "2026-09-22 12:00:00")
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET source_facet = 'synthesis' WHERE id IN (%s, %s)", (s1, s2))
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET source_fact_ids = %s WHERE id = %s", (f"[{s1}]", s2))
+    try:
+        r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                                   json={"superviviente_id": s2, "absorbidos": [s1]})
+        assert r.status_code == 409
+        assert r.json()["detail"] == "fundir_sintesis_con_no_sintesis"
+    finally:
+        client_superadmin.portal.call(_borrar_facts, s1, s2)
+
+
+def test_fundir_no_reaprueba_ni_cambia_verified_by_de_un_superviviente_ya_verificado(client_superadmin):
+    """D6 (MENOR 7, 'un control que no falla no valida nada'): si el
+    superviviente YA estaba verificado por OTRA persona, fundir no puede
+    pisar `verified_by`/`verified_at` con el usuario y el momento actuales
+    -- eso reescribiria quien y cuando lo verifico de verdad."""
+    from datetime import datetime, timedelta
+
+    superviviente = client_superadmin.portal.call(_crear_fact, "fundir: ya verificado por otro", True)
+    absorbido = client_superadmin.portal.call(_crear_fact, "fundir: absorbido")
+    client_superadmin.portal.call(_fijar_created_at, superviviente, "2026-09-22 12:00:00")
+    client_superadmin.portal.call(_fijar_created_at, absorbido, "2020-01-01 00:00:00")
+    hace_un_mes = (datetime(2026, 9, 22) - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET verified_by = 999999, verified_at = %s WHERE id = %s",
+        (hace_un_mes, superviviente))
+    try:
+        r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                                   json={"superviviente_id": superviviente, "absorbidos": [absorbido]})
+        assert r.status_code == 200
+        verificado, verificado_por = client_superadmin.portal.call(_verificado_de, superviviente)
+        assert verificado is True
+        assert verificado_por == 999999, "fundir REAPROBO a un superviviente ya verificado (piso verified_by)"
+        verified_at = client_superadmin.portal.call(
+            sql, "SELECT verified_at FROM facts WHERE id = %s", (superviviente,), True)[0][0]
+        assert verified_at.strftime("%Y-%m-%d") == hace_un_mes[:10], (
+            "fundir REAPROBO a un superviviente ya verificado (piso verified_at)")
     finally:
         client_superadmin.portal.call(_borrar_facts, superviviente, absorbido)
 

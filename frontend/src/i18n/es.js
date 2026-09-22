@@ -1236,11 +1236,20 @@ export default {
     // (backend/api/admin/memoria.py::_elegir_superviviente). El backend
     // declara quién sobrevive (`superviviente_id` en cada cluster de
     // `casi_duplicados`); esta pantalla sólo lo muestra, no lo adivina.
+    //
+    // Ronda 146 (revisión adversarial de jax-platform PR 146, D5): el mensaje
+    // se arma con `superviviente_texto`/`superviviente_verificado` --
+    // ambos vienen del cluster (backend), nunca de `hechosPorId` (que sólo
+    // tiene los 500 hechos más recientes que cargó GET /hechos; un cluster
+    // puede incluir ids fuera de ese cap). Si el superviviente no estaba
+    // verificado, el mensaje dice explícitamente que quedará aprobado al
+    // fundir -- "el más reciente" aparece sólo como el criterio de
+    // desempate, nunca como título del botón (D5).
     fundir: 'Fundir',
     fundirTitulo: (id) => `Fundir en el hecho #${id}`,
-    fundirMensaje: (motivo) => (motivo === 'verificado'
-      ? 'Sobrevive el hecho verificado: el resto queda marcado como superado por él. No se borra nada: la cadena de reemplazo queda registrada.'
-      : 'Ningún hecho de este grupo está verificado: sobrevive el más reciente y el resto queda marcado como superado por él. No se borra nada: la cadena de reemplazo queda registrada.'),
+    fundirMensaje: (texto, verificado) => (verificado
+      ? `Sobrevive el hecho verificado: «${texto}». El resto queda marcado como superado por él. No se borra nada: la cadena de reemplazo queda registrada.`
+      : `Ningún hecho de este grupo está verificado. Sobrevive «${texto}» (el más reciente, el criterio de desempate) y quedará APROBADO como verificado al fundir. El resto queda marcado como superado por él. No se borra nada: la cadena de reemplazo queda registrada.`),
     fundirConfirmar: 'Fundir',
     fundido: 'Casi-duplicados fundidos: el resto quedó superado.',
     sobrevive: 'Sobrevive',
@@ -1305,7 +1314,14 @@ export default {
       texto_vacio: 'Escribí un texto.',
       vence_at_invalido: 'La fecha no es válida.',
       memoria_no_disponible: 'La memoria no está disponible ahora mismo.',
-      superviviente_no_verificado: 'Un hecho verificado no puede quedar superado por uno sin verificar: recargá la pantalla.',
+      // Ronda 146 (D3): el backend EXIGE la regla -- estos dos códigos
+      // salen si el grupo cambió entre que esta pantalla lo cargó y que
+      // Fernando confirmó fundir (otra persona lo revisó primero). El viejo
+      // `superviviente_no_verificado` quedó redundante y se eliminó del
+      // backend (ver memoria.py); no se deja la traducción sin código que
+      // la use.
+      fundir_sintesis_con_no_sintesis: 'Una síntesis no puede fundirse con un hecho que no lo es: recargá la pantalla.',
+      superviviente_no_es_el_de_la_regla: 'El hecho que sobrevive cambió (alguien más revisó el grupo): recargá la pantalla.',
     },
   },
 }

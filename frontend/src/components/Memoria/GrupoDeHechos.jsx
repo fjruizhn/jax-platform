@@ -20,6 +20,13 @@ import FichaDeHecho from './FichaDeHecho'
 // (_elegir_superviviente: el verificado gana al más reciente); esta pantalla
 // ya NO asume "el primero de la lista", que era exactamente el hallazgo de
 // Fernando (una síntesis sin verificar podía superar a un hecho verificado).
+//
+// Ronda 146 (revisión adversarial de jax-platform PR 146, D5): el cluster
+// también trae `superviviente_verificado`/`superviviente_texto` -- se
+// arrastran hasta `Memoria.jsx` para armar el motivo y el texto de la
+// ConfirmacionSuma con ESTOS datos, no con `hechosPorId` (que sólo tiene los
+// primeros 500 hechos que cargó GET /hechos; un cluster puede traer ids que
+// ese cap dejó afuera).
 function agruparParaRenderizar(grupo) {
   const clusterDeId = new Map()
   for (const cluster of grupo.casi_duplicados || []) {
@@ -37,6 +44,8 @@ function agruparParaRenderizar(grupo) {
       tipo: 'cluster',
       ids: grupo.hechos.filter((x) => cluster.ids.includes(x)),
       supervivienteId: cluster.superviviente_id,
+      supervivienteVerificado: cluster.superviviente_verificado,
+      supervivienteTexto: cluster.superviviente_texto,
     })
   }
   return items
@@ -127,7 +136,9 @@ export default function GrupoDeHechos({
                 <button
                   type="button"
                   disabled={ocupadoCluster}
-                  onClick={() => onAbrirFundir(item.ids, item.supervivienteId)}
+                  onClick={() => onAbrirFundir(
+                    item.ids, item.supervivienteId, item.supervivienteVerificado, item.supervivienteTexto,
+                  )}
                   className={`${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors disabled:opacity-50 disabled:pointer-events-none`}
                 >
                   {t.memoria.fundir}
