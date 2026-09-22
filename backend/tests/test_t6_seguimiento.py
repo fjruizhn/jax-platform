@@ -276,12 +276,19 @@ def test_T6_6_el_indice_de_duenio_existe_con_sus_columnas(client):
 
 def test_T6_5a_la_consulta_usa_el_indice_de_duenio(client, pipelines_de_dos_tenants):
     """LAS CUATRO (indexing): EXPLAIN sobre la consulta REAL. El indice lo crea
-    jax/jacobs/store.py (ver el test de arriba), no la plataforma."""
+    jax/jacobs/store.py (ver el test de arriba), no la plataforma.
+
+    `idx_pipelines_visibles`, no `idx_jacobs_pipelines_duenio` (Task 4,
+    descartar-pipelines, fix round 4, Ruling 18/19, 2026-09-22) -- ver la
+    nota igual en test_historial_pipelines.py::test_la_consulta_paginada_usa_el_indice_de_dueño_sin_filesort_ni_temporary.
+    El nombre del test se queda ("de dueño"): la fila sigue filtrada por
+    dueño (user_id+tenant_id), el índice sólo agrega `visible` para acotar
+    el costo por el LIMIT."""
     filas = client.portal.call(sql, "EXPLAIN " + pipelines_mod.SQL_PIPELINES_DEL_USUARIO,
                                ("x", "TENANT-A", pipelines_mod.LISTA_PIPELINES_MAX, 0), True)
     ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
     assert tabla == "jacobs_pipelines"
-    assert clave == "idx_jacobs_pipelines_duenio", filas
+    assert clave == "idx_pipelines_visibles", filas
     assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
 
 

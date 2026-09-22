@@ -92,6 +92,18 @@ function IconoIntercambio() {
   )
 }
 
+// Ojo tachado (Task 7, 2026-09-22): glifo propio, no de Lucide -- el mismo
+// trazo en currentColor que el resto de la barra. Pipelines ocultos.
+function IconoOculto() {
+  return (
+    <svg className={ICONO} {...trazo}>
+      <path d="M2 12s3.5-7 10-7c2.1 0 3.9.6 5.4 1.5M22 12s-3.5 7-10 7c-2.1 0-3.9-.6-5.4-1.5" />
+      <circle cx="12" cy="12" r="3" />
+      <path d="M4 4l16 16" />
+    </svg>
+  )
+}
+
 function IconoSalir() {
   return (
     <svg className={ICONO} {...trazo}>
@@ -245,6 +257,17 @@ export default function BarraUsuario() {
               ? <span aria-hidden="true">🔀</span>
               : <IconoIntercambio />}
             <span className="text-xs font-bold">{propuestasPendientes}</span>
+          </Link>
+        )}
+
+        {/* Task 7 (2026-09-22, spec descartar-pipelines §5): mismo marcado que
+            el enlace a /admin/memoria de arriba -- sin contador propio, a
+            diferencia de memoria/propuestas: no hay un "pendiente" que contar
+            acá, es sólo la vista. Sólo superadmin: es quien puede restaurar
+            y el único que entra a /admin/pipelines-ocultos. */}
+        {esSuperadmin && (
+          <Link to="/admin/pipelines-ocultos" aria-label={t.pipelinesOcultosTitulo} title={t.pipelinesOcultosTitulo} className={BOTON_NEUTRO}>
+            <IconoOculto />
           </Link>
         )}
 

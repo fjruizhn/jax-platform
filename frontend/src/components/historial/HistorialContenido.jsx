@@ -1,9 +1,13 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
-import { textoDeCausa } from '../../api/errores'
+import { textoDeCausa, textoDeErrorDeMesa } from '../../api/errores'
+import api from '../../api/client'
 import AlertaError from '../AlertaError'
+import ConfirmacionSuma from '../ConfirmacionSuma'
 import DetallePipeline from './DetallePipeline'
+
+const LIMITE_DESCARTADOS = 50
 
 // Status del pipeline (jax_engine/schemas.py / jacobs/models.py), leído con
 // Object.hasOwn -- mismo criterio que textoDeStatus en RightPanel.jsx: un
@@ -28,6 +32,7 @@ function textoDeStatus(t, status) {
 export default function HistorialContenido({ pipelineId, nombreSeleccionado, onSelect, onCloseDetail }) {
   const historial = useJaxStore((s) => s.historial)
   const cargarHistorial = useJaxStore((s) => s.cargarHistorial)
+  const esSuperadmin = useJaxStore((s) => s.user?.role === 'superadmin')
   const { t, lang } = useI18n()
 
   useEffect(() => {
@@ -36,6 +41,88 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
   }, [])
 
   const { pipelines, hasMore, cargando, error } = historial
+
+  // Pestaña Descartados (Task 6, spec 2026-09-22-descartar-pipelines §5):
+  // estado LOCAL, propio -- no toca el store `historial`, porque los
+  // descartados no son parte del historial principal (spec §5: "van a ser
+  // muchos en el tiempo", vista propia y paginada).
+  const [tab, setTab] = useState('todos')
+  const [descartados, setDescartados] = useState([])
+  const [hayMasDescartados, setHayMasDescartados] = useState(false)
+  const [cargandoDescartados, setCargandoDescartados] = useState(false)
+  const [errorDescartados, setErrorDescartados] = useState(false)
+  // Borrar (ocultar): sólo el superadmin, con ConfirmacionSuma -- spec §2.
+  const [aBorrar, setABorrar] = useState(null)
+  const [errorAccion, setErrorAccion] = useState(null)
+
+  function cargarDescartados(offset) {
+    setCargandoDescartados(true)
+    setErrorDescartados(false)
+    return api.get('/pipelines', { params: { estado: 'discarded', limite: LIMITE_DESCARTADOS, offset } })
+      .then(({ data }) => {
+        const nuevos = Array.isArray(data?.pipelines) ? data.pipelines : []
+        setDescartados((prev) => (offset === 0 ? nuevos : [...prev, ...nuevos]))
+        setHayMasDescartados(data?.has_more === true)
+      })
+      .catch(() => setErrorDescartados(true))
+      .finally(() => setCargandoDescartados(false))
+  }
+
+  useEffect(() => {
+    if (tab === 'descartados') cargarDescartados(0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
+
+  async function recuperar(pipelineId) {
+    setErrorAccion(null)
+    try {
+      await api.post(`/pipelines/${pipelineId}/recover`)
+      setDescartados((prev) => prev.filter((p) => p.pipeline_id !== pipelineId))
+      // MAJOR-1 (fix round 1, revisión adversarial): un pipeline recuperado
+      // vuelve a `aborted`/`expired` -- GET /pipelines (sin filtro) SÍ lo
+      // trae de nuevo, pero el store `historial` sólo se pide una vez al
+      // montar. Sin este refresco, "Todos" seguía sin el pipeline hasta que
+      // algo MÁS disparara cargarHistorial() -- mismo patrón que
+      // RightPanel.jsx::confirmarDescartar.
+      await cargarHistorial()
+    } catch (e) {
+      // MINOR-4: texto genérico PROPIO (recuperarError) -- "no se pudo
+      // descartar" mentiría sobre qué acción falló de verdad.
+      setErrorAccion(textoDeErrorDeMesa(t, e, t.recuperarError))
+    }
+  }
+
+  async function confirmarBorrar() {
+    const pipelineId = aBorrar.pipeline_id
+    try {
+      await api.post(`/pipelines/${pipelineId}/hide`)
+      setDescartados((prev) => prev.filter((p) => p.pipeline_id !== pipelineId))
+      setABorrar(null)
+    } catch (e) {
+      // MINOR-4: texto genérico PROPIO (borrarError).
+      setErrorAccion(textoDeErrorDeMesa(t, e, t.borrarError))
+      setABorrar(null)
+    }
+  }
+
+  // MINOR-1 (fix round 1): errorAccion sobrevivía al cierre del diálogo y al
+  // cambio de pestaña, contaminando la acción siguiente -- se limpia acá, en
+  // los tres disparadores (cerrar/cancelar, cambiar de pestaña, empezar una
+  // acción nueva); recuperar() ya se limpia a sí misma arriba.
+  function cambiarTab(id) {
+    setErrorAccion(null)
+    setTab(id)
+  }
+
+  function abrirBorrar(p) {
+    setErrorAccion(null)
+    setABorrar(p)
+  }
+
+  function cerrarBorrar() {
+    setABorrar(null)
+    setErrorAccion(null)
+  }
 
   return (
     <>
@@ -55,6 +142,121 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
         </div>
       )}
 
+      <div className="flex gap-1 mb-4 border-b border-borde">
+        {[
+          { id: 'todos', label: t.pestanaTodos },
+          { id: 'descartados', label: t.pestanaDescartados },
+        ].map(({ id, label }) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => cambiarTab(id)}
+            className={`px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
+              tab === id ? 'text-info border-b-2 border-info' : 'text-texto-tenue hover:text-texto'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'descartados' ? (
+        <>
+          {errorAccion && <AlertaError className="mb-4 text-sm">{errorAccion}</AlertaError>}
+
+          {errorDescartados && (
+            <div className="mb-4 flex items-center gap-3">
+              <AlertaError className="text-sm">{t.descartadosError}</AlertaError>
+              <button
+                type="button"
+                onClick={() => cargarDescartados(0)}
+                className="px-3 py-1 rounded text-xs font-semibold bg-superficie text-texto-suave hover:text-texto transition-colors"
+              >
+                {t.historialRetry}
+              </button>
+            </div>
+          )}
+
+          {cargandoDescartados && descartados.length === 0 && !errorDescartados && (
+            <p className="text-sm text-texto-tenue">{t.historialLoading}</p>
+          )}
+
+          {!cargandoDescartados && !errorDescartados && descartados.length === 0 && (
+            <p className="text-sm text-texto-tenue text-center py-12">{t.sinDescartados}</p>
+          )}
+
+          {descartados.length > 0 && (
+            <div className="rounded-lg border border-borde overflow-hidden mb-4">
+              <table className="w-full text-sm">
+                <thead className="bg-hundido border-b border-borde">
+                  <tr>
+                    {[t.historialColName, t.descartadosColFecha, t.historialColCost, ''].map((h, i) => (
+                      <th key={i} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-borde/50">
+                  {descartados.map((p) => (
+                    <tr key={p.pipeline_id} className="bg-hundido hover:bg-superficie transition-colors">
+                      <td className="px-4 py-3 text-texto">{p.name}</td>
+                      <td data-campo="descartado" className="px-4 py-3 text-xs text-texto-tenue">
+                        {typeof p.descartado_at === 'number' ? new Date(p.descartado_at * 1000).toLocaleString(localeFor(lang)) : '—'}
+                      </td>
+                      <td data-campo="costo" className="px-4 py-3 text-xs text-texto-tenue">
+                        {typeof p.costo_usd === 'number' ? t.historialCost(p.costo_usd.toFixed(6)) : t.historialUnknown}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => recuperar(p.pipeline_id)}
+                            className="text-xs font-semibold text-acento-texto hover:underline"
+                          >
+                            {t.recuperarPipeline}
+                          </button>
+                          {esSuperadmin && (
+                            <button
+                              type="button"
+                              onClick={() => abrirBorrar(p)}
+                              className="text-xs font-semibold text-peligro hover:underline"
+                            >
+                              {t.borrarPipeline}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {hayMasDescartados && (
+            <div className="text-center mb-6">
+              <button
+                type="button"
+                onClick={() => cargarDescartados(descartados.length)}
+                disabled={cargandoDescartados}
+                className="px-4 py-1.5 rounded text-xs font-semibold bg-superficie text-texto-suave hover:text-texto transition-colors disabled:opacity-50"
+              >
+                {cargandoDescartados ? t.historialLoadingMore : t.cargarMas}
+              </button>
+            </div>
+          )}
+
+          {aBorrar && (
+            <ConfirmacionSuma
+              titulo={t.borrarTitulo}
+              mensaje={t.borrarMensaje(aBorrar.name)}
+              textoConfirmar={t.borrarPipeline}
+              onConfirmar={confirmarBorrar}
+              onCancelar={cerrarBorrar}
+            />
+          )}
+        </>
+      ) : (
+      <>
       {error && (
         <div className="mb-4 flex items-center gap-3">
           <AlertaError className="text-sm">{t.historialError}</AlertaError>
@@ -128,6 +330,8 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
             {cargando ? t.historialLoadingMore : t.historialLoadMore}
           </button>
         </div>
+      )}
+      </>
       )}
     </>
   )

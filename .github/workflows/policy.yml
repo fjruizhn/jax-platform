@@ -842,8 +842,65 @@ jobs:
           //   guarda en el `catch`) antes de confirmar verde. Medido con
           //   `npx vitest run`, 3 veces seguidas: 954/954 las tres, sin
           //   flakiness.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 954) {
-              console.error("PISO ROTO: se esperaban 954 tests de vitest CORRIDOS y 0 fallidos.");
+          // 954 -> 967 (2026-09-22, Tasks 5-6 de descartar-pipelines): +6 en
+          //   `RightPanel.descartar.test.jsx` (archivo nuevo -- botón
+          //   Descartar en Detenidos, confirmación con Dialogo, error
+          //   traducido, Escape sin llamar a la API) y +7 en
+          //   `HistorialContenido.descartados.test.jsx` (archivo nuevo --
+          //   pestaña Descartados, Recuperar, Borrar sólo para superadmin
+          //   con ConfirmacionSuma, "Cargar más", estado vacío). Vistos en
+          //   rojo contra el código viejo (sin el botón/la pestaña, los
+          //   `findByRole` no encontraban nada) antes de implementar.
+          //   Medido con `npx vitest run`: 967 passed, 0 fallidos, 94
+          //   archivos.
+          // 967 -> 973 (2026-09-22, Task 7 de descartar-pipelines): +5 en
+          //   `AdminPipelinesOcultos.test.jsx` (archivo nuevo -- lista
+          //   paginada con nombre/dueño/fecha, "Cargar más", Restaurar SIN
+          //   confirmación -- es reversible, error 403 traducido, estado
+          //   vacío) y +1 en `BarraUsuario.test.jsx` (el enlace a
+          //   /admin/pipelines-ocultos sólo lo ve el superadmin, mismo
+          //   criterio que el engranaje de Administración). Vistos en rojo
+          //   contra el código viejo (el módulo no existía / el enlace no
+          //   estaba) antes de implementar. Medido con `npx vitest run`:
+          //   973 passed, 0 fallidos, 95 archivos.
+          // 973 -> 987 (2026-09-22, Tasks 5-7, fix round 1 de la revisión
+          //   adversarial): +3 en `RightPanel.descartar.test.jsx` (MINOR-1:
+          //   errorDescartar se limpia al cancelar y al cerrar con Escape,
+          //   sin reaparecer al reabrir; MINOR-5: la tarjeta ya NO depende
+          //   de una baja optimista aparte -- un test con la recarga a
+          //   propósito pendiente prueba que la tarjeta sigue ahí hasta que
+          //   esa recarga resuelve de verdad) + +6 en
+          //   `HistorialContenido.descartados.test.jsx` (MAJOR-1: recuperar
+          //   ahora refresca "Todos" -- cargarHistorial() dentro de
+          //   recuperar(), mismo patrón que RightPanel; MINOR-4: error-path
+          //   de recuperar_no_permitido y de un fallo de Borrar, cada uno
+          //   con su propio texto genérico; MINOR-1: errorAccion se limpia
+          //   al cambiar de pestaña y al empezar otra acción; MINOR-6: el
+          //   caso real del brief, una página COMPLETA de 50) + +3 en
+          //   `api/errores.test.js` (named risk 2: `transicion_no_permitida`
+          //   con status discarded/hidden ahora nombra el estado, en los dos
+          //   idiomas, en vez de caer al genérico) + +2 en `Admin.test.jsx`
+          //   (MINOR-7: "pipelines-ocultos" ya tiene entrada en
+          //   AdminSidebar -- antes quedaba huérfano, sin forma de volver
+          //   sin salir de Administración). Vistos en rojo contra el código
+          //   de las Tasks 5-7 antes de implementar cada arreglo (revertido
+          //   a mano archivo por archivo, nunca `git stash`, y restaurado
+          //   después de confirmar el rojo). Medido con `npx vitest run`:
+          //   987 passed, 0 fallidos, 95 archivos.
+          // 987 -> 988 (2026-09-22, re-revisión, punto 1): el test de
+          //   `recuperarError` (ronda 1) usaba un error CON código
+          //   (`recuperar_no_permitido`) -- textoDeErrorDeMesa lo traduce
+          //   directo y nunca toca el fallback genérico, así que mutar
+          //   `recuperarError -> descartarError` en el catch de recuperar()
+          //   dejaba la suite en 13/13 igual (verificado a mano, mutación
+          //   real). +1 test nuevo en
+          //   `HistorialContenido.descartados.test.jsx` con un error SIN
+          //   código (como el de Borrar) que SÍ fuerza el fallback --
+          //   confirmado en rojo con la misma mutación (13 passed / 1
+          //   failed) y en verde restaurando el código. Medido con
+          //   `npx vitest run`: 988 passed, 0 fallidos, 95 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 988) {
+              console.error("PISO ROTO: se esperaban 988 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -971,7 +1028,10 @@ jobs:
       # funcion, no a nivel de modulo), pero el test que SI ejercita
       # main_async() de punta a punta revienta al llegar a esa linea.
       - run: pip install pytest httpx pymysql python-jose
-      - run: python -m pytest loadtest/test_memoria_medir_fundir.py loadtest/test_memoria_levantar_entorno.py loadtest/test_historial_orquestar.py -v
+      # test_descartados_orquestar.py (Task 8, 2026-09-22, carga de
+      # descartar-pipelines): mismo defecto que el resto de esta lista si no
+      # se agrega acá -- existiría y no correría en NINGÚN job.
+      - run: python -m pytest loadtest/test_memoria_medir_fundir.py loadtest/test_memoria_levantar_entorno.py loadtest/test_historial_orquestar.py loadtest/test_descartados_orquestar.py -v
 
   # --------------------------------------------------------------------------
   # Suite del backend, modo "CON base de datos" -- los 150 tests que el job de
@@ -1119,7 +1179,42 @@ jobs:
             | mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" "$JAX_DB_NAME"
 
       - name: Suite backend (con DB)
-        run: python -m pytest -q -rs --junitxml=junit-db.xml
+        # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,
+        # hallazgo del coordinador sobre 81b6ab5): sus 3 tests son medición
+        # MANUAL, opt-in (JAX_MEDIR_INDICE_PIPELINES=1, siembra 5000+ filas) --
+        # nunca corren en este job, siempre se SALTAN. Antes de este cambio
+        # quedaban COLECTADOS y contados como skip, y ese job de verdad tuvo
+        # 3 skips contra un MAX_SKIPS=1 pensado para "la DB no arranco" -- CI
+        # se puso rojo por un motivo que no es ese: no se salteo nada de lo
+        # que este piso vino a vigilar, simplemente estos 3 tests no son parte
+        # de la corrida normal. Se ignoran, no se cuentan como skip -- el tope
+        # de MAX_SKIPS se queda en 1, no se sube (ese tope sigue sirviendo
+        # para detectar la DB caida).
+        run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
+
+      - name: Piso -- el archivo ignorado sigue pudiendo colectarse (fix round 1, MINOR-2)
+        # El --ignore de arriba saca test_carga_indice_pipelines_del_usuario.py
+        # de la cuenta de skips, pero TAMBIÉN lo saca de la vista de CI --
+        # nadie más lo corre acá. Un ImportError ahí (una firma que cambia en
+        # api/pipelines.py, un import que se mueve) pasaría desapercibido
+        # hasta que alguien lo corriera a mano con
+        # JAX_MEDIR_INDICE_PIPELINES=1, que puede ser meses después. Este
+        # paso NO ejecuta los tests (siguen siendo medición manual, pesada --
+        # siembra 5000+ filas): sólo confirma que pytest los puede COLECTAR,
+        # los 3, ni uno menos -- barato (sin sembrar nada) y suficiente para
+        # detectar la pudrición del archivo.
+        run: |
+          python -m pytest --collect-only -q tests/test_carga_indice_pipelines_del_usuario.py | tee collect.txt
+          # Fix round 2 (re-revisión, punto 3): el texto anterior decía
+          # "dejo de poder colectarse -- ImportError u otro roto" como si
+          # fuera la UNICA causa posible -- un cuarto test de medicion
+          # agregado de buena fe (legitimo) tambien cambia el numero, y ese
+          # diagnostico hubiera sido falso. El mensaje ahora describe el
+          # HECHO (el numero no es 3), no una causa que puede no serlo.
+          grep -q '^3 tests collected' collect.txt || {
+            echo "Se esperaban exactamente 3 tests colectados en este archivo y salio otro numero (ver la salida arriba). Si agregaste o borraste un test de medicion a proposito, actualiza el '3' de este paso; si no tocaste el archivo, es un ImportError u otra rotura." >&2
+            exit 1
+          }
 
       - name: Piso -- que "verde" no signifique "se salteo todo"
         # Dos exigencias, no una: el piso de passed, y que el numero de SKIPS
@@ -2405,6 +2500,114 @@ jobs:
           #   2522 / 0 / 0. Los 8 vistos en rojo contra el código de antes de
           #   cada arreglo (ver el informe de la tarea), y cada uno con su
           #   mutación (revertida) confirmando que cae si el arreglo se deshace.
+          # 2462 -> 2549 (2026-09-22, Task 4 de descartar-pipelines: proxies
+          #   discard/recover/hide/restore, permisos, filtro de listas). Medido
+          #   dos veces, MISMO comando (`JAX_REPO_PATH=<clon de jax master
+          #   0a37a54> python -m pytest -q -p no:warnings`), contra jax_memory_test:
+          #   commit base 50ed2c2 -> 2521 passed / 1 failed / 0 skipped; esta
+          #   rama -> 2549 passed / 0 failed / 0 skipped. Delta +28 = 27 tests
+          #   nuevos (25 en tests/test_pipelines_descarte.py -- discard/recover/
+          #   hide/restore, guardias, `?estado=discarded`, `/admin/pipelines/
+          #   ocultos`, 3 EXPLAIN, axioma_usage intacto -- + 2 parametrizados en
+          #   tests/test_pipeline_resource_release.py, Ruling 5: discarded/hidden
+          #   liberan el cupo del tenant) + 1 fix (Ruling 5:
+          #   test_todos_los_estados_de_jacobs_tienen_entrada_en_el_mapa, ya
+          #   existente, pasaba de FAILED a PASSED con _JACOBS_STATUS_MAP
+          #   completo -- visto en rojo contra el código viejo ANTES del fix,
+          #   ver commit de jax_engine/state.py). El piso registrado (2462)
+          #   ya estaba muy por debajo de lo medido en la base (2521, +59):
+          #   deuda preexistente, no causada por esta tarea -- mismo patrón
+          #   de drift que ya documentó el job "sin DB" más abajo (repartir
+          #   el delta, no adjudicárselo entero a la rama que lo mide).
+          # 2549 -> 2557 (2026-09-22, Task 4, ronda de arreglo 1: hallazgo del
+          #   revisor + Rulings 12 y 13). Medido con el MISMO comando, MISMA
+          #   base (jax master 0a37a54): 2549 -> 2557, +8 exactos = 6 tests
+          #   nuevos en tests/test_pipelines_descarte.py (camino feliz de
+          #   recover del dueño que faltaba -- hallazgo del revisor --,
+          #   Ruling 13(a) NULL/doble-recover no dan 403, Ruling 13(b) hide/
+          #   restore validan la forma del id parametrizado x2, Ruling 13(c)
+          #   costo_usd real en la vista de descartados) + 2 parametrizados
+          #   nuevos en tests/test_pipeline_resource_release.py (Ruling 12:
+          #   discarded/hidden NO disparan el aviso por correo). Sin fixes
+          #   que arreglaran un rojo esta vez (0 failed antes y después).
+          # 2557 -> 2495 (2026-09-22, MERGE de origin/master tras el fix
+          #   round 1 de Task 4). origin/master trajo #148 (`9d378b7`), que
+          #   extrajo el mapeo discarded/hidden de _JACOBS_STATUS_MAP
+          #   (idéntico al de esta rama) para destrabar su propio CI -- el
+          #   merge lo resolvió limpio (jax_engine/state.py y schemas.py sin
+          #   conflicto; test_pipeline_resource_release.py con un conflicto
+          #   mecánico de una sola línea, resuelto quedándose con AMBOS
+          #   bloques de tests, sin duplicar ninguno). #148 NO actualizó el
+          #   piso de este job (se quedó en 2462) aunque sí sumó tests --
+          #   mismo patrón de piso stale que ya viene arrastrando este
+          #   archivo. Medido con el MISMO comando: origin/master (`9d378b7`,
+          #   worktree aparte) -> 2524 passed / 0 failed / 0 skipped; esta
+          #   rama YA MERGEADA -> 2557 / 0 / 0. Delta verificado de ESTA
+          #   rama sobre master: +33. Piso nuevo = piso DECLARADO de master
+          #   (2462, no los 2524 medidos -- mismo criterio que ya usa este
+          #   archivo en cada entrada: no premiar el drift ajeno) + el delta
+          #   verificado (+33) = 2495. Baja respecto del 2557 anterior
+          #   porque ese número ya venía inflado por el mismo drift que este
+          #   comentario evita perpetuar -- no se perdió ningún test (2557
+          #   real sigue siendo el passed medido, ver arriba).
+          # 2495 -> 2496 (2026-09-22, Task 4, fix round 2, Ruling 16). +1
+          #   neto: la vieja test_explain_pipelines_del_usuario_usa_indice_de_tenant_sin_temporary
+          #   (1 test) se reemplazó por la parametrizada
+          #   test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio_sin_filesort
+          #   (2 casos: "historial largo" 5000+50, "muchos descartados"
+          #   60+3) -- ver el hallazgo de Ruling 16 en el reporte de esta
+          #   ronda. tests/test_carga_indice_pipelines_del_usuario.py (medición
+          #   de Ruling 16 punto 5) no suma: sus 2 tests se saltan por
+          #   default (JAX_MEDIR_INDICE_PIPELINES=1 para correrlos). Medido
+          #   con el MISMO comando: 2557 -> 2558 passed / 0 failed / 0
+          #   skipped (+2 skipped de la medición, contados aparte). Delta
+          #   verificado +1 sobre el piso anterior.
+          # 2496 -> 2498 (2026-09-22, Task 4, fix round 3, Ruling 17). +2
+          #   netos: test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio_sin_filesort
+          #   gana un tercer caso parametrizado ("extremo": 5000 descartados
+          #   + 3 vivos en tenant aislado, la forma que el IGNORE INDEX del
+          #   fix round 2 NO cubría) -- +1. Test nuevo
+          #   test_pipelines_del_usuario_no_rompe_sin_los_indices_de_jax_257
+          #   (Ruling 17 punto 2: FORCE INDEX no rompe si
+          #   idx_pipelines_descartados/idx_pipelines_ocultos no existen,
+          #   a diferencia del IGNORE INDEX que reemplaza) -- +1.
+          #   tests/test_carga_indice_pipelines_del_usuario.py gana un
+          #   tercer test de medición (la forma "extremo") -- no suma, se
+          #   salta por default igual que los otros dos. Medido con el
+          #   MISMO comando: 2558 -> 2560 passed / 0 failed / 2 -> 3
+          #   skipped. Delta verificado +2 sobre el piso anterior.
+          # 2498 -> 2503 (2026-09-22, Task 4, fix round 4, Ruling 18/19).
+          #   +5 netos. En tests/test_pipelines_descarte.py: se retiran los
+          #   4 tests del fix round 3 (3 casos EXPLAIN parametrizados +
+          #   test_pipelines_del_usuario_no_rompe_sin_los_indices_de_jax_257,
+          #   que probaba la propiedad CONTRARIA a la de esta ronda) y
+          #   entran 7 -- test_pipelines_del_usuario_el_plan_usa_idx_pipelines_visibles_sin_filesort
+          #   y test_muchos_descartados_el_motor_no_lee_las_descartadas,
+          #   cada uno parametrizado en las TRES formas del controlador
+          #   (historial largo, muchos descartados, hijos sin ack), más
+          #   test_pipelines_del_usuario_depende_de_idx_pipelines_visibles
+          #   (la propiedad nueva: SIN el índice, 1176) -- neto +3.
+          #   tests/test_base_por_sesion.py suma 2 tests nuevos
+          #   (_columnas_copiables/_copiar_filas, el fix del bug 1906 que
+          #   jax ya había arreglado en su gemelo). Medido con el MISMO
+          #   comando: 2560 -> 2565 passed / 0 failed / 3 skipped (sin
+          #   cambio -- test_carga_indice_pipelines_del_usuario.py sigue
+          #   con 3 tests, reescritos pero mismo conteo). Delta verificado
+          #   +5 sobre el piso anterior.
+          # 2503 -> 2505 (2026-09-22, Task 4, fix round 5, re-review). +2:
+          #   test_clonar_esquema_no_revienta_con_1906_si_la_plantilla_tiene_columna_generada
+          #   (tests/test_base_por_sesion.py -- ejercita `_clonar_esquema()`
+          #   de punta a punta, no sólo sus helpers en aislamiento como los
+          #   2 tests del fix round 4) y
+          #   test_visible_excluye_descartados_ocultos_y_exige_ack_del_dueño
+          #   (tests/test_pipelines_descarte.py -- el asunto de fondo de esta
+          #   ronda: lee GENERATION_EXPRESSION de jacobs_pipelines.visible
+          #   contra el jax real de CI y exige que siga excluyendo
+          #   discarded/hidden Y owner_ack_at IS NOT NULL). Medido con el
+          #   MISMO comando, JAX_REPO_PATH apuntando a jax master con jax#259
+          #   ya mergeado: 2565 -> 2567 passed / 0 failed / 3 skipped (sin
+          #   cambio). Delta verificado +2 sobre el piso anterior.
+          
           #   Este delta (+10 sobre el 2452 de 8ca070a, la base comun) es el
           #   de jax-platform#147 solo.
           # MERGE (2026-09-22): jax-platform#146 (+100 sobre 2452) y
@@ -2499,7 +2702,52 @@ jobs:
           #   que por construcción ya contiene los tests de las dos
           #   historias. Medido en vivo, MISMO comando, después del merge:
           #   2577 passed -> 2579 (0 fallidos, 0 skips las tres).
-          PISO_PASSED = 2579
+          
+
+          # MERGE (2026-09-22, Ruling 23, cierre de Task 4): git merge
+          #   origin/master (no rebase, pedido por el coordinador) trae
+          #   jax-platform#149 encima de #146/#147/#148 -- las dos ramas
+          #   comparten como base COMÚN el merge de #148 (`9d378b7`, ya
+          #   incorporado a esta rama desde el fix round 1 de Task 4). NO
+          #   se suman los dos pisos declarados (2505 de esta rama + 2579 de
+          #   master): eso contaría dos veces el tramo común. Medido en vivo,
+          #   MISMO comando (`JAX_REPO_PATH=/home/fruiz/worktrees/jax-master-para-tests
+          #   python -m pytest -q -p no:warnings`), los TRES puntos, en
+          #   worktrees separados: base común (`9d378b7`) -> 2524 passed / 0
+          #   failed / 0 skipped; esta rama antes del merge (`65c650e`) ->
+          #   2567 / 0 / 3; origin/master antes del merge (`9b2777a`) -> 2588
+          #   / 0 / 2. Delta de ESTA rama sobre la base común: +43 (2567 -
+          #   2524) -- el trabajo propio de Task 4 (rondas 1-5), sin el
+          #   tramo que master ya cuenta en su propio 2579. Piso nuevo = piso
+          #   DECLARADO de master (2579, no los 2588 medidos -- mismo
+          #   criterio de siempre: no premiar el drift ajeno) + el delta
+          #   propio verificado (+43) = 2622. Se corre la suite YA fusionada
+          #   para confirmar -- el runner tiene la última palabra, no la
+          #   aritmética (ver el reporte de la tarea para el número real).
+          #
+          # HALLAZGO DEL COORDINADOR (2026-09-22, sobre la corrida real de
+          #   81b6ab5, cierre de Task 4): el job SE PUSO ROJO -- no por un
+          #   test, sino por este mismo guard. La corrida real: 2633 passed /
+          #   0 failed / 3 skipped. Los 3 skips son los 3 tests de
+          #   tests/test_carga_indice_pipelines_del_usuario.py (medición
+          #   MANUAL, opt-in, JAX_MEDIR_INDICE_PIPELINES=1 -- ver el
+          #   docstring del archivo): quedaban COLECTADOS en este job y
+          #   siempre se saltan acá, así que ya sumaban 3 antes de esta
+          #   ronda -- nadie lo había visto en un runner real (medido en
+          #   vivo, sólo local, sin CI de por medio) hasta esta corrida. El
+          #   arreglo NO sube MAX_SKIPS (ese tope existe para pescar "la DB
+          #   no arrancó", no para acomodar tests que nunca corren en este
+          #   job) -- el paso de arriba ahora los excluye con `--ignore`, así
+          #   que dejan de contarse como skip acá (siguen existiendo, se
+          #   corren a mano con JAX_MEDIR_INDICE_PIPELINES=1). Con el
+          #   `--ignore`: 2633 passed sin cambio (eran skips, no passed) / 0
+          #   skipped esperados (el otro skip que este archivo podía
+          #   mostrar -- CREATE USER en test_usuario_solo_insert_punto_restauracion.py --
+          #   es un permiso que SÍ tiene el `root` de este job, según el
+          #   propio mensaje del skip; no aplica acá). PISO_PASSED se queda
+          #   en 2622 -- el `--ignore` no resta ningún test PASSED, sólo saca
+          #   3 SKIPPED de la cuenta.
+          PISO_PASSED = 2622
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3208,6 +3456,104 @@ jobs:
       #   (con el fix de la ronda anterior) 1678 passed / 836 skipped -> esta
       #   rama 1679 / 843 (0 fallidos las dos). El piso declarado sube por el
       #   delta verificado (+1) sobre el piso anterior, no por el passed crudo
+      #   local.
+      # 1642 -> 1645 (2026-09-22, Task 4 de descartar-pipelines): +3 netos.
+      #   Medido dos veces, MISMO comando (`JAX_REPO_PATH=<clon de jax master
+      #   0a37a54> JAX_CI_NO_DB=1 python -m pytest -q -p no:warnings -rs`):
+      #   commit base 50ed2c2 -> 1678 passed / 1 failed / 843 skipped; esta
+      #   rama -> 1681 passed / 0 failed / 868 skipped. El failed de la base
+      #   es Ruling 5 (jax ya trae `discarded`/`hidden` en PipelineStatus,
+      #   este repo todavía no los tenía en _JACOBS_STATUS_MAP) -- arreglado
+      #   acá, +1 passed. Los 2 tests parametrizados nuevos de
+      #   tests/test_pipeline_resource_release.py son puros y suman +2
+      #   passed. Los 25 tests nuevos de tests/test_pipelines_descarte.py
+      #   (Task 4) NO suman a este piso -- los 25 se SALTAN acá (+25 skips,
+      #   868-843=25): el fixture de sesión que nivela el esquema de la base
+      #   de test (columnas/índices que trae `jax`, ver el docstring del
+      #   archivo) depende de `client`, y esa dependencia es TRANSITIVA a
+      #   los 25 tests del módulo vía autouse -- incluidos los 4 que no
+      #   piden `client` directo (`_rechazo_de_jacobs` es puro, pero el
+      #   fixture del módulo igual lo arrastra). El piso declarado sube por
+      #   el delta verificado (+3) sobre el piso anterior, no por el passed
+      #   crudo local (que además arrastra drift preexistente sin relación
+      #   con esta tarea, ver la nota del piso CON DB más arriba).
+      # 1645 -> 1647 (2026-09-22, Task 4, ronda de arreglo 1): +2 netos.
+      #   Medido con el MISMO comando: 1681 -> 1683 passed / 868 -> 874
+      #   skipped / 0 failed las dos. +2 son los 2 parametrizados nuevos de
+      #   test_pipeline_resource_release.py (Ruling 12, puros). Los 6 tests
+      #   nuevos de test_pipelines_descarte.py (camino feliz de recover +
+      #   Rulings 13(a)/(b)/(c)) suman a SKIPS (+6, 868->874), no a passed --
+      #   mismo motivo que ya documentado arriba (fixture de esquema
+      #   autouse, dependencia transitiva de `client`).
+      # 1647 -> 1644 (2026-09-22, MERGE de origin/master tras el fix round 1
+      #   de Task 4). Mismo motivo que el piso CON DB, más arriba: #148
+      #   (`9d378b7`, en origin/master) no subió este piso (se quedó en
+      #   1642) pese a sumar sus 2 tests puros de Ruling 5. Medido con el
+      #   MISMO comando: origin/master (worktree aparte) -> 1681 passed /
+      #   843 skipped / 0 failed; esta rama YA MERGEADA -> 1683 / 874 / 0.
+      #   Delta verificado de esta rama sobre master: +2 passed. Corrección
+      #   (fix round 2, Ruling 16 punto 6): esos 2 NO son de Ruling 5 --
+      #   master (con #148) ya traía los 2 parametrizados de Ruling 5
+      #   (test_poll_one_pipeline_releases_the_resource_slot_on_discard_o_hide).
+      #   El delta de ESTA rama sobre eso son los 2 parametrizados de
+      #   Ruling 12 (test_poll_one_pipeline_no_dispara_aviso_para_discard_o_hide,
+      #   fix round 1 de esta Task), ya contados en la entrada anterior de
+      #   este piso -- no se duplican. Piso nuevo = piso DECLARADO de
+      #   master (1642, no los 1681 medidos) + el delta verificado (+2) =
+      #   1644. Baja respecto del 1647 anterior por el mismo motivo que el
+      #   piso con DB: ese número estaba anclado al drift de ESTA rama
+      #   sola, no al de master -- el criterio del archivo es sumar sobre
+      #   lo DECLARADO, no sobre lo medido.
+      # 1644 -> 1648 (2026-09-22, Task 4, fix round 2, Ruling 16). +4 netos,
+      #   NINGUNO de un test nuevo puro: el fixture de esquema
+      #   (init_tables() de jax) se movió de un `@pytest.fixture(autouse=True)`
+      #   aparte (que le agregaba `client` a los fixturenames de TODA la
+      #   suite -- medido "2560 skipped / 0 passed" con ese diseño, una
+      #   regresión real que no llegó a commitearse) a una llamada DENTRO
+      #   del cuerpo de `client()` (tests/conftest.py) -- sin agregar
+      #   ninguna dependencia nueva. Efecto colateral correcto: los 4 tests
+      #   puros de tests/test_pipelines_descarte.py que NO piden `client`
+      #   directo (`test_transicion_no_permitida_se_propaga_con_su_code_y_status`
+      #   y las otras 3 de `_rechazo_de_jacobs`) ya NO cargan con la
+      #   dependencia transitiva del fixture local que existía en la ronda
+      #   anterior -- ahora corren de verdad bajo JAX_CI_NO_DB=1. Medido con
+      #   el MISMO comando: 1683 -> 1687 passed / 874 -> 873 skipped / 0
+      #   failed. Delta verificado +4 sobre el piso anterior.
+      # Sin cambios en el piso (2026-09-22, Task 4, fix round 3, Ruling 17):
+      #   los 3 tests nuevos de esta ronda (2 en test_pipelines_descarte.py,
+      #   1 en test_carga_indice_pipelines_del_usuario.py) piden todos
+      #   `client` -- ninguno corre sin DB, el piso se queda en 1648. El
+      #   conteo de SKIPS SÍ cambia -- 873 -> 876 (+3, uno por cada test
+      #   nuevo) -- pero este job no lo gatea, sólo lo imprime. Medido con
+      #   JAX_CI_NO_DB=1 (1687 -> 1687 passed, 873 -> 876 skipped).
+      # Sin cambios en el piso (2026-09-22, Task 4, fix round 4, Ruling
+      #   18/19): los 5 tests netos nuevos de esta ronda (ver el piso con
+      #   DB, más arriba) no corren sin DB -- pero NO todos por el mismo
+      #   camino. Corrección (fix round 5): 3 de los 5 (en
+      #   tests/test_pipelines_descarte.py) sí piden `client` -- Regla 1
+      #   (tiempo de colección, conftest.py). Los otros 2 (en
+      #   tests/test_base_por_sesion.py,
+      #   test_copiar_filas_excluye_columnas_generadas_y_no_revienta_con_1906
+      #   y test_columnas_copiables_excluye_solo_las_generadas) NO piden
+      #   `client` -- llevan su propio `@pytest.mark.skipif(not os.environ.get
+      #   ("JAX_DB_HOST"), ...)`, que bajo JAX_CI_NO_DB=1 NO dispara (ese modo
+      #   FIJA JAX_DB_HOST a un placeholder no vacío, conftest.py línea ~452)
+      #   -- se saltan por la Regla 2 (tiempo de ejecución: llegan a
+      #   `aiomysql.create_pool()` dentro de `get_pool()`, parcheado para
+      #   saltar bajo este modo). El piso se queda en 1648 de cualquier
+      #   forma -- ninguno de los 5 pasa a "passed" sin DB. El conteo de
+      #   SKIPS SÍ cambia -- 876 -> 881 (+5) -- este job no lo gatea, sólo
+      #   lo imprime. Medido con JAX_CI_NO_DB=1 (1687 -> 1687 passed,
+      #   876 -> 881 skipped).
+      # Sin cambios en el piso (2026-09-22, Task 4, fix round 5): los 2
+      #   tests nuevos de esta ronda (ver el piso con DB, más arriba) piden
+      #   `client` (test_visible_excluye_descartados_ocultos_y_exige_ack_del_dueño)
+      #   o llegan a aiomysql.create_pool() sin pedirlo
+      #   (test_clonar_esquema_no_revienta_..., Regla 2) -- ninguno corre
+      #   sin DB. Piso sigue en 1648. Skips 881 -> 883 (+2), este job no lo
+      #   gatea. Medido con JAX_CI_NO_DB=1, JAX_REPO_PATH apuntando a jax
+      #   master con jax#259: 1687 -> 1687 passed, 881 -> 883 skipped.
+      
       #   local. Este delta (+1 sobre el 1641 de 8ca070a) es el de
       #   jax-platform#147 solo.
       # MERGE (2026-09-22): jax-platform#146 (+20 sobre 1641) y
@@ -3266,7 +3612,29 @@ jobs:
       #   MISMO comando, después del merge: 1703 passed / 874 skipped ->
       #   1705 / 874 (mismos skips, +2 passed reales -- no absorbidos en
       #   silencio). El piso declarado sube por el delta verificado (+2).
-      JAX_CI_MIN_PASSED: "1668"
+      
+
+      # MERGE (2026-09-22, Ruling 23, cierre de Task 4): mismo motivo que el
+      #   piso CON DB, más arriba -- esta rama y origin/master comparten como
+      #   base COMÚN el merge de #148 (`9d378b7`), así que no se suman los
+      #   dos pisos declarados (1648 + 1668). Medido en vivo, MISMO comando
+      #   (`JAX_CI_NO_DB=1 python -m pytest -q -p no:warnings -rs`), los TRES
+      #   puntos, en worktrees separados con `JAX_REPO_PATH` apuntando al
+      #   mismo checkout fijo de jax master (jax#259 incluido): base común
+      #   (`9d378b7`) -> 1681 passed / 843 skipped; esta rama antes del merge
+      #   (`65c650e`) -> 1687 passed / 883 skipped; origin/master antes del
+      #   merge (`9b2777a`) -> 1707 passed / 883 skipped. Delta de ESTA rama
+      #   sobre la base común: +6 (1687 - 1681) -- el trabajo propio de
+      #   Task 4 (rondas 1-5) que corre sin DB (los 4 tests puros de
+      #   test_pipeline_resource_release.py y test_pipelines_descarte.py, ya
+      #   documentados arriba); el resto de los 39 tests nuevos de esta tarea
+      #   se saltan bajo este modo, mismo motivo repetido en cada ronda.
+      #   Piso nuevo = piso DECLARADO de master (1668, no los 1707 medidos --
+      #   mismo criterio: no premiar el drift ajeno) + el delta propio
+      #   verificado (+6) = 1674. Se corre la suite YA fusionada para
+      #   confirmar -- el runner tiene la última palabra, no la aritmética
+      #   (ver el reporte de la tarea para el número real).
+      JAX_CI_MIN_PASSED: "1674"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -3286,7 +3654,18 @@ jobs:
         run: git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
 
       - name: Suite backend (sin DB) -- -rs lista cada skip con su motivo
-        run: python -m pytest -v -rs --junitxml=junit.xml
+        # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,
+        # mismo hallazgo que en el job con DB, ver su comentario): sus 3
+        # tests son medición manual opt-in (JAX_MEDIR_INDICE_PIPELINES=1),
+        # no "esto necesita MariaDB" -- el marcador de módulo los salta ACÁ
+        # igual, con o sin `--ignore` (pytest resuelve el skipif del módulo
+        # antes de pedir el fixture `client`), pero dejarlos colectados
+        # mezclaba su motivo real con el de los demás skips de este job, que
+        # SÍ son "no hay DB". Este job no gatea sobre `skip` (sólo lo
+        # imprime, más abajo), así que este cambio es de exactitud del
+        # mensaje, no de piso: `passed` no se mueve (eran skips, no passed),
+        # no hace falta tocar JAX_CI_MIN_PASSED.
+        run: python -m pytest -v -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit.xml
 
       - name: Piso de cobertura -- que "verde" nunca signifique "no corrió nada"
         # El scanner P10 de jax estuvo verde meses reportando "1 passed" sobre

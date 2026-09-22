@@ -12,7 +12,7 @@ import ajustes
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
-from auth.middleware import get_current_user
+from auth.middleware import get_current_user, require_superadmin
 from auth.models import AuthUser
 from kill_switch import exigir_mesa_libre
 from db.connection import get_pool
@@ -60,6 +60,16 @@ CODIGOS_DE_JACOBS = frozenset({
     # Ruling R54 del plan J (2026-09-17): /jacobs/preflight mira el kill switch
     # porque su sonda es una llamada paga. Su 423 se muestra con su texto.
     "kill_switch",
+    # Task 4 (2026-09-22, spec descartar-pipelines §4): discard/recover/
+    # hide/restore de jax (jacobs/routes.py, repo jax 0a37a54) devuelven
+    # estos 4 codes tal cual -- sin declararlos acá, _rechazo_de_jacobs los
+    # aplana al jacobs_rechazo genérico y el cliente pierde el `code` (y el
+    # `status` de transicion_no_permitida) que necesita para mostrar el
+    # motivo correcto. "pipeline_no_encontrado" también puede llegar por
+    # /discard|/recover|/hide|/restore cuando el pipeline se borra entre el
+    # chequeo de dueño de este backend y el pedido a Jacobs (carrera).
+    "pipeline_no_encontrado", "transicion_no_permitida", "cambio_concurrente",
+    "estado_previo_invalido",
 })
 # ENMIENDA ítem 2: estado_no_continuable trae {code, status, mensaje} -- NO
 # status_actual. "status" reemplaza a "status_actual"; se agregan "mensaje",
@@ -658,27 +668,88 @@ def es_del_usuario(user_id: str, tenant_id: str, user: AuthUser) -> bool:
     return user_id == user.user_id and tenant_id == user.tenant_id
 
 
+# Task 4 (2026-09-22, spec descartar-pipelines §4): el MISMO criterio de rol
+# que require_superadmin (auth/middleware.py:113) -- no se copia la lógica,
+# se reusa el campo que esa función ya mira. Un solo lugar decide qué es
+# "superadmin".
+def _es_superadmin(user: AuthUser) -> bool:
+    return user.role == "superadmin"
+
+
+# Fix round 1, Ruling 13(b) (2026-09-22): un solo lugar valida la FORMA del
+# id (400 pipeline_id_invalido) -- lo usan los cuatro proxies, directo o vía
+# _require_pipeline_owner/_require_pipeline_exists. Antes de este fix,
+# hide/restore no lo llamaban y un id con forma rara (p. ej. `abc?x=1`)
+# llegaba tal cual a Jacobs -- funcionaba porque Jacobs también lo
+# rechazaba, pero con SU 404 genérico, no con el 400 explícito que el
+# resto de las rutas ya daba para el mismo error del cliente.
+def _validar_uuid_o_400(pipeline_id: str) -> None:
+    try:
+        uuid.UUID(pipeline_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="pipeline_id_invalido")
+
+
 async def _require_pipeline_owner(pipeline_id: str, user: AuthUser) -> str | None:
     # 404 (no 403) para no confirmarle a un no-dueño que el pipeline_id
     # existe. Pipelines creadas antes de esta migración no tienen
     # owner_ack_at poblado y también devuelven 404 -- costo único de la
     # migración, no un bug (mismo criterio que regia con el owner file).
-    try:
-        uuid.UUID(pipeline_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="pipeline_id_invalido")
+    _validar_uuid_o_400(pipeline_id)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT user_id, tenant_id, owner_ack_at, name FROM jacobs_pipelines WHERE pipeline_id=%s",
+                "SELECT user_id, tenant_id, owner_ack_at, name, status FROM jacobs_pipelines WHERE pipeline_id=%s",
                 (pipeline_id,),
             )
             row = await cur.fetchone()
     if row is None or row[2] is None or not es_del_usuario(row[0], row[1], user):
         raise HTTPException(status_code=404, detail="pipeline_no_encontrado")
+    # Task 4 (spec descartar-pipelines §4): "un hidden no aparece en ninguna
+    # lista de su dueño: para él, ya no existe" -- mismo 404 que un
+    # pipeline_id ajeno, no un 403 (no se le confirma que existe). El
+    # superadmin SÍ puede llegar acá (hide/restore lo exigen vía
+    # require_superadmin, y GET/{id} lo deja pasar): la excepción es de rol,
+    # no de dueño -- _require_pipeline_owner sigue exigiendo que el pipeline
+    # sea DE ESTE user, oculto o no.
+    if row[4] == "hidden" and not _es_superadmin(user):
+        raise HTTPException(status_code=404, detail="pipeline_no_encontrado")
     # El nombre lo usa continue para el estado del panel (sin otra consulta).
     return row[3]
+
+
+async def _require_pipeline_exists(pipeline_id: str) -> None:
+    """Como `_require_pipeline_owner`, pero SIN exigir dueño (spec
+    descartar-pipelines §4): "un superadmin que no es dueño no pasa
+    _require_pipeline_owner en recover" -- para el superadmin, recuperar
+    sólo exige que el pipeline exista; a quién pertenece lo decide
+    `_estado_de_descarte`/el rol, no esta función."""
+    _validar_uuid_o_400(pipeline_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT 1 FROM jacobs_pipelines WHERE pipeline_id=%s", (pipeline_id,))
+            row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="pipeline_no_encontrado")
+
+
+# Fix round 1, Ruling 13(a) (2026-09-22): trae status Y descartado_por, no
+# sólo descartado_por -- el 403 de recover_pipeline sólo tiene sentido
+# cuando el pipeline ESTÁ discarded por otro. `descartado_por` NULL (nunca
+# se descartó, o ya se recuperó) o un status distinto de 'discarded' (doble
+# recover, carrera) no son "otro te lo ganó": son un pedido que Jacobs
+# rechaza solo con 409 transicion_no_permitida -- ese rechazo es la fuente
+# de verdad, no un 403 inventado acá antes de preguntarle.
+async def _estado_de_descarte(pipeline_id: str) -> tuple[str | None, str | None]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT status, descartado_por FROM jacobs_pipelines WHERE pipeline_id=%s", (pipeline_id,))
+            row = await cur.fetchone()
+    return (row[0], row[1]) if row else (None, None)
 
 
 # T6-5a (2026-09-15): la lista sale de jacobs_pipelines con la MISMA regla de
@@ -686,15 +757,86 @@ async def _require_pipeline_owner(pipeline_id: str, user: AuthUser) -> str | Non
 # owner_ack_at poblado). Antes hacía proxy de GET {JACOBS_URL}/pipeline, que
 # Jacobs no tiene (405 devuelto como 200) y que no filtraba nada: el día que
 # existiera, entregaba todos los pipelines a cualquier sesión.
-# Índice idx_jacobs_pipelines_duenio (user_id, tenant_id, created_at), creado
-# en db/migrations.py; EXPLAIN en tests/test_t6_seguimiento.py y en
-# test_historial_pipelines.py (Task 7, 2026-09-18: paginado con LIMIT/OFFSET,
-# el índice sigue cubriendo el WHERE + ORDER BY -- el OFFSET no agrega
-# filesort ni temporary, solo salta filas dentro del mismo rango del índice).
+#
+# Índice idx_jacobs_pipelines_duenio (user_id, tenant_id, created_at): lo
+# crea el `init_tables()` de `jax` (repo aparte), NO `db/migrations.py` de
+# ESTE repo -- corrección (fix round 3, 2026-09-22) de un comentario que
+# decía lo contrario desde 2026-09-15. La regla de fondo es de `jax`, de esa
+# misma fecha (Ruling T6-6 de JAX, no de esta tarea: "jacobs_pipelines es
+# del repo jax ... la plataforma no corre DDL sobre tablas de jax", ver
+# jax/jacobs/store.py) -- lo que se corrige acá es que este comentario, en
+# ESTE repo, había quedado desactualizado contra esa regla.
+#
+# Fix round 5 (2026-09-22): corregido QUIÉN lo usa hoy -- NINGUNA consulta
+# de PRODUCCIÓN de este repo va por este índice desde el fix round 4 (ver
+# más abajo por qué la lista principal pasó a idx_pipelines_visibles).
+# Corrección (cierre, Ruling 23, punto (d)): la afirmación anterior decía
+# "ninguna consulta ... lo usa" a secas, y eso era falso -- SÍ hay una que
+# lo usa de verdad, sólo que no es de producción:
+# `test_carga_indice_pipelines_del_usuario.py` (opt-in,
+# JAX_MEDIR_INDICE_PIPELINES=1) define `SQL_FORCE_DUENIO` con
+# `FORCE INDEX (idx_jacobs_pipelines_duenio)` y la CORRE contra la base de
+# test para medir Handler_read/tiempo y dejar constancia de por qué el fix
+# round 4 lo reemplazó por idx_pipelines_visibles (el costo lineal que
+# documenta el bloque de abajo). `test_t6_seguimiento.py::test_T6_6_el_indice_de_duenio_existe_con_sus_columnas`
+# es aparte, y sigue sin ejecutar ninguna consulta: sólo comprueba que el
+# índice EXISTE (`information_schema.STATISTICS`).
+#
+# FORCE INDEX (idx_pipelines_visibles) -- fix round 4, Ruling 18/19,
+# 2026-09-22, reemplaza el FORCE INDEX (idx_jacobs_pipelines_duenio) del
+# fix round 3. La razón real: `idx_jacobs_pipelines_duenio` NO acota el
+# costo por el LIMIT -- es un range scan por (user_id, tenant_id) en orden
+# de created_at, así que con pocas filas vivas entre muchas descartadas
+# tiene que recorrer casi el histórico ENTERO del tenant para juntar las
+# del LIMIT (medido: 4,2-4,4 ms con 5000 descartadas y 3 vivas, ver
+# docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md -- el fix round
+# 3 diagnosticó esto y lo dejó como "costo conocido, no resuelto").
+#
+# `jax` agrega una columna GENERADA `visible` (VIRTUAL, TINYINT(1),
+# `status NOT IN ('discarded','hidden') AND owner_ack_at IS NOT NULL`) e
+# `idx_pipelines_visibles (user_id, tenant_id, visible, created_at)` --
+# Task 1-bis de jax, Ruling 18/19. Con `visible` DENTRO del índice, el
+# rango que el motor recorre ya viene filtrado a las filas visibles: el
+# costo lo acota el LIMIT, no cuántas descartadas/ocultas/sin-ack haya
+# antes. Probado con EXPLAIN + contadores `Handler_read` reales (no sólo
+# la clave del plan) en tests/test_pipelines_descarte.py, en TRES formas
+# (historial largo, muchos descartados, hijos sin ack). Medido con número
+# en docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md.
+#
+# `status NOT IN (...)`/`owner_ack_at IS NOT NULL` YA NO van en el WHERE:
+# `visible` los incluye a los dos, y mantenerlos acá sería una segunda
+# fuente de la misma regla que se puede desincronizar sola (Regla
+# Absoluta). Verificado con EXPLAIN que quitarlos NO cambia el plan (mismo
+# `key`/`key_len`/`rows`/`Extra` con o sin la redundancia) -- no es una
+# suposición, es lo que decide si esta simplificación es segura.
+#
+# Acoplamiento de deploy (a diferencia del `IGNORE INDEX` del fix round 2,
+# pero IGUAL de real): `idx_pipelines_visibles` lo agrega jax#259 (columna
+# GENERADA `visible`). `FORCE INDEX` con un nombre que no existe es un
+# ERROR de MariaDB (1176), no un hint que se ignora: el `jax` desplegado
+# CON jax#259 tiene que estar en producción ANTES que este código -- que
+# jax#259 esté MERGEADO no alcanza, tiene que estar DESPLEGADO (ver el
+# runbook de despliegue en docs/, orden obligatorio).
 SQL_PIPELINES_DEL_USUARIO = (
     "SELECT pipeline_id, name, status, created_at, updated_at FROM jacobs_pipelines "
-    "WHERE user_id=%s AND tenant_id=%s AND owner_ack_at IS NOT NULL "
+    "FORCE INDEX (idx_pipelines_visibles) "
+    "WHERE user_id=%s AND tenant_id=%s AND visible = 1 "
     "ORDER BY created_at DESC LIMIT %s OFFSET %s"
+)
+# 2026-09-22 (spec descartar-pipelines §4): la vista "Descartados" -- propia,
+# paginada ("van a ser muchos en el tiempo", decisión de Fernando), NO la
+# lista principal. Va por idx_pipelines_descartados (user_id, tenant_id,
+# status, descartado_at) -- SQL_PIPELINES_DEL_USUARIO de arriba va por
+# idx_pipelines_visibles (fix round 4, Ruling 18/19; antes de esa ronda iba
+# por idx_jacobs_pipelines_duenio); son dos índices para dos consultas, no
+# uno ampliado, porque el orden de cada una es distinto (created_at vs
+# descartado_at) y un índice compuesto no sirve dos ORDER BY diferentes sin
+# filesort en alguna de las dos.
+SQL_DESCARTADOS_DEL_USUARIO = (
+    "SELECT pipeline_id, name, status, created_at, updated_at, descartado_at "
+    "FROM jacobs_pipelines "
+    "WHERE user_id=%s AND tenant_id=%s AND owner_ack_at IS NOT NULL AND status='discarded' "
+    "ORDER BY descartado_at DESC LIMIT %s OFFSET %s"
 )
 # Tope MÁXIMO de página, no un corte fijo del historial (Task 7, 2026-09-18):
 # antes era el único LIMIT posible y un historial con más filas que esto
@@ -814,10 +956,59 @@ async def list_pipelines(
     user: AuthUser = Depends(get_current_user),
     limite: int = Query(LISTA_PIPELINES_MAX, ge=1, le=LISTA_PIPELINES_MAX),
     offset: int = Query(0, ge=0),
+    # 2026-09-22 (spec descartar-pipelines §4): la vista "Descartados" pide
+    # ?estado=discarded -- el ÚNICO valor válido hoy (los hidden no tienen
+    # vista propia del dueño, spec §4: "para él, ya no existe"; su vista es
+    # /api/admin/pipelines/ocultos, sólo superadmin).
+    estado: str | None = Query(None, pattern="^discarded$"),
 ):
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            if estado == "discarded":
+                await cur.execute(SQL_DESCARTADOS_DEL_USUARIO,
+                                  (user.user_id, user.tenant_id, limite + 1, offset))
+                filas_d = await cur.fetchall()
+                hay_mas_d = len(filas_d) > limite
+                filas_d = filas_d[:limite]
+                # "detenidos"/"causa" van vacíos a propósito (Step 2 del
+                # brief): un descartado no es un "detenido" (ESTADOS_CONTINUABLES
+                # es {aborted, expired}, nunca 'discarded'), así que no hay
+                # eventos de causa que buscar -- ni la consulta extra que eso
+                # pediría.
+                #
+                # duracion_s se queda en None: updated_at de un descartado es
+                # el INSTANTE del descarte (store.py de jax lo pisa en el
+                # mismo UPDATE), no el fin real de la corrida -- "duración"
+                # ahí sería un dato FABRICADO, no uno que se perdió
+                # (Principio VIII).
+                #
+                # costo_usd (fix round 1, Ruling 13(c), 2026-09-22): SÍ se
+                # calcula, MISMA fuente que la lista principal --
+                # SUM(axioma_usage.cost_usd) por pipeline_id
+                # (sql_costo_por_pipeline). No hay ninguna razón de Principio
+                # VIII para omitirlo acá: el gasto de un pipeline no cambia
+                # porque se lo haya descartado (spec §2, "ninguna fila sale
+                # de la base -- tampoco de axioma_usage"), a diferencia de
+                # duracion_s, que sí se vuelve un dato inventado.
+                costos_d = {}
+                ids_descartados = [pid for pid, _n, _st, _c, _u, _d in filas_d]
+                if ids_descartados:
+                    await cur.execute(sql_costo_por_pipeline(len(ids_descartados)), ids_descartados)
+                    for pid, suma in await cur.fetchall():
+                        if suma is not None:
+                            costos_d[pid] = round(float(suma), 6)
+                return {
+                    "pipelines": [
+                        {
+                            "pipeline_id": pid, "name": name, "status": st,
+                            "created_at": c, "updated_at": u, "descartado_at": d,
+                            "duracion_s": None, "costo_usd": costos_d.get(pid), "causa": None,
+                        }
+                        for pid, name, st, c, u, d in filas_d
+                    ],
+                    "has_more": hay_mas_d,
+                }
             # Se pide una fila de más (limite+1) para saber si hay una página
             # siguiente sin un segundo COUNT(*) -- LAS CUATRO/cache: no se
             # recalcula lo que ya se puede leer de la misma consulta.
@@ -1007,6 +1198,80 @@ async def cancel_pipeline(
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
+
+
+# ----------------------------------------------------------------
+#  POST /pipelines/{id}/{discard,recover,hide,restore} (Task 4, 2026-09-22,
+#  spec descartar-pipelines §4). Jacobs (repo jax, rutas literales en
+#  jacobs/routes.py) valida la transición y escribe con CAS; QUIÉN puede
+#  pedirla la valida ESTE backend, mismo reparto que /cancel hoy. No hay
+#  liberación de cupo acá: discard/hide sólo se piden desde estados que ya
+#  son ESTADOS_SIN_CUPO en jax (aborted/expired/discarded) -- el cupo, si
+#  quedaba pendiente de liberar por una carrera con el poller, lo libera
+#  _poll_one_pipeline (jax_engine/state.py, Ruling 5) cuando lo vuelve a ver.
+# ----------------------------------------------------------------
+async def _proxy_descarte(pipeline_id: str, accion: str, user: AuthUser) -> dict:
+    client = await get_http_client()
+    try:
+        r = await client.post(f"{JACOBS_URL}/pipeline/{pipeline_id}/{accion}", timeout=10.0,
+                              json={"user_id": str(user.user_id)},
+                              headers=encabezados_las_manos())
+        return _json_de_jacobs(r)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail={"code": "jacobs_no_responde", "motivo": recortar_redactado(str(e), 200)})
+
+
+@router.post("/{pipeline_id}/discard")
+async def discard_pipeline(pipeline_id: str, user: AuthUser = Depends(get_current_user)):
+    await _require_pipeline_owner(pipeline_id, user)
+    return await _proxy_descarte(pipeline_id, "discard", user)
+
+
+@router.post("/{pipeline_id}/recover")
+async def recover_pipeline(pipeline_id: str, user: AuthUser = Depends(get_current_user)):
+    # Spec §4: "descartado_por == user o superadmin". Un superadmin que NO
+    # es dueño no pasa _require_pipeline_owner (404, mismo criterio que
+    # cualquier no-dueño) -- para él, recuperar sólo exige que el pipeline
+    # exista; el dueño real sigue siendo quien Jacobs escribe en la
+    # transición (el `user_id` que este backend manda es el del pedido, no
+    # el que queda registrado como dueño -- ownership no cambia con recover).
+    if _es_superadmin(user):
+        await _require_pipeline_exists(pipeline_id)
+    else:
+        await _require_pipeline_owner(pipeline_id, user)
+        # Fix round 1, Ruling 13(a): el 403 es SÓLO "otro te lo ganó" --
+        # discarded, y descartado_por es alguien más. `descartado_por` NULL
+        # (nunca se descartó, o ya se recuperó -- store.py lo limpia en el
+        # mismo UPDATE del recover) o un status que ya no es 'discarded'
+        # (doble recover, carrera con otro recover/hide) dejan pasar: Jacobs
+        # decide con su propio CAS y responde 409 transicion_no_permitida,
+        # que es la verdad -- no se la inventa este backend de antemano.
+        estado, descartado_por = await _estado_de_descarte(pipeline_id)
+        if estado == "discarded" and descartado_por is not None and descartado_por != str(user.user_id):
+            raise HTTPException(status_code=403, detail="recuperar_no_permitido")
+    return await _proxy_descarte(pipeline_id, "recover", user)
+
+
+@router.post("/{pipeline_id}/hide")
+async def hide_pipeline(pipeline_id: str, user: AuthUser = Depends(require_superadmin)):
+    # Sin _require_pipeline_owner/_require_pipeline_exists antes: superadmin
+    # ya es la única guardia (spec §4), y un pipeline_id inexistente lo
+    # rechaza Jacobs con 404 pipeline_no_encontrado -- una consulta local de
+    # más acá no cambiaría el resultado (LAS CUATRO/cache). Sí se valida la
+    # FORMA (400 pipeline_id_invalido, fix round 1 Ruling 13(b)): eso no
+    # gasta una consulta, y es el mismo 400 explícito que ya dan los demás
+    # proxies para un id con forma rara -- antes hide/restore lo mandaban
+    # tal cual a Jacobs.
+    _validar_uuid_o_400(pipeline_id)
+    return await _proxy_descarte(pipeline_id, "hide", user)
+
+
+@router.post("/{pipeline_id}/restore")
+async def restore_pipeline(pipeline_id: str, user: AuthUser = Depends(require_superadmin)):
+    _validar_uuid_o_400(pipeline_id)
+    return await _proxy_descarte(pipeline_id, "restore", user)
 
 
 @router.post("/{pipeline_id}/continue/preflight")

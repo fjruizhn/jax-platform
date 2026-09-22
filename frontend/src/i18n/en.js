@@ -17,6 +17,17 @@ const ETIQUETAS_DE_ESTADO = {
   // needs Fernando's call. Deliberately distinct from "Completed" and
   // "Failed": a disputed pipeline is neither.
   disputed: 'Unresolved objection',
+  // Task 4/5/6/7 (2026-09-22, spec descartar-pipelines): two new statuses in
+  // jax. Fix round 1: added here because `transicion_no_permitida`
+  // (erroresMesa, below) can carry `status: 'discarded'`/`'hidden'` -- e.g. a
+  // double recover, or a hide over something already restored -- and without
+  // this entry it fell back to the generic text instead of naming the
+  // status. Every consumer of this dictionary was checked: none shows a
+  // `discarded`/`hidden` outside that case -- `GET /pipelines` with no
+  // filter excludes them, so they never appear in the "All" status column
+  // or as `activePipeline`.
+  discarded: 'Discarded',
+  hidden: 'Hidden',
 }
 
 const UN_PASO = 'A step'
@@ -95,6 +106,14 @@ export default {
   // Nombre guardado del pipeline: el objetivo, recortado a 50 caracteres.
   pipelineName: (objetivo) => `Pipeline: ${objetivo.slice(0, 50)}`,
 
+  // Descartar un pipeline detenido (Task 5, spec 2026-09-22-descartar-pipelines §5).
+  cancelar: 'Cancel',
+  descartarPipeline: 'Discard',
+  descartarTitulo: 'Discard pipeline',
+  descartarMensaje: (nombre) => `"${nombre}" leaves Stopped. You can recover it from History → Discarded.`,
+  descartarConfirmar: 'Discard',
+  descartarError: 'Could not discard the pipeline. Try again.',
+
   // Audit log
   auditLog: 'Audit Log',
   loading: 'Loading…',
@@ -140,6 +159,14 @@ export default {
     pipeline_no_encontrado: () => 'The pipeline does not exist.',
     jacobs_rechazo: (d) => `Jacobs rejected the pipeline (${d.status}).`,
     jacobs_no_responde: () => 'Jacobs did not respond.',
+    // Discard/recover/hide/restore (Task 4/5/6/7, spec
+    // 2026-09-22-descartar-pipelines §4).
+    recuperar_no_permitido: () => 'Someone else already discarded it: only that person or a superadmin can recover it.',
+    transicion_no_permitida: (d) => (typeof d?.status === 'string' && Object.hasOwn(ETIQUETAS_DE_ESTADO, d.status)
+      ? `That change is not possible: its status is "${ETIQUETAS_DE_ESTADO[d.status]}".`
+      : 'That change is not possible in the pipeline\'s current status.'),
+    cambio_concurrente: () => 'Another request changed this pipeline at the same time. Try again.',
+    estado_previo_invalido: () => 'The pipeline has no valid previous state to go back to.',
     archivo_demasiado_grande: (d) => `The file exceeds the ${Math.round(d.max_bytes / 1048576)} MB maximum.`,
     pdf_ilegible: () => 'The PDF could not be read.',
     // Preflight and continue (spec 2026-09-17)
@@ -281,6 +308,20 @@ export default {
   historialLoadingMore: 'Loading more…',
   historialViewDetail: 'View detail',
   historialCloseDetail: 'Close detail',
+
+  // Discarded tab (Task 6, spec 2026-09-22-descartar-pipelines §5).
+  cargarMas: 'Load more',
+  pestanaTodos: 'All',
+  pestanaDescartados: 'Discarded',
+  descartadosColFecha: 'Discarded',
+  sinDescartados: 'No discarded pipelines.',
+  descartadosError: 'Could not load the discarded list. Try again.',
+  recuperarPipeline: 'Recover',
+  recuperarError: 'Could not recover the pipeline. Try again.',
+  borrarPipeline: 'Delete',
+  borrarTitulo: 'Delete pipeline',
+  borrarMensaje: (nombre) => `"${nombre}" stops showing up in any list, including this one. Only a superadmin can restore it from Administration → Hidden pipelines.`,
+  borrarError: 'Could not delete the pipeline. Try again.',
 
   detalleTitle: (nombre) => `Detail — ${nombre}`,
   detalleLoading: 'Loading detail…',
@@ -526,6 +567,7 @@ export default {
   adminSettings: 'Settings',
   adminCosts: 'Costs',
   adminMemoria: 'Memory',
+  adminPipelinesOcultos: 'Hidden pipelines',
   adminBack: (nombre) => `Back to ${nombre}`,
 
   // Admin dashboard
@@ -735,6 +777,15 @@ export default {
   adminRepoDeleteTitle: (name) => `Delete ${name}`,
   adminRepoDeleteMessage: 'The file is removed from the repository and cannot be undone.',
   adminRepoSize: (bytes) => bytes < 1024 ? `${bytes}B` : bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`,
+
+  // Administration → Hidden pipelines (Task 7, spec 2026-09-22-descartar-pipelines §5).
+  pipelinesOcultosTitulo: 'Hidden pipelines',
+  pipelinesOcultosColFecha: 'Hidden',
+  pipelinesOcultosError: 'Could not load the hidden pipelines.',
+  sinOcultos: 'No hidden pipelines.',
+  restaurarPipeline: 'Restore',
+  restaurarError: 'Could not restore the pipeline. Try again.',
+  ocultoDe: (usuario) => `From ${usuario}`,
 
   // Admin settings
   adminSettingsTitle: 'System Configuration',

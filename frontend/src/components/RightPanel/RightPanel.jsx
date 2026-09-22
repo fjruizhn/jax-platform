@@ -6,6 +6,7 @@ import AuditLog from './AuditLog'
 import api from '../../api/client'
 import AlertaError from '../AlertaError'
 import ContinuarPipelineModal from './ContinuarPipelineModal'
+import Dialogo from '../Dialogo'
 import { textoDeCausa, textoDeErrorDeMesa, textoDeViolacion } from '../../api/errores'
 
 // Violaciones de un 422 prevuelo_rechazado al reanudar o aprobar (resume y
@@ -67,6 +68,12 @@ function RightPanel() {
   const [errorDetenidos, setErrorDetenidos] = useState(false)
   const [aContinuar, setAContinuar] = useState(null)
 
+  // Descartar un pipeline detenido (Task 5, spec 2026-09-22-descartar-pipelines
+  // §5): confirmación en ventana propia, nunca confirm().
+  const [aDescartar, setADescartar] = useState(null)
+  const [descartando, setDescartando] = useState(false)
+  const [errorDescartar, setErrorDescartar] = useState(null)
+
   const pipelines = Object.values(activePipelines)
   // La lista se vuelve a pedir cuando cambia el estado de algún pipeline del
   // store (termina, se aborta, llega pipeline_continued). Tras continuar NO se
@@ -90,6 +97,52 @@ function RightPanel() {
 
   const cerrarContinuarDe = (pipelineId) => () =>
     setAContinuar((abierta) => (abierta?.pipeline_id === pipelineId ? null : abierta))
+
+  // Vuelve a pedir /pipelines a pedido (Task 5): tras descartar, la lista se
+  // recarga contra la verdad del backend. Fix round 1 (MINOR-5): ÚNICO
+  // mecanismo -- antes también había una baja optimista de la tarjeta
+  // (`setDetenidos` con un filter), y las dos a la vez tapaban cuál de las
+  // dos hacía el trabajo. La recarga es la fuente de verdad: si el backend
+  // por algún motivo todavía devuelve el pipeline (carrera, caché de más
+  // abajo), la tarjeta tiene que seguir ahí, no desaparecer por las dudas.
+  function recargarDetenidos() {
+    return api.get('/pipelines')
+      .then(({ data }) => {
+        setErrorDetenidos(false)
+        const lista = Array.isArray(data?.pipelines) ? data.pipelines : []
+        setDetenidos(lista.filter((p) => p && CONTINUABLES.includes(p.status)))
+      })
+      .catch(() => setErrorDetenidos(true))
+  }
+
+  // Fix round 1 (MINOR-1): errorDescartar sobrevivía al cierre del diálogo,
+  // contaminando la próxima vez que se abría -- se limpia acá, en los tres
+  // disparadores (abrir/empezar la acción, cancelar, cerrar); confirmar ya
+  // se limpiaba a sí mismo.
+  function abrirDescartar(p) {
+    setErrorDescartar(null)
+    setADescartar(p)
+  }
+
+  function cerrarDescartar() {
+    setADescartar(null)
+    setErrorDescartar(null)
+  }
+
+  async function confirmarDescartar() {
+    const pipelineId = aDescartar.pipeline_id
+    setDescartando(true)
+    setErrorDescartar(null)
+    try {
+      await api.post(`/pipelines/${pipelineId}/discard`)
+      setADescartar(null)
+      await recargarDetenidos()
+    } catch (e) {
+      setErrorDescartar(textoDeErrorDeMesa(t, e, t.descartarError))
+    } finally {
+      setDescartando(false)
+    }
+  }
 
   // El store (eventos en vivo) es más nuevo que la lista: uno que ya corre no
   // se ofrece aunque la lista todavía no se haya vuelto a pedir.
@@ -243,6 +296,10 @@ function RightPanel() {
                     className="mt-2 w-full py-1.5 rounded-lg bg-accion hover:bg-accion-hover text-sobre-color text-xs font-semibold transition-colors">
                     {t.continuarPipeline}
                   </button>
+                  <button type="button" onClick={() => abrirDescartar(p)}
+                    className="mt-1 w-full py-1.5 rounded-lg border border-borde text-texto-suave hover:text-texto text-xs font-semibold transition-colors">
+                    {t.descartarPipeline}
+                  </button>
                 </div>
               ))}
             </div>
@@ -259,6 +316,21 @@ function RightPanel() {
         // de A sólo cierra si la abierta sigue siendo la de A.
         <ContinuarPipelineModal key={aContinuar.pipeline_id} pipeline={aContinuar}
           onClose={cerrarContinuarDe(aContinuar.pipeline_id)} />
+      )}
+      {aDescartar && (
+        <Dialogo idTitulo="titulo-descartar" titulo={t.descartarTitulo}
+          onCerrar={cerrarDescartar}>
+          <p className="text-sm text-texto mb-4">{t.descartarMensaje(aDescartar.name)}</p>
+          {errorDescartar && <AlertaError className="mb-3 text-xs">{errorDescartar}</AlertaError>}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={cerrarDescartar}
+              className="px-3 py-1.5 rounded-lg border border-borde text-sm">{t.cancelar}</button>
+            <button type="button" onClick={confirmarDescartar} disabled={descartando}
+              className="px-3 py-1.5 rounded-lg bg-accion hover:bg-accion-hover text-sobre-color text-sm font-semibold">
+              {t.descartarConfirmar}
+            </button>
+          </div>
+        </Dialogo>
       )}
     </div>
   )

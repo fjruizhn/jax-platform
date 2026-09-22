@@ -15,6 +15,11 @@ const NAV_ITEMS = [
   { path: 'settings',  labelKey: 'adminSettings',  icon: '⚙' },
   { path: 'smtp',      labelKey: 'adminSmtp',      icon: '✉' },
   { path: 'costs',     labelKey: 'adminCosts',     icon: '💰' },
+  // Fix round 1 (MINOR-7, 2026-09-22): la ruta ya existía (Admin.jsx) y el
+  // enlace de BarraUsuario ya llevaba acá, pero sin entrada en este menú el
+  // superadmin no podía volver a "Pipelines ocultos" sin salir de
+  // Administración y volver a hacer clic en el ícono de la barra.
+  { path: 'pipelines-ocultos', labelKey: 'adminPipelinesOcultos', icon: '🙈' },
 ]
 
 export default function AdminSidebar() {

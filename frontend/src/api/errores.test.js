@@ -47,6 +47,31 @@ describe('límite de profundidad JSON (2026-09-17)', () => {
   })
 })
 
+// Fix round 1 (revisión adversarial, named risk 2, 2026-09-22): antes de
+// esta ronda, ETIQUETAS_DE_ESTADO (i18n/es.js, i18n/en.js) no tenía
+// `discarded`/`hidden` -- un `transicion_no_permitida` con `status:
+// 'discarded'` (p.ej. un doble recover, o un hide sobre algo que ya se
+// restauró) caía al texto genérico en vez de nombrar el estado.
+describe('transicion_no_permitida nombra discarded/hidden, no sólo el genérico (fix round 1)', () => {
+  it('status: discarded se traduce con la etiqueta, en los dos idiomas', () => {
+    const e = err({ code: 'transicion_no_permitida', status: 'discarded' })
+    expect(textoDeErrorDeMesa(es, e, es.errorFacet)).toContain(es.pipelineStatusLabels.discarded)
+    expect(textoDeErrorDeMesa(en, e, en.errorFacet)).toContain(en.pipelineStatusLabels.discarded)
+    expect(textoDeErrorDeMesa(es, e, es.errorFacet)).not.toBe(es.errorFacet)
+  })
+
+  it('status: hidden se traduce con la etiqueta, en los dos idiomas', () => {
+    const e = err({ code: 'transicion_no_permitida', status: 'hidden' })
+    expect(textoDeErrorDeMesa(es, e, es.errorFacet)).toContain(es.pipelineStatusLabels.hidden)
+    expect(textoDeErrorDeMesa(en, e, en.errorFacet)).toContain(en.pipelineStatusLabels.hidden)
+  })
+
+  it('un status desconocido sigue cayendo al texto genérico de la transición, nunca crudo', () => {
+    const e = err({ code: 'transicion_no_permitida', status: 'algo_nuevo' })
+    expect(textoDeErrorDeMesa(es, e, es.errorFacet)).not.toContain('algo_nuevo')
+  })
+})
+
 describe('textoDeAviso (A-53)', () => {
   it('identidad del modelo arma el hosting por proveedor, en cada idioma', () => {
     const aviso = { code: 'identidad_del_modelo', params: { facet: 'jax_local', model: 'qwen', provider: 'ollama' } }

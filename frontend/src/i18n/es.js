@@ -17,6 +17,19 @@ const ETIQUETAS_DE_ESTADO = {
   // requiere la decisión de Fernando. Distinto a propósito de "Completado"
   // y de "Fallido": un pipeline disputed no es ninguno de los dos.
   disputed: 'Con objeción sin resolver',
+  // Task 4/5/6/7 (2026-09-22, spec descartar-pipelines): dos estados nuevos
+  // en jax (jacobs/models.py::PipelineStatus). Revisión fix round 1: se
+  // agregan acá (no sólo en las pantallas propias de Descartados/Ocultos)
+  // porque `transicion_no_permitida` (erroresMesa, abajo) puede traer
+  // `status: 'discarded'` o `'hidden'` -- p.ej. un doble recover, o un hide
+  // sobre algo que ya se restauró -- y sin esta entrada caía al texto
+  // genérico en vez de nombrar el estado. Revisado cada consumidor de este
+  // diccionario (RightPanel.jsx, HistorialContenido.jsx, api/errores.js):
+  // ninguno muestra un `discarded`/`hidden` fuera de este caso -- `GET
+  // /pipelines` sin filtro los excluye, así que nunca aparecen en la
+  // columna de estado de "Todos" ni como `activePipeline`.
+  discarded: 'Descartado',
+  hidden: 'Oculto',
 }
 
 const UN_PASO = 'Un paso'
@@ -95,6 +108,16 @@ export default {
   // Nombre guardado del pipeline: el objetivo, recortado a 50 caracteres.
   pipelineName: (objetivo) => `Pipeline: ${objetivo.slice(0, 50)}`,
 
+  // Descartar un pipeline detenido (Task 5, spec 2026-09-22-descartar-pipelines
+  // §5): confirmación en ventana propia (Dialogo), nunca confirm(). `cancelar`
+  // es genérico -- se reutiliza en Task 6/7.
+  cancelar: 'Cancelar',
+  descartarPipeline: 'Descartar',
+  descartarTitulo: 'Descartar pipeline',
+  descartarMensaje: (nombre) => `"${nombre}" sale de Detenidos. Lo puedes recuperar desde Historial → Descartados.`,
+  descartarConfirmar: 'Descartar',
+  descartarError: 'No se pudo descartar el pipeline. Probá de nuevo.',
+
   // Audit log
   auditLog: 'Audit Log',
   loading: 'Cargando…',
@@ -140,6 +163,15 @@ export default {
     pipeline_no_encontrado: () => 'El pipeline no existe.',
     jacobs_rechazo: (d) => `Jacobs rechazó el pipeline (${d.status}).`,
     jacobs_no_responde: () => 'Jacobs no respondió.',
+    // Descartar/recuperar/ocultar/restaurar (Task 4/5/6/7, spec
+    // 2026-09-22-descartar-pipelines §4): los 4 codes propios de
+    // discard/recover/hide/restore que jax-platform propaga tal cual.
+    recuperar_no_permitido: () => 'Otro usuario ya lo descartó: sólo esa persona o un superadmin lo puede recuperar.',
+    transicion_no_permitida: (d) => (typeof d?.status === 'string' && Object.hasOwn(ETIQUETAS_DE_ESTADO, d.status)
+      ? `No se puede hacer ese cambio: su estado es «${ETIQUETAS_DE_ESTADO[d.status]}».`
+      : 'No se puede hacer ese cambio en el estado actual del pipeline.'),
+    cambio_concurrente: () => 'Otro pedido cambió este pipeline al mismo tiempo. Volvé a intentar.',
+    estado_previo_invalido: () => 'El pipeline no tiene un estado previo válido al que volver.',
     archivo_demasiado_grande: (d) => `El archivo supera el máximo de ${Math.round(d.max_bytes / 1048576)} MB.`,
     pdf_ilegible: () => 'No se pudo leer el PDF.',
     // Pre-vuelo y continuar (spec 2026-09-17)
@@ -296,6 +328,26 @@ export default {
   historialLoadingMore: 'Cargando más…',
   historialViewDetail: 'Ver detalle',
   historialCloseDetail: 'Cerrar detalle',
+
+  // Pestaña Descartados (Task 6, spec 2026-09-22-descartar-pipelines §5).
+  // `cargarMas` es genérico -- lo comparte la Task 7 (pipelines ocultos).
+  cargarMas: 'Cargar más',
+  pestanaTodos: 'Todos',
+  pestanaDescartados: 'Descartados',
+  descartadosColFecha: 'Descartado',
+  sinDescartados: 'No hay pipelines descartados.',
+  descartadosError: 'No se pudo cargar la lista de descartados. Probá de nuevo.',
+  recuperarPipeline: 'Recuperar',
+  // Fix round 1 (MINOR-4): texto genérico PROPIO, no el de Descartar --
+  // "no se pudo descartar" en un fallo de Recuperar mentiría sobre qué acción
+  // falló.
+  recuperarError: 'No se pudo recuperar el pipeline. Probá de nuevo.',
+  // "Borrar" = ocultar (spec §2): ninguna fila sale de la base, sólo un
+  // superadmin puede restaurarlo (Administración → Pipelines ocultos).
+  borrarPipeline: 'Borrar',
+  borrarTitulo: 'Borrar pipeline',
+  borrarMensaje: (nombre) => `"${nombre}" deja de verse en cualquier lista, incluida esta. Sólo un superadmin puede restaurarlo desde Administración → Pipelines ocultos.`,
+  borrarError: 'No se pudo borrar el pipeline. Probá de nuevo.',
 
   detalleTitle: (nombre) => `Detalle — ${nombre}`,
   detalleLoading: 'Cargando el detalle…',
@@ -551,6 +603,9 @@ export default {
   adminSettings: 'Configuración',
   adminCosts: 'Costos',
   adminMemoria: 'Memoria',
+  // Fix round 1 (MINOR-7): faltaba en AdminSidebar -- el superadmin entraba
+  // por el enlace de BarraUsuario pero no podía volver sin salir de Admin.
+  adminPipelinesOcultos: 'Pipelines ocultos',
   adminBack: (nombre) => `Volver a ${nombre}`,
 
   // Admin dashboard
@@ -767,6 +822,18 @@ export default {
   adminRepoDeleteTitle: (name) => `Eliminar ${name}`,
   adminRepoDeleteMessage: 'El archivo se borra del repositorio y no se puede deshacer.',
   adminRepoSize: (bytes) => bytes < 1024 ? `${bytes}B` : bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`,
+
+  // Administración → Pipelines ocultos (Task 7, spec
+  // 2026-09-22-descartar-pipelines §5): sólo superadmin -- lista de TODOS
+  // los usuarios (a diferencia de la pestaña Descartados, que es sólo la
+  // propia). Restaurar vuelve a `discarded`: reversible, sin confirmación.
+  pipelinesOcultosTitulo: 'Pipelines ocultos',
+  pipelinesOcultosColFecha: 'Oculto',
+  pipelinesOcultosError: 'No se pudieron cargar los pipelines ocultos.',
+  sinOcultos: 'No hay pipelines ocultos.',
+  restaurarPipeline: 'Restaurar',
+  restaurarError: 'No se pudo restaurar el pipeline. Probá de nuevo.',
+  ocultoDe: (usuario) => `De ${usuario}`,
 
   // Admin settings
   adminSettingsTitle: 'Configuración del Sistema',

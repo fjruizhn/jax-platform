@@ -177,6 +177,166 @@ curl -s -o /dev/null -w "%{http_code}\n" https://axioma-ia.io/api/health
   código viejo. Verificar comportamiento: un endpoint nuevo que devuelva 401 y
   no 404, y el hash del bundle.
 
+## Caso concreto: descartar/recuperar/ocultar pipelines (Task 4, 2026-09-22)
+
+La regla general de arriba ("`jax` va SIEMPRE antes que `jax-platform`") acá
+no es una buena práctica -- es un **hard fail**. `SQL_PIPELINES_DEL_USUARIO`
+(`GET /api/pipelines`, la lista principal) lleva
+`FORCE INDEX (idx_pipelines_visibles)`: si ese índice no existe todavía,
+MariaDB devuelve el error 1176 y el endpoint responde **500**, no un plan
+peor ni una degradación silenciosa.
+
+**Orden exacto, sin margen:**
+
+1. **`jax` primero, con jax#257 (descartar-pipelines) MÁS jax#259 (la
+   columna `visible`/`idx_pipelines_visibles`)** -- verificar que los DOS
+   estén en el `master` que se despliega antes de arrancar este paso: que
+   un PR esté mergeado no alcanza, tiene que estar en el checkout que se
+   va a poner en producción. Reiniciar `jax-las-manos`
+   (`sudo systemctl restart jax-las-manos`, mismo comando que el paso 1 de
+   arriba): el `init_tables()` de `jax` corre al arrancar el proceso y crea
+   `status_previo`/`descartado_por`/`descartado_at`/`visible` y los cuatro
+   índices nuevos (`idx_pipelines_descartados`, `idx_pipelines_ocultos`,
+   `idx_pipelines_visibles`, más los que ya trajo Task 3). Comprobar en la
+   base, no suponerlo:
+
+   ```sql
+   SHOW COLUMNS FROM jax_memory.jacobs_pipelines LIKE 'visible';
+   SHOW INDEX FROM jax_memory.jacobs_pipelines WHERE Key_name = 'idx_pipelines_visibles';
+   ```
+
+   **El camino feliz de arriba no es el único.** `init_tables()` (jax,
+   `jacobs/store.py::_agregar_columna_acotada`) espera hasta 30 s por el
+   metadata lock de cada `ADD COLUMN`/`CREATE INDEX`, y las columnas
+   CONTRATO **fallan CERRADO**: si otra transacción tiene `jacobs_pipelines`
+   tomada y la espera vence (error de MariaDB **1205**), `init_tables()`
+   levanta una excepción y **LAS MANOS no llega a arrancar** -- no es que
+   el DDL "todavía no corrió", es que el proceso murió intentándolo. Un
+   `SHOW COLUMNS` vacío en ese momento no distingue las dos cosas por sí
+   solo. Antes de repetir el `SHOW COLUMNS`/`SHOW INDEX` de arriba:
+
+   ```bash
+   sudo systemctl restart jax-las-manos
+   systemctl is-active jax-las-manos
+   ```
+
+   - Si da `active`: seguir con el `SHOW COLUMNS`/`SHOW INDEX` de arriba,
+     como documentado.
+   - Si NO da `active` (`failed`, `activating` en loop, etc.): buscar
+     `init_tables:` en el log del servicio --
+
+     ```bash
+     sudo journalctl -u jax-las-manos -n 100 --no-pager | grep 'init_tables:'
+     ```
+
+     Un mensaje del tipo `init_tables: no se pudo agregar
+     jacobs_pipelines.<columna> -- otra transacción tiene la tabla y venció
+     la espera de 30 s (1205 ...)` confirma el freno: otra transacción
+     tenía `jacobs_pipelines` tomada cuando el proceso arrancó. **El DDL es
+     idempotente** (`init_tables()` vuelve a chequear `information_schema`
+     antes de cada `ADD COLUMN`/`CREATE INDEX`, y una columna que ya existe
+     no se reintenta) -- esperar a que la transacción que tiene la tabla
+     termine (o encontrarla y matarla si quedó colgada,
+     `SHOW PROCESSLIST`/`SHOW ENGINE INNODB STATUS`) y volver a
+     `sudo systemctl restart jax-las-manos`. No hay nada que reparar a
+     mano: es la misma corrida, repetida.
+   - **No todo lo que crea `init_tables()` falla igual.** Las columnas
+     CONTRATO -- `status_previo`, `descartado_por`, `descartado_at` y
+     `visible` (Task 2 las escribe en la transición de estado; `visible` es
+     generada pero jax-platform depende de que exista para filtrar su
+     listado) -- fallan cerrado: si no se pueden crear, el proceso no
+     arranca, porque un `UPDATE`/`SELECT` contra una columna que no existe
+     rompería en producción de un modo peor (un `Unknown column` a mitad de
+     una transición, no un arranque que se detiene limpio). Los **índices**
+     (`idx_pipelines_descartados`, `idx_pipelines_ocultos`,
+     `idx_pipelines_visibles` y los que ya traía Task 3) son fail-**soft**:
+     si su propia espera de 30 s vence, queda un `ERROR` en el log con el
+     nombre del índice y el arranque **sigue** -- el próximo reinicio los
+     reintenta, y mientras tanto el plan de consulta es peor (o, para
+     `idx_pipelines_visibles`, el `FORCE INDEX` explícito del SQL de
+     jax-platform directamente da el error 1176 -- ver la nota del inicio
+     de esta sección), no un servicio caído.
+
+2. **Backend de jax-platform**, recién CON lo anterior confirmado. Antes de
+   este punto, cualquier build de jax-platform que ya incluya este código
+   (aunque sea una versión previa desplegada) seguiría sirviendo con el SQL
+   viejo -- el riesgo es desplegar la VERSIÓN NUEVA del backend (con
+   `FORCE INDEX (idx_pipelines_visibles)`) ANTES que el paso 1. Verificar
+   por comportamiento, no por `is-active`:
+
+   ```bash
+   curl -s http://127.0.0.1:8080/api/pipelines -H "Authorization: Bearer <token>"
+   # 200 con datos = ok. 500 = el paso 1 no terminó de verdad -- revisar
+   # SHOW INDEX antes de reintentar, no reiniciar a ciegas.
+   ```
+
+3. **Frontend** (interno primero, después el sitio público -- pasos 3 y 4
+   de arriba, sin cambios).
+
+**Qué se rompe si se salta el orden** (corregido, fix round 5, 2026-09-22:
+la versión anterior de este párrafo decía que TODOS estos endpoints
+fallaban "en el proxy, antes de la consulta" -- falso; cada uno rompe en un
+punto distinto, y en dos casos ni siquiera llega a pedirle nada a Jacobs).
+Dos errores de MariaDB en juego, nombrados donde corresponden:
+
+- **1054** `Unknown column '<col>' in '<clause>'`: la consulta SQL nombra
+  una columna que no existe en la tabla.
+- **1176** `Key '<índice>' doesn't exist in table '<tabla>'`: un
+  `FORCE INDEX`/`IGNORE INDEX` nombra un índice que no existe.
+
+Los dos llegan a `jax-platform` como una excepción de `aiomysql` sin
+capturar -- el handler genérico de FastAPI los convierte en **500**, no en
+un código propio del contrato de la API.
+
+**Escenario que describe la tabla de abajo (cierre, Ruling 23, punto (g)):
+NI jax#257 (descartar-pipelines: `status_previo`/`descartado_por`/
+`descartado_at` + `idx_pipelines_descartados`/`idx_pipelines_ocultos`) NI
+jax#259 (la columna `visible`/`idx_pipelines_visibles`) están desplegados
+todavía** -- el backend nuevo de jax-platform saltó el paso 1 completo, no
+sólo la mitad. Es el peor caso, y el que hay que evitar con el orden de
+arriba.
+
+| Qué | Dónde rompe primero | Por qué |
+|---|---|---|
+| `GET /api/pipelines` (lista principal) | **Local, SQL directo** | `FORCE INDEX (idx_pipelines_visibles)` -- **1176**, el índice no existe |
+| `GET /api/pipelines?estado=discarded` ("Descartados") | **Local, SQL directo** | `SQL_DESCARTADOS_DEL_USUARIO` selecciona `descartado_at` -- **1054**, la columna no existe. NO llega a pedirle nada a Jacobs: revienta antes del proxy |
+| `POST /pipelines/{id}/recover`, usuario NO superadmin | **Local, SQL directo** | `_estado_de_descarte()` (`api/pipelines.py`) hace `SELECT status, descartado_por ...` ANTES de decidir si deja pasar el pedido -- **1054**, `descartado_por` no existe. Tampoco llega al proxy |
+| `POST /pipelines/{id}/discard`, `/hide`, `/restore` (y `/recover` de un superadmin) | **En Jacobs, no local** | Ninguno de estos consulta una columna nueva antes de proxear -- `_require_pipeline_owner`/`_require_pipeline_exists` sólo tocan columnas que YA existían. SÍ llegan al proxy; lo que devuelvan depende de qué tan vieja sea la versión de Jacobs contra la que pegan (sin las rutas de Task 3, un 404 de ruta inexistente -- no un 500 de columna) |
+
+Sólo la fila de `discard`/`hide`/`restore` "llega al proxy" -- las otras
+tres rompen ANTES, del lado de jax-platform, sin que Jacobs se entere del
+pedido.
+
+**Caso intermedio -- jax#257 desplegado, jax#259 todavía NO (cierre,
+Ruling 23, punto (g)):** un despliegue a medias del paso 1, no todo o
+nada. Acá `status_previo`/`descartado_por`/`descartado_at` y los índices
+de jax#257 YA EXISTEN -- sólo falta `visible`/`idx_pipelines_visibles` de
+jax#259. Eso cambia el cuadro de arriba:
+
+| Qué | Con sólo jax#257 (sin jax#259) |
+|---|---|
+| `GET /api/pipelines` (lista principal) | Sigue en **1176/500** -- `FORCE INDEX (idx_pipelines_visibles)` sigue nombrando un índice que no existe. Es la ÚNICA fila que se queda igual de rota que en el peor caso |
+| `GET /api/pipelines?estado=discarded` ("Descartados") | **Funciona** -- `descartado_at` ya existe con jax#257 solo |
+| `POST /pipelines/{id}/recover`, usuario NO superadmin | **Funciona** -- `descartado_por` ya existe con jax#257 solo |
+| `POST /pipelines/{id}/discard`, `/hide`, `/restore` (y `/recover` de un superadmin) | **Funciona** igual que en el peor caso -- no dependía de ninguna columna nueva |
+
+O sea: con jax#257 desplegado pero no jax#259, el ÚNICO síntoma visible es
+la lista principal en 500 -- todo lo demás (Descartados, recover/discard/
+hide/restore) responde con normalidad, lo que puede confundir a quien
+diagnostique "a medias funciona, no puede ser el paso 1" -- SÍ es el paso
+1, sólo que incompleto. El chequeo de la sección 1 de arriba
+(`SHOW COLUMNS ... LIKE 'visible'` / `SHOW INDEX ... idx_pipelines_visibles`)
+es el que distingue este caso del peor caso: si `visible` ya aparece pero
+`GET /api/pipelines` sigue en 500, revisar el índice aparte -- la columna
+generada puede existir sin que el índice haya terminado de crearse (ver
+`_agregar_columna_acotada`/reintento en `jax/jacobs/store.py`).
+
+**Volver atrás, caso especial:** si este deploy salió en el orden
+incorrecto y `GET /api/pipelines` está en 500, la reversión MÁS RÁPIDA es
+la del backend de jax-platform (paso 2 de la sección "Volver atrás", más
+abajo) al SHA anterior a este cambio -- no hace falta tocar `jax` ni el
+esquema, que es aditivo.
+
 ## Volver atrás
 
 1. **Sitio público:** copiar de vuelta `~/respaldos-sitio/axioma-<fecha>/` en

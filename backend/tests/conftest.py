@@ -359,6 +359,52 @@ def _sembrar_credenciales_de_prueba(c) -> None:
     c.portal.call(_sembrar)
 
 
+def _esquema_de_jax_en_la_base_de_test(c):
+    """Corre el `init_tables()` de `jax` (repo aparte) contra la base de
+    ESTA sesión -- columnas/índices que `jax_memory_test` local no trae
+    (status_previo/descartado_por/descartado_at, idx_pipelines_descartados,
+    idx_pipelines_ocultos, y -- fix round 4, Ruling 18/19, jax#259 -- la
+    columna GENERADA `visible` e `idx_pipelines_visibles`). CI los tiene
+    porque clona jax MASTER y corre su propio init_tables() antes de la
+    suite; localmente no hay ese paso -- `JAX_REPO_PATH` tiene que apuntar
+    a un checkout de jax con jax#259 incluido (`idx_pipelines_visibles`
+    entre sus índices) para que estas columnas/índices existan.
+
+    Fix round 2 (2026-09-22), Ruling 16 punto 3: vive DENTRO del cuerpo de
+    `client()`, no como fixture `autouse` aparte -- un fixture separado que
+    dependiera de `client` le agregaría `client` a `fixturenames` de TODA la
+    suite (autouse es GLOBAL), y la Regla 1 de acá abajo saltea cualquier
+    test que tenga `client` en sus fixturenames bajo JAX_CI_NO_DB=1: los
+    2560 tests puros de la suite se hubieran saltado TODOS, no sólo los que
+    de verdad tocan DB (medido: "2560 skipped" antes de este cambio, "0
+    passed"). Llamado desde `client()` no agrega ninguna dependencia nueva:
+    todo test que ya pedía `client` YA lo arrastraba.
+
+    Se volvió necesario para módulos que ni siquiera son de esta Task
+    (test_historial_pipelines.py, test_t6_seguimiento.py, ...) porque
+    SQL_PIPELINES_DEL_USUARIO lleva un `FORCE INDEX` con un nombre de
+    índice que sólo existe si `init_tables()` ya corrió (fix round 2,
+    Ruling 16 punto 1, con `IGNORE INDEX (idx_pipelines_descartados,
+    idx_pipelines_ocultos)`; fix round 4, Ruling 18/19, con
+    `FORCE INDEX (idx_pipelines_visibles)`): un nombre de índice que no
+    existe es un ERROR DE MARIADB (1176 "Key ... doesn't exist"), no un
+    hint que se ignora en silencio -- CUALQUIER test que use esa consulta
+    revienta si corre antes de que este paso haya creado los índices.
+    Verificado con el orden invertido (test_t6_seguimiento.py,
+    test_historial_pipelines.py, test_pipelines_descarte.py): 16 fallos con
+    exactamente ese error antes de este cambio. `init_tables()` es
+    idempotente (chequea information_schema antes de cada ALTER/CREATE
+    INDEX), así que correrlo ya en CI (que ya lo corrió antes de la suite)
+    es un no-op medido."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(os.environ["JAX_REPO_PATH"])))
+    from jacobs import store as jacobs_store
+
+    c.portal.call(jacobs_store.init_tables)
+
+
 @pytest.fixture(scope="session")
 def client():
     from fastapi.testclient import TestClient
@@ -367,6 +413,7 @@ def client():
     with TestClient(app) as c:
         c.portal.call = _envolver_portal_call(c.portal.call)
         _sembrar_credenciales_de_prueba(c)
+        _esquema_de_jax_en_la_base_de_test(c)
         yield c
 
 

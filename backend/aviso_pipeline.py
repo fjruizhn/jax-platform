@@ -80,9 +80,19 @@ _TAREAS_EN_VUELO: set[asyncio.Task] = set()
 
 
 def encolar_aviso_fin_pipeline(pid: str, tenant_id: str, user_id: str, status: str, nombre: str) -> None:
-    """Se llama desde `_poll_one_pipeline` al detectar completed/failed.
-    SÍNCRONA y no bloqueante a propósito: dispara la Task y devuelve el
-    control al poller en el mismo tick -- no hay `await` acá adentro."""
+    """Se llama desde `_poll_one_pipeline` al detectar completed/failed/
+    disputed/expired. SÍNCRONA y no bloqueante a propósito: dispara la Task
+    y devuelve el control al poller en el mismo tick -- no hay `await` acá
+    adentro.
+
+    NUNCA se llama con status `discarded`/`hidden` (Task 4, spec
+    descartar-pipelines, fix round 1 Ruling 12, 2026-09-22): el propio
+    `_poll_one_pipeline` filtra esos dos ANTES de invocar esta función,
+    porque a diferencia de completed/failed/disputed/expired -- que el
+    pipeline alcanza SOLO -- son un pedido EXPLÍCITO de un usuario o del
+    superadmin; avisarle por correo que "terminó" es ruido, no información.
+    Por eso `_asunto`/`_enviar_aviso` de abajo no tienen (y no necesitan)
+    una rama para esos dos estados."""
     tarea = asyncio.create_task(_procesar_aviso(pid, tenant_id, user_id, status, nombre))
     _TAREAS_EN_VUELO.add(tarea)
     tarea.add_done_callback(_TAREAS_EN_VUELO.discard)

@@ -253,11 +253,20 @@ def test_la_consulta_paginada_usa_el_indice_de_dueño_sin_filesort_ni_temporary(
     """LAS CUATRO (indexing): EXPLAIN sobre la consulta REAL, con el OFFSET
     nuevo -- no alcanza con que el índice EXISTA (una base de tests
     persistente puede tenerlo de una corrida vieja aunque la migración ya no
-    lo cree); hay que ver que el plan lo USE."""
+    lo cree); hay que ver que el plan lo USE.
+
+    `idx_pipelines_visibles`, no `idx_jacobs_pipelines_duenio` (Task 4,
+    descartar-pipelines, fix round 4, Ruling 18/19, 2026-09-22):
+    SQL_PIPELINES_DEL_USUARIO cambió de índice para que el costo quede
+    acotado por el LIMIT en vez de por el histórico del tenant -- ver
+    api/pipelines.py y docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md.
+    Esta prueba (Task 7, 2026-09-18) sigue siendo la misma propiedad
+    (LAS CUATRO/indexing sobre la consulta paginada real); sólo cambió CUÁL
+    es el índice correcto."""
     filas = client.portal.call(
         sql, "EXPLAIN " + mod.SQL_PIPELINES_DEL_USUARIO,
         ("x", "TENANT-EXPLAIN-T7", mod.LISTA_PIPELINES_MAX, 5), True)
     ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
     assert tabla == "jacobs_pipelines"
-    assert clave == "idx_jacobs_pipelines_duenio", filas
+    assert clave == "idx_pipelines_visibles", filas
     assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas

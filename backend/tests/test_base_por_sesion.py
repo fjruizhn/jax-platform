@@ -307,3 +307,179 @@ def test_ningun_test_hardcodea_jax_db_name_fuera_del_modulo_dueno():
         "exigir_base_de_test()/fijar_base_de_test() de base_de_test.py:\n"
         + "\n".join(hallazgos)
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix round 4 de Task 4 (descartar-pipelines, 2026-09-22, Ruling 18/19
+# punto 4): clonar una tabla con una columna GENERATED y filas rompía con
+# 1906 -- `jacobs_pipelines.visible` (columna que agrega `jax`, Ruling
+# 18/19) es la primera columna generada que pasa por `_clonar_esquema()`,
+# y la plantilla compartida (`jax_memory_test`) SÍ puede tener filas en esa
+# tabla (jax-platform y jax comparten la misma base física). Mismo bug,
+# mismo arreglo, que jax aplicó a su propio `base_de_test.py` el mismo día
+# -- ver el docstring del módulo (espejo mínimo, sin paquete compartido).
+# `_columnas_copiables()`/`_copiar_filas()` arreglan esto con una lista
+# EXPLÍCITA de columnas (sin las GENERATED), no `SELECT *`. Se prueba
+# contra la base de la SESIÓN (no `jax_memory_test`, la plantilla real,
+# para no tocarla) con una tabla propia, desechable: origen (con datos) y
+# destino (vacía, misma forma) en una SEGUNDA base creada y borrada por el
+# propio test.
+# ---------------------------------------------------------------------------
+
+import uuid as _uuid  # noqa: E402
+
+from base_de_test import _columnas_copiables, _copiar_filas  # noqa: E402
+
+
+@pytest.mark.skipif(not os.environ.get("JAX_DB_HOST"), reason="necesita la MariaDB real")
+def test_copiar_filas_excluye_columnas_generadas_y_no_revienta_con_1906():
+    async def _cuerpo():
+        from db.connection import get_pool
+
+        origen = nombre_base_de_test()  # la base de ESTA sesión, ya existe
+        destino = f"{origen}_clon{_uuid.uuid4().hex[:8]}"
+        tabla = f"_diag_gen_{_uuid.uuid4().hex[:8]}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(f"CREATE DATABASE `{destino}`")
+                try:
+                    ddl = (
+                        f"CREATE TABLE `{{esquema}}`.`{tabla}` ("
+                        "id INT PRIMARY KEY, status VARCHAR(20) NOT NULL, "
+                        "visible TINYINT(1) GENERATED ALWAYS AS "
+                        "(status NOT IN ('discarded','hidden')) VIRTUAL)"
+                    )
+                    await cur.execute(ddl.format(esquema=origen))
+                    await cur.execute(ddl.format(esquema=destino))
+                    await cur.executemany(
+                        f"INSERT INTO `{origen}`.`{tabla}` (id, status) VALUES (%s,%s)",
+                        [(1, "completed"), (2, "discarded"), (3, "running")],
+                    )
+                    # El paso que rompía: `SELECT *`/`INSERT ... SELECT *`
+                    # incluiría `visible` -- 1906. `_copiar_filas` no.
+                    await _copiar_filas(cur, origen, destino, tabla)
+                    await cur.execute(
+                        f"SELECT id, status, visible FROM `{destino}`.`{tabla}` ORDER BY id"
+                    )
+                    filas = await cur.fetchall()
+                finally:
+                    await cur.execute(f"DROP TABLE IF EXISTS `{origen}`.`{tabla}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{destino}`")
+        return filas
+
+    filas = asyncio.run(_cuerpo())
+    assert list(filas) == [(1, "completed", 1), (2, "discarded", 0), (3, "running", 1)], (
+        "las filas copiadas no coinciden -- o no llegaron, o `visible` no se "
+        "recalculó igual en la tabla destino"
+    )
+
+
+@pytest.mark.skipif(not os.environ.get("JAX_DB_HOST"), reason="necesita la MariaDB real")
+def test_columnas_copiables_excluye_solo_las_generadas():
+    async def _cuerpo():
+        from db.connection import get_pool
+
+        origen = nombre_base_de_test()
+        tabla = f"_diag_cols_{_uuid.uuid4().hex[:8]}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"CREATE TABLE `{origen}`.`{tabla}` ("
+                    "id INT PRIMARY KEY, status VARCHAR(20) NOT NULL, "
+                    "visible TINYINT(1) GENERATED ALWAYS AS "
+                    "(status NOT IN ('discarded','hidden')) VIRTUAL)"
+                )
+                try:
+                    return await _columnas_copiables(cur, origen, tabla)
+                finally:
+                    await cur.execute(f"DROP TABLE IF EXISTS `{origen}`.`{tabla}`")
+
+    columnas = asyncio.run(_cuerpo())
+    assert columnas == ["id", "status"]
+
+
+# ---------------------------------------------------------------------------
+# Fix round 5 (2026-09-22, re-review): los dos tests de arriba prueban los
+# HELPERS (`_columnas_copiables`/`_copiar_filas`) en aislamiento -- no
+# prueban que `_clonar_esquema()` los LLAME de verdad en el call site real
+# (la línea `await _copiar_filas(cur, BASE_PLANTILLA, nombre, tabla)`, antes
+# `INSERT INTO ... SELECT * FROM ...`). Un regreso a `SELECT *` en ESA línea
+# -- dejando los helpers definidos pero sin usar -- no lo hubiera detectado
+# ninguno de los dos. Este test ejercita `_clonar_esquema()` de punta a
+# punta, con una PLANTILLA PROPIA (nunca `jax_memory_test` real, para no
+# tocarla) que tiene una tabla con columna GENERATED y filas -- igual que
+# el escenario real que rompía (`jax_memory_test` con una fila en
+# `jacobs_pipelines`, que sí tiene `visible`).
+#
+# Mutación verificada a mano (revertida después de confirmarla): volver el
+# call site de `_clonar_esquema()` a
+# `INSERT INTO \`{nombre}\`.\`{tabla}\` SELECT * FROM \`{BASE_PLANTILLA}\`.\`{tabla}\``
+# -- con `_columnas_copiables`/`_copiar_filas` intactas pero sin usar --
+# hace caer este test con `pymysql.err.OperationalError: (1906, "The value
+# specified for generated column 'visible' in table '...' has been
+# ignored")` -- texto EXACTO de MariaDB (verificado en vivo contra la base
+# real; MySQL usa otra redacción para el mismo código).
+# ---------------------------------------------------------------------------
+
+import base_de_test as _base_de_test_modulo  # noqa: E402
+
+
+@pytest.mark.skipif(not os.environ.get("JAX_DB_HOST"), reason="necesita la MariaDB real")
+def test_clonar_esquema_no_revienta_con_1906_si_la_plantilla_tiene_columna_generada(monkeypatch):
+    plantilla = f"{BASE_COMPARTIDA}_plantilla_diag_{_uuid.uuid4().hex[:8]}"
+    destino = f"{BASE_COMPARTIDA}_clondiag_{_uuid.uuid4().hex[:8]}"
+    tabla = f"_diag_clon_{_uuid.uuid4().hex[:8]}"
+
+    async def _cuerpo():
+        from db.connection import get_pool
+
+        pool = await get_pool()
+        # Cierre (Ruling 23, punto (f)): la creación de `plantilla` vivía
+        # ANTES de este `try` -- si el CREATE DATABASE hubiera tenido éxito
+        # pero el CREATE TABLE o el INSERT que siguen hubieran fallado, el
+        # `finally` de abajo nunca corría y `plantilla` quedaba huérfana en
+        # la base real. Ahora TODO lo que puede fallar después de crear la
+        # base -- create, insert, el clonado, el select de verificación --
+        # está dentro del mismo `try`, así que el `finally` la borra pase lo
+        # que pase.
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"CREATE DATABASE `{plantilla}`")
+                    await cur.execute(
+                        f"CREATE TABLE `{plantilla}`.`{tabla}` ("
+                        "id INT PRIMARY KEY, status VARCHAR(20) NOT NULL, "
+                        "visible TINYINT(1) GENERATED ALWAYS AS "
+                        "(status NOT IN ('discarded','hidden')) VIRTUAL)"
+                    )
+                    await cur.executemany(
+                        f"INSERT INTO `{plantilla}`.`{tabla}` (id, status) VALUES (%s,%s)",
+                        [(1, "completed"), (2, "discarded")],
+                    )
+                await conn.commit()
+
+            monkeypatch.setattr(_base_de_test_modulo, "BASE_PLANTILLA", plantilla)
+            copiadas = await _base_de_test_modulo._clonar_esquema(destino)
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        f"SELECT id, status, visible FROM `{destino}`.`{tabla}` ORDER BY id"
+                    )
+                    filas = await cur.fetchall()
+        finally:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{plantilla}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{destino}`")
+                await conn.commit()
+        return copiadas, filas
+
+    copiadas, filas = asyncio.run(_cuerpo())
+    assert copiadas == 1, "no copió la única tabla de la plantilla propia"
+    assert list(filas) == [(1, "completed", 1), (2, "discarded", 0)], (
+        "las filas no llegaron a la base clonada, o `visible` no se "
+        "recalculó igual -- _clonar_esquema() no está usando "
+        "_copiar_filas() en su call site real"
+    )

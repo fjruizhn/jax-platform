@@ -295,8 +295,19 @@ class JAXEngineState:
                 # no bloqueante -- dispara su propia Task y suelta el
                 # control ya mismo (ver aviso_pipeline.py); un SMTP lento no
                 # puede frenar este tick ni los de las demás pipelines.
-                aviso_pipeline.encolar_aviso_fin_pipeline(
-                    pid, pipeline.tenant_id, updated.user_id, updated.status, updated.name)
+                #
+                # Fix round 1, Ruling 12 (2026-09-22): discarded/hidden NO
+                # avisan -- a diferencia de completed/failed/disputed/expired
+                # (que el pipeline alcanza SOLO), discarded/hidden son un
+                # pedido EXPLÍCITO de un usuario o del superadmin: un correo
+                # "tu pipeline terminó" ahí es ruido para quien acaba de
+                # pedirlo, y aviso_pipeline._asunto/_enviar_aviso no tienen
+                # rama para estos dos estados -- sin este filtro mandarían el
+                # texto genérico de "terminó", engañoso (lee como si hubiera
+                # fallado o completado solo).
+                if updated.status not in ("discarded", "hidden"):
+                    aviso_pipeline.encolar_aviso_fin_pipeline(
+                        pid, pipeline.tenant_id, updated.user_id, updated.status, updated.name)
 
         except Exception:  # fail-soft: cubre fetch/parse HTTP de UNA pipeline en _poll_one_pipeline; un fallo transitorio no debe tumbar el polling de las demás pipelines activas en este ciclo — la liberación de cupo de arriba es en memoria y no lanza (resource_manager.py), y ahora corre ANTES del aviso (bloqueante 2, 2026-09-18)
             pass
