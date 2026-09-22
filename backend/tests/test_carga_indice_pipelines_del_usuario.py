@@ -25,9 +25,9 @@ para no perder el porqué):
    visible, created_at)` -- con `visible` DENTRO del índice, el rango que el
    motor recorre ya viene filtrado: el costo lo acota el LIMIT, NO el
    histórico. `FORCE INDEX (idx_pipelines_visibles)` reemplaza al de la
-   ronda anterior. Acopla el deploy a la rama `feat/pipelines-visible` de
-   `jax` (sin mergear a la fecha de este documento) -- ver el runbook de
-   despliegue en docs/.
+   ronda anterior. Acopla el deploy a jax#259 (la migración que agrega
+   `visible`/`idx_pipelines_visibles`) -- ver el runbook de despliegue en
+   docs/.
 
 Por qué esto vive acá y no en loadtest/ (divergencia deliberada, anotada):
 los demás loadtest/*.py son procesos standalone que abren su PROPIA conexión
@@ -40,8 +40,8 @@ mismo aislamiento (`base_de_test`) que el resto de la suite.
 
 Se salta por default (siembra hasta 5000+ filas, no es parte del piso de CI
 normal): correr con JAX_MEDIR_INDICE_PIPELINES=1, y `JAX_REPO_PATH` apuntando
-a un checkout de `jax` que YA tenga `visible` (mientras no esté mergeada a
-master, `/home/fruiz/worktrees/jax-visible`).
+a un checkout de `jax` con jax#259 incluido (`visible`/`idx_pipelines_visibles`
+entre sus índices).
 """
 import os
 import time

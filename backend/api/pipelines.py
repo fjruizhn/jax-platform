@@ -765,10 +765,14 @@ async def _estado_de_descarte(pipeline_id: str) -> tuple[str | None, str | None]
 # misma fecha (Ruling T6-6 de JAX, no de esta tarea: "jacobs_pipelines es
 # del repo jax ... la plataforma no corre DDL sobre tablas de jax", ver
 # jax/jacobs/store.py) -- lo que se corrige acá es que este comentario, en
-# ESTE repo, había quedado desactualizado contra esa regla. Sigue en uso
-# por test_t6_seguimiento.py y test_historial_pipelines.py, que consultan
-# pipelines por id, no por esta lista -- ver más abajo por qué la lista
-# principal ya NO va por este índice.
+# ESTE repo, había quedado desactualizado contra esa regla.
+#
+# Fix round 5 (2026-09-22): corregido QUIÉN lo usa hoy -- NINGUNA consulta
+# de este repo va por este índice desde el fix round 4 (ver más abajo por
+# qué la lista principal pasó a idx_pipelines_visibles). El único lugar que
+# lo nombra es `test_t6_seguimiento.py::test_T6_6_el_indice_de_duenio_existe_con_sus_columnas`,
+# y sólo para comprobar que EXISTE (`information_schema.STATISTICS`, sin
+# correr ninguna consulta) -- no que algo lo use.
 #
 # FORCE INDEX (idx_pipelines_visibles) -- fix round 4, Ruling 18/19,
 # 2026-09-22, reemplaza el FORCE INDEX (idx_jacobs_pipelines_duenio) del
@@ -799,12 +803,12 @@ async def _estado_de_descarte(pipeline_id: str) -> tuple[str | None, str | None]
 # suposición, es lo que decide si esta simplificación es segura.
 #
 # Acoplamiento de deploy (a diferencia del `IGNORE INDEX` del fix round 2,
-# pero IGUAL de real): `idx_pipelines_visibles` todavía NO existe en
-# producción -- vive en la rama `feat/pipelines-visible` de `jax`, sin
-# mergear a la fecha de este comentario. `FORCE INDEX` con un nombre que no
-# existe es un ERROR de MariaDB (1176), no un hint que se ignora: jax CON
-# `visible` tiene que desplegarse ANTES que este código (ver el runbook de
-# despliegue en docs/).
+# pero IGUAL de real): `idx_pipelines_visibles` lo agrega jax#259 (columna
+# GENERADA `visible`). `FORCE INDEX` con un nombre que no existe es un
+# ERROR de MariaDB (1176), no un hint que se ignora: el `jax` desplegado
+# CON jax#259 tiene que estar en producción ANTES que este código -- que
+# jax#259 esté MERGEADO no alcanza, tiene que estar DESPLEGADO (ver el
+# runbook de despliegue en docs/, orden obligatorio).
 SQL_PIPELINES_DEL_USUARIO = (
     "SELECT pipeline_id, name, status, created_at, updated_at FROM jacobs_pipelines "
     "FORCE INDEX (idx_pipelines_visibles) "
@@ -814,8 +818,9 @@ SQL_PIPELINES_DEL_USUARIO = (
 # 2026-09-22 (spec descartar-pipelines §4): la vista "Descartados" -- propia,
 # paginada ("van a ser muchos en el tiempo", decisión de Fernando), NO la
 # lista principal. Va por idx_pipelines_descartados (user_id, tenant_id,
-# status, descartado_at) -- SQL_PIPELINES_DEL_USUARIO de arriba sigue yendo
-# por idx_jacobs_pipelines_duenio; son dos índices para dos consultas, no
+# status, descartado_at) -- SQL_PIPELINES_DEL_USUARIO de arriba va por
+# idx_pipelines_visibles (fix round 4, Ruling 18/19; antes de esa ronda iba
+# por idx_jacobs_pipelines_duenio); son dos índices para dos consultas, no
 # uno ampliado, porque el orden de cada una es distinto (created_at vs
 # descartado_at) y un índice compuesto no sirve dos ORDER BY diferentes sin
 # filesort en alguna de las dos.

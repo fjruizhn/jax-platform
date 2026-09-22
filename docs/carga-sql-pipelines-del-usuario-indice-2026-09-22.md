@@ -47,8 +47,8 @@ por qué la siguiente hacía falta:
    -- verificado con EXPLAIN que sacarlas no cambia el plan (mismo `key`/
    `key_len`/`rows`/`Extra` con o sin ellas).
 
-   Acopla el deploy a la rama `feat/pipelines-visible` de `jax` (sin
-   mergear a la fecha de este documento) -- MISMO tipo de riesgo que tuvo
+   Acopla el deploy a jax#259 (la migración que agrega `visible`/
+   `idx_pipelines_visibles`) -- MISMO tipo de riesgo que tuvo
    `IGNORE INDEX` en el fix round 2, no evitado esta vez porque no hay
    forma de acotar el costo por el LIMIT sin que la columna `visible`
    exista. Ver el runbook de despliegue (`docs/runbooks/despliegue.md`,
@@ -82,10 +82,9 @@ por qué la siguiente hacía falta:
     backend/tests/test_carga_indice_pipelines_del_usuario.py
   ```
 
-  Mientras `feat/pipelines-visible` no esté mergeada a `jax` master,
-  `JAX_REPO_PATH` tiene que apuntar a un checkout que SÍ la tenga
-  (`/home/fruiz/worktrees/jax-visible`, commit `7ba2312`, al momento de
-  esta medición).
+  `JAX_REPO_PATH` tiene que apuntar a un checkout de `jax` que incluya
+  jax#259 (`idx_pipelines_visibles` entre sus índices, `SHOW INDEX FROM
+  jacobs_pipelines` lo confirma).
 - **`Handler_read`, no sólo `EXPLAIN`:** el número que decide es lo que el
   motor leyó DE VERDAD (`FLUSH STATUS` -> consulta real -> `SHOW SESSION
   STATUS LIKE 'Handler_read%'`), no la estimación de `rows` de `EXPLAIN` --
@@ -168,9 +167,9 @@ Absoluta) sin ganar nada medible.
   backend real. Esta medición es específica a la DECISIÓN de índice, no un
   reemplazo de esa carga end-to-end.
 - **Acoplamiento de deploy activo, sin resolver:** `idx_pipelines_visibles`
-  no existe en producción hoy -- vive en una rama de `jax` sin mergear.
-  `FORCE INDEX` con ese nombre revienta con 1176 si jax-platform se
-  despliega antes. Ver el runbook de despliegue para el orden obligatorio.
+  lo agrega jax#259 -- si jax-platform se despliega ANTES que ese `jax` esté
+  en producción (no sólo mergeado), `FORCE INDEX` con ese nombre revienta
+  con 1176. Ver el runbook de despliegue para el orden obligatorio.
 - Si cambia el esquema de `jacobs_pipelines`, sus índices, o el volumen
   típico de datos, este número caduca y hay que volver a medir (LAS CUATRO
   DEL RENDIMIENTO, política de vigencia).

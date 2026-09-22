@@ -2205,7 +2205,20 @@ jobs:
           #   cambio -- test_carga_indice_pipelines_del_usuario.py sigue
           #   con 3 tests, reescritos pero mismo conteo). Delta verificado
           #   +5 sobre el piso anterior.
-          PISO_PASSED = 2503
+          # 2503 -> 2505 (2026-09-22, Task 4, fix round 5, re-review). +2:
+          #   test_clonar_esquema_no_revienta_con_1906_si_la_plantilla_tiene_columna_generada
+          #   (tests/test_base_por_sesion.py -- ejercita `_clonar_esquema()`
+          #   de punta a punta, no sólo sus helpers en aislamiento como los
+          #   2 tests del fix round 4) y
+          #   test_visible_excluye_descartados_ocultos_y_exige_ack_del_dueño
+          #   (tests/test_pipelines_descarte.py -- el asunto de fondo de esta
+          #   ronda: lee GENERATION_EXPRESSION de jacobs_pipelines.visible
+          #   contra el jax real de CI y exige que siga excluyendo
+          #   discarded/hidden Y owner_ack_at IS NOT NULL). Medido con el
+          #   MISMO comando, JAX_REPO_PATH apuntando a jax master con jax#259
+          #   ya mergeado: 2565 -> 2567 passed / 0 failed / 3 skipped (sin
+          #   cambio). Delta verificado +2 sobre el piso anterior.
+          PISO_PASSED = 2505
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2941,10 +2954,31 @@ jobs:
       #   JAX_CI_NO_DB=1 (1687 -> 1687 passed, 873 -> 876 skipped).
       # Sin cambios en el piso (2026-09-22, Task 4, fix round 4, Ruling
       #   18/19): los 5 tests netos nuevos de esta ronda (ver el piso con
-      #   DB, más arriba) piden todos `client` -- ninguno corre sin DB, el
-      #   piso se queda en 1648. El conteo de SKIPS SÍ cambia -- 876 -> 881
-      #   (+5) -- este job no lo gatea, sólo lo imprime. Medido con
-      #   JAX_CI_NO_DB=1 (1687 -> 1687 passed, 876 -> 881 skipped).
+      #   DB, más arriba) no corren sin DB -- pero NO todos por el mismo
+      #   camino. Corrección (fix round 5): 3 de los 5 (en
+      #   tests/test_pipelines_descarte.py) sí piden `client` -- Regla 1
+      #   (tiempo de colección, conftest.py). Los otros 2 (en
+      #   tests/test_base_por_sesion.py,
+      #   test_copiar_filas_excluye_columnas_generadas_y_no_revienta_con_1906
+      #   y test_columnas_copiables_excluye_solo_las_generadas) NO piden
+      #   `client` -- llevan su propio `@pytest.mark.skipif(not os.environ.get
+      #   ("JAX_DB_HOST"), ...)`, que bajo JAX_CI_NO_DB=1 NO dispara (ese modo
+      #   FIJA JAX_DB_HOST a un placeholder no vacío, conftest.py línea ~452)
+      #   -- se saltan por la Regla 2 (tiempo de ejecución: llegan a
+      #   `aiomysql.create_pool()` dentro de `get_pool()`, parcheado para
+      #   saltar bajo este modo). El piso se queda en 1648 de cualquier
+      #   forma -- ninguno de los 5 pasa a "passed" sin DB. El conteo de
+      #   SKIPS SÍ cambia -- 876 -> 881 (+5) -- este job no lo gatea, sólo
+      #   lo imprime. Medido con JAX_CI_NO_DB=1 (1687 -> 1687 passed,
+      #   876 -> 881 skipped).
+      # Sin cambios en el piso (2026-09-22, Task 4, fix round 5): los 2
+      #   tests nuevos de esta ronda (ver el piso con DB, más arriba) piden
+      #   `client` (test_visible_excluye_descartados_ocultos_y_exige_ack_del_dueño)
+      #   o llegan a aiomysql.create_pool() sin pedirlo
+      #   (test_clonar_esquema_no_revienta_..., Regla 2) -- ninguno corre
+      #   sin DB. Piso sigue en 1648. Skips 881 -> 883 (+2), este job no lo
+      #   gatea. Medido con JAX_CI_NO_DB=1, JAX_REPO_PATH apuntando a jax
+      #   master con jax#259: 1687 -> 1687 passed, 881 -> 883 skipped.
       JAX_CI_MIN_PASSED: "1648"
     steps:
       - uses: actions/checkout@v4

@@ -363,13 +363,12 @@ def _esquema_de_jax_en_la_base_de_test(c):
     """Corre el `init_tables()` de `jax` (repo aparte) contra la base de
     ESTA sesión -- columnas/índices que `jax_memory_test` local no trae
     (status_previo/descartado_por/descartado_at, idx_pipelines_descartados,
-    idx_pipelines_ocultos, y -- fix round 4, Ruling 18/19 -- la columna
-    GENERADA `visible` e `idx_pipelines_visibles`, de la rama
-    `feat/pipelines-visible` de jax). CI los tiene porque clona jax MASTER
-    y corre su propio init_tables() antes de la suite; localmente no hay
-    ese paso -- y localmente, mientras `visible` no esté mergeada a jax
-    master, hay que apuntar `JAX_REPO_PATH` a un checkout que SÍ la tenga
-    (`/home/fruiz/worktrees/jax-visible` al momento de este comentario).
+    idx_pipelines_ocultos, y -- fix round 4, Ruling 18/19, jax#259 -- la
+    columna GENERADA `visible` e `idx_pipelines_visibles`). CI los tiene
+    porque clona jax MASTER y corre su propio init_tables() antes de la
+    suite; localmente no hay ese paso -- `JAX_REPO_PATH` tiene que apuntar
+    a un checkout de jax con jax#259 incluido (`idx_pipelines_visibles`
+    entre sus índices) para que estas columnas/índices existan.
 
     Fix round 2 (2026-09-22), Ruling 16 punto 3: vive DENTRO del cuerpo de
     `client()`, no como fixture `autouse` aparte -- un fixture separado que

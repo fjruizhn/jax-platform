@@ -188,10 +188,11 @@ peor ni una degradación silenciosa.
 
 **Orden exacto, sin margen:**
 
-1. **`jax` primero, con jax#257 (descartar-pipelines) MÁS la columna
-   `visible`** (rama `feat/pipelines-visible` a la fecha de este runbook,
-   todavía sin mergear -- verificar que YA esté en el `master` que se
-   despliega antes de arrancar este paso). Reiniciar `jax-las-manos`
+1. **`jax` primero, con jax#257 (descartar-pipelines) MÁS jax#259 (la
+   columna `visible`/`idx_pipelines_visibles`)** -- verificar que los DOS
+   estén en el `master` que se despliega antes de arrancar este paso: que
+   un PR esté mergeado no alcanza, tiene que estar en el checkout que se
+   va a poner en producción. Reiniciar `jax-las-manos`
    (`sudo systemctl restart jax-las-manos`, mismo comando que el paso 1 de
    arriba): el `init_tables()` de `jax` corre al arrancar el proceso y crea
    `status_previo`/`descartado_por`/`descartado_at`/`visible` y los cuatro
@@ -220,14 +221,31 @@ peor ni una degradación silenciosa.
 3. **Frontend** (interno primero, después el sitio público -- pasos 3 y 4
    de arriba, sin cambios).
 
-**Qué se rompe si se salta el orden:** `GET /api/pipelines` (la pantalla
-principal, no sólo "Detenidos") cae con 500 para TODO usuario, no sólo para
-quien use la función nueva -- es la lista de pipelines de siempre, que
-ahora depende de un índice que Task 4 le agregó. Descartar, recuperar,
-ocultar/restaurar y la vista "Descartados" (`?estado=discarded`) dependen
-de las rutas de `jax` (Task 3) y de sus columnas -- sin `jax` desplegado
-primero, esos endpoints responden con el proxy fallando (Jacobs no tiene
-las rutas) antes de llegar siquiera a la consulta.
+**Qué se rompe si se salta el orden** (corregido, fix round 5, 2026-09-22:
+la versión anterior de este párrafo decía que TODOS estos endpoints
+fallaban "en el proxy, antes de la consulta" -- falso; cada uno rompe en un
+punto distinto, y en dos casos ni siquiera llega a pedirle nada a Jacobs).
+Dos errores de MariaDB en juego, nombrados donde corresponden:
+
+- **1054** `Unknown column '<col>' in '<clause>'`: la consulta SQL nombra
+  una columna que no existe en la tabla.
+- **1176** `Key '<índice>' doesn't exist in table '<tabla>'`: un
+  `FORCE INDEX`/`IGNORE INDEX` nombra un índice que no existe.
+
+Los dos llegan a `jax-platform` como una excepción de `aiomysql` sin
+capturar -- el handler genérico de FastAPI los convierte en **500**, no en
+un código propio del contrato de la API.
+
+| Qué | Dónde rompe primero | Por qué |
+|---|---|---|
+| `GET /api/pipelines` (lista principal) | **Local, SQL directo** | `FORCE INDEX (idx_pipelines_visibles)` -- **1176**, el índice no existe |
+| `GET /api/pipelines?estado=discarded` ("Descartados") | **Local, SQL directo** | `SQL_DESCARTADOS_DEL_USUARIO` selecciona `descartado_at` -- **1054**, la columna no existe. NO llega a pedirle nada a Jacobs: revienta antes del proxy |
+| `POST /pipelines/{id}/recover`, usuario NO superadmin | **Local, SQL directo** | `_estado_de_descarte()` (`api/pipelines.py`) hace `SELECT status, descartado_por ...` ANTES de decidir si deja pasar el pedido -- **1054**, `descartado_por` no existe. Tampoco llega al proxy |
+| `POST /pipelines/{id}/discard`, `/hide`, `/restore` (y `/recover` de un superadmin) | **En Jacobs, no local** | Ninguno de estos consulta una columna nueva antes de proxear -- `_require_pipeline_owner`/`_require_pipeline_exists` sólo tocan columnas que YA existían. SÍ llegan al proxy; lo que devuelvan depende de qué tan vieja sea la versión de Jacobs contra la que pegan (sin las rutas de Task 3, un 404 de ruta inexistente -- no un 500 de columna) |
+
+Sólo la fila de `discard`/`hide`/`restore` "llega al proxy" -- las otras
+tres rompen ANTES, del lado de jax-platform, sin que Jacobs se entere del
+pedido.
 
 **Volver atrás, caso especial:** si este deploy salió en el orden
 incorrecto y `GET /api/pipelines` está en 500, la reversión MÁS RÁPIDA es

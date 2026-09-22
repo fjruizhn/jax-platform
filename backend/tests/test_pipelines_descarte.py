@@ -16,6 +16,7 @@ descartado_at (ver jax/jacobs/store.py). Índices: idx_pipelines_descartados
 (user_id, tenant_id, status, descartado_at), idx_pipelines_ocultos (status,
 descartado_at).
 """
+import re
 import time
 import uuid
 from functools import partial
@@ -653,10 +654,10 @@ def test_muchos_descartados_el_motor_no_lee_las_descartadas(
 
 # Fix round 4, Ruling 18/19 punto 2: a diferencia del fix round 3 (donde
 # FORCE INDEX apuntaba a un índice que YA existía en producción), esta
-# consulta ahora DEPENDE de idx_pipelines_visibles -- un índice de la rama
-# `feat/pipelines-visible` de jax, sin mergear a la fecha de este test. Sin
-# él, FORCE INDEX es un ERROR de MariaDB (1176), no un plan peor: la
-# consulta ROMPE. El test viejo ("no rompe sin los índices de jax#257")
+# consulta ahora DEPENDE de idx_pipelines_visibles -- un índice que agrega
+# jax#259 (columna generada `visible`). Sin él, FORCE INDEX es un ERROR de
+# MariaDB (1176), no un plan peor: la consulta ROMPE. El test viejo ("no
+# rompe sin los índices de jax#257")
 # probaba la propiedad CONTRARIA, que ya no es cierta -- este la reemplaza
 # documentando la dependencia real, no escondiéndola. El DROP va DENTRO del
 # `try` (a diferencia de la ronda anterior): si el DROP mismo fallara, el
@@ -682,6 +683,61 @@ def test_pipelines_del_usuario_depende_de_idx_pipelines_visibles(client):
         # si corrieran DESPUÉS de este en la suite completa, heredarían
         # estadísticas triviales.
         client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
+
+
+# Fix round 5 (2026-09-22, re-review) -- el asunto de fondo, no un minor: la
+# regla de "de quién es visible" (owner_ack_at IS NOT NULL) vive AHORA
+# sólo en la definición de la columna generada `visible` de `jax`
+# (jacobs/store.py, jax#259) -- jax-platform ya NO la repite en ningún WHERE
+# (fix round 4 sacó la redundancia). Eso significa que si `jax` cambiara esa
+# expresión -- por ejemplo, si alguien sacara el chequeo de `owner_ack_at` de
+# `visible` sin darse cuenta de que ESTE repo dejó de comprobarlo aparte --
+# `GET /api/pipelines` empezaría a mostrar hijos de Ada sin ack como si
+# fueran visibles, y NADA en jax-platform lo notaría: el contrato que hace
+# ese cruce YA NO ESTÁ ACÁ. Esta prueba lo cierra: lee
+# `information_schema.COLUMNS.GENERATION_EXPRESSION` de
+# `jacobs_pipelines.visible` -- contra el `jax` REAL de CI (clona master,
+# corre su propio `init_tables()`), no una copia local -- y exige que la
+# expresión siga excluyendo descartados/ocultos Y exigiendo `owner_ack_at
+# IS NOT NULL`. Si `jax` cambia la expresión, ESTE test se pone rojo en CI
+# antes de que el cambio llegue a producción sin que nadie lo haya
+# verificado del lado de jax-platform.
+def _normalizar_expresion_sql(expresion: str) -> str:
+    """Sin backticks, espacios de más, ni mayúsculas -- MariaDB devuelve
+    `GENERATION_EXPRESSION` ya renormalizada a su propio estilo (todo en
+    minúsculas, identificadores con backticks, sin espacios extra), pero
+    esta función no depende de ESE estilo puntual: cualquier expresión
+    equivalente pasa igual."""
+    return re.sub(r"\s+", " ", expresion.replace("`", "")).strip().lower()
+
+
+def test_visible_excluye_descartados_ocultos_y_exige_ack_del_dueño(client):
+    filas = client.portal.call(
+        sql,
+        "SELECT GENERATION_EXPRESSION FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='jacobs_pipelines' AND COLUMN_NAME='visible'",
+        (), True)
+    assert filas, (
+        "jacobs_pipelines no tiene una columna 'visible' -- ¿jax sin la "
+        "migración de jax#259, o renombraron la columna?"
+    )
+    expresion = _normalizar_expresion_sql(filas[0][0])
+    assert "status" in expresion and "not in" in expresion, expresion
+    assert "'discarded'" in expresion, (
+        f"la expresión de `visible` ya no excluye 'discarded': {expresion!r} -- "
+        "SQL_PIPELINES_DEL_USUARIO (api/pipelines.py) confía en que `visible` "
+        "ya filtra esto, y ya no lo repite en su WHERE (fix round 4)"
+    )
+    assert "'hidden'" in expresion, (
+        f"la expresión de `visible` ya no excluye 'hidden': {expresion!r}"
+    )
+    assert "owner_ack_at" in expresion and "is not null" in expresion, (
+        f"la expresión de `visible` ya no exige owner_ack_at IS NOT NULL: "
+        f"{expresion!r} -- jax-platform NO comprueba esto por su cuenta en "
+        "ningún lado (fix round 4 sacó la redundancia del WHERE): un hijo de "
+        "Ada sin ack pasaría a verse como visible sin que nada de este repo "
+        "lo note"
+    )
 
 
 def test_explain_descartados_del_usuario_usa_idx_pipelines_descartados(client):
@@ -711,8 +767,8 @@ def test_explain_descartados_del_usuario_usa_idx_pipelines_descartados(client):
         # Fix round 1, Ruling 13(e): ANALYZE TABLE antes del EXPLAIN, no
         # sólo el sembrado -- estadísticas persistentes de InnoDB, el plan
         # depende de qué corrió antes en la sesión sin esto. Mismo motivo
-        # que test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio_sin_filesort
-        # (fix round 2, Ruling 16).
+        # que test_pipelines_del_usuario_el_plan_usa_idx_pipelines_visibles_sin_filesort
+        # (fix round 4, Ruling 18/19).
         client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
 
         filas = client.portal.call(
