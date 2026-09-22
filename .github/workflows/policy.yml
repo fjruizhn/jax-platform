@@ -2130,7 +2130,18 @@ jobs:
           #   deuda preexistente, no causada por esta tarea -- mismo patrón
           #   de drift que ya documentó el job "sin DB" más abajo (repartir
           #   el delta, no adjudicárselo entero a la rama que lo mide).
-          PISO_PASSED = 2549
+          # 2549 -> 2557 (2026-09-22, Task 4, ronda de arreglo 1: hallazgo del
+          #   revisor + Rulings 12 y 13). Medido con el MISMO comando, MISMA
+          #   base (jax master 0a37a54): 2549 -> 2557, +8 exactos = 6 tests
+          #   nuevos en tests/test_pipelines_descarte.py (camino feliz de
+          #   recover del dueño que faltaba -- hallazgo del revisor --,
+          #   Ruling 13(a) NULL/doble-recover no dan 403, Ruling 13(b) hide/
+          #   restore validan la forma del id parametrizado x2, Ruling 13(c)
+          #   costo_usd real en la vista de descartados) + 2 parametrizados
+          #   nuevos en tests/test_pipeline_resource_release.py (Ruling 12:
+          #   discarded/hidden NO disparan el aviso por correo). Sin fixes
+          #   que arreglaran un rojo esta vez (0 failed antes y después).
+          PISO_PASSED = 2557
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2815,7 +2826,15 @@ jobs:
       #   el delta verificado (+3) sobre el piso anterior, no por el passed
       #   crudo local (que además arrastra drift preexistente sin relación
       #   con esta tarea, ver la nota del piso CON DB más arriba).
-      JAX_CI_MIN_PASSED: "1645"
+      # 1645 -> 1647 (2026-09-22, Task 4, ronda de arreglo 1): +2 netos.
+      #   Medido con el MISMO comando: 1681 -> 1683 passed / 868 -> 874
+      #   skipped / 0 failed las dos. +2 son los 2 parametrizados nuevos de
+      #   test_pipeline_resource_release.py (Ruling 12, puros). Los 6 tests
+      #   nuevos de test_pipelines_descarte.py (camino feliz de recover +
+      #   Rulings 13(a)/(b)/(c)) suman a SKIPS (+6, 868->874), no a passed --
+      #   mismo motivo que ya documentado arriba (fixture de esquema
+      #   autouse, dependencia transitiva de `client`).
+      JAX_CI_MIN_PASSED: "1647"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

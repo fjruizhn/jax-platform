@@ -35,5 +35,9 @@ async def listar_ocultos(
         filas = await cur.fetchall()
     campos = ("pipeline_id", "name", "user_id", "tenant_id", "descartado_por",
               "descartado_at", "created_at")
+    # Fix round 1, Ruling 13(d) (2026-09-22): "has_more", NO "hay_mas" --
+    # el contrato ya existente de list_pipelines (api/pipelines.py). Dos
+    # nombres para el mismo campo de paginación es el tipo de cosa que un
+    # cliente descubre en producción, no en review.
     return {"pipelines": [dict(zip(campos, f)) for f in filas[:limite]],
-            "hay_mas": len(filas) > limite}
+            "has_more": len(filas) > limite}

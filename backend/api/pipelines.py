@@ -676,15 +676,26 @@ def _es_superadmin(user: AuthUser) -> bool:
     return user.role == "superadmin"
 
 
+# Fix round 1, Ruling 13(b) (2026-09-22): un solo lugar valida la FORMA del
+# id (400 pipeline_id_invalido) -- lo usan los cuatro proxies, directo o vía
+# _require_pipeline_owner/_require_pipeline_exists. Antes de este fix,
+# hide/restore no lo llamaban y un id con forma rara (p. ej. `abc?x=1`)
+# llegaba tal cual a Jacobs -- funcionaba porque Jacobs también lo
+# rechazaba, pero con SU 404 genérico, no con el 400 explícito que el
+# resto de las rutas ya daba para el mismo error del cliente.
+def _validar_uuid_o_400(pipeline_id: str) -> None:
+    try:
+        uuid.UUID(pipeline_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="pipeline_id_invalido")
+
+
 async def _require_pipeline_owner(pipeline_id: str, user: AuthUser) -> str | None:
     # 404 (no 403) para no confirmarle a un no-dueño que el pipeline_id
     # existe. Pipelines creadas antes de esta migración no tienen
     # owner_ack_at poblado y también devuelven 404 -- costo único de la
     # migración, no un bug (mismo criterio que regia con el owner file).
-    try:
-        uuid.UUID(pipeline_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="pipeline_id_invalido")
+    _validar_uuid_o_400(pipeline_id)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -713,11 +724,8 @@ async def _require_pipeline_exists(pipeline_id: str) -> None:
     descartar-pipelines §4): "un superadmin que no es dueño no pasa
     _require_pipeline_owner en recover" -- para el superadmin, recuperar
     sólo exige que el pipeline exista; a quién pertenece lo decide
-    `_descartado_por`/el rol, no esta función."""
-    try:
-        uuid.UUID(pipeline_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="pipeline_id_invalido")
+    `_estado_de_descarte`/el rol, no esta función."""
+    _validar_uuid_o_400(pipeline_id)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -727,13 +735,21 @@ async def _require_pipeline_exists(pipeline_id: str) -> None:
         raise HTTPException(status_code=404, detail="pipeline_no_encontrado")
 
 
-async def _descartado_por(pipeline_id: str) -> str | None:
+# Fix round 1, Ruling 13(a) (2026-09-22): trae status Y descartado_por, no
+# sólo descartado_por -- el 403 de recover_pipeline sólo tiene sentido
+# cuando el pipeline ESTÁ discarded por otro. `descartado_por` NULL (nunca
+# se descartó, o ya se recuperó) o un status distinto de 'discarded' (doble
+# recover, carrera) no son "otro te lo ganó": son un pedido que Jacobs
+# rechaza solo con 409 transicion_no_permitida -- ese rechazo es la fuente
+# de verdad, no un 403 inventado acá antes de preguntarle.
+async def _estado_de_descarte(pipeline_id: str) -> tuple[str | None, str | None]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT descartado_por FROM jacobs_pipelines WHERE pipeline_id=%s", (pipeline_id,))
+            await cur.execute(
+                "SELECT status, descartado_por FROM jacobs_pipelines WHERE pipeline_id=%s", (pipeline_id,))
             row = await cur.fetchone()
-    return row[0] if row else None
+    return (row[0], row[1]) if row else (None, None)
 
 
 # T6-5a (2026-09-15): la lista sale de jacobs_pipelines con la MISMA regla de
@@ -903,17 +919,35 @@ async def list_pipelines(
                 # brief): un descartado no es un "detenido" (ESTADOS_CONTINUABLES
                 # es {aborted, expired}, nunca 'discarded'), así que no hay
                 # eventos de causa que buscar -- ni la consulta extra que eso
-                # pediría. duracion_s/costo_usd tampoco se calculan: updated_at
-                # de un descartado es el INSTANTE del descarte (store.py de
-                # jax lo pisa en el mismo UPDATE), no el fin real de la
-                # corrida -- "duración" ahí sería un dato FABRICADO, no uno
-                # que se perdió (Principio VIII).
+                # pediría.
+                #
+                # duracion_s se queda en None: updated_at de un descartado es
+                # el INSTANTE del descarte (store.py de jax lo pisa en el
+                # mismo UPDATE), no el fin real de la corrida -- "duración"
+                # ahí sería un dato FABRICADO, no uno que se perdió
+                # (Principio VIII).
+                #
+                # costo_usd (fix round 1, Ruling 13(c), 2026-09-22): SÍ se
+                # calcula, MISMA fuente que la lista principal --
+                # SUM(axioma_usage.cost_usd) por pipeline_id
+                # (sql_costo_por_pipeline). No hay ninguna razón de Principio
+                # VIII para omitirlo acá: el gasto de un pipeline no cambia
+                # porque se lo haya descartado (spec §2, "ninguna fila sale
+                # de la base -- tampoco de axioma_usage"), a diferencia de
+                # duracion_s, que sí se vuelve un dato inventado.
+                costos_d = {}
+                ids_descartados = [pid for pid, _n, _st, _c, _u, _d in filas_d]
+                if ids_descartados:
+                    await cur.execute(sql_costo_por_pipeline(len(ids_descartados)), ids_descartados)
+                    for pid, suma in await cur.fetchall():
+                        if suma is not None:
+                            costos_d[pid] = round(float(suma), 6)
                 return {
                     "pipelines": [
                         {
                             "pipeline_id": pid, "name": name, "status": st,
                             "created_at": c, "updated_at": u, "descartado_at": d,
-                            "duracion_s": None, "costo_usd": None, "causa": None,
+                            "duracion_s": None, "costo_usd": costos_d.get(pid), "causa": None,
                         }
                         for pid, name, st, c, u, d in filas_d
                     ],
@@ -1151,7 +1185,15 @@ async def recover_pipeline(pipeline_id: str, user: AuthUser = Depends(get_curren
         await _require_pipeline_exists(pipeline_id)
     else:
         await _require_pipeline_owner(pipeline_id, user)
-        if await _descartado_por(pipeline_id) != str(user.user_id):
+        # Fix round 1, Ruling 13(a): el 403 es SÓLO "otro te lo ganó" --
+        # discarded, y descartado_por es alguien más. `descartado_por` NULL
+        # (nunca se descartó, o ya se recuperó -- store.py lo limpia en el
+        # mismo UPDATE del recover) o un status que ya no es 'discarded'
+        # (doble recover, carrera con otro recover/hide) dejan pasar: Jacobs
+        # decide con su propio CAS y responde 409 transicion_no_permitida,
+        # que es la verdad -- no se la inventa este backend de antemano.
+        estado, descartado_por = await _estado_de_descarte(pipeline_id)
+        if estado == "discarded" and descartado_por is not None and descartado_por != str(user.user_id):
             raise HTTPException(status_code=403, detail="recuperar_no_permitido")
     return await _proxy_descarte(pipeline_id, "recover", user)
 
@@ -1161,12 +1203,18 @@ async def hide_pipeline(pipeline_id: str, user: AuthUser = Depends(require_super
     # Sin _require_pipeline_owner/_require_pipeline_exists antes: superadmin
     # ya es la única guardia (spec §4), y un pipeline_id inexistente lo
     # rechaza Jacobs con 404 pipeline_no_encontrado -- una consulta local de
-    # más acá no cambiaría el resultado (LAS CUATRO/cache).
+    # más acá no cambiaría el resultado (LAS CUATRO/cache). Sí se valida la
+    # FORMA (400 pipeline_id_invalido, fix round 1 Ruling 13(b)): eso no
+    # gasta una consulta, y es el mismo 400 explícito que ya dan los demás
+    # proxies para un id con forma rara -- antes hide/restore lo mandaban
+    # tal cual a Jacobs.
+    _validar_uuid_o_400(pipeline_id)
     return await _proxy_descarte(pipeline_id, "hide", user)
 
 
 @router.post("/{pipeline_id}/restore")
 async def restore_pipeline(pipeline_id: str, user: AuthUser = Depends(require_superadmin)):
+    _validar_uuid_o_400(pipeline_id)
     return await _proxy_descarte(pipeline_id, "restore", user)
 
 

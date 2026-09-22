@@ -202,3 +202,35 @@ async def test_poll_one_pipeline_releases_the_resource_slot_on_discard_o_hide(st
 
     assert pid not in state._state.active_pipelines
     assert await resource_manager.active_count(TENANT_ID) == 0
+
+
+# Fix round 1, Ruling 12 (2026-09-22): discarded/hidden son un pedido
+# EXPLÍCITO del propio usuario (o del superadmin) -- a diferencia de
+# completed/failed/disputed/expired, que el pipeline alcanza SOLO. Un aviso
+# "tu pipeline terminó" ahí es ruido: quien lo pidió ya lo sabe. Sin este
+# filtro, aviso_pipeline._asunto/_enviar_aviso (sin rama para estos dos
+# estados) mandarían el texto genérico de "terminó", que además es
+# ENGAÑOSO -- lee como si el pipeline hubiera fallado o completado solo.
+@pytest.mark.parametrize("status_crudo", ["discarded", "hidden"])
+async def test_poll_one_pipeline_no_dispara_aviso_para_discard_o_hide(monkeypatch, status_crudo):
+    import aviso_pipeline
+
+    llamados = []
+    monkeypatch.setattr(
+        aviso_pipeline, "encolar_aviso_fin_pipeline",
+        lambda pid, tenant_id, user_id, status, nombre: llamados.append(status),
+    )
+
+    pid = f"pid-sin-aviso-{status_crudo}"
+    state = _make_state_with_pipeline(pid)
+    pipeline = state._state.active_pipelines[pid]
+    await resource_manager.admit_pipeline(TENANT_ID, pid)
+
+    client = _FakeClient(_FakeResponse(200, {"pipeline": {"status": status_crudo}, "steps": []}))
+    await state._poll_one_pipeline(client, pid, pipeline)
+
+    # El cupo se libera igual (Ruling 5); lo único que cambia es que NO se
+    # llama a encolar_aviso_fin_pipeline.
+    assert pid not in state._state.active_pipelines
+    assert await resource_manager.active_count(TENANT_ID) == 0
+    assert llamados == []

@@ -160,6 +160,85 @@ def test_recover_de_quien_no_descarto_y_no_es_superadmin_es_403(client, monkeypa
 
 
 # ---------------------------------------------------------------------------
+# Fix round 1 (2026-09-22, hallazgo del revisor): faltaba el camino FELIZ de
+# recover para un usuario normal -- el dueño que descartó SU PROPIO pipeline
+# lo recupera. Tiene que caer si se fuerza la condición del guard (probado
+# más abajo con las mutaciones de Ruling 13(a): NULL/no-discarded no dan
+# 403, y "otro te lo ganó" sigue dando 403 -- caso 3, arriba).
+# ---------------------------------------------------------------------------
+def test_recover_del_dueno_que_descarto_su_propio_pipeline_es_200(client, monkeypatch):
+    duenio = uid(client, "descarte-c3b-duenio", "operator")
+    pid = str(uuid.uuid4())
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
+                       status_previo="aborted", descartado_por=duenio, descartado_at=time.time()))
+    falso = _instalar_jacobs_falso(monkeypatch, {
+        ("POST", f"/pipeline/{pid}/recover"): respuesta(200, {"pipeline_id": pid, "status": "aborted"}),
+    })
+    try:
+        resp = client.post(f"/api/pipelines/{pid}/recover",
+                           headers=cabeceras(client, "descarte-c3b-duenio", "operator", tenant_id=TENANT))
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"pipeline_id": pid, "status": "aborted"}
+        [(metodo, ruta, cuerpo)] = falso.llamadas
+        assert (metodo, ruta) == ("POST", f"/pipeline/{pid}/recover")
+        assert cuerpo == {"user_id": duenio}
+    finally:
+        client.portal.call(_borrar_pipelines, [pid])
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1, Ruling 13(a): descartado_por NULL (nunca se descartó, o el
+# store ya lo limpió) no da 403 -- se deja pasar a Jacobs, que decide con su
+# propio CAS. Acá Jacobs devuelve 409 transicion_no_permitida: la prueba de
+# que el 403 NO lo frenó antes es justamente que el pedido LLEGÓ a Jacobs.
+# ---------------------------------------------------------------------------
+def test_recover_con_descartado_por_null_no_da_403_deja_pasar_a_jacobs(client, monkeypatch):
+    duenio = uid(client, "descarte-c3c-duenio", "operator")
+    pid = str(uuid.uuid4())
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
+                       status_previo="aborted", descartado_por=None, descartado_at=time.time()))
+    falso = _instalar_jacobs_falso(monkeypatch, {
+        ("POST", f"/pipeline/{pid}/recover"): respuesta(
+            409, {"detail": {"code": "transicion_no_permitida", "status": "discarded"}}),
+    })
+    try:
+        resp = client.post(f"/api/pipelines/{pid}/recover",
+                           headers=cabeceras(client, "descarte-c3c-duenio", "operator", tenant_id=TENANT))
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["detail"]["code"] == "transicion_no_permitida"
+        assert falso.llamadas, "el pedido tenía que LLEGAR a Jacobs, no frenarse en un 403"
+    finally:
+        client.portal.call(_borrar_pipelines, [pid])
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1, Ruling 13(a) -- "el caso del doble recover": un pipeline YA
+# recuperado (status volvió a 'aborted', store.py limpió status_previo/
+# descartado_por/descartado_at a NULL en el mismo UPDATE) no es 'discarded'
+# -- un segundo /recover no puede dar 403 (nadie "se lo ganó": ya no hay
+# nada que recuperar). Se deja pasar a Jacobs, que rechaza con 409
+# transicion_no_permitida porque 'aborted' no está en TRANSICIONES["recover"].
+# ---------------------------------------------------------------------------
+def test_recover_doble_no_da_403_deja_pasar_a_jacobs_que_da_409(client, monkeypatch):
+    duenio = uid(client, "descarte-c3d-duenio", "operator")
+    pid = str(uuid.uuid4())
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "aborted",
+                       status_previo=None, descartado_por=None, descartado_at=None))
+    falso = _instalar_jacobs_falso(monkeypatch, {
+        ("POST", f"/pipeline/{pid}/recover"): respuesta(
+            409, {"detail": {"code": "transicion_no_permitida", "status": "aborted"}}),
+    })
+    try:
+        resp = client.post(f"/api/pipelines/{pid}/recover",
+                           headers=cabeceras(client, "descarte-c3d-duenio", "operator", tenant_id=TENANT))
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["detail"] == {"code": "transicion_no_permitida", "status": "aborted"}
+        assert falso.llamadas, "el segundo recover tenía que LLEGAR a Jacobs, no frenarse en un 403"
+    finally:
+        client.portal.call(_borrar_pipelines, [pid])
+
+
+# ---------------------------------------------------------------------------
 # Caso 4: POST /recover del superadmin sobre el descartado de OTRO -> 200.
 # El superadmin no es dueño: _require_pipeline_owner lo rechazaría, así que
 # recover_pipeline tiene que ramificar y no pasar por esa guardia para él.
@@ -226,6 +305,22 @@ def test_hide_y_restore_del_superadmin_llaman_a_jacobs(client, client_superadmin
 
 
 # ---------------------------------------------------------------------------
+# Fix round 1, Ruling 13(b): hide/restore validan la FORMA del id (400
+# pipeline_id_invalido) ANTES de llamar a Jacobs -- igual que discard/recover
+# (vía _require_pipeline_owner). `abc%3Fx=1` decodifica a `abc?x=1`: no es un
+# UUID, y antes de este fix se mandaba tal cual a Jacobs sin que este backend
+# lo rechazara primero.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("accion", ["hide", "restore"])
+def test_hide_y_restore_de_un_id_con_forma_invalida_es_400(client_superadmin, monkeypatch, accion):
+    falso = _instalar_jacobs_falso(monkeypatch, {})
+    resp = client_superadmin.post(f"/api/pipelines/abc%3Fx=1/{accion}")
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "pipeline_id_invalido"
+    assert falso.llamadas == []
+
+
+# ---------------------------------------------------------------------------
 # Caso 6: GET /api/pipelines excluye discarded y hidden.
 # ---------------------------------------------------------------------------
 def test_el_listado_normal_excluye_descartados_y_ocultos(client):
@@ -277,6 +372,32 @@ def test_estado_discarded_devuelve_solo_los_descartados_ordenados_por_descartado
         assert all(p["descartado_at"] is not None for p in filas)
     finally:
         client.portal.call(_borrar_pipelines, [pid_a, pid_b, pid_vivo, pid_ajeno])
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1, Ruling 13(c): la vista de descartados trae el costo_usd REAL
+# -- misma fuente que la lista principal (SUM(axioma_usage.cost_usd) por
+# pipeline_id). duracion_s se queda en None (su razón está en el código:
+# updated_at de un descartado es el instante del descarte, no el fin real).
+# ---------------------------------------------------------------------------
+def test_estado_discarded_trae_el_costo_usd_real(client):
+    duenio = uid(client, "descarte-c7c-duenio", "operator")
+    ahora = time.time()
+    pid = str(uuid.uuid4())
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded", ahora - 10, ahora - 5,
+                       status_previo="aborted", descartado_por=duenio, descartado_at=ahora - 5))
+    client.portal.call(_insertar_uso_de_pipeline, pid, 0.03, ahora - 9)
+    client.portal.call(_insertar_uso_de_pipeline, pid, 0.02, ahora - 9)
+    try:
+        resp = client.get("/api/pipelines?estado=discarded",
+                          headers=cabeceras(client, "descarte-c7c-duenio", "operator", tenant_id=TENANT))
+        assert resp.status_code == 200, resp.text
+        (fila,) = [p for p in resp.json()["pipelines"] if p["pipeline_id"] == pid]
+        assert fila["costo_usd"] == pytest.approx(0.05)
+        assert fila["duracion_s"] is None
+    finally:
+        client.portal.call(_borrar_uso_de_pipeline, pid)
+        client.portal.call(_borrar_pipelines, [pid])
 
 
 def test_estado_fuera_del_vocabulario_cerrado_es_422(client):
@@ -352,6 +473,11 @@ def test_ocultos_del_superadmin_trae_los_de_todos_los_usuarios(client, client_su
         resp = client_superadmin.get("/api/admin/pipelines/ocultos")
         assert resp.status_code == 200, resp.text
         cuerpo = resp.json()
+        # Fix round 1, Ruling 13(d): "has_more", el mismo contrato de
+        # paginación que ya usa GET /api/pipelines -- no "hay_mas".
+        assert "has_more" in cuerpo, cuerpo
+        assert cuerpo["has_more"] is False
+        assert "hay_mas" not in cuerpo
         filas = {f["pipeline_id"]: f for f in cuerpo["pipelines"] if f["pipeline_id"] in (pid_a, pid_b)}
         assert set(filas) == {pid_a, pid_b}
         assert filas[pid_a]["user_id"] == duenio_a
@@ -367,19 +493,78 @@ def test_ocultos_del_superadmin_trae_los_de_todos_los_usuarios(client, client_su
 # ---------------------------------------------------------------------------
 # Caso 10: EXPLAIN de las tres consultas nuevas/cambiadas.
 # ---------------------------------------------------------------------------
-def test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio(client):
-    """SQL_PIPELINES_DEL_USUARIO ahora suma `status NOT IN (...)`: sigue
-    yendo por idx_jacobs_pipelines_duenio (user_id, tenant_id, created_at) --
-    status no está en el índice, pero el WHERE es sobre las columnas que SÍ
-    lo están, y el ORDER BY sigue siendo el prefijo del índice tras la
-    igualdad de user_id/tenant_id."""
-    filas = client.portal.call(
-        sql, "EXPLAIN " + mod.SQL_PIPELINES_DEL_USUARIO,
-        ("x", "TENANT-EXPLAIN-T4", mod.LISTA_PIPELINES_MAX, 5), True)
-    ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
-    assert tabla == "jacobs_pipelines"
-    assert clave == "idx_jacobs_pipelines_duenio", filas
-    assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
+def test_explain_pipelines_del_usuario_usa_indice_de_tenant_sin_temporary(client):
+    """Fix round 1, Ruling 13(e) -- HALLAZGO, no un bug a esconder.
+
+    Con la tabla casi vacía (0-1 filas) SQL_PIPELINES_DEL_USUARIO iba por
+    idx_jacobs_pipelines_duenio sin filesort. Con datos que se PARECEN a
+    producción -- un fondo de OTRAS 300 pipelines repartidas en 30 tenants
+    distintos con estados normales, más 60 descartados y 3 vivos del tenant
+    bajo prueba -- el optimizador cambia de plan y elige
+    `idx_pipelines_descartados` (user_id, tenant_id, status, descartado_at)
+    con `Using filesort`, NO `idx_jacobs_pipelines_duenio`. Medido en 3
+    corridas de este archivo (aislado, después del otro EXPLAIN pesado, y
+    con `ANALYZE TABLE` de por medio): el plan es ESTABLE en
+    `idx_pipelines_descartados`, no una moneda al aire.
+
+    DECIDIDO CON UN NÚMERO, no a ojo (mismo sembrado, `EXPLAIN` +
+    `ANALYZE TABLE`, p50/p95 de 30 corridas cada una, medido 2026-09-22):
+
+        plan natural (idx_pipelines_descartados, CON filesort):
+            p50 0,069 ms / p95 0,138 ms
+        FORCE INDEX (idx_jacobs_pipelines_duenio, SIN filesort):
+            p50 0,108 ms / p95 0,116 ms
+
+    El plan "impuro" (con filesort) es MÁS RÁPIDO, no más lento -- porque el
+    filesort ordena SÓLO las filas que sobreviven al filtro de status
+    empujado adentro del índice (acotadas por cuántos pipelines VIVOS tiene
+    un tenant, que `ajustes.MAX_PIPELINES` mantiene bajo), mientras que
+    idx_jacobs_pipelines_duenio tiene que LEER las filas descartadas para
+    descartarlas después ("Using where" en motor, no en el índice) -- y la
+    propia spec (§2) dice que los descartados "van a ser muchos en el
+    tiempo": ese es justo el caso que este EXPLAIN tiene que medir, no el
+    caso feliz de una cuenta nueva. Forzar el plan "sin filesort" con
+    FORCE INDEX sería PEOR en producción, no mejor.
+
+    La decisión: NO tocar la consulta ni forzar un índice. La aserción que
+    importa no es "nunca filesort" (ese criterio no sobrevivió a datos
+    reales) sino que el plan siga acotado POR TENANT -- `key` tiene que ser
+    uno de los DOS índices que arrancan con (user_id, tenant_id)
+    (idx_jacobs_pipelines_duenio o idx_pipelines_descartados), nunca
+    idx_pipelines_status (que no tiene user_id/tenant_id y escala con el
+    total de pipelines "vivos" de TODOS los tenants, no sólo el de quien
+    pide la página -- ese sí sería un plan que se degrada con el crecimiento
+    de la tabla). "Using temporary" tampoco puede aparecer: eso sí sería
+    materializar el resultado completo, no sólo ordenar unas pocas filas
+    supervivientes."""
+    INDICES_ACOTADOS_POR_TENANT = {"idx_jacobs_pipelines_duenio", "idx_pipelines_descartados"}
+    ESTADOS_FONDO = ("completed", "failed", "aborted", "expired", "running", "pending")
+    tenant_real = "TENANT-EXPLAIN-T4-mainlist"
+    ids_fondo = [str(uuid.uuid4()) for _ in range(300)]
+    ids_ruido = [str(uuid.uuid4()) for _ in range(60)]
+    ids_vivos = [str(uuid.uuid4()) for _ in range(3)]
+    try:
+        for i, pid in enumerate(ids_fondo):
+            client.portal.call(partial(
+                _insertar_pipeline, pid, f"fondo-{i % 30}", f"fondo-tenant-{i % 30}",
+                ESTADOS_FONDO[i % len(ESTADOS_FONDO)]))
+        for pid in ids_ruido:
+            client.portal.call(partial(
+                _insertar_pipeline, pid, "x", tenant_real, "discarded",
+                status_previo="aborted", descartado_por="x", descartado_at=time.time()))
+        for pid in ids_vivos:
+            client.portal.call(partial(_insertar_pipeline, pid, "x", tenant_real, "completed"))
+        client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
+
+        filas = client.portal.call(
+            sql, "EXPLAIN " + mod.SQL_PIPELINES_DEL_USUARIO,
+            ("x", tenant_real, mod.LISTA_PIPELINES_MAX, 5), True)
+        ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
+        assert tabla == "jacobs_pipelines"
+        assert clave in INDICES_ACOTADOS_POR_TENANT, filas
+        assert "temporary" not in (extra or ""), filas
+    finally:
+        client.portal.call(_borrar_pipelines, ids_fondo + ids_ruido + ids_vivos)
 
 
 def test_explain_descartados_del_usuario_usa_idx_pipelines_descartados(client):
@@ -406,6 +591,12 @@ def test_explain_descartados_del_usuario_usa_idx_pipelines_descartados(client):
             client.portal.call(partial(
                 _insertar_pipeline, pid, "x", tenant_real, "discarded",
                 status_previo="aborted", descartado_por="x", descartado_at=time.time()))
+        # Fix round 1, Ruling 13(e): ANALYZE TABLE antes del EXPLAIN, no
+        # sólo el sembrado -- ver el docstring de
+        # test_explain_pipelines_del_usuario_usa_idx_jacobs_pipelines_duenio
+        # para el porqué (estadísticas persistentes de InnoDB, plan
+        # dependiente de qué corrió antes en la sesión sin esto).
+        client.portal.call(sql, "ANALYZE TABLE jacobs_pipelines", (), True)
 
         filas = client.portal.call(
             sql, "EXPLAIN " + mod.SQL_DESCARTADOS_DEL_USUARIO,
