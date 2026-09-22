@@ -45,3 +45,9 @@ loadtest/_run/
 # (cada corrida la pisa), pero hasta ahora eso dependía de que nadie
 # corriera `git add .` por descuido. Explicitado acá.
 loadtest/_memoria_resultados*.json
+
+# Revisión final de rama (Task 8, 2026-09-22): mismo motivo que la línea de
+# arriba -- descartados_orquestar.py dice en su docstring que este archivo
+# "no se commitea", pero nada lo hacía cumplir. Quedaba untracked por
+# disciplina del que corre el script, no por regla del repo.
+loadtest/_descartados_resultados*.json

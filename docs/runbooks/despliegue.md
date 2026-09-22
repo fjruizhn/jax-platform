@@ -205,6 +205,58 @@ peor ni una degradación silenciosa.
    SHOW INDEX FROM jax_memory.jacobs_pipelines WHERE Key_name = 'idx_pipelines_visibles';
    ```
 
+   **El camino feliz de arriba no es el único.** `init_tables()` (jax,
+   `jacobs/store.py::_agregar_columna_acotada`) espera hasta 30 s por el
+   metadata lock de cada `ADD COLUMN`/`CREATE INDEX`, y las columnas
+   CONTRATO **fallan CERRADO**: si otra transacción tiene `jacobs_pipelines`
+   tomada y la espera vence (error de MariaDB **1205**), `init_tables()`
+   levanta una excepción y **LAS MANOS no llega a arrancar** -- no es que
+   el DDL "todavía no corrió", es que el proceso murió intentándolo. Un
+   `SHOW COLUMNS` vacío en ese momento no distingue las dos cosas por sí
+   solo. Antes de repetir el `SHOW COLUMNS`/`SHOW INDEX` de arriba:
+
+   ```bash
+   sudo systemctl restart jax-las-manos
+   systemctl is-active jax-las-manos
+   ```
+
+   - Si da `active`: seguir con el `SHOW COLUMNS`/`SHOW INDEX` de arriba,
+     como documentado.
+   - Si NO da `active` (`failed`, `activating` en loop, etc.): buscar
+     `init_tables:` en el log del servicio --
+
+     ```bash
+     sudo journalctl -u jax-las-manos -n 100 --no-pager | grep 'init_tables:'
+     ```
+
+     Un mensaje del tipo `init_tables: no se pudo agregar
+     jacobs_pipelines.<columna> -- otra transacción tiene la tabla y venció
+     la espera de 30 s (1205 ...)` confirma el freno: otra transacción
+     tenía `jacobs_pipelines` tomada cuando el proceso arrancó. **El DDL es
+     idempotente** (`init_tables()` vuelve a chequear `information_schema`
+     antes de cada `ADD COLUMN`/`CREATE INDEX`, y una columna que ya existe
+     no se reintenta) -- esperar a que la transacción que tiene la tabla
+     termine (o encontrarla y matarla si quedó colgada,
+     `SHOW PROCESSLIST`/`SHOW ENGINE INNODB STATUS`) y volver a
+     `sudo systemctl restart jax-las-manos`. No hay nada que reparar a
+     mano: es la misma corrida, repetida.
+   - **No todo lo que crea `init_tables()` falla igual.** Las columnas
+     CONTRATO -- `status_previo`, `descartado_por`, `descartado_at` y
+     `visible` (Task 2 las escribe en la transición de estado; `visible` es
+     generada pero jax-platform depende de que exista para filtrar su
+     listado) -- fallan cerrado: si no se pueden crear, el proceso no
+     arranca, porque un `UPDATE`/`SELECT` contra una columna que no existe
+     rompería en producción de un modo peor (un `Unknown column` a mitad de
+     una transición, no un arranque que se detiene limpio). Los **índices**
+     (`idx_pipelines_descartados`, `idx_pipelines_ocultos`,
+     `idx_pipelines_visibles` y los que ya traía Task 3) son fail-**soft**:
+     si su propia espera de 30 s vence, queda un `ERROR` en el log con el
+     nombre del índice y el arranque **sigue** -- el próximo reinicio los
+     reintenta, y mientras tanto el plan de consulta es peor (o, para
+     `idx_pipelines_visibles`, el `FORCE INDEX` explícito del SQL de
+     jax-platform directamente da el error 1176 -- ver la nota del inicio
+     de esta sección), no un servicio caído.
+
 2. **Backend de jax-platform**, recién CON lo anterior confirmado. Antes de
    este punto, cualquier build de jax-platform que ya incluya este código
    (aunque sea una versión previa desplegada) seguiría sirviendo con el SQL
