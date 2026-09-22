@@ -556,6 +556,106 @@ describe('Memoria', () => {
     await waitFor(() => expect(screen.queryByText(es.memoria.actualizando)).not.toBeInTheDocument())
   })
 
+  // m1 (cierre jax-platform#146, ronda 6): la carrera de arriba sólo cubre
+  // el camino "la vieja llega DESPUÉS de que la nueva ya terminó" -- deja
+  // sin ejercitar los dos frenos que actúan mientras la nueva TODAVÍA sigue
+  // en vuelo (el `if (peticionRef.current === miPeticion)` del `finally` y
+  // del `catch` en Memoria.jsx::cargar()). Escenarios B y C del revisor
+  // (`Carrera6.audit.test.jsx`, ronda 6), traídos a este arnés con las
+  // mismas fixtures de la carrera de arriba.
+  it('una recarga vieja que resuelve mientras la mas nueva sigue en vuelo no apaga Actualizando', async () => {
+    let llamadasGrupos = 0
+    let resolverSegunda
+    let resolverTercera
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') {
+        llamadasGrupos += 1
+        if (llamadasGrupos === 1) return Promise.resolve({ data: GRUPOS_CARRERA_VIEJO })
+        // recarga #1 (tras aprobar 510) y recarga #2 (tras caducar 520):
+        // las DOS quedan colgadas -- a diferencia del test de arriba, acá
+        // ninguna terminó todavía cuando empieza a resolverse la primera.
+        if (llamadasGrupos === 2) return new Promise((resolve) => { resolverSegunda = resolve })
+        return new Promise((resolve) => { resolverTercera = resolve })
+      }
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) return Promise.resolve({ data: { hechos: [], total: 0 } })
+        if (params.verificado === false && params.limite === 1) return Promise.resolve({ data: { hechos: [], total: 3 } })
+        return Promise.resolve({ data: HECHOS_CARRERA })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockResolvedValue({ data: { aprobados: 1, ok: true } })
+    renderMemoria()
+    await screen.findByTestId('grupo-2')
+
+    fireEvent.click(within(screen.getByTestId('hecho-510')).getByRole('button', { name: es.memoria.aprobar }))
+    await waitFor(() => expect(llamadasGrupos).toBe(2))
+
+    fireEvent.click(within(screen.getByTestId('hecho-520')).getByRole('button', { name: es.memoria.caducar }))
+    const confirmacion = await screen.findByRole('dialog')
+    fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
+    fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.caducarConfirmar }))
+    await waitFor(() => expect(llamadasGrupos).toBe(3))
+    expect(screen.getByText(es.memoria.actualizando)).toBeInTheDocument()
+
+    // llega la vieja (recarga #1) PRIMERO -- la #2 (la más nueva) sigue en
+    // vuelo. El freno del `finally` tiene que impedir que esta respuesta
+    // vieja apague "Actualizando…".
+    resolverSegunda({ data: GRUPOS_CARRERA_VIEJO })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(screen.getByText(es.memoria.actualizando)).toBeInTheDocument()
+
+    // recién cuando responde la más nueva se apaga.
+    resolverTercera({ data: GRUPOS_CARRERA_NUEVO })
+    await waitFor(() => expect(screen.queryByText(es.memoria.actualizando)).not.toBeInTheDocument())
+    expect(screen.queryByTestId('grupo-2')).not.toBeInTheDocument()
+  })
+
+  it('una recarga vieja que falla tarde, tras una mas nueva ya OK, no muestra error de carga', async () => {
+    let llamadasGrupos = 0
+    let rechazarSegunda
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') {
+        llamadasGrupos += 1
+        if (llamadasGrupos === 1) return Promise.resolve({ data: GRUPOS_CARRERA_VIEJO })
+        // recarga #1 (tras aprobar 510): queda colgada, y luego FALLA.
+        if (llamadasGrupos === 2) return new Promise((_resolve, reject) => { rechazarSegunda = reject })
+        // recarga #2 (tras caducar 520): responde OK enseguida.
+        return Promise.resolve({ data: GRUPOS_CARRERA_NUEVO })
+      }
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) return Promise.resolve({ data: { hechos: [], total: 0 } })
+        if (params.verificado === false && params.limite === 1) return Promise.resolve({ data: { hechos: [], total: 3 } })
+        return Promise.resolve({ data: HECHOS_CARRERA })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockResolvedValue({ data: { aprobados: 1, ok: true } })
+    renderMemoria()
+    await screen.findByTestId('grupo-2')
+
+    fireEvent.click(within(screen.getByTestId('hecho-510')).getByRole('button', { name: es.memoria.aprobar }))
+    await waitFor(() => expect(llamadasGrupos).toBe(2))
+
+    fireEvent.click(within(screen.getByTestId('hecho-520')).getByRole('button', { name: es.memoria.caducar }))
+    const confirmacion = await screen.findByRole('dialog')
+    fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
+    fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.caducarConfirmar }))
+    await waitFor(() => expect(llamadasGrupos).toBe(3))
+    // la más nueva ya terminó bien.
+    await waitFor(() => expect(screen.queryByText(es.memoria.actualizando)).not.toBeInTheDocument())
+    expect(screen.queryByTestId('grupo-2')).not.toBeInTheDocument()
+
+    // recién ahora falla la vieja -- el freno del `catch` tiene que evitar
+    // que un error tardío de una llamada ya superada se muestre.
+    rechazarSegunda(new Error('red'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(screen.queryByText(es.memoria.errorCarga)).not.toBeInTheDocument()
+    expect(screen.getByTestId('grupo-0')).toBeInTheDocument()
+  })
+
   it('un error al aprobar se avisa por toast, con el codigo traducido', async () => {
     servirGet(GRUPOS_DOS_TEMAS, HECHOS_DOS_TEMAS)
     api.post.mockRejectedValue({ response: { status: 404, data: { detail: 'hecho_no_encontrado' } } })
