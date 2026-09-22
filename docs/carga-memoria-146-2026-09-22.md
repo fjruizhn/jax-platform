@@ -422,21 +422,46 @@ comparación de `/grupos` más arriba. No se declara "sin degradación" ni
 "más lento" que ronda 4; p50 y p95 del peor caso quedan LEVEMENTE por
 debajo del caso realista, pero esa diferencia no prueba nada por sí sola
 con máquina y sesión distintas -- puede ser ruido de medición, no una
-mejora real. El BFS de
-`_cierre_transitivo_de_citas` (`backend/api/admin/memoria.py`) recorre
-desde CADA origen sin memoizar entre ellos -- a profundidad 10 eso es
-~10 pasos por nodo de la cadena, ~100 operaciones totales por cadena de
-11 facts: indistinguible del ruido en esta medición, con 50 cadenas de esa
-profundidad sembradas. **Decisión: no se memoiza** -- Regla 2 del
-rendimiento (cache) de este ecosistema pide no cachear lo que no se midió
-caro, y acá se midió y no lo es.
+mejora real.
+
+**m5-texto (revisión adversarial, ronda 7): la decisión de no memoizar NO
+se justifica con "indistinguible del ruido"** -- esa comparación es
+justo la que el párrafo de arriba acaba de declarar no comparable (misma
+falla que m4 corrigió para `/grupos`: no se puede apoyar una decisión en
+un delta contra una base que no es comparable). La justificación real es
+el **número absoluto de ESTA corrida sola**, sin comparar contra nada: el
+peor caso sembrado (19 % síntesis, cadenas de profundidad 10 -- el BFS de
+`_cierre_transitivo_de_citas`, `backend/api/admin/memoria.py`, recorre
+desde CADA origen sin memoizar entre ellos, ~10 pasos por nodo de cadena,
+~100 operaciones totales por cadena de 11 facts) mide **p95 = 17,99 ms,
+max = 24,56 ms** sobre 200 llamadas reales. Un endpoint cuyo peor caso
+medido tarda ~18 ms en el percentil 95 no justifica la complejidad de
+memoizar (invalidación, memoria extra, otro estado que mantener
+correcto) -- el costo de NO memoizar, medido en el peor caso sembrado,
+ya es chico en términos absolutos. **Decisión: no se memoiza** -- Regla 2
+del rendimiento (cache) de este ecosistema pide no cachear lo que no se
+midió caro, y el número de arriba es la medición de que no lo es.
 
 **Dónde queda el crudo de `/fundir`.** MINOR A-texto pedía dejarlo en el
 mismo lugar que el de `/grupos`, o decir por qué no -- ahora sí: se creó
 `loadtest/memoria_medir_fundir.py` (antes esto era un script ad-hoc del
-scratchpad de la sesión, `medir_fundir.py`, que además leía
-`JAX_JWT_SECRET` de `/etc/jax/.env` -- ver el hallazgo de SEGURIDAD, ya
-corregido). Escribe `loadtest/_memoria_resultados_fundir.json`, mismo
+scratchpad de la sesión, `medir_fundir.py`, que además USABA
+`JAX_JWT_SECRET` de `/etc/jax/.env` -- la llave de PRODUCCIÓN -- PARA
+FIRMAR el token con el que medía -- ver el hallazgo de SEGURIDAD, ya
+corregido).
+
+**m6/m4 (cierre jax-platform#146, texto corregido en la ronda 7):**
+"corregido" no quiere decir que `/etc/jax/.env` haya dejado de leerse --
+`memoria_medir_fundir.py` (y `memoria_medir.py`) siguen leyéndolo entero,
+`JAX_JWT_SECRET` de producción incluido, y ese valor SÍ se usa: sólo para
+COMPARARLO (`!=`) contra el secreto de carga (el que de verdad firma,
+generado por `memoria_levantar_entorno.py` y leído vía
+`/proc/<pid>/environ`) -- si algún día coincidieran, el script aborta en
+vez de medir sobre un entorno que también podría emitir tokens válidos
+contra producción. Lo corregido es que el secreto de producción NUNCA
+firma ni se imprime, no que deje de leerse.
+
+Escribe `loadtest/_memoria_resultados_fundir.json`, mismo
 directorio y misma convención que `loadtest/_memoria_resultados.json` (de
 `/grupos`) -- **ver m5 más arriba: desde el cierre (ronda 6) los dos están
 en `.gitignore`** (`loadtest/_memoria_resultados*.json`); esta corrida se copió a

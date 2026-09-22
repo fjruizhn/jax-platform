@@ -9,11 +9,22 @@ llamada, nunca concurrente contra el mismo id (mediría contención de
 
 MINOR A-texto (revisión adversarial de jax-platform PR 146, ronda 5): antes
 este script vivía SOLO en el scratchpad de la sesión (`medir_fundir.py`) y
-leía `JAX_JWT_SECRET` de `/etc/jax/.env` -- la llave de PRODUCCIÓN. Ahora
-vive en el repo, junto a `memoria_medir.py`, y lee el secreto del backend
-de carga YA LEVANTADO vía `/proc/<pid>/environ` (mismo patrón que
-`memoria_medir.py`) -- nunca de producción. El JSON crudo de resultados
-queda en `loadtest/_memoria_resultados_fundir.json`, mismo lugar y misma
+usaba el `JAX_JWT_SECRET` de `/etc/jax/.env` -- la llave de PRODUCCIÓN --
+PARA FIRMAR el token con el que medía. Ahora vive en el repo, junto a
+`memoria_medir.py`, y FIRMA con el secreto del backend de carga YA
+LEVANTADO, leído vía `/proc/<pid>/environ` (mismo patrón que
+`memoria_medir.py`) -- nunca con el de producción.
+
+m6/m4 (cierre jax-platform#146, texto corregido en la ronda 7): esto NO
+quiere decir que `/etc/jax/.env` deje de leerse -- SÍ se lee entero
+(`_run` de abajo, `sudo -n cat /etc/jax/.env`), `JAX_JWT_SECRET` de
+producción incluido, y ese valor de producción SÍ se usa: sólo para
+COMPARARLO (`!=`) contra el secreto de carga, como barrera de seguridad
+antes de medir (si algún día coincidieran, el script aborta en vez de
+medir sobre un entorno que también podría emitir tokens válidos contra
+producción). Lo que nunca pasa es que ese secreto de producción se use
+para FIRMAR, ni que se imprima. El JSON crudo de resultados queda en
+`loadtest/_memoria_resultados_fundir.json`, mismo lugar y misma
 convención que `loadtest/_memoria_resultados.json` (de `/grupos`).
 
 USO:
