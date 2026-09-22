@@ -168,3 +168,110 @@ esta escala (10.000 hechos, 9.000 activos). El aumento de payload (+30,3 %)
 es intencional (D5) y no se midió aparte por bytes/segundo porque el
 cuello de botella medido sigue siendo el pool de conexiones, no el tamaño
 de la respuesta.
+
+> **⚠️ CORRECCIÓN (revisión adversarial de jax-platform PR 146, RONDA 4,
+> MAJOR A, 2026-09-22 tarde).** Todo lo de arriba (§"Qué cambió en el
+> camino medido" en adelante) medía una base de carga **sin una sola fila
+> con `source_fact_ids`** -- `loadtest/memoria_seed.py` nunca poblaba ese
+> campo, así que `SQL_CITAS` devolvía **0 filas** en las dos corridas.
+> "Medido... son pocas" (comentario junto a `SQL_CITAS`,
+> `backend/api/admin/memoria.py`) y "no se distingue del ruido" (más
+> arriba) eran, con esa base, **verdades vacías**: no había nada que
+> distinguir del ruido porque no había carga real que medir. Corregido acá,
+> no borrado -- para que quien vuelva a este documento sepa qué pasó y por
+> qué la sección de arriba ya no alcanza.
+>
+> **Qué se sembró de nuevo.** La base de test de esta sesión estaba vacía
+> (0 `facts`, medido con una consulta ad-hoc **vía pytest**, nunca contra
+> `jax_memory`) -- sin señal organica que dar una proporción real, se usó
+> el piso del brief: **10 % del total en cita plana** (1.000 de 10.000,
+> cada una citando a OTRO hecho al azar) **+ 200 cadenas de 2do/3er orden**
+> (base → S2 cita a base → S3 cita a S2, 400 filas más) -- el peor caso que
+> pedía el brief, para ejercitar el BFS de `_cierre_transitivo_de_citas` a
+> más de un salto. Total: **1.400 de 10.000 facts (14 %) con
+> `source_fact_ids` no nulo** en la base "con síntesis". Ver
+> `loadtest/memoria_seed.py::FRACCION_SINTESIS`/`N_CADENAS_SINTESIS`
+> (overridables por entorno -- `MEMORIA_SEED_FRACCION_SINTESIS=0` y
+> `MEMORIA_SEED_N_CADENAS_SINTESIS=0` reproducen la base VIEJA, sin
+> síntesis, para la comparación).
+>
+> **Método.** Dos bases propias, clonadas por esquema desde
+> `jax_memory_test` (nunca `jax_memory`, nunca la compartida):
+> `jax_memory_test_fundir146_r4a` (SIN síntesis) y
+> `jax_memory_test_fundir146_r4b` (CON síntesis, 14 %) -- las dos con
+> 10.000 `facts`, mismo generador, misma semilla de `numpy`
+> (`np.random.default_rng(20260920)`), un solo backend detrás de la otra
+> contra el MISMO puerto (`127.0.0.1:18080`), commit de `jax` resuelto y
+> registrado en `info.json` (MINOR 4, esta misma ronda):
+> `52e2599e19b5a8fcc7728a23a51b071731d5a0c5`. Rama medida: HEAD de este PR
+> (`cbe19ef` + los arreglos de esta ronda, sin commitear todavía en el
+> momento de medir). Verificado por `/proc/<pid>/environ` antes de cada
+> corrida, igual que la vuelta anterior. Las dos bases y el backend se
+> borraron al terminar de medir (`DROP DATABASE`, vía un script propio que
+> reusa el mismo patrón de credenciales que ya usan
+> `loadtest/memoria_seed.py`/`memoria_levantar_entorno.py` -- `sudo -n cat
+> /etc/jax/.env` DENTRO de Python, nunca sourceado en la terminal).
+>
+> **`GET /api/admin/memoria/grupos` -- con y sin síntesis:**
+>
+> | c | n | | p50 ms | p95 ms |
+> |---|---|---|---|---|
+> | 1 | 3 | Sin síntesis | 3.162,63 | 3.205,37 |
+> | 1 | 3 | Con síntesis (14 %) | 3.021,47 | 3.130,33 |
+> | 3 | 6 | Sin síntesis | 6.527,46 | 7.222,09 |
+> | 3 | 6 | Con síntesis (14 %) | 6.643,75 | 7.011,31 |
+> | 5 | 10 | Sin síntesis | 10.692,80 | 12.027,09 |
+> | 5 | 10 | Con síntesis (14 %) | 11.252,88 | 11.880,87 |
+>
+> Delta de p95 con síntesis vs. sin: c=1 **−2,3 %**, c=3 **−2,9 %**, c=5
+> **−1,2 %** -- las tres NEGATIVAS (más rápido con síntesis, no más lento),
+> dentro del ruido de una muestra de 3-10 peticiones contra un pool de 10
+> conexiones. **Ahora sí hay 1.400 filas con `source_fact_ids` que
+> `SQL_CITAS` recorre en cada request** (antes, 0) y el efecto sigue sin
+> distinguirse del ruido -- esta vez con una base que de verdad ejercita el
+> camino que se quería medir.
+>
+> **`POST /api/admin/memoria/hechos/fundir` -- con y sin síntesis (nuevo en
+> esta ronda; la vuelta anterior no lo medía).** 200 llamadas SECUENCIALES
+> (no concurrentes -- cada fundir muta filas y necesita un cluster propio
+> sin fundir todavía; 512-782 clusters disponibles según la base, de sobra
+> para 200), una por cada cluster de `casi_duplicados` que devolvía
+> `GET /grupos` en ese momento, con el `superviviente_id`/`absorbidos`
+> exactos que el propio backend proponía:
+>
+> | | Sin síntesis | Con síntesis (14 %) |
+> |---|---|---|
+> | ok / intentados | 200 / 200 | 200 / 200 |
+> | p50 ms | 7,60 | 12,20 |
+> | p95 ms | 18,43 | 19,12 |
+> | max ms | 36,92 | 35,35 |
+>
+> p50 sube 60,5 % (7,6 → 12,2 ms) -- el `SQL_CITAS` de más (`fundir_hechos`
+> lo corre UNA vez por request, dentro de la transacción con `FOR UPDATE`,
+> antes de decidir compatibilidad) pesa proporcionalmente más sobre un
+> endpoint que YA era rápido. p95 sube apenas 3,8 % (18,43 → 19,12 ms). En
+> términos absolutos, los dos casos siguen en el orden de **milisegundos
+> de un solo dígito a low-teens** -- muy por debajo de cualquier percepción
+> humana de demora en un botón que Fernando aprieta a mano, no en un lazo
+> automatizado.
+>
+> **Decisión (punto 3 del brief: "si el costo es material, filtrar
+> SQL_CITAS por source_facet, o acotar el cierre a los ids candidatos --
+> elige con número").** Con los números de arriba, el costo **NO es
+> material**: `/grupos` no muestra degradación medible ni con 14 % de
+> síntesis y cadenas de 2do/3er orden, y `/fundir` sigue en milisegundos de
+> un dígito a low-teens con el mismo escenario. No se optimiza `SQL_CITAS`
+> esta ronda -- añadir un índice sobre `source_facet` (que ni siquiera está
+> en la consulta hoy) o acotar el cierre a los ids candidatos sería
+> complejidad sin beneficio medido, exactamente lo que LAS CUATRO DEL
+> RENDIMIENTO #2 (cache) pide evitar: no se cachea/optimiza lo que no se
+> midió caro. Si la proporción real de síntesis en producción creciera muy
+> por encima del 14 % medido acá, esta sección es la que hay que volver a
+> correr -- no una intuición nueva.
+>
+> **Qué NO se remidió en esta corrección.** `/hechos?verificado=false` y
+> `/hechos` sin filtro (no tocados por este PR, igual que la vuelta
+> anterior) -- se corrieron igual como parte del script (`memoria_medir.py`
+> mide las tres rutas siempre), pero no se transcriben acá por no ser el
+> objeto de esta medición; quedaron en los JSON de la sesión (borrados al
+> cerrar, igual que las bases).

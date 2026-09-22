@@ -77,29 +77,44 @@ def _cargar_env_produccion() -> dict:
     return env
 
 
-def _asegurar_checkout_de_jax(tmp: Path) -> Path:
+def _asegurar_checkout_de_jax(tmp: Path, commit: str | None = None) -> tuple[Path, str]:
     """Checkout PROPIO de `jax` para `JAX_REPO_PATH` -- nunca `/home/fruiz/jax`
     ni `/srv/jax-prod/jax` (prohibido, ver el comentario de
-    `JAX_REPO_GIT_URL`). Se clona UNA vez dentro del propio `RUN_DIR` de
-    este script (idempotente: si ya existe, no vuelve a clonar) -- mismo
-    remoto que ya usa `.github/workflows/policy.yml` para el mismo fin
-    (`git clone --depth=1 .../Jax.git`). Así la medición se puede repetir
-    sin preparar ningún worktree compañero a mano."""
+    `JAX_REPO_GIT_URL`).
+
+    MINOR 4 (revisión adversarial de jax-platform PR 146, ronda 4): la
+    versión anterior clonaba `--depth=1` UNA sola vez y no lo volvía a
+    tocar -- una corrida de carga podía terminar usando un `jax` de hace
+    semanas sin que nadie lo notara, y el commit usado ni siquiera quedaba
+    registrado en `info.json`. Acá: el clon es COMPLETO (sin `--depth`, para
+    poder moverse a cualquier commit que se pida, no sólo al HEAD del
+    momento del clon) y se reusa entre corridas (`RUN_DIR` es el mismo), pero
+    en CADA corrida se hace `fetch` + `checkout --force` al commit pedido
+    (o a `origin/master` si no se pidió ninguno) -- nunca queda un checkout
+    viejo sirviendo una medición nueva. Devuelve la ruta Y el commit
+    resuelto (`git rev-parse HEAD`), para que el llamador lo deje escrito en
+    `info.json` -- antes ese dato se perdía."""
     destino = tmp / "jax-repo"
-    if not (destino / "jax" / "memory" / "db.py").exists():
+    if not (destino / ".git").exists():
         destino.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["git", "clone", "--depth=1", JAX_REPO_GIT_URL, str(destino)],
-            check=True,
-        )
-    return destino
+        subprocess.run(["git", "clone", JAX_REPO_GIT_URL, str(destino)], check=True)
+    subprocess.run(["git", "-C", str(destino), "fetch", "--all", "--prune", "--tags"], check=True)
+    ref = commit or "origin/master"
+    subprocess.run(["git", "-C", str(destino), "checkout", "--force", "--detach", ref], check=True)
+    resuelto = subprocess.run(
+        ["git", "-C", str(destino), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    return destino, resuelto
 
 
-def construir_env(base_de_prueba: str, password_superadmin: str, tmp: Path) -> dict:
+def construir_env(base_de_prueba: str, password_superadmin: str, tmp: Path,
+                   commit_de_jax: str | None = None) -> tuple[dict, str]:
     env = dict(os.environ)
     env.update(_cargar_env_produccion())
     env["JAX_DB_NAME"] = base_de_prueba
-    env["JAX_REPO_PATH"] = str(_asegurar_checkout_de_jax(tmp))
+    ruta_jax, jax_commit_resuelto = _asegurar_checkout_de_jax(tmp, commit_de_jax)
+    env["JAX_REPO_PATH"] = str(ruta_jax)
     env["LAS_MANOS_URL"] = "http://127.0.0.1:9"
     env["JACOBS_URL"] = "http://127.0.0.1:9/jacobs"
     env["JAX_PLATFORM_URL"] = BACKEND_URL
@@ -132,7 +147,7 @@ def construir_env(base_de_prueba: str, password_superadmin: str, tmp: Path) -> d
     }.items():
         env[k] = v
     env["PYTHONPATH"] = str(BACKEND_DIR)
-    return env
+    return env, jax_commit_resuelto
 
 
 def _verificar_no_apunta_a_produccion(env: dict, base_de_prueba: str) -> None:
@@ -159,12 +174,19 @@ def esperar_puerto(host: str, port: int, timeout: float = 40.0) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        raise SystemExit("uso: memoria_levantar_entorno.py <base_de_prueba> <password_superadmin>")
+    if len(sys.argv) not in (3, 4):
+        raise SystemExit(
+            "uso: memoria_levantar_entorno.py <base_de_prueba> <password_superadmin> "
+            "[commit_de_jax]"
+        )
     base_de_prueba, password_superadmin = sys.argv[1], sys.argv[2]
+    # MINOR 4 (ronda 4): commit opcional -- sin él, se usa `origin/master`
+    # (siempre al día, ver `_asegurar_checkout_de_jax`); con él, se puede
+    # reproducir una medición exacta contra un commit de `jax` específico.
+    commit_de_jax = sys.argv[3] if len(sys.argv) == 4 else None
 
     RUN_DIR.mkdir(parents=True, exist_ok=True)
-    env = construir_env(base_de_prueba, password_superadmin, RUN_DIR)
+    env, jax_commit_resuelto = construir_env(base_de_prueba, password_superadmin, RUN_DIR, commit_de_jax)
     _verificar_no_apunta_a_produccion(env, base_de_prueba)
 
     log_backend = open(RUN_DIR / "backend.log", "w")
@@ -199,11 +221,20 @@ def main() -> None:
         "url": BACKEND_URL,
         "health_status": r.status_code if r else None,
         "db_name_verificado": db_name,
+        # MINOR 4 (ronda 4): antes este dato se perdía -- una medición vieja
+        # no podía decir de qué `jax` salió. Ver `_asegurar_checkout_de_jax`.
+        "jax_commit": jax_commit_resuelto,
         "superadmin_email": SUPERADMIN_EMAIL,
         "superadmin_password": password_superadmin,
         "log": str(RUN_DIR / "backend.log"),
     }
-    (RUN_DIR / "info.json").write_text(json.dumps(resultado, indent=2))
+    info_path = RUN_DIR / "info.json"
+    info_path.write_text(json.dumps(resultado, indent=2))
+    # MINOR 4 (ronda 4): `info.json` trae `superadmin_password` en texto
+    # plano (de la base de CARGA, nunca de producción -- pero igual es un
+    # secreto utilizable) -- 600, no el default del proceso (típicamente
+    # 644), y sólo el dueño puede leerlo.
+    info_path.chmod(0o600)
     print(json.dumps(resultado, indent=2))
 
 
