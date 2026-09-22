@@ -27,9 +27,10 @@ name: policy
 #     entonces NINGÚN job los corría -- Login.test.jsx existía y era una
 #     hipótesis de cobertura, no cobertura.
 #   - loadtest-tests: los tests puros de loadtest/ (2026-09-22, cierre
-#     jax-platform#146). Mismo defecto que Login.test.jsx en 2026-09-12:
-#     `loadtest/test_memoria_medir_fundir.py`/`test_memoria_levantar_
-#     entorno.py` existían y no corrían en NINGÚN job (`backend-tests-*`
+#     jax-platform#146, ronda 6 + ronda 7). Mismo defecto que Login.test.jsx
+#     en 2026-09-12: `loadtest/test_memoria_medir_fundir.py`/
+#     `test_memoria_levantar_entorno.py`/`test_historial_orquestar.py`
+#     existían (o se crearon) y no corrían en NINGÚN job (`backend-tests-*`
 #     tiene `working-directory: backend` y `testpaths = tests` -- nunca
 #     llegaba a `loadtest/`).
 #
@@ -906,25 +907,34 @@ jobs:
   # cobertura, mismo motivo que `frontend-tests` (comentario de arriba, "NO
   # CUBRE").
   #
-  # Por que un job PROPIO y no sumarlos a `backend-tests-no-db`: los dos
-  # archivos viven en `loadtest/`, fuera de `backend/`, y sus modulos
-  # (`memoria_medir_fundir.py`/`memoria_levantar_entorno.py`) son SCRIPTS
-  # OPERATIVOS que, corridos de verdad, copian credenciales de PRODUCCION al
-  # entorno que levantan (`_cargar_env_produccion`, `sudo -n cat
-  # /etc/jax/.env`) -- mezclarlos con la suite de `backend/tests/` (que tiene
-  # su propio conftest y barreras contra produccion) es exactamente el tipo
-  # de mezcla que este repo evita. Las funciones que SI se testean aca
-  # (`armar_resultado`, `escribir_info_json`) son puras -- nunca tocan DB,
-  # red, ni `/etc/jax/.env` -- asi que un job minimo, sin MariaDB ni el clon
-  # de `jax`, alcanza. `httpx` se instala aparte porque los dos modulos lo
-  # importan a nivel de módulo (para el resto de sus funciones, que este job
-  # no ejercita) y sin él ni siquiera se puede hacer el import.
+  # Por que un job PROPIO y no sumarlos a `backend-tests-no-db`: los archivos
+  # viven en `loadtest/`, fuera de `backend/`, y sus modulos
+  # (`memoria_medir_fundir.py`/`memoria_levantar_entorno.py`/
+  # `historial_orquestar.py`) son SCRIPTS OPERATIVOS que, corridos de verdad,
+  # copian credenciales de PRODUCCION al entorno que levantan
+  # (`_cargar_env_produccion`, `sudo -n cat /etc/jax/.env`) -- mezclarlos con
+  # la suite de `backend/tests/` (que tiene su propio conftest y barreras
+  # contra produccion) es exactamente el tipo de mezcla que este repo evita.
+  # Las funciones que SI se testean aca (`armar_resultado`,
+  # `escribir_info_json`, `construir_env`,
+  # `_abortar_si_el_secreto_de_carga_coincide_con_produccion`) son puras o
+  # mockean el unico borde de I/O (`_cargar_env_produccion`) -- nunca tocan
+  # DB, red, ni `/etc/jax/.env` de verdad -- asi que un job minimo, sin
+  # MariaDB ni el clon de `jax`, alcanza. `httpx` se instala aparte porque
+  # los modulos lo importan a nivel de módulo (para el resto de sus
+  # funciones, que este job no ejercita) y sin él ni siquiera se puede hacer
+  # el import.
+  #
+  # 2026-09-22, ronda 7 (punto 7 del cierre, SEGURIDAD pre-existente):
+  # `loadtest/test_historial_orquestar.py`, archivo NUEVO -- mismo hallazgo
+  # que m5/m7 (test sin job), asi que se suma directo a ESTE job en el mismo
+  # commit que lo crea, no se repite el descubrimiento.
   #
   # Sin PISO_PASSED propio, mismo estilo que `no-fail-open-except`/
-  # `invoke-facet-envoltorio`: son 4 tests en 2 archivos chicos, y el job
+  # `invoke-facet-envoltorio`: son 11 tests en 3 archivos chicos, y el job
   # entero es el gate (cualquier fallo lo pone en rojo) -- un numero de piso
-  # aparte no agrega nada que `pytest -v` no de ya. Medido en vivo: 4 passed,
-  # 0 failed.
+  # aparte no agrega nada que `pytest -v` no de ya. Medido en vivo: 11
+  # passed, 0 failed (antes de la ronda 7: 4 passed, 2 archivos).
   loadtest-tests:
     runs-on: ubuntu-latest
     steps:
@@ -933,7 +943,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pytest httpx
-      - run: python -m pytest loadtest/test_memoria_medir_fundir.py loadtest/test_memoria_levantar_entorno.py -v
+      - run: python -m pytest loadtest/test_memoria_medir_fundir.py loadtest/test_memoria_levantar_entorno.py loadtest/test_historial_orquestar.py -v
 
   # --------------------------------------------------------------------------
   # Suite del backend, modo "CON base de datos" -- los 150 tests que el job de
@@ -2436,7 +2446,20 @@ jobs:
           #   traducir) y su control (error real dentro de la transacción no
           #   se disfraza de 503). Medido en vivo, MISMO comando: 2573 passed
           #   -> 2575 (0 fallidos, 0 skips las dos).
-          PISO_PASSED = 2575
+          # 2575 -> 2577 (2026-09-22, jax-platform#146, ronda 7 de revisión
+          #   adversarial -- punto 6 del ajuste): `corregir_hecho` tenía el
+          #   MISMO defecto sin guarda que `aprobar_hechos`/`fundir_hechos`
+          #   antes de m8/m8-b -- pre-existente, encontrado por el
+          #   controlador. Mismo `AsyncExitStack`, 2 tests nuevos en
+          #   test_memoria_api.py: test_corregir_con_la_base_caida_no_es_
+          #   500_generico (rojo verificado revirtiendo el fix -- reproduce
+          #   el OSError sin traducir) y su control (instrumenta
+          #   aiomysql.Cursor.execute -- corregir_hecho no tiene una función
+          #   propia tipo _aprobar_en_cursor -- para que SOLO el UPDATE ...
+          #   SET superseded_by falle con aiomysql.OperationalError, sin
+          #   disfrazarse de 503). Medido en vivo, MISMO comando: 2575
+          #   passed -> 2577 (0 fallidos, 0 skips las dos).
+          PISO_PASSED = 2577
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3190,6 +3213,11 @@ jobs:
       #   fundir.py también piden `client_superadmin`/`trio` (DB). Medido:
       #   1703 passed / 872 skipped (antes: 1703 / 870 -- +2 skips, 0 passed
       #   nuevos). El piso declarado sigue en 1666, misma razón.
+      # 2026-09-22, ronda 7 (punto 6 del ajuste, corregir_hecho): sin cambio
+      #   en `passed` -- los 2 tests nuevos de test_memoria_api.py también
+      #   piden `client_superadmin`. Medido: 1703 passed / 874 skipped
+      #   (antes: 1703 / 872 -- +2 skips, 0 passed nuevos). El piso
+      #   declarado sigue en 1666, misma razón.
       JAX_CI_MIN_PASSED: "1666"
     steps:
       - uses: actions/checkout@v4
