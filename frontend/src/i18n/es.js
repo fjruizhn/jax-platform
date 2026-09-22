@@ -1323,6 +1323,7 @@ export default {
       hecho_ya_superado: 'Ya fue corregido por otra persona: recargá la pantalla.',
       texto_vacio: 'Escribí un texto.',
       vence_at_invalido: 'La fecha no es válida.',
+      vence_at_sin_zona: 'La fecha necesita indicar su zona horaria.',
       memoria_no_disponible: 'La memoria no está disponible ahora mismo.',
       // Ronda 146 (D3): el backend EXIGE la regla -- estos dos códigos
       // salen si el grupo cambió entre que esta pantalla lo cargó y que

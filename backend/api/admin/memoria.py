@@ -47,7 +47,7 @@ import json
 import logging
 import math
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -462,6 +462,68 @@ class CaducarBody(BaseModel):
     vence_at: Optional[str] = None
 
 
+# TIMESTAMP en MariaDB/MySQL: rango real `1970-01-01 00:00:01` a
+# `2038-01-19 03:14:07`, los dos en UTC (entero con signo de 32 bits desde
+# el epoch). Se valida ANTES de tocar la base -- no se le pide a MariaDB que
+# decida qué hacer con un valor fuera de rango (según el modo SQL, trunca,
+# lo cambia por 0000-00-00, o rechaza con error de driver: ninguna de esas
+# tres es "400 vence_at_invalido" con un detail legible).
+_TIMESTAMP_MIN_UTC = datetime(1970, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+_TIMESTAMP_MAX_UTC = datetime(2038, 1, 19, 3, 14, 7, tzinfo=timezone.utc)
+
+
+class _ZonaHorariaNoResuelta(RuntimeError):
+    """`CONVERT_TZ` devolvió `NULL`: la base no pudo resolver
+    `@@session.time_zone` contra el valor recibido (p.ej. una zona con
+    nombre sin las tablas `mysql.time_zone*` cargadas). Es un fallo de
+    infraestructura, no "sin caducidad" -- `expire_fact(None)` QUITARÍA la
+    caducidad en vez de ponerla, así que este caso no puede llegar ahí."""
+
+
+async def _hora_local_de_base(momento: datetime) -> datetime:
+    """Convierte un datetime CON ZONA a la hora local que usa la base
+    (`@@session.time_zone`, en producción SYSTEM -- Honduras, UTC-6, sin
+    horario de verano hoy).
+
+    La conversión la hace MariaDB con `CONVERT_TZ`, no una resta de horas a
+    mano: `expires_at` se compara con `NOW()` (hora local de sesión, ver
+    `SQL_LISTAR`/`SQL_VECINOS` arriba), y `CONVERT_TZ(dt, '+00:00',
+    @@session.time_zone)` sigue dando la hora correcta aunque el sistema
+    tuviera horario de verano (lee el tzdata real del SO vía 'SYSTEM'), cosa
+    que restar un offset fijo en Python no podría. Verificado en la base de
+    TEST (nunca en producción, `/etc/jax/.env` no se carga desde este
+    módulo ni desde sus tests): con `@@session.time_zone = SYSTEM`,
+    `CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', @@session.time_zone)` da el mismo
+    valor que `NOW()` -- ver `test_memoria_api.py::
+    test_los_dos_pools_ven_la_misma_zona_horaria` y el resto de la suite de
+    caducar.
+
+    El parámetro es el objeto `datetime` (naive, en UTC), no una cadena
+    armada con `strftime`: `strftime("%Y", ...)` no garantiza el relleno a 4
+    dígitos para años < 1000 (depende de la libc del runner), y el escapador
+    de fechas del driver (`pymysql.converters.escape_datetime`) SÍ rellena
+    siempre con `{0.year:04}` -- se le pasa el trabajo a él.
+
+    Usa el mismo pool que el resto de este módulo (`db.connection.get_pool`,
+    la conexión de jax-platform contra `jax_memory`) -- ninguna de las dos
+    conexiones (ésta, y la de `MemoryDB.expire_fact` en `jax/memory/db.py`)
+    fija un `time_zone` de sesión propio, así que las dos ven la misma
+    `@@session.time_zone` del servidor (comprobado en vivo por
+    `test_los_dos_pools_ven_la_misma_zona_horaria`, no solo supuesto)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT CONVERT_TZ(%s, '+00:00', @@session.time_zone)",
+                (momento.astimezone(timezone.utc).replace(tzinfo=None),),
+            )
+            fila = await cur.fetchone()
+    if fila is None or fila[0] is None:
+        raise _ZonaHorariaNoResuelta(
+            "CONVERT_TZ devolvió NULL -- @@session.time_zone no se pudo resolver")
+    return fila[0]
+
+
 @router.post("/hechos/{fact_id}/caducar")
 async def caducar_hecho(fact_id: int, body: CaducarBody,
                         user: AuthUser = Depends(require_superadmin)):
@@ -469,9 +531,32 @@ async def caducar_hecho(fact_id: int, body: CaducarBody,
     expira = None
     if body.vence_at:
         try:
-            expira = datetime.fromisoformat(body.vence_at)
+            crudo = datetime.fromisoformat(body.vence_at)
         except ValueError:
             raise HTTPException(status_code=400, detail="vence_at_invalido") from None
+        # El frontend (Memoria.jsx) siempre manda `new Date().toISOString()`,
+        # que SIEMPRE trae `Z` (UTC). Una fecha sin zona es ambigua -- no hay
+        # forma de saber si es UTC, hora local, u otra cosa -- así que se
+        # rechaza en vez de adivinar (2026-09-22: el defecto de las ~6 horas
+        # de retraso era justo tratar un `Z` como si no tuviera zona).
+        if crudo.tzinfo is None:
+            raise HTTPException(status_code=400, detail="vence_at_sin_zona") from None
+        crudo_utc = crudo.astimezone(timezone.utc)
+        if not (_TIMESTAMP_MIN_UTC <= crudo_utc <= _TIMESTAMP_MAX_UTC):
+            raise HTTPException(status_code=400, detail="vence_at_invalido") from None
+        try:
+            expira = await _hora_local_de_base(crudo)
+        except Exception:
+            # Cualquier fallo al convertir la zona (driver/red, o
+            # `_ZonaHorariaNoResuelta` si CONVERT_TZ dio NULL) es un fallo de
+            # infraestructura: 503 memoria_no_disponible, mismo contrato de
+            # tres estados (M1, auditoría adversarial 2026-09-20) que el
+            # resto del endpoint. Nunca sigue a `expire_fact(None)`: eso
+            # QUITARÍA la caducidad en vez de ponerla. Re-lanza (no traga el
+            # error): no necesita la marca `# fail-soft:` del detector
+            # no-fail-open-except -- ese detector exige la marca sólo cuando
+            # un except amplio NO relanza nada.
+            raise HTTPException(status_code=503, detail="memoria_no_disponible") from None
     ok = await memoria.expire_fact(fact_id, expira)
     # M1 (auditoria adversarial 2026-09-20): mismo contrato de tres estados
     # que aprobar_hechos -- None es "la base no respondio", nunca "no

@@ -1262,6 +1262,7 @@ export default {
       hecho_ya_superado: 'Someone else already corrected it: reload the screen.',
       texto_vacio: 'Write a text.',
       vence_at_invalido: 'The date is not valid.',
+      vence_at_sin_zona: 'The date needs to include its time zone.',
       memoria_no_disponible: 'The memory is not available right now.',
       // Round 146 (D3): the backend now ENFORCES the rule -- these two
       // codes show up when the group changed between this screen loading it

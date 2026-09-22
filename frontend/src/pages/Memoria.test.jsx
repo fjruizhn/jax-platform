@@ -364,6 +364,26 @@ describe('Memoria', () => {
     expect(await screen.findByTestId('vencido-201')).toBeInTheDocument()
   })
 
+  // Ronda de arreglo jax-platform#147, hallazgo MINOR 6 (i18n): el backend
+  // (backend/api/admin/memoria.py) rechaza una fecha sin zona con 400
+  // vence_at_sin_zona -- esta pantalla NUNCA la manda (Memoria.jsx usa
+  // `new Date().toISOString()`, siempre con 'Z'), pero el codigo de error
+  // tiene que traducirse igual que cualquier otro, no caer al generico.
+  it('un error de zona horaria ausente al caducar se avisa por toast, con el codigo traducido', async () => {
+    servirGet(
+      { grupos: [{ tema: HECHO_201.texto, hechos: [201], sin_verificar: 0, casi_duplicados: [] }] },
+      { hechos: [HECHO_201], total: 1 },
+    )
+    api.post.mockRejectedValue({ response: { status: 400, data: { detail: 'vence_at_sin_zona' } } })
+    renderMemoria()
+    const ficha = await screen.findByTestId('hecho-201')
+    fireEvent.click(within(ficha).getByRole('button', { name: es.memoria.caducar }))
+    const confirmacion = await screen.findByRole('dialog')
+    fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
+    fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.caducarConfirmar }))
+    expect(await screen.findByText(es.memoria.errores.vence_at_sin_zona)).toBeInTheDocument()
+  })
+
   it('fundir pide confirmacion en ventana propia y llama SOLO al endpoint de fusion', async () => {
     servirGet(GRUPOS_DOS_TEMAS, HECHOS_DOS_TEMAS)
     api.post.mockResolvedValue({ data: { superados: 2 } })
