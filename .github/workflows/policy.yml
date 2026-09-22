@@ -930,11 +930,26 @@ jobs:
   # que m5/m7 (test sin job), asi que se suma directo a ESTE job en el mismo
   # commit que lo crea, no se repite el descubrimiento.
   #
+  # CORRECCIÓN (2026-09-22, mismo cierre, ronda 8 -- hallazgo del
+  # coordinador): CI daba rojo, `1 failed, 10 passed`,
+  # `ModuleNotFoundError: No module named 'pymysql'` en
+  # `test_main_async_llama_a_armar_resultado_con_los_disponibles_y_los_
+  # intentados_por_separado` -- ese test corre `main_async()` de punta a
+  # punta (mockeando I/O, pero SIN mockear los imports), y `main_async()`
+  # hace `import pymysql` y `from jose import jwt` de verdad. El "11
+  # passed, 0 failed" de la nota de arriba se había medido en el entorno de
+  # la sesión que escribió el test, que YA tenía `pymysql`/`python-jose`
+  # instalados por fuera de este job -- nunca se probó contra lo que este
+  # `pip install` de verdad instala. Reproducido y confirmado en un venv
+  # aislado con `pip install pytest httpx` (sin nada más): mismo
+  # `1 failed, 10 passed`. Con `pymysql python-jose` agregados al mismo
+  # venv aislado: `11 passed, 0 failed` -- ESA es la corrida que respalda
+  # el número de abajo, no una corrida local con dependencias de sobra.
+  #
   # Sin PISO_PASSED propio, mismo estilo que `no-fail-open-except`/
   # `invoke-facet-envoltorio`: son 11 tests en 3 archivos chicos, y el job
   # entero es el gate (cualquier fallo lo pone en rojo) -- un numero de piso
-  # aparte no agrega nada que `pytest -v` no de ya. Medido en vivo: 11
-  # passed, 0 failed (antes de la ronda 7: 4 passed, 2 archivos).
+  # aparte no agrega nada que `pytest -v` no de ya.
   loadtest-tests:
     runs-on: ubuntu-latest
     steps:
@@ -942,7 +957,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pytest httpx
+      # pymysql/python-jose: memoria_medir_fundir.py::main_async() los
+      # importa (pymysql.connect, jose.jwt.encode) -- sin ellos el import
+      # del modulo sigue funcionando (son imports LOCALES, dentro de la
+      # funcion, no a nivel de modulo), pero el test que SI ejercita
+      # main_async() de punta a punta revienta al llegar a esa linea.
+      - run: pip install pytest httpx pymysql python-jose
       - run: python -m pytest loadtest/test_memoria_medir_fundir.py loadtest/test_memoria_levantar_entorno.py loadtest/test_historial_orquestar.py -v
 
   # --------------------------------------------------------------------------
