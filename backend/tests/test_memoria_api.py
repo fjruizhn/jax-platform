@@ -112,6 +112,64 @@ def test_corregir_no_borra_marca_como_superado(client_superadmin):
     assert viejo["id"] in por_id, "el hecho viejo desaparecio: eso es borrar"
 
 
+def test_corregir_con_la_base_caida_no_es_500_generico(client_superadmin, monkeypatch):
+    """Punto 6 (cierre jax-platform#146, ronda 7, pre-existente -- mismo
+    defecto que tenian `aprobar_hechos`/`fundir_hechos` antes de m8/m8-b):
+    con la base caida, `transaccion()` (sobre `db.connection.get_pool()`)
+    levanta una excepcion de conexion SIN GUARDA -- 500 generico en vez de
+    503 `memoria_no_disponible`. Se simula la caida en el punto exacto
+    donde pasaba de verdad: `get_pool()` DENTRO de `db.transaccion`, no un
+    mock de alto nivel."""
+    from db import transaccion as transaccion_mod
+
+    viejo = client_superadmin.portal.call(_crear_fact, "corregir base caida: hecho 1")
+    try:
+        async def _get_pool_caida():
+            raise OSError("Connect call failed ('127.0.0.1', 18080)")
+
+        monkeypatch.setattr(transaccion_mod, "get_pool", _get_pool_caida)
+        r = client_superadmin.post(f"/api/admin/memoria/hechos/{viejo}/corregir",
+                                   json={"texto": "texto de control punto 6"})
+        assert r.status_code == 503, (
+            f"esperaba 503 (memoria_no_disponible), no {r.status_code}: un "
+            "fallo al conectar/adquirir la conexion es 'la base no respondio', "
+            "no un 500 generico sin traducir")
+        assert r.json()["detail"] == "memoria_no_disponible"
+    finally:
+        client_superadmin.portal.call(_borrar_fact, viejo)
+
+
+def test_corregir_con_un_error_real_dentro_de_la_transaccion_no_se_disfraza_de_503(
+        client_superadmin, monkeypatch):
+    """Control del arreglo de arriba: el `except` atrapa SOLO el fallo de
+    conectar/adquirir (`enter_async_context`), nunca lo que pase DENTRO de
+    la transaccion ya abierta. `corregir_hecho` no tiene una funcion propia
+    tipo `_aprobar_en_cursor` para monkeypatchear (los dos `cur.execute` de
+    escritura van a mano) -- se instrumenta el CURSOR real
+    (`aiomysql.Cursor.execute`), mismo patron que
+    `test_fundir_calcula_el_cierre_de_citas_antes_del_for_update`, y se
+    hace fallar SOLO el `UPDATE ... SET superseded_by` (dentro de la
+    transaccion ya abierta) con `aiomysql.OperationalError` -- el MISMO
+    tipo que el `except` SI atrapa, para que el control sea real."""
+    import aiomysql
+
+    viejo = client_superadmin.portal.call(_crear_fact, "corregir control punto6: hecho 1")
+    try:
+        original_execute = aiomysql.Cursor.execute
+
+        async def _execute_instrumentado(self, query, args=None):
+            if "UPDATE facts SET superseded_by" in query:
+                raise aiomysql.OperationalError("fallo real dentro de la transaccion, no de conexion")
+            return await original_execute(self, query, args)
+
+        monkeypatch.setattr(aiomysql.Cursor, "execute", _execute_instrumentado)
+        with pytest.raises(aiomysql.OperationalError, match="fallo real dentro de la transaccion"):
+            client_superadmin.post(f"/api/admin/memoria/hechos/{viejo}/corregir",
+                                   json={"texto": "texto de control punto 6"})
+    finally:
+        client_superadmin.portal.call(_borrar_fact, viejo)
+
+
 def test_no_existe_endpoint_de_borrado(client_superadmin):
     """Fuera de alcance por decision del spec §5: borrar es perder la historia
     de lo que creimos. Este test ata esa decision."""
@@ -138,24 +196,168 @@ def test_nadie_puede_aprobar_automaticamente(client_superadmin):
 # el superadmin supiera que el resto del lote NUNCA se intento (aprobar).
 # ---------------------------------------------------------------------------
 
-def test_aprobar_con_la_base_caida_a_mitad_del_lote_no_es_200_silencioso(
-        client_superadmin, monkeypatch):
-    from api.admin import memoria as memoria_mod
-    from unittest.mock import AsyncMock
+def test_aprobar_con_la_base_caida_no_es_500_generico(client_superadmin, monkeypatch):
+    """m8 (cierre jax-platform#146, ronda 6, SEGURIDAD): MAJOR N2 (ronda 5)
+    abandono `MemoryDB.verify_fact` -- y con eso el contrato de tres estados
+    de arriba tambien se perdio para este endpoint: el viejo test que lo
+    cubria (`test_aprobar_con_la_base_caida_a_mitad_del_lote_no_es_200_
+    silencioso`, mockeaba `verify_fact`) quedo inalcanzable y se borro
+    (ronda 5). Con la base caida, `transaccion()` (sobre
+    `db.connection.get_pool()`) levanta una excepcion de conexion SIN
+    GUARDA -- FastAPI la convertia en un 500 generico. Se simula la caida
+    en el punto exacto donde pasaba de verdad: `get_pool()` DENTRO de
+    `db.transaccion` (lo que usa `transaccion()` para adquirir la conexion),
+    no un mock de alto nivel."""
+    from db import transaccion as transaccion_mod
 
-    # Forzar que _chat_mod._memory ya este conectado, sin depender del orden
-    # de la suite.
-    client_superadmin.get("/api/admin/memoria/hechos?limite=1")
-    memoria = memoria_mod._chat_mod._memory
-    assert memoria is not None, "la memoria no se conecto -- el test no probaria nada"
+    async def _get_pool_caida():
+        raise OSError("Connect call failed ('127.0.0.1', 18080)")
 
-    monkeypatch.setattr(memoria, "verify_fact", AsyncMock(return_value=None))
+    monkeypatch.setattr(transaccion_mod, "get_pool", _get_pool_caida)
     r = client_superadmin.post("/api/admin/memoria/hechos/aprobar", json={"ids": [1]})
     assert r.status_code == 503, (
-        f"esperaba 503 (memoria_no_disponible), no {r.status_code}: un None "
-        "de verify_fact es 'la base no respondio', no 'el id no existe', y "
-        "un 200 con aprobados de menos no avisa que el resto del lote nunca "
-        "se intento")
+        f"esperaba 503 (memoria_no_disponible), no {r.status_code}: un "
+        "fallo al conectar/adquirir la conexion es 'la base no respondio', "
+        "no un 500 generico sin traducir")
+    assert r.json()["detail"] == "memoria_no_disponible"
+
+
+def test_aprobar_con_un_error_real_dentro_de_la_transaccion_no_se_disfraza_de_503(
+        client_superadmin, monkeypatch):
+    """Control del arreglo de arriba: el `except` de m8 atrapa SOLO el fallo
+    de conectar/adquirir (`enter_async_context`), nunca lo que pase DENTRO
+    de la transaccion ya abierta -- un error real ahi tiene que seguir
+    siendo un 500 (o lo que sea), no disfrazarse de 503.
+
+    MINOR (revision adversarial, ronda 7): la version anterior de este
+    control levantaba `RuntimeError`, que `except (OSError, aiomysql.Error)`
+    NUNCA hubiera atrapado de todas formas -- el control no probaba nada
+    sobre el ALCANCE del `except`, solo sobre el TIPO. Ahora levanta
+    `aiomysql.OperationalError` (subclase de `aiomysql.Error`, el MISMO tipo
+    que el `except` SI atrapa) DESDE DENTRO de la transaccion ya abierta --
+    si el `try` estuviera mal escrito (envolviendo el cuerpo entero de
+    `AsyncExitStack`, no solo `enter_async_context`), esto SI caeria en el
+    `except` y se disfrazaria de 503. Verificado en rojo mutando el codigo
+    para ensanchar el `try` (ver el reporte de la tarea)."""
+    from api.admin import memoria
+    import aiomysql
+
+    id1 = client_superadmin.portal.call(_crear_fact, "aprobar control m8: hecho 1")
+    try:
+        async def _revienta(cur, autor, fact_id):
+            raise aiomysql.OperationalError("fallo real dentro de la transaccion, no de conexion")
+
+        monkeypatch.setattr(memoria, "_aprobar_en_cursor", _revienta)
+        with pytest.raises(aiomysql.OperationalError, match="fallo real dentro de la transaccion"):
+            client_superadmin.post("/api/admin/memoria/hechos/aprobar", json={"ids": [id1]})
+    finally:
+        client_superadmin.portal.call(_borrar_fact, id1)
+
+
+def test_aprobar_es_atomico_si_falla_a_mitad_del_lote_no_queda_nada_escrito(
+        client_superadmin, monkeypatch):
+    """MAJOR N2 (revision adversarial de jax-platform PR 146, ronda 5):
+    `aprobar_hechos` dejo de llamar a `MemoryDB.verify_fact` (jax/memory/
+    db.py, que no mira `superseded_by`/`expires_at` -- ver el docstring del
+    endpoint en memoria.py) y pasa a leer con `FOR UPDATE` + escribir con
+    `_aprobar_en_cursor`, TODO en la MISMA transaccion (mismo patron que
+    `fundir_hechos`, jax-platform#107). Este test reemplaza al viejo (que
+    mockeaba `verify_fact`, ya inalcanzable desde este endpoint) con el
+    mismo principio de `test_fundir_es_atomico_si_falla_a_mitad_del_lote_
+    no_queda_nada_escrito`: si algo revienta a mitad del lote, NADA de lo
+    escrito antes en esa misma transaccion queda -- nunca un 200 con
+    'aprobados' de MENOS que no avise que el resto del lote nunca se
+    intento."""
+    from api.admin import memoria
+
+    id1 = client_superadmin.portal.call(_crear_fact, "aprobar atomico: hecho 1")
+    id2 = client_superadmin.portal.call(_crear_fact, "aprobar atomico: hecho 2")
+    llamadas = []
+    original = memoria._aprobar_en_cursor
+
+    async def _revienta_en_la_segunda(cur, autor, fact_id):
+        llamadas.append(fact_id)
+        if len(llamadas) == 2:
+            raise RuntimeError("fallo simulado a mitad del lote de aprobar")
+        await original(cur, autor, fact_id)
+
+    monkeypatch.setattr(memoria, "_aprobar_en_cursor", _revienta_en_la_segunda)
+    try:
+        with pytest.raises(RuntimeError, match="fallo simulado"):
+            client_superadmin.post("/api/admin/memoria/hechos/aprobar", json={"ids": [id1, id2]})
+        hechos = client_superadmin.get(
+            "/api/admin/memoria/hechos?limite=500").json()["hechos"]
+        por_id = {h["id"]: h for h in hechos}
+        assert por_id[id1]["verificado"] is False, (
+            "el primero del lote SI quedo aprobado: aprobo a medias")
+    finally:
+        client_superadmin.portal.call(_borrar_fact, id1)
+        client_superadmin.portal.call(_borrar_fact, id2)
+
+
+# ---------------------------------------------------------------------------
+# MAJOR N2 (revision adversarial de jax-platform PR 146, ronda 5):
+# `MemoryDB.verify_fact` no mira `superseded_by` ni `expires_at` -- desde una
+# pantalla de Memoria vieja (otra pestana, u otro superadmin que no recargo)
+# se podia aprobar un hecho ya vencido o ya superado por otro. El chequeo
+# vive en este endpoint (el repo jax no se toca), lee el lote entero con
+# `FOR UPDATE` y rechaza TODO el lote (todo o nada) si un solo id falla.
+# ---------------------------------------------------------------------------
+
+def test_aprobar_rechaza_un_hecho_vencido_con_409(client_superadmin):
+    fid = client_superadmin.portal.call(
+        partial(_crear_fact, "aprobar vencido", expires_at="2020-01-01 00:00:00"))
+    try:
+        r = client_superadmin.post("/api/admin/memoria/hechos/aprobar", json={"ids": [fid]})
+        assert r.status_code == 409 and r.json()["detail"] == "hecho_vencido"
+        hechos = client_superadmin.get(
+            "/api/admin/memoria/hechos?limite=500&incluir_vencidos=true").json()["hechos"]
+        assert next(h for h in hechos if h["id"] == fid)["verificado"] is False, (
+            "un hecho vencido NO puede quedar aprobado")
+    finally:
+        client_superadmin.portal.call(_borrar_fact, fid)
+
+
+def test_aprobar_rechaza_un_hecho_ya_superado_con_409(client_superadmin):
+    viejo = client_superadmin.portal.call(_crear_fact, "aprobar superado: viejo")
+    nuevo = client_superadmin.portal.call(_crear_fact, "aprobar superado: nuevo")
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET superseded_by = %s, superseded_at = NOW() WHERE id = %s",
+        (nuevo, viejo))
+    try:
+        r = client_superadmin.post("/api/admin/memoria/hechos/aprobar", json={"ids": [viejo]})
+        assert r.status_code == 409 and r.json()["detail"] == "hecho_superado"
+        hechos = client_superadmin.get(
+            "/api/admin/memoria/hechos?limite=500&incluir_superados=true").json()["hechos"]
+        assert next(h for h in hechos if h["id"] == viejo)["verificado"] is False, (
+            "un hecho ya superado NO puede quedar aprobado")
+    finally:
+        client_superadmin.portal.call(_borrar_fact, viejo)
+        client_superadmin.portal.call(_borrar_fact, nuevo)
+
+
+def test_aprobar_un_vencido_en_el_lote_tira_el_lote_entero_todo_o_nada(client_superadmin):
+    """Un solo id vencido en el lote no puede tirar solo a ese id -- el lote
+    ENTERO se rechaza (mismo principio que fundir): dos hechos sanos que
+    viajaban en el mismo POST porque Fernando marco varios juntos no pueden
+    quedar aprobados "por accidente" mientras el tercero explica el 409."""
+    sano1 = client_superadmin.portal.call(_crear_fact, "aprobar lote: sano 1")
+    sano2 = client_superadmin.portal.call(_crear_fact, "aprobar lote: sano 2")
+    vencido = client_superadmin.portal.call(
+        partial(_crear_fact, "aprobar lote: vencido", expires_at="2020-01-01 00:00:00"))
+    try:
+        r = client_superadmin.post(
+            "/api/admin/memoria/hechos/aprobar", json={"ids": [sano1, sano2, vencido]})
+        assert r.status_code == 409 and r.json()["detail"] == "hecho_vencido"
+        hechos = client_superadmin.get(
+            "/api/admin/memoria/hechos?limite=500").json()["hechos"]
+        por_id = {h["id"]: h for h in hechos}
+        assert por_id[sano1]["verificado"] is False, "todo o nada: sano1 no debia aprobarse"
+        assert por_id[sano2]["verificado"] is False, "todo o nada: sano2 no debia aprobarse"
+    finally:
+        client_superadmin.portal.call(_borrar_fact, sano1)
+        client_superadmin.portal.call(_borrar_fact, sano2)
+        client_superadmin.portal.call(_borrar_fact, vencido)
 
 
 def test_caducar_con_la_base_caida_no_es_404_sobre_un_hecho_que_existe(

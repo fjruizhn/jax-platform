@@ -22,7 +22,7 @@ function EstadoBadge({ hecho, t }) {
 }
 
 export default function FichaDeHecho({
-  hecho, resaltado, seleccionado, onToggleSeleccion,
+  hecho, resaltado, esSuperviviente, seleccionado, onToggleSeleccion,
   ocupado, onAprobar, onCorregir, onCaducar, onQuitarCaducidad,
 }) {
   const { t, lang } = useI18n()
@@ -47,6 +47,9 @@ export default function FichaDeHecho({
             <span className="text-xs text-texto-tenue">#{hecho.id}</span>
             <span className={`${BADGE} bg-superficie-2 text-texto-suave`}>{tipoLabel}</span>
             <EstadoBadge hecho={hecho} t={t} />
+            {esSuperviviente && (
+              <span className={`${BADGE} bg-acento-fondo text-acento-texto`}>{t.memoria.sobrevive}</span>
+            )}
           </div>
           <p className="text-sm text-texto-fuerte break-words">{hecho.texto}</p>
         </div>

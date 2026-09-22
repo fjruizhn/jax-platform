@@ -34,6 +34,7 @@ credenciales de conexion.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -51,6 +52,39 @@ N_EXPIRED_FUTURO = 200   # con vence_at fijado pero AUN vigente (variedad de UI)
 FRACCION_VERIFICADA = 0.10   # skew real: casi todo espera revision (spec: "115 esperan revision")
 N_USUARIOS_EXTRA = 40
 PESO_USUARIO_PESADO = 0.30   # "el usuario con mas hechos": 30% de los 10.000
+
+# MAJOR A (revision adversarial de jax-platform PR 146, ronda 4): la siembra
+# de carga NUNCA ponia `source_fact_ids`/`source_facet='synthesis'` en NINGUN
+# hecho -- SQL_CITAS (backend/api/admin/memoria.py) devolvia 0 filas contra
+# esta base, así que el costo de MAJOR 1/`_cierre_transitivo_de_citas` nunca
+# se medía de verdad (docs/carga-memoria-146-2026-09-22.md lo afirmaba con
+# 0 síntesis sembradas -- falso, corregido esta ronda). "Medir cuántas hay en
+# la base de TEST clonada; si no, 10%" (decisión del brief): la base de test
+# de esta sesión está vacía (0 facts, medido con una consulta ad-hoc vía
+# pytest antes de escribir esto, nunca contra jax_memory) -- se usa el piso
+# de 10% del brief.
+# Los dos overridables por entorno -- para poder sembrar DOS bases
+# comparables (con y sin síntesis) con el MISMO script, sin bifurcarlo.
+# Puestos en 0 los dos, la siembra reproduce el comportamiento de antes de
+# esta ronda (ninguna fila con `source_fact_ids`).
+FRACCION_SINTESIS = float(os.environ.get("MEMORIA_SEED_FRACCION_SINTESIS", "0.10"))
+N_CADENAS_SINTESIS = int(os.environ.get("MEMORIA_SEED_N_CADENAS_SINTESIS", "200"))
+
+# MINOR A-texto (revision adversarial de jax-platform PR 146, ronda 5): las
+# "cadenas de 2do/3er orden" de arriba son un caso REALISTA (citas al azar
+# entre CUALQUIER hecho de los 10.000, profundidad <=2) -- memoria.py:796 y
+# el documento de carga las llamaban "el peor caso", y no lo son. El peor
+# caso de verdad son cadenas LARGAS (profundidad configurable, default 10)
+# Y con las fuentes VECINAS EN EMBEDDINGS (dentro del MISMO cluster
+# tematico que arma `agrupar_por_tema`) -- eso hace que la cadena caiga
+# DENTRO de un grupo de casi-duplicados real, ejercitando el BFS de
+# `_cierre_transitivo_de_citas` a la profundidad pedida Y la vuelta de
+# MINOR 1 (extraer los miembros incompatibles de un componente, recalcular,
+# repetir) sobre un caso real -- no uno sintetico aparte. Default 0
+# (desactivado): no cambia la siembra de comparacion de la ronda 4 salvo
+# que se pida a proposito.
+N_CADENAS_LARGAS = int(os.environ.get("MEMORIA_SEED_N_CADENAS_LARGAS", "0"))
+PROFUNDIDAD_CADENA_LARGA = int(os.environ.get("MEMORIA_SEED_PROFUNDIDAD_CADENA_LARGA", "10"))
 
 
 def _cargar_env_produccion() -> dict:
@@ -280,6 +314,93 @@ def main() -> None:
     conn.commit()
     print(f"{len(ids_vencidos)} vencidos (pasado), {len(ids_futuro)} con vencimiento futuro", file=sys.stderr)
 
+    # --- overlay: síntesis (MAJOR A, ronda 4) -- proporción realista +
+    # peor caso de cadenas de 2do/3er orden. `pool` es una COPIA de
+    # `ids_np` (nunca el array en sí): `resto`/`resto2`, arriba, son VISTAS
+    # de `ids_np` (slicing de numpy no copia) -- barajar `ids_np` de nuevo
+    # acá mutaría esas vistas en el lugar y correría el riesgo de que un
+    # id ya usado como "vencido" o "superado" cambiara de posición en
+    # `resto`/`resto2` a mitad de la siembra. Marcar un hecho como síntesis
+    # no tiene ningún conflicto con que ADEMÁS esté verificado, superado o
+    # vencido -- las categorías son ortogonales, por eso no hace falta
+    # excluir nada del pool.
+    pool = ids_np.copy()
+    rng.shuffle(pool)
+    n_sintesis_plana = int(N_TOTAL * FRACCION_SINTESIS)
+    pool_sintesis_plana = pool[:n_sintesis_plana]
+    with conn.cursor() as cur:
+        lote = []
+        for sid in pool_sintesis_plana.tolist():
+            citado = int(rng.choice(pool))
+            while citado == sid:
+                citado = int(rng.choice(pool))
+            lote.append(("synthesis", json.dumps([citado]), sid))
+        for i in range(0, len(lote), 500):
+            cur.executemany(
+                "UPDATE facts SET source_facet = %s, source_fact_ids = %s WHERE id = %s",
+                lote[i:i + 500],
+            )
+    conn.commit()
+    print(f"{len(pool_sintesis_plana)} marcados síntesis (cita plana, un solo salto -- "
+          f"{FRACCION_SINTESIS:.0%} de {N_TOTAL})", file=sys.stderr)
+
+    # Peor caso: cadenas de 3 (base NO síntesis -> S2 cita a base -> S3 cita
+    # a S2) -- ejercita el cierre TRANSITIVO (`_cierre_transitivo_de_citas`,
+    # MAJOR 1) a profundidad 2, no sólo la cita directa de un salto.
+    pool_cadenas = pool[n_sintesis_plana:n_sintesis_plana + N_CADENAS_SINTESIS * 3]
+    with conn.cursor() as cur:
+        lote = []
+        n_cadenas_reales = len(pool_cadenas) // 3
+        for i in range(n_cadenas_reales):
+            base, s2, s3 = (int(x) for x in pool_cadenas[i * 3:i * 3 + 3])
+            lote.append(("synthesis", json.dumps([base]), s2))
+            lote.append(("synthesis", json.dumps([s2]), s3))
+        for i in range(0, len(lote), 500):
+            cur.executemany(
+                "UPDATE facts SET source_facet = %s, source_fact_ids = %s WHERE id = %s",
+                lote[i:i + 500],
+            )
+    conn.commit()
+    print(f"{n_cadenas_reales} cadenas de síntesis de 2do/3er orden sembradas "
+          f"({len(lote)} filas síntesis encadenadas)", file=sys.stderr)
+
+    # --- overlay: PEOR CASO DE VERDAD (ronda 5, MINOR A-texto) -- cadenas
+    # LARGAS con fuentes vecinas en embeddings. `cluster_del_indice[i]` es
+    # el cluster tematico de `ids[i]` -- OJO: se usa `ids` (la lista
+    # original, sin barajar), no `ids_np` (barajado en el lugar más arriba,
+    # `rng.shuffle(ids_np)`): usar `ids_np` acá desalinearía el índice del
+    # cluster con el id real.
+    n_cadenas_largas_reales = 0
+    if N_CADENAS_LARGAS > 0:
+        indices_por_cluster: dict[int, list[int]] = {}
+        for i, c in enumerate(cluster_del_indice):
+            indices_por_cluster.setdefault(c, []).append(i)
+        candidatos = [c for c, idxs in indices_por_cluster.items()
+                      if len(idxs) >= PROFUNDIDAD_CADENA_LARGA + 1]
+        if not candidatos:
+            raise RuntimeError(
+                f"ningún cluster tiene {PROFUNDIDAD_CADENA_LARGA + 1} miembros -- "
+                "no se puede sembrar una cadena larga sin repetir ids")
+        with conn.cursor() as cur:
+            lote_largas = []
+            for k in range(N_CADENAS_LARGAS):
+                cluster_idx = candidatos[k % len(candidatos)]
+                elegidos = rng.choice(indices_por_cluster[cluster_idx],
+                                       size=PROFUNDIDAD_CADENA_LARGA + 1, replace=False)
+                ids_cadena = [ids[int(i)] for i in elegidos]
+                for eslabon in range(1, len(ids_cadena)):
+                    lote_largas.append(("synthesis", json.dumps([ids_cadena[eslabon - 1]]), ids_cadena[eslabon]))
+                n_cadenas_largas_reales += 1
+            for i in range(0, len(lote_largas), 500):
+                cur.executemany(
+                    "UPDATE facts SET source_facet = %s, source_fact_ids = %s WHERE id = %s",
+                    lote_largas[i:i + 500],
+                )
+        conn.commit()
+        print(f"{n_cadenas_largas_reales} cadenas LARGAS (profundidad "
+              f"{PROFUNDIDAD_CADENA_LARGA}, fuentes vecinas en embeddings) "
+              f"sembradas dentro de clusters reales ({len(lote_largas)} filas)", file=sys.stderr)
+
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM facts")
         (total,) = cur.fetchone()
@@ -302,6 +423,16 @@ def main() -> None:
         "n_clusters": len(tamanos),
         "tamano_grupo_mas_grande": max(tamanos),
         "grupo_mas_grande_facts_sample": (ids_grupo_mas_grande[:5] if ids_grupo_mas_grande else []),
+        # MAJOR A (ronda 4): antes SIEMPRE 0 -- SQL_CITAS devolvía 0 filas.
+        "n_sintesis_plana": len(pool_sintesis_plana),
+        "n_cadenas_sintesis": n_cadenas_reales,
+        # MINOR A-texto (ronda 5): peor caso de verdad, separado del "realista"
+        # de arriba -- ver el comentario junto a N_CADENAS_LARGAS.
+        "n_cadenas_largas": n_cadenas_largas_reales,
+        "profundidad_cadena_larga": PROFUNDIDAD_CADENA_LARGA if n_cadenas_largas_reales else 0,
+        "n_filas_con_source_fact_ids": (
+            len(pool_sintesis_plana) + n_cadenas_reales * 2 + n_cadenas_largas_reales * PROFUNDIDAD_CADENA_LARGA
+        ),
     }
     with open(salida_path, "w") as f:
         json.dump(resultado, f, indent=2)

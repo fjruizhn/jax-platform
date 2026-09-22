@@ -87,6 +87,19 @@ def _cargar_env_produccion() -> dict:
     return env
 
 
+def _abortar_si_el_secreto_de_carga_coincide_con_produccion(
+        jwt_secret_de_carga: str, jwt_secret_de_produccion: str | None) -> None:
+    """SEGURIDAD (punto 7, cierre jax-platform#146, ronda 7). Función pura
+    (sin I/O) para poder testearla aislada -- ver
+    `test_historial_orquestar.py`. Nunca imprime ninguno de los dos
+    argumentos (ni acá ni en el `raise`)."""
+    if not jwt_secret_de_carga or jwt_secret_de_carga == jwt_secret_de_produccion:
+        raise SystemExit(
+            "el backend de carga esta firmando con la llave de PRODUCCION (o "
+            "sin ninguna) -- ABORTANDO, no se mide sobre un entorno que puede "
+            "emitir tokens validos tambien contra produccion")
+
+
 def _verificar_no_apunta_a_produccion(env: dict) -> None:
     """Falla RUIDOSO antes de levantar nada si algo, por lo que sea, quedó
     apuntando a producción. No confía en que las constantes de arriba estén
@@ -114,6 +127,18 @@ def construir_env(seed: dict, tmp: Path) -> dict:
     # AISLAMIENTO -- mismo método que backend/tests/conftest.py y que la
     # ronda de carga anterior (docs/carga-prevuelo-y-continuar-2026-09-17.md).
     env["JAX_DB_NAME"] = BASE_DE_PRUEBA
+    # SEGURIDAD (punto 7, cierre jax-platform#146, ronda 7 -- pre-existente,
+    # mismo hallazgo que ya se había corregido en
+    # memoria_levantar_entorno.py::construir_env en la ronda 5, pero nunca se
+    # portó acá): sin esta línea, `env` (arriba) sigue trayendo el
+    # `JAX_JWT_SECRET` de PRODUCCIÓN (de `_cargar_env_produccion()`), y el
+    # backend de esta carga firmaba Y verificaba tokens con esa MISMA llave
+    # -- cualquier token minteado acá era válido también contra producción.
+    # El entorno de carga genera su PROPIA llave, aleatoria, nueva en cada
+    # corrida -- `main_async()` la lee de vuelta del proceso YA LEVANTADO
+    # (`/proc/<pid>/environ`, nunca de este `env` en memoria) y aborta si
+    # por algún motivo coincidiera con la de producción.
+    env["JAX_JWT_SECRET"] = secrets.token_urlsafe(48)
     env["LAS_MANOS_URL"] = FAKE_JACOBS_URL
     env["JACOBS_URL"] = f"{FAKE_JACOBS_URL}/jacobs"
     env["JAX_PLATFORM_URL"] = BACKEND_URL
@@ -282,12 +307,26 @@ async def main_async() -> None:
         print(f"[orquestador] VERIFICADO /proc/{proc_backend.pid}/environ: "
               f"JAX_DB_NAME={db_name} JACOBS_URL={jacobs_url}")
 
-        from jose import jwt as _jwt  # el mismo secreto que usa auth/jwt.py
+        # SEGURIDAD (punto 7, cierre jax-platform#146, ronda 7): el secreto
+        # de FIRMA se lee del proceso YA LEVANTADO (mismo /proc/<pid>/environ
+        # de arriba, no del `env` en memoria de este script -- que podría
+        # divergir si algo lo reescribe entre construirlo y lanzar el
+        # proceso) y se compara contra el de producción (releído aparte,
+        # nunca reusando el `env` de `construir_env()`, que YA lo sobrescribió)
+        # -- si coincidieran, este backend de carga podría firmar tokens
+        # válidos también contra producción. Nunca se imprime ninguno de
+        # los dos secretos.
+        jwt_secret_de_carga = pares.get(b"JAX_JWT_SECRET", b"").decode()
+        jwt_secret_de_produccion = _cargar_env_produccion().get("JAX_JWT_SECRET")
+        _abortar_si_el_secreto_de_carga_coincide_con_produccion(
+            jwt_secret_de_carga, jwt_secret_de_produccion)
+
+        from jose import jwt as _jwt  # el secreto de CARGA leido arriba, nunca el de auth/jwt.py de produccion
         ahora = int(time.time())
         token = _jwt.encode(
             {"user_id": str(seed["user_id"]), "tenant_id": "1", "role": "operator",
              "tv": 0, "exp": ahora + 3600, "type": "access"},
-            env["JAX_JWT_SECRET"], algorithm="HS256",
+            jwt_secret_de_carga, algorithm="HS256",
         )
         headers = {"Authorization": f"Bearer {token}"}
 

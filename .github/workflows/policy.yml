@@ -26,6 +26,13 @@ name: policy
 #   - frontend-tests: los tests de vitest del frontend (2026-09-12). Hasta
 #     entonces NINGÚN job los corría -- Login.test.jsx existía y era una
 #     hipótesis de cobertura, no cobertura.
+#   - loadtest-tests: los tests puros de loadtest/ (2026-09-22, cierre
+#     jax-platform#146, ronda 6 + ronda 7). Mismo defecto que Login.test.jsx
+#     en 2026-09-12: `loadtest/test_memoria_medir_fundir.py`/
+#     `test_memoria_levantar_entorno.py`/`test_historial_orquestar.py`
+#     existían (o se crearon) y no corrían en NINGÚN job (`backend-tests-*`
+#     tiene `working-directory: backend` y `testpaths = tests` -- nunca
+#     llegaba a `loadtest/`).
 #
 # NO CUBRE -- y esto es la parte importante:
 #   - Los 151 tests que SÍ necesitan MariaDB. En el runner no hay DB, así que
@@ -752,8 +759,91 @@ jobs:
           // `?tab=models` abre directo en el Catálogo, y un `?tab`
           // desconocido cae al default sin romper. Medido con
           // `npx vitest run`: 939 passed, 0 fallidos, 91 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 943) {
-              console.error("PISO ROTO: se esperaban 943 tests de vitest CORRIDOS y 0 fallidos.");
+          // 942 -> 943 (2026-09-22, jax-platform: fundir respeta fuentes y
+          //   verificados): +1 Memoria.test.jsx -- "fundir muestra cual
+          //   sobrevive y por que cuando el superviviente esta verificado"
+          //   (la ficha lleva la marca "Sobrevive" y la ConfirmacionSuma dice
+          //   por que). El resto del cambio de esta ronda (el cluster deja de
+          //   asumir "el primero de la lista" y pasa a leer
+          //   `superviviente_id` del backend, una sola llamada a
+          //   /hechos/fundir sin el /hechos/aprobar previo) se cubre
+          //   modificando tests EXISTENTES, no sumando nuevos -- por eso el
+          //   piso sube sólo 1 y no más. Vistos en rojo antes de verde
+          //   (`cluster.ids is not iterable` con la fixture vieja). Medido
+          //   con `npx vitest run`, mismo comando en las dos ramas: master
+          //   942 passed / 92 archivos -> rama 943 / 92 (0 fallidos las dos).
+          // 943 -> 947 (2026-09-22, jax-platform PR 146, tercera vuelta de
+          //   revisión adversarial): +4. M2 (aprobar recarga /grupos, +1;
+          //   quitar caducidad recarga /grupos, +1 -- el primer intento del
+          //   test de quitar caducidad pasaba SIN el `await cargar()`, la
+          //   mutación no caía, hasta agregar la aserción del conteo de
+          //   llamadas a /grupos) y M3 (el aviso "Estos N hechos..." y la
+          //   confirmación de fundir cuentan TODOS los `item.ids`, no sólo
+          //   los cargados, +1) -- 3 en Memoria.test.jsx. M4 (ConfirmacionSuma
+          //   con `break-words`, mensaje largo sin espacios no rompe el
+          //   render ni los otros usos, +2 en ConfirmacionSuma.test.jsx) --
+          //   pero el test de "caducar, confirmado" existente se REESCRIBIÓ
+          //   (ya no asume que la ficha se queda en el grupo: con la recarga,
+          //   el hecho ahora vencido se mueve a la sección Vencidos), sin
+          //   sumar al piso. Vistos en rojo antes de verde. Medido con
+          //   `npx vitest run`, mismo comando en las dos ramas: rama en
+          //   93ed016 943 passed / 92 archivos -> rama con esta ronda 947 /
+          //   92 (0 fallidos las dos). Este delta (+5 sobre el 942 de
+          //   8ca070a, la base comun) es el de ESTA rama (jax-platform#146)
+          //   sola, medido ANTES de traer jax-platform#147.
+          // 942 -> 943 (jax-platform#147, 2026-09-22, ronda de arreglo -- MINOR 6
+          //   i18n): +1 Memoria.test.jsx ("un error de zona horaria ausente al
+          //   caducar se avisa por toast, con el codigo traducido"). El backend
+          //   agrego 400 vence_at_sin_zona (caducar en hora local, MAJOR/MINOR
+          //   de la revision adversarial); es.js/en.js ganan la clave
+          //   `memoria.errores.vence_at_sin_zona`. Vistos en rojo antes de
+          //   verde (findByText sobre una clave i18n ausente). Medido con
+          //   `npx vitest run`: 943 passed, 0 fallidos, 92 archivos. Delta de
+          //   jax-platform#147 sobre la MISMA base 8ca070a=942: +1.
+          // MERGE (2026-09-22): jax-platform#146 (+5 sobre 942) y
+          //   jax-platform#147 (+1 sobre 942) parten de la MISMA base y no
+          //   tocan los mismos tests -- se suman los dos deltas sobre la base
+          //   comun: 942 + 5 + 1 = 948. Confirmado corriendo `npx vitest run`
+          //   DESPUES del merge (`git merge origin/master`, sin rebase, la
+          //   rama ya estaba pusheada): el runner tiene la ultima palabra, no
+          //   la aritmetica.
+          // 948 -> 950 (2026-09-22, jax-platform#146, ronda 4 de revisión
+          //   adversarial): +2 netos. MAJOR B (Memoria.jsx: la recarga
+          //   re-seleccionaba hechos que Fernando ya había desmarcado a
+          //   mano) agrega 2 tests nuevos en Memoria.test.jsx ("la recarga
+          //   preserva la seleccion...", "la recarga tras una accion no
+          //   reemplaza la lista..."). MINOR 6 renombra un test existente de
+          //   ConfirmacionSuma.test.jsx ("...no rompe el render ni los otros
+          //   usos" -> "...no le impide al dialogo terminar de montar su
+          //   formulario y sus botones", el nombre viejo era falso: nunca
+          //   renderizaba los otros usos) -- mismo test, 0 neto. Vistos en
+          //   rojo antes de verde (los dos de MAJOR B fallaban contra
+          //   `cbe19ef`: uno por `TestingLibraryElementError` -- un checkbox
+          //   desmarcado a mano volvía a aparecer `checked` tras la recarga
+          //   -- y el otro porque `grupo-0` desaparecía de pantalla durante
+          //   la recarga, tapada por el "Cargando…" de pantalla completa).
+          //   Medido con `npx vitest run`, MISMO comando, restaurando el
+          //   contenido EXACTO de `cbe19ef` con `git show HEAD:<archivo>`
+          //   (nunca `git stash`) para la medición "antes": HEAD 948 passed
+          //   -> esta ronda 950 (0 fallidos las dos). Repetido 3 veces
+          //   seguidas sin flakiness.
+          // 950 -> 952 (ronda 5, MAJOR N1 + MINOR B-test de
+          //   `Memoria.test.jsx`): este piso NUNCA se subió a 952 -- B1
+          //   (BLOCK) del cierre de ronda 6: CI corría 952 contra un piso
+          //   que exige EXACTO 950, rojo desde la ronda 5 entera.
+          // 952 -> 954 (cierre, ronda 6, m1): +2 tests nuevos en
+          //   `Memoria.test.jsx` (escenarios B y C del revisor,
+          //   `Carrera6.audit.test.jsx` -- "una recarga vieja que resuelve
+          //   mientras la mas nueva sigue en vuelo no apaga Actualizando" /
+          //   "...falla tarde, tras una mas nueva ya OK, no muestra error
+          //   de carga"), cubriendo los dos frenos de `cargar()` que no
+          //   tenían test propio. Vistos en rojo con la mutación exacta del
+          //   hallazgo (`if (true)` en el `finally`, y `setError(true)` sin
+          //   guarda en el `catch`) antes de confirmar verde. Medido con
+          //   `npx vitest run`, 3 veces seguidas: 954/954 las tres, sin
+          //   flakiness.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 954) {
+              console.error("PISO ROTO: se esperaban 954 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -802,6 +892,86 @@ jobs:
           python-version: "3.12"
       - run: pip install pytest
       - run: python -m pytest tests/test_policy_invoke_facet_envoltorio.py -v
+
+  # --------------------------------------------------------------------------
+  # loadtest-tests (cierre jax-platform#146, ronda 6, hallazgo del coordinador
+  # tras el cierre): `loadtest/test_memoria_medir_fundir.py` y
+  # `loadtest/test_memoria_levantar_entorno.py` (m5/m7 de ese cierre) NO
+  # corrian en NINGUN job -- `backend-tests-con-db`/`backend-tests-no-db`
+  # tienen `working-directory: backend` y `backend/pytest.ini` fija
+  # `testpaths = tests`, asi que ese `python -m pytest` nunca llega a
+  # `loadtest/`. No hay ningun detector en este repo que avise de un archivo
+  # `test_*.py` que no corre en ningun job (se buscó: no existe un
+  # equivalente al "detector de cobertura" de pipelines de `jax` aca) -- este
+  # job se agrega para que esos dos archivos dejen de ser hipotesis de
+  # cobertura, mismo motivo que `frontend-tests` (comentario de arriba, "NO
+  # CUBRE").
+  #
+  # Por que un job PROPIO y no sumarlos a `backend-tests-no-db`: los archivos
+  # viven en `loadtest/`, fuera de `backend/`, y sus modulos
+  # (`memoria_medir_fundir.py`/`memoria_levantar_entorno.py`/
+  # `historial_orquestar.py`) son SCRIPTS OPERATIVOS que, corridos de verdad,
+  # copian credenciales de PRODUCCION al entorno que levantan
+  # (`_cargar_env_produccion`, `sudo -n cat /etc/jax/.env`) -- mezclarlos con
+  # la suite de `backend/tests/` (que tiene su propio conftest y barreras
+  # contra produccion) es exactamente el tipo de mezcla que este repo evita.
+  # Las funciones que SI se testean aca (`armar_resultado`,
+  # `escribir_info_json`, `construir_env`,
+  # `_abortar_si_el_secreto_de_carga_coincide_con_produccion`) son puras o
+  # mockean el unico borde de I/O (`_cargar_env_produccion`) -- nunca tocan
+  # DB, red, ni `/etc/jax/.env` de verdad -- asi que un job minimo, sin
+  # MariaDB ni el clon de `jax`, alcanza. `httpx` se instala aparte porque
+  # los modulos lo importan a nivel de módulo (para el resto de sus
+  # funciones, que este job no ejercita) y sin él ni siquiera se puede hacer
+  # el import.
+  #
+  # 2026-09-22, ronda 7 (punto 7 del cierre, SEGURIDAD pre-existente):
+  # `loadtest/test_historial_orquestar.py`, archivo NUEVO -- mismo hallazgo
+  # que m5/m7 (test sin job), asi que se suma directo a ESTE job en el mismo
+  # commit que lo crea, no se repite el descubrimiento.
+  #
+  # CORRECCIÓN (2026-09-22, mismo cierre, ronda 8 -- hallazgo del
+  # coordinador): CI daba rojo, `1 failed, 10 passed`,
+  # `ModuleNotFoundError: No module named 'pymysql'` en
+  # `test_main_async_llama_a_armar_resultado_con_los_disponibles_y_los_
+  # intentados_por_separado` -- ese test corre `main_async()` de punta a
+  # punta (mockeando I/O, pero SIN mockear los imports), y `main_async()`
+  # hace `import pymysql` y `from jose import jwt` de verdad. El "11
+  # passed, 0 failed" de la nota de arriba se había medido en el entorno de
+  # la sesión que escribió el test, que YA tenía `pymysql`/`python-jose`
+  # instalados por fuera de este job -- nunca se probó contra lo que este
+  # `pip install` de verdad instala. Reproducido y confirmado en un venv
+  # aislado con `pip install pytest httpx` (sin nada más): mismo
+  # `1 failed, 10 passed`. Con `pymysql python-jose` agregados al mismo
+  # venv aislado: `11 passed, 0 failed` -- ESA es la corrida que respalda
+  # el número de abajo, no una corrida local con dependencias de sobra.
+  #
+  # MINOR (2026-09-22, mismo cierre, ronda 8 -- consistencia): `memoria_
+  # medir.py`/`memoria_medir_fundir.py` sumaron el chequeo compartido
+  # `abortar_si_el_secreto_de_carga_coincide_con_produccion()` (ver
+  # `memoria_levantar_entorno.py`) con 4 tests nuevos en
+  # `test_memoria_levantar_entorno.py` -- 11 -> 15 tests. Medido en el
+  # mismo venv aislado (`pip install pytest httpx pymysql python-jose`):
+  # 15 passed, 0 failed.
+  #
+  # Sin PISO_PASSED propio, mismo estilo que `no-fail-open-except`/
+  # `invoke-facet-envoltorio`: son 15 tests en 3 archivos chicos, y el job
+  # entero es el gate (cualquier fallo lo pone en rojo) -- un numero de piso
+  # aparte no agrega nada que `pytest -v` no de ya.
+  loadtest-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # pymysql/python-jose: memoria_medir_fundir.py::main_async() los
+      # importa (pymysql.connect, jose.jwt.encode) -- sin ellos el import
+      # del modulo sigue funcionando (son imports LOCALES, dentro de la
+      # funcion, no a nivel de modulo), pero el test que SI ejercita
+      # main_async() de punta a punta revienta al llegar a esa linea.
+      - run: pip install pytest httpx pymysql python-jose
+      - run: python -m pytest loadtest/test_memoria_medir_fundir.py loadtest/test_memoria_levantar_entorno.py loadtest/test_historial_orquestar.py -v
 
   # --------------------------------------------------------------------------
   # Suite del backend, modo "CON base de datos" -- los 150 tests que el job de
@@ -2066,6 +2236,130 @@ jobs:
           #   declarado sube por el delta verificado (+7), no por el passed
           #   crudo local. Si el runner (limpio, sin esas 7 fallas) da otro
           #   numero, manda el runner.
+          # 2452 -> 2465 (2026-09-22, fundir respeta fuentes y verificados):
+          #   +13. La pantalla de Memoria proponia fundir una SINTESIS (con
+          #   partes inventadas por el sintetizador) con su propio hecho
+          #   fuente, y ademas "el mas reciente" podia superar a un hecho YA
+          #   verificado. test_memoria_grupos.py (+9: la exclusion
+          #   fuente/sintesis en _casi_duplicados_del_grupo, el caso de tres,
+          #   source_fact_ids ilegible registrado con WARNING,
+          #   _elegir_superviviente x3, el EXPLAIN de SQL_ACTIVOS_CON_VECTOR
+          #   tras sumarle la columna) y test_memoria_fundir.py (+4: el
+          #   superviviente se aprueba EN la misma transaccion, 409
+          #   `superviviente_no_verificado` si un absorbido verificado
+          #   quedaria superado por uno sin verificar, y la atomicidad de esa
+          #   aprobacion -- revertida si el UPDATE de un absorbido revienta a
+          #   mitad del lote, monkeypatch sobre `_superar_en_cursor`). Vistos
+          #   en rojo antes de verde contra el codigo viejo. Medido en vivo,
+          #   MISMO comando en las dos ramas (`python -m pytest -q`, sin
+          #   contaminacion cruzada -- la primera medicion salio corrupta por
+          #   un `git stash pop` corriendo mientras un pytest de fondo todavia
+          #   leia el archivo del disco, y se remidio limpio): master 2512
+          #   passed / 0 fallidos -> rama 2525 / 0 fallidos.
+          # CORRECCION (revision adversarial de jax-platform PR 146, D6, ultimo
+          #   punto): la nota de arriba dice "vistos en rojo antes de verde"
+          #   para los 13 sin distinguir DOS motivos de rojo bien distintos --
+          #   corregido acá, no en el commit original:
+          #     - test_la_consulta_de_activos_sigue_usando_el_indice_tras_
+          #       agregar_source_fact_ids es un test de REGRESION, no de
+          #       TDD: agregar una columna al SELECT no cambia el plan de
+          #       EXPLAIN, asi que ese test PASABA igual contra el codigo
+          #       VIEJO (antes de agregar la columna). Sirve para probar que
+          #       el cambio no rompio el indice, no que el cambio exista.
+          #     - los 12 restantes SI fallaban contra el codigo viejo, pero
+          #       varios (los 3 de _elegir_superviviente y los 3 de
+          #       _casi_duplicados_del_grupo/source_fact_ids que dependian de
+          #       funciones nuevas) fallaban con `AttributeError: module
+          #       'api.admin.memoria' has no attribute '_elegir_superviviente'`
+          #       -- roja porque la funcion no existia, no porque la logica
+          #       diera un resultado incorrecto. Es un rojo de TDD legitimo
+          #       igual (Kent Beck: "un test que no puede fallar no prueba
+          #       nada" se cumple aca -- SI podia fallar, y fallo), pero es
+          #       una forma mas debil de rojo que "la logica da mal el
+          #       resultado" -- por eso esta ronda, cuando la funcion YA
+          #       existia, verifico con MUTACIONES (revertir el fragmento de
+          #       codigo especifico) en vez de confiar solo en el primer rojo.
+          # 2525 -> 2541 (2026-09-22, jax-platform PR 146, revision
+          #   adversarial de esta misma rama): +16, contados por nombre de
+          #   funcion contra las dos revisiones (`comm` sobre los `def test_`
+          #   de cada una, no un grep del diff -- un grep sobre el diff había
+          #   contado 15, uno de menos, por como git agrupa un hunk cuando una
+          #   linea de contexto compartida queda pegada a la nueva).
+          #   D1 (source_facet en vez de source_fact_ids solo, 5 tests: dos
+          #   sintesis que se citan/no se citan, sintesis de 2do orden,
+          #   source_fact_ids NULL, mas el integration test con source_facet
+          #   solo), D2 (recalcular componentes tras excluir en vez de reusar
+          #   el previo -- MAYOR 1, 1 test con vectores 2D reales, distancias
+          #   verificadas con la formula: dist(A,S)=0.20, dist(S,C)=0.20,
+          #   dist(A,C)=0.72), D3 (el endpoint EXIGE la regla -- CORRECCION,
+          #   revision adversarial PR 146 tercera vuelta, M6: son 3 tests
+          #   NUEVOS -- fundir_sintesis_con_no_sintesis x2 [uno por tipo
+          #   cruzado, uno por dos sintesis que se citan] y
+          #   superviviente_no_es_el_de_la_regla -- MAS 1 test AJUSTADO, no
+          #   nuevo: el que antes esperaba 409 superviviente_no_verificado
+          #   pasa a esperar superviviente_no_es_el_de_la_regla; el ajustado
+          #   no suma al delta de 16, ya estaba contado en el piso anterior),
+          #   D4 (la regla de _elegir_superviviente -- 2 tests: el empate de
+          #   fecha lo desempata el id mayor, y una fecha REAL le gana a un id
+          #   mayor cuando no hay empate -- el primer intento de el de empate
+          #   pasaba SIN el desempate, por como max() resuelve empates en
+          #   orden de iteracion; corregido antes de declarar verde), D5
+          #   (superviviente_verificado/superviviente_texto en el cluster, 1
+          #   test), D6 (CORRECCION, M6: es 1 test, no 2 -- reaprobar a un ya
+          #   verificado no pisa verified_by/at; el otro test de MENOR 7 que
+          #   esta nota le atribuia antes a D6 es en realidad la segunda mitad
+          #   de D4, ya contada ahi), D8 (created_at NULL, 2 tests unitarios +
+          #   1 end-to-end). Los 16 vistos en rojo contra el codigo de esta
+          #   misma rama ANTES del cambio (no contra 2026-09-22 a secas). Las
+          #   6 correcciones centrales (D1 tipo, D1 citas, D2, D4, D6 guardia
+          #   de reaprobar, D3 compatibilidad, D3 regla) se verificaron
+          #   ADEMAS con mutacion (revertir el fragmento, confirmar que el
+          #   test cae, restaurar) -- no solo con el rojo inicial. Medido en
+          #   vivo, MISMO comando (`python -m pytest -q`), restaurando el
+          #   contenido EXACTO del commit anterior (`git show 012d315:<archivo>
+          #   > <archivo>`, nunca `git stash`) para la medicion "antes": rama
+          #   en 012d315 2525 passed / 0 fallidos -> rama con esta ronda 2541
+          #   / 0 fallidos.
+          # 2541 -> 2552 (2026-09-22, jax-platform PR 146, tercera vuelta de
+          #   revision adversarial, MAJOR 1/MAJOR 2/M1/M4): +11. MAJOR 1a/1b
+          #   (cierre transitivo de citas, revalidacion final por
+          #   componente -- 2 tests: el caso exacto del revisor con angulos
+          #   2D reales, y una cita de segundo grado a traves de un puente NO
+          #   citado), MAJOR 1 en `fundir_hechos` (mismo cierre compartido --
+          #   1 test), MAJOR 2 (hecho vencido no se funde -- 3 tests:
+          #   superviviente vencido, absorbido vencido, vencimiento futuro SI
+          #   se permite), M1 (created_at NULL mezclado con fecha real en
+          #   `_construir_grupos`, no solo "todos NULL" -- 1 test puro,
+          #   reproduce scratchpad/repro.py Caso4), M4 (recorte de
+          #   superviviente_texto a 280 caracteres -- 2 tests unitarios de
+          #   `_recortar_texto` + 1 end-to-end). El test de EXPLAIN de
+          #   `SQL_ACTIVOS_CON_VECTOR` se RENOMBRÓ (perdió `source_fact_ids`
+          #   de su nombre, la columna salió de esa consulta) -- no suma al
+          #   delta, ya estaba contado. Los 11 vistos en rojo contra el
+          #   código de esta misma rama ANTES del cambio. Las correcciones
+          #   centrales (cierre transitivo + revalidación, `expires_at` en
+          #   `fundir_hechos`, el `sorted` de `_construir_grupos`, el recorte)
+          #   se verificaron ADEMÁS con mutación. Medido en vivo, MISMO
+          #   comando, restaurando 93ed016 para la medición "antes": rama en
+          #   93ed016 2541 passed / 0 fallidos -> rama con esta ronda 2552 / 0
+          #   fallidos.
+          # CORRECCIÓN (revisión adversarial de jax-platform PR 146, ronda 4,
+          #   MINOR 5): la nota "+100 sobre el 2452 de 8ca070a... es el de
+          #   ESTA rama (jax-platform#146) sola" de arriba era FALSA. El
+          #   aporte REAL de #146 en tests nuevos es 13 + 16 + 11 = **40**
+          #   (las tres rondas de arriba, cada una con su rojo/mutación
+          #   verificados) -- no 100. Los otros **60** son la distancia entre
+          #   el piso que quedó declarado en 8ca070a (2452) y el conteo REAL
+          #   de `master` en el momento en que se midió la primera ronda
+          #   (línea de arriba, 2452→2465: "master 2512 passed" -- 2512, no
+          #   2452): esa distancia es de OTRO trabajo, mergeado a `master`
+          #   entre que se fijó el piso de 8ca070a y que se corrió esta
+          #   medición, y no tiene nada que ver con #146. Sumar los 60 al
+          #   aporte de #146 era contar dos veces trabajo ajeno. El piso
+          #   final de abajo (2562, y su sucesor 2567 de esta ronda) sigue
+          #   siendo correcto -- se calcula sobre el `passed` REAL medido en
+          #   cada punto, nunca sobre esta aritmética -- la corrección es
+          #   sólo de la ATRIBUCIÓN en el comentario, no del número.
           # 2452 -> 2454 (2026-09-22, caducar en hora local): +2,
           #   tests/test_memoria_api.py (2 tests nuevos, piden `client_superadmin`
           #   -> con DB). Arregla el defecto de `caducar_hecho`
@@ -2111,7 +2405,101 @@ jobs:
           #   2522 / 0 / 0. Los 8 vistos en rojo contra el código de antes de
           #   cada arreglo (ver el informe de la tarea), y cada uno con su
           #   mutación (revertida) confirmando que cae si el arreglo se deshace.
-          PISO_PASSED = 2462
+          #   Este delta (+10 sobre el 2452 de 8ca070a, la base comun) es el
+          #   de jax-platform#147 solo.
+          # MERGE (2026-09-22): jax-platform#146 (+100 sobre 2452) y
+          #   jax-platform#147 (+10 sobre 2452) parten de la MISMA base y no
+          #   tocan los mismos tests (jax-platform#147 toca sólo
+          #   test_memoria_api.py y caducar_hecho; jax-platform#146 toca
+          #   fundir_hechos/agrupar_por_tema y sus propios archivos de test) --
+          #   se suman los dos deltas sobre la base común: 2452 + 100 + 10 =
+          #   2562. Confirmado corriendo la suite completa DESPUÉS del merge
+          #   (`git merge origin/master`, sin rebase, la rama ya estaba
+          #   pusheada): el runner tiene la última palabra, no la aritmética.
+          # 2562 -> 2567 (2026-09-22, jax-platform#146, ronda 4 de revisión
+          #   adversarial): +5 -- MINOR 2 (1 test nuevo con DB: SQL_CITAS ve
+          #   la cadena de citas a través de un hecho SUPERADO y otro
+          #   VENCIDO, fijado con mutación: agregarle `AND superseded_by IS
+          #   NULL` a SQL_CITAS hace caer el test) y MINOR 1 (4 tests nuevos
+          #   SIN DB -- ver el piso sin DB, más abajo -- pero que corren acá
+          #   también, dentro de la suite completa). Medido en vivo, MISMO
+          #   comando (`python -m pytest -q`), restaurando el contenido
+          #   EXACTO de HEAD (`git show HEAD:<archivo>`, nunca `git stash`)
+          #   para la medición "antes": HEAD (012d315..cbe19ef) 2562 passed
+          #   -> esta ronda 2567 (0 fallidos las dos, 0 skips las dos). El
+          #   piso declarado sube por el delta verificado (+5).
+          # 2567 -> 2571 (2026-09-22, jax-platform#146, ronda 5 de revisión
+          #   adversarial, ÚLTIMA): +4 -- test_memoria_api.py: el viejo
+          #   test_aprobar_con_la_base_caida_a_mitad_del_lote_no_es_200_
+          #   silencioso (mockeaba `MemoryDB.verify_fact`, que MAJOR N2 dejó
+          #   de usar -- ver el endpoint en memoria.py) se REEMPLAZÓ por 4
+          #   tests nuevos: test_aprobar_es_atomico_si_falla_a_mitad_del_
+          #   lote_no_queda_nada_escrito (mismo principio, mecanismo nuevo:
+          #   FOR UPDATE + `_aprobar_en_cursor` en una sola transacción),
+          #   test_aprobar_rechaza_un_hecho_vencido_con_409,
+          #   test_aprobar_rechaza_un_hecho_ya_superado_con_409 y
+          #   test_aprobar_un_vencido_en_el_lote_tira_el_lote_entero_todo_o_
+          #   nada (1 viejo -> 4 nuevos = +3 neto). test_memoria_fundir.py:
+          #   +1, test_fundir_calcula_el_cierre_de_citas_antes_del_for_
+          #   update (MAJOR A.5, instrumenta aiomysql.Cursor.execute para
+          #   verificar el ORDEN real de las consultas SQL). +3 +1 = +4.
+          #   Medido en vivo, MISMO comando (`python -m pytest -q`): ronda 4
+          #   (3b8c6a8) 2567 passed -> esta ronda 2571 (0 fallidos, 0 skips
+          #   las dos). Los 4 tests nuevos verificados en rojo contra el
+          #   código de la ronda anterior antes de escribir el arreglo (ver
+          #   el reporte de la tarea).
+          # 2571 -> 2573 (2026-09-22, jax-platform#146, cierre ronda 6): +2
+          #   -- m8 (SEGURIDAD): `aprobar_hechos` había perdido el contrato
+          #   de tres estados al dejar de usar `MemoryDB.verify_fact` en la
+          #   ronda 5 (con la base caída, `transaccion()`/`get_pool()`
+          #   levantaba una excepción de conexión SIN GUARDA -- 500
+          #   genérico, no 503 `memoria_no_disponible`). Restituido con
+          #   `AsyncExitStack` (atrapa SÓLO el fallo de conectar/adquirir,
+          #   antes del primer `yield` de `transaccion()`, nunca lo que pase
+          #   DENTRO de la transacción ya abierta) + 2 tests nuevos en
+          #   test_memoria_api.py: test_aprobar_con_la_base_caida_no_es_500_
+          #   generico (rojo contra el código de la ronda 5, verificado con
+          #   `git show HEAD:<archivo>` restaurado) y su control (un error
+          #   real DENTRO de la transacción sigue sin disfrazarse de 503).
+          #   Medido en vivo, MISMO comando: ronda 5 (3750181) 2571 passed
+          #   -> este cierre 2573 (0 fallidos, 0 skips las dos).
+          # 2573 -> 2575 (2026-09-22, jax-platform#146, mismo cierre --
+          #   hallazgo del coordinador tras m8): `fundir_hechos` tenía el
+          #   MISMO defecto sin guarda que `aprobar_hechos` antes de m8 (no
+          #   estaba en la lista de 8 hallazgos, se reportó al cerrar y el
+          #   coordinador pidió el mismo arreglo). Mismo `AsyncExitStack`,
+          #   mismos 2 tests en test_memoria_fundir.py:
+          #   test_fundir_con_la_base_caida_no_es_500_generico (rojo
+          #   verificado revirtiendo el fix -- reproduce el 500/excepción sin
+          #   traducir) y su control (error real dentro de la transacción no
+          #   se disfraza de 503). Medido en vivo, MISMO comando: 2573 passed
+          #   -> 2575 (0 fallidos, 0 skips las dos).
+          # 2575 -> 2577 (2026-09-22, jax-platform#146, ronda 7 de revisión
+          #   adversarial -- punto 6 del ajuste): `corregir_hecho` tenía el
+          #   MISMO defecto sin guarda que `aprobar_hechos`/`fundir_hechos`
+          #   antes de m8/m8-b -- pre-existente, encontrado por el
+          #   controlador. Mismo `AsyncExitStack`, 2 tests nuevos en
+          #   test_memoria_api.py: test_corregir_con_la_base_caida_no_es_
+          #   500_generico (rojo verificado revirtiendo el fix -- reproduce
+          #   el OSError sin traducir) y su control (instrumenta
+          #   aiomysql.Cursor.execute -- corregir_hecho no tiene una función
+          #   propia tipo _aprobar_en_cursor -- para que SOLO el UPDATE ...
+          #   SET superseded_by falle con aiomysql.OperationalError, sin
+          #   disfrazarse de 503). Medido en vivo, MISMO comando: 2575
+          #   passed -> 2577 (0 fallidos, 0 skips las dos).
+          # 2577 -> 2579 (2026-09-22, MERGE de origin/master, jax-platform#148
+          #   ya en master -- `9d378b7`): el hotfix "mapear discarded/hidden
+          #   de Jacobs" (`3200490`) agrega 2 tests en
+          #   `test_pipeline_resource_release.py`, SIN tocar ningún archivo
+          #   de esta rama -- `git merge origin/master` (no rebase, pedido
+          #   por el coordinador) fue LIMPIO, cero conflictos. El piso de
+          #   `origin/master` en ese punto era 2462 (bajo el de esta rama,
+          #   2577, porque master no lleva las rondas de este cierre) -- no
+          #   se suman los dos pisos a mano: se mide la suite YA fusionada,
+          #   que por construcción ya contiene los tests de las dos
+          #   historias. Medido en vivo, MISMO comando, después del merge:
+          #   2577 passed -> 2579 (0 fallidos, 0 skips las tres).
+          PISO_PASSED = 2579
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2765,6 +3153,51 @@ jobs:
       #   MISMO comando en las dos ramas: master local 1669 passed / 830
       #   skipped -> rama 1676 / 830 (0 fallidos las dos; el piso declarado
       #   sube por el delta verificado, +7, no por el passed crudo local).
+      # 1641 -> 1647 (2026-09-22, fundir respeta fuentes y verificados): +6,
+      #   de los 13 tests nuevos de esta ronda (ver el piso con DB, más
+      #   arriba, para el detalle completo) sólo 6 son puros -- los de
+      #   `_casi_duplicados_del_grupo`/`_elegir_superviviente` en
+      #   test_memoria_grupos.py que no piden `client` (la exclusión
+      #   fuente/síntesis, el caso de tres, source_fact_ids ilegible, y las
+      #   tres de `_elegir_superviviente`). Los otros 7 (los de
+      #   `POST /hechos/fundir` y los end-to-end contra `GET /grupos`) piden
+      #   `client`/DB y quedan salteados acá -- por eso los skips también
+      #   suben (+7). Medido con JAX_CI_NO_DB=1 python3 -m pytest -q, MISMO
+      #   comando en las dos ramas: master local 1678 passed / 834 skipped ->
+      #   rama 1684 / 841 (0 fallidos las dos; el piso declarado sube por el
+      #   delta verificado, +6, no por el passed crudo local).
+      # 1647 -> 1656 (2026-09-22, jax-platform PR 146, revisión adversarial):
+      #   +9 puros, de los 16 nuevos de esta ronda (ver el piso con DB, más
+      #   arriba, para el detalle completo, y la CORRECCIÓN de M6 sobre el
+      #   desglose por categoría): 4 de los 5 de D1 (facet en vez de
+      #   source_fact_ids -- todos salvo el integration test con
+      #   source_facet solo, que sí pide `client`), el de D2 (bridging con
+      #   vectores 2D reales), los 2 de D4 (desempate por id Y una fecha real
+      #   ganándole a un id mayor sin empate) y 2 de los 3 de D8
+      #   (created_at NULL en `_elegir_superviviente`, las dos variantes
+      #   unitarias -- la tercera es end-to-end y sí pide `client`) --
+      #   ninguno de estos 9 pide `client`. Los otros 7 sí lo piden y quedan
+      #   salteados (+7 skips): los 3 de D3 (el endpoint exige la regla), el
+      #   integration test de D1, el de D5, el de D6 (guardia de reaprobar) y
+      #   el end-to-end de D8. Medido con JAX_CI_NO_DB=1 python3 -m pytest -q,
+      #   restaurando el contenido exacto de 012d315 para la medición
+      #   "antes" (`git show`, nunca `git stash`): rama en 012d315 1684
+      #   passed / 841 skipped -> rama con esta ronda 1693 / 848 (0 fallidos
+      #   las dos; el piso declarado sube por el delta verificado, +9, no por
+      #   el passed crudo local).
+      # 1656 -> 1661 (2026-09-22, jax-platform PR 146, tercera vuelta): +5
+      #   puros, de los 11 nuevos de esta ronda (ver el piso con DB, más
+      #   arriba): los 2 de MAJOR 1a (caso del revisor, cita de 2do grado --
+      #   ninguno pide `client`), el de M1 (created_at NULL mezclado,
+      #   `_construir_grupos` con filas sintéticas) y los 2 unitarios de M4
+      #   (`_recortar_texto` corto/largo). Los otros 6 (MAJOR 1 en
+      #   `fundir_hechos`, los 3 de MAJOR 2, el EXPLAIN de `SQL_CITAS` y el
+      #   end-to-end de M4) piden `client`/DB y quedan salteados (+6 skips).
+      #   Medido con JAX_CI_NO_DB=1 python3 -m pytest -q, restaurando 93ed016
+      #   para la medición "antes": rama en 93ed016 1656 passed / 848 skipped
+      #   -> rama con esta ronda 1661 / 854 (0 fallidos las dos). Este delta
+      #   (+20 sobre el 1641 de 8ca070a, la base común) es el de ESTA rama
+      #   (jax-platform#146) sola, medido ANTES de traer jax-platform#147.
       # 1641 -> 1642 (2026-09-22, ronda de arreglo jax-platform#147): +1,
       #   test_hora_local_de_base_si_convert_tz_da_null_lanza_zona_no_resuelta
       #   (test_memoria_api.py) -- no pide `client`, falsea el pool/cursor a
@@ -2775,8 +3208,65 @@ jobs:
       #   (con el fix de la ronda anterior) 1678 passed / 836 skipped -> esta
       #   rama 1679 / 843 (0 fallidos las dos). El piso declarado sube por el
       #   delta verificado (+1) sobre el piso anterior, no por el passed crudo
-      #   local.
-      JAX_CI_MIN_PASSED: "1642"
+      #   local. Este delta (+1 sobre el 1641 de 8ca070a) es el de
+      #   jax-platform#147 solo.
+      # MERGE (2026-09-22): jax-platform#146 (+20 sobre 1641) y
+      #   jax-platform#147 (+1 sobre 1641) parten de la MISMA base y no tocan
+      #   los mismos tests -- se suman los dos deltas: 1641 + 20 + 1 = 1662.
+      #   Confirmado corriendo la suite completa sin DB DESPUÉS del merge: el
+      #   runner tiene la última palabra, no la aritmética.
+      # 1662 -> 1666 (2026-09-22, jax-platform#146, ronda 4 de revisión
+      #   adversarial, MINOR 1): +4, los cuatro tests nuevos de
+      #   test_memoria_grupos.py que NO piden `client` (funciones puras
+      #   sobre `_casi_duplicados_del_grupo`) -- extraer los miembros
+      #   incompatibles de un componente en vez de descartarlo entero, el
+      #   caso puente del revisor (control de guardia), el registro del
+      #   conteo de descartados (caplog) y dos componentes independientes
+      #   que no se mezclan entre sí. El quinto test nuevo de esta ronda
+      #   (MINOR 2, SQL_CITAS) SÍ pide `client_superadmin` -- se saltea acá
+      #   (+1 skip, no passed perdido; contado en el piso CON DB, más
+      #   arriba). Medido con JAX_CI_NO_DB=1 python -m pytest -q -rs, MISMO
+      #   comando en las dos revisiones (restaurando el contenido EXACTO de
+      #   HEAD con `git show HEAD:<archivo>`, nunca `git stash`, para la
+      #   medición "antes"): HEAD (012d315..cbe19ef, antes de esta ronda)
+      #   1699 passed / 863 skipped -> esta ronda 1703 / 864 (0 fallidos las
+      #   dos). El piso declarado sube por el delta verificado (+4), no por
+      #   el passed crudo local -- que hoy es 1703, bastante más arriba del
+      #   piso declarado; esa distancia (37) es anterior a esta ronda (no se
+      #   investiga acá -- fuera del alcance de este encargo, se reporta).
+      # 2026-09-22, ronda 5 (ÚLTIMA): sin cambio en `passed` -- los 4 tests
+      #   nuevos/reemplazados de esta ronda (ver el piso CON DB, más arriba)
+      #   piden TODOS `client_superadmin`, así que bajo JAX_CI_NO_DB=1
+      #   quedan salteados, no passed. Medido: 1703 passed / 868 skipped
+      #   (antes de esta ronda: 1703 / 864 -- +4 skips, 0 passed nuevos). El
+      #   piso declarado NO sube (seguiría siendo correcto en 1666; no se
+      #   sube a 1703 por la misma razón que ya documentó la ronda 4: no se
+      #   absorbe la distancia preexistente en silencio).
+      # 2026-09-22, cierre ronda 6: sin cambio en `passed` -- los 2 tests
+      #   nuevos de m8 (ver el piso CON DB, más arriba) piden
+      #   `client_superadmin`, así que bajo JAX_CI_NO_DB=1 quedan salteados.
+      #   Medido: 1703 passed / 870 skipped (antes: 1703 / 868 -- +2 skips,
+      #   0 passed nuevos). El piso declarado sigue en 1666, misma razón que
+      #   la ronda 5.
+      # 2026-09-22, mismo cierre, hallazgo del coordinador (fundir_hechos):
+      #   sin cambio en `passed` -- los 2 tests nuevos de test_memoria_
+      #   fundir.py también piden `client_superadmin`/`trio` (DB). Medido:
+      #   1703 passed / 872 skipped (antes: 1703 / 870 -- +2 skips, 0 passed
+      #   nuevos). El piso declarado sigue en 1666, misma razón.
+      # 2026-09-22, ronda 7 (punto 6 del ajuste, corregir_hecho): sin cambio
+      #   en `passed` -- los 2 tests nuevos de test_memoria_api.py también
+      #   piden `client_superadmin`. Medido: 1703 passed / 874 skipped
+      #   (antes: 1703 / 872 -- +2 skips, 0 passed nuevos). El piso
+      #   declarado sigue en 1666, misma razón.
+      # 2026-09-22, MERGE de origin/master (jax-platform#148 ya en master,
+      #   `9d378b7`): a diferencia de las rondas anteriores, esta vez SÍ hay
+      #   delta -- los 2 tests nuevos de `test_pipeline_resource_release.py`
+      #   (hotfix `3200490`, mapeo discarded/hidden) NO piden `client`, así
+      #   que corren y pasan también bajo `JAX_CI_NO_DB=1`. Medido en vivo,
+      #   MISMO comando, después del merge: 1703 passed / 874 skipped ->
+      #   1705 / 874 (mismos skips, +2 passed reales -- no absorbidos en
+      #   silencio). El piso declarado sube por el delta verificado (+2).
+      JAX_CI_MIN_PASSED: "1668"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

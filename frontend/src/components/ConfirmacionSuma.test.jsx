@@ -10,9 +10,10 @@ import { I18nProvider } from '../i18n/index.jsx'
 function renderSuma(props = {}) {
   const onConfirmar = props.onConfirmar || vi.fn().mockResolvedValue()
   const onCancelar = props.onCancelar || vi.fn()
+  const mensaje = props.mensaje || 'Irreversible.'
   render(
     <I18nProvider>
-      <ConfirmacionSuma titulo="Dar de baja a b@x.io" mensaje="Irreversible." textoConfirmar="Dar de baja"
+      <ConfirmacionSuma titulo="Dar de baja a b@x.io" mensaje={mensaje} textoConfirmar="Dar de baja"
         onConfirmar={onConfirmar} onCancelar={onCancelar} numeros={[12, 7]} />
     </I18nProvider>
   )
@@ -55,6 +56,37 @@ describe('ConfirmacionSuma', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onCancelar).toHaveBeenCalledTimes(1)
     expect(onConfirmar).not.toHaveBeenCalled()
+  })
+})
+
+// M4 (revisión adversarial de jax-platform PR 146, tercera vuelta):
+// `mensaje` puede traer una palabra larga y sin espacios (la pantalla de
+// Memoria lo pasa por `superviviente_texto`, que no está garantizado que
+// tenga puntuación) -- el párrafo tiene que partirla (`break-words`), no
+// desbordar el panel de ancho acotado (`Dialogo`, `max-w-md` por defecto).
+describe('ConfirmacionSuma -- mensaje largo sin espacios', () => {
+  it('el párrafo del mensaje lleva break-words', () => {
+    const largoSinEspacios = 'a'.repeat(400)
+    renderSuma({ mensaje: largoSinEspacios })
+    const parrafo = screen.getByText(largoSinEspacios)
+    expect(parrafo.className).toContain('break-words')
+  })
+
+  // MINOR 6 (revisión adversarial de jax-platform PR 146, ronda 4): el
+  // nombre anterior ("no rompe... ni los otros usos") era falso -- este
+  // test NUNCA renderiza AdminUsers/AdminRepository/KillSwitch, así que no
+  // podía probar nada sobre ellos. Lo que sí ejercita de verdad: con un
+  // `mensaje` largo y sin espacios, el diálogo sigue montando su
+  // formulario y sus botones completos (no se corta a la mitad ni deja
+  // de renderizar el resto). Los otros usos, al pasar mensajes cortos, ni
+  // siquiera entran en el camino que este test cubre -- si se quisiera
+  // probar que ESOS tres no se rompen, habría que renderizarlos.
+  it('un mensaje largo sin espacios no le impide al dialogo terminar de montar su formulario y sus botones', () => {
+    const largoSinEspacios = 'palabralarguisima'.repeat(30)
+    renderSuma({ mensaje: largoSinEspacios })
+    expect(screen.getByText(largoSinEspacios)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancelar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Dar de baja' })).toBeDisabled()
   })
 })
 

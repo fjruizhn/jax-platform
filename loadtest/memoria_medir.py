@@ -88,12 +88,15 @@ async def correr_tanda(cliente_factory, url: str, params: dict, headers: dict, c
 
 
 async def main_async(base_de_prueba: str, backend_url: str) -> None:
-    import os
+    import subprocess
 
     import pymysql
     from jose import jwt as _jwt
 
-    import subprocess
+    from memoria_levantar_entorno import (
+        RUN_DIR, abortar_si_el_secreto_de_carga_coincide_con_produccion, leer_environ_de_proceso,
+    )
+
     r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
     env = {}
     for linea in r.stdout.splitlines():
@@ -101,6 +104,31 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
         if linea and not linea.startswith("#") and "=" in linea:
             k, _, v = linea.partition("=")
             env[k.strip()] = v.strip()
+
+    # SEGURIDAD (revision adversarial de jax-platform PR 146, ronda 5;
+    # comentario corregido en el cierre, ronda 6, m6): el backend de carga
+    # (memoria_levantar_entorno.py) firma con SU PROPIA `JAX_JWT_SECRET`,
+    # generada al azar -- NUNCA la de produccion para FIRMAR ni VERIFICAR
+    # tokens. Pero `env` (arriba) SI parsea el `/etc/jax/.env` entero, y eso
+    # incluye el `JAX_JWT_SECRET` de produccion -- se usa, a proposito, para
+    # el chequeo de abajo: COMPARARLO (con `!=`) contra el del backend de
+    # carga, nunca para firmar ni para imprimirlo. El resto de `env` sigue
+    # haciendo falta para las credenciales de conexion a MariaDB, que son
+    # las mismas para cualquier base de esa instancia. El secreto de firma
+    # se lee del proceso YA LEVANTADO -- `info.json` (el mismo que escribe
+    # el lanzador) trae el `pid`; `/proc/<pid>/environ` es la unica fuente
+    # que no requiere volver a escribir el secreto en ningun archivo.
+    #
+    # MINOR (revision adversarial, ronda 8 -- consistencia): el chequeo
+    # ahora vive en `memoria_levantar_entorno.py`, compartido con
+    # `memoria_medir_fundir.py`, y tambien rechaza un secreto de CARGA
+    # vacio (antes sólo comparaba contra el de produccion -- un vacio no
+    # coincide con uno no vacio, asi que pasaba).
+    info = json.loads((RUN_DIR / "info.json").read_text())
+    environ_de_carga = leer_environ_de_proceso(info["pid"])
+    jwt_secret_de_carga = environ_de_carga["JAX_JWT_SECRET"]
+    abortar_si_el_secreto_de_carga_coincide_con_produccion(
+        jwt_secret_de_carga, env.get("JAX_JWT_SECRET"))
 
     # Barrera dura: no mide si el backend real (segun /proc/<pid>/environ, no
     # esta llamada) no apunta a la base esperada. Se vuelve a verificar por
@@ -131,7 +159,7 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
     token = _jwt.encode(
         {"user_id": "1", "tenant_id": "1", "role": rol, "tv": token_version,
          "exp": int(time.time()) + 7200, "type": "access"},
-        env["JAX_JWT_SECRET"], algorithm="HS256",
+        jwt_secret_de_carga, algorithm="HS256",
     )
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -201,7 +229,22 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
     # /grupos: cada request evalua ~9.000 vecinos con un semaforo interno de 6
     # contra el mismo pool de 10 conexiones -- niveles chicos, a propósito
     # (ver docstring del módulo: ronda anterior, un solo request ya tarda ~7s).
-    for c, n in [(1, 3), (3, 6), (5, 10)]:
+    #
+    # MINOR A-texto (revision adversarial de jax-platform PR 146, ronda 5):
+    # `n` sube a >=10 en los tres niveles -- antes c=1/c=3 median con 3/6
+    # muestras, donde "p95" es literalmente el maximo de la muestra (no un
+    # percentil real).
+    #
+    # m2 (cierre, ronda 6): `percentil()` usa k=round(p*n/100) (redondeo al
+    # mas cercano, con desempate al par -- NO ceil). Para p=95 eso da:
+    #   c=1, n=10 -> round(9.5)=10=n  -> p95 SIGUE siendo el maximo de la
+    #                muestra (el 9.5 empata y Python redondea al par, 10).
+    #   c=3, n=12 -> round(11.4)=11<n -> p95 es el segundo peor, no el max.
+    #   c=5, n=15 -> round(14.25)=14<n -> idem, segundo peor.
+    # O sea: subir a n>=10 alcanza para c=3/c=5, pero NO para c=1 -- ahi
+    # "p95" sigue siendo literalmente el maximo, documentado asi en el
+    # reporte de carga.
+    for c, n in [(1, 10), (3, 12), (5, 15)]:
         r = await correr_tanda(None, f"{backend_url}/api/admin/memoria/grupos", {}, headers, c, n)
         print(f"[GRUPOS] c={c} n={n} -> {r}")
         resultados["grupos"].append(r)
