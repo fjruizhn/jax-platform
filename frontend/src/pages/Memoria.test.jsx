@@ -224,6 +224,35 @@ describe('Memoria', () => {
     }
   })
 
+  it('M3: el aviso y la confirmacion de fundir cuentan TODOS los ids del cluster, no solo los cargados', async () => {
+    // El cluster (y el grupo.hechos que lo contiene -- backend/api/admin/
+    // memoria.py::agrupar_por_tema no tiene el cap de 500) trae un cuarto
+    // id (999) que GET /hechos NO cargó (ni HECHOS_DOS_TEMAS lo tiene) --
+    // el caso real que motiva M3, no un fixture inválido (cluster.ids
+    // siempre es subconjunto de grupo.hechos en el backend real).
+    servirGet(
+      {
+        grupos: [{
+          tema: HECHO_139.texto, hechos: [139, 138, 136, 999], sin_verificar: 4,
+          casi_duplicados: [{
+            ids: [136, 138, 139, 999], superviviente_id: 139,
+            superviviente_verificado: false, superviviente_texto: HECHO_139.texto,
+          }],
+        }],
+      },
+      HECHOS_DOS_TEMAS,
+    )
+    api.post.mockResolvedValue({ data: { superados: 3 } })
+    renderMemoria()
+    const grupo = await screen.findByTestId('grupo-0')
+    expect(within(grupo).getByText(es.memoria.casiDuplicadosSubconjunto(4, 1))).toBeInTheDocument()
+    expect(within(grupo).queryByText(es.memoria.casiDuplicados(3))).not.toBeInTheDocument()
+
+    fireEvent.click(within(grupo).getByRole('button', { name: es.memoria.fundir }))
+    const confirmacion = await screen.findByRole('dialog')
+    expect(confirmacion).toHaveTextContent(es.memoria.casiDuplicadosNoCargados(1))
+  })
+
   it('aprobar en lote desde el grupo manda todos los seleccionados de una vez', async () => {
     servirGet(GRUPOS_DOS_TEMAS, HECHOS_DOS_TEMAS)
     api.post.mockResolvedValue({ data: { aprobados: 3 } })
@@ -243,6 +272,22 @@ describe('Memoria', () => {
     fireEvent.click(within(ficha).getByRole('button', { name: es.memoria.aprobar }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/aprobar', { ids: [136] }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('M2: aprobar vuelve a pedir /grupos (is_verified decide quien sobrevive en un cluster)', async () => {
+    servirGet(GRUPOS_DOS_TEMAS, HECHOS_DOS_TEMAS)
+    api.post.mockResolvedValue({ data: { aprobados: 1 } })
+    renderMemoria()
+    await screen.findByTestId('hecho-136')
+    const llamadasAGruposAntes = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
+    expect(llamadasAGruposAntes).toBe(1) // la carga inicial
+    const ficha = await screen.findByTestId('hecho-136')
+    fireEvent.click(within(ficha).getByRole('button', { name: es.memoria.aprobar }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/aprobar', { ids: [136] }))
+    await waitFor(() => {
+      const llamadas = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
+      expect(llamadas).toBe(2) // la carga inicial + la recarga tras aprobar
+    })
   })
 
   it('un error al aprobar se avisa por toast, con el codigo traducido', async () => {
@@ -275,12 +320,32 @@ describe('Memoria', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/memoria/hechos/201/corregir', { texto: 'texto corregido de prueba' }))
   })
 
-  it('caducar, confirmado, llama al endpoint con una fecha (no null) y no borra la ficha', async () => {
-    servirGet(
-      { grupos: [{ tema: HECHO_201.texto, hechos: [201], sin_verificar: 0, casi_duplicados: [] }] },
-      { hechos: [HECHO_201], total: 1 },
-    )
-    api.post.mockResolvedValue({ data: { ok: true } })
+  it('caducar, confirmado, llama al endpoint con una fecha (no null) y recarga /grupos', async () => {
+    // M2 (revisión adversarial de jax-platform PR 146, tercera vuelta):
+    // ahora que caducar recarga, el hecho SALE del grupo (GET /grupos
+    // excluye vencidos, backend/api/admin/memoria.py::SQL_ACTIVOS_CON_
+    // VECTOR) y pasa a la sección Vencidos -- el mock refleja ese cambio de
+    // estado real en la SEGUNDA vuelta de cada endpoint, no la primera.
+    let caducado = false
+    api.get.mockImplementation((url, config) => {
+      if (url === '/admin/memoria/grupos') {
+        return Promise.resolve({
+          data: { grupos: caducado ? [] : [{ tema: HECHO_201.texto, hechos: [201], sin_verificar: 0, casi_duplicados: [] }] },
+        })
+      }
+      if (url === '/admin/memoria/hechos') {
+        const params = config?.params || {}
+        if (params.incluir_vencidos) {
+          return Promise.resolve({ data: { hechos: [{ ...HECHO_201, vencido: caducado }], total: 1 } })
+        }
+        return Promise.resolve({ data: caducado ? { hechos: [], total: 0 } : { hechos: [HECHO_201], total: 1 } })
+      }
+      return Promise.reject(new Error(`url no mockeada: ${url}`))
+    })
+    api.post.mockImplementation((url) => {
+      if (url === '/admin/memoria/hechos/201/caducar') { caducado = true; return Promise.resolve({ data: { ok: true } }) }
+      return Promise.reject(new Error(`post no mockeado: ${url}`))
+    })
     renderMemoria()
     const ficha = await screen.findByTestId('hecho-201')
     fireEvent.click(within(ficha).getByRole('button', { name: es.memoria.caducar }))
@@ -291,8 +356,12 @@ describe('Memoria', () => {
       '/admin/memoria/hechos/201/caducar',
       expect.objectContaining({ vence_at: expect.any(String) }),
     ))
-    expect(await screen.findByTestId('hecho-201')).toBeInTheDocument()
-    expect(await screen.findByText(es.memoria.vencido)).toBeInTheDocument()
+    // El grupo (con el único hecho ahora vencido) desaparece de la lista de
+    // grupos activos tras la recarga...
+    await waitFor(() => expect(screen.queryByTestId('grupo-0')).not.toBeInTheDocument())
+    // ...y el hecho no se borró: sigue viéndose, en la sección Vencidos
+    // (SeccionVencidos.jsx, no la ficha de un grupo).
+    expect(await screen.findByTestId('vencido-201')).toBeInTheDocument()
   })
 
   it('fundir pide confirmacion en ventana propia y llama SOLO al endpoint de fusion', async () => {
@@ -372,7 +441,7 @@ describe('Memoria', () => {
     expect(screen.queryByTestId(/^vencido-/)).not.toBeInTheDocument()
   })
 
-  it('la seccion Vencidos lista los hechos vencidos, cerrada por defecto, y deja quitarles la caducidad', async () => {
+  it('la seccion Vencidos lista los hechos vencidos, cerrada por defecto, deja quitarles la caducidad y recarga /grupos', async () => {
     servirGetConVencidos({ grupos: [] }, { hechos: [], total: 0 }, { hechos: [HECHO_VENCIDO], total: 1 })
     api.post.mockResolvedValue({ data: { ok: true } })
     renderMemoria()
@@ -380,6 +449,7 @@ describe('Memoria', () => {
     expect(within(fila).getByText(HECHO_VENCIDO.texto)).toBeInTheDocument()
     const detalle = fila.closest('details')
     expect(detalle).not.toHaveAttribute('open')
+    const llamadasAGruposAntes = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
     // Accesibilidad: varios "Quitar caducidad" en la lista se distinguen por
     // el hecho al que corresponden (aria-label), no sólo por el texto visible.
     fireEvent.click(within(fila).getByRole('button', { name: es.memoria.quitarCaducidadDe(301) }))
@@ -387,6 +457,12 @@ describe('Memoria', () => {
       '/admin/memoria/hechos/301/caducar', { vence_at: null },
     ))
     expect(await screen.findByText(es.memoria.caducidadQuitada)).toBeInTheDocument()
+    // M2: un hecho reactivado puede volver a aparecer en un grupo -- recarga
+    // /grupos, igual que aprobar/caducar/corregir/fundir.
+    await waitFor(() => {
+      const llamadas = api.get.mock.calls.filter(([url]) => url === '/admin/memoria/grupos').length
+      expect(llamadas).toBe(llamadasAGruposAntes + 1)
+    })
   })
 
   // Defecto medido por Fernando en la base de carga (10.000 hechos, 8.000

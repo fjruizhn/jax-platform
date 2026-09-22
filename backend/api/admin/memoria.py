@@ -355,6 +355,18 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
         con la regla implica que NINGUN miembro del lote esta verificado --
         el viejo codigo de error ya no es alcanzable, y se elimino (no se
         dejo como código muerto).
+
+    Tercera vuelta (revision adversarial de jax-platform PR 146): dos
+    hallazgos mas.
+      - MAJOR 1: la compatibilidad de citas ahora usa el CIERRE TRANSITIVO
+        del grafo completo de `source_fact_ids` (`_cierre_transitivo_de_
+        citas`), el MISMO que usa el detector -- no solo la cita directa de
+        CADA fila del lote. Una cita indirecta (A cita a B, B cita a C) deja
+        a A y C incompatibles igual, aunque nunca se hayan citado
+        directamente.
+      - MAJOR 2: un hecho vencido (`expires_at` en el pasado) no puede
+        fundirse -- ni como superviviente ni como absorbido -- 409
+        `hecho_vencido`.
     """
     # Sin duplicados, mismo orden de llegada: absorbidos=[7, 7, 8] funde una
     # sola vez al 7.
@@ -372,19 +384,19 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
         marcadores = ", ".join(["%s"] * len(ids))
         await cur.execute(
             f"SELECT id, superseded_by, is_verified, created_at, source_facet, "
-            f"source_fact_ids FROM facts WHERE id IN ({marcadores}) FOR UPDATE",
+            f"expires_at FROM facts WHERE id IN ({marcadores}) FOR UPDATE",
             ids,
         )
         filas = await cur.fetchall()
         superados_de = {}
         info = {}
         facet_por_id = {}
-        fuentes_por_id = {}
-        for fid, superseded_by, is_verified, created_at, source_facet, source_fact_ids in filas:
+        vencidos = {}
+        for fid, superseded_by, is_verified, created_at, source_facet, expires_at in filas:
             superados_de[fid] = superseded_by
             info[fid] = (bool(is_verified), created_at)
             facet_por_id[fid] = source_facet
-            fuentes_por_id[fid] = _parse_fuentes(source_fact_ids, fid)
+            vencidos[fid] = expires_at
 
         if any(i not in superados_de for i in ids):
             raise HTTPException(status_code=404, detail="hecho_no_encontrado")
@@ -396,12 +408,32 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
         if any(superados_de[i] is not None for i in ids):
             raise HTTPException(status_code=409, detail="hecho_ya_superado")
 
+        # MAJOR 2 (revision adversarial de jax-platform PR 146, tercera
+        # vuelta): un hecho vencido no puede fundirse -- ni como
+        # superviviente (resucitaria un hecho que dejo de pesar en la
+        # busqueda, sin pasar por /caducar de vuelta) ni como absorbido
+        # (perderia su propia fecha de vencimiento en silencio, fundida en
+        # otro que no la tiene). `NOW()` se evalua en la MISMA transaccion
+        # que ya trajo la fila con FOR UPDATE -- no hay ventana entre leer y
+        # decidir.
+        await cur.execute("SELECT NOW()")
+        (ahora,) = await cur.fetchone()
+        if any(vencidos[i] is not None and vencidos[i] <= ahora for i in ids):
+            raise HTTPException(status_code=409, detail="hecho_vencido")
+
+        # MAJOR 1, tercera vuelta: el cierre de citas se calcula sobre TODO
+        # el grafo (mismo criterio que el detector, `agrupar_por_tema`) --
+        # con el MISMO cursor de esta transaccion, para no abrir una segunda
+        # conexion mientras el lote sigue bloqueado con FOR UPDATE.
+        citas_directas = await _cargar_citas_directas(cur)
+        cierre_citas = _cierre_transitivo_de_citas(citas_directas)
+
         # D3: compatibilidad PAR A PAR de todo el lote -- antes de decidir
         # quien sobrevive, porque si el lote mezcla tipos la operacion es
         # invalida sea cual sea el superviviente elegido.
         for i in range(len(ids)):
             for j in range(i + 1, len(ids)):
-                if not _compatibles_para_fundir(ids[i], ids[j], facet_por_id, fuentes_por_id):
+                if not _compatibles_para_fundir(ids[i], ids[j], facet_por_id, cierre_citas):
                     raise HTTPException(status_code=409, detail="fundir_sintesis_con_no_sintesis")
 
         # D3: el superviviente solicitado tiene que ser el que la regla
@@ -503,22 +535,25 @@ _MAX_MIEMBROS_CASI_DUPLICADO = 90
 
 SQL_ACTIVOS_CON_VECTOR = (
     "SELECT id, fact_text, is_verified, created_at, "
-    f"VEC_ToText({_COLUMNA_EMBED}) AS vector_texto, source_facet, source_fact_ids "
+    f"VEC_ToText({_COLUMNA_EMBED}) AS vector_texto, source_facet "
     "FROM facts "
     "WHERE superseded_by IS NULL "
     "AND (expires_at IS NULL OR expires_at > NOW()) "
     f"AND {_embedding_no_cero_sql(_COLUMNA_EMBED)}"
 )
-# `source_facet`/`source_fact_ids` van AL FINAL (índices 5 y 6) a propósito:
-# `_casi_duplicados_del_grupo` sigue leyendo el vector en el índice 4 tal
-# cual lo hacía antes de la ronda 2026-09-22, así que las tuplas sintéticas
-# de 5 elementos que ya usan los tests de rendimiento de este archivo (sin
-# facet ni fuentes) siguen funcionando sin tocar -- `len(m) > 5`/`len(m) > 6`
-# deciden si hay quinto/sexto elemento. Ronda 146 (D1): `source_facet`
-# entra ANTES que `source_fact_ids` porque pasa a ser el criterio primario
-# de exclusión (ver `_compatibles_para_fundir`) -- `source_fact_ids` queda
-# como criterio secundario, sólo para separar dos síntesis que se citan
-# entre sí.
+# `source_facet` va AL FINAL (índice 5) a propósito: `_casi_duplicados_
+# del_grupo` sigue leyendo el vector en el índice 4 tal cual lo hacía antes
+# de la ronda 2026-09-22, así que las tuplas sintéticas de 5 elementos que
+# ya usan los tests de rendimiento de este archivo (sin facet) siguen
+# funcionando sin tocar -- `len(m) > 5` decide si hay sexto elemento.
+#
+# Ronda 146, tercera vuelta (MAJOR 1): esta consulta YA NO trae
+# `source_fact_ids` -- el criterio de citas dejó de ser "lo que trae CADA
+# fila del grupo" y pasó a ser el CIERRE TRANSITIVO de TODO el grafo de
+# citas (`SQL_CITAS`/`_cierre_transitivo_de_citas`, más abajo), que
+# necesita ver facts fuera de `miembros` (otros grupos, superados,
+# vencidos). Guardar `source_fact_ids` acá también hubiera quedado como
+# dato muerto: nada lo volvía a leer.
 
 # La consulta que agrupar_por_tema() corre DE VERDAD para cada hecho, vecino
 # a vecino -- mismo patrón que _find_nearest_fact() (jax/memory/db.py). El
@@ -642,6 +677,69 @@ def _parse_fuentes(valor, fact_id) -> frozenset:
         return frozenset()
 
 
+SQL_CITAS = "SELECT id, source_fact_ids FROM facts WHERE source_fact_ids IS NOT NULL"
+# Ronda 146, tercera vuelta (MAJOR 1, revisión adversarial de jax-platform
+# PR 146): SIN filtrar por `superseded_by`/`expires_at` a propósito -- una
+# síntesis puede citar a un hecho que después se superó o venció, y la
+# cadena de citas tiene que seguir cerrada igual (una síntesis no deja de
+# ser síntesis DE algo sólo porque ese algo ya no está activo). `EXPLAIN`
+# (test_memoria_grupos.py) confirma que no hay índice útil para
+# `source_fact_ids IS NOT NULL` -- `source_fact_ids` es `longtext`, sin
+# índice (verificado con `SHOW INDEX FROM facts` contra jax_memory_test):
+# full scan, `type=ALL`. Medido contra la base de carga de 10.000 filas
+# (docs/carga-memoria-146-2026-09-22.md): son pocas las filas con
+# `source_fact_ids` no nulo (las síntesis, no todo `facts`), así que el
+# costo absoluto es chico aunque el plan sea un scan completo.
+
+
+async def _cargar_citas_directas(cur) -> dict:
+    """id -> frozenset de ids que ESE id cita directamente (una fila de
+    `source_fact_ids`), para TODOS los facts que tienen ese dato -- activos
+    o no. Un solo SELECT, reusado por el detector (`agrupar_por_tema`, su
+    propia conexión) y por `fundir_hechos` (el cursor de SU transacción,
+    para no abrir una segunda conexión en medio del `FOR UPDATE`)."""
+    await cur.execute(SQL_CITAS)
+    return {fid: _parse_fuentes(raw, fid) for fid, raw in await cur.fetchall()}
+
+
+def _cierre_transitivo_de_citas(citas_directas: dict) -> dict:
+    """id -> frozenset de TODOS los ids que ese id cita, transitivamente
+    (BFS sobre el grafo dirigido "cita a" que arma `citas_directas`).
+
+    MAJOR 1 (revisión adversarial de jax-platform PR 146, tercera vuelta):
+    la exclusión de la ronda anterior sólo miraba la cita DIRECTA -- S1 cita
+    a S2 los separaba, pero S1 citando a S2 que a su vez cita a S3 (segundo
+    grado) no separaba a S1 de S3. Peor: con las tres en el mismo union-find,
+    S1 y S3 (incompatibles, aunque sea indirectamente) podían terminar en el
+    mismo componente igual, conectados vía S2 -- el MISMO bug de bridging
+    que D2 ya había cerrado para el cruce de tipos, reaparecido acá porque
+    la cita sólo se miraba a UN salto. El cierre transitivo (esta función)
+    hace que "A cita a B, aunque sea indirectamente" sea una propiedad
+    ESTABLE del grafo completo, calculada una vez por request -- no algo
+    que dependa de si A y B llegaron a compararse directo."""
+    cierre = {}
+    for origen in citas_directas:
+        visto: set = set()
+        cola = list(citas_directas.get(origen, ()))
+        while cola:
+            actual = cola.pop()
+            if actual in visto:
+                continue
+            visto.add(actual)
+            cola.extend(citas_directas.get(actual, ()))
+        cierre[origen] = frozenset(visto)
+    return cierre
+
+
+def _relacionados_por_cita(a_id, b_id, cierre_citas: dict) -> bool:
+    """True si `a_id` cita a `b_id` o `b_id` cita a `a_id`, a CUALQUIER
+    profundidad (ver `_cierre_transitivo_de_citas`) -- nunca si sólo
+    comparten un ancestro en común (dos síntesis que citan a la MISMA fuente,
+    sin citarse entre sí, siguen siendo compatibles -- D1: "dos síntesis
+    entre sí sí pueden agruparse")."""
+    return b_id in cierre_citas.get(a_id, frozenset()) or a_id in cierre_citas.get(b_id, frozenset())
+
+
 def _tipo_sintesis(facet) -> bool:
     """`source_facet == 'synthesis'` es la faceta que escribe
     `jax/memory/synthesis_worker.py` sobre un insight de segundo orden.
@@ -664,30 +762,35 @@ def _tipo_sintesis(facet) -> bool:
     return facet == "synthesis"
 
 
-def _compatibles_para_fundir(a_id, b_id, facet_por_id: dict, fuentes_por_id: dict) -> bool:
+def _compatibles_para_fundir(a_id, b_id, facet_por_id: dict, cierre_citas: dict) -> bool:
     """Dos hechos pueden compartir un cluster de casi-duplicados -- y, por
     extensión, fundirse juntos (D3: `fundir_hechos` exige esta MISMA regla,
     no sólo la propone) -- sólo si:
       1. son del MISMO tipo (los dos síntesis, o los dos no) -- D1.
-      2. ninguno cita al otro en `source_fact_ids` -- para separar dos
-         síntesis que se citan ENTRE SÍ (D1: "dos síntesis entre sí sí
-         pueden agruparse", salvo que una cite a la otra)."""
+      2. ninguno cita al otro, a NINGUNA profundidad -- `cierre_citas` (MAJOR
+         1, tercera vuelta) para separar dos síntesis que se citan entre sí,
+         directa O transitivamente (D1: "dos síntesis entre sí sí pueden
+         agruparse", salvo que una cite a la otra)."""
     if _tipo_sintesis(facet_por_id[a_id]) != _tipo_sintesis(facet_por_id[b_id]):
         return False
-    if b_id in fuentes_por_id.get(a_id, frozenset()) or a_id in fuentes_por_id.get(b_id, frozenset()):
+    if _relacionados_por_cita(a_id, b_id, cierre_citas):
         return False
     return True
 
 
-def _casi_duplicados_del_grupo(miembros: list) -> list[list[int]]:
+def _casi_duplicados_del_grupo(miembros: list, cierre_citas: dict) -> list[list[int]]:
     """miembros: lista de (id, fact_text, is_verified, created_at, vector[,
-    source_facet[, source_fact_ids]]) -- el quinto y sexto elemento son
-    opcionales (retrocompatible con las tuplas sintéticas de 5 que ya usan
-    los tests de rendimiento de este archivo, que no tocan síntesis).
-    Devuelve subconjuntos (>=2 elementos): cada uno es una componente CONEXA
-    del grafo de pares a distancia <= UMBRAL_MISMO_TEMA -- es decir, sus
-    miembros están conectados por una CADENA de saltos, cada uno
-    <= UMBRAL_MISMO_TEMA, pero el PAR en sí puede estar más lejos.
+    source_facet]) -- el sexto elemento es opcional (retrocompatible con las
+    tuplas sintéticas de 5 que ya usan los tests de rendimiento de este
+    archivo, que no tocan síntesis). `cierre_citas`: el cierre transitivo
+    de TODO el grafo de citas (`_cierre_transitivo_de_citas`), calculado UNA
+    vez por request -- no se reconstruye acá porque necesita ver facts que
+    pueden no estar en `miembros` (una síntesis puede citar a un hecho de
+    OTRO grupo, o ya superado/vencido). Devuelve subconjuntos (>=2
+    elementos): cada uno es una componente CONEXA del grafo de pares a
+    distancia <= UMBRAL_MISMO_TEMA -- es decir, sus miembros están
+    conectados por una CADENA de saltos, cada uno <= UMBRAL_MISMO_TEMA, pero
+    el PAR en sí puede estar más lejos.
 
     CORRECCIÓN (ronda 146, revisión adversarial de jax-platform PR 146): el
     docstring anterior decía "verificación exacta, par a par" -- era FALSO,
@@ -705,18 +808,26 @@ def _casi_duplicados_del_grupo(miembros: list) -> list[list[int]]:
     una revisión adversarial demostró que eso deja pares FALSOS: si A-S y
     S-C están cerca pero A-C está lejos, sacar a S del componente {A,S,C}
     devolvía `[[A,C]]` aunque A y C NO estén cerca entre sí (MAYOR 1). La
-    corrección real (D2) no es "recalcular después" -- es no dejar que una
-    arista incompatible se cree NUNCA: `_compatibles_para_fundir` se
-    consulta ANTES de cada `uf.unir(...)`, así que dos miembros
-    incompatibles jamás quedan en el mismo componente, ni siquiera
-    transitivamente. No hace falta un segundo union-find "sobre los
-    miembros que quedan": el primero ya se construye bien, porque nunca deja
-    pasar la arista que causaba el bug."""
+    corrección (D2) fue no dejar que una arista incompatible se cree NUNCA:
+    `_compatibles_para_fundir` se consulta ANTES de cada `uf.unir(...)`.
+
+    MAJOR 1, tercera vuelta (revisión adversarial de jax-platform PR 146):
+    esa corrección alcanzaba para tipos cruzados (bloqueo TOTAL, nunca se
+    unen sin importar el puente) pero no para dos síntesis del MISMO tipo
+    con una cita indirecta -- S1 cita a S2 (incompatibles), pero si S3 (sin
+    relación con ninguna) está cerca de las dos, S1 y S2 podían terminar en
+    el MISMO componente igual, conectados vía S3 -- el bridging reaparece
+    cuando la incompatibilidad es puntual (una arista) en vez de total (un
+    tipo entero). Por eso ahora, DESPUÉS de `uf.componentes()`, cada
+    componente final se revalida PAR A PAR (no sólo las aristas que se
+    unieron): si queda algún par incompatible adentro, el componente entero
+    se descarta -- fail-closed, el detector propone de menos, nunca de más.
+    Cualquier otra forma de no-transitividad que aparezca en el futuro queda
+    cubierta por este mismo chequeo, sin tener que anticiparla."""
     if len(miembros) < 2 or len(miembros) > _MAX_MIEMBROS_CASI_DUPLICADO:
         return []
     vectores = {m[0]: json.loads(m[4]) for m in miembros}
     facet_por_id = {m[0]: (m[5] if len(m) > 5 else None) for m in miembros}
-    fuentes_por_id = {m[0]: _parse_fuentes(m[6] if len(m) > 6 else None, m[0]) for m in miembros}
     # UNA norma por vector, no una por par: con 90 miembros son 90 raíces en
     # vez de 8.010. Es el arreglo medido del 2026-09-20 (61 % del request).
     normas = {i: _norma(v) for i, v in vectores.items()}
@@ -726,16 +837,28 @@ def _casi_duplicados_del_grupo(miembros: list) -> list[list[int]]:
         a = ids[i]
         for j in range(i + 1, len(ids)):
             b = ids[j]
-            # La compatibilidad se consulta ANTES que la distancia: además
-            # de ser lo que previene el bridging (D2), evita calcular una
-            # distancia coseno (la parte cara, medida el 2026-09-20) para
-            # un par que de todos modos no se va a unir.
-            if not _compatibles_para_fundir(a, b, facet_por_id, fuentes_por_id):
+            # La compatibilidad se consulta ANTES que la distancia: evita
+            # calcular una distancia coseno (la parte cara, medida el
+            # 2026-09-20) para un par que de todos modos no se va a unir --
+            # pero YA NO es la única garantía (ver la revalidación de abajo).
+            if not _compatibles_para_fundir(a, b, facet_por_id, cierre_citas):
                 continue
             if _distancia_coseno(vectores[a], vectores[b],
                                  normas[a], normas[b]) <= _UMBRAL_MISMO_TEMA:
                 uf.unir(a, b)
-    return [sorted(c) for c in uf.componentes() if len(c) > 1]
+
+    resultado = []
+    for componente in uf.componentes():
+        if len(componente) < 2:
+            continue
+        comp = sorted(componente)
+        limpio = all(
+            _compatibles_para_fundir(comp[i], comp[j], facet_por_id, cierre_citas)
+            for i in range(len(comp)) for j in range(i + 1, len(comp))
+        )
+        if limpio:
+            resultado.append(comp)
+    return resultado
 
 
 def _elegir_superviviente(ids: list, info: dict) -> int:
@@ -763,14 +886,32 @@ def _elegir_superviviente(ids: list, info: dict) -> int:
     return max(candidatos, key=_clave)
 
 
-def _construir_grupos(filas: list, vecinos: list) -> list[dict]:
+# M4 (revisión adversarial de jax-platform PR 146, tercera vuelta):
+# `superviviente_texto` viaja tal cual desde `fact_text`, que no tiene
+# límite de longitud en el frontend (spec §2.1 no lo impone). Sin recorte,
+# una redacción larga y sin espacios podía desbordar la ventana de
+# `ConfirmacionSuma` (probado con `break-words`, ver FichaDeHecho.jsx/
+# ConfirmacionSuma.jsx). 280 caracteres alcanza para reconocer el hecho sin
+# volver ilegible la ventana.
+_MAX_CARACTERES_TEXTO_SUPERVIVIENTE = 280
+
+
+def _recortar_texto(texto: str) -> str:
+    if len(texto) <= _MAX_CARACTERES_TEXTO_SUPERVIVIENTE:
+        return texto
+    return texto[:_MAX_CARACTERES_TEXTO_SUPERVIVIENTE].rstrip() + "…"
+
+
+def _construir_grupos(filas: list, vecinos: list, cierre_citas: dict) -> list[dict]:
     """CPU pura (sin await): se corre en un hilo aparte (asyncio.to_thread)
     para no bloquear el event loop a escala de 10.000 hechos.
 
-    filas: (id, fact_text, is_verified, created_at, vector, source_facet,
-    source_fact_ids) de cada hecho activo. vecinos: [(fact_id,
-    [(vecino_id, distancia), ...]), ...], el resultado de SQL_VECINOS para
-    cada fila.
+    filas: (id, fact_text, is_verified, created_at, vector, source_facet) de
+    cada hecho activo. vecinos: [(fact_id, [(vecino_id, distancia), ...]),
+    ...], el resultado de SQL_VECINOS para cada fila. `cierre_citas`: el
+    cierre transitivo de TODO el grafo de citas (MAJOR 1, tercera vuelta),
+    calculado UNA vez en `agrupar_por_tema` y pasado tal cual a
+    `_casi_duplicados_del_grupo` para cada componente.
 
     Ronda 2026-09-22: cada cluster de `casi_duplicados` deja de ser una
     lista de ids a secas -- pasa a un objeto con `superviviente_id`
@@ -785,7 +926,8 @@ def _construir_grupos(filas: list, vecinos: list) -> list[dict]:
     más reciente, quedará aprobado al fundir") y el texto de la ficha con
     ESTOS datos, no con `hechosPorId` (que sólo tiene los primeros 500
     hechos cargados por `GET /hechos`; un cluster puede incluir ids que ese
-    cap dejó afuera)."""
+    cap dejó afuera). `superviviente_texto` viaja recortado (M4, ver
+    `_recortar_texto`)."""
     datos = {f[0]: f for f in filas}
     uf = _UnionFind(datos.keys())
     for fact_id, cercanos in vecinos:
@@ -809,13 +951,13 @@ def _construir_grupos(filas: list, vecinos: list) -> list[dict]:
         info = {m[0]: (m[2], m[3]) for m in miembros}  # id -> (is_verified, created_at)
         textos = {m[0]: m[1] for m in miembros}
         clusters = []
-        for cluster in _casi_duplicados_del_grupo(miembros):
+        for cluster in _casi_duplicados_del_grupo(miembros, cierre_citas):
             sid = _elegir_superviviente(cluster, info)
             clusters.append({
                 "ids": cluster,
                 "superviviente_id": sid,
                 "superviviente_verificado": bool(info[sid][0]),
-                "superviviente_texto": textos[sid],
+                "superviviente_texto": _recortar_texto(textos[sid]),
             })
         grupos.append({
             "tema": miembros[0][1],
@@ -840,6 +982,14 @@ async def agrupar_por_tema() -> list[dict]:
     if not filas:
         return []
 
+    # MAJOR 1, tercera vuelta: el cierre de citas se calcula UNA vez por
+    # request, sobre TODO el grafo (no sólo los miembros de un grupo) --
+    # conexión propia, antes de repartir el trabajo de vecinos.
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            citas_directas = await _cargar_citas_directas(cur)
+    cierre_citas = _cierre_transitivo_de_citas(citas_directas)
+
     semaforo = asyncio.Semaphore(_CONCURRENCIA_VECINOS)
 
     async def _vecinos_de(fact_id, vector_texto):
@@ -854,7 +1004,7 @@ async def agrupar_por_tema() -> list[dict]:
 
     vecinos = await asyncio.gather(*(_vecinos_de(f[0], f[4]) for f in filas))
 
-    return await asyncio.to_thread(_construir_grupos, filas, vecinos)
+    return await asyncio.to_thread(_construir_grupos, filas, vecinos, cierre_citas)
 
 
 @router.get("/grupos")

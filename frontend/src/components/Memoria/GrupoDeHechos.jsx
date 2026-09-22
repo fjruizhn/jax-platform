@@ -129,10 +129,20 @@ export default function GrupoDeHechos({
           const miembros = item.ids.map((id) => hechosPorId[id]).filter(Boolean)
           if (miembros.length < 2) return null
           const ocupadoCluster = item.ids.some((id) => procesando.has(id))
+          // M3 (revisión adversarial de jax-platform PR 146, tercera
+          // vuelta): el aviso "Estos N hechos..." cuenta TODOS los
+          // `item.ids` que trajo el backend, no sólo los que este cap de
+          // 500 llegó a cargar (`miembros`) -- si hay diferencia, se dice
+          // explícito cuántos faltan.
+          const totalCluster = item.ids.length
+          const noCargadosCluster = totalCluster - miembros.length
+          const textoCasiDuplicados = noCargadosCluster > 0
+            ? t.memoria.casiDuplicadosSubconjunto(totalCluster, noCargadosCluster)
+            : t.memoria.casiDuplicados(totalCluster)
           return (
             <div key={item.ids.join(',')} className="rounded-lg border-2 border-dashed border-aviso-borde p-3 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs font-semibold text-aviso">{t.memoria.casiDuplicados(miembros.length)}</p>
+                <p className="text-xs font-semibold text-aviso">{textoCasiDuplicados}</p>
                 <button
                   type="button"
                   disabled={ocupadoCluster}

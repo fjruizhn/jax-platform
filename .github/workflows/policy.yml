@@ -757,8 +757,25 @@ jobs:
           //   (`cluster.ids is not iterable` con la fixture vieja). Medido
           //   con `npx vitest run`, mismo comando en las dos ramas: master
           //   942 passed / 92 archivos -> rama 943 / 92 (0 fallidos las dos).
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 943) {
-              console.error("PISO ROTO: se esperaban 943 tests de vitest CORRIDOS y 0 fallidos.");
+          // 943 -> 947 (2026-09-22, jax-platform PR 146, tercera vuelta de
+          //   revisión adversarial): +4. M2 (aprobar recarga /grupos, +1;
+          //   quitar caducidad recarga /grupos, +1 -- el primer intento del
+          //   test de quitar caducidad pasaba SIN el `await cargar()`, la
+          //   mutación no caía, hasta agregar la aserción del conteo de
+          //   llamadas a /grupos) y M3 (el aviso "Estos N hechos..." y la
+          //   confirmación de fundir cuentan TODOS los `item.ids`, no sólo
+          //   los cargados, +1) -- 3 en Memoria.test.jsx. M4 (ConfirmacionSuma
+          //   con `break-words`, mensaje largo sin espacios no rompe el
+          //   render ni los otros usos, +2 en ConfirmacionSuma.test.jsx) --
+          //   pero el test de "caducar, confirmado" existente se REESCRIBIÓ
+          //   (ya no asume que la ficha se queda en el grupo: con la recarga,
+          //   el hecho ahora vencido se mueve a la sección Vencidos), sin
+          //   sumar al piso. Vistos en rojo antes de verde. Medido con
+          //   `npx vitest run`, mismo comando en las dos ramas: rama en
+          //   93ed016 943 passed / 92 archivos -> rama con esta ronda 947 /
+          //   92 (0 fallidos las dos).
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 947) {
+              console.error("PISO ROTO: se esperaban 947 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -2115,25 +2132,36 @@ jobs:
           #       existia, verifico con MUTACIONES (revertir el fragmento de
           #       codigo especifico) en vez de confiar solo en el primer rojo.
           # 2525 -> 2541 (2026-09-22, jax-platform PR 146, revision
-          #   adversarial de esta misma rama): +16. D1 (source_facet en vez de
-          #   source_fact_ids solo, 5 tests: dos sintesis que se citan/no se
-          #   citan, sintesis de 2do orden, source_fact_ids NULL, mas el
-          #   integration test con source_facet solo), D2 (recalcular
-          #   componentes tras excluir en vez de reusar el previo -- MAYOR 1,
-          #   1 test con vectores 2D reales, distancias verificadas con la
-          #   formula: dist(A,S)=0.20, dist(S,C)=0.20, dist(A,C)=0.72), D3 (el
-          #   endpoint EXIGE la regla -- 4 tests: 409
-          #   fundir_sintesis_con_no_sintesis x2, 409
-          #   superviviente_no_es_el_de_la_regla, y el ajuste del test que
-          #   antes esperaba superviviente_no_verificado), D4/D6 (desempate
-          #   por id mayor, 2 tests, uno de ellos con el orden de la lista
-          #   deliberadamente distinto del id mayor -- el primer intento de
-          #   este test pasaba SIN el desempate, por como max() resuelve
-          #   empates en orden de iteracion; corregido antes de declarar
-          #   verde), D5 (superviviente_verificado/superviviente_texto en el
-          #   cluster, 1 test), D6 (reaprobar a un ya verificado no pisa
-          #   verified_by/at, 1 test), D8 (created_at NULL, 2 tests unitarios
-          #   + 1 end-to-end). Los 16 vistos en rojo contra el codigo de esta
+          #   adversarial de esta misma rama): +16, contados por nombre de
+          #   funcion contra las dos revisiones (`comm` sobre los `def test_`
+          #   de cada una, no un grep del diff -- un grep sobre el diff había
+          #   contado 15, uno de menos, por como git agrupa un hunk cuando una
+          #   linea de contexto compartida queda pegada a la nueva).
+          #   D1 (source_facet en vez de source_fact_ids solo, 5 tests: dos
+          #   sintesis que se citan/no se citan, sintesis de 2do orden,
+          #   source_fact_ids NULL, mas el integration test con source_facet
+          #   solo), D2 (recalcular componentes tras excluir en vez de reusar
+          #   el previo -- MAYOR 1, 1 test con vectores 2D reales, distancias
+          #   verificadas con la formula: dist(A,S)=0.20, dist(S,C)=0.20,
+          #   dist(A,C)=0.72), D3 (el endpoint EXIGE la regla -- CORRECCION,
+          #   revision adversarial PR 146 tercera vuelta, M6: son 3 tests
+          #   NUEVOS -- fundir_sintesis_con_no_sintesis x2 [uno por tipo
+          #   cruzado, uno por dos sintesis que se citan] y
+          #   superviviente_no_es_el_de_la_regla -- MAS 1 test AJUSTADO, no
+          #   nuevo: el que antes esperaba 409 superviviente_no_verificado
+          #   pasa a esperar superviviente_no_es_el_de_la_regla; el ajustado
+          #   no suma al delta de 16, ya estaba contado en el piso anterior),
+          #   D4 (la regla de _elegir_superviviente -- 2 tests: el empate de
+          #   fecha lo desempata el id mayor, y una fecha REAL le gana a un id
+          #   mayor cuando no hay empate -- el primer intento de el de empate
+          #   pasaba SIN el desempate, por como max() resuelve empates en
+          #   orden de iteracion; corregido antes de declarar verde), D5
+          #   (superviviente_verificado/superviviente_texto en el cluster, 1
+          #   test), D6 (CORRECCION, M6: es 1 test, no 2 -- reaprobar a un ya
+          #   verificado no pisa verified_by/at; el otro test de MENOR 7 que
+          #   esta nota le atribuia antes a D6 es en realidad la segunda mitad
+          #   de D4, ya contada ahi), D8 (created_at NULL, 2 tests unitarios +
+          #   1 end-to-end). Los 16 vistos en rojo contra el codigo de esta
           #   misma rama ANTES del cambio (no contra 2026-09-22 a secas). Las
           #   6 correcciones centrales (D1 tipo, D1 citas, D2, D4, D6 guardia
           #   de reaprobar, D3 compatibilidad, D3 regla) se verificaron
@@ -2144,7 +2172,30 @@ jobs:
           #   > <archivo>`, nunca `git stash`) para la medicion "antes": rama
           #   en 012d315 2525 passed / 0 fallidos -> rama con esta ronda 2541
           #   / 0 fallidos.
-          PISO_PASSED = 2541
+          # 2541 -> 2552 (2026-09-22, jax-platform PR 146, tercera vuelta de
+          #   revision adversarial, MAJOR 1/MAJOR 2/M1/M4): +11. MAJOR 1a/1b
+          #   (cierre transitivo de citas, revalidacion final por
+          #   componente -- 2 tests: el caso exacto del revisor con angulos
+          #   2D reales, y una cita de segundo grado a traves de un puente NO
+          #   citado), MAJOR 1 en `fundir_hechos` (mismo cierre compartido --
+          #   1 test), MAJOR 2 (hecho vencido no se funde -- 3 tests:
+          #   superviviente vencido, absorbido vencido, vencimiento futuro SI
+          #   se permite), M1 (created_at NULL mezclado con fecha real en
+          #   `_construir_grupos`, no solo "todos NULL" -- 1 test puro,
+          #   reproduce scratchpad/repro.py Caso4), M4 (recorte de
+          #   superviviente_texto a 280 caracteres -- 2 tests unitarios de
+          #   `_recortar_texto` + 1 end-to-end). El test de EXPLAIN de
+          #   `SQL_ACTIVOS_CON_VECTOR` se RENOMBRÓ (perdió `source_fact_ids`
+          #   de su nombre, la columna salió de esa consulta) -- no suma al
+          #   delta, ya estaba contado. Los 11 vistos en rojo contra el
+          #   código de esta misma rama ANTES del cambio. Las correcciones
+          #   centrales (cierre transitivo + revalidación, `expires_at` en
+          #   `fundir_hechos`, el `sorted` de `_construir_grupos`, el recorte)
+          #   se verificaron ADEMÁS con mutación. Medido en vivo, MISMO
+          #   comando, restaurando 93ed016 para la medición "antes": rama en
+          #   93ed016 2541 passed / 0 fallidos -> rama con esta ronda 2552 / 0
+          #   fallidos.
+          PISO_PASSED = 2552
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -2813,19 +2864,35 @@ jobs:
       #   delta verificado, +6, no por el passed crudo local).
       # 1647 -> 1656 (2026-09-22, jax-platform PR 146, revisión adversarial):
       #   +9 puros, de los 16 nuevos de esta ronda (ver el piso con DB, más
-      #   arriba, para el detalle completo): los 5 de D1 (facet en vez de
-      #   source_fact_ids), el de D2 (bridging con vectores 2D reales), los 2
-      #   de D4/D6 (desempate por id/por created_at) y el de D8
-      #   (created_at NULL en `_elegir_superviviente`, las DOS variantes
-      #   unitarias) -- ninguno pide `client`. Los otros 7 (D3 x4, D5, D6
-      #   guardia de reaprobar, D8 end-to-end) sí lo piden y quedan salteados
-      #   (+7 skips). Medido con JAX_CI_NO_DB=1 python3 -m pytest -q,
+      #   arriba, para el detalle completo, y la CORRECCIÓN de M6 sobre el
+      #   desglose por categoría): 4 de los 5 de D1 (facet en vez de
+      #   source_fact_ids -- todos salvo el integration test con
+      #   source_facet solo, que sí pide `client`), el de D2 (bridging con
+      #   vectores 2D reales), los 2 de D4 (desempate por id Y una fecha real
+      #   ganándole a un id mayor sin empate) y 2 de los 3 de D8
+      #   (created_at NULL en `_elegir_superviviente`, las dos variantes
+      #   unitarias -- la tercera es end-to-end y sí pide `client`) --
+      #   ninguno de estos 9 pide `client`. Los otros 7 sí lo piden y quedan
+      #   salteados (+7 skips): los 3 de D3 (el endpoint exige la regla), el
+      #   integration test de D1, el de D5, el de D6 (guardia de reaprobar) y
+      #   el end-to-end de D8. Medido con JAX_CI_NO_DB=1 python3 -m pytest -q,
       #   restaurando el contenido exacto de 012d315 para la medición
       #   "antes" (`git show`, nunca `git stash`): rama en 012d315 1684
       #   passed / 841 skipped -> rama con esta ronda 1693 / 848 (0 fallidos
       #   las dos; el piso declarado sube por el delta verificado, +9, no por
       #   el passed crudo local).
-      JAX_CI_MIN_PASSED: "1656"
+      # 1656 -> 1661 (2026-09-22, jax-platform PR 146, tercera vuelta): +5
+      #   puros, de los 11 nuevos de esta ronda (ver el piso con DB, más
+      #   arriba): los 2 de MAJOR 1a (caso del revisor, cita de 2do grado --
+      #   ninguno pide `client`), el de M1 (created_at NULL mezclado,
+      #   `_construir_grupos` con filas sintéticas) y los 2 unitarios de M4
+      #   (`_recortar_texto` corto/largo). Los otros 6 (MAJOR 1 en
+      #   `fundir_hechos`, los 3 de MAJOR 2, el EXPLAIN de `SQL_CITAS` y el
+      #   end-to-end de M4) piden `client`/DB y quedan salteados (+6 skips).
+      #   Medido con JAX_CI_NO_DB=1 python3 -m pytest -q, restaurando 93ed016
+      #   para la medición "antes": rama en 93ed016 1656 passed / 848 skipped
+      #   -> rama con esta ronda 1661 / 854 (0 fallidos las dos).
+      JAX_CI_MIN_PASSED: "1661"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

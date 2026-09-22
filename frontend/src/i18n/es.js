@@ -1226,6 +1226,16 @@ export default {
     aprobados: (n) => (n === 1 ? '1 hecho aprobado.' : `${n} hechos aprobados.`),
     aprobar: 'Aprobar',
     casiDuplicados: (n) => `Estos ${n} hechos dicen lo mismo`,
+    // M3 (revisión adversarial de jax-platform PR 146, tercera vuelta): el
+    // cluster que arma el backend (`grupo.casi_duplicados[].ids`) puede
+    // traer más ids de los que este cap de 500 (`GET /hechos`) llegó a
+    // cargar -- contar sólo `miembros.length` (lo cargado) mentía sobre
+    // cuántos hechos dicen lo mismo. `n` es SIEMPRE el total real; `k`, los
+    // que no están en la lista cargada.
+    casiDuplicadosSubconjunto: (n, k) => `Estos ${n} hechos dicen lo mismo, de los cuales ${k} no ${k === 1 ? 'está' : 'están'} en la lista cargada`,
+    casiDuplicadosNoCargados: (k) => (k === 1
+      ? '1 hecho de este grupo no está en la lista cargada.'
+      : `${k} hechos de este grupo no están en la lista cargada.`),
     // Decisión de Fernando (2026-09-20): fundir SUPERA, no caduca -- "esto
     // fue reemplazado por aquello", no "esto dejó de valer". `POST
     // /hechos/fundir` (backend/api/admin/memoria.py) reemplaza al composite
@@ -1322,6 +1332,9 @@ export default {
       // la use.
       fundir_sintesis_con_no_sintesis: 'Una síntesis no puede fundirse con un hecho que no lo es: recargá la pantalla.',
       superviviente_no_es_el_de_la_regla: 'El hecho que sobrevive cambió (alguien más revisó el grupo): recargá la pantalla.',
+      // Ronda 146, tercera vuelta (MAJOR 2): un hecho vencido no se puede
+      // fundir -- ni como superviviente ni como absorbido.
+      hecho_vencido: 'Uno de estos hechos venció mientras tanto: recargá la pantalla.',
     },
   },
 }

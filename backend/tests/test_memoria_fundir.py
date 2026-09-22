@@ -31,6 +31,14 @@ la regla, no solo la propone. Dos rechazos nuevos, los dos 409:
     superviviente_correcto, asi que un superviviente sin verificar que
     coincida con la regla implica que NINGUN miembro del lote esta
     verificado.
+
+Tercera vuelta (revision adversarial de jax-platform PR 146):
+  - MAJOR 1: `fundir_sintesis_con_no_sintesis` ahora usa el CIERRE
+    TRANSITIVO de citas (mismo que el detector) -- una cita indirecta (A
+    cita a B, B cita a C) deja a A y C incompatibles igual.
+  - MAJOR 2: un hecho vencido (`expires_at` en el pasado) no puede
+    fundirse -- ni como superviviente ni como absorbido -- 409
+    `hecho_vencido`, sin escribir nada.
 """
 import pytest
 
@@ -78,6 +86,15 @@ async def _borrar_facts(*ids):
 
 async def _fijar_created_at(fact_id, valor):
     await sql("UPDATE facts SET created_at = %s WHERE id = %s", (valor, fact_id))
+
+
+async def _fijar_expires_at(fact_id, valor):
+    await sql("UPDATE facts SET expires_at = %s WHERE id = %s", (valor, fact_id))
+
+
+async def _citar(fact_id, cita_a_id):
+    await sql("UPDATE facts SET source_facet = 'synthesis', source_fact_ids = %s WHERE id = %s",
+              (f"[{cita_a_id}]", fact_id))
 
 
 @pytest.fixture
@@ -392,3 +409,79 @@ def test_fundir_es_atomico_si_falla_a_mitad_del_lote_no_queda_nada_escrito(
     assert verificado is False, "la aprobacion del superviviente NO se revirtio: fundio a medias"
     superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido1)
     assert superseded_by is None, "el primer absorbido SI cambio antes de la falla: fundio a medias"
+
+
+# --- MAJOR 2 (revision adversarial de jax-platform PR 146, tercera vuelta):
+# un hecho vencido no puede fundirse ------------------------------------------
+
+def test_fundir_rechaza_superviviente_vencido(client_superadmin, trio):
+    """El escenario del revisor: caducar el superviviente (el que la regla
+    elegiria por fecha) y despues intentar fundir con el -- 409
+    `hecho_vencido`, nada se escribe."""
+    superviviente, absorbido1, absorbido2 = trio
+    client_superadmin.portal.call(_fijar_expires_at, superviviente, "2020-01-01 00:00:00")
+    r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                               json={"superviviente_id": superviviente,
+                                     "absorbidos": [absorbido1, absorbido2]})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "hecho_vencido"
+    for absorbido in (absorbido1, absorbido2):
+        superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido)
+        assert superseded_by is None, f"fundio a medias: {absorbido} SI cambio"
+    verificado, _ = client_superadmin.portal.call(_verificado_de, superviviente)
+    assert verificado is False, "el superviviente vencido se autoaprobo pese al rechazo"
+
+
+def test_fundir_rechaza_absorbido_vencido(client_superadmin, trio):
+    """No sólo el superviviente: un absorbido vencido tampoco puede
+    fundirse -- perderia su propia fecha de vencimiento en silencio,
+    superado por un hecho que no la tiene."""
+    superviviente, absorbido1, absorbido2 = trio
+    client_superadmin.portal.call(_fijar_expires_at, absorbido1, "2020-01-01 00:00:00")
+    r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                               json={"superviviente_id": superviviente,
+                                     "absorbidos": [absorbido1, absorbido2]})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "hecho_vencido"
+    superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido2)
+    assert superseded_by is None, "fundio a medias: el absorbido sano SI cambio"
+
+
+def test_fundir_permite_un_vencimiento_futuro(client_superadmin, trio):
+    """`expires_at` en el FUTURO no es "vencido" -- sigue vigente. Sólo
+    `expires_at <= NOW()` bloquea."""
+    superviviente, absorbido1, absorbido2 = trio
+    client_superadmin.portal.call(_fijar_expires_at, superviviente, "2099-01-01 00:00:00")
+    r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                               json={"superviviente_id": superviviente,
+                                     "absorbidos": [absorbido1, absorbido2]})
+    assert r.status_code == 200
+    assert r.json()["superados"] == 2
+
+
+# --- MAJOR 1 (revision adversarial de jax-platform PR 146, tercera vuelta):
+# el endpoint usa el MISMO cierre transitivo que el detector ------------------
+
+def test_fundir_rechaza_lote_con_cita_transitiva_no_directa(client_superadmin, trio):
+    """A cita a B, B cita a C -- A y C nunca se citan DIRECTO, pero estan
+    relacionados transitivamente (MAJOR 1a). El endpoint tiene que
+    rechazarlos igual, con el MISMO codigo que una cita directa.
+
+    Los TRES quedan marcados `source_facet='synthesis'` a proposito: si sólo
+    A y B lo estuvieran, el rechazo saldria por el chequeo de TIPO (A/B
+    síntesis vs C no-síntesis), no por la transitividad de la cita -- que es
+    justo lo que este test tiene que ejercitar."""
+    superviviente, absorbido1, absorbido2 = trio
+    # superviviente cita a absorbido1, absorbido1 cita a absorbido2 -- asi
+    # superviviente y absorbido2 quedan relacionados solo por transitividad.
+    client_superadmin.portal.call(_citar, superviviente, absorbido1)
+    client_superadmin.portal.call(_citar, absorbido1, absorbido2)
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET source_facet = 'synthesis' WHERE id = %s", (absorbido2,))
+    r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                               json={"superviviente_id": superviviente,
+                                     "absorbidos": [absorbido2]})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "fundir_sintesis_con_no_sintesis"
+    superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido2)
+    assert superseded_by is None

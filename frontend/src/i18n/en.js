@@ -1181,6 +1181,16 @@ export default {
     aprobados: (n) => (n === 1 ? '1 fact approved.' : `${n} facts approved.`),
     aprobar: 'Approve',
     casiDuplicados: (n) => `These ${n} facts say the same thing`,
+    // M3 (jax-platform PR 146 adversarial review, third pass): the cluster
+    // the backend builds (`grupo.casi_duplicados[].ids`) can carry more ids
+    // than this 500-fact cap (`GET /hechos`) loaded -- counting only
+    // `miembros.length` (what's loaded) lied about how many facts say the
+    // same thing. `n` is ALWAYS the real total; `k` is how many aren't in
+    // the loaded list.
+    casiDuplicadosSubconjunto: (n, k) => `These ${n} facts say the same thing, of which ${k} ${k === 1 ? 'is' : 'are'} not in the loaded list`,
+    casiDuplicadosNoCargados: (k) => (k === 1
+      ? '1 fact in this group is not in the loaded list.'
+      : `${k} facts in this group are not in the loaded list.`),
     // Round 2026-09-22: "the most recent" is no longer always the survivor --
     // a verified fact in the group wins (backend ::_elegir_superviviente).
     // The backend declares who survives (`superviviente_id` on each
@@ -1261,6 +1271,9 @@ export default {
       // code that uses it.
       fundir_sintesis_con_no_sintesis: 'A synthesis cannot be merged with a fact that is not one: reload the screen.',
       superviviente_no_es_el_de_la_regla: 'The surviving fact changed (someone else reviewed the group): reload the screen.',
+      // Round 146, third pass (MAJOR 2): an expired fact cannot be merged --
+      // neither as the survivor nor as an absorbed fact.
+      hecho_vencido: 'One of these facts expired in the meantime: reload the screen.',
     },
   },
 }

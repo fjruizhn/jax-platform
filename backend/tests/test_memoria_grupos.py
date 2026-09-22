@@ -150,6 +150,40 @@ def test_el_cluster_trae_superviviente_verificado_y_texto(
     assert cluster["superviviente_texto"] == texto_esperado
 
 
+def test_recortar_texto_no_toca_lo_corto():
+    corto = "un hecho normal, sin recorte"
+    assert memoria._recortar_texto(corto) == corto
+
+
+def test_recortar_texto_corta_y_agrega_puntos_suspensivos():
+    """M4 (revision adversarial de jax-platform PR 146, tercera vuelta): sin
+    recorte, una redaccion larga y sin espacios podia desbordar la ventana
+    de ConfirmacionSuma (frontend/src/components/ConfirmacionSuma.jsx,
+    break-words). 280 caracteres, con '…' al final."""
+    largo = "a" * 400
+    recortado = memoria._recortar_texto(largo)
+    assert len(recortado) == memoria._MAX_CARACTERES_TEXTO_SUPERVIVIENTE + 1  # +1 por el '…'
+    assert recortado.endswith("…")
+    assert recortado[:-1] == largo[:memoria._MAX_CARACTERES_TEXTO_SUPERVIVIENTE]
+
+
+def test_superviviente_texto_llega_recortado_end_to_end(client_superadmin, casi_duplicados_de_prueba):
+    """El recorte se aplica tambien en el camino real (GET /grupos), no solo
+    en la funcion pura."""
+    ids = casi_duplicados_de_prueba
+    texto_largo = "palabra" * 60  # 420 caracteres, sin espacios
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET fact_text = %s WHERE id = %s", (texto_largo, ids[0]))
+    client_superadmin.portal.call(
+        sql, "UPDATE facts SET is_verified = TRUE WHERE id = %s", (ids[0],))
+    grupos = client_superadmin.get("/api/admin/memoria/grupos").json()["grupos"]
+    grupo = next(g for g in grupos if set(ids) <= set(g["hechos"]))
+    cluster = next(d for d in grupo["casi_duplicados"] if set(ids) <= set(d["ids"]))
+    assert cluster["superviviente_id"] == ids[0]
+    assert len(cluster["superviviente_texto"]) == memoria._MAX_CARACTERES_TEXTO_SUPERVIVIENTE + 1
+    assert cluster["superviviente_texto"].endswith("…")
+
+
 def test_created_at_null_no_revienta_el_agrupamiento(client_superadmin, casi_duplicados_de_prueba):
     """D8 (sospecha del revisor): un `created_at` NULL en un miembro del
     grupo no puede tirar un 500 -- ni en el `sorted()` de `_construir_grupos`
@@ -245,18 +279,38 @@ def test_el_agrupamiento_usa_el_indice_vectorial(client_superadmin):
     assert "Using temporary" not in texto, f"tabla temporal: {texto}"
 
 
-def test_la_consulta_de_activos_sigue_usando_el_indice_tras_agregar_source_fact_ids(client_superadmin):
+def test_la_consulta_de_activos_sigue_usando_el_indice_tras_agregar_source_facet(client_superadmin):
     """LAS CUATRO DEL RENDIMIENTO, regla 1 (indexing): `SQL_ACTIVOS_CON_
-    VECTOR` (la consulta que trae las filas del detector de casi-duplicados,
-    ronda 2026-09-22) gano una columna (`source_fact_ids`) para poder excluir
-    sintesis de sus propias fuentes -- se verifica con EXPLAIN, sobre el SQL
-    real, que agregar una columna al SELECT no saco a la consulta de
-    `idx_facts_active` ni metio un filesort/temporal nuevos."""
+    VECTOR` (la consulta que trae las filas del detector de casi-duplicados)
+    gano una columna (`source_facet`, ronda 2026-09-22) -- se verifica con
+    EXPLAIN, sobre el SQL real, que agregar una columna al SELECT no saco a
+    la consulta de `idx_facts_active` ni metio un filesort/temporal nuevos.
+    (Tercera vuelta: `source_fact_ids` SALIO de esta consulta -- ver
+    test_sql_citas_no_tiene_indice_util_pero_el_costo_es_chico, mas abajo,
+    para la consulta que la reemplaza.)"""
     plan = client_superadmin.portal.call(_explain, memoria.SQL_ACTIVOS_CON_VECTOR, ())
     texto = " ".join(str(c) for fila in plan for c in fila)
     assert "idx_facts_active" in texto, f"no usa el indice de superseded_by: {texto}"
     assert "Using filesort" not in texto, f"ordena en memoria: {texto}"
     assert "Using temporary" not in texto, f"tabla temporal: {texto}"
+
+
+def test_sql_citas_no_tiene_indice_util_pero_el_costo_es_chico(client_superadmin):
+    """MAJOR 1a (revision adversarial de jax-platform PR 146, tercera
+    vuelta): `SQL_CITAS` (`SELECT id, source_fact_ids FROM facts WHERE
+    source_fact_ids IS NOT NULL`) alimenta el cierre transitivo de citas.
+    `source_fact_ids` es `longtext` SIN indice (verificado con `SHOW INDEX
+    FROM facts` contra jax_memory_test) -- EXPLAIN tiene que dar `type=ALL`
+    (full scan), y esto NO es un defecto a esconder: se deja escrito acá, tal
+    como pide LAS CUATRO DEL RENDIMIENTO #1 ("buscar Using filesort/Using
+    temporary... y si hay trabajo, decirlo"). El costo absoluto (pocas filas
+    reales -- sólo las síntesis tienen `source_fact_ids`) se midió aparte,
+    contra la base de carga de 10.000 filas: ver
+    docs/carga-memoria-146-2026-09-22.md."""
+    plan = client_superadmin.portal.call(_explain, memoria.SQL_CITAS, ())
+    texto = " ".join(str(c) for fila in plan for c in fila)
+    assert "ALL" in texto, (
+        f"se esperaba un full scan (sin indice util para source_fact_ids IS NOT NULL): {texto}")
 
 
 # --- rendimiento del chequeo de casi-duplicados (2026-09-20) -------------------------------
@@ -288,7 +342,7 @@ def test_la_norma_se_calcula_una_vez_por_vector_no_una_por_par(monkeypatch):
     monkeypatch.setattr(memoria, "_norma",
                         lambda v: (llamadas.append(1), original(v))[1])
 
-    memoria._casi_duplicados_del_grupo(miembros)
+    memoria._casi_duplicados_del_grupo(miembros, {})
 
     assert len(llamadas) == len(miembros), (
         f"{len(llamadas)} normas para {len(miembros)} vectores "
@@ -386,7 +440,7 @@ def test_el_camino_de_produccion_da_LO_MISMO_que_la_implementacion_vieja(n, semi
     valida nada.
     """
     miembros = _grupo_con_clusters(n, semilla, escalas=escalas)
-    assert memoria._casi_duplicados_del_grupo(miembros) == _casi_duplicados_ingenuo(miembros)
+    assert memoria._casi_duplicados_del_grupo(miembros, {}) == _casi_duplicados_ingenuo(miembros)
 
 
 def test_la_norma_de_cada_vector_es_la_SUYA(monkeypatch):
@@ -396,12 +450,12 @@ def test_la_norma_de_cada_vector_es_la_SUYA(monkeypatch):
     # `escalas=True`: con normas todas ~1 el cruce no cambiaria nada y el
     # centinela seria de los que nunca fallan.
     miembros = _grupo_con_clusters(30, semilla=11, escalas=True)
-    correcto = memoria._casi_duplicados_del_grupo(miembros)
+    correcto = memoria._casi_duplicados_del_grupo(miembros, {})
 
     original = memoria._distancia_coseno
     monkeypatch.setattr(memoria, "_distancia_coseno",
                         lambda a, b, na=None, nb=None: original(a, b, na, na))
-    cruzado = memoria._casi_duplicados_del_grupo(miembros)
+    cruzado = memoria._casi_duplicados_del_grupo(miembros, {})
 
     assert cruzado != correcto, (
         "usar la norma de `a` como norma de `b` dio el MISMO resultado: "
@@ -422,32 +476,48 @@ def test_la_norma_de_cada_vector_es_la_SUYA(monkeypatch):
 # el criterio primario es `source_facet == 'synthesis'` (D1): sintesis y
 # no-sintesis NUNCA comparten cluster, sin importar `source_fact_ids`. Dos
 # sintesis SI pueden agruparse entre si, salvo que una cite a la otra (ahi
-# `source_fact_ids` sigue siendo el criterio).
+# el CIERRE TRANSITIVO de citas sigue siendo el criterio -- ver mas abajo,
+# tercera vuelta).
 #
-# `miembros` gana un SEXTO y SEPTIMO elemento opcionales (source_facet,
-# source_fact_ids) al FINAL de la tupla -- las tuplas de 5 elementos que usan
-# los tests de arriba (_grupo_sintetico, _grupo_con_clusters) siguen sin
-# tocar, y su comportamiento no cambia (ver
-# test_el_camino_de_produccion_da_LO_MISMO_que_la_implementacion_vieja, que
-# sigue en verde con tuplas de 5).
+# `miembros` gana un SEXTO elemento opcional (source_facet) al FINAL de la
+# tupla -- las tuplas de 5 elementos que usan los tests de arriba
+# (_grupo_sintetico, _grupo_con_clusters) siguen sin tocar, y su
+# comportamiento no cambia (ver test_el_camino_de_produccion_da_LO_MISMO_
+# que_la_implementacion_vieja, que sigue en verde con tuplas de 5).
+#
+# Tercera vuelta (MAJOR 1, revision adversarial de jax-platform PR 146): el
+# SEPTIMO elemento (source_fact_ids) SALIO de la tupla de `miembros` -- el
+# criterio de citas dejo de ser "lo que trae cada fila" y paso a ser el
+# CIERRE TRANSITIVO de TODO el grafo (`memoria._cierre_transitivo_de_citas`),
+# que se arma aparte con `_citas()` (mas abajo) y se pasa como segundo
+# argumento a `_casi_duplicados_del_grupo`.
 
-def _miembro(mid, vector, facet=None, fuentes=None, verificado=True, creado=None):
-    return (mid, f"hecho {mid}", verificado, creado, json.dumps(vector), facet,
-            json.dumps(list(fuentes)) if fuentes else None)
+def _miembro(mid, vector, facet=None, verificado=True, creado=None):
+    return (mid, f"hecho {mid}", verificado, creado, json.dumps(vector), facet)
 
 
 def _con_vector_identico(*definiciones):
-    """definiciones: (id, facet, fuentes_o_None). Todos comparten el MISMO
-    vector (distancia 0) para que, sin la exclusion de tipo/cita, el
-    union-find los uniria de entrada -- lo que hay que probar es que la
-    exclusion los separa, no que la distancia los una."""
+    """definiciones: (id, facet). Todos comparten el MISMO vector (distancia
+    0) para que, sin la exclusion de tipo/cita, el union-find los uniria de
+    entrada -- lo que hay que probar es que la exclusion los separa, no que
+    la distancia los una."""
     v = [1.0, 0.0, 0.0, 0.0]
-    return [_miembro(mid, v, facet=facet, fuentes=fuentes) for mid, facet, fuentes in definiciones]
+    return [_miembro(mid, v, facet=facet) for mid, facet in definiciones]
+
+
+def _citas(directas: dict) -> dict:
+    """directas: {id: [ids que cita]} -> el cierre transitivo real
+    (memoria._cierre_transitivo_de_citas), NO una reimplementacion de test:
+    si el algoritmo del cierre se rompe, este helper se rompe con el, en vez
+    de esconder el defecto detras de una copia que nunca se desincroniza a
+    proposito pero podria hacerlo por accidente."""
+    return memoria._cierre_transitivo_de_citas({k: frozenset(v) for k, v in directas.items()})
 
 
 def test_una_sintesis_no_se_agrupa_con_su_propia_fuente():
-    miembros = _con_vector_identico((160, None, None), (161, "synthesis", [160]))
-    assert memoria._casi_duplicados_del_grupo(miembros) == []
+    miembros = _con_vector_identico((160, None), (161, "synthesis"))
+    cierre = _citas({161: [160]})
+    assert memoria._casi_duplicados_del_grupo(miembros, cierre) == []
 
 
 def test_caso_de_tres_fuente_sintesis_y_tercero_cercano_a_ambos():
@@ -456,10 +526,14 @@ def test_caso_de_tres_fuente_sintesis_y_tercero_cercano_a_ambos():
     tercer miembro C que si esta cerca de los dos -- Y ADEMAS (D6, MENOR 7:
     "un control que no falla no valida nada") A y C, que SI son del mismo
     tipo y estan a distancia 0, tienen que seguir agrupados entre si: si la
-    exclusion fuera "vaciar el cluster entero" en vez de "sacar solo a quien
-    no encaja", este assert se caeria tambien."""
-    miembros = _con_vector_identico((160, None, None), (161, "synthesis", [160]), (162, None, None))
-    grupos = memoria._casi_duplicados_del_grupo(miembros)
+    exclusion fuera "descartar el componente entero" en vez de bloquear SOLO
+    la arista de tipo cruzado, este assert se caeria tambien -- acá NO hay
+    par incompatible dentro de {160,162} (161 nunca entra a ese componente,
+    por tipo), así que la revalidación final (MAJOR 1b) no tiene nada que
+    objetar."""
+    miembros = _con_vector_identico((160, None), (161, "synthesis"), (162, None))
+    cierre = _citas({161: [160]})
+    grupos = memoria._casi_duplicados_del_grupo(miembros, cierre)
     for g in grupos:
         assert not ({160, 161} <= set(g)), f"fuente y sintesis quedaron juntas: {g}"
     assert [160, 162] in grupos, (
@@ -468,31 +542,35 @@ def test_caso_de_tres_fuente_sintesis_y_tercero_cercano_a_ambos():
 
 def test_dos_sintesis_que_no_se_citan_entre_si_se_agrupan():
     """D1: "Dos sintesis entre si SI pueden agruparse" -- el bloqueo es por
-    TIPO cruzado o por CITA, no por ser sintesis a secas."""
-    miembros = _con_vector_identico((201, "synthesis", None), (202, "synthesis", None))
-    assert memoria._casi_duplicados_del_grupo(miembros) == [[201, 202]]
+    TIPO cruzado o por CITA, no por ser sintesis a secas. Este es el "grupo
+    valido" que el brief pide explicitamente: SIGUE proponiendose."""
+    miembros = _con_vector_identico((201, "synthesis"), (202, "synthesis"))
+    assert memoria._casi_duplicados_del_grupo(miembros, {}) == [[201, 202]]
 
 
 def test_dos_sintesis_que_se_citan_entre_si_no_se_agrupan():
     """D1, la excepcion explicita: dos sintesis SI se excluyen si una cita a
-    la otra en source_fact_ids -- source_facet solo no alcanza para separar
-    ESTE caso, porque las dos son 'synthesis'."""
-    miembros = _con_vector_identico((201, "synthesis", None), (202, "synthesis", [201]))
-    assert memoria._casi_duplicados_del_grupo(miembros) == []
+    la otra -- source_facet solo no alcanza para separar ESTE caso, porque
+    las dos son 'synthesis'."""
+    miembros = _con_vector_identico((201, "synthesis"), (202, "synthesis"))
+    cierre = _citas({202: [201]})
+    assert memoria._casi_duplicados_del_grupo(miembros, cierre) == []
 
 
 def test_sintesis_de_segundo_orden_nunca_se_agrupa_con_la_fuente_original():
-    """D1: el caso que source_fact_ids solo NO cerraba -- S2 (sintesis de
-    S1) no tiene a A en su PROPIO source_fact_ids (solo tiene a S1), asi que
-    la version anterior de este arreglo (basada solo en source_fact_ids) los
-    hubiera dejado agrupar. La faceta los separa igual, sin necesitar la
-    cadena completa."""
+    """D1: el caso que la version basada solo en `source_fact_ids` DIRECTO no
+    cerraba -- S2 (sintesis de S1) no cita a A en su PROPIO source_fact_ids
+    (solo cita a S1). La faceta ya los separa (los tres tipos no coinciden:
+    A no es sintesis), asi que esto verifica el caso simple; el caso donde
+    la faceta NO alcanza (dos sintesis del MISMO tipo con cita indirecta) se
+    prueba mas abajo (MAJOR 1, tercera vuelta)."""
     miembros = _con_vector_identico(
-        (1, None, None),                 # A: fuente original, no-sintesis
-        (2, "synthesis", [1]),           # S1: sintesis de A
-        (3, "synthesis", [2]),           # S2: sintesis de S1 (NO cita a A)
+        (1, None),                 # A: fuente original, no-sintesis
+        (2, "synthesis"),          # S1: sintesis de A
+        (3, "synthesis"),          # S2: sintesis de S1 (NO cita a A directo)
     )
-    grupos = memoria._casi_duplicados_del_grupo(miembros)
+    cierre = _citas({2: [1], 3: [2]})
+    grupos = memoria._casi_duplicados_del_grupo(miembros, cierre)
     for g in grupos:
         assert 1 not in g or not ({2, 3} & set(g)), (
             f"la fuente original quedo agrupada con una sintesis (directa o de 2do orden): {g}")
@@ -500,22 +578,28 @@ def test_sintesis_de_segundo_orden_nunca_se_agrupa_con_la_fuente_original():
 
 def test_sintesis_con_source_fact_ids_null_igual_se_separa_de_no_sintesis():
     """D1: el tercer caso que source_fact_ids solo no cerraba -- una sintesis
-    SIN dato de trazabilidad (NULL) tiene que seguir excluida de los
-    no-sintesis, porque la separacion es por FACETA, no por la cadena de
-    ids."""
-    miembros = _con_vector_identico((1, None, None), (2, "synthesis", None))
-    assert memoria._casi_duplicados_del_grupo(miembros) == []
+    SIN dato de trazabilidad (NULL, sin entrada en el cierre de citas) tiene
+    que seguir excluida de los no-sintesis, porque la separacion primaria es
+    por FACETA."""
+    miembros = _con_vector_identico((1, None), (2, "synthesis"))
+    assert memoria._casi_duplicados_del_grupo(miembros, {}) == []
 
 
 def test_source_fact_ids_ilegible_se_trata_como_vacio_y_se_registra(caplog):
     """Un dato de trazabilidad roto no bloquea el agrupamiento (Principio
     VIII: un 'no se pudo leer' honesto, no un fundir que se cuelga) -- pero
-    tampoco se ignora en silencio: queda un WARNING con el fact_id."""
-    v = json.dumps([1.0, 0.0, 0.0, 0.0])
-    a = (1, "a", True, None, v, "synthesis", "{esto no es JSON valido")
-    b = (2, "b", True, None, v, "synthesis", None)
+    tampoco se ignora en silencio: queda un WARNING con el fact_id. Tercera
+    vuelta: el parseo de `source_fact_ids` ilegible ahora ocurre al construir
+    `citas_directas` (`_cargar_citas_directas`/`_citas` en este archivo), no
+    dentro de `_casi_duplicados_del_grupo` -- se prueba directo contra
+    `_cierre_transitivo_de_citas` pasando por `_parse_fuentes`, el mismo
+    parser de siempre."""
     with caplog.at_level(logging.WARNING):
-        grupos = memoria._casi_duplicados_del_grupo([a, b])
+        cierre = memoria._cierre_transitivo_de_citas(
+            {1: memoria._parse_fuentes("{esto no es JSON valido", 1), 2: frozenset()})
+    v = [1.0, 0.0, 0.0, 0.0]
+    miembros = [_miembro(1, v), _miembro(2, v)]
+    grupos = memoria._casi_duplicados_del_grupo(miembros, cierre)
     assert grupos == [[1, 2]], "un source_fact_ids ilegible no puede bloquear la agrupacion"
     avisos = [r.message for r in caplog.records if "source_fact_ids" in r.message]
     assert avisos and "1" in avisos[0], f"no se registro el dato malo: {caplog.records}"
@@ -542,14 +626,74 @@ def test_bridging_por_sintesis_no_produce_un_par_falso():
 
     miembros = [
         _miembro(1, a_vec, facet=None, verificado=True),        # A: fuente, verificada
-        _miembro(2, s_vec, facet="synthesis", fuentes=[1]),     # S: sintesis de A
+        _miembro(2, s_vec, facet="synthesis"),                  # S: sintesis de A
         _miembro(3, c_vec, facet=None, verificado=False),       # C: no-sintesis, cerca de S
     ]
-    grupos = memoria._casi_duplicados_del_grupo(miembros)
+    cierre = _citas({2: [1]})
+    grupos = memoria._casi_duplicados_del_grupo(miembros, cierre)
     assert [1, 3] not in grupos, (
         f"A y C quedaron agrupados via el puente de S, pese a estar a 0.72: {grupos}")
     assert not any({1, 3} <= set(g) for g in grupos), (
         f"A y C terminaron en el mismo componente por otra via: {grupos}")
+
+
+# --- MAJOR 1, tercera vuelta (revision adversarial de jax-platform PR 146) --
+#
+# Caso reproducido por el revisor (scratchpad/repro.py): S2(#1, verificada),
+# S3(#2, puente), S1(#3, cita a #1). Angulos 0/40/80 grados en 2D:
+#   dist(1,2) = dist(2,3) = 1 - cos(40°) ≈ 0.234  (<= 0.25, puente valido)
+#   dist(1,3) = 1 - cos(80°) ≈ 0.826  (> 0.25, MUY lejos)
+# Antes de esta vuelta, `_construir_grupos` devolvia [[1,2,3]] -- el
+# endpoint rechazaria SIEMPRE ese fundir con fundir_sintesis_con_no_sintesis
+# (1 y 3 son incompatibles: 3 cita a 1), un grupo que el detector proponia
+# pero que nunca se podia fundir. Fail-closed: el componente entero se
+# descarta, no solo el par malo.
+
+def _vector_angulo(grados: float) -> list:
+    import math
+    r = math.radians(grados)
+    return [math.cos(r), math.sin(r)]
+
+
+def test_caso_del_revisor_bridging_por_sintesis_mismo_tipo():
+    v0, v40, v80 = _vector_angulo(0), _vector_angulo(40), _vector_angulo(80)
+    assert memoria._distancia_coseno(v0, v40) == pytest.approx(0.2336, abs=1e-3)
+    assert memoria._distancia_coseno(v40, v80) == pytest.approx(0.2336, abs=1e-3)
+    assert memoria._distancia_coseno(v0, v80) == pytest.approx(0.8264, abs=1e-3)
+
+    miembros = [
+        _miembro(1, v0, facet="synthesis", verificado=True),
+        _miembro(2, v40, facet="synthesis", verificado=False),
+        _miembro(3, v80, facet="synthesis", verificado=False),
+    ]
+    cierre = _citas({3: [1]})  # S1 (#3) cita a S2 (#1) -- directo
+    grupos = memoria._casi_duplicados_del_grupo(miembros, cierre)
+    assert grupos == [], (
+        f"el componente {{1,2,3}} tenia un par incompatible (1,3) y tenia que "
+        f"descartarse ENTERO (fail-closed), no proponerse a medias: {grupos}")
+
+
+def test_cita_de_segundo_grado_a_traves_de_un_puente_no_citado():
+    """La cita es TRANSITIVA (MAJOR 1a): #12 cita a #11, #11 cita a #10 --
+    #12 y #10 estan relacionados aunque NUNCA se citen directo. Un cuarto
+    hecho (#13), sin relacion con ninguno, hace de puente espacial entre #10
+    y #12 (que en si estan lejos) -- exactamente el patron de bridging que
+    D2 cerro para tipos cruzados y que ahora tiene que cerrarse tambien para
+    citas indirectas (MAJOR 1b: revalidacion final del componente)."""
+    v0, v40, v80 = _vector_angulo(0), _vector_angulo(40), _vector_angulo(80)
+    miembros = [
+        _miembro(10, v0, facet="synthesis"),   # C: la fuente original
+        _miembro(13, v40, facet="synthesis"),  # puente, sin relacion con nadie
+        _miembro(12, v80, facet="synthesis"),  # A: cita a #11 (ausente del grupo), que cita a #10
+    ]
+    # #11 no esta en `miembros` (puede pertenecer a otro grupo, u otro tema)
+    # pero SI tiene que entrar al grafo de citas -- por eso el cierre se
+    # arma sobre TODO el grafo, no sobre los miembros de este grupo.
+    cierre = _citas({11: [10], 12: [11]})
+    grupos = memoria._casi_duplicados_del_grupo(miembros, cierre)
+    assert not any({10, 12} <= set(g) for g in grupos), (
+        f"#10 y #12 (relacionados por cita de 2do grado, via #11) quedaron "
+        f"en el mismo cluster: {grupos}")
 
 
 def test_elegir_superviviente_el_verificado_gana_aunque_sea_mas_viejo():
@@ -614,3 +758,25 @@ def test_elegir_superviviente_created_at_null_es_el_mas_antiguo_posible():
 def test_elegir_superviviente_todos_con_created_at_null_desempata_por_id():
     info = {3: (False, None), 9: (False, None)}
     assert memoria._elegir_superviviente([3, 9], info) == 9
+
+
+def test_construir_grupos_tolera_created_at_null_mezclado_con_fecha_real():
+    """M1 (revision adversarial de jax-platform PR 146, tercera vuelta): el
+    `sorted()` de `_construir_grupos` tiene que tolerar un NULL MEZCLADO con
+    una fecha real -- no sólo "todos NULL"
+    (test_created_at_null_no_revienta_el_agrupamiento, mas abajo, con DB
+    real). "Todos NULL" no ejercita la comparacion None-vs-fecha real:
+    `sorted` nunca necesita invocar `<` entre dos `None` porque son iguales
+    por `==` y el desempate cae directo al id -- un mutante que sacara el
+    `datetime.min` (dejando `(f[3], f[0])` a secas) seguiria pasando ESE
+    caso. Este test unitario (sin DB) reproduce el caso mixto que el
+    revisor demostro en scratchpad/repro.py."""
+    v0, v10 = [1.0, 0.0], [0.99, 0.14]
+    filas = [
+        (20, "x", False, None, json.dumps(v0), None),                       # sin fecha
+        (21, "y", False, datetime(2026, 9, 1), json.dumps(v10), None),      # con fecha
+    ]
+    vecinos = [(20, [(21, 0.01)]), (21, [(20, 0.01)])]
+    grupos = memoria._construir_grupos(filas, vecinos, {})
+    assert len(grupos) == 1
+    assert set(grupos[0]["hechos"]) == {20, 21}

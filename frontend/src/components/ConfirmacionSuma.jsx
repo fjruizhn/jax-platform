@@ -11,6 +11,14 @@ import Dialogo from './Dialogo'
 // (la respuesta; por eso no hay autoFocus), Escape = cancelar, role/aria.
 // Pinta solo con tokens. El botón destructivo usa el par declarado en PARES
 // sobre-color / peligro-solido (y peligro-solido-hover).
+//
+// `mensaje` lleva `break-words` (M4, revisión adversarial de jax-platform PR
+// 146, tercera vuelta): `Dialogo` fija un ancho acotado (`max-w-md` por
+// defecto) -- un `mensaje` con una palabra larga y sin espacios (por
+// ejemplo, `superviviente_texto` de la pantalla de Memoria, que puede venir
+// sin puntuación) desbordaba el panel en vez de partirse. Es aditivo: no
+// cambia nada para los `mensaje` cortos y con espacios que ya usan las
+// otras pantallas (AdminUsers, AdminRepository, KillSwitch, ...).
 export function numerosAlAzar(aleatorio = Math.random) {
   return [10 + Math.floor(aleatorio() * 40), 1 + Math.floor(aleatorio() * 9)]
 }
@@ -37,7 +45,7 @@ export default function ConfirmacionSuma({ titulo, mensaje, textoConfirmar, onCo
 
   return (
     <Dialogo idTitulo="confirmacion-suma-titulo" titulo={titulo} claseTitulo="text-sm font-semibold text-texto mb-2" onCerrar={onCancelar}>
-      <p className="text-sm text-texto-suave mb-4">{mensaje}</p>
+      <p className="text-sm text-texto-suave mb-4 break-words">{mensaje}</p>
       <form onSubmit={confirmar} className="space-y-3">
         <label htmlFor="confirmacion-suma-respuesta" className="block text-sm text-texto">{t.confirmSumLabel(a, b)}</label>
         <input

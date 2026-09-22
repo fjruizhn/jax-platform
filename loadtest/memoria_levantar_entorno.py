@@ -47,9 +47,23 @@ PUERTOS_DE_PRODUCCION = {7777, 8080}
 SUPERADMIN_EMAIL = "superadmin-memoria-carga@example.invalid"
 TENANT_NAME = "Tenant de la carga de Memoria (Task 7)"
 
-# JAX_REPO_PATH override, PROHIBIDO tocar /srv/jax-prod/jax o /home/fruiz/jax:
-# el companero de este worktree con las migraciones de Task 1/2 ya aplicadas.
-JAX_REPO_PATH_OVERRIDE = "/home/fruiz/worktrees/jax-memoria"
+# JAX_REPO_PATH, PROHIBIDO tocar /srv/jax-prod/jax o /home/fruiz/jax (el
+# primero es producción; el segundo es el checkout de trabajo de OTRAS
+# sesiones -- usarlo como JAX_REPO_PATH de una medición no lo modifica, pero
+# la mezcla de "qué versión de `jax` corrió esta medición" con "qué hay en el
+# checkout de otra sesión ahora mismo" es exactamente la ambigüedad que la
+# reproducibilidad no puede tener).
+#
+# CORRECCIÓN (revisión adversarial de jax-platform PR 146, tercera vuelta,
+# M5): esta constante apuntaba antes a `/home/fruiz/worktrees/jax-memoria`,
+# un worktree compañero que ya no existe (se limpia entre rondas) -- CUALQUIERA
+# que corriera este script tal cual fallaba al arrancar el backend, y una
+# medición de carga corrida contra ESE hallazgo terminó usando
+# `/home/fruiz/jax` a mano, que este mismo comentario prohíbe. La solución no
+# es otra ruta fija (que se pudre exactamente igual) -- es un checkout PROPIO,
+# clonado por este script, así la medición se puede repetir sin preparar nada
+# a mano y sin tocar ningún checkout ajeno. Ver `_asegurar_checkout_de_jax`.
+JAX_REPO_GIT_URL = "https://github.com/fjruizhn/Jax.git"
 
 
 def _cargar_env_produccion() -> dict:
@@ -63,11 +77,29 @@ def _cargar_env_produccion() -> dict:
     return env
 
 
+def _asegurar_checkout_de_jax(tmp: Path) -> Path:
+    """Checkout PROPIO de `jax` para `JAX_REPO_PATH` -- nunca `/home/fruiz/jax`
+    ni `/srv/jax-prod/jax` (prohibido, ver el comentario de
+    `JAX_REPO_GIT_URL`). Se clona UNA vez dentro del propio `RUN_DIR` de
+    este script (idempotente: si ya existe, no vuelve a clonar) -- mismo
+    remoto que ya usa `.github/workflows/policy.yml` para el mismo fin
+    (`git clone --depth=1 .../Jax.git`). Así la medición se puede repetir
+    sin preparar ningún worktree compañero a mano."""
+    destino = tmp / "jax-repo"
+    if not (destino / "jax" / "memory" / "db.py").exists():
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "clone", "--depth=1", JAX_REPO_GIT_URL, str(destino)],
+            check=True,
+        )
+    return destino
+
+
 def construir_env(base_de_prueba: str, password_superadmin: str, tmp: Path) -> dict:
     env = dict(os.environ)
     env.update(_cargar_env_produccion())
     env["JAX_DB_NAME"] = base_de_prueba
-    env["JAX_REPO_PATH"] = JAX_REPO_PATH_OVERRIDE
+    env["JAX_REPO_PATH"] = str(_asegurar_checkout_de_jax(tmp))
     env["LAS_MANOS_URL"] = "http://127.0.0.1:9"
     env["JACOBS_URL"] = "http://127.0.0.1:9/jacobs"
     env["JAX_PLATFORM_URL"] = BACKEND_URL

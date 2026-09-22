@@ -71,7 +71,6 @@ export default function Memoria() {
   const { t } = useI18n()
   const nombre = useNombreDelSistema(t)
   const addToast = useJaxStore((s) => s.addToast)
-  const usuario = useJaxStore((s) => s.user)
 
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState(false)
@@ -152,10 +151,6 @@ export default function Memoria() {
     })
   }
 
-  function actualizarHecho(id, cambios) {
-    setHechosPorId((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], ...cambios } } : prev))
-  }
-
   function onToggleSeleccion(id) {
     setSeleccionados((prev) => {
       const next = new Set(prev)
@@ -177,15 +172,23 @@ export default function Memoria() {
   }
 
   // Aprobar: la única acción sin ventana propia (ver nota de módulo, punto 1).
+  //
+  // M2 (revisión adversarial de jax-platform PR 146, tercera vuelta): antes
+  // actualizaba `hechosPorId` a mano (optimista) y ahí se quedaba -- pero
+  // aprobar cambia `is_verified`, que es justo lo que decide quién sobrevive
+  // en un cluster (`_elegir_superviviente`, backend/api/admin/memoria.py).
+  // Sin recargar `/grupos`, la pantalla podía seguir mostrando como
+  // "sobrevive" a un hecho que la regla real ya no elegiría -- el mismo
+  // estado viejo en pantalla que fundir ya resolvía recargando. Ahora las
+  // cuatro acciones que cambian el estado de un hecho (aprobar, caducar,
+  // quitar caducidad, corregir) recargan igual que fundir.
   async function aprobar(ids) {
     if (!ids.length) return
     marcarProcesando(ids, true)
     try {
       const { data } = await api.post('/admin/memoria/hechos/aprobar', { ids })
-      const ahora = new Date().toISOString()
-      for (const id of ids) actualizarHecho(id, { verificado: true, verificado_por: usuario?.user_id ?? null, verificado_at: ahora })
-      onSeleccionarNinguno(ids)
       addToast({ type: 'success', message: t.memoria.aprobados(data.aprobados ?? ids.length) })
+      await cargar()
     } catch (err) {
       addToast({ type: 'error', message: mensajeDeError(t, err) })
     } finally {
@@ -204,9 +207,9 @@ export default function Memoria() {
     try {
       const vence_at = new Date().toISOString()
       await api.post(`/admin/memoria/hechos/${hecho.id}/caducar`, { vence_at })
-      actualizarHecho(hecho.id, { vencido: true, vence_at })
       setCaducando(null)
       addToast({ type: 'success', message: t.memoria.caducado })
+      await cargar() // M2: un hecho caducado sale de todos los grupos -- ver nota de módulo.
     } catch (err) {
       addToast({ type: 'error', message: mensajeDeError(t, err) })
     } finally {
@@ -220,9 +223,8 @@ export default function Memoria() {
     marcarProcesando([id], true)
     try {
       await api.post(`/admin/memoria/hechos/${id}/caducar`, { vence_at: null })
-      actualizarHecho(id, { vencido: false, vence_at: null })
-      setVencidos((prev) => prev.filter((h) => h.id !== id))
       addToast({ type: 'success', message: t.memoria.caducidadQuitada })
+      await cargar() // M2: un hecho reactivado puede volver a aparecer en un grupo -- ver nota de módulo.
     } catch (err) {
       addToast({ type: 'error', message: mensajeDeError(t, err) })
     } finally {
@@ -416,7 +418,16 @@ export default function Memoria() {
       {fundiendo && (
         <ConfirmacionSuma
           titulo={t.memoria.fundirTitulo(fundiendo.supervivienteId)}
-          mensaje={t.memoria.fundirMensaje(fundiendo.supervivienteTexto, fundiendo.supervivienteVerificado)}
+          // M3 (revisión adversarial de jax-platform PR 146, tercera
+          // vuelta): "la confirmación... cuenta TODOS los item.ids" -- si
+          // algún miembro del cluster no está en `hechosPorId` (el cap de
+          // 500 de GET /hechos lo dejó afuera), se lo dice explícito acá
+          // también, no sólo en el aviso del panel (GrupoDeHechos.jsx).
+          mensaje={t.memoria.fundirMensaje(fundiendo.supervivienteTexto, fundiendo.supervivienteVerificado)
+            + (() => {
+              const noCargados = fundiendo.ids.filter((id) => !hechosPorId[id]).length
+              return noCargados > 0 ? ` ${t.memoria.casiDuplicadosNoCargados(noCargados)}` : ''
+            })()}
           textoConfirmar={t.memoria.fundirConfirmar}
           onConfirmar={confirmarFundir}
           onCancelar={() => setFundiendo(null)}
