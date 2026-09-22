@@ -95,6 +95,14 @@ export default {
   // Nombre guardado del pipeline: el objetivo, recortado a 50 caracteres.
   pipelineName: (objetivo) => `Pipeline: ${objetivo.slice(0, 50)}`,
 
+  // Descartar un pipeline detenido (Task 5, spec 2026-09-22-descartar-pipelines §5).
+  cancelar: 'Cancel',
+  descartarPipeline: 'Discard',
+  descartarTitulo: 'Discard pipeline',
+  descartarMensaje: (nombre) => `"${nombre}" leaves Stopped. You can recover it from History → Discarded.`,
+  descartarConfirmar: 'Discard',
+  descartarError: 'Could not discard the pipeline. Try again.',
+
   // Audit log
   auditLog: 'Audit Log',
   loading: 'Loading…',

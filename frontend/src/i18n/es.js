@@ -95,6 +95,16 @@ export default {
   // Nombre guardado del pipeline: el objetivo, recortado a 50 caracteres.
   pipelineName: (objetivo) => `Pipeline: ${objetivo.slice(0, 50)}`,
 
+  // Descartar un pipeline detenido (Task 5, spec 2026-09-22-descartar-pipelines
+  // §5): confirmación en ventana propia (Dialogo), nunca confirm(). `cancelar`
+  // es genérico -- se reutiliza en Task 6/7.
+  cancelar: 'Cancelar',
+  descartarPipeline: 'Descartar',
+  descartarTitulo: 'Descartar pipeline',
+  descartarMensaje: (nombre) => `"${nombre}" sale de Detenidos. Lo puedes recuperar desde Historial → Descartados.`,
+  descartarConfirmar: 'Descartar',
+  descartarError: 'No se pudo descartar el pipeline. Probá de nuevo.',
+
   // Audit log
   auditLog: 'Audit Log',
   loading: 'Cargando…',
