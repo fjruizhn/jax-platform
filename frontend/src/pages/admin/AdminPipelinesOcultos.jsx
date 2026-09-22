@@ -4,6 +4,7 @@ import api from '../../api/client'
 import { textoDeErrorDeMesa } from '../../api/errores'
 import AlertaError from '../../components/AlertaError'
 import ConfirmacionSuma from '../../components/ConfirmacionSuma'
+import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 
 const LIMITE = 50
 
@@ -44,6 +45,25 @@ export default function AdminPipelinesOcultos() {
   const [errorAccionDescartados, setErrorAccionDescartados] = useState(null)
   const [aOcultar, setAOcultar] = useState(null)
 
+  // Invalidación explícita (fix round 1, BLOCK-1, revisión adversarial de
+  // PR 151): "la lista está vacía" NO es la señal de "hay que recargar" --
+  // ese idioma es la trampa (LAS CUATRO #2: todo caché declara su
+  // invalidación en el MISMO commit que lo crea). Escenario que probó el
+  // revisor: A y B descartados, C oculto. Se abre Descartados (carga A,B),
+  // se va a Ocultos (carga C), se Restaura C, se vuelve a Descartados -> C
+  // no aparece, porque `listaDescartados` NO está vacía (sigue teniendo A y
+  // B) y la pestaña nunca se marcó para recargar. Cada bandera arranca en
+  // `true` (la primera vez que se visita cada pestaña SIEMPRE carga) y cada
+  // acción que puede cambiar lo que la OTRA pestaña necesita mostrar la
+  // vuelve a poner en `true`: Ocultar invalida Ocultos (el pipeline pasa a
+  // 'hidden', antes no estaba ahí); Restaurar invalida Descartados (pasa de
+  // 'hidden' a 'discarded' -- exactamente el escenario del revisor);
+  // Recuperar invalida Descartados también (por la misma disciplina, aunque
+  // ya se filtra la fila local: no depender de que el filtrado optimista
+  // sea la única fuente de verdad si la pestaña se vuelve a visitar).
+  const [necesitaRecargaOcultos, setNecesitaRecargaOcultos] = useState(true)
+  const [necesitaRecargaDescartados, setNecesitaRecargaDescartados] = useState(true)
+
   function cargarOcultos(offset) {
     setCargandoOcultos(true)
     setErrorOcultos(false)
@@ -70,10 +90,25 @@ export default function AdminPipelinesOcultos() {
       .finally(() => setCargandoDescartados(false))
   }
 
+  // Sólo depende de `tab` a propósito (fix round 1, hallazgo propio al
+  // verificar BLOCK-1): las banderas de invalidación tienen que disparar la
+  // recarga la PRÓXIMA VEZ que se visite la pestaña, no apenas se marcan --
+  // si el efecto dependiera también de `necesitaRecargaDescartados`,
+  // marcarla en `true` DESDE la propia pestaña Descartados (p. ej. al
+  // Recuperar) dispararía una recarga INMEDIATA ahí mismo, que pisa el
+  // filtrado local optimista con una respuesta de red que todavía no
+  // refleja el cambio (medido: el test de Recuperar volvía a mostrar la
+  // fila que se acababa de quitar). Los valores de las banderas siguen
+  // frescos igual -- están en el mismo cierre por el re-render de React
+  // antes de que el usuario pueda hacer otro click.
   useEffect(() => {
     if (tab === 'ocultos') {
-      if (listaOcultos.length === 0 && !cargandoOcultos && !errorOcultos) cargarOcultos(0)
-    } else if (listaDescartados.length === 0 && !cargandoDescartados && !errorDescartados) {
+      if (necesitaRecargaOcultos) {
+        setNecesitaRecargaOcultos(false)
+        cargarOcultos(0)
+      }
+    } else if (necesitaRecargaDescartados) {
+      setNecesitaRecargaDescartados(false)
       cargarDescartados(0)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -84,6 +119,10 @@ export default function AdminPipelinesOcultos() {
     try {
       await api.post(`/pipelines/${pipelineId}/restore`)
       setListaOcultos((prev) => prev.filter((p) => p.pipeline_id !== pipelineId))
+      // Restaurar vuelve el pipeline a 'discarded': Descartados tiene que
+      // volver a pedirse la próxima vez que se visite (ver el comentario de
+      // arriba, BLOCK-1).
+      setNecesitaRecargaDescartados(true)
     } catch (e) {
       setErrorAccionOcultos(textoDeErrorDeMesa(t, e, t.restaurarError))
     }
@@ -94,6 +133,11 @@ export default function AdminPipelinesOcultos() {
     try {
       await api.post(`/pipelines/${pipelineId}/recover`)
       setListaDescartados((prev) => prev.filter((p) => p.pipeline_id !== pipelineId))
+      // Misma disciplina de invalidación que restaurar/ocultar -- el
+      // filtrado local ya corrige la vista actual, esto es para que una
+      // vuelta a esta pestaña no dependa únicamente de ese filtrado
+      // optimista como única fuente de verdad.
+      setNecesitaRecargaDescartados(true)
     } catch (e) {
       setErrorAccionDescartados(textoDeErrorDeMesa(t, e, t.recuperarError))
     }
@@ -114,6 +158,10 @@ export default function AdminPipelinesOcultos() {
     try {
       await api.post(`/pipelines/${pipelineId}/hide`)
       setListaDescartados((prev) => prev.filter((p) => p.pipeline_id !== pipelineId))
+      // Ocultar vuelve el pipeline 'hidden': Ocultos tiene que volver a
+      // pedirse la próxima vez que se visite (BLOCK-1, ver el comentario de
+      // arriba) -- es exactamente el caso que el revisor probó.
+      setNecesitaRecargaOcultos(true)
       setAOcultar(null)
     } catch (e) {
       setErrorAccionDescartados(textoDeErrorDeMesa(t, e, t.ocultarError))
@@ -199,14 +247,25 @@ export default function AdminPipelinesOcultos() {
                           <button
                             type="button"
                             onClick={() => recuperar(p.pipeline_id)}
-                            className="text-xs font-semibold text-acento-texto hover:underline"
+                            // MINOR (fix round 1, revisión adversarial de PR 151): sin
+                            // TAMANO_BOTON_ACCION medía 16px de alto (line-height de
+                            // text-xs, sin ningún py-*) -- bajo el mínimo WCAG 2.2
+                            // §2.5.8 (24×24px). El detector de botonesConPocoRelleno
+                            // no lo veía: declara "irresoluble" un botón SIN ninguna
+                            // utilidad de padding vertical (podría ser un link inline
+                            // dentro de una oración, la excepción "Inline" de la norma)
+                            // -- éste no lo es, es un botón de acción real en una
+                            // tabla, así que se le da el tamaño explícito en vez de
+                            // dejarlo en el punto ciego declarado del detector.
+                            className={`${TAMANO_BOTON_ACCION} font-semibold text-acento-texto hover:underline`}
                           >
                             {t.recuperarPipeline}
                           </button>
                           <button
                             type="button"
                             onClick={() => abrirOcultar(p)}
-                            className="text-xs font-semibold text-peligro hover:underline"
+                            // Mismo motivo que el botón de arriba (Recuperar).
+                            className={`${TAMANO_BOTON_ACCION} font-semibold text-peligro hover:underline`}
                           >
                             {t.ocultarPipeline}
                           </button>

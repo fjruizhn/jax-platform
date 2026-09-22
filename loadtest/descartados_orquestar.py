@@ -249,10 +249,10 @@ async def correr_tanda(url: str, headers: dict, c: int, n: int) -> dict:
     }
 
 
-def _token_para(user_id: int, tenant_id: str, jwt_secret: str) -> str:
+def _token_para(user_id: int, tenant_id: str, jwt_secret: str, role: str = "operator") -> str:
     ahora = int(time.time())
     return _jwt.encode(
-        {"user_id": str(user_id), "tenant_id": tenant_id, "role": "operator",
+        {"user_id": str(user_id), "tenant_id": tenant_id, "role": role,
          "tv": 0, "exp": ahora + 3600, "type": "access"},
         jwt_secret, algorithm="HS256",
     )
@@ -344,6 +344,50 @@ async def main_async() -> None:
                 r = await correr_tanda(f"{BACKEND_URL}/api/pipelines?estado=discarded", headers, c, n)
                 print(f"[{etiqueta}/DESCARTADOS] c={c} n={n} -> {r}")
                 resultados[etiqueta]["descartados"].append(r)
+
+        # ------------------------------------------------------------------
+        # Fix round 1 (BLOCK-2, revisión adversarial de PR#151): los DOS
+        # endpoints nuevos del cierre de huecos, mismo barrido de
+        # concurrencia que arriba.
+        # ------------------------------------------------------------------
+        token_superadmin = _token_para(
+            seed["superadmin"]["user_id"], seed["superadmin"]["tenant_id"],
+            jwt_secret_de_carga, role="superadmin")
+        headers_superadmin = {"Authorization": f"Bearer {token_superadmin}"}
+
+        r_admin = httpx.get(f"{BACKEND_URL}/api/admin/pipelines/descartados",
+                            headers=headers_superadmin, timeout=15.0)
+        print(f"[orquestador] GET /api/admin/pipelines/descartados status={r_admin.status_code} "
+              f"bytes={len(r_admin.content)} pipelines={len(r_admin.json().get('pipelines', []))} "
+              f"has_more={r_admin.json().get('has_more')}")
+        if r_admin.status_code != 200:
+            raise RuntimeError("la verificación previa de /admin/pipelines/descartados no dio 200")
+
+        resultados["admin_descartados"] = []
+        for c in niveles:
+            n = _n_para(c)
+            r = await correr_tanda(f"{BACKEND_URL}/api/admin/pipelines/descartados", headers_superadmin, c, n)
+            print(f"[ADMIN_DESCARTADOS] c={c} n={n} -> {r}")
+            resultados["admin_descartados"].append(r)
+
+        pipeline_eventos = seed["pipeline_con_muchos_eventos"]
+        token_dueño_eventos = _token_para(
+            pipeline_eventos["owner_user_id"], pipeline_eventos["owner_tenant_id"], jwt_secret_de_carga)
+        headers_dueño_eventos = {"Authorization": f"Bearer {token_dueño_eventos}"}
+        url_auditoria = f"{BACKEND_URL}/api/pipelines/{pipeline_eventos['pipeline_id']}/auditoria-descarte"
+
+        r_auditoria = httpx.get(url_auditoria, headers=headers_dueño_eventos, timeout=15.0)
+        print(f"[orquestador] GET /api/pipelines/{{id}}/auditoria-descarte status={r_auditoria.status_code} "
+              f"bytes={len(r_auditoria.content)} eventos={len(r_auditoria.json().get('eventos', []))}")
+        if r_auditoria.status_code != 200:
+            raise RuntimeError("la verificación previa de /pipelines/{id}/auditoria-descarte no dio 200")
+
+        resultados["auditoria_descarte"] = []
+        for c in niveles:
+            n = _n_para(c)
+            r = await correr_tanda(url_auditoria, headers_dueño_eventos, c, n)
+            print(f"[AUDITORIA_DESCARTE] c={c} n={n} -> {r}")
+            resultados["auditoria_descarte"].append(r)
 
         salida = LOADTEST_DIR / "_descartados_resultados.json"
         salida.write_text(json.dumps(resultados, indent=2, ensure_ascii=False))

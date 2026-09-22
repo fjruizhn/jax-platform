@@ -8,6 +8,25 @@ round 4 de Task 1-bis en jax (backend/tests/test_carga_indice_pipelines_del_usua
 "historial largo" / "muchos descartados"). Acá se mide el camino COMPLETO
 (HTTP -> auth -> Mesa -> SQL), no sólo el EXPLAIN.
 
+Fix round 1 (2026-09-22, BLOCK-2, revisión adversarial de PR#151): agrega
+DOS formas más, para los dos endpoints nuevos del cierre de huecos (que no
+tenían NINGUNA carga -- `loadtest/` y `docs/` quedaron sin tocar en la
+primera vuelta):
+
+- **"admin_muchos_usuarios"**: N_ADMIN_DESCARTADOS filas `discarded`
+  repartidas entre N_ADMIN_USUARIOS user_id/tenant_id DISTINTOS (sin crear
+  cuentas reales en `jax_users` -- GET /admin/pipelines/descartados no hace
+  JOIN con esa tabla, lee `jacobs_pipelines` directo, mismo criterio que
+  `test_explain_descartados_admin_usa_idx_pipelines_ocultos_sin_filesort`
+  del backend). Mide `GET /api/admin/pipelines/descartados`, que necesita
+  UN superadmin real (sí se crea en `jax_users`, con rol `superadmin`).
+- **"pipeline_con_muchos_eventos"**: UN pipeline del usuario "escala" con
+  N_EVENTOS_RUIDO eventos `STEP_FAILED` (mismo número que midió el Ruling
+  R20 para `sql_eventos_de_causa`, api/pipelines.py) más los 4 tipos de
+  auditoría -- el PEOR caso de `GET /pipelines/{id}/auditoria-descarte`:
+  "fires on EVERY pipeline-detail open" (coordinador), así que el pipeline
+  medido tiene que ser el que más eventos acumula, no uno vacío.
+
 Requiere que `jacobs_pipelines` tenga el esquema de descartar-pipelines
 (status_previo/descartado_por/descartado_at/visible + los índices
 idx_pipelines_visibles/idx_pipelines_descartados/idx_pipelines_ocultos) --
@@ -55,6 +74,22 @@ N_DESCARTADOS_A = 1000
 # `visible`) pagaba un recorrido lineal del histórico completo del dueño.
 N_VISIBLES_B = 3
 N_DESCARTADOS_B = 5000
+
+# --- Forma C (fix round 1, BLOCK-2): "admin_muchos_usuarios" ---------------
+# GET /admin/pipelines/descartados es GLOBAL (sin filtro de usuario) --
+# forma de producción real es MUCHOS usuarios/tenants distintos, no un solo
+# dueño con un historial largo (esa es la forma A/B, que miden la vista DEL
+# DUEÑO). 5.000 filas entre 500 pares user_id/tenant_id -- mismo orden de
+# magnitud que la forma B, para poder comparar el perfil de degradación.
+N_ADMIN_DESCARTADOS = 5000
+N_ADMIN_USUARIOS = 500
+
+# --- Forma D (fix round 1, BLOCK-2): "pipeline_con_muchos_eventos" --------
+# GET /pipelines/{id}/auditoria-descarte se pide en CADA apertura del
+# detalle de un pipeline (coordinador) -- el peor caso es el pipeline con
+# más eventos acumulados, no uno recién creado. 221 = el mismo número que
+# midió el Ruling R20 (comentario de sql_eventos_de_causa, api/pipelines.py).
+N_EVENTOS_RUIDO = 221
 
 
 def _cargar_env_produccion() -> dict:
@@ -144,15 +179,53 @@ def _insertar(cur, filas):
     )
 
 
-def _crear_usuario(cur, tenant_id, etiqueta) -> int:
+def _crear_usuario(cur, tenant_id, etiqueta, role="operator") -> int:
     email = f"carga-descartados-{etiqueta}-{uuid.uuid4().hex[:10]}@example.invalid"
     pw_hash = bcrypt.hashpw(b"x", bcrypt.gensalt(rounds=4)).decode()
     cur.execute(
         "INSERT INTO jax_users (tenant_id, email, password_hash, role, status, token_version) "
-        "VALUES (%s, %s, %s, 'operator', 'active', 0)",
-        (tenant_id, email, pw_hash),
+        "VALUES (%s, %s, %s, %s, 'active', 0)",
+        (tenant_id, email, pw_hash, role),
     )
     return cur.lastrowid
+
+
+def _filas_admin_muchos_usuarios(n_filas, n_usuarios, offset_id):
+    """Forma C (fix round 1, BLOCK-2): N filas 'discarded' repartidas entre
+    n_usuarios pares user_id/tenant_id DISTINTOS -- sin cuentas reales
+    (GET /admin/pipelines/descartados lee jacobs_pipelines directo, sin
+    JOIN a jax_users). Los user_id/tenant_id son strings reconocibles
+    ('carga-admin-user-N'/'carga-admin-tenant-N') para que la limpieza los
+    pueda encontrar con un LIKE, igual que
+    test_explain_descartados_admin_usa_idx_pipelines_ocultos_sin_filesort."""
+    ahora = time.time()
+    filas = []
+    ids = []
+    for i in range(n_filas):
+        pid = str(uuid.uuid4())
+        creado = ahora - (offset_id + n_filas - i) * 2
+        user_id = f"carga-admin-user-{i % n_usuarios}"
+        tenant_id = f"carga-admin-tenant-{i % n_usuarios}"
+        filas.append((pid, "carga descartar-pipelines (admin)", "plataforma", "supervised",
+                      "discarded", creado, creado + 1, user_id, tenant_id, creado,
+                      "aborted", user_id, creado + 1))
+        ids.append(pid)
+    return filas, ids
+
+
+def _eventos_pipeline_con_muchos_eventos(pipeline_id):
+    """Forma D (fix round 1, BLOCK-2): N_EVENTOS_RUIDO eventos STEP_FAILED
+    (ruido, mismo tipo/número que midió el Ruling R20) + los 4 tipos de
+    auditoría -- el pipeline con más eventos es el peor caso real de
+    GET /pipelines/{id}/auditoria-descarte."""
+    ahora = time.time()
+    filas = []
+    for i in range(N_EVENTOS_RUIDO):
+        filas.append((pipeline_id, None, "STEP_FAILED", json.dumps({"step_index": i}), ahora + i))
+    for i, tipo in enumerate(("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")):
+        filas.append((pipeline_id, None, tipo,
+                      json.dumps({"user_id": "carga", "desde": "a", "a": "b"}), ahora + N_EVENTOS_RUIDO + i))
+    return filas
 
 
 def main() -> None:
@@ -201,12 +274,54 @@ def main() -> None:
             "todos_los_pipelines": ids_vis + ids_desc,
         }
 
+    # Forma C (BLOCK-2): superadmin real + N_ADMIN_DESCARTADOS filas
+    # 'discarded' de N_ADMIN_USUARIOS pares distintos, para
+    # GET /admin/pipelines/descartados.
+    with conn.cursor() as cur:
+        superadmin_id = _crear_usuario(cur, tenant_id, "superadmin", role="superadmin")
+    conn.commit()
+    filas_admin, ids_admin = _filas_admin_muchos_usuarios(
+        N_ADMIN_DESCARTADOS, N_ADMIN_USUARIOS, N_VISIBLES_A + N_DESCARTADOS_A + N_VISIBLES_B + N_DESCARTADOS_B)
+    with conn.cursor() as cur:
+        _insertar(cur, filas_admin)
+    conn.commit()
+    print(f"admin_muchos_usuarios: superadmin_id={superadmin_id} "
+          f"filas={len(ids_admin)} usuarios_distintos={N_ADMIN_USUARIOS}", file=sys.stderr)
+
+    # Forma D (BLOCK-2): un pipeline del usuario "escala" con
+    # N_EVENTOS_RUIDO + 4 eventos, para GET /pipelines/{id}/auditoria-descarte.
+    # `owner_ack_at` seteado -- lo exige _require_pipeline_owner para no
+    # devolver 404 de "pipeline no reconocido por su dueño".
+    pipeline_eventos_id = str(uuid.uuid4())
+    ahora = time.time()
+    escala = usuarios["escala"]
+    with conn.cursor() as cur:
+        _insertar(cur, [(pipeline_eventos_id, "carga descartar-pipelines (eventos)", "plataforma", "supervised",
+                         "completed", ahora, ahora, str(escala["user_id"]), escala["tenant_id"], ahora,
+                         None, None, None)])
+        cur.executemany(
+            "INSERT INTO jacobs_events (pipeline_id, step_id, event_type, payload, ts) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            _eventos_pipeline_con_muchos_eventos(pipeline_eventos_id),
+        )
+    conn.commit()
+    print(f"pipeline_con_muchos_eventos: pipeline_id={pipeline_eventos_id} "
+          f"dueño=escala({escala['user_id']}) eventos={N_EVENTOS_RUIDO + 4}", file=sys.stderr)
+
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM jacobs_pipelines")
         (total_tabla,) = cur.fetchone()
     print(f"jacobs_pipelines total tras la siembra: {total_tabla}", file=sys.stderr)
 
-    resultado = {"tenant_id": tenant_id, "usuarios": usuarios}
+    resultado = {
+        "tenant_id": tenant_id, "usuarios": usuarios,
+        "superadmin": {"user_id": superadmin_id, "tenant_id": tenant_id},
+        "admin_muchos_usuarios": {"pipeline_ids": ids_admin},
+        "pipeline_con_muchos_eventos": {
+            "pipeline_id": pipeline_eventos_id,
+            "owner_user_id": escala["user_id"], "owner_tenant_id": escala["tenant_id"],
+        },
+    }
     with open(sys.argv[1], "w") as f:
         json.dump(resultado, f)
     conn.close()

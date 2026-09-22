@@ -922,8 +922,28 @@ jobs:
           //   `it()` tiene el archivo. Medido con `npx vitest run`: 1000
           //   passed, 0 fallidos, 95 archivos (mismo número de archivos: no
           //   se agregó ninguno, sólo crecieron dos ya existentes).
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1000) {
-              console.error("PISO ROTO: se esperaban 1000 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1000 -> 1002 (2026-09-22, fix round 1, revisión adversarial de
+          //   PR 151, BLOCK-1): el test que codificaba el caché roto como
+          //   comportamiento deseado ("sin recargar Descartados") se
+          //   RENOMBRÓ a una aserción real ("la primera visita a Ocultos
+          //   trae su propia lista", sin cambiar de número) y se agregaron
+          //   +2 -- "Ocultar invalida Ocultos" y "Restaurar invalida
+          //   Descartados", cada uno visitando la pestaña destino DOS
+          //   veces (la primera consume la carga inicial) para probar la
+          //   invalidación de verdad, no sólo el primer visitado. Vistos
+          //   en rojo contra la versión con el idioma viejo ("la lista
+          //   está vacía" como señal de recarga) antes de implementar las
+          //   banderas `necesitaRecarga*` -- 2 failed / 12 passed,
+          //   confirmado, y otra vez en verde con el fix. También se
+          //   corrigió un falso positivo del propio detector de tokens
+          //   (`tema/contraste.test.js`): dos comentarios nuevos escribían
+          //   "PR#151", que el escaneo de hex de ese test lee como el
+          //   color `#151` -- se reescribió "PR 151" (con espacio), sin
+          //   tocar el detector (es un defecto de MI texto, no del
+          //   escaneo). Medido con `npx vitest run`: 1002 passed, 0
+          //   fallidos, 95 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1002) {
+              console.error("PISO ROTO: se esperaban 1002 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -2800,7 +2820,23 @@ jobs:
           #   piso DECLARADO (2622) + delta propio (+12) = 2634 -- no los
           #   2643 crudos, que premiarían el drift de +9 que no es de este
           #   cierre.
-          PISO_PASSED = 2634
+          # 2634 -> 2635 (2026-09-22, fix round 1, revisión adversarial de
+          #   PR#151, MAJOR-1): el EXPLAIN test original de
+          #   test_pipelines_auditoria_descarte.py (afirmaba el nombre del
+          #   índice forzado) se REEMPLAZÓ por dos tests --
+          #   test_auditoria_descarte_no_escanea_todo_el_pipeline
+          #   (Handler_read real, no el nombre del índice) y
+          #   test_auditoria_descarte_topa_en_el_limite_y_muestra_los_mas_nuevos
+          #   (el `LIMITE_AUDITORIA_DESCARTE` nuevo) -- delta neto +1.
+          #   test_pipelines_descartados_admin.py no sumó tests (MAJOR-3
+          #   cambió aserciones, no agregó ni quitó casos). Medido en el
+          #   árbol de esta rama, MISMO comando de arriba: sin los 2
+          #   archivos de esta tarea -> 2631 passed / 2 skipped (mismo
+          #   drift ajeno de +9 ya documentado, sin cambio); CON los 2
+          #   archivos -> 2644 passed / 2 skipped. Delta propio verificado:
+          #   +13 (2644 - 2631). Piso nuevo = piso DECLARADO (2622) + delta
+          #   propio (+13) = 2635.
+          PISO_PASSED = 2635
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

@@ -5,6 +5,18 @@ RENDIMIENTO #4: sin número medido no hay GO. Registrado por Mr. Hyde. Corrida
 completada 2026-09-22 ~12:17 CST (hall9000). Los números salen de la
 corrida; ninguno es estimado.
 
+**Fix round 1 (BLOCK-2, 2026-09-22, revisión adversarial de PR#151):** el
+cierre de los dos huecos de la revisión final de esta rama (Descartados del
+superadmin y Auditoría de descarte, jax-platform PR#151) agregó DOS
+endpoints nuevos sin ninguna carga -- `loadtest/` y este documento quedaron
+sin tocar en la primera vuelta. Esta sección los cierra con el MISMO
+arnés (`loadtest/descartados_orquestar.py`, extendido, no un script
+aparte), el MISMO barrido de concurrencia y el mismo criterio de
+aislamiento que el resto del documento. Corrida completada 2026-09-22
+~16:20 CST (hall9000, la misma máquina), 0 errores en las dos series, en
+las seis concurrencias -- ver "Resultados -- los dos endpoints nuevos" más
+abajo.
+
 **Por qué un documento nuevo y no una extensión de
 `docs/carga-sql-pipelines-del-usuario-indice-2026-09-22.md`:** ese documento
 mide el motor SQL puro (`EXPLAIN` + `Handler_read` + `cursor.execute`/
@@ -63,6 +75,23 @@ fix round 4 de Task 1-bis):
 - Concurrencia: c=1, 25, 50, 100, 150, 200 (mismo barrido que
   `docs/carga-historial-2026-09-18.md`, para poder comparar el perfil).
 
+**Fix round 1 (BLOCK-2): dos formas MÁS, para los dos endpoints nuevos del
+cierre de huecos:**
+
+- **"admin_muchos_usuarios"** — `GET /api/admin/pipelines/descartados`. A
+  diferencia de las formas A/B (la vista DEL DUEÑO, un solo `user_id`), este
+  endpoint es GLOBAL: **5.000 filas `discarded`** repartidas entre **500
+  pares `user_id`/`tenant_id` DISTINTOS** (mismo orden de magnitud que la
+  forma B, para comparar el perfil), sin cuentas reales en `jax_users`
+  (el endpoint no hace `JOIN` con esa tabla) — sólo el superadmin que hace
+  el pedido es una cuenta real.
+- **"pipeline_con_muchos_eventos"** — `GET /pipelines/{id}/auditoria-descarte`.
+  Decisión del coordinador: este endpoint "fires on EVERY pipeline-detail
+  open", así que el peor caso es el pipeline con MÁS eventos acumulados, no
+  uno recién creado. Un pipeline del usuario "escala" con **221 eventos
+  `STEP_FAILED`** (mismo número que midió el Ruling R20 para
+  `sql_eventos_de_causa`) **+ los 4 tipos de auditoría** (225 en total).
+
 ## Método de aislamiento
 
 - Base `jax_memory_test` (nunca `jax_memory`) — verificado con `SELECT
@@ -95,11 +124,17 @@ fix round 4 de Task 1-bis):
 - Cliente de carga: `httpx.AsyncClient` real contra el puerto TCP (HTTP de
   punta a punta).
 - Dos usuarios descartables (`tenant_id=1`, rol `operator`) en `jax_users`,
-  cada uno con su propio token JWT.
+  cada uno con su propio token JWT. Fix round 1 (BLOCK-2): +1 usuario
+  descartable con rol `superadmin` (para `GET /admin/pipelines/descartados`)
+  y +1 pipeline con 225 eventos propios en `jacobs_events` (para
+  `GET /pipelines/{id}/auditoria-descarte`) — ninguno de los dos crea
+  cuentas reales para las 5.000 filas de "admin_muchos_usuarios": ese
+  endpoint no hace `JOIN` con `jax_users`.
 - Al terminar: `os.killpg` sobre los dos procesos; toda fila sembrada
-  (10.003 pipelines entre los dos usuarios + los 2 usuarios) BORRADA y
-  verificada — `SELECT COUNT(*) FROM jacobs_pipelines WHERE user_id IN
-  (...)` volvió a 0 tras la corrida, confirmado independientemente con una
+  (15.004 pipelines entre los cuatro orígenes + los 3 usuarios + 225
+  eventos) BORRADA y verificada — `SELECT COUNT(*) FROM jacobs_pipelines
+  WHERE user_id IN (...)` (y su equivalente para las dos formas nuevas)
+  volvió a 0 tras la corrida, confirmado independientemente con una
   consulta aparte después de que el script terminó.
 
 ## Verificación de que se midió el servicio real, no un literal
@@ -185,6 +220,72 @@ los seis índices posibles de la tabla. Ninguna de las dos consultas hace
 | 150 | 2000 | 2000 | 0 | 322,72 | 147,00 | 2096,17 | 3633,18 | 5371,48 |
 | 200 | 2000 | 2000 | 0 | 294,69 | 221,43 | 3423,09 | 5021,29 | 6082,89 |
 
+## Resultados — los dos endpoints nuevos (fix round 1, BLOCK-2, 2026-09-22)
+
+**El índice se usa, verificado con `EXPLAIN` + `Handler_read` sobre la
+consulta real** (mismo mecanismo que la sección de arriba; números también
+reproducibles con `backend/tests/test_pipelines_descartados_admin.py::test_explain_descartados_admin_usa_idx_pipelines_ocultos_sin_filesort`
+y `test_pipelines_auditoria_descarte.py::test_auditoria_descarte_no_escanea_todo_el_pipeline`):
+
+```
+EXPLAIN SQL_DESCARTADOS_ADMIN (600 filas discarded, 100 usuarios/30 tenants distintos):
+  type=range  key=idx_pipelines_ocultos  key_len=82
+  Extra=Using index condition            -- sin filesort, sin temporary
+
+EXPLAIN SQL_AUDITORIA_DESCARTE (pipeline con 221 eventos de ruido + 4 de auditoría):
+  type=range  key=idx_events_pipeline_tipo  key_len=348
+  Extra=Using index condition            -- sin filesort, sin temporary
+  Handler_read TOTAL=8 para 4 filas devueltas (no ~225: el índice compuesto
+  filtra por event_type ANTES de traer una fila, no después)
+```
+
+**Verificación previa** (mismo criterio que arriba — el camino real, no un
+literal):
+
+```
+GET /api/admin/pipelines/descartados status=200 bytes=10831 pipelines=50 has_more=True
+GET /api/pipelines/{id}/auditoria-descarte status=200 bytes=397 eventos=4
+```
+
+`auditoria-descarte` devuelve **4** eventos (los de auditoría) de un
+pipeline con **225** filas en `jacobs_events` — el filtro por `event_type`
+funciona, no es un volcado de todo lo que tiene el pipeline.
+
+### `GET /api/admin/pipelines/descartados` (superadmin, 5.000 filas / 500 usuarios)
+
+| c | n | ok | errores | rps | p50 ms | p95 ms | p99 ms | max ms |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 200 | 200 | 0 | 659,45 | 1,51 | 1,76 | 2,00 | 2,15 |
+| 25 | 500 | 500 | 0 | 963,24 | 19,30 | 63,57 | 95,37 | 107,53 |
+| 50 | 1000 | 1000 | 0 | 581,07 | 57,52 | 227,68 | 344,34 | 456,62 |
+| 100 | 2000 | 2000 | 0 | 324,97 | 167,92 | 1049,93 | 1659,69 | 3547,53 |
+| 150 | 2000 | 2000 | 0 | 312,85 | 165,88 | 2112,29 | 3799,05 | 5687,34 |
+| 200 | 2000 | 2000 | 0 | 268,41 | 285,96 | 3528,23 | 5157,47 | 6042,47 |
+
+### `GET /api/pipelines/{id}/auditoria-descarte` (pipeline con 225 eventos, 221 de ruido)
+
+| c | n | ok | errores | rps | p50 ms | p95 ms | p99 ms | max ms |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 200 | 200 | 0 | 964,42 | 1,02 | 1,23 | 1,37 | 1,74 |
+| 25 | 500 | 500 | 0 | 1017,67 | 17,20 | 60,23 | 87,52 | 128,42 |
+| 50 | 1000 | 1000 | 0 | 587,31 | 51,71 | 240,31 | 361,30 | 567,02 |
+| 100 | 2000 | 2000 | 0 | 349,57 | 128,86 | 1034,31 | 1635,60 | 2825,15 |
+| 150 | 2000 | 2000 | 0 | 320,35 | 143,39 | 2148,06 | 3578,89 | 5320,42 |
+| 200 | 2000 | 2000 | 0 | 304,68 | 200,58 | 3564,51 | 5060,24 | 5858,79 |
+
+**Lectura:** 0 errores en las dos series, en las seis concurrencias. El
+perfil es **indistinguible** del de los cuatro escenarios de arriba —
+mismo orden de magnitud de p50/p95 en cada nivel de `c`, mismo tramo de
+saturación (rps satura entre c=25 y c=50, p95 cruza los 500 ms de
+referencia entre c=50 y c=100). `auditoria-descarte` en particular —
+"fires on EVERY pipeline-detail open" — se mantiene bajo 1,1 ms de p50 a
+c=1 y bajo 52 ms a c=50 pese a examinar sólo 4 de las 225 filas del
+pipeline con más eventos que se sembró: el índice compuesto
+(`idx_events_pipeline_tipo`) cumple lo que promete (costo acotado por las
+filas de AUDITORÍA, no por el total de eventos del pipeline), igual que
+`idx_pipelines_visibles`/`idx_pipelines_descartados` lo cumplen para el
+resto de este documento.
+
 ## Lectura: dónde empieza a degradarse
 
 **0 errores en los cuatro escenarios, en las seis concurrencias.** No hay un
@@ -245,5 +346,14 @@ latencia de cola por concurrencia del proceso único:
   ni un usuario con MÁS de 5.000 descartados (p.ej. 50.000) — fuera del
   alcance de esta ronda, que se enfocó en el mínimo pedido por el
   coordinador (≥ 5.000, 20 % descartados) más la forma extrema.
+- Fix round 1 (BLOCK-2): mismo criterio de vigencia para
+  `admin_muchos_usuarios`/`pipeline_con_muchos_eventos` -- si cambia el
+  esquema, el volumen de datos o la infraestructura, estos dos números
+  también caducan. No se midió un pipeline con MÁS de 225 eventos (p.ej.
+  miles, de un ciclo discard/recover repetido sin `LIMITE_AUDITORIA_DESCARTE`
+  -- ver ese tope en `api/pipelines.py`, que acota justamente ese caso) ni
+  más de 500 usuarios distintos en la vista admin-wide -- fuera del alcance
+  de esta ronda, que igualó el orden de magnitud de las formas A/B ya
+  medidas.
 
 En memoria de Jairo Urbina.

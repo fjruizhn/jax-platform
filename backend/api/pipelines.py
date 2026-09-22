@@ -1279,18 +1279,46 @@ async def restore_pipeline(pipeline_id: str, user: AuthUser = Depends(require_su
 # escriben en jacobs_events en la MISMA transacción que el CAS (jax,
 # jacobs/routes.py::transicion_descarte), con payload
 # {"user_id", "desde", "a"} -- hasta hoy, ninguna pantalla los mostraba (se
-# leían con `mysql` a mano). Esta consulta trae SÓLO esos cuatro tipos, del
-# más nuevo al más viejo, con `FORCE INDEX (idx_events_pipeline)` -- ver el
-# docstring de tests/test_pipelines_auditoria_descarte.py para el porqué
-# (sin hint, el optimizador prefiere idx_events_pipeline_tipo para el
-# IN(...), pero el ORDER BY id DESC sobre esos 4 rangos separados no le
-# sale gratis: "Using filesort". idx_events_pipeline es un solo rango por
-# pipeline_id, ya en orden de id -- se recorre al revés sin ordenar nada).
+# leían con `mysql` a mano). Esta consulta trae SÓLO esos cuatro tipos.
+#
+# Fix round 1 (2026-09-22, MAJOR-1, revisión adversarial de PR#151): la
+# versión anterior forzaba `idx_events_pipeline (pipeline_id)`, que es
+# EXACTAMENTE el plan que el Ruling R20 (2026-09-17, ver el comentario de
+# `sql_eventos_de_causa` más arriba) midió como lento -- examina TODOS los
+# eventos del pipeline (~221 medidos, 8,1 ms, p95 147 ms a c=25) para
+# devolver 0-4. `sql_eventos_de_causa` ya resuelve la MISMA forma (filtro
+# por pipeline_id + event_type IN, pocas filas de vuelta) sin `FORCE INDEX`
+# y SIN `ORDER BY` en el SQL -- el orden se hace en Python sobre pocas
+# filas, así el plan no necesita decidir entre "ordenar" y "usar el índice
+# compuesto": deja al optimizador usar `idx_events_pipeline_tipo
+# (pipeline_id, event_type)`, que filtra en el índice ANTES de traer una
+# sola fila, en vez de traer las 221 y descartar 217 en Python. Mismo
+# patrón acá: sin ORDER BY, sin FORCE INDEX. Medido con EXPLAIN +
+# Handler_read reales (tests/test_pipelines_auditoria_descarte.py, mismo
+# ruido de 221 eventos STEP_FAILED que R20): SIN hint, el optimizador ya
+# elige `idx_events_pipeline_tipo` -- type=range, rows(estimado)=4,
+# Handler_read TOTAL=8 para 4 filas devueltas (antes: 204 con el índice
+# forzado). El EXPLAIN test ya NO afirma el nombre del índice ni la
+# ausencia de "Using filesort" -- afirma el Handler_read real, que es lo
+# que de verdad importa (un filesort sobre 4 filas es gratis; scanear 221
+# no lo es, tenga o no la etiqueta "Using filesort").
+#
+# `LIMITE_AUDITORIA_DESCARTE` (MINOR, misma ronda): discard/recover es
+# repetible SIN tope (un pipeline puede ciclar cientos de veces) -- sin
+# límite, la respuesta crece sin cota. Se corta en PYTHON, después de
+# ordenar por `id` DESC, no en el SQL: un `LIMIT` en el SQL sin `ORDER BY`
+# tomaría filas arbitrarias del orden del índice (las más VIEJAS del
+# primer event_type que el optimizador visite), no las más nuevas -- sería
+# un tope que muestra lo menos útil. El costo de traer todas las filas
+# ANTES de cortar sigue acotado por el índice compuesto (sólo lee filas de
+# ESOS 4 tipos para ESE pipeline, nunca el resto de sus eventos), así que
+# el corte en Python no reintroduce el problema que resolvió el punto de
+# arriba.
+LIMITE_AUDITORIA_DESCARTE = 50
 _TIPOS_AUDITORIA_DESCARTE = ("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")
 SQL_AUDITORIA_DESCARTE = (
-    "SELECT event_type, payload, ts FROM jacobs_events FORCE INDEX (idx_events_pipeline) "
-    "WHERE pipeline_id=%s AND event_type IN (%s, %s, %s, %s) "
-    "ORDER BY id DESC"
+    "SELECT id, event_type, payload, ts FROM jacobs_events "
+    "WHERE pipeline_id=%s AND event_type IN (%s, %s, %s, %s)"
 )
 
 
@@ -1300,6 +1328,11 @@ async def auditoria_descarte(pipeline_id: str, user: AuthUser = Depends(get_curr
     # por qué ser el DUEÑO para auditar -- sólo que el pipeline exista. El
     # dueño no-superadmin sigue la regla de siempre (_require_pipeline_owner):
     # un hidden le da 404, igual que a /results y GET/{id}.
+    #
+    # Decisión del coordinador (fix round 1): que la auditoría muestre el
+    # user_id del PROPIO superadmin (por ejemplo, quien ocultó/restauró) es
+    # intencional -- es el punto de una auditoría, no una fuga. No se
+    # redacta ni se reemplaza por un rol genérico.
     if _es_superadmin(user):
         await _require_pipeline_exists(pipeline_id)
     else:
@@ -1309,8 +1342,11 @@ async def auditoria_descarte(pipeline_id: str, user: AuthUser = Depends(get_curr
         async with conn.cursor() as cur:
             await cur.execute(SQL_AUDITORIA_DESCARTE, (pipeline_id, *_TIPOS_AUDITORIA_DESCARTE))
             filas = await cur.fetchall()
+    # Más nuevo primero + tope defensivo, los dos en Python sobre pocas
+    # filas -- ver el comentario de SQL_AUDITORIA_DESCARTE.
+    filas_ordenadas = sorted(filas, key=lambda f: f[0], reverse=True)[:LIMITE_AUDITORIA_DESCARTE]
     eventos = []
-    for event_type, payload, ts in filas:
+    for _id, event_type, payload, ts in filas_ordenadas:
         datos = _payload(payload)
         eventos.append({
             "event_type": event_type,
