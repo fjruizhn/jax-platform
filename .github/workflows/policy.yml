@@ -820,8 +820,23 @@ jobs:
           //   (nunca `git stash`) para la medición "antes": HEAD 948 passed
           //   -> esta ronda 950 (0 fallidos las dos). Repetido 3 veces
           //   seguidas sin flakiness.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 950) {
-              console.error("PISO ROTO: se esperaban 950 tests de vitest CORRIDOS y 0 fallidos.");
+          // 950 -> 952 (ronda 5, MAJOR N1 + MINOR B-test de
+          //   `Memoria.test.jsx`): este piso NUNCA se subió a 952 -- B1
+          //   (BLOCK) del cierre de ronda 6: CI corría 952 contra un piso
+          //   que exige EXACTO 950, rojo desde la ronda 5 entera.
+          // 952 -> 954 (cierre, ronda 6, m1): +2 tests nuevos en
+          //   `Memoria.test.jsx` (escenarios B y C del revisor,
+          //   `Carrera6.audit.test.jsx` -- "una recarga vieja que resuelve
+          //   mientras la mas nueva sigue en vuelo no apaga Actualizando" /
+          //   "...falla tarde, tras una mas nueva ya OK, no muestra error
+          //   de carga"), cubriendo los dos frenos de `cargar()` que no
+          //   tenían test propio. Vistos en rojo con la mutación exacta del
+          //   hallazgo (`if (true)` en el `finally`, y `setError(true)` sin
+          //   guarda en el `catch`) antes de confirmar verde. Medido con
+          //   `npx vitest run`, 3 veces seguidas: 954/954 las tres, sin
+          //   flakiness.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 954) {
+              console.error("PISO ROTO: se esperaban 954 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -2346,7 +2361,22 @@ jobs:
           #   las dos). Los 4 tests nuevos verificados en rojo contra el
           #   código de la ronda anterior antes de escribir el arreglo (ver
           #   el reporte de la tarea).
-          PISO_PASSED = 2571
+          # 2571 -> 2573 (2026-09-22, jax-platform#146, cierre ronda 6): +2
+          #   -- m8 (SEGURIDAD): `aprobar_hechos` había perdido el contrato
+          #   de tres estados al dejar de usar `MemoryDB.verify_fact` en la
+          #   ronda 5 (con la base caída, `transaccion()`/`get_pool()`
+          #   levantaba una excepción de conexión SIN GUARDA -- 500
+          #   genérico, no 503 `memoria_no_disponible`). Restituido con
+          #   `AsyncExitStack` (atrapa SÓLO el fallo de conectar/adquirir,
+          #   antes del primer `yield` de `transaccion()`, nunca lo que pase
+          #   DENTRO de la transacción ya abierta) + 2 tests nuevos en
+          #   test_memoria_api.py: test_aprobar_con_la_base_caida_no_es_500_
+          #   generico (rojo contra el código de la ronda 5, verificado con
+          #   `git show HEAD:<archivo>` restaurado) y su control (un error
+          #   real DENTRO de la transacción sigue sin disfrazarse de 503).
+          #   Medido en vivo, MISMO comando: ronda 5 (3750181) 2571 passed
+          #   -> este cierre 2573 (0 fallidos, 0 skips las dos).
+          PISO_PASSED = 2573
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3089,6 +3119,12 @@ jobs:
       #   piso declarado NO sube (seguiría siendo correcto en 1666; no se
       #   sube a 1703 por la misma razón que ya documentó la ronda 4: no se
       #   absorbe la distancia preexistente en silencio).
+      # 2026-09-22, cierre ronda 6: sin cambio en `passed` -- los 2 tests
+      #   nuevos de m8 (ver el piso CON DB, más arriba) piden
+      #   `client_superadmin`, así que bajo JAX_CI_NO_DB=1 quedan salteados.
+      #   Medido: 1703 passed / 870 skipped (antes: 1703 / 868 -- +2 skips,
+      #   0 passed nuevos). El piso declarado sigue en 1666, misma razón que
+      #   la ronda 5.
       JAX_CI_MIN_PASSED: "1666"
     steps:
       - uses: actions/checkout@v4
