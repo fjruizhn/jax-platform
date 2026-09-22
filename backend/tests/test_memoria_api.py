@@ -5,6 +5,7 @@ memoria es lo unico que el sistema acumula sobre nosotros.
 `client` + `tests.identidades.cabeceras`, que es el patron real de esta casa
 (tests/test_config_admin_ajustes.py). El plan original daba por hecho un
 `client_superadmin` que no existia (2026-09-20)."""
+from datetime import datetime, timezone
 from functools import partial
 
 import pytest
@@ -181,3 +182,52 @@ def test_caducar_un_id_que_de_verdad_no_existe_sigue_dando_404(client_superadmin
     r = client_superadmin.post(
         "/api/admin/memoria/hechos/999999999/caducar", json={})
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Hora local vs UTC (2026-09-22). El frontend manda `new Date().toISOString()`
+# -- SIEMPRE con `Z` (UTC) -- pero `@@session.time_zone` de la base es SYSTEM
+# (Honduras, UTC-6): antes de este arreglo `datetime.fromisoformat(vence_at)`
+# guardaba la hora UTC tal cual, como si fuera hora local, y el hecho
+# quedaba "caducado" recien ~6 horas despues (visto en produccion con los
+# hechos #140 y #15: `expires_at` 354 y 359 minutos DESPUES de `updated_at`).
+# ---------------------------------------------------------------------------
+
+def test_caducar_con_hora_utc_deja_el_hecho_vencido_de_inmediato(client_superadmin):
+    fact_id = client_superadmin.portal.call(
+        _crear_fact, "hecho de prueba caducar-hora-utc")
+    try:
+        vence_at = datetime.now(timezone.utc).isoformat()
+        r = client_superadmin.post(
+            f"/api/admin/memoria/hechos/{fact_id}/caducar",
+            json={"vence_at": vence_at})
+        assert r.status_code == 200, r.text
+
+        fila = client_superadmin.portal.call(
+            sql,
+            "SELECT expires_at <= NOW(), expires_at, NOW() FROM facts WHERE id = %s",
+            (fact_id,), True)
+        vencido_ya, expires_at, ahora = fila[0]
+        assert vencido_ya, (
+            f"expires_at ({expires_at}) quedo DESPUES de NOW() de la base "
+            f"({ahora}): la hora UTC con 'Z' se escribio sin convertir a la "
+            "hora local de la base -- el defecto de las ~6 horas de retraso."
+        )
+    finally:
+        client_superadmin.portal.call(_borrar_fact, fact_id)
+
+
+def test_caducar_sin_zona_se_rechaza_por_ambigua(client_superadmin):
+    """Una fecha sin zona no dice si es UTC, hora local, u otra cosa -- el
+    frontend siempre manda 'Z' (ver arriba), asi que una llegada sin zona es
+    un llamador distinto al esperado, no un caso a adivinar."""
+    fact_id = client_superadmin.portal.call(
+        _crear_fact, "hecho de prueba caducar-sin-zona")
+    try:
+        r = client_superadmin.post(
+            f"/api/admin/memoria/hechos/{fact_id}/caducar",
+            json={"vence_at": "2026-09-22T08:18:00"})
+        assert r.status_code == 400
+        assert r.json()["detail"] == "vence_at_sin_zona"
+    finally:
+        client_superadmin.portal.call(_borrar_fact, fact_id)

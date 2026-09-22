@@ -46,7 +46,7 @@ import asyncio
 import json
 import math
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -341,6 +341,37 @@ class CaducarBody(BaseModel):
     vence_at: Optional[str] = None
 
 
+async def _hora_local_de_base(momento: datetime) -> datetime:
+    """Convierte un datetime CON ZONA a la hora local que usa la base
+    (`@@session.time_zone`, en producción SYSTEM -- Honduras, UTC-6, sin
+    horario de verano hoy).
+
+    La conversión la hace MariaDB con `CONVERT_TZ`, no una resta de horas a
+    mano: `expires_at` se compara con `NOW()` (hora local de sesión, ver
+    `SQL_LISTAR`/`SQL_VECINOS` arriba), y `CONVERT_TZ(dt, '+00:00',
+    @@session.time_zone)` sigue dando la hora correcta aunque el sistema
+    tuviera horario de verano (lee el tzdata real del SO vía 'SYSTEM'), cosa
+    que restar un offset fijo en Python no podría. Verificado a mano contra
+    producción el 2026-09-22: con `@@session.time_zone = SYSTEM`,
+    `CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', @@session.time_zone)` da el mismo
+    valor que `NOW()`.
+
+    Usa el mismo pool que el resto de este módulo (`db.connection.get_pool`,
+    la conexión de jax-platform contra `jax_memory`) -- ninguna de las dos
+    conexiones (ésta, y la de `MemoryDB.expire_fact` en `jax/memory/db.py`)
+    fija un `time_zone` de sesión propio, así que las dos ven la misma
+    `@@session.time_zone` del servidor."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT CONVERT_TZ(%s, '+00:00', @@session.time_zone)",
+                (momento.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),),
+            )
+            fila = await cur.fetchone()
+    return fila[0]
+
+
 @router.post("/hechos/{fact_id}/caducar")
 async def caducar_hecho(fact_id: int, body: CaducarBody,
                         user: AuthUser = Depends(require_superadmin)):
@@ -348,9 +379,17 @@ async def caducar_hecho(fact_id: int, body: CaducarBody,
     expira = None
     if body.vence_at:
         try:
-            expira = datetime.fromisoformat(body.vence_at)
+            crudo = datetime.fromisoformat(body.vence_at)
         except ValueError:
             raise HTTPException(status_code=400, detail="vence_at_invalido") from None
+        # El frontend (Memoria.jsx) siempre manda `new Date().toISOString()`,
+        # que SIEMPRE trae `Z` (UTC). Una fecha sin zona es ambigua -- no hay
+        # forma de saber si es UTC, hora local, u otra cosa -- así que se
+        # rechaza en vez de adivinar (2026-09-22: el defecto de las ~6 horas
+        # de retraso era justo tratar un `Z` como si no tuviera zona).
+        if crudo.tzinfo is None:
+            raise HTTPException(status_code=400, detail="vence_at_sin_zona") from None
+        expira = await _hora_local_de_base(crudo)
     ok = await memoria.expire_fact(fact_id, expira)
     # M1 (auditoria adversarial 2026-09-20): mismo contrato de tres estados
     # que aprobar_hechos -- None es "la base no respondio", nunca "no

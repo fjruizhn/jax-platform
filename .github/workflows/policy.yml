@@ -2058,7 +2058,18 @@ jobs:
           #   declarado sube por el delta verificado (+7), no por el passed
           #   crudo local. Si el runner (limpio, sin esas 7 fallas) da otro
           #   numero, manda el runner.
-          PISO_PASSED = 2452
+          # 2452 -> 2454 (2026-09-22, caducar en hora local): +2,
+          #   tests/test_memoria_api.py (2 tests nuevos, piden `client_superadmin`
+          #   -> con DB). Arregla el defecto de `caducar_hecho`
+          #   (backend/api/admin/memoria.py): guardaba la hora UTC que manda el
+          #   frontend como si fuera hora local de la base (@@session.time_zone
+          #   = SYSTEM, Honduras UTC-6), dejando el hecho "caducado" recien ~6
+          #   horas despues. Medido en vivo, MISMO comando (`python -m pytest -q
+          #   -rs`) en las dos ramas contra el mismo clon de jax_memory_test:
+          #   master local 2512 passed / 0 skipped / 0 failed -> rama 2514 / 0 / 0.
+          #   El piso declarado sube por el delta verificado (+2) sobre el piso
+          #   anterior, no por el passed crudo local.
+          PISO_PASSED = 2454
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
