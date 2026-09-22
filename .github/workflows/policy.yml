@@ -728,6 +728,10 @@ jobs:
           // estado (trazo/emoji), color cambia (apagado/aviso), y no lo pide
           // ni lo muestra un rol que no es superadmin. Medido con
           // `npx vitest run`: 894 passed, 0 fallidos, 87 archivos.
+          // 939 -> 942 (jax-platform#145, 2026-09-22): los modos van en su propia
+          //   fila, sobre la caja. +3 BottomBar.layout.test.jsx (fila de modos
+          //   separada del textarea, la precede, y la fila de la caja conserva
+          //   adjuntar/textarea/enviar/kill). Medido: 942 passed, 0 fallidos, 92 archivos.
           // 897 -> 939 (jax-platform#141, 2026-09-21): tamano de toque WCAG 2.2.
           //   Dos detectores nuevos (botonesSinAreaDeToque, botonesConPocoRelleno)
           //   + resolverClassName + el test de aria-label de Toast.
@@ -740,8 +744,8 @@ jobs:
           // `?tab=models` abre directo en el Catálogo, y un `?tab`
           // desconocido cae al default sin romper. Medido con
           // `npx vitest run`: 939 passed, 0 fallidos, 91 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 939) {
-              console.error("PISO ROTO: se esperaban 939 tests de vitest CORRIDOS y 0 fallidos.");
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 942) {
+              console.error("PISO ROTO: se esperaban 942 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
