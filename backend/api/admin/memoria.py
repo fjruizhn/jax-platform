@@ -194,24 +194,61 @@ class AprobarBody(BaseModel):
 
 @router.post("/hechos/aprobar")
 async def aprobar_hechos(body: AprobarBody, user: AuthUser = Depends(require_superadmin)):
-    if not body.ids:
+    """MAJOR N2 (revision adversarial de jax-platform PR 146, ronda 5):
+    `MemoryDB.verify_fact` (jax/memory/db.py) no mira `superseded_by` ni
+    `expires_at` -- desde una pantalla de Memoria vieja (otra pestaña, u
+    otro superadmin que no recargo) se podia aprobar un hecho ya vencido o
+    ya superado por otro. El repo jax no se toca (fuera de alcance de esta
+    ronda): el chequeo vive ACA, antes de escribir nada.
+
+    Mismo patron que `fundir_hechos` (y `corregir_hecho`): se abandona
+    `MemoryDB.verify_fact` (que abre y confirma SU PROPIA conexion, un pool
+    DISTINTO al de `db/transaccion.py` -- componerlo con el `FOR UPDATE` de
+    aca adentro autodeadlockearia la misma request) por el mismo par
+    lectura-con-bloqueo + escritura, sobre UN SOLO cursor, dentro de UNA
+    transaccion: se leen TODOS los ids del lote con `FOR UPDATE` primero: si
+    alguno esta vencido o superado, 409 (`hecho_vencido`/`hecho_superado`) y
+    NADA se escribe -- todo o nada, ningun UPDATE parcial. `_aprobar_en_cursor`
+    ya existia (lo usa `fundir_hechos` para el superviviente sin verificar);
+    ahora tambien lo usa el lote entero de este endpoint."""
+    # Sin duplicados, mismo patron que `fundir_hechos` (absorbidos=[7,7,8]).
+    ids = list(dict.fromkeys(body.ids))
+    if not ids:
         return {"aprobados": 0}
-    memoria = await _memoria_conectada()
     autor = int(user.user_id)
-    aprobados = 0
-    for fact_id in body.ids:
-        ok = await memoria.verify_fact(fact_id, autor)
-        # M1 (auditoria adversarial 2026-09-20): verify_fact devuelve None
-        # cuando la base no respondio (contrato de tres estados, jax/memory/
-        # db.py), no cuando el id no existe. Antes esto sumaba 0 en silencio
-        # y el lote terminaba en 200 {"aprobados": N} de MENOS, sin que el
-        # superadmin tuviera forma de saber que el resto del lote NUNCA se
-        # intento -- fail-closed: se corta el lote y se avisa.
-        if ok is None:
-            raise HTTPException(status_code=503, detail="memoria_no_disponible")
-        if ok:
-            aprobados += 1
-    return {"aprobados": aprobados}
+
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        marcadores = ", ".join(["%s"] * len(ids))
+        await cur.execute(
+            f"SELECT id, superseded_by, expires_at FROM facts "
+            f"WHERE id IN ({marcadores}) FOR UPDATE",
+            ids,
+        )
+        filas = await cur.fetchall()
+        superados_de = {fid: superseded_by for fid, superseded_by, _ in filas}
+        vencidos = {fid: expires_at for fid, _, expires_at in filas}
+
+        if any(i not in superados_de for i in ids):
+            raise HTTPException(status_code=404, detail="hecho_no_encontrado")
+
+        # Todo o nada: esta comprobacion corre para TODOS los ids del lote
+        # ANTES de escribir el primer UPDATE -- un solo hecho ya superado
+        # basta para que NINGUNO se apruebe.
+        if any(superados_de[i] is not None for i in ids):
+            raise HTTPException(status_code=409, detail="hecho_superado")
+
+        # `NOW()` se evalua en la MISMA transaccion que ya trajo la fila con
+        # FOR UPDATE -- no hay ventana entre leer y decidir (mismo patron
+        # que MAJOR 2 de `fundir_hechos`, ronda 3).
+        await cur.execute("SELECT NOW()")
+        (ahora,) = await cur.fetchone()
+        if any(vencidos[i] is not None and vencidos[i] <= ahora for i in ids):
+            raise HTTPException(status_code=409, detail="hecho_vencido")
+
+        for fact_id in ids:
+            await _aprobar_en_cursor(cur, autor, fact_id)
+
+    return {"aprobados": len(ids)}
 
 
 class CorregirBody(BaseModel):
@@ -372,6 +409,21 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
       - MAJOR 2: un hecho vencido (`expires_at` en el pasado) no puede
         fundirse -- ni como superviviente ni como absorbido -- 409
         `hecho_vencido`.
+
+    MAJOR A.5 (revision adversarial de jax-platform PR 146, ronda 5): el
+    cierre de citas (`_cargar_citas_directas`/`_cierre_transitivo_de_citas`)
+    se calcula ANTES de tomar el `FOR UPDATE` del lote, no adentro -- las
+    citas viven en `source_fact_ids`, una columna que fundir NUNCA escribe
+    (fundir toca `superseded_by`/`is_verified`), asi que no hace falta
+    leerlas bajo el mismo candado que protege al lote. El unico riesgo
+    teorico es una sintesis nueva, citando a un miembro del lote, creada en
+    la ventana entre este SELECT y el FOR UPDATE de abajo -- pero esa
+    sintesis nueva no es ELLA MISMA parte de este lote (no esta en `ids`),
+    asi que no puede cambiar el veredicto de compatibilidad de ESTE lote
+    (compara ids[i] contra ids[j], nunca contra un id de afuera). Calcularlo
+    antes tambien acorta la ventana real en la que el lote queda bloqueado:
+    el full scan de `SQL_CITAS` (sin indice sobre `source_fact_ids`, MAJOR A)
+    es el costo mayor de este endpoint.
     """
     # Sin duplicados, mismo orden de llegada: absorbidos=[7, 7, 8] funde una
     # sola vez al 7.
@@ -386,6 +438,13 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
     ids = [body.superviviente_id, *absorbidos]
 
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        # MAJOR A.5: el cierre de citas corre PRIMERO, antes del SELECT ...
+        # FOR UPDATE de mas abajo -- ver el porque en el docstring de esta
+        # funcion. Mismo cursor, misma transaccion (no abre una segunda
+        # conexion), pero SIN bloquear ninguna fila todavia.
+        citas_directas = await _cargar_citas_directas(cur)
+        cierre_citas = _cierre_transitivo_de_citas(citas_directas)
+
         marcadores = ", ".join(["%s"] * len(ids))
         await cur.execute(
             f"SELECT id, superseded_by, is_verified, created_at, source_facet, "
@@ -425,13 +484,6 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
         (ahora,) = await cur.fetchone()
         if any(vencidos[i] is not None and vencidos[i] <= ahora for i in ids):
             raise HTTPException(status_code=409, detail="hecho_vencido")
-
-        # MAJOR 1, tercera vuelta: el cierre de citas se calcula sobre TODO
-        # el grafo (mismo criterio que el detector, `agrupar_por_tema`) --
-        # con el MISMO cursor de esta transaccion, para no abrir una segunda
-        # conexion mientras el lote sigue bloqueado con FOR UPDATE.
-        citas_directas = await _cargar_citas_directas(cur)
-        cierre_citas = _cierre_transitivo_de_citas(citas_directas)
 
         # D3: compatibilidad PAR A PAR de todo el lote -- antes de decidir
         # quien sobrevive, porque si el lote mezcla tipos la operacion es
@@ -793,14 +845,31 @@ SQL_CITAS = "SELECT id, source_fact_ids FROM facts WHERE source_fact_ids IS NOT 
 # sembraba, así que esta consulta devolvía 0 filas en esa medición: una
 # verdad vacía, no una medida. Vuelto a medir con 1.400 de 10.000 facts
 # (14 %) con `source_fact_ids` no nulo (10 % en cita plana + cadenas de
-# 2do/3er orden, el peor caso): `GET /grupos` no muestra degradación
-# medible (delta de p95 entre −2,9 % y −1,2 %, dentro del ruido) y
+# 2do/3er orden) -- CASO REALISTA, con cadenas cortas (profundidad <=2) y
+# citas al azar entre cualquier hecho, no el peor caso (corregido en ronda
+# 5, MINOR A-texto: este comentario decía antes "el peor caso" y no lo
+# era). `GET /grupos` no muestra degradación medible con ese caso realista
+# (delta de p95 entre −2,9 % y −1,2 %, dentro del ruido) y
 # `POST /hechos/fundir` (que corre esta consulta una vez por request,
 # dentro de la transacción) queda en milisegundos de un dígito a low-teens
 # (p50 7,6→12,2 ms, p95 18,4→19,1 ms) -- ver la sección "RONDA 4" del
-# documento para el método y los números completos. Decisión: no se
-# optimiza (sin índice sobre `source_facet`, sin acotar el cierre a los
-# ids candidatos) -- el costo medido no lo justifica.
+# documento para el método y los números completos.
+#
+# MINOR A-texto (ronda 5): el PEOR caso de verdad -- cadenas LARGAS
+# (profundidad 10) con fuentes VECINAS EN EMBEDDINGS (dentro de un cluster
+# de casi-duplicados real, `loadtest/memoria_seed.py::N_CADENAS_LARGAS`) --
+# se midió aparte: 50 cadenas de profundidad 10 sumadas al caso realista de
+# arriba (1.900 filas con `source_fact_ids` en total sobre 10.000 facts).
+# `POST /hechos/fundir`, 200 llamadas secuenciales: 200/200 ok, p50 11,69 ms,
+# p95 17,99 ms, max 24,56 ms -- sin degradación material frente al caso
+# realista (p50 12,2 ms, p95 19,1 ms). El BFS de `_cierre_transitivo_de_
+# citas` (más abajo) no memoiza entre orígenes -- a profundidad 10 el costo
+# por cadena es O(10) por nodo, ~100 operaciones por cadena, indistinguible
+# del ruido en esta medición; no se memoiza (Regla 2 del rendimiento: no se
+# cachea lo que no se midió caro). Ver la sección "RONDA 5" del documento
+# para el método completo. Decisión: no se optimiza (sin índice sobre
+# `source_facet`, sin acotar el cierre a los ids candidatos, sin memoizar
+# el BFS) -- el costo medido, realista Y peor caso, no lo justifica.
 
 
 async def _cargar_citas_directas(cur) -> dict:

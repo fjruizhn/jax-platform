@@ -1288,6 +1288,11 @@ export default {
       // Round 146, third pass (MAJOR 2): an expired fact cannot be merged --
       // neither as the survivor nor as an absorbed fact.
       hecho_vencido: 'One of these facts expired in the meantime: reload the screen.',
+      // MAJOR N2 (jax-platform PR 146 adversarial review, round 5):
+      // approving a batch where one was already superseded by another fact
+      // (merged, or corrected) -- own code, distinct from `hecho_ya_superado`
+      // (used by /corregir on a SINGLE fact).
+      hecho_superado: 'One of these facts was already superseded by another: reload the screen.',
     },
   },
 }

@@ -539,3 +539,40 @@ def test_sql_citas_ve_la_cadena_a_traves_de_un_superado_y_un_vencido(client_supe
         assert r.json()["detail"] == "fundir_hechos_relacionados_por_cita"
     finally:
         client_superadmin.portal.call(_borrar_facts, p, q)
+
+
+# --- MAJOR A.5 (revision adversarial de jax-platform PR 146, ronda 5): el
+# cierre de citas se calcula ANTES de tomar el FOR UPDATE del lote --------
+
+def test_fundir_calcula_el_cierre_de_citas_antes_del_for_update(
+        client_superadmin, trio, monkeypatch):
+    """El cierre de citas (SQL_CITAS, un full scan sin indice util -- MAJOR
+    A) no necesita correr bajo el mismo candado que protege al lote: las
+    citas viven en `source_fact_ids`, columna que fundir nunca escribe. Se
+    instrumenta el CURSOR real (aiomysql.Cursor.execute), no una funcion del
+    modulo memoria, para que la evidencia sea el SQL que de verdad corrio,
+    en el orden real -- no una suposicion sobre el orden de llamadas
+    Python."""
+    import aiomysql
+
+    superviviente, absorbido1, absorbido2 = trio
+    consultas = []
+    original_execute = aiomysql.Cursor.execute
+
+    async def _execute_instrumentado(self, query, args=None):
+        consultas.append(query)
+        return await original_execute(self, query, args)
+
+    monkeypatch.setattr(aiomysql.Cursor, "execute", _execute_instrumentado)
+
+    r = client_superadmin.post(
+        "/api/admin/memoria/hechos/fundir",
+        json={"superviviente_id": superviviente, "absorbidos": [absorbido1, absorbido2]})
+    assert r.status_code == 200
+
+    indice_citas = next(
+        i for i, q in enumerate(consultas) if "source_fact_ids IS NOT NULL" in q)
+    indice_for_update = next(i for i, q in enumerate(consultas) if "FOR UPDATE" in q)
+    assert indice_citas < indice_for_update, (
+        "el SELECT de citas (SQL_CITAS) corrio DESPUES del FOR UPDATE -- el "
+        "lote quedo bloqueado mas tiempo del necesario")

@@ -1349,6 +1349,11 @@ export default {
       // Ronda 146, tercera vuelta (MAJOR 2): un hecho vencido no se puede
       // fundir -- ni como superviviente ni como absorbido.
       hecho_vencido: 'Uno de estos hechos venció mientras tanto: recargá la pantalla.',
+      // MAJOR N2 (revisión adversarial de jax-platform PR 146, ronda 5):
+      // aprobar un lote donde alguno ya fue superado por otro hecho
+      // (fundido, o corregido) -- código propio, distinto de
+      // `hecho_ya_superado` (que usa /corregir sobre UN solo hecho).
+      hecho_superado: 'Uno de estos hechos ya fue superado por otro: recargá la pantalla.',
     },
   },
 }
