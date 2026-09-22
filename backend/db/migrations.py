@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import aiomysql
@@ -2965,9 +2966,12 @@ async def _asegurar_forma_de_ejecutor_punto_restauracion(cur) -> None:
         "AND COLUMN_NAME = 'metodo'"
     )
     data_type, column_type = await cur.fetchone()
-    ya_es_enum = data_type == "enum" and all(
-        f"'{m}'" in column_type for m in _METODOS_PUNTO_RESTAURACION
-    )
+    # Conjunto EXACTO, no "contiene a todos" (hallazgo de la auditoría, 2026-09-22): un
+    # ENUM con un quinto valor de más (agregado a mano, o por una migración vieja que
+    # alguien reactivó) pasaría el chequeo anterior y este MODIFY nunca correría -- la
+    # tabla quedaría aceptando métodos que _METODOS_PUNTO_RESTAURACION no declara.
+    valores_actuales = set(re.findall(r"'((?:[^'\\]|\\.)*)'", column_type or ""))
+    ya_es_enum = data_type == "enum" and valores_actuales == set(_METODOS_PUNTO_RESTAURACION)
     if not ya_es_enum:
         if total:
             await cur.execute(

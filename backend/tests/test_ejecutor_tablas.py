@@ -8,7 +8,9 @@ import pytest
 
 from db.migrations import (
     MIGRACION_EJECUTOR_INVENTARIO_V1, MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1, MIGRACION_EJECUTOR_REGLAS_V1,
-    _ejecutor_inventario_v1, _ejecutor_reglas_envoltorios_v1, _ejecutor_reglas_v1, parsear_inventario,
+    _asegurar_forma_de_ejecutor_punto_restauracion, _ejecutor_inventario_v1,
+    _ejecutor_reglas_envoltorios_v1, _ejecutor_reglas_v1, _METODOS_PUNTO_RESTAURACION,
+    parsear_inventario,
 )
 from tests.identidades import sql
 
@@ -213,3 +215,30 @@ def test_la_edad_del_respaldo_usa_su_propio_indice(client, sin_marcas, monkeypat
     filas = client.portal.call(sql, "EXPLAIN SELECT host_nombre, MAX(respaldado_at) "
                                     "FROM ejecutor_punto_restauracion GROUP BY host_nombre", None, True)
     assert any("idx_ejecutor_punto_host_respaldo" in str(f) for f in filas), filas
+
+
+def test_ya_es_enum_exige_el_conjunto_exacto(client, sin_marcas):
+    """Hallazgo de la auditoría adversarial (2026-09-22): `ya_es_enum` comparaba "¿están los 4
+    valores?", no "¿son EXACTAMENTE estos 4?" -- un ENUM con un quinto valor de más pasaba el
+    chequeo viejo y el MODIFY que lo recorta nunca corría. Se siembra a mano un ENUM con un
+    valor extra y se comprueba que la función lo detecta y lo recorta."""
+    async def _romper_y_reparar():
+        enum_con_extra = ",".join(f"'{m}'" for m in (*_METODOS_PUNTO_RESTAURACION, "algo_extra"))
+        await sql(f"ALTER TABLE ejecutor_punto_restauracion MODIFY COLUMN metodo ENUM({enum_con_extra}) NOT NULL")
+        antes = await sql(
+            "SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_punto_restauracion' AND COLUMN_NAME='metodo'", None, True)
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await _asegurar_forma_de_ejecutor_punto_restauracion(cur)
+            await conn.commit()
+        despues = await sql(
+            "SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_punto_restauracion' AND COLUMN_NAME='metodo'", None, True)
+        return antes, despues
+
+    antes, despues = client.portal.call(_romper_y_reparar)
+    assert "algo_extra" in antes[0][0]
+    assert "algo_extra" not in despues[0][0], despues
