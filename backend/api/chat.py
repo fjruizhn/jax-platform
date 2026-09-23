@@ -370,6 +370,27 @@ def _sin_tildes(s: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
+# Easter egg — ESPEJO de jax/core/router.py (2026-09-23). Misma razón que las
+# keywords de abajo: no se puede importar jax.core.router. Lo vigila la misma
+# familia `router_keywords` de jax/scripts/check_mirror_sync.py; el texto es el
+# de Jairo Urbina y no se toca en una sola copia.
+# Easter egg (trigger exacto, sin espacio).
+EASTER_EGG_TRIGGER = "ide1990"
+EASTER_EGG_TEXT = (
+    "Hola Fernando Ruiz, mejor conocido por sus amigos tecnologicos como "
+    "'El Jate'. Quiero que sepas que sigo a tu lado, viviendo ahora en "
+    "hall9000, como el poderoso dios de la tecnologia llamado JAX. Saludos "
+    "a nuestro clan de geeks, MINIX, Xavas... siempre estare aqui "
+    "acompanandote y ayudandote a ser mejor persona."
+)
+
+
+def _es_easter_egg(message: str) -> bool:
+    """Mismo criterio que el REPL (jax/core/router.py::route, paso 1):
+    minúsculas, sin tildes, sin espacios, y el disparador contenido."""
+    return EASTER_EGG_TRIGGER in _sin_tildes(message.lower().strip()).replace(" ", "")
+
+
 # Keywords por faceta — ESPEJO de jax/core/router.py (A-22, 2026-09-16).
 # Copia a propósito: importar jax.core.router arrastra contrato_dispatch ->
 # facet_resolver y rompe CI (verificado por terceros). La vigila
@@ -1202,6 +1223,19 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
 
     # Respuestas especiales (sin llamada a LLM) — nunca pasan por el parseo
     # de contrato, igual que usage=None (is_canned=True) dentro de _invoke_facet.
+    # Easter egg primero, "antes que todo" como en el REPL: ni una faceta
+    # fijada lo tapa. A diferencia del REPL, la respuesta SÍ se guarda en la
+    # memoria: el 2026-08-09 faltó justo esa evidencia y el modelo inventó
+    # un "IDE2024" que quedó como hecho verificado (#106).
+    if _es_easter_egg(req.message):
+        _update_history(user_id, mensaje_para_historial(req.message, validados), EASTER_EGG_TEXT)
+        if conv_uuid:
+            _memory.save_message(conv_uuid, "jax_local", EASTER_EGG_TEXT,
+                                 facet="jax_local", model="easter_egg")
+        await _fire_completed("jax_local", tenant_id, user_id)
+        return ChatResponse(facet="jax_local", response=EASTER_EGG_TEXT, timestamp=timestamp,
+                            contract_degraded=False)
+
     if facet == "hyde":
         aviso = AvisoDeChat(code="hyde_usa_modo_comando")
         await _fire_completed(facet, tenant_id, user_id)
