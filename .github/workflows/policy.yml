@@ -980,7 +980,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pytest
+      - run: pip install -c constraints.txt pytest
       - run: python -m pytest tests/test_no_fail_open_except.py -v
 
   # La opcion B del diseno 2026-08-28 (probe_facet deja de escribir
@@ -1013,7 +1013,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pytest
+      - run: pip install -c constraints.txt pytest
       - run: python -m pytest tests/test_policy_invoke_facet_envoltorio.py -v
 
   # --------------------------------------------------------------------------
@@ -1093,7 +1093,7 @@ jobs:
       # del modulo sigue funcionando (son imports LOCALES, dentro de la
       # funcion, no a nivel de modulo), pero el test que SI ejercita
       # main_async() de punta a punta revienta al llegar a esa linea.
-      - run: pip install pytest httpx pymysql python-jose
+      - run: pip install -c backend/constraints.txt pytest httpx pymysql python-jose
       # test_descartados_orquestar.py (Task 8, 2026-09-22, carga de
       # descartar-pipelines): mismo defecto que el resto de esta lista si no
       # se agrega acá -- existiría y no correría en NINGÚN job.
@@ -1187,7 +1187,7 @@ jobs:
           # 3.14 = la version real de backend/.venv, la que corre en produccion.
           python-version: "3.14"
       - name: Instalar dependencias
-        run: pip install -r requirements.txt pytest pytest-asyncio
+        run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
 
       - name: Traer el repo jax (fuente de verdad del esquema de Jacobs)
         working-directory: .
@@ -1197,7 +1197,7 @@ jobs:
         working-directory: .
         # pydantic ademas de aiomysql: jacobs.store importa jacobs.models.
         run: |
-          pip install aiomysql pydantic
+          pip install -c backend/constraints.txt aiomysql pydantic
           # `las_manos` en el PYTHONPATH: desde el frente B (2026-09-17), jacobs.policy importa
           # `interruptor`, que vive en jax/core y se expone como las_manos/interruptor.py. Sin eso
           # el paso muere con ModuleNotFoundError y el job no llega ni a correr un test.
@@ -3790,7 +3790,7 @@ jobs:
         # pytest-asyncio NO está en requirements.txt aunque pytest.ini lo
         # necesita (asyncio_mode = auto). Se instala explícito acá; declararlo
         # en un requirements-dev.txt queda como deuda anotada.
-        run: pip install -r requirements.txt pytest pytest-asyncio
+        run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
 
       - name: Traer el repo jax (vocabulario cerrado de predicados)
         working-directory: .
