@@ -1328,27 +1328,61 @@ async def restore_pipeline(pipeline_id: str, user: AuthUser = Depends(require_su
 # acá.
 #
 # FIX (round 3): CUATRO consultas, una por `event_type`, en vez de una con
-# `IN (...)`. CORRECCIÓN sobre un supuesto que esta nota tenía al
-# principio de la ronda 3 (protocolo de la Biblioteca: se marca, no se
-# borra en silencio): NO es cierto que esta forma le quite TODA
-# alternativa de plan al optimizador -- medido a mano, la MISMA siembra
-# (5.000 filas de auditoría, sin ruido) dio `idx_events_pipeline_tipo`
-# para un tipo e `idx_events_pipeline` para el mismo tipo en otra corrida.
-# Lo que SÍ es cierto, y es lo que importa: con UNA sola igualdad de
-# `event_type` (no un `IN (...)`), el costo queda acotado con CUALQUIERA
-# de los dos planes -- `idx_events_pipeline` para un único tipo con buena
-# densidad (como el caso 50/50 medido) examina del orden de 2×limite
-# filas, nunca el histórico completo del pipeline. Es la MISMA lección de
-# MAJOR-1 (no confiar en el nombre del plan, medir el costo) aplicada acá
-# también a la verificación del propio fix, no sólo al código. Medido con
-# EXPLAIN + Handler_read en los CUATRO escenarios de esta ronda, incluido
-# el que salía inestable con la consulta única: SIEMPRE acotado por
-# 4×(limite+1) como peor caso absoluto (204 con limite=50), en 5 corridas
-# repetidas para confirmarlo -- test_auditoria_descarte_con_ruido_mas_
-# nuevo_no_escanea_el_pipeline más abajo. El costo de CUATRO viajes en
-# vez de uno es un intercambio consciente: 4 consultas con un costo
-# acotado por construcción valen más que 1 consulta cuyo costo depende
-# de qué plan elija el optimizador en cada corrida.
+# `IN (...)`. La ronda 3 dejó esto SIN `FORCE INDEX`, razonando que una
+# igualdad simple de `event_type` (no un `IN (...)`) acotaba el costo con
+# CUALQUIERA de los dos planes -- eso es cierto en promedio, pero no es
+# una COTA: es una observación sobre los casos medidos, no algo que el
+# SQL garantice. El caso disperso lo rompe -- 20 filas de auditoría (5 por
+# tipo) + 2.000 `STEP_FAILED` MÁS NUEVOS: si una consulta cae en
+# `idx_events_pipeline` (que sigue siendo `possible_key`, sin `FORCE
+# INDEX`), escanea hacia atrás filtrando por tipo y NUNCA junta sus 51 --
+# tiene que recorrer el rango completo, ~2.020 lecturas por consulta que
+# cae mal, hasta ~8.080 si las cuatro caen mal -- CUATRO VECES peor que
+# los 2.021 por los que se condenó a la ronda 2. El comentario de más
+# arriba ya deja registrado que la MISMA siembra dio índices distintos en
+# corridas distintas.
+#
+# FIX (round 4, decisión del coordinador): `FORCE INDEX
+# (idx_events_pipeline_tipo)` en `SQL_AUDITORIA_DESCARTE_POR_TIPO`. Esto
+# NO es el mismo error que MAJOR-1 (forzar `idx_events_pipeline`, el
+# índice MALO para esa consulta) -- acá se fuerza el índice CORRECTO para
+# ESTA forma exacta de consulta: con `(pipeline_id, event_type)` más la
+# PK que InnoDB agrega sola a todo índice secundario, una igualdad de
+# `event_type` con `ORDER BY id DESC LIMIT 51` es un recorrido hacia atrás
+# de exactamente 51 entradas del índice -- sin filesort, sin ninguna otra
+# forma de resolverlo que el optimizador tenga que evaluar. Verificado con
+# EXPLAIN + Handler_read en 5-7 corridas repetidas del caso disperso (el
+# que antes era inestable): SIEMPRE `idx_events_pipeline_tipo`, SIEMPRE
+# Handler_read=24 (exacto, no un rango) -- test_auditoria_descarte_con_
+# ruido_mas_nuevo_no_escanea_el_pipeline más abajo. El tope de
+# 4×(limite+1)=204 ya NO es un canario que podría no dispararse -- es una
+# cota real, construida por el plan, no observada por casualidad en los
+# escenarios que se les ocurrió sembrar a los tests.
+#
+# ACOPLAMIENTO DE ESQUEMA (mismo tipo de dependencia que el resto de la
+# rama con `idx_pipelines_visibles`/`idx_pipelines_ocultos`): el dueño de
+# `idx_events_pipeline_tipo` es el repo `jax`, no este -- lo crea
+# `init_tables()` (jax/jacobs/store.py, Ruling R20) y
+# jax/tests/test_jacobs_events_indice_causa_db.py::test_init_tables_crea_
+# idx_events_pipeline_tipo prueba que existe. Un `FORCE INDEX` con un
+# nombre que no existe es un ERROR de MariaDB (1176), no un hint que se
+# ignora -- el `jax` desplegado en producción YA tiene este índice desde
+# el Ruling R20 (2026-09-17, anterior a esta rama), así que no hay un
+# orden de despliegue nuevo que cumplir acá, a diferencia de
+# `idx_pipelines_visibles` (jax#259), que sí es más nuevo que producción.
+#
+# CONCURRENCIA (registrado, no arreglado -- decisión del coordinador,
+# ronda 4): las cuatro consultas corren en la MISMA conexión con
+# autocommit, cada una con su propia vista de lectura -- un discard/
+# recover concurrente ENTRE la primera y la cuarta consulta puede producir
+# una lista de auditoría "partida" (mezcla de estados de antes y de
+# después del cambio). Es cosmético sobre una lectura de auditoría (no
+# sobre una transición con CAS, que sigue siendo atómica en `jax`), pero
+# la consulta ÚNICA de la ronda 2 sí era atómica y esta ya no lo es -- se
+# deja escrito, no se envuelve en una transacción con nivel de aislamiento
+# más fuerte porque el costo (una transacción explícita por cada apertura
+# de detalle) no se justifica para un efecto cosmético en una vista de
+# sólo lectura.
 #
 # Los resultados de las 4 consultas se juntan y ordenan en Python (a lo
 # sumo 4×(limite+1) filas, nunca más) -- se pide `limite+1` A CADA tipo:
@@ -1358,7 +1392,7 @@ async def restore_pipeline(pipeline_id: str, user: AuthUser = Depends(require_su
 LIMITE_AUDITORIA_DESCARTE = 50
 _TIPOS_AUDITORIA_DESCARTE = ("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")
 SQL_AUDITORIA_DESCARTE_POR_TIPO = (
-    "SELECT id, event_type, payload, ts FROM jacobs_events "
+    "SELECT id, event_type, payload, ts FROM jacobs_events FORCE INDEX (idx_events_pipeline_tipo) "
     "WHERE pipeline_id=%s AND event_type=%s "
     "ORDER BY id DESC LIMIT %s"
 )

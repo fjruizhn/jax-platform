@@ -378,6 +378,23 @@ EXPLAIN + Handler_read, CUATRO consultas por tipo, 5.000 filas de auditoría, si
   Handler_read TOTAL acotado por 4×51=204 (nunca escala con las 5.000 sembradas)
 ```
 
+**Corrección (fix round 4, MAJOR-2, revisión adversarial de PR 151):**
+"el COSTO queda acotado con cualquiera de los dos planes" (párrafo de
+arriba) era una lectura optimista de los números medidos en la ronda 3,
+no una garantía -- el revisor encontró el caso que la rompe: CON las
+cuatro consultas por tipo pero SIN `FORCE INDEX`, el escenario disperso
+de este mismo pipeline (pocas filas de auditoría, miles de ruido más
+nuevo) podía, en otra corrida, hacer que UNA o varias de las cuatro
+cayeran en `idx_events_pipeline` -- y ahí cada una escanea el rango
+COMPLETO (~2.020 lecturas), hasta ~8.080 si caen las cuatro: CUATRO veces
+peor que los 2.021 de la consulta única que motivó esta misma ronda. La
+cota "queda acotado" pasó a ser real recién con `FORCE INDEX
+(idx_events_pipeline_tipo)` (fix round 4, decisión del coordinador,
+`api/pipelines.py`) -- con eso, el plan no es una elección del
+optimizador, y el Handler_read=24 de arriba deja de ser un rango
+observado (44 en una corrida) para ser el número exacto en cualquier
+corrida.
+
 **Verificación previa** del pipeline con ruido más nuevo (20 eventos de
 auditoría, 2.000 `STEP_FAILED` más nuevos):
 
@@ -402,10 +419,25 @@ es correcto -- no falta nada por mostrar, a diferencia del pipeline con
 
 **Lectura:** 0 errores en las seis concurrencias, en el escenario EXACTO
 que describió el revisor (pocas filas de auditoría, miles de ruido más
-nuevo). El perfil es, otra vez, indistinguible del resto del documento --
-la carga confirma a nivel HTTP lo que el EXPLAIN ya mostró: las cuatro
+nuevo). El perfil es, otra vez, indistinguible del resto del documento.
+
+**Corrección (fix round 4, MINOR, revisión adversarial de PR 151):** este
+párrafo decía, en la ronda 3, que "las cuatro consultas por tipo no dejan
+que el ruido... entre al costo del pedido" -- eso se quedaba corto contra
+el propio matiz que el código de esa ronda ya reconocía: SIN `FORCE
+INDEX`, el costo acotado era una OBSERVACIÓN sobre los casos medidos, no
+algo que el SQL garantizara -- el mismo escenario disperso de este
+pipeline (pocas filas de auditoría, mucho ruido más nuevo) podía, en otra
+corrida con las mismas cuatro consultas, caer en `idx_events_pipeline` y
+escanear el rango completo por cada consulta que cayera mal (hasta
+~8.080 lecturas en el peor caso, cuatro veces peor que la consulta única
+que motivó la ronda 3). Con `FORCE INDEX (idx_events_pipeline_tipo)`
+agregado en esta ronda, la frase original SÍ es cierta: la carga confirma
+a nivel HTTP lo que el EXPLAIN ya mostró determinista (Handler_read=24
+exacto, no un rango, en 5-7 corridas repetidas) -- ahora las cuatro
 consultas por tipo no dejan que el ruido, por mucho que haya o de qué
-edad sea, entre al costo del pedido.
+edad sea, entre al costo del pedido, porque el plan ya no es una elección
+del optimizador.
 
 ## Lectura: dónde empieza a degradarse
 

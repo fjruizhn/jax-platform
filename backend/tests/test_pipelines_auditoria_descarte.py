@@ -48,21 +48,42 @@ este caso es el mismo error que MAJOR-1 ya corrigió una vez.
 
 Se reemplazó la consulta única con `IN (...)` por CUATRO consultas, una
 por `event_type` (`SQL_AUDITORIA_DESCARTE_POR_TIPO`), fusionadas y
-ordenadas en Python. CORRECCIÓN sobre un supuesto que esta misma nota
-tenía al principio de la ronda 3: NO es cierto que `WHERE pipeline_id=%s
-AND event_type=%s ORDER BY id DESC LIMIT %s` elija SIEMPRE
-`idx_events_pipeline_tipo` -- medido a mano, la MISMA siembra (5.000
-filas de auditoría 50/50 entre dos tipos, sin ruido) dio esa clave en una
-corrida e `idx_events_pipeline` en otra, para el mismo tipo. Lo que SÍ es
-cierto, y es lo que estos tests verifican, es que el COSTO queda acotado
-(Handler_read ≤ 4×(limite+1)) con CUALQUIERA de los dos planes -- a
-diferencia de la consulta con `IN (...)`, acá no hay un tercer índice
-"malo sin salvedad": `idx_events_pipeline` para un único `event_type` con
-buena densidad (como el 50/50 de este caso) sigue examinando del orden
-de 2×limite filas, no el total del pipeline. Los tests afirman el
-Handler_read real, NUNCA el nombre del índice -- exactamente la lección
-de MAJOR-1 (no fiarse del plan, medir el costo), aplicada esta vez
-también a la propia verificación de este fix, no sólo al código.
+ordenadas en Python.
+
+Fix round 4 (MAJOR-2, misma revisión, decisión del coordinador):
+CORRECCIÓN sobre lo que decía este párrafo desde el principio de la
+ronda 3 -- ahí se aceptaba que la consulta por tipo, SIN `FORCE INDEX`,
+no eligiera siempre `idx_events_pipeline_tipo`, razonando que el costo
+quedaba acotado igual "con cualquiera de los dos planes". Eso era una
+OBSERVACIÓN sobre los casos medidos hasta esa ronda, no una cota real: el
+caso disperso la rompe -- 20 filas de auditoría (5 por tipo) + 2.000
+`STEP_FAILED` MÁS NUEVOS. Si una consulta cae en `idx_events_pipeline`
+(seguía siendo `possible_key` sin el `FORCE`), escanea hacia atrás
+filtrando por tipo y NUNCA junta sus 51 -- tiene que recorrer el rango
+COMPLETO, ~2.020 lecturas por consulta que cae mal, hasta ~8.080 si caen
+mal las cuatro: CUATRO VECES peor que los 2.021 de la consulta única que
+motivaron esta ronda.
+
+Se agregó `FORCE INDEX (idx_events_pipeline_tipo)` a
+`SQL_AUDITORIA_DESCARTE_POR_TIPO`. Esto NO es el mismo error que MAJOR-1
+(forzar `idx_events_pipeline`, el índice MALO para esa consulta) -- acá
+se fuerza el índice CORRECTO para esta forma exacta de consulta: con
+`(pipeline_id, event_type)` más la PK que InnoDB agrega sola a todo
+índice secundario, una igualdad de `event_type` con `ORDER BY id DESC
+LIMIT 51` es un recorrido hacia atrás de exactamente 51 entradas del
+índice -- sin filesort, sin otra forma de resolverlo que evaluar. El
+índice está garantizado en producción: lo crea `init_tables()` del repo
+`jax` (jacobs/store.py, Ruling R20, 2026-09-17 -- ANTERIOR a esta rama,
+a diferencia de `idx_pipelines_visibles`, que sí es más nuevo que
+producción) y `jax/tests/test_jacobs_events_indice_causa_db.py::
+test_init_tables_crea_idx_events_pipeline_tipo` prueba que existe.
+
+Con el `FORCE INDEX`, el tope de `Handler_read ≤ 4×(limite+1)` DEJA de
+ser una observación sobre los casos que se sembraron y pasa a ser una
+cota real, construida por el plan -- por eso los tests de abajo ya
+afirman el nombre del índice en las cuatro consultas, no sólo el
+Handler_read (MINOR de esta ronda: antes sólo se afirmaba
+`table == "jacobs_events"`, cierto de cualquier plan).
 
 Medido con EXPLAIN + Handler_read reales:
 - Ruido de 221 eventos STEP_FAILED, MÁS VIEJOS que la auditoría (mismo
@@ -70,14 +91,13 @@ Medido con EXPLAIN + Handler_read reales:
   abajo): Handler_read TOTAL=8 para 4 filas devueltas.
 - 5.000 eventos DE AUDITORÍA sembrados, sin ruido
   (`test_auditoria_descarte_acota_incluso_con_miles_de_eventos_de_auditoria`):
-  Handler_read TOTAL acotado por 4×51, medido más abajo -- incluso en la
-  corrida donde un tipo usó `idx_events_pipeline` en vez del compuesto.
-- Pocas filas de auditoría (20) + miles de ruido MÁS NUEVO (el caso que
-  salía INESTABLE con la consulta única -- 44 en una corrida, 2.021 en
-  otra, sin cambiar SQL ni datos --
+  Handler_read TOTAL acotado por 4×51, medido más abajo, SIEMPRE con
+  `idx_events_pipeline_tipo` en las cuatro.
+- Pocas filas de auditoría (20) + miles de ruido MÁS NUEVO (el caso
+  disperso, antes inestable --
   `test_auditoria_descarte_con_ruido_mas_nuevo_no_escanea_el_pipeline`):
-  con las cuatro consultas por tipo, acotado en las cinco corridas
-  repetidas para confirmar (ver el reporte de la tarea).
+  con el `FORCE INDEX`, Handler_read=24 EXACTO (no un rango) en 5-7
+  corridas repetidas, siempre `idx_events_pipeline_tipo` en las cuatro.
 
 El test ya NO afirma el nombre del índice ni la ausencia de "Using
 filesort" -- afirma el Handler_read real (rows examined), que es lo que
@@ -112,7 +132,12 @@ async def _explain_y_handler_read_por_tipo(pid, limite_mas_uno):
     unidad -- FLUSH STATUS antes de las cuatro, Handler_read después de
     las cuatro, en la MISMA conexión (es un contador de sesión). Devuelve
     la lista de los cuatro EXPLAIN (uno por tipo) para que el test pueda
-    afirmar que NINGUNO usa el índice malo."""
+    afirmar que NINGUNO usa el índice malo -- MINOR (fix round 4): antes
+    esta función devolvía los EXPLAIN pero ningún test leía `explain["key"]`,
+    sólo `explain["table"]` (cierto de CUALQUIER plan, no prueba nada).
+    Con `FORCE INDEX (idx_events_pipeline_tipo)` en
+    `SQL_AUDITORIA_DESCARTE_POR_TIPO`, la clave es determinista -- los
+    tests de abajo ahora sí la afirman."""
     from db.connection import get_pool
     from api.pipelines import SQL_AUDITORIA_DESCARTE_POR_TIPO
 
@@ -292,10 +317,16 @@ def test_auditoria_descarte_no_escanea_todo_el_pipeline(client):
             _explain_y_handler_read_por_tipo, pid, LIMITE_AUDITORIA_DESCARTE + 1)
         for explain in explains:
             assert explain["table"] == "jacobs_events"
+            # Fix round 4 (MINOR): con FORCE INDEX (decisión del
+            # coordinador), la clave es DETERMINISTA -- se afirma, no sólo
+            # el Handler_read.
+            assert explain["key"] == "idx_events_pipeline_tipo", explain
         assert len(filas) == 4, filas
         total = sum(handler.values())
-        # Medido: acotado por 4×(limite+1)=204 como peor caso absoluto.
-        assert total <= 220, (
+        # Medido: 8 exacto (4 filas de auditoría). Margen chico, ya no un
+        # canario: con FORCE INDEX el plan no puede caer en
+        # idx_events_pipeline.
+        assert total <= 20, (
             f"{total} lecturas Handler_read para 4 filas de auditoría -- "
             f"huele a que el motor está tocando los 221 eventos NO-auditoría "
             f"del pipeline: {handler}"
@@ -325,13 +356,15 @@ def test_auditoria_descarte_acota_incluso_con_miles_de_eventos_de_auditoria(clie
             _explain_y_handler_read_por_tipo, pid, LIMITE_AUDITORIA_DESCARTE + 1)
         for explain in explains:
             assert explain["table"] == "jacobs_events"
+            assert explain["key"] == "idx_events_pipeline_tipo", explain
         # Cada tipo trae hasta limite+1 -- PIPELINE_DISCARDED y
         # PIPELINE_RECOVERED llegan al tope (51 cada uno, 2500 sembradas de
         # cada uno), HIDDEN/RESTORED traen 0.
         assert len(filas) == 2 * (LIMITE_AUDITORIA_DESCARTE + 1), filas
         total = sum(handler.values())
-        # Medido: acotado por 4×(limite+1)=204. El punto es que NO escale
-        # con las 5.000 sembradas.
+        # Medido: 204 exacto (2×51 de DISCARDED/RECOVERED + 2×0 de
+        # HIDDEN/RESTORED, que confirman "0 filas" sin escanear las 5.000).
+        # Margen chico, ya no un canario.
         assert total <= 220, (
             f"{total} lecturas Handler_read -- huele a que el motor está "
             f"trayendo las 5.000 filas de auditoría sembradas en vez de "
@@ -342,16 +375,21 @@ def test_auditoria_descarte_acota_incluso_con_miles_de_eventos_de_auditoria(clie
 
 
 def test_auditoria_descarte_con_ruido_mas_nuevo_no_escanea_el_pipeline(client):
-    """MAJOR-2 (fix round 3, revisión adversarial de PR 151): el escenario
-    que rompía la consulta única (`ORDER BY id DESC LIMIT %s` sobre
-    `event_type IN (...)`) -- pocas filas de auditoría (bajo el límite) y
-    miles de eventos NO-auditoría MÁS NUEVOS (id más alto). Con la
-    consulta única, el optimizador podía elegir `idx_events_pipeline`
-    (malo: escanea el rango de id completo saltando el ruido) de forma
-    INESTABLE -- medido a mano, Handler_read pasaba de 44 a 2.021 entre
-    corridas idénticas, sin cambiar SQL ni datos. Con las consultas por
-    tipo, no hay esa alternativa: siempre `idx_events_pipeline_tipo`,
-    siempre acotado."""
+    """MAJOR-2 (fix round 3, revisión adversarial de PR 151; FORCE INDEX
+    en fix round 4, decisión del coordinador): el escenario que rompía la
+    consulta única (`ORDER BY id DESC LIMIT %s` sobre `event_type IN
+    (...)`) -- pocas filas de auditoría (bajo el límite) y miles de
+    eventos NO-auditoría MÁS NUEVOS (id más alto). Con la consulta única,
+    el optimizador podía elegir `idx_events_pipeline` (malo: escanea el
+    rango de id completo saltando el ruido) de forma INESTABLE -- medido
+    a mano, Handler_read pasaba de 44 a 2.021 entre corridas idénticas,
+    sin cambiar SQL ni datos. La ronda 3 cambió a consultas por tipo pero
+    SIN forzar el índice -- ese mismo caso disperso seguía pudiendo caer
+    en `idx_events_pipeline` (era `possible_key` igual), y ahí es CUATRO
+    VECES peor que la consulta única (hasta ~8.080, una por cada de las
+    cuatro consultas que cayera mal). Con `FORCE INDEX
+    (idx_events_pipeline_tipo)` (round 4) no hay esa alternativa: el plan
+    es determinista, y este test ya no es un canario -- es la cota real."""
     from api.pipelines import LIMITE_AUDITORIA_DESCARTE
 
     pid = str(uuid.uuid4())
@@ -372,13 +410,15 @@ def test_auditoria_descarte_con_ruido_mas_nuevo_no_escanea_el_pipeline(client):
             _explain_y_handler_read_por_tipo, pid, LIMITE_AUDITORIA_DESCARTE + 1)
         for explain in explains:
             assert explain["table"] == "jacobs_events"
+            assert explain["key"] == "idx_events_pipeline_tipo", explain
         assert len(filas) == 20, filas
         total = sum(handler.values())
-        # Medido con las consultas por tipo: 44 (4 tipos × hasta 11 lecturas
-        # cada uno). El tope de 220 (4×(limite+1)) es el peor caso
-        # ABSOLUTO, independiente de cuánto ruido haya -- a diferencia de
-        # la consulta única, que con este mismo escenario podía llegar a
-        # ~2.021 (todo el ruido).
+        # Medido: 24 EXACTO (4 tipos × 6 lecturas cada uno, 5 filas + 1 de
+        # confirmación de fin de rango por tipo), en 5-7 corridas repetidas
+        # -- ya no un rango ("de 44 a 2.021" como sin el FORCE). El tope de
+        # 220 deja margen sin dejar pasar un regreso al escaneo completo
+        # (~2.020 por consulta que cayera mal, hasta ~8.080 las cuatro --
+        # lo que este mismo escenario media SIN el FORCE INDEX).
         assert total <= 220, (
             f"{total} lecturas Handler_read para 20 filas de auditoría con "
             f"2.000 eventos más nuevos -- huele a que el motor está "
