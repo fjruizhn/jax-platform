@@ -372,10 +372,12 @@ def _sin_tildes(s: str) -> str:
 
 # Easter egg — ESPEJO de jax/core/router.py (2026-09-23). Misma razón que las
 # keywords de abajo: no se puede importar jax.core.router. Lo vigila la misma
-# familia `router_keywords` de jax/scripts/check_mirror_sync.py; el texto es el
-# de Jairo Urbina y no se toca en una sola copia.
-# Easter egg (trigger exacto, sin espacio).
-EASTER_EGG_TRIGGER = "ide1990"
+# familia `router_keywords` de jax/scripts/check_mirror_sync.py: patrón, texto
+# y función, idénticos a los del REPL. Un cambio acá se hace también allá.
+# i18n: EXCEPCIÓN DECLARADA (decisión de Fernando, 2026-09-23). El texto es el
+# mensaje personal de Jairo Urbina del REPL, no texto de la interfaz: se
+# muestra siempre así, en español, en las dos copias.
+EASTER_EGG_PATRON = re.compile(r"(?<![a-z0-9])ide\s*1990(?![0-9])")
 EASTER_EGG_TEXT = (
     "Hola Fernando Ruiz, mejor conocido por sus amigos tecnologicos como "
     "'El Jate'. Quiero que sepas que sigo a tu lado, viviendo ahora en "
@@ -385,10 +387,13 @@ EASTER_EGG_TEXT = (
 )
 
 
-def _es_easter_egg(message: str) -> bool:
-    """Mismo criterio que el REPL (jax/core/router.py::route, paso 1):
-    minúsculas, sin tildes, sin espacios, y el disparador contenido."""
-    return EASTER_EGG_TRIGGER in _sin_tildes(message.lower().strip()).replace(" ", "")
+def es_easter_egg(texto: str) -> bool:
+    """IDE1990 como palabra propia, sin distinguir mayúsculas ni tildes, con
+    o sin espacios entre IDE y 1990. Antes (2026-09-23) era una subcadena
+    tras quitar TODOS los espacios, y "el cliente pide 1990 unidades" o
+    "provide 1990" disparaban: en la Mesa, multiusuario, eso es una
+    respuesta perdida que le muestra a otro el mensaje de Fernando."""
+    return EASTER_EGG_PATRON.search(_sin_tildes(texto.lower())) is not None
 
 
 # Keywords por faceta — ESPEJO de jax/core/router.py (A-22, 2026-09-16).
@@ -1173,6 +1178,17 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     validar_ids_de_uso(user_id, tenant_id)
     timestamp = utc_ahora().isoformat() + "Z"
 
+    # Easter egg IDE1990 "antes que todo", como en el REPL: ni una faceta
+    # fijada ni un adjunto lo tapan, y no llama a ningún modelo. Igual que el
+    # REPL, la respuesta NO va a la memoria persistente: el extractor de hechos
+    # la leería sin filtro y fabricaría hechos del texto (auditoría 2026-09-23,
+    # MAJOR-2). Sí va al hilo en RAM, para que el turno siguiente sepa qué pasó.
+    if es_easter_egg(req.message):
+        _update_history(user_id, req.message, EASTER_EGG_TEXT)
+        await _fire_completed("jax_local", tenant_id, user_id)
+        return ChatResponse(facet="jax_local", response=EASTER_EGG_TEXT, timestamp=timestamp,
+                            contract_degraded=False)
+
     # --- Adjuntos (frente D; RD3: por id) — ANTES de memoria, estado y proveedor
     # Un rechazo no deja fila en memoria, no pone la faceta en "thinking" y no
     # gasta una llamada. Orden: tope por mensaje, sidecars del dueño (404
@@ -1223,19 +1239,6 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
 
     # Respuestas especiales (sin llamada a LLM) — nunca pasan por el parseo
     # de contrato, igual que usage=None (is_canned=True) dentro de _invoke_facet.
-    # Easter egg primero, "antes que todo" como en el REPL: ni una faceta
-    # fijada lo tapa. A diferencia del REPL, la respuesta SÍ se guarda en la
-    # memoria: el 2026-08-09 faltó justo esa evidencia y el modelo inventó
-    # un "IDE2024" que quedó como hecho verificado (#106).
-    if _es_easter_egg(req.message):
-        _update_history(user_id, mensaje_para_historial(req.message, validados), EASTER_EGG_TEXT)
-        if conv_uuid:
-            _memory.save_message(conv_uuid, "jax_local", EASTER_EGG_TEXT,
-                                 facet="jax_local", model="easter_egg")
-        await _fire_completed("jax_local", tenant_id, user_id)
-        return ChatResponse(facet="jax_local", response=EASTER_EGG_TEXT, timestamp=timestamp,
-                            contract_degraded=False)
-
     if facet == "hyde":
         aviso = AvisoDeChat(code="hyde_usa_modo_comando")
         await _fire_completed(facet, tenant_id, user_id)
