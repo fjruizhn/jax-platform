@@ -168,9 +168,9 @@ async def lifespan(app: FastAPI):
     # 2026-09-23: cada índice que el código fuerza con FORCE INDEX (lista
     # sacada del propio código, db/indices_forzados.py) tiene que existir, o
     # la vista que lo usa da 500 (error 1176). Los crea jax, no este repo:
-    # un ERROR por índice ausente, sin tumbar el arranque.
-    forzados = await asyncio.to_thread(indices_forzados.indices_forzados)
-    await indices_forzados.avisar_indices_forzados_ausentes(await get_pool(), forzados)
+    # un ERROR por índice ausente, sin tumbar el arranque (todo el chequeo
+    # es fail-soft adentro de chequeo_de_arranque).
+    await indices_forzados.chequeo_de_arranque(get_pool)
     await run_seed()
     await engine_state.cargar_nombres_de_facetas()
     engine_state.start_background_tasks()

@@ -20,17 +20,30 @@ el resto de la plataforma funciona sin esos índices, sólo fallan las
 consultas que los fuerzan. Deja un `logger.error` por índice ausente, con
 tabla, índice y dónde se fuerza, para que se vea en el journal ANTES de que
 lo vea un usuario.
+
+Tolerante por diseño (auditoría de jax-platform#160): un `.py` ilegible
+(no UTF-8, sintaxis rota, sin permiso) es un ERROR con su nombre y el
+escaneo sigue con el resto; y `chequeo_de_arranque()` envuelve TODO el
+chequeo, así que ningún fallo propio de este aviso tumba el arranque.
 """
 from __future__ import annotations
 
 import ast
+import asyncio
 import logging
+import os
 import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 RAIZ_BACKEND = Path(__file__).resolve().parent.parent
+
+# Directorios que no se recorren NUNCA (se podan antes de entrar): tests, y
+# lo que no es código de este repo (entornos virtuales, dependencias del
+# frontend, cachés de bytecode). En el checkout de producción `backend/`
+# tiene su `.venv` adentro: recorrerlo serían miles de archivos ajenos.
+EXCLUIDOS = frozenset({"tests", ".venv", "venv", "node_modules", "__pycache__", ".git"})
 
 _FORCE_INDEX = re.compile(
     r"\bFROM\s+`?(?P<tabla>\w+)`?(?:\s+(?:AS\s+)?(?!FORCE\b)\w+)?\s+FORCE\s+INDEX\s*\((?P<indices>[^)]*)\)",
@@ -49,15 +62,30 @@ def _literales_de_codigo(arbol: ast.AST):
             yield nodo
 
 
+def _archivos_python(raiz: Path):
+    """Los `.py` de `raiz`, podando EXCLUIDOS antes de entrar (os.walk con
+    `dirnames` recortado in situ), en orden estable."""
+    for actual, dirnames, filenames in os.walk(raiz):
+        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUIDOS)
+        for nombre in sorted(filenames):
+            if nombre.endswith(".py"):
+                yield Path(actual) / nombre
+
+
 def indices_forzados(raiz: Path = RAIZ_BACKEND) -> dict[tuple[str, str], list[str]]:
     """{(tabla, índice): ["archivo.py:línea", ...]} de todo `FORCE INDEX`
-    del código de `raiz`, sin `tests/` ni entornos virtuales."""
+    del código de `raiz`. Un archivo que no se puede leer o parsear es un
+    ERROR con su nombre, y se sigue con los demás."""
     encontrados: dict[tuple[str, str], list[str]] = {}
-    for archivo in sorted(raiz.rglob("*.py")):
+    for archivo in _archivos_python(raiz):
         relativo = archivo.relative_to(raiz)
-        if relativo.parts[0] in ("tests", ".venv", "venv") or "__pycache__" in relativo.parts:
+        try:
+            arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
+        except (OSError, UnicodeDecodeError, SyntaxError, ValueError) as exc:
+            logger.error("arranque: no se pudo leer %s para buscar FORCE INDEX (%s: %s); "
+                         "los índices que fuerce ese archivo NO se comprueban",
+                         relativo, type(exc).__name__, exc)
             continue
-        arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
         for nodo in _literales_de_codigo(arbol):
             for m in _FORCE_INDEX.finditer(nodo.value):
                 for indice in (i.strip().strip("`") for i in m.group("indices").split(",")):
@@ -71,31 +99,59 @@ SQL_INDICES_EXISTENTES = (
     "SELECT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS "
     "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ({})"
 )
+SQL_TABLAS_EXISTENTES = (
+    "SELECT TABLE_NAME FROM information_schema.TABLES "
+    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ({})"
+)
 
 
 async def avisar_indices_forzados_ausentes(pool, forzados=None) -> list[tuple[str, str]]:
-    """Un ERROR por cada índice forzado que no existe en la base activa.
-    Devuelve la lista de (tabla, índice) ausentes. Si la comprobación misma
-    no se puede hacer, también es un ERROR (no se da por buena en silencio),
-    pero tampoco tumba el arranque."""
+    """Un ERROR por cada índice forzado que no existe en la base activa (o
+    por su tabla, si lo que falta es la tabla entera). Devuelve la lista de
+    (tabla, índice) ausentes. Los nombres de índice se comparan sin
+    distinguir mayúsculas: MariaDB no las distingue en `FORCE INDEX`. Si la
+    comprobación misma no se puede hacer, también es un ERROR (no se da por
+    buena en silencio), pero tampoco tumba el arranque."""
     if forzados is None:
         forzados = indices_forzados()
     if not forzados:
         return []
     tablas = sorted({t for t, _i in forzados})
+    marcas = ", ".join(["%s"] * len(tablas))
     try:
         async with pool.acquire() as conn, conn.cursor() as cur:
-            await cur.execute(SQL_INDICES_EXISTENTES.format(", ".join(["%s"] * len(tablas))), tablas)
-            existentes = {(t, i) for t, i in await cur.fetchall()}
+            await cur.execute(SQL_TABLAS_EXISTENTES.format(marcas), tablas)
+            tablas_existentes = {t for (t,) in await cur.fetchall()}
+            await cur.execute(SQL_INDICES_EXISTENTES.format(marcas), tablas)
+            existentes = {(t, i.lower()) for t, i in await cur.fetchall()}
     except Exception as exc:  # fail-soft: chequeo de arranque que sólo avisa (docstring del módulo); el fallo se loguea en ERROR, no se traga
         logger.error("arranque: no se pudo comprobar los índices forzados %s (%s: %s)",
                      sorted(f"{t}.{i}" for t, i in forzados), type(exc).__name__, exc)
         return []
-    ausentes = sorted(k for k in forzados if k not in existentes)
+    ausentes = sorted(k for k in forzados if (k[0], k[1].lower()) not in existentes)
     for tabla, indice in ausentes:
+        donde = ", ".join(forzados[(tabla, indice)])
+        if tabla not in tablas_existentes:
+            logger.error(
+                "arranque: falta la TABLA %s (y con ella el índice %s) -- el código la usa con "
+                "FORCE INDEX en %s y esas consultas van a fallar hasta que exista; la crea "
+                "init_tables() de jax (jacobs/store.py)", tabla, indice, donde)
+            continue
         logger.error(
             "arranque: falta el índice %s en la tabla %s -- el código lo fuerza con FORCE INDEX "
             "en %s y esas consultas darán el error 1176 de MariaDB (500) hasta que exista; "
-            "lo crea init_tables() de jax (jacobs/store.py)",
-            indice, tabla, ", ".join(forzados[(tabla, indice)]))
+            "lo crea init_tables() de jax (jacobs/store.py)", indice, tabla, donde)
     return ausentes
+
+
+async def chequeo_de_arranque(obtener_pool) -> None:
+    """Lo que llama el lifespan de main.py. TODO el chequeo va dentro de un
+    fail-soft: ni el escaneo del código ni la consulta pueden tumbar el
+    arranque -- este aviso existe para que se vea un problema, no para
+    crear otro."""
+    try:
+        forzados = await asyncio.to_thread(indices_forzados)
+        await avisar_indices_forzados_ausentes(await obtener_pool(), forzados)
+    except Exception as exc:  # fail-soft: aviso de arranque (docstring); el fallo se loguea en ERROR con su tipo, no se traga
+        logger.error("arranque: el chequeo de índices forzados falló (%s: %s); "
+                     "los FORCE INDEX NO quedaron comprobados", type(exc).__name__, exc)

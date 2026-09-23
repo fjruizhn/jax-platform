@@ -2934,7 +2934,15 @@ jobs:
           #   docstrings/comentarios/tests no cuentan, ERROR sin
           #   idx_pipelines_descartados y ninguno con él, fallo de la
           #   comprobación es ERROR sin tumbar, el lifespan lo llama).
-          PISO_PASSED = 2676
+          # 2676 -> 2681 (2026-09-23, auditoría de jax-platform#160): +5 en
+          #   tests/test_indices_forzados.py (un .py roto/no UTF-8 es ERROR y
+          #   el escaneo sigue; .venv/node_modules/__pycache__ ni se abren;
+          #   índice sin distinguir mayúsculas; falta de TABLA nombrada como
+          #   tabla; el lifespan REAL completa aunque el escaneo reviente) --
+          #   los 5 en rojo contra 81dbbb2. El viejo "el lifespan lo llama"
+          #   (buscaba el nombre en el texto) se reemplaza por uno que corre
+          #   el lifespan de verdad: rojo si se quita la llamada.
+          PISO_PASSED = 2681
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3832,7 +3840,10 @@ jobs:
       # 1694 -> 1698 (2026-09-23, chequeo de índices forzados): +4 puros en
       #   tests/test_indices_forzados.py (el de la base se salta sin DB).
       #   Medido con JAX_CI_NO_DB=1: 4 passed / 1 skipped en ese archivo.
-      JAX_CI_MIN_PASSED: "1698"
+      # 1698 -> 1703 (2026-09-23, auditoría de jax-platform#160): +5 puros
+      #   en tests/test_indices_forzados.py. Medido con JAX_CI_NO_DB=1:
+      #   9 passed / 1 skipped en ese archivo.
+      JAX_CI_MIN_PASSED: "1703"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

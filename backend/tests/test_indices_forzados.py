@@ -6,11 +6,16 @@
 - Con la base de la sesión SIN `idx_pipelines_descartados` hay un ERROR que
   lo nombra; con el índice, ninguno. Sin el índice, la vista Descartados da
   el 1176 (test_sin_idx_pipelines_descartados_la_consulta_del_usuario_revienta).
-- El lifespan lo llama.
+- Tolerante (auditoría de jax-platform#160): un .py roto es un ERROR con su
+  nombre y el escaneo sigue; si falla todo el escaneo, el lifespan completa
+  igual (se corre el lifespan DE VERDAD, con sus dependencias sustituidas).
+- Falta de tabla se nombra como tabla; índices sin distinguir mayúsculas;
+  .venv/node_modules/__pycache__ ni se recorren.
 """
-import inspect
+import asyncio
 import logging
 import textwrap
+import types
 
 from db import indices_forzados as mod
 from tests.identidades import sql
@@ -80,9 +85,52 @@ def test_sin_el_indice_hay_error_con_su_nombre_y_con_el_no(client, caplog):
     assert not [r for r in caplog.records if r.name == LOGGER], caplog.text
 
 
-def test_si_la_comprobacion_falla_es_error_y_no_tumba(caplog):
-    import asyncio
+class _Cursor:
+    def __init__(self, tablas, indices):
+        self._tablas, self._indices, self._ultima = tablas, indices, None
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, consulta, args=()):
+        self._ultima = consulta
+
+    async def fetchall(self):
+        if "information_schema.TABLES" in self._ultima:
+            return [(t,) for t in self._tablas]
+        return list(self._indices)
+
+
+class _PoolFalso:
+    """Pool mínimo con las filas de information_schema que se le den."""
+
+    def __init__(self, tablas=(), indices=()):
+        self._cur = _Cursor(tablas, indices)
+
+    def acquire(self):
+        pool = self
+
+        class _Conn:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            def cursor(self):
+                return pool._cur
+
+        return _Conn()
+
+
+def _errores(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == LOGGER and r.levelno == logging.ERROR]
+
+
+def test_si_la_comprobacion_falla_es_error_y_no_tumba(caplog):
     class _PoolRoto:
         def acquire(self):
             raise ConnectionError("sin base")
@@ -94,9 +142,117 @@ def test_si_la_comprobacion_falla_es_error_y_no_tumba(caplog):
     assert "no se pudo comprobar" in caplog.text and "t.idx_x" in caplog.text
 
 
-def test_el_lifespan_lo_llama():
-    import main
+def test_un_py_roto_es_error_con_su_nombre_y_el_escaneo_sigue(tmp_path, caplog):
+    """Con el escaneo de 81dbbb2 (sin try por archivo) un SyntaxError o un
+    UnicodeDecodeError salía del escaneo y tumbaba el arranque."""
+    (tmp_path / "a_roto.py").write_text("def f(:\n")
+    (tmp_path / "b_latin1.py").write_bytes('Q = "ñ"\n'.encode("latin-1"))
+    (tmp_path / "c_bueno.py").write_text('Q = "SELECT a FROM t FORCE INDEX (idx_ok)"\n')
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        forzados = mod.indices_forzados(tmp_path)
+    assert forzados == {("t", "idx_ok"): ["c_bueno.py:1"]}
+    errores = _errores(caplog)
+    assert len(errores) == 2, errores
+    assert any("a_roto.py" in e and "SyntaxError" in e for e in errores), errores
+    assert any("b_latin1.py" in e and "UnicodeDecodeError" in e for e in errores), errores
 
-    fuente = inspect.getsource(main.lifespan)
-    assert "indices_forzados.indices_forzados" in fuente
-    assert "indices_forzados.avisar_indices_forzados_ausentes(" in fuente
+
+def test_venv_node_modules_y_pycache_ni_se_recorren(tmp_path, monkeypatch):
+    for d in (".venv/lib", "node_modules/x", "__pycache__", "sub/node_modules", "sub/ok"):
+        (tmp_path / d).mkdir(parents=True)
+        (tmp_path / d / "m.py").write_text('Q = "SELECT a FROM t FORCE INDEX (idx_de_afuera)"\n')
+    (tmp_path / "sub" / "ok" / "m.py").write_text('Q = "SELECT a FROM t FORCE INDEX (idx_propio)"\n')
+    abiertos = []
+    leer_real = mod.Path.read_text
+
+    def _espia(self, *a, **k):
+        abiertos.append(self.relative_to(tmp_path).as_posix())
+        return leer_real(self, *a, **k)
+
+    monkeypatch.setattr(mod.Path, "read_text", _espia)
+    assert mod.indices_forzados(tmp_path) == {("t", "idx_propio"): ["sub/ok/m.py:1"]}
+    assert abiertos == ["sub/ok/m.py"]
+
+
+def test_indice_sin_distinguir_mayusculas():
+    pool = _PoolFalso(tablas=["jacobs_pipelines"], indices=[("jacobs_pipelines", "IDX_Pipelines_Descartados")])
+    assert asyncio.run(mod.avisar_indices_forzados_ausentes(
+        pool, {("jacobs_pipelines", "idx_pipelines_descartados"): ["api/x.py:1"]})) == []
+
+
+def test_si_falta_la_tabla_el_error_nombra_la_tabla(caplog):
+    pool = _PoolFalso(tablas=["jacobs_pipelines"], indices=[("jacobs_pipelines", "idx_a")])
+    forzados = {("jacobs_pipelines", "idx_b"): ["api/x.py:1"], ("jacobs_events", "idx_c"): ["api/x.py:2"]}
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        ausentes = asyncio.run(mod.avisar_indices_forzados_ausentes(pool, forzados))
+    assert ausentes == [("jacobs_events", "idx_c"), ("jacobs_pipelines", "idx_b")]
+    errores = _errores(caplog)
+    assert len(errores) == 2, errores
+    assert "falta la TABLA jacobs_events" in errores[0], errores
+    assert "falta el índice idx_b en la tabla jacobs_pipelines" in errores[1], errores
+
+
+class _Nada:
+    """Sustituto genérico de las dependencias del lifespan: cualquier
+    atributo es él mismo, llamarlo también, y se puede esperar (await)."""
+
+    def __getattr__(self, _nombre):
+        return self
+
+    def __call__(self, *a, **k):
+        return self
+
+    def __await__(self):
+        return iter(())
+
+
+def _correr_lifespan(monkeypatch):
+    """Corre el lifespan REAL de main.py (arranque y cierre) con todas sus
+    dependencias sustituidas por _Nada, MENOS el chequeo de índices: así se
+    prueba lo que el lifespan hace con él, sin tocar la base, el pool de la
+    sesión ni tareas de fondo. `asyncio` se sustituye sólo en create_task."""
+    import main
+    from api import chat
+
+    nombres = [n for n in main.lifespan.__wrapped__.__code__.co_names
+               if n in vars(main) and n not in ("indices_forzados", "asyncio", "logger")]
+    for n in nombres:
+        monkeypatch.setattr(main, n, _Nada())
+    monkeypatch.setattr(main, "asyncio", types.SimpleNamespace(
+        to_thread=asyncio.to_thread, create_task=lambda coro: None))
+
+    async def _sin_conversaciones():
+        return 0
+
+    monkeypatch.setattr(chat, "flush_open_conversations", _sin_conversaciones)
+
+    async def _ciclo():
+        async with main.lifespan(main.app):
+            return "arrancó"
+
+    return asyncio.run(_ciclo())
+
+
+def test_el_lifespan_llama_al_chequeo_de_indices(monkeypatch):
+    llamadas = []
+
+    async def _espia(pool, forzados=None):
+        llamadas.append(forzados)
+        return []
+
+    monkeypatch.setattr(mod, "avisar_indices_forzados_ausentes", _espia)
+    assert _correr_lifespan(monkeypatch) == "arrancó"
+    assert len(llamadas) == 1
+    assert ("jacobs_pipelines", "idx_pipelines_descartados") in llamadas[0]
+
+
+def test_si_el_escaneo_revienta_el_lifespan_completa_igual(monkeypatch, caplog):
+    """Con 81dbbb2 (to_thread del escaneo sin try en el lifespan) esto
+    tumbaba el arranque."""
+    def _revienta(*a, **k):
+        raise PermissionError("sin permiso de lectura")
+
+    monkeypatch.setattr(mod, "indices_forzados", _revienta)
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        assert _correr_lifespan(monkeypatch) == "arrancó"
+    assert any("PermissionError" in e and "NO quedaron comprobados" in e for e in _errores(caplog)), caplog.text
