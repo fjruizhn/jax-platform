@@ -174,7 +174,7 @@ def test_auditoria_de_un_pipeline_ajeno_es_404(client):
 
 
 def test_auditoria_del_dueno_trae_solo_los_cuatro_tipos_ordenados_del_mas_nuevo(client):
-    duenio = uid(client, "auditoria-c2-duenio", "operator")
+    duenio = uid(client, "auditoria-c2-duenio", "operator", tenant_id=TENANT)
     pid = str(uuid.uuid4())
     ahora = time.time()
     client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
@@ -208,7 +208,7 @@ def test_auditoria_del_dueno_trae_los_cuatro_tipos_los_cuatro(client):
     (fix round 3), cada tipo se pide y se fusiona por separado -- este
     test es el único que prueba que los CUATRO, no sólo dos o tres,
     efectivamente vuelven."""
-    duenio = uid(client, "auditoria-c2b-duenio", "operator")
+    duenio = uid(client, "auditoria-c2b-duenio", "operator", tenant_id=TENANT)
     pid = str(uuid.uuid4())
     ahora = time.time()
     client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
@@ -234,7 +234,7 @@ def test_auditoria_del_dueno_trae_los_cuatro_tipos_los_cuatro(client):
 
 
 def test_auditoria_de_un_pipeline_sin_eventos_de_descarte_es_lista_vacia(client):
-    duenio = uid(client, "auditoria-c3-duenio", "operator")
+    duenio = uid(client, "auditoria-c3-duenio", "operator", tenant_id=TENANT)
     pid = str(uuid.uuid4())
     ahora = time.time()
     client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "completed", owner_ack_at=ahora))
@@ -438,7 +438,7 @@ def test_auditoria_descarte_topa_en_el_limite_muestra_los_mas_nuevos_y_marca_tru
     informa MENOS de lo que pasó."""
     from api.pipelines import LIMITE_AUDITORIA_DESCARTE
 
-    duenio = uid(client, "auditoria-limite-duenio", "operator")
+    duenio = uid(client, "auditoria-limite-duenio", "operator", tenant_id=TENANT)
     pid = str(uuid.uuid4())
     ahora = time.time()
     client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
@@ -467,7 +467,7 @@ def test_auditoria_descarte_sin_llegar_al_limite_truncado_es_false(client):
     `truncado` tiene que decir que no falta nada -- sin este test, un
     `truncado` que siempre da `True` (o que nunca se calculó bien)
     pasaría igual el test del límite."""
-    duenio = uid(client, "auditoria-sintrunc-duenio", "operator")
+    duenio = uid(client, "auditoria-sintrunc-duenio", "operator", tenant_id=TENANT)
     pid = str(uuid.uuid4())
     ahora = time.time()
     client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
