@@ -997,6 +997,50 @@ jobs:
   # archivo, que es donde se puede verificar. A proposito NO se repite aca el
   # numero de mutaciones: es una consecuencia, no una medida, y un conteo en
   # un comentario de YAML no lo verifica nadie (ya estuvo mal dos veces).
+  espejos-antes-de-mergear:
+    # Por que existe: el comparador de familias de espejos vive SOLO en `jax`
+    # (su job `mirror-sync`). O sea el repo que HACE el cambio era el unico que
+    # no lo comprobaba, y el rojo aparecia siempre DESPUES de mergear, cuando
+    # master de jax se movia. Pasó el 2026-09-21 con #142: el arreglo de
+    # `_borrar_al_salir` se cerro aca y sobrevivio alla, master de jax quedo en
+    # rojo y bloqueo un PR ajeno de 252 tests. El docstring del propio
+    # comparador dice que ese costo ya se cobro TRES veces en 2026, siempre con
+    # la misma forma.
+    #
+    # NO se copia el comparador aca. Se clona `jax` y se corre EL SUYO. Su
+    # docstring lo explica mejor que este comentario: "una segunda copia del
+    # comparador seria un espejo mas, con el mismo defecto que viene a
+    # detectar". Por eso el guion acepta `JAX_PLATFORM_REPO_ROOT`.
+    #
+    # LIMITE CONOCIDO, y no se finge lo contrario: el clon es --depth=1 de
+    # MASTER de jax. Un PR de aca se compara contra el master de alla, no
+    # contra una rama de jax que este tocando el mismo simbolo al mismo tiempo.
+    # Esa ventana queda abierta -- es mucho mas chica que la de hoy (que es
+    # "siempre, hasta despues del merge"), pero existe.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Traer el checkout de jax (para usar SU comparador)
+        run: git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
+      - name: Comparar las familias de espejos
+        env:
+          JAX_PLATFORM_REPO_ROOT: ${{ github.workspace }}
+        run: |
+          set +e
+          python3 /tmp/jax/scripts/check_mirror_sync.py
+          rc=$?
+          set -e
+          if [ "$rc" = "2" ]; then
+            echo "El comparador no encontro un archivo que esperaba del lado de jax."
+            echo "Suele significar ORDEN DE MERGE: hay un simbolo nuevo que todavia"
+            echo "no esta en master de jax. Mergea alla primero, o declara la"
+            echo "divergencia con 'DIVERGENCIA DELIBERADA' y su razon."
+          fi
+          exit $rc
+
   ci-usa-la-mariadb-de-produccion:
     runs-on: ubuntu-latest
     steps:
