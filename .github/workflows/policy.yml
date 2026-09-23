@@ -965,8 +965,13 @@ jobs:
           //   rojo contra el componente sin la bandera/el render (1
           //   failed) antes de implementar. Medido con `npx vitest run`:
           //   1006 passed, 0 fallidos, 95 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1006) {
-              console.error("PISO ROTO: se esperaban 1006 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1006 -> 1011 (2026-09-23, pendiente 652, jax-platform#156): +5 en
+          //   botonesConPocoRelleno.test.js -- botón-enlace suelto de 16px,
+          //   data-en-linea exime, min-h-6 alcanza, data-en-linea={false} NO
+          //   exime, y el registro exacto de usos de data-en-linea. Confirmado
+          //   por el runner (run 35855267441: passed=1011 failed=0).
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1011) {
+              console.error("PISO ROTO: se esperaban 1011 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

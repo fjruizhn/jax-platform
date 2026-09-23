@@ -141,7 +141,7 @@ export default function Login() {
             )}
             <button
               onClick={() => { setShowForgot(false); setForgotSent(false); setForgotEmail('') }}
-              className="w-full text-xs text-texto-tenue hover:text-texto transition-colors"
+              className="w-full text-xs min-h-6 text-texto-tenue hover:text-texto transition-colors"
             >
               ← {t.backToLogin}
             </button>
@@ -223,7 +223,7 @@ export default function Login() {
             <button
               type="button"
               onClick={() => setShowForgot(true)}
-              className="text-xs text-texto-tenue hover:text-info transition-colors"
+              className="text-xs min-h-6 text-texto-tenue hover:text-info transition-colors"
             >
               {t.forgotPassword}
             </button>

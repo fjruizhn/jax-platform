@@ -210,7 +210,7 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
                           <button
                             type="button"
                             onClick={() => recuperar(p.pipeline_id)}
-                            className="text-xs font-semibold text-acento-texto hover:underline"
+                            className="text-xs min-h-6 font-semibold text-acento-texto hover:underline"
                           >
                             {t.recuperarPipeline}
                           </button>
@@ -218,7 +218,7 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
                             <button
                               type="button"
                               onClick={() => abrirBorrar(p)}
-                              className="text-xs font-semibold text-peligro hover:underline"
+                              className="text-xs min-h-6 font-semibold text-peligro hover:underline"
                             >
                               {t.borrarPipeline}
                             </button>
@@ -307,7 +307,7 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
                     <button
                       type="button"
                       onClick={() => onSelect(p.pipeline_id, p.name)}
-                      className="text-xs font-semibold text-acento-texto hover:underline"
+                      className="text-xs min-h-6 font-semibold text-acento-texto hover:underline"
                     >
                       {t.historialViewDetail}
                     </button>
