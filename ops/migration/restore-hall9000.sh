@@ -346,8 +346,10 @@ make_venv() {
   local label="$1" venv="$2" reqs="$3"
   if is_dry; then
     if [ ! -f "$reqs" ]; then would "$label: requirements ausente ($reqs) → omitiría (llega tras el clone)"; return 0; fi
-    if [ -d "$venv" ]; then would "$label: .venv existe → preguntaría recrear vs. reinstalar; luego pip install -r $reqs"
-    else would "$label: python3 -m venv $venv && pip install -r $reqs"; fi
+    local restr_dry; restr_dry="$(dirname "$reqs")/constraints.txt"
+    local con_dry=""; [ -f "$restr_dry" ] && con_dry=" -c $restr_dry"
+    if [ -d "$venv" ]; then would "$label: .venv existe → preguntaría recrear vs. reinstalar; luego pip install -r $reqs$con_dry"
+    else would "$label: python3 -m venv $venv && pip install -r $reqs$con_dry"; fi
     return 0
   fi
   [ -f "$reqs" ] || { warn "$label: no existe requirements ($reqs), omito."; return 0; }
@@ -360,7 +362,12 @@ make_venv() {
   fi
   [ -d "$venv" ] || python3 -m venv "$venv" || { warn "$label: fallo creando venv"; return 1; }
   "$venv/bin/pip" install --upgrade pip >/dev/null 2>&1
-  if "$venv/bin/pip" install -r "$reqs"; then ok "$label: deps instaladas ($(basename "$reqs"))."
+  # constraints.txt al lado del requirements (jax-platform, 2026-09-23): las
+  # versiones EXACTAS de producción. Sin él, una restauración instala lo último
+  # de PyPI y producción queda en versiones que CI nunca probó.
+  local restr; restr="$(dirname "$reqs")/constraints.txt"
+  local con=(); [ -f "$restr" ] && con=(-c "$restr")
+  if "$venv/bin/pip" install -r "$reqs" "${con[@]}"; then ok "$label: deps instaladas ($(basename "$reqs")${con:+ con $(basename "$restr")})."
   else warn "$label: fallo instalando requirements — revisa la salida."; fi
 }
 
