@@ -240,6 +240,37 @@ describe('AdminPipelinesOcultos (Task 7 + cierre de huecos 2026-09-22)', () => {
     expect(await screen.findByText(es.pipelinesOcultosError)).toBeInTheDocument()
   })
 
+  // MINOR-A (fix round 2, revisión adversarial de PR 151): la bandera de
+  // invalidación se ponía en `false` ANTES del pedido -- si el pedido
+  // fallaba, la bandera quedaba consumida igual, y volver a visitar la
+  // pestaña (sin tocar "Reintentar") NO reintentaba nunca más.
+  it('si Ocultos falla, cambiar de pestaña y volver reintenta (no sólo el botón Reintentar)', async () => {
+    let primeraLlamada = true
+    api.get.mockImplementation((url) => {
+      if (url === '/admin/pipelines/descartados') return Promise.resolve({ data: { pipelines: [DESCARTADO], has_more: false } })
+      if (url === '/admin/pipelines/ocultos') {
+        if (primeraLlamada) {
+          primeraLlamada = false
+          return Promise.reject(new Error('network'))
+        }
+        return Promise.resolve({ data: { pipelines: [OCULTO], has_more: false } })
+      }
+      return Promise.reject(new Error(`url inesperada: ${url}`))
+    })
+    renderPantalla()
+    await screen.findByText('plan descartado')
+
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaOcultos }))
+    expect(await screen.findByText(es.pipelinesOcultosError)).toBeInTheDocument()
+
+    // Sin tocar "Reintentar": sólo cambiar de pestaña y volver.
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaOcultos }))
+
+    expect(await screen.findByText('plan oculto')).toBeInTheDocument()
+    expect(screen.queryByText(es.pipelinesOcultosError)).not.toBeInTheDocument()
+  })
+
   it('en Ocultos, sin ocultos, muestra el estado vacío', async () => {
     mockGet({ ocultos: [] })
     renderPantalla()

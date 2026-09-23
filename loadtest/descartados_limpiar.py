@@ -108,10 +108,22 @@ def main() -> None:
             (n,) = cur.fetchone()
             restantes += n
         if "pipeline_con_muchos_eventos" in seed:
-            cur.execute("SELECT COUNT(*) FROM jacobs_pipelines WHERE pipeline_id=%s",
-                        (seed["pipeline_con_muchos_eventos"]["pipeline_id"],))
+            pid_eventos = seed["pipeline_con_muchos_eventos"]["pipeline_id"]
+            cur.execute("SELECT COUNT(*) FROM jacobs_pipelines WHERE pipeline_id=%s", (pid_eventos,))
             (n,) = cur.fetchone()
             restantes += n
+            # MINOR-C (fix round 2, revisión adversarial de PR 151): la
+            # verificación final SÓLO contaba jacobs_pipelines -- nunca
+            # jacobs_events, que es donde viven las N_EVENTOS_AUDITORIA
+            # filas que este mismo bloque acaba de borrar más arriba. Sin
+            # esto, un DELETE de jacobs_events que fallara (o que borrara
+            # de menos) quedaba sin verificación independiente -- el mismo
+            # mecanismo que dejó ~940.000 eventos huérfanos en
+            # jax_memory_test (otros scripts de carga, documentado en el
+            # reporte de la ronda 1).
+            cur.execute("SELECT COUNT(*) FROM jacobs_events WHERE pipeline_id=%s", (pid_eventos,))
+            (n_eventos_restantes,) = cur.fetchone()
+            restantes += n_eventos_restantes
     print(f"verificación final: filas_restantes_de_la_siembra={restantes} "
           f"(borrados: pipelines={total_pipelines} usuarios={total_usuarios})")
     if restantes != 0:

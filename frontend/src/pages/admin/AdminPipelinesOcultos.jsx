@@ -73,7 +73,18 @@ export default function AdminPipelinesOcultos() {
         setListaOcultos((prev) => (offset === 0 ? nuevos : [...prev, ...nuevos]))
         setHayMasOcultos(data?.has_more === true)
       })
-      .catch(() => setErrorOcultos(true))
+      .catch(() => {
+        setErrorOcultos(true)
+        // MINOR-A (fix round 2, revisión adversarial de PR 151): la
+        // bandera de invalidación se pone en `false` ANTES de este pedido
+        // (efecto de arriba) -- si el pedido falla, sin esto la lista
+        // vieja/vacía se queda mostrando y cambiar de pestaña y volver NO
+        // reintenta (sólo el botón "Reintentar" manual lo haría). Se
+        // restaura acá, en el único lugar que sabe que la carga falló de
+        // verdad, sin importar quién la disparó (el efecto automático o
+        // el propio botón de reintentar).
+        setNecesitaRecargaOcultos(true)
+      })
       .finally(() => setCargandoOcultos(false))
   }
 
@@ -86,7 +97,11 @@ export default function AdminPipelinesOcultos() {
         setListaDescartados((prev) => (offset === 0 ? nuevos : [...prev, ...nuevos]))
         setHayMasDescartados(data?.has_more === true)
       })
-      .catch(() => setErrorDescartados(true))
+      .catch(() => {
+        setErrorDescartados(true)
+        // Mismo motivo que cargarOcultos, arriba.
+        setNecesitaRecargaDescartados(true)
+      })
       .finally(() => setCargandoDescartados(false))
   }
 

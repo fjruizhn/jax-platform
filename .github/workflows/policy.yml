@@ -942,8 +942,18 @@ jobs:
           //   tocar el detector (es un defecto de MI texto, no del
           //   escaneo). Medido con `npx vitest run`: 1002 passed, 0
           //   fallidos, 95 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1002) {
-              console.error("PISO ROTO: se esperaban 1002 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1002 -> 1003 (2026-09-22, fix round 2, revisión adversarial de
+          //   PR 151, MINOR-A): +1 en AdminPipelinesOcultos.test.jsx --
+          //   "si Ocultos falla, cambiar de pestaña y volver reintenta (no
+          //   sólo el botón Reintentar)". La bandera `necesitaRecargaOcultos`
+          //   se ponía en `false` ANTES del pedido; si el pedido fallaba,
+          //   quedaba consumida igual y una vuelta a la pestaña no
+          //   reintentaba. Visto en rojo contra el `.catch(() =>
+          //   setErrorOcultos(true))` sin restaurar la bandera (1 failed)
+          //   antes de mover la restauración al `.catch()`. Medido con
+          //   `npx vitest run`: 1003 passed, 0 fallidos, 95 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1003) {
+              console.error("PISO ROTO: se esperaban 1003 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -2836,7 +2846,22 @@ jobs:
           #   archivos -> 2644 passed / 2 skipped. Delta propio verificado:
           #   +13 (2644 - 2631). Piso nuevo = piso DECLARADO (2622) + delta
           #   propio (+13) = 2635.
-          PISO_PASSED = 2635
+          # 2635 -> 2637 (2026-09-22, fix round 2, revisión adversarial de
+          #   PR 151, MAJOR-A/B): +2 en test_pipelines_auditoria_descarte.py
+          #   -- test_auditoria_descarte_acota_incluso_con_miles_de_eventos_de_auditoria
+          #   (Handler_read acotado con 5.000 eventos DE AUDITORÍA sembrados,
+          #   el escenario real que describió el revisor, no sólo ruido
+          #   STEP_FAILED) y test_auditoria_descarte_sin_llegar_al_limite_truncado_es_false
+          #   (complemento del test de `truncado` ya existente, que sólo
+          #   probaba el caso `True`). test_pipelines_descartados_admin.py
+          #   no sumó tests (MAJOR-C cambió el cálculo de `limite`, no
+          #   agregó casos). Medido en el árbol de esta rama, MISMO comando
+          #   de arriba: sin los 2 archivos -> 2631 passed / 2 skipped
+          #   (mismo drift ajeno de +9, sin cambio); CON los 2 archivos ->
+          #   2646 passed / 2 skipped. Delta propio verificado: +15 (2646 -
+          #   2631). Piso nuevo = piso DECLARADO (2622) + delta propio
+          #   (+15) = 2637.
+          PISO_PASSED = 2637
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

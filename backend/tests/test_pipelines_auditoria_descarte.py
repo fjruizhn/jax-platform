@@ -17,22 +17,41 @@ superadmin es intencional (decisión del coordinador, fix round 1): es el
 punto de una auditoría, no una fuga -- ver el comentario en
 api/pipelines.py::auditoria_descarte.
 
-Índice: fix round 1 (MAJOR-1, revisión adversarial de PR#151) -- la
+Índice: fix round 1 (MAJOR-1, revisión adversarial de PR 151) -- la
 versión original forzaba `idx_events_pipeline (pipeline_id)`, que es
 EXACTAMENTE el plan que el Ruling R20 (2026-09-17, comentario de
 `sql_eventos_de_causa` en api/pipelines.py) midió como lento: examina TODOS
 los eventos del pipeline (~221 medidos, 8,1 ms, p95 147 ms a c=25) para
 devolver 0-4. Se corrigió al MISMO patrón que `sql_eventos_de_causa`: SIN
-`ORDER BY` en el SQL (el orden se hace en Python sobre pocas filas) y SIN
-`FORCE INDEX` -- se deja que el optimizador use `idx_events_pipeline_tipo
-(pipeline_id, event_type)`, que filtra en el índice ANTES de traer una fila.
-Medido con EXPLAIN + Handler_read reales (mismo ruido de 221 eventos
-STEP_FAILED que R20, `test_auditoria_descarte_no_escanea_todo_el_pipeline`
-más abajo): SIN hint, el optimizador YA elige `idx_events_pipeline_tipo` --
-type=range, Handler_read TOTAL=8 para 4 filas devueltas (antes: 204 con el
-índice forzado). El test ya NO afirma el nombre del índice ni la ausencia
-de "Using filesort" -- afirma el Handler_read real (rows examined), que es
-lo que de verdad importa: un filesort sobre 4 filas es gratis, escanear 221
+`FORCE INDEX` -- se deja que el optimizador elija.
+
+Fix round 2 (MAJOR-A/B, misma revisión): la ronda 1 TAMBIÉN había quitado
+el `ORDER BY`/`LIMIT` del SQL, razonando que un `LIMIT` sin `ORDER BY`
+tomaría filas arbitrarias -- cierto, pero `ORDER BY id DESC LIMIT %s` SÍ
+estaba disponible, y sin él `fetchall()` traía TODAS las filas de
+auditoría del pipeline (con su `payload`) a Python en cada apertura del
+detalle: un pipeline ciclado 5.000 veces traía 5.000 filas, no 4. Se
+agregó `ORDER BY id DESC LIMIT %s` (limite+1, mismo idioma que
+`list_pipelines`) -- el filesort que esto puede causar corre sobre las
+filas de AUDITORÍA nada más (el mismo conjunto chico que ya se recortaba
+en Python), no sobre el total de eventos del pipeline: el hallazgo de R20
+es sobre escanear TODO el pipeline, no sobre ordenar unas pocas filas ya
+filtradas, y no aplica acá.
+
+Medido con EXPLAIN + Handler_read reales:
+- Ruido de 221 eventos STEP_FAILED (mismo que R20,
+  `test_auditoria_descarte_no_escanea_todo_el_pipeline` más abajo): SIN
+  hint, el optimizador elige `idx_events_pipeline_tipo` -- Handler_read
+  TOTAL=8 para 4 filas devueltas (antes: 204 con el índice forzado).
+- 5.000 eventos DE AUDITORÍA sembrados (el escenario real de MAJOR-A/B,
+  `test_auditoria_descarte_acota_incluso_con_miles_de_eventos_de_auditoria`
+  más abajo): `ORDER BY id DESC LIMIT 51` -- Handler_read TOTAL=51 para 51
+  filas devueltas (antes de este fix: 5.000 filas traídas a Python en
+  cada pedido).
+
+El test ya NO afirma el nombre del índice ni la ausencia de "Using
+filesort" -- afirma el Handler_read real (rows examined), que es lo que
+de verdad importa: un filesort sobre 51 filas es gratis, escanear 5.000
 no lo es, tenga o no esa etiqueta el EXPLAIN."""
 import json
 import time
@@ -159,13 +178,13 @@ def test_auditoria_de_un_id_con_forma_invalida_es_400(client):
 
 
 def test_auditoria_descarte_no_escanea_todo_el_pipeline(client):
-    """MAJOR-1 (fix round 1, revisión adversarial de PR#151): la propiedad
+    """MAJOR-1 (fix round 1, revisión adversarial de PR 151): la propiedad
     REAL -- Handler_read acotado por las filas de AUDITORÍA, no por el
     total de eventos del pipeline -- no sólo la clave del plan (mismo
     criterio que jax y que el resto de los EXPLAIN de esta tarea: un
     EXPLAIN que sólo mira el nombre del índice se puede volver a romper sin
     que ningún test lo note, como pasó acá con el FORCE INDEX original)."""
-    from api.pipelines import SQL_AUDITORIA_DESCARTE
+    from api.pipelines import LIMITE_AUDITORIA_DESCARTE, SQL_AUDITORIA_DESCARTE
     from tests.test_pipelines_descarte import _explain_y_handler_read
 
     pid = str(uuid.uuid4())
@@ -181,7 +200,7 @@ def test_auditoria_descarte_no_escanea_todo_el_pipeline(client):
             client.portal.call(_insertar_evento, pid, tipo, {"user_id": "x", "desde": "a", "a": "b"}, ahora + 300 + i)
         client.portal.call(sql, "ANALYZE TABLE jacobs_events", (), True)
 
-        args = (pid,) + TIPOS_DE_DESCARTE
+        args = (pid,) + TIPOS_DE_DESCARTE + (LIMITE_AUDITORIA_DESCARTE + 1,)
         explain, handler, filas = client.portal.call(_explain_y_handler_read, SQL_AUDITORIA_DESCARTE, args)
         assert explain["table"] == "jacobs_events"
         assert len(filas) == 4, filas
@@ -198,11 +217,56 @@ def test_auditoria_descarte_no_escanea_todo_el_pipeline(client):
         client.portal.call(_borrar_eventos, pid)
 
 
-def test_auditoria_descarte_topa_en_el_limite_y_muestra_los_mas_nuevos(client):
-    """MINOR (fix round 1): discard/recover es repetible sin tope -- un
-    pipeline ciclado muchas veces no puede devolver una respuesta sin
-    cota, y el corte tiene que quedarse con los MÁS NUEVOS (no una
-    porción arbitraria del orden del índice)."""
+def test_auditoria_descarte_acota_incluso_con_miles_de_eventos_de_auditoria(client):
+    """MAJOR-A/B (fix round 2, revisión adversarial de PR 151): el
+    escenario REAL que el revisor describió -- un pipeline ciclado
+    discard/recover miles de veces -- no tiene ruido STEP_FAILED que
+    filtrar: son TODOS eventos de auditoría. `ORDER BY id DESC LIMIT %s`
+    tiene que acotar el costo por el LIMIT, no por el total de filas de
+    auditoría que existan.
+
+    Comparación limpia medida a mano (no por mutación -- la ronda 1 ya
+    aprendió esa lección, MAJOR-2: una mutación que rompe la cuenta de
+    placeholders da un TypeError, no una prueba de comportamiento) contra
+    la MISMA siembra de 5.000 filas de auditoría, la consulta vieja
+    (`SELECT ... WHERE pipeline_id=%s AND event_type IN (...)`, sin
+    `ORDER BY`/`LIMIT`, fix round 1) trae las 5.000 filas -- Handler_read
+    TOTAL=5001. Con `ORDER BY id DESC LIMIT 51` (este fix): Handler_read
+    TOTAL=51, abajo."""
+    from api.pipelines import LIMITE_AUDITORIA_DESCARTE, SQL_AUDITORIA_DESCARTE
+    from tests.test_pipelines_descarte import _explain_y_handler_read
+
+    pid = str(uuid.uuid4())
+    ahora = time.time()
+    try:
+        for i in range(5000):
+            tipo = "PIPELINE_DISCARDED" if i % 2 == 0 else "PIPELINE_RECOVERED"
+            client.portal.call(_insertar_evento, pid, tipo, {"user_id": "x", "desde": "a", "a": "b"}, ahora + i)
+        client.portal.call(sql, "ANALYZE TABLE jacobs_events", (), True)
+
+        args = (pid,) + TIPOS_DE_DESCARTE + (LIMITE_AUDITORIA_DESCARTE + 1,)
+        explain, handler, filas = client.portal.call(_explain_y_handler_read, SQL_AUDITORIA_DESCARTE, args)
+        assert explain["table"] == "jacobs_events"
+        assert len(filas) == LIMITE_AUDITORIA_DESCARTE + 1, filas
+        total = sum(handler.values())
+        # Medido: 51 (51 filas devueltas, exacto). Tope con margen; el
+        # punto es que NO escale con las 5.000 sembradas.
+        assert total <= 100, (
+            f"{total} lecturas Handler_read para {LIMITE_AUDITORIA_DESCARTE + 1} filas pedidas -- "
+            f"huele a que el motor está trayendo las 5.000 filas de auditoría "
+            f"sembradas en vez de acotar por el LIMIT: {handler}"
+        )
+    finally:
+        client.portal.call(_borrar_eventos, pid)
+
+
+def test_auditoria_descarte_topa_en_el_limite_muestra_los_mas_nuevos_y_marca_truncado(client):
+    """Fix round 1 + fix round 2 (MAJOR-A/B): discard/recover es repetible
+    sin tope -- un pipeline ciclado muchas veces no puede devolver una
+    respuesta sin cota, el corte tiene que quedarse con los MÁS NUEVOS (no
+    una porción arbitraria del orden del índice), y la respuesta tiene que
+    DECIR que hay más -- una auditoría que se calla en 50 sin avisar
+    informa MENOS de lo que pasó."""
     from api.pipelines import LIMITE_AUDITORIA_DESCARTE
 
     duenio = uid(client, "auditoria-limite-duenio", "operator")
@@ -218,10 +282,36 @@ def test_auditoria_descarte_topa_en_el_limite_y_muestra_los_mas_nuevos(client):
         resp = client.get(f"/api/pipelines/{pid}/auditoria-descarte",
                           headers=cabeceras(client, "auditoria-limite-duenio", "operator", tenant_id=TENANT))
         assert resp.status_code == 200, resp.text
-        eventos = resp.json()["eventos"]
+        cuerpo = resp.json()
+        eventos = cuerpo["eventos"]
         assert len(eventos) == LIMITE_AUDITORIA_DESCARTE
         assert eventos[0]["ts"] == ahora + (n - 1)
         assert eventos[-1]["ts"] == ahora + (n - LIMITE_AUDITORIA_DESCARTE)
+        assert cuerpo["truncado"] is True
+    finally:
+        client.portal.call(_borrar_eventos, pid)
+        client.portal.call(_borrar_pipelines, [pid])
+
+
+def test_auditoria_descarte_sin_llegar_al_limite_truncado_es_false(client):
+    """Complemento del test de arriba: con MENOS eventos que el límite,
+    `truncado` tiene que decir que no falta nada -- sin este test, un
+    `truncado` que siempre da `True` (o que nunca se calculó bien)
+    pasaría igual el test del límite."""
+    duenio = uid(client, "auditoria-sintrunc-duenio", "operator")
+    pid = str(uuid.uuid4())
+    ahora = time.time()
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
+                       status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
+    try:
+        client.portal.call(_insertar_evento, pid, "PIPELINE_DISCARDED",
+                           {"user_id": duenio, "desde": "aborted", "a": "discarded"}, ahora)
+        resp = client.get(f"/api/pipelines/{pid}/auditoria-descarte",
+                          headers=cabeceras(client, "auditoria-sintrunc-duenio", "operator", tenant_id=TENANT))
+        assert resp.status_code == 200, resp.text
+        cuerpo = resp.json()
+        assert len(cuerpo["eventos"]) == 1
+        assert cuerpo["truncado"] is False
     finally:
         client.portal.call(_borrar_eventos, pid)
         client.portal.call(_borrar_pipelines, [pid])

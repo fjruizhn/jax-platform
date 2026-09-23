@@ -27,6 +27,20 @@ primera vuelta):
   "fires on EVERY pipeline-detail open" (coordinador), así que el pipeline
   medido tiene que ser el que más eventos acumula, no uno vacío.
 
+Fix round 2 (2026-09-22, MAJOR-A/B, revisión adversarial de PR 151): la
+forma D de arriba quedó OBSOLETA por el propio fix de MAJOR-1 --
+`auditoria_descarte` dejó de escanear los eventos NO-auditoría del
+pipeline (idx_events_pipeline_tipo filtra por event_type en el índice), así
+que los N_EVENTOS_RUIDO `STEP_FAILED` ya no cuestan nada: no miden el
+camino que el endpoint recorre de verdad. El costo que SÍ importa después
+de MAJOR-1 son las filas de AUDITORÍA mismas -- sin `ORDER BY ... LIMIT`
+en el SQL (MAJOR-A/B), `fetchall()` traía TODAS a Python antes de cortar;
+un pipeline ciclado discard/recover miles de veces pagaba ese costo en
+CADA apertura del detalle. Se reemplaza el ruido `STEP_FAILED` por
+N_EVENTOS_AUDITORIA eventos `PIPELINE_DISCARDED`/`PIPELINE_RECOVERED`
+alternados -- el escenario REAL que describió el revisor, no uno
+sintético.
+
 Requiere que `jacobs_pipelines` tenga el esquema de descartar-pipelines
 (status_previo/descartado_por/descartado_at/visible + los índices
 idx_pipelines_visibles/idx_pipelines_descartados/idx_pipelines_ocultos) --
@@ -84,12 +98,15 @@ N_DESCARTADOS_B = 5000
 N_ADMIN_DESCARTADOS = 5000
 N_ADMIN_USUARIOS = 500
 
-# --- Forma D (fix round 1, BLOCK-2): "pipeline_con_muchos_eventos" --------
+# --- Forma D (fix round 2, MAJOR-A/B): "pipeline_con_muchos_eventos" ------
 # GET /pipelines/{id}/auditoria-descarte se pide en CADA apertura del
 # detalle de un pipeline (coordinador) -- el peor caso es el pipeline con
-# más eventos acumulados, no uno recién creado. 221 = el mismo número que
-# midió el Ruling R20 (comentario de sql_eventos_de_causa, api/pipelines.py).
-N_EVENTOS_RUIDO = 221
+# más eventos DE AUDITORÍA acumulados (no eventos en general: MAJOR-1 ya
+# deja fuera del costo a los que no lo son). 5.000 -- mismo orden de
+# magnitud que las formas A/B/C, y el mismo número que probó de verdad la
+# diferencia SQL (docstring del módulo): 5.001 lecturas Handler_read sin
+# `ORDER BY ... LIMIT`, 51 con él.
+N_EVENTOS_AUDITORIA = 5000
 
 
 def _cargar_env_produccion() -> dict:
@@ -214,17 +231,18 @@ def _filas_admin_muchos_usuarios(n_filas, n_usuarios, offset_id):
 
 
 def _eventos_pipeline_con_muchos_eventos(pipeline_id):
-    """Forma D (fix round 1, BLOCK-2): N_EVENTOS_RUIDO eventos STEP_FAILED
-    (ruido, mismo tipo/número que midió el Ruling R20) + los 4 tipos de
-    auditoría -- el pipeline con más eventos es el peor caso real de
-    GET /pipelines/{id}/auditoria-descarte."""
+    """Forma D (fix round 2, MAJOR-A/B): N_EVENTOS_AUDITORIA eventos
+    `PIPELINE_DISCARDED`/`PIPELINE_RECOVERED` alternados -- el escenario
+    REAL que describió el revisor (un pipeline ciclado discard/recover
+    miles de veces), no ruido `STEP_FAILED` sintético (que MAJOR-1 ya dejó
+    fuera del costo del endpoint, y por lo tanto de lo que esta carga tiene
+    que medir)."""
     ahora = time.time()
     filas = []
-    for i in range(N_EVENTOS_RUIDO):
-        filas.append((pipeline_id, None, "STEP_FAILED", json.dumps({"step_index": i}), ahora + i))
-    for i, tipo in enumerate(("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")):
+    for i in range(N_EVENTOS_AUDITORIA):
+        tipo = "PIPELINE_DISCARDED" if i % 2 == 0 else "PIPELINE_RECOVERED"
         filas.append((pipeline_id, None, tipo,
-                      json.dumps({"user_id": "carga", "desde": "a", "a": "b"}), ahora + N_EVENTOS_RUIDO + i))
+                      json.dumps({"user_id": "carga", "desde": "a", "a": "b"}), ahora + i))
     return filas
 
 
@@ -288,10 +306,11 @@ def main() -> None:
     print(f"admin_muchos_usuarios: superadmin_id={superadmin_id} "
           f"filas={len(ids_admin)} usuarios_distintos={N_ADMIN_USUARIOS}", file=sys.stderr)
 
-    # Forma D (BLOCK-2): un pipeline del usuario "escala" con
-    # N_EVENTOS_RUIDO + 4 eventos, para GET /pipelines/{id}/auditoria-descarte.
-    # `owner_ack_at` seteado -- lo exige _require_pipeline_owner para no
-    # devolver 404 de "pipeline no reconocido por su dueño".
+    # Forma D (fix round 2, MAJOR-A/B): un pipeline del usuario "escala" con
+    # N_EVENTOS_AUDITORIA eventos discard/recover, para
+    # GET /pipelines/{id}/auditoria-descarte. `owner_ack_at` seteado -- lo
+    # exige _require_pipeline_owner para no devolver 404 de "pipeline no
+    # reconocido por su dueño".
     pipeline_eventos_id = str(uuid.uuid4())
     ahora = time.time()
     escala = usuarios["escala"]
@@ -306,7 +325,7 @@ def main() -> None:
         )
     conn.commit()
     print(f"pipeline_con_muchos_eventos: pipeline_id={pipeline_eventos_id} "
-          f"dueño=escala({escala['user_id']}) eventos={N_EVENTOS_RUIDO + 4}", file=sys.stderr)
+          f"dueño=escala({escala['user_id']}) eventos={N_EVENTOS_AUDITORIA}", file=sys.stderr)
 
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM jacobs_pipelines")

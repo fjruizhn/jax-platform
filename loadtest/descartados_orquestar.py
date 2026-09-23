@@ -378,7 +378,8 @@ async def main_async() -> None:
 
         r_auditoria = httpx.get(url_auditoria, headers=headers_dueño_eventos, timeout=15.0)
         print(f"[orquestador] GET /api/pipelines/{{id}}/auditoria-descarte status={r_auditoria.status_code} "
-              f"bytes={len(r_auditoria.content)} eventos={len(r_auditoria.json().get('eventos', []))}")
+              f"bytes={len(r_auditoria.content)} eventos={len(r_auditoria.json().get('eventos', []))} "
+              f"truncado={r_auditoria.json().get('truncado')}")
         if r_auditoria.status_code != 200:
             raise RuntimeError("la verificación previa de /pipelines/{id}/auditoria-descarte no dio 200")
 

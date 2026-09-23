@@ -104,6 +104,19 @@ def test_descartados_admin_trae_los_de_todos_los_usuarios(client, client_superad
 
 
 def test_descartados_admin_pagina_con_limite_y_offset(client, client_superadmin):
+    """MAJOR-C (fix round 2, revisión adversarial de PR 151): la ronda 1
+    ya había corregido el `has_more`/`len` hardcodeados de MAJOR-3, pero
+    seguía asumiendo que `total_antes + 2` entra en el `limite` del
+    endpoint -- `listar_descartados_admin` lo declara `Query(..., le=50)`
+    (`LIMITE_MAX`). Con 49+ filas `discarded` YA en la tabla, ese `limite`
+    supera 50, la validación de FastAPI responde 422, y el test moría en
+    `assert resp.status_code == 200` con un mensaje que apuntaba a la
+    validación del pedido, no al problema real -- el mismo supuesto de
+    tabla-casi-limpia de MAJOR-3, con el umbral corrido de 50 a 49. Se
+    tapa el `limite` en `LIMITE_MAX` y las aserciones se recalculan para
+    los dos casos (sin tope, con tope)."""
+    from api.admin.pipelines_ocultos import LIMITE_MAX
+
     duenio = uid(client, "descarte-admin-t1-pagina-duenio", "operator")
     ahora = time.time()
     ids = [str(uuid.uuid4()) for _ in range(3)]
@@ -112,21 +125,25 @@ def test_descartados_admin_pagina_con_limite_y_offset(client, client_superadmin)
         client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded", ahora - 10 + i, ahora - 10 + i,
                            status_previo="aborted", descartado_por=duenio, descartado_at=ahora - 10 + i))
     try:
-        # `limite` relativo al total REAL (no un 2 fijo que sólo separa
-        # "2 y 1" si la tabla estaba vacía antes): dos de nuestras tres
-        # filas caen en la página 1, la tercera en la página 2, sin
-        # importar cuánto más hubiera en la tabla.
-        limite = total_antes + 2
+        # `limite` relativo al total REAL, pero SIN pasar el tope del
+        # endpoint -- un `total_antes` grande (49+) ya no rompe la
+        # petición con un 422 ajeno a lo que este test quiere probar.
+        limite = min(total_antes + 2, LIMITE_MAX)
+        total_real = total_antes + 3
         resp = client_superadmin.get("/api/admin/pipelines/descartados", params={"limite": limite, "offset": 0})
         assert resp.status_code == 200, resp.text
         cuerpo = resp.json()
-        assert cuerpo["has_more"] is True
         assert len(cuerpo["pipelines"]) == limite
-        # Página 2, desde offset=limite: sólo la fila que quedó afuera.
+        assert cuerpo["has_more"] == (total_real > limite)
+        # Página 2, desde offset=limite: lo que haya quedado afuera de la
+        # primera, acotado igual por `limite` (si `total_antes` era
+        # enorme, la página 2 también viene llena, no "sólo la que sobra").
         resp2 = client_superadmin.get("/api/admin/pipelines/descartados", params={"limite": limite, "offset": limite})
+        assert resp2.status_code == 200, resp2.text
         cuerpo2 = resp2.json()
-        assert cuerpo2["has_more"] is False
-        assert len(cuerpo2["pipelines"]) == (total_antes + 3) - limite  # == 1
+        restantes = max(0, total_real - limite)
+        assert len(cuerpo2["pipelines"]) == min(restantes, limite)
+        assert cuerpo2["has_more"] == (restantes > limite)
     finally:
         client.portal.call(_borrar_pipelines, ids)
 

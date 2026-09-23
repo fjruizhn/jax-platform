@@ -1303,22 +1303,38 @@ async def restore_pipeline(pipeline_id: str, user: AuthUser = Depends(require_su
 # que de verdad importa (un filesort sobre 4 filas es gratis; scanear 221
 # no lo es, tenga o no la etiqueta "Using filesort").
 #
-# `LIMITE_AUDITORIA_DESCARTE` (MINOR, misma ronda): discard/recover es
-# repetible SIN tope (un pipeline puede ciclar cientos de veces) -- sin
-# límite, la respuesta crece sin cota. Se corta en PYTHON, después de
-# ordenar por `id` DESC, no en el SQL: un `LIMIT` en el SQL sin `ORDER BY`
-# tomaría filas arbitrarias del orden del índice (las más VIEJAS del
-# primer event_type que el optimizador visite), no las más nuevas -- sería
-# un tope que muestra lo menos útil. El costo de traer todas las filas
-# ANTES de cortar sigue acotado por el índice compuesto (sólo lee filas de
-# ESOS 4 tipos para ESE pipeline, nunca el resto de sus eventos), así que
-# el corte en Python no reintroduce el problema que resolvió el punto de
-# arriba.
+# `LIMITE_AUDITORIA_DESCARTE` (fix round 1, MINOR; corregido fix round 2,
+# MAJOR-A/B de la revisión adversarial de PR 151): discard/recover es
+# repetible SIN tope -- un pipeline ciclado miles de veces no puede
+# devolver una respuesta sin cota.
+#
+# La ronda 1 lo cortaba en PYTHON, DESPUÉS de un `fetchall()` sin `LIMIT`
+# en el SQL -- razonaba (mal) que un `LIMIT` sin `ORDER BY` tomaría filas
+# arbitrarias. Eso es cierto SIN `ORDER BY`, pero `ORDER BY id DESC LIMIT
+# %s` sí estaba disponible y el revisor lo señaló: sin él, un pipeline
+# ciclado 5.000 veces trae 5.000 filas (con su `payload`) a Python en CADA
+# apertura del detalle -- exactamente el costo sin cota que el propio
+# comentario decía evitar. El filesort que un `ORDER BY` podría causar acá
+# corre sobre las filas de AUDITORÍA nada más (el mismo conjunto chico que
+# ya se ordenaba en Python) -- el hallazgo de R20 (comentario de arriba) es
+# sobre escanear TODOS los eventos del pipeline, no sobre ordenar los
+# pocos de auditoría; no aplica acá.
+#
+# Medido (EXPLAIN + Handler_read, 5.000 eventos de auditoría sembrados,
+# sin ruido): `ORDER BY id DESC LIMIT 51` -- type=range,
+# key=idx_events_pipeline, Handler_read TOTAL=51 para 51 filas devueltas
+# (exacto, sin sobrante). Con 300 eventos de ruido más RECIENTES que
+# intercalan por id: Handler_read=351 (300 de ruido saltados + 51 de
+# auditoría) -- sigue acotado por el LIMIT, no por el total de auditoría
+# ni por el total de eventos del pipeline. `limite+1` (LAS CUATRO/cache,
+# mismo idioma que `list_pipelines`/`listar_ocultos`): sabe si hay más sin
+# un segundo `COUNT(*)`.
 LIMITE_AUDITORIA_DESCARTE = 50
 _TIPOS_AUDITORIA_DESCARTE = ("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")
 SQL_AUDITORIA_DESCARTE = (
     "SELECT id, event_type, payload, ts FROM jacobs_events "
-    "WHERE pipeline_id=%s AND event_type IN (%s, %s, %s, %s)"
+    "WHERE pipeline_id=%s AND event_type IN (%s, %s, %s, %s) "
+    "ORDER BY id DESC LIMIT %s"
 )
 
 
@@ -1340,13 +1356,14 @@ async def auditoria_descarte(pipeline_id: str, user: AuthUser = Depends(get_curr
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(SQL_AUDITORIA_DESCARTE, (pipeline_id, *_TIPOS_AUDITORIA_DESCARTE))
+            # limite+1: sabe si hay más sin un segundo COUNT(*) -- mismo
+            # idioma que list_pipelines/listar_ocultos.
+            await cur.execute(SQL_AUDITORIA_DESCARTE,
+                              (pipeline_id, *_TIPOS_AUDITORIA_DESCARTE, LIMITE_AUDITORIA_DESCARTE + 1))
             filas = await cur.fetchall()
-    # Más nuevo primero + tope defensivo, los dos en Python sobre pocas
-    # filas -- ver el comentario de SQL_AUDITORIA_DESCARTE.
-    filas_ordenadas = sorted(filas, key=lambda f: f[0], reverse=True)[:LIMITE_AUDITORIA_DESCARTE]
+    truncado = len(filas) > LIMITE_AUDITORIA_DESCARTE
     eventos = []
-    for _id, event_type, payload, ts in filas_ordenadas:
+    for _id, event_type, payload, ts in filas[:LIMITE_AUDITORIA_DESCARTE]:
         datos = _payload(payload)
         eventos.append({
             "event_type": event_type,
@@ -1355,7 +1372,10 @@ async def auditoria_descarte(pipeline_id: str, user: AuthUser = Depends(get_curr
             "a": datos.get("a"),
             "ts": ts,
         })
-    return {"eventos": eventos}
+    # fix round 2, MAJOR-A/B: una auditoría que se calla en 50 sin decirlo
+    # informa MENOS de lo que pasó -- `truncado` deja explícito que hay más
+    # historia que la que se está mostrando.
+    return {"eventos": eventos, "truncado": truncado}
 
 
 @router.post("/{pipeline_id}/continue/preflight")
