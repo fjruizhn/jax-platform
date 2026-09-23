@@ -26,7 +26,7 @@ import bcrypt
 
 from auth.jwt import create_access_token, create_refresh_token
 
-_CACHE: dict[tuple[str, str], str] = {}
+_CACHE: dict[tuple[str, str, str], str] = {}
 
 
 async def sql(consulta, args=(), fetch=False):
@@ -68,8 +68,19 @@ async def borrar_usuario(user_id):
     await sql("DELETE FROM jax_users WHERE user_id = %s", (user_id,))
 
 
-async def _obtener_o_crear(etiqueta, role):
-    email = f"test-ident-{etiqueta}-{role}@example.invalid"
+async def _obtener_o_crear(etiqueta, role, tenant_id):
+    """Return an active identity whose database tenant matches its token.
+
+    The authenticated-request boundary resolves both the user and tenant from
+    MariaDB.  Test labels are not tenant authority, so callers that exercise
+    another tenant must create an actual numeric tenant and a user in it.
+    """
+    tenant_id = int(tenant_id)
+    await sql(
+        "INSERT INTO jax_tenants (tenant_id, name, plan, status) VALUES (%s, %s, 'test', 'active') "
+        "ON DUPLICATE KEY UPDATE status = 'active'",
+        (tenant_id, f"test-tenant-{tenant_id}"))
+    email = f"test-ident-{etiqueta}-{role}-t{tenant_id}@example.invalid"
     filas = await sql("SELECT user_id FROM jax_users WHERE email = %s", (email,), True)
     if filas:
         user_id = filas[0][0]
@@ -77,19 +88,19 @@ async def _obtener_o_crear(etiqueta, role):
                   (role, user_id))
         return user_id
     return await sql(
-        "INSERT INTO jax_users (tenant_id, email, password_hash, role, status) VALUES (1, %s, %s, %s, 'active')",
-        (email, _hash(secrets.token_urlsafe(12)), role))
+        "INSERT INTO jax_users (tenant_id, email, password_hash, role, status) VALUES (%s, %s, %s, %s, 'active')",
+        (tenant_id, email, _hash(secrets.token_urlsafe(12)), role))
 
 
-def uid(client, etiqueta, role="operator"):
-    clave = (etiqueta, role)
+def uid(client, etiqueta, role="operator", tenant_id="1"):
+    clave = (etiqueta, role, str(tenant_id))
     if clave not in _CACHE:
-        _CACHE[clave] = str(client.portal.call(_obtener_o_crear, etiqueta, role))
+        _CACHE[clave] = str(client.portal.call(_obtener_o_crear, etiqueta, role, tenant_id))
     return _CACHE[clave]
 
 
 def token_de(client, etiqueta, role="operator", tenant_id="1"):
-    return create_access_token(uid(client, etiqueta, role), tenant_id, role)
+    return create_access_token(uid(client, etiqueta, role, tenant_id), tenant_id, role)
 
 
 def cabeceras(client, etiqueta, role="operator", tenant_id="1"):

@@ -220,13 +220,13 @@ async def _borrar(ids):
 
 @pytest.fixture
 def pipelines_de_dos_tenants(client):
-    duenio = uid(client, "t6seg-lista-duenio", "operator")
+    duenio = uid(client, "t6seg-lista-duenio", "operator", "705")
     ahora = time.time()
     ids = {k: str(uuid.uuid4()) for k in ("viejo", "nuevo", "sin_ack", "ajeno")}
-    client.portal.call(_insertar, ids["viejo"], duenio, "TENANT-A", ahora, "mio viejo", ahora - 10)
-    client.portal.call(_insertar, ids["nuevo"], duenio, "TENANT-A", ahora, "mio nuevo", ahora)
-    client.portal.call(_insertar, ids["sin_ack"], duenio, "TENANT-A", None, "sin ack", ahora)
-    client.portal.call(_insertar, ids["ajeno"], "otro-user", "TENANT-B", ahora, "secreto de B", ahora)
+    client.portal.call(_insertar, ids["viejo"], duenio, "705", ahora, "mio viejo", ahora - 10)
+    client.portal.call(_insertar, ids["nuevo"], duenio, "705", ahora, "mio nuevo", ahora)
+    client.portal.call(_insertar, ids["sin_ack"], duenio, "705", None, "sin ack", ahora)
+    client.portal.call(_insertar, ids["ajeno"], "otro-user", "706", ahora, "secreto de B", ahora)
     yield ids
     client.portal.call(_borrar, list(ids.values()))
 
@@ -234,7 +234,7 @@ def pipelines_de_dos_tenants(client):
 def test_T6_5a_el_duenio_ve_solo_los_suyos_mas_nuevos_primero(client, pipelines_de_dos_tenants):
     ids = pipelines_de_dos_tenants
     resp = client.get("/api/pipelines",
-                      headers=cabeceras(client, "t6seg-lista-duenio", "operator", tenant_id="TENANT-A"))
+                      headers=cabeceras(client, "t6seg-lista-duenio", "operator", tenant_id="705"))
     assert resp.status_code == 200, resp.text
     lista = resp.json()["pipelines"]
     assert [p["pipeline_id"] for p in lista] == [ids["nuevo"], ids["viejo"]]
@@ -244,7 +244,7 @@ def test_T6_5a_el_duenio_ve_solo_los_suyos_mas_nuevos_primero(client, pipelines_
 
 def test_T6_5a_un_usuario_de_otro_tenant_no_ve_el_pipeline(client, pipelines_de_dos_tenants):
     resp = client.get("/api/pipelines",
-                      headers=cabeceras(client, "t6seg-lista-ajeno", "viewer", tenant_id="TENANT-B"))
+                      headers=cabeceras(client, "t6seg-lista-ajeno", "viewer", tenant_id="706"))
     assert resp.status_code == 200, resp.text
     assert resp.json()["pipelines"] == []
     assert "mio nuevo" not in resp.text
@@ -252,7 +252,7 @@ def test_T6_5a_un_usuario_de_otro_tenant_no_ve_el_pipeline(client, pipelines_de_
 
 def test_T6_5a_mismo_usuario_en_otro_tenant_no_es_el_duenio(client, pipelines_de_dos_tenants):
     resp = client.get("/api/pipelines",
-                      headers=cabeceras(client, "t6seg-lista-duenio", "operator", tenant_id="TENANT-B"))
+                      headers=cabeceras(client, "t6seg-lista-duenio", "operator", tenant_id="706"))
     assert resp.json()["pipelines"] == []
 
 
