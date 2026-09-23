@@ -24,7 +24,8 @@ import { resolvedorDeArchivo } from './resolverClassName.js'
 // `leading-*` y los valores arbitrarios (`min-h-[24px]`, `py-[5px]`) no se
 // leen: un botón así puede dar un ROJO FALSO (se ve y se corrige), nunca un
 // verde falso. Un className con interpolación (ternario, template literal
-// dinámico) sigue siendo irresoluble y NO se marca: ese sí es un hueco, el
+// dinámico) o con un spread (`{...props}`) sigue siendo irresoluble y NO se
+// marca: ese sí es un hueco, el
 // mismo de antes de este cambio.
 const LINE_HEIGHT_PX = { 'text-xs': 16, 'text-sm': 20, 'text-base': 24, 'text-lg': 28, 'text-xl': 28 }
 

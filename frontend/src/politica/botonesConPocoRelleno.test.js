@@ -128,11 +128,13 @@ describe('todo src sin botones con menos de 24px calculados', () => {
   // Registro de la excepción "Inline" (auditoría 2026-09-23): `data-en-linea`
   // saca un botón del detector, así que cada uso tiene que verse. La lista
   // exacta vive acá; agregar uno obliga a tocar este test, y el diff lo revisa
-  // una persona. politica/ se excluye porque el propio detector lo nombra.
+  // una persona. Se excluye SOLO el detector (lo nombra en su código), por
+  // nombre exacto: un prefijo dejaba pasar politicaDePrivacidad.jsx o
+  // cualquier otro archivo de politica/ (auditoría 2026-09-23, ronda 2).
   const EXCEPCIONES_EN_LINEA = []
   it('la excepción data-en-linea sólo aparece donde está registrada', () => {
     const usos = archivos
-      .filter((r) => !r.startsWith('politica'))
+      .filter((r) => r.replaceAll('\\', '/') !== 'politica/botonesConPocoRelleno.js')
       .flatMap((r) => readFileSync(new URL(r, raiz), 'utf8').split('\n')
         .map((linea, i) => (linea.includes('data-en-linea') ? `${r}:${i + 1}` : null))
         .filter(Boolean))
