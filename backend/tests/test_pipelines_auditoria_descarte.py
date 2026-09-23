@@ -178,7 +178,7 @@ def test_auditoria_del_dueno_trae_solo_los_cuatro_tipos_ordenados_del_mas_nuevo(
     pid = str(uuid.uuid4())
     ahora = time.time()
     client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
-                       status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
+                       owner_ack_at=ahora, status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
     try:
         client.portal.call(_insertar_evento, pid, "STEP_FAILED", {"step_index": 0}, ahora - 10)
         client.portal.call(_insertar_evento, pid, "PIPELINE_DISCARDED",
@@ -212,7 +212,7 @@ def test_auditoria_del_dueno_trae_los_cuatro_tipos_los_cuatro(client):
     pid = str(uuid.uuid4())
     ahora = time.time()
     client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
-                       status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
+                       owner_ack_at=ahora, status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
     try:
         client.portal.call(_insertar_evento, pid, "PIPELINE_DISCARDED",
                            {"user_id": duenio, "desde": "aborted", "a": "discarded"}, ahora - 30)
@@ -236,7 +236,8 @@ def test_auditoria_del_dueno_trae_los_cuatro_tipos_los_cuatro(client):
 def test_auditoria_de_un_pipeline_sin_eventos_de_descarte_es_lista_vacia(client):
     duenio = uid(client, "auditoria-c3-duenio", "operator")
     pid = str(uuid.uuid4())
-    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "completed"))
+    ahora = time.time()
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "completed", owner_ack_at=ahora))
     try:
         resp = client.get(f"/api/pipelines/{pid}/auditoria-descarte",
                           headers=cabeceras(client, "auditoria-c3-duenio", "operator", tenant_id=TENANT))
@@ -441,7 +442,7 @@ def test_auditoria_descarte_topa_en_el_limite_muestra_los_mas_nuevos_y_marca_tru
     pid = str(uuid.uuid4())
     ahora = time.time()
     client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
-                       status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
+                       owner_ack_at=ahora, status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
     try:
         n = LIMITE_AUDITORIA_DESCARTE + 5
         for i in range(n):
@@ -470,7 +471,7 @@ def test_auditoria_descarte_sin_llegar_al_limite_truncado_es_false(client):
     pid = str(uuid.uuid4())
     ahora = time.time()
     client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
-                       status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
+                       owner_ack_at=ahora, status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
     try:
         client.portal.call(_insertar_evento, pid, "PIPELINE_DISCARDED",
                            {"user_id": duenio, "desde": "aborted", "a": "discarded"}, ahora)
