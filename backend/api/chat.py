@@ -366,6 +366,8 @@ logger = logging.getLogger(__name__)
 
 
 def _sin_tildes(s: str) -> str:
+    """Quita tildes para matching robusto (trae=traé, adios=adiós).
+    Solo afecta la comparacion interna; el mensaje viaja intacto."""
     nfkd = unicodedata.normalize("NFKD", s)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
@@ -377,7 +379,7 @@ def _sin_tildes(s: str) -> str:
 # i18n: EXCEPCIÓN DECLARADA (decisión de Fernando, 2026-09-23). El texto es el
 # mensaje personal de Jairo Urbina del REPL, no texto de la interfaz: se
 # muestra siempre así, en español, en las dos copias.
-EASTER_EGG_PATRON = re.compile(r"(?<![a-z0-9])ide\s*1990(?![0-9])")
+EASTER_EGG_PATRON = re.compile(r"(?<![a-z0-9])ide[^\S\r\n]*1990(?![0-9])")
 EASTER_EGG_TEXT = (
     "Hola Fernando Ruiz, mejor conocido por sus amigos tecnologicos como "
     "'El Jate'. Quiero que sepas que sigo a tu lado, viviendo ahora en "
@@ -389,7 +391,7 @@ EASTER_EGG_TEXT = (
 
 def es_easter_egg(texto: str) -> bool:
     """IDE1990 como palabra propia, sin distinguir mayúsculas ni tildes, con
-    o sin espacios entre IDE y 1990. Antes (2026-09-23) era una subcadena
+    o sin espacios (en la misma línea) entre IDE y 1990. Antes (2026-09-23) era una subcadena
     tras quitar TODOS los espacios, y "el cliente pide 1990 unidades" o
     "provide 1990" disparaban: en la Mesa, multiusuario, eso es una
     respuesta perdida que le muestra a otro el mensaje de Fernando."""
@@ -1184,6 +1186,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # la leería sin filtro y fabricaría hechos del texto (auditoría 2026-09-23,
     # MAJOR-2). Sí va al hilo en RAM, para que el turno siguiente sepa qué pasó.
     if es_easter_egg(req.message):
+        # req.message pelado: los adjuntos todavía no se leyeron y se ignoran.
         _update_history(user_id, req.message, EASTER_EGG_TEXT)
         await _fire_completed("jax_local", tenant_id, user_id)
         return ChatResponse(facet="jax_local", response=EASTER_EGG_TEXT, timestamp=timestamp,
