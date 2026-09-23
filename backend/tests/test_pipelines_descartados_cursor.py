@@ -206,6 +206,32 @@ def test_un_cursor_ilegible_por_http_es_422(client, client_superadmin, url, fijo
     assert resp.json()["detail"] == "cursor_invalido"
 
 
+@pytest.mark.parametrize("url, fijos, modulo", [
+    ("/api/pipelines", {"estado": "discarded"}, "api.pipelines"),
+    ("/api/admin/pipelines/descartados", {}, "api.admin.pipelines_ocultos"),
+])
+def test_un_cursor_ilegible_no_toma_conexion_del_pool(client, client_superadmin, monkeypatch, url, fijos, modulo):
+    """Un 422 `cursor_invalido` no necesita la base: el cursor se decodifica
+    ANTES de `get_pool()`/`pool.acquire()` en las dos vistas. Pool espía que
+    revienta si se lo pide: con el código viejo (decodificar dentro del
+    `acquire()` en la vista del dueño) esta prueba fallaba."""
+    import importlib
+
+    pedidos = []
+
+    async def _pool_espia():
+        pedidos.append("get_pool")
+        raise AssertionError("un cursor ilegible pidió el pool")
+
+    monkeypatch.setattr(importlib.import_module(modulo), "get_pool", _pool_espia)
+    cliente = client_superadmin if "admin" in url else client
+    extra = {} if "admin" in url else {"headers": cabeceras(client, "descarte-cursor-422", "operator")}
+    resp = cliente.get(url, params={**fijos, "cursor": _b64('[NaN, "x"]')}, **extra)
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == "cursor_invalido"
+    assert pedidos == []
+
+
 def test_cursor_en_la_lista_principal_es_422(client):
     resp = client.get("/api/pipelines", params={"cursor": pag.codificar_cursor(1.0, "x")},
                       headers=cabeceras(client, "descarte-cursor-422", "operator"))

@@ -978,8 +978,15 @@ jobs:
           //   viejo" (guarda de regresión: pasa también en master). Los
           //   tests de offset quedan como respaldo sin cursor_siguiente.
           //   Medido con vitest run --reporter=json: 1014 passed, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1014) {
-              console.error("PISO ROTO: se esperaban 1014 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1014 -> 1017 (2026-09-23, carrera de "Cargar más" en
+          //   Descartados/Ocultos): +1 en HistorialContenido y +2 en
+          //   AdminPipelinesOcultos (Descartados y Ocultos) -- una respuesta
+          //   de "Cargar más" que llega después de volver a la pestaña (que
+          //   recargó la primera página) se descarta por época. Los 3 en rojo
+          //   contra master. Medido con vitest run --reporter=json: 1017
+          //   passed, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1017) {
+              console.error("PISO ROTO: se esperaban 1017 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -2919,7 +2926,15 @@ jobs:
           #   mutaciones del predicado (sin `IS NULL`, `<=` en el desempate)
           #   en rojo. Medido: suite con DB 2695 passed / 2 skipped local
           #   (drift ajeno incluido); delta propio +29.
-          PISO_PASSED = 2669
+          # 2669 -> 2676 (2026-09-23, arreglos chicos del cursor): +2 en
+          #   test_pipelines_descartados_cursor.py (un cursor ilegible no pide
+          #   el pool, las dos vistas; la del dueño en rojo contra master) y
+          #   +5 de tests/test_indices_forzados.py (chequeo del arranque de
+          #   los índices que el código fuerza: lista sacada del código,
+          #   docstrings/comentarios/tests no cuentan, ERROR sin
+          #   idx_pipelines_descartados y ninguno con él, fallo de la
+          #   comprobación es ERROR sin tumbar, el lifespan lo llama).
+          PISO_PASSED = 2676
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3814,7 +3829,10 @@ jobs:
       #   el SQL, ida y vuelta exacta del cursor, 11 cursores ilegibles,
       #   cursor_siguiente sólo con has_more). Medido con JAX_CI_NO_DB=1:
       #   19 passed / 10 skipped en ese archivo.
-      JAX_CI_MIN_PASSED: "1694"
+      # 1694 -> 1698 (2026-09-23, chequeo de índices forzados): +4 puros en
+      #   tests/test_indices_forzados.py (el de la base se salta sin DB).
+      #   Medido con JAX_CI_NO_DB=1: 4 passed / 1 skipped en ese archivo.
+      JAX_CI_MIN_PASSED: "1698"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
