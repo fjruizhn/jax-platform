@@ -978,8 +978,15 @@ jobs:
           //   viejo" (guarda de regresión: pasa también en master). Los
           //   tests de offset quedan como respaldo sin cursor_siguiente.
           //   Medido con vitest run --reporter=json: 1014 passed, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1014) {
-              console.error("PISO ROTO: se esperaban 1014 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1014 -> 1017 (2026-09-23, carrera de "Cargar más" en
+          //   Descartados/Ocultos): +1 en HistorialContenido y +2 en
+          //   AdminPipelinesOcultos (Descartados y Ocultos) -- una respuesta
+          //   de "Cargar más" que llega después de volver a la pestaña (que
+          //   recargó la primera página) se descarta por época. Los 3 en rojo
+          //   contra master. Medido con vitest run --reporter=json: 1017
+          //   passed, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1017) {
+              console.error("PISO ROTO: se esperaban 1017 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -2919,7 +2926,69 @@ jobs:
           #   mutaciones del predicado (sin `IS NULL`, `<=` en el desempate)
           #   en rojo. Medido: suite con DB 2695 passed / 2 skipped local
           #   (drift ajeno incluido); delta propio +29.
-          PISO_PASSED = 2669
+          # 2669 -> 2676 (2026-09-23, arreglos chicos del cursor): +2 en
+          #   test_pipelines_descartados_cursor.py (un cursor ilegible no pide
+          #   el pool, las dos vistas; la del dueño en rojo contra master) y
+          #   +5 de tests/test_indices_forzados.py (chequeo del arranque de
+          #   los índices que el código fuerza: lista sacada del código,
+          #   docstrings/comentarios/tests no cuentan, ERROR sin
+          #   idx_pipelines_descartados y ninguno con él, fallo de la
+          #   comprobación es ERROR sin tumbar, el lifespan lo llama).
+          # 2676 -> 2681 (2026-09-23, auditoría de jax-platform#160): +5 en
+          #   tests/test_indices_forzados.py (un .py roto/no UTF-8 es ERROR y
+          #   el escaneo sigue; .venv/node_modules/__pycache__ ni se abren;
+          #   índice sin distinguir mayúsculas; falta de TABLA nombrada como
+          #   tabla; el lifespan REAL completa aunque el escaneo reviente) --
+          #   los 5 en rojo contra 81dbbb2. El viejo "el lifespan lo llama"
+          #   (buscaba el nombre en el texto) se reemplaza por uno que corre
+          #   el lifespan de verdad: rojo si se quita la llamada.
+          # 2681 -> 2683 (2026-09-23, jax-platform#160, ronda 2 de auditoría,
+          #   commit 5437cb0): +2 en tests/test_indices_forzados.py -- una
+          #   base que acepta la conexión y no contesta ya no cuelga el
+          #   lifespan (asyncio.wait_for con JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S,
+          #   15 s por default) y un paquete `x/tests/` con SQL de producción
+          #   sigue escaneado (sólo se poda `backend/tests`, la raíz). Los 2
+          #   en rojo contra el código anterior a 5437cb0. (Nota agregada
+          #   2026-09-23 al corregir una atribución equivocada en la cadena
+          #   del job SIN DB, más abajo: este es el mismo +2 de ahí.)
+          # 2683 -> 2690 (2026-09-23, jax-platform#160, ronda de arreglo de
+          #   los MINOR 1/2/3): +7 en tests/test_indices_forzados.py. MINOR 1
+          #   (JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S sin validar: "abc" tumbaba
+          #   el import con un ValueError crudo, "nan" colgaba el event loop,
+          #   "inf" dejaba el chequeo sin tope, "0"/"-1" hacían que nunca
+          #   corriera) -- 5 tests parametrizados (abc/nan/inf/0/-1 rechazados
+          #   con IndicesForzadosConfigInvalida nombrando la variable y el
+          #   valor) + 1 de un valor válido + 1 del default de 15 s sin la
+          #   variable puesta. MINOR 2 (el timeout salía "(TimeoutError: )"
+          #   vacío, sin tope ni fase) no suma test propio: la aserción se
+          #   agrega al test ya existente del tope, que además (MINOR 3) se
+          #   aísla de la fase del escaneo con `indices_forzados` fijo y
+          #   cuelga sólo en la consulta a information_schema (antes colgaba
+          #   en obtener_pool, sin probar la fase real del log). Los 7 son
+          #   puros (no piden `client`). Medido con JAX_CI_NO_DB=1: archivo
+          #   11 -> 18 passed / 1 skip sin cambios; delta propio +7. Los 7
+          #   tests nuevos, en rojo contra el código de jax-platform#160
+          #   mergeado (AttributeError por faltar `VARIABLE_TOPE_CHEQUEO_S` en
+          #   los primeros 7); el test ya existente del tope también falla en
+          #   rojo ahí (log sin "0.2" ni la fase), pero no es un test nuevo y
+          #   no suma al delta.
+          # 2690 -> 2692 (2026-09-23, tres MINOR de la auditoría de 4ac7db3,
+          #   MINOR 1): +2 en tests/test_indices_forzados.py --
+          #   `TOPE_CHEQUEO_S = cargar_tope_chequeo_s()` (línea 92 del
+          #   módulo) no estaba cubierta: los 7 tests de la ronda anterior
+          #   prueban `cargar_tope_chequeo_s()` como función pura, ninguno
+          #   pasa por esa línea, así que revertirla a `float(os.environ.
+          #   get(...))` los dejaba a los 7 en verde igual.
+          #   test_tope_invalido_revienta_el_import_del_modulo y
+          #   test_tope_valido_queda_fijado_en_el_modulo_al_importar hacen
+          #   `importlib.reload(mod)` con `JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S`
+          #   puesta a "nan"/"7" y comprueban el efecto en el módulo
+          #   recargado, restaurando el default de 15 s en un `finally`. Los
+          #   2 puros (no piden `client`). Medido con JAX_CI_NO_DB=1: archivo
+          #   18 -> 20 passed / 1 skip sin cambios; delta propio +2. Los 2 en
+          #   rojo contra la línea 92 revertida a `float(os.environ.get(...))`
+          #   (DID NOT RAISE IndicesForzadosConfigInvalida).
+          PISO_PASSED = 2692  # +2 (auditoría de 4ac7db3, MINOR 1: línea 92 cubierta con reload)
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3814,7 +3883,51 @@ jobs:
       #   el SQL, ida y vuelta exacta del cursor, 11 cursores ilegibles,
       #   cursor_siguiente sólo con has_more). Medido con JAX_CI_NO_DB=1:
       #   19 passed / 10 skipped en ese archivo.
-      JAX_CI_MIN_PASSED: "1694"
+      # 1694 -> 1698 (2026-09-23, chequeo de índices forzados): +4 puros en
+      #   tests/test_indices_forzados.py (el de la base se salta sin DB).
+      #   Medido con JAX_CI_NO_DB=1: 4 passed / 1 skipped en ese archivo.
+      # 1698 -> 1703 (2026-09-23, auditoría de jax-platform#160): +5 puros
+      #   en tests/test_indices_forzados.py. Medido con JAX_CI_NO_DB=1:
+      #   9 passed / 1 skipped en ese archivo.
+      # 1703 -> 1705 (2026-09-23, jax-platform#160, ronda 2 de auditoría,
+      #   commit 5437cb0 -- CORRECCIÓN 2026-09-23: esta línea atribuía antes
+      #   el +2 a los 2 tests puros de test_pipeline_resource_release.py del
+      #   MERGE de origin/master de 2026-09-22; es la misma cifra por
+      #   coincidencia, pero el salto real de 1703 a 1705 lo hizo 5437cb0, no
+      #   ese merge -- verificado con `git show 5437cb0 --
+      #   .github/workflows/policy.yml`, que cambia
+      #   `JAX_CI_MIN_PASSED: "1703"` a `"1705"` en el mismo commit): +2
+      #   puros en tests/test_indices_forzados.py --
+      #   test_un_paquete_tests_anidado_si_se_escanea (un paquete `x/tests/`
+      #   con SQL de producción sigue escaneado, sólo se poda
+      #   `backend/tests`) y test_una_base_que_no_contesta_no_cuelga_el_arranque
+      #   (tope configurable del chequeo, JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S,
+      #   para que una base que acepta la conexión y no contesta no cuelgue
+      #   el lifespan). Mismo +2 documentado arriba, en el piso CON DB
+      #   ("2681 -> 2683").
+      # 1705 -> 1712 (2026-09-23, jax-platform#160, ronda de arreglo de los
+      #   MINOR 1/2/3): +7 puros en tests/test_indices_forzados.py -- mismos
+      #   7 tests nuevos documentados arriba, en el piso CON DB (validación
+      #   de JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S: 5 valores inválidos + 1
+      #   válido + 1 default; ninguno pide `client`). El test ya existente
+      #   del tope se fortalece (fase aislada + aserción del log) pero no es
+      #   nuevo, no suma delta. Medido con JAX_CI_NO_DB=1: archivo
+      #   11 -> 18 passed / 1 skipped (delta propio +7); suite completa
+      #   1747 -> 1754 passed / 964 skipped sin cambios (mismo comando
+      #   `JAX_CI_NO_DB=1 python -m pytest -q -p no:warnings -rs
+      #   --ignore=tests/test_carga_indice_pipelines_del_usuario.py`).
+      # 1712 -> 1714 (2026-09-23, tres MINOR de la auditoría de 4ac7db3,
+      #   MINOR 1): +2 puros en tests/test_indices_forzados.py -- mismos 2
+      #   tests documentados arriba, en el piso CON DB ("2690 -> 2692"):
+      #   test_tope_invalido_revienta_el_import_del_modulo y
+      #   test_tope_valido_queda_fijado_en_el_modulo_al_importar, que cubren
+      #   la línea 92 del módulo (`TOPE_CHEQUEO_S = cargar_tope_chequeo_s()`)
+      #   con `importlib.reload`, no sólo la función pura. Medido con
+      #   JAX_CI_NO_DB=1: archivo 18 -> 20 passed / 1 skipped (delta propio
+      #   +2); suite completa 1754 -> 1756 passed / 964 skipped sin cambios
+      #   (mismo comando `JAX_CI_NO_DB=1 python -m pytest -q -p no:warnings
+      #   -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py`).
+      JAX_CI_MIN_PASSED: "1714"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

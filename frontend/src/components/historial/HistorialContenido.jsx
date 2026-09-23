@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
 import { textoDeCausa, textoDeErrorDeMesa } from '../../api/errores'
@@ -63,7 +63,19 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
   // `mas` = "Cargar más" (agrega); sin él, primera página (reemplaza).
   // Si la respuesta anterior no trajo cursor (un backend todavía sin él,
   // durante un despliegue), cae al `offset` = cantidad ya cargada.
+  //
+  // Época de la carga (2026-09-23): cada pedido toma un número nuevo y su
+  // respuesta sólo se aplica si sigue siendo el ÚLTIMO. Sin esto, "Cargar
+  // más" → cambiar de pestaña → volver (que recarga la primera página)
+  // antes de que llegara la respuesta dejaba que la respuesta VIEJA se
+  // agregara a la lista recién recargada (filas repetidas) y pisara su
+  // cursor. "Cargar más" está deshabilitado mientras hay una carga en
+  // curso, así que "el último pedido gana" no descarta nunca una página que
+  // hacía falta.
+  const epocaDescartados = useRef(0)
   function cargarDescartados({ mas = false } = {}) {
+    const epoca = ++epocaDescartados.current
+    const vigente = () => epoca === epocaDescartados.current
     setCargandoDescartados(true)
     setErrorDescartados(false)
     const params = { estado: 'discarded', limite: LIMITE_DESCARTADOS }
@@ -71,13 +83,14 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
     else params.offset = mas ? descartados.length : 0
     return api.get('/pipelines', { params })
       .then(({ data }) => {
+        if (!vigente()) return
         const nuevos = Array.isArray(data?.pipelines) ? data.pipelines : []
         setDescartados((prev) => (mas ? [...prev, ...nuevos] : nuevos))
         setHayMasDescartados(data?.has_more === true)
         setCursorDescartados(typeof data?.cursor_siguiente === 'string' ? data.cursor_siguiente : null)
       })
-      .catch(() => setErrorDescartados(true))
-      .finally(() => setCargandoDescartados(false))
+      .catch(() => { if (vigente()) setErrorDescartados(true) })
+      .finally(() => { if (vigente()) setCargandoDescartados(false) })
   }
 
   useEffect(() => {

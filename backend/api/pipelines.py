@@ -989,14 +989,20 @@ async def list_pipelines(
     exigir_cursor_sin_offset(cursor, offset)
     if cursor is not None and estado != "discarded":
         raise HTTPException(status_code=422, detail="cursor_solo_descartados")
+    # El cursor se decodifica ANTES de pedir el pool (2026-09-23, mismo
+    # orden que listar_descartados_admin): un cursor ilegible es un 422
+    # `cursor_invalido` que no necesita conexión, y decodificarlo dentro de
+    # `pool.acquire()` tomaba una del pool para devolverla sin usarla.
+    # Fijado por test_un_cursor_ilegible_no_toma_conexion_del_pool.
+    if estado == "discarded":
+        consulta_d, params_d = consulta_y_parametros(
+            SQL_DESCARTADOS_DEL_USUARIO_BASE, (user.user_id, user.tenant_id),
+            limite, offset, cursor)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             if estado == "discarded":
-                consulta, params = consulta_y_parametros(
-                    SQL_DESCARTADOS_DEL_USUARIO_BASE, (user.user_id, user.tenant_id),
-                    limite, offset, cursor)
-                await cur.execute(consulta, params)
+                await cur.execute(consulta_d, params_d)
                 filas_d = await cur.fetchall()
                 hay_mas_d = len(filas_d) > limite
                 filas_d = filas_d[:limite]

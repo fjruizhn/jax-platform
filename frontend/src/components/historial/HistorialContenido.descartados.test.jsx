@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -312,5 +312,46 @@ describe('HistorialContenido -- pestaña Descartados (Task 6)', () => {
     const primeras = api.get.mock.calls.filter(([u, c]) => u === '/pipelines' && c?.params?.estado === 'discarded' && c.params.offset === 0)
     expect(primeras).toHaveLength(2)
     expect(primeras.every(([, c]) => !('cursor' in c.params))).toBe(true)
+  })
+
+  // 2026-09-23: carrera "Cargar más" → cambiar de pestaña → volver ANTES de
+  // que llegue la respuesta. La respuesta vieja (de la época anterior) se
+  // descarta: no se agrega a la lista recién recargada ni pisa su cursor.
+  // Con el código sin época, "tardío" aparecía y el siguiente "Cargar más"
+  // mandaba el cursor viejo 'cX'.
+  it('una respuesta de "Cargar más" que llega después de volver a la pestaña se descarta (no agrega ni pisa el cursor)', async () => {
+    mockGet({ hayMasDescartados: true, cursor: 'c1' })
+    renderCuerpo()
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    await screen.findByText('plan descartado')
+
+    let soltarTardia
+    const tardia = new Promise((resolve) => { soltarTardia = resolve })
+    api.get.mockImplementation((url, config) => {
+      const p = config?.params ?? {}
+      if (p.estado !== 'discarded') return Promise.resolve({ data: { pipelines: [], has_more: false } })
+      if (p.cursor === 'c1') return tardia
+      if (p.cursor === 'c9') {
+        return Promise.resolve({ data: { pipelines: [{ pipeline_id: 'd10', name: 'siguiente buena', status: 'discarded', descartado_at: 1758000800, costo_usd: null }], has_more: false, cursor_siguiente: null } })
+      }
+      return Promise.resolve({ data: { pipelines: [{ pipeline_id: 'd9', name: 'otra primera', status: 'discarded', descartado_at: 1758000900, costo_usd: null }], has_more: true, cursor_siguiente: 'c9' } })
+    })
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/pipelines', { params: { estado: 'discarded', limite: 50, cursor: 'c1' } }))
+
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaTodos }))
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    expect(await screen.findByText('otra primera')).toBeInTheDocument()
+
+    await act(async () => {
+      soltarTardia({ data: { pipelines: [{ pipeline_id: 'd2', name: 'tardío', status: 'discarded', descartado_at: 1758000400, costo_usd: null }], has_more: true, cursor_siguiente: 'cX' } })
+      await tardia
+    })
+    expect(screen.queryByText('tardío')).not.toBeInTheDocument()
+    expect(screen.getByText('otra primera')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+    expect(await screen.findByText('siguiente buena')).toBeInTheDocument()
+    expect(api.get).not.toHaveBeenCalledWith('/pipelines', { params: { estado: 'discarded', limite: 50, cursor: 'cX' } })
   })
 })
