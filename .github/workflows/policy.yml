@@ -2942,6 +2942,15 @@ jobs:
           #   los 5 en rojo contra 81dbbb2. El viejo "el lifespan lo llama"
           #   (buscaba el nombre en el texto) se reemplaza por uno que corre
           #   el lifespan de verdad: rojo si se quita la llamada.
+          # 2681 -> 2683 (2026-09-23, jax-platform#160, ronda 2 de auditoría,
+          #   commit 5437cb0): +2 en tests/test_indices_forzados.py -- una
+          #   base que acepta la conexión y no contesta ya no cuelga el
+          #   lifespan (asyncio.wait_for con JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S,
+          #   15 s por default) y un paquete `x/tests/` con SQL de producción
+          #   sigue escaneado (sólo se poda `backend/tests`, la raíz). Los 2
+          #   en rojo contra el código anterior a 5437cb0. (Nota agregada
+          #   2026-09-23 al corregir una atribución equivocada en la cadena
+          #   del job SIN DB, más abajo: este es el mismo +2 de ahí.)
           # 2683 -> 2690 (2026-09-23, jax-platform#160, ronda de arreglo de
           #   los MINOR 1/2/3): +7 en tests/test_indices_forzados.py. MINOR 1
           #   (JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S sin validar: "abc" tumbaba
@@ -2963,7 +2972,23 @@ jobs:
           #   los primeros 7); el test ya existente del tope también falla en
           #   rojo ahí (log sin "0.2" ni la fase), pero no es un test nuevo y
           #   no suma al delta.
-          PISO_PASSED = 2690  # +7 (jax-platform#160, MINORs 1/2/3: tope validado + fase del log)
+          # 2690 -> 2692 (2026-09-23, tres MINOR de la auditoría de 4ac7db3,
+          #   MINOR 1): +2 en tests/test_indices_forzados.py --
+          #   `TOPE_CHEQUEO_S = cargar_tope_chequeo_s()` (línea 92 del
+          #   módulo) no estaba cubierta: los 7 tests de la ronda anterior
+          #   prueban `cargar_tope_chequeo_s()` como función pura, ninguno
+          #   pasa por esa línea, así que revertirla a `float(os.environ.
+          #   get(...))` los dejaba a los 7 en verde igual.
+          #   test_tope_invalido_revienta_el_import_del_modulo y
+          #   test_tope_valido_queda_fijado_en_el_modulo_al_importar hacen
+          #   `importlib.reload(mod)` con `JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S`
+          #   puesta a "nan"/"7" y comprueban el efecto en el módulo
+          #   recargado, restaurando el default de 15 s en un `finally`. Los
+          #   2 puros (no piden `client`). Medido con JAX_CI_NO_DB=1: archivo
+          #   18 -> 20 passed / 1 skip sin cambios; delta propio +2. Los 2 en
+          #   rojo contra la línea 92 revertida a `float(os.environ.get(...))`
+          #   (DID NOT RAISE IndicesForzadosConfigInvalida).
+          PISO_PASSED = 2692  # +2 (auditoría de 4ac7db3, MINOR 1: línea 92 cubierta con reload)
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3864,14 +3889,22 @@ jobs:
       # 1698 -> 1703 (2026-09-23, auditoría de jax-platform#160): +5 puros
       #   en tests/test_indices_forzados.py. Medido con JAX_CI_NO_DB=1:
       #   9 passed / 1 skipped en ese archivo.
-      # 1703 -> 1705 (línea de historial que faltaba acá; el piso declarado
-      #   ya estaba en 1705 sin que esta cadena lo documentara): mismo +2 ya
-      #   registrado arriba, en la otra cadena de comentarios de este mismo
-      #   job ("2026-09-22, MERGE de origin/master ... 1703 / 874 skipped ->
-      #   1705 / 874") -- los 2 tests puros de test_pipeline_resource_release.py
-      #   que no piden `client`. Las dos cadenas conviven en este archivo por
-      #   el mismo historial de merges que ya explica el bloque de arriba;
-      #   esta línea sólo cierra el salto que quedaba sin nota en ÉSTA.
+      # 1703 -> 1705 (2026-09-23, jax-platform#160, ronda 2 de auditoría,
+      #   commit 5437cb0 -- CORRECCIÓN 2026-09-23: esta línea atribuía antes
+      #   el +2 a los 2 tests puros de test_pipeline_resource_release.py del
+      #   MERGE de origin/master de 2026-09-22; es la misma cifra por
+      #   coincidencia, pero el salto real de 1703 a 1705 lo hizo 5437cb0, no
+      #   ese merge -- verificado con `git show 5437cb0 --
+      #   .github/workflows/policy.yml`, que cambia
+      #   `JAX_CI_MIN_PASSED: "1703"` a `"1705"` en el mismo commit): +2
+      #   puros en tests/test_indices_forzados.py --
+      #   test_un_paquete_tests_anidado_si_se_escanea (un paquete `x/tests/`
+      #   con SQL de producción sigue escaneado, sólo se poda
+      #   `backend/tests`) y test_una_base_que_no_contesta_no_cuelga_el_arranque
+      #   (tope configurable del chequeo, JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S,
+      #   para que una base que acepta la conexión y no contesta no cuelgue
+      #   el lifespan). Mismo +2 documentado arriba, en el piso CON DB
+      #   ("2681 -> 2683").
       # 1705 -> 1712 (2026-09-23, jax-platform#160, ronda de arreglo de los
       #   MINOR 1/2/3): +7 puros en tests/test_indices_forzados.py -- mismos
       #   7 tests nuevos documentados arriba, en el piso CON DB (validación
@@ -3883,7 +3916,18 @@ jobs:
       #   1747 -> 1754 passed / 964 skipped sin cambios (mismo comando
       #   `JAX_CI_NO_DB=1 python -m pytest -q -p no:warnings -rs
       #   --ignore=tests/test_carga_indice_pipelines_del_usuario.py`).
-      JAX_CI_MIN_PASSED: "1712"
+      # 1712 -> 1714 (2026-09-23, tres MINOR de la auditoría de 4ac7db3,
+      #   MINOR 1): +2 puros en tests/test_indices_forzados.py -- mismos 2
+      #   tests documentados arriba, en el piso CON DB ("2690 -> 2692"):
+      #   test_tope_invalido_revienta_el_import_del_modulo y
+      #   test_tope_valido_queda_fijado_en_el_modulo_al_importar, que cubren
+      #   la línea 92 del módulo (`TOPE_CHEQUEO_S = cargar_tope_chequeo_s()`)
+      #   con `importlib.reload`, no sólo la función pura. Medido con
+      #   JAX_CI_NO_DB=1: archivo 18 -> 20 passed / 1 skipped (delta propio
+      #   +2); suite completa 1754 -> 1756 passed / 964 skipped sin cambios
+      #   (mismo comando `JAX_CI_NO_DB=1 python -m pytest -q -p no:warnings
+      #   -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py`).
+      JAX_CI_MIN_PASSED: "1714"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -13,6 +13,7 @@
   .venv/node_modules/__pycache__ ni se recorren.
 """
 import asyncio
+import importlib
 import logging
 import textwrap
 import types
@@ -294,6 +295,60 @@ def test_tope_de_chequeo_valido_se_acepta(monkeypatch):
 def test_tope_de_chequeo_usa_15_por_default_si_falta(monkeypatch):
     monkeypatch.delenv(mod.VARIABLE_TOPE_CHEQUEO_S, raising=False)
     assert mod.cargar_tope_chequeo_s() == 15.0
+
+
+# Los tres tests de arriba cubren `cargar_tope_chequeo_s()` como función
+# pura, pero NO la línea 92 (`TOPE_CHEQUEO_S = cargar_tope_chequeo_s()`):
+# revertirla a `float(os.environ.get(VARIABLE_TOPE_CHEQUEO_S,
+# _TOPE_CHEQUEO_S_DEFAULT))` los deja a los tres en verde igual, porque
+# ninguno pasa por esa línea. Los dos de abajo sí -- recargan el módulo con
+# `importlib.reload` para ejercitar el import real.
+#
+# `reload` es seguro acá porque nada en este repo importa una función
+# SUELTA de `db.indices_forzados` -- el único consumidor, `main.py`, hace
+# `from db import indices_forzados` (liga el NOMBRE al objeto módulo, no a
+# una función) y llama `indices_forzados.chequeo_de_arranque(...)` por
+# atributo en el momento de usarlo. `importlib.reload` reutiliza el MISMO
+# objeto de módulo (no crea uno nuevo), así que `main.indices_forzados`
+# sigue siendo ese objeto y ve lo que el reload le deje adentro. Cada test
+# restaura el módulo a su estado default en un `finally` (delenv + reload)
+# para no dejarle un tope roto o cambiado al resto de la suite -- si el
+# reload de restauración fallara, más vale que ese test reviente ahí a que
+# el problema se filtre en silencio a otro test.
+#
+# Trampa real, encontrada corriendo esto (no supuesta): `pytest.raises(mod.
+# IndicesForzadosConfigInvalida)` evalúa esa referencia ANTES del reload, o
+# sea contra la clase VIEJA -- el `class IndicesForzadosConfigInvalida` de
+# la línea 60 se re-ejecuta durante el reload (queda antes de la línea 92 que
+# falla) y crea un objeto de clase NUEVO, así que la excepción que se
+# levanta es instancia de esa clase nueva y `pytest.raises` con la vieja no
+# la agarra -- salía como error sin capturar en vez de la aserción fallando.
+# Se agarra por `RuntimeError` (builtin, no se redefine con el reload) y se
+# compara el tipo DESPUÉS, leyendo `mod.IndicesForzadosConfigInvalida` ya
+# actualizado.
+def test_tope_invalido_revienta_el_import_del_modulo(monkeypatch):
+    monkeypatch.setenv(mod.VARIABLE_TOPE_CHEQUEO_S, "nan")
+    try:
+        with pytest.raises(RuntimeError) as e:
+            importlib.reload(mod)
+        assert isinstance(e.value, mod.IndicesForzadosConfigInvalida)
+        assert mod.VARIABLE_TOPE_CHEQUEO_S in str(e.value)
+        assert "nan" in str(e.value)
+    finally:
+        monkeypatch.delenv(mod.VARIABLE_TOPE_CHEQUEO_S, raising=False)
+        importlib.reload(mod)
+        assert mod.TOPE_CHEQUEO_S == 15.0
+
+
+def test_tope_valido_queda_fijado_en_el_modulo_al_importar(monkeypatch):
+    monkeypatch.setenv(mod.VARIABLE_TOPE_CHEQUEO_S, "7")
+    try:
+        importlib.reload(mod)
+        assert mod.TOPE_CHEQUEO_S == 7.0
+    finally:
+        monkeypatch.delenv(mod.VARIABLE_TOPE_CHEQUEO_S, raising=False)
+        importlib.reload(mod)
+        assert mod.TOPE_CHEQUEO_S == 15.0
 
 
 # --- MINOR 2/3 (auditoría #160): timeout con fase, aislado de la base -------
