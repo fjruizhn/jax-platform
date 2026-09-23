@@ -14,6 +14,7 @@ from typing import Literal, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, ConfigDict, Field
 import httpx
+import aiomysql
 from http_client import CuerpoJsonDeUnUso, LiteralJsonCrudo, cabeceras_gemini, get_http_client
 from facet_resolver import resolve_facet, FacetUnavailableError
 from adjuntos.contrato import (
@@ -126,8 +127,12 @@ def _importar_memorydb():
 
 
 MemoryDB = _importar_memorydb()
-from jax.memory.b9 import PromptMemoryContext, ScopeContext
+from jax.memory.b9 import (
+    AuthorizationDenied, MutationAuthorizationRequest, PromptMemoryContext,
+    ScopeContext, ScopeDenied, Visibility,
+)
 from jax.memory.b9_mariadb import MariaDBB9Reader
+from jax.memory.scope_authority import ProjectScopeAuthorityResolver
 
 _memory = None              # instancia única (lazy)
 _memory_ready = False
@@ -233,18 +238,73 @@ async def _get_conv_uuid(user_id: int, tenant_id, project_id) -> str | None:
     return u
 
 
+class B9MemoryUnavailable(RuntimeError):
+    """The B9 read boundary could not obtain a trustworthy memory result."""
+
+
+class _B9MappingAcquire:
+    """Adapt the platform pool's plain-cursor acquire contract for B9 reads."""
+    def __init__(self, acquire_context):
+        self._acquire_context = acquire_context
+
+    async def __aenter__(self):
+        self._connection = await self._acquire_context.__aenter__()
+        return _B9MappingConnection(self._connection)
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return await self._acquire_context.__aexit__(exc_type, exc, traceback)
+
+
+class _B9MappingConnection:
+    """Connection view which asks aiomysql for mapping rows on every cursor.
+
+    ``db.connection.get_pool`` deliberately uses aiomysql's default cursor for
+    the rest of the platform.  B9 readers consume named fields, so adapting at
+    this narrow integration boundary avoids treating tuple positions as an
+    authorization-sensitive schema contract.
+    """
+    def __init__(self, connection):
+        self._connection = connection
+
+    def cursor(self, *args, **kwargs):
+        if args or kwargs:
+            raise TypeError("B9 mapping adapter does not accept caller cursor overrides")
+        return self._connection.cursor(aiomysql.DictCursor)
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
+class _B9MappingPool:
+    """Minimal pool adapter required by ``MariaDBB9Reader``."""
+    def __init__(self, pool):
+        self._pool = pool
+
+    def acquire(self):
+        return _B9MappingAcquire(self._pool.acquire())
+
+
 async def _prompt_memory_context(scope: ScopeContext) -> PromptMemoryContext:
     """Read B9 memory exclusively through its envelope boundary.
 
-    A database/schema outage degrades this optional context, but never falls
-    back to the legacy row retrieval path.  That preserves the prompt boundary
-    and prevents a fail-open privacy bypass during adoption.
+    A database/schema outage is explicit to the request.  It must never be
+    represented as a successful empty context: that would make a platform
+    cursor-contract error indistinguishable from genuinely absent memory.
     """
     try:
-        return await MariaDBB9Reader(await get_pool()).prompt_context(scope, limit=20)
-    except Exception:
-        logger.warning("B9 memory retrieval failed; continuing without memory context", exc_info=True)
-        return PromptMemoryContext(())
+        pool = _B9MappingPool(await get_pool())
+        # The reader owns a second, just-in-time DB-backed authorization
+        # decision.  ``scope`` carries request identity and target only; its
+        # earlier chat-boundary resolution is never treated as a bearer grant.
+        request = MutationAuthorizationRequest(
+            scope, "RETRIEVE",
+            Visibility.PROJECT_SHARED if scope.project_id else Visibility.TENANT_SHARED,
+        )
+        reader = MariaDBB9Reader(pool, ProjectScopeAuthorityResolver(pool))
+        return PromptMemoryContext(await reader.retrieve_authorized(request, limit=20))
+    except Exception as exc:
+        logger.error("B9 memory retrieval failed", exc_info=True)
+        raise B9MemoryUnavailable("B9 memory retrieval failed") from exc
 
 
 async def flush_open_conversations() -> int:
@@ -1059,30 +1119,50 @@ def _update_history(user_id: str, user_msg: str, assistant_msg: str):
         _conversations.popitem(last=False)
 
 
-def _conversation_cache_key(tenant_id: str, user_id: str) -> str:
-    """Namespace ephemeral conversation history by authenticated tenant."""
+def _conversation_cache_key(tenant_id: str, user_id: str, project_id: str | None = None) -> str:
+    """Namespace ephemeral history by authenticated tenant *and* resolved scope.
+
+    The project value comes from the authority-resolved ``ScopeContext``, not
+    from the request body.  A user's private chat and two project chats must
+    never inherit one another's provider-facing history.
+    """
     if not tenant_id:
         raise ValueError("tenant scope is required for conversation cache")
-    return f"{tenant_id}:{user_id}"
+    return f"{tenant_id}:{user_id}:project:{project_id if project_id is not None else '-'}"
 
 
-def _scope_for_chat(user: AuthUser, requested_project_id: int | None) -> ScopeContext:
-    """Build scope only from the authenticated principal.
+async def _scope_for_chat(user: AuthUser, requested_project_id: int | None) -> ScopeContext:
+    """Resolve the B9 scope from current identity and project authority.
 
-    This repository presently has no project-membership authority to validate
-    a request-supplied project ID.  Treating that field as authority would
-    expose project memory, so project-scoped chat fails closed until such an
-    authority is wired.  Tenant and subject never come from the request body.
+    ``requested_project_id`` is only a requested lookup target.  In
+    particular it is not a claim of membership or a role assertion: the JAX
+    resolver checks active user/tenant identity, project scope and membership
+    in the same authoritative database before an enriched project scope can
+    reach the B9 reader.
     """
     if not user.tenant_id:
         raise HTTPException(status_code=403, detail={"code": "tenant_scope_required"})
-    if requested_project_id is not None:
-        raise HTTPException(status_code=403, detail={"code": "project_membership_unverified"})
-    return ScopeContext(
+    requested_scope = ScopeContext(
         actor_principal=f"user:{user.user_id}", actor_type="USER",
         subject_user_id=str(user.user_id), tenant_id=str(user.tenant_id),
-        project_id=None, calling_component="jax-platform-web-chat",
+        project_id=str(requested_project_id) if requested_project_id is not None else None,
+        calling_component="jax-platform-web-chat",
     )
+    try:
+        return await ProjectScopeAuthorityResolver(await get_pool()).resolve_scope(requested_scope)
+    except (AuthorizationDenied, ScopeDenied) as exc:
+        # A missing/revoked membership, an unbound legacy project, a disabled
+        # scope and every tenant mismatch deliberately share this fail-closed
+        # boundary.  The request target never reveals which condition failed.
+        code = "project_scope_denied" if requested_project_id is not None else "tenant_scope_denied"
+        raise HTTPException(status_code=403, detail={"code": code}) from exc
+    except Exception as exc:
+        # Authority must be available at this boundary.  Do not degrade a
+        # project request to tenant/private scope when its source cannot be
+        # read.
+        logger.error("B9 scope authority resolution failed", exc_info=True)
+        code = "project_scope_denied" if requested_project_id is not None else "tenant_scope_denied"
+        raise HTTPException(status_code=403, detail={"code": code}) from exc
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -1102,8 +1182,11 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # Task 7: ids no numericos se cortan ACA, antes de la memoria y del LLM --
     # si no, el turno se paga y la fila de uso se pierde en el INSERT.
     validar_ids_de_uso(user_id, tenant_id)
-    memory_scope = _scope_for_chat(user, req.project_id)
-    history_key = _conversation_cache_key(tenant_id, user_id)
+    memory_scope = await _scope_for_chat(user, req.project_id)
+    history_key = _conversation_cache_key(
+        memory_scope.tenant_id, memory_scope.subject_user_id or user_id,
+        memory_scope.project_id,
+    )
     timestamp = utc_ahora().isoformat() + "Z"
 
     # --- Adjuntos (frente D; RD3: por id) — ANTES de memoria, estado y proveedor
@@ -1140,7 +1223,8 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # -----------------------------------------------------------------------
 
     # --- Memoria semántica (misma jax_memory que el REPL) — best-effort -----
-    # user_id/tenant_id vienen del JWT; project_id del request (None=individual).
+    # user_id/tenant_id come from authenticated/resolved authority; project_id
+    # is present only after the project resolver proved active membership.
     try:
         mem_uid = int(user_id)
         mem_tid = int(tenant_id)
@@ -1167,7 +1251,13 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
 
     # B9 retrieval is envelope-only.  No legacy MemoryDB row may be converted
     # into a provider message or prompt string on this supported path.
-    memory_context = await _prompt_memory_context(memory_scope)
+    try:
+        memory_context = await _prompt_memory_context(memory_scope)
+    except B9MemoryUnavailable as exc:
+        # A failed B9 reader is not equivalent to an empty authorized result.
+        # In particular, a pool/cursor integration error must not silently
+        # erase grounding and continue as a normal successful chat request.
+        raise HTTPException(status_code=503, detail={"code": "MEMORY_UNAVAILABLE"}) from exc
 
     # SP3: UN snapshot por turno, construido acá y pasado a sus dos
     # consumidores (el prompt y el background task) -- spec §9.3.

@@ -1123,9 +1123,12 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt pytest pytest-asyncio
 
-      - name: Traer el repo jax (fuente de verdad del esquema de Jacobs)
+      - name: Traer el repo jax (fuente de verdad del esquema de Jacobs y B9)
         working-directory: .
-        run: git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
+        # B9 migration 003 is JAX-owned and loaded from JAX_REPO_PATH by the
+        # platform's existing migration runner. CI must test the paired JAX
+        # feature head, not the default branch which intentionally lacks it.
+        run: git clone --depth=1 --branch phase1/shared-memory-integration https://github.com/fjruizhn/Jax.git /tmp/jax
 
       - name: Crear el esquema de Jacobs con SU propio init_tables()
         working-directory: .
@@ -1177,6 +1180,9 @@ jobs:
               -e "s/^USE jax_memory;$/USE \`$JAX_DB_NAME\`;/" \
               /tmp/jax/jax_memory_schema.sql \
             | mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" "$JAX_DB_NAME"
+
+      - name: B9 project-authority migration chain (con DB)
+        run: python -m pytest -q tests/test_project_authority_migration.py
 
       - name: Suite backend (con DB)
         # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,

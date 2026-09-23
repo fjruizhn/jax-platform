@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import logging
 import os
 import re
@@ -11,6 +12,60 @@ import ajustes
 from .connection import get_pool
 
 logger = logging.getLogger(__name__)
+
+
+def _jax_project_authority_migration() -> object:
+    """Load the reviewed B9 authority migration from the configured JAX tree.
+
+    ``jax_project_*`` is owned by JAX even though it shares the physical
+    ``jax_memory`` schema with this service.  Keep the DDL in that owner; the
+    platform runner only provides the already-established schema lifecycle.
+    Loading the source file by its resolved path deliberately avoids importing
+    the rest of the JAX package (and accidentally accepting a same-named
+    package earlier on ``sys.path``).
+    """
+    configured_root = os.environ.get("JAX_REPO_PATH", "").strip()
+    if not configured_root:
+        raise RuntimeError(
+            "JAX_REPO_PATH is required to run the JAX-owned project authority migration"
+        )
+    root = Path(configured_root)
+    if not root.is_absolute():
+        raise RuntimeError("JAX_REPO_PATH must be absolute for the project authority migration")
+    root = root.resolve()
+    source = (root / "jax" / "memory" / "project_authority_migrations.py").resolve()
+    try:
+        source.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("JAX project authority migration escaped JAX_REPO_PATH") from exc
+    if not source.is_file():
+        raise RuntimeError(
+            f"JAX-owned project authority migration is missing: {source}"
+        )
+
+    spec = importlib.util.spec_from_file_location("_jax_project_authority_migration", source)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load JAX-owned project authority migration: {source}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    hook = getattr(module, "apply_project_authority_migration", None)
+    if hook is None or not callable(hook):
+        raise RuntimeError(
+            "JAX project authority migration does not export apply_project_authority_migration"
+        )
+    return hook
+
+
+async def _apply_jax_project_authority_migration(cur) -> None:
+    """Apply JAX migration 003 inside this runner's transaction/commit flow.
+
+    This is intentionally after the platform's identity tables have been
+    created and before any request path can use project authorization.  It is
+    idempotent in the JAX-owned hook, so it covers both fresh bootstrap and an
+    upgrade from the pre-B9 schema without a second migration framework.
+    """
+    hook = _jax_project_authority_migration()
+    await hook(cur)
 
 CREATE_TENANTS = """
 CREATE TABLE IF NOT EXISTS jax_tenants (
@@ -3189,6 +3244,12 @@ async def run_migrations():
             for table_name, ddl in _TABLES:
                 if not await _table_exists(cur, table_name):
                     await cur.execute(ddl)
+
+            # JAX owns this additive authorization namespace and its DDL.  It
+            # must run after jax_tenants/jax_users exist, and the JAX schema
+            # bootstrap supplies the referenced projects table before this
+            # platform migration runner starts (the same ordering used in CI).
+            await _apply_jax_project_authority_migration(cur)
 
             for table_name, column_name, ddl in _COLUMNS:
                 if not await _column_exists(cur, table_name, column_name):
