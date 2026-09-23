@@ -970,8 +970,16 @@ jobs:
           //   data-en-linea exime, min-h-6 alcanza, data-en-linea={false} NO
           //   exime, y el registro exacto de usos de data-en-linea. Confirmado
           //   por el runner (run 35855267441: passed=1011 failed=0).
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1011) {
-              console.error("PISO ROTO: se esperaban 1011 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1011 -> 1014 (2026-09-23, "Cargar más" de Descartados por
+          //   cursor): +2 "con cursor_siguiente ... manda ESE cursor (no
+          //   offset) y encadena el siguiente" (HistorialContenido y
+          //   AdminPipelinesOcultos, los dos en rojo contra master) y +1
+          //   "volver a la pestaña pide la PRIMERA página sin el cursor
+          //   viejo" (guarda de regresión: pasa también en master). Los
+          //   tests de offset quedan como respaldo sin cursor_siguiente.
+          //   Medido con vitest run --reporter=json: 1014 passed, 0 fallidos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1014) {
+              console.error("PISO ROTO: se esperaban 1014 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -2901,7 +2909,17 @@ jobs:
           #   fallar). El test de EXPLAIN de pipelines completados se
           #   RENOMBRA (exige índice con prefijo status, no un nombre), no se
           #   suma. Medido: tests/test_tablero.py 23 -> 24 passed con DB.
-          PISO_PASSED = 2640
+          # 2640 -> 2669 (2026-09-23, cursor de descartados + FORCE INDEX de
+          #   la vista del dueño): +29 de tests/test_pipelines_descartados_cursor.py
+          #   (19 puros + 10 con DB: recorrido cursor == offset con empates y
+          #   NULL en las dos vistas, 422 de cursor ilegible / cursor+offset /
+          #   cursor en la lista principal, 1176 sin idx_pipelines_descartados,
+          #   Handler_read <= limite+3 en página profunda por cursor). 12 en
+          #   rojo contra master (los 17 restantes prueban el módulo nuevo);
+          #   mutaciones del predicado (sin `IS NULL`, `<=` en el desempate)
+          #   en rojo. Medido: suite con DB 2695 passed / 2 skipped local
+          #   (drift ajeno incluido); delta propio +29.
+          PISO_PASSED = 2669
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3791,7 +3809,12 @@ jobs:
       # 1674 -> 1675 (2026-09-23, pendiente 631): +1 puro en test_tablero.py
       #   (el predicado de índice con prefijo status rechaza una fila EXPLAIN
       #   mala). Medido con JAX_CI_NO_DB=1: test_tablero.py 13 -> 14 passed.
-      JAX_CI_MIN_PASSED: "1675"
+      # 1675 -> 1694 (2026-09-23, cursor de descartados): +19 puros en
+      #   test_pipelines_descartados_cursor.py (FORCE INDEX y orden total en
+      #   el SQL, ida y vuelta exacta del cursor, 11 cursores ilegibles,
+      #   cursor_siguiente sólo con has_more). Medido con JAX_CI_NO_DB=1:
+      #   19 passed / 10 skipped en ese archivo.
+      JAX_CI_MIN_PASSED: "1694"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
