@@ -107,10 +107,14 @@ import time
 import uuid
 from functools import partial
 
-from tests.identidades import cabeceras, sql, uid
+from tests.identidades import _tenant_db_id, cabeceras, sql, uid
 from tests.test_pipelines_descarte import _insertar_pipeline, _borrar_pipelines
 
 TENANT = "auditoria-descarte-t2"
+# `uid`/`cabeceras` normalize descriptive tenant labels before writing the
+# identity and issuing its token.  Owner rows must carry that same DB tenant
+# representation for `_require_pipeline_owner`'s exact ownership comparison.
+TENANT_DB = str(_tenant_db_id(TENANT))
 
 TIPOS_DE_DESCARTE = ("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")
 
@@ -173,11 +177,11 @@ def test_auditoria_de_un_pipeline_ajeno_es_404(client):
         client.portal.call(_borrar_pipelines, [pid])
 
 
-def test_auditoria_del_dueno_trae_solo_los_cuatro_tipos_ordenados_del_mas_nuevo(client):
+def test_auditoria_del_dueno_con_tenant_db_normalizado_trae_solo_los_cuatro_tipos_ordenados_del_mas_nuevo(client):
     duenio = uid(client, "auditoria-c2-duenio", "operator", tenant_id=TENANT)
     pid = str(uuid.uuid4())
     ahora = time.time()
-    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT_DB, "discarded",
                        owner_ack_at=ahora, status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
     try:
         client.portal.call(_insertar_evento, pid, "STEP_FAILED", {"step_index": 0}, ahora - 10)
@@ -211,7 +215,7 @@ def test_auditoria_del_dueno_trae_los_cuatro_tipos_los_cuatro(client):
     duenio = uid(client, "auditoria-c2b-duenio", "operator", tenant_id=TENANT)
     pid = str(uuid.uuid4())
     ahora = time.time()
-    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT_DB, "discarded",
                        owner_ack_at=ahora, status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
     try:
         client.portal.call(_insertar_evento, pid, "PIPELINE_DISCARDED",
@@ -237,7 +241,7 @@ def test_auditoria_de_un_pipeline_sin_eventos_de_descarte_es_lista_vacia(client)
     duenio = uid(client, "auditoria-c3-duenio", "operator", tenant_id=TENANT)
     pid = str(uuid.uuid4())
     ahora = time.time()
-    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "completed", owner_ack_at=ahora))
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT_DB, "completed", owner_ack_at=ahora))
     try:
         resp = client.get(f"/api/pipelines/{pid}/auditoria-descarte",
                           headers=cabeceras(client, "auditoria-c3-duenio", "operator", tenant_id=TENANT))
@@ -441,7 +445,7 @@ def test_auditoria_descarte_topa_en_el_limite_muestra_los_mas_nuevos_y_marca_tru
     duenio = uid(client, "auditoria-limite-duenio", "operator", tenant_id=TENANT)
     pid = str(uuid.uuid4())
     ahora = time.time()
-    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT_DB, "discarded",
                        owner_ack_at=ahora, status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
     try:
         n = LIMITE_AUDITORIA_DESCARTE + 5
@@ -470,7 +474,7 @@ def test_auditoria_descarte_sin_llegar_al_limite_truncado_es_false(client):
     duenio = uid(client, "auditoria-sintrunc-duenio", "operator", tenant_id=TENANT)
     pid = str(uuid.uuid4())
     ahora = time.time()
-    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT_DB, "discarded",
                        owner_ack_at=ahora, status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
     try:
         client.portal.call(_insertar_evento, pid, "PIPELINE_DISCARDED",
