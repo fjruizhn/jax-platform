@@ -40,6 +40,10 @@ export default function AdminPipelinesOcultos() {
 
   const [listaDescartados, setListaDescartados] = useState([])
   const [hayMasDescartados, setHayMasDescartados] = useState(false)
+  // Cursor de la página siguiente de Descartados (2026-09-23): mismo
+  // criterio que HistorialContenido.jsx -- ver su comentario. Ocultos sigue
+  // por offset (su endpoint no tiene cursor).
+  const [cursorDescartados, setCursorDescartados] = useState(null)
   const [cargandoDescartados, setCargandoDescartados] = useState(false)
   const [errorDescartados, setErrorDescartados] = useState(false)
   const [errorAccionDescartados, setErrorAccionDescartados] = useState(null)
@@ -88,14 +92,18 @@ export default function AdminPipelinesOcultos() {
       .finally(() => setCargandoOcultos(false))
   }
 
-  function cargarDescartados(offset) {
+  function cargarDescartados({ mas = false } = {}) {
     setCargandoDescartados(true)
     setErrorDescartados(false)
-    return api.get('/admin/pipelines/descartados', { params: { limite: LIMITE, offset } })
+    const params = { limite: LIMITE }
+    if (mas && cursorDescartados) params.cursor = cursorDescartados
+    else params.offset = mas ? listaDescartados.length : 0
+    return api.get('/admin/pipelines/descartados', { params })
       .then(({ data }) => {
         const nuevos = Array.isArray(data?.pipelines) ? data.pipelines : []
-        setListaDescartados((prev) => (offset === 0 ? nuevos : [...prev, ...nuevos]))
+        setListaDescartados((prev) => (mas ? [...prev, ...nuevos] : nuevos))
         setHayMasDescartados(data?.has_more === true)
+        setCursorDescartados(typeof data?.cursor_siguiente === 'string' ? data.cursor_siguiente : null)
       })
       .catch(() => {
         setErrorDescartados(true)
@@ -124,7 +132,7 @@ export default function AdminPipelinesOcultos() {
       }
     } else if (necesitaRecargaDescartados) {
       setNecesitaRecargaDescartados(false)
-      cargarDescartados(0)
+      cargarDescartados()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
@@ -221,7 +229,7 @@ export default function AdminPipelinesOcultos() {
               <AlertaError className="text-sm">{t.descartadosError}</AlertaError>
               <button
                 type="button"
-                onClick={() => cargarDescartados(0)}
+                onClick={() => cargarDescartados()}
                 className="px-3 py-1 rounded text-xs font-semibold bg-superficie text-texto-suave hover:text-texto transition-colors"
               >
                 {t.historialRetry}
@@ -297,7 +305,7 @@ export default function AdminPipelinesOcultos() {
             <div className="text-center mb-6">
               <button
                 type="button"
-                onClick={() => cargarDescartados(listaDescartados.length)}
+                onClick={() => cargarDescartados({ mas: true })}
                 disabled={cargandoDescartados}
                 className="px-4 py-1.5 rounded text-xs font-semibold bg-superficie text-texto-suave hover:text-texto transition-colors disabled:opacity-50"
               >

@@ -49,27 +49,39 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
   const [tab, setTab] = useState('todos')
   const [descartados, setDescartados] = useState([])
   const [hayMasDescartados, setHayMasDescartados] = useState(false)
+  // Cursor de la página siguiente (2026-09-23): el backend lo devuelve en
+  // `cursor_siguiente` y "Cargar más" lo manda tal cual -- cada página lee
+  // ~50 filas en cualquier profundidad, en vez de `offset`, que lee y tira
+  // todas las anteriores (docs/carga-descartados-cursor-2026-09-23.md).
+  const [cursorDescartados, setCursorDescartados] = useState(null)
   const [cargandoDescartados, setCargandoDescartados] = useState(false)
   const [errorDescartados, setErrorDescartados] = useState(false)
   // Borrar (ocultar): sólo el superadmin, con ConfirmacionSuma -- spec §2.
   const [aBorrar, setABorrar] = useState(null)
   const [errorAccion, setErrorAccion] = useState(null)
 
-  function cargarDescartados(offset) {
+  // `mas` = "Cargar más" (agrega); sin él, primera página (reemplaza).
+  // Si la respuesta anterior no trajo cursor (un backend todavía sin él,
+  // durante un despliegue), cae al `offset` = cantidad ya cargada.
+  function cargarDescartados({ mas = false } = {}) {
     setCargandoDescartados(true)
     setErrorDescartados(false)
-    return api.get('/pipelines', { params: { estado: 'discarded', limite: LIMITE_DESCARTADOS, offset } })
+    const params = { estado: 'discarded', limite: LIMITE_DESCARTADOS }
+    if (mas && cursorDescartados) params.cursor = cursorDescartados
+    else params.offset = mas ? descartados.length : 0
+    return api.get('/pipelines', { params })
       .then(({ data }) => {
         const nuevos = Array.isArray(data?.pipelines) ? data.pipelines : []
-        setDescartados((prev) => (offset === 0 ? nuevos : [...prev, ...nuevos]))
+        setDescartados((prev) => (mas ? [...prev, ...nuevos] : nuevos))
         setHayMasDescartados(data?.has_more === true)
+        setCursorDescartados(typeof data?.cursor_siguiente === 'string' ? data.cursor_siguiente : null)
       })
       .catch(() => setErrorDescartados(true))
       .finally(() => setCargandoDescartados(false))
   }
 
   useEffect(() => {
-    if (tab === 'descartados') cargarDescartados(0)
+    if (tab === 'descartados') cargarDescartados()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
 
@@ -169,7 +181,7 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
               <AlertaError className="text-sm">{t.descartadosError}</AlertaError>
               <button
                 type="button"
-                onClick={() => cargarDescartados(0)}
+                onClick={() => cargarDescartados()}
                 className="px-3 py-1 rounded text-xs font-semibold bg-superficie text-texto-suave hover:text-texto transition-colors"
               >
                 {t.historialRetry}
@@ -236,7 +248,7 @@ export default function HistorialContenido({ pipelineId, nombreSeleccionado, onS
             <div className="text-center mb-6">
               <button
                 type="button"
-                onClick={() => cargarDescartados(descartados.length)}
+                onClick={() => cargarDescartados({ mas: true })}
                 disabled={cargandoDescartados}
                 className="px-4 py-1.5 rounded text-xs font-semibold bg-superficie text-texto-suave hover:text-texto transition-colors disabled:opacity-50"
               >

@@ -22,6 +22,10 @@ from jax_engine.resource_manager import resource_manager
 from jax_engine.state import engine_state
 from jax_engine.schemas import PipelineState
 from redaccion import recortar_redactado
+from api.paginacion_descartados import (
+    CURSOR_MAX, ORDEN as ORDEN_DESCARTADOS, consulta_y_parametros, cursor_siguiente,
+    exigir_cursor_sin_offset,
+)
 
 router = APIRouter(prefix="/api/pipelines")
 
@@ -832,12 +836,28 @@ SQL_PIPELINES_DEL_USUARIO = (
 # uno ampliado, porque el orden de cada una es distinto (created_at vs
 # descartado_at) y un índice compuesto no sirve dos ORDER BY diferentes sin
 # filesort en alguna de las dos.
-SQL_DESCARTADOS_DEL_USUARIO = (
+#
+# FORCE INDEX (idx_pipelines_descartados) -- 2026-09-23 (jax-platform#157 y
+# docs/carga-descartados-cursor-2026-09-23.md): sin el hint el plan NO era
+# estable -- con el mismo SQL y los mismos datos el optimizador alternaba
+# entre este índice y `idx_pipelines_ocultos` (status, descartado_at), el
+# GLOBAL del admin. Con el global recorre los descartados de TODOS los
+# usuarios, en orden de fecha, y filtra por user_id después: el costo pasa
+# a ser proporcional al total GLOBAL de descartados, no a los del dueño
+# (medido con usuarios intercalados en el doc de arriba). Mismo remedio
+# que ya usa SQL_PIPELINES_DEL_USUARIO. El índice lo crea jax
+# (jacobs/store.py, jax#257), ya desplegado: un FORCE INDEX con un nombre
+# que no existe es el error 1176 de MariaDB, no un hint ignorado.
+#
+# Orden TOTAL `descartado_at DESC, pipeline_id DESC` y paginación por
+# cursor: ver api/paginacion_descartados.py. `offset` sigue funcionando
+# (expandir; la contracción es otra decisión).
+SQL_DESCARTADOS_DEL_USUARIO_BASE = (
     "SELECT pipeline_id, name, status, created_at, updated_at, descartado_at "
-    "FROM jacobs_pipelines "
+    "FROM jacobs_pipelines FORCE INDEX (idx_pipelines_descartados) "
     "WHERE user_id=%s AND tenant_id=%s AND owner_ack_at IS NOT NULL AND status='discarded' "
-    "ORDER BY descartado_at DESC LIMIT %s OFFSET %s"
 )
+SQL_DESCARTADOS_DEL_USUARIO = SQL_DESCARTADOS_DEL_USUARIO_BASE + ORDEN_DESCARTADOS + "LIMIT %s OFFSET %s"
 # Tope MÁXIMO de página, no un corte fijo del historial (Task 7, 2026-09-18):
 # antes era el único LIMIT posible y un historial con más filas que esto
 # quedaba inalcanzable. Ahora es el `le=` de `limite` en list_pipelines() y
@@ -961,13 +981,22 @@ async def list_pipelines(
     # vista propia del dueño, spec §4: "para él, ya no existe"; su vista es
     # /api/admin/pipelines/ocultos, sólo superadmin).
     estado: str | None = Query(None, pattern="^discarded$"),
+    # 2026-09-23: paginación por cursor de la vista Descartados (ver
+    # api/paginacion_descartados.py). Sólo con estado=discarded: la lista
+    # principal sigue por offset.
+    cursor: str | None = Query(None, min_length=1, max_length=CURSOR_MAX),
 ):
+    exigir_cursor_sin_offset(cursor, offset)
+    if cursor is not None and estado != "discarded":
+        raise HTTPException(status_code=422, detail="cursor_solo_descartados")
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             if estado == "discarded":
-                await cur.execute(SQL_DESCARTADOS_DEL_USUARIO,
-                                  (user.user_id, user.tenant_id, limite + 1, offset))
+                consulta, params = consulta_y_parametros(
+                    SQL_DESCARTADOS_DEL_USUARIO_BASE, (user.user_id, user.tenant_id),
+                    limite, offset, cursor)
+                await cur.execute(consulta, params)
                 filas_d = await cur.fetchall()
                 hay_mas_d = len(filas_d) > limite
                 filas_d = filas_d[:limite]
@@ -1008,6 +1037,7 @@ async def list_pipelines(
                         for pid, name, st, c, u, d in filas_d
                     ],
                     "has_more": hay_mas_d,
+                    "cursor_siguiente": cursor_siguiente(filas_d, hay_mas_d, idx_fecha=5),
                 }
             # Se pide una fila de más (limite+1) para saber si hay una página
             # siguiente sin un segundo COUNT(*) -- LAS CUATRO/cache: no se
