@@ -139,11 +139,17 @@ export default function DetallePipeline({ pipelineId, nombre, onClose }) {
   // un fallo acá nunca tapa ni compite con el error de /results, que sigue
   // siendo el único que decide cargando/error/notFound de la pantalla.
   const [eventosAuditoria, setEventosAuditoria] = useState([])
+  // CRITICAL-1 (fix round 3, revisión adversarial de PR 151): el backend
+  // devuelve `truncado` desde la ronda 2 (MAJOR-A/B, LIMITE_AUDITORIA_
+  // DESCARTE) -- esta pantalla lo descartaba, así que la sección se
+  // quedaba callada en 50 sin avisar que hay más historia.
+  const [auditoriaTruncada, setAuditoriaTruncada] = useState(false)
 
   useEffect(() => {
     let vigente = true
     setEstado({ data: null, cargando: true, error: false, notFound: false })
     setEventosAuditoria([])
+    setAuditoriaTruncada(false)
     api.get(`/pipelines/${pipelineId}/results`)
       .then(({ data }) => { if (vigente) setEstado({ data, cargando: false, error: false, notFound: false }) })
       .catch((err) => {
@@ -160,14 +166,19 @@ export default function DetallePipeline({ pipelineId, nombre, onClose }) {
       })
     api.get(`/pipelines/${pipelineId}/auditoria-descarte`)
       .then(({ data }) => {
-        if (vigente) setEventosAuditoria(Array.isArray(data?.eventos) ? data.eventos : [])
+        if (!vigente) return
+        setEventosAuditoria(Array.isArray(data?.eventos) ? data.eventos : [])
+        setAuditoriaTruncada(data?.truncado === true)
       })
       .catch((err) => {
         // Mismo 404 por ownership que /results (misma guardia en el
         // backend) o cualquier otro fallo: la sección no se muestra, sin
         // un segundo cartel de error -- ver el comentario de más arriba.
         if (err?.response?.status !== 404) console.error('DetallePipeline auditoria-descarte fetch failed', err)
-        if (vigente) setEventosAuditoria([])
+        if (vigente) {
+          setEventosAuditoria([])
+          setAuditoriaTruncada(false)
+        }
       })
     return () => { vigente = false }
   }, [pipelineId])
@@ -214,6 +225,9 @@ export default function DetallePipeline({ pipelineId, nombre, onClose }) {
                   <EventoAuditoria key={i} evento={evento} t={t} lang={lang} />
                 ))}
               </ul>
+              {auditoriaTruncada && (
+                <p className="mt-2 text-xs text-texto-tenue">{t.auditoriaDescarteTruncado}</p>
+              )}
             </div>
           )}
         </>

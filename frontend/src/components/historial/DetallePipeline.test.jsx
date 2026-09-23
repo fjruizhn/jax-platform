@@ -255,10 +255,10 @@ describe('DetallePipeline', () => {
 // el backend. Si no hay eventos, no se muestra ninguna caja (ni título ni
 // borde vacío) -- distinto de "Cargando…", que sólo tapa mientras la
 // respuesta está en vuelo.
-function mockAuditoria(eventos) {
+function mockAuditoria(eventos, truncado = false) {
   api.get.mockImplementation((url) => {
     if (url === '/pipelines/p1/results') return Promise.resolve({ data: RESULTADO })
-    if (url === '/pipelines/p1/auditoria-descarte') return Promise.resolve({ data: { eventos } })
+    if (url === '/pipelines/p1/auditoria-descarte') return Promise.resolve({ data: { eventos, truncado } })
     return Promise.reject(new Error(`url inesperada: ${url}`))
   })
 }
@@ -317,5 +317,38 @@ describe('DetallePipeline > auditoría de descarte', () => {
     renderDetalle()
     await screen.findByText('thot')
     expect(screen.queryByText('Historial de descarte')).not.toBeInTheDocument()
+  })
+
+  // CRITICAL-1 (fix round 3, revisión adversarial de PR 151): el backend
+  // devuelve `truncado` (api/pipelines.py, MAJOR-A/B de la ronda 2) desde
+  // la ronda 2, pero esta pantalla lo descartaba -- la sección se quedaba
+  // callada en 50 sin decir que faltan eventos, exactamente lo que el
+  // propio commit de esa ronda decía que estaba mal.
+  it('con truncado=true, muestra un aviso de que sólo se ven los más recientes', async () => {
+    mockAuditoria([
+      { event_type: 'PIPELINE_DISCARDED', user_id: 'u-1', desde: 'aborted', a: 'discarded', ts: 100 },
+    ], true)
+    renderDetalle()
+    await screen.findByText('thot')
+    expect(screen.getByText('Historial de descarte')).toBeInTheDocument()
+    expect(screen.getByText('Sólo se muestran los eventos más recientes; hay más en el historial completo.')).toBeInTheDocument()
+  })
+
+  it('con truncado=false, NO muestra el aviso', async () => {
+    mockAuditoria([
+      { event_type: 'PIPELINE_DISCARDED', user_id: 'u-1', desde: 'aborted', a: 'discarded', ts: 100 },
+    ], false)
+    renderDetalle()
+    await screen.findByText('thot')
+    expect(screen.getByText('Historial de descarte')).toBeInTheDocument()
+    expect(screen.queryByText('Sólo se muestran los eventos más recientes; hay más en el historial completo.')).not.toBeInTheDocument()
+  })
+
+  it('sin eventos, aunque truncado viniera true (dato inconsistente del backend), no muestra ninguna caja', async () => {
+    mockAuditoria([], true)
+    renderDetalle()
+    await screen.findByText('thot')
+    expect(screen.queryByText('Historial de descarte')).not.toBeInTheDocument()
+    expect(screen.queryByText('Sólo se muestran los eventos más recientes; hay más en el historial completo.')).not.toBeInTheDocument()
   })
 })

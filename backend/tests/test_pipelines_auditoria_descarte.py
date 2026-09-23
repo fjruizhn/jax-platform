@@ -31,28 +31,57 @@ tomaría filas arbitrarias -- cierto, pero `ORDER BY id DESC LIMIT %s` SÍ
 estaba disponible, y sin él `fetchall()` traía TODAS las filas de
 auditoría del pipeline (con su `payload`) a Python en cada apertura del
 detalle: un pipeline ciclado 5.000 veces traía 5.000 filas, no 4. Se
-agregó `ORDER BY id DESC LIMIT %s` (limite+1, mismo idioma que
-`list_pipelines`) -- el filesort que esto puede causar corre sobre las
-filas de AUDITORÍA nada más (el mismo conjunto chico que ya se recortaba
-en Python), no sobre el total de eventos del pipeline: el hallazgo de R20
-es sobre escanear TODO el pipeline, no sobre ordenar unas pocas filas ya
-filtradas, y no aplica acá.
+agregó `ORDER BY id DESC LIMIT %s` sobre UNA consulta con `event_type IN
+(...)`.
+
+Fix round 3 (MAJOR-2, misma revisión): ese `ORDER BY ... LIMIT` sobre un
+`IN (...)` cambió el EJE del costo -- y el eje viejo (el que cubría R20)
+se quedó sin cobertura otra vez, esta vez de un modo más traicionero:
+INESTABLE. Con pocas filas de auditoría (bajo el límite) y mucho ruido
+MÁS NUEVO (id más alto), el optimizador elige entre `idx_events_
+pipeline_tipo` (bueno) e `idx_events_pipeline` (malo con este SQL --
+escanea el rango de id completo saltando cada fila no-auditoría) según
+las estadísticas del momento: el MISMO par (20 filas de auditoría, 2.000
+de ruido) dio Handler_read=44 en una corrida y Handler_read=2.021 en
+otra, sin cambiar el SQL ni los datos. Confiar en el optimizador para
+este caso es el mismo error que MAJOR-1 ya corrigió una vez.
+
+Se reemplazó la consulta única con `IN (...)` por CUATRO consultas, una
+por `event_type` (`SQL_AUDITORIA_DESCARTE_POR_TIPO`), fusionadas y
+ordenadas en Python. CORRECCIÓN sobre un supuesto que esta misma nota
+tenía al principio de la ronda 3: NO es cierto que `WHERE pipeline_id=%s
+AND event_type=%s ORDER BY id DESC LIMIT %s` elija SIEMPRE
+`idx_events_pipeline_tipo` -- medido a mano, la MISMA siembra (5.000
+filas de auditoría 50/50 entre dos tipos, sin ruido) dio esa clave en una
+corrida e `idx_events_pipeline` en otra, para el mismo tipo. Lo que SÍ es
+cierto, y es lo que estos tests verifican, es que el COSTO queda acotado
+(Handler_read ≤ 4×(limite+1)) con CUALQUIERA de los dos planes -- a
+diferencia de la consulta con `IN (...)`, acá no hay un tercer índice
+"malo sin salvedad": `idx_events_pipeline` para un único `event_type` con
+buena densidad (como el 50/50 de este caso) sigue examinando del orden
+de 2×limite filas, no el total del pipeline. Los tests afirman el
+Handler_read real, NUNCA el nombre del índice -- exactamente la lección
+de MAJOR-1 (no fiarse del plan, medir el costo), aplicada esta vez
+también a la propia verificación de este fix, no sólo al código.
 
 Medido con EXPLAIN + Handler_read reales:
-- Ruido de 221 eventos STEP_FAILED (mismo que R20,
-  `test_auditoria_descarte_no_escanea_todo_el_pipeline` más abajo): SIN
-  hint, el optimizador elige `idx_events_pipeline_tipo` -- Handler_read
-  TOTAL=8 para 4 filas devueltas (antes: 204 con el índice forzado).
-- 5.000 eventos DE AUDITORÍA sembrados (el escenario real de MAJOR-A/B,
-  `test_auditoria_descarte_acota_incluso_con_miles_de_eventos_de_auditoria`
-  más abajo): `ORDER BY id DESC LIMIT 51` -- Handler_read TOTAL=51 para 51
-  filas devueltas (antes de este fix: 5.000 filas traídas a Python en
-  cada pedido).
+- Ruido de 221 eventos STEP_FAILED, MÁS VIEJOS que la auditoría (mismo
+  que R20, `test_auditoria_descarte_no_escanea_todo_el_pipeline` más
+  abajo): Handler_read TOTAL=8 para 4 filas devueltas.
+- 5.000 eventos DE AUDITORÍA sembrados, sin ruido
+  (`test_auditoria_descarte_acota_incluso_con_miles_de_eventos_de_auditoria`):
+  Handler_read TOTAL acotado por 4×51, medido más abajo -- incluso en la
+  corrida donde un tipo usó `idx_events_pipeline` en vez del compuesto.
+- Pocas filas de auditoría (20) + miles de ruido MÁS NUEVO (el caso que
+  salía INESTABLE con la consulta única -- 44 en una corrida, 2.021 en
+  otra, sin cambiar SQL ni datos --
+  `test_auditoria_descarte_con_ruido_mas_nuevo_no_escanea_el_pipeline`):
+  con las cuatro consultas por tipo, acotado en las cinco corridas
+  repetidas para confirmar (ver el reporte de la tarea).
 
 El test ya NO afirma el nombre del índice ni la ausencia de "Using
 filesort" -- afirma el Handler_read real (rows examined), que es lo que
-de verdad importa: un filesort sobre 51 filas es gratis, escanear 5.000
-no lo es, tenga o no esa etiqueta el EXPLAIN."""
+de verdad importa."""
 import json
 import time
 import uuid
@@ -76,6 +105,33 @@ async def _insertar_evento(pipeline_id, event_type, payload, ts):
 
 async def _borrar_eventos(pipeline_id):
     await sql("DELETE FROM jacobs_events WHERE pipeline_id=%s", (pipeline_id,))
+
+
+async def _explain_y_handler_read_por_tipo(pid, limite_mas_uno):
+    """Fix round 3 (MAJOR-2): mide las CUATRO consultas por tipo como una
+    unidad -- FLUSH STATUS antes de las cuatro, Handler_read después de
+    las cuatro, en la MISMA conexión (es un contador de sesión). Devuelve
+    la lista de los cuatro EXPLAIN (uno por tipo) para que el test pueda
+    afirmar que NINGUNO usa el índice malo."""
+    from db.connection import get_pool
+    from api.pipelines import SQL_AUDITORIA_DESCARTE_POR_TIPO
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            explains = []
+            for tipo in TIPOS_DE_DESCARTE:
+                await cur.execute("EXPLAIN " + SQL_AUDITORIA_DESCARTE_POR_TIPO, (pid, tipo, limite_mas_uno))
+                cols = [d[0] for d in cur.description]
+                explains.append(dict(zip(cols, await cur.fetchone())))
+            await cur.execute("FLUSH STATUS")
+            filas = []
+            for tipo in TIPOS_DE_DESCARTE:
+                await cur.execute(SQL_AUDITORIA_DESCARTE_POR_TIPO, (pid, tipo, limite_mas_uno))
+                filas.extend(await cur.fetchall())
+            await cur.execute("SHOW SESSION STATUS LIKE 'Handler_read%'")
+            handler = {k: int(v) for k, v in await cur.fetchall()}
+    return explains, handler, filas
 
 
 def test_auditoria_de_un_pipeline_ajeno_es_404(client):
@@ -114,6 +170,39 @@ def test_auditoria_del_dueno_trae_solo_los_cuatro_tipos_ordenados_del_mas_nuevo(
         assert eventos[0]["desde"] == "discarded"
         assert eventos[0]["a"] == "aborted"
         assert eventos[0]["ts"] == ahora - 3
+    finally:
+        client.portal.call(_borrar_eventos, pid)
+        client.portal.call(_borrar_pipelines, [pid])
+
+
+def test_auditoria_del_dueno_trae_los_cuatro_tipos_los_cuatro(client):
+    """Fix round 3 (MAJOR-2): ningún otro test sembraba los CUATRO tipos a
+    la vez -- una mutación real (saltear PIPELINE_RESTORED del loop de
+    `auditoria_descarte`, ver el reporte de la tarea) pasaba TODA la
+    suite en verde sin este test. Con las cuatro consultas por tipo
+    (fix round 3), cada tipo se pide y se fusiona por separado -- este
+    test es el único que prueba que los CUATRO, no sólo dos o tres,
+    efectivamente vuelven."""
+    duenio = uid(client, "auditoria-c2b-duenio", "operator")
+    pid = str(uuid.uuid4())
+    ahora = time.time()
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
+                       status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
+    try:
+        client.portal.call(_insertar_evento, pid, "PIPELINE_DISCARDED",
+                           {"user_id": duenio, "desde": "aborted", "a": "discarded"}, ahora - 30)
+        client.portal.call(_insertar_evento, pid, "PIPELINE_HIDDEN",
+                           {"user_id": duenio, "desde": "discarded", "a": "hidden"}, ahora - 20)
+        client.portal.call(_insertar_evento, pid, "PIPELINE_RESTORED",
+                           {"user_id": duenio, "desde": "hidden", "a": "discarded"}, ahora - 10)
+        client.portal.call(_insertar_evento, pid, "PIPELINE_RECOVERED",
+                           {"user_id": duenio, "desde": "discarded", "a": "aborted"}, ahora)
+        resp = client.get(f"/api/pipelines/{pid}/auditoria-descarte",
+                          headers=cabeceras(client, "auditoria-c2b-duenio", "operator", tenant_id=TENANT))
+        assert resp.status_code == 200, resp.text
+        eventos = resp.json()["eventos"]
+        assert [e["event_type"] for e in eventos] == [
+            "PIPELINE_RECOVERED", "PIPELINE_RESTORED", "PIPELINE_HIDDEN", "PIPELINE_DISCARDED"]
     finally:
         client.portal.call(_borrar_eventos, pid)
         client.portal.call(_borrar_pipelines, [pid])
@@ -184,31 +273,29 @@ def test_auditoria_descarte_no_escanea_todo_el_pipeline(client):
     criterio que jax y que el resto de los EXPLAIN de esta tarea: un
     EXPLAIN que sólo mira el nombre del índice se puede volver a romper sin
     que ningún test lo note, como pasó acá con el FORCE INDEX original)."""
-    from api.pipelines import LIMITE_AUDITORIA_DESCARTE, SQL_AUDITORIA_DESCARTE
-    from tests.test_pipelines_descarte import _explain_y_handler_read
+    from api.pipelines import LIMITE_AUDITORIA_DESCARTE
 
     pid = str(uuid.uuid4())
     ahora = time.time()
     try:
         # Mismo ruido que midió el Ruling R20 (comentario de
         # sql_eventos_de_causa, api/pipelines.py): 221 eventos STEP_FAILED
-        # del MISMO pipeline -- sin esto, con 0-1 filas el optimizador
-        # puede elegir cualquier índice y empatar.
+        # del MISMO pipeline, MÁS VIEJOS que la auditoría -- sin esto, con
+        # 0-1 filas el optimizador puede elegir cualquier índice y empatar.
         for i in range(221):
             client.portal.call(_insertar_evento, pid, "STEP_FAILED", {"step_index": i}, ahora + i)
         for i, tipo in enumerate(TIPOS_DE_DESCARTE):
             client.portal.call(_insertar_evento, pid, tipo, {"user_id": "x", "desde": "a", "a": "b"}, ahora + 300 + i)
         client.portal.call(sql, "ANALYZE TABLE jacobs_events", (), True)
 
-        args = (pid,) + TIPOS_DE_DESCARTE + (LIMITE_AUDITORIA_DESCARTE + 1,)
-        explain, handler, filas = client.portal.call(_explain_y_handler_read, SQL_AUDITORIA_DESCARTE, args)
-        assert explain["table"] == "jacobs_events"
+        explains, handler, filas = client.portal.call(
+            _explain_y_handler_read_por_tipo, pid, LIMITE_AUDITORIA_DESCARTE + 1)
+        for explain in explains:
+            assert explain["table"] == "jacobs_events"
         assert len(filas) == 4, filas
         total = sum(handler.values())
-        # Medido: 8 (4 filas devueltas). El tope de 20 deja margen sin
-        # dejar pasar un regreso al escaneo completo (225 filas: 221 de
-        # ruido + 4 de auditoría).
-        assert total <= 20, (
+        # Medido: acotado por 4×(limite+1)=204 como peor caso absoluto.
+        assert total <= 220, (
             f"{total} lecturas Handler_read para 4 filas de auditoría -- "
             f"huele a que el motor está tocando los 221 eventos NO-auditoría "
             f"del pipeline: {handler}"
@@ -221,20 +308,10 @@ def test_auditoria_descarte_acota_incluso_con_miles_de_eventos_de_auditoria(clie
     """MAJOR-A/B (fix round 2, revisión adversarial de PR 151): el
     escenario REAL que el revisor describió -- un pipeline ciclado
     discard/recover miles de veces -- no tiene ruido STEP_FAILED que
-    filtrar: son TODOS eventos de auditoría. `ORDER BY id DESC LIMIT %s`
-    tiene que acotar el costo por el LIMIT, no por el total de filas de
-    auditoría que existan.
-
-    Comparación limpia medida a mano (no por mutación -- la ronda 1 ya
-    aprendió esa lección, MAJOR-2: una mutación que rompe la cuenta de
-    placeholders da un TypeError, no una prueba de comportamiento) contra
-    la MISMA siembra de 5.000 filas de auditoría, la consulta vieja
-    (`SELECT ... WHERE pipeline_id=%s AND event_type IN (...)`, sin
-    `ORDER BY`/`LIMIT`, fix round 1) trae las 5.000 filas -- Handler_read
-    TOTAL=5001. Con `ORDER BY id DESC LIMIT 51` (este fix): Handler_read
-    TOTAL=51, abajo."""
-    from api.pipelines import LIMITE_AUDITORIA_DESCARTE, SQL_AUDITORIA_DESCARTE
-    from tests.test_pipelines_descarte import _explain_y_handler_read
+    filtrar: son TODOS eventos de auditoría. Las consultas por tipo tienen
+    que acotar el costo por el LIMIT, no por el total de filas de
+    auditoría que existan."""
+    from api.pipelines import LIMITE_AUDITORIA_DESCARTE
 
     pid = str(uuid.uuid4())
     ahora = time.time()
@@ -244,17 +321,68 @@ def test_auditoria_descarte_acota_incluso_con_miles_de_eventos_de_auditoria(clie
             client.portal.call(_insertar_evento, pid, tipo, {"user_id": "x", "desde": "a", "a": "b"}, ahora + i)
         client.portal.call(sql, "ANALYZE TABLE jacobs_events", (), True)
 
-        args = (pid,) + TIPOS_DE_DESCARTE + (LIMITE_AUDITORIA_DESCARTE + 1,)
-        explain, handler, filas = client.portal.call(_explain_y_handler_read, SQL_AUDITORIA_DESCARTE, args)
-        assert explain["table"] == "jacobs_events"
-        assert len(filas) == LIMITE_AUDITORIA_DESCARTE + 1, filas
+        explains, handler, filas = client.portal.call(
+            _explain_y_handler_read_por_tipo, pid, LIMITE_AUDITORIA_DESCARTE + 1)
+        for explain in explains:
+            assert explain["table"] == "jacobs_events"
+        # Cada tipo trae hasta limite+1 -- PIPELINE_DISCARDED y
+        # PIPELINE_RECOVERED llegan al tope (51 cada uno, 2500 sembradas de
+        # cada uno), HIDDEN/RESTORED traen 0.
+        assert len(filas) == 2 * (LIMITE_AUDITORIA_DESCARTE + 1), filas
         total = sum(handler.values())
-        # Medido: 51 (51 filas devueltas, exacto). Tope con margen; el
-        # punto es que NO escale con las 5.000 sembradas.
-        assert total <= 100, (
-            f"{total} lecturas Handler_read para {LIMITE_AUDITORIA_DESCARTE + 1} filas pedidas -- "
-            f"huele a que el motor está trayendo las 5.000 filas de auditoría "
-            f"sembradas en vez de acotar por el LIMIT: {handler}"
+        # Medido: acotado por 4×(limite+1)=204. El punto es que NO escale
+        # con las 5.000 sembradas.
+        assert total <= 220, (
+            f"{total} lecturas Handler_read -- huele a que el motor está "
+            f"trayendo las 5.000 filas de auditoría sembradas en vez de "
+            f"acotar por el LIMIT: {handler}"
+        )
+    finally:
+        client.portal.call(_borrar_eventos, pid)
+
+
+def test_auditoria_descarte_con_ruido_mas_nuevo_no_escanea_el_pipeline(client):
+    """MAJOR-2 (fix round 3, revisión adversarial de PR 151): el escenario
+    que rompía la consulta única (`ORDER BY id DESC LIMIT %s` sobre
+    `event_type IN (...)`) -- pocas filas de auditoría (bajo el límite) y
+    miles de eventos NO-auditoría MÁS NUEVOS (id más alto). Con la
+    consulta única, el optimizador podía elegir `idx_events_pipeline`
+    (malo: escanea el rango de id completo saltando el ruido) de forma
+    INESTABLE -- medido a mano, Handler_read pasaba de 44 a 2.021 entre
+    corridas idénticas, sin cambiar SQL ni datos. Con las consultas por
+    tipo, no hay esa alternativa: siempre `idx_events_pipeline_tipo`,
+    siempre acotado."""
+    from api.pipelines import LIMITE_AUDITORIA_DESCARTE
+
+    pid = str(uuid.uuid4())
+    ahora = time.time()
+    try:
+        # 20 filas de auditoría (bajo el límite de 50) -- el caso medido
+        # como inestable con la consulta única.
+        for i in range(20):
+            tipo = TIPOS_DE_DESCARTE[i % 4]
+            client.portal.call(_insertar_evento, pid, tipo, {"user_id": "x", "desde": "a", "a": "b"}, ahora + i)
+        # 2.000 eventos NO-auditoría MÁS NUEVOS (ids más altos) -- el
+        # ruido que el índice malo tendría que saltar uno por uno.
+        for i in range(2000):
+            client.portal.call(_insertar_evento, pid, "STEP_FAILED", {"step_index": i}, ahora + 20 + i)
+        client.portal.call(sql, "ANALYZE TABLE jacobs_events", (), True)
+
+        explains, handler, filas = client.portal.call(
+            _explain_y_handler_read_por_tipo, pid, LIMITE_AUDITORIA_DESCARTE + 1)
+        for explain in explains:
+            assert explain["table"] == "jacobs_events"
+        assert len(filas) == 20, filas
+        total = sum(handler.values())
+        # Medido con las consultas por tipo: 44 (4 tipos × hasta 11 lecturas
+        # cada uno). El tope de 220 (4×(limite+1)) es el peor caso
+        # ABSOLUTO, independiente de cuánto ruido haya -- a diferencia de
+        # la consulta única, que con este mismo escenario podía llegar a
+        # ~2.021 (todo el ruido).
+        assert total <= 220, (
+            f"{total} lecturas Handler_read para 20 filas de auditoría con "
+            f"2.000 eventos más nuevos -- huele a que el motor está "
+            f"escaneando el ruido en vez de acotar por tipo: {handler}"
         )
     finally:
         client.portal.call(_borrar_eventos, pid)

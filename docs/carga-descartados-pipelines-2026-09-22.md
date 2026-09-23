@@ -85,12 +85,27 @@ cierre de huecos:**
   forma B, para comparar el perfil), sin cuentas reales en `jax_users`
   (el endpoint no hace `JOIN` con esa tabla) — sólo el superadmin que hace
   el pedido es una cuenta real.
-- **"pipeline_con_muchos_eventos"** — `GET /pipelines/{id}/auditoria-descarte`.
-  Decisión del coordinador: este endpoint "fires on EVERY pipeline-detail
-  open", así que el peor caso es el pipeline con MÁS eventos acumulados, no
-  uno recién creado. Un pipeline del usuario "escala" con **221 eventos
-  `STEP_FAILED`** (mismo número que midió el Ruling R20 para
-  `sql_eventos_de_causa`) **+ los 4 tipos de auditoría** (225 en total).
+- **"pipeline_con_muchos_eventos"** y **"pipeline_con_ruido_mas_nuevo"** —
+  `GET /pipelines/{id}/auditoria-descarte`. Decisión del coordinador: este
+  endpoint "fires on EVERY pipeline-detail open", así que el peor caso es
+  el pipeline con MÁS costo acumulado, no uno recién creado.
+  **CORRECCIÓN (fix round 3, MINOR-4, revisión adversarial de PR 151):**
+  este párrafo decía, desde la ronda 1, "221 eventos `STEP_FAILED` + los 4
+  de auditoría (225 en total)" -- eso dejó de ser lo que esta carga siembra
+  en la ronda 2 (MAJOR-A/B) y NUNCA se corrigió acá, aunque los resultados
+  y el párrafo de vigencia sí hablaban de 5.000. Los números REALES, hoy,
+  son dos pipelines distintos, uno por eje de costo:
+  - **"pipeline_con_muchos_eventos"** (fix round 2): un pipeline del
+    usuario "escala" con **5.000 eventos DE AUDITORÍA**
+    (`PIPELINE_DISCARDED`/`PIPELINE_RECOVERED` alternados, sin ruido) --
+    mide el eje "muchas filas de auditoría", el que rompía sin `ORDER BY
+    ... LIMIT`.
+  - **"pipeline_con_ruido_mas_nuevo"** (fix round 3, MAJOR-2): otro
+    pipeline del usuario "escala" con **20 eventos de auditoría** (bajo el
+    límite de 50) **+ 2.000 eventos `STEP_FAILED` MÁS NUEVOS** (id más
+    alto) -- mide el eje "poca auditoría, mucho ruido reciente", el que
+    `ORDER BY ... LIMIT` sobre una consulta con `event_type IN (...)`
+    dejaba sin cobertura de forma INESTABLE (ver "Resultados" más abajo).
 
 ## Método de aislamiento
 
@@ -125,15 +140,22 @@ cierre de huecos:**
   punta a punta).
 - Dos usuarios descartables (`tenant_id=1`, rol `operator`) en `jax_users`,
   cada uno con su propio token JWT. Fix round 1 (BLOCK-2): +1 usuario
-  descartable con rol `superadmin` (para `GET /admin/pipelines/descartados`)
-  y +1 pipeline con 225 eventos propios en `jacobs_events` (para
-  `GET /pipelines/{id}/auditoria-descarte`) — ninguno de los dos crea
-  cuentas reales para las 5.000 filas de "admin_muchos_usuarios": ese
-  endpoint no hace `JOIN` con `jax_users`.
+  descartable con rol `superadmin` (para `GET /admin/pipelines/descartados`).
+  **CORRECCIÓN (fix round 3, MINOR-4):** este bullet decía "+1 pipeline con
+  225 eventos" desde la ronda 1 -- desactualizado desde la ronda 2. Hoy son
+  **DOS** pipelines con eventos propios en `jacobs_events`:
+  "pipeline_con_muchos_eventos" (5.000 eventos de auditoría, fix round 2) y
+  "pipeline_con_ruido_mas_nuevo" (20 de auditoría + 2.000 de ruido más
+  nuevo, fix round 3) -- ninguno de los tres orígenes nuevos (el
+  superadmin ni los dos pipelines con eventos) crea cuentas reales para
+  las 5.000 filas de "admin_muchos_usuarios": ese endpoint no hace `JOIN`
+  con `jax_users`.
 - Al terminar: `os.killpg` sobre los dos procesos; toda fila sembrada
-  (15.004 pipelines entre los cuatro orígenes + los 3 usuarios + 225
-  eventos) BORRADA y verificada — `SELECT COUNT(*) FROM jacobs_pipelines
-  WHERE user_id IN (...)` (y su equivalente para las dos formas nuevas)
+  (pipelines entre los CINCO orígenes + los 3 usuarios + los eventos de
+  los dos pipelines de auditoría) BORRADA y verificada — `SELECT COUNT(*)
+  FROM jacobs_pipelines WHERE user_id IN (...)` (y su equivalente para las
+  formas nuevas, incluido un `COUNT(*)` aparte sobre `jacobs_events` --
+  MINOR-C de la ronda 2, ver `loadtest/descartados_limpiar.py`)
   volvió a 0 tras la corrida, confirmado independientemente con una
   consulta aparte después de que el script terminó.
 
@@ -312,6 +334,79 @@ se notara (221 STEP_FAILED que MAJOR-1 ya había dejado gratis + sólo 4 de
 auditoría). El número que faltaba y que esta ronda agrega es la
 comparación limpia de arriba: 51 lecturas contra 5.001 sin el `LIMIT`.
 
+## Fix round 3 (MAJOR-2, 2026-09-22): el eje que se quedó sin cobertura
+
+El `ORDER BY id DESC LIMIT %s` de la ronda 2 resolvió el eje "muchas
+filas de auditoría" (arriba) pero cambió el eje del costo, y el eje VIEJO
+-- el de R20, mucho ruido no-auditoría -- se quedó sin cobertura otra vez,
+de un modo más traicionero: INESTABLE. Con pocas filas de auditoría (bajo
+el límite de 50) y miles de eventos `STEP_*` MÁS NUEVOS (id más alto), el
+optimizador elige entre `idx_events_pipeline_tipo` (bueno) e
+`idx_events_pipeline` (malo con la consulta con `IN (...)`: escanea el
+rango de id completo saltando cada fila no-auditoría) según las
+estadísticas del momento -- medido a mano, la MISMA siembra (20 filas de
+auditoría, 2.000 de ruido más nuevo) dio:
+
+```
+EXPLAIN + Handler_read, consulta con event_type IN (...), MISMA siembra, corridas repetidas:
+  corrida 1: key=idx_events_pipeline_tipo  Handler_read=44
+  corrida 2: key=idx_events_pipeline       Handler_read=2021  (~todo el ruido)
+```
+
+Sin cambiar el SQL ni los datos. Confiar en que el optimizador elija bien
+es exactamente el error que ya corrigió MAJOR-1 (ver arriba) -- no se
+vuelve a confiar en él acá.
+
+**Fix:** CUATRO consultas, una por `event_type`
+(`SQL_AUDITORIA_DESCARTE_POR_TIPO`), fusionadas y ordenadas en Python, en
+vez de una con `event_type IN (...)`. Corrección honesta sobre un
+supuesto que este mismo fix asumía al principio: no es cierto que la
+consulta por tipo elija SIEMPRE el índice compuesto (medida la MISMA
+siembra de 5.000 filas de auditoría, dio `idx_events_pipeline_tipo` en
+una corrida e `idx_events_pipeline` en otra, para el mismo tipo). Lo que
+SÍ es cierto, y es lo que estos números prueban, es que el COSTO queda
+acotado con cualquiera de los dos planes, porque una única igualdad de
+`event_type` (no un `IN`) no permite el escenario catastrófico ("cero
+matches, miles de no-matches más nuevos, escanear todo para confirmarlo")
+que sí permitía la consulta con `IN (...)`:
+
+```
+EXPLAIN + Handler_read, CUATRO consultas por tipo, MISMA siembra (20 auditoría + 2.000 ruido más nuevo):
+  Handler_read TOTAL=24-44 en 6 corridas repetidas (nunca ni cerca de 2.021)
+
+EXPLAIN + Handler_read, CUATRO consultas por tipo, 5.000 filas de auditoría, sin ruido:
+  Handler_read TOTAL acotado por 4×51=204 (nunca escala con las 5.000 sembradas)
+```
+
+**Verificación previa** del pipeline con ruido más nuevo (20 eventos de
+auditoría, 2.000 `STEP_FAILED` más nuevos):
+
+```
+GET /api/pipelines/{id}/auditoria-descarte (ruido más nuevo) status=200 bytes=1970 eventos=20 truncado=False
+```
+
+Con sólo 20 eventos de auditoría (bajo el límite de 50), `truncado=False`
+es correcto -- no falta nada por mostrar, a diferencia del pipeline con
+5.000 eventos de auditoría de arriba.
+
+### `GET /api/pipelines/{id}/auditoria-descarte` (pipeline con 20 eventos de auditoría + 2.000 `STEP_FAILED` MÁS NUEVOS)
+
+| c | n | ok | errores | rps | p50 ms | p95 ms | p99 ms | max ms |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 200 | 200 | 0 | 715,05 | 1,39 | 1,66 | 1,79 | 2,32 |
+| 25 | 500 | 500 | 0 | 975,47 | 18,94 | 61,63 | 84,34 | 117,65 |
+| 50 | 1000 | 1000 | 0 | 594,39 | 55,14 | 231,38 | 358,77 | 574,80 |
+| 100 | 2000 | 2000 | 0 | 340,46 | 128,65 | 1065,00 | 1863,95 | 3483,13 |
+| 150 | 2000 | 2000 | 0 | 309,37 | 170,60 | 2160,45 | 3870,31 | 5667,61 |
+| 200 | 2000 | 2000 | 0 | 295,40 | 210,43 | 3599,50 | 5065,66 | 5505,71 |
+
+**Lectura:** 0 errores en las seis concurrencias, en el escenario EXACTO
+que describió el revisor (pocas filas de auditoría, miles de ruido más
+nuevo). El perfil es, otra vez, indistinguible del resto del documento --
+la carga confirma a nivel HTTP lo que el EXPLAIN ya mostró: las cuatro
+consultas por tipo no dejan que el ruido, por mucho que haya o de qué
+edad sea, entre al costo del pedido.
+
 ## Lectura: dónde empieza a degradarse
 
 **0 errores en los cuatro escenarios, en las seis concurrencias.** No hay un
@@ -388,5 +483,14 @@ latencia de cola por concurrencia del proceso único:
   distintos en la vista admin-wide -- fuera del alcance de esta ronda, que
   igualó el orden de magnitud de las formas A/B ya
   medidas.
+- Fix round 3 (MAJOR-2): mismo criterio de vigencia para
+  `pipeline_con_ruido_mas_nuevo` -- si cambia el esquema, el volumen de
+  datos o la infraestructura, este número también caduca. El límite
+  medido acá es 2.000 eventos de ruido más nuevo; no se midió con
+  decenas de miles (el peor caso real de un pipeline reprocesado muchas
+  veces) ni con una mezcla de auditoría intercalada CON el ruido en vez
+  de separada en dos bloques por id -- fuera del alcance de esta ronda,
+  que se enfocó en reproducir el escenario exacto que describió el
+  revisor.
 
 En memoria de Jairo Urbina.

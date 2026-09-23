@@ -95,6 +95,17 @@ def main() -> None:
         print(f"pipeline_con_muchos_eventos: pipelines={n_pipeline_eventos} eventos={n_eventos}")
         total_pipelines += n_pipeline_eventos
 
+    if "pipeline_con_ruido_mas_nuevo" in seed:
+        pid = seed["pipeline_con_ruido_mas_nuevo"]["pipeline_id"]
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM jacobs_events WHERE pipeline_id = %s", (pid,))
+            n_eventos = cur.rowcount
+            cur.execute("DELETE FROM jacobs_pipelines WHERE pipeline_id = %s", (pid,))
+            n_pipeline_ruido = cur.rowcount
+        conn.commit()
+        print(f"pipeline_con_ruido_mas_nuevo: pipelines={n_pipeline_ruido} eventos={n_eventos}")
+        total_pipelines += n_pipeline_ruido
+
     with conn.cursor() as cur:
         restantes = 0
         for datos in seed["usuarios"].values():
@@ -122,6 +133,14 @@ def main() -> None:
             # jax_memory_test (otros scripts de carga, documentado en el
             # reporte de la ronda 1).
             cur.execute("SELECT COUNT(*) FROM jacobs_events WHERE pipeline_id=%s", (pid_eventos,))
+            (n_eventos_restantes,) = cur.fetchone()
+            restantes += n_eventos_restantes
+        if "pipeline_con_ruido_mas_nuevo" in seed:
+            pid_ruido = seed["pipeline_con_ruido_mas_nuevo"]["pipeline_id"]
+            cur.execute("SELECT COUNT(*) FROM jacobs_pipelines WHERE pipeline_id=%s", (pid_ruido,))
+            (n,) = cur.fetchone()
+            restantes += n
+            cur.execute("SELECT COUNT(*) FROM jacobs_events WHERE pipeline_id=%s", (pid_ruido,))
             (n_eventos_restantes,) = cur.fetchone()
             restantes += n_eventos_restantes
     print(f"verificación final: filas_restantes_de_la_siembra={restantes} "

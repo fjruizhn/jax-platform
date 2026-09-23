@@ -952,8 +952,21 @@ jobs:
           //   setErrorOcultos(true))` sin restaurar la bandera (1 failed)
           //   antes de mover la restauración al `.catch()`. Medido con
           //   `npx vitest run`: 1003 passed, 0 fallidos, 95 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1003) {
-              console.error("PISO ROTO: se esperaban 1003 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1003 -> 1006 (2026-09-22, fix round 3, revisión adversarial de
+          //   PR 151, CRITICAL-1): +3 en DetallePipeline.test.jsx -- el
+          //   campo `truncado` que el backend devuelve desde la ronda 2
+          //   (MAJOR-A/B) nadie lo leía: sin i18n, sin render condicional,
+          //   la sección se quedaba callada en 50 sin avisar. Agregada
+          //   la clave `auditoriaDescarteTruncado` (es/en) y el aviso
+          //   condicional: "con truncado=true, muestra un aviso...",
+          //   "con truncado=false, NO muestra el aviso", "sin eventos,
+          //   aunque truncado viniera true, no muestra ninguna caja"
+          //   (dato inconsistente del backend, por si acaso). Vistos en
+          //   rojo contra el componente sin la bandera/el render (1
+          //   failed) antes de implementar. Medido con `npx vitest run`:
+          //   1006 passed, 0 fallidos, 95 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1006) {
+              console.error("PISO ROTO: se esperaban 1006 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -2861,7 +2874,23 @@ jobs:
           #   2646 passed / 2 skipped. Delta propio verificado: +15 (2646 -
           #   2631). Piso nuevo = piso DECLARADO (2622) + delta propio
           #   (+15) = 2637.
-          PISO_PASSED = 2637
+          # 2637 -> 2639 (2026-09-22, fix round 3, revisión adversarial de
+          #   PR 151, MAJOR-2): +2 en test_pipelines_auditoria_descarte.py
+          #   -- test_auditoria_descarte_con_ruido_mas_nuevo_no_escanea_
+          #   el_pipeline (Handler_read acotado con 20 filas de auditoría +
+          #   2.000 de ruido MÁS NUEVO, el escenario exacto que el revisor
+          #   describió como sin cobertura) y
+          #   test_auditoria_del_dueno_trae_los_cuatro_tipos_los_cuatro
+          #   (ningún test sembraba los CUATRO tipos a la vez -- una
+          #   mutación real, saltear PIPELINE_RESTORED del loop de
+          #   auditoria_descarte, pasaba TODA la suite sin este test,
+          #   confirmado en rojo antes de agregarlo). Medido en el árbol de
+          #   esta rama, MISMO comando de arriba: sin los 2 archivos ->
+          #   2631 passed / 2 skipped (mismo drift ajeno de +9, sin
+          #   cambio); CON los 2 archivos -> 2648 passed / 2 skipped. Delta
+          #   propio verificado: +17 (2648 - 2631). Piso nuevo = piso
+          #   DECLARADO (2622) + delta propio (+17) = 2639.
+          PISO_PASSED = 2639
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

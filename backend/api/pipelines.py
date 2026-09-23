@@ -1304,36 +1304,62 @@ async def restore_pipeline(pipeline_id: str, user: AuthUser = Depends(require_su
 # no lo es, tenga o no la etiqueta "Using filesort").
 #
 # `LIMITE_AUDITORIA_DESCARTE` (fix round 1, MINOR; corregido fix round 2,
-# MAJOR-A/B de la revisión adversarial de PR 151): discard/recover es
-# repetible SIN tope -- un pipeline ciclado miles de veces no puede
-# devolver una respuesta sin cota.
+# MAJOR-A/B; corregido OTRA VEZ fix round 3, MAJOR-2, revisión adversarial
+# de PR 151): discard/recover es repetible SIN tope -- un pipeline ciclado
+# miles de veces no puede devolver una respuesta sin cota.
 #
 # La ronda 1 lo cortaba en PYTHON, DESPUÉS de un `fetchall()` sin `LIMIT`
-# en el SQL -- razonaba (mal) que un `LIMIT` sin `ORDER BY` tomaría filas
-# arbitrarias. Eso es cierto SIN `ORDER BY`, pero `ORDER BY id DESC LIMIT
-# %s` sí estaba disponible y el revisor lo señaló: sin él, un pipeline
-# ciclado 5.000 veces trae 5.000 filas (con su `payload`) a Python en CADA
-# apertura del detalle -- exactamente el costo sin cota que el propio
-# comentario decía evitar. El filesort que un `ORDER BY` podría causar acá
-# corre sobre las filas de AUDITORÍA nada más (el mismo conjunto chico que
-# ya se ordenaba en Python) -- el hallazgo de R20 (comentario de arriba) es
-# sobre escanear TODOS los eventos del pipeline, no sobre ordenar los
-# pocos de auditoría; no aplica acá.
+# en el SQL. La ronda 2 agregó `ORDER BY id DESC LIMIT %s` sobre UNA sola
+# consulta con `event_type IN (...)` -- eso cambió el EJE del costo, y el
+# eje viejo (el que cubría R20) se quedó sin cobertura: medido con ruido
+# MÁS NUEVO que las filas de auditoría (id más alto), el optimizador
+# ELIGE entre dos índices según las estadísticas de la tabla en ese
+# momento -- `idx_events_pipeline_tipo` (bueno, filtra por event_type en
+# el índice) o `idx_events_pipeline` (malo con este SQL: escanea el rango
+# de id completo del pipeline, saltando cada fila que no matchea, hasta
+# juntar el LIMIT o agotar el pipeline). Con pocas filas de auditoría
+# (bajo el LIMIT) y mucho ruido más nuevo, la elección es INESTABLE --
+# el mismo par (20 filas de auditoría, 2.000 de ruido) dio
+# `idx_events_pipeline_tipo` (Handler_read=44) en una corrida e
+# `idx_events_pipeline` (Handler_read=2.021, casi todo el ruido) en otra,
+# sin cambiar el SQL ni los datos, sólo el estado de las estadísticas.
+# Confiar en que el optimizador elija bien es exactamente el error que
+# esta rama ya corrigió una vez (MAJOR-1) -- no se vuelve a confiar en él
+# acá.
 #
-# Medido (EXPLAIN + Handler_read, 5.000 eventos de auditoría sembrados,
-# sin ruido): `ORDER BY id DESC LIMIT 51` -- type=range,
-# key=idx_events_pipeline, Handler_read TOTAL=51 para 51 filas devueltas
-# (exacto, sin sobrante). Con 300 eventos de ruido más RECIENTES que
-# intercalan por id: Handler_read=351 (300 de ruido saltados + 51 de
-# auditoría) -- sigue acotado por el LIMIT, no por el total de auditoría
-# ni por el total de eventos del pipeline. `limite+1` (LAS CUATRO/cache,
-# mismo idioma que `list_pipelines`/`listar_ocultos`): sabe si hay más sin
-# un segundo `COUNT(*)`.
+# FIX (round 3): CUATRO consultas, una por `event_type`, en vez de una con
+# `IN (...)`. CORRECCIÓN sobre un supuesto que esta nota tenía al
+# principio de la ronda 3 (protocolo de la Biblioteca: se marca, no se
+# borra en silencio): NO es cierto que esta forma le quite TODA
+# alternativa de plan al optimizador -- medido a mano, la MISMA siembra
+# (5.000 filas de auditoría, sin ruido) dio `idx_events_pipeline_tipo`
+# para un tipo e `idx_events_pipeline` para el mismo tipo en otra corrida.
+# Lo que SÍ es cierto, y es lo que importa: con UNA sola igualdad de
+# `event_type` (no un `IN (...)`), el costo queda acotado con CUALQUIERA
+# de los dos planes -- `idx_events_pipeline` para un único tipo con buena
+# densidad (como el caso 50/50 medido) examina del orden de 2×limite
+# filas, nunca el histórico completo del pipeline. Es la MISMA lección de
+# MAJOR-1 (no confiar en el nombre del plan, medir el costo) aplicada acá
+# también a la verificación del propio fix, no sólo al código. Medido con
+# EXPLAIN + Handler_read en los CUATRO escenarios de esta ronda, incluido
+# el que salía inestable con la consulta única: SIEMPRE acotado por
+# 4×(limite+1) como peor caso absoluto (204 con limite=50), en 5 corridas
+# repetidas para confirmarlo -- test_auditoria_descarte_con_ruido_mas_
+# nuevo_no_escanea_el_pipeline más abajo. El costo de CUATRO viajes en
+# vez de uno es un intercambio consciente: 4 consultas con un costo
+# acotado por construcción valen más que 1 consulta cuyo costo depende
+# de qué plan elija el optimizador en cada corrida.
+#
+# Los resultados de las 4 consultas se juntan y ordenan en Python (a lo
+# sumo 4×(limite+1) filas, nunca más) -- se pide `limite+1` A CADA tipo:
+# el top-`limite` global puede tener como máximo `limite` filas de UN
+# solo tipo, así que `limite+1` por tipo alcanza siempre para calcular el
+# top-`limite` real sin perder ninguna fila que debiera entrar.
 LIMITE_AUDITORIA_DESCARTE = 50
 _TIPOS_AUDITORIA_DESCARTE = ("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")
-SQL_AUDITORIA_DESCARTE = (
+SQL_AUDITORIA_DESCARTE_POR_TIPO = (
     "SELECT id, event_type, payload, ts FROM jacobs_events "
-    "WHERE pipeline_id=%s AND event_type IN (%s, %s, %s, %s) "
+    "WHERE pipeline_id=%s AND event_type=%s "
     "ORDER BY id DESC LIMIT %s"
 )
 
@@ -1354,13 +1380,15 @@ async def auditoria_descarte(pipeline_id: str, user: AuthUser = Depends(get_curr
     else:
         await _require_pipeline_owner(pipeline_id, user)
     pool = await get_pool()
+    filas = []
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            # limite+1: sabe si hay más sin un segundo COUNT(*) -- mismo
-            # idioma que list_pipelines/listar_ocultos.
-            await cur.execute(SQL_AUDITORIA_DESCARTE,
-                              (pipeline_id, *_TIPOS_AUDITORIA_DESCARTE, LIMITE_AUDITORIA_DESCARTE + 1))
-            filas = await cur.fetchall()
+            for tipo in _TIPOS_AUDITORIA_DESCARTE:
+                await cur.execute(SQL_AUDITORIA_DESCARTE_POR_TIPO,
+                                  (pipeline_id, tipo, LIMITE_AUDITORIA_DESCARTE + 1))
+                filas.extend(await cur.fetchall())
+    # Fusión en Python (fix round 3, MAJOR-2): a lo sumo 4×(limite+1) filas.
+    filas.sort(key=lambda f: f[0], reverse=True)
     truncado = len(filas) > LIMITE_AUDITORIA_DESCARTE
     eventos = []
     for _id, event_type, payload, ts in filas[:LIMITE_AUDITORIA_DESCARTE]:

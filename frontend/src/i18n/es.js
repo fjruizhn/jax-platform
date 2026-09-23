@@ -392,6 +392,12 @@ export default {
   auditoriaRecuperado: (usuario, fecha) => `Recuperado por ${usuario} el ${fecha}`,
   auditoriaOcultado: (usuario, fecha) => `Ocultado por ${usuario} el ${fecha}`,
   auditoriaRestaurado: (usuario, fecha) => `Restaurado por ${usuario} el ${fecha}`,
+  // CRITICAL-1 (fix round 3, revisión adversarial de PR 151): el backend
+  // devuelve `truncado` (LIMITE_AUDITORIA_DESCARTE, api/pipelines.py) desde
+  // la ronda 2, pero nadie lo mostraba -- la sección se quedaba callada en
+  // 50 sin avisar que hay más historia. Dice explícitamente QUÉ significa
+  // (sólo los más recientes), no sólo "hay más".
+  auditoriaDescarteTruncado: 'Sólo se muestran los eventos más recientes; hay más en el historial completo.',
 
   // StepStatus (jax/jacobs/models.py), no el status del pipeline entero
   // (arriba, ETIQUETAS_DE_ESTADO): un paso puede quedar 'skipped' o

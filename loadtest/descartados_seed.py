@@ -41,6 +41,20 @@ N_EVENTOS_AUDITORIA eventos `PIPELINE_DISCARDED`/`PIPELINE_RECOVERED`
 alternados -- el escenario REAL que describió el revisor, no uno
 sintético.
 
+Fix round 3 (2026-09-22, MAJOR-2, revisión adversarial de PR 151): el
+propio `ORDER BY id DESC LIMIT` de la ronda 2 cambió el eje del costo, y
+el eje viejo (el de R20, MUCHO ruido) se quedó SIN cobertura de carga
+otra vez -- la forma D de la ronda 2 tenía 5.000 eventos de auditoría y
+CERO ruido, así que nunca ejercitó el escenario real que describió el
+coordinador: pocas filas de auditoría (un pipeline descartado/recuperado
+sólo un puñado de veces) con MUCHO ruido `STEP_*` MÁS NUEVO acumulado
+después (reintentos, reprocesamiento). Se agrega una forma E,
+"pipeline_con_ruido_mas_nuevo": N_EVENTOS_AUDITORIA_POCOS eventos de
+auditoría (viejos) + N_EVENTOS_RUIDO_NUEVO eventos `STEP_FAILED` (más
+nuevos, id más alto) -- el mismo escenario que
+`test_auditoria_descarte_con_ruido_mas_nuevo_no_escanea_el_pipeline` del
+backend, pero a escala de carga HTTP completa.
+
 Requiere que `jacobs_pipelines` tenga el esquema de descartar-pipelines
 (status_previo/descartado_por/descartado_at/visible + los índices
 idx_pipelines_visibles/idx_pipelines_descartados/idx_pipelines_ocultos) --
@@ -107,6 +121,17 @@ N_ADMIN_USUARIOS = 500
 # diferencia SQL (docstring del módulo): 5.001 lecturas Handler_read sin
 # `ORDER BY ... LIMIT`, 51 con él.
 N_EVENTOS_AUDITORIA = 5000
+
+# --- Forma E (fix round 3, MAJOR-2): "pipeline_con_ruido_mas_nuevo" -------
+# El escenario que el revisor describió como el defecto REAL: un pipeline
+# descartado/recuperado sólo unas pocas veces, con MUCHO ruido `STEP_*`
+# acumulado DESPUÉS (id más alto) -- exactamente lo que
+# test_auditoria_descarte_con_ruido_mas_nuevo_no_escanea_el_pipeline mide
+# a nivel SQL, acá a escala de carga HTTP. Mismos números que probaron el
+# punto en el backend: 20 de auditoría (bajo el límite de 50), 2.000 de
+# ruido.
+N_EVENTOS_AUDITORIA_POCOS = 20
+N_EVENTOS_RUIDO_NUEVO = 2000
 
 
 def _cargar_env_produccion() -> dict:
@@ -246,6 +271,23 @@ def _eventos_pipeline_con_muchos_eventos(pipeline_id):
     return filas
 
 
+def _eventos_pipeline_con_ruido_mas_nuevo(pipeline_id):
+    """Forma E (fix round 3, MAJOR-2): N_EVENTOS_AUDITORIA_POCOS eventos de
+    auditoría (viejos, id bajo) + N_EVENTOS_RUIDO_NUEVO eventos
+    `STEP_FAILED` MÁS NUEVOS (id alto) -- el escenario que rompía la
+    consulta con `event_type IN (...)` de la ronda 2 de forma INESTABLE."""
+    ahora = time.time()
+    filas = []
+    for i in range(N_EVENTOS_AUDITORIA_POCOS):
+        tipo = ("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")[i % 4]
+        filas.append((pipeline_id, None, tipo,
+                      json.dumps({"user_id": "carga", "desde": "a", "a": "b"}), ahora + i))
+    for i in range(N_EVENTOS_RUIDO_NUEVO):
+        filas.append((pipeline_id, None, "STEP_FAILED", json.dumps({"step_index": i}),
+                      ahora + N_EVENTOS_AUDITORIA_POCOS + i))
+    return filas
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("uso: descartados_seed.py <ruta-de-salida.json>")
@@ -327,6 +369,24 @@ def main() -> None:
     print(f"pipeline_con_muchos_eventos: pipeline_id={pipeline_eventos_id} "
           f"dueño=escala({escala['user_id']}) eventos={N_EVENTOS_AUDITORIA}", file=sys.stderr)
 
+    # Forma E (fix round 3, MAJOR-2): otro pipeline del usuario "escala",
+    # pocos eventos de auditoría + mucho ruido MÁS NUEVO -- el escenario
+    # real que describió el revisor.
+    pipeline_ruido_id = str(uuid.uuid4())
+    with conn.cursor() as cur:
+        _insertar(cur, [(pipeline_ruido_id, "carga descartar-pipelines (ruido más nuevo)", "plataforma", "supervised",
+                         "completed", ahora, ahora, str(escala["user_id"]), escala["tenant_id"], ahora,
+                         None, None, None)])
+        cur.executemany(
+            "INSERT INTO jacobs_events (pipeline_id, step_id, event_type, payload, ts) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            _eventos_pipeline_con_ruido_mas_nuevo(pipeline_ruido_id),
+        )
+    conn.commit()
+    print(f"pipeline_con_ruido_mas_nuevo: pipeline_id={pipeline_ruido_id} "
+          f"dueño=escala({escala['user_id']}) auditoria={N_EVENTOS_AUDITORIA_POCOS} "
+          f"ruido={N_EVENTOS_RUIDO_NUEVO}", file=sys.stderr)
+
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM jacobs_pipelines")
         (total_tabla,) = cur.fetchone()
@@ -338,6 +398,10 @@ def main() -> None:
         "admin_muchos_usuarios": {"pipeline_ids": ids_admin},
         "pipeline_con_muchos_eventos": {
             "pipeline_id": pipeline_eventos_id,
+            "owner_user_id": escala["user_id"], "owner_tenant_id": escala["tenant_id"],
+        },
+        "pipeline_con_ruido_mas_nuevo": {
+            "pipeline_id": pipeline_ruido_id,
             "owner_user_id": escala["user_id"], "owner_tenant_id": escala["tenant_id"],
         },
     }

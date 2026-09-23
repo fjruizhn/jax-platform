@@ -356,6 +356,9 @@ export default {
   auditoriaRecuperado: (usuario, fecha) => `Recovered by ${usuario} on ${fecha}`,
   auditoriaOcultado: (usuario, fecha) => `Hidden by ${usuario} on ${fecha}`,
   auditoriaRestaurado: (usuario, fecha) => `Restored by ${usuario} on ${fecha}`,
+  // CRITICAL-1 (fix round 3, revisión adversarial de PR 151): ver el
+  // comentario del mismo bloque en es.js.
+  auditoriaDescarteTruncado: 'Only the most recent events are shown; there is more in the full history.',
 
   stepStatusLabels: {
     pending: 'Pending',

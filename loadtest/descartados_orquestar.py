@@ -390,6 +390,29 @@ async def main_async() -> None:
             print(f"[AUDITORIA_DESCARTE] c={c} n={n} -> {r}")
             resultados["auditoria_descarte"].append(r)
 
+        # Fix round 3 (MAJOR-2): forma E -- pocos eventos de auditoría +
+        # mucho ruido MÁS NUEVO, el escenario real que describió el revisor.
+        pipeline_ruido = seed["pipeline_con_ruido_mas_nuevo"]
+        token_dueño_ruido = _token_para(
+            pipeline_ruido["owner_user_id"], pipeline_ruido["owner_tenant_id"], jwt_secret_de_carga)
+        headers_dueño_ruido = {"Authorization": f"Bearer {token_dueño_ruido}"}
+        url_auditoria_ruido = f"{BACKEND_URL}/api/pipelines/{pipeline_ruido['pipeline_id']}/auditoria-descarte"
+
+        r_auditoria_ruido = httpx.get(url_auditoria_ruido, headers=headers_dueño_ruido, timeout=15.0)
+        print(f"[orquestador] GET /api/pipelines/{{id}}/auditoria-descarte (ruido más nuevo) "
+              f"status={r_auditoria_ruido.status_code} bytes={len(r_auditoria_ruido.content)} "
+              f"eventos={len(r_auditoria_ruido.json().get('eventos', []))} "
+              f"truncado={r_auditoria_ruido.json().get('truncado')}")
+        if r_auditoria_ruido.status_code != 200:
+            raise RuntimeError("la verificación previa de /pipelines/{id}/auditoria-descarte (ruido) no dio 200")
+
+        resultados["auditoria_descarte_ruido_mas_nuevo"] = []
+        for c in niveles:
+            n = _n_para(c)
+            r = await correr_tanda(url_auditoria_ruido, headers_dueño_ruido, c, n)
+            print(f"[AUDITORIA_DESCARTE_RUIDO] c={c} n={n} -> {r}")
+            resultados["auditoria_descarte_ruido_mas_nuevo"].append(r)
+
         salida = LOADTEST_DIR / "_descartados_resultados.json"
         salida.write_text(json.dumps(resultados, indent=2, ensure_ascii=False))
         print(f"[orquestador] {salida} escrito")
