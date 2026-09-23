@@ -1107,6 +1107,10 @@ jobs:
       # sys.path. Mismo caso que JAX_CONFIG_PATH: sin esto son 9 tests con
       # "ModuleNotFoundError: No module named 'claims'".
       JAX_REPO_PATH: /tmp/jax
+      # Web Chat imports the JAX-owned B9 package as well as reading its
+      # configuration.  Resolve it from this job's paired checkout, never an
+      # unrelated preinstalled package named `jax`.
+      PYTHONPATH: /tmp/jax
       JAX_OLLAMA_URL: http://127.0.0.1:11434
       # Las credenciales ficticias YA NO van aca (B1.4, 2026-09-17). Estaban
       # como variables de entorno y 18 tests pasaban gracias al fallback
@@ -2817,6 +2821,9 @@ jobs:
       # Este job no clonaba `jax` -- el de DB si. Apunta al clon del paso de
       # mas abajo.
       JAX_REPO_PATH: /tmp/jax
+      # The paired checkout owns `jax.memory.b9`; JAX_REPO_PATH is a data
+      # location, not a Python import path.
+      PYTHONPATH: /tmp/jax
       # Obligatoria desde el 2026-09-16 (frente A, A-55): api/chat.py no se
       # importa sin ella. Apunta al clon del paso "Traer el repo jax".
       JAX_CONFIG_PATH: /tmp/jax/config/config.toml
