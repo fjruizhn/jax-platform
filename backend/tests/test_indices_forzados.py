@@ -256,3 +256,24 @@ def test_si_el_escaneo_revienta_el_lifespan_completa_igual(monkeypatch, caplog):
     with caplog.at_level(logging.ERROR, logger=LOGGER):
         assert _correr_lifespan(monkeypatch) == "arrancó"
     assert any("PermissionError" in e and "NO quedaron comprobados" in e for e in _errores(caplog)), caplog.text
+
+
+def test_un_paquete_tests_anidado_si_se_escanea(tmp_path):
+    # Solo backend/tests se poda; x/tests/ con SQL real sigue escaneado (auditoría #160 r2).
+    (tmp_path / "tests").mkdir(); (tmp_path / "x" / "tests").mkdir(parents=True)
+    (tmp_path / "tests" / "t.py").write_text('Q = "SELECT 1 FROM a FORCE INDEX (idx_de_test)"\n')
+    (tmp_path / "x" / "tests" / "m.py").write_text('Q = "SELECT 1 FROM b FORCE INDEX (idx_anidado)"\n')
+    from db import indices_forzados as mod
+    claves = {i for (_t, i) in mod.indices_forzados(tmp_path)}
+    assert "idx_anidado" in claves and "idx_de_test" not in claves
+
+
+def test_una_base_que_no_contesta_no_cuelga_el_arranque(monkeypatch, caplog):
+    import asyncio
+    from db import indices_forzados as mod
+    monkeypatch.setattr(mod, "TOPE_CHEQUEO_S", 0.2)
+    async def pool_que_no_contesta():
+        await asyncio.sleep(30)
+    with caplog.at_level("ERROR"):
+        asyncio.run(asyncio.wait_for(mod.chequeo_de_arranque(pool_que_no_contesta), 5))
+    assert any("NO quedaron comprobados" in r.getMessage() for r in caplog.records)

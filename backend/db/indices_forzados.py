@@ -43,7 +43,13 @@ RAIZ_BACKEND = Path(__file__).resolve().parent.parent
 # lo que no es código de este repo (entornos virtuales, dependencias del
 # frontend, cachés de bytecode). En el checkout de producción `backend/`
 # tiene su `.venv` adentro: recorrerlo serían miles de archivos ajenos.
-EXCLUIDOS = frozenset({"tests", ".venv", "venv", "node_modules", "__pycache__", ".git"})
+EXCLUIDOS = frozenset({".venv", "venv", "node_modules", "__pycache__", ".git"})
+# `tests` se poda SOLO en la raíz (backend/tests): un paquete `x/tests/` con SQL de
+# producción adentro tiene que seguir escaneado (auditoría de #160, ronda 2).
+EXCLUIDOS_EN_LA_RAIZ = frozenset({"tests"})
+# Tope del chequeo de arranque: una base que acepta la conexión y no contesta no
+# puede dejar colgado el lifespan (auditoría de #160, ronda 2). Configurable.
+TOPE_CHEQUEO_S = float(os.environ.get("JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S", "15"))
 
 _FORCE_INDEX = re.compile(
     r"\bFROM\s+`?(?P<tabla>\w+)`?(?:\s+(?:AS\s+)?(?!FORCE\b)\w+)?\s+FORCE\s+INDEX\s*\((?P<indices>[^)]*)\)",
@@ -66,7 +72,8 @@ def _archivos_python(raiz: Path):
     """Los `.py` de `raiz`, podando EXCLUIDOS antes de entrar (os.walk con
     `dirnames` recortado in situ), en orden estable."""
     for actual, dirnames, filenames in os.walk(raiz):
-        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUIDOS)
+        fuera = EXCLUIDOS | (EXCLUIDOS_EN_LA_RAIZ if Path(actual) == Path(raiz) else frozenset())
+        dirnames[:] = sorted(d for d in dirnames if d not in fuera)
         for nombre in sorted(filenames):
             if nombre.endswith(".py"):
                 yield Path(actual) / nombre
@@ -149,9 +156,11 @@ async def chequeo_de_arranque(obtener_pool) -> None:
     fail-soft: ni el escaneo del código ni la consulta pueden tumbar el
     arranque -- este aviso existe para que se vea un problema, no para
     crear otro."""
-    try:
+    async def _chequear():
         forzados = await asyncio.to_thread(indices_forzados)
         await avisar_indices_forzados_ausentes(await obtener_pool(), forzados)
+    try:
+        await asyncio.wait_for(_chequear(), TOPE_CHEQUEO_S)
     except Exception as exc:  # fail-soft: aviso de arranque (docstring); el fallo se loguea en ERROR con su tipo, no se traga
         logger.error("arranque: el chequeo de índices forzados falló (%s: %s); "
                      "los FORCE INDEX NO quedaron comprobados", type(exc).__name__, exc)

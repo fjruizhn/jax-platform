@@ -2942,7 +2942,7 @@ jobs:
           #   los 5 en rojo contra 81dbbb2. El viejo "el lifespan lo llama"
           #   (buscaba el nombre en el texto) se reemplaza por uno que corre
           #   el lifespan de verdad: rojo si se quita la llamada.
-          PISO_PASSED = 2681
+          PISO_PASSED = 2683  # +2 (auditoría de #160 r2: tests anidados y tope del chequeo)
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3843,7 +3843,7 @@ jobs:
       # 1698 -> 1703 (2026-09-23, auditoría de jax-platform#160): +5 puros
       #   en tests/test_indices_forzados.py. Medido con JAX_CI_NO_DB=1:
       #   9 passed / 1 skipped en ese archivo.
-      JAX_CI_MIN_PASSED: "1703"
+      JAX_CI_MIN_PASSED: "1705"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
