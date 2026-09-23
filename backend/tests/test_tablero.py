@@ -227,9 +227,46 @@ def test_explain_de_llaves_va_por_el_indice_de_credential(client):
     assert all("filesort" not in (f["Extra"] or "") and "temporary" not in (f["Extra"] or "") for f in filas), filas
 
 
-def test_explain_de_pipelines_completados_va_por_idx_pipelines_status(client):
+async def _primera_columna(tabla, indice):
+    """Primera columna del índice `indice` de `tabla` en la base de la sesión
+    (None si el índice no existe)."""
+    filas = await sql(
+        "SELECT COLUMN_NAME FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND INDEX_NAME = %s "
+        "AND SEQ_IN_INDEX = 1", (tabla, indice), True)
+    return filas[0][0] if filas else None
+
+
+def _fallas_del_indice_con_prefijo_status(fila, primera_columna):
+    """Pendiente 631: lo que importa es la PROPIEDAD, no el nombre. MariaDB
+    elige de forma inestable entre idx_pipelines_status e idx_pipelines_ocultos
+    (status, descartado_at); los dos sirven. Se exige: acceso por índice
+    (ref/range), que ese índice empiece por `status`, y que sea cubriente
+    ('Using index': el COUNT no toca la tabla). Devuelve la lista de fallas."""
+    fallas = []
+    if fila.get("type") not in ("ref", "range"):
+        fallas.append(f"type={fila.get('type')!r}, se esperaba ref o range")
+    if primera_columna != "status":
+        fallas.append(f"el índice {fila.get('key')!r} empieza por {primera_columna!r}, no por 'status'")
+    if "Using index" not in (fila.get("Extra") or ""):
+        fallas.append(f"Extra={fila.get('Extra')!r} sin 'Using index'")
+    return fallas
+
+
+def test_explain_de_pipelines_completados_va_por_un_indice_con_prefijo_status(client):
     (fila,) = client.portal.call(_explain, dashboard.SQL_PIPELINES_COMPLETADOS, ())
-    assert fila["key"] == "idx_pipelines_status", fila
+    primera = client.portal.call(_primera_columna, "jacobs_pipelines", fila["key"])
+    assert _fallas_del_indice_con_prefijo_status(fila, primera) == [], fila
+
+
+def test_el_predicado_de_prefijo_status_rechaza_una_fila_mala():
+    """El control tiene que poder fallar: una fila que no va por status, recorre
+    la tabla entera y no es cubriente se rechaza por las tres razones."""
+    mala = {"key": "idx_jacobs_pipelines_duenio", "type": "ALL", "Extra": "Using where"}
+    fallas = _fallas_del_indice_con_prefijo_status(mala, "owner_user_id")
+    assert len(fallas) == 3, fallas
+    buena = {"key": "idx_pipelines_ocultos", "type": "ref", "Extra": "Using where; Using index"}
+    assert _fallas_del_indice_con_prefijo_status(buena, "status") == []
 
 
 MARCA_BLOQUEO = "test-bloqueo-indice-"
