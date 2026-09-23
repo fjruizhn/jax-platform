@@ -2895,7 +2895,13 @@ jobs:
           #   cambio); CON los 2 archivos -> 2648 passed / 2 skipped. Delta
           #   propio verificado: +17 (2648 - 2631). Piso nuevo = piso
           #   DECLARADO (2622) + delta propio (+17) = 2639.
-          PISO_PASSED = 2639
+          # 2639 -> 2640 (2026-09-23, pendiente 631, índice por propiedad):
+          #   +1 en test_tablero.py -- test_el_predicado_de_prefijo_status_
+          #   rechaza_una_fila_mala (puro: el control nuevo tiene que poder
+          #   fallar). El test de EXPLAIN de pipelines completados se
+          #   RENOMBRA (exige índice con prefijo status, no un nombre), no se
+          #   suma. Medido: tests/test_tablero.py 23 -> 24 passed con DB.
+          PISO_PASSED = 2640
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3782,7 +3788,10 @@ jobs:
       #   verificado (+6) = 1674. Se corre la suite YA fusionada para
       #   confirmar -- el runner tiene la última palabra, no la aritmética
       #   (ver el reporte de la tarea para el número real).
-      JAX_CI_MIN_PASSED: "1674"
+      # 1674 -> 1675 (2026-09-23, pendiente 631): +1 puro en test_tablero.py
+      #   (el predicado de índice con prefijo status rechaza una fila EXPLAIN
+      #   mala). Medido con JAX_CI_NO_DB=1: test_tablero.py 13 -> 14 passed.
+      JAX_CI_MIN_PASSED: "1675"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
