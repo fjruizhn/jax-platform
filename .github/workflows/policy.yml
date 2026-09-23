@@ -3662,9 +3662,12 @@ jobs:
         # en un requirements-dev.txt queda como deuda anotada.
         run: pip install -r requirements.txt pytest pytest-asyncio
 
-      - name: Traer el repo jax (vocabulario cerrado de predicados)
+      - name: Traer el repo JAX de integración (vocabulario y B9)
         working-directory: .
-        run: git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
+        # Web Chat imports jax.memory.b9.  The B9 source is intentionally in
+        # the paired integration branch until its own PR merges, so cloning
+        # the default branch would make this job test a different contract.
+        run: git clone --depth=1 --branch phase1/shared-memory-integration https://github.com/fjruizhn/Jax.git /tmp/jax
 
       - name: Suite backend (sin DB) -- -rs lista cada skip con su motivo
         # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,
