@@ -17,6 +17,8 @@ import logging
 import textwrap
 import types
 
+import pytest
+
 from db import indices_forzados as mod
 from tests.identidades import sql
 
@@ -268,12 +270,86 @@ def test_un_paquete_tests_anidado_si_se_escanea(tmp_path):
     assert "idx_anidado" in claves and "idx_de_test" not in claves
 
 
-def test_una_base_que_no_contesta_no_cuelga_el_arranque(monkeypatch, caplog):
-    import asyncio
-    from db import indices_forzados as mod
-    monkeypatch.setattr(mod, "TOPE_CHEQUEO_S", 0.2)
-    async def pool_que_no_contesta():
+# --- MINOR 1 (auditoría #160): JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S validado -
+
+@pytest.mark.parametrize("crudo", ["abc", "nan", "inf", "0", "-1"])
+def test_tope_de_chequeo_invalido_da_error_de_configuracion_claro(monkeypatch, crudo):
+    """Antes de este arreglo: "abc" tumbaba el import con un ValueError
+    crudo, "nan" colgaba el event loop (math.ceil(nan) dentro de
+    asyncio.wait_for), "inf" dejaba el chequeo sin tope de verdad y
+    "0"/"-1" hacían que nunca corriera -- ninguno daba un error de
+    configuración con el nombre de la variable."""
+    monkeypatch.setenv(mod.VARIABLE_TOPE_CHEQUEO_S, crudo)
+    with pytest.raises(mod.IndicesForzadosConfigInvalida) as e:
+        mod.cargar_tope_chequeo_s()
+    assert mod.VARIABLE_TOPE_CHEQUEO_S in str(e.value)
+    assert crudo in str(e.value)
+
+
+def test_tope_de_chequeo_valido_se_acepta(monkeypatch):
+    monkeypatch.setenv(mod.VARIABLE_TOPE_CHEQUEO_S, "7.5")
+    assert mod.cargar_tope_chequeo_s() == 7.5
+
+
+def test_tope_de_chequeo_usa_15_por_default_si_falta(monkeypatch):
+    monkeypatch.delenv(mod.VARIABLE_TOPE_CHEQUEO_S, raising=False)
+    assert mod.cargar_tope_chequeo_s() == 15.0
+
+
+# --- MINOR 2/3 (auditoría #160): timeout con fase, aislado de la base -------
+
+class _CursorQueNoContesta:
+    """Acepta el `execute` (la conexión "está aceptada") y nunca contesta,
+    como el escenario real del docstring del módulo -- a diferencia de
+    `_Cursor`/`_PoolFalso` de arriba, que sí responden."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, *a, **k):
         await asyncio.sleep(30)
+
+    async def fetchall(self):  # pragma: no cover - execute nunca vuelve
+        return []
+
+
+class _PoolQueNoContesta:
+    def acquire(self):
+        class _Conn:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            def cursor(self):
+                return _CursorQueNoContesta()
+
+        return _Conn()
+
+
+def test_una_base_que_no_contesta_no_cuelga_el_arranque(monkeypatch, caplog):
+    """El timeout sólo puede venir de la base colgada: `indices_forzados`
+    (el escaneo del código) se sustituye por un dict fijo y `obtener_pool`
+    devuelve un pool de verdad de inmediato -- lo que se cuelga es la
+    CONSULTA a information_schema (`_CursorQueNoContesta.execute`), así que
+    si el test colgara por otra fase, este mismo test fallaría por
+    timeout real en vez de pasar por la razón equivocada. El log tiene que
+    nombrar el tope en segundos y la fase de la consulta -- antes salía
+    "(TimeoutError: )" vacío, sin decir ni el tope ni dónde se colgó."""
+    monkeypatch.setattr(mod, "TOPE_CHEQUEO_S", 0.2)
+    monkeypatch.setattr(mod, "indices_forzados", lambda: {("t", "idx_x"): ["m.py:1"]})
+
+    async def obtener_pool_rapido():
+        return _PoolQueNoContesta()
+
     with caplog.at_level("ERROR"):
-        asyncio.run(asyncio.wait_for(mod.chequeo_de_arranque(pool_que_no_contesta), 5))
-    assert any("NO quedaron comprobados" in r.getMessage() for r in caplog.records)
+        asyncio.run(asyncio.wait_for(mod.chequeo_de_arranque(obtener_pool_rapido), 5))
+    errores = _errores(caplog)
+    assert len(errores) == 1, errores
+    assert "NO quedaron comprobados" in errores[0]
+    assert "0.2" in errores[0]
+    assert "consultar information_schema" in errores[0], errores[0]

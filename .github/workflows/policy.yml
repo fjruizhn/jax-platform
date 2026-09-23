@@ -2942,7 +2942,28 @@ jobs:
           #   los 5 en rojo contra 81dbbb2. El viejo "el lifespan lo llama"
           #   (buscaba el nombre en el texto) se reemplaza por uno que corre
           #   el lifespan de verdad: rojo si se quita la llamada.
-          PISO_PASSED = 2683  # +2 (auditoría de #160 r2: tests anidados y tope del chequeo)
+          # 2683 -> 2690 (2026-09-23, jax-platform#160, ronda de arreglo de
+          #   los MINOR 1/2/3): +7 en tests/test_indices_forzados.py. MINOR 1
+          #   (JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S sin validar: "abc" tumbaba
+          #   el import con un ValueError crudo, "nan" colgaba el event loop,
+          #   "inf" dejaba el chequeo sin tope, "0"/"-1" hacían que nunca
+          #   corriera) -- 5 tests parametrizados (abc/nan/inf/0/-1 rechazados
+          #   con IndicesForzadosConfigInvalida nombrando la variable y el
+          #   valor) + 1 de un valor válido + 1 del default de 15 s sin la
+          #   variable puesta. MINOR 2 (el timeout salía "(TimeoutError: )"
+          #   vacío, sin tope ni fase) no suma test propio: la aserción se
+          #   agrega al test ya existente del tope, que además (MINOR 3) se
+          #   aísla de la fase del escaneo con `indices_forzados` fijo y
+          #   cuelga sólo en la consulta a information_schema (antes colgaba
+          #   en obtener_pool, sin probar la fase real del log). Los 7 son
+          #   puros (no piden `client`). Medido con JAX_CI_NO_DB=1: archivo
+          #   11 -> 18 passed / 1 skip sin cambios; delta propio +7. Los 7
+          #   tests nuevos, en rojo contra el código de jax-platform#160
+          #   mergeado (AttributeError por faltar `VARIABLE_TOPE_CHEQUEO_S` en
+          #   los primeros 7); el test ya existente del tope también falla en
+          #   rojo ahí (log sin "0.2" ni la fase), pero no es un test nuevo y
+          #   no suma al delta.
+          PISO_PASSED = 2690  # +7 (jax-platform#160, MINORs 1/2/3: tope validado + fase del log)
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3843,7 +3864,26 @@ jobs:
       # 1698 -> 1703 (2026-09-23, auditoría de jax-platform#160): +5 puros
       #   en tests/test_indices_forzados.py. Medido con JAX_CI_NO_DB=1:
       #   9 passed / 1 skipped en ese archivo.
-      JAX_CI_MIN_PASSED: "1705"
+      # 1703 -> 1705 (línea de historial que faltaba acá; el piso declarado
+      #   ya estaba en 1705 sin que esta cadena lo documentara): mismo +2 ya
+      #   registrado arriba, en la otra cadena de comentarios de este mismo
+      #   job ("2026-09-22, MERGE de origin/master ... 1703 / 874 skipped ->
+      #   1705 / 874") -- los 2 tests puros de test_pipeline_resource_release.py
+      #   que no piden `client`. Las dos cadenas conviven en este archivo por
+      #   el mismo historial de merges que ya explica el bloque de arriba;
+      #   esta línea sólo cierra el salto que quedaba sin nota en ÉSTA.
+      # 1705 -> 1712 (2026-09-23, jax-platform#160, ronda de arreglo de los
+      #   MINOR 1/2/3): +7 puros en tests/test_indices_forzados.py -- mismos
+      #   7 tests nuevos documentados arriba, en el piso CON DB (validación
+      #   de JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S: 5 valores inválidos + 1
+      #   válido + 1 default; ninguno pide `client`). El test ya existente
+      #   del tope se fortalece (fase aislada + aserción del log) pero no es
+      #   nuevo, no suma delta. Medido con JAX_CI_NO_DB=1: archivo
+      #   11 -> 18 passed / 1 skipped (delta propio +7); suite completa
+      #   1747 -> 1754 passed / 964 skipped sin cambios (mismo comando
+      #   `JAX_CI_NO_DB=1 python -m pytest -q -p no:warnings -rs
+      #   --ignore=tests/test_carga_indice_pipelines_del_usuario.py`).
+      JAX_CI_MIN_PASSED: "1712"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

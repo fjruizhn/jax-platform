@@ -31,6 +31,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import logging
+import math
 import os
 import re
 from pathlib import Path
@@ -48,8 +49,47 @@ EXCLUIDOS = frozenset({".venv", "venv", "node_modules", "__pycache__", ".git"})
 # producción adentro tiene que seguir escaneado (auditoría de #160, ronda 2).
 EXCLUIDOS_EN_LA_RAIZ = frozenset({"tests"})
 # Tope del chequeo de arranque: una base que acepta la conexión y no contesta no
-# puede dejar colgado el lifespan (auditoría de #160, ronda 2). Configurable.
-TOPE_CHEQUEO_S = float(os.environ.get("JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S", "15"))
+# puede dejar colgado el lifespan (auditoría de #160, ronda 2). Configurable,
+# con default 15 s -- a diferencia de adjuntos/limites.py (sin default: ahí un
+# límite ausente es un error de negocio), este tope SÍ tiene uno porque no es
+# un límite de negocio, es sólo el freno de este aviso de arranque.
+VARIABLE_TOPE_CHEQUEO_S = "JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S"
+_TOPE_CHEQUEO_S_DEFAULT = "15"
+
+
+class IndicesForzadosConfigInvalida(RuntimeError):
+    """`JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S` no es un número finito > 0. Fail-
+    closed, mismo criterio que adjuntos/limites.py (auditoría de #160, MINOR
+    1): antes de esto, `abc` tumbaba el import con un ValueError crudo,
+    `nan` colgaba el event loop (asyncio.wait_for hace math.ceil(timeout) en
+    los selectors, y math.ceil(nan) revienta con ValueError DENTRO del
+    loop), `inf` dejaba el chequeo sin tope de verdad, y `0`/negativo hacía
+    que el chequeo nunca llegara a correr."""
+
+
+def cargar_tope_chequeo_s() -> float:
+    """JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S, con default 15 s si falta. Si
+    está puesta, tiene que parsear como número finito > 0 -- si no, error de
+    configuración claro (variable y valor crudo) en vez de una traza cruda o
+    un loop caído. Se lee en cada llamada (mismo criterio que el resto de
+    `adjuntos/*`: el entorno de un proceso no cambia en caliente, no hay
+    nada que cachear); el valor validado se fija una única vez al importar
+    este módulo, más abajo, para que `chequeo_de_arranque` lo lea de un
+    atributo simple del módulo (y los tests lo puedan sustituir con
+    monkeypatch sin tocar el entorno)."""
+    crudo = os.environ.get(VARIABLE_TOPE_CHEQUEO_S, _TOPE_CHEQUEO_S_DEFAULT)
+    try:
+        valor = float(crudo)
+    except (TypeError, ValueError):
+        valor = None
+    if valor is None or not math.isfinite(valor) or valor <= 0:
+        raise IndicesForzadosConfigInvalida(
+            "tope del chequeo de índices forzados inválido (tiene que ser un "
+            f"número finito > 0 en /etc/jax/.env): {VARIABLE_TOPE_CHEQUEO_S}={crudo!r}")
+    return valor
+
+
+TOPE_CHEQUEO_S = cargar_tope_chequeo_s()
 
 _FORCE_INDEX = re.compile(
     r"\bFROM\s+`?(?P<tabla>\w+)`?(?:\s+(?:AS\s+)?(?!FORCE\b)\w+)?\s+FORCE\s+INDEX\s*\((?P<indices>[^)]*)\)",
@@ -156,11 +196,21 @@ async def chequeo_de_arranque(obtener_pool) -> None:
     fail-soft: ni el escaneo del código ni la consulta pueden tumbar el
     arranque -- este aviso existe para que se vea un problema, no para
     crear otro."""
+    fase = "escanear el código en busca de FORCE INDEX"
+
     async def _chequear():
+        nonlocal fase
         forzados = await asyncio.to_thread(indices_forzados)
-        await avisar_indices_forzados_ausentes(await obtener_pool(), forzados)
+        fase = "obtener el pool de la base"
+        pool = await obtener_pool()
+        fase = "consultar information_schema por los índices existentes"
+        await avisar_indices_forzados_ausentes(pool, forzados)
     try:
         await asyncio.wait_for(_chequear(), TOPE_CHEQUEO_S)
+    except TimeoutError:  # el timeout de asyncio.wait_for no trae mensaje propio (MINOR 2: salía "(TimeoutError: )" vacío)
+        logger.error(
+            "arranque: el chequeo de índices forzados no terminó en %ss (colgado en: %s); "
+            "los FORCE INDEX NO quedaron comprobados", TOPE_CHEQUEO_S, fase)
     except Exception as exc:  # fail-soft: aviso de arranque (docstring); el fallo se loguea en ERROR con su tipo, no se traga
         logger.error("arranque: el chequeo de índices forzados falló (%s: %s); "
                      "los FORCE INDEX NO quedaron comprobados", type(exc).__name__, exc)
