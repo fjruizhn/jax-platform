@@ -20,6 +20,12 @@ import { resolvedorDeArchivo } from './resolverClassName.js'
 // proyecto -- verificado: tailwind.config.js no declara `fontSize`, ver
 // resolverClassName.js/botonesSinAreaDeToque.js para el mismo criterio de
 // "no inventar, verificar contra el config real").
+// Límites declarados (auditoría 2026-09-23, hoy sin casos en el árbol):
+// `leading-*` y los valores arbitrarios (`min-h-[24px]`, `py-[5px]`) no se
+// leen: un botón así puede dar un ROJO FALSO (se ve y se corrige), nunca un
+// verde falso. Un className con interpolación (ternario, template literal
+// dinámico) sigue siendo irresoluble y NO se marca: ese sí es un hueco, el
+// mismo de antes de este cambio.
 const LINE_HEIGHT_PX = { 'text-xs': 16, 'text-sm': 20, 'text-base': 24, 'text-lg': 28, 'text-xl': 28 }
 
 // Escala de espaciado de Tailwind: el valor N de una utilidad (`py-N`,
@@ -170,8 +176,15 @@ export function hallazgosEnFuente(codigo, ruta) {
     if (nombre.type !== 'JSXIdentifier' || nombre.name !== 'button') return
     const { texto } = textoDeClassName(nodo.openingElement.attributes)
     if (texto === null) return // sin className, irresoluble, o sin texto -- no se marca
+    // Exime sólo `data-en-linea` sin valor o `data-en-linea={true}`: con
+    // `={false}` o cualquier otro valor NO exime (auditoría 2026-09-23). La
+    // lista de usos la fija botonesConPocoRelleno.test.js: cada exención nueva
+    // aparece en el diff y la revisa una persona.
     const enLinea = nodo.openingElement.attributes.some(
-      (a) => a.type === 'JSXAttribute' && a.name?.name === 'data-en-linea')
+      (a) => a.type === 'JSXAttribute' && a.name?.name === 'data-en-linea' &&
+        (a.value === null ||
+          (a.value.type === 'JSXExpressionContainer' && a.value.expression.type === 'BooleanLiteral' &&
+            a.value.expression.value === true)))
     const alto = altoCalculado(tokensIncondicionales(texto), enLinea)
     if (alto !== null && alto < 24) {
       hallazgos.push(`${ruta}:${nodo.loc?.start.line ?? '?'}: botón de ${alto}px de alto calculado, bajo el mínimo de 24px (WCAG 2.2 2.5.8) -- dale TAMANO_BOTON_ACCION de tema/botones.js`)

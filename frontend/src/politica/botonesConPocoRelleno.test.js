@@ -84,6 +84,12 @@ describe('detector de botones con poco relleno vertical (< 24px calculado)', () 
     expect(hallazgosEnFuente(codigo, 'oracion.jsx')).toEqual([])
   })
 
+  it('data-en-linea={false} (o cualquier valor que no sea true) NO exime', () => {
+    expect(hallazgosEnFuente('<button data-en-linea={false} className="text-xs">x</button>', 'l.jsx')).toHaveLength(1)
+    expect(hallazgosEnFuente('<button data-en-linea="no" className="text-xs">x</button>', 'm.jsx')).toHaveLength(1)
+    expect(hallazgosEnFuente('<button data-en-linea={true} className="text-xs">x</button>', 'n.jsx')).toEqual([])
+  })
+
   it('min-h-6 sin padding alcanza (24px): así se arreglaron los 9 botones-enlace', () => {
     expect(hallazgosEnFuente('<button className="text-xs min-h-6 hover:underline">x</button>', 'k.jsx')).toEqual([])
   })
@@ -117,5 +123,19 @@ describe('todo src sin botones con menos de 24px calculados', () => {
     expect(archivos.length).toBeGreaterThan(40) // verde sobre cero archivos no vale
     const hallazgos = archivos.flatMap((r) => hallazgosEnFuente(readFileSync(new URL(r, raiz), 'utf8'), r))
     expect(hallazgos).toEqual([])
+  })
+
+  // Registro de la excepción "Inline" (auditoría 2026-09-23): `data-en-linea`
+  // saca un botón del detector, así que cada uso tiene que verse. La lista
+  // exacta vive acá; agregar uno obliga a tocar este test, y el diff lo revisa
+  // una persona. politica/ se excluye porque el propio detector lo nombra.
+  const EXCEPCIONES_EN_LINEA = []
+  it('la excepción data-en-linea sólo aparece donde está registrada', () => {
+    const usos = archivos
+      .filter((r) => !r.startsWith('politica'))
+      .flatMap((r) => readFileSync(new URL(r, raiz), 'utf8').split('\n')
+        .map((linea, i) => (linea.includes('data-en-linea') ? `${r}:${i + 1}` : null))
+        .filter(Boolean))
+    expect(usos).toEqual(EXCEPCIONES_EN_LINEA)
   })
 })
