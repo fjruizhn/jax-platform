@@ -334,6 +334,11 @@ export default {
   cargarMas: 'Cargar más',
   pestanaTodos: 'Todos',
   pestanaDescartados: 'Descartados',
+  // 2026-09-22 (cierre de huecos de la revisión final): pestaña "Ocultos" de
+  // Administración → Pipelines descartados y ocultos -- comparte texto con
+  // `sinOcultos`/`pipelinesOcultosColFecha`, pero la etiqueta de la pestaña
+  // en sí no existía (antes esa pantalla no tenía pestañas).
+  pestanaOcultos: 'Ocultos',
   descartadosColFecha: 'Descartado',
   sinDescartados: 'No hay pipelines descartados.',
   descartadosError: 'No se pudo cargar la lista de descartados. Probá de nuevo.',
@@ -343,10 +348,11 @@ export default {
   // falló.
   recuperarError: 'No se pudo recuperar el pipeline. Probá de nuevo.',
   // "Borrar" = ocultar (spec §2): ninguna fila sale de la base, sólo un
-  // superadmin puede restaurarlo (Administración → Pipelines ocultos).
+  // superadmin puede restaurarlo (Administración → Pipelines descartados y
+  // ocultos).
   borrarPipeline: 'Borrar',
   borrarTitulo: 'Borrar pipeline',
-  borrarMensaje: (nombre) => `"${nombre}" deja de verse en cualquier lista, incluida esta. Sólo un superadmin puede restaurarlo desde Administración → Pipelines ocultos.`,
+  borrarMensaje: (nombre) => `"${nombre}" deja de verse en cualquier lista, incluida esta. Sólo un superadmin puede restaurarlo desde Administración → Pipelines descartados y ocultos.`,
   borrarError: 'No se pudo borrar el pipeline. Probá de nuevo.',
 
   detalleTitle: (nombre) => `Detalle — ${nombre}`,
@@ -376,6 +382,22 @@ export default {
   // (modelo_real/costo_usd ausentes ya dicen "desconocido").
   detalleStepDependsOnUnknown: 'Dependencias desconocidas',
   detalleStepNumber: (n) => `Paso ${n}`,
+
+  // Auditoría de descarte en el detalle (2026-09-22, cierre de huecos de la
+  // revisión final, punto 2): PIPELINE_DISCARDED/RECOVERED/HIDDEN/RESTORED
+  // en palabras -- `usuario` es el user_id TAL CUAL viene del backend, sin
+  // resolver un nombre (spec de esta tarea: "no se inventa una búsqueda").
+  auditoriaDescarteTitulo: 'Historial de descarte',
+  auditoriaDescartado: (usuario, fecha) => `Descartado por ${usuario} el ${fecha}`,
+  auditoriaRecuperado: (usuario, fecha) => `Recuperado por ${usuario} el ${fecha}`,
+  auditoriaOcultado: (usuario, fecha) => `Ocultado por ${usuario} el ${fecha}`,
+  auditoriaRestaurado: (usuario, fecha) => `Restaurado por ${usuario} el ${fecha}`,
+  // CRITICAL-1 (fix round 3, revisión adversarial de PR 151): el backend
+  // devuelve `truncado` (LIMITE_AUDITORIA_DESCARTE, api/pipelines.py) desde
+  // la ronda 2, pero nadie lo mostraba -- la sección se quedaba callada en
+  // 50 sin avisar que hay más historia. Dice explícitamente QUÉ significa
+  // (sólo los más recientes), no sólo "hay más".
+  auditoriaDescarteTruncado: 'Sólo se muestran los eventos más recientes; hay más en el historial completo.',
 
   // StepStatus (jax/jacobs/models.py), no el status del pipeline entero
   // (arriba, ETIQUETAS_DE_ESTADO): un paso puede quedar 'skipped' o
@@ -605,7 +627,7 @@ export default {
   adminMemoria: 'Memoria',
   // Fix round 1 (MINOR-7): faltaba en AdminSidebar -- el superadmin entraba
   // por el enlace de BarraUsuario pero no podía volver sin salir de Admin.
-  adminPipelinesOcultos: 'Pipelines ocultos',
+  adminPipelinesOcultos: 'Pipelines descartados y ocultos',
   adminBack: (nombre) => `Volver a ${nombre}`,
 
   // Admin dashboard
@@ -823,17 +845,25 @@ export default {
   adminRepoDeleteMessage: 'El archivo se borra del repositorio y no se puede deshacer.',
   adminRepoSize: (bytes) => bytes < 1024 ? `${bytes}B` : bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`,
 
-  // Administración → Pipelines ocultos (Task 7, spec
-  // 2026-09-22-descartar-pipelines §5): sólo superadmin -- lista de TODOS
-  // los usuarios (a diferencia de la pestaña Descartados, que es sólo la
-  // propia). Restaurar vuelve a `discarded`: reversible, sin confirmación.
-  pipelinesOcultosTitulo: 'Pipelines ocultos',
+  // Administración → Pipelines descartados y ocultos (Task 7, spec
+  // 2026-09-22-descartar-pipelines §5; renombrada 2026-09-22 al cerrar los
+  // dos huecos de la revisión final): sólo superadmin -- las DOS pestañas
+  // (Descartados/Ocultos) muestran a TODOS los usuarios, a diferencia de la
+  // pestaña Descartados DEL HISTORIAL propio (HistorialContenido.jsx), que
+  // es sólo la propia. Restaurar vuelve a `discarded`: reversible, sin
+  // confirmación. Ocultar SÍ pide confirmación (ConfirmacionSuma) -- mismo
+  // criterio que "Borrar" en el historial propio.
+  pipelinesOcultosTitulo: 'Pipelines descartados y ocultos',
   pipelinesOcultosColFecha: 'Oculto',
   pipelinesOcultosError: 'No se pudieron cargar los pipelines ocultos.',
   sinOcultos: 'No hay pipelines ocultos.',
   restaurarPipeline: 'Restaurar',
   restaurarError: 'No se pudo restaurar el pipeline. Probá de nuevo.',
   ocultoDe: (usuario) => `De ${usuario}`,
+  ocultarPipeline: 'Ocultar',
+  ocultarTitulo: 'Ocultar pipeline',
+  ocultarMensaje: (nombre) => `"${nombre}" pasa a la pestaña Ocultos: deja de verse en cualquier otra lista. Sólo un superadmin puede restaurarlo desde ahí.`,
+  ocultarError: 'No se pudo ocultar el pipeline. Probá de nuevo.',
 
   // Admin settings
   adminSettingsTitle: 'Configuración del Sistema',

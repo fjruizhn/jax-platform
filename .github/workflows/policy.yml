@@ -899,8 +899,74 @@ jobs:
           //   confirmado en rojo con la misma mutación (13 passed / 1
           //   failed) y en verde restaurando el código. Medido con
           //   `npx vitest run`: 988 passed, 0 fallidos, 95 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 988) {
-              console.error("PISO ROTO: se esperaban 988 tests de vitest CORRIDOS y 0 fallidos.");
+          // 988 -> 1000 (2026-09-22, cierre de los dos huecos de la revisión
+          //   final de Descartar Pipelines): +7 en
+          //   `AdminPipelinesOcultos.test.jsx` (pestañas "Descartados"/
+          //   "Ocultos" -- la de Descartados arranca por defecto, trae los
+          //   descartados de TODOS los usuarios con Recuperar y Ocultar
+          //   [ConfirmacionSuma], la de Ocultos queda igual que antes) +5 en
+          //   `DetallePipeline.test.jsx` (sección de auditoría: pide
+          //   /auditoria-descarte junto con /results, los cuatro tipos en
+          //   palabras con el user_id tal cual viene, respeta el orden del
+          //   backend, sin eventos no se muestra ninguna caja, y un fallo de
+          //   ESA llamada no rompe el resto del detalle). Los 12 nuevos
+          //   vistos en rojo contra el código viejo (la pestaña Descartados
+          //   y la sección de auditoría no existían) antes de implementar.
+          //   `Historial.test.jsx` NO suma al piso -- dos de sus tests
+          //   existentes ("Ver detalle...", "el botón atrás...") se
+          //   ajustaron para encadenar el tercer `mockResolvedValueOnce`
+          //   que ahora pide DetallePipeline (antes sólo /pipelines y
+          //   /results; sin el tercero, `api.get` sin configurar devolvía
+          //   undefined y `.then` explotaba -- confirmado en rojo con el
+          //   mock viejo, verde con el `once` agregado), sin cambiar cuántos
+          //   `it()` tiene el archivo. Medido con `npx vitest run`: 1000
+          //   passed, 0 fallidos, 95 archivos (mismo número de archivos: no
+          //   se agregó ninguno, sólo crecieron dos ya existentes).
+          // 1000 -> 1002 (2026-09-22, fix round 1, revisión adversarial de
+          //   PR 151, BLOCK-1): el test que codificaba el caché roto como
+          //   comportamiento deseado ("sin recargar Descartados") se
+          //   RENOMBRÓ a una aserción real ("la primera visita a Ocultos
+          //   trae su propia lista", sin cambiar de número) y se agregaron
+          //   +2 -- "Ocultar invalida Ocultos" y "Restaurar invalida
+          //   Descartados", cada uno visitando la pestaña destino DOS
+          //   veces (la primera consume la carga inicial) para probar la
+          //   invalidación de verdad, no sólo el primer visitado. Vistos
+          //   en rojo contra la versión con el idioma viejo ("la lista
+          //   está vacía" como señal de recarga) antes de implementar las
+          //   banderas `necesitaRecarga*` -- 2 failed / 12 passed,
+          //   confirmado, y otra vez en verde con el fix. También se
+          //   corrigió un falso positivo del propio detector de tokens
+          //   (`tema/contraste.test.js`): dos comentarios nuevos escribían
+          //   "PR#151", que el escaneo de hex de ese test lee como el
+          //   color `#151` -- se reescribió "PR 151" (con espacio), sin
+          //   tocar el detector (es un defecto de MI texto, no del
+          //   escaneo). Medido con `npx vitest run`: 1002 passed, 0
+          //   fallidos, 95 archivos.
+          // 1002 -> 1003 (2026-09-22, fix round 2, revisión adversarial de
+          //   PR 151, MINOR-A): +1 en AdminPipelinesOcultos.test.jsx --
+          //   "si Ocultos falla, cambiar de pestaña y volver reintenta (no
+          //   sólo el botón Reintentar)". La bandera `necesitaRecargaOcultos`
+          //   se ponía en `false` ANTES del pedido; si el pedido fallaba,
+          //   quedaba consumida igual y una vuelta a la pestaña no
+          //   reintentaba. Visto en rojo contra el `.catch(() =>
+          //   setErrorOcultos(true))` sin restaurar la bandera (1 failed)
+          //   antes de mover la restauración al `.catch()`. Medido con
+          //   `npx vitest run`: 1003 passed, 0 fallidos, 95 archivos.
+          // 1003 -> 1006 (2026-09-22, fix round 3, revisión adversarial de
+          //   PR 151, CRITICAL-1): +3 en DetallePipeline.test.jsx -- el
+          //   campo `truncado` que el backend devuelve desde la ronda 2
+          //   (MAJOR-A/B) nadie lo leía: sin i18n, sin render condicional,
+          //   la sección se quedaba callada en 50 sin avisar. Agregada
+          //   la clave `auditoriaDescarteTruncado` (es/en) y el aviso
+          //   condicional: "con truncado=true, muestra un aviso...",
+          //   "con truncado=false, NO muestra el aviso", "sin eventos,
+          //   aunque truncado viniera true, no muestra ninguna caja"
+          //   (dato inconsistente del backend, por si acaso). Vistos en
+          //   rojo contra el componente sin la bandera/el render (1
+          //   failed) antes de implementar. Medido con `npx vitest run`:
+          //   1006 passed, 0 fallidos, 95 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1006) {
+              console.error("PISO ROTO: se esperaban 1006 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -2747,7 +2813,84 @@ jobs:
           #   propio mensaje del skip; no aplica acá). PISO_PASSED se queda
           #   en 2622 -- el `--ignore` no resta ningún test PASSED, sólo saca
           #   3 SKIPPED de la cuenta.
-          PISO_PASSED = 2622
+          # 2622 -> 2634 (2026-09-22, cierre de los dos huecos de la revisión
+          #   final de Descartar Pipelines): +4 en
+          #   `test_pipelines_descartados_admin.py` (archivo nuevo -- GET
+          #   /api/admin/pipelines/descartados: 403 a un no-superadmin, trae
+          #   los descartados de TODOS los usuarios con paginación limite+1,
+          #   y su EXPLAIN) +8 en `test_pipelines_auditoria_descarte.py`
+          #   (archivo nuevo -- GET /api/pipelines/{id}/auditoria-descarte:
+          #   404 a un pipeline ajeno, sólo los 4 tipos de evento ordenados
+          #   del más nuevo al más viejo, lista vacía sin eventos, un hidden
+          #   sigue dando 404 a su dueño no-superadmin, 200 del superadmin
+          #   sobre el pipeline de OTRO, 400 con un id de forma inválida, y
+          #   su EXPLAIN). Los 12 vistos en rojo contra el código viejo (las
+          #   dos rutas no existían) antes de implementar; 3 mutaciones
+          #   manuales confirmaron que los guards son los que sostienen el
+          #   verde, no el request en sí (status='discarded' -> IN
+          #   ('discarded','hidden'), la rama superadmin de
+          #   auditoria_descarte quitada, el filtro event_type IN (...)
+          #   quitado -- las tres cayeron en rojo, revertidas después de
+          #   confirmarlo). MEDICIÓN, mismo criterio de siempre que este
+          #   archivo documenta (no se suma el passed crudo local, que
+          #   arrastra drift ajeno de otras ramas ya mergeadas): el árbol de
+          #   ESTA rama, MISMO comando de arriba, sin los 2 archivos nuevos
+          #   -> 2631 passed / 2 skipped (drift de +9 sobre el 2622
+          #   declarado, previo a esta tarea, no investigado -- no es de
+          #   esta tarea); CON los 2 archivos nuevos -> 2643 passed / 2
+          #   skipped (mismos 2 skips, el CREATE USER de siempre fuera de
+          #   CI). Delta propio verificado: +12 (2643 - 2631). Piso nuevo =
+          #   piso DECLARADO (2622) + delta propio (+12) = 2634 -- no los
+          #   2643 crudos, que premiarían el drift de +9 que no es de este
+          #   cierre.
+          # 2634 -> 2635 (2026-09-22, fix round 1, revisión adversarial de
+          #   PR#151, MAJOR-1): el EXPLAIN test original de
+          #   test_pipelines_auditoria_descarte.py (afirmaba el nombre del
+          #   índice forzado) se REEMPLAZÓ por dos tests --
+          #   test_auditoria_descarte_no_escanea_todo_el_pipeline
+          #   (Handler_read real, no el nombre del índice) y
+          #   test_auditoria_descarte_topa_en_el_limite_y_muestra_los_mas_nuevos
+          #   (el `LIMITE_AUDITORIA_DESCARTE` nuevo) -- delta neto +1.
+          #   test_pipelines_descartados_admin.py no sumó tests (MAJOR-3
+          #   cambió aserciones, no agregó ni quitó casos). Medido en el
+          #   árbol de esta rama, MISMO comando de arriba: sin los 2
+          #   archivos de esta tarea -> 2631 passed / 2 skipped (mismo
+          #   drift ajeno de +9 ya documentado, sin cambio); CON los 2
+          #   archivos -> 2644 passed / 2 skipped. Delta propio verificado:
+          #   +13 (2644 - 2631). Piso nuevo = piso DECLARADO (2622) + delta
+          #   propio (+13) = 2635.
+          # 2635 -> 2637 (2026-09-22, fix round 2, revisión adversarial de
+          #   PR 151, MAJOR-A/B): +2 en test_pipelines_auditoria_descarte.py
+          #   -- test_auditoria_descarte_acota_incluso_con_miles_de_eventos_de_auditoria
+          #   (Handler_read acotado con 5.000 eventos DE AUDITORÍA sembrados,
+          #   el escenario real que describió el revisor, no sólo ruido
+          #   STEP_FAILED) y test_auditoria_descarte_sin_llegar_al_limite_truncado_es_false
+          #   (complemento del test de `truncado` ya existente, que sólo
+          #   probaba el caso `True`). test_pipelines_descartados_admin.py
+          #   no sumó tests (MAJOR-C cambió el cálculo de `limite`, no
+          #   agregó casos). Medido en el árbol de esta rama, MISMO comando
+          #   de arriba: sin los 2 archivos -> 2631 passed / 2 skipped
+          #   (mismo drift ajeno de +9, sin cambio); CON los 2 archivos ->
+          #   2646 passed / 2 skipped. Delta propio verificado: +15 (2646 -
+          #   2631). Piso nuevo = piso DECLARADO (2622) + delta propio
+          #   (+15) = 2637.
+          # 2637 -> 2639 (2026-09-22, fix round 3, revisión adversarial de
+          #   PR 151, MAJOR-2): +2 en test_pipelines_auditoria_descarte.py
+          #   -- test_auditoria_descarte_con_ruido_mas_nuevo_no_escanea_
+          #   el_pipeline (Handler_read acotado con 20 filas de auditoría +
+          #   2.000 de ruido MÁS NUEVO, el escenario exacto que el revisor
+          #   describió como sin cobertura) y
+          #   test_auditoria_del_dueno_trae_los_cuatro_tipos_los_cuatro
+          #   (ningún test sembraba los CUATRO tipos a la vez -- una
+          #   mutación real, saltear PIPELINE_RESTORED del loop de
+          #   auditoria_descarte, pasaba TODA la suite sin este test,
+          #   confirmado en rojo antes de agregarlo). Medido en el árbol de
+          #   esta rama, MISMO comando de arriba: sin los 2 archivos ->
+          #   2631 passed / 2 skipped (mismo drift ajeno de +9, sin
+          #   cambio); CON los 2 archivos -> 2648 passed / 2 skipped. Delta
+          #   propio verificado: +17 (2648 - 2631). Piso nuevo = piso
+          #   DECLARADO (2622) + delta propio (+17) = 2639.
+          PISO_PASSED = 2639
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
