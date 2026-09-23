@@ -206,11 +206,22 @@ _SIN_ACCESO_VALIDO = {
 
 
 def _ruta_sola():
-    """La ruta real con su dependencia de auth, SIN el middleware: su 401 es
-    la referencia."""
+    """La ruta real con su dependencia de auth, SIN el middleware de subidas:
+    su 401 es la referencia.
+
+    Envuelta en el MISMO CORSMiddleware de main.app (su configuración real, no
+    una copia): en producción la ruta y el middleware responden los dos por
+    dentro de CORS, y lo que se compara es lo que ve el cliente. Starlette
+    1.7.0 (2026-09-23) agrega `Vary: Origin` a toda respuesta CORS; con una
+    referencia sin CORS el test comparaba dos pilas distintas y se rompió
+    sin que el middleware hubiera cambiado."""
     import api.upload as upload_mod
+    import main
+    from starlette.middleware.cors import CORSMiddleware
     app = FastAPI()
     app.include_router(upload_mod.router)
+    [cors] = [m for m in main.app.user_middleware if m.cls is CORSMiddleware]
+    app.add_middleware(cors.cls, *cors.args, **cors.kwargs)
     return app
 
 

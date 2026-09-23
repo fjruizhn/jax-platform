@@ -62,7 +62,7 @@ Requisitos verificados contra el entorno real de desarrollo:
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt   # versiones exactas de producción
 # crear tu propio archivo de entorno con credenciales de DB/proveedor --
 # mismas variables que espera el repo jax
 uvicorn main:app --reload
