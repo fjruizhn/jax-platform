@@ -88,11 +88,11 @@ export default function GrupoDeHechos({
         {sinVerificarIds.length > 0 && (
           <div className="flex items-center gap-2 flex-shrink-0">
             <button type="button" onClick={() => onSeleccionarTodos(sinVerificarIds)}
-              className="text-xs text-acento-texto hover:underline">
+              className="text-xs min-h-6 text-acento-texto hover:underline">
               {t.memoria.seleccionarTodos}
             </button>
             <button type="button" onClick={() => onSeleccionarNinguno(sinVerificarIds)}
-              className="text-xs text-texto-tenue hover:underline">
+              className="text-xs min-h-6 text-texto-tenue hover:underline">
               {t.memoria.seleccionarNinguno}
             </button>
             <button

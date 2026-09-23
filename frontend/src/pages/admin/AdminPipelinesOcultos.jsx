@@ -365,7 +365,7 @@ export default function AdminPipelinesOcultos() {
                         <button
                           type="button"
                           onClick={() => restaurar(p.pipeline_id)}
-                          className="text-xs font-semibold text-acento-texto hover:underline"
+                          className="text-xs min-h-6 font-semibold text-acento-texto hover:underline"
                         >
                           {t.restaurarPipeline}
                         </button>

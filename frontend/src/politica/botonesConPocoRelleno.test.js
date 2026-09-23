@@ -66,8 +66,26 @@ describe('detector de botones con poco relleno vertical (< 24px calculado)', () 
     expect(hallazgosEnFuente('<button className="py-0.5 px-2">x</button>', 'f.jsx')).toEqual([])
   })
 
-  it('NO marca una clase de padding SÓLO en variante (condicional, no garantiza nada)', () => {
-    expect(hallazgosEnFuente('<button className="text-xs sm:py-2">x</button>', 'g.jsx')).toEqual([])
+  it('SÍ marca un padding que existe SÓLO en variante: en la pantalla base no hay relleno (2026-09-23)', () => {
+    // `sm:py-2` no garantiza nada: en un celular (bajo `sm`) el botón mide
+    // 16px. Antes esto quedaba sin marcar, junto con todo botón sin padding.
+    expect(hallazgosEnFuente('<button className="text-xs sm:py-2">x</button>', 'g.jsx')).toHaveLength(1)
+  })
+
+  it('SÍ marca un botón-enlace suelto sin padding ni alto (el caso de "Restaurar", 16px)', () => {
+    const codigo = '<td><button className="text-xs font-semibold hover:underline">Restaurar</button></td>'
+    expect(hallazgosEnFuente(codigo, 'ocultos.jsx')).toEqual([
+      'ocultos.jsx:1: botón de 16px de alto calculado, bajo el mínimo de 24px (WCAG 2.2 2.5.8) -- dale TAMANO_BOTON_ACCION de tema/botones.js',
+    ])
+  })
+
+  it('NO marca un botón sin padding que DECLARA la excepción "Inline" de WCAG con data-en-linea', () => {
+    const codigo = '<p>Si no la recuerdas, <button data-en-linea className="text-xs hover:underline">pedí otra</button>.</p>'
+    expect(hallazgosEnFuente(codigo, 'oracion.jsx')).toEqual([])
+  })
+
+  it('min-h-6 sin padding alcanza (24px): así se arreglaron los 9 botones-enlace', () => {
+    expect(hallazgosEnFuente('<button className="text-xs min-h-6 hover:underline">x</button>', 'k.jsx')).toEqual([])
   })
 
   it('NO marca cuando p-N Y py-N/pt-N/pb-N aparecen juntos (ambiguo: no se adivina cuál gana)', () => {
