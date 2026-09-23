@@ -21,7 +21,8 @@
 # coincidan.
 #
 # SUBIDAS DESDE EL CONGELADO (cada una con su PR, su prueba y su carga medida):
-#   2026-09-23  starlette 1.3.1 -> 1.7.0 (jax-platform, PR deps/starlette-1.7.0).
+#   2026-09-23  starlette 1.3.1 -> 1.7.0 (PR deps/starlette-1.7.0; carga en
+#               docs/carga-starlette-1.7.0-2026-09-23.md: sin degradación sobre el ruido).
 #
 # aiosmtplib: instalado en producción pero RETIRADO de requirements.txt a
 # propósito (ningún código lo importa; tests/test_hallazgos_limpieza.py). Queda
