@@ -21,12 +21,28 @@ verdadera.
 """
 import secrets
 import uuid
+import zlib
 
 import bcrypt
 
 from auth.jwt import create_access_token, create_refresh_token
 
 _CACHE: dict[tuple[str, str, str], str] = {}
+
+
+def _tenant_db_id(tenant_id: str | int) -> int:
+    """Return the numeric tenant identifier represented by a test fixture value.
+
+    Production accepts only the DB-backed numeric relationship.  Older tests
+    used descriptive labels solely to keep their fixture namespaces distinct;
+    translate those labels deterministically before both creating the identity
+    and signing its token.  Numeric IDs are kept verbatim so cross-tenant
+    tests can state their real database scopes directly.
+    """
+    try:
+        return int(tenant_id)
+    except (TypeError, ValueError):
+        return 100_000 + (zlib.crc32(str(tenant_id).encode("utf-8")) % 900_000)
 
 
 async def sql(consulta, args=(), fetch=False):
@@ -75,12 +91,13 @@ async def _obtener_o_crear(etiqueta, role, tenant_id):
     MariaDB.  Test labels are not tenant authority, so callers that exercise
     another tenant must create an actual numeric tenant and a user in it.
     """
-    tenant_id = int(tenant_id)
+    tenant_id = _tenant_db_id(tenant_id)
     await sql(
         "INSERT INTO jax_tenants (tenant_id, name, plan, status) VALUES (%s, %s, 'test', 'active') "
         "ON DUPLICATE KEY UPDATE status = 'active'",
         (tenant_id, f"test-tenant-{tenant_id}"))
-    email = f"test-ident-{etiqueta}-{role}-t{tenant_id}@example.invalid"
+    tenant_suffix = "" if tenant_id == 1 else f"-t{tenant_id}"
+    email = f"test-ident-{etiqueta}-{role}{tenant_suffix}@example.invalid"
     filas = await sql("SELECT user_id FROM jax_users WHERE email = %s", (email,), True)
     if filas:
         user_id = filas[0][0]
@@ -100,6 +117,7 @@ def uid(client, etiqueta, role="operator", tenant_id="1"):
 
 
 def token_de(client, etiqueta, role="operator", tenant_id="1"):
+    tenant_id = str(_tenant_db_id(tenant_id))
     return create_access_token(uid(client, etiqueta, role, tenant_id), tenant_id, role)
 
 
