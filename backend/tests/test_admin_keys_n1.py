@@ -9,7 +9,7 @@ import aiomysql
 import pytest
 
 
-TENANT_ID = "test-admin-keys-tenant"
+TENANT_ID = "1"  # DB-backed tenant of the authenticated fixture user.
 
 
 def _superadmin_headers(client):

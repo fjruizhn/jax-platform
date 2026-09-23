@@ -2,7 +2,7 @@ from tests.identidades import cabeceras
 import httpx
 
 
-TENANT_ID = "test-dashboard-pooling-tenant"
+TENANT_ID = "1"  # DB-backed tenant of the authenticated fixture user.
 
 
 def _superadmin_headers(client):

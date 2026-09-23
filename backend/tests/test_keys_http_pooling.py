@@ -2,7 +2,7 @@ from tests.identidades import cabeceras
 import api.admin.keys as keys_module
 import http_client
 
-TENANT_ID = "test-keys-pooling-tenant"
+TENANT_ID = "1"  # DB-backed tenant of the authenticated fixture user.
 
 
 def _superadmin_headers(client):

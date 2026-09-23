@@ -8,7 +8,7 @@ import pytest
 from db.connection import get_pool
 
 ETIQUETA = "pipelines-pooling"
-TENANT_ID = "test-pipelines-pooling-tenant"
+TENANT_ID = "1"  # DB-backed tenant of the authenticated fixture user.
 
 
 def _headers(client):

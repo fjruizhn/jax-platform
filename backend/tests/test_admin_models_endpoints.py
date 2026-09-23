@@ -7,7 +7,7 @@ import model_catalog
 from auth.jwt import create_access_token
 
 USER_ID = "1"  # jax_users.user_id real (unico seed en jax_memory_test) — approve_proposal hace int(user.user_id) y escribe approved_by/decided_by, FK real contra jax_users
-TENANT_ID = "test-admin-models-tenant"
+TENANT_ID = "1"  # DB-backed tenant of user_id=1.
 
 
 def _superadmin_headers():
