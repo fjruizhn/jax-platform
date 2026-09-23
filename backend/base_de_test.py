@@ -554,7 +554,7 @@ def _bootstrap_jax_schema_para_base_de_test(nombre: str) -> None:
     env["MYSQL_PWD"] = os.environ.get("JAX_DB_PASSWORD", "")
     result = subprocess.run(
         [
-            "mariadb",
+            "mysql",
             "--host", os.environ["JAX_DB_HOST"],
             "--port", os.environ["JAX_DB_PORT"],
             "--user", os.environ.get("JAX_DB_USER", ""),
