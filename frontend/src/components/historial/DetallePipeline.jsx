@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import api from '../../api/client'
-import { useI18n } from '../../i18n/index.jsx'
+import { useI18n, localeFor } from '../../i18n/index.jsx'
 import { colorToken, tokenDeFaceta } from '../../tema/tokens'
 import { TAMANO_MINIMO_TOQUE } from '../../tema/botones'
 import AlertaError from '../AlertaError'
@@ -27,6 +27,25 @@ function BloqueLargo({ resumen, children }) {
       </pre>
     </details>
   )
+}
+
+// 2026-09-22 (cierre de los dos huecos de la revisión final de Descartar
+// Pipelines, punto 2): PIPELINE_DISCARDED/RECOVERED/HIDDEN/RESTORED en
+// palabras -- hasta hoy sólo se leían con `mysql` a mano. `user_id` se
+// muestra TAL CUAL viene del backend (payload de jacobs_events): no se
+// inventa una búsqueda de nombre (spec de esta tarea, punto 2, último ítem).
+const _TEXTO_DE_EVENTO_AUDITORIA = {
+  PIPELINE_DISCARDED: 'auditoriaDescartado',
+  PIPELINE_RECOVERED: 'auditoriaRecuperado',
+  PIPELINE_HIDDEN: 'auditoriaOcultado',
+  PIPELINE_RESTORED: 'auditoriaRestaurado',
+}
+
+function EventoAuditoria({ evento, t, lang }) {
+  const clave = _TEXTO_DE_EVENTO_AUDITORIA[evento.event_type]
+  if (!clave) return null // tipo que esta versión no conoce: no se inventa un texto
+  const fecha = typeof evento.ts === 'number' ? new Date(evento.ts * 1000).toLocaleString(localeFor(lang)) : '—'
+  return <li className="text-xs text-texto-suave">{t[clave](evento.user_id, fecha)}</li>
 }
 
 function Paso({ step, t }) {
@@ -111,12 +130,26 @@ function Paso({ step, t }) {
 // completa, duración y de qué pasos dependía, por paso -- lo que hoy sólo se
 // ve una vez, volcado al chat, antes de irse hacia arriba para siempre.
 export default function DetallePipeline({ pipelineId, nombre, onClose }) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [estado, setEstado] = useState({ data: null, cargando: true, error: false, notFound: false })
+  // Auditoría de descarte (punto 2, 2026-09-22): estado APARTE, sin
+  // cargando/error propios -- es una sección secundaria del detalle, no un
+  // segundo detalle. Si falla o no hay eventos, la sección simplemente no
+  // se muestra (spec: "si no hay, no se muestra nada, no una caja vacía");
+  // un fallo acá nunca tapa ni compite con el error de /results, que sigue
+  // siendo el único que decide cargando/error/notFound de la pantalla.
+  const [eventosAuditoria, setEventosAuditoria] = useState([])
+  // CRITICAL-1 (fix round 3, revisión adversarial de PR 151): el backend
+  // devuelve `truncado` desde la ronda 2 (MAJOR-A/B, LIMITE_AUDITORIA_
+  // DESCARTE) -- esta pantalla lo descartaba, así que la sección se
+  // quedaba callada en 50 sin avisar que hay más historia.
+  const [auditoriaTruncada, setAuditoriaTruncada] = useState(false)
 
   useEffect(() => {
     let vigente = true
     setEstado({ data: null, cargando: true, error: false, notFound: false })
+    setEventosAuditoria([])
+    setAuditoriaTruncada(false)
     api.get(`/pipelines/${pipelineId}/results`)
       .then(({ data }) => { if (vigente) setEstado({ data, cargando: false, error: false, notFound: false }) })
       .catch((err) => {
@@ -130,6 +163,22 @@ export default function DetallePipeline({ pipelineId, nombre, onClose }) {
         const esNotFound = err?.response?.status === 404
         if (!esNotFound) console.error('DetallePipeline fetch failed', err)
         if (vigente) setEstado({ data: null, cargando: false, error: !esNotFound, notFound: esNotFound })
+      })
+    api.get(`/pipelines/${pipelineId}/auditoria-descarte`)
+      .then(({ data }) => {
+        if (!vigente) return
+        setEventosAuditoria(Array.isArray(data?.eventos) ? data.eventos : [])
+        setAuditoriaTruncada(data?.truncado === true)
+      })
+      .catch((err) => {
+        // Mismo 404 por ownership que /results (misma guardia en el
+        // backend) o cualquier otro fallo: la sección no se muestra, sin
+        // un segundo cartel de error -- ver el comentario de más arriba.
+        if (err?.response?.status !== 404) console.error('DetallePipeline auditoria-descarte fetch failed', err)
+        if (vigente) {
+          setEventosAuditoria([])
+          setAuditoriaTruncada(false)
+        }
       })
     return () => { vigente = false }
   }, [pipelineId])
@@ -167,6 +216,20 @@ export default function DetallePipeline({ pipelineId, nombre, onClose }) {
           <ul className="space-y-3">
             {pasos.map((step) => <Paso key={step.step_index} step={step} t={t} />)}
           </ul>
+
+          {eventosAuditoria.length > 0 && (
+            <div className="mt-4 pt-3 border-t border-borde">
+              <h3 className="text-xs font-semibold text-texto-suave uppercase tracking-wider mb-2">{t.auditoriaDescarteTitulo}</h3>
+              <ul className="space-y-1">
+                {eventosAuditoria.map((evento, i) => (
+                  <EventoAuditoria key={i} evento={evento} t={t} lang={lang} />
+                ))}
+              </ul>
+              {auditoriaTruncada && (
+                <p className="mt-2 text-xs text-texto-tenue">{t.auditoriaDescarteTruncado}</p>
+              )}
+            </div>
+          )}
         </>
       )}
     </div>

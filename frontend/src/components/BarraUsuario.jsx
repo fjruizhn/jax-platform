@@ -185,7 +185,7 @@ export default function BarraUsuario() {
         type="button"
         onClick={() => setMiCuenta(true)}
         title={t.myAccount}
-        className="text-xs text-texto-tenue truncate max-w-[20rem] rounded hover:text-texto transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-foco"
+        className="text-xs min-h-6 text-texto-tenue truncate max-w-[20rem] rounded hover:text-texto transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-foco"
       >
         {t.userLabel}: <span className="text-texto">{user?.email}</span>
       </button>

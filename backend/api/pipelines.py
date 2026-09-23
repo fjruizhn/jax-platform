@@ -1274,6 +1274,172 @@ async def restore_pipeline(pipeline_id: str, user: AuthUser = Depends(require_su
     return await _proxy_descarte(pipeline_id, "restore", user)
 
 
+# 2026-09-22 (cierre de los dos huecos de la revisión final de Descartar
+# Pipelines, punto 2): PIPELINE_DISCARDED/RECOVERED/HIDDEN/RESTORED se
+# escriben en jacobs_events en la MISMA transacción que el CAS (jax,
+# jacobs/routes.py::transicion_descarte), con payload
+# {"user_id", "desde", "a"} -- hasta hoy, ninguna pantalla los mostraba (se
+# leían con `mysql` a mano). Esta consulta trae SÓLO esos cuatro tipos.
+#
+# Fix round 1 (2026-09-22, MAJOR-1, revisión adversarial de PR#151): la
+# versión anterior forzaba `idx_events_pipeline (pipeline_id)`, que es
+# EXACTAMENTE el plan que el Ruling R20 (2026-09-17, ver el comentario de
+# `sql_eventos_de_causa` más arriba) midió como lento -- examina TODOS los
+# eventos del pipeline (~221 medidos, 8,1 ms, p95 147 ms a c=25) para
+# devolver 0-4. `sql_eventos_de_causa` ya resuelve la MISMA forma (filtro
+# por pipeline_id + event_type IN, pocas filas de vuelta) sin `FORCE INDEX`
+# y SIN `ORDER BY` en el SQL -- el orden se hace en Python sobre pocas
+# filas, así el plan no necesita decidir entre "ordenar" y "usar el índice
+# compuesto": deja al optimizador usar `idx_events_pipeline_tipo
+# (pipeline_id, event_type)`, que filtra en el índice ANTES de traer una
+# sola fila, en vez de traer las 221 y descartar 217 en Python. Mismo
+# patrón acá: sin ORDER BY, sin FORCE INDEX. Medido con EXPLAIN +
+# Handler_read reales (tests/test_pipelines_auditoria_descarte.py, mismo
+# ruido de 221 eventos STEP_FAILED que R20): SIN hint, el optimizador ya
+# elige `idx_events_pipeline_tipo` -- type=range, rows(estimado)=4,
+# Handler_read TOTAL=8 para 4 filas devueltas (antes: 204 con el índice
+# forzado). El EXPLAIN test ya NO afirma el nombre del índice ni la
+# ausencia de "Using filesort" -- afirma el Handler_read real, que es lo
+# que de verdad importa (un filesort sobre 4 filas es gratis; scanear 221
+# no lo es, tenga o no la etiqueta "Using filesort").
+#
+# `LIMITE_AUDITORIA_DESCARTE` (fix round 1, MINOR; corregido fix round 2,
+# MAJOR-A/B; corregido OTRA VEZ fix round 3, MAJOR-2, revisión adversarial
+# de PR 151): discard/recover es repetible SIN tope -- un pipeline ciclado
+# miles de veces no puede devolver una respuesta sin cota.
+#
+# La ronda 1 lo cortaba en PYTHON, DESPUÉS de un `fetchall()` sin `LIMIT`
+# en el SQL. La ronda 2 agregó `ORDER BY id DESC LIMIT %s` sobre UNA sola
+# consulta con `event_type IN (...)` -- eso cambió el EJE del costo, y el
+# eje viejo (el que cubría R20) se quedó sin cobertura: medido con ruido
+# MÁS NUEVO que las filas de auditoría (id más alto), el optimizador
+# ELIGE entre dos índices según las estadísticas de la tabla en ese
+# momento -- `idx_events_pipeline_tipo` (bueno, filtra por event_type en
+# el índice) o `idx_events_pipeline` (malo con este SQL: escanea el rango
+# de id completo del pipeline, saltando cada fila que no matchea, hasta
+# juntar el LIMIT o agotar el pipeline). Con pocas filas de auditoría
+# (bajo el LIMIT) y mucho ruido más nuevo, la elección es INESTABLE --
+# el mismo par (20 filas de auditoría, 2.000 de ruido) dio
+# `idx_events_pipeline_tipo` (Handler_read=44) en una corrida e
+# `idx_events_pipeline` (Handler_read=2.021, casi todo el ruido) en otra,
+# sin cambiar el SQL ni los datos, sólo el estado de las estadísticas.
+# Confiar en que el optimizador elija bien es exactamente el error que
+# esta rama ya corrigió una vez (MAJOR-1) -- no se vuelve a confiar en él
+# acá.
+#
+# FIX (round 3): CUATRO consultas, una por `event_type`, en vez de una con
+# `IN (...)`. La ronda 3 dejó esto SIN `FORCE INDEX`, razonando que una
+# igualdad simple de `event_type` (no un `IN (...)`) acotaba el costo con
+# CUALQUIERA de los dos planes -- eso es cierto en promedio, pero no es
+# una COTA: es una observación sobre los casos medidos, no algo que el
+# SQL garantice. El caso disperso lo rompe -- 20 filas de auditoría (5 por
+# tipo) + 2.000 `STEP_FAILED` MÁS NUEVOS: si una consulta cae en
+# `idx_events_pipeline` (que sigue siendo `possible_key`, sin `FORCE
+# INDEX`), escanea hacia atrás filtrando por tipo y NUNCA junta sus 51 --
+# tiene que recorrer el rango completo, ~2.020 lecturas por consulta que
+# cae mal, hasta ~8.080 si las cuatro caen mal -- CUATRO VECES peor que
+# los 2.021 por los que se condenó a la ronda 2. El comentario de más
+# arriba ya deja registrado que la MISMA siembra dio índices distintos en
+# corridas distintas.
+#
+# FIX (round 4, decisión del coordinador): `FORCE INDEX
+# (idx_events_pipeline_tipo)` en `SQL_AUDITORIA_DESCARTE_POR_TIPO`. Esto
+# NO es el mismo error que MAJOR-1 (forzar `idx_events_pipeline`, el
+# índice MALO para esa consulta) -- acá se fuerza el índice CORRECTO para
+# ESTA forma exacta de consulta: con `(pipeline_id, event_type)` más la
+# PK que InnoDB agrega sola a todo índice secundario, una igualdad de
+# `event_type` con `ORDER BY id DESC LIMIT 51` es un recorrido hacia atrás
+# de exactamente 51 entradas del índice -- sin filesort, sin ninguna otra
+# forma de resolverlo que el optimizador tenga que evaluar. Verificado con
+# EXPLAIN + Handler_read en 5-7 corridas repetidas del caso disperso (el
+# que antes era inestable): SIEMPRE `idx_events_pipeline_tipo`, SIEMPRE
+# Handler_read=24 (exacto, no un rango) -- test_auditoria_descarte_con_
+# ruido_mas_nuevo_no_escanea_el_pipeline más abajo. El tope de
+# 4×(limite+1)=204 ya NO es un canario que podría no dispararse -- es una
+# cota real, construida por el plan, no observada por casualidad en los
+# escenarios que se les ocurrió sembrar a los tests.
+#
+# ACOPLAMIENTO DE ESQUEMA (mismo tipo de dependencia que el resto de la
+# rama con `idx_pipelines_visibles`/`idx_pipelines_ocultos`): el dueño de
+# `idx_events_pipeline_tipo` es el repo `jax`, no este -- lo crea
+# `init_tables()` (jax/jacobs/store.py, Ruling R20) y
+# jax/tests/test_jacobs_events_indice_causa_db.py::test_init_tables_crea_
+# idx_events_pipeline_tipo prueba que existe. Un `FORCE INDEX` con un
+# nombre que no existe es un ERROR de MariaDB (1176), no un hint que se
+# ignora -- el `jax` desplegado en producción YA tiene este índice desde
+# el Ruling R20 (2026-09-17, anterior a esta rama), así que no hay un
+# orden de despliegue nuevo que cumplir acá, a diferencia de
+# `idx_pipelines_visibles` (jax#259), que sí es más nuevo que producción.
+#
+# CONCURRENCIA (registrado, no arreglado -- decisión del coordinador,
+# ronda 4): las cuatro consultas corren en la MISMA conexión con
+# autocommit, cada una con su propia vista de lectura -- un discard/
+# recover concurrente ENTRE la primera y la cuarta consulta puede producir
+# una lista de auditoría "partida" (mezcla de estados de antes y de
+# después del cambio). Es cosmético sobre una lectura de auditoría (no
+# sobre una transición con CAS, que sigue siendo atómica en `jax`), pero
+# la consulta ÚNICA de la ronda 2 sí era atómica y esta ya no lo es -- se
+# deja escrito, no se envuelve en una transacción con nivel de aislamiento
+# más fuerte porque el costo (una transacción explícita por cada apertura
+# de detalle) no se justifica para un efecto cosmético en una vista de
+# sólo lectura.
+#
+# Los resultados de las 4 consultas se juntan y ordenan en Python (a lo
+# sumo 4×(limite+1) filas, nunca más) -- se pide `limite+1` A CADA tipo:
+# el top-`limite` global puede tener como máximo `limite` filas de UN
+# solo tipo, así que `limite+1` por tipo alcanza siempre para calcular el
+# top-`limite` real sin perder ninguna fila que debiera entrar.
+LIMITE_AUDITORIA_DESCARTE = 50
+_TIPOS_AUDITORIA_DESCARTE = ("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")
+SQL_AUDITORIA_DESCARTE_POR_TIPO = (
+    "SELECT id, event_type, payload, ts FROM jacobs_events FORCE INDEX (idx_events_pipeline_tipo) "
+    "WHERE pipeline_id=%s AND event_type=%s "
+    "ORDER BY id DESC LIMIT %s"
+)
+
+
+@router.get("/{pipeline_id}/auditoria-descarte")
+async def auditoria_descarte(pipeline_id: str, user: AuthUser = Depends(get_current_user)):
+    # Mismo reparto que recover_pipeline (Task 4): el superadmin no tiene
+    # por qué ser el DUEÑO para auditar -- sólo que el pipeline exista. El
+    # dueño no-superadmin sigue la regla de siempre (_require_pipeline_owner):
+    # un hidden le da 404, igual que a /results y GET/{id}.
+    #
+    # Decisión del coordinador (fix round 1): que la auditoría muestre el
+    # user_id del PROPIO superadmin (por ejemplo, quien ocultó/restauró) es
+    # intencional -- es el punto de una auditoría, no una fuga. No se
+    # redacta ni se reemplaza por un rol genérico.
+    if _es_superadmin(user):
+        await _require_pipeline_exists(pipeline_id)
+    else:
+        await _require_pipeline_owner(pipeline_id, user)
+    pool = await get_pool()
+    filas = []
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for tipo in _TIPOS_AUDITORIA_DESCARTE:
+                await cur.execute(SQL_AUDITORIA_DESCARTE_POR_TIPO,
+                                  (pipeline_id, tipo, LIMITE_AUDITORIA_DESCARTE + 1))
+                filas.extend(await cur.fetchall())
+    # Fusión en Python (fix round 3, MAJOR-2): a lo sumo 4×(limite+1) filas.
+    filas.sort(key=lambda f: f[0], reverse=True)
+    truncado = len(filas) > LIMITE_AUDITORIA_DESCARTE
+    eventos = []
+    for _id, event_type, payload, ts in filas[:LIMITE_AUDITORIA_DESCARTE]:
+        datos = _payload(payload)
+        eventos.append({
+            "event_type": event_type,
+            "user_id": datos.get("user_id"),
+            "desde": datos.get("desde"),
+            "a": datos.get("a"),
+            "ts": ts,
+        })
+    # fix round 2, MAJOR-A/B: una auditoría que se calla en 50 sin decirlo
+    # informa MENOS de lo que pasó -- `truncado` deja explícito que hay más
+    # historia que la que se está mostrando.
+    return {"eventos": eventos, "truncado": truncado}
+
+
 @router.post("/{pipeline_id}/continue/preflight")
 async def continue_preflight(pipeline_id: str, pedido: PedidoDeContinuarPrevuelo,
                              user: AuthUser = Depends(get_current_user)):

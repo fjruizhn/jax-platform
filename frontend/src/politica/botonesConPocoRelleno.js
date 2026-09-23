@@ -20,6 +20,13 @@ import { resolvedorDeArchivo } from './resolverClassName.js'
 // proyecto -- verificado: tailwind.config.js no declara `fontSize`, ver
 // resolverClassName.js/botonesSinAreaDeToque.js para el mismo criterio de
 // "no inventar, verificar contra el config real").
+// Límites declarados (auditoría 2026-09-23, hoy sin casos en el árbol):
+// `leading-*` y los valores arbitrarios (`min-h-[24px]`, `py-[5px]`) no se
+// leen: un botón así puede dar un ROJO FALSO (se ve y se corrige), nunca un
+// verde falso. Un className con interpolación (ternario, template literal
+// dinámico) o con un spread (`{...props}`) sigue siendo irresoluble y NO se
+// marca: ese sí es un hueco, el
+// mismo de antes de este cambio.
 const LINE_HEIGHT_PX = { 'text-xs': 16, 'text-sm': 20, 'text-base': 24, 'text-lg': 28, 'text-xl': 28 }
 
 // Escala de espaciado de Tailwind: el valor N de una utilidad (`py-N`,
@@ -54,7 +61,7 @@ function tokensIncondicionales(texto) {
 
 // Alto calculado de un botón a partir de sus tokens, o null si no se puede
 // calcular con confianza (ver "Límite conocido" de hallazgosEnFuente).
-function altoCalculado(tokens) {
+function altoCalculado(tokens, enLinea = false) {
   // 1. ¿Hay una utilidad de alto explícito (h-N o min-h-N) que YA garantiza
   //    el mínimo por sí sola? Si la hay y alcanza, no hace falta seguir.
   for (const token of tokens) {
@@ -90,7 +97,19 @@ function altoCalculado(tokens) {
   // irresoluble, no se asume relleno cero. La familia que este detector
   // existe para cazar (AdminUsers.jsx, AdminRepository.jsx, ...) siempre
   // tenía un `py-0.5` ESCRITO -- nunca ausencia total de padding.
-  if (pTokens.length === 0 && ptTokens.length === 0 && pbTokens.length === 0 && pyTokens.length === 0) return null
+  //
+  // CAMBIO 2026-09-23 (pendiente 652, revisión del PR 151 de jax-platform): lo de
+  // arriba dejaba pasar en verde los botones-enlace SUELTOS -- "Restaurar" en
+  // una celda de tabla medía 16px y los tres controles de área de toque daban
+  // verde; 9 botones así en Login, BarraUsuario, Memoria, Historial y
+  // Ocultos. Ahora la ausencia de padding cuenta como relleno 0 (cerrado por
+  // defecto), y la excepción "Inline" de WCAG se DECLARA en el botón con
+  // `data-en-linea`: quien lo pone afirma que está dentro de una oración. La
+  // decisión de diseño la toma una persona y queda escrita; el análisis ya no
+  // la adivina a favor.
+  if (pTokens.length === 0 && ptTokens.length === 0 && pbTokens.length === 0 && pyTokens.length === 0) {
+    return enLinea ? null : lineHeight
+  }
   const usaEspecificos = pyTokens.length > 0 || ptTokens.length > 0 || pbTokens.length > 0
   if (pTokens.length > 0 && usaEspecificos) return null // ambiguo, no se adivina
   if (pTokens.length > 1 || pyTokens.length > 1) return null // repetido, ambiguo
@@ -158,7 +177,16 @@ export function hallazgosEnFuente(codigo, ruta) {
     if (nombre.type !== 'JSXIdentifier' || nombre.name !== 'button') return
     const { texto } = textoDeClassName(nodo.openingElement.attributes)
     if (texto === null) return // sin className, irresoluble, o sin texto -- no se marca
-    const alto = altoCalculado(tokensIncondicionales(texto))
+    // Exime sólo `data-en-linea` sin valor o `data-en-linea={true}`: con
+    // `={false}` o cualquier otro valor NO exime (auditoría 2026-09-23). La
+    // lista de usos la fija botonesConPocoRelleno.test.js: cada exención nueva
+    // aparece en el diff y la revisa una persona.
+    const enLinea = nodo.openingElement.attributes.some(
+      (a) => a.type === 'JSXAttribute' && a.name?.name === 'data-en-linea' &&
+        (a.value === null ||
+          (a.value.type === 'JSXExpressionContainer' && a.value.expression.type === 'BooleanLiteral' &&
+            a.value.expression.value === true)))
+    const alto = altoCalculado(tokensIncondicionales(texto), enLinea)
     if (alto !== null && alto < 24) {
       hallazgos.push(`${ruta}:${nodo.loc?.start.line ?? '?'}: botón de ${alto}px de alto calculado, bajo el mínimo de 24px (WCAG 2.2 2.5.8) -- dale TAMANO_BOTON_ACCION de tema/botones.js`)
     }

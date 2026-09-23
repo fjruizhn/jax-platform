@@ -208,12 +208,16 @@ describe('Historial', () => {
     expect(screen.getByTestId('ruta')).toHaveTextContent('/historial')
 
     api.get.mockResolvedValueOnce({ data: RESULTADO_P1 })
+    // 2026-09-22: DetallePipeline pide un TERCER endpoint (auditoría de
+    // descarte) junto con /results -- sin este `once`, esa llamada cae en
+    // el mock sin configurar (undefined) y `.then` explota.
+    api.get.mockResolvedValueOnce({ data: { eventos: [] } })
     const fila = screen.getByText('plan de leyes').closest('tr')
     fireEvent.click(within(fila).getByRole('button', { name: 'Ver detalle' }))
 
     expect(await screen.findByText('Detalle — plan de leyes')).toBeInTheDocument()
     expect(screen.getByTestId('ruta')).toHaveTextContent('/historial/p1')
-    expect(api.get).toHaveBeenLastCalledWith('/pipelines/p1/results')
+    expect(api.get).toHaveBeenCalledWith('/pipelines/p1/results')
   })
 
   it('entrar directo por la URL con :pipelineId abre ese detalle sin pasar por la lista', async () => {
@@ -252,6 +256,9 @@ describe('Historial', () => {
     await screen.findByText('plan de leyes')
 
     api.get.mockResolvedValueOnce({ data: RESULTADO_P1 })
+    // 2026-09-22: tercer endpoint que pide DetallePipeline (ver el test de
+    // arriba, "Ver detalle").
+    api.get.mockResolvedValueOnce({ data: { eventos: [] } })
     const fila = screen.getByText('plan de leyes').closest('tr')
     fireEvent.click(within(fila).getByRole('button', { name: 'Ver detalle' }))
     await screen.findByText('Detalle — plan de leyes')

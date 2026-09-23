@@ -1,0 +1,72 @@
+# Versiones EXACTAS del venv de PRODUCCIÓN (/srv/jax-prod/jax-platform/backend/.venv,
+# Python 3.14.4), congeladas con `pip freeze` el 2026-09-23 contra jax-platform aff1660.
+#
+# POR QUÉ EXISTE. requirements.txt declara rangos (fastapi>=0.115, ...) y CI
+# instalaba lo último que hubiera en PyPI. El 2026-09-23 salió Starlette 1.7.0 y
+# CI la instaló (producción corre 1.3.1): trae "Vary: Origin" en toda respuesta
+# CORS y rompió tests/test_adjuntos_limite_de_subidas.py en cualquier PR, sin que
+# el código hubiera cambiado. CI probaba una versión que producción no corre.
+# Mismo principio que CI con la MariaDB exacta de producción: se prueba lo que
+# corre de verdad.
+#
+# CÓMO SE USA. Restricciones, no requisitos: `pip install -r requirements.txt
+# -c constraints.txt`. Fijan la versión de todo paquete que se instale y no
+# instalan nada por sí solas. CI las aplica en cada `pip install`.
+#
+# CÓMO SE SUBE UNA VERSIÓN. Nunca a mano en un solo lado: se actualiza el venv de
+# producción en un PR que la prueba en CI, y se vuelve a congelar desde ahí:
+#   /srv/jax-prod/jax-platform/backend/.venv/bin/pip freeze
+# tests/test_constraints_de_produccion.py exige que toda dependencia directa de
+# requirements.txt esté fijada acá, y que los pines exactos de los dos archivos
+# coincidan.
+#
+# SUBIDAS DESDE EL CONGELADO (cada una con su PR, su prueba y su carga medida):
+#   2026-09-23  starlette 1.3.1 -> 1.7.0 (PR deps/starlette-1.7.0; carga en
+#               docs/carga-starlette-1.7.0-2026-09-23.md: sin degradación sobre el ruido).
+#
+# aiosmtplib: instalado en producción pero RETIRADO de requirements.txt a
+# propósito (ningún código lo importa; tests/test_hallazgos_limpieza.py). Queda
+# acá porque este archivo refleja el venv tal cual es.
+aiomysql==0.3.2
+aiosmtplib==5.1.2
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.14.2
+bcrypt==5.0.0
+certifi==2026.6.17
+cffi==2.1.0
+click==8.4.2
+cryptography==49.0.0
+ecdsa==0.19.2
+fastapi==0.139.2
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.18
+iniconfig==2.3.0
+packaging==26.2
+pluggy==1.6.0
+psutil==7.2.2
+pyasn1==0.6.4
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+Pygments==2.20.0
+PyMySQL==1.2.0
+pypdf==6.19.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+python-dotenv==1.2.2
+python-jose==3.5.0
+python-multipart==0.0.32
+PyYAML==6.0.3
+rsa==4.9.1
+six==1.17.0
+starlette==1.7.0
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+uvicorn==0.51.0
+uvloop==0.22.1
+watchfiles==1.2.0
+websockets==16.1

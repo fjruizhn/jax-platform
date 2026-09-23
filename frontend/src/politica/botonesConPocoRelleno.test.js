@@ -66,8 +66,32 @@ describe('detector de botones con poco relleno vertical (< 24px calculado)', () 
     expect(hallazgosEnFuente('<button className="py-0.5 px-2">x</button>', 'f.jsx')).toEqual([])
   })
 
-  it('NO marca una clase de padding SÓLO en variante (condicional, no garantiza nada)', () => {
-    expect(hallazgosEnFuente('<button className="text-xs sm:py-2">x</button>', 'g.jsx')).toEqual([])
+  it('SÍ marca un padding que existe SÓLO en variante: en la pantalla base no hay relleno (2026-09-23)', () => {
+    // `sm:py-2` no garantiza nada: en un celular (bajo `sm`) el botón mide
+    // 16px. Antes esto quedaba sin marcar, junto con todo botón sin padding.
+    expect(hallazgosEnFuente('<button className="text-xs sm:py-2">x</button>', 'g.jsx')).toHaveLength(1)
+  })
+
+  it('SÍ marca un botón-enlace suelto sin padding ni alto (el caso de "Restaurar", 16px)', () => {
+    const codigo = '<td><button className="text-xs font-semibold hover:underline">Restaurar</button></td>'
+    expect(hallazgosEnFuente(codigo, 'ocultos.jsx')).toEqual([
+      'ocultos.jsx:1: botón de 16px de alto calculado, bajo el mínimo de 24px (WCAG 2.2 2.5.8) -- dale TAMANO_BOTON_ACCION de tema/botones.js',
+    ])
+  })
+
+  it('NO marca un botón sin padding que DECLARA la excepción "Inline" de WCAG con data-en-linea', () => {
+    const codigo = '<p>Si no la recuerdas, <button data-en-linea className="text-xs hover:underline">pedí otra</button>.</p>'
+    expect(hallazgosEnFuente(codigo, 'oracion.jsx')).toEqual([])
+  })
+
+  it('data-en-linea={false} (o cualquier valor que no sea true) NO exime', () => {
+    expect(hallazgosEnFuente('<button data-en-linea={false} className="text-xs">x</button>', 'l.jsx')).toHaveLength(1)
+    expect(hallazgosEnFuente('<button data-en-linea="no" className="text-xs">x</button>', 'm.jsx')).toHaveLength(1)
+    expect(hallazgosEnFuente('<button data-en-linea={true} className="text-xs">x</button>', 'n.jsx')).toEqual([])
+  })
+
+  it('min-h-6 sin padding alcanza (24px): así se arreglaron los 9 botones-enlace', () => {
+    expect(hallazgosEnFuente('<button className="text-xs min-h-6 hover:underline">x</button>', 'k.jsx')).toEqual([])
   })
 
   it('NO marca cuando p-N Y py-N/pt-N/pb-N aparecen juntos (ambiguo: no se adivina cuál gana)', () => {
@@ -99,5 +123,21 @@ describe('todo src sin botones con menos de 24px calculados', () => {
     expect(archivos.length).toBeGreaterThan(40) // verde sobre cero archivos no vale
     const hallazgos = archivos.flatMap((r) => hallazgosEnFuente(readFileSync(new URL(r, raiz), 'utf8'), r))
     expect(hallazgos).toEqual([])
+  })
+
+  // Registro de la excepción "Inline" (auditoría 2026-09-23): `data-en-linea`
+  // saca un botón del detector, así que cada uso tiene que verse. La lista
+  // exacta vive acá; agregar uno obliga a tocar este test, y el diff lo revisa
+  // una persona. Se excluye SOLO el detector (lo nombra en su código), por
+  // nombre exacto: un prefijo dejaba pasar politicaDePrivacidad.jsx o
+  // cualquier otro archivo de politica/ (auditoría 2026-09-23, ronda 2).
+  const EXCEPCIONES_EN_LINEA = []
+  it('la excepción data-en-linea sólo aparece donde está registrada', () => {
+    const usos = archivos
+      .filter((r) => r.replaceAll('\\', '/') !== 'politica/botonesConPocoRelleno.js')
+      .flatMap((r) => readFileSync(new URL(r, raiz), 'utf8').split('\n')
+        .map((linea, i) => (linea.includes('data-en-linea') ? `${r}:${i + 1}` : null))
+        .filter(Boolean))
+    expect(usos).toEqual(EXCEPCIONES_EN_LINEA)
   })
 })
