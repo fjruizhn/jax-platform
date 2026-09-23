@@ -29,6 +29,20 @@ def test_jax_owned_003_hook_is_the_only_project_authority_ddl_source():
     assert "jax_project_scope" not in inspect.getsource(migrations.run_migrations)
 
 
+def test_jax_owned_b9_core_001_002_are_loaded_in_tracked_order_not_copied():
+    """The platform runner executes the reviewed JAX core DDL before 003."""
+    statements = migrations._jax_b9_core_migration_statements()
+
+    assert "CREATE TABLE IF NOT EXISTS memory_objects" in statements[0]
+    assert any("CREATE TABLE IF NOT EXISTS memory_revision_payloads" in sql for sql in statements)
+    assert any("CREATE TRIGGER no_update_memory_events" in sql for sql in statements)
+    runner = inspect.getsource(migrations.run_migrations)
+    assert "_apply_jax_b9_core_migrations(cur)" in runner
+    assert runner.index("_apply_jax_b9_core_migrations(cur)") < runner.index(
+        "_apply_jax_project_authority_migration(cur)"
+    )
+
+
 def test_project_authority_hook_requires_configured_jax_source(monkeypatch):
     monkeypatch.delenv("JAX_REPO_PATH", raising=False)
     with pytest.raises(RuntimeError, match="JAX_REPO_PATH"):
@@ -44,20 +58,27 @@ async def _schema_snapshot():
             await cur.execute(
                 "SELECT TABLE_NAME FROM information_schema.TABLES "
                 "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN "
-                "('jax_project_scope','jax_project_membership','jax_project_membership_event')"
+                "('memory_objects','memory_revisions','memory_provenance','memory_events',"
+                "'memory_projections','memory_revision_payloads','memory_legacy_bindings',"
+                "'embedding_spaces','embedding_generations','jax_project_scope',"
+                "'jax_project_membership','jax_project_membership_event')"
             )
             tables = {row[0] for row in await cur.fetchall()}
             await cur.execute(
                 "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS "
                 "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN "
-                "('jax_project_scope','jax_project_membership','jax_project_membership_event')"
+                "('memory_objects','memory_revisions','memory_provenance','memory_events',"
+                "'memory_projections','memory_revision_payloads','memory_legacy_bindings',"
+                "'embedding_spaces','embedding_generations','jax_project_scope',"
+                "'jax_project_membership','jax_project_membership_event')"
             )
             columns = {(row[0], row[1]) for row in await cur.fetchall()}
             await cur.execute(
                 "SELECT TRIGGER_NAME FROM information_schema.TRIGGERS "
                 "WHERE TRIGGER_SCHEMA = DATABASE() AND TRIGGER_NAME IN "
                 "('no_update_jax_project_membership_event',"
-                "'no_delete_jax_project_membership_event')"
+                "'no_delete_jax_project_membership_event','no_update_memory_events',"
+                "'no_delete_memory_events')"
             )
             triggers = {row[0] for row in await cur.fetchall()}
     return tables, columns, triggers
@@ -69,6 +90,15 @@ def test_supported_runner_applies_003_and_expected_schema_is_not_drifted(client)
     tables, columns, triggers = client.portal.call(_schema_snapshot)
 
     assert tables == {
+        "memory_objects",
+        "memory_revisions",
+        "memory_provenance",
+        "memory_events",
+        "memory_projections",
+        "memory_revision_payloads",
+        "memory_legacy_bindings",
+        "embedding_spaces",
+        "embedding_generations",
         "jax_project_scope",
         "jax_project_membership",
         "jax_project_membership_event",
@@ -87,8 +117,15 @@ def test_supported_runner_applies_003_and_expected_schema_is_not_drifted(client)
         ("jax_project_membership_event", "actor_principal"),
         ("jax_project_membership_event", "request_id"),
         ("jax_project_membership_event", "trace_id"),
+        ("memory_objects", "memory_id"),
+        ("memory_revisions", "project_id"),
+        ("memory_events", "actor_type"),
+        ("memory_events", "request_id"),
+        ("memory_revision_payloads", "revision_id"),
     }.issubset(columns)
     assert triggers == {
         "no_update_jax_project_membership_event",
         "no_delete_jax_project_membership_event",
+        "no_update_memory_events",
+        "no_delete_memory_events",
     }
