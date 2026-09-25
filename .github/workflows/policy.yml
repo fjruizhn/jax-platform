@@ -1273,6 +1273,38 @@ jobs:
         # para detectar la DB caida).
         run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
 
+      - name: Diagnóstico de pruebas fallidas (sin contenido de excepciones)
+        if: failure()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import xml.etree.ElementTree as ET
+
+          report = Path("junit-db.xml")
+          if not report.exists():
+              print("JUnit de la suite backend no disponible")
+          else:
+              def safe_identifier(value):
+                  # Parametrized test IDs and exception messages can contain
+                  # user data. Emit only static Python identifiers.
+                  value = (value or "").split("[", 1)[0]
+                  return value if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9.]*", value) else "unknown"
+
+              count = 0
+              for case in ET.parse(report).getroot().iter("testcase"):
+                  failure = case.find("failure")
+                  if failure is None:
+                      failure = case.find("error")
+                  if failure is None:
+                      continue
+                  name = safe_identifier(case.get("classname")) + "." + safe_identifier(case.get("name"))
+                  kind = safe_identifier(failure.get("type"))
+                  print(f"::error::{name}: {kind}")
+                  count += 1
+              print(f"JUnit failed/error testcases: {count}")
+          PY
+
       - name: Piso -- el archivo ignorado sigue pudiendo colectarse (fix round 1, MINOR-2)
         # El --ignore de arriba saca test_carga_indice_pipelines_del_usuario.py
         # de la cuenta de skips, pero TAMBIÉN lo saca de la vista de CI --
