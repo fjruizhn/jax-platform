@@ -7,6 +7,7 @@
 - JAX serializa el contenido ordinario de memoria como dato dentro de `PromptMemoryContext.render()`, preservando los encabezados de confianza que genera el código. HEAD de JAX publicado para la pareja prevista: `714be57322d2389ccf804d7666b49689890469c4`.
 - Web Chat sigue usando ese serializador compartido antes de enviar el prompt a los transportes del modelo. En jax-platform, `efb4447da3da4130b828b28f7ceb697eb3e0e2f5` añadió `test_b9_aud_002_memory_payload_cannot_form_prompt_trust_sections` para fijar el límite estructural. La prueba falló contra el serializador previo y pasó con el actualizado; el conjunto local de pruebas de chat terminó con 37 passed y 12 skipped.
 - `046ce8ac54696800307ae95a0f4e95a834a132de` añadió al job backend con DB un diagnóstico de nombres de pruebas fallidas y tipos de excepción obtenidos del JUnit existente. No modifica la ejecución ni los umbrales de CI.
+- En `20c7effa090795a180161c4846cc69d4eabfbdb8`, el workflow `push` terminó verde (7/7 jobs), mientras el workflow `pull_request` falló en `backend-tests-con-db` por `test_el_cursor_del_usuario_da_las_mismas_paginas_que_offset_con_empates_y_null`, ajeno a B9. Se registra como resultado de CI, sin atribuirle causa ni alterar esa prueba.
 
 **Lección técnica:** el límite de confianza debe imponerse al serializar la memoria compartida; Web Chat debe consumir ese único resultado en todos sus transportes. Una regresión del prompt compuesto comprueba que el límite llega hasta el punto de envío.
 
