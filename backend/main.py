@@ -72,6 +72,7 @@ from db.connection import get_pool, close_pool
 from http_client import get_http_client, close_http_client
 from db.migrations import run_migrations
 from db.seed import run_seed
+from db import indices_forzados
 from jax_engine.state import engine_state
 from jax_engine.events import event_bus
 from jax_engine.owner_cleanup import start_owner_file_cleanup
@@ -164,6 +165,12 @@ async def lifespan(app: FastAPI):
     # Ruling R16 (2026-09-17): nombra en ERROR cada ajuste ilegible (p.ej. tras
     # cambiar ACCESS_EXPIRE_SECONDS o MAX_PARALLEL_PIPELINES); no aborta.
     await ajustes.avisar_claves_ilegibles()
+    # 2026-09-23: cada índice que el código fuerza con FORCE INDEX (lista
+    # sacada del propio código, db/indices_forzados.py) tiene que existir, o
+    # la vista que lo usa da 500 (error 1176). Los crea jax, no este repo:
+    # un ERROR por índice ausente, sin tumbar el arranque (todo el chequeo
+    # es fail-soft adentro de chequeo_de_arranque).
+    await indices_forzados.chequeo_de_arranque(get_pool)
     await run_seed()
     await engine_state.cargar_nombres_de_facetas()
     engine_state.start_background_tasks()

@@ -30,7 +30,8 @@ SQL_LLAVES = (
     "FROM provider p WHERE p.auth_type = 'api_key' AND p.status = 'active'"
 )
 # A-49: total de completados (spec: status='completed', sin ventana). Índice
-# idx_pipelines_status, creado por jax/jacobs/store.py::init_tables().
+# con prefijo status (hoy idx_pipelines_status / idx_pipelines_ocultos),
+# creados por jax/jacobs/store.py::init_tables().
 SQL_PIPELINES_COMPLETADOS = "SELECT COUNT(*) FROM jacobs_pipelines WHERE status = 'completed'"
 # Task 15 R12(c) (2026-09-16): la carga G midio `ALL` sobre jax_users.
 # Rango sobre idx_jax_users_locked_until (db/migrations.py::
