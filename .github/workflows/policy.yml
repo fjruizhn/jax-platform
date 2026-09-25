@@ -1216,9 +1216,9 @@ jobs:
       - name: Traer el repo jax (fuente de verdad del esquema de Jacobs y B9)
         working-directory: .
         # B9 migration 003 is JAX-owned and loaded from JAX_REPO_PATH by the
-        # platform's existing migration runner. CI must test the paired JAX
-        # feature head, not the default branch which intentionally lacks it.
-        run: git clone --depth=1 --branch phase1/shared-memory-integration https://github.com/fjruizhn/Jax.git /tmp/jax
+        # platform's existing migration runner. JAX master contains B9 after
+        # JAX #269, so CI tests the normal integration source.
+        run: git clone --depth=1 --branch master https://github.com/fjruizhn/Jax.git /tmp/jax
 
       - name: Crear el esquema de Jacobs con SU propio init_tables()
         working-directory: .
@@ -3989,10 +3989,9 @@ jobs:
 
       - name: Traer el repo JAX de integración (vocabulario y B9)
         working-directory: .
-        # Web Chat imports jax.memory.b9.  The B9 source is intentionally in
-        # the paired integration branch until its own PR merges, so cloning
-        # the default branch would make this job test a different contract.
-        run: git clone --depth=1 --branch phase1/shared-memory-integration https://github.com/fjruizhn/Jax.git /tmp/jax
+        # Web Chat imports jax.memory.b9. JAX master contains B9 after #269,
+        # so CI tests the normal integration source.
+        run: git clone --depth=1 --branch master https://github.com/fjruizhn/Jax.git /tmp/jax
 
       - name: Suite backend (sin DB) -- -rs lista cada skip con su motivo
         # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,
