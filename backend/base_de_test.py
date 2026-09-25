@@ -54,6 +54,8 @@ import atexit
 import os
 import re
 import secrets
+import subprocess
+from pathlib import Path
 
 #: La base compartida de siempre. Sin sufijo, la suite sigue corriendo acá.
 BASE_COMPARTIDA = "jax_memory_test"
@@ -496,6 +498,99 @@ async def _clonar_esquema(nombre: str) -> int:
         conn.close()
 
 
+def _bootstrap_jax_schema_para_base_de_test(nombre: str) -> None:
+    """Load the existing JAX schema source into an isolated test database.
+
+    ``projects`` is JAX-owned and is the FK parent for migration 003.  The
+    platform migration runner deliberately does not create or parse that
+    schema in production.  CI already loads this exact source before the
+    platform suite; isolated local databases need the same prerequisite after
+    cloning a legacy template that predates ``projects``.
+    """
+    _verificar_que_no_es_produccion(nombre)
+    configured_root = os.environ.get("JAX_REPO_PATH", "").strip()
+    root = Path(configured_root)
+    if not configured_root or not root.is_absolute():
+        raise BaseDeTestInvalida(
+            "JAX_REPO_PATH absoluto es requerido para bootstrap del esquema JAX en tests"
+        )
+    schema = (root.resolve() / "jax_memory_schema.sql").resolve()
+    try:
+        schema.relative_to(root.resolve())
+    except ValueError as exc:
+        raise BaseDeTestInvalida("el esquema JAX escapó JAX_REPO_PATH") from exc
+    if not schema.is_file():
+        raise BaseDeTestInvalida(f"falta el esquema JAX requerido: {schema}")
+
+    sql = schema.read_text(encoding="utf-8")
+    # Igual que el job DB de CI: no se parte SQL en Python; MariaDB interpreta
+    # el archivo entero. Solo se elimina el encabezado que seleccionaría la
+    # base de producción, y se conserva cada sentencia de esquema de JAX.
+    sql, replacements = re.subn(
+        r"(?ms)^CREATE DATABASE IF NOT EXISTS jax_memory\s+CHARACTER SET.*?;\s*^USE jax_memory;\s*",
+        "",
+        sql,
+        count=1,
+    )
+    if replacements != 1:
+        raise BaseDeTestInvalida(
+            "el encabezado de jax_memory_schema.sql cambió; actualizar el bootstrap de tests"
+        )
+    # Migration 003 has a parent in both repositories: projects from JAX and
+    # jax_tenants from the platform. It belongs in the platform migration
+    # chain after jax_tenants exists, never in this standalone JAX bootstrap.
+    if "CREATE TABLE `jax_project_scope`" in sql:
+        raise BaseDeTestInvalida(
+            "jax_memory_schema.sql no debe incluir migration 003; "
+            "la corre el runner de plataforma después de jax_tenants"
+        )
+    # The template can already contain some JAX tables while still lacking
+    # `projects` (the historical state this test bootstrap repairs). Keep the
+    # JAX source authoritative and make only its CREATEs idempotent; this is
+    # not a drift repairer and does not alter existing definitions.
+    sql = re.sub(r"(?m)^CREATE TABLE `", "CREATE TABLE IF NOT EXISTS `", sql)
+
+    env = os.environ.copy()
+    env["MYSQL_PWD"] = os.environ.get("JAX_DB_PASSWORD", "")
+    result = subprocess.run(
+        [
+            "mysql",
+            "--host", os.environ["JAX_DB_HOST"],
+            "--port", os.environ["JAX_DB_PORT"],
+            "--user", os.environ.get("JAX_DB_USER", ""),
+            "--database", nombre,
+        ],
+        input=sql,
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+    if result.returncode:
+        raise BaseDeTestInvalida(
+            "el bootstrap del esquema JAX falló para la base aislada: "
+            f"{result.stderr.strip()[:500]}"
+        )
+
+
+async def _tabla_existe_en_base(nombre: str, tabla: str) -> bool:
+    import aiomysql
+    from db_connect_config import db_connect_timeout_seconds
+
+    conn = await aiomysql.connect(
+        db=nombre, autocommit=True,
+        connect_timeout=db_connect_timeout_seconds(),
+        **_parametros_de_conexion())
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT 1 FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (tabla,))
+            return await cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
 def asegurar_base_de_test(nombre: str | None = None) -> str:
     """Deja lista la base de esta sesión: la crea con el esquema de la
     plantilla si no existía, y le corre `run_migrations()` del repo.
@@ -515,6 +610,11 @@ def asegurar_base_de_test(nombre: str | None = None) -> str:
     os.environ[VARIABLE_DE_LA_BASE] = nombre
     try:
         asyncio.run(_clonar_esquema(nombre))
+        # En CI el workflow carga este mismo esquema antes de pytest.  La
+        # plantilla local puede ser anterior a `projects`, así que se repone
+        # únicamente en bases aisladas y sólo si el padre de FK no está.
+        if nombre != BASE_COMPARTIDA and not asyncio.run(_tabla_existe_en_base(nombre, "projects")):
+            _bootstrap_jax_schema_para_base_de_test(nombre)
         # El esquema propio del repo, por SU camino. Corre siempre (no sólo al
         # crear): la plantilla puede estar atrasada respecto de esta rama.
         # DIVERGENCIA DELIBERADA con jax: allá es

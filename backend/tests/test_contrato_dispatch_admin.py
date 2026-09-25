@@ -22,7 +22,7 @@ import time
 from auth.jwt import create_access_token
 
 USER_ID = "1"  # jax_users.user_id real (FK de performed_by / decided_by)
-TENANT_ID = "test-contrato-dispatch-admin-tenant"
+TENANT_ID = "1"  # DB-backed tenant of user_id=1.
 
 SIN_CONTRATO = "test-prl-sin-contrato"
 _PROVEEDOR = "deepseek"  # el de jekyll (http_openai_compat)

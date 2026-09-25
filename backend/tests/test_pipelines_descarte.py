@@ -24,11 +24,16 @@ import aiomysql
 import pytest
 
 from api import pipelines as mod
-from tests.identidades import cabeceras, sql, uid
+from tests.identidades import cabeceras, sql, uid as _uid
 from tests.jacobs_falso import JacobsFalso, respuesta
 
-TENANT = "descarte-t4"
+TENANT = "702"
 URL_JACOBS_FALSO = "http://jacobs.test/jacobs"
+
+
+def uid(client, etiqueta, role="operator"):
+    """Create pipeline-test identities in the tenant used by this module."""
+    return _uid(client, etiqueta, role, TENANT)
 
 # La base de tests LOCAL (jax_memory_test_<sufijo>, clonada de jax_memory_test
 # -- ver base_de_test.py) no tiene status_previo/descartado_por/descartado_at,
@@ -423,7 +428,7 @@ def test_get_de_un_hidden_para_el_superadmin_no_es_404_por_oculto(client, client
     por la regla de pertenencia (es_del_usuario), no por estar hidden. Se
     fija con un pipeline propiedad del propio superadmin para aislar el
     chequeo de "hidden" del chequeo de dueño."""
-    superadmin_id = uid(client, "descarte-c8b-superadmin", "superadmin")
+    superadmin_id = _uid(client, "descarte-c8b-superadmin", "superadmin", "1")
     pid = str(uuid.uuid4())
     client.portal.call(partial(_insertar_pipeline, pid, superadmin_id, "1", "hidden",
                        status_previo="aborted", descartado_por=superadmin_id, descartado_at=time.time()))

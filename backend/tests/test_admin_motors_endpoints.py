@@ -14,7 +14,7 @@ from tests.identidades import cabeceras
 from auth.jwt import create_access_token
 
 USER_ID = "1"
-TENANT_ID = "test-admin-motors-tenant"
+TENANT_ID = "1"  # DB-backed tenant of user_id=1.
 
 
 def _superadmin_headers():

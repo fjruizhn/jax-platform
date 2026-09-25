@@ -86,6 +86,26 @@ def test_version_distinta_no_entra(client, usuarios):
     assert _me(client, token_para(user_id, tv=3)).status_code == 200
 
 
+def test_claim_de_tenant_falsificada_no_autentica(client, usuarios):
+    """La claim firmada no sustituye la membresía user -> tenant de la base."""
+    user_id, _ = usuarios()
+    r = _me(client, token_para(user_id, tenant_id="999999"))
+    assert (r.status_code, r.json()["detail"]) == (401, "sesion_invalida")
+
+
+def test_claim_de_tenant_ausente_no_autentica(client, usuarios):
+    """Un JWT histórico sin tenant tampoco puede crear un scope implícito."""
+    user_id, _ = usuarios()
+    token = jwt.encode(
+        {"user_id": str(user_id), "role": "operator", "tv": 0,
+         "exp": int(time.time()) + 600, "type": "access"},
+        SECRET,
+        algorithm=ALGORITHM,
+    )
+    r = _me(client, token)
+    assert (r.status_code, r.json()["detail"]) == (401, "sesion_invalida")
+
+
 def test_token_de_antes_del_despliegue_sin_tv_vale_como_cero(client, usuarios):
     # CONTROL: ya pasa hoy. Protege la regla de spec §3.2 (nadie queda afuera
     # al desplegar) de un refactor que exija `tv`.

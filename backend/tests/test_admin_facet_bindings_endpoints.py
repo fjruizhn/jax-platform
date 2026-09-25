@@ -6,7 +6,7 @@ model.supports_tool_use/context_window.
 from auth.jwt import create_access_token
 
 USER_ID = "1"  # jax_users.user_id real — PUT hace int(user.user_id) para approved_by
-TENANT_ID = "test-facet-bindings-tenant"
+TENANT_ID = "1"  # DB-backed tenant of user_id=1.
 
 
 def _superadmin_headers():

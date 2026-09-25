@@ -12,7 +12,7 @@ tabla legacy esta vacia. Restaura el estado previo en el finally.
 """
 from tests.identidades import cabeceras
 
-TENANT_ID = "test-admin-keys-model-source-tenant"
+TENANT_ID = "1"  # DB-backed tenant of the authenticated fixture user.
 
 
 def _superadmin_headers(client):

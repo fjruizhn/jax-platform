@@ -16,7 +16,7 @@ se limpia en un finally.
 from auth.jwt import create_access_token
 
 USER_ID = "1"  # jax_users.user_id real (FK de approved_by/decided_by)
-TENANT_ID = "test-contrato-dispatch-tenant"
+TENANT_ID = "1"  # DB-backed tenant of the seeded authenticated user.
 
 # Filas de prueba del catálogo, una por estado del contrato.
 SIN_PARAM = "test-contrato-sin-max-tokens-param"
@@ -330,7 +330,7 @@ def test_el_dispatch_real_sigue_logueando_dispatch_abortado_con_el_update(client
     import logging
     import api.chat as chat
 
-    async def dispatch(facet, config, user_id, message, semantic_context, grounding=None, imagenes=(),
+    async def dispatch(facet, config, user_id, message, semantic_context, memory_context=None, grounding=None, imagenes=(),
                        texto_del_usuario=None):
         await chat._call_openai_compat(
             "https://api.example.com/v1", "sk-fake", _MODELO_SIN_SEMBRAR,

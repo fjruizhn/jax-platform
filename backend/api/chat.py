@@ -14,6 +14,7 @@ from typing import Literal, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, ConfigDict, Field
 import httpx
+import aiomysql
 from http_client import CuerpoJsonDeUnUso, LiteralJsonCrudo, cabeceras_gemini, get_http_client
 from facet_resolver import resolve_facet, FacetUnavailableError
 from adjuntos.contrato import (
@@ -96,8 +97,11 @@ _JAX_PLATFORM_CHAT_CALLER = "jax_platform_chat"
 CONFIG_PATH = str(ruta_absoluta_requerida("JAX_CONFIG_PATH"))
 JAX_REPO = ruta_absoluta_requerida("JAX_REPO_PATH")
 
-# --- Memoria semántica COMPARTIDA con el REPL (MISMA MariaDB jax_memory) ----
-# Reutiliza la clase MemoryDB del núcleo (~/jax) — no duplica memoria ni lógica.
+# --- Memoria de conversación heredada (no es el borde B9 de lectura) -------
+# Reutiliza la clase MemoryDB del núcleo (~/jax) únicamente para registrar
+# conversaciones que todavía consumen los workers de adopción.  Ninguna fila
+# devuelta por MemoryDB puede llegar a un prompt: las lecturas model-facing
+# pasan por ScopeContext -> MariaDBB9Reader -> PromptMemoryContext.
 # Degrada elegante: si no carga o la base cae, el chat sigue SIN memoria.
 # Imports separados a propósito: ~/jax es un repo aparte con su propio ciclo
 # de reconciliación (ver infra/facetas-bloque-d de ese repo, pendiente de
@@ -123,13 +127,12 @@ def _importar_memorydb():
 
 
 MemoryDB = _importar_memorydb()
-try:
-    from jax.memory.db import detect_completeness_intent
-except Exception:  # fail-soft: sin la función auxiliar solo se pierde el bypass de completeness; MemoryDB se importa por separado y sigue viva
-    logging.getLogger(__name__).warning(
-        "detect_completeness_intent no importable: chat sin bypass de completeness", exc_info=True)
-    def detect_completeness_intent(text: str) -> str | None:
-        return None
+from jax.memory.b9 import (
+    AuthorizationDenied, MutationAuthorizationRequest, PromptMemoryContext,
+    ScopeContext, ScopeDenied, Visibility,
+)
+from jax.memory.b9_mariadb import MariaDBB9Reader
+from jax.memory.scope_authority import ProjectScopeAuthorityResolver
 
 _memory = None              # instancia única (lazy)
 _memory_ready = False
@@ -137,7 +140,7 @@ _memory_ready = False
 # configuracion que no cambia mientras el proceso vive -- se avisa en ERROR
 # una sola vez (con el motivo) y los turnos siguientes quedan en DEBUG.
 _puerto_invalido_avisado = False
-# "user_id:project_id" -> conversation_uuid. OrderedDict como LRU: sin cota,
+# "tenant_id:user_id:project_id" -> conversation_uuid. OrderedDict como LRU: sin cota,
 # cada par (usuario, proyecto) que alguna vez chateó quedaba abierto acá para
 # siempre. Al superar MAX_TRACKED_CONVERSATIONS se cierra (end_conversation)
 # la conversación menos recientemente activa antes de sacarla del dict —
@@ -219,7 +222,9 @@ async def _get_conv_uuid(user_id: int, tenant_id, project_id) -> str | None:
     project_id NOT NULL -> memoria de proyecto (compartida); NULL -> individual."""
     if not await _ensure_memory():
         return None
-    key = f"{user_id}:{project_id}"
+    # A user/project identifier is not globally authoritative: the tenant is
+    # part of the cache namespace even when two tenants happen to use equal IDs.
+    key = f"{tenant_id}:{user_id}:{project_id}"
     u = _conv_uuids.get(key)
     if u:
         _conv_uuids.move_to_end(key)
@@ -233,102 +238,73 @@ async def _get_conv_uuid(user_id: int, tenant_id, project_id) -> str | None:
     return u
 
 
-async def _semantic_context(user_text: str, user_id: int, project_id,
-                            recent_history: list[dict] | None = None) -> list[dict]:
-    """Recupera contexto de sesiones pasadas (replica jax/core/main.py:514-533)
-    con scope de dos niveles: memoria del proyecto + memoria individual del user.
-    recent_history (opcional): ultimos turnos de ESTA conversacion, para que la
-    busqueda semantica no dependa solo de la ultima frase (ver db.py:_blend_query).
+class B9MemoryUnavailable(RuntimeError):
+    """The B9 read boundary could not obtain a trustworthy memory result."""
 
-    Si user_text es una pregunta de completeness ("que proyectos tenes
-    activos?"), suma ADEMAS todos los facts de esa categoria via get_facts()
-    — la similitud vectorial contra un solo fact no basta para "dame todo
-    lo que sepas de X" (item #4 del roadmap).
 
-    Para cualquier otra pregunta, busca facts por similitud vectorial via
-    search_similar_facts() (jax/memory/db.py) — sin esto, "jax sabes a que
-    me dedico?" no traía el hecho de ocupación guardado y verificado, porque
-    no matchea ninguna categoría de completeness y nadie más buscaba facts
-    al leer (2026-09-20, decisión de Fernando tras ese fallo real)."""
-    if not await _ensure_memory():
-        return []
+class _B9MappingAcquire:
+    """Adapt the platform pool's plain-cursor acquire contract for B9 reads."""
+    def __init__(self, acquire_context):
+        self._acquire_context = acquire_context
 
-    bloques = []
-    ids_de_facts_ya_incluidos: set[int] = set()
+    async def __aenter__(self):
+        self._connection = await self._acquire_context.__aenter__()
+        return _B9MappingConnection(self._connection)
 
-    tipo_completeness = detect_completeness_intent(user_text)
-    if tipo_completeness:
-        try:
-            facts = await _memory.get_facts(
-                only_unverified=False, fact_type=tipo_completeness, limit=20,
-                user_id=user_id, project_id=project_id)
-        except Exception:  # fail-soft: sin facts el turno responde sin ese bloque de contexto; no se inventa contenido
-            logger.warning("get_facts (completeness) falló: turno sin bloque de facts", exc_info=True)
-            facts = None
-        if facts:
-            ids_de_facts_ya_incluidos = {f["id"] for f in facts}
-            lineas_facts = [f"- {f['fact_text']}" for f in facts]
-            bloques.append(
-                f"Todos los hechos guardados de tipo '{tipo_completeness}':\n"
-                + "\n".join(lineas_facts)
-            )
+    async def __aexit__(self, exc_type, exc, traceback):
+        return await self._acquire_context.__aexit__(exc_type, exc, traceback)
 
-    # Facts por similitud vectorial (2026-09-20, decision de Fernando tras un
-    # fallo real): "jax sabes a que me dedico?" no matchea ninguna categoria
-    # de completeness (arriba) y hasta esta ronda NINGUN turno buscaba facts
-    # por similitud al LEER -- el hecho de ocupacion de Fernando (fact #7)
-    # estaba guardado y verificado, pero nadie lo miraba. search_similar_facts()
-    # (jax/memory/db.py) ya aplica su propio umbral de similitud
-    # (FACT_SIMILARITY_THRESHOLD, documentado ahi con las mediciones reales
-    # que lo justifican) y excluye SIEMPRE facts superados/vencidos -- este
-    # llamador no repite ese criterio, solo lo consume.
+
+class _B9MappingConnection:
+    """Connection view which asks aiomysql for mapping rows on every cursor.
+
+    ``db.connection.get_pool`` deliberately uses aiomysql's default cursor for
+    the rest of the platform.  B9 readers consume named fields, so adapting at
+    this narrow integration boundary avoids treating tuple positions as an
+    authorization-sensitive schema contract.
+    """
+    def __init__(self, connection):
+        self._connection = connection
+
+    def cursor(self, *args, **kwargs):
+        if args or kwargs:
+            raise TypeError("B9 mapping adapter does not accept caller cursor overrides")
+        return self._connection.cursor(aiomysql.DictCursor)
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
+class _B9MappingPool:
+    """Minimal pool adapter required by ``MariaDBB9Reader``."""
+    def __init__(self, pool):
+        self._pool = pool
+
+    def acquire(self):
+        return _B9MappingAcquire(self._pool.acquire())
+
+
+async def _prompt_memory_context(scope: ScopeContext) -> PromptMemoryContext:
+    """Read B9 memory exclusively through its envelope boundary.
+
+    A database/schema outage is explicit to the request.  It must never be
+    represented as a successful empty context: that would make a platform
+    cursor-contract error indistinguishable from genuinely absent memory.
+    """
     try:
-        similares_facts = await _memory.search_similar_facts(
-            user_text, user_id=user_id, project_id=project_id,
-            recent_history=recent_history)
-    except Exception:  # fail-soft: sin facts por similitud el turno responde sin ese bloque; no se inventa contenido
-        logger.warning("search_similar_facts falló: turno sin bloque de facts por similitud", exc_info=True)
-        similares_facts = []
-    # No duplicar: un fact que la rama de completeness YA trajo completo
-    # (arriba) no vuelve a aparecer acá -- dos copias del mismo hecho en el
-    # prompt no suman contexto, solo gastan tokens.
-    facts_nuevos = [
-        f for f in (similares_facts or []) if f["id"] not in ids_de_facts_ya_incluidos
-    ]
-    if facts_nuevos:
-        lineas_similares = [f"- {f['fact_text']}" for f in facts_nuevos]
-        bloques.append("Hechos relacionados con la consulta:\n" + "\n".join(lineas_similares))
-
-    try:
-        similares = await _memory.search_similar_messages(
-            user_text, limit=5, user_id=user_id, project_id=project_id,
-            recent_history=recent_history)
-    except Exception:  # fail-soft: memoria semántica caída = turno sin contexto previo, mismo contrato que MemoryDB (devuelve [] ante fallo)
-        logger.warning("search_similar_messages falló: turno sin contexto semántico", exc_info=True)
-        similares = []
-    # Fail-soft tambien al CONSUMIR, no solo al consultar: una fila con
-    # distancia inutilizable (None o NaN -- embeddings "vector cero", ver
-    # jax/memory/db.py::_nonzero_embedding_sql en el repo jax) cuesta un
-    # candidato, no el turno. El 2026-09-11 `None < 0.8` tumbo el chat entero
-    # del scope individual con un 500. NaN < 0.8 ya es False y se descarta solo.
-    relevantes = [
-        r for r in similares
-        if isinstance(r.get("distancia"), (int, float)) and r["distancia"] < 0.8
-    ]
-    if relevantes:
-        lineas = []
-        for r in relevantes:
-            fecha = r["started_at"].strftime("%Y-%m-%d") if r.get("started_at") else "?"
-            rol = "user" if r["role"] == "user" else "jax"
-            lineas.append(f"[{fecha}] {rol}: {r['content']}")
-        bloques.append("Conversaciones relevantes de sesiones anteriores:\n" + "\n".join(lineas))
-
-    if not bloques:
-        return []
-    return [
-        {"role": "user", "content": "[memoria de sesiones anteriores]"},
-        {"role": "assistant", "content": "\n\n".join(bloques)},
-    ]
+        pool = _B9MappingPool(await get_pool())
+        # The reader owns a second, just-in-time DB-backed authorization
+        # decision.  ``scope`` carries request identity and target only; its
+        # earlier chat-boundary resolution is never treated as a bearer grant.
+        request = MutationAuthorizationRequest(
+            scope, "RETRIEVE",
+            Visibility.PROJECT_SHARED if scope.project_id else Visibility.TENANT_SHARED,
+        )
+        reader = MariaDBB9Reader(pool, ProjectScopeAuthorityResolver(pool))
+        return PromptMemoryContext(await reader.retrieve_authorized(request, limit=20))
+    except Exception as exc:
+        logger.error("B9 memory retrieval failed", exc_info=True)
+        raise B9MemoryUnavailable("B9 memory retrieval failed") from exc
 
 
 async def flush_open_conversations() -> int:
@@ -960,6 +936,7 @@ async def _record_resolved_version_from_response(facet_key: str, data: dict) -> 
 async def _invoke_facet_dispatch(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
+    memory_context: PromptMemoryContext | None = None,
     grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError | None" = None,
     imagenes: tuple = (),
     texto_del_usuario: str | None = None,
@@ -981,6 +958,13 @@ async def _invoke_facet_dispatch(
     # (la sonda de facet_canary) tampoco: la sonda no corre shadow validation.
     if isinstance(grounding, governance_grounding.Snapshot):
         system_prompt += "\n\n" + governance_grounding.render(grounding)
+    # This is the sole model-facing memory renderer in Web Chat.  It accepts
+    # envelopes, retains their trust classification, and never sees database
+    # rows or caller-provided classifications.
+    if memory_context is not None:
+        rendered_memory = memory_context.render()
+        if rendered_memory:
+            system_prompt += "\n\n" + rendered_memory
 
     # Bloque C: resolve_facet() reemplaza _resolve_active_model +
     # resolve_credential sueltos — mismo resolver que usa
@@ -1085,6 +1069,7 @@ async def _invoke_facet_dispatch(
 async def _invoke_facet(
     facet: str, config: dict, user_id: str, message: str,
     semantic_context: list[dict] | None = None,
+    memory_context: PromptMemoryContext | None = None,
     *, source: str = SOURCE_CHAT,
     grounding: "governance_grounding.Snapshot | governance_grounding.SnapshotError | None" = None,
     imagenes: tuple = (),
@@ -1102,7 +1087,8 @@ async def _invoke_facet(
     construccion, sin una segunda ruta que pueda divergir."""
     try:
         texto, usage, outcome = await _invoke_facet_dispatch(
-            facet, config, user_id, message, semantic_context, grounding=grounding, imagenes=imagenes,
+            facet, config, user_id, message, semantic_context, memory_context,
+            grounding=grounding, imagenes=imagenes,
             texto_del_usuario=texto_del_usuario)
     except ModelDispatchConfigError as e:
         # ModelDispatchConfigError hereda de RuntimeError: este except TIENE
@@ -1161,6 +1147,52 @@ def _update_history(user_id: str, user_msg: str, assistant_msg: str):
         _conversations.popitem(last=False)
 
 
+def _conversation_cache_key(tenant_id: str, user_id: str, project_id: str | None = None) -> str:
+    """Namespace ephemeral history by authenticated tenant *and* resolved scope.
+
+    The project value comes from the authority-resolved ``ScopeContext``, not
+    from the request body.  A user's private chat and two project chats must
+    never inherit one another's provider-facing history.
+    """
+    if not tenant_id:
+        raise ValueError("tenant scope is required for conversation cache")
+    return f"{tenant_id}:{user_id}:project:{project_id if project_id is not None else '-'}"
+
+
+async def _scope_for_chat(user: AuthUser, requested_project_id: int | None) -> ScopeContext:
+    """Resolve the B9 scope from current identity and project authority.
+
+    ``requested_project_id`` is only a requested lookup target.  In
+    particular it is not a claim of membership or a role assertion: the JAX
+    resolver checks active user/tenant identity, project scope and membership
+    in the same authoritative database before an enriched project scope can
+    reach the B9 reader.
+    """
+    if not user.tenant_id:
+        raise HTTPException(status_code=403, detail={"code": "tenant_scope_required"})
+    requested_scope = ScopeContext(
+        actor_principal=f"user:{user.user_id}", actor_type="USER",
+        subject_user_id=str(user.user_id), tenant_id=str(user.tenant_id),
+        project_id=str(requested_project_id) if requested_project_id is not None else None,
+        calling_component="jax-platform-web-chat",
+    )
+    try:
+        return await ProjectScopeAuthorityResolver(await get_pool()).resolve_scope(requested_scope)
+    except (AuthorizationDenied, ScopeDenied) as exc:
+        # A missing/revoked membership, an unbound legacy project, a disabled
+        # scope and every tenant mismatch deliberately share this fail-closed
+        # boundary.  The request target never reveals which condition failed.
+        code = "project_scope_denied" if requested_project_id is not None else "tenant_scope_denied"
+        raise HTTPException(status_code=403, detail={"code": code}) from exc
+    except Exception as exc:
+        # Authority must be available at this boundary.  Do not degrade a
+        # project request to tenant/private scope when its source cannot be
+        # read.
+        logger.error("B9 scope authority resolution failed", exc_info=True)
+        code = "project_scope_denied" if requested_project_id is not None else "tenant_scope_denied"
+        raise HTTPException(status_code=403, detail={"code": code}) from exc
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUser = Depends(exigir_mesa_libre)):
     config = _load_config()
@@ -1178,6 +1210,11 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # Task 7: ids no numericos se cortan ACA, antes de la memoria y del LLM --
     # si no, el turno se paga y la fila de uso se pierde en el INSERT.
     validar_ids_de_uso(user_id, tenant_id)
+    memory_scope = await _scope_for_chat(user, req.project_id)
+    history_key = _conversation_cache_key(
+        memory_scope.tenant_id, memory_scope.subject_user_id or user_id,
+        memory_scope.project_id,
+    )
     timestamp = utc_ahora().isoformat() + "Z"
 
     # Easter egg IDE1990 "antes que todo", como en el REPL: ni una faceta
@@ -1226,13 +1263,14 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # -----------------------------------------------------------------------
 
     # --- Memoria semántica (misma jax_memory que el REPL) — best-effort -----
-    # user_id/tenant_id vienen del JWT; project_id del request (None=individual).
+    # user_id/tenant_id come from authenticated/resolved authority; project_id
+    # is present only after the project resolver proved active membership.
     try:
         mem_uid = int(user_id)
         mem_tid = int(tenant_id)
     except (TypeError, ValueError):
         mem_uid = mem_tid = None
-    mem_pid = req.project_id
+    mem_pid = memory_scope.project_id
     conv_uuid = None
     if mem_uid is not None:
         conv_uuid = await _get_conv_uuid(mem_uid, mem_tid, mem_pid)
@@ -1251,11 +1289,15 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # Señal: faceta pensando
     await engine_state.set_facet_status(facet, "thinking", tenant_id, user_id, req.message[:100])
 
-    # Retrieval semántico ANTES del LLM (scope: proyecto + individual del user).
-    semantic_context: list[dict] = []
-    if mem_uid is not None:
-        semantic_context = await _semantic_context(
-            req.message, mem_uid, mem_pid, recent_history=_conversations.get(user_id, []))
+    # B9 retrieval is envelope-only.  No legacy MemoryDB row may be converted
+    # into a provider message or prompt string on this supported path.
+    try:
+        memory_context = await _prompt_memory_context(memory_scope)
+    except B9MemoryUnavailable as exc:
+        # A failed B9 reader is not equivalent to an empty authorized result.
+        # In particular, a pool/cursor integration error must not silently
+        # erase grounding and continue as a normal successful chat request.
+        raise HTTPException(status_code=503, detail={"code": "MEMORY_UNAVAILABLE"}) from exc
 
     # SP3: UN snapshot por turno, construido acá y pasado a sus dos
     # consumidores (el prompt y el background task) -- spec §9.3.
@@ -1263,7 +1305,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
 
     try:
         response_text, usage = await _invoke_facet(
-            facet, config, user_id, mensaje_al_modelo, semantic_context,
+            facet, config, history_key, mensaje_al_modelo, memory_context=memory_context,
             grounding=grounding, imagenes=validados.imagenes, texto_del_usuario=req.message)
         is_canned = usage is None
     except ImagenNoSoportadaError:
@@ -1304,7 +1346,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     else:
         display_text, contract_degraded = response_text, False
 
-    _update_history(user_id, mensaje_para_historial(req.message, validados), display_text)
+    _update_history(history_key, mensaje_para_historial(req.message, validados), display_text)
 
     # Registrar uso (best-effort)
     personality = config["personalities"].get(facet, {})

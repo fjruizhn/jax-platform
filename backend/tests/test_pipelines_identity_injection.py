@@ -10,7 +10,7 @@ from auth.jwt import create_access_token
 from credencial_las_manos import ENCABEZADO, VARIABLE
 
 USER_ID = "1"
-TENANT_ID = "test-pipelines-identity-tenant"
+TENANT_ID = "1"  # DB-backed tenant of user_id=1.
 
 
 def _auth_headers():

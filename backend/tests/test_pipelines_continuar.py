@@ -507,14 +507,14 @@ def test_el_200_de_continuar_solo_trae_claves_declaradas_y_validas(monkeypatch, 
 
 @pytest.fixture
 def abortado_con_eventos(client):
-    duenio = uid(client, "continuar-causa", "operator")
+    duenio = uid(client, "continuar-causa", "operator", "703")
     ahora = time.time()
     abortado, corriendo = str(uuid.uuid4()), str(uuid.uuid4())
     for pid, estado in ((abortado, "aborted"), (corriendo, "running")):
         client.portal.call(
             sql,
             "INSERT INTO jacobs_pipelines (pipeline_id, name, invoked_by, mode, status, created_at, updated_at, "
-            "user_id, tenant_id, owner_ack_at) VALUES (%s, %s, 'plataforma', 'supervised', %s, %s, %s, %s, 'TENANT-CONT', %s)",
+            "user_id, tenant_id, owner_ack_at) VALUES (%s, %s, 'plataforma', 'supervised', %s, %s, %s, %s, '703', %s)",
             (pid, f"causa {estado}", estado, ahora, ahora, duenio, ahora))
     client.portal.call(sql, "INSERT INTO jacobs_events (pipeline_id, step_id, event_type, payload, ts) "
                             "VALUES (%s, NULL, 'STEP_FAILED', %s, %s)",
@@ -529,14 +529,14 @@ def abortado_con_eventos(client):
 
 
 @pytest.mark.parametrize("nombre", ["continue_preflight", "continue_pipeline"])
-@pytest.mark.parametrize("intruso", [AuthUser(user_id="intruso", tenant_id="TENANT-CONT", role="operator"),
+@pytest.mark.parametrize("intruso", [AuthUser(user_id="intruso", tenant_id="703", role="operator"),
                                      "mismo usuario, otro tenant"])
 def test_continuar_exige_ser_el_duenio(client, monkeypatch, abortado_con_eventos, nombre, intruso):
     """Un pipeline QUE EXISTE y es de otro: 404, sin llamar a Jacobs y sin
     consultar el cupo (el dueño va primero)."""
     abortado, _ = abortado_con_eventos
     if isinstance(intruso, str):
-        intruso = AuthUser(user_id=uid(client, "continuar-causa", "operator"), tenant_id="OTRO", role="operator")
+        intruso = AuthUser(user_id=uid(client, "continuar-causa", "operator", "703"), tenant_id="704", role="operator")
     duenio_real = mod._require_pipeline_owner
     falso = JacobsFalso()
     preparar(monkeypatch, falso)
@@ -563,13 +563,13 @@ def test_continuar_exige_ser_el_duenio(client, monkeypatch, abortado_con_eventos
 
 def test_el_duenio_real_devuelve_el_nombre(client, abortado_con_eventos):
     abortado, _ = abortado_con_eventos
-    duenio = AuthUser(user_id=uid(client, "continuar-causa", "operator"), tenant_id="TENANT-CONT", role="operator")
+    duenio = AuthUser(user_id=uid(client, "continuar-causa", "operator", "703"), tenant_id="703", role="operator")
     assert client.portal.call(mod._require_pipeline_owner, abortado, duenio) == "causa aborted"
 
 
 def test_la_lista_trae_la_causa_de_los_abortados(client, abortado_con_eventos):
     abortado, corriendo = abortado_con_eventos
-    r = client.get("/api/pipelines", headers=cabeceras(client, "continuar-causa", "operator", tenant_id="TENANT-CONT"))
+    r = client.get("/api/pipelines", headers=cabeceras(client, "continuar-causa", "operator", tenant_id="703"))
     assert r.status_code == 200, r.text
     por_id = {p["pipeline_id"]: p for p in r.json()["pipelines"]}
     assert por_id[abortado]["causa"] == {"tipo": "fallo", "paso": 4, "detalle": "Salida cortada por max_tokens"}

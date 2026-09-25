@@ -98,16 +98,16 @@ def test_el_estado_global_no_se_modifica_al_filtrar(dos_pipelines):
 
 def test_por_http_un_viewer_de_otro_tenant_no_ve_el_pipeline(client, monkeypatch):
     estado = engine_state.get_state()
-    duenio = uid(client, "t6-state-duenio", "operator")
+    duenio = uid(client, "t6-state-duenio", "operator", "707")
     monkeypatch.setattr(estado, "active_pipelines", {
-        PID_A: PipelineState(pipeline_id=PID_A, tenant_id="TENANT-A", user_id=duenio,
+        PID_A: PipelineState(pipeline_id=PID_A, tenant_id="707", user_id=duenio,
                              name="secreto de A", status="running"),
     })
-    ajeno = client.get("/api/state", headers=cabeceras(client, "t6-state-ajeno", "viewer", tenant_id="TENANT-B"))
+    ajeno = client.get("/api/state", headers=cabeceras(client, "t6-state-ajeno", "viewer", tenant_id="708"))
     assert ajeno.status_code == 200, ajeno.text
     assert ajeno.json()["active_pipelines"] == {}
     assert "secreto de A" not in ajeno.text
 
-    propio = client.get("/api/state", headers=cabeceras(client, "t6-state-duenio", "operator", tenant_id="TENANT-A"))
+    propio = client.get("/api/state", headers=cabeceras(client, "t6-state-duenio", "operator", tenant_id="707"))
     assert propio.status_code == 200, propio.text
     assert list(propio.json()["active_pipelines"]) == [PID_A]

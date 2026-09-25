@@ -127,7 +127,7 @@ class _Espias:
             return "conv-test-frente-d"
 
         async def sin_contexto(*a, **k):
-            return []
+            return chat_mod.PromptMemoryContext(())
 
         async def espia_estado(facet, status, tenant_id=None, user_id=None, message=""):
             espias.estados.append((status, message or ""))
@@ -137,7 +137,7 @@ class _Espias:
 
         import shadow_validation
         monkeypatch.setattr(chat_mod, "_get_conv_uuid", conversacion)
-        monkeypatch.setattr(chat_mod, "_semantic_context", sin_contexto)
+        monkeypatch.setattr(chat_mod, "_prompt_memory_context", sin_contexto)
         monkeypatch.setattr(chat_mod, "_memory", _Memoria())
         monkeypatch.setattr(chat_mod.engine_state, "set_facet_status", espia_estado)
         monkeypatch.setattr(shadow_validation, "run_shadow_validation", sin_shadow)

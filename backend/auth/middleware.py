@@ -9,8 +9,10 @@ status, role, token_version, email y must_change_password POR CLAVE PRIMARIA
 Sin caché a propósito (LAS CUATRO §2: sin medición no hay caché). Si algún día
 hiciera falta uno, su invalidación es la propia token_version.
 
-`tenant_id` sigue saliendo del token (el spec pide rol, estado y versión).
-Un token sin `tv` (emitido antes de esta etapa) vale como tv=0.
+El tenant del JWT también se contrasta contra la fila autoritativa de
+`jax_users`: un token firmado para el usuario correcto pero con otro tenant no
+es una membresía y se rechaza. Un token sin `tv` (emitido antes de esta etapa)
+vale como tv=0.
 """
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -34,7 +36,10 @@ CAMBIO_DE_PASSWORD_REQUERIDO = "cambio_de_password_requerido"
 # tests/test_fijar_password.py fija que esta lista y las rutas que piden
 # get_current_user_con_cambio_pendiente son el mismo conjunto.
 RUTAS_CON_CAMBIO_PENDIENTE = frozenset({("GET", "/api/auth/me"), ("POST", "/api/auth/me/password")})
-SQL_ESTADO_DE_SESION = "SELECT status, role, token_version, email, must_change_password FROM jax_users WHERE user_id = %s"
+SQL_ESTADO_DE_SESION = (
+    "SELECT status, role, token_version, email, must_change_password, tenant_id "
+    "FROM jax_users WHERE user_id = %s"
+)
 
 
 def _rechazo() -> HTTPException:
@@ -65,8 +70,17 @@ async def verificar_sesion(payload: dict, tipo: str, *, admite_cambio_pendiente:
             fila = await cur.fetchone()
     if fila is None:
         raise _rechazo()
-    estado, rol, tv_base, email, cambio_pendiente = fila
-    if estado != "active" or tv_token != int(tv_base):
+    estado, rol, tv_base, email, cambio_pendiente, tenant_id_base = fila
+    # `tenant_id` del token es una claim de transporte, no autoridad. La
+    # relación user -> tenant de jax_users es la fuente que la confirma para
+    # toda sesión autenticada, incluidos refresh, WS y SSE.
+    tenant_id_token = payload.get("tenant_id")
+    if (
+        estado != "active"
+        or tv_token != int(tv_base)
+        or tenant_id_token is None
+        or str(tenant_id_token) != str(tenant_id_base)
+    ):
         raise _rechazo()
     # Después de los 401: una sesión revocada sigue siendo 401 (el frontend la
     # manda al login); una válida con la marca, 403 (la manda al cambio).
@@ -74,7 +88,7 @@ async def verificar_sesion(payload: dict, tipo: str, *, admite_cambio_pendiente:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CAMBIO_DE_PASSWORD_REQUERIDO)
     return AuthUser(
         user_id=str(user_id),
-        tenant_id=str(payload.get("tenant_id", "")),
+        tenant_id=str(tenant_id_base),
         role=rol,
         email=email,
         token_version=int(tv_base),

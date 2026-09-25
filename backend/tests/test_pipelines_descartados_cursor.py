@@ -31,7 +31,7 @@ import pytest
 
 from api import paginacion_descartados as pag
 from api import pipelines as mod
-from tests.identidades import cabeceras, sql, uid
+from tests.identidades import _tenant_db_id, cabeceras, sql, uid
 from tests.test_pipelines_descarte import _explain_y_handler_read, _insertar_pipelines_bulk
 
 TENANT = "descarte-cursor-t1"
@@ -137,16 +137,17 @@ def _recorrer(client, url, headers, limite, por, fijos=None):
 
 
 def test_el_cursor_del_usuario_da_las_mismas_paginas_que_offset_con_empates_y_null(client):
-    duenio = uid(client, "descarte-cursor-duenio", "operator")
+    tenant_real = str(_tenant_db_id(TENANT))
+    duenio = uid(client, "descarte-cursor-duenio", "operator", tenant_id=TENANT)
     headers = cabeceras(client, "descarte-cursor-duenio", "operator", tenant_id=TENANT)
     base = time.time() - 10_000
     # 30 fechas, cada una repetida 3 veces (empates que caen en el borde de
     # página con limite=4), + 3 sin fecha (NULL) para que un cursor caiga
     # sobre una fila NULL y se use la rama "sin fecha" del predicado.
     fechas = [base + (i // 3) for i in range(90)] + [None, None, None]
-    filas = _filas_descartadas(duenio, TENANT, fechas)
+    filas = _filas_descartadas(duenio, tenant_real, fechas)
     # ruido: otro dueño, mismas fechas, no puede aparecer
-    ruido = _filas_descartadas("descarte-cursor-otro", TENANT, fechas[:20])
+    ruido = _filas_descartadas("descarte-cursor-otro", tenant_real, fechas[:20])
     try:
         client.portal.call(_insertar_pipelines_bulk, filas + ruido)
         esperado = _esperado(filas)
@@ -160,7 +161,7 @@ def test_el_cursor_del_usuario_da_las_mismas_paginas_que_offset_con_empates_y_nu
         # los tres NULL al final, en orden de pipeline_id DESC
         assert esperado[-3:] == sorted([f[0] for f in filas if f[9] is None], reverse=True)
     finally:
-        client.portal.call(sql, "DELETE FROM jacobs_pipelines WHERE tenant_id=%s", (TENANT,))
+        client.portal.call(sql, "DELETE FROM jacobs_pipelines WHERE tenant_id=%s", (tenant_real,))
 
 
 def test_el_cursor_del_admin_da_las_mismas_paginas_que_offset(client, client_superadmin):

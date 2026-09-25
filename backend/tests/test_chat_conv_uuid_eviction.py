@@ -53,16 +53,16 @@ async def test_evicts_the_least_recently_used_conversation_past_the_cap(fake_mem
     await chat._get_conv_uuid(1, "t", None)
     await chat._get_conv_uuid(2, "t", None)
     await chat._get_conv_uuid(3, "t", None)
-    assert list(chat._conv_uuids.keys()) == ["1:None", "2:None", "3:None"]
+    assert list(chat._conv_uuids.keys()) == ["t:1:None", "t:2:None", "t:3:None"]
 
     # re-tocar user 1 -> pasa a ser el más reciente
     await chat._get_conv_uuid(1, "t", None)
-    assert list(chat._conv_uuids.keys()) == ["2:None", "3:None", "1:None"]
+    assert list(chat._conv_uuids.keys()) == ["t:2:None", "t:3:None", "t:1:None"]
 
     # un cuarto par (usuario, proyecto) empuja al menos-recientemente-usado (user 2) afuera
     await chat._get_conv_uuid(4, "t", None)
-    assert "2:None" not in chat._conv_uuids
-    assert list(chat._conv_uuids.keys()) == ["3:None", "1:None", "4:None"]
+    assert "t:2:None" not in chat._conv_uuids
+    assert list(chat._conv_uuids.keys()) == ["t:3:None", "t:1:None", "t:4:None"]
 
     # la conversación de user 2 se cerró en la DB antes de descartarla -- no queda abandonada
     assert fake_memory.ended == ["conv-2"]

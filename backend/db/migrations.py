@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import logging
 import os
 import re
@@ -11,6 +12,148 @@ import ajustes
 from .connection import get_pool
 
 logger = logging.getLogger(__name__)
+
+
+def _jax_b9_migration_root() -> Path:
+    """Return the checked-in JAX B9 migration directory, never a copy of it."""
+    configured_root = os.environ.get("JAX_REPO_PATH", "").strip()
+    if not configured_root:
+        raise RuntimeError("JAX_REPO_PATH is required to run JAX-owned B9 migrations")
+    root = Path(configured_root)
+    if not root.is_absolute():
+        raise RuntimeError("JAX_REPO_PATH must be absolute for JAX-owned B9 migrations")
+    root = root.resolve()
+    migrations_root = (root / "jax" / "memory" / "b9_migrations").resolve()
+    try:
+        migrations_root.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("JAX B9 migrations escaped JAX_REPO_PATH") from exc
+    if not migrations_root.is_dir():
+        raise RuntimeError(f"JAX-owned B9 migrations are missing: {migrations_root}")
+    return migrations_root
+
+
+def _split_jax_b9_sql(script: str) -> tuple[str, ...]:
+    """Split the deliberately small MariaDB migration grammar used by B9.
+
+    The source files remain owned and reviewed in JAX.  The platform runner
+    only needs to execute their DDL through its established transaction and
+    cursor lifecycle.  B9's tracked files use line-oriented statements and
+    MariaDB ``DELIMITER`` only for the two append-only triggers; accepting a
+    broader SQL dialect here would create a second migration implementation.
+    """
+    delimiter = ";"
+    pending: list[str] = []
+    statements: list[str] = []
+    for raw_line in script.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        if stripped.upper().startswith("DELIMITER "):
+            if pending:
+                raise RuntimeError("unexpected DELIMITER inside JAX B9 statement")
+            delimiter = stripped.split(None, 1)[1]
+            continue
+        pending.append(raw_line)
+        if stripped.endswith(delimiter):
+            statement = "\n".join(pending).rstrip()
+            statement = statement[: -len(delimiter)].strip()
+            if statement:
+                statements.append(statement)
+            pending = []
+    if pending:
+        raise RuntimeError("unterminated statement in JAX B9 migration")
+    if delimiter != ";":
+        raise RuntimeError("JAX B9 migration did not restore MariaDB delimiter")
+    return tuple(statements)
+
+
+def _jax_b9_core_migration_statements() -> tuple[str, ...]:
+    """Read migrations 001/002 from JAX in their tracked order."""
+    root = _jax_b9_migration_root()
+    statements: list[str] = []
+    for filename in ("001_b9_shared_memory.sql", "002_b9_hardening.sql"):
+        source = (root / filename).resolve()
+        try:
+            source.relative_to(root)
+        except ValueError as exc:
+            raise RuntimeError("JAX B9 migration escaped its migration directory") from exc
+        if not source.is_file():
+            raise RuntimeError(f"JAX-owned B9 migration is missing: {source}")
+        statements.extend(_split_jax_b9_sql(source.read_text(encoding="utf-8")))
+    return tuple(statements)
+
+
+async def _trigger_exists(cur, trigger_name: str) -> bool:
+    await cur.execute(
+        "SELECT COUNT(*) FROM information_schema.TRIGGERS "
+        "WHERE TRIGGER_SCHEMA = DATABASE() AND TRIGGER_NAME = %s",
+        (trigger_name,),
+    )
+    row = await cur.fetchone()
+    return bool(row and row[0] > 0)
+
+
+async def _apply_jax_b9_core_migrations(cur) -> None:
+    """Apply JAX B9 core migrations 001/002 through the platform runner.
+
+    The CREATE TABLE/ALTER statements are idempotent in the JAX-owned source.
+    The two historical trigger statements are not ``IF NOT EXISTS``, so their
+    existence is checked before execution to make the established runner safe
+    on both fresh schemas and upgrades.
+    """
+    for statement in _jax_b9_core_migration_statements():
+        if statement.upper().startswith("CREATE TRIGGER"):
+            name = statement.split()[2]
+            if await _trigger_exists(cur, name):
+                continue
+        await cur.execute(statement)
+
+
+def _jax_project_authority_migration() -> object:
+    """Load the reviewed B9 authority migration from the configured JAX tree.
+
+    ``jax_project_*`` is owned by JAX even though it shares the physical
+    ``jax_memory`` schema with this service.  Keep the DDL in that owner; the
+    platform runner only provides the already-established schema lifecycle.
+    Loading the source file by its resolved path deliberately avoids importing
+    the rest of the JAX package (and accidentally accepting a same-named
+    package earlier on ``sys.path``).
+    """
+    root = _jax_b9_migration_root().parents[2]
+    source = (root / "jax" / "memory" / "project_authority_migrations.py").resolve()
+    try:
+        source.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("JAX project authority migration escaped JAX_REPO_PATH") from exc
+    if not source.is_file():
+        raise RuntimeError(
+            f"JAX-owned project authority migration is missing: {source}"
+        )
+
+    spec = importlib.util.spec_from_file_location("_jax_project_authority_migration", source)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load JAX-owned project authority migration: {source}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    hook = getattr(module, "apply_project_authority_migration", None)
+    if hook is None or not callable(hook):
+        raise RuntimeError(
+            "JAX project authority migration does not export apply_project_authority_migration"
+        )
+    return hook
+
+
+async def _apply_jax_project_authority_migration(cur) -> None:
+    """Apply JAX migration 003 inside this runner's transaction/commit flow.
+
+    This is intentionally after the platform's identity tables have been
+    created and before any request path can use project authorization.  It is
+    idempotent in the JAX-owned hook, so it covers both fresh bootstrap and an
+    upgrade from the pre-B9 schema without a second migration framework.
+    """
+    hook = _jax_project_authority_migration()
+    await hook(cur)
 
 CREATE_TENANTS = """
 CREATE TABLE IF NOT EXISTS jax_tenants (
@@ -3189,6 +3332,18 @@ async def run_migrations():
             for table_name, ddl in _TABLES:
                 if not await _table_exists(cur, table_name):
                     await cur.execute(ddl)
+
+            # B9 core 001/002 is JAX-owned DDL just like the project
+            # authority namespace below.  It must precede 003 so a database
+            # bootstrapped from a legacy platform template has the complete
+            # memory store before Web Chat attempts a B9 read.
+            await _apply_jax_b9_core_migrations(cur)
+
+            # JAX owns this additive authorization namespace and its DDL.  It
+            # must run after jax_tenants/jax_users exist, and the JAX schema
+            # bootstrap supplies the referenced projects table before this
+            # platform migration runner starts (the same ordering used in CI).
+            await _apply_jax_project_authority_migration(cur)
 
             for table_name, column_name, ddl in _COLUMNS:
                 if not await _column_exists(cur, table_name, column_name):

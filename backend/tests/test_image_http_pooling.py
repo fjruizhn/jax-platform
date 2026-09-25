@@ -1,7 +1,7 @@
 import os
 
 import http_client
-from auth.jwt import create_access_token
+from tests.identidades import cabeceras
 
 # record_usage (api/admin/usage.py) hace int(user_id)/int(tenant_id) antes del
 # INSERT — IDs no numericos hacian que ese cast reventara dentro de un bare
@@ -9,13 +9,11 @@ from auth.jwt import create_access_token
 # nueva. tenant_id=88 es exclusivo de este archivo (test_usage_pricing.py y
 # los demas tests de axioma_usage usan tenant_id="1") para poder filtrar por
 # el sin colisionar con filas de otros tests.
-USER_ID = "1"
 TENANT_ID = "88"
 
 
-def _headers():
-    token = create_access_token(USER_ID, TENANT_ID, "operator")
-    return {"Authorization": f"Bearer {token}"}
+def _headers(client):
+    return cabeceras(client, "image-http-pooling", "operator", TENANT_ID)
 
 
 class _FakeResponse:
@@ -50,7 +48,7 @@ def test_generate_image_uses_the_shared_client(client, monkeypatch):
     try:
         resp = client.post(
             "/api/image/generate",
-            headers=_headers(),
+            headers=_headers(client),
             json={"prompt": "a cat"},
         )
     finally:
@@ -119,7 +117,7 @@ def test_generate_image_registra_uso_con_costo_plano(client, monkeypatch):
     try:
         resp = client.post(
             "/api/image/generate",
-            headers=_headers(),
+            headers=_headers(client),
             json={"prompt": "un gato"},
         )
     finally:

@@ -29,7 +29,12 @@ import aiomysql
 import pytest
 
 import conftest as _conftest
-from base_de_test import BASE_COMPARTIDA, _parametros_de_conexion, es_base_de_test
+from base_de_test import (
+    BASE_COMPARTIDA,
+    _bootstrap_jax_schema_para_base_de_test,
+    _parametros_de_conexion,
+    es_base_de_test,
+)
 from db.connection import close_pool, get_pool
 from db.migrations import _EJECUTOR_CONFIG_C5, _seed_el_juez_facet, run_migrations
 from db_connect_config import db_connect_timeout_seconds
@@ -221,6 +226,10 @@ def test_una_base_virgen_nace_con_el_juez_bindeado(monkeypatch):
     asyncio.run(_crear_base_virgen(nombre))
     monkeypatch.setenv("JAX_DB_NAME", nombre)
     try:
+        # The supported fresh-schema composition is the same as the DB CI
+        # job: JAX owns the projects parent, then the platform migration
+        # chain creates identity and applies the JAX-owned B9 migrations.
+        _bootstrap_jax_schema_para_base_de_test(nombre)
         cerebro, juez = asyncio.run(_migrar_y_leer_bindings())
     finally:
         asyncio.run(_dropear_base_virgen(nombre))
@@ -280,6 +289,7 @@ def test_una_base_virgen_no_deja_huecos_en_los_ids_de_model(monkeypatch):
     asyncio.run(_crear_base_virgen(nombre))
     monkeypatch.setenv("JAX_DB_NAME", nombre)
     try:
+        _bootstrap_jax_schema_para_base_de_test(nombre)
         ids = asyncio.run(_migrar_y_leer_ids_de_model())
     finally:
         asyncio.run(_dropear_base_virgen(nombre))

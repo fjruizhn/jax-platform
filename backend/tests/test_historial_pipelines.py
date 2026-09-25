@@ -77,13 +77,13 @@ async def _borrar_uso(tenant_id):
     await sql("DELETE FROM axioma_usage WHERE tenant_id=%s", (tenant_id,))
 
 
-TENANT = "hist-t7"
+TENANT = "701"
 
 
 def test_el_listado_trae_duracion_costo_y_pagina(client):
     """Step 1 del brief, literal: el listado devuelve duracion_s, costo_usd
     y pagina."""
-    duenio = uid(client, "hist-basico", "operator")
+    duenio = uid(client, "hist-basico", "operator", TENANT)
     ahora = time.time()
     pid = str(uuid.uuid4())
     client.portal.call(_insertar_pipeline, pid, duenio, TENANT, "completed", ahora - 12.5, ahora)
@@ -109,7 +109,7 @@ def test_duracion_s_null_si_el_pipeline_puede_seguir_corriendo(client, status):
     (aborted/expired: un /continue los reanuda). Mostrar una duración ahí
     tendría pinta de definitiva y dejaría de ser cierta en cuanto el
     pipeline avance o se continúe."""
-    duenio = uid(client, f"hist-no-final-{status}", "operator")
+    duenio = uid(client, f"hist-no-final-{status}", "operator", TENANT)
     ahora = time.time()
     pid = str(uuid.uuid4())
     client.portal.call(_insertar_pipeline, pid, duenio, TENANT, status, ahora - 5, ahora - 1)
@@ -126,7 +126,7 @@ def test_duracion_s_se_calcula_para_failed_igual_que_completed(client):
     """completed y failed son los ÚNICOS estados sin camino de vuelta a
     correr (ESTADOS_CONTINUABLES no los incluye): ahí sí hay una duración
     definitiva que mostrar."""
-    duenio = uid(client, "hist-failed", "operator")
+    duenio = uid(client, "hist-failed", "operator", TENANT)
     ahora = time.time()
     pid = str(uuid.uuid4())
     client.portal.call(_insertar_pipeline, pid, duenio, TENANT, "failed", ahora - 7.25, ahora)
@@ -144,7 +144,7 @@ def test_costo_usd_no_se_inventa_ni_con_un_registro_de_uso_parecido(client):
     fila de axioma_usage con el mismo tenant/época que PARECE del pipeline,
     costo_usd sigue null -- no se arma un cruce heurístico por ventana de
     tiempo para disfrazarlo de dato verificado (Principio VIII)."""
-    duenio = uid(client, "hist-costo-parecido", "operator")
+    duenio = uid(client, "hist-costo-parecido", "operator", "91234")
     tenant_num = 91234
     ahora = time.time()
     pid = str(uuid.uuid4())
@@ -164,7 +164,7 @@ def test_costo_usd_suma_el_uso_real_del_pipeline_por_pipeline_id(client):
     """Task 7b: con `pipeline_id` en axioma_usage y los escritores de jax
     llenándolo, costo_usd deja de ser null siempre -- suma SOLO las filas de
     ESE pipeline, no las de un pipeline vecino con el mismo tenant."""
-    duenio = uid(client, "hist-costo-real", "operator")
+    duenio = uid(client, "hist-costo-real", "operator", TENANT)
     tenant_num = int(duenio)  # axioma_usage.tenant_id es INT; no participa del
                               # cruce (que es por pipeline_id), así que alcanza
                               # con un número propio de este test para poder
@@ -192,7 +192,7 @@ def test_costo_usd_suma_lo_que_conoce_cuando_una_fila_no_tiene_precio(client):
     que documenta record_direct_usage/record_motor_usage) no tira el total a
     null -- SUM() lo ignora y suma lo que SÍ se sabe. Es un total parcial
     real, no un total inventado."""
-    duenio = uid(client, "hist-costo-parcial", "operator")
+    duenio = uid(client, "hist-costo-parcial", "operator", TENANT)
     tenant_num = int(duenio)
     ahora = time.time()
     pid = str(uuid.uuid4())
@@ -221,7 +221,7 @@ def test_la_consulta_de_costo_usa_el_indice_de_pipeline_sin_filesort_ni_temporar
 
 
 def test_el_tope_fijo_ya_no_corta_el_historial__pagina_con_limite_y_offset(client):
-    duenio = uid(client, "hist-pagina", "operator")
+    duenio = uid(client, "hist-pagina", "operator", TENANT)
     ahora = time.time()
     ids = [str(uuid.uuid4()) for _ in range(3)]
     # ids[0] el más nuevo, ids[2] el más viejo.
