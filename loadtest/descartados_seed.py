@@ -67,26 +67,29 @@ contra `jax_memory_test` directo (no a un clon por sesión): los scripts de
 loadtest/ ya escriben ahí directo (ver historial_seed.py).
 
 USO:
+    set -a; . ~/.config/jax/test-db.env; set +a
     JAX_REPO_PATH=/home/fruiz/worktrees/jax-master-para-tests \
     python3 loadtest/descartados_seed.py loadtest/_descartados_seed_result.json
 
-Requiere `sudo -n cat /etc/jax/.env` (mismo mecanismo que historial_seed.py).
-NUNCA escribe fuera de `jax_memory_test` -- misma barrera dura que
-historial_seed.py: revienta antes de escribir una sola fila si la conexión
-no es a esa base.
+Las credenciales de conexión salen del entorno del proceso (ver
+`entorno_de_prueba.py`; PASO 0, 2026-09-25 -- mismo mecanismo que
+historial_seed.py, ya no `sudo -n cat /etc/jax/.env`). NUNCA escribe fuera
+de `jax_memory_test` -- misma barrera dura que historial_seed.py: revienta
+antes de escribir una sola fila si la conexión no es a esa base.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-import subprocess
 import sys
 import time
 import uuid
 
 import bcrypt
 import pymysql
+
+from entorno_de_prueba import credenciales_de_base_de_prueba
 
 BASE_DE_PRUEBA = "jax_memory_test"  # la ÚNICA base a la que este script escribe
 
@@ -136,17 +139,6 @@ N_EVENTOS_AUDITORIA = 5000
 # ruido.
 N_EVENTOS_AUDITORIA_POCOS = 20
 N_EVENTOS_RUIDO_NUEVO = 2000
-
-
-def _cargar_env_produccion() -> dict:
-    r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
-    env = {}
-    for linea in r.stdout.splitlines():
-        linea = linea.strip()
-        if linea and not linea.startswith("#") and "=" in linea:
-            k, _, v = linea.partition("=")
-            env[k.strip()] = v.strip()
-    return env
 
 
 def _asegurar_esquema(env: dict) -> None:
@@ -296,7 +288,7 @@ def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("uso: descartados_seed.py <ruta-de-salida.json>")
 
-    env = _cargar_env_produccion()
+    env = credenciales_de_base_de_prueba()
 
     print("asegurando el esquema de descartar-pipelines en jax_memory_test "
           "(idempotente, jacobs.store.init_tables)...", file=sys.stderr)

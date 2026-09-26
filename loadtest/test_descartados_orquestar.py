@@ -1,5 +1,5 @@
-"""Tests puros (sin red, sin DB, sin tocar /etc/jax/.env de verdad -- la
-lectura de producción se monkeypatchea siempre) para
+"""Tests puros (sin red, sin DB, sin sudo, sin tocar /etc/jax/.env de verdad
+-- las credenciales de la base de PRUEBA se monkeypatchean siempre) para
 `descartados_orquestar.py`.
 
 Mismo hallazgo de seguridad que `test_historial_orquestar.py` (jax-platform#146,
@@ -9,6 +9,12 @@ es la barrera dura que revienta si por algún motivo coinciden. Las dos
 funciones están duplicadas (no importadas) entre los dos orquestadores --
 ver la nota de módulo de descartados_orquestar.py -- así que llevan su
 propio test, no comparten el de historial.
+
+PASO 0 (2026-09-25): `construir_env()` ya no lee `/etc/jax/.env` con `sudo`
+-- las credenciales de conexión salen de
+`entorno_de_prueba.credenciales_de_base_de_prueba()`, importada en este
+módulo como `do.credenciales_de_base_de_prueba`. Los tests de abajo la
+monkeypatchean a ELLA (no ya a `_cargar_env_produccion`, que se retiró).
 
 `python3 -m pytest loadtest/test_descartados_orquestar.py -q` (no forma
 parte de los tres pisos de CI de `backend/`; corre en el job `loadtest-tests`).
@@ -25,9 +31,8 @@ import descartados_orquestar as do  # noqa: E402
 
 def test_construir_env_genera_su_propia_llave_distinta_de_produccion(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        do, "_cargar_env_produccion",
-        lambda: {"JAX_JWT_SECRET": "secreto-de-produccion-fijo-de-prueba",
-                 "JAX_DB_HOST": "127.0.0.1", "JAX_DB_PORT": "3308",
+        do, "credenciales_de_base_de_prueba",
+        lambda: {"JAX_DB_HOST": "127.0.0.1", "JAX_DB_PORT": "3308",
                  "JAX_DB_USER": "u", "JAX_DB_PASSWORD": "p"},
     )
     env = do.construir_env(tmp_path)
@@ -39,16 +44,33 @@ def test_construir_env_genera_su_propia_llave_distinta_de_produccion(tmp_path, m
 
 
 def test_construir_env_genera_una_llave_distinta_en_cada_llamada(tmp_path, monkeypatch):
-    monkeypatch.setattr(do, "_cargar_env_produccion", lambda: {"JAX_JWT_SECRET": "produccion"})
+    monkeypatch.setattr(do, "credenciales_de_base_de_prueba", lambda: {})
     env1 = do.construir_env(tmp_path)
     env2 = do.construir_env(tmp_path)
     assert env1["JAX_JWT_SECRET"] != env2["JAX_JWT_SECRET"]
 
 
 def test_construir_env_fija_jax_db_name_a_la_base_de_test(tmp_path, monkeypatch):
-    monkeypatch.setattr(do, "_cargar_env_produccion", lambda: {"JAX_DB_NAME": "jax_memory"})
+    monkeypatch.setattr(do, "credenciales_de_base_de_prueba", lambda: {})
     env = do.construir_env(tmp_path)
     assert env["JAX_DB_NAME"] == do.BASE_DE_PRUEBA == "jax_memory_test"
+
+
+def test_construir_env_no_corre_sudo(tmp_path, monkeypatch):
+    """PASO 0: si alguien reintroduce la lectura directa de /etc/jax/.env,
+    este test explota antes que ningún otro."""
+    import subprocess
+
+    def _sudo_prohibido(*args, **kwargs):
+        raise AssertionError("construir_env() no debe invocar subprocess.run para credenciales")
+
+    monkeypatch.setattr(subprocess, "run", _sudo_prohibido)
+    monkeypatch.setattr(
+        do, "credenciales_de_base_de_prueba",
+        lambda: {"JAX_DB_HOST": "127.0.0.1", "JAX_DB_PORT": "3308", "JAX_DB_USER": "u", "JAX_DB_PASSWORD": "p"},
+    )
+    env = do.construir_env(tmp_path)
+    assert env["JAX_DB_HOST"] == "127.0.0.1"
 
 
 def test_abortar_si_coincide_con_produccion_no_lanza_si_son_distintos():

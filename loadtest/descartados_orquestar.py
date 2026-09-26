@@ -22,12 +22,16 @@ producción (jax-platform#146, ronda 7) -- ver `_abortar_si_el_secreto_de_carga_
 USO (desde la raíz del repo, con backend/requirements.txt instalado y
 JAX_REPO_PATH apuntando a un checkout de jax con jax#257+jax#259 --
 ver descartados_seed.py):
+    set -a; . ~/.config/jax/test-db.env; set +a
     JAX_REPO_PATH=/home/fruiz/worktrees/jax-master-para-tests \
+    JAX_CONFIG_PATH=/home/fruiz/worktrees/jax-master-para-tests/config/config.toml \
     python3 loadtest/descartados_orquestar.py
     CARGA_RAPIDA=1 ... python3 loadtest/descartados_orquestar.py   # solo c=1
 
-Requiere `sudo -n cat /etc/jax/.env` y que `jax_memory_test` exista. NUNCA
-toca `jax_memory` ni los puertos 7777/8080 -- `_verificar_no_apunta_a_produccion()`
+Las credenciales de conexión salen del entorno del proceso (ver
+`entorno_de_prueba.py`; PASO 0, 2026-09-25 -- ya no `sudo -n cat
+/etc/jax/.env`) y `jax_memory_test` tiene que existir. NUNCA toca
+`jax_memory` ni los puertos 7777/8080 -- `_verificar_no_apunta_a_produccion()`
 revienta ANTES de levantar nada si algo los pisa.
 
 Los resultados quedan en loadtest/_descartados_resultados.json (no se
@@ -52,6 +56,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+
+from entorno_de_prueba import credenciales_de_base_de_prueba, secreto_de_produccion_para_comparar
 from jose import jwt as _jwt
 
 # ---------------------------------------------------------------------------
@@ -74,17 +80,6 @@ N_POR_NIVEL = {1: 200}  # default para el resto: min(2000, c*20)
 
 def _n_para(c: int) -> int:
     return N_POR_NIVEL.get(c, min(2000, c * 20))
-
-
-def _cargar_env_produccion() -> dict:
-    r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
-    env = {}
-    for linea in r.stdout.splitlines():
-        linea = linea.strip()
-        if linea and not linea.startswith("#") and "=" in linea:
-            k, _, v = linea.partition("=")
-            env[k.strip()] = v.strip()
-    return env
 
 
 def _abortar_si_el_secreto_de_carga_coincide_con_produccion(
@@ -121,11 +116,14 @@ def _verificar_no_apunta_a_produccion(env: dict) -> None:
 
 def construir_env(tmp: Path) -> dict:
     env = dict(os.environ)
-    env.update(_cargar_env_produccion())
+    # PASO 0 (2026-09-25) -- ver la nota de historial_orquestar.py::construir_env:
+    # sólo las cuatro credenciales de conexión a MariaDB, del entorno de
+    # ESTE proceso, nunca de /etc/jax/.env.
+    env.update(credenciales_de_base_de_prueba())
     env["JAX_DB_NAME"] = BASE_DE_PRUEBA
     # SEGURIDAD (jax-platform#146, ronda 7) -- ver la nota de
     # historial_orquestar.py::construir_env, mismo motivo exacto: llave
-    # propia de la corrida, nunca la de `_cargar_env_produccion()`.
+    # propia de la corrida, nunca la de producción.
     env["JAX_JWT_SECRET"] = secrets.token_urlsafe(48)
     env["LAS_MANOS_URL"] = FAKE_JACOBS_URL
     env["JACOBS_URL"] = f"{FAKE_JACOBS_URL}/jacobs"
@@ -306,9 +304,15 @@ async def main_async() -> None:
 
         # SEGURIDAD (jax-platform#146, ronda 7): el secreto de FIRMA se lee
         # del proceso YA LEVANTADO, nunca del `env` en memoria de este
-        # script, y se compara contra el de producción releído aparte.
+        # script. PASO 0 (2026-09-25): la comparación contra el de
+        # producción ya no lee /etc/jax/.env con sudo -- el operador exporta
+        # JAX_JWT_SECRET_DE_PRODUCCION a mano si la quiere; ausente, se
+        # avisa y se sigue sin ella.
         jwt_secret_de_carga = pares.get(b"JAX_JWT_SECRET", b"").decode()
-        jwt_secret_de_produccion = _cargar_env_produccion().get("JAX_JWT_SECRET")
+        jwt_secret_de_produccion = secreto_de_produccion_para_comparar("JAX_JWT_SECRET_DE_PRODUCCION")
+        if jwt_secret_de_produccion is None:
+            print("[orquestador] JAX_JWT_SECRET_DE_PRODUCCION no está en el entorno: "
+                  "se sigue sin comparar contra el secreto real de producción", file=sys.stderr)
         _abortar_si_el_secreto_de_carga_coincide_con_produccion(
             jwt_secret_de_carga, jwt_secret_de_produccion)
 

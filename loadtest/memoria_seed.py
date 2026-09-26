@@ -28,14 +28,15 @@ USO:
 Requiere que la base ya tenga tenant_id=1 (la crea `db/seed.run_seed()` al
 arrancar el backend contra esa base) y el esquema de `facts` con
 `verified_by`/`superseded_by_user`/`idx_facts_revision` ya migrado (lo trae
-el clon de jax_memory_test). Requiere `sudo -n cat /etc/jax/.env` para las
-credenciales de conexion.
+el clon de jax_memory_test). Las credenciales de conexión salen del entorno
+del proceso (ver `entorno_de_prueba.py`; PASO 0, 2026-09-25 -- ya no
+`sudo -n cat /etc/jax/.env`): `set -a; . ~/.config/jax/test-db.env; set +a`
+antes de correr este script.
 """
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import time
 import uuid
@@ -43,6 +44,8 @@ from datetime import datetime, timedelta
 
 import numpy as np
 import pymysql
+
+from entorno_de_prueba import credenciales_de_base_de_prueba
 
 DIM = 1024
 N_TOTAL = 10_000
@@ -85,17 +88,6 @@ N_CADENAS_SINTESIS = int(os.environ.get("MEMORIA_SEED_N_CADENAS_SINTESIS", "200"
 # que se pida a proposito.
 N_CADENAS_LARGAS = int(os.environ.get("MEMORIA_SEED_N_CADENAS_LARGAS", "0"))
 PROFUNDIDAD_CADENA_LARGA = int(os.environ.get("MEMORIA_SEED_PROFUNDIDAD_CADENA_LARGA", "10"))
-
-
-def _cargar_env_produccion() -> dict:
-    r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
-    env = {}
-    for linea in r.stdout.splitlines():
-        linea = linea.strip()
-        if linea and not linea.startswith("#") and "=" in linea:
-            k, _, v = linea.partition("=")
-            env[k.strip()] = v.strip()
-    return env
 
 
 def _unit(v: np.ndarray) -> np.ndarray:
@@ -170,7 +162,7 @@ def main() -> None:
     base_de_prueba = sys.argv[1]
     salida_path = sys.argv[2]
 
-    env = _cargar_env_produccion()
+    env = credenciales_de_base_de_prueba()
     conn = pymysql.connect(
         host=env["JAX_DB_HOST"], port=int(env["JAX_DB_PORT"]),
         user=env["JAX_DB_USER"], password=env["JAX_DB_PASSWORD"],

@@ -16,13 +16,19 @@ ENDPOINTS MEDIDOS:
 
 USO (desde la raíz del repo, con las dependencias de backend/requirements.txt
 instaladas -- fastapi, uvicorn, httpx, pymysql, bcrypt, python-jose):
+    set -a; . ~/.config/jax/test-db.env; set +a
+    JAX_REPO_PATH=/ruta/a/un/checkout/de/jax JAX_CONFIG_PATH=$JAX_REPO_PATH/config/config.toml \
     python3 loadtest/historial_orquestar.py
     CARGA_RAPIDA=1 python3 loadtest/historial_orquestar.py   # solo c=1, para probar el arnés
 
-Requiere `sudo -n cat /etc/jax/.env` (credenciales de conexión) y que
-`jax_memory_test` exista con el esquema vigente. NUNCA toca `jax_memory` ni
-los puertos 7777/8080 -- ver `_verificar_no_apunta_a_produccion()`, que
-revienta ANTES de levantar nada si algo los pisa.
+Las credenciales de conexión salen del entorno del proceso (ver
+`entorno_de_prueba.py`; PASO 0, 2026-09-25 -- ya no `sudo -n cat
+/etc/jax/.env`, que además copiaba de paso `JAX_REPO_PATH`/`JAX_CONFIG_PATH`
+de producción: ahora, igual que la suite de pytest del backend, los pone
+quien corre el script). Requiere que `jax_memory_test` exista con el
+esquema vigente. NUNCA toca `jax_memory` ni los puertos 7777/8080 -- ver
+`_verificar_no_apunta_a_produccion()`, que revienta ANTES de levantar nada
+si algo los pisa.
 
 Los resultados quedan en loadtest/_resultados.json (no se commitea: es
 la salida de una corrida, no la herramienta). Los NÚMEROS que respalda
@@ -47,6 +53,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+
+from entorno_de_prueba import credenciales_de_base_de_prueba, secreto_de_produccion_para_comparar
 
 # ---------------------------------------------------------------------------
 # CONSTANTES DE LA CORRIDA -- visibles acá, no enterradas en el cuerpo. Los
@@ -74,17 +82,6 @@ N_POR_NIVEL_DETALLE = {1: 100}     # default para el resto: min(1000, c*10) -- v
 
 def _n_para(c: int, tope: int, factor: int, especiales: dict) -> int:
     return especiales.get(c, min(tope, c * factor))
-
-
-def _cargar_env_produccion() -> dict:
-    r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
-    env = {}
-    for linea in r.stdout.splitlines():
-        linea = linea.strip()
-        if linea and not linea.startswith("#") and "=" in linea:
-            k, _, v = linea.partition("=")
-            env[k.strip()] = v.strip()
-    return env
 
 
 def _abortar_si_el_secreto_de_carga_coincide_con_produccion(
@@ -123,21 +120,29 @@ def _verificar_no_apunta_a_produccion(env: dict) -> None:
 
 def construir_env(seed: dict, tmp: Path) -> dict:
     env = dict(os.environ)
-    env.update(_cargar_env_produccion())
+    # PASO 0 (2026-09-25): antes `env.update(_cargar_env_produccion())`
+    # copiaba `/etc/jax/.env` de producción ENTERO (JWT y Fernet
+    # incluidos) -- `credenciales_de_base_de_prueba()` sólo trae las
+    # cuatro variables de conexión a MariaDB, tomadas del entorno de ESTE
+    # proceso (quien corre el script las carga, ver el docstring del
+    # módulo). `JAX_REPO_PATH`/`JAX_CONFIG_PATH`, que antes también
+    # llegaban de ese archivo, ahora los tiene que poner quien corre el
+    # script -- igual que la suite de pytest del backend.
+    env.update(credenciales_de_base_de_prueba())
     # AISLAMIENTO -- mismo método que backend/tests/conftest.py y que la
     # ronda de carga anterior (docs/carga-prevuelo-y-continuar-2026-09-17.md).
     env["JAX_DB_NAME"] = BASE_DE_PRUEBA
     # SEGURIDAD (punto 7, cierre jax-platform#146, ronda 7 -- pre-existente,
     # mismo hallazgo que ya se había corregido en
     # memoria_levantar_entorno.py::construir_env en la ronda 5, pero nunca se
-    # portó acá): sin esta línea, `env` (arriba) sigue trayendo el
-    # `JAX_JWT_SECRET` de PRODUCCIÓN (de `_cargar_env_produccion()`), y el
-    # backend de esta carga firmaba Y verificaba tokens con esa MISMA llave
-    # -- cualquier token minteado acá era válido también contra producción.
-    # El entorno de carga genera su PROPIA llave, aleatoria, nueva en cada
-    # corrida -- `main_async()` la lee de vuelta del proceso YA LEVANTADO
-    # (`/proc/<pid>/environ`, nunca de este `env` en memoria) y aborta si
-    # por algún motivo coincidiera con la de producción.
+    # portó acá): el backend de esta carga firma y verifica tokens con SU
+    # PROPIA llave, aleatoria, nueva en cada corrida -- nunca con la de
+    # producción (que además, desde PASO 0, ya ni siquiera puede llegar a
+    # `env` por accidente: ver el comentario de arriba). `main_async()` la
+    # lee de vuelta del proceso YA LEVANTADO (`/proc/<pid>/environ`, nunca
+    # de este `env` en memoria) y aborta si por algún motivo coincidiera
+    # con la de producción, cuando esa comparación está disponible (ver
+    # `secreto_de_produccion_para_comparar`).
     env["JAX_JWT_SECRET"] = secrets.token_urlsafe(48)
     env["LAS_MANOS_URL"] = FAKE_JACOBS_URL
     env["JACOBS_URL"] = f"{FAKE_JACOBS_URL}/jacobs"
@@ -317,7 +322,15 @@ async def main_async() -> None:
         # válidos también contra producción. Nunca se imprime ninguno de
         # los dos secretos.
         jwt_secret_de_carga = pares.get(b"JAX_JWT_SECRET", b"").decode()
-        jwt_secret_de_produccion = _cargar_env_produccion().get("JAX_JWT_SECRET")
+        # PASO 0 (2026-09-25): ya no se lee /etc/jax/.env con sudo para esta
+        # comparación -- el operador exporta JAX_JWT_SECRET_DE_PRODUCCION a
+        # mano si quiere que corra (ver entorno_de_prueba.py). Ausente, se
+        # avisa y se sigue: la barrera de fondo (que el backend de carga ya
+        # no puede heredar el secreto real por accidente) no depende de esto.
+        jwt_secret_de_produccion = secreto_de_produccion_para_comparar("JAX_JWT_SECRET_DE_PRODUCCION")
+        if jwt_secret_de_produccion is None:
+            print("[orquestador] JAX_JWT_SECRET_DE_PRODUCCION no está en el entorno: "
+                  "se sigue sin comparar contra el secreto real de producción", file=sys.stderr)
         _abortar_si_el_secreto_de_carga_coincide_con_produccion(
             jwt_secret_de_carga, jwt_secret_de_produccion)
 

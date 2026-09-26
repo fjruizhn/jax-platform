@@ -1054,15 +1054,17 @@ jobs:
   # viven en `loadtest/`, fuera de `backend/`, y sus modulos
   # (`memoria_medir_fundir.py`/`memoria_levantar_entorno.py`/
   # `historial_orquestar.py`) son SCRIPTS OPERATIVOS que, corridos de verdad,
-  # copian credenciales de PRODUCCION al entorno que levantan
-  # (`_cargar_env_produccion`, `sudo -n cat /etc/jax/.env`) -- mezclarlos con
+  # arman el entorno del backend que levantan con credenciales de la base de
+  # PRUEBA tomadas del entorno del proceso (`entorno_de_prueba.py`, PASO 0,
+  # 2026-09-25 -- antes `_cargar_env_produccion`/`sudo -n cat
+  # /etc/jax/.env` copiaba TODO el `.env` de producción) -- mezclarlos con
   # la suite de `backend/tests/` (que tiene su propio conftest y barreras
   # contra produccion) es exactamente el tipo de mezcla que este repo evita.
   # Las funciones que SI se testean aca (`armar_resultado`,
   # `escribir_info_json`, `construir_env`,
   # `_abortar_si_el_secreto_de_carga_coincide_con_produccion`) son puras o
-  # mockean el unico borde de I/O (`_cargar_env_produccion`) -- nunca tocan
-  # DB, red, ni `/etc/jax/.env` de verdad -- asi que un job minimo, sin
+  # mockean el unico borde de I/O (`credenciales_de_base_de_prueba`) -- nunca
+  # tocan DB, red, ni `/etc/jax/.env` de verdad -- asi que un job minimo, sin
   # MariaDB ni el clon de `jax`, alcanza. `httpx` se instala aparte porque
   # los modulos lo importan a nivel de módulo (para el resto de sus
   # funciones, que este job no ejercita) y sin él ni siquiera se puede hacer

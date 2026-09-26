@@ -15,15 +15,17 @@ PARA FIRMAR el token con el que medía. Ahora vive en el repo, junto a
 LEVANTADO, leído vía `/proc/<pid>/environ` (mismo patrón que
 `memoria_medir.py`) -- nunca con el de producción.
 
-m6/m4 (cierre jax-platform#146, texto corregido en la ronda 7): esto NO
-quiere decir que `/etc/jax/.env` deje de leerse -- SÍ se lee entero
-(`_run` de abajo, `sudo -n cat /etc/jax/.env`), `JAX_JWT_SECRET` de
-producción incluido, y ese valor de producción SÍ se usa: sólo para
-COMPARARLO (`!=`) contra el secreto de carga, como barrera de seguridad
-antes de medir (si algún día coincidieran, el script aborta en vez de
+m6/m4 (cierre jax-platform#146, texto corregido en la ronda 7; PASO 0,
+2026-09-25, corregido de nuevo): esto YA NO lee `/etc/jax/.env` con `sudo`.
+Las credenciales de conexión a MariaDB salen de `entorno_de_prueba.py`
+(entorno del proceso), y el `JAX_JWT_SECRET` de producción para la
+comparación de seguridad -- sólo para COMPARARLO (`!=`) contra el secreto
+de carga, nunca para firmar ni para imprimir -- es opcional: el operador lo
+exporta a mano como `JAX_JWT_SECRET_DE_PRODUCCION` si quiere que la
+comparación corra (si algún día coincidieran, el script aborta en vez de
 medir sobre un entorno que también podría emitir tokens válidos contra
-producción). Lo que nunca pasa es que ese secreto de producción se use
-para FIRMAR, ni que se imprima. El JSON crudo de resultados queda en
+producción); ausente, se avisa y se sigue sin ella. El JSON crudo de
+resultados queda en
 `loadtest/_memoria_resultados_fundir.json`, mismo lugar y misma
 convención que `loadtest/_memoria_resultados.json` (de `/grupos`).
 
@@ -34,7 +36,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -43,6 +44,7 @@ import httpx
 
 LOADTEST_DIR = Path(__file__).parent
 
+from entorno_de_prueba import credenciales_de_base_de_prueba, secreto_de_produccion_para_comparar  # noqa: E402
 from memoria_levantar_entorno import (  # noqa: E402
     RUN_DIR, abortar_si_el_secreto_de_carga_coincide_con_produccion, leer_environ_de_proceso,
 )
@@ -86,20 +88,17 @@ async def main_async(base_de_prueba: str, backend_url: str, n_max: int) -> None:
     import pymysql
     from jose import jwt as _jwt
 
-    r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
-    env = {}
-    for linea in r.stdout.splitlines():
-        linea = linea.strip()
-        if linea and not linea.startswith("#") and "=" in linea:
-            k, _, v = linea.partition("=")
-            env[k.strip()] = v.strip()
+    # PASO 0 (2026-09-25): las credenciales de conexión salen del entorno
+    # de este proceso (ver entorno_de_prueba.py), nunca de /etc/jax/.env.
+    env = credenciales_de_base_de_prueba()
 
-    # SEGURIDAD (ronda 5; comentario corregido en el cierre, ronda 6, m6):
-    # el secreto de FIRMA sale del proceso de carga YA LEVANTADO, nunca de
-    # producción -- pero `env` (arriba) parsea el `/etc/jax/.env` entero, y
-    # eso incluye el `JAX_JWT_SECRET` de producción, usado a propósito acá
-    # sólo para COMPARARLO (`!=`) contra el de carga, nunca para firmar ni
-    # imprimirlo (mismo patrón y misma nota que `memoria_medir.py`).
+    # SEGURIDAD (ronda 5; comentario corregido en el cierre, ronda 6, m6;
+    # PASO 0, 2026-09-25, corregido de nuevo): el secreto de FIRMA sale del
+    # proceso de carga YA LEVANTADO, nunca de producción. La comparación
+    # contra el secreto de producción (nunca para firmar ni imprimir) es
+    # opcional: sólo corre si el operador exportó
+    # `JAX_JWT_SECRET_DE_PRODUCCION` a mano (mismo patrón y misma nota que
+    # `memoria_medir.py`).
     #
     # MINOR (revision adversarial, ronda 8 -- consistencia): el chequeo
     # ahora vive en `memoria_levantar_entorno.py`, compartido con
@@ -109,8 +108,12 @@ async def main_async(base_de_prueba: str, backend_url: str, n_max: int) -> None:
     info = json.loads((RUN_DIR / "info.json").read_text())
     environ_de_carga = leer_environ_de_proceso(info["pid"])
     jwt_secret_de_carga = environ_de_carga["JAX_JWT_SECRET"]
+    jwt_secret_de_produccion = secreto_de_produccion_para_comparar("JAX_JWT_SECRET_DE_PRODUCCION")
+    if jwt_secret_de_produccion is None:
+        print("[fundir] JAX_JWT_SECRET_DE_PRODUCCION no está en el entorno: "
+              "se sigue sin comparar contra el secreto real de producción", file=sys.stderr)
     abortar_si_el_secreto_de_carga_coincide_con_produccion(
-        jwt_secret_de_carga, env.get("JAX_JWT_SECRET"))
+        jwt_secret_de_carga, jwt_secret_de_produccion)
 
     conn = pymysql.connect(host=env["JAX_DB_HOST"], port=int(env["JAX_DB_PORT"]), user=env["JAX_DB_USER"],
                             password=env["JAX_DB_PASSWORD"], database=base_de_prueba, charset="utf8mb4")

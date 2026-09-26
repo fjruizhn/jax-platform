@@ -88,36 +88,30 @@ async def correr_tanda(cliente_factory, url: str, params: dict, headers: dict, c
 
 
 async def main_async(base_de_prueba: str, backend_url: str) -> None:
-    import subprocess
-
     import pymysql
     from jose import jwt as _jwt
 
+    from entorno_de_prueba import credenciales_de_base_de_prueba, secreto_de_produccion_para_comparar
     from memoria_levantar_entorno import (
         RUN_DIR, abortar_si_el_secreto_de_carga_coincide_con_produccion, leer_environ_de_proceso,
     )
 
-    r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
-    env = {}
-    for linea in r.stdout.splitlines():
-        linea = linea.strip()
-        if linea and not linea.startswith("#") and "=" in linea:
-            k, _, v = linea.partition("=")
-            env[k.strip()] = v.strip()
+    # PASO 0 (2026-09-25): las credenciales de conexión a MariaDB salen del
+    # entorno de este proceso (ver entorno_de_prueba.py), nunca de
+    # /etc/jax/.env -- son las mismas para cualquier base de esa instancia.
+    env = credenciales_de_base_de_prueba()
 
     # SEGURIDAD (revision adversarial de jax-platform PR 146, ronda 5;
-    # comentario corregido en el cierre, ronda 6, m6): el backend de carga
-    # (memoria_levantar_entorno.py) firma con SU PROPIA `JAX_JWT_SECRET`,
-    # generada al azar -- NUNCA la de produccion para FIRMAR ni VERIFICAR
-    # tokens. Pero `env` (arriba) SI parsea el `/etc/jax/.env` entero, y eso
-    # incluye el `JAX_JWT_SECRET` de produccion -- se usa, a proposito, para
-    # el chequeo de abajo: COMPARARLO (con `!=`) contra el del backend de
-    # carga, nunca para firmar ni para imprimirlo. El resto de `env` sigue
-    # haciendo falta para las credenciales de conexion a MariaDB, que son
-    # las mismas para cualquier base de esa instancia. El secreto de firma
-    # se lee del proceso YA LEVANTADO -- `info.json` (el mismo que escribe
-    # el lanzador) trae el `pid`; `/proc/<pid>/environ` es la unica fuente
-    # que no requiere volver a escribir el secreto en ningun archivo.
+    # comentario corregido en el cierre, ronda 6, m6; PASO 0, 2026-09-25,
+    # corregido de nuevo): el backend de carga (memoria_levantar_entorno.py)
+    # firma con SU PROPIA `JAX_JWT_SECRET`, generada al azar -- NUNCA la de
+    # produccion para FIRMAR ni VERIFICAR tokens. La comparación contra el
+    # secreto de producción (con `!=`, nunca para firmar ni imprimir) es
+    # opcional: sólo corre si el operador exportó
+    # `JAX_JWT_SECRET_DE_PRODUCCION` a mano. El secreto de firma se lee del
+    # proceso YA LEVANTADO -- `info.json` (el mismo que escribe el
+    # lanzador) trae el `pid`; `/proc/<pid>/environ` es la unica fuente que
+    # no requiere volver a escribir el secreto en ningun archivo.
     #
     # MINOR (revision adversarial, ronda 8 -- consistencia): el chequeo
     # ahora vive en `memoria_levantar_entorno.py`, compartido con
@@ -127,8 +121,12 @@ async def main_async(base_de_prueba: str, backend_url: str) -> None:
     info = json.loads((RUN_DIR / "info.json").read_text())
     environ_de_carga = leer_environ_de_proceso(info["pid"])
     jwt_secret_de_carga = environ_de_carga["JAX_JWT_SECRET"]
+    jwt_secret_de_produccion = secreto_de_produccion_para_comparar("JAX_JWT_SECRET_DE_PRODUCCION")
+    if jwt_secret_de_produccion is None:
+        print("[medir] JAX_JWT_SECRET_DE_PRODUCCION no está en el entorno: "
+              "se sigue sin comparar contra el secreto real de producción", file=sys.stderr)
     abortar_si_el_secreto_de_carga_coincide_con_produccion(
-        jwt_secret_de_carga, env.get("JAX_JWT_SECRET"))
+        jwt_secret_de_carga, jwt_secret_de_produccion)
 
     # Barrera dura: no mide si el backend real (segun /proc/<pid>/environ, no
     # esta llamada) no apunta a la base esperada. Se vuelve a verificar por

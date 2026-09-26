@@ -9,23 +9,26 @@ N_USAGE_FILLER filas de relleno (set-based, motor SEQUENCE de MariaDB) para llev
 la tabla al mismo orden de magnitud que la ronda de carga anterior (2026-09-17).
 
 USO:
+    set -a; . ~/.config/jax/test-db.env; set +a
     python3 loadtest/historial_seed.py loadtest/_seed_result.json
 
-Requiere `sudo -n cat /etc/jax/.env` (mismo mecanismo que
-backend/tests/entorno_de_produccion.py) para las credenciales de conexión.
-El resultado (ids sembrados) se escribe en el JSON que se le pasa por
-argumento -- lo consumen historial_orquestar.py y historial_limpiar.py.
+Las credenciales de conexión salen del entorno del proceso (ver
+`entorno_de_prueba.py`; PASO 0, 2026-09-25 -- ya no se leen con
+`sudo -n cat /etc/jax/.env`). El resultado (ids sembrados) se escribe en el
+JSON que se le pasa por argumento -- lo consumen historial_orquestar.py y
+historial_limpiar.py.
 """
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import time
 import uuid
 
 import bcrypt
 import pymysql
+
+from entorno_de_prueba import credenciales_de_base_de_prueba
 
 # ---------------------------------------------------------------------------
 # CONSTANTES DEL PEOR CASO -- visibles acá, no enterradas en el cuerpo.
@@ -40,22 +43,11 @@ MARCADOR_TENANT_FILLER = 999999             # tenant_id del relleno -> se borra 
 TEXTO_ERROR_CHARS = 300                     # tamaño del motivo de error, igual que la ronda anterior
 
 
-def _cargar_env_produccion() -> dict:
-    r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
-    env = {}
-    for linea in r.stdout.splitlines():
-        linea = linea.strip()
-        if linea and not linea.startswith("#") and "=" in linea:
-            k, _, v = linea.partition("=")
-            env[k.strip()] = v.strip()
-    return env
-
-
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("uso: historial_seed.py <ruta-de-salida.json>")
 
-    env = _cargar_env_produccion()
+    env = credenciales_de_base_de_prueba()
     conn = pymysql.connect(
         host=env["JAX_DB_HOST"], port=int(env["JAX_DB_PORT"]),
         user=env["JAX_DB_USER"], password=env["JAX_DB_PASSWORD"],

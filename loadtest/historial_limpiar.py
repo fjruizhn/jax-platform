@@ -10,30 +10,19 @@ o error); se puede correr a mano si una corrida se cortó a la mitad:
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 
 import pymysql
 
+from entorno_de_prueba import credenciales_de_base_de_prueba
 from historial_seed import BASE_DE_PRUEBA
-
-
-def _cargar_env_produccion() -> dict:
-    r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
-    env = {}
-    for linea in r.stdout.splitlines():
-        linea = linea.strip()
-        if linea and not linea.startswith("#") and "=" in linea:
-            k, _, v = linea.partition("=")
-            env[k.strip()] = v.strip()
-    return env
 
 
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("uso: historial_limpiar.py <ruta-al-json-de-historial_seed.py>")
 
-    env = _cargar_env_produccion()
+    env = credenciales_de_base_de_prueba()
     seed = json.loads(open(sys.argv[1]).read())
     conn = pymysql.connect(
         host=env["JAX_DB_HOST"], port=int(env["JAX_DB_PORT"]),

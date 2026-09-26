@@ -131,13 +131,23 @@ def test_main_async_llama_a_armar_resultado_con_los_disponibles_y_los_intentados
     monkeypatch.setattr(mmf, "leer_environ_de_proceso",
                          lambda pid: {"JAX_JWT_SECRET": "secreto-de-carga-nunca-el-de-produccion"})
 
-    def _run_falso(cmd, capture_output, text, check):
-        assert cmd[:3] == ["sudo", "-n", "cat"]
-        salida = ("JAX_DB_HOST=127.0.0.1\nJAX_DB_PORT=18080\nJAX_DB_USER=u\n"
-                   "JAX_DB_PASSWORD=p\nJAX_JWT_SECRET=secreto-de-produccion-nunca-igual-al-de-carga\n")
-        return subprocess.CompletedProcess(cmd, 0, stdout=salida, stderr="")
+    # PASO 0 (2026-09-25): las credenciales ya no salen de `sudo -n cat
+    # /etc/jax/.env` -- `credenciales_de_base_de_prueba()` lee el entorno
+    # del proceso, y la comparación de seguridad usa
+    # `secreto_de_produccion_para_comparar`, también sobre el entorno.
+    monkeypatch.setattr(
+        mmf, "credenciales_de_base_de_prueba",
+        lambda: {"JAX_DB_HOST": "127.0.0.1", "JAX_DB_PORT": "18080", "JAX_DB_USER": "u", "JAX_DB_PASSWORD": "p"},
+    )
+    monkeypatch.setattr(
+        mmf, "secreto_de_produccion_para_comparar",
+        lambda variable: "secreto-de-produccion-nunca-igual-al-de-carga",
+    )
 
-    monkeypatch.setattr(subprocess, "run", _run_falso)
+    def _sudo_prohibido(*args, **kwargs):
+        raise AssertionError("main_async() no debe invocar subprocess.run para credenciales")
+
+    monkeypatch.setattr(subprocess, "run", _sudo_prohibido)
 
     import pymysql
     monkeypatch.setattr(pymysql, "connect", lambda **kwargs: _ConexionFalsa())

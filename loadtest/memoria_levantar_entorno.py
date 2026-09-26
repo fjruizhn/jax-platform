@@ -36,6 +36,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from entorno_de_prueba import credenciales_de_base_de_prueba
+
 LOADTEST_DIR = Path(__file__).parent
 BACKEND_DIR = LOADTEST_DIR.parent / "backend"
 RUN_DIR = LOADTEST_DIR / "_run"
@@ -66,17 +68,6 @@ TENANT_NAME = "Tenant de la carga de Memoria (Task 7)"
 JAX_REPO_GIT_URL = "https://github.com/fjruizhn/Jax.git"
 
 
-def _cargar_env_produccion() -> dict:
-    r = subprocess.run(["sudo", "-n", "cat", "/etc/jax/.env"], capture_output=True, text=True, check=True)
-    env = {}
-    for linea in r.stdout.splitlines():
-        linea = linea.strip()
-        if linea and not linea.startswith("#") and "=" in linea:
-            k, _, v = linea.partition("=")
-            env[k.strip()] = v.strip()
-    return env
-
-
 def _asegurar_checkout_de_jax(tmp: Path, commit: str | None = None) -> tuple[Path, str]:
     """Checkout PROPIO de `jax` para `JAX_REPO_PATH` -- nunca `/home/fruiz/jax`
     ni `/srv/jax-prod/jax` (prohibido, ver el comentario de
@@ -104,8 +95,10 @@ def _asegurar_checkout_de_jax(tmp: Path, commit: str | None = None) -> tuple[Pat
     subprocess.run(["git", "-C", str(destino), "fetch", "--all", "--prune", "--tags"], check=True)
     ref = commit or "origin/master"
     # SEGURIDAD (revision adversarial de jax-platform PR 146, ronda 5): este
-    # lanzador copia credenciales de PRODUCCION al entorno del backend que
-    # arranca (`_cargar_env_produccion`) -- sin este chequeo, un
+    # lanzador copia las credenciales de la base de PRUEBA al entorno del
+    # backend que arranca (`credenciales_de_base_de_prueba()`, PASO 0,
+    # 2026-09-25 -- antes era `_cargar_env_produccion()`, que además traía
+    # TODO `/etc/jax/.env` de producción) -- sin este chequeo, un
     # `commit_de_jax` arbitrario (cualquier rama, cualquier fork con acceso
     # de push, cualquier commit sin revisar) corria CON esas credenciales.
     # `origin/master` ya esta al dia (el `fetch` de arriba corre siempre
@@ -118,9 +111,9 @@ def _asegurar_checkout_de_jax(tmp: Path, commit: str | None = None) -> tuple[Pat
         if ancestro.returncode != 0:
             raise RuntimeError(
                 f"commit_de_jax={commit!r} no es ancestro de origin/master -- "
-                "este lanzador copia credenciales de PRODUCCION al entorno "
-                "que arranca; no corre un commit arbitrario sin pasar por "
-                "revision.")
+                "este lanzador copia credenciales de la base de PRUEBA al "
+                "entorno que arranca; no corre un commit arbitrario sin pasar "
+                "por revision.")
     subprocess.run(["git", "-C", str(destino), "checkout", "--force", "--detach", ref], check=True)
     resuelto = subprocess.run(
         ["git", "-C", str(destino), "rev-parse", "HEAD"],
@@ -132,21 +125,32 @@ def _asegurar_checkout_de_jax(tmp: Path, commit: str | None = None) -> tuple[Pat
 def construir_env(base_de_prueba: str, password_superadmin: str, tmp: Path,
                    commit_de_jax: str | None = None) -> tuple[dict, str]:
     env = dict(os.environ)
-    env.update(_cargar_env_produccion())
+    # PASO 0 (2026-09-25): antes `env.update(_cargar_env_produccion())`
+    # copiaba `/etc/jax/.env` de producción ENTERO (JWT incluido, ver el
+    # comentario de abajo) -- `credenciales_de_base_de_prueba()` sólo trae
+    # las cuatro variables de conexión a MariaDB, del entorno de ESTE
+    # proceso (quien corre el script las carga, ver el docstring del
+    # módulo).
+    env.update(credenciales_de_base_de_prueba())
     env["JAX_DB_NAME"] = base_de_prueba
-    # SEGURIDAD (revision adversarial de jax-platform PR 146, ronda 5):
-    # `_cargar_env_produccion()` copia TODO `/etc/jax/.env`, incluido
-    # `JAX_JWT_SECRET` -- sin esta linea, el backend de carga firmaba (y
-    # verificaba) tokens con la MISMA llave que produccion, y cualquier
-    # script de medicion (memoria_medir.py) podia fabricar un token de
-    # superadmin valido tanto para el backend de carga COMO para
-    # produccion. El entorno de carga genera su PROPIA llave, aleatoria,
-    # nueva en cada corrida -- los scripts de medicion la leen del entorno
-    # del proceso YA LEVANTADO (`/proc/<pid>/environ`, ver `main()` mas
-    # abajo), nunca de `/etc/jax/.env`.
+    # SEGURIDAD (revision adversarial de jax-platform PR 146, ronda 5): el
+    # backend de carga firma (y verifica) con SU PROPIA llave, aleatoria,
+    # nueva en cada corrida -- nunca con la de producción, que además,
+    # desde PASO 0, ya ni siquiera puede llegar a `env` por accidente (ver
+    # el comentario de arriba). Cualquier script de medición (p. ej.
+    # memoria_medir.py) que intentara fabricar un token con la llave de
+    # producción no podría: los scripts de medición leen la llave de CARGA
+    # del entorno del proceso YA LEVANTADO (`/proc/<pid>/environ`, ver
+    # `main()` más abajo), nunca de `/etc/jax/.env`.
     env["JAX_JWT_SECRET"] = secrets.token_urlsafe(48)
     ruta_jax, jax_commit_resuelto = _asegurar_checkout_de_jax(tmp, commit_de_jax)
     env["JAX_REPO_PATH"] = str(ruta_jax)
+    # PASO 0 (2026-09-25): antes esto también llegaba de /etc/jax/.env (el
+    # config.toml de PRODUCCIÓN). Con un checkout propio de `jax` ya
+    # clonado (arriba) para JAX_REPO_PATH, su propio config.toml es la
+    # fuente correcta -- reproducible, sin depender de ningún archivo de
+    # producción.
+    env["JAX_CONFIG_PATH"] = str(ruta_jax / "config" / "config.toml")
     env["LAS_MANOS_URL"] = "http://127.0.0.1:9"
     env["JACOBS_URL"] = "http://127.0.0.1:9/jacobs"
     env["JAX_PLATFORM_URL"] = BACKEND_URL
@@ -204,13 +208,18 @@ def leer_environ_de_proceso(pid: int) -> dict[str, str]:
     de produccion; el entorno de carga tiene la suya propia, generada en
     `construir_env`).
 
-    m6/m4 (cierre jax-platform#146, texto corregido en la ronda 7): esto NO
-    significa que los scripts de medicion dejen de leer `/etc/jax/.env` --
-    lo leen entero (`sudo -n cat`), `JAX_JWT_SECRET` de produccion
-    incluido, y ese valor SI se usa, pero sólo para COMPARARLO (`!=`)
-    contra el secreto de carga que devuelve esta función -- nunca para
-    firmar, nunca para imprimir. Es la barrera de seguridad de ronda 5: si
-    algún día coincidieran, el script aborta en vez de medir."""
+    m6/m4 (cierre jax-platform#146, texto corregido en la ronda 7; PASO 0,
+    2026-09-25, corregido de nuevo): los scripts de medición YA NO leen
+    `/etc/jax/.env` con `sudo` para la comparación de seguridad -- el
+    operador exporta `JAX_JWT_SECRET_DE_PRODUCCION` a mano si quiere que
+    corra (ver `entorno_de_prueba.secreto_de_produccion_para_comparar`).
+    Cuando está presente, ese valor SI se usa, pero sólo para COMPARARLO
+    (`!=`) contra el secreto de carga que devuelve esta función -- nunca
+    para firmar, nunca para imprimir. Es la barrera de seguridad de ronda 5:
+    si algún día coincidieran, el script aborta en vez de medir. Ausente,
+    se avisa y se sigue: la barrera de fondo (que el backend de carga ya no
+    puede heredar el secreto real por accidente, ver `construir_env`) no
+    depende de esta comparación."""
     environ = Path(f"/proc/{pid}/environ").read_bytes()
     pares = dict(p.split(b"=", 1) for p in environ.split(b"\x00") if b"=" in p)
     return {k.decode(): v.decode() for k, v in pares.items()}
