@@ -133,6 +133,7 @@ from jax.memory.b9 import (
 )
 from jax.memory.b9_mariadb import MariaDBB9Reader
 from jax.memory.scope_authority import ProjectScopeAuthorityResolver
+from jax_engine.memory_prompt_selection import limits_from_environment, select_memory_context, selected_kind_counts
 
 _memory = None              # instancia única (lazy)
 _memory_ready = False
@@ -301,7 +302,12 @@ async def _prompt_memory_context(scope: ScopeContext) -> PromptMemoryContext:
             Visibility.PROJECT_SHARED if scope.project_id else Visibility.TENANT_SHARED,
         )
         reader = MariaDBB9Reader(pool, ProjectScopeAuthorityResolver(pool))
-        return PromptMemoryContext(await reader.retrieve_authorized(request, limit=20))
+        limits = limits_from_environment()
+        candidates = await reader.retrieve_authorized(request, limit=limits.candidates)
+        context = select_memory_context(candidates, limits)
+        logger.info("B9 memory selection: candidate_count=%s selected_count=%s kinds=%s rendered_chars=%s",
+                    len(candidates), len(context.entries), selected_kind_counts(context), len(context.render()))
+        return context
     except Exception as exc:
         logger.error("B9 memory retrieval failed", exc_info=True)
         raise B9MemoryUnavailable("B9 memory retrieval failed") from exc
