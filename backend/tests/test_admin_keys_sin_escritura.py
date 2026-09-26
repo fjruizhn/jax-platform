@@ -55,7 +55,14 @@ def test_el_modulo_no_escribe_el_archivo_de_entorno():
 
 def test_la_barrera_de_escritura_en_produccion_muerde():
     """Una barrera que nunca se ejercita no es una barrera. Este control la
-    hace fallar a propósito: si alguien la desarma, esto se pone rojo."""
+    hace fallar a propósito: si alguien la desarma, esto se pone rojo.
+
+    PASO 0 (2026-09-25): la sección que seguía acá probando que la suite
+    podía LEER `/etc/jax/.env` con `sudo -n cat` se retiró junto con
+    `tests/entorno_de_produccion.py` -- la suite ya no lee ese archivo bajo
+    ninguna circunstancia (ver `tests/entorno_de_test.py` y
+    `test_conftest_sin_produccion.py`). Lo que queda acá es sólo la barrera
+    de ESCRITURA, que protege un incidente distinto (B1.4) y sigue vigente."""
     import pytest
 
     from conftest import EscrituraEnProduccion
@@ -64,18 +71,18 @@ def test_la_barrera_de_escritura_en_produccion_muerde():
         open("/etc/jax/.env", "w")
     assert "/etc/jax/.env" in str(exc.value)
 
-    # La LECTURA directa dejó de estar permitida para el operador el 2026-09-17: el archivo es
-    # root:jaxsvc 640 y la suite lo lee con `sudo -n cat` (tests/entorno_de_produccion.py). Acá se
-    # fija lo que importa: quien no es el dueño recibe PermissionError (no la barrera de escritura,
-    # que da EscrituraEnProduccion), y la suite igual pudo cargar el entorno.
-    import os
 
-    from tests.entorno_de_produccion import cargar
+def test_el_sembrado_legado_de_llaves_no_revienta_sin_permiso(tmp_path, monkeypatch):
+    """`/api/admin/keys` leía el .env en caliente: con el archivo del servicio devolvía 500.
 
-    if os.path.exists("/etc/jax/.env") and os.geteuid() != 0:
-        try:
-            with open("/etc/jax/.env") as f:
-                f.readline()
-        except PermissionError:  # fail-soft: ES lo esperado para el operador desde que el archivo es root:jaxsvc 640; lo que este control fija es que la barrera de ESCRITURA muerda
-            pass  # lo esperado para el operador
-        assert cargar("/etc/jax/.env"), "la suite tiene que poder cargar el entorno con sudo -n"
+    Movido acá desde `tests/test_entorno_de_produccion.py` (PASO 0,
+    2026-09-25, al retirar ese módulo): prueba `api/admin/keys.py`, código
+    de PRODUCCIÓN ajeno al incidente de carga de credenciales que cierra
+    ese PASO -- nunca dependió de `entorno_de_produccion.py`."""
+    from api.admin import keys as K
+
+    cerrado = tmp_path / "env-ajeno"
+    cerrado.write_text("OPENAI_API_KEY=sk-no-deberia-leerse\n")
+    cerrado.chmod(0o000)
+    monkeypatch.setattr(K, "ENV_PATH", str(cerrado))
+    assert K._load_env() == {}

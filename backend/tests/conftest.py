@@ -2,12 +2,24 @@ import os
 
 import pytest
 
-from tests.entorno_de_produccion import cargar
+from tests.entorno_de_test import cargar as cargar_credenciales_de_test
 
-ENV_PATH = "/etc/jax/.env"
-
-
-for _k, _v in cargar(ENV_PATH).items():
+# Credenciales de la base de PRUEBAS (2026-09-25, PASO 0) -- nunca de
+# producción. Antes esta sección cargaba el archivo de configuración de
+# producción entero (con escalada de privilegios de respaldo cuando el
+# operador no podía leerlo directo, en el módulo retirado
+# `tests/entorno_de_produccion.py`) en CADA corrida de pytest: eso metía en
+# el proceso la contraseña de la base de PRODUCCIÓN, el JWT real, la clave
+# Fernet real y el token de Telegram, sin que ningún test los pidiera -- ver
+# `test_conftest_sin_produccion.py`. `tests/entorno_de_test.py` sólo sabe
+# leer un archivo de credenciales DE PRUEBA (por defecto
+# `~/.config/jax/test-db.env`, movible con `JAX_TEST_ENV_FILE`), con un
+# usuario dedicado (`jax_test`) que sólo tiene permisos sobre
+# `jax_memory_test`/`jax_memory_test_%` -- nunca sobre `jax_memory`
+# (producción) -- y una lista blanca de claves que nunca incluye un secreto
+# de sesión. `setdefault`: una sesión que ya exportó JAX_DB_HOST a mano (o
+# que corre en CI, con sus propias variables) no se pisa.
+for _k, _v in cargar_credenciales_de_test().items():
     os.environ.setdefault(_k, _v)
 
 # Base de tests por sesión (2026-09-20, port de `base_de_test.py` de `jax`,
@@ -29,11 +41,20 @@ from base_de_test import (  # noqa: E402
 fijar_base_de_test()
 asegurar_base_de_test()
 
-# El runner de CI no tiene /etc/jax/.env, asi que no tiene FERNET_KEY, y sin
-# ella no se pueden sembrar credenciales cifradas en la base de tests. Se
-# genera una por sesion SOLO si falta (en hall9000 sale del .env). setdefault
-# a proposito: los tests que ejercitan una FERNET_KEY ausente o malformada la
-# fijan ellos con monkeypatch.
+# Secretos EFÍMEROS de la sesión (JAX_JWT_SECRET, FERNET_KEY): 2026-09-25,
+# PASO 0. Los dos se generan SIEMPRE por sesión, salvo que ya vengan puestos
+# (CI fija JAX_JWT_SECRET en policy.yml; una sesión con su propio valor
+# exportado a mano no se pisa). Ninguno de los dos sale jamás de un archivo:
+# antes podían llegar heredados de /etc/jax/.env (producción), y un test
+# cualquiera terminaba firmando con el JWT real o descifrando con la Fernet
+# real sin haberlo pedido. Los tests que ejercitan un valor ausente o
+# malformado lo fijan ellos con monkeypatch, después de que esta sección ya
+# corrió.
+if not os.environ.get("JAX_JWT_SECRET"):
+    import secrets as _secrets_jwt
+
+    os.environ["JAX_JWT_SECRET"] = _secrets_jwt.token_urlsafe(48)
+
 if not os.environ.get("FERNET_KEY"):
     # Sin importar cryptography: dos jobs de CI (no-fail-open-except,
     # invoke-facet-envoltorio) corren este conftest SIN instalar
@@ -44,20 +65,27 @@ if not os.environ.get("FERNET_KEY"):
 
     os.environ["FERNET_KEY"] = base64.urlsafe_b64encode(os.urandom(32)).decode()
 
-# BARRERA DE ESCRITURA A ARCHIVOS DE PRODUCCIÓN (2026-09-17).
-# Incidente real de ese día: un test llamó a PUT /api/admin/keys/{proveedor},
+# BARRERA DE ESCRITURA A ARCHIVOS DE PRODUCCIÓN (2026-09-17, ampliada
+# 2026-09-25 -- PASO 0).
+# Incidente real del 2026-09-17: un test llamó a PUT /api/admin/keys/{proveedor},
 # que reescribía /etc/jax/.env con un volcado del diccionario parseado. El
 # archivo de PRODUCCIÓN perdió 28 líneas de comentarios y la llave de OpenAI
 # quedó vacía. Se restauró desde respaldo, pero la lección es que la barrera
 # de la base no cubría los archivos. Fail-closed: cualquier apertura para
 # escritura de un archivo de producción revienta el test que la intenta, con
 # el nombre del archivo, en vez de tocarlo.
-_ARCHIVOS_DE_PRODUCCION = frozenset({ENV_PATH, "/etc/jax/config.toml"})
+#
+# Antes esta barrera nombraba dos archivos sueltos (el .env y config.toml).
+# Se amplía a todo el DIRECTORIO de configuración de producción (prefijo, no
+# lista): cualquier archivo nuevo que aparezca ahí queda cubierto sin que
+# alguien se acuerde de agregarlo a una lista, y esta sección deja de tener
+# que nombrar el .env de producción (ver `test_conftest_sin_produccion.py`).
+_PREFIJO_DE_PRODUCCION = "/etc/jax/"
 _open_real = open
 
 
 class EscrituraEnProduccion(RuntimeError):
-    """Un test intentó escribir un archivo de producción."""
+    """Un test intentó escribir dentro de la configuración de producción."""
 
 
 def _open_vigilado(file, mode="r", *args, **kwargs):
@@ -65,7 +93,7 @@ def _open_vigilado(file, mode="r", *args, **kwargs):
         ruta = os.fspath(file)
         if isinstance(ruta, bytes):
             ruta = ruta.decode("utf-8", "replace")
-        if ruta in _ARCHIVOS_DE_PRODUCCION and any(c in mode for c in "wxa+"):
+        if ruta.startswith(_PREFIJO_DE_PRODUCCION) and any(c in mode for c in "wxa+"):
             raise EscrituraEnProduccion(
                 f"la suite intentó abrir {ruta} en modo {mode!r}: es un archivo "
                 "de producción. Parcheá la ruta con monkeypatch/tmp_path."

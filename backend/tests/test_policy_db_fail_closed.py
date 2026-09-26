@@ -62,9 +62,11 @@ def pool_limpio(monkeypatch):
 def sin_endpoint(monkeypatch, pool_limpio):
     """Quita JAX_DB_HOST/JAX_DB_PORT del entorno del proceso.
 
-    Hace falta explicitamente porque `tests/conftest.py` carga /etc/jax/.env
-    al importarse: sin esto los tests correrian con la configuracion real y no
-    probarian nada.
+    Hace falta explicitamente porque `tests/conftest.py` carga las
+    credenciales de la base de PRUEBAS al importarse (PASO 0, 2026-09-25:
+    desde `tests/entorno_de_test.py`, nunca de producción -- ver
+    `test_conftest_sin_produccion.py`): sin esto los tests correrian con esa
+    configuracion puesta y no probarian nada.
     """
     for var in _VARS_DE_ENDPOINT:
         monkeypatch.delenv(var, raising=False)
