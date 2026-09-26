@@ -4,6 +4,7 @@ import asyncio
 import pytest
 
 import api.chat as chat
+import b9_pool
 from auth.models import AuthUser
 from jax.memory.b9 import (
     Lifecycle, MemoryEnvelope, MemoryObject, MemoryProvenance, MemoryRevision,
@@ -227,7 +228,12 @@ def test_b9_reader_uses_mapping_cursor_with_platform_pool_shape(monkeypatch):
     result = asyncio.run(chat._prompt_memory_context(
         chat.ScopeContext("user:7", "USER", "7", "tenant-a", None, "test")))
     assert result.entries == ()
-    assert captured["cursor_class"] is chat.aiomysql.DictCursor
+    # PR-P1 (2026-09-25): el adaptador de cursor mapeado (`_B9MappingPool` y
+    # compañía) se movió a `b9_pool.py` -- lo comparten `api.chat` y
+    # `backend/proyectos/autoridad.py` -- así que la fuente de verdad de
+    # `DictCursor` es ese módulo, no un `import aiomysql` que ya no vive en
+    # `api/chat.py`.
+    assert captured["cursor_class"] is b9_pool.aiomysql.DictCursor
     assert isinstance(captured["request"], chat.MutationAuthorizationRequest)
     assert captured["request"].operation == "RETRIEVE"
 
