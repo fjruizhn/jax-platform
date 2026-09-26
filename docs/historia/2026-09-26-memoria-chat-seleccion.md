@@ -41,6 +41,16 @@ en la Mac dieron p95=2,914ms,max3,372ms y356,39 selecciones/s; el contexto
 resultante mide24057 caracteres, dentro del límite32000. Se conserva entero
 el único FACT que cabe en ese peor caso sintético, sin truncarlo.
 
-Quedan pendientes composición con reader/autoridad SQL real, revisión del
-SHA exacto, CI, integración,
+Composición SQL real: se crearon136 objetos canónicos sintéticos en orden
+96 FACT,22 decisiones,18 pendientes mediante PersistentMemoryAPI. La
+función real _scope_for_chat resolvió las identidades desde la DB y la
+función real _prompt_memory_context usó ProjectScopeAuthorityResolver y el
+reader B9. Resultado:10 FACT,5 decisiones,5 pendientes;20 envelopes,
+2898 caracteres. Otro usuario activo del mismo tenant obtuvo0 envelopes.
+No se simularon el reader ni el resolvedor: sólo se inyectó el pool de la
+base de pruebas para impedir acceso a producción. No constituye un turno
+autenticado de navegador ni prueba de adopción legacy productiva. Evidencia
+privada: /tmp/codex-memory-chat-real-composition.json en Hall9000.
+
+Quedan pendientes revisión del SHA exacto, CI, integración,
 despliegue y turno real autenticado sobre un FACT con binding legacy real.
