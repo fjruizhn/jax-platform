@@ -14,17 +14,18 @@ en esta rama, contra el código anterior a este cambio: 34 tests en rojo (chat,
 adjuntos, facet wiring, shadow), los 34 con ese mismo código.
 
 `aplicar_migraciones_b9_restantes()` (backend/base_de_test.py) es el arreglo: por
-GLOB, contra un MANIFIESTO (`backend/b9_migraciones_en_produccion.json`) -- no una
-lista fija ni confianza ciega en lo que el glob encuentre (corrección de la auditoría
-adversarial del PR #164, MAJOR-2: un `.sql` nuevo en el repo de JAX no prueba por sí
-solo que ya pasó por el flujo revisado de producción). Este archivo prueba el
-mecanismo en sí -- que las 34 pruebas de arriba ahora pasen es la prueba de
+GLOB, contra un MANIFIESTO de NOMBRE + CONTENIDO (`backend/b9_migraciones_en_produccion.json`)
+-- no una lista fija ni confianza ciega en lo que el glob encuentre. Dos rondas de
+auditoría adversarial (PR #164): MAJOR-2 (un `.sql` nuevo en el repo de JAX no prueba
+por sí solo que ya pasó por el flujo revisado de producción -- hace falta un nombre
+declarado) y MAJOR-A (declarar el nombre tampoco alcanza -- si el contenido cambia
+después de declararlo, nadie se entera sin comparar el `sha256`). Este archivo prueba
+el mecanismo en sí -- que las 34 pruebas de arriba ahora pasen es la prueba de
 integración; medido aparte (ver el informe de esta rama), no repetido acá.
 """
 from __future__ import annotations
 
 import asyncio
-import inspect
 
 import pytest
 
@@ -52,31 +53,88 @@ def test_glob_descubre_004_y_006_sin_lista_fija():
     assert "006_memory_jobs.sql" not in _MIGRACIONES_B9_YA_CUBIERTAS_POR_RUN_MIGRATIONS
 
 
-def test_las_ya_cubiertas_coinciden_con_lo_que_run_migrations_realmente_lee():
-    """Corrección de la auditoría adversarial del PR #164 (MINOR-5): la versión
-    anterior de este test comparaba la constante contra otra lista escrita a mano acá
-    mismo -- tautológico, dos copias de la misma opinión que se mueven juntas sin
-    decir nada sobre el código real. 001 y 002 se derivan del CÓDIGO FUENTE de
-    `_jax_b9_core_migration_statements()` (la función que `run_migrations()` usa de
-    verdad): si algún día esa función deja de leer uno de los dos archivos, este test
-    lo nota sin que nadie edite las dos listas a la vez. 003 no se lee de un archivo
-    en `run_migrations()` -- se aplica vía el hook Python `project_authority_migrations.py`
-    (una copia deliberada de `003_project_scope_authority.sql`, ver el docstring de
-    `_apply_jax_project_authority_migration`); ese contenido ya lo prueba, statement
-    por statement, `tests/test_project_authority_migration.py` -- acá sólo se comprueba
-    que la excepción sigue declarada, sin repetir esa prueba."""
-    fuente_core = inspect.getsource(db_migrations._jax_b9_core_migration_statements)
-    for archivo in ("001_b9_shared_memory.sql", "002_b9_hardening.sql"):
-        assert archivo in fuente_core, (
-            f"{archivo} ya no aparece en _jax_b9_core_migration_statements(): "
-            "actualizar _MIGRACIONES_B9_YA_CUBIERTAS_POR_RUN_MIGRATIONS"
-        )
-
+def test_las_ya_cubiertas_son_exactamente_estas_tres():
+    """Guardia de deriva simple: un cambio a esta constante (agregar o sacar un
+    archivo) sin que nadie lo note. La prueba de que son las CORRECTAS -- lo que
+    `run_migrations()` realmente lee -- es de COMPORTAMIENTO, en los tres tests de
+    abajo (corrección de la auditoría adversarial del PR #164, MINOR-C: la versión
+    anterior de este test derivaba 001/002 de `inspect.getsource(...)`, que prueba que
+    el NOMBRE aparece en el texto fuente, no que la función realmente lo USA -- dos
+    funciones podrían mencionar un nombre en un comentario y seguir pasando ese
+    control sin leer el archivo de verdad)."""
     assert _MIGRACIONES_B9_YA_CUBIERTAS_POR_RUN_MIGRATIONS == {
         "001_b9_shared_memory.sql",
         "002_b9_hardening.sql",
         "003_project_scope_authority.sql",
     }
+
+
+def test_core_sin_002_revienta_nombrandolo(tmp_path, monkeypatch):
+    """Prueba de COMPORTAMIENTO (MINOR-C): con SÓLO 001 presente en el directorio,
+    `_jax_b9_core_migration_statements()` -- la función que `run_migrations()` corre
+    de verdad, no una copia -- revienta nombrando `002_b9_hardening.sql`. Si esa
+    función alguna vez dejara de pedir 002, este test (que no sabe nada del código
+    fuente, sólo del resultado) lo notaría al dejar de fallar donde se espera."""
+    (tmp_path / "001_b9_shared_memory.sql").write_text("SELECT 1;\n", encoding="utf-8")
+    monkeypatch.setattr(db_migrations, "_jax_b9_migration_root", lambda: tmp_path)
+
+    with pytest.raises(RuntimeError, match="002_b9_hardening.sql"):
+        db_migrations._jax_b9_core_migration_statements()
+
+
+def test_core_con_001_y_002_ignora_cualquier_otro_sql_del_directorio(tmp_path, monkeypatch):
+    """Con 001+002 válidos Y un tercer `.sql` cuyo contenido reventaría el parser si
+    se leyera (un `DELIMITER` sin cerrar -- ver `_split_jax_b9_sql`), la función NO
+    revienta: prueba, por comportamiento, que lee EXACTAMENTE esos dos nombres, nunca
+    "todo lo que haya en el directorio" (que es justo el error que
+    `aplicar_migraciones_b9_restantes` sí comete a propósito, contra el manifiesto)."""
+    (tmp_path / "001_b9_shared_memory.sql").write_text("SELECT 1;\n", encoding="utf-8")
+    (tmp_path / "002_b9_hardening.sql").write_text("SELECT 2;\n", encoding="utf-8")
+    (tmp_path / "999_no_deberia_leerse.sql").write_text(
+        "DELIMITER //\nSELECT 3\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(db_migrations, "_jax_b9_migration_root", lambda: tmp_path)
+
+    statements = db_migrations._jax_b9_core_migration_statements()
+
+    assert statements == ("SELECT 1", "SELECT 2")
+
+
+def test_project_authority_003_se_cubre_sin_leer_el_sql_de_esa_carpeta(tmp_path, monkeypatch):
+    """Prueba de COMPORTAMIENTO de por qué 003 está en
+    `_MIGRACIONES_B9_YA_CUBIERTAS_POR_RUN_MIGRATIONS` aunque `run_migrations()` nunca
+    abre `003_project_scope_authority.sql`: lo que cubre a 003 es el hook Python
+    `project_authority_migrations.py`, cargado por RUTA ABSOLUTA
+    (`<JAX_REPO_PATH>/jax/memory/project_authority_migrations.py`), no por leer nada
+    de `b9_migrations/`. Se arma un directorio SIN ese `.sql` -- sólo con 001/002 y el
+    hook -- y se confirma que `_apply_jax_project_authority_migration` igual corre. No
+    prueba que el CONTENIDO del hook coincida con el de `003_project_scope_authority.sql`
+    (eso ya lo hace `tests/test_project_authority_migration.py`, statement por
+    statement) -- sólo que su ejecución no depende de que ese archivo exista."""
+    raiz = tmp_path
+    migraciones = raiz / "jax" / "memory" / "b9_migrations"
+    migraciones.mkdir(parents=True)
+    (migraciones / "001_b9_shared_memory.sql").write_text("SELECT 1;\n", encoding="utf-8")
+    (migraciones / "002_b9_hardening.sql").write_text("SELECT 2;\n", encoding="utf-8")
+    # SIN 003_project_scope_authority.sql a propósito.
+    (raiz / "jax" / "memory" / "project_authority_migrations.py").write_text(
+        "async def apply_project_authority_migration(cursor):\n"
+        "    await cursor.execute('SELECT 999')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(db_migrations, "_jax_b9_migration_root", lambda: migraciones)
+
+    class _CursorGrabador:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+
+    cursor = _CursorGrabador()
+    asyncio.run(db_migrations._apply_jax_project_authority_migration(cursor))
+
+    assert cursor.statements == ["SELECT 999"]
 
 
 async def _estado_de_la_cadena_b9(pool):
@@ -244,15 +302,109 @@ def test_un_archivo_b9_no_declarado_en_el_manifiesto_revienta_sin_tocar_la_db(
         asyncio.run(aplicar_migraciones_b9_restantes())
 
 
+def test_un_archivo_declarado_con_contenido_distinto_revienta_sin_tocar_la_db(
+    tmp_path, monkeypatch
+):
+    """MAJOR-A de la auditoría adversarial del PR #164 (ronda 2): el manifiesto
+    declara CONTENIDO, no sólo nombre. Simula `004_tenant_legacy_binding.sql` con un
+    contenido que YA NO coincide con el `sha256` que un humano verificó contra
+    producción (declarado acá con un hash inventado) -- tiene que reventar nombrando
+    ESE archivo, sin conectarse a nada, mientras que `006` (con su hash real)
+    no dispara nada por sí solo."""
+    from db import connection as db_connection
+
+    directorio = tmp_path / "b9_migrations"
+    directorio.mkdir()
+    (directorio / "004_tenant_legacy_binding.sql").write_text(
+        "ALTER TABLE memory_legacy_bindings ADD COLUMN algo_que_nadie_revisó INT;",
+        encoding="utf-8",
+    )
+    (directorio / "006_memory_jobs.sql").write_text("SELECT 1;\n", encoding="utf-8")
+
+    async def _no_deberia_llamarse(*args, **kwargs):
+        pytest.fail("intentó abrir un pool de conexión antes de validar el contenido")
+
+    monkeypatch.setattr(db_connection, "get_pool", _no_deberia_llamarse)
+    monkeypatch.setattr(db_migrations, "_jax_b9_migration_root", lambda: directorio)
+    monkeypatch.setattr(
+        modulo_base_de_test,
+        "_manifiesto_b9_de_produccion",
+        lambda: {
+            "004_tenant_legacy_binding.sql": {"sha256": "0" * 64},  # deliberadamente falso
+            "006_memory_jobs.sql": {
+                "sha256": modulo_base_de_test._sha256_de_archivo(
+                    directorio / "006_memory_jobs.sql"
+                )
+            },
+        },
+    )
+    monkeypatch.setenv("JAX_DB_NAME", "jax_memory_test_zz_hash")
+
+    with pytest.raises(BaseDeTestInvalida, match="004_tenant_legacy_binding.sql"):
+        asyncio.run(aplicar_migraciones_b9_restantes())
+
+
+async def _leer_hash_guardado(pool, archivo):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT sha256 FROM _test_b9_migraciones_aplicadas WHERE archivo=%s",
+                (archivo,),
+            )
+            fila = await cur.fetchone()
+            return fila[0] if fila else None
+
+
+async def _forzar_hash_guardado(pool, archivo, sha256):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE _test_b9_migraciones_aplicadas SET sha256=%s WHERE archivo=%s",
+                (sha256, archivo),
+            )
+        await conn.commit()
+
+
+def test_un_hash_guardado_distinto_deja_la_base_invalida_para_ese_archivo(client):
+    """MAJOR-A, la otra mitad: no sólo el archivo de origen puede mentir -- la base de
+    ESTA sesión puede tener una fila de una corrida anterior con otro contenido (sea
+    porque el manifiesto cambió después, sea una fila vieja de antes de que la
+    columna `sha256` existiera). Se pisa a mano el hash guardado por el fixture
+    `client` (que aplicó 004 correctamente) y se confirma que la PRÓXIMA corrida
+    revienta -- restaurado en un `finally` para no dejar la base de la sesión
+    corrompida para el resto de la suite."""
+    from db.connection import get_pool
+
+    pool = client.portal.call(get_pool)
+    archivo = "004_tenant_legacy_binding.sql"
+    original = client.portal.call(_leer_hash_guardado, pool, archivo)
+    assert original, "el fixture client ya debería haber aplicado 004 con su hash real"
+
+    client.portal.call(_forzar_hash_guardado, pool, archivo, "f" * 64)
+    try:
+        with pytest.raises(BaseDeTestInvalida, match=archivo):
+            client.portal.call(aplicar_migraciones_b9_restantes)
+    finally:
+        client.portal.call(_forzar_hash_guardado, pool, archivo, original)
+
+
 def test_el_manifiesto_committeado_declara_exactamente_004_y_006():
     """El manifiesto real del repo (no uno de prueba): hoy declara 004 y 006, ni de
     más ni de menos, porque eso es exactamente lo que `run_migrations()` no cubre y
     lo que `jax_memory` de producción ya tiene aplicado (ver el informe de esta
     rama). Un cambio a este archivo que agregue o saque una clave sin que nadie lo
-    note es justo el tipo de deriva silenciosa que este test atrapa."""
+    note es justo el tipo de deriva silenciosa que este test atrapa. El `sha256`
+    declarado tiene que coincidir con el archivo REAL del checkout de JAX que usa
+    esta sesión (`JAX_REPO_PATH`) -- si no coincide, es la prueba de integración
+    (`test_memory_revisions_y_legacy_bindings_espejan_la_cadena_completa`, que pide
+    `client`) la que revienta, no ésta, que es intencionalmente sin DB."""
     manifiesto = modulo_base_de_test._manifiesto_b9_de_produccion()
     assert set(manifiesto) == {"004_tenant_legacy_binding.sql", "006_memory_jobs.sql"}
     for archivo, datos in manifiesto.items():
         assert datos["aplicada_en_produccion"], archivo
         assert datos["por"], archivo
         assert datos["verificado"], archivo
+        assert datos["sha256_origen"], archivo
+        sha256 = datos["sha256"]
+        assert isinstance(sha256, str) and len(sha256) == 64, archivo
+        assert all(c in "0123456789abcdef" for c in sha256), archivo

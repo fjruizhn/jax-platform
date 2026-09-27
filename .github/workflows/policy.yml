@@ -3030,7 +3030,7 @@ jobs:
           #   18 -> 20 passed / 1 skip sin cambios; delta propio +2. Los 2 en
           #   rojo contra la línea 92 revertida a `float(os.environ.get(...))`
           #   (DID NOT RAISE IndicesForzadosConfigInvalida).
-          # 2692 -> 2754 (2026-09-27, fix/b9-migraciones-en-test): la base de tests
+          # 2692 -> 2759 (2026-09-27, fix/b9-migraciones-en-test): la base de tests
           #   sólo aplicaba 001-003 de jax/memory/b9_migrations/ (lo que
           #   `db.migrations.run_migrations()` cubre); jax#279 (26-sep) puso a
           #   `jax.memory.b9_mariadb._retrieve_scoped` a leer `r.tenant_id` de
@@ -3038,12 +3038,13 @@ jobs:
           #   el propio README de esa carpeta dice que NO se aplica sola, ni en
           #   producción ni acá. Sin ella: "Unknown column 'r.tenant_id'",
           #   envuelto por api/chat.py en 503 MEMORY_UNAVAILABLE. `base_de_test.py`
-          #   ahora aplica, por GLOB contra un MANIFIESTO versionado
-          #   (`backend/b9_migraciones_en_produccion.json` -- no aplica a ciegas lo
-          #   que el glob encuentre; un `.sql` no declarado ahí revienta en rojo,
-          #   ver MAJOR-2 de la auditoría de abajo), todo lo que `run_migrations()`
-          #   no cubre -- ver `aplicar_migraciones_b9_restantes()` y
-          #   tests/test_b9_migraciones_restantes.py (archivo nuevo, 7 tests).
+          #   ahora aplica, por GLOB contra un MANIFIESTO versionado de NOMBRE +
+          #   CONTENIDO (`backend/b9_migraciones_en_produccion.json` -- no aplica a
+          #   ciegas lo que el glob encuentre, ni confía en que un archivo declarado
+          #   no cambió de contenido: ver MAJOR-2 y MAJOR-A de las dos rondas de
+          #   auditoría de abajo), todo lo que `run_migrations()` no cubre -- ver
+          #   `aplicar_migraciones_b9_restantes()` y
+          #   tests/test_b9_migraciones_restantes.py (archivo nuevo, 12 tests).
           #
           #   Medido dos veces, porque este job corre COMO ROOT (JAX_DB_USER: root
           #   más arriba) y hall9000 no lo es:
@@ -3053,7 +3054,8 @@ jobs:
           #      master (4642613): antes de este cambio, 2711 passed / 34 failed /
           #      2 skipped (2747 colectados) -- los 34 en rojo con
           #      MEMORY_UNAVAILABLE, en chat, adjuntos, facet wiring y shadow;
-          #      después, 2752 passed / 0 failed / 2 skipped (2754 colectados). Los
+          #      después, 2757 passed / 0 failed / 2 skipped (2759 colectados),
+          #      medido dos veces (bases nuevas) con el mismo resultado exacto. Los
           #      2 skips (sin cambios) son
           #      tests/test_usuario_solo_insert_punto_restauracion.py: `jax_user`
           #      no tiene CREATE USER fuera de CI (ver el motivo de cada SKIPPED
@@ -3064,13 +3066,13 @@ jobs:
           #      `jax_memory_schema.sql`): con este mismo fix, los 2 tests que
           #      arriba se saltan CORREN (root sí tiene CREATE USER) y los 2
           #      PASAN -- verificado por su nombre en el XML, no sólo por el
-          #      conteo. `2711 + 2 = 2713` antes / `2752 + 2 = 2754` después,
+          #      conteo. `2711 + 2 = 2713` antes / `2757 + 2 = 2759` después,
           #      contra los mismos 34 (antes) / 0 (después) failed y ahora 0
           #      skipped: la aritmética de las dos medidas cierra sin resto (la
-          #      medición de root es del PR original, 5 tests; los 2 tests que la
-          #      auditoría adversarial del PR #164 agregó después no tocan DB --
-          #      no piden `client` -- así que no cambian el término "+2" de la
-          #      cuenta de root, sólo el total).
+          #      medición de root es del PR original, 5 tests; los 7 tests que las
+          #      dos rondas de auditoría adversarial del PR #164 agregaron después
+          #      no tocan DB -- ninguno pide `client` -- así que no cambian el
+          #      término "+2" de la cuenta de root, sólo el total).
           #
           #   `tests/test_base_por_sesion.py` (27 tests) se corrió aparte en esa
           #   segunda medición: sus 3 tests que lanzan un SUBPROCESO simulando
@@ -3084,19 +3086,28 @@ jobs:
           #   por la aritmética de las dos mediciones de arriba, no una tercera
           #   corrida en el entorno exacto de CI.
           #
-          #   Auditoría adversarial del PR #164 (2026-09-27, APROBADO CON CAMBIOS):
-          #   MAJOR-1 (test de la guarda de base de test conectaba con credenciales
-          #   reales si la guarda fallaba), MAJOR-2 (manifiesto de arriba, en vez de
-          #   aplicar a ciegas lo que el glob encuentra), MINOR-3 (error claro en una
-          #   migración a mitad, con qué archivo/sentencia y que hay que recrear la
-          #   base), MINOR-4 (`SELECT DATABASE()` sobre la conexión real antes del
-          #   primer DDL), MINOR-5 (el test de "ya cubiertas" dejó de ser
-          #   tautológico: deriva 001/002 del código fuente real). +2 tests de esta
-          #   ronda (5 -> 7 en tests/test_b9_migraciones_restantes.py).
+          #   Auditoría adversarial del PR #164, ronda 1 (2026-09-27, APROBADO CON
+          #   CAMBIOS): MAJOR-1 (test de la guarda de base de test conectaba con
+          #   credenciales reales si la guarda fallaba), MAJOR-2 (manifiesto de
+          #   nombre, en vez de aplicar a ciegas lo que el glob encuentra), MINOR-3
+          #   (error claro en una migración a mitad, con qué archivo/sentencia y
+          #   que hay que recrear la base), MINOR-4 (`SELECT DATABASE()` sobre la
+          #   conexión real antes del primer DDL), MINOR-5 (el test de "ya
+          #   cubiertas" dejó de ser tautológico). Ronda 2 (mismo día, también
+          #   APROBADO CON CAMBIOS): MAJOR-A (el manifiesto declara también el
+          #   `sha256` del contenido, no sólo el nombre -- un archivo declarado que
+          #   cambió de contenido, o una base que ya lo aplicó con otro contenido,
+          #   revientan igual que uno no declarado), MINOR-B (runbook: GO de
+          #   Fernando como precondición, qué hacer si el DDL falla a mitad en
+          #   producción, el DDL no es puramente aditivo), MINOR-C (MINOR-5 de la
+          #   ronda 1 pasó de derivar por `inspect.getsource` a pruebas de
+          #   comportamiento reales), MINOR-D (el comentario que atribuía un `DROP
+          #   INDEX` de 004 a la viñeta de 006). +7 tests entre las dos rondas (5 ->
+          #   12 en tests/test_b9_migraciones_restantes.py).
           #
-          #   Delta de colectados (+7) = los 7 tests nuevos; los 34 que estaban en
+          #   Delta de colectados (+12) = los 12 tests nuevos; los 34 que estaban en
           #   rojo pasan a passed sin agregar ninguno.
-          PISO_PASSED = 2754
+          PISO_PASSED = 2759
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

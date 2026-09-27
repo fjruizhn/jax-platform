@@ -366,6 +366,12 @@ archivos por glob contra el manifiesto de abajo -- NO los aplica a ciegas: que u
 
 ### Pasos
 
+0. **GO explícito de Fernando, ANTES de tocar nada.** *(MINOR-B, ronda 2 de la
+   auditoría del PR #164.)* Esto no es un `ALTER` aditivo de rutina: 004 hace
+   `DROP PRIMARY KEY`/`DROP INDEX` sobre una tabla con filas reales, y 006 deja
+   `memory_revisions.tenant_id` en `NOT NULL` con una FK nueva -- los dos son DDL
+   que reescribe la forma de una tabla de PRODUCCIÓN con datos adentro, no un
+   `ADD COLUMN NULL` que no le puede doler a nadie. Sin el GO, no se pasa al paso 1.
 1. **Respaldo primero** (Principio VI, sección 0 de arriba) -- **y probarlo**,
    restaurando en una base descartable antes de seguir. Sin esto no hay paso 2.
 2. **Leer el archivo entero antes de aplicarlo.** Los `.sql` de esa carpeta NO son
@@ -373,33 +379,57 @@ archivos por glob contra el manifiesto de abajo -- NO los aplica a ciegas: que u
    `IF NOT EXISTS`, `DROP PRIMARY KEY`/`DROP INDEX` que asumen que lo que borran
    sigue ahí, `CREATE TRIGGER`/`ADD CONSTRAINT` sin `IF NOT EXISTS`) -- correrlo dos
    veces contra la misma base revienta a mitad. Aplicarlo UNA vez, a mano, contra
-   `jax_memory`:
+   `jax_memory`, con el archivo EXACTO que se va a declarar en el paso 4 (mismo
+   byte a byte -- es de ahí que sale el `sha256` de ese paso, no de una copia
+   editada a mano ni de memoria):
 
    ```bash
    set -a; . <(sudo -n cat /etc/jax/.env); set +a
+   ARCHIVO=/srv/jax-prod/jax/jax/memory/b9_migrations/<archivo>.sql
    mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" \
-     jax_memory < /srv/jax-prod/jax/jax/memory/b9_migrations/<archivo>.sql
+     jax_memory < "$ARCHIVO"
    ```
 
+   **Si falla a mitad (MariaDB corta la conexión, un error de sintaxis, un lock que
+   vence): DETENERSE. No reintentar el archivo entero.** MariaDB hace commit
+   implícito por sentencia DDL -- no hay rollback que deshaga lo que ya corrió, y
+   reintentar desde el principio puede chocar con lo que sí quedó aplicado (mismo
+   defecto, en la base de tests, que documenta MINOR-3 de esta auditoría en
+   `base_de_test.py`). Dos salidas, ninguna a ciegas:
+   - **Restaurar desde el respaldo del paso 1** (la más segura: vuelve la tabla al
+     estado de antes de este cambio) y volver a empezar desde el paso 0.
+   - **Completar sentencia por sentencia, con Fernando delante**, leyendo el
+     `.sql` y ejecutando cada sentencia que falta a mano, verificando el estado de
+     la tabla entre una y otra (`SHOW CREATE TABLE`) -- sólo si restaurar el
+     respaldo no es viable por el tiempo que ya pasó con datos nuevos escritos.
 3. **Verificar en la base, no suponer.** El `SHOW COLUMNS`/`SHOW INDEX`/consulta a
    `information_schema` que confirme la forma final que describe el propio
    `.sql` -- exactamente lo que va a quedar escrito en el manifiesto del paso 4.
 4. **Declarar la migración en `jax-platform`**, en el MISMO cambio que cualquier
    código que dependa de ella (o antes, si nada la usa todavía):
    `backend/b9_migraciones_en_produccion.json` gana una clave nueva con el nombre
-   exacto del archivo, la fecha, quién la aplicó y CÓMO se verificó (la consulta
-   del paso 3, no "se ve bien"). Sin esta clave, la suite de tests revienta con el
-   mensaje de arriba -- es la baranda, no un trámite.
+   exacto del archivo, la fecha, quién la aplicó, CÓMO se verificó (la consulta
+   del paso 3, no "se ve bien") y el `sha256` **del archivo exacto que se aplicó
+   en el paso 2** (`sha256sum "$ARCHIVO"`, la misma variable, no un clon distinto
+   ni una versión más nueva de `jax` master). Sin esta clave, la suite de tests
+   revienta con el mensaje de arriba; con la clave pero el hash equivocado,
+   revienta igual, con un mensaje que dice "el contenido cambió" -- es la
+   baranda, no un trámite.
 5. **Correr la suite de jax-platform** (`aplicar_migraciones_b9_restantes` recoge
-   el archivo nuevo por glob, lo ve declarado en el manifiesto, y lo aplica en la
-   base de tests) para confirmar que el código que la necesita pasa contra el
-   esquema real.
+   el archivo nuevo por glob, lo ve declarado en el manifiesto con el hash que
+   coincide, y lo aplica en la base de tests) para confirmar que el código que la
+   necesita pasa contra el esquema real.
 
-**Volver atrás.** El esquema B9 es aditivo, igual que el resto de esta casa (ver
-"Volver atrás" más abajo): revertir el código no exige revertir el DDL. Si hiciera
-falta revertir el DDL mismo (columna con datos ya escritos, trigger que rompe un
-flujo), es un caso a mano, con Fernando, igual que cualquier reversión de esquema
-con datos de por medio.
+**Volver atrás.** *(Acotado, MINOR-B ronda 2: la versión anterior de este párrafo
+decía "el esquema B9 es aditivo... revertir el código no exige revertir el DDL" --
+cierto para 001/002/003, FALSO en general para lo que este runbook cubre.)* 004 y
+006 NO son aditivos puros: 004 hace `DROP PRIMARY KEY`/`DROP INDEX` sobre
+`memory_legacy_bindings`/`memory_objects`, y 006 deja `memory_revisions.tenant_id`
+`NOT NULL` con una FK -- revertir el CÓDIGO que los usa no repone la forma vieja de
+esas tablas, y con filas ya escritas bajo el esquema nuevo, revertir el DDL mismo
+puede perder datos o violar la FK. Si hiciera falta revertir el DDL, es un caso a
+mano, con Fernando, con el respaldo del paso 1 como red -- nunca una decisión
+unilateral de la sesión que despliega.
 
 ## Volver atrás
 
