@@ -17,6 +17,7 @@ las conexiones YA abiertas del usuario se cierran después del commit: el WS con
 (api.events.close_user_streams).
 """
 import asyncio
+import inspect
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -51,8 +52,39 @@ async def _auditoria(target):
     return [tuple(f) for f in filas]
 
 
-async def _ninguno(cur, excluido):
+async def _ninguno(cur, excluido, tenant_id=1):
     return 0
+
+
+async def test_sincronizacion_de_membresia_reusa_el_cursor_de_identidad(monkeypatch):
+    """No abre una segunda transacción entre role/status y memberships."""
+    from jax.memory.project_authority import ProjectAuthorityAdmin
+
+    llamadas = []
+
+    async def sync(self, cur, *, actor_scope, user_id, tenant_id):
+        llamadas.append((self, cur, actor_scope, user_id, tenant_id))
+        return 7
+
+    monkeypatch.setattr(ProjectAuthorityAdmin, "sync_tenant_admin_memberships_in_transaction", sync)
+    cursor = object()
+    assert await users_mod._sincronizar_membresias_admin_tenant(
+        cursor, actor_id=11, target_id=12, tenant_id=13,
+    ) == 7
+    assert len(llamadas) == 1
+    _, recibido, scope, target, tenant = llamadas[0]
+    assert recibido is cursor and (target, tenant) == (12, 13)
+    assert (scope.actor_principal, scope.actor_type, scope.subject_user_id, scope.tenant_id) == (
+        "user:11", "USER", "11", "13",
+    )
+
+
+def test_escritores_de_rol_y_estado_toman_mutex_y_sincronizan_en_la_misma_transaccion():
+    for handler in (users_mod.create_user, users_mod.update_user, users_mod.dar_de_baja):
+        source = inspect.getsource(handler)
+        writer = "INSERT INTO jax_users" if handler is users_mod.create_user else "UPDATE jax_users"
+        assert source.index("await _bloquear_tenant") < source.index(writer)
+        assert "_sincronizar_membresias_admin_tenant" in source
 
 
 # ---------------------------------------------------------------- puros
@@ -399,7 +431,7 @@ def test_sse_registrado_despues_del_corte_termina_el_stream(client, usuarios, mo
 
 # ------------------------- fix ronda 1: concurrencia y corte tolerante
 
-def test_degradacion_mutua_concurrente_no_da_deadlock_uno_gana_y_el_otro_409(client, usuarios, monkeypatch):
+def test_degradacion_mutua_concurrente_no_da_deadlock_y_el_actor_revalidado_se_rechaza(client, usuarios, monkeypatch):
     """A degrada a B y B degrada a A, a la vez, en dos transacciones reales.
     Antes: cada una bloqueaba su destino y después pedía el del otro (el
     FOR UPDATE del conteo) -> InnoDB 1213 -> 500. Ahora los bloqueos se toman
@@ -418,11 +450,11 @@ def test_degradacion_mutua_concurrente_no_da_deadlock_uno_gana_y_el_otro_409(cli
     b, _ = usuarios(role="superadmin")
     conteo_real = users_mod.otros_superadmins_activos
 
-    async def en_un_mundo_de_dos(cur, excluido):
-        await conteo_real(cur, excluido)
+    async def en_un_mundo_de_dos(cur, excluido, tenant_id=1):
+        await conteo_real(cur, excluido, tenant_id)
         await cur.execute(
             "SELECT user_id FROM jax_users WHERE role = 'superadmin' AND status = 'active' "
-            "AND user_id IN (%s, %s) AND user_id <> %s FOR UPDATE", (a, b, excluido))
+            "AND user_id IN (%s, %s) AND user_id <> %s", (a, b, excluido))
         return len(await cur.fetchall())
 
     llegadas, todas = [], asyncio.Event()
@@ -457,7 +489,10 @@ def test_degradacion_mutua_concurrente_no_da_deadlock_uno_gana_y_el_otro_409(cli
     assert inesperados == [], f"nada de 500 (deadlock): {inesperados!r}"
     ok = [r for r in resultados if r == {"ok": True}]
     rechazos = [(r.status_code, r.detail) for r in resultados if isinstance(r, HTTPException)]
-    assert (len(ok), rechazos) == (1, [(409, "ultimo_superadmin")]), resultados
+    # Al serializar por tenant, el segundo request vuelve a bloquear y
+    # verificar a su actor. El primero ya lo degradó, así que la autorización
+    # previamente comprobada por el dependency dejó de ser vigente.
+    assert (len(ok), rechazos) == (1, [(403, "actor_no_autorizado")]), resultados
     roles = sorted(client.portal.call(_fila, u)[0] for u in (a, b))
     assert roles == ["operator", "superadmin"], "queda exactamente un superadmin de la pareja"
 
@@ -568,6 +603,13 @@ def test_alta_con_email_duplicado_concurrente_responde_409_sin_auditoria(client,
 
     email = f"test-carrera-{uuid.uuid4().hex[:10]}@example.invalid"
     transaccion_real = users_mod.transaccion
+
+    # This regression isolates the UNIQUE-email race.  Production now takes
+    # the tenant mutex before the INSERT, which correctly prevents a second
+    # tenant writer from reaching this artificial interleaving at all.
+    async def sin_mutex_tenant(cur, tenant_id):
+        return None
+    monkeypatch.setattr(users_mod, "_bloquear_tenant", sin_mutex_tenant)
 
     class _CursorQueDejaColarse:
         def __init__(self, cur):
