@@ -34,8 +34,23 @@ def _preparar_env_falso(tmp_path: Path, contenido: str, modo=0o640) -> Path:
     return ruta
 
 
-def _correr(ruta_env: Path, token: str | None, timeout=15):
-    entrada = None if token is None else f"{token}\n"
+# Sentinela para el default de `confirmacion` en `_correr` -- distinto de
+# `None` (que representa a propósito "no escribir ninguna segunda línea",
+# para simular EOF antes de la confirmación).
+_MISMA_QUE_TOKEN = object()
+
+
+def _correr(ruta_env: Path, token: str | None, confirmacion=_MISMA_QUE_TOKEN, timeout=15):
+    """Punto 6 (tercera auditoría adversarial, 2026-09-27): el script ahora
+    pide el token DOS veces. Por default acá se manda la MISMA cadena las
+    dos veces (así el resto de los tests -- escritos para el protocolo de
+    una sola lectura -- siguen valiendo sin tocarlos); los tests que
+    ejercitan la confirmación de verdad pasan `confirmacion` explícito."""
+    if token is None:
+        entrada = None
+    else:
+        conf = token if confirmacion is _MISMA_QUE_TOKEN else confirmacion
+        entrada = f"{token}\n" if conf is None else f"{token}\n{conf}\n"
     return subprocess.run(
         ["sudo", "env", f"JAX_ENV_PATH={ruta_env}", "bash", str(SCRIPT)],
         input=entrada, text=True, capture_output=True, timeout=timeout,
@@ -389,12 +404,18 @@ def test_token_partido_en_dos_lineas_aborta_sin_tocar_el_env(tmp_path):
     partido en dos líneas por el terminal -- `read -rs` sólo toma la
     primera, y la segunda queda esperando en la entrada. ANTES este script
     sólo drenaba ese resto y seguía adelante con la primera línea (a medias,
-    probablemente truncada) como si fuera el token completo. Ahora CUALQUIER
-    resto no vacío aborta sin tocar el .env: "el token llegó partido en
-    varias líneas, pegalo de nuevo en una sola" -- ver
-    test_vacia_lo_que_sobra_en_stdin_tras_leer_el_token (más abajo) para la
-    prueba de que el resto se drena IGUAL, aunque el resultado ahora sea
-    abortar y no continuar.
+    probablemente truncada) como si fuera el token completo.
+
+    Tercera auditoría adversarial (2026-09-27), punto 6: con el protocolo
+    de DOS lecturas, la mitad sobrante de un pegado partido ya no se detecta
+    con un chequeo inmediato después de la primera lectura (eso rompería el
+    pegado doble LEGÍTIMO -- ver el comentario grande en el script sobre por
+    qué el chequeo de sobrante se hace una sola vez, después de las DOS
+    lecturas). En cambio, esa mitad sobrante se termina leyendo como si
+    fuera la CONFIRMACIÓN, y no coincide con el token real -- así que sigue
+    abortando sin tocar el .env, sólo que ahora por "no coinciden" en vez de
+    por "partido". El resultado que importa (returncode != 0, .env intacto)
+    es el mismo.
 
     Se ejercita con un pty de verdad (no un pipe simple: un pipe no tiene la
     semántica de "cola de entrada compartida" que sí tiene una terminal, así
@@ -420,7 +441,7 @@ def test_token_partido_en_dos_lineas_aborta_sin_tocar_el_env(tmp_path):
 
         assert proc.returncode != 0
         assert ruta.read_text() == original  # NO se tocó
-        assert "partid" in salida_err.lower()  # el mensaje explica qué pasó
+        assert "no coinciden" in salida_err.lower()  # el mensaje explica qué pasó
     finally:
         if master_fd is not None:
             os.close(master_fd)
@@ -472,6 +493,107 @@ def test_vacia_lo_que_sobra_en_stdin_tras_leer_el_token(tmp_path):
         listo, _, _ = select.select([slave_fd], [], [], 0.5)
         sobrante = os.read(slave_fd, 4096) if listo else b""
         assert b"resto-que-no-deberia-quedar-sin-leer" not in sobrante
+    finally:
+        if master_fd is not None:
+            os.close(master_fd)
+        if slave_fd is not None:
+            os.close(slave_fd)
+        _limpiar(ruta)
+
+
+# --------------------------------------------------------------------------
+# Punto 6 (tercera auditoría adversarial, 2026-09-27): pedir el token DOS
+# veces y abortar si no coinciden.
+# --------------------------------------------------------------------------
+
+def test_confirmacion_igual_al_token_guarda_normalmente(tmp_path):
+    """Coinciden -> OK. Es el caso "feliz" de todos los tests de arriba
+    (que usan el default de `_correr`, mismo valor las dos veces) -- este
+    lo deja explícito."""
+    original = "FOO=bar\n"
+    ruta = _preparar_env_falso(tmp_path, original)
+    try:
+        resultado = _correr(ruta, TOKEN_VALIDO, confirmacion=TOKEN_VALIDO)
+        assert resultado.returncode == 0, resultado.stderr
+        assert f"CLAUDE_CODE_OAUTH_TOKEN={TOKEN_VALIDO}" in ruta.read_text()
+    finally:
+        _limpiar(ruta)
+
+
+def test_confirmacion_distinta_no_coincide_y_no_cambia_nada(tmp_path):
+    """No coinciden -> aborta con .env intacto."""
+    original = "FOO=bar\n"
+    ruta = _preparar_env_falso(tmp_path, original)
+    otro_token_valido = "sk-ant-oat01-" + "y" * 100
+    try:
+        resultado = _correr(ruta, TOKEN_VALIDO, confirmacion=otro_token_valido)
+        assert resultado.returncode != 0
+        assert ruta.read_text() == original
+        assert "no coinciden" in resultado.stderr.lower()
+    finally:
+        _limpiar(ruta)
+
+
+def test_confirmacion_vacia_por_eof_no_coincide_y_no_cambia_nada(tmp_path):
+    """Sin nada más en la entrada (EOF antes de la segunda lectura),
+    `read -rs` devuelve vacío -- eso tampoco coincide con un token real, así
+    que aborta igual que cualquier otro mismatch, con el .env intacto."""
+    original = "FOO=bar\n"
+    ruta = _preparar_env_falso(tmp_path, original)
+    try:
+        resultado = _correr(ruta, TOKEN_VALIDO, confirmacion=None)
+        assert resultado.returncode != 0
+        assert ruta.read_text() == original
+    finally:
+        _limpiar(ruta)
+
+
+def test_el_token_nunca_aparece_en_la_salida_ni_siquiera_al_no_coincidir(tmp_path):
+    """El primer token (el que sí es válido) tampoco debería filtrarse a la
+    salida cuando el que falla es el segundo pegado."""
+    original = "FOO=bar\n"
+    ruta = _preparar_env_falso(tmp_path, original)
+    otro_token_valido = "sk-ant-oat01-" + "z" * 100
+    try:
+        resultado = _correr(ruta, TOKEN_VALIDO, confirmacion=otro_token_valido)
+        assert TOKEN_VALIDO not in resultado.stdout
+        assert TOKEN_VALIDO not in resultado.stderr
+        assert otro_token_valido not in resultado.stdout
+        assert otro_token_valido not in resultado.stderr
+    finally:
+        _limpiar(ruta)
+
+
+def test_confirmacion_partida_en_mas_de_dos_lineas_aborta_sin_tocar_el_env(tmp_path):
+    """Pegado partido -> aborta. A diferencia del test de la mitad del
+    PRIMER pegado (más arriba, que ahora aborta por "no coinciden"), acá el
+    sobrante aparece DESPUÉS de la confirmación -- eso sigue siendo detectado
+    por el chequeo explícito de `hay_stdin_sobrante`, con su propio mensaje
+    ("partido en más de dos líneas")."""
+    import pty
+
+    original = "FOO=bar\n"
+    ruta = _preparar_env_falso(tmp_path, original)
+    master_fd = None
+    slave_fd = None
+    try:
+        master_fd, slave_fd = pty.openpty()
+        proc = subprocess.Popen(
+            ["sudo", "env", f"JAX_ENV_PATH={ruta}", "bash", str(SCRIPT)],
+            stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        os.write(
+            master_fd,
+            f"{TOKEN_VALIDO}\n{TOKEN_VALIDO}\nresto-que-no-deberia-quedar-sin-leer\n".encode(),
+        )
+        proc.wait(timeout=15)
+        salida_err = proc.stderr.read().decode(errors="replace")
+        proc.stdout.close()
+        proc.stderr.close()
+
+        assert proc.returncode != 0
+        assert ruta.read_text() == original
+        assert "partid" in salida_err.lower()
     finally:
         if master_fd is not None:
             os.close(master_fd)

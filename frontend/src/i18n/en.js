@@ -651,11 +651,6 @@ export default {
   sync_con_saltados: (lista) => `Sync skipped providers: ${lista}`,
   sync_facetas_en_riesgo: (lista) => `Facets at risk (model unavailable): ${lista}`,
   sync_modelos_nuevos: (lista) => `New models detected: ${lista}`,
-  adminModelsForzarBoton: (proveedor) => `Force sync of ${proveedor}`,
-  adminModelsForzarTitulo: 'Force sync',
-  adminModelsForzarMensaje: (proveedor) =>
-    `Provider "${proveedor}" answered with an empty list, or much smaller than expected -- the system treated it as suspicious and did not touch any model. Forcing the sync skips that check ONLY for this provider and gets logged in the audit trail. Only use this if you know the response is real (not a broken limit or pagination on the provider's side).`,
-  adminModelsForzarConfirmar: 'Force anyway',
   adminModelsProvider: 'Provider',
   adminModelsModelId: 'Model',
   adminModelsAlias: 'Alias',

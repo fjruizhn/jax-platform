@@ -12,5 +12,11 @@ EnvironmentFile=/etc/jax/.env
 # .venv de la app (ver ops/avisar-fallo-unidad.py: este es el último
 # recurso para cuando ese .venv está roto).
 ExecStart=/usr/bin/python3 -I ops/avisar-fallo-unidad.py jax-catalogo-modelos.service
+# Punto 3 (tercera auditoría adversarial, 2026-09-27): el script es SOLO
+# biblioteca estándar y hace a lo sumo un POST HTTP con timeout propio de
+# 10s (ver TIMEOUT_SEGUNDOS en el script) -- 1min deja margen sin dejarlo
+# indefinido si Telegram se cuelga de una forma que su propio timeout no
+# cubre.
+TimeoutStartSec=1min
 StandardOutput=journal
 StandardError=journal

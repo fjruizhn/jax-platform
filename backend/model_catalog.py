@@ -233,68 +233,25 @@ async def _fetch_gemini_paginado(client, url: str, headers: dict) -> dict:
     return {"models": modelos}
 
 
-def _motivo_si_respuesta_sospechosa(seen_ids: set, disponibles_antes: int) -> str | None:
-    """A-3: una respuesta 200 con la lista VACÍA, o con MENOS DE LA MITAD de
-    lo que este proveedor tenía 'available' antes, es sospechosa de un
-    pageSize/límite roto (el caso real de Gemini de arriba) -- se trata como
-    FALLO del proveedor, sin sumar un solo miss (una lista incompleta no es
-    evidencia de que un modelo real haya desaparecido). Devuelve el motivo
-    (para loguear/reportar) o None si la respuesta es de fiar. Sin historia
-    (`disponibles_antes == 0`, un proveedor nunca sincronizado) el chequeo
-    de "menos de la mitad" no aplica -- no hay nada contra qué comparar."""
+def _motivo_si_respuesta_sospechosa(seen_ids: set) -> str | None:
+    """Tercera auditoría adversarial (2026-09-27): SIMPLIFICADO -- se quitó
+    por completo el guardián de "menos de la mitad" (denominador frágil,
+    guardián que se podía quedar bloqueado, y el mecanismo de `forzar` que
+    traía para destrabarlo). Lo único que se conserva: una respuesta 200 con
+    la lista VACÍA es sospechosa de un límite/paginación rota (el caso real
+    de Gemini que originó todo esto) y se trata como FALLO del proveedor,
+    sin sumar un solo miss -- un retiro masivo LEGÍTIMO de modelos (el
+    proveedor de verdad se quedó sin ninguno) fluye por los misses normales
+    de D1.4 en la próxima corrida, no por acá. Devuelve el motivo (para
+    loguear/reportar) o None si la respuesta es de fiar."""
     if not seen_ids:
         return "lista vacía"
-    if disponibles_antes > 0 and len(seen_ids) < disponibles_antes / 2:
-        return f"lista encogida a {len(seen_ids)} de {disponibles_antes} disponibles antes"
     return None
 
 
-async def _disponibles_antes(cur, provider_id: str) -> int:
-    """El denominador del guardián de "lista encogida" (`_motivo_si_respuesta_sospechosa`).
-
-    MAJOR-3(a) (segunda auditoría adversarial, 2026-09-27): sólo cuenta lo
-    que SUMARÍA un miss si desapareciera de una respuesta real -- el MISMO
-    criterio que el loop de depreciación de `sync_provider_models`, más
-    abajo:
-    - `source != 'provider_api'` (filas 'manual' sembradas a mano, u
-      'observed' de `record_resolved_version`) NUNCA las reporta un
-      `/v1/models` real, así que tampoco cuentan para "cuánto había antes".
-    - Para `anthropic`, un alias suelto sin prefijo 'claude-' (ej. 'sonnet')
-      JAMÁS aparece en `GET /v1/models` real -- mismo `continue` que ya
-      excluye esos alias del conteo de misses.
-    Antes el denominador contaba TODO lo 'available': una sola fila 'manual'
-    de prueba (o el alias 'sonnet', que queda 'available' para siempre y
-    nunca lo va a devolver un sync real) bastaba para inflar el denominador
-    y dejar el guardián bloqueado sin remedio en una cuenta con pocos
-    modelos reales -- el caso reportado."""
-    if provider_id == "anthropic":
-        await cur.execute(
-            "SELECT COUNT(*) FROM model WHERE provider_id=%s AND status='available' "
-            "AND source='provider_api' AND model_id LIKE 'claude-%%'",
-            (provider_id,),
-        )
-    else:
-        await cur.execute(
-            "SELECT COUNT(*) FROM model WHERE provider_id=%s AND status='available' AND source='provider_api'",
-            (provider_id,),
-        )
-    (cantidad,) = await cur.fetchone()
-    return cantidad
-
-
-async def sync_provider_models(provider_id: str, forzar: bool = False) -> dict:
+async def sync_provider_models(provider_id: str) -> dict:
     """D1.3-a. Unica verdad de disponibilidad para ESTA cuenta. Upsert en
-    `model` para lo visto; lo que no aparecio suma un miss (D1.4).
-
-    `forzar=True` (MAJOR-3(b), segunda auditoría adversarial, 2026-09-27):
-    salta el guardián de "lista encogida" (`_motivo_si_respuesta_sospechosa`)
-    para ESTE proveedor -- vía POST /admin/models/sync con
-    `forzar: [provider_id]`, sólo superadmin, auditado en
-    `model_catalog_audit` (acción 'sync_forzado', ver api/admin/models.py).
-    NO salta el tope de páginas ni la detección de cursor repetido
-    (`PaginacionSospechosaError`, MAJOR-1): esas dos son sobre una
-    paginación que nunca converge -- forzarlas podría colgar el proceso de
-    verdad, no sólo aceptar un catálogo más chico de lo esperado."""
+    `model` para lo visto; lo que no aparecio suma un miss (D1.4)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -303,14 +260,13 @@ async def sync_provider_models(provider_id: str, forzar: bool = False) -> dict:
                 (provider_id,),
             )
             row = await cur.fetchone()
-            disponibles_antes = await _disponibles_antes(cur, provider_id) if row and row[1] else 0
 
     if not row or not row[1]:
         return {"provider_id": provider_id, "fetched": 0, "skipped": "sin models_list_url"}
     transport, url = row
 
     if provider_id == "ollama":
-        return await _sync_ollama_models(url, forzar=forzar)
+        return await _sync_ollama_models(url)
 
     if provider_id == "anthropic":
         try:
@@ -352,16 +308,10 @@ async def sync_provider_models(provider_id: str, forzar: bool = False) -> dict:
 
     seen_ids = set(_extract_model_ids(provider_id, payload))
 
-    motivo_sospechoso = None if forzar else _motivo_si_respuesta_sospechosa(seen_ids, disponibles_antes)
+    motivo_sospechoso = _motivo_si_respuesta_sospechosa(seen_ids)
     if motivo_sospechoso:
         logger.warning(f"model_catalog sync provider={provider_id} respuesta sospechosa: {motivo_sospechoso}")
-        # ACOPLAMIENTO DELIBERADO: catalogo_modelos_ejecutor.py::_PREFIJO_ERROR_GUARDIAN
-        # reconoce este prefijo EXACTO ("respuesta sospechosa del proveedor") para
-        # decidir si el aviso de Telegram sugiere "forzalo" (MAJOR-3(c)) -- si
-        # cambia el texto acá, hay que cambiarlo ahí también.
         return {"provider_id": provider_id, "error": f"respuesta sospechosa del proveedor ({motivo_sospechoso})"}
-    if forzar:
-        logger.warning(f"model_catalog sync provider={provider_id} FORZADO -- guardián de lista encogida saltado")
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -424,7 +374,7 @@ async def _capacidades_ollama(url_show: str, model_id: str) -> list[str] | None:
     return caps if isinstance(caps, list) else None
 
 
-async def _sync_ollama_models(url: str, forzar: bool = False) -> dict:
+async def _sync_ollama_models(url: str) -> dict:
     """Ollama es local, sin API key (provider.auth_type='none') — /api/tags
     no lleva ningun header, a diferencia de todos los demas providers.
     Shape real distinto (verificado con curl, 2026-08-10):
@@ -451,22 +401,16 @@ async def _sync_ollama_models(url: str, forzar: bool = False) -> dict:
     seen = {m["model"]: m.get("digest") for m in entries}
     seen_ids = set(seen.keys())
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            disponibles_antes = await _disponibles_antes(cur, "ollama")
-
-    # A-3: mismo guardián que sync_provider_models -- un /api/tags que
-    # responde 200 con 'models': [] (o con menos de la mitad de lo que
-    # había 'available') no es lo mismo que 'no alcanzable' (eso ya lo cubre
-    # el except de arriba); acá SÍ hay respuesta, pero es sospechosa. Se
+    # Mismo guardián que sync_provider_models -- un /api/tags que responde
+    # 200 con 'models': [] no es lo mismo que 'no alcanzable' (eso ya lo
+    # cubre el except de arriba); acá SÍ hay respuesta, pero está vacía. Se
     # corta ANTES de pedir /api/show por cada modelo (nada que consultar).
-    motivo_sospechoso = None if forzar else _motivo_si_respuesta_sospechosa(seen_ids, disponibles_antes)
+    motivo_sospechoso = _motivo_si_respuesta_sospechosa(seen_ids)
     if motivo_sospechoso:
         logger.warning(f"model_catalog sync provider=ollama respuesta sospechosa: {motivo_sospechoso}")
         return {"provider_id": "ollama", "error": f"respuesta sospechosa del proveedor ({motivo_sospechoso})"}
-    if forzar:
-        logger.warning("model_catalog sync provider=ollama FORZADO -- guardián de lista encogida saltado")
+
+    pool = await get_pool()
 
     # Frente D (2026-09-16): la modalidad de entrada sale de /api/show, ANTES
     # de tomar la conexion (no se retiene una conexion del pool durante HTTP).
@@ -734,7 +678,29 @@ async def _facetas_en_riesgo(cur) -> list[dict]:
     return filas
 
 
-async def sync_all(forzar: list[str] | None = None) -> dict:
+# Tercera auditoría adversarial (2026-09-27), punto 5: candado contra syncs
+# concurrentes. `GET_LOCK`/`RELEASE_LOCK` de MariaDB son POR CONEXIÓN (no
+# por sesión lógica ni por transacción) -- por eso `sync_all()` reserva UNA
+# conexión del pool y la mantiene DEDICADA durante todo el sync; soltarla
+# antes de tiempo soltaría el candado antes de tiempo, y otro proceso que
+# la reusara (el pool las recicla) heredaría un candado que cree que nadie
+# más tiene.
+_NOMBRE_CANDADO_SYNC = "jax_catalogo_sync"
+
+#: Respuesta cuando el candado ya lo tiene otro proceso -- no se tocó nada
+#: (ni una consulta de escritura corrió). `code='sync_en_curso'` es un
+#: código nuevo y claro, no una reutilización de 'sync_con_errores': no es
+#: un error del catálogo, es "alguien más ya está sincronizando ahora mismo".
+def _respuesta_sync_en_curso() -> dict:
+    return {
+        "ok": False, "code": "sync_en_curso",
+        "providers": [], "enrich": {}, "providers_fallidos": [],
+        "providers_saltados": [], "enrich_fallido": False,
+        "nuevos": {}, "facetas_en_riesgo": [],
+    }
+
+
+async def sync_all() -> dict:
     """Orquesta el sync completo: capa (a) por cada proveedor de
     SYNCABLE_PROVIDERS, capa (b) de enriquecimiento, y el diagnostico de
     saltados/nuevos/facetas en riesgo. Extraida de POST /admin/models/sync
@@ -746,61 +712,75 @@ async def sync_all(forzar: list[str] | None = None) -> dict:
     `ok=False` si CUALQUIERA de estos pasa (hallazgo real, 2026-09-27): un
     provider con error, un provider SALTADO (antes esto no bajaba `ok` --
     asi paso desapercibido que anthropic se saltaba en cada corrida desde
-    que los servicios corren como jaxsvc), el enriquecimiento fallido, o una
-    faceta 'primary' cuyo modelo dejo de estar disponible.
-
-    `forzar` (MAJOR-3(b), segunda auditoría adversarial, 2026-09-27): lista
-    de provider_id para los que se salta el guardián de "lista encogida" --
-    ver `sync_provider_models`. El ejecutor programado (sin superadmin
-    detrás) nunca pasa esto; sólo lo usa el endpoint, y sólo cuando un
-    superadmin lo pide explícitamente."""
-    forzados = set(forzar or ())
-    results = []
-    for provider_id in SYNCABLE_PROVIDERS:
-        try:
-            results.append(await sync_provider_models(provider_id, forzar=provider_id in forzados))
-        except Exception as e:  # fail-soft: un provider caido no frena a los demas; su error va en el resultado y apaga ok
-            motivo = texto_de_error(e)
-            logger.warning(f"sync_all provider={provider_id} failed reason={motivo}")
-            results.append({"provider_id": provider_id, "error": redactar_secretos(str(e))[:200]})
-
-    try:
-        enrich_result = await enrich_from_models_dev()
-    except Exception as e:  # fail-soft: el enriquecimiento es capa (b) opcional; su error va en 'enrich' y apaga ok
-        logger.warning(f"sync_all enrich failed reason={texto_de_error(e)}")
-        enrich_result = {"error": redactar_secretos(str(e))[:200]}
-
-    providers_fallidos = [r["provider_id"] for r in results if "error" in r]
-    # Un provider saltado (sin credencial, sin models_list_url, no
-    # alcanzable) NO es un sync exitoso -- es exactamente el hallazgo real
-    # que origina este cambio: antes 'skipped' no contaba para nada y
-    # anthropic desaparecio del catalogo en silencio.
-    providers_saltados = [r["provider_id"] for r in results if "skipped" in r]
-    enrich_fallido = "error" in enrich_result
-    nuevos = {r["provider_id"]: r["nuevos"] for r in results if r.get("nuevos")}
-
+    que los servicios corren como jaxsvc), el enriquecimiento fallido, una
+    faceta 'primary' cuyo modelo dejo de estar disponible, o que el candado
+    (`GET_LOCK`, ver arriba) ya lo tenga otro sync en curso -- en ESE último
+    caso `ok=False` no significa "el catálogo está roto", significa "no se
+    intentó nada, probá de nuevo en un rato"; el ejecutor programado lo
+    distingue explícitamente y no lo trata como problema (ver
+    catalogo_modelos_ejecutor.py)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            facetas_en_riesgo = await _facetas_en_riesgo(cur)
+            # timeout=0: no espera -- si alguien más lo tiene, se corta al
+            # toque en vez de hacer cola (el timer corre cada 6h; una espera
+            # larga acá sólo demoraría un click manual sin ganar nada).
+            await cur.execute("SELECT GET_LOCK(%s, 0)", (_NOMBRE_CANDADO_SYNC,))
+            (obtenido,) = await cur.fetchone()
 
-    ok = not (providers_fallidos or providers_saltados or enrich_fallido or facetas_en_riesgo)
-    respuesta = {
-        "ok": ok,
-        "providers": results,
-        "enrich": enrich_result,
-        "providers_fallidos": providers_fallidos,
-        "providers_saltados": providers_saltados,
-        "enrich_fallido": enrich_fallido,
-        "nuevos": nuevos,
-        "facetas_en_riesgo": facetas_en_riesgo,
-    }
-    if not ok:
-        # Se conserva el `code` de Task 3 (2026-09-15) a proposito -- ya lo
-        # leen tests/test_admin_models_endpoints.py, el frontend
-        # (AdminModelCatalog.jsx) y su i18n (t.sync_con_errores en es.js/
-        # en.js). Ampliar QUE cuenta como "no ok" (saltados, facetas en
-        # riesgo) no exige renombrar el codigo que ya identifica "esta
-        # respuesta trae algo que mirar".
-        respuesta["code"] = "sync_con_errores"
-    return respuesta
+        if not obtenido:
+            logger.warning("sync_all: candado ocupado por otro sync en curso -- no se tocó nada")
+            return _respuesta_sync_en_curso()
+
+        try:
+            results = []
+            for provider_id in SYNCABLE_PROVIDERS:
+                try:
+                    results.append(await sync_provider_models(provider_id))
+                except Exception as e:  # fail-soft: un provider caido no frena a los demas; su error va en el resultado y apaga ok
+                    motivo = texto_de_error(e)
+                    logger.warning(f"sync_all provider={provider_id} failed reason={motivo}")
+                    results.append({"provider_id": provider_id, "error": redactar_secretos(str(e))[:200]})
+
+            try:
+                enrich_result = await enrich_from_models_dev()
+            except Exception as e:  # fail-soft: el enriquecimiento es capa (b) opcional; su error va en 'enrich' y apaga ok
+                logger.warning(f"sync_all enrich failed reason={texto_de_error(e)}")
+                enrich_result = {"error": redactar_secretos(str(e))[:200]}
+
+            providers_fallidos = [r["provider_id"] for r in results if "error" in r]
+            # Un provider saltado (sin credencial, sin models_list_url, no
+            # alcanzable) NO es un sync exitoso -- es exactamente el hallazgo
+            # real que origina este cambio: antes 'skipped' no contaba para
+            # nada y anthropic desaparecio del catalogo en silencio.
+            providers_saltados = [r["provider_id"] for r in results if "skipped" in r]
+            enrich_fallido = "error" in enrich_result
+            nuevos = {r["provider_id"]: r["nuevos"] for r in results if r.get("nuevos")}
+
+            async with conn.cursor() as cur:
+                facetas_en_riesgo = await _facetas_en_riesgo(cur)
+
+            ok = not (providers_fallidos or providers_saltados or enrich_fallido or facetas_en_riesgo)
+            respuesta = {
+                "ok": ok,
+                "providers": results,
+                "enrich": enrich_result,
+                "providers_fallidos": providers_fallidos,
+                "providers_saltados": providers_saltados,
+                "enrich_fallido": enrich_fallido,
+                "nuevos": nuevos,
+                "facetas_en_riesgo": facetas_en_riesgo,
+            }
+            if not ok:
+                # Se conserva el `code` de Task 3 (2026-09-15) a proposito --
+                # ya lo leen tests/test_admin_models_endpoints.py, el
+                # frontend (AdminModelCatalog.jsx) y su i18n
+                # (t.sync_con_errores en es.js/en.js). Ampliar QUE cuenta
+                # como "no ok" (saltados, facetas en riesgo) no exige
+                # renombrar el codigo que ya identifica "esta respuesta trae
+                # algo que mirar".
+                respuesta["code"] = "sync_con_errores"
+            return respuesta
+        finally:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT RELEASE_LOCK(%s)", (_NOMBRE_CANDADO_SYNC,))

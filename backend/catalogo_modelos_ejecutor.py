@@ -22,13 +22,23 @@ Este módulo:
    MUDO, sin avisar a nadie.
 4. Avisa por Telegram con un envío PROPIO y mínimo (A-5: ya no se importa
    `jacobs.reaper.send_telegram_alert` del repo `jax` -- ver el docstring de
-   `_enviar_telegram` para el motivo). El dedupe SÓLO avanza si Telegram
-   confirmó la entrega (A-1): un aviso que falla no se marca como avisado,
-   la corrida siguiente reintenta, y un modelo nuevo que no se pudo avisar
-   se acumula como pendiente hasta que un envío salga -- nunca se pierde en
-   silencio.
+   `_enviar_telegram` para el motivo). El dedupe de "problemas" SÓLO avanza
+   si Telegram confirmó la entrega (A-1): un aviso que falla no se marca
+   como avisado, la corrida siguiente reintenta.
 5. Un aviso roto (Telegram caído, disco lleno) nunca enmascara el código de
    salida del job.
+
+Tercera auditoría adversarial (2026-09-27), SIMPLIFICACIÓN de "nuevos": ya
+no hay un archivo de pendientes que acumula modelos nuevos sin avisar --
+"es nuevo" lo decide la BASE (`model.created_at`), comparado contra una
+MARCA (timestamp) guardada en el archivo de estado, que sólo avanza cuando
+Telegram confirmó el envío. Un crash en cualquier punto (antes o después de
+mandar el aviso) no pierde nada: la marca en disco sigue siendo la última
+confirmada, y la corrida siguiente vuelve a calcular desde ahí -- ver
+`_nuevos_desde_marca`/`_correr`/`_avisar`. `sync_provider_models` sigue
+devolviendo su propio `nuevos` (lo que ESTA corrida vio por primera vez)
+para la respuesta de POST /admin/models/sync que lee la UI -- el aviso
+programado de este módulo ya no lo usa.
 
 Uso: `python -m catalogo_modelos_ejecutor` desde `backend/`, con el mismo
 entorno que el resto del servicio (`/etc/jax/.env`) más
@@ -159,40 +169,26 @@ def _problemas_de(resultado: dict) -> dict | None:
     }
 
 
-def _nuevos_de(resultado: dict) -> dict | None:
-    """Lo que ESTA corrida vio por primera vez para cada proveedor. No es
-    "lo pendiente de avisar" -- eso vive en el archivo de estado y lo arma
-    `_fusionar_nuevos`."""
-    nuevos = {p: sorted(ids) for p, ids in (resultado.get("nuevos") or {}).items() if ids}
-    return nuevos or None
-
-
-def _fusionar_nuevos(pendientes: dict, detectados: dict) -> dict:
-    """Unión por proveedor de lo pendiente de avisar (de una corrida
-    anterior cuyo envío falló) con lo detectado en ESTA corrida.
-
-    A-1 (auditoría adversarial, 2026-09-27): `sync_provider_models` ya
-    insertó en `model` lo que ve como nuevo -- la corrida SIGUIENTE no lo
-    va a reportar de nuevo en `resultado["nuevos"]`, sin importar si el
-    aviso de HOY salió o no. Sin este acumulador, un modelo nuevo cuyo
-    aviso falló se perdía para siempre en el siguiente `_avisar()`, sin que
-    nadie se enterara jamás de que existió. Acá se fusiona con lo que ya
-    estaba pendiente y sólo se limpia cuando un envío confirma la entrega."""
-    proveedores = set(pendientes) | set(detectados)
-    fusion = {
-        p: sorted(set(pendientes.get(p, [])) | set(detectados.get(p, [])))
-        for p in proveedores
-    }
-    return {p: ids for p, ids in fusion.items() if ids}
-
-
-#: Motivo con el que `model_catalog._motivo_si_respuesta_sospechosa` marca
-#: un error del guardián de "lista encogida" (A-3) -- prefijo EXACTO que
-#: arma `sync_provider_models`/`_sync_ollama_models` al devolver el error.
-#: Sirve para distinguir "esto se puede forzar" de cualquier otro fallo de
-#: proveedor (una excepción de red, una credencial vencida) que forzar NO
-#: arregla.
-_PREFIJO_ERROR_GUARDIAN = "respuesta sospechosa del proveedor"
+async def _nuevos_desde_marca(cur, marca: str | None, corte: str) -> dict:
+    """Modelos cuyo `model.created_at` cae en (marca, corte] -- la fuente de
+    verdad de "es nuevo" para el AVISO programado es la BASE, no lo que
+    `sync_provider_models` vio en esta corrida puntual (eso sigue
+    disponible en `resultado["nuevos"]`, para el endpoint/UI). Si `marca`
+    es None (primera corrida, todavía sin marca guardada) no hay nada
+    contra qué comparar -- devuelve vacío; `_avisar` fija la marca en
+    `corte` sin avisar retroactivamente de todo lo que ya estaba en la
+    base antes de que este mecanismo existiera."""
+    if marca is None:
+        return {}
+    await cur.execute(
+        "SELECT provider_id, model_id FROM model WHERE created_at > %s AND created_at <= %s "
+        "ORDER BY provider_id, model_id",
+        (marca, corte),
+    )
+    nuevos: dict[str, list[str]] = {}
+    for provider_id, model_id in await cur.fetchall():
+        nuevos.setdefault(provider_id, []).append(model_id)
+    return nuevos
 
 
 def _mensaje_problemas(resultado: dict) -> str:
@@ -210,19 +206,6 @@ def _mensaje_problemas(resultado: dict) -> str:
         )
         partes.append(f"Facetas en riesgo: {riesgos}.")
 
-    # MAJOR-3(c) (segunda auditoría adversarial, 2026-09-27): si el motivo es
-    # el guardián de "lista encogida", el aviso dice CÓMO forzarlo -- si es
-    # una caída real del proveedor (no un límite/paginación rota), forzar
-    # simplemente vuelve a fallar en el próximo sync programado.
-    sospechosos = sorted(
-        r["provider_id"] for r in resultado.get("providers") or []
-        if isinstance(r.get("error"), str) and r["error"].startswith(_PREFIJO_ERROR_GUARDIAN)
-    )
-    if sospechosos:
-        partes.append(
-            "Si es una caída real de esos proveedores (no un límite o una paginación rota), "
-            f"forzalo con POST /api/admin/models/sync {{\"forzar\": {sospechosos}}} (requiere superadmin)."
-        )
     return " ".join(partes)
 
 
@@ -340,34 +323,34 @@ async def _avisar(resultado: dict) -> None:
         _guardar_estado(ruta, estado)
         cambio = False
 
-    # --- Nuevos: acumulador PERSISTENTE, no firma+ventana (A-1, ver
-    # `_fusionar_nuevos`).
-    #
-    # MAJOR-4 (segunda auditoría adversarial, 2026-09-27): el `_guardar_estado`
-    # de lo pendiente va INMEDIATAMENTE después de calcular `fusion`, ANTES
-    # del POST a Telegram -- no al final de la función. Antes el archivo sólo
-    # se escribía al terminar `_avisar()`, así que si el proceso moría A
-    # MITAD del envío (excepción, SIGKILL, el propio `_enviar_telegram`
-    # reventando), lo recién detectado se perdía: nunca había tocado disco.
-    # Ahora, pase lo que pase durante el envío, lo pendiente YA está en
-    # disco antes de intentarlo; sólo se limpia cuando Telegram confirma.
-    detectados = _nuevos_de(resultado) or {}
-    pendientes_antes = estado.get("nuevos_pendientes") or {}
-    fusion = _fusionar_nuevos(pendientes_antes, detectados)
-    if fusion != pendientes_antes:
-        if fusion:
-            estado["nuevos_pendientes"] = fusion
-        else:
-            estado.pop("nuevos_pendientes", None)
-        _guardar_estado(ruta, estado)
-
-    if fusion:
-        if await _enviar_telegram(_mensaje_nuevos(fusion)):
-            if estado.pop("nuevos_pendientes", None) is not None:
+    # --- Nuevos: la fuente de verdad es la BASE (tercera auditoría
+    # adversarial, 2026-09-27; ver `_nuevos_desde_marca`/`_correr`), no un
+    # archivo de pendientes. `_correr()` ya calculó, con el mismo pool antes
+    # de cerrarlo, qué hay en (marca_previa, marca_corte] -- acá sólo se
+    # decide si avisar y si la marca avanza. La marca SOLO avanza cuando
+    # Telegram confirma la entrega (o en la primera corrida, sin marca
+    # previa, que se fija sin avisar): un crash en cualquier punto -- antes
+    # o después del envío -- no pierde ni repite nada, porque en disco sigue
+    # la última marca confirmada y la corrida siguiente recalcula desde ahí.
+    marca_corte = resultado.get("marca_corte")
+    if marca_corte:
+        if resultado.get("marca_previa_era_none"):
+            # Primera corrida: sin marca previa no hay nada contra qué
+            # comparar -- se fija la marca en "ahora" (=`marca_corte`) SIN
+            # avisar retroactivamente de todo lo que ya estaba en la base
+            # antes de que este mecanismo existiera.
+            if estado.get("nuevos_marca") != marca_corte:
+                estado["nuevos_marca"] = marca_corte
                 _guardar_estado(ruta, estado)
-        # si falla (o el proceso muere acá): lo pendiente YA quedó guardado
-        # arriba -- la corrida siguiente lo reintenta, sumándole lo que
-        # aparezca nuevo mientras tanto.
+        else:
+            nuevos = resultado.get("nuevos_desde_marca") or {}
+            if nuevos and await _enviar_telegram(_mensaje_nuevos(nuevos)):
+                estado["nuevos_marca"] = marca_corte
+                _guardar_estado(ruta, estado)
+            # si no hay nada nuevo, o si el envío falla: la marca NO avanza
+            # -- la corrida siguiente vuelve a mirar desde la MISMA marca de
+            # siempre (más lo que haya aparecido mientras tanto) y no pierde
+            # nada.
 
 
 def _resumen(resultado: dict) -> str:
@@ -388,11 +371,41 @@ async def _correr() -> dict:
     y `close_pool` se importan ACÁ ADENTRO, no al tope del módulo -- ver el
     comentario grande junto a los imports. Si `model_catalog` (o algo que él
     importa) revienta al cargarse, la excepción sale de ESTA función, que
-    `_ciclo()` corre con un try alrededor."""
+    `_ciclo()` corre con un try alrededor.
+
+    Tercera auditoría adversarial (2026-09-27): si `sync_all()` devuelve
+    `code == "sync_en_curso"` (candado ocupado por otro sync, ver
+    `model_catalog.sync_all`) no se tocó NADA -- se devuelve tal cual, sin
+    la consulta de "nuevos desde la marca" de abajo (no hay nada nuevo que
+    calcular: esta corrida no sincronizó). `_ciclo()`/`main()` lo tratan
+    como no-problema.
+
+    Si sí corrió, se calcula acá -- con el MISMO pool, ANTES de cerrarlo --
+    qué modelos son nuevos desde la MARCA guardada en el archivo de estado
+    (ver `_nuevos_desde_marca`); `_avisar()` decide con eso si avisa y si la
+    marca avanza, sin volver a tocar la base."""
     import model_catalog
-    from db.connection import close_pool
+    from db.connection import get_pool, close_pool
     try:
-        return await model_catalog.sync_all()
+        resultado = await model_catalog.sync_all()
+        if resultado.get("code") == "sync_en_curso":
+            return resultado
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT NOW(6)")
+                (corte,) = await cur.fetchone()
+                estado = _cargar_estado(_ruta_estado())
+                marca = estado.get("nuevos_marca")
+                marca = marca if isinstance(marca, str) and marca else None
+                nuevos_desde_marca = await _nuevos_desde_marca(cur, marca, corte)
+
+        resultado = dict(resultado)
+        resultado["marca_corte"] = str(corte)
+        resultado["marca_previa_era_none"] = marca is None
+        resultado["nuevos_desde_marca"] = nuevos_desde_marca
+        return resultado
     finally:
         # Mismo loop que lo creó (ver db/connection.py) -- cerrar acá evita
         # que la interpretación termine con conexiones a medio cerrar.
@@ -414,7 +427,13 @@ async def _ciclo() -> dict | None:
     manera que ni su propio try/except interno cubre (A-2: DB caída al
     conectar, un import roto) -- en ese caso ya mandó su propio aviso de
     "el vigilante falló" acá adentro, y ya imprimió el resumen de una
-    línea."""
+    línea.
+
+    Tercera auditoría adversarial (2026-09-27): `code == "sync_en_curso"`
+    (candado ocupado por otro sync, ver `model_catalog.sync_all`) no es un
+    problema -- no se tocó nada, así que no hay nada de qué avisar. Se
+    imprime igual el resumen (queda en el journal) pero se salta `_avisar`
+    por completo."""
     resultado = None
     try:
         resultado = await _correr()
@@ -429,10 +448,13 @@ async def _ciclo() -> dict | None:
 
     if resultado is not None:
         print(_resumen(resultado))
-        try:
-            await _avisar(resultado)
-        except Exception:  # fail-soft: el código de salida es sobre `ok`, nunca sobre si el aviso salió bien
-            logger.exception("catalogo_modelos_ejecutor: _avisar falló, el código de salida no cambia por esto")
+        if resultado.get("code") == "sync_en_curso":
+            logger.info("catalogo_modelos_ejecutor: candado ocupado por otro sync -- no se tocó nada, no se avisa")
+        else:
+            try:
+                await _avisar(resultado)
+            except Exception:  # fail-soft: el código de salida es sobre `ok`, nunca sobre si el aviso salió bien
+                logger.exception("catalogo_modelos_ejecutor: _avisar falló, el código de salida no cambia por esto")
 
     # Mismo loop, al final de todo: `close_http_client()` está del lado de
     # http_client.py y no toca el pool (ya cerrado dentro de `_correr()`).
@@ -444,6 +466,10 @@ def main() -> int:
     resultado = asyncio.run(_ciclo())
     if resultado is None:
         return 1
+    # Tercera auditoría adversarial (2026-09-27): un sync que no corrió
+    # porque otro lo tenía tomado no es un fallo del ejecutor -- sale 0.
+    if resultado.get("code") == "sync_en_curso":
+        return 0
     return 0 if resultado["ok"] else 1
 
 

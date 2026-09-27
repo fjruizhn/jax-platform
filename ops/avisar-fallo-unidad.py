@@ -15,8 +15,8 @@ NO puede avisar por sí mismo:
   siquiera deja arrancar el Python de la app.
 
 Por eso este script NO importa nada de jax-platform, no usa httpx ni el
-.venv -- sólo `os`, `subprocess`, `sys` y `urllib` de la biblioteca estándar
-de CPython, que existen en cualquier instalación de Python 3 del sistema.
+.venv -- sólo `os`, `sys` y `urllib` de la biblioteca estándar de CPython,
+que existen en cualquier instalación de Python 3 del sistema.
 
 El token del bot NUNCA viaja como argumento de otro proceso: se lee del
 entorno (`TELEGRAM_BOT_TOKEN`, poblado por `EnvironmentFile=/etc/jax/.env`
@@ -24,11 +24,39 @@ de la propia unidad) DENTRO de este proceso Python, y se usa directo en la
 llamada a `urllib.request` -- nunca se arma un comando `curl` con la URL
 como argumento, que lo dejaría visible para cualquiera que corra `ps`
 mientras el aviso está en vuelo.
+
+Tercera auditoría adversarial (2026-09-27), dos cambios sobre la versión
+anterior:
+
+1. Ya NO lee el journal. `jaxsvc` no tiene permiso de leerlo (haría falta
+   pertenecer a `systemd-journal` o ser superusuario) -- depender de eso era
+   una VÍA DE FUGA: si algún día se le diera ese permiso, el contenido del
+   journal (que puede incluir salida de otras unidades, no sólo la del
+   catálogo) viajaría a Telegram sin ningún control adicional de este
+   script. El aviso ahora es sólo "esta unidad terminó de una forma que el
+   propio ejecutor no pudo avisar", con los datos que systemd YA exporta --
+   sin intentar leer algo que este script no tiene forma segura de leer.
+
+2. Sólo avisa si `MONITOR_SERVICE_RESULT` -- que systemd exporta a toda
+   unidad de `OnFailure=`, junto con `MONITOR_EXIT_CODE`,
+   `MONITOR_EXIT_STATUS` y `MONITOR_INVOCATION_ID` (ver systemd.exec(5) /
+   systemd.unit(5), sección de manejo de fallos) -- es DISTINTO de
+   `exit-code`. Con `exit-code` el proceso SÍ llegó a correr y terminar con
+   un código de salida propio, que es justo el camino que
+   `catalogo_modelos_ejecutor.py::main()` ya cubre desde ADENTRO (con
+   contexto real: qué proveedor falló, qué faceta quedó en riesgo) -- avisar
+   de nuevo acá sería un segundo aviso, más pobre, del mismo hecho. Esta
+   unidad es el backstop para lo que NUNCA llega a ese código: `timeout`
+   (`TimeoutStartSec` mató el proceso), `signal` (una señal externa lo
+   tumbó), `core-dump`, `watchdog`, `start-limit-hit`, o que ni siquiera
+   pudo arrancar (`exec`, `protocol`, etc.). Si la variable viniera vacía o
+   ausente (una versión de systemd vieja que no la exporta, o correrlo a
+   mano) se trata como "no es exit-code": mejor un aviso de más que uno de
+   menos en un camino que sólo se dispara cuando algo ya salió mal.
 """
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -36,24 +64,21 @@ import urllib.request
 
 TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
-LINEAS_DE_JOURNAL = 20
 TIMEOUT_SEGUNDOS = 10
 
+#: Las cuatro variables que systemd exporta a toda unidad de `OnFailure=`
+#: (ver systemd.unit(5)) -- las que pide la tercera auditoría adversarial
+#: (2026-09-27).
+MONITOR_SERVICE_RESULT_ENV = "MONITOR_SERVICE_RESULT"
+MONITOR_EXIT_CODE_ENV = "MONITOR_EXIT_CODE"
+MONITOR_EXIT_STATUS_ENV = "MONITOR_EXIT_STATUS"
+MONITOR_INVOCATION_ID_ENV = "MONITOR_INVOCATION_ID"
 
-def _ultimas_lineas_de_journal(unidad: str) -> str | None:
-    """Best-effort: sin `journalctl` en el PATH, sin permiso de leerlo, o si
-    no imprime nada, se devuelve None -- el aviso sale igual, sin esas
-    líneas. Nunca revienta el aviso principal por esto."""
-    try:
-        resultado = subprocess.run(
-            ["journalctl", "-u", unidad, "-n", str(LINEAS_DE_JOURNAL), "--no-pager", "--output=cat"],
-            capture_output=True, text=True, timeout=TIMEOUT_SEGUNDOS, check=False,
-        )
-    except Exception:  # fail-soft: sin journalctl/permiso, el aviso principal sale igual, sin estas líneas
-        return None
-    if resultado.returncode != 0 or not resultado.stdout.strip():
-        return None
-    return resultado.stdout.strip()
+#: Con este resultado, `catalogo_modelos_ejecutor.py::main()` YA corrió
+#: hasta el final de su propio try/except y ya avisó lo que había que avisar
+#: (o decidió, correctamente, que no había nada que avisar) -- esta unidad
+#: se queda callada para no duplicar ese aviso con MENOS contexto.
+RESULTADO_YA_CUBIERTO_POR_EL_EJECUTOR = "exit-code"
 
 
 def _enviar_telegram(mensaje: str) -> bool:
@@ -83,14 +108,21 @@ def main(argv: list[str]) -> int:
         return 2
     unidad = argv[1].strip()
 
-    mensaje = f"Catálogo de modelos: falló la unidad {unidad}."
-    journal = _ultimas_lineas_de_journal(unidad)
-    if journal:
-        # Recorte defensivo: Telegram tiene un tope de ~4096 caracteres por
-        # mensaje; el journal completo de 20 líneas normalmente entra de
-        # sobra, pero una línea gigante no debe tumbar el envío.
-        mensaje += f"\n\nÚltimas líneas del journal:\n{journal[-3000:]}"
+    resultado = os.environ.get(MONITOR_SERVICE_RESULT_ENV, "").strip()
+    if resultado == RESULTADO_YA_CUBIERTO_POR_EL_EJECUTOR:
+        return 0
 
+    codigo = os.environ.get(MONITOR_EXIT_CODE_ENV, "").strip() or "?"
+    estado = os.environ.get(MONITOR_EXIT_STATUS_ENV, "").strip() or "?"
+    invocation_id = os.environ.get(MONITOR_INVOCATION_ID_ENV, "").strip() or "?"
+
+    mensaje = (
+        f"Catálogo de modelos: la unidad {unidad} terminó de una forma que el "
+        "propio ejecutor no pudo avisar (lo mató systemd, o ni llegó a "
+        f"correr). MONITOR_SERVICE_RESULT={resultado or '?'} "
+        f"MONITOR_EXIT_CODE={codigo} MONITOR_EXIT_STATUS={estado} "
+        f"MONITOR_INVOCATION_ID={invocation_id}."
+    )
     return 0 if _enviar_telegram(mensaje) else 1
 
 

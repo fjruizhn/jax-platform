@@ -2250,38 +2250,7 @@ _ENUM_EXTENSIONS = [
         "ALTER TABLE facet_health_event MODIFY COLUMN source "
         "ENUM('chat','canary_periodic','canary_rebind','preflight') NOT NULL",
     ),
-    # MAJOR-3(b) (segunda auditoría adversarial, 2026-09-27): 'sync_forzado'
-    # audita que un superadmin saltó el guardián de "lista encogida" (A-3)
-    # para uno o más proveedores puntuales -- ver
-    # api/admin/models.py::sync_models. Lista COMPLETA de valores.
-    (
-        "model_catalog_audit", "action", "sync_forzado",
-        "ALTER TABLE model_catalog_audit MODIFY COLUMN action "
-        "ENUM('contrato_declarado','binding_rechazado','sync_forzado') NOT NULL",
-    ),
 ]
-
-
-async def _columna_es_nullable(cur, table_name: str, column_name: str) -> bool:
-    await cur.execute(
-        "SELECT IS_NULLABLE FROM information_schema.COLUMNS "
-        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s",
-        (table_name, column_name),
-    )
-    row = await cur.fetchone()
-    return bool(row) and row[0] == "YES"
-
-
-async def _permitir_model_ref_nulo_en_model_catalog_audit(cur) -> None:
-    """MAJOR-3(b) (segunda auditoría adversarial, 2026-09-27): 'sync_forzado'
-    audita un PROVEEDOR entero (una corrida de sync), no una fila puntual de
-    `model` -- no hay un `model_ref` natural para esa acción.  `model_ref`
-    nace `NOT NULL` porque las dos acciones originales (`contrato_declarado`,
-    `binding_rechazado`) sí son sobre una fila concreta; se afloja a NULL en
-    vez de inventarle un 0 de relleno. Idempotente vía information_schema,
-    mismo patrón que `_column_too_narrow`."""
-    if not await _columna_es_nullable(cur, "model_catalog_audit", "model_ref"):
-        await cur.execute("ALTER TABLE model_catalog_audit MODIFY COLUMN model_ref INT NULL")
 
 
 async def _column_too_narrow(cur, table_name: str, column_name: str, min_length: int) -> bool:
@@ -3436,8 +3405,6 @@ async def run_migrations():
             for table_name, column_name, value, ddl in _ENUM_EXTENSIONS:
                 if not await _enum_has_value(cur, table_name, column_name, value):
                     await cur.execute(ddl)
-
-            await _permitir_model_ref_nulo_en_model_catalog_audit(cur)
 
             for table_name, column_name, min_length, ddl in _COLUMN_WIDENS:
                 if await _column_too_narrow(cur, table_name, column_name, min_length):

@@ -30,7 +30,7 @@ async def _enrich_ok():
 
 
 def _fake_sync_provider_models(monkeypatch, resultados):
-    async def _fake(provider_id, forzar=False):
+    async def _fake(provider_id):
         return resultados[provider_id]
     monkeypatch.setattr(model_catalog, "sync_provider_models", _fake)
 
@@ -78,7 +78,7 @@ def test_sync_all_un_provider_saltado_baja_ok_y_se_lista(client, monkeypatch):
 
 
 def test_sync_all_un_provider_fallido_baja_ok_y_se_lista(client, monkeypatch):
-    async def _fake(provider_id, forzar=False):
+    async def _fake(provider_id):
         if provider_id == "openai":
             raise RuntimeError("boom")
         return {"provider_id": provider_id, "fetched": 0, "nuevos": []}
@@ -115,3 +115,73 @@ def test_sync_all_agrega_nuevos_por_proveedor_solo_los_no_vacios(client, monkeyp
     result = client.portal.call(model_catalog.sync_all)
 
     assert result["nuevos"] == {"moonshot": ["kimi-nuevo"]}
+
+
+# --------------------------------------------------------------------------
+# Punto 5 (tercera auditoría adversarial, 2026-09-27): candado contra syncs
+# concurrentes -- `GET_LOCK`/`RELEASE_LOCK` de MariaDB, sostenido en UNA
+# conexión dedicada durante todo `sync_all()`.
+# --------------------------------------------------------------------------
+
+async def _tomar_candado_desde_otra_conexion():
+    """Simula OTRO proceso con el candado tomado: una conexión PROPIA del
+    pool (no la que usa `sync_all()`), que pide el MISMO `GET_LOCK` y no lo
+    suelta hasta que el test llame a `_soltar_candado`."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    conn = await pool.acquire()
+    cur = await conn.cursor()
+    await cur.execute("SELECT GET_LOCK(%s, 0)", (model_catalog._NOMBRE_CANDADO_SYNC,))
+    (obtenido,) = await cur.fetchone()
+    await cur.close()
+    assert obtenido == 1, "no se pudo tomar el candado desde la conexión de control del test"
+    return pool, conn
+
+
+async def _soltar_candado(pool, conn):
+    cur = await conn.cursor()
+    await cur.execute("SELECT RELEASE_LOCK(%s)", (model_catalog._NOMBRE_CANDADO_SYNC,))
+    await cur.close()
+    await pool.release(conn)
+
+
+def test_sync_all_candado_ocupado_no_toca_nada_y_devuelve_sync_en_curso(client, monkeypatch):
+    llamado = []
+
+    async def _no_deberia_llamarse(provider_id):
+        llamado.append(provider_id)
+        return {"provider_id": provider_id, "fetched": 1, "nuevos": []}
+    monkeypatch.setattr(model_catalog, "sync_provider_models", _no_deberia_llamarse)
+
+    async def _enrich_no_deberia_llamarse():
+        raise AssertionError("enrich_from_models_dev no debería correr con el candado ocupado")
+    monkeypatch.setattr(model_catalog, "enrich_from_models_dev", _enrich_no_deberia_llamarse)
+
+    pool, conn = client.portal.call(_tomar_candado_desde_otra_conexion)
+    try:
+        result = client.portal.call(model_catalog.sync_all)
+    finally:
+        client.portal.call(_soltar_candado, pool, conn)
+
+    assert result == {
+        "ok": False, "code": "sync_en_curso",
+        "providers": [], "enrich": {}, "providers_fallidos": [],
+        "providers_saltados": [], "enrich_fallido": False,
+        "nuevos": {}, "facetas_en_riesgo": [],
+    }
+    assert llamado == []  # no se tocó ni un proveedor
+
+
+def test_sync_all_libera_el_candado_al_terminar(client, monkeypatch):
+    """Control: sin nadie más sosteniendo el candado, DOS `sync_all()`
+    consecutivos tienen que poder correr los dos -- si el primero no
+    soltara el candado en su `finally`, el segundo se vería "en curso" para
+    siempre."""
+    _fake_sync_provider_models(monkeypatch, _resultados_todo_bien())
+    _sin_enrich_real(monkeypatch)
+
+    primero = client.portal.call(model_catalog.sync_all)
+    segundo = client.portal.call(model_catalog.sync_all)
+
+    assert primero.get("code") != "sync_en_curso"
+    assert segundo.get("code") != "sync_en_curso"

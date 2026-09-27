@@ -174,7 +174,7 @@ def test_sonda_por_rebind_no_guarda_la_key(monkeypatch):
 
 # --- 3. sync de modelos ---------------------------------------------------------
 def _parchear_sync_que_falla(monkeypatch):
-    async def sync(provider_id, forzar=False):
+    async def sync(provider_id):
         req = httpx.Request("GET", f"https://generativelanguage.googleapis.com/v1beta/models?key={KEY}")
         httpx.Response(403, request=req).raise_for_status()
 
@@ -188,10 +188,8 @@ def _parchear_sync_que_falla(monkeypatch):
 def test_sync_de_modelos_no_devuelve_ni_loguea_la_key(monkeypatch, caplog):
     _parchear_sync_que_falla(monkeypatch)
     caplog.set_level(logging.DEBUG)
-    # request=None: sin `forzar` (default []), el endpoint nunca lo toca --
-    # sólo se usa para auditar un sync forzado (MAJOR-3(b), 2026-09-27).
     body = asyncio.run(models_mod.sync_models(
-        request=None, user=AuthUser(user_id="1", tenant_id="1", role="superadmin")))
+        user=AuthUser(user_id="1", tenant_id="1", role="superadmin")))
     texto = repr(body)
     assert body["ok"] is False
     assert "403" in body["providers"][0]["error"]

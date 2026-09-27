@@ -70,11 +70,6 @@ echo "Pegá el token de 'claude setup-token' (no se muestra en pantalla):" >&2
 read -rs TOKEN
 echo >&2
 
-if hay_stdin_sobrante; then
-  echo "El token llegó partido en varias líneas (quedaba algo más esperando en la entrada) -- volvé a pegarlo en una sola línea. No se cambió nada." >&2
-  exit 1
-fi
-
 if [[ -z "${TOKEN}" ]]; then
   echo "Token vacío -- no se cambió nada." >&2
   exit 1
@@ -82,6 +77,40 @@ fi
 
 if [[ ! "${TOKEN}" =~ ${PATRON_TOKEN} || "${#TOKEN}" -lt "${LARGO_MINIMO}" || "${#TOKEN}" -gt "${LARGO_MAXIMO}" ]]; then
   echo "El token no tiene la forma esperada ('sk-ant-oat01-' + entre ${LARGO_MINIMO} y ${LARGO_MAXIMO} caracteres [A-Za-z0-9_-]) -- ¿copiaste bien? No se cambió nada." >&2
+  exit 1
+fi
+
+# Punto 6 (tercera auditoría adversarial, 2026-09-27): un segundo pegado, a
+# confirmar contra el primero -- el drenaje de stdin y la regex de arriba
+# cubren "se cortó a la mitad" o "tiene basura pegada", pero NINGUNO de los
+# dos detecta un pegado partido que por casualidad sigue teniendo la FORMA
+# de un token válido (dos tokens de cuentas distintas, uno viejo y uno
+# nuevo pegados sin querer, etc.). Pedirlo dos veces cubre cualquier forma
+# de "no es el que creía que pegué", no sólo la mitad cortada.
+#
+# El chequeo de "algo quedó esperando en stdin" se hace ACÁ, una sola vez,
+# DESPUÉS de las dos lecturas -- no después de cada una por separado. Si se
+# chequeara también inmediatamente después de la PRIMERA lectura, un pegado
+# doble legítimo (el token y su confirmación, los dos ya en el buffer de
+# entrada -- que es exactamente cómo llega cuando esto se prueba con un pipe,
+# o cuando alguien pega las dos líneas de una sola vez) se vería IDÉNTICO a
+# un token partido: la confirmación, todavía sin leer, sería indistinguible
+# de "sobró algo". Con el chequeo único después de ambas lecturas, un pegado
+# partido de la PRIMERA línea tampoco se pierde: la mitad que sobra se
+# termina leyendo como si fuera la confirmación, y casi con certeza NO va a
+# coincidir con la primera mitad -- así que igual aborta, por "no coinciden"
+# en vez de por "partido", pero sin tocar el .env en ningún caso.
+echo "Volvé a pegar el MISMO token, para confirmar (tampoco se muestra):" >&2
+read -rs TOKEN_CONFIRMACION
+echo >&2
+
+if hay_stdin_sobrante; then
+  echo "El pegado llegó partido en más de dos líneas (quedaba algo más esperando en la entrada) -- volvé a pegar el token y su confirmación de nuevo, cada uno en una sola línea. No se cambió nada." >&2
+  exit 1
+fi
+
+if [[ "${TOKEN}" != "${TOKEN_CONFIRMACION}" ]]; then
+  echo "Los dos tokens no coinciden -- no se cambió nada. Volvé a correr el script." >&2
   exit 1
 fi
 
