@@ -499,9 +499,12 @@ CREATE TABLE IF NOT EXISTS model (
   -- _seed_model_max_output_tokens() y el comentario de _COLUMNS mas abajo.
   max_output_tokens INT NULL,
   input_modalities SET('text','image','audio','video') NOT NULL DEFAULT 'text',
-  price_input_per_1m_usd DECIMAL(10,4) NULL,
-  price_output_per_1m_usd DECIMAL(10,4) NULL,
-  price_cache_per_1m_usd DECIMAL(10,4) NULL,
+  -- DECIMAL(12,6), no (10,4): 6 decimales alcanzan precios por debajo de
+  -- $0.001/1M tokens sin truncar en silencio (ver _DECIMAL_WIDENS, abajo,
+  -- que ensancha las instalaciones que nacieron con el ancho viejo).
+  price_input_per_1m_usd DECIMAL(12,6) NULL,
+  price_output_per_1m_usd DECIMAL(12,6) NULL,
+  price_cache_per_1m_usd DECIMAL(12,6) NULL,
   release_date DATE NULL,
   deprecation_date DATE NULL,
   status ENUM('available','degraded','deprecated','gone') NOT NULL DEFAULT 'available',
@@ -2262,6 +2265,56 @@ async def _column_too_narrow(cur, table_name: str, column_name: str, min_length:
     return bool(row) and row[0] is not None and row[0] < min_length
 
 
+async def _decimal_precision_too_small(
+    cur, table_name: str, column_name: str, min_precision: int, min_scale: int,
+) -> bool:
+    """Version DECIMAL de `_column_too_narrow` -- CHARACTER_MAXIMUM_LENGTH es
+    NULL para una columna numerica, asi que hace falta su propio par de
+    columnas de information_schema. True si la columna tiene MENOS digitos
+    totales o MENOS decimales que el minimo pedido; nunca compara "distinto",
+    para que una columna YA ensanchada (o ensanchada mas alla del minimo a
+    mano) no dispare el ALTER de nuevo."""
+    await cur.execute(
+        """
+        SELECT NUMERIC_PRECISION, NUMERIC_SCALE FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
+        """,
+        (table_name, column_name),
+    )
+    row = await cur.fetchone()
+    if not row or row[0] is None:
+        return False
+    precision, scale = row
+    return precision < min_precision or (scale or 0) < min_scale
+
+
+# (tabla, columna, precision minima, escala minima, ALTER MODIFY completo) --
+# ensancha una columna DECIMAL existente sin perder datos. Bloque D
+# (catalogo de modelos, 2026-09-27): las 3 columnas de precio nacieron
+# DECIMAL(10,4) (ver CREATE_MODEL, mas abajo) -- 4 decimales no alcanza para
+# un precio por debajo de $0.001/1M tokens, y `enrich_from_models_dev()`
+# (model_catalog.py) lo trunca en SILENCIO: MariaDB solo emite un Warning
+# ("Data truncated for column 'price_cache_per_1m_usd'") que nadie miraba,
+# reproducido en vivo contra jax_memory_test antes de este cambio
+# (tests/test_migracion_precio_decimal.py). DECIMAL(12,6): 6 decimales --
+# igual que axioma_usage.cost_usd (CREATE_AXIOMA_USAGE, arriba) -- y 2
+# digitos mas de parte entera de margen.
+_DECIMAL_WIDENS = [
+    (
+        "model", "price_input_per_1m_usd", 12, 6,
+        "ALTER TABLE model MODIFY COLUMN price_input_per_1m_usd DECIMAL(12,6) NULL",
+    ),
+    (
+        "model", "price_output_per_1m_usd", 12, 6,
+        "ALTER TABLE model MODIFY COLUMN price_output_per_1m_usd DECIMAL(12,6) NULL",
+    ),
+    (
+        "model", "price_cache_per_1m_usd", 12, 6,
+        "ALTER TABLE model MODIFY COLUMN price_cache_per_1m_usd DECIMAL(12,6) NULL",
+    ),
+]
+
+
 # (tabla, columna, longitud minima requerida, ALTER MODIFY completo) —
 # ensancha una columna VARCHAR existente sin perder datos. Instalaciones
 # nuevas ya nacen con el ancho correcto via CREATE TABLE; esto cubre las
@@ -3355,6 +3408,10 @@ async def run_migrations():
 
             for table_name, column_name, min_length, ddl in _COLUMN_WIDENS:
                 if await _column_too_narrow(cur, table_name, column_name, min_length):
+                    await cur.execute(ddl)
+
+            for table_name, column_name, min_precision, min_scale, ddl in _DECIMAL_WIDENS:
+                if await _decimal_precision_too_small(cur, table_name, column_name, min_precision, min_scale):
                     await cur.execute(ddl)
 
             for table_name, index_name, ddl in _INDEXES:

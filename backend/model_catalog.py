@@ -18,11 +18,22 @@ import time
 from credential_resolver import resolve_credential
 from db.connection import get_pool
 from http_client import cabeceras_gemini, get_http_client
+from redaccion import redactar_secretos, texto_de_error
 
 logger = logging.getLogger("model_catalog")
 
 MODELS_DEV_URL = "https://models.dev/api.json"
 DEPRECATION_MISS_THRESHOLD = 3  # D1.4: 3 syncs consecutivos ausente -> deprecated. Nunca 'gone' automatico.
+
+# Proveedores con catalogo real hoy. anthropic (2026-08-10): sync contra
+# /v1/models, credencial via CLAUDE_CODE_OAUTH_TOKEN o el OAuth local de
+# Claude Code. ollama (2026-08-10): sync local contra /api/tags, sin ninguna
+# credencial (provider.auth_type='none') — ver ramas explicitas en
+# sync_provider_models. Vive ACA (no en api/admin/models.py, donde nacio) por
+# `sync_all()`: la lista de "que se sincroniza" es del dominio del sync, no
+# de la capa HTTP, y api/admin/models.py la importa de aca — una sola fuente,
+# nunca dos listas que puedan desincronizarse.
+SYNCABLE_PROVIDERS = ["openai", "deepseek", "gemini", "moonshot", "zhipu", "anthropic", "ollama"]
 
 # anthropic no tiene fila en `credential` (Hyde no gestiona API key via
 # admin/keys.py — ver provider.auth_type='subprocess'). El sync usa en su
@@ -31,6 +42,20 @@ DEPRECATION_MISS_THRESHOLD = 3  # D1.4: 3 syncs consecutivos ausente -> deprecat
 # Fernando): leer en caliente, sin refresh OAuth propio — un bug ahi
 # arriesgaria la sesion en vivo de Hyde por una ganancia menor (el sync
 # reintenta solo en la proxima corrida). Ver CONTEXT.md 2026-08-10.
+#
+# 2026-09-27: desde el 17-sep los servicios corren como `jaxsvc`
+# (HOME=/var/lib/jaxsvc), que no tiene `~/.claude/.credentials.json` -- el
+# sync de anthropic se saltaba en SILENCIO (devolvia 'skipped' y el
+# endpoint seguia contestando ok:true) y Opus 5.5 nunca entro al catalogo
+# sin que nadie se enterara. Decision de Fernando: nada de API key de
+# Anthropic -- la credencial es SU cuenta Max via `claude setup-token`,
+# guardada como CLAUDE_CODE_OAUTH_TOKEN en /etc/jax/.env (mismo NOMBRE que
+# ya honra el propio CLI de Claude Code, sin inventar una variable nueva).
+# Se prueba PRIMERO -- unica fuente para el nombre de la variable, para que
+# no queden dos lugares del codigo que puedan desincronizarse sobre como se
+# llama. Nunca se loguea el valor ni un fragmento de ninguno de los dos
+# caminos.
+ANTHROPIC_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 _ANTHROPIC_CREDENTIALS_PATH = os.path.expanduser("~/.claude/.credentials.json")
 _ANTHROPIC_API_VERSION = "2023-06-01"  # requerido por /v1/models, verificado con curl real
 
@@ -42,6 +67,17 @@ class AnthropicOAuthUnavailableError(Exception):
 
 
 def _read_anthropic_oauth_token() -> str:
+    # Camino de produccion (jaxsvc): la variable de entorno, si trae algo mas
+    # que espacios. Vacia ("CLAUDE_CODE_OAUTH_TOKEN=" sin valor) NO cuenta
+    # como puesta -- cae al archivo, igual que si la variable no existiera:
+    # tratarla como token real seria el mismo defecto (fallo silencioso) que
+    # esto viene a arreglar, solo que con un valor vacio en vez de ausente.
+    env_token = os.environ.get(ANTHROPIC_OAUTH_TOKEN_ENV, "").strip()
+    if env_token:
+        return env_token
+
+    # Camino de desarrollo (Hyde, sesion interactiva de Claude Code): el
+    # archivo que el propio CLI mantiene fresco.
     try:
         with open(_ANTHROPIC_CREDENTIALS_PATH) as f:
             data = json.load(f)
@@ -143,6 +179,15 @@ async def sync_provider_models(provider_id: str) -> dict:
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            # `nuevos` (2026-09-27): lo que este sync ve por primera vez para
+            # ESTE proveedor -- se mide ANTES del upsert de abajo (que ya
+            # sembraría estos ids), contra el mismo índice que ya usa el
+            # UNIQUE KEY uk_provider_model (provider_id, model_id): sin
+            # índice nuevo.
+            await cur.execute("SELECT model_id FROM model WHERE provider_id=%s", (provider_id,))
+            ya_conocidos = {r[0] for r in await cur.fetchall()}
+            nuevos = sorted(seen_ids - ya_conocidos)
+
             for model_id in seen_ids:
                 await cur.execute(
                     "INSERT INTO model (provider_id, model_id, status, source, source_checked_at, consecutive_misses) "
@@ -175,7 +220,7 @@ async def sync_provider_models(provider_id: str) -> dict:
                 )
         await conn.commit()
 
-    return {"provider_id": provider_id, "fetched": len(seen_ids)}
+    return {"provider_id": provider_id, "fetched": len(seen_ids), "nuevos": nuevos}
 
 
 async def _capacidades_ollama(url_show: str, model_id: str) -> list[str] | None:
@@ -234,6 +279,12 @@ async def _sync_ollama_models(url: str) -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            # `nuevos` (2026-09-27): mismo contrato que la rama OpenAI-
+            # compatible de sync_provider_models -- medido ANTES del upsert.
+            await cur.execute("SELECT model_id FROM model WHERE provider_id='ollama'")
+            ya_conocidos = {r[0] for r in await cur.fetchall()}
+            nuevos = sorted(seen_ids - ya_conocidos)
+
             for model_id, digest in seen.items():
                 await cur.execute(
                     "SELECT digest FROM model WHERE provider_id='ollama' AND model_id=%s",
@@ -280,7 +331,7 @@ async def _sync_ollama_models(url: str) -> dict:
                 )
         await conn.commit()
 
-    return {"provider_id": "ollama", "fetched": len(seen_ids)}
+    return {"provider_id": "ollama", "fetched": len(seen_ids), "nuevos": nuevos}
 
 
 async def enrich_from_models_dev() -> dict:
@@ -407,3 +458,129 @@ async def record_resolved_version(facet_key: str, resolved_version: str) -> dict
         f"model_catalog drift facet={facet_key} from={previous_resolved} to={resolved_version} proposal_id={proposal_id}"
     )
     return {"drift": True, "proposal_id": proposal_id}
+
+
+# --------------------------------------------------------------------------
+# Facetas en riesgo (2026-09-27)
+# --------------------------------------------------------------------------
+#
+# facet_binding.model_ref es la FK que el DISPATCH REAL usa para resolver el
+# modelo -- verificado contra el codigo, no supuesto: facet_resolver.py:298
+# (`JOIN model m ON m.id = b.model_ref`), ejecutor/misiones.py:68 y
+# adjuntos/politica.py:24 hacen el MISMO join; facet_resolver.py:284-288
+# documenta que `b.model_id` (texto) quedo de solo-lectura desde D1.1 paso 4
+# y ya no se usa para resolver nada. Por eso esta funcion resuelve el estado
+# SIEMPRE por model_ref -- nunca por el texto -- pero informa si el texto
+# divergio (facet_binding.provider_id/model_id vs. el provider_id/model_id
+# de la fila que model_ref señala hoy): esa divergencia es evidencia de un
+# desincronismo que ningun camino de dispatch ve, y silenciarla seria perder
+# la unica señal barata de que existe.
+#
+# Solo role='primary': es el UNICO rol que algun camino de dispatch real lee
+# hoy (mismos tres archivos de arriba). 'fallback_1'/'fallback_2' existen en
+# el ENUM de facet_binding.role pero ningun resolver los consulta -- filtrar
+# por ellos tambien reportaria facetas "en riesgo" que en los hechos no
+# despachan nada (ver DEUDA.md / PENDIENTES.md para si algun dia se activan).
+#
+# Sin indice nuevo: facet_binding es el catalogo de facetas del ecosistema
+# (documentado en otros modulos como "hoy 7 filas", ver adjuntos/politica.py),
+# acotado por cuantas facetas existen, no por trafico de usuarios -- un
+# escaneo completo de esa tabla es instantaneo y agregar un indice sobre una
+# columna de 4 valores en una tabla de un digito de filas seria puro ruido.
+_SQL_FACETAS_EN_RIESGO = (
+    "SELECT b.facet_key, b.provider_id AS provider_binding, b.model_id AS model_id_binding, "
+    "b.model_ref, m.provider_id AS provider_resuelto, m.model_id AS model_id_resuelto, m.status "
+    "FROM facet_binding b "
+    "LEFT JOIN model m ON m.id = b.model_ref "
+    "WHERE b.role = 'primary' AND (b.model_ref IS NULL OR m.status != 'available')"
+)
+
+
+async def _facetas_en_riesgo(cur) -> list[dict]:
+    """Bindings 'primary' cuyo modelo -- resuelto por `model_ref`, la FK que
+    el dispatch real usa -- no esta disponible, o que no tienen `model_ref`
+    en absoluto (dangling: el dispatch real, que hace INNER JOIN, no
+    encontraria nada y la faceta quedaria FacetUnavailableError). Ver el
+    comentario de modulo de arriba para la evidencia de por que model_ref y
+    no el texto."""
+    await cur.execute(_SQL_FACETAS_EN_RIESGO)
+    filas = []
+    for (facet_key, provider_binding, model_id_binding, model_ref,
+         provider_resuelto, model_id_resuelto, status) in await cur.fetchall():
+        fila = {
+            "facet_key": facet_key,
+            "provider_id": provider_resuelto if model_ref is not None else provider_binding,
+            "model_id": model_id_resuelto if model_ref is not None else model_id_binding,
+            "status": status if model_ref is not None else "sin_model_ref",
+        }
+        if model_ref is not None and (
+            provider_resuelto != provider_binding or model_id_resuelto != model_id_binding
+        ):
+            fila["model_ref_diverge_de_texto"] = True
+        filas.append(fila)
+    return filas
+
+
+async def sync_all() -> dict:
+    """Orquesta el sync completo: capa (a) por cada proveedor de
+    SYNCABLE_PROVIDERS, capa (b) de enriquecimiento, y el diagnostico de
+    saltados/nuevos/facetas en riesgo. Extraida de POST /admin/models/sync
+    (2026-09-27) para que el endpoint Y el ejecutor programado
+    (catalogo_modelos_ejecutor.py) compartan la MISMA logica de que
+    significa que el catalogo este sano -- Regla Absoluta: una sola fuente,
+    nunca dos implementaciones que puedan divergir.
+
+    `ok=False` si CUALQUIERA de estos pasa (hallazgo real, 2026-09-27): un
+    provider con error, un provider SALTADO (antes esto no bajaba `ok` --
+    asi paso desapercibido que anthropic se saltaba en cada corrida desde
+    que los servicios corren como jaxsvc), el enriquecimiento fallido, o una
+    faceta 'primary' cuyo modelo dejo de estar disponible."""
+    results = []
+    for provider_id in SYNCABLE_PROVIDERS:
+        try:
+            results.append(await sync_provider_models(provider_id))
+        except Exception as e:  # fail-soft: un provider caido no frena a los demas; su error va en el resultado y apaga ok
+            motivo = texto_de_error(e)
+            logger.warning(f"sync_all provider={provider_id} failed reason={motivo}")
+            results.append({"provider_id": provider_id, "error": redactar_secretos(str(e))[:200]})
+
+    try:
+        enrich_result = await enrich_from_models_dev()
+    except Exception as e:  # fail-soft: el enriquecimiento es capa (b) opcional; su error va en 'enrich' y apaga ok
+        logger.warning(f"sync_all enrich failed reason={texto_de_error(e)}")
+        enrich_result = {"error": redactar_secretos(str(e))[:200]}
+
+    providers_fallidos = [r["provider_id"] for r in results if "error" in r]
+    # Un provider saltado (sin credencial, sin models_list_url, no
+    # alcanzable) NO es un sync exitoso -- es exactamente el hallazgo real
+    # que origina este cambio: antes 'skipped' no contaba para nada y
+    # anthropic desaparecio del catalogo en silencio.
+    providers_saltados = [r["provider_id"] for r in results if "skipped" in r]
+    enrich_fallido = "error" in enrich_result
+    nuevos = {r["provider_id"]: r["nuevos"] for r in results if r.get("nuevos")}
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            facetas_en_riesgo = await _facetas_en_riesgo(cur)
+
+    ok = not (providers_fallidos or providers_saltados or enrich_fallido or facetas_en_riesgo)
+    respuesta = {
+        "ok": ok,
+        "providers": results,
+        "enrich": enrich_result,
+        "providers_fallidos": providers_fallidos,
+        "providers_saltados": providers_saltados,
+        "enrich_fallido": enrich_fallido,
+        "nuevos": nuevos,
+        "facetas_en_riesgo": facetas_en_riesgo,
+    }
+    if not ok:
+        # Se conserva el `code` de Task 3 (2026-09-15) a proposito -- ya lo
+        # leen tests/test_admin_models_endpoints.py, el frontend
+        # (AdminModelCatalog.jsx) y su i18n (t.sync_con_errores en es.js/
+        # en.js). Ampliar QUE cuenta como "no ok" (saltados, facetas en
+        # riesgo) no exige renombrar el codigo que ya identifica "esta
+        # respuesta trae algo que mirar".
+        respuesta["code"] = "sync_con_errores"
+    return respuesta

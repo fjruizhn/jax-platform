@@ -1,0 +1,19 @@
+[Unit]
+Description=JAX Platform — sync programado del catálogo de modelos (Bloque D)
+After=network-online.target mariadb.service
+
+[Service]
+Type=oneshot
+User=jaxsvc
+Group=jaxsvc
+WorkingDirectory=/srv/jax-prod/jax-platform/backend
+EnvironmentFile=/etc/jax/.env
+ExecStart=/srv/jax-prod/jax-platform/backend/.venv/bin/python -m catalogo_modelos_ejecutor
+# Acotado: 7 proveedores x 15s de timeout HTTP en el peor caso + el
+# enriquecimiento (otros 15s) + el aviso de Telegram (10s) caben de sobra en
+# 5 minutos; si el job se cuelga más que eso, mejor que systemd lo mate y
+# quede en rojo a que un proveedor caído deje el timer trabado hasta la
+# próxima corrida de las 6h.
+TimeoutStartSec=5min
+StandardOutput=journal
+StandardError=journal

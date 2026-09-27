@@ -32,6 +32,15 @@ export default function AdminModelCatalog() {
   const [syncError, setSyncError] = useState(false)
   // Task 3 (2026-09-15): lo que falló en un sync que respondió ok:false.
   const [syncFallidos, setSyncFallidos] = useState(null)
+  // 2026-09-27: un proveedor saltado (sin credencial, no alcanzable) y una
+  // faceta 'primary' cuyo modelo dejó de estar disponible AHORA también
+  // bajan `ok` (model_catalog.sync_all()) -- antes un saltado se veía como
+  // éxito y nadie se enteraba (ver CONTEXT.md, caso real: anthropic bajo
+  // jaxsvc).
+  const [syncSaltados, setSyncSaltados] = useState(null)
+  const [facetasEnRiesgo, setFacetasEnRiesgo] = useState(null)
+  // Informativo, no es un error: `ok` puede seguir true con modelos nuevos.
+  const [modelosNuevos, setModelosNuevos] = useState(null)
   const [deciding, setDeciding] = useState(null)
   // El error crudo: se traduce al renderizar, así un cambio de idioma lo sigue.
   const [decideError, setDecideError] = useState(null)
@@ -74,6 +83,9 @@ export default function AdminModelCatalog() {
     setSyncing(true)
     setSyncError(false)
     setSyncFallidos(null)
+    setSyncSaltados(null)
+    setFacetasEnRiesgo(null)
+    setModelosNuevos(null)
     try {
       // Solo escribe `model` — regla de oro (D1.3): nunca facet_binding.
       const { data } = await api.post('/admin/models/sync')
@@ -81,7 +93,14 @@ export default function AdminModelCatalog() {
       // fallaba todo se veía como éxito. Lo que sí se sincronizó se recarga igual.
       if (data?.ok === false) {
         setSyncFallidos([...(data.providers_fallidos || []), ...(data.enrich_fallido ? ['models.dev'] : [])])
+        if (data.providers_saltados?.length) setSyncSaltados(data.providers_saltados)
+        if (data.facetas_en_riesgo?.length) {
+          setFacetasEnRiesgo(data.facetas_en_riesgo.map(f => `${f.facet_key} (${f.status})`))
+        }
       }
+      // Informativo: independiente de `ok` -- un sync exitoso también puede traer novedades.
+      const nuevosTotal = Object.values(data?.nuevos || {}).flat()
+      if (nuevosTotal.length) setModelosNuevos(nuevosTotal)
       loadModels()
       loadProposals()
     } catch {
@@ -123,6 +142,9 @@ export default function AdminModelCatalog() {
         <div className="flex items-center gap-2">
           {syncError && <span className="text-xs text-peligro">{t.adminModelsSyncError}</span>}
           {syncFallidos && <span role="alert" className="text-xs text-peligro">{t.sync_con_errores(syncFallidos.join(', '))}</span>}
+          {syncSaltados && <span role="alert" className="text-xs text-peligro">{t.sync_con_saltados(syncSaltados.join(', '))}</span>}
+          {facetasEnRiesgo && <span role="alert" className="text-xs text-peligro">{t.sync_facetas_en_riesgo(facetasEnRiesgo.join(', '))}</span>}
+          {modelosNuevos && <span className="text-xs text-exito">{t.sync_modelos_nuevos(modelosNuevos.join(', '))}</span>}
           <button
             onClick={handleSync}
             disabled={syncing}

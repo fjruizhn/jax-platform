@@ -10,6 +10,10 @@ desde un `async def test_...` revienta con 'attached to a different loop'.
 HTTP real fakeado via http_client._client, mismo patron que
 test_keys_http_pooling.py.
 """
+import uuid
+
+import pytest
+
 import http_client
 import model_catalog
 
@@ -98,6 +102,30 @@ def test_sync_provider_models_upserts_openai_compatible_response(client, monkeyp
     row_new = client.portal.call(_fetch_model, "moonshot", "kimi-k3-preview")
     assert row_new is not None
     assert row_new[1] == "provider_api"
+
+
+def test_sync_provider_models_nuevos_lists_only_previously_unseen_ids(client, monkeypatch):
+    """D-catálogo (2026-09-27): un operador que corre el sync quiere saber
+    "¿apareció algo que no estaba?" sin comparar el catálogo entero a mano --
+    `nuevos` es esa lista, y sólo esa: lo que YA estaba en `model` para este
+    proveedor no cuenta, aunque la corrida lo vuelva a ver."""
+    _patch_credential(monkeypatch, "sk-fake")
+    ya_conocido = "kimi-k3"  # ya sembrado por otro test de este archivo, misma sesión de DB
+    nuevo = f"test-nuevo-{uuid.uuid4().hex[:8]}"
+
+    original = http_client._client
+    try:
+        http_client._client = _FakeGetClient(_FakeResponse({"data": [{"id": ya_conocido}]}))
+        client.portal.call(model_catalog.sync_provider_models, "moonshot")
+
+        http_client._client = _FakeGetClient(_FakeResponse({"data": [
+            {"id": ya_conocido}, {"id": nuevo},
+        ]}))
+        result = client.portal.call(model_catalog.sync_provider_models, "moonshot")
+    finally:
+        http_client._client = original
+
+    assert result["nuevos"] == [nuevo]
 
 
 def test_sync_provider_models_gemini_uses_models_key_and_strips_prefix(client, monkeypatch):
@@ -318,6 +346,61 @@ def test_sync_provider_models_anthropic_uses_local_oauth_token(client, monkeypat
     assert row[1] == "provider_api"
 
 
+def test_read_anthropic_oauth_token_prefers_env_var_over_file(monkeypatch, tmp_path):
+    """2026-09-27: desde que los servicios corren como `jaxsvc` (17-sep),
+    `~/.claude/.credentials.json` no existe para ese usuario -- el sync de
+    anthropic se saltaba en SILENCIO y `ok` no bajaba (ver
+    test_sync_all_*). La credencial real ahora es la cuenta Max de Fernando
+    vía `claude setup-token`, guardada como CLAUDE_CODE_OAUTH_TOKEN en
+    /etc/jax/.env -- MISMO nombre que ya honra el CLI de Claude Code, sin
+    inventar uno nuevo. Con la variable puesta, el archivo NUNCA se abre
+    (ruta a un archivo que no existe -- si lo intentara abrir, reventaría)."""
+    monkeypatch.setenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, "sk-ant-oat01-desde-env")
+    monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", str(tmp_path / "no-existe.json"))
+
+    assert model_catalog._read_anthropic_oauth_token() == "sk-ant-oat01-desde-env"
+
+
+def test_read_anthropic_oauth_token_empty_env_falls_back_to_file(monkeypatch, tmp_path):
+    """Una variable puesta pero vacía (`CLAUDE_CODE_OAUTH_TOKEN=`, típico de un
+    .env con la línea agregada sin valor todavía) NO cuenta como token: cae al
+    archivo local, igual que si la variable no existiera."""
+    monkeypatch.setenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, "   ")
+    path = _write_anthropic_credentials(tmp_path, expires_in_seconds=3600)
+    monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", path)
+
+    assert model_catalog._read_anthropic_oauth_token() == "sk-ant-oat01-fake"
+
+
+def test_read_anthropic_oauth_token_no_env_no_file_is_unavailable(monkeypatch, tmp_path):
+    monkeypatch.delenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, raising=False)
+    monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", str(tmp_path / "no-existe.json"))
+
+    with pytest.raises(model_catalog.AnthropicOAuthUnavailableError):
+        model_catalog._read_anthropic_oauth_token()
+
+
+def test_sync_provider_models_anthropic_uses_env_token_end_to_end(client, monkeypatch, tmp_path):
+    """Integración completa (D1.3-a): con CLAUDE_CODE_OAUTH_TOKEN puesto, el
+    sync de anthropic funciona sin `~/.claude/.credentials.json` -- el caso
+    real de jaxsvc en producción, reproducido con evidencia y no supuesto."""
+    monkeypatch.setenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, "sk-ant-oat01-jaxsvc")
+    monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", str(tmp_path / "no-existe.json"))
+
+    fake = _FakeGetClient(_FakeResponse({"data": [{"id": "claude-opus-5"}]}))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        result = client.portal.call(model_catalog.sync_provider_models, "anthropic")
+    finally:
+        http_client._client = original
+
+    assert "skipped" not in result
+    assert result["fetched"] == 1
+    url, kwargs = fake.calls[0]
+    assert kwargs["headers"]["Authorization"] == "Bearer sk-ant-oat01-jaxsvc"
+
+
 def test_sync_provider_models_anthropic_skips_when_token_file_missing(client, monkeypatch, tmp_path):
     """Fail-soft (opcion 1): sin archivo de credenciales local, el sync no
     revienta — se salta con motivo explicito, igual que 'sin models_list_url'
@@ -412,6 +495,32 @@ async def _reset_model_digest(provider_id, model_id):
                 (provider_id, model_id),
             )
         await conn.commit()
+
+
+def test_sync_provider_models_ollama_nuevos_lists_only_previously_unseen_ids(client):
+    """Mismo contrato de `nuevos` que los proveedores OpenAI-compatible
+    (test_sync_provider_models_nuevos_lists_only_previously_unseen_ids),
+    ejercitado en la rama de ollama -- shape de respuesta y upsert distintos,
+    misma pregunta ("¿qué es nuevo?")."""
+    ya_conocido = "llama3.2:3b"  # ya sembrado por otro test de este archivo, misma sesión de DB
+    nuevo = f"test-nuevo-ollama-{uuid.uuid4().hex[:8]}"
+
+    original = http_client._client
+    try:
+        http_client._client = _FakeGetClient(_FakeResponse({"models": [
+            {"model": ya_conocido, "digest": "sha-aaa"},
+        ]}))
+        client.portal.call(model_catalog.sync_provider_models, "ollama")
+
+        http_client._client = _FakeGetClient(_FakeResponse({"models": [
+            {"model": ya_conocido, "digest": "sha-aaa"},
+            {"model": nuevo, "digest": "sha-nueva"},
+        ]}))
+        result = client.portal.call(model_catalog.sync_provider_models, "ollama")
+    finally:
+        http_client._client = original
+
+    assert result["nuevos"] == [nuevo]
 
 
 def test_sync_provider_models_ollama_captures_digest_change(client):
