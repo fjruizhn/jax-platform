@@ -51,6 +51,8 @@ En memoria de Jairo Urbina.
 from __future__ import annotations
 
 import atexit
+import hashlib
+import json
 import os
 import re
 import secrets
@@ -571,6 +573,271 @@ def _bootstrap_jax_schema_para_base_de_test(nombre: str) -> None:
             "el bootstrap del esquema JAX falló para la base aislada: "
             f"{result.stderr.strip()[:500]}"
         )
+
+
+#: Archivos de `jax/memory/b9_migrations/` que YA aplica `db.migrations.run_migrations()`:
+#: 001/002 por `_apply_jax_b9_core_migrations` (lee estos DOS archivos tal cual, ver
+#: `_jax_b9_core_migration_statements()`) y 003 por `_apply_jax_project_authority_migration`,
+#: que ejecuta el hook Python `project_authority_migrations.py` -- una copia deliberada,
+#: mantenida por JAX, de `003_project_scope_authority.sql` (ver el docstring de ese hook).
+#: Volver a aplicarlas acá no rompería nada (las tres son puro `IF NOT EXISTS`), pero sería
+#: trabajo de más en cada sesión y una tercera fuente de la misma lista. Todo lo que la
+#: carpeta tenga FUERA de este conjunto es DDL que el propio README de esa carpeta declara
+#: que NO se aplica sola -- justo lo que este bootstrap de test tiene que ponerse al día,
+#: descubriéndolo por GLOB y no por una lista fija (ver `aplicar_migraciones_b9_restantes`).
+_MIGRACIONES_B9_YA_CUBIERTAS_POR_RUN_MIGRATIONS = frozenset({
+    "001_b9_shared_memory.sql",
+    "002_b9_hardening.sql",
+    "003_project_scope_authority.sql",
+})
+
+#: Registro de qué migración B9 (de las que quedan fuera del conjunto de arriba) ya se
+#: aplicó a ESTA base física. Vive SOLO en la base de tests -- producción no corre este
+#: módulo -- y es lo que permite reusar una base entre corridas sin reventar un DDL no
+#: idempotente. NI 004 NI 006 son idempotentes de punta a punta (verificado contra jax
+#: master 2026-09-27, leyendo cada sentencia, no de memoria):
+#:   - 004 (`004_tenant_legacy_binding.sql`): `ALTER TABLE memory_legacy_bindings
+#:     ADD COLUMN tenant_id ...` SIN `IF NOT EXISTS` ("Duplicate column name" la segunda
+#:     vez); el `DROP PRIMARY KEY` de esa misma tabla asume que la PK vieja sigue ahí
+#:     (la segunda vez ya no está: "Can't DROP PRIMARY KEY; check that it exists"); y
+#:     `ALTER TABLE memory_objects DROP INDEX uq_memory_legacy_binding` (la segunda vez
+#:     ese índice ya no existe -- lo reemplazó `uq_memory_legacy_binding_tenant` en la
+#:     misma sentencia, MINOR-D de la auditoría del PR #164, ronda 2: esta viñeta lo
+#:     tenía puesto, por error, bajo 006).
+#:   - 006 (`006_memory_jobs.sql`): `CREATE TRIGGER memory_revision_tenant_compat` y
+#:     `ADD CONSTRAINT fk_memory_revision_tenant` tampoco traen `IF NOT EXISTS` ("trigger
+#:     ya existe" / "constraint duplicada" la segunda vez).
+#: Con el registro, cada archivo corre UNA sola vez por base física, para siempre --
+#: mismo criterio de fondo que `axioma_migracion_de_datos` en `db/migrations.py`, pero
+#: acotado al arnés de tests: una migración de JAX no es una migración de datos de este
+#: repo, y no comparte esa tabla.
+CREATE_TABLA_MIGRACIONES_B9_DE_TEST = """
+CREATE TABLE IF NOT EXISTS _test_b9_migraciones_aplicadas (
+  archivo VARCHAR(191) NOT NULL PRIMARY KEY,
+  sha256 CHAR(64) NULL,
+  aplicada_at DATETIME DEFAULT NOW()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+#: Una base creada por una versión anterior de este módulo (antes de MAJOR-A de la
+#: auditoría del PR #164, ronda 2) tiene la tabla de arriba SIN esta columna --
+#: `ADD COLUMN IF NOT EXISTS` la repone, idempotente, sin tocar las filas que ya tenía
+#: (quedan con `sha256 IS NULL`, que `aplicar_migraciones_b9_restantes` trata como "no
+#: coincide" -- ver más abajo: no hay forma de confiar en una fila sin hash).
+ALTER_TABLA_MIGRACIONES_B9_DE_TEST_AGREGA_SHA256 = """
+ALTER TABLE _test_b9_migraciones_aplicadas ADD COLUMN IF NOT EXISTS sha256 CHAR(64) NULL;
+"""
+
+#: El manifiesto (ver `_manifiesto_b9_de_produccion()`) vive en este archivo del propio
+#: repo -- versionado, no generado -- para que declarar una migración quede en el mismo
+#: PR que la usa.
+RUTA_MANIFIESTO_B9_DE_PRODUCCION = Path(__file__).resolve().parent / "b9_migraciones_en_produccion.json"
+
+
+def _sha256_de_archivo(ruta: Path) -> str:
+    """El hash del CONTENIDO exacto del archivo, en hex minúscula -- mismo formato que
+    `sha256sum` en la terminal, para que declarar una entrada del manifiesto sea copiar
+    y pegar la salida de ese comando, sin transformación."""
+    return hashlib.sha256(ruta.read_bytes()).hexdigest()
+
+
+def _manifiesto_b9_de_produccion() -> dict:
+    """Qué migraciones de `jax/memory/b9_migrations/` -- de las que `run_migrations()` NO
+    cubre -- ya están aplicadas A MANO en `jax_memory` de PRODUCCIÓN, con fecha, quién,
+    CÓMO se verificó y el `sha256` exacto del `.sql` que se aplicó
+    (`backend/b9_migraciones_en_produccion.json`, versionado en el repo).
+
+    **Por qué un manifiesto y no "aplicá lo que el glob encuentre".** La primera versión de
+    este bootstrap confiaba en que cualquier `.sql` de esa carpeta, más allá de 001-003, era
+    seguro de aplicar en la base de tests porque "ya estaba en jax master". Eso da vuelta la
+    carga de la prueba: el README de esa carpeta es explícito en que la cadena NO se aplica
+    sola en ningún lado, ni siquiera en JAX -- que un archivo esté en el repo no dice que
+    ya pasó por el flujo revisado de producción (Ruling de la auditoría adversarial del
+    PR #164, MAJOR-2, 2026-09-27). Con el manifiesto, la pregunta que decide no es "¿existe
+    el archivo?" sino "¿alguien ya lo aplicó en producción y lo declaró acá?" -- y si la
+    respuesta es no, la suite lo dice en rojo (`aplicar_migraciones_b9_restantes`) en vez de
+    aplicarlo a ciegas contra una base de test.
+
+    **Por qué también el hash, y no sólo el nombre (MAJOR-A, misma auditoría, ronda 2).**
+    Declarar "004_tenant_legacy_binding.sql: aplicada" no dice NADA sobre qué contenido
+    tenía ese archivo cuando alguien lo aplicó y lo verificó -- si `jax` edita el archivo
+    después (mismo nombre, otro DDL) y nadie vuelve a mirar el manifiesto, la suite
+    aplicaría en la base de tests un contenido que ningún humano revisó contra producción.
+    El nombre declara "yo sé de este archivo"; el hash declara "y es ESTE, byte a byte".
+    """
+    if not RUTA_MANIFIESTO_B9_DE_PRODUCCION.is_file():
+        raise BaseDeTestInvalida(
+            f"falta el manifiesto de migraciones B9 de producción: "
+            f"{RUTA_MANIFIESTO_B9_DE_PRODUCCION}"
+        )
+    datos = json.loads(RUTA_MANIFIESTO_B9_DE_PRODUCCION.read_text(encoding="utf-8"))
+    return {clave: valor for clave, valor in datos.items() if not clave.startswith("_")}
+
+
+async def aplicar_migraciones_b9_restantes() -> None:
+    """Deja en la base de ESTA sesión toda la cadena B9 de JAX, más allá de 001-003 (lo
+    que `run_migrations()` ya cubre).
+
+    **Por qué existe.** El README de `jax/memory/b9_migrations/` es explícito: esa cadena
+    "is not executed by application import or worker startup. Apply it only through the
+    repository's reviewed database migration workflow" -- ni siquiera 001-003 se aplican
+    solos en JAX; en `jax-platform` sí se aplican, pero a través de `run_migrations()`, que
+    deliberadamente sólo trae 001-003 (ver el comentario de esa función). En PRODUCCIÓN
+    (`jax_memory`) la cadena completa, 004 y 006 incluidos, ya está aplicada por fuera de
+    ese flujo (verificado 2026-09-27, ver `backend/b9_migraciones_en_produccion.json`).
+    Una base de TEST que sólo corre `run_migrations()` se queda atrás de esa realidad, y
+    cualquier código que dependa de lo que 004/006 agregan
+    (`jax.memory.b9_mariadb._retrieve_scoped`, tras jax#279, lee `r.tenant_id` de
+    `memory_revisions`) revienta en la suite con "Unknown column 'r.tenant_id'" -- medido
+    en esta rama antes de este cambio: 34 tests de chat/adjuntos/facetas/shadow en rojo,
+    todos con `MEMORY_UNAVAILABLE` (503) porque `api/chat.py` envuelve esa falla de B9.
+
+    **Por qué NO va en `run_migrations()`.** Esa función es el arranque de PRODUCCIÓN
+    (la corre el lifespan de `main.py` contra `jax_memory`), y el README de arriba es una
+    decisión de diseño de JAX sobre qué se aplica solo y qué no -- diferirla es de ese
+    repo, no de este bootstrap de test. Esta función es EXCLUSIVA del arnés de tests: sólo
+    hace que la base de prueba deje de mentir sobre lo que producción ya tiene.
+
+    **Descubrimiento por GLOB, contra un MANIFIESTO de NOMBRE + CONTENIDO -- no una
+    lista fija ni confianza ciega.** Un archivo nuevo (007, ...) que JAX agregue mañana
+    se recoge solo, en orden alfabético, sin que nadie tenga que tocar este módulo para
+    que la suite se entere de que existe -- pero no se aplica solo: si no está declarado
+    en `backend/b9_migraciones_en_produccion.json`, o si está declarado pero su `sha256`
+    ya no coincide (alguien lo editó después de que un humano lo verificó), esta función
+    revienta con un mensaje que dice exactamente qué falta y qué hacer (ver
+    `_manifiesto_b9_de_produccion`). Así, un archivo nuevo o cambiado nunca se aplica a
+    ciegas Y nunca se pierde en silencio (lo que ya pasó una vez: 004 y 006 llevaban
+    semanas en `jax` master sin que nada de acá los aplicara).
+
+    **Cuándo llamarla.** DESPUÉS de que `run_migrations()` ya corrió: `memory_objects`,
+    `memory_revisions` y `memory_legacy_bindings` (que 004/006 alteran) son de 001/002.
+    `tests/conftest.py` la llama desde el fixture `client`, en el mismo punto donde ya se
+    asegura el esquema de Jacobs -- ahí el lifespan de la app (que corre `run_migrations()`)
+    ya terminó de arrancar.
+    """
+    from db.connection import get_pool
+    from db.migrations import _jax_b9_migration_root, _split_jax_b9_sql
+
+    nombre = os.environ.get(VARIABLE_DE_LA_BASE)
+    if not es_base_de_test(nombre):
+        raise BaseDeTestInvalida(
+            f"{VARIABLE_DE_LA_BASE}={nombre!r} no es una base de tests: no se le aplican "
+            "acá las migraciones B9 de JAX que producción reserva para su propio flujo "
+            "revisado."
+        )
+
+    directorio = _jax_b9_migration_root()
+    pendientes = sorted(
+        p.name for p in directorio.glob("*.sql")
+        if p.name not in _MIGRACIONES_B9_YA_CUBIERTAS_POR_RUN_MIGRATIONS
+    )
+    if not pendientes:
+        return
+
+    # Contra el manifiesto ANTES de conectar a nada: un archivo no declarado es un error
+    # de configuración/proceso, no algo que se resuelve abriendo una conexión.
+    manifiesto = _manifiesto_b9_de_produccion()
+    no_declaradas = [archivo for archivo in pendientes if archivo not in manifiesto]
+    if no_declaradas:
+        raise BaseDeTestInvalida(
+            "migración B9 "
+            + ", ".join(no_declaradas)
+            + " no declarada como aplicada en producción: aplícala en producción "
+            "siguiendo docs/runbooks/despliegue.md (sección 'Migraciones B9 adicionales') "
+            f"y agregala a {RUTA_MANIFIESTO_B9_DE_PRODUCCION.name} antes de que la suite "
+            "la use."
+        )
+
+    # MAJOR-A de la auditoría del PR #164 (ronda 2): el manifiesto declara CONTENIDO, no
+    # sólo nombre. Se calcula ANTES de `get_pool()`, junto con la validación de arriba --
+    # un contenido que cambió es el mismo tipo de error de proceso que un archivo no
+    # declarado, y se detecta sin abrir ninguna conexión.
+    hashes_verificados: dict[str, str] = {}
+    for archivo in pendientes:
+        esperado = manifiesto[archivo].get("sha256")
+        real = _sha256_de_archivo(directorio / archivo)
+        if real != esperado:
+            raise BaseDeTestInvalida(
+                f"el contenido de {archivo} cambió respecto de lo aplicado en producción "
+                f"(sha256 real {real!r}, el manifiesto declara {esperado!r}): "
+                "re-verificalo contra jax_memory siguiendo "
+                "docs/runbooks/despliegue.md (sección 'Migraciones B9 adicionales') y "
+                f"actualizá el hash en {RUTA_MANIFIESTO_B9_DE_PRODUCCION.name} antes de "
+                "que la suite lo use."
+            )
+        hashes_verificados[archivo] = real
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            # MINOR-4 de la auditoría del PR #164: `get_pool()` cachea un pool por loop de
+            # asyncio (ver `db/connection.py`) -- si algún día un test reusara un loop con
+            # un pool ya abierto contra OTRA base, `os.environ[VARIABLE_DE_LA_BASE]` mentiría
+            # sobre la conexión real. Se verifica la base de ESTA conexión, no la variable.
+            await cur.execute("SELECT DATABASE()")
+            (base_real,) = await cur.fetchone()
+            if not es_base_de_test(base_real):
+                raise BaseDeTestInvalida(
+                    f"la conexión de este pool apunta a {base_real!r}, que no es una base "
+                    f"de tests (JAX_DB_NAME decía {nombre!r}): no se aplican acá las "
+                    "migraciones B9 de JAX."
+                )
+
+            await cur.execute(CREATE_TABLA_MIGRACIONES_B9_DE_TEST)
+            await cur.execute(ALTER_TABLA_MIGRACIONES_B9_DE_TEST_AGREGA_SHA256)
+            for archivo in pendientes:
+                esperado = hashes_verificados[archivo]
+                await cur.execute(
+                    "SELECT sha256 FROM _test_b9_migraciones_aplicadas WHERE archivo=%s",
+                    (archivo,),
+                )
+                fila = await cur.fetchone()
+                if fila is not None:
+                    (guardado,) = fila
+                    if guardado != esperado:
+                        # MAJOR-A de la auditoría del PR #164 (ronda 2): esta base ya
+                        # aplicó `archivo` con un contenido DISTINTO del que el
+                        # manifiesto declara hoy (o con una fila vieja, de antes de que
+                        # esta columna existiera, que quedó en NULL -- tampoco es de
+                        # fiar). No hay forma segura de "actualizar" un DDL ya corrido
+                        # sin saber qué cambió: la base queda inválida para ese archivo.
+                        raise BaseDeTestInvalida(
+                            f"la base de esta sesión ya tiene {archivo} aplicado con "
+                            f"otro contenido (sha256 guardado {guardado!r}, el "
+                            f"manifiesto de hoy declara {esperado!r}): recreala "
+                            f"(borrala con DROP DATABASE `{base_real}` y corré la "
+                            "suite de nuevo con el mismo u otro JAX_TEST_DB_SUFIJO)."
+                        )
+                    continue
+                script = (directorio / archivo).read_text(encoding="utf-8")
+                for numero, statement in enumerate(_split_jax_b9_sql(script), start=1):
+                    try:
+                        await cur.execute(statement)
+                    except Exception as exc:
+                        # MINOR-3 de la auditoría del PR #164: ni 004 ni 006 son
+                        # idempotentes de punta a punta (ver el docstring de
+                        # `CREATE_TABLA_MIGRACIONES_B9_DE_TEST`) y esta función no
+                        # registra la migración como aplicada hasta que TERMINÓ -- una
+                        # falla a mitad dejaría la base con un DDL parcial que un
+                        # reintento no puede completar (la próxima corrida repetiría
+                        # desde la sentencia 1 y chocaría con lo que sí llegó a
+                        # aplicarse). No hay rollback posible: MariaDB hace commit
+                        # implícito por sentencia DDL. La única salida segura es
+                        # recrear la base de la sesión.
+                        raise BaseDeTestInvalida(
+                            f"la migración B9 {archivo} falló en su sentencia "
+                            f"#{numero} ({statement[:200]!r}): {exc}. La base de esta "
+                            "sesión quedó con un DDL parcial de esa migración y NO es "
+                            "segura de reintentar tal cual -- recreala (borrala con "
+                            f"DROP DATABASE `{base_real}` y corré la suite de "
+                            "nuevo con el mismo u otro JAX_TEST_DB_SUFIJO)."
+                        ) from exc
+                await cur.execute(
+                    "INSERT INTO _test_b9_migraciones_aplicadas (archivo, sha256) "
+                    "VALUES (%s, %s)",
+                    (archivo, esperado),
+                )
+        await conn.commit()
 
 
 async def _tabla_existe_en_base(nombre: str, tabla: str) -> bool:
