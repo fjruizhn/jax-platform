@@ -1,0 +1,13 @@
+{
+  "_comentario": "Manifiesto de migraciones de jax/memory/b9_migrations/ que run_migrations() NO aplica solo (ver el README de esa carpeta) y que YA están aplicadas a mano en jax_memory de PRODUCCIÓN, siguiendo el runbook 'Migraciones B9 adicionales' de docs/runbooks/despliegue.md. aplicar_migraciones_b9_restantes() (backend/base_de_test.py) SOLO aplica en la base de tests lo que aparece acá: un .sql nuevo que el glob encuentre y que no esté ni en run_migrations() ni en este manifiesto revienta la suite con un error explícito -- no se asume que un archivo nuevo en el repo de JAX ya está en producción.",
+  "004_tenant_legacy_binding.sql": {
+    "aplicada_en_produccion": "2026-09-27",
+    "por": "Hyde",
+    "verificado": "SELECT desde information_schema.COLUMNS contra jax_memory: memory_legacy_bindings.tenant_id existe"
+  },
+  "006_memory_jobs.sql": {
+    "aplicada_en_produccion": "2026-09-27",
+    "por": "Hyde",
+    "verificado": "SELECT desde information_schema contra jax_memory: memory_extraction_jobs, memory_extraction_results, memory_synthesis_jobs y memory_synthesis_job_items existen; memory_revisions.tenant_id es NOT NULL; fk_memory_revision_tenant existe; el trigger memory_revision_tenant_compat existe"
+  }
+}

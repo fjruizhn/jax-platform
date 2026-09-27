@@ -337,6 +337,70 @@ la del backend de jax-platform (paso 2 de la sección "Volver atrás", más
 abajo) al SHA anterior a este cambio -- no hace falta tocar `jax` ni el
 esquema, que es aditivo.
 
+## Migraciones B9 adicionales (`jax/memory/b9_migrations/`, más allá de 001-003)
+
+*(Agregado 2026-09-27, auditoría adversarial del PR #164, MAJOR-2.)* El esquema B9
+vive en `jax_memory` (compartido) pero **`run_migrations()` de jax-platform sólo
+aplica 001 (`001_b9_shared_memory.sql`), 002 (`002_b9_hardening.sql`) y 003
+(`003_project_scope_authority.sql`, vía el hook Python de JAX)**. El propio README
+de esa carpeta es explícito: la cadena entera "is not executed by application
+import or worker startup" -- todo lo que quede después de 003 (004, 006, y lo que
+JAX agregue mañana) es DDL que **nadie aplica solo, en ningún lado**. Aplicarlo es
+un paso manual, y declarar que ya se aplicó es OTRO paso manual, separado.
+
+**Cuándo hace falta este paso.** Cuando `jax` agrega un `.sql` nuevo a
+`jax/memory/b9_migrations/` y el código que lo necesita (en `jax` o en
+`jax-platform`) va a producción. La señal de que falta: la suite de jax-platform
+revienta con
+
+```
+BaseDeTestInvalida: migración B9 <archivo> no declarada como aplicada en
+producción: aplícala en producción siguiendo docs/runbooks/despliegue.md
+(sección 'Migraciones B9 adicionales') y agregala a
+b9_migraciones_en_produccion.json antes de que la suite la use.
+```
+
+(`backend/base_de_test.py::aplicar_migraciones_b9_restantes`, que descubre estos
+archivos por glob contra el manifiesto de abajo -- NO los aplica a ciegas: que un
+`.sql` exista en el repo de JAX no prueba que ya pasó por este flujo revisado.)
+
+### Pasos
+
+1. **Respaldo primero** (Principio VI, sección 0 de arriba) -- **y probarlo**,
+   restaurando en una base descartable antes de seguir. Sin esto no hay paso 2.
+2. **Leer el archivo entero antes de aplicarlo.** Los `.sql` de esa carpeta NO son
+   idempotentes en general (verificado en 004 y 006, 2026-09-27: `ADD COLUMN` sin
+   `IF NOT EXISTS`, `DROP PRIMARY KEY`/`DROP INDEX` que asumen que lo que borran
+   sigue ahí, `CREATE TRIGGER`/`ADD CONSTRAINT` sin `IF NOT EXISTS`) -- correrlo dos
+   veces contra la misma base revienta a mitad. Aplicarlo UNA vez, a mano, contra
+   `jax_memory`:
+
+   ```bash
+   set -a; . <(sudo -n cat /etc/jax/.env); set +a
+   mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" \
+     jax_memory < /srv/jax-prod/jax/jax/memory/b9_migrations/<archivo>.sql
+   ```
+
+3. **Verificar en la base, no suponer.** El `SHOW COLUMNS`/`SHOW INDEX`/consulta a
+   `information_schema` que confirme la forma final que describe el propio
+   `.sql` -- exactamente lo que va a quedar escrito en el manifiesto del paso 4.
+4. **Declarar la migración en `jax-platform`**, en el MISMO cambio que cualquier
+   código que dependa de ella (o antes, si nada la usa todavía):
+   `backend/b9_migraciones_en_produccion.json` gana una clave nueva con el nombre
+   exacto del archivo, la fecha, quién la aplicó y CÓMO se verificó (la consulta
+   del paso 3, no "se ve bien"). Sin esta clave, la suite de tests revienta con el
+   mensaje de arriba -- es la baranda, no un trámite.
+5. **Correr la suite de jax-platform** (`aplicar_migraciones_b9_restantes` recoge
+   el archivo nuevo por glob, lo ve declarado en el manifiesto, y lo aplica en la
+   base de tests) para confirmar que el código que la necesita pasa contra el
+   esquema real.
+
+**Volver atrás.** El esquema B9 es aditivo, igual que el resto de esta casa (ver
+"Volver atrás" más abajo): revertir el código no exige revertir el DDL. Si hiciera
+falta revertir el DDL mismo (columna con datos ya escritos, trigger que rompe un
+flujo), es un caso a mano, con Fernando, igual que cualquier reversión de esquema
+con datos de por medio.
+
 ## Volver atrás
 
 1. **Sitio público:** copiar de vuelta `~/respaldos-sitio/axioma-<fecha>/` en

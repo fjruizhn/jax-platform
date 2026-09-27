@@ -51,6 +51,7 @@ En memoria de Jairo Urbina.
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import re
 import secrets
@@ -592,20 +593,57 @@ _MIGRACIONES_B9_YA_CUBIERTAS_POR_RUN_MIGRATIONS = frozenset({
 #: Registro de qué migración B9 (de las que quedan fuera del conjunto de arriba) ya se
 #: aplicó a ESTA base física. Vive SOLO en la base de tests -- producción no corre este
 #: módulo -- y es lo que permite reusar una base entre corridas sin reventar un DDL no
-#: idempotente: la `CREATE TRIGGER memory_revision_tenant_compat` de 006 y su
-#: `ADD CONSTRAINT fk_memory_revision_tenant` no traen `IF NOT EXISTS`
-#: (jax/memory/b9_migrations/006_memory_jobs.sql, verificado contra jax master 2026-09-27),
-#: así que ejecutar el archivo una segunda vez fallaría con "trigger ya existe" o
-#: "constraint duplicada". Con el registro, cada archivo corre UNA sola vez por base
-#: física, para siempre -- mismo criterio de fondo que `axioma_migracion_de_datos` en
-#: `db/migrations.py`, pero acotado al arnés de tests: una migración de JAX no es una
-#: migración de datos de este repo, y no comparte esa tabla.
+#: idempotente. NI 004 NI 006 son idempotentes de punta a punta (verificado contra jax
+#: master 2026-09-27, leyendo cada sentencia, no de memoria):
+#:   - 004 (`004_tenant_legacy_binding.sql`): `ALTER TABLE memory_legacy_bindings
+#:     ADD COLUMN tenant_id ...` SIN `IF NOT EXISTS` ("Duplicate column name" la segunda
+#:     vez), y el `DROP PRIMARY KEY` de esa misma tabla asume que la PK vieja sigue ahí
+#:     (la segunda vez ya no está: "Can't DROP PRIMARY KEY; check that it exists").
+#:   - 006 (`006_memory_jobs.sql`): `CREATE TRIGGER memory_revision_tenant_compat` y
+#:     `ADD CONSTRAINT fk_memory_revision_tenant` tampoco traen `IF NOT EXISTS` ("trigger
+#:     ya existe" / "constraint duplicada" la segunda vez); también tiene un
+#:     `ALTER TABLE memory_objects DROP INDEX uq_memory_legacy_binding` (viene de 004, no
+#:     de 006, pero el mismo defecto aplica: la segunda vez ese índice ya no existe).
+#: Con el registro, cada archivo corre UNA sola vez por base física, para siempre --
+#: mismo criterio de fondo que `axioma_migracion_de_datos` en `db/migrations.py`, pero
+#: acotado al arnés de tests: una migración de JAX no es una migración de datos de este
+#: repo, y no comparte esa tabla.
 CREATE_TABLA_MIGRACIONES_B9_DE_TEST = """
 CREATE TABLE IF NOT EXISTS _test_b9_migraciones_aplicadas (
   archivo VARCHAR(191) NOT NULL PRIMARY KEY,
   aplicada_at DATETIME DEFAULT NOW()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
+
+#: El manifiesto (ver `_manifiesto_b9_de_produccion()`) vive en este archivo del propio
+#: repo -- versionado, no generado -- para que declarar una migración quede en el mismo
+#: PR que la usa.
+RUTA_MANIFIESTO_B9_DE_PRODUCCION = Path(__file__).resolve().parent / "b9_migraciones_en_produccion.json"
+
+
+def _manifiesto_b9_de_produccion() -> dict:
+    """Qué migraciones de `jax/memory/b9_migrations/` -- de las que `run_migrations()` NO
+    cubre -- ya están aplicadas A MANO en `jax_memory` de PRODUCCIÓN, con fecha, quién y
+    cómo se verificó (`backend/b9_migraciones_en_produccion.json`, versionado en el repo).
+
+    **Por qué un manifiesto y no "aplicá lo que el glob encuentre".** La primera versión de
+    este bootstrap confiaba en que cualquier `.sql` de esa carpeta, más allá de 001-003, era
+    seguro de aplicar en la base de tests porque "ya estaba en jax master". Eso da vuelta la
+    carga de la prueba: el README de esa carpeta es explícito en que la cadena NO se aplica
+    sola en ningún lado, ni siquiera en JAX -- que un archivo esté en el repo no dice que
+    ya pasó por el flujo revisado de producción (Ruling de la auditoría adversarial del
+    PR #164, MAJOR-2, 2026-09-27). Con el manifiesto, la pregunta que decide no es "¿existe
+    el archivo?" sino "¿alguien ya lo aplicó en producción y lo declaró acá?" -- y si la
+    respuesta es no, la suite lo dice en rojo (`aplicar_migraciones_b9_restantes`) en vez de
+    aplicarlo a ciegas contra una base de test.
+    """
+    if not RUTA_MANIFIESTO_B9_DE_PRODUCCION.is_file():
+        raise BaseDeTestInvalida(
+            f"falta el manifiesto de migraciones B9 de producción: "
+            f"{RUTA_MANIFIESTO_B9_DE_PRODUCCION}"
+        )
+    datos = json.loads(RUTA_MANIFIESTO_B9_DE_PRODUCCION.read_text(encoding="utf-8"))
+    return {clave: valor for clave, valor in datos.items() if not clave.startswith("_")}
 
 
 async def aplicar_migraciones_b9_restantes() -> None:
@@ -618,7 +656,7 @@ async def aplicar_migraciones_b9_restantes() -> None:
     solos en JAX; en `jax-platform` sí se aplican, pero a través de `run_migrations()`, que
     deliberadamente sólo trae 001-003 (ver el comentario de esa función). En PRODUCCIÓN
     (`jax_memory`) la cadena completa, 004 y 006 incluidos, ya está aplicada por fuera de
-    ese flujo (verificado 2026-09-27: `jax_memory.memory_revisions` ya trae `tenant_id`).
+    ese flujo (verificado 2026-09-27, ver `backend/b9_migraciones_en_produccion.json`).
     Una base de TEST que sólo corre `run_migrations()` se queda atrás de esa realidad, y
     cualquier código que dependa de lo que 004/006 agregan
     (`jax.memory.b9_mariadb._retrieve_scoped`, tras jax#279, lee `r.tenant_id` de
@@ -632,11 +670,14 @@ async def aplicar_migraciones_b9_restantes() -> None:
     repo, no de este bootstrap de test. Esta función es EXCLUSIVA del arnés de tests: sólo
     hace que la base de prueba deje de mentir sobre lo que producción ya tiene.
 
-    **Descubrimiento por GLOB, no por lista fija.** Un archivo nuevo (007, ...) que JAX
-    agregue mañana se recoge solo, en orden alfabético, sin que nadie tenga que tocar este
-    módulo -- la razón de ser de este bootstrap es justo no depender de que alguien se
-    acuerde de actualizarlo cada vez que la cadena crece (lo que ya pasó una vez: 004 y 006
-    llevaban semanas en `jax` master sin que nada de acá los aplicara).
+    **Descubrimiento por GLOB, contra un MANIFIESTO -- no una lista fija ni confianza
+    ciega.** Un archivo nuevo (007, ...) que JAX agregue mañana se recoge solo, en orden
+    alfabético, sin que nadie tenga que tocar este módulo para que la suite se entere de
+    que existe -- pero no se aplica solo: si no está declarado en
+    `backend/b9_migraciones_en_produccion.json`, esta función revienta con un mensaje que
+    dice exactamente qué falta y qué hacer (ver `_manifiesto_b9_de_produccion`). Así, un
+    archivo nuevo nunca se aplica a ciegas Y nunca se pierde en silencio (lo que ya pasó
+    una vez: 004 y 006 llevaban semanas en `jax` master sin que nada de acá los aplicara).
 
     **Cuándo llamarla.** DESPUÉS de que `run_migrations()` ya corrió: `memory_objects`,
     `memory_revisions` y `memory_legacy_bindings` (que 004/006 alteran) son de 001/002.
@@ -663,9 +704,36 @@ async def aplicar_migraciones_b9_restantes() -> None:
     if not pendientes:
         return
 
+    # Contra el manifiesto ANTES de conectar a nada: un archivo no declarado es un error
+    # de configuración/proceso, no algo que se resuelve abriendo una conexión.
+    manifiesto = _manifiesto_b9_de_produccion()
+    no_declaradas = [archivo for archivo in pendientes if archivo not in manifiesto]
+    if no_declaradas:
+        raise BaseDeTestInvalida(
+            "migración B9 "
+            + ", ".join(no_declaradas)
+            + " no declarada como aplicada en producción: aplícala en producción "
+            "siguiendo docs/runbooks/despliegue.md (sección 'Migraciones B9 adicionales') "
+            f"y agregala a {RUTA_MANIFIESTO_B9_DE_PRODUCCION.name} antes de que la suite "
+            "la use."
+        )
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            # MINOR-4 de la auditoría del PR #164: `get_pool()` cachea un pool por loop de
+            # asyncio (ver `db/connection.py`) -- si algún día un test reusara un loop con
+            # un pool ya abierto contra OTRA base, `os.environ[VARIABLE_DE_LA_BASE]` mentiría
+            # sobre la conexión real. Se verifica la base de ESTA conexión, no la variable.
+            await cur.execute("SELECT DATABASE()")
+            (base_real,) = await cur.fetchone()
+            if not es_base_de_test(base_real):
+                raise BaseDeTestInvalida(
+                    f"la conexión de este pool apunta a {base_real!r}, que no es una base "
+                    f"de tests (JAX_DB_NAME decía {nombre!r}): no se aplican acá las "
+                    "migraciones B9 de JAX."
+                )
+
             await cur.execute(CREATE_TABLA_MIGRACIONES_B9_DE_TEST)
             for archivo in pendientes:
                 await cur.execute(
@@ -675,8 +743,28 @@ async def aplicar_migraciones_b9_restantes() -> None:
                 if await cur.fetchone():
                     continue
                 script = (directorio / archivo).read_text(encoding="utf-8")
-                for statement in _split_jax_b9_sql(script):
-                    await cur.execute(statement)
+                for numero, statement in enumerate(_split_jax_b9_sql(script), start=1):
+                    try:
+                        await cur.execute(statement)
+                    except Exception as exc:
+                        # MINOR-3 de la auditoría del PR #164: ni 004 ni 006 son
+                        # idempotentes de punta a punta (ver el docstring de
+                        # `CREATE_TABLA_MIGRACIONES_B9_DE_TEST`) y esta función no
+                        # registra la migración como aplicada hasta que TERMINÓ -- una
+                        # falla a mitad dejaría la base con un DDL parcial que un
+                        # reintento no puede completar (la próxima corrida repetiría
+                        # desde la sentencia 1 y chocaría con lo que sí llegó a
+                        # aplicarse). No hay rollback posible: MariaDB hace commit
+                        # implícito por sentencia DDL. La única salida segura es
+                        # recrear la base de la sesión.
+                        raise BaseDeTestInvalida(
+                            f"la migración B9 {archivo} falló en su sentencia "
+                            f"#{numero} ({statement[:200]!r}): {exc}. La base de esta "
+                            "sesión quedó con un DDL parcial de esa migración y NO es "
+                            "segura de reintentar tal cual -- recreala (borrala con "
+                            f"DROP DATABASE `{base_real}` y corré la suite de "
+                            "nuevo con el mismo u otro JAX_TEST_DB_SUFIJO)."
+                        ) from exc
                 await cur.execute(
                     "INSERT INTO _test_b9_migraciones_aplicadas (archivo) VALUES (%s)",
                     (archivo,),
