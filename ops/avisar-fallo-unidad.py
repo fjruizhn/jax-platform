@@ -74,11 +74,20 @@ MONITOR_EXIT_CODE_ENV = "MONITOR_EXIT_CODE"
 MONITOR_EXIT_STATUS_ENV = "MONITOR_EXIT_STATUS"
 MONITOR_INVOCATION_ID_ENV = "MONITOR_INVOCATION_ID"
 
-#: Con este resultado, `catalogo_modelos_ejecutor.py::main()` YA corrió
-#: hasta el final de su propio try/except y ya avisó lo que había que avisar
-#: (o decidió, correctamente, que no había nada que avisar) -- esta unidad
-#: se queda callada para no duplicar ese aviso con MENOS contexto.
+#: Con este resultado, `catalogo_modelos_ejecutor.py::main()` corrió hasta
+#: el final de su propio try/except -- pero (MAJOR-1, cuarta auditoría
+#: adversarial, 2026-09-28) `exit-code` SOLO no alcanza: también lo es un
+#: fallo de chdir/exec de systemd o un .venv roto, casos que el ejecutor
+#: JAMÁS llegó a avisar. Hace falta ADEMÁS el código exacto de abajo.
 RESULTADO_YA_CUBIERTO_POR_EL_EJECUTOR = "exit-code"
+
+#: El único código de salida que `catalogo_modelos_ejecutor.py::main()` usa
+#: cuando hubo problemas Y su propio aviso quedó resuelto (Telegram
+#: confirmó la entrega, o ya estaba deduplicado con razón) -- ver el
+#: docstring de ese módulo. Cualquier otro valor (0 no dispara `OnFailure=`
+#: en absoluto; 1 es "todo lo demás", incluido que el propio aviso del
+#: ejecutor haya fallado) tiene que avisar acá.
+CODIGO_SALIDA_AVISADO_POR_EL_EJECUTOR = "3"
 
 
 def _enviar_telegram(mensaje: str) -> bool:
@@ -109,11 +118,22 @@ def main(argv: list[str]) -> int:
     unidad = argv[1].strip()
 
     resultado = os.environ.get(MONITOR_SERVICE_RESULT_ENV, "").strip()
-    if resultado == RESULTADO_YA_CUBIERTO_POR_EL_EJECUTOR:
+    estado = os.environ.get(MONITOR_EXIT_STATUS_ENV, "").strip()
+    # MAJOR-1 (cuarta auditoría adversarial, 2026-09-28): `exit-code` SOLO
+    # cubre "el ejecutor corrió y decidió su propio código" cuando ese
+    # código es EXACTAMENTE 3 -- el que catalogo_modelos_ejecutor.py usa
+    # SOLO cuando hubo problemas Y su propio aviso quedó resuelto (Telegram
+    # confirmó, o ya estaba deduplicado). Cualquier otro par -- incluido
+    # `exit-code` con estado 1, 200 (falla de chdir) o 203 (falla de exec),
+    # que la regla vieja ("callar si exit-code" a secas) dejaba en
+    # silencio -- SÍ avisa: son justo los casos que el propio ejecutor
+    # nunca llegó a poder avisar por sí mismo (ver el docstring del
+    # módulo).
+    if resultado == RESULTADO_YA_CUBIERTO_POR_EL_EJECUTOR and estado == CODIGO_SALIDA_AVISADO_POR_EL_EJECUTOR:
         return 0
 
     codigo = os.environ.get(MONITOR_EXIT_CODE_ENV, "").strip() or "?"
-    estado = os.environ.get(MONITOR_EXIT_STATUS_ENV, "").strip() or "?"
+    estado = estado or "?"
     invocation_id = os.environ.get(MONITOR_INVOCATION_ID_ENV, "").strip() or "?"
 
     mensaje = (

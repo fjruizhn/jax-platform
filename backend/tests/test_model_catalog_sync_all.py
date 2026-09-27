@@ -18,6 +18,10 @@ por proveedor se convierte en `ok`/`code`/las listas de la respuesta.
 Usa `client` (DB real vía el portal de la sesión) porque `sync_all()` hace
 una consulta real a `facet_binding`/`model` para las facetas en riesgo.
 """
+import uuid
+
+import pytest
+
 import model_catalog
 
 
@@ -185,3 +189,188 @@ def test_sync_all_libera_el_candado_al_terminar(client, monkeypatch):
 
     assert primero.get("code") != "sync_en_curso"
     assert segundo.get("code") != "sync_en_curso"
+
+
+# --------------------------------------------------------------------------
+# MINOR-1 (cuarta auditoría adversarial, 2026-09-28): verificar el candado
+# de verdad (IS_FREE_LOCK desde OTRA conexión) tras un sync normal y tras
+# uno que revienta con una excepción.
+# --------------------------------------------------------------------------
+
+async def _is_free_lock():
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT IS_FREE_LOCK(%s)", (model_catalog._NOMBRE_CANDADO_SYNC,))
+            (libre,) = await cur.fetchone()
+            return libre
+
+
+def test_sync_all_deja_el_candado_libre_verificado_desde_otra_conexion(client, monkeypatch):
+    _fake_sync_provider_models(monkeypatch, _resultados_todo_bien())
+    _sin_enrich_real(monkeypatch)
+
+    client.portal.call(model_catalog.sync_all)
+
+    assert client.portal.call(_is_free_lock) == 1
+
+
+def test_sync_all_libera_el_candado_incluso_si_algo_revienta_dentro_del_try(client, monkeypatch):
+    """Una excepción DENTRO del try (después de tomar el candado, en algo
+    que `sync_all()` NO envuelve en su propio try/except por proveedor --
+    acá `_facetas_en_riesgo`) tiene que seguir liberando el candado en el
+    `finally`. Control de que el `finally` corre pase lo que pase, no sólo
+    en el camino feliz."""
+    _fake_sync_provider_models(monkeypatch, _resultados_todo_bien())
+    _sin_enrich_real(monkeypatch)
+
+    async def _facetas_en_riesgo_revienta(cur):
+        raise RuntimeError("boom -- no debería dejar el candado trabado")
+    monkeypatch.setattr(model_catalog, "_facetas_en_riesgo", _facetas_en_riesgo_revienta)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        client.portal.call(model_catalog.sync_all)
+
+    assert client.portal.call(_is_free_lock) == 1
+
+
+# --------------------------------------------------------------------------
+# MAJOR-2(a)/(b) (cuarta auditoría adversarial, 2026-09-28): la
+# INTERPRETACIÓN de GET_LOCK/RELEASE_LOCK es pura -- se prueba directo, sin
+# tener que forzar un error real de MariaDB (imposible de reproducir
+# determinísticamente en un test).
+# --------------------------------------------------------------------------
+
+def test_interpretar_get_lock_null_es_error():
+    assert model_catalog._interpretar_get_lock(None) == "error"
+
+
+def test_interpretar_get_lock_cero_es_ocupado():
+    assert model_catalog._interpretar_get_lock(0) == "ocupado"
+
+
+def test_interpretar_get_lock_uno_es_obtenido():
+    assert model_catalog._interpretar_get_lock(1) == "obtenido"
+
+
+class _ConexionFalsa:
+    def __init__(self):
+        self.cerrada = False
+
+    def close(self):
+        self.cerrada = True
+
+
+def test_release_lock_que_no_confirma_cierra_la_conexion():
+    conn = _ConexionFalsa()
+    model_catalog._cerrar_conexion_si_release_lock_no_confirma(0, conn)
+    assert conn.cerrada is True
+
+
+def test_release_lock_nulo_cierra_la_conexion():
+    conn = _ConexionFalsa()
+    model_catalog._cerrar_conexion_si_release_lock_no_confirma(None, conn)
+    assert conn.cerrada is True
+
+
+def test_release_lock_confirmado_no_cierra_la_conexion():
+    conn = _ConexionFalsa()
+    model_catalog._cerrar_conexion_si_release_lock_no_confirma(1, conn)
+    assert conn.cerrada is False
+
+
+# --------------------------------------------------------------------------
+# MINOR-2/MINOR-3 (cuarta auditoría adversarial, 2026-09-28): `marca_nuevos`
+# -- la consulta real corre DENTRO de sync_all(), con el candado tomado.
+# --------------------------------------------------------------------------
+
+async def _sembrar_modelo_con_created_at(provider_id, model_id, created_at):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO model (provider_id, model_id, status, source, source_checked_at, created_at) "
+                "VALUES (%s, %s, 'available', 'manual', NOW(), %s)",
+                (provider_id, model_id, created_at),
+            )
+        await conn.commit()
+
+
+async def _borrar_modelo(provider_id, model_id):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM model WHERE provider_id=%s AND model_id=%s", (provider_id, model_id))
+        await conn.commit()
+
+
+async def _ahora_como_str():
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT NOW()")
+            (ahora,) = await cur.fetchone()
+            return str(ahora)
+
+
+async def _hace_un_minuto_como_str():
+    """Un instante claramente ANTES de "ahora" (no `NOW()` a secas): el
+    modelo sintético se siembra con `created_at=NOW()` en el MISMO
+    call -- si la marca fuera `NOW()` capturado un instante antes, ambas
+    consultas podrían caer en el MISMO segundo (la resolución de
+    `created_at` es de segundos, no de microsegundos) y la comparación
+    estricta `created_at > marca` daría falso por un empate, no por un
+    error real."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT NOW() - INTERVAL 1 MINUTE")
+            (hace_un_minuto,) = await cur.fetchone()
+            return str(hace_un_minuto)
+
+
+def test_sync_all_sin_marca_nuevos_no_calcula_nada(client, monkeypatch):
+    _fake_sync_provider_models(monkeypatch, _resultados_todo_bien())
+    _sin_enrich_real(monkeypatch)
+
+    result = client.portal.call(model_catalog.sync_all)
+
+    assert "nuevos_desde_marca" not in result
+    assert "marca_corte" not in result
+    assert "marca_retrocedio" not in result
+
+
+def test_sync_all_con_marca_nuevos_incluye_lo_creado_despues(client, monkeypatch):
+    provider_id = "zhipu"
+    model_id = f"test-marca-sync-all-{uuid.uuid4().hex[:8]}"
+    hace_un_minuto = client.portal.call(_hace_un_minuto_como_str)
+    _fake_sync_provider_models(monkeypatch, _resultados_todo_bien())
+    _sin_enrich_real(monkeypatch)
+    client.portal.call(_sembrar_modelo_con_created_at, provider_id, model_id, client.portal.call(_ahora_como_str))
+    try:
+        result = client.portal.call(model_catalog.sync_all, hace_un_minuto)
+        assert result["marca_retrocedio"] is False
+        assert model_id in result.get("nuevos_desde_marca", {}).get(provider_id, [])
+        assert isinstance(result["marca_corte"], str) and result["marca_corte"]
+    finally:
+        client.portal.call(_borrar_modelo, provider_id, model_id)
+
+
+def test_sync_all_marca_en_el_futuro_avisa_retroceso_y_no_pierde(client, monkeypatch):
+    """MINOR-3: si `marca_nuevos` queda DESPUÉS de `NOW()` (reloj o zona
+    horaria movidos hacia atrás), `sync_all()` marca `marca_retrocedio` en
+    vez de devolver silenciosamente una ventana vacía/invertida."""
+    _fake_sync_provider_models(monkeypatch, _resultados_todo_bien())
+    _sin_enrich_real(monkeypatch)
+
+    marca_del_futuro = "2099-01-01 00:00:00"
+    result = client.portal.call(model_catalog.sync_all, marca_del_futuro)
+
+    assert result["marca_retrocedio"] is True
+    assert result["nuevos_desde_marca"] == {}
+    assert isinstance(result["marca_corte"], str) and result["marca_corte"]

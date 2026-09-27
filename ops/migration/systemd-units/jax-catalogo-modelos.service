@@ -30,6 +30,19 @@ Wants=network-online.target
 # con más contexto). Sólo avisa en los casos que NUNCA llegan a `main()`
 # (timeout, señal externa, core-dump, fallo de exec) -- ahí es donde de
 # verdad son complementarios, no en que "avisan cosas distintas" a secas.
+#
+# CORRECCIÓN (MAJOR-1, cuarta auditoría adversarial, 2026-09-28): lo de
+# arriba también era incompleto -- `exit-code` a secas cubre ADEMÁS un fallo
+# de chdir/exec de systemd y `main()` saliendo 1 porque SU PROPIO aviso de
+# Telegram falló; con la regla vieja, esos también quedaban en silencio.
+# `catalogo_modelos_ejecutor.py::main()` ahora sale con el código 3 SOLO
+# cuando hubo problemas Y el aviso quedó resuelto -- `ops/
+# avisar-fallo-unidad.py` exige ADEMÁS `MONITOR_EXIT_STATUS=3` para callar
+# (no sólo `MONITOR_SERVICE_RESULT=exit-code`). Deliberadamente SIN
+# `SuccessExitStatus=3` acá: eso haría que systemd tratara la unidad como
+# "exitosa" con el código 3, y la queremos FAILED y visible en
+# `systemctl status`/`systemctl list-units --failed` -- el silencio es sólo
+# de `OnFailure=`, no del estado de la unidad.
 OnFailure=jax-catalogo-modelos-aviso.service
 
 [Service]

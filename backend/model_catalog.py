@@ -240,9 +240,19 @@ def _motivo_si_respuesta_sospechosa(seen_ids: set) -> str | None:
     traía para destrabarlo). Lo único que se conserva: una respuesta 200 con
     la lista VACÍA es sospechosa de un límite/paginación rota (el caso real
     de Gemini que originó todo esto) y se trata como FALLO del proveedor,
-    sin sumar un solo miss -- un retiro masivo LEGÍTIMO de modelos (el
-    proveedor de verdad se quedó sin ninguno) fluye por los misses normales
-    de D1.4 en la próxima corrida, no por acá. Devuelve el motivo (para
+    sin sumar un solo miss.
+
+    CORRECCIÓN (MINOR-7/8, cuarta auditoría adversarial, 2026-09-28): el
+    comentario de esta función decía antes que un retiro masivo legítimo (el
+    proveedor de verdad se quedó sin ningún modelo) "fluye por los misses
+    normales de D1.4" -- es FALSO. Mientras `seen_ids` siga vacío, ESTA
+    función sigue devolviendo "lista vacía" en CADA sync, así que
+    `sync_provider_models`/`_sync_ollama_models` cortan ACÁ (antes de llegar
+    al bucle que suma misses) y el provider queda en ERROR PERMANENTE,
+    avisado sync tras sync -- nunca pasa por D1.4. D1.4 (consecutive_misses
+    -> degraded/deprecated) sólo aplica cuando la lista NO está vacía pero
+    a ALGUNOS modelos puntuales les falta una fila en la respuesta (ver el
+    bucle de abajo en sync_provider_models). Devuelve el motivo (para
     loguear/reportar) o None si la respuesta es de fiar."""
     if not seen_ids:
         return "lista vacía"
@@ -319,7 +329,13 @@ async def sync_provider_models(provider_id: str) -> dict:
             # ESTE proveedor -- se mide ANTES del upsert de abajo (que ya
             # sembraría estos ids), contra el mismo índice que ya usa el
             # UNIQUE KEY uk_provider_model (provider_id, model_id): sin
-            # índice nuevo.
+            # índice nuevo. `ya_conocidos` NO filtra por `status` a propósito
+            # (MINOR-8, cuarta auditoría adversarial, 2026-09-28): un modelo
+            # que ya tiene FILA en `model` -- aunque hoy esté 'deprecated' o
+            # 'gone' -- NO es nuevo cuando vuelve a aparecer, es una vuelta a
+            # 'available' (el UPDATE de la rama ON DUPLICATE KEY de abajo ya
+            # lo revive). Filtrar por status acá haría que un modelo que
+            # volvió se reportara como "nuevo" cada vez que reaparece.
             await cur.execute("SELECT model_id FROM model WHERE provider_id=%s", (provider_id,))
             ya_conocidos = {r[0] for r in await cur.fetchall()}
             nuevos = sorted(seen_ids - ya_conocidos)
@@ -687,6 +703,36 @@ async def _facetas_en_riesgo(cur) -> list[dict]:
 # más tiene.
 _NOMBRE_CANDADO_SYNC = "jax_catalogo_sync"
 
+
+def _interpretar_get_lock(obtenido) -> str:
+    """MAJOR-2(a) (cuarta auditoría adversarial, 2026-09-28): `GET_LOCK`
+    devuelve 1 (obtenido), 0 (ocupado por otra conexión) o NULL (error real
+    de MariaDB -- p. ej. sin memoria para registrar el candado). Tratar NULL
+    como "ocupado" escondería un error real de la base detrás de un código
+    que dice "no pasa nada, reintentá en un rato". Función PURA (sin I/O)
+    para poder probar la interpretación sin tener que forzar un error real
+    de MariaDB."""
+    if obtenido is None:
+        return "error"
+    if obtenido == 0:
+        return "ocupado"
+    return "obtenido"
+
+
+def _cerrar_conexion_si_release_lock_no_confirma(liberado, conn) -> None:
+    """MAJOR-2(b) (cuarta auditoría adversarial, 2026-09-28): `RELEASE_LOCK`
+    devuelve 1 (liberado por esta conexión), 0 (el candado existe pero esta
+    conexión no lo tenía) o NULL (el candado ni existía). Si no es
+    EXACTAMENTE 1, no se puede confiar en el estado del candado para esta
+    conexión -- se la descarta (`conn.close()`) en vez de devolverla al
+    pool, así el próximo que la tome no hereda un candado en un estado que
+    nadie puede explicar. Función separada (en vez de inline en el
+    `finally`) para poder probar la decisión con un `conn` falso, sin
+    depender de poder forzar un `RELEASE_LOCK` real que no devuelva 1."""
+    if liberado != 1:
+        logger.warning("sync_all: RELEASE_LOCK no confirmó (no devolvió 1) -- se descarta la conexión")
+        conn.close()
+
 #: Respuesta cuando el candado ya lo tiene otro proceso -- no se tocó nada
 #: (ni una consulta de escritura corrió). `code='sync_en_curso'` es un
 #: código nuevo y claro, no una reutilización de 'sync_con_errores': no es
@@ -700,7 +746,44 @@ def _respuesta_sync_en_curso() -> dict:
     }
 
 
-async def sync_all() -> dict:
+async def _nuevos_desde_marca_bajo_candado(cur, marca_nuevos: str) -> dict:
+    """Cuarta auditoría adversarial (2026-09-28), MINOR-2/MINOR-3: calcula,
+    TODAVÍA con el candado tomado (para que un sync concurrente no se cuele
+    en la ventana entre "terminé de sincronizar" y "solté el candado"), qué
+    modelos son nuevos desde `marca_nuevos`. `corte = NOW()` (grano de
+    segundos, el MISMO que `model.created_at DATETIME DEFAULT NOW()` --
+    nunca `NOW(6)`, que desalinearía la comparación con microsegundos que
+    `created_at` no tiene).
+
+    Si el reloj (o un cambio de zona horaria) hiciera que `corte` diera
+    ANTES que `marca_nuevos`, es una anomalía real -- comparar
+    `created_at > marca AND created_at <= corte` con corte < marca
+    devolvería silenciosamente CERO filas (rango vacío o invertido) y
+    enmascararía cualquier modelo nuevo real. Se marca `marca_retrocedio` y
+    se devuelve `nuevos={}`; quien llama decide avisar y re-fija la marca de
+    todos modos (ver catalogo_modelos_ejecutor._avisar)."""
+    await cur.execute("SELECT NOW(), NOW() < %s", (marca_nuevos,))
+    corte, retrocedio = await cur.fetchone()
+    corte_str = str(corte)
+    if retrocedio:
+        logger.warning(
+            f"sync_all: NOW() ({corte_str}) dio antes que la marca de nuevos guardada "
+            f"({marca_nuevos}) -- reloj o zona horaria movidos hacia atrás"
+        )
+        return {"nuevos_desde_marca": {}, "marca_corte": corte_str, "marca_retrocedio": True}
+
+    await cur.execute(
+        "SELECT provider_id, model_id FROM model WHERE created_at > %s AND created_at <= %s "
+        "ORDER BY provider_id, model_id",
+        (marca_nuevos, corte_str),
+    )
+    nuevos_desde_marca: dict[str, list[str]] = {}
+    for provider_id, model_id in await cur.fetchall():
+        nuevos_desde_marca.setdefault(provider_id, []).append(model_id)
+    return {"nuevos_desde_marca": nuevos_desde_marca, "marca_corte": corte_str, "marca_retrocedio": False}
+
+
+async def sync_all(marca_nuevos: str | None = None) -> dict:
     """Orquesta el sync completo: capa (a) por cada proveedor de
     SYNCABLE_PROVIDERS, capa (b) de enriquecimiento, y el diagnostico de
     saltados/nuevos/facetas en riesgo. Extraida de POST /admin/models/sync
@@ -718,7 +801,15 @@ async def sync_all() -> dict:
     caso `ok=False` no significa "el catálogo está roto", significa "no se
     intentó nada, probá de nuevo en un rato"; el ejecutor programado lo
     distingue explícitamente y no lo trata como problema (ver
-    catalogo_modelos_ejecutor.py)."""
+    catalogo_modelos_ejecutor.py).
+
+    `marca_nuevos` (cuarta auditoría adversarial, 2026-09-28, MINOR-2): si
+    se pasa (el ejecutor programado lo hace, con la marca guardada en su
+    archivo de estado), la respuesta trae además `nuevos_desde_marca`,
+    `marca_corte` y `marca_retrocedio` -- ver `_nuevos_desde_marca_bajo_candado`.
+    El endpoint (POST /admin/models/sync) no pasa marca: sync_all() no
+    impone una fuente de verdad de "cuándo fue el último aviso", eso lo
+    decide el ejecutor (la marca sólo avanza cuando Telegram confirma)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -728,7 +819,13 @@ async def sync_all() -> dict:
             await cur.execute("SELECT GET_LOCK(%s, 0)", (_NOMBRE_CANDADO_SYNC,))
             (obtenido,) = await cur.fetchone()
 
-        if not obtenido:
+        estado_candado = _interpretar_get_lock(obtenido)
+        if estado_candado == "error":
+            raise RuntimeError(
+                f"sync_all: GET_LOCK('{_NOMBRE_CANDADO_SYNC}') devolvió NULL -- "
+                "error de MariaDB, no candado ocupado"
+            )
+        if estado_candado == "ocupado":
             logger.warning("sync_all: candado ocupado por otro sync en curso -- no se tocó nada")
             return _respuesta_sync_en_curso()
 
@@ -780,7 +877,27 @@ async def sync_all() -> dict:
                 # renombrar el codigo que ya identifica "esta respuesta trae
                 # algo que mirar".
                 respuesta["code"] = "sync_con_errores"
+
+            # MINOR-2 (cuarta auditoría adversarial, 2026-09-28): TODAVÍA
+            # dentro del try, ANTES del finally que suelta el candado.
+            if marca_nuevos is not None:
+                async with conn.cursor() as cur:
+                    respuesta.update(await _nuevos_desde_marca_bajo_candado(cur, marca_nuevos))
+
             return respuesta
         finally:
-            async with conn.cursor() as cur:
-                await cur.execute("SELECT RELEASE_LOCK(%s)", (_NOMBRE_CANDADO_SYNC,))
+            # MAJOR-2(b) (cuarta auditoría adversarial, 2026-09-28): si
+            # RELEASE_LOCK no confirma con 1 (0 = no lo tenía esta conexión,
+            # NULL = el candado ni existía) o la propia consulta revienta, no
+            # se puede confiar en el estado del candado para esta conexión --
+            # se la DESCARTA (conn.close()) en vez de devolverla al pool, así
+            # el próximo que la tome del pool no hereda un candado en un
+            # estado que nadie puede explicar.
+            liberado = None
+            try:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT RELEASE_LOCK(%s)", (_NOMBRE_CANDADO_SYNC,))
+                    (liberado,) = await cur.fetchone()
+            except Exception:  # fail-soft: si RELEASE_LOCK revienta, `liberado` queda None y se descarta la conexión igual, abajo
+                logger.exception("sync_all: RELEASE_LOCK reventó -- se descarta la conexión")
+            _cerrar_conexion_si_release_lock_no_confirma(liberado, conn)

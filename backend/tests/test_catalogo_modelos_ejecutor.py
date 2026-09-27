@@ -1,19 +1,20 @@
-"""Ejecutor programado del catálogo de modelos (2026-09-27, revisado tras la
-auditoría adversarial del commit d549335 -- A-1/A-2/A-5).
+"""Ejecutor programado del catálogo de modelos -- revisado tras varias
+rondas de auditoría adversarial, la última el 2026-09-28.
 
 `catalogo_modelos_ejecutor.py` corre `model_catalog.sync_all()` fuera del
 click de un superadmin. La mayoría de estos tests son PUROS -- no piden
-`client` ni tocan la base real: el propio `sync_all()` ya está cubierto por
+`client` ni tocan la base real: el propio `sync_all()` (incluida la consulta
+real de "nuevos desde la marca", que desde la cuarta auditoría adversarial
+vive DENTRO de `model_catalog.sync_all()`, no acá) ya está cubierto por
 test_model_catalog_sync_all.py y test_model_catalog_facetas_en_riesgo.py. Lo
-que se prueba acá es la capa de arriba: código de salida, resumen, el envío
-propio de Telegram, y el dedupe (que ahora exige un envío CONFIRMADO antes
-de marcar algo como avisado). La excepción, al final del archivo (tercera
-auditoría adversarial, 2026-09-27): la consulta real de "nuevos desde la
-marca" (`_nuevos_desde_marca`/`_correr`) SÍ toca la base -- es la única forma
-honesta de probar una consulta SQL."""
+que se prueba acá es la capa de arriba: código de salida (0/1/3, MAJOR-1),
+el candado ocupado (MAJOR-2(c)), el resumen, el envío propio de Telegram, y
+el dedupe (que exige un envío CONFIRMADO antes de marcar algo como
+avisado). La excepción, al final del archivo: un puñado de tests SÍ tocan la
+base -- `_correr()` calculando la marca de arranque cuando no hay ninguna
+guardada todavía."""
 import asyncio
 import json
-import uuid
 from pathlib import Path
 
 import pytest
@@ -67,11 +68,15 @@ def _sin_cerrar_el_cliente_http_real(monkeypatch):
 # main(): código de salida
 # --------------------------------------------------------------------------
 
-def _sin_aviso(monkeypatch):
+def _sin_aviso(monkeypatch, estado_aviso="sin_problemas"):
     """Aísla main() del envío real de avisos -- eso lo prueban los tests de
-    dedupe y de _enviar_telegram, más abajo."""
+    dedupe y de _enviar_telegram, más abajo. `_avisar()` devuelve un estado
+    (MAJOR-1, cuarta auditoría adversarial, 2026-09-28) que main() usa para
+    decidir entre el código de salida 3 y 1 -- por default acá se simula
+    "sin_problemas" (no importa para el código de salida, sólo importa
+    cuando `ok=False`)."""
     async def _nada(resultado):
-        return None
+        return estado_aviso
     monkeypatch.setattr(ejecutor, "_avisar", _nada)
 
 
@@ -88,15 +93,64 @@ def test_main_sale_distinto_de_cero_cuando_hay_problemas(monkeypatch):
     async def _correr():
         return _resultado_con_problemas()
     monkeypatch.setattr(ejecutor, "_correr", _correr)
-    _sin_aviso(monkeypatch)
+    _sin_aviso(monkeypatch, estado_aviso="fallo")
 
     assert ejecutor.main() != 0
 
 
 # --------------------------------------------------------------------------
-# Punto 5 (tercera auditoría adversarial, 2026-09-27): el candado contra
-# syncs concurrentes -- `code == "sync_en_curso"` no es un problema, no se
-# avisa y sale 0.
+# MAJOR-1 (cuarta auditoría adversarial, 2026-09-28): el código de salida es
+# 3 SOLO cuando hubo problemas Y el aviso quedó resuelto (avisado o
+# deduplicado con razón) -- 1 en cualquier otro desenlace.
+# --------------------------------------------------------------------------
+
+def test_main_sale_3_cuando_hay_problemas_y_el_aviso_se_confirmo(monkeypatch):
+    async def _correr():
+        return _resultado_con_problemas()
+    monkeypatch.setattr(ejecutor, "_correr", _correr)
+    _sin_aviso(monkeypatch, estado_aviso="avisado")
+
+    assert ejecutor.main() == 3
+
+
+def test_main_sale_3_cuando_hay_problemas_y_ya_estaban_deduplicados(monkeypatch):
+    async def _correr():
+        return _resultado_con_problemas()
+    monkeypatch.setattr(ejecutor, "_correr", _correr)
+    _sin_aviso(monkeypatch, estado_aviso="dedupeado")
+
+    assert ejecutor.main() == 3
+
+
+def test_main_sale_1_cuando_hay_problemas_y_el_aviso_no_se_pudo_confirmar(monkeypatch):
+    async def _correr():
+        return _resultado_con_problemas()
+    monkeypatch.setattr(ejecutor, "_correr", _correr)
+    _sin_aviso(monkeypatch, estado_aviso="fallo")
+
+    assert ejecutor.main() == 1
+
+
+def test_main_sale_1_si_avisar_revento_sin_dejar_estado_de_aviso(monkeypatch):
+    """Si `_avisar()` revienta, `_ciclo()` lo atrapa (fail-soft) pero la
+    clave `_estado_aviso_problemas` nunca se llega a escribir -- main() no
+    puede asumir "avisado" ante la ausencia de la clave, tiene que salir 1."""
+    async def _correr():
+        return _resultado_con_problemas()
+    monkeypatch.setattr(ejecutor, "_correr", _correr)
+
+    async def _avisar_que_revienta(resultado):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(ejecutor, "_avisar", _avisar_que_revienta)
+
+    assert ejecutor.main() == 1
+
+
+# --------------------------------------------------------------------------
+# MAJOR-2(c) (cuarta auditoría adversarial, 2026-09-28): el candado contra
+# syncs concurrentes -- `code == "sync_en_curso"` UNA vez no es un problema
+# (sale 0, sin aviso); a partir de la SEGUNDA corrida consecutiva, avisa y
+# sale 1.
 # --------------------------------------------------------------------------
 
 def _resultado_sync_en_curso():
@@ -107,16 +161,78 @@ def _resultado_sync_en_curso():
     }
 
 
-def test_main_sale_0_si_el_candado_esta_ocupado(monkeypatch):
+def test_main_sale_0_si_el_candado_esta_ocupado_por_primera_vez(monkeypatch, tmp_path):
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+
     async def _correr():
         return _resultado_sync_en_curso()
     monkeypatch.setattr(ejecutor, "_correr", _correr)
     _sin_aviso(monkeypatch)
 
+    llamado = []
+    async def _enviar_no_deberia_llamarse(mensaje):
+        llamado.append(mensaje)
+        return True
+    monkeypatch.setattr(ejecutor, "_enviar_telegram", _enviar_no_deberia_llamarse)
+
     assert ejecutor.main() == 0
+    assert llamado == []
 
 
-def test_ciclo_no_avisa_nada_si_el_candado_esta_ocupado(monkeypatch):
+def test_main_sale_1_y_avisa_desde_la_segunda_corrida_seguida_con_candado_ocupado(monkeypatch, tmp_path):
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+
+    async def _correr():
+        return _resultado_sync_en_curso()
+    monkeypatch.setattr(ejecutor, "_correr", _correr)
+    _sin_aviso(monkeypatch)
+
+    llamadas = []
+    async def _enviar(mensaje):
+        llamadas.append(mensaje)
+        return True
+    monkeypatch.setattr(ejecutor, "_enviar_telegram", _enviar)
+
+    assert ejecutor.main() == 0  # primera vez -- sin aviso todavía
+    assert llamadas == []
+
+    assert ejecutor.main() == 1  # segunda vez SEGUIDA -- avisa y sale 1
+    assert len(llamadas) == 1
+    assert "candado" in llamadas[0].lower()
+
+
+def test_main_corta_la_racha_de_candado_ocupado_si_el_sync_corre_de_verdad(monkeypatch, tmp_path):
+    """Si el candado se libera y un sync REAL corre en el medio, el contador
+    de corridas consecutivas se corta -- un candado ocupado más adelante
+    vuelve a contar desde 1, no arrastra la racha vieja."""
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+
+    async def _correr_ocupado():
+        return _resultado_sync_en_curso()
+    async def _correr_ok():
+        return _resultado_ok()
+
+    llamadas = []
+    async def _enviar(mensaje):
+        llamadas.append(mensaje)
+        return True
+    monkeypatch.setattr(ejecutor, "_enviar_telegram", _enviar)
+    _sin_aviso(monkeypatch)
+
+    monkeypatch.setattr(ejecutor, "_correr", _correr_ocupado)
+    assert ejecutor.main() == 0  # candado ocupado, 1ra vez
+
+    monkeypatch.setattr(ejecutor, "_correr", _correr_ok)
+    assert ejecutor.main() == 0  # corrió de verdad -- corta la racha
+
+    monkeypatch.setattr(ejecutor, "_correr", _correr_ocupado)
+    assert ejecutor.main() == 0  # candado ocupado otra vez, pero es la 1ra de una racha NUEVA
+    assert llamadas == []  # nunca llegó a la segunda consecutiva
+
+
+def test_ciclo_no_avisa_nada_de_problemas_si_el_candado_esta_ocupado(monkeypatch, tmp_path):
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+
     async def _correr():
         return _resultado_sync_en_curso()
     monkeypatch.setattr(ejecutor, "_correr", _correr)
@@ -214,7 +330,11 @@ def test_main_imprime_ok_true_no_avisa_nada_de_crash_en_el_camino_sano(monkeypat
     llamadas = []
 
     async def _avisar(resultado):
-        llamadas.append(resultado)
+        # copia -- `_ciclo()` agrega `_estado_aviso_problemas` al MISMO
+        # dict DESPUÉS de este llamado (MAJOR-1, cuarta auditoría
+        # adversarial, 2026-09-28); comparar contra una copia tomada ACÁ
+        # evita que esa mutación posterior invalide la aserción de abajo.
+        llamadas.append(dict(resultado))
     monkeypatch.setattr(ejecutor, "_avisar", _avisar)
 
     assert ejecutor.main() == 0
@@ -458,35 +578,56 @@ def test_avisar_sin_problemas_no_manda_nada_y_limpia_el_estado(monkeypatch, tmp_
 
 
 # --------------------------------------------------------------------------
-# Tercera auditoría adversarial (2026-09-27): "nuevos" ya NO es un acumulador
-# de pendientes en el archivo de estado -- la fuente de verdad es la BASE
-# (`model.created_at` comparado contra una MARCA guardada en el archivo de
-# estado). `_correr()` es quien calcula, con una consulta real a la base,
-# los tres campos que `_avisar()` recibe ya resueltos en `resultado`:
-# `marca_corte`, `marca_previa_era_none` y `nuevos_desde_marca` -- ver
-# `_nuevos_desde_marca`/`_correr` en el módulo, y
-# test_model_catalog_ejecutor_nuevos_desde_marca.py para la consulta real
-# contra la base. Acá se prueba SÓLO la decisión de `_avisar()` sobre esos
-# tres campos ya calculados, sin tocar la base -- mismo criterio "puro" que
-# el resto de este archivo.
+# "nuevos" no es un acumulador de pendientes en el archivo de estado -- la
+# fuente de verdad es la BASE (`model.created_at` comparado contra una
+# MARCA). Desde la cuarta auditoría adversarial (2026-09-28, MINOR-2), la
+# consulta real corre DENTRO de `model_catalog.sync_all()`; `_correr()` sólo
+# agrega `marca_usada` (con qué arrancó esta corrida) al resultado que ya
+# trae `marca_corte`/`nuevos_desde_marca`/`marca_retrocedio`. Regla UNIFORME
+# en `_avisar()` (MINOR-4, sin caso especial para la primera corrida): la
+# marca avanza a `marca_corte` salvo que HAYA nuevos Y el envío falle -- ahí
+# se re-persiste `marca_usada` (con qué arrancó ESTA corrida), que en una
+# corrida normal es un no-op y en el arranque es lo que evita perder un
+# modelo que ya quedó insertado en `model`.
 # --------------------------------------------------------------------------
 
-def test_avisar_primera_corrida_fija_la_marca_sin_avisar(monkeypatch, tmp_path):
-    """Sin marca previa no hay nada contra qué comparar -- se fija la marca
-    en `marca_corte` SIN mandar nada a Telegram (no hay que avisar
-    retroactivamente de todo lo que ya estaba en la base)."""
+def test_avisar_bootstrap_sin_nuevos_fija_la_marca_sin_avisar(monkeypatch, tmp_path):
+    """Arranque (sin archivo de estado todavía) pero nada nuevo en la
+    ventana -- se fija la marca en `marca_corte` sin mandar nada a
+    Telegram."""
     monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
     llamadas = _mock_envio(monkeypatch, [True])
 
     resultado = _resultado_ok()
-    resultado["marca_corte"] = "2026-09-27 10:00:00.000000"
-    resultado["marca_previa_era_none"] = True
+    resultado["marca_corte"] = "2026-09-27 10:00:00"
+    resultado["marca_usada"] = "2026-09-27 09:59:59"
+    resultado["marca_retrocedio"] = False
     resultado["nuevos_desde_marca"] = {}
     _correr_async(ejecutor._avisar(resultado))
 
     assert llamadas == []
     estado = json.loads(ejecutor._ruta_estado().read_text())
-    assert estado["nuevos_marca"] == "2026-09-27 10:00:00.000000"
+    assert estado["nuevos_marca"] == "2026-09-27 10:00:00"
+
+
+def test_avisar_bootstrap_con_nuevos_avisa_como_cualquier_otra_corrida(monkeypatch, tmp_path):
+    """MINOR-4: lo que entra en la corrida de arranque (p. ej. un modelo
+    nuevo recién sincronizado) SÍ se avisa -- no hay caso especial que lo
+    calle."""
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+    llamadas = _mock_envio(monkeypatch, [True])
+
+    resultado = _resultado_ok()
+    resultado["marca_corte"] = "2026-09-27 10:05:00"
+    resultado["marca_usada"] = "2026-09-27 10:00:00"
+    resultado["marca_retrocedio"] = False
+    resultado["nuevos_desde_marca"] = {"anthropic": ["claude-opus-5-nuevo"]}
+    _correr_async(ejecutor._avisar(resultado))
+
+    assert len(llamadas) == 1
+    assert "claude-opus-5-nuevo" in llamadas[0]
+    estado = json.loads(ejecutor._ruta_estado().read_text())
+    assert estado["nuevos_marca"] == "2026-09-27 10:05:00"
 
 
 def test_avisar_nuevos_avanza_la_marca_solo_si_telegram_confirma(monkeypatch, tmp_path):
@@ -494,77 +635,81 @@ def test_avisar_nuevos_avanza_la_marca_solo_si_telegram_confirma(monkeypatch, tm
     llamadas = _mock_envio(monkeypatch, [True])
 
     resultado = _resultado_ok()
-    resultado["marca_corte"] = "2026-09-27 11:00:00.000000"
-    resultado["marca_previa_era_none"] = False
+    resultado["marca_corte"] = "2026-09-27 11:00:00"
+    resultado["marca_usada"] = "2026-09-27 10:00:00"
+    resultado["marca_retrocedio"] = False
     resultado["nuevos_desde_marca"] = {"anthropic": ["claude-opus-5-nuevo"]}
     _correr_async(ejecutor._avisar(resultado))
 
     assert len(llamadas) == 1
     assert "claude-opus-5-nuevo" in llamadas[0]
     estado = json.loads(ejecutor._ruta_estado().read_text())
-    assert estado["nuevos_marca"] == "2026-09-27 11:00:00.000000"
+    assert estado["nuevos_marca"] == "2026-09-27 11:00:00"
 
 
-def test_avisar_nuevos_no_avanza_la_marca_si_el_envio_falla(monkeypatch, tmp_path):
+def test_avisar_nuevos_si_el_envio_falla_repersiste_la_marca_usada(monkeypatch, tmp_path):
+    """Si el envío falla, la marca NO avanza a `marca_corte` -- se
+    re-persiste `marca_usada` (la que ya estaba, en una corrida normal; la
+    de arranque, en la primera) para que la corrida siguiente reintente
+    desde el MISMO punto de partida y no pierda el modelo que ya quedó
+    insertado en `model`."""
     monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
     llamadas = _mock_envio(monkeypatch, [False])
 
     resultado = _resultado_ok()
-    resultado["marca_corte"] = "2026-09-27 12:00:00.000000"
-    resultado["marca_previa_era_none"] = False
+    resultado["marca_corte"] = "2026-09-27 12:00:00"
+    resultado["marca_usada"] = "2026-09-27 11:00:00"
+    resultado["marca_retrocedio"] = False
     resultado["nuevos_desde_marca"] = {"anthropic": ["claude-opus-5-nuevo"]}
     _correr_async(ejecutor._avisar(resultado))
 
     assert len(llamadas) == 1  # lo intentó
     estado = ejecutor._cargar_estado(ejecutor._ruta_estado())
-    assert "nuevos_marca" not in estado  # no confirmó -- no avanza
+    assert estado["nuevos_marca"] == "2026-09-27 11:00:00"  # se queda en el punto de partida, no avanza
 
 
-def test_avisar_sin_nuevos_no_avanza_la_marca_ni_avisa(monkeypatch, tmp_path):
+def test_avisar_sin_nuevos_avanza_la_marca_sin_avisar(monkeypatch, tmp_path):
     monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
     llamadas = _mock_envio(monkeypatch, [True])
 
     resultado = _resultado_ok()
-    resultado["marca_corte"] = "2026-09-27 13:00:00.000000"
-    resultado["marca_previa_era_none"] = False
+    resultado["marca_corte"] = "2026-09-27 13:00:00"
+    resultado["marca_usada"] = "2026-09-27 12:00:00"
+    resultado["marca_retrocedio"] = False
     resultado["nuevos_desde_marca"] = {}
     _correr_async(ejecutor._avisar(resultado))
 
     assert llamadas == []
     estado = ejecutor._cargar_estado(ejecutor._ruta_estado())
-    assert "nuevos_marca" not in estado
+    assert estado["nuevos_marca"] == "2026-09-27 13:00:00"
 
 
-def test_avisar_nuevos_reintenta_con_la_misma_marca_tras_un_fallo(monkeypatch, tmp_path):
-    """Si el envío falla, la marca se queda igual -- la corrida siguiente
-    (que en la práctica recalcularía `nuevos_desde_marca` desde la MISMA
-    marca vieja, ver `_correr`) reintenta con lo mismo en cuanto se le
-    vuelva a pasar."""
+def test_avisar_nuevos_reintenta_desde_la_marca_usada_tras_un_fallo(monkeypatch, tmp_path):
     monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
     llamadas = _mock_envio(monkeypatch, [False, True])
 
     resultado = _resultado_ok()
-    resultado["marca_corte"] = "2026-09-27 14:00:00.000000"
-    resultado["marca_previa_era_none"] = False
+    resultado["marca_corte"] = "2026-09-27 14:00:00"
+    resultado["marca_usada"] = "2026-09-27 13:00:00"
+    resultado["marca_retrocedio"] = False
     resultado["nuevos_desde_marca"] = {"anthropic": ["claude-opus-5-nuevo"]}
     _correr_async(ejecutor._avisar(resultado))  # falla
 
     estado = ejecutor._cargar_estado(ejecutor._ruta_estado())
-    assert "nuevos_marca" not in estado
+    assert estado["nuevos_marca"] == "2026-09-27 13:00:00"
 
     _correr_async(ejecutor._avisar(resultado))  # reintento, mismo contenido -- ahora confirma
 
     assert len(llamadas) == 2
     estado = ejecutor._cargar_estado(ejecutor._ruta_estado())
-    assert estado["nuevos_marca"] == "2026-09-27 14:00:00.000000"
+    assert estado["nuevos_marca"] == "2026-09-27 14:00:00"
 
 
 def test_avisar_nuevos_si_el_envio_revienta_la_marca_no_avanza(monkeypatch, tmp_path):
     """Un crash a mitad del envío (SIGKILL visto desde afuera como una
     excepción sin control) no pierde ni ensucia nada: como la marca sólo
     avanza al CONFIRMAR, sigue apuntando a la última confirmada y la
-    corrida siguiente recalcula desde ahí -- ya no hace falta un archivo de
-    "pendientes" separado (tercera auditoría adversarial, 2026-09-27)."""
+    corrida siguiente recalcula desde ahí."""
     monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
 
     async def _enviar_que_revienta(mensaje):
@@ -572,8 +717,9 @@ def test_avisar_nuevos_si_el_envio_revienta_la_marca_no_avanza(monkeypatch, tmp_
     monkeypatch.setattr(ejecutor, "_enviar_telegram", _enviar_que_revienta)
 
     resultado = _resultado_ok()
-    resultado["marca_corte"] = "2026-09-27 16:00:00.000000"
-    resultado["marca_previa_era_none"] = False
+    resultado["marca_corte"] = "2026-09-27 16:00:00"
+    resultado["marca_usada"] = "2026-09-27 15:00:00"
+    resultado["marca_retrocedio"] = False
     resultado["nuevos_desde_marca"] = {"anthropic": ["claude-opus-5-nuevo"]}
 
     with pytest.raises(RuntimeError):
@@ -581,6 +727,84 @@ def test_avisar_nuevos_si_el_envio_revienta_la_marca_no_avanza(monkeypatch, tmp_
 
     estado = ejecutor._cargar_estado(ejecutor._ruta_estado())
     assert "nuevos_marca" not in estado
+
+
+# --------------------------------------------------------------------------
+# MINOR-3 (cuarta auditoría adversarial, 2026-09-28): `marca_retrocedio` --
+# `model_catalog.sync_all()` ya detectó que `NOW()` dio antes que la marca
+# guardada. `_avisar()` avisa la anomalía y re-fija la marca de todos
+# modos.
+# --------------------------------------------------------------------------
+
+def test_avisar_marca_retrocedida_avisa_la_anomalia_y_refija_la_marca(monkeypatch, tmp_path):
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+    llamadas = _mock_envio(monkeypatch, [True])
+
+    resultado = _resultado_ok()
+    resultado["marca_corte"] = "2020-01-01 00:00:00"
+    resultado["marca_usada"] = "2026-09-27 10:00:00"
+    resultado["marca_retrocedio"] = True
+    resultado["nuevos_desde_marca"] = {}
+    _correr_async(ejecutor._avisar(resultado))
+
+    assert len(llamadas) == 1
+    assert "reloj" in llamadas[0].lower() or "zona" in llamadas[0].lower()
+    estado = ejecutor._cargar_estado(ejecutor._ruta_estado())
+    assert estado["nuevos_marca"] == "2020-01-01 00:00:00"
+
+
+def test_avisar_marca_retrocedida_refija_aunque_el_aviso_de_la_anomalia_falle(monkeypatch, tmp_path):
+    """El aviso de la anomalía es best-effort -- si Telegram tampoco
+    confirma ESE mensaje, la marca se re-fija IGUAL (quedarse comparando
+    contra una marca "del futuro" para siempre es peor)."""
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+    _mock_envio(monkeypatch, [False])
+
+    resultado = _resultado_ok()
+    resultado["marca_corte"] = "2020-01-01 00:00:00"
+    resultado["marca_usada"] = "2026-09-27 10:00:00"
+    resultado["marca_retrocedio"] = True
+    resultado["nuevos_desde_marca"] = {}
+    _correr_async(ejecutor._avisar(resultado))
+
+    estado = ejecutor._cargar_estado(ejecutor._ruta_estado())
+    assert estado["nuevos_marca"] == "2020-01-01 00:00:00"
+
+
+# --------------------------------------------------------------------------
+# MINOR-5 (cuarta auditoría adversarial, 2026-09-28): truncar el mensaje de
+# Telegram, con "y N más".
+# --------------------------------------------------------------------------
+
+def test_mensaje_nuevos_corto_no_se_trunca():
+    mensaje = ejecutor._mensaje_nuevos({"anthropic": ["claude-opus-5-nuevo"]})
+    assert mensaje == "Catálogo de modelos: modelos nuevos detectados -- anthropic: claude-opus-5-nuevo."
+    assert "más" not in mensaje
+
+
+def test_mensaje_nuevos_largo_se_trunca_con_y_n_mas():
+    nuevos = {f"provider-{i}": [f"modelo-{i}"] for i in range(400)}  # de sobra para pasar 4000 caracteres
+    mensaje = ejecutor._mensaje_nuevos(nuevos)
+
+    assert len(mensaje) <= ejecutor.LIMITE_TELEGRAM + 50  # margen para "(y N más)."
+    assert "más)." in mensaje
+    assert "provider-0: modelo-0" in mensaje  # el primero siempre entra
+
+
+def test_enviar_telegram_trunca_cualquier_mensaje_que_pase_el_limite(monkeypatch):
+    monkeypatch.setenv(ejecutor.TELEGRAM_TOKEN_ENV, "123456:token-de-prueba")
+    monkeypatch.setenv(ejecutor.TELEGRAM_CHAT_ID_ENV, "-100999")
+    fake = _FakePostClient(respuesta=_FakePostResponse(200, {"ok": True}))
+    original = http_client._client
+    http_client._client = fake
+    mensaje_gigante = "x" * (ejecutor.LIMITE_TELEGRAM + 5000)
+    try:
+        _correr_async(ejecutor._enviar_telegram(mensaje_gigante))
+    finally:
+        http_client._client = original
+
+    enviado = fake.calls[0][1]["data"]["text"]
+    assert len(enviado) <= ejecutor.LIMITE_TELEGRAM + 50
 
 
 def test_avisar_persiste_el_estado_como_json_legible(monkeypatch, tmp_path):
@@ -626,18 +850,23 @@ def test_cargar_estado_json_valido_pero_no_dict_es_vacio(tmp_path, contenido):
 
 
 # --------------------------------------------------------------------------
-# MAJOR-2 (segunda auditoría adversarial, 2026-09-27): si `model_catalog`
-# (o algo que él importa) revienta al cargarse, este módulo tiene que poder
-# cargarse igual -- si no, `main()` nunca llega a correr y no hay quien
-# avise. Se verifica por AST: el import real (no la mención en un
-# comentario/docstring) no puede estar a nivel de módulo.
+# Si `model_catalog`/`db.connection`/`http_client`/`redaccion` (o algo que
+# ellos importen) revienta al cargarse, este módulo tiene que poder cargarse
+# igual -- si no, `main()` nunca llega a correr y no hay quien avise. Se
+# verifica por AST: el import real (no la mención en un comentario/
+# docstring) no puede estar a nivel de módulo. MAJOR-1 (cuarta auditoría
+# adversarial, 2026-09-28) sumó `http_client`/`redaccion` a esta regla --
+# antes vivían arriba a propósito, pero eso significaba que un .venv roto
+# tumbaba el módulo ENTERO con un traceback sin control (ver el docstring
+# del módulo).
 # --------------------------------------------------------------------------
 
-def test_model_catalog_y_db_connection_no_se_importan_a_nivel_de_modulo():
+def test_ningun_import_no_stdlib_esta_a_nivel_de_modulo():
     import ast
 
     fuente = Path(ejecutor.__file__).read_text(encoding="utf-8")
     arbol = ast.parse(fuente)
+    prohibidos = ("model_catalog", "db.connection", "http_client", "redaccion")
     for nodo in arbol.body:  # SOLO nivel de módulo -- ast.walk también entraría a las funciones
         if isinstance(nodo, ast.Import):
             nombres = [n.name for n in nodo.names]
@@ -645,9 +874,10 @@ def test_model_catalog_y_db_connection_no_se_importan_a_nivel_de_modulo():
             nombres = [nodo.module]
         else:
             continue
-        assert "model_catalog" not in nombres, "model_catalog se importa a nivel de módulo"
-        assert not any(n == "db.connection" or n.startswith("db.connection.") for n in nombres), \
-            "db.connection se importa a nivel de módulo"
+        for nombre in nombres:
+            assert not any(nombre == p or nombre.startswith(f"{p}.") for p in prohibidos), (
+                f"{nombre} se importa a nivel de módulo -- tiene que quedar dentro de una función"
+            )
 
 
 # --------------------------------------------------------------------------
@@ -694,111 +924,95 @@ def test_main_cierra_el_cliente_http_al_final_incluso_si_correr_revienta(monkeyp
 
 
 # --------------------------------------------------------------------------
-# Punto 2 (tercera auditoría adversarial, 2026-09-27): `_nuevos_desde_marca`
-# es la consulta real contra `model.created_at` -- estos SÍ tocan la base
-# (ver el docstring del módulo).
+# MAJOR-1 (cuarta auditoría adversarial, 2026-09-28): `close_http_client` se
+# resuelve DENTRO del try de main() -- si `http_client` (.venv roto) no se
+# puede importar, main() devuelve 1 de forma controlada en vez de que el
+# intérprete muera con un traceback sin que nada de este módulo decida
+# nada.
 # --------------------------------------------------------------------------
 
-async def _sembrar_modelo_con_created_at(provider_id, model_id, created_at):
-    from db.connection import get_pool
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "INSERT INTO model (provider_id, model_id, status, source, source_checked_at, created_at) "
-                "VALUES (%s, %s, 'available', 'manual', NOW(), %s)",
-                (provider_id, model_id, created_at),
-            )
-        await conn.commit()
+def test_main_resuelve_close_http_client_de_verdad_si_seguia_en_none(monkeypatch):
+    """Si nada lo parcheó todavía (simulando el arranque real del proceso,
+    sin la fixture autouse de este archivo), main() hace el import de
+    verdad. `_ciclo()` se mockea A PROPÓSITO: la función real que
+    `main()` resuelve queda apuntando al `close_http_client` VERDADERO de
+    `http_client.py` -- si se dejara correr `_ciclo()` de verdad, cerraría
+    el `httpx.AsyncClient` global compartido con TODA la suite (el mismo
+    bug de orden de ejecución que rompió test_dashboard_http_pooling.py en
+    una ronda anterior). Lo único que importa acá es que main() haya hecho
+    la resolución -- no hace falta ejecutar el cierre real para probarlo."""
+    monkeypatch.setattr(ejecutor, "close_http_client", None)
+
+    async def _ciclo_que_no_cierra_nada_de_verdad():
+        return _resultado_ok()
+    monkeypatch.setattr(ejecutor, "_ciclo", _ciclo_que_no_cierra_nada_de_verdad)
+
+    assert ejecutor.main() == 0
+    assert ejecutor.close_http_client is not None
+    assert callable(ejecutor.close_http_client)
 
 
-async def _borrar_modelo(provider_id, model_id):
-    from db.connection import get_pool
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "DELETE FROM model WHERE provider_id=%s AND model_id=%s", (provider_id, model_id))
-        await conn.commit()
+def test_main_sale_1_si_no_se_puede_importar_http_client(monkeypatch):
+    """.venv roto: `import http_client` revienta -- main() lo atrapa y
+    devuelve 1 en vez de dejar propagar la excepción fuera del proceso."""
+    monkeypatch.setattr(ejecutor, "close_http_client", None)
+
+    import builtins
+    import_original = builtins.__import__
+
+    def _import_que_revienta_para_http_client(nombre, *args, **kwargs):
+        if nombre == "http_client":
+            raise ImportError("simulando .venv roto")
+        return import_original(nombre, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", _import_que_revienta_para_http_client)
+
+    assert ejecutor.main() == 1
 
 
-async def _consultar_nuevos_desde_marca(marca, corte):
-    from db.connection import get_pool
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            return await ejecutor._nuevos_desde_marca(cur, marca, corte)
+# --------------------------------------------------------------------------
+# `_correr()` calcula la marca de ARRANQUE con una consulta real a la base
+# cuando no hay ninguna guardada todavía -- la consulta de "nuevos desde la
+# marca" en sí ya está cubierta por test_model_catalog_sync_all.py, del lado
+# de `model_catalog.sync_all()` (MINOR-2, cuarta auditoría adversarial,
+# 2026-09-28). `close_pool` se neutraliza en los dos tests: el fixture
+# `client` es de ALCANCE DE SESIÓN (`tests/conftest.py`) y comparte el pool
+# de ESTE loop con TODO el resto de la suite -- cerrarlo de verdad tumbó 34
+# tests de otros archivos la primera vez que se corrió esta ronda (chat,
+# adjuntos, facet wiring, shadow validation), todos ajenos al catálogo de
+# modelos. Mismo criterio que `_sin_cerrar_el_cliente_http_real` (arriba,
+# para `close_http_client`) aplicado al pool de DB.
+# --------------------------------------------------------------------------
+
+def _fake_sync_all_marca(**esperado_marca_nuevos):
+    """`model_catalog.sync_all()` real -- mockeada acá para no pegarle a
+    proveedores reales -- ahora acepta `marca_nuevos`; el fake lo recibe y
+    lo devuelve reflejado en la respuesta, como haría la función real, para
+    poder verificar QUÉ marca le pasó `_correr()`."""
+    llamadas = []
+
+    async def _fake(marca_nuevos=None):
+        llamadas.append(marca_nuevos)
+        return {
+            "ok": True, "providers": [], "enrich": {}, "providers_fallidos": [],
+            "providers_saltados": [], "enrich_fallido": False, "nuevos": {},
+            "facetas_en_riesgo": [], "nuevos_desde_marca": {},
+            "marca_corte": "2026-09-28 00:00:00", "marca_retrocedio": False,
+        }
+    return _fake, llamadas
 
 
-def test_nuevos_desde_marca_sin_marca_previa_devuelve_vacio(client):
-    """Primera corrida (sin marca guardada todavía): no hay nada contra qué
-    comparar -- `_correr()`/`_avisar()` fijan la marca sin avisar
-    retroactivamente, así que acá la consulta ni se ejecuta."""
-    resultado = client.portal.call(_consultar_nuevos_desde_marca, None, "2026-09-27 23:59:59")
-    assert resultado == {}
-
-
-def test_nuevos_desde_marca_incluye_solo_lo_creado_en_la_ventana(client):
-    # `model.provider_id` es FK contra `provider` -- se usa un provider_id
-    # REAL ya sembrado (zhipu), con model_id sintético propio (uuid) para no
-    # pisar filas de otros tests en la base de sesión compartida.
-    provider_id = "zhipu"
-    sufijo = uuid.uuid4().hex[:8]
-    model_id_antes = f"test-marca-antes-{sufijo}"
-    model_id_dentro = f"test-marca-dentro-{sufijo}"
-    model_id_despues = f"test-marca-despues-{sufijo}"
-    client.portal.call(_sembrar_modelo_con_created_at, provider_id, model_id_antes, "2026-09-27 09:00:00")
-    client.portal.call(_sembrar_modelo_con_created_at, provider_id, model_id_dentro, "2026-09-27 10:30:00")
-    client.portal.call(_sembrar_modelo_con_created_at, provider_id, model_id_despues, "2026-09-27 12:00:00")
-    try:
-        resultado = client.portal.call(
-            _consultar_nuevos_desde_marca, "2026-09-27 10:00:00", "2026-09-27 11:00:00")
-        assert resultado == {provider_id: [model_id_dentro]}
-    finally:
-        for model_id in (model_id_antes, model_id_dentro, model_id_despues):
-            client.portal.call(_borrar_modelo, provider_id, model_id)
-
-
-def test_nuevos_desde_marca_agrupa_por_proveedor(client):
-    provider_a, provider_b = "zhipu", "moonshot"
-    sufijo = uuid.uuid4().hex[:8]
-    model_a = f"test-marca-a-{sufijo}"
-    model_b = f"test-marca-b-{sufijo}"
-    client.portal.call(_sembrar_modelo_con_created_at, provider_a, model_a, "2026-09-27 10:30:00")
-    client.portal.call(_sembrar_modelo_con_created_at, provider_b, model_b, "2026-09-27 10:31:00")
-    try:
-        resultado = client.portal.call(
-            _consultar_nuevos_desde_marca, "2026-09-27 10:00:00", "2026-09-27 11:00:00")
-        assert resultado == {provider_a: [model_a], provider_b: [model_b]}
-    finally:
-        client.portal.call(_borrar_modelo, provider_a, model_a)
-        client.portal.call(_borrar_modelo, provider_b, model_b)
-
-
-def test_correr_primera_vez_fija_marca_previa_era_none(client, monkeypatch, tmp_path):
-    """Extremo a extremo de `_correr()` (sin archivo de estado todavía):
-    `sync_all()` se mockea para no pegarle a proveedores reales, pero la
-    consulta de `_nuevos_desde_marca` SÍ es la real.
-
-    `close_pool` se neutraliza a propósito: el fixture `client` es de
-    ALCANCE DE SESIÓN (`tests/conftest.py`) y comparte el pool de ESTE loop
-    con TODO el resto de la suite -- cerrarlo de verdad acá tumbó 34 tests
-    de otros archivos la primera vez que se corrió esta ronda (chat,
-    adjuntos, facet wiring, shadow validation), todos ajenos al catálogo de
-    modelos. Mismo criterio que `_sin_cerrar_el_cliente_http_real` (arriba,
-    para `close_http_client`) aplicado al pool de DB."""
+def test_correr_sin_marca_guardada_la_calcula_con_now_de_la_base_antes_del_sync(client, monkeypatch, tmp_path):
+    """MINOR-4 (cuarta auditoría adversarial, 2026-09-28): arranque (sin
+    archivo de estado todavía) -- `_correr()` calcula `marca_usada` con
+    `NOW()` de la BASE (no el reloj de este proceso) ANTES de llamar a
+    `sync_all()`, y se la pasa como `marca_nuevos`."""
     monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
 
     import model_catalog
     import db.connection as db_connection
 
-    async def _fake_sync_all():
-        return {
-            "ok": True, "providers": [], "enrich": {}, "providers_fallidos": [],
-            "providers_saltados": [], "enrich_fallido": False, "nuevos": {},
-            "facetas_en_riesgo": [],
-        }
-    monkeypatch.setattr(model_catalog, "sync_all", _fake_sync_all)
+    fake, llamadas = _fake_sync_all_marca()
+    monkeypatch.setattr(model_catalog, "sync_all", fake)
 
     async def _no_cerrar_el_pool_compartido():
         pass
@@ -806,6 +1020,53 @@ def test_correr_primera_vez_fija_marca_previa_era_none(client, monkeypatch, tmp_
 
     resultado = client.portal.call(ejecutor._correr)
 
-    assert resultado["marca_previa_era_none"] is True
-    assert resultado["nuevos_desde_marca"] == {}
-    assert isinstance(resultado["marca_corte"], str) and resultado["marca_corte"]
+    assert len(llamadas) == 1
+    marca_pasada = llamadas[0]
+    assert isinstance(marca_pasada, str) and marca_pasada  # se calculó algo, no None
+    assert resultado["marca_usada"] == marca_pasada
+
+
+def test_correr_con_marca_guardada_la_reusa_sin_tocar_la_base_para_calcularla(client, monkeypatch, tmp_path):
+    """Con una marca YA guardada, `_correr()` no necesita la consulta extra
+    de `NOW()` -- usa directo lo que hay en el archivo de estado."""
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+    ejecutor._guardar_estado(ejecutor._ruta_estado(), {"nuevos_marca": "2026-09-27 08:00:00"})
+
+    import model_catalog
+    import db.connection as db_connection
+
+    fake, llamadas = _fake_sync_all_marca()
+    monkeypatch.setattr(model_catalog, "sync_all", fake)
+
+    async def _no_cerrar_el_pool_compartido():
+        pass
+    monkeypatch.setattr(db_connection, "close_pool", _no_cerrar_el_pool_compartido)
+
+    resultado = client.portal.call(ejecutor._correr)
+
+    assert llamadas == ["2026-09-27 08:00:00"]
+    assert resultado["marca_usada"] == "2026-09-27 08:00:00"
+
+
+def test_correr_no_agrega_marca_usada_si_el_candado_esta_ocupado(client, monkeypatch, tmp_path):
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+
+    import model_catalog
+    import db.connection as db_connection
+
+    async def _fake_sync_en_curso(marca_nuevos=None):
+        return {
+            "ok": False, "code": "sync_en_curso", "providers": [], "enrich": {},
+            "providers_fallidos": [], "providers_saltados": [], "enrich_fallido": False,
+            "nuevos": {}, "facetas_en_riesgo": [],
+        }
+    monkeypatch.setattr(model_catalog, "sync_all", _fake_sync_en_curso)
+
+    async def _no_cerrar_el_pool_compartido():
+        pass
+    monkeypatch.setattr(db_connection, "close_pool", _no_cerrar_el_pool_compartido)
+
+    resultado = client.portal.call(ejecutor._correr)
+
+    assert resultado["code"] == "sync_en_curso"
+    assert "marca_usada" not in resultado

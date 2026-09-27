@@ -39,6 +39,9 @@ export default function AdminModelCatalog() {
   // jaxsvc).
   const [syncSaltados, setSyncSaltados] = useState(null)
   const [facetasEnRiesgo, setFacetasEnRiesgo] = useState(null)
+  // MINOR-6 (cuarta auditoría adversarial, 2026-09-28): candado ocupado por
+  // otro sync -- no es un error del catálogo, no se tocó nada.
+  const [syncEnCurso, setSyncEnCurso] = useState(false)
   // Informativo, no es un error: `ok` puede seguir true con modelos nuevos.
   const [modelosNuevos, setModelosNuevos] = useState(null)
   const [deciding, setDeciding] = useState(null)
@@ -85,11 +88,23 @@ export default function AdminModelCatalog() {
     setSyncSaltados(null)
     setFacetasEnRiesgo(null)
     setModelosNuevos(null)
+    setSyncEnCurso(false)
     if (data?.ok === false) {
-      setSyncFallidos([...(data.providers_fallidos || []), ...(data.enrich_fallido ? ['models.dev'] : [])])
-      if (data.providers_saltados?.length) setSyncSaltados(data.providers_saltados)
-      if (data.facetas_en_riesgo?.length) {
-        setFacetasEnRiesgo(data.facetas_en_riesgo.map(f => `${f.facet_key} (${f.status})`))
+      if (data.code === 'sync_en_curso') {
+        // MINOR-6: candado ocupado por otro sync -- no se tocó nada, no es
+        // "fallaron" (esa lista vendría vacía y mostraría un mensaje sin
+        // sentido).
+        setSyncEnCurso(true)
+      } else {
+        const fallidos = [...(data.providers_fallidos || []), ...(data.enrich_fallido ? ['models.dev'] : [])]
+        // MINOR-6: nunca mostrar "fallaron: " con la lista vacía -- `ok`
+        // también puede ser false sólo por saltados o por facetas en
+        // riesgo, que ya tienen su propio mensaje más abajo.
+        if (fallidos.length) setSyncFallidos(fallidos)
+        if (data.providers_saltados?.length) setSyncSaltados(data.providers_saltados)
+        if (data.facetas_en_riesgo?.length) {
+          setFacetasEnRiesgo(data.facetas_en_riesgo.map(f => `${f.facet_key} (${f.status})`))
+        }
       }
     }
     // Informativo: independiente de `ok` -- un sync exitoso también puede traer novedades.
@@ -146,6 +161,7 @@ export default function AdminModelCatalog() {
         <h2 className="text-sm font-semibold text-texto">{t.adminModelsTitle}</h2>
         <div className="flex items-center gap-2">
           {syncError && <span className="text-xs text-peligro">{t.adminModelsSyncError}</span>}
+          {syncEnCurso && <span role="alert" className="text-xs text-peligro">{t.sync_en_curso}</span>}
           {syncFallidos && <span role="alert" className="text-xs text-peligro">{t.sync_con_errores(syncFallidos.join(', '))}</span>}
           {syncSaltados && <span role="alert" className="text-xs text-peligro">{t.sync_con_saltados(syncSaltados.join(', '))}</span>}
           {facetasEnRiesgo && <span role="alert" className="text-xs text-peligro">{t.sync_facetas_en_riesgo(facetasEnRiesgo.join(', '))}</span>}

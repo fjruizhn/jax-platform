@@ -88,6 +88,30 @@ describe('AdminModelCatalog -- un sync con proveedores saltados o facetas en rie
     expect(await screen.findByText(es.sync_con_saltados('anthropic'))).toBeInTheDocument()
   })
 
+  it('MINOR-6: ok:false solo por saltados no muestra "fallaron" con lista vacía', async () => {
+    api.post.mockResolvedValue({ data: {
+      ok: false, code: 'sync_con_errores', providers_fallidos: [], enrich_fallido: false,
+      providers_saltados: ['anthropic'], facetas_en_riesgo: [], nuevos: {}, providers: [], enrich: {},
+    } })
+    renderCatalogo()
+    fireEvent.click(screen.getByText(es.adminModelsSync))
+    await screen.findByText(es.sync_con_saltados('anthropic'))
+    expect(screen.queryByText(es.sync_con_errores(''))).not.toBeInTheDocument()
+  })
+
+  it('MINOR-6: ok:false solo por facetas en riesgo no muestra "fallaron" con lista vacía', async () => {
+    api.post.mockResolvedValue({ data: {
+      ok: false, code: 'sync_con_errores', providers_fallidos: [], enrich_fallido: false,
+      providers_saltados: [],
+      facetas_en_riesgo: [{ facet_key: 'jekyll', provider_id: 'deepseek', model_id: 'deepseek-v4-flash', status: 'deprecated' }],
+      nuevos: {}, providers: [], enrich: {},
+    } })
+    renderCatalogo()
+    fireEvent.click(screen.getByText(es.adminModelsSync))
+    await screen.findByText(es.sync_facetas_en_riesgo('jekyll (deprecated)'))
+    expect(screen.queryByText(es.sync_con_errores(''))).not.toBeInTheDocument()
+  })
+
   it('ok:false por una faceta en riesgo la nombra con su estado', async () => {
     api.post.mockResolvedValue({ data: {
       ok: false, code: 'sync_con_errores', providers_fallidos: [], enrich_fallido: false,
@@ -110,6 +134,46 @@ describe('AdminModelCatalog -- un sync con proveedores saltados o facetas en rie
     await screen.findByText(es.adminModelsSync)
     expect(screen.queryByText(es.sync_con_saltados('anthropic'))).not.toBeInTheDocument()
     expect(screen.queryByText(es.sync_facetas_en_riesgo('jekyll (deprecated)'))).not.toBeInTheDocument()
+  })
+})
+
+// MINOR-6 (cuarta auditoría adversarial, 2026-09-28): un candado ocupado por
+// otro sync (`code: 'sync_en_curso'`) no es un error del catálogo -- no se
+// tocó nada, tiene su propio mensaje, y NO tiene que mostrar "fallaron"
+// (esa lista viene vacía).
+describe('AdminModelCatalog -- un sync con el candado ocupado se ve distinto de un error', () => {
+  it('el texto existe en los dos idiomas', () => {
+    expect(es.sync_en_curso).toBeTruthy()
+    expect(en.sync_en_curso).toBeTruthy()
+  })
+
+  it('code: sync_en_curso muestra su propio mensaje, no "fallaron"', async () => {
+    api.post.mockResolvedValue({ data: {
+      ok: false, code: 'sync_en_curso', providers_fallidos: [], enrich_fallido: false,
+      providers_saltados: [], facetas_en_riesgo: [], nuevos: {}, providers: [], enrich: {},
+    } })
+    renderCatalogo()
+    fireEvent.click(screen.getByText(es.adminModelsSync))
+    expect(await screen.findByText(es.sync_en_curso)).toBeInTheDocument()
+    expect(screen.queryByText(es.sync_con_errores(''))).not.toBeInTheDocument()
+  })
+
+  it('un sync normal posterior limpia el aviso de candado ocupado', async () => {
+    api.post.mockResolvedValueOnce({ data: {
+      ok: false, code: 'sync_en_curso', providers_fallidos: [], enrich_fallido: false,
+      providers_saltados: [], facetas_en_riesgo: [], nuevos: {}, providers: [], enrich: {},
+    } })
+    renderCatalogo()
+    fireEvent.click(screen.getByText(es.adminModelsSync))
+    await screen.findByText(es.sync_en_curso)
+
+    api.post.mockResolvedValueOnce({ data: {
+      ok: true, providers_fallidos: [], enrich_fallido: false,
+      providers_saltados: [], facetas_en_riesgo: [], nuevos: {}, providers: [], enrich: {},
+    } })
+    fireEvent.click(screen.getByText(es.adminModelsSync))
+    await screen.findByText(es.adminModelsSync)
+    expect(screen.queryByText(es.sync_en_curso)).not.toBeInTheDocument()
   })
 })
 

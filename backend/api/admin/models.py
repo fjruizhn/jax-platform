@@ -211,8 +211,15 @@ async def sync_models(user: AuthUser = Depends(require_superadmin)):
     guardián de "lista encogida" (guardián que también se retiró: la
     complejidad de sostenerlo, más forzar/auditar, traía más defectos
     nuevos que los que resolvía). Lo único que sigue siendo un FALLO del
-    proveedor sin sumar misses es una lista VACÍA -- eso no se fuerza: un
-    retiro masivo legítimo fluye por los misses normales de D1.4."""
+    proveedor sin sumar misses es una lista VACÍA.
+
+    CORRECCIÓN (MINOR-7, cuarta auditoría adversarial, 2026-09-28): esta
+    misma línea decía antes "un retiro masivo legítimo fluye por los misses
+    normales de D1.4" -- es falso. Un proveedor que queda con la lista
+    VACÍA no pasa nunca por D1.4: queda en error permanente, avisado sync
+    tras sync, mientras la lista siga vacía (ver
+    model_catalog._motivo_si_respuesta_sospechosa). D1.4 sólo degrada
+    modelos puntuales que faltan de una lista que YA NO está vacía."""
     return await model_catalog.sync_all()
 
 

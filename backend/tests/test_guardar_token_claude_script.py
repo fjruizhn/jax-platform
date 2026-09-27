@@ -600,3 +600,36 @@ def test_confirmacion_partida_en_mas_de_dos_lineas_aborta_sin_tocar_el_env(tmp_p
         if slave_fd is not None:
             os.close(slave_fd)
         _limpiar(ruta)
+
+
+def test_una_linea_vacia_de_mas_no_cuenta_como_partido(tmp_path):
+    """MINOR-9 (cuarta auditoría adversarial, 2026-09-28): un Enter de más
+    al pegar dos veces (o cualquier línea vacía sobrante) no es un pegado
+    partido -- sólo contenido no vacío cuenta como "sobró algo". Se ejercita
+    con un pty de verdad, mismo motivo que los tests de arriba."""
+    import pty
+
+    original = "FOO=bar\n"
+    ruta = _preparar_env_falso(tmp_path, original)
+    master_fd = None
+    slave_fd = None
+    try:
+        master_fd, slave_fd = pty.openpty()
+        proc = subprocess.Popen(
+            ["sudo", "env", f"JAX_ENV_PATH={ruta}", "bash", str(SCRIPT)],
+            stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        os.write(master_fd, f"{TOKEN_VALIDO}\n{TOKEN_VALIDO}\n\n".encode())
+        proc.wait(timeout=15)
+        salida_err = proc.stderr.read().decode(errors="replace")
+        proc.stdout.close()
+        proc.stderr.close()
+
+        assert proc.returncode == 0, salida_err
+        assert f"CLAUDE_CODE_OAUTH_TOKEN={TOKEN_VALIDO}" in ruta.read_text()
+    finally:
+        if master_fd is not None:
+            os.close(master_fd)
+        if slave_fd is not None:
+            os.close(slave_fd)
+        _limpiar(ruta)

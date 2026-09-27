@@ -45,14 +45,19 @@ LARGO_MAXIMO=400
 # ningún aviso. Ahora, además de drenar (nunca se deja el resto sin leer:
 # eso seguiría siendo un problema aparte, ver el comentario de más arriba),
 # devuelve 0 si encontró algo -- el llamador aborta sin tocar el .env.
+#
+# MINOR-9 (cuarta auditoría adversarial, 2026-09-28): sólo cuenta como
+# "sobrante" una línea con CONTENIDO -- una línea vacía de más (un Enter de
+# más al pegar, o el propio "\n" final que separa el token de nada) no es un
+# pegado partido, es ruido inofensivo. Se drena TODO igual (vacío o no),
+# pero "encontrado" sólo se marca si alguna de esas líneas no está vacía.
 hay_stdin_sobrante() {
   local sobrante encontrado=1
-  if read -r -t 0.1 sobrante; then
-    encontrado=0
-  fi
-  # sigue drenando el resto, haya encontrado algo o no -- puede haber más de
-  # una línea de sobra.
-  while read -r -t 0.1 sobrante; do :; done
+  while read -r -t 0.1 sobrante; do
+    if [[ -n "${sobrante}" ]]; then
+      encontrado=0
+    fi
+  done
   return "${encontrado}"
 }
 

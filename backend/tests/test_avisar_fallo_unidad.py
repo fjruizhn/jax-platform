@@ -129,17 +129,22 @@ def _limpiar_monitor_env(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Tercera auditoría adversarial (2026-09-27): sólo avisa si
-# MONITOR_SERVICE_RESULT != "exit-code" -- con "exit-code" el propio
-# ejecutor ya avisó desde adentro.
+# MAJOR-1 (cuarta auditoría adversarial, 2026-09-28): sólo calla si el PAR
+# es EXACTAMENTE (MONITOR_SERVICE_RESULT=exit-code, MONITOR_EXIT_STATUS=3)
+# -- ese 3 es el único código que `catalogo_modelos_ejecutor.py::main()` usa
+# cuando hubo problemas Y su propio aviso quedó resuelto. `exit-code` SOLO
+# (sin el status exacto) YA NO alcanza: también lo es un fallo de chdir
+# (200), de exec (203), o el ejecutor saliendo 1 porque SU PROPIO aviso de
+# Telegram falló -- la regla vieja los dejaba en silencio.
 # --------------------------------------------------------------------------
 
-def test_main_no_avisa_nada_si_el_resultado_es_exit_code(monkeypatch):
-    """El caso central: `exit-code` significa que el proceso SÍ corrió y
-    terminó solo -- eso ya lo avisa `catalogo_modelos_ejecutor.py::main()`
-    desde adentro, con más contexto. Esta unidad se queda callada."""
+def test_main_calla_solo_con_exit_code_y_estado_exactamente_3(monkeypatch):
+    """El caso central: `exit-code` + `3` significa que el proceso SÍ corrió,
+    tuvo problemas Y ya avisó (o dedupeó) desde adentro, con más contexto.
+    Esta unidad se queda callada."""
     _limpiar_monitor_env(monkeypatch)
     monkeypatch.setenv(aviso.MONITOR_SERVICE_RESULT_ENV, "exit-code")
+    monkeypatch.setenv(aviso.MONITOR_EXIT_STATUS_ENV, "3")
     monkeypatch.setenv(aviso.TELEGRAM_TOKEN_ENV, "123456:token-de-prueba")
     monkeypatch.setenv(aviso.TELEGRAM_CHAT_ID_ENV, "-100999")
 
@@ -150,6 +155,67 @@ def test_main_no_avisa_nada_si_el_resultado_es_exit_code(monkeypatch):
 
     assert codigo == 0
     assert llamado == []  # nunca intentó mandar nada -- el ejecutor ya avisó
+
+
+def test_main_avisa_si_exit_code_pero_el_estado_es_1(monkeypatch):
+    """`exit-code` con estado 1 es justo el caso que la regla vieja dejaba
+    en silencio por error: el ejecutor SÍ corrió, pero su propio aviso de
+    Telegram no se pudo confirmar (o revento) -- nadie más se enteró."""
+    _limpiar_monitor_env(monkeypatch)
+    monkeypatch.setenv(aviso.MONITOR_SERVICE_RESULT_ENV, "exit-code")
+    monkeypatch.setenv(aviso.MONITOR_EXIT_STATUS_ENV, "1")
+    monkeypatch.setenv(aviso.TELEGRAM_TOKEN_ENV, "123456:token-de-prueba")
+    monkeypatch.setenv(aviso.TELEGRAM_CHAT_ID_ENV, "-100999")
+    monkeypatch.setattr(aviso.urllib.request, "urlopen", lambda peticion, timeout=None: _FakeHTTPResponse(200))
+
+    codigo = aviso.main(["prog", "jax-catalogo-modelos.service"])
+
+    assert codigo == 0  # el AVISO de ESTA unidad salió bien -- ver el mensaje real más abajo
+
+
+def test_main_avisa_si_exit_code_y_estado_200_fallo_de_chdir(monkeypatch):
+    """systemd 200/EXIT_CHDIR: `WorkingDirectory=` no existe/no es
+    accesible -- el proceso NUNCA llegó a correr una sola línea de Python.
+    `MONITOR_SERVICE_RESULT` sigue siendo `exit-code` (el fork murió con ese
+    código antes del exec real), y sin el chequeo de estado exacto quedaba
+    en silencio."""
+    _limpiar_monitor_env(monkeypatch)
+    monkeypatch.setenv(aviso.MONITOR_SERVICE_RESULT_ENV, "exit-code")
+    monkeypatch.setenv(aviso.MONITOR_EXIT_STATUS_ENV, "200")
+    monkeypatch.setenv(aviso.TELEGRAM_TOKEN_ENV, "123456:token-de-prueba")
+    monkeypatch.setenv(aviso.TELEGRAM_CHAT_ID_ENV, "-100999")
+
+    capturado = {}
+    def fake_urlopen(peticion, timeout=None):
+        capturado["data"] = peticion.data
+        return _FakeHTTPResponse(200)
+    monkeypatch.setattr(aviso.urllib.request, "urlopen", fake_urlopen)
+
+    codigo = aviso.main(["prog", "jax-catalogo-modelos.service"])
+
+    assert codigo == 0
+    assert "200" in capturado["data"].decode()
+
+
+def test_main_avisa_si_exit_code_y_estado_203_fallo_de_exec(monkeypatch):
+    """systemd 203/EXIT_EXEC: el binario del ExecStart= no se pudo ejecutar
+    (.venv roto, permisos) -- mismo razonamiento que 200."""
+    _limpiar_monitor_env(monkeypatch)
+    monkeypatch.setenv(aviso.MONITOR_SERVICE_RESULT_ENV, "exit-code")
+    monkeypatch.setenv(aviso.MONITOR_EXIT_STATUS_ENV, "203")
+    monkeypatch.setenv(aviso.TELEGRAM_TOKEN_ENV, "123456:token-de-prueba")
+    monkeypatch.setenv(aviso.TELEGRAM_CHAT_ID_ENV, "-100999")
+
+    capturado = {}
+    def fake_urlopen(peticion, timeout=None):
+        capturado["data"] = peticion.data
+        return _FakeHTTPResponse(200)
+    monkeypatch.setattr(aviso.urllib.request, "urlopen", fake_urlopen)
+
+    codigo = aviso.main(["prog", "jax-catalogo-modelos.service"])
+
+    assert codigo == 0
+    assert "203" in capturado["data"].decode()
 
 
 def test_main_avisa_si_el_resultado_es_timeout(monkeypatch):
