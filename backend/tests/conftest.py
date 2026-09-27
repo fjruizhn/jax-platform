@@ -22,6 +22,7 @@ for _k, _v in cargar(ENV_PATH).items():
 # de `jax_memory_test` + `run_migrations()` de este repo si no existía. Sin
 # sufijo (CI, o `JAX_DB_HOST` ausente) no hace nada.
 from base_de_test import (  # noqa: E402
+    aplicar_migraciones_b9_restantes,
     asegurar_base_de_test,
     fijar_base_de_test,
 )
@@ -414,6 +415,11 @@ def client():
         c.portal.call = _envolver_portal_call(c.portal.call)
         _sembrar_credenciales_de_prueba(c)
         _esquema_de_jax_en_la_base_de_test(c)
+        # La cadena B9 completa de JAX (004, 006, ...), más allá de 001-003 que
+        # `run_migrations()` ya corrió arriba, en el lifespan de la app. Ver el
+        # docstring de `aplicar_migraciones_b9_restantes` -- sin esto, cualquier turno
+        # de chat real revienta con "Unknown column 'r.tenant_id'" (jax#279).
+        c.portal.call(aplicar_migraciones_b9_restantes)
         yield c
 
 
