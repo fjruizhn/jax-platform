@@ -3192,12 +3192,12 @@ jobs:
           #   en el `finally`, RELEASE_LOCK 1 no la cierra). Medido en vivo,
           #   MISMO comando que este job: 2864 passed / 34 failed (mismos
           #   34 de siempre, drift B9 ajeno) / 2 skipped.
-          # Integración 2026-09-28 (Hyde, regla 5 de SESIONES EN PARALELO: el último en
-          # llegar re-mide): master ya traía 2759 (PR #164, cadena B9 en las bases de
-          # test); el catálogo de modelos (PR #163) suma su delta propio +34 medido sobre
-          # 2692 (2692 -> 2726). 2759 + 34 = 2793. Lo confirma o desmiente la corrida real
-          # de este job en el PR #163; si difiere, se corrige con el número del runner.
-          PISO_PASSED = 2793
+          # Integración 2026-09-27 (Hyde, regla 5 de SESIONES EN PARALELO: el último en
+          # llegar re-mide). MEDIDO EN EL RUNNER, no por aritmética: master c127a7f (con
+          # #164) run 36328116696 -> passed=2759; esta rama run 36328147944 -> passed=2912
+          # (colectados=2912, skipped=0). Delta propio real del catálogo: +153 (el +34
+          # estimado arriba contaba `def test_` y no los parametrizados: era falso).
+          PISO_PASSED = 2912
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4160,7 +4160,10 @@ jobs:
       #   arriba: no premiar el drift ajeno de PRs que ya deberían haber
       #   subido este número y no lo hicieron) + el delta propio verificado
       #   (+9) = 1723.
-      JAX_CI_MIN_PASSED: "1723"
+      # 2026-09-27 (Hyde, catálogo de modelos #163): medido en el runner, master c127a7f
+      # passed=1789 (run 36328116696) y esta rama passed=1908 (run 36328147944): delta propio
+      # +119. Piso = declarado de master (1723, sin premiar la deriva ajena) + 119 = 1842.
+      JAX_CI_MIN_PASSED: "1842"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
