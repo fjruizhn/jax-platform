@@ -22,20 +22,38 @@ VARIABLE="CLAUDE_CODE_OAUTH_TOKEN"
 # no alcanzaba -- aceptaba cualquier basura después. El patrón real de
 # Claude Code es "sk-ant-oat01-" + el cuerpo del token, alfabeto
 # [A-Za-z0-9_-] (el mismo que usan las demás credenciales tipo API-key de
-# Anthropic). 40 es un mínimo conservador: un token real mide bastante más,
-# pero cualquier prueba de humo con menos que eso es obviamente basura.
+# Anthropic).
+# MAJOR-5 (segunda auditoría adversarial, 2026-09-27): el mínimo sube de 40 a
+# 100 -- MEDIDO contra un token OAuth REAL "sk-ant-oat01-…" de la cuenta de
+# Fernando, que mide 108. El máximo (400) es HOLGADO a propósito: el largo
+# exacto que puede llegar a tener un token de `claude setup-token` no está
+# medido, así que se pone un techo generoso en vez de uno ajustado que
+# podría rechazar un token real más largo mañana.
 PATRON_TOKEN='^sk-ant-oat01-[A-Za-z0-9_-]+$'
-LARGO_MINIMO=40
+LARGO_MINIMO=100
+LARGO_MAXIMO=400
 
-# (a, segunda mitad) Vacía lo que quede en stdin sin leer -- un token pegado
-# partido en dos líneas por el terminal deja la SEGUNDA línea esperando en
-# la entrada; sin drenarla, un `sudo bash guardar-token-claude.sh` corrido
-# pegado a una terminal real dejaría esa línea para que el shell que lanzó
-# este script la lea como si fuera SU propio comando siguiente. `read -t 0.1`
-# en bucle consume todo lo que haya sin bloquear cuando ya no queda nada.
-vaciar_stdin_sobrante() {
-  local sobrante
+# Vacía lo que quede en stdin sin leer y dice, por código de salida, si HABÍA
+# algo -- un token pegado partido en dos líneas por el terminal deja la
+# SEGUNDA línea esperando en la entrada. `read -t 0.1` en bucle consume todo
+# lo que haya sin bloquear cuando ya no queda nada.
+#
+# MAJOR-5 (segunda auditoría adversarial, 2026-09-27): antes esta función
+# sólo DRENABA el sobrante y el script seguía adelante con la primera línea
+# como si fuera el token completo -- un token realmente partido en dos
+# (copiado mal, con un salto de línea en el medio) se guardaba TRUNCADO, sin
+# ningún aviso. Ahora, además de drenar (nunca se deja el resto sin leer:
+# eso seguiría siendo un problema aparte, ver el comentario de más arriba),
+# devuelve 0 si encontró algo -- el llamador aborta sin tocar el .env.
+hay_stdin_sobrante() {
+  local sobrante encontrado=1
+  if read -r -t 0.1 sobrante; then
+    encontrado=0
+  fi
+  # sigue drenando el resto, haya encontrado algo o no -- puede haber más de
+  # una línea de sobra.
   while read -r -t 0.1 sobrante; do :; done
+  return "${encontrado}"
 }
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -51,15 +69,19 @@ fi
 echo "Pegá el token de 'claude setup-token' (no se muestra en pantalla):" >&2
 read -rs TOKEN
 echo >&2
-vaciar_stdin_sobrante
+
+if hay_stdin_sobrante; then
+  echo "El token llegó partido en varias líneas (quedaba algo más esperando en la entrada) -- volvé a pegarlo en una sola línea. No se cambió nada." >&2
+  exit 1
+fi
 
 if [[ -z "${TOKEN}" ]]; then
   echo "Token vacío -- no se cambió nada." >&2
   exit 1
 fi
 
-if [[ ! "${TOKEN}" =~ ${PATRON_TOKEN} || "${#TOKEN}" -lt "${LARGO_MINIMO}" ]]; then
-  echo "El token no tiene la forma esperada ('sk-ant-oat01-' + al menos ${LARGO_MINIMO} caracteres [A-Za-z0-9_-]) -- ¿copiaste bien? No se cambió nada." >&2
+if [[ ! "${TOKEN}" =~ ${PATRON_TOKEN} || "${#TOKEN}" -lt "${LARGO_MINIMO}" || "${#TOKEN}" -gt "${LARGO_MAXIMO}" ]]; then
+  echo "El token no tiene la forma esperada ('sk-ant-oat01-' + entre ${LARGO_MINIMO} y ${LARGO_MAXIMO} caracteres [A-Za-z0-9_-]) -- ¿copiaste bien? No se cambió nada." >&2
   exit 1
 fi
 
@@ -68,11 +90,25 @@ fi
 RESPALDO="${RUTA_ENV}.bak-$(date +%Y%m%d-%H%M%S)"
 cp -p "${RUTA_ENV}" "${RESPALDO}"
 
-# A-8b: sólo se conservan los 2 respaldos MÁS RECIENTES que ESTE script haya
-# creado -- el patrón de nombre es el propio (`<RUTA_ENV>.bak-*`), así que
-# nunca borra un archivo de respaldo ajeno que viva en el mismo directorio.
-# El sello de `date +%Y%m%d-%H%M%S` ordena igual alfabético que cronológico.
-mapfile -t _RESPALDOS_VIEJOS < <(ls -1 "${RUTA_ENV}".bak-* 2>/dev/null | sort | head -n -2)
+# A-8b/MINOR-6 (segunda auditoría adversarial, 2026-09-27): sólo se
+# conservan los 2 respaldos MÁS RECIENTES que ESTE script haya creado.
+#
+# El glob es ESTRICTO -- exactamente el patrón de `date +%Y%m%d-%H%M%S`
+# (8 dígitos, guion, 6 dígitos), no `bak-*` a secas. Un `*` a secas
+# consideraba candidato a CUALQUIER archivo con ese prefijo, incluido uno
+# ajeno puesto a mano con otro sufijo (`fake.env.bak-antes-rotar`,
+# `fake.env.bak-1`) -- y si ese sufijo ordenaba antes que una fecha real
+# ('1' < '2...', por ejemplo), el `head -n -2` de la versión anterior
+# TERMINABA BORRÁNDOLO. El glob estricto ni siquiera lo lista.
+#
+# El respaldo RECIÉN CREADO (`RESPALDO`) se excluye EXPLÍCITAMENTE de la
+# lista de candidatos (no se confía sólo en que el orden alfabético lo deje
+# último): lo que queda son los viejos, y de ÉSOS se borran todos menos el
+# más reciente (`head -n -1`) -- total conservado: el nuevo + 1 viejo = 2.
+mapfile -t _RESPALDOS_VIEJOS < <(
+  ls -1 "${RUTA_ENV}".bak-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null \
+    | grep -F -x -v -- "${RESPALDO}" | sort | head -n -1
+)
 if [[ "${#_RESPALDOS_VIEJOS[@]}" -gt 0 ]]; then
   rm -f -- "${_RESPALDOS_VIEJOS[@]}"
 fi

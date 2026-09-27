@@ -697,6 +697,11 @@ export default {
   sync_con_saltados: (lista) => `Sincronización con proveedores saltados: ${lista}`,
   sync_facetas_en_riesgo: (lista) => `Facetas en riesgo (modelo no disponible): ${lista}`,
   sync_modelos_nuevos: (lista) => `Modelos nuevos detectados: ${lista}`,
+  adminModelsForzarBoton: (proveedor) => `Forzar sincronización de ${proveedor}`,
+  adminModelsForzarTitulo: 'Forzar sincronización',
+  adminModelsForzarMensaje: (proveedor) =>
+    `El proveedor "${proveedor}" respondió con una lista vacía o mucho más chica de lo esperado -- el sistema la trató como sospechosa y no tocó ningún modelo. Forzar el sync salta ese chequeo SOLO para este proveedor y queda registrado en la auditoría. Usalo solo si sabés que la respuesta es real (no un límite o una paginación rota del proveedor).`,
+  adminModelsForzarConfirmar: 'Forzar de todos modos',
   adminModelsProvider: 'Proveedor',
   adminModelsModelId: 'Modelo',
   adminModelsAlias: 'Alias',

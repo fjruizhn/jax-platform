@@ -13,6 +13,8 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 import http_client
 import catalogo_modelos_ejecutor as ejecutor
 
@@ -37,6 +39,25 @@ def _resultado_con_problemas(**overrides):
 
 def _correr_async(coro):
     return asyncio.run(coro)
+
+
+@pytest.fixture(autouse=True)
+def _sin_cerrar_el_cliente_http_real(monkeypatch):
+    """MINOR-8 (segunda auditoría adversarial, 2026-09-27): `_ciclo()` cierra
+    el cliente HTTP compartido (`http_client.close_http_client()`) al final
+    de CADA `main()` -- real, si nadie lo mockea. Hallazgo real: sin este
+    autouse, `ejecutor.main()` en un test de código de salida (que no le
+    interesa nada de HTTP) cerraba de VERDAD el `httpx.AsyncClient` global
+    que otro test (ajeno a este archivo, p. ej.
+    test_dashboard_http_pooling.py) esperaba encontrar ya creado -- rompía
+    ESE test según el orden de ejecución de la suite completa, sin que
+    ningún test de ESTE archivo fallara nunca por sí solo. Ningún test de
+    código de salida de este archivo necesita que el cierre sea real; los
+    dos que sí lo verifican (`test_main_cierra_el_cliente_http_al_final_*`)
+    ponen su PROPIO mock, que pisa este default sin problema."""
+    async def _no_cerrar_nada():
+        return None
+    monkeypatch.setattr(ejecutor, "close_http_client", _no_cerrar_nada)
 
 
 # --------------------------------------------------------------------------
@@ -497,3 +518,185 @@ def test_avisar_persiste_el_estado_como_json_legible(monkeypatch, tmp_path):
     assert "problemas" in estado
     assert "firma" in estado["problemas"]
     assert "notificado_en" in estado["problemas"]
+
+
+# --------------------------------------------------------------------------
+# MAJOR-4 (segunda auditoría adversarial, 2026-09-27): persistir ANTES del
+# envío, no después -- si el proceso muere a mitad del POST, lo pendiente no
+# se puede perder.
+# --------------------------------------------------------------------------
+
+def test_avisar_persiste_nuevos_pendientes_antes_de_intentar_el_envio(monkeypatch, tmp_path):
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+
+    async def _enviar_que_revienta_a_mitad(mensaje):
+        raise RuntimeError("el proceso murió a mitad del POST")
+    monkeypatch.setattr(ejecutor, "_enviar_telegram", _enviar_que_revienta_a_mitad)
+
+    resultado = _resultado_ok()
+    resultado["nuevos"] = {"anthropic": ["claude-opus-5-nuevo"]}
+
+    with pytest.raises(RuntimeError):
+        _correr_async(ejecutor._avisar(resultado))
+
+    # el envío reventó DESPUÉS de guardar -- lo pendiente ya está en disco
+    estado = json.loads(ejecutor._ruta_estado().read_text(encoding="utf-8"))
+    assert estado["nuevos_pendientes"] == {"anthropic": ["claude-opus-5-nuevo"]}
+
+
+def test_avisar_siguiente_corrida_recupera_lo_pendiente_tras_una_muerte_a_mitad(monkeypatch, tmp_path):
+    """El caso completo que pide la auditoría: simula la muerte del proceso
+    (una excepción sin control, que es como se ve un SIGKILL desde afuera)
+    ENTRE el guardado y el envío, y confirma que la corrida SIGUIENTE sigue
+    teniendo el pendiente -- no se perdió."""
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+
+    async def _enviar_que_revienta(mensaje):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(ejecutor, "_enviar_telegram", _enviar_que_revienta)
+
+    resultado = _resultado_ok()
+    resultado["nuevos"] = {"anthropic": ["claude-opus-5-nuevo"]}
+    with pytest.raises(RuntimeError):
+        _correr_async(ejecutor._avisar(resultado))
+
+    # corrida siguiente: sync_all() ya NO reporta el modelo como nuevo (ya
+    # está en `model`), pero el envío ahora SÍ sale.
+    llamadas = []
+
+    async def _enviar_ok(mensaje):
+        llamadas.append(mensaje)
+        return True
+    monkeypatch.setattr(ejecutor, "_enviar_telegram", _enviar_ok)
+
+    otro = _resultado_ok()  # nuevos vacío
+    _correr_async(ejecutor._avisar(otro))
+
+    assert len(llamadas) == 1
+    assert "claude-opus-5-nuevo" in llamadas[0]
+    estado = ejecutor._cargar_estado(ejecutor._ruta_estado())
+    assert "nuevos_pendientes" not in estado
+
+
+def test_enviar_telegram_devuelve_false_si_el_cuerpo_no_es_un_objeto(monkeypatch):
+    """MAJOR-4: `resp.json()` puede parsear bien y no ser un dict (una
+    lista, un número) -- `.get('ok')` reventaría sin este chequeo."""
+    monkeypatch.setenv(ejecutor.TELEGRAM_TOKEN_ENV, "123456:token-de-prueba")
+    monkeypatch.setenv(ejecutor.TELEGRAM_CHAT_ID_ENV, "-100999")
+    fake = _FakePostClient(respuesta=_FakePostResponse(200, [1, 2, 3]))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        resultado = _correr_async(ejecutor._enviar_telegram("hola"))
+    finally:
+        http_client._client = original
+
+    assert resultado is False
+
+
+# --------------------------------------------------------------------------
+# MINOR-7 (segunda auditoría adversarial, 2026-09-27): estado JSON válido
+# pero que no es un objeto -- se trata como {}.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("contenido", ["[1, 2, 3]", '"solo un string"', "42", "true", "null"])
+def test_cargar_estado_json_valido_pero_no_dict_es_vacio(tmp_path, contenido):
+    ruta = tmp_path / "estado.json"
+    ruta.write_text(contenido, encoding="utf-8")
+    assert ejecutor._cargar_estado(ruta) == {}
+
+
+# --------------------------------------------------------------------------
+# MAJOR-2 (segunda auditoría adversarial, 2026-09-27): si `model_catalog`
+# (o algo que él importa) revienta al cargarse, este módulo tiene que poder
+# cargarse igual -- si no, `main()` nunca llega a correr y no hay quien
+# avise. Se verifica por AST: el import real (no la mención en un
+# comentario/docstring) no puede estar a nivel de módulo.
+# --------------------------------------------------------------------------
+
+def test_model_catalog_y_db_connection_no_se_importan_a_nivel_de_modulo():
+    import ast
+
+    fuente = Path(ejecutor.__file__).read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    for nodo in arbol.body:  # SOLO nivel de módulo -- ast.walk también entraría a las funciones
+        if isinstance(nodo, ast.Import):
+            nombres = [n.name for n in nodo.names]
+        elif isinstance(nodo, ast.ImportFrom) and nodo.module:
+            nombres = [nodo.module]
+        else:
+            continue
+        assert "model_catalog" not in nombres, "model_catalog se importa a nivel de módulo"
+        assert not any(n == "db.connection" or n.startswith("db.connection.") for n in nombres), \
+            "db.connection se importa a nivel de módulo"
+
+
+# --------------------------------------------------------------------------
+# MINOR-8 (segunda auditoría adversarial, 2026-09-27): un solo asyncio.run
+# -- sync + aviso + cierre del cliente HTTP en el mismo loop.
+# --------------------------------------------------------------------------
+
+def test_main_cierra_el_cliente_http_al_final_del_ciclo_sano(monkeypatch):
+    llamadas = []
+
+    async def _correr():
+        return _resultado_ok()
+
+    async def _avisar(resultado):
+        pass
+
+    async def _cerrar():
+        llamadas.append("cerrado")
+    monkeypatch.setattr(ejecutor, "_correr", _correr)
+    monkeypatch.setattr(ejecutor, "_avisar", _avisar)
+    monkeypatch.setattr(ejecutor, "close_http_client", _cerrar)
+
+    assert ejecutor.main() == 0
+    assert llamadas == ["cerrado"]
+
+
+def test_main_cierra_el_cliente_http_al_final_incluso_si_correr_revienta(monkeypatch):
+    llamadas = []
+
+    async def _correr_roto():
+        raise RuntimeError("boom")
+
+    async def _enviar(mensaje):
+        return True
+
+    async def _cerrar():
+        llamadas.append("cerrado")
+    monkeypatch.setattr(ejecutor, "_correr", _correr_roto)
+    monkeypatch.setattr(ejecutor, "_enviar_telegram", _enviar)
+    monkeypatch.setattr(ejecutor, "close_http_client", _cerrar)
+
+    assert ejecutor.main() == 1
+    assert llamadas == ["cerrado"]
+
+
+# --------------------------------------------------------------------------
+# MAJOR-3(c) (segunda auditoría adversarial, 2026-09-27): el aviso de
+# "problemas" dice cómo forzar cuando el motivo es el guardián de "lista
+# encogida" (A-3) -- no para cualquier otro tipo de fallo.
+# --------------------------------------------------------------------------
+
+def test_mensaje_problemas_sugiere_forzar_cuando_el_guardian_disparo():
+    resultado = _resultado_con_problemas(
+        providers_fallidos=["anthropic"],
+        providers_saltados=[],
+        providers=[{"provider_id": "anthropic", "error": "respuesta sospechosa del proveedor (lista vacía)"}],
+    )
+    mensaje = ejecutor._mensaje_problemas(resultado)
+    assert "forzar" in mensaje.lower()
+    assert "anthropic" in mensaje
+    assert "/api/admin/models/sync" in mensaje
+
+
+def test_mensaje_problemas_no_sugiere_forzar_para_un_error_comun(monkeypatch):
+    resultado = _resultado_con_problemas(
+        providers_fallidos=["openai"],
+        providers_saltados=[],
+        providers=[{"provider_id": "openai", "error": "ConnectionError: refused"}],
+    )
+    mensaje = ejecutor._mensaje_problemas(resultado)
+    assert "forzar" not in mensaje.lower()

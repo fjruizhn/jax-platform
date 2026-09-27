@@ -30,7 +30,7 @@ async def _enrich_ok():
 
 
 def _fake_sync_provider_models(monkeypatch, resultados):
-    async def _fake(provider_id):
+    async def _fake(provider_id, forzar=False):
         return resultados[provider_id]
     monkeypatch.setattr(model_catalog, "sync_provider_models", _fake)
 
@@ -78,7 +78,7 @@ def test_sync_all_un_provider_saltado_baja_ok_y_se_lista(client, monkeypatch):
 
 
 def test_sync_all_un_provider_fallido_baja_ok_y_se_lista(client, monkeypatch):
-    async def _fake(provider_id):
+    async def _fake(provider_id, forzar=False):
         if provider_id == "openai":
             raise RuntimeError("boom")
         return {"provider_id": provider_id, "fetched": 0, "nuevos": []}

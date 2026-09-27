@@ -80,7 +80,7 @@ def test_sync_endpoint_only_touches_model_never_facet_binding(client, monkeypatc
     facet_binding, solo dispara sync (capa a+b) sobre `model`."""
     calls = {"providers": [], "enrich": 0}
 
-    async def fake_sync(provider_id):
+    async def fake_sync(provider_id, forzar=False):
         calls["providers"].append(provider_id)
         return {"provider_id": provider_id, "fetched": 1, "nuevos": []}
 
@@ -118,7 +118,7 @@ def test_sync_con_todos_los_providers_caidos_no_dice_ok(client, monkeypatch):
     """Task 3 (2026-09-15), clase (b): el `except` por provider esta bien (uno
     caido no frena a los demas), pero la respuesta decia `ok: True` aunque
     fallaran TODOS -- y el frontend no leia el cuerpo."""
-    async def falla(provider_id):
+    async def falla(provider_id, forzar=False):
         raise RuntimeError(f"{provider_id} caido")
 
     async def fake_enrich():
@@ -137,7 +137,7 @@ def test_sync_con_todos_los_providers_caidos_no_dice_ok(client, monkeypatch):
 
 
 def test_sync_con_el_enriquecimiento_caido_no_dice_ok(client, monkeypatch):
-    async def fake_sync(provider_id):
+    async def fake_sync(provider_id, forzar=False):
         return {"provider_id": provider_id, "fetched": 1}
 
     async def falla_enrich():
@@ -157,6 +157,148 @@ def test_sync_con_el_enriquecimiento_caido_no_dice_ok(client, monkeypatch):
 def test_sync_endpoint_requires_superadmin(client):
     resp = client.post("/api/admin/models/sync")
     assert resp.status_code in (401, 403)
+
+
+# --------------------------------------------------------------------------
+# MAJOR-3(b) (segunda auditoría adversarial, 2026-09-27): POST /sync acepta
+# `forzar` (lista de provider_id), sólo superadmin, salta el guardián de
+# "lista encogida" SÓLO para esos proveedores y deja auditoría.
+# --------------------------------------------------------------------------
+
+async def _ultima_fila_sync_forzado(provider_id):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT action, model_ref, provider_id, valor_antes, valor_despues, "
+                "performed_by, performed_by_email, performed_from_ip FROM model_catalog_audit "
+                "WHERE action='sync_forzado' AND provider_id=%s ORDER BY id DESC LIMIT 1",
+                (provider_id,),
+            )
+            return await cur.fetchone()
+
+
+async def _contar_filas_sync_forzado():
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT COUNT(*) FROM model_catalog_audit WHERE action='sync_forzado'")
+            (cantidad,) = await cur.fetchone()
+            return cantidad
+
+
+def test_sync_endpoint_forzar_salta_el_guardian_solo_para_ese_proveedor_y_audita(client, monkeypatch):
+    async def fake_sync(provider_id, forzar=False):
+        if provider_id == "anthropic":
+            if forzar:
+                return {"provider_id": "anthropic", "fetched": 3, "nuevos": []}
+            return {"provider_id": "anthropic", "error": "respuesta sospechosa del proveedor (lista vacía)"}
+        return {"provider_id": provider_id, "fetched": 1, "nuevos": []}
+
+    async def fake_enrich():
+        return {"enriched": 0}
+
+    async def sin_facetas_en_riesgo(cur):
+        return []
+
+    async def fake_disponibles_antes(cur, provider_id):
+        return 5 if provider_id == "anthropic" else 0
+
+    monkeypatch.setattr(model_catalog, "sync_provider_models", fake_sync)
+    monkeypatch.setattr(model_catalog, "enrich_from_models_dev", fake_enrich)
+    monkeypatch.setattr(model_catalog, "_facetas_en_riesgo", sin_facetas_en_riesgo)
+    monkeypatch.setattr(model_catalog, "_disponibles_antes", fake_disponibles_antes)
+
+    resp = client.post(
+        "/api/admin/models/sync", json={"forzar": ["anthropic"]}, headers=_superadmin_headers())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert "anthropic" not in body["providers_fallidos"]
+
+    fila = client.portal.call(_ultima_fila_sync_forzado, "anthropic")
+    assert fila is not None
+    (action, model_ref, provider_id, valor_antes, valor_despues,
+     performed_by, performed_by_email, performed_from_ip) = fila
+    assert action == "sync_forzado"
+    assert model_ref is None
+    assert provider_id == "anthropic"
+    assert '"disponibles_antes": 5' in valor_antes
+    assert '"fetched": 3' in valor_despues
+    assert performed_by == int(USER_ID)
+    assert performed_by_email
+    assert performed_from_ip
+
+
+def test_sync_endpoint_forzar_no_afecta_a_otros_proveedores(client, monkeypatch):
+    """El guardián sigue de pie para los proveedores que NO están en
+    `forzar` -- forzar uno no vuelve permisivo el sync entero. `anthropic`
+    y `gemini` fallan igual SIN forzar (control); sólo `anthropic` está en
+    `forzar`, así que sólo ese tiene que dejar de fallar."""
+    async def fake_sync(provider_id, forzar=False):
+        if provider_id == "anthropic":
+            if forzar:
+                return {"provider_id": "anthropic", "fetched": 3, "nuevos": []}
+            return {"provider_id": "anthropic", "error": "respuesta sospechosa del proveedor (lista vacía)"}
+        if provider_id == "gemini":
+            return {"provider_id": "gemini", "error": "respuesta sospechosa del proveedor (lista vacía)"}
+        return {"provider_id": provider_id, "fetched": 1, "nuevos": []}
+
+    async def fake_enrich():
+        return {"enriched": 0}
+
+    async def sin_facetas_en_riesgo(cur):
+        return []
+
+    async def fake_disponibles_antes(cur, provider_id):
+        return 0
+
+    monkeypatch.setattr(model_catalog, "sync_provider_models", fake_sync)
+    monkeypatch.setattr(model_catalog, "enrich_from_models_dev", fake_enrich)
+    monkeypatch.setattr(model_catalog, "_facetas_en_riesgo", sin_facetas_en_riesgo)
+    monkeypatch.setattr(model_catalog, "_disponibles_antes", fake_disponibles_antes)
+
+    resp = client.post(
+        "/api/admin/models/sync", json={"forzar": ["anthropic"]}, headers=_superadmin_headers())
+    body = resp.json()
+    assert "anthropic" not in body["providers_fallidos"]
+    assert "gemini" in body["providers_fallidos"]  # gemini NO se forzó -- sigue fallando
+
+
+def test_sync_endpoint_sin_forzar_no_escribe_auditoria(client, monkeypatch):
+    async def fake_sync(provider_id, forzar=False):
+        return {"provider_id": provider_id, "fetched": 1, "nuevos": []}
+
+    async def fake_enrich():
+        return {"enriched": 0}
+
+    async def sin_facetas_en_riesgo(cur):
+        return []
+
+    monkeypatch.setattr(model_catalog, "sync_provider_models", fake_sync)
+    monkeypatch.setattr(model_catalog, "enrich_from_models_dev", fake_enrich)
+    monkeypatch.setattr(model_catalog, "_facetas_en_riesgo", sin_facetas_en_riesgo)
+
+    antes = client.portal.call(_contar_filas_sync_forzado)
+    resp = client.post("/api/admin/models/sync", headers=_superadmin_headers())
+    assert resp.status_code == 200, resp.text
+    despues = client.portal.call(_contar_filas_sync_forzado)
+    assert despues == antes
+
+
+def test_sync_endpoint_forzar_requiere_superadmin(client):
+    """get_current_user resuelve el rol REAL desde `jax_users`, no del claim
+    del JWT (auth/middleware.py::verificar_sesion) -- un token de user_id=1
+    (el superadmin sembrado) firmado con otro rol igual vuelve superadmin.
+    Se usa `tests.identidades.cabeceras`, que crea una fila real con el rol
+    pedido (mismo patrón que test_admin_motors_endpoints.py)."""
+    from tests.identidades import cabeceras
+    headers = cabeceras(client, "sync-forzar-no-superadmin", "operator", TENANT_ID)
+    resp = client.post(
+        "/api/admin/models/sync", json={"forzar": ["anthropic"]}, headers=headers)
+    assert resp.status_code == 403
 
 
 async def _make_pending_proposal(facet_key="jekyll", proposed_ref=None):

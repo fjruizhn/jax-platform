@@ -3,6 +3,7 @@ import { useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { codigoDe, textoDeDetalleDeBinding, textoDeErrorDeBinding } from '../../api/errores'
 import AlertaError from '../../components/AlertaError'
+import ConfirmarForzarSync from '../../components/admin/ConfirmarForzarSync'
 import FormContratoDispatch from './FormContratoDispatch'
 import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 
@@ -10,6 +11,15 @@ import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 // (PR-L). `modelo_de_otro_proveedor` no: su remedio es otro modelo o el PUT
 // del binding.
 const CODIGO_SIN_CONTRATO = 'modelo_sin_contrato_de_dispatch'
+
+// MAJOR-3(d) (segunda auditoría adversarial del catálogo de modelos,
+// 2026-09-27): prefijo EXACTO que arma model_catalog.py cuando el guardián
+// de "lista encogida" (A-3) hace fallar un proveedor -- ACOPLAMIENTO
+// DELIBERADO con backend/catalogo_modelos_ejecutor.py::_PREFIJO_ERROR_GUARDIAN
+// y backend/model_catalog.py::_motivo_si_respuesta_sospechosa. Sólo ESE
+// motivo se puede forzar; cualquier otro error de proveedor (red, credencial)
+// no ofrece el botón porque forzar no lo arregla.
+const PREFIJO_ERROR_GUARDIAN = 'respuesta sospechosa del proveedor'
 
 const STATUS_COLOR = {
   available: 'text-exito',
@@ -41,6 +51,13 @@ export default function AdminModelCatalog() {
   const [facetasEnRiesgo, setFacetasEnRiesgo] = useState(null)
   // Informativo, no es un error: `ok` puede seguir true con modelos nuevos.
   const [modelosNuevos, setModelosNuevos] = useState(null)
+  // MAJOR-3(d): provider_id cuyo último sync falló por el guardián de
+  // "lista encogida" -- a esos se les ofrece el botón de forzar.
+  const [providersForzables, setProvidersForzables] = useState([])
+  // El provider_id que se está confirmando ahora mismo (abre el modal), o
+  // null si no hay ninguno en confirmación.
+  const [proveedorAForzar, setProveedorAForzar] = useState(null)
+  const [forzando, setForzando] = useState(false)
   const [deciding, setDeciding] = useState(null)
   // El error crudo: se traduce al renderizar, así un cambio de idioma lo sigue.
   const [decideError, setDecideError] = useState(null)
@@ -79,34 +96,67 @@ export default function AdminModelCatalog() {
 
   useEffect(() => { loadModels(); loadProposals() }, [loadModels, loadProposals])
 
-  async function handleSync() {
-    setSyncing(true)
-    setSyncError(false)
+  // Procesa el cuerpo de POST /admin/models/sync -- lo usan tanto el sync
+  // normal como "forzar" (MAJOR-3(d)), para no duplicar la lógica de qué
+  // hacer con cada campo de la respuesta.
+  function procesarRespuestaSync(data) {
     setSyncFallidos(null)
     setSyncSaltados(null)
     setFacetasEnRiesgo(null)
     setModelosNuevos(null)
+    setProvidersForzables([])
+    if (data?.ok === false) {
+      setSyncFallidos([...(data.providers_fallidos || []), ...(data.enrich_fallido ? ['models.dev'] : [])])
+      if (data.providers_saltados?.length) setSyncSaltados(data.providers_saltados)
+      if (data.facetas_en_riesgo?.length) {
+        setFacetasEnRiesgo(data.facetas_en_riesgo.map(f => `${f.facet_key} (${f.status})`))
+      }
+      // MAJOR-3(d): sólo el motivo del guardián de "lista encogida" se
+      // puede forzar -- cualquier otro error de proveedor (red, credencial)
+      // no ofrece el botón porque forzar no lo arregla.
+      const forzables = (data.providers || [])
+        .filter(p => typeof p.error === 'string' && p.error.startsWith(PREFIJO_ERROR_GUARDIAN))
+        .map(p => p.provider_id)
+      if (forzables.length) setProvidersForzables(forzables)
+    }
+    // Informativo: independiente de `ok` -- un sync exitoso también puede traer novedades.
+    const nuevosTotal = Object.values(data?.nuevos || {}).flat()
+    if (nuevosTotal.length) setModelosNuevos(nuevosTotal)
+    loadModels()
+    loadProposals()
+  }
+
+  async function handleSync() {
+    setSyncing(true)
+    setSyncError(false)
     try {
       // Solo escribe `model` — regla de oro (D1.3): nunca facet_binding.
       const { data } = await api.post('/admin/models/sync')
       // Task 3 (2026-09-15): antes se ignoraba el cuerpo y un sync en que
       // fallaba todo se veía como éxito. Lo que sí se sincronizó se recarga igual.
-      if (data?.ok === false) {
-        setSyncFallidos([...(data.providers_fallidos || []), ...(data.enrich_fallido ? ['models.dev'] : [])])
-        if (data.providers_saltados?.length) setSyncSaltados(data.providers_saltados)
-        if (data.facetas_en_riesgo?.length) {
-          setFacetasEnRiesgo(data.facetas_en_riesgo.map(f => `${f.facet_key} (${f.status})`))
-        }
-      }
-      // Informativo: independiente de `ok` -- un sync exitoso también puede traer novedades.
-      const nuevosTotal = Object.values(data?.nuevos || {}).flat()
-      if (nuevosTotal.length) setModelosNuevos(nuevosTotal)
-      loadModels()
-      loadProposals()
+      procesarRespuestaSync(data)
     } catch {
       setSyncError(true)
     } finally {
       setSyncing(false)
+    }
+  }
+
+  // MAJOR-3(d): confirmar en la ventana propia dispara el POST con
+  // `forzar: [provider]` -- NUNCA se envía sin el click explícito de
+  // ConfirmarForzarSync (nada de window.confirm).
+  async function confirmarForzarSync() {
+    const provider = proveedorAForzar
+    setForzando(true)
+    setSyncError(false)
+    try {
+      const { data } = await api.post('/admin/models/sync', { forzar: [provider] })
+      procesarRespuestaSync(data)
+      setProveedorAForzar(null)
+    } catch {
+      setSyncError(true)
+    } finally {
+      setForzando(false)
     }
   }
 
@@ -145,6 +195,18 @@ export default function AdminModelCatalog() {
           {syncSaltados && <span role="alert" className="text-xs text-peligro">{t.sync_con_saltados(syncSaltados.join(', '))}</span>}
           {facetasEnRiesgo && <span role="alert" className="text-xs text-peligro">{t.sync_facetas_en_riesgo(facetasEnRiesgo.join(', '))}</span>}
           {modelosNuevos && <span className="text-xs text-exito">{t.sync_modelos_nuevos(modelosNuevos.join(', '))}</span>}
+          {/* MAJOR-3(d): un botón por proveedor forzable -- confirmación en
+              ventana propia (ConfirmarForzarSync), nunca window.confirm. */}
+          {providersForzables.map(provider => (
+            <button
+              key={provider}
+              onClick={() => setProveedorAForzar(provider)}
+              disabled={syncing || forzando}
+              className="text-xs px-3 py-1.5 rounded-lg bg-peligro-solido hover:bg-peligro-solido-hover text-sobre-color font-semibold disabled:opacity-50 transition-colors"
+            >
+              {t.adminModelsForzarBoton(provider)}
+            </button>
+          ))}
           <button
             onClick={handleSync}
             disabled={syncing}
@@ -179,6 +241,15 @@ export default function AdminModelCatalog() {
           opciones={opcionesParam}
           onGuardado={contratoDeclarado}
           onCancelar={() => setContratoDe(null)}
+        />
+      )}
+
+      {proveedorAForzar && (
+        <ConfirmarForzarSync
+          proveedor={proveedorAForzar}
+          enviando={forzando}
+          onConfirmar={confirmarForzarSync}
+          onCancelar={() => setProveedorAForzar(null)}
         />
       )}
 

@@ -8,14 +8,22 @@ Description=JAX Platform — sync programado del catálogo de modelos (Bloque D)
 # en tiempo de ejecución, con su propio timeout de conexión a la DB).
 After=network-online.target docker.service
 Wants=network-online.target
-# Sin OnFailure=: `catalogo_modelos_ejecutor.py::main()` YA manda su propio
-# aviso por Telegram tanto si `sync_all()` termina con `ok=False` como si
-# revienta de una manera inesperada (DB caída, import roto -- ver A-2), y en
-# los dos casos sale con código != 0. Una unidad OnFailure= aparte sumaría
-# un SEGUNDO camino de aviso (probablemente por email, systemd no manda
-# Telegram) que puede decir algo distinto del primero y quedar sin
-# mantenimiento -- un solo lugar que decide "hay que avisar" es más fácil de
-# confiar que dos que puedan divergir (Regla Absoluta).
+# CORRECCIÓN (MAJOR-2, segunda auditoría adversarial, 2026-09-27): esta
+# sección decía que un OnFailure= aparte no hacía falta porque
+# `catalogo_modelos_ejecutor.py::main()` ya avisaba solo. Es cierto para lo
+# que `main()` alcanza a ver -- pero hay fallos que NUNCA le llegan a
+# `main()`: un SIGTERM por `TimeoutStartSec` (arriba) matando el proceso
+# ANTES de que corra su propio try/except, o un .venv roto que ni siquiera
+# deja arrancar `ExecStart`. Para esos dos casos, `main()` no es mudo por
+# elección -- ya está muerto. `OnFailure=` es el backstop para lo que el
+# propio proceso no puede avisar de sí mismo: una unidad mínima
+# (jax-catalogo-modelos-aviso.service) que corre un script de SOLO
+# biblioteca estándar (ni httpx ni el .venv de la app), así que funciona
+# incluso si el .venv está roto. Los dos caminos NO divergen en qué avisan
+# (uno es "hay problemas", el otro es "la unidad ni corrió"), así que no es
+# el "segundo camino que puede decir algo distinto" que esta nota
+# descartaba -- son complementarios, no redundantes.
+OnFailure=jax-catalogo-modelos-aviso.service
 
 [Service]
 Type=oneshot

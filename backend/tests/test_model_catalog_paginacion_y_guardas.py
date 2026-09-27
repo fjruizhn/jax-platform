@@ -20,7 +20,14 @@ sync nunca pidió una segunda página. Este archivo cubre:
 4. Una respuesta 200 con lista vacía, o con MENOS DE LA MITAD de lo que ese
    proveedor tenía `available` antes, es un FALLO del proveedor -- no toca
    ninguna fila (ni upsert ni miss).
+5. MAJOR-1 (segunda auditoría adversarial, 2026-09-27): la paginación tiene
+   tope (`_TOPE_PAGINAS`) y corta como error si el cursor se repite o si
+   llega una página vacía con más páginas anunciadas -- sin esto, un
+   proveedor con `has_more`/`nextPageToken` que nunca termina de verdad
+   (bug del lado del proveedor, o una respuesta adversarial) deja al
+   ejecutor pidiendo páginas para siempre.
 """
+import asyncio
 import uuid
 
 import pytest
@@ -64,6 +71,20 @@ class _FakeGetClientSecuencia:
         indice = len(self.calls)
         self.calls.append((url, kwargs))
         return self._respuestas[indice]
+
+
+class _FakeGetClientGenerador:
+    """Una respuesta por llamada, generada por una función -- para simular
+    paginación que NUNCA termina (has_more/nextPageToken siempre presente)
+    sin necesitar una lista pre-armada de tamaño arbitrario (MAJOR-1)."""
+    def __init__(self, generador):
+        self._generador = generador
+        self.calls = []
+
+    async def get(self, url, **kwargs):
+        indice = len(self.calls)
+        self.calls.append((url, kwargs))
+        return self._generador(indice)
 
 
 def _patch_credential(monkeypatch, value):
@@ -122,6 +143,12 @@ async def _borrar_provider_de_prueba(provider_id):
 
 
 async def _sembrar_modelos_disponibles(provider_id, cantidad):
+    """`source='provider_api'` a propósito (MAJOR-3(a)): estos modelos
+    simulan lo que dejó un sync REAL anterior -- si fueran 'manual', el
+    nuevo denominador de `_disponibles_antes` los ignoraría, y las pruebas
+    de "lista encogida"/"exactamente la mitad" perderían su historia sin
+    querer (disponibles_antes daría 0, y el guardián de "menos de la mitad"
+    no aplica sin historia)."""
     from db.connection import get_pool
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -129,7 +156,7 @@ async def _sembrar_modelos_disponibles(provider_id, cantidad):
             for i in range(cantidad):
                 await cur.execute(
                     "INSERT INTO model (provider_id, model_id, status, source, source_checked_at) "
-                    "VALUES (%s, %s, 'available', 'manual', NOW())",
+                    "VALUES (%s, %s, 'available', 'provider_api', NOW())",
                     (provider_id, f"modelo-{i}"),
                 )
         await conn.commit()
@@ -440,3 +467,239 @@ def test_sync_provider_models_ollama_lista_vacia_es_fallo_y_no_toca_nada(client)
         assert fila[0] == "available"  # no se tocó
     finally:
         client.portal.call(_borrar)
+
+
+# --------------------------------------------------------------------------
+# 5. MAJOR-1: tope de páginas + cursor repetido + página vacía con más
+#    páginas anunciadas -- todo se prueba sobre los helpers PUROS (sin DB),
+#    mismo criterio que los tests de compatibilidad "sin has_more".
+# --------------------------------------------------------------------------
+
+def test_fetch_anthropic_paginado_corta_en_el_tope_si_has_more_nunca_termina():
+    def generador(indice):
+        return _FakeResponse({
+            "data": [{"id": f"claude-{indice}"}], "has_more": True, "last_id": f"cursor-{indice}",
+        })
+    fake = _FakeGetClientGenerador(generador)
+
+    with pytest.raises(model_catalog.PaginacionSospechosaError):
+        asyncio.run(model_catalog._fetch_anthropic_paginado(fake, "https://api.anthropic.com/v1/models", {}))
+
+    assert len(fake.calls) == model_catalog._TOPE_PAGINAS
+
+
+def test_fetch_anthropic_paginado_corta_si_el_last_id_se_repite():
+    fake = _FakeGetClientSecuencia([
+        _FakeResponse({"data": [{"id": "claude-a"}], "has_more": True, "last_id": "cursor-fijo"}),
+        _FakeResponse({"data": [{"id": "claude-b"}], "has_more": True, "last_id": "cursor-fijo"}),
+    ])
+
+    with pytest.raises(model_catalog.PaginacionSospechosaError):
+        asyncio.run(model_catalog._fetch_anthropic_paginado(fake, "https://api.anthropic.com/v1/models", {}))
+
+    assert len(fake.calls) == 2  # corta apenas detecta la repetición, no espera al tope
+
+
+def test_fetch_anthropic_paginado_corta_si_llega_pagina_vacia_con_has_more():
+    fake = _FakeGetClientSecuencia([
+        _FakeResponse({"data": [{"id": "claude-a"}], "has_more": True, "last_id": "claude-a"}),
+        _FakeResponse({"data": [], "has_more": True, "last_id": "claude-a-2"}),
+    ])
+
+    with pytest.raises(model_catalog.PaginacionSospechosaError):
+        asyncio.run(model_catalog._fetch_anthropic_paginado(fake, "https://api.anthropic.com/v1/models", {}))
+
+    assert len(fake.calls) == 2
+
+
+def test_fetch_gemini_paginado_corta_en_el_tope_si_next_page_token_nunca_termina():
+    def generador(indice):
+        return _FakeResponse({
+            "models": [{"name": f"models/gemini-{indice}"}], "nextPageToken": f"token-{indice}",
+        })
+    fake = _FakeGetClientGenerador(generador)
+
+    with pytest.raises(model_catalog.PaginacionSospechosaError):
+        asyncio.run(model_catalog._fetch_gemini_paginado(
+            fake, "https://generativelanguage.googleapis.com/v1beta/models", {}))
+
+    assert len(fake.calls) == model_catalog._TOPE_PAGINAS
+
+
+def test_fetch_gemini_paginado_corta_si_el_page_token_se_repite():
+    fake = _FakeGetClientSecuencia([
+        _FakeResponse({"models": [{"name": "models/gemini-a"}], "nextPageToken": "token-fijo"}),
+        _FakeResponse({"models": [{"name": "models/gemini-b"}], "nextPageToken": "token-fijo"}),
+    ])
+
+    with pytest.raises(model_catalog.PaginacionSospechosaError):
+        asyncio.run(model_catalog._fetch_gemini_paginado(
+            fake, "https://generativelanguage.googleapis.com/v1beta/models", {}))
+
+    assert len(fake.calls) == 2
+
+
+def test_fetch_gemini_paginado_corta_si_llega_pagina_vacia_con_next_page_token():
+    fake = _FakeGetClientSecuencia([
+        _FakeResponse({"models": [{"name": "models/gemini-a"}], "nextPageToken": "token-2"}),
+        _FakeResponse({"models": [], "nextPageToken": "token-3"}),
+    ])
+
+    with pytest.raises(model_catalog.PaginacionSospechosaError):
+        asyncio.run(model_catalog._fetch_gemini_paginado(
+            fake, "https://generativelanguage.googleapis.com/v1beta/models", {}))
+
+    assert len(fake.calls) == 2
+
+
+def test_sync_provider_models_gemini_paginacion_sospechosa_se_propaga_sin_atrapar(client, monkeypatch):
+    """`sync_provider_models` no atrapa el error de paginación -- sube tal
+    cual, para que `sync_all()` (que sí tiene el try/except por proveedor,
+    ver test_model_catalog_sync_all.py) lo cuente como fallo del proveedor."""
+    _patch_credential(monkeypatch, "gk-fake")
+
+    def generador(indice):
+        return _FakeResponse({
+            "models": [{"name": f"models/gemini-loop-{indice}"}], "nextPageToken": f"token-{indice}",
+        })
+    fake = _FakeGetClientGenerador(generador)
+    original = http_client._client
+    http_client._client = fake
+    try:
+        with pytest.raises(model_catalog.PaginacionSospechosaError):
+            client.portal.call(model_catalog.sync_provider_models, "gemini")
+    finally:
+        http_client._client = original
+
+
+# --------------------------------------------------------------------------
+# 6. MAJOR-3(a) (segunda auditoría adversarial, 2026-09-27): el denominador
+#    del guardián excluye filas 'manual' y los alias sueltos de anthropic --
+#    comparación por DELTA (antes/después de sembrar), inmune al ruido que
+#    ya haya en la base de sesión compartida.
+# --------------------------------------------------------------------------
+
+async def _medir_disponibles_antes(provider_id):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            return await model_catalog._disponibles_antes(cur, provider_id)
+
+
+async def _sembrar_modelo_con_source(provider_id, model_id, source, status="available"):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO model (provider_id, model_id, status, source, source_checked_at) "
+                "VALUES (%s, %s, %s, %s, NOW())",
+                (provider_id, model_id, status, source),
+            )
+        await conn.commit()
+
+
+def test_disponibles_antes_excluye_filas_manual(client):
+    provider_id = "zhipu"
+    model_id_api = f"test-denom-api-{uuid.uuid4().hex[:8]}"
+    model_id_manual = f"test-denom-manual-{uuid.uuid4().hex[:8]}"
+    antes = client.portal.call(_medir_disponibles_antes, provider_id)
+    client.portal.call(_sembrar_modelo_con_source, provider_id, model_id_api, "provider_api")
+    client.portal.call(_sembrar_modelo_con_source, provider_id, model_id_manual, "manual")
+    try:
+        despues = client.portal.call(_medir_disponibles_antes, provider_id)
+        assert despues == antes + 1  # sólo la 'provider_api' cuenta
+    finally:
+        client.portal.call(_borrar_modelos, provider_id, [model_id_api, model_id_manual])
+
+
+def test_disponibles_antes_excluye_alias_sueltos_de_anthropic(client):
+    provider_id = "anthropic"
+    model_id_claude = f"claude-test-denom-{uuid.uuid4().hex[:8]}"
+    model_id_alias = f"test-denom-alias-{uuid.uuid4().hex[:8]}"  # no empieza con 'claude-'
+    antes = client.portal.call(_medir_disponibles_antes, provider_id)
+    client.portal.call(_sembrar_modelo_con_source, provider_id, model_id_claude, "provider_api")
+    client.portal.call(_sembrar_modelo_con_source, provider_id, model_id_alias, "provider_api")
+    try:
+        despues = client.portal.call(_medir_disponibles_antes, provider_id)
+        assert despues == antes + 1  # sólo el que empieza con 'claude-' cuenta
+    finally:
+        client.portal.call(_borrar_modelos, provider_id, [model_id_claude, model_id_alias])
+
+
+# --------------------------------------------------------------------------
+# 7. MAJOR-3(b) (segunda auditoría adversarial, 2026-09-27): `forzar=True`
+#    salta el guardián de "lista encogida" SOLO para ese proveedor.
+# --------------------------------------------------------------------------
+
+def test_sync_provider_models_forzar_salta_el_guardian_de_lista_encogida(client, monkeypatch):
+    provider_id = f"test-forzar-{uuid.uuid4().hex[:8]}"
+    _patch_credential(monkeypatch, "sk-fake")
+    client.portal.call(_crear_provider_de_prueba, provider_id, "https://example.invalid/v1/models")
+    client.portal.call(_sembrar_modelos_disponibles, provider_id, 4)  # mitad = 2
+    try:
+        fake = _FakeGetClient(_FakeResponse({"data": [{"id": "modelo-0"}]}))  # 1 < 2 -- normalmente sería fallo
+        original = http_client._client
+        http_client._client = fake
+        try:
+            sin_forzar = client.portal.call(model_catalog.sync_provider_models, provider_id, False)
+            assert "error" in sin_forzar  # control: sin forzar, sigue fallando
+
+            con_forzar = client.portal.call(model_catalog.sync_provider_models, provider_id, True)
+        finally:
+            http_client._client = original
+
+        assert "error" not in con_forzar
+        assert con_forzar["fetched"] == 1
+    finally:
+        client.portal.call(_borrar_provider_de_prueba, provider_id)
+
+
+def test_sync_provider_models_forzar_no_salta_el_tope_de_paginas(client, monkeypatch):
+    """`forzar` es SÓLO para el guardián de "lista encogida" -- una
+    paginación que nunca converge sigue siendo un error aunque se fuerce
+    (forzar una paginación rota podría colgar el proceso de verdad)."""
+    _patch_credential(monkeypatch, "gk-fake")
+
+    def generador(indice):
+        return _FakeResponse({
+            "models": [{"name": f"models/gemini-loop-{indice}"}], "nextPageToken": f"token-{indice}",
+        })
+    fake = _FakeGetClientGenerador(generador)
+    original = http_client._client
+    http_client._client = fake
+    try:
+        with pytest.raises(model_catalog.PaginacionSospechosaError):
+            client.portal.call(model_catalog.sync_provider_models, "gemini", True)
+    finally:
+        http_client._client = original
+
+
+def test_sync_all_forzar_salta_el_guardian_solo_para_ese_proveedor(client, monkeypatch):
+    resultados = {
+        p: {"provider_id": p, "fetched": 1, "nuevos": []}
+        for p in model_catalog.SYNCABLE_PROVIDERS
+    }
+    resultados["anthropic"] = {"provider_id": "anthropic", "error": "respuesta sospechosa del proveedor (lista vacía)"}
+
+    llamadas = []
+
+    async def _fake(provider_id, forzar=False):
+        llamadas.append((provider_id, forzar))
+        if provider_id == "anthropic" and forzar:
+            return {"provider_id": "anthropic", "fetched": 3, "nuevos": []}
+        return resultados[provider_id]
+    monkeypatch.setattr(model_catalog, "sync_provider_models", _fake)
+
+    async def _enrich_ok():
+        return {"enriched": 0}
+    monkeypatch.setattr(model_catalog, "enrich_from_models_dev", _enrich_ok)
+
+    result = client.portal.call(model_catalog.sync_all, ["anthropic"])
+
+    assert result["providers_fallidos"] == []
+    anthropic_llamado_forzado = [f for p, f in llamadas if p == "anthropic"]
+    assert anthropic_llamado_forzado == [True]
+    otros_forzados = [f for p, f in llamadas if p != "anthropic"]
+    assert not any(otros_forzados)  # sólo anthropic se fuerza

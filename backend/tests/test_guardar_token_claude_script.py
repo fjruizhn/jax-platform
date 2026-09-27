@@ -9,13 +9,18 @@ El token viaja SOLO por stdin (`input=` de subprocess), nunca como
 argumento: el propio contrato del script ("nunca por argv") se ejercita acá
 armando el comando sin el token en ninguna posición de `args`.
 """
+import os
 import pwd
 import stat
 import subprocess
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "ops" / "guardar-token-claude.sh"
-TOKEN_VALIDO = "sk-ant-oat01-" + "x" * 40
+# MAJOR-5 (segunda auditoría adversarial, 2026-09-27): 100 caracteres --
+# medido en un token OAuth REAL "sk-ant-oat01-…" de la cuenta de Fernando,
+# que mide 108. Éste (113) queda cómodo por encima del mínimo sin acercarse
+# al máximo holgado (400) que el script también exige.
+TOKEN_VALIDO = "sk-ant-oat01-" + "x" * 100
 
 
 def _sudo_disponible() -> bool:
@@ -196,22 +201,56 @@ def test_token_con_prefijo_correcto_pero_demasiado_corto_no_cambia_nada(tmp_path
         _limpiar(ruta)
 
 
+def _limite_del_script(nombre):
+    """Lee LARGO_MINIMO/LARGO_MAXIMO de la fuente del propio script -- así
+    estos tests no se desincronizan si el número vuelve a cambiar."""
+    import re
+    fuente = SCRIPT.read_text()
+    return int(re.search(rf'{nombre}=(\d+)', fuente).group(1))
+
+
 def test_token_valido_en_el_largo_minimo_exacto_se_acepta(tmp_path):
-    """Boundary: el mínimo declarado por el script tiene que aceptarse, no
-    sólo rechazar por debajo de él."""
+    """Boundary: el mínimo declarado por el script (100, MAJOR-5) tiene que
+    aceptarse, no sólo rechazar por debajo de él."""
     original = "FOO=bar\n"
     ruta = _preparar_env_falso(tmp_path, original)
     try:
-        # 40 es el mínimo que documenta el propio script (ver LARGO_MINIMO);
-        # se lee de ahí para que este test no se desincronice si cambia.
-        fuente = SCRIPT.read_text()
-        import re
-        minimo = int(re.search(r'LARGO_MINIMO=(\d+)', fuente).group(1))
+        minimo = _limite_del_script("LARGO_MINIMO")
         token = "sk-ant-oat01-" + ("a" * max(0, minimo - len("sk-ant-oat01-")))
         assert len(token) >= minimo
         resultado = _correr(ruta, token)
         assert resultado.returncode == 0, resultado.stderr
         assert f"CLAUDE_CODE_OAUTH_TOKEN={token}" in ruta.read_text()
+    finally:
+        _limpiar(ruta)
+
+
+def test_token_valido_en_el_largo_maximo_exacto_se_acepta(tmp_path):
+    """Boundary simétrico: el máximo (holgado, MAJOR-5) también tiene que
+    aceptarse, no sólo rechazar por encima de él."""
+    original = "FOO=bar\n"
+    ruta = _preparar_env_falso(tmp_path, original)
+    try:
+        maximo = _limite_del_script("LARGO_MAXIMO")
+        token = "sk-ant-oat01-" + ("a" * (maximo - len("sk-ant-oat01-")))
+        assert len(token) == maximo
+        resultado = _correr(ruta, token)
+        assert resultado.returncode == 0, resultado.stderr
+        assert f"CLAUDE_CODE_OAUTH_TOKEN={token}" in ruta.read_text()
+    finally:
+        _limpiar(ruta)
+
+
+def test_token_mas_largo_que_el_maximo_no_cambia_nada(tmp_path):
+    original = "FOO=bar\n"
+    ruta = _preparar_env_falso(tmp_path, original)
+    try:
+        maximo = _limite_del_script("LARGO_MAXIMO")
+        token = "sk-ant-oat01-" + ("a" * (maximo - len("sk-ant-oat01-") + 1))
+        assert len(token) == maximo + 1
+        resultado = _correr(ruta, token)
+        assert resultado.returncode != 0
+        assert ruta.read_text() == original
     finally:
         _limpiar(ruta)
 
@@ -258,6 +297,77 @@ def test_no_borra_respaldos_de_otro_archivo(tmp_path):
         ajeno.unlink(missing_ok=True)
 
 
+def test_no_borra_respaldo_ajeno_con_sufijo_no_numerico_del_mismo_archivo(tmp_path):
+    """MINOR-6 (segunda auditoría adversarial, 2026-09-27): el glob de
+    limpieza tiene que ser el patrón EXACTO que el propio script genera
+    (fecha-hora numérica: 8 dígitos, guion, 6 dígitos) -- no `*` a secas.
+    Un respaldo ajeno con el MISMO archivo base pero un sufijo puesto a mano
+    (`antes-rotar`, no una fecha) tiene que sobrevivir."""
+    original = "FOO=bar\n"
+    ruta = _preparar_env_falso(tmp_path, original)
+    ajeno = tmp_path / "fake.env.bak-antes-rotar"
+    ajeno.write_text("no me borres -- no tengo el patrón de fecha")
+    try:
+        for _ in range(3):
+            resultado = _correr(ruta, TOKEN_VALIDO)
+            assert resultado.returncode == 0, resultado.stderr
+            import time
+            time.sleep(1.1)
+        assert ajeno.is_file()
+        assert ajeno.read_text() == "no me borres -- no tengo el patrón de fecha"
+    finally:
+        _limpiar(ruta)
+        ajeno.unlink(missing_ok=True)
+
+
+def test_no_borra_respaldo_ajeno_con_sufijo_que_ordena_antes_que_las_fechas(tmp_path):
+    """MINOR-6, la prueba que SÍ distingue el glob viejo del nuevo: un
+    sufijo ajeno puramente numérico pero de otra forma (`bak-1`, un solo
+    dígito) ordena ANTES que cualquier fecha real (`bak-2026...`,
+    comparación de string: '1' < '2') -- con el glob viejo (`*` a secas)
+    esto SÍ caía entre los "más viejos" y se borraba. El glob estricto
+    (8 dígitos-guion-6 dígitos) nunca lo toma como candidato, sin importar
+    dónde ordene."""
+    original = "FOO=bar\n"
+    ruta = _preparar_env_falso(tmp_path, original)
+    ajeno = tmp_path / "fake.env.bak-1"
+    ajeno.write_text("no me borres -- ordeno antes que cualquier fecha real")
+    try:
+        for _ in range(3):
+            resultado = _correr(ruta, TOKEN_VALIDO)
+            assert resultado.returncode == 0, resultado.stderr
+            import time
+            time.sleep(1.1)
+        assert ajeno.is_file()
+        assert ajeno.read_text() == "no me borres -- ordeno antes que cualquier fecha real"
+    finally:
+        _limpiar(ruta)
+        ajeno.unlink(missing_ok=True)
+
+
+def test_conserva_exactamente_el_respaldo_recien_creado_mas_uno_viejo(tmp_path):
+    """MINOR-6: el respaldo recién creado se excluye EXPLÍCITAMENTE del
+    cálculo de "qué borrar" -- no depende sólo de que el orden alfabético lo
+    deje último. Con 3 corridas, sobreviven el más nuevo y el segundo más
+    nuevo; el primero se borra."""
+    original = "FOO=bar\n"
+    ruta = _preparar_env_falso(tmp_path, original)
+    try:
+        import time
+        for _ in range(3):
+            resultado = _correr(ruta, TOKEN_VALIDO)
+            assert resultado.returncode == 0, resultado.stderr
+            time.sleep(1.1)
+
+        respaldos = sorted(tmp_path.glob("fake.env.bak-*"))
+        assert len(respaldos) == 2
+        # el más reciente de los 2 sigue siendo legible y con el contenido
+        # de ANTES de la última corrida (el respaldo se toma antes de escribir)
+        assert respaldos[-1].is_file()
+    finally:
+        _limpiar(ruta)
+
+
 def test_mensaje_final_menciona_los_dos_servicios_a_reiniciar(tmp_path):
     """(c) jax-platform Y jax-las-manos -- las dos partes que leen la
     credencial de anthropic (el sync del catálogo corre en el backend de
@@ -274,17 +384,57 @@ def test_mensaje_final_menciona_los_dos_servicios_a_reiniciar(tmp_path):
         _limpiar(ruta)
 
 
+def test_token_partido_en_dos_lineas_aborta_sin_tocar_el_env(tmp_path):
+    """MAJOR-5 (segunda auditoría adversarial, 2026-09-27): un token pegado
+    partido en dos líneas por el terminal -- `read -rs` sólo toma la
+    primera, y la segunda queda esperando en la entrada. ANTES este script
+    sólo drenaba ese resto y seguía adelante con la primera línea (a medias,
+    probablemente truncada) como si fuera el token completo. Ahora CUALQUIER
+    resto no vacío aborta sin tocar el .env: "el token llegó partido en
+    varias líneas, pegalo de nuevo en una sola" -- ver
+    test_vacia_lo_que_sobra_en_stdin_tras_leer_el_token (más abajo) para la
+    prueba de que el resto se drena IGUAL, aunque el resultado ahora sea
+    abortar y no continuar.
+
+    Se ejercita con un pty de verdad (no un pipe simple: un pipe no tiene la
+    semántica de "cola de entrada compartida" que sí tiene una terminal, así
+    que con un pipe la segunda línea no llegaría a mezclarse con la
+    primera)."""
+    import pty
+
+    original = "FOO=bar\n"
+    ruta = _preparar_env_falso(tmp_path, original)
+    master_fd = None
+    slave_fd = None
+    try:
+        master_fd, slave_fd = pty.openpty()
+        proc = subprocess.Popen(
+            ["sudo", "env", f"JAX_ENV_PATH={ruta}", "bash", str(SCRIPT)],
+            stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        os.write(master_fd, f"{TOKEN_VALIDO}\nresto-que-no-deberia-quedar-sin-leer\n".encode())
+        proc.wait(timeout=15)
+        salida_err = proc.stderr.read().decode(errors="replace")
+        proc.stdout.close()
+        proc.stderr.close()
+
+        assert proc.returncode != 0
+        assert ruta.read_text() == original  # NO se tocó
+        assert "partid" in salida_err.lower()  # el mensaje explica qué pasó
+    finally:
+        if master_fd is not None:
+            os.close(master_fd)
+        if slave_fd is not None:
+            os.close(slave_fd)
+        _limpiar(ruta)
+
+
 def test_vacia_lo_que_sobra_en_stdin_tras_leer_el_token(tmp_path):
-    """(a) Un token pegado partido en dos líneas por el terminal: `read -rs`
-    sólo toma la primera. Sin drenar el resto, esa segunda línea queda
-    esperando en la entrada -- y si esto corriera pegado a una terminal real
-    (no a un pipe descartable como en el resto de estos tests), el shell que
-    lanzó `sudo bash guardar-token-claude.sh` la leería como si fuera SU
-    propio siguiente comando. Se ejercita con un pty de verdad (no un pipe
-    simple: un pipe no tiene la semántica de "cola de entrada compartida"
-    que sí tiene una terminal, así que con un pipe este defecto no se
-    reproduce)."""
-    import os
+    """El resto se DRENA de la entrada aunque el resultado sea abortar (test
+    de arriba) -- si no se drenara, esa segunda línea seguiría esperando en
+    la cola del terminal para que el shell que lanzó
+    `sudo bash guardar-token-claude.sh` la lea como si fuera SU propio
+    siguiente comando."""
     import pty
     import select
     import termios
@@ -314,8 +464,7 @@ def test_vacia_lo_que_sobra_en_stdin_tras_leer_el_token(tmp_path):
         proc.stdout.close()
         proc.stderr.close()
 
-        assert proc.returncode == 0
-        assert f"CLAUDE_CODE_OAUTH_TOKEN={TOKEN_VALIDO}" in ruta.read_text()
+        assert proc.returncode != 0  # abortó (MAJOR-5) -- pero drenó igual
 
         # Si el script vació stdin, no queda nada por leer del lado slave --
         # si el drenado NO ocurrió, la segunda línea seguiría entera en la

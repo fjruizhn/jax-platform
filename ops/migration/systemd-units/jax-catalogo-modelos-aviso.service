@@ -1,0 +1,16 @@
+[Unit]
+Description=JAX Platform — aviso de fallo de jax-catalogo-modelos (OnFailure=)
+
+[Service]
+Type=oneshot
+User=jaxsvc
+Group=jaxsvc
+WorkingDirectory=/srv/jax-prod/jax-platform
+EnvironmentFile=/etc/jax/.env
+# -I (aislado): ignora PYTHONPATH/PYTHONHOME y no agrega el directorio del
+# script a sys.path para paquetes de sitio -- deliberadamente NO usa el
+# .venv de la app (ver ops/avisar-fallo-unidad.py: este es el último
+# recurso para cuando ese .venv está roto).
+ExecStart=/usr/bin/python3 -I ops/avisar-fallo-unidad.py jax-catalogo-modelos.service
+StandardOutput=journal
+StandardError=journal

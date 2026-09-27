@@ -139,6 +139,21 @@ def _extract_model_ids(provider_id: str, payload: dict) -> list[str]:
 _PAGE_LIMIT_ANTHROPIC = 1000
 _PAGE_SIZE_GEMINI = 1000
 
+# MAJOR-1 (segunda auditoría adversarial, 2026-09-27): paginación sin tope.
+# 50 páginas x 1000 por página = 50.000 modelos -- ningún catálogo real de
+# hoy se acerca a eso; si un proveedor pide más páginas que esto, algo está
+# roto (o es hostil) y no una cuenta legítima con muchos modelos.
+_TOPE_PAGINAS = 50
+
+
+class PaginacionSospechosaError(RuntimeError):
+    """La paginación de un proveedor no converge: más de `_TOPE_PAGINAS`
+    páginas, un cursor (`after_id`/`pageToken`) que se repite sin avanzar, o
+    una página vacía con más páginas anunciadas. Se deja propagar sin
+    atrapar desde `_fetch_*_paginado`/`sync_provider_models` -- el try/except
+    por proveedor de `sync_all()` la cuenta como error de ESE proveedor,
+    igual que cualquier otra excepción, nunca como un loop infinito real."""
+
 
 async def _fetch_anthropic_paginado(client, url: str, headers: dict) -> dict:
     """GET /v1/models de Anthropic pagina con `limit`/`after_id`, y la
@@ -146,22 +161,38 @@ async def _fetch_anthropic_paginado(client, url: str, headers: dict) -> dict:
     documentado por el equipo que pidió este fix -- no inventado). Una
     respuesta SIN 'has_more' (los fakes de test_model_catalog_sync.py,
     escritos antes de este cambio) se trata como 'False': una sola página,
-    compatibilidad hacia atrás sin tocar esos tests."""
+    compatibilidad hacia atrás sin tocar esos tests.
+
+    MAJOR-1: corta con `PaginacionSospechosaError` si se superan
+    `_TOPE_PAGINAS`, si `last_id` no avanza entre dos páginas con
+    `has_more=true`, o si una página llega vacía pero `has_more` sigue
+    siendo verdadero -- las tres son señales de una paginación que nunca
+    converge, no de un catálogo enorme."""
     datos = []
     after_id = None
+    paginas = 0
     while True:
+        paginas += 1
+        if paginas > _TOPE_PAGINAS:
+            raise PaginacionSospechosaError(
+                f"anthropic: más de {_TOPE_PAGINAS} páginas sin terminar -- paginación rota o catálogo absurdo")
         params = {"limit": _PAGE_LIMIT_ANTHROPIC}
         if after_id:
             params["after_id"] = after_id
         resp = await client.get(url, headers=headers, params=params, timeout=15.0)
         resp.raise_for_status()
         pagina = resp.json()
-        datos.extend(pagina.get("data", []))
+        pagina_datos = pagina.get("data", [])
+        datos.extend(pagina_datos)
         if not pagina.get("has_more"):
             break
-        after_id = pagina.get("last_id")
-        if not after_id:  # defensivo: 'has_more' sin 'last_id' no tiene con qué seguir
-            break
+        if not pagina_datos:
+            raise PaginacionSospechosaError("anthropic: página vacía con has_more=true")
+        nuevo_after_id = pagina.get("last_id")
+        if not nuevo_after_id or nuevo_after_id == after_id:
+            raise PaginacionSospechosaError(
+                f"anthropic: last_id no avanzó ({nuevo_after_id!r}) con has_more=true")
+        after_id = nuevo_after_id
     return {"data": datos}
 
 
@@ -169,20 +200,36 @@ async def _fetch_gemini_paginado(client, url: str, headers: dict) -> dict:
     """models.list de Gemini pagina con `pageSize`/`pageToken`, y la
     respuesta trae `nextPageToken` mientras queden páginas (contrato real de
     la Generative Language API). Sin 'nextPageToken' -- los fakes ya
-    existentes -- una sola página, mismo criterio que el de Anthropic."""
+    existentes -- una sola página, mismo criterio que el de Anthropic.
+
+    MAJOR-1: mismas tres protecciones que la paginación de Anthropic --
+    tope de páginas, `pageToken` que no avanza, página vacía con
+    `nextPageToken` todavía presente."""
     modelos = []
     page_token = None
+    paginas = 0
     while True:
+        paginas += 1
+        if paginas > _TOPE_PAGINAS:
+            raise PaginacionSospechosaError(
+                f"gemini: más de {_TOPE_PAGINAS} páginas sin terminar -- paginación rota o catálogo absurdo")
         params = {"pageSize": _PAGE_SIZE_GEMINI}
         if page_token:
             params["pageToken"] = page_token
         resp = await client.get(url, headers=headers, params=params, timeout=15.0)
         resp.raise_for_status()
         pagina = resp.json()
-        modelos.extend(pagina.get("models", []))
-        page_token = pagina.get("nextPageToken")
-        if not page_token:
+        pagina_modelos = pagina.get("models", [])
+        modelos.extend(pagina_modelos)
+        nuevo_page_token = pagina.get("nextPageToken")
+        if not nuevo_page_token:
             break
+        if not pagina_modelos:
+            raise PaginacionSospechosaError("gemini: página vacía con nextPageToken presente")
+        if nuevo_page_token == page_token:
+            raise PaginacionSospechosaError(
+                f"gemini: nextPageToken no avanzó ({nuevo_page_token!r})")
+        page_token = nuevo_page_token
     return {"models": modelos}
 
 
@@ -203,17 +250,51 @@ def _motivo_si_respuesta_sospechosa(seen_ids: set, disponibles_antes: int) -> st
 
 
 async def _disponibles_antes(cur, provider_id: str) -> int:
-    await cur.execute(
-        "SELECT COUNT(*) FROM model WHERE provider_id=%s AND status='available'",
-        (provider_id,),
-    )
+    """El denominador del guardián de "lista encogida" (`_motivo_si_respuesta_sospechosa`).
+
+    MAJOR-3(a) (segunda auditoría adversarial, 2026-09-27): sólo cuenta lo
+    que SUMARÍA un miss si desapareciera de una respuesta real -- el MISMO
+    criterio que el loop de depreciación de `sync_provider_models`, más
+    abajo:
+    - `source != 'provider_api'` (filas 'manual' sembradas a mano, u
+      'observed' de `record_resolved_version`) NUNCA las reporta un
+      `/v1/models` real, así que tampoco cuentan para "cuánto había antes".
+    - Para `anthropic`, un alias suelto sin prefijo 'claude-' (ej. 'sonnet')
+      JAMÁS aparece en `GET /v1/models` real -- mismo `continue` que ya
+      excluye esos alias del conteo de misses.
+    Antes el denominador contaba TODO lo 'available': una sola fila 'manual'
+    de prueba (o el alias 'sonnet', que queda 'available' para siempre y
+    nunca lo va a devolver un sync real) bastaba para inflar el denominador
+    y dejar el guardián bloqueado sin remedio en una cuenta con pocos
+    modelos reales -- el caso reportado."""
+    if provider_id == "anthropic":
+        await cur.execute(
+            "SELECT COUNT(*) FROM model WHERE provider_id=%s AND status='available' "
+            "AND source='provider_api' AND model_id LIKE 'claude-%%'",
+            (provider_id,),
+        )
+    else:
+        await cur.execute(
+            "SELECT COUNT(*) FROM model WHERE provider_id=%s AND status='available' AND source='provider_api'",
+            (provider_id,),
+        )
     (cantidad,) = await cur.fetchone()
     return cantidad
 
 
-async def sync_provider_models(provider_id: str) -> dict:
+async def sync_provider_models(provider_id: str, forzar: bool = False) -> dict:
     """D1.3-a. Unica verdad de disponibilidad para ESTA cuenta. Upsert en
-    `model` para lo visto; lo que no aparecio suma un miss (D1.4)."""
+    `model` para lo visto; lo que no aparecio suma un miss (D1.4).
+
+    `forzar=True` (MAJOR-3(b), segunda auditoría adversarial, 2026-09-27):
+    salta el guardián de "lista encogida" (`_motivo_si_respuesta_sospechosa`)
+    para ESTE proveedor -- vía POST /admin/models/sync con
+    `forzar: [provider_id]`, sólo superadmin, auditado en
+    `model_catalog_audit` (acción 'sync_forzado', ver api/admin/models.py).
+    NO salta el tope de páginas ni la detección de cursor repetido
+    (`PaginacionSospechosaError`, MAJOR-1): esas dos son sobre una
+    paginación que nunca converge -- forzarlas podría colgar el proceso de
+    verdad, no sólo aceptar un catálogo más chico de lo esperado."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -229,7 +310,7 @@ async def sync_provider_models(provider_id: str) -> dict:
     transport, url = row
 
     if provider_id == "ollama":
-        return await _sync_ollama_models(url)
+        return await _sync_ollama_models(url, forzar=forzar)
 
     if provider_id == "anthropic":
         try:
@@ -271,10 +352,16 @@ async def sync_provider_models(provider_id: str) -> dict:
 
     seen_ids = set(_extract_model_ids(provider_id, payload))
 
-    motivo_sospechoso = _motivo_si_respuesta_sospechosa(seen_ids, disponibles_antes)
+    motivo_sospechoso = None if forzar else _motivo_si_respuesta_sospechosa(seen_ids, disponibles_antes)
     if motivo_sospechoso:
         logger.warning(f"model_catalog sync provider={provider_id} respuesta sospechosa: {motivo_sospechoso}")
+        # ACOPLAMIENTO DELIBERADO: catalogo_modelos_ejecutor.py::_PREFIJO_ERROR_GUARDIAN
+        # reconoce este prefijo EXACTO ("respuesta sospechosa del proveedor") para
+        # decidir si el aviso de Telegram sugiere "forzalo" (MAJOR-3(c)) -- si
+        # cambia el texto acá, hay que cambiarlo ahí también.
         return {"provider_id": provider_id, "error": f"respuesta sospechosa del proveedor ({motivo_sospechoso})"}
+    if forzar:
+        logger.warning(f"model_catalog sync provider={provider_id} FORZADO -- guardián de lista encogida saltado")
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -337,7 +424,7 @@ async def _capacidades_ollama(url_show: str, model_id: str) -> list[str] | None:
     return caps if isinstance(caps, list) else None
 
 
-async def _sync_ollama_models(url: str) -> dict:
+async def _sync_ollama_models(url: str, forzar: bool = False) -> dict:
     """Ollama es local, sin API key (provider.auth_type='none') — /api/tags
     no lleva ningun header, a diferencia de todos los demas providers.
     Shape real distinto (verificado con curl, 2026-08-10):
@@ -374,10 +461,12 @@ async def _sync_ollama_models(url: str) -> dict:
     # había 'available') no es lo mismo que 'no alcanzable' (eso ya lo cubre
     # el except de arriba); acá SÍ hay respuesta, pero es sospechosa. Se
     # corta ANTES de pedir /api/show por cada modelo (nada que consultar).
-    motivo_sospechoso = _motivo_si_respuesta_sospechosa(seen_ids, disponibles_antes)
+    motivo_sospechoso = None if forzar else _motivo_si_respuesta_sospechosa(seen_ids, disponibles_antes)
     if motivo_sospechoso:
         logger.warning(f"model_catalog sync provider=ollama respuesta sospechosa: {motivo_sospechoso}")
         return {"provider_id": "ollama", "error": f"respuesta sospechosa del proveedor ({motivo_sospechoso})"}
+    if forzar:
+        logger.warning("model_catalog sync provider=ollama FORZADO -- guardián de lista encogida saltado")
 
     # Frente D (2026-09-16): la modalidad de entrada sale de /api/show, ANTES
     # de tomar la conexion (no se retiene una conexion del pool durante HTTP).
@@ -645,7 +734,7 @@ async def _facetas_en_riesgo(cur) -> list[dict]:
     return filas
 
 
-async def sync_all() -> dict:
+async def sync_all(forzar: list[str] | None = None) -> dict:
     """Orquesta el sync completo: capa (a) por cada proveedor de
     SYNCABLE_PROVIDERS, capa (b) de enriquecimiento, y el diagnostico de
     saltados/nuevos/facetas en riesgo. Extraida de POST /admin/models/sync
@@ -658,11 +747,18 @@ async def sync_all() -> dict:
     provider con error, un provider SALTADO (antes esto no bajaba `ok` --
     asi paso desapercibido que anthropic se saltaba en cada corrida desde
     que los servicios corren como jaxsvc), el enriquecimiento fallido, o una
-    faceta 'primary' cuyo modelo dejo de estar disponible."""
+    faceta 'primary' cuyo modelo dejo de estar disponible.
+
+    `forzar` (MAJOR-3(b), segunda auditoría adversarial, 2026-09-27): lista
+    de provider_id para los que se salta el guardián de "lista encogida" --
+    ver `sync_provider_models`. El ejecutor programado (sin superadmin
+    detrás) nunca pasa esto; sólo lo usa el endpoint, y sólo cuando un
+    superadmin lo pide explícitamente."""
+    forzados = set(forzar or ())
     results = []
     for provider_id in SYNCABLE_PROVIDERS:
         try:
-            results.append(await sync_provider_models(provider_id))
+            results.append(await sync_provider_models(provider_id, forzar=provider_id in forzados))
         except Exception as e:  # fail-soft: un provider caido no frena a los demas; su error va en el resultado y apaga ok
             motivo = texto_de_error(e)
             logger.warning(f"sync_all provider={provider_id} failed reason={motivo}")

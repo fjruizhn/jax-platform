@@ -93,7 +93,26 @@ class _OllamaFalso:
         return _Resp({"capabilities": caps})
 
 
+async def _normalizar_disponibles_ollama():
+    """A-3/MAJOR-3(a) (segunda auditoría adversarial de model_catalog,
+    2026-09-27): baja a 'deprecated' todo lo 'available' de ollama antes de
+    este test -- no borra nada. La base de sesión es persistente entre
+    corridas de pytest y otros tests (de este archivo y de otros) dejan
+    filas 'available' con source='provider_api' sin limpiar: sin esto, el
+    guardián de "lista encogida" del sync puede disparar por casualidad
+    según cuánto acumuló la sesión, no por nada que este test afirme (mismo
+    hallazgo que en tests/test_model_catalog_sync.py)."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE model SET status='deprecated' WHERE provider_id='ollama' AND status='available'")
+        await conn.commit()
+
+
 def test_sync_de_ollama_llena_input_modalities_desde_api_show(client):
+    client.portal.call(_normalizar_disponibles_ollama)
     falso = _OllamaFalso(["test-vision:1b", "test-texto:1b"],
                          {"test-vision:1b": ["completion", "vision"], "test-texto:1b": ["completion"]})
     original = http_client._client
@@ -115,6 +134,7 @@ def test_sync_de_ollama_llena_input_modalities_desde_api_show(client):
 
 
 def test_sync_de_ollama_si_api_show_falla_no_pisa_lo_que_habia(client):
+    client.portal.call(_normalizar_disponibles_ollama)
     client.portal.call(_commit,
         "INSERT INTO model (provider_id, model_id, status, source, source_checked_at, input_modalities) "
         "VALUES ('ollama', 'test-previo:1b', 'available', 'provider_api', NOW(), 'text,image') "

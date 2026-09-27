@@ -46,9 +46,21 @@ import sys
 import time
 from pathlib import Path
 
-import model_catalog
-from db.connection import close_pool
-from http_client import get_http_client
+# MAJOR-2 (segunda auditoría adversarial, 2026-09-27): `model_catalog` y
+# `db.connection` NO se importan acá arriba -- si el .venv de producción
+# quedara roto (una dependencia faltante, un bug de import-time en
+# model_catalog.py o algo que él mismo importa), un `import` a nivel de
+# módulo reventaría ANTES de que `main()` llegue a correr una sola línea, y
+# el `try/except` de `main()` nunca lo vería: el proceso moriría con un
+# traceback, sin avisar a nadie. Se importan DENTRO de `_correr()` (que
+# `main()` sí llama con un try alrededor) para que ESE camino de fallo
+# también dispare el aviso de "el vigilante falló". `http_client` y
+# `redaccion` sí quedan acá arriba: son módulos más simples y estables, y el
+# propio aviso de fallo los necesita para poder mandar algo -- si esos dos
+# estuvieran rotos, no habría nada en este proceso capaz de avisar de todos
+# modos (para ESE caso está la unidad `OnFailure=`, que ni siquiera usa el
+# .venv, ver ops/avisar-fallo-unidad.py).
+from http_client import close_http_client, get_http_client
 from redaccion import redactar_secretos, texto_de_error
 
 logger = logging.getLogger("catalogo_modelos_ejecutor")
@@ -96,9 +108,15 @@ def _firma(objeto) -> str:
 
 def _cargar_estado(ruta: Path) -> dict:
     try:
-        return json.loads(ruta.read_text(encoding="utf-8"))
+        estado = json.loads(ruta.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+    # MINOR-7 (segunda auditoría adversarial, 2026-09-27): un archivo con
+    # JSON válido pero que NO es un objeto (una lista, un string, un número
+    # -- corrupción parcial, o alguien lo pisó a mano) rompería cada
+    # `estado.get(...)` de más abajo con AttributeError. Se trata igual que
+    # "no hay estado".
+    return estado if isinstance(estado, dict) else {}
 
 
 def _guardar_estado(ruta: Path, estado: dict) -> None:
@@ -168,6 +186,15 @@ def _fusionar_nuevos(pendientes: dict, detectados: dict) -> dict:
     return {p: ids for p, ids in fusion.items() if ids}
 
 
+#: Motivo con el que `model_catalog._motivo_si_respuesta_sospechosa` marca
+#: un error del guardián de "lista encogida" (A-3) -- prefijo EXACTO que
+#: arma `sync_provider_models`/`_sync_ollama_models` al devolver el error.
+#: Sirve para distinguir "esto se puede forzar" de cualquier otro fallo de
+#: proveedor (una excepción de red, una credencial vencida) que forzar NO
+#: arregla.
+_PREFIJO_ERROR_GUARDIAN = "respuesta sospechosa del proveedor"
+
+
 def _mensaje_problemas(resultado: dict) -> str:
     partes = ["Catálogo de modelos: hay problemas."]
     if resultado.get("providers_fallidos"):
@@ -182,6 +209,20 @@ def _mensaje_problemas(resultado: dict) -> str:
             for f in resultado["facetas_en_riesgo"]
         )
         partes.append(f"Facetas en riesgo: {riesgos}.")
+
+    # MAJOR-3(c) (segunda auditoría adversarial, 2026-09-27): si el motivo es
+    # el guardián de "lista encogida", el aviso dice CÓMO forzarlo -- si es
+    # una caída real del proveedor (no un límite/paginación rota), forzar
+    # simplemente vuelve a fallar en el próximo sync programado.
+    sospechosos = sorted(
+        r["provider_id"] for r in resultado.get("providers") or []
+        if isinstance(r.get("error"), str) and r["error"].startswith(_PREFIJO_ERROR_GUARDIAN)
+    )
+    if sospechosos:
+        partes.append(
+            "Si es una caída real de esos proveedores (no un límite o una paginación rota), "
+            f"forzalo con POST /api/admin/models/sync {{\"forzar\": {sospechosos}}} (requiere superadmin)."
+        )
     return " ".join(partes)
 
 
@@ -249,6 +290,17 @@ async def _enviar_telegram(mensaje: str) -> bool:
         )
         return False
 
+    # MAJOR-4 (segunda auditoría adversarial, 2026-09-27): `resp.json()`
+    # puede parsear bien y devolver algo que NO es un objeto (una lista, un
+    # número) -- `.get("ok")` reventaría con AttributeError, sin marcar,
+    # fuera de cualquier try. Se trata como "no confirmado", igual que
+    # cualquier otra respuesta rara.
+    if not isinstance(cuerpo, dict):
+        logger.warning(
+            f"catalogo_modelos_ejecutor: Telegram respondió un JSON que no es un objeto (status={resp.status_code})"
+        )
+        return False
+
     if resp.status_code == 200 and cuerpo.get("ok"):
         return True
 
@@ -284,10 +336,21 @@ async def _avisar(resultado: dict) -> None:
             # si falla: no se escribe nada -- la firma actual sigue sin
             # figurar como avisada, así que la corrida siguiente reintenta.
 
+    if cambio:
+        _guardar_estado(ruta, estado)
+        cambio = False
+
     # --- Nuevos: acumulador PERSISTENTE, no firma+ventana (A-1, ver
-    # `_fusionar_nuevos`). Se guarda lo pendiente ANTES de intentar el envío
-    # (si el proceso muriera a mitad del POST, no se pierde lo detectado) y
-    # sólo se limpia cuando Telegram confirma la entrega.
+    # `_fusionar_nuevos`).
+    #
+    # MAJOR-4 (segunda auditoría adversarial, 2026-09-27): el `_guardar_estado`
+    # de lo pendiente va INMEDIATAMENTE después de calcular `fusion`, ANTES
+    # del POST a Telegram -- no al final de la función. Antes el archivo sólo
+    # se escribía al terminar `_avisar()`, así que si el proceso moría A
+    # MITAD del envío (excepción, SIGKILL, el propio `_enviar_telegram`
+    # reventando), lo recién detectado se perdía: nunca había tocado disco.
+    # Ahora, pase lo que pase durante el envío, lo pendiente YA está en
+    # disco antes de intentarlo; sólo se limpia cuando Telegram confirma.
     detectados = _nuevos_de(resultado) or {}
     pendientes_antes = estado.get("nuevos_pendientes") or {}
     fusion = _fusionar_nuevos(pendientes_antes, detectados)
@@ -296,17 +359,15 @@ async def _avisar(resultado: dict) -> None:
             estado["nuevos_pendientes"] = fusion
         else:
             estado.pop("nuevos_pendientes", None)
-        cambio = True
+        _guardar_estado(ruta, estado)
+
     if fusion:
         if await _enviar_telegram(_mensaje_nuevos(fusion)):
             if estado.pop("nuevos_pendientes", None) is not None:
-                cambio = True
-        # si falla: se queda fusionado en el estado (ya guardado arriba) --
-        # la corrida siguiente lo reintenta, sumándole lo que aparezca nuevo
-        # mientras tanto.
-
-    if cambio:
-        _guardar_estado(ruta, estado)
+                _guardar_estado(ruta, estado)
+        # si falla (o el proceso muere acá): lo pendiente YA quedó guardado
+        # arriba -- la corrida siguiente lo reintenta, sumándole lo que
+        # aparezca nuevo mientras tanto.
 
 
 def _resumen(resultado: dict) -> str:
@@ -323,43 +384,66 @@ def _resumen(resultado: dict) -> str:
 
 
 async def _correr() -> dict:
+    """MAJOR-2 (segunda auditoría adversarial, 2026-09-27): `model_catalog`
+    y `close_pool` se importan ACÁ ADENTRO, no al tope del módulo -- ver el
+    comentario grande junto a los imports. Si `model_catalog` (o algo que él
+    importa) revienta al cargarse, la excepción sale de ESTA función, que
+    `_ciclo()` corre con un try alrededor."""
+    import model_catalog
+    from db.connection import close_pool
     try:
         return await model_catalog.sync_all()
     finally:
-        # Este proceso termina apenas main() retorna -- cerrar el pool acá
-        # (mismo loop que lo creó, ver db/connection.py) evita que la
-        # interpretación cierre con conexiones a medio cerrar.
+        # Mismo loop que lo creó (ver db/connection.py) -- cerrar acá evita
+        # que la interpretación termine con conexiones a medio cerrar.
         await close_pool()
 
 
-def main() -> int:
-    """A-2 (auditoría adversarial, 2026-09-27): antes, si `sync_all()`
-    reventaba de una manera que su propio try/except interno NO cubre (la
-    DB caída al conectar, un import roto, un bug real en
-    `_facetas_en_riesgo`), la excepción se propagaba, Python imprimía el
-    traceback y el proceso salía en 1 -- en rojo, pero MUDO: nadie se
-    entera hasta que alguien mira el journal a mano. Ahora cualquier
-    excepción de ese tramo también avisa, con un mensaje que dice
-    explícitamente que el propio vigilante falló al correr (distinto de "el
-    catálogo tiene problemas": acá ni siquiera se llegó a terminar el
-    sync)."""
+async def _ciclo() -> dict | None:
+    """MINOR-8 (segunda auditoría adversarial, 2026-09-27): TODO -- el sync,
+    el aviso (de problemas o de crash) y el cierre del cliente HTTP -- corre
+    en el MISMO event loop, con un único `asyncio.run()` en `main()`. Antes
+    cada pieza tenía su propio `asyncio.run()`: `http_client._client` es un
+    `httpx.AsyncClient` GLOBAL atado al loop que lo crea la primera vez, así
+    que un segundo `asyncio.run()` reusando ese cliente contra un loop
+    NUEVO (con el anterior ya cerrado) es el mismo bug de "Event loop is
+    closed" que `db/connection.py` ya resolvió para el pool de aiomysql, con
+    el mismo remedio: un solo loop para todo el ciclo de vida del proceso.
+
+    Devuelve el `resultado` de `sync_all()`, o `None` si reventó de una
+    manera que ni su propio try/except interno cubre (A-2: DB caída al
+    conectar, un import roto) -- en ese caso ya mandó su propio aviso de
+    "el vigilante falló" acá adentro, y ya imprimió el resumen de una
+    línea."""
+    resultado = None
     try:
-        resultado = asyncio.run(_correr())
+        resultado = await _correr()
     except Exception as e:  # fail-soft: un vigilante que revienta sin avisar es peor que uno que sale rojo avisando (A-2)
         motivo = texto_de_error(e)
         logger.exception("catalogo_modelos_ejecutor: sync_all() reventó de forma inesperada")
         print(f"catalogo_modelos ok=False crash={motivo}")
         try:
-            asyncio.run(_enviar_telegram(_mensaje_fallo_critico(motivo)))
+            await _enviar_telegram(_mensaje_fallo_critico(motivo))
         except Exception:  # fail-soft: ni el aviso de crash puede impedir salir en rojo
             logger.exception("catalogo_modelos_ejecutor: fallo el aviso de crash")
-        return 1
 
-    print(_resumen(resultado))
-    try:
-        asyncio.run(_avisar(resultado))
-    except Exception:  # fail-soft: el código de salida es sobre `ok`, nunca sobre si el aviso salió bien
-        logger.exception("catalogo_modelos_ejecutor: _avisar falló, el código de salida no cambia por esto")
+    if resultado is not None:
+        print(_resumen(resultado))
+        try:
+            await _avisar(resultado)
+        except Exception:  # fail-soft: el código de salida es sobre `ok`, nunca sobre si el aviso salió bien
+            logger.exception("catalogo_modelos_ejecutor: _avisar falló, el código de salida no cambia por esto")
+
+    # Mismo loop, al final de todo: `close_http_client()` está del lado de
+    # http_client.py y no toca el pool (ya cerrado dentro de `_correr()`).
+    await close_http_client()
+    return resultado
+
+
+def main() -> int:
+    resultado = asyncio.run(_ciclo())
+    if resultado is None:
+        return 1
     return 0 if resultado["ok"] else 1
 
 

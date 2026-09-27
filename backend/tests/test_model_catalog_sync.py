@@ -511,11 +511,31 @@ async def _fetch_model_digest(provider_id, model_id):
             return await cur.fetchone()
 
 
+async def _normalizar_disponibles_ollama():
+    """MAJOR-3(a)/A-3 (segunda auditoría adversarial, 2026-09-27): baja a
+    'deprecated' todo lo 'available' de ollama -- no borra nada. La base de
+    sesión es persistente entre corridas de pytest (docstring de módulo de
+    este archivo) y otros tests de este mismo archivo dejan filas
+    'available' con source='provider_api' sin limpiar: sin esto, el
+    guardián de "lista encogida" (A-3) puede disparar por casualidad según
+    cuántas corridas anteriores acumuló la sesión, no por nada que ESTE test
+    esté afirmando -- medido: 12 disponibles acumuladas de corridas previas
+    tumbaban un fake de sólo 2 ids."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE model SET status='deprecated' WHERE provider_id='ollama' AND status='available'")
+        await conn.commit()
+
+
 def test_sync_provider_models_ollama_uses_local_tags_without_auth(client):
     """Ollama es local, sin API key (provider.auth_type='none') -- /api/tags
     no debe llevar Authorization ni ningun otro header. Shape real distinto
     a los demas (verificado con curl, 2026-08-10): {'models':[{'model':<tag>,
     'digest':<sha>}]}."""
+    client.portal.call(_normalizar_disponibles_ollama)
     fake = _FakeGetClient(_FakeResponse({"models": [
         {"model": "qwen3-coder:30b", "digest": "sha-aaa"},
         {"model": "llama3.2:3b", "digest": "sha-bbb"},
@@ -556,6 +576,7 @@ def test_sync_provider_models_ollama_nuevos_lists_only_previously_unseen_ids(cli
     (test_sync_provider_models_nuevos_lists_only_previously_unseen_ids),
     ejercitado en la rama de ollama -- shape de respuesta y upsert distintos,
     misma pregunta ("¿qué es nuevo?")."""
+    client.portal.call(_normalizar_disponibles_ollama)
     ya_conocido = "llama3.2:3b"  # ya sembrado por otro test de este archivo, misma sesión de DB
     nuevo = f"test-nuevo-ollama-{uuid.uuid4().hex[:8]}"
 
@@ -585,6 +606,7 @@ def test_sync_provider_models_ollama_captures_digest_change(client):
     corridas (ver docstring del archivo) -- arranca de un baseline explicito
     en vez de asumir digest=NULL, para no depender de lo que haya dejado
     una corrida anterior de este mismo test."""
+    client.portal.call(_normalizar_disponibles_ollama)
     client.portal.call(_reset_model_digest, "ollama", "qwen2.5:7b")
     original = http_client._client
     try:

@@ -192,8 +192,41 @@ async def declarar_contrato_dispatch(
     return {"ok": True, "model_ref": model_ref, "model_id": model_id, "antes": antes, **despues}
 
 
+class SyncModelsRequest(BaseModel):
+    # MAJOR-3(b) (segunda auditoría adversarial, 2026-09-27): provider_id
+    # para los que un superadmin decide saltar el guardián de "lista
+    # encogida" (A-3) -- una salida AUDITADA, nunca silenciosa. Default []:
+    # el ejecutor programado y cualquier llamador viejo sin body siguen
+    # funcionando exactamente igual que antes.
+    forzar: list[str] = []
+
+
+async def _auditar_sync_forzado(
+    cur, provider_id: str, disponibles_antes: int | None,
+    resultado_provider: dict | None, user: AuthUser, request: Request,
+) -> None:
+    valor_antes = {"disponibles_antes": disponibles_antes}
+    valor_despues = {
+        "fetched": (resultado_provider or {}).get("fetched"),
+        "error": (resultado_provider or {}).get("error"),
+    }
+    await cur.execute(
+        "INSERT INTO model_catalog_audit (action, model_ref, provider_id, valor_antes, valor_despues, "
+        "performed_by, performed_by_email, performed_from_ip) "
+        "VALUES ('sync_forzado', NULL, %s, %s, %s, %s, %s, %s)",
+        (
+            provider_id, json.dumps(valor_antes), json.dumps(valor_despues),
+            int(user.user_id), user.email, ip_de(request),
+        ),
+    )
+
+
 @router.post("/sync")
-async def sync_models(user: AuthUser = Depends(require_superadmin)):
+async def sync_models(
+    request: Request,
+    body: SyncModelsRequest | None = None,
+    user: AuthUser = Depends(require_superadmin),
+):
     """D1.3: capa (a) por cada proveedor con catalogo remoto propio, luego
     capa (b) de enriquecimiento. Solo escribe `model` — ver docstring del
     modulo.
@@ -203,8 +236,44 @@ async def sync_models(user: AuthUser = Depends(require_superadmin)):
     riesgo) vive en `model_catalog.sync_all()`, compartida con el ejecutor
     programado (catalogo_modelos_ejecutor.py) -- Regla Absoluta: una sola
     fuente de "que significa que el catalogo este sano", nunca dos
-    implementaciones que puedan divergir."""
-    return await model_catalog.sync_all()
+    implementaciones que puedan divergir.
+
+    `body.forzar` (MAJOR-3(b), segunda auditoría adversarial, 2026-09-27):
+    salta el guardián de "lista encogida" (A-3) SOLO para esos provider_id
+    -- nunca el tope de páginas ni el cursor repetido (MAJOR-1), que son
+    señales de una paginación rota, no de un catálogo más chico de lo
+    esperado. Deja una fila en `model_catalog_audit` (acción 'sync_forzado')
+    por cada proveedor forzado, con quién/cuándo (el propio `performed_by`/
+    `performed_at` de la tabla) y cuántos modelos había antes/después."""
+    forzar = body.forzar if body else []
+
+    disponibles_antes_por_provider: dict[str, int] = {}
+    if forzar:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                for provider_id in forzar:
+                    disponibles_antes_por_provider[provider_id] = await model_catalog._disponibles_antes(
+                        cur, provider_id)
+
+    respuesta = await model_catalog.sync_all(forzar=forzar)
+
+    if forzar:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                for provider_id in forzar:
+                    resultado_provider = next(
+                        (r for r in respuesta.get("providers") or [] if r.get("provider_id") == provider_id),
+                        None,
+                    )
+                    await _auditar_sync_forzado(
+                        cur, provider_id, disponibles_antes_por_provider.get(provider_id),
+                        resultado_provider, user, request,
+                    )
+            await conn.commit()
+
+    return respuesta
 
 
 # PR-L ronda 2 (2026-09-14, punto 7 de la revisión): la lista era sin límite y,
