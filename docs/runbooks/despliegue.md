@@ -34,31 +34,76 @@ los endpoints revientan con `Unknown column` la primera vez que se usan.
 
 ## 0 · Respaldo, y probarlo (Principio VI)
 
+> **Corregido el 2026-09-27 (Hyde), ejecutándolo en el despliegue del catálogo
+> de modelos.** La versión anterior de este paso tenía dos defectos:
+>
+> 1. **La contraseña en el argv** (`-p"$JAX_DB_PASSWORD"`): mientras corre el
+>    dump queda legible por cualquier usuario del host en `/proc/<pid>/cmdline`
+>    (`/proc` no tiene `hidepid` en hall9000). Ahora va en un archivo de
+>    opciones `600` de root que se borra al salir.
+> 2. **El respaldo NO se podía restaurar con el usuario de la aplicación.** Los
+>    triggers se vuelcan con `DEFINER=root@localhost` y restaurarlos exige el
+>    privilegio `SET USER`: la restauración de prueba fallaba en la línea 9054
+>    con `ERROR 1227`. O sea, el paso decía «probá la restauración» y la
+>    restauración no funcionaba. Ahora se quitan las cláusulas `DEFINER` al
+>    restaurar (el trigger queda con el usuario que restaura).
+>
+> Medido con esta versión: dump de 11 MB, restauración con `facts`, `model`,
+> `facet_binding`, `memory_revisions`, `memory_objects` y `axioma_usage`
+> idénticos a producción, 66 tablas y 5 triggers en los dos lados.
+
 ```bash
-set -a; . <(sudo -n cat /etc/jax/.env); set +a
-D=~/respaldos-despliegue/$(date +%Y-%m-%d)-<motivo>; mkdir -p $D
+D=~/respaldos-despliegue/$(date +%Y-%m-%d)-<motivo>; mkdir -p $D && chmod 700 $D
+
+sudo bash -c '
+set -euo pipefail; set -a; . /etc/jax/.env; set +a
+D='"$D"'
+T=$(mktemp -d); chmod 700 $T; trap "rm -rf $T" EXIT
+printf "[client]\nhost=%s\nport=%s\nuser=%s\npassword=%s\n" \
+  "$JAX_DB_HOST" "$JAX_DB_PORT" "$JAX_DB_USER" "$JAX_DB_PASSWORD" > $T/c.cnf
+chmod 600 $T/c.cnf
 
 # Los SHA a los que volver, ANTES de tocar nada
 { echo "fecha: $(date -Is)"
-  echo "jax prod:          $(git -C /srv/jax-prod/jax rev-parse HEAD)"
-  echo "jax-platform prod: $(git -C /srv/jax-prod/jax-platform rev-parse HEAD)"
-  echo "bundle publico:    $(curl -s https://axioma-ia.io | grep -oE 'assets/index-[^"]*\.js' | head -1)"
-} | tee $D/ESTADO-ANTES.txt
+  echo "jax prod:          $(git -c safe.directory=/srv/jax-prod/jax -C /srv/jax-prod/jax rev-parse HEAD)"
+  echo "jax-platform prod: $(git -c safe.directory=/srv/jax-prod/jax-platform -C /srv/jax-prod/jax-platform rev-parse HEAD)"
+  echo "bundle publico:    $(curl -s https://axioma-ia.io | grep -oE "assets/index-[^\"]*\.js" | head -1)"
+} > $D/ESTADO-ANTES.txt
 
-mariadb-dump -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u "$JAX_DB_USER" \
-  -p"$JAX_DB_PASSWORD" --single-transaction jax_memory | gzip > $D/jax_memory.sql.gz
+mariadb-dump --defaults-extra-file=$T/c.cnf --single-transaction --routines --triggers \
+  jax_memory | gzip > $D/jax_memory.sql.gz
+chown -R fruiz:fruiz $D; chmod 600 $D/*'
 ```
 
 **Y restauralo en una base descartable antes de seguir** — un respaldo sin
 restauración probada no es un respaldo:
 
 ```bash
-B=jax_memory_test_restauracion
-mariadb ... -e "DROP DATABASE IF EXISTS \`$B\`; CREATE DATABASE \`$B\`;"
-gunzip -c $D/jax_memory.sql.gz | sed -e '/^CREATE DATABASE/d' \
-  -e "s/^USE \`jax_memory\`;/USE \`$B\`;/" | mariadb ... "$B"
-# comparar COUNT(*) de facts contra produccion, y DROP la base de prueba
+sudo bash -c '
+set -euo pipefail; set -a; . /etc/jax/.env; set +a
+T=$(mktemp -d); chmod 700 $T; trap "rm -rf $T" EXIT
+printf "[client]\nhost=%s\nport=%s\nuser=%s\npassword=%s\n" \
+  "$JAX_DB_HOST" "$JAX_DB_PORT" "$JAX_DB_USER" "$JAX_DB_PASSWORD" > $T/c.cnf
+chmod 600 $T/c.cnf; C="--defaults-extra-file=$T/c.cnf"
+B=jax_memory_test_restauracion_$(date +%Y%m%d)
+mariadb $C -e "DROP DATABASE IF EXISTS \`$B\`; CREATE DATABASE \`$B\`;"
+# Quitar DEFINER: sin esto falla con ERROR 1227 (hace falta SET USER).
+gunzip -c '"$D"'/jax_memory.sql.gz | sed -e "/^CREATE DATABASE/d" \
+  -e "s/^USE \`jax_memory\`;/USE \`$B\`;/" \
+  -e "s#/\*!50017 DEFINER=[^*]*\*/##g" -e "s/DEFINER=\`[^\`]*\`@\`[^\`]*\`//g" \
+  | mariadb $C "$B"
+for t in facts model facet_binding memory_revisions memory_objects axioma_usage; do
+  echo "$t prod=$(mariadb $C -N -e "SELECT COUNT(*) FROM jax_memory.$t") restaurada=$(mariadb $C -N -e "SELECT COUNT(*) FROM \`$B\`.$t")"
+done
+mariadb $C -e "DROP DATABASE \`$B\`;"'
 ```
+
+Cada par tiene que dar el mismo número. Si alguno difiere, **no se sigue**.
+
+> No uses `--defaults-extra-file=<(printf ...)` para ahorrarte el archivo
+> temporal: un descriptor de sustitución de proceso se lee **una sola vez**, y
+> desde la segunda llamada `mariadb` cae al socket local por defecto
+> (`ERROR 2002 ... mysqld.sock`). Medido el mismo día.
 
 ## 1 · `jax` (si el cambio lo toca)
 
