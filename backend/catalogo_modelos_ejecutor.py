@@ -1,4 +1,5 @@
-"""Ejecutor programado del catálogo de modelos (2026-09-27).
+"""Ejecutor programado del catálogo de modelos (2026-09-27, revisado el
+mismo día tras la auditoría adversarial del commit d549335 -- A-1/A-2/A-5).
 
 `POST /api/admin/models/sync` (api/admin/models.py) sólo se dispara con el
 click de un superadmin -- no hay nada programado. Desde que los servicios
@@ -15,17 +16,24 @@ Este módulo:
    sano", nunca dos implementaciones que puedan divergir).
 2. Imprime un resumen de una línea por stdout (la unidad systemd lo manda al
    journal).
-3. Sale con código != 0 si `ok` es falso -- lo que
-   `jax-catalogo-modelos.service` usa para marcar el job en rojo.
-4. Avisa por Telegram, reusando `jacobs.reaper.send_telegram_alert` del repo
-   `jax` -- jax-platform NO tiene su propio cliente de Telegram a propósito
-   (ver `aviso_pipeline.py`: "El de Telegram vive en el otro repo (jax)").
-   Nunca repite el mismo aviso más de una vez por ventana de 24 h, y un
-   aviso roto (Telegram caído, disco lleno) nunca enmascara el código de
+3. Sale con código != 0 si `ok` es falso, O si `sync_all()` reventó de una
+   manera que ni su propio try/except interno cubre (A-2: DB caída al
+   conectar, un import roto) -- antes ese segundo caso salía en rojo pero
+   MUDO, sin avisar a nadie.
+4. Avisa por Telegram con un envío PROPIO y mínimo (A-5: ya no se importa
+   `jacobs.reaper.send_telegram_alert` del repo `jax` -- ver el docstring de
+   `_enviar_telegram` para el motivo). El dedupe SÓLO avanza si Telegram
+   confirmó la entrega (A-1): un aviso que falla no se marca como avisado,
+   la corrida siguiente reintenta, y un modelo nuevo que no se pudo avisar
+   se acumula como pendiente hasta que un envío salga -- nunca se pierde en
+   silencio.
+5. Un aviso roto (Telegram caído, disco lleno) nunca enmascara el código de
    salida del job.
 
 Uso: `python -m catalogo_modelos_ejecutor` desde `backend/`, con el mismo
-entorno que el resto del servicio (`/etc/jax/.env`, `JAX_REPO_PATH`).
+entorno que el resto del servicio (`/etc/jax/.env`) más
+`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`. Ya NO depende de `JAX_REPO_PATH`
+(A-5): el envío propio a Telegram no cruza a otro repo.
 """
 from __future__ import annotations
 
@@ -40,18 +48,27 @@ from pathlib import Path
 
 import model_catalog
 from db.connection import close_pool
+from http_client import get_http_client
+from redaccion import redactar_secretos, texto_de_error
 
 logger = logging.getLogger("catalogo_modelos_ejecutor")
 
-#: Directorio donde se guarda el estado del último aviso (dedupe). Variable
-#: de entorno primero; sin ella, bajo el HOME del proceso -- en producción
-#: eso es jaxsvc (/var/lib/jaxsvc), el mismo usuario que corre el resto del
-#: servicio.
+#: Directorio donde se guarda el estado del último aviso (dedupe + pendientes
+#: de "nuevos"). Variable de entorno primero; sin ella, bajo el HOME del
+#: proceso -- en producción eso es jaxsvc (/var/lib/jaxsvc), el mismo
+#: usuario que corre el resto del servicio.
 ESTADO_DIR_ENV = "JAX_CATALOGO_ESTADO_DIR"
 
-#: No se reavisa del MISMO conjunto de problemas antes de que pase esto --
-#: evita el spam de "sigue roto" cada 6 h (el timer corre cada 6 h,
-#: ver ops/); un problema NUEVO, en cambio, avisa de inmediato.
+#: Credenciales del bot -- las MISMAS variables que ya usa `jax/jacobs/
+#: reaper.py::send_telegram_alert` (mismo ecosistema, un solo bot), pero acá
+#: se leen y se usan directo: sin importar ese módulo (A-5).
+TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
+
+#: No se reavisa del MISMO conjunto de "problemas" antes de que pase esto --
+#: evita el spam de "sigue roto" cada 6 h (el timer corre cada 6 h, ver
+#: ops/); un problema NUEVO, en cambio, avisa de inmediato. "nuevos" NO usa
+#: esta ventana -- ver `_avisar`.
 VENTANA_REAVISO_SEGUNDOS = 24 * 60 * 60
 
 
@@ -71,8 +88,8 @@ def _firma(objeto) -> str:
     corridas con el MISMO conjunto de problemas (aunque en otro orden
     interno) dan la misma firma. `sort_keys` hace el orden de las claves
     irrelevante; las LISTAS ya llegan ordenadas por quien arma `objeto`
-    (ver `_problemas_de`/`_nuevos_de`), para que el orden de una lista
-    tampoco cambie la firma."""
+    (ver `_problemas_de`), para que el orden de una lista tampoco cambie la
+    firma."""
     crudo = json.dumps(objeto, sort_keys=True, default=str)
     return hashlib.sha256(crudo.encode("utf-8")).hexdigest()
 
@@ -92,9 +109,11 @@ def _guardar_estado(ruta: Path, estado: dict) -> None:
 
 
 def _debe_avisar(entrada: dict | None, firma_actual: str, ahora: float) -> bool:
-    """¿Toca mandar el aviso? Sí si es la primera vez, si el conjunto de
-    problemas cambió, o si ya pasó la ventana de reaviso -- nunca por "ya se
-    avisó antes y nada cambió", que es justo el spam que esto evita."""
+    """¿Toca INTENTAR mandar el aviso de "problemas"? Sí si es la primera
+    vez, si el conjunto de problemas cambió, o si ya pasó la ventana de
+    reaviso -- nunca por "ya se avisó antes y nada cambió", que es justo el
+    spam que esto evita. Sólo se usa para "problemas": "nuevos" se acumula
+    como pendiente (ver `_avisar`), no se dedupea por ventana."""
     if not entrada:
         return True
     if entrada.get("firma") != firma_actual:
@@ -123,8 +142,30 @@ def _problemas_de(resultado: dict) -> dict | None:
 
 
 def _nuevos_de(resultado: dict) -> dict | None:
+    """Lo que ESTA corrida vio por primera vez para cada proveedor. No es
+    "lo pendiente de avisar" -- eso vive en el archivo de estado y lo arma
+    `_fusionar_nuevos`."""
     nuevos = {p: sorted(ids) for p, ids in (resultado.get("nuevos") or {}).items() if ids}
     return nuevos or None
+
+
+def _fusionar_nuevos(pendientes: dict, detectados: dict) -> dict:
+    """Unión por proveedor de lo pendiente de avisar (de una corrida
+    anterior cuyo envío falló) con lo detectado en ESTA corrida.
+
+    A-1 (auditoría adversarial, 2026-09-27): `sync_provider_models` ya
+    insertó en `model` lo que ve como nuevo -- la corrida SIGUIENTE no lo
+    va a reportar de nuevo en `resultado["nuevos"]`, sin importar si el
+    aviso de HOY salió o no. Sin este acumulador, un modelo nuevo cuyo
+    aviso falló se perdía para siempre en el siguiente `_avisar()`, sin que
+    nadie se enterara jamás de que existió. Acá se fusiona con lo que ya
+    estaba pendiente y sólo se limpia cuando un envío confirma la entrega."""
+    proveedores = set(pendientes) | set(detectados)
+    fusion = {
+        p: sorted(set(pendientes.get(p, [])) | set(detectados.get(p, [])))
+        for p in proveedores
+    }
+    return {p: ids for p, ids in fusion.items() if ids}
 
 
 def _mensaje_problemas(resultado: dict) -> str:
@@ -149,64 +190,120 @@ def _mensaje_nuevos(nuevos: dict) -> str:
     return f"Catálogo de modelos: modelos nuevos detectados -- {lineas}."
 
 
-def _enviar_telegram(mensaje: str) -> None:
-    """Best-effort: NUNCA levanta. Reusa el ÚNICO cliente de Telegram del
-    ecosistema (jax/jacobs/reaper.py::send_telegram_alert) -- jax-platform
-    no tiene el suyo a propósito (ver aviso_pipeline.py). Mismo patrón de
-    sys.path que governance_context.py: JAX_REPO_PATH validado con
-    `config_entorno.ruta_absoluta_requerida`, nunca un import de un paquete
-    llamado 'jax' preinstalado sin relación."""
+def _mensaje_fallo_critico(motivo: str) -> str:
+    return f"Catálogo de modelos: el vigilante falló al correr -- {motivo}"
+
+
+async def _enviar_telegram(mensaje: str) -> bool:
+    """Envío propio y mínimo (A-1/A-5, auditoría adversarial del commit
+    d549335, 2026-09-27). ANTES importaba `jacobs.reaper.send_telegram_alert`
+    (repo `jax`) -- eso mete en `sys.path` un checkout entero de otro repo y
+    arrastra `jacobs.store`/`jacobs.policy`/`interruptor`: módulos que
+    pueden chocar con algo ya presente en `sys.modules` de ESTE proceso
+    (jax-platform tiene módulos propios con nombres parecidos) -- el
+    resultado es un import híbrido frágil, que depende del ORDEN en que algo
+    se haya importado antes en este mismo proceso, no sólo de qué hay en
+    disco. Este envío usa el cliente HTTP YA compartido de jax-platform
+    (`http_client.get_http_client`) y no toca `jax` para nada.
+
+    Devuelve True SÓLO si Telegram confirmó la entrega (200 + body['ok']) --
+    nunca "se intentó mandar". `_avisar()` depende de este valor real para
+    decidir si el dedupe avanza (A-1): antes se marcaba "avisado" aunque el
+    envío fallara, y un Telegram caído dejaba el catálogo roto en silencio
+    otras 24h sin que nadie insistiera.
+
+    El token del bot NUNCA se loguea ni se devuelve: viaja en el PATH de la
+    URL (`.../bot<token>/sendMessage`), forma que NINGUNA regla de
+    `redactar_secretos` reconoce por defecto (no es un query param ni tiene
+    la forma AIza...) -- se pasa `secretos=[token]` EXPLÍCITO, que tapa por
+    substring exacto antes de cualquier patrón, tanto en el log de una
+    excepción de red como en el cuerpo de una respuesta sin confirmar."""
+    token = os.environ.get(TELEGRAM_TOKEN_ENV, "").strip()
+    chat_id = os.environ.get(TELEGRAM_CHAT_ID_ENV, "").strip()
+    if not token or not chat_id:
+        logger.warning(
+            f"catalogo_modelos_ejecutor: {TELEGRAM_TOKEN_ENV}/{TELEGRAM_CHAT_ID_ENV} "
+            "no configurados, aviso suprimido"
+        )
+        return False
+
     try:
-        from config_entorno import ruta_absoluta_requerida
+        client = await get_http_client()
+        resp = await client.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data={"chat_id": chat_id, "text": mensaje},
+            timeout=10.0,
+        )
+    except Exception as e:  # fail-soft: red caída/timeout no puede tumbar el job
+        logger.warning(
+            "catalogo_modelos_ejecutor: fallo de red enviando a Telegram: "
+            f"{texto_de_error(e, secretos=[token])}"
+        )
+        return False
 
-        repo = ruta_absoluta_requerida("JAX_REPO_PATH")
-        for ruta in (str(repo), str(repo / "las_manos")):
-            if ruta not in sys.path:
-                sys.path.insert(0, ruta)
-        from jacobs.reaper import send_telegram_alert
+    try:
+        cuerpo = resp.json()
+    except Exception:  # fail-soft: una respuesta no-JSON tampoco puede tumbar el job
+        logger.warning(
+            f"catalogo_modelos_ejecutor: Telegram respondió algo no-JSON, status={resp.status_code}"
+        )
+        return False
 
-        resultado = asyncio.run(send_telegram_alert(mensaje))
-        if not resultado.get("ok"):
-            logger.warning(
-                f"catalogo_modelos_ejecutor: aviso Telegram no confirmado: {resultado.get('error')}"
-            )
-    except Exception:  # fail-soft: un aviso roto no puede tumbar el job ni enmascarar su código de salida
-        logger.exception("catalogo_modelos_ejecutor: fallo enviando aviso a Telegram")
+    if resp.status_code == 200 and cuerpo.get("ok"):
+        return True
+
+    logger.warning(
+        "catalogo_modelos_ejecutor: Telegram no confirmó la entrega "
+        f"(status={resp.status_code} body={redactar_secretos(str(cuerpo), secretos=[token])})"
+    )
+    return False
 
 
-def _avisar(resultado: dict) -> None:
+async def _avisar(resultado: dict) -> None:
     ruta = _ruta_estado()
     estado = _cargar_estado(ruta)
     ahora = time.time()
     cambio = False
 
+    # --- Problemas: dedupe por firma+ventana, pero el estado SÓLO avanza si
+    # Telegram confirmó la entrega (A-1). Si falla, no se toca nada: la
+    # firma actual sigue "sin avisar" y la corrida siguiente reintenta sola.
     problemas = _problemas_de(resultado)
     if problemas is None:
-        # Catálogo sano: no hay nada que avisar, y se limpia el "ya avisado"
-        # de la vez pasada -- si el MISMO problema reaparece más adelante,
-        # tiene que volver a avisar (no seguir suprimido por una corrida
-        # sana intermedia).
+        # Catálogo sano: se limpia el "ya avisado" de la vez pasada -- si el
+        # MISMO problema reaparece más adelante, tiene que volver a avisar.
         if "problemas" in estado:
             del estado["problemas"]
             cambio = True
     else:
         firma = _firma(problemas)
         if _debe_avisar(estado.get("problemas"), firma, ahora):
-            _enviar_telegram(_mensaje_problemas(resultado))
-            estado["problemas"] = {"firma": firma, "notificado_en": ahora}
-            cambio = True
+            if await _enviar_telegram(_mensaje_problemas(resultado)):
+                estado["problemas"] = {"firma": firma, "notificado_en": ahora}
+                cambio = True
+            # si falla: no se escribe nada -- la firma actual sigue sin
+            # figurar como avisada, así que la corrida siguiente reintenta.
 
-    nuevos = _nuevos_de(resultado)
-    if nuevos is None:
-        if "nuevos" in estado:
-            del estado["nuevos"]
-            cambio = True
-    else:
-        firma = _firma(nuevos)
-        if _debe_avisar(estado.get("nuevos"), firma, ahora):
-            _enviar_telegram(_mensaje_nuevos(nuevos))
-            estado["nuevos"] = {"firma": firma, "notificado_en": ahora}
-            cambio = True
+    # --- Nuevos: acumulador PERSISTENTE, no firma+ventana (A-1, ver
+    # `_fusionar_nuevos`). Se guarda lo pendiente ANTES de intentar el envío
+    # (si el proceso muriera a mitad del POST, no se pierde lo detectado) y
+    # sólo se limpia cuando Telegram confirma la entrega.
+    detectados = _nuevos_de(resultado) or {}
+    pendientes_antes = estado.get("nuevos_pendientes") or {}
+    fusion = _fusionar_nuevos(pendientes_antes, detectados)
+    if fusion != pendientes_antes:
+        if fusion:
+            estado["nuevos_pendientes"] = fusion
+        else:
+            estado.pop("nuevos_pendientes", None)
+        cambio = True
+    if fusion:
+        if await _enviar_telegram(_mensaje_nuevos(fusion)):
+            if estado.pop("nuevos_pendientes", None) is not None:
+                cambio = True
+        # si falla: se queda fusionado en el estado (ya guardado arriba) --
+        # la corrida siguiente lo reintenta, sumándole lo que aparezca nuevo
+        # mientras tanto.
 
     if cambio:
         _guardar_estado(ruta, estado)
@@ -236,10 +333,31 @@ async def _correr() -> dict:
 
 
 def main() -> int:
-    resultado = asyncio.run(_correr())
+    """A-2 (auditoría adversarial, 2026-09-27): antes, si `sync_all()`
+    reventaba de una manera que su propio try/except interno NO cubre (la
+    DB caída al conectar, un import roto, un bug real en
+    `_facetas_en_riesgo`), la excepción se propagaba, Python imprimía el
+    traceback y el proceso salía en 1 -- en rojo, pero MUDO: nadie se
+    entera hasta que alguien mira el journal a mano. Ahora cualquier
+    excepción de ese tramo también avisa, con un mensaje que dice
+    explícitamente que el propio vigilante falló al correr (distinto de "el
+    catálogo tiene problemas": acá ni siquiera se llegó a terminar el
+    sync)."""
+    try:
+        resultado = asyncio.run(_correr())
+    except Exception as e:  # fail-soft: un vigilante que revienta sin avisar es peor que uno que sale rojo avisando (A-2)
+        motivo = texto_de_error(e)
+        logger.exception("catalogo_modelos_ejecutor: sync_all() reventó de forma inesperada")
+        print(f"catalogo_modelos ok=False crash={motivo}")
+        try:
+            asyncio.run(_enviar_telegram(_mensaje_fallo_critico(motivo)))
+        except Exception:  # fail-soft: ni el aviso de crash puede impedir salir en rojo
+            logger.exception("catalogo_modelos_ejecutor: fallo el aviso de crash")
+        return 1
+
     print(_resumen(resultado))
     try:
-        _avisar(resultado)
+        asyncio.run(_avisar(resultado))
     except Exception:  # fail-soft: el código de salida es sobre `ok`, nunca sobre si el aviso salió bien
         logger.exception("catalogo_modelos_ejecutor: _avisar falló, el código de salida no cambia por esto")
     return 0 if resultado["ok"] else 1

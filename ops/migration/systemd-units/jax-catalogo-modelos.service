@@ -1,6 +1,21 @@
 [Unit]
 Description=JAX Platform — sync programado del catálogo de modelos (Bloque D)
-After=network-online.target mariadb.service
+# A-7 (auditoría adversarial, 2026-09-27): la MariaDB real corre en Docker
+# (`mariadb-12-3-jax`, ver CLAUDE.md/CONTEXT.md), no como `mariadb.service`
+# de systemd -- esperar por esa unidad no esperaba nada de verdad. Se espera
+# a que la red esté arriba y a que el DAEMON de Docker haya arrancado (no a
+# que el contenedor específico esté sano: eso lo decide `catalogo_modelos_ejecutor`
+# en tiempo de ejecución, con su propio timeout de conexión a la DB).
+After=network-online.target docker.service
+Wants=network-online.target
+# Sin OnFailure=: `catalogo_modelos_ejecutor.py::main()` YA manda su propio
+# aviso por Telegram tanto si `sync_all()` termina con `ok=False` como si
+# revienta de una manera inesperada (DB caída, import roto -- ver A-2), y en
+# los dos casos sale con código != 0. Una unidad OnFailure= aparte sumaría
+# un SEGUNDO camino de aviso (probablemente por email, systemd no manda
+# Telegram) que puede decir algo distinto del primero y quedar sin
+# mantenimiento -- un solo lugar que decide "hay que avisar" es más fácil de
+# confiar que dos que puedan divergir (Regla Absoluta).
 
 [Service]
 Type=oneshot

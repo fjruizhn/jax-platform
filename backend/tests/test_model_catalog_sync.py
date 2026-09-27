@@ -67,6 +67,21 @@ async def _fetch_scalar(sql, params=()):
     return row[0] if row else None
 
 
+async def _ejecutar(sql, params=None):
+    """Para DDL/DML sin resultado (DELETE/UPDATE) -- `_fetch_scalar` asume
+    un result set y un DELETE no tiene ninguno. `params=None` (no `()`) a
+    propósito: pymysql intenta `query %% args` en cuanto `args is not None`,
+    y una consulta con un `%` literal (un `LIKE 'x-%'`) explota con
+    "not enough arguments for format string" incluso pasándole una tupla
+    vacía."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql, params)
+        await conn.commit()
+
+
 def _patch_credential(monkeypatch, value):
     async def fake_credential(provider_id):
         return value
@@ -201,18 +216,43 @@ def test_sync_marks_missing_model_deprecated_after_three_consecutive_misses(clie
     nunca se borra la fila. jax_memory_test es persistente entre corridas de
     pytest (no se recrea) — arranca de un baseline explicito en vez de
     asumir consecutive_misses=0, para no depender de lo que haya dejado una
-    corrida anterior."""
+    corrida anterior.
+
+    A-3 (auditoría adversarial, 2026-09-27): una lista VACÍA ahora es
+    'respuesta sospechosa' y no toca nada (ver
+    test_model_catalog_paginacion_y_guardas.py) -- ya no sirve para simular
+    "el modelo desapareció". Se simula con un decoy: una lista NO vacía que
+    nunca incluye a 'deepseek-v4-flash'. El tamaño del decoy sale de
+    consultar cuántos 'available' hay HOY para deepseek (la base de sesión
+    es persistente entre corridas de pytest y puede tener más que sólo el
+    seed) -- así el fake nunca dispara el guardián de "lista encogida" por
+    casualidad, sin importar cuánto haya acumulado la sesión."""
     _patch_credential(monkeypatch, "sk-fake")
     client.portal.call(_reset_model_baseline, "deepseek", "deepseek-v4-flash")
 
+    disponibles = client.portal.call(
+        _fetch_scalar,
+        "SELECT COUNT(*) FROM model WHERE provider_id='deepseek' AND status='available'",
+    )
+    decoy_response = _FakeGetClient(_FakeResponse({
+        "data": [{"id": f"deepseek-decoy-{i}"} for i in range(disponibles + 1)],
+    }))  # nunca incluye 'deepseek-v4-flash', y nunca es una lista más chica que la mitad de lo que ya había
+
     original = http_client._client
-    empty_response = _FakeGetClient(_FakeResponse({"data": []}))  # deepseek-v4-flash nunca aparece
     try:
         for _ in range(3):
-            http_client._client = empty_response
+            http_client._client = decoy_response
             client.portal.call(model_catalog.sync_provider_models, "deepseek")
     finally:
         http_client._client = original
+        # Limpieza: los decoys quedarían 'available' para siempre en la base
+        # de sesión persistente, e inflarían el "disponibles antes" de la
+        # PRÓXIMA corrida de este mismo test (crecimiento sin límite entre
+        # corridas). Sólo se borran los decoys -- 'deepseek-v4-flash' queda.
+        client.portal.call(
+            _ejecutar,
+            "DELETE FROM model WHERE provider_id='deepseek' AND model_id LIKE 'deepseek-decoy-%'",
+        )
 
     row = client.portal.call(_fetch_model, "deepseek", "deepseek-v4-flash")
     assert row[0] == "deprecated"
@@ -383,7 +423,21 @@ def test_read_anthropic_oauth_token_no_env_no_file_is_unavailable(monkeypatch, t
 def test_sync_provider_models_anthropic_uses_env_token_end_to_end(client, monkeypatch, tmp_path):
     """Integración completa (D1.3-a): con CLAUDE_CODE_OAUTH_TOKEN puesto, el
     sync de anthropic funciona sin `~/.claude/.credentials.json` -- el caso
-    real de jaxsvc en producción, reproducido con evidencia y no supuesto."""
+    real de jaxsvc en producción, reproducido con evidencia y no supuesto.
+
+    A-3 (auditoría adversarial, 2026-09-27): esta prueba manda una lista de
+    UN solo id -- otros tests de este archivo (anthropic OAuth local, alias
+    'sonnet') ya dejaron más de un modelo 'available' en la base de sesión
+    persistente, así que sin normalizar el guardián de "lista encogida"
+    vería 1 de N y lo trataría como sospechoso. Se bajan a 'deprecated' los
+    OTROS anthropic 'available' antes de esta llamada -- no se borra nada,
+    y ningún test de este archivo depende de que sigan 'available' después
+    del suyo propio (cada uno resetea su propio baseline al empezar)."""
+    client.portal.call(
+        _ejecutar,
+        "UPDATE model SET status='deprecated' WHERE provider_id='anthropic' "
+        "AND model_id != 'claude-opus-5' AND status='available'",
+    )
     monkeypatch.setenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, "sk-ant-oat01-jaxsvc")
     monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", str(tmp_path / "no-existe.json"))
 

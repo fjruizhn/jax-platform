@@ -129,6 +129,88 @@ def _extract_model_ids(provider_id: str, payload: dict) -> list[str]:
     return [m["id"] for m in payload.get("data", [])]
 
 
+# A-3 (auditoría adversarial del commit d549335, 2026-09-27). VERIFICADO EN
+# PRODUCCIÓN por la sesión principal el 26-sep: Gemini quedó con
+# exactamente 50 modelos 'available' -- el pageSize por defecto de su API --
+# y el resto se degradó solo, 3 misses después de 'deprecated', porque el
+# sync nunca pedía una segunda página. `limit`/`pageSize` grandes (1000) más
+# el cursor de cada API cubren cualquier catálogo real de hoy sin adivinar
+# un número "seguro" más chico.
+_PAGE_LIMIT_ANTHROPIC = 1000
+_PAGE_SIZE_GEMINI = 1000
+
+
+async def _fetch_anthropic_paginado(client, url: str, headers: dict) -> dict:
+    """GET /v1/models de Anthropic pagina con `limit`/`after_id`, y la
+    respuesta trae `has_more`/`last_id` (contrato real de su Admin API,
+    documentado por el equipo que pidió este fix -- no inventado). Una
+    respuesta SIN 'has_more' (los fakes de test_model_catalog_sync.py,
+    escritos antes de este cambio) se trata como 'False': una sola página,
+    compatibilidad hacia atrás sin tocar esos tests."""
+    datos = []
+    after_id = None
+    while True:
+        params = {"limit": _PAGE_LIMIT_ANTHROPIC}
+        if after_id:
+            params["after_id"] = after_id
+        resp = await client.get(url, headers=headers, params=params, timeout=15.0)
+        resp.raise_for_status()
+        pagina = resp.json()
+        datos.extend(pagina.get("data", []))
+        if not pagina.get("has_more"):
+            break
+        after_id = pagina.get("last_id")
+        if not after_id:  # defensivo: 'has_more' sin 'last_id' no tiene con qué seguir
+            break
+    return {"data": datos}
+
+
+async def _fetch_gemini_paginado(client, url: str, headers: dict) -> dict:
+    """models.list de Gemini pagina con `pageSize`/`pageToken`, y la
+    respuesta trae `nextPageToken` mientras queden páginas (contrato real de
+    la Generative Language API). Sin 'nextPageToken' -- los fakes ya
+    existentes -- una sola página, mismo criterio que el de Anthropic."""
+    modelos = []
+    page_token = None
+    while True:
+        params = {"pageSize": _PAGE_SIZE_GEMINI}
+        if page_token:
+            params["pageToken"] = page_token
+        resp = await client.get(url, headers=headers, params=params, timeout=15.0)
+        resp.raise_for_status()
+        pagina = resp.json()
+        modelos.extend(pagina.get("models", []))
+        page_token = pagina.get("nextPageToken")
+        if not page_token:
+            break
+    return {"models": modelos}
+
+
+def _motivo_si_respuesta_sospechosa(seen_ids: set, disponibles_antes: int) -> str | None:
+    """A-3: una respuesta 200 con la lista VACÍA, o con MENOS DE LA MITAD de
+    lo que este proveedor tenía 'available' antes, es sospechosa de un
+    pageSize/límite roto (el caso real de Gemini de arriba) -- se trata como
+    FALLO del proveedor, sin sumar un solo miss (una lista incompleta no es
+    evidencia de que un modelo real haya desaparecido). Devuelve el motivo
+    (para loguear/reportar) o None si la respuesta es de fiar. Sin historia
+    (`disponibles_antes == 0`, un proveedor nunca sincronizado) el chequeo
+    de "menos de la mitad" no aplica -- no hay nada contra qué comparar."""
+    if not seen_ids:
+        return "lista vacía"
+    if disponibles_antes > 0 and len(seen_ids) < disponibles_antes / 2:
+        return f"lista encogida a {len(seen_ids)} de {disponibles_antes} disponibles antes"
+    return None
+
+
+async def _disponibles_antes(cur, provider_id: str) -> int:
+    await cur.execute(
+        "SELECT COUNT(*) FROM model WHERE provider_id=%s AND status='available'",
+        (provider_id,),
+    )
+    (cantidad,) = await cur.fetchone()
+    return cantidad
+
+
 async def sync_provider_models(provider_id: str) -> dict:
     """D1.3-a. Unica verdad de disponibilidad para ESTA cuenta. Upsert en
     `model` para lo visto; lo que no aparecio suma un miss (D1.4)."""
@@ -140,6 +222,7 @@ async def sync_provider_models(provider_id: str) -> dict:
                 (provider_id,),
             )
             row = await cur.fetchone()
+            disponibles_antes = await _disponibles_antes(cur, provider_id) if row and row[1] else 0
 
     if not row or not row[1]:
         return {"provider_id": provider_id, "fetched": 0, "skipped": "sin models_list_url"}
@@ -160,7 +243,8 @@ async def sync_provider_models(provider_id: str) -> dict:
     client = await get_http_client()
     if transport == "header_goog_api_key":
         # T6-2 (2026-09-15): Gemini, key en la cabecera x-goog-api-key.
-        resp = await client.get(url, headers=cabeceras_gemini(credential), timeout=15.0)
+        # A-3: pagina con pageSize/pageToken (ver _fetch_gemini_paginado).
+        payload = await _fetch_gemini_paginado(client, url, cabeceras_gemini(credential))
     elif transport == "query_param":
         # Fail-closed: el valor viejo ponia la key en la URL. La migracion
         # _migrar_gemini_a_cabecera lo reemplaza; una fila que igual lo
@@ -173,9 +257,24 @@ async def sync_provider_models(provider_id: str) -> dict:
         headers = {"Authorization": f"Bearer {credential}"}
         if provider_id == "anthropic":
             headers["anthropic-version"] = _ANTHROPIC_API_VERSION
-        resp = await client.get(url, headers=headers, timeout=15.0)
-    resp.raise_for_status()
-    seen_ids = set(_extract_model_ids(provider_id, resp.json()))
+            # A-3: pagina con limit/after_id (ver _fetch_anthropic_paginado).
+            payload = await _fetch_anthropic_paginado(client, url, headers)
+        else:
+            # openai/deepseek/moonshot/zhipu: se autodescriben compatibles
+            # con /v1/models de OpenAI (ver _PROVIDER_SYNC_SEED en
+            # db/migrations.py), que no pagina -- NO VERIFICADO con curl real
+            # contra las 4 APIs desde este entorno (sin credenciales ni red
+            # de producción a mano); inferido de la compatibilidad declarada.
+            resp = await client.get(url, headers=headers, timeout=15.0)
+            resp.raise_for_status()
+            payload = resp.json()
+
+    seen_ids = set(_extract_model_ids(provider_id, payload))
+
+    motivo_sospechoso = _motivo_si_respuesta_sospechosa(seen_ids, disponibles_antes)
+    if motivo_sospechoso:
+        logger.warning(f"model_catalog sync provider={provider_id} respuesta sospechosa: {motivo_sospechoso}")
+        return {"provider_id": provider_id, "error": f"respuesta sospechosa del proveedor ({motivo_sospechoso})"}
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -265,6 +364,21 @@ async def _sync_ollama_models(url: str) -> dict:
     seen = {m["model"]: m.get("digest") for m in entries}
     seen_ids = set(seen.keys())
 
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            disponibles_antes = await _disponibles_antes(cur, "ollama")
+
+    # A-3: mismo guardián que sync_provider_models -- un /api/tags que
+    # responde 200 con 'models': [] (o con menos de la mitad de lo que
+    # había 'available') no es lo mismo que 'no alcanzable' (eso ya lo cubre
+    # el except de arriba); acá SÍ hay respuesta, pero es sospechosa. Se
+    # corta ANTES de pedir /api/show por cada modelo (nada que consultar).
+    motivo_sospechoso = _motivo_si_respuesta_sospechosa(seen_ids, disponibles_antes)
+    if motivo_sospechoso:
+        logger.warning(f"model_catalog sync provider=ollama respuesta sospechosa: {motivo_sospechoso}")
+        return {"provider_id": "ollama", "error": f"respuesta sospechosa del proveedor ({motivo_sospechoso})"}
+
     # Frente D (2026-09-16): la modalidad de entrada sale de /api/show, ANTES
     # de tomar la conexion (no se retiene una conexion del pool durante HTTP).
     # Misma base que models_list_url (la fila `provider` de ollama), no una
@@ -276,7 +390,6 @@ async def _sync_ollama_models(url: str) -> dict:
         if caps is not None:
             modalidades[model_id] = "text,image" if "vision" in caps else "text"
 
-    pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             # `nuevos` (2026-09-27): mismo contrato que la rama OpenAI-
@@ -491,18 +604,29 @@ _SQL_FACETAS_EN_RIESGO = (
     "SELECT b.facet_key, b.provider_id AS provider_binding, b.model_id AS model_id_binding, "
     "b.model_ref, m.provider_id AS provider_resuelto, m.model_id AS model_id_resuelto, m.status "
     "FROM facet_binding b "
+    "JOIN facet f ON f.`key` = b.facet_key "
     "LEFT JOIN model m ON m.id = b.model_ref "
-    "WHERE b.role = 'primary' AND (b.model_ref IS NULL OR m.status != 'available')"
+    "WHERE b.role = 'primary' AND f.status = 'active' "
+    "AND (b.model_ref IS NULL OR m.status != 'available')"
 )
 
 
 async def _facetas_en_riesgo(cur) -> list[dict]:
-    """Bindings 'primary' cuyo modelo -- resuelto por `model_ref`, la FK que
-    el dispatch real usa -- no esta disponible, o que no tienen `model_ref`
-    en absoluto (dangling: el dispatch real, que hace INNER JOIN, no
-    encontraria nada y la faceta quedaria FacetUnavailableError). Ver el
-    comentario de modulo de arriba para la evidencia de por que model_ref y
-    no el texto."""
+    """Bindings 'primary' de una faceta ACTIVA (A-9, auditoría adversarial
+    2026-09-27: `facet.status != 'active'` ya no despacha nada -- mismo
+    filtro que usa el dispatch real en facet_resolver.py:299 y
+    adjuntos/politica.py:26 -- así que una faceta 'disabled'/'degraded'
+    atada a un modelo roto no es un riesgo, nadie la va a invocar) cuyo
+    modelo -- resuelto por `model_ref`, la FK que el dispatch real usa -- no
+    esta disponible, o que no tienen `model_ref` en absoluto (dangling: el
+    dispatch real, que hace INNER JOIN, no encontraria nada y la faceta
+    quedaria FacetUnavailableError). Ver el comentario de modulo de arriba
+    para la evidencia de por que model_ref y no el texto.
+
+    FUERA DE ALCANCE a propósito: `motor_resolved` (api/admin/motors.py) es
+    OTRO camino de resolución de modelo, vía `motor.model_ref` con fallback
+    a `facet_binding.model_ref` -- no lo cubre esta función. Un motor sin
+    faceta homónima que apunte a un modelo roto no aparece acá."""
     await cur.execute(_SQL_FACETAS_EN_RIESGO)
     filas = []
     for (facet_key, provider_binding, model_id_binding, model_ref,

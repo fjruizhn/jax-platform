@@ -124,6 +124,54 @@ def test_facetas_en_riesgo_no_incluye_modelo_disponible(client):
         client.portal.call(_borrar_facet, facet_key, provider_id, model_id)
 
 
+async def _crear_binding_con_model_ref_y_estado_de_faceta(facet_key, provider_id, model_id, status_modelo, status_faceta):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO facet (`key`, display_name, transport, status) "
+                "VALUES (%s, %s, 'http_openai_compat', %s)",
+                (facet_key, facet_key, status_faceta),
+            )
+            await cur.execute(
+                "INSERT INTO model (provider_id, model_id, status, source, source_checked_at) "
+                "VALUES (%s, %s, %s, 'manual', NOW())",
+                (provider_id, model_id, status_modelo),
+            )
+            await cur.execute(
+                "SELECT id FROM model WHERE provider_id=%s AND model_id=%s",
+                (provider_id, model_id),
+            )
+            (model_ref,) = await cur.fetchone()
+            await cur.execute(
+                "INSERT INTO facet_binding (facet_key, provider_id, model_id, model_ref, role) "
+                "VALUES (%s, %s, %s, %s, 'primary')",
+                (facet_key, provider_id, model_id, model_ref),
+            )
+        await conn.commit()
+
+
+def test_facetas_en_riesgo_ignora_faceta_no_activa(client):
+    """A-9 (auditoría adversarial, 2026-09-27): una faceta 'disabled' (o
+    'degraded') no despacha nada -- facet_resolver.py:299 y
+    adjuntos/politica.py:26 filtran `f.status = 'active'` en el MISMO join.
+    Una faceta apagada atada a un modelo deprecado no es un riesgo real:
+    nadie va a intentar usarla."""
+    facet_key = f"test-inactiva-{uuid.uuid4().hex[:8]}"
+    provider_id = "zhipu"
+    model_id = f"test-inactiva-modelo-{uuid.uuid4().hex[:8]}"
+    client.portal.call(
+        _crear_binding_con_model_ref_y_estado_de_faceta,
+        facet_key, provider_id, model_id, "deprecated", "disabled",
+    )
+    try:
+        filas = client.portal.call(_fetch_pool_cursor_facetas_en_riesgo)
+        assert not any(f["facet_key"] == facet_key for f in filas)
+    finally:
+        client.portal.call(_borrar_facet, facet_key, provider_id, model_id)
+
+
 def test_facetas_en_riesgo_binding_sin_model_ref_es_riesgo(client):
     """Una fila con `model_ref` NULL no resuelve nada para el dispatch real
     (INNER JOIN): tiene que aparecer como riesgo aunque no haya ningún
