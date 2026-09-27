@@ -365,27 +365,87 @@ async def _forzar_hash_guardado(pool, archivo, sha256):
         await conn.commit()
 
 
-def test_un_hash_guardado_distinto_deja_la_base_invalida_para_ese_archivo(client):
-    """MAJOR-A, la otra mitad: no sólo el archivo de origen puede mentir -- la base de
-    ESTA sesión puede tener una fila de una corrida anterior con otro contenido (sea
-    porque el manifiesto cambió después, sea una fila vieja de antes de que la
-    columna `sha256` existiera). Se pisa a mano el hash guardado por el fixture
-    `client` (que aplicó 004 correctamente) y se confirma que la PRÓXIMA corrida
-    revienta -- restaurado en un `finally` para no dejar la base de la sesión
-    corrompida para el resto de la suite."""
-    from db.connection import get_pool
+async def _borrar_marca_sintetica(pool, archivo):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM _test_b9_migraciones_aplicadas WHERE archivo=%s",
+                (archivo,),
+            )
+        await conn.commit()
 
-    pool = client.portal.call(get_pool)
-    archivo = "004_tenant_legacy_binding.sql"
-    original = client.portal.call(_leer_hash_guardado, pool, archivo)
-    assert original, "el fixture client ya debería haber aplicado 004 con su hash real"
 
-    client.portal.call(_forzar_hash_guardado, pool, archivo, "f" * 64)
+async def _ejercicio_hash_sintetico(archivo, sha_correcto):
+    """Todo en UN solo event loop (un solo `asyncio.run()` desde el test): `get_pool()`
+    cachea un pool POR LOOP (ver `db/connection.py`), así que abrir uno acá y leerlo
+    con otro `asyncio.run()` distinto sería cruzar loops -- exactamente el defecto que
+    ese módulo ya documenta haber cerrado. `close_pool()` al final limpia el pool
+    propio de este test (no el de la sesión: `client` ni se pide acá)."""
+    from db.connection import close_pool, get_pool
+
     try:
+        await aplicar_migraciones_b9_restantes()
+        pool = await get_pool()
+        guardado = await _leer_hash_guardado(pool, archivo)
+        assert guardado == sha_correcto, (
+            "la primera corrida debería haber insertado la fila sintética con su "
+            "hash real"
+        )
+
+        await _forzar_hash_guardado(pool, archivo, "f" * 64)
         with pytest.raises(BaseDeTestInvalida, match=archivo):
-            client.portal.call(aplicar_migraciones_b9_restantes)
+            await aplicar_migraciones_b9_restantes()
     finally:
-        client.portal.call(_forzar_hash_guardado, pool, archivo, original)
+        pool = await get_pool()
+        await _borrar_marca_sintetica(pool, archivo)
+        await close_pool()
+
+
+def test_un_hash_guardado_distinto_deja_la_base_invalida_para_ese_archivo(
+    tmp_path, monkeypatch
+):
+    """MAJOR-A, la otra mitad: no sólo el archivo de origen puede mentir -- la base de
+    tests puede tener una fila de una corrida anterior con otro contenido (sea porque
+    el manifiesto cambió después, sea una fila vieja de antes de que la columna
+    `sha256` existiera).
+
+    Corrección de la auditoría adversarial del PR #164 (MINOR-3, ronda 3): la versión
+    anterior de este test pedía el fixture `client` y pisaba a mano el hash guardado
+    de `004_tenant_legacy_binding.sql` -- la fila REAL que ese fixture, session-scoped,
+    ya aplicó para el RESTO de la suite. El `finally` restauraba el valor, así que
+    dentro de ese test no había ventana de corrupción (Python no interfoliza dos
+    tests), pero el docstring anterior sobrevendía la garantía: decía que eso "no
+    dejaba la base corrompida para el resto de la suite" sin decir qué pasaba si el
+    `finally` no llegaba a correr (una excepción al restaurar, `client` cayendo en el
+    medio) -- la fila de 004 vive en la base COMPARTIDA por TODA la sesión, así que
+    cualquier otro test que pidiera `client` (la mayoría de la suite) hubiera visto esa
+    fila corrompida y terminado en ERROR de fixture, no en un fallo limpio y acotado a
+    este test.
+
+    Ahora se usa un archivo SINTÉTICO (`999_prueba_hash_sintetica.sql`, que no es
+    ninguna migración real de JAX y no aparece en
+    `_MIGRACIONES_B9_YA_CUBIERTAS_POR_RUN_MIGRATIONS`) con su propia fila en
+    `_test_b9_migraciones_aplicadas`: nunca se toca la fila de 004 ni de 006, y por
+    eso ya no hace falta el fixture `client` -- este test abre su PROPIO pool
+    (`_ejercicio_hash_sintetico`), contra la misma base física de la sesión, vía
+    `db.connection.get_pool()` directo. La fila sintética se BORRA en un `finally` en
+    vez de restaurarse a un valor anterior: si el `finally` no llegara a correr, lo
+    peor que queda es una fila huérfana con un nombre que ninguna migración real usa
+    jamás -- inofensiva, y que cualquier recreación de la base se lleva puesta."""
+    archivo = "999_prueba_hash_sintetica.sql"
+    directorio = tmp_path / "b9_migrations"
+    directorio.mkdir()
+    (directorio / archivo).write_text("SELECT 1;\n", encoding="utf-8")
+    sha_correcto = modulo_base_de_test._sha256_de_archivo(directorio / archivo)
+
+    monkeypatch.setattr(db_migrations, "_jax_b9_migration_root", lambda: directorio)
+    monkeypatch.setattr(
+        modulo_base_de_test,
+        "_manifiesto_b9_de_produccion",
+        lambda: {archivo: {"sha256": sha_correcto}},
+    )
+
+    asyncio.run(_ejercicio_hash_sintetico(archivo, sha_correcto))
 
 
 def test_el_manifiesto_committeado_declara_exactamente_004_y_006():

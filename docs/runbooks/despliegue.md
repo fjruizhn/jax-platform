@@ -386,6 +386,12 @@ archivos por glob contra el manifiesto de abajo -- NO los aplica a ciegas: que u
    ```bash
    set -a; . <(sudo -n cat /etc/jax/.env); set +a
    ARCHIVO=/srv/jax-prod/jax/jax/memory/b9_migrations/<archivo>.sql
+   # El hash se calcula ANTES de aplicar nada, sobre el archivo que se está
+   # por correr -- ANOTALO (pegalo en el ticket/PR de este despliegue): es el
+   # valor que el paso 4 va a exigir, byte a byte, antes de declarar la
+   # migración. Calcularlo DESPUÉS (de memoria, o de una copia editada) es
+   # exactamente el error que este control existe para atrapar.
+   sha256sum "$ARCHIVO"
    mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" \
      jax_memory < "$ARCHIVO"
    ```
@@ -410,11 +416,19 @@ archivos por glob contra el manifiesto de abajo -- NO los aplica a ciegas: que u
    `backend/b9_migraciones_en_produccion.json` gana una clave nueva con el nombre
    exacto del archivo, la fecha, quién la aplicó, CÓMO se verificó (la consulta
    del paso 3, no "se ve bien") y el `sha256` **del archivo exacto que se aplicó
-   en el paso 2** (`sha256sum "$ARCHIVO"`, la misma variable, no un clon distinto
-   ni una versión más nueva de `jax` master). Sin esta clave, la suite de tests
-   revienta con el mensaje de arriba; con la clave pero el hash equivocado,
-   revienta igual, con un mensaje que dice "el contenido cambió" -- es la
-   baranda, no un trámite.
+   en el paso 2**. **Antes de pegar el hash en el manifiesto, recalculalo y
+   compará contra el que anotaste en el paso 2:**
+
+   ```bash
+   sha256sum "$ARCHIVO"   # tiene que dar LITERALMENTE lo mismo que anotaste en el paso 2
+   ```
+
+   Si no coincide -- el archivo cambió entre el paso 2 y ahora, o el que se
+   copió al manifiesto no es el que se aplicó -- NO se declara: hay que volver
+   al paso 2 con el archivo correcto, nunca "arreglar" el hash a mano para que
+   cierre. Sin esta clave, la suite de tests revienta con el mensaje de arriba;
+   con la clave pero el hash equivocado, revienta igual, con un mensaje que dice
+   "el contenido cambió" -- es la baranda, no un trámite.
 5. **Correr la suite de jax-platform** (`aplicar_migraciones_b9_restantes` recoge
    el archivo nuevo por glob, lo ve declarado en el manifiesto con el hash que
    coincide, y lo aplica en la base de tests) para confirmar que el código que la

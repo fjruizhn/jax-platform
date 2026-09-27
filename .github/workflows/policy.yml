@@ -3068,11 +3068,28 @@ jobs:
           #      PASAN -- verificado por su nombre en el XML, no sólo por el
           #      conteo. `2711 + 2 = 2713` antes / `2757 + 2 = 2759` después,
           #      contra los mismos 34 (antes) / 0 (después) failed y ahora 0
-          #      skipped: la aritmética de las dos medidas cierra sin resto (la
-          #      medición de root es del PR original, 5 tests; los 7 tests que las
-          #      dos rondas de auditoría adversarial del PR #164 agregaron después
-          #      no tocan DB -- ninguno pide `client` -- así que no cambian el
-          #      término "+2" de la cuenta de root, sólo el total).
+          #      skipped: la aritmética de las dos medidas cierra sin resto.
+          #      CORRECCIÓN (auditoría adversarial del PR #164, ronda 3, punto 1):
+          #      esta celda decía antes "los 7 tests que las dos rondas agregaron
+          #      después no tocan DB -- ninguno pide `client`" -- FALSO, uno de
+          #      ellos (`test_un_hash_guardado_distinto_deja_la_base_invalida_para_ese_archivo`)
+          #      sí pedía `client`. La ronda 3 lo reescribió (MINOR-3 de esa
+          #      ronda) para usar una fila SINTÉTICA en vez de la real de 004, y
+          #      de paso dejó de pedir `client` -- pero SIGUE tocando la DB (abre
+          #      su propio `get_pool()` sin el fixture, para poder ejercitar el
+          #      registro por base). Hoy, de los 12 tests de
+          #      `tests/test_b9_migraciones_restantes.py`: 9 son puros (no tocan
+          #      DB en absoluto), 2 piden `client`
+          #      (`test_memory_revisions_y_legacy_bindings_espejan_la_cadena_completa`,
+          #      `test_segunda_corrida_es_idempotente_no_revienta_trigger_ni_constraint`)
+          #      y 1 abre su propia conexión real sin pedir `client`
+          #      (el del hash sintético). Los 3 que tocan DB -- con o sin
+          #      `client` -- corren igual bajo `root` que bajo `jax_user`: ninguno
+          #      depende de un privilegio que sólo tenga uno de los dos usuarios
+          #      (a diferencia de `CREATE USER`, que sí distingue). Por eso el
+          #      término "+2" de la cuenta de root sigue siendo sólo de
+          #      `test_usuario_solo_insert_punto_restauracion.py` -- los 12 tests
+          #      de este archivo no lo mueven, midan como midan.
           #
           #   `tests/test_base_por_sesion.py` (27 tests) se corrió aparte en esa
           #   segunda medición: sus 3 tests que lanzan un SUBPROCESO simulando
@@ -3103,7 +3120,16 @@ jobs:
           #   ronda 1 pasó de derivar por `inspect.getsource` a pruebas de
           #   comportamiento reales), MINOR-D (el comentario que atribuía un `DROP
           #   INDEX` de 004 a la viñeta de 006). +7 tests entre las dos rondas (5 ->
-          #   12 en tests/test_b9_migraciones_restantes.py).
+          #   12 en tests/test_b9_migraciones_restantes.py). Ronda 3 (mismo día,
+          #   APROBADO CON CAMBIOS, sin BLOCK ni MAJOR): 4 MINOR, ninguno agrega
+          #   test -- corrige esta celda (punto 1, arriba), sube el piso SIN DB
+          #   (punto 2, ver ese job), reescribe el test del hash guardado distinto
+          #   para no tocar la fila real de 004 (punto 3, ver
+          #   `test_un_hash_guardado_distinto_deja_la_base_invalida_para_ese_archivo`
+          #   en tests/test_b9_migraciones_restantes.py) y dos pasos más del
+          #   runbook (punto 4: calcular el `sha256` ANTES de aplicar, exigir que
+          #   coincida antes de declarar en el manifiesto). Total sigue en 12
+          #   tests (0 nuevos, 1 reescrito).
           #
           #   Delta de colectados (+12) = los 12 tests nuevos; los 34 que estaban en
           #   rojo pasan a passed sin agregar ninguno.
@@ -4049,7 +4075,28 @@ jobs:
       #   +2); suite completa 1754 -> 1756 passed / 964 skipped sin cambios
       #   (mismo comando `JAX_CI_NO_DB=1 python -m pytest -q -p no:warnings
       #   -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py`).
-      JAX_CI_MIN_PASSED: "1714"
+      # 1714 -> 1723 (2026-09-27, fix/b9-migraciones-en-test, auditoría
+      #   adversarial del PR #164, ronda 3, punto 2): tests/test_b9_migraciones_restantes.py
+      #   (archivo nuevo del PR, ver el piso CON DB de más arriba) agrega 12
+      #   tests; 9 son puros (no piden `client` ni tocan una conexión real:
+      #   descubrimiento por glob, las tres pruebas de comportamiento de
+      #   001/002/003, las guardas que revientan ANTES de `get_pool()` --
+      #   base inválida, archivo no declarado, archivo con hash distinto -- y
+      #   el chequeo de forma del manifiesto). Los otros 3 sí tocan DB (2
+      #   piden `client`, 1 abre su propio pool sin pedirlo) y se saltan acá
+      #   igual, con o sin `client`, por la Regla 2 del modo sin-DB. Medido
+      #   con el comando documentado, MISMO checkout de JAX
+      #   (`JAX_REPO_PATH` a un clon fijo de jax master 4642613) en los dos
+      #   puntos: master `7fa4303` -> 1780 passed / 967 skipped; esta rama
+      #   (con las tres rondas de auditoría del PR #164 ya aplicadas,
+      #   incluida la reescritura de MINOR-3 de la ronda 3) -> 1789 passed /
+      #   970 skipped. Delta propio: +9 passed / +3 skipped, exactamente los
+      #   12 tests nuevos del archivo. Piso nuevo = piso DECLARADO de master
+      #   (1714, no los 1780 medidos -- mismo criterio que las entradas de
+      #   arriba: no premiar el drift ajeno de PRs que ya deberían haber
+      #   subido este número y no lo hicieron) + el delta propio verificado
+      #   (+9) = 1723.
+      JAX_CI_MIN_PASSED: "1723"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
