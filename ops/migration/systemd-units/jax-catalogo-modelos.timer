@@ -1,0 +1,15 @@
+[Unit]
+Description=Schedule JAX Platform model catalog sync (cada 6h)
+
+[Timer]
+OnCalendar=*-*-* 00/6:00:00
+# Si hall9000 estuvo abajo cuando debía correr, corre apenas vuelve --
+# mismo criterio que jax-memory-vector-health.timer.
+Persistent=true
+# Margen chico para no pegarle a la misma hora exacta que otros timers de
+# 6h/hourly que ya existen en esta máquina.
+RandomizedDelaySec=5min
+Unit=jax-catalogo-modelos.service
+
+[Install]
+WantedBy=timers.target

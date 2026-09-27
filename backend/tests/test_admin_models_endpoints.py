@@ -82,22 +82,35 @@ def test_sync_endpoint_only_touches_model_never_facet_binding(client, monkeypatc
 
     async def fake_sync(provider_id):
         calls["providers"].append(provider_id)
-        return {"provider_id": provider_id, "fetched": 1}
+        return {"provider_id": provider_id, "fetched": 1, "nuevos": []}
 
     async def fake_enrich():
         calls["enrich"] += 1
         return {"enriched": 1}
 
+    async def sin_facetas_en_riesgo(cur):
+        return []
+
     monkeypatch.setattr(model_catalog, "sync_provider_models", fake_sync)
     monkeypatch.setattr(model_catalog, "enrich_from_models_dev", fake_enrich)
+    # 2026-09-27: `ok` ahora también depende de facetas_en_riesgo -- ese
+    # aspecto lo cubre tests/test_model_catalog_facetas_en_riesgo.py con
+    # filas sintéticas propias. Este test es sobre OTRA cosa (que el
+    # endpoint dispare sync sobre `model` y jamás facet_binding), así que se
+    # aísla del estado real de la base de sesión en vez de depender de que
+    # HOY no haya ninguna faceta en riesgo (jekyll/deepseek-v4-flash sí lo
+    # está, ver CONTEXT.md -- un test que dependiera de eso sería frágil).
+    monkeypatch.setattr(model_catalog, "_facetas_en_riesgo", sin_facetas_en_riesgo)
 
     resp = client.post("/api/admin/models/sync", headers=_superadmin_headers())
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["ok"] is True
     assert body["providers_fallidos"] == [] and body["enrich_fallido"] is False
+    assert body["providers_saltados"] == []
+    assert body["facetas_en_riesgo"] == []
     assert "code" not in body
-    assert set(calls["providers"]) == {"openai", "deepseek", "gemini", "moonshot", "zhipu", "anthropic", "ollama"}
+    assert set(calls["providers"]) == set(model_catalog.SYNCABLE_PROVIDERS)
     assert calls["enrich"] == 1
 
 

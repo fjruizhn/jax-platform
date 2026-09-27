@@ -30,16 +30,9 @@ from contrato_dispatch import (
     registrar_rechazo_de_binding,
 )
 from db.connection import get_pool
-from redaccion import redactar_secretos, texto_de_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/models")
-
-# Proveedores con catalogo real hoy. anthropic (2026-08-10): sync contra
-# /v1/models, credencial via OAuth local de Claude Code, no `credential` DB.
-# ollama (2026-08-10): sync local contra /api/tags, sin ninguna credencial
-# (provider.auth_type='none') — ver ramas explicitas en model_catalog.py.
-_SYNCABLE_PROVIDERS = ["openai", "deepseek", "gemini", "moonshot", "zhipu", "anthropic", "ollama"]
 
 _MODEL_FIELDS = (
     "id", "provider_id", "model_id", "is_alias", "context_window", "supports_tool_use",
@@ -203,39 +196,31 @@ async def declarar_contrato_dispatch(
 async def sync_models(user: AuthUser = Depends(require_superadmin)):
     """D1.3: capa (a) por cada proveedor con catalogo remoto propio, luego
     capa (b) de enriquecimiento. Solo escribe `model` — ver docstring del
-    modulo."""
-    results = []
-    for provider_id in _SYNCABLE_PROVIDERS:
-        try:
-            results.append(await model_catalog.sync_provider_models(provider_id))
-        except Exception as e:  # fail-soft: un provider caído no frena a los demás; su error va en el resultado y apaga ok
-            # Task 6 S1: el log y la respuesta usan el texto ya redactado.
-            # Defensa en profundidad: la key de Gemini va en la cabecera
-            # x-goog-api-key (T6-2); str(e) de httpx trae la URL, sin ella.
-            motivo = texto_de_error(e)
-            logger.warning(f"sync_models provider={provider_id} failed reason={motivo}")
-            results.append({"provider_id": provider_id, "error": redactar_secretos(str(e))[:200]})
+    modulo.
 
-    try:
-        enrich_result = await model_catalog.enrich_from_models_dev()
-    except Exception as e:  # fail-soft: el enriquecimiento es capa (b) opcional; su error va en 'enrich' y apaga ok
-        logger.warning(f"sync_models enrich failed reason={texto_de_error(e)}")
-        enrich_result = {"error": redactar_secretos(str(e))[:200]}
+    Capa delgada desde 2026-09-27: la logica de orquestacion (que
+    proveedores se sincronizan, que cuenta como fallo, las facetas en
+    riesgo, el candado contra syncs concurrentes) vive en
+    `model_catalog.sync_all()`, compartida con el ejecutor programado
+    (catalogo_modelos_ejecutor.py) -- Regla Absoluta: una sola fuente de
+    "que significa que el catalogo este sano", nunca dos implementaciones
+    que puedan divergir.
 
-    # Task 3 (2026-09-15, clase b): antes `ok` era True siempre, aunque
-    # fallaran todos los providers y el enriquecimiento. Contrato: 200 con
-    # `ok` calculado; si algo fallo, `code: "sync_con_errores"` y la lista de
-    # providers que fallaron (el resto SI se sincronizo, por eso no es 502).
-    providers_fallidos = [r["provider_id"] for r in results if "error" in r]
-    enrich_fallido = "error" in enrich_result
-    ok = not providers_fallidos and not enrich_fallido
-    respuesta = {
-        "ok": ok, "providers": results, "enrich": enrich_result,
-        "providers_fallidos": providers_fallidos, "enrich_fallido": enrich_fallido,
-    }
-    if not ok:
-        respuesta["code"] = "sync_con_errores"
-    return respuesta
+    Tercera auditoría adversarial (2026-09-27): el endpoint volvió a NO
+    aceptar cuerpo -- se retiró por completo el mecanismo de `forzar` el
+    guardián de "lista encogida" (guardián que también se retiró: la
+    complejidad de sostenerlo, más forzar/auditar, traía más defectos
+    nuevos que los que resolvía). Lo único que sigue siendo un FALLO del
+    proveedor sin sumar misses es una lista VACÍA.
+
+    CORRECCIÓN (MINOR-7, cuarta auditoría adversarial, 2026-09-28): esta
+    misma línea decía antes "un retiro masivo legítimo fluye por los misses
+    normales de D1.4" -- es falso. Un proveedor que queda con la lista
+    VACÍA no pasa nunca por D1.4: queda en error permanente, avisado sync
+    tras sync, mientras la lista siga vacía (ver
+    model_catalog._motivo_si_respuesta_sospechosa). D1.4 sólo degrada
+    modelos puntuales que faltan de una lista que YA NO está vacía."""
+    return await model_catalog.sync_all()
 
 
 # PR-L ronda 2 (2026-09-14, punto 7 de la revisión): la lista era sin límite y,

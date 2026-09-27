@@ -1,0 +1,79 @@
+[Unit]
+Description=JAX Platform — sync programado del catálogo de modelos (Bloque D)
+# A-7 (auditoría adversarial, 2026-09-27): la MariaDB real corre en Docker
+# (`mariadb-12-3-jax`, ver CLAUDE.md/CONTEXT.md), no como `mariadb.service`
+# de systemd -- esperar por esa unidad no esperaba nada de verdad. Se espera
+# a que la red esté arriba y a que el DAEMON de Docker haya arrancado (no a
+# que el contenedor específico esté sano: eso lo decide `catalogo_modelos_ejecutor`
+# en tiempo de ejecución, con su propio timeout de conexión a la DB).
+After=network-online.target docker.service
+Wants=network-online.target
+# CORRECCIÓN (MAJOR-2, segunda auditoría adversarial, 2026-09-27): esta
+# sección decía que un OnFailure= aparte no hacía falta porque
+# `catalogo_modelos_ejecutor.py::main()` ya avisaba solo. Es cierto para lo
+# que `main()` alcanza a ver -- pero hay fallos que NUNCA le llegan a
+# `main()`: un SIGTERM por `TimeoutStartSec` (abajo) matando el proceso
+# ANTES de que corra su propio try/except, o un .venv roto que ni siquiera
+# deja arrancar `ExecStart`. Para esos dos casos, `main()` no es mudo por
+# elección -- ya está muerto. `OnFailure=` es el backstop para lo que el
+# propio proceso no puede avisar de sí mismo: una unidad mínima
+# (jax-catalogo-modelos-aviso.service) que corre un script de SOLO
+# biblioteca estándar (ni httpx ni el .venv de la app), así que funciona
+# incluso si el .venv está roto.
+#
+# CORRECCIÓN (tercera auditoría adversarial, 2026-09-27): lo de arriba decía
+# además que los dos caminos eran "complementarios, no redundantes" sin
+# explicar CÓMO evitan pisarse -- ops/avisar-fallo-unidad.py ahora lee
+# `MONITOR_SERVICE_RESULT` (una de las variables que systemd exporta a toda
+# unidad de `OnFailure=`) y se queda callado si es `exit-code` (el proceso
+# SÍ corrió y terminó solo -- ese caso ya lo avisa `main()` desde adentro,
+# con más contexto). Sólo avisa en los casos que NUNCA llegan a `main()`
+# (timeout, señal externa, core-dump, fallo de exec) -- ahí es donde de
+# verdad son complementarios, no en que "avisan cosas distintas" a secas.
+#
+# CORRECCIÓN (MAJOR-1, cuarta auditoría adversarial, 2026-09-28): lo de
+# arriba también era incompleto -- `exit-code` a secas cubre ADEMÁS un fallo
+# de chdir/exec de systemd y `main()` saliendo 1 porque SU PROPIO aviso de
+# Telegram falló; con la regla vieja, esos también quedaban en silencio.
+# `catalogo_modelos_ejecutor.py::main()` ahora sale con el código 3 SOLO
+# cuando hubo problemas Y el aviso quedó resuelto -- `ops/
+# avisar-fallo-unidad.py` exige ADEMÁS `MONITOR_EXIT_STATUS=3` para callar
+# (no sólo `MONITOR_SERVICE_RESULT=exit-code`). Deliberadamente SIN
+# `SuccessExitStatus=3` acá: eso haría que systemd tratara la unidad como
+# "exitosa" con el código 3, y la queremos FAILED y visible en
+# `systemctl status`/`systemctl list-units --failed` -- el silencio es sólo
+# de `OnFailure=`, no del estado de la unidad.
+OnFailure=jax-catalogo-modelos-aviso.service
+
+[Service]
+Type=oneshot
+User=jaxsvc
+Group=jaxsvc
+WorkingDirectory=/srv/jax-prod/jax-platform/backend
+EnvironmentFile=/etc/jax/.env
+ExecStart=/srv/jax-prod/jax-platform/backend/.venv/bin/python -m catalogo_modelos_ejecutor
+# Recalculado (tercera auditoría adversarial, 2026-09-27): el valor de 5min
+# de antes NO era honesto contra el propio tope de paginación que este mismo
+# commit agregó (`model_catalog._TOPE_PAGINAS = 50`, timeout HTTP de 15s por
+# página, ver model_catalog.py). Cuenta del PEOR CASO TEÓRICO (secuencial,
+# un proveedor tras otro, ver `sync_all`):
+#   - anthropic paginando al tope:            50 páginas x 15s = 750s
+#   - gemini paginando al tope:                50 páginas x 15s = 750s
+#   - openai/deepseek/moonshot/zhipu (sin paginar, 1 request c/u): 4 x 15s = 60s
+#   - ollama /api/tags:                                                 15s
+#   - enrich_from_models_dev (models.dev):                              15s
+#   - _avisar(): hasta 2 envíos a Telegram (problemas + nuevos), 10s c/u = 20s
+#   TOTAL ≈ 750+750+60+15+15+20 = 1610s (~26.9 min)
+# Ollama además pide POST /api/show por CADA modelo local antes de terminar
+# (ver model_catalog._sync_ollama_models) -- ese bucle NO está acotado por
+# _TOPE_PAGINAS ni por ningún otro tope de código; con una instalación local
+# razonable (unas pocas decenas de modelos) agrega segundos, no minutos, así
+# que no se lo suma al total de arriba, pero queda anotado como riesgo
+# residual (VISTO PERO NO TOCADO, ver informe de esta ronda) si algún día
+# hubiera cientos de modelos locales. 30min deja margen sobre los ~27min del
+# peor caso teórico sin dejarlo indefinido: si el job se cuelga más que eso,
+# mejor que systemd lo mate (y OnFailure= avise, ver arriba) a que un
+# proveedor caído deje el timer trabado hasta la próxima corrida de las 6h.
+TimeoutStartSec=30min
+StandardOutput=journal
+StandardError=journal

@@ -27,7 +27,7 @@ MIGRATIONS = Path(__file__).resolve().parent.parent / "db" / "migrations.py"
 # Listas de esquema que run_migrations() recorre ejecutando su DDL: una tupla
 # cuyo primer elemento sea una tabla `jacobs_*` es DDL sobre jax aunque la
 # sentencia se arme con f-string en otro lado.
-_LISTAS_DE_ESQUEMA = {"_TABLES", "_COLUMNS", "_ENUM_EXTENSIONS", "_COLUMN_WIDENS", "_INDEXES"}
+_LISTAS_DE_ESQUEMA = {"_TABLES", "_COLUMNS", "_ENUM_EXTENSIONS", "_COLUMN_WIDENS", "_DECIMAL_WIDENS", "_INDEXES"}
 
 _DDL_SOBRE_JACOBS = re.compile(r"""(?ix)
     \b(?:

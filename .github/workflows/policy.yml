@@ -985,8 +985,20 @@ jobs:
           //   recargó la primera página) se descarta por época. Los 3 en rojo
           //   contra master. Medido con vitest run --reporter=json: 1017
           //   passed, 0 fallidos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1017) {
-              console.error("PISO ROTO: se esperaban 1017 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1017 -> 1029 (2026-09-28, catálogo de modelos, cuarta auditoría
+          //   adversarial): este piso no se había vuelto a subir en las
+          //   rondas previas del catálogo de modelos (que sí movieron el
+          //   número real de la suite, sin actualizar este archivo -- regla
+          //   "el número compartido lo re-mide el último en llegar"). Medido
+          //   de punta a punta en esta rama con `npx vitest run`: 1029
+          //   passed, 0 fallidos, 95 archivos. El botón/diálogo de "forzar
+          //   sync" y sus 6 tests se quitaron por completo (tercera
+          //   auditoría adversarial); esta ronda agregó 2 tests de
+          //   regresión ("fallaron" no se muestra con lista vacía) y 3 del
+          //   aviso de "sync en curso" (candado ocupado) en
+          //   AdminModelCatalog.test.jsx.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1029) {
+              console.error("PISO ROTO: se esperaban 1029 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3133,7 +3145,59 @@ jobs:
           #
           #   Delta de colectados (+12) = los 12 tests nuevos; los 34 que estaban en
           #   rojo pasan a passed sin agregar ninguno.
-          PISO_PASSED = 2759
+          # 2692 -> 2720 (2026-09-28, catálogo de modelos, cuarta auditoría
+          #   adversarial): +28 tests nuevos de esta ronda -- MAJOR-2(a)/(b)
+          #   y MINOR-1 del candado GET_LOCK/RELEASE_LOCK en
+          #   test_model_catalog_sync_all.py (+11: interpretación pura de
+          #   GET_LOCK/RELEASE_LOCK, IS_FREE_LOCK verificado desde otra
+          #   conexión, el candado se libera aunque algo reviente dentro del
+          #   try, `marca_nuevos`/`marca_retrocedio`), el código de salida
+          #   0/1/3 y el candado ocupado consecutivo en
+          #   test_catalogo_modelos_ejecutor.py (+13), MAJOR-1 con
+          #   MONITOR_EXIT_STATUS 200/203/1/3 en test_avisar_fallo_unidad.py
+          #   (+3), y la confirmación del token sin contar una línea vacía
+          #   como partido en test_guardar_token_claude_script.py (+1).
+          #   CORRECCIÓN (quinta auditoría adversarial, 2026-09-28): acá
+          #   decía "no se corrigió ningún test viejo" -- es falso, 12 tests
+          #   viejos se quitaron o se reescribieron (la sección de "nuevos"
+          #   de test_catalogo_modelos_ejecutor.py cambió de contrato con
+          #   MINOR-2/3/4 y varios se reemplazaron por otros de nombre
+          #   distinto); el DELTA NETO (+28, contando funciones `def test_`
+          #   antes/después por archivo) sigue siendo el correcto para este
+          #   piso -- ninguno de esos 12 es drift ajeno, son parte del
+          #   propio trabajo de esa ronda. Medido en vivo, MISMO comando que
+          #   este job
+          #   (`python -m pytest -q -rs
+          #   --ignore=tests/test_carga_indice_pipelines_del_usuario.py`):
+          #   2858 passed / 34 failed / 2 skipped -- los 34 failed son el
+          #   drift AJENO y ya conocido de las migraciones B9 003/004/006
+          #   (`Unknown column 'r.tenant_id'`, ver CONTEXT.md/CLAUDE.md;
+          #   otra rama lo arregla, no se toca acá ni se le suma crédito a
+          #   este piso). El piso nuevo es el DECLARADO (2692) + el delta
+          #   PROPIO verificado (+28) = 2720, no los 2858 medidos en bruto
+          #   -- mismo criterio de siempre en este archivo: no premiar el
+          #   drift ajeno.
+          # 2720 -> 2726 (2026-09-28, quinta auditoría adversarial del
+          #   catálogo de modelos, cierre de MINORES antes del merge): +6 --
+          #   +1 en test_catalogo_modelos_ejecutor.py::test_debe_avisar_reloj_retrocedido_es_true
+          #   (punto A: `notificado_en > ahora` ya no dedupea), +1
+          #   test_main_sale_1_si_avisar_revienta_aunque_ok_sea_verdadero
+          #   (punto B: `_avisar()` reventando sale 1 aunque `ok` sea
+          #   verdadero), +1
+          #   test_enviar_telegram_el_mensaje_recortado_no_pasa_el_limite_ni_un_caracter
+          #   (punto C: el recorte deja lugar al sufijo, el mensaje final
+          #   nunca pasa el límite), y +3 en test_model_catalog_sync_all.py
+          #   (punto D: `sync_all()` con un cursor FALSO -- GET_LOCK NULL
+          #   lanza excepción, RELEASE_LOCK 0 cierra la conexión de verdad
+          #   en el `finally`, RELEASE_LOCK 1 no la cierra). Medido en vivo,
+          #   MISMO comando que este job: 2864 passed / 34 failed (mismos
+          #   34 de siempre, drift B9 ajeno) / 2 skipped.
+          # Integración 2026-09-27 (Hyde, regla 5 de SESIONES EN PARALELO: el último en
+          # llegar re-mide). MEDIDO EN EL RUNNER, no por aritmética: master c127a7f (con
+          # #164) run 36328116696 -> passed=2759; esta rama run 36328147944 -> passed=2912
+          # (colectados=2912, skipped=0). Delta propio real del catálogo: +153 (el +34
+          # estimado arriba contaba `def test_` y no los parametrizados: era falso).
+          PISO_PASSED = 2912
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4096,7 +4160,10 @@ jobs:
       #   arriba: no premiar el drift ajeno de PRs que ya deberían haber
       #   subido este número y no lo hicieron) + el delta propio verificado
       #   (+9) = 1723.
-      JAX_CI_MIN_PASSED: "1723"
+      # 2026-09-27 (Hyde, catálogo de modelos #163): medido en el runner, master c127a7f
+      # passed=1789 (run 36328116696) y esta rama passed=1908 (run 36328147944): delta propio
+      # +119. Piso = declarado de master (1723, sin premiar la deriva ajena) + 119 = 1842.
+      JAX_CI_MIN_PASSED: "1842"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
