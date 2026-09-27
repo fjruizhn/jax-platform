@@ -3030,7 +3030,57 @@ jobs:
           #   18 -> 20 passed / 1 skip sin cambios; delta propio +2. Los 2 en
           #   rojo contra la línea 92 revertida a `float(os.environ.get(...))`
           #   (DID NOT RAISE IndicesForzadosConfigInvalida).
-          PISO_PASSED = 2692  # +2 (auditoría de 4ac7db3, MINOR 1: línea 92 cubierta con reload)
+          # 2692 -> 2752 (2026-09-27, fix/b9-migraciones-en-test): la base de tests
+          #   sólo aplicaba 001-003 de jax/memory/b9_migrations/ (lo que
+          #   `db.migrations.run_migrations()` cubre); jax#279 (26-sep) puso a
+          #   `jax.memory.b9_mariadb._retrieve_scoped` a leer `r.tenant_id` de
+          #   `memory_revisions`, columna que sólo trae 006 -- una migración que
+          #   el propio README de esa carpeta dice que NO se aplica sola, ni en
+          #   producción ni acá. Sin ella: "Unknown column 'r.tenant_id'",
+          #   envuelto por api/chat.py en 503 MEMORY_UNAVAILABLE. `base_de_test.py`
+          #   ahora aplica, por GLOB (no por lista fija: una 007 futura se recoge
+          #   sola), todo lo que `run_migrations()` no cubre -- ver
+          #   `aplicar_migraciones_b9_restantes()` y
+          #   tests/test_b9_migraciones_restantes.py (archivo nuevo, 5 tests).
+          #
+          #   Medido dos veces, porque este job corre COMO ROOT (JAX_DB_USER: root
+          #   más arriba) y hall9000 no lo es:
+          #
+          #   1) Local, flujo normal de sesión (`JAX_TEST_DB_SUFIJO` propio,
+          #      `JAX_DB_USER=jax_user`), JAX_REPO_PATH a un clon fresco de jax
+          #      master (4642613): antes de este cambio, 2711 passed / 34 failed /
+          #      2 skipped (2747 colectados) -- los 34 en rojo con
+          #      MEMORY_UNAVAILABLE, en chat, adjuntos, facet wiring y shadow;
+          #      después, 2750 passed / 0 failed / 2 skipped (2752 colectados). Los
+          #      2 skips (sin cambios) son
+          #      tests/test_usuario_solo_insert_punto_restauracion.py: `jax_user`
+          #      no tiene CREATE USER fuera de CI (ver el motivo de cada SKIPPED
+          #      arriba) -- se saltan solos también en la rama, por diseño.
+          #   2) Un contenedor `mariadb:12.3.3` descartable (mismo tag que este
+          #      job), `JAX_DB_USER=root`, mismos pasos de bootstrap que las
+          #      celdas de arriba (`jacobs.store.init_tables()` +
+          #      `jax_memory_schema.sql`): con este mismo fix, los 2 tests que
+          #      arriba se saltan CORREN (root sí tiene CREATE USER) y los 2
+          #      PASAN -- verificado por su nombre en el XML, no sólo por el
+          #      conteo. `2711 + 2 = 2713` antes / `2750 + 2 = 2752` después,
+          #      contra los mismos 34 (antes) / 0 (después) failed y ahora 0
+          #      skipped: la aritmética de las dos medidas cierra sin resto.
+          #
+          #   `tests/test_base_por_sesion.py` (27 tests) se corrió aparte en esa
+          #   segunda medición: sus 3 tests que lanzan un SUBPROCESO simulando
+          #   "fuera de CI" heredan `/etc/jax/.env` en hall9000 (que no existe en
+          #   el runner) y eso reintroduce `JAX_DB_HOST` con un valor que su
+          #   propio `env.pop(...)` quiso sacar -- un artefacto de ESTA máquina,
+          #   no del código ni de este fix (esos 3 tests no tocan nada de la
+          #   cadena B9). Sin ese artefacto (medición 1, sin root, donde
+          #   `JAX_DB_HOST` no vuelve solo) los 27 pasan limpios de punta a punta.
+          #   NO VERIFICADO en un runner de GitHub real -- es el número esperado
+          #   por la aritmética de las dos mediciones de arriba, no una tercera
+          #   corrida en el entorno exacto de CI.
+          #
+          #   Delta de colectados (+5) = los 5 tests nuevos; los 34 que estaban en
+          #   rojo pasan a passed sin agregar ninguno.
+          PISO_PASSED = 2752
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

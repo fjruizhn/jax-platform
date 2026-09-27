@@ -573,6 +573,117 @@ def _bootstrap_jax_schema_para_base_de_test(nombre: str) -> None:
         )
 
 
+#: Archivos de `jax/memory/b9_migrations/` que YA aplica `db.migrations.run_migrations()`:
+#: 001/002 por `_apply_jax_b9_core_migrations` (lee estos DOS archivos tal cual, ver
+#: `_jax_b9_core_migration_statements()`) y 003 por `_apply_jax_project_authority_migration`,
+#: que ejecuta el hook Python `project_authority_migrations.py` -- una copia deliberada,
+#: mantenida por JAX, de `003_project_scope_authority.sql` (ver el docstring de ese hook).
+#: Volver a aplicarlas acá no rompería nada (las tres son puro `IF NOT EXISTS`), pero sería
+#: trabajo de más en cada sesión y una tercera fuente de la misma lista. Todo lo que la
+#: carpeta tenga FUERA de este conjunto es DDL que el propio README de esa carpeta declara
+#: que NO se aplica sola -- justo lo que este bootstrap de test tiene que ponerse al día,
+#: descubriéndolo por GLOB y no por una lista fija (ver `aplicar_migraciones_b9_restantes`).
+_MIGRACIONES_B9_YA_CUBIERTAS_POR_RUN_MIGRATIONS = frozenset({
+    "001_b9_shared_memory.sql",
+    "002_b9_hardening.sql",
+    "003_project_scope_authority.sql",
+})
+
+#: Registro de qué migración B9 (de las que quedan fuera del conjunto de arriba) ya se
+#: aplicó a ESTA base física. Vive SOLO en la base de tests -- producción no corre este
+#: módulo -- y es lo que permite reusar una base entre corridas sin reventar un DDL no
+#: idempotente: la `CREATE TRIGGER memory_revision_tenant_compat` de 006 y su
+#: `ADD CONSTRAINT fk_memory_revision_tenant` no traen `IF NOT EXISTS`
+#: (jax/memory/b9_migrations/006_memory_jobs.sql, verificado contra jax master 2026-09-27),
+#: así que ejecutar el archivo una segunda vez fallaría con "trigger ya existe" o
+#: "constraint duplicada". Con el registro, cada archivo corre UNA sola vez por base
+#: física, para siempre -- mismo criterio de fondo que `axioma_migracion_de_datos` en
+#: `db/migrations.py`, pero acotado al arnés de tests: una migración de JAX no es una
+#: migración de datos de este repo, y no comparte esa tabla.
+CREATE_TABLA_MIGRACIONES_B9_DE_TEST = """
+CREATE TABLE IF NOT EXISTS _test_b9_migraciones_aplicadas (
+  archivo VARCHAR(191) NOT NULL PRIMARY KEY,
+  aplicada_at DATETIME DEFAULT NOW()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+
+async def aplicar_migraciones_b9_restantes() -> None:
+    """Deja en la base de ESTA sesión toda la cadena B9 de JAX, más allá de 001-003 (lo
+    que `run_migrations()` ya cubre).
+
+    **Por qué existe.** El README de `jax/memory/b9_migrations/` es explícito: esa cadena
+    "is not executed by application import or worker startup. Apply it only through the
+    repository's reviewed database migration workflow" -- ni siquiera 001-003 se aplican
+    solos en JAX; en `jax-platform` sí se aplican, pero a través de `run_migrations()`, que
+    deliberadamente sólo trae 001-003 (ver el comentario de esa función). En PRODUCCIÓN
+    (`jax_memory`) la cadena completa, 004 y 006 incluidos, ya está aplicada por fuera de
+    ese flujo (verificado 2026-09-27: `jax_memory.memory_revisions` ya trae `tenant_id`).
+    Una base de TEST que sólo corre `run_migrations()` se queda atrás de esa realidad, y
+    cualquier código que dependa de lo que 004/006 agregan
+    (`jax.memory.b9_mariadb._retrieve_scoped`, tras jax#279, lee `r.tenant_id` de
+    `memory_revisions`) revienta en la suite con "Unknown column 'r.tenant_id'" -- medido
+    en esta rama antes de este cambio: 34 tests de chat/adjuntos/facetas/shadow en rojo,
+    todos con `MEMORY_UNAVAILABLE` (503) porque `api/chat.py` envuelve esa falla de B9.
+
+    **Por qué NO va en `run_migrations()`.** Esa función es el arranque de PRODUCCIÓN
+    (la corre el lifespan de `main.py` contra `jax_memory`), y el README de arriba es una
+    decisión de diseño de JAX sobre qué se aplica solo y qué no -- diferirla es de ese
+    repo, no de este bootstrap de test. Esta función es EXCLUSIVA del arnés de tests: sólo
+    hace que la base de prueba deje de mentir sobre lo que producción ya tiene.
+
+    **Descubrimiento por GLOB, no por lista fija.** Un archivo nuevo (007, ...) que JAX
+    agregue mañana se recoge solo, en orden alfabético, sin que nadie tenga que tocar este
+    módulo -- la razón de ser de este bootstrap es justo no depender de que alguien se
+    acuerde de actualizarlo cada vez que la cadena crece (lo que ya pasó una vez: 004 y 006
+    llevaban semanas en `jax` master sin que nada de acá los aplicara).
+
+    **Cuándo llamarla.** DESPUÉS de que `run_migrations()` ya corrió: `memory_objects`,
+    `memory_revisions` y `memory_legacy_bindings` (que 004/006 alteran) son de 001/002.
+    `tests/conftest.py` la llama desde el fixture `client`, en el mismo punto donde ya se
+    asegura el esquema de Jacobs -- ahí el lifespan de la app (que corre `run_migrations()`)
+    ya terminó de arrancar.
+    """
+    from db.connection import get_pool
+    from db.migrations import _jax_b9_migration_root, _split_jax_b9_sql
+
+    nombre = os.environ.get(VARIABLE_DE_LA_BASE)
+    if not es_base_de_test(nombre):
+        raise BaseDeTestInvalida(
+            f"{VARIABLE_DE_LA_BASE}={nombre!r} no es una base de tests: no se le aplican "
+            "acá las migraciones B9 de JAX que producción reserva para su propio flujo "
+            "revisado."
+        )
+
+    directorio = _jax_b9_migration_root()
+    pendientes = sorted(
+        p.name for p in directorio.glob("*.sql")
+        if p.name not in _MIGRACIONES_B9_YA_CUBIERTAS_POR_RUN_MIGRATIONS
+    )
+    if not pendientes:
+        return
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(CREATE_TABLA_MIGRACIONES_B9_DE_TEST)
+            for archivo in pendientes:
+                await cur.execute(
+                    "SELECT 1 FROM _test_b9_migraciones_aplicadas WHERE archivo=%s",
+                    (archivo,),
+                )
+                if await cur.fetchone():
+                    continue
+                script = (directorio / archivo).read_text(encoding="utf-8")
+                for statement in _split_jax_b9_sql(script):
+                    await cur.execute(statement)
+                await cur.execute(
+                    "INSERT INTO _test_b9_migraciones_aplicadas (archivo) VALUES (%s)",
+                    (archivo,),
+                )
+        await conn.commit()
+
+
 async def _tabla_existe_en_base(nombre: str, tabla: str) -> bool:
     import aiomysql
     from db_connect_config import db_connect_timeout_seconds
