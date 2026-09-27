@@ -18,6 +18,7 @@ por proveedor se convierte en `ok`/`code`/las listas de la respuesta.
 Usa `client` (DB real vía el portal de la sesión) porque `sync_all()` hace
 una consulta real a `facet_binding`/`model` para las facetas en riesgo.
 """
+import asyncio
 import uuid
 
 import pytest
@@ -374,3 +375,131 @@ def test_sync_all_marca_en_el_futuro_avisa_retroceso_y_no_pierde(client, monkeyp
     assert result["marca_retrocedio"] is True
     assert result["nuevos_desde_marca"] == {}
     assert isinstance(result["marca_corte"], str) and result["marca_corte"]
+
+
+# --------------------------------------------------------------------------
+# Punto D (quinta auditoría adversarial, 2026-09-28): `sync_all()` con un
+# CURSOR FALSO -- prueba de integración de la función real (no sólo las
+# funciones puras `_interpretar_get_lock`/`_cerrar_conexion_si_release_lock_no_confirma`
+# ya cubiertas más arriba), sin depender de poder forzar un error real de
+# MariaDB.
+# --------------------------------------------------------------------------
+
+class _CursorFalsoParaSyncAll:
+    """Todos los cursores de una MISMA conexión falsa comparten la cola --
+    cada `fetchone()` consume la SIGUIENTE respuesta programada, en el orden
+    en que `sync_all()` las pide de verdad (GET_LOCK, después lo que sea que
+    pida `_facetas_en_riesgo`/`_nuevos_desde_marca_bajo_candado` si no están
+    mockeadas, después RELEASE_LOCK)."""
+    def __init__(self, cola):
+        self._cola = cola
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, query, params=None):
+        pass
+
+    async def fetchone(self):
+        return self._cola.pop(0)
+
+
+class _ConexionFalsaConCursor:
+    def __init__(self, cola_fetchone):
+        self._cola = cola_fetchone
+        self.cerrada = False
+
+    def cursor(self):
+        return _CursorFalsoParaSyncAll(self._cola)
+
+    def close(self):
+        self.cerrada = True
+
+
+class _AdquirirFalsoConCursor:
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _PoolFalsoConCursor:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def acquire(self):
+        return _AdquirirFalsoConCursor(self._conn)
+
+
+def test_sync_all_con_cursor_falso_get_lock_null_lanza_excepcion(monkeypatch):
+    """GET_LOCK devolviendo NULL es un error real de MariaDB -- `sync_all()`
+    tiene que dejarlo propagar, no confundirlo con "candado ocupado"."""
+    conn = _ConexionFalsaConCursor([(None,)])  # GET_LOCK -> NULL
+
+    async def _fake_get_pool():
+        return _PoolFalsoConCursor(conn)
+    monkeypatch.setattr(model_catalog, "get_pool", _fake_get_pool)
+
+    with pytest.raises(RuntimeError, match="GET_LOCK"):
+        asyncio.run(model_catalog.sync_all())
+
+
+def test_sync_all_con_cursor_falso_release_lock_cero_cierra_la_conexion(monkeypatch):
+    """RELEASE_LOCK devolviendo 0 (no confirmado) tiene que descartar la
+    conexión -- `conn.close()` se llama de verdad dentro del `finally`, no
+    sólo en la función pura aislada."""
+    conn = _ConexionFalsaConCursor([(1,), (0,)])  # GET_LOCK -> obtenido, RELEASE_LOCK -> no confirma
+
+    async def _fake_get_pool():
+        return _PoolFalsoConCursor(conn)
+    monkeypatch.setattr(model_catalog, "get_pool", _fake_get_pool)
+
+    async def _sin_providers(provider_id):
+        return {"provider_id": provider_id, "fetched": 0, "nuevos": []}
+    monkeypatch.setattr(model_catalog, "sync_provider_models", _sin_providers)
+
+    async def _enrich_ok():
+        return {"enriched": 0}
+    monkeypatch.setattr(model_catalog, "enrich_from_models_dev", _enrich_ok)
+
+    async def _sin_facetas(cur):
+        return []
+    monkeypatch.setattr(model_catalog, "_facetas_en_riesgo", _sin_facetas)
+
+    resultado = asyncio.run(model_catalog.sync_all())
+
+    assert resultado["ok"] is True
+    assert conn.cerrada is True  # se llamó a conn.close() en el finally
+
+
+def test_sync_all_con_cursor_falso_release_lock_uno_no_cierra_la_conexion(monkeypatch):
+    """Control: RELEASE_LOCK confirmando con 1 NO descarta la conexión."""
+    conn = _ConexionFalsaConCursor([(1,), (1,)])  # GET_LOCK -> obtenido, RELEASE_LOCK -> confirma
+
+    async def _fake_get_pool():
+        return _PoolFalsoConCursor(conn)
+    monkeypatch.setattr(model_catalog, "get_pool", _fake_get_pool)
+
+    async def _sin_providers(provider_id):
+        return {"provider_id": provider_id, "fetched": 0, "nuevos": []}
+    monkeypatch.setattr(model_catalog, "sync_provider_models", _sin_providers)
+
+    async def _enrich_ok():
+        return {"enriched": 0}
+    monkeypatch.setattr(model_catalog, "enrich_from_models_dev", _enrich_ok)
+
+    async def _sin_facetas(cur):
+        return []
+    monkeypatch.setattr(model_catalog, "_facetas_en_riesgo", _sin_facetas)
+
+    resultado = asyncio.run(model_catalog.sync_all())
+
+    assert resultado["ok"] is True
+    assert conn.cerrada is False

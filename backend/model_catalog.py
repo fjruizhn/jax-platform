@@ -728,7 +728,24 @@ def _cerrar_conexion_si_release_lock_no_confirma(liberado, conn) -> None:
     pool, así el próximo que la tome no hereda un candado en un estado que
     nadie puede explicar. Función separada (en vez de inline en el
     `finally`) para poder probar la decisión con un `conn` falso, sin
-    depender de poder forzar un `RELEASE_LOCK` real que no devuelva 1."""
+    depender de poder forzar un `RELEASE_LOCK` real que no devuelva 1.
+
+    RIESGO CONOCIDO (punto E, quinta auditoría adversarial, 2026-09-28,
+    caso anómalo -- no cambia el código): `aiomysql.Pool.release()` sólo
+    llama a su propio `_wakeup()` (lo que despierta a un `await
+    pool.acquire()` bloqueado porque el pool está al tope) cuando la
+    conexión que recibe SIGUE ABIERTA (`if not conn.closed: ... fut =
+    self._loop.create_task(self._wakeup())`). Como acá la conexión YA está
+    cerrada (por este mismo `conn.close()`) ANTES de que el `async with
+    pool.acquire()` de `sync_all()` dispare el `release()` real en su
+    `__aexit__`, esa rama nunca corre y `_wakeup()` no se llama. El slot
+    libre existe igual (la conexión murió, `_used` la descuenta), pero un
+    `acquire()` ajeno bloqueado esperando pool lleno podría no despertar
+    justo en ESE momento -- quedaría esperando hasta el próximo `release()`
+    de OTRA conexión (que sí dispare `_wakeup()`) o hasta su propio
+    timeout, en vez de notarlo al instante. Caso anómalo (RELEASE_LOCK sin
+    confirmar es raro de por sí) y con impacto acotado a una demora, no a
+    un deadlock -- documentado, no se cambia código para esto."""
     if liberado != 1:
         logger.warning("sync_all: RELEASE_LOCK no confirmó (no devolvió 1) -- se descarta la conexión")
         conn.close()

@@ -3053,9 +3053,17 @@ jobs:
           #   test_catalogo_modelos_ejecutor.py (+13), MAJOR-1 con
           #   MONITOR_EXIT_STATUS 200/203/1/3 en test_avisar_fallo_unidad.py
           #   (+3), y la confirmación del token sin contar una línea vacía
-          #   como partido en test_guardar_token_claude_script.py (+1). No
-          #   se corrigió ningún test viejo, no hay drift ajeno que
-          #   descontar. Medido en vivo, MISMO comando que este job
+          #   como partido en test_guardar_token_claude_script.py (+1).
+          #   CORRECCIÓN (quinta auditoría adversarial, 2026-09-28): acá
+          #   decía "no se corrigió ningún test viejo" -- es falso, 12 tests
+          #   viejos se quitaron o se reescribieron (la sección de "nuevos"
+          #   de test_catalogo_modelos_ejecutor.py cambió de contrato con
+          #   MINOR-2/3/4 y varios se reemplazaron por otros de nombre
+          #   distinto); el DELTA NETO (+28, contando funciones `def test_`
+          #   antes/después por archivo) sigue siendo el correcto para este
+          #   piso -- ninguno de esos 12 es drift ajeno, son parte del
+          #   propio trabajo de esa ronda. Medido en vivo, MISMO comando que
+          #   este job
           #   (`python -m pytest -q -rs
           #   --ignore=tests/test_carga_indice_pipelines_del_usuario.py`):
           #   2858 passed / 34 failed / 2 skipped -- los 34 failed son el
@@ -3066,7 +3074,22 @@ jobs:
           #   PROPIO verificado (+28) = 2720, no los 2858 medidos en bruto
           #   -- mismo criterio de siempre en este archivo: no premiar el
           #   drift ajeno.
-          PISO_PASSED = 2720  # +28 (cuarta auditoría adversarial del catálogo de modelos, 2026-09-28)
+          # 2720 -> 2726 (2026-09-28, quinta auditoría adversarial del
+          #   catálogo de modelos, cierre de MINORES antes del merge): +6 --
+          #   +1 en test_catalogo_modelos_ejecutor.py::test_debe_avisar_reloj_retrocedido_es_true
+          #   (punto A: `notificado_en > ahora` ya no dedupea), +1
+          #   test_main_sale_1_si_avisar_revienta_aunque_ok_sea_verdadero
+          #   (punto B: `_avisar()` reventando sale 1 aunque `ok` sea
+          #   verdadero), +1
+          #   test_enviar_telegram_el_mensaje_recortado_no_pasa_el_limite_ni_un_caracter
+          #   (punto C: el recorte deja lugar al sufijo, el mensaje final
+          #   nunca pasa el límite), y +3 en test_model_catalog_sync_all.py
+          #   (punto D: `sync_all()` con un cursor FALSO -- GET_LOCK NULL
+          #   lanza excepción, RELEASE_LOCK 0 cierra la conexión de verdad
+          #   en el `finally`, RELEASE_LOCK 1 no la cierra). Medido en vivo,
+          #   MISMO comando que este job: 2864 passed / 34 failed (mismos
+          #   34 de siempre, drift B9 ajeno) / 2 skipped.
+          PISO_PASSED = 2726  # +6 (quinta auditoría adversarial del catálogo de modelos, 2026-09-28)
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

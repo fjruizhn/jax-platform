@@ -173,13 +173,25 @@ def _debe_avisar(entrada: dict | None, firma_actual: str, ahora: float) -> bool:
     vez, si el conjunto de problemas cambió, o si ya pasó la ventana de
     reaviso -- nunca por "ya se avisó antes y nada cambió", que es justo el
     spam que esto evita. Sólo se usa para "problemas": "nuevos" se compara
-    contra una marca, no se dedupea por ventana (ver `_avisar`)."""
+    contra una marca, no se dedupea por ventana (ver `_avisar`).
+
+    Quinta auditoría adversarial (2026-09-28), punto A: si `notificado_en`
+    quedara DESPUÉS de `ahora` (el reloj del sistema saltó hacia atrás,
+    mismo tipo de anomalía que MINOR-3 cubre del lado de la marca de
+    "nuevos"), `ahora - notificado_en` da NEGATIVO -- siempre menor que
+    `VENTANA_REAVISO_SEGUNDOS`, así que sin este chequeo se leería como
+    "todavía dentro de la ventana" y se DEDUPEARÍA un problema que en
+    realidad nunca se confirmó avisado con el reloj de hoy. No hay nada
+    contra qué comparar con confianza -- se avisa, igual que si no hubiera
+    entrada previa."""
     if not entrada:
         return True
     if entrada.get("firma") != firma_actual:
         return True
     notificado_en = entrada.get("notificado_en")
     if not isinstance(notificado_en, (int, float)):
+        return True
+    if notificado_en > ahora:
         return True
     return (ahora - notificado_en) >= VENTANA_REAVISO_SEGUNDOS
 
@@ -300,7 +312,12 @@ async def _enviar_telegram(mensaje: str) -> bool:
     from redaccion import redactar_secretos, texto_de_error
 
     if len(mensaje) > LIMITE_TELEGRAM:
-        mensaje = mensaje[:LIMITE_TELEGRAM] + "… (mensaje recortado)"
+        # Quinta auditoría adversarial (2026-09-28), punto C: el corte tiene
+        # que dejar lugar para el propio sufijo -- `mensaje[:LIMITE] +
+        # sufijo` daba un mensaje de `LIMITE + len(sufijo)` caracteres,
+        # MÁS largo que el límite que se quería respetar.
+        sufijo = "… (mensaje recortado)"
+        mensaje = mensaje[:LIMITE_TELEGRAM - len(sufijo)] + sufijo
 
     token = os.environ.get(TELEGRAM_TOKEN_ENV, "").strip()
     chat_id = os.environ.get(TELEGRAM_CHAT_ID_ENV, "").strip()
@@ -565,8 +582,9 @@ async def _ciclo() -> dict | None:
             _limpiar_contador_sync_en_curso()
             try:
                 resultado["_estado_aviso_problemas"] = await _avisar(resultado)
-            except Exception:  # fail-soft: el código de salida se decide en main() con lo que haya
+            except Exception:  # fail-soft: no relanza -- pero SÍ deja marca de que _avisar no terminó bien (punto B, quinta auditoría adversarial, 2026-09-28)
                 logger.exception("catalogo_modelos_ejecutor: _avisar falló")
+                resultado["_estado_aviso_problemas"] = "fallo"
 
     # Mismo loop, al final de todo: `close_http_client()` está del lado de
     # http_client.py y no toca el pool (ya cerrado dentro de `_correr()`).
@@ -598,12 +616,22 @@ def main() -> int:
         return forzado
 
     if resultado.get("ok"):
+        # Punto B (quinta auditoría adversarial, 2026-09-28): `ok=True` no
+        # alcanza si `_avisar()` reventó (p. ej. `_guardar_estado` sin
+        # permisos o disco lleno) -- eso significa que ni siquiera se pudo
+        # confiar en dejar el estado de dedupe/marca al día, y el propio
+        # `_ciclo()` ya marcó `_estado_aviso_problemas="fallo"` en ese caso.
+        # Un catálogo sano con su mecanismo de aviso roto no es un job
+        # exitoso.
+        if resultado.get("_estado_aviso_problemas") == "fallo":
+            return 1
         return 0
 
     # Hubo problemas reales (no `sync_en_curso`, ya manejado arriba): 3 si
     # el aviso quedó resuelto (avisado o deduplicado con razón), 1 en
     # cualquier otro caso -- incluido que `_avisar()` haya reventado, en
-    # cuyo caso esta clave ni existe (MAJOR-1).
+    # cuyo caso esta clave vale "fallo" (punto B) o no existe si el propio
+    # `_ciclo()` reventó antes de escribirla.
     if resultado.get("_estado_aviso_problemas") in ("avisado", "dedupeado"):
         return 3
     return 1

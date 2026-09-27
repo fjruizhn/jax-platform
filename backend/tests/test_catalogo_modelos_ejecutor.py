@@ -132,15 +132,32 @@ def test_main_sale_1_cuando_hay_problemas_y_el_aviso_no_se_pudo_confirmar(monkey
 
 
 def test_main_sale_1_si_avisar_revento_sin_dejar_estado_de_aviso(monkeypatch):
-    """Si `_avisar()` revienta, `_ciclo()` lo atrapa (fail-soft) pero la
-    clave `_estado_aviso_problemas` nunca se llega a escribir -- main() no
-    puede asumir "avisado" ante la ausencia de la clave, tiene que salir 1."""
+    """Si `_avisar()` revienta, `_ciclo()` lo atrapa (fail-soft) y deja
+    `_estado_aviso_problemas="fallo"` (punto B, quinta auditoría
+    adversarial, 2026-09-28) -- main() no puede asumir "avisado" cuando en
+    realidad ni siquiera se pudo confirmar el intento, tiene que salir 1."""
     async def _correr():
         return _resultado_con_problemas()
     monkeypatch.setattr(ejecutor, "_correr", _correr)
 
     async def _avisar_que_revienta(resultado):
         raise RuntimeError("boom")
+    monkeypatch.setattr(ejecutor, "_avisar", _avisar_que_revienta)
+
+    assert ejecutor.main() == 1
+
+
+def test_main_sale_1_si_avisar_revienta_aunque_ok_sea_verdadero(monkeypatch):
+    """Punto B (quinta auditoría adversarial, 2026-09-28): un catálogo sano
+    (`ok=True`) cuyo `_avisar()` revienta (p. ej. `_guardar_estado` sin
+    permisos, disco lleno) NO puede salir 0 -- eso escondería que ni
+    siquiera se pudo confiar en dejar el estado de dedupe/marca al día."""
+    async def _correr():
+        return _resultado_ok()
+    monkeypatch.setattr(ejecutor, "_correr", _correr)
+
+    async def _avisar_que_revienta(resultado):
+        raise OSError("disco lleno")
     monkeypatch.setattr(ejecutor, "_avisar", _avisar_que_revienta)
 
     assert ejecutor.main() == 1
@@ -493,6 +510,17 @@ def test_debe_avisar_misma_firma_pasada_la_ventana_es_true():
     assert ejecutor._debe_avisar(entrada, "firma-x", ahora=ahora) is True
 
 
+def test_debe_avisar_reloj_retrocedido_es_true():
+    """Punto A (quinta auditoría adversarial, 2026-09-28): si `notificado_en`
+    queda DESPUÉS de `ahora` (el reloj del sistema saltó hacia atrás),
+    `ahora - notificado_en` da negativo -- sin el chequeo explícito, eso es
+    siempre menor que la ventana y se leería como "todavía dentro de la
+    ventana, no reavisar" cuando en realidad no hay nada confiable contra
+    qué comparar."""
+    entrada = {"firma": "firma-x", "notificado_en": 2_000_000.0}
+    assert ejecutor._debe_avisar(entrada, "firma-x", ahora=1_000_000.0) is True
+
+
 def _mock_envio(monkeypatch, resultados):
     """`resultados` es una lista de bool -- cada llamada a `_enviar_telegram`
     consume el siguiente valor, en orden."""
@@ -804,7 +832,31 @@ def test_enviar_telegram_trunca_cualquier_mensaje_que_pase_el_limite(monkeypatch
         http_client._client = original
 
     enviado = fake.calls[0][1]["data"]["text"]
-    assert len(enviado) <= ejecutor.LIMITE_TELEGRAM + 50
+    # Punto C (quinta auditoría adversarial, 2026-09-28): el largo EXACTO,
+    # no un margen -- el sufijo tiene que quedar DENTRO del límite
+    # declarado, no sumado por encima.
+    assert len(enviado) == ejecutor.LIMITE_TELEGRAM
+    assert enviado.endswith("… (mensaje recortado)")
+
+
+def test_enviar_telegram_el_mensaje_recortado_no_pasa_el_limite_ni_un_caracter(monkeypatch):
+    """Punto C: contra el largo exacto del límite -- si el recorte sumara el
+    sufijo por encima (`mensaje[:LIMITE] + sufijo`), este test lo agarra en
+    el peor caso posible: un mensaje apenas un caracter más largo que el
+    límite."""
+    monkeypatch.setenv(ejecutor.TELEGRAM_TOKEN_ENV, "123456:token-de-prueba")
+    monkeypatch.setenv(ejecutor.TELEGRAM_CHAT_ID_ENV, "-100999")
+    fake = _FakePostClient(respuesta=_FakePostResponse(200, {"ok": True}))
+    original = http_client._client
+    http_client._client = fake
+    mensaje = "y" * (ejecutor.LIMITE_TELEGRAM + 1)
+    try:
+        _correr_async(ejecutor._enviar_telegram(mensaje))
+    finally:
+        http_client._client = original
+
+    enviado = fake.calls[0][1]["data"]["text"]
+    assert len(enviado) == ejecutor.LIMITE_TELEGRAM
 
 
 def test_avisar_persiste_el_estado_como_json_legible(monkeypatch, tmp_path):
