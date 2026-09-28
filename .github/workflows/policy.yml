@@ -997,8 +997,11 @@ jobs:
           //   regresión ("fallaron" no se muestra con lista vacía) y 3 del
           //   aviso de "sync en curso" (candado ocupado) en
           //   AdminModelCatalog.test.jsx.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1029) {
-              console.error("PISO ROTO: se esperaban 1029 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1029 -> 1053 (2026-09-27, programación configurable del sync,
+          //   #167): MEDIDO EN EL RUNNER, run 36381118121 (d7b1670): passed=1053
+          //   failed=0 total=1053. Regla 5: el último en llegar re-mide.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1053) {
+              console.error("PISO ROTO: se esperaban 1053 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3197,7 +3200,10 @@ jobs:
           # #164) run 36328116696 -> passed=2759; esta rama run 36328147944 -> passed=2912
           # (colectados=2912, skipped=0). Delta propio real del catálogo: +153 (el +34
           # estimado arriba contaba `def test_` y no los parametrizados: era falso).
-          PISO_PASSED = 2912
+          # 2026-09-27 (Hyde, #167, programación configurable del sync): MEDIDO EN EL
+          # RUNNER. master a0aa01c run 36354899003 -> passed=2912; esta rama run
+          # 36381118121 (d7b1670) -> colectados=3045 passed=3044 skipped=1. Delta propio +132.
+          PISO_PASSED = 3044
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4163,7 +4169,10 @@ jobs:
       # 2026-09-27 (Hyde, catálogo de modelos #163): medido en el runner, master c127a7f
       # passed=1789 (run 36328116696) y esta rama passed=1908 (run 36328147944): delta propio
       # +119. Piso = declarado de master (1723, sin premiar la deriva ajena) + 119 = 1842.
-      JAX_CI_MIN_PASSED: "1842"
+      # 2026-09-27 (Hyde, #167): medido en el runner, master a0aa01c passed=1908 (run
+      # 36354899003) y esta rama passed=1978 (run 36381118121): delta propio +70. Piso =
+      # declarado de master (1842, sin premiar la deriva ajena) + 70 = 1912.
+      JAX_CI_MIN_PASSED: "1912"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
