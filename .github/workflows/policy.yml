@@ -3257,7 +3257,17 @@ jobs:
           # test_mision_de_servidor_expone_tipo_y_repo_vacio -- ninguno parametrizado, delta
           # 1:1). PISO_PASSED se suma sobre el declarado (3052), no sobre el 3054 medido en
           # bruto localmente: mismo criterio de siempre en este archivo.
-          PISO_PASSED = 3062
+          # 3062 -> 3064 (2026-09-28, Hyde, dos correcciones del controlador sobre la Task
+          # 10, mismo commit: el runner también emite `entrega_codigo` con
+          # `estado_entrega='sin_entregar'` (el turno no tocó GitHub) y
+          # `estado_entrega='empujado_sin_pr'` (rama ya en GitHub, PR sin confirmar) -- sexto
+          # y séptimo valor del ENUM, ensanchados por `_ENUM_EXTENSIONS` sin editar el `ADD
+          # COLUMN` original de Task 8). +2: test_entrega_codigo_con_sin_entregar_se_guarda,
+          # test_entrega_codigo_con_empujado_sin_pr_se_guarda. Medido LOCAL, mismo comando
+          # que este job, A/B contra un segundo worktree (`git worktree add`, sin tocar este)
+          # fijado en el commit padre 6731086: 3064 passed / 2 skipped ANTES; esta rama ->
+          # 3066 passed / 2 skipped DESPUÉS. Delta propio real: +2.
+          PISO_PASSED = 3064
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
