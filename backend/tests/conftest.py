@@ -6,8 +6,48 @@ from tests.entorno_de_produccion import cargar
 
 ENV_PATH = "/etc/jax/.env"
 
+# Secretos de PRODUCCIÓN que /etc/jax/.env trae y que la suite NO necesita --
+# cargarlos "porque están" expone el valor real a cualquier test que no los
+# aísle explícitamente. Hallazgo real (2026-09-27, sesión
+# jax-platform-sync-config): `CLAUDE_CODE_OAUTH_TOKEN` quedaba puesto en el
+# ambiente por este bucle y GANABA sobre el archivo que 3 tests de
+# `test_model_catalog_sync.py` monkeypatcheaban explícitamente
+# (`model_catalog._ANTHROPIC_CREDENTIALS_PATH`) -- esos tests fallaban en
+# cualquier máquina con acceso `sudo -n` a `/etc/jax/.env`, sin que su propio
+# código estuviera mal. Ver `_read_anthropic_oauth_token()` en
+# `model_catalog.py`: la rama de variable de entorno se prueba PRIMERO.
+#
+# Verificado uno por uno (no supuesto) antes de excluir: cada consumidor
+# REAL de estas variables en este árbol ya hace su propio
+# `monkeypatch.setenv`/`delenv` -- ninguno depende de que la ambiente ya las
+# traiga puestas.
+#   - CLAUDE_CODE_OAUTH_TOKEN: model_catalog.py la lee vía
+#     `ANTHROPIC_OAUTH_TOKEN_ENV`; los tests que la ejercitan (D1.3-a,
+#     test_read_anthropic_oauth_token_*) la ponen/quitan ellos mismos.
+#   - TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID: sólo las lee
+#     `catalogo_modelos_ejecutor.py` (aviso del sync programado); TODOS sus
+#     tests (test_catalogo_modelos_ejecutor.py, test_avisar_fallo_unidad.py)
+#     ya hacen `monkeypatch.setenv`/`delenv` explícito -- ninguno lee el
+#     valor ambiente.
+#
+# Control: tests/test_conftest_no_carga_secretos_no_necesarios.py -- falla
+# si este conjunto vuelve a filtrarse al entorno de la suite.
+SECRETOS_DE_PRODUCCION_NO_NECESARIOS = frozenset({
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
+})
+
+# Además de no CARGARLOS desde el archivo: si alguno ya viniera heredado del
+# proceso que lanzó la suite (una sesión interactiva de Hyde, no sólo
+# /etc/jax/.env), se lo quita también -- "no lo necesita" es del entorno de
+# la suite entera, no sólo de esta fuente.
+for _secreto in SECRETOS_DE_PRODUCCION_NO_NECESARIOS:
+    os.environ.pop(_secreto, None)
 
 for _k, _v in cargar(ENV_PATH).items():
+    if _k in SECRETOS_DE_PRODUCCION_NO_NECESARIOS:
+        continue
     os.environ.setdefault(_k, _v)
 
 # Base de tests por sesión (2026-09-20, port de `base_de_test.py` de `jax`,

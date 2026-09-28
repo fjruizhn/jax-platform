@@ -359,7 +359,17 @@ def test_sync_provider_models_anthropic_uses_local_oauth_token(client, monkeypat
     usa el token OAuth que Claude Code ya deja en ~/.claude/.credentials.json
     (decision 2026-08-10: opcion 1, leer en caliente, sin refresh propio).
     Verifica tambien que va el header anthropic-version, requerido por la
-    API real (confirmado con curl contra api.anthropic.com el 2026-08-10)."""
+    API real (confirmado con curl contra api.anthropic.com el 2026-08-10).
+
+    `delenv` explícito (2026-09-27): este test ejercita el camino del
+    ARCHIVO -- si `CLAUDE_CODE_OAUTH_TOKEN` quedara puesto en el ambiente
+    (una máquina con `/etc/jax/.env` real a mano, o heredado de una sesión
+    de Hyde), esa rama gana ANTES de llegar al archivo que este test
+    monkeypatchea, y el resultado sería el token real, no el fake de abajo.
+    conftest.py ya no carga esa variable (ver
+    `SECRETOS_DE_PRODUCCION_NO_NECESARIOS`), pero este test no depende de
+    eso: se aísla también él mismo."""
+    monkeypatch.delenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, raising=False)
     path = _write_anthropic_credentials(tmp_path, expires_in_seconds=3600)
     monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", path)
 
@@ -458,7 +468,12 @@ def test_sync_provider_models_anthropic_uses_env_token_end_to_end(client, monkey
 def test_sync_provider_models_anthropic_skips_when_token_file_missing(client, monkeypatch, tmp_path):
     """Fail-soft (opcion 1): sin archivo de credenciales local, el sync no
     revienta — se salta con motivo explicito, igual que 'sin models_list_url'
-    para otros providers sin config."""
+    para otros providers sin config.
+
+    `delenv` explícito (2026-09-27): este test ejercita "sin archivo NI
+    variable" -- ver el comentario de
+    test_sync_provider_models_anthropic_uses_local_oauth_token, mismo motivo."""
+    monkeypatch.delenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, raising=False)
     monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", str(tmp_path / "no-existe.json"))
 
     fake = _FakeGetClient(_FakeResponse({"data": []}))
@@ -477,7 +492,12 @@ def test_sync_provider_models_anthropic_skips_when_token_file_missing(client, mo
 
 def test_sync_provider_models_anthropic_skips_when_token_expired(client, monkeypatch, tmp_path):
     """Token OAuth vencido (vida corta, ver decision 2026-08-10) -> skip
-    explicito, nunca una llamada con credencial vieja a la API real."""
+    explicito, nunca una llamada con credencial vieja a la API real.
+
+    `delenv` explícito (2026-09-27): mismo motivo que
+    test_sync_provider_models_anthropic_uses_local_oauth_token -- este test
+    ejercita el archivo vencido, no la variable de entorno."""
+    monkeypatch.delenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, raising=False)
     path = _write_anthropic_credentials(tmp_path, expires_in_seconds=-60)
     monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", path)
 
