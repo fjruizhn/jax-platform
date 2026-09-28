@@ -1007,8 +1007,21 @@ jobs:
           // 1053 -> 1054 (2026-09-28, Hyde, integración de #166 sobre #167 por decisión
           //   de Fernando): 1053 de master + 1 test de #166. Regla 5: lo confirma o
           //   desmiente la corrida real del runner en este PR.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1054) {
-              console.error("PISO ROTO: se esperaban 1054 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1054 -> 1063 (2026-09-28, Hyde, Task 11 del plan "El Ejecutor programa":
+          //   tipo Código en el modo Ejecutor -- radio servidor/código, selector de
+          //   repos, DetalleMision con el link al PR y el estado de entrega
+          //   traducido, violaciones de entrega_codigo por regla en la bitácora).
+          //   +9: 4 en useEjecutor.test.js (cargarRepos guarda la lista, un error
+          //   de /repos queda guardado, crearMision manda tipo/repo_id y abre la
+          //   misión, un error del POST de crearMision queda en errorEnvio) y 5 en
+          //   PanelEjecutor.test.jsx (el selector de repos aparece y exige uno para
+          //   lanzar, tipo Servidor sigue mostrando las máquinas, lanzar con repo y
+          //   objetivo crea la misión, DetalleMision enlaza el PR y traduce el
+          //   estado de entrega, la bitácora traduce las violaciones por regla).
+          //   Medido con `npx vitest run`: 1063 passed, 0 fallidos, delta propio
+          //   +9 sobre el 1054 declarado.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1063) {
+              console.error("PISO ROTO: se esperaban 1063 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
