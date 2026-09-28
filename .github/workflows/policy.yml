@@ -3267,7 +3267,17 @@ jobs:
           # que este job, A/B contra un segundo worktree (`git worktree add`, sin tocar este)
           # fijado en el commit padre 6731086: 3064 passed / 2 skipped ANTES; esta rama ->
           # 3066 passed / 2 skipped DESPUÉS. Delta propio real: +2.
-          PISO_PASSED = 3064
+          # 3064 -> 3066 (2026-09-28, Hyde, ruling del controlador: continuar() de una misión
+          # de código -- spec §3.4 -- retoma la misma rama/PR, así que el runner necesita
+          # tipo/repo en CADA turno, no sólo en el de creación; repo_id se revalida contra
+          # ejecutor_repo.activo en cada turno nuevo, 409 repo_inactivo si se desactivó
+          # después de crear()). +2:
+          # test_continuar_mision_de_codigo_pasa_tipo_y_repo_al_runner,
+          # test_continuar_mision_de_codigo_con_repo_desactivado_es_409. Medido LOCAL, mismo
+          # comando que este job, A/B contra un segundo worktree (`git worktree add`, sin
+          # tocar este) fijado en el commit padre d3e57ae: 3066 passed / 2 skipped ANTES;
+          # esta rama -> 3068 passed / 2 skipped DESPUÉS. Delta propio real: +2.
+          PISO_PASSED = 3066
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
