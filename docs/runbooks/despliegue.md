@@ -121,6 +121,14 @@ SHOW COLUMNS FROM jax_memory.facts LIKE 'verified_by';
 
 ## 2 · Backend de la plataforma
 
+> **Si el cambio toca el ejecutor del catálogo de modelos o el nombre del
+> candado** (`model_catalog.nombre_candado()`, `_NOMBRE_CANDADO_SYNC`/
+> `_NOMBRE_CANDADO_GATE`, o `catalogo_modelos_ejecutor.py`), **NO sigas acá**:
+> usá `ops/desplegar-sin-ventana-de-sync.sh`, ver la sección "Caso general"
+> más abajo. Lo de acá (`git merge --ff-only` + `restart` sin más) no espera
+> ninguna corrida del ejecutor en curso ni frena el sync manual -- es
+> exactamente la ventana que ese guion existe para cerrar.
+
 ```bash
 cd /srv/jax-prod/jax-platform && git fetch origin && git merge --ff-only origin/master
 sudo systemctl restart jax-platform
@@ -387,7 +395,23 @@ esquema, que es aditivo.
 *(Agregado 2026-09-27, auditoría adversarial de la quinta ronda del catálogo de
 modelos, MINOR-1: el mismo procedimiento sirve para CUALQUIER cambio futuro que
 toque `model_catalog.nombre_candado()`, `_NOMBRE_CANDADO_SYNC`/`_NOMBRE_CANDADO_GATE`,
-o el propio `catalogo_modelos_ejecutor.py` -- no es específico de esta ronda.)*
+o el propio `catalogo_modelos_ejecutor.py` -- no es específico de esta ronda.
+**Reescrito 2026-09-27, séptima ronda de la auditoría adversarial** -- RECHAZADO
+por el runbook en la ronda anterior: los pasos de más abajo eran bloques de
+bash para copiar y pegar a mano, sin nada que los pusiera a prueba. Ahora son
+un guion versionado y probado, `ops/desplegar-sin-ventana-de-sync.sh`
+(pruebas en `backend/tests/test_desplegar_sin_ventana_de_sync.py`, contra
+`systemctl`/`mariadb`/`git`/`curl`/`install`/`systemd-analyze` SIMULADOS,
+nunca contra producción).*
+
+**Cuándo usar este guion, y cuándo no.** Si el cambio toca el ejecutor del
+catálogo (`catalogo_modelos_ejecutor.py`), el nombre del candado
+(`model_catalog.nombre_candado()`, `_NOMBRE_CANDADO_SYNC`/`_NOMBRE_CANDADO_GATE`)
+o cualquiera de las 3 unidades systemd del mecanismo -- este guion, no los
+pasos sueltos de la sección 2. Si el cambio no toca nada de eso, la sección 2
+de arriba (`git merge --ff-only` + `restart`) alcanza: este guion no es un
+reemplazo general del despliegue, es específico de la ventana que el
+ejecutor programado y el candado abren.
 
 **Por qué hace falta un procedimiento aparte.** `jax-catalogo-modelos.service`
 (`Type=oneshot`) lo dispara `jax-catalogo-modelos.timer` (`OnCalendar=hourly`,
@@ -414,142 +438,106 @@ mientras esa tarea está en vuelo la mata a mitad de camino, sin que el
 timer tenga nada que ver. Hace falta comprobar las DOS cosas antes de
 reiniciar, no sólo el timer.
 
-**Procedimiento, sin ventana:**
+**El guion, de punta a punta:**
 
 ```bash
-# 1. Frenar el TIMER primero -- nada nuevo se agenda mientras se despliega.
-sudo systemctl stop jax-catalogo-modelos.timer
-
-# 2. Esperar a que la corrida del EJECUTOR PROGRAMADO en curso (si la hay)
-#    termine SOLA -- nunca matarla a mitad de un sync. Con el código VIEJO
-#    todavía en el checkout, termina con el candado VIEJO, limpio, sin
-#    ninguna corrida nueva que pueda pisarla.
-#
-#    OJO (BLOCK-1, sexta ronda de la auditoría adversarial, 2026-09-27):
-#    `jax-catalogo-modelos.service` es `Type=oneshot` SIN `RemainAfterExit`
-#    -- mientras corre, `systemctl is-active` devuelve "activating", NUNCA
-#    "active". Un chequeo contra "active" (la versión anterior de este
-#    paso) pasa de largo con una corrida real en curso, sin esperar nada.
-#    Lo que hay que mirar es `ActiveState` con `systemctl show`, y esperar
-#    a que sea "inactive" (terminó bien) o "failed" (terminó mal) --
-#    cualquier otra cosa ("activating", "deactivating") significa que
-#    TODAVÍA está corriendo. Con tope de espera: si nunca termina, avisa en
-#    vez de colgarse en un loop infinito.
-TOPE_ESPERA_SEGUNDOS=1900   # más que TimeoutStartSec=30min del propio .service
-esperado=0
-while :; do
-  estado=$(systemctl show -p ActiveState --value jax-catalogo-modelos.service)
-  case "$estado" in
-    inactive|failed) break ;;
-  esac
-  if [ "$esperado" -ge "$TOPE_ESPERA_SEGUNDOS" ]; then
-    echo "ERROR: jax-catalogo-modelos.service sigue en '$estado' tras ${TOPE_ESPERA_SEGUNDOS}s -- " \
-         "no sigas sin revisar por qué (sudo journalctl -u jax-catalogo-modelos.service -n 100)" >&2
-    exit 1
-  fi
-  sleep 5; esperado=$((esperado + 5))
-done
-echo "jax-catalogo-modelos.service: $estado"   # "inactive" (bien) o "failed" (revisar el log antes de seguir)
-
-# 3. Exigir CERO filas 'corriendo' en catalogo_sync_ejecucion -- cubre el
-#    sync MANUAL (POST /admin/models/sync, corre DENTRO de jax-platform, el
-#    timer no lo ve). Credenciales en archivo de opciones 600 efímero,
-#    nunca -p en argv (mismo criterio que el paso 0 de este runbook).
-#
-#    Tolera EXPLÍCITAMENTE "la tabla no existe todavía" -- en el PRIMER
-#    despliegue de esta función completa, el código VIEJO nunca creó
-#    catalogo_sync_ejecucion (la crea el arranque del código NUEVO): sin la
-#    tabla, el código viejo no puede haber escrito ninguna fila 'corriendo',
-#    así que el chequeo del ActiveState del paso 2 ya alcanza. Cualquier
-#    OTRO error (permisos, conexión caída) corta el script, no se traga
-#    nada.
-sudo bash -c '
-set -euo pipefail; set -a; . /etc/jax/.env; set +a
-T=$(mktemp -d); chmod 700 $T; trap "rm -rf $T" EXIT
-printf "[client]\nhost=%s\nport=%s\nuser=%s\npassword=%s\n" \
-  "$JAX_DB_HOST" "$JAX_DB_PORT" "$JAX_DB_USER" "$JAX_DB_PASSWORD" > $T/c.cnf
-chmod 600 $T/c.cnf
-echo "SELECT COUNT(*) FROM catalogo_sync_ejecucion WHERE estado=\"corriendo\";" > $T/q.sql
-
-if salida=$(mariadb --defaults-extra-file=$T/c.cnf jax_memory -N < $T/q.sql 2>&1); then
-  corriendo="$salida"
-elif echo "$salida" | grep -qi "catalogo_sync_ejecucion.*doesn.t exist"; then
-  corriendo=0   # primer despliegue de esta función -- la tabla todavia no existe, ver el comentario de arriba
-else
-  echo "ERROR consultando catalogo_sync_ejecucion: $salida" >&2
-  exit 1
-fi
-
-if [ "$corriendo" -ne 0 ]; then
-  echo "ERROR: hay $corriendo fila(s) '"'"'corriendo'"'"' en catalogo_sync_ejecucion -- un sync MANUAL " \
-       "sigue en curso DENTRO de jax-platform. Reiniciar ahora lo mataria a mitad de camino. " \
-       "Esperar a que termine (GET /api/admin/models/sync/estado) y correr este chequeo de nuevo." >&2
-  exit 1
-fi
-echo "catalogo_sync_ejecucion: 0 filas corriendo -- seguro reiniciar jax-platform"'
-
-# 4. RECIÉN ACÁ actualizar el checkout y reiniciar jax-platform (pasos 1-2 de
-#    arriba, sin cambios) -- con el timer parado y las dos comprobaciones de
-#    arriba en verde, ninguna corrida puede arrancar en el medio con una
-#    mezcla de candado viejo/nuevo, y ninguna corrida manual queda cortada
-#    a mitad de camino.
-cd /srv/jax-prod/jax-platform && git fetch origin && git merge --ff-only origin/master
-sudo systemctl restart jax-platform
-
-# 5. Reinstalar las TRES unidades si el archivo propio cambió (cadencia,
-#    OnFailure=, TimeoutStartSec=, etc.) -- comparar antes de sobrescribir,
-#    no a ciegas -- y validar la sintaxis de cada una ANTES del
-#    daemon-reload (MINOR-2, sexta ronda de la auditoría adversarial,
-#    2026-09-27: las TRES unidades de este mecanismo, no sólo el .timer --
-#    `jax-catalogo-modelos-aviso.service` es el `OnFailure=` del propio
-#    .service y también puede cambiar).
-DIR_UNIDADES=/srv/jax-prod/jax-platform/ops/migration/systemd-units
-for U in jax-catalogo-modelos.service jax-catalogo-modelos.timer jax-catalogo-modelos-aviso.service; do
-  sudo diff -q "$DIR_UNIDADES/$U" "/etc/systemd/system/$U" \
-    || sudo install -m 644 -o root -g root "$DIR_UNIDADES/$U" "/etc/systemd/system/$U"
-  sudo systemd-analyze verify "/etc/systemd/system/$U"   # sintaxis sana ANTES de recargar
-done
-sudo systemctl daemon-reload
-
-# 6. Recién ahora arrancar el timer de nuevo -- la PRIMERA corrida que
-#    dispare (el próximo tick horario, o antes si Persistent=true y hall9000
-#    estuvo abajo) ya usa el código y el nombre de candado NUEVOS de punta a
-#    punta, sin ningún proceso viejo compitiendo por un nombre distinto.
-sudo systemctl start jax-catalogo-modelos.timer
-systemctl list-timers jax-catalogo-modelos.timer   # confirmar la próxima corrida agendada
+sudo bash ops/desplegar-sin-ventana-de-sync.sh <SHA-esperado-tras-el-fetch>
 ```
 
-**Verificar con comprobaciones que se puedan EJECUTAR, no "mirar el log y
-parecer bien"** *(MINOR-1, sexta ronda de la auditoría adversarial,
-2026-09-27: la versión anterior de este paso decía "confirmar en el log el
-candado que usa es el nuevo" -- sin decir con qué comando, ni cómo se
-provoca una corrida real que sincronice de verdad)*:
+El SHA esperado es OBLIGATORIO -- el mismo SHA de `origin/master` que el
+despliegue va a traer (`git rev-parse origin/master` antes de correrlo, o el
+SHA del PR que se está desplegando). Hace los 7 pasos de una sola pasada:
 
-1. **El ejecutor programado no hace nada si no toca** (`catalogo_sync_config`
-   decide la cadencia -- ver el principio de esta sección). Para forzar una
-   corrida que SÍ sincronice, dos caminos:
-   - **El botón "Sincronizar" de la pantalla de administración** (la vía
-     normal, como superadmin); o
-   - `curl -X POST https://axioma-ia.io/api/admin/models/sync -H "Authorization: Bearer <token de superadmin>"`
-     si hace falta forzarlo sin la pantalla.
-2. **Mientras esa corrida está en curso**, desde OTRA sesión de MariaDB (con
-   el mismo archivo de opciones 600 efímero del paso 3 de arriba):
+1. Para `jax-catalogo-modelos.timer` -- nada nuevo se agenda mientras dura
+   el despliegue.
+2. Espera a que la corrida del ejecutor programado en curso (si la hay)
+   termine SOLA, mirando `ActiveState` (nunca `is-active`: el servicio es
+   `Type=oneshot` sin `RemainAfterExit`, y `is-active` da "activating" NUNCA
+   "active" mientras corre -- BLOCK-1, sexta ronda de la auditoría
+   adversarial, 2026-09-27) y que no queden trabajos encolados para esa
+   unidad.
+3. **Freno autoritativo**, en una sola conexión, credenciales por archivo de
+   opciones 600 efímero (nunca `-p` en argv): los DOS nombres de candado
+   (`jax_catalogo_sync` sin calificar -- código viejo -- y calificado con la
+   base -- código nuevo) tienen que dar `IS_USED_LOCK(...)` = NULL, y si
+   `catalogo_sync_ejecucion` ya existe, 0 filas `corriendo` (cubre el botón
+   "Sincronizar", que corre DENTRO de jax-platform y al que el timer no ve).
+   Tolera explícitamente que la tabla todavía no exista (primer despliegue
+   de esta función). Cualquier otra cosa -- un candado tomado, una fila
+   corriendo, una respuesta que no se pueda interpretar, un error de
+   conexión -- aborta ahí mismo, **antes de tocar el checkout o reiniciar
+   nada**.
+4. Actualiza el checkout de producción (`fetch` + `merge --ff-only`, como
+   `fruiz`) y compara el SHA resultante contra el que se le pasó como
+   argumento -- si no coincide, aborta sin reiniciar.
+5. Reinicia `jax-platform` y espera `/api/health` = 200. **Este es el punto
+   de no retorno**: de acá en adelante un fallo ya no puede decir "no se
+   reinició nada" (jax-platform SÍ corre con el checkout nuevo) -- el guion
+   avisa qué falta terminar a mano.
+6. Verifica la sintaxis de las 3 unidades (`systemd-analyze verify`) ANTES
+   de instalar CUALQUIERA, las instala, `daemon-reload`.
+7. Arranca `jax-catalogo-modelos.timer` y muestra `systemctl list-timers`
+   para confirmar la próxima corrida agendada.
+
+**Ventana residual, y quién no debe tocar nada durante ella.** Entre el paso
+3 (freno autoritativo) y el paso 5 (jax-platform reiniciado), hay una
+ventana de varios segundos -- el `git fetch`/`merge` del paso 4, más lo que
+tarde el propio reinicio -- durante la cual el freno del paso 3 YA PASÓ pero
+el código nuevo TODAVÍA no está corriendo. **Nadie debe usar la pantalla de
+modelos (ni el botón "Sincronizar") mientras el guion está corriendo**: un
+click justo en esa ventana no lo detecta el freno (que ya se corrió) y
+tampoco lo va a interrumpir un chequeo posterior -- simplemente arrancaría
+con el código viejo, milisegundos antes de que ese proceso se reinicie de
+todas formas en el paso 5, lo cual lo mataría a mitad de camino igual que un
+`restart` sin este guion. El guion no puede cerrar esta ventana por sí solo
+(no controla la pantalla de administración): se cierra por acuerdo humano --
+avisar antes de correrlo, como con cualquier otra ventana de mantenimiento.
+
+**Orden completo del despliegue cuando aplica este caso** (reemplaza a los
+pasos 1-2 de arriba, no a las secciones 3-5):
+
+1. Sección 0 de este runbook: respaldo, y la restauración YA PROBADA
+   (Principio VI) -- antes de tocar nada.
+2. Este guion (`ops/desplegar-sin-ventana-de-sync.sh <SHA>`).
+3. Sección 3 (frontend interno), sección 4 (el sitio público) y sección 5
+   (verificar desde afuera) -- sin cambios, el guion no las reemplaza: son
+   pasos independientes del backend y el ejecutor.
+4. Verificación EJECUTABLE (no "mirar el log"): forzar una corrida real
+   (el botón "Sincronizar", como superadmin, o el próximo tick del timer) y
+   confirmar, mientras corre, que `IS_USED_LOCK('jax_catalogo_sync:<base>')`
+   NO es NULL, y que al terminar la fila de `catalogo_sync_ejecucion` cierra
+   en `ok` o `con_problemas` -- **nunca en `error`** (un `error` ahí, justo
+   después de un despliegue de este tipo de cambio, es la señal de que algo
+   de lo anterior no se respetó):
 
    ```sql
-   -- IS_USED_LOCK() (no IS_FREE_LOCK()) porque acá se quiere confirmar que
-   -- SÍ está tomado -- devuelve el id de conexión que lo sostiene, o NULL
-   -- si está libre. "jax_memory" es la base de PRODUCCIÓN -- ajustar si el
-   -- nombre de la base real difiere.
-   SELECT IS_USED_LOCK('jax_catalogo_sync:jax_memory');   -- tiene que dar un id, NO NULL
+   SELECT IS_USED_LOCK('jax_catalogo_sync:jax_memory');   -- tiene que dar un id, NO NULL, mientras corre
+   SELECT id, estado, terminado_en FROM catalogo_sync_ejecucion ORDER BY id DESC LIMIT 1;   -- 'ok' o 'con_problemas' al terminar
    ```
-3. **Cuando termine**, la fila de `catalogo_sync_ejecucion` de esa corrida
-   tiene que cerrar en `ok` o `con_problemas` -- **nunca en `error`** (un
-   `error` ahí, justo después de un despliegue de este tipo de cambio, es la
-   señal de que algo del procedimiento de arriba no se respetó):
 
-   ```sql
-   SELECT id, estado, terminado_en FROM catalogo_sync_ejecucion ORDER BY id DESC LIMIT 1;
-   ```
+**Revertir un despliegue de este tipo pasa por el mismo guion, con el SHA
+ANTERIOR.** El guion sólo avanza (`merge --ff-only`) -- no hay forma de
+pedirle que retroceda el checkout con un argumento. Para revertir:
+
+```bash
+# 1. Retroceder el checkout de producción A MANO, como el dueño del checkout
+#    (fruiz) -- --ff-only nunca va a llevarlo hacia atrás, así que esto NO lo
+#    hace el guion por sí solo.
+sudo -u fruiz git -C /srv/jax-prod/jax-platform reset --hard <SHA-anterior>
+
+# 2. Correr el guion de nuevo, con <SHA-anterior> como el SHA esperado --
+#    hace el fetch (no cambia nada, ya se hizo el reset), y como HEAD ya
+#    coincide con <SHA-anterior>, el resto del guion (freno, reinicio,
+#    unidades) corre igual que en un despliegue hacia adelante.
+sudo bash ops/desplegar-sin-ventana-de-sync.sh <SHA-anterior>
+```
+
+El `git reset --hard` del paso 1 pisa cualquier commit posterior al
+`<SHA-anterior>` en el checkout de producción -- son commits que ya están en
+`origin/master` (nunca se pierden), pero si el checkout tenía algo sin
+empujar (no debería, es un checkout de despliegue, no de desarrollo) ESO sí
+se pierde. Confirmarlo antes de reiniciar nada es lo que ya hace el propio
+guion (compara el SHA resultante contra el esperado antes del paso 5).
 
 ## Migraciones B9 adicionales (`jax/memory/b9_migrations/`, más allá de 001-003)
 
