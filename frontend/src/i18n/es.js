@@ -730,6 +730,7 @@ export default {
   adminModelsSyncReintentar: 'Reintentar',
   adminModelsProgramacionUnidadEtiqueta: 'Unidad',
   catalogo_sync_config_invalida: (campo) => `Valor inválido para "${campo}".`,
+  adminModelsProgramacionConfigInvalida: 'La configuración guardada no es válida (datos corruptos). Elegí un valor y una unidad válidos y guardá para repararla.',
   adminModelsProvider: 'Proveedor',
   adminModelsModelId: 'Modelo',
   adminModelsAlias: 'Alias',

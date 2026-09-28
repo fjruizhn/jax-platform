@@ -60,6 +60,15 @@ export default function DialogoProgramacionSync({ config, onGuardado, onCerrar }
   return (
     <Dialogo idTitulo="programacion-sync-titulo" titulo={t.adminModelsProgramacionTitulo} onCerrar={onCerrar}>
       <form onSubmit={guardar}>
+        {/* MINOR-2 (tercera ronda de la auditoría adversarial, 2026-09-27):
+            GET /sync/config ya no da 500 ante una fila corrupta -- manda
+            `valida: false` para que un operador la vea y la repare desde
+            acá (el PUT sabe reparar: audita el "antes" tal cual, marcado
+            inválido, y aplica el "después" ya validado). */}
+        {config.valida === false && (
+          <p role="alert" className="text-xs text-aviso mb-4">{t.adminModelsProgramacionConfigInvalida}</p>
+        )}
+
         <label htmlFor={idHabilitado} className="flex items-center gap-2 mb-4 text-sm text-texto">
           <input
             id={idHabilitado}

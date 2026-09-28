@@ -276,3 +276,51 @@ def test_el_detector_no_confunde_axioma_config_audit_con_axioma_config():
     # Control positivo con la MISMA tabla real, sin el sufijo: sigue viéndose.
     assert _escribe_config('"INSERT INTO axioma_config_audit_no_es_una_tabla_real" '
                            '"; INSERT INTO axioma_config (k) VALUES (1)"')
+
+
+# ------------------------------------------------ único escritor de la AUDITORÍA
+#
+# MINOR-6 (tercera ronda de la auditoría adversarial, 2026-09-27):
+# `catalogo_sync_config.py` tenía su PROPIO `INSERT INTO axioma_config_audit`
+# crudo (MAJOR-2, ronda anterior) -- un segundo camino de escritura a la
+# tabla de auditoría, mientras `config_audit.py` seguía siendo "el único
+# escritor de axioma_config" (una tabla DISTINTA). Ahora `config_audit.auditar()`
+# es el único INSERT crudo a `axioma_config_audit` en todo el árbol --
+# `escribir()` la llama para su propio rastro, y `catalogo_sync_config.py`
+# (su propia tabla tipada, no `axioma_config`) la llama directo.
+ESCRITORES_PERMITIDOS_AUDITORIA = {"config_audit.py"}
+_ESCRITURAS_AUDITORIA = tuple(
+    re.compile(rf"{prefijo} AXIOMA_CONFIG_AUDIT\b") for prefijo in
+    ("INSERT INTO", "INSERT IGNORE INTO", "UPDATE", "DELETE FROM"))
+
+
+def _escribe_config_audit(texto: str) -> bool:
+    for nodo in ast.walk(ast.parse(texto)):
+        if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str):
+            aplanado = " ".join(nodo.value.upper().split())
+            if any(patron.search(aplanado) for patron in _ESCRITURAS_AUDITORIA):
+                return True
+    return False
+
+
+def test_ningun_otro_modulo_escribe_axioma_config_audit():
+    culpables = set()
+    for ruta in RAIZ.rglob("*.py"):
+        relativa = ruta.relative_to(RAIZ).as_posix()
+        if relativa.startswith(("tests/", ".venv/")):
+            continue
+        if _escribe_config_audit(ruta.read_text(encoding="utf-8")):
+            culpables.add(relativa)
+    assert culpables == ESCRITORES_PERMITIDOS_AUDITORIA, (
+        "escritor de axioma_config_audit fuera de config_audit.py (o config_audit.py dejó de "
+        f"escribirla): {sorted(culpables ^ ESCRITORES_PERMITIDOS_AUDITORIA)}")
+
+
+def test_el_detector_de_auditoria_ve_una_escritura_nueva():
+    """Un control que no falla no valida."""
+    assert _escribe_config_audit('"INSERT INTO axioma_config_audit (config_key) VALUES (%s)"')
+    assert _escribe_config_audit(
+        '("INSERT INTO axioma_config_audit "\n "(ts, actor_user_id) VALUES (%s, %s)")')
+    assert not _escribe_config_audit(
+        '"SELECT config_key FROM axioma_config_audit WHERE config_key = %s"')
+    assert not _escribe_config_audit('# INSERT INTO axioma_config_audit: comentario\nx = 1')

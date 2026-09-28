@@ -3,6 +3,8 @@ Mismo patron de auth que test_admin_keys_n1.py (superadmin JWT). El sync
 real (D1.3) se fake-ea a nivel de model_catalog (ya probado aparte en
 test_model_catalog_sync.py) para no depender de red real en este archivo.
 """
+import pytest
+
 import model_catalog
 from auth.jwt import create_access_token
 
@@ -267,6 +269,75 @@ def test_sync_config_put_rechaza_fuera_de_rango_con_422(client):
     detalle = resp.json()["detail"]
     assert detalle["code"] == "catalogo_sync_config_invalida"
     assert detalle["campo"] == "cada_valor"
+
+
+async def _ultima_auditoria_catalogo_sync():
+    import catalogo_sync_config as csc
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT actor_user_id, valor_anterior, valor_nuevo, origen, ip "
+                "FROM axioma_config_audit WHERE config_key=%s ORDER BY id DESC LIMIT 1",
+                (csc.CONFIG_KEY_AUDITORIA,),
+            )
+            return await cur.fetchone()
+
+
+def test_sync_config_put_con_auditoria_rota_no_deja_el_cambio_aplicado(client, monkeypatch):
+    """MINOR-4 (tercera ronda de la auditoría adversarial, 2026-09-27): HTTP
+    de punta a punta -- el mismo `test_un_fallo_de_auditoria_no_deja_el_cambio_aplicado`
+    de test_catalogo_sync_config.py, pero pasando por el endpoint REAL
+    (`PUT /api/admin/models/sync/config`), no por una llamada directa a la
+    función. Si el INSERT de auditoría revienta dentro de la transacción que
+    abre el endpoint, el UPDATE de la config se revierte con él."""
+    import config_audit
+
+    class _AuditoriaRota(RuntimeError):
+        pass
+
+    async def _auditar_roto(*_a, **_k):
+        raise _AuditoriaRota("el INSERT de auditoría revienta a propósito")
+
+    monkeypatch.setattr(config_audit, "auditar", _auditar_roto)
+
+    with pytest.raises(_AuditoriaRota):
+        client.put("/api/admin/models/sync/config", headers=_superadmin_headers(), json={
+            "habilitado": False, "cada_valor": 3, "cada_unidad": "dias",
+        })
+
+    resp = client.get("/api/admin/models/sync/config", headers=_superadmin_headers())
+    assert resp.status_code == 200, resp.text
+    # Sin cambios: sigue en el valor sembrado (6 horas, encendido) -- el
+    # UPDATE de catalogo_sync_config se revirtió junto con la auditoría rota.
+    assert resp.json()["cada_valor"] == 6
+    assert resp.json()["cada_unidad"] == "horas"
+    assert resp.json()["habilitado"] is True
+
+
+def test_sync_config_put_audita_actor_ip_y_origen_correctos(client):
+    """MINOR-4: la auditoría real (sin mocks) escrita por un PUT exitoso
+    trae el actor, la IP y el origen correctos -- HTTP de punta a punta,
+    TestClient manda un `Authorization` real y un `client` con IP por
+    defecto (`testclient`, ver `ip_de()` en la app)."""
+    try:
+        resp = client.put("/api/admin/models/sync/config", headers=_superadmin_headers(), json={
+            "habilitado": False, "cada_valor": 5, "cada_unidad": "dias",
+        })
+        assert resp.status_code == 200, resp.text
+
+        actor_user_id, _antes, despues, origen, ip = client.portal.call(_ultima_auditoria_catalogo_sync)
+        assert actor_user_id == int(USER_ID)
+        assert origen == "catalogo_sync"
+        assert ip  # no vacío -- el endpoint SIEMPRE manda algo, aunque sea la IP del TestClient
+        import json as _json
+        assert _json.loads(despues) == {
+            "habilitado": False, "cada_valor": 5, "cada_unidad": "dias", "valida": True}
+    finally:
+        client.put("/api/admin/models/sync/config", headers=_superadmin_headers(), json={
+            "habilitado": True, "cada_valor": 6, "cada_unidad": "horas",
+        })
 
 
 async def _make_pending_proposal(facet_key="jekyll", proposed_ref=None):

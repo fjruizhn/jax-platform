@@ -143,35 +143,63 @@ def toca_correr(ultima_exitosa: _dt.datetime | None, ahora: _dt.datetime, cada_v
     return ahora >= limite
 
 
-async def leer_config(cur) -> dict:
-    """La fila única (id=1). `_seed_catalogo_sync_config` (db/migrations.py)
-    la siembra siempre -- si falta, es una base sin migrar, no un estado
-    normal a tolerar en silencio.
+def _config_es_valida(cada_valor, cada_unidad) -> bool:
+    try:
+        validar_config(cada_valor, cada_unidad)
+        return True
+    except ConfigInvalidaError:
+        return False
 
-    MINOR-3 (auditoría adversarial, 2026-09-27): la fila se valida con
-    `validar_config` antes de devolverse -- una fila corrupta (escrita a
-    mano, o por un bug futuro que sortee `actualizar_config`) tiene que
-    volverse un ERROR ruidoso (el ejecutor programado sale 1, ver
-    `catalogo_modelos_ejecutor._correr`), nunca un `toca_correr()` que
-    interprete basura como "corré cada hora" o "no corras nunca" en
-    silencio."""
-    await cur.execute(
-        "SELECT habilitado, cada_valor, cada_unidad, actualizado_por, actualizado_en "
-        "FROM catalogo_sync_config WHERE id=1"
-    )
+
+async def leer_config_cruda(cur, *, for_update: bool = False) -> dict:
+    """La fila única (id=1), SIN VALIDAR -- nunca levanta `ConfigInvalidaError`,
+    ni con una fila corrupta. `_seed_catalogo_sync_config` (db/migrations.py)
+    la siembra siempre -- si falta, es una base sin migrar, no un estado
+    normal a tolerar en silencio (eso sí sigue siendo un `RuntimeError`).
+
+    MINOR-2 (tercera ronda de la auditoría adversarial, 2026-09-27): hace
+    falta poder LEER una config inválida para poder REPARARLA -- auditar el
+    "antes" tal cual (marcado como inválido, no descartado) y aplicar un
+    "después" que sí valida. `leer_config()` (más abajo) es un envoltorio que
+    SÍ exige una fila válida, para quien necesita un error ruidoso ante una
+    corrupta (el ejecutor programado -- ese comportamiento NO cambia).
+
+    MINOR-3: `for_update=True` agrega `FOR UPDATE` -- lo usa
+    `actualizar_config()` dentro de su propia transacción, para que dos PUT
+    simultáneos no lean el mismo "antes" y auditen un cambio que nunca pasó
+    (mismo criterio que `config_audit.SQL_ANTERIOR`)."""
+    sql = ("SELECT habilitado, cada_valor, cada_unidad, actualizado_por, actualizado_en "
+           "FROM catalogo_sync_config WHERE id=1")
+    if for_update:
+        sql += " FOR UPDATE"
+    await cur.execute(sql)
     fila = await cur.fetchone()
     if fila is None:
         raise RuntimeError(
             "catalogo_sync_config no tiene la fila id=1 -- ¿faltó correr run_migrations()?")
     habilitado, cada_valor, cada_unidad, actualizado_por, actualizado_en = fila
-    validar_config(cada_valor, cada_unidad)
     return {
         "habilitado": bool(habilitado),
         "cada_valor": cada_valor,
         "cada_unidad": cada_unidad,
         "actualizado_por": actualizado_por,
         "actualizado_en": actualizado_en,
+        "valida": _config_es_valida(cada_valor, cada_unidad),
     }
+
+
+async def leer_config(cur) -> dict:
+    """Envoltorio de `leer_config_cruda()` que EXIGE una fila válida:
+    `ConfigInvalidaError` si no lo es. Usado por el ejecutor programado
+    (`catalogo_modelos_ejecutor.py`), que tiene que salir con error (código 1)
+    ante una fila corrupta -- nunca interpretar basura como "corré cada hora"
+    o "no corras nunca" en silencio (MINOR-2: este comportamiento no cambia).
+
+    `GET /admin/models/sync/config` usa `leer_config_cruda()` directo -- ya
+    NUNCA 500 ante una fila inválida (ver `api/admin/models.py`)."""
+    cruda = await leer_config_cruda(cur)
+    validar_config(cruda["cada_valor"], cruda["cada_unidad"])  # repropaga con el mensaje real de validar_config
+    return {k: v for k, v in cruda.items() if k != "valida"}
 
 
 #: `config_key` fijo bajo el que queda el historial de esta pantalla en
@@ -184,46 +212,59 @@ async def leer_config(cur) -> dict:
 #: cuándo) y no hace falta una tabla de auditoría nueva para eso.
 CONFIG_KEY_AUDITORIA = "catalogo_sync_config"
 
-_SQL_AUDITORIA = (
-    "INSERT INTO axioma_config_audit "
-    "(ts, actor_user_id, config_key, valor_anterior, valor_nuevo, origen, ip) "
-    "VALUES (UTC_TIMESTAMP(6), %s, %s, %s, %s, 'catalogo_sync', %s)"
-)
-
-_CAMPOS_AUDITABLES = ("habilitado", "cada_valor", "cada_unidad")
+#: `valida` incluido a propósito (MINOR-2, tercera ronda de la auditoría
+#: adversarial, 2026-09-27): al reparar una fila corrupta, el "antes" queda
+#: marcado como inválido en el propio rastro de auditoría -- no sólo se
+#: audita QUÉ valores tenía, sino que NO eran usables.
+_CAMPOS_AUDITABLES = ("habilitado", "cada_valor", "cada_unidad", "valida")
 
 
 async def actualizar_config(cur, *, habilitado: bool, cada_valor, cada_unidad: str,
                             actualizado_por: int, ip: str | None = None) -> dict:
-    """Valida ANTES de escribir (nada se toca si `cada_valor`/`cada_unidad`
-    no pasan `validar_config`). El UPDATE y su auditoría van con el MISMO
-    cursor -- el llamador (`PUT /admin/models/sync/config`) lo abre con
-    `db.transaccion.transaccion()`, así que si el INSERT de auditoría de
-    abajo revienta, el UPDATE se revierte con él (fail-closed, mismo
-    criterio que `api/admin/config_admin.py::update_config`). Un
-    `actualizado_por` sin cambios reales (mismos 3 valores) NO escribe
-    auditoría -- mismo criterio que `config_audit.escribir()`: guardar lo
-    mismo no es un cambio que auditar."""
+    """Valida el valor NUEVO antes de escribir (nada se toca si
+    `cada_valor`/`cada_unidad` no pasan `validar_config`) -- pero el "antes"
+    se lee SIN validar (MINOR-2, tercera ronda de la auditoría adversarial,
+    2026-09-27): con `leer_config()` (que valida y levanta
+    `ConfigInvalidaError`), una fila YA corrupta no se podía reparar nunca --
+    `actualizar_config()` reventaba antes de llegar al UPDATE. Con
+    `leer_config_cruda(cur, for_update=True)` (MINOR-3: bajo `FOR UPDATE`,
+    misma transacción) se audita el "antes" TAL CUAL, marcado inválido si lo
+    es, y se aplica el "después" ya validado.
+
+    El UPDATE y su auditoría van con el MISMO cursor -- el llamador
+    (`PUT /admin/models/sync/config`) lo abre con `db.transaccion.transaccion()`,
+    así que si la auditoría revienta, el UPDATE se revierte con ella
+    (fail-closed, mismo criterio que `api/admin/config_admin.py::update_config`).
+    Un `actualizado_por` sin cambios reales (mismos 4 valores, incluida
+    validez) NO escribe auditoría -- mismo criterio que
+    `config_audit.escribir()`: guardar lo mismo no es un cambio que auditar.
+
+    MINOR-6: la auditoría la escribe `config_audit.auditar()` -- el ÚNICO
+    escritor de `axioma_config_audit` en todo el árbol (antes, esta función
+    tenía su propio INSERT crudo; ver el detector en
+    tests/test_config_audit.py)."""
     validar_config(cada_valor, cada_unidad)
-    antes = await leer_config(cur)
+    antes = await leer_config_cruda(cur, for_update=True)
     await cur.execute(
         "UPDATE catalogo_sync_config SET habilitado=%s, cada_valor=%s, cada_unidad=%s, "
         "actualizado_por=%s, actualizado_en=UTC_TIMESTAMP() WHERE id=1",
         (bool(habilitado), cada_valor, cada_unidad, actualizado_por),
     )
-    despues = await leer_config(cur)
+    despues = await leer_config_cruda(cur)
 
     antes_auditable = {k: antes[k] for k in _CAMPOS_AUDITABLES}
     despues_auditable = {k: despues[k] for k in _CAMPOS_AUDITABLES}
     if antes_auditable != despues_auditable:
-        await cur.execute(_SQL_AUDITORIA, (
-            int(actualizado_por), CONFIG_KEY_AUDITORIA,
-            json.dumps(antes_auditable, default=str), json.dumps(despues_auditable, default=str),
-            ip,
-        ))
+        from config_audit import auditar
+        await auditar(
+            cur, actor_user_id=actualizado_por, config_key=CONFIG_KEY_AUDITORIA,
+            valor_anterior=json.dumps(antes_auditable, default=str),
+            valor_nuevo=json.dumps(despues_auditable, default=str),
+            origen="catalogo_sync", ip=ip,
+        )
 
     logger.info(
         "catalogo_sync_config actualizado by=%s antes=%s despues=%s",
         actualizado_por, json.dumps(antes_auditable, default=str), json.dumps(despues_auditable, default=str),
     )
-    return despues
+    return {k: v for k, v in despues.items() if k != "valida"}

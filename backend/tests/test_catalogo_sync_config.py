@@ -205,6 +205,48 @@ def test_toca_correr_serie_de_ticks_horarios_con_jitter_cada_6h_corre_cada_6_tic
     assert intervalos == [6, 6, 6, 6, 6, 6, 6, 6]
 
 
+def test_toca_correr_con_iniciado_en_no_pierde_ticks_por_la_duracion_de_la_corrida():
+    """MINOR-1 (tercera ronda de la auditoría adversarial, 2026-09-27): la
+    cadencia se mide contra `iniciado_en` de la última corrida exitosa, NO
+    `terminado_en` -- si se midiera contra `terminado_en`, la propia
+    DURACIÓN del sync (acá, 9 minutos -- un paso de proveedor paginando su
+    catálogo, ver model_catalog.py) se comería parte de `TOLERANCIA_SEGUNDOS`
+    (10 min), dejando mucho menos margen del que MAJOR-1 pensó que había
+    contra el jitter real del timer (`RandomizedDelaySec` hasta 2 min).
+
+    Simulación con el MISMO generador de jitter que
+    `test_toca_correr_serie_de_ticks_horarios_con_jitter_cada_1h_corre_en_cada_tick`
+    (semilla fija, reproducible) -- corriendo "cada 1 hora" en 500 ticks:
+    con `iniciado_en` corren los 500; simulando qué pasaría si se hubiera
+    medido contra `terminado_en` (sumándole los 9 minutos de duración al
+    momento de guardar `ultima_exitosa`), se pierden decenas de ticks -- la
+    cadencia deja de cumplirse."""
+    import random
+    aleatorio = random.Random(20260927)
+    epoca = dt.datetime(2026, 1, 1, 0, 0, 0)
+    duracion_de_la_corrida = dt.timedelta(minutes=9)
+    n_ticks = 500
+
+    ultima_por_iniciado_en = None
+    ultima_por_terminado_en = None
+    corridas_por_iniciado_en = 0
+    corridas_por_terminado_en = 0
+    for hora in range(1, n_ticks + 1):
+        ahora = epoca + dt.timedelta(hours=hora, seconds=aleatorio.uniform(0, 120) + 4)
+        if csc.toca_correr(ultima_por_iniciado_en, ahora, 1, "horas"):
+            corridas_por_iniciado_en += 1
+            ultima_por_iniciado_en = ahora  # el arreglo real: iniciado_en de esta corrida
+        if csc.toca_correr(ultima_por_terminado_en, ahora, 1, "horas"):
+            corridas_por_terminado_en += 1
+            # lo que HARÍA el código viejo: terminado_en = iniciado_en + duración.
+            ultima_por_terminado_en = ahora + duracion_de_la_corrida
+
+    assert corridas_por_iniciado_en == n_ticks
+    assert corridas_por_terminado_en < corridas_por_iniciado_en, (
+        "la simulación no reprodujo el defecto -- ¿el generador de jitter cambió?"
+    )
+
+
 # --------------------------------------------------------------------------
 # leer_config / actualizar_config: contra la base real (fila única id=1)
 # --------------------------------------------------------------------------
@@ -305,6 +347,122 @@ def test_leer_config_con_fila_invalida_levanta_error(client, config_original):
 
 
 # --------------------------------------------------------------------------
+# MINOR-2 (tercera ronda de la auditoría adversarial, 2026-09-27):
+# leer_config_cruda NUNCA levanta, y actualizar_config puede REPARAR una fila
+# corrupta (leer_config, que sí valida, bloqueaba la reparación: reventaba
+# antes de llegar al UPDATE).
+# --------------------------------------------------------------------------
+
+async def _corromper_config():
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE catalogo_sync_config SET cada_valor=999, cada_unidad='horas' WHERE id=1")
+        await conn.commit()
+
+
+async def _leer_config_cruda():
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            return await csc.leer_config_cruda(cur)
+
+
+def test_leer_config_cruda_nunca_levanta_con_una_fila_invalida(client, config_original):
+    client.portal.call(_corromper_config)
+
+    cruda = client.portal.call(_leer_config_cruda)
+
+    assert cruda["valida"] is False
+    assert cruda["cada_valor"] == 999
+    assert cruda["cada_unidad"] == "horas"
+
+
+def test_leer_config_cruda_marca_valida_una_fila_correcta(client, config_original):
+    cruda = client.portal.call(_leer_config_cruda)
+    assert cruda["valida"] is True
+
+
+def test_actualizar_config_repara_una_fila_corrupta(client, config_original):
+    """El bug que esto arregla: `actualizar_config()` usaba `leer_config()`
+    (que valida) para leer el "antes" -- con una fila YA corrupta, reventaba
+    ahí mismo, antes de llegar al UPDATE, así que una config rota no se podía
+    arreglar nunca desde la pantalla."""
+    client.portal.call(_corromper_config)
+
+    async def _reparar():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                return await csc.actualizar_config(
+                    cur, habilitado=True, cada_valor=6, cada_unidad="horas", actualizado_por=1)
+
+    reparada = client.portal.call(_reparar)
+    assert reparada["cada_valor"] == 6
+    assert reparada["cada_unidad"] == "horas"
+
+    # Se puede releer con la función que SÍ valida -- ya no revienta.
+    config = client.portal.call(_leer_config)
+    assert config["cada_valor"] == 6
+
+
+def test_actualizar_config_audita_el_antes_corrupto_marcado_invalido(client, config_original):
+    client.portal.call(_corromper_config)
+
+    async def _reparar_y_auditar():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await csc.actualizar_config(
+                    cur, habilitado=True, cada_valor=6, cada_unidad="horas", actualizado_por=1)
+            await conn.commit()
+            async with conn.cursor() as cur:
+                return await _historial_catalogo_sync(cur)
+
+    actor, antes, despues, origen, ip = client.portal.call(_reparar_y_auditar)
+    antes_dict = json.loads(antes)
+    assert antes_dict["valida"] is False
+    assert antes_dict["cada_valor"] == 999
+    despues_dict = json.loads(despues)
+    assert despues_dict["valida"] is True
+
+
+# --------------------------------------------------------------------------
+# MINOR-3 (tercera ronda de la auditoría adversarial, 2026-09-27):
+# leer_config_cruda(for_update=True) usa FOR UPDATE.
+# --------------------------------------------------------------------------
+
+def test_leer_config_cruda_for_update_agrega_for_update_al_sql():
+    """No hace falta un candado real para probar esto -- un cursor falso que
+    graba el SQL alcanza (mismo patrón que otros tests de "qué SQL exacto se
+    ejecuta" en este árbol)."""
+    import asyncio
+
+    class _CursorFalso:
+        def __init__(self):
+            self.sql_ejecutado = None
+
+        async def execute(self, sql, *args, **kwargs):
+            self.sql_ejecutado = sql
+
+        async def fetchone(self):
+            return (1, 6, "horas", None, None)
+
+    cur = _CursorFalso()
+    asyncio.run(csc.leer_config_cruda(cur, for_update=True))
+    assert "FOR UPDATE" in cur.sql_ejecutado.upper()
+
+    cur_sin = _CursorFalso()
+    asyncio.run(csc.leer_config_cruda(cur_sin, for_update=False))
+    assert "FOR UPDATE" not in cur_sin.sql_ejecutado.upper()
+
+
+# --------------------------------------------------------------------------
 # MAJOR-2 (auditoría adversarial, 2026-09-27): auditoría en axioma_config_audit.
 # --------------------------------------------------------------------------
 
@@ -337,7 +495,8 @@ def test_actualizar_config_escribe_auditoria_con_antes_y_despues(client, config_
     antes_dict = json.loads(antes)
     despues_dict = json.loads(despues)
     assert antes_dict["cada_valor"] == 6  # el valor sembrado, antes de este cambio
-    assert despues_dict == {"habilitado": False, "cada_valor": 2, "cada_unidad": "dias"}
+    assert antes_dict["valida"] is True  # la semilla es válida
+    assert despues_dict == {"habilitado": False, "cada_valor": 2, "cada_unidad": "dias", "valida": True}
 
 
 def test_actualizar_config_sin_cambios_reales_no_audita(client, config_original):

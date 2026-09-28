@@ -101,6 +101,21 @@ describe('DialogoProgramacionSync', () => {
     expect(await screen.findByText(/valor inválido/i)).toBeInTheDocument()
   })
 
+  it('MINOR-2 (tercera ronda de la auditoría adversarial, 2026-09-27): valida=false muestra el aviso de config corrupta', () => {
+    renderDialogo({ config: { ...CONFIG_BASE, cada_valor: 999, valida: false } })
+    expect(screen.getByText(/no es válida/i)).toBeInTheDocument()
+  })
+
+  it('sin la marca "valida" (config normal, GET viejo) no muestra el aviso de config corrupta', () => {
+    renderDialogo()
+    expect(screen.queryByText(/no es válida/i)).not.toBeInTheDocument()
+  })
+
+  it('valida=true no muestra el aviso de config corrupta', () => {
+    renderDialogo({ config: { ...CONFIG_BASE, valida: true } })
+    expect(screen.queryByText(/no es válida/i)).not.toBeInTheDocument()
+  })
+
   it('desmarcar el interruptor apaga la sincronización automática al guardar', async () => {
     api.put.mockResolvedValue({ data: { ...CONFIG_BASE, habilitado: false } })
     renderDialogo()

@@ -325,10 +325,17 @@ class ConfigSyncRequest(BaseModel):
 
 @router.get("/sync/config")
 async def obtener_config_sync(user: AuthUser = Depends(require_superadmin)):
+    """MINOR-2 (tercera ronda de la auditoría adversarial, 2026-09-27):
+    `leer_config_cruda()`, no `leer_config()` -- una fila corrupta (escrita a
+    mano, o por un bug futuro) tiene que poder VERSE en la pantalla para que
+    un operador la repare desde ahí (el PUT sabe reparar, ver
+    `catalogo_sync_config.actualizar_config`), nunca un 500. El ejecutor
+    programado SIGUE usando `leer_config()` (que sí revienta) -- ese
+    comportamiento no cambia."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            config = await catalogo_sync_config.leer_config(cur)
+            config = await catalogo_sync_config.leer_config_cruda(cur)
             ultima_exitosa = await catalogo_sync_registro.ultima_actualizacion_exitosa(cur)
     return {
         **_config_serializable(config),
@@ -337,25 +344,29 @@ async def obtener_config_sync(user: AuthUser = Depends(require_superadmin)):
 
 
 def _config_serializable(config: dict) -> dict:
-    # MINOR-6 (auditoría adversarial, 2026-09-27): `iso_utc()`, no `str()`
-    # -- `actualizado_en` se escribe con `UTC_TIMESTAMP()` (ver
-    # catalogo_sync_config.actualizar_config); `iso_utc()` le pone la zona
-    # UTC explícita para que `new Date(...)` del navegador no lo lea como
-    # hora local (la sesión de MariaDB de esta app corre en CST, ver
-    # tiempo.py).
+    # MINOR-6 de la ronda anterior (auditoría adversarial, 2026-09-27):
+    # `iso_utc()`, no `str()` -- `actualizado_en` se escribe con
+    # `UTC_TIMESTAMP()` (ver catalogo_sync_config.actualizar_config);
+    # `iso_utc()` le pone la zona UTC explícita para que `new Date(...)` del
+    # navegador no lo lea como hora local (la sesión de MariaDB de esta app
+    # corre en CST, ver tiempo.py). `valida` (si viene, MINOR-2 tercera
+    # ronda) pasa tal cual -- lo consume el frontend para avisar de una
+    # config corrupta que hay que reparar.
     d = dict(config)
     d["actualizado_en"] = iso_utc(d["actualizado_en"])
     return d
 
 
 def _proxima_corrida_estimada(config: dict, ultima_exitosa) -> str | None:
-    """`None` si está apagado (no hay "próxima corrida" que estimar) o si
-    todavía no hubo ninguna corrida exitosa (tocaría en la próxima pasada
-    del timer, no en una fecha calculable). MINOR-6: `iso_utc()`, mismo
+    """`None` si está apagado, si todavía no hubo ninguna corrida exitosa
+    (tocaría en la próxima pasada del timer, no en una fecha calculable), o
+    si la config es inválida (MINOR-2: `cada_unidad`/`cada_valor` corruptos
+    no se pueden usar para estimar nada -- `proxima_corrida()` asume una
+    unidad conocida). MINOR-6 de la ronda anterior: `iso_utc()`, mismo
     motivo que `_config_serializable` -- `ultima_exitosa` es UTC (viene de
-    `catalogo_sync_ejecucion.terminado_en`) y `proxima_corrida()` sólo le
-    suma un intervalo, así que el resultado sigue siendo UTC."""
-    if not config["habilitado"] or ultima_exitosa is None:
+    `catalogo_sync_ejecucion.iniciado_en`) y `proxima_corrida()` sólo le suma
+    un intervalo, así que el resultado sigue siendo UTC."""
+    if not config["habilitado"] or ultima_exitosa is None or not config.get("valida", True):
         return None
     return iso_utc(catalogo_sync_config.proxima_corrida(ultima_exitosa, config["cada_valor"], config["cada_unidad"]))
 
