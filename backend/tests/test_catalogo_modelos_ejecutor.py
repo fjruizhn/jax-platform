@@ -1039,10 +1039,13 @@ def _fake_sync_all_marca(**esperado_marca_nuevos):
     """`model_catalog.sync_all()` real -- mockeada acá para no pegarle a
     proveedores reales -- ahora acepta `marca_nuevos`; el fake lo recibe y
     lo devuelve reflejado en la respuesta, como haría la función real, para
-    poder verificar QUÉ marca le pasó `_correr()`."""
+    poder verificar QUÉ marca le pasó `_correr()`. `on_progreso=None`
+    (2026-09-27, `catalogo_sync_registro.correr_sync_registrado()` siempre
+    lo pasa ahora): se acepta e ignora, estos tests son sobre la marca, no
+    sobre el avance."""
     llamadas = []
 
-    async def _fake(marca_nuevos=None):
+    async def _fake(marca_nuevos=None, on_progreso=None):
         llamadas.append(marca_nuevos)
         return {
             "ok": True, "providers": [], "enrich": {}, "providers_fallidos": [],
@@ -1053,12 +1056,23 @@ def _fake_sync_all_marca(**esperado_marca_nuevos):
     return _fake, llamadas
 
 
+def _forzar_toca(monkeypatch):
+    """Estos tests son sobre el cálculo de la MARCA, no sobre el gate de
+    configuración (2026-09-27) -- se fuerza `toca_correr` a verdadero para
+    que sigan probando exactamente lo que probaban antes de que `_correr()`
+    aprendiera a consultarlo, sin depender de qué haya en
+    `catalogo_sync_ejecucion` por otros tests de la misma sesión de DB."""
+    import catalogo_sync_config
+    monkeypatch.setattr(catalogo_sync_config, "toca_correr", lambda *a, **k: True)
+
+
 def test_correr_sin_marca_guardada_la_calcula_con_now_de_la_base_antes_del_sync(client, monkeypatch, tmp_path):
     """MINOR-4 (cuarta auditoría adversarial, 2026-09-28): arranque (sin
     archivo de estado todavía) -- `_correr()` calcula `marca_usada` con
     `NOW()` de la BASE (no el reloj de este proceso) ANTES de llamar a
     `sync_all()`, y se la pasa como `marca_nuevos`."""
     monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+    _forzar_toca(monkeypatch)
 
     import model_catalog
     import db.connection as db_connection
@@ -1071,6 +1085,7 @@ def test_correr_sin_marca_guardada_la_calcula_con_now_de_la_base_antes_del_sync(
     monkeypatch.setattr(db_connection, "close_pool", _no_cerrar_el_pool_compartido)
 
     resultado = client.portal.call(ejecutor._correr)
+    _borrar_ejecucion_de_registro(client, resultado)
 
     assert len(llamadas) == 1
     marca_pasada = llamadas[0]
@@ -1083,6 +1098,7 @@ def test_correr_con_marca_guardada_la_reusa_sin_tocar_la_base_para_calcularla(cl
     de `NOW()` -- usa directo lo que hay en el archivo de estado."""
     monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
     ejecutor._guardar_estado(ejecutor._ruta_estado(), {"nuevos_marca": "2026-09-27 08:00:00"})
+    _forzar_toca(monkeypatch)
 
     import model_catalog
     import db.connection as db_connection
@@ -1095,18 +1111,40 @@ def test_correr_con_marca_guardada_la_reusa_sin_tocar_la_base_para_calcularla(cl
     monkeypatch.setattr(db_connection, "close_pool", _no_cerrar_el_pool_compartido)
 
     resultado = client.portal.call(ejecutor._correr)
+    _borrar_ejecucion_de_registro(client, resultado)
 
     assert llamadas == ["2026-09-27 08:00:00"]
     assert resultado["marca_usada"] == "2026-09-27 08:00:00"
 
 
+def _borrar_ejecucion_de_registro(client, resultado):
+    """Estos tests corren `_correr()` real contra la base compartida de la
+    sesión -- `correr_sync_registrado()` (2026-09-27) deja una fila en
+    `catalogo_sync_ejecucion`; se borra para no ensuciar la retención ni la
+    marca de "última exitosa" que otros tests de `catalogo_sync_registro`
+    puedan medir."""
+    ejecucion_id = resultado.get("ejecucion_id")
+    if ejecucion_id is None:
+        return
+
+    async def _borrar():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("DELETE FROM catalogo_sync_ejecucion WHERE id=%s", (ejecucion_id,))
+            await conn.commit()
+    client.portal.call(_borrar)
+
+
 def test_correr_no_agrega_marca_usada_si_el_candado_esta_ocupado(client, monkeypatch, tmp_path):
     monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+    _forzar_toca(monkeypatch)
 
     import model_catalog
     import db.connection as db_connection
 
-    async def _fake_sync_en_curso(marca_nuevos=None):
+    async def _fake_sync_en_curso(marca_nuevos=None, on_progreso=None):
         return {
             "ok": False, "code": "sync_en_curso", "providers": [], "enrich": {},
             "providers_fallidos": [], "providers_saltados": [], "enrich_fallido": False,
@@ -1122,3 +1160,184 @@ def test_correr_no_agrega_marca_usada_si_el_candado_esta_ocupado(client, monkeyp
 
     assert resultado["code"] == "sync_en_curso"
     assert "marca_usada" not in resultado
+
+    # correr_sync_registrado() reservó una fila, y como sync_all() devolvió
+    # 'sync_en_curso' pese a que reservar_ejecucion() no vio nada corriendo
+    # (carrera inesperada simulada por este fake), la marcó 'error' -- se
+    # limpia para no ensuciar la sesión compartida.
+    async def _borrar_error_reciente():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM catalogo_sync_ejecucion WHERE origen='programado' AND estado='error' "
+                    "AND iniciado_en >= NOW() - INTERVAL 60 SECOND")
+            await conn.commit()
+    client.portal.call(_borrar_error_reciente)
+
+
+# --------------------------------------------------------------------------
+# Gate de configuración (2026-09-27, pedido de Fernando): el timer pasa a
+# OnCalendar=hourly y `_correr()` decide, leyendo `catalogo_sync_config`, si
+# de verdad toca -- apagado o "todavía no toca" no llaman a NINGÚN proveedor
+# ni tocan ningún estado (ver `_CODIGOS_GATE_CERRADO`).
+# --------------------------------------------------------------------------
+
+async def _fijar_config(habilitado, cada_valor, cada_unidad):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE catalogo_sync_config SET habilitado=%s, cada_valor=%s, cada_unidad=%s, "
+                "actualizado_por=NULL, actualizado_en=NULL WHERE id=1",
+                (habilitado, cada_valor, cada_unidad),
+            )
+        await conn.commit()
+
+
+@pytest.fixture
+def config_sync_original(client):
+    """Restaura la fila única de `catalogo_sync_config` (compartida por toda
+    la sesión de tests) al valor sembrado al terminar."""
+    yield
+    client.portal.call(_fijar_config, True, 6, "horas")
+
+
+def _sin_llamadas_a_sync_all(monkeypatch):
+    import model_catalog
+    llamadas = []
+
+    async def _no_deberia_llamarse(marca_nuevos=None, on_progreso=None):
+        llamadas.append(1)
+        return {"ok": True}
+    monkeypatch.setattr(model_catalog, "sync_all", _no_deberia_llamarse)
+    return llamadas
+
+
+@pytest.mark.parametrize("code", ["programado_apagado", "programado_no_toca"])
+def test_main_sale_0_cuando_el_gate_decide_no_correr(monkeypatch, code):
+    """Mismo patrón que el resto de los tests de código de salida de este
+    archivo (`_correr` mockeado, sin DB real): un resultado con un código de
+    `_CODIGOS_GATE_CERRADO` sale 0, y -- a diferencia de `ok=True` a secas --
+    NUNCA llama a `_avisar()` (se probaría por separado si hiciera falta,
+    acá alcanza con que `main()` no dependa de que se haya llamado)."""
+    async def _correr():
+        return ejecutor._resultado_sin_tocar_nada(code)
+    monkeypatch.setattr(ejecutor, "_correr", _correr)
+
+    llamado = []
+
+    async def _avisar_no_deberia_llamarse(resultado):
+        llamado.append(1)
+        return "sin_problemas"
+    monkeypatch.setattr(ejecutor, "_avisar", _avisar_no_deberia_llamarse)
+
+    assert ejecutor.main() == 0
+    assert llamado == []
+
+
+def test_correr_apagado_no_llama_a_ningun_proveedor(client, monkeypatch, tmp_path, config_sync_original):
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+    client.portal.call(_fijar_config, False, 6, "horas")
+    llamadas = _sin_llamadas_a_sync_all(monkeypatch)
+
+    resultado = client.portal.call(ejecutor._correr)
+
+    assert llamadas == []
+    assert resultado["ok"] is True
+    assert resultado["code"] == "programado_apagado"
+
+
+def test_correr_no_toca_todavia_no_llama_a_ningun_proveedor(client, monkeypatch, tmp_path, config_sync_original):
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+    client.portal.call(_fijar_config, True, 6, "horas")
+    import catalogo_sync_config
+    monkeypatch.setattr(catalogo_sync_config, "toca_correr", lambda *a, **k: False)
+    llamadas = _sin_llamadas_a_sync_all(monkeypatch)
+
+    resultado = client.portal.call(ejecutor._correr)
+
+    assert resultado["ok"] is True
+    assert resultado["code"] == "programado_no_toca"
+    assert llamadas == []
+
+
+def test_correr_toca_llama_a_sync_all(client, monkeypatch, tmp_path, config_sync_original):
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+    client.portal.call(_fijar_config, True, 6, "horas")
+    _forzar_toca(monkeypatch)
+
+    import model_catalog
+    llamadas = []
+
+    async def _fake(marca_nuevos=None, on_progreso=None):
+        llamadas.append(marca_nuevos)
+        return {
+            "ok": True, "providers": [], "enrich": {}, "providers_fallidos": [],
+            "providers_saltados": [], "enrich_fallido": False, "nuevos": {},
+            "facetas_en_riesgo": [], "nuevos_desde_marca": {},
+            "marca_corte": "2026-09-28 00:00:00", "marca_retrocedio": False,
+        }
+    monkeypatch.setattr(model_catalog, "sync_all", _fake)
+
+    resultado = client.portal.call(ejecutor._correr)
+    _borrar_ejecucion_de_registro(client, resultado)
+
+    assert len(llamadas) == 1
+    assert resultado.get("code") != "programado_apagado"
+    assert resultado.get("code") != "programado_no_toca"
+
+
+def test_correr_config_ilegible_propaga_la_excepcion(client, monkeypatch, tmp_path, config_sync_original):
+    """Config ilegible (DB caída, tabla corrupta) es un FALLO real -- no se
+    puede callar. `_correr()` deja propagar la excepción tal cual; es
+    `_ciclo()` (probado aparte) quien la convierte en salida 1."""
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+    import catalogo_sync_config
+
+    async def _revienta(cur):
+        raise RuntimeError("catalogo_sync_config sin fila id=1")
+    monkeypatch.setattr(catalogo_sync_config, "leer_config", _revienta)
+
+    with pytest.raises(RuntimeError):
+        client.portal.call(ejecutor._correr)
+
+
+def test_correr_no_toca_con_una_corrida_manual_reciente(client, monkeypatch, tmp_path, config_sync_original):
+    """"Contando también las manuales" (pedido de Fernando): una corrida
+    MANUAL exitosa reciente hace que el gate diga "todavía no toca", igual
+    que si hubiera sido programada."""
+    monkeypatch.setenv(ejecutor.ESTADO_DIR_ENV, str(tmp_path))
+    client.portal.call(_fijar_config, True, 6, "horas")
+
+    async def _insertar_ok_manual_reciente():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO catalogo_sync_ejecucion (origen, estado, pasos_total, iniciado_en, terminado_en) "
+                    "VALUES ('manual', 'ok', 9, NOW(), NOW())")
+                eid = cur.lastrowid
+            await conn.commit()
+        return eid
+    eid = client.portal.call(_insertar_ok_manual_reciente)
+
+    llamadas = _sin_llamadas_a_sync_all(monkeypatch)
+    try:
+        resultado = client.portal.call(ejecutor._correr)
+        assert resultado["code"] == "programado_no_toca"
+        assert llamadas == []
+    finally:
+        client.portal.call(_borrar_ejecucion, eid)
+
+
+async def _borrar_ejecucion(ejecucion_id):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM catalogo_sync_ejecucion WHERE id=%s", (ejecucion_id,))
+        await conn.commit()
