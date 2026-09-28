@@ -247,10 +247,21 @@ async def _abrir_candado_sostenido(env: dict):
     se marcaría 'error' en cuanto pasara ese margen, mucho antes de terminar
     los 5 niveles de concurrencia, y el peor caso medido ("200 terminadas +
     1 corriendo") dejaría de sostenerse durante la corrida completa. Quien
-    abre esta conexión la cierra (eso libera el candado)."""
+    abre esta conexión la cierra (eso libera el candado).
+
+    MAJOR-1 (quinta ronda de la auditoría adversarial, 2026-09-28): el
+    nombre pasa por `model_catalog.nombre_candado()` -- MINOR-1 de la ronda
+    anterior calificó el candado real con la base actual
+    (`jax_catalogo_sync:<base>`), y este script seguía tomando el nombre
+    SIN calificar. `marcar_huerfanas_interrumpidas()` mira el calificado,
+    lo ve libre desde el minuto cero, y a los 60s (el margen de gracia)
+    marca 'error' la fila 'corriendo' sembrada -- la medición de c=25 en
+    adelante corría contra "200 terminadas, ninguna corriendo" (el caso
+    FÁCIL), no contra el peor caso que el script dice medir, sin ningún
+    aviso de que el escenario había cambiado a mitad de camino."""
     import aiomysql
     sys.path.insert(0, str(BACKEND_DIR))
-    from model_catalog import _NOMBRE_CANDADO_SYNC
+    from model_catalog import _NOMBRE_CANDADO_SYNC, nombre_candado
 
     conn = await aiomysql.connect(
         host=env["JAX_DB_HOST"], port=int(env.get("JAX_DB_PORT", 3306)),
@@ -258,12 +269,13 @@ async def _abrir_candado_sostenido(env: dict):
         db=env["JAX_DB_NAME"], autocommit=True,
     )
     async with conn.cursor() as cur:
-        await cur.execute("SELECT GET_LOCK(%s, 5)", (_NOMBRE_CANDADO_SYNC,))
+        candado = await nombre_candado(cur, _NOMBRE_CANDADO_SYNC)
+        await cur.execute("SELECT GET_LOCK(%s, 5)", (candado,))
         (obtenido,) = await cur.fetchone()
     if obtenido != 1:
         conn.close()
         raise RuntimeError(
-            "no se pudo tomar el candado de trabajo (jax_catalogo_sync) para sostenerlo durante la carga")
+            f"no se pudo tomar el candado de trabajo ({candado}) para sostenerlo durante la carga")
     return conn
 
 
@@ -413,6 +425,35 @@ async def main_async(tmp: Path, jax_repo_dir: Path) -> None:
             r = await correr_tanda(url, headers, c, n)
             print(f"[sync/estado] c={c} n={n} -> {r}")
             resultados["medidas"].append(r)
+
+        # MAJOR-1 (quinta ronda de la auditoría adversarial, 2026-09-28): la
+        # verificación de ARRIBA (antes del loop) sólo probaba que el peor
+        # caso ESTABA sembrado al principio -- el defecto real (candado sin
+        # calificar, ya arreglado arriba) hacía que la fila 'corriendo' se
+        # cayera a 'error' A MITAD de la corrida, sin que nada lo notara: la
+        # medición de c=25 en adelante corría contra el caso FÁCIL (nada
+        # corriendo) y el script terminaba igual, en verde, con números que
+        # no medían lo que decía medir. Se repite la MISMA comprobación
+        # DESPUÉS del loop -- si la fila ya no está 'corriendo', el script
+        # tiene que fallar fuerte, no reportar números silenciosamente
+        # inválidos.
+        r_verif_final = httpx.get(url, headers=headers, timeout=15.0)
+        cuerpo_final = r_verif_final.json()
+        if r_verif_final.status_code != 200 or cuerpo_final.get("corriendo") is None:
+            raise RuntimeError(
+                "la fila 'corriendo' sembrada ya NO estaba 'corriendo' al terminar la medición -- "
+                f"el peor caso se perdió a mitad de la corrida (candado sin calificar, huérfanas "
+                f"espurias, u otra causa): {cuerpo_final}")
+        if cuerpo_final["corriendo"]["id"] != resultados["verificacion"]["corriendo_id"]:
+            raise RuntimeError(
+                "la fila 'corriendo' al final es OTRA distinta de la sembrada -- "
+                f"esperada id={resultados['verificacion']['corriendo_id']}, "
+                f"vista id={cuerpo_final['corriendo']['id']}")
+        resultados["verificacion_final"] = {
+            "status": r_verif_final.status_code, "corriendo_id": cuerpo_final["corriendo"]["id"],
+        }
+        print(f"[orquestador] verificación final: la fila 'corriendo' (id={cuerpo_final['corriendo']['id']}) "
+              "sigue sembrada -- el peor caso se sostuvo toda la corrida")
 
         p95_base = next((r["p95_ms"] for r in resultados["medidas"] if r["c"] == 1), None)
         resultados["degradacion"] = _detectar_degradacion(resultados["medidas"], p95_base)

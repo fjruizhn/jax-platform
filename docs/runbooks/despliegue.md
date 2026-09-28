@@ -382,6 +382,75 @@ la del backend de jax-platform (paso 2 de la sección "Volver atrás", más
 abajo) al SHA anterior a este cambio -- no hace falta tocar `jax` ni el
 esquema, que es aditivo.
 
+## Caso general: un cambio toca el nombre del candado o el ejecutor programado
+
+*(Agregado 2026-09-28, auditoría adversarial de la quinta ronda del catálogo de
+modelos, MINOR-1: el mismo procedimiento sirve para CUALQUIER cambio futuro que
+toque `model_catalog.nombre_candado()`, `_NOMBRE_CANDADO_SYNC`/`_NOMBRE_CANDADO_GATE`,
+o el propio `catalogo_modelos_ejecutor.py` -- no es específico de esta ronda.)*
+
+**Por qué hace falta un procedimiento aparte.** `jax-catalogo-modelos.service`
+(`Type=oneshot`) lo dispara `jax-catalogo-modelos.timer` (`OnCalendar=hourly`,
+`RandomizedDelaySec=2min`) y corre `python -m catalogo_modelos_ejecutor` DESDE
+el mismo checkout que el backend (`WorkingDirectory=/srv/jax-prod/jax-platform/backend`).
+Un `git pull` + `restart jax-platform` normal (pasos 1-2 de arriba) no avisa ni
+espera a una corrida del ejecutor que esté en curso -- y si el NOMBRE del
+candado cambia entre el código viejo y el nuevo (`jax_catalogo_sync` →
+`jax_catalogo_sync:<base>`, el cambio real de esta ronda; o cualquier otro
+cambio de nombre futuro), una corrida vieja TODAVÍA sosteniendo el candado
+VIEJO no bloquea una corrida nueva que recién arranca pidiendo el candado
+NUEVO -- son dos nombres distintos para MariaDB, así que **dos syncs
+concurrentes**, exactamente lo que el candado existe para impedir. La
+`TimeoutStartSec=30min` del servicio (ver su propio comentario sobre el peor
+caso teórico, ~27 min) es la ventana real donde esto puede pasar: un deploy
+que caiga en medio de una corrida larga, o justo antes de un tick horario.
+
+**Procedimiento, sin ventana:**
+
+```bash
+# 1. Frenar el TIMER primero -- nada nuevo se agenda mientras se despliega.
+sudo systemctl stop jax-catalogo-modelos.timer
+
+# 2. Esperar a que la corrida en curso (si la hay) termine SOLA -- nunca
+#    matarla a mitad de un sync. Con el código VIEJO todavía en el checkout,
+#    termina con el candado VIEJO, limpio, sin ninguna corrida nueva que
+#    pueda pisarla.
+until [ "$(systemctl is-active jax-catalogo-modelos.service)" != "active" ]; do
+  sleep 5
+done
+systemctl is-active jax-catalogo-modelos.service   # "inactive" (o "failed" si venía mal)
+
+# 3. RECIÉN ACÁ actualizar el checkout y reiniciar jax-platform (pasos 1-2 de
+#    arriba, sin cambios) -- con el timer parado, ninguna corrida puede
+#    arrancar en el medio con una mezcla de candado viejo/nuevo.
+cd /srv/jax-prod/jax-platform && git fetch origin && git merge --ff-only origin/master
+sudo systemctl restart jax-platform
+
+# 4. Reinstalar el .timer/.service si el propio archivo cambió (cadencia,
+#    OnFailure=, TimeoutStartSec=, etc. -- comparar antes de sobrescribir, no
+#    a ciegas):
+UNIDAD=/srv/jax-prod/jax-platform/ops/migration/systemd-units/jax-catalogo-modelos.timer
+sudo diff -q "$UNIDAD" /etc/systemd/system/jax-catalogo-modelos.timer \
+  || sudo install -m 644 -o root -g root "$UNIDAD" /etc/systemd/system/jax-catalogo-modelos.timer
+sudo systemctl daemon-reload
+
+# 5. Recién ahora arrancar el timer de nuevo -- la PRIMERA corrida que
+#    dispare (el próximo tick horario, o antes si Persistent=true y hall9000
+#    estuvo abajo) ya usa el código y el nombre de candado NUEVOS de punta a
+#    punta, sin ningún proceso viejo compitiendo por un nombre distinto.
+sudo systemctl start jax-catalogo-modelos.timer
+systemctl list-timers jax-catalogo-modelos.timer   # confirmar la próxima corrida agendada
+```
+
+**Verificar por comportamiento, no por `is-active` del timer** (mismo
+criterio que el resto de este runbook): esperar a la primera corrida real (o
+forzarla a mano, `sudo systemctl start jax-catalogo-modelos.service` sin
+esperar al timer) y confirmar en el log que el candado que usa es el nuevo:
+
+```bash
+sudo journalctl -u jax-catalogo-modelos.service -n 50 --no-pager
+```
+
 ## Migraciones B9 adicionales (`jax/memory/b9_migrations/`, más allá de 001-003)
 
 *(Agregado 2026-09-27, auditoría adversarial del PR #164, MAJOR-2.)* El esquema B9
