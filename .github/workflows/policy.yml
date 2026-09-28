@@ -3290,7 +3290,20 @@ jobs:
           # comando que este job, A/B contra un segundo worktree (`git worktree add`, sin
           # tocar este) fijado en el commit padre d3e57ae: 3066 passed / 2 skipped ANTES;
           # esta rama -> 3068 passed / 2 skipped DESPUÉS. Delta propio real: +2.
-          PISO_PASSED = 3066
+          # 3066 -> 3095 (2026-09-29, Hyde, Task 12 del plan "El Ejecutor programa", mitad
+          # jax-platform: ops/guardar-token-github.sh + backend/tests/
+          # test_guardar_token_github_script.py, clon de guardar-token-claude.sh con
+          # VARIABLE=JAX_GITHUB_TOKEN, patrón 'github_pat_...' y el caso extra del token
+          # clásico 'ghp_...' rechazado -- DC3 exige grano fino). +29, uno por test nuevo
+          # (sin parametrizar, delta 1:1); no tocan la DB (corren con sudo contra un .env
+          # falso en tmp_path), así que corren igual con o sin ella. Medido LOCAL, mismo
+          # comando que este job (barrera test-db.env, JAX_DB_USER=jax_test verificado), A/B
+          # contra un segundo worktree (`git worktree add --detach`, sin tocar este) fijado
+          # en el commit padre 3a827c4: 3068 passed / 2 skipped ANTES; esta rama (bb25f78) ->
+          # 3097 passed / 2 skipped DESPUÉS. Delta propio real: +29. PISO_PASSED se suma
+          # sobre el declarado (3066), no sobre el 3068 medido en bruto localmente: mismo
+          # criterio de siempre en este archivo.
+          PISO_PASSED = 3095
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
