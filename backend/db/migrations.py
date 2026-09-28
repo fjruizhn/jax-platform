@@ -644,11 +644,14 @@ CREATE TABLE IF NOT EXISTS catalogo_sync_config (
 # que el índice entrega escaneando hacia atrás YA es la última fila
 # terminada, sin necesitar (ni admitir sin perder el índice) un WHERE
 # adicional.
-# latido_en (MINOR-1, auditoría adversarial 2026-09-27): última vez que
-# alguien estampó avance sobre esta fila -- huérfana ya no es "más de
-# TimeoutStartSec desde que arrancó" (`iniciado_en`), es "sin latido por
-# TIMEOUT_LATIDO_MINUTOS" (catalogo_sync_registro.py). Todas las fechas
-# DEFAULT/escritas UTC_TIMESTAMP(), nunca NOW() (MINOR-6): la sesión de
+# Huérfanas (MAJOR-A, tercera ronda de la auditoría adversarial, 2026-09-27):
+# esta tabla tuvo una columna `latido_en` (última vez que alguien estampó
+# avance sobre la fila) -- se retiró por completo, nunca llegó a producción.
+# El criterio de huérfana no depende de ninguna columna propia: usa
+# IS_FREE_LOCK() sobre el candado de trabajo real de model_catalog.sync_all()
+# más `iniciado_en` (ver catalogo_sync_registro.py), por eso idx_estado_iniciado
+# de abajo alcanza -- no hace falta un índice dedicado a huérfanas. Todas las
+# fechas DEFAULT/escritas UTC_TIMESTAMP(), nunca NOW() (MINOR-6): la sesión de
 # MariaDB de esta app corre en CST (ver tiempo.py) y estas fechas viajan al
 # navegador.
 CREATE_CATALOGO_SYNC_EJECUCION = """
@@ -662,13 +665,11 @@ CREATE TABLE IF NOT EXISTS catalogo_sync_ejecucion (
   detalle_paso VARCHAR(100) NULL,
   iniciado_en DATETIME NOT NULL DEFAULT UTC_TIMESTAMP(),
   terminado_en DATETIME NULL,
-  latido_en DATETIME NULL,
   resultado LONGTEXT NULL CHECK (resultado IS NULL OR json_valid(resultado)),
   FOREIGN KEY (iniciado_por) REFERENCES jax_users(user_id),
   INDEX idx_estado_terminado (estado, terminado_en),
   INDEX idx_estado_iniciado (estado, iniciado_en),
-  INDEX idx_terminado_en (terminado_en),
-  INDEX idx_estado_latido (estado, latido_en)
+  INDEX idx_terminado_en (terminado_en)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -834,9 +835,18 @@ CREATE TABLE IF NOT EXISTS kill_switch_audit (
 # en `true` y por la base no se podía saber quién la había cambiado.
 # Sin FK a jax_users, como user_admin_audit y kill_switch_audit: la historia
 # sobrevive a la baja del usuario. `ts` en UTC explícito (lo escribe
-# config_audit.escribir, el único escritor). config_key VARCHAR(100), igual que
+# config_audit.auditar, el único escritor de esta tabla -- config_audit.escribir
+# la llama para su propio rastro). config_key VARCHAR(100), igual que
 # axioma_config. valor_anterior NULL = la clave no existía. El historial de una
 # clave sale por idx_axioma_config_audit_key_ts (EXPLAIN en los tests).
+#
+# origen VARCHAR(20) y el CHECK con 'catalogo_sync' YA desde la creación
+# (MINOR-6, tercera ronda de la auditoría adversarial, 2026-09-27) -- antes
+# esto era VARCHAR(10) + CHECK ('config','smtp') y una base NUEVA necesitaba
+# el ALTER de _agregar_origen_catalogo_sync_a_config_audit() para poder
+# auditar catalogo_sync_config.py. Ese ALTER se queda (más abajo) para bases
+# YA EXISTENTES creadas con la forma vieja -- su propio chequeo de
+# information_schema ya se salta las tablas nuevas, que nacen con esto.
 CREATE_AXIOMA_CONFIG_AUDIT = """
 CREATE TABLE IF NOT EXISTS axioma_config_audit (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -845,9 +855,9 @@ CREATE TABLE IF NOT EXISTS axioma_config_audit (
   config_key VARCHAR(100) NOT NULL,
   valor_anterior TEXT NULL,
   valor_nuevo TEXT NOT NULL,
-  origen VARCHAR(10) NOT NULL,
+  origen VARCHAR(20) NOT NULL,
   ip VARCHAR(45) NULL,
-  CONSTRAINT chk_axioma_config_audit_origen CHECK (origen IN ('config', 'smtp')),
+  CONSTRAINT chk_axioma_config_audit_origen CHECK (origen IN ('config', 'smtp', 'catalogo_sync')),
   INDEX idx_axioma_config_audit_key_ts (config_key, ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
@@ -2038,11 +2048,6 @@ async def _migrate_user_api_keys_to_credential(cur) -> None:
         )
 
 _COLUMNS = [
-    # MINOR-1 (auditoría adversarial, 2026-09-27): bases que ya tenían
-    # catalogo_sync_ejecucion sin latido_en (creada por una corrida anterior
-    # de esta misma rama, antes de la ronda de correcciones).
-    ("catalogo_sync_ejecucion", "latido_en",
-     "ALTER TABLE catalogo_sync_ejecucion ADD COLUMN latido_en DATETIME NULL"),
     ("jax_users", "last_login", "ALTER TABLE jax_users ADD COLUMN last_login TIMESTAMP NULL"),
     ("jax_users", "failed_attempts", "ALTER TABLE jax_users ADD COLUMN failed_attempts INT DEFAULT 0"),
     ("jax_users", "locked_until", "ALTER TABLE jax_users ADD COLUMN locked_until DATETIME NULL"),
@@ -2462,10 +2467,6 @@ _COLUMN_WIDENS = [
 _INDEXES = [
     ("jax_users", "idx_jax_users_role_status",
      "ALTER TABLE jax_users ADD INDEX idx_jax_users_role_status (role, status)"),
-    # MINOR-1: acompaña a la columna latido_en de arriba en _COLUMNS -- una
-    # base existente que ya tenía la tabla necesita el índice también.
-    ("catalogo_sync_ejecucion", "idx_estado_latido",
-     "ALTER TABLE catalogo_sync_ejecucion ADD INDEX idx_estado_latido (estado, latido_en)"),
 ]
 
 

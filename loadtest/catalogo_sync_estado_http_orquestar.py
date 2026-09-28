@@ -236,6 +236,37 @@ async def correr_tanda(url: str, headers: dict, c: int, n: int) -> dict:
     }
 
 
+async def _abrir_candado_sostenido(env: dict):
+    """MAJOR-A (tercera ronda de la auditoría adversarial, 2026-09-27):
+    sostiene, en una conexión DEDICADA que vive durante TODA la medición, el
+    mismo candado que `model_catalog.sync_all()` sostiene durante un sync
+    real (`_NOMBRE_CANDADO_SYNC`). El criterio de huérfana ahora es "candado
+    de trabajo libre Y `iniciado_en` más viejo que el margen de gracia"
+    (`catalogo_sync_registro.MARGEN_GRACIA_SEGUNDOS`, 60s) -- sin este
+    candado sostenido, la fila 'corriendo' sembrada por `_sembrar_peor_caso`
+    se marcaría 'error' en cuanto pasara ese margen, mucho antes de terminar
+    los 5 niveles de concurrencia, y el peor caso medido ("200 terminadas +
+    1 corriendo") dejaría de sostenerse durante la corrida completa. Quien
+    abre esta conexión la cierra (eso libera el candado)."""
+    import aiomysql
+    sys.path.insert(0, str(BACKEND_DIR))
+    from model_catalog import _NOMBRE_CANDADO_SYNC
+
+    conn = await aiomysql.connect(
+        host=env["JAX_DB_HOST"], port=int(env.get("JAX_DB_PORT", 3306)),
+        user=env["JAX_DB_USER"], password=env["JAX_DB_PASSWORD"],
+        db=env["JAX_DB_NAME"], autocommit=True,
+    )
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT GET_LOCK(%s, 5)", (_NOMBRE_CANDADO_SYNC,))
+        (obtenido,) = await cur.fetchone()
+    if obtenido != 1:
+        conn.close()
+        raise RuntimeError(
+            "no se pudo tomar el candado de trabajo (jax_catalogo_sync) para sostenerlo durante la carga")
+    return conn
+
+
 def _detectar_degradacion(resultados: list[dict], p95_base_ms: float) -> str:
     """Primer nivel cuyo p95 pasa 3x el de c=1, o cuyos errores no son cero
     -- criterio simple y explícito, no "se ve peor" a ojo."""
@@ -268,16 +299,19 @@ async def _sembrar_peor_caso(env: dict) -> None:
                         "UTC_TIMESTAMP() - INTERVAL %s SECOND, %s)",
                         (FILAS_TERMINADAS - i + 10, FILAS_TERMINADAS - i, json.dumps({"ok": True})),
                     )
-                # latido_en=UTC_TIMESTAMP() (fresco, MINOR-1): el endpoint
-                # real interrumpe huérfanas (latido_en NULL o viejo) en CADA
-                # GET -- sin un latido fresco, esta fila se marcaría 'error'
-                # en la primera petición medida y el peor caso ("200
-                # terminadas + 1 corriendo") dejaría de sostenerse durante
-                # toda la corrida.
+                # iniciado_en=UTC_TIMESTAMP() (fresco, MAJOR-A tercera ronda):
+                # el endpoint real interrumpe huérfanas en CADA GET -- el
+                # criterio nuevo es candado de trabajo libre Y `iniciado_en`
+                # más viejo que el margen de gracia. El candado
+                # (`jax_catalogo_sync`) está libre de verdad durante toda esta
+                # medición (nada llama a `model_catalog.sync_all()`), así que
+                # sin un `iniciado_en` fresco esta fila se marcaría 'error' en
+                # la primera petición medida y el peor caso ("200 terminadas +
+                # 1 corriendo") dejaría de sostenerse durante toda la corrida.
                 await cur.execute(
                     "INSERT INTO catalogo_sync_ejecucion "
-                    "(origen, estado, pasos_total, paso_actual, iniciado_en, latido_en) "
-                    "VALUES ('programado', 'corriendo', 9, 4, UTC_TIMESTAMP(), UTC_TIMESTAMP())"
+                    "(origen, estado, pasos_total, paso_actual, iniciado_en) "
+                    "VALUES ('programado', 'corriendo', 9, 4, UTC_TIMESTAMP())"
                 )
             await conn.commit()
     finally:
@@ -318,6 +352,9 @@ async def main_async(tmp: Path, jax_repo_dir: Path) -> None:
 
     print(f"[orquestador] sembrando el peor caso ({FILAS_TERMINADAS} filas terminadas + 1 corriendo)")
     await _sembrar_peor_caso(env)
+
+    print("[orquestador] tomando el candado de trabajo real -- lo sostiene toda la medición")
+    conn_candado = await _abrir_candado_sostenido(env)
 
     log_backend = open(tmp / "backend.log", "w")
     proc_backend = None
@@ -400,6 +437,9 @@ async def main_async(tmp: Path, jax_repo_dir: Path) -> None:
                     pass
         log_backend.close()
         print("[orquestador] backend detenido")
+
+        conn_candado.close()
+        print("[orquestador] candado de trabajo liberado")
 
         print(f"[orquestador] borrando la base de prueba {BASE_DE_PRUEBA} por nombre")
         await _borrar_base_de_prueba(env)

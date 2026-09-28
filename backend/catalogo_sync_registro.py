@@ -11,11 +11,20 @@ actualización" (misma Regla Absoluta que ya aplica `model_catalog.sync_all()`
 para "qué significa que el catálogo esté sano").
 
 FECHAS EN UTC (MINOR-6, auditoría adversarial, 2026-09-27): todas las
-columnas de fecha de esta tabla (`iniciado_en`, `terminado_en`, `latido_en`)
-se escriben con `UTC_TIMESTAMP()`, nunca `NOW()` -- la sesión de MariaDB de
-esta app corre en `SYSTEM` (CST, UTC-6, ver `tiempo.py`); un `NOW()` leído
-como si fuera UTC y mandado al navegador saldría 6 horas corrido. Se
-serializan con `tiempo.iso_utc()`, nunca `str()`."""
+columnas de fecha de esta tabla (`iniciado_en`, `terminado_en`) se escriben
+con `UTC_TIMESTAMP()`, nunca `NOW()` -- la sesión de MariaDB de esta app
+corre en `SYSTEM` (CST, UTC-6, ver `tiempo.py`); un `NOW()` leído como si
+fuera UTC y mandado al navegador saldría 6 horas corrido. Se serializan con
+`tiempo.iso_utc()`, nunca `str()`.
+
+SIN LATIDO (MAJOR-A, tercera ronda de la auditoría adversarial, 2026-09-27):
+esta tabla tuvo una columna `latido_en`, estampada entre pasos de
+`sync_all()`, para detectar corridas huérfanas. Se retiró por completo --
+ver `marcar_huerfanas_interrumpidas()` -- porque un solo paso más lento que
+el margen de detección (p.ej. Gemini paginando su catálogo) marcaba
+"caída" una corrida viva. El criterio nuevo usa el candado de MariaDB que
+`model_catalog.sync_all()` ya sostiene durante TODO el sync, no un latido
+propio."""
 from __future__ import annotations
 
 import json
@@ -35,20 +44,23 @@ logger = logging.getLogger("catalogo_sync_registro")
 #: del .service).
 _NOMBRE_CANDADO_GATE = "jax_catalogo_sync_gate"
 
-#: MINOR-1 (auditoría adversarial, 2026-09-27): huérfana = sin LATIDO por
-#: este tiempo, no "más de TimeoutStartSec desde que arrancó". Con el
-#: criterio viejo (30 min desde `iniciado_en`), un reinicio de uvicorn a
-#: mitad de una corrida manual larga la dejaba "corriendo" hasta que se
-#: cumplieran esos 30 min completos desde el ARRANQUE, no desde la caída; y
-#: una corrida manual genuina y viva, pero más larga que 30 min, se hubiera
-#: marcado huérfana por error. `actualizar_progreso()` (el callback de
-#: avance real que ya existía) ahora TAMBIÉN estampa el latido en cada paso
-#: -- 3 minutos sin uno es sospechoso incluso para el paso más lento del
-#: sync real (paginación al tope de un proveedor, ver model_catalog.py:
-#: peor caso teórico ~750s para ESE paso solo, pero el latido se estampa
-#: ANTES de cada paso, no al terminarlo -- ver `on_progreso` en
-#: `ejecutar_reservada`).
-TIMEOUT_LATIDO_MINUTOS = 3
+#: MAJOR-A (tercera ronda de la auditoría adversarial, 2026-09-27): huérfana
+#: = el candado de trabajo real (`model_catalog._NOMBRE_CANDADO_SYNC`) está
+#: LIBRE Y ya pasó este margen desde que se reservó la fila. Reemplaza al
+#: criterio de LATIDO de la ronda anterior (columna `latido_en`, estampada
+#: sólo ENTRE pasos de `sync_all()`): un único paso más lento que el umbral
+#: de latido -- p.ej. un proveedor paginando su catálogo -- marcaba "caída"
+#: una corrida viva y sana en cualquier `GET /sync/estado` que cayera en el
+#: medio. `IS_FREE_LOCK()` no tiene ese problema: la conexión dedicada de
+#: `sync_all()` sostiene el candado durante TODO el sync sin importar cuánto
+#: tarde un paso -- MariaDB lo libera SÓLO cuando esa conexión termina o
+#: muere, garantizado, sin depender de que nadie avise nada mientras tanto.
+#: El margen cubre la ventana real entre que `reservar_ejecucion()` inserta
+#: la fila (bajo el candado de GATE, corto) y el momento en que `sync_all()`
+#: -- recién llamado después, desde `ejecutar_reservada()` -- alcanza a
+#: tomar SU candado de trabajo: en esa ventana el candado está libre de
+#: verdad (todavía nadie lo tomó) aunque la corrida esté sana.
+MARGEN_GRACIA_SEGUNDOS = 60
 
 #: Retención (pedido de Fernando, 2026-09-27): conserva como mucho estas
 #: filas TERMINADAS (nunca la que está 'corriendo') y nada más viejo que
@@ -92,23 +104,32 @@ def _resultado_sync_en_curso() -> dict:
 
 
 async def marcar_huerfanas_interrumpidas(cur) -> None:
-    """Una fila 'corriendo' sin latido por `TIMEOUT_LATIDO_MINUTOS` es un
-    proceso que ya no existe -- se marca 'error' con un resultado explícito,
-    nunca queda 'corriendo' para siempre. `latido_en IS NULL` cuenta como
-    "nunca latió": una fila recién reservada (que todavía no llamó a
-    `actualizar_progreso` ni una vez) usa `iniciado_en` como su latido
-    inicial -- ver `reservar_ejecucion`, que lo estampa al crearla -- así
-    que `latido_en` nunca debería quedar NULL en la práctica, pero el `OR`
-    cubre el caso de una fila más vieja (de antes de esta columna) o de un
-    valor puesto a NULL a mano."""
+    """Una fila 'corriendo' cuyo candado de trabajo real está LIBRE Y ya
+    pasó `MARGEN_GRACIA_SEGUNDOS` desde que se reservó es un proceso que ya
+    no existe -- se marca 'error' con un resultado explícito, nunca queda
+    'corriendo' para siempre. Las DOS condiciones son necesarias: el candado
+    libre por sí solo no alcanza (la ventana entre reservar la fila y que
+    `sync_all()` lo tome todavía no pasó, ver `MARGEN_GRACIA_SEGUNDOS`), y
+    el margen vencido por sí solo tampoco (una corrida legítima y viva puede
+    tardar mucho más que el margen -- lo que importa es si el candado sigue
+    sostenido, no cuánto lleva corriendo).
+
+    Filas 'corriendo' de ANTES de este cambio (con el criterio viejo de
+    latido) resuelven igual, sin caso especial: si el proceso que las creó
+    ya no existe, su candado de trabajo también está libre."""
+    from model_catalog import _NOMBRE_CANDADO_SYNC
+
     resultado_huerfana = json.dumps({
-        "error": f"interrumpida: sin latido por más de {TIMEOUT_LATIDO_MINUTOS} minuto(s) (proceso caído)"
+        "error": (
+            "interrumpida: candado de trabajo libre y más de "
+            f"{MARGEN_GRACIA_SEGUNDOS}s desde iniciado_en (proceso caído)"
+        )
     })
     await cur.execute(
         "UPDATE catalogo_sync_ejecucion SET estado='error', terminado_en=UTC_TIMESTAMP(), resultado=%s "
-        "WHERE estado='corriendo' AND "
-        "(latido_en IS NULL OR latido_en < UTC_TIMESTAMP() - INTERVAL %s MINUTE)",
-        (resultado_huerfana, TIMEOUT_LATIDO_MINUTOS),
+        "WHERE estado='corriendo' AND IS_FREE_LOCK(%s)=1 "
+        "AND iniciado_en < UTC_TIMESTAMP() - INTERVAL %s SECOND",
+        (resultado_huerfana, _NOMBRE_CANDADO_SYNC, MARGEN_GRACIA_SEGUNDOS),
     )
 
 
@@ -168,8 +189,8 @@ async def reservar_ejecucion(cur, conn, *, origen: str, iniciado_por: int | None
 
         await cur.execute(
             "INSERT INTO catalogo_sync_ejecucion "
-            "(origen, iniciado_por, estado, paso_actual, pasos_total, iniciado_en, latido_en) "
-            "VALUES (%s, %s, 'corriendo', 0, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP())",
+            "(origen, iniciado_por, estado, paso_actual, pasos_total, iniciado_en) "
+            "VALUES (%s, %s, 'corriendo', 0, %s, UTC_TIMESTAMP())",
             (origen, iniciado_por, pasos_total),
         )
         ejecucion_id = cur.lastrowid
@@ -184,14 +205,15 @@ async def actualizar_progreso(ejecucion_id: int, paso_actual: int, pasos_total: 
     nunca retiene la conexión dedicada que `model_catalog.sync_all()`
     necesita para sostener su candado durante TODO el sync (ver su
     docstring: soltarla antes de tiempo soltaría el candado antes de
-    tiempo). MINOR-1: también estampa el LATIDO -- ver
-    `marcar_huerfanas_interrumpidas`."""
+    tiempo). Ya NO estampa ningún latido (MAJOR-A, tercera ronda de la
+    auditoría adversarial): el criterio de huérfanas usa el candado de
+    trabajo, no un latido propio -- ver `marcar_huerfanas_interrumpidas`."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "UPDATE catalogo_sync_ejecucion SET paso_actual=%s, pasos_total=%s, detalle_paso=%s, "
-                "latido_en=UTC_TIMESTAMP() WHERE id=%s",
+                "UPDATE catalogo_sync_ejecucion SET paso_actual=%s, pasos_total=%s, detalle_paso=%s "
+                "WHERE id=%s",
                 (paso_actual, pasos_total, (detalle_paso or "")[:100], ejecucion_id),
             )
         await conn.commit()
@@ -217,15 +239,40 @@ async def finalizar_ejecucion(ejecucion_id: int, estado: str, resultado: dict | 
 
 
 async def ultima_actualizacion_exitosa(cur):
-    """`terminado_en` de la última corrida con `estado='ok'` -- cuenta
+    """`iniciado_en` de la última corrida con `estado='ok'` -- cuenta
     tanto manuales como programadas (pedido de Fernando: "contando también
-    las manuales"). `None` si nunca hubo ninguna exitosa."""
+    las manuales"). `None` si nunca hubo ninguna exitosa.
+
+    MINOR-1 (tercera ronda de la auditoría adversarial, 2026-09-27):
+    `iniciado_en`, no `terminado_en` -- si se usara `terminado_en`, la
+    propia DURACIÓN del sync se comería parte de la tolerancia de
+    `catalogo_sync_config.toca_correr()` (una corrida de 9 minutos corriendo
+    cada hora dejaría sólo 51 minutos reales hasta la próxima, no 60).
+
+    MINOR-7: ignora filas 'ok' cuyo `iniciado_en` está en el FUTURO respecto
+    de `UTC_TIMESTAMP()` -- un reloj/zona horaria adelantado no puede forzar
+    al programador a creer que "toca correr" cada hora contra una fecha que
+    todavía no llegó. Avisa (no calla) cuando excluye una fila así: es una
+    situación anómala que alguien debería poder ver en los logs.
+    """
     await cur.execute(
-        "SELECT terminado_en FROM catalogo_sync_ejecucion WHERE estado='ok' "
-        "ORDER BY terminado_en DESC LIMIT 1"
+        "SELECT iniciado_en FROM catalogo_sync_ejecucion WHERE estado='ok' "
+        "AND iniciado_en <= UTC_TIMESTAMP() ORDER BY iniciado_en DESC LIMIT 1"
     )
     fila = await cur.fetchone()
-    return fila[0] if fila else None
+    resultado = fila[0] if fila else None
+
+    await cur.execute(
+        "SELECT 1 FROM catalogo_sync_ejecucion WHERE estado='ok' "
+        "AND iniciado_en > UTC_TIMESTAMP() LIMIT 1"
+    )
+    if await cur.fetchone() is not None:
+        logger.warning(
+            "catalogo_sync_registro.ultima_actualizacion_exitosa: hay al menos una corrida "
+            "'ok' con iniciado_en en el futuro -- se ignora para la cadencia (reloj o zona "
+            "horaria movidos hacia adelante)"
+        )
+    return resultado
 
 
 async def limpiar_ejecuciones_viejas(cur) -> None:
