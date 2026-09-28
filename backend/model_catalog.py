@@ -145,6 +145,12 @@ _PAGE_SIZE_GEMINI = 1000
 # roto (o es hostil) y no una cuenta legítima con muchos modelos.
 _TOPE_PAGINAS = 50
 
+# Tarea 6 (2026-09-27, pedido de Fernando): tope de CANTIDAD (modelos
+# consultados por corrida) y de TIEMPO TOTAL acumulado en el bucle de
+# /api/show de _sync_ollama_models -- ver ahí el porqué.
+_OLLAMA_MAX_MODELOS_CONSULTADOS = 200
+_OLLAMA_TIEMPO_MAX_CONSULTAS_SEGUNDOS = 60.0
+
 
 class PaginacionSospechosaError(RuntimeError):
     """La paginación de un proveedor no converge: más de `_TOPE_PAGINAS`
@@ -434,8 +440,28 @@ async def _sync_ollama_models(url: str) -> dict:
     # URL nueva.
     url_show = url.rsplit("/api/tags", 1)[0] + "/api/show"
     modalidades: dict[str, str] = {}
+    inicio_consultas = time.monotonic()
+    consultados = 0
     for model_id in seen:
+        # Tope de la tarea 6 (2026-09-27, pedido de Fernando): un catálogo
+        # local con muchos modelos no puede dejar el sync pidiendo
+        # /api/show uno por uno sin límite -- lo que se cumpla primero
+        # (cantidad o tiempo) corta el resto de ESTA corrida. Fail-soft,
+        # mismo criterio que un /api/show individual que falla: a un modelo
+        # no consultado simplemente no se le toca input_modalities esta
+        # vez, la fila conserva el valor que ya tenía.
+        if consultados >= _OLLAMA_MAX_MODELOS_CONSULTADOS:
+            logger.warning(
+                f"model_catalog ollama /api/show: tope de cantidad alcanzado "
+                f"({_OLLAMA_MAX_MODELOS_CONSULTADOS}) -- {len(seen) - consultados} modelo(s) sin consultar esta corrida")
+            break
+        if time.monotonic() - inicio_consultas >= _OLLAMA_TIEMPO_MAX_CONSULTAS_SEGUNDOS:
+            logger.warning(
+                f"model_catalog ollama /api/show: tope de tiempo alcanzado "
+                f"({_OLLAMA_TIEMPO_MAX_CONSULTAS_SEGUNDOS}s) -- {len(seen) - consultados} modelo(s) sin consultar esta corrida")
+            break
         caps = await _capacidades_ollama(url_show, model_id)
+        consultados += 1
         if caps is not None:
             modalidades[model_id] = "text,image" if "vision" in caps else "text"
 
@@ -800,7 +826,17 @@ async def _nuevos_desde_marca_bajo_candado(cur, marca_nuevos: str) -> dict:
     return {"nuevos_desde_marca": nuevos_desde_marca, "marca_corte": corte_str, "marca_retrocedio": False}
 
 
-async def sync_all(marca_nuevos: str | None = None) -> dict:
+def pasos_totales_de_sync() -> int:
+    """Cuántos pasos de avance reporta UN `sync_all()` completo: uno por
+    proveedor de `SYNCABLE_PROVIDERS`, más enriquecimiento, más el chequeo
+    de facetas en riesgo. Función propia (no un literal repetido) para que
+    `catalogo_sync_registro.py` -- que necesita el número ANTES de llamar a
+    `sync_all()`, para reservar la fila con su `pasos_total` -- nunca pueda
+    desincronizarse del número real que `sync_all()` termina reportando."""
+    return len(SYNCABLE_PROVIDERS) + 2
+
+
+async def sync_all(marca_nuevos: str | None = None, on_progreso=None) -> dict:
     """Orquesta el sync completo: capa (a) por cada proveedor de
     SYNCABLE_PROVIDERS, capa (b) de enriquecimiento, y el diagnostico de
     saltados/nuevos/facetas en riesgo. Extraida de POST /admin/models/sync
@@ -826,7 +862,29 @@ async def sync_all(marca_nuevos: str | None = None) -> dict:
     `marca_corte` y `marca_retrocedio` -- ver `_nuevos_desde_marca_bajo_candado`.
     El endpoint (POST /admin/models/sync) no pasa marca: sync_all() no
     impone una fuente de verdad de "cuándo fue el último aviso", eso lo
-    decide el ejecutor (la marca sólo avanza cuando Telegram confirma)."""
+    decide el ejecutor (la marca sólo avanza cuando Telegram confirma).
+
+    `on_progreso` (2026-09-27, pedido de Fernando: avance real de la barra
+    de sincronización): callback ASYNC opcional, `on_progreso(paso_actual,
+    pasos_total, detalle_paso)`, invocado ANTES de cada paso (cada
+    proveedor, el enriquecimiento, el chequeo de facetas en riesgo) --
+    `pasos_total` es siempre `pasos_totales_de_sync()`. Fail-soft: un
+    `on_progreso` que revienta se loguea y NUNCA tumba el sync -- nadie
+    aguas abajo depende de que el registro de avance haya salido bien
+    (mismo criterio que `add_safe_task`)."""
+    pasos_total = pasos_totales_de_sync()
+    paso_actual = 0
+
+    async def _avanzar(detalle_paso: str) -> None:
+        nonlocal paso_actual
+        paso_actual += 1
+        if on_progreso is None:
+            return
+        try:
+            await on_progreso(paso_actual, pasos_total, detalle_paso)
+        except Exception:  # fail-soft: registrar avance no puede tumbar el sync
+            logger.exception(f"sync_all: on_progreso reventó en paso={detalle_paso!r}")
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -849,6 +907,7 @@ async def sync_all(marca_nuevos: str | None = None) -> dict:
         try:
             results = []
             for provider_id in SYNCABLE_PROVIDERS:
+                await _avanzar(provider_id)
                 try:
                     results.append(await sync_provider_models(provider_id))
                 except Exception as e:  # fail-soft: un provider caido no frena a los demas; su error va en el resultado y apaga ok
@@ -856,6 +915,7 @@ async def sync_all(marca_nuevos: str | None = None) -> dict:
                     logger.warning(f"sync_all provider={provider_id} failed reason={motivo}")
                     results.append({"provider_id": provider_id, "error": redactar_secretos(str(e))[:200]})
 
+            await _avanzar("enrich")
             try:
                 enrich_result = await enrich_from_models_dev()
             except Exception as e:  # fail-soft: el enriquecimiento es capa (b) opcional; su error va en 'enrich' y apaga ok
@@ -871,6 +931,7 @@ async def sync_all(marca_nuevos: str | None = None) -> dict:
             enrich_fallido = "error" in enrich_result
             nuevos = {r["provider_id"]: r["nuevos"] for r in results if r.get("nuevos")}
 
+            await _avanzar("facetas_en_riesgo")
             async with conn.cursor() as cur:
                 facetas_en_riesgo = await _facetas_en_riesgo(cur)
 
