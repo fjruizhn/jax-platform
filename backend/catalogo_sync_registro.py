@@ -116,9 +116,16 @@ async def marcar_huerfanas_interrumpidas(cur) -> None:
 
     Filas 'corriendo' de ANTES de este cambio (con el criterio viejo de
     latido) resuelven igual, sin caso especial: si el proceso que las creó
-    ya no existe, su candado de trabajo también está libre."""
-    from model_catalog import _NOMBRE_CANDADO_SYNC
+    ya no existe, su candado de trabajo también está libre.
 
+    MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    nombre del candado se califica con la base actual (`nombre_candado()`,
+    único sitio que arma ese nombre) -- GET_LOCK/RELEASE_LOCK/IS_FREE_LOCK
+    son globales al SERVIDOR de MariaDB, y en hall9000 la base de test vive
+    en el MISMO servidor que producción."""
+    from model_catalog import _NOMBRE_CANDADO_SYNC, nombre_candado
+
+    candado = await nombre_candado(cur, _NOMBRE_CANDADO_SYNC)
     resultado_huerfana = json.dumps({
         "error": (
             "interrumpida: candado de trabajo libre y más de "
@@ -129,7 +136,7 @@ async def marcar_huerfanas_interrumpidas(cur) -> None:
         "UPDATE catalogo_sync_ejecucion SET estado='error', terminado_en=UTC_TIMESTAMP(), resultado=%s "
         "WHERE estado='corriendo' AND IS_FREE_LOCK(%s)=1 "
         "AND iniciado_en < UTC_TIMESTAMP() - INTERVAL %s SECOND",
-        (resultado_huerfana, _NOMBRE_CANDADO_SYNC, MARGEN_GRACIA_SEGUNDOS),
+        (resultado_huerfana, candado, MARGEN_GRACIA_SEGUNDOS),
     )
 
 
@@ -169,13 +176,20 @@ async def reservar_ejecucion(cur, conn, *, origen: str, iniciado_por: int | None
     MINOR-5: si `GET_LOCK` devuelve NULL (error real de MariaDB, no
     "ocupado"), se levanta `RuntimeError` -- no se confunde con
     `sync_en_curso`, mismo criterio que `model_catalog.sync_all()` para su
-    propio candado."""
-    await cur.execute("SELECT GET_LOCK(%s, 5)", (_NOMBRE_CANDADO_GATE,))
+    propio candado.
+
+    MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): nombre
+    calificado con la base actual, mismo motivo que el candado de trabajo
+    (ver `marcar_huerfanas_interrumpidas`)."""
+    from model_catalog import nombre_candado
+
+    candado_gate = await nombre_candado(cur, _NOMBRE_CANDADO_GATE)
+    await cur.execute("SELECT GET_LOCK(%s, 5)", (candado_gate,))
     (obtenido,) = await cur.fetchone()
     estado_candado = _interpretar_get_lock(obtenido)
     if estado_candado == "error":
         raise RuntimeError(
-            f"reservar_ejecucion: GET_LOCK('{_NOMBRE_CANDADO_GATE}') devolvió NULL -- "
+            f"reservar_ejecucion: GET_LOCK('{candado_gate}') devolvió NULL -- "
             "error de MariaDB, no candado ocupado")
     if estado_candado == "ocupado":
         logger.warning("catalogo_sync_registro: candado de gate ocupado por otra alta en curso")
@@ -197,7 +211,7 @@ async def reservar_ejecucion(cur, conn, *, origen: str, iniciado_por: int | None
         await conn.commit()
         return ejecucion_id, None
     finally:
-        await cur.execute("SELECT RELEASE_LOCK(%s)", (_NOMBRE_CANDADO_GATE,))
+        await cur.execute("SELECT RELEASE_LOCK(%s)", (candado_gate,))
 
 
 async def actualizar_progreso(ejecucion_id: int, paso_actual: int, pasos_total: int, detalle_paso: str) -> None:
@@ -219,12 +233,21 @@ async def actualizar_progreso(ejecucion_id: int, paso_actual: int, pasos_total: 
         await conn.commit()
 
 
-async def finalizar_ejecucion(ejecucion_id: int, estado: str, resultado: dict | None) -> None:
+async def finalizar_ejecucion(ejecucion_id: int, estado: str, resultado: dict | None) -> bool:
     """Cierra la fila: `estado` final (ok/con_problemas/error),
     `terminado_en=UTC_TIMESTAMP()`, y el resumen -- pasado por
     `redactar_secretos` ANTES de guardarse, defensa en profundidad aunque
     los errores de proveedor que trae `resultado` ya vienen redactados
-    desde `model_catalog.sync_all()`."""
+    desde `model_catalog.sync_all()`.
+
+    MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    UPDATE sólo pisa una fila que TODAVÍA está 'corriendo' -- si ya estaba
+    cerrada (p.ej. `marcar_huerfanas_interrumpidas()` la marcó 'error' por
+    una carrera real, o un llamador la cerró dos veces), no se la pisa en
+    silencio. Devuelve si CERRÓ la fila de verdad (`cur.rowcount == 1`);
+    `False` es la señal para que el llamador (`ejecutar_reservada()`) deje
+    constancia -- log de advertencia y una nota en el resultado que
+    devuelve -- en vez de asumir que su cierre ganó."""
     pool = await get_pool()
     resultado_crudo = json.dumps(resultado, default=str) if resultado is not None else None
     resultado_seguro = redactar_secretos(resultado_crudo) if resultado_crudo is not None else None
@@ -232,10 +255,12 @@ async def finalizar_ejecucion(ejecucion_id: int, estado: str, resultado: dict | 
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE catalogo_sync_ejecucion SET estado=%s, terminado_en=UTC_TIMESTAMP(), resultado=%s "
-                "WHERE id=%s",
+                "WHERE id=%s AND estado='corriendo'",
                 (estado, resultado_seguro, ejecucion_id),
             )
+            cerro = cur.rowcount == 1
         await conn.commit()
+    return cerro
 
 
 async def ultima_actualizacion_exitosa(cur):
@@ -322,35 +347,91 @@ async def correr_sync_registrado(*, origen: str, iniciado_por: int | None = None
     return await ejecutar_reservada(ejecucion_id, marca_nuevos=marca_nuevos)
 
 
-async def ejecutar_reservada(ejecucion_id: int, *, marca_nuevos: str | None = None) -> dict:
-    """La mitad de `correr_sync_registrado()` que corre DESPUÉS de reservar
-    la fila -- separada para que `POST /admin/models/sync` pueda reservar
-    SINCRÓNICAMENTE (para decidir 202 vs 409 antes de responder) y delegar
-    esto a una `BackgroundTask` con el `ejecucion_id` ya en mano, sin
-    reservar dos veces."""
-    import model_catalog
-
-    async def on_progreso(paso_actual: int, pasos_total_real: int, detalle_paso: str) -> None:
-        await actualizar_progreso(ejecucion_id, paso_actual, pasos_total_real, detalle_paso)
-
-    try:
-        resultado = await model_catalog.sync_all(marca_nuevos=marca_nuevos, on_progreso=on_progreso)
-    except Exception as e:  # fail-soft: un crash del sync no puede dejar la fila 'corriendo' para siempre
-        motivo = redactar_secretos(f"{type(e).__name__}: {e}")
-        logger.exception("catalogo_sync_registro: sync_all() reventó (ejecucion_id=%s)", ejecucion_id)
-        await finalizar_ejecucion(ejecucion_id, "error", {"error": motivo})
-        raise
-
+def _estado_final_de(resultado: dict) -> str:
     if resultado.get("code") == "sync_en_curso":
         # No debería pasar -- reservar_ejecucion() ya lo evita -- pero si
         # algún llamador futuro invocara model_catalog.sync_all() por fuera
         # de este registro y se cruzara con esto, la fila no queda
         # mintiendo "corriendo" para siempre.
-        await finalizar_ejecucion(ejecucion_id, "error", {
-            "error": "sync_all() encontró su propio candado ocupado pese a que "
-                     "reservar_ejecucion() no vio nada corriendo -- carrera inesperada"})
-    else:
-        estado_final = "ok" if resultado.get("ok") else "con_problemas"
-        await finalizar_ejecucion(ejecucion_id, estado_final, resultado)
+        return "error"
+    return "ok" if resultado.get("ok") else "con_problemas"
+
+
+async def ejecutar_reservada(ejecucion_id: int, *, marca_nuevos: str | None = None) -> dict:
+    """La mitad de `correr_sync_registrado()` que corre DESPUÉS de reservar
+    la fila -- separada para que `POST /admin/models/sync` pueda reservar
+    SINCRÓNICAMENTE (para decidir 202 vs 409 antes de responder) y delegar
+    esto a una `BackgroundTask` con el `ejecucion_id` ya en mano, sin
+    reservar dos veces.
+
+    MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    cierre PRIMARIO de la fila pasa por `on_terminar`, que
+    `model_catalog.sync_all()` llama DENTRO de su propio `try` -- con el
+    candado de trabajo TODAVÍA sostenido -- tanto en el camino feliz como en
+    el de excepción (ver su docstring). Esto es lo que cierra la carrera
+    real: antes, la fila se cerraba ACÁ, después de que `sync_all()` ya
+    había retornado (y su `finally` ya había soltado el candado) -- un
+    `GET /sync/estado` en el medio podía ver "candado libre + más vieja que
+    el margen" y marcarla 'error', y el cierre normal que llegaba after la
+    pisaba con 'ok' sin condición.
+
+    Lo que queda ACÁ (fuera de `sync_all()`) son sólo REDES DE SEGURIDAD
+    para cuando `on_terminar` no pudo cerrar la fila: `sync_all()` reventó
+    ANTES de tomar el candado (nunca entra al `try`, `on_terminar` no
+    corrió), encontró su propio candado ocupado (retorna ANTES del `try`,
+    caso "no debería pasar"), o el propio callback falló al escribir (fail
+    soft, loguea y sigue). `finalizar_ejecucion()` sólo pisa una fila que
+    siga 'corriendo' -- si `on_terminar` ya cerró, estas redes no hacen
+    nada (0 filas afectadas, sin advertencia: es el camino normal)."""
+    import model_catalog
+
+    cerrada = False
+
+    async def on_progreso(paso_actual: int, pasos_total_real: int, detalle_paso: str) -> None:
+        await actualizar_progreso(ejecucion_id, paso_actual, pasos_total_real, detalle_paso)
+
+    async def on_terminar(resultado: dict, *, es_error: bool = False) -> None:
+        nonlocal cerrada
+        estado_final = "error" if es_error else _estado_final_de(resultado)
+        cerrada = await finalizar_ejecucion(ejecucion_id, estado_final, resultado)
+        if not cerrada:
+            logger.warning(
+                "catalogo_sync_registro: on_terminar no pudo cerrar ejecucion_id=%s "
+                "(ya no estaba 'corriendo' -- alguien más la cerró primero)", ejecucion_id)
+
+    try:
+        resultado = await model_catalog.sync_all(
+            marca_nuevos=marca_nuevos, on_progreso=on_progreso, on_terminar=on_terminar)
+    except Exception as e:
+        # Red de seguridad: si `on_terminar` ya cerró la fila (el camino de
+        # excepción de `sync_all()` lo llama antes de re-lanzar), esto no
+        # hace nada -- `finalizar_ejecucion` no pisa una fila que ya cerró.
+        if not cerrada:
+            motivo = redactar_secretos(f"{type(e).__name__}: {e}")
+            logger.exception("catalogo_sync_registro: sync_all() reventó (ejecucion_id=%s)", ejecucion_id)
+            if not await finalizar_ejecucion(ejecucion_id, "error", {"error": motivo}):
+                logger.warning(
+                    "catalogo_sync_registro: la red de seguridad de excepción tampoco pudo "
+                    "cerrar ejecucion_id=%s -- ya estaba cerrada por otra vía", ejecucion_id)
+        raise
+
+    if not cerrada:
+        # Red de seguridad: `on_terminar` no corrió (p.ej. sync_all() vio su
+        # propio candado ocupado y retornó ANTES del try) o falló al
+        # escribir. Se cierra acá, fuera del candado -- el mismo hueco que
+        # esto reemplaza como camino PRIMARIO, pero ahora como excepción
+        # rara, no la regla.
+        estado_final = _estado_final_de(resultado)
+        resultado_a_guardar = resultado
+        if resultado.get("code") == "sync_en_curso":
+            resultado_a_guardar = {
+                "error": "sync_all() encontró su propio candado ocupado pese a que "
+                         "reservar_ejecucion() no vio nada corriendo -- carrera inesperada"}
+        if not await finalizar_ejecucion(ejecucion_id, estado_final, resultado_a_guardar):
+            logger.warning(
+                "catalogo_sync_registro: la red de seguridad final tampoco pudo cerrar "
+                "ejecucion_id=%s -- ya estaba cerrada por otra vía (posible carrera con "
+                "marcar_huerfanas_interrumpidas)", ejecucion_id)
+            resultado = {**resultado, "cierre_omitido": True}
 
     return {**resultado, "ejecucion_id": ejecucion_id}

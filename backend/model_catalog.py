@@ -762,6 +762,28 @@ async def _facetas_en_riesgo(cur) -> list[dict]:
 _NOMBRE_CANDADO_SYNC = "jax_catalogo_sync"
 
 
+async def nombre_candado(cur, base_nombre: str) -> str:
+    """El nombre de un candado de MariaDB, CALIFICADO con la base actual de
+    esta conexión (MINOR-1, cuarta ronda de la auditoría adversarial,
+    2026-09-28). `GET_LOCK`/`RELEASE_LOCK`/`IS_FREE_LOCK` son GLOBALES al
+    SERVIDOR de MariaDB, no a la base de datos -- y en hall9000 la base de
+    test vive en el MISMO servidor (puerto 3308) que producción. Sin
+    calificar, la suite de tests y un sync real corriendo en producción
+    comparten el mismo candado: un test que lo sostiene bloquea (o, peor,
+    se ve interrumpido por) un sync de producción, y viceversa.
+
+    Resuelto en un SOLO SITIO (acá) con `DATABASE()` -- no con la variable
+    de entorno `JAX_DB_NAME` que usa `db/connection.py` para conectar: leer
+    la base desde la CONEXIÓN misma es correcto incluso si algo cambiara de
+    base a mitad de conexión (`USE`), cosa que la variable de entorno no
+    podría reflejar. Cada candado (el de trabajo `jax_catalogo_sync`, el de
+    gate `jax_catalogo_sync_gate` de `catalogo_sync_registro.py`) pasa por
+    acá -- nunca se arma el nombre calificado a mano en otro lado."""
+    await cur.execute("SELECT CONCAT(%s, ':', DATABASE())", (base_nombre,))
+    (nombre,) = await cur.fetchone()
+    return nombre
+
+
 def _interpretar_get_lock(obtenido) -> str:
     """MAJOR-2(a) (cuarta auditoría adversarial, 2026-09-28): `GET_LOCK`
     devuelve 1 (obtenido), 0 (ocupado por otra conexión) o NULL (error real
@@ -868,7 +890,7 @@ def pasos_totales_de_sync() -> int:
     return len(SYNCABLE_PROVIDERS) + 2
 
 
-async def sync_all(marca_nuevos: str | None = None, on_progreso=None) -> dict:
+async def sync_all(marca_nuevos: str | None = None, on_progreso=None, on_terminar=None) -> dict:
     """Orquesta el sync completo: capa (a) por cada proveedor de
     SYNCABLE_PROVIDERS, capa (b) de enriquecimiento, y el diagnostico de
     saltados/nuevos/facetas en riesgo. Extraida de POST /admin/models/sync
@@ -903,7 +925,28 @@ async def sync_all(marca_nuevos: str | None = None, on_progreso=None) -> dict:
     `pasos_total` es siempre `pasos_totales_de_sync()`. Fail-soft: un
     `on_progreso` que revienta se loguea y NUNCA tumba el sync -- nadie
     aguas abajo depende de que el registro de avance haya salido bien
-    (mismo criterio que `add_safe_task`)."""
+    (mismo criterio que `add_safe_task`).
+
+    `on_terminar` (MAJOR-1, cuarta ronda de la auditoría adversarial,
+    2026-09-28): callback ASYNC opcional, `on_terminar(resultado, *,
+    es_error=False)`, invocado DENTRO del `try` -- mientras esta conexión
+    TODAVÍA sostiene el candado de trabajo -- tanto si `sync_all()` termina
+    normal como si algo revienta antes del `finally`. El defecto real que
+    esto cierra: `catalogo_sync_registro.ejecutar_reservada()` cerraba la
+    fila de `catalogo_sync_ejecucion` DESPUÉS de que `sync_all()` retornaba,
+    es decir DESPUÉS de que el `finally` ya había soltado el candado -- en
+    ese hueco, un `GET /sync/estado` (que corre
+    `marcar_huerfanas_interrumpidas()` en cada pedido) podía ver "candado
+    libre + fila todavía 'corriendo' + más vieja que el margen de gracia" y
+    marcarla 'error', y el cierre normal que llegaba un instante después la
+    pisaba con 'ok' SIN CONDICIÓN, escondiendo que la carrera había
+    ocurrido. Con `on_terminar` la fila se cierra ANTES de que el candado
+    quede libre -- para cuando alguien más puede verlo libre, la fila YA
+    está cerrada, así que `marcar_huerfanas_interrumpidas()` nunca la
+    encuentra 'corriendo'. Fail-soft (igual que `on_progreso`): si el propio
+    callback revienta, se loguea y NO tumba el sync -- `ejecutar_reservada()`
+    tiene su propia red de seguridad para ese caso degradado (ver su
+    docstring)."""
     pasos_total = pasos_totales_de_sync()
     paso_actual = 0
 
@@ -917,19 +960,30 @@ async def sync_all(marca_nuevos: str | None = None, on_progreso=None) -> dict:
         except Exception:  # fail-soft: registrar avance no puede tumbar el sync
             logger.exception(f"sync_all: on_progreso reventó en paso={detalle_paso!r}")
 
+    async def _terminar(resultado: dict, *, es_error: bool = False) -> None:
+        if on_terminar is None:
+            return
+        try:
+            await on_terminar(resultado, es_error=es_error)
+        except Exception:  # fail-soft: cerrar el registro no puede tumbar el sync
+            logger.exception("sync_all: on_terminar reventó -- la fila queda para el cierre de red de seguridad")
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            # MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28):
+            # nombre calificado con la base actual -- ver `nombre_candado()`.
+            candado = await nombre_candado(cur, _NOMBRE_CANDADO_SYNC)
             # timeout=0: no espera -- si alguien más lo tiene, se corta al
             # toque en vez de hacer cola (el timer corre cada 6h; una espera
             # larga acá sólo demoraría un click manual sin ganar nada).
-            await cur.execute("SELECT GET_LOCK(%s, 0)", (_NOMBRE_CANDADO_SYNC,))
+            await cur.execute("SELECT GET_LOCK(%s, 0)", (candado,))
             (obtenido,) = await cur.fetchone()
 
         estado_candado = _interpretar_get_lock(obtenido)
         if estado_candado == "error":
             raise RuntimeError(
-                f"sync_all: GET_LOCK('{_NOMBRE_CANDADO_SYNC}') devolvió NULL -- "
+                f"sync_all: GET_LOCK('{candado}') devolvió NULL -- "
                 "error de MariaDB, no candado ocupado"
             )
         if estado_candado == "ocupado":
@@ -994,7 +1048,19 @@ async def sync_all(marca_nuevos: str | None = None, on_progreso=None) -> dict:
                 async with conn.cursor() as cur:
                     respuesta.update(await _nuevos_desde_marca_bajo_candado(cur, marca_nuevos))
 
+            # MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28):
+            # TODAVÍA dentro del try, con el candado TODAVÍA sostenido -- ver
+            # el docstring de `on_terminar` más arriba.
+            await _terminar(respuesta)
             return respuesta
+        except Exception as e:
+            # MAJOR-1: el camino de excepción TAMBIÉN cierra la fila con el
+            # candado todavía sostenido -- si no, un crash acá (p.ej.
+            # `_facetas_en_riesgo` reventando) dejaría la MISMA carrera que
+            # el camino feliz: `finally` suelta el candado, y sólo DESPUÉS
+            # `ejecutar_reservada()` se entera del error y cierra la fila.
+            await _terminar({"error": redactar_secretos(f"{type(e).__name__}: {e}")}, es_error=True)
+            raise
         finally:
             # MAJOR-2(b) (cuarta auditoría adversarial, 2026-09-28): si
             # RELEASE_LOCK no confirma con 1 (0 = no lo tenía esta conexión,
@@ -1006,7 +1072,7 @@ async def sync_all(marca_nuevos: str | None = None, on_progreso=None) -> dict:
             liberado = None
             try:
                 async with conn.cursor() as cur:
-                    await cur.execute("SELECT RELEASE_LOCK(%s)", (_NOMBRE_CANDADO_SYNC,))
+                    await cur.execute("SELECT RELEASE_LOCK(%s)", (candado,))
                     (liberado,) = await cur.fetchone()
             except Exception:  # fail-soft: si RELEASE_LOCK revienta, `liberado` queda None y se descarta la conexión igual, abajo
                 logger.exception("sync_all: RELEASE_LOCK reventó -- se descarta la conexión")

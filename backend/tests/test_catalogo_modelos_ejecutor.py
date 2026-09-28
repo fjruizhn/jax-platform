@@ -1045,14 +1045,17 @@ def _fake_sync_all_marca(**esperado_marca_nuevos):
     sobre el avance."""
     llamadas = []
 
-    async def _fake(marca_nuevos=None, on_progreso=None):
+    async def _fake(marca_nuevos=None, on_progreso=None, on_terminar=None):
         llamadas.append(marca_nuevos)
-        return {
+        resultado = {
             "ok": True, "providers": [], "enrich": {}, "providers_fallidos": [],
             "providers_saltados": [], "enrich_fallido": False, "nuevos": {},
             "facetas_en_riesgo": [], "nuevos_desde_marca": {},
             "marca_corte": "2026-09-28 00:00:00", "marca_retrocedio": False,
         }
+        if on_terminar is not None:
+            await on_terminar(resultado)
+        return resultado
     return _fake, llamadas
 
 
@@ -1144,7 +1147,7 @@ def test_correr_no_agrega_marca_usada_si_el_candado_esta_ocupado(client, monkeyp
     import model_catalog
     import db.connection as db_connection
 
-    async def _fake_sync_en_curso(marca_nuevos=None, on_progreso=None):
+    async def _fake_sync_en_curso(marca_nuevos=None, on_progreso=None, on_terminar=None):
         return {
             "ok": False, "code": "sync_en_curso", "providers": [], "enrich": {},
             "providers_fallidos": [], "providers_saltados": [], "enrich_fallido": False,
@@ -1209,7 +1212,7 @@ def _sin_llamadas_a_sync_all(monkeypatch):
     import model_catalog
     llamadas = []
 
-    async def _no_deberia_llamarse(marca_nuevos=None, on_progreso=None):
+    async def _no_deberia_llamarse(marca_nuevos=None, on_progreso=None, on_terminar=None):
         llamadas.append(1)
         return {"ok": True}
     monkeypatch.setattr(model_catalog, "sync_all", _no_deberia_llamarse)
@@ -1272,14 +1275,17 @@ def test_correr_toca_llama_a_sync_all(client, monkeypatch, tmp_path, config_sync
     import model_catalog
     llamadas = []
 
-    async def _fake(marca_nuevos=None, on_progreso=None):
+    async def _fake(marca_nuevos=None, on_progreso=None, on_terminar=None):
         llamadas.append(marca_nuevos)
-        return {
+        resultado = {
             "ok": True, "providers": [], "enrich": {}, "providers_fallidos": [],
             "providers_saltados": [], "enrich_fallido": False, "nuevos": {},
             "facetas_en_riesgo": [], "nuevos_desde_marca": {},
             "marca_corte": "2026-09-28 00:00:00", "marca_retrocedio": False,
         }
+        if on_terminar is not None:
+            await on_terminar(resultado)
+        return resultado
     monkeypatch.setattr(model_catalog, "sync_all", _fake)
 
     resultado = client.portal.call(ejecutor._correr)

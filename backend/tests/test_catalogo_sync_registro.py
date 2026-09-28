@@ -87,18 +87,25 @@ async def _con_candado_de_trabajo_sostenido(coro_dentro):
     lo sostiene, y lo suelta al final pase lo que pase adentro -- así un
     `marcar_huerfanas_interrumpidas()` corrido desde OTRA conexión (server-wide,
     no por conexión) ve el candado ocupado, tal como vería el candado real de
-    una corrida viva."""
-    from model_catalog import _NOMBRE_CANDADO_SYNC
+    una corrida viva.
+
+    MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    nombre pasa por `nombre_candado()` -- el mismo que usa la producción --
+    para tomar el candado CALIFICADO con la base actual; si se tomara el
+    nombre sin calificar, `IS_FREE_LOCK()` sobre el calificado lo vería
+    libre igual, y esta prueba dejaría de probar lo que dice probar."""
+    from model_catalog import _NOMBRE_CANDADO_SYNC, nombre_candado
     pool = await _pool()
     async with pool.acquire() as conn_candado:
         async with conn_candado.cursor() as cur_candado:
-            await cur_candado.execute("SELECT GET_LOCK(%s, 5)", (_NOMBRE_CANDADO_SYNC,))
+            candado = await nombre_candado(cur_candado, _NOMBRE_CANDADO_SYNC)
+            await cur_candado.execute("SELECT GET_LOCK(%s, 5)", (candado,))
             (obtenido,) = await cur_candado.fetchone()
             assert obtenido == 1, "no se pudo tomar el candado de trabajo para la prueba"
             try:
                 return await coro_dentro()
             finally:
-                await cur_candado.execute("SELECT RELEASE_LOCK(%s)", (_NOMBRE_CANDADO_SYNC,))
+                await cur_candado.execute("SELECT RELEASE_LOCK(%s)", (candado,))
 
 
 def test_marcar_huerfanas_no_toca_una_fila_con_el_candado_de_trabajo_sostenido(
@@ -364,30 +371,42 @@ async def _ultima_exitosa():
             return await registro.ultima_actualizacion_exitosa(cur)
 
 
-def test_ultima_actualizacion_exitosa_ignora_con_problemas_y_error_mas_recientes(client, limpiar_catalogo_sync_ejecucion):
+async def _vaciar_catalogo_sync_ejecucion():
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM catalogo_sync_ejecucion")
+        await conn.commit()
+
+
+@pytest.fixture
+def tabla_catalogo_sync_ejecucion_vacia(client):
+    """MINOR-2 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    aislamiento de esta tabla entre tests era "por probabilidad" -- filas
+    'ok' que dejan los POST de test_admin_models_endpoints.py (sin limpiar,
+    la tabla es de TODA la sesión) podían ganarle a la fila que un test de
+    ESTE archivo espera que sea "la más reciente". No es una carrera de
+    verdad (pytest corre en serie, un test a la vez): es que la tabla no
+    empieza vacía cuando un test asume que sí. Se vacía al INICIO -- no
+    hace falta al final, cada test de este archivo ya limpia lo que crea
+    (`limpiar_catalogo_sync_ejecucion`)."""
+    client.portal.call(_vaciar_catalogo_sync_ejecucion)
+    yield
+
+
+def test_ultima_actualizacion_exitosa_ignora_con_problemas_y_error_mas_recientes(
+        client, limpiar_catalogo_sync_ejecucion, tabla_catalogo_sync_ejecucion_vacia):
     """MINOR-8: el 'ok' es el MÁS VIEJO de los tres a propósito -- si alguien
     quitara el `WHERE estado='ok'` de la consulta, este test tendría que
     fallar (devolvería el 'error', más nuevo, no el 'ok'). MINOR-1 (tercera
     ronda): se compara contra `iniciado_en`, no `terminado_en` -- la función
-    ahora selecciona `iniciado_en`.
-
-    Offsets de 0/1/2 SEGUNDOS, no 20/10/1 (como en la ronda anterior): esta
-    tabla es compartida por TODA la sesión de tests (ver el docstring del
-    módulo), y `ultima_actualizacion_exitosa()` mira el 'ok' MÁS RECIENTE de
-    TODA la tabla, no sólo de este test. Con un offset de 20s, cualquier otro
-    archivo que insertara una fila 'ok' en esos 20 segundos (muy probable en
-    una corrida de ~2500 tests) le ganaba a `eid_ok` y este test fallaba por
-    una carrera real, no por un defecto -- medido: `test_catalogo_modelos_ejecutor.py`
-    corre antes (alfabético) e inserta filas 'ok' propias. Con offsets de
-    0-2s la ventana de colisión se reduce a, como mucho, un empate exacto al
-    segundo con OTRO test insertando en el mismísimo instante -- igual de
-    posible que antes de este cambio, pero mucho menos probable."""
-    eid_error = client.portal.call(_insertar_ejecucion, "manual", "error", 0)
-    limpiar_catalogo_sync_ejecucion.append(eid_error)
-    eid_problemas = client.portal.call(_insertar_ejecucion, "manual", "con_problemas", 1)
-    limpiar_catalogo_sync_ejecucion.append(eid_problemas)
-    eid_ok = client.portal.call(_insertar_ejecucion, "manual", "ok", 2)
+    ahora selecciona `iniciado_en`."""
+    eid_ok = client.portal.call(_insertar_ejecucion, "manual", "ok", 20)
     limpiar_catalogo_sync_ejecucion.append(eid_ok)
+    eid_problemas = client.portal.call(_insertar_ejecucion, "manual", "con_problemas", 10)
+    limpiar_catalogo_sync_ejecucion.append(eid_problemas)
+    eid_error = client.portal.call(_insertar_ejecucion, "manual", "error", 1)
+    limpiar_catalogo_sync_ejecucion.append(eid_error)
 
     ultima = client.portal.call(_ultima_exitosa)
     assert ultima is not None
@@ -404,26 +423,20 @@ def test_ultima_actualizacion_exitosa_ignora_con_problemas_y_error_mas_recientes
     assert ultima == iniciado_en_ok
 
 
-def test_ultima_actualizacion_exitosa_es_none_sin_ninguna_ok(client):
-    """No borra nada -- sólo verifica que la función no explota cuando la
-    consulta no encuentra 'ok' entre las corridas de otros tests de la
-    sesión: si HAY alguna 'ok' vieja, esto sólo confirma que el tipo de
-    retorno es correcto (datetime o None), no que sea None literal."""
+def test_ultima_actualizacion_exitosa_es_none_sin_ninguna_ok(client, tabla_catalogo_sync_ejecucion_vacia):
+    """Con la tabla vacía de verdad (fixture MINOR-2), esto ya puede afirmar
+    `None` a secas -- antes tenía que tolerar "alguna 'ok' vieja de otro
+    test" y sólo confirmaba el tipo de retorno."""
     ultima = client.portal.call(_ultima_exitosa)
-    assert ultima is None or hasattr(ultima, "year")
+    assert ultima is None
 
 
 def test_ultima_actualizacion_exitosa_ignora_una_fila_ok_con_iniciado_en_en_el_futuro(
-        client, limpiar_catalogo_sync_ejecucion, caplog):
+        client, limpiar_catalogo_sync_ejecucion, tabla_catalogo_sync_ejecucion_vacia, caplog):
     """MINOR-7 (tercera ronda de la auditoría adversarial, 2026-09-27): una
     fila 'ok' con `iniciado_en` en el futuro (reloj/zona horaria adelantados)
     no puede ser la "última actualización exitosa" -- se ignora, y se avisa
-    por log en vez de fallar en silencio.
-
-    `eid_pasado` con offset 0 (no 30s, ver el comentario de
-    test_ultima_actualizacion_exitosa_ignora_con_problemas_y_error_mas_recientes
-    sobre por qué un offset chico reduce la ventana de colisión con otros
-    tests de la misma sesión de DB)."""
+    por log en vez de fallar en silencio."""
     async def _insertar_en_el_futuro():
         pool = await _pool()
         async with pool.acquire() as conn:
@@ -437,7 +450,7 @@ def test_ultima_actualizacion_exitosa_ignora_una_fila_ok_con_iniciado_en_en_el_f
 
     eid_futuro = client.portal.call(_insertar_en_el_futuro)
     limpiar_catalogo_sync_ejecucion.append(eid_futuro)
-    eid_pasado = client.portal.call(_insertar_ejecucion, "manual", "ok", 0)
+    eid_pasado = client.portal.call(_insertar_ejecucion, "manual", "ok", 30)
     limpiar_catalogo_sync_ejecucion.append(eid_pasado)
 
     import logging
@@ -520,12 +533,21 @@ def test_limpiar_ejecuciones_viejas_conserva_como_mucho_retencion_filas(client):
 # --------------------------------------------------------------------------
 
 def _fake_sync_all(resultado, pasos_avanzados):
-    async def _fake(marca_nuevos=None, on_progreso=None):
+    """MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    fake TIENE que aceptar y llamar `on_terminar` -- es lo que ahora cierra
+    la fila (dentro del "candado", que acá no existe de verdad, pero el
+    CONTRATO del callback sí se ejercita). Sin esto, `ejecutar_reservada()`
+    depende de su red de seguridad (cerrada=False) para cerrar la fila --
+    lo que estos tests de orquestación siguen verificando igual (miran el
+    estado final de la fila), pero el camino PRIMARIO quedaría sin probar."""
+    async def _fake(marca_nuevos=None, on_progreso=None, on_terminar=None):
         if on_progreso is not None:
             await on_progreso(1, 2, "paso-1")
             pasos_avanzados.append(1)
             await on_progreso(2, 2, "paso-2")
             pasos_avanzados.append(2)
+        if on_terminar is not None:
+            await on_terminar(resultado)
         return resultado
     return _fake
 
@@ -576,7 +598,7 @@ def test_correr_sync_registrado_marca_con_problemas_cuando_ok_es_falso(client, m
 def test_correr_sync_registrado_marca_error_si_sync_all_revienta(client, monkeypatch, limpiar_catalogo_sync_ejecucion):
     import model_catalog
 
-    async def _explota(marca_nuevos=None, on_progreso=None):
+    async def _explota(marca_nuevos=None, on_progreso=None, on_terminar=None):
         raise RuntimeError("boom")
     monkeypatch.setattr(model_catalog, "sync_all", _explota)
 
@@ -606,7 +628,7 @@ def test_correr_sync_registrado_no_llama_a_sync_all_si_ya_hay_uno_corriendo(clie
 
     llamadas = []
 
-    async def _no_deberia_llamarse(marca_nuevos=None, on_progreso=None):
+    async def _no_deberia_llamarse(marca_nuevos=None, on_progreso=None, on_terminar=None):
         llamadas.append(1)
         return {"ok": True}
     monkeypatch.setattr(model_catalog, "sync_all", _no_deberia_llamarse)
@@ -619,3 +641,82 @@ def test_correr_sync_registrado_no_llama_a_sync_all_si_ya_hay_uno_corriendo(clie
     assert resultado["code"] == "sync_en_curso"
     assert resultado["ejecucion_id"] is None
     assert llamadas == []
+
+
+
+
+# --------------------------------------------------------------------------
+# MAJOR-1 (cuarta ronda de la auditoria adversarial, 2026-09-28): la fila se
+# cierra ANTES de soltar el candado real -- integracion de punta a punta con
+# `model_catalog.sync_all()` REAL (proveedores/enriquecimiento mockeados,
+# candado y orquestacion de cierre reales), no el fake de arriba.
+# --------------------------------------------------------------------------
+
+def test_ejecutar_reservada_cierra_la_fila_con_el_candado_todavia_sostenido(
+        client, monkeypatch, limpiar_catalogo_sync_ejecucion):
+    """El defecto real que MAJOR-1 cierra: antes, `sync_all()` soltaba el
+    candado en su `finally` y RECIEN DESPUES `ejecutar_reservada()` cerraba
+    la fila -- en ese hueco, un `GET /sync/estado` (que corre
+    `marcar_huerfanas_interrumpidas()` en cada pedido) podia ver "candado
+    libre + fila 'corriendo' + mas vieja que el margen" y marcarla 'error',
+    y el cierre normal que llegaba un instante despues la pisaba con 'ok'
+    SIN CONDICION, escondiendo la carrera.
+
+    Prueba de punta a punta con el candado REAL: se engancha una sonda
+    ENCIMA de `finalizar_ejecucion` (justo donde `on_terminar` cierra la
+    fila, dentro de `sync_all()`, con el candado todavia tomado) que, desde
+    OTRA conexion, verifica que el candado de trabajo TODAVIA esta
+    sostenido (`IS_FREE_LOCK`=0) en ese instante -- y corre
+    `marcar_huerfanas_interrumpidas()` ahi mismo, para probar que ni
+    siquiera intentandolo justo en ese momento se puede corromper la fila
+    (el candado sostenido la protege una vez; estar ya cerrada -- no
+    'corriendo' -- la protege una segunda vez). `MARGEN_GRACIA_SEGUNDOS` en
+    0 para maximizar la ventana de la carrera que esto cierra."""
+    import model_catalog
+    monkeypatch.setattr(registro, "MARGEN_GRACIA_SEGUNDOS", 0)
+
+    async def _sync_provider_models_rapido(provider_id):
+        return {"provider_id": provider_id, "fetched": 1, "nuevos": []}
+    monkeypatch.setattr(model_catalog, "sync_provider_models", _sync_provider_models_rapido)
+
+    async def _enrich_rapido():
+        return {"enriched": 0}
+    monkeypatch.setattr(model_catalog, "enrich_from_models_dev", _enrich_rapido)
+
+    libres_al_cerrar = []
+    finalizar_real = registro.finalizar_ejecucion
+
+    async def _finalizar_con_sonda(ejecucion_id, estado, resultado):
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                candado = await model_catalog.nombre_candado(cur, model_catalog._NOMBRE_CANDADO_SYNC)
+                await cur.execute("SELECT IS_FREE_LOCK(%s)", (candado,))
+                (libre,) = await cur.fetchone()
+                libres_al_cerrar.append(libre)
+                # La sonda del defecto: si esto marcara la fila 'error' acá
+                # (porque el candado ya estuviera libre), el cierre normal
+                # que sigue la pisaría con 'ok' sin condición -- justo la
+                # carrera que MAJOR-1 cierra.
+                await registro.marcar_huerfanas_interrumpidas(cur)
+            await conn.commit()
+        return await finalizar_real(ejecucion_id, estado, resultado)
+
+    monkeypatch.setattr(registro, "finalizar_ejecucion", _finalizar_con_sonda)
+
+    resultado = client.portal.call(functools.partial(registro.correr_sync_registrado, origen="manual"))
+    limpiar_catalogo_sync_ejecucion.append(resultado["ejecucion_id"])
+
+    assert libres_al_cerrar == [0], (
+        "el candado de trabajo debía seguir SOSTENIDO en el momento del cierre -- "
+        f"IS_FREE_LOCK devolvió {libres_al_cerrar!r}"
+    )
+    assert resultado.get("code") != "sync_en_curso"
+    assert resultado.get("cierre_omitido") is not True
+
+    # Lo que importa: NUNCA 'error' por una huérfana espuria -- ni "ok" (todo
+    # sincronizó bien) ni "con_problemas" (alguna faceta en riesgo real de
+    # los datos sembrados de la sesión, ajeno a este test) son el defecto
+    # que MAJOR-1 cierra; 'error' por la carrera sí lo sería.
+    _origen, estado_final, *_resto = client.portal.call(_fila, resultado["ejecucion_id"])
+    assert estado_final in ("ok", "con_problemas")
