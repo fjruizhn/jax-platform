@@ -6,49 +6,53 @@ from tests.entorno_de_produccion import cargar
 
 ENV_PATH = "/etc/jax/.env"
 
-# Secretos de PRODUCCIÓN que /etc/jax/.env trae y que la suite NO necesita --
-# cargarlos "porque están" expone el valor real a cualquier test que no los
-# aísle explícitamente. Hallazgo real (2026-09-27, sesión
-# jax-platform-sync-config): `CLAUDE_CODE_OAUTH_TOKEN` quedaba puesto en el
-# ambiente por este bucle y GANABA sobre el archivo que 3 tests de
-# `test_model_catalog_sync.py` monkeypatcheaban explícitamente
-# (`model_catalog._ANTHROPIC_CREDENTIALS_PATH`) -- esos tests fallaban en
-# cualquier máquina con acceso `sudo -n` a `/etc/jax/.env`, sin que su propio
-# código estuviera mal. Ver `_read_anthropic_oauth_token()` en
-# `model_catalog.py`: la rama de variable de entorno se prueba PRIMERO.
+# LISTA BLANCA, no lista negra (2026-09-27, tercera ronda de la auditoría
+# adversarial). La versión anterior de este archivo cargaba TODO
+# `/etc/jax/.env` salvo 3 secretos ajenos (`CLAUDE_CODE_OAUTH_TOKEN`,
+# `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`, ver el hallazgo de la ronda
+# anterior) -- y ESO NO ALCANZABA: `FERNET_KEY` y `JAX_JWT_SECRET`, los dos
+# secretos que la app SÍ usa de verdad (cifrado de credenciales y firma de
+# sesión), seguían colándose enteros, porque ninguna lista negra los
+# nombraba. Toda la suite firmaba y verificaba tokens con la llave JWT REAL
+# de producción, y cifraba credenciales de prueba con la FERNET_KEY REAL.
 #
-# Verificado uno por uno (no supuesto) antes de excluir: cada consumidor
-# REAL de estas variables en este árbol ya hace su propio
-# `monkeypatch.setenv`/`delenv` -- ninguno depende de que la ambiente ya las
-# traiga puestas.
-#   - CLAUDE_CODE_OAUTH_TOKEN: model_catalog.py la lee vía
-#     `ANTHROPIC_OAUTH_TOKEN_ENV`; los tests que la ejercitan (D1.3-a,
-#     test_read_anthropic_oauth_token_*) la ponen/quitan ellos mismos.
-#   - TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID: sólo las lee
-#     `catalogo_modelos_ejecutor.py` (aviso del sync programado); TODOS sus
-#     tests (test_catalogo_modelos_ejecutor.py, test_avisar_fallo_unidad.py)
-#     ya hacen `monkeypatch.setenv`/`delenv` explícito -- ninguno lee el
-#     valor ambiente.
+# La lista de abajo es lo ÚNICO que la suite toma de `/etc/jax/.env` --
+# verificado con evidencia (grep de `os.environ[...]`/`os.environ.get(...)`
+# sin default funcional en TODO el árbol, tests/ excluido), no una lista de
+# "todo lo que parece razonable":
+#   - JAX_DB_HOST / JAX_DB_PORT: `db/connection.py` los exige sin default
+#     (`RuntimeError` si faltan) -- sin esto no hay a qué MariaDB conectarse.
+#   - JAX_DB_USER / JAX_DB_PASSWORD: `db/connection.py` tiene un default
+#     (`"jax_user"` / `""`), pero es un default que NUNCA autentica contra
+#     la base real -- sin el password real, cualquier test que use `client`
+#     falla al conectar.
+#   - JAX_REPO_PATH: `os.environ["JAX_REPO_PATH"]` sin default, en este
+#     mismo archivo (`_esquema_de_jax_en_la_base_de_test`) y en varios
+#     módulos de la app (B9, shadow_validation) -- el checkout real de
+#     `jax` en esta máquina.
+#   - JAX_CONFIG_PATH: `api/chat.py` usa
+#     `ruta_absoluta_requerida("JAX_CONFIG_PATH")` -- el módulo ni se
+#     importa sin esto.
+# Todo lo demás que la app necesita para arrancar YA tiene su propio valor
+# de prueba fijado más abajo en este archivo, o un default seguro en el
+# propio código (`JAX_ADJUNTO_*`, `JAX_SEED_*`, `FRONTEND_ORIGIN`, etc.) --
+# no depende de que `/etc/jax/.env` lo traiga.
 #
 # Control: tests/test_conftest_no_carga_secretos_no_necesarios.py -- falla
-# si este conjunto vuelve a filtrarse al entorno de la suite.
-SECRETOS_DE_PRODUCCION_NO_NECESARIOS = frozenset({
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID",
+# si algo fuera de esta lista vuelve a llegar al entorno de la suite, o si
+# FERNET_KEY/JAX_JWT_SECRET coinciden con los de producción.
+VARIABLES_NECESARIAS_DE_PRODUCCION = frozenset({
+    "JAX_DB_HOST",
+    "JAX_DB_PORT",
+    "JAX_DB_USER",
+    "JAX_DB_PASSWORD",
+    "JAX_REPO_PATH",
+    "JAX_CONFIG_PATH",
 })
 
-# Además de no CARGARLOS desde el archivo: si alguno ya viniera heredado del
-# proceso que lanzó la suite (una sesión interactiva de Hyde, no sólo
-# /etc/jax/.env), se lo quita también -- "no lo necesita" es del entorno de
-# la suite entera, no sólo de esta fuente.
-for _secreto in SECRETOS_DE_PRODUCCION_NO_NECESARIOS:
-    os.environ.pop(_secreto, None)
-
 for _k, _v in cargar(ENV_PATH).items():
-    if _k in SECRETOS_DE_PRODUCCION_NO_NECESARIOS:
-        continue
-    os.environ.setdefault(_k, _v)
+    if _k in VARIABLES_NECESARIAS_DE_PRODUCCION:
+        os.environ.setdefault(_k, _v)
 
 # Base de tests por sesión (2026-09-20, port de `base_de_test.py` de `jax`,
 # family `base_de_test` en `scripts/check_mirror_sync.py`). Antes esta línea
@@ -84,6 +88,17 @@ if not os.environ.get("FERNET_KEY"):
     import base64
 
     os.environ["FERNET_KEY"] = base64.urlsafe_b64encode(os.urandom(32)).decode()
+
+# Mismo caso que FERNET_KEY arriba, para el otro secreto que la lista blanca
+# ya no deja pasar: `auth/jwt.py` exige `JAX_JWT_SECRET` sin default (revienta
+# con RuntimeError si está vacía) y antes de este cambio la suite entera
+# firmaba y verificaba JWT con la llave REAL de producción. setdefault a
+# propósito: algunas invocaciones (CI, algunos scripts de carga) YA exportan
+# la suya propia antes de correr pytest, y eso sigue ganando.
+if not os.environ.get("JAX_JWT_SECRET"):
+    import secrets as _secrets
+
+    os.environ["JAX_JWT_SECRET"] = _secrets.token_urlsafe(48)
 
 # BARRERA DE ESCRITURA A ARCHIVOS DE PRODUCCIÓN (2026-09-17).
 # Incidente real de ese día: un test llamó a PUT /api/admin/keys/{proveedor},
