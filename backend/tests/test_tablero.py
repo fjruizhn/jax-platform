@@ -227,9 +227,9 @@ def test_explain_de_llaves_va_por_el_indice_de_credential(client):
     assert all("filesort" not in (f["Extra"] or "") and "temporary" not in (f["Extra"] or "") for f in filas), filas
 
 
-def test_explain_de_pipelines_completados_va_por_idx_pipelines_status(client):
+def test_explain_de_pipelines_completados_va_por_indice_con_prefijo_status(client):
     (fila,) = client.portal.call(_explain, dashboard.SQL_PIPELINES_COMPLETADOS, ())
-    assert fila["key"] == "idx_pipelines_status", fila
+    assert fila["key"] == "idx_pipelines_ocultos", fila
 
 
 MARCA_BLOQUEO = "test-bloqueo-indice-"
