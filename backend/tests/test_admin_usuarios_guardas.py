@@ -218,7 +218,7 @@ def test_cuenta_los_otros_superadmins_activos(client, usuarios):
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
-                return await users_mod.otros_superadmins_activos(cur, excluido)
+                return await users_mod.otros_superadmins_activos(cur, excluido, tenant_id=1)
 
     base = client.portal.call(contar, a)
     usuarios(role="superadmin", status="inactive")
@@ -227,8 +227,9 @@ def test_cuenta_los_otros_superadmins_activos(client, usuarios):
     usuarios(role="superadmin")
     assert client.portal.call(contar, a) == base + 1
     ((independiente,),) = client.portal.call(
-        sql, "SELECT COUNT(*) FROM jax_users WHERE role = 'superadmin' AND status = 'active' AND user_id <> %s",
-        (a,), True)
+        sql, "SELECT COUNT(*) FROM jax_users WHERE tenant_id = %s AND role = 'superadmin' "
+             "AND status = 'active' AND user_id <> %s",
+        (1, a), True)
     assert client.portal.call(contar, a) == independiente
 
 

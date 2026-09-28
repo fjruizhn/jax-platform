@@ -104,7 +104,7 @@ async def _superadmins_activos(cur, tenant_id: int) -> list[int]:
     return [fila[0] for fila in await cur.fetchall()]
 
 
-async def otros_superadmins_activos(cur, excluido: int, tenant_id: int = 1) -> int:
+async def otros_superadmins_activos(cur, excluido: int, tenant_id: int) -> int:
     return sum(1 for user_id in await _superadmins_activos(cur, tenant_id) if user_id != excluido)
 
 
@@ -529,9 +529,9 @@ async def fijar_password(user_id: int, req: FijarPasswordRequest, request: Reque
                          user: AuthUser = Depends(require_superadmin)):
     """Orden fijo (U11): guarda de auto-acción (la propia va por Mi cuenta),
     regla única, bcrypt en un hilo y ANTES de la transacción; en READ
-    COMMITTED (U33): superadmins -> usuario (_leer_para_actualizar; 404 si no
-    existe o está de baja) -> UPDATE -> enlaces pendientes -> auditoría. Tras
-    el commit, el corte (U9, fail-soft).
+    COMMITTED (U33): mutex del tenant -> actor autorizado -> usuario
+    (_leer_para_actualizar; 404 si no existe o está de baja) -> UPDATE ->
+    enlaces pendientes -> auditoría. Tras el commit, el corte (U9, fail-soft).
 
     Un inactivo se permite: no le da entrada (el login exige 'active') y deja
     la cuenta lista para reactivarla, con la marca puesta. El bloqueo se
@@ -539,13 +539,20 @@ async def fijar_password(user_id: int, req: FijarPasswordRequest, request: Reque
     (igual que /reset-password y Mi cuenta, U16). Los enlaces pendientes se
     borran: uno viejo no puede pisar lo que fijó el admin ni apagar la marca."""
     actor_id = int(user.user_id)
+    tenant_id = int(user.tenant_id)
     guarda_auto_accion(actor_id, user_id)
     problema = problema_de_password(req.new_password)
     if problema:
         raise HTTPException(status_code=400, detail=f"password_{problema}")
     nuevo_hash = await asyncio.to_thread(_hash, req.new_password)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        if await _leer_para_actualizar(cur, user_id, int(user.tenant_id)) is None:
+        # Use the same tenant -> actor -> target order as the role/status
+        # writers.  In particular, this rechecks that an actor concurrently
+        # demoted by another admin cannot complete a password change with an
+        # authorization decision made before that demotion committed.
+        await _bloquear_tenant(cur, tenant_id)
+        await _bloquear_actor(cur, actor_id, tenant_id)
+        if await _leer_para_actualizar(cur, user_id, tenant_id) is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await cur.execute(
             "UPDATE jax_users SET password_hash = %s, token_version = token_version + 1, "
