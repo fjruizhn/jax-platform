@@ -173,7 +173,7 @@ def test_nadie_se_da_de_baja_a_si_mismo_ni_al_ultimo_superadmin(client, usuarios
     r = _baja(client, s, auth(token_para(s, role="superadmin")))
     assert (r.status_code, r.json()["detail"]) == (403, "auto_accion_prohibida")
 
-    async def ninguno(cur, excluido):
+    async def ninguno(cur, excluido, tenant_id=1):
         return 0
 
     monkeypatch.setattr(users_mod, "otros_superadmins_activos", ninguno)

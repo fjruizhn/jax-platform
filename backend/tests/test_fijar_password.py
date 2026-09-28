@@ -429,7 +429,7 @@ def test_fijar_password_si_el_corte_falla_responde_igual(client, usuarios, monke
 
 def test_fijar_password_hashea_antes_y_bloquea_en_el_orden_fijo(client, usuarios, cortes, monkeypatch):
     """bcrypt ANTES de abrir la transacción (nunca con filas tomadas), READ
-    COMMITTED, superadmins -> usuario -> tokens -> auditoría (U11, U21, U33)."""
+    COMMITTED, tenant -> actor -> usuario -> tokens -> auditoría (U11, U21, U33)."""
     u, _ = usuarios()
     pasos = []
     hash_real, transaccion_real = users_mod._hash, users_mod.transaccion
@@ -462,7 +462,8 @@ def test_fijar_password_hashea_antes_y_bloquea_en_el_orden_fijo(client, usuarios
     assert pasos[1] == ("BEGIN", ("READ COMMITTED",), {})
     sqls = [p for p in pasos[2:] if isinstance(p, str)]
     orden = [next(i for i, q in enumerate(sqls) if cond(q)) for cond in (
-        lambda q: q == " ".join(users_mod.SQL_SUPERADMINS_ACTIVOS.split()),
+        lambda q: q.startswith("SELECT tenant_id FROM jax_tenants") and q.endswith("FOR UPDATE"),
+        lambda q: q.startswith("SELECT user_id FROM jax_users WHERE user_id") and q.endswith("FOR UPDATE"),
         lambda q: q.startswith("SELECT role, status, email FROM jax_users") and q.endswith("FOR UPDATE"),
         lambda q: q.startswith("UPDATE jax_users SET password_hash"),
         lambda q: q.startswith("DELETE FROM password_reset_tokens WHERE user_id"),

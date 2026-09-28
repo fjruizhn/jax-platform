@@ -318,7 +318,6 @@ def test_sync_provider_models_openai_compatible_no_manda_parametros_de_pagina(cl
         client.portal.call(model_catalog.sync_provider_models, "moonshot")
     finally:
         http_client._client = original
-
     assert len(fake.calls) == 1
     _url, kwargs = fake.calls[0]
     assert "params" not in kwargs or not kwargs["params"]
@@ -503,5 +502,3 @@ def test_sync_provider_models_gemini_paginacion_sospechosa_se_propaga_sin_atrapa
             client.portal.call(model_catalog.sync_provider_models, "gemini")
     finally:
         http_client._client = original
-
-

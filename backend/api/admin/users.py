@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import smtplib
+import sys
+import uuid
 from datetime import date
 
 import aiomysql
@@ -20,12 +22,20 @@ from auth.conexiones import _cortar_conexiones
 from auth.password_rules import problema_de_password
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
+from config_entorno import ruta_absoluta_requerida
 from db.connection import get_pool
 from db.seed import _hash
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion  # noqa: F401 -- reexporta AISLAMIENTO_ADMIN
 from validacion import email_valido
 
 logger = logging.getLogger(__name__)
+
+# Project membership is owned by the paired JAX checkout.  Admin role/status
+# changes must update that derived authority in the *same* database
+# transaction, so load the same checkout used by the B9 migration runner.
+_JAX_REPO = str(ruta_absoluta_requerida("JAX_REPO_PATH"))
+if _JAX_REPO not in sys.path:
+    sys.path.insert(0, _JAX_REPO)
 
 router = APIRouter(prefix="/api/admin")
 
@@ -55,64 +65,95 @@ def pierde_superadmin_activo(rol_actual: str, estado_actual: str, nuevo_rol: str
         nuevo_rol != "superadmin" or nuevo_estado != "active")
 
 
-# ORDEN FIJO DE BLOQUEOS (fix ronda 1, 2026-09-15). Toda escritura de admin
-# sobre jax_users bloquea PRIMERO el conjunto de superadmins activos (esta
-# consulta) y DESPUÉS la fila destino (_leer_para_actualizar). Antes cada
-# transacción bloqueaba su destino y luego pedía el conjunto: A degradando a B
-# y B degradando a A se esperaban en orden opuesto -> InnoDB 1213 -> 500. Con
-# el conjunto primero, la segunda espera en la primera fila del conjunto sin
-# tener nada tomado, y al entrar ve (lectura con bloqueo = lectura actual) el
-# resultado de la primera -> 409 ultimo_superadmin. InnoDB bloquea en el orden
-# del recorrido: por idx_jax_users_role_status, cuya cola es la PK, o sea por
-# user_id (el ORDER BY lo documenta y no agrega filesort). Verificado con
-# EXPLAIN en tests/test_user_audit.py::test_conteo_de_superadmins_usa_el_indice_role_status.
-#
-# READ COMMITTED en esas transacciones: en REPEATABLE READ el FOR UPDATE del
-# rango toma next-key locks (fila + hueco), y la petición EN ESPERA de la
-# segunda transacción sobre el hueco choca con el INSERT de la entrada nueva
-# (operator, active, B) que hace el UPDATE de la primera en el índice -> 1213
-# igual, aun con orden fijo (medido: el test de degradación mutua lo reproducía).
-# READ COMMITTED bloquea solo filas. Sigue siendo correcto para la invariante:
-# un fantasma solo puede SUMAR superadmins; quitar uno exige una fila que ya
-# tenemos bloqueada. (La constante vive en db/transaccion.py desde U33 y se
-# importa arriba con el mismo nombre: users_mod.AISLAMIENTO_ADMIN sigue siendo
-# la misma.)
+# Lock order for every admin role/status writer is tenant -> actor -> target
+# -> derived project memberships.  The tenant row is the serialization mutex
+# shared with JAX's project-authority writer.  In particular, do *not* lock
+# the whole superadmin set: those are third-party jax_users rows and locking
+# them creates a cycle with membership operations.  The plain read below is
+# safe while the tenant mutex is held, because every role/status writer takes
+# that mutex first.
 SQL_SUPERADMINS_ACTIVOS = (
-    "SELECT user_id FROM jax_users WHERE role = 'superadmin' AND status = 'active' "
-    "ORDER BY user_id FOR UPDATE"
+    "SELECT user_id FROM jax_users WHERE tenant_id = %s AND role = 'superadmin' AND status = 'active' "
+    "ORDER BY user_id"
 )
 
 
-async def _bloquear_superadmins_activos(cur) -> list[int]:
-    await cur.execute(SQL_SUPERADMINS_ACTIVOS)
+async def _bloquear_tenant(cur, tenant_id: int) -> None:
+    await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id = %s FOR UPDATE", (tenant_id,))
+    if await cur.fetchone() is None:
+        raise HTTPException(status_code=403, detail="tenant_no_encontrado")
+
+
+async def _bloquear_actor(cur, actor_id: int, tenant_id: int) -> None:
+    """Lock only the authenticated actor after the tenant mutex.
+
+    The dependency already checked the actor, but this lock closes the gap
+    until commit and establishes the common order with JAX authority code.
+    """
+    await cur.execute(
+        "SELECT user_id FROM jax_users WHERE user_id = %s AND tenant_id = %s "
+        "AND role = 'superadmin' AND status = 'active' FOR UPDATE",
+        (actor_id, tenant_id),
+    )
+    if await cur.fetchone() is None:
+        raise HTTPException(status_code=403, detail="actor_no_autorizado")
+
+
+async def _superadmins_activos(cur, tenant_id: int) -> list[int]:
+    await cur.execute(SQL_SUPERADMINS_ACTIVOS, (tenant_id,))
     return [fila[0] for fila in await cur.fetchall()]
 
 
-async def otros_superadmins_activos(cur, excluido: int) -> int:
-    # Misma consulta (y mismos bloqueos, ya tomados por _leer_para_actualizar
-    # en esta transacción): el destino se excluye acá, no en el SQL, para que
-    # el recorrido y el orden de bloqueo sean idénticos en los dos puntos.
-    return sum(1 for user_id in await _bloquear_superadmins_activos(cur) if user_id != excluido)
+async def otros_superadmins_activos(cur, excluido: int, tenant_id: int) -> int:
+    return sum(1 for user_id in await _superadmins_activos(cur, tenant_id) if user_id != excluido)
 
 
 async def exigir_invariante(cur, target_id: int, rol_actual: str, estado_actual: str,
-                            nuevo_rol: str, nuevo_estado: str) -> None:
+                            nuevo_rol: str, nuevo_estado: str, tenant_id: int) -> None:
     if pierde_superadmin_activo(rol_actual, estado_actual, nuevo_rol, nuevo_estado) \
-            and await otros_superadmins_activos(cur, target_id) == 0:
+            and await otros_superadmins_activos(cur, target_id, tenant_id) == 0:
         raise HTTPException(status_code=409, detail="ultimo_superadmin")
 
 
-async def _leer_para_actualizar(cur, user_id: int):
-    # Orden fijo: el conjunto de superadmins activos antes que el destino,
-    # SIEMPRE (también si el destino no es superadmin: el costo es serializar
-    # las escrituras de admin, que son raras). Ver SQL_SUPERADMINS_ACTIVOS.
-    # Un dado de baja no existe para ninguna acción (etapa 5): 404.
-    await _bloquear_superadmins_activos(cur)
+async def _leer_para_actualizar(cur, user_id: int, tenant_id: int):
+    # Caller already holds tenant -> actor.  This is the target lock, never a
+    # lock on a third-party user.
     await cur.execute(
-        "SELECT role, status, email FROM jax_users WHERE user_id = %s AND status <> 'deleted' FOR UPDATE",
-        (user_id,),
+        "SELECT role, status, email FROM jax_users WHERE user_id = %s AND tenant_id = %s "
+        "AND status <> 'deleted' FOR UPDATE",
+        (user_id, tenant_id),
     )
     return await cur.fetchone()
+
+
+async def _sincronizar_membresias_admin_tenant(cur, *, actor_id: int, target_id: int, tenant_id: int) -> int:
+    """Synchronize derived TENANT_ADMIN memberships without leaving the tx.
+
+    The paired JAX D1 implementation deliberately accepts the caller cursor;
+    opening its store mutation here would split the identity and membership
+    changes into different commits.
+    """
+    from jax.memory.b9 import ScopeContext
+    from jax.memory.project_authority import ProjectAuthorityAdmin, ProjectAuthorityError
+
+    sync = getattr(ProjectAuthorityAdmin, "sync_tenant_admin_memberships_in_transaction", None)
+    if not callable(sync):
+        raise RuntimeError("paired JAX checkout lacks tenant-admin membership synchronization")
+    authority = ProjectAuthorityAdmin(None)
+    scope = ScopeContext(
+        actor_principal=f"user:{actor_id}", actor_type="USER", subject_user_id=str(actor_id),
+        tenant_id=str(tenant_id), calling_component="jax-platform-admin-users",
+        request_id=str(uuid.uuid4()), trace_id=str(uuid.uuid4()),
+    )
+    try:
+        return await authority.sync_tenant_admin_memberships_in_transaction(
+            cur, actor_scope=scope, user_id=target_id, tenant_id=tenant_id,
+        )
+    except ProjectAuthorityError as exc:
+        # Esta excepción se convierte *dentro* de `transaccion`: el 409 aún
+        # hace que su context manager revierta identidad, memberships y audit.
+        # JAX expone códigos estables precisamente para esta frontera HTTP.
+        raise HTTPException(status_code=409, detail=exc.code) from exc
 
 
 # Un dado de baja no aparece (etapa 5). created_at/last_login son TIMESTAMP:
@@ -217,8 +258,11 @@ async def create_user(req: CreateUserRequest, request: Request, user: AuthUser =
     # bcrypt de costo 12 (~150 ms de CPU): fuera del event loop y antes de
     # abrir la transacción, para no tener filas bloqueadas mientras hashea.
     ph = await asyncio.to_thread(_hash, req.password)
+    actor_id, tenant_id = int(user.user_id), int(user.tenant_id)
     # El alta y su registro de auditoría van juntos (etapa 3, spec §3.3).
     async with transaccion() as cur:
+        await _bloquear_tenant(cur, tenant_id)
+        await _bloquear_actor(cur, actor_id, tenant_id)
         await cur.execute("SELECT COUNT(*) FROM jax_users WHERE email = %s", (email,))
         (count,) = await cur.fetchone()
         if count > 0:
@@ -228,15 +272,18 @@ async def create_user(req: CreateUserRequest, request: Request, user: AuthUser =
         # email (1062) -> el mismo 409, y la transacción revierte sin auditoría.
         try:
             await cur.execute(
-                "INSERT INTO jax_users (tenant_id, email, password_hash, role, status) VALUES (1, %s, %s, %s, 'active')",
-                (email, ph, req.role),
+                "INSERT INTO jax_users (tenant_id, email, password_hash, role, status) VALUES (%s, %s, %s, %s, 'active')",
+                (tenant_id, email, ph, req.role),
             )
         except aiomysql.IntegrityError as e:
             if e.args and e.args[0] == ER_DUP_ENTRY:
                 raise HTTPException(status_code=409, detail="email_ya_existe") from e
             raise
         new_id = cur.lastrowid
-        await user_audit.registrar(cur, int(user.user_id), new_id, "create",
+        await _sincronizar_membresias_admin_tenant(
+            cur, actor_id=actor_id, target_id=new_id, tenant_id=tenant_id,
+        )
+        await user_audit.registrar(cur, actor_id, new_id, "create",
                                    {"email": email, "role": req.role}, _ip(request))
     return {"user_id": new_id, "email": email, "role": req.role, "status": "active"}
 
@@ -269,8 +316,11 @@ async def update_user(
     if req.status is not None and req.status not in ESTADOS_EDITABLES:
         raise HTTPException(status_code=400, detail="estado_invalido")
     actor_id = int(user.user_id)
+    tenant_id = int(user.tenant_id)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        actual = await _leer_para_actualizar(cur, user_id)
+        await _bloquear_tenant(cur, tenant_id)
+        await _bloquear_actor(cur, actor_id, tenant_id)
+        actual = await _leer_para_actualizar(cur, user_id, tenant_id)
         if actual is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         rol_actual, estado_actual, email_actual = actual
@@ -290,7 +340,7 @@ async def update_user(
         corta_sesiones = cambia_rol or cambia_estado
         if corta_sesiones:
             guarda_auto_accion(actor_id, user_id)
-            await exigir_invariante(cur, user_id, rol_actual, estado_actual, nuevo_rol, nuevo_estado)
+            await exigir_invariante(cur, user_id, rol_actual, estado_actual, nuevo_rol, nuevo_estado, tenant_id)
         if cambia_email:
             # No bloquea (como el alta): el respaldo es el UNIQUE de email
             # capturado abajo como IntegrityError -> email_ya_existe.
@@ -307,6 +357,10 @@ async def update_user(
             if e.args and e.args[0] == ER_DUP_ENTRY:
                 raise HTTPException(status_code=409, detail="email_ya_existe") from e
             raise
+        if corta_sesiones:
+            await _sincronizar_membresias_admin_tenant(
+                cur, actor_id=actor_id, target_id=user_id, tenant_id=tenant_id,
+            )
         ip = _ip(request)
         if cambia_email:
             await user_audit.registrar(cur, actor_id, user_id, "update_email",
@@ -328,7 +382,7 @@ async def unlock_user(user_id: int, request: Request, user: AuthUser = Depends(r
     # transaccion(AISLAMIENTO_ADMIN)): ninguna escritura de admin puede formar
     # un ciclo de espera con otra.
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        if await _leer_para_actualizar(cur, user_id) is None:
+        if await _leer_para_actualizar(cur, user_id, int(user.tenant_id)) is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await cur.execute(
             "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
@@ -343,7 +397,7 @@ async def revoke_sessions(user_id: int, request: Request, user: AuthUser = Depen
     # Sube la versión: todos los tokens del usuario (access, refresh y el
     # próximo handshake de WS) quedan inválidos en el request siguiente.
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        if await _leer_para_actualizar(cur, user_id) is None:
+        if await _leer_para_actualizar(cur, user_id, int(user.tenant_id)) is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await cur.execute("UPDATE jax_users SET token_version = token_version + 1 WHERE user_id = %s", (user_id,))
         await user_audit.registrar(cur, int(user.user_id), user_id, "sessions_revoked", None, _ip(request))
@@ -475,9 +529,9 @@ async def fijar_password(user_id: int, req: FijarPasswordRequest, request: Reque
                          user: AuthUser = Depends(require_superadmin)):
     """Orden fijo (U11): guarda de auto-acción (la propia va por Mi cuenta),
     regla única, bcrypt en un hilo y ANTES de la transacción; en READ
-    COMMITTED (U33): superadmins -> usuario (_leer_para_actualizar; 404 si no
-    existe o está de baja) -> UPDATE -> enlaces pendientes -> auditoría. Tras
-    el commit, el corte (U9, fail-soft).
+    COMMITTED (U33): mutex del tenant -> actor autorizado -> usuario
+    (_leer_para_actualizar; 404 si no existe o está de baja) -> UPDATE ->
+    enlaces pendientes -> auditoría. Tras el commit, el corte (U9, fail-soft).
 
     Un inactivo se permite: no le da entrada (el login exige 'active') y deja
     la cuenta lista para reactivarla, con la marca puesta. El bloqueo se
@@ -485,13 +539,20 @@ async def fijar_password(user_id: int, req: FijarPasswordRequest, request: Reque
     (igual que /reset-password y Mi cuenta, U16). Los enlaces pendientes se
     borran: uno viejo no puede pisar lo que fijó el admin ni apagar la marca."""
     actor_id = int(user.user_id)
+    tenant_id = int(user.tenant_id)
     guarda_auto_accion(actor_id, user_id)
     problema = problema_de_password(req.new_password)
     if problema:
         raise HTTPException(status_code=400, detail=f"password_{problema}")
     nuevo_hash = await asyncio.to_thread(_hash, req.new_password)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        if await _leer_para_actualizar(cur, user_id) is None:
+        # Use the same tenant -> actor -> target order as the role/status
+        # writers.  In particular, this rechecks that an actor concurrently
+        # demoted by another admin cannot complete a password change with an
+        # authorization decision made before that demotion committed.
+        await _bloquear_tenant(cur, tenant_id)
+        await _bloquear_actor(cur, actor_id, tenant_id)
+        if await _leer_para_actualizar(cur, user_id, tenant_id) is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await cur.execute(
             "UPDATE jax_users SET password_hash = %s, token_version = token_version + 1, "
@@ -529,14 +590,17 @@ async def dar_de_baja(user_id: int, request: Request, user: AuthUser = Depends(r
     Un dado de baja ya no existe para _leer_para_actualizar: repetir la baja
     es 404, como cualquier otra acción sobre él."""
     actor_id = int(user.user_id)
+    tenant_id = int(user.tenant_id)
     guarda_auto_accion(actor_id, user_id)
     ahora = utc_ahora().replace(microsecond=0)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        actual = await _leer_para_actualizar(cur, user_id)
+        await _bloquear_tenant(cur, tenant_id)
+        await _bloquear_actor(cur, actor_id, tenant_id)
+        actual = await _leer_para_actualizar(cur, user_id, tenant_id)
         if actual is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         rol_actual, estado_actual, email_actual = actual
-        await exigir_invariante(cur, user_id, rol_actual, estado_actual, rol_actual, "deleted")
+        await exigir_invariante(cur, user_id, rol_actual, estado_actual, rol_actual, "deleted", tenant_id)
         await cur.execute(
             "UPDATE jax_users SET status = 'deleted', deleted_at = %s, deleted_by = %s, email = %s, "
             "token_version = token_version + 1, failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
@@ -546,6 +610,9 @@ async def dar_de_baja(user_id: int, request: Request, user: AuthUser = Depends(r
         # de bloquear la fila del usuario (usuario -> token, el orden de
         # /reset-password, U21); por el índice de la FK user_id.
         await cur.execute("DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE", (user_id,))
+        await _sincronizar_membresias_admin_tenant(
+            cur, actor_id=actor_id, target_id=user_id, tenant_id=tenant_id,
+        )
         await user_audit.registrar(cur, actor_id, user_id, "baja", {"email": email_actual}, _ip(request))
     await _cortar_conexiones(user_id)
     await _borrar_adjuntos(user_id)

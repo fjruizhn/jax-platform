@@ -65,15 +65,18 @@ def test_historial_usa_el_indice_target_ts(client):
     assert (tipo_u, clave_u) == ("eq_ref", "PRIMARY"), plan
 
 
-def test_conteo_de_superadmins_usa_el_indice_role_status(client):
+def test_conteo_de_superadmins_usa_un_indice_de_superadmins_por_tenant(client):
     # La consulta REAL del conteo de la invariante (Task 2,
     # api/admin/users.py::otros_superadmins_activos), no una copia a mano.
     # Desde el fix ronda 1 es también la consulta que fija el orden de
     # bloqueos: tiene que recorrer el índice, sin filesort.
     from api.admin.users import SQL_SUPERADMINS_ACTIVOS
-    plan = _explain(client, SQL_SUPERADMINS_ACTIVOS, ())
+    plan = _explain(client, SQL_SUPERADMINS_ACTIVOS, (1,))
     _, clave, extra = plan["jax_users"]
-    assert clave == "idx_jax_users_role_status", plan
+    # Upgrades can retain the historical (role, status) index until the JAX
+    # 005h tenant-prefixed index is present; either plan is bounded and does
+    # not introduce a locking range scan.
+    assert clave in {"idx_jax_users_role_status", "idx_jax_users_tenant_role_status"}, plan
     assert "filesort" not in extra and "temporary" not in extra, plan
 
 
