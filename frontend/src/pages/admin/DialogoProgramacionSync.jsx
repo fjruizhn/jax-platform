@@ -88,7 +88,7 @@ export default function DialogoProgramacionSync({ config, onGuardado, onCerrar }
             />
           </label>
           <label htmlFor={idUnidad} className="flex flex-col gap-1 text-xs text-texto-suave">
-            &nbsp;
+            {t.adminModelsProgramacionUnidadEtiqueta}
             <select
               id={idUnidad}
               value={cadaUnidad}
@@ -108,6 +108,14 @@ export default function DialogoProgramacionSync({ config, onGuardado, onCerrar }
               ? t.adminModelsProgramacionProximaCorrida(fechaLocal(config.proxima_corrida_estimada))
               : t.adminModelsProgramacionProximaCorridaNinguna}
         </p>
+
+        {/* MINOR-4 (auditoría adversarial, 2026-09-27): apagar el sync
+            también apaga los avisos de facetas en riesgo y de modelos
+            nuevos (esos avisos sólo salen de una corrida real -- sin
+            corridas, no hay de dónde sacarlos). */}
+        {!habilitado && (
+          <p role="alert" className="text-xs text-aviso mb-4">{t.adminModelsProgramacionApagadoAvisos}</p>
+        )}
 
         {error && <AlertaError className="text-xs mb-3">{textoDeError(error)}</AlertaError>}
 

@@ -80,8 +80,18 @@ export default function AdminModelCatalog() {
   const [ahora, setAhora] = useState(Date.now())  // fuerza el re-render del reloj de "transcurrido"
   const [programando, setProgramando] = useState(false)
   const [configSync, setConfigSync] = useState(null)
+  // MINOR-7 (auditoría adversarial, 2026-09-27): error de red mientras se
+  // consulta el estado (inicial o durante el polling) -- se corta el
+  // polling automático y se ofrece un botón, en vez de reintentar para
+  // siempre en silencio o quedar pegado sin avisar.
+  const [pollingError, setPollingError] = useState(false)
   const pollingRef = useRef(null)
   const tickRef = useRef(null)
+  // MINOR-7: una respuesta en vuelo que llega DESPUÉS de desmontar no puede
+  // crear un intervalo nuevo ni tocar estado -- `detenerPolling()` del
+  // cleanup ya corrió antes de que esa respuesta llegue.
+  const montadoRef = useRef(true)
+  const idEsperadoRef = useRef(null)
 
   const loadModels = useCallback(() => {
     api.get('/admin/models').then(r => {
@@ -146,8 +156,15 @@ export default function AdminModelCatalog() {
   // (o mantiene) el polling y el reloj de "transcurrido"; si no, y la
   // "última" es la que estábamos esperando, procesa su resultado y frena.
   const refrescarEstado = useCallback(async (idEsperado) => {
+    idEsperadoRef.current = idEsperado
     try {
       const { data } = await api.get('/admin/models/sync/estado')
+      // MINOR-7: una respuesta que llega después de desmontar no toca estado
+      // ni arma un intervalo nuevo (el cleanup del efecto de montaje ya
+      // corrió `detenerPolling()` -- crear uno acá lo dejaría vivo para
+      // siempre, sin nadie que lo limpie).
+      if (!montadoRef.current) return
+      setPollingError(false)
       setUltima(data.ultima || null)
       if (data.corriendo) {
         setProgreso(data.corriendo)
@@ -157,7 +174,7 @@ export default function AdminModelCatalog() {
           pollingRef.current = setInterval(() => refrescarEstado(idEsperado), INTERVALO_POLLING_MS)
         }
         if (!tickRef.current) {
-          tickRef.current = setInterval(() => setAhora(Date.now()), 1000)
+          tickRef.current = setInterval(() => { if (montadoRef.current) setAhora(Date.now()) }, 1000)
         }
         return
       }
@@ -170,16 +187,31 @@ export default function AdminModelCatalog() {
         if (data.ultima?.resultado) procesarResultado(data.ultima.resultado)
       }
     } catch {
+      // MINOR-7: un error de red no reintenta para siempre en silencio --
+      // se corta el polling, se limpia el avance y se deja un botón
+      // ("Reintentar") que retoma desde el mismo `idEsperado`.
+      if (!montadoRef.current) return
       detenerPolling()
       setSyncing(false)
+      setProgreso(null)
+      setPollingError(true)
     }
   }, [detenerPolling, procesarResultado])
 
+  function reintentarPolling() {
+    setPollingError(false)
+    refrescarEstado(idEsperadoRef.current)
+  }
+
   useEffect(() => {
+    montadoRef.current = true
     loadModels()
     loadProposals()
     refrescarEstado(null)
-    return detenerPolling
+    return () => {
+      montadoRef.current = false
+      detenerPolling()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -294,6 +326,19 @@ export default function AdminModelCatalog() {
               style={{ width: `${Math.min(100, (progreso.paso_actual / Math.max(1, progreso.pasos_total)) * 100)}%` }}
             />
           </div>
+        </div>
+      )}
+
+      {pollingError && (
+        <div role="alert" className="mb-3 flex items-center justify-between rounded-lg border border-peligro-borde bg-peligro-fondo px-3 py-2 text-xs text-peligro">
+          <span>{t.adminModelsSyncPollingError}</span>
+          <button
+            type="button"
+            onClick={reintentarPolling}
+            className={`ml-2 ${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto hover:text-texto-fuerte transition-colors`}
+          >
+            {t.adminModelsSyncReintentar}
+          </button>
         </div>
       )}
 

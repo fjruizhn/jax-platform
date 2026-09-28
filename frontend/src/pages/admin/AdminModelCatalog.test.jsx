@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act } from 'react'
 import '@testing-library/jest-dom'
 
 // PR-J (2026-09-14): aprobar una propuesta hacia un modelo que no declara el
@@ -35,6 +36,12 @@ function rechazo(status, detail) {
 // antes de que la pantalla pueda preguntar por él.
 let estadoSyncMock
 
+// MINOR-6 (auditoría adversarial, 2026-09-27): fechas EXACTAMENTE en la
+// forma real que manda el backend (tiempo.iso_utc() -- ISO 8601, zona UTC
+// explícita, milisegundos), no un string ambiguo "YYYY-MM-DD HH:MM:SS" sin
+// zona (eso es justo lo que un `new Date(...)` de Safari/iPad puede leer
+// distinto que Chrome). Si algún día el backend volviera a un formato sin
+// zona, estos fixtures dejarían de representar la respuesta real.
 function resultadoTerminado(resultado, { id = 1, origen = 'manual' } = {}) {
   return {
     corriendo: null,
@@ -42,7 +49,7 @@ function resultadoTerminado(resultado, { id = 1, origen = 'manual' } = {}) {
       id, origen, iniciado_por: 1, iniciado_por_email: 'fernando@axioma-ia.io',
       estado: resultado.ok ? 'ok' : 'con_problemas',
       paso_actual: 9, pasos_total: 9, detalle_paso: 'facetas_en_riesgo',
-      iniciado_en: '2026-09-27 00:00:00', terminado_en: '2026-09-27 00:00:05',
+      iniciado_en: '2026-09-27T00:00:00.000+00:00', terminado_en: '2026-09-27T00:00:05.000+00:00',
       resultado,
     },
   }
@@ -460,5 +467,113 @@ describe('AdminModelCatalog -- botón de Programación', () => {
     fireEvent.click(await screen.findByRole('button', { name: es.adminModelsProgramacionAbrir }))
 
     expect(await screen.findByText(es.adminModelsProgramacionTitulo)).toBeInTheDocument()
+  })
+})
+
+// --------------------------------------------------------------------------
+// MINOR-7/MINOR-8 (auditoría adversarial, 2026-09-27): el polling de
+// GET /admin/models/sync/estado se DETIENE -- cuando el sync termina, al
+// desmontar, y un error de red no reintenta para siempre en silencio.
+// --------------------------------------------------------------------------
+
+function corriendoFixture(overrides = {}) {
+  return {
+    id: 9, origen: 'manual', iniciado_por: 1, estado: 'corriendo',
+    paso_actual: 1, pasos_total: 9, detalle_paso: 'openai',
+    iniciado_en: new Date().toISOString(), terminado_en: null, resultado: null,
+    ...overrides,
+  }
+}
+
+function llamadasAEstado() {
+  return api.get.mock.calls.filter(([url]) => url.startsWith('/admin/models/sync/estado')).length
+}
+
+describe('AdminModelCatalog -- el polling se detiene', () => {
+  // Fake timers desde ANTES del render, durante TODO el test: un intervalo
+  // creado por React mientras corren timers REALES sigue siendo un
+  // intervalo REAL para siempre (cambiar a fake timers a mitad de camino
+  // no lo "adopta") -- y con fake timers activos, `findByText`/`waitFor` no
+  // sirven (su propio polling interno usa `setTimeout`, que con el reloj
+  // congelado nunca dispara solo). Por eso acá todo se resuelve con
+  // `act(async () => { await vi.advanceTimersByTimeAsync(0) })` (deja
+  // correr los microtasks pendientes sin mover el reloj) + aserciones
+  // SÍNCRONAS (`getByText`/`queryByText`), nunca `findBy*`/`waitFor`.
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  async function flush() {
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+  }
+
+  it('deja de pedir /sync/estado una vez que el sync termina', async () => {
+    estadoSyncMock = { corriendo: corriendoFixture(), ultima: null }
+    mockRoutes()
+    render(<I18nProvider><AdminModelCatalog /></I18nProvider>)
+    await flush()
+
+    expect(screen.getByText(es.adminModelsSyncProgreso(1, 9, 'openai'))).toBeInTheDocument()
+    const llamadasCorriendo = llamadasAEstado()
+
+    estadoSyncMock = resultadoTerminado({
+      ok: true, providers: [], enrich: {}, providers_fallidos: [], providers_saltados: [],
+      enrich_fallido: false, nuevos: {}, facetas_en_riesgo: [],
+    }, { id: 9 })
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByText(es.adminModelsSync)).not.toBeDisabled()
+    const llamadasTerminado = llamadasAEstado()
+    expect(llamadasTerminado).toBeGreaterThan(llamadasCorriendo)
+
+    // Varios intervalos más: si el polling no se hubiera detenido, habría
+    // seguido pidiendo /sync/estado.
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(llamadasAEstado()).toBe(llamadasTerminado)
+  })
+
+  it('deja de pedir /sync/estado al desmontar', async () => {
+    estadoSyncMock = { corriendo: corriendoFixture(), ultima: null }
+    mockRoutes()
+    const { unmount } = render(<I18nProvider><AdminModelCatalog /></I18nProvider>)
+    await flush()
+
+    expect(screen.getByText(es.adminModelsSyncProgreso(1, 9, 'openai'))).toBeInTheDocument()
+    const llamadasAntes = llamadasAEstado()
+
+    unmount()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(llamadasAEstado()).toBe(llamadasAntes)
+  })
+
+  it('un error de red durante el polling muestra un mensaje y un botón de reintentar', async () => {
+    estadoSyncMock = { corriendo: corriendoFixture(), ultima: null }
+    mockRoutes()
+    render(<I18nProvider><AdminModelCatalog /></I18nProvider>)
+    await flush()
+
+    expect(screen.getByText(es.adminModelsSyncProgreso(1, 9, 'openai'))).toBeInTheDocument()
+
+    api.get.mockImplementation(url => {
+      if (url.startsWith('/admin/models/sync/estado')) return Promise.reject(new Error('network down'))
+      return Promise.resolve({ data: { models: [] } })
+    })
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByText(es.adminModelsSyncPollingError)).toBeInTheDocument()
+    // El avance se limpia -- no queda mostrando un paso viejo mientras dice que hay un error.
+    expect(screen.queryByText(es.adminModelsSyncProgreso(1, 9, 'openai'))).not.toBeInTheDocument()
+
+    // Reintentar, con la red ya recuperada.
+    estadoSyncMock = resultadoTerminado({
+      ok: true, providers: [], enrich: {}, providers_fallidos: [], providers_saltados: [],
+      enrich_fallido: false, nuevos: {}, facetas_en_riesgo: [],
+    }, { id: 9 })
+    mockRoutes()
+
+    fireEvent.click(screen.getByRole('button', { name: es.adminModelsSyncReintentar }))
+    await flush()
+
+    expect(screen.queryByText(es.adminModelsSyncPollingError)).not.toBeInTheDocument()
   })
 })
