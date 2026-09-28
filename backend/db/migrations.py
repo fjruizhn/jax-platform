@@ -1066,7 +1066,11 @@ _TABLES = [
     ("ejecutor_host", CREATE_EJECUTOR_HOST),                            # antes de punto_restauracion (FK)
     ("ejecutor_regla", CREATE_EJECUTOR_REGLA),
     ("ejecutor_punto_restauracion", CREATE_EJECUTOR_PUNTO_RESTAURACION),
-    ("ejecutor_repo", CREATE_EJECUTOR_REPO),                            # antes de mision (FK repo_id)
+    # agrupada con las otras ejecutor_*; ejecutor_mision.repo_id (FK) se agrega en
+    # _COLUMNS, DESPUÉS de que todo este bucle de _TABLES ya corrió -- este orden no la
+    # condiciona (a diferencia de ejecutor_host, cuya FK sí está inline en el CREATE de
+    # ejecutor_punto_restauracion, arriba).
+    ("ejecutor_repo", CREATE_EJECUTOR_REPO),
     ("ejecutor_mision", CREATE_EJECUTOR_MISION),                        # antes de turno y bitácora (FK)
     ("ejecutor_turno", CREATE_EJECUTOR_TURNO),
     ("ejecutor_bitacora", CREATE_EJECUTOR_BITACORA),
@@ -2502,7 +2506,12 @@ _INDEXES = [
      "ALTER TABLE jax_users ADD INDEX idx_jax_users_role_status (role, status)"),
     # Task 8 (2026-09-28, plan "El Ejecutor programa"): el selector de repos del Ejecutor
     # sólo lista los activos (SELECT id, owner_repo FROM ejecutor_repo WHERE activo = 1
-    # ORDER BY owner_repo). Tabla chica; EXPLAIN medido a mano, ver el informe de la tarea.
+    # ORDER BY owner_repo). Medido contra jax_memory_test (2026-09-28, 1 fila -- la
+    # semilla de _sembrar_repo_jax_platform_v1): EXPLAIN de esa consulta con el indice da
+    # type=ref, key=idx_ejecutor_repo_activo, rows=1, Extra="Using where; Using filesort"
+    # -- el filesort es del ORDER BY owner_repo (índice de una sola columna, activo, no
+    # cubre el orden) y es irrelevante con este volumen; si el catálogo de repos creciera
+    # a cientos de filas, un índice compuesto (activo, owner_repo) lo evitaría.
     ("ejecutor_repo", "idx_ejecutor_repo_activo",
      "CREATE INDEX idx_ejecutor_repo_activo ON ejecutor_repo (activo)"),
 ]
