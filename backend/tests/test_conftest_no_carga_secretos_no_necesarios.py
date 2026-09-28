@@ -35,6 +35,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 # NUNCA `import tests.conftest` (ni `from tests.conftest import ...`) al
 # nivel de módulo de un archivo de test -- hallazgo real (2026-09-27, ronda
 # anterior de esta misma sesión): pytest ya cargó `tests/conftest.py` por su
@@ -194,6 +196,82 @@ def test_fernet_key_y_jwt_secret_generados_nunca_coinciden_con_produccion():
                 "la suite volvió a firmar/cifrar con el secreto real. (Este mensaje nunca "
                 "imprime el valor: sólo compara hashes.)"
             )
+
+
+def test_fernet_key_y_jwt_secret_del_propio_proceso_de_pytest_no_son_los_de_produccion():
+    """MINOR-5 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    `os.environ` del PROPIO proceso que está corriendo esta prueba -- la
+    suite real, no un subproceso aparte -- comparado por HASH contra los de
+    producción. Si esto alguna vez diera falso (el hash coincide), sería
+    porque la propia corrida de pytest está firmando/cifrando con las
+    llaves reales AHORA MISMO."""
+    from tests import entorno_de_produccion
+
+    valores_reales = entorno_de_produccion.cargar()
+    for nombre in NOMBRES_EXCLUIDOS_CON_GENERACION:
+        valor_de_esta_sesion = os.environ.get(nombre)
+        assert valor_de_esta_sesion, f"{nombre} no está puesto en esta sesión de pytest"
+        if nombre in valores_reales and valores_reales[nombre]:
+            hash_real = hashlib.sha256(valores_reales[nombre].encode()).hexdigest()
+            hash_de_esta_sesion = hashlib.sha256(valor_de_esta_sesion.encode()).hexdigest()
+            assert hash_de_esta_sesion != hash_real, (
+                f"{nombre} de ESTA sesión de pytest coincide con el de producción -- "
+                "toda la suite está corriendo con el secreto real ahora mismo."
+            )
+
+
+_SONDA_FORZADO_AUNQUE_YA_VENGA_PUESTO = """
+import hashlib, json, os
+import tests.conftest  # noqa: F401  (YA con los reales puestos en el ambiente -- simula `set -a; . /etc/jax/.env`)
+salida = {}
+for nombre in %r:
+    valor = os.environ.get(nombre)
+    salida[nombre] = {
+        "presente": valor is not None,
+        "hash": hashlib.sha256(valor.encode()).hexdigest() if valor else None,
+    }
+print(json.dumps(salida))
+""" % (list(NOMBRES_EXCLUIDOS_CON_GENERACION),)
+
+
+def test_fernet_key_y_jwt_secret_se_fuerzan_aunque_ya_vengan_puestos_en_el_ambiente():
+    """MINOR-5: no alcanza con no CARGARLOS de `/etc/jax/.env` -- si alguien
+    corriera `set -a; . /etc/jax/.env; set +a; pytest` (exportando el
+    archivo A MANO, en el shell, ANTES de arrancar pytest), un `setdefault`
+    los habría encontrado YA puestos y los habría dejado pasar tal cual. Se
+    simula EXACTAMENTE eso: el entorno del subproceso trae los valores
+    REALES de producción puestos ANTES de que `tests.conftest` se importe
+    -- y se verifica que el conftest los REEMPLAZA de todas formas (fuerza,
+    no `setdefault`)."""
+    from tests import entorno_de_produccion
+    valores_reales = entorno_de_produccion.cargar()
+
+    if not any(valores_reales.get(nombre) for nombre in NOMBRES_EXCLUIDOS_CON_GENERACION):
+        pytest.skip("no hay /etc/jax/.env con estos secretos en esta máquina -- nada que simular")
+
+    con_los_reales_ya_puestos = dict(os.environ)
+    for nombre in NOMBRES_EXCLUIDOS_CON_GENERACION:
+        if valores_reales.get(nombre):
+            con_los_reales_ya_puestos[nombre] = valores_reales[nombre]
+        else:
+            con_los_reales_ya_puestos.pop(nombre, None)
+
+    salida = subprocess.run(
+        [sys.executable, "-c", _SONDA_FORZADO_AUNQUE_YA_VENGA_PUESTO], cwd=BACKEND,
+        env=con_los_reales_ya_puestos, capture_output=True, text=True, timeout=120,
+    )
+    assert salida.returncode == 0, salida.stderr
+    datos = json.loads(salida.stdout.strip().splitlines()[-1])
+
+    for nombre in NOMBRES_EXCLUIDOS_CON_GENERACION:
+        if not valores_reales.get(nombre):
+            continue
+        hash_real = hashlib.sha256(valores_reales[nombre].encode()).hexdigest()
+        assert datos[nombre]["hash"] != hash_real, (
+            f"{nombre} SIGUE siendo el de producción después de `import tests.conftest` -- "
+            "no se está forzando: un `set -a; . /etc/jax/.env; pytest` filtraría el secreto real "
+            "a toda la suite. (Este mensaje nunca imprime el valor: sólo compara hashes.)"
+        )
 
 
 _SONDA_LISTA_BLANCA_NO_VACIA = """
