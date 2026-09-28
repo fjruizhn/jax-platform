@@ -14,9 +14,11 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
+import catalogo_sync_config
+import catalogo_sync_registro
 import facet_resolver
 import model_catalog
 from auth.middleware import require_superadmin
@@ -192,8 +194,12 @@ async def declarar_contrato_dispatch(
     return {"ok": True, "model_ref": model_ref, "model_id": model_id, "antes": antes, **despues}
 
 
-@router.post("/sync")
-async def sync_models(user: AuthUser = Depends(require_superadmin)):
+@router.post("/sync", status_code=202)
+async def sync_models(
+    background_tasks: BackgroundTasks,
+    response: Response,
+    user: AuthUser = Depends(require_superadmin),
+):
     """D1.3: capa (a) por cada proveedor con catalogo remoto propio, luego
     capa (b) de enriquecimiento. Solo escribe `model` — ver docstring del
     modulo.
@@ -219,8 +225,161 @@ async def sync_models(user: AuthUser = Depends(require_superadmin)):
     VACÍA no pasa nunca por D1.4: queda en error permanente, avisado sync
     tras sync, mientras la lista siga vacía (ver
     model_catalog._motivo_si_respuesta_sospechosa). D1.4 sólo degrada
-    modelos puntuales que faltan de una lista que YA NO está vacía."""
-    return await model_catalog.sync_all()
+    modelos puntuales que faltan de una lista que YA NO está vacía.
+
+    2026-09-27 (pedido de Fernando: avance real + no bloquear el click):
+    ahora RESERVA la fila de ejecución SINCRÓNICAMENTE (para poder responder
+    202 con su id, o 409 si ya hay una corriendo -- candado tomado o fila
+    'corriendo' viva, ver `catalogo_sync_registro.reservar_ejecucion`) y
+    delega el sync real a una `BackgroundTask` (`add_safe_task`: una
+    excepción ahí no puede tumbar nada ni quedar en silencio, ver su
+    docstring). El sync YA NO bloquea el click del admin -- la pantalla
+    sigue el avance con `GET /admin/models/sync/estado`."""
+    pool = await get_pool()
+    pasos_total = model_catalog.pasos_totales_de_sync()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await catalogo_sync_registro.limpiar_ejecuciones_viejas(cur)
+        await conn.commit()
+        async with conn.cursor() as cur:
+            ejecucion_id, resultado_en_curso = await catalogo_sync_registro.reservar_ejecucion(
+                cur, conn, origen="manual", iniciado_por=int(user.user_id), pasos_total=pasos_total)
+
+    if ejecucion_id is None:
+        response.status_code = 409
+        return {**resultado_en_curso, "ejecucion_id": None}
+
+    from jax_engine.background import add_safe_task
+    add_safe_task(background_tasks, catalogo_sync_registro.ejecutar_reservada, ejecucion_id)
+
+    return {"ok": True, "ejecucion_id": ejecucion_id, "pasos_total": pasos_total}
+
+
+@router.get("/sync/estado")
+async def sync_estado(user: AuthUser = Depends(require_superadmin)):
+    """Avance en vivo (si hay un sync corriendo AHORA) más la última corrida
+    terminada, sea cual sea su estado -- "última actualización" siempre
+    visible (pedido de Fernando, 2026-09-27), incluso si nunca hubo ninguna
+    corriendo. Antes de leer, interrumpe cualquier fila 'corriendo' huérfana
+    (más vieja que el timeout del .service): sin esto, un proceso caído
+    dejaría la pantalla mostrando "corriendo" para siempre."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await catalogo_sync_registro.marcar_huerfanas_interrumpidas(cur)
+        await conn.commit()
+
+        async with conn.cursor() as cur:
+            # LEFT JOIN jax_users: "quién" (si manual) es el email, no un
+            # user_id crudo -- el join va sobre `e.` (alias de
+            # catalogo_sync_ejecucion), así que el EXPLAIN sigue leyendo el
+            # índice de ESA tabla, no el de jax_users (PK, siempre barato).
+            await cur.execute(
+                "SELECT e.id, e.origen, e.iniciado_por, e.estado, e.paso_actual, e.pasos_total, "
+                "e.detalle_paso, e.iniciado_en, e.terminado_en, e.resultado, u.email "
+                "FROM catalogo_sync_ejecucion e LEFT JOIN jax_users u ON u.user_id = e.iniciado_por "
+                "WHERE e.estado='corriendo' LIMIT 1"
+            )
+            fila_corriendo = await cur.fetchone()
+
+        async with conn.cursor() as cur:
+            # ORDER BY terminado_en DESC sin WHERE de estado a proposito --
+            # ver el comentario de los índices en db/migrations.py
+            # (CREATE_CATALOGO_SYNC_EJECUCION): NULL ordena último en DESC,
+            # así que esto ya excluye la fila 'corriendo' sin perder el
+            # índice.
+            await cur.execute(
+                "SELECT e.id, e.origen, e.iniciado_por, e.estado, e.paso_actual, e.pasos_total, "
+                "e.detalle_paso, e.iniciado_en, e.terminado_en, e.resultado, u.email "
+                "FROM catalogo_sync_ejecucion e LEFT JOIN jax_users u ON u.user_id = e.iniciado_por "
+                "ORDER BY e.terminado_en DESC LIMIT 1"
+            )
+            fila_ultima = await cur.fetchone()
+
+    return {
+        "corriendo": _fila_con_email(fila_corriendo),
+        "ultima": _fila_con_email(fila_ultima),
+    }
+
+
+def _fila_con_email(fila) -> dict | None:
+    if fila is None:
+        return None
+    *columnas_base, email = fila
+    d = catalogo_sync_registro.fila_a_dict(columnas_base)
+    d["iniciado_por_email"] = email
+    return d
+
+
+class ConfigSyncRequest(BaseModel):
+    # Any a propósito, mismo criterio que ContratoDispatchRequest más abajo:
+    # el tipo y el rango los valida catalogo_sync_config.validar_config(), no
+    # pydantic -- así el 422 siempre trae el mismo `code`/`campo`, venga el
+    # dato mal tipado o fuera de rango.
+    habilitado: bool
+    cada_valor: Any
+    cada_unidad: str
+
+
+@router.get("/sync/config")
+async def obtener_config_sync(user: AuthUser = Depends(require_superadmin)):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            config = await catalogo_sync_config.leer_config(cur)
+            ultima_exitosa = await catalogo_sync_registro.ultima_actualizacion_exitosa(cur)
+    return {
+        **_config_serializable(config),
+        "proxima_corrida_estimada": _proxima_corrida_estimada(config, ultima_exitosa),
+    }
+
+
+def _config_serializable(config: dict) -> dict:
+    d = dict(config)
+    if d["actualizado_en"] is not None:
+        d["actualizado_en"] = str(d["actualizado_en"])
+    return d
+
+
+def _proxima_corrida_estimada(config: dict, ultima_exitosa) -> str | None:
+    """`None` si está apagado (no hay "próxima corrida" que estimar) o si
+    todavía no hubo ninguna corrida exitosa (tocaría en la próxima pasada
+    del timer, no en una fecha calculable)."""
+    if not config["habilitado"] or ultima_exitosa is None:
+        return None
+    return str(catalogo_sync_config.proxima_corrida(ultima_exitosa, config["cada_valor"], config["cada_unidad"]))
+
+
+@router.put("/sync/config")
+async def actualizar_config_sync(
+    req: ConfigSyncRequest,
+    user: AuthUser = Depends(require_superadmin),
+):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            try:
+                config = await catalogo_sync_config.actualizar_config(
+                    cur,
+                    habilitado=req.habilitado,
+                    cada_valor=req.cada_valor,
+                    cada_unidad=req.cada_unidad,
+                    actualizado_por=int(user.user_id),
+                )
+            except catalogo_sync_config.ConfigInvalidaError as e:
+                await conn.rollback()
+                raise HTTPException(status_code=422, detail={
+                    "code": "catalogo_sync_config_invalida",
+                    "campo": e.campo,
+                    "message": str(e),
+                })
+            ultima_exitosa = await catalogo_sync_registro.ultima_actualizacion_exitosa(cur)
+        await conn.commit()
+
+    return {
+        **_config_serializable(config),
+        "proxima_corrida_estimada": _proxima_corrida_estimada(config, ultima_exitosa),
+    }
 
 
 # PR-L ronda 2 (2026-09-14, punto 7 de la revisión): la lista era sin límite y,

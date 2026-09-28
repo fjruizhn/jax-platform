@@ -103,8 +103,15 @@ def test_sync_endpoint_only_touches_model_never_facet_binding(client, monkeypatc
     monkeypatch.setattr(model_catalog, "_facetas_en_riesgo", sin_facetas_en_riesgo)
 
     resp = client.post("/api/admin/models/sync", headers=_superadmin_headers())
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    # 2026-09-27: el sync real corre en segundo plano (BackgroundTask) --
+    # el endpoint responde 202 con el id de la ejecución de inmediato, ya no
+    # el resultado completo. TestClient corre la BackgroundTask ANTES de
+    # devolver el control a este assert (mismo mecanismo que
+    # `approve_proposal`/`probe_after_rebind`, ya probado en este repo), así
+    # que el resultado final ya está en la fila cuando se lee.
+    assert resp.status_code == 202, resp.text
+    ejecucion_id = resp.json()["ejecucion_id"]
+    body = _ultima_ejecucion(client)["resultado"]
     assert body["ok"] is True
     assert body["providers_fallidos"] == [] and body["enrich_fallido"] is False
     assert body["providers_saltados"] == []
@@ -112,6 +119,15 @@ def test_sync_endpoint_only_touches_model_never_facet_binding(client, monkeypatc
     assert "code" not in body
     assert set(calls["providers"]) == set(model_catalog.SYNCABLE_PROVIDERS)
     assert calls["enrich"] == 1
+    assert _ultima_ejecucion(client)["id"] == ejecucion_id
+
+
+def _ultima_ejecucion(client) -> dict:
+    resp = client.get("/api/admin/models/sync/estado", headers=_superadmin_headers())
+    assert resp.status_code == 200, resp.text
+    ultima = resp.json()["ultima"]
+    assert ultima is not None
+    return ultima
 
 
 def test_sync_con_todos_los_providers_caidos_no_dice_ok(client, monkeypatch):
@@ -128,8 +144,8 @@ def test_sync_con_todos_los_providers_caidos_no_dice_ok(client, monkeypatch):
     monkeypatch.setattr(model_catalog, "enrich_from_models_dev", fake_enrich)
 
     resp = client.post("/api/admin/models/sync", headers=_superadmin_headers())
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    assert resp.status_code == 202, resp.text
+    body = _ultima_ejecucion(client)["resultado"]
     assert body["ok"] is False
     assert body["code"] == "sync_con_errores"
     assert set(body["providers_fallidos"]) == {"openai", "deepseek", "gemini", "moonshot", "zhipu", "anthropic", "ollama"}
@@ -146,7 +162,9 @@ def test_sync_con_el_enriquecimiento_caido_no_dice_ok(client, monkeypatch):
     monkeypatch.setattr(model_catalog, "sync_provider_models", fake_sync)
     monkeypatch.setattr(model_catalog, "enrich_from_models_dev", falla_enrich)
 
-    body = client.post("/api/admin/models/sync", headers=_superadmin_headers()).json()
+    resp = client.post("/api/admin/models/sync", headers=_superadmin_headers())
+    assert resp.status_code == 202, resp.text
+    body = _ultima_ejecucion(client)["resultado"]
     assert body["ok"] is False
     assert body["code"] == "sync_con_errores"
     assert body["providers_fallidos"] == []
@@ -157,6 +175,98 @@ def test_sync_con_el_enriquecimiento_caido_no_dice_ok(client, monkeypatch):
 def test_sync_endpoint_requires_superadmin(client):
     resp = client.post("/api/admin/models/sync")
     assert resp.status_code in (401, 403)
+
+
+def test_sync_estado_requires_superadmin(client):
+    resp = client.get("/api/admin/models/sync/estado")
+    assert resp.status_code in (401, 403)
+
+
+def test_sync_config_get_and_put_require_superadmin(client):
+    assert client.get("/api/admin/models/sync/config").status_code in (401, 403)
+    assert client.put("/api/admin/models/sync/config", json={
+        "habilitado": True, "cada_valor": 6, "cada_unidad": "horas",
+    }).status_code in (401, 403)
+
+
+def test_sync_devuelve_409_con_una_ejecucion_ya_corriendo(client, monkeypatch):
+    import catalogo_sync_registro
+
+    async def _siempre_ocupado(cur, conn, *, origen, iniciado_por, pasos_total):
+        return None, {
+            "ok": False, "code": "sync_en_curso", "providers": [], "enrich": {},
+            "providers_fallidos": [], "providers_saltados": [], "enrich_fallido": False,
+            "nuevos": {}, "facetas_en_riesgo": [],
+        }
+    monkeypatch.setattr(catalogo_sync_registro, "reservar_ejecucion", _siempre_ocupado)
+
+    resp = client.post("/api/admin/models/sync", headers=_superadmin_headers())
+    assert resp.status_code == 409, resp.text
+    body = resp.json()
+    assert body["code"] == "sync_en_curso"
+    assert body["ejecucion_id"] is None
+
+
+def test_sync_estado_ultima_trae_el_email_de_quien_lanzo_el_manual(client, monkeypatch):
+    async def fake_sync(provider_id):
+        return {"provider_id": provider_id, "fetched": 0}
+
+    async def fake_enrich():
+        return {"enriched": 0}
+
+    async def sin_facetas_en_riesgo(cur):
+        return []
+
+    monkeypatch.setattr(model_catalog, "sync_provider_models", fake_sync)
+    monkeypatch.setattr(model_catalog, "enrich_from_models_dev", fake_enrich)
+    monkeypatch.setattr(model_catalog, "_facetas_en_riesgo", sin_facetas_en_riesgo)
+
+    resp = client.post("/api/admin/models/sync", headers=_superadmin_headers())
+    assert resp.status_code == 202, resp.text
+
+    ultima = _ultima_ejecucion(client)
+    assert ultima["origen"] == "manual"
+    assert ultima["iniciado_por"] == 1
+    assert "iniciado_por_email" in ultima
+    assert ultima["iniciado_por_email"]  # user_id=1 tiene email real sembrado
+
+
+def test_sync_config_get_trae_la_semilla_y_proxima_corrida_estimada(client):
+    resp = client.get("/api/admin/models/sync/config", headers=_superadmin_headers())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "habilitado" in body and "cada_valor" in body and "cada_unidad" in body
+    assert "proxima_corrida_estimada" in body
+
+
+def test_sync_config_put_valida_y_persiste(client):
+    try:
+        resp = client.put("/api/admin/models/sync/config", headers=_superadmin_headers(), json={
+            "habilitado": False, "cada_valor": 3, "cada_unidad": "dias",
+        })
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["habilitado"] is False
+        assert body["cada_valor"] == 3
+        assert body["cada_unidad"] == "dias"
+        assert body["actualizado_en"] is not None
+
+        resp2 = client.get("/api/admin/models/sync/config", headers=_superadmin_headers())
+        assert resp2.json()["cada_valor"] == 3
+    finally:
+        client.put("/api/admin/models/sync/config", headers=_superadmin_headers(), json={
+            "habilitado": True, "cada_valor": 6, "cada_unidad": "horas",
+        })
+
+
+def test_sync_config_put_rechaza_fuera_de_rango_con_422(client):
+    resp = client.put("/api/admin/models/sync/config", headers=_superadmin_headers(), json={
+        "habilitado": True, "cada_valor": 999, "cada_unidad": "horas",
+    })
+    assert resp.status_code == 422, resp.text
+    detalle = resp.json()["detail"]
+    assert detalle["code"] == "catalogo_sync_config_invalida"
+    assert detalle["campo"] == "cada_valor"
 
 
 async def _make_pending_proposal(facet_key="jekyll", proposed_ref=None):
