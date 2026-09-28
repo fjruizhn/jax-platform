@@ -957,6 +957,24 @@ CREATE TABLE IF NOT EXISTS ejecutor_mision (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# Task 8 (2026-09-28, plan "El Ejecutor programa"): inventario de repos que el Ejecutor
+# puede clonar para una misión de código. `remoto_url` es solo para mostrar -- el lado
+# jax deriva la URL real de clonado desde `owner_repo`, no lee esta columna. Antes de
+# `ejecutor_mision` porque `ejecutor_mision.repo_id` la referencia (FK, agregada en
+# _COLUMNS más abajo).
+CREATE_EJECUTOR_REPO = """
+CREATE TABLE IF NOT EXISTS ejecutor_repo (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  owner_repo VARCHAR(140) NOT NULL,
+  remoto_url VARCHAR(300) NOT NULL,
+  comandos_prueba JSON NOT NULL,
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at DATETIME DEFAULT NOW(),
+  UNIQUE KEY uk_ejecutor_repo_owner_repo (owner_repo),
+  CHECK (JSON_TYPE(comandos_prueba) = 'ARRAY')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
 CREATE_EJECUTOR_TURNO = """
 CREATE TABLE IF NOT EXISTS ejecutor_turno (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -1048,6 +1066,7 @@ _TABLES = [
     ("ejecutor_host", CREATE_EJECUTOR_HOST),                            # antes de punto_restauracion (FK)
     ("ejecutor_regla", CREATE_EJECUTOR_REGLA),
     ("ejecutor_punto_restauracion", CREATE_EJECUTOR_PUNTO_RESTAURACION),
+    ("ejecutor_repo", CREATE_EJECUTOR_REPO),                            # antes de mision (FK repo_id)
     ("ejecutor_mision", CREATE_EJECUTOR_MISION),                        # antes de turno y bitácora (FK)
     ("ejecutor_turno", CREATE_EJECUTOR_TURNO),
     ("ejecutor_bitacora", CREATE_EJECUTOR_BITACORA),
@@ -2277,6 +2296,20 @@ _COLUMNS = [
     # semilla MEDIDA la pone _semilla_min_output_tokens_v1.
     ("capability", "min_output_tokens",
      "ALTER TABLE capability ADD COLUMN min_output_tokens INT NOT NULL DEFAULT 0"),
+    # Task 8 (2026-09-28, plan "El Ejecutor programa"): la misión de código, distinta de
+    # una misión de servidor (SP2). `tipo` distingue las dos; el resto sólo aplica a
+    # 'codigo'. `repo_id` referencia ejecutor_repo (creada antes en _TABLES). `estado_
+    # entrega` es NULL mientras la misión sigue en curso -- sólo se fija al cerrar.
+    ("ejecutor_mision", "tipo",
+     "ALTER TABLE ejecutor_mision ADD COLUMN tipo ENUM('servidor','codigo') NOT NULL DEFAULT 'servidor'"),
+    ("ejecutor_mision", "repo_id",
+     "ALTER TABLE ejecutor_mision ADD COLUMN repo_id INT NULL, "
+     "ADD CONSTRAINT fk_ejecutor_mision_repo FOREIGN KEY (repo_id) REFERENCES ejecutor_repo(id)"),
+    ("ejecutor_mision", "rama", "ALTER TABLE ejecutor_mision ADD COLUMN rama VARCHAR(80) NULL"),
+    ("ejecutor_mision", "pr_url", "ALTER TABLE ejecutor_mision ADD COLUMN pr_url VARCHAR(300) NULL"),
+    ("ejecutor_mision", "estado_entrega",
+     "ALTER TABLE ejecutor_mision ADD COLUMN estado_entrega "
+     "ENUM('abierto','rechazada_por_contrato','sin_informe_c5','fallo_entrega','sin_cambios') NULL"),
 ]
 
 
@@ -2467,6 +2500,11 @@ _COLUMN_WIDENS = [
 _INDEXES = [
     ("jax_users", "idx_jax_users_role_status",
      "ALTER TABLE jax_users ADD INDEX idx_jax_users_role_status (role, status)"),
+    # Task 8 (2026-09-28, plan "El Ejecutor programa"): el selector de repos del Ejecutor
+    # sólo lista los activos (SELECT id, owner_repo FROM ejecutor_repo WHERE activo = 1
+    # ORDER BY owner_repo). Tabla chica; EXPLAIN medido a mano, ver el informe de la tarea.
+    ("ejecutor_repo", "idx_ejecutor_repo_activo",
+     "CREATE INDEX idx_ejecutor_repo_activo ON ejecutor_repo (activo)"),
 ]
 
 
@@ -3282,6 +3320,23 @@ async def _ejecutor_reglas_codigo_v1(cur) -> None:
     await _sembrar_reglas_una_vez(cur, MIGRACION_EJECUTOR_REGLAS_CODIGO_V1, _SEMILLA_EJECUTOR_REGLAS_CODIGO)
 
 
+MIGRACION_EJECUTOR_REPO_JAX_PLATFORM_V1 = "ejecutor_repo_jax_platform_v1"
+
+
+async def _sembrar_repo_jax_platform_v1(cur) -> None:
+    """Task 8 (plan "El Ejecutor programa"): la primera fila de `ejecutor_repo` es el propio
+    jax-platform (DC10). `remoto_url` sólo es para mostrar -- el lado jax deriva la URL real
+    de clonado de `owner_repo`, no lee esta columna."""
+    if await _marcada(cur, MIGRACION_EJECUTOR_REPO_JAX_PLATFORM_V1):
+        return
+    await cur.execute(
+        "INSERT IGNORE INTO ejecutor_repo (owner_repo, remoto_url, comandos_prueba) VALUES (%s, %s, %s)",
+        ("fjruizhn/jax-platform", "https://github.com/fjruizhn/jax-platform.git",
+         json.dumps(["cd frontend && npx vitest run", "cd backend && JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q"])))
+    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
+                      (MIGRACION_EJECUTOR_REPO_JAX_PLATFORM_V1,))
+
+
 # Los 4 métodos de verificación reales del diseño C2 (tabla «Respaldo por máquina»):
 # restauración de la imagen LVM completa, restauración de archivos sueltos por restic,
 # restauración de un volcado de MariaDB, o recreación de una VM desechable desde su seed.
@@ -3581,6 +3636,7 @@ async def run_migrations():
             await _ejecutor_reglas_v1(cur)
             await _ejecutor_reglas_envoltorios_v1(cur)
             await _ejecutor_reglas_codigo_v1(cur)
+            await _sembrar_repo_jax_platform_v1(cur)
             await _eliminar_sudo_y_machine_id_de_ejecutor_host(cur)
             await _asegurar_forma_de_ejecutor_punto_restauracion(cur)
             await _ejecutor_inventario_v1(cur)

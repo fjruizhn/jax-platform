@@ -317,3 +317,12 @@ def test_ejecutor_host_nace_sin_sudo_ni_machine_id(client):
     nombres = {f[0] for f in columnas}
     assert "sudo" not in nombres, nombres
     assert "machine_id" not in nombres, nombres
+
+
+def test_ejecutor_repo_y_columnas_de_codigo(client):
+    """Task 8 (plan "El Ejecutor programa"): `ejecutor_repo` (el inventario de repos que el
+    Ejecutor puede clonar) y las columnas de misión de código en `ejecutor_mision`."""
+    columnas_repo = client.portal.call(sql, "SHOW COLUMNS FROM ejecutor_repo", None, True)
+    assert {r[0] for r in columnas_repo} >= {"id", "owner_repo", "remoto_url", "comandos_prueba", "activo"}
+    columnas_mision = client.portal.call(sql, "SHOW COLUMNS FROM ejecutor_mision", None, True)
+    assert {r[0] for r in columnas_mision} >= {"tipo", "repo_id", "rama", "pr_url", "estado_entrega"}
