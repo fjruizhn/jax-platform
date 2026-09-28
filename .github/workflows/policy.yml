@@ -997,11 +997,18 @@ jobs:
           //   regresión ("fallaron" no se muestra con lista vacía) y 3 del
           //   aviso de "sync en curso" (candado ocupado) en
           //   AdminModelCatalog.test.jsx.
+          // 1029 -> 1030 el 2026-09-27 (carrera de Escape al montar Dialogo):
+          //   +1 en lib/useCerrarConEscape.test.js. Medido de punta a punta
+          //   con `npx vitest run --reporter=dot --silent`: 1030 passed,
+          //   0 fallidos, 95 archivos.
           // 1029 -> 1053 (2026-09-27, programación configurable del sync,
           //   #167): MEDIDO EN EL RUNNER, run 36381118121 (d7b1670): passed=1053
           //   failed=0 total=1053. Regla 5: el último en llegar re-mide.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1053) {
-              console.error("PISO ROTO: se esperaban 1053 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1053 -> 1054 (2026-09-28, Hyde, integración de #166 sobre #167 por decisión
+          //   de Fernando): 1053 de master + 1 test de #166. Regla 5: lo confirma o
+          //   desmiente la corrida real del runner en este PR.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1054) {
+              console.error("PISO ROTO: se esperaban 1054 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

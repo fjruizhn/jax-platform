@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useLayoutEffect, useRef } from 'react'
 
 // Escape cierra los modales de usuarios (Ruling U24, 2026-09-15). Desde el
 // Ruling U27 lo usa sólo components/Dialogo.jsx, el diálogo único sobre el que
@@ -15,11 +15,15 @@ import { useEffect, useRef } from 'react'
 // sigue llamando siempre al `onCerrar` más reciente.
 export function useCerrarConEscape(onCerrar) {
   const onCerrarRef = useRef(onCerrar)
-  useEffect(() => {
+  // El diálogo ya existe en el DOM durante el commit. El listener tiene que
+  // existir antes del siguiente evento, no en un efecto pasivo posterior.
+  // React 19: useLayoutEffect corre tras el commit y antes del repintado.
+  // Fuente: https://react.dev/reference/react/useLayoutEffect#reference
+  useLayoutEffect(() => {
     onCerrarRef.current = onCerrar
   })
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     function onKeyDown(e) {
       // `null` = diálogo no cerrable (U34, cambio obligatorio de contraseña).
       if (e.key === 'Escape') onCerrarRef.current?.()
