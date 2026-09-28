@@ -72,13 +72,20 @@ async def _sembrar(pool, marca: str) -> list[int]:
                 await cur.execute(
                     "INSERT INTO catalogo_sync_ejecucion "
                     "(origen, estado, pasos_total, paso_actual, iniciado_en, terminado_en, resultado) "
-                    "VALUES ('manual', 'ok', 9, 9, NOW() - INTERVAL %s SECOND, NOW() - INTERVAL %s SECOND, %s)",
+                    "VALUES ('manual', 'ok', 9, 9, UTC_TIMESTAMP() - INTERVAL %s SECOND, "
+                    "UTC_TIMESTAMP() - INTERVAL %s SECOND, %s)",
                     (FILAS_TERMINADAS - i + 10, FILAS_TERMINADAS - i, json.dumps({"marca": marca, "ok": True})),
                 )
                 ids.append(cur.lastrowid)
+            # latido_en=UTC_TIMESTAMP() (fresco, MINOR-1): sin esto la fila
+            # 'corriendo' se marcaría huérfana en la PRIMERA lectura de la
+            # medición (marcar_huerfanas_interrumpidas trata latido_en NULL
+            # como huérfana siempre) y el peor caso dejaría de tener una
+            # fila corriendo de verdad a partir de la segunda tanda.
             await cur.execute(
-                "INSERT INTO catalogo_sync_ejecucion (origen, estado, pasos_total, paso_actual, iniciado_en) "
-                "VALUES ('programado', 'corriendo', 9, 4, NOW())"
+                "INSERT INTO catalogo_sync_ejecucion "
+                "(origen, estado, pasos_total, paso_actual, iniciado_en, latido_en) "
+                "VALUES ('programado', 'corriendo', 9, 4, UTC_TIMESTAMP(), UTC_TIMESTAMP())"
             )
             ids.append(cur.lastrowid)
         await conn.commit()
