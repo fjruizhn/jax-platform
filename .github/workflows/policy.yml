@@ -3236,7 +3236,28 @@ jobs:
           # tests nuevos -> 3054 passed / 2 skipped. Delta propio real: +3, verificado
           # también por diferencia directa contra el worktree de origin/master 3701109
           # (3049 passed): 3054 - 3049 = +5 = +2 (ronda anterior) + +3 (esta ronda).
-          PISO_PASSED = 3052
+          # 3052 -> 3062 (2026-09-28, Hyde, Task 10 del plan "El Ejecutor programa": API de
+          # misiones de código -- `tipo`/`repo_id` en POST /misiones, GET /repos, el evento
+          # `entrega_codigo` del runner persistiendo `pr_url`/`estado_entrega` y los cinco
+          # campos nuevos expuestos en GET /misiones/{id}). NO MEDIDO EN EL RUNNER, mismo
+          # motivo de las dos rondas anteriores (cuenta Free sin minutos). Medido LOCAL,
+          # mismo comando que este job (`python -m pytest -q -rs
+          # --ignore=tests/test_carga_indice_pipelines_del_usuario.py`), A/B controlado el
+          # mismo día contra jax_memory_test (127.0.0.1:3308, usuario jax_test) con un
+          # segundo worktree (`git worktree add`, sin tocar este) fijado en el commit padre
+          # 5ea5451 (el de la ronda anterior): 3054 passed / 2 skipped ANTES; esta rama
+          # (mismos cambios que este PR) -> 3064 passed / 2 skipped DESPUÉS. Delta propio
+          # real: +10 (los 10 tests nuevos de tests/test_ejecutor_misiones.py:
+          # test_crear_mision_de_codigo_pasa_repo_al_runner, test_codigo_sin_repo_es_422,
+          # test_codigo_con_repo_inactivo_es_422, test_servidor_con_repo_id_es_422,
+          # test_tipo_desconocido_es_422, test_codigo_sin_host_local_es_409,
+          # test_codigo_con_dos_hosts_locales_es_409,
+          # test_repos_lista_solo_los_activos_para_superadmin,
+          # test_entrega_codigo_persiste_pr_url_y_estado_entrega_y_se_expone_en_el_detalle,
+          # test_mision_de_servidor_expone_tipo_y_repo_vacio -- ninguno parametrizado, delta
+          # 1:1). PISO_PASSED se suma sobre el declarado (3052), no sobre el 3054 medido en
+          # bruto localmente: mismo criterio de siempre en este archivo.
+          PISO_PASSED = 3062
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
