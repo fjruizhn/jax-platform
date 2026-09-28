@@ -1044,6 +1044,31 @@ def test_entrega_codigo_queda_en_la_bitacora_aunque_falle_al_persistir_en_la_mis
     assert "entrega_codigo" in eventos
 
 
+def test_entrega_codigo_turno_2_sin_pr_url_conserva_el_del_turno_1(client_superadmin, runner, repo_jax_platform):
+    """MAJOR-1 (ola final, plan "El Ejecutor programa"): un turno que no trae `pr_url` (p. ej.
+    `rechazada_por_contrato`, donde mision_codigo ni llegó a mirar si había un PR previo) no
+    debe BORRAR el de un turno anterior -- `COALESCE` conserva el que ya había."""
+    runner.guion({"lineas": [
+        _ev("turno_lanzado"),
+        _ev("entrega_codigo", estado_entrega="abierto",
+            pr_url="https://github.com/fjruizhn/jax-platform/pull/1", violaciones=[], notas="listo"),
+        _resultado()]})
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    d = _esperar(client_superadmin, {}, mision_id)
+    assert (d["estado_entrega"], d["pr_url"]) == ("abierto", "https://github.com/fjruizhn/jax-platform/pull/1")
+    runner.guion({"lineas": [
+        _ev("turno_lanzado", 2, reanudar=True),
+        _ev("entrega_codigo", 2, estado_entrega="rechazada_por_contrato", pr_url=None,
+            violaciones=[{"regla": "flujos_ci", "ruta": ".github/workflows/x.yml", "detalle": "x"}], notas=[]),
+        _resultado(turno=2)]})
+    r = client_superadmin.post(f"{BASE}/misiones/{mision_id}/turnos", json={"instruccion": "otra"})
+    assert r.status_code == 202, r.json()
+    d = _esperar(client_superadmin, {}, mision_id)
+    assert (d["estado_entrega"], d["pr_url"]) == (
+        "rechazada_por_contrato", "https://github.com/fjruizhn/jax-platform/pull/1")
+
+
 def test_continuar_mision_de_codigo_pasa_tipo_y_repo_al_runner(client_superadmin, runner, repo_jax_platform):
     """Ruling del controlador sobre §3.4 del spec (2026-09-28): un turno nuevo de la MISMA
     misión de código retoma la misma rama/PR -- el runner necesita `tipo`/`repo` en cada

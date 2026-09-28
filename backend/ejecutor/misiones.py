@@ -81,7 +81,10 @@ SQL_MISION = ("SELECT m.id, m.objetivo, m.maquinas, m.sesion_id, m.created_at, m
 SQL_REPO_ACTIVO = "SELECT owner_repo, comandos_prueba FROM ejecutor_repo WHERE id = %s AND activo = 1"
 SQL_HOST_LOCAL = "SELECT nombre FROM ejecutor_host WHERE es_local = 1"
 SQL_REPOS_ACTIVOS = "SELECT id, owner_repo FROM ejecutor_repo WHERE activo = 1 ORDER BY owner_repo"
-SQL_GUARDAR_ENTREGA_CODIGO = "UPDATE ejecutor_mision SET pr_url = %s, estado_entrega = %s WHERE id = %s"
+# MAJOR-1 (ola final, plan "El Ejecutor programa"): un turno sin `pr_url` (p. ej.
+# `rechazada_por_contrato`, que no llega a mirar si había un PR previo abierto) no debe
+# borrar el de un turno anterior -- COALESCE conserva el que ya había si este viene NULL.
+SQL_GUARDAR_ENTREGA_CODIGO = "UPDATE ejecutor_mision SET pr_url = COALESCE(%s, pr_url), estado_entrega = %s WHERE id = %s"
 SQL_TURNOS = ("SELECT n, instruccion, estado, codigo, resultado, sesion_iniciada, iniciado_at, terminado_at "
               "FROM ejecutor_turno WHERE mision_id = %s ORDER BY n")
 SQL_BITACORA = ("SELECT id, turno, evento, datos, at FROM ejecutor_bitacora "
