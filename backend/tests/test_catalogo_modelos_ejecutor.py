@@ -308,6 +308,26 @@ def test_resumen_de_un_sync_real_no_dice_sin_sincronizar(monkeypatch, capsys):
     assert "sin sincronizar" not in salida
 
 
+def test_resumen_de_un_sync_sano_no_lleva_code_ni_sin_sincronizar(monkeypatch, capsys):
+    """El caso con el que se confundía la corrida saltada: un sync real sano
+    no trae `code`, así que su línea no puede llevar `code=` ni
+    "sin sincronizar"."""
+    async def _correr():
+        return {
+            "ok": True, "providers": [], "enrich": {}, "providers_fallidos": [],
+            "providers_saltados": [], "enrich_fallido": False, "nuevos": {},
+            "facetas_en_riesgo": [],
+        }
+    monkeypatch.setattr(ejecutor, "_correr", _correr)
+    _sin_aviso(monkeypatch)
+
+    assert ejecutor.main() == 0
+    salida = capsys.readouterr().out
+    assert "ok=True" in salida
+    assert "code=" not in salida
+    assert "sin sincronizar" not in salida
+
+
 def test_main_no_enmascara_el_codigo_de_salida_si_el_aviso_falla(monkeypatch):
     """Principio: un aviso roto (Telegram caído, disco lleno) NO puede
     convertir un job con problemas en un job que sale 0, NI puede
