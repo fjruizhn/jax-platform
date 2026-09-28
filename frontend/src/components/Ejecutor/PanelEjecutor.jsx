@@ -1,4 +1,4 @@
-import { memo, useEffect } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
 import { useEjecutor } from '../../store/useEjecutor'
 import Maquinas from './Maquinas'
@@ -28,6 +28,17 @@ function PanelEjecutor() {
   const abrirMision = useEjecutor((s) => s.abrirMision)
   const nuevaMision = useEjecutor((s) => s.nuevaMision)
   const detenerPolling = useEjecutor((s) => s.detenerPolling)
+  // Tipo Código (Task 11, 2026-09-28): repo, PR y estado de entrega en vez de
+  // máquinas. `tipoNueva` es de esta pantalla nada más -- el backend no lo
+  // pide hasta que se lanza la misión.
+  const repos = useEjecutor((s) => s.repos)
+  const errorRepos = useEjecutor((s) => s.errorRepos)
+  const cargarRepos = useEjecutor((s) => s.cargarRepos)
+  const crearMision = useEjecutor((s) => s.crearMision)
+  const enviando = useEjecutor((s) => s.enviando)
+  const [tipoNueva, setTipoNueva] = useState('servidor')
+  const [repoId, setRepoId] = useState('')
+  const [objetivoCodigo, setObjetivoCodigo] = useState('')
 
   useEffect(() => {
     cargarEstado()
@@ -35,17 +46,88 @@ function PanelEjecutor() {
     return () => detenerPolling()
   }, [cargarEstado, cargarMisiones, detenerPolling])
 
+  useEffect(() => {
+    if (tipoNueva === 'codigo') cargarRepos()
+  }, [tipoNueva, cargarRepos])
+
+  async function lanzarCodigo() {
+    const objetivo = objetivoCodigo.trim()
+    if (!repoId || !objetivo) return
+    const aceptada = await crearMision({ tipo: 'codigo', repoId: Number(repoId), objetivo })
+    if (aceptada) {
+      setRepoId('')
+      setObjetivoCodigo('')
+    }
+  }
+
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
       <h2 className="text-sm font-semibold text-texto-fuerte">{tx.titulo}</h2>
 
       {errorEnvio && <p role="alert" className="text-xs text-peligro">{textoDeErrorEjecutor(t, errorEnvio)}</p>}
 
+      <div role="radiogroup" aria-label={tx.nuevaMision} className="flex items-center gap-4 text-xs">
+        <label htmlFor="ejecutor-tipo-servidor" className="flex items-center gap-1.5 text-texto">
+          <input
+            id="ejecutor-tipo-servidor"
+            type="radio"
+            name="ejecutor-tipo-mision"
+            checked={tipoNueva === 'servidor'}
+            onChange={() => setTipoNueva('servidor')}
+          />
+          {tx.tipoServidor}
+        </label>
+        <label htmlFor="ejecutor-tipo-codigo" className="flex items-center gap-1.5 text-texto">
+          <input
+            id="ejecutor-tipo-codigo"
+            type="radio"
+            name="ejecutor-tipo-mision"
+            checked={tipoNueva === 'codigo'}
+            onChange={() => setTipoNueva('codigo')}
+          />
+          {tx.tipoCodigo}
+        </label>
+      </div>
+
       {errorEstado && <p className="text-xs text-peligro">{textoDeErrorEjecutor(t, errorEstado)}</p>}
       {!estado && !errorEstado && <p className="text-xs text-texto-suave">{tx.cargando}</p>}
       {estado && (
         <div className="grid gap-4 md:grid-cols-2">
-          <Maquinas estado={estado} />
+          {tipoNueva === 'codigo' ? (
+            <section aria-labelledby="ejecutor-repo" className="rounded-lg border border-borde bg-superficie p-3 space-y-2">
+              <h3 id="ejecutor-repo" className="text-xs font-semibold text-texto-fuerte">{tx.repo}</h3>
+              {errorRepos && <p className="text-xs text-peligro">{textoDeErrorEjecutor(t, errorRepos)}</p>}
+              <select
+                aria-label={tx.repo}
+                value={repoId}
+                onChange={(e) => setRepoId(e.target.value)}
+                className="w-full bg-superficie border border-borde-control rounded px-2 py-1 text-xs text-texto"
+              >
+                <option value="">{tx.elegirRepo}</option>
+                {repos.map((r) => (
+                  <option key={r.id} value={r.id}>{r.owner_repo}</option>
+                ))}
+              </select>
+              <textarea
+                aria-label={tx.placeholderNueva}
+                value={objetivoCodigo}
+                onChange={(e) => setObjetivoCodigo(e.target.value)}
+                placeholder={tx.placeholderNueva}
+                rows={2}
+                className="w-full bg-superficie border border-borde-control rounded px-2 py-1 text-xs text-texto placeholder-texto-tenue resize-none"
+              />
+              <button
+                type="button"
+                onClick={lanzarCodigo}
+                disabled={!repoId || !objetivoCodigo.trim() || enviando}
+                className={`${TAMANO_BOTON_ACCION} rounded bg-modo-ejecutor text-sobre-color font-semibold disabled:opacity-40`}
+              >
+                {tx.lanzar}
+              </button>
+            </section>
+          ) : (
+            <Maquinas estado={estado} />
+          )}
           <PausaEjecutor pausa={estado.pausa} />
         </div>
       )}

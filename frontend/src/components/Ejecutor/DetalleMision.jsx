@@ -142,6 +142,7 @@ function Turno({ turno }) {
 export default function DetalleMision({ mision }) {
   const { t } = useI18n()
   const tx = t.ejecutor
+  const esCodigo = mision.tipo === 'codigo'
   return (
     <div className="space-y-3">
       <div className="space-y-1">
@@ -149,8 +150,22 @@ export default function DetalleMision({ mision }) {
         <p className="text-xs text-texto-suave">
           <span data-estado-mision className="px-1.5 py-0.5 rounded border border-borde text-texto">{traducir(tx.estadosMision, mision.estado)}</span>
           {' · '}
-          {tx.maquinasDeMision}: <span className="font-mono">{(mision.maquinas || []).join(', ')}</span>
+          {esCodigo ? (
+            <>{tx.repo}: <span className="font-mono">{mision.repo}</span>{mision.rama && <>{' · '}<span className="font-mono">{mision.rama}</span></>}</>
+          ) : (
+            <>{tx.maquinasDeMision}: <span className="font-mono">{(mision.maquinas || []).join(', ')}</span></>
+          )}
         </p>
+        {esCodigo && (mision.pr_url || mision.estado_entrega) && (
+          <p className="text-xs text-texto-suave flex flex-wrap items-center gap-2">
+            {mision.pr_url && (
+              <a href={mision.pr_url} target="_blank" rel="noopener noreferrer" className="text-acento-texto hover:underline">
+                {tx.verPr}
+              </a>
+            )}
+            {mision.estado_entrega && <span>{traducir(tx.entrega, mision.estado_entrega)}</span>}
+          </p>
+        )}
         <p className="text-xs text-texto-suave">{mision.puede_continuar ? tx.puedeContinuar : tx.noPuedeContinuar}</p>
       </div>
       {(mision.turnos || []).map((turno) => <Turno key={turno.n} turno={turno} />)}

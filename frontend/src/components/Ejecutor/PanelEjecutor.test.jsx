@@ -45,14 +45,15 @@ function mision(estadoMision, turnos, extra = {}) {
 }
 
 let respuestas
-function servir({ est = estado(), misiones = [], detalle = null, eventos = [] } = {}) {
-  respuestas = { est, misiones, detalle, eventos }
+function servir({ est = estado(), misiones = [], detalle = null, eventos = [], repos = [] } = {}) {
+  respuestas = { est, misiones, detalle, eventos, repos }
   api.get.mockImplementation((url) => {
     const r = respuestas
     if (url === '/ejecutor/estado') return r.est instanceof Error || r.est?.response ? Promise.reject(r.est) : Promise.resolve({ data: r.est })
     if (url === '/ejecutor/misiones') return Promise.resolve({ data: { misiones: r.misiones } })
     if (url === '/ejecutor/misiones/m1') return Promise.resolve({ data: typeof r.detalle === 'function' ? r.detalle() : r.detalle })
     if (url === '/ejecutor/misiones/m1/bitacora') return Promise.resolve({ data: { eventos: r.eventos } })
+    if (url === '/ejecutor/repos') return Promise.resolve({ data: r.repos })
     return Promise.reject(new Error(`GET inesperado ${url}`))
   })
 }
@@ -327,6 +328,58 @@ describe('Ejecutor -- detalle de misión', () => {
     const n = api.get.mock.calls.length
     await vi.advanceTimersByTimeAsync(INTERVALO_POLLING_MS * 3)
     expect(api.get.mock.calls.length).toBe(n)
+  })
+})
+
+describe('Ejecutor -- misión de código (Task 11)', () => {
+  it('en tipo Código muestra el selector de repos y exige uno para lanzar', async () => {
+    servir({ repos: [{ id: 1, owner_repo: 'fjruizhn/jax-platform' }] })
+    pintar()
+    fireEvent.click(screen.getByRole('radio', { name: tx.tipoCodigo }))
+    const combo = await screen.findByRole('combobox', { name: tx.repo })
+    expect(within(combo).getByText('fjruizhn/jax-platform')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: tx.lanzar })).toBeDisabled()
+  })
+
+  it('elegir tipo Servidor (default) sigue mostrando las máquinas, no el selector de repos', async () => {
+    servir()
+    pintar()
+    await screen.findByRole('checkbox', { name: /ejecutor-prueba/ })
+    expect(screen.queryByRole('combobox', { name: tx.repo })).not.toBeInTheDocument()
+  })
+
+  it('con repo elegido y objetivo escrito, lanzar crea la misión de código', async () => {
+    servir({ repos: [{ id: 1, owner_repo: 'fjruizhn/jax-platform' }], misiones: [{ id: 'm1', objetivo: 'arreglar X', maquinas: [], estado: 'en_curso', turnos: 0 }], detalle: mision('en_curso', [], { tipo: 'codigo', repo: 'fjruizhn/jax-platform' }) })
+    api.post.mockResolvedValue({ data: mision('en_curso', [], { tipo: 'codigo', repo: 'fjruizhn/jax-platform' }) })
+    pintar()
+    fireEvent.click(screen.getByRole('radio', { name: tx.tipoCodigo }))
+    const combo = await screen.findByRole('combobox', { name: tx.repo })
+    fireEvent.change(combo, { target: { value: '1' } })
+    fireEvent.change(screen.getByRole('textbox', { name: tx.placeholderNueva }), { target: { value: 'arreglar X' } })
+    const lanzar = screen.getByRole('button', { name: tx.lanzar })
+    expect(lanzar).toBeEnabled()
+    fireEvent.click(lanzar)
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/ejecutor/misiones', { objetivo: 'arreglar X', tipo: 'codigo', repo_id: 1 }))
+  })
+
+  it('DetalleMision enlaza el PR y traduce el estado de entrega', async () => {
+    await pintarConMision(mision('completada', [], { tipo: 'codigo', repo: 'fjruizhn/jax-platform', pr_url: 'https://github.com/o/r/pull/7', estado_entrega: 'abierto' }))
+    const link = screen.getByRole('link', { name: tx.verPr })
+    expect(link).toHaveAttribute('href', 'https://github.com/o/r/pull/7')
+    expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'))
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(screen.getByText(tx.entrega.abierto)).toBeInTheDocument()
+    expect(screen.getByText('fjruizhn/jax-platform')).toBeInTheDocument()
+  })
+
+  it('la bitácora traduce las violaciones de entrega_codigo por regla', async () => {
+    await pintarConMision(mision('rechazada', [turno({ estado: 'rechazado' })], { tipo: 'codigo' }), [
+      { id: 1, turno: 1, evento: 'entrega_codigo', datos: { violaciones: [{ regla: 'secretos', ruta: 'ops/x.sh', detalle: 'token en claro' }] }, at: '2026-09-28T10:00:00Z' },
+    ])
+    const items = within(screen.getByRole('list', { name: tx.bitacora })).getAllByRole('listitem')
+    expect(items[0]).toHaveTextContent(tx.regla.secretos)
+    expect(items[0]).toHaveTextContent('ops/x.sh')
+    expect(items[0]).toHaveTextContent('token en claro')
   })
 })
 

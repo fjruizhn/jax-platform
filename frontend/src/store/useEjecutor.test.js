@@ -97,6 +97,38 @@ describe('useEjecutor -- enviar', () => {
   })
 })
 
+describe('useEjecutor -- repos y misión de código', () => {
+  it('cargarRepos guarda la lista', async () => {
+    api.get.mockImplementation((url) => (url === '/ejecutor/repos'
+      ? Promise.resolve({ data: [{ id: 1, owner_repo: 'fjruizhn/jax-platform' }] })
+      : Promise.reject(new Error(`GET inesperado ${url}`))))
+    await useEjecutor.getState().cargarRepos()
+    expect(useEjecutor.getState().repos).toEqual([{ id: 1, owner_repo: 'fjruizhn/jax-platform' }])
+  })
+
+  it('un error de /repos queda guardado, no se traga', async () => {
+    const err = new Error('red')
+    api.get.mockRejectedValue(err)
+    await useEjecutor.getState().cargarRepos()
+    expect(useEjecutor.getState().errorRepos).toBe(err)
+  })
+
+  it('crearMision manda tipo y repo_id, y abre la misión creada', async () => {
+    responderGet(() => mision('en_curso', { tipo: 'codigo', repo: 'fjruizhn/jax-platform' }))
+    api.post.mockResolvedValue({ data: mision('en_curso', { tipo: 'codigo' }) })
+    expect(await useEjecutor.getState().crearMision({ tipo: 'codigo', repoId: 1, objetivo: 'arreglar X' })).toBe(true)
+    expect(api.post).toHaveBeenCalledWith('/ejecutor/misiones', { objetivo: 'arreglar X', tipo: 'codigo', repo_id: 1 })
+    expect(useEjecutor.getState().misionActiva.id).toBe('m1')
+  })
+
+  it('un error del POST de crearMision queda en errorEnvio y devuelve false', async () => {
+    const err = { response: { status: 409, data: { detail: 'ejecutor_turno_en_curso' } } }
+    api.post.mockRejectedValue(err)
+    expect(await useEjecutor.getState().crearMision({ tipo: 'codigo', repoId: 1, objetivo: 'x' })).toBe(false)
+    expect(useEjecutor.getState().errorEnvio).toBe(err)
+  })
+})
+
 describe('useEjecutor -- polling mientras en_curso', () => {
   it('corre mientras la misión está en_curso y se detiene al terminar', async () => {
     vi.useFakeTimers()
