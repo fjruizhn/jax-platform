@@ -199,7 +199,7 @@ def test_fernet_key_y_jwt_secret_generados_nunca_coinciden_con_produccion():
 
 
 def test_fernet_key_y_jwt_secret_del_propio_proceso_de_pytest_no_son_los_de_produccion():
-    """MINOR-5 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    """MINOR-5 (cuarta ronda de la auditoría adversarial, 2026-09-27): el
     `os.environ` del PROPIO proceso que está corriendo esta prueba -- la
     suite real, no un subproceso aparte -- comparado por HASH contra los de
     producción. Si esto alguna vez diera falso (el hash coincide), sería

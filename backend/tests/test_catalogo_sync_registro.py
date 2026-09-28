@@ -89,7 +89,7 @@ async def _con_candado_de_trabajo_sostenido(coro_dentro):
     no por conexión) ve el candado ocupado, tal como vería el candado real de
     una corrida viva.
 
-    MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27): el
     nombre pasa por `nombre_candado()` -- el mismo que usa la producción --
     para tomar el candado CALIFICADO con la base actual; si se tomara el
     nombre sin calificar, `IS_FREE_LOCK()` sobre el calificado lo vería
@@ -361,7 +361,7 @@ def test_finalizar_ejecucion_admite_resultado_none(client, limpiar_catalogo_sync
 
 
 def test_finalizar_ejecucion_devuelve_true_cuando_cierra_de_verdad(client, limpiar_catalogo_sync_ejecucion):
-    """MINOR-2 (quinta ronda de la auditoría adversarial, 2026-09-28): el
+    """MINOR-2 (quinta ronda de la auditoría adversarial, 2026-09-27): el
     valor de retorno es lo que `ejecutar_reservada()` usa para decidir si
     hace falta su red de seguridad -- se prueba el caso normal explícito,
     no sólo el degradado de abajo."""
@@ -426,7 +426,7 @@ async def _vaciar_catalogo_sync_ejecucion():
 
 @pytest.fixture
 def tabla_catalogo_sync_ejecucion_vacia(client):
-    """MINOR-2 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    """MINOR-2 (cuarta ronda de la auditoría adversarial, 2026-09-27): el
     aislamiento de esta tabla entre tests era "por probabilidad" -- filas
     'ok' que dejan los POST de test_admin_models_endpoints.py (sin limpiar,
     la tabla es de TODA la sesión) podían ganarle a la fila que un test de
@@ -578,7 +578,7 @@ def test_limpiar_ejecuciones_viejas_conserva_como_mucho_retencion_filas(client):
 # --------------------------------------------------------------------------
 
 def _fake_sync_all(resultado, pasos_avanzados):
-    """MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    """MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27): el
     fake TIENE que aceptar y llamar `on_terminar` -- es lo que ahora cierra
     la fila (dentro del "candado", que acá no existe de verdad, pero el
     CONTRATO del callback sí se ejercita). Sin esto, `ejecutar_reservada()`
@@ -690,7 +690,7 @@ def test_correr_sync_registrado_no_llama_a_sync_all_si_ya_hay_uno_corriendo(clie
 
 def test_on_terminar_que_revienta_la_red_de_seguridad_cierra_igual(
         client, monkeypatch, limpiar_catalogo_sync_ejecucion):
-    """MINOR-2 (quinta ronda de la auditoría adversarial, 2026-09-28): el
+    """MINOR-2 (quinta ronda de la auditoría adversarial, 2026-09-27): el
     `on_terminar` que arma `ejecutar_reservada()` llama a
     `finalizar_ejecucion()` -- si ESA llamada revienta (una falla real de
     DB, por ejemplo), `sync_all()` la atrapa fail-soft (mismo criterio que
@@ -738,7 +738,7 @@ def test_on_terminar_que_revienta_la_red_de_seguridad_cierra_igual(
 
 
 # --------------------------------------------------------------------------
-# MAJOR-1 (cuarta ronda de la auditoria adversarial, 2026-09-28): la fila se
+# MAJOR-1 (cuarta ronda de la auditoria adversarial, 2026-09-27): la fila se
 # cierra ANTES de soltar el candado real -- integracion de punta a punta con
 # `model_catalog.sync_all()` REAL (proveedores/enriquecimiento mockeados,
 # candado y orquestacion de cierre reales), no el fake de arriba.
@@ -816,7 +816,7 @@ def test_ejecutar_reservada_cierra_la_fila_con_el_candado_todavia_sostenido(
 
 def test_ejecutar_reservada_cierra_error_con_el_candado_sostenido_si_sync_all_revienta(
         client, monkeypatch, limpiar_catalogo_sync_ejecucion):
-    """MINOR-2 (quinta ronda de la auditoría adversarial, 2026-09-28): el
+    """MINOR-2 (quinta ronda de la auditoría adversarial, 2026-09-27): el
     camino de EXCEPCIÓN de `sync_all()` REAL (no un fake) -- una excepción
     DENTRO del `try`, con el candado tomado -- también tiene que cerrar la
     fila 'error' con el candado TODAVÍA sostenido, mismo criterio que el
@@ -889,7 +889,7 @@ def test_ejecutar_reservada_cierra_error_con_el_candado_sostenido_si_sync_all_re
 
 def test_cierre_omitido_se_marca_cuando_nada_logra_cerrar_la_fila(
         client, monkeypatch, limpiar_catalogo_sync_ejecucion):
-    """MINOR-2 (quinta ronda de la auditoría adversarial, 2026-09-28):
+    """MINOR-2 (quinta ronda de la auditoría adversarial, 2026-09-27):
     escenario doblemente degradado -- `on_terminar` NO logra cerrar (ver
     `test_on_terminar_que_revienta_...` de arriba, mismo motivo cualquiera
     que sea) Y la red de seguridad final TAMPOCO -- `finalizar_ejecucion()`

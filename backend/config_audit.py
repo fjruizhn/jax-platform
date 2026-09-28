@@ -100,7 +100,7 @@ async def auditar(cur, *, actor_user_id: int | None, config_key: str,
     a la misma tabla, exactamente lo que el docstring del módulo dice que no
     puede pasar.
 
-    MINOR-4 (cuarta ronda de la auditoría adversarial, 2026-09-28): SÍ aplica
+    MINOR-4 (cuarta ronda de la auditoría adversarial, 2026-09-27): SÍ aplica
     `_visible()` -- antes esto decía que era contrato de `escribir()` para
     claves conocidas de `axioma_config`, pero eso dejaba la redacción
     dependiendo de que CADA llamador se acordara de aplicarla antes de

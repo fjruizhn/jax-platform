@@ -116,7 +116,7 @@ describe('DialogoProgramacionSync', () => {
     expect(screen.queryByText(/no es válida/i)).not.toBeInTheDocument()
   })
 
-  it('MINOR-3 (cuarta ronda de la auditoría adversarial, 2026-09-28): con cada_unidad ' +
+  it('MINOR-3 (cuarta ronda de la auditoría adversarial, 2026-09-27): con cada_unidad ' +
      'corrupta el <select> NO cae en "horas" en silencio -- arranca vacío y exige elegir', () => {
     // El defecto real: con cada_unidad="lunas" (fuera de UNIDADES), un
     // <select> controlado con ese value cae al PRIMER <option> ("horas") en

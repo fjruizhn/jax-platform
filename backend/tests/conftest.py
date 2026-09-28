@@ -77,7 +77,7 @@ asegurar_base_de_test()
 # El runner de CI no tiene /etc/jax/.env, asi que no tiene FERNET_KEY, y sin
 # ella no se pueden sembrar credenciales cifradas en la base de tests. Se
 # genera una FRESCA por sesión, SIEMPRE -- MINOR-5 (cuarta ronda de la
-# auditoría adversarial, 2026-09-28): un `setdefault` (la versión anterior)
+# auditoría adversarial, 2026-09-27): un `setdefault` (la versión anterior)
 # sólo protege cuando NADIE puso la variable antes -- si alguien corriera
 # `set -a; . /etc/jax/.env; set +a; pytest` (exportando TODO el .env, FERNET_KEY
 # real incluida, a mano, ANTES de arrancar pytest), el `setdefault` la
@@ -397,7 +397,7 @@ def _sembrar_credenciales_de_prueba(c) -> None:
 
     cifrada = encrypt_secret("ci-dummy-not-a-real-key")
 
-    # MINOR-5 (cuarta ronda de la auditoría adversarial, 2026-09-28):
+    # MINOR-5 (cuarta ronda de la auditoría adversarial, 2026-09-27):
     # `base_de_test.py` (líneas ~449-463) clona TODAS las tablas chicas de
     # la plantilla `jax_memory_test`, filas incluidas -- y `credential` es
     # una de ellas: 5 filas reales (openai/deepseek/gemini/moonshot/zhipu),

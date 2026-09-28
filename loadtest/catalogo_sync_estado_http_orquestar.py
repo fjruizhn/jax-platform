@@ -249,7 +249,7 @@ async def _abrir_candado_sostenido(env: dict):
     1 corriendo") dejaría de sostenerse durante la corrida completa. Quien
     abre esta conexión la cierra (eso libera el candado).
 
-    MAJOR-1 (quinta ronda de la auditoría adversarial, 2026-09-28): el
+    MAJOR-1 (quinta ronda de la auditoría adversarial, 2026-09-27): el
     nombre pasa por `model_catalog.nombre_candado()` -- MINOR-1 de la ronda
     anterior calificó el candado real con la base actual
     (`jax_catalogo_sync:<base>`), y este script seguía tomando el nombre
@@ -426,7 +426,7 @@ async def main_async(tmp: Path, jax_repo_dir: Path) -> None:
             print(f"[sync/estado] c={c} n={n} -> {r}")
             resultados["medidas"].append(r)
 
-        # MAJOR-1 (quinta ronda de la auditoría adversarial, 2026-09-28): la
+        # MAJOR-1 (quinta ronda de la auditoría adversarial, 2026-09-27): la
         # verificación de ARRIBA (antes del loop) sólo probaba que el peor
         # caso ESTABA sembrado al principio -- el defecto real (candado sin
         # calificar, ya arreglado arriba) hacía que la fila 'corriendo' se

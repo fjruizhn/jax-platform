@@ -22,7 +22,7 @@ export default function DialogoProgramacionSync({ config, onGuardado, onCerrar }
   const idValor = useId()
   const idUnidad = useId()
 
-  // MINOR-3 (cuarta ronda de la auditoría adversarial, 2026-09-28): un
+  // MINOR-3 (cuarta ronda de la auditoría adversarial, 2026-09-27): un
   // `<select>` CONTROLADO con un `value` que no matchea NINGÚN `<option>`
   // (una `cada_unidad` corrupta, fuera de UNIDADES) cae al PRIMER `<option>`
   // en pantalla ("horas") -- pero el estado de React sigue teniendo el

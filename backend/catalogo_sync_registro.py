@@ -118,7 +118,7 @@ async def marcar_huerfanas_interrumpidas(cur) -> None:
     latido) resuelven igual, sin caso especial: si el proceso que las creó
     ya no existe, su candado de trabajo también está libre.
 
-    MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27): el
     nombre del candado se califica con la base actual (`nombre_candado()`,
     único sitio que arma ese nombre) -- GET_LOCK/RELEASE_LOCK/IS_FREE_LOCK
     son globales al SERVIDOR de MariaDB, y en hall9000 la base de test vive
@@ -178,7 +178,7 @@ async def reservar_ejecucion(cur, conn, *, origen: str, iniciado_por: int | None
     `sync_en_curso`, mismo criterio que `model_catalog.sync_all()` para su
     propio candado.
 
-    MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): nombre
+    MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27): nombre
     calificado con la base actual, mismo motivo que el candado de trabajo
     (ver `marcar_huerfanas_interrumpidas`)."""
     from model_catalog import nombre_candado
@@ -240,7 +240,7 @@ async def finalizar_ejecucion(ejecucion_id: int, estado: str, resultado: dict | 
     los errores de proveedor que trae `resultado` ya vienen redactados
     desde `model_catalog.sync_all()`.
 
-    MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27): el
     UPDATE sólo pisa una fila que TODAVÍA está 'corriendo' -- si ya estaba
     cerrada (p.ej. `marcar_huerfanas_interrumpidas()` la marcó 'error' por
     una carrera real, o un llamador la cerró dos veces), no se la pisa en
@@ -364,7 +364,7 @@ async def ejecutar_reservada(ejecucion_id: int, *, marca_nuevos: str | None = No
     esto a una `BackgroundTask` con el `ejecucion_id` ya en mano, sin
     reservar dos veces.
 
-    MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27): el
     cierre PRIMARIO de la fila pasa por `on_terminar`, que
     `model_catalog.sync_all()` llama DENTRO de su propio `try` -- con el
     candado de trabajo TODAVÍA sostenido -- tanto en el camino feliz como en
