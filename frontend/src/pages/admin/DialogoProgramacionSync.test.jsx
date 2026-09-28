@@ -116,6 +116,40 @@ describe('DialogoProgramacionSync', () => {
     expect(screen.queryByText(/no es válida/i)).not.toBeInTheDocument()
   })
 
+  it('MINOR-3 (cuarta ronda de la auditoría adversarial, 2026-09-28): con cada_unidad ' +
+     'corrupta el <select> NO cae en "horas" en silencio -- arranca vacío y exige elegir', () => {
+    // El defecto real: con cada_unidad="lunas" (fuera de UNIDADES), un
+    // <select> controlado con ese value cae al PRIMER <option> ("horas") en
+    // pantalla -- pero el estado interno seguía siendo "lunas". Parecía una
+    // config válida en horas, lista para guardar tal cual, sin serlo.
+    renderDialogo({ config: { ...CONFIG_BASE, cada_unidad: 'lunas', valida: false } })
+
+    const select = screen.getByRole('combobox')
+    expect(select).toHaveValue('')  // NUNCA "horas" por default del navegador
+    expect(screen.getByText(/elegí una unidad/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /guardar/i })).toBeDisabled()
+  })
+
+  it('MINOR-3: elegir una unidad válida Y un valor habilita Guardar', () => {
+    // Los dos arrancan vacíos con la config inválida (ver el test de arriba)
+    // -- hace falta completar los dos, no sólo la unidad, para habilitar.
+    renderDialogo({ config: { ...CONFIG_BASE, cada_unidad: 'lunas', valida: false } })
+
+    expect(screen.getByRole('button', { name: /guardar/i })).toBeDisabled()
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'dias' } })
+    expect(screen.getByRole('button', { name: /guardar/i })).toBeDisabled()  // falta el valor
+
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '3' } })
+    expect(screen.getByRole('button', { name: /guardar/i })).not.toBeDisabled()
+  })
+
+  it('MINOR-3: con la config válida, el <select> arranca con la unidad real, no vacío', () => {
+    renderDialogo()
+    expect(screen.getByRole('combobox')).toHaveValue('horas')
+    expect(screen.queryByText(/elegí una unidad/i)).not.toBeInTheDocument()
+  })
+
   it('desmarcar el interruptor apaga la sincronización automática al guardar', async () => {
     api.put.mockResolvedValue({ data: { ...CONFIG_BASE, habilitado: false } })
     renderDialogo()

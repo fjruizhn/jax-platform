@@ -22,9 +22,20 @@ export default function DialogoProgramacionSync({ config, onGuardado, onCerrar }
   const idValor = useId()
   const idUnidad = useId()
 
+  // MINOR-3 (cuarta ronda de la auditoría adversarial, 2026-09-28): un
+  // `<select>` CONTROLADO con un `value` que no matchea NINGÚN `<option>`
+  // (una `cada_unidad` corrupta, fuera de UNIDADES) cae al PRIMER `<option>`
+  // en pantalla ("horas") -- pero el estado de React sigue teniendo el
+  // valor corrupto. Mostraba "horas" mintiendo: parecía una config válida
+  // (y guardable tal cual) cuando no lo era. Con la config inválida o la
+  // unidad desconocida, el estado arranca VACÍO -- el `<select>` lo
+  // refleja con un placeholder sin elegir, y Guardar queda deshabilitado
+  // hasta que se elija de verdad.
+  const configUtilizable = config.valida !== false && UNIDADES.includes(config.cada_unidad)
+
   const [habilitado, setHabilitado] = useState(config.habilitado)
-  const [cadaValor, setCadaValor] = useState(String(config.cada_valor))
-  const [cadaUnidad, setCadaUnidad] = useState(config.cada_unidad)
+  const [cadaValor, setCadaValor] = useState(configUtilizable ? String(config.cada_valor) : '')
+  const [cadaUnidad, setCadaUnidad] = useState(configUtilizable ? config.cada_unidad : '')
   const [guardando, setGuardando] = useState(false)
   const [error, setError] = useState(null)
 
@@ -105,6 +116,9 @@ export default function DialogoProgramacionSync({ config, onGuardado, onCerrar }
               disabled={!habilitado}
               className="bg-superficie border border-borde-control rounded px-2 py-1 text-sm text-texto disabled:opacity-50"
             >
+              {cadaUnidad === '' && (
+                <option value="" disabled>{t.adminModelsProgramacionUnidadElegir}</option>
+              )}
               {UNIDADES.map(u => <option key={u} value={u}>{t[UNIDAD_KEY[u]]}</option>)}
             </select>
           </label>
@@ -131,7 +145,7 @@ export default function DialogoProgramacionSync({ config, onGuardado, onCerrar }
         <div className="flex items-center gap-2">
           <button
             type="submit"
-            disabled={guardando}
+            disabled={guardando || cadaValor === '' || cadaUnidad === ''}
             className="text-xs px-3 py-1.5 rounded-lg bg-acento hover:bg-acento-hover text-sobre-color font-semibold disabled:opacity-50 transition-colors"
           >
             {guardando ? t.adminModelsProgramacionGuardando : t.adminModelsProgramacionGuardar}

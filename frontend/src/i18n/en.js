@@ -683,6 +683,7 @@ export default {
   adminModelsSyncPollingError: 'Could not check the sync status (network error).',
   adminModelsSyncReintentar: 'Retry',
   adminModelsProgramacionUnidadEtiqueta: 'Unit',
+  adminModelsProgramacionUnidadElegir: 'Choose a unit',
   catalogo_sync_config_invalida: (campo) => `Invalid value for "${campo}".`,
   adminModelsProgramacionConfigInvalida: 'The saved configuration is not valid (corrupted data). Pick a valid value and unit and save to repair it.',
   adminModelsProvider: 'Provider',
