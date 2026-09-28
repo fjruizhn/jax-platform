@@ -1,5 +1,5 @@
 """Las credenciales de prueba sembradas por conftest.py decodifican de
-verdad con la FERNET_KEY de esta sesión (2026-09-28, MINOR-5 de la cuarta
+verdad con la FERNET_KEY de esta sesión (2026-09-27, MINOR-5 de la cuarta
 ronda de la auditoría adversarial).
 
 Hallazgo real: `base_de_test.py` clona TODAS las tablas chicas de la
@@ -120,7 +120,7 @@ _PROVEEDORES_SEMBRADOS = [
 
 
 def test_las_5_credenciales_sembradas_por_el_conftest_real_decodifican_con_la_llave_de_la_sesion(client):
-    """MINOR-4 (quinta ronda de la auditoría adversarial, 2026-09-28): SIN
+    """MINOR-4 (quinta ronda de la auditoría adversarial, 2026-09-27): SIN
     fixture de corrupción y SIN depender de qué corrió antes -- ejercita el
     sembrado REAL que ya corrió al levantar `client` (fixture de sesión, la
     MISMA que usa toda la suite), tal cual lo deja para el resto de la
@@ -128,7 +128,23 @@ def test_las_5_credenciales_sembradas_por_el_conftest_real_decodifican_con_la_ll
     `_sembrar_credenciales_de_prueba()` en conftest.py, este es el test que
     se entera: las 5 filas activas volverían a ser las heredadas de la
     plantilla `jax_memory_test`, indescifrables con la llave de esta
-    sesión (ver el docstring del módulo)."""
+    sesión (ver el docstring del módulo).
+
+    ALCANCE DECLARADO (MINOR-4, sexta ronda de la auditoría adversarial,
+    2026-09-27): este control es efectivo en LOCAL (hall9000), donde la
+    plantilla `jax_memory_test` de verdad trae las 5 filas reales de
+    `credential` cifradas con una llave vieja -- ahí, sin la reparación,
+    `_sembrar_credenciales_de_prueba()` encuentra una fila "activa" ya
+    puesta y NUNCA llega a insertar la suya. En CI la plantilla se arma
+    SIN esas filas (nada las siembra en ese entorno), así que la tabla
+    `credential` está vacía cuando corre el sembrado real -- CUALQUIER
+    versión de `_sembrar_credenciales_de_prueba()` (con o sin la
+    reparación) inserta su propia fila ahí, y este test pasaría igual
+    aunque la reparación se revirtiera. No hay una fixture portable que
+    reproduzca el estado real de la plantilla de hall9000 sin tocar la
+    plantilla misma (fuera de alcance de este test) -- la cobertura real
+    del defecto queda en local; en CI este test corre como control de que
+    el sembrado sigue funcionando, no como regresión de la reparación."""
     for provider_id, _env_key in _PROVEEDORES_SEMBRADOS:
         _id, valor_cifrado = client.portal.call(_fila_activa, provider_id)
         assert decrypt_db_secret(valor_cifrado) == "ci-dummy-not-a-real-key", (
