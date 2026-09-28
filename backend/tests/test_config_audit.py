@@ -12,6 +12,7 @@ nadie la limpia por nosotros.
 import ast
 import asyncio
 import pathlib
+import re
 
 import pytest
 
@@ -203,29 +204,166 @@ def test_escribir_exige_saber_quien_lo_hizo():
         asyncio.run(config_audit.escribir(None, {"k": "v"}, None, "config"))
 
 
+def test_auditar_redacta_por_su_cuenta_sin_depender_de_quien_la_llama():
+    """MINOR-4 (cuarta ronda de la auditoría adversarial, 2026-09-27):
+    `auditar()` aplica `_visible()` ELLA MISMA -- se prueba llamándola
+    DIRECTO (no a través de `escribir()`), con un cursor falso que sólo
+    graba los parámetros del INSERT, para confirmar que la redacción no
+    depende de que el llamador se acuerde de aplicarla antes."""
+    llamadas = []
+
+    class _CursorFalso:
+        async def execute(self, _sql, params):
+            llamadas.append(params)
+
+    asyncio.run(config_audit.auditar(
+        _CursorFalso(), actor_user_id=1, config_key="smtp.password",
+        valor_anterior="secreto-viejo", valor_nuevo="secreto-nuevo",
+        origen="smtp"))
+
+    ((_actor, _clave, valor_anterior, valor_nuevo, _origen, _ip),) = llamadas
+    assert valor_anterior == config_audit.REDACTADO
+    assert valor_nuevo == config_audit.REDACTADO
+
+
 # ------------------------------------------------------------- detector
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent
+
+#
+# MINOR-5 (quinta ronda de la auditoría adversarial, 2026-09-27): una sola
+# regex de escritores, COMPARTIDA por `axioma_config` y `axioma_config_audit`
+# -- antes eran dos juegos de patrones casi idénticos (uno armado en la
+# cuarta ronda para `_audit`, el original de `axioma_config` sin
+# actualizar) con el mismo riesgo de divergir: un arreglo en uno que se
+# olvida del otro. `_patrones_de_escritura(tabla)` arma los patrones para
+# CUALQUIER nombre de tabla; `_escribe_tabla(texto, tabla)` es el único
+# escáner. El `(?![A-Z0-9_])` al final del nombre de tabla (en vez de `\b`)
+# sigue siendo necesario -- una comilla invertida de cierre inmediatamente
+# seguida de un espacio no es un "borde de palabra" para `\b`, pero sí
+# tiene que contar como "la tabla termina acá" para este detector; `\b`
+# fallaba justo en ese caso (comillas invertidas).
+#
+# Formas que ahora se ven, además del nombre pelado con `INSERT INTO`:
+#   - comillas invertidas: `` `tabla` ``;
+#   - prefijo de base: `mibase.tabla`, con o sin comillas invertidas en
+#     cada parte;
+#   - `INTO` opcional en INSERT/REPLACE (la gramática de MariaDB/MySQL no
+#     lo exige: `INSERT tabla (...)` es SQL válido);
+#   - modificadores opcionales de INSERT/REPLACE (`LOW_PRIORITY`,
+#     `DELAYED`, `HIGH_PRIORITY`, `IGNORE`) y de UPDATE/DELETE
+#     (`LOW_PRIORITY`, `IGNORE`, y `QUICK` sólo en DELETE) entre el verbo y
+#     el nombre de la tabla -- p.ej. `UPDATE LOW_PRIORITY tabla SET ...` o
+#     `INSERT LOW_PRIORITY IGNORE INTO tabla ...`;
+#   - `DELETE` multi-tabla, DOS formas: la tabla pegada a `DELETE` --
+#     `DELETE tabla, otra FROM tabla JOIN otra ON ...` -- y la tabla pegada
+#     a `FROM`, en CUALQUIER posición de la sentencia (no sólo inmediata
+#     después de `DELETE`) -- `DELETE FROM tabla, otra USING ...` y también
+#     `DELETE alias FROM tabla alias WHERE ...` (MINOR-3, sexta ronda de la
+#     auditoría adversarial, 2026-09-27: la versión anterior de este
+#     comentario decía que las "dos formas" ya estaban cubiertas, pero el
+#     patrón exigía que `FROM` viniera INMEDIATAMENTE después de `DELETE` --
+#     un alias en el medio, como en `DELETE alias FROM tabla alias`, no
+#     matcheaba. Ahora el patrón de FROM busca la tabla en cualquier punto
+#     posterior a `DELETE`, no sólo pegada);
+#   - `UPDATE` multi-tabla: `UPDATE otra JOIN tabla ON ... SET tabla.x = ...`
+#     (la tabla como el JOIN, no la primera) y la sintaxis vieja
+#     `UPDATE otra, tabla SET tabla.x = ...` (lista separada por comas, sin
+#     JOIN) -- las dos formas dejan escribir una tabla que NO es la primera
+#     nombrada después de `UPDATE`;
+#   - `TRUNCATE [TABLE] tabla` -- borra todas las filas, tan escritura como
+#     un DELETE sin WHERE;
+#   - `LOAD DATA ... INTO TABLE tabla` -- carga masiva, un tercer camino de
+#     escritura además de INSERT/REPLACE.
+_MODIFICADORES_INSERT = r"(?:(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE)\s+)*"
+_MODIFICADORES_UPDATE = r"(?:(?:LOW_PRIORITY|IGNORE)\s+)*"
+_MODIFICADORES_DELETE = r"(?:(?:LOW_PRIORITY|QUICK|IGNORE)\s+)*"
+
+
+def _patron_de_tabla(tabla: str) -> str:
+    return rf"`?(?:[A-Z0-9_$]+`?\.`?)?{tabla}(?![A-Z0-9_])"
+
+
+def _patrones_de_escritura(tabla: str) -> tuple:
+    t = _patron_de_tabla(tabla)
+    return tuple(re.compile(p) for p in (
+        rf"INSERT\s+{_MODIFICADORES_INSERT}(?:INTO\s+)?{t}",
+        rf"REPLACE\s+{_MODIFICADORES_INSERT}(?:INTO\s+)?{t}",
+        # UPDATE: la tabla justo después del verbo (caso simple), O en
+        # cualquier punto posterior a un JOIN o una coma (multi-tabla).
+        rf"UPDATE\s+{_MODIFICADORES_UPDATE}{t}",
+        rf"UPDATE\b.*?(?:JOIN|,)\s*{t}",
+        # DELETE: la tabla pegada al verbo (listado multi-tabla), O en
+        # cualquier punto posterior a un FROM -- no necesariamente el FROM
+        # inmediato después de DELETE (cubre alias en el medio).
+        rf"DELETE\s+{_MODIFICADORES_DELETE}{t}",
+        rf"DELETE\b.*?FROM\s+{_MODIFICADORES_DELETE}{t}",
+        rf"TRUNCATE\s+(?:TABLE\s+)?{t}",
+        rf"LOAD\s+DATA\b.*?INTO\s+TABLE\s+{t}",
+    ))
+
+
+def _nodos_de_docstring(arbol: ast.AST) -> set:
+    """Los `ast.Constant` que SON docstrings de verdad -- el PRIMER
+    statement del módulo, o de una clase/función/función async, exactamente
+    la definición de Python (`ast.get_docstring`). MINOR-3 (sexta ronda de
+    la auditoría adversarial, 2026-09-27): una docstring que MENCIONA una
+    tabla en su prosa -- "antes, X tenía su propio INSERT INTO
+    axioma_config_audit crudo", por ejemplo, un patrón que este mismo
+    árbol usa seguido para explicar POR QUÉ algo cambió -- no es una
+    escritura real, y no tiene que contar como una. Se identifican por
+    posición (primer statement de su scope), no por heurística de
+    contenido: así no hace falta adivinar qué "parece" documentación."""
+    nodos = set()
+    scopes = [arbol] + [n for n in ast.walk(arbol)
+                        if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))]
+    for scope in scopes:
+        if (scope.body and isinstance(scope.body[0], ast.Expr)
+                and isinstance(scope.body[0].value, ast.Constant)
+                and isinstance(scope.body[0].value.value, str)):
+            nodos.add(id(scope.body[0].value))
+    return nodos
+
+
+def _escribe_tabla(texto: str, tabla: str) -> bool:
+    """Mira los LITERALES de cadena del módulo que NO son docstrings (no el
+    texto crudo): un comentario `#` nunca es un nodo del AST (no hace falta
+    excluirlo aparte), una docstring de verdad se excluye explícitamente
+    (`_nodos_de_docstring`), y una consulta partida en varias líneas sí
+    cuenta (ast concatena los literales adyacentes en uno solo)."""
+    patrones = _patrones_de_escritura(tabla)
+    arbol = ast.parse(texto)
+    docstrings = _nodos_de_docstring(arbol)
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str):
+            if id(nodo) in docstrings:
+                continue
+            aplanado = " ".join(nodo.value.upper().split())
+            if any(patron.search(aplanado) for patron in patrones):
+                return True
+    return False
+
+
+def _escribe_config(texto: str) -> bool:
+    return _escribe_tabla(texto, "AXIOMA_CONFIG")
+
+
+def _escribe_config_audit(texto: str) -> bool:
+    return _escribe_tabla(texto, "AXIOMA_CONFIG_AUDIT")
+
+
 # Los DOS únicos archivos que pueden escribir axioma_config:
 #   - config_audit.py: el escritor auditado (es el punto de esta rama);
 #   - db/migrations.py: las semillas de arranque (INSERT IGNORE), que no son
 #     el cambio de nadie y corren antes de que exista una sesión.
 # Cualquier otro escritor nuevo vuelve a abrir el agujero que esto cerró.
 ESCRITORES_PERMITIDOS = {"config_audit.py", "db/migrations.py"}
-_ESCRITURAS = ("INSERT INTO AXIOMA_CONFIG", "INSERT IGNORE INTO AXIOMA_CONFIG",
-               "UPDATE AXIOMA_CONFIG", "DELETE FROM AXIOMA_CONFIG")
 
-
-def _escribe_config(texto: str) -> bool:
-    """Mira los LITERALES de cadena del módulo (no el texto crudo): un
-    comentario que nombre la tabla no cuenta, y una consulta partida en varias
-    líneas sí (ast concatena las adyacentes)."""
-    for nodo in ast.walk(ast.parse(texto)):
-        if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str):
-            aplanado = " ".join(nodo.value.upper().split())
-            if any(e in aplanado for e in _ESCRITURAS):
-                return True
-    return False
+# `config_audit.auditar()` (MINOR-6, tercera ronda) es el ÚNICO INSERT crudo
+# a `axioma_config_audit` en todo el árbol -- `escribir()` la llama para su
+# propio rastro, y `catalogo_sync_config.py` (su propia tabla tipada, no
+# `axioma_config`) la llama directo.
+ESCRITORES_PERMITIDOS_AUDITORIA = {"config_audit.py"}
 
 
 def test_ningun_otro_modulo_escribe_axioma_config():
@@ -241,9 +379,142 @@ def test_ningun_otro_modulo_escribe_axioma_config():
         f"{sorted(culpables ^ ESCRITORES_PERMITIDOS)}")
 
 
-def test_el_detector_ve_una_escritura_nueva():
-    """Un control que no falla no valida."""
-    assert _escribe_config('"INSERT INTO axioma_config (config_key) VALUES (%s)"')
-    assert _escribe_config('("UPDATE axioma_config SET config_value = %s "\n "WHERE config_key = %s")')
-    assert not _escribe_config('"SELECT config_value FROM axioma_config WHERE config_key = %s"')
-    assert not _escribe_config('# INSERT INTO axioma_config: esto es un comentario\nx = 1')
+def test_ningun_otro_modulo_escribe_axioma_config_audit():
+    culpables = set()
+    for ruta in RAIZ.rglob("*.py"):
+        relativa = ruta.relative_to(RAIZ).as_posix()
+        if relativa.startswith(("tests/", ".venv/")):
+            continue
+        if _escribe_config_audit(ruta.read_text(encoding="utf-8")):
+            culpables.add(relativa)
+    assert culpables == ESCRITORES_PERMITIDOS_AUDITORIA, (
+        "escritor de axioma_config_audit fuera de config_audit.py (o config_audit.py dejó de "
+        f"escribirla): {sorted(culpables ^ ESCRITORES_PERMITIDOS_AUDITORIA)}")
+
+
+@pytest.mark.parametrize("escribe,tabla", [
+    (_escribe_config, "axioma_config"),
+    (_escribe_config_audit, "axioma_config_audit"),
+])
+class TestDetectorCompartido:
+    """Un control que no falla no valida -- las MISMAS formas, para las DOS
+    tablas, contra el MISMO detector (MINOR-5: la razón de compartirlo es
+    justamente poder escribir el test una sola vez y correrlo dos veces)."""
+
+    def test_forma_basica(self, escribe, tabla):
+        assert escribe(f'SQL_DE_PRUEBA = "INSERT INTO {tabla} (config_key) VALUES (%s)"')
+        assert escribe(f'SQL_DE_PRUEBA = ("UPDATE {tabla} SET x = %s "\n "WHERE config_key = %s")')
+        assert not escribe(f'SQL_DE_PRUEBA = "SELECT config_key FROM {tabla} WHERE config_key = %s"')
+        assert not escribe(f'# INSERT INTO {tabla}: esto es un comentario\nx = 1')
+
+    def test_comillas_invertidas(self, escribe, tabla):
+        assert escribe(f'SQL_DE_PRUEBA = "INSERT INTO `{tabla}` (config_key) VALUES (%s)"')
+        assert escribe(f'SQL_DE_PRUEBA = "UPDATE `{tabla}` SET ip = %s WHERE id = %s"')
+
+    def test_replace_con_y_sin_into(self, escribe, tabla):
+        assert escribe(f'SQL_DE_PRUEBA = "REPLACE INTO {tabla} (id, ts) VALUES (%s, %s)"')
+        assert escribe(f'SQL_DE_PRUEBA = "REPLACE {tabla} (id, ts) VALUES (%s, %s)"')
+
+    def test_insert_sin_into(self, escribe, tabla):
+        assert escribe(f'SQL_DE_PRUEBA = "INSERT {tabla} (config_key) VALUES (%s)"')
+
+    def test_prefijo_de_base(self, escribe, tabla):
+        assert escribe(f'SQL_DE_PRUEBA = "INSERT INTO jax_memory.{tabla} (id) VALUES (%s)"')
+        assert escribe(f'SQL_DE_PRUEBA = "INSERT INTO `jax_memory`.`{tabla}` (id) VALUES (%s)"')
+        assert escribe(f'SQL_DE_PRUEBA = "INSERT INTO `jax_memory`.{tabla} (id) VALUES (%s)"')
+
+    def test_modificadores_de_insert(self, escribe, tabla):
+        assert escribe(f'SQL_DE_PRUEBA = "INSERT LOW_PRIORITY INTO {tabla} (id) VALUES (%s)"')
+        assert escribe(f'SQL_DE_PRUEBA = "INSERT DELAYED {tabla} (id) VALUES (%s)"')
+        assert escribe(f'SQL_DE_PRUEBA = "INSERT HIGH_PRIORITY IGNORE INTO {tabla} (id) VALUES (%s)"')
+        assert escribe(f'SQL_DE_PRUEBA = "INSERT IGNORE INTO {tabla} (id) VALUES (%s)"')
+
+    def test_update_low_priority(self, escribe, tabla):
+        assert escribe(f'SQL_DE_PRUEBA = "UPDATE LOW_PRIORITY {tabla} SET x = %s WHERE id = %s"')
+        assert escribe(f'SQL_DE_PRUEBA = "UPDATE LOW_PRIORITY IGNORE {tabla} SET x = %s WHERE id = %s"')
+
+    def test_delete_con_modificadores(self, escribe, tabla):
+        assert escribe(f'SQL_DE_PRUEBA = "DELETE LOW_PRIORITY QUICK IGNORE FROM {tabla} WHERE id = %s"')
+
+    def test_delete_multi_tabla(self, escribe, tabla):
+        # La tabla pegada a DELETE, antes de cualquier FROM.
+        assert escribe(f'SQL_DE_PRUEBA = "DELETE {tabla}, otra FROM {tabla} JOIN otra ON otra.id = {tabla}.id"')
+        # La tabla pegada a FROM, en la lista de un DELETE ... USING.
+        assert escribe(f'SQL_DE_PRUEBA = "DELETE FROM {tabla}, otra USING {tabla} JOIN otra ON otra.id = {tabla}.id"')
+
+    def test_delete_con_alias_y_from_no_inmediato(self, escribe, tabla):
+        """MINOR-3: `DELETE alias FROM tabla alias WHERE ...` -- el `FROM`
+        NO viene inmediatamente después de `DELETE` (hay un alias en el
+        medio), así que un patrón que exigiera esa adyacencia se lo perdía
+        entero."""
+        assert escribe(f'SQL_DE_PRUEBA = "DELETE a FROM {tabla} a WHERE a.config_key = %s"')
+
+    def test_update_join(self, escribe, tabla):
+        """MINOR-3: `UPDATE otra JOIN tabla ON ... SET tabla.x = ...` -- la
+        tabla escrita es la del JOIN, no la primera después de UPDATE."""
+        assert escribe(f'SQL_DE_PRUEBA = "UPDATE otra JOIN {tabla} ON otra.id = {tabla}.id SET {tabla}.x = %s"')
+
+    def test_update_multi_tabla_con_coma(self, escribe, tabla):
+        """MINOR-3: sintaxis vieja de UPDATE multi-tabla -- lista de tablas
+        separada por comas, sin JOIN."""
+        assert escribe(f'SQL_DE_PRUEBA = "UPDATE otra, {tabla} SET {tabla}.x = %s WHERE otra.id = {tabla}.id"')
+
+    def test_truncate(self, escribe, tabla):
+        assert escribe(f'SQL_DE_PRUEBA = "TRUNCATE {tabla}"')
+        assert escribe(f'SQL_DE_PRUEBA = "TRUNCATE TABLE {tabla}"')
+
+    def test_load_data_into_table(self, escribe, tabla):
+        assert escribe(f'SQL_DE_PRUEBA = "LOAD DATA LOCAL INFILE %s INTO TABLE {tabla}"')
+        assert escribe(f'SQL_DE_PRUEBA = "LOAD DATA INFILE %s REPLACE INTO TABLE {tabla}"')
+
+    def test_no_confunde_una_tabla_que_solo_comparte_el_prefijo(self, escribe, tabla):
+        assert not escribe(f'SQL_DE_PRUEBA = "INSERT INTO `{tabla}_no_es_una_tabla_real` (id) VALUES (%s)"')
+        assert not escribe(f'SQL_DE_PRUEBA = "INSERT INTO jax_memory.{tabla}_no_es_una_tabla_real (id) VALUES (%s)"')
+
+    def test_una_docstring_que_menciona_la_tabla_no_cuenta_como_escritor(self, escribe, tabla):
+        """MINOR-3: una docstring que EXPLICA algo citando SQL de ejemplo --
+        patrón real y frecuente en este árbol ("antes, X tenía su propio
+        INSERT INTO ... crudo") -- no es una escritura. Sólo cuenta si el
+        mismo texto aparece como un LITERAL usado de verdad (no como
+        docstring)."""
+        modulo_con_docstring_nada_mas = (
+            '"""Esto documenta algo.\n\n'
+            f'Antes este modulo tenia su propio INSERT INTO {tabla} (id) VALUES (%s)\n'
+            'crudo -- ya no: ahora llama a la funcion compartida.\n'
+            '"""\n'
+            'x = 1\n'
+        )
+        assert not escribe(modulo_con_docstring_nada_mas)
+
+        def_con_docstring = (
+            'def f():\n'
+            f'    """INSERT INTO {tabla} (id) VALUES (%s) -- esto es solo un ejemplo en prosa."""\n'
+            '    return 1\n'
+        )
+        assert not escribe(def_con_docstring)
+
+        # Control positivo: el MISMO texto, pero como literal usado de
+        # verdad (no el primer statement de una función) -- SÍ cuenta.
+        def_con_literal_real = (
+            'def f(cur):\n'
+            '    x = 1\n'
+            f'    return cur.execute("INSERT INTO {tabla} (id) VALUES (%s)")\n'
+        )
+        assert escribe(def_con_literal_real)
+
+
+def test_el_detector_no_confunde_axioma_config_audit_con_axioma_config():
+    """Falso positivo real, encontrado al agregar MAJOR-2
+    (catalogo_sync_config.py escribe en axioma_config_audit, una tabla
+    DISTINTA, reusando la MISMA tabla de auditoría genérica que ya usa
+    config_audit.py) -- sin el `(?![A-Z0-9_])` al final del nombre, la
+    comparación por substring de antes ("INSERT INTO AXIOMA_CONFIG" adentro
+    de "INSERT INTO AXIOMA_CONFIG_AUDIT (...)") daba un falso positivo
+    real, medido al agregar esa auditoría."""
+    assert not _escribe_config(
+        '"INSERT INTO axioma_config_audit (ts, actor_user_id) VALUES (%s, %s)"')
+    assert not _escribe_config(
+        '("INSERT INTO axioma_config_audit "\n "(ts, actor_user_id) VALUES (%s, %s)")')
+    # Control positivo con la MISMA tabla real, sin el sufijo: sigue viéndose.
+    assert _escribe_config('SQL_DE_PRUEBA = "INSERT INTO axioma_config_audit_no_es_una_tabla_real" '
+                           '"; INSERT INTO axioma_config (k) VALUES (1)"')

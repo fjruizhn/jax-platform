@@ -51,3 +51,7 @@ loadtest/_memoria_resultados*.json
 # "no se commitea", pero nada lo hacía cumplir. Quedaba untracked por
 # disciplina del que corre el script, no por regla del repo.
 loadtest/_descartados_resultados*.json
+
+# Catálogo de modelos (2026-09-27): mismo motivo. catalogo_sync_estado_http_orquestar.py
+# escribe aquí el resultado de cada corrida; el número vive en el PR y en la Biblioteca.
+loadtest/_resultados_catalogo_sync_estado*.json

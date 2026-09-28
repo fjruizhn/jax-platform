@@ -110,9 +110,13 @@ TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
 
 #: No se reavisa del MISMO conjunto de "problemas" antes de que pase esto --
-#: evita el spam de "sigue roto" cada 6 h (el timer corre cada 6 h, ver
-#: ops/); un problema NUEVO, en cambio, avisa de inmediato. "nuevos" NO usa
-#: esta ventana -- ver `_avisar`.
+#: evita el spam de "sigue roto" en cada intento real de sync (el timer de
+#: systemd pasa a correr cada HORA desde 2026-09-27 -- ver ops/ -- pero el
+#: gate de `catalogo_sync_config` sólo deja pasar un intento real cada
+#: `cada_valor`/`cada_unidad`, 6 horas por defecto; los ticks horarios que el
+#: gate cierra ni siquiera llegan a este dedupe, ver `_CODIGOS_GATE_CERRADO`);
+#: un problema NUEVO, en cambio, avisa de inmediato. "nuevos" NO usa esta
+#: ventana -- ver `_avisar`.
 VENTANA_REAVISO_SEGUNDOS = 24 * 60 * 60
 
 #: MINOR-5 (cuarta auditoría adversarial, 2026-09-28): Telegram acepta hasta
@@ -121,9 +125,12 @@ VENTANA_REAVISO_SEGUNDOS = 24 * 60 * 60
 LIMITE_TELEGRAM = 4000
 
 #: MAJOR-2(c) (cuarta auditoría adversarial, 2026-09-28): un candado ocupado
-#: UNA vez no es alarmante (el timer corre cada 6h, alguien más lo puede
-#: estar usando en este instante); a partir de la SEGUNDA corrida
-#: CONSECUTIVA probablemente está trabado de verdad.
+#: UNA vez no es alarmante (alguien más -- un click manual, u otro intento
+#: real que el gate de `catalogo_sync_config` dejó pasar -- lo puede estar
+#: usando en este instante); a partir de la SEGUNDA corrida CONSECUTIVA
+#: probablemente está trabado de verdad. Este contador SÓLO avanza en
+#: intentos reales (nunca en un tick horario que el gate cerró sin tocar
+#: nada, ver `_limpiar_contador_sync_en_curso` y `_CODIGOS_GATE_CERRADO`).
 CONSECUTIVOS_SYNC_EN_CURSO_ANTES_DE_AVISAR = 2
 
 
@@ -458,9 +465,17 @@ async def _avisar(resultado: dict) -> str:
 def _resumen(resultado: dict) -> str:
     conteo_nuevos = {p: len(ids) for p, ids in (resultado.get("nuevos") or {}).items()}
     facetas = [f["facet_key"] for f in resultado.get("facetas_en_riesgo") or []]
+    code = resultado.get("code")
+    # 2026-09-27, hallado en producción al desplegar #167: sin esto, una
+    # corrida que el gate saltó imprimía lo mismo que un sync real sano. El
+    # `logger.info` que lo explica no se ve porque el ejecutor no configura
+    # logging a propósito (el INFO de httpx llevaría la URL con el token del
+    # bot de Telegram), así que la distinción tiene que ir en esta línea.
+    salto = " (sin sincronizar)" if code in _CODIGOS_GATE_CERRADO else ""
     return (
-        f"catalogo_modelos ok={resultado['ok']} "
-        f"providers_fallidos={resultado.get('providers_fallidos')} "
+        f"catalogo_modelos ok={resultado['ok']}"
+        + (f" code={code}{salto}" if code else "")
+        + f" providers_fallidos={resultado.get('providers_fallidos')} "
         f"providers_saltados={resultado.get('providers_saltados')} "
         f"enrich_fallido={resultado.get('enrich_fallido')} "
         f"nuevos={conteo_nuevos} "
@@ -468,22 +483,83 @@ def _resumen(resultado: dict) -> str:
     )
 
 
-async def _correr() -> dict:
-    """`model_catalog` y `close_pool` se importan ACÁ ADENTRO, no al tope
-    del módulo -- ver el párrafo grande del docstring del módulo (MAJOR-1).
-    Si `model_catalog` (o algo que él importa) revienta al cargarse, la
-    excepción sale de ESTA función, que `_ciclo()` corre con un try
-    alrededor.
+#: Códigos que significan "el gate de configuración decidió no correr nada
+#: -- ni el candado de trabajo, ni una fila de ejecución, ni ningún aviso".
+#: `_ciclo()` los trata como un no-op total (2026-09-27, pedido de Fernando:
+#: encender/apagar el timer y elegir cada cuánto corre). El timer de systemd
+#: pasa a `OnCalendar=hourly`, así que la MAYORÍA de las corridas van a
+#: caer acá -- por eso, a diferencia de `sync_en_curso`, este resultado
+#: NUNCA toca el estado de dedupe de "problemas" ni el contador de candado
+#: ocupado: un ciclo que decide no correr no es evidencia de que el
+#: catálogo esté sano NI de que esté roto.
+_CODIGO_PROGRAMADO_APAGADO = "programado_apagado"
+_CODIGO_PROGRAMADO_NO_TOCA = "programado_no_toca"
+_CODIGOS_GATE_CERRADO = frozenset({_CODIGO_PROGRAMADO_APAGADO, _CODIGO_PROGRAMADO_NO_TOCA})
 
-    Calcula la marca de "nuevos" a usar (MINOR-4, cuarta auditoría
-    adversarial, 2026-09-28): la que esté guardada en el archivo de estado,
-    o -- si todavía no hay ninguna -- `NOW()` de la base capturado ANTES de
-    correr el sync, para que lo que entre en ESTA misma corrida sí cuente
-    como nuevo. Se la pasa a `model_catalog.sync_all(marca_nuevos=...)`, que
-    hace la consulta real TODAVÍA con el candado tomado (MINOR-2)."""
-    import model_catalog
+
+def _resultado_sin_tocar_nada(code: str) -> dict:
+    """Misma FORMA que un `model_catalog.sync_all()` sano y vacío -- para
+    que `_resumen()` no explote leyendo claves que no están -- pero con un
+    `code` propio que `_ciclo()` reconoce para NO tocar ningún estado
+    persistido (ver `_CODIGOS_GATE_CERRADO`)."""
+    return {
+        "ok": True, "code": code, "providers": [], "enrich": {}, "providers_fallidos": [],
+        "providers_saltados": [], "enrich_fallido": False, "nuevos": {}, "facetas_en_riesgo": [],
+    }
+
+
+async def _correr() -> dict:
+    """`model_catalog`, `catalogo_sync_config`, `catalogo_sync_registro` y
+    `close_pool` se importan ACÁ ADENTRO, no al tope del módulo -- ver el
+    párrafo grande del docstring del módulo (MAJOR-1). Si alguno revienta al
+    cargarse, la excepción sale de ESTA función, que `_ciclo()` corre con un
+    try alrededor.
+
+    Gate de configuración (2026-09-27, pedido de Fernando -- el timer de
+    systemd pasa a `OnCalendar=hourly` y ESTA función decide si de verdad
+    toca): primero lee `catalogo_sync_config` (si la lectura falla, la
+    excepción se deja propagar tal cual -- una config ilegible es un fallo
+    real, no se puede callar). Si está deshabilitado, o si no pasó el
+    intervalo desde la última actualización EXITOSA (contando también las
+    manuales -- `catalogo_sync_registro.ultima_actualizacion_exitosa`), no
+    se toca nada en absoluto: ni el candado de trabajo, ni una fila de
+    ejecución.
+
+    Si toca correr, calcula la marca de "nuevos" a usar (MINOR-4, cuarta
+    auditoría adversarial, 2026-09-28): la que esté guardada en el archivo
+    de estado, o -- si todavía no hay ninguna -- `NOW()` de la base
+    capturado ANTES de correr el sync, para que lo que entre en ESTA misma
+    corrida sí cuente como nuevo. La orquestación real (candado de trabajo,
+    avance registrado, marca de "nuevos") vive en
+    `catalogo_sync_registro.correr_sync_registrado()`, compartida con el
+    endpoint manual -- Regla Absoluta, una sola fuente."""
+    import catalogo_sync_config
+    import catalogo_sync_registro
     from db.connection import get_pool, close_pool
     try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                config = await catalogo_sync_config.leer_config(cur)
+                # UTC_TIMESTAMP(), no NOW() (MINOR-6): `ultima_exitosa` viene
+                # de `catalogo_sync_ejecucion.terminado_en`, escrita en UTC
+                # -- comparar contra un NOW() en CST desalinearía el gate por
+                # las 6 horas de diferencia de la sesión de MariaDB.
+                await cur.execute("SELECT UTC_TIMESTAMP()")
+                (ahora,) = await cur.fetchone()
+                ultima_exitosa = await catalogo_sync_registro.ultima_actualizacion_exitosa(cur)
+
+        if not config["habilitado"]:
+            logger.info("catalogo_modelos_ejecutor: sync programado apagado por configuración -- no se tocó nada")
+            return _resultado_sin_tocar_nada(_CODIGO_PROGRAMADO_APAGADO)
+
+        if not catalogo_sync_config.toca_correr(ultima_exitosa, ahora, config["cada_valor"], config["cada_unidad"]):
+            logger.info(
+                f"catalogo_modelos_ejecutor: todavía no toca (última exitosa={ultima_exitosa}, "
+                f"cada {config['cada_valor']} {config['cada_unidad']}) -- no se tocó nada"
+            )
+            return _resultado_sin_tocar_nada(_CODIGO_PROGRAMADO_NO_TOCA)
+
         estado = _cargar_estado(_ruta_estado())
         marca_guardada = estado.get("nuevos_marca")
         marca_guardada = marca_guardada if isinstance(marca_guardada, str) and marca_guardada else None
@@ -491,14 +567,14 @@ async def _correr() -> dict:
         if marca_guardada is not None:
             marca_usada = marca_guardada
         else:
-            pool = await get_pool()
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute("SELECT NOW()")
                     (marca_before,) = await cur.fetchone()
             marca_usada = str(marca_before)
 
-        resultado = await model_catalog.sync_all(marca_nuevos=marca_usada)
+        resultado = await catalogo_sync_registro.correr_sync_registrado(
+            origen="programado", marca_nuevos=marca_usada)
         if resultado.get("code") != "sync_en_curso":
             resultado = dict(resultado)
             resultado["marca_usada"] = marca_usada
@@ -578,6 +654,16 @@ async def _ciclo() -> dict | None:
         print(_resumen(resultado))
         if resultado.get("code") == "sync_en_curso":
             resultado["_codigo_salida_forzado"] = await _manejar_sync_en_curso()
+        elif resultado.get("code") in _CODIGOS_GATE_CERRADO:
+            # Gate de configuración (2026-09-27): "apagado" o "todavía no
+            # toca" -- no se tocó nada, así que tampoco se toca ningún
+            # estado persistido: ni el dedupe de "problemas" (`_avisar()`
+            # lo BORRARÍA si se llamara con `ok=True` acá, perdiendo el
+            # aviso pendiente de la última corrida real que sí encontró
+            # algo), ni el contador de candado ocupado (no tiene nada que
+            # ver con esto). Exit 0 (ver `main()`: `ok=True` sin
+            # `_estado_aviso_problemas` alcanza).
+            pass
         else:
             _limpiar_contador_sync_en_curso()
             try:

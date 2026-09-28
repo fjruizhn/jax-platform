@@ -1001,8 +1001,14 @@ jobs:
           //   +1 en lib/useCerrarConEscape.test.js. Medido de punta a punta
           //   con `npx vitest run --reporter=dot --silent`: 1030 passed,
           //   0 fallidos, 95 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1030) {
-              console.error("PISO ROTO: se esperaban 1030 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1029 -> 1053 (2026-09-27, programación configurable del sync,
+          //   #167): MEDIDO EN EL RUNNER, run 36381118121 (d7b1670): passed=1053
+          //   failed=0 total=1053. Regla 5: el último en llegar re-mide.
+          // 1053 -> 1054 (2026-09-28, Hyde, integración de #166 sobre #167 por decisión
+          //   de Fernando): 1053 de master + 1 test de #166. Regla 5: lo confirma o
+          //   desmiente la corrida real del runner en este PR.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1054) {
+              console.error("PISO ROTO: se esperaban 1054 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3201,7 +3207,11 @@ jobs:
           # #164) run 36328116696 -> passed=2759; esta rama run 36328147944 -> passed=2912
           # (colectados=2912, skipped=0). Delta propio real del catálogo: +153 (el +34
           # estimado arriba contaba `def test_` y no los parametrizados: era falso).
-          PISO_PASSED = 2912
+          # 2026-09-27 (Hyde, #167, programación configurable del sync): MEDIDO EN EL
+          # RUNNER. master a0aa01c run 36354899003 -> passed=2912; esta rama run
+          # 36381118121 (d7b1670) -> colectados=3045 passed=3044 skipped=1. Delta propio +132.
+          # +3 (2026-09-27, Hyde: la línea de resumen distingue una corrida saltada de un sync).
+          PISO_PASSED = 3047
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4167,7 +4177,11 @@ jobs:
       # 2026-09-27 (Hyde, catálogo de modelos #163): medido en el runner, master c127a7f
       # passed=1789 (run 36328116696) y esta rama passed=1908 (run 36328147944): delta propio
       # +119. Piso = declarado de master (1723, sin premiar la deriva ajena) + 119 = 1842.
-      JAX_CI_MIN_PASSED: "1842"
+      # 2026-09-27 (Hyde, #167): medido en el runner, master a0aa01c passed=1908 (run
+      # 36354899003) y esta rama passed=1978 (run 36381118121): delta propio +70. Piso =
+      # declarado de master (1842, sin premiar la deriva ajena) + 70 = 1912.
+      # +3 (2026-09-27, Hyde: resumen de corrida saltada; los 3 tests no usan DB).
+      JAX_CI_MIN_PASSED: "1915"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

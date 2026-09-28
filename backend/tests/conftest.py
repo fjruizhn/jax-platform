@@ -6,9 +6,53 @@ from tests.entorno_de_produccion import cargar
 
 ENV_PATH = "/etc/jax/.env"
 
+# LISTA BLANCA, no lista negra (2026-09-27, tercera ronda de la auditoría
+# adversarial). La versión anterior de este archivo cargaba TODO
+# `/etc/jax/.env` salvo 3 secretos ajenos (`CLAUDE_CODE_OAUTH_TOKEN`,
+# `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`, ver el hallazgo de la ronda
+# anterior) -- y ESO NO ALCANZABA: `FERNET_KEY` y `JAX_JWT_SECRET`, los dos
+# secretos que la app SÍ usa de verdad (cifrado de credenciales y firma de
+# sesión), seguían colándose enteros, porque ninguna lista negra los
+# nombraba. Toda la suite firmaba y verificaba tokens con la llave JWT REAL
+# de producción, y cifraba credenciales de prueba con la FERNET_KEY REAL.
+#
+# La lista de abajo es lo ÚNICO que la suite toma de `/etc/jax/.env` --
+# verificado con evidencia (grep de `os.environ[...]`/`os.environ.get(...)`
+# sin default funcional en TODO el árbol, tests/ excluido), no una lista de
+# "todo lo que parece razonable":
+#   - JAX_DB_HOST / JAX_DB_PORT: `db/connection.py` los exige sin default
+#     (`RuntimeError` si faltan) -- sin esto no hay a qué MariaDB conectarse.
+#   - JAX_DB_USER / JAX_DB_PASSWORD: `db/connection.py` tiene un default
+#     (`"jax_user"` / `""`), pero es un default que NUNCA autentica contra
+#     la base real -- sin el password real, cualquier test que use `client`
+#     falla al conectar.
+#   - JAX_REPO_PATH: `os.environ["JAX_REPO_PATH"]` sin default, en este
+#     mismo archivo (`_esquema_de_jax_en_la_base_de_test`) y en varios
+#     módulos de la app (B9, shadow_validation) -- el checkout real de
+#     `jax` en esta máquina.
+#   - JAX_CONFIG_PATH: `api/chat.py` usa
+#     `ruta_absoluta_requerida("JAX_CONFIG_PATH")` -- el módulo ni se
+#     importa sin esto.
+# Todo lo demás que la app necesita para arrancar YA tiene su propio valor
+# de prueba fijado más abajo en este archivo, o un default seguro en el
+# propio código (`JAX_ADJUNTO_*`, `JAX_SEED_*`, `FRONTEND_ORIGIN`, etc.) --
+# no depende de que `/etc/jax/.env` lo traiga.
+#
+# Control: tests/test_conftest_no_carga_secretos_no_necesarios.py -- falla
+# si algo fuera de esta lista vuelve a llegar al entorno de la suite, o si
+# FERNET_KEY/JAX_JWT_SECRET coinciden con los de producción.
+VARIABLES_NECESARIAS_DE_PRODUCCION = frozenset({
+    "JAX_DB_HOST",
+    "JAX_DB_PORT",
+    "JAX_DB_USER",
+    "JAX_DB_PASSWORD",
+    "JAX_REPO_PATH",
+    "JAX_CONFIG_PATH",
+})
 
 for _k, _v in cargar(ENV_PATH).items():
-    os.environ.setdefault(_k, _v)
+    if _k in VARIABLES_NECESARIAS_DE_PRODUCCION:
+        os.environ.setdefault(_k, _v)
 
 # Base de tests por sesión (2026-09-20, port de `base_de_test.py` de `jax`,
 # family `base_de_test` en `scripts/check_mirror_sync.py`). Antes esta línea
@@ -32,18 +76,33 @@ asegurar_base_de_test()
 
 # El runner de CI no tiene /etc/jax/.env, asi que no tiene FERNET_KEY, y sin
 # ella no se pueden sembrar credenciales cifradas en la base de tests. Se
-# genera una por sesion SOLO si falta (en hall9000 sale del .env). setdefault
-# a proposito: los tests que ejercitan una FERNET_KEY ausente o malformada la
-# fijan ellos con monkeypatch.
-if not os.environ.get("FERNET_KEY"):
-    # Sin importar cryptography: dos jobs de CI (no-fail-open-except,
-    # invoke-facet-envoltorio) corren este conftest SIN instalar
-    # requirements.txt, y un import de nivel de modulo los tumba con
-    # ModuleNotFoundError. Una llave Fernet es exactamente 32 bytes al azar
-    # en base64 urlsafe, asi que se arma con la biblioteca estandar.
-    import base64
+# genera una FRESCA por sesión, SIEMPRE -- MINOR-5 (cuarta ronda de la
+# auditoría adversarial, 2026-09-27): un `setdefault` (la versión anterior)
+# sólo protege cuando NADIE puso la variable antes -- si alguien corriera
+# `set -a; . /etc/jax/.env; set +a; pytest` (exportando TODO el .env, FERNET_KEY
+# real incluida, a mano, ANTES de arrancar pytest), el `setdefault` la
+# hubiera encontrado YA puesta y la habría dejado pasar tal cual: la suite
+# entera cifrando/descifrando credenciales de prueba con la llave REAL de
+# producción, exactamente el hallazgo que la lista blanca (ronda anterior)
+# cerró para la CARGA desde `/etc/jax/.env`, pero no para una variable que
+# ya viniera puesta en el ambiente por otro medio. Forzar (asignación
+# directa, no `setdefault`) cierra las dos vías con el mismo código.
+# Los tests que ejercitan una FERNET_KEY ausente o malformada la vuelven a
+# tocar ELLOS, con `monkeypatch` -- eso corre DESPUÉS de este punto y sigue
+# funcionando igual, se haya llegado acá por `setdefault` o por fuerza.
+import base64 as _base64  # noqa: E402 (sin importar `cryptography`: dos jobs de CI corren este conftest sin requirements.txt)
 
-    os.environ["FERNET_KEY"] = base64.urlsafe_b64encode(os.urandom(32)).decode()
+os.environ["FERNET_KEY"] = _base64.urlsafe_b64encode(os.urandom(32)).decode()
+
+# Mismo caso y mismo motivo que FERNET_KEY arriba, para el otro secreto que
+# la lista blanca ya no deja pasar: `auth/jwt.py` exige `JAX_JWT_SECRET` sin
+# default (revienta con RuntimeError si está vacía), se lee UNA sola vez al
+# importarse (`SECRET = os.getenv(...)` a nivel de módulo) -- y `conftest.py`
+# es lo PRIMERO que pytest carga, antes de que nada importe `auth.jwt`, así
+# que forzar acá no puede desincronizar a nadie que ya lo hubiera leído.
+import secrets as _secrets
+
+os.environ["JAX_JWT_SECRET"] = _secrets.token_urlsafe(48)
 
 # BARRERA DE ESCRITURA A ARCHIVOS DE PRODUCCIÓN (2026-09-17).
 # Incidente real de ese día: un test llamó a PUT /api/admin/keys/{proveedor},
@@ -333,23 +392,47 @@ _CREDENCIALES_DE_PRUEBA = [
 
 
 def _sembrar_credenciales_de_prueba(c) -> None:
-    from crypto_secrets import encrypt_secret
+    from crypto_secrets import decrypt_db_secret, encrypt_secret
     from db.connection import get_pool
 
     cifrada = encrypt_secret("ci-dummy-not-a-real-key")
 
+    # MINOR-5 (cuarta ronda de la auditoría adversarial, 2026-09-27):
+    # `base_de_test.py` (líneas ~449-463) clona TODAS las tablas chicas de
+    # la plantilla `jax_memory_test`, filas incluidas -- y `credential` es
+    # una de ellas: 5 filas reales (openai/deepseek/gemini/moonshot/zhipu),
+    # `encrypted_value` cifrado con la FERNET_KEY que estaba vigente cuando
+    # se sembró la plantilla, NO con la de esta sesión (fresca, distinta,
+    # por sesión desde la lista blanca de la ronda anterior). El chequeo de
+    # abajo era "¿existe una fila activa?" -- y esas 5 SIEMPRE existen, así
+    # que este sembrado nunca llegaba a insertar su propio
+    # "ci-dummy-not-a-real-key": cada sesión de test corría con 5
+    # credenciales de proveedor INDESCIFRABLES con su propia llave, en
+    # silencio (`decrypt_secret()` es fail-soft: ante un token inválido
+    # devuelve el CIFRADO tal cual, no revienta -- así que nada avisaba).
+    # Se agrega la comprobación que faltaba: si la fila activa que ya
+    # existe NO decodifica con la llave de ESTA sesión, se la reemplaza por
+    # la propia (nunca se edita en el lugar: se cierra la vieja y se
+    # inserta una nueva 'active', mismo patrón que una rotación real).
     async def _sembrar():
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 for provider_id, env_key in _CREDENCIALES_DE_PRUEBA:
                     await cur.execute(
-                        "SELECT id FROM credential "
+                        "SELECT id, encrypted_value FROM credential "
                         "WHERE provider_id = %s AND state = 'active' LIMIT 1",
                         (provider_id,),
                     )
-                    if await cur.fetchone():
-                        continue
+                    fila = await cur.fetchone()
+                    if fila is not None:
+                        credencial_id, valor_cifrado = fila
+                        if decrypt_db_secret(valor_cifrado):
+                            continue  # decodifica con la llave de esta sesión: de verdad utilizable
+                        await cur.execute(
+                            "UPDATE credential SET state='revoked', revoked_at=NOW() WHERE id=%s",
+                            (credencial_id,),
+                        )
                     await cur.execute(
                         "INSERT INTO credential "
                         "(provider_id, env_key, encrypted_value, state, activated_at) "

@@ -14,6 +14,14 @@ el CURSOR de la transacción de quien llama, como user_audit.registrar: o quedan
 el cambio y su rastro, o ninguno de los dos. Fail-closed por construcción, no
 por un try/except -- si el INSERT de la auditoría falla, revierte también el
 UPDATE de la configuración.
+
+`auditar` (MINOR-6, tercera ronda de la auditoría adversarial, 2026-09-27) es,
+a su vez, el ÚNICO escritor de `axioma_config_audit` en todo el árbol -- de
+los DOS, es el más estricto: ni siquiera `escribir()` tiene su propio INSERT a
+esa tabla, la llama a ELLA. Un módulo con su propia tabla tipada (no
+`axioma_config`) que necesite dejar un rastro de auditoría -- como
+`catalogo_sync_config.py`, que vive en su propia tabla `catalogo_sync_config`
+-- llama a `auditar()` directo, nunca escribe el INSERT a mano.
 """
 from __future__ import annotations
 
@@ -22,9 +30,12 @@ from tiempo import iso_utc
 
 # De dónde vino el cambio. `config` = la pantalla Configuración
 # (api/admin/config_admin.py); `smtp` = la pantalla Correo (api/admin/smtp.py,
-# vía smtp_config.guardar_filas). Lista cerrada: un origen nuevo se declara acá
-# y en el CHECK de la tabla (db/migrations.py).
-ORIGENES = frozenset({"config", "smtp"})
+# vía smtp_config.guardar_filas); `catalogo_sync` = la programación del sync
+# del catálogo de modelos (catalogo_sync_config.actualizar_config(), MAJOR-2
+# de la auditoría adversarial 2026-09-27) -- ver
+# db/migrations.py::_agregar_origen_catalogo_sync_a_config_audit. Lista
+# cerrada: un origen nuevo se declara acá y en el CHECK de la tabla.
+ORIGENES = frozenset({"config", "smtp", "catalogo_sync"})
 
 # smtp.password vive CIFRADA en axioma_config. Copiar el texto cifrado a la
 # auditoría sería una segunda copia del secreto en reposo, en una tabla que
@@ -72,6 +83,42 @@ def _visible(clave: str, valor: str | None) -> str | None:
     return REDACTADO if clave in CLAVES_REDACTADAS else valor
 
 
+async def auditar(cur, *, actor_user_id: int | None, config_key: str,
+                  valor_anterior: str | None, valor_nuevo: str | None,
+                  origen: str, ip: str | None = None) -> None:
+    """El ÚNICO `INSERT INTO axioma_config_audit` de todo el árbol (MINOR-6,
+    tercera ronda de la auditoría adversarial, 2026-09-27; detector:
+    tests/test_config_audit.py::test_ningun_otro_modulo_escribe_axioma_config_audit).
+
+    `escribir()` (abajo) es el escritor de `axioma_config` (el almacén
+    genérico de clave/valor) Y llama a ESTA función para su rastro; un
+    llamador con su PROPIA tabla tipada -- `catalogo_sync_config.py`, que no
+    vive en `axioma_config` -- llama a esta función directo, sin pasar por
+    `escribir()` (que forzaría una copia redundante del valor en el almacén
+    genérico). Antes, `catalogo_sync_config.py` tenía su propio
+    `INSERT INTO axioma_config_audit` crudo -- un segundo camino de escritura
+    a la misma tabla, exactamente lo que el docstring del módulo dice que no
+    puede pasar.
+
+    MINOR-4 (cuarta ronda de la auditoría adversarial, 2026-09-27): SÍ aplica
+    `_visible()` -- antes esto decía que era contrato de `escribir()` para
+    claves conocidas de `axioma_config`, pero eso dejaba la redacción
+    dependiendo de que CADA llamador se acordara de aplicarla antes de
+    llegar acá; siendo ésta la función que de verdad escribe el INSERT, es
+    el sitio correcto para una defensa que no se pueda saltear por
+    descuido. Aplicarlo dos veces (acá y en `escribir()`, si un llamador
+    viejo todavía lo hiciera) es inofensivo -- `_visible()` sólo mira la
+    CLAVE, nunca el valor ya redactado."""
+    if origen not in ORIGENES:
+        raise ValueError(f"origen de auditoría desconocido: {origen!r}")
+    if actor_user_id is None:
+        # Media auditoría (qué cambió, sin quién) no cierra el agujero.
+        raise ValueError("una escritura de configuración sin actor no se audita")
+    await cur.execute(SQL_AUDITORIA, (
+        int(actor_user_id), config_key, _visible(config_key, valor_anterior),
+        _visible(config_key, valor_nuevo), origen, ip))
+
+
 async def escribir(cur, filas: dict[str, str], actor_user_id: int | None,
                    origen: str, ip: str | None = None) -> int:
     """Escribe `filas` en axioma_config y su auditoría con el MISMO cursor.
@@ -99,9 +146,13 @@ async def escribir(cur, filas: dict[str, str], actor_user_id: int | None,
         await cur.execute(SQL_ESCRIBIR, (clave, valor))
         if anterior == valor:
             continue
-        await cur.execute(SQL_AUDITORIA, (int(actor_user_id), clave_real,
-                                          _visible(clave_real, anterior),
-                                          _visible(clave_real, valor), origen, ip))
+        # MINOR-4: la redacción (`_visible()`) ya la aplica `auditar()` --
+        # no se repite acá, un solo sitio que decide qué es seguro guardar.
+        await auditar(
+            cur, actor_user_id=actor_user_id, config_key=clave_real,
+            valor_anterior=anterior, valor_nuevo=valor,
+            origen=origen, ip=ip,
+        )
         cambios += 1
     return cambios
 
