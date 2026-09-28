@@ -133,7 +133,7 @@ async def _tomar_candado_desde_otra_conexion():
     pool (no la que usa `sync_all()`), que pide el MISMO `GET_LOCK` y no lo
     suelta hasta que el test llame a `_soltar_candado`.
 
-    MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): el
+    MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27): el
     nombre pasa por `model_catalog.nombre_candado()` -- el candado real de
     `sync_all()` ahora está CALIFICADO con la base actual; tomar el nombre
     sin calificar tomaría un candado DISTINTO y esta prueba dejaría de
@@ -245,7 +245,7 @@ def test_sync_all_libera_el_candado_incluso_si_algo_revienta_dentro_del_try(clie
 
 
 # --------------------------------------------------------------------------
-# MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28): el nombre
+# MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27): el nombre
 # de un candado depende de la base actual -- GET_LOCK/RELEASE_LOCK/IS_FREE_LOCK
 # son GLOBALES al SERVIDOR de MariaDB, y en hall9000 la base de test vive en
 # el MISMO servidor (puerto 3308) que producción. Sin calificar, la suite y
@@ -283,42 +283,59 @@ def test_nombre_candado_incluye_la_base_actual_no_un_literal_fijo(client):
 
 
 async def _nombre_candado_en_dos_bases_reales():
-    """Ejecuta `nombre_candado()` DOS VECES, en la MISMA conexión, con un
-    `USE` real de por medio -- la única forma de probar "depende de la
-    base" ejercitando la función de verdad contra dos contextos de
-    `DATABASE()` reales, no comparando su salida contra un string armado a
-    mano aparte (MINOR-3, quinta ronda de la auditoría adversarial,
-    2026-09-28: la versión anterior de este test nunca corría
-    `nombre_candado()` para la "otra base", sólo para la propia -- el resto
-    era un CONCAT hecho a mano que no probaba la función en absoluto).
+    """Ejecuta `nombre_candado()` DOS VECES, en DOS conexiones reales
+    DISTINTAS, contra dos bases reales DISTINTAS -- la única forma de
+    probar "depende de la base" ejercitando la función de verdad, no
+    comparando su salida contra un string armado a mano aparte (MINOR-3,
+    quinta ronda de la auditoría adversarial, 2026-09-27: la versión
+    anterior de este test nunca corría `nombre_candado()` para la "otra
+    base", sólo para la propia -- el resto era un CONCAT hecho a mano que
+    no probaba la función en absoluto).
 
-    `jax_memory_test` (la PLANTILLA, sin sufijo) es la "otra base": existe
-    siempre en este servidor y `nombre_candado()` sólo LEE `DATABASE()`, no
-    escribe nada -- un `USE` no toca sus datos. Se vuelve a la base de la
-    sesión antes de devolver la conexión al pool: si no, otro test podría
-    heredarla apuntando a la plantilla."""
+    MAJOR-1 (sexta ronda de la auditoría adversarial, 2026-09-27): la
+    PRIMERA reescritura usaba `USE jax_memory_test` (la plantilla, sin
+    sufijo) como "otra base" en la MISMA conexión del pool -- en CI la base
+    de la sesión ES `jax_memory_test` a secas (sin `JAX_TEST_DB_SUFIJO`),
+    así que `base_actual == base_otra` y el test fallaba ahí, no en hall9000
+    (donde este árbol siempre corre con un sufijo propio). `information_schema`
+    existe SIEMPRE, en cualquier servidor MariaDB, con cualquier
+    configuración, y es DISTINTA de la base de sesión sea cual sea su
+    nombre -- se abre en una conexión PROPIA (`aiomysql.connect()`, fuera
+    del pool) para no tener que devolver al pool una conexión que haya
+    hecho `USE` a otra base (ni un `USE` de vuelta que alguien podría
+    olvidar en un cambio futuro): se cierra en el `finally` y listo."""
+    import os
+    import aiomysql
     from db.connection import get_pool
+    from db_connect_config import db_connect_timeout_seconds
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             base_actual = await _database_actual(cur)
             candado_actual = await model_catalog.nombre_candado(cur, "jax_catalogo_sync")
 
-            await cur.execute("USE `jax_memory_test`")
-            base_otra = await _database_actual(cur)
-            candado_otra = await model_catalog.nombre_candado(cur, "jax_catalogo_sync")
+    conn_otra = await aiomysql.connect(
+        host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]),
+        user=os.getenv("JAX_DB_USER", ""), password=os.getenv("JAX_DB_PASSWORD", ""),
+        connect_timeout=db_connect_timeout_seconds(),
+        db="information_schema", autocommit=True,
+    )
+    try:
+        async with conn_otra.cursor() as cur_otra:
+            base_otra = await _database_actual(cur_otra)
+            candado_otra = await model_catalog.nombre_candado(cur_otra, "jax_catalogo_sync")
+    finally:
+        conn_otra.close()
 
-            await cur.execute(f"USE `{base_actual}`")  # deja la conexión como la encontró
-            assert await _database_actual(cur) == base_actual
-
-            return base_actual, candado_actual, base_otra, candado_otra
+    return base_actual, candado_actual, base_otra, candado_otra
 
 
 def test_nombre_candado_distinto_para_bases_distintas(client):
-    """`nombre_candado()`, corrida en la MISMA conexión bajo dos `USE`
-    reales -- la base de esta sesión y la plantilla `jax_memory_test` --
-    da un resultado DISTINTO para cada una, y cada uno coincide con la
-    fórmula (`<base_nombre>:<DATABASE() de ese momento>`)."""
+    """`nombre_candado()`, corrida en DOS conexiones reales -- la base de
+    esta sesión y `information_schema` -- da un resultado DISTINTO para
+    cada una, y cada uno coincide con la fórmula (`<base_nombre>:<DATABASE()
+    de ese momento>`)."""
     base_actual, candado_actual, base_otra, candado_otra = client.portal.call(_nombre_candado_en_dos_bases_reales)
 
     assert base_actual != base_otra
@@ -480,7 +497,7 @@ class _CursorFalsoParaSyncAll:
     """Todos los cursores de una MISMA conexión falsa comparten la cola --
     cada `fetchone()` consume la SIGUIENTE respuesta programada, en el orden
     en que `sync_all()` las pide de verdad (`nombre_candado()` primero --
-    MINOR-1, cuarta ronda de la auditoría adversarial, 2026-09-28 --, después
+    MINOR-1, cuarta ronda de la auditoría adversarial, 2026-09-27 --, después
     GET_LOCK, después lo que sea que pida
     `_facetas_en_riesgo`/`_nuevos_desde_marca_bajo_candado` si no están
     mockeadas, después RELEASE_LOCK)."""

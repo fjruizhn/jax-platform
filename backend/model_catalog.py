@@ -765,7 +765,7 @@ _NOMBRE_CANDADO_SYNC = "jax_catalogo_sync"
 async def nombre_candado(cur, base_nombre: str) -> str:
     """El nombre de un candado de MariaDB, CALIFICADO con la base actual de
     esta conexión (MINOR-1, cuarta ronda de la auditoría adversarial,
-    2026-09-28). `GET_LOCK`/`RELEASE_LOCK`/`IS_FREE_LOCK` son GLOBALES al
+    2026-09-27). `GET_LOCK`/`RELEASE_LOCK`/`IS_FREE_LOCK` son GLOBALES al
     SERVIDOR de MariaDB, no a la base de datos -- y en hall9000 la base de
     test vive en el MISMO servidor (puerto 3308) que producción. Sin
     calificar, la suite de tests y un sync real corriendo en producción
@@ -780,13 +780,15 @@ async def nombre_candado(cur, base_nombre: str) -> str:
     gate `jax_catalogo_sync_gate` de `catalogo_sync_registro.py`) pasa por
     acá -- nunca se arma el nombre calificado a mano en otro lado.
 
-    MINOR-6 (quinta ronda de la auditoría adversarial, 2026-09-28,
+    MINOR-6 (quinta ronda de la auditoría adversarial, 2026-09-27,
     DESCARTADO con evidencia): ¿un nombre de base larga puede desbordar el
     límite de longitud del candado? Medido en MariaDB 12.3.3: un nombre de
     128 caracteres se acepta, uno de 200 da `ERROR 1059`; con una base de
     hasta 64 caracteres (el máximo real de MariaDB para un nombre de base)
-    el candado calificado más largo posible mide 88 -- muy por debajo del
-    límite real. No hace falta ningún tope ni truncado acá."""
+    y el más largo de los dos nombres base (`jax_catalogo_sync_gate`, 22
+    caracteres), el candado calificado más largo posible mide 87 (22 + 1
+    del `:` + 64) -- muy por debajo del límite real. No hace falta ningún
+    tope ni truncado acá."""
     await cur.execute("SELECT CONCAT(%s, ':', DATABASE())", (base_nombre,))
     (nombre,) = await cur.fetchone()
     return nombre
@@ -936,7 +938,7 @@ async def sync_all(marca_nuevos: str | None = None, on_progreso=None, on_termina
     (mismo criterio que `add_safe_task`).
 
     `on_terminar` (MAJOR-1, cuarta ronda de la auditoría adversarial,
-    2026-09-28): callback ASYNC opcional, `on_terminar(resultado, *,
+    2026-09-27): callback ASYNC opcional, `on_terminar(resultado, *,
     es_error=False)`, invocado DENTRO del `try` -- mientras esta conexión
     TODAVÍA sostiene el candado de trabajo -- tanto si `sync_all()` termina
     normal como si algo revienta antes del `finally`. El defecto real que
@@ -979,7 +981,7 @@ async def sync_all(marca_nuevos: str | None = None, on_progreso=None, on_termina
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            # MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28):
+            # MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27):
             # nombre calificado con la base actual -- ver `nombre_candado()`.
             candado = await nombre_candado(cur, _NOMBRE_CANDADO_SYNC)
             # timeout=0: no espera -- si alguien más lo tiene, se corta al
@@ -1056,7 +1058,7 @@ async def sync_all(marca_nuevos: str | None = None, on_progreso=None, on_termina
                 async with conn.cursor() as cur:
                     respuesta.update(await _nuevos_desde_marca_bajo_candado(cur, marca_nuevos))
 
-            # MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-28):
+            # MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27):
             # TODAVÍA dentro del try, con el candado TODAVÍA sostenido -- ver
             # el docstring de `on_terminar` más arriba.
             await _terminar(respuesta)
