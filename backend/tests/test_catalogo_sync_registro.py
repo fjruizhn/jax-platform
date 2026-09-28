@@ -360,6 +360,51 @@ def test_finalizar_ejecucion_admite_resultado_none(client, limpiar_catalogo_sync
     assert resultado is None
 
 
+def test_finalizar_ejecucion_devuelve_true_cuando_cierra_de_verdad(client, limpiar_catalogo_sync_ejecucion):
+    """MINOR-2 (quinta ronda de la auditoría adversarial, 2026-09-28): el
+    valor de retorno es lo que `ejecutar_reservada()` usa para decidir si
+    hace falta su red de seguridad -- se prueba el caso normal explícito,
+    no sólo el degradado de abajo."""
+    eid = client.portal.call(_insertar_ejecucion, "manual", "corriendo", 0)
+    limpiar_catalogo_sync_ejecucion.append(eid)
+
+    cerro = client.portal.call(registro.finalizar_ejecucion, eid, "ok", {"ok": True})
+    assert cerro is True
+
+
+def test_finalizar_ejecucion_sobre_una_fila_ya_cerrada_por_fuera_no_la_pisa(
+        client, limpiar_catalogo_sync_ejecucion):
+    """MINOR-2: si la fila YA no está 'corriendo' (alguien más la cerró --
+    p.ej. `marcar_huerfanas_interrumpidas()`, u otra llamada a
+    `finalizar_ejecucion()`), esta llamada no la pisa: devuelve `False` y
+    el estado/resultado que ya tenía queda intacto."""
+    eid = client.portal.call(_insertar_ejecucion, "manual", "corriendo", 0)
+    limpiar_catalogo_sync_ejecucion.append(eid)
+
+    # Cerrada "por fuera" -- no a través de finalizar_ejecucion, para que la
+    # sonda de abajo pruebe el `WHERE estado='corriendo'` de esta función y
+    # no otra cosa.
+    async def _cerrar_por_fuera():
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE catalogo_sync_ejecucion SET estado='error', terminado_en=UTC_TIMESTAMP(), "
+                    "resultado=%s WHERE id=%s",
+                    (json.dumps({"error": "cerrada por fuera"}), eid),
+                )
+            await conn.commit()
+
+    client.portal.call(_cerrar_por_fuera)
+
+    cerro = client.portal.call(registro.finalizar_ejecucion, eid, "ok", {"ok": True, "no": "debería verse"})
+    assert cerro is False
+
+    _origen, estado, _paso, _pt, _detalle, terminado_en, resultado = client.portal.call(_fila, eid)
+    assert estado == "error"  # sigue como la dejó "afuera" -- NO "ok"
+    assert json.loads(resultado)["error"] == "cerrada por fuera"
+
+
 # --------------------------------------------------------------------------
 # ultima_actualizacion_exitosa
 # --------------------------------------------------------------------------
@@ -643,6 +688,53 @@ def test_correr_sync_registrado_no_llama_a_sync_all_si_ya_hay_uno_corriendo(clie
     assert llamadas == []
 
 
+def test_on_terminar_que_revienta_la_red_de_seguridad_cierra_igual(
+        client, monkeypatch, limpiar_catalogo_sync_ejecucion):
+    """MINOR-2 (quinta ronda de la auditoría adversarial, 2026-09-28): el
+    `on_terminar` que arma `ejecutar_reservada()` llama a
+    `finalizar_ejecucion()` -- si ESA llamada revienta (una falla real de
+    DB, por ejemplo), `sync_all()` la atrapa fail-soft (mismo criterio que
+    `on_progreso`) y sigue -- `cerrada` queda en `False`. La red de
+    seguridad de `ejecutar_reservada()` (el `if not cerrada:` de después)
+    tiene que cerrar la fila igual, con una SEGUNDA llamada a
+    `finalizar_ejecucion()` que esta vez sí funciona."""
+    import model_catalog
+
+    llamadas = []
+    finalizar_real = registro.finalizar_ejecucion
+
+    async def _finalizar_revienta_la_primera_vez(ejecucion_id, estado, resultado):
+        llamadas.append((ejecucion_id, estado))
+        if len(llamadas) == 1:
+            raise RuntimeError("boom -- la escritura de cierre revienta la primera vez")
+        return await finalizar_real(ejecucion_id, estado, resultado)
+
+    monkeypatch.setattr(registro, "finalizar_ejecucion", _finalizar_revienta_la_primera_vez)
+
+    async def _sync_all_con_on_terminar_fail_soft(marca_nuevos=None, on_progreso=None, on_terminar=None):
+        resultado = {
+            "ok": True, "providers": [], "enrich": {}, "providers_fallidos": [],
+            "providers_saltados": [], "enrich_fallido": False, "nuevos": {}, "facetas_en_riesgo": [],
+        }
+        if on_terminar is not None:
+            try:
+                await on_terminar(resultado)
+            except Exception:  # fail-soft: mismo criterio que el `_terminar` real de model_catalog.sync_all()
+                pass
+        return resultado
+
+    monkeypatch.setattr(model_catalog, "sync_all", _sync_all_con_on_terminar_fail_soft)
+
+    resultado = client.portal.call(functools.partial(registro.correr_sync_registrado, origen="manual"))
+    limpiar_catalogo_sync_ejecucion.append(resultado["ejecucion_id"])
+
+    assert len(llamadas) == 2, "on_terminar tiene que intentar cerrar, reventar, y la red de seguridad reintentar"
+    assert resultado.get("cierre_omitido") is not True
+
+    _origen, estado_final, *_resto = client.portal.call(_fila, resultado["ejecucion_id"])
+    assert estado_final == "ok"
+
+
 
 
 # --------------------------------------------------------------------------
@@ -720,3 +812,109 @@ def test_ejecutar_reservada_cierra_la_fila_con_el_candado_todavia_sostenido(
     # que MAJOR-1 cierra; 'error' por la carrera sí lo sería.
     _origen, estado_final, *_resto = client.portal.call(_fila, resultado["ejecucion_id"])
     assert estado_final in ("ok", "con_problemas")
+
+
+def test_ejecutar_reservada_cierra_error_con_el_candado_sostenido_si_sync_all_revienta(
+        client, monkeypatch, limpiar_catalogo_sync_ejecucion):
+    """MINOR-2 (quinta ronda de la auditoría adversarial, 2026-09-28): el
+    camino de EXCEPCIÓN de `sync_all()` REAL (no un fake) -- una excepción
+    DENTRO del `try`, con el candado tomado -- también tiene que cerrar la
+    fila 'error' con el candado TODAVÍA sostenido, mismo criterio que el
+    camino feliz de arriba.
+
+    El ejemplo de la auditoría fue "`sync_provider_models` que lanza" --
+    pero `sync_all()` envuelve CADA proveedor en su propio try/except
+    (fail-soft, ver `model_catalog.py`): una excepción ahí NUNCA se
+    propaga, queda en `results` como `{"error": ...}` y el sync sigue,
+    `ok=False`. Para ejercitar el camino de EXCEPCIÓN real (el que
+    `_terminar(..., es_error=True)` cubre) hace falta algo que `sync_all()`
+    NO envuelva -- `_facetas_en_riesgo` es ese punto (ya usado con el mismo
+    fin en test_model_catalog_sync_all.py::test_sync_all_libera_el_candado_incluso_si_algo_revienta_dentro_del_try),
+    y es lo que se usa acá para que el test pruebe lo que la auditoría pide
+    probar, no la forma exacta en que lo describió."""
+    import model_catalog
+    monkeypatch.setattr(registro, "MARGEN_GRACIA_SEGUNDOS", 0)
+
+    async def _sync_provider_models_rapido(provider_id):
+        return {"provider_id": provider_id, "fetched": 1, "nuevos": []}
+    monkeypatch.setattr(model_catalog, "sync_provider_models", _sync_provider_models_rapido)
+
+    async def _enrich_rapido():
+        return {"enriched": 0}
+    monkeypatch.setattr(model_catalog, "enrich_from_models_dev", _enrich_rapido)
+
+    async def _facetas_en_riesgo_revienta(cur):
+        raise RuntimeError("boom -- explota antes de terminar, con el candado tomado")
+    monkeypatch.setattr(model_catalog, "_facetas_en_riesgo", _facetas_en_riesgo_revienta)
+
+    libres_al_cerrar = []
+    finalizar_real = registro.finalizar_ejecucion
+
+    async def _finalizar_con_sonda(ejecucion_id, estado, resultado):
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                candado = await model_catalog.nombre_candado(cur, model_catalog._NOMBRE_CANDADO_SYNC)
+                await cur.execute("SELECT IS_FREE_LOCK(%s)", (candado,))
+                (libre,) = await cur.fetchone()
+                libres_al_cerrar.append(libre)
+                await registro.marcar_huerfanas_interrumpidas(cur)
+            await conn.commit()
+        return await finalizar_real(ejecucion_id, estado, resultado)
+
+    monkeypatch.setattr(registro, "finalizar_ejecucion", _finalizar_con_sonda)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        client.portal.call(functools.partial(registro.correr_sync_registrado, origen="manual"))
+
+    async def _ultima_fila_manual():
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT id, estado, resultado FROM catalogo_sync_ejecucion "
+                    "WHERE origen='manual' ORDER BY id DESC LIMIT 1")
+                return await cur.fetchone()
+
+    eid, estado_final, resultado_json = client.portal.call(_ultima_fila_manual)
+    limpiar_catalogo_sync_ejecucion.append(eid)
+
+    assert libres_al_cerrar == [0], (
+        "el candado de trabajo debía seguir SOSTENIDO en el momento del cierre por excepción -- "
+        f"IS_FREE_LOCK devolvió {libres_al_cerrar!r}"
+    )
+    assert estado_final == "error"
+    assert "boom" in resultado_json
+
+
+def test_cierre_omitido_se_marca_cuando_nada_logra_cerrar_la_fila(
+        client, monkeypatch, limpiar_catalogo_sync_ejecucion):
+    """MINOR-2 (quinta ronda de la auditoría adversarial, 2026-09-28):
+    escenario doblemente degradado -- `on_terminar` NO logra cerrar (ver
+    `test_on_terminar_que_revienta_...` de arriba, mismo motivo cualquiera
+    que sea) Y la red de seguridad final TAMPOCO -- `finalizar_ejecucion()`
+    devuelve `False` las dos veces. `correr_sync_registrado()` tiene que
+    devolver `cierre_omitido: True` en vez de mentir que cerró."""
+    import model_catalog
+
+    async def _finalizar_nunca_cierra(_ejecucion_id, _estado, _resultado):
+        return False  # simula que la fila queda cerrada por otra vía, siempre
+
+    monkeypatch.setattr(registro, "finalizar_ejecucion", _finalizar_nunca_cierra)
+
+    async def _sync_all_fake(marca_nuevos=None, on_progreso=None, on_terminar=None):
+        resultado = {
+            "ok": True, "providers": [], "enrich": {}, "providers_fallidos": [],
+            "providers_saltados": [], "enrich_fallido": False, "nuevos": {}, "facetas_en_riesgo": [],
+        }
+        if on_terminar is not None:
+            await on_terminar(resultado)
+        return resultado
+
+    monkeypatch.setattr(model_catalog, "sync_all", _sync_all_fake)
+
+    resultado = client.portal.call(functools.partial(registro.correr_sync_registrado, origen="manual"))
+    if resultado.get("ejecucion_id") is not None:
+        limpiar_catalogo_sync_ejecucion.append(resultado["ejecucion_id"])
+
+    assert resultado.get("cierre_omitido") is True

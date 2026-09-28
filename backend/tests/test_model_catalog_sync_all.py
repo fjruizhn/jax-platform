@@ -282,30 +282,49 @@ def test_nombre_candado_incluye_la_base_actual_no_un_literal_fijo(client):
     )
 
 
-def test_nombre_candado_distinto_para_bases_distintas(client):
-    """Mismo `base_nombre`, bases DISTINTAS -> candados DISTINTOS -- la
-    prueba directa de "depende de la base": se resuelve el nombre para la
-    base real de esta sesión y para una base FALSA (nunca conectada, sólo
-    para el cálculo -- `nombre_candado()` no valida que la base exista,
-    sólo concatena `DATABASE()`), y tienen que diferir."""
-    async def _con_otra_base_en_el_calculo():
-        from db.connection import get_pool
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                base_actual = await _database_actual(cur)
-                candado_actual = await model_catalog.nombre_candado(cur, "jax_catalogo_sync")
-                # Se arma el candado de una base DISTINTA con la MISMA
-                # fórmula que usa `nombre_candado()` -- sin conectarse a
-                # ella (no hace falta: sólo se compara el resultado del
-                # cálculo, no un candado tomado de verdad).
-                await cur.execute("SELECT CONCAT(%s, ':', %s)", ("jax_catalogo_sync", "otra_base_distinta"))
-                (candado_de_otra_base,) = await cur.fetchone()
-                return base_actual, candado_actual, candado_de_otra_base
+async def _nombre_candado_en_dos_bases_reales():
+    """Ejecuta `nombre_candado()` DOS VECES, en la MISMA conexión, con un
+    `USE` real de por medio -- la única forma de probar "depende de la
+    base" ejercitando la función de verdad contra dos contextos de
+    `DATABASE()` reales, no comparando su salida contra un string armado a
+    mano aparte (MINOR-3, quinta ronda de la auditoría adversarial,
+    2026-09-28: la versión anterior de este test nunca corría
+    `nombre_candado()` para la "otra base", sólo para la propia -- el resto
+    era un CONCAT hecho a mano que no probaba la función en absoluto).
 
-    base_actual, candado_actual, candado_de_otra_base = client.portal.call(_con_otra_base_en_el_calculo)
-    assert base_actual != "otra_base_distinta"  # la sesión de test no se llama así
-    assert candado_actual != candado_de_otra_base
+    `jax_memory_test` (la PLANTILLA, sin sufijo) es la "otra base": existe
+    siempre en este servidor y `nombre_candado()` sólo LEE `DATABASE()`, no
+    escribe nada -- un `USE` no toca sus datos. Se vuelve a la base de la
+    sesión antes de devolver la conexión al pool: si no, otro test podría
+    heredarla apuntando a la plantilla."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            base_actual = await _database_actual(cur)
+            candado_actual = await model_catalog.nombre_candado(cur, "jax_catalogo_sync")
+
+            await cur.execute("USE `jax_memory_test`")
+            base_otra = await _database_actual(cur)
+            candado_otra = await model_catalog.nombre_candado(cur, "jax_catalogo_sync")
+
+            await cur.execute(f"USE `{base_actual}`")  # deja la conexión como la encontró
+            assert await _database_actual(cur) == base_actual
+
+            return base_actual, candado_actual, base_otra, candado_otra
+
+
+def test_nombre_candado_distinto_para_bases_distintas(client):
+    """`nombre_candado()`, corrida en la MISMA conexión bajo dos `USE`
+    reales -- la base de esta sesión y la plantilla `jax_memory_test` --
+    da un resultado DISTINTO para cada una, y cada uno coincide con la
+    fórmula (`<base_nombre>:<DATABASE() de ese momento>`)."""
+    base_actual, candado_actual, base_otra, candado_otra = client.portal.call(_nombre_candado_en_dos_bases_reales)
+
+    assert base_actual != base_otra
+    assert candado_actual == f"jax_catalogo_sync:{base_actual}"
+    assert candado_otra == f"jax_catalogo_sync:{base_otra}"
+    assert candado_actual != candado_otra
 
 
 # --------------------------------------------------------------------------
