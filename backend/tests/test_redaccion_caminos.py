@@ -185,14 +185,45 @@ def _parchear_sync_que_falla(monkeypatch):
     monkeypatch.setattr(model_catalog, "enrich_from_models_dev", enrich)
 
 
-def test_sync_de_modelos_no_devuelve_ni_loguea_la_key(monkeypatch, caplog):
+async def _resultado_de_ejecucion(ejecucion_id):
+    """2026-09-27: el resultado del sync ya no vuelve en el cuerpo de POST
+    /sync (corre en segundo plano) -- queda en `catalogo_sync_ejecucion`.
+    Borra la fila al leerla: este test corre contra la base compartida de
+    la sesión."""
+    import json as _json
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT resultado FROM catalogo_sync_ejecucion WHERE id=%s", (ejecucion_id,))
+            (resultado_json,) = await cur.fetchone()
+            await cur.execute("DELETE FROM catalogo_sync_ejecucion WHERE id=%s", (ejecucion_id,))
+        await conn.commit()
+    return _json.loads(resultado_json)
+
+
+def test_sync_de_modelos_no_devuelve_ni_loguea_la_key(client, monkeypatch, caplog):
+    """2026-09-27: POST /sync ahora reserva la fila y delega el sync real a
+    una BackgroundTask (ver api/admin/models.py::sync_models) -- se invoca
+    la función directo (bypass de FastAPI DI, mismo criterio que el resto de
+    este archivo) y se corren a mano las tareas encoladas, como haría el
+    runtime real después de mandar la respuesta."""
+    from fastapi import BackgroundTasks, Response
+
     _parchear_sync_que_falla(monkeypatch)
     caplog.set_level(logging.DEBUG)
-    body = asyncio.run(models_mod.sync_models(
-        user=AuthUser(user_id="1", tenant_id="1", role="superadmin")))
-    texto = repr(body)
-    assert body["ok"] is False
-    assert "403" in body["providers"][0]["error"]
+    background_tasks = BackgroundTasks()
+    respuesta_http = Response()
+    body = client.portal.call(
+        models_mod.sync_models, background_tasks, respuesta_http,
+        AuthUser(user_id="1", tenant_id="1", role="superadmin"))
+    client.portal.call(background_tasks)
+
+    resultado = client.portal.call(_resultado_de_ejecucion, body["ejecucion_id"])
+    texto = repr(resultado)
+    assert resultado["ok"] is False
+    assert "403" in resultado["providers"][0]["error"]
     assert KEY not in texto
     assert "tok-FAKE-zzz999" not in texto
     assert KEY not in caplog.text
@@ -238,7 +269,14 @@ def test_sync_de_modelos_por_http_no_devuelve_la_key(client, monkeypatch, caplog
     caplog.set_level(logging.DEBUG)
     token = create_access_token("1", "1", "superadmin")
     resp = client.post("/api/admin/models/sync", headers={"Authorization": f"Bearer {token}"})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["ok"] is False
+    # 2026-09-27: 202 -- el resultado real corre en segundo plano
+    # (BackgroundTask, ya ejecutada por TestClient antes de que este `post`
+    # devuelva el control) y queda en catalogo_sync_ejecucion, no en el
+    # cuerpo de esta respuesta.
+    assert resp.status_code == 202, resp.text
     assert KEY not in resp.text
+    ejecucion_id = resp.json()["ejecucion_id"]
+    resultado = client.portal.call(_resultado_de_ejecucion, ejecucion_id)
+    assert resultado["ok"] is False
+    assert KEY not in repr(resultado)
     assert KEY not in caplog.text

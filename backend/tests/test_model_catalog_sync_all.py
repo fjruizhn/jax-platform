@@ -131,21 +131,28 @@ def test_sync_all_agrega_nuevos_por_proveedor_solo_los_no_vacios(client, monkeyp
 async def _tomar_candado_desde_otra_conexion():
     """Simula OTRO proceso con el candado tomado: una conexión PROPIA del
     pool (no la que usa `sync_all()`), que pide el MISMO `GET_LOCK` y no lo
-    suelta hasta que el test llame a `_soltar_candado`."""
+    suelta hasta que el test llame a `_soltar_candado`.
+
+    MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27): el
+    nombre pasa por `model_catalog.nombre_candado()` -- el candado real de
+    `sync_all()` ahora está CALIFICADO con la base actual; tomar el nombre
+    sin calificar tomaría un candado DISTINTO y esta prueba dejaría de
+    probar lo que dice probar."""
     from db.connection import get_pool
     pool = await get_pool()
     conn = await pool.acquire()
     cur = await conn.cursor()
-    await cur.execute("SELECT GET_LOCK(%s, 0)", (model_catalog._NOMBRE_CANDADO_SYNC,))
+    candado = await model_catalog.nombre_candado(cur, model_catalog._NOMBRE_CANDADO_SYNC)
+    await cur.execute("SELECT GET_LOCK(%s, 0)", (candado,))
     (obtenido,) = await cur.fetchone()
     await cur.close()
     assert obtenido == 1, "no se pudo tomar el candado desde la conexión de control del test"
-    return pool, conn
+    return pool, conn, candado
 
 
-async def _soltar_candado(pool, conn):
+async def _soltar_candado(pool, conn, candado):
     cur = await conn.cursor()
-    await cur.execute("SELECT RELEASE_LOCK(%s)", (model_catalog._NOMBRE_CANDADO_SYNC,))
+    await cur.execute("SELECT RELEASE_LOCK(%s)", (candado,))
     await cur.close()
     await pool.release(conn)
 
@@ -162,11 +169,11 @@ def test_sync_all_candado_ocupado_no_toca_nada_y_devuelve_sync_en_curso(client, 
         raise AssertionError("enrich_from_models_dev no debería correr con el candado ocupado")
     monkeypatch.setattr(model_catalog, "enrich_from_models_dev", _enrich_no_deberia_llamarse)
 
-    pool, conn = client.portal.call(_tomar_candado_desde_otra_conexion)
+    pool, conn, candado = client.portal.call(_tomar_candado_desde_otra_conexion)
     try:
         result = client.portal.call(model_catalog.sync_all)
     finally:
-        client.portal.call(_soltar_candado, pool, conn)
+        client.portal.call(_soltar_candado, pool, conn, candado)
 
     assert result == {
         "ok": False, "code": "sync_en_curso",
@@ -203,7 +210,8 @@ async def _is_free_lock():
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT IS_FREE_LOCK(%s)", (model_catalog._NOMBRE_CANDADO_SYNC,))
+            candado = await model_catalog.nombre_candado(cur, model_catalog._NOMBRE_CANDADO_SYNC)
+            await cur.execute("SELECT IS_FREE_LOCK(%s)", (candado,))
             (libre,) = await cur.fetchone()
             return libre
 
@@ -234,6 +242,106 @@ def test_sync_all_libera_el_candado_incluso_si_algo_revienta_dentro_del_try(clie
         client.portal.call(model_catalog.sync_all)
 
     assert client.portal.call(_is_free_lock) == 1
+
+
+# --------------------------------------------------------------------------
+# MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27): el nombre
+# de un candado depende de la base actual -- GET_LOCK/RELEASE_LOCK/IS_FREE_LOCK
+# son GLOBALES al SERVIDOR de MariaDB, y en hall9000 la base de test vive en
+# el MISMO servidor (puerto 3308) que producción. Sin calificar, la suite y
+# un sync real de producción comparten el mismo candado.
+# --------------------------------------------------------------------------
+
+async def _database_actual(cur) -> str:
+    await cur.execute("SELECT DATABASE()")
+    (base,) = await cur.fetchone()
+    return base
+
+
+async def _nombre_candado_y_base():
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            base_actual = await _database_actual(cur)
+            candado = await model_catalog.nombre_candado(cur, "jax_catalogo_sync")
+            return candado, base_actual
+
+
+def test_nombre_candado_incluye_la_base_actual_no_un_literal_fijo(client):
+    """El candado NO es el nombre sin calificar -- lleva pegada la base
+    ACTUAL de la conexión, leída con `DATABASE()` (no con la variable de
+    entorno `JAX_DB_NAME`: la conexión es la fuente de verdad)."""
+    candado, base_actual = client.portal.call(_nombre_candado_y_base)
+
+    assert base_actual  # de verdad conectado a una base con nombre real
+    assert candado == f"jax_catalogo_sync:{base_actual}"
+    assert candado != "jax_catalogo_sync", (
+        "el candado no está calificado -- volvería a compartirse entre "
+        "la base de test y producción, en el mismo servidor MariaDB"
+    )
+
+
+async def _nombre_candado_en_dos_bases_reales():
+    """Ejecuta `nombre_candado()` DOS VECES, en DOS conexiones reales
+    DISTINTAS, contra dos bases reales DISTINTAS -- la única forma de
+    probar "depende de la base" ejercitando la función de verdad, no
+    comparando su salida contra un string armado a mano aparte (MINOR-3,
+    quinta ronda de la auditoría adversarial, 2026-09-27: la versión
+    anterior de este test nunca corría `nombre_candado()` para la "otra
+    base", sólo para la propia -- el resto era un CONCAT hecho a mano que
+    no probaba la función en absoluto).
+
+    MAJOR-1 (sexta ronda de la auditoría adversarial, 2026-09-27): la
+    PRIMERA reescritura usaba `USE jax_memory_test` (la plantilla, sin
+    sufijo) como "otra base" en la MISMA conexión del pool -- en CI la base
+    de la sesión ES `jax_memory_test` a secas (sin `JAX_TEST_DB_SUFIJO`),
+    así que `base_actual == base_otra` y el test fallaba ahí, no en hall9000
+    (donde este árbol siempre corre con un sufijo propio). `information_schema`
+    existe SIEMPRE, en cualquier servidor MariaDB, con cualquier
+    configuración, y es DISTINTA de la base de sesión sea cual sea su
+    nombre -- se abre en una conexión PROPIA (`aiomysql.connect()`, fuera
+    del pool) para no tener que devolver al pool una conexión que haya
+    hecho `USE` a otra base (ni un `USE` de vuelta que alguien podría
+    olvidar en un cambio futuro): se cierra en el `finally` y listo."""
+    import os
+    import aiomysql
+    from db.connection import get_pool
+    from db_connect_config import db_connect_timeout_seconds
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            base_actual = await _database_actual(cur)
+            candado_actual = await model_catalog.nombre_candado(cur, "jax_catalogo_sync")
+
+    conn_otra = await aiomysql.connect(
+        host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]),
+        user=os.getenv("JAX_DB_USER", ""), password=os.getenv("JAX_DB_PASSWORD", ""),
+        connect_timeout=db_connect_timeout_seconds(),
+        db="information_schema", autocommit=True,
+    )
+    try:
+        async with conn_otra.cursor() as cur_otra:
+            base_otra = await _database_actual(cur_otra)
+            candado_otra = await model_catalog.nombre_candado(cur_otra, "jax_catalogo_sync")
+    finally:
+        conn_otra.close()
+
+    return base_actual, candado_actual, base_otra, candado_otra
+
+
+def test_nombre_candado_distinto_para_bases_distintas(client):
+    """`nombre_candado()`, corrida en DOS conexiones reales -- la base de
+    esta sesión y `information_schema` -- da un resultado DISTINTO para
+    cada una, y cada uno coincide con la fórmula (`<base_nombre>:<DATABASE()
+    de ese momento>`)."""
+    base_actual, candado_actual, base_otra, candado_otra = client.portal.call(_nombre_candado_en_dos_bases_reales)
+
+    assert base_actual != base_otra
+    assert candado_actual == f"jax_catalogo_sync:{base_actual}"
+    assert candado_otra == f"jax_catalogo_sync:{base_otra}"
+    assert candado_actual != candado_otra
 
 
 # --------------------------------------------------------------------------
@@ -388,8 +496,10 @@ def test_sync_all_marca_en_el_futuro_avisa_retroceso_y_no_pierde(client, monkeyp
 class _CursorFalsoParaSyncAll:
     """Todos los cursores de una MISMA conexión falsa comparten la cola --
     cada `fetchone()` consume la SIGUIENTE respuesta programada, en el orden
-    en que `sync_all()` las pide de verdad (GET_LOCK, después lo que sea que
-    pida `_facetas_en_riesgo`/`_nuevos_desde_marca_bajo_candado` si no están
+    en que `sync_all()` las pide de verdad (`nombre_candado()` primero --
+    MINOR-1, cuarta ronda de la auditoría adversarial, 2026-09-27 --, después
+    GET_LOCK, después lo que sea que pida
+    `_facetas_en_riesgo`/`_nuevos_desde_marca_bajo_candado` si no están
     mockeadas, después RELEASE_LOCK)."""
     def __init__(self, cola):
         self._cola = cola
@@ -441,7 +551,7 @@ class _PoolFalsoConCursor:
 def test_sync_all_con_cursor_falso_get_lock_null_lanza_excepcion(monkeypatch):
     """GET_LOCK devolviendo NULL es un error real de MariaDB -- `sync_all()`
     tiene que dejarlo propagar, no confundirlo con "candado ocupado"."""
-    conn = _ConexionFalsaConCursor([(None,)])  # GET_LOCK -> NULL
+    conn = _ConexionFalsaConCursor([("basefalsa",), (None,)])  # nombre_candado(), GET_LOCK -> NULL
 
     async def _fake_get_pool():
         return _PoolFalsoConCursor(conn)
@@ -455,7 +565,7 @@ def test_sync_all_con_cursor_falso_release_lock_cero_cierra_la_conexion(monkeypa
     """RELEASE_LOCK devolviendo 0 (no confirmado) tiene que descartar la
     conexión -- `conn.close()` se llama de verdad dentro del `finally`, no
     sólo en la función pura aislada."""
-    conn = _ConexionFalsaConCursor([(1,), (0,)])  # GET_LOCK -> obtenido, RELEASE_LOCK -> no confirma
+    conn = _ConexionFalsaConCursor([("basefalsa",), (1,), (0,)])  # nombre_candado(), GET_LOCK -> obtenido, RELEASE_LOCK -> no confirma
 
     async def _fake_get_pool():
         return _PoolFalsoConCursor(conn)
@@ -481,7 +591,7 @@ def test_sync_all_con_cursor_falso_release_lock_cero_cierra_la_conexion(monkeypa
 
 def test_sync_all_con_cursor_falso_release_lock_uno_no_cierra_la_conexion(monkeypatch):
     """Control: RELEASE_LOCK confirmando con 1 NO descarta la conexión."""
-    conn = _ConexionFalsaConCursor([(1,), (1,)])  # GET_LOCK -> obtenido, RELEASE_LOCK -> confirma
+    conn = _ConexionFalsaConCursor([("basefalsa",), (1,), (1,)])  # nombre_candado(), GET_LOCK -> obtenido, RELEASE_LOCK -> confirma
 
     async def _fake_get_pool():
         return _PoolFalsoConCursor(conn)

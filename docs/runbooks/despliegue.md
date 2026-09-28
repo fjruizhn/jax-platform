@@ -121,6 +121,10 @@ SHOW COLUMNS FROM jax_memory.facts LIKE 'verified_by';
 
 ## 2 · Backend de la plataforma
 
+> **Si el cambio toca el ejecutor del catálogo o el nombre de su candado, NO sigas
+> acá:** usa «Caso general: un cambio toca el nombre del candado o el ejecutor
+> programado», más abajo.
+
 ```bash
 cd /srv/jax-prod/jax-platform && git fetch origin && git merge --ff-only origin/master
 sudo systemctl restart jax-platform
@@ -381,6 +385,121 @@ incorrecto y `GET /api/pipelines` está en 500, la reversión MÁS RÁPIDA es
 la del backend de jax-platform (paso 2 de la sección "Volver atrás", más
 abajo) al SHA anterior a este cambio -- no hace falta tocar `jax` ni el
 esquema, que es aditivo.
+
+## Caso general: un cambio toca el nombre del candado o el ejecutor programado
+
+*(2026-09-27, Hyde. Ejecutado así el mismo día al desplegar la programación
+configurable del catálogo, jax-platform#167.)*
+
+**Por qué hace falta.** El sync del catálogo lo corren DOS caminos: el
+`jax-catalogo-modelos.service` (oneshot, disparado por el timer) y el botón
+«Sincronizar», que corre DENTRO de `jax-platform`. Los dos se excluyen con un
+candado con nombre de MariaDB (`GET_LOCK`). Si un cambio **renombra** ese
+candado (#167: `jax_catalogo_sync` → `jax_catalogo_sync:<base>`), el código
+viejo y el nuevo dejan de verse: durante el despliegue podría haber **dos syncs
+a la vez**. Este procedimiento cierra esa ventana.
+
+> **Se ejecuta a mano, un paso por vez, mirando la salida.** No es un guion
+> para pegar de corrido. Se intentó hacerlo guion desatendido y siete rondas
+> de auditoría adversarial encontraron fallos nuevos en cada versión (un
+> `exit` dentro de `sudo bash -c` que no frenaba el reinicio, un `merge` a
+> `origin/master` antes de comparar el SHA, una reversión que volvía a
+> avanzar). Para algo que pasa rara vez, un operador que mira cada salida es
+> más seguro. **Si un paso no da exactamente lo esperado: no sigas, y ve a
+> «Si hay que abortar».**
+
+**Antes de empezar:** sección 0 (respaldo **con restauración probada**). Avisa
+de que nadie use la pantalla de modelos durante el despliegue: entre el paso 3
+y el 5 un clic en «Sincronizar» todavía podría colarse.
+
+1. **Parar el timer.**
+   ```bash
+   sudo systemctl stop jax-catalogo-modelos.timer
+   systemctl is-active jax-catalogo-modelos.timer     # tiene que dar: inactive
+   ```
+
+2. **Esperar a que no haya un sync programado corriendo ni encolado.** El
+   servicio es `oneshot`: mientras corre, systemd lo da como `activating`, no
+   `active` (por eso **no** sirve `is-active`).
+   ```bash
+   systemctl show -p ActiveState --value jax-catalogo-modelos.service   # tiene que dar: inactive (o failed)
+   systemctl list-jobs --no-legend jax-catalogo-modelos.service         # tiene que dar: nada
+   ```
+   Si da `activating`, esperar y repetir (una corrida dura segundos; el tope
+   del servicio es 30 min).
+
+3. **Freno: ningún sync con NINGUNO de los dos nombres de candado.** Cubre el
+   timer y el botón, el código viejo y el nuevo, y funciona aunque la tabla
+   `catalogo_sync_ejecucion` todavía no exista (primer despliegue). Las
+   credenciales van en un archivo de opciones `600` efímero, nunca en argv
+   (`/proc` no tiene `hidepid`):
+   ```bash
+   sudo bash -c '
+   set -euo pipefail; set -a; . /etc/jax/.env; set +a
+   T=$(mktemp -d); chmod 700 $T; trap "rm -rf $T" EXIT
+   printf "[client]\nhost=%s\nport=%s\nuser=%s\npassword=%s\ndatabase=%s\n" \
+     "$JAX_DB_HOST" "$JAX_DB_PORT" "$JAX_DB_USER" "$JAX_DB_PASSWORD" "$JAX_DB_NAME" > $T/c.cnf
+   chmod 600 $T/c.cnf
+   mariadb --defaults-extra-file=$T/c.cnf -N -e \
+     "SELECT IS_USED_LOCK('"'"'jax_catalogo_sync'"'"'), IS_USED_LOCK(CONCAT('"'"'jax_catalogo_sync:'"'"', DATABASE()))"'
+   ```
+   **Tiene que dar `NULL	NULL`.** Un número es el id de la conexión que
+   sincroniza: esperar y repetir.
+
+4. **Actualizar el checkout al SHA exacto** (40 caracteres, el merge del PR;
+   nunca `origin/master` a secas, que puede haber avanzado):
+   ```bash
+   SHA=<sha-de-40-caracteres>
+   cd /srv/jax-prod/jax-platform && git fetch origin \
+     && git merge-base --is-ancestor HEAD "$SHA" && git merge --ff-only "$SHA"
+   git rev-parse HEAD            # tiene que dar exactamente $SHA
+   git status -s                 # tiene que dar: nada (el ExecStartPre exige árbol limpio)
+   ```
+
+5. **Reiniciar el backend y verificar.**
+   ```bash
+   sudo systemctl restart jax-platform
+   curl -s -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1:8080/api/health   # 200
+   ```
+
+6. **Reinstalar las TRES unidades**, verificando cada archivo del repo **antes**
+   de instalarlo:
+   ```bash
+   U=/srv/jax-prod/jax-platform/ops/migration/systemd-units
+   for f in jax-catalogo-modelos.service jax-catalogo-modelos.timer jax-catalogo-modelos-aviso.service; do
+     sudo systemd-analyze verify "$U/$f" && sudo install -m 644 -o root -g root "$U/$f" /etc/systemd/system/$f
+   done
+   sudo systemctl daemon-reload
+   ```
+   `verify` no tiene que mencionar ninguna de las tres (los avisos de otras
+   unidades del sistema no cuentan).
+
+7. **Arrancar el timer.**
+   ```bash
+   sudo systemctl start jax-catalogo-modelos.timer
+   systemctl list-timers jax-catalogo-modelos.timer --no-pager
+   ```
+
+8. **Seguir con las secciones 3, 4 y 5** (frontend interno, sitio público,
+   verificación desde afuera) si el cambio toca el frontend.
+
+9. **Verificación funcional:** pulsar «Sincronizar» como superadmin. Mientras
+   corre, el paso 3 tiene que dar `NULL	<id>` (el candado **nuevo** tomado);
+   al terminar, la última fila de `catalogo_sync_ejecucion` tiene que cerrar
+   `ok` o `con_problemas`, nunca `error`.
+
+**Si hay que abortar** (antes del paso 5): nada se reinició. Si ya se hizo el
+paso 4, devolver el checkout a como estaba con
+`git -C /srv/jax-prod/jax-platform reset --hard <SHA-previo>` (anotado en
+`ESTADO-ANTES.txt` de la sección 0), comprobar `git status -s` vacío, y
+**volver a arrancar el timer** (`sudo systemctl start jax-catalogo-modelos.timer`):
+si no, el catálogo deja de sincronizarse sin que nadie avise.
+
+**Volver atrás un despliegue ya hecho:** el mismo procedimiento, con dos
+cambios. En el paso 4, `git reset --hard <SHA-previo>` en lugar del `merge`
+(se hace **después** de los pasos 1-3, nunca antes, porque si no el timer
+podría correr el código viejo con el candado viejo). En el paso 6, reinstalar
+las unidades de ese SHA.
 
 ## Migraciones B9 adicionales (`jax/memory/b9_migrations/`, más allá de 001-003)
 

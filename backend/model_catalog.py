@@ -145,6 +145,12 @@ _PAGE_SIZE_GEMINI = 1000
 # roto (o es hostil) y no una cuenta legítima con muchos modelos.
 _TOPE_PAGINAS = 50
 
+# Tarea 6 (2026-09-27, pedido de Fernando): tope de CANTIDAD (modelos
+# consultados por corrida) y de TIEMPO TOTAL acumulado en el bucle de
+# /api/show de _sync_ollama_models -- ver ahí el porqué.
+_OLLAMA_MAX_MODELOS_CONSULTADOS = 200
+_OLLAMA_TIEMPO_MAX_CONSULTAS_SEGUNDOS = 60.0
+
 
 class PaginacionSospechosaError(RuntimeError):
     """La paginación de un proveedor no converge: más de `_TOPE_PAGINAS`
@@ -433,9 +439,49 @@ async def _sync_ollama_models(url: str) -> dict:
     # Misma base que models_list_url (la fila `provider` de ollama), no una
     # URL nueva.
     url_show = url.rsplit("/api/tags", 1)[0] + "/api/show"
+
+    # MINOR-10 (auditoría adversarial, 2026-09-27): orden de PRIORIDAD para
+    # el tope de abajo -- nunca el orden que devuelve /api/tags a secas (que
+    # puede ser estable entre corridas, p.ej. alfabético): eso dejaría a los
+    # modelos del final de esa lista SIN refrescar su input_modalities para
+    # siempre si el catálogo local es más grande que el tope. Los nunca
+    # verificados (`input_modalities_checked_at IS NULL`) van primero;
+    # después, los verificados hace más tiempo. Lectura corta ANTES de las
+    # llamadas HTTP -- misma razón que el resto de esta función: no retener
+    # una conexión del pool durante I/O de red.
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT model_id, input_modalities_checked_at FROM model WHERE provider_id='ollama'")
+            checked_at_por_modelo = dict(await cur.fetchall())
+    orden_prioridad = sorted(
+        seen, key=lambda m: (checked_at_por_modelo.get(m) is not None, checked_at_por_modelo.get(m)))
+
     modalidades: dict[str, str] = {}
-    for model_id in seen:
+    modalidades_verificadas_ahora: set[str] = set()
+    inicio_consultas = time.monotonic()
+    consultados = 0
+    for model_id in orden_prioridad:
+        # Tope de la tarea 6 (2026-09-27, pedido de Fernando): un catálogo
+        # local con muchos modelos no puede dejar el sync pidiendo
+        # /api/show uno por uno sin límite -- lo que se cumpla primero
+        # (cantidad o tiempo) corta el resto de ESTA corrida. Fail-soft,
+        # mismo criterio que un /api/show individual que falla: a un modelo
+        # no consultado simplemente no se le toca input_modalities esta
+        # vez, la fila conserva el valor que ya tenía.
+        if consultados >= _OLLAMA_MAX_MODELOS_CONSULTADOS:
+            logger.warning(
+                f"model_catalog ollama /api/show: tope de cantidad alcanzado "
+                f"({_OLLAMA_MAX_MODELOS_CONSULTADOS}) -- {len(seen) - consultados} modelo(s) sin consultar esta corrida")
+            break
+        if time.monotonic() - inicio_consultas >= _OLLAMA_TIEMPO_MAX_CONSULTAS_SEGUNDOS:
+            logger.warning(
+                f"model_catalog ollama /api/show: tope de tiempo alcanzado "
+                f"({_OLLAMA_TIEMPO_MAX_CONSULTAS_SEGUNDOS}s) -- {len(seen) - consultados} modelo(s) sin consultar esta corrida")
+            break
         caps = await _capacidades_ollama(url_show, model_id)
+        consultados += 1
+        modalidades_verificadas_ahora.add(model_id)
         if caps is not None:
             modalidades[model_id] = "text,image" if "vision" in caps else "text"
 
@@ -473,9 +519,21 @@ async def _sync_ollama_models(url: str) -> dict:
 
                 if model_id in modalidades:
                     await cur.execute(
-                        "UPDATE model SET input_modalities=%s "
+                        "UPDATE model SET input_modalities=%s, input_modalities_checked_at=NOW() "
                         "WHERE provider_id='ollama' AND model_id=%s",
                         (modalidades[model_id], model_id),
+                    )
+                elif model_id in modalidades_verificadas_ahora:
+                    # MINOR-10: se intentó (entró bajo el tope) pero
+                    # /api/show falló -- igual cuenta como "le tocó esta
+                    # vez" para la prioridad de la PRÓXIMA corrida, sin lo
+                    # cual un modelo cuyo /api/show falla siempre quedaría
+                    # primero en la cola para siempre y nunca le tocaría el
+                    # turno a los demás.
+                    await cur.execute(
+                        "UPDATE model SET input_modalities_checked_at=NOW() "
+                        "WHERE provider_id='ollama' AND model_id=%s",
+                        (model_id,),
                     )
 
             await cur.execute(
@@ -704,6 +762,38 @@ async def _facetas_en_riesgo(cur) -> list[dict]:
 _NOMBRE_CANDADO_SYNC = "jax_catalogo_sync"
 
 
+async def nombre_candado(cur, base_nombre: str) -> str:
+    """El nombre de un candado de MariaDB, CALIFICADO con la base actual de
+    esta conexión (MINOR-1, cuarta ronda de la auditoría adversarial,
+    2026-09-27). `GET_LOCK`/`RELEASE_LOCK`/`IS_FREE_LOCK` son GLOBALES al
+    SERVIDOR de MariaDB, no a la base de datos -- y en hall9000 la base de
+    test vive en el MISMO servidor (puerto 3308) que producción. Sin
+    calificar, la suite de tests y un sync real corriendo en producción
+    comparten el mismo candado: un test que lo sostiene bloquea (o, peor,
+    se ve interrumpido por) un sync de producción, y viceversa.
+
+    Resuelto en un SOLO SITIO (acá) con `DATABASE()` -- no con la variable
+    de entorno `JAX_DB_NAME` que usa `db/connection.py` para conectar: leer
+    la base desde la CONEXIÓN misma es correcto incluso si algo cambiara de
+    base a mitad de conexión (`USE`), cosa que la variable de entorno no
+    podría reflejar. Cada candado (el de trabajo `jax_catalogo_sync`, el de
+    gate `jax_catalogo_sync_gate` de `catalogo_sync_registro.py`) pasa por
+    acá -- nunca se arma el nombre calificado a mano en otro lado.
+
+    MINOR-6 (quinta ronda de la auditoría adversarial, 2026-09-27,
+    DESCARTADO con evidencia): ¿un nombre de base larga puede desbordar el
+    límite de longitud del candado? Medido en MariaDB 12.3.3: un nombre de
+    128 caracteres se acepta, uno de 200 da `ERROR 1059`; con una base de
+    hasta 64 caracteres (el máximo real de MariaDB para un nombre de base)
+    y el más largo de los dos nombres base (`jax_catalogo_sync_gate`, 22
+    caracteres), el candado calificado más largo posible mide 87 (22 + 1
+    del `:` + 64) -- muy por debajo del límite real. No hace falta ningún
+    tope ni truncado acá."""
+    await cur.execute("SELECT CONCAT(%s, ':', DATABASE())", (base_nombre,))
+    (nombre,) = await cur.fetchone()
+    return nombre
+
+
 def _interpretar_get_lock(obtenido) -> str:
     """MAJOR-2(a) (cuarta auditoría adversarial, 2026-09-28): `GET_LOCK`
     devuelve 1 (obtenido), 0 (ocupado por otra conexión) o NULL (error real
@@ -800,7 +890,17 @@ async def _nuevos_desde_marca_bajo_candado(cur, marca_nuevos: str) -> dict:
     return {"nuevos_desde_marca": nuevos_desde_marca, "marca_corte": corte_str, "marca_retrocedio": False}
 
 
-async def sync_all(marca_nuevos: str | None = None) -> dict:
+def pasos_totales_de_sync() -> int:
+    """Cuántos pasos de avance reporta UN `sync_all()` completo: uno por
+    proveedor de `SYNCABLE_PROVIDERS`, más enriquecimiento, más el chequeo
+    de facetas en riesgo. Función propia (no un literal repetido) para que
+    `catalogo_sync_registro.py` -- que necesita el número ANTES de llamar a
+    `sync_all()`, para reservar la fila con su `pasos_total` -- nunca pueda
+    desincronizarse del número real que `sync_all()` termina reportando."""
+    return len(SYNCABLE_PROVIDERS) + 2
+
+
+async def sync_all(marca_nuevos: str | None = None, on_progreso=None, on_terminar=None) -> dict:
     """Orquesta el sync completo: capa (a) por cada proveedor de
     SYNCABLE_PROVIDERS, capa (b) de enriquecimiento, y el diagnostico de
     saltados/nuevos/facetas en riesgo. Extraida de POST /admin/models/sync
@@ -826,20 +926,74 @@ async def sync_all(marca_nuevos: str | None = None) -> dict:
     `marca_corte` y `marca_retrocedio` -- ver `_nuevos_desde_marca_bajo_candado`.
     El endpoint (POST /admin/models/sync) no pasa marca: sync_all() no
     impone una fuente de verdad de "cuándo fue el último aviso", eso lo
-    decide el ejecutor (la marca sólo avanza cuando Telegram confirma)."""
+    decide el ejecutor (la marca sólo avanza cuando Telegram confirma).
+
+    `on_progreso` (2026-09-27, pedido de Fernando: avance real de la barra
+    de sincronización): callback ASYNC opcional, `on_progreso(paso_actual,
+    pasos_total, detalle_paso)`, invocado ANTES de cada paso (cada
+    proveedor, el enriquecimiento, el chequeo de facetas en riesgo) --
+    `pasos_total` es siempre `pasos_totales_de_sync()`. Fail-soft: un
+    `on_progreso` que revienta se loguea y NUNCA tumba el sync -- nadie
+    aguas abajo depende de que el registro de avance haya salido bien
+    (mismo criterio que `add_safe_task`).
+
+    `on_terminar` (MAJOR-1, cuarta ronda de la auditoría adversarial,
+    2026-09-27): callback ASYNC opcional, `on_terminar(resultado, *,
+    es_error=False)`, invocado DENTRO del `try` -- mientras esta conexión
+    TODAVÍA sostiene el candado de trabajo -- tanto si `sync_all()` termina
+    normal como si algo revienta antes del `finally`. El defecto real que
+    esto cierra: `catalogo_sync_registro.ejecutar_reservada()` cerraba la
+    fila de `catalogo_sync_ejecucion` DESPUÉS de que `sync_all()` retornaba,
+    es decir DESPUÉS de que el `finally` ya había soltado el candado -- en
+    ese hueco, un `GET /sync/estado` (que corre
+    `marcar_huerfanas_interrumpidas()` en cada pedido) podía ver "candado
+    libre + fila todavía 'corriendo' + más vieja que el margen de gracia" y
+    marcarla 'error', y el cierre normal que llegaba un instante después la
+    pisaba con 'ok' SIN CONDICIÓN, escondiendo que la carrera había
+    ocurrido. Con `on_terminar` la fila se cierra ANTES de que el candado
+    quede libre -- para cuando alguien más puede verlo libre, la fila YA
+    está cerrada, así que `marcar_huerfanas_interrumpidas()` nunca la
+    encuentra 'corriendo'. Fail-soft (igual que `on_progreso`): si el propio
+    callback revienta, se loguea y NO tumba el sync -- `ejecutar_reservada()`
+    tiene su propia red de seguridad para ese caso degradado (ver su
+    docstring)."""
+    pasos_total = pasos_totales_de_sync()
+    paso_actual = 0
+
+    async def _avanzar(detalle_paso: str) -> None:
+        nonlocal paso_actual
+        paso_actual += 1
+        if on_progreso is None:
+            return
+        try:
+            await on_progreso(paso_actual, pasos_total, detalle_paso)
+        except Exception:  # fail-soft: registrar avance no puede tumbar el sync
+            logger.exception(f"sync_all: on_progreso reventó en paso={detalle_paso!r}")
+
+    async def _terminar(resultado: dict, *, es_error: bool = False) -> None:
+        if on_terminar is None:
+            return
+        try:
+            await on_terminar(resultado, es_error=es_error)
+        except Exception:  # fail-soft: cerrar el registro no puede tumbar el sync
+            logger.exception("sync_all: on_terminar reventó -- la fila queda para el cierre de red de seguridad")
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            # MINOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27):
+            # nombre calificado con la base actual -- ver `nombre_candado()`.
+            candado = await nombre_candado(cur, _NOMBRE_CANDADO_SYNC)
             # timeout=0: no espera -- si alguien más lo tiene, se corta al
             # toque en vez de hacer cola (el timer corre cada 6h; una espera
             # larga acá sólo demoraría un click manual sin ganar nada).
-            await cur.execute("SELECT GET_LOCK(%s, 0)", (_NOMBRE_CANDADO_SYNC,))
+            await cur.execute("SELECT GET_LOCK(%s, 0)", (candado,))
             (obtenido,) = await cur.fetchone()
 
         estado_candado = _interpretar_get_lock(obtenido)
         if estado_candado == "error":
             raise RuntimeError(
-                f"sync_all: GET_LOCK('{_NOMBRE_CANDADO_SYNC}') devolvió NULL -- "
+                f"sync_all: GET_LOCK('{candado}') devolvió NULL -- "
                 "error de MariaDB, no candado ocupado"
             )
         if estado_candado == "ocupado":
@@ -849,6 +1003,7 @@ async def sync_all(marca_nuevos: str | None = None) -> dict:
         try:
             results = []
             for provider_id in SYNCABLE_PROVIDERS:
+                await _avanzar(provider_id)
                 try:
                     results.append(await sync_provider_models(provider_id))
                 except Exception as e:  # fail-soft: un provider caido no frena a los demas; su error va en el resultado y apaga ok
@@ -856,6 +1011,7 @@ async def sync_all(marca_nuevos: str | None = None) -> dict:
                     logger.warning(f"sync_all provider={provider_id} failed reason={motivo}")
                     results.append({"provider_id": provider_id, "error": redactar_secretos(str(e))[:200]})
 
+            await _avanzar("enrich")
             try:
                 enrich_result = await enrich_from_models_dev()
             except Exception as e:  # fail-soft: el enriquecimiento es capa (b) opcional; su error va en 'enrich' y apaga ok
@@ -871,6 +1027,7 @@ async def sync_all(marca_nuevos: str | None = None) -> dict:
             enrich_fallido = "error" in enrich_result
             nuevos = {r["provider_id"]: r["nuevos"] for r in results if r.get("nuevos")}
 
+            await _avanzar("facetas_en_riesgo")
             async with conn.cursor() as cur:
                 facetas_en_riesgo = await _facetas_en_riesgo(cur)
 
@@ -901,7 +1058,19 @@ async def sync_all(marca_nuevos: str | None = None) -> dict:
                 async with conn.cursor() as cur:
                     respuesta.update(await _nuevos_desde_marca_bajo_candado(cur, marca_nuevos))
 
+            # MAJOR-1 (cuarta ronda de la auditoría adversarial, 2026-09-27):
+            # TODAVÍA dentro del try, con el candado TODAVÍA sostenido -- ver
+            # el docstring de `on_terminar` más arriba.
+            await _terminar(respuesta)
             return respuesta
+        except Exception as e:
+            # MAJOR-1: el camino de excepción TAMBIÉN cierra la fila con el
+            # candado todavía sostenido -- si no, un crash acá (p.ej.
+            # `_facetas_en_riesgo` reventando) dejaría la MISMA carrera que
+            # el camino feliz: `finally` suelta el candado, y sólo DESPUÉS
+            # `ejecutar_reservada()` se entera del error y cierra la fila.
+            await _terminar({"error": redactar_secretos(f"{type(e).__name__}: {e}")}, es_error=True)
+            raise
         finally:
             # MAJOR-2(b) (cuarta auditoría adversarial, 2026-09-28): si
             # RELEASE_LOCK no confirma con 1 (0 = no lo tenía esta conexión,
@@ -913,7 +1082,7 @@ async def sync_all(marca_nuevos: str | None = None) -> dict:
             liberado = None
             try:
                 async with conn.cursor() as cur:
-                    await cur.execute("SELECT RELEASE_LOCK(%s)", (_NOMBRE_CANDADO_SYNC,))
+                    await cur.execute("SELECT RELEASE_LOCK(%s)", (candado,))
                     (liberado,) = await cur.fetchone()
             except Exception:  # fail-soft: si RELEASE_LOCK revienta, `liberado` queda None y se descarta la conexión igual, abajo
                 logger.exception("sync_all: RELEASE_LOCK reventó -- se descarta la conexión")
