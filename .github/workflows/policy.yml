@@ -3303,7 +3303,18 @@ jobs:
           # 3097 passed / 2 skipped DESPUÉS. Delta propio real: +29. PISO_PASSED se suma
           # sobre el declarado (3066), no sobre el 3068 medido en bruto localmente: mismo
           # criterio de siempre en este archivo.
-          PISO_PASSED = 3095
+          # 3095 -> 3098 (2026-09-28, Hyde, ola final de arreglos, plan "El Ejecutor
+          # programa"): +3, uno por test nuevo (sin parametrizar, delta 1:1) --
+          # test_codigo_host_local_inactivo_no_cuenta_para_el_unico (MINOR-4:
+          # SQL_HOST_LOCAL exige `activo = 1`),
+          # test_entrega_codigo_queda_en_la_bitacora_aunque_falle_al_persistir_en_la_mision
+          # (MINOR-3: se anota en la bitácora ANTES de intentar persistir en la misión) y
+          # test_entrega_codigo_turno_2_sin_pr_url_conserva_el_del_turno_1 (MAJOR-1:
+          # SQL_GUARDAR_ENTREGA_CODIGO usa COALESCE). Medido LOCAL, mismo comando que este
+          # job (barrera test-db.env, JAX_DB_USER=jax_test verificado): 3100 passed / 2
+          # skipped DESPUÉS -- coincide con el "3097 DESPUÉS" del round anterior + 3, sin
+          # arrastre. PISO_PASSED se suma sobre el declarado (3095), no sobre el bruto local.
+          PISO_PASSED = 3098
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
