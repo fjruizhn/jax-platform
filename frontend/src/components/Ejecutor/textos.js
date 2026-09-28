@@ -85,6 +85,13 @@ export function datosDeBitacora(tx, datos) {
         : valorLegible(viol)))
       return `${k}: ${violaciones.join('; ')}`
     }
+    // `notas` de `entrega_codigo` (mision_codigo.py): una lista de códigos cortos -- algunos
+    // propios (tx.notas), otros reutilizados de `codigosTurno` (p. ej. "pausa_puesta").
+    if (k === 'notas' && Array.isArray(v)) {
+      const notas = v.map((n) => (typeof n === 'string' && Object.hasOwn(tx.notas, n)
+        ? tx.notas[n] : traducirCodigoDeBitacora(tx, n)))
+      return `${k}: ${notas.join('; ')}`
+    }
     return `${k}: ${valorLegible(v)}`
   }).join(' · ')
 }

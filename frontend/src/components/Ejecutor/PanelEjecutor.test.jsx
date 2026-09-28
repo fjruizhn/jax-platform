@@ -417,23 +417,40 @@ describe('Ejecutor -- textos', () => {
   const CITA = ['respaldada', 'sin_respaldo', 'fuente_truncada', 'fuente_inexistente', 'dato_fuera_de_linea', 'verificador_caido', 'linea_vacia', 'maquina_vacia', 'dato_vacio', 'proposito_vacio', 'dato_no_entero', 'linea_no_esta', 'comando_no_corrido']
   const AUDITOR = ['fuera_de_mision', 'prohibido', 'solucion_temporal', 'hardcoding', 'cierre_sin_verificacion', 'vigia_caido']
   const ARRANQUE = ['instalado_distinto_del_repo', 'maquina_fuera_del_inventario', 'maquina_sin_contratos_remotos', 'freno_sin_latido', 'interruptor_puesto', 'freno_sin_cuenta', 'freno_no_habilitado', 'cron_abierto_para_la_cuenta', 'linger_activo', 'pausa_del_ejecutor_puesta', 'vigia_ya_activo', 'cuenta_inalcanzable', 'cerco_alcanza_maquina_sin_contratos', 'maquina_inalcanzable', 'exportacion_imposible', 'prueba_ausente', 'prueba_reventada', 'auditor_no_admite_datos_de_clientes']
-  const TURNO = ['arranque_rechazado', 'pausa_puesta', 'auditor_pauso', 'vigia_no_latio', 'cerebro_fallo', 'registro_no_cuadra', 'cadena_rota', 'vigia_no_cerro', 'runner_salida_invalida', 'runner_sin_cierre', 'plataforma_reiniciada', 'sin_configurar', 'cerebro_tope_vencido', 'auditor_ilegible', 'turno_ilegible', 'runner_error', 'sin_afirmaciones']
-  const EVENTOS = ['mision_creada', 'turno_lanzado', 'arranque_rechazado', 'arranque_verificado', 'vigia_late', 'vigia_no_latio', 'cerebro_termino', 'paso', 'afirmacion_entregada', 'afirmacion_descartada', 'auditor_pauso', 'vigia_cerrado', 'pausa_detectada', 'turno_completado', 'turno_fallido', 'turno_interrumpido', 'turno_rechazado', 'auditor_ilegible', 'runner_salida_invalida']
-  const ERRORES = ['ejecutor_objetivo_vacio', 'ejecutor_sin_maquinas', 'ejecutor_maquina_desconocida', 'ejecutor_maquina_no_elegible', 'ejecutor_turno_en_curso', 'ejecutor_pausado', 'ejecutor_sin_configurar', 'ejecutor_mision_inexistente', 'ejecutor_instruccion_vacia', 'ejecutor_mision_sin_sesion', 'ejecutor_pausa_no_escribible', 'ejecutor_pausa_auditoria_fallida']
+  // Motivos del contrato "codigo" (Task 12/13, jax/ejecutor/contratos/arranque.py y
+  // canario_codigo.py): token de GitHub y los dos canarios permanentes.
+  const CODIGO_CONTRATO = ['sin_token_github', 'push_no_bloqueado', 'push_sin_su_regla', 'cerco_deja_salir_a_github', 'c1_diff_no_bloquea']
+  const TURNO = ['arranque_rechazado', 'pausa_puesta', 'auditor_pauso', 'vigia_no_latio', 'cerebro_fallo', 'registro_no_cuadra', 'cadena_rota', 'vigia_no_cerro', 'runner_salida_invalida', 'runner_sin_cierre', 'plataforma_reiniciada', 'sin_configurar', 'cerebro_tope_vencido', 'auditor_ilegible', 'turno_ilegible', 'runner_error', 'sin_afirmaciones',
+    // MAJOR-2 (ola final, plan "El Ejecutor programa"): el `codigo` de un turno de código
+    // que no llega a entregar (mision.py, ENTREGA_SIN_FALLO) o que ni prepara el clon.
+    'preparar_fallo', 'codigo_sin_clon', 'codigo_sin_dependencias', 'rechazada_por_contrato', 'fallo_entrega', 'sin_informe_c5', 'empujado_sin_pr']
+  const EVENTOS = ['mision_creada', 'turno_lanzado', 'arranque_rechazado', 'arranque_verificado', 'vigia_late', 'vigia_no_latio', 'cerebro_termino', 'paso', 'afirmacion_entregada', 'afirmacion_descartada', 'auditor_pauso', 'vigia_cerrado', 'pausa_detectada', 'turno_completado', 'turno_fallido', 'turno_interrumpido', 'turno_rechazado', 'auditor_ilegible', 'runner_salida_invalida',
+    // MAJOR-2: los tres eventos propios de una misión de código (`mision.py: dice(...)`).
+    'codigo_preparado', 'preparar_fallo', 'entrega_codigo']
+  const ERRORES = ['ejecutor_objetivo_vacio', 'ejecutor_sin_maquinas', 'ejecutor_maquina_desconocida', 'ejecutor_maquina_no_elegible', 'ejecutor_turno_en_curso', 'ejecutor_pausado', 'ejecutor_sin_configurar', 'ejecutor_mision_inexistente', 'ejecutor_instruccion_vacia', 'ejecutor_mision_sin_sesion', 'ejecutor_pausa_no_escribible', 'ejecutor_pausa_auditoria_fallida',
+    // MAJOR-2: los `detail` 422/409 propios de las misiones de código (backend/ejecutor/misiones.py).
+    'repo_invalido', 'repo_inactivo', 'sin_host_local', 'ejecutor_tipo_invalido']
   // Reglas de entrega_codigo (Task 12, jax/ejecutor/contratos): las 9 declaradas por el
   // controlador -- flujos_ci, archivo_de_fernando, prueba_debilitada, ganchos, secretos,
   // tamano, identidad, encoding_no_permitido, entrega.
   const REGLA = ['flujos_ci', 'archivo_de_fernando', 'prueba_debilitada', 'ganchos', 'secretos', 'tamano', 'identidad', 'encoding_no_permitido', 'entrega']
+  // Estados propios de `entrega_codigo` (mision_codigo.py) -- los 7 del ENUM.
+  const ENTREGA = ['abierto', 'rechazada_por_contrato', 'sin_informe_c5', 'fallo_entrega', 'sin_cambios', 'sin_entregar', 'empujado_sin_pr']
+  // `notas` de `entrega_codigo` (mision_codigo.py, MAJOR-1/MINOR-5): los 4 códigos propios,
+  // fuera de los que ya reusa de `codigosTurno` (p. ej. "pausa_puesta").
+  const NOTAS = ['pr_reabierto_nuevo', 'sin_etiqueta', 'pr_previo_sin_cambios_nuevos', 'pr_con_informe_desactualizado']
   const lleno = (v) => typeof v === 'string' && v.trim() !== ''
 
   it('todo código conocido del contrato tiene texto en es y en', () => {
     for (const [nombre, dic] of [['es', es], ['en', en]]) {
       const e = dic.ejecutor
-      for (const c of [...CITA, ...AUDITOR, ...ARRANQUE]) expect(lleno(e.codigos[c]), `${nombre}.codigos.${c}`).toBe(true)
+      for (const c of [...CITA, ...AUDITOR, ...ARRANQUE, ...CODIGO_CONTRATO]) expect(lleno(e.codigos[c]), `${nombre}.codigos.${c}`).toBe(true)
       for (const c of TURNO) expect(lleno(e.codigosTurno[c]), `${nombre}.codigosTurno.${c}`).toBe(true)
       for (const c of EVENTOS) expect(lleno(e.eventos[c]), `${nombre}.eventos.${c}`).toBe(true)
       for (const c of REGLA) expect(lleno(e.regla[c]), `${nombre}.regla.${c}`).toBe(true)
-      for (const c of ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'arranque']) {
+      for (const c of ENTREGA) expect(lleno(e.entrega[c]), `${nombre}.entrega.${c}`).toBe(true)
+      for (const c of NOTAS) expect(lleno(e.notas[c]), `${nombre}.notas.${c}`).toBe(true)
+      for (const c of ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'arranque', 'codigo']) {
         expect(lleno(e.contratos[c]), `${nombre}.contratos.${c}`).toBe(true)
         // Con nombre propio, no sólo "Contrato C1".
         expect(e.contratos[c], `${nombre}.contratos.${c}`).not.toMatch(/^(Contrato|Contract) C\d$/)
