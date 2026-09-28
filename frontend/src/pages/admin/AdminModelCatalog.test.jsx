@@ -546,6 +546,48 @@ describe('AdminModelCatalog -- el polling se detiene', () => {
     expect(llamadasAEstado()).toBe(llamadasAntes)
   })
 
+  it('MINOR-5 (tercera ronda de la auditoría adversarial, 2026-09-27): una respuesta ' +
+     'en vuelo al desmontar no dispara más pedidos', async () => {
+    // Distinto del "deja de pedir /sync/estado al desmontar" de arriba: ahí
+    // el desmontaje pasa con el polling QUIETO (sin pedido pendiente) --
+    // esto reproduce el desmontaje ocurriendo MIENTRAS un GET ya está en
+    // vuelo, y esa respuesta llega recién DESPUÉS. Sin el guard de
+    // `montadoRef` en la rama `if (data.corriendo)`, una respuesta así
+    // (todavía "corriendo") armaría un `setInterval` nuevo que nadie
+    // limpiaría nunca -- el cleanup del efecto de montaje ya corrió antes de
+    // que esta respuesta llegara.
+    estadoSyncMock = { corriendo: corriendoFixture(), ultima: null }
+    mockRoutes()
+    const { unmount } = render(<I18nProvider><AdminModelCatalog /></I18nProvider>)
+    await flush()
+
+    expect(screen.getByText(es.adminModelsSyncProgreso(1, 9, 'openai'))).toBeInTheDocument()
+
+    // El próximo tick del polling (INTERVALO_POLLING_MS = 1000, en el
+    // componente) queda EN VUELO -- se resuelve a mano, después de desmontar.
+    let resolverEnVuelo
+    const enVuelo = new Promise(resolve => { resolverEnVuelo = resolve })
+    api.get.mockImplementation(url => {
+      if (url.startsWith('/admin/models/sync/estado')) return enVuelo
+      return Promise.resolve({ data: { proposals: [PROPUESTA] } })
+    })
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    const llamadasAntesDeDesmontar = llamadasAEstado()
+    expect(llamadasAntesDeDesmontar).toBeGreaterThan(0)
+
+    unmount()
+
+    // La respuesta llega DESPUÉS de desmontar, con datos que -- si el guard
+    // no existiera -- armarían un intervalo nuevo (sigue "corriendo").
+    resolverEnVuelo({ data: { corriendo: corriendoFixture({ paso_actual: 2 }), ultima: null } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+
+    // Nada de intervalos nuevos: avanzar mucho tiempo no dispara más pedidos.
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    expect(llamadasAEstado()).toBe(llamadasAntesDeDesmontar)
+  })
+
   it('un error de red durante el polling muestra un mensaje y un botón de reintentar', async () => {
     estadoSyncMock = { corriendo: corriendoFixture(), ultima: null }
     mockRoutes()
