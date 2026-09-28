@@ -1,5 +1,6 @@
 import { renderHook, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
+import { useLayoutEffect } from 'react'
 import { useCerrarConEscape } from './useCerrarConEscape'
 
 // Fix round 2 (2026-09-15, Ruling U25): antes, `onCerrar` iba en las deps del
@@ -8,6 +9,22 @@ import { useCerrarConEscape } from './useCerrarConEscape'
 // callback vive ahora en un ref actualizado en cada render, y el listener de
 // `keydown` se agrega UNA sola vez.
 describe('useCerrarConEscape', () => {
+  it('escucha Escape desde el mismo commit en que el diálogo queda visible', () => {
+    const onCerrar = vi.fn()
+
+    function DialogoRecienMontado() {
+      useCerrarConEscape(onCerrar)
+      useLayoutEffect(() => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+      }, [])
+      return null
+    }
+
+    renderHook(() => DialogoRecienMontado())
+
+    expect(onCerrar).toHaveBeenCalledTimes(1)
+  })
+
   it('agrega el listener de keydown una sola vez, no se re-agrega al cambiar onCerrar, y Escape llama al más reciente', () => {
     const addSpy = vi.spyOn(document, 'addEventListener')
     const removeSpy = vi.spyOn(document, 'removeEventListener')

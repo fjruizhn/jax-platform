@@ -16,6 +16,9 @@ from fastapi import APIRouter, Depends, Query
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
+from api.paginacion_descartados import (
+    CURSOR_MAX, ORDEN, consulta_y_parametros, cursor_siguiente, exigir_cursor_sin_offset,
+)
 
 router = APIRouter(prefix="/api/admin/pipelines")
 
@@ -64,24 +67,34 @@ async def listar_ocultos(
 # tests/test_pipelines_descartados_admin.py) -- ver el docstring de ese
 # archivo para la medición completa y por qué NO es el índice que menciona
 # el encargo original.
-SQL_DESCARTADOS_ADMIN = (
+#
+# 2026-09-23: orden TOTAL (descartado_at DESC, pipeline_id DESC) y
+# paginación por cursor además de offset -- ver api/paginacion_descartados.py
+# y docs/carga-descartados-cursor-2026-09-23.md.
+SQL_DESCARTADOS_ADMIN_BASE = (
     "SELECT pipeline_id, name, user_id, tenant_id, descartado_por, descartado_at, created_at "
     "FROM jacobs_pipelines WHERE status='discarded' "
-    "ORDER BY descartado_at DESC LIMIT %s OFFSET %s"
 )
+SQL_DESCARTADOS_ADMIN = SQL_DESCARTADOS_ADMIN_BASE + ORDEN + "LIMIT %s OFFSET %s"
 
 
 @router.get("/descartados")
 async def listar_descartados_admin(
     limite: int = Query(LIMITE_MAX, ge=1, le=LIMITE_MAX),
     offset: int = Query(0, ge=0),
+    cursor: str | None = Query(None, min_length=1, max_length=CURSOR_MAX),
     user: AuthUser = Depends(require_superadmin),
 ):
+    exigir_cursor_sin_offset(cursor, offset)
+    consulta, params = consulta_y_parametros(SQL_DESCARTADOS_ADMIN_BASE, (), limite, offset, cursor)
     pool = await get_pool()
     async with pool.acquire() as conn, conn.cursor() as cur:
-        await cur.execute(SQL_DESCARTADOS_ADMIN, (limite + 1, offset))
+        await cur.execute(consulta, params)
         filas = await cur.fetchall()
     campos = ("pipeline_id", "name", "user_id", "tenant_id", "descartado_por",
               "descartado_at", "created_at")
-    return {"pipelines": [dict(zip(campos, f)) for f in filas[:limite]],
-            "has_more": len(filas) > limite}
+    pagina = filas[:limite]
+    hay_mas = len(filas) > limite
+    return {"pipelines": [dict(zip(campos, f)) for f in pagina],
+            "has_more": hay_mas,
+            "cursor_siguiente": cursor_siguiente(pagina, hay_mas, idx_fecha=5)}

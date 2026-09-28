@@ -499,9 +499,12 @@ CREATE TABLE IF NOT EXISTS model (
   -- _seed_model_max_output_tokens() y el comentario de _COLUMNS mas abajo.
   max_output_tokens INT NULL,
   input_modalities SET('text','image','audio','video') NOT NULL DEFAULT 'text',
-  price_input_per_1m_usd DECIMAL(10,4) NULL,
-  price_output_per_1m_usd DECIMAL(10,4) NULL,
-  price_cache_per_1m_usd DECIMAL(10,4) NULL,
+  -- DECIMAL(12,6), no (10,4): 6 decimales alcanzan precios por debajo de
+  -- $0.001/1M tokens sin truncar en silencio (ver _DECIMAL_WIDENS, abajo,
+  -- que ensancha las instalaciones que nacieron con el ancho viejo).
+  price_input_per_1m_usd DECIMAL(12,6) NULL,
+  price_output_per_1m_usd DECIMAL(12,6) NULL,
+  price_cache_per_1m_usd DECIMAL(12,6) NULL,
   release_date DATE NULL,
   deprecation_date DATE NULL,
   status ENUM('available','degraded','deprecated','gone') NOT NULL DEFAULT 'available',
@@ -594,6 +597,79 @@ CREATE TABLE IF NOT EXISTS model_catalog_audit (
   INDEX idx_proposal_id (proposal_id, id),
   INDEX idx_facet_rechazo (action, facet_key, id),
   INDEX idx_model_time (model_ref, performed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+# Configuración del sync PROGRAMADO del catálogo (2026-09-27, pedido de
+# Fernando: encender/apagar el timer y elegir cada cuánto corre desde la
+# pantalla, no editando systemd). Principio IV (sin hardcoding): esta fila
+# es la ÚNICA fuente de "cada cuánto" -- el timer de systemd pasa a
+# OnCalendar=hourly y catalogo_modelos_ejecutor.py decide, leyendo ACÁ, si
+# de verdad toca sincronizar (ver catalogo_sync_config.py).
+#
+# Fila única (id fijo en 1, CHECK que lo hace explícito además del PK): no
+# hay tenant ni usuario dueño de esta configuración, es global al catálogo.
+# Sembrada por _seed_catalogo_sync_config con el valor de HOY (habilitado,
+# cada 6 horas) -- decisión de Fernando de conservar el comportamiento
+# actual al introducir el apagador.
+CREATE_CATALOGO_SYNC_CONFIG = """
+CREATE TABLE IF NOT EXISTS catalogo_sync_config (
+  id TINYINT NOT NULL PRIMARY KEY DEFAULT 1,
+  habilitado BOOLEAN NOT NULL DEFAULT TRUE,
+  cada_valor INT NOT NULL DEFAULT 6,
+  cada_unidad ENUM('horas','dias','semanas','meses') NOT NULL DEFAULT 'horas',
+  actualizado_por INT NULL,
+  actualizado_en DATETIME NULL,
+  CONSTRAINT chk_catalogo_sync_config_fila_unica CHECK (id = 1),
+  FOREIGN KEY (actualizado_por) REFERENCES jax_users(user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+# Una fila por CORRIDA del sync completo (manual o programada) -- avance
+# real (paso_actual/pasos_total/detalle_paso) y última actualización
+# siempre visibles (pedido de Fernando, 2026-09-27). Ver
+# catalogo_sync_registro.py: es la ÚNICA fuente de "hay un sync corriendo"
+# y de "cuándo fue la última actualización" -- el endpoint manual y el
+# ejecutor programado comparten esta misma orquestación (Regla Absoluta,
+# mismo criterio que model_catalog.sync_all()).
+#
+# Índices: idx_estado_terminado cubre "¿hay uno corriendo?" (estado='corriendo')
+# y "última actualización EXITOSA" (estado='ok' ORDER BY terminado_en DESC);
+# idx_estado_iniciado cubre detectar una fila 'corriendo' huérfana
+# (estado='corriendo' AND iniciado_en < corte); idx_terminado_en cubre "la
+# última terminada, sea cual sea su estado" -- ORDER BY terminado_en DESC
+# SIN filtrar por estado: una fila 'corriendo' tiene terminado_en NULL, y
+# tanto MySQL como MariaDB ordenan NULL como el valor MÁS CHICO, así que en
+# DESC queda siempre al final del recorrido del índice -- el primer valor
+# que el índice entrega escaneando hacia atrás YA es la última fila
+# terminada, sin necesitar (ni admitir sin perder el índice) un WHERE
+# adicional.
+# Huérfanas (MAJOR-A, tercera ronda de la auditoría adversarial, 2026-09-27):
+# esta tabla tuvo una columna `latido_en` (última vez que alguien estampó
+# avance sobre la fila) -- se retiró por completo, nunca llegó a producción.
+# El criterio de huérfana no depende de ninguna columna propia: usa
+# IS_FREE_LOCK() sobre el candado de trabajo real de model_catalog.sync_all()
+# más `iniciado_en` (ver catalogo_sync_registro.py), por eso idx_estado_iniciado
+# de abajo alcanza -- no hace falta un índice dedicado a huérfanas. Todas las
+# fechas DEFAULT/escritas UTC_TIMESTAMP(), nunca NOW() (MINOR-6): la sesión de
+# MariaDB de esta app corre en CST (ver tiempo.py) y estas fechas viajan al
+# navegador.
+CREATE_CATALOGO_SYNC_EJECUCION = """
+CREATE TABLE IF NOT EXISTS catalogo_sync_ejecucion (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  origen ENUM('manual','programado') NOT NULL,
+  iniciado_por INT NULL,
+  estado ENUM('corriendo','ok','con_problemas','error') NOT NULL DEFAULT 'corriendo',
+  paso_actual INT NOT NULL DEFAULT 0,
+  pasos_total INT NOT NULL DEFAULT 0,
+  detalle_paso VARCHAR(100) NULL,
+  iniciado_en DATETIME NOT NULL DEFAULT UTC_TIMESTAMP(),
+  terminado_en DATETIME NULL,
+  resultado LONGTEXT NULL CHECK (resultado IS NULL OR json_valid(resultado)),
+  FOREIGN KEY (iniciado_por) REFERENCES jax_users(user_id),
+  INDEX idx_estado_terminado (estado, terminado_en),
+  INDEX idx_estado_iniciado (estado, iniciado_en),
+  INDEX idx_terminado_en (terminado_en)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -759,9 +835,18 @@ CREATE TABLE IF NOT EXISTS kill_switch_audit (
 # en `true` y por la base no se podía saber quién la había cambiado.
 # Sin FK a jax_users, como user_admin_audit y kill_switch_audit: la historia
 # sobrevive a la baja del usuario. `ts` en UTC explícito (lo escribe
-# config_audit.escribir, el único escritor). config_key VARCHAR(100), igual que
+# config_audit.auditar, el único escritor de esta tabla -- config_audit.escribir
+# la llama para su propio rastro). config_key VARCHAR(100), igual que
 # axioma_config. valor_anterior NULL = la clave no existía. El historial de una
 # clave sale por idx_axioma_config_audit_key_ts (EXPLAIN en los tests).
+#
+# origen VARCHAR(20) y el CHECK con 'catalogo_sync' YA desde la creación
+# (MINOR-6, tercera ronda de la auditoría adversarial, 2026-09-27) -- antes
+# esto era VARCHAR(10) + CHECK ('config','smtp') y una base NUEVA necesitaba
+# el ALTER de _agregar_origen_catalogo_sync_a_config_audit() para poder
+# auditar catalogo_sync_config.py. Ese ALTER se queda (más abajo) para bases
+# YA EXISTENTES creadas con la forma vieja -- su propio chequeo de
+# information_schema ya se salta las tablas nuevas, que nacen con esto.
 CREATE_AXIOMA_CONFIG_AUDIT = """
 CREATE TABLE IF NOT EXISTS axioma_config_audit (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -770,9 +855,9 @@ CREATE TABLE IF NOT EXISTS axioma_config_audit (
   config_key VARCHAR(100) NOT NULL,
   valor_anterior TEXT NULL,
   valor_nuevo TEXT NOT NULL,
-  origen VARCHAR(10) NOT NULL,
+  origen VARCHAR(20) NOT NULL,
   ip VARCHAR(45) NULL,
-  CONSTRAINT chk_axioma_config_audit_origen CHECK (origen IN ('config', 'smtp')),
+  CONSTRAINT chk_axioma_config_audit_origen CHECK (origen IN ('config', 'smtp', 'catalogo_sync')),
   INDEX idx_axioma_config_audit_key_ts (config_key, ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
@@ -950,6 +1035,8 @@ _TABLES = [
     ("facet_binding", CREATE_FACET_BINDING),
     ("model_binding_proposal", CREATE_MODEL_BINDING_PROPOSAL),
     ("model_catalog_audit", CREATE_MODEL_CATALOG_AUDIT),  # sin FK (PR-L rondas 1-2): el orden no importa
+    ("catalogo_sync_config", CREATE_CATALOGO_SYNC_CONFIG),        # FK a jax_users (ya creada arriba)
+    ("catalogo_sync_ejecucion", CREATE_CATALOGO_SYNC_EJECUCION),  # FK a jax_users (ya creada arriba)
     ("motor", CREATE_MOTOR),                          # antes de capability (FK fallback_motor)
     ("capability", CREATE_CAPABILITY),                # antes de capability_motor (FK)
     ("capability_motor", CREATE_CAPABILITY_MOTOR),
@@ -1781,6 +1868,16 @@ async def _seed_provider_sync_config(cur) -> None:
         )
 
 
+async def _seed_catalogo_sync_config(cur) -> None:
+    """INSERT IGNORE por PK fija (id=1): conserva lo de HOY (habilitado,
+    cada 6 horas -- decisión de Fernando, 2026-09-27) en una base nueva, y
+    NUNCA pisa lo que un superadmin ya haya cambiado desde la pantalla en
+    una base existente."""
+    await cur.execute(
+        "INSERT IGNORE INTO catalogo_sync_config (id, habilitado, cada_valor, cada_unidad) "
+        "VALUES (1, TRUE, 6, 'horas')")
+
+
 async def _seed_models_and_backfill(cur) -> None:
     """D1.1 — deriva el catalogo inicial de los bindings YA migrados en
     Bloque C (_seed_facets), no de una lista nueva inventada. source='manual'
@@ -2055,6 +2152,15 @@ _COLUMNS = [
      "ALTER TABLE model ADD COLUMN max_output_tokens INT NULL"),
     ("model", "digest", "ALTER TABLE model ADD COLUMN digest VARCHAR(80) NULL"),
     ("model", "digest_changed_at", "ALTER TABLE model ADD COLUMN digest_changed_at DATETIME NULL"),
+    # MINOR-10 (auditoría adversarial, 2026-09-27): cursor de equidad del tope
+    # de /api/show de Ollama (model_catalog._sync_ollama_models) -- NULL o
+    # más viejo primero, para que ningún modelo local quede sin refrescar su
+    # input_modalities para siempre si el catálogo es más grande que el tope.
+    # Separada de `source_checked_at` a propósito: esa se pisa con NOW() para
+    # TODOS los vistos en cada sync (lo haga o no el tope), así que perdería
+    # la señal de "a cuál le tocó de verdad" en la corrida siguiente.
+    ("model", "input_modalities_checked_at",
+     "ALTER TABLE model ADD COLUMN input_modalities_checked_at DATETIME NULL"),
     # T2 (2026-08-19, jax/las_manos/motor_registry/worker.py): "disable
     # reasoning por defecto" NO es aplicable parejo entre proveedores --
     # verificado real contra las 3 APIs: Ollama acepta reasoning_effort=none
@@ -2262,6 +2368,56 @@ async def _column_too_narrow(cur, table_name: str, column_name: str, min_length:
     return bool(row) and row[0] is not None and row[0] < min_length
 
 
+async def _decimal_precision_too_small(
+    cur, table_name: str, column_name: str, min_precision: int, min_scale: int,
+) -> bool:
+    """Version DECIMAL de `_column_too_narrow` -- CHARACTER_MAXIMUM_LENGTH es
+    NULL para una columna numerica, asi que hace falta su propio par de
+    columnas de information_schema. True si la columna tiene MENOS digitos
+    totales o MENOS decimales que el minimo pedido; nunca compara "distinto",
+    para que una columna YA ensanchada (o ensanchada mas alla del minimo a
+    mano) no dispare el ALTER de nuevo."""
+    await cur.execute(
+        """
+        SELECT NUMERIC_PRECISION, NUMERIC_SCALE FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
+        """,
+        (table_name, column_name),
+    )
+    row = await cur.fetchone()
+    if not row or row[0] is None:
+        return False
+    precision, scale = row
+    return precision < min_precision or (scale or 0) < min_scale
+
+
+# (tabla, columna, precision minima, escala minima, ALTER MODIFY completo) --
+# ensancha una columna DECIMAL existente sin perder datos. Bloque D
+# (catalogo de modelos, 2026-09-27): las 3 columnas de precio nacieron
+# DECIMAL(10,4) (ver CREATE_MODEL, mas abajo) -- 4 decimales no alcanza para
+# un precio por debajo de $0.001/1M tokens, y `enrich_from_models_dev()`
+# (model_catalog.py) lo trunca en SILENCIO: MariaDB solo emite un Warning
+# ("Data truncated for column 'price_cache_per_1m_usd'") que nadie miraba,
+# reproducido en vivo contra jax_memory_test antes de este cambio
+# (tests/test_migracion_precio_decimal.py). DECIMAL(12,6): 6 decimales --
+# igual que axioma_usage.cost_usd (CREATE_AXIOMA_USAGE, arriba) -- y 2
+# digitos mas de parte entera de margen.
+_DECIMAL_WIDENS = [
+    (
+        "model", "price_input_per_1m_usd", 12, 6,
+        "ALTER TABLE model MODIFY COLUMN price_input_per_1m_usd DECIMAL(12,6) NULL",
+    ),
+    (
+        "model", "price_output_per_1m_usd", 12, 6,
+        "ALTER TABLE model MODIFY COLUMN price_output_per_1m_usd DECIMAL(12,6) NULL",
+    ),
+    (
+        "model", "price_cache_per_1m_usd", 12, 6,
+        "ALTER TABLE model MODIFY COLUMN price_cache_per_1m_usd DECIMAL(12,6) NULL",
+    ),
+]
+
+
 # (tabla, columna, longitud minima requerida, ALTER MODIFY completo) —
 # ensancha una columna VARCHAR existente sin perder datos. Instalaciones
 # nuevas ya nacen con el ancho correcto via CREATE TABLE; esto cubre las
@@ -2283,6 +2439,17 @@ _COLUMN_WIDENS = [
     (
         "jax_users", "email", 320,
         "ALTER TABLE jax_users MODIFY COLUMN email VARCHAR(320) NOT NULL",
+    ),
+    # axioma_config_audit.origen era VARCHAR(10) -- alcanzaba para 'config'
+    # (6) y 'smtp' (4), pero no para 'catalogo_sync' (13), el origen nuevo
+    # que agrega catalogo_sync_config.actualizar_config() (MAJOR-2, auditoría
+    # adversarial de la ronda 2026-09-27). Ensanchado ANTES de tocar el
+    # CHECK (ver _agregar_origen_catalogo_sync_a_config_audit): un ADD
+    # CONSTRAINT con un valor más largo que la columna fallaría, o peor,
+    # MariaDB podría aceptar el CHECK y truncar el valor real al escribir.
+    (
+        "axioma_config_audit", "origen", 20,
+        "ALTER TABLE axioma_config_audit MODIFY COLUMN origen VARCHAR(20) NOT NULL",
     ),
 ]
 
@@ -2830,6 +2997,33 @@ async def _backfill_capability_mode(cur) -> None:
         )
 
 
+async def _agregar_origen_catalogo_sync_a_config_audit(cur) -> None:
+    """`axioma_config_audit.origen` gana el origen `catalogo_sync`
+    (MAJOR-2, auditoría adversarial de la ronda 2026-09-27):
+    `catalogo_sync_config.actualizar_config()` audita ahí, igual que
+    `config`/`smtp`. Un `ADD CONSTRAINT` sobre un nombre que YA existe da el
+    error 1826 (mismo motivo que `_asegurar_forma_de_capability_mode`) --
+    por eso se consulta `CHECK_CLAUSE` primero: si ya menciona
+    `catalogo_sync`, no hay nada que hacer; si no, se DROPEA el CHECK viejo
+    y se agrega uno nuevo con la lista ampliada (nunca un `ADD` a secas
+    sobre un nombre existente)."""
+    await cur.execute(
+        "SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS "
+        "WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'axioma_config_audit' "
+        "AND CONSTRAINT_NAME = 'chk_axioma_config_audit_origen'"
+    )
+    fila = await cur.fetchone()
+    if fila is not None and "catalogo_sync" in fila[0]:
+        return
+    if fila is not None:
+        await cur.execute(
+            "ALTER TABLE axioma_config_audit DROP CONSTRAINT chk_axioma_config_audit_origen")
+    await cur.execute(
+        "ALTER TABLE axioma_config_audit ADD CONSTRAINT chk_axioma_config_audit_origen "
+        "CHECK (origen IN ('config', 'smtp', 'catalogo_sync'))"
+    )
+
+
 async def _asegurar_forma_de_capability_mode(cur) -> None:
     """Deja `capability.mode` en su forma final: VARCHAR(16) NOT NULL +
     CHECK, sin default (tanda A v3, spec §0/§3.1). Idempotente, en orden:
@@ -3356,6 +3550,13 @@ async def run_migrations():
             for table_name, column_name, min_length, ddl in _COLUMN_WIDENS:
                 if await _column_too_narrow(cur, table_name, column_name, min_length):
                     await cur.execute(ddl)
+            # Después del ensanchado de arriba (axioma_config_audit.origen ya
+            # es VARCHAR(20) para cuando esto corre).
+            await _agregar_origen_catalogo_sync_a_config_audit(cur)
+
+            for table_name, column_name, min_precision, min_scale, ddl in _DECIMAL_WIDENS:
+                if await _decimal_precision_too_small(cur, table_name, column_name, min_precision, min_scale):
+                    await cur.execute(ddl)
 
             for table_name, index_name, ddl in _INDEXES:
                 if not await _index_exists(cur, table_name, index_name):
@@ -3393,6 +3594,7 @@ async def run_migrations():
             # faceta vieja activa.
             await _retirar_auditor_local_facet(cur)
             await _seed_provider_sync_config(cur)
+            await _seed_catalogo_sync_config(cur)
             await _migrar_gemini_a_cabecera(cur)
             await _seed_models_and_backfill(cur)
             await _fix_anthropic_sonnet_alias(cur)

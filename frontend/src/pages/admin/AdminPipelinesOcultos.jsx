@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
 import api from '../../api/client'
 import { textoDeErrorDeMesa } from '../../api/errores'
@@ -40,6 +40,10 @@ export default function AdminPipelinesOcultos() {
 
   const [listaDescartados, setListaDescartados] = useState([])
   const [hayMasDescartados, setHayMasDescartados] = useState(false)
+  // Cursor de la página siguiente de Descartados (2026-09-23): mismo
+  // criterio que HistorialContenido.jsx -- ver su comentario. Ocultos sigue
+  // por offset (su endpoint no tiene cursor).
+  const [cursorDescartados, setCursorDescartados] = useState(null)
   const [cargandoDescartados, setCargandoDescartados] = useState(false)
   const [errorDescartados, setErrorDescartados] = useState(false)
   const [errorAccionDescartados, setErrorAccionDescartados] = useState(null)
@@ -64,16 +68,32 @@ export default function AdminPipelinesOcultos() {
   const [necesitaRecargaOcultos, setNecesitaRecargaOcultos] = useState(true)
   const [necesitaRecargaDescartados, setNecesitaRecargaDescartados] = useState(true)
 
+  // Época de cada carga (2026-09-23): cada pedido toma un número nuevo y su
+  // respuesta (datos, error y fin de "cargando") sólo se aplica si sigue
+  // siendo el ÚLTIMO de su pestaña. Sin esto, "Cargar más" → otra pestaña →
+  // una acción que invalida la primera → volver (recarga la primera
+  // página) antes de que llegara la respuesta dejaba que la respuesta VIEJA
+  // se agregara a la lista recién recargada (filas repetidas) y pisara su
+  // cursor. Mismo arreglo que HistorialContenido.jsx. "Cargar más" está
+  // deshabilitado mientras hay una carga en curso, así que "el último
+  // pedido gana" nunca descarta una página que hacía falta.
+  const epocaOcultos = useRef(0)
+  const epocaDescartados = useRef(0)
+
   function cargarOcultos(offset) {
+    const epoca = ++epocaOcultos.current
+    const vigente = () => epoca === epocaOcultos.current
     setCargandoOcultos(true)
     setErrorOcultos(false)
     return api.get('/admin/pipelines/ocultos', { params: { limite: LIMITE, offset } })
       .then(({ data }) => {
+        if (!vigente()) return
         const nuevos = Array.isArray(data?.pipelines) ? data.pipelines : []
         setListaOcultos((prev) => (offset === 0 ? nuevos : [...prev, ...nuevos]))
         setHayMasOcultos(data?.has_more === true)
       })
       .catch(() => {
+        if (!vigente()) return
         setErrorOcultos(true)
         // MINOR-A (fix round 2, revisión adversarial de PR 151): la
         // bandera de invalidación se pone en `false` ANTES de este pedido
@@ -85,24 +105,32 @@ export default function AdminPipelinesOcultos() {
         // el propio botón de reintentar).
         setNecesitaRecargaOcultos(true)
       })
-      .finally(() => setCargandoOcultos(false))
+      .finally(() => { if (vigente()) setCargandoOcultos(false) })
   }
 
-  function cargarDescartados(offset) {
+  function cargarDescartados({ mas = false } = {}) {
+    const epoca = ++epocaDescartados.current
+    const vigente = () => epoca === epocaDescartados.current
     setCargandoDescartados(true)
     setErrorDescartados(false)
-    return api.get('/admin/pipelines/descartados', { params: { limite: LIMITE, offset } })
+    const params = { limite: LIMITE }
+    if (mas && cursorDescartados) params.cursor = cursorDescartados
+    else params.offset = mas ? listaDescartados.length : 0
+    return api.get('/admin/pipelines/descartados', { params })
       .then(({ data }) => {
+        if (!vigente()) return
         const nuevos = Array.isArray(data?.pipelines) ? data.pipelines : []
-        setListaDescartados((prev) => (offset === 0 ? nuevos : [...prev, ...nuevos]))
+        setListaDescartados((prev) => (mas ? [...prev, ...nuevos] : nuevos))
         setHayMasDescartados(data?.has_more === true)
+        setCursorDescartados(typeof data?.cursor_siguiente === 'string' ? data.cursor_siguiente : null)
       })
       .catch(() => {
+        if (!vigente()) return
         setErrorDescartados(true)
         // Mismo motivo que cargarOcultos, arriba.
         setNecesitaRecargaDescartados(true)
       })
-      .finally(() => setCargandoDescartados(false))
+      .finally(() => { if (vigente()) setCargandoDescartados(false) })
   }
 
   // Sólo depende de `tab` a propósito (fix round 1, hallazgo propio al
@@ -124,7 +152,7 @@ export default function AdminPipelinesOcultos() {
       }
     } else if (necesitaRecargaDescartados) {
       setNecesitaRecargaDescartados(false)
-      cargarDescartados(0)
+      cargarDescartados()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
@@ -221,7 +249,7 @@ export default function AdminPipelinesOcultos() {
               <AlertaError className="text-sm">{t.descartadosError}</AlertaError>
               <button
                 type="button"
-                onClick={() => cargarDescartados(0)}
+                onClick={() => cargarDescartados()}
                 className="px-3 py-1 rounded text-xs font-semibold bg-superficie text-texto-suave hover:text-texto transition-colors"
               >
                 {t.historialRetry}
@@ -297,7 +325,7 @@ export default function AdminPipelinesOcultos() {
             <div className="text-center mb-6">
               <button
                 type="button"
-                onClick={() => cargarDescartados(listaDescartados.length)}
+                onClick={() => cargarDescartados({ mas: true })}
                 disabled={cargandoDescartados}
                 className="px-4 py-1.5 rounded text-xs font-semibold bg-superficie text-texto-suave hover:text-texto transition-colors disabled:opacity-50"
               >

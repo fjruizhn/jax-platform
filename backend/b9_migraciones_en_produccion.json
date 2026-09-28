@@ -1,0 +1,17 @@
+{
+  "_comentario": "Manifiesto de migraciones de jax/memory/b9_migrations/ que run_migrations() NO aplica solo (ver el README de esa carpeta) y que YA están aplicadas a mano en jax_memory de PRODUCCIÓN, siguiendo el runbook 'Migraciones B9 adicionales' de docs/runbooks/despliegue.md. aplicar_migraciones_b9_restantes() (backend/base_de_test.py) SOLO aplica en la base de tests lo que aparece acá, Y sólo si el sha256 del archivo que encuentra coincide con el declarado: un .sql nuevo que el glob encuentre y que no esté ni en run_migrations() ni en este manifiesto revienta la suite con un error explícito -- no se asume que un archivo nuevo en el repo de JAX ya está en producción, y tampoco se asume que un archivo declarado no cambió de contenido desde que se aplicó. `sha256` es `sha256sum <archivo>` sobre el .sql exacto que se aplicó en producción -- si `jax` edita ese archivo después (aunque el nombre no cambie), la próxima corrida de la suite revienta pidiendo que se re-verifique y se actualice el hash, en vez de aplicar en silencio un contenido distinto del que un humano ya revisó.",
+  "004_tenant_legacy_binding.sql": {
+    "aplicada_en_produccion": "2026-09-27",
+    "por": "Hyde",
+    "verificado": "SELECT desde information_schema.COLUMNS contra jax_memory: memory_legacy_bindings.tenant_id existe",
+    "sha256": "2ca7c8da5ce0bdd239b8ff3d643dd9b244a3171f125f9da5f644befb9a30a7d9",
+    "sha256_origen": "sha256sum sobre jax/memory/b9_migrations/004_tenant_legacy_binding.sql en un clon de lectura de jax en el commit 4642613 (rama master, 'Merge pull request #279: repair B9 memory workers and legacy adoption') -- el mismo SHA desplegado en /srv/jax-prod/jax, verificado por la sesión principal. NO se leyó de /home/fruiz/jax (checkout de otra sesión)."
+  },
+  "006_memory_jobs.sql": {
+    "aplicada_en_produccion": "2026-09-27",
+    "por": "Hyde",
+    "verificado": "SELECT desde information_schema contra jax_memory: memory_extraction_jobs, memory_extraction_results, memory_synthesis_jobs y memory_synthesis_job_items existen; memory_revisions.tenant_id es NOT NULL; fk_memory_revision_tenant existe; el trigger memory_revision_tenant_compat existe",
+    "sha256": "29795dd6fcaeb2b8cdb80fb6e08c54b0097fd0410ab40f6a56c80057219d1333",
+    "sha256_origen": "sha256sum sobre jax/memory/b9_migrations/006_memory_jobs.sql en un clon de lectura de jax en el commit 4642613 (rama master, 'Merge pull request #279: repair B9 memory workers and legacy adoption') -- el mismo SHA desplegado en /srv/jax-prod/jax, verificado por la sesión principal. NO se leyó de /home/fruiz/jax (checkout de otra sesión)."
+  }
+}

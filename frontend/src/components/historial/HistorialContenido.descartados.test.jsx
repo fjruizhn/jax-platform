@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -29,11 +29,13 @@ function renderCuerpo(extra = {}) {
   )
 }
 
-function mockGet({ todos = [], discarded = DESCARTADOS, hayMasDescartados = false } = {}) {
+function mockGet({ todos = [], discarded = DESCARTADOS, hayMasDescartados = false, cursor } = {}) {
   api.get.mockImplementation((url, config) => {
     if (url !== '/pipelines') return Promise.reject(new Error(`url inesperada: ${url}`))
     if (config?.params?.estado === 'discarded') {
-      return Promise.resolve({ data: { pipelines: discarded, has_more: hayMasDescartados } })
+      const data = { pipelines: discarded, has_more: hayMasDescartados }
+      if (cursor !== undefined) data.cursor_siguiente = cursor
+      return Promise.resolve({ data })
     }
     return Promise.resolve({ data: { pipelines: todos, has_more: false } })
   })
@@ -73,7 +75,10 @@ describe('HistorialContenido -- pestaña Descartados (Task 6)', () => {
   // pero la página sembrada acá tiene 1 elemento -- lo que de verdad prueba
   // es que el offset es la CANTIDAD YA CARGADA (1), no un 50 fijo. El caso
   // con una página completa de 50 (offset real = 50) está abajo, aparte.
-  it('con has_more, "Cargar más" pide el offset = cantidad ya cargada, y agrega sin perder lo anterior', async () => {
+  // 2026-09-23: estos dos casos (sin `cursor_siguiente` en la respuesta)
+  // son ahora el RESPALDO para un backend todavía sin cursor; el camino
+  // normal es el cursor, probado más abajo.
+  it('sin cursor_siguiente, con has_more, "Cargar más" pide el offset = cantidad ya cargada, y agrega sin perder lo anterior', async () => {
     mockGet({ hayMasDescartados: true })
     renderCuerpo()
     fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
@@ -245,7 +250,7 @@ describe('HistorialContenido -- pestaña Descartados (Task 6)', () => {
   })
 
   // MINOR-6: el caso real del brief -- una página COMPLETA de 50, no 1.
-  it('con una página completa de 50, "Cargar más" pide offset=50', async () => {
+  it('sin cursor_siguiente, con una página completa de 50, "Cargar más" pide offset=50', async () => {
     const pagina = Array.from({ length: 50 }, (_, i) => ({
       pipeline_id: `d${i}`, name: `plan ${i}`, status: 'discarded', descartado_at: 1758000000 + i, costo_usd: null,
     }))
@@ -261,5 +266,92 @@ describe('HistorialContenido -- pestaña Descartados (Task 6)', () => {
       params: { estado: 'discarded', limite: 50, offset: 50 },
     }))
     expect(await screen.findByText('plan 50')).toBeInTheDocument()
+  })
+
+  // 2026-09-23 (paginación por cursor, docs/carga-descartados-cursor-2026-09-23.md).
+  it('con cursor_siguiente, "Cargar más" manda ESE cursor (no offset) y encadena el siguiente', async () => {
+    mockGet({ hayMasDescartados: true, cursor: 'c1' })
+    renderCuerpo()
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    await screen.findByText('plan descartado')
+
+    mockGet({ discarded: [{ pipeline_id: 'd2', name: 'segundo', status: 'discarded', descartado_at: 1758000400, costo_usd: null }], hayMasDescartados: true, cursor: 'c2' })
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/pipelines', {
+      params: { estado: 'discarded', limite: 50, cursor: 'c1' },
+    }))
+    expect(await screen.findByText('segundo')).toBeInTheDocument()
+    expect(screen.getByText('plan descartado')).toBeInTheDocument()
+
+    mockGet({ discarded: [{ pipeline_id: 'd3', name: 'tercero', status: 'discarded', descartado_at: 1758000300, costo_usd: null }], hayMasDescartados: false, cursor: null })
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/pipelines', {
+      params: { estado: 'discarded', limite: 50, cursor: 'c2' },
+    }))
+    expect(await screen.findByText('tercero')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: es.cargarMas })).not.toBeInTheDocument()
+    expect(api.get).not.toHaveBeenCalledWith('/pipelines', expect.objectContaining({
+      params: expect.objectContaining({ offset: 1 }),
+    }))
+  })
+
+  it('volver a la pestaña pide de nuevo la PRIMERA página (offset 0, sin el cursor viejo) y reemplaza la lista', async () => {
+    mockGet({ hayMasDescartados: true, cursor: 'c1' })
+    renderCuerpo()
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    await screen.findByText('plan descartado')
+    mockGet({ discarded: [{ pipeline_id: 'd2', name: 'segundo', status: 'discarded', descartado_at: 1758000400, costo_usd: null }], hayMasDescartados: false, cursor: null })
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+    expect(await screen.findByText('segundo')).toBeInTheDocument()
+
+    mockGet({ discarded: [{ pipeline_id: 'd9', name: 'otra primera', status: 'discarded', descartado_at: 1758000900, costo_usd: null }], hayMasDescartados: false, cursor: null })
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaTodos }))
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    expect(await screen.findByText('otra primera')).toBeInTheDocument()
+    expect(screen.queryByText('segundo')).not.toBeInTheDocument()
+    const primeras = api.get.mock.calls.filter(([u, c]) => u === '/pipelines' && c?.params?.estado === 'discarded' && c.params.offset === 0)
+    expect(primeras).toHaveLength(2)
+    expect(primeras.every(([, c]) => !('cursor' in c.params))).toBe(true)
+  })
+
+  // 2026-09-23: carrera "Cargar más" → cambiar de pestaña → volver ANTES de
+  // que llegue la respuesta. La respuesta vieja (de la época anterior) se
+  // descarta: no se agrega a la lista recién recargada ni pisa su cursor.
+  // Con el código sin época, "tardío" aparecía y el siguiente "Cargar más"
+  // mandaba el cursor viejo 'cX'.
+  it('una respuesta de "Cargar más" que llega después de volver a la pestaña se descarta (no agrega ni pisa el cursor)', async () => {
+    mockGet({ hayMasDescartados: true, cursor: 'c1' })
+    renderCuerpo()
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    await screen.findByText('plan descartado')
+
+    let soltarTardia
+    const tardia = new Promise((resolve) => { soltarTardia = resolve })
+    api.get.mockImplementation((url, config) => {
+      const p = config?.params ?? {}
+      if (p.estado !== 'discarded') return Promise.resolve({ data: { pipelines: [], has_more: false } })
+      if (p.cursor === 'c1') return tardia
+      if (p.cursor === 'c9') {
+        return Promise.resolve({ data: { pipelines: [{ pipeline_id: 'd10', name: 'siguiente buena', status: 'discarded', descartado_at: 1758000800, costo_usd: null }], has_more: false, cursor_siguiente: null } })
+      }
+      return Promise.resolve({ data: { pipelines: [{ pipeline_id: 'd9', name: 'otra primera', status: 'discarded', descartado_at: 1758000900, costo_usd: null }], has_more: true, cursor_siguiente: 'c9' } })
+    })
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/pipelines', { params: { estado: 'discarded', limite: 50, cursor: 'c1' } }))
+
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaTodos }))
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    expect(await screen.findByText('otra primera')).toBeInTheDocument()
+
+    await act(async () => {
+      soltarTardia({ data: { pipelines: [{ pipeline_id: 'd2', name: 'tardío', status: 'discarded', descartado_at: 1758000400, costo_usd: null }], has_more: true, cursor_siguiente: 'cX' } })
+      await tardia
+    })
+    expect(screen.queryByText('tardío')).not.toBeInTheDocument()
+    expect(screen.getByText('otra primera')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+    expect(await screen.findByText('siguiente buena')).toBeInTheDocument()
+    expect(api.get).not.toHaveBeenCalledWith('/pipelines', { params: { estado: 'discarded', limite: 50, cursor: 'cX' } })
   })
 })

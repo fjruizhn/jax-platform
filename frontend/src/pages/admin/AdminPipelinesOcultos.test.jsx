@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -34,10 +34,14 @@ function renderPantalla() {
   return render(<I18nProvider><AdminPipelinesOcultos /></I18nProvider>)
 }
 
-function mockGet({ ocultos = [OCULTO], hayMasOcultos = false, descartados = [DESCARTADO], hayMasDescartados = false } = {}) {
+function mockGet({ ocultos = [OCULTO], hayMasOcultos = false, descartados = [DESCARTADO], hayMasDescartados = false, cursor } = {}) {
   api.get.mockImplementation((url, config) => {
     if (url === '/admin/pipelines/ocultos') return Promise.resolve({ data: { pipelines: ocultos, has_more: hayMasOcultos } })
-    if (url === '/admin/pipelines/descartados') return Promise.resolve({ data: { pipelines: descartados, has_more: hayMasDescartados } })
+    if (url === '/admin/pipelines/descartados') {
+      const data = { pipelines: descartados, has_more: hayMasDescartados }
+      if (cursor !== undefined) data.cursor_siguiente = cursor
+      return Promise.resolve({ data })
+    }
     return Promise.reject(new Error(`url inesperada: ${url}`))
   })
 }
@@ -148,7 +152,9 @@ describe('AdminPipelinesOcultos (Task 7 + cierre de huecos 2026-09-22)', () => {
   // "offset=50" y la aserción de abajo pedía `offset: 1` -- el mock inicial
   // sólo carga UNA fila (DESCARTADO), así que "Cargar más" pide desde
   // offset=length=1, no desde 50 (ese seria el `limite`, no el `offset`).
-  it('en Descartados, "Cargar más" pide offset=1 (la cantidad ya cargada)', async () => {
+  // 2026-09-23: sin `cursor_siguiente` (backend todavía sin cursor) es el
+  // RESPALDO; el camino normal es el cursor, en el test siguiente.
+  it('en Descartados, sin cursor_siguiente, "Cargar más" pide offset=1 (la cantidad ya cargada)', async () => {
     mockGet({ hayMasDescartados: true })
     renderPantalla()
     await screen.findByText('plan descartado')
@@ -159,6 +165,25 @@ describe('AdminPipelinesOcultos (Task 7 + cierre de huecos 2026-09-22)', () => {
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/pipelines/descartados', { params: { limite: 50, offset: 1 } }))
     expect(await screen.findByText('segundo descartado')).toBeInTheDocument()
     expect(screen.getByText('plan descartado')).toBeInTheDocument()
+  })
+
+  it('en Descartados, con cursor_siguiente, "Cargar más" manda ESE cursor (no offset) y encadena el siguiente', async () => {
+    mockGet({ hayMasDescartados: true, cursor: 'c1' })
+    renderPantalla()
+    await screen.findByText('plan descartado')
+
+    mockGet({ descartados: [{ ...DESCARTADO, pipeline_id: 'd2', name: 'segundo descartado' }], hayMasDescartados: true, cursor: 'c2' })
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/pipelines/descartados', { params: { limite: 50, cursor: 'c1' } }))
+    expect(await screen.findByText('segundo descartado')).toBeInTheDocument()
+
+    mockGet({ descartados: [{ ...DESCARTADO, pipeline_id: 'd3', name: 'tercero descartado' }], hayMasDescartados: false, cursor: null })
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/pipelines/descartados', { params: { limite: 50, cursor: 'c2' } }))
+    expect(await screen.findByText('tercero descartado')).toBeInTheDocument()
+    expect(screen.getByText('plan descartado')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: es.cargarMas })).not.toBeInTheDocument()
+    expect(api.get).not.toHaveBeenCalledWith('/admin/pipelines/descartados', { params: { limite: 50, offset: 1 } })
   })
 
   it('en Descartados, Recuperar llama a /recover y quita la fila, sin pedir confirmación', async () => {
@@ -276,5 +301,88 @@ describe('AdminPipelinesOcultos (Task 7 + cierre de huecos 2026-09-22)', () => {
     renderPantalla()
     await irAPestanaOcultos()
     expect(await screen.findByText(es.sinOcultos)).toBeInTheDocument()
+  })
+
+  // 2026-09-23: carrera "Cargar más" → otra pestaña → una acción que
+  // invalida la primera → volver ANTES de que llegue la respuesta. La
+  // respuesta vieja se descarta: no se agrega a la lista recién recargada ni
+  // pisa su cursor. Con el código sin época, "tardío" aparecía.
+  it('en Descartados, una respuesta de "Cargar más" que llega después de la recarga se descarta (no agrega ni pisa el cursor)', async () => {
+    api.post.mockResolvedValue({ data: { pipeline_id: 'h1', status: 'discarded' } })
+    mockGet({ hayMasDescartados: true, cursor: 'c1' })
+    renderPantalla()
+    await screen.findByText('plan descartado')
+
+    let soltarTardia
+    const tardia = new Promise((resolve) => { soltarTardia = resolve })
+    api.get.mockImplementation((url, config) => {
+      const p = config?.params ?? {}
+      if (url === '/admin/pipelines/ocultos') return Promise.resolve({ data: { pipelines: [OCULTO], has_more: false } })
+      if (p.cursor === 'c1') return tardia
+      if (p.cursor === 'c9') {
+        return Promise.resolve({ data: { pipelines: [{ ...DESCARTADO, pipeline_id: 'd10', name: 'siguiente buena' }], has_more: false, cursor_siguiente: null } })
+      }
+      return Promise.resolve({ data: { pipelines: [{ ...DESCARTADO, pipeline_id: 'h1', name: 'otra primera' }], has_more: true, cursor_siguiente: 'c9' } })
+    })
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/pipelines/descartados', { params: { limite: 50, cursor: 'c1' } }))
+
+    await irAPestanaOcultos()
+    await screen.findByText('plan oculto')
+    fireEvent.click(screen.getByRole('button', { name: es.restaurarPipeline }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/pipelines/h1/restore'))
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    expect(await screen.findByText('otra primera')).toBeInTheDocument()
+
+    await act(async () => {
+      soltarTardia({ data: { pipelines: [{ ...DESCARTADO, pipeline_id: 'd2', name: 'tardío' }], has_more: true, cursor_siguiente: 'cX' } })
+      await tardia
+    })
+    expect(screen.queryByText('tardío')).not.toBeInTheDocument()
+    expect(screen.getByText('otra primera')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+    expect(await screen.findByText('siguiente buena')).toBeInTheDocument()
+    expect(api.get).not.toHaveBeenCalledWith('/admin/pipelines/descartados', { params: { limite: 50, cursor: 'cX' } })
+  })
+
+  it('en Ocultos, una respuesta de "Cargar más" que llega después de la recarga se descarta', async () => {
+    api.post.mockResolvedValue({ data: { pipeline_id: 'd1', status: 'hidden' } })
+    mockGet({ hayMasOcultos: true })
+    renderPantalla()
+    await screen.findByText('plan descartado')
+    await irAPestanaOcultos()
+    await screen.findByText('plan oculto')
+
+    let soltarTardia
+    const tardia = new Promise((resolve) => { soltarTardia = resolve })
+    api.get.mockImplementation((url, config) => {
+      const p = config?.params ?? {}
+      if (url === '/admin/pipelines/descartados') return Promise.resolve({ data: { pipelines: [DESCARTADO], has_more: false } })
+      if (p.offset === 1) return tardia
+      return Promise.resolve({ data: { pipelines: [{ ...OCULTO, pipeline_id: 'd1', name: 'oculto nuevo' }], has_more: false } })
+    })
+    fireEvent.click(screen.getByRole('button', { name: es.cargarMas }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/pipelines/ocultos', { params: { limite: 50, offset: 1 } }))
+
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaDescartados }))
+    await screen.findByText('plan descartado')
+    fireEvent.click(screen.getByRole('button', { name: es.ocultarPipeline }))
+    const dialogo = screen.getByRole('dialog')
+    const [, a, b] = within(dialogo).getByText(/Resolvé \d+ \+ \d+ = \?/).textContent.match(/(\d+) \+ (\d+)/)
+    fireEvent.change(within(dialogo).getByLabelText(/Resolvé/), { target: { value: String(Number(a) + Number(b)) } })
+    fireEvent.click(within(dialogo).getByRole('button', { name: es.ocultarPipeline }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/pipelines/d1/hide'))
+
+    fireEvent.click(screen.getByRole('button', { name: es.pestanaOcultos }))
+    expect(await screen.findByText('oculto nuevo')).toBeInTheDocument()
+
+    await act(async () => {
+      soltarTardia({ data: { pipelines: [{ ...OCULTO, pipeline_id: 'h2', name: 'oculto tardío' }], has_more: true } })
+      await tardia
+    })
+    expect(screen.queryByText('oculto tardío')).not.toBeInTheDocument()
+    expect(screen.getByText('oculto nuevo')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: es.cargarMas })).not.toBeInTheDocument()
   })
 })

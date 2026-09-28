@@ -34,31 +34,76 @@ los endpoints revientan con `Unknown column` la primera vez que se usan.
 
 ## 0 · Respaldo, y probarlo (Principio VI)
 
+> **Corregido el 2026-09-27 (Hyde), ejecutándolo en el despliegue del catálogo
+> de modelos.** La versión anterior de este paso tenía dos defectos:
+>
+> 1. **La contraseña en el argv** (`-p"$JAX_DB_PASSWORD"`): mientras corre el
+>    dump queda legible por cualquier usuario del host en `/proc/<pid>/cmdline`
+>    (`/proc` no tiene `hidepid` en hall9000). Ahora va en un archivo de
+>    opciones `600` de root que se borra al salir.
+> 2. **El respaldo NO se podía restaurar con el usuario de la aplicación.** Los
+>    triggers se vuelcan con `DEFINER=root@localhost` y restaurarlos exige el
+>    privilegio `SET USER`: la restauración de prueba fallaba en la línea 9054
+>    con `ERROR 1227`. O sea, el paso decía «probá la restauración» y la
+>    restauración no funcionaba. Ahora se quitan las cláusulas `DEFINER` al
+>    restaurar (el trigger queda con el usuario que restaura).
+>
+> Medido con esta versión: dump de 11 MB, restauración con `facts`, `model`,
+> `facet_binding`, `memory_revisions`, `memory_objects` y `axioma_usage`
+> idénticos a producción, 66 tablas y 5 triggers en los dos lados.
+
 ```bash
-set -a; . <(sudo -n cat /etc/jax/.env); set +a
-D=~/respaldos-despliegue/$(date +%Y-%m-%d)-<motivo>; mkdir -p $D
+D=~/respaldos-despliegue/$(date +%Y-%m-%d)-<motivo>; mkdir -p $D && chmod 700 $D
+
+sudo bash -c '
+set -euo pipefail; set -a; . /etc/jax/.env; set +a
+D='"$D"'
+T=$(mktemp -d); chmod 700 $T; trap "rm -rf $T" EXIT
+printf "[client]\nhost=%s\nport=%s\nuser=%s\npassword=%s\n" \
+  "$JAX_DB_HOST" "$JAX_DB_PORT" "$JAX_DB_USER" "$JAX_DB_PASSWORD" > $T/c.cnf
+chmod 600 $T/c.cnf
 
 # Los SHA a los que volver, ANTES de tocar nada
 { echo "fecha: $(date -Is)"
-  echo "jax prod:          $(git -C /srv/jax-prod/jax rev-parse HEAD)"
-  echo "jax-platform prod: $(git -C /srv/jax-prod/jax-platform rev-parse HEAD)"
-  echo "bundle publico:    $(curl -s https://axioma-ia.io | grep -oE 'assets/index-[^"]*\.js' | head -1)"
-} | tee $D/ESTADO-ANTES.txt
+  echo "jax prod:          $(git -c safe.directory=/srv/jax-prod/jax -C /srv/jax-prod/jax rev-parse HEAD)"
+  echo "jax-platform prod: $(git -c safe.directory=/srv/jax-prod/jax-platform -C /srv/jax-prod/jax-platform rev-parse HEAD)"
+  echo "bundle publico:    $(curl -s https://axioma-ia.io | grep -oE "assets/index-[^\"]*\.js" | head -1)"
+} > $D/ESTADO-ANTES.txt
 
-mariadb-dump -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u "$JAX_DB_USER" \
-  -p"$JAX_DB_PASSWORD" --single-transaction jax_memory | gzip > $D/jax_memory.sql.gz
+mariadb-dump --defaults-extra-file=$T/c.cnf --single-transaction --routines --triggers \
+  jax_memory | gzip > $D/jax_memory.sql.gz
+chown -R fruiz:fruiz $D; chmod 600 $D/*'
 ```
 
 **Y restauralo en una base descartable antes de seguir** — un respaldo sin
 restauración probada no es un respaldo:
 
 ```bash
-B=jax_memory_test_restauracion
-mariadb ... -e "DROP DATABASE IF EXISTS \`$B\`; CREATE DATABASE \`$B\`;"
-gunzip -c $D/jax_memory.sql.gz | sed -e '/^CREATE DATABASE/d' \
-  -e "s/^USE \`jax_memory\`;/USE \`$B\`;/" | mariadb ... "$B"
-# comparar COUNT(*) de facts contra produccion, y DROP la base de prueba
+sudo bash -c '
+set -euo pipefail; set -a; . /etc/jax/.env; set +a
+T=$(mktemp -d); chmod 700 $T; trap "rm -rf $T" EXIT
+printf "[client]\nhost=%s\nport=%s\nuser=%s\npassword=%s\n" \
+  "$JAX_DB_HOST" "$JAX_DB_PORT" "$JAX_DB_USER" "$JAX_DB_PASSWORD" > $T/c.cnf
+chmod 600 $T/c.cnf; C="--defaults-extra-file=$T/c.cnf"
+B=jax_memory_test_restauracion_$(date +%Y%m%d)
+mariadb $C -e "DROP DATABASE IF EXISTS \`$B\`; CREATE DATABASE \`$B\`;"
+# Quitar DEFINER: sin esto falla con ERROR 1227 (hace falta SET USER).
+gunzip -c '"$D"'/jax_memory.sql.gz | sed -e "/^CREATE DATABASE/d" \
+  -e "s/^USE \`jax_memory\`;/USE \`$B\`;/" \
+  -e "s#/\*!50017 DEFINER=[^*]*\*/##g" -e "s/DEFINER=\`[^\`]*\`@\`[^\`]*\`//g" \
+  | mariadb $C "$B"
+for t in facts model facet_binding memory_revisions memory_objects axioma_usage; do
+  echo "$t prod=$(mariadb $C -N -e "SELECT COUNT(*) FROM jax_memory.$t") restaurada=$(mariadb $C -N -e "SELECT COUNT(*) FROM \`$B\`.$t")"
+done
+mariadb $C -e "DROP DATABASE \`$B\`;"'
 ```
+
+Cada par tiene que dar el mismo número. Si alguno difiere, **no se sigue**.
+
+> No uses `--defaults-extra-file=<(printf ...)` para ahorrarte el archivo
+> temporal: un descriptor de sustitución de proceso se lee **una sola vez**, y
+> desde la segunda llamada `mariadb` cae al socket local por defecto
+> (`ERROR 2002 ... mysqld.sock`). Medido el mismo día.
 
 ## 1 · `jax` (si el cambio lo toca)
 
@@ -75,6 +120,10 @@ SHOW COLUMNS FROM jax_memory.facts LIKE 'verified_by';
 ```
 
 ## 2 · Backend de la plataforma
+
+> **Si el cambio toca el ejecutor del catálogo o el nombre de su candado, NO sigas
+> acá:** usa «Caso general: un cambio toca el nombre del candado o el ejecutor
+> programado», más abajo.
 
 ```bash
 cd /srv/jax-prod/jax-platform && git fetch origin && git merge --ff-only origin/master
@@ -336,6 +385,229 @@ incorrecto y `GET /api/pipelines` está en 500, la reversión MÁS RÁPIDA es
 la del backend de jax-platform (paso 2 de la sección "Volver atrás", más
 abajo) al SHA anterior a este cambio -- no hace falta tocar `jax` ni el
 esquema, que es aditivo.
+
+## Caso general: un cambio toca el nombre del candado o el ejecutor programado
+
+*(2026-09-27, Hyde. Ejecutado así el mismo día al desplegar la programación
+configurable del catálogo, jax-platform#167.)*
+
+**Por qué hace falta.** El sync del catálogo lo corren DOS caminos: el
+`jax-catalogo-modelos.service` (oneshot, disparado por el timer) y el botón
+«Sincronizar», que corre DENTRO de `jax-platform`. Los dos se excluyen con un
+candado con nombre de MariaDB (`GET_LOCK`). Si un cambio **renombra** ese
+candado (#167: `jax_catalogo_sync` → `jax_catalogo_sync:<base>`), el código
+viejo y el nuevo dejan de verse: durante el despliegue podría haber **dos syncs
+a la vez**. Este procedimiento cierra esa ventana.
+
+> **Se ejecuta a mano, un paso por vez, mirando la salida.** No es un guion
+> para pegar de corrido. Se intentó hacerlo guion desatendido y siete rondas
+> de auditoría adversarial encontraron fallos nuevos en cada versión (un
+> `exit` dentro de `sudo bash -c` que no frenaba el reinicio, un `merge` a
+> `origin/master` antes de comparar el SHA, una reversión que volvía a
+> avanzar). Para algo que pasa rara vez, un operador que mira cada salida es
+> más seguro. **Si un paso no da exactamente lo esperado: no sigas, y ve a
+> «Si hay que abortar».**
+
+**Antes de empezar:** sección 0 (respaldo **con restauración probada**). Avisa
+de que nadie use la pantalla de modelos durante el despliegue: entre el paso 3
+y el 5 un clic en «Sincronizar» todavía podría colarse.
+
+1. **Parar el timer.**
+   ```bash
+   sudo systemctl stop jax-catalogo-modelos.timer
+   systemctl is-active jax-catalogo-modelos.timer     # tiene que dar: inactive
+   ```
+
+2. **Esperar a que no haya un sync programado corriendo ni encolado.** El
+   servicio es `oneshot`: mientras corre, systemd lo da como `activating`, no
+   `active` (por eso **no** sirve `is-active`).
+   ```bash
+   systemctl show -p ActiveState --value jax-catalogo-modelos.service   # tiene que dar: inactive (o failed)
+   systemctl list-jobs --no-legend jax-catalogo-modelos.service         # tiene que dar: nada
+   ```
+   Si da `activating`, esperar y repetir (una corrida dura segundos; el tope
+   del servicio es 30 min).
+
+3. **Freno: ningún sync con NINGUNO de los dos nombres de candado.** Cubre el
+   timer y el botón, el código viejo y el nuevo, y funciona aunque la tabla
+   `catalogo_sync_ejecucion` todavía no exista (primer despliegue). Las
+   credenciales van en un archivo de opciones `600` efímero, nunca en argv
+   (`/proc` no tiene `hidepid`):
+   ```bash
+   sudo bash -c '
+   set -euo pipefail; set -a; . /etc/jax/.env; set +a
+   T=$(mktemp -d); chmod 700 $T; trap "rm -rf $T" EXIT
+   printf "[client]\nhost=%s\nport=%s\nuser=%s\npassword=%s\ndatabase=%s\n" \
+     "$JAX_DB_HOST" "$JAX_DB_PORT" "$JAX_DB_USER" "$JAX_DB_PASSWORD" "$JAX_DB_NAME" > $T/c.cnf
+   chmod 600 $T/c.cnf
+   mariadb --defaults-extra-file=$T/c.cnf -N -e \
+     "SELECT IS_USED_LOCK('"'"'jax_catalogo_sync'"'"'), IS_USED_LOCK(CONCAT('"'"'jax_catalogo_sync:'"'"', DATABASE()))"'
+   ```
+   **Tiene que dar `NULL	NULL`.** Un número es el id de la conexión que
+   sincroniza: esperar y repetir.
+
+4. **Actualizar el checkout al SHA exacto** (40 caracteres, el merge del PR;
+   nunca `origin/master` a secas, que puede haber avanzado):
+   ```bash
+   SHA=<sha-de-40-caracteres>
+   cd /srv/jax-prod/jax-platform && git fetch origin \
+     && git merge-base --is-ancestor HEAD "$SHA" && git merge --ff-only "$SHA"
+   git rev-parse HEAD            # tiene que dar exactamente $SHA
+   git status -s                 # tiene que dar: nada (el ExecStartPre exige árbol limpio)
+   ```
+
+5. **Reiniciar el backend y verificar.**
+   ```bash
+   sudo systemctl restart jax-platform
+   curl -s -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1:8080/api/health   # 200
+   ```
+
+6. **Reinstalar las TRES unidades**, verificando cada archivo del repo **antes**
+   de instalarlo:
+   ```bash
+   U=/srv/jax-prod/jax-platform/ops/migration/systemd-units
+   for f in jax-catalogo-modelos.service jax-catalogo-modelos.timer jax-catalogo-modelos-aviso.service; do
+     sudo systemd-analyze verify "$U/$f" && sudo install -m 644 -o root -g root "$U/$f" /etc/systemd/system/$f
+   done
+   sudo systemctl daemon-reload
+   ```
+   `verify` no tiene que mencionar ninguna de las tres (los avisos de otras
+   unidades del sistema no cuentan).
+
+7. **Arrancar el timer.**
+   ```bash
+   sudo systemctl start jax-catalogo-modelos.timer
+   systemctl list-timers jax-catalogo-modelos.timer --no-pager
+   ```
+
+8. **Seguir con las secciones 3, 4 y 5** (frontend interno, sitio público,
+   verificación desde afuera) si el cambio toca el frontend.
+
+9. **Verificación funcional:** pulsar «Sincronizar» como superadmin. Mientras
+   corre, el paso 3 tiene que dar `NULL	<id>` (el candado **nuevo** tomado);
+   al terminar, la última fila de `catalogo_sync_ejecucion` tiene que cerrar
+   `ok` o `con_problemas`, nunca `error`.
+
+**Si hay que abortar** (antes del paso 5): nada se reinició. Si ya se hizo el
+paso 4, devolver el checkout a como estaba con
+`git -C /srv/jax-prod/jax-platform reset --hard <SHA-previo>` (anotado en
+`ESTADO-ANTES.txt` de la sección 0), comprobar `git status -s` vacío, y
+**volver a arrancar el timer** (`sudo systemctl start jax-catalogo-modelos.timer`):
+si no, el catálogo deja de sincronizarse sin que nadie avise.
+
+**Volver atrás un despliegue ya hecho:** el mismo procedimiento, con dos
+cambios. En el paso 4, `git reset --hard <SHA-previo>` en lugar del `merge`
+(se hace **después** de los pasos 1-3, nunca antes, porque si no el timer
+podría correr el código viejo con el candado viejo). En el paso 6, reinstalar
+las unidades de ese SHA.
+
+## Migraciones B9 adicionales (`jax/memory/b9_migrations/`, más allá de 001-003)
+
+*(Agregado 2026-09-27, auditoría adversarial del PR #164, MAJOR-2.)* El esquema B9
+vive en `jax_memory` (compartido) pero **`run_migrations()` de jax-platform sólo
+aplica 001 (`001_b9_shared_memory.sql`), 002 (`002_b9_hardening.sql`) y 003
+(`003_project_scope_authority.sql`, vía el hook Python de JAX)**. El propio README
+de esa carpeta es explícito: la cadena entera "is not executed by application
+import or worker startup" -- todo lo que quede después de 003 (004, 006, y lo que
+JAX agregue mañana) es DDL que **nadie aplica solo, en ningún lado**. Aplicarlo es
+un paso manual, y declarar que ya se aplicó es OTRO paso manual, separado.
+
+**Cuándo hace falta este paso.** Cuando `jax` agrega un `.sql` nuevo a
+`jax/memory/b9_migrations/` y el código que lo necesita (en `jax` o en
+`jax-platform`) va a producción. La señal de que falta: la suite de jax-platform
+revienta con
+
+```
+BaseDeTestInvalida: migración B9 <archivo> no declarada como aplicada en
+producción: aplícala en producción siguiendo docs/runbooks/despliegue.md
+(sección 'Migraciones B9 adicionales') y agregala a
+b9_migraciones_en_produccion.json antes de que la suite la use.
+```
+
+(`backend/base_de_test.py::aplicar_migraciones_b9_restantes`, que descubre estos
+archivos por glob contra el manifiesto de abajo -- NO los aplica a ciegas: que un
+`.sql` exista en el repo de JAX no prueba que ya pasó por este flujo revisado.)
+
+### Pasos
+
+0. **GO explícito de Fernando, ANTES de tocar nada.** *(MINOR-B, ronda 2 de la
+   auditoría del PR #164.)* Esto no es un `ALTER` aditivo de rutina: 004 hace
+   `DROP PRIMARY KEY`/`DROP INDEX` sobre una tabla con filas reales, y 006 deja
+   `memory_revisions.tenant_id` en `NOT NULL` con una FK nueva -- los dos son DDL
+   que reescribe la forma de una tabla de PRODUCCIÓN con datos adentro, no un
+   `ADD COLUMN NULL` que no le puede doler a nadie. Sin el GO, no se pasa al paso 1.
+1. **Respaldo primero** (Principio VI, sección 0 de arriba) -- **y probarlo**,
+   restaurando en una base descartable antes de seguir. Sin esto no hay paso 2.
+2. **Leer el archivo entero antes de aplicarlo.** Los `.sql` de esa carpeta NO son
+   idempotentes en general (verificado en 004 y 006, 2026-09-27: `ADD COLUMN` sin
+   `IF NOT EXISTS`, `DROP PRIMARY KEY`/`DROP INDEX` que asumen que lo que borran
+   sigue ahí, `CREATE TRIGGER`/`ADD CONSTRAINT` sin `IF NOT EXISTS`) -- correrlo dos
+   veces contra la misma base revienta a mitad. Aplicarlo UNA vez, a mano, contra
+   `jax_memory`, con el archivo EXACTO que se va a declarar en el paso 4 (mismo
+   byte a byte -- es de ahí que sale el `sha256` de ese paso, no de una copia
+   editada a mano ni de memoria):
+
+   ```bash
+   set -a; . <(sudo -n cat /etc/jax/.env); set +a
+   ARCHIVO=/srv/jax-prod/jax/jax/memory/b9_migrations/<archivo>.sql
+   # El hash se calcula ANTES de aplicar nada, sobre el archivo que se está
+   # por correr -- ANOTALO (pegalo en el ticket/PR de este despliegue): es el
+   # valor que el paso 4 va a exigir, byte a byte, antes de declarar la
+   # migración. Calcularlo DESPUÉS (de memoria, o de una copia editada) es
+   # exactamente el error que este control existe para atrapar.
+   sha256sum "$ARCHIVO"
+   mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" \
+     jax_memory < "$ARCHIVO"
+   ```
+
+   **Si falla a mitad (MariaDB corta la conexión, un error de sintaxis, un lock que
+   vence): DETENERSE. No reintentar el archivo entero.** MariaDB hace commit
+   implícito por sentencia DDL -- no hay rollback que deshaga lo que ya corrió, y
+   reintentar desde el principio puede chocar con lo que sí quedó aplicado (mismo
+   defecto, en la base de tests, que documenta MINOR-3 de esta auditoría en
+   `base_de_test.py`). Dos salidas, ninguna a ciegas:
+   - **Restaurar desde el respaldo del paso 1** (la más segura: vuelve la tabla al
+     estado de antes de este cambio) y volver a empezar desde el paso 0.
+   - **Completar sentencia por sentencia, con Fernando delante**, leyendo el
+     `.sql` y ejecutando cada sentencia que falta a mano, verificando el estado de
+     la tabla entre una y otra (`SHOW CREATE TABLE`) -- sólo si restaurar el
+     respaldo no es viable por el tiempo que ya pasó con datos nuevos escritos.
+3. **Verificar en la base, no suponer.** El `SHOW COLUMNS`/`SHOW INDEX`/consulta a
+   `information_schema` que confirme la forma final que describe el propio
+   `.sql` -- exactamente lo que va a quedar escrito en el manifiesto del paso 4.
+4. **Declarar la migración en `jax-platform`**, en el MISMO cambio que cualquier
+   código que dependa de ella (o antes, si nada la usa todavía):
+   `backend/b9_migraciones_en_produccion.json` gana una clave nueva con el nombre
+   exacto del archivo, la fecha, quién la aplicó, CÓMO se verificó (la consulta
+   del paso 3, no "se ve bien") y el `sha256` **del archivo exacto que se aplicó
+   en el paso 2**. **Antes de pegar el hash en el manifiesto, recalculalo y
+   compará contra el que anotaste en el paso 2:**
+
+   ```bash
+   sha256sum "$ARCHIVO"   # tiene que dar LITERALMENTE lo mismo que anotaste en el paso 2
+   ```
+
+   Si no coincide -- el archivo cambió entre el paso 2 y ahora, o el que se
+   copió al manifiesto no es el que se aplicó -- NO se declara: hay que volver
+   al paso 2 con el archivo correcto, nunca "arreglar" el hash a mano para que
+   cierre. Sin esta clave, la suite de tests revienta con el mensaje de arriba;
+   con la clave pero el hash equivocado, revienta igual, con un mensaje que dice
+   "el contenido cambió" -- es la baranda, no un trámite.
+5. **Correr la suite de jax-platform** (`aplicar_migraciones_b9_restantes` recoge
+   el archivo nuevo por glob, lo ve declarado en el manifiesto con el hash que
+   coincide, y lo aplica en la base de tests) para confirmar que el código que la
+   necesita pasa contra el esquema real.
+
+**Volver atrás.** *(Acotado, MINOR-B ronda 2: la versión anterior de este párrafo
+decía "el esquema B9 es aditivo... revertir el código no exige revertir el DDL" --
+cierto para 001/002/003, FALSO en general para lo que este runbook cubre.)* 004 y
+006 NO son aditivos puros: 004 hace `DROP PRIMARY KEY`/`DROP INDEX` sobre
+`memory_legacy_bindings`/`memory_objects`, y 006 deja `memory_revisions.tenant_id`
+`NOT NULL` con una FK -- revertir el CÓDIGO que los usa no repone la forma vieja de
+esas tablas, y con filas ya escritas bajo el esquema nuevo, revertir el DDL mismo
+puede perder datos o violar la FK. Si hiciera falta revertir el DDL, es un caso a
+mano, con Fernando, con el respaldo del paso 1 como red -- nunca una decisión
+unilateral de la sesión que despliega.
 
 ## Volver atrás
 

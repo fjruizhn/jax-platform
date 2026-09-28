@@ -116,8 +116,13 @@ def _pool_con(monkeypatch, modulo, filas):
 
 
 def test_T6_2_sync_del_catalogo_manda_la_key_en_la_cabecera(monkeypatch):
+    # 2do valor en la cola (2026-09-27, A-3): sync_provider_models ahora
+    # también consulta cuántos modelos 'available' había ANTES (guardián de
+    # "lista encogida") -- un segundo fetchone() sobre la MISMA conexión
+    # fake, antes de llegar siquiera a decidir el transporte.
     _pool_con(monkeypatch, model_catalog, [
-        ("header_goog_api_key", "https://generativelanguage.googleapis.com/v1beta/models")])
+        ("header_goog_api_key", "https://generativelanguage.googleapis.com/v1beta/models"),
+        (0,)])
     cap = _Captura({"models": []})
     cliente = cap.cliente()
 
@@ -139,7 +144,8 @@ def test_T6_2_el_transporte_query_param_ya_no_se_usa(monkeypatch):
     """Fail-closed: una fila que quedara con el valor viejo no vuelve a poner
     la key en la URL; falla, y el sync lo reporta como error del provider."""
     _pool_con(monkeypatch, model_catalog, [
-        ("query_param", "https://generativelanguage.googleapis.com/v1beta/models")])
+        ("query_param", "https://generativelanguage.googleapis.com/v1beta/models"),
+        (0,)])
     cap = _Captura({"models": []})
     cliente = cap.cliente()
 

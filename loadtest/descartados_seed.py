@@ -101,7 +101,11 @@ N_DESCARTADOS_A = 1000
 # caso que en la ronda 3 (FORCE INDEX idx_jacobs_pipelines_duenio, sin
 # `visible`) pagaba un recorrido lineal del histórico completo del dueño.
 N_VISIBLES_B = 3
-N_DESCARTADOS_B = 5000
+# 2026-09-23 (carga de OFFSET profundo, docs/carga-descartados-offset-2026-09-23.md):
+# ajustable por entorno para medir la pendiente del costo del OFFSET con un
+# histórico más largo que el mínimo pedido. Sin la variable, 5.000 -- el
+# valor de toda la carga de 2026-09-22.
+N_DESCARTADOS_B = int(os.environ.get("CARGA_N_DESCARTADOS_EXTREMO", "5000"))
 
 # --- Forma C (fix round 1, BLOCK-2): "admin_muchos_usuarios" ---------------
 # GET /admin/pipelines/descartados es GLOBAL (sin filtro de usuario) --

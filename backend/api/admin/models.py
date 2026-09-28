@@ -14,9 +14,11 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
+import catalogo_sync_config
+import catalogo_sync_registro
 import facet_resolver
 import model_catalog
 from auth.middleware import require_superadmin
@@ -30,16 +32,11 @@ from contrato_dispatch import (
     registrar_rechazo_de_binding,
 )
 from db.connection import get_pool
-from redaccion import redactar_secretos, texto_de_error
+from db.transaccion import AISLAMIENTO_ADMIN, transaccion
+from tiempo import iso_utc
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/models")
-
-# Proveedores con catalogo real hoy. anthropic (2026-08-10): sync contra
-# /v1/models, credencial via OAuth local de Claude Code, no `credential` DB.
-# ollama (2026-08-10): sync local contra /api/tags, sin ninguna credencial
-# (provider.auth_type='none') — ver ramas explicitas en model_catalog.py.
-_SYNCABLE_PROVIDERS = ["openai", "deepseek", "gemini", "moonshot", "zhipu", "anthropic", "ollama"]
 
 _MODEL_FIELDS = (
     "id", "provider_id", "model_id", "is_alias", "context_window", "supports_tool_use",
@@ -199,43 +196,218 @@ async def declarar_contrato_dispatch(
     return {"ok": True, "model_ref": model_ref, "model_id": model_id, "antes": antes, **despues}
 
 
-@router.post("/sync")
-async def sync_models(user: AuthUser = Depends(require_superadmin)):
+@router.post("/sync", status_code=202)
+async def sync_models(
+    background_tasks: BackgroundTasks,
+    response: Response,
+    user: AuthUser = Depends(require_superadmin),
+):
     """D1.3: capa (a) por cada proveedor con catalogo remoto propio, luego
     capa (b) de enriquecimiento. Solo escribe `model` — ver docstring del
-    modulo."""
-    results = []
-    for provider_id in _SYNCABLE_PROVIDERS:
-        try:
-            results.append(await model_catalog.sync_provider_models(provider_id))
-        except Exception as e:  # fail-soft: un provider caído no frena a los demás; su error va en el resultado y apaga ok
-            # Task 6 S1: el log y la respuesta usan el texto ya redactado.
-            # Defensa en profundidad: la key de Gemini va en la cabecera
-            # x-goog-api-key (T6-2); str(e) de httpx trae la URL, sin ella.
-            motivo = texto_de_error(e)
-            logger.warning(f"sync_models provider={provider_id} failed reason={motivo}")
-            results.append({"provider_id": provider_id, "error": redactar_secretos(str(e))[:200]})
+    modulo.
 
-    try:
-        enrich_result = await model_catalog.enrich_from_models_dev()
-    except Exception as e:  # fail-soft: el enriquecimiento es capa (b) opcional; su error va en 'enrich' y apaga ok
-        logger.warning(f"sync_models enrich failed reason={texto_de_error(e)}")
-        enrich_result = {"error": redactar_secretos(str(e))[:200]}
+    Capa delgada desde 2026-09-27: la logica de orquestacion (que
+    proveedores se sincronizan, que cuenta como fallo, las facetas en
+    riesgo, el candado contra syncs concurrentes) vive en
+    `model_catalog.sync_all()`, compartida con el ejecutor programado
+    (catalogo_modelos_ejecutor.py) -- Regla Absoluta: una sola fuente de
+    "que significa que el catalogo este sano", nunca dos implementaciones
+    que puedan divergir.
 
-    # Task 3 (2026-09-15, clase b): antes `ok` era True siempre, aunque
-    # fallaran todos los providers y el enriquecimiento. Contrato: 200 con
-    # `ok` calculado; si algo fallo, `code: "sync_con_errores"` y la lista de
-    # providers que fallaron (el resto SI se sincronizo, por eso no es 502).
-    providers_fallidos = [r["provider_id"] for r in results if "error" in r]
-    enrich_fallido = "error" in enrich_result
-    ok = not providers_fallidos and not enrich_fallido
-    respuesta = {
-        "ok": ok, "providers": results, "enrich": enrich_result,
-        "providers_fallidos": providers_fallidos, "enrich_fallido": enrich_fallido,
+    Tercera auditoría adversarial (2026-09-27): el endpoint volvió a NO
+    aceptar cuerpo -- se retiró por completo el mecanismo de `forzar` el
+    guardián de "lista encogida" (guardián que también se retiró: la
+    complejidad de sostenerlo, más forzar/auditar, traía más defectos
+    nuevos que los que resolvía). Lo único que sigue siendo un FALLO del
+    proveedor sin sumar misses es una lista VACÍA.
+
+    CORRECCIÓN (MINOR-7, cuarta auditoría adversarial, 2026-09-28): esta
+    misma línea decía antes "un retiro masivo legítimo fluye por los misses
+    normales de D1.4" -- es falso. Un proveedor que queda con la lista
+    VACÍA no pasa nunca por D1.4: queda en error permanente, avisado sync
+    tras sync, mientras la lista siga vacía (ver
+    model_catalog._motivo_si_respuesta_sospechosa). D1.4 sólo degrada
+    modelos puntuales que faltan de una lista que YA NO está vacía.
+
+    2026-09-27 (pedido de Fernando: avance real + no bloquear el click):
+    ahora RESERVA la fila de ejecución SINCRÓNICAMENTE (para poder responder
+    202 con su id, o 409 si ya hay una corriendo -- candado tomado o fila
+    'corriendo' viva, ver `catalogo_sync_registro.reservar_ejecucion`) y
+    delega el sync real a una `BackgroundTask` (`add_safe_task`: una
+    excepción ahí no puede tumbar nada ni quedar en silencio, ver su
+    docstring). El sync YA NO bloquea el click del admin -- la pantalla
+    sigue el avance con `GET /admin/models/sync/estado`."""
+    pool = await get_pool()
+    pasos_total = model_catalog.pasos_totales_de_sync()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await catalogo_sync_registro.limpiar_ejecuciones_viejas(cur)
+        await conn.commit()
+        async with conn.cursor() as cur:
+            ejecucion_id, resultado_en_curso = await catalogo_sync_registro.reservar_ejecucion(
+                cur, conn, origen="manual", iniciado_por=int(user.user_id), pasos_total=pasos_total)
+
+    if ejecucion_id is None:
+        response.status_code = 409
+        return {**resultado_en_curso, "ejecucion_id": None}
+
+    from jax_engine.background import add_safe_task
+    add_safe_task(background_tasks, catalogo_sync_registro.ejecutar_reservada, ejecucion_id)
+
+    return {"ok": True, "ejecucion_id": ejecucion_id, "pasos_total": pasos_total}
+
+
+@router.get("/sync/estado")
+async def sync_estado(user: AuthUser = Depends(require_superadmin)):
+    """Avance en vivo (si hay un sync corriendo AHORA) más la última corrida
+    terminada, sea cual sea su estado -- "última actualización" siempre
+    visible (pedido de Fernando, 2026-09-27), incluso si nunca hubo ninguna
+    corriendo. Antes de leer, interrumpe cualquier fila 'corriendo' huérfana
+    (más vieja que el timeout del .service): sin esto, un proceso caído
+    dejaría la pantalla mostrando "corriendo" para siempre."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await catalogo_sync_registro.marcar_huerfanas_interrumpidas(cur)
+        await conn.commit()
+
+        async with conn.cursor() as cur:
+            # LEFT JOIN jax_users: "quién" (si manual) es el email, no un
+            # user_id crudo -- el join va sobre `e.` (alias de
+            # catalogo_sync_ejecucion), así que el EXPLAIN sigue leyendo el
+            # índice de ESA tabla, no el de jax_users (PK, siempre barato).
+            await cur.execute(
+                "SELECT e.id, e.origen, e.iniciado_por, e.estado, e.paso_actual, e.pasos_total, "
+                "e.detalle_paso, e.iniciado_en, e.terminado_en, e.resultado, u.email "
+                "FROM catalogo_sync_ejecucion e LEFT JOIN jax_users u ON u.user_id = e.iniciado_por "
+                "WHERE e.estado='corriendo' LIMIT 1"
+            )
+            fila_corriendo = await cur.fetchone()
+
+        async with conn.cursor() as cur:
+            # ORDER BY terminado_en DESC sin WHERE de estado a proposito --
+            # ver el comentario de los índices en db/migrations.py
+            # (CREATE_CATALOGO_SYNC_EJECUCION): NULL ordena último en DESC,
+            # así que esto ya excluye la fila 'corriendo' sin perder el
+            # índice.
+            await cur.execute(
+                "SELECT e.id, e.origen, e.iniciado_por, e.estado, e.paso_actual, e.pasos_total, "
+                "e.detalle_paso, e.iniciado_en, e.terminado_en, e.resultado, u.email "
+                "FROM catalogo_sync_ejecucion e LEFT JOIN jax_users u ON u.user_id = e.iniciado_por "
+                "ORDER BY e.terminado_en DESC LIMIT 1"
+            )
+            fila_ultima = await cur.fetchone()
+
+    return {
+        "corriendo": _fila_con_email(fila_corriendo),
+        "ultima": _fila_con_email(fila_ultima),
     }
-    if not ok:
-        respuesta["code"] = "sync_con_errores"
-    return respuesta
+
+
+def _fila_con_email(fila) -> dict | None:
+    if fila is None:
+        return None
+    *columnas_base, email = fila
+    d = catalogo_sync_registro.fila_a_dict(columnas_base)
+    d["iniciado_por_email"] = email
+    return d
+
+
+class ConfigSyncRequest(BaseModel):
+    # Any a propósito, mismo criterio que ContratoDispatchRequest más abajo:
+    # el tipo y el rango los valida catalogo_sync_config.validar_config(), no
+    # pydantic -- así el 422 siempre trae el mismo `code`/`campo`, venga el
+    # dato mal tipado o fuera de rango.
+    habilitado: bool
+    cada_valor: Any
+    cada_unidad: str
+
+
+@router.get("/sync/config")
+async def obtener_config_sync(user: AuthUser = Depends(require_superadmin)):
+    """MINOR-2 (tercera ronda de la auditoría adversarial, 2026-09-27):
+    `leer_config_cruda()`, no `leer_config()` -- una fila corrupta (escrita a
+    mano, o por un bug futuro) tiene que poder VERSE en la pantalla para que
+    un operador la repare desde ahí (el PUT sabe reparar, ver
+    `catalogo_sync_config.actualizar_config`), nunca un 500. El ejecutor
+    programado SIGUE usando `leer_config()` (que sí revienta) -- ese
+    comportamiento no cambia."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            config = await catalogo_sync_config.leer_config_cruda(cur)
+            ultima_exitosa = await catalogo_sync_registro.ultima_actualizacion_exitosa(cur)
+    return {
+        **_config_serializable(config),
+        "proxima_corrida_estimada": _proxima_corrida_estimada(config, ultima_exitosa),
+    }
+
+
+def _config_serializable(config: dict) -> dict:
+    # MINOR-6 de la ronda anterior (auditoría adversarial, 2026-09-27):
+    # `iso_utc()`, no `str()` -- `actualizado_en` se escribe con
+    # `UTC_TIMESTAMP()` (ver catalogo_sync_config.actualizar_config);
+    # `iso_utc()` le pone la zona UTC explícita para que `new Date(...)` del
+    # navegador no lo lea como hora local (la sesión de MariaDB de esta app
+    # corre en CST, ver tiempo.py). `valida` (si viene, MINOR-2 tercera
+    # ronda) pasa tal cual -- lo consume el frontend para avisar de una
+    # config corrupta que hay que reparar.
+    d = dict(config)
+    d["actualizado_en"] = iso_utc(d["actualizado_en"])
+    return d
+
+
+def _proxima_corrida_estimada(config: dict, ultima_exitosa) -> str | None:
+    """`None` si está apagado, si todavía no hubo ninguna corrida exitosa
+    (tocaría en la próxima pasada del timer, no en una fecha calculable), o
+    si la config es inválida (MINOR-2: `cada_unidad`/`cada_valor` corruptos
+    no se pueden usar para estimar nada -- `proxima_corrida()` asume una
+    unidad conocida). MINOR-6 de la ronda anterior: `iso_utc()`, mismo
+    motivo que `_config_serializable` -- `ultima_exitosa` es UTC (viene de
+    `catalogo_sync_ejecucion.iniciado_en`) y `proxima_corrida()` sólo le suma
+    un intervalo, así que el resultado sigue siendo UTC."""
+    if not config["habilitado"] or ultima_exitosa is None or not config.get("valida", True):
+        return None
+    return iso_utc(catalogo_sync_config.proxima_corrida(ultima_exitosa, config["cada_valor"], config["cada_unidad"]))
+
+
+@router.put("/sync/config")
+async def actualizar_config_sync(
+    req: ConfigSyncRequest,
+    request: Request,
+    user: AuthUser = Depends(require_superadmin),
+):
+    """MAJOR-2 (auditoría adversarial, 2026-09-27): el UPDATE y su auditoría
+    (`axioma_config_audit`, origen `catalogo_sync`) van en la MISMA
+    transacción EXPLÍCITA (`db.transaccion.transaccion`, mismo patrón que
+    `api/admin/config_admin.py::update_config`) -- el pool es
+    `autocommit=True` (ver `db/connection.py`), así que sin `BEGIN`
+    explícito un `conn.rollback()` no revierte nada: cada sentencia ya se
+    había confirmado sola. Con `transaccion()`, si el INSERT de auditoría
+    (dentro de `catalogo_sync_config.actualizar_config`) revienta, el
+    UPDATE se revierte con él -- fail-closed, sin try/except que lo tape."""
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        try:
+            config = await catalogo_sync_config.actualizar_config(
+                cur,
+                habilitado=req.habilitado,
+                cada_valor=req.cada_valor,
+                cada_unidad=req.cada_unidad,
+                actualizado_por=int(user.user_id),
+                ip=ip_de(request),
+            )
+        except catalogo_sync_config.ConfigInvalidaError as e:
+            raise HTTPException(status_code=422, detail={
+                "code": "catalogo_sync_config_invalida",
+                "campo": e.campo,
+                "message": str(e),
+            }) from None
+        ultima_exitosa = await catalogo_sync_registro.ultima_actualizacion_exitosa(cur)
+
+    return {
+        **_config_serializable(config),
+        "proxima_corrida_estimada": _proxima_corrida_estimada(config, ultima_exitosa),
+    }
 
 
 # PR-L ronda 2 (2026-09-14, punto 7 de la revisión): la lista era sin límite y,

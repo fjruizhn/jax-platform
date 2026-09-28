@@ -10,6 +10,10 @@ desde un `async def test_...` revienta con 'attached to a different loop'.
 HTTP real fakeado via http_client._client, mismo patron que
 test_keys_http_pooling.py.
 """
+import uuid
+
+import pytest
+
 import http_client
 import model_catalog
 
@@ -63,6 +67,21 @@ async def _fetch_scalar(sql, params=()):
     return row[0] if row else None
 
 
+async def _ejecutar(sql, params=None):
+    """Para DDL/DML sin resultado (DELETE/UPDATE) -- `_fetch_scalar` asume
+    un result set y un DELETE no tiene ninguno. `params=None` (no `()`) a
+    propósito: pymysql intenta `query %% args` en cuanto `args is not None`,
+    y una consulta con un `%` literal (un `LIKE 'x-%'`) explota con
+    "not enough arguments for format string" incluso pasándole una tupla
+    vacía."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql, params)
+        await conn.commit()
+
+
 def _patch_credential(monkeypatch, value):
     async def fake_credential(provider_id):
         return value
@@ -98,6 +117,30 @@ def test_sync_provider_models_upserts_openai_compatible_response(client, monkeyp
     row_new = client.portal.call(_fetch_model, "moonshot", "kimi-k3-preview")
     assert row_new is not None
     assert row_new[1] == "provider_api"
+
+
+def test_sync_provider_models_nuevos_lists_only_previously_unseen_ids(client, monkeypatch):
+    """D-catálogo (2026-09-27): un operador que corre el sync quiere saber
+    "¿apareció algo que no estaba?" sin comparar el catálogo entero a mano --
+    `nuevos` es esa lista, y sólo esa: lo que YA estaba en `model` para este
+    proveedor no cuenta, aunque la corrida lo vuelva a ver."""
+    _patch_credential(monkeypatch, "sk-fake")
+    ya_conocido = "kimi-k3"  # ya sembrado por otro test de este archivo, misma sesión de DB
+    nuevo = f"test-nuevo-{uuid.uuid4().hex[:8]}"
+
+    original = http_client._client
+    try:
+        http_client._client = _FakeGetClient(_FakeResponse({"data": [{"id": ya_conocido}]}))
+        client.portal.call(model_catalog.sync_provider_models, "moonshot")
+
+        http_client._client = _FakeGetClient(_FakeResponse({"data": [
+            {"id": ya_conocido}, {"id": nuevo},
+        ]}))
+        result = client.portal.call(model_catalog.sync_provider_models, "moonshot")
+    finally:
+        http_client._client = original
+
+    assert result["nuevos"] == [nuevo]
 
 
 def test_sync_provider_models_gemini_uses_models_key_and_strips_prefix(client, monkeypatch):
@@ -173,18 +216,43 @@ def test_sync_marks_missing_model_deprecated_after_three_consecutive_misses(clie
     nunca se borra la fila. jax_memory_test es persistente entre corridas de
     pytest (no se recrea) — arranca de un baseline explicito en vez de
     asumir consecutive_misses=0, para no depender de lo que haya dejado una
-    corrida anterior."""
+    corrida anterior.
+
+    A-3 (auditoría adversarial, 2026-09-27): una lista VACÍA ahora es
+    'respuesta sospechosa' y no toca nada (ver
+    test_model_catalog_paginacion_y_guardas.py) -- ya no sirve para simular
+    "el modelo desapareció". Se simula con un decoy: una lista NO vacía que
+    nunca incluye a 'deepseek-v4-flash'. El tamaño del decoy sale de
+    consultar cuántos 'available' hay HOY para deepseek (la base de sesión
+    es persistente entre corridas de pytest y puede tener más que sólo el
+    seed) -- así el fake nunca dispara el guardián de "lista encogida" por
+    casualidad, sin importar cuánto haya acumulado la sesión."""
     _patch_credential(monkeypatch, "sk-fake")
     client.portal.call(_reset_model_baseline, "deepseek", "deepseek-v4-flash")
 
+    disponibles = client.portal.call(
+        _fetch_scalar,
+        "SELECT COUNT(*) FROM model WHERE provider_id='deepseek' AND status='available'",
+    )
+    decoy_response = _FakeGetClient(_FakeResponse({
+        "data": [{"id": f"deepseek-decoy-{i}"} for i in range(disponibles + 1)],
+    }))  # nunca incluye 'deepseek-v4-flash', y nunca es una lista más chica que la mitad de lo que ya había
+
     original = http_client._client
-    empty_response = _FakeGetClient(_FakeResponse({"data": []}))  # deepseek-v4-flash nunca aparece
     try:
         for _ in range(3):
-            http_client._client = empty_response
+            http_client._client = decoy_response
             client.portal.call(model_catalog.sync_provider_models, "deepseek")
     finally:
         http_client._client = original
+        # Limpieza: los decoys quedarían 'available' para siempre en la base
+        # de sesión persistente, e inflarían el "disponibles antes" de la
+        # PRÓXIMA corrida de este mismo test (crecimiento sin límite entre
+        # corridas). Sólo se borran los decoys -- 'deepseek-v4-flash' queda.
+        client.portal.call(
+            _ejecutar,
+            "DELETE FROM model WHERE provider_id='deepseek' AND model_id LIKE 'deepseek-decoy-%'",
+        )
 
     row = client.portal.call(_fetch_model, "deepseek", "deepseek-v4-flash")
     assert row[0] == "deprecated"
@@ -291,7 +359,17 @@ def test_sync_provider_models_anthropic_uses_local_oauth_token(client, monkeypat
     usa el token OAuth que Claude Code ya deja en ~/.claude/.credentials.json
     (decision 2026-08-10: opcion 1, leer en caliente, sin refresh propio).
     Verifica tambien que va el header anthropic-version, requerido por la
-    API real (confirmado con curl contra api.anthropic.com el 2026-08-10)."""
+    API real (confirmado con curl contra api.anthropic.com el 2026-08-10).
+
+    `delenv` explícito (2026-09-27): este test ejercita el camino del
+    ARCHIVO -- si `CLAUDE_CODE_OAUTH_TOKEN` quedara puesto en el ambiente
+    (una máquina con `/etc/jax/.env` real a mano, o heredado de una sesión
+    de Hyde), esa rama gana ANTES de llegar al archivo que este test
+    monkeypatchea, y el resultado sería el token real, no el fake de abajo.
+    conftest.py ya no carga esa variable (ver
+    `SECRETOS_DE_PRODUCCION_NO_NECESARIOS`), pero este test no depende de
+    eso: se aísla también él mismo."""
+    monkeypatch.delenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, raising=False)
     path = _write_anthropic_credentials(tmp_path, expires_in_seconds=3600)
     monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", path)
 
@@ -318,10 +396,84 @@ def test_sync_provider_models_anthropic_uses_local_oauth_token(client, monkeypat
     assert row[1] == "provider_api"
 
 
+def test_read_anthropic_oauth_token_prefers_env_var_over_file(monkeypatch, tmp_path):
+    """2026-09-27: desde que los servicios corren como `jaxsvc` (17-sep),
+    `~/.claude/.credentials.json` no existe para ese usuario -- el sync de
+    anthropic se saltaba en SILENCIO y `ok` no bajaba (ver
+    test_sync_all_*). La credencial real ahora es la cuenta Max de Fernando
+    vía `claude setup-token`, guardada como CLAUDE_CODE_OAUTH_TOKEN en
+    /etc/jax/.env -- MISMO nombre que ya honra el CLI de Claude Code, sin
+    inventar uno nuevo. Con la variable puesta, el archivo NUNCA se abre
+    (ruta a un archivo que no existe -- si lo intentara abrir, reventaría)."""
+    monkeypatch.setenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, "sk-ant-oat01-desde-env")
+    monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", str(tmp_path / "no-existe.json"))
+
+    assert model_catalog._read_anthropic_oauth_token() == "sk-ant-oat01-desde-env"
+
+
+def test_read_anthropic_oauth_token_empty_env_falls_back_to_file(monkeypatch, tmp_path):
+    """Una variable puesta pero vacía (`CLAUDE_CODE_OAUTH_TOKEN=`, típico de un
+    .env con la línea agregada sin valor todavía) NO cuenta como token: cae al
+    archivo local, igual que si la variable no existiera."""
+    monkeypatch.setenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, "   ")
+    path = _write_anthropic_credentials(tmp_path, expires_in_seconds=3600)
+    monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", path)
+
+    assert model_catalog._read_anthropic_oauth_token() == "sk-ant-oat01-fake"
+
+
+def test_read_anthropic_oauth_token_no_env_no_file_is_unavailable(monkeypatch, tmp_path):
+    monkeypatch.delenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, raising=False)
+    monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", str(tmp_path / "no-existe.json"))
+
+    with pytest.raises(model_catalog.AnthropicOAuthUnavailableError):
+        model_catalog._read_anthropic_oauth_token()
+
+
+def test_sync_provider_models_anthropic_uses_env_token_end_to_end(client, monkeypatch, tmp_path):
+    """Integración completa (D1.3-a): con CLAUDE_CODE_OAUTH_TOKEN puesto, el
+    sync de anthropic funciona sin `~/.claude/.credentials.json` -- el caso
+    real de jaxsvc en producción, reproducido con evidencia y no supuesto.
+
+    A-3 (auditoría adversarial, 2026-09-27): esta prueba manda una lista de
+    UN solo id -- otros tests de este archivo (anthropic OAuth local, alias
+    'sonnet') ya dejaron más de un modelo 'available' en la base de sesión
+    persistente, así que sin normalizar el guardián de "lista encogida"
+    vería 1 de N y lo trataría como sospechoso. Se bajan a 'deprecated' los
+    OTROS anthropic 'available' antes de esta llamada -- no se borra nada,
+    y ningún test de este archivo depende de que sigan 'available' después
+    del suyo propio (cada uno resetea su propio baseline al empezar)."""
+    client.portal.call(
+        _ejecutar,
+        "UPDATE model SET status='deprecated' WHERE provider_id='anthropic' "
+        "AND model_id != 'claude-opus-5' AND status='available'",
+    )
+    monkeypatch.setenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, "sk-ant-oat01-jaxsvc")
+    monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", str(tmp_path / "no-existe.json"))
+
+    fake = _FakeGetClient(_FakeResponse({"data": [{"id": "claude-opus-5"}]}))
+    original = http_client._client
+    http_client._client = fake
+    try:
+        result = client.portal.call(model_catalog.sync_provider_models, "anthropic")
+    finally:
+        http_client._client = original
+
+    assert "skipped" not in result
+    assert result["fetched"] == 1
+    url, kwargs = fake.calls[0]
+    assert kwargs["headers"]["Authorization"] == "Bearer sk-ant-oat01-jaxsvc"
+
+
 def test_sync_provider_models_anthropic_skips_when_token_file_missing(client, monkeypatch, tmp_path):
     """Fail-soft (opcion 1): sin archivo de credenciales local, el sync no
     revienta — se salta con motivo explicito, igual que 'sin models_list_url'
-    para otros providers sin config."""
+    para otros providers sin config.
+
+    `delenv` explícito (2026-09-27): este test ejercita "sin archivo NI
+    variable" -- ver el comentario de
+    test_sync_provider_models_anthropic_uses_local_oauth_token, mismo motivo."""
+    monkeypatch.delenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, raising=False)
     monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", str(tmp_path / "no-existe.json"))
 
     fake = _FakeGetClient(_FakeResponse({"data": []}))
@@ -340,7 +492,12 @@ def test_sync_provider_models_anthropic_skips_when_token_file_missing(client, mo
 
 def test_sync_provider_models_anthropic_skips_when_token_expired(client, monkeypatch, tmp_path):
     """Token OAuth vencido (vida corta, ver decision 2026-08-10) -> skip
-    explicito, nunca una llamada con credencial vieja a la API real."""
+    explicito, nunca una llamada con credencial vieja a la API real.
+
+    `delenv` explícito (2026-09-27): mismo motivo que
+    test_sync_provider_models_anthropic_uses_local_oauth_token -- este test
+    ejercita el archivo vencido, no la variable de entorno."""
+    monkeypatch.delenv(model_catalog.ANTHROPIC_OAUTH_TOKEN_ENV, raising=False)
     path = _write_anthropic_credentials(tmp_path, expires_in_seconds=-60)
     monkeypatch.setattr(model_catalog, "_ANTHROPIC_CREDENTIALS_PATH", path)
 
@@ -362,6 +519,69 @@ class _FakeRaisingClient:
         raise ConnectionError("refused")
 
 
+class _FakeOllamaClient:
+    """GET /api/tags + POST /api/show reales (los otros fakes de este
+    archivo sólo tienen `.get`, así que `_capacidades_ollama` fallaba en
+    silencio contra ellos -- MINOR-10 necesita que el POST sí funcione para
+    poder ver A CUÁLES modelos les tocó turno)."""
+    def __init__(self, tags: list[dict]):
+        self._tags = tags
+        self.show_calls: list[str] = []
+
+    async def get(self, url, **kwargs):
+        return _FakeResponse({"models": self._tags})
+
+    async def post(self, url, json=None, **kwargs):
+        self.show_calls.append(json["model"])
+        return _FakeResponse({"capabilities": ["completion"]})
+
+
+def test_sync_provider_models_ollama_rota_el_tope_de_api_show_entre_corridas(client, monkeypatch):
+    """MINOR-10 (auditoría adversarial, 2026-09-27): con un catálogo local
+    más grande que el tope, la SEGUNDA corrida tiene que consultar modelos
+    DISTINTOS de la primera -- nunca los mismos de siempre (el orden crudo
+    de /api/tags, alfabético/estable, dejaría a los últimos sin refrescar
+    para siempre)."""
+    monkeypatch.setattr(model_catalog, "_OLLAMA_MAX_MODELOS_CONSULTADOS", 2)
+    tags = [
+        {"model": f"test-rotacion-{i}:latest", "digest": f"sha-rot-{i}"} for i in range(5)
+    ]
+    # Limpia cualquier input_modalities_checked_at de una corrida anterior de
+    # ESTE mismo test (la base de sesión es persistente) -- arranca todos
+    # sin verificar, mismo baseline en cada corrida de la suite.
+    async def _resetear():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                marcas = ", ".join(["%s"] * len(tags))
+                await cur.execute(
+                    f"DELETE FROM model WHERE provider_id='ollama' AND model_id IN ({marcas})",
+                    tuple(t["model"] for t in tags),
+                )
+            await conn.commit()
+    client.portal.call(_resetear)
+
+    original = http_client._client
+    try:
+        fake1 = _FakeOllamaClient(tags)
+        http_client._client = fake1
+        client.portal.call(model_catalog.sync_provider_models, "ollama")
+
+        fake2 = _FakeOllamaClient(tags)
+        http_client._client = fake2
+        client.portal.call(model_catalog.sync_provider_models, "ollama")
+    finally:
+        http_client._client = original
+        client.portal.call(_resetear)
+
+    assert len(fake1.show_calls) == 2
+    assert len(fake2.show_calls) == 2
+    # La segunda corrida NO repite ninguno de los que ya le tocaron a la
+    # primera -- rotación real, no casualidad de orden.
+    assert set(fake1.show_calls).isdisjoint(set(fake2.show_calls))
+
+
 async def _fetch_model_digest(provider_id, model_id):
     from db.connection import get_pool
     pool = await get_pool()
@@ -374,11 +594,31 @@ async def _fetch_model_digest(provider_id, model_id):
             return await cur.fetchone()
 
 
+async def _normalizar_disponibles_ollama():
+    """MAJOR-3(a)/A-3 (segunda auditoría adversarial, 2026-09-27): baja a
+    'deprecated' todo lo 'available' de ollama -- no borra nada. La base de
+    sesión es persistente entre corridas de pytest (docstring de módulo de
+    este archivo) y otros tests de este mismo archivo dejan filas
+    'available' con source='provider_api' sin limpiar: sin esto, el
+    guardián de "lista encogida" (A-3) puede disparar por casualidad según
+    cuántas corridas anteriores acumuló la sesión, no por nada que ESTE test
+    esté afirmando -- medido: 12 disponibles acumuladas de corridas previas
+    tumbaban un fake de sólo 2 ids."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE model SET status='deprecated' WHERE provider_id='ollama' AND status='available'")
+        await conn.commit()
+
+
 def test_sync_provider_models_ollama_uses_local_tags_without_auth(client):
     """Ollama es local, sin API key (provider.auth_type='none') -- /api/tags
     no debe llevar Authorization ni ningun otro header. Shape real distinto
     a los demas (verificado con curl, 2026-08-10): {'models':[{'model':<tag>,
     'digest':<sha>}]}."""
+    client.portal.call(_normalizar_disponibles_ollama)
     fake = _FakeGetClient(_FakeResponse({"models": [
         {"model": "qwen3-coder:30b", "digest": "sha-aaa"},
         {"model": "llama3.2:3b", "digest": "sha-bbb"},
@@ -414,6 +654,33 @@ async def _reset_model_digest(provider_id, model_id):
         await conn.commit()
 
 
+def test_sync_provider_models_ollama_nuevos_lists_only_previously_unseen_ids(client):
+    """Mismo contrato de `nuevos` que los proveedores OpenAI-compatible
+    (test_sync_provider_models_nuevos_lists_only_previously_unseen_ids),
+    ejercitado en la rama de ollama -- shape de respuesta y upsert distintos,
+    misma pregunta ("¿qué es nuevo?")."""
+    client.portal.call(_normalizar_disponibles_ollama)
+    ya_conocido = "llama3.2:3b"  # ya sembrado por otro test de este archivo, misma sesión de DB
+    nuevo = f"test-nuevo-ollama-{uuid.uuid4().hex[:8]}"
+
+    original = http_client._client
+    try:
+        http_client._client = _FakeGetClient(_FakeResponse({"models": [
+            {"model": ya_conocido, "digest": "sha-aaa"},
+        ]}))
+        client.portal.call(model_catalog.sync_provider_models, "ollama")
+
+        http_client._client = _FakeGetClient(_FakeResponse({"models": [
+            {"model": ya_conocido, "digest": "sha-aaa"},
+            {"model": nuevo, "digest": "sha-nueva"},
+        ]}))
+        result = client.portal.call(model_catalog.sync_provider_models, "ollama")
+    finally:
+        http_client._client = original
+
+    assert result["nuevos"] == [nuevo]
+
+
 def test_sync_provider_models_ollama_captures_digest_change(client):
     """El tag es un puntero LOCAL -- puede re-pullearse con pesos distintos
     sin que el tag cambie. digest_changed_at debe quedar NULL la primera vez
@@ -422,6 +689,7 @@ def test_sync_provider_models_ollama_captures_digest_change(client):
     corridas (ver docstring del archivo) -- arranca de un baseline explicito
     en vez de asumir digest=NULL, para no depender de lo que haya dejado
     una corrida anterior de este mismo test."""
+    client.portal.call(_normalizar_disponibles_ollama)
     client.portal.call(_reset_model_digest, "ollama", "qwen2.5:7b")
     original = http_client._client
     try:

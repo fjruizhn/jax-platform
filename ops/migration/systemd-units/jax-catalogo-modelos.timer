@@ -1,0 +1,24 @@
+[Unit]
+Description=Schedule JAX Platform model catalog sync (chequeo horario, cadencia real en catalogo_sync_config)
+
+[Timer]
+# 2026-09-27 (pedido de Fernando: encender/apagar y elegir cada cuánto corre
+# desde la pantalla, no editando systemd): pasa de "cada 6h" fijo a un
+# chequeo HORARIO -- "cada cuánto sincroniza de verdad" ya no lo decide este
+# archivo, lo decide la fila única de `catalogo_sync_config` (Principio IV,
+# sin hardcoding). `catalogo_modelos_ejecutor.py` lee esa config en cada
+# corrida y sale 0 sin tocar nada si está apagado o si todavía no toca (ver
+# `_correr()`/`_CODIGOS_GATE_CERRADO`) -- la mayoría de las corridas horarias
+# van a ser exactamente eso, un no-op barato.
+OnCalendar=hourly
+# Si hall9000 estuvo abajo cuando debía correr, corre apenas vuelve -- mismo
+# criterio que jax-memory-vector-health.timer.
+Persistent=true
+# Margen chico (no la mitad de un intervalo de 6h como antes: ahora corre
+# cada hora) para no pegarle a la misma hora exacta que otros timers
+# horarios que ya existen en esta máquina.
+RandomizedDelaySec=2min
+Unit=jax-catalogo-modelos.service
+
+[Install]
+WantedBy=timers.target

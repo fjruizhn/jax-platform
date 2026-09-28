@@ -970,8 +970,45 @@ jobs:
           //   data-en-linea exime, min-h-6 alcanza, data-en-linea={false} NO
           //   exime, y el registro exacto de usos de data-en-linea. Confirmado
           //   por el runner (run 35855267441: passed=1011 failed=0).
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1011) {
-              console.error("PISO ROTO: se esperaban 1011 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1011 -> 1014 (2026-09-23, "Cargar más" de Descartados por
+          //   cursor): +2 "con cursor_siguiente ... manda ESE cursor (no
+          //   offset) y encadena el siguiente" (HistorialContenido y
+          //   AdminPipelinesOcultos, los dos en rojo contra master) y +1
+          //   "volver a la pestaña pide la PRIMERA página sin el cursor
+          //   viejo" (guarda de regresión: pasa también en master). Los
+          //   tests de offset quedan como respaldo sin cursor_siguiente.
+          //   Medido con vitest run --reporter=json: 1014 passed, 0 fallidos.
+          // 1014 -> 1017 (2026-09-23, carrera de "Cargar más" en
+          //   Descartados/Ocultos): +1 en HistorialContenido y +2 en
+          //   AdminPipelinesOcultos (Descartados y Ocultos) -- una respuesta
+          //   de "Cargar más" que llega después de volver a la pestaña (que
+          //   recargó la primera página) se descarta por época. Los 3 en rojo
+          //   contra master. Medido con vitest run --reporter=json: 1017
+          //   passed, 0 fallidos.
+          // 1017 -> 1029 (2026-09-28, catálogo de modelos, cuarta auditoría
+          //   adversarial): este piso no se había vuelto a subir en las
+          //   rondas previas del catálogo de modelos (que sí movieron el
+          //   número real de la suite, sin actualizar este archivo -- regla
+          //   "el número compartido lo re-mide el último en llegar"). Medido
+          //   de punta a punta en esta rama con `npx vitest run`: 1029
+          //   passed, 0 fallidos, 95 archivos. El botón/diálogo de "forzar
+          //   sync" y sus 6 tests se quitaron por completo (tercera
+          //   auditoría adversarial); esta ronda agregó 2 tests de
+          //   regresión ("fallaron" no se muestra con lista vacía) y 3 del
+          //   aviso de "sync en curso" (candado ocupado) en
+          //   AdminModelCatalog.test.jsx.
+          // 1029 -> 1030 el 2026-09-27 (carrera de Escape al montar Dialogo):
+          //   +1 en lib/useCerrarConEscape.test.js. Medido de punta a punta
+          //   con `npx vitest run --reporter=dot --silent`: 1030 passed,
+          //   0 fallidos, 95 archivos.
+          // 1029 -> 1053 (2026-09-27, programación configurable del sync,
+          //   #167): MEDIDO EN EL RUNNER, run 36381118121 (d7b1670): passed=1053
+          //   failed=0 total=1053. Regla 5: el último en llegar re-mide.
+          // 1053 -> 1054 (2026-09-28, Hyde, integración de #166 sobre #167 por decisión
+          //   de Fernando): 1053 de master + 1 test de #166. Regla 5: lo confirma o
+          //   desmiente la corrida real del runner en este PR.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1054) {
+              console.error("PISO ROTO: se esperaban 1054 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1200,10 +1237,10 @@ jobs:
 
       - name: Traer el repo jax (fuente de verdad del esquema de Jacobs y B9)
         working-directory: .
-        # B9 migration 003 and the D1 membership synchronizer are JAX-owned
-        # and loaded from JAX_REPO_PATH. CI must test the paired JAX feature
-        # head, not the default branch which intentionally lacks the latter.
-        run: git clone --depth=1 --branch feat/proyectos-d1-d5 https://github.com/fjruizhn/Jax.git /tmp/jax
+        # B9 migration 003 is JAX-owned and loaded from JAX_REPO_PATH by the
+        # platform's existing migration runner. JAX master contains B9 after
+        # JAX #269, so CI tests the normal integration source.
+        run: git clone --depth=1 --branch master https://github.com/fjruizhn/Jax.git /tmp/jax
 
       - name: Crear el esquema de Jacobs con SU propio init_tables()
         working-directory: .
@@ -1272,6 +1309,38 @@ jobs:
         # de MAX_SKIPS se queda en 1, no se sube (ese tope sigue sirviendo
         # para detectar la DB caida).
         run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
+
+      - name: Diagnóstico de pruebas fallidas (sin contenido de excepciones)
+        if: failure()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import xml.etree.ElementTree as ET
+
+          report = Path("junit-db.xml")
+          if not report.exists():
+              print("JUnit de la suite backend no disponible")
+          else:
+              def safe_identifier(value):
+                  # Parametrized test IDs and exception messages can contain
+                  # user data. Emit only static Python identifiers.
+                  value = (value or "").split("[", 1)[0]
+                  return value if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9.]*", value) else "unknown"
+
+              count = 0
+              for case in ET.parse(report).getroot().iter("testcase"):
+                  failure = case.find("failure")
+                  if failure is None:
+                      failure = case.find("error")
+                  if failure is None:
+                      continue
+                  name = safe_identifier(case.get("classname")) + "." + safe_identifier(case.get("name"))
+                  kind = safe_identifier(failure.get("type"))
+                  print(f"::error::{name}: {kind}")
+                  count += 1
+              print(f"JUnit failed/error testcases: {count}")
+          PY
 
       - name: Piso -- el archivo ignorado sigue pudiendo colectarse (fix round 1, MINOR-2)
         # El --ignore de arriba saca test_carga_indice_pipelines_del_usuario.py
@@ -2905,7 +2974,244 @@ jobs:
           #   cambio); CON los 2 archivos -> 2648 passed / 2 skipped. Delta
           #   propio verificado: +17 (2648 - 2631). Piso nuevo = piso
           #   DECLARADO (2622) + delta propio (+17) = 2639.
-          PISO_PASSED = 2639
+          # 2639 -> 2640 (2026-09-23, pendiente 631, índice por propiedad):
+          #   +1 en test_tablero.py -- test_el_predicado_de_prefijo_status_
+          #   rechaza_una_fila_mala (puro: el control nuevo tiene que poder
+          #   fallar). El test de EXPLAIN de pipelines completados se
+          #   RENOMBRA (exige índice con prefijo status, no un nombre), no se
+          #   suma. Medido: tests/test_tablero.py 23 -> 24 passed con DB.
+          # 2640 -> 2669 (2026-09-23, cursor de descartados + FORCE INDEX de
+          #   la vista del dueño): +29 de tests/test_pipelines_descartados_cursor.py
+          #   (19 puros + 10 con DB: recorrido cursor == offset con empates y
+          #   NULL en las dos vistas, 422 de cursor ilegible / cursor+offset /
+          #   cursor en la lista principal, 1176 sin idx_pipelines_descartados,
+          #   Handler_read <= limite+3 en página profunda por cursor). 12 en
+          #   rojo contra master (los 17 restantes prueban el módulo nuevo);
+          #   mutaciones del predicado (sin `IS NULL`, `<=` en el desempate)
+          #   en rojo. Medido: suite con DB 2695 passed / 2 skipped local
+          #   (drift ajeno incluido); delta propio +29.
+          # 2669 -> 2676 (2026-09-23, arreglos chicos del cursor): +2 en
+          #   test_pipelines_descartados_cursor.py (un cursor ilegible no pide
+          #   el pool, las dos vistas; la del dueño en rojo contra master) y
+          #   +5 de tests/test_indices_forzados.py (chequeo del arranque de
+          #   los índices que el código fuerza: lista sacada del código,
+          #   docstrings/comentarios/tests no cuentan, ERROR sin
+          #   idx_pipelines_descartados y ninguno con él, fallo de la
+          #   comprobación es ERROR sin tumbar, el lifespan lo llama).
+          # 2676 -> 2681 (2026-09-23, auditoría de jax-platform#160): +5 en
+          #   tests/test_indices_forzados.py (un .py roto/no UTF-8 es ERROR y
+          #   el escaneo sigue; .venv/node_modules/__pycache__ ni se abren;
+          #   índice sin distinguir mayúsculas; falta de TABLA nombrada como
+          #   tabla; el lifespan REAL completa aunque el escaneo reviente) --
+          #   los 5 en rojo contra 81dbbb2. El viejo "el lifespan lo llama"
+          #   (buscaba el nombre en el texto) se reemplaza por uno que corre
+          #   el lifespan de verdad: rojo si se quita la llamada.
+          # 2681 -> 2683 (2026-09-23, jax-platform#160, ronda 2 de auditoría,
+          #   commit 5437cb0): +2 en tests/test_indices_forzados.py -- una
+          #   base que acepta la conexión y no contesta ya no cuelga el
+          #   lifespan (asyncio.wait_for con JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S,
+          #   15 s por default) y un paquete `x/tests/` con SQL de producción
+          #   sigue escaneado (sólo se poda `backend/tests`, la raíz). Los 2
+          #   en rojo contra el código anterior a 5437cb0. (Nota agregada
+          #   2026-09-23 al corregir una atribución equivocada en la cadena
+          #   del job SIN DB, más abajo: este es el mismo +2 de ahí.)
+          # 2683 -> 2690 (2026-09-23, jax-platform#160, ronda de arreglo de
+          #   los MINOR 1/2/3): +7 en tests/test_indices_forzados.py. MINOR 1
+          #   (JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S sin validar: "abc" tumbaba
+          #   el import con un ValueError crudo, "nan" colgaba el event loop,
+          #   "inf" dejaba el chequeo sin tope, "0"/"-1" hacían que nunca
+          #   corriera) -- 5 tests parametrizados (abc/nan/inf/0/-1 rechazados
+          #   con IndicesForzadosConfigInvalida nombrando la variable y el
+          #   valor) + 1 de un valor válido + 1 del default de 15 s sin la
+          #   variable puesta. MINOR 2 (el timeout salía "(TimeoutError: )"
+          #   vacío, sin tope ni fase) no suma test propio: la aserción se
+          #   agrega al test ya existente del tope, que además (MINOR 3) se
+          #   aísla de la fase del escaneo con `indices_forzados` fijo y
+          #   cuelga sólo en la consulta a information_schema (antes colgaba
+          #   en obtener_pool, sin probar la fase real del log). Los 7 son
+          #   puros (no piden `client`). Medido con JAX_CI_NO_DB=1: archivo
+          #   11 -> 18 passed / 1 skip sin cambios; delta propio +7. Los 7
+          #   tests nuevos, en rojo contra el código de jax-platform#160
+          #   mergeado (AttributeError por faltar `VARIABLE_TOPE_CHEQUEO_S` en
+          #   los primeros 7); el test ya existente del tope también falla en
+          #   rojo ahí (log sin "0.2" ni la fase), pero no es un test nuevo y
+          #   no suma al delta.
+          # 2690 -> 2692 (2026-09-23, tres MINOR de la auditoría de 4ac7db3,
+          #   MINOR 1): +2 en tests/test_indices_forzados.py --
+          #   `TOPE_CHEQUEO_S = cargar_tope_chequeo_s()` (línea 92 del
+          #   módulo) no estaba cubierta: los 7 tests de la ronda anterior
+          #   prueban `cargar_tope_chequeo_s()` como función pura, ninguno
+          #   pasa por esa línea, así que revertirla a `float(os.environ.
+          #   get(...))` los dejaba a los 7 en verde igual.
+          #   test_tope_invalido_revienta_el_import_del_modulo y
+          #   test_tope_valido_queda_fijado_en_el_modulo_al_importar hacen
+          #   `importlib.reload(mod)` con `JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S`
+          #   puesta a "nan"/"7" y comprueban el efecto en el módulo
+          #   recargado, restaurando el default de 15 s en un `finally`. Los
+          #   2 puros (no piden `client`). Medido con JAX_CI_NO_DB=1: archivo
+          #   18 -> 20 passed / 1 skip sin cambios; delta propio +2. Los 2 en
+          #   rojo contra la línea 92 revertida a `float(os.environ.get(...))`
+          #   (DID NOT RAISE IndicesForzadosConfigInvalida).
+          # 2692 -> 2759 (2026-09-27, fix/b9-migraciones-en-test): la base de tests
+          #   sólo aplicaba 001-003 de jax/memory/b9_migrations/ (lo que
+          #   `db.migrations.run_migrations()` cubre); jax#279 (26-sep) puso a
+          #   `jax.memory.b9_mariadb._retrieve_scoped` a leer `r.tenant_id` de
+          #   `memory_revisions`, columna que sólo trae 006 -- una migración que
+          #   el propio README de esa carpeta dice que NO se aplica sola, ni en
+          #   producción ni acá. Sin ella: "Unknown column 'r.tenant_id'",
+          #   envuelto por api/chat.py en 503 MEMORY_UNAVAILABLE. `base_de_test.py`
+          #   ahora aplica, por GLOB contra un MANIFIESTO versionado de NOMBRE +
+          #   CONTENIDO (`backend/b9_migraciones_en_produccion.json` -- no aplica a
+          #   ciegas lo que el glob encuentre, ni confía en que un archivo declarado
+          #   no cambió de contenido: ver MAJOR-2 y MAJOR-A de las dos rondas de
+          #   auditoría de abajo), todo lo que `run_migrations()` no cubre -- ver
+          #   `aplicar_migraciones_b9_restantes()` y
+          #   tests/test_b9_migraciones_restantes.py (archivo nuevo, 12 tests).
+          #
+          #   Medido dos veces, porque este job corre COMO ROOT (JAX_DB_USER: root
+          #   más arriba) y hall9000 no lo es:
+          #
+          #   1) Local, flujo normal de sesión (`JAX_TEST_DB_SUFIJO` propio,
+          #      `JAX_DB_USER=jax_user`), JAX_REPO_PATH a un clon fresco de jax
+          #      master (4642613): antes de este cambio, 2711 passed / 34 failed /
+          #      2 skipped (2747 colectados) -- los 34 en rojo con
+          #      MEMORY_UNAVAILABLE, en chat, adjuntos, facet wiring y shadow;
+          #      después, 2757 passed / 0 failed / 2 skipped (2759 colectados),
+          #      medido dos veces (bases nuevas) con el mismo resultado exacto. Los
+          #      2 skips (sin cambios) son
+          #      tests/test_usuario_solo_insert_punto_restauracion.py: `jax_user`
+          #      no tiene CREATE USER fuera de CI (ver el motivo de cada SKIPPED
+          #      arriba) -- se saltan solos también en la rama, por diseño.
+          #   2) Un contenedor `mariadb:12.3.3` descartable (mismo tag que este
+          #      job), `JAX_DB_USER=root`, mismos pasos de bootstrap que las
+          #      celdas de arriba (`jacobs.store.init_tables()` +
+          #      `jax_memory_schema.sql`): con este mismo fix, los 2 tests que
+          #      arriba se saltan CORREN (root sí tiene CREATE USER) y los 2
+          #      PASAN -- verificado por su nombre en el XML, no sólo por el
+          #      conteo. `2711 + 2 = 2713` antes / `2757 + 2 = 2759` después,
+          #      contra los mismos 34 (antes) / 0 (después) failed y ahora 0
+          #      skipped: la aritmética de las dos medidas cierra sin resto.
+          #      CORRECCIÓN (auditoría adversarial del PR #164, ronda 3, punto 1):
+          #      esta celda decía antes "los 7 tests que las dos rondas agregaron
+          #      después no tocan DB -- ninguno pide `client`" -- FALSO, uno de
+          #      ellos (`test_un_hash_guardado_distinto_deja_la_base_invalida_para_ese_archivo`)
+          #      sí pedía `client`. La ronda 3 lo reescribió (MINOR-3 de esa
+          #      ronda) para usar una fila SINTÉTICA en vez de la real de 004, y
+          #      de paso dejó de pedir `client` -- pero SIGUE tocando la DB (abre
+          #      su propio `get_pool()` sin el fixture, para poder ejercitar el
+          #      registro por base). Hoy, de los 12 tests de
+          #      `tests/test_b9_migraciones_restantes.py`: 9 son puros (no tocan
+          #      DB en absoluto), 2 piden `client`
+          #      (`test_memory_revisions_y_legacy_bindings_espejan_la_cadena_completa`,
+          #      `test_segunda_corrida_es_idempotente_no_revienta_trigger_ni_constraint`)
+          #      y 1 abre su propia conexión real sin pedir `client`
+          #      (el del hash sintético). Los 3 que tocan DB -- con o sin
+          #      `client` -- corren igual bajo `root` que bajo `jax_user`: ninguno
+          #      depende de un privilegio que sólo tenga uno de los dos usuarios
+          #      (a diferencia de `CREATE USER`, que sí distingue). Por eso el
+          #      término "+2" de la cuenta de root sigue siendo sólo de
+          #      `test_usuario_solo_insert_punto_restauracion.py` -- los 12 tests
+          #      de este archivo no lo mueven, midan como midan.
+          #
+          #   `tests/test_base_por_sesion.py` (27 tests) se corrió aparte en esa
+          #   segunda medición: sus 3 tests que lanzan un SUBPROCESO simulando
+          #   "fuera de CI" heredan `/etc/jax/.env` en hall9000 (que no existe en
+          #   el runner) y eso reintroduce `JAX_DB_HOST` con un valor que su
+          #   propio `env.pop(...)` quiso sacar -- un artefacto de ESTA máquina,
+          #   no del código ni de este fix (esos 3 tests no tocan nada de la
+          #   cadena B9). Sin ese artefacto (medición 1, sin root, donde
+          #   `JAX_DB_HOST` no vuelve solo) los 27 pasan limpios de punta a punta.
+          #   NO VERIFICADO en un runner de GitHub real -- es el número esperado
+          #   por la aritmética de las dos mediciones de arriba, no una tercera
+          #   corrida en el entorno exacto de CI.
+          #
+          #   Auditoría adversarial del PR #164, ronda 1 (2026-09-27, APROBADO CON
+          #   CAMBIOS): MAJOR-1 (test de la guarda de base de test conectaba con
+          #   credenciales reales si la guarda fallaba), MAJOR-2 (manifiesto de
+          #   nombre, en vez de aplicar a ciegas lo que el glob encuentra), MINOR-3
+          #   (error claro en una migración a mitad, con qué archivo/sentencia y
+          #   que hay que recrear la base), MINOR-4 (`SELECT DATABASE()` sobre la
+          #   conexión real antes del primer DDL), MINOR-5 (el test de "ya
+          #   cubiertas" dejó de ser tautológico). Ronda 2 (mismo día, también
+          #   APROBADO CON CAMBIOS): MAJOR-A (el manifiesto declara también el
+          #   `sha256` del contenido, no sólo el nombre -- un archivo declarado que
+          #   cambió de contenido, o una base que ya lo aplicó con otro contenido,
+          #   revientan igual que uno no declarado), MINOR-B (runbook: GO de
+          #   Fernando como precondición, qué hacer si el DDL falla a mitad en
+          #   producción, el DDL no es puramente aditivo), MINOR-C (MINOR-5 de la
+          #   ronda 1 pasó de derivar por `inspect.getsource` a pruebas de
+          #   comportamiento reales), MINOR-D (el comentario que atribuía un `DROP
+          #   INDEX` de 004 a la viñeta de 006). +7 tests entre las dos rondas (5 ->
+          #   12 en tests/test_b9_migraciones_restantes.py). Ronda 3 (mismo día,
+          #   APROBADO CON CAMBIOS, sin BLOCK ni MAJOR): 4 MINOR, ninguno agrega
+          #   test -- corrige esta celda (punto 1, arriba), sube el piso SIN DB
+          #   (punto 2, ver ese job), reescribe el test del hash guardado distinto
+          #   para no tocar la fila real de 004 (punto 3, ver
+          #   `test_un_hash_guardado_distinto_deja_la_base_invalida_para_ese_archivo`
+          #   en tests/test_b9_migraciones_restantes.py) y dos pasos más del
+          #   runbook (punto 4: calcular el `sha256` ANTES de aplicar, exigir que
+          #   coincida antes de declarar en el manifiesto). Total sigue en 12
+          #   tests (0 nuevos, 1 reescrito).
+          #
+          #   Delta de colectados (+12) = los 12 tests nuevos; los 34 que estaban en
+          #   rojo pasan a passed sin agregar ninguno.
+          # 2692 -> 2720 (2026-09-28, catálogo de modelos, cuarta auditoría
+          #   adversarial): +28 tests nuevos de esta ronda -- MAJOR-2(a)/(b)
+          #   y MINOR-1 del candado GET_LOCK/RELEASE_LOCK en
+          #   test_model_catalog_sync_all.py (+11: interpretación pura de
+          #   GET_LOCK/RELEASE_LOCK, IS_FREE_LOCK verificado desde otra
+          #   conexión, el candado se libera aunque algo reviente dentro del
+          #   try, `marca_nuevos`/`marca_retrocedio`), el código de salida
+          #   0/1/3 y el candado ocupado consecutivo en
+          #   test_catalogo_modelos_ejecutor.py (+13), MAJOR-1 con
+          #   MONITOR_EXIT_STATUS 200/203/1/3 en test_avisar_fallo_unidad.py
+          #   (+3), y la confirmación del token sin contar una línea vacía
+          #   como partido en test_guardar_token_claude_script.py (+1).
+          #   CORRECCIÓN (quinta auditoría adversarial, 2026-09-28): acá
+          #   decía "no se corrigió ningún test viejo" -- es falso, 12 tests
+          #   viejos se quitaron o se reescribieron (la sección de "nuevos"
+          #   de test_catalogo_modelos_ejecutor.py cambió de contrato con
+          #   MINOR-2/3/4 y varios se reemplazaron por otros de nombre
+          #   distinto); el DELTA NETO (+28, contando funciones `def test_`
+          #   antes/después por archivo) sigue siendo el correcto para este
+          #   piso -- ninguno de esos 12 es drift ajeno, son parte del
+          #   propio trabajo de esa ronda. Medido en vivo, MISMO comando que
+          #   este job
+          #   (`python -m pytest -q -rs
+          #   --ignore=tests/test_carga_indice_pipelines_del_usuario.py`):
+          #   2858 passed / 34 failed / 2 skipped -- los 34 failed son el
+          #   drift AJENO y ya conocido de las migraciones B9 003/004/006
+          #   (`Unknown column 'r.tenant_id'`, ver CONTEXT.md/CLAUDE.md;
+          #   otra rama lo arregla, no se toca acá ni se le suma crédito a
+          #   este piso). El piso nuevo es el DECLARADO (2692) + el delta
+          #   PROPIO verificado (+28) = 2720, no los 2858 medidos en bruto
+          #   -- mismo criterio de siempre en este archivo: no premiar el
+          #   drift ajeno.
+          # 2720 -> 2726 (2026-09-28, quinta auditoría adversarial del
+          #   catálogo de modelos, cierre de MINORES antes del merge): +6 --
+          #   +1 en test_catalogo_modelos_ejecutor.py::test_debe_avisar_reloj_retrocedido_es_true
+          #   (punto A: `notificado_en > ahora` ya no dedupea), +1
+          #   test_main_sale_1_si_avisar_revienta_aunque_ok_sea_verdadero
+          #   (punto B: `_avisar()` reventando sale 1 aunque `ok` sea
+          #   verdadero), +1
+          #   test_enviar_telegram_el_mensaje_recortado_no_pasa_el_limite_ni_un_caracter
+          #   (punto C: el recorte deja lugar al sufijo, el mensaje final
+          #   nunca pasa el límite), y +3 en test_model_catalog_sync_all.py
+          #   (punto D: `sync_all()` con un cursor FALSO -- GET_LOCK NULL
+          #   lanza excepción, RELEASE_LOCK 0 cierra la conexión de verdad
+          #   en el `finally`, RELEASE_LOCK 1 no la cierra). Medido en vivo,
+          #   MISMO comando que este job: 2864 passed / 34 failed (mismos
+          #   34 de siempre, drift B9 ajeno) / 2 skipped.
+          # Integración 2026-09-27 (Hyde, regla 5 de SESIONES EN PARALELO: el último en
+          # llegar re-mide). MEDIDO EN EL RUNNER, no por aritmética: master c127a7f (con
+          # #164) run 36328116696 -> passed=2759; esta rama run 36328147944 -> passed=2912
+          # (colectados=2912, skipped=0). Delta propio real del catálogo: +153 (el +34
+          # estimado arriba contaba `def test_` y no los parametrizados: era falso).
+          # 2026-09-27 (Hyde, #167, programación configurable del sync): MEDIDO EN EL
+          # RUNNER. master a0aa01c run 36354899003 -> passed=2912; esta rama run
+          # 36381118121 (d7b1670) -> colectados=3045 passed=3044 skipped=1. Delta propio +132.
+          # +3 (2026-09-27, Hyde: la línea de resumen distingue una corrida saltada de un sync).
+          PISO_PASSED = 3047
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3795,7 +4101,87 @@ jobs:
       #   verificado (+6) = 1674. Se corre la suite YA fusionada para
       #   confirmar -- el runner tiene la última palabra, no la aritmética
       #   (ver el reporte de la tarea para el número real).
-      JAX_CI_MIN_PASSED: "1674"
+      # 1674 -> 1675 (2026-09-23, pendiente 631): +1 puro en test_tablero.py
+      #   (el predicado de índice con prefijo status rechaza una fila EXPLAIN
+      #   mala). Medido con JAX_CI_NO_DB=1: test_tablero.py 13 -> 14 passed.
+      # 1675 -> 1694 (2026-09-23, cursor de descartados): +19 puros en
+      #   test_pipelines_descartados_cursor.py (FORCE INDEX y orden total en
+      #   el SQL, ida y vuelta exacta del cursor, 11 cursores ilegibles,
+      #   cursor_siguiente sólo con has_more). Medido con JAX_CI_NO_DB=1:
+      #   19 passed / 10 skipped en ese archivo.
+      # 1694 -> 1698 (2026-09-23, chequeo de índices forzados): +4 puros en
+      #   tests/test_indices_forzados.py (el de la base se salta sin DB).
+      #   Medido con JAX_CI_NO_DB=1: 4 passed / 1 skipped en ese archivo.
+      # 1698 -> 1703 (2026-09-23, auditoría de jax-platform#160): +5 puros
+      #   en tests/test_indices_forzados.py. Medido con JAX_CI_NO_DB=1:
+      #   9 passed / 1 skipped en ese archivo.
+      # 1703 -> 1705 (2026-09-23, jax-platform#160, ronda 2 de auditoría,
+      #   commit 5437cb0 -- CORRECCIÓN 2026-09-23: esta línea atribuía antes
+      #   el +2 a los 2 tests puros de test_pipeline_resource_release.py del
+      #   MERGE de origin/master de 2026-09-22; es la misma cifra por
+      #   coincidencia, pero el salto real de 1703 a 1705 lo hizo 5437cb0, no
+      #   ese merge -- verificado con `git show 5437cb0 --
+      #   .github/workflows/policy.yml`, que cambia
+      #   `JAX_CI_MIN_PASSED: "1703"` a `"1705"` en el mismo commit): +2
+      #   puros en tests/test_indices_forzados.py --
+      #   test_un_paquete_tests_anidado_si_se_escanea (un paquete `x/tests/`
+      #   con SQL de producción sigue escaneado, sólo se poda
+      #   `backend/tests`) y test_una_base_que_no_contesta_no_cuelga_el_arranque
+      #   (tope configurable del chequeo, JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S,
+      #   para que una base que acepta la conexión y no contesta no cuelgue
+      #   el lifespan). Mismo +2 documentado arriba, en el piso CON DB
+      #   ("2681 -> 2683").
+      # 1705 -> 1712 (2026-09-23, jax-platform#160, ronda de arreglo de los
+      #   MINOR 1/2/3): +7 puros en tests/test_indices_forzados.py -- mismos
+      #   7 tests nuevos documentados arriba, en el piso CON DB (validación
+      #   de JAX_CHEQUEO_INDICES_FORZADOS_TOPE_S: 5 valores inválidos + 1
+      #   válido + 1 default; ninguno pide `client`). El test ya existente
+      #   del tope se fortalece (fase aislada + aserción del log) pero no es
+      #   nuevo, no suma delta. Medido con JAX_CI_NO_DB=1: archivo
+      #   11 -> 18 passed / 1 skipped (delta propio +7); suite completa
+      #   1747 -> 1754 passed / 964 skipped sin cambios (mismo comando
+      #   `JAX_CI_NO_DB=1 python -m pytest -q -p no:warnings -rs
+      #   --ignore=tests/test_carga_indice_pipelines_del_usuario.py`).
+      # 1712 -> 1714 (2026-09-23, tres MINOR de la auditoría de 4ac7db3,
+      #   MINOR 1): +2 puros en tests/test_indices_forzados.py -- mismos 2
+      #   tests documentados arriba, en el piso CON DB ("2690 -> 2692"):
+      #   test_tope_invalido_revienta_el_import_del_modulo y
+      #   test_tope_valido_queda_fijado_en_el_modulo_al_importar, que cubren
+      #   la línea 92 del módulo (`TOPE_CHEQUEO_S = cargar_tope_chequeo_s()`)
+      #   con `importlib.reload`, no sólo la función pura. Medido con
+      #   JAX_CI_NO_DB=1: archivo 18 -> 20 passed / 1 skipped (delta propio
+      #   +2); suite completa 1754 -> 1756 passed / 964 skipped sin cambios
+      #   (mismo comando `JAX_CI_NO_DB=1 python -m pytest -q -p no:warnings
+      #   -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py`).
+      # 1714 -> 1723 (2026-09-27, fix/b9-migraciones-en-test, auditoría
+      #   adversarial del PR #164, ronda 3, punto 2): tests/test_b9_migraciones_restantes.py
+      #   (archivo nuevo del PR, ver el piso CON DB de más arriba) agrega 12
+      #   tests; 9 son puros (no piden `client` ni tocan una conexión real:
+      #   descubrimiento por glob, las tres pruebas de comportamiento de
+      #   001/002/003, las guardas que revientan ANTES de `get_pool()` --
+      #   base inválida, archivo no declarado, archivo con hash distinto -- y
+      #   el chequeo de forma del manifiesto). Los otros 3 sí tocan DB (2
+      #   piden `client`, 1 abre su propio pool sin pedirlo) y se saltan acá
+      #   igual, con o sin `client`, por la Regla 2 del modo sin-DB. Medido
+      #   con el comando documentado, MISMO checkout de JAX
+      #   (`JAX_REPO_PATH` a un clon fijo de jax master 4642613) en los dos
+      #   puntos: master `7fa4303` -> 1780 passed / 967 skipped; esta rama
+      #   (con las tres rondas de auditoría del PR #164 ya aplicadas,
+      #   incluida la reescritura de MINOR-3 de la ronda 3) -> 1789 passed /
+      #   970 skipped. Delta propio: +9 passed / +3 skipped, exactamente los
+      #   12 tests nuevos del archivo. Piso nuevo = piso DECLARADO de master
+      #   (1714, no los 1780 medidos -- mismo criterio que las entradas de
+      #   arriba: no premiar el drift ajeno de PRs que ya deberían haber
+      #   subido este número y no lo hicieron) + el delta propio verificado
+      #   (+9) = 1723.
+      # 2026-09-27 (Hyde, catálogo de modelos #163): medido en el runner, master c127a7f
+      # passed=1789 (run 36328116696) y esta rama passed=1908 (run 36328147944): delta propio
+      # +119. Piso = declarado de master (1723, sin premiar la deriva ajena) + 119 = 1842.
+      # 2026-09-27 (Hyde, #167): medido en el runner, master a0aa01c passed=1908 (run
+      # 36354899003) y esta rama passed=1978 (run 36381118121): delta propio +70. Piso =
+      # declarado de master (1842, sin premiar la deriva ajena) + 70 = 1912.
+      # +3 (2026-09-27, Hyde: resumen de corrida saltada; los 3 tests no usan DB).
+      JAX_CI_MIN_PASSED: "1915"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -3812,10 +4198,9 @@ jobs:
 
       - name: Traer el repo JAX de integración (vocabulario y B9)
         working-directory: .
-        # Web Chat imports jax.memory.b9 and admin users imports the D1
-        # membership synchronizer.  Keep this paired with JAX's feature
-        # head; cloning the default branch would test a different contract.
-        run: git clone --depth=1 --branch feat/proyectos-d1-d5 https://github.com/fjruizhn/Jax.git /tmp/jax
+        # Web Chat imports jax.memory.b9. JAX master contains B9 after #269,
+        # so CI tests the normal integration source.
+        run: git clone --depth=1 --branch master https://github.com/fjruizhn/Jax.git /tmp/jax
 
       - name: Suite backend (sin DB) -- -rs lista cada skip con su motivo
         # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,
