@@ -1234,6 +1234,7 @@ export default {
       turno_ilegible: 'The turn could not be read',
       runner_error: 'Runner error',
       sin_afirmaciones: 'The turn delivered no claim',
+      sin_entregar: 'The turn did not pass the checks: nothing was delivered',
       preparar_fallo: 'Preparing the code failed',
       codigo_sin_clon: 'No clone was prepared',
       codigo_sin_dependencias: 'The code dependencies are missing',

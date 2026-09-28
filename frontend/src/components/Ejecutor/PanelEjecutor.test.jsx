@@ -423,7 +423,7 @@ describe('Ejecutor -- textos', () => {
   const TURNO = ['arranque_rechazado', 'pausa_puesta', 'auditor_pauso', 'vigia_no_latio', 'cerebro_fallo', 'registro_no_cuadra', 'cadena_rota', 'vigia_no_cerro', 'runner_salida_invalida', 'runner_sin_cierre', 'plataforma_reiniciada', 'sin_configurar', 'cerebro_tope_vencido', 'auditor_ilegible', 'turno_ilegible', 'runner_error', 'sin_afirmaciones',
     // MAJOR-2 (ola final, plan "El Ejecutor programa"): el `codigo` de un turno de código
     // que no llega a entregar (mision.py, ENTREGA_SIN_FALLO) o que ni prepara el clon.
-    'preparar_fallo', 'codigo_sin_clon', 'codigo_sin_dependencias', 'rechazada_por_contrato', 'fallo_entrega', 'sin_informe_c5', 'empujado_sin_pr']
+    'preparar_fallo', 'codigo_sin_clon', 'codigo_sin_dependencias', 'rechazada_por_contrato', 'fallo_entrega', 'sin_informe_c5', 'sin_entregar', 'empujado_sin_pr']
   const EVENTOS = ['mision_creada', 'turno_lanzado', 'arranque_rechazado', 'arranque_verificado', 'vigia_late', 'vigia_no_latio', 'cerebro_termino', 'paso', 'afirmacion_entregada', 'afirmacion_descartada', 'auditor_pauso', 'vigia_cerrado', 'pausa_detectada', 'turno_completado', 'turno_fallido', 'turno_interrumpido', 'turno_rechazado', 'auditor_ilegible', 'runner_salida_invalida',
     // MAJOR-2: los tres eventos propios de una misión de código (`mision.py: dice(...)`).
     'codigo_preparado', 'preparar_fallo', 'entrega_codigo']

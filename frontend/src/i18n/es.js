@@ -1303,6 +1303,7 @@ export default {
       // descartado-- dejó de reportarse como completado. Dos misiones salieron
       // "completada" con cero y nadie las miró.
       sin_afirmaciones: 'El turno no entregó ninguna afirmación',
+      sin_entregar: 'El turno no pasó los controles: no se entregó nada',
       // Task 12/13 (plan "El Ejecutor programa"): cuando `entrega_codigo` termina en algo
       // que no es "abierto"/"sin_cambios", su `estado_entrega` se vuelve el `codigo` del
       // turno (mision.py, ENTREGA_SIN_FALLO) -- y la preparación del clon tiene sus propios
