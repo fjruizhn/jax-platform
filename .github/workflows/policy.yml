@@ -3225,7 +3225,18 @@ jobs:
           # no forman parte de este delta. PISO_PASSED se suma sobre el declarado (3047), no
           # sobre el 3049 medido en bruto localmente: mismo criterio de siempre en este
           # archivo (no premiar la brecha entre el runner y esta máquina).
-          PISO_PASSED = 3049
+          # 3049 -> 3052 (2026-09-28, Hyde, ronda de revisión de las Tasks 7/8: 3 tests
+          # negativos nuevos -- test_comandos_prueba_debe_ser_array (el CHECK
+          # JSON_TYPE(comandos_prueba)='ARRAY' de ejecutor_repo rechaza un JSON que no es
+          # array), test_tipo_fuera_del_enum_no_se_guarda y
+          # test_estado_entrega_fuera_del_enum_no_se_guarda (los dos ENUM nuevos de
+          # ejecutor_mision rechazan un valor fuera de lista). Tampoco medido en el runner,
+          # mismo motivo de arriba. Medido LOCAL, mismo comando, mismo día: la MISMA rama,
+          # antes de esta ronda -> 3054 passed - 3 = 3051 (ya verificado arriba); con los 3
+          # tests nuevos -> 3054 passed / 2 skipped. Delta propio real: +3, verificado
+          # también por diferencia directa contra el worktree de origin/master 3701109
+          # (3049 passed): 3054 - 3049 = +5 = +2 (ronda anterior) + +3 (esta ronda).
+          PISO_PASSED = 3052
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
