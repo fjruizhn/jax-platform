@@ -11,7 +11,7 @@ class _RecordingCursor:
     def __init__(self):
         self.statements = []
 
-    async def execute(self, statement):
+    async def execute(self, statement, parameters=None):
         self.statements.append(statement)
 
 
