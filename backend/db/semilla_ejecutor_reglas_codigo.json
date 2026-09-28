@@ -1,0 +1,17 @@
+[
+  {"codigo": "codigo_git_push", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
+   "patron": "\\bgit\\b[^\\n]*\\bpush\\b", "ambito_host": null, "ambito_roles": [], "es_canario": false,
+   "origen": "spec 2026-09-28 §3.2: la jaula no empuja; la entrega sí",
+   "ejemplos_coincide": [{"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"}}],
+   "ejemplos_no_coincide": [{"tool_name": "Bash", "tool_input": {"command": "git status"}}]},
+  {"codigo": "codigo_no_verify", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
+   "patron": "--no-verify\\b|core\\.hooksPath", "ambito_host": null, "ambito_roles": [], "es_canario": false,
+   "origen": "spec 2026-09-28 §5.1 (ganchos)",
+   "ejemplos_coincide": [{"tool_name": "Bash", "tool_input": {"command": "git commit --no-verify -m x"}}],
+   "ejemplos_no_coincide": [{"tool_name": "Bash", "tool_input": {"command": "git commit -m x"}}]},
+  {"codigo": "codigo_workflows", "tipo": "prohibido", "herramientas": "Edit|Write", "campo": "file_path",
+   "patron": "/\\.github/workflows/", "ambito_host": null, "ambito_roles": [], "es_canario": false,
+   "origen": "spec 2026-09-28 §5.1 (flujos de CI)",
+   "ejemplos_coincide": [{"tool_name": "Write", "tool_input": {"file_path": "/x/repo/.github/workflows/a.yml"}}],
+   "ejemplos_no_coincide": [{"tool_name": "Write", "tool_input": {"file_path": "/x/repo/src/a.py"}}]}
+]

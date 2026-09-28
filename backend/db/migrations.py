@@ -3227,9 +3227,11 @@ async def _ajuste_confirmar_costo_v1(cur) -> None:
 
 MIGRACION_EJECUTOR_REGLAS_V1 = "ejecutor_reglas_v1"
 MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1 = "ejecutor_reglas_envoltorios_v1"
+MIGRACION_EJECUTOR_REGLAS_CODIGO_V1 = "ejecutor_reglas_codigo_v1"
 MIGRACION_EJECUTOR_INVENTARIO_V1 = "ejecutor_inventario_v1"
 _SEMILLA_EJECUTOR_REGLAS = Path(__file__).with_name("semilla_ejecutor_reglas.json")
 _SEMILLA_EJECUTOR_REGLAS_ENVOLTORIOS = Path(__file__).with_name("semilla_ejecutor_reglas_envoltorios.json")
+_SEMILLA_EJECUTOR_REGLAS_CODIGO = Path(__file__).with_name("semilla_ejecutor_reglas_codigo.json")
 _ROLES_EJECUTOR = ("hypervisor", "desarrollo", "produccion", "clientes", "respaldo")
 _OPCIONES_INVENTARIO = frozenset({"local", "sin_clientes"})
 
@@ -3271,6 +3273,13 @@ async def _ejecutor_reglas_envoltorios_v1(cur) -> None:
     `tmux new-session -d '… ssh …'` pasó C1 (ssh_sin_tt no lo ve) y sólo lo atrapó C5.
     Falsos positivos decididos: ver el `origen` de cada regla y la Biblioteca de jax."""
     await _sembrar_reglas_una_vez(cur, MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1, _SEMILLA_EJECUTOR_REGLAS_ENVOLTORIOS)
+
+
+async def _ejecutor_reglas_codigo_v1(cur) -> None:
+    """C1 dentro de la jaula para misiones de código (plan "El Ejecutor programa", Task 7,
+    spec 2026-09-28): la jaula no empuja (`codigo_git_push`), no desactiva ganchos
+    (`codigo_no_verify`) y no toca flujos de CI (`codigo_workflows`). Ninguna es canario."""
+    await _sembrar_reglas_una_vez(cur, MIGRACION_EJECUTOR_REGLAS_CODIGO_V1, _SEMILLA_EJECUTOR_REGLAS_CODIGO)
 
 
 # Los 4 métodos de verificación reales del diseño C2 (tabla «Respaldo por máquina»):
@@ -3571,6 +3580,7 @@ async def run_migrations():
             await _ajuste_confirmar_costo_v1(cur)
             await _ejecutor_reglas_v1(cur)
             await _ejecutor_reglas_envoltorios_v1(cur)
+            await _ejecutor_reglas_codigo_v1(cur)
             await _eliminar_sudo_y_machine_id_de_ejecutor_host(cur)
             await _asegurar_forma_de_ejecutor_punto_restauracion(cur)
             await _ejecutor_inventario_v1(cur)
