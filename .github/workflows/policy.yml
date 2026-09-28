@@ -3203,7 +3203,8 @@ jobs:
           # 2026-09-27 (Hyde, #167, programación configurable del sync): MEDIDO EN EL
           # RUNNER. master a0aa01c run 36354899003 -> passed=2912; esta rama run
           # 36381118121 (d7b1670) -> colectados=3045 passed=3044 skipped=1. Delta propio +132.
-          PISO_PASSED = 3044
+          # +3 (2026-09-27, Hyde: la línea de resumen distingue una corrida saltada de un sync).
+          PISO_PASSED = 3047
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4172,7 +4173,8 @@ jobs:
       # 2026-09-27 (Hyde, #167): medido en el runner, master a0aa01c passed=1908 (run
       # 36354899003) y esta rama passed=1978 (run 36381118121): delta propio +70. Piso =
       # declarado de master (1842, sin premiar la deriva ajena) + 70 = 1912.
-      JAX_CI_MIN_PASSED: "1912"
+      # +3 (2026-09-27, Hyde: resumen de corrida saltada; los 3 tests no usan DB).
+      JAX_CI_MIN_PASSED: "1915"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

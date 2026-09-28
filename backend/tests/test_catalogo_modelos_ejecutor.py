@@ -277,6 +277,57 @@ def test_main_imprime_un_resumen_con_los_campos_clave(monkeypatch, capsys):
     assert "anthropic" in salida
 
 
+def test_resumen_de_una_corrida_saltada_no_se_confunde_con_un_sync(monkeypatch, capsys):
+    """Hallado en producción el 2026-09-27 al desplegar #167: una corrida que
+    el gate de configuración saltó ("todavía no toca") imprimía la MISMA línea
+    que un sync real sano (`ok=True ... nuevos={}`), y el `logger.info` que lo
+    explica no se emite (el ejecutor no configura logging, a propósito: el
+    INFO de httpx llevaría la URL de Telegram con el token del bot). En el
+    journal, saltada y sincronizada eran indistinguibles."""
+    for code in (ejecutor._CODIGO_PROGRAMADO_NO_TOCA, ejecutor._CODIGO_PROGRAMADO_APAGADO):
+        async def _correr(code=code):
+            return ejecutor._resultado_sin_tocar_nada(code)
+        monkeypatch.setattr(ejecutor, "_correr", _correr)
+        _sin_aviso(monkeypatch)
+
+        assert ejecutor.main() == 0
+        salida = capsys.readouterr().out
+        assert f"code={code}" in salida
+        assert "sin sincronizar" in salida
+
+
+def test_resumen_de_un_sync_real_no_dice_sin_sincronizar(monkeypatch, capsys):
+    async def _correr():
+        return _resultado_con_problemas(providers_fallidos=["openai"])
+    monkeypatch.setattr(ejecutor, "_correr", _correr)
+    _sin_aviso(monkeypatch)
+
+    ejecutor.main()
+    salida = capsys.readouterr().out
+    assert "code=sync_con_errores" in salida
+    assert "sin sincronizar" not in salida
+
+
+def test_resumen_de_un_sync_sano_no_lleva_code_ni_sin_sincronizar(monkeypatch, capsys):
+    """El caso con el que se confundía la corrida saltada: un sync real sano
+    no trae `code`, así que su línea no puede llevar `code=` ni
+    "sin sincronizar"."""
+    async def _correr():
+        return {
+            "ok": True, "providers": [], "enrich": {}, "providers_fallidos": [],
+            "providers_saltados": [], "enrich_fallido": False, "nuevos": {},
+            "facetas_en_riesgo": [],
+        }
+    monkeypatch.setattr(ejecutor, "_correr", _correr)
+    _sin_aviso(monkeypatch)
+
+    assert ejecutor.main() == 0
+    salida = capsys.readouterr().out
+    assert "ok=True" in salida
+    assert "code=" not in salida
+    assert "sin sincronizar" not in salida
+
+
 def test_main_no_enmascara_el_codigo_de_salida_si_el_aviso_falla(monkeypatch):
     """Principio: un aviso roto (Telegram caído, disco lleno) NO puede
     convertir un job con problemas en un job que sale 0, NI puede

@@ -465,9 +465,17 @@ async def _avisar(resultado: dict) -> str:
 def _resumen(resultado: dict) -> str:
     conteo_nuevos = {p: len(ids) for p, ids in (resultado.get("nuevos") or {}).items()}
     facetas = [f["facet_key"] for f in resultado.get("facetas_en_riesgo") or []]
+    code = resultado.get("code")
+    # 2026-09-27, hallado en producción al desplegar #167: sin esto, una
+    # corrida que el gate saltó imprimía lo mismo que un sync real sano. El
+    # `logger.info` que lo explica no se ve porque el ejecutor no configura
+    # logging a propósito (el INFO de httpx llevaría la URL con el token del
+    # bot de Telegram), así que la distinción tiene que ir en esta línea.
+    salto = " (sin sincronizar)" if code in _CODIGOS_GATE_CERRADO else ""
     return (
-        f"catalogo_modelos ok={resultado['ok']} "
-        f"providers_fallidos={resultado.get('providers_fallidos')} "
+        f"catalogo_modelos ok={resultado['ok']}"
+        + (f" code={code}{salto}" if code else "")
+        + f" providers_fallidos={resultado.get('providers_fallidos')} "
         f"providers_saltados={resultado.get('providers_saltados')} "
         f"enrich_fallido={resultado.get('enrich_fallido')} "
         f"nuevos={conteo_nuevos} "
