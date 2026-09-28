@@ -977,3 +977,46 @@ def test_mision_de_servidor_expone_tipo_y_repo_vacio(client, superadmin, maquina
     runner.guion(GUION_BUENO)
     d = _esperar(client, h, _crear(client, h).json()["id"])
     assert (d["tipo"], d["repo"], d["rama"], d["pr_url"], d["estado_entrega"]) == ("servidor", None, None, None, None)
+
+
+def test_entrega_codigo_con_sin_entregar_se_guarda(client_superadmin, runner, repo_jax_platform):
+    """Corrección del controlador (2026-09-28): el runner de jax (Task 9) también emite
+    `estado_entrega='sin_entregar'` (con `motivo`) cuando el turno no pasó los controles y
+    NUNCA tocó GitHub -- un sexto valor del ENUM, distinto de los otros cinco (que sí implican
+    algún contacto con el repo). `pr_url` queda NULL; `motivo` no es un campo propio de
+    `ejecutor_mision` (no se expone en el detalle) pero SÍ queda persistido -- en la
+    bitácora, como el resto de `datos` de cualquier evento (`_anotar`, ya existente)."""
+    runner.guion({"lineas": [
+        _ev("turno_lanzado"),
+        _ev("entrega_codigo", estado_entrega="sin_entregar", pr_url=None,
+            violaciones=["c1_git_push"], motivo="c1_violado", notas="rechazado por C1"),
+        _resultado()]})
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    d = _esperar(client_superadmin, {}, mision_id)
+    assert d["estado"] == "completada"
+    assert (d["estado_entrega"], d["pr_url"]) == ("sin_entregar", None)
+    eventos = client_superadmin.get(f"{BASE}/misiones/{mision_id}/bitacora").json()["eventos"]
+    (entrega,) = [e for e in eventos if e["evento"] == "entrega_codigo"]
+    assert entrega["datos"]["motivo"] == "c1_violado"
+
+
+def test_entrega_codigo_con_empujado_sin_pr_se_guarda(client_superadmin, runner, repo_jax_platform):
+    """Corrección del controlador (2026-09-28): un séptimo valor del ENUM --
+    `estado_entrega='empujado_sin_pr'`, la rama ya está en GitHub pero el PR no se confirmó.
+    `rama_empujada`/`sha` no son campos propios de `ejecutor_mision` (no se exponen en el
+    detalle) pero SÍ quedan persistidos en la bitácora, igual que `motivo` para
+    'sin_entregar' arriba."""
+    runner.guion({"lineas": [
+        _ev("turno_lanzado"),
+        _ev("entrega_codigo", estado_entrega="empujado_sin_pr", pr_url=None,
+            rama_empujada=True, sha="a1b2c3d4", violaciones=[], notas="push ok, PR sin confirmar"),
+        _resultado()]})
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    d = _esperar(client_superadmin, {}, mision_id)
+    assert d["estado"] == "completada"
+    assert (d["estado_entrega"], d["pr_url"]) == ("empujado_sin_pr", None)
+    eventos = client_superadmin.get(f"{BASE}/misiones/{mision_id}/bitacora").json()["eventos"]
+    (entrega,) = [e for e in eventos if e["evento"] == "entrega_codigo"]
+    assert (entrega["datos"]["sha"], entrega["datos"]["rama_empujada"]) == ("a1b2c3d4", True)

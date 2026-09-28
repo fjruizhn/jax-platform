@@ -2390,6 +2390,28 @@ _ENUM_EXTENSIONS = [
         "ALTER TABLE facet_health_event MODIFY COLUMN source "
         "ENUM('chat','canary_periodic','canary_rebind','preflight') NOT NULL",
     ),
+    # Task 10 (plan "El Ejecutor programa", correcciones del controlador 2026-09-28): el
+    # runner de jax (Task 9) emite `entrega_codigo` con dos valores de `estado_entrega` que
+    # el ENUM original (Task 8, ver `_COLUMNS`) no traía -- 'sin_entregar' (el turno no pasó
+    # los controles y NUNCA tocó GitHub) y 'empujado_sin_pr' (la rama ya está en GitHub pero
+    # el PR no se confirmó). Se ensancha el ENUM acá, no editando el `ADD COLUMN` original de
+    # `_COLUMNS`: mismo patrón que las entradas de arriba. `NULL`, como el `ADD COLUMN` que
+    # le dio origen -- una misión que sigue en curso, o una de servidor, no tiene entrega
+    # todavía. DOS entradas con el MISMO ALTER final (siete valores): cada una se dispara por
+    # SU propio valor ausente, así que el ENUM converge al conjunto completo sin importar
+    # cuál de los dos falte.
+    (
+        "ejecutor_mision", "estado_entrega", "sin_entregar",
+        "ALTER TABLE ejecutor_mision MODIFY COLUMN estado_entrega "
+        "ENUM('abierto','rechazada_por_contrato','sin_informe_c5','fallo_entrega','sin_cambios',"
+        "'sin_entregar','empujado_sin_pr') NULL",
+    ),
+    (
+        "ejecutor_mision", "estado_entrega", "empujado_sin_pr",
+        "ALTER TABLE ejecutor_mision MODIFY COLUMN estado_entrega "
+        "ENUM('abierto','rechazada_por_contrato','sin_informe_c5','fallo_entrega','sin_cambios',"
+        "'sin_entregar','empujado_sin_pr') NULL",
+    ),
 ]
 
 
