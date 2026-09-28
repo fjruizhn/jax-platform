@@ -100,16 +100,23 @@ async def auditar(cur, *, actor_user_id: int | None, config_key: str,
     a la misma tabla, exactamente lo que el docstring del módulo dice que no
     puede pasar.
 
-    NO aplica `_visible()` (redacción de `smtp.password`) -- es contrato de
-    `escribir()` para claves conocidas de `axioma_config`; un llamador con su
-    propio dato ya decide qué es seguro guardar antes de llegar acá."""
+    MINOR-4 (cuarta ronda de la auditoría adversarial, 2026-09-28): SÍ aplica
+    `_visible()` -- antes esto decía que era contrato de `escribir()` para
+    claves conocidas de `axioma_config`, pero eso dejaba la redacción
+    dependiendo de que CADA llamador se acordara de aplicarla antes de
+    llegar acá; siendo ésta la función que de verdad escribe el INSERT, es
+    el sitio correcto para una defensa que no se pueda saltear por
+    descuido. Aplicarlo dos veces (acá y en `escribir()`, si un llamador
+    viejo todavía lo hiciera) es inofensivo -- `_visible()` sólo mira la
+    CLAVE, nunca el valor ya redactado."""
     if origen not in ORIGENES:
         raise ValueError(f"origen de auditoría desconocido: {origen!r}")
     if actor_user_id is None:
         # Media auditoría (qué cambió, sin quién) no cierra el agujero.
         raise ValueError("una escritura de configuración sin actor no se audita")
     await cur.execute(SQL_AUDITORIA, (
-        int(actor_user_id), config_key, valor_anterior, valor_nuevo, origen, ip))
+        int(actor_user_id), config_key, _visible(config_key, valor_anterior),
+        _visible(config_key, valor_nuevo), origen, ip))
 
 
 async def escribir(cur, filas: dict[str, str], actor_user_id: int | None,
@@ -139,9 +146,11 @@ async def escribir(cur, filas: dict[str, str], actor_user_id: int | None,
         await cur.execute(SQL_ESCRIBIR, (clave, valor))
         if anterior == valor:
             continue
+        # MINOR-4: la redacción (`_visible()`) ya la aplica `auditar()` --
+        # no se repite acá, un solo sitio que decide qué es seguro guardar.
         await auditar(
             cur, actor_user_id=actor_user_id, config_key=clave_real,
-            valor_anterior=_visible(clave_real, anterior), valor_nuevo=_visible(clave_real, valor),
+            valor_anterior=anterior, valor_nuevo=valor,
             origen=origen, ip=ip,
         )
         cambios += 1
