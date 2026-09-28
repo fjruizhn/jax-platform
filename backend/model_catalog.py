@@ -778,7 +778,15 @@ async def nombre_candado(cur, base_nombre: str) -> str:
     base a mitad de conexión (`USE`), cosa que la variable de entorno no
     podría reflejar. Cada candado (el de trabajo `jax_catalogo_sync`, el de
     gate `jax_catalogo_sync_gate` de `catalogo_sync_registro.py`) pasa por
-    acá -- nunca se arma el nombre calificado a mano en otro lado."""
+    acá -- nunca se arma el nombre calificado a mano en otro lado.
+
+    MINOR-6 (quinta ronda de la auditoría adversarial, 2026-09-28,
+    DESCARTADO con evidencia): ¿un nombre de base larga puede desbordar el
+    límite de longitud del candado? Medido en MariaDB 12.3.3: un nombre de
+    128 caracteres se acepta, uno de 200 da `ERROR 1059`; con una base de
+    hasta 64 caracteres (el máximo real de MariaDB para un nombre de base)
+    el candado calificado más largo posible mide 88 -- muy por debajo del
+    límite real. No hace falta ningún tope ni truncado acá."""
     await cur.execute("SELECT CONCAT(%s, ':', DATABASE())", (base_nombre,))
     (nombre,) = await cur.fetchone()
     return nombre
