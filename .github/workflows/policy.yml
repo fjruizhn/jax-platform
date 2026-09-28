@@ -3211,7 +3211,21 @@ jobs:
           # RUNNER. master a0aa01c run 36354899003 -> passed=2912; esta rama run
           # 36381118121 (d7b1670) -> colectados=3045 passed=3044 skipped=1. Delta propio +132.
           # +3 (2026-09-27, Hyde: la línea de resumen distingue una corrida saltada de un sync).
-          PISO_PASSED = 3047
+          # 3047 -> 3049 (2026-09-28, Hyde, Tasks 7/8 del plan "El Ejecutor programa": reglas
+          # C1 de código + ejecutor_repo/columnas de misión). NO MEDIDO EN EL RUNNER -- este
+          # trabajo no corrió en GitHub Actions (cuenta Free sin minutos, ver la sección del
+          # runner propio en CLAUDE.md). Medido LOCAL, mismo comando que este job (`python -m
+          # pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py`), A/B
+          # controlado el mismo día contra jax_memory_test (127.0.0.1:3308, usuario jax_test):
+          # un worktree detached en origin/master 3701109 -> 3049 passed / 2 skipped; esta
+          # rama (mismos cambios que este PR) -> 3051 passed / 2 skipped. Delta propio real:
+          # +2 (los 2 tests nuevos: test_reglas_de_codigo_sembradas y
+          # test_ejecutor_repo_y_columnas_de_codigo). Los 2 skips en ambas corridas son el
+          # mismo par ya documentado arriba (CREATE USER, root lo tiene en CI y jax_test no) --
+          # no forman parte de este delta. PISO_PASSED se suma sobre el declarado (3047), no
+          # sobre el 3049 medido en bruto localmente: mismo criterio de siempre en este
+          # archivo (no premiar la brecha entre el runner y esta máquina).
+          PISO_PASSED = 3049
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
