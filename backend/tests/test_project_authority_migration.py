@@ -10,9 +10,26 @@ from db import migrations
 class _RecordingCursor:
     def __init__(self):
         self.statements = []
+        # The JAX-owned 005 hook inspects the schema after applying 003.  Model
+        # the schema just upgraded from 003: only the old scope constraint is
+        # present, and none of the 005 additions have been applied yet.
+        self._fetchone_rows = iter(
+            (
+                (0,),  # chk_jax_project_scope_status_v2
+                (1,),  # chk_jax_project_scope_status (from 003)
+                (0,),  # chk_jax_project_membership_origin
+                (0,),  # chk_jax_project_membership_pre_admin
+                (0,),  # idx_jax_project_membership_user_list
+                ("enum('planning','active','paused','completed','archived')",),
+                (0,),  # idx_jax_users_tenant_role_status
+            )
+        )
 
     async def execute(self, statement, parameters=None):
         self.statements.append(statement)
+
+    async def fetchone(self):
+        return next(self._fetchone_rows, None)
 
 
 def test_jax_owned_003_hook_is_the_only_project_authority_ddl_source():
@@ -20,7 +37,10 @@ def test_jax_owned_003_hook_is_the_only_project_authority_ddl_source():
     cursor = _RecordingCursor()
     asyncio.run(migrations._apply_jax_project_authority_migration(cursor))
 
-    assert len(cursor.statements) == 5
+    # The first five statements are exactly the JAX-owned 003 DDL.  Later
+    # statements belong to JAX-owned 005, whose information-schema guards use
+    # this cursor double as well.
+    assert len(cursor.statements) == 21
     assert "CREATE TABLE IF NOT EXISTS jax_project_scope" in cursor.statements[0]
     assert "CREATE TABLE IF NOT EXISTS jax_project_membership" in cursor.statements[1]
     assert "CREATE TABLE IF NOT EXISTS jax_project_membership_event" in cursor.statements[2]
