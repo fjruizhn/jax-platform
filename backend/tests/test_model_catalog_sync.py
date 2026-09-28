@@ -519,6 +519,69 @@ class _FakeRaisingClient:
         raise ConnectionError("refused")
 
 
+class _FakeOllamaClient:
+    """GET /api/tags + POST /api/show reales (los otros fakes de este
+    archivo sólo tienen `.get`, así que `_capacidades_ollama` fallaba en
+    silencio contra ellos -- MINOR-10 necesita que el POST sí funcione para
+    poder ver A CUÁLES modelos les tocó turno)."""
+    def __init__(self, tags: list[dict]):
+        self._tags = tags
+        self.show_calls: list[str] = []
+
+    async def get(self, url, **kwargs):
+        return _FakeResponse({"models": self._tags})
+
+    async def post(self, url, json=None, **kwargs):
+        self.show_calls.append(json["model"])
+        return _FakeResponse({"capabilities": ["completion"]})
+
+
+def test_sync_provider_models_ollama_rota_el_tope_de_api_show_entre_corridas(client, monkeypatch):
+    """MINOR-10 (auditoría adversarial, 2026-09-27): con un catálogo local
+    más grande que el tope, la SEGUNDA corrida tiene que consultar modelos
+    DISTINTOS de la primera -- nunca los mismos de siempre (el orden crudo
+    de /api/tags, alfabético/estable, dejaría a los últimos sin refrescar
+    para siempre)."""
+    monkeypatch.setattr(model_catalog, "_OLLAMA_MAX_MODELOS_CONSULTADOS", 2)
+    tags = [
+        {"model": f"test-rotacion-{i}:latest", "digest": f"sha-rot-{i}"} for i in range(5)
+    ]
+    # Limpia cualquier input_modalities_checked_at de una corrida anterior de
+    # ESTE mismo test (la base de sesión es persistente) -- arranca todos
+    # sin verificar, mismo baseline en cada corrida de la suite.
+    async def _resetear():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                marcas = ", ".join(["%s"] * len(tags))
+                await cur.execute(
+                    f"DELETE FROM model WHERE provider_id='ollama' AND model_id IN ({marcas})",
+                    tuple(t["model"] for t in tags),
+                )
+            await conn.commit()
+    client.portal.call(_resetear)
+
+    original = http_client._client
+    try:
+        fake1 = _FakeOllamaClient(tags)
+        http_client._client = fake1
+        client.portal.call(model_catalog.sync_provider_models, "ollama")
+
+        fake2 = _FakeOllamaClient(tags)
+        http_client._client = fake2
+        client.portal.call(model_catalog.sync_provider_models, "ollama")
+    finally:
+        http_client._client = original
+        client.portal.call(_resetear)
+
+    assert len(fake1.show_calls) == 2
+    assert len(fake2.show_calls) == 2
+    # La segunda corrida NO repite ninguno de los que ya le tocaron a la
+    # primera -- rotación real, no casualidad de orden.
+    assert set(fake1.show_calls).isdisjoint(set(fake2.show_calls))
+
+
 async def _fetch_model_digest(provider_id, model_id):
     from db.connection import get_pool
     pool = await get_pool()

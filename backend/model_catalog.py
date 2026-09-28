@@ -439,10 +439,29 @@ async def _sync_ollama_models(url: str) -> dict:
     # Misma base que models_list_url (la fila `provider` de ollama), no una
     # URL nueva.
     url_show = url.rsplit("/api/tags", 1)[0] + "/api/show"
+
+    # MINOR-10 (auditoría adversarial, 2026-09-27): orden de PRIORIDAD para
+    # el tope de abajo -- nunca el orden que devuelve /api/tags a secas (que
+    # puede ser estable entre corridas, p.ej. alfabético): eso dejaría a los
+    # modelos del final de esa lista SIN refrescar su input_modalities para
+    # siempre si el catálogo local es más grande que el tope. Los nunca
+    # verificados (`input_modalities_checked_at IS NULL`) van primero;
+    # después, los verificados hace más tiempo. Lectura corta ANTES de las
+    # llamadas HTTP -- misma razón que el resto de esta función: no retener
+    # una conexión del pool durante I/O de red.
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT model_id, input_modalities_checked_at FROM model WHERE provider_id='ollama'")
+            checked_at_por_modelo = dict(await cur.fetchall())
+    orden_prioridad = sorted(
+        seen, key=lambda m: (checked_at_por_modelo.get(m) is not None, checked_at_por_modelo.get(m)))
+
     modalidades: dict[str, str] = {}
+    modalidades_verificadas_ahora: set[str] = set()
     inicio_consultas = time.monotonic()
     consultados = 0
-    for model_id in seen:
+    for model_id in orden_prioridad:
         # Tope de la tarea 6 (2026-09-27, pedido de Fernando): un catálogo
         # local con muchos modelos no puede dejar el sync pidiendo
         # /api/show uno por uno sin límite -- lo que se cumpla primero
@@ -462,6 +481,7 @@ async def _sync_ollama_models(url: str) -> dict:
             break
         caps = await _capacidades_ollama(url_show, model_id)
         consultados += 1
+        modalidades_verificadas_ahora.add(model_id)
         if caps is not None:
             modalidades[model_id] = "text,image" if "vision" in caps else "text"
 
@@ -499,9 +519,21 @@ async def _sync_ollama_models(url: str) -> dict:
 
                 if model_id in modalidades:
                     await cur.execute(
-                        "UPDATE model SET input_modalities=%s "
+                        "UPDATE model SET input_modalities=%s, input_modalities_checked_at=NOW() "
                         "WHERE provider_id='ollama' AND model_id=%s",
                         (modalidades[model_id], model_id),
+                    )
+                elif model_id in modalidades_verificadas_ahora:
+                    # MINOR-10: se intentó (entró bajo el tope) pero
+                    # /api/show falló -- igual cuenta como "le tocó esta
+                    # vez" para la prioridad de la PRÓXIMA corrida, sin lo
+                    # cual un modelo cuyo /api/show falla siempre quedaría
+                    # primero en la cola para siempre y nunca le tocaría el
+                    # turno a los demás.
+                    await cur.execute(
+                        "UPDATE model SET input_modalities_checked_at=NOW() "
+                        "WHERE provider_id='ollama' AND model_id=%s",
+                        (model_id,),
                     )
 
             await cur.execute(
