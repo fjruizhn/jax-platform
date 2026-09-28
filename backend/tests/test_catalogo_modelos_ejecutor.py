@@ -1317,9 +1317,14 @@ def test_correr_no_toca_con_una_corrida_manual_reciente(client, monkeypatch, tmp
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
+                # UTC_TIMESTAMP(), no NOW() (MINOR-6): catalogo_sync_ejecucion
+                # guarda sus fechas en UTC; la sesión de MariaDB de esta app
+                # corre en CST (6h detrás) -- un NOW() acá haría ver esta
+                # corrida como "de hace 6 horas" y rompería justo lo que este
+                # test quiere probar ("reciente" -> no toca).
                 await cur.execute(
                     "INSERT INTO catalogo_sync_ejecucion (origen, estado, pasos_total, iniciado_en, terminado_en) "
-                    "VALUES ('manual', 'ok', 9, NOW(), NOW())")
+                    "VALUES ('manual', 'ok', 9, UTC_TIMESTAMP(), UTC_TIMESTAMP())")
                 eid = cur.lastrowid
             await conn.commit()
         return eid

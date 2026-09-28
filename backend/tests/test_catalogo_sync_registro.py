@@ -3,8 +3,8 @@ Fernando: avance real + última actualización siempre visible).
 
 `catalogo_sync_ejecucion` es compartida por TODA la sesión de tests (misma
 base persistente que el resto del catálogo) -- cada test limpia lo que
-inserta por su cuenta, nunca asume que la tabla está vacía.
-"""
+inserta por su cuenta, nunca asume que la tabla está vacía."""
+import asyncio
 import functools
 import json
 
@@ -18,15 +18,26 @@ async def _pool():
     return await get_pool()
 
 
-async def _insertar_ejecucion(origen, estado, iniciado_hace_segundos=0, pasos_total=5):
+async def _insertar_ejecucion(origen, estado, iniciado_hace_segundos=0, pasos_total=5, latido_hace_minutos=None):
+    """`latido_hace_minutos=None` (default) deja `latido_en` en el mismo
+    instante que `iniciado_en` (una fila 'corriendo' recién arrancada,
+    primer latido = inicio) -- un valor explícito simula una fila con un
+    latido más viejo (para probar el timeout) o sin latido en absoluto
+    (`False`, deja `latido_en` NULL)."""
     pool = await _pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            terminado = "NOW()" if estado != "corriendo" else "NULL"
+            terminado = "UTC_TIMESTAMP()" if estado != "corriendo" else "NULL"
+            if latido_hace_minutos is False:
+                latido_sql = "NULL"
+            elif latido_hace_minutos is None:
+                latido_sql = "UTC_TIMESTAMP() - INTERVAL %s SECOND" % iniciado_hace_segundos
+            else:
+                latido_sql = "UTC_TIMESTAMP() - INTERVAL %s MINUTE" % latido_hace_minutos
             await cur.execute(
                 f"INSERT INTO catalogo_sync_ejecucion "
-                f"(origen, estado, pasos_total, iniciado_en, terminado_en) "
-                f"VALUES (%s, %s, %s, NOW() - INTERVAL %s SECOND, {terminado})",
+                f"(origen, estado, pasos_total, iniciado_en, terminado_en, latido_en) "
+                f"VALUES (%s, %s, %s, UTC_TIMESTAMP() - INTERVAL %s SECOND, {terminado}, {latido_sql})",
                 (origen, estado, pasos_total, iniciado_hace_segundos),
             )
             return cur.lastrowid
@@ -45,7 +56,7 @@ async def _fila(ejecucion_id):
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT origen, estado, paso_actual, pasos_total, detalle_paso, terminado_en, resultado "
+                "SELECT origen, estado, paso_actual, pasos_total, detalle_paso, terminado_en, resultado, latido_en "
                 "FROM catalogo_sync_ejecucion WHERE id=%s", (ejecucion_id,))
             return await cur.fetchone()
 
@@ -62,7 +73,7 @@ def limpiar_catalogo_sync_ejecucion(client):
 
 
 # --------------------------------------------------------------------------
-# marcar_huerfanas_interrumpidas
+# marcar_huerfanas_interrumpidas (MINOR-1: por LATIDO, no por iniciado_en)
 # --------------------------------------------------------------------------
 
 async def _marcar_huerfanas():
@@ -73,22 +84,37 @@ async def _marcar_huerfanas():
         await conn.commit()
 
 
-def test_marcar_huerfanas_interrumpe_una_fila_corriendo_mas_vieja_que_el_timeout(client, limpiar_catalogo_sync_ejecucion):
-    eid = client.portal.call(_insertar_ejecucion, "programado", "corriendo",
-                              registro.TIMEOUT_HUERFANA_SEGUNDOS + 60)
+def test_marcar_huerfanas_interrumpe_una_fila_sin_latido_reciente(client, limpiar_catalogo_sync_ejecucion):
+    eid = client.portal.call(
+        _insertar_ejecucion, "programado", "corriendo", 0, 5,
+        registro.TIMEOUT_LATIDO_MINUTOS + 1)
     limpiar_catalogo_sync_ejecucion.append(eid)
 
     client.portal.call(_marcar_huerfanas)
 
-    origen, estado, paso_actual, pasos_total, detalle_paso, terminado_en, resultado = client.portal.call(_fila, eid)
+    origen, estado, paso_actual, pasos_total, detalle_paso, terminado_en, resultado, latido_en = (
+        client.portal.call(_fila, eid))
     assert estado == "error"
     assert terminado_en is not None
     assert resultado is not None
     assert "interrumpida" in json.loads(resultado)["error"]
 
 
-def test_marcar_huerfanas_no_toca_una_fila_corriendo_reciente(client, limpiar_catalogo_sync_ejecucion):
-    eid = client.portal.call(_insertar_ejecucion, "manual", "corriendo", 5)
+def test_marcar_huerfanas_interrumpe_una_fila_sin_ningun_latido(client, limpiar_catalogo_sync_ejecucion):
+    """`latido_en IS NULL` cuenta como huérfana también -- una fila vieja de
+    antes de esta columna, o un valor puesto a NULL a mano."""
+    eid = client.portal.call(
+        _insertar_ejecucion, "programado", "corriendo", 0, 5, False)
+    limpiar_catalogo_sync_ejecucion.append(eid)
+
+    client.portal.call(_marcar_huerfanas)
+
+    _origen, estado, *_resto = client.portal.call(_fila, eid)
+    assert estado == "error"
+
+
+def test_marcar_huerfanas_no_toca_una_fila_con_latido_reciente(client, limpiar_catalogo_sync_ejecucion):
+    eid = client.portal.call(_insertar_ejecucion, "manual", "corriendo", 0, 5, 0)
     limpiar_catalogo_sync_ejecucion.append(eid)
 
     client.portal.call(_marcar_huerfanas)
@@ -98,7 +124,8 @@ def test_marcar_huerfanas_no_toca_una_fila_corriendo_reciente(client, limpiar_ca
 
 
 def test_marcar_huerfanas_no_toca_filas_ya_terminadas(client, limpiar_catalogo_sync_ejecucion):
-    eid = client.portal.call(_insertar_ejecucion, "manual", "ok", registro.TIMEOUT_HUERFANA_SEGUNDOS + 60)
+    eid = client.portal.call(
+        _insertar_ejecucion, "manual", "ok", (registro.TIMEOUT_LATIDO_MINUTOS + 1) * 60)
     limpiar_catalogo_sync_ejecucion.append(eid)
 
     client.portal.call(_marcar_huerfanas)
@@ -125,15 +152,17 @@ def test_reservar_ejecucion_crea_la_fila_cuando_no_hay_nada_corriendo(client, li
     assert ejecucion_id is not None
     limpiar_catalogo_sync_ejecucion.append(ejecucion_id)
 
-    origen, estado, paso_actual, pasos_total, *_resto = client.portal.call(_fila, ejecucion_id)
+    origen, estado, paso_actual, pasos_total, _detalle, _term, _res, latido_en = client.portal.call(
+        _fila, ejecucion_id)
     assert origen == "manual"
     assert estado == "corriendo"
     assert paso_actual == 0
     assert pasos_total == 9
+    assert latido_en is not None  # MINOR-1: latido inicial estampado al reservar
 
 
 def test_reservar_ejecucion_devuelve_sync_en_curso_si_ya_hay_una_fila_corriendo(client, limpiar_catalogo_sync_ejecucion):
-    eid_existente = client.portal.call(_insertar_ejecucion, "programado", "corriendo", 1)
+    eid_existente = client.portal.call(_insertar_ejecucion, "programado", "corriendo", 0, 5, 0)
     limpiar_catalogo_sync_ejecucion.append(eid_existente)
 
     ejecucion_id, en_curso = client.portal.call(_reservar, "manual", 1, 9)
@@ -145,11 +174,12 @@ def test_reservar_ejecucion_devuelve_sync_en_curso_si_ya_hay_una_fila_corriendo(
 
 
 def test_reservar_ejecucion_limpia_huerfanas_antes_de_decidir(client, limpiar_catalogo_sync_ejecucion):
-    """Una fila 'corriendo' huérfana (más vieja que el timeout) no puede
-    bloquear una reserva nueva para siempre -- reservar_ejecucion la
-    interrumpe ella misma antes de mirar si hay algo corriendo."""
+    """Una fila 'corriendo' huérfana (sin latido reciente) no puede bloquear
+    una reserva nueva para siempre -- reservar_ejecucion la interrumpe ella
+    misma antes de mirar si hay algo corriendo."""
     eid_huerfana = client.portal.call(
-        _insertar_ejecucion, "programado", "corriendo", registro.TIMEOUT_HUERFANA_SEGUNDOS + 60)
+        _insertar_ejecucion, "programado", "corriendo", 0, 5,
+        registro.TIMEOUT_LATIDO_MINUTOS + 1)
     limpiar_catalogo_sync_ejecucion.append(eid_huerfana)
 
     ejecucion_id, en_curso = client.portal.call(_reservar, "manual", 1, 9)
@@ -162,21 +192,74 @@ def test_reservar_ejecucion_limpia_huerfanas_antes_de_decidir(client, limpiar_ca
     assert estado_huerfana == "error"
 
 
+def test_reservar_ejecucion_get_lock_null_levanta_runtime_error(client, monkeypatch):
+    """MINOR-5: GET_LOCK devolviendo NULL es un error real de MariaDB, no
+    'ocupado' -- reservar_ejecucion no puede confundir los dos."""
+    class _CursorFalso:
+        async def execute(self, *_a, **_k):
+            return None
+
+        async def fetchone(self):
+            return (None,)  # GET_LOCK -> NULL
+
+    with pytest.raises(RuntimeError, match="GET_LOCK"):
+        client.portal.call(functools.partial(
+            registro.reservar_ejecucion, _CursorFalso(), object(),
+            origen="manual", iniciado_por=None, pasos_total=9))
+
+
+def test_dos_reservas_concurrentes_reales_solo_una_queda_corriendo(client, limpiar_catalogo_sync_ejecucion):
+    """MINOR-8: sin fakes -- dos `reservar_ejecucion()` REALES, contra la
+    base real, disparadas al mismo tiempo (`asyncio.gather`). El candado de
+    gate (`GET_LOCK`) tiene que serializarlas: una gana la fila 'corriendo',
+    la otra ve 'sync_en_curso' -- nunca las dos con una fila propia, nunca
+    dos filas 'corriendo' a la vez."""
+    async def _dos_reservas():
+        pool = await _pool()
+        async with pool.acquire() as conn_a, pool.acquire() as conn_b:
+            async with conn_a.cursor() as cur_a, conn_b.cursor() as cur_b:
+                return await asyncio.gather(
+                    registro.reservar_ejecucion(cur_a, conn_a, origen="manual", iniciado_por=None, pasos_total=9),
+                    registro.reservar_ejecucion(cur_b, conn_b, origen="programado", iniciado_por=None, pasos_total=9),
+                )
+
+    (id_a, en_curso_a), (id_b, en_curso_b) = client.portal.call(_dos_reservas)
+
+    ganadores = [eid for eid in (id_a, id_b) if eid is not None]
+    perdedores = [ec for ec in (en_curso_a, en_curso_b) if ec is not None]
+    assert len(ganadores) == 1, (id_a, id_b)
+    assert len(perdedores) == 1
+    assert perdedores[0]["code"] == "sync_en_curso"
+    limpiar_catalogo_sync_ejecucion.append(ganadores[0])
+
+    async def _contar_corriendo():
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT COUNT(*) FROM catalogo_sync_ejecucion WHERE id=%s AND estado='corriendo'",
+                                  (ganadores[0],))
+                (n,) = await cur.fetchone()
+                return n
+    assert client.portal.call(_contar_corriendo) == 1
+
+
 # --------------------------------------------------------------------------
 # actualizar_progreso / finalizar_ejecucion
 # --------------------------------------------------------------------------
 
-def test_actualizar_progreso_escribe_paso_actual_y_detalle(client, limpiar_catalogo_sync_ejecucion):
-    eid = client.portal.call(_insertar_ejecucion, "manual", "corriendo", 0, 9)
+def test_actualizar_progreso_escribe_paso_actual_y_detalle_y_latido(client, limpiar_catalogo_sync_ejecucion):
+    eid = client.portal.call(_insertar_ejecucion, "manual", "corriendo", 0, 9, False)
     limpiar_catalogo_sync_ejecucion.append(eid)
 
     client.portal.call(registro.actualizar_progreso, eid, 3, 9, "gemini")
 
-    _origen, estado, paso_actual, pasos_total, detalle_paso, *_resto = client.portal.call(_fila, eid)
+    _origen, estado, paso_actual, pasos_total, detalle_paso, _term, _res, latido_en = client.portal.call(
+        _fila, eid)
     assert estado == "corriendo"
     assert paso_actual == 3
     assert pasos_total == 9
     assert detalle_paso == "gemini"
+    assert latido_en is not None  # MINOR-1: el latido se estampa en cada paso
 
 
 def test_finalizar_ejecucion_ok_guarda_resultado_y_termina(client, limpiar_catalogo_sync_ejecucion):
@@ -185,7 +268,7 @@ def test_finalizar_ejecucion_ok_guarda_resultado_y_termina(client, limpiar_catal
 
     client.portal.call(registro.finalizar_ejecucion, eid, "ok", {"ok": True, "providers": []})
 
-    _origen, estado, _paso, _pt, _detalle, terminado_en, resultado = client.portal.call(_fila, eid)
+    _origen, estado, _paso, _pt, _detalle, terminado_en, resultado, _latido = client.portal.call(_fila, eid)
     assert estado == "ok"
     assert terminado_en is not None
     assert json.loads(resultado)["ok"] is True
@@ -199,7 +282,8 @@ def test_finalizar_ejecucion_redacta_secretos_del_resultado(client, limpiar_cata
         registro.finalizar_ejecucion, eid, "error",
         {"error": "boom token=sk-super-secreto-1234567890"})
 
-    *_resto, resultado = client.portal.call(_fila, eid)
+    fila = client.portal.call(_fila, eid)
+    resultado = fila[6]
     assert "sk-super-secreto-1234567890" not in resultado
 
 
@@ -209,7 +293,7 @@ def test_finalizar_ejecucion_admite_resultado_none(client, limpiar_catalogo_sync
 
     client.portal.call(registro.finalizar_ejecucion, eid, "error", None)
 
-    _origen, estado, _paso, _pt, _detalle, terminado_en, resultado = client.portal.call(_fila, eid)
+    _origen, estado, _paso, _pt, _detalle, terminado_en, resultado, _latido = client.portal.call(_fila, eid)
     assert estado == "error"
     assert terminado_en is not None
     assert resultado is None
@@ -226,15 +310,18 @@ async def _ultima_exitosa():
             return await registro.ultima_actualizacion_exitosa(cur)
 
 
-def test_ultima_actualizacion_exitosa_ignora_con_problemas_y_error(client, limpiar_catalogo_sync_ejecucion):
-    # Limpia cualquier 'ok' de sesiones anteriores para que este test no
-    # dependa de qué corrió antes: mide únicamente el delta que él mismo crea.
-    eid_error = client.portal.call(_insertar_ejecucion, "manual", "error", 5)
-    limpiar_catalogo_sync_ejecucion.append(eid_error)
-    eid_problemas = client.portal.call(_insertar_ejecucion, "manual", "con_problemas", 3)
-    limpiar_catalogo_sync_ejecucion.append(eid_problemas)
-    eid_ok = client.portal.call(_insertar_ejecucion, "manual", "ok", 1)
+def test_ultima_actualizacion_exitosa_ignora_con_problemas_y_error_mas_recientes(client, limpiar_catalogo_sync_ejecucion):
+    """MINOR-8: el 'ok' es el MÁS VIEJO de los tres a propósito -- si alguien
+    quitara el `WHERE estado='ok'` de la consulta, este test tendría que
+    fallar (devolvería el 'error', más nuevo, no el 'ok'). La versión
+    anterior tenía 'ok' como el más reciente por casualidad: quitar el WHERE
+    no cambiaba el resultado y el test no probaba nada."""
+    eid_ok = client.portal.call(_insertar_ejecucion, "manual", "ok", 20)
     limpiar_catalogo_sync_ejecucion.append(eid_ok)
+    eid_problemas = client.portal.call(_insertar_ejecucion, "manual", "con_problemas", 10)
+    limpiar_catalogo_sync_ejecucion.append(eid_problemas)
+    eid_error = client.portal.call(_insertar_ejecucion, "manual", "error", 1)
+    limpiar_catalogo_sync_ejecucion.append(eid_error)
 
     ultima = client.portal.call(_ultima_exitosa)
     assert ultima is not None
@@ -266,7 +353,7 @@ async def _limpiar_viejas():
 
 
 def test_limpiar_ejecuciones_viejas_no_toca_una_fila_corriendo(client, limpiar_catalogo_sync_ejecucion):
-    eid = client.portal.call(_insertar_ejecucion, "manual", "corriendo", 0)
+    eid = client.portal.call(_insertar_ejecucion, "manual", "corriendo", 0, 5, 0)
     limpiar_catalogo_sync_ejecucion.append(eid)
 
     client.portal.call(_limpiar_viejas)
@@ -283,6 +370,33 @@ def test_limpiar_ejecuciones_viejas_borra_lo_mas_viejo_que_la_retencion_en_dias(
     client.portal.call(_limpiar_viejas)
 
     assert client.portal.call(_fila, eid_viejo) is None
+
+
+def test_limpiar_ejecuciones_viejas_conserva_como_mucho_retencion_filas(client):
+    """MINOR-8: RETENCION_FILAS (200) es un tope de CANTIDAD, no sólo de
+    edad -- se siembran RETENCION_FILAS + 5 filas 'ok' recientes (todas
+    dentro de RETENCION_DIAS, así que el criterio de edad no las tocaría) y
+    se verifica que sólo sobreviven las RETENCION_FILAS más nuevas."""
+    ids = []
+    try:
+        for i in range(registro.RETENCION_FILAS + 5):
+            # Segundos crecientes hacia atrás: el primero insertado es el
+            # más viejo, el último el más nuevo -- misma correlación id/edad
+            # que en producción (AUTO_INCREMENT en orden de inserción).
+            eid = client.portal.call(
+                _insertar_ejecucion, "manual", "ok", (registro.RETENCION_FILAS + 5 - i))
+            ids.append(eid)
+
+        client.portal.call(_limpiar_viejas)
+
+        sobrevivientes = [eid for eid in ids if client.portal.call(_fila, eid) is not None]
+        assert len(sobrevivientes) == registro.RETENCION_FILAS
+        # Los que sobreviven son los ÚLTIMOS insertados (los más nuevos), no
+        # un subconjunto arbitrario.
+        assert sobrevivientes == ids[-registro.RETENCION_FILAS:]
+    finally:
+        for eid in ids:
+            client.portal.call(_borrar_ejecucion, eid)
 
 
 # --------------------------------------------------------------------------
@@ -316,7 +430,7 @@ def test_correr_sync_registrado_marca_ok_y_llama_al_progreso(client, monkeypatch
     limpiar_catalogo_sync_ejecucion.append(resultado["ejecucion_id"])
     assert pasos == [1, 2]
 
-    origen, estado, paso_actual, pasos_total, detalle_paso, terminado_en, _resultado_json = client.portal.call(
+    origen, estado, paso_actual, pasos_total, detalle_paso, terminado_en, _resultado_json, _latido = client.portal.call(
         _fila, resultado["ejecucion_id"])
     assert origen == "manual"
     assert estado == "ok"
@@ -381,7 +495,7 @@ def test_correr_sync_registrado_no_llama_a_sync_all_si_ya_hay_uno_corriendo(clie
         return {"ok": True}
     monkeypatch.setattr(model_catalog, "sync_all", _no_deberia_llamarse)
 
-    eid_existente = client.portal.call(_insertar_ejecucion, "programado", "corriendo", 1)
+    eid_existente = client.portal.call(_insertar_ejecucion, "programado", "corriendo", 0, 5, 0)
     limpiar_catalogo_sync_ejecucion.append(eid_existente)
 
     resultado = client.portal.call(functools.partial(registro.correr_sync_registrado, origen="manual"))

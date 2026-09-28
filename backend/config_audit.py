@@ -22,9 +22,12 @@ from tiempo import iso_utc
 
 # De dónde vino el cambio. `config` = la pantalla Configuración
 # (api/admin/config_admin.py); `smtp` = la pantalla Correo (api/admin/smtp.py,
-# vía smtp_config.guardar_filas). Lista cerrada: un origen nuevo se declara acá
-# y en el CHECK de la tabla (db/migrations.py).
-ORIGENES = frozenset({"config", "smtp"})
+# vía smtp_config.guardar_filas); `catalogo_sync` = la programación del sync
+# del catálogo de modelos (catalogo_sync_config.actualizar_config(), MAJOR-2
+# de la auditoría adversarial 2026-09-27) -- ver
+# db/migrations.py::_agregar_origen_catalogo_sync_a_config_audit. Lista
+# cerrada: un origen nuevo se declara acá y en el CHECK de la tabla.
+ORIGENES = frozenset({"config", "smtp", "catalogo_sync"})
 
 # smtp.password vive CIFRADA en axioma_config. Copiar el texto cifrado a la
 # auditoría sería una segunda copia del secreto en reposo, en una tabla que

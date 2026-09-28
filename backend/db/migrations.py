@@ -644,6 +644,13 @@ CREATE TABLE IF NOT EXISTS catalogo_sync_config (
 # que el índice entrega escaneando hacia atrás YA es la última fila
 # terminada, sin necesitar (ni admitir sin perder el índice) un WHERE
 # adicional.
+# latido_en (MINOR-1, auditoría adversarial 2026-09-27): última vez que
+# alguien estampó avance sobre esta fila -- huérfana ya no es "más de
+# TimeoutStartSec desde que arrancó" (`iniciado_en`), es "sin latido por
+# TIMEOUT_LATIDO_MINUTOS" (catalogo_sync_registro.py). Todas las fechas
+# DEFAULT/escritas UTC_TIMESTAMP(), nunca NOW() (MINOR-6): la sesión de
+# MariaDB de esta app corre en CST (ver tiempo.py) y estas fechas viajan al
+# navegador.
 CREATE_CATALOGO_SYNC_EJECUCION = """
 CREATE TABLE IF NOT EXISTS catalogo_sync_ejecucion (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -653,13 +660,15 @@ CREATE TABLE IF NOT EXISTS catalogo_sync_ejecucion (
   paso_actual INT NOT NULL DEFAULT 0,
   pasos_total INT NOT NULL DEFAULT 0,
   detalle_paso VARCHAR(100) NULL,
-  iniciado_en DATETIME NOT NULL DEFAULT NOW(),
+  iniciado_en DATETIME NOT NULL DEFAULT UTC_TIMESTAMP(),
   terminado_en DATETIME NULL,
+  latido_en DATETIME NULL,
   resultado LONGTEXT NULL CHECK (resultado IS NULL OR json_valid(resultado)),
   FOREIGN KEY (iniciado_por) REFERENCES jax_users(user_id),
   INDEX idx_estado_terminado (estado, terminado_en),
   INDEX idx_estado_iniciado (estado, iniciado_en),
-  INDEX idx_terminado_en (terminado_en)
+  INDEX idx_terminado_en (terminado_en),
+  INDEX idx_estado_latido (estado, latido_en)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -2029,6 +2038,11 @@ async def _migrate_user_api_keys_to_credential(cur) -> None:
         )
 
 _COLUMNS = [
+    # MINOR-1 (auditoría adversarial, 2026-09-27): bases que ya tenían
+    # catalogo_sync_ejecucion sin latido_en (creada por una corrida anterior
+    # de esta misma rama, antes de la ronda de correcciones).
+    ("catalogo_sync_ejecucion", "latido_en",
+     "ALTER TABLE catalogo_sync_ejecucion ADD COLUMN latido_en DATETIME NULL"),
     ("jax_users", "last_login", "ALTER TABLE jax_users ADD COLUMN last_login TIMESTAMP NULL"),
     ("jax_users", "failed_attempts", "ALTER TABLE jax_users ADD COLUMN failed_attempts INT DEFAULT 0"),
     ("jax_users", "locked_until", "ALTER TABLE jax_users ADD COLUMN locked_until DATETIME NULL"),
@@ -2133,6 +2147,15 @@ _COLUMNS = [
      "ALTER TABLE model ADD COLUMN max_output_tokens INT NULL"),
     ("model", "digest", "ALTER TABLE model ADD COLUMN digest VARCHAR(80) NULL"),
     ("model", "digest_changed_at", "ALTER TABLE model ADD COLUMN digest_changed_at DATETIME NULL"),
+    # MINOR-10 (auditoría adversarial, 2026-09-27): cursor de equidad del tope
+    # de /api/show de Ollama (model_catalog._sync_ollama_models) -- NULL o
+    # más viejo primero, para que ningún modelo local quede sin refrescar su
+    # input_modalities para siempre si el catálogo es más grande que el tope.
+    # Separada de `source_checked_at` a propósito: esa se pisa con NOW() para
+    # TODOS los vistos en cada sync (lo haga o no el tope), así que perdería
+    # la señal de "a cuál le tocó de verdad" en la corrida siguiente.
+    ("model", "input_modalities_checked_at",
+     "ALTER TABLE model ADD COLUMN input_modalities_checked_at DATETIME NULL"),
     # T2 (2026-08-19, jax/las_manos/motor_registry/worker.py): "disable
     # reasoning por defecto" NO es aplicable parejo entre proveedores --
     # verificado real contra las 3 APIs: Ollama acepta reasoning_effort=none
@@ -2412,6 +2435,17 @@ _COLUMN_WIDENS = [
         "jax_users", "email", 320,
         "ALTER TABLE jax_users MODIFY COLUMN email VARCHAR(320) NOT NULL",
     ),
+    # axioma_config_audit.origen era VARCHAR(10) -- alcanzaba para 'config'
+    # (6) y 'smtp' (4), pero no para 'catalogo_sync' (13), el origen nuevo
+    # que agrega catalogo_sync_config.actualizar_config() (MAJOR-2, auditoría
+    # adversarial de la ronda 2026-09-27). Ensanchado ANTES de tocar el
+    # CHECK (ver _agregar_origen_catalogo_sync_a_config_audit): un ADD
+    # CONSTRAINT con un valor más largo que la columna fallaría, o peor,
+    # MariaDB podría aceptar el CHECK y truncar el valor real al escribir.
+    (
+        "axioma_config_audit", "origen", 20,
+        "ALTER TABLE axioma_config_audit MODIFY COLUMN origen VARCHAR(20) NOT NULL",
+    ),
 ]
 
 
@@ -2428,6 +2462,10 @@ _COLUMN_WIDENS = [
 _INDEXES = [
     ("jax_users", "idx_jax_users_role_status",
      "ALTER TABLE jax_users ADD INDEX idx_jax_users_role_status (role, status)"),
+    # MINOR-1: acompaña a la columna latido_en de arriba en _COLUMNS -- una
+    # base existente que ya tenía la tabla necesita el índice también.
+    ("catalogo_sync_ejecucion", "idx_estado_latido",
+     "ALTER TABLE catalogo_sync_ejecucion ADD INDEX idx_estado_latido (estado, latido_en)"),
 ]
 
 
@@ -2958,6 +2996,33 @@ async def _backfill_capability_mode(cur) -> None:
         )
 
 
+async def _agregar_origen_catalogo_sync_a_config_audit(cur) -> None:
+    """`axioma_config_audit.origen` gana el origen `catalogo_sync`
+    (MAJOR-2, auditoría adversarial de la ronda 2026-09-27):
+    `catalogo_sync_config.actualizar_config()` audita ahí, igual que
+    `config`/`smtp`. Un `ADD CONSTRAINT` sobre un nombre que YA existe da el
+    error 1826 (mismo motivo que `_asegurar_forma_de_capability_mode`) --
+    por eso se consulta `CHECK_CLAUSE` primero: si ya menciona
+    `catalogo_sync`, no hay nada que hacer; si no, se DROPEA el CHECK viejo
+    y se agrega uno nuevo con la lista ampliada (nunca un `ADD` a secas
+    sobre un nombre existente)."""
+    await cur.execute(
+        "SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS "
+        "WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'axioma_config_audit' "
+        "AND CONSTRAINT_NAME = 'chk_axioma_config_audit_origen'"
+    )
+    fila = await cur.fetchone()
+    if fila is not None and "catalogo_sync" in fila[0]:
+        return
+    if fila is not None:
+        await cur.execute(
+            "ALTER TABLE axioma_config_audit DROP CONSTRAINT chk_axioma_config_audit_origen")
+    await cur.execute(
+        "ALTER TABLE axioma_config_audit ADD CONSTRAINT chk_axioma_config_audit_origen "
+        "CHECK (origen IN ('config', 'smtp', 'catalogo_sync'))"
+    )
+
+
 async def _asegurar_forma_de_capability_mode(cur) -> None:
     """Deja `capability.mode` en su forma final: VARCHAR(16) NOT NULL +
     CHECK, sin default (tanda A v3, spec §0/§3.1). Idempotente, en orden:
@@ -3484,6 +3549,9 @@ async def run_migrations():
             for table_name, column_name, min_length, ddl in _COLUMN_WIDENS:
                 if await _column_too_narrow(cur, table_name, column_name, min_length):
                     await cur.execute(ddl)
+            # Después del ensanchado de arriba (axioma_config_audit.origen ya
+            # es VARCHAR(20) para cuando esto corre).
+            await _agregar_origen_catalogo_sync_a_config_audit(cur)
 
             for table_name, column_name, min_precision, min_scale, ddl in _DECIMAL_WIDENS:
                 if await _decimal_precision_too_small(cur, table_name, column_name, min_precision, min_scale):

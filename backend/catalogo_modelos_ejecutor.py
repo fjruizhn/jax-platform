@@ -533,7 +533,11 @@ async def _correr() -> dict:
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 config = await catalogo_sync_config.leer_config(cur)
-                await cur.execute("SELECT NOW()")
+                # UTC_TIMESTAMP(), no NOW() (MINOR-6): `ultima_exitosa` viene
+                # de `catalogo_sync_ejecucion.terminado_en`, escrita en UTC
+                # -- comparar contra un NOW() en CST desalinearía el gate por
+                # las 6 horas de diferencia de la sesión de MariaDB.
+                await cur.execute("SELECT UTC_TIMESTAMP()")
                 (ahora,) = await cur.fetchone()
                 ultima_exitosa = await catalogo_sync_registro.ultima_actualizacion_exitosa(cur)
 

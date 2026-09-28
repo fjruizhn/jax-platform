@@ -12,6 +12,7 @@ nadie la limpia por nosotros.
 import ast
 import asyncio
 import pathlib
+import re
 
 import pytest
 
@@ -212,8 +213,20 @@ RAIZ = pathlib.Path(__file__).resolve().parent.parent
 #     el cambio de nadie y corren antes de que exista una sesión.
 # Cualquier otro escritor nuevo vuelve a abrir el agujero que esto cerró.
 ESCRITORES_PERMITIDOS = {"config_audit.py", "db/migrations.py"}
-_ESCRITURAS = ("INSERT INTO AXIOMA_CONFIG", "INSERT IGNORE INTO AXIOMA_CONFIG",
-               "UPDATE AXIOMA_CONFIG", "DELETE FROM AXIOMA_CONFIG")
+# `\b` al final, NO al principio (auditoría adversarial, 2026-09-27,
+# catalogo_sync_config.py::actualizar_config): un `INSERT INTO
+# axioma_config_audit (...)` es una tabla DISTINTA (la de auditoría genérica,
+# reusada por MAJOR-2 con origen='catalogo_sync') y NO tiene que contar como
+# escritura de `axioma_config` -- sin el `\b`, la comparación por substring
+# de antes ("INSERT INTO AXIOMA_CONFIG" adentro de "INSERT INTO
+# AXIOMA_CONFIG_AUDIT (...)") daba un falso positivo real, medido al agregar
+# esa auditoría. `\b` funciona acá porque `_` es un carácter de palabra en
+# regex: no hay borde entre "CONFIG" y "_AUDIT", así que el patrón de abajo
+# ya no matchea esa tabla -- sí sigue matcheando "axioma_config " o
+# "axioma_config(" (columna list pegada, sin espacio), que es lo único que
+# de verdad importa.
+_ESCRITURAS = tuple(re.compile(rf"{prefijo} AXIOMA_CONFIG\b") for prefijo in
+                    ("INSERT INTO", "INSERT IGNORE INTO", "UPDATE", "DELETE FROM"))
 
 
 def _escribe_config(texto: str) -> bool:
@@ -223,7 +236,7 @@ def _escribe_config(texto: str) -> bool:
     for nodo in ast.walk(ast.parse(texto)):
         if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str):
             aplanado = " ".join(nodo.value.upper().split())
-            if any(e in aplanado for e in _ESCRITURAS):
+            if any(patron.search(aplanado) for patron in _ESCRITURAS):
                 return True
     return False
 
@@ -247,3 +260,19 @@ def test_el_detector_ve_una_escritura_nueva():
     assert _escribe_config('("UPDATE axioma_config SET config_value = %s "\n "WHERE config_key = %s")')
     assert not _escribe_config('"SELECT config_value FROM axioma_config WHERE config_key = %s"')
     assert not _escribe_config('# INSERT INTO axioma_config: esto es un comentario\nx = 1')
+
+
+def test_el_detector_no_confunde_axioma_config_audit_con_axioma_config():
+    """Falso positivo real, encontrado al agregar MAJOR-2
+    (catalogo_sync_config.py escribe en axioma_config_audit, una tabla
+    DISTINTA, reusando la MISMA tabla de auditoría genérica que ya usa
+    config_audit.py) -- antes del `\\b` en `_ESCRITURAS`, este literal solo
+    (nunca toca `axioma_config`, la tabla de configuración) hacía que el
+    scanner lo marcara como escritor."""
+    assert not _escribe_config(
+        '"INSERT INTO axioma_config_audit (ts, actor_user_id) VALUES (%s, %s)"')
+    assert not _escribe_config(
+        '("INSERT INTO axioma_config_audit "\n "(ts, actor_user_id) VALUES (%s, %s)")')
+    # Control positivo con la MISMA tabla real, sin el sufijo: sigue viéndose.
+    assert _escribe_config('"INSERT INTO axioma_config_audit_no_es_una_tabla_real" '
+                           '"; INSERT INTO axioma_config (k) VALUES (1)"')

@@ -32,6 +32,8 @@ from contrato_dispatch import (
     registrar_rechazo_de_binding,
 )
 from db.connection import get_pool
+from db.transaccion import AISLAMIENTO_ADMIN, transaccion
+from tiempo import iso_utc
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/models")
@@ -335,46 +337,61 @@ async def obtener_config_sync(user: AuthUser = Depends(require_superadmin)):
 
 
 def _config_serializable(config: dict) -> dict:
+    # MINOR-6 (auditoría adversarial, 2026-09-27): `iso_utc()`, no `str()`
+    # -- `actualizado_en` se escribe con `UTC_TIMESTAMP()` (ver
+    # catalogo_sync_config.actualizar_config); `iso_utc()` le pone la zona
+    # UTC explícita para que `new Date(...)` del navegador no lo lea como
+    # hora local (la sesión de MariaDB de esta app corre en CST, ver
+    # tiempo.py).
     d = dict(config)
-    if d["actualizado_en"] is not None:
-        d["actualizado_en"] = str(d["actualizado_en"])
+    d["actualizado_en"] = iso_utc(d["actualizado_en"])
     return d
 
 
 def _proxima_corrida_estimada(config: dict, ultima_exitosa) -> str | None:
     """`None` si está apagado (no hay "próxima corrida" que estimar) o si
     todavía no hubo ninguna corrida exitosa (tocaría en la próxima pasada
-    del timer, no en una fecha calculable)."""
+    del timer, no en una fecha calculable). MINOR-6: `iso_utc()`, mismo
+    motivo que `_config_serializable` -- `ultima_exitosa` es UTC (viene de
+    `catalogo_sync_ejecucion.terminado_en`) y `proxima_corrida()` sólo le
+    suma un intervalo, así que el resultado sigue siendo UTC."""
     if not config["habilitado"] or ultima_exitosa is None:
         return None
-    return str(catalogo_sync_config.proxima_corrida(ultima_exitosa, config["cada_valor"], config["cada_unidad"]))
+    return iso_utc(catalogo_sync_config.proxima_corrida(ultima_exitosa, config["cada_valor"], config["cada_unidad"]))
 
 
 @router.put("/sync/config")
 async def actualizar_config_sync(
     req: ConfigSyncRequest,
+    request: Request,
     user: AuthUser = Depends(require_superadmin),
 ):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            try:
-                config = await catalogo_sync_config.actualizar_config(
-                    cur,
-                    habilitado=req.habilitado,
-                    cada_valor=req.cada_valor,
-                    cada_unidad=req.cada_unidad,
-                    actualizado_por=int(user.user_id),
-                )
-            except catalogo_sync_config.ConfigInvalidaError as e:
-                await conn.rollback()
-                raise HTTPException(status_code=422, detail={
-                    "code": "catalogo_sync_config_invalida",
-                    "campo": e.campo,
-                    "message": str(e),
-                })
-            ultima_exitosa = await catalogo_sync_registro.ultima_actualizacion_exitosa(cur)
-        await conn.commit()
+    """MAJOR-2 (auditoría adversarial, 2026-09-27): el UPDATE y su auditoría
+    (`axioma_config_audit`, origen `catalogo_sync`) van en la MISMA
+    transacción EXPLÍCITA (`db.transaccion.transaccion`, mismo patrón que
+    `api/admin/config_admin.py::update_config`) -- el pool es
+    `autocommit=True` (ver `db/connection.py`), así que sin `BEGIN`
+    explícito un `conn.rollback()` no revierte nada: cada sentencia ya se
+    había confirmado sola. Con `transaccion()`, si el INSERT de auditoría
+    (dentro de `catalogo_sync_config.actualizar_config`) revienta, el
+    UPDATE se revierte con él -- fail-closed, sin try/except que lo tape."""
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        try:
+            config = await catalogo_sync_config.actualizar_config(
+                cur,
+                habilitado=req.habilitado,
+                cada_valor=req.cada_valor,
+                cada_unidad=req.cada_unidad,
+                actualizado_por=int(user.user_id),
+                ip=ip_de(request),
+            )
+        except catalogo_sync_config.ConfigInvalidaError as e:
+            raise HTTPException(status_code=422, detail={
+                "code": "catalogo_sync_config_invalida",
+                "campo": e.campo,
+                "message": str(e),
+            }) from None
+        ultima_exitosa = await catalogo_sync_registro.ultima_actualizacion_exitosa(cur)
 
     return {
         **_config_serializable(config),

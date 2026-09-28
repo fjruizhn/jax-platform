@@ -94,22 +94,67 @@ def proxima_corrida(desde: _dt.datetime, cada_valor: int, cada_unidad: str) -> _
     raise ConfigInvalidaError(f"cada_unidad desconocida: {cada_unidad!r}", "cada_unidad")
 
 
+#: MAJOR-1 (auditoría adversarial, 2026-09-27): el timer de systemd corre
+#: `OnCalendar=hourly` con `RandomizedDelaySec=2min` (ver ops/migration/
+#: systemd-units/jax-catalogo-modelos.timer) más la duración real del propio
+#: chequeo (medida ~4s, el caso "no toca" es barato -- una lectura de
+#: config y un SELECT). Sin tolerancia, comparar `ahora >= proxima_corrida`
+#: a secas hace que "cada 1h" a veces rinda 1-2h y "cada 6h" a veces rinda
+#: 6-7h: el tick que "debería" tocar puede llegar unos segundos ANTES del
+#: instante exacto (el jitter del tick anterior fue más grande que el de
+#: éste), y entonces hay que esperar al tick siguiente -- una hora entera
+#: de más. TOLERANCIA_SEGUNDOS (10 min) es mayor que el peor jitter posible
+#: de un solo tick (RandomizedDelaySec=2min + ~4s de duración): perdona
+#: exactamente esa holgura, nunca acumula entre corridas (cada cálculo
+#: parte de la última EXITOSA real, no de un calendario rígido -- ver
+#: `toca_correr`).
+TOLERANCIA_SEGUNDOS = 10 * 60
+
+
 def toca_correr(ultima_exitosa: _dt.datetime | None, ahora: _dt.datetime, cada_valor: int, cada_unidad: str) -> bool:
     """¿Ya pasó el intervalo desde la última actualización EXITOSA?
 
     Sin ninguna corrida exitosa previa, toca siempre (arranque de una base
     nueva, o venimos encadenando corridas con problemas -- el timer corre
     cada hora ahora y reintenta hasta que un sync exitoso vuelva a fijar la
-    marca; no hay "última exitosa" con la que esperar)."""
+    marca; no hay "última exitosa" con la que esperar).
+
+    MINOR-2 (auditoría adversarial, 2026-09-27): si `ultima_exitosa` diera
+    DESPUÉS de `ahora` (reloj o zona horaria movidos hacia atrás -- misma
+    anomalía que `model_catalog._nuevos_desde_marca_bajo_candado` ya cubre
+    del lado de la marca de "nuevos"), no hay nada confiable contra qué
+    comparar: se corre igual (nunca se "atasca" esperando una fecha del
+    futuro que tal vez nunca llegue) y se deja constancia con un `warning`
+    -- el llamador (`catalogo_modelos_ejecutor._correr`) es quien decide si
+    además avisa a alguien.
+
+    MAJOR-1: la comparación real perdona `TOLERANCIA_SEGUNDOS` -- ver su
+    docstring."""
     if ultima_exitosa is None:
         return True
-    return ahora >= proxima_corrida(ultima_exitosa, cada_valor, cada_unidad)
+    if ultima_exitosa > ahora:
+        logger.warning(
+            "catalogo_sync_config.toca_correr: última actualización exitosa (%s) da DESPUÉS "
+            "de ahora (%s) -- reloj o zona horaria movidos hacia atrás; se corre igual",
+            ultima_exitosa, ahora,
+        )
+        return True
+    limite = proxima_corrida(ultima_exitosa, cada_valor, cada_unidad) - _dt.timedelta(seconds=TOLERANCIA_SEGUNDOS)
+    return ahora >= limite
 
 
 async def leer_config(cur) -> dict:
     """La fila única (id=1). `_seed_catalogo_sync_config` (db/migrations.py)
     la siembra siempre -- si falta, es una base sin migrar, no un estado
-    normal a tolerar en silencio."""
+    normal a tolerar en silencio.
+
+    MINOR-3 (auditoría adversarial, 2026-09-27): la fila se valida con
+    `validar_config` antes de devolverse -- una fila corrupta (escrita a
+    mano, o por un bug futuro que sortee `actualizar_config`) tiene que
+    volverse un ERROR ruidoso (el ejecutor programado sale 1, ver
+    `catalogo_modelos_ejecutor._correr`), nunca un `toca_correr()` que
+    interprete basura como "corré cada hora" o "no corras nunca" en
+    silencio."""
     await cur.execute(
         "SELECT habilitado, cada_valor, cada_unidad, actualizado_por, actualizado_en "
         "FROM catalogo_sync_config WHERE id=1"
@@ -119,6 +164,7 @@ async def leer_config(cur) -> dict:
         raise RuntimeError(
             "catalogo_sync_config no tiene la fila id=1 -- ¿faltó correr run_migrations()?")
     habilitado, cada_valor, cada_unidad, actualizado_por, actualizado_en = fila
+    validar_config(cada_valor, cada_unidad)
     return {
         "habilitado": bool(habilitado),
         "cada_valor": cada_valor,
@@ -128,24 +174,56 @@ async def leer_config(cur) -> dict:
     }
 
 
-async def actualizar_config(cur, *, habilitado: bool, cada_valor, cada_unidad: str, actualizado_por: int) -> dict:
+#: `config_key` fijo bajo el que queda el historial de esta pantalla en
+#: `axioma_config_audit` -- MAJOR-2, auditoría adversarial 2026-09-27. No es
+#: una clave de `axioma_config` (esta configuración vive en su propia tabla
+#: tipada, no en el almacén genérico) -- se reusa la MISMA tabla de
+#: auditoría que `config_audit.py`, con su propio `origen` ('catalogo_sync',
+#: ver ORIGENES en config_audit.py y el CHECK en db/migrations.py), porque
+#: sirve exactamente al mismo propósito (quién cambió qué configuración y
+#: cuándo) y no hace falta una tabla de auditoría nueva para eso.
+CONFIG_KEY_AUDITORIA = "catalogo_sync_config"
+
+_SQL_AUDITORIA = (
+    "INSERT INTO axioma_config_audit "
+    "(ts, actor_user_id, config_key, valor_anterior, valor_nuevo, origen, ip) "
+    "VALUES (UTC_TIMESTAMP(6), %s, %s, %s, %s, 'catalogo_sync', %s)"
+)
+
+_CAMPOS_AUDITABLES = ("habilitado", "cada_valor", "cada_unidad")
+
+
+async def actualizar_config(cur, *, habilitado: bool, cada_valor, cada_unidad: str,
+                            actualizado_por: int, ip: str | None = None) -> dict:
     """Valida ANTES de escribir (nada se toca si `cada_valor`/`cada_unidad`
-    no pasan `validar_config`). El antes/después queda en el log
-    estructurado -- ver el docstring de módulo de `api/admin/models.py`
-    sobre por qué no `model_catalog_audit` (su `model_ref` es NOT NULL y
-    esto no es un cambio sobre una fila de `model`)."""
+    no pasan `validar_config`). El UPDATE y su auditoría van con el MISMO
+    cursor -- el llamador (`PUT /admin/models/sync/config`) lo abre con
+    `db.transaccion.transaccion()`, así que si el INSERT de auditoría de
+    abajo revienta, el UPDATE se revierte con él (fail-closed, mismo
+    criterio que `api/admin/config_admin.py::update_config`). Un
+    `actualizado_por` sin cambios reales (mismos 3 valores) NO escribe
+    auditoría -- mismo criterio que `config_audit.escribir()`: guardar lo
+    mismo no es un cambio que auditar."""
     validar_config(cada_valor, cada_unidad)
     antes = await leer_config(cur)
     await cur.execute(
         "UPDATE catalogo_sync_config SET habilitado=%s, cada_valor=%s, cada_unidad=%s, "
-        "actualizado_por=%s, actualizado_en=NOW() WHERE id=1",
+        "actualizado_por=%s, actualizado_en=UTC_TIMESTAMP() WHERE id=1",
         (bool(habilitado), cada_valor, cada_unidad, actualizado_por),
     )
     despues = await leer_config(cur)
+
+    antes_auditable = {k: antes[k] for k in _CAMPOS_AUDITABLES}
+    despues_auditable = {k: despues[k] for k in _CAMPOS_AUDITABLES}
+    if antes_auditable != despues_auditable:
+        await cur.execute(_SQL_AUDITORIA, (
+            int(actualizado_por), CONFIG_KEY_AUDITORIA,
+            json.dumps(antes_auditable, default=str), json.dumps(despues_auditable, default=str),
+            ip,
+        ))
+
     logger.info(
         "catalogo_sync_config actualizado by=%s antes=%s despues=%s",
-        actualizado_por,
-        json.dumps({k: antes[k] for k in ("habilitado", "cada_valor", "cada_unidad")}, default=str),
-        json.dumps({k: despues[k] for k in ("habilitado", "cada_valor", "cada_unidad")}, default=str),
+        actualizado_por, json.dumps(antes_auditable, default=str), json.dumps(despues_auditable, default=str),
     )
     return despues
