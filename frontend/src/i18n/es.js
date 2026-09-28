@@ -1156,6 +1156,8 @@ export default {
       ganchos: 'Ganchos',
       secretos: 'Secretos',
       tamano: 'Tamaño',
+      identidad: 'Identidad',
+      encoding_no_permitido: 'Encoding no permitido',
       entrega: 'Entrega',
     },
     maquinasTitulo: 'Máquinas',

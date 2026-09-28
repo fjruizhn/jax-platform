@@ -1092,6 +1092,8 @@ export default {
       ganchos: 'Hooks',
       secretos: 'Secrets',
       tamano: 'Size',
+      identidad: 'Identity',
+      encoding_no_permitido: 'Disallowed encoding',
       entrega: 'Delivery',
     },
     maquinasTitulo: 'Machines',

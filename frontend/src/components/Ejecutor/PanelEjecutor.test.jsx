@@ -420,6 +420,10 @@ describe('Ejecutor -- textos', () => {
   const TURNO = ['arranque_rechazado', 'pausa_puesta', 'auditor_pauso', 'vigia_no_latio', 'cerebro_fallo', 'registro_no_cuadra', 'cadena_rota', 'vigia_no_cerro', 'runner_salida_invalida', 'runner_sin_cierre', 'plataforma_reiniciada', 'sin_configurar', 'cerebro_tope_vencido', 'auditor_ilegible', 'turno_ilegible', 'runner_error', 'sin_afirmaciones']
   const EVENTOS = ['mision_creada', 'turno_lanzado', 'arranque_rechazado', 'arranque_verificado', 'vigia_late', 'vigia_no_latio', 'cerebro_termino', 'paso', 'afirmacion_entregada', 'afirmacion_descartada', 'auditor_pauso', 'vigia_cerrado', 'pausa_detectada', 'turno_completado', 'turno_fallido', 'turno_interrumpido', 'turno_rechazado', 'auditor_ilegible', 'runner_salida_invalida']
   const ERRORES = ['ejecutor_objetivo_vacio', 'ejecutor_sin_maquinas', 'ejecutor_maquina_desconocida', 'ejecutor_maquina_no_elegible', 'ejecutor_turno_en_curso', 'ejecutor_pausado', 'ejecutor_sin_configurar', 'ejecutor_mision_inexistente', 'ejecutor_instruccion_vacia', 'ejecutor_mision_sin_sesion', 'ejecutor_pausa_no_escribible', 'ejecutor_pausa_auditoria_fallida']
+  // Reglas de entrega_codigo (Task 12, jax/ejecutor/contratos): las 9 declaradas por el
+  // controlador -- flujos_ci, archivo_de_fernando, prueba_debilitada, ganchos, secretos,
+  // tamano, identidad, encoding_no_permitido, entrega.
+  const REGLA = ['flujos_ci', 'archivo_de_fernando', 'prueba_debilitada', 'ganchos', 'secretos', 'tamano', 'identidad', 'encoding_no_permitido', 'entrega']
   const lleno = (v) => typeof v === 'string' && v.trim() !== ''
 
   it('todo código conocido del contrato tiene texto en es y en', () => {
@@ -428,6 +432,7 @@ describe('Ejecutor -- textos', () => {
       for (const c of [...CITA, ...AUDITOR, ...ARRANQUE]) expect(lleno(e.codigos[c]), `${nombre}.codigos.${c}`).toBe(true)
       for (const c of TURNO) expect(lleno(e.codigosTurno[c]), `${nombre}.codigosTurno.${c}`).toBe(true)
       for (const c of EVENTOS) expect(lleno(e.eventos[c]), `${nombre}.eventos.${c}`).toBe(true)
+      for (const c of REGLA) expect(lleno(e.regla[c]), `${nombre}.regla.${c}`).toBe(true)
       for (const c of ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'arranque']) {
         expect(lleno(e.contratos[c]), `${nombre}.contratos.${c}`).toBe(true)
         // Con nombre propio, no sólo "Contrato C1".
