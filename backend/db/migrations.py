@@ -600,6 +600,69 @@ CREATE TABLE IF NOT EXISTS model_catalog_audit (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# Configuración del sync PROGRAMADO del catálogo (2026-09-27, pedido de
+# Fernando: encender/apagar el timer y elegir cada cuánto corre desde la
+# pantalla, no editando systemd). Principio IV (sin hardcoding): esta fila
+# es la ÚNICA fuente de "cada cuánto" -- el timer de systemd pasa a
+# OnCalendar=hourly y catalogo_modelos_ejecutor.py decide, leyendo ACÁ, si
+# de verdad toca sincronizar (ver catalogo_sync_config.py).
+#
+# Fila única (id fijo en 1, CHECK que lo hace explícito además del PK): no
+# hay tenant ni usuario dueño de esta configuración, es global al catálogo.
+# Sembrada por _seed_catalogo_sync_config con el valor de HOY (habilitado,
+# cada 6 horas) -- decisión de Fernando de conservar el comportamiento
+# actual al introducir el apagador.
+CREATE_CATALOGO_SYNC_CONFIG = """
+CREATE TABLE IF NOT EXISTS catalogo_sync_config (
+  id TINYINT NOT NULL PRIMARY KEY DEFAULT 1,
+  habilitado BOOLEAN NOT NULL DEFAULT TRUE,
+  cada_valor INT NOT NULL DEFAULT 6,
+  cada_unidad ENUM('horas','dias','semanas','meses') NOT NULL DEFAULT 'horas',
+  actualizado_por INT NULL,
+  actualizado_en DATETIME NULL,
+  CONSTRAINT chk_catalogo_sync_config_fila_unica CHECK (id = 1),
+  FOREIGN KEY (actualizado_por) REFERENCES jax_users(user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+# Una fila por CORRIDA del sync completo (manual o programada) -- avance
+# real (paso_actual/pasos_total/detalle_paso) y última actualización
+# siempre visibles (pedido de Fernando, 2026-09-27). Ver
+# catalogo_sync_registro.py: es la ÚNICA fuente de "hay un sync corriendo"
+# y de "cuándo fue la última actualización" -- el endpoint manual y el
+# ejecutor programado comparten esta misma orquestación (Regla Absoluta,
+# mismo criterio que model_catalog.sync_all()).
+#
+# Índices: idx_estado_terminado cubre "¿hay uno corriendo?" (estado='corriendo')
+# y "última actualización EXITOSA" (estado='ok' ORDER BY terminado_en DESC);
+# idx_estado_iniciado cubre detectar una fila 'corriendo' huérfana
+# (estado='corriendo' AND iniciado_en < corte); idx_terminado_en cubre "la
+# última terminada, sea cual sea su estado" -- ORDER BY terminado_en DESC
+# SIN filtrar por estado: una fila 'corriendo' tiene terminado_en NULL, y
+# tanto MySQL como MariaDB ordenan NULL como el valor MÁS CHICO, así que en
+# DESC queda siempre al final del recorrido del índice -- el primer valor
+# que el índice entrega escaneando hacia atrás YA es la última fila
+# terminada, sin necesitar (ni admitir sin perder el índice) un WHERE
+# adicional.
+CREATE_CATALOGO_SYNC_EJECUCION = """
+CREATE TABLE IF NOT EXISTS catalogo_sync_ejecucion (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  origen ENUM('manual','programado') NOT NULL,
+  iniciado_por INT NULL,
+  estado ENUM('corriendo','ok','con_problemas','error') NOT NULL DEFAULT 'corriendo',
+  paso_actual INT NOT NULL DEFAULT 0,
+  pasos_total INT NOT NULL DEFAULT 0,
+  detalle_paso VARCHAR(100) NULL,
+  iniciado_en DATETIME NOT NULL DEFAULT NOW(),
+  terminado_en DATETIME NULL,
+  resultado LONGTEXT NULL CHECK (resultado IS NULL OR json_valid(resultado)),
+  FOREIGN KEY (iniciado_por) REFERENCES jax_users(user_id),
+  INDEX idx_estado_terminado (estado, terminado_en),
+  INDEX idx_estado_iniciado (estado, iniciado_en),
+  INDEX idx_terminado_en (terminado_en)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 # R4 — motor desacoplado de faceta. Tres ejes separados: capability (que
 # sabe hacer), transport (como se le habla, mismo enum que facet.transport),
 # auth (via provider.auth_type, ya existente — ollama='none' ya sembrado).
@@ -953,6 +1016,8 @@ _TABLES = [
     ("facet_binding", CREATE_FACET_BINDING),
     ("model_binding_proposal", CREATE_MODEL_BINDING_PROPOSAL),
     ("model_catalog_audit", CREATE_MODEL_CATALOG_AUDIT),  # sin FK (PR-L rondas 1-2): el orden no importa
+    ("catalogo_sync_config", CREATE_CATALOGO_SYNC_CONFIG),        # FK a jax_users (ya creada arriba)
+    ("catalogo_sync_ejecucion", CREATE_CATALOGO_SYNC_EJECUCION),  # FK a jax_users (ya creada arriba)
     ("motor", CREATE_MOTOR),                          # antes de capability (FK fallback_motor)
     ("capability", CREATE_CAPABILITY),                # antes de capability_motor (FK)
     ("capability_motor", CREATE_CAPABILITY_MOTOR),
@@ -1782,6 +1847,16 @@ async def _seed_provider_sync_config(cur) -> None:
             "WHERE id=%s AND models_list_url IS NULL",
             (transport, url, provider_id),
         )
+
+
+async def _seed_catalogo_sync_config(cur) -> None:
+    """INSERT IGNORE por PK fija (id=1): conserva lo de HOY (habilitado,
+    cada 6 horas -- decisión de Fernando, 2026-09-27) en una base nueva, y
+    NUNCA pisa lo que un superadmin ya haya cambiado desde la pantalla en
+    una base existente."""
+    await cur.execute(
+        "INSERT IGNORE INTO catalogo_sync_config (id, habilitado, cada_valor, cada_unidad) "
+        "VALUES (1, TRUE, 6, 'horas')")
 
 
 async def _seed_models_and_backfill(cur) -> None:
@@ -3450,6 +3525,7 @@ async def run_migrations():
             # faceta vieja activa.
             await _retirar_auditor_local_facet(cur)
             await _seed_provider_sync_config(cur)
+            await _seed_catalogo_sync_config(cur)
             await _migrar_gemini_a_cabecera(cur)
             await _seed_models_and_backfill(cur)
             await _fix_anthropic_sonnet_alias(cur)
