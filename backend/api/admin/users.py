@@ -134,7 +134,7 @@ async def _sincronizar_membresias_admin_tenant(cur, *, actor_id: int, target_id:
     changes into different commits.
     """
     from jax.memory.b9 import ScopeContext
-    from jax.memory.project_authority import ProjectAuthorityAdmin
+    from jax.memory.project_authority import ProjectAuthorityAdmin, ProjectAuthorityError
 
     sync = getattr(ProjectAuthorityAdmin, "sync_tenant_admin_memberships_in_transaction", None)
     if not callable(sync):
@@ -145,9 +145,15 @@ async def _sincronizar_membresias_admin_tenant(cur, *, actor_id: int, target_id:
         tenant_id=str(tenant_id), calling_component="jax-platform-admin-users",
         request_id=str(uuid.uuid4()), trace_id=str(uuid.uuid4()),
     )
-    return await authority.sync_tenant_admin_memberships_in_transaction(
-        cur, actor_scope=scope, user_id=target_id, tenant_id=tenant_id,
-    )
+    try:
+        return await authority.sync_tenant_admin_memberships_in_transaction(
+            cur, actor_scope=scope, user_id=target_id, tenant_id=tenant_id,
+        )
+    except ProjectAuthorityError as exc:
+        # Esta excepción se convierte *dentro* de `transaccion`: el 409 aún
+        # hace que su context manager revierta identidad, memberships y audit.
+        # JAX expone códigos estables precisamente para esta frontera HTTP.
+        raise HTTPException(status_code=409, detail=exc.code) from exc
 
 
 # Un dado de baja no aparece (etapa 5). created_at/last_login son TIMESTAMP:

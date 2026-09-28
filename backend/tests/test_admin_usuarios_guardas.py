@@ -52,6 +52,13 @@ async def _auditoria(target):
     return [tuple(f) for f in filas]
 
 
+async def _membresias(target):
+    filas = await sql(
+        "SELECT project_id, user_id "
+        "FROM jax_project_membership WHERE user_id = %s ORDER BY project_id", (target,), True)
+    return [tuple(f) for f in filas]
+
+
 async def _ninguno(cur, excluido, tenant_id=1):
     return 0
 
@@ -131,6 +138,41 @@ def test_no_se_degrada_al_ultimo_superadmin_activo(client, usuarios, monkeypatch
     assert (r.status_code, r.json()["detail"]) == (409, "ultimo_superadmin")
     assert client.portal.call(_fila, s) == ("superadmin", "active", 0)
     assert client.portal.call(_auditoria, s) == [], "la transacción revierte: ni cambio ni registro"
+
+
+def test_ultimo_duenio_de_proyecto_es_409_y_revierte_la_actualizacion(client, usuarios, monkeypatch):
+    """La traducción ocurre dentro de la transacción compartida con JAX.
+
+    La misma helper se usa por alta, edición y baja; al propagar el 409 desde
+    ella, el context manager revierte antes el rol/estado, memberships y audit.
+    """
+    from jax.memory import project_authority as authority_mod
+
+    # La dependencia JAX emparejada debe exportar esta jerarquía; no se usa un
+    # fallback para que una incompatibilidad real entre ambos repos no quede
+    # oculta en CI.
+    authority_error = authority_mod.ProjectAuthorityError
+
+    class LastOwnerRequired(authority_error):
+        code = "proyecto_sin_duenio"
+
+    target, _ = usuarios(role="superadmin")
+    memberships_before = client.portal.call(_membresias, target)
+
+    class ProjectAuthorityAdmin:
+        def __init__(self, store):
+            assert store is None
+
+        async def sync_tenant_admin_memberships_in_transaction(self, cur, *, actor_scope, user_id, tenant_id):
+            raise LastOwnerRequired("no puede quedar un proyecto sin dueño")
+
+    monkeypatch.setattr(authority_mod, "ProjectAuthorityAdmin", ProjectAuthorityAdmin)
+    response = _put(client, target, role="operator")
+
+    assert (response.status_code, response.json()["detail"]) == (409, "proyecto_sin_duenio")
+    assert client.portal.call(_fila, target) == ("superadmin", "active", 0)
+    assert client.portal.call(_membresias, target) == memberships_before
+    assert client.portal.call(_auditoria, target) == []
 
 
 def test_degradar_con_otro_superadmin_cambia_sube_la_version_y_audita(client, usuarios, monkeypatch):
