@@ -79,7 +79,7 @@ SQL_MISION = ("SELECT m.id, m.objetivo, m.maquinas, m.sesion_id, m.created_at, m
               "m.tipo, r.owner_repo, m.rama, m.pr_url, m.estado_entrega, m.repo_id "
               "FROM ejecutor_mision m LEFT JOIN ejecutor_repo r ON r.id = m.repo_id WHERE m.id = %s")
 SQL_REPO_ACTIVO = "SELECT owner_repo, comandos_prueba FROM ejecutor_repo WHERE id = %s AND activo = 1"
-SQL_HOST_LOCAL = "SELECT nombre FROM ejecutor_host WHERE es_local = 1"
+SQL_HOST_LOCAL = "SELECT nombre FROM ejecutor_host WHERE es_local = 1 AND activo = 1"
 SQL_REPOS_ACTIVOS = "SELECT id, owner_repo FROM ejecutor_repo WHERE activo = 1 ORDER BY owner_repo"
 # MAJOR-1 (ola final, plan "El Ejecutor programa"): un turno sin `pr_url` (p. ej.
 # `rechazada_por_contrato`, que no llega a mirar si había un PR previo abierto) no debe

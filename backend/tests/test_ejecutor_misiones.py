@@ -939,6 +939,25 @@ def test_codigo_con_dos_hosts_locales_es_409(client_superadmin, runner, repo_jax
         client_superadmin.portal.call(sql, "DELETE FROM ejecutor_host WHERE nombre = %s", (otro,))
 
 
+def test_codigo_host_local_inactivo_no_cuenta_para_el_unico(client_superadmin, runner, repo_jax_platform):
+    """MINOR-4 (ola final, plan "El Ejecutor programa"): un `ejecutor_host` con `es_local = 1`
+    pero `activo = 0` no cuenta -- si no, un host local de baja bloquea CUALQUIER misión de
+    código con un 409 falso, aunque el host local de verdad siga siendo uno solo."""
+    inactivo = "t-sp2-codigo-local-inactivo"
+    client_superadmin.portal.call(
+        sql, "INSERT INTO ejecutor_host (nombre, ip, puerto, rol, es_local, con_datos_de_clientes, activo) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (inactivo, "192.0.2.96", 58291, "desarrollo", True, False, False))
+    try:
+        runner.guion(GUION_BUENO)
+        r = client_superadmin.post(f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform,
+                                                              "objetivo": "x"})
+        assert r.status_code == 202, r.json()
+        _esperar(client_superadmin, {}, r.json()["id"])  # no deja el turno en_curso para el test siguiente
+    finally:
+        client_superadmin.portal.call(sql, "DELETE FROM ejecutor_host WHERE nombre = %s", (inactivo,))
+
+
 def test_repos_lista_solo_los_activos_para_superadmin(client_superadmin, repo_jax_platform):
     inactivo_id = client_superadmin.portal.call(
         sql, "INSERT INTO ejecutor_repo (owner_repo, remoto_url, comandos_prueba, activo) VALUES (%s, %s, %s, FALSE)",
