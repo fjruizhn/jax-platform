@@ -997,8 +997,12 @@ jobs:
           //   regresión ("fallaron" no se muestra con lista vacía) y 3 del
           //   aviso de "sync en curso" (candado ocupado) en
           //   AdminModelCatalog.test.jsx.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1029) {
-              console.error("PISO ROTO: se esperaban 1029 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1029 -> 1030 el 2026-09-27 (carrera de Escape al montar Dialogo):
+          //   +1 en lib/useCerrarConEscape.test.js. Medido de punta a punta
+          //   con `npx vitest run --reporter=dot --silent`: 1030 passed,
+          //   0 fallidos, 95 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1030) {
+              console.error("PISO ROTO: se esperaban 1030 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
