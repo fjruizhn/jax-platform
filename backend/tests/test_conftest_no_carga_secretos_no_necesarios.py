@@ -22,8 +22,22 @@ import subprocess
 import sys
 from pathlib import Path
 
-import tests.conftest as conftest_mod
-
+# NUNCA `import tests.conftest` (ni `from tests.conftest import ...`) al
+# nivel de módulo de un archivo de test -- hallazgo real (2026-09-27, esta
+# misma ronda): pytest ya cargó `tests/conftest.py` por su cuenta (import
+# automático de conftest, con SU propia resolución de nombre de módulo);
+# un `import tests.conftest` explícito acá crea una SEGUNDA entrada en
+# `sys.modules` bajo un nombre distinto y VUELVE A EJECUTAR TODO el código
+# de nivel de módulo de conftest.py -- que reasigna `os.environ` con
+# temp-dirs NUEVOS para `JAX_KILL_SWITCH_PATH`, `JAX_ADJUNTOS_DIR`, etc.
+# (asignación directa, no `setdefault`). Efecto medido: 48 tests de
+# test_kill_switch*.py/test_carril_mesa.py/test_facet_canary_freno.py
+# empezaban a fallar SOLO cuando este archivo se colecionaba antes que
+# ellos -- el freno de pruebas quedaba "ya activado" de una corrida
+# anterior porque la ruta real del archivo cambió a mitad de sesión. Todo
+# lo que necesite mirar `tests.conftest` en este archivo lo hace DENTRO de
+# un sonda en subproceso (import aislado, proceso descartable) -- nunca acá
+# arriba.
 BACKEND = Path(__file__).resolve().parents[1]
 
 # Lista FIJA, propia de este test -- NO se deriva de
@@ -78,9 +92,24 @@ def test_los_secretos_no_necesarios_declarados_nunca_llegan_al_ambiente():
     assert datos["JAX_UNA_VARIABLE_DE_CONTROL_INOFENSIVA"] == "deberia-pasar"
 
 
+_SONDA_LISTA_NO_VACIA = """
+import json
+import tests.conftest as conftest_mod
+print(json.dumps(sorted(conftest_mod.SECRETOS_DE_PRODUCCION_NO_NECESARIOS)))
+"""
+
+
 def test_la_lista_de_exclusion_no_esta_vacia():
     """Un `frozenset()` vacío haría pasar el test de arriba sin exclusión
     real -- éste falla si alguien "arregla" el test vaciando la lista en vez
-    de mantenerla."""
-    assert conftest_mod.SECRETOS_DE_PRODUCCION_NO_NECESARIOS
-    assert "CLAUDE_CODE_OAUTH_TOKEN" in conftest_mod.SECRETOS_DE_PRODUCCION_NO_NECESARIOS
+    de mantenerla. Corre en un PROCESO APARTE -- ver el comentario grande al
+    principio del archivo sobre por qué `tests.conftest` nunca se importa al
+    nivel de módulo de un test."""
+    salida = subprocess.run(
+        [sys.executable, "-c", _SONDA_LISTA_NO_VACIA], cwd=BACKEND,
+        capture_output=True, text=True, timeout=120,
+    )
+    assert salida.returncode == 0, salida.stderr
+    lista = json.loads(salida.stdout.strip().splitlines()[-1])
+    assert lista
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in lista
