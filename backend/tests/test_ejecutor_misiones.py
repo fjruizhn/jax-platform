@@ -1020,3 +1020,35 @@ def test_entrega_codigo_con_empujado_sin_pr_se_guarda(client_superadmin, runner,
     eventos = client_superadmin.get(f"{BASE}/misiones/{mision_id}/bitacora").json()["eventos"]
     (entrega,) = [e for e in eventos if e["evento"] == "entrega_codigo"]
     assert (entrega["datos"]["sha"], entrega["datos"]["rama_empujada"]) == ("a1b2c3d4", True)
+
+
+def test_continuar_mision_de_codigo_pasa_tipo_y_repo_al_runner(client_superadmin, runner, repo_jax_platform):
+    """Ruling del controlador sobre §3.4 del spec (2026-09-28): un turno nuevo de la MISMA
+    misión de código retoma la misma rama/PR -- el runner necesita `tipo`/`repo` en cada
+    turno, no sólo en el de creación."""
+    runner.guion(GUION_BUENO)
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    _esperar(client_superadmin, {}, mision_id)
+    runner.guion({"lineas": [_ev("turno_lanzado", 2, reanudar=True), _resultado(turno=2)]})
+    r = client_superadmin.post(f"{BASE}/misiones/{mision_id}/turnos", json={"instruccion": "y ahora esto"})
+    assert r.status_code == 202, r.json()
+    _esperar(client_superadmin, {}, mision_id)
+    pedido2 = runner.ultimo_pedido()
+    assert pedido2["n"] == 2
+    assert pedido2["tipo"] == "codigo"
+    assert pedido2["repo"] == {"owner_repo": "fjruizhn/jax-platform", "comandos_prueba": COMANDOS_PRUEBA_JAX_PLATFORM}
+    assert pedido2["hosts"] == [runner.host_local]
+
+
+def test_continuar_mision_de_codigo_con_repo_desactivado_es_409(client_superadmin, runner, repo_jax_platform):
+    runner.guion(GUION_BUENO)
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    _esperar(client_superadmin, {}, mision_id)
+    client_superadmin.portal.call(sql, "UPDATE ejecutor_repo SET activo = FALSE WHERE id = %s", (repo_jax_platform,))
+    try:
+        r = client_superadmin.post(f"{BASE}/misiones/{mision_id}/turnos", json={"instruccion": "otra"})
+        assert (r.status_code, r.json()["detail"]) == (409, "repo_inactivo")
+    finally:
+        client_superadmin.portal.call(sql, "UPDATE ejecutor_repo SET activo = TRUE WHERE id = %s", (repo_jax_platform,))

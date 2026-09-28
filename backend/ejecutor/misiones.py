@@ -70,11 +70,13 @@ SQL_AUDITOR_LOCAL_DISPONIBLE = (
     "WHERE c.config_key = 'ejecutor.auditor_faceta_local'"
 )
 SQL_TURNO_EN_CURSO = "SELECT mision_id, n FROM ejecutor_turno WHERE estado = 'en_curso' LIMIT 1"
-# `repo` (Task 10, plan "El Ejecutor programa") va al FINAL de la lista: `continuar()` lee
-# esta misma consulta por índice posicional (fila[1]=objetivo, fila[2]=maquinas,
-# fila[3]=sesion_id) y esos índices no se pueden mover.
+# `repo`/`repo_id` (Task 10, plan "El Ejecutor programa") van al FINAL de la lista:
+# `continuar()` lee esta misma consulta por índice posicional (fila[1]=objetivo,
+# fila[2]=maquinas, fila[3]=sesion_id) y esos índices no se pueden mover. `repo_id` (fila[11])
+# es el de la PROPIA columna -- no viene del JOIN, que sólo trae el nombre para mostrar -- y
+# `continuar()` lo necesita para revalidar que el repo siga activo en cada turno nuevo.
 SQL_MISION = ("SELECT m.id, m.objetivo, m.maquinas, m.sesion_id, m.created_at, m.updated_at, "
-              "m.tipo, r.owner_repo, m.rama, m.pr_url, m.estado_entrega "
+              "m.tipo, r.owner_repo, m.rama, m.pr_url, m.estado_entrega, m.repo_id "
               "FROM ejecutor_mision m LEFT JOIN ejecutor_repo r ON r.id = m.repo_id WHERE m.id = %s")
 SQL_REPO_ACTIVO = "SELECT owner_repo, comandos_prueba FROM ejecutor_repo WHERE id = %s AND activo = 1"
 SQL_HOST_LOCAL = "SELECT nombre FROM ejecutor_host WHERE es_local = 1"
@@ -287,6 +289,18 @@ async def _repo_activo(repo_id) -> dict:
     return {"owner_repo": fila[0], "comandos_prueba": _json(fila[1], [])}
 
 
+async def _repo_sigue_activo(repo_id) -> dict:
+    """Task 10 (ruling del controlador sobre `continuar()`, 2026-09-28): a diferencia de
+    `_repo_activo` -- que valida un `repo_id` que el CLIENTE acaba de mandar, 422 si no sirve
+    -- acá el `repo_id` es el de la PROPIA misión, ya fijado en `crear()`. Que se haya
+    desactivado DESPUÉS es un conflicto con el estado actual, no un dato mal formado del
+    pedido: `409 repo_inactivo`, no 422."""
+    fila = await _consultar(SQL_REPO_ACTIVO, (repo_id,), una=True)
+    if fila is None:
+        raise ErrorDelEjecutor(409, "repo_inactivo")
+    return {"owner_repo": fila[0], "comandos_prueba": _json(fila[1], [])}
+
+
 async def _host_local_unico() -> str:
     """Task 10: el host de una misión de código no lo elige quien la pide -- es EL host local
     de esta plataforma. Ni cero ni dos: `409 sin_host_local` si `ejecutor_host` no tiene
@@ -432,7 +446,16 @@ async def continuar(user_id, mision_id: str, instruccion) -> dict:
         if fila is None:
             raise ErrorDelEjecutor(404, "ejecutor_mision_inexistente")
         pedidas = _json(fila[2], [])
-        await _validar_maquinas(pedidas)
+        tipo = fila[6]
+        # Ruling del controlador sobre §3.4 del spec (2026-09-28): un turno nuevo de una
+        # misión de código retoma la MISMA rama/PR -- el runner necesita `tipo`/`repo` en
+        # CADA turno, no sólo en el de creación. Los hosts son los mismos de la misión (el
+        # host local no se re-elige turno a turno: es el que quedó fijado en `crear()`).
+        repo = None
+        if tipo == "codigo":
+            repo = await _repo_sigue_activo(fila[11])
+        else:
+            await _validar_maquinas(pedidas)
         await _barreras_de_lanzamiento(ruta_pausa)
         turnos = await _consultar(SQL_TURNOS, (mision_id,))
         if not any(t[5] for t in turnos):
@@ -443,8 +466,12 @@ async def continuar(user_id, mision_id: str, instruccion) -> dict:
                 "INSERT INTO ejecutor_turno (mision_id, n, instruccion, estado, iniciado_at) "
                 "VALUES (%s, %s, %s, 'en_curso', UTC_TIMESTAMP(6))", (mision_id, n, instruccion))
             await cur.execute("UPDATE ejecutor_mision SET updated_at = UTC_TIMESTAMP(6) WHERE id = %s", (mision_id,))
-        _lanzar(mision_id, n, {"mision_id": mision_id, "n": n, "sesion": fila[3], "objetivo": fila[1],
-                               "instruccion": instruccion, "hosts": pedidas}, runner)
+        pedido = {"mision_id": mision_id, "n": n, "sesion": fila[3], "objetivo": fila[1],
+                  "instruccion": instruccion, "hosts": pedidas}
+        if tipo == "codigo":
+            pedido["tipo"] = "codigo"
+            pedido["repo"] = {"owner_repo": repo["owner_repo"], "comandos_prueba": repo["comandos_prueba"]}
+        _lanzar(mision_id, n, pedido, runner)
     return await detalle(mision_id)
 
 
