@@ -1022,6 +1022,28 @@ def test_entrega_codigo_con_empujado_sin_pr_se_guarda(client_superadmin, runner,
     assert (entrega["datos"]["sha"], entrega["datos"]["rama_empujada"]) == ("a1b2c3d4", True)
 
 
+def test_entrega_codigo_queda_en_la_bitacora_aunque_falle_al_persistir_en_la_mision(
+        client_superadmin, runner, repo_jax_platform, monkeypatch):
+    """MINOR-3 (ola final, plan "El Ejecutor programa"): el evento va a la bitácora ANTES de
+    intentar guardar `pr_url`/`estado_entrega` en la fila de la misión -- un fallo de esa
+    segunda escritura no debe perder el evento (el turno igual cierra fallido/runner_error,
+    pero la bitácora ya tiene lo que pasó de verdad)."""
+    async def revienta(mision_id, datos):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(misiones, "_guardar_entrega_codigo", revienta)
+    runner.guion({"lineas": [
+        _ev("turno_lanzado"),
+        _ev("entrega_codigo", estado_entrega="abierto",
+            pr_url="https://github.com/fjruizhn/jax-platform/pull/1", violaciones=[], notas="listo"),
+        _resultado()]})
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    d = _esperar(client_superadmin, {}, mision_id)
+    assert d["estado"] == "fallida"
+    eventos = [e["evento"] for e in client_superadmin.get(f"{BASE}/misiones/{mision_id}/bitacora").json()["eventos"]]
+    assert "entrega_codigo" in eventos
+
+
 def test_continuar_mision_de_codigo_pasa_tipo_y_repo_al_runner(client_superadmin, runner, repo_jax_platform):
     """Ruling del controlador sobre §3.4 del spec (2026-09-28): un turno nuevo de la MISMA
     misión de código retoma la misma rama/PR -- el runner necesita `tipo`/`repo` en cada

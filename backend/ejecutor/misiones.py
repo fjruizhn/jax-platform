@@ -582,11 +582,13 @@ async def _correr_turno(mision_id: str, n: int, pedido: dict, runner) -> None:
             if doc["evento"] == "resultado":
                 resultado = doc["datos"]
                 continue
-            if doc["evento"] == "entrega_codigo":
-                await _guardar_entrega_codigo(mision_id, doc["datos"])
             terminal_visto = terminal_visto or doc["evento"] in EVENTOS_TERMINALES
             turno = doc.get("turno") if isinstance(doc.get("turno"), int) else n
+            # MINOR-3 (ola final, plan "El Ejecutor programa"): a la bitácora PRIMERO -- un
+            # fallo al persistir en la fila de la misión (abajo) no debe perder el evento.
             await _anotar(mision_id, turno, doc["evento"], doc["datos"])
+            if doc["evento"] == "entrega_codigo":
+                await _guardar_entrega_codigo(mision_id, doc["datos"])
         await proc.wait()
         err = ""
         try:
