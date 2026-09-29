@@ -38,7 +38,7 @@ describe('BottomBar -- errores y avisos con código', () => {
     enviarChat('hola')
     await waitFor(() => expect(useJaxStore.getState().messages).toHaveLength(2))
     const { content } = useJaxStore.getState().messages[1]
-    expect(content).toBe(`**${es.errorPrefix}:** ${es.erroresMesa.faceta_error({ facet: 'thot' })}`)
+    expect(content).toBe(`**${es.errorPrefix}:** ${es.erroresMesa.faceta_error({})}`)
     expect(content).not.toContain('timeout')
   })
 

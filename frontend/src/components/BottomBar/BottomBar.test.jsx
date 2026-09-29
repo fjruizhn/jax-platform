@@ -252,7 +252,7 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Enviar' }))
     await waitFor(() => {
       const ultimo = useJaxStore.getState().messages.at(-1)
-      expect(ultimo.content).toContain(es.erroresMesa.faceta_error({ facet: 'hipatia' }))
+      expect(ultimo.content).toContain(es.erroresMesa.faceta_error({}))
     })
     expect(screen.getByAltText('f.png')).toBeInTheDocument()
     expect(URL.revokeObjectURL).not.toHaveBeenCalled()

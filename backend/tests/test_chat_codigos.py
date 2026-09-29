@@ -85,12 +85,12 @@ def test_el_502_http_es_un_codigo_servidor_sin_cuerpo_externo():
     req = httpx.Request("POST", "https://x.test/v1")
     exc = httpx.HTTPStatusError("x", request=req, response=httpx.Response(400, text="malo", request=req))
     assert chat_mod._detalle_502_http("hipatia", exc) == {
-        "code": "proveedor_error_http", "facet": "hipatia", "status": 400}
+        "code": "proveedor_error_http"}
 
 
 def test_el_502_generico_es_un_codigo():
     assert chat_mod._detalle_502_generico("thot", RuntimeError("se cayó")) == {
-        "code": "faceta_error", "facet": "thot"}
+        "code": "faceta_error"}
 
 
 def test_el_502_nunca_proyecta_cuerpo_hostil_del_proveedor():
@@ -102,7 +102,7 @@ def test_el_502_nunca_proyecta_cuerpo_hostil_del_proveedor():
     req = httpx.Request("POST", "https://x.test/v1")
     exc = httpx.HTTPStatusError("x", request=req, response=httpx.Response(502, text=cuerpo, request=req))
     detalle = chat_mod._detalle_502_http("hipatia", exc)
-    assert detalle == {"code": "proveedor_error_http", "facet": "hipatia", "status": 502}
+    assert detalle == {"code": "proveedor_error_http"}
     serializado = repr(detalle)
     for fragmento in ("VERIFIED", "citation", "<b>", "\u202e", "CURRENT_OBSERVATION", "epistemic_status", "source_class"):
         assert fragmento not in serializado
@@ -131,7 +131,7 @@ def test_endpoint_502_no_renderiza_cuerpo_hostil_del_proveedor(client, monkeypat
         headers=cabeceras(client, "chat-hostile-provider", "operator"))
     assert respuesta.status_code == 502
     detalle = respuesta.json()["detail"]
-    assert detalle == {"code": "proveedor_error_http", "facet": "jekyll", "status": 502}
+    assert detalle == {"code": "proveedor_error_http"}
     contenido_visible = respuesta.text
     for fragmento in ("VERIFIED", "citation", "<i>", "\u202e", "CURRENT_OBSERVATION", "epistemic_status", "source_class"):
         assert fragmento not in contenido_visible

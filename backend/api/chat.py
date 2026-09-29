@@ -1156,13 +1156,13 @@ def _detalle_502_http(facet: str, e: httpx.HTTPStatusError) -> dict:
     Markdown, HTML, bidi controls, or forged governance fields, so they stay
     in logs/forensics and never enter the HTTP detail consumed by the client.
     """
-    return {"code": "proveedor_error_http", "facet": facet, "status": e.response.status_code}
+    return {"code": "proveedor_error_http"}
 
 
 def _detalle_502_generico(facet: str, e: Exception) -> dict:
     # Exception text may be provider or external payload.  The public API
     # exposes only its stable server-owned error code.
-    return {"code": "faceta_error", "facet": facet}
+    return {"code": "faceta_error"}
 
 
 def _update_history(user_id: str, user_msg: str, assistant_msg: str):

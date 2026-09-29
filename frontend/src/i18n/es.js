@@ -151,8 +151,8 @@ export default {
   respuestaDelServicio: (texto) => `Respuesta del servicio: ${texto}`,
   erroresMesa: {
     faceta_desconocida: (d) => `La faceta «${d.facet}» no existe.`,
-    proveedor_error_http: (d) => `El proveedor de ${d.facet} respondió con error ${d.status}.`,
-    faceta_error: (d) => `${d.facet} no pudo responder.`,
+    proveedor_error_http: () => 'El proveedor no pudo completar la solicitud.',
+    faceta_error: () => 'El servicio de chat no pudo responder.',
     credencial_no_disponible: (d) => `No hay una credencial válida configurada para ${d.provider}.`,
     imagen_error_http: (d) => `El servicio de imágenes respondió con error ${d.status}.`,
     imagen_error: () => 'No se pudo generar la imagen.',

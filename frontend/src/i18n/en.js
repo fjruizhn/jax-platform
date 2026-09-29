@@ -147,8 +147,8 @@ export default {
   respuestaDelServicio: (texto) => `Service response: ${texto}`,
   erroresMesa: {
     faceta_desconocida: (d) => `The facet "${d.facet}" does not exist.`,
-    proveedor_error_http: (d) => `The provider for ${d.facet} returned error ${d.status}.`,
-    faceta_error: (d) => `${d.facet} could not respond.`,
+    proveedor_error_http: () => 'The provider could not complete the request.',
+    faceta_error: () => 'The chat service could not respond.',
     credencial_no_disponible: (d) => `There is no valid credential configured for ${d.provider}.`,
     imagen_error_http: (d) => `The image service returned error ${d.status}.`,
     imagen_error: () => 'The image could not be generated.',

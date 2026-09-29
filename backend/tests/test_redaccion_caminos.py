@@ -151,7 +151,7 @@ def test_el_502_del_chat_no_proyecta_diagnostico_del_proveedor():
     cuerpo = "e" * 190 + " " + KEY + " fin"          # la key empieza en el 191
     exc = httpx.HTTPStatusError("x", request=req, response=httpx.Response(400, text=cuerpo, request=req))
     detail = chat_mod._detalle_502_http("hipatia", exc)
-    assert detail["code"] == "proveedor_error_http" and detail["status"] == 400
+    assert detail == {"code": "proveedor_error_http"}
     assert KEY not in repr(detail)
     assert "motivo" not in detail
 
