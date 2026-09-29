@@ -159,7 +159,7 @@ def project_provider_contract(
             contract_state=rendered.contract_state.value,
             contract_degraded=degraded, governed_plain=True,
         )
-    except Exception:
+    except Exception:  # fail-soft: renderer/core failure emits only static non-current text, never provider prose
         # This is the only F2-C bridge failure fallback.  It is static,
         # server-owned and contains no provider candidate text.
         return GovernedChatProjection(
