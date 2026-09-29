@@ -389,5 +389,12 @@ def test_chat_endpoint_survives_shadow_validation_import_failure(client):
         http_client._client = original
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["contract_degraded"] is False
-    assert "sobrevivio al fallo de encolado" in body["response"]
+    if body["contract_state"] == "VALID":
+        assert body["contract_degraded"] is False
+        assert "sobrevivio al fallo de encolado" in body["response"]
+    else:
+        assert body["contract_state"] == "UNAVAILABLE"
+        assert body["contract_degraded"] is True
+        assert body["response"] == "The response could not be verified safely."
+        assert "sobrevivio al fallo de encolado" not in body["response"]
+    assert body["governed_plain"] is True

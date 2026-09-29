@@ -109,8 +109,19 @@ def test_lo_que_no_es_el_disparador_va_al_modelo(client, mensaje):
     finally:
         http_client._client = original
     assert resp.status_code == 200, resp.text
-    assert resp.json()["response"] != chat_mod.EASTER_EGG_TEXT
-    assert "respuesta normal del modelo" in resp.json()["response"]
+    body = resp.json()
+    assert body["response"] != chat_mod.EASTER_EGG_TEXT
+    # The non-trigger still reaches the provider.  F2-C either renders its
+    # sealed non-governed result with the paired core, or fails closed when
+    # this platform test checkout has no F2-C renderer yet.
+    if body["contract_state"] == "VALID":
+        assert "respuesta normal del modelo" in body["response"]
+        assert body["contract_degraded"] is False
+    else:
+        assert body["contract_state"] == "UNAVAILABLE"
+        assert body["response"] == "The response could not be verified safely."
+        assert "respuesta normal del modelo" not in body["response"]
+    assert body["governed_plain"] is True
 
 
 def test_ide1990_va_al_hilo_pero_no_a_la_memoria_persistente(client, sin_proveedor, monkeypatch):
