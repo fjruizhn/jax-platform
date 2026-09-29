@@ -24,7 +24,7 @@ def _f2b_composition():
     from policy.governance.resolution import (
         AdapterKind, ConflictPolicy, GovernedResolutionReceipt,
         PredicateAuthorityBinding, ReceiptAuthenticator, RegistryEntry,
-        ResolutionObservation, ResolutionStatus, ResolverRegistry,
+        ReferenceLookupRecord, ResolutionObservation, ResolutionStatus, ResolverRegistry,
         ScopeRule, ServerAdapterInput, TrustedAdapterRegistration,
     )
 
@@ -67,9 +67,32 @@ def _f2b_composition():
         (claim,), (ref,))
     envelope = response._seal_candidate_for_server(candidate,
         contract_state=ContractState.VALID, governance_receipt=governance_receipt)
+    trusted_references = {ref.ref_id: ReferenceLookupRecord(ref.ref_id,
+        ref.ref_type, ref.canonical_locator, ref.immutable_identity,
+        ref.revision_or_digest, ref.scope_digest, ref.temporal_class,
+        ref.existence_state, True)}
+
+    def resolve_trusted_reference(candidate_ref, candidate_scope):
+        known = trusted_references.get(candidate_ref.ref_id)
+        if (known is None or known.ref_type is not candidate_ref.ref_type
+                or known.canonical_locator != candidate_ref.canonical_locator
+                or known.immutable_identity != candidate_ref.immutable_identity
+                or known.revision_or_digest != candidate_ref.revision_or_digest
+                or known.scope_digest != candidate_ref.scope_digest
+                or known.scope_digest != candidate_scope.scope_digest
+                or known.temporal_class is not candidate_ref.temporal_class
+                or known.existence_state is not candidate_ref.existence_state
+                or not known.accessible):
+            return None
+        return known
+
+    def validate_trusted_reference(candidate_ref, candidate_scope):
+        return resolve_trusted_reference(candidate_ref, candidate_scope) is not None
+
     context = RenderContext(registry, {ref.ref_id: resolution_receipt},
         {("capability", "1", "en"): "Capability {name} is available."}, {},
-        GovernedDomainRegistry(), lambda _ref, _scope: True, lambda: now)
+        GovernedDomainRegistry(), validate_trusted_reference, lambda: now,
+        receipt_reference_resolver=resolve_trusted_reference)
     return envelope, context, governance_receipt
 
 
@@ -93,6 +116,21 @@ def test_exact_pair_bridge_blocks_narrative_and_renders_valid_supported_claim(mo
     assert response.envelope_digest.startswith("sha256:")
     assert response.source_envelope_digest == envelope.envelope_digest
 
+    # Receipt verification resolves the original immutable reference from
+    # test-owned trusted state; caller substitutions cannot borrow it.
+    from policy.governance.response import _seal_candidate_for_server
+    for changed_ref in (
+        replace(envelope.references[0], immutable_identity="substituted-identity"),
+        replace(envelope.references[0], canonical_locator="test://substituted"),
+    ):
+        substituted = _seal_candidate_for_server(
+            replace(envelope.candidate, references=(changed_ref,)),
+            contract_state=envelope.contract_state,
+            governance_receipt=governance_receipt)
+        rejected = project_sealed_envelope(substituted, context)
+        assert rejected.contract_state == "UNAVAILABLE"
+        assert rejected.text != "Capability x is available."
+
     hostile = _parse_contract_response(
         '{"claim": [], "analysis": "Hall9000 is healthy.", "judgment": null}')
     blocked = project_provider_contract(hostile, memory_scope=__import__("jax.memory.b9", fromlist=["ScopeContext"]).ScopeContext(
@@ -100,6 +138,14 @@ def test_exact_pair_bridge_blocks_narrative_and_renders_valid_supported_claim(mo
         tenant_id="1", project_id=None, calling_component="jax-platform-web-chat"), user_id="7")
     assert blocked.contract_state == "UNAVAILABLE"
     assert "Hall9000" not in blocked.text
+
+    curly = _parse_contract_response(
+        '{"claim": [], "analysis": "Hall9000 isn’t healthy.", "judgment": null}')
+    curly_blocked = project_provider_contract(curly, memory_scope=__import__("jax.memory.b9", fromlist=["ScopeContext"]).ScopeContext(
+        actor_principal="user:7", actor_type="USER", subject_user_id="7",
+        tenant_id="1", project_id=None, calling_component="jax-platform-web-chat"), user_id="7")
+    assert curly_blocked.contract_state == "UNAVAILABLE"
+    assert "Hall9000" not in curly_blocked.text
 
     # A valid receipt for the original semantic arguments cannot support a
     # privileged substitute even through the actual platform bridge.

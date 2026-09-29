@@ -253,24 +253,13 @@ export default {
     desconocida: () => 'Stopped for a reason that was not recorded.',
   },
   avisosChat: {
-    faceta_sin_binding: (p = {}) => `⚠️ ${p.facet || 'This chat facet'} is not available: no active binding configured.`,
-    faceta_no_autorizada: (p = {}) => `⚠️ ${p.facet || 'This chat facet'} is not available: access not authorized.`,
-    transporte_no_soportado: (p = {}) => p.transport
-      ? `⚠️ ${p.facet || 'This chat facet'} is not available: transport '${p.transport}' is not supported in the web Mesa.`
-      : '⚠️ The configured transport is not supported in the web Mesa.',
-    identidad_del_modelo: (p, hosting) => `I run on '${p.model}' ${hosting} — read live from the active model selector, not from memory.`,
+    faceta_sin_binding: () => '⚠️ This chat facet is not available: no active binding is configured.',
+    faceta_no_autorizada: () => '⚠️ This chat facet is not available: access is not authorized.',
+    transporte_no_soportado: () => '⚠️ The configured chat transport is not supported in the web Mesa.',
+    identidad_del_modelo: () => 'I could not verify the current state.',
     estado_actual_no_disponible: () => 'I could not verify the current state.',
     hyde_usa_modo_comando: () => 'Hyde works as an autonomous task runner — use Command mode for technical tasks.',
   },
-  hostingDeProveedor: {
-    ollama: 'via local Ollama on hall9000',
-    deepseek: 'via the DeepSeek API',
-    gemini: 'via the Gemini API (Google)',
-    openai: 'via the OpenAI API',
-    moonshot: 'via the Moonshot API',
-    zhipu: 'via the Zhipu API (GLM)',
-  },
-  hostingGenerico: 'via the API configured for this facet',
   avisoDesconocido: 'The facet replied with a notice this version does not know.',
   commandFailed: (motivo) => `Error running the task: ${motivo}`,
   commandFailedSinMotivo: 'Error running the task.',

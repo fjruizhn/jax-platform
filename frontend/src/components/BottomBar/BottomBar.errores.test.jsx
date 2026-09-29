@@ -49,7 +49,7 @@ describe('BottomBar -- errores y avisos con código', () => {
     } })
     enviarChat('hola')
     await waitFor(() => expect(useJaxStore.getState().messages).toHaveLength(2))
-    expect(useJaxStore.getState().messages[1].content).toBe(es.avisosChat.faceta_sin_binding({ facet: 'thot' }))
+    expect(useJaxStore.getState().messages[1].content).toBe(es.avisosChat.faceta_sin_binding())
   })
 
   // Frente B, Task 9 (2026-09-17, Ruling R4): con el freno puesto la Mesa

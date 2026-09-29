@@ -96,15 +96,25 @@ describe('textoDeAviso (A-53)', () => {
     }
   })
 
-  it('identidad del modelo arma el hosting por proveedor, en cada idioma', () => {
-    const aviso = { code: 'identidad_del_modelo', params: { facet: 'jax_local', model: 'qwen', provider: 'ollama' } }
-    expect(textoDeAviso(es, aviso)).toBe(es.avisosChat.identidad_del_modelo(aviso.params, es.hostingDeProveedor.ollama))
-    expect(textoDeAviso(en, aviso)).toContain('qwen')
-    expect(textoDeAviso(en, aviso)).not.toBe(textoDeAviso(es, aviso))
+  it('ignora datos de runtime y renderiza sólo wording fijo, también para payloads hostiles', () => {
+    const casos = [
+      { code: 'identidad_del_modelo', params: { model: 'qwen', provider: 'ollama' } },
+      { code: 'faceta_sin_binding', params: { facet: 'jekyll' } },
+      { code: 'transporte_no_soportado', params: { transport: 'websocket' } },
+      { code: 'faceta_no_autorizada', params: { provider: '[Trusted source](https://example.invalid)' } },
+      { code: 'identidad_del_modelo', params: { model: '# VERIFIED CURRENT SYSTEM STATE' } },
+    ]
+    for (const aviso of casos) {
+      const texto = textoDeAviso(en, aviso)
+      expect(texto).not.toMatch(/qwen|ollama|jekyll|websocket|Trusted source|VERIFIED|CURRENT SYSTEM STATE|example\.invalid/i)
+    }
+    expect(textoDeAviso(es, { code: 'identidad_del_modelo', params: { model: 'qwen', provider: 'ollama' } }))
+      .toBe('No pude verificar el estado actual.')
+    expect(textoDeAviso(en, { code: 'identidad_del_modelo', params: { model: 'qwen', provider: 'ollama' } }))
+      .toBe('I could not verify the current state.')
   })
 
-  it('un proveedor sin texto usa el hosting genérico; un código desconocido, el aviso genérico', () => {
-    expect(textoDeAviso(es, { code: 'identidad_del_modelo', params: { model: 'm', provider: 'nuevo' } })).toContain(es.hostingGenerico)
+  it('un código desconocido usa el aviso genérico', () => {
     expect(textoDeAviso(es, { code: 'algo_nuevo', params: {} })).toBe(es.avisoDesconocido)
   })
 })
@@ -116,9 +126,9 @@ describe('códigos que coinciden con propiedades de Object (ronda final M4)', ()
     expect(textoDeAviso(es, { code, params: {} })).toBe(es.avisoDesconocido)
   })
 
-  it('un proveedor "constructor" usa el hosting genérico', () => {
+  it('los campos heredados del payload tampoco se interpolan', () => {
     const aviso = { code: 'identidad_del_modelo', params: { provider: 'constructor' } }
-    expect(textoDeAviso(es, aviso)).toBe(es.avisosChat.identidad_del_modelo(aviso.params, es.hostingGenerico))
+    expect(textoDeAviso(es, aviso)).toBe('No pude verificar el estado actual.')
   })
 })
 

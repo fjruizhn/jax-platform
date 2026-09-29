@@ -260,24 +260,13 @@ export default {
     desconocida: () => 'Se detuvo por una causa que no quedó registrada.',
   },
   avisosChat: {
-    faceta_sin_binding: (p = {}) => `⚠️ ${p.facet || 'Esta faceta'} no está disponible: sin binding activo configurado.`,
-    faceta_no_autorizada: (p = {}) => `⚠️ ${p.facet || 'Esta faceta'} no está disponible: acceso no autorizado.`,
-    transporte_no_soportado: (p = {}) => p.transport
-      ? `⚠️ ${p.facet || 'Esta faceta'} no está disponible: transporte '${p.transport}' no soportado en la Mesa web.`
-      : '⚠️ El transporte configurado no está soportado en la Mesa web.',
-    identidad_del_modelo: (p, hosting) => `Corro con '${p.model}' ${hosting} — dato leído en vivo del selector de modelos activo, no de memoria.`,
+    faceta_sin_binding: () => '⚠️ Esta faceta de chat no está disponible: no hay un binding activo configurado.',
+    faceta_no_autorizada: () => '⚠️ Esta faceta de chat no está disponible: el acceso no está autorizado.',
+    transporte_no_soportado: () => '⚠️ El transporte de chat configurado no está soportado en la Mesa web.',
+    identidad_del_modelo: () => 'No pude verificar el estado actual.',
     estado_actual_no_disponible: () => 'No pude verificar el estado actual.',
     hyde_usa_modo_comando: () => 'Hyde opera en modo tarea autónoma — usa el modo Comando para ejecutar tareas técnicas.',
   },
-  hostingDeProveedor: {
-    ollama: 'vía Ollama local en hall9000',
-    deepseek: 'vía la API de DeepSeek',
-    gemini: 'vía la API de Gemini (Google)',
-    openai: 'vía la API de OpenAI',
-    moonshot: 'vía la API de Moonshot',
-    zhipu: 'vía la API de Zhipu (GLM)',
-  },
-  hostingGenerico: 'vía la API configurada para esta faceta',
   avisoDesconocido: 'La faceta respondió con un aviso que esta versión no conoce.',
   commandFailed: (motivo) => `Error ejecutando la tarea: ${motivo}`,
   commandFailedSinMotivo: 'Error ejecutando la tarea.',

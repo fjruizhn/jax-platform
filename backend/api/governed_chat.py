@@ -72,7 +72,7 @@ def _core():
         if any(Path(module.__file__).resolve().is_relative_to(root_path) is False for module in modules):
             raise GovernedChatUnavailable("loaded F2-C modules are outside configured JAX repository")
         if (GOVERNED_RENDERER_API_VERSION, GOVERNED_DOMAIN_SPEC_VERSION,
-                GOVERNED_ENVELOPE_SCHEMA_VERSIONS) != ("f2-c.renderer.2", "f2-c.domain.1", frozenset({"f2-c.1"})):
+                GOVERNED_ENVELOPE_SCHEMA_VERSIONS) != ("f2-c.renderer.2", "f2-c.domain.2", frozenset({"f2-c.1"})):
             raise GovernedChatUnavailable("configured JAX F2-C compatibility is unsupported")
     except (ImportError, AttributeError) as exc:
         raise GovernedChatUnavailable("F2-C core renderer is unavailable") from exc

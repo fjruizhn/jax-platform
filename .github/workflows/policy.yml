@@ -4363,7 +4363,7 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 170
     runs-on: ubuntu-latest
     env:
-      JAX_F2C_EXPECTED_HEAD: c225c00ea420748ea87e629dd225a6fa92ea391c
+      JAX_F2C_EXPECTED_HEAD: 5a6f4d73ed30ea8a0b2c10e7ed656af621f7a61a
       JAX_JWT_SECRET: ci-dummy-not-a-real-secret
       JAX_CI_NO_DB: "1"
       JAX_REPO_BASE: ${{ github.workspace }}/jax
@@ -4414,6 +4414,15 @@ jobs:
       - name: Exact-pair F2-C integration test
         working-directory: platform/backend
         run: python -m pytest -q -p no:warnings integration_tests/test_f2c_exact_pair_integration.py
+      - name: Verify fixed frontend notices on exact platform head
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Frontend dynamic notice regression
+        working-directory: platform/frontend
+        run: |
+          npm ci
+          npm test -- src/api/errores.test.js src/components/BottomBar/BottomBar.errores.test.jsx
       - name: Upload exact-pair evidence
         uses: actions/upload-artifact@v4
         with:
