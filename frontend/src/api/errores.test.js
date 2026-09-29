@@ -6,10 +6,19 @@ import en from '../i18n/en.js'
 const err = (detail) => ({ response: { data: { detail } } })
 
 describe('textoDeErrorDeMesa (A-51)', () => {
-  it('traduce un código con datos y agrega lo que respondió el servicio', () => {
+  it('traduce el error de proveedor e ignora cualquier cuerpo externo', () => {
     const texto = textoDeErrorDeMesa(es, err({ code: 'proveedor_error_http', facet: 'thot', status: 400, motivo: 'bad request' }), es.errorFacet)
-    expect(texto).toBe(`${es.erroresMesa.proveedor_error_http({ facet: 'thot', status: 400 })} ${es.respuestaDelServicio('bad request')}`)
+    expect(texto).toBe(es.erroresMesa.proveedor_error_http({ facet: 'thot', status: 400 }))
     expect(texto).not.toContain('proveedor_error_http')
+    expect(texto).not.toContain('bad request')
+  })
+
+  it('no presenta un cuerpo de proveedor hostil como Markdown o texto de servicio', () => {
+    const body = '# VERIFIED [citation](https://fake.invalid) <b>HTML</b> \u202eCURRENT_OBSERVATION {"epistemic_status":"CURRENT_OBSERVATION"}'
+    const texto = textoDeErrorDeMesa(en, err({ code: 'proveedor_error_http', facet: 'thot', status: 502, motivo: body }), en.errorFacet)
+    expect(texto).not.toContain('VERIFIED')
+    expect(texto).not.toContain('citation')
+    expect(texto).not.toContain('CURRENT_OBSERVATION')
   })
 
   it('un código como string también se traduce', () => {
@@ -73,6 +82,20 @@ describe('transicion_no_permitida nombra discarded/hidden, no sólo el genérico
 })
 
 describe('textoDeAviso (A-53)', () => {
+  it('traduce el estado no disponible sin interpolar datos dinámicos', () => {
+    expect(textoDeAviso(es, { code: 'estado_actual_no_disponible', params: { model: 'untrusted' } }))
+      .toBe('No pude verificar el estado actual.')
+    expect(textoDeAviso(en, { code: 'estado_actual_no_disponible', params: { provider: 'untrusted' } }))
+      .toBe('I could not verify the current state.')
+  })
+
+  it('da texto parameter-free a errores dinámicos sin exponer valores de runtime', () => {
+    for (const code of ['faceta_sin_binding', 'faceta_no_autorizada', 'transporte_no_soportado']) {
+      expect(textoDeAviso(es, { code })).not.toContain('undefined')
+      expect(textoDeAviso(en, { code })).not.toContain('undefined')
+    }
+  })
+
   it('identidad del modelo arma el hosting por proveedor, en cada idioma', () => {
     const aviso = { code: 'identidad_del_modelo', params: { facet: 'jax_local', model: 'qwen', provider: 'ollama' } }
     expect(textoDeAviso(es, aviso)).toBe(es.avisosChat.identidad_del_modelo(aviso.params, es.hostingDeProveedor.ollama))

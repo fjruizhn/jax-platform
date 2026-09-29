@@ -51,6 +51,10 @@ export function textoDeDetalleDeMesa(t, detail, generico) {
   if (!traducir) return generico
   const datos = detail && typeof detail === 'object' ? detail : {}
   const partes = [traducir(datos)]
+  // Provider and external response bodies are untrusted diagnostics. They are
+  // never appended to a user-visible chat error, even if an older backend
+  // still includes a `motivo` field.
+  if (code === 'proveedor_error_http' || code === 'faceta_error') return partes[0]
   // Sólo un string no vacío va como dato (fix round 2): un objeto sería
   // "[object Object]" en pantalla.
   if (typeof datos.motivo === 'string' && datos.motivo) partes.push(t.respuestaDelServicio(datos.motivo))

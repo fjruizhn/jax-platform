@@ -33,12 +33,13 @@ beforeEach(() => {
 })
 
 describe('BottomBar -- errores y avisos con código', () => {
-  it('un 502 con código se traduce; el código no aparece crudo', async () => {
+  it('un 502 de faceta omite el cuerpo externo y traduce solo el código estable', async () => {
     api.post.mockRejectedValue({ response: { status: 502, data: { detail: { code: 'faceta_error', facet: 'thot', motivo: 'timeout' } } } })
     enviarChat('hola')
     await waitFor(() => expect(useJaxStore.getState().messages).toHaveLength(2))
     const { content } = useJaxStore.getState().messages[1]
-    expect(content).toBe(`**${es.errorPrefix}:** ${es.erroresMesa.faceta_error({ facet: 'thot' })} ${es.respuestaDelServicio('timeout')}`)
+    expect(content).toBe(`**${es.errorPrefix}:** ${es.erroresMesa.faceta_error({ facet: 'thot' })}`)
+    expect(content).not.toContain('timeout')
   })
 
   it('una respuesta enlatada muestra el texto del aviso, no la marca', async () => {

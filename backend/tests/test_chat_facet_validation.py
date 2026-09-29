@@ -347,4 +347,4 @@ def test_a_new_http_transport_facet_is_governed_even_if_unnamed(monkeypatch):
     # Denegado => ni una sola llamada al proveedor real.
     assert len(fake.urls) == 1, fake.urls
     assert usage is None
-    assert texto == chat_mod.AvisoDeChat(code="faceta_no_autorizada", params={"facet": "facet_http_nuevo"})
+    assert texto == chat_mod.AvisoDeChat(code="faceta_no_autorizada")

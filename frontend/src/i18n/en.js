@@ -253,10 +253,13 @@ export default {
     desconocida: () => 'Stopped for a reason that was not recorded.',
   },
   avisosChat: {
-    faceta_sin_binding: (p) => `⚠️ ${p.facet} is not available: no active binding configured.`,
-    faceta_no_autorizada: (p) => `⚠️ ${p.facet} is not available: access not authorized.`,
-    transporte_no_soportado: (p) => `⚠️ ${p.facet} is not available: transport '${p.transport}' is not supported in the web Mesa.`,
+    faceta_sin_binding: (p = {}) => `⚠️ ${p.facet || 'This chat facet'} is not available: no active binding configured.`,
+    faceta_no_autorizada: (p = {}) => `⚠️ ${p.facet || 'This chat facet'} is not available: access not authorized.`,
+    transporte_no_soportado: (p = {}) => p.transport
+      ? `⚠️ ${p.facet || 'This chat facet'} is not available: transport '${p.transport}' is not supported in the web Mesa.`
+      : '⚠️ The configured transport is not supported in the web Mesa.',
     identidad_del_modelo: (p, hosting) => `I run on '${p.model}' ${hosting} — read live from the active model selector, not from memory.`,
+    estado_actual_no_disponible: () => 'I could not verify the current state.',
     hyde_usa_modo_comando: () => 'Hyde works as an autonomous task runner — use Command mode for technical tasks.',
   },
   hostingDeProveedor: {

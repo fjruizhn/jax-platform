@@ -145,18 +145,15 @@ def test_record_facet_health_redacta_antes_de_truncar(monkeypatch):
     assert detail.endswith("***")
 
 
-def test_el_502_del_chat_redacta_antes_de_recortar():
-    """Fix round 1 (review de 3bed155): el 502 armaba
-    redactar_secretos(f"... {e.response.text[:200]}") -- recortaba ANTES de
-    redactar. Una key que cruza el caracter 200 quedaba cortada, sin forma
-    reconocible, y su prefijo salia al usuario y al bus."""
+def test_el_502_del_chat_no_proyecta_diagnostico_del_proveedor():
+    """The complete provider body is forensic-only, never HTTP detail."""
     req = httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/m:generateContent")
     cuerpo = "e" * 190 + " " + KEY + " fin"          # la key empieza en el 191
     exc = httpx.HTTPStatusError("x", request=req, response=httpx.Response(400, text=cuerpo, request=req))
     detail = chat_mod._detalle_502_http("hipatia", exc)
     assert detail["code"] == "proveedor_error_http" and detail["status"] == 400
-    assert "AIza" not in detail["motivo"]
-    assert len(detail["motivo"]) <= 200
+    assert KEY not in repr(detail)
+    assert "motivo" not in detail
 
 
 # --- 2. sonda por rebind --------------------------------------------------------

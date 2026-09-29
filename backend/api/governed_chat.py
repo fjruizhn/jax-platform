@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+import importlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,26 +20,6 @@ if TYPE_CHECKING:  # keep the platform importable until the paired JAX core is d
     from api.chat import ContractResult
     from jax.memory.b9 import ScopeContext
 
-
-# This is a deliberately small, deterministic grammar.  It is a tripwire for
-# known current-system wording, not an NLP claim classifier.  A parsed provider
-# claim is blocked independently of this grammar.
-_GOVERNED_PHRASES = {
-    "capability_available": "CAPABILITY_AVAILABLE",
-    "is available": "CAPABILITY_AVAILABLE",
-    "está disponible": "CAPABILITY_AVAILABLE",
-    "facet_exists": "FACET_EXISTS",
-    "engine_status": "ENGINE_STATUS",
-    "is running": "ENGINE_STATUS",
-    "está ejecutándose": "ENGINE_STATUS",
-    "server is healthy": "ENGINE_STATUS",
-    "el servidor está saludable": "ENGINE_STATUS",
-    "config_value": "CONFIG_VALUE",
-    "file_exists": "FILE_EXISTS",
-    "audit_event_exists": "AUDIT_EVENT_EXISTS",
-    "job_status": "JOB_STATUS",
-    "memory_entry_exists": "MEMORY_ENTRY_EXISTS",
-}
 
 _UNAVAILABLE_NOTICE = "I could not verify the current state."
 _DEGRADED_NOTICE = "The response could not be verified safely."
@@ -53,6 +34,7 @@ class GovernedChatProjection:
     text: str
     response_id: str | None
     envelope_digest: str | None
+    source_envelope_digest: str | None
     contract_state: str
     contract_degraded: bool
     governed_plain: bool
@@ -67,7 +49,8 @@ def _core():
     # from another checkout into sys.modules.  The configured repository is
     # the trusted paired core dependency, not whichever module happened to be
     # imported first in this process.
-    if not (Path(root) / "policy" / "governance" / "governed_renderer.py").is_file():
+    root_path = Path(root).resolve()
+    if not (root_path / "policy" / "governance" / "governed_renderer.py").is_file():
         raise GovernedChatUnavailable("configured JAX repository lacks the F2-C renderer")
     if root not in sys.path:
         sys.path.insert(0, root)
@@ -79,10 +62,23 @@ def _core():
             WebChatGovernanceAdapter,
         )
         from policy.governance.response import ContractState, GovernanceReceipt, ResponseScope
+        from policy.governance.governed_domain import (
+            GOVERNED_DOMAIN_SPEC_VERSION, GOVERNED_ENVELOPE_SCHEMA_VERSIONS,
+            GOVERNED_RENDERER_API_VERSION, GovernedDomainSpecification,
+        )
+        modules = (importlib.import_module("policy.governance.governed_renderer"),
+                   importlib.import_module("policy.governance.governed_domain"),
+                   importlib.import_module("policy.governance.response"))
+        if any(Path(module.__file__).resolve().is_relative_to(root_path) is False for module in modules):
+            raise GovernedChatUnavailable("loaded F2-C modules are outside configured JAX repository")
+        if (GOVERNED_RENDERER_API_VERSION, GOVERNED_DOMAIN_SPEC_VERSION,
+                GOVERNED_ENVELOPE_SCHEMA_VERSIONS) != ("f2-c.renderer.2", "f2-c.domain.1", frozenset({"f2-c.1"})):
+            raise GovernedChatUnavailable("configured JAX F2-C compatibility is unsupported")
     except (ImportError, AttributeError) as exc:
         raise GovernedChatUnavailable("F2-C core renderer is unavailable") from exc
     return (GovernedDomainRegistry, GovernedRenderer, RenderContext,
-            WebChatGovernanceAdapter, ContractState, GovernanceReceipt, ResponseScope)
+            WebChatGovernanceAdapter, ContractState, GovernanceReceipt, ResponseScope,
+            GovernedDomainSpecification)
 
 
 def _environment() -> str:
@@ -101,6 +97,33 @@ def _narrative(contract: "ContractResult") -> str:
     return contract.analysis
 
 
+def project_sealed_envelope(envelope, render_context) -> GovernedChatProjection:
+    """Render a typed sealed envelope through the same platform projection.
+
+    This is also the non-production composition seam for accredited F2-B
+    integration tests. The caller must supply server-owned registry,
+    authenticator-minted receipts, templates and reference validators.
+    """
+    try:
+        (_, GovernedRenderer, _, _, _, _, _, _) = _core()
+        rendered = GovernedRenderer().render_text(envelope, render_context)
+        degraded = rendered.contract_state.value != "VALID"
+        return GovernedChatProjection(
+            text=rendered.text, response_id=rendered.response_id,
+            envelope_digest=rendered.envelope_digest,
+            source_envelope_digest=rendered.source_envelope_digest,
+            contract_state=rendered.contract_state.value,
+            contract_degraded=degraded, governed_plain=True,
+        )
+    except Exception:  # fail-soft: never expose an envelope or text if the renderer fails
+        return GovernedChatProjection(
+            text=_DEGRADED_NOTICE, response_id=None, envelope_digest=None,
+            source_envelope_digest=None,
+            contract_state="UNAVAILABLE", contract_degraded=True,
+            governed_plain=True,
+        )
+
+
 def project_provider_contract(
     contract: "ContractResult | None", *, memory_scope: "ScopeContext",
     user_id: str, request_id: str | None = None, trace_id: str | None = None,
@@ -114,7 +137,8 @@ def project_provider_contract(
     """
     try:
         (GovernedDomainRegistry, GovernedRenderer, RenderContext,
-         WebChatGovernanceAdapter, ContractState, GovernanceReceipt, ResponseScope) = _core()
+         WebChatGovernanceAdapter, ContractState, GovernanceReceipt, ResponseScope,
+         GovernedDomainSpecification) = _core()
         response_id = str(uuid.uuid4())
         request_id = request_id or str(uuid.uuid4())
         trace_id = trace_id or str(uuid.uuid4())
@@ -140,7 +164,7 @@ def project_provider_contract(
         context = RenderContext(
             registry=None, receipts={}, templates={},
             notices={"unavailable": _UNAVAILABLE_NOTICE, "degraded": _DEGRADED_NOTICE},
-            domain_registry=GovernedDomainRegistry(_GOVERNED_PHRASES),
+            domain_registry=GovernedDomainRegistry(specification=GovernedDomainSpecification()),
         )
         if contract is None or not contract.contract_parsed:
             envelope = adapter.seal_safe_notice(
@@ -163,14 +187,16 @@ def project_provider_contract(
         return GovernedChatProjection(
             text=rendered.text, response_id=rendered.response_id,
             envelope_digest=rendered.envelope_digest,
+            source_envelope_digest=rendered.source_envelope_digest,
             contract_state=rendered.contract_state.value,
-            contract_degraded=degraded, governed_plain=True,
+            contract_degraded=rendered.contract_state.value != "VALID" or degraded, governed_plain=True,
         )
     except Exception:  # fail-soft: renderer/core failure emits only static non-current text, never provider prose
         # This is the only F2-C bridge failure fallback.  It is static,
         # server-owned and contains no provider candidate text.
         return GovernedChatProjection(
             text=_DEGRADED_NOTICE, response_id=None, envelope_digest=None,
+            source_envelope_digest=None,
             contract_state="UNAVAILABLE", contract_degraded=True,
             governed_plain=True,
         )

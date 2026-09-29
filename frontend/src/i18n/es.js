@@ -260,10 +260,13 @@ export default {
     desconocida: () => 'Se detuvo por una causa que no quedó registrada.',
   },
   avisosChat: {
-    faceta_sin_binding: (p) => `⚠️ ${p.facet} no está disponible: sin binding activo configurado.`,
-    faceta_no_autorizada: (p) => `⚠️ ${p.facet} no está disponible: acceso no autorizado.`,
-    transporte_no_soportado: (p) => `⚠️ ${p.facet} no está disponible: transporte '${p.transport}' no soportado en la Mesa web.`,
+    faceta_sin_binding: (p = {}) => `⚠️ ${p.facet || 'Esta faceta'} no está disponible: sin binding activo configurado.`,
+    faceta_no_autorizada: (p = {}) => `⚠️ ${p.facet || 'Esta faceta'} no está disponible: acceso no autorizado.`,
+    transporte_no_soportado: (p = {}) => p.transport
+      ? `⚠️ ${p.facet || 'Esta faceta'} no está disponible: transporte '${p.transport}' no soportado en la Mesa web.`
+      : '⚠️ El transporte configurado no está soportado en la Mesa web.',
     identidad_del_modelo: (p, hosting) => `Corro con '${p.model}' ${hosting} — dato leído en vivo del selector de modelos activo, no de memoria.`,
+    estado_actual_no_disponible: () => 'No pude verificar el estado actual.',
     hyde_usa_modo_comando: () => 'Hyde opera en modo tarea autónoma — usa el modo Comando para ejecutar tareas técnicas.',
   },
   hostingDeProveedor: {
