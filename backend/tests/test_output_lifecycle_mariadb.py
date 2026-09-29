@@ -214,6 +214,55 @@ def test_outbox_schema_is_versioned_and_rollback_is_explicit():
     assert DOWN_SQL[1].endswith("governed_output_outbox")
 
 
+def test_mariadb_migration_upgrade_rollback_and_reupgrade_isolated(client):
+    from db.output_lifecycle_migration import DOWN_SQL, UP_SQL
+    suffix = uuid.uuid4().hex[:10]
+    outbox_name = f"f2d_test_outbox_{suffix}"
+    events_name = f"f2d_test_events_{suffix}"
+    replacements = {
+        "governed_output_lifecycle_events": events_name,
+        "governed_output_outbox": outbox_name,
+    }
+
+    def renamed(statement):
+        for old, new in replacements.items():
+            statement = statement.replace(old, new)
+        return statement
+
+    async def exercise():
+        async with transaccion() as cur:
+            try:
+                for statement in UP_SQL:
+                    await cur.execute(renamed(statement))
+                await cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.TABLES "
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s)",
+                    (outbox_name, events_name),
+                )
+                assert (await cur.fetchone())[0] == 2
+                for statement in DOWN_SQL:
+                    await cur.execute(renamed(statement))
+                await cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.TABLES "
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s)",
+                    (outbox_name, events_name),
+                )
+                assert (await cur.fetchone())[0] == 0
+                for statement in UP_SQL:
+                    await cur.execute(renamed(statement))
+                await cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.TABLES "
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s)",
+                    (outbox_name, events_name),
+                )
+                assert (await cur.fetchone())[0] == 2
+            finally:
+                await cur.execute(f"DROP TABLE IF EXISTS {events_name}")
+                await cur.execute(f"DROP TABLE IF EXISTS {outbox_name}")
+
+    client.portal.call(exercise)
+
+
 def test_mariadb_migration_created_innodb_outbox_and_scoped_constraints(client):
     async def inspect_schema():
         pool = await get_pool()
