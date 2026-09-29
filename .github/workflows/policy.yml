@@ -4364,7 +4364,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       JAX_F2C_EXPECTED_HEAD: c225c00ea420748ea87e629dd225a6fa92ea391c
-      JAX_F2C_EXACT_PAIR: "1"
       JAX_JWT_SECRET: ci-dummy-not-a-real-secret
       JAX_CI_NO_DB: "1"
       JAX_REPO_PATH: ${{ github.workspace }}/jax
@@ -4413,7 +4412,7 @@ jobs:
         run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
       - name: Exact-pair F2-C integration test
         working-directory: platform/backend
-        run: python -m pytest -q -p no:warnings tests/test_f2c_exact_pair_integration.py
+        run: python -m pytest -q -p no:warnings integration_tests/test_f2c_exact_pair_integration.py
       - name: Upload exact-pair evidence
         uses: actions/upload-artifact@v4
         with:
