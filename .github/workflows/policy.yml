@@ -4366,7 +4366,7 @@ jobs:
   # records both SHAs, and exercises governed Web Chat preparation and ASGI
   # transport against that pair.
   f2d-exact-pair:
-    if: github.event_name == 'pull_request' && github.event.pull_request.number == 170
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 171
     runs-on: ubuntu-latest
     env:
       JAX_F2D_EXPECTED_SHA: e2cfbf871534bb876ad5f066e5923b6d3ebd3cc2
@@ -4403,7 +4403,7 @@ jobs:
               "jax_pr": 302,
               "jax_head": os.environ["JAX_F2D_EXPECTED_SHA"],
               "platform_repository": "fjruizhn/jax-platform",
-              "platform_pr": 170,
+              "platform_pr": 171,
               "platform_head": os.popen("git rev-parse HEAD").read().strip(),
           }
           with open("f2d-exact-pair-evidence.json", "w", encoding="utf-8") as f:
