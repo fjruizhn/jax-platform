@@ -4363,7 +4363,7 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 170
     runs-on: ubuntu-latest
     env:
-      JAX_F2C_EXPECTED_HEAD: 5a6f4d73ed30ea8a0b2c10e7ed656af621f7a61a
+      JAX_F2C_EXPECTED_HEAD: 4c594f9764b2500bfe90602f87c9bf97569bab07
       JAX_JWT_SECRET: ci-dummy-not-a-real-secret
       JAX_CI_NO_DB: "1"
       JAX_REPO_BASE: ${{ github.workspace }}/jax
