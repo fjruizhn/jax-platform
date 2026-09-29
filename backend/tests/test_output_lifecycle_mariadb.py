@@ -69,6 +69,17 @@ async def _row(outbox_id):
             return await cur.fetchone()
 
 
+async def _event_rows(outbox_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT event_type, from_state, to_state FROM governed_output_lifecycle_events "
+                "WHERE outbox_id=%s ORDER BY sequence_no", (outbox_id,),
+            )
+            return await cur.fetchall()
+
+
 async def _count_attempts(tenant_id, request_id):
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -96,6 +107,7 @@ def test_exact_preparation_survives_repository_reinstantiation_and_is_idempotent
     scope, unit, payload = _unit()
     repo1 = repository.OutputOutboxRepository()
     args = dict(tenant_id=1, project_id=None, subject_id="7", request_id=unit.request_id)
+    recovery_before = _call(client, repository.OutputOutboxRepository().recovery_snapshot)
     auth1 = _call(client, repo1.prepare, unit, payload, **args)
     auth2 = _call(client, repository.OutputOutboxRepository().prepare, unit, payload, **args)
     assert auth1.outbox_id == auth2.outbox_id
@@ -107,8 +119,8 @@ def test_exact_preparation_survives_repository_reinstantiation_and_is_idempotent
     assert (sequence, parent) == (1, None)
     assert client.portal.call(_count_attempts, 1, unit.request_id) == 1
     snapshot = _call(client, repository.OutputOutboxRepository().recovery_snapshot)
-    assert snapshot["OUTPUT_PREPARED"] >= 1
-    assert snapshot["OUTPUT_COMMITTED_TO_TRANSPORT"] == 0
+    assert snapshot["OUTPUT_PREPARED"] == recovery_before["OUTPUT_PREPARED"] + 1
+    assert snapshot["OUTPUT_COMMITTED_TO_TRANSPORT"] == recovery_before["OUTPUT_COMMITTED_TO_TRANSPORT"]
     client.portal.call(_delete_request, 1, unit.request_id)
 
 
@@ -136,6 +148,41 @@ def test_scope_and_wire_mutation_are_rejected_before_transport(client):
         _call(client, repo.prepare, unit, payload + b" ", tenant_id=1, project_id=None,
                            subject_id="7", request_id=request_id)
     assert client.portal.call(_count_attempts, 1, request_id) == 0
+
+
+def test_current_expiry_during_durable_prepare_persists_cancelled_without_authorization(
+    client, monkeypatch,
+):
+    request_id = str(uuid.uuid4())
+    _, unit, payload = _unit(request_id=request_id)
+    from api.governed_chat import _lifecycle_core
+    core = _lifecycle_core()
+    original = core.revalidate_for_transport
+    calls = 0
+
+    def expire_after_transaction(candidate, now):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("simulated current receipt expiry during DB prepare")
+        return original(candidate, now)
+
+    monkeypatch.setattr(core, "revalidate_for_transport", expire_after_transaction)
+    repo = repository.OutputOutboxRepository()
+    with pytest.raises(repository.OutputLifecycleUnavailable, match="expired during durable preparation"):
+        _call(client, repo.prepare, unit, payload, tenant_id=1, project_id=None,
+              subject_id="7", request_id=request_id)
+    async def find_request():
+        async with transaccion() as cur:
+            await cur.execute(
+                "SELECT outbox_id, state FROM governed_output_outbox "
+                "WHERE tenant_id=1 AND request_id=%s", (request_id,),
+            )
+            return await cur.fetchone()
+    outbox_id, state = _call(client, find_request)
+    assert state == "CANCELLED_BEFORE_COMMIT"
+    assert calls == 2
+    client.portal.call(_delete_request, 1, request_id)
 
 
 def test_prepare_and_audit_event_rollback_atomically(client, monkeypatch):
@@ -183,6 +230,25 @@ def test_concurrent_prepare_converges_and_concurrent_commit_is_single_winner(cli
     client.portal.call(_delete_request, 1, request_id)
 
 
+def test_post_commit_secondary_failure_is_durable_without_lifecycle_reversal(client):
+    request_id = str(uuid.uuid4())
+    _, unit, payload = _unit(request_id=request_id)
+    repo = repository.OutputOutboxRepository()
+    authorization = _call(client, repo.prepare, unit, payload, tenant_id=1, project_id=None,
+                          subject_id="7", request_id=request_id)
+    from api.governed_chat import _lifecycle_core
+    core = _lifecycle_core()
+    _call(client, repo.transition, authorization, core.OutputLifecycleState.TRANSPORT_COMMITTING)
+    _call(client, repo.transition, authorization, core.OutputLifecycleState.OUTPUT_COMMITTED_TO_TRANSPORT)
+    _call(client, repo.record_secondary_event, authorization, "POST_COMMIT_PROJECTION_FAILED")
+    assert client.portal.call(_row, authorization.outbox_id)[0] == "OUTPUT_COMMITTED_TO_TRANSPORT"
+    assert client.portal.call(_event_rows, authorization.outbox_id)[-1] == (
+        "POST_COMMIT_PROJECTION_FAILED", "OUTPUT_COMMITTED_TO_TRANSPORT",
+        "OUTPUT_COMMITTED_TO_TRANSPORT",
+    )
+    client.portal.call(_delete_request, 1, request_id)
+
+
 def test_changed_output_retry_has_new_attempt_and_preserves_first_record(client):
     request_id = str(uuid.uuid4())
     scope, unit1, payload1 = _unit(request_id=request_id, text="first safe output")
@@ -222,6 +288,7 @@ def test_mariadb_migration_upgrade_rollback_and_reupgrade_isolated(client):
     replacements = {
         "governed_output_lifecycle_events": events_name,
         "governed_output_outbox": outbox_name,
+        "fk_go_output_event_outbox": f"fk_f2d_{suffix}",
     }
 
     def renamed(statement):
@@ -232,6 +299,23 @@ def test_mariadb_migration_upgrade_rollback_and_reupgrade_isolated(client):
     async def exercise():
         async with transaccion() as cur:
             try:
+                legacy_outbox = renamed(UP_SQL[0]).replace(
+                    "      current_not_after DATETIME(6) NULL,\n", "")
+                await cur.execute(legacy_outbox)
+                await cur.execute(renamed(UP_SQL[2]))
+                await cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME='current_not_after'",
+                    (outbox_name,),
+                )
+                assert (await cur.fetchone())[0] == 0
+                await cur.execute(renamed(UP_SQL[1]))
+                await cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME='current_not_after'",
+                    (outbox_name,),
+                )
+                assert (await cur.fetchone())[0] == 1
                 for statement in UP_SQL:
                     await cur.execute(renamed(statement))
                 await cur.execute(

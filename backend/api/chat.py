@@ -1433,10 +1433,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         _update_history(history_key, mensaje_para_historial(req.message, validados), display_text)
         if conv_uuid:
             _memory.save_message(conv_uuid, facet, display_text, facet=facet, model=model_name)
-        try:
-            await _fire_completed(facet, tenant_id, user_id)
-        except Exception:  # fail-soft: transport is already committed; only the auxiliary event failed
-            logger.exception("F2-D transport committed but completion event failed")
+        await _fire_completed(facet, tenant_id, user_id)
 
     try:
         from webchat_f2d.transport import prepare_governed_chat_response
