@@ -4378,7 +4378,7 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}/jax
       JAX_OLLAMA_URL: http://127.0.0.1:11434
     steps:
-      - name: Checkout exact platform PR #170 head
+      - name: Checkout exact platform PR #171 head
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
