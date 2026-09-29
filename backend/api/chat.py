@@ -567,6 +567,14 @@ class ChatResponse(BaseModel):
     contract_degraded: bool = False
     # A-53: presente en las respuestas enlatadas; el frontend muestra t.avisosChat[aviso.code].
     aviso: AvisoDeChat | None = None
+    # F2-C: opaque response identity only.  The browser never receives
+    # references, receipts, or other trusted governance internals.
+    response_id: str | None = None
+    envelope_digest: str | None = None
+    contract_state: str | None = None
+    # Assistant/provider content rendered by F2-C is literal text.  This
+    # prevents payload Markdown from impersonating trusted presentation.
+    governed_plain: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -677,8 +685,14 @@ def _parse_contract_response(raw_text: str) -> ContractResult:
 
 
 def _build_display_response(contract: ContractResult) -> tuple[str, bool]:
+    """Compatibility projection with no raw-provider degraded fallback.
+
+    The HTTP Web Chat path uses ``api.governed_chat``.  Keeping this pure
+    helper safe prevents an accidental caller from restoring the historical
+    raw degraded-provider display path.
+    """
     if not contract.contract_parsed:
-        return contract.raw_text, True
+        return "The response could not be verified safely.", True
     if contract.judgment:
         return f"{contract.analysis}\n\n**{contract.judgment}**", False
     return contract.analysis, False
@@ -1347,9 +1361,19 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # Contrato {claim/analysis/judgment}: solo se intenta parsear cuando
     # hubo una llamada real al LLM (usage is not None, ver nota en _invoke_facet).
     contract = _parse_contract_response(response_text) if not is_canned else None
+    # F2-C pre-display boundary.  Provider text is already fully buffered by
+    # _invoke_facet; no token is written to an HTTP/WebSocket response before
+    # this sealed-envelope renderer projection succeeds.  Canned server
+    # notices remain SAFE_STATIC_TEXT and do not enter this dynamic path.
     if contract is not None:
-        display_text, contract_degraded = _build_display_response(contract)
+        from api.governed_chat import project_provider_contract
+        governed = project_provider_contract(
+            contract, memory_scope=memory_scope, user_id=str(user_id),
+        )
+        display_text = governed.text
+        contract_degraded = governed.contract_degraded
     else:
+        governed = None
         display_text, contract_degraded = response_text, False
 
     _update_history(history_key, mensaje_para_historial(req.message, validados), display_text)
@@ -1393,6 +1417,10 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     return ChatResponse(
         facet=facet, response=display_text, timestamp=timestamp,
         contract_degraded=contract_degraded, aviso=aviso,
+        response_id=governed.response_id if governed is not None else None,
+        envelope_digest=governed.envelope_digest if governed is not None else None,
+        contract_state=governed.contract_state if governed is not None else None,
+        governed_plain=governed.governed_plain if governed is not None else False,
     )
 
 

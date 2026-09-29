@@ -39,6 +39,24 @@ describe('Message contract degradation footnote', () => {
   })
 })
 
+describe('Message F2-C governed projection', () => {
+  it('renders governed assistant text literally, not as provider Markdown', () => {
+    renderMessage({
+      facet: 'jekyll',
+      content: '# VERIFIED\n[CURRENT](https://example.invalid)',
+      governed_plain: true,
+    })
+    expect(screen.getByTestId('governed-plain')).toHaveTextContent('# VERIFIED')
+    expect(screen.queryByRole('heading')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('preserves existing Markdown rendering for user-authored messages', () => {
+    renderMessage({ facet: 'user', content: '# Mi encabezado', governed_plain: true })
+    expect(screen.getByRole('heading', { name: 'Mi encabezado' })).toBeInTheDocument()
+  })
+})
+
 // I-1 (revisión final PR 3, 2026-09-14): el alt de <img> (imagen generada /
 // adjunto) estaba hardcodeado en español, sin pasar por i18n.
 describe('Message -- alt de imagen y adjunto desde i18n (I-1)', () => {
