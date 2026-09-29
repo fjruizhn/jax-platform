@@ -78,6 +78,9 @@ class _FakeRepository:
         self.transitions.append((current.value, target.value, before_send))
         self.state = target.value
 
+    async def record_secondary_event(self, authorization, event_type):
+        self.transitions.append((self.state, event_type, False))
+
 
 def _user_scope(scope):
     return scope
@@ -258,6 +261,19 @@ def test_post_send_db_failure_leaves_committing_uncertainty(monkeypatch):
     assert repo.state == "TRANSPORT_COMMITTING"
     assert len([m for m in messages if m["type"] == "http.response.body"]) == 1
     assert invoked == []
+
+
+def test_post_commit_projection_failure_is_durably_appended_without_state_reversal(monkeypatch):
+    repo = _FakeRepository()
+    async def fail_projection():
+        raise RuntimeError("simulated history projection failure")
+    response, _, _ = _make_response(monkeypatch, repo, fail_projection)
+    messages = []
+    _run_asgi(response, messages.append)
+    assert repo.state == "OUTPUT_COMMITTED_TO_TRANSPORT"
+    assert repo.transitions[-1] == (
+        "OUTPUT_COMMITTED_TO_TRANSPORT", "POST_COMMIT_PROJECTION_FAILED", False,
+    )
 
 
 def test_outbox_authorization_cannot_be_self_attested():
