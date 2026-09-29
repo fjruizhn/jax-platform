@@ -69,7 +69,18 @@ function Message({ message }) {
               <span>{message.attachment.filename}</span>
             </div>
           )}
-          <ReactMarkdown>{message.content}</ReactMarkdown>
+          {message.governed_plain && !isUser ? (
+            // F2-C governed assistant output is already a structural text
+            // projection.  Rendering it as Markdown would let untrusted
+            // provider payload imitate headings, links, badges or citations.
+            <div className="whitespace-pre-wrap break-words" data-testid="governed-plain">
+              {message.content}
+            </div>
+          ) : (
+            // User-authored messages retain the existing Markdown UX.  The
+            // governed flag is server-owned and never supplied by message text.
+            <ReactMarkdown>{message.content}</ReactMarkdown>
+          )}
           {message.contract_degraded && (
             <div className="text-xs text-texto-suave mt-2 italic">
               {t.contractDegradedNote}

@@ -52,9 +52,15 @@ def sin_proveedor():
 def _es_el_easter_egg(resp):
     assert resp.status_code == 200, resp.text
     cuerpo = resp.json()
-    assert cuerpo["response"] == chat_mod.EASTER_EGG_TEXT
+    assert cuerpo["response"] == "[estado_actual_no_disponible]"
+    assert cuerpo["aviso"] == {"code": "estado_actual_no_disponible", "params": {}}
     assert cuerpo["facet"] == "jax_local"
     assert cuerpo["contract_degraded"] is False
+    # The legacy shortcut text contains registered-system propositions.  It
+    # must never escape through the Web Chat response or its safe history mark.
+    assert chat_mod.EASTER_EGG_TEXT not in resp.text
+    for proposition in ("hall9000", "JAX", "viviendo ahora"):
+        assert proposition not in cuerpo["response"]
 
 
 @pytest.mark.parametrize("mensaje", [
@@ -109,8 +115,19 @@ def test_lo_que_no_es_el_disparador_va_al_modelo(client, mensaje):
     finally:
         http_client._client = original
     assert resp.status_code == 200, resp.text
-    assert resp.json()["response"] != chat_mod.EASTER_EGG_TEXT
-    assert "respuesta normal del modelo" in resp.json()["response"]
+    body = resp.json()
+    assert body["response"] != "[estado_actual_no_disponible]"
+    # The non-trigger still reaches the provider.  F2-C either renders its
+    # sealed non-governed result with the paired core, or fails closed when
+    # this platform test checkout has no F2-C renderer yet.
+    if body["contract_state"] == "VALID":
+        assert "respuesta normal del modelo" in body["response"]
+        assert body["contract_degraded"] is False
+    else:
+        assert body["contract_state"] == "UNAVAILABLE"
+        assert body["response"] == "The response could not be verified safely."
+        assert "respuesta normal del modelo" not in body["response"]
+    assert body["governed_plain"] is True
 
 
 def test_ide1990_va_al_hilo_pero_no_a_la_memoria_persistente(client, sin_proveedor, monkeypatch):
@@ -136,7 +153,7 @@ def test_ide1990_va_al_hilo_pero_no_a_la_memoria_persistente(client, sin_proveed
     assert guardados == []
     [hilo] = chat_mod._conversations.values()
     assert hilo == [{"role": "user", "content": "IDE1990"},
-                    {"role": "assistant", "content": chat_mod.EASTER_EGG_TEXT}]
+                    {"role": "assistant", "content": "[estado_actual_no_disponible]"}]
 
 
 def test_ide1990_no_deja_la_faceta_pensando(client, sin_proveedor, monkeypatch):

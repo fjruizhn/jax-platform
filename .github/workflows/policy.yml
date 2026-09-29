@@ -3,12 +3,9 @@ name: policy
 # P10 (REFORMAS-v3.1.md, Apéndice C-bis, jax/six-impossible-things.html):
 # ningún validador/gate falla abierto ante excepción sin capturar.
 #
-# Copia de jax/.github/workflows/policy.yml (ronda 4, 2026-08-20, T3).
-# jax-platform y jax son repos GitHub privados separados -- un checkout
-# cruzado en un solo job requeriría un PAT/secret nuevo, decisión de
-# infraestructura no tomada esa sesión. Cada repo corre su PROPIA copia
-# del scanner (backend/tests/test_no_fail_open_except.py) contra su propio
-# árbol -- cobertura real por repo, sin credenciales compartidas.
+# Copia del gate P10 de JAX (ronda 4, 2026-08-20, T3). The repositories keep
+# independent fail-open scans. A dedicated F2-C job below additionally checks
+# out the public JAX PR #300 head and records the exact cross-repository pair.
 #
 # Corrida manual el 2026-08-20 contra este árbol: 88 archivos .py
 # escaneados, 0 violaciones (verificado, no supuesto -- ver CONTEXT.md
@@ -1020,8 +1017,14 @@ jobs:
           //   estado de entrega, la bitácora traduce las violaciones por regla).
           //   Medido con `npx vitest run`: 1063 passed, 0 fallidos, delta propio
           //   +9 sobre el 1054 declarado.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1063) {
-              console.error("PISO ROTO: se esperaban 1063 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1063 -> 1065 (F2-C Web Chat governed projection): +2 en
+          // Message.test.jsx; salida asistente gobernada se proyecta como texto
+          // literal y los mensajes del usuario conservan Markdown. Medido con
+          // npm ci limpio + npx vitest run --reporter=json en esta rama.
+          // 1065 -> 1068 (F2C-A03/A04): parameter-free unavailable/error
+          // translations and provider-body spoof suppression regressions.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1068) {
+              console.error("PISO ROTO: se esperaban 1068 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -4352,3 +4355,77 @@ jobs:
               )
           print("OK: piso de cobertura respetado.")
           PY
+
+  # F2-C cross-repository proof. This job checks out the exact open PR heads,
+  # records both SHAs, and exercises the supported claim path against that
+  # pair. The independent JAX-master job above remains unchanged.
+  f2c-exact-pair:
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 170
+    runs-on: ubuntu-latest
+    env:
+      JAX_F2C_EXPECTED_MASTER_SHA: 1c5986df7f46ae4633341fd8d13cbdcfa51b5259
+      JAX_JWT_SECRET: ci-dummy-not-a-real-secret
+      JAX_CI_NO_DB: "1"
+      JAX_REPO_BASE: ${{ github.workspace }}/jax
+      JAX_REPO_PATH: ${{ github.workspace }}/jax
+      JAX_CONFIG_PATH: ${{ github.workspace }}/jax/config/config.toml
+      PYTHONPATH: ${{ github.workspace }}/jax
+      JAX_OLLAMA_URL: http://127.0.0.1:11434
+    steps:
+      - name: Checkout exact platform PR #170 head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: platform
+      - name: Checkout merged JAX master from PR #300
+        uses: actions/checkout@v4
+        with:
+          repository: fjruizhn/Jax
+          ref: 1c5986df7f46ae4633341fd8d13cbdcfa51b5259
+          path: jax
+      - name: Require and record exact PR pair
+        working-directory: platform
+        run: |
+          JAX_SHA=$(git -C ../jax rev-parse HEAD)
+          PLATFORM_SHA=$(git rev-parse HEAD)
+          test "$JAX_SHA" = "$JAX_F2C_EXPECTED_MASTER_SHA"
+          test "$PLATFORM_SHA" = "${{ github.event.pull_request.head.sha }}"
+          python - <<'PY'
+          import json, os
+          evidence = {
+              "jax_pr": 300,
+              "jax_head": os.environ["JAX_F2C_EXPECTED_MASTER_SHA"],
+              "jax_master_sha": os.environ["JAX_F2C_EXPECTED_MASTER_SHA"],
+              "platform_pr": 170,
+              "platform_head": os.popen("git rev-parse HEAD").read().strip(),
+          }
+          with open("f2c-exact-pair-evidence.json", "w", encoding="utf-8") as f:
+              json.dump(evidence, f, sort_keys=True)
+              f.write("\n")
+          print(json.dumps(evidence, sort_keys=True))
+          PY
+          cat f2c-exact-pair-evidence.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install backend test dependencies
+        working-directory: platform/backend
+        run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
+      - name: Exact-pair F2-C integration test
+        working-directory: platform/backend
+        run: python -m pytest -q -p no:warnings integration_tests/test_f2c_exact_pair_integration.py
+      - name: Verify fixed frontend notices on exact platform head
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Frontend dynamic notice regression
+        working-directory: platform/frontend
+        run: |
+          npm ci
+          npm test -- src/api/errores.test.js src/components/BottomBar/BottomBar.errores.test.jsx
+      - name: Upload exact-pair evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: f2c-exact-pair-evidence
+          path: platform/f2c-exact-pair-evidence.json

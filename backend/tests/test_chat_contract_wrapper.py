@@ -157,7 +157,7 @@ def test_build_display_response_valid_contract_with_judgment():
     assert degraded is False
 
 
-def test_build_display_response_degraded_shows_raw_text():
+def test_build_display_response_degraded_never_shows_raw_provider_text():
     from api.chat import _build_display_response
     from api.chat import ContractResult
     contract = ContractResult(
@@ -165,7 +165,8 @@ def test_build_display_response_degraded_shows_raw_text():
         judgment=None, degradation_reason="JSON no parsea", raw_text="texto crudo truncado",
     )
     text, degraded = _build_display_response(contract)
-    assert text == "texto crudo truncado"
+    assert text == "The response could not be verified safely."
+    assert "texto crudo truncado" not in text
     assert degraded is True
 
 
@@ -227,7 +228,9 @@ def test_chat_endpoint_marks_contract_degraded_on_truncated_json(client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["contract_degraded"] is True
-    assert body["response"].startswith('{"claim"')
+    assert body["response"] == "The response could not be verified safely."
+    assert '{"claim"' not in body["response"]
+    assert body["governed_plain"] is True
 
 
 def test_chat_endpoint_contract_not_degraded_on_valid_json(client):
@@ -258,9 +261,22 @@ def test_chat_endpoint_contract_not_degraded_on_valid_json(client):
         http_client._client = original
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["contract_degraded"] is False
-    assert "mi analisis real" in body["response"]
-    assert "mi conclusion real" in body["response"]
+    # The platform supports both explicitly bounded states while the paired
+    # core rolls out: a real F2-C core renders the sealed non-governed
+    # narrative; an older configured JAX checkout fails closed without raw
+    # provider prose.  It must never take a third/raw path.
+    if body["contract_state"] == "VALID":
+        assert body["contract_degraded"] is False
+        assert "mi analisis real" in body["response"]
+        assert "mi conclusion real" in body["response"]
+        assert body["response_id"]
+        assert body["envelope_digest"].startswith("sha256:")
+    else:
+        assert body["contract_degraded"] is True
+        assert body["response"] == "The response could not be verified safely."
+        assert "mi analisis real" not in body["response"]
+        assert body["contract_state"] == "UNAVAILABLE"
+    assert body["governed_plain"] is True
 
 
 async def _call_invoke_facet_jax_local_identity_question():

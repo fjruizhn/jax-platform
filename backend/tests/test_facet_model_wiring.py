@@ -174,7 +174,7 @@ def test_degrades_explicitly_when_facet_unavailable(client):
     )
     # Ronda final M6 (2026-09-16): el contrato HTTP de la degradacion es un
     # aviso con codigo (A-53), no un texto: el frontend lo traduce.
-    assert resp.json()["aviso"] == {"code": "faceta_sin_binding", "params": {"facet": "jax_local"}}
+    assert resp.json()["aviso"] == {"code": "faceta_sin_binding", "params": {}}
 
 
 def test_jax_local_system_prompt_states_resolved_model(client):
@@ -193,12 +193,9 @@ def test_jax_local_system_prompt_states_resolved_model(client):
         _set_jax_local_model_id(client, prev_model)
 
 
-def test_model_identity_question_short_circuits_before_ollama(client):
-    """'que modelo sos' must be answered deterministically from the resolved
-    facet_binding model, without ever calling Ollama — the LLM confabulates
-    its own identity even when handed the correct model as context, so this
-    class of question is intercepted before _call_ollama (see
-    _is_model_identity_question in chat.py)."""
+def test_model_identity_question_is_unavailable_without_governed_claim(client):
+    """Live selector state is not exposed through an ungoverned canned notice;
+    the question fails closed until F2-C supplies an accredited claim."""
     prev_model = _current_jax_local_model_id(client)
     _set_jax_local_model_id(client, SENTINEL_MODEL)
     try:
@@ -214,8 +211,9 @@ def test_model_identity_question_short_circuits_before_ollama(client):
             f"model-identity question must short-circuit before Ollama, "
             f"got {mock_post.call_count} call(s)"
         )
-        assert resp.json()["aviso"]["params"]["model"] == SENTINEL_MODEL, (
-            "short-circuit reply does not name the resolved DB-active model"
-        )
+        assert resp.json()["aviso"] == {
+            "code": "estado_actual_no_disponible",
+            "params": {},
+        }
     finally:
         _set_jax_local_model_id(client, prev_model)

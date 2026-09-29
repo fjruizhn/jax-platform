@@ -53,7 +53,7 @@ from jax_engine.state import engine_state, LAS_MANOS_URL
 from credencial_las_manos import encabezados_las_manos
 from api.admin.usage import record_usage, validar_ids_de_uso
 from db.connection import get_pool
-from redaccion import recortar_redactado, texto_de_error
+from redaccion import texto_de_error
 from facet_health import (
     record_facet_health,
     OUTCOME_OK,
@@ -548,7 +548,8 @@ class AvisoDeChat(BaseModel):
     `como_texto()` es la marca sin idioma que va al historial del hilo y a la
     memoria: registra QUÉ pasó sin fijar un idioma en la base."""
     code: Literal["faceta_sin_binding", "faceta_no_autorizada", "transporte_no_soportado",
-                  "identidad_del_modelo", "hyde_usa_modo_comando"]
+                  "identidad_del_modelo", "estado_actual_no_disponible",
+                  "hyde_usa_modo_comando"]
     params: dict[str, str] = {}
 
     def como_texto(self) -> str:
@@ -567,6 +568,15 @@ class ChatResponse(BaseModel):
     contract_degraded: bool = False
     # A-53: presente en las respuestas enlatadas; el frontend muestra t.avisosChat[aviso.code].
     aviso: AvisoDeChat | None = None
+    # F2-C: opaque response identity only.  The browser never receives
+    # references, receipts, or other trusted governance internals.
+    response_id: str | None = None
+    envelope_digest: str | None = None
+    source_envelope_digest: str | None = None
+    contract_state: str | None = None
+    # Assistant/provider content rendered by F2-C is literal text.  This
+    # prevents payload Markdown from impersonating trusted presentation.
+    governed_plain: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -677,8 +687,14 @@ def _parse_contract_response(raw_text: str) -> ContractResult:
 
 
 def _build_display_response(contract: ContractResult) -> tuple[str, bool]:
+    """Compatibility projection with no raw-provider degraded fallback.
+
+    The HTTP Web Chat path uses ``api.governed_chat``.  Keeping this pure
+    helper safe prevents an accidental caller from restoring the historical
+    raw degraded-provider display path.
+    """
     if not contract.contract_parsed:
-        return contract.raw_text, True
+        return "The response could not be verified safely.", True
     if contract.judgment:
         return f"{contract.analysis}\n\n**{contract.judgment}**", False
     return contract.analysis, False
@@ -977,10 +993,20 @@ async def _invoke_facet_dispatch(
     # Jacobs (facet_resolver.py), garantiza que Mesa web y Jacobs resuelvan
     # la MISMA faceta al MISMO modelo. FAIL-CLOSED: sin binding activo,
     # mensaje de degradacion explicito, nunca una llamada con modelo vacio.
+    # The question is about live model/provider/binding state.  It cannot be
+    # answered by an ungoverned canned notice.  Until a supported claim is
+    # supplied through the F2-C bridge, return a parameter-free typed
+    # unavailable outcome.  This check intentionally precedes resolution so
+    # no runtime selector value enters the response path.
+    if _is_model_identity_question(message if texto_del_usuario is None else texto_del_usuario):
+        return AvisoDeChat(code="estado_actual_no_disponible"), None, OUTCOME_UNBOUND
+
     try:
         f = await resolve_facet(facet)
     except FacetUnavailableError:
-        return AvisoDeChat(code="faceta_sin_binding", params={"facet": facet}), None, OUTCOME_UNBOUND
+        # This is a typed safe-unavailable outcome.  Do not interpolate the
+        # selected facet or any binding value into the server-owned notice.
+        return AvisoDeChat(code="faceta_sin_binding"), None, OUTCOME_UNBOUND
 
     # El gate va DESPUÉS de resolve_facet() a propósito: es ahí donde
     # `f.transport` existe, y el transporte es lo mismo que decide el
@@ -1020,7 +1046,7 @@ async def _invoke_facet_dispatch(
                 f"error={type(e).__name__}: {e} -- denegado fail-closed"
             )
         if not allowed:
-            return AvisoDeChat(code="faceta_no_autorizada", params={"facet": facet}), None, gate_outcome
+            return AvisoDeChat(code="faceta_no_autorizada"), None, gate_outcome
 
     # Frente D: re-chequeo con el binding que se va a usar de verdad. El
     # endpoint ya validó, pero un rebind entre ambos momentos no puede
@@ -1028,10 +1054,6 @@ async def _invoke_facet_dispatch(
     # ignora y el modelo inventa). Registra provider_error en _invoke_facet;
     # el endpoint lo devuelve como 422.
     exigir_soporte_de_imagen(f, facet, imagenes)
-
-    if _is_model_identity_question(message if texto_del_usuario is None else texto_del_usuario):
-        return AvisoDeChat(code="identidad_del_modelo",
-                           params={"facet": facet, "model": f.model, "provider": f.provider_id}), None, OUTCOME_OK
 
     if f.transport == "ollama":
         # Bug 3: jax_local no sabia con que modelo corre y confabulaba su
@@ -1068,8 +1090,7 @@ async def _invoke_facet_dispatch(
         )
         return text, UsageInfo(f.provider_id, f.model, tin, tout), OUTCOME_OK
 
-    return AvisoDeChat(code="transporte_no_soportado",
-                       params={"facet": facet, "transport": f.transport}), None, OUTCOME_UNSUPPORTED_TRANSPORT
+    return AvisoDeChat(code="transporte_no_soportado"), None, OUTCOME_UNSUPPORTED_TRANSPORT
 
 
 async def _invoke_facet(
@@ -1129,15 +1150,19 @@ async def _invoke_facet(
 
 
 def _detalle_502_http(facet: str, e: httpx.HTTPStatusError) -> dict:
-    """detail del 502 cuando el proveedor responde con error. Código estable
-    (A-51); `motivo` es lo que dijo el proveedor, REDACTADO y DESPUÉS recortado
-    (fix round 1 de 3bed155: al revés, una key que cruza el corte sale en claro)."""
-    return {"code": "proveedor_error_http", "facet": facet, "status": e.response.status_code,
-            "motivo": recortar_redactado(e.response.text, 200)}
+    """Server-owned public failure detail for a provider HTTP failure.
+
+    Provider response bodies are untrusted diagnostics.  They can contain
+    Markdown, HTML, bidi controls, or forged governance fields, so they stay
+    in logs/forensics and never enter the HTTP detail consumed by the client.
+    """
+    return {"code": "proveedor_error_http"}
 
 
 def _detalle_502_generico(facet: str, e: Exception) -> dict:
-    return {"code": "faceta_error", "facet": facet, "motivo": recortar_redactado(str(e), 200)}
+    # Exception text may be provider or external payload.  The public API
+    # exposes only its stable server-owned error code.
+    return {"code": "faceta_error"}
 
 
 def _update_history(user_id: str, user_msg: str, assistant_msg: str):
@@ -1223,17 +1248,19 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     )
     timestamp = utc_ahora().isoformat() + "Z"
 
-    # Easter egg IDE1990 "antes que todo", como en el REPL: ni una faceta
-    # fijada ni un adjunto lo tapan, y no llama a ningún modelo. Igual que el
-    # REPL, la respuesta NO va a la memoria persistente: el extractor de hechos
-    # la leería sin filtro y fabricaría hechos del texto (auditoría 2026-09-23,
-    # MAJOR-2). Sí va al hilo en RAM, para que el turno siguiente sepa qué pasó.
+    # IDE1990 remains an early no-provider intercept.  Its legacy text makes
+    # propositions about registered systems, so Web Chat cannot display it as
+    # a direct shortcut.  F2-C emits the same parameter-free typed unavailable
+    # outcome used for other ungoverned runtime output; the legacy text is
+    # retained only for the JAX mirror contract and is never stored or rendered
+    # from this endpoint.
     if es_easter_egg(req.message):
         # req.message pelado: los adjuntos todavía no se leyeron y se ignoran.
-        _update_history(user_id, req.message, EASTER_EGG_TEXT)
+        aviso = AvisoDeChat(code="estado_actual_no_disponible")
+        _update_history(user_id, req.message, aviso.como_texto())
         await _fire_completed("jax_local", tenant_id, user_id)
-        return ChatResponse(facet="jax_local", response=EASTER_EGG_TEXT, timestamp=timestamp,
-                            contract_degraded=False)
+        return ChatResponse(facet="jax_local", response=aviso.como_texto(), timestamp=timestamp,
+                            contract_degraded=False, aviso=aviso)
 
     # --- Adjuntos (frente D; RD3: por id) — ANTES de memoria, estado y proveedor
     # Un rechazo no deja fila en memoria, no pone la faceta en "thinking" y no
@@ -1322,16 +1349,18 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         raise HTTPException(status_code=422,
                             detail={"code": "imagen_no_soportada", "facet": facet}) from None
     except httpx.HTTPStatusError as e:
-        # Task 6 S1: el cuerpo del proveedor no deberia repetir la key, pero
-        # el `motivo` del detail (dict con codigo, A-51) sale al usuario y al
-        # bus -- se redacta igual (y antes de recortar: ver _detalle_502_http).
+        # Keep the raw external diagnostic in logs only.  It is deliberately
+        # absent from the client-facing detail and engine-state payload.
+        logger.error("provider HTTP failure facet=%r status=%s body=%r",
+                     facet, e.response.status_code, e.response.text)
         detail = _detalle_502_http(facet, e)
-        await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail["motivo"][:100])
+        await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail["code"])
         await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
         raise HTTPException(status_code=502, detail=detail)
     except Exception as e:
+        logger.exception("facet dispatch failure facet=%r", facet)
         detail = _detalle_502_generico(facet, e)
-        await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail["motivo"][:100])
+        await engine_state.set_facet_status(facet, "error", tenant_id, user_id, detail["code"])
         await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
         raise HTTPException(status_code=502, detail=detail)
 
@@ -1347,9 +1376,19 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # Contrato {claim/analysis/judgment}: solo se intenta parsear cuando
     # hubo una llamada real al LLM (usage is not None, ver nota en _invoke_facet).
     contract = _parse_contract_response(response_text) if not is_canned else None
+    # F2-C pre-display boundary.  Provider text is already fully buffered by
+    # _invoke_facet; no token is written to an HTTP/WebSocket response before
+    # this sealed-envelope renderer projection succeeds.  Canned server
+    # notices remain SAFE_STATIC_TEXT and do not enter this dynamic path.
     if contract is not None:
-        display_text, contract_degraded = _build_display_response(contract)
+        from api.governed_chat import project_provider_contract
+        governed = project_provider_contract(
+            contract, memory_scope=memory_scope, user_id=str(user_id),
+        )
+        display_text = governed.text
+        contract_degraded = governed.contract_degraded
     else:
+        governed = None
         display_text, contract_degraded = response_text, False
 
     _update_history(history_key, mensaje_para_historial(req.message, validados), display_text)
@@ -1393,6 +1432,11 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     return ChatResponse(
         facet=facet, response=display_text, timestamp=timestamp,
         contract_degraded=contract_degraded, aviso=aviso,
+        response_id=governed.response_id if governed is not None else None,
+        envelope_digest=governed.envelope_digest if governed is not None else None,
+        source_envelope_digest=governed.source_envelope_digest if governed is not None else None,
+        contract_state=governed.contract_state if governed is not None else None,
+        governed_plain=governed.governed_plain if governed is not None else False,
     )
 
 

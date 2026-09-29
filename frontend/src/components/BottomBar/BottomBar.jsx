@@ -242,6 +242,7 @@ function BottomBar() {
         content: data.aviso ? textoDeAviso(t, data.aviso) : data.response,
         timestamp: data.timestamp,
         contract_degraded: data.contract_degraded ?? false,
+        governed_plain: data.governed_plain === true,
       })
       // El mensaje del usuario ya se armó con vistaDeAdjunto() más arriba,
       // que le dio su PROPIO object URL (adjuntos.js) -- el del compositor

@@ -79,7 +79,14 @@ def test_chat_endpoint_accepts_known_facet_and_round_trips_it(client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["facet"] == "jekyll"
-    assert "faceta real, sin problema" in body["response"]
+    if body["contract_state"] == "VALID":
+        assert "faceta real, sin problema" in body["response"]
+        assert body["contract_degraded"] is False
+    else:
+        assert body["contract_state"] == "UNAVAILABLE"
+        assert body["response"] == "The response could not be verified safely."
+        assert "faceta real, sin problema" not in body["response"]
+    assert body["governed_plain"] is True
 
 
 def test_chat_endpoint_accepts_none_facet_and_auto_routes(client):
@@ -211,7 +218,18 @@ def test_chat_endpoint_allows_hipatia_when_authorize_facet_returns_true(client):
     finally:
         http_client._client = original
     assert resp.status_code == 200
-    assert "hola desde hipatia" in resp.json()["response"]
+    body = resp.json()
+    if body["contract_state"] == "VALID":
+        assert "hola desde hipatia" in body["response"]
+        assert body["contract_degraded"] is False
+    else:
+        # This fixture deliberately returns legacy plain provider text, so a
+        # present F2-C core emits its typed degraded notice; an absent paired
+        # core emits the same safe text as UNAVAILABLE.
+        assert body["contract_state"] in {"DEGRADED_STRUCTURED", "UNAVAILABLE"}
+        assert body["response"] == "The response could not be verified safely."
+        assert "hola desde hipatia" not in body["response"]
+    assert body["governed_plain"] is True
     # Exactamente dos llamadas: authorize-facet, despues el proveedor real.
     # Sin este assert, el test pasaria igual aunque la respuesta del
     # proveedor nunca llegara a dispararse.
@@ -329,4 +347,4 @@ def test_a_new_http_transport_facet_is_governed_even_if_unnamed(monkeypatch):
     # Denegado => ni una sola llamada al proveedor real.
     assert len(fake.urls) == 1, fake.urls
     assert usage is None
-    assert texto == chat_mod.AvisoDeChat(code="faceta_no_autorizada", params={"facet": "facet_http_nuevo"})
+    assert texto == chat_mod.AvisoDeChat(code="faceta_no_autorizada")
