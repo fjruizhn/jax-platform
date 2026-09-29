@@ -5,6 +5,9 @@ it never reads or provisions a production receipt key.
 """
 from dataclasses import replace
 from datetime import datetime, timezone
+import os
+
+import pytest
 
 from api.chat import ChatResponse, _parse_contract_response
 from api.governed_chat import project_provider_contract, project_sealed_envelope
@@ -72,6 +75,10 @@ def _f2b_composition():
     return envelope, context, governance_receipt
 
 
+@pytest.mark.skipif(
+    os.environ.get("JAX_F2C_EXACT_PAIR") != "1",
+    reason="requires the exact open JAX #300 / platform #170 pair",
+)
 def test_exact_pair_bridge_blocks_narrative_and_renders_valid_supported_claim(monkeypatch):
     monkeypatch.setenv("JAX_REPO_PATH", __import__("os").environ["JAX_REPO_PATH"])
     from api.governed_chat import _core
