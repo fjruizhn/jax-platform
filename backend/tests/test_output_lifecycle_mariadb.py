@@ -312,7 +312,7 @@ def test_outbox_schema_is_versioned_and_rollback_is_explicit():
 
 
 def test_mariadb_migration_upgrade_rollback_and_reupgrade_isolated(client):
-    from db.output_lifecycle_migration import DOWN_SQL, UP_SQL
+    from db.output_lifecycle_migration import DOWN_SQL, LEGACY_DOWNGRADE_SQL, UP_SQL
     suffix = uuid.uuid4().hex[:10]
     outbox_name = f"f2d_test_outbox_{suffix}"
     events_name = f"f2d_test_events_{suffix}"
@@ -334,6 +334,20 @@ def test_mariadb_migration_upgrade_rollback_and_reupgrade_isolated(client):
                     "      current_not_after DATETIME(6) NULL,\n", "")
                 await cur.execute(legacy_outbox)
                 await cur.execute(renamed(UP_SQL[2]))
+                await cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME='current_not_after'",
+                    (outbox_name,),
+                )
+                assert (await cur.fetchone())[0] == 0
+                await cur.execute(renamed(UP_SQL[1]))
+                await cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME='current_not_after'",
+                    (outbox_name,),
+                )
+                assert (await cur.fetchone())[0] == 1
+                await cur.execute(renamed(LEGACY_DOWNGRADE_SQL[0]))
                 await cur.execute(
                     "SELECT COUNT(*) FROM information_schema.COLUMNS "
                     "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME='current_not_after'",

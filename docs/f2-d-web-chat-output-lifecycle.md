@@ -49,8 +49,9 @@ two-table schema is versioned as `f2-d.outbox.2` and record schema as
 `f2-d.outbox.record.2`; the JAX-owned lifecycle API is `f2-d.lifecycle.2`;
 the serialized Web Chat projection is
 `f2-d.web-chat-json.1`. Unknown versions fail closed. DDL is reversible via
-the explicit rollback statements, but no production migration is executed by
-this implementation task.
+the explicit legacy downgrade (which removes the expiry column and preserves
+rows) or the separate disposable-schema teardown. No production migration is
+executed by this implementation task.
 
 The idempotency key is derived from governed scope, request id, response id,
 and transport kind. Concurrent duplicate preparations converge only when

@@ -78,6 +78,12 @@ DOWN_SQL = (
     "DROP TABLE IF EXISTS governed_output_outbox",
 )
 
+# Upgrade rollback preserves all prior F2-D rows and restores the v1 shape.
+# DOWN_SQL is the separate opt-in teardown for a fresh, disposable schema.
+LEGACY_DOWNGRADE_SQL = (
+    "ALTER TABLE governed_output_outbox DROP COLUMN IF EXISTS current_not_after",
+)
+
 
 async def apply(cur) -> None:
     for statement in UP_SQL:
@@ -87,4 +93,10 @@ async def apply(cur) -> None:
 async def rollback(cur) -> None:
     """Explicit destructive rollback for controlled, non-production use."""
     for statement in DOWN_SQL:
+        await cur.execute(statement)
+
+
+async def downgrade_legacy(cur) -> None:
+    """Reverse only the v1→v2 expiry-column upgrade, preserving outbox data."""
+    for statement in LEGACY_DOWNGRADE_SQL:
         await cur.execute(statement)
