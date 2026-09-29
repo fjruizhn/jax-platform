@@ -4,7 +4,7 @@ These tables hold only effective F2-C output bytes and lifecycle metadata.
 They never hold raw provider candidates or governance receipt bodies.
 """
 
-OUTBOX_SCHEMA_VERSION = "f2-d.outbox.1"
+OUTBOX_SCHEMA_VERSION = "f2-d.outbox.2"
 
 UP_SQL = (
     """CREATE TABLE IF NOT EXISTS governed_output_outbox (

@@ -168,7 +168,7 @@ class PreparedGovernedChatResponse(Response):
             # is already committed, so record honest uncertainty, not cancel.
             try:
                 core.revalidate_for_transport(authorization.unit, datetime.now(timezone.utc))
-            except Exception as exc:
+            except Exception as exc:  # fail-soft: withhold the body even if durable uncertainty cannot be recorded
                 logger.info("F2-D withheld stale current body after response start (%s)", type(exc).__name__)
                 await send({"type": "http.response.body", "body": b"", "more_body": False})
                 await self.repository.transition(
@@ -207,7 +207,7 @@ class PreparedGovernedChatResponse(Response):
                 await self.repository.record_secondary_event(
                     authorization, "POST_COMMIT_PROJECTION_FAILED",
                 )
-            except Exception:
+            except Exception:  # fail-soft: secondary audit failure cannot rewrite committed transport state
                 logger.exception("F2-D could not persist post-commit projection failure")
         if self.background is not None:
             try:
@@ -218,5 +218,5 @@ class PreparedGovernedChatResponse(Response):
                     await self.repository.record_secondary_event(
                         authorization, "POST_COMMIT_OBSERVATION_FAILED",
                     )
-                except Exception:
+                except Exception:  # fail-soft: secondary audit failure cannot rewrite committed transport state
                     logger.exception("F2-D could not persist post-commit observation failure")

@@ -234,7 +234,7 @@ def _lifecycle_core():
         if not Path(module.__file__).resolve().is_relative_to(root_path):
             raise GovernedChatUnavailable("loaded F2-D API is outside configured JAX repository")
         module.validate_lifecycle_version(module.OUTPUT_LIFECYCLE_API_VERSION)
-        if module.OUTPUT_LIFECYCLE_API_VERSION != "f2-d.lifecycle.1":
+        if module.OUTPUT_LIFECYCLE_API_VERSION != "f2-d.lifecycle.2":
             raise GovernedChatUnavailable("configured JAX F2-D lifecycle API is unsupported")
         return module
     except (ImportError, AttributeError) as exc:

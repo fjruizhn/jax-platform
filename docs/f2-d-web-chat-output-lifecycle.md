@@ -45,8 +45,9 @@ WebSocket completion event do not prove delivery to or reading by a person.
 
 MariaDB InnoDB stores one immutable outbox row per logical idempotency key and
 transport attempt, plus append-only-by-application lifecycle event rows. The
-two-table schema is versioned as `f2-d.outbox.1`; the JAX-owned lifecycle API
-is `f2-d.lifecycle.1`; the serialized Web Chat projection is
+two-table schema is versioned as `f2-d.outbox.2` and record schema as
+`f2-d.outbox.record.2`; the JAX-owned lifecycle API is `f2-d.lifecycle.2`;
+the serialized Web Chat projection is
 `f2-d.web-chat-json.1`. Unknown versions fail closed. DDL is reversible via
 the explicit rollback statements, but no production migration is executed by
 this implementation task.

@@ -165,7 +165,7 @@ async def lifespan(app: FastAPI):
     try:
         logger.info("F2-D durable transport recovery snapshot %s",
                     await OutputOutboxRepository().recovery_snapshot())
-    except Exception:
+    except Exception:  # fail-soft: startup diagnostics must not change transport authorization
         # The Web Chat dynamic path still fails closed if lifecycle persistence
         # is unavailable; startup diagnostics do not weaken its transport gate.
         logger.exception("F2-D recovery snapshot unavailable")

@@ -207,7 +207,7 @@ def test_changed_output_retry_has_new_attempt_and_preserves_first_record(client)
 
 
 def test_outbox_schema_is_versioned_and_rollback_is_explicit():
-    assert outbox_module.OUTBOX_RECORD_SCHEMA_VERSION == "f2-d.outbox.record.1"
+    assert outbox_module.OUTBOX_RECORD_SCHEMA_VERSION == "f2-d.outbox.record.2"
     from db.output_lifecycle_migration import DOWN_SQL, UP_SQL
     assert len(UP_SQL) == 3 and len(DOWN_SQL) == 2
     assert DOWN_SQL[0].endswith("governed_output_lifecycle_events")
