@@ -1,7 +1,9 @@
-"""Exact JAX #300 / platform #170 F2-C integration proof.
+"""Exact JAX #302 / platform #170 F2-C/F2-D integration proof.
 
 This test intentionally composes a test-only F2-B authenticator and registry;
-it never reads or provisions a production receipt key.
+it never reads or provisions a production receipt key. The F2-D success path
+uses a deterministic recording repository here; MariaDB durability, restart,
+and concurrency are exercised by the separate DB-backed platform tests.
 """
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -28,8 +30,8 @@ def _f2b_composition():
         ScopeRule, ServerAdapterInput, TrustedAdapterRegistration,
     )
 
-    now = datetime(2026, 9, 29, 12, tzinfo=timezone.utc)
-    scope = ResponseScope("test", "tenant-it", "project-it", "user-it",
+    now = datetime.now(timezone.utc)
+    scope = ResponseScope("test", "1", None, "7",
         "service:web-chat-test", "user:7", "web-chat", "request-it", "trace-it")
     rule = ScopeRule(scope.environment, scope.tenant_id, scope.project_id,
         scope.subject_id, scope.actor_id, scope.audience, scope.component_id)
@@ -167,3 +169,98 @@ def test_exact_pair_bridge_version_or_import_failure_is_static_safe(monkeypatch)
     assert result.contract_state == "UNAVAILABLE"
     assert result.contract_degraded is True and result.governed_plain is True
     assert "Hall9000" not in result.text and "VERIFIED" not in result.text
+
+
+def test_exact_pair_supported_claim_is_prepared_and_committed_as_exact_asgi_bytes(monkeypatch):
+    """Exercise JAX F2-D authority through the platform Web Chat transport adapter."""
+    import asyncio
+    import hashlib
+    import json
+
+    from api.chat import ChatResponse
+    from auth.models import AuthUser
+    from jax.memory.b9 import ScopeContext
+    from webchat_f2d import repository as outbox
+    from webchat_f2d.transport import prepare_governed_chat_response
+
+    monkeypatch.setenv("JAX_REPO_PATH", os.environ["JAX_REPO_PATH"])
+    envelope, context, _ = _f2b_composition()
+    from api.governed_chat import project_sealed_envelope
+
+    governed = project_sealed_envelope(envelope, context)
+    assert governed.transport_unit is not None
+    assert governed.contract_state == "VALID"
+    assert governed.text == "Capability x is available."
+    response = ChatResponse(
+        facet="jekyll", response=governed.text, timestamp="2026-09-29T12:00:00Z",
+        contract_degraded=governed.contract_degraded,
+        response_id=governed.response_id, envelope_digest=governed.envelope_digest,
+        source_envelope_digest=governed.source_envelope_digest,
+        contract_state=governed.contract_state, governed_plain=True,
+    )
+    user = AuthUser(user_id="7", tenant_id="1", role="operator")
+    memory_scope = ScopeContext(
+        actor_principal="user:7", actor_type="USER", subject_user_id="7",
+        tenant_id="1", project_id=None, calling_component="jax-platform-web-chat",
+    )
+
+    class ExactPairRecordingTestRepository:
+        def __init__(self):
+            self.state = None
+            self.payload = None
+            self.transitions = []
+
+        async def prepare(self, unit, payload, *, tenant_id, project_id, subject_id, request_id,
+                          previous_attempt_id=None):
+            assert unit is governed.transport_unit
+            assert tenant_id == 1 and project_id is None and subject_id == "7"
+            assert request_id == unit.request_id
+            self.payload = payload
+            projection = unit.durable_projection()
+            self.state = "OUTPUT_PREPARED"
+            return outbox.PreparedTransportAuthorization._mint(
+                outbox._AUTH_TOKEN,
+                outbox_id="test-outbox", attempt_id="test-attempt", tenant_id=tenant_id,
+                scope_digest=projection["scope_digest"], request_id=request_id,
+                response_id=projection["response_id"], subject_id=subject_id,
+                idempotency_key=projection["idempotency_key"],
+                effective_output_digest=projection["effective_output_digest"],
+                effective_projection_digest=projection["effective_projection_digest"],
+                original_envelope_digest=projection["original_envelope_digest"],
+                contract_state=projection["effective_contract_state"],
+                transport_payload_digest="sha256:" + hashlib.sha256(payload).hexdigest(),
+                payload=payload, unit=unit,
+            )
+
+        async def transition(self, authorization, target, *, failure_class=None, before_send=False):
+            from api.governed_chat import _lifecycle_core
+            core = _lifecycle_core()
+            current = core.OutputLifecycleState(self.state)
+            core.validate_lifecycle_transition(current, target, before_send=before_send)
+            self.transitions.append((current.value, target.value))
+            self.state = target.value
+
+    repository = ExactPairRecordingTestRepository()
+    prepared_response = asyncio.run(prepare_governed_chat_response(
+        response=response, transport_unit=governed.transport_unit, user=user,
+        memory_scope=memory_scope, on_commit=lambda: asyncio.sleep(0), repository=repository,
+    ))
+    messages = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        messages.append(message)
+
+    asyncio.run(prepared_response(
+        {"type": "http", "method": "POST", "path": "/api/chat"}, receive, send,
+    ))
+    body = next(item["body"] for item in messages if item["type"] == "http.response.body")
+    assert repository.state == "OUTPUT_COMMITTED_TO_TRANSPORT"
+    assert repository.transitions == [
+        ("OUTPUT_PREPARED", "TRANSPORT_COMMITTING"),
+        ("TRANSPORT_COMMITTING", "OUTPUT_COMMITTED_TO_TRANSPORT"),
+    ]
+    assert body == repository.payload
+    assert json.loads(body)["response"] == "Capability x is available."

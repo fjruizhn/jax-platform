@@ -12,6 +12,7 @@ from functools import lru_cache
 from tiempo import utc_ahora
 from typing import Literal, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 import httpx
 import aiomysql
@@ -1380,18 +1381,18 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # _invoke_facet; no token is written to an HTTP/WebSocket response before
     # this sealed-envelope renderer projection succeeds.  Canned server
     # notices remain SAFE_STATIC_TEXT and do not enter this dynamic path.
+    governance_request_id = str(uuid.uuid4()) if contract is not None else None
     if contract is not None:
         from api.governed_chat import project_provider_contract
         governed = project_provider_contract(
             contract, memory_scope=memory_scope, user_id=str(user_id),
+            request_id=governance_request_id,
         )
         display_text = governed.text
         contract_degraded = governed.contract_degraded
     else:
         governed = None
         display_text, contract_degraded = response_text, False
-
-    _update_history(history_key, mensaje_para_historial(req.message, validados), display_text)
 
     # Registrar uso (best-effort)
     personality = config["personalities"].get(facet, {})
@@ -1400,36 +1401,8 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         await record_usage(user_id, tenant_id, facet, usage.provider_id, usage.model, usage.tokens_in, usage.tokens_out, "chat")
         model_name = usage.model  # modelo real resuelto, no el stale de config.toml
 
-    # Guardar la respuesta de la faceta en la MISMA memoria (fire-and-forget).
-    if conv_uuid:
-        _memory.save_message(conv_uuid, facet, display_text,
-                             facet=facet, model=model_name)
-
-    await _fire_completed(facet, tenant_id, user_id)
     await engine_state.set_facet_status(facet, "idle", tenant_id, user_id)
-
-    # Encolar shadow validation es un efecto secundario de medición, no
-    # debe poder tumbar un turno de chat que YA respondió al usuario (el
-    # mensaje del asistente ya se guardó y se transmitió por WebSocket
-    # arriba). Si el import diferido o add_task fallan (p.ej. import cycle
-    # roto, shadow_validation.py con un error de sintaxis introducido
-    # después), lo logueamos y seguimos — finding 4 de la revisión final.
-    # Los errores DENTRO de run_shadow_validation (el fail-closed logging
-    # de la Task 5) no pasan por acá, ese try/except es de shadow_validation.py.
-    try:
-        from shadow_validation import run_shadow_validation
-        from jax_engine.background import add_safe_task
-        # req.origin ausente (None) se declara 'unattributed' ACÁ, en el
-        # borde -- no en el default de la columna solamente -- para que el
-        # sexto argumento de run_shadow_validation nunca sea None: un
-        # llamador de ese módulo que reciba None por descuido escribiría
-        # la palabra "None", no el valor fail-closed real.
-        origin = req.origin or "unattributed"
-        add_safe_task(background_tasks, run_shadow_validation, conv_uuid, shadow_message_id, facet, contract, grounding, origin)
-    except Exception:  # fail-soft: la respuesta ya se guardó y se transmitió; encolar la medición no puede tumbar el turno; logueado con traceback
-        logger.exception("no se pudo encolar shadow validation")
-
-    return ChatResponse(
+    chat_response = ChatResponse(
         facet=facet, response=display_text, timestamp=timestamp,
         contract_degraded=contract_degraded, aviso=aviso,
         response_id=governed.response_id if governed is not None else None,
@@ -1438,6 +1411,57 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         contract_state=governed.contract_state if governed is not None else None,
         governed_plain=governed.governed_plain if governed is not None else False,
     )
+
+    # Parameter-free canned/usage=None responses are the existing F2-C
+    # SAFE_STATIC_TEXT exception. They contain no provider/runtime values and
+    # are not the governed dynamic Web Chat output governed by the F2-D gate.
+    if governed is None:
+        _update_history(history_key, mensaje_para_historial(req.message, validados), display_text)
+        if conv_uuid:
+            _memory.save_message(conv_uuid, facet, display_text, facet=facet, model=model_name)
+        await _fire_completed(facet, tenant_id, user_id)
+        return chat_response
+
+    # From here onward, the response is governed dynamic output. Prepare its
+    # exact JSON bytes durably before FastAPI/ASGI can emit them. History and
+    # B9 receive display_text only after the ASGI body send and durable commit.
+    if governed.transport_unit is None:
+        return JSONResponse(status_code=503,
+                            content={"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}})
+
+    async def project_after_transport_commit():
+        _update_history(history_key, mensaje_para_historial(req.message, validados), display_text)
+        if conv_uuid:
+            _memory.save_message(conv_uuid, facet, display_text, facet=facet, model=model_name)
+        try:
+            await _fire_completed(facet, tenant_id, user_id)
+        except Exception:  # fail-soft: transport is already committed; only the auxiliary event failed
+            logger.exception("F2-D transport committed but completion event failed")
+
+    try:
+        from webchat_f2d.transport import prepare_governed_chat_response
+        prepared_response = await prepare_governed_chat_response(
+            response=chat_response, transport_unit=governed.transport_unit,
+            user=user, memory_scope=memory_scope,
+            on_commit=project_after_transport_commit,
+        )
+    except Exception as exc:  # fail-soft: do not send governed output; return fixed protocol error
+        logger.warning("F2-D preparation failed closed (%s)", type(exc).__name__)
+        return JSONResponse(status_code=503,
+                            content={"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}})
+
+    # Shadow validation remains observational and runs only after a successful
+    # transport commitment. It cannot authorize, restore, or alter output.
+    try:
+        from shadow_validation import run_shadow_validation
+        from jax_engine.background import add_safe_task
+        origin = req.origin or "unattributed"
+        add_safe_task(background_tasks, run_shadow_validation, conv_uuid, shadow_message_id,
+                      facet, contract, grounding, origin)
+    except Exception:  # fail-soft: shadow telemetry is observational and runs only after commit
+        logger.exception("F2-D committed response but shadow task could not be queued")
+    prepared_response.background = background_tasks
+    return prepared_response
 
 
 async def _fire_completed(facet: str, tenant_id: str, user_id: str):

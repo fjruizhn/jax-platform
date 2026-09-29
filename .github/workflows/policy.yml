@@ -1253,10 +1253,12 @@ jobs:
 
       - name: Traer el repo jax (fuente de verdad del esquema de Jacobs y B9)
         working-directory: .
-        # B9 migration 003 is JAX-owned and loaded from JAX_REPO_PATH by the
-        # platform's existing migration runner. JAX master contains B9 after
-        # JAX #269, so CI tests the normal integration source.
-        run: git clone --depth=1 --branch master https://github.com/fjruizhn/Jax.git /tmp/jax
+        # F2-D uses the JAX-owned lifecycle API from its exact paired PR head.
+        run: |
+          git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
+          git -C /tmp/jax fetch --depth=1 origin e2cfbf871534bb876ad5f066e5923b6d3ebd3cc2
+          git -C /tmp/jax checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/jax rev-parse HEAD)" = e2cfbf871534bb876ad5f066e5923b6d3ebd3cc2
 
       - name: Crear el esquema de Jacobs con SU propio init_tables()
         working-directory: .
@@ -4304,9 +4306,13 @@ jobs:
 
       - name: Traer el repo JAX de integración (vocabulario y B9)
         working-directory: .
-        # Web Chat imports jax.memory.b9. JAX master contains B9 after #269,
-        # so CI tests the normal integration source.
-        run: git clone --depth=1 --branch master https://github.com/fjruizhn/Jax.git /tmp/jax
+        # The governed bridge requires the JAX F2-D lifecycle API. Pin this
+        # integration source to the exact paired JAX PR head.
+        run: |
+          git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
+          git -C /tmp/jax fetch --depth=1 origin e2cfbf871534bb876ad5f066e5923b6d3ebd3cc2
+          git -C /tmp/jax checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/jax rev-parse HEAD)" = e2cfbf871534bb876ad5f066e5923b6d3ebd3cc2
 
       - name: Suite backend (sin DB) -- -rs lista cada skip con su motivo
         # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,
@@ -4356,14 +4362,14 @@ jobs:
           print("OK: piso de cobertura respetado.")
           PY
 
-  # F2-C cross-repository proof. This job checks out the exact open PR heads,
-  # records both SHAs, and exercises the supported claim path against that
-  # pair. The independent JAX-master job above remains unchanged.
-  f2c-exact-pair:
+  # F2-D cross-repository proof. This job checks out the exact open PR heads,
+  # records both SHAs, and exercises governed Web Chat preparation and ASGI
+  # transport against that pair.
+  f2d-exact-pair:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 170
     runs-on: ubuntu-latest
     env:
-      JAX_F2C_EXPECTED_MASTER_SHA: 1c5986df7f46ae4633341fd8d13cbdcfa51b5259
+      JAX_F2D_EXPECTED_SHA: e2cfbf871534bb876ad5f066e5923b6d3ebd3cc2
       JAX_JWT_SECRET: ci-dummy-not-a-real-secret
       JAX_CI_NO_DB: "1"
       JAX_REPO_BASE: ${{ github.workspace }}/jax
@@ -4377,34 +4383,35 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           path: platform
-      - name: Checkout merged JAX master from PR #300
+      - name: Checkout exact JAX F2-D PR #302 head
         uses: actions/checkout@v4
         with:
           repository: fjruizhn/Jax
-          ref: 1c5986df7f46ae4633341fd8d13cbdcfa51b5259
+          ref: e2cfbf871534bb876ad5f066e5923b6d3ebd3cc2
           path: jax
-      - name: Require and record exact PR pair
+      - name: Require and record exact F2-D PR pair
         working-directory: platform
         run: |
           JAX_SHA=$(git -C ../jax rev-parse HEAD)
           PLATFORM_SHA=$(git rev-parse HEAD)
-          test "$JAX_SHA" = "$JAX_F2C_EXPECTED_MASTER_SHA"
+          test "$JAX_SHA" = "$JAX_F2D_EXPECTED_SHA"
           test "$PLATFORM_SHA" = "${{ github.event.pull_request.head.sha }}"
           python - <<'PY'
           import json, os
           evidence = {
-              "jax_pr": 300,
-              "jax_head": os.environ["JAX_F2C_EXPECTED_MASTER_SHA"],
-              "jax_master_sha": os.environ["JAX_F2C_EXPECTED_MASTER_SHA"],
+              "jax_repository": "fjruizhn/Jax",
+              "jax_pr": 302,
+              "jax_head": os.environ["JAX_F2D_EXPECTED_SHA"],
+              "platform_repository": "fjruizhn/jax-platform",
               "platform_pr": 170,
               "platform_head": os.popen("git rev-parse HEAD").read().strip(),
           }
-          with open("f2c-exact-pair-evidence.json", "w", encoding="utf-8") as f:
+          with open("f2d-exact-pair-evidence.json", "w", encoding="utf-8") as f:
               json.dump(evidence, f, sort_keys=True)
               f.write("\n")
           print(json.dumps(evidence, sort_keys=True))
           PY
-          cat f2c-exact-pair-evidence.json >> "$GITHUB_STEP_SUMMARY"
+          cat f2d-exact-pair-evidence.json >> "$GITHUB_STEP_SUMMARY"
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -4412,9 +4419,9 @@ jobs:
       - name: Install backend test dependencies
         working-directory: platform/backend
         run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
-      - name: Exact-pair F2-C integration test
+      - name: Exact-pair F2-C/F2-D Web Chat integration tests
         working-directory: platform/backend
-        run: python -m pytest -q -p no:warnings integration_tests/test_f2c_exact_pair_integration.py
+        run: python -m pytest -q -p no:warnings integration_tests/test_f2c_exact_pair_integration.py tests/test_output_lifecycle_transport.py
       - name: Verify fixed frontend notices on exact platform head
         uses: actions/setup-node@v4
         with:
@@ -4427,5 +4434,5 @@ jobs:
       - name: Upload exact-pair evidence
         uses: actions/upload-artifact@v4
         with:
-          name: f2c-exact-pair-evidence
-          path: platform/f2c-exact-pair-evidence.json
+          name: f2d-exact-pair-evidence
+          path: platform/f2d-exact-pair-evidence.json
