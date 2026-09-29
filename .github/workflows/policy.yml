@@ -1020,8 +1020,12 @@ jobs:
           //   estado de entrega, la bitácora traduce las violaciones por regla).
           //   Medido con `npx vitest run`: 1063 passed, 0 fallidos, delta propio
           //   +9 sobre el 1054 declarado.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1063) {
-              console.error("PISO ROTO: se esperaban 1063 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1063 -> 1065 (F2-C Web Chat governed projection): +2 en
+          // Message.test.jsx; salida asistente gobernada se proyecta como texto
+          // literal y los mensajes del usuario conservan Markdown. Medido con
+          // npm ci limpio + npx vitest run --reporter=json en esta rama.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1065) {
+              console.error("PISO ROTO: se esperaban 1065 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
