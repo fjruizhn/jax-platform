@@ -957,6 +957,24 @@ CREATE TABLE IF NOT EXISTS ejecutor_mision (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# Task 8 (2026-09-28, plan "El Ejecutor programa"): inventario de repos que el Ejecutor
+# puede clonar para una misión de código. `remoto_url` es solo para mostrar -- el lado
+# jax deriva la URL real de clonado desde `owner_repo`, no lee esta columna. Antes de
+# `ejecutor_mision` porque `ejecutor_mision.repo_id` la referencia (FK, agregada en
+# _COLUMNS más abajo).
+CREATE_EJECUTOR_REPO = """
+CREATE TABLE IF NOT EXISTS ejecutor_repo (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  owner_repo VARCHAR(140) NOT NULL,
+  remoto_url VARCHAR(300) NOT NULL,
+  comandos_prueba JSON NOT NULL,
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at DATETIME DEFAULT NOW(),
+  UNIQUE KEY uk_ejecutor_repo_owner_repo (owner_repo),
+  CHECK (JSON_TYPE(comandos_prueba) = 'ARRAY')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
 CREATE_EJECUTOR_TURNO = """
 CREATE TABLE IF NOT EXISTS ejecutor_turno (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -1048,6 +1066,11 @@ _TABLES = [
     ("ejecutor_host", CREATE_EJECUTOR_HOST),                            # antes de punto_restauracion (FK)
     ("ejecutor_regla", CREATE_EJECUTOR_REGLA),
     ("ejecutor_punto_restauracion", CREATE_EJECUTOR_PUNTO_RESTAURACION),
+    # agrupada con las otras ejecutor_*; ejecutor_mision.repo_id (FK) se agrega en
+    # _COLUMNS, DESPUÉS de que todo este bucle de _TABLES ya corrió -- este orden no la
+    # condiciona (a diferencia de ejecutor_host, cuya FK sí está inline en el CREATE de
+    # ejecutor_punto_restauracion, arriba).
+    ("ejecutor_repo", CREATE_EJECUTOR_REPO),
     ("ejecutor_mision", CREATE_EJECUTOR_MISION),                        # antes de turno y bitácora (FK)
     ("ejecutor_turno", CREATE_EJECUTOR_TURNO),
     ("ejecutor_bitacora", CREATE_EJECUTOR_BITACORA),
@@ -2277,6 +2300,20 @@ _COLUMNS = [
     # semilla MEDIDA la pone _semilla_min_output_tokens_v1.
     ("capability", "min_output_tokens",
      "ALTER TABLE capability ADD COLUMN min_output_tokens INT NOT NULL DEFAULT 0"),
+    # Task 8 (2026-09-28, plan "El Ejecutor programa"): la misión de código, distinta de
+    # una misión de servidor (SP2). `tipo` distingue las dos; el resto sólo aplica a
+    # 'codigo'. `repo_id` referencia ejecutor_repo (creada antes en _TABLES). `estado_
+    # entrega` es NULL mientras la misión sigue en curso -- sólo se fija al cerrar.
+    ("ejecutor_mision", "tipo",
+     "ALTER TABLE ejecutor_mision ADD COLUMN tipo ENUM('servidor','codigo') NOT NULL DEFAULT 'servidor'"),
+    ("ejecutor_mision", "repo_id",
+     "ALTER TABLE ejecutor_mision ADD COLUMN repo_id INT NULL, "
+     "ADD CONSTRAINT fk_ejecutor_mision_repo FOREIGN KEY (repo_id) REFERENCES ejecutor_repo(id)"),
+    ("ejecutor_mision", "rama", "ALTER TABLE ejecutor_mision ADD COLUMN rama VARCHAR(80) NULL"),
+    ("ejecutor_mision", "pr_url", "ALTER TABLE ejecutor_mision ADD COLUMN pr_url VARCHAR(300) NULL"),
+    ("ejecutor_mision", "estado_entrega",
+     "ALTER TABLE ejecutor_mision ADD COLUMN estado_entrega "
+     "ENUM('abierto','rechazada_por_contrato','sin_informe_c5','fallo_entrega','sin_cambios') NULL"),
 ]
 
 
@@ -2352,6 +2389,28 @@ _ENUM_EXTENSIONS = [
         "facet_health_event", "source", "preflight",
         "ALTER TABLE facet_health_event MODIFY COLUMN source "
         "ENUM('chat','canary_periodic','canary_rebind','preflight') NOT NULL",
+    ),
+    # Task 10 (plan "El Ejecutor programa", correcciones del controlador 2026-09-28): el
+    # runner de jax (Task 9) emite `entrega_codigo` con dos valores de `estado_entrega` que
+    # el ENUM original (Task 8, ver `_COLUMNS`) no traía -- 'sin_entregar' (el turno no pasó
+    # los controles y NUNCA tocó GitHub) y 'empujado_sin_pr' (la rama ya está en GitHub pero
+    # el PR no se confirmó). Se ensancha el ENUM acá, no editando el `ADD COLUMN` original de
+    # `_COLUMNS`: mismo patrón que las entradas de arriba. `NULL`, como el `ADD COLUMN` que
+    # le dio origen -- una misión que sigue en curso, o una de servidor, no tiene entrega
+    # todavía. DOS entradas con el MISMO ALTER final (siete valores): cada una se dispara por
+    # SU propio valor ausente, así que el ENUM converge al conjunto completo sin importar
+    # cuál de los dos falte.
+    (
+        "ejecutor_mision", "estado_entrega", "sin_entregar",
+        "ALTER TABLE ejecutor_mision MODIFY COLUMN estado_entrega "
+        "ENUM('abierto','rechazada_por_contrato','sin_informe_c5','fallo_entrega','sin_cambios',"
+        "'sin_entregar','empujado_sin_pr') NULL",
+    ),
+    (
+        "ejecutor_mision", "estado_entrega", "empujado_sin_pr",
+        "ALTER TABLE ejecutor_mision MODIFY COLUMN estado_entrega "
+        "ENUM('abierto','rechazada_por_contrato','sin_informe_c5','fallo_entrega','sin_cambios',"
+        "'sin_entregar','empujado_sin_pr') NULL",
     ),
 ]
 
@@ -2467,6 +2526,16 @@ _COLUMN_WIDENS = [
 _INDEXES = [
     ("jax_users", "idx_jax_users_role_status",
      "ALTER TABLE jax_users ADD INDEX idx_jax_users_role_status (role, status)"),
+    # Task 8 (2026-09-28, plan "El Ejecutor programa"): el selector de repos del Ejecutor
+    # sólo lista los activos (SELECT id, owner_repo FROM ejecutor_repo WHERE activo = 1
+    # ORDER BY owner_repo). Medido contra jax_memory_test (2026-09-28, 1 fila -- la
+    # semilla de _sembrar_repo_jax_platform_v1): EXPLAIN de esa consulta con el indice da
+    # type=ref, key=idx_ejecutor_repo_activo, rows=1, Extra="Using where; Using filesort"
+    # -- el filesort es del ORDER BY owner_repo (índice de una sola columna, activo, no
+    # cubre el orden) y es irrelevante con este volumen; si el catálogo de repos creciera
+    # a cientos de filas, un índice compuesto (activo, owner_repo) lo evitaría.
+    ("ejecutor_repo", "idx_ejecutor_repo_activo",
+     "CREATE INDEX idx_ejecutor_repo_activo ON ejecutor_repo (activo)"),
 ]
 
 
@@ -3227,9 +3296,11 @@ async def _ajuste_confirmar_costo_v1(cur) -> None:
 
 MIGRACION_EJECUTOR_REGLAS_V1 = "ejecutor_reglas_v1"
 MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1 = "ejecutor_reglas_envoltorios_v1"
+MIGRACION_EJECUTOR_REGLAS_CODIGO_V1 = "ejecutor_reglas_codigo_v1"
 MIGRACION_EJECUTOR_INVENTARIO_V1 = "ejecutor_inventario_v1"
 _SEMILLA_EJECUTOR_REGLAS = Path(__file__).with_name("semilla_ejecutor_reglas.json")
 _SEMILLA_EJECUTOR_REGLAS_ENVOLTORIOS = Path(__file__).with_name("semilla_ejecutor_reglas_envoltorios.json")
+_SEMILLA_EJECUTOR_REGLAS_CODIGO = Path(__file__).with_name("semilla_ejecutor_reglas_codigo.json")
 _ROLES_EJECUTOR = ("hypervisor", "desarrollo", "produccion", "clientes", "respaldo")
 _OPCIONES_INVENTARIO = frozenset({"local", "sin_clientes"})
 
@@ -3271,6 +3342,30 @@ async def _ejecutor_reglas_envoltorios_v1(cur) -> None:
     `tmux new-session -d '… ssh …'` pasó C1 (ssh_sin_tt no lo ve) y sólo lo atrapó C5.
     Falsos positivos decididos: ver el `origen` de cada regla y la Biblioteca de jax."""
     await _sembrar_reglas_una_vez(cur, MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1, _SEMILLA_EJECUTOR_REGLAS_ENVOLTORIOS)
+
+
+async def _ejecutor_reglas_codigo_v1(cur) -> None:
+    """C1 dentro de la jaula para misiones de código (plan "El Ejecutor programa", Task 7,
+    spec 2026-09-28): la jaula no empuja (`codigo_git_push`), no desactiva ganchos
+    (`codigo_no_verify`) y no toca flujos de CI (`codigo_workflows`). Ninguna es canario."""
+    await _sembrar_reglas_una_vez(cur, MIGRACION_EJECUTOR_REGLAS_CODIGO_V1, _SEMILLA_EJECUTOR_REGLAS_CODIGO)
+
+
+MIGRACION_EJECUTOR_REPO_JAX_PLATFORM_V1 = "ejecutor_repo_jax_platform_v1"
+
+
+async def _sembrar_repo_jax_platform_v1(cur) -> None:
+    """Task 8 (plan "El Ejecutor programa"): la primera fila de `ejecutor_repo` es el propio
+    jax-platform (DC10). `remoto_url` sólo es para mostrar -- el lado jax deriva la URL real
+    de clonado de `owner_repo`, no lee esta columna."""
+    if await _marcada(cur, MIGRACION_EJECUTOR_REPO_JAX_PLATFORM_V1):
+        return
+    await cur.execute(
+        "INSERT IGNORE INTO ejecutor_repo (owner_repo, remoto_url, comandos_prueba) VALUES (%s, %s, %s)",
+        ("fjruizhn/jax-platform", "https://github.com/fjruizhn/jax-platform.git",
+         json.dumps(["cd frontend && npx vitest run", "cd backend && JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q"])))
+    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
+                      (MIGRACION_EJECUTOR_REPO_JAX_PLATFORM_V1,))
 
 
 # Los 4 métodos de verificación reales del diseño C2 (tabla «Respaldo por máquina»):
@@ -3571,6 +3666,8 @@ async def run_migrations():
             await _ajuste_confirmar_costo_v1(cur)
             await _ejecutor_reglas_v1(cur)
             await _ejecutor_reglas_envoltorios_v1(cur)
+            await _ejecutor_reglas_codigo_v1(cur)
+            await _sembrar_repo_jax_platform_v1(cur)
             await _eliminar_sudo_y_machine_id_de_ejecutor_host(cur)
             await _asegurar_forma_de_ejecutor_punto_restauracion(cur)
             await _ejecutor_inventario_v1(cur)

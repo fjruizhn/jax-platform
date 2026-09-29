@@ -317,3 +317,89 @@ def test_ejecutor_host_nace_sin_sudo_ni_machine_id(client):
     nombres = {f[0] for f in columnas}
     assert "sudo" not in nombres, nombres
     assert "machine_id" not in nombres, nombres
+
+
+def test_ejecutor_repo_y_columnas_de_codigo(client):
+    """Task 8 (plan "El Ejecutor programa"): `ejecutor_repo` (el inventario de repos que el
+    Ejecutor puede clonar) y las columnas de misión de código en `ejecutor_mision`."""
+    columnas_repo = client.portal.call(sql, "SHOW COLUMNS FROM ejecutor_repo", None, True)
+    assert {r[0] for r in columnas_repo} >= {"id", "owner_repo", "remoto_url", "comandos_prueba", "activo"}
+    columnas_mision = client.portal.call(sql, "SHOW COLUMNS FROM ejecutor_mision", None, True)
+    assert {r[0] for r in columnas_mision} >= {"tipo", "repo_id", "rama", "pr_url", "estado_entrega"}
+
+
+def test_comandos_prueba_debe_ser_array(client):
+    """Ronda de revisión de Task 8: el CHECK (JSON_TYPE(comandos_prueba) = 'ARRAY') de
+    ejecutor_repo -- un JSON válido que NO es array (un objeto, acá) se rechaza. Insertar
+    con un owner_repo único (uuid) para no chocar con la fila sembrada de jax-platform ni
+    con otra corrida en paralelo sobre la misma jax_memory_test compartida."""
+    import uuid
+
+    import pymysql
+
+    async def _intentar():
+        try:
+            await sql(
+                "INSERT INTO ejecutor_repo (owner_repo, remoto_url, comandos_prueba) VALUES (%s, %s, %s)",
+                (f"zz-test/check-{uuid.uuid4()}", "https://example.invalid/x.git",
+                 json.dumps({"no": "es un array"})))
+            return None
+        except pymysql.err.OperationalError as exc:
+            return exc.args
+
+    error = client.portal.call(_intentar)
+    assert error is not None, "un comandos_prueba que no es array se guardó -- no debería"
+    assert error[0] == 4025, error  # CONSTRAINT ... failed
+
+
+def test_tipo_fuera_del_enum_no_se_guarda(client):
+    """Ronda de revisión de Task 8: ejecutor_mision.tipo es ENUM('servidor','codigo') -- un
+    valor fuera de esos dos se rechaza, ni truncado ni silencioso (mismo criterio que
+    test_metodo_desconocido_no_se_guarda para ejecutor_punto_restauracion.metodo)."""
+    import uuid
+
+    import pymysql
+
+    async def _intentar():
+        mision_id = str(uuid.uuid4())
+        try:
+            await sql(
+                "INSERT INTO ejecutor_mision (id, user_id, objetivo, maquinas, sesion_id, created_at, "
+                "updated_at, tipo) VALUES (%s, 1, 'x', '[]', %s, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6), %s)",
+                (mision_id, str(uuid.uuid4()), "tipo_inventado"))
+            return None
+        except pymysql.err.DataError as exc:
+            return exc.args
+
+    error = client.portal.call(_intentar)
+    assert error is not None, "un tipo fuera del ENUM se guardó -- no debería"
+    filas = client.portal.call(sql, "SELECT COUNT(*) FROM ejecutor_mision WHERE tipo = 'tipo_inventado'",
+                               None, True)
+    assert filas == ((0,),)
+
+
+def test_estado_entrega_fuera_del_enum_no_se_guarda(client):
+    """Ronda de revisión de Task 8: ejecutor_mision.estado_entrega es
+    ENUM('abierto','rechazada_por_contrato','sin_informe_c5','fallo_entrega','sin_cambios')
+    -- un valor fuera de esos cinco se rechaza."""
+    import uuid
+
+    import pymysql
+
+    async def _intentar():
+        mision_id = str(uuid.uuid4())
+        try:
+            await sql(
+                "INSERT INTO ejecutor_mision (id, user_id, objetivo, maquinas, sesion_id, created_at, "
+                "updated_at, estado_entrega) VALUES "
+                "(%s, 1, 'x', '[]', %s, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6), %s)",
+                (mision_id, str(uuid.uuid4()), "estado_inventado"))
+            return None
+        except pymysql.err.DataError as exc:
+            return exc.args
+
+    error = client.portal.call(_intentar)
+    assert error is not None, "un estado_entrega fuera del ENUM se guardó -- no debería"
+    filas = client.portal.call(
+        sql, "SELECT COUNT(*) FROM ejecutor_mision WHERE estado_entrega = 'estado_inventado'", None, True)
+    assert filas == ((0,),)

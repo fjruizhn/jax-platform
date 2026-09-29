@@ -70,7 +70,21 @@ SQL_AUDITOR_LOCAL_DISPONIBLE = (
     "WHERE c.config_key = 'ejecutor.auditor_faceta_local'"
 )
 SQL_TURNO_EN_CURSO = "SELECT mision_id, n FROM ejecutor_turno WHERE estado = 'en_curso' LIMIT 1"
-SQL_MISION = "SELECT id, objetivo, maquinas, sesion_id, created_at, updated_at FROM ejecutor_mision WHERE id = %s"
+# `repo`/`repo_id` (Task 10, plan "El Ejecutor programa") van al FINAL de la lista:
+# `continuar()` lee esta misma consulta por índice posicional (fila[1]=objetivo,
+# fila[2]=maquinas, fila[3]=sesion_id) y esos índices no se pueden mover. `repo_id` (fila[11])
+# es el de la PROPIA columna -- no viene del JOIN, que sólo trae el nombre para mostrar -- y
+# `continuar()` lo necesita para revalidar que el repo siga activo en cada turno nuevo.
+SQL_MISION = ("SELECT m.id, m.objetivo, m.maquinas, m.sesion_id, m.created_at, m.updated_at, "
+              "m.tipo, r.owner_repo, m.rama, m.pr_url, m.estado_entrega, m.repo_id "
+              "FROM ejecutor_mision m LEFT JOIN ejecutor_repo r ON r.id = m.repo_id WHERE m.id = %s")
+SQL_REPO_ACTIVO = "SELECT owner_repo, comandos_prueba FROM ejecutor_repo WHERE id = %s AND activo = 1"
+SQL_HOST_LOCAL = "SELECT nombre FROM ejecutor_host WHERE es_local = 1 AND activo = 1"
+SQL_REPOS_ACTIVOS = "SELECT id, owner_repo FROM ejecutor_repo WHERE activo = 1 ORDER BY owner_repo"
+# MAJOR-1 (ola final, plan "El Ejecutor programa"): un turno sin `pr_url` (p. ej.
+# `rechazada_por_contrato`, que no llega a mirar si había un PR previo abierto) no debe
+# borrar el de un turno anterior -- COALESCE conserva el que ya había si este viene NULL.
+SQL_GUARDAR_ENTREGA_CODIGO = "UPDATE ejecutor_mision SET pr_url = COALESCE(%s, pr_url), estado_entrega = %s WHERE id = %s"
 SQL_TURNOS = ("SELECT n, instruccion, estado, codigo, resultado, sesion_iniciada, iniciado_at, terminado_at "
               "FROM ejecutor_turno WHERE mision_id = %s ORDER BY n")
 SQL_BITACORA = ("SELECT id, turno, evento, datos, at FROM ejecutor_bitacora "
@@ -223,7 +237,13 @@ async def detalle(mision_id: str) -> dict:
             "estado": ESTADO_DE_MISION.get(ultimo, "fallida"),
             "puede_continuar": en_curso is None and any(t[5] for t in turnos),
             "created_at": iso_utc(fila[4]), "updated_at": iso_utc(fila[5]),
+            "tipo": fila[6], "repo": fila[7], "rama": fila[8], "pr_url": fila[9], "estado_entrega": fila[10],
             "turnos": [_turno(t) for t in turnos]}
+
+
+async def repos_activos() -> list[dict]:
+    """Task 10: inventario de repos que se pueden elegir para una misión de código."""
+    return [{"id": f[0], "owner_repo": f[1]} for f in await _consultar(SQL_REPOS_ACTIVOS)]
 
 
 async def listar(limite: int) -> list[dict]:
@@ -258,6 +278,40 @@ async def _validar_maquinas(pedidas: list[str]) -> None:
             raise ErrorDelEjecutor(403, {"codigo": "ejecutor_maquina_no_elegible",
                                          "maquina": _eco(nombre),
                                          "motivo": _eco(m["motivo_no_elegible"])})
+
+
+async def _repo_activo(repo_id) -> dict:
+    """Task 10: el `repo_id` de una misión de código, activo. `422 repo_invalido` para lo que
+    no sea -- sin id, con un id de tipo raro (un dict/lista no es hasheable para la consulta
+    de todos modos), o el id de un repo inactivo/inexistente."""
+    if not isinstance(repo_id, int) or isinstance(repo_id, bool):
+        raise ErrorDelEjecutor(422, "repo_invalido")
+    fila = await _consultar(SQL_REPO_ACTIVO, (repo_id,), una=True)
+    if fila is None:
+        raise ErrorDelEjecutor(422, "repo_invalido")
+    return {"owner_repo": fila[0], "comandos_prueba": _json(fila[1], [])}
+
+
+async def _repo_sigue_activo(repo_id) -> dict:
+    """Task 10 (ruling del controlador sobre `continuar()`, 2026-09-28): a diferencia de
+    `_repo_activo` -- que valida un `repo_id` que el CLIENTE acaba de mandar, 422 si no sirve
+    -- acá el `repo_id` es el de la PROPIA misión, ya fijado en `crear()`. Que se haya
+    desactivado DESPUÉS es un conflicto con el estado actual, no un dato mal formado del
+    pedido: `409 repo_inactivo`, no 422."""
+    fila = await _consultar(SQL_REPO_ACTIVO, (repo_id,), una=True)
+    if fila is None:
+        raise ErrorDelEjecutor(409, "repo_inactivo")
+    return {"owner_repo": fila[0], "comandos_prueba": _json(fila[1], [])}
+
+
+async def _host_local_unico() -> str:
+    """Task 10: el host de una misión de código no lo elige quien la pide -- es EL host local
+    de esta plataforma. Ni cero ni dos: `409 sin_host_local` si `ejecutor_host` no tiene
+    exactamente una fila con `es_local = 1`."""
+    filas = await _consultar(SQL_HOST_LOCAL)
+    if len(filas) != 1:
+        raise ErrorDelEjecutor(409, "sin_host_local")
+    return filas[0][0]
 
 
 async def _barreras_de_lanzamiento(ruta_pausa: Path) -> None:
@@ -334,7 +388,19 @@ def _texto_guardable(valor, codigo_vacio: str, codigo_ilegible: str, codigo_larg
     return texto
 
 
-async def crear(user_id, objetivo, pedidas) -> dict:
+async def crear(user_id, objetivo, pedidas, tipo="servidor", repo_id=None) -> dict:
+    # Task 10 (plan "El Ejecutor programa"): una misión de código no la lanza el cliente con
+    # una lista de máquinas -- pide un `repo_id` activo y la plataforma elige, ella sola, EL
+    # host local (`_host_local_unico`). Todo esto se resuelve ANTES de la barrera de la pausa,
+    # igual que el resto de la validación de forma del pedido (texto, máquinas).
+    if tipo not in ("servidor", "codigo"):
+        raise ErrorDelEjecutor(422, "ejecutor_tipo_invalido")
+    repo = None
+    if tipo == "codigo":
+        repo = await _repo_activo(repo_id)
+        pedidas = [await _host_local_unico()]
+    elif repo_id is not None:
+        raise ErrorDelEjecutor(422, "repo_invalido")
     objetivo = _texto_guardable(objetivo, "ejecutor_objetivo_vacio",
                                 "ejecutor_objetivo_ilegible", "ejecutor_objetivo_largo")
     # El orden importa: `set(pedidas)` revienta con TypeError si un elemento no es
@@ -348,21 +414,28 @@ async def crear(user_id, objetivo, pedidas) -> dict:
     runner = _runner_o_503()
     ruta_pausa = _ruta_de_la_pausa()
     async with _lanzamiento:
-        await _validar_maquinas(pedidas)
+        if tipo == "servidor":
+            await _validar_maquinas(pedidas)
         await _barreras_de_lanzamiento(ruta_pausa)
         mision_id, sesion = str(uuid.uuid4()), str(uuid.uuid4())
+        rama = f"axioma/{mision_id}" if tipo == "codigo" else None
         async with transaccion() as cur:
             await cur.execute(
-                "INSERT INTO ejecutor_mision (id, user_id, objetivo, maquinas, sesion_id, created_at, updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))",
-                (mision_id, int(user_id), objetivo, json.dumps(pedidas), sesion))
+                "INSERT INTO ejecutor_mision (id, user_id, objetivo, maquinas, sesion_id, tipo, repo_id, rama, "
+                "created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))",
+                (mision_id, int(user_id), objetivo, json.dumps(pedidas), sesion, tipo, repo_id, rama))
             await cur.execute(
                 "INSERT INTO ejecutor_turno (mision_id, n, instruccion, estado, iniciado_at) "
                 "VALUES (%s, 1, %s, 'en_curso', UTC_TIMESTAMP(6))", (mision_id, objetivo))
             await cur.execute(SQL_BITACORA_INSERTAR, (mision_id, None, "mision_creada",
                                                       json.dumps({"maquinas": pedidas, "user_id": int(user_id)})))
-        _lanzar(mision_id, 1, {"mision_id": mision_id, "n": 1, "sesion": sesion, "objetivo": objetivo,
-                               "instruccion": objetivo, "hosts": pedidas}, runner)
+        pedido = {"mision_id": mision_id, "n": 1, "sesion": sesion, "objetivo": objetivo,
+                  "instruccion": objetivo, "hosts": pedidas}
+        if tipo == "codigo":
+            pedido["tipo"] = "codigo"
+            pedido["repo"] = {"owner_repo": repo["owner_repo"], "comandos_prueba": repo["comandos_prueba"]}
+        _lanzar(mision_id, 1, pedido, runner)
     return await detalle(mision_id)
 
 
@@ -376,7 +449,16 @@ async def continuar(user_id, mision_id: str, instruccion) -> dict:
         if fila is None:
             raise ErrorDelEjecutor(404, "ejecutor_mision_inexistente")
         pedidas = _json(fila[2], [])
-        await _validar_maquinas(pedidas)
+        tipo = fila[6]
+        # Ruling del controlador sobre §3.4 del spec (2026-09-28): un turno nuevo de una
+        # misión de código retoma la MISMA rama/PR -- el runner necesita `tipo`/`repo` en
+        # CADA turno, no sólo en el de creación. Los hosts son los mismos de la misión (el
+        # host local no se re-elige turno a turno: es el que quedó fijado en `crear()`).
+        repo = None
+        if tipo == "codigo":
+            repo = await _repo_sigue_activo(fila[11])
+        else:
+            await _validar_maquinas(pedidas)
         await _barreras_de_lanzamiento(ruta_pausa)
         turnos = await _consultar(SQL_TURNOS, (mision_id,))
         if not any(t[5] for t in turnos):
@@ -387,8 +469,12 @@ async def continuar(user_id, mision_id: str, instruccion) -> dict:
                 "INSERT INTO ejecutor_turno (mision_id, n, instruccion, estado, iniciado_at) "
                 "VALUES (%s, %s, %s, 'en_curso', UTC_TIMESTAMP(6))", (mision_id, n, instruccion))
             await cur.execute("UPDATE ejecutor_mision SET updated_at = UTC_TIMESTAMP(6) WHERE id = %s", (mision_id,))
-        _lanzar(mision_id, n, {"mision_id": mision_id, "n": n, "sesion": fila[3], "objetivo": fila[1],
-                               "instruccion": instruccion, "hosts": pedidas}, runner)
+        pedido = {"mision_id": mision_id, "n": n, "sesion": fila[3], "objetivo": fila[1],
+                  "instruccion": instruccion, "hosts": pedidas}
+        if tipo == "codigo":
+            pedido["tipo"] = "codigo"
+            pedido["repo"] = {"owner_repo": repo["owner_repo"], "comandos_prueba": repo["comandos_prueba"]}
+        _lanzar(mision_id, n, pedido, runner)
     return await detalle(mision_id)
 
 
@@ -403,6 +489,19 @@ async def _anotar(mision_id: str, turno, evento: str, datos) -> None:
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(SQL_BITACORA_INSERTAR, (mision_id, turno, evento, json.dumps(datos, ensure_ascii=False)))
+
+
+async def _guardar_entrega_codigo(mision_id: str, datos: dict) -> None:
+    """Task 10: el evento `entrega_codigo` del runner (campos `estado_entrega`, `pr_url`,
+    `violaciones`, `notas`) además de ir a la bitácora como cualquier otro evento (eso lo hace
+    el llamador), deja su `pr_url`/`estado_entrega` en la fila de la misión -- es lo que
+    expone GET /misiones/{id}. Sin try/except propio: si `estado_entrega` no es un valor del
+    ENUM, la excepción sube y el turno entero cierra `fallido`/`runner_error`, igual que
+    cualquier otra falla de esta tarea de fondo (ver el `except Exception` de `_correr_turno`)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(SQL_GUARDAR_ENTREGA_CODIGO, (datos.get("pr_url"), datos.get("estado_entrega"), mision_id))
 
 
 async def _cerrar_turno(mision_id: str, n: int, estado_t: str, codigo, resultado: dict, evento=None) -> bool:
@@ -488,7 +587,11 @@ async def _correr_turno(mision_id: str, n: int, pedido: dict, runner) -> None:
                 continue
             terminal_visto = terminal_visto or doc["evento"] in EVENTOS_TERMINALES
             turno = doc.get("turno") if isinstance(doc.get("turno"), int) else n
+            # MINOR-3 (ola final, plan "El Ejecutor programa"): a la bitácora PRIMERO -- un
+            # fallo al persistir en la fila de la misión (abajo) no debe perder el evento.
             await _anotar(mision_id, turno, doc["evento"], doc["datos"])
+            if doc["evento"] == "entrega_codigo":
+                await _guardar_entrega_codigo(mision_id, doc["datos"])
         await proc.wait()
         err = ""
         try:

@@ -65,23 +65,64 @@ GUION_BUENO = {"lineas": [_ev("turno_lanzado", reanudar=False), _ev("arranque_ve
 
 
 @pytest.fixture
-def runner(tmp_path, monkeypatch):
+def sin_hosts_locales(client):
+    """Fuerza CERO `ejecutor_host` con `es_local = 1` durante el test, y repone lo que había
+    al salir. Esta base puede traer YA uno sembrado de verdad (`_ejecutor_inventario_v1`
+    corrido alguna vez con un `JAX_EJECUTOR_INVENTARIO` real, p.ej. 'hall9000') -- medido en
+    vivo: sin esta fixture, `_host_local_unico()` veía DOS candidatos y un test que esperaba
+    'ningún host local' daba 409 por el motivo equivocado (dos, no cero). No se ASUME
+    ausencia, se la fuerza acá, igual que `sin_auditor_local` con el binding."""
+    nombres = [f[0] for f in client.portal.call(
+        sql, "SELECT nombre FROM ejecutor_host WHERE es_local = 1", (), True)]
+    if nombres:
+        marcadores = ",".join(["%s"] * len(nombres))
+        client.portal.call(sql, f"UPDATE ejecutor_host SET es_local = 0 WHERE nombre IN ({marcadores})",
+                           tuple(nombres))
+    yield
+    if nombres:
+        marcadores = ",".join(["%s"] * len(nombres))
+        client.portal.call(sql, f"UPDATE ejecutor_host SET es_local = 1 WHERE nombre IN ({marcadores})",
+                           tuple(nombres))
+
+
+#: Nombre del host que `runner` siembra como el ÚNICO `ejecutor_host` con `es_local = 1`
+#: -- el que `crear()` elige solo para una misión de código (Task 10, plan "El Ejecutor
+#: programa"). Se borra al terminar cada test, igual que la fixture `maquinas`.
+_HOST_LOCAL_DEL_RUNNER = "t-sp2-codigo-local"
+
+
+@pytest.fixture
+def runner(tmp_path, monkeypatch, client, sin_hosts_locales):
     script = tmp_path / "runner_falso.py"
     script.write_text(RUNNER_FALSO)
     guion = tmp_path / "guion.json"
     monkeypatch.setenv("GUION_EJECUTOR", str(guion))
     monkeypatch.setattr(misiones, "_runner", lambda: ([sys.executable, str(script)], str(tmp_path), dict(os.environ)))
+    client.portal.call(sql, "DELETE FROM ejecutor_host WHERE nombre = %s", (_HOST_LOCAL_DEL_RUNNER,))
+    client.portal.call(
+        sql, "INSERT INTO ejecutor_host (nombre, ip, puerto, rol, es_local, con_datos_de_clientes, activo) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (_HOST_LOCAL_DEL_RUNNER, "192.0.2.98", 58291, "desarrollo", True, False, True))
 
     class R:
+        host_local = _HOST_LOCAL_DEL_RUNNER
+
         def guion(self, doc):
             guion.write_text(json.dumps(doc))
 
         def pedido(self, n=1):
             return json.loads((tmp_path / f"guion.json.pedido.{n}").read_text())
 
+        def ultimo_pedido(self):
+            """El último pedido ESCRITO por el runner falso (por mtime), no por `n`: sirve
+            igual para una misión de código, donde el `n` del pedido puede no ser 1."""
+            archivos = sorted(tmp_path.glob("guion.json.pedido.*"), key=lambda p: p.stat().st_mtime)
+            return json.loads(archivos[-1].read_text())
+
         def seguir(self):
             (tmp_path / "guion.json.seguir").write_text("")
-    return R()
+    yield R()
+    client.portal.call(sql, "DELETE FROM ejecutor_host WHERE nombre = %s", (_HOST_LOCAL_DEL_RUNNER,))
 
 
 @pytest.fixture
@@ -166,7 +207,8 @@ def test_solo_un_superadmin(client):
     h = cabeceras(client, "ejecutor-operador")
     for metodo, ruta in (("get", "/estado"), ("post", "/pausa/poner"), ("post", "/pausa/quitar"),
                          ("get", "/misiones"), ("post", "/misiones"), ("get", f"/misiones/{uuid.uuid4()}"),
-                         ("get", f"/misiones/{uuid.uuid4()}/bitacora"), ("post", f"/misiones/{uuid.uuid4()}/turnos")):
+                         ("get", f"/misiones/{uuid.uuid4()}/bitacora"), ("post", f"/misiones/{uuid.uuid4()}/turnos"),
+                         ("get", "/repos")):
         assert getattr(client, metodo)(BASE + ruta, headers=h).status_code == 403, ruta
     assert client.get(BASE + "/estado").status_code in (401, 403)
     assert not pausa.pausa_puesta(pausa.ruta_de_la_pausa())
@@ -810,3 +852,269 @@ def test_un_runner_que_escribe_MUCHO_en_stderr_no_se_cuelga(client, superadmin, 
     d = _esperar(client, h, _crear(client, h).json()["id"])
     (t,) = d["turnos"]
     assert t["estado"] == "completado", t
+
+
+# --- Task 10 (plan "El Ejecutor programa"): API de misiones de código ------------------------
+#
+# `tipo` y `repo_id` en POST /misiones; GET /repos; el evento `entrega_codigo` del runner
+# persiste `pr_url`/`estado_entrega` y los dos, junto con `tipo`/`repo`/`rama`, se exponen en
+# GET /misiones/{id}. La fila sembrada de `ejecutor_repo` (Task 8) es 'fjruizhn/jax-platform'.
+
+COMANDOS_PRUEBA_JAX_PLATFORM = ["cd frontend && npx vitest run",
+                                "cd backend && JAX_CI_NO_DB=1 .venv/bin/python -m pytest -q"]
+
+
+@pytest.fixture
+def repo_jax_platform(client_superadmin):
+    """El id de la fila que la migración de Task 8 siembra sin condición
+    (`_sembrar_repo_jax_platform_v1`): no se crea acá, se lee."""
+    filas = client_superadmin.portal.call(
+        sql, "SELECT id FROM ejecutor_repo WHERE owner_repo = %s", ("fjruizhn/jax-platform",), True)
+    return filas[0][0]
+
+
+def test_crear_mision_de_codigo_pasa_repo_al_runner(client_superadmin, runner, repo_jax_platform):
+    runner.guion(GUION_BUENO)
+    r = client_superadmin.post(f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform,
+                                                          "objetivo": "arregla X"})
+    assert r.status_code == 202, r.json()
+    d = r.json()
+    _esperar(client_superadmin, {}, d["id"])
+    pedido = runner.ultimo_pedido()
+    assert pedido["tipo"] == "codigo"
+    assert pedido["repo"] == {"owner_repo": "fjruizhn/jax-platform", "comandos_prueba": COMANDOS_PRUEBA_JAX_PLATFORM}
+    assert "remoto_url" not in pedido["repo"]
+    assert pedido["hosts"] == [runner.host_local]
+    assert (d["tipo"], d["repo"], d["rama"]) == ("codigo", "fjruizhn/jax-platform", f"axioma/{d['id']}")
+    assert d["pr_url"] is None and d["estado_entrega"] is None
+
+
+def test_codigo_sin_repo_es_422(client_superadmin, runner):
+    r = client_superadmin.post(f"{BASE}/misiones", json={"tipo": "codigo", "objetivo": "x"})
+    assert (r.status_code, r.json()["detail"]) == (422, "repo_invalido")
+
+
+def test_codigo_con_repo_inactivo_es_422(client_superadmin, runner):
+    repo_id = client_superadmin.portal.call(
+        sql, "INSERT INTO ejecutor_repo (owner_repo, remoto_url, comandos_prueba, activo) "
+             "VALUES (%s, %s, %s, FALSE)",
+        ("t-sp2/repo-inactivo", "https://example.invalid/repo-inactivo.git", json.dumps(["true"])))
+    try:
+        r = client_superadmin.post(f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_id, "objetivo": "x"})
+        assert (r.status_code, r.json()["detail"]) == (422, "repo_invalido")
+    finally:
+        client_superadmin.portal.call(sql, "DELETE FROM ejecutor_repo WHERE id = %s", (repo_id,))
+
+
+def test_servidor_con_repo_id_es_422(client_superadmin, maquinas, runner, repo_jax_platform):
+    r = client_superadmin.post(f"{BASE}/misiones", json={"tipo": "servidor", "repo_id": repo_jax_platform,
+                                                          "objetivo": "x", "maquinas": ["t-sp2-vm"]})
+    assert (r.status_code, r.json()["detail"]) == (422, "repo_invalido")
+
+
+def test_tipo_desconocido_es_422(client_superadmin):
+    r = client_superadmin.post(f"{BASE}/misiones", json={"tipo": "otra-cosa", "objetivo": "x"})
+    assert (r.status_code, r.json()["detail"]) == (422, "ejecutor_tipo_invalido")
+
+
+def test_codigo_sin_host_local_es_409(client_superadmin, repo_jax_platform, sin_hosts_locales):
+    """Sin la fixture `runner` (y con `sin_hosts_locales` forzando la base), ningún
+    `ejecutor_host` es `es_local = 1`."""
+    r = client_superadmin.post(f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform,
+                                                          "objetivo": "x"})
+    assert (r.status_code, r.json()["detail"]) == (409, "sin_host_local")
+
+
+def test_codigo_con_dos_hosts_locales_es_409(client_superadmin, runner, repo_jax_platform):
+    otro = "t-sp2-codigo-local-2"
+    client_superadmin.portal.call(
+        sql, "INSERT INTO ejecutor_host (nombre, ip, puerto, rol, es_local, con_datos_de_clientes, activo) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (otro, "192.0.2.97", 58291, "desarrollo", True, False, True))
+    try:
+        r = client_superadmin.post(f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform,
+                                                              "objetivo": "x"})
+        assert (r.status_code, r.json()["detail"]) == (409, "sin_host_local")
+    finally:
+        client_superadmin.portal.call(sql, "DELETE FROM ejecutor_host WHERE nombre = %s", (otro,))
+
+
+def test_codigo_host_local_inactivo_no_cuenta_para_el_unico(client_superadmin, runner, repo_jax_platform):
+    """MINOR-4 (ola final, plan "El Ejecutor programa"): un `ejecutor_host` con `es_local = 1`
+    pero `activo = 0` no cuenta -- si no, un host local de baja bloquea CUALQUIER misión de
+    código con un 409 falso, aunque el host local de verdad siga siendo uno solo."""
+    inactivo = "t-sp2-codigo-local-inactivo"
+    client_superadmin.portal.call(
+        sql, "INSERT INTO ejecutor_host (nombre, ip, puerto, rol, es_local, con_datos_de_clientes, activo) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (inactivo, "192.0.2.96", 58291, "desarrollo", True, False, False))
+    try:
+        runner.guion(GUION_BUENO)
+        r = client_superadmin.post(f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform,
+                                                              "objetivo": "x"})
+        assert r.status_code == 202, r.json()
+        _esperar(client_superadmin, {}, r.json()["id"])  # no deja el turno en_curso para el test siguiente
+    finally:
+        client_superadmin.portal.call(sql, "DELETE FROM ejecutor_host WHERE nombre = %s", (inactivo,))
+
+
+def test_repos_lista_solo_los_activos_para_superadmin(client_superadmin, repo_jax_platform):
+    inactivo_id = client_superadmin.portal.call(
+        sql, "INSERT INTO ejecutor_repo (owner_repo, remoto_url, comandos_prueba, activo) VALUES (%s, %s, %s, FALSE)",
+        ("t-sp2/repo-inactivo-listado", "https://example.invalid/repo-listado.git", json.dumps(["true"])))
+    try:
+        r = client_superadmin.get(f"{BASE}/repos")
+        assert r.status_code == 200
+        cuerpo = r.json()
+        assert {"id": repo_jax_platform, "owner_repo": "fjruizhn/jax-platform"} in cuerpo
+        assert inactivo_id not in [x["id"] for x in cuerpo]
+    finally:
+        client_superadmin.portal.call(sql, "DELETE FROM ejecutor_repo WHERE id = %s", (inactivo_id,))
+
+
+def test_entrega_codigo_persiste_pr_url_y_estado_entrega_y_se_expone_en_el_detalle(
+        client_superadmin, runner, repo_jax_platform):
+    runner.guion({"lineas": [
+        _ev("turno_lanzado"),
+        _ev("entrega_codigo", estado_entrega="abierto",
+            pr_url="https://github.com/fjruizhn/jax-platform/pull/1", violaciones=[], notas="listo"),
+        _resultado()]})
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    d = _esperar(client_superadmin, {}, mision_id)
+    assert d["estado"] == "completada"
+    assert (d["tipo"], d["repo"], d["pr_url"], d["estado_entrega"]) == (
+        "codigo", "fjruizhn/jax-platform", "https://github.com/fjruizhn/jax-platform/pull/1", "abierto")
+    eventos = [e["evento"] for e in client_superadmin.get(f"{BASE}/misiones/{mision_id}/bitacora").json()["eventos"]]
+    assert "entrega_codigo" in eventos
+
+
+def test_mision_de_servidor_expone_tipo_y_repo_vacio(client, superadmin, maquinas, runner):
+    """Las misiones de servidor (SP2) no cambian de forma: `tipo` es 'servidor' y el resto de
+    los campos nuevos van NULL -- el ciclo de código no se cuela en el camino viejo."""
+    _, h = superadmin
+    runner.guion(GUION_BUENO)
+    d = _esperar(client, h, _crear(client, h).json()["id"])
+    assert (d["tipo"], d["repo"], d["rama"], d["pr_url"], d["estado_entrega"]) == ("servidor", None, None, None, None)
+
+
+def test_entrega_codigo_con_sin_entregar_se_guarda(client_superadmin, runner, repo_jax_platform):
+    """Corrección del controlador (2026-09-28): el runner de jax (Task 9) también emite
+    `estado_entrega='sin_entregar'` (con `motivo`) cuando el turno no pasó los controles y
+    NUNCA tocó GitHub -- un sexto valor del ENUM, distinto de los otros cinco (que sí implican
+    algún contacto con el repo). `pr_url` queda NULL; `motivo` no es un campo propio de
+    `ejecutor_mision` (no se expone en el detalle) pero SÍ queda persistido -- en la
+    bitácora, como el resto de `datos` de cualquier evento (`_anotar`, ya existente)."""
+    runner.guion({"lineas": [
+        _ev("turno_lanzado"),
+        _ev("entrega_codigo", estado_entrega="sin_entregar", pr_url=None,
+            violaciones=["c1_git_push"], motivo="c1_violado", notas="rechazado por C1"),
+        _resultado()]})
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    d = _esperar(client_superadmin, {}, mision_id)
+    assert d["estado"] == "completada"
+    assert (d["estado_entrega"], d["pr_url"]) == ("sin_entregar", None)
+    eventos = client_superadmin.get(f"{BASE}/misiones/{mision_id}/bitacora").json()["eventos"]
+    (entrega,) = [e for e in eventos if e["evento"] == "entrega_codigo"]
+    assert entrega["datos"]["motivo"] == "c1_violado"
+
+
+def test_entrega_codigo_con_empujado_sin_pr_se_guarda(client_superadmin, runner, repo_jax_platform):
+    """Corrección del controlador (2026-09-28): un séptimo valor del ENUM --
+    `estado_entrega='empujado_sin_pr'`, la rama ya está en GitHub pero el PR no se confirmó.
+    `rama_empujada`/`sha` no son campos propios de `ejecutor_mision` (no se exponen en el
+    detalle) pero SÍ quedan persistidos en la bitácora, igual que `motivo` para
+    'sin_entregar' arriba."""
+    runner.guion({"lineas": [
+        _ev("turno_lanzado"),
+        _ev("entrega_codigo", estado_entrega="empujado_sin_pr", pr_url=None,
+            rama_empujada=True, sha="a1b2c3d4", violaciones=[], notas="push ok, PR sin confirmar"),
+        _resultado()]})
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    d = _esperar(client_superadmin, {}, mision_id)
+    assert d["estado"] == "completada"
+    assert (d["estado_entrega"], d["pr_url"]) == ("empujado_sin_pr", None)
+    eventos = client_superadmin.get(f"{BASE}/misiones/{mision_id}/bitacora").json()["eventos"]
+    (entrega,) = [e for e in eventos if e["evento"] == "entrega_codigo"]
+    assert (entrega["datos"]["sha"], entrega["datos"]["rama_empujada"]) == ("a1b2c3d4", True)
+
+
+def test_entrega_codigo_queda_en_la_bitacora_aunque_falle_al_persistir_en_la_mision(
+        client_superadmin, runner, repo_jax_platform, monkeypatch):
+    """MINOR-3 (ola final, plan "El Ejecutor programa"): el evento va a la bitácora ANTES de
+    intentar guardar `pr_url`/`estado_entrega` en la fila de la misión -- un fallo de esa
+    segunda escritura no debe perder el evento (el turno igual cierra fallido/runner_error,
+    pero la bitácora ya tiene lo que pasó de verdad)."""
+    async def revienta(mision_id, datos):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(misiones, "_guardar_entrega_codigo", revienta)
+    runner.guion({"lineas": [
+        _ev("turno_lanzado"),
+        _ev("entrega_codigo", estado_entrega="abierto",
+            pr_url="https://github.com/fjruizhn/jax-platform/pull/1", violaciones=[], notas="listo"),
+        _resultado()]})
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    d = _esperar(client_superadmin, {}, mision_id)
+    assert d["estado"] == "fallida"
+    eventos = [e["evento"] for e in client_superadmin.get(f"{BASE}/misiones/{mision_id}/bitacora").json()["eventos"]]
+    assert "entrega_codigo" in eventos
+
+
+def test_entrega_codigo_turno_2_sin_pr_url_conserva_el_del_turno_1(client_superadmin, runner, repo_jax_platform):
+    """MAJOR-1 (ola final, plan "El Ejecutor programa"): un turno que no trae `pr_url` (p. ej.
+    `rechazada_por_contrato`, donde mision_codigo ni llegó a mirar si había un PR previo) no
+    debe BORRAR el de un turno anterior -- `COALESCE` conserva el que ya había."""
+    runner.guion({"lineas": [
+        _ev("turno_lanzado"),
+        _ev("entrega_codigo", estado_entrega="abierto",
+            pr_url="https://github.com/fjruizhn/jax-platform/pull/1", violaciones=[], notas="listo"),
+        _resultado()]})
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    d = _esperar(client_superadmin, {}, mision_id)
+    assert (d["estado_entrega"], d["pr_url"]) == ("abierto", "https://github.com/fjruizhn/jax-platform/pull/1")
+    runner.guion({"lineas": [
+        _ev("turno_lanzado", 2, reanudar=True),
+        _ev("entrega_codigo", 2, estado_entrega="rechazada_por_contrato", pr_url=None,
+            violaciones=[{"regla": "flujos_ci", "ruta": ".github/workflows/x.yml", "detalle": "x"}], notas=[]),
+        _resultado(turno=2)]})
+    r = client_superadmin.post(f"{BASE}/misiones/{mision_id}/turnos", json={"instruccion": "otra"})
+    assert r.status_code == 202, r.json()
+    d = _esperar(client_superadmin, {}, mision_id)
+    assert (d["estado_entrega"], d["pr_url"]) == (
+        "rechazada_por_contrato", "https://github.com/fjruizhn/jax-platform/pull/1")
+
+
+def test_continuar_mision_de_codigo_pasa_tipo_y_repo_al_runner(client_superadmin, runner, repo_jax_platform):
+    """Ruling del controlador sobre §3.4 del spec (2026-09-28): un turno nuevo de la MISMA
+    misión de código retoma la misma rama/PR -- el runner necesita `tipo`/`repo` en cada
+    turno, no sólo en el de creación."""
+    runner.guion(GUION_BUENO)
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    _esperar(client_superadmin, {}, mision_id)
+    runner.guion({"lineas": [_ev("turno_lanzado", 2, reanudar=True), _resultado(turno=2)]})
+    r = client_superadmin.post(f"{BASE}/misiones/{mision_id}/turnos", json={"instruccion": "y ahora esto"})
+    assert r.status_code == 202, r.json()
+    _esperar(client_superadmin, {}, mision_id)
+    pedido2 = runner.ultimo_pedido()
+    assert pedido2["n"] == 2
+    assert pedido2["tipo"] == "codigo"
+    assert pedido2["repo"] == {"owner_repo": "fjruizhn/jax-platform", "comandos_prueba": COMANDOS_PRUEBA_JAX_PLATFORM}
+    assert pedido2["hosts"] == [runner.host_local]
+
+
+def test_continuar_mision_de_codigo_con_repo_desactivado_es_409(client_superadmin, runner, repo_jax_platform):
+    runner.guion(GUION_BUENO)
+    mision_id = client_superadmin.post(
+        f"{BASE}/misiones", json={"tipo": "codigo", "repo_id": repo_jax_platform, "objetivo": "x"}).json()["id"]
+    _esperar(client_superadmin, {}, mision_id)
+    client_superadmin.portal.call(sql, "UPDATE ejecutor_repo SET activo = FALSE WHERE id = %s", (repo_jax_platform,))
+    try:
+        r = client_superadmin.post(f"{BASE}/misiones/{mision_id}/turnos", json={"instruccion": "otra"})
+        assert (r.status_code, r.json()["detail"]) == (409, "repo_inactivo")
+    finally:
+        client_superadmin.portal.call(sql, "UPDATE ejecutor_repo SET activo = TRUE WHERE id = %s", (repo_jax_platform,))

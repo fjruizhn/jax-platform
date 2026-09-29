@@ -1135,6 +1135,33 @@ export default {
     hint: 'El Ejecutor corre comandos verificados en las máquinas elegidas (sin datos de clientes)',
     titulo: 'Ejecutor',
     cargando: 'Cargando…',
+    // Tipo de misión (Task 11, 2026-09-28): servidor (máquinas) o código (repo, PR).
+    tipoServidor: 'Servidor',
+    tipoCodigo: 'Código',
+    repo: 'Repositorio',
+    elegirRepo: 'Elegí un repositorio…',
+    lanzar: 'Lanzar',
+    verPr: 'Ver el PR',
+    entrega: {
+      abierto: 'PR abierto',
+      rechazada_por_contrato: 'Rechazada por el contrato',
+      sin_informe_c5: 'Sin informe de C5',
+      fallo_entrega: 'Falló la entrega',
+      sin_cambios: 'Sin cambios que entregar',
+      sin_entregar: 'Sin entregar',
+      empujado_sin_pr: 'Empujado sin PR',
+    },
+    regla: {
+      flujos_ci: 'Flujos de CI',
+      archivo_de_fernando: 'Archivo de Fernando',
+      prueba_debilitada: 'Prueba debilitada',
+      ganchos: 'Ganchos',
+      secretos: 'Secretos',
+      tamano: 'Tamaño',
+      identidad: 'Identidad',
+      encoding_no_permitido: 'Encoding no permitido',
+      entrega: 'Entrega',
+    },
     maquinasTitulo: 'Máquinas',
     sinElegibles: 'No hay ninguna máquina elegible.',
     compuertaRotulo: 'Compuerta de datos de clientes',
@@ -1229,6 +1256,9 @@ export default {
       c5: 'C5 · auditor en vivo',
       c6: 'C6 · revocación',
       arranque: 'Arranque condicionado',
+      // Task 12/13: el octavo contrato de `_ORDEN`, sin número -- corre SOLO en un turno de
+      // código (canarios de push/flujos de CI, ver `codigos.*` de abajo).
+      codigo: 'Código · canarios de CI y del push',
     },
     errores: {
       ejecutor_objetivo_vacio: () => 'El objetivo no puede estar vacío.',
@@ -1247,6 +1277,10 @@ export default {
       ejecutor_mision_sin_sesion: () => 'Esta misión no tiene una sesión iniciada: no admite otro turno.',
       ejecutor_pausa_no_escribible: () => 'No se pudo escribir la pausa: nada cambió.',
       ejecutor_pausa_auditoria_fallida: () => 'La pausa cambió pero no se pudo auditar. Revisá el estado.',
+      repo_invalido: () => 'El repositorio no es válido.',
+      repo_inactivo: () => 'El repositorio no está activo.',
+      sin_host_local: () => 'No hay una máquina local para el Ejecutor.',
+      ejecutor_tipo_invalido: () => 'El tipo de misión no es válido.',
     },
     codigosTurno: {
       arranque_rechazado: 'El arranque fue rechazado',
@@ -1269,6 +1303,18 @@ export default {
       // descartado-- dejó de reportarse como completado. Dos misiones salieron
       // "completada" con cero y nadie las miró.
       sin_afirmaciones: 'El turno no entregó ninguna afirmación',
+      sin_entregar: 'El turno no pasó los controles: no se entregó nada',
+      // Task 12/13 (plan "El Ejecutor programa"): cuando `entrega_codigo` termina en algo
+      // que no es "abierto"/"sin_cambios", su `estado_entrega` se vuelve el `codigo` del
+      // turno (mision.py, ENTREGA_SIN_FALLO) -- y la preparación del clon tiene sus propios
+      // fallos, antes de llegar siquiera a entregar.
+      preparar_fallo: 'Falló la preparación del código',
+      codigo_sin_clon: 'No hay un clon preparado',
+      codigo_sin_dependencias: 'Faltan las dependencias del código',
+      rechazada_por_contrato: 'Rechazada por el contrato',
+      fallo_entrega: 'Falló la entrega',
+      sin_informe_c5: 'Sin informe de C5',
+      empujado_sin_pr: 'Empujado sin PR',
     },
     eventos: {
       mision_creada: 'Misión creada',
@@ -1290,6 +1336,15 @@ export default {
       turno_rechazado: 'Turno rechazado',
       auditor_ilegible: 'Auditor ilegible',
       runner_salida_invalida: 'Salida inválida del runner',
+      codigo_preparado: 'Código preparado',
+      preparar_fallo: 'Falló la preparación',
+      entrega_codigo: 'Entrega de código',
+    },
+    notas: {
+      pr_reabierto_nuevo: 'El PR se reabrió con un número nuevo',
+      sin_etiqueta: 'El PR se abrió, pero falló la etiqueta',
+      pr_previo_sin_cambios_nuevos: 'Ya había un PR abierto de esta misión',
+      pr_con_informe_desactualizado: 'El PR abierto tiene el informe de un turno anterior',
     },
     codigos: {
       respaldada: 'Respaldada',
@@ -1331,6 +1386,14 @@ export default {
       prueba_ausente: 'Falta la prueba',
       prueba_reventada: 'La prueba reventó',
       auditor_no_admite_datos_de_clientes: 'El auditor no admite máquinas con datos de clientes',
+      // Task 12/13: motivos del contrato "codigo" (`jax/ejecutor/contratos/arranque.py` y
+      // `canario_codigo.py`) -- los dos canarios permanentes (push desde la jaula, flujos de
+      // CI) y el token de GitHub.
+      sin_token_github: 'Sin token de GitHub',
+      push_no_bloqueado: 'El push no quedó bloqueado',
+      push_sin_su_regla: 'El push no dejó su regla de negación',
+      cerco_deja_salir_a_github: 'El cerco deja salir a GitHub',
+      c1_diff_no_bloquea: 'C1 no bloquea el diff',
     },
   },
 

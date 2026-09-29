@@ -25,6 +25,9 @@ const INICIAL = {
   seleccion: [],
   enviando: false,
   errorEnvio: null,
+  // Misión de código (Task 11, 2026-09-28): repos activos para elegir.
+  repos: [],
+  errorRepos: null,
 }
 
 // Fuera del estado de zustand: un temporizador no es un dato que se pinte.
@@ -157,13 +160,37 @@ export const useEjecutor = create((set, get) => {
           ? await api.post(`/ejecutor/misiones/${abierta.id}/turnos`, { instruccion: texto })
           : await api.post('/ejecutor/misiones', { objetivo: texto, maquinas: get().seleccion })
         if (!vigente(e)) return false
-        get().detenerPolling()
-        // Otra misión: la bitácora se pide completa.
-        if (data.id !== get().idActiva) set({ bitacora: [] })
-        set({ idActiva: data.id, misionActiva: data, errorMision: null })
-        get().refrescarMision(data.id)
-        get().cargarMisiones()
-        get().cargarEstado()
+        _aplicarMision(data)
+        return true
+      } catch (err) {
+        if (vigente(e)) set({ errorEnvio: err })
+        return false
+      } finally {
+        if (vigente(e)) set({ enviando: false })
+      }
+    },
+
+    // Task 11 (2026-09-28): inventario de repos activos para el selector del
+    // tipo Código.
+    cargarRepos: async () => {
+      const e = epoca()
+      try {
+        const { data } = await api.get('/ejecutor/repos')
+        if (vigente(e)) set({ repos: data || [], errorRepos: null })
+      } catch (err) {
+        if (vigente(e)) set({ errorRepos: err })
+      }
+    },
+
+    // Misión de código: siempre crea (nunca continúa un turno -- eso es
+    // `enviar`). Devuelve true si el backend la aceptó.
+    crearMision: async ({ tipo, repoId, objetivo }) => {
+      const e = epoca()
+      set({ enviando: true, errorEnvio: null })
+      try {
+        const { data } = await api.post('/ejecutor/misiones', { objetivo, tipo, repo_id: repoId })
+        if (!vigente(e)) return false
+        _aplicarMision(data)
         return true
       } catch (err) {
         if (vigente(e)) set({ errorEnvio: err })
@@ -177,6 +204,18 @@ export const useEjecutor = create((set, get) => {
     // /estado: un 500 de auditoría puede haber dejado la pausa escrita.
     ponerPausa: () => _pausa('/ejecutor/pausa/poner'),
     quitarPausa: () => _pausa('/ejecutor/pausa/quitar'),
+  }
+
+  // Tras crear una misión o mandar un turno: corta el polling viejo, resetea
+  // la bitácora si es OTRA misión, guarda la misión activa y relee todo lo
+  // que puede haber cambiado. Compartido por `enviar` y `crearMision`.
+  function _aplicarMision(data) {
+    get().detenerPolling()
+    if (data.id !== get().idActiva) set({ bitacora: [] })
+    set({ idActiva: data.id, misionActiva: data, errorMision: null })
+    get().refrescarMision(data.id)
+    get().cargarMisiones()
+    get().cargarEstado()
   }
 
   async function _pausa(url) {

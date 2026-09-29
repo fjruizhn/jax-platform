@@ -1007,8 +1007,21 @@ jobs:
           // 1053 -> 1054 (2026-09-28, Hyde, integración de #166 sobre #167 por decisión
           //   de Fernando): 1053 de master + 1 test de #166. Regla 5: lo confirma o
           //   desmiente la corrida real del runner en este PR.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1054) {
-              console.error("PISO ROTO: se esperaban 1054 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1054 -> 1063 (2026-09-28, Hyde, Task 11 del plan "El Ejecutor programa":
+          //   tipo Código en el modo Ejecutor -- radio servidor/código, selector de
+          //   repos, DetalleMision con el link al PR y el estado de entrega
+          //   traducido, violaciones de entrega_codigo por regla en la bitácora).
+          //   +9: 4 en useEjecutor.test.js (cargarRepos guarda la lista, un error
+          //   de /repos queda guardado, crearMision manda tipo/repo_id y abre la
+          //   misión, un error del POST de crearMision queda en errorEnvio) y 5 en
+          //   PanelEjecutor.test.jsx (el selector de repos aparece y exige uno para
+          //   lanzar, tipo Servidor sigue mostrando las máquinas, lanzar con repo y
+          //   objetivo crea la misión, DetalleMision enlaza el PR y traduce el
+          //   estado de entrega, la bitácora traduce las violaciones por regla).
+          //   Medido con `npx vitest run`: 1063 passed, 0 fallidos, delta propio
+          //   +9 sobre el 1054 declarado.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1063) {
+              console.error("PISO ROTO: se esperaban 1063 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3211,7 +3224,97 @@ jobs:
           # RUNNER. master a0aa01c run 36354899003 -> passed=2912; esta rama run
           # 36381118121 (d7b1670) -> colectados=3045 passed=3044 skipped=1. Delta propio +132.
           # +3 (2026-09-27, Hyde: la línea de resumen distingue una corrida saltada de un sync).
-          PISO_PASSED = 3047
+          # 3047 -> 3049 (2026-09-28, Hyde, Tasks 7/8 del plan "El Ejecutor programa": reglas
+          # C1 de código + ejecutor_repo/columnas de misión). NO MEDIDO EN EL RUNNER -- este
+          # trabajo no corrió en GitHub Actions (cuenta Free sin minutos, ver la sección del
+          # runner propio en CLAUDE.md). Medido LOCAL, mismo comando que este job (`python -m
+          # pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py`), A/B
+          # controlado el mismo día contra jax_memory_test (127.0.0.1:3308, usuario jax_test):
+          # un worktree detached en origin/master 3701109 -> 3049 passed / 2 skipped; esta
+          # rama (mismos cambios que este PR) -> 3051 passed / 2 skipped. Delta propio real:
+          # +2 (los 2 tests nuevos: test_reglas_de_codigo_sembradas y
+          # test_ejecutor_repo_y_columnas_de_codigo). Los 2 skips en ambas corridas son el
+          # mismo par ya documentado arriba (CREATE USER, root lo tiene en CI y jax_test no) --
+          # no forman parte de este delta. PISO_PASSED se suma sobre el declarado (3047), no
+          # sobre el 3049 medido en bruto localmente: mismo criterio de siempre en este
+          # archivo (no premiar la brecha entre el runner y esta máquina).
+          # 3049 -> 3052 (2026-09-28, Hyde, ronda de revisión de las Tasks 7/8: 3 tests
+          # negativos nuevos -- test_comandos_prueba_debe_ser_array (el CHECK
+          # JSON_TYPE(comandos_prueba)='ARRAY' de ejecutor_repo rechaza un JSON que no es
+          # array), test_tipo_fuera_del_enum_no_se_guarda y
+          # test_estado_entrega_fuera_del_enum_no_se_guarda (los dos ENUM nuevos de
+          # ejecutor_mision rechazan un valor fuera de lista). Tampoco medido en el runner,
+          # mismo motivo de arriba. Medido LOCAL, mismo comando, mismo día: la MISMA rama,
+          # antes de esta ronda -> 3054 passed - 3 = 3051 (ya verificado arriba); con los 3
+          # tests nuevos -> 3054 passed / 2 skipped. Delta propio real: +3, verificado
+          # también por diferencia directa contra el worktree de origin/master 3701109
+          # (3049 passed): 3054 - 3049 = +5 = +2 (ronda anterior) + +3 (esta ronda).
+          # 3052 -> 3062 (2026-09-28, Hyde, Task 10 del plan "El Ejecutor programa": API de
+          # misiones de código -- `tipo`/`repo_id` en POST /misiones, GET /repos, el evento
+          # `entrega_codigo` del runner persistiendo `pr_url`/`estado_entrega` y los cinco
+          # campos nuevos expuestos en GET /misiones/{id}). NO MEDIDO EN EL RUNNER, mismo
+          # motivo de las dos rondas anteriores (cuenta Free sin minutos). Medido LOCAL,
+          # mismo comando que este job (`python -m pytest -q -rs
+          # --ignore=tests/test_carga_indice_pipelines_del_usuario.py`), A/B controlado el
+          # mismo día contra jax_memory_test (127.0.0.1:3308, usuario jax_test) con un
+          # segundo worktree (`git worktree add`, sin tocar este) fijado en el commit padre
+          # 5ea5451 (el de la ronda anterior): 3054 passed / 2 skipped ANTES; esta rama
+          # (mismos cambios que este PR) -> 3064 passed / 2 skipped DESPUÉS. Delta propio
+          # real: +10 (los 10 tests nuevos de tests/test_ejecutor_misiones.py:
+          # test_crear_mision_de_codigo_pasa_repo_al_runner, test_codigo_sin_repo_es_422,
+          # test_codigo_con_repo_inactivo_es_422, test_servidor_con_repo_id_es_422,
+          # test_tipo_desconocido_es_422, test_codigo_sin_host_local_es_409,
+          # test_codigo_con_dos_hosts_locales_es_409,
+          # test_repos_lista_solo_los_activos_para_superadmin,
+          # test_entrega_codigo_persiste_pr_url_y_estado_entrega_y_se_expone_en_el_detalle,
+          # test_mision_de_servidor_expone_tipo_y_repo_vacio -- ninguno parametrizado, delta
+          # 1:1). PISO_PASSED se suma sobre el declarado (3052), no sobre el 3054 medido en
+          # bruto localmente: mismo criterio de siempre en este archivo.
+          # 3062 -> 3064 (2026-09-28, Hyde, dos correcciones del controlador sobre la Task
+          # 10, mismo commit: el runner también emite `entrega_codigo` con
+          # `estado_entrega='sin_entregar'` (el turno no tocó GitHub) y
+          # `estado_entrega='empujado_sin_pr'` (rama ya en GitHub, PR sin confirmar) -- sexto
+          # y séptimo valor del ENUM, ensanchados por `_ENUM_EXTENSIONS` sin editar el `ADD
+          # COLUMN` original de Task 8). +2: test_entrega_codigo_con_sin_entregar_se_guarda,
+          # test_entrega_codigo_con_empujado_sin_pr_se_guarda. Medido LOCAL, mismo comando
+          # que este job, A/B contra un segundo worktree (`git worktree add`, sin tocar este)
+          # fijado en el commit padre 6731086: 3064 passed / 2 skipped ANTES; esta rama ->
+          # 3066 passed / 2 skipped DESPUÉS. Delta propio real: +2.
+          # 3064 -> 3066 (2026-09-28, Hyde, ruling del controlador: continuar() de una misión
+          # de código -- spec §3.4 -- retoma la misma rama/PR, así que el runner necesita
+          # tipo/repo en CADA turno, no sólo en el de creación; repo_id se revalida contra
+          # ejecutor_repo.activo en cada turno nuevo, 409 repo_inactivo si se desactivó
+          # después de crear()). +2:
+          # test_continuar_mision_de_codigo_pasa_tipo_y_repo_al_runner,
+          # test_continuar_mision_de_codigo_con_repo_desactivado_es_409. Medido LOCAL, mismo
+          # comando que este job, A/B contra un segundo worktree (`git worktree add`, sin
+          # tocar este) fijado en el commit padre d3e57ae: 3066 passed / 2 skipped ANTES;
+          # esta rama -> 3068 passed / 2 skipped DESPUÉS. Delta propio real: +2.
+          # 3066 -> 3095 (2026-09-29, Hyde, Task 12 del plan "El Ejecutor programa", mitad
+          # jax-platform: ops/guardar-token-github.sh + backend/tests/
+          # test_guardar_token_github_script.py, clon de guardar-token-claude.sh con
+          # VARIABLE=JAX_GITHUB_TOKEN, patrón 'github_pat_...' y el caso extra del token
+          # clásico 'ghp_...' rechazado -- DC3 exige grano fino). +29, uno por test nuevo
+          # (sin parametrizar, delta 1:1); no tocan la DB (corren con sudo contra un .env
+          # falso en tmp_path), así que corren igual con o sin ella. Medido LOCAL, mismo
+          # comando que este job (barrera test-db.env, JAX_DB_USER=jax_test verificado), A/B
+          # contra un segundo worktree (`git worktree add --detach`, sin tocar este) fijado
+          # en el commit padre 3a827c4: 3068 passed / 2 skipped ANTES; esta rama (bb25f78) ->
+          # 3097 passed / 2 skipped DESPUÉS. Delta propio real: +29. PISO_PASSED se suma
+          # sobre el declarado (3066), no sobre el 3068 medido en bruto localmente: mismo
+          # criterio de siempre en este archivo.
+          # 3095 -> 3098 (2026-09-28, Hyde, ola final de arreglos, plan "El Ejecutor
+          # programa"): +3, uno por test nuevo (sin parametrizar, delta 1:1) --
+          # test_codigo_host_local_inactivo_no_cuenta_para_el_unico (MINOR-4:
+          # SQL_HOST_LOCAL exige `activo = 1`),
+          # test_entrega_codigo_queda_en_la_bitacora_aunque_falle_al_persistir_en_la_mision
+          # (MINOR-3: se anota en la bitácora ANTES de intentar persistir en la misión) y
+          # test_entrega_codigo_turno_2_sin_pr_url_conserva_el_del_turno_1 (MAJOR-1:
+          # SQL_GUARDAR_ENTREGA_CODIGO usa COALESCE). Medido LOCAL, mismo comando que este
+          # job (barrera test-db.env, JAX_DB_USER=jax_test verificado): 3100 passed / 2
+          # skipped DESPUÉS -- coincide con el "3097 DESPUÉS" del round anterior + 3, sin
+          # arrastre. PISO_PASSED se suma sobre el declarado (3095), no sobre el bruto local.
+          PISO_PASSED = 3098
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

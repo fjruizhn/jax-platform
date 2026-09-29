@@ -66,8 +66,9 @@ export function traducirCodigoDeBitacora(tx, codigo) {
   return valorLegible(codigo)
 }
 
-// `datos` de un evento, legible: codigo/motivo/estado traducidos y `fallos`
-// (arranque_rechazado) como contrato + código, igual que en el detalle.
+// `datos` de un evento, legible: codigo/motivo/estado traducidos, `fallos`
+// (arranque_rechazado) como contrato + código igual que en el detalle, y
+// `violaciones` (entrega_codigo, Task 11) como regla + ruta + detalle.
 export function datosDeBitacora(tx, datos) {
   if (!datos || typeof datos !== 'object') return ''
   return Object.entries(datos).map(([k, v]) => {
@@ -77,6 +78,19 @@ export function datosDeBitacora(tx, datos) {
         ? [traducir(tx.contratos, f.contrato), traducirCodigo(tx, f.codigo)].filter(Boolean).join(' — ')
         : valorLegible(f)))
       return `${k}: ${fallos.join('; ')}`
+    }
+    if (k === 'violaciones' && Array.isArray(v)) {
+      const violaciones = v.map((viol) => (viol && typeof viol === 'object'
+        ? [traducir(tx.regla, viol.regla), viol.ruta, viol.detalle].filter(Boolean).join(' — ')
+        : valorLegible(viol)))
+      return `${k}: ${violaciones.join('; ')}`
+    }
+    // `notas` de `entrega_codigo` (mision_codigo.py): una lista de códigos cortos -- algunos
+    // propios (tx.notas), otros reutilizados de `codigosTurno` (p. ej. "pausa_puesta").
+    if (k === 'notas' && Array.isArray(v)) {
+      const notas = v.map((n) => (typeof n === 'string' && Object.hasOwn(tx.notas, n)
+        ? tx.notas[n] : traducirCodigoDeBitacora(tx, n)))
+      return `${k}: ${notas.join('; ')}`
     }
     return `${k}: ${valorLegible(v)}`
   }).join(' · ')

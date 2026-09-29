@@ -52,9 +52,15 @@ async def listar_misiones(limite: int = Query(20, ge=1, le=misiones.LIMITE_DE_LI
 @router.post("/misiones", status_code=202)
 async def crear_mision(cuerpo: dict = Body(default_factory=dict), user: AuthUser = Depends(require_superadmin)):
     try:
-        return await misiones.crear(user.user_id, cuerpo.get("objetivo"), cuerpo.get("maquinas"))
+        return await misiones.crear(user.user_id, cuerpo.get("objetivo"), cuerpo.get("maquinas"),
+                                    cuerpo.get("tipo", "servidor"), cuerpo.get("repo_id"))
     except misiones.ErrorDelEjecutor as exc:
         raise _http(exc) from exc
+
+
+@router.get("/repos")
+async def repos(user: AuthUser = Depends(require_superadmin)):
+    return await misiones.repos_activos()
 
 
 @router.get("/misiones/{mision_id}")
