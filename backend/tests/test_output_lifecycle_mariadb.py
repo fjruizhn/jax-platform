@@ -1,6 +1,6 @@
 """MariaDB tests for F2-D transactional preparation, attempts and transitions."""
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import uuid
@@ -56,6 +56,26 @@ def _unit(request_id=None, response_id=None, text="durable safe output", idempot
         "contract_state": rendered.contract_state.value, "governed_plain": True,
     }, ensure_ascii=False, separators=(",", ":")).encode()
     return scope, unit, body
+
+
+def _current_unit_and_payload():
+    from integration_tests.test_f2c_exact_pair_integration import _f2b_composition
+    from api.governed_chat import project_sealed_envelope
+    envelope, context, _ = _f2b_composition()
+    governed = project_sealed_envelope(envelope, context)
+    assert governed.transport_unit is not None and governed.contract_state == "VALID"
+    unit = governed.transport_unit
+    body = {
+        "facet": "jekyll", "response": governed.text,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "contract_degraded": False, "aviso": None,
+        "response_id": governed.response_id,
+        "envelope_digest": governed.envelope_digest,
+        "source_envelope_digest": governed.source_envelope_digest,
+        "contract_state": governed.contract_state, "governed_plain": True,
+    }
+    payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+    return unit, payload
 
 
 async def _row(outbox_id):
@@ -153,8 +173,9 @@ def test_scope_and_wire_mutation_are_rejected_before_transport(client):
 def test_current_expiry_during_durable_prepare_persists_cancelled_without_authorization(
     client, monkeypatch,
 ):
-    request_id = str(uuid.uuid4())
-    _, unit, payload = _unit(request_id=request_id)
+    unit, payload = _current_unit_and_payload()
+    request_id = unit.request_id
+    assert unit.contains_current_claim and unit.current_not_after is not None
     from api.governed_chat import _lifecycle_core
     core = _lifecycle_core()
     original = core.revalidate_for_transport
@@ -164,7 +185,7 @@ def test_current_expiry_during_durable_prepare_persists_cancelled_without_author
         nonlocal calls
         calls += 1
         if calls == 2:
-            raise RuntimeError("simulated current receipt expiry during DB prepare")
+            return original(candidate, candidate.current_not_after + timedelta(seconds=1))
         return original(candidate, now)
 
     monkeypatch.setattr(core, "revalidate_for_transport", expire_after_transaction)
@@ -234,13 +255,23 @@ def test_post_commit_secondary_failure_is_durable_without_lifecycle_reversal(cli
     request_id = str(uuid.uuid4())
     _, unit, payload = _unit(request_id=request_id)
     repo = repository.OutputOutboxRepository()
+    before = _call(client, repo.recovery_snapshot)
     authorization = _call(client, repo.prepare, unit, payload, tenant_id=1, project_id=None,
                           subject_id="7", request_id=request_id)
     from api.governed_chat import _lifecycle_core
     core = _lifecycle_core()
     _call(client, repo.transition, authorization, core.OutputLifecycleState.TRANSPORT_COMMITTING)
-    _call(client, repo.transition, authorization, core.OutputLifecycleState.OUTPUT_COMMITTED_TO_TRANSPORT)
-    _call(client, repo.record_secondary_event, authorization, "POST_COMMIT_PROJECTION_FAILED")
+    restarted_repo = repository.OutputOutboxRepository()
+    committing = _call(client, restarted_repo.recovery_snapshot)
+    assert committing["TRANSPORT_COMMITTING"] == before["TRANSPORT_COMMITTING"] + 1
+    assert client.portal.call(_row, authorization.outbox_id)[0] == "TRANSPORT_COMMITTING"
+    _call(client, restarted_repo.transition, authorization,
+          core.OutputLifecycleState.OUTPUT_COMMITTED_TO_TRANSPORT)
+    after_commit_restart = repository.OutputOutboxRepository()
+    committed = _call(client, after_commit_restart.recovery_snapshot)
+    assert committed["OUTPUT_COMMITTED_TO_TRANSPORT"] == before["OUTPUT_COMMITTED_TO_TRANSPORT"] + 1
+    _call(client, after_commit_restart.record_secondary_event,
+          authorization, "POST_COMMIT_PROJECTION_FAILED")
     assert client.portal.call(_row, authorization.outbox_id)[0] == "OUTPUT_COMMITTED_TO_TRANSPORT"
     assert client.portal.call(_event_rows, authorization.outbox_id)[-1] == (
         "POST_COMMIT_PROJECTION_FAILED", "OUTPUT_COMMITTED_TO_TRANSPORT",
