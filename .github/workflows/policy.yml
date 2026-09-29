@@ -4366,6 +4366,7 @@ jobs:
       JAX_F2C_EXPECTED_HEAD: c225c00ea420748ea87e629dd225a6fa92ea391c
       JAX_JWT_SECRET: ci-dummy-not-a-real-secret
       JAX_CI_NO_DB: "1"
+      JAX_REPO_BASE: ${{ github.workspace }}/jax
       JAX_REPO_PATH: ${{ github.workspace }}/jax
       JAX_CONFIG_PATH: ${{ github.workspace }}/jax/config/config.toml
       PYTHONPATH: ${{ github.workspace }}/jax
