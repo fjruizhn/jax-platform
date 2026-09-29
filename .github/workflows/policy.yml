@@ -4363,7 +4363,7 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 170
     runs-on: ubuntu-latest
     env:
-      JAX_F2C_EXPECTED_HEAD: 4c594f9764b2500bfe90602f87c9bf97569bab07
+      JAX_F2C_EXPECTED_MASTER_SHA: 1c5986df7f46ae4633341fd8d13cbdcfa51b5259
       JAX_JWT_SECRET: ci-dummy-not-a-real-secret
       JAX_CI_NO_DB: "1"
       JAX_REPO_BASE: ${{ github.workspace }}/jax
@@ -4377,24 +4377,25 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           path: platform
-      - name: Checkout current JAX PR #300 head
+      - name: Checkout merged JAX master from PR #300
         uses: actions/checkout@v4
         with:
           repository: fjruizhn/Jax
-          ref: refs/pull/300/head
+          ref: 1c5986df7f46ae4633341fd8d13cbdcfa51b5259
           path: jax
       - name: Require and record exact PR pair
         working-directory: platform
         run: |
           JAX_SHA=$(git -C ../jax rev-parse HEAD)
           PLATFORM_SHA=$(git rev-parse HEAD)
-          test "$JAX_SHA" = "$JAX_F2C_EXPECTED_HEAD"
+          test "$JAX_SHA" = "$JAX_F2C_EXPECTED_MASTER_SHA"
           test "$PLATFORM_SHA" = "${{ github.event.pull_request.head.sha }}"
           python - <<'PY'
           import json, os
           evidence = {
               "jax_pr": 300,
-              "jax_head": os.environ["JAX_F2C_EXPECTED_HEAD"],
+              "jax_head": os.environ["JAX_F2C_EXPECTED_MASTER_SHA"],
+              "jax_master_sha": os.environ["JAX_F2C_EXPECTED_MASTER_SHA"],
               "platform_pr": 170,
               "platform_head": os.popen("git rev-parse HEAD").read().strip(),
           }
