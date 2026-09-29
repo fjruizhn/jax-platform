@@ -53,6 +53,10 @@ def _validate_wire_payload(payload: bytes, unit, projection) -> None:
     }
     if not isinstance(body, dict) or any(body.get(name) != value for name, value in expected.items()):
         raise OutputLifecycleUnavailable("prepared JSON differs from the effective F2-C output")
+    canonical = json.dumps(body, ensure_ascii=False, allow_nan=False,
+                           separators=(",", ":")).encode("utf-8")
+    if canonical != payload:
+        raise OutputLifecycleUnavailable("prepared JSON is not the canonical transport serialization")
 
 
 _AUTH_TOKEN = object()
@@ -92,6 +96,25 @@ class PreparedTransportAuthorization:
 
 class OutputOutboxRepository:
     """Transactional persistence. SQL rows, not Python locks, own transitions."""
+
+    async def recovery_snapshot(self) -> dict[str, int]:
+        """Read durable restart state without replaying or claiming delivery.
+
+        OUTPUT_PREPARED means the row survived preparation but no transport
+        commitment was durably recorded. TRANSPORT_COMMITTING remains
+        ambiguous and must not be replayed automatically.
+        """
+        async with transaccion("READ COMMITTED") as cur:
+            await cur.execute(
+                """SELECT state, COUNT(*) FROM governed_output_outbox
+                   WHERE state IN ('OUTPUT_PREPARED','TRANSPORT_COMMITTING',
+                                   'OUTPUT_COMMITTED_TO_TRANSPORT') GROUP BY state"""
+            )
+            rows = await cur.fetchall()
+        result = {"OUTPUT_PREPARED": 0, "TRANSPORT_COMMITTING": 0,
+                  "OUTPUT_COMMITTED_TO_TRANSPORT": 0}
+        result.update({str(state): int(count) for state, count in rows})
+        return result
 
     async def prepare(
         self, unit, payload: bytes, *, tenant_id: int, project_id: str | None,
@@ -151,6 +174,10 @@ class OutputOutboxRepository:
             "governance_reference_ids": _json(projection["governance_reference_ids"]),
             "claim_ids": _json(projection["claim_ids"]),
             "contains_current_claim": bool(projection["contains_current_claim"]),
+            "current_not_after": (
+                datetime.fromisoformat(projection["current_not_after"]).replace(tzinfo=None)
+                if projection.get("current_not_after") else None
+            ),
             "state": core.OutputLifecycleState.OUTPUT_PREPARED.value,
             "response_payload": payload,
             "prepared_at": now,
@@ -172,7 +199,7 @@ class OutputOutboxRepository:
                       renderer_api_version, domain_spec_version,
                       contract_state, effective_output_digest, effective_projection_digest,
                       original_envelope_digest, transport_payload_digest,
-                      governance_reference_ids, claim_ids, contains_current_claim, state,
+                      governance_reference_ids, claim_ids, contains_current_claim, current_not_after, state,
                       response_payload, prepared_at
                     ) VALUES (
                       %(outbox_id)s, %(attempt_id)s, %(previous_attempt_id)s, %(attempt_sequence)s,
@@ -183,7 +210,7 @@ class OutputOutboxRepository:
                       %(renderer_api_version)s, %(domain_spec_version)s,
                       %(contract_state)s, %(effective_output_digest)s, %(effective_projection_digest)s,
                       %(original_envelope_digest)s, %(transport_payload_digest)s,
-                      %(governance_reference_ids)s, %(claim_ids)s, %(contains_current_claim)s, %(state)s,
+                      %(governance_reference_ids)s, %(claim_ids)s, %(contains_current_claim)s, %(current_not_after)s, %(state)s,
                       %(response_payload)s, %(prepared_at)s
                     )""", values,
                 )
@@ -196,7 +223,7 @@ class OutputOutboxRepository:
             values["outbox_id"] = existing[0]
             values["attempt_id"] = existing[1]
             values["attempt_sequence"] = existing[2]
-        return PreparedTransportAuthorization._mint(
+        authorization = PreparedTransportAuthorization._mint(
             _AUTH_TOKEN, outbox_id=values["outbox_id"], attempt_id=values["attempt_id"],
             tenant_id=tenant_id, scope_digest=projection["scope_digest"],
             request_id=request_id, response_id=projection["response_id"],
@@ -207,6 +234,17 @@ class OutputOutboxRepository:
             contract_state=projection["effective_contract_state"],
             transport_payload_digest=payload_digest, payload=payload, unit=unit,
         )
+        try:
+            # A durable transaction can itself cross the receipt expiry. Do
+            # not hand out transport authority if it did.
+            core.revalidate_for_transport(unit, datetime.now(timezone.utc))
+        except Exception as exc:
+            await self.transition(
+                authorization, core.OutputLifecycleState.CANCELLED_BEFORE_COMMIT,
+                failure_class="CURRENT_OUTPUT_EXPIRED_DURING_PREPARATION",
+            )
+            raise OutputLifecycleUnavailable("current output expired during durable preparation") from exc
+        return authorization
 
     async def _next_retry_sequence(self, tenant_id, scope_digest, request_id, previous_attempt_id):
         async with transaccion("READ COMMITTED") as cur:
@@ -249,6 +287,7 @@ class OutputOutboxRepository:
                           effective_output_digest, effective_projection_digest,
                           original_envelope_digest, transport_payload_digest,
                           governance_reference_ids, claim_ids, contains_current_claim,
+                          current_not_after,
                           response_payload, state
                    FROM governed_output_outbox WHERE tenant_id=%s AND idempotency_key=%s FOR UPDATE""",
                 (tenant_id, idempotency_key),
@@ -267,6 +306,7 @@ class OutputOutboxRepository:
             "domain_spec_version", "contract_state", "effective_output_digest",
             "effective_projection_digest", "original_envelope_digest", "transport_payload_digest",
             "governance_reference_ids", "claim_ids", "contains_current_claim",
+            "current_not_after",
             "response_payload", "state",
         )
         # Default aiomysql cursors return tuples; names above mirror the explicit
@@ -304,7 +344,7 @@ class OutputOutboxRepository:
                           effective_output_digest, effective_projection_digest, original_envelope_digest,
                           response_payload, subject_id, response_id, request_id,
                           idempotency_key, scope_digest, project_id, audience, trace_id,
-                          governance_reference_ids, claim_ids, contains_current_claim
+                          governance_reference_ids, claim_ids, contains_current_claim, current_not_after
                    FROM governed_output_outbox
                    WHERE outbox_id=%s AND tenant_id=%s AND scope_digest=%s
                      AND request_id=%s AND response_id=%s AND subject_id=%s
@@ -323,7 +363,7 @@ class OutputOutboxRepository:
              transport_kind, contract_state, payload_digest, output_digest, projection_digest,
              source_digest, stored_payload, subject_id, response_id, request_id,
              idempotency_key, scope_digest, project_id, audience, trace_id,
-             reference_ids_json, claim_ids_json, contains_current_claim) = row
+             reference_ids_json, claim_ids_json, contains_current_claim, current_not_after) = row
             core.validate_lifecycle_version(lifecycle_version)
             projection = authorization.unit.durable_projection()
             if record_schema_version != OUTBOX_RECORD_SCHEMA_VERSION:
@@ -341,6 +381,10 @@ class OutputOutboxRepository:
                     or json.loads(claim_ids_json) != projection["claim_ids"]
                     or bool(contains_current_claim) != bool(projection["contains_current_claim"])):
                 raise OutputLifecycleUnavailable("immutable governed output metadata changed")
+            expected_expiry = (datetime.fromisoformat(projection["current_not_after"]).replace(tzinfo=None)
+                               if projection.get("current_not_after") else None)
+            if current_not_after != expected_expiry:
+                raise OutputLifecycleUnavailable("current-claim expiry metadata changed")
             if (payload_digest != authorization.transport_payload_digest
                     or output_digest != authorization.effective_output_digest
                     or projection_digest != authorization.effective_projection_digest
@@ -373,3 +417,32 @@ class OutputOutboxRepository:
                 version, current, target, now, target.value,
                 {"failure_class": failure_class} if failure_class else None,
             )
+
+    async def record_secondary_event(self, authorization, event_type: str) -> None:
+        """Append a fixed post-commit failure fact without changing lifecycle state."""
+        allowed = {"POST_COMMIT_PROJECTION_FAILED", "POST_COMMIT_OBSERVATION_FAILED"}
+        if event_type not in allowed or not isinstance(authorization, PreparedTransportAuthorization):
+            raise OutputLifecycleUnavailable("invalid secondary lifecycle event")
+        core = _lifecycle_core()
+        async with transaccion("READ COMMITTED") as cur:
+            await cur.execute(
+                """SELECT state, lifecycle_version FROM governed_output_outbox
+                   WHERE outbox_id=%s AND tenant_id=%s AND scope_digest=%s
+                     AND request_id=%s AND attempt_id=%s FOR UPDATE""",
+                (authorization.outbox_id, authorization.tenant_id, authorization.scope_digest,
+                 authorization.request_id, authorization.attempt_id),
+            )
+            row = await cur.fetchone()
+            if row is None or row[0] != core.OutputLifecycleState.OUTPUT_COMMITTED_TO_TRANSPORT.value:
+                raise OutputLifecycleUnavailable("secondary event requires committed scoped output")
+            core.validate_lifecycle_version(row[1])
+            await cur.execute(
+                "SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM governed_output_lifecycle_events WHERE outbox_id=%s",
+                (authorization.outbox_id,),
+            )
+            seq = int((await cur.fetchone())[0])
+            await self._event(cur, authorization.outbox_id, authorization.tenant_id,
+                              authorization.scope_digest, seq,
+                              core.OutputLifecycleState.OUTPUT_COMMITTED_TO_TRANSPORT,
+                              core.OutputLifecycleState.OUTPUT_COMMITTED_TO_TRANSPORT,
+                              _utc_naive(), event_type)

@@ -29,7 +29,7 @@ def _json_bytes(value: dict) -> bytes:
                       separators=(",", ":")).encode("utf-8")
 
 
-def _validate_projection(response, unit) -> dict:
+def _validate_projection(response, unit, trusted_metadata: dict | None = None) -> dict:
     """Validate the Pydantic response against the opaque core render unit."""
     core = _lifecycle_core()
     if not isinstance(unit, core.GovernedTransportUnit):
@@ -46,6 +46,16 @@ def _validate_projection(response, unit) -> dict:
     }
     if any(body.get(key) != value for key, value in expected.items()):
         raise OutputLifecycleUnavailable("ChatResponse differs from effective governed projection")
+    # These fields are not part of the F2-C claim digest, but affect the actual
+    # ChatResponse consumed by the frontend. Bind them to values derived by the
+    # trusted route before constructing the response; governed outputs cannot
+    # carry a canned notice that would replace the prepared response client-side.
+    trusted_metadata = trusted_metadata or {}
+    for key in ("facet", "timestamp", "contract_degraded"):
+        if key not in trusted_metadata or body.get(key) != trusted_metadata[key]:
+            raise OutputLifecycleUnavailable("ChatResponse metadata differs from trusted route projection")
+    if body.get("aviso") is not None:
+        raise OutputLifecycleUnavailable("governed dynamic output cannot carry a canned notice")
     if not body.get("response_id") or not body.get("envelope_digest"):
         raise OutputLifecycleUnavailable("effective governed identity is incomplete")
     return body
@@ -53,11 +63,11 @@ def _validate_projection(response, unit) -> dict:
 
 async def prepare_governed_chat_response(
     *, response, transport_unit, user, memory_scope, on_commit,
-    background_tasks=None, repository=None,
+    trusted_metadata=None, background_tasks=None, repository=None,
 ) -> Response:
     """Persist OUTPUT_PREPARED before returning the response to FastAPI/ASGI."""
     repo = repository or OutputOutboxRepository()
-    body = _validate_projection(response, transport_unit)
+    body = _validate_projection(response, transport_unit, trusted_metadata)
     payload = _json_bytes(body)
     projection = transport_unit.durable_projection()
     expected_audience = f"user:{user.user_id}"
@@ -153,6 +163,19 @@ class PreparedGovernedChatResponse(Response):
             invoked_send = True
             await send({"type": "http.response.start", "status": self.status_code,
                         "headers": self.raw_headers})
+            # Headers may have been accepted while an accredited current
+            # receipt expires. Withhold the body in that case; the HTTP status
+            # is already committed, so record honest uncertainty, not cancel.
+            try:
+                core.revalidate_for_transport(authorization.unit, datetime.now(timezone.utc))
+            except Exception as exc:
+                logger.info("F2-D withheld stale current body after response start (%s)", type(exc).__name__)
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+                await self.repository.transition(
+                    authorization, core.OutputLifecycleState.TRANSPORT_OUTCOME_UNKNOWN,
+                    failure_class="CURRENT_OUTPUT_EXPIRED_AFTER_RESPONSE_START",
+                )
+                return
             await send({"type": "http.response.body", "body": authorization.payload,
                         "more_body": False})
         except BaseException:  # fail-soft: preserve uncertainty; never claim a successful transport commit
@@ -180,8 +203,20 @@ class PreparedGovernedChatResponse(Response):
             await self.on_commit()
         except Exception:  # fail-soft: transport is already committed; lifecycle truth stays committed
             logger.exception("F2-D post-commit conversation projection failed")
+            try:
+                await self.repository.record_secondary_event(
+                    authorization, "POST_COMMIT_PROJECTION_FAILED",
+                )
+            except Exception:
+                logger.exception("F2-D could not persist post-commit projection failure")
         if self.background is not None:
             try:
                 await self.background()
             except Exception:  # fail-soft: observational work cannot revoke committed transport
                 logger.exception("F2-D post-commit observational background task failed")
+                try:
+                    await self.repository.record_secondary_event(
+                        authorization, "POST_COMMIT_OBSERVATION_FAILED",
+                    )
+                except Exception:
+                    logger.exception("F2-D could not persist post-commit observation failure")

@@ -36,6 +36,7 @@ UP_SQL = (
       governance_reference_ids JSON NOT NULL,
       claim_ids JSON NOT NULL,
       contains_current_claim BOOLEAN NOT NULL,
+      current_not_after DATETIME(6) NULL,
       state VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
       response_payload MEDIUMBLOB NOT NULL,
       prepared_at DATETIME(6) NOT NULL,
@@ -51,6 +52,7 @@ UP_SQL = (
       KEY idx_go_output_scope_state (tenant_id, scope_digest, state, prepared_at),
       KEY idx_go_output_response (tenant_id, scope_digest, response_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    "ALTER TABLE governed_output_outbox ADD COLUMN IF NOT EXISTS current_not_after DATETIME(6) NULL",
     """CREATE TABLE IF NOT EXISTS governed_output_lifecycle_events (
       event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
       outbox_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,

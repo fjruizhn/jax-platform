@@ -1443,6 +1443,8 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         prepared_response = await prepare_governed_chat_response(
             response=chat_response, transport_unit=governed.transport_unit,
             user=user, memory_scope=memory_scope,
+            trusted_metadata={"facet": facet, "timestamp": timestamp,
+                              "contract_degraded": contract_degraded},
             on_commit=project_after_transport_commit,
         )
     except Exception as exc:  # fail-soft: do not send governed output; return fixed protocol error

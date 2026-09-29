@@ -243,7 +243,10 @@ def test_exact_pair_supported_claim_is_prepared_and_committed_as_exact_asgi_byte
     repository = ExactPairRecordingTestRepository()
     prepared_response = asyncio.run(prepare_governed_chat_response(
         response=response, transport_unit=governed.transport_unit, user=user,
-        memory_scope=memory_scope, on_commit=lambda: asyncio.sleep(0), repository=repository,
+        memory_scope=memory_scope,
+        trusted_metadata={"facet": response.facet, "timestamp": response.timestamp,
+                          "contract_degraded": response.contract_degraded},
+        on_commit=lambda: asyncio.sleep(0), repository=repository,
     ))
     messages = []
 

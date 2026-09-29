@@ -15,14 +15,20 @@ from webchat_f2d import repository
 pytestmark = pytest.mark.usefixtures("client")
 
 
-def _unit(request_id=None, response_id=None, text="durable safe output", idempotency_key=None):
+def _call(client, async_fn, *args, **kwargs):
+    async def invoke():
+        return await async_fn(*args, **kwargs)
+    return client.portal.call(invoke)
+
+
+def _unit(request_id=None, response_id=None, text="durable safe output", idempotency_key=None, scope=None):
     from policy.governance.governed_renderer import GovernedRenderer, RenderContext, WebChatGovernanceAdapter
     from policy.governance.output_lifecycle import mint_governed_transport_unit
     from policy.governance.response import GovernanceReceipt, ResponseScope
 
-    request_id = request_id or str(uuid.uuid4())
+    request_id = request_id or (scope.request_id if scope else str(uuid.uuid4()))
     response_id = response_id or str(uuid.uuid4())
-    scope = ResponseScope(
+    scope = scope or ResponseScope(
         environment="test", tenant_id="1", project_id=None, subject_id="7",
         actor_id="user:7", audience="user:7", component_id="web-chat",
         request_id=request_id, trace_id=str(uuid.uuid4()),
@@ -90,8 +96,8 @@ def test_exact_preparation_survives_repository_reinstantiation_and_is_idempotent
     scope, unit, payload = _unit()
     repo1 = repository.OutputOutboxRepository()
     args = dict(tenant_id=1, project_id=None, subject_id="7", request_id=unit.request_id)
-    auth1 = client.portal.call(repo1.prepare, unit, payload, **args)
-    auth2 = client.portal.call(repository.OutputOutboxRepository().prepare, unit, payload, **args)
+    auth1 = _call(client, repo1.prepare, unit, payload, **args)
+    auth2 = _call(client, repository.OutputOutboxRepository().prepare, unit, payload, **args)
     assert auth1.outbox_id == auth2.outbox_id
     assert auth1.attempt_id == auth2.attempt_id
     state, committed_at, acknowledged_at, stored, sequence, parent = client.portal.call(_row, auth1.outbox_id)
@@ -100,6 +106,9 @@ def test_exact_preparation_survives_repository_reinstantiation_and_is_idempotent
     assert bytes(stored) == payload
     assert (sequence, parent) == (1, None)
     assert client.portal.call(_count_attempts, 1, unit.request_id) == 1
+    snapshot = _call(client, repository.OutputOutboxRepository().recovery_snapshot)
+    assert snapshot["OUTPUT_PREPARED"] >= 1
+    assert snapshot["OUTPUT_COMMITTED_TO_TRANSPORT"] == 0
     client.portal.call(_delete_request, 1, unit.request_id)
 
 
@@ -108,10 +117,10 @@ def test_same_idempotency_identity_with_changed_output_fails_closed(client):
     _, unit_a, payload_a = _unit(request_id=request_id, text="safe A")
     _, unit_b, payload_b = _unit(request_id=request_id, text="safe B", idempotency_key=unit_a.idempotency_key)
     repo = repository.OutputOutboxRepository()
-    auth = client.portal.call(repo.prepare, unit_a, payload_a, tenant_id=1, project_id=None,
+    auth = _call(client, repo.prepare, unit_a, payload_a, tenant_id=1, project_id=None,
                               subject_id="7", request_id=request_id)
     with pytest.raises(repository.OutputIdentityConflict):
-        client.portal.call(repo.prepare, unit_b, payload_b, tenant_id=1, project_id=None,
+        _call(client, repo.prepare, unit_b, payload_b, tenant_id=1, project_id=None,
                            subject_id="7", request_id=request_id)
     client.portal.call(_delete_request, 1, request_id)
 
@@ -121,10 +130,10 @@ def test_scope_and_wire_mutation_are_rejected_before_transport(client):
     _, unit, payload = _unit(request_id=request_id)
     repo = repository.OutputOutboxRepository()
     with pytest.raises(repository.OutputLifecycleUnavailable):
-        client.portal.call(repo.prepare, unit, payload, tenant_id=2, project_id=None,
+        _call(client, repo.prepare, unit, payload, tenant_id=2, project_id=None,
                            subject_id="7", request_id=request_id)
     with pytest.raises(repository.OutputLifecycleUnavailable):
-        client.portal.call(repo.prepare, unit, payload + b" ", tenant_id=1, project_id=None,
+        _call(client, repo.prepare, unit, payload + b" ", tenant_id=1, project_id=None,
                            subject_id="7", request_id=request_id)
     assert client.portal.call(_count_attempts, 1, request_id) == 0
 
@@ -139,7 +148,7 @@ def test_prepare_and_audit_event_rollback_atomically(client, monkeypatch):
 
     monkeypatch.setattr(repo, "_event", fail_event)
     with pytest.raises(RuntimeError):
-        client.portal.call(repo.prepare, unit, payload, tenant_id=1, project_id=None,
+        _call(client, repo.prepare, unit, payload, tenant_id=1, project_id=None,
                            subject_id="7", request_id=request_id)
     assert client.portal.call(_count_attempts, 1, request_id) == 0
 
@@ -176,16 +185,16 @@ def test_concurrent_prepare_converges_and_concurrent_commit_is_single_winner(cli
 
 def test_changed_output_retry_has_new_attempt_and_preserves_first_record(client):
     request_id = str(uuid.uuid4())
-    _, unit1, payload1 = _unit(request_id=request_id, text="first safe output")
+    scope, unit1, payload1 = _unit(request_id=request_id, text="first safe output")
     repo = repository.OutputOutboxRepository()
-    auth1 = client.portal.call(repo.prepare, unit1, payload1, tenant_id=1, project_id=None,
+    auth1 = _call(client, repo.prepare, unit1, payload1, tenant_id=1, project_id=None,
                               subject_id="7", request_id=request_id)
     from api.governed_chat import _lifecycle_core
     core = _lifecycle_core()
-    client.portal.call(repo.transition, auth1, core.OutputLifecycleState.FAILED_BEFORE_COMMIT,
+    _call(client, repo.transition, auth1, core.OutputLifecycleState.FAILED_BEFORE_COMMIT,
                        failure_class="TEST_PRECOMMIT_FAILURE")
-    _, unit2, payload2 = _unit(request_id=request_id, text="replacement safe output")
-    auth2 = client.portal.call(repo.prepare, unit2, payload2, tenant_id=1, project_id=None,
+    _, unit2, payload2 = _unit(request_id=request_id, text="replacement safe output", scope=scope)
+    auth2 = _call(client, repo.prepare, unit2, payload2, tenant_id=1, project_id=None,
                               subject_id="7", request_id=request_id,
                               previous_attempt_id=auth1.attempt_id)
     assert auth2.attempt_id != auth1.attempt_id
@@ -200,7 +209,7 @@ def test_changed_output_retry_has_new_attempt_and_preserves_first_record(client)
 def test_outbox_schema_is_versioned_and_rollback_is_explicit():
     assert outbox_module.OUTBOX_RECORD_SCHEMA_VERSION == "f2-d.outbox.record.1"
     from db.output_lifecycle_migration import DOWN_SQL, UP_SQL
-    assert len(UP_SQL) == 2 and len(DOWN_SQL) == 2
+    assert len(UP_SQL) == 3 and len(DOWN_SQL) == 2
     assert DOWN_SQL[0].endswith("governed_output_lifecycle_events")
     assert DOWN_SQL[1].endswith("governed_output_outbox")
 

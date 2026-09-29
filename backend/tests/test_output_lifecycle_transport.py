@@ -1,5 +1,6 @@
 """F2-D Web Chat ASGI boundary tests using a deterministic repository seam."""
 import asyncio
+import os
 from datetime import datetime, timezone
 import json
 
@@ -18,7 +19,8 @@ from webchat_f2d.transport import (
 
 
 def _composition(monkeypatch):
-    monkeypatch.setenv("JAX_REPO_PATH", "/home/fruiz/worktrees/phase2-universal-governance-f2-d")
+    # CI owns the exact paired JAX checkout; never substitute a developer path.
+    assert os.environ.get("JAX_REPO_PATH")
     scope = ScopeContext(
         actor_principal="user:7", actor_type="USER", subject_user_id="7",
         tenant_id="1", project_id=None, calling_component="jax-platform-web-chat",
@@ -86,6 +88,8 @@ def _make_response(monkeypatch, repo, callback=lambda: asyncio.sleep(0)):
     result = asyncio.run(prepare_governed_chat_response(
         response=chat_response, transport_unit=governed.transport_unit,
         user=user, memory_scope=_user_scope(scope), on_commit=callback,
+        trusted_metadata={"facet": chat_response.facet, "timestamp": chat_response.timestamp,
+                          "contract_degraded": chat_response.contract_degraded},
         repository=repo,
     ))
     return result, governed, chat_response
@@ -130,6 +134,8 @@ def test_response_text_or_state_mutation_fails_before_durable_prepare(monkeypatc
         asyncio.run(prepare_governed_chat_response(
             response=changed, transport_unit=governed.transport_unit,
             user=user, memory_scope=_user_scope(_composition(monkeypatch)[0]),
+            trusted_metadata={"facet": response.facet, "timestamp": response.timestamp,
+                              "contract_degraded": response.contract_degraded},
             on_commit=lambda: asyncio.sleep(0), repository=repo,
         ))
     assert repo.authorization is None
@@ -141,6 +147,10 @@ def test_response_text_or_state_mutation_fails_before_durable_prepare(monkeypatc
     ("envelope_digest", "sha256:" + "0" * 64),
     ("source_envelope_digest", "sha256:" + "1" * 64),
     ("governed_plain", False),
+    ("facet", "other-facet"),
+    ("timestamp", "2099-01-01T00:00:00Z"),
+    ("contract_degraded", True),
+    ("aviso", {"code": "estado_actual_no_disponible"}),
 ])
 def test_effective_metadata_mutation_fails_before_prepare(monkeypatch, field, value):
     _, governed, response, user = _composition(monkeypatch)
@@ -151,6 +161,8 @@ def test_effective_metadata_mutation_fails_before_prepare(monkeypatch, field, va
         asyncio.run(prepare_governed_chat_response(
             response=changed, transport_unit=governed.transport_unit,
             user=user, memory_scope=_user_scope(scope),
+            trusted_metadata={"facet": response.facet, "timestamp": response.timestamp,
+                              "contract_degraded": response.contract_degraded},
             on_commit=lambda: asyncio.sleep(0), repository=repo,
         ))
     assert repo.authorization is None
@@ -167,6 +179,8 @@ def test_durable_prepare_failure_cannot_return_dynamic_response(monkeypatch):
         asyncio.run(prepare_governed_chat_response(
             response=response, transport_unit=governed.transport_unit,
             user=user, memory_scope=_user_scope(_composition(monkeypatch)[0]),
+            trusted_metadata={"facet": response.facet, "timestamp": response.timestamp,
+                              "contract_degraded": response.contract_degraded},
             on_commit=lambda: asyncio.sleep(0), repository=FailingPrepareRepository(),
         ))
 
@@ -210,6 +224,28 @@ def test_current_expiry_after_commit_intent_cancels_before_dynamic_send(monkeypa
     payload = next(message["body"] for message in messages if message["type"] == "http.response.body")
     assert b"A normal non-current response" not in payload
     assert json.loads(payload) == {"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}}
+
+
+def test_current_expiry_after_response_start_withholds_body_and_records_uncertainty(monkeypatch):
+    repo = _FakeRepository()
+    response, _, _ = _make_response(monkeypatch, repo)
+    module = __import__("api.governed_chat", fromlist=["_lifecycle_core"])._lifecycle_core()
+    original = module.revalidate_for_transport
+    calls = 0
+
+    def expire_before_body(unit, now):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("simulated current receipt expiry after headers")
+        return original(unit, now)
+
+    monkeypatch.setattr(module, "revalidate_for_transport", expire_before_body)
+    messages = []
+    _run_asgi(response, messages.append)
+    assert repo.state == "TRANSPORT_OUTCOME_UNKNOWN"
+    body = next(message["body"] for message in messages if message["type"] == "http.response.body")
+    assert body == b""
 
 
 def test_post_send_db_failure_leaves_committing_uncertainty(monkeypatch):

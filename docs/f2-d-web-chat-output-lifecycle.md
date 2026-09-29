@@ -32,6 +32,11 @@ failure around the send or before the post-send database transition leaves
 `TRANSPORT_OUTCOME_UNKNOWN` or durable `TRANSPORT_COMMITTING`; the system does
 not manufacture certainty.
 
+The persisted payload digest covers the exact canonical UTF-8 JSON bytes. The
+route also binds the frontend-visible facet, timestamp, degraded flag, and
+absence of a canned notice to its trusted request context. A caller cannot
+prepare one governed response and substitute those fields at transport time.
+
 `DELIVERY_ACKNOWLEDGED` is intentionally unreachable. Web Chat HTTP has no
 authenticated acknowledgement protocol. HTTP return, TCP write, and the
 WebSocket completion event do not prove delivery to or reading by a person.
@@ -59,13 +64,14 @@ delivery or guaranteed single display after network ambiguity.
 
 ## Freshness, failure, and recovery
 
-Current observations are revalidated before preparation, before durable
-commit intent, and immediately before the first ASGI send. Expiry after
-preparation cancels the prepared attempt before sending its dynamic body; the
-stored output is not edited. The endpoint returns only a fixed protocol-level
-unavailable response for that failure. A process restart leaves prepared rows
-distinguishable from committing, committed, failed, and uncertain attempts;
-presence of a prepared row never implies transport commitment.
+Current observations are revalidated before preparation, after its durable
+transaction, before durable commit intent, before the response headers, and
+immediately before sending the body. Their minimum authenticated `not_after`
+is persisted with the row. Expiry before headers cancels the prepared attempt;
+expiry after headers withholds the body and records transport uncertainty. The
+stored output is never edited. A process restart snapshot reports prepared,
+committing, and committed counts without replaying output or inferring
+commitment. Presence of a prepared row never implies transport commitment.
 
 Preparation, lifecycle state changes, and their audit events are transactional.
 If persistence or version validation fails, governed dynamic output is not
