@@ -12,6 +12,7 @@ import os
 import sys
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # keep the platform importable until the paired JAX core is deployed
@@ -62,6 +63,12 @@ def _core():
     root = os.environ.get("JAX_REPO_PATH")
     if not root or not os.path.isabs(root):
         raise GovernedChatUnavailable("JAX_REPO_PATH is unavailable for governed rendering")
+    # Do this before importing: a prior request may have loaded ``policy``
+    # from another checkout into sys.modules.  The configured repository is
+    # the trusted paired core dependency, not whichever module happened to be
+    # imported first in this process.
+    if not (Path(root) / "policy" / "governance" / "governed_renderer.py").is_file():
+        raise GovernedChatUnavailable("configured JAX repository lacks the F2-C renderer")
     if root not in sys.path:
         sys.path.insert(0, root)
     try:

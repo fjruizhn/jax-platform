@@ -261,13 +261,21 @@ def test_chat_endpoint_contract_not_degraded_on_valid_json(client):
         http_client._client = original
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["contract_degraded"] is True
-    # The paired JAX F2-C core is intentionally not provisioned by this
-    # platform-only test harness.  Its absence must fail closed, not restore
-    # raw provider prose.  Core integration tests cover the sealed success
-    # path in the JAX repository.
-    assert body["response"] == "The response could not be verified safely."
-    assert "mi analisis real" not in body["response"]
+    # The platform supports both explicitly bounded states while the paired
+    # core rolls out: a real F2-C core renders the sealed non-governed
+    # narrative; an older configured JAX checkout fails closed without raw
+    # provider prose.  It must never take a third/raw path.
+    if body["contract_state"] == "VALID":
+        assert body["contract_degraded"] is False
+        assert "mi analisis real" in body["response"]
+        assert "mi conclusion real" in body["response"]
+        assert body["response_id"]
+        assert body["envelope_digest"].startswith("sha256:")
+    else:
+        assert body["contract_degraded"] is True
+        assert body["response"] == "The response could not be verified safely."
+        assert "mi analisis real" not in body["response"]
+        assert body["contract_state"] == "UNAVAILABLE"
     assert body["governed_plain"] is True
 
 
