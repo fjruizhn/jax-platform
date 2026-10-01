@@ -50,6 +50,7 @@ const lugarDelPaso = (v) => {
 export default {
   // Top bar
   logout: 'Salir',
+  governedResponseLabel: 'Respuesta gobernada',
 
   // Left panel
   facets: 'Facetas',

@@ -1,10 +1,9 @@
 """F2-C Web Chat composition bridge.
 
 This module is deliberately the *only* bridge from buffered provider text to
-the F2-C renderer.  It owns all values used to construct the response scope
-and governance receipt; neither a provider candidate nor a request payload
-can supply them.  F2-D transport durability is intentionally not implemented
-here.
+the F2-C renderer and the JAX-owned F2-D transport unit. It owns values used
+to construct response scope and governance receipts; neither provider nor
+request payloads can supply lifecycle authority.
 """
 from __future__ import annotations
 
@@ -12,6 +11,7 @@ import os
 import sys
 import uuid
 import importlib
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,6 +38,8 @@ class GovernedChatProjection:
     contract_state: str
     contract_degraded: bool
     governed_plain: bool
+    # Private in-process F2-D authority; never included in ChatResponse JSON.
+    transport_unit: object | None = None
 
 
 def _core():
@@ -107,13 +109,18 @@ def project_sealed_envelope(envelope, render_context) -> GovernedChatProjection:
     try:
         (_, GovernedRenderer, _, _, _, _, _, _) = _core()
         rendered = GovernedRenderer().render_text(envelope, render_context)
+        lifecycle = _lifecycle_core()
+        unit = lifecycle.mint_governed_transport_unit(
+            envelope, rendered, render_context, transport_kind="web-chat-http-json",
+            idempotency_key=str(uuid.uuid4()),
+        )
         degraded = rendered.contract_state.value != "VALID"
         return GovernedChatProjection(
             text=rendered.text, response_id=rendered.response_id,
             envelope_digest=rendered.envelope_digest,
             source_envelope_digest=rendered.source_envelope_digest,
             contract_state=rendered.contract_state.value,
-            contract_degraded=degraded, governed_plain=True,
+            contract_degraded=degraded, governed_plain=True, transport_unit=unit,
         )
     except Exception:  # fail-soft: never expose an envelope or text if the renderer fails
         return GovernedChatProjection(
@@ -184,12 +191,21 @@ def project_provider_contract(
             )
             degraded = False
         rendered = GovernedRenderer().render_text(envelope, context)
+        lifecycle = _lifecycle_core()
+        idempotency_key = hashlib.sha256(
+            f"{scope.scope_digest}:{request_id}:{response_id}:web-chat-http-json".encode("utf-8")
+        ).hexdigest()
+        unit = lifecycle.mint_governed_transport_unit(
+            envelope, rendered, context, transport_kind="web-chat-http-json",
+            idempotency_key=idempotency_key,
+        )
         return GovernedChatProjection(
             text=rendered.text, response_id=rendered.response_id,
             envelope_digest=rendered.envelope_digest,
             source_envelope_digest=rendered.source_envelope_digest,
             contract_state=rendered.contract_state.value,
-            contract_degraded=rendered.contract_state.value != "VALID" or degraded, governed_plain=True,
+            contract_degraded=rendered.contract_state.value != "VALID" or degraded,
+            governed_plain=True, transport_unit=unit,
         )
     except Exception:  # fail-soft: renderer/core failure emits only static non-current text, never provider prose
         # This is the only F2-C bridge failure fallback.  It is static,
@@ -200,3 +216,26 @@ def project_provider_contract(
             contract_state="UNAVAILABLE", contract_degraded=True,
             governed_plain=True,
         )
+
+
+def _lifecycle_core():
+    """Load the paired JAX-owned F2-D lifecycle API, never a stale import."""
+    root = os.environ.get("JAX_REPO_PATH")
+    if not root or not os.path.isabs(root):
+        raise GovernedChatUnavailable("JAX_REPO_PATH is unavailable for F2-D lifecycle")
+    root_path = Path(root).resolve()
+    source = root_path / "policy" / "governance" / "output_lifecycle.py"
+    if not source.is_file():
+        raise GovernedChatUnavailable("configured JAX repository lacks F2-D lifecycle API")
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    try:
+        module = importlib.import_module("policy.governance.output_lifecycle")
+        if not Path(module.__file__).resolve().is_relative_to(root_path):
+            raise GovernedChatUnavailable("loaded F2-D API is outside configured JAX repository")
+        module.validate_lifecycle_version(module.OUTPUT_LIFECYCLE_API_VERSION)
+        if module.OUTPUT_LIFECYCLE_API_VERSION != "f2-d.lifecycle.2":
+            raise GovernedChatUnavailable("configured JAX F2-D lifecycle API is unsupported")
+        return module
+    except (ImportError, AttributeError) as exc:
+        raise GovernedChatUnavailable("F2-D lifecycle API is unavailable") from exc

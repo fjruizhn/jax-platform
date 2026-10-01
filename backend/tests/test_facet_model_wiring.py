@@ -172,9 +172,11 @@ def test_degrades_explicitly_when_facet_unavailable(client):
     assert mock_post.call_count == 0, (
         "sin binding activo no debe invocar Ollama en absoluto (fail-closed)"
     )
-    # Ronda final M6 (2026-09-16): el contrato HTTP de la degradacion es un
-    # aviso con codigo (A-53), no un texto: el frontend lo traduce.
-    assert resp.json()["aviso"] == {"code": "faceta_sin_binding", "params": {}}
+    # Runtime binding state is converted to a governed unavailable projection;
+    # the legacy notice code is not returned as a frontend rendering shortcut.
+    assert resp.json()["aviso"] is None
+    assert resp.json()["contract_state"] == "DEGRADED_STRUCTURED"
+    assert resp.json()["response"] == "The response could not be verified safely."
 
 
 def test_jax_local_system_prompt_states_resolved_model(client):
@@ -211,9 +213,8 @@ def test_model_identity_question_is_unavailable_without_governed_claim(client):
             f"model-identity question must short-circuit before Ollama, "
             f"got {mock_post.call_count} call(s)"
         )
-        assert resp.json()["aviso"] == {
-            "code": "estado_actual_no_disponible",
-            "params": {},
-        }
+        assert resp.json()["aviso"] is None
+        assert resp.json()["contract_state"] == "DEGRADED_STRUCTURED"
+        assert resp.json()["response"] == "The response could not be verified safely."
     finally:
         _set_jax_local_model_id(client, prev_model)

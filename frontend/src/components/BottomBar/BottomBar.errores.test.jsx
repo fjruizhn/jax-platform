@@ -42,14 +42,18 @@ describe('BottomBar -- errores y avisos con código', () => {
     expect(content).not.toContain('timeout')
   })
 
-  it('una respuesta enlatada muestra el texto del aviso, no la marca', async () => {
+  it('una respuesta lifecycle-gated never reconstruye una faceta dinámica', async () => {
     api.post.mockResolvedValue({ data: {
-      facet: 'thot', response: '[faceta_sin_binding facet=thot]', timestamp: 't',
-      aviso: { code: 'faceta_sin_binding', params: { facet: 'thot' } },
+      facet: 'thot', response: 'The response could not be verified safely.', timestamp: 't',
+      aviso: null, governed_plain: true, contract_state: 'DEGRADED_STRUCTURED',
     } })
     enviarChat('hola')
     await waitFor(() => expect(useJaxStore.getState().messages).toHaveLength(2))
-    expect(useJaxStore.getState().messages[1].content).toBe(es.avisosChat.faceta_sin_binding())
+    const respuesta = useJaxStore.getState().messages[1]
+    expect(respuesta.content).toBe('The response could not be verified safely.')
+    expect(respuesta.facet).toBe('governed_response')
+    expect(respuesta.timestamp).toBeNull()
+    expect(respuesta.content).not.toContain('thot')
   })
 
   // Frente B, Task 9 (2026-09-17, Ruling R4): con el freno puesto la Mesa

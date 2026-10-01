@@ -441,4 +441,6 @@ def test_la_pregunta_de_identidad_del_usuario_sigue_recibiendo_el_aviso_con_adju
     meta = _guardar_texto(_duenio(client))
     r = _chat(client, [{"id": meta["id"]}], message="que modelo sos")
     assert r.status_code == 200, r.text
-    assert r.json()["aviso"] == {"code": "estado_actual_no_disponible", "params": {}}
+    assert r.json()["aviso"] is None
+    assert r.json()["response"] == "The response could not be verified safely."
+    assert r.json()["contract_state"] == "DEGRADED_STRUCTURED"

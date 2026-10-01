@@ -3622,6 +3622,11 @@ async def run_migrations():
                 if not await _table_exists(cur, table_name):
                     await cur.execute(ddl)
 
+            # F2-D's purpose-specific Web Chat outbox is a platform transport
+            # record, independent of JAX's F2-A/B governance persistence.
+            from db.output_lifecycle_migration import apply as apply_output_lifecycle_migration
+            await apply_output_lifecycle_migration(cur)
+
             # B9 core 001/002 is JAX-owned DDL just like the project
             # authority namespace below.  It must precede 003 so a database
             # bootstrapped from a legacy platform template has the complete

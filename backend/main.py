@@ -159,6 +159,16 @@ async def lifespan(app: FastAPI):
     await get_pool()
     await get_http_client()
     await run_migrations()
+    # F2-D restart inspection is observational: PREPARED remains uncommitted,
+    # COMMITTING remains ambiguous, and no response is replayed automatically.
+    from webchat_f2d.repository import OutputOutboxRepository
+    try:
+        logger.info("F2-D durable transport recovery snapshot %s",
+                    await OutputOutboxRepository().recovery_snapshot())
+    except Exception:  # fail-soft: startup diagnostics must not change transport authorization
+        # The Web Chat dynamic path still fails closed if lifecycle persistence
+        # is unavailable; startup diagnostics do not weaken its transport gate.
+        logger.exception("F2-D recovery snapshot unavailable")
     # SP2 del Ejecutor (2026-09-17): un turno en curso de un arranque anterior quedó huérfano
     # (el reinicio mató el runner y su vigía con el grupo del servicio): se cierra con código.
     await ejecutor_misiones.reconciliar_al_arrancar()
