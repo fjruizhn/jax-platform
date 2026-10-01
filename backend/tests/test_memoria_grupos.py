@@ -40,16 +40,18 @@ import pytest
 from api.admin import memoria  # noqa: E402
 from jax.memory.embedding_config import CONFIG as _EMBED  # noqa: E402
 from tests.identidades import sql  # noqa: E402
+from tests.identidades import uid  # noqa: E402
 
 _FIXTURE_EMBEDDINGS = pathlib.Path(__file__).parent / "fixtures" / \
     "memoria_casi_duplicados_bge_m3.json"
 
 
-async def _crear_fact_con_embedding(texto, embedding, fact_type="technical"):
+async def _crear_fact_con_embedding(texto, embedding, fact_type="technical",
+                                    user_id=1, project_id=None):
     return await sql(
-        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, "
-        f"{_EMBED.column}) VALUES (UUID(), %s, %s, FALSE, VEC_FromText(%s))",
-        (texto, fact_type, json.dumps(embedding)),
+        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, user_id, project_id, "
+        f"{_EMBED.column}) VALUES (UUID(), %s, %s, FALSE, %s, %s, VEC_FromText(%s))",
+        (texto, fact_type, user_id, project_id, json.dumps(embedding)),
     )
 
 
@@ -293,6 +295,64 @@ def test_la_consulta_de_activos_sigue_usando_el_indice_tras_agregar_source_facet
     assert "idx_facts_active" in texto, f"no usa el indice de superseded_by: {texto}"
     assert "Using filesort" not in texto, f"ordena en memoria: {texto}"
     assert "Using temporary" not in texto, f"tabla temporal: {texto}"
+
+
+def test_el_agrupamiento_no_conecta_vecinos_de_scope_distinto():
+    """F2-P M2: aun si una composición defectuosa entregara un vecino fuera
+    de su namespace, la construcción final no puede unir tenant, usuario o
+    proyecto distintos. El SQL de producción ya filtra antes del top-K; esta
+    segunda guarda protege la frontera Python."""
+    vector = json.dumps([1.0, 0.0])
+    filas = [
+        (1, "hecho tenant A", False, datetime(2026, 1, 1), vector, None, 10, None, 1),
+        (2, "hecho tenant B", False, datetime(2026, 1, 1), vector, None, 10, None, 2),
+        (3, "hecho usuario B", False, datetime(2026, 1, 1), vector, None, 11, None, 1),
+        (4, "hecho proyecto B", False, datetime(2026, 1, 1), vector, None, 10, 99, 1),
+    ]
+    vecinos = [(1, [(2, 0.01), (3, 0.01), (4, 0.01)])]
+    grupos = memoria._construir_grupos(filas, vecinos, {})
+    assert {frozenset(g["hechos"]) for g in grupos} == {
+        frozenset({1}), frozenset({2}), frozenset({3}), frozenset({4}),
+    }
+
+
+def test_sql_vecinos_aplica_tenant_usuario_y_proyecto_antes_del_top_k():
+    """La consulta real tiene sus límites de namespace en WHERE, antes del
+    ORDER BY/LIMIT vectorial; no hay barrido global para descubrir vecinos."""
+    antes_de_orden = memoria.SQL_VECINOS.split("ORDER BY", 1)[0]
+    assert "f.user_id = %s" in antes_de_orden
+    assert "u.tenant_id = %s" in antes_de_orden
+    assert "f.project_id = %s" in antes_de_orden
+    assert "LIMIT %s" in memoria.SQL_VECINOS
+
+
+@pytest.mark.parametrize("scope_ajeno", ("tenant", "user", "project"))
+def test_el_endpoint_no_descubre_vecinos_de_otro_scope(
+        client_superadmin, scope_ajeno):
+    """Prueba el camino real: filtros de tenant/user/project se aplican en
+    SQL_VECINOS antes del top-K, por lo que dos embeddings idénticos nunca
+    forman el mismo grupo fuera de su namespace."""
+    datos = json.loads(_FIXTURE_EMBEDDINGS.read_text(encoding="utf-8"))
+    vector = datos["embeddings"][0]
+    owner_a, project_a = 1, None
+    owner_b, project_b = 1, None
+    if scope_ajeno == "tenant":
+        owner_b = int(uid(client_superadmin, "grupos-tenant-ajeno", tenant_id="200002"))
+    elif scope_ajeno == "user":
+        owner_b = int(uid(client_superadmin, "grupos-user-ajeno", tenant_id="1"))
+    else:
+        project_a, project_b = 902000, 902001
+
+    primero = client_superadmin.portal.call(
+        _crear_fact_con_embedding, "scope A", vector, "technical", owner_a, project_a)
+    segundo = client_superadmin.portal.call(
+        _crear_fact_con_embedding, "scope B", vector, "technical", owner_b, project_b)
+    try:
+        grupos = client_superadmin.get("/api/admin/memoria/grupos").json()["grupos"]
+        assert not any({primero, segundo} <= set(grupo["hechos"]) for grupo in grupos)
+    finally:
+        client_superadmin.portal.call(sql, "DELETE FROM facts WHERE id IN (%s, %s)",
+                                      (primero, segundo))
 
 
 def test_sql_citas_no_tiene_indice_util_pero_el_costo_es_chico(client_superadmin):

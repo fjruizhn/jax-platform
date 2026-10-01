@@ -7,14 +7,10 @@ hechos vencidos -- son uno con tres redacciones.
 Todo o nada en UNA transaccion (mismo principio que corregir_hecho ya aplica,
 jax-platform#107): fundir a medias deja la memoria peor que antes.
 
-Ronda 2026-09-22 (hallazgo de Fernando en la pantalla de Memoria): "fundir en
-el mas reciente" podia aprobar una SINTESIS (con partes inventadas por el
-sintetizador) y con eso SUPERAR a un hecho ya verificado por Fernando. El
-superviviente ya NO es "el mas reciente" a secas: si hay algun verificado en
-el grupo, gana el verificado mas reciente (_elegir_superviviente,
-test_memoria_grupos.py), y `fundir_hechos` aprueba al superviviente EN LA
-MISMA transaccion si hacia falta -- el frontend ya no llama a
-/hechos/aprobar aparte.
+F2-P M2: deduplicar preserva `superseded_by`, pero no verifica. Si hay algún
+hecho verificado, gana el verificado más reciente; si no lo hay, gana el más
+reciente y sigue sin verificar. La verificación exige su operación humana
+separada.
 
 Ronda 146 (revision adversarial de jax-platform PR 146, D3): el endpoint EXIGE
 la regla, no solo la propone. Dos rechazos nuevos, los dos 409:
@@ -43,12 +39,13 @@ Tercera vuelta (revision adversarial de jax-platform PR 146):
 import pytest
 
 from tests.identidades import sql
+from tests.identidades import uid
 
 
 async def _crear_fact(fact_text, is_verified=False):
     return await sql(
-        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified) "
-        "VALUES (UUID(), %s, 'technical', %s)",
+        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, user_id) "
+        "VALUES (UUID(), %s, 'technical', %s, 1)",
         (fact_text, is_verified),
     )
 
@@ -95,6 +92,11 @@ async def _fijar_expires_at(fact_id, valor):
 async def _citar(fact_id, cita_a_id):
     await sql("UPDATE facts SET source_facet = 'synthesis', source_fact_ids = %s WHERE id = %s",
               (f"[{cita_a_id}]", fact_id))
+
+
+async def _asignar_scope(fact_id, user_id, project_id=None):
+    await sql("UPDATE facts SET user_id = %s, project_id = %s WHERE id = %s",
+              (user_id, project_id, fact_id))
 
 
 @pytest.fixture
@@ -223,14 +225,11 @@ def test_fundir_rechaza_absorbido_ya_superado_y_no_toca_al_otro(client_superadmi
     assert superseded_by is None, "fundio a medias: el absorbido sano SI cambio"
 
 
-# --- Ronda 2026-09-22: el superviviente se aprueba EN el fundir, y un
-# verificado nunca puede quedar superado por uno sin verificar -----------
+# --- F2-P M2: fundir nunca verifica; conserva la verificación existente ---
 
-def test_fundir_aprueba_al_superviviente_no_verificado_en_la_misma_llamada(client_superadmin, trio):
-    """El frontend ya NO llama a /hechos/aprobar antes de /hechos/fundir
-    (una sola llamada, decision de esta ronda): fundir_hechos tiene que
-    aprobar al superviviente el mismo, con el MISMO efecto que
-    /hechos/aprobar (is_verified, verified_at, verified_by)."""
+def test_fundir_no_verifica_al_superviviente_no_verificado(client_superadmin, trio):
+    """Deduplicación no es verificación: el superviviente conserva su estado
+    sin verificar y no gana un `verified_by` implícito."""
     superviviente, absorbido1, absorbido2 = trio
     verificado_antes, _ = client_superadmin.portal.call(_verificado_de, superviviente)
     assert verificado_antes is False, "la fixture trio tiene que arrancar sin verificar"
@@ -240,8 +239,39 @@ def test_fundir_aprueba_al_superviviente_no_verificado_en_la_misma_llamada(clien
                                      "absorbidos": [absorbido1, absorbido2]})
     assert r.status_code == 200
     verificado, verificado_por = client_superadmin.portal.call(_verificado_de, superviviente)
-    assert verificado is True
-    assert verificado_por is not None, "verified_by no puede quedar implicito (Protocolo de la Memoria Viva)"
+    assert verificado is False
+    assert verificado_por is None
+
+
+@pytest.mark.parametrize(
+    "scope_ajeno",
+    ("tenant", "user", "project"),
+)
+def test_fundir_rechaza_lote_de_scope_distinto_antes_de_escribir(
+        client_superadmin, trio, scope_ajeno):
+    """F2-P M2: tenant deriva del dueño real (`jax_users`), y el lote debe
+    quedar íntegro dentro de tenant + user + project. El 409 corre bajo el
+    candado antes de cualquier `superseded_by`."""
+    superviviente, absorbido1, absorbido2 = trio
+    if scope_ajeno == "tenant":
+        ajeno = int(uid(client_superadmin, "fundir-tenant-ajeno", tenant_id="200001"))
+        client_superadmin.portal.call(_asignar_scope, absorbido1, ajeno)
+    elif scope_ajeno == "user":
+        ajeno = int(uid(client_superadmin, "fundir-user-ajeno", tenant_id="1"))
+        client_superadmin.portal.call(_asignar_scope, absorbido1, ajeno)
+    else:
+        client_superadmin.portal.call(_asignar_scope, absorbido1, 1, 901001)
+        client_superadmin.portal.call(_asignar_scope, superviviente, 1, 901000)
+        client_superadmin.portal.call(_asignar_scope, absorbido2, 1, 901000)
+
+    r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                               json={"superviviente_id": superviviente,
+                                     "absorbidos": [absorbido1, absorbido2]})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "fundir_hechos_de_scope_distinto"
+    for fact_id in (superviviente, absorbido1, absorbido2):
+        superseded_by, _, _ = client_superadmin.portal.call(_estado, fact_id)
+        assert superseded_by is None
 
 
 def test_fundir_rechaza_absorber_un_verificado_con_superviviente_sin_verificar(client_superadmin, trio):
@@ -389,9 +419,8 @@ def test_fundir_no_reaprueba_ni_cambia_verified_by_de_un_superviviente_ya_verifi
 def test_fundir_es_atomico_si_falla_a_mitad_del_lote_no_queda_nada_escrito(
         client_superadmin, trio, monkeypatch):
     """Si el UPDATE de `superseded_by` de un absorbido revienta a mitad del
-    lote, la aprobacion del superviviente -- escrita ANTES, en la MISMA
-    transaccion -- tiene que revertirse tambien. Todo o nada, jax-platform#107
-    aplicado tambien a la aprobacion nueva de esta ronda."""
+    lote no queda ningún reemplazo parcial. El superviviente tampoco puede
+    adquirir verificación como efecto lateral."""
     from api.admin import memoria
 
     superviviente, absorbido1, absorbido2 = trio
@@ -412,7 +441,7 @@ def test_fundir_es_atomico_si_falla_a_mitad_del_lote_no_queda_nada_escrito(
                                      "absorbidos": [absorbido1, absorbido2]})
 
     verificado, _ = client_superadmin.portal.call(_verificado_de, superviviente)
-    assert verificado is False, "la aprobacion del superviviente NO se revirtio: fundio a medias"
+    assert verificado is False, "fundir no puede verificar al superviviente"
     superseded_by, _, _ = client_superadmin.portal.call(_estado, absorbido1)
     assert superseded_by is None, "el primer absorbido SI cambio antes de la falla: fundio a medias"
 

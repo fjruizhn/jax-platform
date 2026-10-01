@@ -211,8 +211,8 @@ async def aprobar_hechos(body: AprobarBody, user: AuthUser = Depends(require_sup
     transaccion: se leen TODOS los ids del lote con `FOR UPDATE` primero: si
     alguno esta vencido o superado, 409 (`hecho_vencido`/`hecho_superado`) y
     NADA se escribe -- todo o nada, ningun UPDATE parcial. `_aprobar_en_cursor`
-    ya existia (lo usa `fundir_hechos` para el superviviente sin verificar);
-    ahora tambien lo usa el lote entero de este endpoint.
+    es el único escritor de este módulo para la aprobación explícita del lote.
+    `fundir_hechos` no lo usa: deduplicar no verifica.
 
     m8 (cierre jax-platform#146, ronda 6, SEGURIDAD): abandonar
     `MemoryDB.verify_fact` tambien tiro el contrato de tres estados que
@@ -394,13 +394,16 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
     `supersede_fact` ejecuta, sobre el MISMO cursor, dentro de la MISMA
     transaccion con `FOR UPDATE` (mismo patron que `corregir_hecho`).
 
-    Ronda 2026-09-22 (hallazgo de Fernando): "fundir en el mas reciente"
-    podia aprobar una SINTESIS (con partes inventadas por el sintetizador) y
-    con eso SUPERAR a un hecho YA verificado. Si el superviviente todavia no
-    estaba verificado, se aprueba EN esta misma transaccion -- mismo efecto
-    que `/hechos/aprobar`, sin la segunda llamada HTTP que el frontend hacia
-    antes (dos llamadas separadas dejaban una ventana real: si la segunda
-    fallaba, el hecho quedaba aprobado sin fundir).
+    F2-P M2: fundir nunca verifica. La deduplicación conserva la cadena de
+    reemplazo, pero una verificación sigue siendo una decisión humana
+    separada. Un superviviente ya verificado conserva exactamente esa
+    verificación; uno sin verificar sigue sin verificar.
+
+    El lote se bloquea y se lee junto con su dueño autorizado
+    (`facts.user_id -> jax_users.tenant_id`). Todos los miembros deben tener
+    el mismo tenant, usuario y proyecto (NULL-safe). No se infiere un tenant
+    de la petición administrativa y una fila sin dueño resoluble falla
+    cerrada: el administrador tampoco puede fundir entre namespaces.
 
     Ronda 146 (revision adversarial de jax-platform PR 146, D1/D3, decision de
     Fernando): el endpoint EXIGE la regla, no solo la propone -- antes un
@@ -492,8 +495,10 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
 
         marcadores = ", ".join(["%s"] * len(ids))
         await cur.execute(
-            f"SELECT id, superseded_by, is_verified, created_at, source_facet, "
-            f"expires_at FROM facts WHERE id IN ({marcadores}) FOR UPDATE",
+            f"SELECT f.id, f.superseded_by, f.is_verified, f.created_at, "
+            f"f.source_facet, f.expires_at, f.user_id, f.project_id, u.tenant_id "
+            f"FROM facts f JOIN jax_users u ON u.user_id = f.user_id "
+            f"WHERE f.id IN ({marcadores}) FOR UPDATE",
             ids,
         )
         filas = await cur.fetchall()
@@ -501,14 +506,26 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
         info = {}
         facet_por_id = {}
         vencidos = {}
-        for fid, superseded_by, is_verified, created_at, source_facet, expires_at in filas:
+        scope_por_id = {}
+        for (fid, superseded_by, is_verified, created_at, source_facet,
+             expires_at, fact_user_id, project_id, tenant_id) in filas:
             superados_de[fid] = superseded_by
             info[fid] = (bool(is_verified), created_at)
             facet_por_id[fid] = source_facet
             vencidos[fid] = expires_at
+            # `JOIN jax_users` hace que un user_id inexistente no llegue
+            # aquí. Aun así se comprueba explícitamente: una identidad o
+            # tenant nulo jamás es un scope que se pueda compartir.
+            if fact_user_id is None or tenant_id is None:
+                raise HTTPException(status_code=409, detail="scope_de_hecho_no_resuelto")
+            scope_por_id[fid] = (tenant_id, fact_user_id, project_id)
 
         if any(i not in superados_de for i in ids):
+            # También cubre un fact con dueño inexistente: no revelar si el
+            # id estaba en facts fuera de un namespace resoluble.
             raise HTTPException(status_code=404, detail="hecho_no_encontrado")
+        if len({scope_por_id[i] for i in ids}) != 1:
+            raise HTTPException(status_code=409, detail="fundir_hechos_de_scope_distinto")
         # Encadenar sobre una cadena rota confunde la historia: ni el
         # superviviente ni ningun absorbido pueden estar ya superados. Todo o
         # nada: esta comprobacion corre para TODOS los ids ANTES de escribir
@@ -559,9 +576,6 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
                     "superviviente_correcto": superviviente_correcto,
                 },
             )
-
-        if not info[body.superviviente_id][0]:
-            await _aprobar_en_cursor(cur, autor, body.superviviente_id)
 
         for absorbido_id in absorbidos:
             await _superar_en_cursor(cur, autor, absorbido_id, body.superviviente_id)
@@ -686,12 +700,13 @@ async def caducar_hecho(fact_id: int, body: CaducarBody,
 #
 # Usa el indice vectorial HNSW de `embedding_bge_m3`, verificado con EXPLAIN
 # (test_memoria_grupos.py::test_el_agrupamiento_usa_el_indice_vectorial).
-# NINGUNA consulta de acá hace JOIN contra `facts`: el antecedente de esta
-# casa (2026-09-11, jax_memory/messages) es que un JOIN de más saca al
+# Los vecinos nunca usan un self-JOIN contra `facts`: el antecedente de esta
+# casa (2026-09-11, jax_memory/messages) es que un JOIN de más puede sacar al
 # optimizador del índice vectorial en silencio -- 58,5 ms contra 0,4 ms con
-# 1.149 filas. Por eso, igual que `_find_nearest_fact()` en jax/memory/db.py,
-# cada vecino se busca con un SELECT propio (`SQL_VECINOS`), nunca con un
-# self-join.
+# 1.149 filas. F2-P M2 agrega el JOIN mínimo a `jax_users`, que acredita el
+# tenant del dueño de cada fact; el EXPLAIN cubre que el camino vectorial aún
+# usa su índice. Cada vecino se busca con un SELECT propio (`SQL_VECINOS`),
+# nunca con un self-join ni un barrido global cross-scope.
 #
 # UMBRAL_MISMO_TEMA reutiliza CORRECTION_DISTANCE_THRESHOLD (0.25) -- la
 # banda YA calibrada en jax/memory/db.py para "esto describe el mismo hecho,
@@ -729,12 +744,13 @@ _CONCURRENCIA_VECINOS = 6
 _MAX_MIEMBROS_CASI_DUPLICADO = 90
 
 SQL_ACTIVOS_CON_VECTOR = (
-    "SELECT id, fact_text, is_verified, created_at, "
-    f"VEC_ToText({_COLUMNA_EMBED}) AS vector_texto, source_facet "
-    "FROM facts "
-    "WHERE superseded_by IS NULL "
-    "AND (expires_at IS NULL OR expires_at > NOW()) "
-    f"AND {_embedding_no_cero_sql(_COLUMNA_EMBED)}"
+    "SELECT f.id, f.fact_text, f.is_verified, f.created_at, "
+    f"VEC_ToText(f.{_COLUMNA_EMBED}) AS vector_texto, f.source_facet, "
+    "f.user_id, f.project_id, u.tenant_id "
+    "FROM facts f JOIN jax_users u ON u.user_id = f.user_id "
+    "WHERE f.superseded_by IS NULL "
+    "AND (f.expires_at IS NULL OR f.expires_at > NOW()) "
+    f"AND {_embedding_no_cero_sql('f.' + _COLUMNA_EMBED)}"
 )
 # `source_facet` va AL FINAL (índice 5) a propósito: `_casi_duplicados_
 # del_grupo` sigue leyendo el vector en el índice 4 tal cual lo hacía antes
@@ -755,13 +771,15 @@ SQL_ACTIVOS_CON_VECTOR = (
 # vector de consulta es el propio VEC_ToText() de la fila (ver
 # SQL_ACTIVOS_CON_VECTOR): no hace falta volver a pedírselo a MariaDB.
 SQL_VECINOS = (
-    "SELECT id, "
-    f"VEC_DISTANCE_COSINE({_COLUMNA_EMBED}, VEC_FromText(%s)) AS distancia "
-    "FROM facts "
-    "WHERE id != %s AND superseded_by IS NULL "
-    "AND (expires_at IS NULL OR expires_at > NOW()) "
-    f"AND {_embedding_no_cero_sql(_COLUMNA_EMBED)} "
-    f"ORDER BY VEC_DISTANCE_COSINE({_COLUMNA_EMBED}, VEC_FromText(%s)) ASC "
+    "SELECT f.id, "
+    f"VEC_DISTANCE_COSINE(f.{_COLUMNA_EMBED}, VEC_FromText(%s)) AS distancia "
+    "FROM facts f JOIN jax_users u ON u.user_id = f.user_id "
+    "WHERE f.id != %s AND f.user_id = %s AND u.tenant_id = %s "
+    "AND ((f.project_id = %s) OR (f.project_id IS NULL AND %s IS NULL)) "
+    "AND f.superseded_by IS NULL "
+    "AND (f.expires_at IS NULL OR f.expires_at > NOW()) "
+    f"AND {_embedding_no_cero_sql('f.' + _COLUMNA_EMBED)} "
+    f"ORDER BY VEC_DISTANCE_COSINE(f.{_COLUMNA_EMBED}, VEC_FromText(%s)) ASC "
     "LIMIT %s"
 )
 # id=0 y un vector no-nulo cualquiera (no hace falta un hecho real): alcanza
@@ -769,7 +787,8 @@ SQL_VECINOS = (
 # tipos de parámetro. test_memoria_grupos.py corre EXPLAIN sobre esta tupla
 # exacta.
 _VECTOR_EJEMPLO = json.dumps([0.0001] * _EMBED_CFG.dim)
-ARGS_VECINOS_EJEMPLO = (_VECTOR_EJEMPLO, 0, _VECTOR_EJEMPLO, _K_VECINOS_TEMA)
+ARGS_VECINOS_EJEMPLO = (_VECTOR_EJEMPLO, 0, 1, 1, None, None,
+                         _VECTOR_EJEMPLO, _K_VECINOS_TEMA)
 
 
 def _norma(v: list) -> float:
@@ -1190,12 +1209,29 @@ def _recortar_texto(texto: str) -> str:
     return texto[:_MAX_CARACTERES_TEXTO_SUPERVIVIENTE].rstrip() + "…"
 
 
+def _scope_de_fila(fila):
+    """Devuelve el namespace completo de una fila de agrupamiento.
+
+    Las filas de producción siempre llevan estas tres columnas desde
+    `SQL_ACTIVOS_CON_VECTOR`. Las tuplas de seis campos se conservan sólo para
+    los tests puros históricos de la parte geométrica; nunca entran desde la
+    base y por eso no relajan el filtro SQL de producción.
+    """
+    if len(fila) < 9:
+        return None
+    tenant_id, user_id, project_id = fila[8], fila[6], fila[7]
+    if tenant_id is None or user_id is None:
+        return None
+    return tenant_id, user_id, project_id
+
+
 def _construir_grupos(filas: list, vecinos: list, cierre_citas: dict) -> list[dict]:
     """CPU pura (sin await): se corre en un hilo aparte (asyncio.to_thread)
     para no bloquear el event loop a escala de 10.000 hechos.
 
-    filas: (id, fact_text, is_verified, created_at, vector, source_facet) de
-    cada hecho activo. vecinos: [(fact_id, [(vecino_id, distancia), ...]),
+    filas: (id, fact_text, is_verified, created_at, vector, source_facet,
+    user_id, project_id, tenant_id) de cada hecho activo. vecinos: [(fact_id,
+    [(vecino_id, distancia), ...]),
     ...], el resultado de SQL_VECINOS para cada fila. `cierre_citas`: el
     cierre transitivo de TODO el grafo de citas (MAJOR 1, tercera vuelta),
     calculado UNA vez en `agrupar_por_tema` y pasado tal cual a
@@ -1211,7 +1247,7 @@ def _construir_grupos(filas: list, vecinos: list, cierre_citas: dict) -> list[di
     D5 (ronda 146, revisión adversarial de jax-platform PR 146, MAYOR 3): el
     cluster también trae `superviviente_verificado` y `superviviente_texto`
     -- el frontend arma el motivo ("sobrevive el verificado" / "sobrevive el
-    más reciente, quedará aprobado al fundir") y el texto de la ficha con
+    más reciente y permanece sin verificar") y el texto de la ficha con
     ESTOS datos, no con `hechosPorId` (que sólo tiene los primeros 500
     hechos cargados por `GET /hechos`; un cluster puede incluir ids que ese
     cap dejó afuera). `superviviente_texto` viaja recortado (M4, ver
@@ -1221,7 +1257,8 @@ def _construir_grupos(filas: list, vecinos: list, cierre_citas: dict) -> list[di
     for fact_id, cercanos in vecinos:
         for vecino_id, distancia in cercanos:
             if vecino_id in datos and distancia is not None \
-                    and distancia <= _UMBRAL_MISMO_TEMA:
+                    and distancia <= _UMBRAL_MISMO_TEMA \
+                    and _scope_de_fila(datos[fact_id]) == _scope_de_fila(datos[vecino_id]):
                 uf.unir(fact_id, vecino_id)
 
     grupos = []
@@ -1280,17 +1317,25 @@ async def agrupar_por_tema() -> list[dict]:
 
     semaforo = asyncio.Semaphore(_CONCURRENCIA_VECINOS)
 
-    async def _vecinos_de(fact_id, vector_texto):
+    async def _vecinos_de(fact_id, vector_texto, user_id, project_id, tenant_id):
+        # Una fila de producción sin identidad completa ya fue excluida por
+        # el JOIN; la guarda conserva el fallo cerrado si una composición
+        # futura cambiara SQL_ACTIVOS_CON_VECTOR por accidente.
+        if user_id is None or tenant_id is None:
+            return fact_id, []
         async with semaforo:
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(
                         SQL_VECINOS,
-                        (vector_texto, fact_id, vector_texto, _K_VECINOS_TEMA),
+                        (vector_texto, fact_id, user_id, tenant_id, project_id,
+                         project_id, vector_texto, _K_VECINOS_TEMA),
                     )
                     return fact_id, await cur.fetchall()
 
-    vecinos = await asyncio.gather(*(_vecinos_de(f[0], f[4]) for f in filas))
+    vecinos = await asyncio.gather(*(
+        _vecinos_de(f[0], f[4], f[6], f[7], f[8]) for f in filas
+    ))
 
     return await asyncio.to_thread(_construir_grupos, filas, vecinos, cierre_citas)
 

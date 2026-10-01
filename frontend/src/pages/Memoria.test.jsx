@@ -773,6 +773,8 @@ describe('Memoria', () => {
     // es "el mas reciente", no "el verificado" -- y el mensaje se arma con
     // el texto/verificado que trae el CLUSTER (D5), no con hechosPorId.
     expect(confirmacion).toHaveTextContent(es.memoria.fundirMensaje(HECHO_139.texto, false))
+    expect(confirmacion).toHaveTextContent('sigue sin verificar')
+    expect(confirmacion).not.toHaveTextContent('APROBADO')
     fireEvent.change(within(confirmacion).getByLabelText(/=/), { target: { value: sumaCorrecta(confirmacion) } })
     fireEvent.click(within(confirmacion).getByRole('button', { name: es.memoria.fundirConfirmar }))
     // grupo.hechos = [139, 138, 136] (creado_at DESC); superviviente_id=139
