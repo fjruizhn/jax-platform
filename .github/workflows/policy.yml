@@ -1023,8 +1023,10 @@ jobs:
           // npm ci limpio + npx vitest run --reporter=json en esta rama.
           // 1065 -> 1068 (F2C-A03/A04): parameter-free unavailable/error
           // translations and provider-body spoof suppression regressions.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1068) {
-              console.error("PISO ROTO: se esperaban 1068 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1068 -> 1069 (F2-D D01/D25): governed response speaker label never
+          // reconstructs a runtime facet; measured in the targeted frontend suite.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1069) {
+              console.error("PISO ROTO: se esperaban 1069 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
