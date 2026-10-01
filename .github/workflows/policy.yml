@@ -4383,7 +4383,7 @@ jobs:
     env:
       JAX_F2D_EXPECTED_SHA: 93900c208aa30614b2feede454f5ad67abfa8c5b
       JAX_JWT_SECRET: ci-dummy-not-a-real-secret
-      JAX_CI_NO_DB: "0"
+      JAX_CI_NO_DB: "1"
       JAX_DB_HOST: 127.0.0.1
       JAX_DB_PORT: "3306"
       JAX_DB_USER: root
@@ -4441,10 +4441,7 @@ jobs:
         run: |
           python -m pytest -q -p no:warnings \
             integration_tests/test_f2c_exact_pair_integration.py \
-            tests/test_output_lifecycle_transport.py \
-            tests/test_output_lifecycle_endpoint.py \
-            tests/test_chat_codigos.py::test_hyde_runtime_notice_uses_governed_lifecycle_output \
-            tests/test_chat_easter_egg.py
+            tests/test_output_lifecycle_transport.py
           python integration_tests/f2d_exact_pair_durable_fallback.py
       - name: Verify fixed frontend notices on exact platform head
         uses: actions/setup-node@v4

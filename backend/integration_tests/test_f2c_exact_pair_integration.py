@@ -396,3 +396,114 @@ def test_exact_pair_rejected_narrative_fallback_is_prepared_sent_and_never_proje
 
 async def _append(target, value):
     target.append(value)
+
+
+def test_exact_pair_usage_none_runtime_notice_enters_f2d_before_transport(monkeypatch):
+    """The real chat route cannot return a runtime notice as a direct shortcut."""
+    import asyncio
+    import hashlib
+    import json
+    from types import SimpleNamespace
+
+    from api import chat as chat_mod
+    from auth.models import AuthUser
+    from fastapi import BackgroundTasks
+    from webchat_f2d import repository as outbox
+    from webchat_f2d import transport
+    from jax.memory.b9 import ScopeContext
+
+    monkeypatch.setenv("JAX_REPO_PATH", os.environ["JAX_REPO_PATH"])
+    scope = ScopeContext(
+        actor_principal="user:7", actor_type="USER", subject_user_id="7",
+        tenant_id="1", project_id=None, calling_component="jax-platform-web-chat",
+    )
+    runtime_notice = chat_mod.AvisoDeChat(code="faceta_sin_binding")
+    projected = []
+
+    async def scope_for_chat(*_args):
+        return scope
+
+    async def no_conversation(*_args):
+        return None
+
+    async def invoke(*_args, **_kwargs):
+        return runtime_notice, None
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(chat_mod, "_load_config", lambda: {"personalities": {"jekyll": {}}})
+    monkeypatch.setattr(chat_mod, "_scope_for_chat", scope_for_chat)
+    monkeypatch.setattr(chat_mod, "_get_conv_uuid", no_conversation)
+    monkeypatch.setattr(chat_mod, "_prompt_memory_context", noop)
+    monkeypatch.setattr(chat_mod, "_build_grounding", noop)
+    monkeypatch.setattr(chat_mod, "_invoke_facet", invoke)
+    monkeypatch.setattr(chat_mod.engine_state, "set_facet_status", noop)
+    monkeypatch.setattr(chat_mod, "_update_history",
+                        lambda *_args: projected.append((repository.state, _args[2])))
+    monkeypatch.setattr(chat_mod, "_fire_completed",
+                        lambda *_args: noop())
+    monkeypatch.setattr("jax_engine.background.add_safe_task", lambda *_args, **_kwargs: None)
+
+    class RuntimeNoticeRepository:
+        def __init__(self):
+            self.state = None
+            self.payload = None
+
+        async def prepare(self, unit, payload, *, tenant_id, project_id, subject_id, request_id,
+                          previous_attempt_id=None):
+            self.payload = payload
+            self.state = "OUTPUT_PREPARED"
+            projection = unit.durable_projection()
+            return outbox.PreparedTransportAuthorization._mint(
+                outbox._AUTH_TOKEN, outbox_id="notice-outbox", attempt_id="notice-attempt",
+                tenant_id=tenant_id, scope_digest=projection["scope_digest"],
+                request_id=request_id, response_id=projection["response_id"],
+                subject_id=subject_id, idempotency_key=projection["idempotency_key"],
+                effective_output_digest=projection["effective_output_digest"],
+                effective_projection_digest=projection["effective_projection_digest"],
+                original_envelope_digest=projection["original_envelope_digest"],
+                contract_state=projection["effective_contract_state"],
+                transport_payload_digest="sha256:" + hashlib.sha256(payload).hexdigest(),
+                payload=payload, unit=unit,
+            )
+
+        async def transition(self, authorization, target, *, failure_class=None, before_send=False):
+            from api.governed_chat import _lifecycle_core
+            core = _lifecycle_core()
+            core.validate_lifecycle_transition(core.OutputLifecycleState(self.state), target,
+                                               before_send=before_send)
+            self.state = target.value
+
+        async def record_secondary_event(self, authorization, event_type):
+            return None
+
+    repository = RuntimeNoticeRepository()
+    monkeypatch.setattr(transport, "OutputOutboxRepository", lambda: repository)
+
+    async def run_route():
+        result = await chat_mod.chat(
+            chat_mod.ChatRequest(message="hello", facet="jekyll"),
+            BackgroundTasks(), AuthUser(user_id="7", tenant_id="1", role="operator"),
+        )
+        messages = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        await result({"type": "http", "method": "POST", "path": "/api/chat"}, receive, send)
+        body = next(item["body"] for item in messages if item["type"] == "http.response.body")
+        return body
+
+    body = asyncio.run(run_route())
+    decoded = json.loads(body)
+    assert repository.state == "OUTPUT_COMMITTED_TO_TRANSPORT"
+    assert decoded["aviso"] is None
+    assert decoded["contract_state"] == "DEGRADED_STRUCTURED"
+    assert decoded["response"] == "The response could not be verified safely."
+    assert "faceta_sin_binding" not in body.decode("utf-8")
+    assert body == repository.payload
+    assert projected == [("OUTPUT_COMMITTED_TO_TRANSPORT", decoded["response"])]
