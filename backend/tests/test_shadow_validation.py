@@ -348,7 +348,9 @@ def test_chat_endpoint_does_not_break_when_shadow_validation_is_enqueued(client)
     finally:
         http_client._client = original
     assert resp.status_code == 200
-    assert resp.json()["contract_degraded"] is False
+    assert resp.json()["aviso"] is None
+    assert resp.json()["contract_state"] == "DEGRADED_STRUCTURED"
+    assert resp.json()["response"] == "The response could not be verified safely."
 
 
 def test_chat_endpoint_survives_shadow_validation_import_failure(client):

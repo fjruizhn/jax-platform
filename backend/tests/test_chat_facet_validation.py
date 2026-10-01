@@ -139,7 +139,9 @@ def test_chat_endpoint_denies_hipatia_when_authorize_facet_returns_false(client)
     finally:
         http_client._client = original
     assert resp.status_code == 200
-    assert resp.json()["aviso"]["code"] == "faceta_no_autorizada"
+    assert resp.json()["aviso"] is None
+    assert resp.json()["contract_state"] == "DEGRADED_STRUCTURED"
+    assert resp.json()["response"] == "The response could not be verified safely."
 
 
 def test_chat_endpoint_denies_hipatia_logs_the_reason_from_authorize_facet(client, caplog):
@@ -184,7 +186,9 @@ def test_chat_endpoint_denies_hipatia_when_las_manos_is_down(client):
     finally:
         http_client._client = original
     assert resp.status_code == 200
-    assert resp.json()["aviso"]["code"] == "faceta_no_autorizada"
+    assert resp.json()["aviso"] is None
+    assert resp.json()["contract_state"] == "DEGRADED_STRUCTURED"
+    assert resp.json()["response"] == "The response could not be verified safely."
 
 
 def test_chat_endpoint_allows_hipatia_when_authorize_facet_returns_true(client):

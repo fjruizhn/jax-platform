@@ -1560,6 +1560,7 @@ async def _runtime_notice_response(*, aviso: AvisoDeChat, facet: str, timestamp:
         logger.warning("F2-D runtime-notice preparation failed closed (%s)", type(exc).__name__)
         return JSONResponse(status_code=503,
                             content={"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}})
+    return prepared
 
 
 async def _fire_completed(facet: str, tenant_id: str, user_id: str):
