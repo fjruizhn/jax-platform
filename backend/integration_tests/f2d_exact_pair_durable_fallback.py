@@ -8,6 +8,7 @@ and committed as the bytes sent by the ASGI adapter.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -38,7 +39,8 @@ async def _row(outbox_id: str):
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT state, contract_state, effective_output_digest, response_payload "
+                "SELECT state, contract_state, effective_output_digest, response_payload, "
+                "transport_payload_digest, original_envelope_digest "
                 "FROM governed_output_outbox WHERE outbox_id=%s", (outbox_id,)
             )
             return await cur.fetchone()
@@ -88,11 +90,14 @@ async def _run() -> None:
 
     await prepared({"type": "http", "method": "POST", "path": "/api/chat"}, receive, send)
     body = next(message["body"] for message in messages if message["type"] == "http.response.body")
-    state, contract_state, effective_digest, stored = await _row(prepared.authorization.outbox_id)
+    (state, contract_state, effective_digest, stored, transport_digest,
+     original_digest) = await _row(prepared.authorization.outbox_id)
     assert state == "OUTPUT_COMMITTED_TO_TRANSPORT"
     assert contract_state == "UNAVAILABLE"
     assert effective_digest == governed.envelope_digest
+    assert original_digest == governed.source_envelope_digest
     assert bytes(stored) == body
+    assert transport_digest == "sha256:" + hashlib.sha256(body).hexdigest()
     assert json.loads(body)["response"] == governed.text
     assert rejected.encode("utf-8") not in body
     assert history == [governed.text]
