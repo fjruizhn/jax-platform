@@ -52,10 +52,11 @@ def sin_proveedor():
 def _es_el_easter_egg(resp):
     assert resp.status_code == 200, resp.text
     cuerpo = resp.json()
-    assert cuerpo["response"] == "[estado_actual_no_disponible]"
-    assert cuerpo["aviso"] == {"code": "estado_actual_no_disponible", "params": {}}
+    assert cuerpo["response"] == "The response could not be verified safely."
+    assert cuerpo["aviso"] is None
     assert cuerpo["facet"] == "jax_local"
-    assert cuerpo["contract_degraded"] is False
+    assert cuerpo["contract_state"] == "DEGRADED_STRUCTURED"
+    assert cuerpo["governed_plain"] is True
     # The legacy shortcut text contains registered-system propositions.  It
     # must never escape through the Web Chat response or its safe history mark.
     assert chat_mod.EASTER_EGG_TEXT not in resp.text
@@ -153,7 +154,7 @@ def test_ide1990_va_al_hilo_pero_no_a_la_memoria_persistente(client, sin_proveed
     assert guardados == []
     [hilo] = chat_mod._conversations.values()
     assert hilo == [{"role": "user", "content": "IDE1990"},
-                    {"role": "assistant", "content": "[estado_actual_no_disponible]"}]
+                    {"role": "assistant", "content": "The response could not be verified safely."}]
 
 
 def test_ide1990_no_deja_la_faceta_pensando(client, sin_proveedor, monkeypatch):

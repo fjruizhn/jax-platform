@@ -188,6 +188,21 @@ def test_durable_prepare_failure_cannot_return_dynamic_response(monkeypatch):
         ))
 
 
+def test_lifecycle_unavailable_protocol_error_is_fixed_and_parameter_free(monkeypatch):
+    """The narrow static exception cannot carry response/provider/runtime data."""
+    repo = _FakeRepository()
+    response, _, _ = _make_response(monkeypatch, repo)
+    messages = []
+
+    async def send(message):
+        messages.append(message)
+
+    asyncio.run(response._send_protocol_error(send))
+    body = next(message["body"] for message in messages if message["type"] == "http.response.body")
+    assert json.loads(body) == {"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}}
+    assert b"facet" not in body and b"provider" not in body and b"response" not in body
+
+
 def test_asgi_failure_is_uncertain_and_never_acknowledged(monkeypatch):
     repo = _FakeRepository()
     response, _, _ = _make_response(monkeypatch, repo)

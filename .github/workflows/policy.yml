@@ -4368,10 +4368,25 @@ jobs:
   f2d-exact-pair:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 171
     runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:12.3.3
+        env:
+          MARIADB_ROOT_PASSWORD: ci
+          MARIADB_DATABASE: f2d_exact_pair
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
     env:
       JAX_F2D_EXPECTED_SHA: 93900c208aa30614b2feede454f5ad67abfa8c5b
       JAX_JWT_SECRET: ci-dummy-not-a-real-secret
       JAX_CI_NO_DB: "1"
+      JAX_DB_HOST: 127.0.0.1
+      JAX_DB_PORT: "3306"
+      JAX_DB_USER: root
+      JAX_DB_PASSWORD: ci
+      JAX_DB_NAME: f2d_exact_pair
       JAX_REPO_BASE: ${{ github.workspace }}/jax
       JAX_REPO_PATH: ${{ github.workspace }}/jax
       JAX_CONFIG_PATH: ${{ github.workspace }}/jax/config/config.toml
@@ -4421,7 +4436,14 @@ jobs:
         run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
       - name: Exact-pair F2-C/F2-D Web Chat integration tests
         working-directory: platform/backend
-        run: python -m pytest -q -p no:warnings integration_tests/test_f2c_exact_pair_integration.py tests/test_output_lifecycle_transport.py
+        run: |
+          python -m pytest -q -p no:warnings \
+            integration_tests/test_f2c_exact_pair_integration.py \
+            tests/test_output_lifecycle_transport.py \
+            tests/test_output_lifecycle_endpoint.py \
+            tests/test_chat_codigos.py::test_hyde_runtime_notice_uses_governed_lifecycle_output \
+            tests/test_chat_easter_egg.py
+          python integration_tests/f2d_exact_pair_durable_fallback.py
       - name: Verify fixed frontend notices on exact platform head
         uses: actions/setup-node@v4
         with:

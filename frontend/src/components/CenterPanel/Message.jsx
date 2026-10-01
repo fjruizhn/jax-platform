@@ -18,9 +18,11 @@ function Spinner({ token }) {
 
 function Message({ message }) {
   const { t, lang } = useI18n()
-  const token = TOKEN_DE[message.facet] || 'texto-suave'
   const isUser = message.facet === 'user'
+  const isGovernedResponse = message.governed_plain && !isUser
+  const token = isGovernedResponse ? 'texto-suave' : (TOKEN_DE[message.facet] || 'texto-suave')
   const isRunning = message.status === 'running'
+  const speaker = isUser ? t.userLabel : (isGovernedResponse ? t.governedResponseLabel : (message.facet || t.userLabel))
 
   return (
     <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -28,12 +30,12 @@ function Message({ message }) {
         className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold mt-0.5 bg-superficie border"
         style={{ borderColor: colorToken(token, 0.38), color: colorToken(token) }}
       >
-        {(message.facet || 'U')[0].toUpperCase()}
+        {speaker[0].toUpperCase()}
       </div>
       <div className={`flex-1 max-w-[85%] ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
         <div className="flex items-center gap-2 mb-1">
           <span className="text-xs font-semibold capitalize" style={{ color: colorToken(token) }}>
-            {message.facet === 'user' ? t.userLabel : (message.facet || t.userLabel)}
+            {speaker}
           </span>
           {isRunning && <Spinner token={token} />}
           <span className="text-xs text-texto-tenue">

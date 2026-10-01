@@ -51,6 +51,17 @@ describe('Message F2-C governed projection', () => {
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 
+  it('uses a fixed governed speaker label instead of a runtime facet', () => {
+    renderMessage({
+      facet: 'jekyll',
+      content: 'I could not verify the current state.',
+      governed_plain: true,
+      timestamp: '2026-10-01T00:00:00Z',
+    })
+    expect(screen.getByText(es.governedResponseLabel)).toBeInTheDocument()
+    expect(screen.queryByText('jekyll')).not.toBeInTheDocument()
+  })
+
   it('preserves existing Markdown rendering for user-authored messages', () => {
     renderMessage({ facet: 'user', content: '# Mi encabezado', governed_plain: true })
     expect(screen.getByRole('heading', { name: 'Mi encabezado' })).toBeInTheDocument()

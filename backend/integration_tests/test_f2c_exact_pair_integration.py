@@ -267,3 +267,132 @@ def test_exact_pair_supported_claim_is_prepared_and_committed_as_exact_asgi_byte
     ]
     assert body == repository.payload
     assert json.loads(body)["response"] == "Capability x is available."
+
+
+def test_exact_pair_rejected_narrative_fallback_is_prepared_sent_and_never_projects_candidate(monkeypatch):
+    """The F2-C effective UNAVAILABLE fallback, never rejected text, is F2-D output."""
+    import asyncio
+    import hashlib
+    import json
+
+    from api.chat import ChatResponse
+    from auth.models import AuthUser
+    from jax.memory.b9 import ScopeContext
+    from webchat_f2d import repository as outbox
+    from webchat_f2d.transport import prepare_governed_chat_response
+
+    monkeypatch.setenv("JAX_REPO_PATH", os.environ["JAX_REPO_PATH"])
+    scope = ScopeContext(
+        actor_principal="user:7", actor_type="USER", subject_user_id="7",
+        tenant_id="1", project_id=None, calling_component="jax-platform-web-chat",
+    )
+    rejected_candidate = "Hall9000 is healthy."
+    governed = project_provider_contract(
+        _parse_contract_response(
+            '{"claim": [], "analysis": "Hall9000 is healthy.", "judgment": null}'),
+        memory_scope=scope, user_id="7", request_id="fallback-request",
+    )
+    assert governed.transport_unit is not None
+    assert governed.contract_state == "UNAVAILABLE"
+    assert rejected_candidate not in governed.text
+    response = ChatResponse(
+        facet="jekyll", response=governed.text, timestamp="2026-10-01T00:00:00Z",
+        contract_degraded=governed.contract_degraded,
+        response_id=governed.response_id, envelope_digest=governed.envelope_digest,
+        source_envelope_digest=governed.source_envelope_digest,
+        contract_state=governed.contract_state, governed_plain=True,
+    )
+    user = AuthUser(user_id="7", tenant_id="1", role="operator")
+
+    class RecordingRepository:
+        def __init__(self):
+            self.state = None
+            self.payload = None
+            self.authorization = None
+
+        async def prepare(self, unit, payload, *, tenant_id, project_id, subject_id, request_id,
+                          previous_attempt_id=None):
+            self.payload = payload
+            projection = unit.durable_projection()
+            self.state = "OUTPUT_PREPARED"
+            self.authorization = outbox.PreparedTransportAuthorization._mint(
+                outbox._AUTH_TOKEN, outbox_id="fallback-outbox", attempt_id="fallback-attempt",
+                tenant_id=tenant_id, scope_digest=projection["scope_digest"], request_id=request_id,
+                response_id=projection["response_id"], subject_id=subject_id,
+                idempotency_key=projection["idempotency_key"],
+                effective_output_digest=projection["effective_output_digest"],
+                effective_projection_digest=projection["effective_projection_digest"],
+                original_envelope_digest=projection["original_envelope_digest"],
+                contract_state=projection["effective_contract_state"],
+                transport_payload_digest="sha256:" + hashlib.sha256(payload).hexdigest(),
+                payload=payload, unit=unit,
+            )
+            return self.authorization
+
+        async def transition(self, authorization, target, *, failure_class=None, before_send=False):
+            from api.governed_chat import _lifecycle_core
+            core = _lifecycle_core()
+            core.validate_lifecycle_transition(core.OutputLifecycleState(self.state), target,
+                                               before_send=before_send)
+            self.state = target.value
+
+        async def record_secondary_event(self, authorization, event_type):
+            return None
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    repository = RecordingRepository()
+    history = []
+    prepared = asyncio.run(prepare_governed_chat_response(
+        response=response, transport_unit=governed.transport_unit, user=user,
+        memory_scope=scope,
+        trusted_metadata={"facet": response.facet, "timestamp": response.timestamp,
+                          "contract_degraded": response.contract_degraded},
+        on_commit=lambda: _append(history, governed.text), repository=repository,
+    ))
+    messages = []
+
+    async def send(message):
+        messages.append(message)
+
+    asyncio.run(prepared({"type": "http", "method": "POST", "path": "/api/chat"}, receive, send))
+    body = next(item["body"] for item in messages if item["type"] == "http.response.body")
+    decoded = json.loads(body)
+    assert repository.state == "OUTPUT_COMMITTED_TO_TRANSPORT"
+    assert decoded["response"] == governed.text
+    assert decoded["contract_state"] == "UNAVAILABLE"
+    assert rejected_candidate not in body.decode("utf-8")
+    assert body == repository.payload
+    assert repository.authorization.effective_output_digest == governed.envelope_digest
+    assert history == [governed.text]
+    assert all(rejected_candidate not in item for item in history)
+
+    # A post-prepare send failure leaves the effective fallback prepared/unknown
+    # and does not invoke successful assistant-history projection.
+    failed_repository = RecordingRepository()
+    failed_history = []
+    failed = asyncio.run(prepare_governed_chat_response(
+        response=response, transport_unit=governed.transport_unit, user=user,
+        memory_scope=scope,
+        trusted_metadata={"facet": response.facet, "timestamp": response.timestamp,
+                          "contract_degraded": response.contract_degraded},
+        on_commit=lambda: _append(failed_history, governed.text), repository=failed_repository,
+    ))
+
+    async def fail_send(message):
+        if message["type"] == "http.response.body":
+            raise OSError("simulated fallback transport failure")
+
+    import pytest
+    with pytest.raises(OSError, match="fallback transport failure"):
+        asyncio.run(failed({"type": "http", "method": "POST", "path": "/api/chat"},
+                           receive, fail_send))
+    assert failed_repository.state == "TRANSPORT_OUTCOME_UNKNOWN"
+    assert failed_history == []
+    assert failed_repository.payload is not None
+    assert rejected_candidate.encode("utf-8") not in failed_repository.payload
+
+
+async def _append(target, value):
+    target.append(value)

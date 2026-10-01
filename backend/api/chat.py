@@ -544,10 +544,13 @@ class ChatRequest(BaseModel):
 
 
 class AvisoDeChat(BaseModel):
-    """Respuesta enlatada (sin LLM) como CÓDIGO + datos (A-53, 2026-09-16). El
-    texto visible lo arma el frontend con i18n (t.avisosChat[code]).
-    `como_texto()` es la marca sin idioma que va al historial del hilo y a la
-    memoria: registra QUÉ pasó sin fijar un idioma en la base."""
+    """Legacy dispatch outcome code, never runtime Web Chat display authority.
+
+    F2-D converts every current code below to a server-owned governed safe
+    projection before response construction.  ``como_texto`` remains only for
+    lower-level compatibility tests and must not become normal assistant
+    history from the Web Chat route.
+    """
     code: Literal["faceta_sin_binding", "faceta_no_autorizada", "transporte_no_soportado",
                   "identidad_del_modelo", "estado_actual_no_disponible",
                   "hyde_usa_modo_comando"]
@@ -556,6 +559,34 @@ class AvisoDeChat(BaseModel):
     def como_texto(self) -> str:
         datos = " ".join(f"{k}={v}" for k, v in sorted(self.params.items()))
         return f"[{self.code}{' ' + datos if datos else ''}]"
+
+
+# F2-D: none of the existing ChatResponse notice codes is a static transport
+# exception.  Each describes a dispatch, binding, transport, model, or current
+# availability condition.  Its wording may be parameter-free, but its meaning
+# is runtime-dependent and must therefore become a governed safe projection.
+_RUNTIME_NOTICE_CODES = frozenset(AvisoDeChat.model_fields["code"].annotation.__args__)
+
+# This narrow classifier documents the only bypass category: fixed protocol
+# errors sent outside ChatResponse.  It intentionally excludes every AvisoDeChat
+# code above, and callers must not expand it with runtime/domain conditions.
+_STATIC_PROTOCOL_ERROR_CODES = frozenset({
+    "INVALID_REQUEST_FORMAT",
+    "AUTHENTICATION_REQUIRED",
+    "INTERNAL_SERVICE_UNAVAILABLE",
+})
+
+
+def _is_runtime_notice(aviso: AvisoDeChat | None) -> bool:
+    return aviso is not None and aviso.code in _RUNTIME_NOTICE_CODES
+
+
+def is_true_static_protocol_error(code: str) -> bool:
+    """Whether a fixed non-ChatResponse protocol error may skip F2-D.
+
+    This is deliberately not a semantic authorization for Chat notices.
+    """
+    return isinstance(code, str) and code in _STATIC_PROTOCOL_ERROR_CODES
 
 
 class ChatResponse(BaseModel):
@@ -567,7 +598,8 @@ class ChatResponse(BaseModel):
     # para respuestas enlatadas (aviso) y para el intercept de hyde,
     # que nunca pasan por el parseo de contrato.
     contract_degraded: bool = False
-    # A-53: presente en las respuestas enlatadas; el frontend muestra t.avisosChat[aviso.code].
+    # Retained for old protocol clients only. Runtime notices are cleared
+    # before the governed F2-D response is constructed.
     aviso: AvisoDeChat | None = None
     # F2-C: opaque response identity only.  The browser never receives
     # references, receipts, or other trusted governance internals.
@@ -1258,10 +1290,11 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     if es_easter_egg(req.message):
         # req.message pelado: los adjuntos todavía no se leyeron y se ignoran.
         aviso = AvisoDeChat(code="estado_actual_no_disponible")
-        _update_history(user_id, req.message, aviso.como_texto())
-        await _fire_completed("jax_local", tenant_id, user_id)
-        return ChatResponse(facet="jax_local", response=aviso.como_texto(), timestamp=timestamp,
-                            contract_degraded=False, aviso=aviso)
+        return await _runtime_notice_response(
+            aviso=aviso, facet="jax_local", timestamp=timestamp, request=req,
+            user=user, memory_scope=memory_scope, history_key=history_key,
+            conv_uuid=None, validados=SIN_ADJUNTOS,
+        )
 
     # --- Adjuntos (frente D; RD3: por id) — ANTES de memoria, estado y proveedor
     # Un rechazo no deja fila en memoria, no pone la faceta en "thinking" y no
@@ -1316,9 +1349,11 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # de contrato, igual que usage=None (is_canned=True) dentro de _invoke_facet.
     if facet == "hyde":
         aviso = AvisoDeChat(code="hyde_usa_modo_comando")
-        await _fire_completed(facet, tenant_id, user_id)
-        return ChatResponse(facet=facet, response=aviso.como_texto(), timestamp=timestamp,
-                            contract_degraded=False, aviso=aviso)
+        return await _runtime_notice_response(
+            aviso=aviso, facet=facet, timestamp=timestamp, request=req,
+            user=user, memory_scope=memory_scope, history_key=history_key,
+            conv_uuid=conv_uuid, validados=validados,
+        )
 
     # Señal: faceta pensando
     await engine_state.set_facet_status(facet, "thinking", tenant_id, user_id, req.message[:100])
@@ -1379,9 +1414,12 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     contract = _parse_contract_response(response_text) if not is_canned else None
     # F2-C pre-display boundary.  Provider text is already fully buffered by
     # _invoke_facet; no token is written to an HTTP/WebSocket response before
-    # this sealed-envelope renderer projection succeeds.  Canned server
-    # notices remain SAFE_STATIC_TEXT and do not enter this dynamic path.
-    governance_request_id = str(uuid.uuid4()) if contract is not None else None
+    # this sealed-envelope renderer projection succeeds. Runtime notices have
+    # the same dynamic meaning as provider output, even where their display
+    # wording is fixed: they are converted to a typed server-owned safe
+    # projection and must cross the F2-D durable lifecycle.
+    runtime_notice = _is_runtime_notice(aviso)
+    governance_request_id = str(uuid.uuid4()) if contract is not None or runtime_notice else None
     if contract is not None:
         from api.governed_chat import project_provider_contract
         governed = project_provider_contract(
@@ -1390,6 +1428,17 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         )
         display_text = governed.text
         contract_degraded = governed.contract_degraded
+    elif runtime_notice:
+        from api.governed_chat import project_provider_contract
+        # ``None`` is an explicit server-owned typed degraded notice, never
+        # the legacy runtime code or any binding/provider value.
+        governed = project_provider_contract(
+            None, memory_scope=memory_scope, user_id=str(user_id),
+            request_id=governance_request_id,
+        )
+        display_text = governed.text
+        contract_degraded = governed.contract_degraded
+        aviso = None
     else:
         governed = None
         display_text, contract_degraded = response_text, False
@@ -1412,9 +1461,9 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         governed_plain=governed.governed_plain if governed is not None else False,
     )
 
-    # Parameter-free canned/usage=None responses are the existing F2-C
-    # SAFE_STATIC_TEXT exception. They contain no provider/runtime values and
-    # are not the governed dynamic Web Chat output governed by the F2-D gate.
+    # Only genuinely immutable protocol errors outside ChatResponse may skip
+    # F2-D.  A runtime notice cannot use this branch; it has been converted to
+    # a governed safe projection above.
     if governed is None:
         _update_history(history_key, mensaje_para_historial(req.message, validados), display_text)
         if conv_uuid:
@@ -1461,6 +1510,57 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         logger.exception("F2-D committed response but shadow task could not be queued")
     prepared_response.background = background_tasks
     return prepared_response
+
+
+async def _runtime_notice_response(*, aviso: AvisoDeChat, facet: str, timestamp: str,
+                                   request: ChatRequest, user: AuthUser,
+                                   memory_scope: ScopeContext, history_key: str,
+                                   conv_uuid, validados):
+    """Route early runtime notices through the same governed F2-C/F2-D gate.
+
+    These notices have fixed wording at the source, but describe runtime
+    conditions.  They therefore receive the server-owned unavailable
+    projection and only enter assistant history after transport commitment.
+    """
+    from api.governed_chat import project_provider_contract
+    from webchat_f2d.transport import prepare_governed_chat_response
+
+    governed = project_provider_contract(
+        None, memory_scope=memory_scope, user_id=str(user.user_id),
+        request_id=str(uuid.uuid4()),
+    )
+    response = ChatResponse(
+        facet=facet, response=governed.text, timestamp=timestamp,
+        contract_degraded=governed.contract_degraded, aviso=None,
+        response_id=governed.response_id, envelope_digest=governed.envelope_digest,
+        source_envelope_digest=governed.source_envelope_digest,
+        contract_state=governed.contract_state,
+        governed_plain=governed.governed_plain,
+    )
+
+    async def project_after_commit():
+        _update_history(history_key, mensaje_para_historial(request.message, validados), governed.text)
+        if conv_uuid:
+            _memory.save_message(conv_uuid, "assistant", governed.text,
+                                 facet=facet, model="governed")
+        await _fire_completed(facet, user.tenant_id, user.user_id)
+
+    if governed.transport_unit is None:
+        return JSONResponse(status_code=503,
+                            content={"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}})
+    try:
+        prepared = await prepare_governed_chat_response(
+            response=response, transport_unit=governed.transport_unit, user=user,
+            memory_scope=memory_scope,
+            trusted_metadata={"facet": facet, "timestamp": timestamp,
+                              "contract_degraded": governed.contract_degraded},
+            on_commit=project_after_commit,
+        )
+    except Exception as exc:
+        logger.warning("F2-D runtime-notice preparation failed closed (%s)", type(exc).__name__)
+        return JSONResponse(status_code=503,
+                            content={"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}})
+    return prepared
 
 
 async def _fire_completed(facet: str, tenant_id: str, user_id: str):

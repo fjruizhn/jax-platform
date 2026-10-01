@@ -48,6 +48,7 @@ const lugarDelPaso = (v) => {
 export default {
   // Top bar
   logout: 'Sign out',
+  governedResponseLabel: 'Governed response',
 
   // Left panel
   facets: 'Facets',

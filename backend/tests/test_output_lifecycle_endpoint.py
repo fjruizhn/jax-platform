@@ -51,8 +51,9 @@ class _RecordingOutbox:
 
 @pytest.mark.usefixtures("chat_sin_memoria")
 @pytest.mark.parametrize("scenario", ["success", "prepare_failure", "send_failure"])
+@pytest.mark.parametrize("runtime_notice", [False, True])
 def test_actual_chat_route_projects_only_governed_assistant_after_commit(
-    client, monkeypatch, scenario,
+    client, monkeypatch, scenario, runtime_notice,
 ):
     from api import chat
     from webchat_f2d import transport
@@ -66,6 +67,11 @@ def test_actual_chat_route_projects_only_governed_assistant_after_commit(
     async def resolved_scope(_user, _project):
         return scope
     async def invoke_provider(*_args, **_kwargs):
+        if runtime_notice:
+            # A parameter-free binding notice still carries runtime semantics;
+            # it must become a governed F2-D response rather than an ``aviso``
+            # shortcut the frontend can enrich independently.
+            return (chat.AvisoDeChat(code="faceta_sin_binding"), None)
         return ('{"claim": [], "analysis": "A safe narrative.", "judgment": null}',
                 SimpleNamespace(provider_id="test", model="test-model", tokens_in=1, tokens_out=1))
     async def noop_async(*_args, **_kwargs):
@@ -124,13 +130,19 @@ def test_actual_chat_route_projects_only_governed_assistant_after_commit(
     assert outbox_repo.state == "OUTPUT_COMMITTED_TO_TRANSPORT"
     body = next(message["body"] for message in messages if message["type"] == "http.response.body")
     import json
-    assert json.loads(body)["response"] == "A safe narrative."
+    response_body = json.loads(body)
+    expected_text = "The response could not be verified safely." if runtime_notice else "A safe narrative."
+    assert response_body["response"] == expected_text
+    if runtime_notice:
+        assert response_body["aviso"] is None
+        assert response_body["contract_state"] == "DEGRADED_STRUCTURED"
+        assert "faceta_sin_binding" not in body.decode("utf-8")
     assistant_rows = [row for row in projected if row[0] == "history" or row[0] == "completed" or
                       (row[0] == "memory" and row[1] == "assistant")]
     assert assistant_rows
     assert all((row[1] if row[0] != "memory" else row[2]) == "OUTPUT_COMMITTED_TO_TRANSPORT"
                for row in assistant_rows)
-    assert all((row[2] if row[0] != "memory" else row[3]) in (None, "A safe narrative.")
+    assert all((row[2] if row[0] != "memory" else row[3]) in (None, expected_text)
                for row in assistant_rows)
     assert all("Provider" not in ((row[2] if row[0] != "memory" else row[3]) or "")
                for row in assistant_rows)

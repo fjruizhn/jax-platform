@@ -74,6 +74,19 @@ def test_la_marca_de_un_aviso_no_tiene_idioma():
     assert chat_mod.AvisoDeChat(code="hyde_usa_modo_comando").como_texto() == "[hyde_usa_modo_comando]"
 
 
+def test_runtime_avisos_never_claim_the_static_protocol_exception():
+    for code in (
+        "faceta_sin_binding", "faceta_no_autorizada", "transporte_no_soportado",
+        "identidad_del_modelo", "estado_actual_no_disponible", "hyde_usa_modo_comando",
+    ):
+        assert chat_mod._is_runtime_notice(chat_mod.AvisoDeChat(code=code))
+        assert not chat_mod.is_true_static_protocol_error(code)
+    # The exception remains deliberately narrow and names only immutable
+    # protocol failures outside the ChatResponse governed-output channel.
+    assert chat_mod.is_true_static_protocol_error("INVALID_REQUEST_FORMAT")
+    assert not chat_mod.is_true_static_protocol_error("faceta_sin_binding")
+
+
 def test_no_quedan_textos_enlatados_en_español():
     fuente = (BACKEND / "api/chat.py").read_text(encoding="utf-8")
     for resto in ("no está disponible", "Hyde opera", "Corro con", "_MODEL_IDENTITY_HOSTING",
@@ -188,10 +201,12 @@ def test_los_sets_llevan_los_nombres_del_espejo():
     assert set(chat_mod._KW_SETS) == {"kimi", "hipatia", "jekyll", "thot", "ada"}
 
 
-def test_hyde_responde_un_aviso(client, chat_sin_memoria):
+def test_hyde_runtime_notice_uses_governed_lifecycle_output(client, chat_sin_memoria):
     resp = client.post("/api/chat", json={"message": "hola", "facet": "hyde"},
                        headers=cabeceras(client, "chat-codigos-hyde", "operator"))
     assert resp.status_code == 200, resp.text
     cuerpo = resp.json()
-    assert cuerpo["aviso"] == {"code": "hyde_usa_modo_comando", "params": {}}
-    assert cuerpo["response"] == "[hyde_usa_modo_comando]"
+    assert cuerpo["aviso"] is None
+    assert cuerpo["response"] == "The response could not be verified safely."
+    assert cuerpo["contract_state"] == "DEGRADED_STRUCTURED"
+    assert cuerpo["governed_plain"] is True

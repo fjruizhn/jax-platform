@@ -236,13 +236,17 @@ function BottomBar() {
       const chatBody = { message: text, facet: activeFacet, origin: 'web' }
       if (attachment) chatBody.adjuntos = [cuerpoDeAdjunto(attachment)]
       const { data } = await api.post('/chat', chatBody)
+      const governed = data.governed_plain === true
       addMessage({
         id: Date.now().toString() + '_resp',
-        facet: data.facet,
+        // F2-D responses are governed server output.  Do not recreate a
+        // runtime facet/model/binding assertion from compatibility metadata
+        // around that output; the neutral presentation is fixed locally.
+        facet: governed ? 'governed_response' : data.facet,
         content: data.aviso ? textoDeAviso(t, data.aviso) : data.response,
-        timestamp: data.timestamp,
+        timestamp: governed ? null : data.timestamp,
         contract_degraded: data.contract_degraded ?? false,
-        governed_plain: data.governed_plain === true,
+        governed_plain: governed,
       })
       // El mensaje del usuario ya se armó con vistaDeAdjunto() más arriba,
       // que le dio su PROPIO object URL (adjuntos.js) -- el del compositor
