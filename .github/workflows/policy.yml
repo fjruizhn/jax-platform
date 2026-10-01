@@ -5,7 +5,7 @@ name: policy
 #
 # Copia del gate P10 de JAX (ronda 4, 2026-08-20, T3). The repositories keep
 # independent fail-open scans. A dedicated F2-C job below additionally checks
-# out the public JAX PR #300 head and records the exact cross-repository pair.
+# out the merged JAX F2-D master and records the exact cross-repository pair.
 #
 # Corrida manual el 2026-08-20 contra este árbol: 88 archivos .py
 # escaneados, 0 violaciones (verificado, no supuesto -- ver CONTEXT.md
@@ -4381,7 +4381,7 @@ jobs:
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=5s --health-timeout=5s --health-retries=20
     env:
-      JAX_F2D_EXPECTED_SHA: 93900c208aa30614b2feede454f5ad67abfa8c5b
+      JAX_F2D_EXPECTED_SHA: fd519548e10006578b9dd03cfed260092be16e99
       JAX_JWT_SECRET: ci-dummy-not-a-real-secret
       JAX_CI_NO_DB: "1"
       JAX_DB_HOST: 127.0.0.1
@@ -4400,11 +4400,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           path: platform
-      - name: Checkout exact JAX F2-D PR #302 head
+      - name: Checkout exact merged JAX F2-D master
         uses: actions/checkout@v4
         with:
           repository: fjruizhn/Jax
-          ref: 93900c208aa30614b2feede454f5ad67abfa8c5b
+          ref: fd519548e10006578b9dd03cfed260092be16e99
           path: jax
       - name: Require and record exact F2-D PR pair
         working-directory: platform
