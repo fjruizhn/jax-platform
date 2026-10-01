@@ -4383,7 +4383,7 @@ jobs:
     env:
       JAX_F2D_EXPECTED_SHA: 93900c208aa30614b2feede454f5ad67abfa8c5b
       JAX_JWT_SECRET: ci-dummy-not-a-real-secret
-      JAX_CI_NO_DB: "1"
+      JAX_CI_NO_DB: "0"
       JAX_DB_HOST: 127.0.0.1
       JAX_DB_PORT: "3306"
       JAX_DB_USER: root

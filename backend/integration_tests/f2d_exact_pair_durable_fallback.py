@@ -9,6 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
+import sys
+
+# Running this file as a script puts integration_tests/, not backend/, at
+# sys.path[0]. Keep imports identical to the pytest and application layout.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from api.chat import ChatResponse, _parse_contract_response
 from api.governed_chat import project_provider_contract
