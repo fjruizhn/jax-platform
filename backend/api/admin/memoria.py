@@ -47,6 +47,7 @@ import json
 import logging
 import math
 import sys
+import unicodedata
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from typing import Optional
@@ -370,6 +371,17 @@ async def _superar_en_cursor(cur, autor: int, absorbido_id: int, superviviente_i
     )
 
 
+def _contenido_canonico_para_fundir(texto: str) -> str:
+    """Identidad determinista y conservadora para la fusión automática.
+
+    La similitud vectorial sólo descubre candidatos. La mutación requiere
+    igualdad tras NFC, que unifica representaciones Unicode equivalentes sin
+    eliminar negaciones, números, fechas, unidades, signos, espacios ni
+    calificadores. No es una decisión de verdad ni un clasificador semántico.
+    """
+    return unicodedata.normalize("NFC", texto)
+
+
 @router.post("/hechos/fundir")
 async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_superadmin)):
     """Fundir casi-duplicados es SUPERSEDER, no caducar (decision de
@@ -495,7 +507,7 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
 
         marcadores = ", ".join(["%s"] * len(ids))
         await cur.execute(
-            f"SELECT f.id, f.superseded_by, f.is_verified, f.created_at, "
+            f"SELECT f.id, f.fact_text, f.superseded_by, f.is_verified, f.created_at, "
             f"f.source_facet, f.expires_at, f.user_id, f.project_id, u.tenant_id "
             f"FROM facts f JOIN jax_users u ON u.user_id = f.user_id "
             f"WHERE f.id IN ({marcadores}) FOR UPDATE",
@@ -507,8 +519,10 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
         facet_por_id = {}
         vencidos = {}
         scope_por_id = {}
-        for (fid, superseded_by, is_verified, created_at, source_facet,
+        texto_por_id = {}
+        for (fid, fact_text, superseded_by, is_verified, created_at, source_facet,
              expires_at, fact_user_id, project_id, tenant_id) in filas:
+            texto_por_id[fid] = fact_text
             superados_de[fid] = superseded_by
             info[fid] = (bool(is_verified), created_at)
             facet_por_id[fid] = source_facet
@@ -562,6 +576,15 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
                     # cruzado" (que aca seria falso: los dos SON del mismo
                     # tipo).
                     raise HTTPException(status_code=409, detail="fundir_hechos_relacionados_por_cita")
+
+        # F2-P R1: ni el rol de superadmin ni un vector cercano prueban que
+        # dos afirmaciones sean equivalentes. Sólo la igualdad canónica
+        # conservadora autoriza alterar `superseded_by`. Se deja después de
+        # las incompatibilidades estructurales para conservar su diagnóstico.
+        contenido_superviviente = _contenido_canonico_para_fundir(texto_por_id[body.superviviente_id])
+        if any(_contenido_canonico_para_fundir(texto_por_id[absorbido_id]) != contenido_superviviente
+               for absorbido_id in absorbidos):
+            raise HTTPException(status_code=409, detail="fundir_hechos_no_equivalentes")
 
         # D3: el superviviente solicitado tiene que ser el que la regla
         # calcularia para ESTE lote -- no el grupo entero que vio el

@@ -112,9 +112,9 @@ def trio(client):
     `created_at` bien por delante de los otros dos para que, en el caso sano
     (nadie verificado), la regla y el rol coincidan -- tal como coincidían
     antes de esta ronda, cuando el cliente podía elegir a mano."""
-    superviviente = client.portal.call(_crear_fact, "fundir: hecho A (superviviente)")
-    absorbido1 = client.portal.call(_crear_fact, "fundir: hecho B (absorbido)")
-    absorbido2 = client.portal.call(_crear_fact, "fundir: hecho C (absorbido)")
+    superviviente = client.portal.call(_crear_fact, "fundir: duplicado exacto")
+    absorbido1 = client.portal.call(_crear_fact, "fundir: duplicado exacto")
+    absorbido2 = client.portal.call(_crear_fact, "fundir: duplicado exacto")
     client.portal.call(_fijar_created_at, superviviente, "2026-09-22 12:00:00")
     client.portal.call(_fijar_created_at, absorbido1, "2020-01-01 00:00:00")
     client.portal.call(_fijar_created_at, absorbido2, "2020-01-02 00:00:00")
@@ -243,6 +243,61 @@ def test_fundir_no_verifica_al_superviviente_no_verificado(client_superadmin, tr
     assert verificado_por is None
 
 
+@pytest.mark.parametrize("superviviente_texto,absorbido_texto", [
+    ("X is enabled", "X is disabled"),
+    ("service is running", "service is not running"),
+    ("limit is 10", "limit is 100"),
+    ("date is 2026-10-01", "date is 2026-10-02"),
+    ("near vector candidate", "near vector candidate with material qualifier"),
+])
+def test_fundir_rechaza_contenido_materialmente_distinto_sin_escrituras(
+        client_superadmin, superviviente_texto, absorbido_texto):
+    """R1: vector/selección humana descubre candidatos; NFC exacto autoriza
+    la mutación. Los dos hechos siguen activos tras un rechazo."""
+    superviviente = client_superadmin.portal.call(_crear_fact, superviviente_texto)
+    absorbido = client_superadmin.portal.call(_crear_fact, absorbido_texto)
+    client_superadmin.portal.call(_fijar_created_at, superviviente, "2026-09-22 12:00:00")
+    client_superadmin.portal.call(_fijar_created_at, absorbido, "2020-01-01 00:00:00")
+    try:
+        r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                                   json={"superviviente_id": superviviente, "absorbidos": [absorbido]})
+        assert r.status_code == 409
+        assert r.json()["detail"] == "fundir_hechos_no_equivalentes"
+        assert client_superadmin.portal.call(_estado, absorbido)[0] is None
+        assert client_superadmin.portal.call(_estado, superviviente)[0] is None
+    finally:
+        client_superadmin.portal.call(_borrar_facts, superviviente, absorbido)
+
+
+def test_fundir_rechaza_superviviente_verificado_con_contradiccion(client_superadmin):
+    superviviente = client_superadmin.portal.call(_crear_fact, "X is enabled", True)
+    absorbido = client_superadmin.portal.call(_crear_fact, "X is disabled")
+    client_superadmin.portal.call(_fijar_created_at, superviviente, "2026-09-22 12:00:00")
+    try:
+        r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                                   json={"superviviente_id": superviviente, "absorbidos": [absorbido]})
+        assert r.status_code == 409
+        assert r.json()["detail"] == "fundir_hechos_no_equivalentes"
+        assert client_superadmin.portal.call(_estado, absorbido)[0] is None
+        assert client_superadmin.portal.call(_verificado_de, superviviente)[0] is True
+    finally:
+        client_superadmin.portal.call(_borrar_facts, superviviente, absorbido)
+
+
+def test_fundir_permite_equivalencia_unicode_nfc_sin_ampliar_significado(client_superadmin):
+    superviviente = client_superadmin.portal.call(_crear_fact, "caf\u00e9")
+    absorbido = client_superadmin.portal.call(_crear_fact, "cafe\u0301")
+    client_superadmin.portal.call(_fijar_created_at, superviviente, "2026-09-22 12:00:00")
+    client_superadmin.portal.call(_fijar_created_at, absorbido, "2020-01-01 00:00:00")
+    try:
+        r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
+                                   json={"superviviente_id": superviviente, "absorbidos": [absorbido]})
+        assert r.status_code == 200
+        assert client_superadmin.portal.call(_estado, absorbido)[0] == superviviente
+    finally:
+        client_superadmin.portal.call(_borrar_facts, superviviente, absorbido)
+
+
 @pytest.mark.parametrize(
     "scope_ajeno",
     ("tenant", "user", "project"),
@@ -307,8 +362,8 @@ def test_fundir_permite_absorber_hechos_verificados_si_el_superviviente_ya_lo_es
     la misma llamada y podrian empatar de segundo -- se fuerza al
     superviviente a ser claramente el mas reciente para que la regla lo
     elija a EL, no al absorbido por el desempate de id (D4)."""
-    superviviente = client_superadmin.portal.call(_crear_fact, "fundir: superviviente ya verificado", True)
-    absorbido = client_superadmin.portal.call(_crear_fact, "fundir: absorbido tambien verificado", True)
+    superviviente = client_superadmin.portal.call(_crear_fact, "fundir: duplicado verificado", True)
+    absorbido = client_superadmin.portal.call(_crear_fact, "fundir: duplicado verificado", True)
     client_superadmin.portal.call(_fijar_created_at, superviviente, "2026-09-22 12:00:00")
     client_superadmin.portal.call(_fijar_created_at, absorbido, "2020-01-01 00:00:00")
     try:
@@ -393,8 +448,8 @@ def test_fundir_no_reaprueba_ni_cambia_verified_by_de_un_superviviente_ya_verifi
     -- eso reescribiria quien y cuando lo verifico de verdad."""
     from datetime import datetime, timedelta
 
-    superviviente = client_superadmin.portal.call(_crear_fact, "fundir: ya verificado por otro", True)
-    absorbido = client_superadmin.portal.call(_crear_fact, "fundir: absorbido")
+    superviviente = client_superadmin.portal.call(_crear_fact, "fundir: duplicado ya verificado", True)
+    absorbido = client_superadmin.portal.call(_crear_fact, "fundir: duplicado ya verificado")
     client_superadmin.portal.call(_fijar_created_at, superviviente, "2026-09-22 12:00:00")
     client_superadmin.portal.call(_fijar_created_at, absorbido, "2020-01-01 00:00:00")
     hace_un_mes = (datetime(2026, 9, 22) - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
