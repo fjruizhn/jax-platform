@@ -27,7 +27,7 @@ def _source_configuration():
     from jax_engine.state import las_manos_health_source_configuration
     return {
         "FACET_RUNTIME_STATUS": {"state_contract": "JAXEngineState.FacetState", "status_field": "status",
-            "observed_at_field": "last_update", "allowed_statuses": ["idle", "thinking", "error", "offline"]},
+            "observed_at_field": "resolver_read_time", "allowed_statuses": ["idle", "thinking", "error", "offline"]},
         "ENGINE_STATUS": las_manos_health_source_configuration(),
     }
 
@@ -65,7 +65,8 @@ def test_facet_runtime_status_bridge_carries_only_registered_status_and_exact_sc
 
     assert evidence.adapter_kind is resolution.AdapterKind.FACET_RUNTIME_STATUS
     assert evidence.observation.result == {"name": "hyde", "status": "thinking"}
-    assert evidence.observation.observed_at == datetime(2026, 10, 2, 12, tzinfo=timezone.utc)
+    assert evidence.observation.observed_at > datetime(2026, 10, 2, 12, tzinfo=timezone.utc)
+    assert evidence.observation.observed_at <= datetime.now(timezone.utc)
     assert evidence.observation_scope.subject_id == "user-a"
     assert "secret per-user payload" not in repr(evidence)
     assert "Private label" not in repr(evidence)
@@ -183,7 +184,7 @@ def test_engine_probe_configuration_is_bound_into_f2b_registry_and_receipt(monke
         authenticator=resolution.ReceiptAuthenticator.for_testing(b"runtime-status-test-key-material-32-bytes"),
         platform_source_configuration={
             "FACET_RUNTIME_STATUS": {"state_contract": "JAXEngineState.FacetState", "status_field": "status",
-                "observed_at_field": "last_update", "allowed_statuses": ["idle", "thinking", "error", "offline"]},
+                "observed_at_field": "resolver_read_time", "allowed_statuses": ["idle", "thinking", "error", "offline"]},
             "ENGINE_STATUS": config,
         })
     receipt = registry.resolve("ENGINE_STATUS", {"name": "las_manos", "status": "alive"},

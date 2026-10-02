@@ -37,7 +37,7 @@ def _jax_runtime_status_bridge():
     loaded_path = Path(module.__file__).resolve()
     if not loaded_path.is_relative_to(root_path):
         raise RuntimeStatusBridgeUnavailable("loaded runtime-status bridge is outside configured JAX")
-    if getattr(module, "RUNTIME_STATUS_API_VERSION", None) != "f2-e.runtime-status.1":
+    if getattr(module, "RUNTIME_STATUS_API_VERSION", None) != "f2-e.runtime-status.2":
         raise RuntimeStatusBridgeUnavailable("unsupported JAX runtime-status bridge version")
     return module
 
@@ -81,7 +81,7 @@ class FacetRuntimeStatusResolver:
             observed_at=observed_at,
             provenance_ref=f"facet:{name}",
             source_configuration={"state_contract": "JAXEngineState.FacetState", "status_field": "status",
-                "observed_at_field": "last_update", "allowed_statuses": ["idle", "thinking", "error", "offline"]},
+                "observed_at_field": "resolver_read_time", "allowed_statuses": ["idle", "thinking", "error", "offline"]},
         )
         try:
             return bridge.platform_runtime_status_evidence(typed_snapshot, arguments, scope)

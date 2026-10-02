@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from tiempo import utc_ahora
 import httpx
@@ -96,6 +97,7 @@ def _steps_fingerprint(steps: list[PipelineStep]) -> str:
 class JAXEngineState:
     def __init__(self):
         self._state = EcosystemState()
+        self._facet_status_lock = threading.RLock()
         self._init_facets()
         self._poller_task: asyncio.Task | None = None
 
@@ -135,23 +137,24 @@ class JAXEngineState:
         return parsed.astimezone(timezone.utc)
 
     def facet_runtime_status_snapshot(self, name: str) -> tuple[str, datetime] | None:
-        """Return only the registered facet's typed status and source time.
+        """Return only the registered facet's status and resolver-read time.
 
         The snapshot deliberately excludes last_message, display_name, and all
         request/tenant payload. It is a projection of JAX Platform state, not
-        provider/model health or facet existence evidence.
+        provider/model health or facet existence evidence. ``last_update`` is
+        transition metadata; a resolver read observes the current in-process
+        state now and does not rewrite that transition time.
         """
         if not isinstance(name, str) or not name:
             return None
-        facet = self._state.facets.get(name)
-        if facet is None or facet.name != name:
-            return None
-        if facet.status not in {"idle", "thinking", "error", "offline"}:
-            return None
-        observed_at = self._parse_status_time(facet.last_update)
-        if observed_at is None:
-            return None
-        return facet.status, observed_at
+        with self._facet_status_lock:
+            facet = self._state.facets.get(name)
+            if facet is None or facet.name != name:
+                return None
+            if facet.status not in {"idle", "thinking", "error", "offline"}:
+                return None
+            observed_at = datetime.now(timezone.utc)
+            return facet.status, observed_at
 
     def engine_health_status_snapshot(self, name: str) -> tuple[str, datetime] | None:
         """Return the fixed LAS MANOS health probe, never a caller URL/source."""
@@ -174,11 +177,12 @@ class JAXEngineState:
         self._state.connected_users.pop(user_id, None)
 
     async def set_facet_status(self, facet: str, status: str, tenant_id: str, user_id: str, message: str = ""):
-        if facet not in self._state.facets:
-            self._state.facets[facet] = FacetState(name=facet)
-        self._state.facets[facet].status = status
-        self._state.facets[facet].last_message = message
-        self._state.facets[facet].last_update = utc_ahora().isoformat() + "Z"
+        with self._facet_status_lock:
+            if facet not in self._state.facets:
+                self._state.facets[facet] = FacetState(name=facet)
+            self._state.facets[facet].status = status
+            self._state.facets[facet].last_message = message
+            self._state.facets[facet].last_update = utc_ahora().isoformat() + "Z"
 
         event = JAXEvent(
             event_type="facet_status_changed",
