@@ -56,10 +56,12 @@ def _arguments(arguments: Mapping[str, object] | object, *, expected_name: str |
 class FacetRuntimeStatusResolver:
     """Observe only the platform's registered transient FacetState status."""
 
-    def __init__(self, state: JAXEngineState = engine_state):
-        if not isinstance(state, JAXEngineState):
+    def __init__(self):
+        # The server module singleton is selected by platform composition;
+        # requests cannot substitute another state object/source.
+        if not isinstance(engine_state, JAXEngineState):
             raise TypeError("facet status resolver requires server JAXEngineState")
-        self._state = state
+        self._state = engine_state
 
     def evidence(self, arguments: Mapping[str, object], scope):
         parsed = _arguments(arguments)
@@ -91,10 +93,10 @@ class LasManosHealthStatusResolver:
     _ENGINE_NAME = "las_manos"
     _ALLOWED_STATUS = frozenset({"alive", "down"})
 
-    def __init__(self, state: JAXEngineState = engine_state):
-        if not isinstance(state, JAXEngineState):
+    def __init__(self):
+        if not isinstance(engine_state, JAXEngineState):
             raise TypeError("engine status resolver requires server JAXEngineState")
-        self._state = state
+        self._state = engine_state
 
     def evidence(self, arguments: Mapping[str, object], scope):
         parsed = _arguments(arguments, expected_name=self._ENGINE_NAME)
@@ -120,4 +122,3 @@ class LasManosHealthStatusResolver:
             return bridge.platform_runtime_status_evidence(typed_snapshot, arguments, scope)
         except (TypeError, ValueError):
             return None
-

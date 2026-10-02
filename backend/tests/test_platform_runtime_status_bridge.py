@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from jax_engine.state import JAXEngineState
+from jax_engine import status_resolution as status_bridge
 from jax_engine.status_resolution import (
     FacetRuntimeStatusResolver,
     LasManosHealthStatusResolver,
@@ -40,7 +41,8 @@ def test_facet_runtime_status_bridge_carries_only_registered_status_and_exact_sc
     facet.display_name = "Private label"
     facet.last_update = "2026-10-02T12:00:00Z"
 
-    evidence = FacetRuntimeStatusResolver(state).evidence(
+    monkeypatch.setattr(status_bridge, "engine_state", state)
+    evidence = FacetRuntimeStatusResolver().evidence(
         {"name": "hyde", "status": "thinking"}, _scope(resolution)
     )
 
@@ -57,7 +59,8 @@ def test_facet_runtime_status_never_accepts_facet_state_as_engine_health(monkeyp
     state = JAXEngineState()
     facet = state._state.facets["hyde"]
     facet.status = "offline"
-    evidence = FacetRuntimeStatusResolver(state).evidence(
+    monkeypatch.setattr(status_bridge, "engine_state", state)
+    evidence = FacetRuntimeStatusResolver().evidence(
         {"name": "hyde", "status": "offline"}, _scope(resolution)
     )
     assert evidence.adapter_kind is resolution.AdapterKind.FACET_RUNTIME_STATUS
@@ -67,7 +70,8 @@ def test_facet_runtime_status_never_accepts_facet_state_as_engine_health(monkeyp
 def test_unknown_facet_or_wrong_claimed_status_has_no_resolved_evidence(monkeypatch):
     _, resolution = _core(monkeypatch)
     state = JAXEngineState()
-    resolver = FacetRuntimeStatusResolver(state)
+    monkeypatch.setattr(status_bridge, "engine_state", state)
+    resolver = FacetRuntimeStatusResolver()
 
     assert resolver.evidence({"name": "unknown", "status": "idle"}, _scope(resolution)) is None
     assert resolver.evidence({"name": "hyde", "status": "offline"}, _scope(resolution)) is None
@@ -77,7 +81,8 @@ def test_unknown_facet_or_wrong_claimed_status_has_no_resolved_evidence(monkeypa
 def test_engine_health_bridge_is_fixed_to_las_manos_and_completed_probe(monkeypatch):
     core, resolution = _core(monkeypatch)
     state = JAXEngineState()
-    resolver = LasManosHealthStatusResolver(state)
+    monkeypatch.setattr(status_bridge, "engine_state", state)
+    resolver = LasManosHealthStatusResolver()
 
     assert resolver.evidence({"name": "las_manos", "status": "down"}, _scope(resolution)) is None
     assert resolver.evidence({"name": "other", "status": "alive"}, _scope(resolution)) is None
@@ -105,7 +110,8 @@ def test_platform_runtime_status_exact_pair_resolves_facet_without_health_confla
     facet.status = "thinking"
     facet.last_message = "private user message must not enter evidence"
     facet.last_update = datetime.now(timezone.utc).isoformat()
-    evidence = FacetRuntimeStatusResolver(state).evidence(
+    monkeypatch.setattr(status_bridge, "engine_state", state)
+    evidence = FacetRuntimeStatusResolver().evidence(
         {"name": "hyde", "status": "thinking"}, _scope(resolution)
     )
     registry = core.build_runtime_status_registry(
@@ -128,7 +134,8 @@ def test_platform_global_status_evidence_is_not_replayable_between_tenants(monke
     facet = state._state.facets["hyde"]
     facet.status = "idle"
     facet.last_update = datetime.now(timezone.utc).isoformat()
-    evidence = FacetRuntimeStatusResolver(state).evidence(
+    monkeypatch.setattr(status_bridge, "engine_state", state)
+    evidence = FacetRuntimeStatusResolver().evidence(
         {"name": "hyde", "status": "idle"}, _scope(resolution)
     )
     registry = core.build_runtime_status_registry(
@@ -142,8 +149,7 @@ def test_platform_global_status_evidence_is_not_replayable_between_tenants(monke
 
 def test_bridge_rejects_missing_or_wrong_jax_runtime_status_checkout(monkeypatch, tmp_path):
     monkeypatch.setenv("JAX_REPO_PATH", str(tmp_path))
-    state = JAXEngineState()
     with pytest.raises(RuntimeStatusBridgeUnavailable):
-        FacetRuntimeStatusResolver(state).evidence(
+        FacetRuntimeStatusResolver().evidence(
             {"name": "hyde", "status": "idle"}, object()
         )
