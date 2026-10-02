@@ -1545,6 +1545,7 @@ export default {
     estados: { ACTIVE: 'Activo', ARCHIVED: 'Archivado', HIDDEN: 'Oculto' },
     cargando: 'Cargando…',
     vacio: 'No hay proyectos en esta vista.',
+    reintentar: 'Reintentar',
     cargarMas: 'Cargar más',
     crear: 'Crear',
     cancelar: 'Cancelar',

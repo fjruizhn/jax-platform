@@ -1449,6 +1449,7 @@ export default {
     estados: { ACTIVE: 'Active', ARCHIVED: 'Archived', HIDDEN: 'Hidden' },
     cargando: 'Loading…',
     vacio: 'There are no projects in this view.',
+    reintentar: 'Retry',
     cargarMas: 'Load more',
     crear: 'Create',
     cancelar: 'Cancel',
