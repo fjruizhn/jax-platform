@@ -614,9 +614,17 @@ def clasificar_respuesta(status: int | None, cuerpo: str = "") -> str:
 
 
 def clasificar_error_db(exc: BaseException) -> str:
-    """deadlock 1213 / lock timeout 1205 / otro, por el código de MariaDB en args[0]. Pura."""
-    codigo = exc.args[0] if exc.args and isinstance(exc.args[0], int) else None
-    return CODIGOS_DB.get(codigo, "otro")
+    """deadlock 1213 / lock timeout 1205 / otro, por el código de MariaDB en args[0] de la excepción o de
+    cualquiera de su cadena de causas (__cause__/__context__). Pura. Se mira ANTES de que nada la convierta:
+    el chat convierte toda excepción en 403/503 y esconde un 1213."""
+    visto, actual = set(), exc
+    while actual is not None and id(actual) not in visto:
+        visto.add(id(actual))
+        codigo = actual.args[0] if actual.args and isinstance(actual.args[0], int) else None
+        if codigo in CODIGOS_DB:
+            return CODIGOS_DB[codigo]
+        actual = actual.__cause__ or actual.__context__
+    return "otro"
 
 
 def resumen(lat: list[float]) -> dict:
@@ -627,7 +635,8 @@ def resumen(lat: list[float]) -> dict:
 
 
 def veredicto_peor_caso(sin: dict, con: dict, errores_con_escrituras: int) -> str:
-    """Pura. Dice sin rodeos si la mitad con escrituras degrada el p95 más de FACTOR_DEGRADACION o hay errores."""
+    """Pura. `sin` y `con` son los resúmenes de los PERMITIDOS (no del total: los denegados son más rápidos y
+    diluyen el p95). Dice sin rodeos si la mitad con escrituras degrada el p95 más de FACTOR_DEGRADACION o hay errores."""
     motivos = []
     if sin.get("p95_ms") and con.get("p95_ms") and con["p95_ms"] > FACTOR_DEGRADACION * sin["p95_ms"]:
         motivos.append(f"p95 con escrituras {con['p95_ms']} ms > {FACTOR_DEGRADACION}x el de sin escrituras ({sin['p95_ms']} ms)")
@@ -637,17 +646,30 @@ def veredicto_peor_caso(sin: dict, con: dict, errores_con_escrituras: int) -> st
 
 
 async def _peor_alcance(semilla: dict, segundos: float) -> dict:
-    """Hijo: 50 clientes, cada uno con SU usuario miembro de P, resuelven el alcance del chat en bucle."""
+    """Hijo: 50 clientes, cada uno con SU usuario miembro de P, ejecutan en bucle la ruta de proyecto de un
+    turno de chat TAL COMO la corre `api/chat.py`: `ProjectScopeAuthorityResolver.resolve_scope`
+    (`_scope_for_chat`) y después `_prompt_memory_context` (chat.py:248-270): `MariaDBB9Reader(
+    B9MappingPool(pool), ProjectScopeAuthorityResolver(...)).retrieve_authorized(MutationAuthorizationRequest(
+    scope_resuelto, "RETRIEVE", PROJECT_SHARED), limit=limits.candidates)`. Esa segunda llamada abre una
+    transacción y toma FOR UPDATE en jax_users, jax_project_scope de P y la membresía: es la que choca con el
+    OWNER. Se importa lo mismo que el chat (B9MappingPool, limits_from_environment); no hay nada que exija el
+    proceso del backend. No hay memoria sembrada en P: la lectura posterior a la autorización devuelve vacío,
+    y el costo de armar el prompt (select_memory_context, CPU pura) queda fuera.
+    Las excepciones se clasifican CRUDAS, antes de cualquier conversión a 403/503."""
+    from b9_pool import B9MappingPool
     from db.connection import get_pool
-    from jax.memory.b9 import AuthorizationDenied, ScopeContext, ScopeDenied
+    from jax.memory.b9 import (AuthorizationDenied, MutationAuthorizationRequest, ScopeContext, ScopeDenied,
+                               Visibility)
+    from jax.memory.b9_mariadb import MariaDBB9Reader
     from jax.memory.scope_authority import ProjectScopeAuthorityResolver
+    from jax_engine.memory_prompt_selection import limits_from_environment
     pool = await get_pool()
-    resolver = ProjectScopeAuthorityResolver(pool)
     pid = semilla["proyecto_con_miembros"]
     usuarios = semilla["extras"][:CLIENTES_ALCANCE]
     if len(usuarios) < CLIENTES_ALCANCE:
         raise RuntimeError(f"hacen falta {CLIENTES_ALCANCE} miembros distintos de P, hay {len(usuarios)}")
-    lat, lat_ok, lat_den, errores = [], [], [], {}
+    limite = limits_from_environment().candidates
+    lat, lat_ok, lat_lectura, lat_den, errores, muestras = [], [], [], [], {}, {}
     fin = time.perf_counter() + segundos
 
     async def cliente(uid):
@@ -657,21 +679,31 @@ async def _peor_alcance(semilla: dict, segundos: float) -> dict:
                                    calling_component="jax-platform-web-chat")
             t0 = time.perf_counter()
             try:
-                await resolver.resolve_scope(alcance)
+                resuelto = await ProjectScopeAuthorityResolver(await get_pool()).resolve_scope(alcance)
+                t1 = time.perf_counter()
+                b9 = B9MappingPool(pool)
+                lector = MariaDBB9Reader(b9, ProjectScopeAuthorityResolver(b9))
+                pedido = MutationAuthorizationRequest(
+                    resuelto, "RETRIEVE", Visibility.PROJECT_SHARED if resuelto.project_id else Visibility.TENANT_SHARED)
+                await lector.retrieve_authorized(pedido, limit=limite)
             except (AuthorizationDenied, ScopeDenied):
-                lat_den.append((time.perf_counter() - t0) * 1000)   # P archivado en ese instante: el chat lo niega, no es un error
-                lat.append(lat_den[-1])
+                lat_den.append((time.perf_counter() - t0) * 1000)   # autoridad niega (P archivado en ese instante)
                 continue
-            except Exception as exc:  # fail-soft: se clasifica y se cuenta, no tumba la corrida
+            except Exception as exc:  # fail-soft: se clasifica CRUDA por código de MariaDB y se cuenta
                 k = clasificar_error_db(exc)
+                if k == "otro":
+                    k = f"otro:{type(exc).__name__}"
+                    muestras.setdefault(k, repr(exc)[:200])
                 errores[k] = errores.get(k, 0) + 1
                 continue
-            lat_ok.append((time.perf_counter() - t0) * 1000)
-            lat.append(lat_ok[-1])
+            t2 = time.perf_counter()
+            lat_ok.append((t2 - t0) * 1000)
+            lat_lectura.append((t2 - t1) * 1000)
     await asyncio.gather(*(cliente(u) for u in usuarios))
-    return {**resumen(lat), "clientes": len(usuarios), "segundos": segundos,
-            "permitidos": resumen(lat_ok), "denegados": resumen(lat_den),
-            "errores": errores, "pool_maxsize": pool.maxsize}
+    return {"clientes": len(usuarios), "segundos": segundos, "limite_candidatos": limite,
+            "permitidos": resumen(lat_ok), "permitidos_solo_lectura_con_candado": resumen(lat_lectura),
+            "denegados": resumen(lat_den), "errores": errores, "muestras_otros": muestras,
+            "pool_maxsize": pool.maxsize}
 
 
 async def _correr_hijo_alcance(semilla: dict, segundos: float) -> dict:
@@ -754,13 +786,13 @@ async def _http_en_bucle(c: int, segundos: float, paso) -> dict:
             **{k: resumen(v) for k, v in lat.items()}}
 
 
-def _crear_base(nombre: str) -> None:
-    """Crea la base propia VACÍA y le arma el esquema por los caminos de la suite: el esquema de JAX
-    (`_bootstrap_jax_schema_para_base_de_test`) y las migraciones de la plataforma (`run_migrations`).
-    No se usa `asegurar_base_de_test`/`_clonar_esquema`: este rechaza clonar la plantilla porque tiene
-    triggers que no copia (medido 2026-10-02, BaseDeTestInvalida)."""
+def _verificar_nombre_propio(nombre: str) -> None:
     if not re.fullmatch(rf"{BASE_DE_PRUEBA}_[0-9a-f]{{8}}", nombre):
-        raise RuntimeError(f"{nombre!r} no es una base propia de peor-caso -- no se crea")
+        raise RuntimeError(f"{nombre!r} no es una base propia de peor-caso -- no se toca")
+
+
+def _crear_base_vacia(nombre: str) -> None:
+    _verificar_nombre_propio(nombre)
     import pymysql
     env0 = _cargar_env_de_prueba()
     conn = pymysql.connect(host=env0["JAX_DB_HOST"], port=int(env0["JAX_DB_PORT"]), user=env0["JAX_DB_USER"],
@@ -770,12 +802,22 @@ def _crear_base(nombre: str) -> None:
             cur.execute(f"CREATE DATABASE `{nombre}` CHARACTER SET utf8mb4")
     finally:
         conn.close()
-    env = dict(os.environ, **env0)
+
+
+def _armar_esquema(nombre: str) -> None:
+    """Le arma el esquema por los caminos de la suite: el de JAX (`_bootstrap_jax_schema_para_base_de_test`) y
+    las migraciones de la plataforma (`run_migrations`) y el resto de la cadena B9 (`aplicar_migraciones_b9_restantes`, la que
+    deja `memory_revisions.tenant_id` que `_retrieve_scoped` lee). No se usa `asegurar_base_de_test`/`_clonar_esquema`: este
+    rechaza clonar la plantilla porque tiene triggers que no copia (medido 2026-10-02, BaseDeTestInvalida)."""
+    _verificar_nombre_propio(nombre)
+    env = dict(os.environ, **_cargar_env_de_prueba())
     env["PYTHONPATH"] = os.pathsep.join([str(BACKEND_DIR), env.get("PYTHONPATH", "")])
     codigo = ("import asyncio, sys, base_de_test as b\n"
               "b._bootstrap_jax_schema_para_base_de_test(sys.argv[1])\n"
               "from db.migrations import run_migrations\n"
-              "asyncio.run(run_migrations())\n")
+              "asyncio.run(run_migrations())\n"
+              "from base_de_test import aplicar_migraciones_b9_restantes\n"   # 004/006: sin ellas la lectura de B9 revienta
+              "asyncio.run(aplicar_migraciones_b9_restantes())\n")
     r = subprocess.run([sys.executable, "-c", codigo, nombre], cwd=str(BACKEND_DIR), env=env,
                        capture_output=True, text=True, timeout=600)
     if r.returncode != 0:
@@ -784,8 +826,7 @@ def _crear_base(nombre: str) -> None:
 
 def _borrar_base(nombre: str) -> None:
     """DROP DATABASE de la base propia. Revalida el nombre: jamás la compartida ni jax_memory."""
-    if not re.fullmatch(rf"{BASE_DE_PRUEBA}_[0-9a-f]{{8}}", nombre):
-        raise RuntimeError(f"{nombre!r} no es una base propia de peor-caso -- no se borra")
+    _verificar_nombre_propio(nombre)
     import pymysql
     env = _cargar_env_de_prueba()
     conn = pymysql.connect(host=env["JAX_DB_HOST"], port=int(env["JAX_DB_PORT"]), user=env["JAX_DB_USER"],
@@ -807,8 +848,9 @@ async def peor_caso() -> None:
     creada = False
     try:
         os.environ["PROYECTOS_E1_BASE"] = base      # la heredan los hijos; _conectar() y los chequeos la exigen
-        creada = True       # antes de crear: si falla a medias, igual se elimina
-        _crear_base(base)
+        _crear_base_vacia(base)
+        creada = True       # DESPUÉS de que CREATE DATABASE funcione: si falló, no hay nada que borrar
+        _armar_esquema(base)    # si esto falla, el finally elimina la base ya creada
         # Primero el backend: su lifespan siembra el tenant 1, que la base nueva todavía no tiene.
         env = _env_del_backend(tmp)
         proc, log = _levantar_backend(env, tmp)
@@ -855,9 +897,11 @@ async def peor_caso() -> None:
                               "lock_timeout_1205": len(re.findall(r"\b1205\b|Lock wait timeout", texto)),
                               "lineas_error": len(re.findall(r"\bERROR\b", texto))}
         owner_err = sum(v for k, v in res["mutaciones_del_owner"]["categorias"].items() if k != "ok")
-        errores_con = (sum(res["alcance_con_escrituras"]["errores"].values()) + owner_err
+        errores_con = (sum(res["alcance_con_escrituras"]["errores"].values())
+                       + sum(res["alcance_sin_escrituras"]["errores"].values()) + owner_err
                        + sum(res["backend_log"][k] for k in ("deadlock_1213", "lock_timeout_1205")))
-        res["veredicto"] = veredicto_peor_caso(res["alcance_sin_escrituras"], res["alcance_con_escrituras"], errores_con)
+        res["veredicto"] = veredicto_peor_caso(res["alcance_sin_escrituras"]["permitidos"],
+                                               res["alcance_con_escrituras"]["permitidos"], errores_con)
         salida = LOADTEST_DIR / "_resultados_peor_caso_proyectos_e1.json"
         salida.write_text(json.dumps(res, indent=2, ensure_ascii=False))
         print(f"[orquestador] {salida} escrito\n[veredicto] {res['veredicto']}")

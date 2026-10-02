@@ -75,7 +75,9 @@ def test_borrar_y_crear_base_rechazan_la_compartida_y_produccion(monkeypatch):
         with pytest.raises(RuntimeError):
             pe._borrar_base(nombre)
         with pytest.raises(RuntimeError):
-            pe._crear_base(nombre)
+            pe._crear_base_vacia(nombre)
+        with pytest.raises(RuntimeError):
+            pe._armar_esquema(nombre)
 
 
 def test_base_activa_solo_acepta_bases_de_prueba(monkeypatch):
@@ -116,3 +118,22 @@ def test_veredicto_dice_degrada_por_p95_o_por_errores():
     assert pe.veredicto_peor_caso(sin, {"p95_ms": 20.0}, 0).startswith("no degrada")      # justo 2x: no
     assert pe.veredicto_peor_caso(sin, {"p95_ms": 20.1}, 0).startswith("DEGRADA")
     assert "errores" in pe.veredicto_peor_caso(sin, {"p95_ms": 10.0}, 3)
+
+
+def test_clasificar_error_db_mira_la_cadena_de_causas():
+    """Un 1213 envuelto (el chat lo convierte en 403/503) se sigue viendo como deadlock."""
+    interna = Exception(1213, "Deadlock found")
+    try:
+        try:
+            raise interna
+        except Exception as e:
+            raise RuntimeError("B9 memory retrieval failed") from e
+    except RuntimeError as envuelta:
+        assert pe.clasificar_error_db(envuelta) == "deadlock_1213"
+    assert pe.clasificar_error_db(RuntimeError("sin causa")) == "otro"
+
+
+def test_crear_base_vacia_no_marca_nada_si_el_nombre_es_ajeno():
+    # `creada` en peor_caso se fija DESPUÉS de _crear_base_vacia: si esta lanza, no hay base que borrar.
+    with pytest.raises(RuntimeError):
+        pe._crear_base_vacia("jax_memory_test")
