@@ -53,6 +53,41 @@ async function marcarYAgregar(...ns) {
   fireEvent.click(agregar(ns.length))
 }
 
+describe('Miembros: ronda 3', () => {
+  it('un marcado que nunca vuelve a la lista se limpia con el botón, deja de contar y no se envía', async () => {
+    montar()
+    await screen.findByRole('checkbox', { name: 'u1@x.com' })
+    fireEvent.click(casilla('u1@x.com'))
+    api.buscarCandidatos.mockResolvedValue({ candidatos: [U(5)] })
+    api.invitarMiembro.mockRejectedValueOnce(error(500, 'x'))
+    fireEvent.change(screen.getByLabelText(T.buscarPorEmail), { target: { value: 'zz' } })
+    await waitFor(() => expect(screen.queryByRole('checkbox', { name: 'u1@x.com' })).not.toBeInTheDocument())
+    fireEvent.click(agregar(1))
+    await screen.findByText(`u1@x.com: ${T.errores.generico}`)
+    expect(screen.getByText(T.seleccionadosOcultos(1, 1))).toBeInTheDocument()
+    api.invitarMiembro.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: T.limpiarSeleccion }))
+    expect(screen.getByText(T.seleccionados(0))).toBeInTheDocument()
+    expect(agregar(0)).toBeDisabled()
+    expect(screen.queryByRole('button', { name: T.limpiarSeleccion })).not.toBeInTheDocument()
+    fireEvent.submit(agregar(0).closest('form'))
+    expect(api.invitarMiembro).not.toHaveBeenCalled()
+  })
+
+  it('con el lote en vuelo las casillas quedan deshabilitadas', async () => {
+    montar()
+    await screen.findByRole('checkbox', { name: 'u1@x.com' })
+    let resolver
+    api.invitarMiembro.mockImplementation(() => new Promise((r) => { resolver = r }))
+    fireEvent.click(casilla('u1@x.com'))
+    fireEvent.click(agregar(1))
+    await waitFor(() => expect(casilla('u2@x.com')).toBeDisabled())
+    expect(screen.getByRole('button', { name: T.limpiarSeleccion })).toBeDisabled()
+    await act(async () => { resolver({}) })
+    await waitFor(() => expect(casilla('u2@x.com')).toBeEnabled())
+  })
+})
+
 describe('Miembros: ronda 2', () => {
   it('un marcado oculto por el filtro que falla con 500 sigue marcado, se cuenta como oculto y se reenvía', async () => {
     montar()

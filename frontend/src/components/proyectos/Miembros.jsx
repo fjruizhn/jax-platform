@@ -175,7 +175,7 @@ export default function Miembros({ proyecto, miembros, onCambio }) {
                   {candidatos.map((c) => (
                     <li key={c.user_id}>
                       <label className="flex items-center gap-3 min-h-11 px-3 text-sm text-texto hover:text-texto-fuerte cursor-pointer">
-                        <input type="checkbox" checked={Boolean(marcados[c.user_id])} onChange={() => alternar(c)}
+                        <input type="checkbox" checked={Boolean(marcados[c.user_id])} disabled={ocupado} onChange={() => alternar(c)}
                           className={`w-4 h-4 ${FOCO}`} />
                         <span className="break-all">{c.email}</span>
                       </label>
@@ -195,6 +195,9 @@ export default function Miembros({ proyecto, miembros, onCambio }) {
               </select>
             </div>
             <button type="submit" disabled={ocupado || cantidad === 0} className={BOTON}>{T.agregarSeleccionados(cantidad)}</button>
+            {cantidad > 0 && (
+              <button type="button" disabled={ocupado} onClick={() => setMarcados({})} className={BOTON}>{T.limpiarSeleccion}</button>
+            )}
             <p aria-live="polite" className="text-xs text-texto-suave pb-3">{ocultos > 0 ? T.seleccionadosOcultos(cantidad, ocultos) : T.seleccionados(cantidad)}</p>
           </div>
           {resumen && (
