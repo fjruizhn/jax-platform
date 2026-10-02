@@ -403,3 +403,47 @@ def test_estado_entrega_fuera_del_enum_no_se_guarda(client):
     filas = client.portal.call(
         sql, "SELECT COUNT(*) FROM ejecutor_mision WHERE estado_entrega = 'estado_inventado'", None, True)
     assert filas == ((0,),)
+
+
+def test_snapshot_lv_es_un_metodo_del_contrato():
+    """Pre-requisito 2 del veredicto de ronda 3 (fase 4b): las VMs del ensayo viven en LVs thin
+    y su punto de restauración es un snapshot de LV. `imagen_vm` y `recreacion` no sirven
+    (mentirían sobre cómo se verificó). Puro, sin DB."""
+    assert "snapshot_lv" in _METODOS_PUNTO_RESTAURACION
+    assert len(set(_METODOS_PUNTO_RESTAURACION)) == len(_METODOS_PUNTO_RESTAURACION)
+
+
+def test_la_migracion_amplia_el_enum_a_snapshot_lv_sin_perder_filas(client, sin_marcas):
+    """Producción tiene el ENUM de 4 valores. La migración lo amplía a 5 SIN perder filas
+    existentes (con filas, el chequeo previo de valores inválidos tiene que seguir andando con
+    5 métodos), es idempotente, y después `snapshot_lv` se guarda."""
+    antiguos = ("imagen_vm", "restic_ficheros", "volcado_mariadb", "recreacion")
+
+    async def _escenario():
+        await _sembrar_host_de_prueba()
+        enum_viejo = ",".join(f"'{m}'" for m in antiguos)
+        await sql(f"ALTER TABLE ejecutor_punto_restauracion MODIFY COLUMN metodo ENUM({enum_viejo}) NOT NULL")
+        await sql(
+            "INSERT INTO ejecutor_punto_restauracion (host_nombre, referencia, metodo, "
+            "respaldado_at, restaurado_y_verificado_at, verificado_por, evidencia) "
+            "VALUES ('zz_test_forma_prc', 'fila-previa', 'imagen_vm', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 't', 't')")
+        from db.connection import get_pool
+        pool = await get_pool()
+        for _ in range(2):  # dos veces: idempotente
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await _asegurar_forma_de_ejecutor_punto_restauracion(cur)
+                await conn.commit()
+        columna = await sql(
+            "SELECT COLUMN_TYPE, IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='ejecutor_punto_restauracion' AND COLUMN_NAME='metodo'", None, True)
+        await sql(
+            "INSERT INTO ejecutor_punto_restauracion (host_nombre, referencia, metodo, "
+            "respaldado_at, restaurado_y_verificado_at, verificado_por, evidencia) "
+            "VALUES ('zz_test_forma_prc', 'vg/snap', 'snapshot_lv', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 't', 't')")
+        filas = await sql("SELECT referencia, metodo FROM ejecutor_punto_restauracion ORDER BY referencia", None, True)
+        return columna, filas
+
+    columna, filas = client.portal.call(_escenario)
+    assert "'snapshot_lv'" in columna[0][0] and columna[0][1] == "NO", columna
+    assert filas == (("fila-previa", "imagen_vm"), ("vg/snap", "snapshot_lv")), filas
