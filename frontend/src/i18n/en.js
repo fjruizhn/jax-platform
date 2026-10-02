@@ -472,6 +472,9 @@ export default {
   // VERSION, y cada idioma decide cómo se dice. La pantalla de inicio lo pone en
   // mayúsculas por CSS.
   platformLabel: (nombre, v) => `${nombre} V${v}`,
+  // Título de la pestaña y meta description, armados en runtime (TituloDePagina).
+  tituloPagina: (nombre) => nombre,
+  metaDescripcion: (nombre) => `${nombre} — In memory of Jairo Urbina`,
   adminVersion: (nombre, v) => `${nombre} v${v}`,
   inMemoryOf: 'In memory of Jairo Urbina.',
   inHonorOf: 'In honor of Prof. Raúl Jacobs.',

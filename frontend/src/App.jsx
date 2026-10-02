@@ -10,6 +10,7 @@ import ProyectoDetalle from './pages/ProyectoDetalle'
 import Admin from './pages/Admin'
 import ResetPassword from './pages/ResetPassword'
 import RequireAuth from './components/RequireAuth'
+import TituloDePagina from './components/TituloDePagina'
 
 function RequireSuperadmin({ children }) {
   const user = useJaxStore((s) => s.user)
@@ -33,6 +34,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      <TituloDePagina />
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />

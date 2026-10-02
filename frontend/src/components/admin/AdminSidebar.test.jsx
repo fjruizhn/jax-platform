@@ -87,7 +87,7 @@ describe('AdminSidebar -- orden del menú (2026-10-02)', () => {
 // Un glifo con presentación de emoji por defecto (Emoji_Presentation) sale de
 // color sin depender de un selector de variación ni de la fuente.
 describe('AdminSidebar -- íconos de color (2026-10-02)', () => {
-  const claves = ['adminSettings', 'adminSmtp', 'adminProyectos']
+  const claves = ['adminDashboard', 'adminSettings', 'adminSmtp', 'adminProyectos']
   for (const clave of claves) {
     it(`${clave} usa un emoji de color por defecto`, () => {
       renderSidebar()

@@ -12,7 +12,7 @@ import { useNombreDelSistema } from '../../store/useApariencia'
 // no dependen de un selector de variación; ⚙ y ✉ eran símbolos de texto y se
 // veían grises.
 const NAV_ITEMS = [
-  { path: 'dashboard', labelKey: 'adminDashboard', icon: '◈' },
+  { path: 'dashboard', labelKey: 'adminDashboard', icon: '📊' },
   { path: 'keys',      labelKey: 'adminFacetsModels', icon: '🧠' },
   { path: 'costs',     labelKey: 'adminCosts',     icon: '💰' },
   { path: 'repo',      labelKey: 'adminRepo',      icon: '📁' },

@@ -124,6 +124,16 @@ describe('guarda: ninguna versión fija en src/', () => {
   })
 })
 
+describe('guarda: package.json no lleva versión (cuarto lugar)', () => {
+  it('ni package.json ni package-lock.json declaran "version" del paquete', () => {
+    for (const f of ['package.json', 'package-lock.json']) {
+      const j = JSON.parse(readFileSync(join(process.cwd(), f), 'utf8'))
+      expect(j.version, f).toBeUndefined()
+      if (j.packages?.['']) expect(j.packages[''].version, f).toBeUndefined()
+    }
+  })
+})
+
 describe('guarda: ninguna marca fija en i18n, inicio y Administración', () => {
   it('el detector se dispara con una marca fija y respeta brandName (control negativo)', () => {
     expect(marcaFija("platformLabel: (v) => `AXIOMA V${v}`")).toHaveLength(1)
