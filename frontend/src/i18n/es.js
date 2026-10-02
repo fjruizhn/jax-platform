@@ -511,7 +511,15 @@ export default {
   },
 
   // Center panel
-  platformLabel: 'AXIOMA V0.2',
+  // Ni el número ni el nombre van fijos (Principio IV): la plantilla recibe el nombre
+  // del sistema (system_name, o brandName de respaldo) y la versión del archivo
+  // VERSION, y cada idioma decide cómo se dice. La pantalla de inicio lo pone en
+  // mayúsculas por CSS.
+  platformLabel: (nombre, v) => `${nombre} V${v}`,
+  // Título de la pestaña y meta description, armados en runtime (TituloDePagina).
+  tituloPagina: (nombre) => nombre,
+  metaDescripcion: (nombre) => `${nombre} — En memoria de Jairo Urbina`,
+  adminVersion: (nombre, v) => `${nombre} v${v}`,
   inMemoryOf: 'En memoria de Jairo Urbina.',
   inHonorOf: 'En honor al Prof. Raúl Jacobs.',
 
@@ -609,6 +617,7 @@ export default {
   adminSettings: 'Configuración',
   adminCosts: 'Costos',
   adminMemoria: 'Memoria',
+  adminProyectos: 'Proyectos',
   // Fix round 1 (MINOR-7): faltaba en AdminSidebar -- el superadmin entraba
   // por el enlace de BarraUsuario pero no podía volver sin salir de Admin.
   adminPipelinesOcultos: 'Pipelines descartados y ocultos',

@@ -88,10 +88,18 @@ export default function ProyectoDetalle() {
   return (
     <div className="min-h-dvh bg-fondo text-texto p-6">
       <div className="max-w-3xl mx-auto">
-        <Link to="/proyectos" className={`${TAMANO_BOTON_44} -ml-4 text-texto-tenue hover:text-texto transition-colors gap-1.5 mb-4`}>
-          <span aria-hidden="true">←</span>
-          <span>{T.volverAProyectos}</span>
-        </Link>
+        {/* Misma fila que Proyectos e Historial (Fernando, 2026-10-02): título a la
+            izquierda, «← Volver» a la derecha, arriba. Sin proyecto cargado, el
+            hueco del título se deja vacío para que el enlace no salte. */}
+        <div className="flex items-center justify-between mb-6 gap-3">
+          {proyecto ? (
+            <h1 className="text-xl font-bold text-texto-fuerte break-words">{proyecto.nombre}</h1>
+          ) : <span />}
+          <Link to="/proyectos" className={`${TAMANO_BOTON_44} text-texto-tenue hover:text-texto transition-colors gap-1.5`}>
+            <span aria-hidden="true">←</span>
+            <span>{T.volverAProyectos}</span>
+          </Link>
+        </div>
 
         {estado === 'cargando' && <p className="text-sm text-texto-tenue">{T.cargando}</p>}
         {estado === 'error' && (
@@ -104,8 +112,7 @@ export default function ProyectoDetalle() {
         {proyecto && (
           <>
             <header className="mb-4">
-              <h1 className="text-xl font-bold text-texto-fuerte break-words">{proyecto.nombre}</h1>
-              <p className="mt-1 text-xs text-texto-tenue">
+              <p className="text-xs text-texto-tenue">
                 {T.estados[proyecto.estado]} · {T.tuPapel}: {T.papeles[proyecto.papel]}
               </p>
               {proyecto.descripcion && <p className="mt-1 text-sm text-texto-suave break-words">{proyecto.descripcion}</p>}

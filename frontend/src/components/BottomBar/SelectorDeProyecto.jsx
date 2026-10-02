@@ -8,6 +8,10 @@ import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 // teclado y lector de pantalla gratis. E1.1 (Fernando, 2026-10-02): vive DENTRO
 // de la fila de modos, pegado a Chat, con el mismo tamaño y tipografía que los
 // botones de modo (objetivo táctil = el de sus vecinos, 24 px de alto mínimo).
+// 2026-10-02 (Fernando, con captura): se veía pegado a Chat y del color de los
+// botones. Ahora va separado (margen + divisor sutil, y aire tras el 📁) y con
+// el token de superficie más clara (superficie-2, no el bg-superficie de los
+// botones de modo), para que se distinga que es otra cosa.
 //
 // El proyecto elegido vive SOLO en memoria (store). No se persiste entre
 // recargas: el mecanismo de `store/almacenamiento` guarda preferencias del
@@ -63,18 +67,18 @@ export default function SelectorDeProyecto() {
   const hayElegidoFueraDeLista = proyectoActivo && !proyectos.some((p) => p.id === proyectoActivo.id)
 
   return (
-    <span className="inline-flex items-center">
+    <span className="inline-flex items-center ml-2 pl-3 border-l border-borde">
       <label htmlFor="selector-proyecto-chat" className="sr-only">
         {t.proyectos.selectorChat.etiqueta}
       </label>
-      <span aria-hidden="true" className="text-xs -mr-1 pl-1 select-none">📁</span>
+      <span aria-hidden="true" className="text-xs mr-1.5 select-none">📁</span>
       <select
         id="selector-proyecto-chat"
         value={proyectoActivo ? String(proyectoActivo.id) : ''}
         onChange={elegir}
         onMouseDown={cargar}
         onFocus={cargar}
-        className={`${TAMANO_BOTON_ACCION} max-w-40 truncate rounded bg-superficie text-texto-suave hover:text-texto font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-foco`}
+        className={`${TAMANO_BOTON_ACCION} max-w-40 truncate rounded bg-superficie-2 text-texto-suave hover:text-texto font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-foco`}
       >
         <option value="">{t.proyectos.selectorChat.personal}</option>
         {hayElegidoFueraDeLista && (

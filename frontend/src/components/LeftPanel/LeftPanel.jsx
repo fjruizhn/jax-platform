@@ -3,6 +3,8 @@ import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 import FacetCard from './FacetCard'
 import HalEye from '../HalEye/HalEye'
+import { useNombreDelSistema } from '../../store/useApariencia'
+import { useVersion } from '../../store/useVersion'
 
 const FACET_ORDER = ['jax_local', 'jekyll', 'hyde', 'hipatia', 'thot', 'kimi', 'ada']
 
@@ -11,6 +13,8 @@ function LeftPanel() {
   const lasManos = useJaxStore((s) => s.lasManos)
   const wsStatus = useJaxStore((s) => s.wsStatus)
   const { t } = useI18n()
+  const nombre = useNombreDelSistema(t)
+  const version = useVersion()
 
   return (
     <div className="flex flex-col h-full bg-fondo border-r border-borde">
@@ -20,7 +24,7 @@ function LeftPanel() {
       <div className="flex-shrink-0 flex flex-col items-center justify-center py-4 relative border-b border-borde">
         <HalEye size={150} />
         <div className="mt-1 text-xs font-mono text-texto-tenue tracking-widest uppercase">
-          {t.platformLabel}
+          {version ? t.platformLabel(nombre, version) : nombre}
         </div>
       </div>
 

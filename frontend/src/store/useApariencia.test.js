@@ -11,12 +11,12 @@ beforeEach(() => {
 })
 
 describe('useApariencia', () => {
-  it('fijar guarda el nombre y el idioma y titula el documento', () => {
+  it('fijar guarda el nombre y el idioma, y NO escribe el título (lo hace TituloDePagina)', () => {
     useApariencia.getState().fijar({ system_name: 'Hal', lang_default: 'en' })
     expect(useApariencia.getState()).toMatchObject({ systemName: 'Hal', langDefault: 'en' })
     expect(localStorage.getItem('jax_system_name')).toBe('Hal')
     expect(localStorage.getItem('jax_lang_default')).toBe('en')
-    expect(document.title).toBe('Hal')
+    expect(document.title).toBe('Axioma')
   })
 
   it('un nombre vacío, de espacios o que no es texto no se aplica; un idioma fuera de lista tampoco', () => {
@@ -28,13 +28,13 @@ describe('useApariencia', () => {
     expect(document.title).toBe('Axioma')
   })
 
-  it('al cargar el módulo toma el último nombre conocido y titula', async () => {
+  it('al cargar el módulo toma el último nombre conocido sin tocar el título', async () => {
     localStorage.setItem('jax_system_name', 'Hal')
     localStorage.setItem('jax_lang_default', 'en')
     vi.resetModules()
     const { useApariencia: fresco } = await import('./useApariencia')
     expect(fresco.getState()).toMatchObject({ systemName: 'Hal', langDefault: 'en' })
-    expect(document.title).toBe('Hal')
+    expect(document.title).toBe('Axioma')
   })
 
   it('con localStorage bloqueado, importar y fijar no lanzan', async () => {

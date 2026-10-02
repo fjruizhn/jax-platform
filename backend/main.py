@@ -56,6 +56,7 @@ _cred_handler.setFormatter(logging.Formatter("%(levelname)s credential_resolver:
 _cred_logger.addHandler(_cred_handler)
 _cred_logger.propagate = False
 
+from app_version import leer_version
 import ajustes
 from adjuntos import limites as limites_de_adjuntos
 from adjuntos import almacen as almacen_de_adjuntos
@@ -96,6 +97,7 @@ from api.image import router as image_router
 from api.upload import router as upload_router
 from api.motors import router as motors_router
 from api.apariencia import router as apariencia_router
+from api.version import router as version_router
 from api.ejecutor import router as ejecutor_router
 from ejecutor import misiones as ejecutor_misiones
 from api.admin import (
@@ -206,7 +208,7 @@ async def lifespan(app: FastAPI):
     await close_pool()
 
 
-app = FastAPI(title="JAX Platform", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="JAX Platform", version=leer_version(), lifespan=lifespan)
 
 # Frente C (2026-09-16): un ajuste de admin ilegible es un 503 con código, en
 # cualquier endpoint que lo lea -- nunca un default silencioso (ajustes.py).
@@ -264,6 +266,7 @@ ROUTERS = (
     smtp_router,
     kill_switch_router,
     apariencia_router,
+    version_router,
     ejecutor_router,
     memoria_router,
     pipelines_ocultos_router,

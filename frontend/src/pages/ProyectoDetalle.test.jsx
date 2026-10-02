@@ -75,6 +75,33 @@ describe('ProyectoDetalle: carga y 404', () => {
     expect(api.listarMiembros).toHaveBeenCalledWith(7)
   })
 
+  // Fernando (2026-10-02): «← Volver a proyectos» sigue el patrón de las demás
+  // pantallas (Historial, Proyectos): arriba, en la fila del título, a la
+  // derecha, con el estilo del enlace «Volver» de Proyectos.
+  it('«Volver a proyectos» va en la fila del título, a la derecha, como en Historial y Proyectos', async () => {
+    renderDetalle()
+    const titulo = await screen.findByRole('heading', { name: 'Alfa' })
+    const volver = screen.getByRole('link', { name: new RegExp(T.volverAProyectos) })
+    const fila = titulo.parentElement
+    expect(fila.className).toMatch(/\bflex\b/)
+    expect(fila.className).toMatch(/justify-between/)
+    expect(fila.className).toMatch(/\bmb-6\b/)
+    expect(fila.firstElementChild).toBe(titulo)
+    expect(fila.lastElementChild).toBe(volver)
+    expect(volver.className).toMatch(/text-texto-tenue/)
+    expect(volver.className).toMatch(/hover:text-texto\b/)
+    expect(volver.className).toMatch(/gap-1\.5/)
+    expect(volver.className).not.toMatch(/-ml-/)
+    expect(volver.className).not.toMatch(/\bmb-4\b/)
+    expect(volver).toHaveAttribute('href', '/proyectos')
+  })
+
+  it('el enlace «Volver» está desde la carga, antes de que llegue el proyecto', () => {
+    api.verProyecto.mockReturnValue(new Promise(() => {}))
+    renderDetalle()
+    expect(screen.getByRole('link', { name: new RegExp(T.volverAProyectos) })).toBeInTheDocument()
+  })
+
   it('un 404 muestra solo «no encontrado» y el enlace a /proyectos', async () => {
     api.verProyecto.mockRejectedValue(error(404, 'proyecto_no_encontrado'))
     renderDetalle()
