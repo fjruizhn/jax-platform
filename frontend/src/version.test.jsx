@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import '@testing-library/jest-dom'
@@ -26,6 +26,7 @@ vi.mock('./api/client', () => ({ default: { get: vi.fn() } }))
 
 import api from './api/client'
 import { reiniciarVersion } from './store/useVersion'
+import { useJaxStore } from './store/useJaxStore'
 import LeftPanel from './components/LeftPanel/LeftPanel'
 import AdminSidebar from './components/admin/AdminSidebar'
 import { useApariencia } from './store/useApariencia'
@@ -35,6 +36,7 @@ beforeEach(() => {
   useApariencia.setState({ systemName: null, langDefault: null })
   globalThis.__idiomaVersionTest.actual = es
   reiniciarVersion()
+  useJaxStore.setState({ token: 'tok' })
   api.get.mockReset()
   api.get.mockResolvedValue({ data: { version: '9.9.9' } })
 })
@@ -63,6 +65,16 @@ describe('versión de Axioma: una sola fuente, el archivo VERSION', () => {
     useApariencia.setState({ systemName: 'Hal' })
     render(<LeftPanel />)
     expect(await screen.findByText('Hal V9.9.9')).toBeInTheDocument()
+  })
+
+  it('sin sesión no pide la versión; al haber token, la pide', async () => {
+    useJaxStore.setState({ token: null })
+    render(<LeftPanel />)
+    expect(api.get).not.toHaveBeenCalled()
+    expect(screen.getByText(es.brandName)).toBeInTheDocument()
+    act(() => useJaxStore.setState({ token: 'tok' }))
+    expect(await screen.findByText(`${es.brandName} V9.9.9`)).toBeInTheDocument()
+    expect(api.get).toHaveBeenCalledTimes(1)
   })
 
   it('mientras carga, solo el nombre, sin número', () => {

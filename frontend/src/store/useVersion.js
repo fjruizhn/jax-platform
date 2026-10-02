@@ -1,13 +1,16 @@
 import { useEffect } from 'react'
 import { create } from 'zustand'
 import api from '../api/client'
+import { useJaxStore } from './useJaxStore'
 
-// Versión de Axioma, pedida en tiempo de ejecución a GET /api/version (sin
-// autenticación; el backend la lee de VERSION al arrancar). Se pide UNA vez y se
-// cachea en el store. Mientras carga, o si falla, `version` es null: quien la
-// muestra pone solo el nombre, nunca un número de respaldo. Si falla, el
-// próximo montaje vuelve a intentar. Sin invalidación: la versión solo cambia
-// al reiniciar el backend, y un reinicio recarga la página con el sitio.
+// Versión de Axioma, pedida en tiempo de ejecución a GET /api/version (exige
+// sesión; el backend la lee de VERSION al arrancar). NO se pide sin token: el
+// hook espera a que haya sesión. Se pide UNA vez y se cachea en el store.
+// Mientras carga, o si falla, `version` es null: quien la muestra pone solo el
+// nombre, nunca un número de respaldo. Si falla, el próximo montaje o login
+// vuelve a intentar. Invalidación: ninguna automática. La versión solo cambia
+// al reiniciar el backend, y una pestaña ya abierta sigue mostrando la vieja
+// hasta que se recarga.
 let pedido = null
 
 export const useVersionStore = create(() => ({ version: null }))
@@ -31,6 +34,7 @@ export function reiniciarVersion() {
 
 export function useVersion() {
   const version = useVersionStore((s) => s.version)
-  useEffect(() => { pedirVersion() }, [])
+  const token = useJaxStore((s) => s.token)
+  useEffect(() => { if (token) pedirVersion() }, [token])
   return version
 }
