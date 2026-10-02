@@ -1,7 +1,9 @@
 import { render, screen } from '@testing-library/react'
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import '@testing-library/jest-dom'
+vi.mock('../../api/client', () => ({ default: { get: vi.fn(() => new Promise(() => {})) } }))
+
 import AdminSidebar from './AdminSidebar'
 import { I18nProvider } from '../../i18n/index.jsx'
 import es from '../../i18n/es.js'
@@ -23,18 +25,7 @@ beforeEach(() => {
   useApariencia.setState({ systemName: null, langDefault: null })
 })
 
-// I-1 (2026-09-14) y 2026-10-02: la versión sale del archivo VERSION de la
-// raíz vía __APP_VERSION__ (define en vite.config.js) -- una sola fuente; el
-// contenido exacto de VERSION se ata en src/version.test.jsx. Guarda que ya pasaba;
-// sigue vigente porque sin system_name configurado el nombre por defecto es
-// la marca de i18n ("Axioma"), igual que antes del frente C.
-describe('AdminSidebar -- versión (I-1)', () => {
-  it('muestra __APP_VERSION__, no un número fijo en el JSX', () => {
-    renderSidebar()
-    expect(screen.getByText(`Axioma v${__APP_VERSION__}`)).toBeInTheDocument()
-    expect(screen.queryByText('Axioma v0.3')).not.toBeInTheDocument()
-  })
-})
+// La versión se pide a /api/version y se ata en src/version.test.jsx.
 
 // system_name (frente C, 2026-09-16): la cabecera y el enlace de vuelta
 // llevan el nombre del sistema en vez de "Axioma" fijo.
@@ -42,7 +33,7 @@ describe('AdminSidebar', () => {
   it('la cabecera y el enlace de vuelta usan el nombre del sistema', () => {
     useApariencia.setState({ systemName: 'Hal' })
     render(<I18nProvider><MemoryRouter><AdminSidebar /></MemoryRouter></I18nProvider>)
-    expect(screen.getByText(`Hal v${__APP_VERSION__}`)).toBeInTheDocument()
+    expect(screen.getByText('Hal')).toBeInTheDocument()
     expect(screen.getByText(es.adminBack('Hal'))).toBeInTheDocument()
   })
 })

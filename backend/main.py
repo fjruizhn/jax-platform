@@ -97,6 +97,7 @@ from api.image import router as image_router
 from api.upload import router as upload_router
 from api.motors import router as motors_router
 from api.apariencia import router as apariencia_router
+from api.version import router as version_router
 from api.ejecutor import router as ejecutor_router
 from ejecutor import misiones as ejecutor_misiones
 from api.admin import (
@@ -265,6 +266,7 @@ ROUTERS = (
     smtp_router,
     kill_switch_router,
     apariencia_router,
+    version_router,
     ejecutor_router,
     memoria_router,
     pipelines_ocultos_router,

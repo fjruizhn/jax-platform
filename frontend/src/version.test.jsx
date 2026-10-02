@@ -1,12 +1,10 @@
-import { readFileSync, readdirSync, statSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import '@testing-library/jest-dom'
 import es from './i18n/es.js'
-import { leerVersion } from '../leerVersion.js'
 import en from './i18n/en.js'
 
 // Versión de Axioma en UN solo lugar (Fernando, 2026-10-02): el archivo VERSION
@@ -24,6 +22,10 @@ vi.mock('./i18n/index.jsx', async () => {
   return { ...real, useI18n: () => ({ t: idioma.actual }) }
 })
 
+vi.mock('./api/client', () => ({ default: { get: vi.fn() } }))
+
+import api from './api/client'
+import { reiniciarVersion } from './store/useVersion'
 import LeftPanel from './components/LeftPanel/LeftPanel'
 import AdminSidebar from './components/admin/AdminSidebar'
 import { useApariencia } from './store/useApariencia'
@@ -32,49 +34,57 @@ beforeEach(() => {
   localStorage.clear()
   useApariencia.setState({ systemName: null, langDefault: null })
   globalThis.__idiomaVersionTest.actual = es
+  reiniciarVersion()
+  api.get.mockReset()
+  api.get.mockResolvedValue({ data: { version: '9.9.9' } })
 })
 
+// La versión se pide en tiempo de ejecución a GET /api/version (el backend la
+// lee de VERSION al arrancar): cambiar VERSION no recompila el frontend. Las
+// pruebas simulan la respuesta con 9.9.9, que NO es la real: un número escrito
+// a mano en un componente no aparecería en pantalla.
 describe('versión de Axioma: una sola fuente, el archivo VERSION', () => {
   it('VERSION tiene un número del tipo X.Y', () => {
     expect(VERSION).toMatch(/^\d+\.\d+(\.\d+)?$/)
   })
 
-  it('__APP_VERSION__ es el contenido de VERSION', () => {
-    expect(__APP_VERSION__).toBe(VERSION)
-  })
-
-  // Principio IV: ni el número ni el nombre van fijos en los textos. La plantilla
-  // de i18n recibe (nombre, versión) y cada idioma decide cómo se dice.
-  // Se inyecta una versión que NO es la real: un número escrito a mano en el
-  // componente (aunque coincida con VERSION hoy) no aparecería en pantalla.
-  it('inicio e Administración muestran la versión inyectada, no un número escrito a mano', () => {
-    vi.stubGlobal('__APP_VERSION__', '9.9.9')
-    try {
-      const { unmount } = render(<LeftPanel />)
-      expect(screen.getByText(`${es.brandName} V9.9.9`)).toBeInTheDocument()
-      unmount()
-      render(<MemoryRouter><AdminSidebar /></MemoryRouter>)
-      expect(screen.getByText(`${es.brandName} v9.9.9`)).toBeInTheDocument()
-    } finally {
-      vi.unstubAllGlobals()
-    }
-  })
-
-  it('inicio: plantilla i18n + nombre del sistema + VERSION', () => {
-    useApariencia.setState({ systemName: 'Hal' })
+  it('inicio muestra la versión que responde /api/version', async () => {
     render(<LeftPanel />)
-    expect(screen.getByText(`Hal V${VERSION}`)).toBeInTheDocument()
+    expect(await screen.findByText(`${es.brandName} V9.9.9`)).toBeInTheDocument()
+    expect(api.get).toHaveBeenCalledWith('/version')
   })
 
-  it('inicio sin nombre configurado: usa la marca de i18n (brandName)', () => {
-    render(<LeftPanel />)
-    expect(screen.getByText(`${es.brandName} V${VERSION}`)).toBeInTheDocument()
-  })
-
-  it('Administración: plantilla i18n + nombre del sistema + VERSION', () => {
-    useApariencia.setState({ systemName: 'Hal' })
+  it('Administración muestra la versión que responde /api/version', async () => {
     render(<MemoryRouter><AdminSidebar /></MemoryRouter>)
-    expect(screen.getByText(`Hal v${VERSION}`)).toBeInTheDocument()
+    expect(await screen.findByText(`${es.brandName} v9.9.9`)).toBeInTheDocument()
+  })
+
+  it('con nombre configurado: plantilla i18n + nombre + versión', async () => {
+    useApariencia.setState({ systemName: 'Hal' })
+    render(<LeftPanel />)
+    expect(await screen.findByText('Hal V9.9.9')).toBeInTheDocument()
+  })
+
+  it('mientras carga, solo el nombre, sin número', () => {
+    api.get.mockReturnValue(new Promise(() => {}))
+    render(<LeftPanel />)
+    expect(screen.getByText(es.brandName)).toBeInTheDocument()
+    expect(screen.queryByText(/\d+\.\d+/)).not.toBeInTheDocument()
+  })
+
+  it('si falla, solo el nombre, sin número de respaldo', async () => {
+    api.get.mockRejectedValue(new Error('red'))
+    render(<MemoryRouter><AdminSidebar /></MemoryRouter>)
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    expect(screen.getByText(es.brandName)).toBeInTheDocument()
+    expect(screen.queryByText(/\d+\.\d+/)).not.toBeInTheDocument()
+  })
+
+  it('se pide una sola vez aunque se monten varios componentes', async () => {
+    render(<LeftPanel />)
+    render(<MemoryRouter><AdminSidebar /></MemoryRouter>)
+    await screen.findAllByText(/9\.9\.9/)
+    expect(api.get).toHaveBeenCalledTimes(1)
   })
 
   it('cada idioma tiene su plantilla, que recibe nombre y versión (sin número ni marca fijos)', () => {
@@ -141,25 +151,6 @@ describe('guarda: ninguna versión fija en src/', () => {
   })
 })
 
-describe('vite.config: valida VERSION al leerla', () => {
-  it.each(['', '   \n', 'dos punto cinco', '2', '2.5.x', 'v2.5'])('rechaza %j con un mensaje claro', (contenido) => {
-    const f = join(mkdtempSync(join(tmpdir(), 'ver-')), 'VERSION')
-    writeFileSync(f, contenido)
-    expect(() => leerVersion(f)).toThrow(/VERSION/)
-  })
-
-  it('acepta X.Y y X.Y.Z, con salto de línea', () => {
-    const d = mkdtempSync(join(tmpdir(), 'ver-'))
-    writeFileSync(join(d, 'a'), '2.5\n'); writeFileSync(join(d, 'b'), '3.0.1')
-    expect(leerVersion(join(d, 'a'))).toBe('2.5')
-    expect(leerVersion(join(d, 'b'))).toBe('3.0.1')
-  })
-
-  it('un archivo inexistente falla con mensaje claro', () => {
-    expect(() => leerVersion('/no/existe/VERSION')).toThrow(/VERSION/)
-  })
-})
-
 describe('guarda: package.json no lleva versión (cuarto lugar)', () => {
   it('ni package.json ni package-lock.json declaran "version" del paquete', () => {
     for (const f of ['package.json', 'package-lock.json']) {
@@ -167,6 +158,14 @@ describe('guarda: package.json no lleva versión (cuarto lugar)', () => {
       expect(j.version, f).toBeUndefined()
       if (j.packages?.['']) expect(j.packages[''].version, f).toBeUndefined()
     }
+  })
+})
+
+describe('guarda: la versión no se compila dentro del frontend', () => {
+  it('ningún archivo de src/ ni vite.config.js usan __APP_VERSION__', () => {
+    const archivos = [...archivosFuente(SRC), join(process.cwd(), 'vite.config.js')]
+    const sucios = archivos.filter((f) => readFileSync(f, 'utf8').includes('__APP_VERSION__'))
+    expect(sucios).toEqual([])
   })
 })
 

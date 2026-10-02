@@ -1,6 +1,7 @@
 import { NavLink, Link } from 'react-router-dom'
 import { useI18n } from '../../i18n/index.jsx'
 import { useNombreDelSistema } from '../../store/useApariencia'
+import { useVersion } from '../../store/useVersion'
 
 // Orden pedido por Fernando (2026-10-02, con captura): Dashboard, Facetas &
 // Modelos, Costos, Repositorio, Memoria, Proyectos, Usuarios, Pipelines
@@ -31,6 +32,7 @@ const NAV_ITEMS = [
 export default function AdminSidebar() {
   const { t } = useI18n()
   const nombre = useNombreDelSistema(t)
+  const version = useVersion()
 
   return (
     <aside className="w-52 flex-shrink-0 bg-fondo border-r border-borde flex flex-col">
@@ -38,9 +40,9 @@ export default function AdminSidebar() {
         <div className="text-xs font-bold text-acento-texto uppercase tracking-widest">
           {t.adminTitle}
         </div>
-        {/* Versión desde el archivo VERSION (__APP_VERSION__, vite.config.js); el
+        {/* Versión pedida a /api/version (useVersion; sin número mientras carga); el
             nombre es system_name (frente C, 2026-09-16). */}
-        <div className="text-xs text-texto-tenue mt-0.5">{t.adminVersion(nombre, __APP_VERSION__)}</div>
+        <div className="text-xs text-texto-tenue mt-0.5">{version ? t.adminVersion(nombre, version) : nombre}</div>
       </div>
 
       <nav className="flex-1 py-3">
