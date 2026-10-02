@@ -50,6 +50,7 @@ function renderDetalle(id = '7') {
 function configurar({ proyecto = PROY, miembros = [M_YO, M_ADMIN, M_LECTOR] } = {}) {
   api.verProyecto.mockResolvedValue(proyecto)
   api.listarMiembros.mockResolvedValue({ miembros })
+  api.buscarCandidatos.mockResolvedValue({ candidatos: [] })
 }
 
 let espias
@@ -136,7 +137,7 @@ describe('Miembros', () => {
     renderDetalle()
     await screen.findByText('lec@x.com')
     expect(screen.queryByRole('button', { name: T.quitar })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: T.invitar })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(T.buscarPorEmail)).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: T.ajustes })).not.toBeInTheDocument()
   })
@@ -146,7 +147,7 @@ describe('Miembros', () => {
     renderDetalle()
     await screen.findByText('lec@x.com')
     expect(screen.queryByRole('button', { name: T.quitar })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: T.invitar })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(T.buscarPorEmail)).not.toBeInTheDocument()
   })
 
   it('las filas TENANT_ADMIN no llevan controles; las demás sí', async () => {
@@ -158,74 +159,6 @@ describe('Miembros', () => {
     const otra = screen.getByText('lec@x.com').closest('li')
     expect(within(otra).getByRole('button', { name: T.quitar })).toBeInTheDocument()
     expect(within(otra).getByRole('combobox')).toBeInTheDocument()
-  })
-
-  it('invitar llama a invitarMiembro con email y papel y recarga', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    api.buscarCandidatos.mockResolvedValue({ candidatos: [{ user_id: 9, email: 'nuevo@x.com' }] })
-    api.invitarMiembro.mockResolvedValue({})
-    renderDetalle()
-    await screen.findByText('lec@x.com')
-    fireEvent.change(screen.getByLabelText(T.buscarPorEmail), { target: { value: 'nue' } })
-    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
-    fireEvent.click(await screen.findByRole('button', { name: 'nuevo@x.com' }))
-    fireEvent.change(screen.getByLabelText(T.papel), { target: { value: 'CONTRIBUTOR' } })
-    const cargasAntes = api.verProyecto.mock.calls.length
-    fireEvent.click(screen.getByRole('button', { name: T.invitar }))
-    await waitFor(() => expect(api.invitarMiembro).toHaveBeenCalledWith(7, { email: 'nuevo@x.com', papel: 'CONTRIBUTOR' }))
-    await waitFor(() => expect(api.verProyecto.mock.calls.length).toBe(cargasAntes + 1))
-    expect(api.listarMiembros.mock.calls.length).toBe(cargasAntes + 1)
-  })
-
-  it('invitar muestra el texto de ya_es_miembro', async () => {
-    api.invitarMiembro.mockRejectedValue(error(409, 'ya_es_miembro'))
-    renderDetalle()
-    await screen.findByText('lec@x.com')
-    fireEvent.change(screen.getByLabelText(T.buscarPorEmail), { target: { value: 'lec@x.com' } })
-    fireEvent.click(screen.getByRole('button', { name: T.invitar }))
-    expect(await screen.findByText(T.errores.ya_es_miembro)).toBeInTheDocument()
-  })
-
-  it('debounce de 300 ms, mínimo 2 letras y una sola búsqueda por ráfaga', async () => {
-    api.buscarCandidatos.mockResolvedValue({ candidatos: [] })
-    renderDetalle()
-    await screen.findByText('lec@x.com')
-    // Reloj totalmente falso (sin avance real): con carga alta, el tiempo real
-    // sumaba a los 299 ms y la prueba era inestable.
-    vi.useFakeTimers()
-    const campo = screen.getByLabelText(T.buscarPorEmail)
-    fireEvent.change(campo, { target: { value: 'a' } })
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
-    expect(api.buscarCandidatos).not.toHaveBeenCalled()
-    fireEvent.change(campo, { target: { value: 'ab' } })
-    await act(async () => { await vi.advanceTimersByTimeAsync(299) })
-    expect(api.buscarCandidatos).not.toHaveBeenCalled()
-    fireEvent.change(campo, { target: { value: 'abc' } })
-    await act(async () => { await vi.advanceTimersByTimeAsync(299) })
-    expect(api.buscarCandidatos).not.toHaveBeenCalled()
-    await act(async () => { await vi.advanceTimersByTimeAsync(2) })
-    expect(api.buscarCandidatos).toHaveBeenCalledTimes(1)
-    expect(api.buscarCandidatos).toHaveBeenCalledWith(7, 'abc')
-    expect(screen.getByText(T.sinCandidatos)).toBeInTheDocument()
-  })
-
-  it('descarta la respuesta tardía de una búsqueda anterior', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    let resolverViejo
-    api.buscarCandidatos
-      .mockImplementationOnce(() => new Promise((r) => { resolverViejo = r }))
-      .mockResolvedValueOnce({ candidatos: [{ user_id: 5, email: 'nueva@x.com' }] })
-    renderDetalle()
-    await screen.findByText('lec@x.com')
-    const campo = screen.getByLabelText(T.buscarPorEmail)
-    fireEvent.change(campo, { target: { value: 'vie' } })
-    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
-    fireEvent.change(campo, { target: { value: 'nue' } })
-    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
-    expect(await screen.findByRole('button', { name: 'nueva@x.com' })).toBeInTheDocument()
-    await act(async () => { resolverViejo({ candidatos: [{ user_id: 6, email: 'vieja@x.com' }] }) })
-    expect(screen.queryByRole('button', { name: 'vieja@x.com' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'nueva@x.com' })).toBeInTheDocument()
   })
 
   it('cambiar el papel del último dueño muestra el texto de ultimo_dueno y recarga', async () => {
