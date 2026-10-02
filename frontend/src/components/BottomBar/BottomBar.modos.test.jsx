@@ -51,14 +51,34 @@ describe('BottomBar -- fila de modos con el selector de proyecto', () => {
       expect(sel.className).toContain(c)
       expect(chat.className).toContain(c)
     }
-    // mismo formato que un botón de modo inactivo: sin borde propio, mismo fondo
+    // Fernando (2026-10-02): se tiene que ver que es OTRA cosa, no un botón de
+    // modo. Mismo tamaño y tipografía, pero NO el fondo de los botones
+    // (bg-superficie) sino el token de superficie más clara (bg-superficie-2).
     const pipeline = screen.getByRole('button', { name: es.modePipeline })
     expect(sel.className).not.toMatch(/\bborder\b|border-borde/)
     expect(pipeline.className).not.toMatch(/\bborder\b|border-borde/)
-    expect(sel.className).toContain('bg-superficie')
-    expect(pipeline.className).toContain('bg-superficie')
+    expect(pipeline.className).toMatch(/(^|\s)bg-superficie(\s|$)/)
+    expect(sel.className).not.toMatch(/(^|\s)bg-superficie(\s|$)/)
+    expect(sel.className).toMatch(/(^|\s)bg-superficie-2(\s|$)/)
+    expect(sel.className).not.toMatch(/bg-\[|#[0-9a-f]{3,6}|rgb\(/i)
     expect(sel.className).not.toContain('min-h-11')
     expect(sel.className).toContain('focus-visible:ring-2')
+  })
+
+  it('va separado de Chat y el ícono 📁 separado del select (2026-10-02)', () => {
+    renderBar()
+    const fila = screen.getByTestId('fila-modos')
+    const sel = within(fila).getByLabelText(es.proyectos.selectorChat.etiqueta)
+    const bloque = sel.parentElement
+    // separación de Chat: margen a la izquierda y divisor sutil
+    expect(bloque.className).toMatch(/(^|\s)ml-\d/)
+    expect(bloque.className).toMatch(/border-l/)
+    expect(bloque.className).toMatch(/border-borde/)
+    // el ícono ya no se pega al select: sin margen negativo y con aire a la derecha
+    const icono = bloque.querySelector('[aria-hidden="true"]')
+    expect(icono.textContent).toBe('📁')
+    expect(icono.className).not.toMatch(/-mr-/)
+    expect(icono.className).toMatch(/(^|\s)mr-\d/)
   })
 
   it('solo se ve en modo Chat: desaparece al cambiar de modo y vuelve', () => {
