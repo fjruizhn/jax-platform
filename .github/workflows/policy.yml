@@ -1042,8 +1042,9 @@ jobs:
           // 1055 -> 1135 (2026-10-02, Proyectos E1, PR #176): +80, medido en el runner 1135/0/1135: pruebas de la API cliente, pantallas de proyectos, detalle, selector del chat, sesión y 44px.
           // 1135 -> 1160 (2026-10-02, Proyectos E1.1, PR #178): +25 medido en el runner 1160/0/1160: fila de modos, Miembros con lista marcable, lote atado a la sesión.
           // 1160 -> 1190 (2026-10-02, versión única y marca configurable, PR #179): +30 medido en el runner 1190/0/1190.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1190) {
-              console.error("PISO ROTO: se esperaban 1190 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1190 -> 1196 (2026-10-02, Proyectos dentro de Administración, PR #181): +6 medido en el runner 1196/0/1196.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1196) {
+              console.error("PISO ROTO: se esperaban 1196 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
