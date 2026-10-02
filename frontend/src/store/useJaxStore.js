@@ -170,6 +170,9 @@ export const useJaxStore = create((set, get) => {
   toasts: [],
   killSwitchActive: false,
   activeFacet: 'jax_local',
+  // Proyecto del chat (E1, T9): null = «Personal» | {id, nombre}. Solo en memoria:
+  // no se persiste (ver SelectorDeProyecto.jsx).
+  proyectoActivo: null,
   generatingImage: false,
   _pipelineCompletedShown: new Set(),
   _sessionEpoch: 0,
@@ -240,7 +243,7 @@ export const useJaxStore = create((set, get) => {
       }
       _revocarObjectURLsDeAdjuntos(get().messages)
       set({
-        token: null, user: null, messages: [], _pipelineCompletedShown: new Set(),
+        token: null, user: null, messages: [], proyectoActivo: null, _pipelineCompletedShown: new Set(),
         avisoSesion: null, saliendo: null,
         // Bloqueante 1 (revisión final, 2026-09-18): faltaba. Sin esto, otro
         // usuario que entra en la MISMA pestaña (no hay location.reload en el
@@ -292,6 +295,8 @@ export const useJaxStore = create((set, get) => {
   setWsStatus: (wsStatus) => set({ wsStatus }),
 
   setActiveFacet: (facet) => set({ activeFacet: facet }),
+
+  setProyectoActivo: (proyecto) => set({ proyectoActivo: proyecto ? { id: proyecto.id, nombre: proyecto.nombre } : null }),
 
   setGeneratingImage: (generatingImage) => set({ generatingImage }),
 

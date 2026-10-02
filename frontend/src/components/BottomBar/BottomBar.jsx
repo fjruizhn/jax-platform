@@ -4,6 +4,7 @@ import { useEjecutor } from '../../store/useEjecutor'
 import { useI18n } from '../../i18n/index.jsx'
 import KillSwitch from './KillSwitch'
 import PipelineModal from './PipelineModal'
+import SelectorDeProyecto from './SelectorDeProyecto'
 import AttachButton from '../chat/AttachButton'
 import FileAttachment from '../chat/FileAttachment'
 import api from '../../api/client'
@@ -45,6 +46,8 @@ function BottomBar() {
   const [politicaFallo, setPoliticaFallo] = useState(false)
   const addMessage = useJaxStore((s) => s.addMessage)
   const activeFacet = useJaxStore((s) => s.activeFacet)
+  const proyectoActivo = useJaxStore((s) => s.proyectoActivo)
+  const setProyectoActivo = useJaxStore((s) => s.setProyectoActivo)
   const setActiveFacet = useJaxStore((s) => s.setActiveFacet)
   const addToast = useJaxStore((s) => s.addToast)
   const setGeneratingImage = useJaxStore((s) => s.setGeneratingImage)
@@ -223,6 +226,8 @@ function BottomBar() {
     // Modo chat
     try {
       const chatBody = { message: text, facet: activeFacet, origin: 'web' }
+      // E1/T9: project_id solo si hay proyecto elegido; la clave no va en «Personal».
+      if (proyectoActivo) chatBody.project_id = proyectoActivo.id
       if (attachment) chatBody.adjuntos = [cuerpoDeAdjunto(attachment)]
       const { data } = await api.post('/chat', chatBody)
       const governed = data.governed_plain === true
@@ -242,6 +247,14 @@ function BottomBar() {
       // ya no lo necesita nadie.
       descartarAdjuntoComposer()
     } catch (err) {
+      if (codigoDe(err) === 'project_scope_denied') {
+        // El proyecto ya no es accesible: vuelve a «Personal», avisa y NO
+        // reintenta solo. El texto vuelve a la caja para reenviarlo a mano.
+        setProyectoActivo(null)
+        addToast({ type: 'warning', message: t.proyectos.proyectoNoDisponible })
+        setInput((actual) => actual || text)
+        return
+      }
       agregarError(activeFacet, Date.now().toString() + '_err', 'errorPrefix', textoDeErrorDeMesa(t, err, t.errorFacet))
       // El id ya no existe (venció o lo borraron): no hay nada para
       // reintentar con ÉL, así que se limpia para poder re-adjuntar.
@@ -332,6 +345,9 @@ function BottomBar() {
             </button>
           ))}
         </div>
+
+        {/* Selector de proyecto — solo en modo chat */}
+        {mode === 'chat' && <SelectorDeProyecto />}
 
         {/* Selector de faceta — solo visible en modo chat */}
         {mode === 'chat' && (
