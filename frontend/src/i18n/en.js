@@ -209,7 +209,7 @@ export default {
     adjuntos_sin_espacio: () => 'The server has no space to store the attachment right now. Try again later.',
     adjuntos_subidas_limite: (d) => `Too many uploads in a row. Wait ${d?.retry_after || 60} s and try again.`,
     adjuntos_reintentar: () => 'The attachment could not be saved right now. Try again.',
-    adjuntos_no_soportados: () => 'Hyde does not take attachments in chat: use Command mode.',
+    adjuntos_no_soportados: () => 'Hyde does not take attachments in chat.',
     imagen_no_soportada: () => "This facet's model does not accept images. Pick another facet or remove the image.",
     pdf_ilegible: () => 'The PDF could not be read: it is damaged or password-protected.',
     pdf_sin_texto: () => 'The PDF has no extractable text (is it a scan?).',
@@ -254,7 +254,7 @@ export default {
     transporte_no_soportado: () => '⚠️ The configured chat transport is not supported in the web Mesa.',
     identidad_del_modelo: () => 'I could not verify the current state.',
     estado_actual_no_disponible: () => 'I could not verify the current state.',
-    hyde_usa_modo_comando: () => 'Hyde works as an autonomous task runner — use Command mode for technical tasks.',
+    hyde_usa_modo_comando: () => 'Hyde does not converse in chat.',
   },
   avisoDesconocido: 'The facet replied with a notice this version does not know.',
   pipelineStarted: (id, mode, steps) =>

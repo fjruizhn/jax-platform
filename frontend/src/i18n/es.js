@@ -216,7 +216,7 @@ export default {
     adjuntos_sin_espacio: () => 'El servidor no tiene espacio para guardar el adjunto ahora. Vuelve a intentarlo más tarde.',
     adjuntos_subidas_limite: (d) => `Subiste demasiados archivos seguidos. Espera ${d?.retry_after || 60} s y vuelve a intentarlo.`,
     adjuntos_reintentar: () => 'No se pudo guardar el adjunto en este momento. Vuelve a intentarlo.',
-    adjuntos_no_soportados: () => 'Hyde no recibe adjuntos en el chat: usa el modo Comando.',
+    adjuntos_no_soportados: () => 'Hyde no recibe adjuntos en el chat.',
     imagen_no_soportada: () => 'El modelo de esta faceta no acepta imágenes. Elige otra faceta o quita la imagen.',
     pdf_ilegible: () => 'No se pudo leer el PDF: está dañado o protegido con contraseña.',
     pdf_sin_texto: () => 'El PDF no tiene texto que se pueda extraer (¿es un escaneo?).',
@@ -261,7 +261,7 @@ export default {
     transporte_no_soportado: () => '⚠️ El transporte de chat configurado no está soportado en la Mesa web.',
     identidad_del_modelo: () => 'No pude verificar el estado actual.',
     estado_actual_no_disponible: () => 'No pude verificar el estado actual.',
-    hyde_usa_modo_comando: () => 'Hyde opera en modo tarea autónoma — usa el modo Comando para ejecutar tareas técnicas.',
+    hyde_usa_modo_comando: () => 'Hyde no conversa por el chat.',
   },
   avisoDesconocido: 'La faceta respondió con un aviso que esta versión no conoce.',
   pipelineStarted: (id, mode, steps) =>
