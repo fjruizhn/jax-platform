@@ -40,7 +40,7 @@ export default function AdminSidebar() {
         </div>
         {/* Versión desde el archivo VERSION (__APP_VERSION__, vite.config.js); el
             nombre es system_name (frente C, 2026-09-16). */}
-        <div className="text-xs text-texto-tenue mt-0.5">{nombre} v{__APP_VERSION__}</div>
+        <div className="text-xs text-texto-tenue mt-0.5">{t.adminVersion(nombre, __APP_VERSION__)}</div>
       </div>
 
       <nav className="flex-1 py-3">

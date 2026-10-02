@@ -511,8 +511,12 @@ export default {
   },
 
   // Center panel
-  // El número sale del archivo VERSION de la raíz (vite.config.js), no se escribe acá.
-  platformLabel: (v) => `AXIOMA V${v}`,
+  // Ni el número ni el nombre van fijos (Principio IV): la plantilla recibe el nombre
+  // del sistema (system_name, o brandName de respaldo) y la versión del archivo
+  // VERSION, y cada idioma decide cómo se dice. La pantalla de inicio lo pone en
+  // mayúsculas por CSS.
+  platformLabel: (nombre, v) => `${nombre} V${v}`,
+  adminVersion: (nombre, v) => `${nombre} v${v}`,
   inMemoryOf: 'En memoria de Jairo Urbina.',
   inHonorOf: 'En honor al Prof. Raúl Jacobs.',
 
