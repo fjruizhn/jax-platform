@@ -4504,3 +4504,68 @@ jobs:
         with:
           name: f2d-exact-pair-evidence
           path: platform/f2d-exact-pair-evidence.json
+
+  # F2-E-SR-001 adds a JAX typed resolver API consumed by Platform's fixed
+  # FacetState and LAS MANOS health adapters. Test and record this exact pair.
+  f2e-runtime-status-exact-pair:
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'phase2/f2-e-runtime-status-resolution-platform'
+    runs-on: ubuntu-latest
+    env:
+      JAX_RUNTIME_STATUS_EXPECTED_SHA: 5eadd971c6d0033d5f851297357eaf77202c2033
+      JAX_REPO_PATH: ${{ github.workspace }}/jax
+      JAX_CONFIG_PATH: ${{ github.workspace }}/jax/las_manos/config.toml
+      JAX_CI_NO_DB: "1"
+      JAX_JWT_SECRET: f2e-runtime-status-ci-only
+    steps:
+      - name: Checkout exact platform pull request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Checkout exact JAX runtime-status API
+        uses: actions/checkout@v4
+        with:
+          repository: fjruizhn/Jax
+          ref: 5eadd971c6d0033d5f851297357eaf77202c2033
+          path: jax
+      - name: Require and record exact F2-E status pair
+        run: |
+          JAX_SHA=$(git -C jax rev-parse HEAD)
+          PLATFORM_SHA=$(git rev-parse HEAD)
+          test "$JAX_SHA" = "$JAX_RUNTIME_STATUS_EXPECTED_SHA"
+          test "$PLATFORM_SHA" = "${{ github.event.pull_request.head.sha }}"
+          python - <<'PY'
+          import json, os, subprocess
+          evidence = {
+              "jax_repository": "fjruizhn/Jax",
+              "jax_pr": 313,
+              "jax_head": os.environ["JAX_RUNTIME_STATUS_EXPECTED_SHA"],
+              "platform_repository": "fjruizhn/jax-platform",
+              "platform_pr": int(os.environ["GITHUB_PR_NUMBER"]),
+              "platform_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "integration": "F2-E-SR-001 typed runtime-status resolver bridge",
+          }
+          with open("f2e-runtime-status-exact-pair-evidence.json", "w", encoding="utf-8") as f:
+              json.dump(evidence, f, sort_keys=True)
+              f.write("\n")
+          print(json.dumps(evidence, sort_keys=True))
+          PY
+          cat f2e-runtime-status-exact-pair-evidence.json >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install backend test dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
+      - name: Exercise fixed platform sources against exact JAX API
+        working-directory: backend
+        env:
+          PYTHONPATH: ${{ github.workspace }}/jax
+        run: python -m pytest -q -p no:warnings tests/test_runtime_status_sources.py tests/test_platform_runtime_status_bridge.py
+      - name: Upload exact-pair runtime-status evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: f2e-runtime-status-exact-pair-evidence
+          path: f2e-runtime-status-exact-pair-evidence.json

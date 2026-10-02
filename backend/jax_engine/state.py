@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from tiempo import utc_ahora
 import httpx
 import aviso_pipeline
@@ -107,6 +108,49 @@ class JAXEngineState:
     def get_state(self) -> EcosystemState:
         return self._state
 
+    @staticmethod
+    def _parse_status_time(value: str) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+
+    def facet_runtime_status_snapshot(self, name: str) -> tuple[str, datetime] | None:
+        """Return only the registered facet's typed status and source time.
+
+        The snapshot deliberately excludes last_message, display_name, and all
+        request/tenant payload. It is a projection of JAX Platform state, not
+        provider/model health or facet existence evidence.
+        """
+        if not isinstance(name, str) or not name:
+            return None
+        facet = self._state.facets.get(name)
+        if facet is None or facet.name != name:
+            return None
+        if facet.status not in {"idle", "thinking", "error", "offline"}:
+            return None
+        observed_at = self._parse_status_time(facet.last_update)
+        if observed_at is None:
+            return None
+        return facet.status, observed_at
+
+    def engine_health_status_snapshot(self, name: str) -> tuple[str, datetime] | None:
+        """Return the fixed LAS MANOS health probe, never a caller URL/source."""
+        if name != "las_manos":
+            return None
+        observed_at = self._parse_status_time(self._state.last_health_check)
+        if observed_at is None:
+            return None
+        status = "alive" if self._state.las_manos_alive is True else "down"
+        if not isinstance(self._state.las_manos_alive, bool):
+            return None
+        return status, observed_at
+
     def register_user(self, user_id: str, tenant_id: str, role: str):
         self._state.connected_users[user_id] = UserSession(
             user_id=user_id, tenant_id=tenant_id, role=role
@@ -208,9 +252,12 @@ class JAXEngineState:
         except Exception:  # fail-soft: cualquier error de la sonda ES la señal 'caído' (alive=False) y se emite las_manos_health_changed
             alive = False
 
-        if alive != self._state.las_manos_alive:
-            self._state.las_manos_alive = alive
-            self._state.last_health_check = utc_ahora().isoformat() + "Z"
+        changed = alive != self._state.las_manos_alive
+        self._state.las_manos_alive = alive
+        # Freshness follows the completed health observation, not only a
+        # state transition. Event consumers still receive change events only.
+        self._state.last_health_check = utc_ahora().isoformat() + "Z"
+        if changed:
             for user_id, session in list(self._state.connected_users.items()):
                 event = JAXEvent(
                     event_type="las_manos_health_changed",
