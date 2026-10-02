@@ -30,6 +30,7 @@ const setStateMock = vi.fn()
 const getStateMock = vi.fn(() => ({ token: 'viejo' }))
 vi.mock('../store/useJaxStore', () => ({
   useJaxStore: { getState: getStateMock, setState: setStateMock },
+  SESION_VACIA: { token: null, user: null, proyectoActivo: null },
 }))
 
 let onRejected
@@ -60,6 +61,7 @@ describe('client.js -- aviso de por qué se cerró la sesión', () => {
     expect(setStateMock).toHaveBeenCalledWith({
       token: null,
       user: null,
+      proyectoActivo: null,
       avisoSesion: 'sesion_invalida',
     })
   })
@@ -72,6 +74,7 @@ describe('client.js -- aviso de por qué se cerró la sesión', () => {
     expect(setStateMock).toHaveBeenCalledWith({
       token: null,
       user: null,
+      proyectoActivo: null,
       avisoSesion: 'sesion_invalida',
     })
   })
@@ -84,6 +87,7 @@ describe('client.js -- aviso de por qué se cerró la sesión', () => {
     expect(setStateMock).toHaveBeenCalledWith({
       token: null,
       user: null,
+      proyectoActivo: null,
       avisoSesion: 'sesion_expirada',
     })
   })
@@ -98,7 +102,7 @@ describe('client.js -- aviso de por qué se cerró la sesión', () => {
 
     await expect(onRejected(err401())).rejects.toBeTruthy()
 
-    expect(setStateMock).toHaveBeenCalledWith({ token: null, user: null, avisoSesion: 'ajuste_ilegible' })
+    expect(setStateMock).toHaveBeenCalledWith({ token: null, user: null, proyectoActivo: null, avisoSesion: 'ajuste_ilegible' })
   })
 
   it('refresh falla con otro 5xx -> avisoSesion error_del_servidor', async () => {
@@ -106,7 +110,7 @@ describe('client.js -- aviso de por qué se cerró la sesión', () => {
 
     await expect(onRejected(err401())).rejects.toBeTruthy()
 
-    expect(setStateMock).toHaveBeenCalledWith({ token: null, user: null, avisoSesion: 'error_del_servidor' })
+    expect(setStateMock).toHaveBeenCalledWith({ token: null, user: null, proyectoActivo: null, avisoSesion: 'error_del_servidor' })
   })
 
   it('refresh anda -> reintenta el request original y no toca avisoSesion', async () => {

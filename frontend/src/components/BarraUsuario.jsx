@@ -67,6 +67,15 @@ function IconoHistorial() {
   )
 }
 
+// Carpeta: los proyectos compartidos (E1, T7).
+function IconoProyectos() {
+  return (
+    <svg className={ICONO} {...trazo}>
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </svg>
+  )
+}
+
 // Pieza de rompecabezas: la memoria son piezas sueltas hasta que alguien las
 // revisa. Trazo en currentColor como el resto de la barra, para que AL DIA se
 // vea como un icono mas y no como una alarma permanente.
@@ -208,6 +217,10 @@ export default function BarraUsuario() {
             usuario logueado -- es su propio historial, no administración. */}
         <Link to="/historial" aria-label={t.historialTitle} title={t.historialTitle} className={BOTON_NEUTRO}>
           <IconoHistorial />
+        </Link>
+
+        <Link to="/proyectos" aria-label={t.proyectos.titulo} title={t.proyectos.titulo} className={BOTON_NEUTRO}>
+          <IconoProyectos />
         </Link>
 
         {/* SIEMPRE visible, también en 0 (corrección de Fernando, 2026-09-20).

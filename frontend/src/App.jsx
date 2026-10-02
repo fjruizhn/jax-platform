@@ -5,6 +5,8 @@ import { sincronizarApariencia } from './apariencia/sincronizarApariencia'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Historial from './pages/Historial'
+import Proyectos from './pages/Proyectos'
+import ProyectoDetalle from './pages/ProyectoDetalle'
 import Admin from './pages/Admin'
 import ResetPassword from './pages/ResetPassword'
 import RequireAuth from './components/RequireAuth'
@@ -68,6 +70,23 @@ export default function App() {
           element={
             <RequireAuth>
               <Historial />
+            </RequireAuth>
+          }
+        />
+        {/* E1, T7: proyectos. /proyectos/:id monta ProyectoDetalle (T8). */}
+        <Route
+          path="/proyectos"
+          element={
+            <RequireAuth>
+              <Proyectos />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/proyectos/:id"
+          element={
+            <RequireAuth>
+              <ProyectoDetalle />
             </RequireAuth>
           }
         />
