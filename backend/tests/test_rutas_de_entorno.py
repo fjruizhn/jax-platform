@@ -31,8 +31,6 @@ SUPER = AuthUser(user_id="1", tenant_id="1", role="superadmin")
 
 @pytest.mark.parametrize("modulo, variable", [
     ("api.audit", "JAX_AUDIT_LOG_PATH"),
-    ("api.command", "JAX_MISSIONS_DIR"),
-    ("api.command", "JAX_BIN"),
     ("api.admin.repository", "JAX_REPO_BASE"),
     ("governance_context", "JAX_REPO_PATH"),
     ("api.chat", "JAX_CONFIG_PATH"),
@@ -46,18 +44,15 @@ def test_sin_la_variable_el_modulo_no_se_importa(modulo, variable):
 
 
 # Fuera, con motivo: model_catalog.py (~/.claude/.credentials.json, ubicacion
-# que define Claude Code), el cwd del subproceso jax en api/command.py (el
-# directorio de trabajo de la CLI, no una ruta de datos) y el default del
+# que define Claude Code) y el default del
 # directorio de estado del ejecutor programado del catálogo (2026-09-27):
 # `JAX_CATALOGO_ESTADO_DIR` es la fuente real (igual que las demas rutas de
 # este archivo), pero un default AUSENTE ahi rompería la primera corrida en
 # cualquier maquina que todavia no lo declare en /etc/jax/.env -- el HOME del
 # servicio (jaxsvc en produccion) es un lugar razonable para un archivo de
-# dedupe que no es secreto ni configuracion, mismo criterio que
-# api/command.py.
+# dedupe que no es secreto ni configuracion.
 PERMITIDOS = {
     ("model_catalog.py", "expanduser"),
-    ("api/command.py", "Path.home()"),
     ("catalogo_modelos_ejecutor.py", "Path.home()"),
 }
 

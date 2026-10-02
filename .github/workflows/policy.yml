@@ -3321,7 +3321,18 @@ jobs:
           # job (barrera test-db.env, JAX_DB_USER=jax_test verificado): 3100 passed / 2
           # skipped DESPUÉS -- coincide con el "3097 DESPUÉS" del round anterior + 3, sin
           # arrastre. PISO_PASSED se suma sobre el declarado (3095), no sobre el bruto local.
-          PISO_PASSED = 3098
+          # 3098 -> 3059 (2026-10-02, Hyde, T16: retiro de /command, decisión de Fernando
+          # D-5 del spec El Faro). -39 tests colectados: test_command_ownership (-8),
+          # test_command_path_traversal (-3), test_command_stderr (-2) y
+          # test_owner_cleanup (-10), archivos enteros; test_mesa_codigos -14 (13 de
+          # command y el parámetro de api/command.py de test_ningun_detail_es_texto_libre);
+          # test_rutas_de_entorno -2 (los de api.command). El caso /api/command de
+          # test_kill_switch_mesa no cambia el conteo (es un caso dentro de un test).
+          # Delta medido por colección, mismo comando con JAX_CI_NO_DB=1: 3159
+          # colectados antes -> 3120 después. NO se midió con DB real (el local no
+          # tiene la barrera test-db.env): el job lo confirma o lo corrige (regla 5,
+          # el último en llegar re-mide).
+          PISO_PASSED = 3059
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3366,7 +3377,8 @@ jobs:
   # Verificado además que NO miente: quitando a mano el guard `uuid.UUID(task_id)`
   # de api/command.py (el que frena el path traversal), este job se pone en rojo
   # con 1 failed. Detecta regresión real, no es un no-op como lo fue el scanner
-  # P10 en jax hasta la ronda 4.
+  # P10 en jax hasta la ronda 4. (T16, 2026-10-02: api/command.py se retiró; esa
+  # comprobación histórica ya no se puede repetir, y su test se fue con el endpoint.)
   backend-tests-no-db:
     runs-on: ubuntu-latest
     defaults:
@@ -4291,7 +4303,11 @@ jobs:
       # 36354899003) y esta rama passed=1978 (run 36381118121): delta propio +70. Piso =
       # declarado de master (1842, sin premiar la deriva ajena) + 70 = 1912.
       # +3 (2026-09-27, Hyde: resumen de corrida saltada; los 3 tests no usan DB).
-      JAX_CI_MIN_PASSED: "1915"
+      # 1915 -> 1878 (2026-10-02, Hyde, T16: retiro de /command): -37 passed y -2 skipped,
+      # medido con el comando documentado y el mismo checkout de JAX (jax 93900c2):
+      # antes 2037 passed / 1122 skipped -> después 2000 / 1120. Piso = declarado
+      # (1915) - 37.
+      JAX_CI_MIN_PASSED: "1878"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

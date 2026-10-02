@@ -62,7 +62,6 @@ def test_peor_caso_en_la_mesa(client, usuarios, monkeypatch):
     casos = [
         ("/api/chat", {"message": "hola", "facet": "jax_local"}),
         ("/api/image/generate", {"prompt": "un faro"}),
-        ("/api/command", {"command": "ls", "mode": "dry_run"}),
         ("/api/pipelines", {"name": "t", "objective": "o"}),
         ("/api/pipelines/00000000-0000-0000-0000-000000000000/resume", None),
     ]

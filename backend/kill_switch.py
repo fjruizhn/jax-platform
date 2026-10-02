@@ -71,7 +71,6 @@ EVENTO_LIBERADO = "kill_switch_released"
 RUTAS_FRENADAS = frozenset({
     ("POST", "/api/chat"),
     ("POST", "/api/image/generate"),
-    ("POST", "/api/command"),
     ("POST", "/api/pipelines"),
     ("POST", "/api/pipelines/{pipeline_id}/resume"),
     # Ruling del principal (2026-09-17, frente D): la subida de adjuntos también
