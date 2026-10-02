@@ -3359,7 +3359,11 @@ jobs:
           # 3070 -> 3071 (reauditoria de T16, MINOR-14): +1 con `client` en test_chat_codigos.py (Hyde
           #   en el chat al superadmin le declara ejecutor:true). Medido con DB real: 3130 passed / 2
           #   skipped (3129 antes). Sin DB no suma passed (se salta): JAX_CI_MIN_PASSED no cambia.
-          PISO_PASSED = 3071
+          # 3071 -> 3073 (2026-10-02, Hyde, C2 snapshot_lv, fase 4b req. 2): +2 en
+          #   test_ejecutor_tablas.py (el metodo esta en el contrato; la migracion amplia el
+          #   ENUM sin perder filas, con DB). Delta medido por archivo con DB real (contenedor
+          #   mariadb:12.3.3): 26 -> 28 passed. Vistos en rojo contra a22829f^ (el codigo viejo).
+          PISO_PASSED = 3073
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4338,7 +4342,9 @@ jobs:
       # 1882 -> 1887 (2026-10-02, auditoria de T16): re-medido sin DB, mismo comando y mismo
       # jax 93900c2: origin/master 34856b7 2037 passed / 1124 skipped -> esta rama 2009 / 1122
       # = -28 (+4 de test_retiro_ajuste_retencion). Piso = declarado (1915) - 28 = 1887.
-      JAX_CI_MIN_PASSED: "1887"
+      # 1887 -> 1888 (2026-10-02, C2 snapshot_lv): +1 puro en test_ejecutor_tablas.py (el otro
+      # nuevo pide `client`: +1 skip). Medido por archivo con JAX_CI_NO_DB=1: 6/20 -> 7/21.
+      JAX_CI_MIN_PASSED: "1888"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

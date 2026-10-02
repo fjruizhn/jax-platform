@@ -3398,14 +3398,20 @@ async def _eliminar_sudo_y_machine_id_de_ejecutor_host(cur) -> None:
             await cur.execute(f"ALTER TABLE ejecutor_host DROP COLUMN {columna}")
 
 
-_METODOS_PUNTO_RESTAURACION = ("imagen_vm", "restic_ficheros", "volcado_mariadb", "recreacion")
+_METODOS_PUNTO_RESTAURACION = (
+    "imagen_vm", "restic_ficheros", "volcado_mariadb", "recreacion",
+    # Fase 4b (veredicto de ronda 3, req. 2): las VMs del ensayo viven en LVs thin; su punto
+    # de restauración es un snapshot de LV verificado restaurando (snapshot del snapshot +
+    # canario leído con virt-cat). imagen_vm y recreacion mentirían sobre cómo se verificó.
+    "snapshot_lv",
+)
 
 
 async def _asegurar_forma_de_ejecutor_punto_restauracion(cur) -> None:
     """Deja `ejecutor_punto_restauracion` en su forma final (C2, diseño 2026-09-22, Esquema):
 
     (a) `metodo` pasa de VARCHAR(50) (texto libre) a
-        `ENUM('imagen_vm','restic_ficheros','volcado_mariadb','recreacion') NOT NULL` --
+        `ENUM(<_METODOS_PUNTO_RESTAURACION>) NOT NULL` (hoy 5, con 'snapshot_lv') --
         un método que no está en la lista no se guarda, punto (mismo criterio que
         chk_capability_mode: fail-closed, no un texto que cualquiera podía escribir).
     (b) se agrega `respaldado_at DATETIME NOT NULL` -- la hora del SNAPSHOT, que ninguna
@@ -3447,7 +3453,7 @@ async def _asegurar_forma_de_ejecutor_punto_restauracion(cur) -> None:
         if total:
             await cur.execute(
                 "SELECT DISTINCT metodo FROM ejecutor_punto_restauracion WHERE metodo NOT IN "
-                "(%s,%s,%s,%s) ORDER BY metodo",
+                f"({','.join(['%s'] * len(_METODOS_PUNTO_RESTAURACION))}) ORDER BY metodo",
                 _METODOS_PUNTO_RESTAURACION,
             )
             invalidos = [fila[0] for fila in await cur.fetchall()]
