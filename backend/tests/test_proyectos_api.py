@@ -63,7 +63,7 @@ def test_descripcion_vacia_se_guarda_como_null(client):
     r = m.crear(h, "Alfa", "   ")
     assert r.status_code == 201, r.text
     assert r.json()["descripcion"] is None
-    r2 = client.patch(f"{P}/{r.json()['id']}", headers=h, json={"nombre": "Beta", "descripcion": ""})
+    r2 = client.put(f"{P}/{r.json()['id']}", headers=h, json={"nombre": "Beta", "descripcion": ""})
     assert r2.status_code == 200, r2.text
     assert r2.json()["descripcion"] is None and r2.json()["nombre"] == "Beta"
 
@@ -119,7 +119,7 @@ def test_ultimo_dueno_no_se_rebaja(client):
     m = Mundo(client)
     h = m.usuario("dueno")
     pid = m.crear(h, "Alfa").json()["id"]
-    r = client.patch(f"{P}/{pid}/miembros/{m.id_de('dueno')}", headers=h, json={"papel": "VIEWER"})
+    r = client.put(f"{P}/{pid}/miembros/{m.id_de('dueno')}", headers=h, json={"papel": "VIEWER"})
     assert r.status_code == 409 and _code(r) == "ultimo_dueno"
     assert client.get(f"{P}/{pid}", headers=h).json()["papel"] == "OWNER"
 
@@ -137,7 +137,7 @@ def test_invitar_cambiar_quitar(client):
     por_id = {x["user_id"]: x for x in miembros}
     assert por_id[oid]["papel"] == "VIEWER" and por_id[oid]["email"] == m.email_de("otro")
     assert set(por_id[oid]) == {"user_id", "email", "papel", "origen"}
-    r = client.patch(f"{P}/{pid}/miembros/{oid}", headers=dueno, json={"papel": "CONTRIBUTOR"})
+    r = client.put(f"{P}/{pid}/miembros/{oid}", headers=dueno, json={"papel": "CONTRIBUTOR"})
     assert r.status_code == 204 and r.content == b""
     assert client.get(f"{P}/{pid}", headers=otro).json()["papel"] == "CONTRIBUTOR"
     r = client.delete(f"{P}/{pid}/miembros/{oid}", headers=dueno)
@@ -245,19 +245,19 @@ def test_renombrar_valida_nombre(client):
     m = Mundo(client)
     h = m.usuario("dueno")
     pid = m.crear(h, "Alfa", "d").json()["id"]
-    r = client.patch(f"{P}/{pid}", headers=h, json={"nombre": "", "descripcion": None})
+    r = client.put(f"{P}/{pid}", headers=h, json={"nombre": "", "descripcion": None})
     assert r.status_code == 422
-    r = client.patch(f"{P}/{pid}", headers=h, json={"nombre": "   ", "descripcion": None})
+    r = client.put(f"{P}/{pid}", headers=h, json={"nombre": "   ", "descripcion": None})
     assert r.status_code == 422 and _code(r) == "datos_invalidos"
-    r = client.patch(f"{P}/{pid}", headers=h, json={"nombre": "Beta", "descripcion": None})
+    r = client.put(f"{P}/{pid}", headers=h, json={"nombre": "Beta", "descripcion": None})
     assert r.status_code == 200 and r.json()["nombre"] == "Beta" and r.json()["descripcion"] is None
 
 
-def test_patch_sin_descripcion_422(client):
+def test_put_sin_descripcion_422(client):
     m = Mundo(client)
     h = m.usuario("dueno")
     pid = m.crear(h, "Alfa", "conservame").json()["id"]
-    r = client.patch(f"{P}/{pid}", headers=h, json={"nombre": "Beta"})
+    r = client.put(f"{P}/{pid}", headers=h, json={"nombre": "Beta"})
     assert r.status_code == 422
     assert client.get(f"{P}/{pid}", headers=h).json()["descripcion"] == "conservame"
 
@@ -290,3 +290,21 @@ def test_ningun_500_filtra_mensaje_interno(client, monkeypatch):
 
 def test_sin_sesion_401(client):
     assert client.get(P).status_code in (401, 403)
+
+
+def test_patch_ya_no_existe_405(client):
+    m = Mundo(client)
+    h = m.usuario("dueno")
+    pid = m.crear(h, "Alfa").json()["id"]
+    assert client.patch(f"{P}/{pid}", headers=h, json={"nombre": "B", "descripcion": None}).status_code == 405
+    r = client.patch(f"{P}/{pid}/miembros/{m.id_de('dueno')}", headers=h, json={"papel": "VIEWER"})
+    assert r.status_code == 405
+
+
+def test_cors_permite_idempotency_key_y_put():
+    from fastapi.middleware.cors import CORSMiddleware
+    from main import app
+
+    opciones = next(mw.kwargs for mw in app.user_middleware if mw.cls is CORSMiddleware)
+    assert "Idempotency-Key" in opciones["allow_headers"]
+    assert "PUT" in opciones["allow_methods"] and "PATCH" not in opciones["allow_methods"]

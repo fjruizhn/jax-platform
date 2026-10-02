@@ -234,7 +234,7 @@ app.add_middleware(
     allow_origins=[o for o in [os.getenv("FRONTEND_ORIGIN", "")] if o],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
 )
 
 ROUTERS = (

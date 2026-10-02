@@ -97,8 +97,8 @@ def _descripcion(valor: str | None) -> str | None:
 
 
 class ProyectoIn(BaseModel):
-    """Cuerpo de POST y de PATCH. En PATCH `descripcion` es OBLIGATORIA (puede
-    ser null): rename_project reemplaza la descripción entera, y un PATCH que
+    """Cuerpo de POST y de PUT. En PUT `descripcion` es OBLIGATORIA (puede
+    ser null): rename_project reemplaza la descripción entera, y un PUT que
     solo mandara el nombre la borraría en silencio."""
     nombre: str = Field(min_length=1, max_length=255)
     descripcion: str | None = Field(max_length=2000)
@@ -163,7 +163,7 @@ async def ver(project_id: int, user: AuthUser = Depends(get_current_user)):
     return await _leer(user, project_id)
 
 
-@router.patch("/proyectos/{project_id}")
+@router.put("/proyectos/{project_id}")
 async def renombrar(project_id: int, body: ProyectoIn, user: AuthUser = Depends(get_current_user)):
     _ids(user)
     try:
@@ -208,7 +208,7 @@ async def invitar(project_id: int, body: MiembroIn, user: AuthUser = Depends(get
     return {"user_id": nuevo}
 
 
-@router.patch("/proyectos/{project_id}/miembros/{user_id}", status_code=204)
+@router.put("/proyectos/{project_id}/miembros/{user_id}", status_code=204)
 async def cambiar_papel(project_id: int, user_id: int, body: PapelIn, user: AuthUser = Depends(get_current_user)):
     _ids(user)
     try:
