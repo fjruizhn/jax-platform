@@ -161,6 +161,22 @@ describe('Proyectos', () => {
     expect(crearProyecto.mock.calls[1][1]).toBe(crearProyecto.mock.calls[0][1])
   })
 
+  it('error, editar el nombre y reintentar usa una llave distinta', async () => {
+    crearProyecto.mockRejectedValueOnce({ response: { status: 409, data: { detail: { code: 'estado_no_permite' } } } })
+    crearProyecto.mockResolvedValueOnce({ id: 9, nombre: 'Corregido' })
+    renderProyectos()
+    await screen.findByText('Alfa')
+    const dialogo = abrirModal()
+    fireEvent.change(within(dialogo).getByLabelText(T.nombre), { target: { value: 'Nuevo' } })
+    fireEvent.click(within(dialogo).getByRole('button', { name: T.crear }))
+    await within(dialogo).findByText(T.errores.estado_no_permite)
+    await waitFor(() => expect(within(dialogo).getByRole('button', { name: T.crear })).not.toBeDisabled())
+    fireEvent.change(within(dialogo).getByLabelText(T.nombre), { target: { value: 'Corregido' } })
+    fireEvent.click(within(dialogo).getByRole('button', { name: T.crear }))
+    await waitFor(() => expect(crearProyecto).toHaveBeenCalledTimes(2))
+    expect(crearProyecto.mock.calls[1][1]).not.toBe(crearProyecto.mock.calls[0][1])
+  })
+
   it('un código desconocido cae en el texto genérico', async () => {
     crearProyecto.mockRejectedValueOnce({ response: { data: { detail: { code: 'inventado' } } } })
     renderProyectos()

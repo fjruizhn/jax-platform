@@ -8,7 +8,7 @@ import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 
 // Alta de proyecto (E1, T7), sobre Dialogo. La Idempotency-Key nace AL ABRIR
 // el modal (este componente se monta al abrirlo) y se reutiliza en cada
-// reintento: si la primera petición llegó al servidor y la respuesta se perdió,
+// reintento con el mismo cuerpo: si la primera petición llegó al servidor y la respuesta se perdió,
 // el reintento devuelve el mismo proyecto en vez de crear un duplicado.
 // `enviandoRef` espeja el estado de forma síncrona: dos clics dentro del mismo
 // render no pueden colarse mientras `disabled` aún no se pintó.
@@ -20,12 +20,15 @@ const BOTON_SECUNDARIO = `${TAMANO_BOTON_ACCION} min-h-11 px-4 rounded bg-superf
 export default function CrearProyectoModal({ onCerrar }) {
   const { t } = useI18n()
   const navigate = useNavigate()
-  const [llave] = useState(() => crypto.randomUUID())
   const [nombre, setNombre] = useState('')
   const [descripcion, setDescripcion] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [error, setError] = useState(null)
   const enviandoRef = useRef(false)
+  // Llave + cuerpo del último envío. Mismo cuerpo = reintento real (misma
+  // llave); cuerpo distinto = otra solicitud (llave nueva), o la API respondería
+  // idempotencia_conflicto y el usuario quedaría trabado.
+  const envioRef = useRef({ llave: crypto.randomUUID(), cuerpo: null })
   const vivoRef = useRef(true)
   // Cierra la ventana de respuestas tardías: si el modal ya se cerró, el
   // resultado no navega ni toca el estado.
@@ -38,10 +41,14 @@ export default function CrearProyectoModal({ onCerrar }) {
     setEnviando(true)
     setError(null)
     try {
-      const creado = await crearProyecto(
-        { nombre: nombre.trim(), descripcion: descripcion.trim() || null },
-        llave,
-      )
+      const cuerpo = { nombre: nombre.trim(), descripcion: descripcion.trim() || null }
+      const previo = envioRef.current
+      if (previo.cuerpo && (previo.cuerpo.nombre !== cuerpo.nombre || previo.cuerpo.descripcion !== cuerpo.descripcion)) {
+        envioRef.current = { llave: crypto.randomUUID(), cuerpo }
+      } else {
+        envioRef.current = { llave: previo.llave, cuerpo }
+      }
+      const creado = await crearProyecto(cuerpo, envioRef.current.llave)
       if (!vivoRef.current) return
       vivoRef.current = false
       onCerrar()
