@@ -5,7 +5,7 @@ import { useJaxStore } from '../store/useJaxStore'
 import { useNombreDelSistema } from '../store/useApariencia'
 import { listarProyectos } from '../api/proyectos'
 import { codigoDe } from '../api/errores'
-import { TAMANO_BOTON_ACCION } from '../tema/botones'
+import { TAMANO_BOTON_44 } from '../tema/botones'
 import CrearProyectoModal from '../components/proyectos/CrearProyectoModal'
 
 // Lista de proyectos (E1, T7): pestañas Activos / Archivados / Ocultos, paginada
@@ -14,7 +14,7 @@ import CrearProyectoModal from '../components/proyectos/CrearProyectoModal'
 // interfaz: la defensa real es el 403/404 de la API al no-admin.
 const VISTAS = ['activos', 'archivados', 'ocultos']
 const FOCO = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
-const BOTON = `${TAMANO_BOTON_ACCION} min-h-11 px-4 rounded bg-superficie-2 text-texto hover:text-texto-fuerte border border-borde-control ${FOCO} disabled:opacity-50 transition-colors`
+const BOTON = `${TAMANO_BOTON_44} rounded bg-superficie-2 text-texto hover:text-texto-fuerte border border-borde-control ${FOCO} disabled:opacity-50 transition-colors`
 
 export default function Proyectos() {
   const { t } = useI18n()
@@ -62,7 +62,7 @@ export default function Proyectos() {
           <h1 className="text-xl font-bold text-texto-fuerte">{t.proyectos.titulo}</h1>
           <div className="flex items-center gap-4">
             <button type="button" onClick={() => setCreando(true)} className={BOTON}>{t.proyectos.nuevo}</button>
-            <Link to="/" className="text-xs text-texto-tenue hover:text-texto transition-colors flex items-center gap-1.5">
+            <Link to="/" className={`${TAMANO_BOTON_44} text-texto-tenue hover:text-texto transition-colors gap-1.5`}>
               <span aria-hidden="true">←</span>
               <span>{t.historialBack(nombreSistema)}</span>
             </Link>
@@ -72,7 +72,7 @@ export default function Proyectos() {
         <div role="tablist" className="flex gap-1 mb-4 border-b border-borde">
           {vistas.map((v) => (
             <button key={v} type="button" role="tab" aria-selected={vista === v} onClick={() => setVista(v)}
-              className={`${TAMANO_BOTON_ACCION} min-h-11 px-4 -mb-px border-b-2 ${FOCO} transition-colors ${vista === v ? 'border-foco text-texto-fuerte' : 'border-transparent text-texto-tenue hover:text-texto'}`}>
+              className={`${TAMANO_BOTON_44} -mb-px border-b-2 ${FOCO} transition-colors ${vista === v ? 'border-foco text-texto-fuerte' : 'border-transparent text-texto-tenue hover:text-texto'}`}>
               {t.proyectos.vistas[v]}
             </button>
           ))}

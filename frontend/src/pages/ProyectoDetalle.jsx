@@ -88,7 +88,7 @@ export default function ProyectoDetalle() {
   return (
     <div className="min-h-dvh bg-fondo text-texto p-6">
       <div className="max-w-3xl mx-auto">
-        <Link to="/proyectos" className="text-xs text-texto-tenue hover:text-texto transition-colors flex items-center gap-1.5 mb-4">
+        <Link to="/proyectos" className={`${TAMANO_BOTON_44} -ml-4 text-texto-tenue hover:text-texto transition-colors gap-1.5 mb-4`}>
           <span aria-hidden="true">←</span>
           <span>{T.volverAProyectos}</span>
         </Link>

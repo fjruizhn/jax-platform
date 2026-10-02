@@ -4,7 +4,7 @@ import { useI18n } from '../../i18n/index.jsx'
 import Dialogo from '../Dialogo'
 import { crearProyecto } from '../../api/proyectos'
 import { codigoDe } from '../../api/errores'
-import { TAMANO_BOTON_ACCION } from '../../tema/botones'
+import { TAMANO_BOTON_44 } from '../../tema/botones'
 
 // Alta de proyecto (E1, T7), sobre Dialogo. La Idempotency-Key nace AL ABRIR
 // el modal (este componente se monta al abrirlo) y se reutiliza en cada
@@ -14,8 +14,8 @@ import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 // render no pueden colarse mientras `disabled` aún no se pintó.
 const CAMPO = 'w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue focus:outline-none focus:border-foco'
 const ETIQUETA = 'block text-xs text-texto-suave mb-1'
-const BOTON_PRIMARIO = `${TAMANO_BOTON_ACCION} min-h-11 px-4 rounded bg-superficie-2 text-texto-fuerte border border-borde-control hover:border-foco focus:outline-none focus-visible:ring-2 focus-visible:ring-foco disabled:opacity-50 transition-colors`
-const BOTON_SECUNDARIO = `${TAMANO_BOTON_ACCION} min-h-11 px-4 rounded bg-superficie text-texto-suave hover:text-texto focus:outline-none focus-visible:ring-2 focus-visible:ring-foco transition-colors`
+const BOTON_PRIMARIO = `${TAMANO_BOTON_44} rounded bg-superficie-2 text-texto-fuerte border border-borde-control hover:border-foco focus:outline-none focus-visible:ring-2 focus-visible:ring-foco disabled:opacity-50 transition-colors`
+const BOTON_SECUNDARIO = `${TAMANO_BOTON_44} rounded bg-superficie text-texto-suave hover:text-texto focus:outline-none focus-visible:ring-2 focus-visible:ring-foco transition-colors`
 
 export default function CrearProyectoModal({ onCerrar }) {
   const { t } = useI18n()
