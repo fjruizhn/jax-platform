@@ -1035,8 +1035,12 @@ jobs:
           //   no cambian de cantidad.
           // 1049 -> 1050 (mismo PR): +1 en BottomBar.ejecutor.test.jsx, el modo Comando
           //   no lo ve ningún rol; visto en rojo contra d4fa054. Medido: 1050/0/1050.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1050) {
-              console.error("PISO ROTO: se esperaban 1050 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1050 -> 1055 (2026-10-02, auditoria de T16): +5, medido 1055/0/1055: +1 en
+          //   AdminSettings.test.jsx (sin campo de retencion), +1 en errores.test.js
+          //   (hyde_no_conversa_en_chat) y +3 en store/restosRetirados.test.js; los tres vistos
+          //   en rojo antes del arreglo.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1055) {
+              console.error("PISO ROTO: se esperaban 1055 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3346,7 +3350,13 @@ jobs:
           # api.command no existe, la app no registra /api/command, el evento
           # command_completed y la ruta frenada se fueron); vistos en rojo contra
           # d4fa054. Neto del PR: 3098 -> 3063.
-          PISO_PASSED = 3063
+          # 3063 -> 3070 (2026-10-02, rebase sobre #173 + auditoria de T16): re-medido CON DB real
+          #   (jax_memory_test, usuario jax_test, MISMO comando, 0 failed): origin/master 34856b7
+          #   3159 passed / 2 skipped -> esta rama 3129 / 2 = -30 (el retiro -39, +4 de
+          #   test_command_retirado, +4 de test_retiro_ajuste_retencion, +1 de test_chat_codigos).
+          #   Piso = declarado de master (3098) + 2 de #173 (regla 5) - 30 = 3070. Las
+          #   pruebas con `client` de MAJOR-7/MINOR-8 corrieron de verdad contra la DB.
+          PISO_PASSED = 3070
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4322,7 +4332,10 @@ jobs:
       # antes 2037 passed / 1122 skipped -> después 2000 / 1120. Piso = declarado
       # (1915) - 37 = 1878; +4 puros de tests/test_command_retirado.py (2004 passed
       # medido) = 1882.
-      JAX_CI_MIN_PASSED: "1882"
+      # 1882 -> 1887 (2026-10-02, auditoria de T16): re-medido sin DB, mismo comando y mismo
+      # jax 93900c2: origin/master 34856b7 2037 passed / 1124 skipped -> esta rama 2009 / 1122
+      # = -28 (+4 de test_retiro_ajuste_retencion). Piso = declarado (1915) - 28 = 1887.
+      JAX_CI_MIN_PASSED: "1887"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
