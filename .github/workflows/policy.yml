@@ -1040,8 +1040,9 @@ jobs:
           //   (hyde_no_conversa_en_chat) y +3 en store/restosRetirados.test.js; los tres vistos
           //   en rojo antes del arreglo.
           // 1055 -> 1135 (2026-10-02, Proyectos E1, PR #176): +80, medido en el runner 1135/0/1135: pruebas de la API cliente, pantallas de proyectos, detalle, selector del chat, sesión y 44px.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1135) {
-              console.error("PISO ROTO: se esperaban 1135 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1135 -> 1160 (2026-10-02, Proyectos E1.1, PR #178): +25 medido en el runner 1160/0/1160: fila de modos, Miembros con lista marcable, lote atado a la sesión.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1160) {
+              console.error("PISO ROTO: se esperaban 1160 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
