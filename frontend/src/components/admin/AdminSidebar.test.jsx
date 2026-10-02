@@ -4,8 +4,8 @@ import { MemoryRouter } from 'react-router-dom'
 import '@testing-library/jest-dom'
 import AdminSidebar from './AdminSidebar'
 import { I18nProvider } from '../../i18n/index.jsx'
-import pkg from '../../../package.json'
 import es from '../../i18n/es.js'
+import en from '../../i18n/en.js'
 import { useApariencia } from '../../store/useApariencia'
 
 function renderSidebar() {
@@ -23,16 +23,15 @@ beforeEach(() => {
   useApariencia.setState({ systemName: null, langDefault: null })
 })
 
-// I-1 (revisión final PR 2, 2026-09-14): "Axioma v0.3" estaba fijo en el
-// JSX. Ahora sale de package.json vía __APP_VERSION__ (define en
-// vite.config.js), así que el número en pantalla tiene que coincidir con
-// el version de package.json -- una sola fuente. Guarda que ya pasaba;
+// I-1 (2026-09-14) y 2026-10-02: la versión sale del archivo VERSION de la
+// raíz vía __APP_VERSION__ (define en vite.config.js) -- una sola fuente; el
+// contenido exacto de VERSION se ata en src/version.test.jsx. Guarda que ya pasaba;
 // sigue vigente porque sin system_name configurado el nombre por defecto es
 // la marca de i18n ("Axioma"), igual que antes del frente C.
 describe('AdminSidebar -- versión (I-1)', () => {
-  it('muestra la versión de package.json, no un número fijo en el JSX', () => {
+  it('muestra __APP_VERSION__, no un número fijo en el JSX', () => {
     renderSidebar()
-    expect(screen.getByText(`Axioma v${pkg.version}`)).toBeInTheDocument()
+    expect(screen.getByText(`Axioma v${__APP_VERSION__}`)).toBeInTheDocument()
     expect(screen.queryByText('Axioma v0.3')).not.toBeInTheDocument()
   })
 })
@@ -48,26 +47,59 @@ describe('AdminSidebar', () => {
   })
 })
 
-// Observación de Fernando (2026-09-20): Memoria tiene que ser el 2º ítem del
-// menú. Memoria.jsx quedó ruteada como hermana de /admin/* con la marca
-// `absoluto: true` -- de ahí salían las dos quejas (ver App.test.jsx y
-// Admin.test.jsx). Acá se ata el orden; el candado de ruta relativa
-// (sin `absoluto`) se ata abajo.
-describe('AdminSidebar -- posición de Memoria (2026-09-20)', () => {
-  it('Memoria es el 2º ítem del menú, justo después de Dashboard', () => {
+// Orden pedido por Fernando (2026-10-02, con captura). Sustituye al de
+// 2026-09-20 (Memoria 2ª): ahora Memoria va 5ª y Proyectos 6ª.
+const ORDEN = [
+  'adminDashboard', 'adminFacetsModels', 'adminCosts', 'adminRepo', 'adminMemoria',
+  'adminProyectos', 'adminUsers', 'adminPipelinesOcultos', 'adminSettings', 'adminSmtp',
+]
+
+describe('AdminSidebar -- orden del menú (2026-10-02)', () => {
+  it('Dashboard · Facetas · Costos · Repositorio · Memoria · Proyectos · Usuarios · Pipelines ocultos · Configuración · Correo', () => {
     renderSidebar()
-    // Cada enlace lleva un ícono antes del texto (span aparte); el texto
-    // visible es lo que importa para el orden, no el ícono.
-    const enlaces = screen.getAllByRole('link').map((a) => a.textContent)
-    // El primer enlace de la lista es "Dashboard"; el 2º tiene que ser
-    // "Memoria" -- no el último, como estaba antes.
-    expect(enlaces[0]).toContain(es.adminDashboard)
-    expect(enlaces[1]).toContain(es.adminMemoria)
+    // Los enlaces de navegación; el último (volver) no es del menú.
+    const enlaces = screen.getAllByRole('link').slice(0, ORDEN.length).map((a) => a.textContent)
+    ORDEN.forEach((clave, i) => {
+      expect(enlaces[i], `posición ${i + 1}`).toContain(es[clave])
+    })
+    expect(screen.getAllByRole('link')).toHaveLength(ORDEN.length + 1)
+  })
+
+  it('las etiquetas de Proyectos existen en es y en', () => {
+    expect(es.adminProyectos).toBe('Proyectos')
+    expect(en.adminProyectos).toBe('Projects')
   })
 
   it('Memoria es una ruta relativa del caparazón (/admin/memoria), no absoluta', () => {
     renderSidebar()
     const enlaceMemoria = screen.getByRole('link', { name: new RegExp(es.adminMemoria) })
     expect(enlaceMemoria).toHaveAttribute('href', '/admin/memoria')
+  })
+
+  it('Proyectos lleva a la pantalla de proyectos que ya existe (/proyectos)', () => {
+    renderSidebar()
+    const enlace = screen.getByRole('link', { name: new RegExp(es.adminProyectos) })
+    expect(enlace).toHaveAttribute('href', '/proyectos')
+  })
+})
+
+// Fernando (2026-10-02): ⚙ y ✉ se veían grises (símbolos de texto, no emoji).
+// Un glifo con presentación de emoji por defecto (Emoji_Presentation) sale de
+// color sin depender de un selector de variación ni de la fuente.
+describe('AdminSidebar -- íconos de color (2026-10-02)', () => {
+  const claves = ['adminSettings', 'adminSmtp', 'adminProyectos']
+  for (const clave of claves) {
+    it(`${clave} usa un emoji de color por defecto`, () => {
+      renderSidebar()
+      const enlace = screen.getAllByRole('link').find((a) => a.textContent.includes(es[clave]))
+      const icono = enlace.querySelector('span').textContent
+      expect(icono).toMatch(/^\p{Emoji_Presentation}$/u)
+    })
+  }
+
+  it('el detector rechaza los símbolos monocromos que había', () => {
+    for (const mono of ['\u2699', '\u2709']) {
+      expect(mono).not.toMatch(/^\p{Emoji_Presentation}$/u)
+    }
   })
 })

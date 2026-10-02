@@ -610,6 +610,7 @@ export default {
   adminSettings: 'Configuración',
   adminCosts: 'Costos',
   adminMemoria: 'Memoria',
+  adminProyectos: 'Proyectos',
   // Fix round 1 (MINOR-7): faltaba en AdminSidebar -- el superadmin entraba
   // por el enlace de BarraUsuario pero no podía volver sin salir de Admin.
   adminPipelinesOcultos: 'Pipelines descartados y ocultos',

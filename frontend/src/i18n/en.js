@@ -566,6 +566,7 @@ export default {
   adminSettings: 'Settings',
   adminCosts: 'Costs',
   adminMemoria: 'Memory',
+  adminProyectos: 'Projects',
   adminPipelinesOcultos: 'Discarded and hidden pipelines',
   adminBack: (nombre) => `Back to ${nombre}`,
 
