@@ -5,19 +5,6 @@ import { diccionarioActivo } from '../i18n/index.jsx'
 import { EYE_ESTADO_REPOSO } from './eyeRestState'
 import { tokenDeFaceta } from '../tema/tokens'
 
-// A-53 (2026-09-16): el resultado de un comando llega con código cuando no hay
-// texto que mostrar (sin output, fallo o simulación). Lo usan el evento de WS
-// y la consulta de pendientes: un solo lugar decide el texto.
-export function contenidoDeComando(t, datos) {
-  if (datos?.code === 'comando_fallo') {
-    // Ronda final M7: sin motivo no queda "Error ejecutando la tarea: " colgando.
-    const motivo = typeof datos.motivo === 'string' ? datos.motivo.trim() : ''
-    return motivo ? t.commandFailed(motivo) : t.commandFailedSinMotivo
-  }
-  if (datos?.code === 'comando_simulado') return t.commandDryRun(datos.result || '')
-  return datos?.result || t.commandNoResult
-}
-
 const RESULTS_FETCH_MAX_ATTEMPTS = 2
 // Tope del POST /auth/logout: salir nunca espera más que esto a la red.
 const LOGOUT_TIMEOUT_MS = 5000
@@ -62,10 +49,8 @@ function _revocarObjectURLsDeAdjuntos(messages) {
   }
 }
 
-// Nunca descarta un mensaje 'running' (comando/tarea todavía en curso en el
-// backend) aunque sea el más viejo — perderlo acá pierde el resultado para
-// siempre (ver applyResult, que sólo lo escribe si el placeholder sigue en
-// `messages`). Sólo recorta entre los mensajes ya resueltos.
+// Nunca descarta un mensaje 'running' (todavía en curso) aunque sea el más
+// viejo. Sólo recorta entre los mensajes ya resueltos.
 function _capMessages(messages) {
   if (messages.length <= MAX_MESSAGES) return messages
   let toDrop = messages.length - MAX_MESSAGES
@@ -157,9 +142,8 @@ async function _postDelFreno(url, set) {
 }
 
 export const useJaxStore = create((set, get) => {
-  // Varios escritores async (fetch de resultados de pipeline, polling de
-  // comandos pendientes) programan su propio setTimeout/then() que puede
-  // resolver bien después de logout(), bien después de que OTRO usuario se
+  // Varios escritores async (fetch de resultados de pipeline) programan su
+  // propio setTimeout/then() que puede resolver bien después de logout(), bien después de que OTRO usuario se
   // loguee en el mismo browser — un simple "¿hay token?" no distingue esos
   // dos casos, porque el nuevo login también deja un token truthy. Cada
   // cambio de sesión (login/logout/restoreSession) incrementa
@@ -167,30 +151,6 @@ export const useJaxStore = create((set, get) => {
   // su trabajo y sólo escriben si sigue siendo el mismo al resolver.
   const bumpSessionEpoch = () => set((s) => ({ _sessionEpoch: s._sessionEpoch + 1 }))
   const isSameSession = (epoch) => get()._sessionEpoch === epoch && !!get().token
-
-  // jax_pending_cmds está scopeado por dueño (user_id), no sólo limpiado en
-  // logout(): la sesión también puede terminar por un refresh silencioso
-  // que falla (api/client.js) o por restoreSession() al cargar la página, y
-  // perseguir cada uno de esos puntos es frágil. Con el owner embebido, un
-  // login de OTRO usuario en el mismo browser simplemente no matchea y lee
-  // vacío — sin importar por dónde terminó la sesión anterior.
-  const _loadPendingIds = () => {
-    try {
-      const raw = JSON.parse(localStorage.getItem('jax_pending_cmds') || 'null')
-      if (!raw || raw.owner !== (get().user?.user_id ?? null) || !Array.isArray(raw.ids)) return []
-      return raw.ids
-    } catch { return [] }
-  }
-  const _savePendingIds = (ids) => {
-    localStorage.setItem('jax_pending_cmds', JSON.stringify({ owner: get().user?.user_id ?? null, ids }))
-  }
-  // A-44 (2026-09-16): "resolver un comando" (contenido, estado, sacarlo de
-  // pendientes) en un solo lugar. Quien llama conserva sus chequeos (sesión
-  // vigente, mensaje que todavía existe) ANTES de llamarlo.
-  const _resolverComando = (msgId, taskId, content, status) => {
-    set((s) => ({ messages: s.messages.map((m) => (m.id === msgId ? { ...m, content, status } : m)) }))
-    _savePendingIds(_loadPendingIds().filter((id) => id !== taskId))
-  }
 
   return {
   token: null,
@@ -293,10 +253,6 @@ export const useJaxStore = create((set, get) => {
     })()
     set({ saliendo: promesa })
     return promesa
-    // No hace falta limpiar jax_pending_cmds acá a mano: está scopeado por
-    // owner (ver _loadPendingIds arriba), así que un login de otro usuario
-    // ya lo lee vacío solo. Borrarlo acá de más perdería, sin necesidad, los
-    // comandos pendientes propios de ESTE usuario si vuelve a loguearse.
   },
 
   // Mi cuenta (2026-09-12, admin usuarios etapa 4): el backend sube la versión
@@ -406,38 +362,6 @@ export const useJaxStore = create((set, get) => {
       set({ activeFacet: null })
     }
 
-    if (event_type === 'command_completed') {
-      const { task_id, status } = payload
-      const msgId = `cmd-${task_id}`
-      const msgStatus = status === 'failed' ? 'failed' : 'completed'
-      const sessionEpoch = get()._sessionEpoch
-
-      const applyResult = (content) => {
-        if (!isSameSession(sessionEpoch)) return
-        // El placeholder pudo ser evictado por _capMessages (sesión muy
-        // larga) — no purgar el id pendiente en ese caso: así
-        // restorePendingTasks lo recupera en el próximo reload en vez de
-        // perder el resultado para siempre.
-        if (!get().messages.some((m) => m.id === msgId)) return
-        _resolverComando(msgId, task_id, content, msgStatus)
-      }
-
-      if (payload.result || payload.code) {
-        applyResult(contenidoDeComando(diccionarioActivo(), payload))
-      } else if (task_id) {
-        // resultado completo en archivo — pedir al backend. Los dos
-        // argumentos de .then() separan "el fetch falló" (sin resultado)
-        // de "el fetch anduvo pero applyResult tiró" (bug real, no debe
-        // aplicar "sin resultado" como si fuera la respuesta válida).
-        api.get(`/command/${task_id}`).then(
-          ({ data }) => applyResult(contenidoDeComando(diccionarioActivo(), data)),
-          () => applyResult(diccionarioActivo().commandNoResult)
-        ).catch((err) => console.error('command result render failed', err))
-      } else {
-        applyResult(diccionarioActivo().commandNoResult)
-      }
-    }
-
     if (event_type === 'pipeline_step_changed' && typeof payload?.pipeline_id === 'string' && payload.status === 'completed') {
       const { pipeline_id } = payload
       const shown = get()._pipelineCompletedShown
@@ -540,81 +464,6 @@ export const useJaxStore = create((set, get) => {
 
       fetchResults(1)
     }
-  },
-
-  checkPendingTasks: async () => {
-    const sessionEpoch = get()._sessionEpoch
-    if (!isSameSession(sessionEpoch)) return
-    const running = get().messages.filter(
-      (m) => m.status === 'running' && m.id.startsWith('cmd-')
-    )
-    let stillRunning = 0
-    for (const msg of running) {
-      if (!isSameSession(sessionEpoch)) return
-      const taskId = msg.id.slice(4)
-      try {
-        const { data } = await api.get(`/command/${taskId}`)
-        if (!isSameSession(sessionEpoch)) return
-        // A-44: un fallo o un completado sin texto (con código) también
-        // resuelven; antes solo `completed` con `result` salía de "running".
-        if (data.status === 'completed' || data.status === 'failed') {
-          _resolverComando(msg.id, taskId, contenidoDeComando(diccionarioActivo(), data), data.status)
-        } else {
-          stillRunning++
-        }
-      } catch (err) {
-        const httpStatus = err.response?.status
-        if (httpStatus === 404 || httpStatus === 400) {
-          // El backend ya no reconoce este task_id como propio (ownership
-          // check del endpoint, tarea muy vieja ya limpiada, etc.) — sin
-          // esto, restorePendingTasks() lo recrea como placeholder
-          // "verificando estado…" para siempre en cada reload, un zombie
-          // que nunca se resuelve. Se resuelve acá y se saca de la lista.
-          _resolverComando(msg.id, taskId, diccionarioActivo().commandNoResult, 'completed')
-        } else {
-          stillRunning++ // error transitorio (red, 5xx) — reintentar en el próximo ciclo
-        }
-      }
-    }
-    // si quedan tareas en curso, reintentar en 5s para capturar el resultado.
-    // No hace falta re-chequear la sesión acá: no hubo ningún await desde el
-    // último chequeo dentro del loop, así que sigue siendo válida en este
-    // mismo tick — y la llamada reprogramada vuelve a capturar y validar su
-    // propio epoch al entrar, cubriendo un logout que ocurra en esos 5s.
-    if (stillRunning > 0) {
-      setTimeout(() => get().checkPendingTasks(), 5000)
-    }
-  },
-
-  // sessionEpoch: capturado por el llamador ANTES de lanzar el POST que
-  // produjo este taskId (ver BottomBar.jsx) — si la sesión cambió mientras
-  // ese POST estaba en vuelo, no hay que registrar el id bajo la sesión
-  // nueva (owner-scoping en _savePendingIds ya evita que otro usuario lo
-  // lea, pero esto además evita pisarle a la sesión nueva su propia lista).
-  registerPendingCommand: (taskId, sessionEpoch) => {
-    if (!isSameSession(sessionEpoch)) return
-    const ids = _loadPendingIds()
-    if (!ids.includes(taskId)) _savePendingIds([...ids, taskId])
-  },
-
-  restorePendingTasks: () => {
-    const ids = _loadPendingIds()
-    if (!ids.length) return
-    const ts = new Date().toISOString()
-    set((s) => {
-      const existingIds = new Set(s.messages.map((m) => m.id))
-      const added = ids
-        .filter((taskId) => !existingIds.has(`cmd-${taskId}`))
-        .map((taskId) => ({
-          id: `cmd-${taskId}`,
-          facet: 'hyde',
-          content: diccionarioActivo().taskRestoring(taskId.slice(0, 8)),
-          status: 'running',
-          timestamp: ts,
-        }))
-      return added.length ? { messages: _capMessages([...s.messages, ...added]) } : s
-    })
-    get().checkPendingTasks()
   },
 
   addMessage: (msg) => set((s) =>

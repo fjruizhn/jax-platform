@@ -4,8 +4,7 @@ hacía cumplir como valor inicial).
 
 Hasta el 2026-09-16 la pantalla Configuración guardaba estas cinco claves en
 axioma_config y NADIE las leía: la sesión duraba 7 días fijos (auth/jwt.py),
-el cupo era 3 fijo (resource_manager.py), la retención 30 días fija
-(owner_cleanup.py), el idioma 'es' y el nombre "Axioma" desde i18n.
+el cupo era 3 fijo (resource_manager.py), (la retención de tareas web, 30 días fija, se retiró en T16 con /command), el idioma 'es' y el nombre "Axioma" desde i18n.
 
 Reglas:
   - Una sola consulta por PRIMARY para las cinco (CONSULTA; EXPLAIN en
@@ -55,7 +54,6 @@ MAX_PARALLEL_PIPELINES  = 3
 
 SESION = "session_timeout_min"
 MAX_PIPELINES = "max_pipelines"
-RETENCION = "web_task_retention_days"
 IDIOMA = "lang_default"
 NOMBRE = "system_name"
 # Umbral de confirmación de costo de un pipeline (spec 2026-09-17 §6.1): por
@@ -72,7 +70,7 @@ CONFIRMAR_USD = "pipeline_confirmar_usd"
 # `get_tope_devoluciones()` cuando falta la fila -- el árbitro puede objetar
 # pero no devuelve, y la primera objeción termina el pipeline en `disputed`.
 TOPE_DEVOLUCIONES = "jacobs.tope_devoluciones"
-CLAVES = (SESION, MAX_PIPELINES, RETENCION, IDIOMA, NOMBRE, CONFIRMAR_USD, TOPE_DEVOLUCIONES)
+CLAVES = (SESION, MAX_PIPELINES, IDIOMA, NOMBRE, CONFIRMAR_USD, TOPE_DEVOLUCIONES)
 
 # Baranda ELEGIDA EN ESTA RAMA (2026-09-20), no en el spec: el spec fija el
 # valor inicial en 2 y explica el porqué del tope --«sin tope, dos modelos
@@ -90,7 +88,6 @@ NOMBRE_MAX = 60
 # main.py) y el endpoint que lo lea responde 503.
 SESION_MIN = ACCESS_EXPIRE_SECONDS // 60
 SESION_MAX = 10080  # 7 días: la vida que el código hacía cumplir el 2026-09-16
-RETENCION_MAX = 365
 CONFIRMAR_USD_MAX = "999999.99"
 CONFIRMAR_USD_DECIMALES = 2
 # Canónico: sin ceros a la izquierda, punto decimal, hasta 2 decimales, ASCII.
@@ -158,7 +155,6 @@ class Definicion:
 DEFINICIONES: dict[str, Definicion] = {
     SESION: Definicion(_entero(SESION_MIN, SESION_MAX), {"min": SESION_MIN, "max": SESION_MAX}),
     MAX_PIPELINES: Definicion(_entero(1, MAX_PARALLEL_PIPELINES), {"min": 1, "max": MAX_PARALLEL_PIPELINES}),
-    RETENCION: Definicion(_entero(1, RETENCION_MAX), {"min": 1, "max": RETENCION_MAX}),
     IDIOMA: Definicion(_idioma, {"opciones": list(IDIOMAS)}),
     NOMBRE: Definicion(_nombre, {"max_largo": NOMBRE_MAX}),
     # Los montos viajan como string: un float de JSON no es un monto exacto.

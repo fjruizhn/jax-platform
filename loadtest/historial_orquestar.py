@@ -152,10 +152,8 @@ def construir_env(seed: dict, tmp: Path) -> dict:
     env["JAX_KILL_SWITCH_PATH"] = str(tmp / "interruptor" / "PAUSE")
     env["JAX_EJECUTOR_PAUSA"] = str(tmp / "ejecutor-pausa" / "PAUSA")
     env["JAX_EJECUTOR_PYTHON"] = str(tmp / "no-existe" / "python")  # nunca puede lanzar nada real
-    env["JAX_MISSIONS_DIR"] = str(tmp / "missions")
     env["JAX_REPO_BASE"] = str(tmp / "repo")
     env["JAX_AUDIT_LOG_PATH"] = str(tmp / "audit.jsonl")
-    env["JAX_BIN"] = str(tmp / "bin" / "jax")
     env["JAX_ADJUNTOS_DIR"] = str(tmp / "adjuntos")
     env["JAX_PROXY_CARRIL_RAIZ"] = str(tmp / "carril")
     for k, v in {

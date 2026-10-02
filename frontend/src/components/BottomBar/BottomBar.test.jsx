@@ -179,7 +179,7 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
     await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
     adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
     await screen.findByAltText('f.png')
-    fireEvent.click(screen.getByRole('button', { name: es.modeComando }))
+    fireEvent.click(screen.getByRole('button', { name: es.modeImagen }))
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:u1')
     expect(screen.queryByAltText('f.png')).not.toBeInTheDocument()
   })
@@ -201,7 +201,7 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
     await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
     adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
     // Sale del chat MIENTRAS la subida sigue en vuelo.
-    fireEvent.click(screen.getByRole('button', { name: es.modeComando }))
+    fireEvent.click(screen.getByRole('button', { name: es.modeImagen }))
     resolverSubida({ data: SUBIDA_IMAGEN })
     await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1))
     // El chequeo de generación va ANTES de crear el object URL -- nunca se
@@ -214,13 +214,13 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
   // si el modo vuelve a 'chat' antes de que la subida resuelva, el chequeo
   // viejo la aceptaba igual. Hace falta un contador de generación que se
   // invalide en CADA salida del chat, no sólo "¿el modo de ahora es chat?".
-  it('chat → comando → chat mientras la subida sigue en vuelo: la respuesta tardía no adjunta nada ni crea object URL', async () => {
+  it('chat → imagen → chat mientras la subida sigue en vuelo: la respuesta tardía no adjunta nada ni crea object URL', async () => {
     let resolverSubida
     api.post.mockImplementationOnce(() => new Promise((r) => { resolverSubida = r }))
     const { container } = renderBar()
     await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
     adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
-    fireEvent.click(screen.getByRole('button', { name: es.modeComando }))
+    fireEvent.click(screen.getByRole('button', { name: es.modeImagen }))
     fireEvent.click(screen.getByRole('button', { name: es.modeChat }))
     resolverSubida({ data: SUBIDA_IMAGEN })
     await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1))

@@ -32,7 +32,7 @@ export function textoDeDetalleDeBinding(t, detail) {
   return null
 }
 
-// Errores de la Mesa (frente A, A-51, 2026-09-16): chat, comando, imagen,
+// Errores de la Mesa (frente A, A-51, 2026-09-16): chat, imagen,
 // pipelines y subida responden un código estable. Nunca se muestra el código
 // crudo ni un texto del backend; `motivo` (lo que dijo un servicio externo,
 // ya redactado por el backend) se agrega como dato, igual que smtpServerSaid.

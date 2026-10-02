@@ -13,8 +13,8 @@ from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 
 router = APIRouter(prefix="/api/admin")
 
-# Frente C (2026-09-16): los cinco ajustes que mandan (session_timeout_min,
-# max_pipelines, web_task_retention_days, lang_default, system_name) NO van
+# Frente C (2026-09-16): los ajustes que mandan (session_timeout_min,
+# max_pipelines, lang_default, system_name y los que se sumaron) NO van
 # acá. Sus filas las crea una vez db/migrations.py::_ajustes_que_mandan_v1, y
 # si faltan, la respuesta es 503 ajuste_ilegible (ajustes.py): un GET de esta
 # pantalla no puede recrearlas en silencio con un default.

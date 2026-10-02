@@ -279,17 +279,15 @@ HEREDADA_DE_PRODUCCION = str(_interruptor.RUTA_HEREDADA)
 HEREDADA_EXISTIA_AL_INICIO = os.path.lexists(HEREDADA_DE_PRODUCCION)
 
 # Rutas de datos aisladas (2026-09-16, frente A, A-55), por la misma razón
-# que el sello y el respaldo de uso: api/command.py, api/audit.py y
+# que el sello y el respaldo de uso: api/audit.py y
 # api/admin/repository.py las leen AL IMPORTARSE. Antes eran ~/jax/... REALES
 # y test_command_path_traversal escribía en ~/jax/missions de producción.
 # Forzadas (no setdefault): un /etc/jax/.env con las rutas reales no puede
 # ganarles. JAX_REPO_PATH y JAX_CONFIG_PATH NO se fijan acá: apuntan al repo
 # `jax` de verdad (vocabulario, config) y las pone el job de CI o quien corre.
 _RUTAS_DE_PRUEBA = tempfile.mkdtemp(prefix="jax-test-rutas-")
-os.environ["JAX_MISSIONS_DIR"] = os.path.join(_RUTAS_DE_PRUEBA, "missions")
 os.environ["JAX_REPO_BASE"] = os.path.join(_RUTAS_DE_PRUEBA, "repo")
 os.environ["JAX_AUDIT_LOG_PATH"] = os.path.join(_RUTAS_DE_PRUEBA, "audit.jsonl")
-os.environ["JAX_BIN"] = os.path.join(_RUTAS_DE_PRUEBA, "bin", "jax")
 # Semilla (A-54): en una base vacía (CI) hay que sembrar user_id=1. Valores de
 # prueba salvo que el .env traiga los reales.
 os.environ.setdefault("JAX_SEED_SUPERADMIN_EMAIL", "superadmin-semilla@example.invalid")
@@ -943,7 +941,7 @@ def ajustes_en_db(client):
     yield SimpleNamespace(
         poner=poner, quitar=quitar, filas=filas,
         validos={"session_timeout_min": "10080", "max_pipelines": "3",
-                 "web_task_retention_days": "30", "lang_default": "es", "system_name": "Axioma",
+                 "lang_default": "es", "system_name": "Axioma",
                  "pipeline_confirmar_usd": "0.50"},
     )
     client.portal.call(sql, f"DELETE FROM axioma_config WHERE config_key IN ({marcadores})", ajustes.CLAVES)

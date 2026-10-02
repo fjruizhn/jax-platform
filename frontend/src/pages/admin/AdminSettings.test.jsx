@@ -20,7 +20,6 @@ import { aplicarTema } from '../../tema/aplicarTema'
 const LIMITES = {
   session_timeout_min: { min: 15, max: 10080 },
   max_pipelines: { min: 1, max: 3 },
-  web_task_retention_days: { min: 1, max: 365 },
   lang_default: { opciones: ['es', 'en'] },
   system_name: { max_largo: 60 },
 }
@@ -188,7 +187,7 @@ describe('AdminSettings -- ajustes que mandan', () => {
   const COMPLETA = { data: { config: [
     { key: 'system_name', value: 'Axioma' }, { key: 'lang_default', value: 'es' },
     { key: 'theme_default', value: 'dark' }, { key: 'session_timeout_min', value: '10080' },
-    { key: 'max_pipelines', value: '3' }, { key: 'web_task_retention_days', value: '30' },
+    { key: 'max_pipelines', value: '3' },
   ], limites: LIMITES } }
 
   it('los campos toman mínimo, máximo y largo del servidor', async () => {
@@ -207,7 +206,20 @@ describe('AdminSettings -- ajustes que mandan', () => {
     renderSettings()
     expect(await screen.findByLabelText(es.adminSettingsTimeout)).toHaveValue(null)
     expect(screen.getByLabelText(es.adminSettingsMaxPipelines)).toHaveValue(null)
-    expect(screen.getByLabelText(es.adminSettingsRetention)).toHaveValue(null)
+  })
+
+  // T16 (2026-10-02): web_task_retention_days se retiró con /command (el reaper
+  // que lo leía se borró). Ningún campo ni etiqueta de retención en la pantalla.
+  it('no hay campo de retención de tareas web y su limite no se pinta', async () => {
+    api.get.mockResolvedValue(COMPLETA)
+    renderSettings()
+    await screen.findByLabelText(es.adminSettingsTimeout)
+    expect(document.getElementById('ajuste-retencion')).toBeNull()
+    expect(screen.queryByText(/Retención de tareas web/)).not.toBeInTheDocument()
+    expect(es.adminSettingsRetention).toBeUndefined()
+    expect(en.adminSettingsRetention).toBeUndefined()
+    expect(es.adminSettingsRetentionAyuda).toBeUndefined()
+    expect(en.adminSettingsRetentionAyuda).toBeUndefined()
   })
 
   it('un valor fuera de rango se nombra con la etiqueta del campo, en los dos idiomas', async () => {
@@ -235,7 +247,6 @@ describe('AdminSettings -- ajustes que mandan', () => {
   it('las ayudas existen en los dos idiomas', () => {
     for (const t of [es, en]) {
       expect(t.adminSettingsTimeoutAyuda).toBeTruthy()
-      expect(t.adminSettingsRetentionAyuda).toBeTruthy()
       expect(t.adminSettingsMaxPipelinesAyuda(3)).toContain('3')
     }
   })

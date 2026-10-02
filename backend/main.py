@@ -75,7 +75,6 @@ from db.seed import run_seed
 from db import indices_forzados
 from jax_engine.state import engine_state
 from jax_engine.events import event_bus
-from jax_engine.owner_cleanup import start_owner_file_cleanup
 from jax_engine.facet_canary import start_facet_canary
 from uso.reintento import start_reintento_de_uso
 from jax_engine.websocket_hub import ws_hub
@@ -91,7 +90,6 @@ from api.facets import router as facets_router
 from api.pipelines import router as pipelines_router
 from api.events import router as events_router
 from api.chat import router as chat_router, _raiz_del_carril, _url_de_ollama
-from api.command import router as command_router
 from api.audit import router as audit_router
 from api.image import router as image_router
 from api.upload import router as upload_router
@@ -184,9 +182,7 @@ async def lifespan(app: FastAPI):
     await run_seed()
     await engine_state.cargar_nombres_de_facetas()
     engine_state.start_background_tasks()
-    asyncio.create_task(start_owner_file_cleanup())
-    # RD2: vencidos y huérfanos de JAX_ADJUNTOS_DIR. Tarea hermana, no dentro
-    # del bucle de owner_cleanup (6 h): ver almacen.INTERVALO_DE_LIMPIEZA.
+    # RD2: vencidos y huérfanos de JAX_ADJUNTOS_DIR (ver almacen.INTERVALO_DE_LIMPIEZA).
     asyncio.create_task(almacen_de_adjuntos.start_limpieza_de_adjuntos())
     asyncio.create_task(start_facet_canary())
     # Drenaje del respaldo de uso (2026-09-15, Task 3): reinserta las filas
@@ -248,7 +244,6 @@ ROUTERS = (
     pipelines_router,
     events_router,
     chat_router,
-    command_router,
     audit_router,
     image_router,
     upload_router,

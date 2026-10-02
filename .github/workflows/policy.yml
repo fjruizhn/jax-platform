@@ -1025,8 +1025,22 @@ jobs:
           // translations and provider-body spoof suppression regressions.
           // 1068 -> 1069 (F2-D D01/D25): governed response speaker label never
           // reconstructs a runtime facet; measured in the targeted frontend suite.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1069) {
-              console.error("PISO ROTO: se esperaban 1069 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1069 -> 1049 (2026-10-02, Hyde, T16: retiro del modo Comando y de /command,
+          //   decisión de Fernando D-5 del spec El Faro). -20, medido con
+          //   `npx vitest run --reporter=json` antes (1069/0/1069) y después
+          //   (1049/0/1049): useJaxStore.comandos.test.js (-9) y
+          //   useJaxStore.commandPolling.test.js (-3) enteros, useJaxStore.logoutRace.test.js
+          //   (-7, 8 -> 1) y useJaxStore.eviction.test.js (-1, restorePendingTasks).
+          //   Los demás tests tocados (BottomBar*, useWebSocket, errores, contraste)
+          //   no cambian de cantidad.
+          // 1049 -> 1050 (mismo PR): +1 en BottomBar.ejecutor.test.jsx, el modo Comando
+          //   no lo ve ningún rol; visto en rojo contra d4fa054. Medido: 1050/0/1050.
+          // 1050 -> 1055 (2026-10-02, auditoria de T16): +5, medido 1055/0/1055: +1 en
+          //   AdminSettings.test.jsx (sin campo de retencion), +1 en errores.test.js
+          //   (hyde_no_conversa_en_chat) y +3 en store/restosRetirados.test.js; los tres vistos
+          //   en rojo antes del arreglo.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1055) {
+              console.error("PISO ROTO: se esperaban 1055 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3321,7 +3335,31 @@ jobs:
           # job (barrera test-db.env, JAX_DB_USER=jax_test verificado): 3100 passed / 2
           # skipped DESPUÉS -- coincide con el "3097 DESPUÉS" del round anterior + 3, sin
           # arrastre. PISO_PASSED se suma sobre el declarado (3095), no sobre el bruto local.
-          PISO_PASSED = 3098
+          # 3098 -> 3059 (2026-10-02, Hyde, T16: retiro de /command, decisión de Fernando
+          # D-5 del spec El Faro). -39 tests colectados: test_command_ownership (-8),
+          # test_command_path_traversal (-3), test_command_stderr (-2) y
+          # test_owner_cleanup (-10), archivos enteros; test_mesa_codigos -14 (13 de
+          # command y el parámetro de api/command.py de test_ningun_detail_es_texto_libre);
+          # test_rutas_de_entorno -2 (los de api.command). El caso /api/command de
+          # test_kill_switch_mesa no cambia el conteo (es un caso dentro de un test).
+          # Delta medido por colección, mismo comando con JAX_CI_NO_DB=1: 3159
+          # colectados antes -> 3120 después. NO se midió con DB real (el local no
+          # tiene la barrera test-db.env): el job lo confirma o lo corrige (regla 5,
+          # el último en llegar re-mide).
+          # 3059 -> 3063 (mismo PR): +4 puros de tests/test_command_retirado.py (el módulo
+          # api.command no existe, la app no registra /api/command, el evento
+          # command_completed y la ruta frenada se fueron); vistos en rojo contra
+          # d4fa054. Neto del PR: 3098 -> 3063.
+          # 3063 -> 3070 (2026-10-02, rebase sobre #173 + auditoria de T16): re-medido CON DB real
+          #   (jax_memory_test, usuario jax_test, MISMO comando, 0 failed): origin/master 34856b7
+          #   3159 passed / 2 skipped -> esta rama 3129 / 2 = -30 (el retiro -39, +4 de
+          #   test_command_retirado, +4 de test_retiro_ajuste_retencion, +1 de test_chat_codigos).
+          #   Piso = declarado de master (3098) + 2 de #173 (regla 5) - 30 = 3070. Las
+          #   pruebas con `client` de MAJOR-7/MINOR-8 corrieron de verdad contra la DB.
+          # 3070 -> 3071 (reauditoria de T16, MINOR-14): +1 con `client` en test_chat_codigos.py (Hyde
+          #   en el chat al superadmin le declara ejecutor:true). Medido con DB real: 3130 passed / 2
+          #   skipped (3129 antes). Sin DB no suma passed (se salta): JAX_CI_MIN_PASSED no cambia.
+          PISO_PASSED = 3071
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3366,7 +3404,8 @@ jobs:
   # Verificado además que NO miente: quitando a mano el guard `uuid.UUID(task_id)`
   # de api/command.py (el que frena el path traversal), este job se pone en rojo
   # con 1 failed. Detecta regresión real, no es un no-op como lo fue el scanner
-  # P10 en jax hasta la ronda 4.
+  # P10 en jax hasta la ronda 4. (T16, 2026-10-02: api/command.py se retiró; esa
+  # comprobación histórica ya no se puede repetir, y su test se fue con el endpoint.)
   backend-tests-no-db:
     runs-on: ubuntu-latest
     defaults:
@@ -4291,7 +4330,15 @@ jobs:
       # 36354899003) y esta rama passed=1978 (run 36381118121): delta propio +70. Piso =
       # declarado de master (1842, sin premiar la deriva ajena) + 70 = 1912.
       # +3 (2026-09-27, Hyde: resumen de corrida saltada; los 3 tests no usan DB).
-      JAX_CI_MIN_PASSED: "1915"
+      # 1915 -> 1878 (2026-10-02, Hyde, T16: retiro de /command): -37 passed y -2 skipped,
+      # medido con el comando documentado y el mismo checkout de JAX (jax 93900c2):
+      # antes 2037 passed / 1122 skipped -> después 2000 / 1120. Piso = declarado
+      # (1915) - 37 = 1878; +4 puros de tests/test_command_retirado.py (2004 passed
+      # medido) = 1882.
+      # 1882 -> 1887 (2026-10-02, auditoria de T16): re-medido sin DB, mismo comando y mismo
+      # jax 93900c2: origin/master 34856b7 2037 passed / 1124 skipped -> esta rama 2009 / 1122
+      # = -28 (+4 de test_retiro_ajuste_retencion). Piso = declarado (1915) - 28 = 1887.
+      JAX_CI_MIN_PASSED: "1887"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

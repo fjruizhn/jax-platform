@@ -552,8 +552,7 @@ class AvisoDeChat(BaseModel):
     history from the Web Chat route.
     """
     code: Literal["faceta_sin_binding", "faceta_no_autorizada", "transporte_no_soportado",
-                  "identidad_del_modelo", "estado_actual_no_disponible",
-                  "hyde_usa_modo_comando"]
+                  "identidad_del_modelo", "estado_actual_no_disponible"]
     params: dict[str, str] = {}
 
     def como_texto(self) -> str:
@@ -1326,10 +1325,21 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         except ImagenNoSoportadaError:
             raise HTTPException(status_code=422,
                                 detail={"code": "imagen_no_soportada", "facet": facet}) from None
+    # Hyde no conversa por el chat (decision de Fernando, 2026-10-02: Hyde se queda
+    # en el selector, pero su trabajo va por el Ejecutor, modo Codigo). Es un
+    # RECHAZO del pedido con codigo estable -- igual que adjuntos_no_soportados --,
+    # no una salida del asistente: no genera texto, no entra al historial ni a la
+    # memoria, y la Mesa lo traduce con su i18n. Antes devolvia 200 con la
+    # proyeccion gobernada "no se pudo verificar" (F2-D), que no orientaba a nada.
+    if facet == "hyde":
+        # `ejecutor` lo declara el servidor: el modo Ejecutor es solo del superadmin, y
+        # la Mesa no debe orientar a quien no lo ve ni deducir el rol por su cuenta.
+        raise HTTPException(status_code=422, detail={
+            "code": "hyde_no_conversa_en_chat", "facet": facet, "ejecutor": user.role == "superadmin"})
     mensaje_al_modelo = componer_mensaje(req.message, validados.textos)
     # -----------------------------------------------------------------------
 
-    # --- Memoria semántica (misma jax_memory que el REPL) — best-effort -----
+    # --- Memoria semántica (jax_memory compartida con jax) — best-effort -----
     # user_id/tenant_id come from authenticated/resolved authority; project_id
     # is present only after the project resolver proved active membership.
     try:
@@ -1344,16 +1354,6 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         if conv_uuid:
             _memory.save_message(conv_uuid, "user", metadatos_para_memoria(req.message, validados))  # fire-and-forget
     # -----------------------------------------------------------------------
-
-    # Respuestas especiales (sin llamada a LLM) — nunca pasan por el parseo
-    # de contrato, igual que usage=None (is_canned=True) dentro de _invoke_facet.
-    if facet == "hyde":
-        aviso = AvisoDeChat(code="hyde_usa_modo_comando")
-        return await _runtime_notice_response(
-            aviso=aviso, facet=facet, timestamp=timestamp, request=req,
-            user=user, memory_scope=memory_scope, history_key=history_key,
-            conv_uuid=conv_uuid, validados=validados,
-        )
 
     # Señal: faceta pensando
     await engine_state.set_facet_status(facet, "thinking", tenant_id, user_id, req.message[:100])

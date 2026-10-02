@@ -71,13 +71,12 @@ def test_identidad_del_modelo_es_unavailable_sin_leer_binding(monkeypatch):
 def test_la_marca_de_un_aviso_no_tiene_idioma():
     aviso = chat_mod.AvisoDeChat(code="faceta_sin_binding")
     assert aviso.como_texto() == "[faceta_sin_binding]"
-    assert chat_mod.AvisoDeChat(code="hyde_usa_modo_comando").como_texto() == "[hyde_usa_modo_comando]"
 
 
 def test_runtime_avisos_never_claim_the_static_protocol_exception():
     for code in (
         "faceta_sin_binding", "faceta_no_autorizada", "transporte_no_soportado",
-        "identidad_del_modelo", "estado_actual_no_disponible", "hyde_usa_modo_comando",
+        "identidad_del_modelo", "estado_actual_no_disponible",
     ):
         assert chat_mod._is_runtime_notice(chat_mod.AvisoDeChat(code=code))
         assert not chat_mod.is_true_static_protocol_error(code)
@@ -201,12 +200,29 @@ def test_los_sets_llevan_los_nombres_del_espejo():
     assert set(chat_mod._KW_SETS) == {"kimi", "hipatia", "jekyll", "thot", "ada"}
 
 
-def test_hyde_runtime_notice_uses_governed_lifecycle_output(client, chat_sin_memoria):
+def test_hyde_en_el_chat_es_un_rechazo_con_codigo_y_no_una_salida_del_asistente(client, chat_sin_memoria):
+    """T16 (auditoria MINOR-8): Hyde no conversa por el chat. Antes: 200 con la
+    proyeccion gobernada "no se pudo verificar" en ingles, que no orientaba a nada.
+    Ahora: 422 con codigo estable (como adjuntos_no_soportados); sin texto del
+    asistente, sin historial ni memoria; la Mesa lo traduce y orienta al Ejecutor."""
     resp = client.post("/api/chat", json={"message": "hola", "facet": "hyde"},
                        headers=cabeceras(client, "chat-codigos-hyde", "operator"))
-    assert resp.status_code == 200, resp.text
-    cuerpo = resp.json()
-    assert cuerpo["aviso"] is None
-    assert cuerpo["response"] == "The response could not be verified safely."
-    assert cuerpo["contract_state"] == "DEGRADED_STRUCTURED"
-    assert cuerpo["governed_plain"] is True
+    assert resp.status_code == 422, resp.text
+    # El Ejecutor solo lo ve el superadmin: el servidor declara si orientar a el.
+    assert resp.json()["detail"] == {"code": "hyde_no_conversa_en_chat", "facet": "hyde",
+                                     "ejecutor": False}
+    assert "response" not in resp.json()
+
+
+def test_hyde_en_el_chat_al_superadmin_le_declara_el_ejecutor(client, chat_sin_memoria):
+    resp = client.post("/api/chat", json={"message": "hola", "facet": "hyde"},
+                       headers=cabeceras(client, "chat-codigos-hyde-su", "superadmin"))
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "hyde_no_conversa_en_chat", "facet": "hyde",
+                                     "ejecutor": True}
+
+
+def test_el_aviso_hyde_usa_modo_comando_ya_no_existe():
+    import typing
+    assert "hyde_usa_modo_comando" not in typing.get_args(
+        typing.get_type_hints(chat_mod.AvisoDeChat)["code"])

@@ -128,14 +128,11 @@ export default {
 
   // Bottom bar — modes
   modeChat: 'Chat',
-  modeComando: 'Command',
   modePipeline: 'Pipeline',
   modeImagen: 'Image',
   placeholderChat: (label) => `Message to ${label}… Enter to send, Shift+Enter for new line`,
-  placeholderComando: () => 'Describe the task for Hyde… (autonomous)',
   placeholderPipeline: () => 'Describe the pipeline objective…',
   placeholderImagen: () => 'Describe the image you want to generate…',
-  hydeHint: 'Hyde will execute the task autonomously in background',
   jacobsHint: 'Jacobs will orchestrate multiple facets in a pipeline',
   imagenHint: 'DALL-E 3 will generate the image from your description',
   errorImagen: 'Could not generate the image.',
@@ -153,8 +150,6 @@ export default {
     credencial_no_disponible: (d) => `There is no valid credential configured for ${d.provider}.`,
     imagen_error_http: (d) => `The image service returned error ${d.status}.`,
     imagen_error: () => 'The image could not be generated.',
-    task_id_invalido: () => 'The task id is not valid.',
-    tarea_no_encontrada: () => 'The task does not exist.',
     limite_de_pipelines: (d) => `${d.max} pipelines are already running: wait for one to finish.`,
     pipeline_id_invalido: () => 'The pipeline id is not valid.',
     pipeline_no_encontrado: () => 'The pipeline does not exist.',
@@ -214,7 +209,11 @@ export default {
     adjuntos_sin_espacio: () => 'The server has no space to store the attachment right now. Try again later.',
     adjuntos_subidas_limite: (d) => `Too many uploads in a row. Wait ${d?.retry_after || 60} s and try again.`,
     adjuntos_reintentar: () => 'The attachment could not be saved right now. Try again.',
-    adjuntos_no_soportados: () => 'Hyde does not take attachments in chat: use Command mode.',
+    adjuntos_no_soportados: () => 'Hyde does not take attachments in chat.',
+    // The server declares `ejecutor: true` only to the superadmin (Executor mode is theirs).
+    hyde_no_conversa_en_chat: (d) => (d?.ejecutor === true
+      ? 'Hyde does not converse in chat. To ask it for work use Executor mode, Code type.'
+      : 'Hyde does not converse in chat. Its work goes through the Executor, which an administrator manages.'),
     imagen_no_soportada: () => "This facet's model does not accept images. Pick another facet or remove the image.",
     pdf_ilegible: () => 'The PDF could not be read: it is damaged or password-protected.',
     pdf_sin_texto: () => 'The PDF has no extractable text (is it a scan?).',
@@ -259,16 +258,8 @@ export default {
     transporte_no_soportado: () => '⚠️ The configured chat transport is not supported in the web Mesa.',
     identidad_del_modelo: () => 'I could not verify the current state.',
     estado_actual_no_disponible: () => 'I could not verify the current state.',
-    hyde_usa_modo_comando: () => 'Hyde works as an autonomous task runner — use Command mode for technical tasks.',
   },
   avisoDesconocido: 'The facet replied with a notice this version does not know.',
-  commandFailed: (motivo) => `Error running the task: ${motivo}`,
-  commandFailedSinMotivo: 'Error running the task.',
-  commandDryRun: (mision) => `[Dry run] Task registered:\n\n${mision}`,
-  taskInitializing: '_Starting autonomous task…_',
-  taskStarted: (id) => `_Task started — \`${id}\`_\n\nHyde is running in background…`,
-  errorTask: 'Could not start the task.',
-  commandNoResult: '(no result)',
   pipelineStarted: (id, mode, steps) =>
     `Pipeline started — \`${id}\`\nMode: **${mode}** · ${steps} steps\n\nTracking progress in right panel…`,
   errorPipeline: 'Could not create the pipeline.',
@@ -853,8 +844,6 @@ export default {
   adminSettingsTimeoutAyuda: 'From sign-in until signing in again is required. Using it does not extend it.',
   adminSettingsMaxPipelines: 'Active pipelines at once',
   adminSettingsMaxPipelinesAyuda: (tope) => `Per organization. Jacobs runs no more than ${tope} in total.`,
-  adminSettingsRetention: 'Web task retention (days)',
-  adminSettingsRetentionAyuda: 'Days a web task (mission, result and owner) is kept before it is deleted.',
   adminSettingsSystemName: 'System name',
   adminSettingsConfirmarUsd: 'Confirm pipelines from (USD)',
   adminSettingsConfirmarUsdAyuda: 'Above this maximum cost, or with a step without price, confirmation is required before running. 0 = always confirm.',
@@ -1052,11 +1041,8 @@ export default {
   forcedChangeLogout: 'Sign out',
   myAccountSameAsCurrent: 'The new password must be different from the one you were given.',
 
-  // Restoring pending tasks (useJaxStore.js)
-  taskRestoring: (id) => `_Task \`${id}\` — checking status…_`,
   // Executor mode (SP2, 2026-09-17): superadmin only, only machines without
-  // customer data. Not Command mode (Hyde's autonomous tasks). A code missing
-  // here is shown raw.
+  // customer data. A code missing here is shown raw.
   ejecutor: {
     modo: 'Executor',
     placeholderNueva: 'Goal for a new Executor mission…',

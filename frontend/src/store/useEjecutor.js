@@ -2,8 +2,8 @@ import { create } from 'zustand'
 import api from '../api/client'
 import { useJaxStore } from './useJaxStore'
 
-// Modo Ejecutor (SP2, 2026-09-17). Store propio: el Ejecutor no es el chat ni
-// el modo Comando (tareas autónomas de Hyde). Contrato HTTP: /api/ejecutor/*,
+// Modo Ejecutor (SP2, 2026-09-17). Store propio: el Ejecutor no es el chat.
+// Contrato HTTP: /api/ejecutor/*,
 // sólo superadmin. Quien pinta traduce los códigos; acá se guardan los datos y
 // los errores tal cual (nunca se tragan).
 

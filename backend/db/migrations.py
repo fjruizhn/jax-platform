@@ -3234,7 +3234,6 @@ MIGRACION_AJUSTES_V1 = "ajustes_que_mandan_v1"
 VALORES_QUE_RIGEN_2026_09_16 = {
     ajustes.SESION: "10080",   # auth/jwt.py: REFRESH_EXPIRE_SECONDS = 7 * 24 * 3600
     ajustes.MAX_PIPELINES: "3",  # jax_engine/resource_manager.py: reemplazó la constante fija por este ajuste (frente C)
-    ajustes.RETENCION: "30",   # jax_engine/owner_cleanup.py: COMMAND_OWNER_MAX_AGE_SECONDS
     ajustes.IDIOMA: "es",      # frontend/src/i18n/index.jsx: jax_lang || 'es'
 }
 # El nombre que la UI mostraba (i18n brandName). La fila, si existe, se conserva:
@@ -3268,6 +3267,18 @@ async def _ajustes_que_mandan_v1(cur) -> None:
     )
     await cur.execute("DELETE FROM axioma_config WHERE config_key = %s", (CLAVE_RETIRADA_WS_NOTIFICATIONS,))
     await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_AJUSTES_V1,))
+
+
+CLAVE_RETIRADA_RETENCION = "web_task_retention_days"
+
+
+async def _retirar_ajuste_retencion_v1(cur) -> None:
+    """T16 (2026-10-02): web_task_retention_days gobernaba solo el reaper de los
+    archivos de /command, que se retiraron. Borra su fila vieja en CADA arranque:
+    la clave ya no esta en ajustes.CLAVES ni en DEFAULT_CONFIG, asi que nada la
+    recrea, y un DELETE de una fila ausente no toca nada (idempotente, sin
+    marcador: si faltara el marcador la fila volveria a quedar huerfana)."""
+    await cur.execute("DELETE FROM axioma_config WHERE config_key = %s", (CLAVE_RETIRADA_RETENCION,))
 
 
 MIGRACION_AJUSTE_CONFIRMAR_USD_V1 = "ajuste_pipeline_confirmar_usd_v1"
@@ -3668,6 +3679,7 @@ async def run_migrations():
 
             await _drop_axioma_artifacts(cur)
             await _ajustes_que_mandan_v1(cur)
+            await _retirar_ajuste_retencion_v1(cur)
             await _ajuste_confirmar_costo_v1(cur)
             await _ejecutor_reglas_v1(cur)
             await _ejecutor_reglas_envoltorios_v1(cur)
