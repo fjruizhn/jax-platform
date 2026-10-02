@@ -91,6 +91,7 @@ from api.pipelines import router as pipelines_router
 from api.events import router as events_router
 from api.chat import router as chat_router, _raiz_del_carril, _url_de_ollama
 from api.audit import router as audit_router
+from api.proyectos import router as proyectos_router
 from api.image import router as image_router
 from api.upload import router as upload_router
 from api.motors import router as motors_router
@@ -233,7 +234,7 @@ app.add_middleware(
     allow_origins=[o for o in [os.getenv("FRONTEND_ORIGIN", "")] if o],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
 )
 
 ROUTERS = (
@@ -266,6 +267,7 @@ ROUTERS = (
     ejecutor_router,
     memoria_router,
     pipelines_ocultos_router,
+    proyectos_router,
 )
 for _router in ROUTERS:
     app.include_router(_router)

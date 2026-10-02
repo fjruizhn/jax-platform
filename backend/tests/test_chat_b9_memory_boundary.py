@@ -1,6 +1,7 @@
 """Web Chat's B9-only memory prompt boundary."""
 import asyncio
 
+import aiomysql
 import pytest
 
 import api.chat as chat
@@ -227,7 +228,7 @@ def test_b9_reader_uses_mapping_cursor_with_platform_pool_shape(monkeypatch):
     result = asyncio.run(chat._prompt_memory_context(
         chat.ScopeContext("user:7", "USER", "7", "tenant-a", None, "test")))
     assert result.entries == ()
-    assert captured["cursor_class"] is chat.aiomysql.DictCursor
+    assert captured["cursor_class"] is aiomysql.DictCursor
     assert isinstance(captured["request"], chat.MutationAuthorizationRequest)
     assert captured["request"].operation == "RETRIEVE"
 

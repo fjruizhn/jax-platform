@@ -91,3 +91,11 @@ export const TAMANO_BOTON_ACCION = 'text-xs px-2 py-1 min-h-6 min-w-6 flex-shrin
 // puede y no puede cubrir (no cubre el selector de idioma: su tamaño depende
 // de un array en runtime, no de texto literal en el código fuente).
 export const TAMANO_MINIMO_TOQUE = 'min-h-6 min-w-6 flex-shrink-0 inline-flex items-center justify-center'
+
+// Botón de 44px de alto (WCAG 2.5.5 AAA, cómodo al toque) para pantallas de
+// uso diario (Proyectos). NO se combina con TAMANO_BOTON_ACCION: medido con el
+// CLI de Tailwind 3.4 sobre `min-h-6 min-h-11`, el CSS generado declara
+// `.min-h-11` ANTES que `.min-h-6` (orden por valor), así que con las dos
+// clases gana min-h-6 y el botón mide 24px. Por eso esta constante lleva su
+// propio juego de clases, sin min-h-6. (E1, T8)
+export const TAMANO_BOTON_44 = 'text-xs px-4 min-h-11 min-w-11 flex-shrink-0 inline-flex items-center justify-center'

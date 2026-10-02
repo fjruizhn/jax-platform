@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { useJaxStore } from '../store/useJaxStore'
+import { useJaxStore, SESION_VACIA } from '../store/useJaxStore'
 import { codigoDe } from './errores'
 
 // Código que manda el backend (auth/middleware.py, SESION_INVALIDA) cuando
@@ -122,7 +122,7 @@ api.interceptors.response.use(
               : refreshErr?.response?.status >= 500
                 ? 'error_del_servidor'
                 : 'sesion_expirada'
-        useJaxStore.setState({ token: null, user: null, avisoSesion })
+        useJaxStore.setState({ ...SESION_VACIA, avisoSesion })
       }
     }
     return Promise.reject(err)
