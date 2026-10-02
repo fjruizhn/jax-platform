@@ -67,10 +67,10 @@ describe('AdminSidebar -- orden del menú (2026-10-02)', () => {
     expect(enlaceMemoria).toHaveAttribute('href', '/admin/memoria')
   })
 
-  it('Proyectos lleva a la pantalla de proyectos que ya existe (/proyectos)', () => {
+  it('Proyectos queda dentro del caparazon (/admin/proyectos), E1.3', () => {
     renderSidebar()
     const enlace = screen.getByRole('link', { name: new RegExp(es.adminProyectos) })
-    expect(enlace).toHaveAttribute('href', '/proyectos')
+    expect(enlace).toHaveAttribute('href', '/admin/proyectos')
   })
 })
 

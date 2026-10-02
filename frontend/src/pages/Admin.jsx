@@ -10,6 +10,8 @@ import AdminCosts from './admin/AdminCosts'
 import AdminSmtp from './admin/AdminSmtp'
 import AdminPipelinesOcultos from './admin/AdminPipelinesOcultos'
 import Memoria from './Memoria'
+import Proyectos from './Proyectos'
+import ProyectoDetalle from './ProyectoDetalle'
 
 export default function Admin() {
   return (
@@ -34,6 +36,11 @@ export default function Admin() {
           <Route path="memoria" element={<Memoria />} />
           {/* Task 7 (2026-09-22, spec descartar-pipelines §5): sólo
               superadmin, misma guardia que el resto de /admin/* (App.jsx). */}
+          {/* E1.3 (2026-10-02): Proyectos dentro del caparazon; mismos
+              componentes que /proyectos, que detectan el contexto por la ruta
+              (components/proyectos/contexto.js). */}
+          <Route path="proyectos" element={<Proyectos />} />
+          <Route path="proyectos/:id" element={<ProyectoDetalle />} />
           <Route path="pipelines-ocultos" element={<AdminPipelinesOcultos />} />
         </Routes>
       </main>

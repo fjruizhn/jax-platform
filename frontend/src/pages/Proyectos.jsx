@@ -6,6 +6,7 @@ import { useNombreDelSistema } from '../store/useApariencia'
 import { listarProyectos } from '../api/proyectos'
 import { codigoDe } from '../api/errores'
 import { TAMANO_BOTON_44 } from '../tema/botones'
+import { useBaseProyectos } from '../components/proyectos/contexto'
 import CrearProyectoModal from '../components/proyectos/CrearProyectoModal'
 
 // Lista de proyectos (E1, T7): pestañas Activos / Archivados / Ocultos, paginada
@@ -20,6 +21,7 @@ export default function Proyectos() {
   const { t } = useI18n()
   const nombreSistema = useNombreDelSistema(t)
   const esAdmin = useJaxStore((s) => s.user?.role === 'superadmin')
+  const { dentroDeAdmin, base } = useBaseProyectos()
   const vistas = esAdmin ? VISTAS : VISTAS.filter((v) => v !== 'ocultos')
 
   const [vista, setVista] = useState('activos')
@@ -56,16 +58,18 @@ export default function Proyectos() {
   useEffect(() => () => { pedidoRef.current += 1 }, [])
 
   return (
-    <div className="min-h-dvh bg-fondo text-texto p-6">
+    <div className={dentroDeAdmin ? '' : 'min-h-dvh bg-fondo text-texto p-6'}>
       <div className="max-w-5xl mx-auto">
         <div className="flex items-center justify-between mb-6 gap-3">
           <h1 className="text-xl font-bold text-texto-fuerte">{t.proyectos.titulo}</h1>
           <div className="flex items-center gap-4">
             <button type="button" onClick={() => setCreando(true)} className={BOTON}>{t.proyectos.nuevo}</button>
-            <Link to="/" className={`${TAMANO_BOTON_44} text-texto-tenue hover:text-texto transition-colors gap-1.5`}>
-              <span aria-hidden="true">←</span>
-              <span>{t.historialBack(nombreSistema)}</span>
-            </Link>
+            {!dentroDeAdmin && (
+              <Link to="/" className={`${TAMANO_BOTON_44} text-texto-tenue hover:text-texto transition-colors gap-1.5`}>
+                <span aria-hidden="true">←</span>
+                <span>{t.historialBack(nombreSistema)}</span>
+              </Link>
+            )}
           </div>
         </div>
 
@@ -94,7 +98,7 @@ export default function Proyectos() {
           <ul className="space-y-2">
             {proyectos.map((p) => (
               <li key={p.id}>
-                <Link to={`/proyectos/${p.id}`} className={`block bg-superficie border border-borde rounded-lg px-4 py-3 hover:border-foco ${FOCO} transition-colors`}>
+                <Link to={`${base}/${p.id}`} className={`block bg-superficie border border-borde rounded-lg px-4 py-3 hover:border-foco ${FOCO} transition-colors`}>
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-sm font-medium text-texto-fuerte">{p.nombre}</span>
                     <span className="text-xs text-texto-tenue">{t.proyectos.papeles[p.papel]}</span>

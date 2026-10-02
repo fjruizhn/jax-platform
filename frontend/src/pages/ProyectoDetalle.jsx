@@ -5,6 +5,7 @@ import { useJaxStore } from '../store/useJaxStore'
 import { verProyecto, listarMiembros } from '../api/proyectos'
 import { codigoDe } from '../api/errores'
 import { TAMANO_BOTON_44 } from '../tema/botones'
+import { useBaseProyectos } from '../components/proyectos/contexto'
 import Miembros from '../components/proyectos/Miembros'
 import Ajustes from '../components/proyectos/Ajustes'
 
@@ -23,6 +24,7 @@ export default function ProyectoDetalle() {
   const { t } = useI18n()
   const T = t.proyectos
   const id = idValido(useParams().id)
+  const { dentroDeAdmin, base } = useBaseProyectos()
   const esAdmin = useJaxStore((s) => s.user?.role === 'superadmin')
 
   const [proyecto, setProyecto] = useState(null)
@@ -60,10 +62,10 @@ export default function ProyectoDetalle() {
 
   if (estado === 'noEncontrado') {
     return (
-      <div className="min-h-dvh bg-fondo text-texto p-6">
+      <div className={dentroDeAdmin ? '' : 'min-h-dvh bg-fondo text-texto p-6'}>
         <div className="max-w-3xl mx-auto space-y-4">
           <p role="alert" className="text-sm text-texto">{T.noEncontrado}</p>
-          <Link to="/proyectos" className={`${BOTON} no-underline`}>{T.volverAProyectos}</Link>
+          <Link to={base} className={`${BOTON} no-underline`}>{T.volverAProyectos}</Link>
         </div>
       </div>
     )
@@ -86,7 +88,7 @@ export default function ProyectoDetalle() {
   }
 
   return (
-    <div className="min-h-dvh bg-fondo text-texto p-6">
+    <div className={dentroDeAdmin ? '' : 'min-h-dvh bg-fondo text-texto p-6'}>
       <div className="max-w-3xl mx-auto">
         {/* Misma fila que Proyectos e Historial (Fernando, 2026-10-02): título a la
             izquierda, «← Volver» a la derecha, arriba. Sin proyecto cargado, el
@@ -95,7 +97,7 @@ export default function ProyectoDetalle() {
           {proyecto ? (
             <h1 className="text-xl font-bold text-texto-fuerte break-words">{proyecto.nombre}</h1>
           ) : <span />}
-          <Link to="/proyectos" className={`${TAMANO_BOTON_44} text-texto-tenue hover:text-texto transition-colors gap-1.5`}>
+          <Link to={base} className={`${TAMANO_BOTON_44} text-texto-tenue hover:text-texto transition-colors gap-1.5`}>
             <span aria-hidden="true">←</span>
             <span>{T.volverAProyectos}</span>
           </Link>
