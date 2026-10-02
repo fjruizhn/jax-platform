@@ -210,6 +210,7 @@ export default {
     adjuntos_subidas_limite: (d) => `Too many uploads in a row. Wait ${d?.retry_after || 60} s and try again.`,
     adjuntos_reintentar: () => 'The attachment could not be saved right now. Try again.',
     adjuntos_no_soportados: () => 'Hyde does not take attachments in chat.',
+    hyde_no_conversa_en_chat: () => 'Hyde does not converse in chat. To ask it for work use Executor mode, Code type.',
     imagen_no_soportada: () => "This facet's model does not accept images. Pick another facet or remove the image.",
     pdf_ilegible: () => 'The PDF could not be read: it is damaged or password-protected.',
     pdf_sin_texto: () => 'The PDF has no extractable text (is it a scan?).',

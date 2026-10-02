@@ -25,6 +25,19 @@ describe('textoDeErrorDeMesa (A-51)', () => {
     expect(textoDeErrorDeMesa(en, err('pipeline_id_invalido'), en.errorPipeline)).toBe(en.erroresMesa.pipeline_id_invalido({}))
   })
 
+  // T16 (auditoria MINOR-8): Hyde no conversa por el chat; el servidor rechaza con un
+  // codigo y la Mesa lo traduce y orienta al Ejecutor (modo Codigo), en los dos idiomas.
+  it('hyde_no_conversa_en_chat se traduce y orienta al Ejecutor, no cae en el texto generico', () => {
+    for (const d of [es, en]) {
+      const texto = textoDeErrorDeMesa(d, err({ code: 'hyde_no_conversa_en_chat', facet: 'hyde' }), d.errorFacet)
+      expect(texto).toBe(d.erroresMesa.hyde_no_conversa_en_chat({}))
+      expect(texto).not.toBe(d.errorFacet)
+      expect(texto).not.toContain('hyde_no_conversa_en_chat')
+      expect(texto).toContain(d.ejecutor.modo)
+      expect(texto).toContain(d.ejecutor.tipoCodigo)
+    }
+  })
+
   it('el límite de pipelines usa el máximo del backend', () => {
     expect(textoDeErrorDeMesa(es, err({ code: 'limite_de_pipelines', max: 4 }), es.errorPipeline)).toContain('4')
   })

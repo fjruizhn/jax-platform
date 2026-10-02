@@ -1326,6 +1326,14 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         except ImagenNoSoportadaError:
             raise HTTPException(status_code=422,
                                 detail={"code": "imagen_no_soportada", "facet": facet}) from None
+    # Hyde no conversa por el chat (decision de Fernando, 2026-10-02: Hyde se queda
+    # en el selector, pero su trabajo va por el Ejecutor, modo Codigo). Es un
+    # RECHAZO del pedido con codigo estable -- igual que adjuntos_no_soportados --,
+    # no una salida del asistente: no genera texto, no entra al historial ni a la
+    # memoria, y la Mesa lo traduce con su i18n. Antes devolvia 200 con la
+    # proyeccion gobernada "no se pudo verificar" (F2-D), que no orientaba a nada.
+    if facet == "hyde":
+        raise HTTPException(status_code=422, detail={"code": "hyde_no_conversa_en_chat", "facet": facet})
     mensaje_al_modelo = componer_mensaje(req.message, validados.textos)
     # -----------------------------------------------------------------------
 

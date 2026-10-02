@@ -201,12 +201,13 @@ def test_los_sets_llevan_los_nombres_del_espejo():
     assert set(chat_mod._KW_SETS) == {"kimi", "hipatia", "jekyll", "thot", "ada"}
 
 
-def test_hyde_runtime_notice_uses_governed_lifecycle_output(client, chat_sin_memoria):
+def test_hyde_en_el_chat_es_un_rechazo_con_codigo_y_no_una_salida_del_asistente(client, chat_sin_memoria):
+    """T16 (auditoria MINOR-8): Hyde no conversa por el chat. Antes: 200 con la
+    proyeccion gobernada "no se pudo verificar" en ingles, que no orientaba a nada.
+    Ahora: 422 con codigo estable (como adjuntos_no_soportados); sin texto del
+    asistente, sin historial ni memoria; la Mesa lo traduce y orienta al Ejecutor."""
     resp = client.post("/api/chat", json={"message": "hola", "facet": "hyde"},
                        headers=cabeceras(client, "chat-codigos-hyde", "operator"))
-    assert resp.status_code == 200, resp.text
-    cuerpo = resp.json()
-    assert cuerpo["aviso"] is None
-    assert cuerpo["response"] == "The response could not be verified safely."
-    assert cuerpo["contract_state"] == "DEGRADED_STRUCTURED"
-    assert cuerpo["governed_plain"] is True
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "hyde_no_conversa_en_chat", "facet": "hyde"}
+    assert "response" not in resp.json()
