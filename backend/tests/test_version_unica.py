@@ -32,3 +32,24 @@ def test_leer_version_ignora_salto_de_linea(tmp_path):
     f = tmp_path / "VERSION"
     f.write_text("3.0\n")
     assert app_version.leer_version(f) == "3.0"
+
+
+def test_main_usa_la_version_del_archivo_aunque_no_sea_la_real(tmp_path):
+    """Con un VERSION distinto del real, app.version tiene que ser ese: un
+    version="2.5" escrito a mano en main.py (que hoy coincide) no pasa."""
+    import os
+    import subprocess
+    import sys
+
+    falso = tmp_path / "VERSION"
+    falso.write_text("9.9.9\n")
+    codigo = (
+        "import pathlib, sys, app_version;"
+        "app_version.RUTA_VERSION = pathlib.Path(sys.argv[1]);"
+        "import main; print(main.app.version)"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", codigo, str(falso)], cwd=RAIZ / "backend",
+        env=os.environ.copy(), capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert r.stdout.strip().splitlines()[-1] == "9.9.9"

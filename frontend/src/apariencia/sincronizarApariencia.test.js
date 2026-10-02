@@ -55,11 +55,11 @@ describe('sincronizarApariencia', () => {
     expect(localStorage.getItem('jax_theme_default')).toBe('light')
   })
 
-  it('una sola petición deja el nombre, el idioma y el título del documento', async () => {
+  it('una sola petición deja el nombre y el idioma (el título lo escribe TituloDePagina)', async () => {
     api.get.mockResolvedValue({ data: { theme_default: 'dark', lang_default: 'en', system_name: 'Axioma Lab' } })
     await sincronizarApariencia()
     expect(api.get).toHaveBeenCalledTimes(1)
     expect(useApariencia.getState()).toMatchObject({ systemName: 'Axioma Lab', langDefault: 'en' })
-    expect(document.title).toBe('Axioma Lab')
+    expect(document.title).toBe('Axioma')
   })
 })

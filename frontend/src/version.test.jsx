@@ -1,10 +1,12 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import '@testing-library/jest-dom'
 import es from './i18n/es.js'
+import { leerVersion } from '../leerVersion.js'
 import en from './i18n/en.js'
 
 // Versión de Axioma en UN solo lugar (Fernando, 2026-10-02): el archivo VERSION
@@ -43,6 +45,21 @@ describe('versión de Axioma: una sola fuente, el archivo VERSION', () => {
 
   // Principio IV: ni el número ni el nombre van fijos en los textos. La plantilla
   // de i18n recibe (nombre, versión) y cada idioma decide cómo se dice.
+  // Se inyecta una versión que NO es la real: un número escrito a mano en el
+  // componente (aunque coincida con VERSION hoy) no aparecería en pantalla.
+  it('inicio e Administración muestran la versión inyectada, no un número escrito a mano', () => {
+    vi.stubGlobal('__APP_VERSION__', '9.9.9')
+    try {
+      const { unmount } = render(<LeftPanel />)
+      expect(screen.getByText(`${es.brandName} V9.9.9`)).toBeInTheDocument()
+      unmount()
+      render(<MemoryRouter><AdminSidebar /></MemoryRouter>)
+      expect(screen.getByText(`${es.brandName} v9.9.9`)).toBeInTheDocument()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('inicio: plantilla i18n + nombre del sistema + VERSION', () => {
     useApariencia.setState({ systemName: 'Hal' })
     render(<LeftPanel />)
@@ -121,6 +138,25 @@ describe('guarda: ninguna versión fija en src/', () => {
       .map((f) => [f, versionesFijas(readFileSync(f, 'utf8'))])
       .filter(([, h]) => h.length > 0)
     expect(sucios).toEqual([])
+  })
+})
+
+describe('vite.config: valida VERSION al leerla', () => {
+  it.each(['', '   \n', 'dos punto cinco', '2', '2.5.x', 'v2.5'])('rechaza %j con un mensaje claro', (contenido) => {
+    const f = join(mkdtempSync(join(tmpdir(), 'ver-')), 'VERSION')
+    writeFileSync(f, contenido)
+    expect(() => leerVersion(f)).toThrow(/VERSION/)
+  })
+
+  it('acepta X.Y y X.Y.Z, con salto de línea', () => {
+    const d = mkdtempSync(join(tmpdir(), 'ver-'))
+    writeFileSync(join(d, 'a'), '2.5\n'); writeFileSync(join(d, 'b'), '3.0.1')
+    expect(leerVersion(join(d, 'a'))).toBe('2.5')
+    expect(leerVersion(join(d, 'b'))).toBe('3.0.1')
+  })
+
+  it('un archivo inexistente falla con mensaje claro', () => {
+    expect(() => leerVersion('/no/existe/VERSION')).toThrow(/VERSION/)
   })
 })
 

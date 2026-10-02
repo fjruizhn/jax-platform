@@ -37,6 +37,14 @@ describe('TituloDePagina', () => {
     expect(document.title).toContain(es.brandName)
   })
 
+  it('un solo escritor: fijar() del store llega al título solo a través del componente', () => {
+    render(<I18nProvider><TituloDePagina /></I18nProvider>)
+    act(() => useApariencia.getState().fijar({ system_name: 'Lab' }))
+    expect(document.title).toBe(es.tituloPagina('Lab'))
+    const fuente = readFileSync(join(process.cwd(), 'src/store/useApariencia.js'), 'utf8')
+    expect(fuente).not.toMatch(/document\.title/)
+  })
+
   it('sigue al nombre cuando cambia', () => {
     render(<I18nProvider><TituloDePagina /></I18nProvider>)
     act(() => useApariencia.setState({ systemName: 'Lab' }))

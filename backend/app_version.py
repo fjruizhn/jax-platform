@@ -11,7 +11,9 @@ RUTA_VERSION = Path(__file__).resolve().parent.parent / "VERSION"
 _FORMA = re.compile(r"^\d+\.\d+(\.\d+)?$")
 
 
-def leer_version(ruta: Path = RUTA_VERSION) -> str:
+def leer_version(ruta: Path | None = None) -> str:
+    # RUTA_VERSION se resuelve al llamar (no al definir) para poder probar con otro archivo.
+    ruta = RUTA_VERSION if ruta is None else ruta
     version = ruta.read_text(encoding="utf-8").strip()
     if not _FORMA.match(version):
         raise ValueError(f"{ruta}: se esperaba X.Y o X.Y.Z, hay {version!r}")
