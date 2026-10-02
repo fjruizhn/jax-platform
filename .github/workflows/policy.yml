@@ -1342,7 +1342,12 @@ jobs:
         # de la corrida normal. Se ignoran, no se cuentan como skip -- el tope
         # de MAX_SKIPS se queda en 1, no se sube (ese tope sigue sirviendo
         # para detectar la DB caida).
-        run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
+        # Runtime-status bridge tests require the new JAX API and are run
+        # without skips by the PR-triggered exact-pair job above. The generic
+        # platform DB suite intentionally tests against current JAX master, so
+        # exclude that cross-repository module here instead of counting its
+        # expected compatibility skips against MAX_SKIPS.
+        run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --ignore=tests/test_platform_runtime_status_bridge.py --junitxml=junit-db.xml
 
       - name: Diagnóstico de pruebas fallidas (sin contenido de excepciones)
         if: failure()
