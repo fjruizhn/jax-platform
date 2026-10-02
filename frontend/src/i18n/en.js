@@ -1363,14 +1363,14 @@ export default {
     // built from `superviviente_texto`/`superviviente_verificado` -- both
     // come from the cluster (backend), never from `hechosPorId` (which only
     // holds the 500 most recent facts GET /hechos loaded; a cluster can
-    // include ids outside that cap). If the survivor wasn't verified, the
-    // message says explicitly it will be approved on merge -- "most recent"
-    // only shows up as the tie-break criterion, never as the button title.
+    // include ids outside that cap). F2-P M2: merging never approves; an
+    // unverified survivor remains unverified. "Most recent" only shows up as
+    // the tie-break criterion, never as the button title.
     fundir: 'Merge',
     fundirTitulo: (id) => `Merge into fact #${id}`,
     fundirMensaje: (texto, verificado) => (verificado
       ? `The verified fact survives: "${texto}". The rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.`
-      : `No fact in this group is verified. "${texto}" survives (the most recent, the tie-break criterion) and will be APPROVED as verified on merge. The rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.`),
+      : `No fact in this group is verified. "${texto}" survives (the most recent, the tie-break criterion) and remains unverified. The rest gets marked as superseded by it. Nothing is deleted: the replacement chain stays on record.`),
     fundirConfirmar: 'Merge',
     fundido: 'Near-duplicates merged: the rest is now superseded.',
     sobrevive: 'Survives',

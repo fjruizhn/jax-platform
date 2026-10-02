@@ -1449,15 +1449,15 @@ export default {
     // se arma con `superviviente_texto`/`superviviente_verificado` --
     // ambos vienen del cluster (backend), nunca de `hechosPorId` (que sólo
     // tiene los 500 hechos más recientes que cargó GET /hechos; un cluster
-    // puede incluir ids fuera de ese cap). Si el superviviente no estaba
-    // verificado, el mensaje dice explícitamente que quedará aprobado al
-    // fundir -- "el más reciente" aparece sólo como el criterio de
-    // desempate, nunca como título del botón (D5).
+    // puede incluir ids fuera de ese cap). F2-P M2: fundir no aprueba; si el
+    // superviviente no estaba verificado, conserva ese estado. "El más
+    // reciente" aparece sólo como el criterio de desempate, nunca como
+    // título del botón (D5).
     fundir: 'Fundir',
     fundirTitulo: (id) => `Fundir en el hecho #${id}`,
     fundirMensaje: (texto, verificado) => (verificado
       ? `Sobrevive el hecho verificado: «${texto}». El resto queda marcado como superado por él. No se borra nada: la cadena de reemplazo queda registrada.`
-      : `Ningún hecho de este grupo está verificado. Sobrevive «${texto}» (el más reciente, el criterio de desempate) y quedará APROBADO como verificado al fundir. El resto queda marcado como superado por él. No se borra nada: la cadena de reemplazo queda registrada.`),
+      : `Ningún hecho de este grupo está verificado. Sobrevive «${texto}» (el más reciente, el criterio de desempate) y sigue sin verificar. El resto queda marcado como superado por él. No se borra nada: la cadena de reemplazo queda registrada.`),
     fundirConfirmar: 'Fundir',
     fundido: 'Casi-duplicados fundidos: el resto quedó superado.',
     sobrevive: 'Sobrevive',
