@@ -3269,6 +3269,18 @@ async def _ajustes_que_mandan_v1(cur) -> None:
     await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)", (MIGRACION_AJUSTES_V1,))
 
 
+CLAVE_RETIRADA_RETENCION = "web_task_retention_days"
+
+
+async def _retirar_ajuste_retencion_v1(cur) -> None:
+    """T16 (2026-10-02): web_task_retention_days gobernaba solo el reaper de los
+    archivos de /command, que se retiraron. Borra su fila vieja en CADA arranque:
+    la clave ya no esta en ajustes.CLAVES ni en DEFAULT_CONFIG, asi que nada la
+    recrea, y un DELETE de una fila ausente no toca nada (idempotente, sin
+    marcador: si faltara el marcador la fila volveria a quedar huerfana)."""
+    await cur.execute("DELETE FROM axioma_config WHERE config_key = %s", (CLAVE_RETIRADA_RETENCION,))
+
+
 MIGRACION_AJUSTE_CONFIRMAR_USD_V1 = "ajuste_pipeline_confirmar_usd_v1"
 # Valor inicial decidido en el spec 2026-09-17 §6.1 (Fernando, GO autónomo).
 VALOR_INICIAL_CONFIRMAR_USD = "0.50"
@@ -3667,6 +3679,7 @@ async def run_migrations():
 
             await _drop_axioma_artifacts(cur)
             await _ajustes_que_mandan_v1(cur)
+            await _retirar_ajuste_retencion_v1(cur)
             await _ajuste_confirmar_costo_v1(cur)
             await _ejecutor_reglas_v1(cur)
             await _ejecutor_reglas_envoltorios_v1(cur)
