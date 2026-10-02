@@ -51,6 +51,12 @@ describe('BottomBar -- fila de modos con el selector de proyecto', () => {
       expect(sel.className).toContain(c)
       expect(chat.className).toContain(c)
     }
+    // mismo formato que un botón de modo inactivo: sin borde propio, mismo fondo
+    const pipeline = screen.getByRole('button', { name: es.modePipeline })
+    expect(sel.className).not.toMatch(/\bborder\b|border-borde/)
+    expect(pipeline.className).not.toMatch(/\bborder\b|border-borde/)
+    expect(sel.className).toContain('bg-superficie')
+    expect(pipeline.className).toContain('bg-superficie')
     expect(sel.className).not.toContain('min-h-11')
     expect(sel.className).toContain('focus-visible:ring-2')
   })

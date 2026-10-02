@@ -12,6 +12,7 @@ vi.mock('../../api/proyectos', () => ({
 import * as api from '../../api/proyectos'
 import Miembros from './Miembros'
 import { I18nProvider } from '../../i18n/index.jsx'
+import { useJaxStore } from '../../store/useJaxStore'
 import es from '../../i18n/es.js'
 import en from '../../i18n/en.js'
 
@@ -37,12 +38,104 @@ function montar(props = {}) {
 const casilla = (email) => screen.getByRole('checkbox', { name: email })
 const agregar = (n) => screen.getByRole('button', { name: T.agregarSeleccionados(n) })
 
+const INICIAL = useJaxStore.getState()
 beforeEach(() => {
+  useJaxStore.setState({ ...INICIAL, token: 't', user: { user_id: 1 } }, true)
   Object.values(api).forEach((f) => f.mockReset())
   api.buscarCandidatos.mockResolvedValue({ candidatos: CINCO })
   api.invitarMiembro.mockResolvedValue({})
 })
 afterEach(() => { vi.useRealTimers() })
+
+async function marcarYAgregar(...ns) {
+  await screen.findByRole('checkbox', { name: 'u1@x.com' })
+  for (const n of ns) fireEvent.click(casilla(`u${n}@x.com`))
+  fireEvent.click(agregar(ns.length))
+}
+
+describe('Miembros: ronda 1', () => {
+  it('lo que entró se desmarca: tras agregar, el contador vuelve a 0 y no se reenvía', async () => {
+    montar()
+    await marcarYAgregar(1, 2)
+    await screen.findByText(T.resumenAgregados(2))
+    expect(agregar(0)).toBeDisabled()
+    expect(casilla('u1@x.com')).not.toBeChecked()
+    expect(casilla('u2@x.com')).not.toBeChecked()
+  })
+
+  it('un fallo que desaparece de la lista ya no cuenta en (N) ni se reenvía; el que sigue visible queda marcado', async () => {
+    montar()
+    api.buscarCandidatos
+      .mockResolvedValueOnce({ candidatos: CINCO })
+      .mockResolvedValue({ candidatos: [U(1), U(3), U(4), U(5)] }) // u2 ya no es elegible
+    await screen.findByRole('checkbox', { name: 'u1@x.com' })
+    api.invitarMiembro
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(error(409, 'ya_es_miembro'))
+      .mockRejectedValueOnce(error(500, 'inventado'))
+    for (const n of [1, 2, 3]) fireEvent.click(casilla(`u${n}@x.com`))
+    fireEvent.click(agregar(3))
+    expect(await screen.findByText(`u2@x.com: ${T.errores.ya_es_miembro}`)).toBeInTheDocument()
+    // u3 falló pero sigue en la lista: queda marcada; u2 se podó
+    expect(agregar(1)).toBeInTheDocument()
+    expect(casilla('u3@x.com')).toBeChecked()
+    api.invitarMiembro.mockClear()
+    api.invitarMiembro.mockResolvedValue({})
+    fireEvent.click(agregar(1))
+    await waitFor(() => expect(api.invitarMiembro).toHaveBeenCalledTimes(1))
+    expect(api.invitarMiembro.mock.calls[0][1].email).toBe('u3@x.com')
+  })
+
+  it('cambiar la época de sesión a mitad del lote detiene los envíos', async () => {
+    montar()
+    await screen.findByRole('checkbox', { name: 'u1@x.com' })
+    api.invitarMiembro.mockImplementation(async () => {
+      useJaxStore.setState({ _sessionEpoch: useJaxStore.getState()._sessionEpoch + 1 })
+      return {}
+    })
+    for (const n of [1, 2, 3]) fireEvent.click(casilla(`u${n}@x.com`))
+    fireEvent.click(agregar(3))
+    await waitFor(() => expect(api.invitarMiembro).toHaveBeenCalledTimes(1))
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+    expect(api.invitarMiembro).toHaveBeenCalledTimes(1)
+  })
+
+  it('perder el token a mitad del lote detiene los envíos', async () => {
+    montar()
+    await screen.findByRole('checkbox', { name: 'u1@x.com' })
+    api.invitarMiembro.mockImplementation(async () => { useJaxStore.setState({ token: null }); return {} })
+    for (const n of [1, 2]) fireEvent.click(casilla(`u${n}@x.com`))
+    fireEvent.click(agregar(2))
+    await waitFor(() => expect(api.invitarMiembro).toHaveBeenCalledTimes(1))
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+    expect(api.invitarMiembro).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([401, 403])('un %s detiene el resto del lote', async (estado) => {
+    montar()
+    api.invitarMiembro.mockRejectedValue(error(estado, 'x'))
+    await marcarYAgregar(1, 2, 3)
+    expect(await screen.findByText(`u1@x.com: ${T.errores.generico}`)).toBeInTheDocument()
+    expect(api.invitarMiembro).toHaveBeenCalledTimes(1)
+  })
+
+  it('ocupado vuelve a false aunque algo lance', async () => {
+    montar()
+    await screen.findByRole('checkbox', { name: 'u1@x.com' })
+    fireEvent.click(casilla('u1@x.com'))
+    const real = useJaxStore.getState
+    let n = 0
+    const espia = vi.spyOn(useJaxStore, 'getState').mockImplementation(() => {
+      n += 1
+      if (n === 3) throw new Error('boom') // la comprobación posterior al lote
+      return real()
+    })
+    fireEvent.click(agregar(1))
+    expect(await screen.findByRole('alert')).toHaveTextContent(T.errores.generico)
+    espia.mockRestore()
+    expect(agregar(1)).toBeEnabled()
+  })
+})
 
 describe('Miembros: lista de elegibles con casillas', () => {
   it('la lista se carga sin escribir nada, con q vacío', async () => {

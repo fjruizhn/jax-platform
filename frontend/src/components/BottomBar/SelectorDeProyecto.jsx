@@ -74,7 +74,7 @@ export default function SelectorDeProyecto() {
         onChange={elegir}
         onMouseDown={cargar}
         onFocus={cargar}
-        className={`${TAMANO_BOTON_ACCION} max-w-40 truncate rounded border border-borde-control bg-superficie text-texto font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-foco`}
+        className={`${TAMANO_BOTON_ACCION} max-w-40 truncate rounded bg-superficie text-texto-suave hover:text-texto font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-foco`}
       >
         <option value="">{t.proyectos.selectorChat.personal}</option>
         {hayElegidoFueraDeLista && (

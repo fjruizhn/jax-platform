@@ -1557,7 +1557,7 @@ export default {
     agregarSeleccionados: (n) => `Agregar seleccionados (${n})`,
     seleccionados: (n) => `${n} seleccionado${n === 1 ? '' : 's'}`,
     resumenAgregados: (n) => `${n} agregado${n === 1 ? '' : 's'}.`,
-    mostrandoPrimeros100: 'Mostrando los primeros 100; escribí para filtrar.',
+    mostrandoPrimeros100: 'Se muestran hasta 100; escribí para filtrar.',
     buscarPorEmail: 'Buscar por email',
     sinCandidatos: 'No hay personas que coincidan.',
     quitar: 'Quitar',

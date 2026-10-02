@@ -1461,7 +1461,7 @@ export default {
     agregarSeleccionados: (n) => `Add selected (${n})`,
     seleccionados: (n) => `${n} selected`,
     resumenAgregados: (n) => `${n} added.`,
-    mostrandoPrimeros100: 'Showing the first 100; type to filter.',
+    mostrandoPrimeros100: 'Showing up to 100; type to filter.',
     buscarPorEmail: 'Search by email',
     sinCandidatos: 'No matching people.',
     quitar: 'Remove',

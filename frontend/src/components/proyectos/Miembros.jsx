@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useI18n } from '../../i18n/index.jsx'
 import { buscarCandidatos, invitarMiembro, cambiarPapel, quitarMiembro } from '../../api/proyectos'
+import { useJaxStore } from '../../store/useJaxStore'
 import { codigoDe } from '../../api/errores'
 import { TAMANO_BOTON_44 } from '../../tema/botones'
 import ConfirmarAccion from './ConfirmarAccion'
@@ -43,12 +44,14 @@ export default function Miembros({ proyecto, miembros, onCambio }) {
     const mia = ++busquedaRef.current
     try {
       const r = await buscarCandidatos(proyecto.id, q)
-      if (mia === busquedaRef.current) setCandidatos(r.candidatos ?? [])
+      const lista = r.candidatos ?? []
+      if (mia === busquedaRef.current) { setCandidatos(lista); return lista }
     } catch (err) {
-      if (mia !== busquedaRef.current) return
+      if (mia !== busquedaRef.current) return null
       setCandidatos(null)
       setError(T.errores[codigoDe(err)] ?? T.errores.generico)
     }
+    return null
   }, [proyecto.id, T])
 
   // La lista se carga al montar sin escribir nada (q vacío); después, cada
@@ -99,6 +102,14 @@ export default function Miembros({ proyecto, miembros, onCambio }) {
     e.preventDefault()
     if (cantidad === 0 || ocupadoRef.current) return
     const lote = Object.entries(marcados)
+    // El lote queda atado a la sesión que lo empezó (ver `_sessionEpoch` en
+    // useJaxStore): si se cierra sesión a mitad, los POST que quedan no salen
+    // con la autoridad de quien entre después.
+    const epoca = useJaxStore.getState()._sessionEpoch
+    const mismaSesion = () => {
+      const st = useJaxStore.getState()
+      return st._sessionEpoch === epoca && !!st.token
+    }
     ocupadoRef.current = true
     setOcupado(true)
     setError(null)
@@ -106,21 +117,38 @@ export default function Miembros({ proyecto, miembros, onCambio }) {
     let agregados = 0
     const fallos = []
     const quedan = { ...marcados }
-    for (const [id, email] of lote) {
-      try {
-        await invitarMiembro(proyecto.id, { email, papel: papelNuevo })
-        agregados += 1
-        delete quedan[id]
-      } catch (err) {
-        fallos.push({ email, texto: T.errores[codigoDe(err)] ?? T.errores.generico })
+    try {
+      for (const [id, email] of lote) {
+        if (!mismaSesion()) break
+        try {
+          await invitarMiembro(proyecto.id, { email, papel: papelNuevo })
+          agregados += 1
+          delete quedan[id]
+        } catch (err) {
+          fallos.push({ email, texto: T.errores[codigoDe(err)] ?? T.errores.generico })
+          const estado = err?.response?.status
+          // 401/403: lo que sigue fallaría igual; no se siguen mandando.
+          if (estado === 401 || estado === 403) break
+        }
       }
+      if (!mismaSesion()) return
+      setResumen({ agregados, fallos })
+      try { await onCambio() } catch { /* la pantalla muestra su propio error de carga */ }
+      const lista = await cargarCandidatos(consulta.trim())
+      // Lo que falló y ya no está entre los elegibles no se puede ni ver ni
+      // desmarcar: se poda. El resumen ya informó el fallo.
+      if (lista) {
+        const visibles = new Set(lista.map((c) => String(c.user_id)))
+        for (const id of Object.keys(quedan)) if (!visibles.has(id)) delete quedan[id]
+      }
+      setMarcados(quedan)
+    } catch {
+      // algo inesperado: se avisa y el formulario no queda trabado
+      setError(T.errores.generico)
+    } finally {
+      ocupadoRef.current = false
+      setOcupado(false)
     }
-    setMarcados(quedan)
-    setResumen({ agregados, fallos })
-    try { await onCambio() } catch { /* la pantalla muestra su propio error de carga */ }
-    await cargarCandidatos(consulta.trim())
-    ocupadoRef.current = false
-    setOcupado(false)
   }
 
   return (
