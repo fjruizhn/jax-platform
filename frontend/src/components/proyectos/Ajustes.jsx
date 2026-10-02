@@ -53,7 +53,7 @@ export default function Ajustes({ proyecto, esAdmin, onCambio }) {
     <div className="space-y-6">
       {error && <p role="alert" className="text-sm text-peligro">{error}</p>}
 
-      {esOwner && (
+      {esOwner && proyecto.estado === 'ACTIVE' && (
         <form onSubmit={guardar} className="space-y-3 max-w-xl">
           <div>
             <label htmlFor="ajuste-nombre" className="block text-xs text-texto-suave mb-1">{T.nombre}</label>

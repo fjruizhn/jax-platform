@@ -187,10 +187,12 @@ describe('Miembros', () => {
   })
 
   it('debounce de 300 ms, mínimo 2 letras y una sola búsqueda por ráfaga', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
     api.buscarCandidatos.mockResolvedValue({ candidatos: [] })
     renderDetalle()
     await screen.findByText('lec@x.com')
+    // Reloj totalmente falso (sin avance real): con carga alta, el tiempo real
+    // sumaba a los 299 ms y la prueba era inestable.
+    vi.useFakeTimers()
     const campo = screen.getByLabelText(T.buscarPorEmail)
     fireEvent.change(campo, { target: { value: 'a' } })
     await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
@@ -204,7 +206,7 @@ describe('Miembros', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(2) })
     expect(api.buscarCandidatos).toHaveBeenCalledTimes(1)
     expect(api.buscarCandidatos).toHaveBeenCalledWith(7, 'abc')
-    expect(await screen.findByText(T.sinCandidatos)).toBeInTheDocument()
+    expect(screen.getByText(T.sinCandidatos)).toBeInTheDocument()
   })
 
   it('descarta la respuesta tardía de una búsqueda anterior', async () => {
@@ -289,6 +291,23 @@ describe('Ajustes', () => {
     expect(guardar).toBeDisabled()
     fireEvent.click(guardar)
     expect(api.renombrarProyecto).not.toHaveBeenCalled()
+  })
+
+  it('un OWNER con el proyecto ARCHIVED no ve el formulario de renombrar ni Guardar', async () => {
+    configurar({ proyecto: { ...PROY, estado: 'ARCHIVED' } })
+    renderDetalle()
+    await irAAjustes()
+    expect(screen.queryByLabelText(T.nombre)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: T.guardar })).not.toBeInTheDocument()
+  })
+
+  it('un admin con el proyecto HIDDEN no ve el formulario de renombrar ni Guardar', async () => {
+    useJaxStore.setState({ ...useJaxStore.getState(), user: { user_id: 1, email: 'a@b.c', role: 'superadmin' } })
+    configurar({ proyecto: { ...PROY, estado: 'HIDDEN' } })
+    renderDetalle()
+    await irAAjustes()
+    expect(screen.queryByLabelText(T.nombre)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: T.guardar })).not.toBeInTheDocument()
   })
 
   it('archivar pide confirmación y no llama a la API si se cancela', async () => {
