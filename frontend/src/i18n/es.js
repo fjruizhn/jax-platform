@@ -217,7 +217,10 @@ export default {
     adjuntos_subidas_limite: (d) => `Subiste demasiados archivos seguidos. Espera ${d?.retry_after || 60} s y vuelve a intentarlo.`,
     adjuntos_reintentar: () => 'No se pudo guardar el adjunto en este momento. Vuelve a intentarlo.',
     adjuntos_no_soportados: () => 'Hyde no recibe adjuntos en el chat.',
-    hyde_no_conversa_en_chat: () => 'Hyde no conversa por el chat. Para pedirle trabajo usa el modo Ejecutor, tipo Código.',
+    // El servidor declara `ejecutor: true` solo al superadmin (el modo Ejecutor es suyo).
+    hyde_no_conversa_en_chat: (d) => (d?.ejecutor === true
+      ? 'Hyde no conversa por el chat. Para pedirle trabajo usa el modo Ejecutor, tipo Código.'
+      : 'Hyde no conversa por el chat. Su trabajo va por el Ejecutor, que gestiona un administrador.'),
     imagen_no_soportada: () => 'El modelo de esta faceta no acepta imágenes. Elige otra faceta o quita la imagen.',
     pdf_ilegible: () => 'No se pudo leer el PDF: está dañado o protegido con contraseña.',
     pdf_sin_texto: () => 'El PDF no tiene texto que se pueda extraer (¿es un escaneo?).',

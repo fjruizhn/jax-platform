@@ -208,8 +208,18 @@ def test_hyde_en_el_chat_es_un_rechazo_con_codigo_y_no_una_salida_del_asistente(
     resp = client.post("/api/chat", json={"message": "hola", "facet": "hyde"},
                        headers=cabeceras(client, "chat-codigos-hyde", "operator"))
     assert resp.status_code == 422, resp.text
-    assert resp.json()["detail"] == {"code": "hyde_no_conversa_en_chat", "facet": "hyde"}
+    # El Ejecutor solo lo ve el superadmin: el servidor declara si orientar a el.
+    assert resp.json()["detail"] == {"code": "hyde_no_conversa_en_chat", "facet": "hyde",
+                                     "ejecutor": False}
     assert "response" not in resp.json()
+
+
+def test_hyde_en_el_chat_al_superadmin_le_declara_el_ejecutor(client, chat_sin_memoria):
+    resp = client.post("/api/chat", json={"message": "hola", "facet": "hyde"},
+                       headers=cabeceras(client, "chat-codigos-hyde-su", "superadmin"))
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "hyde_no_conversa_en_chat", "facet": "hyde",
+                                     "ejecutor": True}
 
 
 def test_el_aviso_hyde_usa_modo_comando_ya_no_existe():

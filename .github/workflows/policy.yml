@@ -3356,7 +3356,10 @@ jobs:
           #   test_command_retirado, +4 de test_retiro_ajuste_retencion, +1 de test_chat_codigos).
           #   Piso = declarado de master (3098) + 2 de #173 (regla 5) - 30 = 3070. Las
           #   pruebas con `client` de MAJOR-7/MINOR-8 corrieron de verdad contra la DB.
-          PISO_PASSED = 3070
+          # 3070 -> 3071 (reauditoria de T16, MINOR-14): +1 con `client` en test_chat_codigos.py (Hyde
+          #   en el chat al superadmin le declara ejecutor:true). Medido con DB real: 3130 passed / 2
+          #   skipped (3129 antes). Sin DB no suma passed (se salta): JAX_CI_MIN_PASSED no cambia.
+          PISO_PASSED = 3071
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

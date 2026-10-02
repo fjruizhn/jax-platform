@@ -27,14 +27,22 @@ describe('textoDeErrorDeMesa (A-51)', () => {
 
   // T16 (auditoria MINOR-8): Hyde no conversa por el chat; el servidor rechaza con un
   // codigo y la Mesa lo traduce y orienta al Ejecutor (modo Codigo), en los dos idiomas.
-  it('hyde_no_conversa_en_chat se traduce y orienta al Ejecutor, no cae en el texto generico', () => {
+  it('hyde_no_conversa_en_chat orienta al Ejecutor solo si el servidor declara ejecutor:true', () => {
     for (const d of [es, en]) {
-      const texto = textoDeErrorDeMesa(d, err({ code: 'hyde_no_conversa_en_chat', facet: 'hyde' }), d.errorFacet)
-      expect(texto).toBe(d.erroresMesa.hyde_no_conversa_en_chat({}))
-      expect(texto).not.toBe(d.errorFacet)
-      expect(texto).not.toContain('hyde_no_conversa_en_chat')
-      expect(texto).toContain(d.ejecutor.modo)
-      expect(texto).toContain(d.ejecutor.tipoCodigo)
+      const su = textoDeErrorDeMesa(d, err({ code: 'hyde_no_conversa_en_chat', facet: 'hyde', ejecutor: true }), d.errorFacet)
+      expect(su).toBe(d.erroresMesa.hyde_no_conversa_en_chat({ ejecutor: true }))
+      expect(su).toContain(d.ejecutor.modo)
+      expect(su).toContain(d.ejecutor.tipoCodigo)
+      expect(su).not.toContain('hyde_no_conversa_en_chat')
+      // Cualquier otro rol (ejecutor:false, ausente o no booleano): texto neutro, sin el modo.
+      for (const detalle of [{ ejecutor: false }, {}, { ejecutor: 'true' }]) {
+        const otro = textoDeErrorDeMesa(d, err({ code: 'hyde_no_conversa_en_chat', facet: 'hyde', ...detalle }), d.errorFacet)
+        expect(otro).toBe(d.erroresMesa.hyde_no_conversa_en_chat(detalle))
+        expect(otro).not.toBe(d.errorFacet)
+        expect(otro).not.toContain(d.ejecutor.tipoCodigo)
+        expect(otro).not.toMatch(/modo|mode/i) // no manda a un modo que ese rol no ve
+        expect(otro).not.toBe(su)
+      }
     }
   })
 

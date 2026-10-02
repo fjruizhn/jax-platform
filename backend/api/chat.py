@@ -1332,7 +1332,10 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # memoria, y la Mesa lo traduce con su i18n. Antes devolvia 200 con la
     # proyeccion gobernada "no se pudo verificar" (F2-D), que no orientaba a nada.
     if facet == "hyde":
-        raise HTTPException(status_code=422, detail={"code": "hyde_no_conversa_en_chat", "facet": facet})
+        # `ejecutor` lo declara el servidor: el modo Ejecutor es solo del superadmin, y
+        # la Mesa no debe orientar a quien no lo ve ni deducir el rol por su cuenta.
+        raise HTTPException(status_code=422, detail={
+            "code": "hyde_no_conversa_en_chat", "facet": facet, "ejecutor": user.role == "superadmin"})
     mensaje_al_modelo = componer_mensaje(req.message, validados.textos)
     # -----------------------------------------------------------------------
 
