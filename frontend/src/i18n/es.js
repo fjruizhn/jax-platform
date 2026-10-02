@@ -221,7 +221,7 @@ export default {
     imagen_no_soportada: () => 'El modelo de esta faceta no acepta imágenes. Elige otra faceta o quita la imagen.',
     pdf_ilegible: () => 'No se pudo leer el PDF: está dañado o protegido con contraseña.',
     pdf_sin_texto: () => 'El PDF no tiene texto que se pueda extraer (¿es un escaneo?).',
-    // Frente B (2026-09-17): 423 de chat, imagen, comando y pipelines con el freno puesto.
+    // Frente B (2026-09-17): 423 de chat, imagen y pipelines con el freno puesto.
     kill_switch_activo: () => 'Kill switch activo: JAX está detenido',
     // Límite global de profundidad JSON (2026-09-17): 422 de cualquier
     // endpoint ante un cuerpo con demasiado anidamiento. El backend manda el

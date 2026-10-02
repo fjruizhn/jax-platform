@@ -44,7 +44,7 @@ async function tokenTrasCambioDePassword(config) {
 // backend niega todo salvo /me, /me/password, /refresh y /logout con este 403.
 const CAMBIO_REQUERIDO = 'cambio_de_password_requerido'
 
-// Kill switch (2026-09-16, frente B): chat, imagen, comando y pipelines
+// Kill switch (2026-09-16, frente B): chat, imagen y pipelines
 // responden 423 con este código cuando el freno está puesto.
 const KILL_SWITCH_ACTIVO = 'kill_switch_activo'
 

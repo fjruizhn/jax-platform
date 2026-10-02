@@ -4,8 +4,7 @@ hacía cumplir como valor inicial).
 
 Hasta el 2026-09-16 la pantalla Configuración guardaba estas cinco claves en
 axioma_config y NADIE las leía: la sesión duraba 7 días fijos (auth/jwt.py),
-el cupo era 3 fijo (resource_manager.py), la retención 30 días fija
-(owner_cleanup.py), el idioma 'es' y el nombre "Axioma" desde i18n.
+el cupo era 3 fijo (resource_manager.py), (la retención de tareas web, 30 días fija, se retiró en T16 con /command), el idioma 'es' y el nombre "Axioma" desde i18n.
 
 Reglas:
   - Una sola consulta por PRIMARY para las cinco (CONSULTA; EXPLAIN en

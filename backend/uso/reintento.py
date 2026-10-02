@@ -445,7 +445,7 @@ def _corriendo_bajo_pytest() -> bool:
 
 
 async def start_reintento_de_uso(forzado: bool = False) -> None:
-    """El loop de fondo. Mismo patrón que `start_owner_file_cleanup`.
+    """El loop de fondo. Mismo patrón que los demás loops de fondo del lifespan.
 
     **Drena ANTES del primer sleep**: un reinicio después de una caída tiene
     que recuperar enseguida, no al minuto.
@@ -461,6 +461,6 @@ async def start_reintento_de_uso(forzado: bool = False) -> None:
     while True:
         try:
             await drenar()
-        except Exception:  # fail-soft: loop en background, mismo patrón que owner_cleanup.py -- `drenar` promete no propagar, pero si rompiera la promesa el loop no puede morir; el próximo ciclo reintenta
+        except Exception:  # fail-soft: loop en background, mismo patrón que los demás loops de fondo -- `drenar` promete no propagar, pero si rompiera la promesa el loop no puede morir; el próximo ciclo reintenta
             logger.warning("reintento de uso: el ciclo falló", exc_info=True)
         await asyncio.sleep(intervalo())

@@ -4,7 +4,7 @@ DECISIÓN (principal, 2026-09-17): el chat deja de recibir los adjuntos en el
 cuerpo JSON; /api/chat/upload los guarda en disco y devuelve un id, y el chat
 (RD3) los pide por id. Ruling R23-2: los metadatos van en un sidecar JSON al
 lado de los bytes, atado al dueño -- sin tabla nueva, sin migración (mismo
-patrón de archivo que jax_engine/owner_cleanup.py).
+patrón de archivo que usaba el sidecar de dueño de /command, retirado en T16).
 
 DISPOSICIÓN en JAX_ADJUNTOS_DIR (absoluto, 0700; fail-closed). RD7 (decisión
 del principal, 2026-09-17): una carpeta por usuario, JAX_ADJUNTOS_DIR/<user_id>/
@@ -42,7 +42,7 @@ y largo exactos) ANTES de construir una ruta.
 VENCIMIENTO: JAX_ADJUNTOS_TTL_HORAS (1..168). `obtener` mira `vence` del
 sidecar en cada lectura, así que un vencido es 404 aunque el limpiador
 todavía no haya pasado. El limpiador (`start_limpieza_de_adjuntos`, tarea
-hermana de owner_cleanup en el lifespan) recorre las carpetas, borra vencidos
+de fondo del lifespan) recorre las carpetas, borra vencidos
 y huérfanos, y borra la carpeta que quedó vacía (os.rmdir: atómico, falla si
 algo entró). Una subida que preparó su carpeta justo antes de ese rmdir la
 vuelve a crear al abrir su primer archivo (`_crear_exclusivo`): mientras una
@@ -121,9 +121,8 @@ PREFIJO_ESCRITURA = ".tmp-"
 # margen técnico sobre esos límites, no una política.
 ORFANO_MAX_SEGUNDOS = 6 * 3600
 
-# Cada 15 minutos. owner_cleanup corre cada 6 h porque retiene 30 días; acá
-# el TTL mínimo es 1 h, y a 6 h un adjunto vencido quedaría en disco hasta 7
-# veces su vida. La pasada es un scandir + un json chico por adjunto.
+# Cada 15 minutos. El TTL mínimo es 1 h, y con una pasada cada 6 h un adjunto
+# vencido quedaría en disco hasta 7 veces su vida. La pasada es un scandir + un json chico por adjunto.
 INTERVALO_DE_LIMPIEZA_SEGUNDOS = 15 * 60
 
 _TAMANO_DE_BLOQUE = 1024 * 1024
@@ -754,12 +753,11 @@ def borrar_de_usuario(directorio: Path, user_id: str) -> int:
 
 
 async def start_limpieza_de_adjuntos():
-    """Tarea de fondo del lifespan, hermana de owner_cleanup (mismo patrón:
-    pasa al arrancar, después duerme; nunca muere por un fallo). No va dentro
-    del bucle de owner_cleanup: ese duerme 6 h (ver INTERVALO_DE_LIMPIEZA)."""
+    """Tarea de fondo del lifespan (pasa al arrancar, después duerme; nunca muere
+    por un fallo). Intervalo: INTERVALO_DE_LIMPIEZA_SEGUNDOS."""
     while True:
         try:
             await asyncio.to_thread(limpiar, cargar_directorio())
-        except Exception:  # fail-soft: loop de limpieza en background, mismo patrón que owner_cleanup.py -- nunca debe tumbar el proceso; el próximo ciclo reintenta y un vencido ya es 404 en la lectura aunque siga en disco
+        except Exception:  # fail-soft: loop de limpieza en background, mismo patrón que los demás loops de fondo -- nunca debe tumbar el proceso; el próximo ciclo reintenta y un vencido ya es 404 en la lectura aunque siga en disco
             logger.warning("adjuntos: la limpieza falló, se reintenta en el próximo ciclo", exc_info=True)
         await _dormir(INTERVALO_DE_LIMPIEZA_SEGUNDOS)

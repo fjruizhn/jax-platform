@@ -1336,7 +1336,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     mensaje_al_modelo = componer_mensaje(req.message, validados.textos)
     # -----------------------------------------------------------------------
 
-    # --- Memoria semántica (misma jax_memory que el REPL) — best-effort -----
+    # --- Memoria semántica (jax_memory compartida con jax) — best-effort -----
     # user_id/tenant_id come from authenticated/resolved authority; project_id
     # is present only after the project resolver proved active membership.
     try:

@@ -255,6 +255,6 @@ async def start_facet_canary() -> None:
             # sondear si algo anterior en la lista cuelga.
             async with asyncio.timeout(CANARY_SWEEP_TIMEOUT_SECONDS):
                 await probe_all(SOURCE_CANARY_PERIODIC)
-        except Exception:  # fail-soft: loop en background, mismo patron que owner_cleanup.py -- nunca debe tumbar el proceso, el proximo ciclo reintenta. Incluye TimeoutError del asyncio.timeout de arriba.
+        except Exception:  # fail-soft: loop en background, mismo patron que los demas loops de fondo -- nunca debe tumbar el proceso, el proximo ciclo reintenta. Incluye TimeoutError del asyncio.timeout de arriba.
             logger.warning("facet_canary: barrido fallo", exc_info=True)
         await asyncio.sleep(CANARY_INTERVAL_SECONDS)
