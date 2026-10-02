@@ -262,16 +262,45 @@ def test_put_sin_descripcion_422(client):
     assert client.get(f"{P}/{pid}", headers=h).json()["descripcion"] == "conservame"
 
 
-def test_candidatos_minimo_dos_letras(client):
+def test_candidatos_q_vacio_devuelve_todos_los_elegibles(client):
+    m = Mundo(client)
+    dueno = m.usuario("dueno")
+    m.usuario("zz")
+    m.usuario("yy")
+    pid = m.crear(dueno, "Alfa").json()["id"]
+    r = client.get(f"{P}/{pid}/candidatos", headers=dueno)
+    assert r.status_code == 200
+    emails = {c["email"] for c in r.json()["candidatos"]}
+    assert {m.email_de("zz"), m.email_de("yy")} <= emails
+    r2 = client.get(f"{P}/{pid}/candidatos", headers=dueno, params={"q": ""})
+    assert r2.json() == r.json()
+
+
+def test_candidatos_con_q_filtra_por_prefijo(client):
     m = Mundo(client)
     dueno = m.usuario("dueno")
     m.usuario("zz")
     pid = m.crear(dueno, "Alfa").json()["id"]
-    assert client.get(f"{P}/{pid}/candidatos", headers=dueno, params={"q": "t"}).json() == {"candidatos": []}
     email = m.email_de("zz")
     r = client.get(f"{P}/{pid}/candidatos", headers=dueno, params={"q": email[:12]})
     assert r.status_code == 200
     assert {"user_id": m.id_de("zz"), "email": email} in r.json()["candidatos"]
+
+
+def test_candidatos_pide_hasta_100(client, monkeypatch):
+    import api.proyectos as proyectos
+    visto = {}
+
+    async def falso(pool, **k):
+        visto.update(k)
+        return []
+
+    monkeypatch.setattr(proyectos, "list_invite_candidates", falso)
+    m = Mundo(client)
+    h = m.usuario("dueno")
+    pid = m.crear(h, "Alfa").json()["id"]
+    assert client.get(f"{P}/{pid}/candidatos", headers=h).status_code == 200
+    assert visto["limit"] == 100
 
 
 def test_ningun_500_filtra_mensaje_interno(client, monkeypatch):

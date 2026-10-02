@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useI18n } from '../../i18n/index.jsx'
 import { listarProyectos } from '../../api/proyectos'
-import { TAMANO_BOTON_44 } from '../../tema/botones'
+import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 
 // Selector «Personal / proyecto» del chat (E1, T9). Control nativo <select>:
-// teclado y lector de pantalla gratis, y se ve como el resto de los campos.
+// teclado y lector de pantalla gratis. E1.1 (Fernando, 2026-10-02): vive DENTRO
+// de la fila de modos, pegado a Chat, con el mismo tamaño y tipografía que los
+// botones de modo (objetivo táctil = el de sus vecinos, 24 px de alto mínimo).
 //
 // El proyecto elegido vive SOLO en memoria (store). No se persiste entre
 // recargas: el mecanismo de `store/almacenamiento` guarda preferencias del
@@ -61,17 +63,18 @@ export default function SelectorDeProyecto() {
   const hayElegidoFueraDeLista = proyectoActivo && !proyectos.some((p) => p.id === proyectoActivo.id)
 
   return (
-    <div className="mb-2 flex items-center gap-2">
-      <label htmlFor="selector-proyecto-chat" className="text-xs font-semibold text-texto-suave">
+    <span className="inline-flex items-center">
+      <label htmlFor="selector-proyecto-chat" className="sr-only">
         {t.proyectos.selectorChat.etiqueta}
       </label>
+      <span aria-hidden="true" className="text-xs -mr-1 pl-1 select-none">📁</span>
       <select
         id="selector-proyecto-chat"
         value={proyectoActivo ? String(proyectoActivo.id) : ''}
         onChange={elegir}
         onMouseDown={cargar}
         onFocus={cargar}
-        className={`${TAMANO_BOTON_44} rounded border border-borde-control bg-superficie text-texto font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-foco`}
+        className={`${TAMANO_BOTON_ACCION} max-w-40 truncate rounded bg-superficie text-texto-suave hover:text-texto font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-foco`}
       >
         <option value="">{t.proyectos.selectorChat.personal}</option>
         {hayElegidoFueraDeLista && (
@@ -81,6 +84,6 @@ export default function SelectorDeProyecto() {
           <option key={p.id} value={String(p.id)}>{p.nombre}</option>
         ))}
       </select>
-    </div>
+    </span>
   )
 }

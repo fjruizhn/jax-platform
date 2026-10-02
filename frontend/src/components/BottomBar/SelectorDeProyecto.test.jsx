@@ -25,13 +25,13 @@ beforeEach(() => {
 })
 
 describe('SelectorDeProyecto', () => {
-  it('lista Personal + los proyectos activos, con etiqueta i18n y 44px', async () => {
+  it('lista Personal + los proyectos activos, con etiqueta i18n y el tamaño de los botones de modo', async () => {
     listarProyectos.mockResolvedValue({ proyectos: [A, B] })
     renderSel()
     const sel = screen.getByLabelText(es.proyectos.selectorChat.etiqueta)
     await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(3))
     expect(screen.getByRole('option', { name: es.proyectos.selectorChat.personal })).toBeInTheDocument()
-    expect(sel.className).toContain('min-h-11')
+    expect(sel.className).toContain('min-h-6')
     expect(listarProyectos).toHaveBeenCalledWith({ vista: 'activos', limite: 100 })
   })
 

@@ -22,6 +22,7 @@ class _RecordingCursor:
                 (0,),  # idx_jax_project_membership_user_list
                 ("enum('planning','active','paused','completed','archived')",),
                 (0,),  # idx_jax_users_tenant_role_status
+                (0,),  # idx_jax_users_tenant_email (005i)
             )
         )
 
@@ -40,7 +41,10 @@ def test_jax_owned_003_hook_is_the_only_project_authority_ddl_source():
     # The first five statements are exactly the JAX-owned 003 DDL.  Later
     # statements belong to JAX-owned 005, whose information-schema guards use
     # this cursor double as well.
-    assert len(cursor.statements) == 21
+    # 21 -> 23 (2026-10-02, Proyectos E1.1, Jax#321): la migracion 005i suma dos
+    # sentencias, la comprobacion de existencia y el CREATE INDEX de
+    # idx_jax_users_tenant_email en jax_users.
+    assert len(cursor.statements) == 23
     assert "CREATE TABLE IF NOT EXISTS jax_project_scope" in cursor.statements[0]
     assert "CREATE TABLE IF NOT EXISTS jax_project_membership" in cursor.statements[1]
     assert "CREATE TABLE IF NOT EXISTS jax_project_membership_event" in cursor.statements[2]
