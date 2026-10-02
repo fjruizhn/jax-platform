@@ -71,13 +71,12 @@ def test_identidad_del_modelo_es_unavailable_sin_leer_binding(monkeypatch):
 def test_la_marca_de_un_aviso_no_tiene_idioma():
     aviso = chat_mod.AvisoDeChat(code="faceta_sin_binding")
     assert aviso.como_texto() == "[faceta_sin_binding]"
-    assert chat_mod.AvisoDeChat(code="hyde_usa_modo_comando").como_texto() == "[hyde_usa_modo_comando]"
 
 
 def test_runtime_avisos_never_claim_the_static_protocol_exception():
     for code in (
         "faceta_sin_binding", "faceta_no_autorizada", "transporte_no_soportado",
-        "identidad_del_modelo", "estado_actual_no_disponible", "hyde_usa_modo_comando",
+        "identidad_del_modelo", "estado_actual_no_disponible",
     ):
         assert chat_mod._is_runtime_notice(chat_mod.AvisoDeChat(code=code))
         assert not chat_mod.is_true_static_protocol_error(code)
@@ -211,3 +210,9 @@ def test_hyde_en_el_chat_es_un_rechazo_con_codigo_y_no_una_salida_del_asistente(
     assert resp.status_code == 422, resp.text
     assert resp.json()["detail"] == {"code": "hyde_no_conversa_en_chat", "facet": "hyde"}
     assert "response" not in resp.json()
+
+
+def test_el_aviso_hyde_usa_modo_comando_ya_no_existe():
+    import typing
+    assert "hyde_usa_modo_comando" not in typing.get_args(
+        typing.get_type_hints(chat_mod.AvisoDeChat)["code"])

@@ -255,7 +255,6 @@ export default {
     transporte_no_soportado: () => '⚠️ The configured chat transport is not supported in the web Mesa.',
     identidad_del_modelo: () => 'I could not verify the current state.',
     estado_actual_no_disponible: () => 'I could not verify the current state.',
-    hyde_usa_modo_comando: () => 'Hyde does not converse in chat.',
   },
   avisoDesconocido: 'The facet replied with a notice this version does not know.',
   pipelineStarted: (id, mode, steps) =>

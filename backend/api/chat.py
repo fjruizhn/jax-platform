@@ -552,8 +552,7 @@ class AvisoDeChat(BaseModel):
     history from the Web Chat route.
     """
     code: Literal["faceta_sin_binding", "faceta_no_autorizada", "transporte_no_soportado",
-                  "identidad_del_modelo", "estado_actual_no_disponible",
-                  "hyde_usa_modo_comando"]
+                  "identidad_del_modelo", "estado_actual_no_disponible"]
     params: dict[str, str] = {}
 
     def como_texto(self) -> str:
@@ -1352,16 +1351,6 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         if conv_uuid:
             _memory.save_message(conv_uuid, "user", metadatos_para_memoria(req.message, validados))  # fire-and-forget
     # -----------------------------------------------------------------------
-
-    # Respuestas especiales (sin llamada a LLM) — nunca pasan por el parseo
-    # de contrato, igual que usage=None (is_canned=True) dentro de _invoke_facet.
-    if facet == "hyde":
-        aviso = AvisoDeChat(code="hyde_usa_modo_comando")
-        return await _runtime_notice_response(
-            aviso=aviso, facet=facet, timestamp=timestamp, request=req,
-            user=user, memory_scope=memory_scope, history_key=history_key,
-            conv_uuid=conv_uuid, validados=validados,
-        )
 
     # Señal: faceta pensando
     await engine_state.set_facet_status(facet, "thinking", tenant_id, user_id, req.message[:100])

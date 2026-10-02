@@ -262,7 +262,6 @@ export default {
     transporte_no_soportado: () => '⚠️ El transporte de chat configurado no está soportado en la Mesa web.',
     identidad_del_modelo: () => 'No pude verificar el estado actual.',
     estado_actual_no_disponible: () => 'No pude verificar el estado actual.',
-    hyde_usa_modo_comando: () => 'Hyde no conversa por el chat.',
   },
   avisoDesconocido: 'La faceta respondió con un aviso que esta versión no conoce.',
   pipelineStarted: (id, mode, steps) =>
