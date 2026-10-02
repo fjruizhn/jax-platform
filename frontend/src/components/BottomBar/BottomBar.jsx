@@ -1,4 +1,4 @@
-import { memo, useState, useRef, useLayoutEffect, useEffect } from 'react'
+import { Fragment, memo, useState, useRef, useLayoutEffect, useEffect } from 'react'
 import { useJaxStore } from '../../store/useJaxStore'
 import { useEjecutor } from '../../store/useEjecutor'
 import { useI18n } from '../../i18n/index.jsx'
@@ -127,9 +127,9 @@ function BottomBar() {
 
   const MODES = [
     { id: 'chat',     label: t.modeChat },
+    ...(esSuperadmin ? [{ id: 'ejecutor', label: t.ejecutor.modo }] : []),
     { id: 'pipeline', label: t.modePipeline },
     { id: 'imagen',   label: t.modeImagen },
-    ...(esSuperadmin ? [{ id: 'ejecutor', label: t.ejecutor.modo }] : []),
   ]
 
   const activeFacetObj = FACETS.find((f) => f.id === activeFacet) || FACETS[0]
@@ -324,10 +324,10 @@ function BottomBar() {
         {/* Fila 1: modos, en su propia fila arriba de la caja (pedido de
             Fernando 2026-09-22) -- antes compartía fila con el textarea y le
             robaba ancho al crecer. */}
-        <div data-testid="fila-modos" className="flex gap-1 mb-2">
+        <div data-testid="fila-modos" className="flex gap-1 mb-2 flex-wrap items-center">
           {MODES.map(({ id: m, label }) => (
+            <Fragment key={m}>
             <button
-              key={m}
               onClick={() => elegirModo(m)}
               className={`px-2 py-1 rounded text-xs font-semibold transition-colors ${
                 mode === m
@@ -343,11 +343,11 @@ function BottomBar() {
             >
               {label}
             </button>
+            {/* E1.1: el selector de proyecto, pegado a Chat y solo en modo chat */}
+            {m === 'chat' && mode === 'chat' && <SelectorDeProyecto />}
+            </Fragment>
           ))}
         </div>
-
-        {/* Selector de proyecto — solo en modo chat */}
-        {mode === 'chat' && <SelectorDeProyecto />}
 
         {/* Selector de faceta — solo visible en modo chat */}
         {mode === 'chat' && (

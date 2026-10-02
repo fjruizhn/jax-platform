@@ -257,7 +257,7 @@ async def candidatos(project_id: int, q: str = Query(default="", max_length=320)
     tenant_id, user_id = _ids(user)
     try:
         filas = await list_invite_candidates(await _pool(), tenant_id=tenant_id, user_id=user_id,
-                                             project_id=project_id, query=q, limit=20)
+                                             project_id=project_id, query=q, limit=100)
     except Exception as exc:
         raise _http(exc) from exc
     return {"candidatos": filas}
