@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -22,6 +23,19 @@ logger = logging.getLogger(__name__)
 DEFAULT_FACETS = ["jax_local", "jekyll", "hyde", "hipatia", "thot", "kimi", "ada", "jacobs"]
 
 LAS_MANOS_URL = os.getenv("LAS_MANOS_URL", "http://127.0.0.1:7777")
+
+
+def las_manos_health_source_configuration() -> dict[str, object]:
+    """Return non-secret identity of the exact server-owned health probe."""
+    target = f"{LAS_MANOS_URL}/health"
+    return {
+        "endpoint_sha256": "sha256:" + hashlib.sha256(target.encode("utf-8")).hexdigest(),
+        "method": "GET",
+        "path": "/health",
+        "timeout_seconds": 5,
+        "poll_interval_seconds": 30,
+        "success_status_code": 200,
+    }
 
 _JACOBS_STATUS_MAP = {
     "pending":     "pending",

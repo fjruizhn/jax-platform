@@ -23,11 +23,28 @@ def _scope(core):
     )
 
 
+def _source_configuration():
+    from jax_engine.state import las_manos_health_source_configuration
+    return {
+        "FACET_RUNTIME_STATUS": {"state_contract": "JAXEngineState.FacetState", "status_field": "status",
+            "observed_at_field": "last_update", "allowed_statuses": ["idle", "thinking", "error", "offline"]},
+        "ENGINE_STATUS": las_manos_health_source_configuration(),
+    }
+
+
 def _core(monkeypatch):
     root = Path(os.environ["JAX_REPO_PATH"]).resolve()
     monkeypatch.setenv("JAX_REPO_PATH", str(root))
     from jax_engine.status_resolution import _jax_runtime_status_bridge
-    runtime_status = _jax_runtime_status_bridge()
+    try:
+        runtime_status = _jax_runtime_status_bridge()
+    except RuntimeStatusBridgeUnavailable:
+        # The broad no-DB suite intentionally checks compatibility against
+        # JAX master. The branch-pinned exact-pair job sets this marker and
+        # must fail if the bridge is absent or incompatible.
+        if os.environ.get("JAX_RUNTIME_STATUS_EXPECTED_SHA"):
+            raise
+        pytest.skip("requires the exact-pair F2-E runtime-status JAX bridge")
     resolution = importlib.import_module("policy.governance.resolution")
     return runtime_status, resolution
 
@@ -96,7 +113,8 @@ def test_engine_health_bridge_is_fixed_to_las_manos_and_completed_probe(monkeypa
     assert evidence.observation.result == {"name": "las_manos", "status": "alive"}
 
     registry = core.build_runtime_status_registry(
-        _scope(resolution), authenticator=resolution.ReceiptAuthenticator.for_testing(b"x" * 32)
+        _scope(resolution), authenticator=resolution.ReceiptAuthenticator.for_testing(b"x" * 32),
+        platform_source_configuration=_source_configuration(),
     )
     receipt = registry.resolve("ENGINE_STATUS", {"name": "las_manos", "status": "alive"},
         _scope(resolution), validation_time=datetime.now(timezone.utc), runtime_status_evidence=evidence)
@@ -115,7 +133,8 @@ def test_platform_runtime_status_exact_pair_resolves_facet_without_health_confla
         {"name": "hyde", "status": "thinking"}, _scope(resolution)
     )
     registry = core.build_runtime_status_registry(
-        _scope(resolution), authenticator=resolution.ReceiptAuthenticator.for_testing(b"y" * 32)
+        _scope(resolution), authenticator=resolution.ReceiptAuthenticator.for_testing(b"y" * 32),
+        platform_source_configuration=_source_configuration(),
     )
     receipt = registry.resolve("FACET_RUNTIME_STATUS", {"name": "hyde", "status": "thinking"},
         _scope(resolution), validation_time=datetime.now(timezone.utc), runtime_status_evidence=evidence)
@@ -139,12 +158,44 @@ def test_platform_global_status_evidence_is_not_replayable_between_tenants(monke
         {"name": "hyde", "status": "idle"}, _scope(resolution)
     )
     registry = core.build_runtime_status_registry(
-        _scope(resolution), authenticator=resolution.ReceiptAuthenticator.for_testing(b"z" * 32)
+        _scope(resolution), authenticator=resolution.ReceiptAuthenticator.for_testing(b"z" * 32),
+        platform_source_configuration=_source_configuration(),
     )
     other = replace(_scope(resolution), tenant_id="tenant-b", request_id="request-b")
     receipt = registry.resolve("FACET_RUNTIME_STATUS", {"name": "hyde", "status": "idle"},
         other, validation_time=datetime.now(timezone.utc), runtime_status_evidence=evidence)
     assert receipt.status is resolution.ResolutionStatus.WRONG_SCOPE
+
+
+def test_engine_probe_configuration_is_bound_into_f2b_registry_and_receipt(monkeypatch):
+    core, resolution = _core(monkeypatch)
+    from jax_engine import state as state_module
+    state = JAXEngineState()
+    state._state.las_manos_alive = True
+    state._state.last_health_check = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(status_bridge, "engine_state", state)
+    config = state_module.las_manos_health_source_configuration()
+    digest = core.runtime_status_source_configuration_digest("ENGINE_STATUS", config)
+    evidence = LasManosHealthStatusResolver().evidence(
+        {"name": "las_manos", "status": "alive"}, _scope(resolution))
+    assert evidence.source_configuration_digest == digest
+    registry = core.build_runtime_status_registry(_scope(resolution),
+        authenticator=resolution.ReceiptAuthenticator.for_testing(b"runtime-status-test-key-material-32-bytes"),
+        platform_source_configuration={
+            "FACET_RUNTIME_STATUS": {"state_contract": "JAXEngineState.FacetState", "status_field": "status",
+                "observed_at_field": "last_update", "allowed_statuses": ["idle", "thinking", "error", "offline"]},
+            "ENGINE_STATUS": config,
+        })
+    receipt = registry.resolve("ENGINE_STATUS", {"name": "las_manos", "status": "alive"},
+        _scope(resolution), validation_time=evidence.observation.observed_at,
+        runtime_status_evidence=evidence)
+    assert receipt.status is resolution.ResolutionStatus.RESOLVED
+    assert receipt.source_configuration_digest == digest
+
+    original_digest = digest
+    monkeypatch.setattr(state_module, "LAS_MANOS_URL", "http://different-server.invalid:7777")
+    changed_config = state_module.las_manos_health_source_configuration()
+    assert core.runtime_status_source_configuration_digest("ENGINE_STATUS", changed_config) != original_digest
 
 
 def test_bridge_rejects_missing_or_wrong_jax_runtime_status_checkout(monkeypatch, tmp_path):

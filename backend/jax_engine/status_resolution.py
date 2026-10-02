@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Mapping
 
-from .state import JAXEngineState, engine_state
+from .state import JAXEngineState, engine_state, las_manos_health_source_configuration
 
 
 class RuntimeStatusBridgeUnavailable(RuntimeError):
@@ -80,6 +80,8 @@ class FacetRuntimeStatusResolver:
             arguments={"name": name, "status": observed_status},
             observed_at=observed_at,
             provenance_ref=f"facet:{name}",
+            source_configuration={"state_contract": "JAXEngineState.FacetState", "status_field": "status",
+                "observed_at_field": "last_update", "allowed_statuses": ["idle", "thinking", "error", "offline"]},
         )
         try:
             return bridge.platform_runtime_status_evidence(typed_snapshot, arguments, scope)
@@ -117,6 +119,7 @@ class LasManosHealthStatusResolver:
             arguments={"name": name, "status": observed_status},
             observed_at=observed_at,
             provenance_ref="health:las_manos",
+            source_configuration=las_manos_health_source_configuration(),
         )
         try:
             return bridge.platform_runtime_status_evidence(typed_snapshot, arguments, scope)
