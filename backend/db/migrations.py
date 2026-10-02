@@ -3234,7 +3234,6 @@ MIGRACION_AJUSTES_V1 = "ajustes_que_mandan_v1"
 VALORES_QUE_RIGEN_2026_09_16 = {
     ajustes.SESION: "10080",   # auth/jwt.py: REFRESH_EXPIRE_SECONDS = 7 * 24 * 3600
     ajustes.MAX_PIPELINES: "3",  # jax_engine/resource_manager.py: reemplazó la constante fija por este ajuste (frente C)
-    ajustes.RETENCION: "30",   # jax_engine/owner_cleanup.py: COMMAND_OWNER_MAX_AGE_SECONDS
     ajustes.IDIOMA: "es",      # frontend/src/i18n/index.jsx: jax_lang || 'es'
 }
 # El nombre que la UI mostraba (i18n brandName). La fila, si existe, se conserva:

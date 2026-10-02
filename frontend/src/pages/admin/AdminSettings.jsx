@@ -16,7 +16,6 @@ const CODIGOS_CONOCIDOS = new Set(['config_clave_reservada', 'config_collation_d
 const ETIQUETAS = {
   session_timeout_min: 'adminSettingsTimeout',
   max_pipelines: 'adminSettingsMaxPipelines',
-  web_task_retention_days: 'adminSettingsRetention',
   lang_default: 'adminSettingsLang',
   system_name: 'adminSettingsSystemName',
   pipeline_confirmar_usd: 'adminSettingsConfirmarUsd',
@@ -143,9 +142,6 @@ export default function AdminSettings() {
           ayuda={limites.max_pipelines ? t.adminSettingsMaxPipelinesAyuda(limites.max_pipelines.max) : null}
           valor={config.max_pipelines} limite={limites.max_pipelines}
           onChange={v => set('max_pipelines', v)} />
-        <CampoNumero id="ajuste-retencion" etiqueta={t.adminSettingsRetention} ayuda={t.adminSettingsRetentionAyuda}
-          valor={config.web_task_retention_days} limite={limites.web_task_retention_days}
-          onChange={v => set('web_task_retention_days', v)} />
         <CampoNumero id="ajuste-confirmar-usd" etiqueta={t.adminSettingsConfirmarUsd} ayuda={t.adminSettingsConfirmarUsdAyuda}
           valor={config.pipeline_confirmar_usd} limite={limites.pipeline_confirmar_usd}
           onChange={v => set('pipeline_confirmar_usd', v)} />

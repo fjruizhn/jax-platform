@@ -841,8 +841,6 @@ export default {
   adminSettingsTimeoutAyuda: 'From sign-in until signing in again is required. Using it does not extend it.',
   adminSettingsMaxPipelines: 'Active pipelines at once',
   adminSettingsMaxPipelinesAyuda: (tope) => `Per organization. Jacobs runs no more than ${tope} in total.`,
-  adminSettingsRetention: 'Web task retention (days)',
-  adminSettingsRetentionAyuda: 'Days a web task (mission, result and owner) is kept before it is deleted.',
   adminSettingsSystemName: 'System name',
   adminSettingsConfirmarUsd: 'Confirm pipelines from (USD)',
   adminSettingsConfirmarUsdAyuda: 'Above this maximum cost, or with a step without price, confirmation is required before running. 0 = always confirm.',

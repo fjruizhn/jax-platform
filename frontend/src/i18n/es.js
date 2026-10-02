@@ -899,8 +899,6 @@ export default {
   adminSettingsTimeoutAyuda: 'Desde que se inicia sesión hasta que hay que volver a entrar. Usarla no la alarga.',
   adminSettingsMaxPipelines: 'Pipelines activos a la vez',
   adminSettingsMaxPipelinesAyuda: (tope) => `Por organización. Jacobs no corre más de ${tope} en total.`,
-  adminSettingsRetention: 'Retención de tareas web (días)',
-  adminSettingsRetentionAyuda: 'Días que se guarda una tarea web (misión, resultado y dueño) antes de borrarse.',
   adminSettingsSystemName: 'Nombre del sistema',
   adminSettingsConfirmarUsd: 'Confirmar pipelines desde (USD)',
   adminSettingsConfirmarUsdAyuda: 'Por encima de este costo máximo, o con un paso sin precio, se pide confirmación antes de correr. 0 = confirmar siempre.',

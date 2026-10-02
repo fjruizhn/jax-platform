@@ -30,11 +30,11 @@ def sin_marca(client, ajustes_en_db):
 
 
 def test_primera_corrida_fija_lo_que_el_codigo_hacia_cumplir(client, sin_marca):
-    sin_marca.poner(session_timeout_min="60", max_pipelines="1", web_task_retention_days="7",
+    sin_marca.poner(session_timeout_min="60", max_pipelines="1",
                     lang_default="en", system_name="Mi Sistema", pipeline_confirmar_usd="0.50")
     client.portal.call(_migrar)
     assert sin_marca.filas() == {
-        "session_timeout_min": "10080", "max_pipelines": "3", "web_task_retention_days": "30",
+        "session_timeout_min": "10080", "max_pipelines": "3",
         "lang_default": "es", "system_name": "Mi Sistema",
         # El tope de devoluciones lo pone OTRA migración
         # (_jacobs_tope_devoluciones_v1, 2026-09-20) y ésta tampoco lo toca --

@@ -37,7 +37,7 @@ def test_entero_acepta_los_bordes_y_rechaza_fuera_de_rango():
 
 
 def test_entero_rechaza_lo_que_no_es_un_entero_canonico():
-    retencion = ajustes.DEFINICIONES[ajustes.RETENCION].interpretar
+    retencion = ajustes.DEFINICIONES[ajustes.SESION].interpretar
     for texto in ("", " 30", "30 ", "+30", "30.0", "030", "٣٠", "treinta", "-1"):
         with pytest.raises(ajustes.ValorInvalido):
             retencion(texto)
@@ -141,7 +141,6 @@ def test_limites_publicos_y_tope_espejado_de_jacobs():
     assert ajustes.limites() == {
         "session_timeout_min": {"min": 15, "max": 10080},
         "max_pipelines": {"min": 1, "max": 3},
-        "web_task_retention_days": {"min": 1, "max": 365},
         "lang_default": {"opciones": ["es", "en"]},
         # Tope de devoluciones del arbitro (2026-09-20): CERO es valido -- es el
         # estado fail-closed de store.get_tope_devoluciones(). El maximo 5 es una
@@ -194,7 +193,7 @@ async def _explain():
 def test_lee_los_valores_tipados_de_la_tabla(client, ajustes_en_db):
     ajustes_en_db.poner(**{**ajustes_en_db.validos, "max_pipelines": "2", "lang_default": "en"})
     assert client.portal.call(_leer_todos) == {
-        "session_timeout_min": 10080, "max_pipelines": 2, "web_task_retention_days": 30,
+        "session_timeout_min": 10080, "max_pipelines": 2,
         "lang_default": "en", "system_name": "Axioma", "pipeline_confirmar_usd": Decimal("0.50"),
         # Su fila la siembra db/migrations.py::_jacobs_tope_devoluciones_v1 con el
         # valor del spec (2); este test lee, no siembra.
