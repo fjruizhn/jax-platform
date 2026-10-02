@@ -7,6 +7,7 @@ conftest fija JAX_EJECUTOR_PYTHON a un intérprete que no existe y cada test ree
 `misiones._runner` por un proceso falso que habla el MISMO protocolo (pedido por stdin, una
 línea JSON por evento, `resultado` al final). Lo que se prueba es la plataforma: la compuerta,
 la exclusión de un turno a la vez, la pausa, la persistencia y la lectura del stream."""
+import asyncio
 import json
 import os
 import sys
@@ -92,7 +93,26 @@ _HOST_LOCAL_DEL_RUNNER = "t-sp2-codigo-local"
 
 
 @pytest.fixture
-def runner(tmp_path, monkeypatch, client, sin_hosts_locales):
+def _verificar_runner_sin_tareas_pendientes(client, tmp_path):
+    anteriores = client.portal.call(lambda: set(misiones._tareas))
+    yield
+    pendientes = client.portal.call(
+        lambda: tuple(t for t in misiones._tareas if t not in anteriores))
+    if pendientes:
+        # Deja el arnés limpio incluso cuando esta regresión falla antes de que
+        # el fixture `runner` sea dueño del drenaje.
+        (tmp_path / "guion.json.seguir").write_text("")
+
+        async def terminar():
+            await asyncio.gather(*pendientes, return_exceptions=True)
+
+        client.portal.call(terminar)
+        pytest.fail("el fixture runner dejó tareas de misión activas al desmontarse")
+
+
+@pytest.fixture
+def runner(tmp_path, monkeypatch, client, sin_hosts_locales,
+           _verificar_runner_sin_tareas_pendientes):
     script = tmp_path / "runner_falso.py"
     script.write_text(RUNNER_FALSO)
     guion = tmp_path / "guion.json"
@@ -103,7 +123,7 @@ def runner(tmp_path, monkeypatch, client, sin_hosts_locales):
         sql, "INSERT INTO ejecutor_host (nombre, ip, puerto, rol, es_local, con_datos_de_clientes, activo) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s)",
         (_HOST_LOCAL_DEL_RUNNER, "192.0.2.98", 58291, "desarrollo", True, False, True))
-
+    tareas_anteriores = client.portal.call(lambda: set(misiones._tareas))
     class R:
         host_local = _HOST_LOCAL_DEL_RUNNER
 
@@ -121,7 +141,21 @@ def runner(tmp_path, monkeypatch, client, sin_hosts_locales):
 
         def seguir(self):
             (tmp_path / "guion.json.seguir").write_text("")
-    yield R()
+    runner_falso = R()
+    yield runner_falso
+    # El endpoint agenda `_correr_turno` como tarea de fondo y devuelve antes
+    # de que termine. Este fixture posee el runner falso y debe cerrar los
+    # trabajos que él lanzó antes de que `superadmin`/`usuarios` borren sus
+    # misiones. Si no, una escritura tardía en ejecutor_bitacora compite con
+    # la limpieza de la FK bitacora -> mision.
+    runner_falso.seguir()
+
+    async def esperar_tareas_del_test():
+        nuevas = tuple(t for t in misiones._tareas if t not in tareas_anteriores)
+        if nuevas:
+            await asyncio.gather(*nuevas)
+
+    client.portal.call(esperar_tareas_del_test)
     client.portal.call(sql, "DELETE FROM ejecutor_host WHERE nombre = %s", (_HOST_LOCAL_DEL_RUNNER,))
 
 
@@ -463,6 +497,40 @@ def test_el_salto_de_linea_y_el_tab_siguen_siendo_texto_valido(client, superadmi
     runner.guion(GUION_BUENO)
     r = _crear(client, h, objetivo="primera linea\nsegunda\tcon tab")
     assert r.status_code == 202, r.json()
+
+
+def test_teardown_runner_espera_mision_antes_de_limpiar_usuario(
+        client, superadmin, maquinas, runner):
+    """El runner falso queda activo al retornar; su fixture debe drenarlo antes de `usuarios`."""
+    _, h = superadmin
+    runner.guion({"lineas": ["@esperar", _ev("turno_lanzado"), _resultado()]})
+    respuesta = _crear(client, h, objetivo="espera para regresion de teardown")
+    assert respuesta.status_code == 202, respuesta.json()
+
+
+def test_borrar_usuario_respeta_fk_de_bitacora_a_mision(client, usuarios):
+    """El limpiador de usuarios borra los hijos antes de la misión y no apaga la FK."""
+    from tests.identidades import borrar_usuario
+
+    user_id, _ = usuarios()
+    mision_id = str(uuid.uuid4())
+    client.portal.call(sql, "INSERT INTO ejecutor_mision "
+                           "(id, user_id, objetivo, maquinas, sesion_id, created_at, updated_at) "
+                           "VALUES (%s, %s, %s, %s, %s, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))",
+                       (mision_id, user_id, "regresion teardown", '[\"t-test\"]', str(uuid.uuid4())))
+    client.portal.call(sql, "INSERT INTO ejecutor_bitacora (mision_id, turno, evento, datos, at) "
+                           "VALUES (%s, NULL, 'mision_creada', '{}', UTC_TIMESTAMP(6))", (mision_id,))
+    fk_activa_antes = client.portal.call(sql, "SELECT @@GLOBAL.foreign_key_checks", (), True)[0][0]
+
+    client.portal.call(borrar_usuario, user_id)
+
+    bitacoras = client.portal.call(sql,
+        "SELECT COUNT(*) FROM ejecutor_bitacora WHERE mision_id = %s", (mision_id,), True)[0][0]
+    misiones_restantes = client.portal.call(sql,
+        "SELECT COUNT(*) FROM ejecutor_mision WHERE id = %s", (mision_id,), True)[0][0]
+    fk_activa_despues = client.portal.call(sql, "SELECT @@GLOBAL.foreign_key_checks", (), True)[0][0]
+    assert (bitacoras, misiones_restantes) == (0, 0)
+    assert fk_activa_antes == fk_activa_despues == 1
 
 
 def test_instruccion_con_caracteres_de_control_es_422(client, superadmin, maquinas, runner):
