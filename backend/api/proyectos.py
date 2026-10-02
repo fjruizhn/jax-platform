@@ -10,7 +10,10 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 from auth.middleware import get_current_user
@@ -29,7 +32,23 @@ from jax.memory.project_queries import (ProjectView, get_project_for_user, list_
 from jax.memory.scope_authority import ProjectLifecycle, ProjectRole
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api")
+class _RutaConCodigo(APIRoute):
+    """Los 422 de validación de FastAPI traen `detail` como lista; el frontend
+    lee `detail.code`. Solo este router los convierte a `datos_invalidos`."""
+
+    def get_route_handler(self):
+        original = super().get_route_handler()
+
+        async def handler(request: Request):
+            try:
+                return await original(request)
+            except RequestValidationError:
+                return JSONResponse(status_code=422, content={"detail": {"code": "datos_invalidos"}})
+
+        return handler
+
+
+router = APIRouter(prefix="/api", route_class=_RutaConCodigo)
 
 # Orden importa: ProjectNotVisible hereda de ScopeDenied/AuthorizationDenied.
 _HTTP_DE_ERROR: tuple[tuple[type[Exception], int, str], ...] = (
@@ -134,6 +153,9 @@ async def listar(vista: ProjectView = ProjectView.ACTIVOS, antes_de: int | None 
     return {"proyectos": [_out(p) for p in filas[:limite]], "siguiente": siguiente}
 
 
+# Toda ruta que muta /proyectos/{id} llama primero a `_leer` (get_project_for_user):
+# DISABLED, HIDDEN para un no admin y el no miembro dan el mismo 404 que un id
+# inexistente, y la autoridad nunca llega a distinguirlos con un 409.
 async def _leer(user: AuthUser, project_id: int) -> dict:
     tenant_id, user_id = _ids(user)
     try:
@@ -165,7 +187,7 @@ async def ver(project_id: int, user: AuthUser = Depends(get_current_user)):
 
 @router.put("/proyectos/{project_id}")
 async def renombrar(project_id: int, body: ProyectoIn, user: AuthUser = Depends(get_current_user)):
-    _ids(user)
+    await _leer(user, project_id)
     try:
         await (await _admin()).rename_project(_request(user, "RENAME_PROJECT", project_id), project_id,
                                               name=body.nombre, description=_descripcion(body.descripcion))
@@ -176,7 +198,7 @@ async def renombrar(project_id: int, body: ProyectoIn, user: AuthUser = Depends(
 
 @router.post("/proyectos/{project_id}/estado")
 async def cambiar_estado(project_id: int, body: EstadoIn, user: AuthUser = Depends(get_current_user)):
-    _ids(user)
+    await _leer(user, project_id)
     try:
         await (await _admin()).set_project_lifecycle(_request(user, "SET_PROJECT_LIFECYCLE", project_id),
                                                      project_id, ProjectLifecycle(body.estado))
@@ -199,7 +221,7 @@ async def miembros(project_id: int, user: AuthUser = Depends(get_current_user)):
 
 @router.post("/proyectos/{project_id}/miembros", status_code=201)
 async def invitar(project_id: int, body: MiembroIn, user: AuthUser = Depends(get_current_user)):
-    _ids(user)
+    await _leer(user, project_id)
     try:
         nuevo = await (await _admin()).grant_member(_request(user, "GRANT_MEMBER", project_id), project_id,
                                                     email=body.email, role=ProjectRole(body.papel))
@@ -210,7 +232,7 @@ async def invitar(project_id: int, body: MiembroIn, user: AuthUser = Depends(get
 
 @router.put("/proyectos/{project_id}/miembros/{user_id}", status_code=204)
 async def cambiar_papel(project_id: int, user_id: int, body: PapelIn, user: AuthUser = Depends(get_current_user)):
-    _ids(user)
+    await _leer(user, project_id)
     try:
         await (await _admin()).change_project_role(_request(user, "CHANGE_PROJECT_ROLE", project_id),
                                                    project_id, user_id, ProjectRole(body.papel))
@@ -221,7 +243,7 @@ async def cambiar_papel(project_id: int, user_id: int, body: PapelIn, user: Auth
 
 @router.delete("/proyectos/{project_id}/miembros/{user_id}", status_code=204)
 async def quitar(project_id: int, user_id: int, user: AuthUser = Depends(get_current_user)):
-    _ids(user)
+    await _leer(user, project_id)
     try:
         await (await _admin()).revoke_member(_request(user, "REVOKE_MEMBER", project_id), project_id, user_id)
     except Exception as exc:

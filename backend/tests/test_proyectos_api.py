@@ -246,7 +246,7 @@ def test_renombrar_valida_nombre(client):
     h = m.usuario("dueno")
     pid = m.crear(h, "Alfa", "d").json()["id"]
     r = client.put(f"{P}/{pid}", headers=h, json={"nombre": "", "descripcion": None})
-    assert r.status_code == 422
+    assert r.status_code == 422 and _code(r) == "datos_invalidos"
     r = client.put(f"{P}/{pid}", headers=h, json={"nombre": "   ", "descripcion": None})
     assert r.status_code == 422 and _code(r) == "datos_invalidos"
     r = client.put(f"{P}/{pid}", headers=h, json={"nombre": "Beta", "descripcion": None})
@@ -308,3 +308,48 @@ def test_cors_permite_idempotency_key_y_put():
     opciones = next(mw.kwargs for mw in app.user_middleware if mw.cls is CORSMiddleware)
     assert "Idempotency-Key" in opciones["allow_headers"]
     assert "PUT" in opciones["allow_methods"] and "PATCH" not in opciones["allow_methods"]
+
+
+def _422(r):
+    assert r.status_code == 422 and r.json() == {"detail": {"code": "datos_invalidos"}}, r.text
+
+
+def test_validacion_422_trae_code(client):
+    m = Mundo(client)
+    h = m.usuario("dueno")
+    pid = m.crear(h, "Alfa").json()["id"]
+    _422(client.put(f"{P}/{pid}", headers=h, json={"nombre": "", "descripcion": None}))
+    _422(client.put(f"{P}/{pid}", headers=h, json={"nombre": "B"}))
+    _422(client.post(f"{P}/{pid}/miembros", headers=h, json={"email": m.email_de("dueno"), "papel": "REVIEWER"}))
+    _422(client.post(f"{P}/{pid}/miembros", headers=h, json={"email": "a", "papel": "VIEWER"}))
+    _422(client.post(f"{P}/{pid}/estado", headers=h, json={"estado": "DISABLED"}))
+    _422(client.get(P, headers=h, params={"limite": 0}))
+    _422(client.get(P, headers=h, params={"antes_de": "abc"}))
+    _422(client.post(P, headers=h, json={"nombre": "Alfa", "descripcion": None}))
+
+
+def test_un_router_ajeno_conserva_su_422(client):
+    r = client.post("/api/auth/login", json={})
+    assert r.status_code == 422 and isinstance(r.json()["detail"], list)
+
+
+def _deshabilitar(client, pid):
+    client.portal.call(sql, "UPDATE jax_project_scope SET status='DISABLED' WHERE project_id=%s", (pid,))
+
+
+def test_disabled_da_404_igual_que_inexistente_tambien_al_admin(client):
+    m = Mundo(client)
+    adm = m.usuario("adm", role="admin")
+    pid = m.crear(adm, "Alfa").json()["id"]
+    _deshabilitar(client, pid)
+    esperado = client.post(f"{P}/999999999/estado", headers=adm, json={"estado": "ACTIVE"})
+    assert esperado.status_code == 404
+    for destino in ("ACTIVE", "ARCHIVED"):
+        r = client.post(f"{P}/{pid}/estado", headers=adm, json={"estado": destino})
+        assert r.status_code == 404 and r.json() == esperado.json()
+    r = client.put(f"{P}/{pid}", headers=adm, json={"nombre": "Otro", "descripcion": None})
+    assert r.status_code == 404 and r.json() == esperado.json()
+    r = client.post(f"{P}/{pid}/miembros", headers=adm, json={"email": m.email_de("adm", "admin"), "papel": "VIEWER"})
+    assert r.status_code == 404 and r.json() == esperado.json()
+    estado = client.portal.call(sql, "SELECT status FROM jax_project_scope WHERE project_id=%s", (pid,), True)
+    assert estado[0][0] == "DISABLED"
