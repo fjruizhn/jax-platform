@@ -41,9 +41,9 @@ function fallas(tema) {
 }
 
 describe('tokens de color', () => {
-  it('tokens.css tiene los dos temas con 49 tokens cada uno', () => {
-    expect(Object.keys(temas.oscuro)).toHaveLength(49)
-    expect(Object.keys(temas.claro)).toHaveLength(49)
+  it('tokens.css tiene los dos temas con 48 tokens cada uno', () => {
+    expect(Object.keys(temas.oscuro)).toHaveLength(48)
+    expect(Object.keys(temas.claro)).toHaveLength(48)
   })
 
   it('todo token de tokens.js tiene valor en los dos temas, y todo valor tiene nombre', () => {
@@ -61,12 +61,12 @@ describe('tokens de color', () => {
     expect(r).toBeLessThan(AA_TEXTO)
   })
 
-  it('los 92 pares alcanzan su mínimo en oscuro', () => {
-    expect(PARES).toHaveLength(92)
+  it('los 91 pares alcanzan su mínimo en oscuro', () => {
+    expect(PARES).toHaveLength(91)
     expect(fallas('oscuro')).toEqual([])
   })
 
-  it('los 92 pares alcanzan su mínimo en claro', () => {
+  it('los 91 pares alcanzan su mínimo en claro', () => {
     expect(fallas('claro')).toEqual([])
   })
 
@@ -80,13 +80,13 @@ describe('tokens de color', () => {
     }
   })
 
-  // Modo Ejecutor (SP2, 2026-09-17): su propio color de modo, distinto de
-  // modo-comando (Hyde autónomo). Texto blanco encima, como modo-comando.
-  it('modo-ejecutor existe con el par sobre-color AA y es distinto de modo-comando', () => {
+  // Modo Ejecutor (SP2, 2026-09-17): su propio color de modo. Texto blanco encima.
+  // (T16, 2026-10-02: el modo Comando y su token modo-comando se retiraron.)
+  it('modo-ejecutor existe con el par sobre-color AA', () => {
     expect(TOKENS).toContain('modo-ejecutor')
     expect(PARES).toContainEqual(['sobre-color', 'modo-ejecutor', AA_TEXTO])
     for (const tema of ['oscuro', 'claro']) {
-      expect(temas[tema]['modo-ejecutor']).not.toEqual(temas[tema]['modo-comando'])
+      expect(temas[tema]).not.toHaveProperty('modo-comando')
     }
   })
 

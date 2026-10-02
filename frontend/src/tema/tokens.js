@@ -14,7 +14,7 @@ export const TOKENS = [
   'aviso', 'aviso-fondo', 'aviso-borde',
   'obsoleto',
   'oro', 'oro-claro', 'oro-oscuro',
-  'burbuja-usuario', 'modo-comando', 'modo-ejecutor',
+  'burbuja-usuario', 'modo-ejecutor',
   'faceta-jax-local', 'faceta-jekyll', 'faceta-hyde', 'faceta-hipatia',
   'faceta-thot', 'faceta-kimi', 'faceta-ada', 'faceta-jacobs', 'faceta-imagen',
 ]
@@ -40,7 +40,7 @@ export const PARES = [
     [e === 'acento' ? 'acento-texto' : e, `${e}-fondo`, AA_TEXTO],
     ['texto', `${e}-fondo`, AA_TEXTO],
   ]),
-  ...['acento', 'acento-hover', 'accion', 'accion-hover', 'peligro-solido', 'peligro-solido-hover', 'modo-comando', 'modo-ejecutor']
+  ...['acento', 'acento-hover', 'accion', 'accion-hover', 'peligro-solido', 'peligro-solido-hover', 'modo-ejecutor']
     .map((f) => ['sobre-color', f, AA_TEXTO]),
   ['texto', 'burbuja-usuario', AA_TEXTO],
   ['texto-suave', 'burbuja-usuario', AA_TEXTO],

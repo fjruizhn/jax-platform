@@ -44,11 +44,9 @@ function BottomBar() {
   const [politica, setPolitica] = useState(null)
   const [politicaFallo, setPoliticaFallo] = useState(false)
   const addMessage = useJaxStore((s) => s.addMessage)
-  const updateMessage = useJaxStore((s) => s.updateMessage)
   const activeFacet = useJaxStore((s) => s.activeFacet)
   const setActiveFacet = useJaxStore((s) => s.setActiveFacet)
   const addToast = useJaxStore((s) => s.addToast)
-  const registerPendingCommand = useJaxStore((s) => s.registerPendingCommand)
   const setGeneratingImage = useJaxStore((s) => s.setGeneratingImage)
   const { t } = useI18n()
   const textareaRef = useRef(null)
@@ -126,7 +124,6 @@ function BottomBar() {
 
   const MODES = [
     { id: 'chat',     label: t.modeChat },
-    { id: 'comando',  label: t.modeComando },
     { id: 'pipeline', label: t.modePipeline },
     { id: 'imagen',   label: t.modeImagen },
     ...(esSuperadmin ? [{ id: 'ejecutor', label: t.ejecutor.modo }] : []),
@@ -134,7 +131,6 @@ function BottomBar() {
 
   const activeFacetObj = FACETS.find((f) => f.id === activeFacet) || FACETS[0]
   const placeholder = mode === 'chat' ? t.placeholderChat(activeFacetObj.label)
-    : mode === 'comando' ? t.placeholderComando()
     : mode === 'pipeline' ? t.placeholderPipeline()
     : mode === 'imagen' ? t.placeholderImagen()
     : mode === 'ejecutor' ? (ejecutorContinua ? t.ejecutor.placeholderTurno : t.ejecutor.placeholderNueva)
@@ -217,13 +213,6 @@ function BottomBar() {
       timestamp: new Date().toISOString(),
     })
 
-    if (mode === 'comando') {
-      await handleComando(text)
-      setSending(false)
-      textareaRef.current?.focus()
-      return
-    }
-
     if (mode === 'imagen') {
       await handleImagen(text)
       setSending(false)
@@ -260,38 +249,6 @@ function BottomBar() {
     } finally {
       setSending(false)
       textareaRef.current?.focus()
-    }
-  }
-
-  async function handleComando(text) {
-    const msgId = `cmd-placeholder-${Date.now()}`
-    // capturado ANTES del POST: si la sesión cambia mientras está en vuelo
-    // (logout+login en el mismo browser), registerPendingCommand no debe
-    // registrar este taskId bajo la sesión nueva.
-    const sessionEpoch = useJaxStore.getState()._sessionEpoch
-    addMessage({
-      id: msgId,
-      facet: 'hyde',
-      content: t.taskInitializing,
-      status: 'running',
-      timestamp: new Date().toISOString(),
-    })
-
-    try {
-      const { data } = await api.post('/command', { command: text, mode: 'execute' })
-      const taskId = data.task_id
-      const realMsgId = `cmd-${taskId}`
-      updateMessage(msgId, {
-        id: realMsgId,
-        content: t.taskStarted(taskId.slice(0, 8)),
-        status: 'running',
-      })
-      registerPendingCommand(taskId, sessionEpoch)
-    } catch (err) {
-      updateMessage(msgId, {
-        content: `**${t.errorPrefix}:** ${textoDeErrorDeMesa(t, err, t.errorTask)}`,
-        status: 'completed',
-      })
     }
   }
 
@@ -361,9 +318,7 @@ function BottomBar() {
               onClick={() => elegirModo(m)}
               className={`px-2 py-1 rounded text-xs font-semibold transition-colors ${
                 mode === m
-                  ? m === 'comando'
-                    ? 'bg-modo-comando text-sobre-color'
-                    : m === 'pipeline'
+                  ? m === 'pipeline'
                     ? 'bg-texto-fuerte text-fondo'
                     : m === 'imagen'
                     ? 'bg-acento text-sobre-color'
@@ -399,12 +354,6 @@ function BottomBar() {
         )}
 
         {/* Hint de modo */}
-        {mode === 'comando' && (
-          <div className="mb-2 text-xs text-aviso font-semibold flex items-center gap-1">
-            <span>⚡</span>
-            <span>{t.hydeHint}</span>
-          </div>
-        )}
         {mode === 'pipeline' && (
           <div className="mb-2 text-xs text-texto-fuerte font-semibold flex items-center gap-1">
             <span>⚙</span>
@@ -464,8 +413,7 @@ function BottomBar() {
             className="flex-1 bg-superficie border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue resize-none focus:outline-none focus:border-foco disabled:opacity-50"
             style={{
               minHeight: '38px',
-              borderColor: mode === 'comando' ? colorToken('modo-comando', 0.5)
-                : mode === 'pipeline' ? colorToken('texto-fuerte', 0.25)
+              borderColor: mode === 'pipeline' ? colorToken('texto-fuerte', 0.25)
                 : mode === 'imagen' ? colorToken('faceta-imagen', 0.5)
                 : mode === 'ejecutor' ? colorToken('modo-ejecutor', 0.5)
                 : sending ? colorToken(activeFacetObj.token, 0.5) : undefined,
@@ -480,13 +428,12 @@ function BottomBar() {
             onClick={handleSend}
             disabled={!input.trim() || sending || imagenSinSoporte}
             className={`flex-shrink-0 px-4 py-2 rounded-lg border disabled:opacity-40 text-sm font-semibold transition-colors ${
-              mode === 'comando' ? 'border-transparent bg-modo-comando text-sobre-color'
-                : mode === 'pipeline' ? 'border-transparent bg-texto-fuerte text-fondo'
+              mode === 'pipeline' ? 'border-transparent bg-texto-fuerte text-fondo'
                 : mode === 'imagen' ? 'border-transparent bg-acento text-sobre-color'
                 : mode === 'ejecutor' ? 'border-transparent bg-modo-ejecutor text-sobre-color'
                 : 'bg-superficie'
             }`}
-            style={['comando', 'pipeline', 'imagen', 'ejecutor'].includes(mode) ? undefined : {
+            style={['pipeline', 'imagen', 'ejecutor'].includes(mode) ? undefined : {
               borderColor: colorToken(activeFacetObj.token),
               color: colorToken(activeFacetObj.token),
             }}

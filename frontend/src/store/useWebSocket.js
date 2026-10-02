@@ -8,8 +8,6 @@ export function useWebSocket() {
   const handleEvent = useJaxStore((s) => s.handleEvent)
   const setWsStatus = useJaxStore((s) => s.setWsStatus)
   const loadState = useJaxStore((s) => s.loadState)
-  const checkPendingTasks = useJaxStore((s) => s.checkPendingTasks)
-  const restorePendingTasks = useJaxStore((s) => s.restorePendingTasks)
   const wsRef = useRef(null)
   const everConnectedRef = useRef(false)
 
@@ -23,16 +21,11 @@ export function useWebSocket() {
       setWsStatus(status)
       if (status === 'connected') {
         if (everConnectedRef.current) {
-          // reconexión — chequear tareas que completaron mientras el WS estaba caído
-          checkPendingTasks()
-          // y recargar el estado: los eventos del corte (pipeline_continued,
+          // reconexión — recargar el estado: los eventos del corte (pipeline_continued,
           // pipeline_step_changed...) se perdieron, y el panel de detenidos se
           // refresca por ellos (fix round 2 Task 10). La primera conexión no:
           // loadState ya corrió al montar.
           loadState()
-        } else {
-          // primera conexión — restaurar tareas pendientes de sesiones anteriores
-          restorePendingTasks()
         }
         everConnectedRef.current = true
       }

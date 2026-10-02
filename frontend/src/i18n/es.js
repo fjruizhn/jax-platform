@@ -132,14 +132,11 @@ export default {
 
   // Bottom bar — modes
   modeChat: 'Chat',
-  modeComando: 'Comando',
   modePipeline: 'Pipeline',
   modeImagen: 'Imagen',
   placeholderChat: (label) => `Mensaje a ${label}… Enter para enviar, Shift+Enter para nueva línea`,
-  placeholderComando: () => 'Describe la tarea para Hyde… (autónomo)',
   placeholderPipeline: () => 'Describe el objetivo del pipeline…',
   placeholderImagen: () => 'Describe la imagen que querés generar…',
-  hydeHint: 'Hyde ejecutará la tarea de forma autónoma en background',
   jacobsHint: 'Jacobs orquestará múltiples facetas en pipeline',
   imagenHint: 'DALL-E 3 generará la imagen a partir de tu descripción',
   errorImagen: 'No se pudo generar la imagen.',
@@ -157,8 +154,6 @@ export default {
     credencial_no_disponible: (d) => `No hay una credencial válida configurada para ${d.provider}.`,
     imagen_error_http: (d) => `El servicio de imágenes respondió con error ${d.status}.`,
     imagen_error: () => 'No se pudo generar la imagen.',
-    task_id_invalido: () => 'El identificador de la tarea no es válido.',
-    tarea_no_encontrada: () => 'La tarea no existe.',
     limite_de_pipelines: (d) => `Ya hay ${d.max} pipelines en curso: espera a que termine uno.`,
     pipeline_id_invalido: () => 'El identificador del pipeline no es válido.',
     pipeline_no_encontrado: () => 'El pipeline no existe.',
@@ -269,13 +264,6 @@ export default {
     hyde_usa_modo_comando: () => 'Hyde opera en modo tarea autónoma — usa el modo Comando para ejecutar tareas técnicas.',
   },
   avisoDesconocido: 'La faceta respondió con un aviso que esta versión no conoce.',
-  commandFailed: (motivo) => `Error ejecutando la tarea: ${motivo}`,
-  commandFailedSinMotivo: 'Error ejecutando la tarea.',
-  commandDryRun: (mision) => `[Simulación] Tarea registrada:\n\n${mision}`,
-  taskInitializing: '_Iniciando tarea autónoma…_',
-  taskStarted: (id) => `_Tarea iniciada — \`${id}\`_\n\nHyde está ejecutando en background…`,
-  errorTask: 'No se pudo iniciar la tarea.',
-  commandNoResult: '(sin resultado)',
   pipelineStarted: (id, mode, steps) =>
     `Pipeline iniciado — \`${id}\`\nModo: **${mode}** · ${steps} steps\n\nSiguiendo progreso en panel derecho…`,
   errorPipeline: 'No se pudo crear el pipeline.',
@@ -1116,11 +1104,8 @@ export default {
   forcedChangeLogout: 'Cerrar sesión',
   myAccountSameAsCurrent: 'La nueva contraseña tiene que ser distinta de la que te dieron.',
 
-  // Restaurar tareas pendientes (useJaxStore.js)
-  taskRestoring: (id) => `_Tarea \`${id}\` — verificando estado…_`,
   // Modo Ejecutor (SP2, 2026-09-17): sólo superadmin, sólo máquinas sin datos
-  // de clientes. Distinto del modo Comando (tareas autónomas de Hyde). Un
-  // código que no está acá se muestra crudo.
+  // de clientes. Un código que no está acá se muestra crudo.
   ejecutor: {
     modo: 'Ejecutor',
     placeholderNueva: 'Objetivo de una misión nueva para el Ejecutor…',

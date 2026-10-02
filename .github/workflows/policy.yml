@@ -1025,8 +1025,16 @@ jobs:
           // translations and provider-body spoof suppression regressions.
           // 1068 -> 1069 (F2-D D01/D25): governed response speaker label never
           // reconstructs a runtime facet; measured in the targeted frontend suite.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1069) {
-              console.error("PISO ROTO: se esperaban 1069 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1069 -> 1049 (2026-10-02, Hyde, T16: retiro del modo Comando y de /command,
+          //   decisión de Fernando D-5 del spec El Faro). -20, medido con
+          //   `npx vitest run --reporter=json` antes (1069/0/1069) y después
+          //   (1049/0/1049): useJaxStore.comandos.test.js (-9) y
+          //   useJaxStore.commandPolling.test.js (-3) enteros, useJaxStore.logoutRace.test.js
+          //   (-7, 8 -> 1) y useJaxStore.eviction.test.js (-1, restorePendingTasks).
+          //   Los demás tests tocados (BottomBar*, useWebSocket, errores, contraste)
+          //   no cambian de cantidad.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1049) {
+              console.error("PISO ROTO: se esperaban 1049 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

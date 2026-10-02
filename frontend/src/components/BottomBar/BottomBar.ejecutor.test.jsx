@@ -15,7 +15,7 @@ import { useEjecutor } from '../../store/useEjecutor'
 import es from '../../i18n/es.js'
 
 // Modo Ejecutor en la barra (SP2, 2026-09-17): se AGREGA junto a Chat,
-// Comando, Pipeline e Imagen; sólo lo ve un superadmin.
+// Pipeline e Imagen; sólo lo ve un superadmin.
 // jsdom no implementa scrollIntoView (CenterPanel baja al último mensaje).
 Element.prototype.scrollIntoView = vi.fn()
 
@@ -41,20 +41,20 @@ beforeEach(() => {
 })
 
 describe('BottomBar -- modo Ejecutor', () => {
-  it('un operator no ve el modo Ejecutor; los cuatro modos de siempre siguen', () => {
+  it('un operator no ve el modo Ejecutor; los tres modos de siempre siguen', () => {
     como('operator')
     pintar()
     expect(screen.queryByRole('button', { name: tx.modo })).not.toBeInTheDocument()
-    for (const m of [es.modeChat, es.modeComando, es.modePipeline, es.modeImagen]) {
+    for (const m of [es.modeChat, es.modePipeline, es.modeImagen]) {
       expect(screen.getByRole('button', { name: m })).toBeInTheDocument()
     }
   })
 
-  it('un superadmin lo ve junto a Comando (que no se renombra)', () => {
+  it('un superadmin lo ve junto a los demás modos', () => {
     como('superadmin')
     pintar()
     expect(screen.getByRole('button', { name: tx.modo })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: es.modeComando })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: es.modeImagen })).toBeInTheDocument()
   })
 
   it('al elegirlo, el centro muestra el panel del Ejecutor en vez de los mensajes y no hay adjuntos', async () => {
@@ -81,7 +81,6 @@ describe('BottomBar -- modo Ejecutor', () => {
     fireEvent.change(screen.getByPlaceholderText(tx.placeholderNueva), { target: { value: 'ver memoria' } })
     fireEvent.click(screen.getByRole('button', { name: es.send }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/ejecutor/misiones', { objetivo: 'ver memoria', maquinas: ['ejecutor-prueba'] }))
-    expect(api.post).not.toHaveBeenCalledWith('/command', expect.anything())
     expect(api.post).not.toHaveBeenCalledWith('/chat', expect.anything())
   })
 

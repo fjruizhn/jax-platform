@@ -22,7 +22,7 @@ describe('textoDeErrorDeMesa (A-51)', () => {
   })
 
   it('un código como string también se traduce', () => {
-    expect(textoDeErrorDeMesa(en, err('task_id_invalido'), en.errorTask)).toBe(en.erroresMesa.task_id_invalido({}))
+    expect(textoDeErrorDeMesa(en, err('pipeline_id_invalido'), en.errorPipeline)).toBe(en.erroresMesa.pipeline_id_invalido({}))
   })
 
   it('el límite de pipelines usa el máximo del backend', () => {

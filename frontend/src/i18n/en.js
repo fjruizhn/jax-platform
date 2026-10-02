@@ -128,14 +128,11 @@ export default {
 
   // Bottom bar — modes
   modeChat: 'Chat',
-  modeComando: 'Command',
   modePipeline: 'Pipeline',
   modeImagen: 'Image',
   placeholderChat: (label) => `Message to ${label}… Enter to send, Shift+Enter for new line`,
-  placeholderComando: () => 'Describe the task for Hyde… (autonomous)',
   placeholderPipeline: () => 'Describe the pipeline objective…',
   placeholderImagen: () => 'Describe the image you want to generate…',
-  hydeHint: 'Hyde will execute the task autonomously in background',
   jacobsHint: 'Jacobs will orchestrate multiple facets in a pipeline',
   imagenHint: 'DALL-E 3 will generate the image from your description',
   errorImagen: 'Could not generate the image.',
@@ -153,8 +150,6 @@ export default {
     credencial_no_disponible: (d) => `There is no valid credential configured for ${d.provider}.`,
     imagen_error_http: (d) => `The image service returned error ${d.status}.`,
     imagen_error: () => 'The image could not be generated.',
-    task_id_invalido: () => 'The task id is not valid.',
-    tarea_no_encontrada: () => 'The task does not exist.',
     limite_de_pipelines: (d) => `${d.max} pipelines are already running: wait for one to finish.`,
     pipeline_id_invalido: () => 'The pipeline id is not valid.',
     pipeline_no_encontrado: () => 'The pipeline does not exist.',
@@ -262,13 +257,6 @@ export default {
     hyde_usa_modo_comando: () => 'Hyde works as an autonomous task runner — use Command mode for technical tasks.',
   },
   avisoDesconocido: 'The facet replied with a notice this version does not know.',
-  commandFailed: (motivo) => `Error running the task: ${motivo}`,
-  commandFailedSinMotivo: 'Error running the task.',
-  commandDryRun: (mision) => `[Dry run] Task registered:\n\n${mision}`,
-  taskInitializing: '_Starting autonomous task…_',
-  taskStarted: (id) => `_Task started — \`${id}\`_\n\nHyde is running in background…`,
-  errorTask: 'Could not start the task.',
-  commandNoResult: '(no result)',
   pipelineStarted: (id, mode, steps) =>
     `Pipeline started — \`${id}\`\nMode: **${mode}** · ${steps} steps\n\nTracking progress in right panel…`,
   errorPipeline: 'Could not create the pipeline.',
@@ -1052,11 +1040,8 @@ export default {
   forcedChangeLogout: 'Sign out',
   myAccountSameAsCurrent: 'The new password must be different from the one you were given.',
 
-  // Restoring pending tasks (useJaxStore.js)
-  taskRestoring: (id) => `_Task \`${id}\` — checking status…_`,
   // Executor mode (SP2, 2026-09-17): superadmin only, only machines without
-  // customer data. Not Command mode (Hyde's autonomous tasks). A code missing
-  // here is shown raw.
+  // customer data. A code missing here is shown raw.
   ejecutor: {
     modo: 'Executor',
     placeholderNueva: 'Goal for a new Executor mission…',

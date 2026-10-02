@@ -17,10 +17,6 @@ describe('unbounded growth caps (long-session memory leaks)', () => {
     vi.clearAllMocks()
   })
 
-  afterEach(() => {
-    localStorage.removeItem('jax_pending_cmds')
-  })
-
   it('addMessage caps the messages array at 200, dropping the oldest first', () => {
     for (let i = 0; i < 205; i++) {
       useJaxStore.getState().addMessage({ id: `m${i}`, facet: 'jax_local', content: `msg ${i}`, timestamp: `t${i}` })
@@ -29,20 +25,6 @@ describe('unbounded growth caps (long-session memory leaks)', () => {
     expect(messages).toHaveLength(200)
     expect(messages[0].id).toBe('m5') // los primeros 5 (m0..m4) se descartaron
     expect(messages[messages.length - 1].id).toBe('m204')
-  })
-
-  it('restorePendingTasks respects the same cap when adding many at once', () => {
-    useJaxStore.setState({
-      messages: Array.from({ length: 199 }, (_, i) => ({ id: `old-${i}`, facet: 'hyde', content: 'x', timestamp: 't' })),
-    })
-    localStorage.setItem('jax_pending_cmds', JSON.stringify({ owner: 1, ids: ['a', 'b', 'c'] }))
-
-    useJaxStore.getState().restorePendingTasks()
-
-    const { messages } = useJaxStore.getState()
-    expect(messages).toHaveLength(200)
-    // los 3 restaurados son los más nuevos -> sobreviven; se descartan los 2 más viejos
-    expect(messages.filter((m) => m.id.startsWith('cmd-'))).toHaveLength(3)
   })
 
   it('never evicts a running message even if it is the oldest one', () => {

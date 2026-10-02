@@ -18,15 +18,13 @@ import { useWebSocket } from './useWebSocket'
 import { useJaxStore } from './useJaxStore'
 
 const loadState = vi.fn()
-const checkPendingTasks = vi.fn()
-const restorePendingTasks = vi.fn()
 
 beforeEach(() => {
   alCambiarEstado = null
-  for (const f of [loadState, checkPendingTasks, restorePendingTasks]) f.mockReset()
+  for (const f of [loadState]) f.mockReset()
   useJaxStore.setState({
     token: 'tok', user: { user_id: 7, role: 'viewer' },
-    loadState, checkPendingTasks, restorePendingTasks, setWsStatus: vi.fn(), handleEvent: vi.fn(),
+    loadState, setWsStatus: vi.fn(), handleEvent: vi.fn(),
   })
 })
 
@@ -36,16 +34,14 @@ describe('useWebSocket -- recarga del estado al reconectar', () => {
     expect(loadState).toHaveBeenCalledTimes(1)
     act(() => alCambiarEstado('connected'))
     expect(loadState).toHaveBeenCalledTimes(1)
-    expect(restorePendingTasks).toHaveBeenCalledTimes(1)
   })
 
-  it('una reconexión recarga el estado una vez y chequea las tareas', () => {
+  it('una reconexión recarga el estado una vez', () => {
     renderHook(() => useWebSocket())
     act(() => alCambiarEstado('connected'))
     act(() => alCambiarEstado('disconnected'))
     expect(loadState).toHaveBeenCalledTimes(1)
     act(() => alCambiarEstado('connected'))
     expect(loadState).toHaveBeenCalledTimes(2)
-    expect(checkPendingTasks).toHaveBeenCalledTimes(1)
   })
 })
