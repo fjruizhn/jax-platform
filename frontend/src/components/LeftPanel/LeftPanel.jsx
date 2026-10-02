@@ -20,7 +20,7 @@ function LeftPanel() {
       <div className="flex-shrink-0 flex flex-col items-center justify-center py-4 relative border-b border-borde">
         <HalEye size={150} />
         <div className="mt-1 text-xs font-mono text-texto-tenue tracking-widest uppercase">
-          {t.platformLabel}
+          {t.platformLabel(__APP_VERSION__)}
         </div>
       </div>
 

@@ -56,6 +56,7 @@ _cred_handler.setFormatter(logging.Formatter("%(levelname)s credential_resolver:
 _cred_logger.addHandler(_cred_handler)
 _cred_logger.propagate = False
 
+from app_version import leer_version
 import ajustes
 from adjuntos import limites as limites_de_adjuntos
 from adjuntos import almacen as almacen_de_adjuntos
@@ -206,7 +207,7 @@ async def lifespan(app: FastAPI):
     await close_pool()
 
 
-app = FastAPI(title="JAX Platform", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="JAX Platform", version=leer_version(), lifespan=lifespan)
 
 # Frente C (2026-09-16): un ajuste de admin ilegible es un 503 con código, en
 # cualquier endpoint que lo lea -- nunca un default silencioso (ajustes.py).

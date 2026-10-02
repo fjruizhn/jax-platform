@@ -511,7 +511,8 @@ export default {
   },
 
   // Center panel
-  platformLabel: 'AXIOMA V0.2',
+  // El número sale del archivo VERSION de la raíz (vite.config.js), no se escribe acá.
+  platformLabel: (v) => `AXIOMA V${v}`,
   inMemoryOf: 'En memoria de Jairo Urbina.',
   inHonorOf: 'En honor al Prof. Raúl Jacobs.',
 
