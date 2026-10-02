@@ -1033,8 +1033,10 @@ jobs:
           //   (-7, 8 -> 1) y useJaxStore.eviction.test.js (-1, restorePendingTasks).
           //   Los demás tests tocados (BottomBar*, useWebSocket, errores, contraste)
           //   no cambian de cantidad.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1049) {
-              console.error("PISO ROTO: se esperaban 1049 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1049 -> 1050 (mismo PR): +1 en BottomBar.ejecutor.test.jsx, el modo Comando
+          //   no lo ve ningún rol; visto en rojo contra d4fa054. Medido: 1050/0/1050.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1050) {
+              console.error("PISO ROTO: se esperaban 1050 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3340,7 +3342,11 @@ jobs:
           # colectados antes -> 3120 después. NO se midió con DB real (el local no
           # tiene la barrera test-db.env): el job lo confirma o lo corrige (regla 5,
           # el último en llegar re-mide).
-          PISO_PASSED = 3059
+          # 3059 -> 3063 (mismo PR): +4 puros de tests/test_command_retirado.py (el módulo
+          # api.command no existe, la app no registra /api/command, el evento
+          # command_completed y la ruta frenada se fueron); vistos en rojo contra
+          # d4fa054. Neto del PR: 3098 -> 3063.
+          PISO_PASSED = 3063
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4314,8 +4320,9 @@ jobs:
       # 1915 -> 1878 (2026-10-02, Hyde, T16: retiro de /command): -37 passed y -2 skipped,
       # medido con el comando documentado y el mismo checkout de JAX (jax 93900c2):
       # antes 2037 passed / 1122 skipped -> después 2000 / 1120. Piso = declarado
-      # (1915) - 37.
-      JAX_CI_MIN_PASSED: "1878"
+      # (1915) - 37 = 1878; +4 puros de tests/test_command_retirado.py (2004 passed
+      # medido) = 1882.
+      JAX_CI_MIN_PASSED: "1882"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

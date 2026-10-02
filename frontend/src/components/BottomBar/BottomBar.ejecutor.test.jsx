@@ -50,6 +50,16 @@ describe('BottomBar -- modo Ejecutor', () => {
     }
   })
 
+  it('el modo Comando se retiró (T16): ningún rol lo ve', () => {
+    for (const rol of ['operator', 'superadmin']) {
+      como(rol)
+      const { unmount } = pintar()
+      expect(screen.queryByRole('button', { name: 'Comando' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Command' })).not.toBeInTheDocument()
+      unmount()
+    }
+  })
+
   it('un superadmin lo ve junto a los demás modos', () => {
     como('superadmin')
     pintar()

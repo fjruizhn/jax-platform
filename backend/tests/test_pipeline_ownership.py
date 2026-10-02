@@ -1,7 +1,7 @@
 """GET/POST /api/pipelines/{pipeline_id}(/results|/resume|/cancel) had no
 ownership check -- any authenticated user who knew a pipeline_id could read
 its results or resume/cancel it. Fixed the same way as GET
-/api/command/{task_id} (see test_command_ownership.py): a durable owner
+/api/command/{task_id} (see test_command_ownership.py, retired in T16 together with /command): a durable owner
 record written at creation time, since engine_state.active_pipelines (the
 only in-memory ownership record) is evicted the moment a pipeline
 completes -- exactly when /results is normally fetched.
