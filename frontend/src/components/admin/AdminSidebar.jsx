@@ -6,9 +6,7 @@ import { useVersion } from '../../store/useVersion'
 // Orden pedido por Fernando (2026-10-02, con captura): Dashboard, Facetas &
 // Modelos, Costos, Repositorio, Memoria, Proyectos, Usuarios, Pipelines
 // ocultos, Configuración, Correo. (El de 2026-09-20 ponía Memoria 2ª.)
-// Rutas relativas a /admin, salvo `a` (ruta absoluta de otra pantalla): Proyectos
-// es la pantalla /proyectos que ya existe, con su propio "Volver" -- no se
-// duplica dentro del caparazón de Administración.
+// Rutas relativas a /admin. Proyectos (E1.3) también vive dentro del caparazón.
 // Íconos: emoji con presentación de color POR DEFECTO (Emoji_Presentation), que
 // no dependen de un selector de variación; ⚙ y ✉ eran símbolos de texto y se
 // veían grises.
@@ -18,7 +16,7 @@ const NAV_ITEMS = [
   { path: 'costs',     labelKey: 'adminCosts',     icon: '💰' },
   { path: 'repo',      labelKey: 'adminRepo',      icon: '📁' },
   { path: 'memoria',   labelKey: 'adminMemoria',   icon: '🧩' },
-  { a: '/proyectos',   labelKey: 'adminProyectos', icon: '📂' },
+  { path: 'proyectos', labelKey: 'adminProyectos', icon: '📂' },
   { path: 'users',     labelKey: 'adminUsers',     icon: '👤' },
   // Fix round 1 (MINOR-7, 2026-09-22): la ruta ya existía (Admin.jsx) y el
   // enlace de BarraUsuario ya llevaba acá, pero sin entrada en este menú el
@@ -48,8 +46,8 @@ export default function AdminSidebar() {
       <nav className="flex-1 py-3">
         {NAV_ITEMS.map((item) => (
           <NavLink
-            key={item.path ?? item.a}
-            to={item.a ?? `/admin/${item.path}`}
+            key={item.path}
+            to={`/admin/${item.path}`}
             className={({ isActive }) =>
               `flex items-center gap-2.5 px-4 py-2.5 text-sm transition-colors ${
                 isActive

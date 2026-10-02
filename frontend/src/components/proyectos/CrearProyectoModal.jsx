@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useBaseProyectos } from './contexto'
 import { useI18n } from '../../i18n/index.jsx'
 import Dialogo from '../Dialogo'
 import { crearProyecto } from '../../api/proyectos'
@@ -20,6 +21,7 @@ const BOTON_SECUNDARIO = `${TAMANO_BOTON_44} rounded bg-superficie text-texto-su
 export default function CrearProyectoModal({ onCerrar }) {
   const { t } = useI18n()
   const navigate = useNavigate()
+  const { base } = useBaseProyectos()
   const [nombre, setNombre] = useState('')
   const [descripcion, setDescripcion] = useState('')
   const [enviando, setEnviando] = useState(false)
@@ -52,7 +54,7 @@ export default function CrearProyectoModal({ onCerrar }) {
       if (!vivoRef.current) return
       vivoRef.current = false
       onCerrar()
-      navigate(`/proyectos/${Number(creado.id)}`)
+      navigate(`${base}/${Number(creado.id)}`)
     } catch (err) {
       if (!vivoRef.current) return
       setError(t.proyectos.errores[codigoDe(err)] ?? t.proyectos.errores.generico)
