@@ -141,6 +141,12 @@ async function _postDelFreno(url, set) {
   }
 }
 
+// Lo que se vacía cuando una sesión se pierde por cualquier camino (logout,
+// restoreSession fallido, refresh fallido en api/client.js). Un único punto: lo
+// elegido en la sesión que se fue (proyecto del chat) no puede heredarlo quien
+// entre después en la misma pestaña. (E1, T9 ronda 1)
+export const SESION_VACIA = { token: null, user: null, proyectoActivo: null }
+
 export const useJaxStore = create((set, get) => {
   // Varios escritores async (fetch de resultados de pipeline) programan su
   // propio setTimeout/then() que puede resolver bien después de logout(), bien después de que OTRO usuario se
@@ -201,7 +207,7 @@ export const useJaxStore = create((set, get) => {
       set({ token: refreshData.access_token, user })
       bumpSessionEpoch()
     } catch {
-      set({ token: null, user: null })
+      set({ ...SESION_VACIA })
       bumpSessionEpoch()
     } finally {
       set({ sessionRestoring: false })
@@ -243,7 +249,7 @@ export const useJaxStore = create((set, get) => {
       }
       _revocarObjectURLsDeAdjuntos(get().messages)
       set({
-        token: null, user: null, messages: [], proyectoActivo: null, _pipelineCompletedShown: new Set(),
+        ...SESION_VACIA, messages: [], _pipelineCompletedShown: new Set(),
         avisoSesion: null, saliendo: null,
         // Bloqueante 1 (revisión final, 2026-09-18): faltaba. Sin esto, otro
         // usuario que entra en la MISMA pestaña (no hay location.reload en el
