@@ -12,6 +12,9 @@ limpieza SIEMPRE), con DOS diferencias deliberadas:
 
 SUBCOMANDOS (desde la raíz del repo, con el venv del backend):
     medir     siembra, levanta, mide, hace EXPLAIN y limpia (la corrida de carga)
+    peor-caso resolución de alcance de 50 miembros de un proyecto mientras su OWNER lo muta
+              por HTTP, y crear/invitar/quitar bajo carga. Corre en una base PROPIA clonada
+              (jax_memory_test_<sufijo>) que se elimina al terminar
     visual    siembra, levanta backend + vite y espera (SIGTERM/Ctrl-C) para la
               revisión visual en el navegador; al salir limpia
     limpiar SUFIJO   borra lo sembrado por UNA corrida (el sufijo de 8 hex que imprime
@@ -90,6 +93,25 @@ P95_DEGRADADO_MS = 250.0
 CRECIMIENTO_MINIMO = 1.05
 
 
+def base_de_peor_caso(sufijo: str | None) -> str:
+    """Nombre de la base PROPIA del escenario peor-caso: `jax_memory_test_<sufijo>`. Pura.
+    Las mutaciones por HTTP dejan filas en tablas append-only (`jax_project_membership_event`,
+    trigger de no-DELETE, FK RESTRICT), que no se pueden borrar por sufijo: el escenario corre en
+    una base clonada y se la elimina entera. Solo acepta 8 hex: nunca produce `jax_memory`."""
+    if not sufijo or not re.fullmatch(r"[0-9a-f]{8}", sufijo):
+        raise ValueError(f"sufijo de corrida inválido: {sufijo!r}")
+    return f"{BASE_DE_PRUEBA}_{sufijo}"
+
+
+def _base_activa() -> str:
+    """La base de esta corrida: la compartida de prueba, o la propia de peor-caso si el orquestador la fijó
+    en PROYECTOS_E1_BASE (la heredan los procesos hijos). Cualquier otro valor aborta."""
+    base = os.environ.get("PROYECTOS_E1_BASE", BASE_DE_PRUEBA)
+    if not re.fullmatch(rf"{BASE_DE_PRUEBA}(_[0-9a-f]{{8}})?", base):
+        raise SystemExit(f"PROYECTOS_E1_BASE={base!r} no es una base de prueba -- ABORTANDO")
+    return base
+
+
 def _cargar_env_de_prueba() -> dict:
     ruta = Path(os.environ.get("JAX_TEST_DB_ENV", Path.home() / ".config/jax/test-db.env"))
     env = {}
@@ -100,6 +122,7 @@ def _cargar_env_de_prueba() -> dict:
             env[k.strip()] = v.strip().strip('"').strip("'")
     if env.get("JAX_DB_NAME") != BASE_DE_PRUEBA:
         raise SystemExit(f"JAX_DB_NAME={env.get('JAX_DB_NAME')!r} != {BASE_DE_PRUEBA!r} -- ABORTANDO")
+    env["JAX_DB_NAME"] = _base_activa()
     return env
 
 
@@ -107,12 +130,12 @@ def _conectar():
     import pymysql
     env = _cargar_env_de_prueba()
     conn = pymysql.connect(host=env["JAX_DB_HOST"], port=int(env["JAX_DB_PORT"]), user=env["JAX_DB_USER"],
-                           password=env["JAX_DB_PASSWORD"], database=BASE_DE_PRUEBA, autocommit=False,
+                           password=env["JAX_DB_PASSWORD"], database=_base_activa(), autocommit=False,
                            charset="utf8mb4", connect_timeout=10)
     with conn.cursor() as cur:  # barrera dura, no un assert
         cur.execute("SELECT DATABASE()")
         (db,) = cur.fetchone()
-    if db != BASE_DE_PRUEBA:
+    if db != _base_activa():
         raise RuntimeError(f"conectado a {db!r} -- ABORTANDO sin escribir nada")
     return conn
 
@@ -133,10 +156,17 @@ def patrones_de_limpieza(sufijo: str | None) -> tuple[str, str]:
     return f"{PREFIJO_PROYECTO}{sufijo}-%", f"{PREFIJO_PROYECTO}%-{sufijo}@{DOMINIO}"
 
 
-def sembrar(sufijo: str) -> dict:
-    import bcrypt
+def sembrar(sufijo: str, n_extras: int = N_MIEMBROS_EXTRA, n_invitables: int = 0) -> dict:
     patrones_de_limpieza(sufijo)  # valida antes de escribir nada
     conn = _conectar()
+    try:
+        return _sembrar(conn, sufijo, n_extras, n_invitables)
+    finally:
+        conn.close()   # también si falla: una conexión abierta bloquea el DROP DATABASE de peor-caso
+
+
+def _sembrar(conn, sufijo: str, n_extras: int, n_invitables: int) -> dict:
+    import bcrypt
     ahora = "2026-10-02 00:00:00.000000"
     pw = bcrypt.hashpw(PASSWORD_DE_PRUEBA.encode(), bcrypt.gensalt(rounds=4)).decode()
 
@@ -148,7 +178,10 @@ def sembrar(sufijo: str) -> dict:
     with conn.cursor() as cur:
         miembro = usuario(cur, f"{PREFIJO_PROYECTO}miembro-{sufijo}@{DOMINIO}")
         dueno = usuario(cur, f"{PREFIJO_PROYECTO}dueno-{sufijo}@{DOMINIO}")
-        extras = [usuario(cur, f"{PREFIJO_PROYECTO}u{i:02d}-{sufijo}@{DOMINIO}") for i in range(N_MIEMBROS_EXTRA)]
+        extras = [usuario(cur, f"{PREFIJO_PROYECTO}u{i:02d}-{sufijo}@{DOMINIO}") for i in range(n_extras)]
+        # No son miembros de nada: los usa el escenario peor-caso para invitar y quitar.
+        invitables = [(usuario(cur, f"{PREFIJO_PROYECTO}v{i:02d}-{sufijo}@{DOMINIO}"), f"{PREFIJO_PROYECTO}v{i:02d}-{sufijo}@{DOMINIO}")
+                      for i in range(n_invitables)]
     conn.commit()
 
     ids, de_miembro = [], []
@@ -180,8 +213,7 @@ def sembrar(sufijo: str) -> dict:
                         "VALUES (%s,%s,%s,%s,%s,'ACTIVE',%s,%s,%s,%s)",
                         [(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]) for m in membresias])
     conn.commit()
-    conn.close()
-    semilla = {"sufijo": sufijo, "user_id": miembro, "email": f"{PREFIJO_PROYECTO}miembro-{sufijo}@{DOMINIO}", "tenant_id": str(TENANT_ID),
+    semilla = {"sufijo": sufijo, "extras": extras, "invitables": invitables, "user_id": miembro, "email": f"{PREFIJO_PROYECTO}miembro-{sufijo}@{DOMINIO}", "tenant_id": str(TENANT_ID),
                "dueno_id": dueno, "proyectos": len(ids), "del_usuario": len(de_miembro),
                "proyecto_con_miembros": proyecto_con_miembros, "proyecto_del_usuario": de_miembro[0],
                "proyecto_ajeno": next(p for p in ids if p not in set(de_miembro))}
@@ -289,7 +321,7 @@ def _levantar_backend(env: dict, tmp: Path):
         raise
     # VERIFICACIÓN DURA contra el proceso ya levantado, no contra el dict en memoria.
     pares = dict(p.split(b"=", 1) for p in Path(f"/proc/{proc.pid}/environ").read_bytes().split(b"\x00") if b"=" in p)
-    if pares.get(b"JAX_DB_NAME", b"").decode() != BASE_DE_PRUEBA:
+    if pares.get(b"JAX_DB_NAME", b"").decode() != _base_activa():
         raise RuntimeError("el backend levantado NO apunta a la base de prueba -- ABORTANDO")
     return proc, log
 
@@ -553,6 +585,294 @@ def visual() -> None:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# Escenario peor-caso (E1, ola final, MAJOR-1): resolución de alcance de 50 miembros del MISMO
+# proyecto P mientras el OWNER de P lo renombra/archiva/restaura por HTTP real.
+# ---------------------------------------------------------------------------
+CLIENTES_ALCANCE = 50
+SEGUNDOS_FASE = 60
+CLIENTES_ESCRITURA = 20
+SEGUNDOS_ESCRITURA = 60
+PERIODO_DEL_OWNER_S = 1.0
+FACTOR_DEGRADACION = 2.0
+CODIGOS_DB = {1213: "deadlock_1213", 1205: "lock_timeout_1205"}
+if os.environ.get("CARGA_RAPIDA"):
+    SEGUNDOS_FASE, SEGUNDOS_ESCRITURA = 4, 4
+
+
+def clasificar_respuesta(status: int | None, cuerpo: str = "") -> str:
+    """Categoría de una respuesta de mutación. Pura. 503 con `reintentar` se cuenta aparte del 5xx."""
+    if status is None:
+        return "sin_respuesta"
+    if status == 503 and "reintentar" in cuerpo:
+        return "503_reintentar"
+    if status >= 500:
+        return "5xx"
+    if status >= 400:
+        return "4xx"
+    return "ok"
+
+
+def clasificar_error_db(exc: BaseException) -> str:
+    """deadlock 1213 / lock timeout 1205 / otro, por el código de MariaDB en args[0]. Pura."""
+    codigo = exc.args[0] if exc.args and isinstance(exc.args[0], int) else None
+    return CODIGOS_DB.get(codigo, "otro")
+
+
+def resumen(lat: list[float]) -> dict:
+    if not lat:
+        return {"n": 0, "p50_ms": None, "p95_ms": None, "p99_ms": None, "max_ms": None}
+    return {"n": len(lat), "p50_ms": round(percentil(lat, 50), 1), "p95_ms": round(percentil(lat, 95), 1),
+            "p99_ms": round(percentil(lat, 99), 1), "max_ms": round(max(lat), 1)}
+
+
+def veredicto_peor_caso(sin: dict, con: dict, errores_con_escrituras: int) -> str:
+    """Pura. Dice sin rodeos si la mitad con escrituras degrada el p95 más de FACTOR_DEGRADACION o hay errores."""
+    motivos = []
+    if sin.get("p95_ms") and con.get("p95_ms") and con["p95_ms"] > FACTOR_DEGRADACION * sin["p95_ms"]:
+        motivos.append(f"p95 con escrituras {con['p95_ms']} ms > {FACTOR_DEGRADACION}x el de sin escrituras ({sin['p95_ms']} ms)")
+    if errores_con_escrituras:
+        motivos.append(f"{errores_con_escrituras} errores (deadlock/lock timeout/5xx/503)")
+    return "DEGRADA: " + "; ".join(motivos) if motivos else "no degrada (p95 <= 2x y sin errores)"
+
+
+async def _peor_alcance(semilla: dict, segundos: float) -> dict:
+    """Hijo: 50 clientes, cada uno con SU usuario miembro de P, resuelven el alcance del chat en bucle."""
+    from db.connection import get_pool
+    from jax.memory.b9 import AuthorizationDenied, ScopeContext, ScopeDenied
+    from jax.memory.scope_authority import ProjectScopeAuthorityResolver
+    pool = await get_pool()
+    resolver = ProjectScopeAuthorityResolver(pool)
+    pid = semilla["proyecto_con_miembros"]
+    usuarios = semilla["extras"][:CLIENTES_ALCANCE]
+    if len(usuarios) < CLIENTES_ALCANCE:
+        raise RuntimeError(f"hacen falta {CLIENTES_ALCANCE} miembros distintos de P, hay {len(usuarios)}")
+    lat, lat_ok, lat_den, errores = [], [], [], {}
+    fin = time.perf_counter() + segundos
+
+    async def cliente(uid):
+        while time.perf_counter() < fin:
+            alcance = ScopeContext(actor_principal=f"user:{uid}", actor_type="USER", subject_user_id=str(uid),
+                                   tenant_id=str(TENANT_ID), project_id=str(pid),
+                                   calling_component="jax-platform-web-chat")
+            t0 = time.perf_counter()
+            try:
+                await resolver.resolve_scope(alcance)
+            except (AuthorizationDenied, ScopeDenied):
+                lat_den.append((time.perf_counter() - t0) * 1000)   # P archivado en ese instante: el chat lo niega, no es un error
+                lat.append(lat_den[-1])
+                continue
+            except Exception as exc:  # fail-soft: se clasifica y se cuenta, no tumba la corrida
+                k = clasificar_error_db(exc)
+                errores[k] = errores.get(k, 0) + 1
+                continue
+            lat_ok.append((time.perf_counter() - t0) * 1000)
+            lat.append(lat_ok[-1])
+    await asyncio.gather(*(cliente(u) for u in usuarios))
+    return {**resumen(lat), "clientes": len(usuarios), "segundos": segundos,
+            "permitidos": resumen(lat_ok), "denegados": resumen(lat_den),
+            "errores": errores, "pool_maxsize": pool.maxsize}
+
+
+async def _correr_hijo_alcance(semilla: dict, segundos: float) -> dict:
+    env = dict(os.environ, **_cargar_env_de_prueba(),
+               PYTHONPATH=os.pathsep.join([str(BACKEND_DIR), os.environ.get("PYTHONPATH", "")]))
+    proc = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__)), "--peor-alcance",
+                                                json.dumps(semilla), str(segundos), env=env,
+                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    out, err = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"--peor-alcance falló:\n{err.decode()[-3000:]}")
+    return json.loads(out.decode().splitlines()[-1])
+
+
+async def _owner_alterna(cli, headers: dict, pid: int, parar: asyncio.Event) -> dict:
+    """El OWNER de P, una mutación por segundo: renombrar -> archivar -> restaurar -> ..."""
+    ciclo = [("renombrar", "PUT", f"/api/proyectos/{pid}"), ("archivar", "POST", f"/api/proyectos/{pid}/estado"),
+             ("restaurar", "POST", f"/api/proyectos/{pid}/estado")]
+    lat = {k: [] for k, _, _ in ciclo}
+    cats: dict[str, int] = {}
+    i, proximo = 0, time.perf_counter()
+    while not parar.is_set():
+        nombre, metodo, ruta = ciclo[i % 3]
+        if nombre == "renombrar":
+            cuerpo = {"nombre": f"{PREFIJO_PROYECTO}renombrado-{i}", "descripcion": None}
+        else:
+            cuerpo = {"estado": "ARCHIVED" if nombre == "archivar" else "ACTIVE"}
+        t0 = time.perf_counter()
+        try:
+            r = await cli.request(metodo, f"{BACKEND_URL}{ruta}", headers=headers, json=cuerpo)
+            cat = clasificar_respuesta(r.status_code, r.text)
+        except Exception:  # fail-soft: cuenta como sin_respuesta
+            cat = "sin_respuesta"
+        ms = (time.perf_counter() - t0) * 1000
+        cats[cat] = cats.get(cat, 0) + 1
+        if cat == "ok":
+            lat[nombre].append(ms)
+        i += 1
+        proximo += PERIODO_DEL_OWNER_S
+        try:
+            await asyncio.wait_for(parar.wait(), timeout=max(0.0, proximo - time.perf_counter()))
+        except asyncio.TimeoutError:
+            pass
+    if i % 3 == 2:   # la última mutación fue «archivar»: se restaura (sin medir) para las fases siguientes
+        await cli.post(f"{BACKEND_URL}/api/proyectos/{pid}/estado", headers=headers, json={"estado": "ACTIVE"})
+    todas = [x for v in lat.values() for x in v]
+    return {"mutaciones": i, "categorias": cats, "todas": resumen(todas),
+            **{k: resumen(v) for k, v in lat.items()}}
+
+
+async def _http_en_bucle(c: int, segundos: float, paso) -> dict:
+    """`c` clientes ejecutan `paso(i, cli, medir)` en bucle; devuelve latencias por etiqueta y categorías."""
+    import httpx
+    lat: dict[str, list[float]] = {}
+    cats: dict[str, int] = {}
+    rechazos: dict[str, int] = {}   # status + cuerpo de lo que no fue ok: un 4xx masivo suele ser el arnés
+    fin = time.perf_counter() + segundos
+    limits = httpx.Limits(max_connections=c + 5, max_keepalive_connections=c + 5)
+    async with httpx.AsyncClient(limits=limits, timeout=30.0) as cli:
+        async def medir(etiqueta, metodo, url, **kw):
+            t0 = time.perf_counter()
+            try:
+                r = await cli.request(metodo, url, **kw)
+                cat, status = clasificar_respuesta(r.status_code, r.text), r.status_code
+                if cat != "ok":
+                    k = f"{etiqueta} {r.status_code} {r.text[:80]}"
+                    rechazos[k] = rechazos.get(k, 0) + 1
+            except Exception:  # fail-soft: cuenta como sin_respuesta
+                cat, status = "sin_respuesta", None
+            cats[cat] = cats.get(cat, 0) + 1
+            if cat == "ok":
+                lat.setdefault(etiqueta, []).append((time.perf_counter() - t0) * 1000)
+            return status
+
+        async def cliente(i):
+            while time.perf_counter() < fin:
+                await paso(i, medir)
+        await asyncio.gather(*(cliente(i) for i in range(c)))
+    return {"clientes": c, "segundos": segundos, "categorias": cats, "rechazos": rechazos,
+            **{k: resumen(v) for k, v in lat.items()}}
+
+
+def _crear_base(nombre: str) -> None:
+    """Crea la base propia VACÍA y le arma el esquema por los caminos de la suite: el esquema de JAX
+    (`_bootstrap_jax_schema_para_base_de_test`) y las migraciones de la plataforma (`run_migrations`).
+    No se usa `asegurar_base_de_test`/`_clonar_esquema`: este rechaza clonar la plantilla porque tiene
+    triggers que no copia (medido 2026-10-02, BaseDeTestInvalida)."""
+    if not re.fullmatch(rf"{BASE_DE_PRUEBA}_[0-9a-f]{{8}}", nombre):
+        raise RuntimeError(f"{nombre!r} no es una base propia de peor-caso -- no se crea")
+    import pymysql
+    env0 = _cargar_env_de_prueba()
+    conn = pymysql.connect(host=env0["JAX_DB_HOST"], port=int(env0["JAX_DB_PORT"]), user=env0["JAX_DB_USER"],
+                           password=env0["JAX_DB_PASSWORD"], connect_timeout=10, autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"CREATE DATABASE `{nombre}` CHARACTER SET utf8mb4")
+    finally:
+        conn.close()
+    env = dict(os.environ, **env0)
+    env["PYTHONPATH"] = os.pathsep.join([str(BACKEND_DIR), env.get("PYTHONPATH", "")])
+    codigo = ("import asyncio, sys, base_de_test as b\n"
+              "b._bootstrap_jax_schema_para_base_de_test(sys.argv[1])\n"
+              "from db.migrations import run_migrations\n"
+              "asyncio.run(run_migrations())\n")
+    r = subprocess.run([sys.executable, "-c", codigo, nombre], cwd=str(BACKEND_DIR), env=env,
+                       capture_output=True, text=True, timeout=600)
+    if r.returncode != 0:
+        raise RuntimeError(f"no se pudo armar {nombre}:\n{r.stderr[-3000:]}")
+
+
+def _borrar_base(nombre: str) -> None:
+    """DROP DATABASE de la base propia. Revalida el nombre: jamás la compartida ni jax_memory."""
+    if not re.fullmatch(rf"{BASE_DE_PRUEBA}_[0-9a-f]{{8}}", nombre):
+        raise RuntimeError(f"{nombre!r} no es una base propia de peor-caso -- no se borra")
+    import pymysql
+    env = _cargar_env_de_prueba()
+    conn = pymysql.connect(host=env["JAX_DB_HOST"], port=int(env["JAX_DB_PORT"]), user=env["JAX_DB_USER"],
+                           password=env["JAX_DB_PASSWORD"], connect_timeout=10, autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"DROP DATABASE IF EXISTS `{nombre}`")
+    finally:
+        conn.close()
+    print(f"[limpieza] base {nombre} eliminada", file=sys.stderr)
+
+
+async def peor_caso() -> None:
+    import httpx
+    tmp = Path(tempfile.mkdtemp(prefix="peor-caso-proyectos-e1-"))
+    sufijo = nuevo_sufijo()
+    base = base_de_peor_caso(sufijo)
+    proc = log = None
+    creada = False
+    try:
+        os.environ["PROYECTOS_E1_BASE"] = base      # la heredan los hijos; _conectar() y los chequeos la exigen
+        creada = True       # antes de crear: si falla a medias, igual se elimina
+        _crear_base(base)
+        # Primero el backend: su lifespan siembra el tenant 1, que la base nueva todavía no tiene.
+        env = _env_del_backend(tmp)
+        proc, log = _levantar_backend(env, tmp)
+        semilla = sembrar(sufijo, n_extras=60, n_invitables=CLIENTES_ESCRITURA)
+        h_owner = _token(env, semilla["dueno_id"])
+        pid = semilla["proyecto_con_miembros"]
+        res: dict = {"fecha": time.strftime("%Y-%m-%d %H:%M:%S %Z"), "base": base, "proyecto_P": pid,
+                     "miembros_de_P": 2 + 60, "clientes_alcance": CLIENTES_ALCANCE}
+
+        # (a)+(b) fase SIN escrituras, luego fase CON escrituras del OWNER.
+        res["alcance_sin_escrituras"] = await _correr_hijo_alcance(semilla, SEGUNDOS_FASE)
+        print(f"[sin escrituras] {res['alcance_sin_escrituras']}", file=sys.stderr)
+        parar = asyncio.Event()
+        async with httpx.AsyncClient(timeout=30.0) as cli:
+            escritor = asyncio.create_task(_owner_alterna(cli, h_owner, pid, parar))
+            try:
+                res["alcance_con_escrituras"] = await _correr_hijo_alcance(semilla, SEGUNDOS_FASE)
+            finally:
+                parar.set()
+                res["mutaciones_del_owner"] = await escritor
+        print(f"[con escrituras] {res['alcance_con_escrituras']}", file=sys.stderr)
+        print(f"[owner] {res['mutaciones_del_owner']}", file=sys.stderr)
+
+        # (c) 20 clientes, 60 s: crear proyecto, y luego invitar/quitar miembro.
+        async def crear(i, medir):
+            await medir("crear", "POST", f"{BACKEND_URL}/api/proyectos",
+                        headers={**h_owner, "Idempotency-Key": str(uuid.uuid4())},
+                        json={"nombre": f"{PREFIJO_PROYECTO}{sufijo}-c-{uuid.uuid4().hex[:12]}", "descripcion": None})
+        res["crear_proyecto"] = await _http_en_bucle(CLIENTES_ESCRITURA, SEGUNDOS_ESCRITURA, crear)
+        print(f"[crear] {res['crear_proyecto']}", file=sys.stderr)
+
+        async def invitar_quitar(i, medir):
+            uid, email = semilla["invitables"][i]
+            st = await medir("invitar", "POST", f"{BACKEND_URL}/api/proyectos/{pid}/miembros", headers=h_owner,
+                             json={"email": email, "papel": "VIEWER"})
+            if st == 201:
+                await medir("quitar", "DELETE", f"{BACKEND_URL}/api/proyectos/{pid}/miembros/{uid}", headers=h_owner)
+        res["invitar_quitar"] = await _http_en_bucle(CLIENTES_ESCRITURA, SEGUNDOS_ESCRITURA, invitar_quitar)
+        print(f"[invitar/quitar] {res['invitar_quitar']}", file=sys.stderr)
+
+        # Errores de base que el HTTP no distingue: se buscan en el log del backend.
+        texto = (tmp / "backend.log").read_text(errors="replace")
+        res["backend_log"] = {"deadlock_1213": len(re.findall(r"\b1213\b|Deadlock", texto)),
+                              "lock_timeout_1205": len(re.findall(r"\b1205\b|Lock wait timeout", texto)),
+                              "lineas_error": len(re.findall(r"\bERROR\b", texto))}
+        owner_err = sum(v for k, v in res["mutaciones_del_owner"]["categorias"].items() if k != "ok")
+        errores_con = (sum(res["alcance_con_escrituras"]["errores"].values()) + owner_err
+                       + sum(res["backend_log"][k] for k in ("deadlock_1213", "lock_timeout_1205")))
+        res["veredicto"] = veredicto_peor_caso(res["alcance_sin_escrituras"], res["alcance_con_escrituras"], errores_con)
+        salida = LOADTEST_DIR / "_resultados_peor_caso_proyectos_e1.json"
+        salida.write_text(json.dumps(res, indent=2, ensure_ascii=False))
+        print(f"[orquestador] {salida} escrito\n[veredicto] {res['veredicto']}")
+    finally:
+        _matar(proc)
+        if log:
+            log.close()
+        try:
+            if creada:
+                _borrar_base(base)
+        finally:
+            os.environ.pop("PROYECTOS_E1_BASE", None)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "medir"
     if cmd == "medir":
@@ -561,9 +881,13 @@ if __name__ == "__main__":
         visual()
     elif cmd == "limpiar":
         limpiar(sys.argv[2] if len(sys.argv) > 2 else None)
+    elif cmd == "peor-caso":
+        asyncio.run(peor_caso())
+    elif cmd == "--peor-alcance":
+        print(json.dumps(asyncio.run(_peor_alcance(json.loads(sys.argv[2]), float(sys.argv[3])))))
     elif cmd == "--alcance-chat":
         print(json.dumps(asyncio.run(_medir_alcance_chat(json.loads(sys.argv[2])))))
     elif cmd == "--explain":
         print(json.dumps(asyncio.run(_explain(json.loads(sys.argv[2])))))
     else:
-        raise SystemExit("uso: proyectos_e1.py [medir|visual|limpiar]")
+        raise SystemExit("uso: proyectos_e1.py [medir|peor-caso|visual|limpiar SUFIJO]")
