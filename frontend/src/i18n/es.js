@@ -1556,6 +1556,8 @@ export default {
     ajustes: 'Ajustes',
     agregarSeleccionados: (n) => `Agregar seleccionados (${n})`,
     seleccionados: (n) => `${n} seleccionado${n === 1 ? '' : 's'}`,
+    seleccionadosOcultos: (n, m) => `${n} seleccionado${n === 1 ? '' : 's'} (${m} oculto${m === 1 ? '' : 's'} por el filtro)`,
+    noEnviados: (n) => `No se enviaron: ${n}.`,
     resumenAgregados: (n) => `${n} agregado${n === 1 ? '' : 's'}.`,
     mostrandoPrimeros100: 'Se muestran hasta 100; escribí para filtrar.',
     buscarPorEmail: 'Buscar por email',

@@ -53,6 +53,55 @@ async function marcarYAgregar(...ns) {
   fireEvent.click(agregar(ns.length))
 }
 
+describe('Miembros: ronda 2', () => {
+  it('un marcado oculto por el filtro que falla con 500 sigue marcado, se cuenta como oculto y se reenvía', async () => {
+    montar()
+    await screen.findByRole('checkbox', { name: 'u1@x.com' })
+    fireEvent.click(casilla('u1@x.com'))
+    fireEvent.click(casilla('u2@x.com'))
+    // el filtro nuevo solo muestra a u5
+    api.buscarCandidatos.mockResolvedValue({ candidatos: [U(5)] })
+    fireEvent.change(screen.getByLabelText(T.buscarPorEmail), { target: { value: 'zz' } })
+    await waitFor(() => expect(screen.queryByRole('checkbox', { name: 'u1@x.com' })).not.toBeInTheDocument())
+    expect(screen.getByText(T.seleccionadosOcultos(2, 2))).toBeInTheDocument()
+    api.invitarMiembro.mockRejectedValueOnce(error(500, 'x')).mockResolvedValueOnce({})
+    fireEvent.click(agregar(2))
+    expect(await screen.findByText(`u1@x.com: ${T.errores.generico}`)).toBeInTheDocument()
+    // u1 falló con 500: sigue marcado aunque oculto; u2 entró
+    expect(await screen.findByText(T.seleccionadosOcultos(1, 1))).toBeInTheDocument()
+    api.invitarMiembro.mockClear()
+    api.invitarMiembro.mockResolvedValue({})
+    fireEvent.click(agregar(1))
+    await waitFor(() => expect(api.invitarMiembro).toHaveBeenCalledTimes(1))
+    expect(api.invitarMiembro.mock.calls[0][1].email).toBe('u1@x.com')
+  })
+
+  it('usuario_no_elegible no corta el lote y desmarca solo a ese usuario', async () => {
+    montar()
+    await screen.findByRole('checkbox', { name: 'u1@x.com' })
+    api.invitarMiembro
+      .mockRejectedValueOnce(error(422, 'usuario_no_elegible'))
+      .mockRejectedValueOnce(error(500, 'x'))
+      .mockResolvedValueOnce({})
+    for (const n of [1, 2, 3]) fireEvent.click(casilla(`u${n}@x.com`))
+    fireEvent.click(agregar(3))
+    expect(await screen.findByText(`u1@x.com: ${T.errores.usuario_no_elegible}`)).toBeInTheDocument()
+    expect(api.invitarMiembro).toHaveBeenCalledTimes(3)
+    await waitFor(() => expect(casilla('u1@x.com')).not.toBeChecked())
+    expect(casilla('u2@x.com')).toBeChecked()
+    expect(casilla('u3@x.com')).not.toBeChecked()
+  })
+
+  it('tras un 401 lo no intentado aparece en el resumen y sigue marcado', async () => {
+    montar()
+    api.invitarMiembro.mockRejectedValue(error(401, 'x'))
+    await marcarYAgregar(1, 2, 3)
+    expect(await screen.findByText(T.noEnviados(2))).toBeInTheDocument()
+    expect(casilla('u2@x.com')).toBeChecked()
+    expect(casilla('u3@x.com')).toBeChecked()
+  })
+})
+
 describe('Miembros: ronda 1', () => {
   it('lo que entró se desmarca: tras agregar, el contador vuelve a 0 y no se reenvía', async () => {
     montar()

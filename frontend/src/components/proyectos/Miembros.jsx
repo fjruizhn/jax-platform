@@ -14,6 +14,10 @@ import ConfirmarAccion from './ConfirmarAccion'
 const PAPELES = ['VIEWER', 'CONTRIBUTOR', 'OWNER']
 const ESPERA_MS = 300
 const TOPE_LISTA = 100
+// Códigos con los que el servidor declara definitivo el fallo para ESE usuario:
+// reintentarlo daría lo mismo, así que se desmarca. Cualquier otro fallo
+// (500, genérico, desconocido) deja la casilla marcada, se vea o no.
+const FALLO_DEFINITIVO = new Set(['ya_es_miembro', 'usuario_no_elegible', 'miembro_no_encontrado'])
 const FOCO = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
 const CAMPO = `w-full min-h-11 bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto placeholder-texto-tenue ${FOCO}`
 const SELECT = `min-h-11 bg-hundido border border-borde-control rounded-lg px-2 text-sm text-texto ${FOCO}`
@@ -95,6 +99,9 @@ export default function Miembros({ proyecto, miembros, onCambio }) {
   }
 
   const cantidad = Object.keys(marcados).length
+  // Marcados que el filtro de ahora no muestra: se envían igual, así que se cuentan y se avisa.
+  const visibles = new Set((candidatos ?? []).map((c) => String(c.user_id)))
+  const ocultos = Object.keys(marcados).filter((id) => !visibles.has(id)).length
 
   // Una invitación por persona, en secuencia (el backend las trata una a una).
   // El guardia es el ref, no el estado: dos clics en el mismo tick no duplican.
@@ -116,31 +123,29 @@ export default function Miembros({ proyecto, miembros, onCambio }) {
     setResumen(null)
     let agregados = 0
     const fallos = []
+    let intentados = 0
     const quedan = { ...marcados }
     try {
       for (const [id, email] of lote) {
         if (!mismaSesion()) break
+        intentados += 1
         try {
           await invitarMiembro(proyecto.id, { email, papel: papelNuevo })
           agregados += 1
           delete quedan[id]
         } catch (err) {
-          fallos.push({ email, texto: T.errores[codigoDe(err)] ?? T.errores.generico })
+          const codigo = codigoDe(err)
+          fallos.push({ email, texto: T.errores[codigo] ?? T.errores.generico })
+          if (FALLO_DEFINITIVO.has(codigo)) delete quedan[id]
           const estado = err?.response?.status
           // 401/403: lo que sigue fallaría igual; no se siguen mandando.
           if (estado === 401 || estado === 403) break
         }
       }
       if (!mismaSesion()) return
-      setResumen({ agregados, fallos })
+      setResumen({ agregados, fallos, noEnviados: lote.length - intentados })
       try { await onCambio() } catch { /* la pantalla muestra su propio error de carga */ }
-      const lista = await cargarCandidatos(consulta.trim())
-      // Lo que falló y ya no está entre los elegibles no se puede ni ver ni
-      // desmarcar: se poda. El resumen ya informó el fallo.
-      if (lista) {
-        const visibles = new Set(lista.map((c) => String(c.user_id)))
-        for (const id of Object.keys(quedan)) if (!visibles.has(id)) delete quedan[id]
-      }
+      await cargarCandidatos(consulta.trim())
       setMarcados(quedan)
     } catch {
       // algo inesperado: se avisa y el formulario no queda trabado
@@ -190,11 +195,12 @@ export default function Miembros({ proyecto, miembros, onCambio }) {
               </select>
             </div>
             <button type="submit" disabled={ocupado || cantidad === 0} className={BOTON}>{T.agregarSeleccionados(cantidad)}</button>
-            <p aria-live="polite" className="text-xs text-texto-suave pb-3">{T.seleccionados(cantidad)}</p>
+            <p aria-live="polite" className="text-xs text-texto-suave pb-3">{ocultos > 0 ? T.seleccionadosOcultos(cantidad, ocultos) : T.seleccionados(cantidad)}</p>
           </div>
           {resumen && (
             <div role="status" className="text-sm text-texto">
               <p>{T.resumenAgregados(resumen.agregados)}</p>
+              {resumen.noEnviados > 0 && <p>{T.noEnviados(resumen.noEnviados)}</p>}
               {resumen.fallos.length > 0 && (
                 <ul className="text-peligro">
                   {resumen.fallos.map((f) => <li key={f.email}>{`${f.email}: ${f.texto}`}</li>)}

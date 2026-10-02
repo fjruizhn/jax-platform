@@ -1460,6 +1460,8 @@ export default {
     ajustes: 'Settings',
     agregarSeleccionados: (n) => `Add selected (${n})`,
     seleccionados: (n) => `${n} selected`,
+    seleccionadosOcultos: (n, m) => `${n} selected (${m} hidden by the filter)`,
+    noEnviados: (n) => `Not sent: ${n}.`,
     resumenAgregados: (n) => `${n} added.`,
     mostrandoPrimeros100: 'Showing up to 100; type to filter.',
     buscarPorEmail: 'Search by email',
