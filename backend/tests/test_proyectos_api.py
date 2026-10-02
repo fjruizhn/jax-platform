@@ -351,5 +351,14 @@ def test_disabled_da_404_igual_que_inexistente_tambien_al_admin(client):
     assert r.status_code == 404 and r.json() == esperado.json()
     r = client.post(f"{P}/{pid}/miembros", headers=adm, json={"email": m.email_de("adm", "admin"), "papel": "VIEWER"})
     assert r.status_code == 404 and r.json() == esperado.json()
+    # MINOR-1 (auditoria de la rama): PUT y DELETE de miembros tambien pasan por `_leer`.
+    otro = m.id_de("adm", "admin")
+    for metodo, cuerpo in (("put", {"papel": "VIEWER"}), ("delete", None)):
+        llamar = getattr(client, metodo)
+        kw = {"headers": adm, **({"json": cuerpo} if cuerpo else {})}
+        inexistente = llamar(f"{P}/999999999/miembros/{otro}", **kw)
+        assert inexistente.status_code == 404
+        r = llamar(f"{P}/{pid}/miembros/{otro}", **kw)
+        assert r.status_code == 404 and r.json() == inexistente.json(), (metodo, r.status_code, r.text)
     estado = client.portal.call(sql, "SELECT status FROM jax_project_scope WHERE project_id=%s", (pid,), True)
     assert estado[0][0] == "DISABLED"
