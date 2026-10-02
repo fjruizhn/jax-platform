@@ -745,7 +745,7 @@ async def _owner_alterna(cli, headers: dict, pid: int, parar: asyncio.Event) -> 
         proximo += PERIODO_DEL_OWNER_S
         try:
             await asyncio.wait_for(parar.wait(), timeout=max(0.0, proximo - time.perf_counter()))
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError:  # fail-soft: el timeout de wait_for ES el ritmo del bucle (espera hasta la próxima mutación), no un error
             pass
     if i % 3 == 2:   # la última mutación fue «archivar»: se restaura (sin medir) para las fases siguientes
         await cli.post(f"{BACKEND_URL}/api/proyectos/{pid}/estado", headers=headers, json={"estado": "ACTIVE"})
