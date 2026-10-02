@@ -14,7 +14,8 @@ SUBCOMANDOS (desde la raíz del repo, con el venv del backend):
     medir     siembra, levanta, mide, hace EXPLAIN y limpia (la corrida de carga)
     visual    siembra, levanta backend + vite y espera (SIGTERM/Ctrl-C) para la
               revisión visual en el navegador; al salir limpia
-    limpiar   borra lo sembrado (por si una corrida murió a medias)
+    limpiar SUFIJO   borra lo sembrado por UNA corrida (el sufijo de 8 hex que imprime
+              `[siembra]`); sin sufijo no borra nada
 
 ENTORNO que hay que dar (igual que la suite):
     set -a; . ~/.config/jax/test-db.env; set +a
@@ -40,6 +41,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -118,10 +120,23 @@ def _conectar():
 # ---------------------------------------------------------------------------
 # Siembra y limpieza
 # ---------------------------------------------------------------------------
-def sembrar() -> dict:
+def nuevo_sufijo() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+def patrones_de_limpieza(sufijo: str | None) -> tuple[str, str]:
+    """(patrón LIKE de proyectos, patrón LIKE de correos) de UNA corrida. Función pura.
+    Sin sufijo válido (8 hex) no hay patrón: borrar por prefijo se llevaría la siembra de
+    otra corrida (un `visual` abierto, otra sesión sobre la misma base de prueba)."""
+    if not sufijo or not re.fullmatch(r"[0-9a-f]{8}", sufijo):
+        raise ValueError(f"sufijo de corrida inválido: {sufijo!r} -- no se borra nada")
+    return f"{PREFIJO_PROYECTO}{sufijo}-%", f"{PREFIJO_PROYECTO}%-{sufijo}@{DOMINIO}"
+
+
+def sembrar(sufijo: str) -> dict:
     import bcrypt
+    patrones_de_limpieza(sufijo)  # valida antes de escribir nada
     conn = _conectar()
-    sufijo = uuid.uuid4().hex[:8]
     ahora = "2026-10-02 00:00:00.000000"
     pw = bcrypt.hashpw(PASSWORD_DE_PRUEBA.encode(), bcrypt.gensalt(rounds=4)).decode()
 
@@ -166,7 +181,7 @@ def sembrar() -> dict:
                         [(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]) for m in membresias])
     conn.commit()
     conn.close()
-    semilla = {"user_id": miembro, "email": f"{PREFIJO_PROYECTO}miembro-{sufijo}@{DOMINIO}", "tenant_id": str(TENANT_ID),
+    semilla = {"sufijo": sufijo, "user_id": miembro, "email": f"{PREFIJO_PROYECTO}miembro-{sufijo}@{DOMINIO}", "tenant_id": str(TENANT_ID),
                "dueno_id": dueno, "proyectos": len(ids), "del_usuario": len(de_miembro),
                "proyecto_con_miembros": proyecto_con_miembros, "proyecto_del_usuario": de_miembro[0],
                "proyecto_ajeno": next(p for p in ids if p not in set(de_miembro))}
@@ -174,13 +189,15 @@ def sembrar() -> dict:
     return semilla
 
 
-def limpiar() -> None:
+def limpiar(sufijo: str | None) -> None:
+    """Borra SOLO lo que sembró la corrida `sufijo`. Sin sufijo válido no se conecta ni borra."""
+    pat_proyecto, pat_correo = patrones_de_limpieza(sufijo)
     conn = _conectar()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT id FROM projects WHERE name LIKE %s", (PREFIJO_PROYECTO + "%",))
+            cur.execute("SELECT id FROM projects WHERE name LIKE %s", (pat_proyecto,))
             ids = [r[0] for r in cur.fetchall()]
-            cur.execute("SELECT user_id FROM jax_users WHERE email LIKE %s", (f"{PREFIJO_PROYECTO}%@{DOMINIO}",))
+            cur.execute("SELECT user_id FROM jax_users WHERE email LIKE %s", (pat_correo,))
             usuarios = [r[0] for r in cur.fetchall()]
             for i in range(0, len(ids), 500):
                 lote = ids[i:i + 500]
@@ -453,10 +470,11 @@ async def _explain(semilla: dict) -> dict:
 
 async def medir() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="carga-proyectos-e1-"))
+    sufijo = nuevo_sufijo()
     semilla = None
     proc = log = None
     try:
-        semilla = sembrar()
+        semilla = sembrar(sufijo)
         env = _env_del_backend(tmp)
         proc, log = _levantar_backend(env, tmp)
         print(f"[orquestador] backend arriba pid={proc.pid} en {BACKEND_URL}", file=sys.stderr)
@@ -494,7 +512,7 @@ async def medir() -> None:
         if log:
             log.close()
         try:
-            limpiar()
+            limpiar(sufijo)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -502,11 +520,12 @@ async def medir() -> None:
 def visual() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="visual-proyectos-e1-"))
     proc = vite = log = None
+    sufijo = nuevo_sufijo()
     parar = {"x": False}
     signal.signal(signal.SIGTERM, lambda *_: parar.update(x=True))
     signal.signal(signal.SIGINT, lambda *_: parar.update(x=True))
     try:
-        semilla = sembrar()
+        semilla = sembrar(sufijo)
         env = _env_del_backend(tmp)
         proc, log = _levantar_backend(env, tmp)
         _puerto_libre(VITE_PORT)
@@ -529,7 +548,7 @@ def visual() -> None:
         if log:
             log.close()
         try:
-            limpiar()
+            limpiar(sufijo)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -541,7 +560,7 @@ if __name__ == "__main__":
     elif cmd == "visual":
         visual()
     elif cmd == "limpiar":
-        limpiar()
+        limpiar(sys.argv[2] if len(sys.argv) > 2 else None)
     elif cmd == "--alcance-chat":
         print(json.dumps(asyncio.run(_medir_alcance_chat(json.loads(sys.argv[2])))))
     elif cmd == "--explain":
