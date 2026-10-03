@@ -428,3 +428,24 @@ def test_explain_de_listar_visibles_usa_su_indice_en_un_proyecto_viejo_y_grande(
     doc = next(f for f in plan if f["table"] == "d")
     assert doc["key"] == "idx_project_documents_lista", plan
     assert "filesort" not in (doc["Extra"] or "") and "temporary" not in (doc["Extra"] or ""), plan
+
+
+def test_archivado_y_usuario_inactivo_a_la_vez_es_no_visible_no_409(e):
+    # Ronda final, 9a: mismo orden que la ruta (404 -> 403 -> 409). Un usuario ya no activo
+    # no debe aprender que el proyecto se archivo.
+    p = e.proyecto()
+    e.archivar(p)
+    args = dict(project_id=p, nombre_original="x.pdf", ruta_entrada="entrada/l/x.pdf", bytes_=1, tipo="pdf",
+                subido_por=e.usuario, roles_escritura=("OWNER", "CONTRIBUTOR", "REVIEWER"))
+    try:
+        e.client.portal.call(sql, "UPDATE jax_users SET status='inactive' WHERE user_id=%s", (e.usuario,))
+        with pytest.raises(repo.MembresiaPerdida) as perdida:
+            _pool_call(e.client, repo.insertar, sha256="8" * 64, **args)
+        assert perdida.value.papel is None
+        e.client.portal.call(sql, "UPDATE jax_users SET status='active' WHERE user_id=%s", (e.usuario,))
+        # activo pero con un papel que no escribe, en archivado: 403 antes que 409
+        with pytest.raises(repo.MembresiaPerdida) as papel:
+            _pool_call(e.client, repo.insertar, sha256="9" * 64, **{**args, "roles_escritura": ("VIEWER",)})
+        assert papel.value.papel == "OWNER"
+    finally:
+        e.client.portal.call(sql, "UPDATE jax_users SET status='active' WHERE user_id=%s", (e.usuario,))

@@ -111,10 +111,15 @@ async def insertar(pool, *, project_id: int, sha256: str, nombre_original: str, 
                 await cur.execute(_SQL_POR_QUE_NO, (subido_por, subido_por, project_id))
                 fila = await cur.fetchone()
                 await conn.commit()
-                if fila is None or fila[0] != "ACTIVE":
+                if fila is None:
                     raise ProyectoNoActivo(project_id)
-                # Un usuario ya no activo en su tenant es, para E1, un proyecto no visible.
-                raise MembresiaPerdida(fila[1] if fila[2] is not None else None)
+                # Mismo orden que la ruta (404 -> 403 -> 409): quien ya no ve el proyecto no
+                # aprende que se archivo. Un usuario ya no activo en su tenant es, para E1, un
+                # proyecto no visible (papel None -> 404).
+                papel = fila[1] if fila[2] is not None else None
+                if papel is None or papel not in roles_escritura or fila[0] == "ACTIVE":
+                    raise MembresiaPerdida(papel)
+                raise ProyectoNoActivo(project_id)
             nuevo = cur.lastrowid
         await conn.commit()
         return nuevo
