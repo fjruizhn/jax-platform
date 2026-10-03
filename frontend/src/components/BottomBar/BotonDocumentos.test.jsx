@@ -187,17 +187,6 @@ describe('BotonDocumentos -- el destino sigue al proyecto activo', () => {
     fireEvent.click(screen.getByRole('button', { name: T.boton }))
     expect(screen.getByTestId('selector-docs')).toHaveAttribute('data-proyecto', '9')
   })
-
-  it('un segundo clic en 📄 cierra el selector', async () => {
-    useJaxStore.setState({ proyectoActivo: { id: 7, nombre: 'Alfa' } })
-    verProyecto.mockResolvedValue(ALFA)
-    renderBoton()
-    await waitFor(() => expect(screen.getByRole('button', { name: T.boton })).toBeEnabled())
-    fireEvent.click(screen.getByRole('button', { name: T.boton }))
-    expect(screen.getByTestId('selector-docs')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: T.boton }))
-    expect(screen.queryByTestId('selector-docs')).toBeNull()
-  })
 })
 
 describe('BotonDocumentos -- en «Personal»', () => {

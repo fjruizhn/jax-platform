@@ -144,7 +144,6 @@ export default function BotonDocumentos() {
   }, [idActivo])
 
   function abrir() {
-    if (abiertoPara !== null) { cerrarSelector(); return } // segundo clic en 📄: cierra
     if (idActivo === null) { setPaso('elegir'); return }
     setPaso({ subir: idActivo })
     consultar(idActivo) // el papel o el estado pudieron cambiar desde la última vez
