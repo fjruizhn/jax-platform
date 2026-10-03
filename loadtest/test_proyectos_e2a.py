@@ -196,3 +196,18 @@ def test_workspace_de_la_corrida_nunca_es_el_real(tmp_path):
     with pytest.raises(RuntimeError):
         pe.verificar_workspace_propio(real / "proyectos")
     pe.verificar_workspace_propio(tmp_path)   # no lanza
+
+
+# --- Ronda final, menor 11: los resultados de `medir` se escriben FUERA del repo ---------------
+def test_resultados_van_fuera_del_repo_por_defecto(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    ruta = pe.ruta_de_resultados({})
+    assert ruta == tmp_path / ".cache" / "jax-loadtest" / "_resultados_proyectos_e2a.json"
+    assert ruta.parent.is_dir()
+    assert pe.LOADTEST_DIR.resolve() not in ruta.resolve().parents
+
+
+def test_resultados_en_la_carpeta_que_diga_el_entorno(tmp_path):
+    destino = tmp_path / "otra" / "carpeta"
+    ruta = pe.ruta_de_resultados({pe.VARIABLE_RESULTADOS: str(destino)})
+    assert ruta == destino / "_resultados_proyectos_e2a.json" and destino.is_dir()

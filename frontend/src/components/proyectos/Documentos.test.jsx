@@ -125,6 +125,19 @@ describe('Documentos: lista y permisos', () => {
     expect(screen.getByText(T.causa(T.causas.procesamiento_fallido))).toBeInTheDocument()
   })
 
+  it('un correo largo se recorta con puntos suspensivos y lo completo queda en el title; la fecha no se va', async () => {
+    const largo = 'una.persona.con.un.correo.larguisimo.de.verdad@subdominio.empresa-de-ejemplo.com'
+    api.listarDocumentos.mockResolvedValue({ documentos: [doc(1, { subido_por_email: largo })], siguiente: null })
+    montar()
+    const correo = await screen.findByTitle(largo)
+    expect(correo).toHaveClass('truncate')
+    expect(correo).toHaveTextContent(largo)
+    // la fecha es hermana del correo en la misma línea y no se recorta
+    const linea = correo.parentElement
+    expect(linea).toHaveClass('flex')
+    expect([...linea.children].at(-1)).toHaveClass('shrink-0')
+  })
+
   it('un código desconocido (o texto crudo) muestra el genérico, nunca el texto tal cual', async () => {
     api.listarDocumentos.mockResolvedValue({
       documentos: [doc(1, { estado: 'error', error: '[Errno 28] /srv/jax/proyectos/x.pdf' })], siguiente: null,

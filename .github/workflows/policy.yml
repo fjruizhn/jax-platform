@@ -1054,7 +1054,7 @@ jobs:
             //   1250/0/1250: tope de render de ignorados, reintento de límites, aviso de no-cierre,
             //   motivo y nombre traducidos, onTerminado al desmontar (x2), tope ausente.
             // 1250 -> 1252 (2026-10-03, Proyectos E2a T9 ronda 2): +2, medido LOCAL con `npx vitest run`
-            //   1252/0/1252: formatoPeso en español (coma) y sin `style:'unit'` (Intl que lanza).
+            //   1252/0/1252: formatoPeso en español (punto decimal, es-HN) y sin `style:'unit'` (Intl que lanza).
             // 1252 -> 1288 (2026-10-03, Proyectos E2a T10): +36, medido LOCAL con `npx vitest run`
             //   1288/0/1288 (número local que el runner confirma o corrige): +33 en Documentos.test.jsx
             //   (lista, papeles, ocultar y restaurar, errores, Selector, sondeo de 5 s) y +3 net en

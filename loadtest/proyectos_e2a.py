@@ -16,7 +16,8 @@ credenciales de `~/.config/jax/test-db.env`, backend REAL de este repo en un uvi
 
 SUBCOMANDOS (desde la raíz del repo, con el venv del backend):
     medir      la corrida de carga de punta a punta (subida de LACTOVI con 20 chats, 10 subidas
-               simultáneas, EXPLAIN sobre 10.000 filas). Escribe `_resultados_proyectos_e2a.json`
+               simultáneas, EXPLAIN sobre 10.000 filas). Escribe `_resultados_proyectos_e2a.json` en
+               ~/.cache/jax-loadtest/ (o en $JAX_LOADTEST_RESULTADOS_DIR), fuera del repo
     visual     base propia + backend + LAS MANOS falso + vite, y espera (SIGTERM/Ctrl-C) para la
                revisión visual; al salir limpia
     limpiar SUFIJO   elimina la base propia de UNA corrida (el sufijo de 8 hex que imprime
@@ -63,6 +64,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 LOADTEST_DIR = Path(__file__).parent
+# Donde escribe `medir` sus resultados: FUERA del repo (ronda final, menor 11), para que una
+# corrida no deje archivos sin seguimiento en el arbol de trabajo. Por defecto
+# ~/.cache/jax-loadtest/; otra carpeta con esta variable.
+VARIABLE_RESULTADOS = "JAX_LOADTEST_RESULTADOS_DIR"
+ARCHIVO_RESULTADOS = "_resultados_proyectos_e2a.json"
+
+
+def ruta_de_resultados(entorno=None) -> Path:
+    entorno = os.environ if entorno is None else entorno
+    carpeta = Path(entorno.get(VARIABLE_RESULTADOS) or Path.home() / ".cache" / "jax-loadtest")
+    carpeta.mkdir(parents=True, exist_ok=True)
+    return carpeta / ARCHIVO_RESULTADOS
 sys.path.insert(0, str(LOADTEST_DIR))
 
 import proyectos_e1 as e1  # noqa: E402  (reutiliza la base de prueba, el token y las utilidades de E1)
@@ -985,7 +998,7 @@ async def medir() -> None:
         res["backend_log"] = {"lineas_error": len(re.findall(r"\bERROR\b", texto)), "tracebacks": len(re.findall(r"Traceback", texto)),
                               "deadlock_1213": len(re.findall(r"\b1213\b|Deadlock", texto)),
                               "lock_timeout_1205": len(re.findall(r"\b1205\b|Lock wait timeout", texto))}
-        salida = LOADTEST_DIR / "_resultados_proyectos_e2a.json"
+        salida = ruta_de_resultados()
         salida.write_text(json.dumps(res, indent=2, ensure_ascii=False, default=str))
         print(f"[orquestador] {salida} escrito")
     finally:

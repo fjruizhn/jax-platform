@@ -228,10 +228,13 @@ export default function Documentos({ proyecto }) {
             <li key={f.id} className="flex flex-wrap items-center justify-between gap-3 bg-superficie border border-borde rounded-lg px-4 py-2">
               <div className="min-w-0 flex-1">
                 <p className="text-sm text-texto-fuerte break-all">{f.nombre}</p>
-                <p className="text-xs text-texto-tenue">
-                  <span>{formatoPeso(f.bytes ?? 0, locale, T.unidades)}</span>
-                  {f.subido_por_email && <span>{` · ${f.subido_por_email}`}</span>}
-                  {fechaLegible(f.creado, locale) && <span>{` · ${fechaLegible(f.creado, locale)}`}</span>}
+                {/* Un correo largo se recorta (completo en el title) para que la fecha no baje de línea. */}
+                <p className="flex min-w-0 whitespace-pre text-xs text-texto-tenue">
+                  <span className="shrink-0">{formatoPeso(f.bytes ?? 0, locale, T.unidades)}</span>
+                  {f.subido_por_email && (
+                    <span className="min-w-0 truncate" title={f.subido_por_email}>{` · ${f.subido_por_email}`}</span>
+                  )}
+                  {fechaLegible(f.creado, locale) && <span className="shrink-0">{` · ${fechaLegible(f.creado, locale)}`}</span>}
                 </p>
                 {f.estado === 'error' && (
                   <p className="text-xs text-peligro break-words">{f.error ? T.causa(Object.hasOwn(T.causas, f.error) ? T.causas[f.error] : T.causas.desconocida) : T.sinCausa}</p>
