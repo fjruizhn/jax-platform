@@ -1993,18 +1993,21 @@ def test_el_ancla_misma_sin_setgid_falla_cerrado(tmp_path):
     assert list((tmp_path / "proyectos").iterdir()) == []
 
 
-def test_un_nivel_existente_con_otro_grupo_que_el_ancla_falla_cerrado(tmp_path):
-    ancla = _ancla(tmp_path)
-    otros = [g for g in os.getgroups() if g != ancla.stat().st_gid]
-    if not otros:
-        pytest.skip("este usuario no pertenece a otro grupo")
-    u = str(uuid.uuid4())
-    (ancla / u).mkdir()
-    os.chmod(ancla / u, 0o2770)
-    os.chown(ancla / u, -1, otros[0])
-    os.chmod(ancla / u, 0o2770)
-    with pytest.raises(almacen.HerenciaDeCarpetaRota, match="grupo"):
-        almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
+def test_un_nivel_con_otro_grupo_que_el_ancla_falla_cerrado(tmp_path):
+    """El grupo se compara con el del ancla. Sin depender de que este usuario pertenezca a otro grupo (en un runner
+    puede no pasar): el ancla se simula con un gid distinto del real del nivel."""
+    from types import SimpleNamespace
+    d = tmp_path / "nivel"
+    d.mkdir()
+    os.chmod(d, 0o2770)
+    fd = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        ancla = SimpleNamespace(st_gid=d.stat().st_gid + 12345)
+        with pytest.raises(almacen.HerenciaDeCarpetaRota, match="grupo"):
+            almacen._verificar_nivel(ancla, fd, fd, "nivel", False)
+        assert almacen._verificar_nivel(SimpleNamespace(st_gid=d.stat().st_gid), fd, fd, "nivel", False).st_gid == d.stat().st_gid
+    finally:
+        os.close(fd)
 
 
 def test_todo_en_orden_abre_y_crea_con_setgid_y_el_grupo_del_ancla(tmp_path):
