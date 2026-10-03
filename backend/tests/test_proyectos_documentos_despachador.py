@@ -865,3 +865,43 @@ def test_mas_filas_en_incertidumbre_que_el_limite_no_dejan_sin_ventana_a_las_san
     despachador._en_incertidumbre.clear()
     e.ciclo()
     assert any(e.fila(i)[0] == "pendiente" for i in inciertas)
+
+
+def test_con_100_o_mas_filas_en_incertidumbre_el_ciclo_no_despacha_nada_y_avisa(e, caplog):
+    """MINOR-R1: si LAS MANOS corta las conexiones despues de recibir el pedido, la lista de filas en
+    incertidumbre crece y multiplica los trabajos duplicados. Con `2 * rutas_por_trabajo` (100) o mas, el ciclo falla
+    cerrado: ningun POST, y un warning con la cantidad."""
+    sana = e.insertar(e.ruta("l1", "sana.pdf"), n=1, nombre="sana.pdf")
+    hasta = despachador._reloj() + 1000
+    for i in range(100):
+        despachador._en_incertidumbre[10**12 + i] = hasta               # ids que no existen: solo cuentan
+    with caplog.at_level(logging.WARNING):
+        e.ciclo()
+    assert e.las_manos.posts == [] and e.fila(sana)[0] == "en_cola"
+    avisos = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "incertidumbre" in r.getMessage()]
+    assert avisos and "100" in avisos[0], caplog.text
+
+
+def test_con_menos_de_100_filas_en_incertidumbre_se_despacha_normal(e):
+    sana = e.insertar(e.ruta("l1", "sana.pdf"), n=1, nombre="sana.pdf")
+    hasta = despachador._reloj() + 1000
+    for i in range(99):
+        despachador._en_incertidumbre[10**12 + i] = hasta
+    e.ciclo()
+    assert len(e.las_manos.posts) == 1 and e.fila(sana)[0] == "pendiente"
+
+
+def test_el_freno_de_incertidumbre_sigue_a_rutas_por_trabajo_y_las_vencidas_no_cuentan(e, ajustes_en_db):
+    ajustes_en_db.poner(**{"proyectos.documentos.rutas_por_trabajo": "2"})        # el freno pasa a 4
+    sana = e.insertar(e.ruta("l1", "sana.pdf"), n=1, nombre="sana.pdf")
+    ahora = despachador._reloj()
+    for i in range(3):
+        despachador._en_incertidumbre[10**12 + i] = ahora + 1000
+    for i in range(5):
+        despachador._en_incertidumbre[10**13 + i] = ahora - 1                     # ya vencidas: se podan, no cuentan
+    e.ciclo()
+    assert len(e.las_manos.posts) == 1 and e.fila(sana)[0] == "pendiente"
+    despachador._en_incertidumbre[10**12 + 3] = ahora + 1000                      # 4 vigentes = 2 * 2: frena
+    otra = e.insertar(e.ruta("l1", "otra.pdf"), n=2, nombre="otra.pdf")
+    e.ciclo()
+    assert len(e.las_manos.posts) == 1 and e.fila(otra)[0] == "en_cola"

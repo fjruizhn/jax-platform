@@ -442,6 +442,18 @@ async def _despachar(pool) -> None:
     mismo ciclo (MAJOR-N2). Se repite mientras una pasada frene una clase nueva: como mucho una pasada por clase."""
     frenadas: set[str] = set()
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
+    ahora = _reloj()
+    for i in [i for i, hasta in _en_incertidumbre.items() if hasta <= ahora]:
+        del _en_incertidumbre[i]
+    # FRENO: si LAS MANOS corta las conexiones despues de recibir el pedido, las filas en incertidumbre se acumulan
+    # (cada una, hasta VENTANA_DE_INCERTIDUMBRE_SEGUNDOS) y cada reintento puede duplicar el trabajo. Con
+    # `2 * rutas_por_trabajo` o mas, el ciclo NO despacha nada (falla cerrado) y la lista que se le pasa a la
+    # consulta (`NOT IN`) queda acotada.
+    if len(_en_incertidumbre) >= 2 * por_trabajo:
+        logger.warning("proyectos_documentos: %s fila(s) en incertidumbre (tope %s = 2 x rutas_por_trabajo): este "
+                       "ciclo no despacha nada hasta que venzan; revisar si LAS MANOS corta las conexiones",
+                       len(_en_incertidumbre), 2 * por_trabajo)
+        return
     saltados: set[tuple[str, object]] = set()
     for _pasada in range(len(tipos.CLASES) + 1):
         antes = len(frenadas)
@@ -455,9 +467,6 @@ async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltad
     """Una pasada. Devuelve 'cortar' si hay que dejar el ciclo; agrega a `frenadas` las clases que LAS MANOS frene."""
     por_grupo: dict[tuple[str, object, str], list[dict]] = {}
     ajenas: list[tuple[int, object]] = []
-    ahora = _reloj()
-    for i in [i for i, hasta in _en_incertidumbre.items() if hasta <= ahora]:
-        del _en_incertidumbre[i]
     # Las filas con desenlace incierto no se piden: contarian contra el LIMIT y despues se saltarian, y con
     # LIMITE o mas de ellas las sanas de atras nunca entrarian en la ventana. Viven en la memoria de este proceso
     # (no en la base), asi que se pasan como ids; la condicion es temporal y ya se podo arriba por `_reloj`.
