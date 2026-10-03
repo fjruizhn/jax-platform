@@ -240,3 +240,32 @@ async def marcar_job_perdido(pool, *, job_id: str) -> None:
                 "UPDATE project_documents SET estado = 'error', error = 'trabajo_perdido' "
                 "WHERE job_id = %s AND estado IN ('pendiente', 'procesando')", (job_id,))
         await conn.commit()
+
+
+async def filas_abiertas_de_trabajo(pool, *, job_id: str) -> list[dict]:
+    """Filas `pendiente`/`procesando` de un trabajo, con el uuid de su proyecto (el
+    borrado de `entrada/` lo necesita)."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT d.id, d.ruta_entrada, p.project_uuid FROM project_documents d "
+                "JOIN projects p ON p.id = d.project_id "
+                "WHERE d.job_id = %s AND d.estado IN ('pendiente', 'procesando') ORDER BY d.id", (job_id,))
+            filas = await cur.fetchall()
+    return [{"id": f[0], "ruta_entrada": f[1], "project_uuid": f[2]} for f in filas]
+
+
+async def marcar_error_en_cola(pool, *, ids: list[int], error: str) -> int:
+    """en_cola -> error con su causa (LAS MANOS rechazo el pedido de forma definitiva).
+    Solo toca filas en_cola. Devuelve las filas cambiadas."""
+    if not ids:
+        return 0
+    marcadores = ", ".join(["%s"] * len(ids))
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"UPDATE project_documents SET estado = 'error', error = %s "
+                f"WHERE estado = 'en_cola' AND id IN ({marcadores})", (error[:1000], *ids))
+            cambiadas = cur.rowcount
+        await conn.commit()
+    return cambiadas

@@ -103,6 +103,15 @@ class SimpleProyecto:
         self.uuid = uuid_
 
 
+@pytest.fixture(autouse=True)
+def _sin_despachador(monkeypatch):
+    """Una subida avisa al despachador, que hablaria con un LAS MANOS real y cambiaria el
+    estado de las filas que estas pruebas afirman. El aviso se prueba en
+    test_proyectos_documentos_despachador.py."""
+    from proyectos_documentos import despachador
+    monkeypatch.setattr(despachador, "despachar_ahora", lambda: None)
+
+
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_WORKSPACE_DIR", str(tmp_path))

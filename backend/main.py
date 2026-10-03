@@ -60,6 +60,7 @@ from app_version import leer_version
 import ajustes
 from adjuntos import limites as limites_de_adjuntos
 from adjuntos import almacen as almacen_de_adjuntos
+from proyectos_documentos import despachador as despachador_de_documentos
 from adjuntos import cuota as cuota_de_adjuntos
 from adjuntos import limite_de_subidas
 from adjuntos import pdf_pool
@@ -188,6 +189,8 @@ async def lifespan(app: FastAPI):
     engine_state.start_background_tasks()
     # RD2: vencidos y huérfanos de JAX_ADJUNTOS_DIR (ver almacen.INTERVALO_DE_LIMPIEZA).
     asyncio.create_task(almacen_de_adjuntos.start_limpieza_de_adjuntos())
+    # Proyectos E2a: reparte los documentos en_cola a LAS MANOS y sincroniza su estado.
+    asyncio.create_task(despachador_de_documentos.start_despachador())
     asyncio.create_task(start_facet_canary())
     # Drenaje del respaldo de uso (2026-09-15, Task 3): reinserta las filas
     # de axioma_usage que quedaron en disco cuando la base no respondió.

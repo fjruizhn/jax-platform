@@ -19,7 +19,9 @@ aplican:
    leido -> `repositorio.insertar`; si la restriccion unica `(project_id, sha256)`
    lo rechaza, se borra lo escrito y `existente_por_sha` dice si el duplicado esta
    visible u oculto. Quien decide el duplicado es la base, no un SELECT previo.
-5. Las filas quedan `en_cola`. El aviso al despachador lo agrega la Tarea 7.
+5. Las filas quedan `en_cola`. Si el lote acepto al menos una, se avisa al despachador
+   (`despachador.despachar_ahora()`, sin esperarlo); si falla, la subida igual responde bien:
+   el despachador de fondo las toma en su siguiente vuelta.
 """
 from __future__ import annotations
 
@@ -43,7 +45,7 @@ from db.connection import get_pool
 from jax.memory.project_authority import ProjectNotVisible, ProjectRoleInsufficient
 from jax.memory.scope_authority import MariaDBScopeAuthorityResolver, ProjectRole
 from kill_switch import exigir_freno_suelto, exigir_mesa_libre
-from proyectos_documentos import almacen, tipos
+from proyectos_documentos import almacen, despachador, tipos
 from proyectos_documentos import repositorio as repo
 
 logger = logging.getLogger(__name__)
@@ -259,6 +261,11 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
             if not aceptados:
                 await asyncio.to_thread(carpeta.quitar_lote_si_vacio)
             carpeta.cerrar()
+    if aceptados:
+        try:
+            despachador.despachar_ahora()
+        except Exception:  # fail-soft: el aviso es un adelanto; las filas ya estan en_cola y el despachador de fondo las toma en su vuelta
+            logger.warning("proyectos_documentos: no se pudo avisar al despachador (lote %s)", lote, exc_info=True)
     return {"lote": lote, "aceptados": aceptados, "ignorados": ignorados}
 
 
