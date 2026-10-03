@@ -700,38 +700,104 @@ def test_limites_con_ajuste_ilegible_falla_cerrado(ent, ajustes_en_db):
 
 # ------------------------------------------------------------------- modos
 
-def test_modos_explicitos_no_dependen_del_umask(ent, workspace):
-    """Bajo `proyectos/` hay ACL por defecto y setgid: un 0600 anula el acceso de
-    fruiz (mascara `---`). Archivo 0660 y carpetas 2770 (con S_ISGID) aunque el umask diga otra
-    cosa, en toda la cadena que crea la subida."""
+def test_los_archivos_se_fijan_a_0660_y_las_carpetas_heredan_sin_chmod(ent, workspace, monkeypatch):
+    """Bajo `proyectos/` hay ACL por defecto y setgid. El archivo es 0660 aunque el umask diga otra
+    cosa; las CARPETAS no se chmodean nunca (un chmod de jaxsvc, que no es del grupo, les borraria el
+    setgid) y heredan el setgid y el grupo del padre."""
+    (workspace / "proyectos").mkdir()
+    os.chmod(workspace / "proyectos", 0o2770)                     # como en produccion: padre con setgid
     p = ent.proyecto()
+    chmods = []
+    real = os.fchmod
+    monkeypatch.setattr(almacen.os, "fchmod", lambda fd, modo: (chmods.append(stat.S_ISDIR(os.fstat(fd).st_mode)),
+                                                                  real(fd, modo))[1])
     anterior = os.umask(0o077)
     try:
         r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
     finally:
         os.umask(anterior)
     assert r.status_code == 202, r.text
+    assert chmods and not any(chmods)                             # solo se chmodeo archivos, ninguna carpeta
     archivo = _en_disco(workspace)[0]
     assert stat.S_IMODE(archivo.stat().st_mode) == 0o660
-    for carpeta in (archivo.parent, archivo.parent.parent, archivo.parent.parent.parent,
-                    archivo.parent.parent.parent.parent):
-        assert stat.S_IMODE(carpeta.stat().st_mode) == 0o2770, carpeta        # 0770 + setgid heredable
-    assert archivo.parent.parent.parent.parent == workspace / "proyectos"
+    padre = workspace / "proyectos"
+    for carpeta in (archivo.parent.parent.parent, archivo.parent.parent, archivo.parent):
+        assert carpeta.stat().st_mode & stat.S_ISGID, carpeta             # setgid heredado
+        assert carpeta.stat().st_gid == padre.stat().st_gid
+        assert carpeta.stat().st_mode & 0o007 == 0
+    assert archivo.parent.parent.parent.parent == padre
 
 
-def test_carpeta_existente_no_se_toca(tmp_path):
-    """Solo se fija el modo de lo que se crea: una carpeta previa conserva el suyo."""
+def test_carpeta_existente_no_se_toca_y_las_nuevas_no_se_chmodean(tmp_path, monkeypatch):
+    """Solo se crea lo que falta, sin chmod: una carpeta previa conserva el suyo."""
     previa = tmp_path / "proyectos"
     previa.mkdir(mode=0o750)
     os.chmod(previa, 0o750)
+    llamadas = []
+    monkeypatch.setattr(almacen.os, "fchmod", lambda *a: llamadas.append(a))
+    monkeypatch.setattr(almacen.os, "chmod", lambda *a, **k: llamadas.append(a))
     u = str(uuid.uuid4())
     c1 = almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
     assert stat.S_IMODE(previa.stat().st_mode) == 0o750
-    assert stat.S_IMODE((previa / u / "entrada" / "lote1").stat().st_mode) == 0o2770
+    assert (previa / u / "entrada" / "lote1").is_dir()
     c2 = almacen.abrir_carpeta_lote(tmp_path, u, "lote2")                 # idempotente sobre lo ya creado
     assert sorted(x.name for x in (previa / u / "entrada").iterdir()) == ["lote1", "lote2"]
+    assert llamadas == []
     c1.cerrar()
     c2.cerrar()
+
+
+def _mkdir_que_pierde(que):
+    """Un `os.mkdir` que crea la carpeta y luego le quita lo heredado (lo que haria un chmod de jaxsvc)."""
+    real = os.mkdir
+
+    def mkdir(nombre, modo, dir_fd=None):
+        real(nombre, modo, dir_fd=dir_fd)
+        if nombre == "entrada":
+            que(nombre, dir_fd)
+    return mkdir
+
+
+def test_una_carpeta_sin_setgid_despues_de_crear_falla_cerrado_y_no_se_corrige(tmp_path, monkeypatch):
+    (tmp_path / "proyectos").mkdir()
+    os.chmod(tmp_path / "proyectos", 0o2770)
+    monkeypatch.setattr(almacen.os, "mkdir", _mkdir_que_pierde(
+        lambda n, fd: os.chmod(n, 0o770, dir_fd=fd)))                     # un chmod explicito borra el setgid
+    u = str(uuid.uuid4())
+    with pytest.raises(almacen.HerenciaDeCarpetaRota, match="setgid"):
+        almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
+    assert not (tmp_path / "proyectos" / u).exists() or not any((tmp_path / "proyectos" / u).iterdir())
+    assert not (tmp_path / "proyectos" / u / "entrada").exists()
+
+
+def test_una_carpeta_con_bits_para_otros_que_el_padre_no_tiene_falla_cerrado(tmp_path, monkeypatch):
+    (tmp_path / "proyectos").mkdir()
+    os.chmod(tmp_path / "proyectos", 0o2770)
+    monkeypatch.setattr(almacen.os, "mkdir", _mkdir_que_pierde(
+        lambda n, fd: os.chmod(n, 0o2775, dir_fd=fd)))
+    with pytest.raises(almacen.HerenciaDeCarpetaRota, match="otros"):
+        almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "lote1")
+
+
+def test_si_el_padre_ya_da_bits_a_otros_el_hijo_puede_tenerlos(tmp_path, monkeypatch):
+    (tmp_path / "proyectos").mkdir()
+    os.chmod(tmp_path / "proyectos", 0o2775)
+    anterior = os.umask(0)
+    try:
+        c = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "lote1")
+    finally:
+        os.umask(anterior)
+    c.cerrar()
+
+
+def test_subir_con_una_carpeta_sin_herencia_500_almacen_herencia_rota_y_no_queda_nada(ent, workspace, monkeypatch):
+    (workspace / "proyectos").mkdir()
+    os.chmod(workspace / "proyectos", 0o2770)
+    p = ent.proyecto()
+    monkeypatch.setattr(almacen.os, "mkdir", _mkdir_que_pierde(lambda n, fd: os.chmod(n, 0o770, dir_fd=fd)))
+    r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
+    assert r.status_code == 500 and _code(r) == "almacen_herencia_rota", r.text
+    assert ent.filas(p) == [] and _en_disco(workspace) == []
 
 
 # --------------------------------------------- enlaces simbolicos en el camino

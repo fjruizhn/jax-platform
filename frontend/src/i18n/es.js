@@ -1708,6 +1708,7 @@ export default {
         proyecto_no_activo: 'El proyecto no está activo: no admite cambios en sus documentos.',
         sin_espacio: 'No hay espacio suficiente en el servidor. Avisá a un administrador.',
         almacen_no_configurado: 'El almacén de documentos no está configurado. Avisá a un administrador.',
+        almacen_herencia_rota: 'Los permisos de la carpeta de documentos del servidor no son los esperados. Avisá a un administrador.',
         almacen_ruta_insegura: 'El servidor rechazó guardar los archivos por seguridad. Avisá a un administrador.',
         almacen_error_escritura: 'No se pudo guardar un archivo en el servidor. Revisá la lista: algunos pueden haberse agregado.',
         insercion_incierta: 'No se pudo confirmar si un archivo quedó registrado. Revisá la lista antes de volver a subirlo.',

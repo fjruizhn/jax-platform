@@ -1612,6 +1612,7 @@ export default {
         proyecto_no_activo: 'The project is not active: its documents cannot be changed.',
         sin_espacio: 'The server is out of space. Tell an administrator.',
         almacen_no_configurado: 'The document store is not configured. Tell an administrator.',
+        almacen_herencia_rota: 'The permissions of the server's documents folder are not the expected ones. Contact an administrator.',
         almacen_ruta_insegura: 'The server refused to store the files for safety reasons. Tell an administrator.',
         almacen_error_escritura: 'A file could not be saved on the server. Check the list: some may have been added.',
         insercion_incierta: 'It could not be confirmed whether a file was registered. Check the list before uploading it again.',

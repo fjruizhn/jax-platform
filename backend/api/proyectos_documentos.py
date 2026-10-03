@@ -203,6 +203,12 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                     # al log, nunca al cuerpo.
                     logger.error("proyectos_documentos: ruta insegura en el workspace", exc_info=True)
                     raise _error(500, "almacen_ruta_insegura") from None
+                except almacen.HerenciaDeCarpetaRota:
+                    # Una carpeta nueva no heredo setgid/grupo del padre (permisos del workspace mal
+                    # puestos): falla cerrado, sin chmod en silencio. El detalle va al log.
+                    logger.error("proyectos_documentos: una carpeta del workspace no heredo los permisos del "
+                                 "padre (revisar ops/permisos_proyectos.py --verificar)", exc_info=True)
+                    raise _error(500, "almacen_herencia_rota") from None
 
             restante = max_lote - bytes_lote
             usados.add(seguro)
