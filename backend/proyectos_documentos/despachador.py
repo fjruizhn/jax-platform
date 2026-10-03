@@ -361,7 +361,7 @@ def _detalle_en_texto(respuesta) -> str:
 
 
 async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict]) -> str:
-    """'seguir' | 'saltar_trozo' | 'saltar_proyecto' | 'cortar'. Las filas solo cambian de estado cuando la
+    """'seguir' | 'saltar_grupo' | 'saltar_proyecto' | 'cortar'. Las filas solo cambian de estado cuando la
     respuesta es definitiva (202 o un 4xx que no es de reintento)."""
     ids = [f["id"] for f in trozo]
     try:
@@ -407,11 +407,12 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
         return "cortar"
     if estado == 503 and _codigo_de(respuesta) == CODIGO_EXTRACTORES_NO_DISPONIBLES:
         # El freno de extractores de LAS MANOS (Jax#335) contesta SOLO por los lotes que traen el tipo
-        # afectado: las filas siguen en_cola y se sigue con los demas trozos. Cortar aqui congelaria
-        # el sistema entero porque falta una biblioteca de UN tipo.
+        # afectado, y el grupo (proyecto, dueno, clase) es homogeneo: todo el resto del grupo recibiria el
+        # mismo 503, asi que se salta entero (un solo POST) y se sigue con los demas grupos. Cortar aqui
+        # congelaria el sistema entero porque falta una biblioteca de UN tipo.
         logger.error("proyectos_documentos: LAS MANOS no tiene los extractores del trozo (proyecto %s, %s fila(s)); "
-                     "siguen en_cola y se sigue con los demas trozos", project_uuid, len(ids))
-        return "saltar_trozo"
+                     "siguen en_cola, con el resto de su grupo, y se sigue con los demas grupos", project_uuid, len(ids))
+        return "saltar_grupo"
     if estado in SIN_CULPA_DEL_DOCUMENTO or estado >= 500 or not 400 <= estado < 500:
         # Un fallo de configuracion o de capacidad (credencial, cupo, caida) no es culpa del
         # documento: nunca lo convierte en `error`. Queda en_cola y el log dice que paso.
@@ -473,6 +474,8 @@ async def _despachar(pool) -> None:
             accion = await _despachar_trozo(pool, project_uuid, contexto, filas[i:i + por_trabajo])
             if accion == "cortar":
                 return
+            if accion == "saltar_grupo":
+                break                                       # todo el grupo (proyecto, dueno, clase) queda en_cola
             if accion == "saltar_proyecto":
                 saltados.add((project_uuid, contexto))      # el proyecto entero, tambien sus otras clases
                 break

@@ -749,7 +749,7 @@ def _clase(ruta):
     return {"pdf": "pdf", "xlsx": "excel", "xlsm": "excel", "docx": "word"}.get(ext, "otro")
 
 
-def test_un_503_extractores_no_disponibles_salta_el_trozo_y_se_sigue_con_los_demas(e):
+def test_un_503_extractores_no_disponibles_salta_el_grupo_y_se_sigue_con_los_demas(e):
     pdfs = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1, nombre=f"{i}.pdf") for i in range(3)]
     jpgs = [e.insertar(e.ruta("l1", f"{i}.jpg"), n=100 + i, nombre=f"{i}.jpg") for i in range(3)]
     e.las_manos.post_respuestas = [EXTRACTORES]
@@ -759,13 +759,16 @@ def test_un_503_extractores_no_disponibles_salta_el_trozo_y_se_sigue_con_los_dem
     assert [e.fila(i)[0] for i in jpgs] == ["pendiente"] * 3
 
 
-def test_el_503_de_extractores_salta_solo_ese_trozo_dentro_del_mismo_grupo(e):
-    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1, nombre=f"{i}.pdf") for i in range(120)]
+def test_el_503_de_extractores_salta_el_resto_del_grupo_y_los_otros_grupos_salen(e):
+    pdfs = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1, nombre=f"{i}.pdf") for i in range(120)]   # 3 trozos
+    jpgs = [e.insertar(e.ruta("l1", f"{i}.jpg"), n=1000 + i, nombre=f"{i}.jpg") for i in range(3)]
     e.las_manos.post_respuestas = [EXTRACTORES]
     e.ciclo()
-    assert [len(c["rutas"]) for c in e.las_manos.posts] == [50, 50, 20]
-    estados = [e.fila(i)[0] for i in ids]
-    assert estados[:50] == ["en_cola"] * 50 and set(estados[50:]) == {"pendiente"}
+    cuerpos = e.las_manos.posts
+    assert [len(c["rutas"]) for c in cuerpos] == [50, 3]               # un solo POST del grupo pdf, y el jpg
+    assert all(r.endswith(".pdf") for r in cuerpos[0]["rutas"]) and all(r.endswith(".jpg") for r in cuerpos[1]["rutas"])
+    assert [e.fila(i)[0] for i in pdfs] == ["en_cola"] * 120          # 0 despachados del grupo afectado
+    assert [e.fila(i)[0] for i in jpgs] == ["pendiente"] * 3
 
 
 def test_un_503_generico_sigue_cortando_el_ciclo_entero(e, caplog):
