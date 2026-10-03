@@ -41,14 +41,40 @@ SQL_LISTAR_OCULTOS = _BASE_LISTA.format(nulo="NOT NULL", indice=_INDICE_LISTA)
 # `job_id IS NULL` fija el prefijo (estado, job_id) del indice de despacho y deja
 # `id` ya ordenado: sin eso, MariaDB ordena aparte. Una fila en_cola nunca tiene
 # job_id (marcar_despachadas lo pone junto con el estado `pendiente`).
-SQL_TOMAR_EN_COLA = (
-    "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id "
-    "FROM project_documents d "
-    "JOIN projects p ON p.id = d.project_id "
-    "JOIN jax_project_scope s ON s.project_id = d.project_id AND s.status = 'ACTIVE' "
-    "JOIN jax_users u ON u.user_id = d.subido_por AND u.tenant_id = s.tenant_id "
-    "WHERE d.estado = 'en_cola' AND d.job_id IS NULL ORDER BY d.id LIMIT %s"
-)
+# La extension de `ruta_entrada` en SQL (lo que viene tras el ultimo punto), comparada en `utf8mb4_nopad_bin`
+# como `tipos.clase_de` en Python: con la colacion de la tabla (PAD SPACE) `x.pdf ` seria `pdf`.
+_EXTENSION_SQL = "LOWER(SUBSTRING_INDEX(d.ruta_entrada, '.', -1)) COLLATE utf8mb4_nopad_bin"
+
+
+def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset()) -> str:
+    """La consulta de la cola, SIN las filas de las clases de extension `excluir_clases` (las que LAS MANOS
+    frena por falta de una biblioteca: sin esto un bloque de pdf atascados en los ids bajos llena la ventana de
+    `LIMIT` y las imagenes que llegan despues nunca entran). `otro` es todo lo que no es pdf, excel ni word. Las
+    extensiones son constantes de `tipos`, nunca texto del usuario. El `ORDER BY d.id` sigue en el indice de
+    despacho: el filtro por extension se aplica a las filas que ese indice ya entrega en orden."""
+    desconocida = set(excluir_clases) - set(tipos.CLASES)
+    if desconocida:
+        raise ValueError(f"clases desconocidas: {sorted(desconocida)}")
+    condiciones = []
+    for clase in sorted(excluir_clases):
+        if clase == "otro":
+            conocidas = ", ".join(repr(e) for e in sorted(tipos.CLASE_POR_EXTENSION))
+            condiciones.append(f"{_EXTENSION_SQL} IN ({conocidas})")
+        else:
+            de_la_clase = ", ".join(repr(e) for e, c in sorted(tipos.CLASE_POR_EXTENSION.items()) if c == clase)
+            condiciones.append(f"{_EXTENSION_SQL} NOT IN ({de_la_clase})")
+    extra = "".join(f"AND {c} " for c in condiciones)
+    return (
+        "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id "
+        "FROM project_documents d "
+        "JOIN projects p ON p.id = d.project_id "
+        "JOIN jax_project_scope s ON s.project_id = d.project_id AND s.status = 'ACTIVE' "
+        "JOIN jax_users u ON u.user_id = d.subido_por AND u.tenant_id = s.tenant_id "
+        f"WHERE d.estado = 'en_cola' AND d.job_id IS NULL {extra}ORDER BY d.id LIMIT %s"
+    )
+
+
+SQL_TOMAR_EN_COLA = sql_tomar_en_cola()
 
 
 def _owner(tenant_id: int, user_id: int, project_id: int) -> PlatformProcessingOwnership:
@@ -326,14 +352,15 @@ async def restaurar(pool, *, project_id: int, documento_id: int) -> bool:
         (), project_id, documento_id)
 
 
-async def tomar_en_cola(pool, *, limite: int) -> list[dict]:
+async def tomar_en_cola(pool, *, limite: int, excluir_clases: frozenset[str] = frozenset()) -> list[dict]:
     """Filas `en_cola` de proyectos ACTIVE, por `id`. `jax_project_scope.status` es
     la fuente de verdad del ciclo de vida (B9); `projects.status` solo lo refleja.
     El uploader canonico produce el contexto tipado de ownership que el despachador
-    transmite a LAS MANOS en cabeceras cerradas."""
+    transmite a LAS MANOS en cabeceras cerradas. `excluir_clases`: clases de extension que no se piden
+    (ver `sql_tomar_en_cola`); el `limite` cuenta solo lo que queda."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(SQL_TOMAR_EN_COLA, (limite,))
+            await cur.execute(sql_tomar_en_cola(frozenset(excluir_clases)), (limite,))
             filas = await cur.fetchall()
     return [{"id": f[0], "project_id": f[1], "project_uuid": f[2], "ruta_entrada": f[3],
              "owner": _owner(f[4], f[5], f[1])} for f in filas]

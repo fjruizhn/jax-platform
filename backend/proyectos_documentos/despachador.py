@@ -68,7 +68,7 @@ from credencial_las_manos import encabezados_procesamiento
 from db.connection import get_pool
 from http_client import get_http_client
 from jax_engine.state import LAS_MANOS_URL
-from proyectos_documentos import almacen, original
+from proyectos_documentos import almacen, original, tipos
 from proyectos_documentos import repositorio as repo
 
 logger = logging.getLogger(__name__)
@@ -433,52 +433,58 @@ def _ruta_del_proyecto(project_uuid: str, ruta: str | None) -> bool:
             and not any(p in ("", ".", "..") for p in partes))
 
 
-_CLASES_DE_EXTENSION = {"pdf": "pdf", "xlsx": "excel", "xlsm": "excel", "docx": "word"}
-
-
-def _clase_de_extension(ruta: str) -> str:
-    """pdf / excel / word / otro (las imagenes y lo demas), por la extension de la ruta: lo que
-    LAS MANOS frena es por tipo, asi que un trozo no mezcla clases."""
-    extension = ruta.rsplit(".", 1)[-1].lower() if "." in ruta.rsplit("/", 1)[-1] else ""
-    return _CLASES_DE_EXTENSION.get(extension, "otro")
-
-
 async def _despachar(pool) -> None:
+    """Una o varias PASADAS sobre la cola. Cada pasada pide `LIMITE_DE_FILAS_POR_CICLO` filas por `id` SIN las
+    clases ya frenadas en este ciclo y las despacha por grupos (proyecto, dueno, clase). Un 503
+    `extractores_no_disponibles` frena la CLASE entera (la falta de una biblioteca no es de un proyecto) hasta
+    el fin del ciclo: sus filas quedan en_cola y la pasada siguiente pide las que siguen, sin esa clase. Asi,
+    1.000 pdf atascados en los ids bajos no llenan la ventana y las imagenes que llegaron despues salen en el
+    mismo ciclo (MAJOR-N2). Se repite mientras una pasada frene una clase nueva: como mucho una pasada por clase."""
+    frenadas: set[str] = set()
+    por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
+    saltados: set[tuple[str, object]] = set()
+    for _pasada in range(len(tipos.CLASES) + 1):
+        antes = len(frenadas)
+        if await _pasada_de_despacho(pool, por_trabajo, frenadas, saltados) == "cortar":
+            return
+        if len(frenadas) == antes:
+            return
+
+
+async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltados: set) -> str | None:
+    """Una pasada. Devuelve 'cortar' si hay que dejar el ciclo; agrega a `frenadas` las clases que LAS MANOS frene."""
     por_grupo: dict[tuple[str, object, str], list[dict]] = {}
     ajenas: list[tuple[int, object]] = []
     ahora = _reloj()
     for i in [i for i, hasta in _en_incertidumbre.items() if hasta <= ahora]:
         del _en_incertidumbre[i]
-    for fila in await repo.tomar_en_cola(pool, limite=LIMITE_DE_FILAS_POR_CICLO):
+    for fila in await repo.tomar_en_cola(pool, limite=LIMITE_DE_FILAS_POR_CICLO, excluir_clases=frozenset(frenadas)):
         if fila["id"] in _en_incertidumbre:
             continue
         if not _ruta_del_proyecto(fila["project_uuid"], fila["ruta_entrada"]):
             ajenas.append((fila["id"], fila["owner"]))
             continue
-        clase = _clase_de_extension(fila["ruta_entrada"])
-        por_grupo.setdefault((fila["project_uuid"], fila["owner"], clase), []).append(fila)
+        por_grupo.setdefault((fila["project_uuid"], fila["owner"], tipos.clase_de(fila["ruta_entrada"])), []).append(fila)
     if ajenas:
         logger.error("proyectos_documentos: %s fila(s) con una ruta que no es de su proyecto pasan a error "
                      "ruta_ajena sin mandarse a LAS MANOS: %s", len(ajenas), ajenas[:20])
         for owner in {owner for _, owner in ajenas}:
             await repo.marcar_error_en_cola(pool, ids=[id_ for id_, current in ajenas if current == owner],
                                              error="ruta_ajena", owner=owner)
-    if not por_grupo:
-        return
-    por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
-    saltados: set[tuple[str, object]] = set()
-    for (project_uuid, contexto, _clase), filas in por_grupo.items():
-        if (project_uuid, contexto) in saltados:
+    for (project_uuid, contexto, clase), filas in por_grupo.items():
+        if clase in frenadas or (project_uuid, contexto) in saltados:
             continue
         for i in range(0, len(filas), por_trabajo):
             accion = await _despachar_trozo(pool, project_uuid, contexto, filas[i:i + por_trabajo])
             if accion == "cortar":
-                return
+                return "cortar"
             if accion == "saltar_grupo":
-                break                                       # todo el grupo (proyecto, dueno, clase) queda en_cola
+                frenadas.add(clase)                         # la clase entera, en todos los proyectos, hasta el fin del ciclo
+                break
             if accion == "saltar_proyecto":
                 saltados.add((project_uuid, contexto))      # el proyecto entero, tambien sus otras clases
                 break
+    return None
 
 
 # ---------------------------------------------------------------- ciclo y tarea de fondo

@@ -675,3 +675,48 @@ def test_reprocesar_no_toca_un_documento_oculto(e):
     assert _reprocesar(e, p, d) is False
     assert e.fila(d)[0] == "sin_extractor"
     assert _pool_call(e.client, repo.documento_para_reprocesar, project_id=p, documento_id=d)["oculto"] is True
+
+
+# ------------------------------------------------------------------ tomar_en_cola sin las clases frenadas
+def _en_cola(e, p, nombres, desde):
+    return [e.insertar(p, f"{desde + i:064x}", n, ruta=f"proyectos/u/entrada/l/{n}") for i, n in enumerate(nombres)]
+
+
+def test_tomar_en_cola_excluye_las_clases_frenadas_y_el_limite_cuenta_solo_lo_que_queda(e):
+    p = e.proyecto()
+    pdfs = _en_cola(e, p, [f"{i}.pdf" for i in range(6)], 1)
+    otros = _en_cola(e, p, ["a.jpg", "b.PNG", "c.docx", "d.xlsx", "e.xlsm", "sin-extension", "f.pdf.bak"], 100)
+    propios = lambda r: [f["id"] for f in r if f["project_id"] == p]
+    sin_pdf = propios(_pool_call(e.client, repo.tomar_en_cola, limite=100000, excluir_clases=frozenset({"pdf"})))
+    assert sin_pdf == otros                                            # ni un pdf, y el orden por id se conserva
+    sin_nada = propios(_pool_call(e.client, repo.tomar_en_cola, limite=100000))
+    assert sin_nada == pdfs + otros                                    # sin exclusion: todo, como antes
+    sin_excel_ni_word = propios(_pool_call(e.client, repo.tomar_en_cola, limite=100000,
+                                           excluir_clases=frozenset({"excel", "word"})))
+    assert sin_excel_ni_word == [i for i, n in zip(pdfs + otros, [f"{i}.pdf" for i in range(6)] +
+                                                   ["a.jpg", "b.PNG", "c.docx", "d.xlsx", "e.xlsm", "sin-extension", "f.pdf.bak"])
+                                 if not n.endswith((".docx", ".xlsx", ".xlsm"))]
+    sin_otro = propios(_pool_call(e.client, repo.tomar_en_cola, limite=100000, excluir_clases=frozenset({"otro"})))
+    assert sin_otro == pdfs + [otros[2], otros[3], otros[4]]           # solo pdf, word y excel
+    # el limite cuenta lo que queda: pedir 3 sin pdf trae 3 que no son pdf aunque haya pdfs con ids menores
+    tres = _pool_call(e.client, repo.tomar_en_cola, limite=3, excluir_clases=frozenset({"pdf"}))
+    assert len(tres) == 3 and all(not f["ruta_entrada"].endswith(".pdf") for f in tres)
+
+
+def test_la_extension_se_compara_sin_espacios_de_relleno(e):
+    p = e.proyecto()
+    d = _en_cola(e, p, ["x.pdf "], 500)[0]                             # `tipos.tipo_de` no lo toma por pdf
+    sin_pdf = [f["id"] for f in _pool_call(e.client, repo.tomar_en_cola, limite=100000,
+                                           excluir_clases=frozenset({"pdf"}))]
+    assert d in sin_pdf
+
+
+def test_explain_de_tomar_en_cola_con_exclusion_sigue_usando_su_indice(e):
+    proyectos = [e.proyecto() for _ in range(10)]
+    for i, pid in enumerate(proyectos):
+        _sembrar(e.client, pid, e.usuario, 100, desde=2 * 10**9 + i * 1000)
+    plan = _plan(e.client, repo.sql_tomar_en_cola(frozenset({"pdf", "otro"})), (100,))
+    doc = next(f for f in plan if f["table"] == "d")
+    assert doc["key"] == "idx_project_documents_despacho", plan
+    for f in plan:
+        assert "filesort" not in (f["Extra"] or "") and "temporary" not in (f["Extra"] or ""), plan

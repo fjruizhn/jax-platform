@@ -800,3 +800,44 @@ def test_los_trozos_no_mezclan_clases_de_extension(e):
     assert all(len(c) == 1 for c in clases), clases
     assert sorted(next(iter(c)) for c in clases) == ["excel", "otro", "pdf", "word"]
     assert sorted(len(c["rutas"]) for c in e.las_manos.posts) == [2, 2, 2, 3]
+
+
+def _insertar_en_bloque(e, nombres, desde):
+    """Una sola sentencia: filas `en_cola` con sha unico y ruta `entrada/l1/<nombre>` (ids crecientes)."""
+    filas = ", ".join(
+        f"({e.project_id}, '{desde + i:064x}', '{n}', '{e.ruta('l1', n)}', 10, 'pdf', {e.usuario})"
+        for i, n in enumerate(nombres))
+    e.client.portal.call(sql, "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, "
+                              f"bytes, tipo, subido_por) VALUES {filas}")
+
+
+def test_mas_pdf_que_el_limite_con_extractores_caidos_no_dejan_sin_ventana_a_las_imagenes(e):
+    """MAJOR-N2: con 1.001 pdf en cola (ids bajos), el LIMIT 1000 de la cola se llena solo de pdf y las
+    imagenes con ids altos nunca entraban en la ventana mientras faltara pdfplumber."""
+    limite = despachador.LIMITE_DE_FILAS_POR_CICLO
+    pdfs = [f"p{i:04d}.pdf" for i in range(limite + 1)]
+    _insertar_en_bloque(e, pdfs, 10_000)
+    imagenes = [e.insertar(e.ruta("l1", f"i{i}.jpg"), n=50_000 + i, nombre=f"i{i}.jpg") for i in range(3)]
+    e.las_manos.post_respuestas = [EXTRACTORES]                          # el primer trozo (pdf) da 503
+    e.ciclo()
+    rutas = [r for c in e.las_manos.posts for r in c["rutas"]]
+    assert sum(r.endswith(".pdf") for r in rutas) == 50                  # un solo trozo de pdf se intento
+    assert sorted(r for r in rutas if r.endswith(".jpg")) == sorted(e.ruta("l1", f"i{i}.jpg") for i in range(3))
+    assert [e.fila(i)[0] for i in imagenes] == ["pendiente"] * 3         # las imagenes SI salen en ese mismo ciclo
+    n_pdf_en_cola = e.client.portal.call(
+        sql, "SELECT COUNT(*) FROM project_documents WHERE project_id=%s AND estado='en_cola'", (e.project_id,), True)[0][0]
+    assert n_pdf_en_cola == limite + 1                                   # ningun pdf se despacho
+
+
+def test_una_clase_frenada_se_salta_en_todos_los_grupos_del_ciclo_con_un_solo_post(e):
+    """Un segundo proyecto con pdf en la misma vuelta no vuelve a pegarle al 503 ya conocido."""
+    _insertar_en_bloque(e, [f"a{i}.pdf" for i in range(3)], 70_000)
+    otro_id, otro_uuid = e.proyecto()
+    e.client.portal.call(sql, "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, "
+                              "bytes, tipo, subido_por) VALUES (%s, %s, 'b.pdf', %s, 10, 'pdf', %s)",
+                         (otro_id, f"{80_000:064x}", f"proyectos/{otro_uuid}/entrada/l1/b.pdf", e.usuario))
+    img = e.insertar(e.ruta("l1", "z.jpg"), n=90_000, nombre="z.jpg")
+    e.las_manos.post_respuestas = [EXTRACTORES]
+    e.ciclo()
+    assert e.fila(img)[0] == "pendiente"
+    assert [len(c["rutas"]) for c in e.las_manos.posts] == [3, 1]       # 1 POST pdf (503) + 1 jpg; el de otro proyecto no
