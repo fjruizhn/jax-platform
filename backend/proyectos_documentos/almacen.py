@@ -24,11 +24,17 @@ from __future__ import annotations
 import asyncio
 import errno
 import hashlib
+import logging
 import os
 import re
 import threading
 import unicodedata
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Cada cuanto se avisa (WARNING) que se sigue esperando a un hilo que no termina.
+ESPERA_AVISO_S = 30.0
 
 VARIABLE_WORKSPACE = "JAX_WORKSPACE_DIR"
 TAMANO_DE_BLOQUE = 1024 * 1024
@@ -95,6 +101,10 @@ class CarpetaLote:
         self._fds = fds
         self._creados = creados           # (fd del padre, nombre) de lo que creo ESTA llamada
         self._relativa = relativa
+
+    @property
+    def nombre_lote(self) -> str:
+        return self._relativa.rsplit("/", 1)[-1]
 
     @property
     def fd(self) -> int:
@@ -284,17 +294,28 @@ async def escribir_streaming(upload, carpeta: CarpetaLote, nombre: str, tope: in
     except asyncio.CancelledError:
         cancelado.set()
         # Esperar al hilo de forma BLINDADA: una segunda cancelacion no puede sacarnos de
-        # la espera (el hilo seguiria escribiendo con el llamador ya adelante).
+        # la espera (el hilo seguiria escribiendo con el llamador ya adelante). Si tarda,
+        # deja rastro cada ESPERA_AVISO_S: lote y nombre en disco, nunca la ruta completa.
         while True:
             try:
-                await asyncio.shield(hilo)
+                await asyncio.wait_for(asyncio.shield(hilo), ESPERA_AVISO_S)
                 break
+            except asyncio.TimeoutError:
+                logger.warning("proyectos_documentos: cancelada la escritura de %r (lote %s); se sigue "
+                               "esperando al hilo", nombre, carpeta.nombre_lote)
             except asyncio.CancelledError:
                 continue
             except Exception:  # fail-soft: _Cancelado o el error del hilo; ya limpio por el, y abajo se re-lanza la cancelacion
                 break
         if not hilo.cancelled() and hilo.exception() is None:
             # La cancelacion llego despues de la ultima mirada del hilo a la bandera: termino
-            # bien, el archivo esta en disco y nadie lo va a registrar.
-            _borrar(carpeta.fd, nombre)
+            # bien, el archivo esta en disco y nadie lo va a registrar. Se borra en un hilo
+            # (no bloquea el loop) y, igual que la espera, a prueba de otra cancelacion.
+            borrado = asyncio.ensure_future(asyncio.to_thread(_borrar, carpeta.fd, nombre))
+            while True:
+                try:
+                    await asyncio.shield(borrado)
+                    break
+                except asyncio.CancelledError:
+                    continue
         raise

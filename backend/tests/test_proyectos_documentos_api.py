@@ -1080,3 +1080,111 @@ def test_insert_con_resultado_incierto_no_toca_el_disco_y_deja_rastro(ent, works
     assert [f[1] for f in ent.filas(p)] == ["a.pdf"]                      # y la fila existe: no se perdio el documento
     log = " ".join(rec.getMessage() for rec in caplog.records)
     assert lote in log and "a.pdf" in log and "conciliar" in log
+
+
+# -------------------------------------------------------------- ronda 3
+
+def test_usuario_inactivo_entre_la_escritura_y_el_insert_404_sin_fila_ni_archivo(ent, workspace, monkeypatch):
+    p = ent.proyecto()
+    contrib = ent.miembro(p, "contrib", "CONTRIBUTOR")
+    uid_ = ent._id("contrib")
+
+    def desactivar():
+        ent.client.portal.call(sql, "UPDATE jax_users SET status='inactive' WHERE user_id=%s", (uid_,))
+        return SimpleNamespace(status_code=200, text="")
+
+    _tras_escribir(monkeypatch, desactivar)
+    r = ent.subir(p, contrib, [_parte("a.pdf", "a")])
+    assert r.status_code == 404 and _code(r) == "proyecto_no_encontrado"   # lo que E1 da a un usuario no activo
+    assert r.json()["detail"]["lote"] and r.json()["detail"]["aceptados"] == []
+    assert _en_disco(workspace) == [] and ent.filas(p) == []
+
+
+async def test_la_espera_blindada_deja_rastro_con_lote_y_nombre_sin_la_ruta(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(almacen, "ESPERA_AVISO_S", 0.1)
+    carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "loteX")
+    try:
+        leyendo, compuerta = threading.Event(), threading.Event()
+
+        class Lenta(io.BytesIO):
+            def __init__(self):
+                super().__init__(b"a" * (3 * MIB))
+                self.bloques = 0
+
+            def read(self, n=-1):
+                self.bloques += 1
+                if self.bloques == 2:
+                    leyendo.set()
+                    assert compuerta.wait(10)
+                return super().read(n)
+
+        sub = _Subida(b"")
+        sub.file = Lenta()
+        with caplog.at_level(logging.WARNING, logger="proyectos_documentos.almacen"):
+            tarea = asyncio.create_task(almacen.escribir_streaming(sub, carpeta, "a.pdf", 10 * MIB))
+            assert await asyncio.to_thread(leyendo.wait, 10)
+            tarea.cancel()
+            await asyncio.sleep(0.45)
+            compuerta.set()
+            with pytest.raises(asyncio.CancelledError):
+                await tarea
+        avisos = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(avisos) >= 2                                         # uno por cada intervalo de espera
+        assert all("loteX" in a and "a.pdf" in a and str(tmp_path) not in a for a in avisos)
+        assert list(carpeta.ruta.iterdir()) == []
+    finally:
+        carpeta.cerrar()
+
+
+async def test_borrado_de_cancelacion_tardia_corre_fuera_del_hilo_del_loop(tmp_path, monkeypatch):
+    """El `_borrar` de la rama de cancelacion tardia va por `to_thread`: no bloquea el loop."""
+    carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
+    loop = asyncio.get_running_loop()
+    hilo_del_loop = threading.get_ident()
+    caja, borrados = {}, []
+
+    class Resumen:
+        def __init__(self):
+            self.h = hashlib.sha256()
+
+        def update(self, b):
+            self.h.update(b)
+
+        def hexdigest(self):
+            loop.call_soon_threadsafe(caja["tarea"].cancel)
+            time.sleep(0.3)
+            return self.h.hexdigest()
+
+    original = almacen._borrar
+
+    def espia(fd, nombre):
+        borrados.append(threading.get_ident())
+        return original(fd, nombre)
+
+    monkeypatch.setattr(almacen, "hashlib", SimpleNamespace(sha256=Resumen))
+    monkeypatch.setattr(almacen, "_borrar", espia)
+    try:
+        caja["tarea"] = asyncio.ensure_future(almacen.escribir_streaming(_Subida(b"%PDF x"), carpeta, "a.pdf", 100))
+        with pytest.raises(asyncio.CancelledError):
+            await caja["tarea"]
+        assert len(borrados) == 1 and borrados[0] != hilo_del_loop
+        assert list(carpeta.ruta.iterdir()) == []
+    finally:
+        carpeta.cerrar()
+
+
+def test_fallo_al_consultar_el_duplicado_informa_el_lote(ent, workspace, monkeypatch):
+    p = ent.proyecto()
+    assert ent.subir(p, ent.dueno, [_parte("viejo.pdf", "mismo")]).status_code == 202
+
+    async def falla(*args, **kwargs):
+        raise RuntimeError("la base no responde")
+
+    monkeypatch.setattr(repo, "existente_por_sha", falla)
+    r = ent.subir(p, ent.dueno, [_parte("nuevo.pdf", "otro"), _parte("copia.pdf", "mismo"), _parte("z.pdf", "z")])
+    assert r.status_code == 500 and _code(r) == "consulta_duplicado_fallida"
+    detalle = r.json()["detail"]
+    assert detalle["lote"] and [a["nombre"] for a in detalle["aceptados"]] == ["nuevo.pdf"]
+    assert sorted(f[1] for f in ent.filas(p)) == ["nuevo.pdf", "viejo.pdf"]            # lo aceptado esta; z no se intento
+    assert sorted(x.name for x in _en_disco(workspace)) == ["nuevo.pdf", "viejo.pdf"]  # la copia ya se habia borrado
+    assert str(workspace) not in r.text

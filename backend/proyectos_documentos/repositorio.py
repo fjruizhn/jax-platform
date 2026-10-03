@@ -46,7 +46,7 @@ class ProyectoNoActivo(Exception):
 
 class MembresiaPerdida(Exception):
     """`subido_por` ya no es miembro ACTIVE con papel de escritura: no se inserto nada.
-    `papel` es el que le queda (None si dejo de ser miembro)."""
+    `papel` es el que le queda (None si dejo de ser miembro o de estar activo en su tenant)."""
 
     def __init__(self, papel: str | None):
         super().__init__(papel)
@@ -55,7 +55,7 @@ class MembresiaPerdida(Exception):
 
 # El INSERT lee `jax_project_scope` y `jax_project_membership` (la misma fuente que la
 # autorizacion) y solo inserta si el proyecto sigue ACTIVE Y quien sube sigue siendo
-# miembro ACTIVE con uno de los `roles_escritura`: comprobacion y escritura son UNA
+# miembro ACTIVE con uno de los `roles_escritura`, y activo en su tenant: comprobacion y escritura son UNA
 # sentencia, sin carrera con un archivado o una baja que lleguen en medio de la subida.
 # (InnoDB toma un candado compartido sobre las filas que lee, asi un cambio concurrente
 # espera a este commit.)
@@ -66,12 +66,19 @@ _SQL_INSERTAR = (
     "WHERE s.project_id = %s AND s.status = 'ACTIVE' AND EXISTS ("
     "SELECT 1 FROM jax_project_membership m WHERE m.project_id = s.project_id "
     "AND m.tenant_id = s.tenant_id AND m.user_id = %s AND m.status = 'ACTIVE' "
-    "AND m.project_role IN ({roles})) LIMIT 1"
+    "AND m.project_role IN ({roles})) "
+    # Quien sube sigue activo en SU tenant: el mismo predicado que `_usuario` de
+    # jax/memory/project_queries.py (47-53), por donde pasa `_proyecto_visible` en E1.
+    # Copiado, no reutilizado: aquel es Python sobre un cursor y esto es UNA sentencia.
+    "AND EXISTS (SELECT 1 FROM jax_users u WHERE u.user_id = %s AND u.tenant_id = s.tenant_id "
+    "AND LOWER(u.status) = 'active') LIMIT 1"
 )
 _SQL_POR_QUE_NO = (
-    "SELECT s.status, m.project_role FROM jax_project_scope s "
+    "SELECT s.status, m.project_role, u.user_id FROM jax_project_scope s "
     "LEFT JOIN jax_project_membership m ON m.project_id = s.project_id AND m.tenant_id = s.tenant_id "
-    "AND m.user_id = %s AND m.status = 'ACTIVE' WHERE s.project_id = %s LIMIT 1"
+    "AND m.user_id = %s AND m.status = 'ACTIVE' "
+    "LEFT JOIN jax_users u ON u.user_id = %s AND u.tenant_id = s.tenant_id AND LOWER(u.status) = 'active' "
+    "WHERE s.project_id = %s LIMIT 1"
 )
 
 
@@ -88,18 +95,19 @@ async def insertar(pool, *, project_id: int, sha256: str, nombre_original: str, 
         async with conn.cursor() as cur:
             try:
                 await cur.execute(consulta, (project_id, sha256, nombre_original, ruta_entrada, bytes_, tipo,
-                                             subido_por, project_id, subido_por, *roles_escritura))
+                                             subido_por, project_id, subido_por, *roles_escritura, subido_por))
             except aiomysql.IntegrityError as exc:
                 if exc.args and exc.args[0] == _ERROR_DUPLICADO:
                     return None
                 raise
             if not cur.rowcount:
-                await cur.execute(_SQL_POR_QUE_NO, (subido_por, project_id))
+                await cur.execute(_SQL_POR_QUE_NO, (subido_por, subido_por, project_id))
                 fila = await cur.fetchone()
                 await conn.commit()
                 if fila is None or fila[0] != "ACTIVE":
                     raise ProyectoNoActivo(project_id)
-                raise MembresiaPerdida(fila[1])
+                # Un usuario ya no activo en su tenant es, para E1, un proyecto no visible.
+                raise MembresiaPerdida(fila[1] if fila[2] is not None else None)
             nuevo = cur.lastrowid
         await conn.commit()
         return nuevo

@@ -241,7 +241,15 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 await asyncio.to_thread(carpeta.borrar, seguro)
                 usados.discard(seguro)
                 bytes_lote -= escritos          # el duplicado descartado no ocupa lugar en el lote
-                existente = await repo.existente_por_sha(pool, project_id=proyecto["id"], sha256=sha256)
+                try:
+                    existente = await repo.existente_por_sha(pool, project_id=proyecto["id"], sha256=sha256)
+                except Exception:
+                    # El duplicado ya esta descartado (archivo borrado); lo que falla es solo
+                    # decir si estaba oculto. Se responde con lo que SI quedo registrado.
+                    logger.error("proyectos_documentos: no se pudo consultar el duplicado %r (lote %s)", seguro,
+                                 lote, exc_info=True)
+                    raise _error(500, "consulta_duplicado_fallida", lote=lote, aceptados=aceptados,
+                                 ignorados=ignorados) from None
                 oculto = existente is not None and existente["oculto"]
                 ignorados.append({"nombre": nombre, "motivo": "duplicado_oculto" if oculto else "duplicado"})
                 continue

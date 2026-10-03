@@ -388,3 +388,28 @@ def test_insertar_exige_membresia_activa_con_papel_de_escritura(e):
         _pool_call(e.client, repo.insertar, sha256="4" * 64, subido_por=e.usuario, roles_escritura=(), **args)
     filas = e.client.portal.call(sql, "SELECT sha256 FROM project_documents WHERE project_id=%s", (p,), True)
     assert [f[0] for f in filas] == ["3" * 64]
+
+
+def test_insertar_exige_usuario_activo_en_su_tenant(e):
+    p = e.proyecto()
+    args = dict(project_id=p, nombre_original="x.pdf", ruta_entrada="entrada/l/x.pdf", bytes_=1, tipo="pdf",
+                subido_por=e.usuario, roles_escritura=("OWNER", "CONTRIBUTOR", "REVIEWER"))
+    assert _pool_call(e.client, repo.insertar, sha256="5" * 64, **args) is not None
+    propio = e.client.portal.call(sql, "SELECT tenant_id FROM jax_users WHERE user_id=%s", (e.usuario,), True)[0][0]
+    otro = e.client.portal.call(sql, "SELECT tenant_id FROM jax_tenants WHERE tenant_id <> %s LIMIT 1",
+                                (propio,), True)[0][0]
+    try:
+        e.client.portal.call(sql, "UPDATE jax_users SET status='inactive' WHERE user_id=%s", (e.usuario,))
+        with pytest.raises(repo.MembresiaPerdida) as perdida:
+            _pool_call(e.client, repo.insertar, sha256="6" * 64, **args)
+        assert perdida.value.papel is None                      # para E1, un proyecto no visible
+        # activo, pero en OTRO tenant que el del proyecto: tampoco
+        e.client.portal.call(sql, "UPDATE jax_users SET status='active', tenant_id=%s WHERE user_id=%s",
+                             (otro, e.usuario))
+        with pytest.raises(repo.MembresiaPerdida):
+            _pool_call(e.client, repo.insertar, sha256="7" * 64, **args)
+    finally:
+        e.client.portal.call(sql, "UPDATE jax_users SET status='active', tenant_id=%s WHERE user_id=%s",
+                             (propio, e.usuario))
+    filas = e.client.portal.call(sql, "SELECT sha256 FROM project_documents WHERE project_id=%s", (p,), True)
+    assert [f[0] for f in filas] == ["5" * 64]
