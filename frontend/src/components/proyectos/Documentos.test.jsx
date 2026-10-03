@@ -13,7 +13,7 @@ vi.mock('../../api/proyectos', () => ({
 import * as api from '../../api/proyectos'
 import Documentos from './Documentos'
 import { puedeVerOcultos, puedeModificarDocumentos } from './permisos'
-import { I18nProvider } from '../../i18n/index.jsx'
+import { I18nProvider, useI18n } from '../../i18n/index.jsx'
 import es from '../../i18n/es.js'
 
 const T = es.proyectos.documentos
@@ -59,6 +59,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   espias.forEach((e) => e.mockRestore())
+  localStorage.clear() // el idioma elegido en una prueba no pasa a la siguiente
   vi.useRealTimers()
   vi.restoreAllMocks()
 })
@@ -288,6 +289,74 @@ describe('Documentos: sondeo cada 5 s', () => {
     expect(api.listarDocumentos).toHaveBeenCalledTimes(1)
   })
 
+  it('Cargar más: un sondeo que corre con la página en vuelo no deja el botón deshabilitado', async () => {
+    const base = servidor(60, (n) => (n === 60 ? { estado: 'procesando' } : {}))
+    let soltar
+    let retener = false
+    api.listarDocumentos.mockImplementation((id, args) => {
+      if (retener && args.antesDe === 11) return new Promise((res) => { soltar = () => res(base(id, args)) })
+      return base(id, args)
+    })
+    vi.useFakeTimers()
+    montar()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    retener = true
+    fireEvent.click(screen.getByRole('button', { name: T.cargarMas }))
+    expect(screen.getByRole('button', { name: T.cargarMas })).toBeDisabled()
+    retener = false
+    // el sondeo corre mientras la página sigue en vuelo
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    await act(async () => { soltar(); await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByRole('button', { name: T.cargarMas })).toBeEnabled()
+  })
+
+  it('el cambio de idioma no reinicia la lista ni la vuelve a pedir', async () => {
+    function Idioma() { const { setLang } = useI18n(); return <button type="button" onClick={() => setLang('en')}>en</button> }
+    render(<I18nProvider><Idioma /><Documentos proyecto={PROY} /></I18nProvider>)
+    await screen.findByText('doc1.pdf')
+    const llamadas = api.listarDocumentos.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'en' }))
+    expect(await screen.findByRole('button', { name: 'Add documents' })).toBeInTheDocument()
+    expect(screen.getByText('doc1.pdf')).toBeInTheDocument()
+    expect(api.listarDocumentos.mock.calls.length).toBe(llamadas)
+    expect(screen.queryByText(T.cargando)).not.toBeInTheDocument()
+  })
+
+  it('más de 100 filas visibles: el sondeo las re-pide en varios pedidos y no pierde ninguna', async () => {
+    api.listarDocumentos.mockImplementation(servidor(130, (n) => (n === 130 ? { estado: 'procesando' } : {})))
+    vi.useFakeTimers()
+    montar()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    for (let i = 0; i < 2; i++) {
+      fireEvent.click(screen.getByRole('button', { name: T.cargarMas }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    }
+    expect(screen.getByText('doc1.pdf')).toBeInTheDocument()
+    api.listarDocumentos.mockClear()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(api.listarDocumentos.mock.calls.map((c) => [c[1].antesDe, c[1].limite])).toEqual([[null, 100], [31, 30]])
+    expect(screen.getByText('doc130.pdf')).toBeInTheDocument()
+    expect(screen.getByText('doc1.pdf')).toBeInTheDocument()
+  })
+
+  it('tope del sondeo: con más de 300 filas re-pide 300 y conserva las de más abajo', async () => {
+    api.listarDocumentos.mockImplementation(servidor(320, (n) => (n === 320 ? { estado: 'procesando' } : {})))
+    vi.useFakeTimers()
+    montar()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    for (let i = 0; i < 6; i++) {
+      fireEvent.click(screen.getByRole('button', { name: T.cargarMas }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    }
+    expect(screen.getByText('doc1.pdf')).toBeInTheDocument()
+    api.listarDocumentos.mockClear()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(api.listarDocumentos.mock.calls.map((c) => c[1].limite)).toEqual([100, 100, 100])
+    expect(screen.getByText('doc320.pdf')).toBeInTheDocument()
+    expect(screen.getByText('doc1.pdf')).toBeInTheDocument()
+    expect(screen.getAllByRole('listitem')).toHaveLength(320)
+  })
+
   it('cambiar de proyecto cancela el sondeo del anterior', async () => {
     vi.useFakeTimers()
     api.listarDocumentos.mockResolvedValue({ documentos: [activo(1)], siguiente: null })
@@ -306,6 +375,35 @@ describe('Documentos: sondeo cada 5 s', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
     expect(screen.getByText(T.errores.kill_switch_activo)).toBeInTheDocument()
     expect(screen.getByText('doc1.pdf')).toBeInTheDocument()
+  })
+})
+
+describe('Documentos: anuncio de transiciones (role=status)', () => {
+  it('anuncia una transición una sola vez y calla cuando un sondeo no cambia nada', async () => {
+    vi.useFakeTimers()
+    api.listarDocumentos
+      .mockResolvedValueOnce({ documentos: [doc(1, { estado: 'procesando' }), doc(2, { estado: 'procesando' })], siguiente: null })
+      .mockResolvedValueOnce({ documentos: [doc(1, { estado: 'procesando' }), doc(2, { estado: 'procesando' })], siguiente: null })
+      .mockResolvedValueOnce({ documentos: [doc(1), doc(2, { estado: 'procesando' })], siguiente: null })
+      .mockResolvedValue({ documentos: [doc(1), doc(2, { estado: 'procesando' })], siguiente: null })
+    montar()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const region = screen.getByRole('status')
+    expect(region).toHaveTextContent('')
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(region).toHaveTextContent('') // sondeo sin cambios: nada
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(region).toHaveTextContent(T.anuncio('doc1.pdf', T.estados.listo))
+    expect(region.textContent).not.toMatch(/doc2/)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(region).toHaveTextContent('') // otro sondeo sin cambios: ya no repite
+  })
+
+  it('la carga inicial y las filas nuevas no se anuncian', async () => {
+    api.listarDocumentos.mockResolvedValue({ documentos: [doc(1)], siguiente: null })
+    montar()
+    await screen.findByText('doc1.pdf')
+    expect(screen.getByRole('status')).toHaveTextContent('')
   })
 })
 

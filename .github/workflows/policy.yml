@@ -1059,8 +1059,11 @@ jobs:
             //   1288/0/1288 (número local que el runner confirma o corrige): +33 en Documentos.test.jsx
             //   (lista, papeles, ocultar y restaurar, errores, Selector, sondeo de 5 s) y +3 net en
             //   ProyectoDetalle.test.jsx (tres pestañas por teclado, VIEWER, Documentos pide la lista, desmontar).
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1288) {
-              console.error("PISO ROTO: se esperaban 1288 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1288 -> 1295 (2026-10-03, Proyectos E2a T10 ronda 1): +7, medido LOCAL con `npx vitest run`
+            //   1295/0/1295: Cargar más con sondeo en vuelo, idioma sin reinicio, más de 100 filas,
+            //   tope de 300, anuncio de transiciones (x2) y REVIEWER con texto.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1295) {
+              console.error("PISO ROTO: se esperaban 1295 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

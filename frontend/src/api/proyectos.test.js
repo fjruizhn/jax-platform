@@ -125,10 +125,10 @@ describe('i18n proyectos', () => {
     }
   })
 
-  it('vistas, papeles y estados tienen sus tres claves', () => {
+  it('vistas, papeles (cuatro, con REVIEWER) y estados tienen sus claves', () => {
     for (const d of [es, en]) {
       expect(Object.keys(d.proyectos.vistas).sort()).toEqual(['activos', 'archivados', 'ocultos'])
-      expect(Object.keys(d.proyectos.papeles).sort()).toEqual(['CONTRIBUTOR', 'OWNER', 'VIEWER'])
+      expect(Object.keys(d.proyectos.papeles).sort()).toEqual(['CONTRIBUTOR', 'OWNER', 'REVIEWER', 'VIEWER'])
       expect(Object.keys(d.proyectos.estados).sort()).toEqual(['ACTIVE', 'ARCHIVED', 'HIDDEN'])
     }
   })

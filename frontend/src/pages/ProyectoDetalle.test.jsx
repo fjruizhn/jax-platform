@@ -180,6 +180,15 @@ describe('ProyectoDetalle: pestañas', () => {
     expect(screen.queryByRole('button', { name: T.documentos.agregar })).not.toBeInTheDocument()
   })
 
+  it('un REVIEWER ve su papel con texto («Revisor»), no undefined', async () => {
+    configurar({ proyecto: { ...PROY, papel: 'REVIEWER' } })
+    renderDetalle()
+    await screen.findByText('informe.pdf')
+    expect(T.papeles.REVIEWER).toBe('Revisor')
+    expect(screen.getByText(new RegExp(`${T.tuPapel}: Revisor`))).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: T.documentos.agregar })).toBeInTheDocument()
+  })
+
   it('la pestaña Documentos pide la lista del proyecto y un OWNER ve Agregar', async () => {
     renderDetalle()
     expect(await screen.findByText('informe.pdf')).toBeInTheDocument()
