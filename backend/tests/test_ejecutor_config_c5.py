@@ -8,7 +8,7 @@ CLAVES = {
     "ejecutor.cerebro_faceta": "ejecutor", "ejecutor.auditor_faceta": "thot",
     # `el_juez` desde 2026-09-20: ver el comentario de la semilla en migrations.py.
     "ejecutor.auditor_faceta_local": "el_juez", "ejecutor.c5_lote_max": "20",
-    "ejecutor.c5_intervalo_s": "15", "ejecutor.c5_max_tokens": "4000",
+    "ejecutor.c5_intervalo_s": "15", "ejecutor.c5_max_tokens": "4000", "ejecutor.c5_tope_s": "400",
     "ejecutor.c5_auditor_admite_datos_de_clientes": "false",
 }
 _PLACEHOLDERS = ", ".join(["%s"] * len(CLAVES))
@@ -52,3 +52,9 @@ def test_el_auditor_local_no_esta_hardcodeado_a_una_sola_clave():
 def test_la_compuerta_de_datos_de_clientes_nace_cerrada():
     from db.migrations import _EJECUTOR_CONFIG_C5
     assert dict(_EJECUTOR_CONFIG_C5)["ejecutor.c5_auditor_admite_datos_de_clientes"] == "false"
+
+
+def test_el_plazo_del_auditor_se_siembra_en_400_segundos_enteros():
+    from db.migrations import _EJECUTOR_CONFIG_C5
+    valor = dict(_EJECUTOR_CONFIG_C5)["ejecutor.c5_tope_s"]
+    assert valor == "400" and int(valor) > 0
