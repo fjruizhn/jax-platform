@@ -78,7 +78,10 @@ TIMEOUT_HTTP_SEGUNDOS = 10.0
 # Tope de filas `en_cola` que una vuelta toma; lo que sobre sale en la siguiente.
 LIMITE_DE_FILAS_POR_CICLO = 1000
 
-NOMBRE_DEL_LOCK = "proyectos_documentos_despacho"
+# El nombre de GET_LOCK es global al SERVIDOR de MariaDB: lleva la base para que dos bases en
+# el mismo servidor (otra instancia, una suite de pruebas) no se frenen entre si.
+NOMBRE_DEL_LOCK = "proyectos_documentos_despacho:"
+_LOCK_SQL = "CONCAT(%s, DATABASE())"
 
 # Estado de un archivo en LAS MANOS -> `project_documents.estado`.
 ESTADO_DE_ARCHIVO = {
@@ -115,6 +118,7 @@ CAUSAS_DE_ERROR = frozenset({
     "trabajo_fallido",         # el trabajo entero fallo o fue rechazado
     "trabajo_perdido",         # LAS MANOS ya no conoce el trabajo (reinicio)
     "http_4xx",                # LAS MANOS rechazo el pedido de forma definitiva
+    "ruta_ajena",              # la ruta de la fila no es de su proyecto: no se mando
 })
 # Una ruta absoluta que no es del workspace: se deja solo su ultimo tramo.
 _RUTA_ABSOLUTA = re.compile(r"(?<![\w.~-])/(?:[^\s'\"/]+/)+([^\s'\"/]*)")
@@ -183,11 +187,11 @@ async def _borrar_copia(fila: dict) -> None:
 
     try:
         await asyncio.to_thread(borrar)
-    except Exception:  # fail-soft: no se pudo borrar la copia de entrada/; el estado ya quedo aplicado y la fila queda para conciliar a mano, no se detiene el ciclo
-        partes = (fila["ruta_entrada"] or "").split("/")
+    except Exception as exc:  # fail-soft: no se pudo borrar la copia de entrada/; el estado ya quedo aplicado y la fila queda para conciliar a mano, no se detiene el ciclo
+        # Sin exc_info: el traceback y el texto de un OSError llevan la ruta absoluta. Basta
+        # el tipo y la ruta relativa al workspace, que es la de la fila.
         logger.error("proyectos_documentos: no se pudo borrar la copia de entrada del documento %s "
-                     "(lote %r, archivo %r; se deja en disco)", fila["id"],
-                     partes[-2] if len(partes) > 1 else "", partes[-1], exc_info=True)
+                     "(%s, ruta %r; se deja en disco)", fila["id"], type(exc).__name__, fila["ruta_entrada"])
 
 
 # ---------------------------------------------------------------- sincronizacion
@@ -339,6 +343,8 @@ async def _despachar_trozo(pool, project_uuid: str, usuario: str, trozo: list[di
                            job_id, len(ganadas), len(ids))
         return "seguir"
     if estado == 422 and _codigo_de(respuesta) in CODIGOS_QUE_DEJAN_EN_COLA:
+        logger.warning("proyectos_documentos: LAS MANOS respondio 422 %s para el proyecto %s; %s fila(s) siguen "
+                       "en espera y se salta el proyecto en esta vuelta", _codigo_de(respuesta), project_uuid, len(ids))
         return "saltar_proyecto"
     if estado == 422 and _detalle_en_texto(respuesta).startswith(PREFIJO_DEMASIADAS_RUTAS):
         # Fallo de configuracion, no del documento: nunca lo convierte en `error`.
@@ -357,15 +363,31 @@ async def _despachar_trozo(pool, project_uuid: str, usuario: str, trozo: list[di
     return "seguir"
 
 
+def _ruta_del_proyecto(project_uuid: str, ruta: str | None) -> bool:
+    """La ruta de una fila tiene que estar bajo `proyectos/<su project_uuid>/`, sin tramos
+    vacios ni `.`/`..`: LAS MANOS solo recibe rutas del proyecto que el pedido nombra."""
+    partes = (ruta or "").split("/")
+    return (len(partes) >= 4 and partes[:2] == ["proyectos", project_uuid]
+            and not any(p in ("", ".", "..") for p in partes))
+
+
 async def _despachar(pool) -> None:
     por_grupo: dict[tuple[str, str], list[dict]] = {}
+    ajenas: list[int] = []
     ahora = _reloj()
     for i in [i for i, hasta in _en_incertidumbre.items() if hasta <= ahora]:
         del _en_incertidumbre[i]
     for fila in await repo.tomar_en_cola(pool, limite=LIMITE_DE_FILAS_POR_CICLO):
         if fila["id"] in _en_incertidumbre:
             continue
+        if not _ruta_del_proyecto(fila["project_uuid"], fila["ruta_entrada"]):
+            ajenas.append(fila["id"])
+            continue
         por_grupo.setdefault((fila["project_uuid"], fila["subido_por_email"]), []).append(fila)
+    if ajenas:
+        logger.error("proyectos_documentos: %s fila(s) con una ruta que no es de su proyecto pasan a error "
+                     "ruta_ajena sin mandarse a LAS MANOS: %s", len(ajenas), ajenas[:20])
+        await repo.marcar_error_en_cola(pool, ids=ajenas, error="ruta_ajena")
     if not por_grupo:
         return
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
@@ -385,7 +407,7 @@ async def ciclo(pool) -> None:
     despachador lo tiene, esta vuelta no hace nada."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT GET_LOCK(%s, 0)", (NOMBRE_DEL_LOCK,))
+            await cur.execute(f"SELECT GET_LOCK({_LOCK_SQL}, 0)", (NOMBRE_DEL_LOCK,))
             if (await cur.fetchone())[0] != 1:
                 return
         try:
@@ -394,7 +416,7 @@ async def ciclo(pool) -> None:
         finally:
             try:
                 async with conn.cursor() as cur:
-                    await cur.execute("SELECT RELEASE_LOCK(%s)", (NOMBRE_DEL_LOCK,))
+                    await cur.execute(f"SELECT RELEASE_LOCK({_LOCK_SQL})", (NOMBRE_DEL_LOCK,))
             except BaseException:
                 # Sin soltar el lock, la conexion que lo tiene volveria al pool con el lock puesto
                 # y ningun despachador podria correr: se cierra (el servidor lo libera al cortar).

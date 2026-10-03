@@ -541,3 +541,79 @@ def test_un_fallo_del_aviso_no_rompe_la_subida(e, monkeypatch):
     monkeypatch.setattr(despachador, "despachar_ahora", roto)
     r = _subir(e, "a.pdf", b"%PDF-1.4 dos")
     assert r.status_code == 202 and len(r.json()["aceptados"]) == 1
+
+
+# ------------------------------------------------------------------ ronda final: menores 6, 7, 9b y 12
+
+def test_saltar_un_proyecto_deja_rastro_con_el_proyecto_y_la_cantidad(e, caplog):
+    [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(3)]
+    e.las_manos.post_respuestas = [(422, {"detail": {"code": "project_uuid_invalido"}})]
+    with caplog.at_level(logging.WARNING):
+        e.ciclo()
+    avisos = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and e.uuid in r.getMessage()]
+    assert avisos and "project_uuid_invalido" in avisos[0] and "3" in avisos[0], avisos
+
+
+def _con_lock_ajeno(client, nombre_sql, funcion):
+    """Otra conexion sostiene un GET_LOCK (nombre como expresion SQL) mientras corre `funcion`."""
+    async def corre():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(f"SELECT GET_LOCK({nombre_sql}, 0)")
+                assert (await cur.fetchone())[0] == 1
+            try:
+                return await funcion(pool)
+            finally:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"SELECT RELEASE_LOCK({nombre_sql})")
+    return client.portal.call(corre)
+
+
+def test_el_lock_del_despacho_es_de_esta_base_y_no_de_todo_el_servidor(e):
+    doc = e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    # El nombre viejo, global al servidor: otra base (otra instancia, otra suite) lo tendria.
+    _con_lock_ajeno(e.client, "'proyectos_documentos_despacho'", despachador.ciclo)
+    assert e.fila(doc)[0] == "pendiente"
+    doc2 = e.insertar(e.ruta("l1", "b.pdf"), n=2)
+    # El de ESTA base si frena: un solo despachador por base.
+    _con_lock_ajeno(e.client, "CONCAT('proyectos_documentos_despacho:', DATABASE())", despachador.ciclo)
+    assert e.fila(doc2)[0] == "en_cola"
+
+
+def test_fallo_al_borrar_registra_el_tipo_y_la_ruta_relativa_sin_la_absoluta(e, caplog, monkeypatch):
+    r = e.ruta("l1", "a.pdf")
+    e.archivo(r)
+    doc = e.insertar(r, n=1)
+    e.abrir(doc, "J30")
+    e.las_manos.estados["J30"] = _trabajo("J30", "completed", [
+        _resultado(r, "ok", carpeta=f"proyectos/{e.uuid}/procesado/x")])
+
+    def falla(workspace, project_uuid, ruta):
+        raise PermissionError(13, "Permission denied", str(workspace / ruta))
+    monkeypatch.setattr(despachador, "_borrar_de_entrada", falla)
+    with caplog.at_level(logging.WARNING):
+        e.ciclo()
+    assert "PermissionError" in caplog.text and r in caplog.text
+    assert str(e.workspace) not in caplog.text                 # ni en el mensaje ni en un traceback
+
+
+@pytest.mark.parametrize("ruta", [
+    "proyectos/11111111-1111-4111-8111-111111111111/entrada/l1/a.pdf",   # otro proyecto
+    "entrada/l1/a.pdf",
+    "proyectos/{uuid}/../11111111-1111-4111-8111-111111111111/entrada/l1/a.pdf",
+    "/proyectos/{uuid}/entrada/l1/a.pdf",
+])
+def test_ruta_que_no_es_del_proyecto_no_se_manda_y_queda_ruta_ajena(e, caplog, ruta):
+    ruta = ruta.format(uuid=e.uuid)
+    doc = e.insertar(ruta, n=1)
+    propia = e.insertar(e.ruta("l1", "b.pdf"), n=2)
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    assert e.fila(doc) == ("error", None, None, "ruta_ajena")
+    assert "ruta_ajena" in despachador.CAUSAS_DE_ERROR
+    assert [c["rutas"] for c in e.las_manos.posts] == [[e.ruta("l1", "b.pdf")]]   # la ajena no viajo
+    assert e.fila(propia)[0] == "pendiente"
+    assert any(str(doc) in r.getMessage() and "ruta_ajena" in r.getMessage()
+               for r in caplog.records if r.levelno == logging.ERROR)

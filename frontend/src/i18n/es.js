@@ -1630,6 +1630,7 @@ export default {
         trabajo_fallido: 'falló el trabajo de procesamiento.',
         trabajo_perdido: 'se perdió el trabajo de procesamiento (el servicio se reinició).',
         http_4xx: 'el procesador rechazó el pedido.',
+        ruta_ajena: 'el archivo no está en la carpeta de este proyecto; no se procesó.',
         desconocida: 'error sin detalle conocido.',
       },
       agregar: 'Agregar documentos',

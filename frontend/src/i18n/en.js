@@ -1534,6 +1534,7 @@ export default {
         trabajo_fallido: 'the processing job failed.',
         trabajo_perdido: 'the processing job was lost (the service restarted).',
         http_4xx: 'the processor rejected the request.',
+        ruta_ajena: 'the file is not in this project\'s folder; it was not processed.',
         desconocida: 'error with no known detail.',
       },
       agregar: 'Add documents',

@@ -301,7 +301,7 @@ describe('i18n proyectos.documentos', () => {
 
   it('el extractor de causas ve la lista completa (la prueba no es vacía)', () => {
     expect(causasDelBackend()).toEqual(['estado_desconocido', 'http_4xx', 'procesamiento_fallido', 'rechazado',
-      'sin_resultado', 'trabajo_fallido', 'trabajo_perdido'])
+      'ruta_ajena', 'sin_resultado', 'trabajo_fallido', 'trabajo_perdido'])
   })
 
   it.each(secciones)('%s: toda causa de error del backend tiene texto, y hay un genérico', (_n, d) => {
