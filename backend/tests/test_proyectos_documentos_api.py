@@ -1822,27 +1822,117 @@ def test_reprocesar_con_una_carpeta_de_fuente_sin_permiso_503_y_no_409_falso(ent
     assert r.status_code == 503 and _code(r) == "fuente_ilegible"
 
 
-def test_reprocesar_usa_el_cupo_de_subidas_429_y_lo_suelta_siempre(ent, workspace, ajustes_en_db, monkeypatch):
-    from proyectos_documentos import cupo_de_subidas
-    ajustes_en_db.poner(**{POR_USUARIO: "1", GLOBALES: "4"})
+REP_POR_USUARIO = "proyectos.documentos.reprocesar_por_usuario"
+REP_GLOBALES = "proyectos.documentos.reprocesar_globales"
+
+
+def test_reprocesar_usa_su_propio_cupo_429_sin_recorrer_nada_y_lo_suelta_siempre(ent, workspace, ajustes_en_db,
+                                                                                  monkeypatch):
+    from proyectos_documentos import cupo_de_reprocesos, cupo_de_subidas
+    ajustes_en_db.poner(**{REP_POR_USUARIO: "1", REP_GLOBALES: "1"})
     p = ent.proyecto()
     doc, _ = _ingerido(ent, p, workspace, ent.dueno)
     usuario = str(ent._id("dueno"))
-    antes = cupo_de_subidas.en_uso()
-    assert cupo_de_subidas.tomar(usuario, por_usuario=1, globales=4)     # una subida en vuelo del mismo usuario
+    antes, antes_subidas = cupo_de_reprocesos.en_uso(), cupo_de_subidas.en_uso()
+    recorridos = []
+    real = original.buscar_original
+    monkeypatch.setattr(original, "buscar_original", lambda *a, **k: (recorridos.append(1), real(*a, **k))[1])
+    assert cupo_de_reprocesos.tomar(usuario, por_usuario=1, globales=1)      # un reprocesar ya en curso
     try:
         r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
-        assert r.status_code == 429 and _code(r) == "subidas_simultaneas"
+        assert r.status_code == 429 and _code(r) == "reprocesos_simultaneos", r.text
+        assert recorridos == []                                              # no recorrio nada
         assert _fila_rep(ent, doc)[0] == "sin_extractor"
     finally:
-        cupo_de_subidas.soltar(usuario)
-    assert cupo_de_subidas.en_uso() == antes
+        cupo_de_reprocesos.soltar(usuario)
+    assert cupo_de_reprocesos.en_uso() == antes
+    assert cupo_de_subidas.en_uso() == antes_subidas                         # nunca toco el cupo de subir
+    # exito: se suelta
     assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
-    assert cupo_de_subidas.en_uso() == antes                              # exito: soltado
+    assert cupo_de_reprocesos.en_uso() == antes
+    # error de negocio (409 original_no_encontrado) despues de tomarlo: se suelta
     ent.client.portal.call(sql, "UPDATE project_documents SET estado='sin_extractor' WHERE id=%s", (doc,))
+    monkeypatch.setattr(original, "buscar_original", lambda *a, **k: None)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 409
+    assert cupo_de_reprocesos.en_uso() == antes
 
-    def revienta(*a, **k):
+    # 503 fuente_ilegible: se suelta
+    def ilegible(*a, **k):
         raise original.FuenteIlegible("x")
-    monkeypatch.setattr(original, "buscar_original", revienta)
+    monkeypatch.setattr(original, "buscar_original", ilegible)
     assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 503
-    assert cupo_de_subidas.en_uso() == antes                              # fallo: soltado
+    assert cupo_de_reprocesos.en_uso() == antes
+
+    # un error inesperado (500) tambien
+    def revienta(*a, **k):
+        raise RuntimeError("inesperado")
+    monkeypatch.setattr(original, "buscar_original", revienta)
+    with pytest.raises(RuntimeError):
+        ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert cupo_de_reprocesos.en_uso() == antes
+    assert cupo_de_subidas.en_uso() == antes_subidas
+
+
+def test_el_cupo_global_de_reprocesos_corta_a_otro_usuario(ent, workspace, ajustes_en_db):
+    from proyectos_documentos import cupo_de_reprocesos
+    ajustes_en_db.poner(**{REP_POR_USUARIO: "1", REP_GLOBALES: "1"})
+    p = ent.proyecto()
+    otro = ent.miembro(p, "otro", "CONTRIBUTOR")
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    assert cupo_de_reprocesos.tomar("ajeno-en-curso", por_usuario=1, globales=1)
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=otro)
+        assert r.status_code == 429 and _code(r) == "reprocesos_simultaneos"
+    finally:
+        cupo_de_reprocesos.soltar("ajeno-en-curso")
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=otro).status_code == 202
+
+
+def test_una_subida_concurrente_a_un_reprocesar_en_curso_no_recibe_429_por_su_culpa(ent, workspace, ajustes_en_db):
+    from proyectos_documentos import cupo_de_reprocesos
+    ajustes_en_db.poner(**{REP_POR_USUARIO: "1", REP_GLOBALES: "1", POR_USUARIO: "1", GLOBALES: "1"})
+    p = ent.proyecto()
+    usuario = str(ent._id("dueno"))
+    assert cupo_de_reprocesos.tomar(usuario, por_usuario=1, globales=1)      # reprocesar en curso, cupo lleno
+    try:
+        r = ent.subir(p, ent.dueno, [_parte("nueva.pdf", "nueva")])
+        assert r.status_code == 202, r.text                                   # la subida usa SU cupo (1/1, libre)
+    finally:
+        cupo_de_reprocesos.soltar(usuario)
+
+
+def test_un_reprocesar_no_recibe_429_porque_las_subidas_llenaron_su_cupo(ent, workspace, ajustes_en_db):
+    from proyectos_documentos import cupo_de_subidas
+    ajustes_en_db.poner(**{POR_USUARIO: "1", GLOBALES: "1"})
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    usuario = str(ent._id("dueno"))
+    assert cupo_de_subidas.tomar(usuario, por_usuario=1, globales=1)         # una subida en vuelo, cupo lleno
+    try:
+        assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    finally:
+        cupo_de_subidas.soltar(usuario)
+
+
+# --------------------------------------------------------- Retry-After en los 429
+
+def test_los_429_de_reprocesar_y_de_subir_llevan_retry_after(ent, workspace, ajustes_en_db):
+    from api import proyectos_documentos as api_docs
+    from proyectos_documentos import cupo_de_reprocesos, cupo_de_subidas
+    assert api_docs.REINTENTAR_DESPUES_S == 2
+    ajustes_en_db.poner(**{REP_POR_USUARIO: "1", REP_GLOBALES: "1", POR_USUARIO: "1", GLOBALES: "1"})
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    usuario = str(ent._id("dueno"))
+    assert cupo_de_reprocesos.tomar(usuario, por_usuario=1, globales=1)
+    assert cupo_de_subidas.tomar(usuario, por_usuario=1, globales=1)
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+        assert r.status_code == 429 and r.headers.get("retry-after") == "2", dict(r.headers)
+        r = ent.subir(p, ent.dueno, [_parte("x.pdf", "x")])
+        assert r.status_code == 429 and _code(r) == "subidas_simultaneas" and r.headers.get("retry-after") == "2", dict(r.headers)
+    finally:
+        cupo_de_reprocesos.soltar(usuario)
+        cupo_de_subidas.soltar(usuario)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 202 and "retry-after" not in r.headers

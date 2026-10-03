@@ -48,7 +48,7 @@ from db.connection import get_pool
 from jax.memory.project_authority import ProjectNotVisible, ProjectRoleInsufficient
 from jax.memory.scope_authority import MariaDBScopeAuthorityResolver, ProjectRole
 from kill_switch import exigir_freno_suelto, exigir_mesa_libre
-from proyectos_documentos import almacen, cupo_de_subidas, despachador, original, tipos
+from proyectos_documentos import almacen, cupo_de_reprocesos, cupo_de_subidas, despachador, original, tipos
 from proyectos_documentos import repositorio as repo
 
 logger = logging.getLogger(__name__)
@@ -62,8 +62,14 @@ _HOLGURA_MULTIPART_POR_ARCHIVO = 8 * 1024
 _CAMPO = "archivos"
 
 
+# Segundos que se le sugiere esperar a quien recibe un 429 (cabecera `Retry-After`). Una constante y no una
+# clave de config: es una sugerencia al cliente, no un tope del servicio.
+REINTENTAR_DESPUES_S = 2
+
+
 def _error(status: int, code: str, **extra) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code, **extra})
+    cabeceras = {"Retry-After": str(REINTENTAR_DESPUES_S)} if status == 429 else None
+    return HTTPException(status_code=status, detail={"code": code, **extra}, headers=cabeceras)
 
 
 def _puede_escribir(papel: str) -> bool:
@@ -378,7 +384,7 @@ async def reprocesar(project_id: int, documento_id: int, user: AuthUser = Depend
     escritura y proyecto ACTIVE; la fila misma la protege `repo.reprocesar`, que repite las
     condiciones en la sentencia y reasigna la fila a quien pide. 404 documento ajeno, 409
     `no_reprocesable` (otro estado, oculto o tipo sin extractor), 409 `original_no_encontrado`, 503
-    `fuente_ilegible` (no se pudo leer `fuente/`) y 429 `subidas_simultaneas`."""
+    `fuente_ilegible` (no se pudo leer `fuente/`) y 429 `reprocesos_simultaneos` (cupo propio, con `Retry-After`)."""
     proyecto = await _con_papel(user, project_id, escribe=True, activo=True)
     pool = await get_pool()
     doc = await repo.documento_para_reprocesar(pool, project_id=proyecto["id"], documento_id=documento_id)
@@ -392,12 +398,13 @@ async def reprocesar(project_id: int, documento_id: int, user: AuthUser = Depend
     except almacen.WorkspaceNoConfigurado:
         logger.error("proyectos_documentos: %s no esta bien configurado", almacen.VARIABLE_WORKSPACE, exc_info=True)
         raise _error(503, "almacen_no_configurado") from None
-    # Recorrer `fuente/` lee disco: el mismo cupo por usuario y global que subir, tomado ANTES del
-    # recorrido y soltado siempre.
+    # Recorrer `fuente/` lee y hashea disco (medido: ~16 s con 4 a la vez): cupo PROPIO, aparte del de subir
+    # (un reprocesar lento no le quita lugar a las subidas), tomado ANTES del recorrido y soltado siempre.
     usuario = str(user.user_id)
-    if not cupo_de_subidas.tomar(usuario, por_usuario=int(await ajustes.valor(ajustes.DOC_SUBIDAS_POR_USUARIO)),
-                                 globales=int(await ajustes.valor(ajustes.DOC_SUBIDAS_GLOBALES))):
-        raise _error(429, "subidas_simultaneas")
+    if not cupo_de_reprocesos.tomar(usuario,
+                                    por_usuario=int(await ajustes.valor(ajustes.DOC_REPROCESAR_POR_USUARIO)),
+                                    globales=int(await ajustes.valor(ajustes.DOC_REPROCESAR_GLOBALES))):
+        raise _error(429, "reprocesos_simultaneos")
     try:
         try:
             ruta = await asyncio.to_thread(
@@ -417,7 +424,7 @@ async def reprocesar(project_id: int, documento_id: int, user: AuthUser = Depend
             # La fila cambio entre la lectura y el UPDATE, o quien pide perdio el papel justo ahora.
             raise _error(409, "no_reprocesable")
     finally:
-        cupo_de_subidas.soltar(usuario)
+        cupo_de_reprocesos.soltar(usuario)
     logger.info("proyectos_documentos: documento %s del proyecto %s reprocesado por el usuario %s "
                 "(estado anterior %s, subido por %s -> %s, ruta anterior %r, original %s)", documento_id,
                 proyecto["id"], user.user_id, doc["estado"], previo["subido_por_anterior"], user.user_id,
