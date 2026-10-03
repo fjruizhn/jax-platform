@@ -207,6 +207,7 @@ async def trabajos_abiertos(pool) -> list[str]:
             return [f[0] for f in await cur.fetchall()]
 
 
+LARGO_MAXIMO_DEL_ERROR = 1000
 ESTADOS_DE_RESULTADO = frozenset({"procesando", "listo", "parcial", "error", "sin_extractor", "cancelado"})
 
 
@@ -221,6 +222,8 @@ async def aplicar_resultado(pool, *, job_id: str, ruta_entrada: str, estado: str
     compartieran, el resultado se aplicaria a las dos."""
     if estado not in ESTADOS_DE_RESULTADO:
         raise ValueError(f"estado de resultado invalido: {estado!r}")
+    # `error` es VARCHAR(1000): uno mas largo haria fallar el UPDATE y la fila quedaria abierta.
+    error = error[:LARGO_MAXIMO_DEL_ERROR] if error else error
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -265,7 +268,7 @@ async def marcar_error_en_cola(pool, *, ids: list[int], error: str) -> int:
         async with conn.cursor() as cur:
             await cur.execute(
                 f"UPDATE project_documents SET estado = 'error', error = %s "
-                f"WHERE estado = 'en_cola' AND id IN ({marcadores})", (error[:1000], *ids))
+                f"WHERE estado = 'en_cola' AND id IN ({marcadores})", (error[:LARGO_MAXIMO_DEL_ERROR], *ids))
             cambiadas = cur.rowcount
         await conn.commit()
     return cambiadas

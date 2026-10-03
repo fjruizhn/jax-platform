@@ -31,6 +31,17 @@ controlador): se borra SOLO si LAS MANOS devolvio resultado de ESE archivo. Sin 
 lo reemplace. El camino se recorre desde `JAX_WORKSPACE_DIR` con
 `openat(O_NOFOLLOW)` y `unlink(dir_fd=)`, como `almacen.abrir_carpeta_lote`: un enlace
 simbolico en cualquier nivel no se sigue, la fila queda y se deja el error en el log.
+
+RIESGOS ACEPTADOS (decision del controlador, 2026-10-03):
+  - Desenlace incierto del POST (`ReadTimeout`, `RemoteProtocolError`, `ReadError`): LAS MANOS
+    pudo crear el trabajo sin que lo sepamos. Las filas del trozo siguen `en_cola` pero NO se
+    re-despachan durante VENTANA_DE_INCERTIDUMBRE_SEGUNDOS (registro en memoria del proceso: un
+    reinicio lo olvida). Si aun asi se despacha dos veces, el duplicado procesa los mismos
+    archivos de forma atomica y su resultado se ignora (la fila ya esta atada a otro job_id).
+    La solucion completa seria una clave idempotente en LAS MANOS (mejora futura).
+  - Corte de la conexion que sostiene el `GET_LOCK` a mitad de ciclo: el servidor suelta el
+    lock y otro despachador podria entrar mientras este sigue; mismo desenlace que arriba
+    (trabajo duplicado cuyo resultado se ignora), no perdida de datos.
 """
 from __future__ import annotations
 
@@ -39,7 +50,10 @@ import errno
 import logging
 import os
 import stat
+import time
 from pathlib import Path
+
+import httpx
 
 import ajustes
 from credencial_las_manos import encabezados_las_manos
@@ -75,7 +89,18 @@ CODIGOS_QUE_DEJAN_EN_COLA = frozenset({"proyecto_no_activo", "project_uuid_inval
 # 4xx que hablan del llamador o del cupo, no del documento: las filas siguen en_cola.
 SIN_CULPA_DEL_DOCUMENTO = frozenset({401, 403, 408, 429})
 
+# Desenlace incierto: el POST pudo llegar y LAS MANOS pudo crear el trabajo, pero no hubo
+# respuesta. (`ConnectError` NO esta aqui: ahi el pedido no llego.)
+ERRORES_DE_DESENLACE_INCIERTO = (httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.ReadError)
+# Cuanto no se vuelve a despachar un trozo de desenlace incierto.
+VENTANA_DE_INCERTIDUMBRE_SEGUNDOS = 5 * 60
+# Prefijo del 422 en texto con que LAS MANOS rechaza un pedido con mas rutas que su tope.
+PREFIJO_DEMASIADAS_RUTAS = "demasiadas rutas"
+
 _dormir = asyncio.sleep
+_reloj = time.monotonic
+# id de fila -> hasta cuando (segun `_reloj`) no se re-despacha. En memoria de ESTE proceso.
+_en_incertidumbre: dict[int, float] = {}
 _avisos: set[asyncio.Task] = set()
 
 
@@ -121,12 +146,16 @@ def _borrar_de_entrada(workspace: Path, project_uuid: str, ruta_entrada: str) ->
 
 
 async def _borrar_copia(fila: dict) -> None:
+    def borrar() -> None:
+        _borrar_de_entrada(almacen.cargar_workspace(), fila["project_uuid"], fila["ruta_entrada"] or "")
+
     try:
-        workspace = almacen.cargar_workspace()
-        await asyncio.to_thread(_borrar_de_entrada, workspace, fila["project_uuid"], fila["ruta_entrada"] or "")
+        await asyncio.to_thread(borrar)
     except Exception:  # fail-soft: no se pudo borrar la copia de entrada/; el estado ya quedo aplicado y la fila queda para conciliar a mano, no se detiene el ciclo
-        logger.warning("proyectos_documentos: no se pudo borrar la copia de entrada del documento %s (se deja en disco)",
-                       fila["id"], exc_info=True)
+        partes = (fila["ruta_entrada"] or "").split("/")
+        logger.error("proyectos_documentos: no se pudo borrar la copia de entrada del documento %s "
+                     "(lote %r, archivo %r; se deja en disco)", fila["id"],
+                     partes[-2] if len(partes) > 1 else "", partes[-1], exc_info=True)
 
 
 # ---------------------------------------------------------------- sincronizacion
@@ -186,6 +215,10 @@ async def _sincronizar(pool) -> None:
     for job_id in await repo.trabajos_abiertos(pool):
         try:
             await _sincronizar_trabajo(pool, job_id)
+        except httpx.TimeoutException:  # fail-soft: LAS MANOS no contesta; consultar el resto de los trabajos seria esperar un timeout por cada uno, y todos siguen abiertos para la proxima vuelta
+            logger.warning("proyectos_documentos: LAS MANOS no contesto al consultar el trabajo %s; "
+                           "se corta la sincronizacion de esta vuelta", job_id)
+            return
         except Exception:  # fail-soft: LAS MANOS caida o ilegible; el trabajo sigue abierto y se consulta de nuevo en la proxima vuelta
             logger.warning("proyectos_documentos: no se pudo sincronizar el trabajo %s", job_id, exc_info=True)
 
@@ -202,6 +235,14 @@ def _codigo_de(respuesta) -> str:
     return f"http_{respuesta.status_code}"
 
 
+def _detalle_en_texto(respuesta) -> str:
+    try:
+        detalle = respuesta.json().get("detail")
+    except Exception:  # fail-soft: cuerpo que no es JSON; sin texto que reconocer
+        return ""
+    return detalle if isinstance(detalle, str) else ""
+
+
 async def _despachar_trozo(pool, project_uuid: str, usuario: str, trozo: list[dict]) -> str:
     """'seguir' | 'saltar_proyecto' | 'cortar'. Las filas solo cambian de estado cuando la
     respuesta es definitiva (202 o un 4xx que no es de reintento)."""
@@ -212,7 +253,15 @@ async def _despachar_trozo(pool, project_uuid: str, usuario: str, trozo: list[di
             f"{LAS_MANOS_URL}/procesamiento/trabajos",
             json={"project_uuid": project_uuid, "rutas": [f["ruta_entrada"] for f in trozo], "usuario": usuario},
             headers=encabezados_las_manos(), timeout=TIMEOUT_HTTP_SEGUNDOS)
-    except Exception:  # fail-soft: LAS MANOS caida, timeout o credencial ausente; las filas siguen en_cola y se reintenta en la proxima vuelta
+    except ERRORES_DE_DESENLACE_INCIERTO:  # fail-soft: el pedido pudo llegar; las filas siguen en_cola pero no se re-despachan durante la ventana, para no duplicar el trabajo
+        hasta = _reloj() + VENTANA_DE_INCERTIDUMBRE_SEGUNDOS
+        for i in ids:
+            _en_incertidumbre[i] = hasta
+        logger.error("proyectos_documentos: desenlace incierto: posible trabajo duplicado en LAS MANOS "
+                     "(proyecto %s, %s fila(s); no se reintentan durante %s s)", project_uuid, len(ids),
+                     VENTANA_DE_INCERTIDUMBRE_SEGUNDOS, exc_info=True)
+        return "cortar"
+    except Exception:  # fail-soft: LAS MANOS caida (el pedido no llego), o credencial ausente; las filas siguen en_cola y se reintenta en la proxima vuelta
         logger.warning("proyectos_documentos: no se pudo despachar al proyecto %s", project_uuid, exc_info=True)
         return "cortar"
     estado = respuesta.status_code
@@ -232,6 +281,11 @@ async def _despachar_trozo(pool, project_uuid: str, usuario: str, trozo: list[di
         return "seguir"
     if estado == 422 and _codigo_de(respuesta) in CODIGOS_QUE_DEJAN_EN_COLA:
         return "saltar_proyecto"
+    if estado == 422 and _detalle_en_texto(respuesta).startswith(PREFIJO_DEMASIADAS_RUTAS):
+        # Fallo de configuracion, no del documento: nunca lo convierte en `error`.
+        logger.error("proyectos_documentos: rutas_por_trabajo mayor que el tope de LAS MANOS (proyecto %s, "
+                     "%s ruta(s) en el trozo); las filas siguen en_cola", project_uuid, len(ids))
+        return "cortar"
     if estado in SIN_CULPA_DEL_DOCUMENTO or estado >= 500 or not 400 <= estado < 500:
         # Un fallo de configuracion o de capacidad (credencial, cupo, caida) no es culpa del
         # documento: nunca lo convierte en `error`. Queda en_cola y el log dice que paso.
@@ -247,7 +301,12 @@ async def _despachar_trozo(pool, project_uuid: str, usuario: str, trozo: list[di
 
 async def _despachar(pool) -> None:
     por_grupo: dict[tuple[str, str], list[dict]] = {}
+    ahora = _reloj()
+    for i in [i for i, hasta in _en_incertidumbre.items() if hasta <= ahora]:
+        del _en_incertidumbre[i]
     for fila in await repo.tomar_en_cola(pool, limite=LIMITE_DE_FILAS_POR_CICLO):
+        if fila["id"] in _en_incertidumbre:
+            continue
         por_grupo.setdefault((fila["project_uuid"], fila["subido_por_email"]), []).append(fila)
     if not por_grupo:
         return

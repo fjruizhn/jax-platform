@@ -34,6 +34,7 @@ class LasManosFalsa:
         self.estados = {}                     # job_id -> (status, json) del GET
         self.demora = 0.0
         self.sin_credencial = 0
+        self.consultas = []                   # job_id de cada GET
 
     async def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.headers.get(credencial_las_manos.ENCABEZADO) != CREDENCIAL:
@@ -53,6 +54,9 @@ class LasManosFalsa:
             return httpx.Response(202, json={"job_id": f"job-{uuid.uuid4().hex}"})
         job_id = request.url.path.rsplit("/", 1)[-1]
         if job_id in self.estados:
+            self.consultas.append(job_id)
+            if isinstance(self.estados[job_id], Exception):
+                raise self.estados[job_id]
             status, cuerpo = self.estados[job_id]
             return httpx.Response(status, json=cuerpo)
         return httpx.Response(200, json={"job_id": job_id, "estado": "running", "resultados": []})
@@ -141,6 +145,7 @@ def _insertar(client, project_id, usuario, sha, nombre, ruta):
 def e(client, workspace, monkeypatch):
     entorno = Entorno(client, workspace, monkeypatch)
     yield entorno
+    despachador._en_incertidumbre.clear()
     for pid in entorno.proyectos:
         client.portal.call(sql, "DELETE FROM project_documents WHERE project_id=%s", (pid,))
 
@@ -185,6 +190,40 @@ def test_las_manos_caida_no_pierde_filas(e):
     e.las_manos.post_respuestas = [httpx.ConnectError("caida")]
     e.ciclo()                                        # no lanza hacia afuera
     assert [e.fila(i)[:2] for i in ids] == [("en_cola", None)] * 2
+    e.ciclo()                                        # ConnectError = "no llego": se reintenta normal
+    assert len(e.las_manos.posts) == 2
+    assert {e.fila(i)[0] for i in ids} == {"pendiente"}
+
+
+@pytest.mark.parametrize("falla", [
+    httpx.ReadTimeout("x"), httpx.RemoteProtocolError("x"), httpx.ReadError("x")])
+def test_desenlace_incierto_no_se_redespacha_hasta_pasar_la_ventana(e, monkeypatch, caplog, falla):
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(2)]
+    ahora = [1000.0]
+    monkeypatch.setattr(despachador, "_reloj", lambda: ahora[0])
+    e.las_manos.post_respuestas = [falla]
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    assert len(e.las_manos.posts) == 1
+    msg = " ".join(r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+    assert "desenlace incierto: posible trabajo duplicado en LAS MANOS" in msg and e.uuid in msg
+    assert [e.fila(i)[:2] for i in ids] == [("en_cola", None)] * 2
+    e.ciclo()                                        # dentro de la ventana: no se reenvia
+    assert len(e.las_manos.posts) == 1
+    ahora[0] += despachador.VENTANA_DE_INCERTIDUMBRE_SEGUNDOS + 1
+    e.ciclo()                                        # pasada la ventana: sale
+    assert len(e.las_manos.posts) == 2
+    assert {e.fila(i)[0] for i in ids} == {"pendiente"}
+
+
+def test_422_demasiadas_rutas_deja_en_cola_y_loguea_la_configuracion(e, caplog):
+    doc = e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    e.las_manos.post_respuestas = [(422, {"detail": "demasiadas rutas en un solo trabajo: 60 > 50"})]
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    assert e.fila(doc)[:2] == ("en_cola", None)
+    assert any("rutas_por_trabajo mayor que el tope de LAS MANOS" in r.getMessage()
+               for r in caplog.records if r.levelno == logging.ERROR)
 
 
 @pytest.mark.parametrize("estado,detail", [
@@ -313,6 +352,27 @@ def test_trabajo_perdido_pasa_a_error(e):
     assert p.exists()                                # sin resultado no hay nada procesado: el archivo se queda
 
 
+def test_error_largo_se_recorta_y_la_fila_termina(e):
+    r = e.ruta("l1", "a.pdf")
+    p = e.archivo(r)
+    doc = e.insertar(r, n=1)
+    e.abrir(doc, "J20")
+    e.las_manos.estados["J20"] = _trabajo("J20", "completed", [_resultado(r, "error", error="x" * 1500)])
+    e.ciclo()
+    estado, _, _, error = e.fila(doc)
+    assert estado == "error" and error == "x" * 1000
+    assert "J20" not in _con_pool(e.client, repo.trabajos_abiertos)
+    assert not p.exists()
+
+
+def test_un_timeout_corta_la_sincronizacion_de_la_vuelta(e):
+    for n, job in enumerate(("J21", "J22"), start=1):
+        e.abrir(e.insertar(e.ruta("l1", f"{n}.pdf"), n=n), job)
+        e.las_manos.estados[job] = httpx.ReadTimeout("lento")
+    e.ciclo()
+    assert len(e.las_manos.consultas) == 1           # el segundo ni se pregunto
+
+
 def test_consulta_fallida_no_cambia_el_estado(e):
     doc = e.insertar(e.ruta("l1", "a.pdf"), n=1)
     e.abrir(doc, "J7")
@@ -362,7 +422,9 @@ def test_symlink_en_el_camino_del_borrado_no_se_sigue(e, caplog):
         e.ciclo()
     assert (senuelo / "a.pdf").read_bytes() == b"no me toques"
     assert (entrada / "l1").is_symlink()
-    assert any("borrar" in m.lower() for m in caplog.messages)
+    errores = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("borrar" in m.lower() and "l1" in m and "a.pdf" in m for m in errores)
+    assert not any(str(e.workspace) in m for m in errores)     # lote y nombre, nunca la ruta completa
     assert e.fila(doc)[0] == "listo"                 # el estado ya se aplico; solo el borrado quedo pendiente
 
 
