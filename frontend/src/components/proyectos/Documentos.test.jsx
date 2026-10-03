@@ -525,7 +525,7 @@ describe('Documentos: reprocesar', () => {
     expect(espias.every((e) => e.mock.calls.length === 0)).toBe(true)
   })
 
-  it.each(['no_reprocesable', 'original_no_encontrado', 'proyecto_no_activo', 'kill_switch_activo'])(
+  it.each(['no_reprocesable', 'original_no_encontrado', 'fuente_ilegible', 'proyecto_no_activo', 'kill_switch_activo'])(
     'un 409/423 %s se muestra traducido y la fila sigue ahí', async (code) => {
       limites()
       lista(doc(1, { estado: 'sin_extractor', tipo: 'pdf' }))
@@ -552,11 +552,38 @@ describe('Documentos: reprocesar', () => {
 })
 
 describe('Documentos: motivo del error', () => {
-  it('un error sin motivo guardado dice que no está registrado y que se reprocese, no «sin detalle»', async () => {
-    api.listarDocumentos.mockResolvedValue({ documentos: [doc(1, { estado: 'error', error: null })], siguiente: null })
+  const sinMotivo = () => api.listarDocumentos.mockResolvedValue({
+    documentos: [doc(1, { estado: 'error', error: null })], siguiente: null })
+
+  it('un error sin motivo guardado, que se puede reprocesar, dice que se reprocese', async () => {
+    sinMotivo()
     montar()
+    expect(await screen.findByText(T.sinMotivoReprocesable)).toBeInTheDocument()
+    expect(T.sinMotivoReprocesable).toBe('Motivo no registrado: reprocesalo para obtenerlo')
+    expect(T.sinMotivo).toBe('Motivo no registrado')
+    expect(screen.queryByText(T.sinMotivo)).toBeNull()
+  })
+
+  it('sin permiso de escritura solo dice que el motivo no está registrado', async () => {
+    sinMotivo()
+    montar({ ...PROY, papel: 'VIEWER' })
     expect(await screen.findByText(T.sinMotivo)).toBeInTheDocument()
-    expect(T.sinMotivo).toBe('Motivo no registrado: reprocesalo para obtenerlo')
+    expect(screen.queryByText(T.sinMotivoReprocesable)).toBeNull()
+  })
+
+  it('en un proyecto archivado tampoco ofrece reprocesar', async () => {
+    sinMotivo()
+    montar({ ...PROY, estado: 'ARCHIVED' })
+    expect(await screen.findByText(T.sinMotivo)).toBeInTheDocument()
+    expect(screen.queryByText(T.sinMotivoReprocesable)).toBeNull()
+  })
+
+  it('con un tipo sin extractor solo dice que el motivo no está registrado', async () => {
+    api.listarDocumentos.mockResolvedValue({ documentos: [doc(1, { estado: 'error', error: null, tipo: 'txt' })], siguiente: null })
+    montar()
+    await waitFor(() => expect(api.limitesDeDocumentos).toHaveBeenCalled())
+    expect(await screen.findByText(T.sinMotivo)).toBeInTheDocument()
+    expect(screen.queryByText(T.sinMotivoReprocesable)).toBeNull()
   })
 
   it.each(['ocr_sin_texto', 'ocr_confianza_baja'])('el código %s se muestra traducido', async (codigo) => {

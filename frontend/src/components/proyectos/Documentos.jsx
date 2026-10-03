@@ -257,7 +257,7 @@ export default function Documentos({ proyecto }) {
                   {fechaLegible(f.creado, locale) && <span className="shrink-0">{` · ${fechaLegible(f.creado, locale)}`}</span>}
                 </p>
                 {f.estado === 'error' && (
-                  <p className="text-xs text-peligro break-words">{f.error ? T.causa(Object.hasOwn(T.causas, f.error) ? T.causas[f.error] : T.causas.desconocida) : T.sinMotivo}</p>
+                  <p className="text-xs text-peligro break-words">{f.error ? T.causa(Object.hasOwn(T.causas, f.error) ? T.causas[f.error] : T.causas.desconocida) : (sePuedeReprocesar(f) ? T.sinMotivoReprocesable : T.sinMotivo)}</p>
                 )}
               </div>
               <span className={`text-xs ${COLOR_ESTADO[f.estado] ?? 'text-texto-tenue'}`}>{T.estados[f.estado] ?? f.estado}</span>

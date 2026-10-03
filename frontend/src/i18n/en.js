@@ -1524,7 +1524,8 @@ export default {
       ocultarDe: (nombre) => `Hide ${nombre}`,
       restaurarDe: (nombre) => `Restore ${nombre}`,
       causa: (texto) => `Cause: ${texto}`,
-      sinMotivo: 'Reason not recorded: reprocess it to find out',
+      sinMotivo: 'Reason not recorded',
+      sinMotivoReprocesable: 'Reason not recorded: reprocess it to find out',
       // Stable codes of `project_documents.error` (despachador.py::CAUSAS_DE_ERROR).
       causas: {
         procesamiento_fallido: 'the file could not be processed.',
@@ -1619,6 +1620,7 @@ export default {
         proyecto_no_encontrado: 'This project does not exist or you do not have access.',
         papel_insuficiente: 'Your role in this project does not allow this action.',
         no_reprocesable: 'This document cannot be reprocessed: it is not in a state or of a type that allows it.',
+        fuente_ilegible: 'The server could not read the originals folder. Contact an administrator.',
         original_no_encontrado: 'The original file was not found on the server, or it is no longer the same. Contact an administrator.',
         documento_no_encontrado: 'That document no longer exists in the project.',
         subidas_simultaneas: 'Too many uploads are already in progress. Wait for one to finish and try again.',

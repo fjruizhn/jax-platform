@@ -1620,7 +1620,8 @@ export default {
       ocultarDe: (nombre) => `Ocultar ${nombre}`,
       restaurarDe: (nombre) => `Restaurar ${nombre}`,
       causa: (texto) => `Causa: ${texto}`,
-      sinMotivo: 'Motivo no registrado: reprocesalo para obtenerlo',
+      sinMotivo: 'Motivo no registrado',
+      sinMotivoReprocesable: 'Motivo no registrado: reprocesalo para obtenerlo',
       // Códigos estables de `project_documents.error` (despachador.py::CAUSAS_DE_ERROR).
       causas: {
         procesamiento_fallido: 'no se pudo procesar el archivo.',
@@ -1715,6 +1716,7 @@ export default {
         proyecto_no_encontrado: 'Este proyecto no existe o no tenés acceso.',
         papel_insuficiente: 'Tu papel en este proyecto no permite esta acción.',
         no_reprocesable: 'Este documento no se puede reprocesar: ya no está en un estado o es de un tipo que lo permita.',
+        fuente_ilegible: 'El servidor no pudo leer la carpeta de originales. Avisá a un administrador.',
         original_no_encontrado: 'No se encontró el archivo original en el servidor, o ya no es el mismo. Avisá a un administrador.',
         documento_no_encontrado: 'Ese documento ya no existe en el proyecto.',
         subidas_simultaneas: 'Ya hay demasiadas subidas en curso. Esperá a que termine alguna y probá de nuevo.',
