@@ -123,11 +123,18 @@ SUBCARPETAS_FUENTE = 2_000
 TAMANO_FUENTE = 4096            # todos los rellenos pesan LO MISMO que el objetivo: el prefiltro por tamano no ayuda
 PROFUNDIDAD_OBJETIVO = 8
 USUARIOS_REPROCESAR = 10
-CLIENTES_LISTA = 5
+CLIENTES_LISTA = int(os.environ.get("E2A_CLIENTES_LISTA", "5"))
+# Cuantos de los 20 usuarios de chat corren (por defecto todos: el fondo PESADO). `E2A_USUARIOS_CHAT=2` con
+# `E2A_CLIENTES_LISTA=1` es el fondo LIGERO, para ver cuanto cuesta reprocesar con el servidor sin saturar.
+USUARIOS_CHAT_ACTIVOS = int(os.environ.get("E2A_USUARIOS_CHAT", str(USUARIOS_CHAT)))
 SEGUNDOS_ANTES_R, SEGUNDOS_REPROCESAR, SEGUNDOS_DESPUES_R = 20, 60, 10
 # Pausa de quien recibe un 429 antes de volver a pedir. 0,01 s = el peor caso (un cliente que insiste sin descanso);
 # 1 s = un cliente que respeta el rechazo. `E2A_PAUSA_429_S` la cambia.
 PAUSA_TRAS_429_S = float(os.environ.get("E2A_PAUSA_429_S", "0.01"))
+# Cuantos usuarios reprocesan (1 = solo uno, sin nadie que reciba 429: separa lo que cuesta UN recorrido de lo que
+# cuesta la tormenta de 429 de los demas).
+USUARIOS_QUE_REPROCESAN = int(os.environ.get("E2A_USUARIOS_REPROCESAR", str(USUARIOS_REPROCESAR)))
+PAUSA_ENTRE_SUBIDAS_S = 0.5      # una subida chica concurrente (del dueno de LACTOVI) cada medio segundo
 if os.environ.get("CARGA_RAPIDA"):   # solo para probar el arnés: números NO válidos
     ARCHIVOS_FUENTE, SUBCARPETAS_FUENTE, SEGUNDOS_ANTES_R, SEGUNDOS_REPROCESAR, SEGUNDOS_DESPUES_R = 600, 60, 3, 6, 3
 
@@ -894,7 +901,8 @@ async def _fase_grande(env, semilla, tmp, plan, res) -> None:
     res["lote"] = {"archivos": len(plan), "bytes": total, "mib": round(total / 2**20, 1), "repeticiones": REPETICIONES_GRANDE,
                    "mayor_bytes": max(b for _, b in plan), "menor_bytes": min(b for _, b in plan)}
     print(f"[lote] {res['lote']}", file=sys.stderr)
-    usuarios = [{"id": u, "autorizacion": e1._token(env, u)["Authorization"]} for u in semilla["chat"]]
+    usuarios = [{"id": u, "autorizacion": e1._token(env, u)["Authorization"]}
+                for u in semilla["chat"][:USUARIOS_CHAT_ACTIVOS]]
     parar_chat = tmp / "parar-chat"
     config = {"url": BACKEND_URL, "proyecto": semilla["p_chat"], "usuarios": usuarios, "parar": str(parar_chat),
               "salida": str(tmp / "chat-salida.json")}
@@ -1248,6 +1256,7 @@ async def _fase_reprocesar(env, semilla, tmp, docs, res) -> None:
             solitaria.append({"status": r.status_code, "ms": (time.perf_counter() - t0) * 1000})
         await asyncio.to_thread(_reponer, d0["documento"])
     muestras: list[dict] = []          # {status, ms, t}
+    subidas: list[dict] = []           # subidas chicas concurrentes: {status, ms}
     lista: list[tuple[float, float]] = []   # (inicio, ms) del GET de la lista de documentos
     errores_lista: dict[str, int] = {}
     parar = asyncio.Event()             # detiene a los que reprocesan
@@ -1286,16 +1295,30 @@ async def _fase_reprocesar(env, semilla, tmp, docs, res) -> None:
                     continue
                 lista.append((inicio, (time.perf_counter() - t0) * 1000))
 
+        async def subidor():
+            """Una subida chica (4 KiB, bytes nuevos) cada medio segundo, mientras dura TODO el escenario: con el
+            cupo propio de reprocesar, ninguna puede recibir 429 por culpa de un reprocesar en curso."""
+            n = 0
+            while not parar_lista.is_set():
+                n += 1
+                ruta = tmp / f"subida-concurrente-{n}.pdf"
+                ruta.write_bytes(b"%PDF-1.4 " + os.urandom(4096))
+                subidas.append({**(await _subir(cli, h_lista, semilla["p_lactovi"], [ruta])), "t": time.time()})
+                ruta.unlink(missing_ok=True)
+                await asyncio.sleep(PAUSA_ENTRE_SUBIDAS_S)
+
         try:
             with _MuestreoFd(pid_backend) as fds:
                 fds_antes = contar_descriptores(pid_backend)
                 lectores = [asyncio.create_task(listador()) for _ in range(CLIENTES_LISTA)]
+                lectores.append(asyncio.create_task(subidor()))
                 await asyncio.sleep(SEGUNDOS_ANTES_R)
                 if chat.poll() is not None:
                     raise RuntimeError(f"el hijo de chat murio:\n{chat.stderr.read()[-2000:]}")
                 fds_sin_carga = fds.maximo
                 t_ini = time.time()
-                trabajadores = [asyncio.create_task(reprocesador(d, e1._token(env, d["usuario"]))) for d in docs]
+                trabajadores = [asyncio.create_task(reprocesador(d, e1._token(env, d["usuario"])))
+                                for d in docs[:USUARIOS_QUE_REPROCESAN]]
                 await asyncio.sleep(SEGUNDOS_REPROCESAR)
                 parar.set()
                 await asyncio.gather(*trabajadores)
@@ -1328,6 +1351,11 @@ async def _fase_reprocesar(env, semilla, tmp, docs, res) -> None:
                    "profundidad_del_objetivo": PROFUNDIDAD_OBJETIVO, "ficha": "ninguna (busqueda por sha256)",
                    "nombre_coincide": False},
         "usuarios": len(docs), "segundos": round(seg, 2), "cupo": res.get("cupo"), "pausa_tras_429_s": PAUSA_TRAS_429_S,
+        "subidas_concurrentes": {"cada_s": PAUSA_ENTRE_SUBIDAS_S, "total": len(subidas),
+                                 "codigos": resumen_de_reprocesar(subidas, 1.0)["codigos"],
+                                 "durante_reprocesar_codigos": resumen_de_reprocesar(
+                                     [m for m in subidas if t_ini <= m["t"] < t_fin], 1.0)["codigos"],
+                                 "latencia_ms": _resumen_fase([m["ms"] for m in subidas if m["status"] == 202])},
         "una_sola_peticion_sin_otra_carga": resumen_de_reprocesar(solitaria, 1.0)["latencia_todas_ms"] | {
             "codigos": resumen_de_reprocesar(solitaria, 1.0)["codigos"], "ms": [round(m["ms"], 1) for m in solitaria]},
         "endpoint": resumen_de_reprocesar(mias, seg),
@@ -1366,9 +1394,13 @@ async def medir_reprocesar() -> None:
         conn = _conexion_de_lectura()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT config_key, config_value FROM axioma_config WHERE config_key IN (%s, %s)",
-                            ("proyectos.documentos.subidas_por_usuario", "proyectos.documentos.subidas_globales"))
+                cur.execute("SELECT config_key, config_value FROM axioma_config WHERE config_key LIKE %s",
+                            ("proyectos.documentos.%subidas%",))
                 res["cupo"] = dict(cur.fetchall())
+                cur.execute("SELECT config_key, config_value FROM axioma_config WHERE config_key LIKE %s",
+                            ("proyectos.documentos.reprocesar%",))
+                res["cupo"] |= dict(cur.fetchall())
+                cur.execute("SELECT 1")
         finally:
             conn.close()
         await _fase_reprocesar(env, semilla, tmp, docs, res)
