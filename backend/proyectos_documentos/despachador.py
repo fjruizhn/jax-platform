@@ -458,8 +458,12 @@ async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltad
     ahora = _reloj()
     for i in [i for i, hasta in _en_incertidumbre.items() if hasta <= ahora]:
         del _en_incertidumbre[i]
-    for fila in await repo.tomar_en_cola(pool, limite=LIMITE_DE_FILAS_POR_CICLO, excluir_clases=frozenset(frenadas)):
-        if fila["id"] in _en_incertidumbre:
+    # Las filas con desenlace incierto no se piden: contarian contra el LIMIT y despues se saltarian, y con
+    # LIMITE o mas de ellas las sanas de atras nunca entrarian en la ventana. Viven en la memoria de este proceso
+    # (no en la base), asi que se pasan como ids; la condicion es temporal y ya se podo arriba por `_reloj`.
+    for fila in await repo.tomar_en_cola(pool, limite=LIMITE_DE_FILAS_POR_CICLO, excluir_clases=frozenset(frenadas),
+                                         excluir_ids=frozenset(_en_incertidumbre)):
+        if fila["id"] in _en_incertidumbre:      # respaldo: se agrego una entre la consulta y aqui
             continue
         if not _ruta_del_proyecto(fila["project_uuid"], fila["ruta_entrada"]):
             ajenas.append((fila["id"], fila["owner"]))

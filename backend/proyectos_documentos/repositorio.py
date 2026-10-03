@@ -46,12 +46,14 @@ SQL_LISTAR_OCULTOS = _BASE_LISTA.format(nulo="NOT NULL", indice=_INDICE_LISTA)
 _EXTENSION_SQL = "LOWER(SUBSTRING_INDEX(d.ruta_entrada, '.', -1)) COLLATE utf8mb4_nopad_bin"
 
 
-def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset()) -> str:
+def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_excluidos: int = 0) -> str:
     """La consulta de la cola, SIN las filas de las clases de extension `excluir_clases` (las que LAS MANOS
     frena por falta de una biblioteca: sin esto un bloque de pdf atascados en los ids bajos llena la ventana de
     `LIMIT` y las imagenes que llegan despues nunca entran). `otro` es todo lo que no es pdf, excel ni word. Las
     extensiones son constantes de `tipos`, nunca texto del usuario. El `ORDER BY d.id` sigue en el indice de
-    despacho: el filtro por extension se aplica a las filas que ese indice ya entrega en orden."""
+    despacho: el filtro por extension se aplica a las filas que ese indice ya entrega en orden.
+    `n_ids_excluidos`: cuantos `AND d.id NOT IN (%s, ...)` lleva (las filas con desenlace incierto del despachador,
+    que viven en la memoria del proceso y no en la base; el llamador pasa los ids antes del `LIMIT`)."""
     desconocida = set(excluir_clases) - set(tipos.CLASES)
     if desconocida:
         raise ValueError(f"clases desconocidas: {sorted(desconocida)}")
@@ -63,6 +65,8 @@ def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset()) -> str:
         else:
             de_la_clase = ", ".join(repr(e) for e, c in sorted(tipos.CLASE_POR_EXTENSION.items()) if c == clase)
             condiciones.append(f"{_EXTENSION_SQL} NOT IN ({de_la_clase})")
+    if n_ids_excluidos:
+        condiciones.append(f"d.id NOT IN ({', '.join(['%s'] * n_ids_excluidos)})")
     extra = "".join(f"AND {c} " for c in condiciones)
     return (
         "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id "
@@ -352,15 +356,18 @@ async def restaurar(pool, *, project_id: int, documento_id: int) -> bool:
         (), project_id, documento_id)
 
 
-async def tomar_en_cola(pool, *, limite: int, excluir_clases: frozenset[str] = frozenset()) -> list[dict]:
+async def tomar_en_cola(pool, *, limite: int, excluir_clases: frozenset[str] = frozenset(),
+                        excluir_ids: frozenset[int] = frozenset()) -> list[dict]:
     """Filas `en_cola` de proyectos ACTIVE, por `id`. `jax_project_scope.status` es
     la fuente de verdad del ciclo de vida (B9); `projects.status` solo lo refleja.
     El uploader canonico produce el contexto tipado de ownership que el despachador
     transmite a LAS MANOS en cabeceras cerradas. `excluir_clases`: clases de extension que no se piden
-    (ver `sql_tomar_en_cola`); el `limite` cuenta solo lo que queda."""
+    (ver `sql_tomar_en_cola`); `excluir_ids`: filas que no se piden (las del desenlace incierto, que si no
+    cuentan contra el `limite` y despues se saltan); el `limite` cuenta solo lo que queda."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(sql_tomar_en_cola(frozenset(excluir_clases)), (limite,))
+            ids = sorted(excluir_ids)
+            await cur.execute(sql_tomar_en_cola(frozenset(excluir_clases), len(ids)), (*ids, limite))
             filas = await cur.fetchall()
     return [{"id": f[0], "project_id": f[1], "project_uuid": f[2], "ruta_entrada": f[3],
              "owner": _owner(f[4], f[5], f[1])} for f in filas]

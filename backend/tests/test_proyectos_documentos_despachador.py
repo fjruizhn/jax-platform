@@ -845,3 +845,23 @@ def test_una_clase_frenada_se_salta_en_todos_los_grupos_del_ciclo_con_un_solo_po
     e.ciclo()
     assert e.fila(img)[0] == "pendiente"
     assert [len(c["rutas"]) for c in e.las_manos.posts] == [3, 1]       # 1 POST pdf (503) + 1 jpg; el de otro proyecto no
+
+
+def test_mas_filas_en_incertidumbre_que_el_limite_no_dejan_sin_ventana_a_las_sanas(e, monkeypatch):
+    """Las filas con desenlace incierto (ReadTimeout...) cuentan contra el LIMIT de la cola y despues el despachador
+    las salta: con mas de ellas que el limite, las sanas de atras nunca entraban en la ventana."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 5)
+    inciertas = [e.insertar(e.ruta("l1", f"u{i}.pdf"), n=100 + i, nombre=f"u{i}.pdf") for i in range(8)]
+    sanas = [e.insertar(e.ruta("l1", f"s{i}.pdf"), n=200 + i, nombre=f"s{i}.pdf") for i in range(3)]
+    hasta = despachador._reloj() + 1000
+    for i in inciertas:
+        despachador._en_incertidumbre[i] = hasta
+    e.ciclo()
+    rutas = [r for c in e.las_manos.posts for r in c["rutas"]]
+    assert sorted(rutas) == sorted(e.ruta("l1", f"s{i}.pdf") for i in range(3))          # solo las sanas salieron
+    assert [e.fila(i)[0] for i in sanas] == ["pendiente"] * 3
+    assert [e.fila(i)[0] for i in inciertas] == ["en_cola"] * 8                          # las inciertas esperan
+    # vencida la ventana, vuelven a entrar
+    despachador._en_incertidumbre.clear()
+    e.ciclo()
+    assert any(e.fila(i)[0] == "pendiente" for i in inciertas)

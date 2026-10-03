@@ -720,3 +720,29 @@ def test_explain_de_tomar_en_cola_con_exclusion_sigue_usando_su_indice(e):
     assert doc["key"] == "idx_project_documents_despacho", plan
     for f in plan:
         assert "filesort" not in (f["Extra"] or "") and "temporary" not in (f["Extra"] or ""), plan
+
+
+def test_tomar_en_cola_excluye_ids_y_el_limite_cuenta_solo_lo_que_queda(e):
+    p = e.proyecto()
+    ids = _en_cola(e, p, [f"{i}.pdf" for i in range(8)], 3000)
+    excluidas = ids[:6]
+    r = _pool_call(e.client, repo.tomar_en_cola, limite=2, excluir_ids=frozenset(excluidas))
+    assert [f["id"] for f in r if f["project_id"] == p] == ids[6:8] or [f["id"] for f in r] == ids[6:8]
+    r = _pool_call(e.client, repo.tomar_en_cola, limite=100000, excluir_ids=frozenset(excluidas),
+                   excluir_clases=frozenset({"otro"}))
+    propios = [f["id"] for f in r if f["project_id"] == p]
+    assert propios == ids[6:8] and not set(excluidas) & {f["id"] for f in r}
+    assert [f["id"] for f in _pool_call(e.client, repo.tomar_en_cola, limite=100000, excluir_ids=frozenset())
+            if f["project_id"] == p] == ids                     # sin exclusion, todas, como antes
+
+
+def test_explain_de_tomar_en_cola_con_ids_excluidos_sigue_usando_su_indice(e):
+    proyectos = [e.proyecto() for _ in range(10)]
+    for i, pid in enumerate(proyectos):
+        _sembrar(e.client, pid, e.usuario, 100, desde=3 * 10**9 + i * 1000)
+    ids = list(range(1, 2001))                                   # una lista grande de ids en incertidumbre
+    plan = _plan(e.client, repo.sql_tomar_en_cola(frozenset({"pdf"}), len(ids)), (*ids, 100))
+    doc = next(f for f in plan if f["table"] == "d")
+    assert doc["key"] == "idx_project_documents_despacho", plan
+    for f in plan:
+        assert "filesort" not in (f["Extra"] or "") and "temporary" not in (f["Extra"] or ""), plan
