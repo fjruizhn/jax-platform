@@ -272,9 +272,10 @@ async def escribir_streaming(upload, carpeta: CarpetaLote, nombre: str, tope: in
     `DemasiadoGrande`: nunca se escribe mas de `tope + 1 MiB`. Memoria: un bloque a la vez.
 
     Cancelacion: un hilo ya lanzado no se detiene solo. Se le avisa con una bandera que
-    revisa antes de abrir, en cada bloque y antes de cerrar, y se ESPERA a que termine
-    antes de dejar salir la cancelacion: asi el archivo ya no existe cuando el llamador
-    sigue, haya llegado la cancelacion antes o despues del `open`."""
+    revisa antes de abrir, en cada bloque y antes de cerrar, y se ESPERA a que termine (aunque
+    lleguen mas cancelaciones) antes de dejar salir la cancelacion; si el hilo alcanzo a
+    terminar bien, el archivo se borra aqui. Asi no existe cuando el llamador sigue, haya
+    llegado la cancelacion antes del `open`, a mitad o despues de la ultima mirada."""
     cancelado = threading.Event()
     hilo = asyncio.ensure_future(
         asyncio.to_thread(_escribir, upload.file, carpeta.fd, nombre, tope, cancelado))
@@ -282,8 +283,18 @@ async def escribir_streaming(upload, carpeta: CarpetaLote, nombre: str, tope: in
         return await asyncio.shield(hilo)
     except asyncio.CancelledError:
         cancelado.set()
-        try:
-            await hilo
-        except (Exception, asyncio.CancelledError):  # fail-soft: _Cancelado o el error del hilo; ya limpio y se re-lanza la cancelacion
-            pass
+        # Esperar al hilo de forma BLINDADA: una segunda cancelacion no puede sacarnos de
+        # la espera (el hilo seguiria escribiendo con el llamador ya adelante).
+        while True:
+            try:
+                await asyncio.shield(hilo)
+                break
+            except asyncio.CancelledError:
+                continue
+            except Exception:  # fail-soft: _Cancelado o el error del hilo; ya limpio por el, y abajo se re-lanza la cancelacion
+                break
+        if not hilo.cancelled() and hilo.exception() is None:
+            # La cancelacion llego despues de la ultima mirada del hilo a la bandera: termino
+            # bien, el archivo esta en disco y nadie lo va a registrar.
+            _borrar(carpeta.fd, nombre)
         raise

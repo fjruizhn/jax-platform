@@ -51,7 +51,7 @@ class Entorno:
     def insertar(self, pid, sha, nombre="x.pdf", ruta=None, bytes_=1, tipo="pdf"):
         return _pool_call(self.client, repo.insertar, project_id=pid, sha256=sha, nombre_original=nombre,
                           ruta_entrada=ruta or f"entrada/l/{nombre}", bytes_=bytes_, tipo=tipo,
-                          subido_por=self.usuario)
+                          subido_por=self.usuario, roles_escritura=("OWNER", "CONTRIBUTOR", "REVIEWER"))
 
     def fila(self, doc_id):
         return self.client.portal.call(
@@ -367,3 +367,24 @@ def test_insertar_solo_si_el_proyecto_sigue_activo(e):
         e.insertar(p, "c" * 64)
     filas = e.client.portal.call(sql, "SELECT sha256 FROM project_documents WHERE project_id=%s", (p,), True)
     assert [f[0] for f in filas] == ["a" * 64]            # lo rechazado no dejo fila
+
+
+def test_insertar_exige_membresia_activa_con_papel_de_escritura(e):
+    p = e.proyecto()
+    ajeno = int(uid(e.client, f"{e.tenant}-ajeno", "operator", e.tenant))
+    args = dict(project_id=p, nombre_original="x.pdf", ruta_entrada="entrada/l/x.pdf", bytes_=1, tipo="pdf")
+    roles = ("OWNER", "CONTRIBUTOR", "REVIEWER")
+    # quien nunca fue miembro: sin papel
+    with pytest.raises(repo.MembresiaPerdida) as sin:
+        _pool_call(e.client, repo.insertar, sha256="1" * 64, subido_por=ajeno, roles_escritura=roles, **args)
+    assert sin.value.papel is None
+    # miembro ACTIVE pero con un papel que no escribe: se informa el papel que tiene
+    with pytest.raises(repo.MembresiaPerdida) as papel:
+        _pool_call(e.client, repo.insertar, sha256="2" * 64, subido_por=e.usuario, roles_escritura=("VIEWER",), **args)
+    assert papel.value.papel == "OWNER"
+    assert _pool_call(e.client, repo.insertar, sha256="3" * 64, subido_por=e.usuario, roles_escritura=roles,
+                      **args) is not None
+    with pytest.raises(ValueError):
+        _pool_call(e.client, repo.insertar, sha256="4" * 64, subido_por=e.usuario, roles_escritura=(), **args)
+    filas = e.client.portal.call(sql, "SELECT sha256 FROM project_documents WHERE project_id=%s", (p,), True)
+    assert [f[0] for f in filas] == ["3" * 64]

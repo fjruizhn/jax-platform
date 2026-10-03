@@ -24,6 +24,7 @@ aplican:
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import secrets
 from pathlib import Path
@@ -39,7 +40,7 @@ from api.proyectos import _http, _leer, _RutaConCodigo
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from db.connection import get_pool
-from jax.memory.project_authority import ProjectRoleInsufficient
+from jax.memory.project_authority import ProjectNotVisible, ProjectRoleInsufficient
 from jax.memory.scope_authority import MariaDBScopeAuthorityResolver, ProjectRole
 from kill_switch import exigir_freno_suelto, exigir_mesa_libre
 from proyectos_documentos import almacen, tipos
@@ -65,6 +66,11 @@ def _puede_escribir(papel: str) -> bool:
     `memory:project:write` en `MariaDBScopeAuthorityResolver._project_roles` (hoy CONTRIBUTOR,
     REVIEWER y OWNER) puede subir, ocultar y restaurar."""
     return "memory:project:write" in MariaDBScopeAuthorityResolver._project_roles(ProjectRole(papel))[1]
+
+
+# Los papeles que B9 deja escribir, calculados UNA vez con la misma capacidad: el INSERT
+# los usa para volver a exigir la membresia sin una segunda tabla.
+_ROLES_DE_ESCRITURA = tuple(r.value for r in ProjectRole if _puede_escribir(r.value))
 
 
 def _nuevo_lote() -> str:
@@ -188,6 +194,16 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                     raise _lote_excedido(lote, aceptados, ignorados) from None
                 ignorados.append({"nombre": nombre, "motivo": "demasiado_grande"})
                 continue
+            except OSError as exc:
+                # Con el nombre ya ocupado (un enlace plantado en el lote: O_EXCL da EEXIST)
+                # o el disco fallando: se responde con lo que SI quedo registrado en este
+                # lote, para que el cliente no lo pierda de vista.
+                usados.discard(seguro)
+                insegura = isinstance(exc, FileExistsError) or exc.errno == errno.ELOOP
+                logger.error("proyectos_documentos: no se pudo escribir %r en el lote %s (%s)", seguro, lote,
+                             "ruta insegura" if insegura else "error de disco", exc_info=True)
+                raise _error(500, "almacen_ruta_insegura" if insegura else "almacen_error_escritura",
+                             lote=lote, aceptados=aceptados, ignorados=ignorados) from None
             except BaseException:
                 usados.discard(seguro)
                 raise
@@ -197,21 +213,35 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 nuevo = await repo.insertar(
                     pool, project_id=proyecto["id"], sha256=sha256, nombre_original=nombre,
                     ruta_entrada=carpeta.ruta_relativa(seguro), bytes_=escritos, tipo=tipo,
-                    subido_por=int(user.user_id))
-                if nuevo is None:
-                    existente = await repo.existente_por_sha(pool, project_id=proyecto["id"], sha256=sha256)
-            except BaseException as exc:
+                    subido_por=int(user.user_id), roles_escritura=_ROLES_DE_ESCRITURA)
+            except (repo.ProyectoNoActivo, repo.MembresiaPerdida) as exc:
+                # Rechazo DEFINITIVO del INSERT: nada se inserto, el archivo sobra.
                 await asyncio.to_thread(carpeta.borrar, seguro)
                 usados.discard(seguro)
                 bytes_lote -= escritos
                 if isinstance(exc, repo.ProyectoNoActivo):
                     raise _error(409, "proyecto_no_activo", lote=lote, aceptados=aceptados,
                                  ignorados=ignorados) from None
-                raise
+                error = _http(ProjectNotVisible("member lost") if exc.papel is None
+                              else ProjectRoleInsufficient("role lost"))
+                error.detail = {**error.detail, "lote": lote, "aceptados": aceptados, "ignorados": ignorados}
+                raise error from None
+            except BaseException as exc:
+                # Resultado INCIERTO (p. ej. se cayo la conexion despues de mandar el
+                # COMMIT): la fila pudo quedar escrita. NO se toca el disco -- borrar el
+                # archivo de una fila que existe seria perder el documento --; se deja
+                # el rastro para conciliar a mano.
+                logger.error("proyectos_documentos: insercion incierta, lote=%s archivo=%r sha256=%s "
+                             "(el archivo queda en disco; conciliar)", lote, seguro, sha256, exc_info=True)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                raise _error(500, "insercion_incierta", lote=lote, aceptados=aceptados,
+                             ignorados=ignorados) from None
             if nuevo is None:
                 await asyncio.to_thread(carpeta.borrar, seguro)
                 usados.discard(seguro)
                 bytes_lote -= escritos          # el duplicado descartado no ocupa lugar en el lote
+                existente = await repo.existente_por_sha(pool, project_id=proyecto["id"], sha256=sha256)
                 oculto = existente is not None and existente["oculto"]
                 ignorados.append({"nombre": nombre, "motivo": "duplicado_oculto" if oculto else "duplicado"})
                 continue

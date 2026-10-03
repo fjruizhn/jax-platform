@@ -10,8 +10,11 @@ import hashlib
 import io
 import os
 import stat
+import logging
 import threading
+import time
 import uuid
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -931,3 +934,149 @@ def test_el_duplicado_descartado_no_cuenta_en_los_bytes_del_lote(ent, workspace,
     assert r.status_code == 202, r.text                                # 900 KiB reales < 1 MiB
     assert [a["nombre"] for a in r.json()["aceptados"]] == ["a.pdf", "c.pdf", "d.pdf"]
     assert r.json()["ignorados"] == [{"nombre": "a2.pdf", "motivo": "duplicado"}]
+
+
+# ------------------------------------------------------- cancelacion (ronda 2)
+
+async def test_cancelacion_despues_de_la_ultima_mirada_del_hilo_no_deja_huerfano(tmp_path, monkeypatch):
+    """El caso del revisor: la cancelacion llega DESPUES de la ultima comprobacion de la
+    bandera (`hexdigest` es lo ultimo que corre) y antes de que el resultado vuelva al
+    loop. El hilo termina bien, y el archivo no puede quedar sin fila."""
+    carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
+    loop = asyncio.get_running_loop()
+    caja = {}
+
+    class Resumen:
+        def __init__(self):
+            self.h = hashlib.sha256()
+
+        def update(self, b):
+            self.h.update(b)
+
+        def hexdigest(self):
+            loop.call_soon_threadsafe(caja["tarea"].cancel)
+            time.sleep(0.3)                                    # la cancelacion ya esta entregada
+            return self.h.hexdigest()
+
+    monkeypatch.setattr(almacen, "hashlib", SimpleNamespace(sha256=Resumen))
+    try:
+        caja["tarea"] = asyncio.ensure_future(almacen.escribir_streaming(_Subida(b"%PDF x"), carpeta, "a.pdf", 100))
+        with pytest.raises(asyncio.CancelledError):
+            await caja["tarea"]
+        assert list(carpeta.ruta.iterdir()) == []
+    finally:
+        carpeta.cerrar()
+
+
+async def test_una_segunda_cancelacion_no_saca_de_la_espera_al_hilo(tmp_path):
+    carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
+    try:
+        leyendo, compuerta = threading.Event(), threading.Event()
+
+        class Lenta(io.BytesIO):
+            def __init__(self):
+                super().__init__(b"a" * (3 * MIB))
+                self.bloques = 0
+
+            def read(self, n=-1):
+                self.bloques += 1
+                if self.bloques == 2:
+                    leyendo.set()
+                    assert compuerta.wait(10)
+                return super().read(n)
+
+        sub = _Subida(b"")
+        sub.file = Lenta()
+        tarea = asyncio.create_task(almacen.escribir_streaming(sub, carpeta, "a.pdf", 10 * MIB))
+        assert await asyncio.to_thread(leyendo.wait, 10)
+        tarea.cancel()
+        await asyncio.sleep(0.1)
+        tarea.cancel()                                         # la segunda, con el hilo todavia vivo
+        await asyncio.sleep(0.1)
+        assert not tarea.done()                                # sigue esperando al hilo
+        compuerta.set()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+        assert list(carpeta.ruta.iterdir()) == []
+    finally:
+        carpeta.cerrar()
+
+
+# ------------------------------------------------- EEXIST con un enlace plantado
+
+def test_enlace_plantado_en_el_nombre_del_archivo_informa_el_lote(ent, workspace, monkeypatch):
+    p = ent.proyecto()
+    fuera = workspace / "fuera.txt"
+    original = almacen.abrir_carpeta_lote
+
+    def con_enlace(*args, **kwargs):
+        carpeta = original(*args, **kwargs)
+        os.symlink(fuera, carpeta.ruta / "b.pdf")             # alguien planta el nombre del 2.o archivo
+        return carpeta
+
+    monkeypatch.setattr(almacen, "abrir_carpeta_lote", con_enlace)
+    r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a"), _parte("b.pdf", "b"), _parte("c.pdf", "c")])
+    assert r.status_code == 500 and _code(r) == "almacen_ruta_insegura"
+    detalle = r.json()["detail"]
+    assert detalle["lote"] and [a["nombre"] for a in detalle["aceptados"]] == ["a.pdf"]   # lo ya registrado se informa
+    assert not fuera.exists() and str(workspace) not in r.text
+    assert [f[1] for f in ent.filas(p)] == ["a.pdf"]
+    assert sorted(x.name for x in (workspace / "proyectos" / p.uuid / "entrada" / detalle["lote"]).iterdir()) == ["a.pdf", "b.pdf"]
+
+
+# ---------------------------------- membresia entre la escritura y el INSERT
+
+def _tras_escribir(monkeypatch, accion):
+    original = almacen.escribir_streaming
+
+    async def y_despues(*args, **kwargs):
+        resultado = await original(*args, **kwargs)
+        r = await asyncio.to_thread(accion)
+        assert r.status_code in (200, 204), r.text
+        return resultado
+
+    monkeypatch.setattr(almacen, "escribir_streaming", y_despues)
+
+
+def test_miembro_quitado_entre_la_escritura_y_el_insert_404_sin_fila_ni_archivo(ent, workspace, monkeypatch):
+    p = ent.proyecto()
+    contrib = ent.miembro(p, "contrib", "CONTRIBUTOR")
+    _tras_escribir(monkeypatch, lambda: ent.client.delete(f"{P}/{p.id}/miembros/{ent._id('contrib')}", headers=ent.dueno))
+    r = ent.subir(p, contrib, [_parte("a.pdf", "a")])
+    assert r.status_code == 404 and _code(r) == "proyecto_no_encontrado"
+    assert r.json()["detail"]["aceptados"] == [] and r.json()["detail"]["lote"]
+    assert _en_disco(workspace) == [] and ent.filas(p) == []
+
+
+def test_miembro_degradado_a_lector_entre_la_escritura_y_el_insert_403_sin_fila_ni_archivo(ent, workspace, monkeypatch):
+    p = ent.proyecto()
+    contrib = ent.miembro(p, "contrib", "CONTRIBUTOR")
+    _tras_escribir(monkeypatch, lambda: ent.client.put(f"{P}/{p.id}/miembros/{ent._id('contrib')}",
+                                                       headers=ent.dueno, json={"papel": "VIEWER"}))
+    r = ent.subir(p, contrib, [_parte("a.pdf", "a")])
+    assert r.status_code == 403 and _code(r) == "papel_insuficiente"
+    assert _en_disco(workspace) == [] and ent.filas(p) == []
+
+
+# ------------------------------------------------------ commit incierto del INSERT
+
+def test_insert_con_resultado_incierto_no_toca_el_disco_y_deja_rastro(ent, workspace, monkeypatch, caplog):
+    import aiomysql
+
+    p = ent.proyecto()
+    original = repo.insertar
+
+    async def se_cae_despues_del_commit(*args, **kwargs):
+        await original(*args, **kwargs)                        # la fila SI se escribio
+        raise aiomysql.OperationalError(2013, "Lost connection to MySQL server during query")
+
+    monkeypatch.setattr(repo, "insertar", se_cae_despues_del_commit)
+    with caplog.at_level(logging.ERROR, logger="api.proyectos_documentos"):
+        r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
+    assert r.status_code == 500 and _code(r) == "insercion_incierta"
+    lote = r.json()["detail"]["lote"]
+    assert lote and str(workspace) not in r.text
+    assert [x.name for x in _en_disco(workspace)] == ["a.pdf"]            # el archivo SIGUE ahi
+    assert [f[1] for f in ent.filas(p)] == ["a.pdf"]                      # y la fila existe: no se perdio el documento
+    log = " ".join(rec.getMessage() for rec in caplog.records)
+    assert lote in log and "a.pdf" in log and "conciliar" in log

@@ -44,34 +44,62 @@ class ProyectoNoActivo(Exception):
     """El proyecto ya no esta ACTIVE en `jax_project_scope`: no se inserto nada."""
 
 
-# El INSERT lee `jax_project_scope` y solo inserta si el proyecto sigue ACTIVE: la
-# comprobacion y la escritura son UNA sentencia, sin carrera con un archivado que
-# llegue en medio de la subida. (InnoDB toma un candado compartido sobre la fila de
-# scope que lee, asi un cambio de estado concurrente espera a este commit.)
-SQL_INSERTAR = (
+class MembresiaPerdida(Exception):
+    """`subido_por` ya no es miembro ACTIVE con papel de escritura: no se inserto nada.
+    `papel` es el que le queda (None si dejo de ser miembro)."""
+
+    def __init__(self, papel: str | None):
+        super().__init__(papel)
+        self.papel = papel
+
+
+# El INSERT lee `jax_project_scope` y `jax_project_membership` (la misma fuente que la
+# autorizacion) y solo inserta si el proyecto sigue ACTIVE Y quien sube sigue siendo
+# miembro ACTIVE con uno de los `roles_escritura`: comprobacion y escritura son UNA
+# sentencia, sin carrera con un archivado o una baja que lleguen en medio de la subida.
+# (InnoDB toma un candado compartido sobre las filas que lee, asi un cambio concurrente
+# espera a este commit.)
+_SQL_INSERTAR = (
     "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, "
     "bytes, tipo, subido_por) "
-    "SELECT %s, %s, %s, %s, %s, %s, %s FROM jax_project_scope "
-    "WHERE project_id = %s AND status = 'ACTIVE' LIMIT 1"
+    "SELECT %s, %s, %s, %s, %s, %s, %s FROM jax_project_scope s "
+    "WHERE s.project_id = %s AND s.status = 'ACTIVE' AND EXISTS ("
+    "SELECT 1 FROM jax_project_membership m WHERE m.project_id = s.project_id "
+    "AND m.tenant_id = s.tenant_id AND m.user_id = %s AND m.status = 'ACTIVE' "
+    "AND m.project_role IN ({roles})) LIMIT 1"
+)
+_SQL_POR_QUE_NO = (
+    "SELECT s.status, m.project_role FROM jax_project_scope s "
+    "LEFT JOIN jax_project_membership m ON m.project_id = s.project_id AND m.tenant_id = s.tenant_id "
+    "AND m.user_id = %s AND m.status = 'ACTIVE' WHERE s.project_id = %s LIMIT 1"
 )
 
 
 async def insertar(pool, *, project_id: int, sha256: str, nombre_original: str, ruta_entrada: str,
-                   bytes_: int, tipo: str, subido_por: int) -> int | None:
+                   bytes_: int, tipo: str, subido_por: int, roles_escritura: tuple[str, ...]) -> int | None:
     """Id de la fila nueva, o None si ese sha256 ya esta en el proyecto.
-    ProyectoNoActivo si el proyecto dejo de estar ACTIVE (no inserta nada)."""
+    ProyectoNoActivo / MembresiaPerdida si el proyecto dejo de estar ACTIVE o quien sube
+    perdio la membresia o el papel (no inserta nada). `roles_escritura` lo decide el
+    llamador con la capacidad de B9: aqui no hay tabla de papeles."""
+    if not roles_escritura:
+        raise ValueError("roles_escritura vacio: nadie podria insertar")
+    consulta = _SQL_INSERTAR.format(roles=", ".join(["%s"] * len(roles_escritura)))
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             try:
-                await cur.execute(SQL_INSERTAR, (project_id, sha256, nombre_original, ruta_entrada,
-                                                 bytes_, tipo, subido_por, project_id))
+                await cur.execute(consulta, (project_id, sha256, nombre_original, ruta_entrada, bytes_, tipo,
+                                             subido_por, project_id, subido_por, *roles_escritura))
             except aiomysql.IntegrityError as exc:
                 if exc.args and exc.args[0] == _ERROR_DUPLICADO:
                     return None
                 raise
             if not cur.rowcount:
+                await cur.execute(_SQL_POR_QUE_NO, (subido_por, project_id))
+                fila = await cur.fetchone()
                 await conn.commit()
-                raise ProyectoNoActivo(project_id)
+                if fila is None or fila[0] != "ACTIVE":
+                    raise ProyectoNoActivo(project_id)
+                raise MembresiaPerdida(fila[1])
             nuevo = cur.lastrowid
         await conn.commit()
         return nuevo
