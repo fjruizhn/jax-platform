@@ -24,6 +24,16 @@ if TYPE_CHECKING:  # keep the platform importable until the paired JAX core is d
 _UNAVAILABLE_NOTICE = "I could not verify the current state."
 _DEGRADED_NOTICE = "The response could not be verified safely."
 
+# This platform bridge is reviewed only against this exact JAX F2-C contract.
+# Versions are a compatibility boundary, not a capability range: accepting an
+# older or newer renderer/domain pair could make the transport project an
+# envelope with semantics it has not been reviewed to preserve.
+F2C_EXACT_PAIR_COMPATIBILITY = (
+    "f2-c.renderer.3",
+    "f2-c.domain.5",
+    frozenset({"f2-c.1"}),
+)
+
 
 class GovernedChatUnavailable(RuntimeError):
     """The JAX F2-C core is unavailable; raw candidate text must not escape."""
@@ -74,7 +84,7 @@ def _core():
         if any(Path(module.__file__).resolve().is_relative_to(root_path) is False for module in modules):
             raise GovernedChatUnavailable("loaded F2-C modules are outside configured JAX repository")
         if (GOVERNED_RENDERER_API_VERSION, GOVERNED_DOMAIN_SPEC_VERSION,
-                GOVERNED_ENVELOPE_SCHEMA_VERSIONS) != ("f2-c.renderer.2", "f2-c.domain.2", frozenset({"f2-c.1"})):
+                GOVERNED_ENVELOPE_SCHEMA_VERSIONS) != F2C_EXACT_PAIR_COMPATIBILITY:
             raise GovernedChatUnavailable("configured JAX F2-C compatibility is unsupported")
     except (ImportError, AttributeError) as exc:
         raise GovernedChatUnavailable("F2-C core renderer is unavailable") from exc
