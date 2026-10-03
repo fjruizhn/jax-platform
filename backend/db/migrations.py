@@ -3550,6 +3550,15 @@ _EJECUTOR_CONFIG_C5 = (
     ("ejecutor.c5_intervalo_s", "15"),
     # El tope que usó U4 de la Fase 0 (scripts/ejecutor_fase0/auditor_costo.py).
     ("ejecutor.c5_max_tokens", "4000"),
+    # Plazo, en segundos enteros (> 0), de UNA llamada al auditor (2026-10-03). El auditor
+    # local (`el_juez`) comparte la ÚNICA ranura de la GPU con el cerebro
+    # (OLLAMA_NUM_PARALLEL=1): su petición hace COLA detrás de una del cerebro que puede
+    # tardar más de 2 min. Con los 120 s que estaban escritos en el código del repo jax,
+    # la misión 6f00c8ce se cortó a los 120 s exactos (500 en el journal de ollama) y
+    # frenó (auditor_ilegible). La lee `eleccion_c5.config_desde_filas` (repo jax) como
+    # obligatoria: sin la fila, el Ejecutor no arranca. INSERT IGNORE: un valor que el
+    # admin cambió no se pisa.
+    ("ejecutor.c5_tope_s", "400"),
     # Nace CERRADA: con el cerebro local todo auditor de otro proveedor es de nube, y la
     # Fase 0 prohibió que la nube vea datos de clientes. Abrirla es DECISIÓN de Fernando
     # (índice de SP1, punto 1 de «lo que el spec dice mal»). Cerrada, una misión que toca
