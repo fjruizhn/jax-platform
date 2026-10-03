@@ -234,7 +234,7 @@ export default function Documentos({ proyecto }) {
                   {fechaLegible(f.creado, locale) && <span>{` · ${fechaLegible(f.creado, locale)}`}</span>}
                 </p>
                 {f.estado === 'error' && (
-                  <p className="text-xs text-peligro break-words">{f.error ? T.causa(f.error) : T.sinCausa}</p>
+                  <p className="text-xs text-peligro break-words">{f.error ? T.causa(Object.hasOwn(T.causas, f.error) ? T.causas[f.error] : T.causas.desconocida) : T.sinCausa}</p>
                 )}
               </div>
               <span className={`text-xs ${COLOR_ESTADO[f.estado] ?? 'text-texto-tenue'}`}>{T.estados[f.estado] ?? f.estado}</span>

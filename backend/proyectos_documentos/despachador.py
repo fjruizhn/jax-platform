@@ -20,7 +20,11 @@ Que hacer con cada respuesta del POST:
   - 422 `proyecto_no_activo` o `project_uuid_invalido` -> siguen `en_cola`; se salta ESE
     proyecto (se archivo entre medio; al reactivarlo salen).
   - los demas 4xx (400, un 422 con otro codigo...) -> rechazan el pedido mismo: las filas
-    del trozo pasan a `error` con el codigo.
+    del trozo pasan a `error` `http_4xx` (el codigo de LAS MANOS va al log).
+
+`project_documents.error` guarda SOLO un codigo estable de CAUSAS_DE_ERROR, que el frontend
+traduce. El texto de LAS MANOS (en ingles, con rutas absolutas) va solo al log, con las rutas
+recortadas a relativas al workspace (`_sin_rutas_absolutas`).
 
 BORRADO de `entrada/`: se borra la copia de `proyectos/<uuid>/entrada/...` (y la carpeta del
 lote si quedo vacia) SOLO si el resultado de ESE archivo trae `carpeta_procesado` bajo
@@ -51,6 +55,7 @@ import asyncio
 import errno
 import logging
 import os
+import re
 import stat
 import time
 from pathlib import Path
@@ -98,6 +103,21 @@ ERRORES_DE_DESENLACE_INCIERTO = (httpx.ReadTimeout, httpx.RemoteProtocolError, h
 VENTANA_DE_INCERTIDUMBRE_SEGUNDOS = 5 * 60
 # Prefijo del 422 en texto con que LAS MANOS rechaza un pedido con mas rutas que su tope.
 PREFIJO_DEMASIADAS_RUTAS = "demasiadas rutas"
+
+# Codigos estables que puede guardar `project_documents.error` (ronda final, menor 5). El
+# frontend los traduce en `proyectos.documentos.causas` (la prueba de paridad lee ESTA lista);
+# lo desconocido cae al generico. `trabajo_perdido` lo escribe repositorio.marcar_job_perdido.
+CAUSAS_DE_ERROR = frozenset({
+    "procesamiento_fallido",   # LAS MANOS devolvio `error` para ese archivo
+    "rechazado",               # LAS MANOS rechazo ese archivo (fuera del jail, no es un archivo)
+    "estado_desconocido",      # un estado de archivo que este despachador no conoce
+    "sin_resultado",           # el trabajo termino sin resultado de ese archivo
+    "trabajo_fallido",         # el trabajo entero fallo o fue rechazado
+    "trabajo_perdido",         # LAS MANOS ya no conoce el trabajo (reinicio)
+    "http_4xx",                # LAS MANOS rechazo el pedido de forma definitiva
+})
+# Una ruta absoluta que no es del workspace: se deja solo su ultimo tramo.
+_RUTA_ABSOLUTA = re.compile(r"(?<![\w.~-])/(?:[^\s'\"/]+/)+([^\s'\"/]*)")
 
 _dormir = asyncio.sleep
 _reloj = time.monotonic
@@ -172,16 +192,28 @@ async def _borrar_copia(fila: dict) -> None:
 
 # ---------------------------------------------------------------- sincronizacion
 
+def _sin_rutas_absolutas(texto: object) -> str:
+    """Texto de LAS MANOS apto para el log: las rutas del workspace quedan relativas a el y
+    cualquier otra ruta absoluta queda reducida a su ultimo tramo. Recortado a 500."""
+    texto = str(texto)
+    try:
+        texto = texto.replace(f"{almacen.cargar_workspace()}/", "")
+    except Exception:  # fail-soft: sin workspace configurado no hay prefijo que quitar; el enmascarado de abajo igual corre
+        pass
+    return _RUTA_ABSOLUTA.sub(r".../\1", texto)[:500]
+
+
 def _decidir(fila: dict, resultado: dict | None, trabajo: dict) -> tuple[str, str | None, str | None] | None:
-    """(estado, carpeta_procesado, error) para una fila abierta, o None si no cambia."""
+    """(estado, carpeta_procesado, error) para una fila abierta, o None si no cambia. `error`
+    es siempre un codigo de CAUSAS_DE_ERROR (o None)."""
     if resultado is not None:
         crudo = resultado.get("estado")
         estado = ESTADO_DE_ARCHIVO.get(crudo)
-        error = resultado.get("error")
         if estado is None:
-            return "error", None, f"estado_desconocido:{crudo}"[:1000]
-        if estado == "error" and not error:
-            error = crudo
+            return "error", None, "estado_desconocido"
+        error = None
+        if estado == "error":
+            error = "rechazado" if crudo == "rechazado" else "procesamiento_fallido"
         return estado, resultado.get("carpeta_procesado"), error
     terminado = trabajo.get("estado")
     if terminado not in TRABAJO_TERMINADO:
@@ -190,7 +222,19 @@ def _decidir(fila: dict, resultado: dict | None, trabajo: dict) -> tuple[str, st
         return "cancelado", None, None
     if terminado == "completed":
         return "error", None, "sin_resultado"
-    return "error", None, str(trabajo.get("error") or terminado)[:1000]
+    return "error", None, "trabajo_fallido"
+
+
+def _registrar_detalle(fila: dict, job_id: str, resultado: dict | None, trabajo: dict, estado: str) -> None:
+    """El detalle que la fila ya no guarda, al log y sin rutas absolutas."""
+    if resultado is not None:
+        if resultado.get("error") or estado == "error":
+            logger.warning("proyectos_documentos: documento %s (trabajo %s): LAS MANOS dijo %r: %s", fila["id"],
+                           job_id, _sin_rutas_absolutas(resultado.get("estado")),
+                           _sin_rutas_absolutas(resultado.get("error") or ""))
+    elif estado == "error" and trabajo.get("error"):
+        logger.warning("proyectos_documentos: documento %s (trabajo %s %r): %s", fila["id"], job_id,
+                       _sin_rutas_absolutas(trabajo.get("estado")), _sin_rutas_absolutas(trabajo.get("error")))
 
 
 async def _sincronizar_trabajo(pool, job_id: str) -> None:
@@ -216,6 +260,8 @@ async def _sincronizar_trabajo(pool, job_id: str) -> None:
             cambiadas = await repo.aplicar_resultado(
                 pool, job_id=job_id, ruta_entrada=fila["ruta_entrada"], estado=estado,
                 carpeta_procesado=carpeta, error=error)
+            if cambiadas:
+                _registrar_detalle(fila, job_id, resultado, trabajo, estado)
             if (cambiadas and resultado is not None and estado in ESTADOS_FINALES
                     and _original_a_salvo(fila["project_uuid"], carpeta)):
                 await _borrar_copia(fila)
@@ -305,10 +351,9 @@ async def _despachar_trozo(pool, project_uuid: str, usuario: str, trozo: list[di
         logger.error("proyectos_documentos: LAS MANOS respondio %s (%s) al despachar %s fila(s) del proyecto %s; "
                      "siguen en_cola y se reintenta", estado, _codigo_de(respuesta), len(ids), project_uuid)
         return "cortar"
-    codigo = _codigo_de(respuesta)
     logger.error("proyectos_documentos: LAS MANOS rechazo el trabajo del proyecto %s (%s, %s)",
-                 project_uuid, estado, codigo)
-    await repo.marcar_error_en_cola(pool, ids=ids, error=codigo)
+                 project_uuid, estado, _codigo_de(respuesta))
+    await repo.marcar_error_en_cola(pool, ids=ids, error="http_4xx")
     return "seguir"
 
 

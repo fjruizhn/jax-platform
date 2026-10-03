@@ -248,8 +248,8 @@ def test_respuestas_que_dejan_las_filas_en_cola(e, estado, detail, caplog):
 
 
 @pytest.mark.parametrize("estado,detail,causa", [
-    (422, {"code": "ruta_invalida"}, "ruta_invalida"),
-    (400, "pedido malo", "http_400"),
+    (422, {"code": "ruta_invalida"}, "http_4xx"),
+    (400, "pedido malo", "http_4xx"),
 ])
 def test_otro_4xx_pasa_las_filas_del_trozo_a_error_con_el_codigo(e, estado, detail, causa):
     doc = e.insertar(e.ruta("l1", "a.pdf"), n=1)
@@ -296,7 +296,7 @@ def test_sincroniza_resultados_y_borra_entrada(e):
         _resultado(rb, "error", error="PDF corrupto")])
     e.ciclo()
     assert e.fila(a) == ("listo", "J1", f"proyectos/{e.uuid}/procesado/a", None)
-    assert e.fila(b) == ("error", "J1", None, "PDF corrupto")
+    assert e.fila(b) == ("error", "J1", None, "procesamiento_fallido")
     assert not pa.exists()
     assert pb.exists()                               # error sin carpeta_procesado: puede ser el unico original
 
@@ -349,6 +349,33 @@ def test_mapa_de_estados(e, de_las_manos, esperado):
     assert e.fila(doc)[0] == esperado
 
 
+@pytest.mark.parametrize("de_las_manos,causa", [
+    ("ok", None), ("parcial", None), ("sin_extractor", None), ("cancelado", None),
+    ("error", "procesamiento_fallido"), ("rechazado", "rechazado"), ("raro", "estado_desconocido")])
+def test_la_fila_guarda_un_codigo_estable_y_nunca_el_texto_de_las_manos(e, de_las_manos, causa):
+    r = e.ruta("l1", "a.pdf")
+    doc = e.insertar(r, n=1)
+    e.abrir(doc, "J2b")
+    e.las_manos.estados["J2b"] = _trabajo("J2b", "completed", [
+        _resultado(r, de_las_manos, error=f"Errno 28 /srv/x/{r}: No space left")])
+    e.ciclo()
+    assert e.fila(doc)[3] == causa
+    assert causa is None or causa in despachador.CAUSAS_DE_ERROR
+
+
+def test_el_detalle_va_al_log_con_rutas_relativas_al_workspace(e, caplog):
+    r = e.ruta("l1", "a.pdf")
+    doc = e.insertar(r, n=1)
+    e.abrir(doc, "J2c")
+    detalle = f"[Errno 28] No space left: '{e.workspace}/{r}' (copia en /otra/raiz/fuente/a.pdf)"
+    e.las_manos.estados["J2c"] = _trabajo("J2c", "completed", [_resultado(r, "error", error=detalle)])
+    with caplog.at_level(logging.WARNING):
+        e.ciclo()
+    assert e.fila(doc)[3] == "procesamiento_fallido"
+    assert f"'{r}'" in caplog.text and "No space left" in caplog.text and str(doc) in caplog.text
+    assert str(e.workspace) not in caplog.text and "/otra/raiz" not in caplog.text
+
+
 def test_trabajo_en_marcha_sin_resultado_del_archivo_pasa_a_procesando(e):
     r = e.ruta("l1", "a.pdf")
     p = e.archivo(r)
@@ -373,7 +400,7 @@ def test_trabajo_fallido_pasa_las_filas_a_error(e):
     e.abrir(doc, "J5")
     e.las_manos.estados["J5"] = (200, {"job_id": "J5", "estado": "failed", "error": "se cayo", "resultados": []})
     e.ciclo()
-    assert e.fila(doc)[0] == "error"
+    assert e.fila(doc)[0] == "error" and e.fila(doc)[3] == "trabajo_fallido"
 
 
 def test_trabajo_perdido_pasa_a_error(e):
@@ -387,7 +414,7 @@ def test_trabajo_perdido_pasa_a_error(e):
     assert p.exists()                                # sin resultado no hay nada procesado: el archivo se queda
 
 
-def test_error_largo_se_recorta_y_la_fila_termina(e):
+def test_error_largo_de_las_manos_no_llega_a_la_fila_y_la_fila_termina(e):
     r = e.ruta("l1", "a.pdf")
     p = e.archivo(r)
     doc = e.insertar(r, n=1)
@@ -395,7 +422,7 @@ def test_error_largo_se_recorta_y_la_fila_termina(e):
     e.las_manos.estados["J20"] = _trabajo("J20", "completed", [_resultado(r, "error", error="x" * 1500)])
     e.ciclo()
     estado, _, _, error = e.fila(doc)
-    assert estado == "error" and error == "x" * 1000
+    assert estado == "error" and error == "procesamiento_fallido"     # el detalle va al log, no a la fila
     assert "J20" not in _con_pool(e.client, repo.trabajos_abiertos)
     assert p.exists()                                # error sin carpeta_procesado: la copia se queda
 

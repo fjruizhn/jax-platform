@@ -1621,6 +1621,17 @@ export default {
       restaurarDe: (nombre) => `Restaurar ${nombre}`,
       causa: (texto) => `Causa: ${texto}`,
       sinCausa: 'Sin detalle del error.',
+      // Códigos estables de `project_documents.error` (despachador.py::CAUSAS_DE_ERROR).
+      causas: {
+        procesamiento_fallido: 'no se pudo procesar el archivo.',
+        rechazado: 'el procesador rechazó el archivo.',
+        estado_desconocido: 'el procesador devolvió un estado desconocido.',
+        sin_resultado: 'el procesamiento terminó sin resultado para este archivo.',
+        trabajo_fallido: 'falló el trabajo de procesamiento.',
+        trabajo_perdido: 'se perdió el trabajo de procesamiento (el servicio se reinició).',
+        http_4xx: 'el procesador rechazó el pedido.',
+        desconocida: 'error sin detalle conocido.',
+      },
       agregar: 'Agregar documentos',
       vacio: 'Este proyecto todavía no tiene documentos.',
       boton: 'Documentos del proyecto',

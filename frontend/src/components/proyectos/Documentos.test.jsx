@@ -116,13 +116,22 @@ describe('Documentos: lista y permisos', () => {
     expect(await screen.findByText(T.vacio)).toBeInTheDocument()
   })
 
-  it('un documento con error muestra la causa', async () => {
+  it('un documento con error muestra la causa traducida desde su código', async () => {
     api.listarDocumentos.mockResolvedValue({
-      documentos: [doc(1, { estado: 'error', error: 'PDF corrupto' })], siguiente: null,
+      documentos: [doc(1, { estado: 'error', error: 'procesamiento_fallido' })], siguiente: null,
     })
     montar()
     expect(await screen.findByText(T.estados.error)).toBeInTheDocument()
-    expect(screen.getByText(T.causa('PDF corrupto'))).toBeInTheDocument()
+    expect(screen.getByText(T.causa(T.causas.procesamiento_fallido))).toBeInTheDocument()
+  })
+
+  it('un código desconocido (o texto crudo) muestra el genérico, nunca el texto tal cual', async () => {
+    api.listarDocumentos.mockResolvedValue({
+      documentos: [doc(1, { estado: 'error', error: '[Errno 28] /srv/jax/proyectos/x.pdf' })], siguiente: null,
+    })
+    montar()
+    expect(await screen.findByText(T.causa(T.causas.desconocida))).toBeInTheDocument()
+    expect(screen.queryByText(/Errno 28/)).toBeNull()
   })
 
   it('Cargar más pide la página siguiente con el cursor y la agrega', async () => {

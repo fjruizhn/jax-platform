@@ -253,6 +253,13 @@ function estadosDelBackend() {
   return unicos([...comillas(resultado), ...comillas(abiertos), 'en_cola'])
 }
 
+// Códigos estables de `project_documents.error` (ronda final, menor 5): la lista vive en el despachador.
+function causasDelBackend() {
+  const bloque = leer('proyectos_documentos/despachador.py').match(/^CAUSAS_DE_ERROR = frozenset\(\{([\s\S]*?)\}\)/m)
+  expect(bloque, `CAUSAS_DE_ERROR no está en despachador.py: ${ACTUALIZAR}`).not.toBeNull()
+  return unicos([...bloque[1].matchAll(/^\s*"(\w+)",/gm)].map((m) => m[1]))
+}
+
 function motivosDelBackend() {
   const docs = leer('api/proyectos_documentos.py')
   return unicos([...docs.matchAll(/"motivo":\s*([^\n]*?)\}\)/g)].flatMap((m) => comillas(m[1])))
@@ -290,6 +297,15 @@ describe('i18n proyectos.documentos', () => {
 
   it.each(secciones)('%s: todo estado del backend tiene texto', (_n, d) => {
     for (const k of estadosDelBackend()) expect(typeof d.proyectos.documentos.estados[k], k).toBe('string')
+  })
+
+  it('el extractor de causas ve la lista completa (la prueba no es vacía)', () => {
+    expect(causasDelBackend()).toEqual(['estado_desconocido', 'http_4xx', 'procesamiento_fallido', 'rechazado',
+      'sin_resultado', 'trabajo_fallido', 'trabajo_perdido'])
+  })
+
+  it.each(secciones)('%s: toda causa de error del backend tiene texto, y hay un genérico', (_n, d) => {
+    for (const k of [...causasDelBackend(), 'desconocida']) expect(typeof d.proyectos.documentos.causas[k], k).toBe('string')
   })
 
   it.each(secciones)('%s: todo motivo de ignorado del backend tiene texto', (_n, d) => {

@@ -1525,6 +1525,17 @@ export default {
       restaurarDe: (nombre) => `Restore ${nombre}`,
       causa: (texto) => `Cause: ${texto}`,
       sinCausa: 'No error detail.',
+      // Stable codes of `project_documents.error` (despachador.py::CAUSAS_DE_ERROR).
+      causas: {
+        procesamiento_fallido: 'the file could not be processed.',
+        rechazado: 'the processor rejected the file.',
+        estado_desconocido: 'the processor returned an unknown state.',
+        sin_resultado: 'processing finished without a result for this file.',
+        trabajo_fallido: 'the processing job failed.',
+        trabajo_perdido: 'the processing job was lost (the service restarted).',
+        http_4xx: 'the processor rejected the request.',
+        desconocida: 'error with no known detail.',
+      },
       agregar: 'Add documents',
       vacio: 'This project has no documents yet.',
       boton: 'Project documents',
