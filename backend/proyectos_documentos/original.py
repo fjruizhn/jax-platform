@@ -157,12 +157,16 @@ def _recorrer(fd_fuente: int) -> list[list[str]]:
         nonlocal vistas
         archivos: list[str] = []
         carpetas: list[str] = []
+        entradas = []
         with os.scandir(fd) as it:
-            entradas = sorted(it, key=lambda x: x.name)
+            for entrada in it:
+                # Se cuenta MIENTRAS se itera, antes de ordenar: una carpeta enorme no se carga entera.
+                vistas += 1
+                if vistas > TOPE_ENTRADAS:
+                    raise FuenteIlegible(f"mas de {TOPE_ENTRADAS} entradas en fuente/")
+                entradas.append(entrada)
+        entradas.sort(key=lambda x: x.name)
         for entrada in entradas:
-            vistas += 1
-            if vistas > TOPE_ENTRADAS:
-                raise FuenteIlegible(f"mas de {TOPE_ENTRADAS} entradas en fuente/")
             if not _componente_valido(entrada.name) or entrada.is_symlink():
                 continue
             if entrada.is_file(follow_symlinks=False):

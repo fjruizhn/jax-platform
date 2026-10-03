@@ -166,6 +166,39 @@ def test_el_tope_de_entradas_corta_con_error_explicito_y_no_con_no_encontrado(ws
         _buscar(ws, carpeta=None)
 
 
+def test_el_tope_de_entradas_se_cuenta_mientras_se_itera_y_no_despues_de_cargar_la_carpeta(ws, monkeypatch):
+    """MINOR-N6: `sorted(it)` cargaba la carpeta entera antes de contar contra el tope; una carpeta enorme se
+    leia completa. Un scandir falso entrega 10.000 entradas y cuenta cuantas se le pidieron."""
+    monkeypatch.setattr(original, "TOPE_ENTRADAS", 50)
+    _fuente(ws, "a.pdf")
+    pedidas = []
+
+    class Entrada:
+        def __init__(self, i):
+            self.name = f"f{i:05d}.pdf"
+        def is_symlink(self):
+            return False
+        def is_file(self, follow_symlinks=True):
+            return True
+        def is_dir(self, follow_symlinks=True):
+            return False
+
+    class FalsoScandir:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def __iter__(self):
+            for i in range(10_000):
+                pedidas.append(i)
+                yield Entrada(i)
+
+    monkeypatch.setattr(original.os, "scandir", lambda fd: FalsoScandir())
+    with pytest.raises(original.FuenteIlegible, match="entradas"):
+        _buscar(ws, carpeta=None)
+    assert len(pedidas) <= 51, len(pedidas)                         # corta al pasar el tope, no al final
+
+
 def test_el_tope_de_profundidad_corta_con_error_explicito(ws, monkeypatch):
     monkeypatch.setattr(original, "TOPE_PROFUNDIDAD", 5)
     _fuente(ws, "/".join(["d"] * 7) + "/a.pdf")
