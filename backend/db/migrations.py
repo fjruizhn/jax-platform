@@ -3605,6 +3605,25 @@ async def _jacobs_tope_devoluciones_v1(cur) -> None:
     )
 
 
+# Topes de la subida de documentos de un proyecto (Proyectos E2a, T5, 2026-10-03).
+# Valores de Fernando (2026-09-25): 100 MB por archivo, 250 archivos o 1 GB por
+# lote; 50 rutas por trabajo es el techo de LAS MANOS. Mismas claves y rangos que
+# ajustes.py. INSERT IGNORE en cada arranque, sin marcador, igual que el tope de
+# devoluciones: repone una fila ausente y nunca pisa lo que cambió el admin.
+TOPES_DOCUMENTOS_INICIALES = (
+    ("proyectos.documentos.max_bytes_archivo", "104857600"),
+    ("proyectos.documentos.max_archivos_lote", "250"),
+    ("proyectos.documentos.max_bytes_lote", "1073741824"),
+    ("proyectos.documentos.rutas_por_trabajo", "50"),
+)
+
+
+async def _proyectos_documentos_topes_v1(cur) -> None:
+    for clave, valor in TOPES_DOCUMENTOS_INICIALES:
+        await cur.execute(
+            "INSERT IGNORE INTO axioma_config (config_key, config_value) VALUES (%s, %s)", (clave, valor))
+
+
 # Tema por defecto de la instancia (2026-09-18). Antes lo sembraba, con INSERT
 # IGNORE, el GET de /api/admin/config: una LECTURA que escribía configuración
 # por fuera del camino auditado. La semilla vive acá, como la de C5, con la
@@ -3696,6 +3715,7 @@ async def run_migrations():
             await _ejecutor_inventario_v1(cur)
             await _ejecutor_config_c5_v1(cur)
             await _jacobs_tope_devoluciones_v1(cur)
+            await _proyectos_documentos_topes_v1(cur)
             await _apariencia_default_v1(cur)
             await _seed_providers(cur)
             await _seed_ollama_cpu_provider(cur)

@@ -148,6 +148,12 @@ def test_limites_publicos_y_tope_espejado_de_jacobs():
         "jacobs.tope_devoluciones": {"min": 0, "max": 5},
         "system_name": {"max_largo": 60},
         "pipeline_confirmar_usd": {"min": "0", "max": "999999.99", "decimales": 2},
+        # Topes de documentos de proyecto (E2a T5): los valores del spec de Fernando
+        # (2026-09-25); el techo de rutas_por_trabajo es el de LAS MANOS.
+        "proyectos.documentos.max_bytes_archivo": {"min": 1048576, "max": 2147483648},
+        "proyectos.documentos.max_archivos_lote": {"min": 1, "max": 1000},
+        "proyectos.documentos.max_bytes_lote": {"min": 1048576, "max": 10737418240},
+        "proyectos.documentos.rutas_por_trabajo": {"min": 1, "max": 50},
     }
 
 
@@ -198,6 +204,11 @@ def test_lee_los_valores_tipados_de_la_tabla(client, ajustes_en_db):
         # Su fila la siembra db/migrations.py::_jacobs_tope_devoluciones_v1 con el
         # valor del spec (2); este test lee, no siembra.
         "jacobs.tope_devoluciones": 2,
+        # Las siembra db/migrations.py::_proyectos_documentos_topes_v1.
+        "proyectos.documentos.max_bytes_archivo": 104857600,
+        "proyectos.documentos.max_archivos_lote": 250,
+        "proyectos.documentos.max_bytes_lote": 1073741824,
+        "proyectos.documentos.rutas_por_trabajo": 50,
     }
 
 
@@ -245,3 +256,27 @@ def test_avisar_claves_ilegibles_loguea_error_sin_el_valor(client, ajustes_en_db
     errores = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert any("session_timeout_min" in m and "invalido" in m for m in errores), errores
     assert not any("valor-secreto-99" in m for m in errores), errores
+
+
+@pytest.mark.parametrize("clave, malos", [
+    ("proyectos.documentos.max_bytes_archivo", ["1048575", "2147483649", "0", "cien", "-1", "0104857600"]),
+    ("proyectos.documentos.max_archivos_lote", ["0", "1001", "2.5", ""]),
+    ("proyectos.documentos.max_bytes_lote", ["1048575", "10737418241"]),
+    ("proyectos.documentos.rutas_por_trabajo", ["0", "51"]),
+])
+def test_topes_de_documentos_fuera_de_rango_son_ilegibles(client, ajustes_en_db, clave, malos):
+    for malo in malos:
+        ajustes_en_db.poner(**{clave: malo})
+        assert client.portal.call(_error_de, clave) == (clave, "invalido"), malo
+
+
+@pytest.mark.parametrize("clave, bordes", [
+    ("proyectos.documentos.max_bytes_archivo", [1048576, 2147483648]),
+    ("proyectos.documentos.max_archivos_lote", [1, 1000]),
+    ("proyectos.documentos.max_bytes_lote", [1048576, 10737418240]),
+    ("proyectos.documentos.rutas_por_trabajo", [1, 50]),
+])
+def test_topes_de_documentos_aceptan_sus_bordes(client, ajustes_en_db, clave, bordes):
+    for borde in bordes:
+        ajustes_en_db.poner(**{clave: str(borde)})
+        assert client.portal.call(ajustes.valor, clave) == borde
