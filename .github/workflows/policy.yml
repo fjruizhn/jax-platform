@@ -1273,15 +1273,14 @@ jobs:
 
       - name: Traer el repo jax (fuente de verdad del esquema de Jacobs y B9)
         working-directory: .
-        # F2-D uses the JAX-owned lifecycle API from its exact paired PR head.
-        # 2026-10-02: pin subido a 2832cdd (merge de Jax#315, Proyectos E1 Parte A):
-        # 2026-10-02: 2832cdd -> 27590a6 (Jax#321, Proyectos E1.1: candidatos sin mínimo de letras).
-        # trae jax/memory/project_queries.py, que E1 importa. Desciende de 93900c2.
+        # The generic suite uses the reconciled F2-E-SR JAX integration head.
+        # It contains the F2-C/F2-D compatibility contract and the runtime
+        # status bridge API consumed by this Platform branch.
         run: |
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
-          git -C /tmp/jax fetch --depth=1 origin 27590a6106fac9d3855a014ca91f2263d9fd8135
+          git -C /tmp/jax fetch --depth=1 origin 1b54455aab8c5879f95c516aa2b6359f67c4381b
           git -C /tmp/jax checkout --detach FETCH_HEAD
-          test "$(git -C /tmp/jax rev-parse HEAD)" = 27590a6106fac9d3855a014ca91f2263d9fd8135
+          test "$(git -C /tmp/jax rev-parse HEAD)" = 1b54455aab8c5879f95c516aa2b6359f67c4381b
 
       - name: Crear el esquema de Jacobs con SU propio init_tables()
         working-directory: .
@@ -1349,12 +1348,10 @@ jobs:
         # de la corrida normal. Se ignoran, no se cuentan como skip -- el tope
         # de MAX_SKIPS se queda en 1, no se sube (ese tope sigue sirviendo
         # para detectar la DB caida).
-        # Runtime-status bridge tests require the new JAX API and are run
-        # without skips by the PR-triggered exact-pair job above. The generic
-        # platform DB suite intentionally tests against current JAX master, so
-        # exclude that cross-repository module here instead of counting its
-        # expected compatibility skips against MAX_SKIPS.
-        run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --ignore=tests/test_platform_runtime_status_bridge.py --junitxml=junit-db.xml
+        # The reconciled JAX pin provides the runtime-status bridge API, so
+        # run that module here too. The PR exact-pair job remains the separate
+        # cross-repository contract gate.
+        run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
 
       - name: Diagnóstico de pruebas fallidas (sin contenido de excepciones)
         if: failure()
@@ -4373,16 +4370,14 @@ jobs:
 
       - name: Traer el repo JAX de integración (vocabulario y B9)
         working-directory: .
-        # The governed bridge requires the JAX F2-D lifecycle API. Pin this
-        # integration source to the exact paired JAX PR head.
-        # 2026-10-02: pin subido a 2832cdd (merge de Jax#315, Proyectos E1 Parte A):
-        # trae jax/memory/project_queries.py, que E1 importa. Desciende de 93900c2.
-        # 2026-10-02: 2832cdd -> 27590a6 (Jax#321, Proyectos E1.1: candidatos sin mínimo de letras).
+        # The generic suite uses the reconciled F2-E-SR JAX integration head.
+        # It contains the F2-C/F2-D compatibility contract and the runtime
+        # status bridge API consumed by this Platform branch.
         run: |
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
-          git -C /tmp/jax fetch --depth=1 origin 27590a6106fac9d3855a014ca91f2263d9fd8135
+          git -C /tmp/jax fetch --depth=1 origin 1b54455aab8c5879f95c516aa2b6359f67c4381b
           git -C /tmp/jax checkout --detach FETCH_HEAD
-          test "$(git -C /tmp/jax rev-parse HEAD)" = 27590a6106fac9d3855a014ca91f2263d9fd8135
+          test "$(git -C /tmp/jax rev-parse HEAD)" = 1b54455aab8c5879f95c516aa2b6359f67c4381b
 
       - name: Suite backend (sin DB) -- -rs lista cada skip con su motivo
         # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,
