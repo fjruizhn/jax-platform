@@ -1078,6 +1078,8 @@ jobs:
             //   y Cancelar, título, 7→9 sube a 9),
             //   SelectorDeDocumentos.test.jsx +3, Documentos.test.jsx +2 (causa desconocida, correo
             //   largo), api/proyectos.test.js +3 (causas del despachador y su texto es/en).
+            // 1332 tras la fusion con master (#175): 1196 de master (#175 no toca el frontend) + 136 de
+            //   E2a; medido LOCAL sobre la fusion: 1332/0/1332.
             if (r.numFailedTests !== 0 || r.numPassedTests !== 1332) {
               console.error("PISO ROTO: se esperaban 1332 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
@@ -3422,7 +3424,13 @@ jobs:
           # 3360 -> 3363 (seguimiento 2 de la ronda final): +3 con `client` (re-encolar registra a quien
           #   sube de nuevo y su correo viaja a LAS MANOS; re-encolar en archivado entre medio da 409;
           #   el re-encolado exige las condiciones del INSERT). Coleccion 3364 -> 3367. Sin DB no suman.
-          PISO_PASSED = 3363
+          # 3363 -> 3262 (2026-10-03, fusion con master tras #175, a pedido del controlador): el piso de
+          #   master (3073; #175 no lo movio) + las pruebas que agrega E2a y master no tiene, +189 por
+          #   coleccion con DB y jax 1b54455: master 3199 -> fusion 3388 (= base 9a2c90c 3154 -> E2a
+          #   3343). Fusion medida LOCAL: 3359 passed, 2 skipped, 0 failed. Baja respecto de 3363
+          #   porque aquel salia del numero del runner (3322) y el 3073 de master esta por debajo de
+          #   su cuenta real; el runner tiene la ultima palabra.
+          PISO_PASSED = 3262
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4411,7 +4419,10 @@ jobs:
       # DEL RUNNER sobre 683344f (2040 passed, leido por el controlador) + el delta local de la ronda
       # final, que es 0: medido sin DB (JAX_CI_NO_DB=1), mismo comando y mismo jax-proyectos-e2a,
       # 185102c 2041 passed / 1282 skipped -> HEAD 2041 / 1320. Las 38 pruebas nuevas piden `client`.
-      JAX_CI_MIN_PASSED: "2040"
+      # 2040 -> 1912 (2026-10-03, fusion con master tras #175, a pedido del controlador): el piso de
+      # master (1888) + las pruebas sin DB que agrega E2a, +24: sin DB con jax 1b54455, master 2041
+      # passed -> fusion 2065 passed (0 failed). El runner tiene la ultima palabra.
+      JAX_CI_MIN_PASSED: "1912"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
