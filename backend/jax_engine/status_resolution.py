@@ -37,7 +37,7 @@ def _jax_runtime_status_bridge():
     loaded_path = Path(module.__file__).resolve()
     if not loaded_path.is_relative_to(root_path):
         raise RuntimeStatusBridgeUnavailable("loaded runtime-status bridge is outside configured JAX")
-    if getattr(module, "RUNTIME_STATUS_API_VERSION", None) != "f2-e.runtime-status.2":
+    if getattr(module, "RUNTIME_STATUS_API_VERSION", None) != "f2-e.runtime-status.3":
         raise RuntimeStatusBridgeUnavailable("unsupported JAX runtime-status bridge version")
     return module
 

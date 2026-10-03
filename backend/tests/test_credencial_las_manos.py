@@ -54,7 +54,10 @@ def test_todo_pedido_a_las_manos_salvo_health_lleva_la_credencial():
         if destino.endswith("/health'") or destino.endswith('/health"'):
             continue
         headers = [k for k in n.keywords if k.arg == "headers"]
-        if not headers or ast.unparse(headers[0].value) != "encabezados_las_manos()":
+        secured = headers and ast.unparse(headers[0].value) == "encabezados_las_manos()"
+        processing = (ruta == Path("proyectos_documentos/despachador.py") and headers
+                      and ast.unparse(headers[0].value) == "encabezados_procesamiento(contexto)")
+        if not secured and not processing:
             faltan.append(f"{ruta}:{n.lineno} {destino}")
     assert not faltan, "pedidos a LAS MANOS sin credencial de servicio:\n" + "\n".join(faltan)
 
@@ -68,6 +71,25 @@ def test_encabezado_sale_del_entorno(monkeypatch):
     valor = secrets.token_urlsafe(32)
     monkeypatch.setenv(cred.VARIABLE, valor)
     assert cred.encabezados_las_manos() == {cred.ENCABEZADO: valor}
+
+
+def test_encabezados_procesamiento_son_cerrados_y_canonicos(monkeypatch):
+    valor = secrets.token_urlsafe(32)
+    monkeypatch.setenv(cred.VARIABLE, valor)
+    contexto = cred.PlatformProcessingOwnership(tenant_id=1, user_id=2, project_id=3)
+    assert cred.encabezados_procesamiento(contexto) == {
+        cred.ENCABEZADO: valor,
+        "X-Jax-Processing-Owner-Version": "processing-owner.1",
+        "X-Jax-Processing-Tenant-Id": "1",
+        "X-Jax-Processing-User-Id": "2",
+        "X-Jax-Processing-Project-Id": "3",
+    }
+
+
+@pytest.mark.parametrize("values", [(True, 2, 3), (1, 0, 3), (1, 2, -3)])
+def test_contexto_procesamiento_rechaza_identificadores_no_canonicos(values):
+    with pytest.raises(ValueError):
+        cred.PlatformProcessingOwnership(*values)
 
 
 @pytest.mark.parametrize("valor", [None, "", "   ", "a" * 42, "a" * 42 + " b"])

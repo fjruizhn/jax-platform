@@ -63,7 +63,7 @@ from pathlib import Path
 import httpx
 
 import ajustes
-from credencial_las_manos import encabezados_las_manos
+from credencial_las_manos import encabezados_procesamiento
 from db.connection import get_pool
 from http_client import get_http_client
 from jax_engine.state import LAS_MANOS_URL
@@ -243,12 +243,12 @@ def _registrar_detalle(fila: dict, job_id: str, resultado: dict | None, trabajo:
                        _sin_rutas_absolutas(trabajo.get("estado")), _sin_rutas_absolutas(trabajo.get("error")))
 
 
-async def _sincronizar_trabajo(pool, job_id: str) -> None:
+async def _sincronizar_trabajo(pool, job_id: str, contexto) -> None:
     cliente = await get_http_client()
     respuesta = await cliente.get(f"{LAS_MANOS_URL}/procesamiento/trabajos/{job_id}",
-                                  headers=encabezados_las_manos(), timeout=TIMEOUT_HTTP_SEGUNDOS)
+                                  headers=encabezados_procesamiento(contexto), timeout=TIMEOUT_HTTP_SEGUNDOS)
     if respuesta.status_code == 404:
-        await repo.marcar_job_perdido(pool, job_id=job_id)
+        await repo.marcar_job_perdido(pool, job_id=job_id, owner=contexto)
         return
     if respuesta.status_code != 200:
         logger.warning("proyectos_documentos: LAS MANOS respondio %s al consultar el trabajo %s",
@@ -256,7 +256,7 @@ async def _sincronizar_trabajo(pool, job_id: str) -> None:
         return
     trabajo = respuesta.json()
     por_archivo = {r.get("archivo"): r for r in trabajo.get("resultados") or [] if isinstance(r, dict)}
-    for fila in await repo.filas_abiertas_de_trabajo(pool, job_id=job_id):
+    for fila in await repo.filas_abiertas_de_trabajo(pool, job_id=job_id, owner=contexto):
         try:
             resultado = por_archivo.get(fila["ruta_entrada"])
             decision = _decidir(fila, resultado, trabajo)
@@ -265,7 +265,7 @@ async def _sincronizar_trabajo(pool, job_id: str) -> None:
             estado, carpeta, error = decision
             cambiadas = await repo.aplicar_resultado(
                 pool, job_id=job_id, ruta_entrada=fila["ruta_entrada"], estado=estado,
-                carpeta_procesado=carpeta, error=error)
+                carpeta_procesado=carpeta, error=error, owner=contexto)
             if cambiadas:
                 _registrar_detalle(fila, job_id, resultado, trabajo, estado)
             if (cambiadas and resultado is not None and estado in ESTADOS_FINALES
@@ -277,9 +277,10 @@ async def _sincronizar_trabajo(pool, job_id: str) -> None:
 
 
 async def _sincronizar(pool) -> None:
-    for job_id in await repo.trabajos_abiertos(pool):
+    for trabajo_abierto in await repo.trabajos_abiertos(pool):
+        job_id, contexto = trabajo_abierto["job_id"], trabajo_abierto["owner"]
         try:
-            await _sincronizar_trabajo(pool, job_id)
+            await _sincronizar_trabajo(pool, job_id, contexto)
         except httpx.TimeoutException:  # fail-soft: LAS MANOS no contesta; consultar el resto de los trabajos seria esperar un timeout por cada uno, y todos siguen abiertos para la proxima vuelta
             logger.warning("proyectos_documentos: LAS MANOS no contesto al consultar el trabajo %s; "
                            "se corta la sincronizacion de esta vuelta", job_id)
@@ -308,7 +309,7 @@ def _detalle_en_texto(respuesta) -> str:
     return detalle if isinstance(detalle, str) else ""
 
 
-async def _despachar_trozo(pool, project_uuid: str, usuario: str, trozo: list[dict]) -> str:
+async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict]) -> str:
     """'seguir' | 'saltar_proyecto' | 'cortar'. Las filas solo cambian de estado cuando la
     respuesta es definitiva (202 o un 4xx que no es de reintento)."""
     ids = [f["id"] for f in trozo]
@@ -316,8 +317,8 @@ async def _despachar_trozo(pool, project_uuid: str, usuario: str, trozo: list[di
         cliente = await get_http_client()
         respuesta = await cliente.post(
             f"{LAS_MANOS_URL}/procesamiento/trabajos",
-            json={"project_uuid": project_uuid, "rutas": [f["ruta_entrada"] for f in trozo], "usuario": usuario},
-            headers=encabezados_las_manos(), timeout=TIMEOUT_HTTP_SEGUNDOS)
+            json={"project_uuid": project_uuid, "rutas": [f["ruta_entrada"] for f in trozo]},
+            headers=encabezados_procesamiento(contexto), timeout=TIMEOUT_HTTP_SEGUNDOS)
     except ERRORES_DE_DESENLACE_INCIERTO:  # fail-soft: el pedido pudo llegar; las filas siguen en_cola pero no se re-despachan durante la ventana, para no duplicar el trabajo
         hasta = _reloj() + VENTANA_DE_INCERTIDUMBRE_SEGUNDOS
         for i in ids:
@@ -339,7 +340,7 @@ async def _despachar_trozo(pool, project_uuid: str, usuario: str, trozo: list[di
             logger.error("proyectos_documentos: LAS MANOS acepto el trabajo sin job_id legible (proyecto %s)",
                          project_uuid)
             return "cortar"
-        ganadas = await repo.marcar_despachadas(pool, ids=ids, job_id=job_id)
+        ganadas = await repo.marcar_despachadas(pool, ids=ids, job_id=job_id, owner=contexto)
         if len(ganadas) != len(ids):
             logger.warning("proyectos_documentos: el trabajo %s tomo %s de %s filas (las demas ya no estaban en_cola)",
                            job_id, len(ganadas), len(ids))
@@ -361,7 +362,7 @@ async def _despachar_trozo(pool, project_uuid: str, usuario: str, trozo: list[di
         return "cortar"
     logger.error("proyectos_documentos: LAS MANOS rechazo el trabajo del proyecto %s (%s, %s)",
                  project_uuid, estado, _codigo_de(respuesta))
-    await repo.marcar_error_en_cola(pool, ids=ids, error="http_4xx")
+    await repo.marcar_error_en_cola(pool, ids=ids, error="http_4xx", owner=contexto)
     return "seguir"
 
 
@@ -374,8 +375,8 @@ def _ruta_del_proyecto(project_uuid: str, ruta: str | None) -> bool:
 
 
 async def _despachar(pool) -> None:
-    por_grupo: dict[tuple[str, str], list[dict]] = {}
-    ajenas: list[int] = []
+    por_grupo: dict[tuple[str, object], list[dict]] = {}
+    ajenas: list[tuple[int, object]] = []
     ahora = _reloj()
     for i in [i for i, hasta in _en_incertidumbre.items() if hasta <= ahora]:
         del _en_incertidumbre[i]
@@ -383,19 +384,21 @@ async def _despachar(pool) -> None:
         if fila["id"] in _en_incertidumbre:
             continue
         if not _ruta_del_proyecto(fila["project_uuid"], fila["ruta_entrada"]):
-            ajenas.append(fila["id"])
+            ajenas.append((fila["id"], fila["owner"]))
             continue
-        por_grupo.setdefault((fila["project_uuid"], fila["subido_por_email"]), []).append(fila)
+        por_grupo.setdefault((fila["project_uuid"], fila["owner"]), []).append(fila)
     if ajenas:
         logger.error("proyectos_documentos: %s fila(s) con una ruta que no es de su proyecto pasan a error "
                      "ruta_ajena sin mandarse a LAS MANOS: %s", len(ajenas), ajenas[:20])
-        await repo.marcar_error_en_cola(pool, ids=ajenas, error="ruta_ajena")
+        for owner in {owner for _, owner in ajenas}:
+            await repo.marcar_error_en_cola(pool, ids=[id_ for id_, current in ajenas if current == owner],
+                                             error="ruta_ajena", owner=owner)
     if not por_grupo:
         return
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
-    for (project_uuid, usuario), filas in por_grupo.items():
+    for (project_uuid, contexto), filas in por_grupo.items():
         for i in range(0, len(filas), por_trabajo):
-            accion = await _despachar_trozo(pool, project_uuid, usuario, filas[i:i + por_trabajo])
+            accion = await _despachar_trozo(pool, project_uuid, contexto, filas[i:i + por_trabajo])
             if accion == "cortar":
                 return
             if accion == "saltar_proyecto":
