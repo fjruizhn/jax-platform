@@ -18,7 +18,7 @@ lugar de conservar un receipt histórico incompatible.
 
 ### Por qué
 
-El checkout exacto de JAX `9e13b0def684a2cea8ebc602960700c4df7a34c1` publica
+El checkout exacto final de JAX `1b54455aab8c5879f95c516aa2b6359f67c4381b` publica
 renderer `.3` y domain `.5`, pero Platform mantenía el guard `.2`/`.2`.
 `_core()` cerraba correctamente, pero contra el contrato equivocado: cualquier
 respuesta Web Chat se degradaba a `UNAVAILABLE` y no producía unidad de
