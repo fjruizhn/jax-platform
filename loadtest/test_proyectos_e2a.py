@@ -16,7 +16,22 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import proyectos_e2a as pe  # noqa: E402
 
-EXT = frozenset({".pdf", ".xlsx", ".xls", ".docx", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".csv", ".txt", ".md"})
+
+
+def _tipos_del_backend():
+    """La lista que publica el backend (`GET /api/proyectos/documentos/limites` la saca de aca),
+    cargada por ruta: este job no instala las dependencias del backend y `tipos.py` no tiene."""
+    import importlib.util
+    ruta = Path(__file__).resolve().parent.parent / "backend" / "proyectos_documentos" / "tipos.py"
+    spec = importlib.util.spec_from_file_location("tipos_del_backend", ruta)
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+TIPOS = _tipos_del_backend()
+# Con punto, como las usa `plan_de_lote` (la API las publica sin punto; `medir` les agrega el punto).
+EXT = frozenset("." + e for e in TIPOS.EXTENSIONES_ACEPTADAS)
 CRED = "c" * 43
 
 
@@ -51,6 +66,13 @@ def test_plan_de_lote_conserva_cantidad_y_total_y_solo_extensiones_aceptadas():
     assert sorted(b for _, b in plan) == sorted(tamanos)
     assert all(Path(n).suffix in EXT for n, _ in plan)
     assert len({n for n, _ in plan}) == len(plan)
+
+
+def test_las_extensiones_de_la_prueba_son_las_que_publica_el_backend():
+    assert EXT == {"." + e for e in TIPOS.EXTENSIONES_ACEPTADAS}
+    assert ".xlsm" in EXT and ".csv" not in EXT and ".txt" not in EXT    # la compuerta de jax vigente
+    plan = pe.plan_de_lote(list(range(1, 30)), EXT)
+    assert all(TIPOS.tipo_de(n) is not None for n, _ in plan)        # todo el lote lo aceptaria la API
 
 
 def test_plan_de_lote_es_determinista():

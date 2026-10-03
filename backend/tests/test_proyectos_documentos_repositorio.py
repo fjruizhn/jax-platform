@@ -449,3 +449,22 @@ def test_archivado_y_usuario_inactivo_a_la_vez_es_no_visible_no_409(e):
         assert papel.value.papel == "OWNER"
     finally:
         e.client.portal.call(sql, "UPDATE jax_users SET status='active' WHERE user_id=%s", (e.usuario,))
+
+
+def test_reencolar_exige_las_mismas_condiciones_que_el_insert(e):
+    p = e.proyecto()
+    doc = e.insertar(p, "e" * 64)
+    e.client.portal.call(sql, "UPDATE project_documents SET estado='error', error='x' WHERE id=%s", (doc,))
+    ajeno = int(uid(e.client, f"{e.tenant}-ajeno", "operator", e.tenant))
+    roles = ("OWNER", "CONTRIBUTOR", "REVIEWER")
+    args = dict(project_id=p, sha256="e" * 64, ruta_entrada="entrada/l2/x.pdf", nombre_original="x.pdf")
+    with pytest.raises(repo.MembresiaPerdida) as sin:                # no miembro: 404
+        _pool_call(e.client, repo.reencolar_atascado, subido_por=ajeno, roles_escritura=roles, **args)
+    assert sin.value.papel is None
+    with pytest.raises(repo.MembresiaPerdida) as papel:              # papel que no escribe: 403
+        _pool_call(e.client, repo.reencolar_atascado, subido_por=e.usuario, roles_escritura=("VIEWER",), **args)
+    assert papel.value.papel == "OWNER"
+    e.archivar(p)
+    with pytest.raises(repo.ProyectoNoActivo):                       # archivado: 409
+        _pool_call(e.client, repo.reencolar_atascado, subido_por=e.usuario, roles_escritura=roles, **args)
+    assert e.fila(doc)[0] == "error"                                 # nada cambio

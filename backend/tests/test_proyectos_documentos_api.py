@@ -8,6 +8,7 @@ tenant y sus propios proyectos por la API (igual que test_proyectos_api.py).
 import asyncio
 import hashlib
 import io
+import json
 import os
 import stat
 import logging
@@ -1398,3 +1399,62 @@ def test_oculto_en_error_no_se_resucita(ent, workspace):
     r = ent.subir(p, ent.dueno, [_parte("a.pdf", "oculto")])
     assert r.json()["ignorados"] == [{"nombre": "a.pdf", "motivo": "duplicado_oculto"}]
     assert _fila(ent, doc)[0] == "error"
+
+
+# ------------------------- re-encolar: quien sube de nuevo y las mismas condiciones del INSERT (seguimiento 2)
+
+def test_reencolar_registra_a_quien_subio_de_nuevo_y_el_despachador_manda_su_correo(ent, workspace, monkeypatch):
+    from proyectos_documentos import despachador
+    p = ent.proyecto()
+    b = ent.miembro(p, "bea", "CONTRIBUTOR")
+    doc = ent.subir(p, ent.dueno, [_parte("de_a.pdf", "compartido")]).json()["aceptados"][0]["id"]
+    _atascar(ent, doc)
+    r = ent.subir(p, b, [_parte("de_b.pdf", "compartido")])
+    assert r.json()["aceptados"] == [{"id": doc, "nombre": "de_b.pdf"}], r.text
+    subido_por, nombre = ent.client.portal.call(
+        sql, "SELECT subido_por, nombre_original FROM project_documents WHERE id=%s", (doc,), True)[0]
+    assert (subido_por, nombre) == (ent._id("bea"), "de_b.pdf")
+
+    pedidos = []
+
+    async def las_manos(request):
+        cuerpo = json.loads(request.content) if request.method == "POST" else None
+        if cuerpo and cuerpo["project_uuid"] == p.uuid:
+            pedidos.append(cuerpo)
+        if request.method == "POST":
+            return httpx.Response(202, json={"job_id": f"j-{uuid.uuid4().hex}"})
+        return httpx.Response(200, json={"estado": "running", "resultados": []})
+
+    cliente = httpx.AsyncClient(transport=httpx.MockTransport(las_manos))
+
+    async def get_cliente():
+        return cliente
+    monkeypatch.setattr(despachador, "get_http_client", get_cliente)
+    import credencial_las_manos
+    monkeypatch.setenv(credencial_las_manos.VARIABLE, "c" * credencial_las_manos.LARGO_MINIMO)
+
+    async def ciclo():
+        from db.connection import get_pool
+        await despachador.ciclo(await get_pool())
+    ent.client.portal.call(ciclo)
+    assert [x["usuario"] for x in pedidos] == [ent._email("bea")]
+
+
+def test_reencolar_en_un_proyecto_archivado_entre_medio_responde_409_y_no_cambia_la_fila(ent, workspace, monkeypatch):
+    p = ent.proyecto()
+    doc = ent.subir(p, ent.dueno, [_parte("a.pdf", "hueco")]).json()["aceptados"][0]["id"]
+    _atascar(ent, doc)
+    antes = _fila(ent, doc)
+    original = repo.insertar
+
+    async def insertar_y_archivar(*args, **kwargs):
+        resultado = await original(*args, **kwargs)
+        if resultado is None:   # el INSERT vio el duplicado; el proyecto se archiva antes del UPDATE
+            await asyncio.to_thread(lambda: ent.client.post(f"{P}/{p.id}/estado", headers=ent.dueno,
+                                                            json={"estado": "ARCHIVED"}))
+        return resultado
+    monkeypatch.setattr(repo, "insertar", insertar_y_archivar)
+    r = ent.subir(p, ent.dueno, [_parte("a2.pdf", "hueco")])
+    assert r.status_code == 409 and _code(r) == "proyecto_no_activo", r.text
+    assert _fila(ent, doc) == antes
+    assert [x.name for x in _en_disco(workspace)] == ["a.pdf"]      # lo recien escrito se borro

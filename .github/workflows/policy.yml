@@ -3418,7 +3418,10 @@ jobs:
           #   185102c 3326 colectados -> HEAD 3364 (+38, todos en test_proyectos_documentos_api +7,
           #   _despachador +25, _repositorio +2, test_ajustes +4); suite con DB local en HEAD
           #   (JAX_TEST_DB_SUFIJO propio): 3332 passed, 2 skipped, 0 failed. Sin skips nuevos.
-          PISO_PASSED = 3360
+          # 3360 -> 3363 (seguimiento 2 de la ronda final): +3 con `client` (re-encolar registra a quien
+          #   sube de nuevo y su correo viaja a LAS MANOS; re-encolar en archivado entre medio da 409;
+          #   el re-encolado exige las condiciones del INSERT). Coleccion 3364 -> 3367. Sin DB no suman.
+          PISO_PASSED = 3363
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

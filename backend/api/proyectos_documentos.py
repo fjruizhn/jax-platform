@@ -237,15 +237,7 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
             except (repo.ProyectoNoActivo, repo.MembresiaPerdida) as exc:
                 # Rechazo DEFINITIVO del INSERT: nada se inserto, el archivo sobra.
                 await asyncio.to_thread(carpeta.borrar, seguro)
-                usados.discard(seguro)
-                bytes_lote -= escritos
-                if isinstance(exc, repo.ProyectoNoActivo):
-                    raise _error(409, "proyecto_no_activo", lote=lote, aceptados=aceptados,
-                                 ignorados=ignorados) from None
-                error = _http(ProjectNotVisible("member lost") if exc.papel is None
-                              else ProjectRoleInsufficient("role lost"))
-                error.detail = {**error.detail, "lote": lote, "aceptados": aceptados, "ignorados": ignorados}
-                raise error from None
+                raise _rechazo_definitivo(exc, lote, aceptados, ignorados) from None
             except BaseException as exc:
                 # Resultado INCIERTO (p. ej. se cayo la conexion despues de mandar el
                 # COMMIT): la fila pudo quedar escrita. NO se toca el disco -- borrar el
@@ -258,8 +250,13 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 raise _error(500, "insercion_incierta", lote=lote, aceptados=aceptados,
                              ignorados=ignorados) from None
             if nuevo is None:
-                reencolada = await _reencolar_atascado(proyecto, sha256, carpeta.ruta_relativa(seguro), lote, seguro,
-                                                       aceptados, ignorados)
+                try:
+                    reencolada = await _reencolar_atascado(proyecto, user, sha256, carpeta.ruta_relativa(seguro),
+                                                           nombre, lote, seguro, aceptados, ignorados)
+                except (repo.ProyectoNoActivo, repo.MembresiaPerdida) as exc:
+                    # Mismo rechazo que el INSERT: el UPDATE no toco nada, el archivo sobra.
+                    await asyncio.to_thread(carpeta.borrar, seguro)
+                    raise _rechazo_definitivo(exc, lote, aceptados, ignorados) from None
                 if reencolada is not None:
                     aceptados.append({"id": reencolada, "nombre": nombre})
                     continue
@@ -292,15 +289,30 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
     return {"lote": lote, "aceptados": aceptados, "ignorados": ignorados}
 
 
-async def _reencolar_atascado(proyecto: dict, sha256: str, ruta: str, lote: str, seguro: str, aceptados: list,
-                              ignorados: list) -> int | None:
+def _rechazo_definitivo(exc: Exception, lote: str, aceptados: list, ignorados: list) -> HTTPException:
+    """ProyectoNoActivo -> 409; MembresiaPerdida -> 404 sin papel, 403 con un papel que no escribe
+    (el contrato de E1), con lo que SI quedo registrado en el lote."""
+    if isinstance(exc, repo.ProyectoNoActivo):
+        return _error(409, "proyecto_no_activo", lote=lote, aceptados=aceptados, ignorados=ignorados)
+    error = _http(ProjectNotVisible("member lost") if exc.papel is None
+                  else ProjectRoleInsufficient("role lost"))
+    error.detail = {**error.detail, "lote": lote, "aceptados": aceptados, "ignorados": ignorados}
+    return error
+
+
+async def _reencolar_atascado(proyecto: dict, user: AuthUser, sha256: str, ruta: str, nombre: str, lote: str,
+                              seguro: str, aceptados: list, ignorados: list) -> int | None:
     """El duplicado de un documento en `error` sin `carpeta_procesado` vuelve a la cola con la
-    copia recien subida (repositorio.reencolar_atascado); la copia anterior se borra si estaba
-    bajo `entrada/` de este proyecto (despachador.borrar_copia no toca `fuente/`). Id de la
-    fila re-encolada, o None si era un duplicado comun."""
+    copia recien subida y pasa a ser de quien la subio (repositorio.reencolar_atascado, con las
+    mismas condiciones que el INSERT: ProyectoNoActivo / MembresiaPerdida suben al llamador); la
+    copia anterior se borra si estaba bajo `entrada/` de este proyecto (despachador.borrar_copia
+    no toca `fuente/`). Id de la fila re-encolada, o None si era un duplicado comun."""
     try:
-        reencolada = await repo.reencolar_atascado(await get_pool(), project_id=proyecto["id"], sha256=sha256,
-                                                   ruta_entrada=ruta)
+        reencolada = await repo.reencolar_atascado(
+            await get_pool(), project_id=proyecto["id"], sha256=sha256, ruta_entrada=ruta, nombre_original=nombre,
+            subido_por=int(user.user_id), roles_escritura=_ROLES_DE_ESCRITURA)
+    except (repo.ProyectoNoActivo, repo.MembresiaPerdida):
+        raise
     except BaseException as exc:
         # Resultado INCIERTO, como el de un INSERT: la fila pudo quedar apuntando al archivo
         # nuevo, asi que el disco no se toca y queda el rastro para conciliar.

@@ -66,11 +66,10 @@ class MembresiaPerdida(Exception):
 # sentencia, sin carrera con un archivado o una baja que lleguen en medio de la subida.
 # (InnoDB toma un candado compartido sobre las filas que lee, asi un cambio concurrente
 # espera a este commit.)
-_SQL_INSERTAR = (
-    "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, "
-    "bytes, tipo, subido_por) "
-    "SELECT %s, %s, %s, %s, %s, %s, %s FROM jax_project_scope s "
-    "WHERE s.project_id = %s AND s.status = 'ACTIVE' AND EXISTS ("
+# Predicado de escritura sobre `jax_project_scope s` (parametros: user_id, *roles, user_id).
+# Lo comparten el INSERT y el re-encolado: las mismas condiciones en la misma sentencia.
+_PUEDE_ESCRIBIR = (
+    "s.status = 'ACTIVE' AND EXISTS ("
     "SELECT 1 FROM jax_project_membership m WHERE m.project_id = s.project_id "
     "AND m.tenant_id = s.tenant_id AND m.user_id = %s AND m.status = 'ACTIVE' "
     "AND m.project_role IN ({roles})) "
@@ -78,7 +77,19 @@ _SQL_INSERTAR = (
     # jax/memory/project_queries.py (47-53), por donde pasa `_proyecto_visible` en E1.
     # Copiado, no reutilizado: aquel es Python sobre un cursor y esto es UNA sentencia.
     "AND EXISTS (SELECT 1 FROM jax_users u WHERE u.user_id = %s AND u.tenant_id = s.tenant_id "
-    "AND LOWER(u.status) = 'active') LIMIT 1"
+    "AND LOWER(u.status) = 'active')"
+)
+_SQL_INSERTAR = (
+    "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, "
+    "bytes, tipo, subido_por) "
+    "SELECT %s, %s, %s, %s, %s, %s, %s FROM jax_project_scope s "
+    "WHERE s.project_id = %s AND " + _PUEDE_ESCRIBIR + " LIMIT 1"
+)
+_SQL_REENCOLAR = (
+    "UPDATE project_documents SET estado = 'en_cola', job_id = NULL, error = NULL, ruta_entrada = %s, "
+    "nombre_original = %s, subido_por = %s "
+    "WHERE id = %s AND EXISTS (SELECT 1 FROM jax_project_scope s WHERE s.project_id = %s AND "
+    + _PUEDE_ESCRIBIR + ")"
 )
 _SQL_POR_QUE_NO = (
     "SELECT s.status, m.project_role, u.user_id FROM jax_project_scope s "
@@ -87,6 +98,22 @@ _SQL_POR_QUE_NO = (
     "LEFT JOIN jax_users u ON u.user_id = %s AND u.tenant_id = s.tenant_id AND LOWER(u.status) = 'active' "
     "WHERE s.project_id = %s LIMIT 1"
 )
+
+
+async def _por_que_no(conn, cur, *, project_id: int, subido_por: int, roles_escritura: tuple[str, ...]) -> None:
+    """Una escritura condicional no toco nada: commit y la excepcion que corresponde, en el
+    mismo orden que la ruta (404 -> 403 -> 409): quien ya no ve el proyecto no aprende que se
+    archivo. Un usuario ya no activo en su tenant es, para E1, un proyecto no visible (papel
+    None -> 404). Siempre levanta."""
+    await cur.execute(_SQL_POR_QUE_NO, (subido_por, subido_por, project_id))
+    fila = await cur.fetchone()
+    await conn.commit()
+    if fila is None:
+        raise ProyectoNoActivo(project_id)
+    papel = fila[1] if fila[2] is not None else None
+    if papel is None or papel not in roles_escritura or fila[0] == "ACTIVE":
+        raise MembresiaPerdida(papel)
+    raise ProyectoNoActivo(project_id)
 
 
 async def insertar(pool, *, project_id: int, sha256: str, nombre_original: str, ruta_entrada: str,
@@ -108,31 +135,28 @@ async def insertar(pool, *, project_id: int, sha256: str, nombre_original: str, 
                     return None
                 raise
             if not cur.rowcount:
-                await cur.execute(_SQL_POR_QUE_NO, (subido_por, subido_por, project_id))
-                fila = await cur.fetchone()
-                await conn.commit()
-                if fila is None:
-                    raise ProyectoNoActivo(project_id)
-                # Mismo orden que la ruta (404 -> 403 -> 409): quien ya no ve el proyecto no
-                # aprende que se archivo. Un usuario ya no activo en su tenant es, para E1, un
-                # proyecto no visible (papel None -> 404).
-                papel = fila[1] if fila[2] is not None else None
-                if papel is None or papel not in roles_escritura or fila[0] == "ACTIVE":
-                    raise MembresiaPerdida(papel)
-                raise ProyectoNoActivo(project_id)
+                await _por_que_no(conn, cur, project_id=project_id, subido_por=subido_por,
+                                  roles_escritura=roles_escritura)
             nuevo = cur.lastrowid
         await conn.commit()
         return nuevo
 
 
-async def reencolar_atascado(pool, *, project_id: int, sha256: str, ruta_entrada: str) -> tuple[int, str | None] | None:
+async def reencolar_atascado(pool, *, project_id: int, sha256: str, ruta_entrada: str, nombre_original: str,
+                             subido_por: int, roles_escritura: tuple[str, ...]) -> tuple[int, str | None] | None:
     """Ronda final, menor 8: si el documento con ese sha256 quedo en `error` SIN
     `carpeta_procesado` (LAS MANOS no llego a asegurarlo en fuente/) y esta visible, vuelve a
     `en_cola` con la copia recien subida (`job_id` y `error` en NULL) en vez de ser un
     «duplicado» para siempre. Devuelve (id, ruta_entrada anterior) o None si no habia nada
     que re-encolar. Un oculto no se resucita (mismo contrato que el duplicado oculto).
     SELECT ... FOR UPDATE y UPDATE en una transaccion: dos subidas iguales a la vez re-encolan
-    una sola vez."""
+    una sola vez. La fila pasa a ser de quien acaba de subir (`subido_por`, `nombre_original`):
+    el despachador manda SU correo a LAS MANOS. El UPDATE exige las mismas condiciones que el
+    INSERT (proyecto ACTIVE, miembro activo con papel de escritura); si no se cumplen, levanta
+    ProyectoNoActivo / MembresiaPerdida como `insertar`."""
+    if not roles_escritura:
+        raise ValueError("roles_escritura vacio: nadie podria re-encolar")
+    actualizar = _SQL_REENCOLAR.format(roles=", ".join(["%s"] * len(roles_escritura)))
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await conn.begin()
@@ -145,10 +169,15 @@ async def reencolar_atascado(pool, *, project_id: int, sha256: str, ruta_entrada
                 if fila is None:
                     await conn.rollback()
                     return None
-                await cur.execute(
-                    "UPDATE project_documents SET estado = 'en_cola', job_id = NULL, error = NULL, ruta_entrada = %s "
-                    "WHERE id = %s", (ruta_entrada, fila[0]))
+                await cur.execute(actualizar, (ruta_entrada, nombre_original, subido_por, fila[0], project_id,
+                                               subido_por, *roles_escritura, subido_por))
+                if not cur.rowcount:
+                    await conn.rollback()
+                    await _por_que_no(conn, cur, project_id=project_id, subido_por=subido_por,
+                                      roles_escritura=roles_escritura)
                 await conn.commit()
+            except (ProyectoNoActivo, MembresiaPerdida):
+                raise
             except BaseException:
                 await conn.rollback()
                 raise
