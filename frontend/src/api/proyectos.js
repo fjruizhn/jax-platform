@@ -101,3 +101,9 @@ export async function restaurarDocumento(id, doc) {
   const { data } = await api.post(`/proyectos/${id}/documentos/${doc}/restaurar`)
   return data
 }
+
+// Vuelve a poner en la cola un documento sin_extractor o con error (el original ya está en el servidor).
+export async function reprocesarDocumento(id, doc) {
+  const { data } = await api.post(`/proyectos/${id}/documentos/${doc}/reprocesar`)
+  return data
+}
