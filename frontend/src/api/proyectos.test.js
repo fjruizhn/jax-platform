@@ -305,8 +305,11 @@ describe('i18n proyectos.documentos', () => {
   })
 
   it('el extractor de causas ve la lista completa (la prueba no es vacía)', () => {
-    expect(causasDelBackend()).toEqual(['estado_desconocido', 'http_4xx', 'ocr_confianza_baja', 'ocr_sin_texto',
-      'procesamiento_fallido', 'rechazado', 'ruta_ajena', 'sin_resultado', 'trabajo_fallido', 'trabajo_perdido'])
+    expect(causasDelBackend()).toEqual(['archivo_ilegible', 'archivo_no_procesable', 'estado_desconocido',
+      'formato_bmp_16_bits', 'formato_coma_flotante', 'formato_entero_32_bits', 'formato_gif_animado',
+      'formato_gris_16_bits', 'formato_no_soportado', 'formato_webp_animado', 'http_4xx', 'imagen_demasiado_grande',
+      'ocr_confianza_baja', 'ocr_sin_memoria', 'ocr_sin_texto', 'ocr_tiempo_excedido', 'procesamiento_fallido',
+      'rechazado', 'ruta_ajena', 'sin_resultado', 'trabajo_fallido', 'trabajo_perdido'])
   })
 
   it.each(secciones)('%s: toda causa de error del backend tiene texto, y hay un genérico', (_n, d) => {
