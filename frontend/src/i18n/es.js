@@ -1620,7 +1620,7 @@ export default {
       ocultarDe: (nombre) => `Ocultar ${nombre}`,
       restaurarDe: (nombre) => `Restaurar ${nombre}`,
       causa: (texto) => `Causa: ${texto}`,
-      sinMotivo: 'Motivo no registrado: reprocésalo para obtenerlo',
+      sinMotivo: 'Motivo no registrado: reprocesalo para obtenerlo',
       // Códigos estables de `project_documents.error` (despachador.py::CAUSAS_DE_ERROR).
       causas: {
         procesamiento_fallido: 'no se pudo procesar el archivo.',
