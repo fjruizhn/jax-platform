@@ -1080,8 +1080,13 @@ jobs:
             //   largo), api/proyectos.test.js +3 (causas del despachador y su texto es/en).
             // 1332 tras la fusion con master (#175): 1196 de master (#175 no toca el frontend) + 136 de
             //   E2a; medido LOCAL sobre la fusion: 1332/0/1332.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1332) {
-              console.error("PISO ROTO: se esperaban 1332 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1332 -> 1348 (2026-10-03, jax-14, «Reprocesar» + motivo del error): +16, medido LOCAL con
+            //   `npx vitest run` sobre origin/master 1e2888c = 1332/0/1332 y sobre esta rama 1348/0/1348:
+            //   Documentos.test.jsx +15 (botón según estado, tipo, permiso y vista; llama a la API sin
+            //   diálogo; errores traducidos; una acción a la vez; «Motivo no registrado»; dos causas OCR)
+            //   y api/proyectos.test.js +1 (POST a /reprocesar). El runner tiene la última palabra.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1348) {
+              console.error("PISO ROTO: se esperaban 1348 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3446,7 +3451,12 @@ jobs:
           #   toca la de produccion; el +1 sale de la medicion sin DB de abajo (el mismo test cuenta
           #   en los dos jobs) y el test con `client` ya existente solo gana una clave en su dict.
           #   El runner tiene la ultima palabra.
-          PISO_PASSED = 3402
+          # 3402 -> 3506 (2026-10-03, jax-14, «Reprocesar» + motivo del error): +104, MEDIDO CON DB
+          #   (mariadb:12.3.3 descartable, jax 2b0c163, mismo comando) sobre origin/master 1e2888c ->
+          #   3401 passed y sobre esta rama -> 3505 passed (en ambas, 2 pruebas de test_base_por_sesion
+          #   que hablan con un MariaDB local con triggers quedan fuera: no son del runner). Piso =
+          #   declarado (3402) + delta propio (104). El runner tiene la ultima palabra.
+          PISO_PASSED = 3506
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4447,7 +4457,13 @@ jobs:
       # backend/tests/test_ejecutor_config_c5.py. MEDIDO con JAX_CI_NO_DB=1 sobre ese archivo:
       # antes 2 passed + 1 skipped, despues 3 passed + 1 skipped (el skipped es el `client`).
       # El resto de la suite no cambia; la base 2074 es el numero del runner de arriba.
-      JAX_CI_MIN_PASSED: "2075"
+      # 2075 -> 2118 (2026-10-03, jax-14, «Reprocesar» + motivo del error): +43 puros. MEDIDO con
+      # JAX_CI_NO_DB=1 sobre el MISMO comando (sin tests/test_carga_indice_pipelines_del_usuario.py):
+      # origin/master 1e2888c 2076 passed / 1327 skipped (el declarado es 2075: no se premia esa
+      # deriva) -> esta rama 2119 / 1388. Delta propio +43: test_proyectos_documentos_original.py
+      # (archivo nuevo, 32) + 11 casos puros de codigo_de_la_razon en el despachador. El resto de
+      # lo nuevo pide `client` (skips). El runner tiene la ultima palabra.
+      JAX_CI_MIN_PASSED: "2118"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
