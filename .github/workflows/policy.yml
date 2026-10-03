@@ -3501,7 +3501,11 @@ jobs:
           #   frontend/src/api/causas_de_error.json, vista en rojo quitandole un codigo). MEDIDO CON DB en local
           #   (mariadb:12.3.3 descartable en 3399, jax 2b0c163, mismo comando): 3608 passed, 0 failed, 0 skipped,
           #   con las 3 de test_base_por_sesion incluidas; 3608 - 3 = 3605, el mismo criterio de antes.
-          PISO_PASSED = 3605
+          # 3605 -> 3606 (ronda 3 de #187): +1 pura (una razon del OCR con codigo fuera de CAUSAS_DE_ERROR cae a
+          #   procesamiento_fallido; vista en rojo contra el despachador sin defensa). MEDIDO CON DB en local
+          #   (mariadb:12.3.3 descartable en 3399, jax 2b0c163, mismo comando): 3609 passed, 0 failed, 0 skipped,
+          #   con las 3 de test_base_por_sesion incluidas; 3609 - 3 = 3606.
+          PISO_PASSED = 3606
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4523,7 +4527,9 @@ jobs:
       # runner salta, 2175.
       # 2175 -> 2179 (ronda 2 de #187): +4 puras (ver el piso con DB). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo
       # comando, sobre la rama: 2180 passed / 1428 skipped; menos el skip de entorno del runner, 2179.
-      JAX_CI_MIN_PASSED: "2179"
+      # 2179 -> 2180 (ronda 3 de #187): +1 pura. MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la rama:
+      # 2181 passed / 1428 skipped; menos el skip de entorno del runner, 2180.
+      JAX_CI_MIN_PASSED: "2180"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
