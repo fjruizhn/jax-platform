@@ -203,3 +203,8 @@ Se aceptan con su cota; ninguno es un fallo abierto.)*
 - **nginx responde 413 en HTML si un admin sube `max_bytes_lote` por encima de `client_max_body_size`.**
   El cliente no recibe el JSON con el código y la persona ve el mensaje genérico. Se corrige alineando
   los dos valores en el despliegue (Parte C), no en el código.
+- **Subir de nuevo un documento OCULTO que quedó en `error` sin procesar no lo re-encola.** Sigue dando
+  «Ya estaba en el proyecto, oculto» (`duplicado_oculto`): se mantiene el contrato de que un oculto no se
+  resucita (`test_duplicado_y_duplicado_oculto`, `test_oculto_en_error_no_se_resucita`). Para procesarlo,
+  primero se restaura y después se vuelve a subir. La fila re-encolada (visible) conserva también su
+  `nombre_original` y su `subido_por`.

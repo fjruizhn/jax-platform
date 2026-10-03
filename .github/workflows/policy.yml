@@ -1073,8 +1073,9 @@ jobs:
             // 1318 -> 1332 (2026-10-03, Proyectos E2a ronda final de la Parte B): base = el número DEL
             //   RUNNER sobre 683344f (1318, leído por el controlador; el frontend no cambió hasta
             //   185102c) + el delta local de la ronda final, +14, medido LOCAL con `npx vitest run`
-            //   1332/0/1332: BotonDocumentos.test.jsx +3 (destino en ventana, 7→9 cierra, segundo clic),
-            //   BotonDocumentos.flujo.test.jsx +3 (archivo nuevo: Escape y foco, título, 7→9 sube a 9),
+            //   1332/0/1332: BotonDocumentos.test.jsx +2 (destino en ventana, 7→9 cierra),
+            //   BotonDocumentos.flujo.test.jsx +4 (archivo nuevo, con #root real: Escape y foco, #root inert
+            //   y Cancelar, título, 7→9 sube a 9),
             //   SelectorDeDocumentos.test.jsx +3, Documentos.test.jsx +2 (causa desconocida, correo
             //   largo), api/proyectos.test.js +3 (causas del despachador y su texto es/en).
             if (r.numFailedTests !== 0 || r.numPassedTests !== 1332) {

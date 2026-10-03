@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import '@testing-library/jest-dom'
 
@@ -22,9 +22,16 @@ const INICIAL = useJaxStore.getState()
 const LIMITES = { max_bytes_archivo: 1e8, max_archivos_lote: 250, max_bytes_lote: 1e9, extensiones: ['pdf'] }
 const archivo = (nombre) => new File([new Uint8Array(10)], nombre)
 
+// Se monta dentro de un #root real, como la app: Dialogo marca ese nodo `inert` mientras está
+// abierto (y vive fuera de él, por portal). Así la prueba ve lo mismo que el navegador.
 function renderBoton() {
-  return render(<I18nProvider><MemoryRouter><BotonDocumentos /></MemoryRouter></I18nProvider>)
+  const raiz = document.createElement('div')
+  raiz.id = 'root'
+  document.body.appendChild(raiz)
+  return render(<I18nProvider><MemoryRouter><BotonDocumentos /></MemoryRouter></I18nProvider>, { container: raiz })
 }
+
+afterEach(() => { document.getElementById('root')?.remove() })
 
 async function abrirPara(nombre) {
   const boton = screen.getByRole('button', { name: T.boton })
@@ -50,9 +57,25 @@ describe('BotonDocumentos con el selector real', () => {
     renderBoton()
     const { boton, dialogo } = await abrirPara('Alfa')
     expect(within(dialogo).getByRole('button', { name: T.elegirCarpeta })).toBeInTheDocument()
+    expect(document.getElementById('root')).toHaveAttribute('inert')
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(document.getElementById('root')).not.toHaveAttribute('inert')
     expect(screen.queryByRole('button', { name: T.elegirArchivos })).toBeNull()   // nada queda fijo en la barra
+    await waitFor(() => expect(boton).toHaveFocus())
+  })
+
+  it('con la ventana abierta el resto de la app (con 📄) está inerte; Cancelar la cierra y el foco vuelve a 📄', async () => {
+    useJaxStore.setState({ proyectoActivo: { id: 7, nombre: 'Alfa' } })
+    renderBoton()
+    const { boton, dialogo } = await abrirPara('Alfa')
+    const raiz = document.getElementById('root')
+    expect(raiz).toHaveAttribute('inert')
+    expect(raiz.contains(boton)).toBe(true)          // 📄 queda dentro de lo inerte: no se puede volver a pulsar
+    expect(raiz.contains(dialogo)).toBe(false)       // la ventana vive fuera, por portal
+    fireEvent.click(within(dialogo).getByRole('button', { name: T.resumen.cancelar }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(raiz).not.toHaveAttribute('inert')
     await waitFor(() => expect(boton).toHaveFocus())
   })
 
