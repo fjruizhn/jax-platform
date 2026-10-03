@@ -3473,7 +3473,12 @@ jobs:
           #   asi que el piso queda por debajo de lo que contara el runner). Nuevas: 4 en test_ajustes (claves
           #   nuevas), 4 en test_proyectos_documentos_api (cupo global, subida concurrente, reprocesar sin 429 por
           #   las subidas, Retry-After) y 3 puras en test_proyectos_documentos_cupo.py = 11.
-          PISO_PASSED = 3551
+          # 3551 -> 3567 (ronda 2 de #186): MEDIDO EXACTO CON DB en local (mariadb:12.3.3 descartable, jax 2b0c163,
+          #   mismo comando): 3567 passed, con las mismas 3 pruebas de test_base_por_sesion fuera. El run
+          #   37149064120 conto passed=3553 con piso 3551 (medido 3551 local): +2 de las pruebas de
+          #   test_base_por_sesion que local no cuenta y -1 por el skip de entorno de arriba. Mismo desfase
+          #   esperado: el runner contara unas 2 por encima del piso.
+          PISO_PASSED = 3567
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4484,7 +4489,12 @@ jobs:
       # 2140 passed / 1403 skipped (master 1e2888c: 2076; el piso es el medido, sin margen por debajo).
       # 2140 -> 2143 (cupo propio de reprocesar): +3 puros en test_proyectos_documentos_cupo.py. MEDIDO EXACTO
       # con JAX_CI_NO_DB=1, mismo comando, sobre la rama: 2143 passed / 1411 skipped.
-      JAX_CI_MIN_PASSED: "2143"
+      # 2143 -> 2149 (ronda 2 de #186). El run 37149064120 dio passed=2142 skipped=1412 con piso 2143 (medido
+      # en local: 2143 / 1411). Comparadas las listas `-rs` del runner y de local, la UNICA diferencia es
+      # tests/test_conftest_no_carga_secretos_no_necesarios.py:250, que el runner salta ("no hay /etc/jax/.env con
+      # estos secretos en esta maquina"): un skip LEGITIMO de entorno, la prueba no es de esta rama. Piso =
+      # lo medido en local ahora (2150 passed / 1420 skipped) menos ese 1: 2149, el numero que dara el runner.
+      JAX_CI_MIN_PASSED: "2149"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
