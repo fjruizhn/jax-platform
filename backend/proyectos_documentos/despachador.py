@@ -22,13 +22,15 @@ Que hacer con cada respuesta del POST:
   - los demas 4xx (400, un 422 con otro codigo...) -> rechazan el pedido mismo: las filas
     del trozo pasan a `error` con el codigo.
 
-BORRADO de `entrada/`: cuando LAS MANOS devuelve el resultado de un archivo (ok o no) y la
-fila cambia a un estado final, se borra la copia de `proyectos/<uuid>/entrada/...` (el
-original queda en `fuente/`) y la carpeta del lote si quedo vacia. Una ruta bajo `fuente/`
--- los documentos que trajo LACTOVI -- NUNCA se borra: es el original. REGLA (aceptada por el
-controlador): se borra SOLO si LAS MANOS devolvio resultado de ESE archivo. Sin resultado
-(trabajo perdido, fallido o sin ese archivo) el archivo se queda: no hay nada procesado que
-lo reemplace. El camino se recorre desde `JAX_WORKSPACE_DIR` con
+BORRADO de `entrada/`: se borra la copia de `proyectos/<uuid>/entrada/...` (y la carpeta del
+lote si quedo vacia) SOLO si el resultado de ESE archivo trae `carpeta_procesado` bajo
+`proyectos/<project_uuid de la fila>/procesado/` y la fila cambio a un estado final. LAS MANOS
+llena `carpeta_procesado` recien despues de asegurar el original en `fuente/`
+(jax `procesamiento/ingesta.py::ingerir`); un `error` sin carpeta (ENOSPC, EACCES, jail, otro
+`JAX_WORKSPACE_DIR`), un `rechazado`, un `cancelado` o una carpeta de otro proyecto significan
+que la copia de `entrada/` puede ser el UNICO original: se queda. Tampoco se borra sin resultado
+(trabajo perdido, fallido o sin ese archivo). Una ruta bajo `fuente/` -- los documentos que
+trajo LACTOVI -- NUNCA se borra: es el original. El camino se recorre desde `JAX_WORKSPACE_DIR` con
 `openat(O_NOFOLLOW)` y `unlink(dir_fd=)`, como `almacen.abrir_carpeta_lote`: un enlace
 simbolico en cualquier nivel no se sigue, la fila queda y se deja el error en el log.
 
@@ -105,6 +107,16 @@ _avisos: set[asyncio.Task] = set()
 
 
 # ---------------------------------------------------------------- borrado de entrada/
+
+def _original_a_salvo(project_uuid: str, carpeta_procesado: str | None) -> bool:
+    """True solo si LAS MANOS devolvio una `carpeta_procesado` de ESTE proyecto: la prueba de
+    que el original ya esta en `fuente/` y la copia de `entrada/` sobra."""
+    if not isinstance(carpeta_procesado, str):
+        return False
+    partes = carpeta_procesado.split("/")
+    return (len(partes) >= 4 and partes[:3] == ["proyectos", project_uuid, "procesado"]
+            and not any(p in ("", ".", "..") for p in partes))
+
 
 def _borrar_de_entrada(workspace: Path, project_uuid: str, ruta_entrada: str) -> bool:
     """Sincrona (to_thread). True si la copia ya no esta (la borro o ya no existia); False
@@ -204,7 +216,8 @@ async def _sincronizar_trabajo(pool, job_id: str) -> None:
             cambiadas = await repo.aplicar_resultado(
                 pool, job_id=job_id, ruta_entrada=fila["ruta_entrada"], estado=estado,
                 carpeta_procesado=carpeta, error=error)
-            if cambiadas and resultado is not None and estado in ESTADOS_FINALES:
+            if (cambiadas and resultado is not None and estado in ESTADOS_FINALES
+                    and _original_a_salvo(fila["project_uuid"], carpeta)):
                 await _borrar_copia(fila)
         except Exception:  # fail-soft: una fila que no se pudo aplicar no detiene a las demas del trabajo; la proxima vuelta la reintenta y queda en el log
             logger.warning("proyectos_documentos: no se pudo aplicar el resultado del documento %s (trabajo %s)",

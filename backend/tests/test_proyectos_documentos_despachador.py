@@ -297,9 +297,44 @@ def test_sincroniza_resultados_y_borra_entrada(e):
     e.ciclo()
     assert e.fila(a) == ("listo", "J1", f"proyectos/{e.uuid}/procesado/a", None)
     assert e.fila(b) == ("error", "J1", None, "PDF corrupto")
-    assert not pa.exists() and not pb.exists()
-    assert not pa.parent.exists()                    # la carpeta del lote quedo vacia y se fue
+    assert not pa.exists()
+    assert pb.exists()                               # error sin carpeta_procesado: puede ser el unico original
+
+
+def test_con_carpeta_procesado_borra_y_quita_el_lote_vacio(e):
+    r = e.ruta("l1", "a.pdf")
+    p = e.archivo(r)
+    doc = e.insertar(r, n=1)
+    e.abrir(doc, "J1b")
+    e.las_manos.estados["J1b"] = _trabajo("J1b", "completed", [
+        _resultado(r, "error", carpeta=f"proyectos/{e.uuid}/procesado/abc", error="extractor")])
+    e.ciclo()
+    assert e.fila(doc)[0] == "error"
+    assert not p.exists() and not p.parent.exists()  # el original ya esta en fuente/; el lote vacio se va
     assert (e.workspace / "proyectos" / e.uuid / "entrada").is_dir()
+
+
+@pytest.mark.parametrize("estado,carpeta", [
+    ("error", None),                                 # LAS MANOS fallo antes de asegurar fuente/ (ENOSPC, jail...)
+    ("rechazado", None),
+    ("cancelado", None),
+    ("ok", None),
+    ("ok", "proyectos/11111111-1111-4111-8111-111111111111/procesado/x"),   # carpeta de OTRO proyecto
+    ("ok", "procesado/x"),
+    ("ok", "proyectos/{uuid}/fuente/x"),
+    ("ok", "proyectos/{uuid}/procesado/../entrada"),
+    ("ok", "proyectos/{uuid}/procesado/"),
+])
+def test_sin_carpeta_procesado_propia_la_copia_de_entrada_se_queda(e, estado, carpeta):
+    r = e.ruta("l1", "a.pdf")
+    p = e.archivo(r)
+    doc = e.insertar(r, n=1)
+    e.abrir(doc, "J1c")
+    carpeta = carpeta.format(uuid=e.uuid) if carpeta else carpeta
+    e.las_manos.estados["J1c"] = _trabajo("J1c", "completed", [_resultado(r, estado, carpeta=carpeta, error="x")])
+    e.ciclo()
+    assert e.fila(doc)[0] != "pendiente"             # el estado se aplico
+    assert p.exists() and p.read_bytes() == b"%PDF-1.4 x"
 
 
 @pytest.mark.parametrize("de_las_manos,esperado", [
@@ -362,7 +397,7 @@ def test_error_largo_se_recorta_y_la_fila_termina(e):
     estado, _, _, error = e.fila(doc)
     assert estado == "error" and error == "x" * 1000
     assert "J20" not in _con_pool(e.client, repo.trabajos_abiertos)
-    assert not p.exists()
+    assert p.exists()                                # error sin carpeta_procesado: la copia se queda
 
 
 def test_un_timeout_corta_la_sincronizacion_de_la_vuelta(e):
@@ -389,7 +424,7 @@ def test_no_borra_ruta_entrada_bajo_fuente(e):
     antes = sorted(x.name for x in p.parent.parent.rglob("*"))
     doc = e.insertar(r, n=1)
     e.abrir(doc, "J8")
-    e.las_manos.estados["J8"] = _trabajo("J8", "completed", [_resultado(r, "ok", carpeta="proc/x")])
+    e.las_manos.estados["J8"] = _trabajo("J8", "completed", [_resultado(r, "ok", carpeta=f"proyectos/{e.uuid}/procesado/x")])
     e.ciclo()
     assert e.fila(doc)[0] == "listo"
     assert p.exists() and p.read_bytes() == b"%PDF-1.4 x"
@@ -402,7 +437,7 @@ def test_no_borra_un_archivo_de_otro_proyecto_aunque_diga_entrada(e):
     p = e.archivo(r)
     doc = e.insertar(r, n=1)
     e.abrir(doc, "J9")
-    e.las_manos.estados["J9"] = _trabajo("J9", "completed", [_resultado(r, "ok", carpeta="x")])
+    e.las_manos.estados["J9"] = _trabajo("J9", "completed", [_resultado(r, "ok", carpeta=f"proyectos/{e.uuid}/procesado/x")])
     e.ciclo()
     assert e.fila(doc)[0] == "listo" and p.exists()
 
@@ -417,7 +452,7 @@ def test_symlink_en_el_camino_del_borrado_no_se_sigue(e, caplog):
     (entrada / "l1").symlink_to(senuelo)
     doc = e.insertar(r, n=1)
     e.abrir(doc, "J10")
-    e.las_manos.estados["J10"] = _trabajo("J10", "completed", [_resultado(r, "ok", carpeta="x")])
+    e.las_manos.estados["J10"] = _trabajo("J10", "completed", [_resultado(r, "ok", carpeta=f"proyectos/{e.uuid}/procesado/x")])
     with caplog.at_level(logging.WARNING):
         e.ciclo()
     assert (senuelo / "a.pdf").read_bytes() == b"no me toques"
@@ -437,7 +472,7 @@ def test_symlink_como_archivo_no_se_borra_ni_se_sigue(e):
     destino.symlink_to(fuera)
     doc = e.insertar(r, n=1)
     e.abrir(doc, "J11")
-    e.las_manos.estados["J11"] = _trabajo("J11", "completed", [_resultado(r, "ok", carpeta="x")])
+    e.las_manos.estados["J11"] = _trabajo("J11", "completed", [_resultado(r, "ok", carpeta=f"proyectos/{e.uuid}/procesado/x")])
     e.ciclo()
     assert fuera.read_bytes() == b"ajeno" and destino.is_symlink()
 
@@ -448,7 +483,7 @@ def test_carpeta_del_lote_con_otro_archivo_no_se_quita(e):
     a = e.insertar(ra, n=1)
     e.insertar(rb, n=2)
     e.abrir(a, "J12")
-    e.las_manos.estados["J12"] = _trabajo("J12", "completed", [_resultado(ra, "ok", carpeta="x")])
+    e.las_manos.estados["J12"] = _trabajo("J12", "completed", [_resultado(ra, "ok", carpeta=f"proyectos/{e.uuid}/procesado/x")])
     e.ciclo()
     assert not pa.exists() and pb.exists()
 
