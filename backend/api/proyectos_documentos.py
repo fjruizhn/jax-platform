@@ -1,5 +1,5 @@
 """Documentos de un proyecto (E2a, T6, 2026-10-03): subir por lotes, listar,
-ocultar, restaurar y publicar los limites.
+ocultar, restaurar, reprocesar y publicar los limites.
 
 Es el punto de entrada de archivos de clientes. Reglas, en el orden en que se
 aplican:
@@ -15,7 +15,7 @@ aplican:
    plataforma reciba y vuelque a disco su cuerpo entero. Tambien antes del cuerpo,
    el cupo de subidas simultaneas (`cupo_de_subidas`, 429 `subidas_simultaneas`).
 3. `proyecto_no_activo` (409) lo decide la plataforma antes de escribir nada; vale
-   para subir, ocultar y restaurar. Esas tres rutas estan en `RUTAS_FRENADAS`.
+   para subir, ocultar y restaurar. Esas rutas, y `reprocesar`, estan en `RUTAS_FRENADAS`.
 4. Por archivo: tipo -> nombre seguro -> escritura en streaming con tope sobre lo
    leido -> `repositorio.insertar`; si la restriccion unica `(project_id, sha256)`
    lo rechaza, se borra lo escrito y `existente_por_sha` dice si el duplicado esta
@@ -48,7 +48,7 @@ from db.connection import get_pool
 from jax.memory.project_authority import ProjectNotVisible, ProjectRoleInsufficient
 from jax.memory.scope_authority import MariaDBScopeAuthorityResolver, ProjectRole
 from kill_switch import exigir_freno_suelto, exigir_mesa_libre
-from proyectos_documentos import almacen, cupo_de_subidas, despachador, tipos
+from proyectos_documentos import almacen, cupo_de_subidas, despachador, original, tipos
 from proyectos_documentos import repositorio as repo
 
 logger = logging.getLogger(__name__)
@@ -361,3 +361,44 @@ async def ocultar(project_id: int, documento_id: int, user: AuthUser = Depends(e
 @router.post("/proyectos/{project_id}/documentos/{documento_id}/restaurar", status_code=204)
 async def restaurar(project_id: int, documento_id: int, user: AuthUser = Depends(exigir_mesa_libre)):
     return await _cambiar_visibilidad(project_id, documento_id, user, ocultar=False)
+
+
+@router.post("/proyectos/{project_id}/documentos/{documento_id}/reprocesar", status_code=202)
+async def reprocesar(project_id: int, documento_id: int, user: AuthUser = Depends(exigir_mesa_libre)):
+    """Vuelve a poner en la cola un documento `sin_extractor` o `error` cuyo tipo SI tiene
+    extractor (LAS MANOS no tenia las bibliotecas, o el motivo no se guardo). No sube nada: el
+    original ya esta en `proyectos/<uuid>/fuente/` y se manda tal cual, tras comprobar que su
+    sha256 es el de la fila (`original.buscar_original`). Se autoriza igual que subir: papel de
+    escritura y proyecto ACTIVE; la fila misma la protege `repo.reprocesar`, que repite las
+    condiciones en la sentencia. 404 documento ajeno, 409 `no_reprocesable` (otro estado o tipo
+    sin extractor) y 409 `original_no_encontrado`."""
+    proyecto = await _con_papel(user, project_id, escribe=True, activo=True)
+    pool = await get_pool()
+    doc = await repo.documento_para_reprocesar(pool, project_id=proyecto["id"], documento_id=documento_id)
+    if doc is None:
+        raise _error(404, "documento_no_encontrado")
+    if doc["estado"] not in ("sin_extractor", "error") or tipos.tipo_de(doc["nombre_original"]) is None:
+        raise _error(409, "no_reprocesable")
+    try:
+        workspace = almacen.cargar_workspace()
+    except almacen.WorkspaceNoConfigurado:
+        logger.error("proyectos_documentos: %s no esta bien configurado", almacen.VARIABLE_WORKSPACE, exc_info=True)
+        raise _error(503, "almacen_no_configurado") from None
+    ruta = await asyncio.to_thread(
+        original.buscar_original, workspace, proyecto["uuid"], sha256=doc["sha256"],
+        nombre_original=doc["nombre_original"], carpeta_procesado=doc["carpeta_procesado"], bytes_=doc["bytes"])
+    if ruta is None:
+        raise _error(409, "original_no_encontrado")
+    if not await repo.reprocesar(pool, project_id=proyecto["id"], documento_id=documento_id, ruta_fuente=ruta,
+                                 user_id=int(user.user_id), roles_escritura=_ROLES_DE_ESCRITURA):
+        # La fila cambio entre la lectura y el UPDATE, o quien pide perdio el papel justo ahora.
+        raise _error(409, "no_reprocesable")
+    logger.info("proyectos_documentos: documento %s del proyecto %s reprocesado por el usuario %s "
+                "(estado anterior %s, subido por %s, original %s)", documento_id, proyecto["id"], user.user_id,
+                doc["estado"], doc["subido_por"], ruta)
+    try:
+        despachador.despachar_ahora()
+    except Exception:  # fail-soft: el aviso es un adelanto; la fila ya esta en_cola y el despachador de fondo la toma en su vuelta
+        logger.warning("proyectos_documentos: no se pudo avisar al despachador (documento %s)", documento_id,
+                       exc_info=True)
+    return {"id": documento_id, "estado": "en_cola"}

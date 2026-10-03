@@ -1505,3 +1505,173 @@ def test_reencolar_en_un_proyecto_archivado_entre_medio_responde_409_y_no_cambia
     assert r.status_code == 409 and _code(r) == "proyecto_no_activo", r.text
     assert _fila(ent, doc) == antes
     assert [x.name for x in _en_disco(workspace)] == ["a.pdf"]      # lo recien escrito se borro
+
+
+# ------------------------------------------------------------------ reprocesar
+
+def _ingerido(ent, p, workspace, headers, *, estado="sin_extractor", nombre="a.pdf", con_ficha=True,
+              error=None, mover=True):
+    """Un documento subido y luego «ingerido» como lo deja LAS MANOS: el original en
+    `fuente/`, `carpeta_procesado` con su ficha y la fila en `estado`."""
+    contenido = f"%PDF-1.4 {nombre}".encode()
+    r = ent.subir(p, headers, [("archivos", (nombre, contenido, "application/pdf"))])
+    doc = r.json()["aceptados"][0]["id"]
+    fila = [f for f in ent.filas(p) if f[0] == doc][0]
+    entrada = workspace / fila[2]
+    fuente = workspace / "proyectos" / p.uuid / "fuente" / "lactovi" / nombre
+    fuente.parent.mkdir(parents=True, exist_ok=True)
+    if mover:
+        entrada.rename(fuente)
+    procesado = f"proyectos/{p.uuid}/procesado/{doc}"
+    if con_ficha:
+        (workspace / procesado).mkdir(parents=True)
+        (workspace / procesado / "ficha.json").write_text(json.dumps({"origen": f"fuente/lactovi/{nombre}"}))
+    ent.client.portal.call(
+        sql, "UPDATE project_documents SET estado=%s, carpeta_procesado=%s, error=%s, job_id='job-viejo' WHERE id=%s",
+        (estado, procesado if con_ficha else None, error, doc))
+    return doc, fuente
+
+
+def _fila_rep(ent, doc):
+    return ent.client.portal.call(sql, "SELECT estado, ruta_entrada, job_id, error, subido_por "
+                                       "FROM project_documents WHERE id=%s", (doc,), True)[0]
+
+
+def test_reprocesar_202_deja_la_fila_en_cola_apuntando_a_fuente_y_no_toca_el_disco(ent, workspace, caplog):
+    p = ent.proyecto()
+    contrib = ent.miembro(p, "contrib", "CONTRIBUTOR")
+    doc, fuente = _ingerido(ent, p, workspace, contrib)
+    antes = _en_disco(workspace)
+    caplog.set_level(logging.INFO)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)    # otro miembro: el dueno
+    assert r.status_code == 202, r.text
+    assert r.json() == {"id": doc, "estado": "en_cola"}
+    estado, ruta, job, error, subido_por = _fila_rep(ent, doc)
+    assert (estado, ruta, job, error) == ("en_cola", f"proyectos/{p.uuid}/fuente/lactovi/a.pdf", None, None)
+    assert subido_por == ent._id("contrib")                       # la fila sigue siendo de quien la subio
+    assert _en_disco(workspace) == antes and fuente.is_file()
+    # quien reprocesa queda en el log (la tabla no tiene donde)
+    assert any(str(ent._id("dueno")) in m and str(doc) in m for m in caplog.messages), caplog.messages
+
+
+def test_reprocesar_desde_error_con_o_sin_motivo(ent, workspace):
+    p = ent.proyecto()
+    a, _ = _ingerido(ent, p, workspace, ent.dueno, estado="error", nombre="a.pdf", error=None)
+    b, _ = _ingerido(ent, p, workspace, ent.dueno, estado="error", nombre="b.pdf", error="procesamiento_fallido")
+    for doc in (a, b):
+        assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+        assert _fila_rep(ent, doc)[:4] == ("en_cola", f"proyectos/{p.uuid}/fuente/lactovi/{'a' if doc == a else 'b'}.pdf",
+                                       None, None)
+
+
+def test_reprocesar_por_sha_cuando_no_hay_ficha(ent, workspace):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno, con_ficha=False, estado="error", error="trabajo_perdido")
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    assert _fila_rep(ent, doc)[1] == f"proyectos/{p.uuid}/fuente/lactovi/a.pdf"
+
+
+@pytest.mark.parametrize("estado", ["en_cola", "pendiente", "procesando", "listo", "parcial", "cancelado"])
+def test_reprocesar_otro_estado_409_no_reprocesable(ent, workspace, estado):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno, estado=estado)
+    antes = _fila_rep(ent, doc)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "no_reprocesable"
+    assert _fila_rep(ent, doc) == antes
+
+
+def test_reprocesar_tipo_sin_extractor_409_no_reprocesable(ent, workspace):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    ent.client.portal.call(sql, "UPDATE project_documents SET nombre_original='a.txt' WHERE id=%s", (doc,))
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "no_reprocesable"
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_sin_original_409_original_no_encontrado_y_no_cambia_la_fila_rep(ent, workspace):
+    p = ent.proyecto()
+    doc, fuente = _ingerido(ent, p, workspace, ent.dueno)
+    fuente.unlink()
+    antes = _fila_rep(ent, doc)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "original_no_encontrado"
+    assert _fila_rep(ent, doc) == antes
+
+
+def test_reprocesar_con_el_original_cambiado_409_original_no_encontrado(ent, workspace):
+    p = ent.proyecto()
+    doc, fuente = _ingerido(ent, p, workspace, ent.dueno)
+    fuente.write_bytes(b"otro contenido distinto")
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "original_no_encontrado"
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_con_el_original_como_enlace_fuera_de_fuente_409(ent, workspace, tmp_path_factory):
+    p = ent.proyecto()
+    doc, fuente = _ingerido(ent, p, workspace, ent.dueno)
+    fuera = tmp_path_factory.mktemp("fuera") / "a.pdf"
+    fuera.write_bytes(fuente.read_bytes())
+    fuente.unlink()
+    fuente.symlink_to(fuera)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "original_no_encontrado"
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_404_documento_de_otro_proyecto_o_inexistente_o_proyecto_ajeno(ent, workspace):
+    p1, p2 = ent.proyecto(), ent.proyecto()
+    doc, _ = _ingerido(ent, p2, workspace, ent.dueno)
+    for d in (doc, 99999999):
+        r = ent.client.post(f"{P}/{p1.id}/documentos/{d}/reprocesar", headers=ent.dueno)
+        assert r.status_code == 404 and _code(r) == "documento_no_encontrado"
+    ajeno = ent.usuario("ajeno", tenant=f"otro-{uuid.uuid4().hex}")
+    r = ent.client.post(f"{P}/{p2.id}/documentos/{doc}/reprocesar", headers=ajeno)
+    assert r.status_code == 404 and _code(r) == "proyecto_no_encontrado"
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_lector_403_y_anonimo_401(ent, workspace):
+    p = ent.proyecto()
+    lector = ent.miembro(p, "lector", "VIEWER")
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=lector)
+    assert r.status_code == 403 and _code(r) == "papel_insuficiente"
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar").status_code == 401
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_en_proyecto_archivado_409(ent, workspace):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    assert ent.client.post(f"{P}/{p.id}/estado", headers=ent.dueno, json={"estado": "ARCHIVED"}).status_code == 200
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "proyecto_no_activo"
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_avisa_al_despachador(ent, workspace, monkeypatch):
+    from proyectos_documentos import despachador
+    avisos = []
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    monkeypatch.setattr(despachador, "despachar_ahora", lambda: avisos.append(1))   # despues de subir, que tambien avisa
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    assert avisos == [1]
+
+
+def test_reprocesar_con_el_freno_puesto_423_y_no_cambia_nada(client, usuarios, ent, workspace):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    admin_id, _ = usuarios(role="superadmin")
+    admin = auth(token_para(admin_id, role="superadmin"))
+    assert client.post("/api/admin/kill-switch/activar", headers=admin).status_code == 200
+    try:
+        r = client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+        assert (r.status_code, r.json().get("detail")) == (423, "kill_switch_activo")
+        assert _fila_rep(ent, doc)[0] == "sin_extractor"
+    finally:
+        assert client.post("/api/admin/kill-switch/reanudar", headers=admin).status_code == 200
+    assert client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202

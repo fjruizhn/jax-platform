@@ -83,6 +83,8 @@ RUTAS_FRENADAS = frozenset({
     ("POST", "/api/proyectos/{project_id}/documentos"),
     ("POST", "/api/proyectos/{project_id}/documentos/{documento_id}/ocultar"),
     ("POST", "/api/proyectos/{project_id}/documentos/{documento_id}/restaurar"),
+    # Reprocesar un documento (jax-14, 2026-10-03): vuelve a poner un original a procesar.
+    ("POST", "/api/proyectos/{project_id}/documentos/{documento_id}/reprocesar"),
 })
 
 SQL_REGISTRAR = "INSERT INTO kill_switch_audit (accion, user_id, at) VALUES (%s, %s, UTC_TIMESTAMP(6))"
