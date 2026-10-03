@@ -4,6 +4,7 @@ import { codigoDe } from '../api/errores'
 import { diccionarioActivo } from '../i18n/index.jsx'
 import { EYE_ESTADO_REPOSO } from './eyeRestState'
 import { tokenDeFaceta } from '../tema/tokens'
+import { governedPipelineResults, isGovernedPipelineResults } from '../services/governedPipelineResults'
 
 const RESULTS_FETCH_MAX_ATTEMPTS = 2
 // Tope del POST /auth/logout: salir nunca espera más que esto a la red.
@@ -408,11 +409,12 @@ export const useJaxStore = create((set, get) => {
         // reanudar con un fetch de una sesión que ya no es la vigente.
         if (!isSameSession(sessionEpoch)) return
 
-        api.get(`/pipelines/${pipeline_id}/results`).then(({ data }) => {
+        api.get(`/pipelines/${pipeline_id}/results`, { responseType: 'text', transformResponse: [(raw) => raw] }).then(async (response) => {
+          const data = await governedPipelineResults(response)
           // Payload 200 pero sin forma válida (p.ej. LAS MANOS devuelve un
           // error con status 200) — se trata como fallo de fetch, no como
           // bug de renderizado.
-          if (!Array.isArray(data?.steps)) {
+          if (!isGovernedPipelineResults(data) || !Array.isArray(data.steps)) {
             onFetchFailure(attempt)
             return
           }
@@ -433,27 +435,13 @@ export const useJaxStore = create((set, get) => {
 
           const t = diccionarioActivo()
           const newMessages = completedSteps.map((step) => {
-            const header = t.pipelineStepHeader(step.facet, step.capability)
             const body = step.result || t.pipelineNoResult
-            const sourceParts = (step.sources || []).map(
-              (s) => `- [${s.title || s.url}](${s.url})`
-            )
-            const sourcesBlock = sourceParts.length
-              ? `\n\n**${t.pipelineSources}**\n${sourceParts.join('\n')}`
-              : ''
             return {
               id: `pipeline-${pipeline_id}-step-${step.step_index}`,
               facet: step.facet,
-              content: `${header}\n\n${body}${sourcesBlock}`,
+              content: body, origin: 'TOOL', kind: 'pipeline_step_result',
               timestamp: ts,
             }
-          })
-
-          newMessages.push({
-            id: `pipeline-${pipeline_id}-done`,
-            facet: 'jacobs',
-            content: t.pipelineCompleted(completedSteps.length, allSteps.length, data.total_duration_seconds),
-            timestamp: ts,
           })
 
           // Re-chequeo tras el await: la sesión pudo cerrarse (o cambiar)

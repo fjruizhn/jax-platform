@@ -3,6 +3,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from governed_output.http import install_governed_http_boundary
+from governed_output.registry import contracts_for_routes
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -83,6 +85,7 @@ from jax_engine.websocket_hub import ws_hub
 from jax_engine.lifecycle import lifecycle_lock, sse_connections
 from jax_engine.schemas import JAXEvent
 from auth.jwt import decode_token
+from auth.models import AuthUser
 from auth.middleware import reverificar_sesion, verificar_sesion
 
 from api.health import router as health_router
@@ -241,6 +244,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+    expose_headers=[
+        "X-Axioma-Governed-Output", "X-Axioma-Structured-Renderer", "X-Axioma-Structured-Schema",
+        "X-Axioma-Domain-Spec", "X-Axioma-Response-Id", "X-Axioma-Body-SHA256",
+        "X-Axioma-Provenance-Profile", "X-Axioma-Provenance-Profile-Digest",
+        "X-Axioma-Origin-Manifest-SHA256",
+    ],
 )
 
 ROUTERS = (
@@ -280,6 +289,10 @@ ROUTERS = (
 for _router in ROUTERS:
     app.include_router(_router)
 
+# Install after all routers have their final prefixes.  The frozen table is
+# server-owned startup state; FastAPI never serializes a dynamic DTO first.
+install_governed_http_boundary(app, contracts=contracts_for_routes(app.routes))
+
 
 # ws_hub and event_bus each guard their own state with their own lock, so a
 # disconnecting tab's disconnect+maybe-unsubscribe sequence can interleave
@@ -296,10 +309,11 @@ for _router in ROUTERS:
 
 
 async def _ws_connect_and_subscribe(
-    user_id: str, tenant_id: str, role: str, websocket: WebSocket
+    user_id: str, tenant_id: str, role: str, websocket: WebSocket, user: AuthUser | None = None,
 ) -> str:
     async with lifecycle_lock:
-        connection_id = await ws_hub.connect(user_id, websocket)
+        principal = user or AuthUser(user_id=str(user_id), tenant_id=str(tenant_id), role=role)
+        connection_id = await ws_hub.connect(user_id, websocket, principal)
         engine_state.register_user(user_id, tenant_id, role)
 
         async def event_callback(event: JAXEvent):
@@ -397,7 +411,7 @@ async def websocket_endpoint(
 
     await websocket.send_json({"type": "auth_ok"})
 
-    connection_id = await _ws_connect_and_subscribe(user_id, tenant_id, role, websocket)
+    connection_id = await _ws_connect_and_subscribe(user_id, tenant_id, role, websocket, sesion)
 
     heartbeat_task = None
     try:

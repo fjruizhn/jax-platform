@@ -4,7 +4,7 @@ alive con un 404. A-35: "API Keys" contaba el .env, la verdad es `credential`.
 A-49: pipelines_completed era 0 fijo. A-37: dos COUNT con DATE(created_at).
 A-05/A-06: URL literal de LAS MANOS y recent_events constante."""
 import asyncio
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import aiomysql
@@ -53,6 +53,25 @@ def test_jax_engine_sondea_api_health_de_la_base_configurada(monkeypatch):
 def test_sin_base_configurada_nunca_es_alive():
     assert asyncio.run(dashboard._servicio("JAX Engine", None, "/api/health")) == {
         "name": "JAX Engine", "port": None, "status": "sin_configurar", "latency_ms": None}
+
+
+def test_las_manos_dashboard_uses_atomic_probe_observation_without_a_second_http_request(monkeypatch):
+    urls = []
+    monkeypatch.setattr(dashboard, "get_http_client", _cliente(200, urls))
+    monkeypatch.setattr(dashboard.engine_state, "engine_health_status_snapshot",
+                        lambda name: ("alive", datetime(2026, 10, 3, tzinfo=timezone.utc)))
+
+    service = dashboard._servicio_las_manos()
+
+    assert service["name"] == "LAS MANOS"
+    assert service["status"] == "alive"
+    assert service["latency_ms"] is None
+    assert urls == []
+
+
+def test_las_manos_dashboard_does_not_turn_the_default_compatibility_field_into_evidence(monkeypatch):
+    monkeypatch.setattr(dashboard.engine_state, "engine_health_status_snapshot", lambda name: None)
+    assert dashboard._servicio_las_manos()["status"] == "unavailable"
 
 
 @pytest.mark.parametrize("base", ["http://127.0.0.1:abc", "http://127.0.0.1:99999", "http://[::1"])

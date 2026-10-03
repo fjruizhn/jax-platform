@@ -9,7 +9,7 @@ from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from db.connection import get_pool
 from http_client import get_http_client
-from jax_engine.state import LAS_MANOS_URL
+from jax_engine.state import LAS_MANOS_URL, engine_state
 from tiempo import utc_ahora
 
 router = APIRouter(prefix="/api/admin")
@@ -84,6 +84,26 @@ async def _servicio(nombre: str, base_url: str | None, ruta: str) -> dict:
     return {"name": nombre, "port": puerto, **await _check_http(f"{base_url}{ruta}")}
 
 
+def _servicio_las_manos() -> dict:
+    """Project the one Platform-owned completed health observation.
+
+    The dashboard must not issue a second health probe: a screen read is not a
+    new ENGINE_STATUS observation and cannot choose a different source tuple.
+    """
+    sin_configurar = {"name": "LAS MANOS", "port": None, "status": "sin_configurar", "latency_ms": None}
+    if not LAS_MANOS_URL:
+        return sin_configurar
+    try:
+        puerto = urlsplit(LAS_MANOS_URL).port
+    except ValueError:
+        return sin_configurar
+    observation = engine_state.engine_health_status_snapshot("las_manos")
+    if observation is None:
+        return {"name": "LAS MANOS", "port": puerto, "status": "unavailable", "latency_ms": None}
+    status, _observed_at = observation
+    return {"name": "LAS MANOS", "port": puerto, "status": status, "latency_ms": None}
+
+
 async def _check_db() -> dict:
     try:
         pool = await get_pool()
@@ -98,7 +118,7 @@ async def _check_db() -> dict:
 @router.get("/dashboard")
 async def get_dashboard(user: AuthUser = Depends(require_superadmin)):
     services = [
-        await _servicio("LAS MANOS", LAS_MANOS_URL, "/health"),
+        _servicio_las_manos(),
         await _servicio("JAX Engine", os.environ.get("JAX_PLATFORM_URL"), "/api/health"),
         # Sin default: este panel MUESTRA el puerto, no conecta. Un "3306"
         # inventado no rompe nada -- miente, y en un tablero de estado eso es

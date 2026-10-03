@@ -37,11 +37,13 @@ class LasManosHealthObservation:
 
 def las_manos_health_source_configuration() -> dict[str, object]:
     """Return non-secret identity of the exact server-owned health probe."""
-    target = f"{LAS_MANOS_URL}/health"
+    target = f"{LAS_MANOS_URL}/internal/health"
     return {
         "endpoint_sha256": "sha256:" + hashlib.sha256(target.encode("utf-8")).hexdigest(),
         "method": "GET",
-        "path": "/health",
+        "path": "/internal/health",
+        "service_authentication_identity": "plataforma",
+        "service_authentication_header": "X-Jax-Credencial-Servicio",
         "timeout_seconds": 5,
         "poll_interval_seconds": 30,
         "success_status_code": 200,
@@ -306,7 +308,10 @@ class JAXEngineState:
 
     async def _check_las_manos_health(self, client: httpx.AsyncClient):
         try:
-            r = await client.get(f"{LAS_MANOS_URL}/health", timeout=5.0)
+            r = await client.get(
+                f"{LAS_MANOS_URL}/internal/health", timeout=5.0,
+                headers=encabezados_las_manos(),
+            )
             alive = r.status_code == 200
         except Exception:  # fail-soft: cualquier error de la sonda ES la señal 'caído' (alive=False) y se emite las_manos_health_changed
             alive = False

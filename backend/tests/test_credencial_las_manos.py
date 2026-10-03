@@ -1,6 +1,7 @@
 """jax-platform presenta su credencial de servicio a LAS MANOS (2026-09-17).
 
-LAS MANOS exige credencial en toda ruta salvo /health y saca la identidad de la
+LAS MANOS exige credencial en toda ruta que jax-platform consume, incluido el
+origen interno de salud, y saca la identidad de la
 credencial (jax: las_manos/auth_servicio.py). Si un pedido de este backend a
 LAS MANOS sale sin `headers=encabezados_las_manos()`, LAS MANOS responde 401 y
 la función de la Mesa que lo usa deja de andar. El guard de abajo recorre TODO
@@ -45,18 +46,22 @@ def _pedidos_a_las_manos():
 
 def test_hay_pedidos_a_las_manos_que_vigilar():
     # Si el guard deja de encontrar llamadas, no vigila nada.
-    assert len([p for p in _pedidos_a_las_manos() if "/health" not in p[2]]) >= 7
+    assert len(list(_pedidos_a_las_manos())) >= 8
 
 
-def test_todo_pedido_a_las_manos_salvo_health_lleva_la_credencial():
+def test_todo_pedido_a_las_manos_lleva_la_credencial():
     faltan = []
     for ruta, n, destino in _pedidos_a_las_manos():
-        if destino.endswith("/health'") or destino.endswith('/health"'):
-            continue
         headers = [k for k in n.keywords if k.arg == "headers"]
         if not headers or ast.unparse(headers[0].value) != "encabezados_las_manos()":
             faltan.append(f"{ruta}:{n.lineno} {destino}")
     assert not faltan, "pedidos a LAS MANOS sin credencial de servicio:\n" + "\n".join(faltan)
+
+
+def test_no_platform_consumer_can_reintroduce_the_retired_public_health_source():
+    legacy = [f"{ruta}:{n.lineno} {destino}" for ruta, n, destino in _pedidos_a_las_manos()
+              if "/health" in destino and "/internal/health" not in destino]
+    assert not legacy, "consumidores del origen público de salud retirado:\n" + "\n".join(legacy)
 
 
 def test_nombres_iguales_a_los_de_las_manos():

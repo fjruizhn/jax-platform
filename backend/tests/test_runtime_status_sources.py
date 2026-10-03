@@ -25,6 +25,26 @@ class _Client:
         return _Response(self._status_code)
 
 
+def test_engine_probe_uses_the_restricted_authenticated_source(monkeypatch):
+    state = JAXEngineState()
+    captured = {}
+    credential = "a" * 43
+    monkeypatch.setenv("JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA", credential)
+
+    class Client:
+        async def get(self, url, *args, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers")
+            return _Response(200)
+
+    asyncio.run(state._check_las_manos_health(Client()))
+
+    assert captured == {
+        "url": f"{state_module.LAS_MANOS_URL}/internal/health",
+        "headers": {"X-Jax-Credencial-Servicio": credential},
+    }
+
+
 class _BlockingHealthCompatibilityState(EcosystemState):
     """Test double that pauses immediately after the legacy status write."""
 

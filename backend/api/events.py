@@ -1,14 +1,13 @@
 import asyncio
-import json
 import logging
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
 from auth.middleware import get_current_user, reverificar_sesion
 from auth.models import AuthUser
 from jax_engine.events import event_bus
 from jax_engine.lifecycle import lifecycle_lock, sse_connections
 from jax_engine.websocket_hub import ws_hub
 from jax_engine.schemas import JAXEvent
+from governed_output.event_transport import GovernedSSEEventsResponse
 
 logger = logging.getLogger(__name__)
 
@@ -87,23 +86,14 @@ async def sse_events(user: AuthUser = Depends(get_current_user)):
         await _sse_disconnect_and_maybe_unsubscribe(user.user_id, queue)
         raise
 
-    async def generator():
+    async def next_event():
         try:
-            while True:
-                event = await queue.get()
-                if event is _CERRAR:
-                    return
-                yield f"data: {json.dumps(event.model_dump())}\n\n"
-        except asyncio.CancelledError:  # fail-soft: CancelledError es la forma normal de terminar el generador SSE al desconectar el cliente
-            pass
-        finally:
-            await _sse_disconnect_and_maybe_unsubscribe(user.user_id, queue)
+            event = await queue.get()
+            return None if event is _CERRAR else event
+        except asyncio.CancelledError:
+            return None
 
-    return StreamingResponse(
-        generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    async def on_close():
+        await _sse_disconnect_and_maybe_unsubscribe(user.user_id, queue)
+
+    return GovernedSSEEventsResponse(user=user, next_event=next_event, on_close=on_close)

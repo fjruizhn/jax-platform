@@ -197,6 +197,16 @@ def test_engine_probe_configuration_is_bound_into_f2b_registry_and_receipt(monke
     assert core.runtime_status_source_configuration_digest("ENGINE_STATUS", changed_config) != original_digest
 
 
+def test_engine_probe_rejects_the_previous_public_unauthenticated_contract(monkeypatch):
+    core, _resolution = _core(monkeypatch)
+    config = __import__("jax_engine.state", fromlist=["las_manos_health_source_configuration"]).las_manos_health_source_configuration()
+    old = {key: value for key, value in config.items()
+           if key not in {"service_authentication_identity", "service_authentication_header"}}
+    old["path"] = "/health"
+    with pytest.raises(core.GovernanceContractError):
+        core.runtime_status_source_configuration_digest("ENGINE_STATUS", old)
+
+
 def test_engine_health_evidence_becomes_stale_without_another_completed_probe(monkeypatch):
     core, resolution = _core(monkeypatch)
     state = JAXEngineState()
