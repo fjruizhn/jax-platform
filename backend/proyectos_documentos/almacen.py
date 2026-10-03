@@ -26,6 +26,13 @@ from pathlib import Path
 VARIABLE_WORKSPACE = "JAX_WORKSPACE_DIR"
 TAMANO_DE_BLOQUE = 1024 * 1024
 
+# Modos de `entrada/`. Bajo `proyectos/` hay ACL por defecto (g:fruiz, u:jaxsvc) y
+# setgid: un archivo creado 0600 deja la mascara de la ACL en `---` y anula el
+# acceso de fruiz (por eso LAS MANOS hace fchmod 0660 en tool_authority._write_file).
+# El modo se fija explicito con fchmod/chmod, nunca por el umask.
+MODO_ARCHIVO = 0o660
+MODO_CARPETA = 0o770
+
 # Largos. 200 caracteres Y 200 bytes: un nombre de 200 emojis son 800 bytes y el
 # sistema de archivos corta en 255 bytes por componente (ENAMETOOLONG). El margen
 # hasta 255 es para el " (N)" de los repetidos.
@@ -66,10 +73,18 @@ def carpeta_entrada(workspace: Path, project_uuid: str, lote: str) -> Path:
 
 
 def preparar_carpeta(carpeta: Path, workspace: Path) -> None:
-    """Sincrona (to_thread). Crea la carpeta del lote 0700 y comprueba que, ya
-    resuelta (symlinks incluidos), sigue dentro del workspace."""
-    carpeta.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(carpeta, 0o700)
+    """Sincrona (to_thread). Crea la carpeta del lote (y lo que falte de
+    `proyectos/<uuid>/entrada`) con modo explicito 0770 -- chmod despues de crear,
+    sin depender del umask -- y comprueba que, ya resuelta (symlinks incluidos),
+    sigue dentro del workspace. Solo se fija el modo de lo que se crea aqui."""
+    for nivel in reversed([carpeta, *carpeta.parents]):
+        if nivel == workspace or workspace not in nivel.parents:
+            continue
+        try:
+            nivel.mkdir(mode=MODO_CARPETA)
+        except FileExistsError:
+            continue
+        os.chmod(nivel, MODO_CARPETA)
     if not carpeta.resolve().is_relative_to(workspace.resolve()):
         raise WorkspaceNoConfigurado("la carpeta de entrada resuelve fuera del workspace")
 
@@ -114,9 +129,9 @@ def nombre_seguro(original: str, usados: set[str]) -> str:
 
 
 def _escribir(archivo, destino: Path, tope: int) -> tuple[int, str]:
-    fd = os.open(destino, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    fd = os.open(destino, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, MODO_ARCHIVO)
     try:
-        os.fchmod(fd, 0o600)
+        os.fchmod(fd, MODO_ARCHIVO)
     except BaseException:
         os.close(fd)
         destino.unlink(missing_ok=True)
@@ -140,7 +155,7 @@ def _escribir(archivo, destino: Path, tope: int) -> tuple[int, str]:
 
 async def escribir_streaming(upload, destino: Path, tope: int) -> tuple[int, str]:
     """Copia `upload` (un UploadFile de Starlette: se lee su `.file`) a `destino`
-    (0600, O_EXCL: nunca pisa un archivo existente) y devuelve `(bytes, sha256)`.
+    (0660, O_EXCL: nunca pisa un archivo existente) y devuelve `(bytes, sha256)`.
     Corta en cuanto lo leido cruza `tope` -- no mira ningun tamano declarado --,
     borra el parcial y lanza `DemasiadoGrande`: nunca se escribe mas de
     `tope + 1 MiB`. Memoria: un bloque a la vez."""

@@ -13,7 +13,8 @@ aplican:
 2. Todo eso se decide ANTES de leer el cuerpo: el multipart se lee con
    `request.form()` recien despues, asi un lector o un ajeno no hace que la
    plataforma reciba y vuelque a disco su cuerpo entero.
-3. `proyecto_no_activo` (409) lo decide la plataforma antes de escribir nada.
+3. `proyecto_no_activo` (409) lo decide la plataforma antes de escribir nada; vale
+   para subir, ocultar y restaurar. Esas tres rutas estan en `RUTAS_FRENADAS`.
 4. Por archivo: tipo -> nombre seguro -> escritura en streaming con tope sobre lo
    leido -> `repositorio.insertar`; si la restriccion unica `(project_id, sha256)`
    lo rechaza, se borra lo escrito y `existente_por_sha` dice si el duplicado esta
@@ -35,6 +36,7 @@ import ajustes
 from adjuntos import cuota
 from api.proyectos import _http, _leer, _RutaConCodigo
 from auth.middleware import get_current_user
+from kill_switch import exigir_mesa_libre
 from auth.models import AuthUser
 from db.connection import get_pool
 from jax.memory.project_authority import ProjectRoleInsufficient
@@ -58,10 +60,14 @@ def _error(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
-async def _con_papel(user: AuthUser, project_id: int, *, escribe: bool) -> dict:
+async def _con_papel(user: AuthUser, project_id: int, *, escribe: bool, activo: bool = False) -> dict:
+    """404 si no es visible, 403 si falta el papel y, con `activo`, 409
+    `proyecto_no_activo`: en ese orden, para que un lector no aprenda el estado."""
     proyecto = await _leer(user, project_id)
     if escribe and proyecto["papel"] not in _ESCRIBEN:
         raise _http(ProjectRoleInsufficient("this operation requires CONTRIBUTOR"))
+    if activo and proyecto["estado"] != "ACTIVE":
+        raise _error(409, "proyecto_no_activo")
     return proyecto
 
 
@@ -78,10 +84,8 @@ def _lote_excedido(lote: str, aceptados: list, ignorados: list) -> HTTPException
 
 
 @router.post("/proyectos/{project_id}/documentos", status_code=202)
-async def subir(project_id: int, request: Request, user: AuthUser = Depends(get_current_user)):
-    proyecto = await _con_papel(user, project_id, escribe=True)
-    if proyecto["estado"] != "ACTIVE":
-        raise _error(409, "proyecto_no_activo")
+async def subir(project_id: int, request: Request, user: AuthUser = Depends(exigir_mesa_libre)):
+    proyecto = await _con_papel(user, project_id, escribe=True, activo=True)
 
     max_archivo = int(await ajustes.valor(ajustes.DOC_MAX_BYTES_ARCHIVO))
     max_archivos = int(await ajustes.valor(ajustes.DOC_MAX_ARCHIVOS_LOTE))
@@ -207,7 +211,7 @@ async def listar(project_id: int, vista: Literal["visibles", "ocultos"] = "visib
 
 
 async def _cambiar_visibilidad(project_id: int, documento_id: int, user: AuthUser, *, ocultar: bool) -> Response:
-    proyecto = await _con_papel(user, project_id, escribe=True)
+    proyecto = await _con_papel(user, project_id, escribe=True, activo=True)
     pool = await get_pool()
     if ocultar:
         existe = await repo.ocultar(pool, project_id=proyecto["id"], documento_id=documento_id,
@@ -220,10 +224,10 @@ async def _cambiar_visibilidad(project_id: int, documento_id: int, user: AuthUse
 
 
 @router.post("/proyectos/{project_id}/documentos/{documento_id}/ocultar", status_code=204)
-async def ocultar(project_id: int, documento_id: int, user: AuthUser = Depends(get_current_user)):
+async def ocultar(project_id: int, documento_id: int, user: AuthUser = Depends(exigir_mesa_libre)):
     return await _cambiar_visibilidad(project_id, documento_id, user, ocultar=True)
 
 
 @router.post("/proyectos/{project_id}/documentos/{documento_id}/restaurar", status_code=204)
-async def restaurar(project_id: int, documento_id: int, user: AuthUser = Depends(get_current_user)):
+async def restaurar(project_id: int, documento_id: int, user: AuthUser = Depends(exigir_mesa_libre)):
     return await _cambiar_visibilidad(project_id, documento_id, user, ocultar=False)

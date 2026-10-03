@@ -43,6 +43,14 @@ def test_primera_corrida_fija_lo_que_el_codigo_hacia_cumplir(client, sin_marca):
         # La fila del umbral la pone OTRA migración (_ajuste_confirmar_costo_v1)
         # y ésta no la toca: sigue con el valor que tenía.
         "pipeline_confirmar_usd": "0.50",
+        # Los topes de la subida de documentos (Proyectos E2a, T5) los siembra
+        # OTRA migracion (_proyectos_documentos_topes_v1) con los valores de
+        # Fernando (2026-09-25: 100 MiB por archivo, 250 archivos o 1 GiB por
+        # lote, 50 rutas por trabajo); ésta tampoco los toca.
+        "proyectos.documentos.max_bytes_archivo": "104857600",
+        "proyectos.documentos.max_archivos_lote": "250",
+        "proyectos.documentos.max_bytes_lote": "1073741824",
+        "proyectos.documentos.rutas_por_trabajo": "50",
     }
     assert client.portal.call(sql, "SELECT COUNT(*) FROM axioma_migracion_de_datos WHERE nombre = %s",
                               (MIGRACION_AJUSTES_V1,), True) == ((1,),)

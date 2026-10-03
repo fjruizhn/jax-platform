@@ -19,7 +19,8 @@ import pytest
 from adjuntos import cuota
 from proyectos_documentos import almacen, tipos
 from proyectos_documentos import repositorio as repo
-from tests.identidades import cabeceras, sql, uid
+import kill_switch
+from tests.identidades import auth, cabeceras, sql, token_para, uid
 
 P = "/api/proyectos"
 MIB = 1024 * 1024
@@ -133,7 +134,7 @@ def test_contributor_sube_y_queda_en_cola(ent, workspace):
     escritos = list((workspace / "proyectos" / p.uuid / "entrada").rglob("*.pdf"))
     assert len(escritos) == 1 and escritos[0].parent.name == cuerpo["lote"]
     assert escritos[0].read_bytes() == b"%PDF-1.4 a"
-    assert stat.S_IMODE(escritos[0].stat().st_mode) == 0o600
+    assert stat.S_IMODE(escritos[0].stat().st_mode) == 0o660
     filas = ent.filas(p)
     assert len(filas) == 1
     id_, nombre, ruta, bytes_, tipo, estado, sha, job, oculto = filas[0]
@@ -442,7 +443,7 @@ async def test_escribir_streaming_cuenta_lo_leido_y_borra_el_parcial(tmp_path):
     destino = tmp_path / "ok.bin"
     total, sha = await almacen.escribir_streaming(_Subida(b"a" * (2 * MIB + 5)), destino, 3 * MIB)
     assert total == 2 * MIB + 5 and sha == hashlib.sha256(b"a" * (2 * MIB + 5)).hexdigest()
-    assert destino.stat().st_size == total and stat.S_IMODE(destino.stat().st_mode) == 0o600
+    assert destino.stat().st_size == total and stat.S_IMODE(destino.stat().st_mode) == 0o660
     grande = tmp_path / "grande.bin"
     with pytest.raises(almacen.DemasiadoGrande):
         await almacen.escribir_streaming(_Subida(b"a" * (3 * MIB + 1)), grande, 3 * MIB)
@@ -585,3 +586,84 @@ def test_limites_con_ajuste_ilegible_falla_cerrado(ent, ajustes_en_db):
     p = ent.proyecto()
     r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
     assert r.status_code == 503 and ent.filas(p) == []
+
+
+# ------------------------------------------------------------------- modos
+
+def test_modos_explicitos_no_dependen_del_umask(ent, workspace):
+    """Bajo `proyectos/` hay ACL por defecto y setgid: un 0600 anula el acceso de
+    fruiz (mascara `---`). Archivo 0660 y carpetas 0770 aunque el umask diga otra
+    cosa, en toda la cadena que crea la subida."""
+    p = ent.proyecto()
+    anterior = os.umask(0o077)
+    try:
+        r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
+    finally:
+        os.umask(anterior)
+    assert r.status_code == 202, r.text
+    archivo = _en_disco(workspace)[0]
+    assert stat.S_IMODE(archivo.stat().st_mode) == 0o660
+    for carpeta in (archivo.parent, archivo.parent.parent, archivo.parent.parent.parent,
+                    archivo.parent.parent.parent.parent):
+        assert stat.S_IMODE(carpeta.stat().st_mode) == 0o770, carpeta
+    assert archivo.parent.parent.parent.parent == workspace / "proyectos"
+
+
+def test_carpeta_existente_no_se_toca(tmp_path):
+    """Solo se fija el modo de lo que se crea: una carpeta previa conserva el suyo."""
+    previa = tmp_path / "proyectos"
+    previa.mkdir(mode=0o750)
+    os.chmod(previa, 0o750)
+    u = str(uuid.uuid4())
+    almacen.preparar_carpeta(almacen.carpeta_entrada(tmp_path, u, "lote1"), tmp_path)
+    assert stat.S_IMODE(previa.stat().st_mode) == 0o750
+    assert stat.S_IMODE((previa / u / "entrada" / "lote1").stat().st_mode) == 0o770
+    almacen.preparar_carpeta(almacen.carpeta_entrada(tmp_path, u, "lote2"), tmp_path)    # idempotente
+
+
+# ------------------------------------------------------------------- freno
+
+def test_con_el_freno_puesto_subir_ocultar_y_restaurar_responden_423(client, usuarios, ent, workspace):
+    p = ent.proyecto()
+    a = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")]).json()["aceptados"][0]["id"]
+    antes = _en_disco(workspace)
+    admin_id, _ = usuarios(role="superadmin")
+    admin = auth(token_para(admin_id, role="superadmin"))
+    assert client.post("/api/admin/kill-switch/activar", headers=admin).status_code == 200
+    try:
+        r = ent.subir(p, ent.dueno, [_parte("nuevo.pdf", "nuevo")])
+        assert (r.status_code, r.json().get("detail")) == (423, "kill_switch_activo")
+        for accion in ("ocultar", "restaurar"):
+            r = client.post(f"{P}/{p.id}/documentos/{a}/{accion}", headers=ent.dueno)
+            assert (r.status_code, r.json().get("detail")) == (423, "kill_switch_activo"), accion
+        # un anonimo sigue recibiendo 401, no el estado del freno
+        assert client.post(f"{P}/{p.id}/documentos", files=[_parte("x.pdf", "x")]).status_code == 401
+        # las lecturas no se frenan
+        assert client.get(f"{P}/{p.id}/documentos", headers=ent.dueno).status_code == 200
+        assert client.get(f"{P}/documentos/limites", headers=ent.dueno).status_code == 200
+        assert _en_disco(workspace) == antes and len(ent.filas(p)) == 1 and ent.filas(p)[0][8] is None
+    finally:
+        assert client.post("/api/admin/kill-switch/reanudar", headers=admin).status_code == 200
+    r = ent.subir(p, ent.dueno, [_parte("nuevo.pdf", "nuevo")])
+    assert r.status_code == 202 and len(r.json()["aceptados"]) == 1
+
+
+# ---------------------------------------------- ocultar exige proyecto ACTIVE
+
+def test_ocultar_y_restaurar_en_proyecto_archivado_409(ent, workspace):
+    p = ent.proyecto()
+    lector = ent.miembro(p, "lector", "VIEWER")
+    a, b = (x["id"] for x in ent.subir(p, ent.dueno, [_parte("a.pdf", "a"), _parte("b.pdf", "b")]).json()["aceptados"])
+    assert ent.client.post(f"{P}/{p.id}/documentos/{b}/ocultar", headers=ent.dueno).status_code == 204
+    assert ent.client.post(f"{P}/{p.id}/estado", headers=ent.dueno, json={"estado": "ARCHIVED"}).status_code == 200
+    antes = ent.filas(p)
+    for accion, doc in (("ocultar", a), ("restaurar", b)):
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/{accion}", headers=ent.dueno)
+        assert r.status_code == 409 and _code(r) == "proyecto_no_activo", accion
+        # el papel se mira antes que el estado
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/{accion}", headers=lector)
+        assert r.status_code == 403 and _code(r) == "papel_insuficiente", accion
+    assert ent.filas(p) == antes                                     # ni a se oculto ni b se restauro
+    # volver a ACTIVE los habilita de nuevo
+    assert ent.client.post(f"{P}/{p.id}/estado", headers=ent.dueno, json={"estado": "ACTIVE"}).status_code == 200
+    assert ent.client.post(f"{P}/{p.id}/documentos/{a}/ocultar", headers=ent.dueno).status_code == 204

@@ -44,7 +44,10 @@ def test_jax_owned_003_hook_is_the_only_project_authority_ddl_source():
     # 21 -> 23 (2026-10-02, Proyectos E1.1, Jax#321): la migracion 005i suma dos
     # sentencias, la comprobacion de existencia y el CREATE INDEX de
     # idx_jax_users_tenant_email en jax_users.
-    assert len(cursor.statements) == 23
+    # 23 -> 24 (2026-10-03, Proyectos E2a): la migracion 006a suma una sentencia,
+    # el CREATE TABLE IF NOT EXISTS project_documents.
+    assert len(cursor.statements) == 24
+    assert "CREATE TABLE IF NOT EXISTS project_documents" in cursor.statements[-1]
     assert "CREATE TABLE IF NOT EXISTS jax_project_scope" in cursor.statements[0]
     assert "CREATE TABLE IF NOT EXISTS jax_project_membership" in cursor.statements[1]
     assert "CREATE TABLE IF NOT EXISTS jax_project_membership_event" in cursor.statements[2]
