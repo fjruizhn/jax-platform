@@ -1202,7 +1202,7 @@ jobs:
       # test_descartados_orquestar.py (Task 8, 2026-09-22, carga de
       # descartar-pipelines): mismo defecto que el resto de esta lista si no
       # se agrega acá -- existiría y no correría en NINGÚN job.
-      - run: python -m pytest loadtest/test_memoria_medir_fundir.py loadtest/test_memoria_levantar_entorno.py loadtest/test_historial_orquestar.py loadtest/test_descartados_orquestar.py loadtest/test_proyectos_e1.py -v
+      - run: python -m pytest loadtest/test_memoria_medir_fundir.py loadtest/test_memoria_levantar_entorno.py loadtest/test_historial_orquestar.py loadtest/test_descartados_orquestar.py loadtest/test_proyectos_e1.py loadtest/test_proyectos_e2a.py -v
 
   # --------------------------------------------------------------------------
   # Suite del backend, modo "CON base de datos" -- los 150 tests que el job de
