@@ -21,6 +21,13 @@ import { resumirLote, formatoPeso } from './resumenDeLote'
 // responder el servidor): así el padre puede refrescar su lista sin que la
 // ventana desaparezca antes de que la persona lea lo que pasó. `onCerrar` se
 // llama al cerrar sin subir (cancelar o Escape).
+//
+// `nombreProyecto` (opcional) titula el resumen con el destino («Subir a: <nombre>»): la
+// persona ve a qué proyecto va lo que confirma. `enVentana` (la barra del chat) pone
+// «Archivos» y «Carpeta» en un Dialogo propio que se cierra con Escape o Cancelar, en vez
+// de dejarlos fijos en la barra; al elegir, esa ventana deja su lugar al resumen (nunca
+// dos diálogos abiertos: Escape cerraría los dos). Las entradas ocultas van dentro de la
+// ventana porque el resto de la app queda `inert` mientras está abierta.
 const FOCO = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
 const BOTON = `${TAMANO_BOTON_44} rounded bg-superficie-2 text-texto hover:text-texto-fuerte border border-borde-control ${FOCO} disabled:opacity-50 transition-colors`
 const BOTON_PRIMARIO = `${TAMANO_BOTON_44} rounded bg-superficie-2 text-texto-fuerte border border-borde-control hover:border-foco ${FOCO} disabled:opacity-50 transition-colors`
@@ -123,7 +130,7 @@ function Avance({ T, fraccion }) {
   )
 }
 
-export default function SelectorDeDocumentos({ proyectoId, onTerminado, onCerrar }) {
+export default function SelectorDeDocumentos({ proyectoId, nombreProyecto, enVentana = false, onTerminado, onCerrar }) {
   const { t, lang } = useI18n()
   const T = t.proyectos.documentos
   const locale = localeFor(lang)
@@ -144,6 +151,7 @@ export default function SelectorDeDocumentos({ proyectoId, onTerminado, onCerrar
   const entradaCarpeta = useRef(null)
   const botonActivo = useRef(null)
   const botonSubir = useRef(null)
+  const botonArchivos = useRef(null)
 
   function cargarLimites() {
     setErrorLimites(false)
@@ -170,6 +178,13 @@ export default function SelectorDeDocumentos({ proyectoId, onTerminado, onCerrar
   useEffect(() => {
     if (resumen && !resultado) botonSubir.current?.focus()
   }, [!!resumen, !!resultado]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // En ventana, el foco inicial va a «Archivos» (Dialogo buscaría la primera entrada, y las
+  // dos están ocultas). Se reintenta cuando llegan los límites y el botón se habilita.
+  const listo = !!limites
+  useEffect(() => {
+    if (enVentana && !resumen) botonArchivos.current?.focus()
+  }, [enVentana, !!resumen, listo]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function abrir(entrada, e) {
     botonActivo.current = e.currentTarget
@@ -223,14 +238,12 @@ export default function SelectorDeDocumentos({ proyectoId, onTerminado, onCerrar
     }
   }
 
-  const listo = !!limites
-
-  return (
+  const eleccion = (
     <>
       <input ref={entradaArchivos} type="file" multiple hidden tabIndex={-1} aria-hidden="true" onChange={alElegir} />
       <input ref={entradaCarpeta} type="file" webkitdirectory="" hidden tabIndex={-1} aria-hidden="true" onChange={alElegir} />
-      <div className="flex items-center gap-2">
-        <button type="button" disabled={!listo} className={BOTON} onClick={(e) => abrir(entradaArchivos, e)}>
+      <div className="flex flex-wrap items-center gap-2">
+        <button ref={botonArchivos} type="button" disabled={!listo} className={BOTON} onClick={(e) => abrir(entradaArchivos, e)}>
           {T.elegirArchivos}
         </button>
         <button type="button" disabled={!listo} className={BOTON} onClick={(e) => abrir(entradaCarpeta, e)}>
@@ -243,6 +256,23 @@ export default function SelectorDeDocumentos({ proyectoId, onTerminado, onCerrar
           </>
         )}
       </div>
+    </>
+  )
+
+  return (
+    <>
+      {!enVentana && eleccion}
+      {enVentana && !resumen && (
+        <Dialogo idTitulo="selector-documentos-elegir" titulo={nombreProyecto ? T.ventanaElegir(nombreProyecto) : T.agregar}
+          onCerrar={cerrarSinSubir} className="max-w-lg">
+          <div className="space-y-3">
+            {eleccion}
+            <div className="flex justify-end pt-2">
+              <button type="button" onClick={cerrarSinSubir} className={BOTON_SECUNDARIO}>{T.resumen.cancelar}</button>
+            </div>
+          </div>
+        </Dialogo>
+      )}
 
       {resumen && resultado && (
         <Dialogo idTitulo="selector-documentos-titulo" titulo={T.resultado.titulo} onCerrar={cerrarResultado} className="max-w-lg">
@@ -257,7 +287,8 @@ export default function SelectorDeDocumentos({ proyectoId, onTerminado, onCerrar
       )}
 
       {resumen && !resultado && (
-        <Dialogo idTitulo="selector-documentos-titulo" titulo={T.resumen.titulo} onCerrar={cerrarSinSubir}
+        <Dialogo idTitulo="selector-documentos-titulo" titulo={nombreProyecto ? T.resumen.tituloA(nombreProyecto) : T.resumen.titulo}
+          onCerrar={cerrarSinSubir}
           cerrable={!subiendo} className="max-w-lg">
           <div className="space-y-3">
             <Resumen resumen={resumen} limites={limites} T={T} locale={locale} />

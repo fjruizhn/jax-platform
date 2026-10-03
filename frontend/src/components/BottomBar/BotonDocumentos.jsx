@@ -22,6 +22,9 @@ import { puedeModificarDocumentos } from '../proyectos/permisos'
 //
 // En «Personal» no hay a dónde subir: el botón abre una ventana para elegir (o
 // crear) un proyecto y sigue al selector de documentos de ese proyecto.
+//
+// El selector se abre en ventana propia (Archivos/Carpeta no quedan fijos en la barra),
+// titulado con el proyecto de destino, y se cierra si el proyecto activo cambia.
 const FOCO = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
 const BOTON = `${TAMANO_BOTON_ACCION} rounded bg-superficie-2 text-texto-suave hover:text-texto font-semibold ${FOCO} disabled:opacity-50 transition-colors`
 const BOTON_LISTA = `${TAMANO_BOTON_44} w-full justify-start rounded bg-superficie-2 text-texto border border-borde-control hover:border-foco ${FOCO} transition-colors`
@@ -133,7 +136,15 @@ export default function BotonDocumentos() {
     else if (!puedeModificarDocumentos(conocido)) { cerrado = true; texto = T.sinPermiso }
   }
 
+  // El selector solo vale para el proyecto ACTIVO: si cambia (7→9 con el selector abierto),
+  // el flujo se cierra -- nunca se sube al proyecto de antes, ni siquiera un render.
+  const abiertoPara = paso?.subir !== undefined && paso.subir === idActivo ? paso.subir : null
+  useEffect(() => {
+    setPaso((previo) => (previo?.subir !== undefined && previo.subir !== idActivo ? null : previo))
+  }, [idActivo])
+
   function abrir() {
+    if (abiertoPara !== null) { cerrarSelector(); return } // segundo clic en 📄: cierra
     if (idActivo === null) { setPaso('elegir'); return }
     setPaso({ subir: idActivo })
     consultar(idActivo) // el papel o el estado pudieron cambiar desde la última vez
@@ -162,8 +173,9 @@ export default function BotonDocumentos() {
       {paso === 'crear' && (
         <CrearProyectoModal onCerrar={() => setPaso(null)} onCreado={seguirConProyecto} />
       )}
-      {paso?.subir !== undefined && (
-        <SelectorDeDocumentos proyectoId={paso.subir} onTerminado={cerrarSelector} onCerrar={cerrarSelector} />
+      {abiertoPara !== null && (
+        <SelectorDeDocumentos proyectoId={abiertoPara} nombreProyecto={proyectoActivo?.nombre} enVentana
+          onTerminado={cerrarSelector} onCerrar={cerrarSelector} />
       )}
     </>
   )

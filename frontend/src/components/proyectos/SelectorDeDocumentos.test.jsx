@@ -304,3 +304,39 @@ describe('SelectorDeDocumentos', () => {
     }
   })
 })
+
+// Ronda final, MAJOR-2: el destino se ve en el resumen y, desde la barra, los botones viven
+// en una ventana propia que se cierra (antes quedaban fijos en la barra).
+describe('SelectorDeDocumentos -- destino y ventana propia', () => {
+  it('con nombreProyecto, el resumen dice a qué proyecto se sube', async () => {
+    const { multiple } = await montar({ nombreProyecto: 'Alfa' })
+    elegir(multiple, [archivo('a.pdf')])
+    expect(await screen.findByRole('dialog', { name: T.resumen.tituloA('Alfa') })).toBeInTheDocument()
+    expect(T.resumen.tituloA('Alfa')).toContain('Alfa')
+  })
+
+  it('enVentana: Archivos y Carpeta van en un diálogo con el destino; el foco va a Archivos; Escape lo cierra', async () => {
+    const onCerrar = vi.fn()
+    render(<I18nProvider><SelectorDeDocumentos proyectoId={7} nombreProyecto="Alfa" enVentana onTerminado={vi.fn()} onCerrar={onCerrar} /></I18nProvider>)
+    const dialogo = screen.getByRole('dialog', { name: T.ventanaElegir('Alfa') })
+    const botonArchivos = within(dialogo).getByRole('button', { name: T.elegirArchivos })
+    expect(within(dialogo).getByRole('button', { name: T.elegirCarpeta })).toBeInTheDocument()
+    await waitFor(() => expect(botonArchivos).toBeEnabled())
+    await waitFor(() => expect(botonArchivos).toHaveFocus())
+    expect(dialogo.querySelectorAll('input[type="file"]')).toHaveLength(2)   // dentro de la ventana, no en la barra
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onCerrar).toHaveBeenCalledTimes(1)
+  })
+
+  it('enVentana: al elegir, la ventana de elegir deja su lugar al resumen (un solo diálogo, un solo Escape)', async () => {
+    const onCerrar = vi.fn()
+    render(<I18nProvider><SelectorDeDocumentos proyectoId={7} nombreProyecto="Alfa" enVentana onTerminado={vi.fn()} onCerrar={onCerrar} /></I18nProvider>)
+    const dialogo = screen.getByRole('dialog', { name: T.ventanaElegir('Alfa') })
+    await waitFor(() => expect(within(dialogo).getByRole('button', { name: T.elegirArchivos })).toBeEnabled())
+    elegir(dialogo.querySelector('input[multiple]'), [archivo('a.pdf')])
+    await screen.findByRole('dialog', { name: T.resumen.tituloA('Alfa') })
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onCerrar).toHaveBeenCalledTimes(1)
+  })
+})

@@ -196,7 +196,7 @@ export default function Documentos({ proyecto }) {
         {puedeModificar ? (
           <div className="flex flex-wrap items-center gap-2">
             {agregando ? (
-              <SelectorDeDocumentos proyectoId={id}
+              <SelectorDeDocumentos proyectoId={id} nombreProyecto={proyecto.nombre}
                 onTerminado={() => { setAgregando(false); refrescar(visibles()) }}
                 onCerrar={() => setAgregando(false)} />
             ) : (

@@ -8,8 +8,10 @@ vi.mock('../../api/proyectos', () => ({
 }))
 // El selector real se prueba aparte (SelectorDeDocumentos.test.jsx): aquí solo importa a qué proyecto se abre.
 vi.mock('../proyectos/SelectorDeDocumentos', () => ({
-  default: ({ proyectoId, onCerrar }) => (
-    <div data-testid="selector-docs" data-proyecto={proyectoId}><button onClick={onCerrar}>cerrar-stub</button></div>
+  default: ({ proyectoId, nombreProyecto, enVentana, onCerrar }) => (
+    <div data-testid="selector-docs" data-proyecto={proyectoId} data-nombre={nombreProyecto} data-ventana={String(!!enVentana)}>
+      <button onClick={onCerrar}>cerrar-stub</button>
+    </div>
   ),
 }))
 
@@ -154,6 +156,47 @@ describe('BotonDocumentos -- con proyecto elegido', () => {
     fireEvent.click(screen.getByRole('button', { name: T.boton }))
     fireEvent.click(screen.getByText('cerrar-stub'))
     expect(await screen.findByRole('button', { name: T.sinPermiso })).toBeDisabled()
+  })
+})
+
+// Ronda final, MAJOR-2: el destino se fijaba al abrir y no se reiniciaba al cambiar de proyecto.
+describe('BotonDocumentos -- el destino sigue al proyecto activo', () => {
+  it('abre el selector en ventana propia, con el nombre del proyecto de destino', async () => {
+    useJaxStore.setState({ proyectoActivo: { id: 7, nombre: 'Alfa' } })
+    verProyecto.mockResolvedValue(ALFA)
+    renderBoton()
+    await waitFor(() => expect(screen.getByRole('button', { name: T.boton })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: T.boton }))
+    const selector = screen.getByTestId('selector-docs')
+    expect(selector).toHaveAttribute('data-nombre', 'Alfa')
+    expect(selector).toHaveAttribute('data-ventana', 'true')
+  })
+
+  it('7→9 con el selector abierto: el flujo se cierra al instante y no se reabre solo para 9', async () => {
+    useJaxStore.setState({ proyectoActivo: { id: 7, nombre: 'Alfa' } })
+    verProyecto.mockResolvedValue(ALFA)
+    renderBoton()
+    await waitFor(() => expect(screen.getByRole('button', { name: T.boton })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: T.boton }))
+    expect(screen.getByTestId('selector-docs')).toHaveAttribute('data-proyecto', '7')
+    verProyecto.mockResolvedValue({ ...ALFA, id: 9 })
+    act(() => useJaxStore.setState({ proyectoActivo: { id: 9, nombre: 'Nueve' } }))
+    expect(screen.queryByTestId('selector-docs')).toBeNull()
+    await waitFor(() => expect(screen.getByRole('button', { name: T.boton })).toBeEnabled())
+    expect(screen.queryByTestId('selector-docs')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: T.boton }))
+    expect(screen.getByTestId('selector-docs')).toHaveAttribute('data-proyecto', '9')
+  })
+
+  it('un segundo clic en 📄 cierra el selector', async () => {
+    useJaxStore.setState({ proyectoActivo: { id: 7, nombre: 'Alfa' } })
+    verProyecto.mockResolvedValue(ALFA)
+    renderBoton()
+    await waitFor(() => expect(screen.getByRole('button', { name: T.boton })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: T.boton }))
+    expect(screen.getByTestId('selector-docs')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: T.boton }))
+    expect(screen.queryByTestId('selector-docs')).toBeNull()
   })
 })
 

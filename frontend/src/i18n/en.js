@@ -1534,6 +1534,7 @@ export default {
       subiendo: 'Uploading…',
       elegirArchivos: 'Files',
       elegirCarpeta: 'Folder',
+      ventanaElegir: (nombre) => `Add documents to: ${nombre}`,
       sinPermiso: 'Your role in this project does not allow adding documents.',
       proyectoArchivado: 'This project is archived: it does not accept new documents.',
       noSePudoComprobar: 'Your access to this project could not be checked.',
@@ -1556,6 +1557,7 @@ export default {
       },
       resumen: {
         titulo: 'Upload summary',
+        tituloA: (nombre) => `Upload to: ${nombre}`,
         archivos: (n) => `${n} file${n === 1 ? '' : 's'}`,
         peso: (peso) => `Total size: ${peso}`,
         ignorados: (n) => `${n} will be skipped`,

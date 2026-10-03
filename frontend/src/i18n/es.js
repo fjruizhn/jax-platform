@@ -1630,6 +1630,7 @@ export default {
       subiendo: 'Subiendo…',
       elegirArchivos: 'Archivos',
       elegirCarpeta: 'Carpeta',
+      ventanaElegir: (nombre) => `Agregar documentos a: ${nombre}`,
       sinPermiso: 'Tu papel en este proyecto no permite agregar documentos.',
       proyectoArchivado: 'Este proyecto está archivado: no admite documentos nuevos.',
       noSePudoComprobar: 'No se pudo comprobar tu acceso a este proyecto.',
@@ -1652,6 +1653,7 @@ export default {
       },
       resumen: {
         titulo: 'Resumen de la subida',
+        tituloA: (nombre) => `Subir a: ${nombre}`,
         archivos: (n) => `${n} archivo${n === 1 ? '' : 's'}`,
         peso: (peso) => `Tamaño total: ${peso}`,
         ignorados: (n) => `${n} se ignorará${n === 1 ? '' : 'n'}`,
