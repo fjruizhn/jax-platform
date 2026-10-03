@@ -21,12 +21,15 @@ USO (normalmente lo invoca chat_f2d_orquestar.py):
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import time
 import uuid
 
 import bcrypt
 import pymysql
+
+LOGGER = logging.getLogger(__name__)
 
 # This is deliberately a closed value.  The runner never accepts a database name
 # from its caller: every write in this file is guarded by this exact name.
@@ -84,10 +87,10 @@ def liberar_exclusion(conn) -> None:
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT RELEASE_LOCK(%s)", (LOCK_DE_CORRIDA,))
-    except pymysql.Error:
+    except pymysql.Error as exc:  # fail-soft: a closed connection releases its MariaDB named lock.
         # The connection can be gone after an interrupted run; MariaDB releases
         # named locks with that connection, so there is no unsafe fallback action.
-        pass
+        LOGGER.warning("named-lock release skipped after %s", type(exc).__name__)
 
 
 def preparar_corrida(conn) -> None:

@@ -15,7 +15,10 @@ def _module():
 
 
 def _row():
-    return json.loads(Path("/tmp/f2esr-load-20261003/production-baseline-8000-r1.json").read_text())
+    evidence = (Path(__file__).resolve().parents[1] / "docs" / "evidence" /
+                "f2-e-sr-load-2026-10-03" / "http" /
+                "production-baseline-8000-r1.json")
+    return json.loads(evidence.read_text())
 
 
 def test_first_threshold_uses_median_of_repetitions_and_ignores_warmup():

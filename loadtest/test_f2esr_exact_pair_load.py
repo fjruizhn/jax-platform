@@ -1,4 +1,5 @@
 import importlib.util
+import logging
 from pathlib import Path
 
 import pytest
@@ -23,12 +24,8 @@ def test_actual_harness_keeps_full_concurrency_and_warmup_contract():
 def test_isolated_env_rejects_production_db(tmp_path):
     mod = _module()
     env = {"JAX_DB_HOST": "127.0.0.1", "JAX_DB_PORT": "3308", "JAX_DB_USER": "u", "JAX_DB_PASSWORD": "p", "JAX_DB_NAME": "jax_memory"}
-    try:
+    with pytest.raises(RuntimeError):
         mod.construir_env(tmp_path, env, tmp_path, tmp_path)
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("production database was accepted")
 
 
 def test_closed_db_file_rejects_foreign_keys_and_accepts_only_fixed_target(tmp_path):
@@ -81,3 +78,27 @@ def test_cleanup_retries_mariadb_1020_without_a_database(monkeypatch):
     monkeypatch.setattr(mod.siembra.time, "sleep", lambda _seconds: calls.append("sleep"))
     assert mod.siembra.limpiar(FakeConnection()) == {"governed_output_outbox": 0}
     assert calls == ["cleanup", "rollback", "sleep", "cleanup"]
+
+
+def test_readiness_retry_and_closed_lock_release_emit_sanitized_traces(monkeypatch, caplog):
+    mod = _module()
+    attempts = []
+
+    def get(_url, timeout):
+        attempts.append(timeout)
+        if len(attempts) == 1:
+            raise mod.httpx.TimeoutException("unreachable")
+        return type("Response", (), {"status_code": 200})()
+
+    class ClosedConnection:
+        def cursor(self):
+            raise mod.siembra.pymysql.Error("connection closed")
+
+    monkeypatch.setattr(mod.httpx, "get", get)
+    monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
+    with caplog.at_level(logging.WARNING):
+        assert mod.esperar_http_ok("http://127.0.0.1:18080", timeout=1).status_code == 200
+        mod.siembra.liberar_exclusion(ClosedConnection())
+    assert "TimeoutException" in caplog.text
+    assert "Error" in caplog.text
+    assert "127.0.0.1" not in caplog.text

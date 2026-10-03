@@ -45,6 +45,7 @@ import asyncio
 import argparse
 import base64
 import json
+import logging
 import os
 import platform
 import secrets
@@ -66,6 +67,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import f2esr_exact_pair_explain as explain  # noqa: E402
 import f2esr_exact_pair_seed as siembra  # noqa: E402
 
+LOGGER = logging.getLogger(__name__)
+
 def esperar_puerto(host, port, timeout=90):
     import socket
     until = time.time() + timeout
@@ -81,7 +84,8 @@ def esperar_http_ok(url, timeout=90):
         try:
             response = httpx.get(url, timeout=3)
             if response.status_code < 500: return response
-        except httpx.HTTPError: pass
+        except httpx.HTTPError as exc:  # fail-soft: bounded readiness retry; timeout reports the startup failure.
+            LOGGER.warning("HTTP readiness retry after %s", type(exc).__name__)
         time.sleep(.2)
     raise RuntimeError(f"{url} did not become ready")
 
