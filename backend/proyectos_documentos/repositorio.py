@@ -40,20 +40,38 @@ SQL_TOMAR_EN_COLA = (
 )
 
 
+class ProyectoNoActivo(Exception):
+    """El proyecto ya no esta ACTIVE en `jax_project_scope`: no se inserto nada."""
+
+
+# El INSERT lee `jax_project_scope` y solo inserta si el proyecto sigue ACTIVE: la
+# comprobacion y la escritura son UNA sentencia, sin carrera con un archivado que
+# llegue en medio de la subida. (InnoDB toma un candado compartido sobre la fila de
+# scope que lee, asi un cambio de estado concurrente espera a este commit.)
+SQL_INSERTAR = (
+    "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, "
+    "bytes, tipo, subido_por) "
+    "SELECT %s, %s, %s, %s, %s, %s, %s FROM jax_project_scope "
+    "WHERE project_id = %s AND status = 'ACTIVE' LIMIT 1"
+)
+
+
 async def insertar(pool, *, project_id: int, sha256: str, nombre_original: str, ruta_entrada: str,
                    bytes_: int, tipo: str, subido_por: int) -> int | None:
-    """Id de la fila nueva, o None si ese sha256 ya esta en el proyecto."""
+    """Id de la fila nueva, o None si ese sha256 ya esta en el proyecto.
+    ProyectoNoActivo si el proyecto dejo de estar ACTIVE (no inserta nada)."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             try:
-                await cur.execute(
-                    "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, "
-                    "bytes, tipo, subido_por) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                    (project_id, sha256, nombre_original, ruta_entrada, bytes_, tipo, subido_por))
+                await cur.execute(SQL_INSERTAR, (project_id, sha256, nombre_original, ruta_entrada,
+                                                 bytes_, tipo, subido_por, project_id))
             except aiomysql.IntegrityError as exc:
                 if exc.args and exc.args[0] == _ERROR_DUPLICADO:
                     return None
                 raise
+            if not cur.rowcount:
+                await conn.commit()
+                raise ProyectoNoActivo(project_id)
             nuevo = cur.lastrowid
         await conn.commit()
         return nuevo

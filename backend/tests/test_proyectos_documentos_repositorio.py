@@ -44,6 +44,10 @@ class Entorno:
             assert r.status_code == 200, r.text
         return pid
 
+    def archivar(self, pid):
+        r = self.client.post(f"{P}/{pid}/estado", headers=self.h, json={"estado": "ARCHIVED"})
+        assert r.status_code == 200, r.text
+
     def insertar(self, pid, sha, nombre="x.pdf", ruta=None, bytes_=1, tipo="pdf"):
         return _pool_call(self.client, repo.insertar, project_id=pid, sha256=sha, nombre_original=nombre,
                           ruta_entrada=ruta or f"entrada/l/{nombre}", bytes_=bytes_, tipo=tipo,
@@ -170,9 +174,10 @@ def test_ocultar_documento_de_otro_proyecto_es_false(e):
 
 
 def test_tomar_en_cola_ignora_proyectos_archivados(e):
-    activo, archivado = e.proyecto(), e.proyecto(archivado=True)
+    activo, archivado = e.proyecto(), e.proyecto()
     a = e.insertar(activo, "d" * 64, "a.pdf")
     e.insertar(archivado, "e" * 64, "b.pdf")
+    e.archivar(archivado)          # se archiva DESPUES: insertar ya no entra en un proyecto no ACTIVE
     filas = [f for f in _pool_call(e.client, repo.tomar_en_cola, limite=100000)
              if f["project_id"] in (activo, archivado)]
     assert [f["id"] for f in filas] == [a]
@@ -348,3 +353,17 @@ def test_explain_de_listar_y_tomar_en_cola_usan_su_indice(e):
     assert doc["key"] == "idx_project_documents_despacho", plan
     for f in plan:
         assert "filesort" not in (f["Extra"] or "") and "temporary" not in (f["Extra"] or ""), plan
+
+
+def test_insertar_solo_si_el_proyecto_sigue_activo(e):
+    p = e.proyecto()
+    assert e.insertar(p, "a" * 64) is not None
+    assert e.insertar(p, "a" * 64) is None                # duplicado en un proyecto ACTIVE: sigue siendo None
+    e.archivar(p)
+    with pytest.raises(repo.ProyectoNoActivo):
+        e.insertar(p, "b" * 64)
+    e.client.portal.call(sql, "UPDATE jax_project_scope SET status='DISABLED' WHERE project_id=%s", (p,))
+    with pytest.raises(repo.ProyectoNoActivo):
+        e.insertar(p, "c" * 64)
+    filas = e.client.portal.call(sql, "SELECT sha256 FROM project_documents WHERE project_id=%s", (p,), True)
+    assert [f[0] for f in filas] == ["a" * 64]            # lo rechazado no dejo fila

@@ -10,6 +10,7 @@ import hashlib
 import io
 import os
 import stat
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -392,6 +393,35 @@ def test_nombres_hostiles(ent, workspace):
     for f in ent.filas(p):
         assert f[2].startswith(f"proyectos/{p.uuid}/entrada/{r.json()['lote']}/") and ".." not in f[2].split("/")
         assert (workspace / f[2]).is_file()
+    # `nombre_original` es el nombre ORIGINAL como texto (NFC, sin controles, <= 1024): el
+    # de disco es otro. Nada se recorta a la baja ni se aplana a un componente.
+    guardados = sorted(f[1] for f in ent.filas(p))
+    # (httpx escapa los controles del nombre como %XX antes de enviarlo: el NUL llega "%00".)
+    esperados = sorted(almacen.nombre_para_mostrar(n.replace("\x00", "%00")) for n in nombres)
+    assert guardados == esperados
+    assert "../../etc/passwd.pdf" in guardados and "x" * 600 + ".pdf" in guardados and "/abs/ruta.pdf" in guardados
+    assert "con%00nul.pdf" in guardados and not any("\x00" in g for g in guardados)
+    assert sorted(a["nombre"] for a in r.json()["aceptados"]) == guardados
+
+
+def test_nombre_para_mostrar_unitario():
+    assert almacen.nombre_para_mostrar("con\x00nul\x07\u200b.pdf") == "connul.pdf"           # controles y de formato fuera
+    assert almacen.nombre_para_mostrar("e\u0301.pdf") == "\u00e9.pdf"                        # NFC
+    assert almacen.nombre_para_mostrar("a/b\\c.pdf") == "a/b\\c.pdf"                        # la ruta relativa se conserva como texto
+    assert almacen.nombre_para_mostrar("z" * 2000) == "z" * 1024
+    assert almacen.nombre_para_mostrar(None) == ""
+
+
+def test_nombre_original_con_carpeta_y_recortado_a_1024(ent, workspace):
+    p = ent.proyecto()
+    largo = "y" * 1100 + ".pdf"
+    r = ent.subir(p, ent.dueno, [_parte("Cliente/Contratos/2026/e\u0301.pdf", "1"), _parte(largo, "2")])
+    assert r.status_code == 202, r.text
+    por_nombre = {f[1]: f for f in ent.filas(p)}
+    assert set(por_nombre) == {"Cliente/Contratos/2026/\u00e9.pdf", largo[:1024]}      # ruta relativa conservada, NFC, 1024
+    carpeta = por_nombre["Cliente/Contratos/2026/\u00e9.pdf"][2]
+    assert carpeta.endswith("/\u00e9.pdf") and carpeta.count("/") == 4                 # en disco: un solo componente
+    assert por_nombre[largo[:1024]][2].rsplit("/", 1)[1] == ("y" * 196) + ".pdf"        # el seguro, a 200
 
 
 def test_misma_carpeta_nombres_repetidos_se_numeran_sin_pisarse(ent, workspace):
@@ -440,32 +470,98 @@ class _Subida:
 
 
 async def test_escribir_streaming_cuenta_lo_leido_y_borra_el_parcial(tmp_path):
-    destino = tmp_path / "ok.bin"
-    total, sha = await almacen.escribir_streaming(_Subida(b"a" * (2 * MIB + 5)), destino, 3 * MIB)
-    assert total == 2 * MIB + 5 and sha == hashlib.sha256(b"a" * (2 * MIB + 5)).hexdigest()
-    assert destino.stat().st_size == total and stat.S_IMODE(destino.stat().st_mode) == 0o660
-    grande = tmp_path / "grande.bin"
-    with pytest.raises(almacen.DemasiadoGrande):
-        await almacen.escribir_streaming(_Subida(b"a" * (3 * MIB + 1)), grande, 3 * MIB)
-    assert not grande.exists()
-    # no lee mucho mas alla del tope: corta en cuanto lo cruza
-    leido = []
+    carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
+    try:
+        destino = carpeta.ruta / "ok.bin"
+        total, sha = await almacen.escribir_streaming(_Subida(b"a" * (2 * MIB + 5)), carpeta, "ok.bin", 3 * MIB)
+        assert total == 2 * MIB + 5 and sha == hashlib.sha256(b"a" * (2 * MIB + 5)).hexdigest()
+        assert destino.stat().st_size == total and stat.S_IMODE(destino.stat().st_mode) == 0o660
+        with pytest.raises(almacen.DemasiadoGrande):
+            await almacen.escribir_streaming(_Subida(b"a" * (3 * MIB + 1)), carpeta, "grande.bin", 3 * MIB)
+        assert not (carpeta.ruta / "grande.bin").exists()
+        # no lee mucho mas alla del tope: corta en cuanto lo cruza
+        leido = []
 
-    class Contador(io.BytesIO):
-        def read(self, n=-1):
-            bloque = super().read(n)
-            leido.append(len(bloque))
-            return bloque
+        class Contador(io.BytesIO):
+            def read(self, n=-1):
+                bloque = super().read(n)
+                leido.append(len(bloque))
+                return bloque
 
-    sub = _Subida(b"")
-    sub.file = Contador(b"a" * (50 * MIB))
-    with pytest.raises(almacen.DemasiadoGrande):
-        await almacen.escribir_streaming(sub, tmp_path / "otro.bin", MIB)
-    assert sum(leido) <= 2 * MIB and not (tmp_path / "otro.bin").exists()
-    # nunca pisa un archivo que ya existe
-    with pytest.raises(FileExistsError):
-        await almacen.escribir_streaming(_Subida(b"x"), destino, MIB)
-    assert destino.stat().st_size == total
+        sub = _Subida(b"")
+        sub.file = Contador(b"a" * (50 * MIB))
+        with pytest.raises(almacen.DemasiadoGrande):
+            await almacen.escribir_streaming(sub, carpeta, "otro.bin", MIB)
+        assert sum(leido) <= 2 * MIB and not (carpeta.ruta / "otro.bin").exists()
+        # nunca pisa un archivo que ya existe
+        with pytest.raises(FileExistsError):
+            await almacen.escribir_streaming(_Subida(b"x"), carpeta, "ok.bin", MIB)
+        assert destino.stat().st_size == total
+        # ni sigue un enlace puesto en el lugar del archivo
+        fuera = tmp_path / "fuera.txt"
+        os.symlink(fuera, carpeta.ruta / "enlace.pdf")
+        with pytest.raises(OSError):
+            await almacen.escribir_streaming(_Subida(b"x"), carpeta, "enlace.pdf", MIB)
+        assert not fuera.exists()
+    finally:
+        carpeta.cerrar()
+
+
+async def test_cancelacion_antes_de_abrir_no_deja_archivo_huerfano(tmp_path, monkeypatch):
+    """La cancelacion llega mientras el hilo todavia no hizo `os.open`: cuando el hilo
+    sigue, la bandera lo detiene y, de todos modos, el archivo no puede quedar."""
+    carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
+    try:
+        entro, compuerta = threading.Event(), threading.Event()
+        original = almacen._crear
+
+        def lenta(fd, nombre):
+            entro.set()
+            assert compuerta.wait(10)
+            return original(fd, nombre)
+
+        monkeypatch.setattr(almacen, "_crear", lenta)
+        tarea = asyncio.create_task(almacen.escribir_streaming(_Subida(b"x" * 100), carpeta, "a.pdf", MIB))
+        assert await asyncio.to_thread(entro.wait, 10)
+        tarea.cancel()
+        asyncio.get_running_loop().call_later(0.2, compuerta.set)      # el hilo sigue DESPUES de cancelar
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+        assert list(carpeta.ruta.iterdir()) == []
+        assert threading.active_count() >= 1
+    finally:
+        carpeta.cerrar()
+
+
+async def test_cancelacion_a_mitad_de_la_escritura_borra_el_parcial(tmp_path):
+    carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
+    try:
+        leyendo, compuerta = threading.Event(), threading.Event()
+
+        class Lenta(io.BytesIO):
+            def __init__(self):
+                super().__init__(b"a" * (3 * MIB))
+                self.bloques = 0
+
+            def read(self, n=-1):
+                self.bloques += 1
+                if self.bloques == 2:
+                    leyendo.set()
+                    assert compuerta.wait(10)
+                return super().read(n)
+
+        sub = _Subida(b"")
+        sub.file = Lenta()
+        tarea = asyncio.create_task(almacen.escribir_streaming(sub, carpeta, "a.pdf", 10 * MIB))
+        assert await asyncio.to_thread(leyendo.wait, 10)
+        assert (carpeta.ruta / "a.pdf").exists()                      # ya hay un parcial en disco
+        tarea.cancel()
+        asyncio.get_running_loop().call_later(0.2, compuerta.set)
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+        assert list(carpeta.ruta.iterdir()) == []
+    finally:
+        carpeta.cerrar()
 
 
 # ------------------------------------------------------------------ listar
@@ -592,7 +688,7 @@ def test_limites_con_ajuste_ilegible_falla_cerrado(ent, ajustes_en_db):
 
 def test_modos_explicitos_no_dependen_del_umask(ent, workspace):
     """Bajo `proyectos/` hay ACL por defecto y setgid: un 0600 anula el acceso de
-    fruiz (mascara `---`). Archivo 0660 y carpetas 0770 aunque el umask diga otra
+    fruiz (mascara `---`). Archivo 0660 y carpetas 2770 (con S_ISGID) aunque el umask diga otra
     cosa, en toda la cadena que crea la subida."""
     p = ent.proyecto()
     anterior = os.umask(0o077)
@@ -605,7 +701,7 @@ def test_modos_explicitos_no_dependen_del_umask(ent, workspace):
     assert stat.S_IMODE(archivo.stat().st_mode) == 0o660
     for carpeta in (archivo.parent, archivo.parent.parent, archivo.parent.parent.parent,
                     archivo.parent.parent.parent.parent):
-        assert stat.S_IMODE(carpeta.stat().st_mode) == 0o770, carpeta
+        assert stat.S_IMODE(carpeta.stat().st_mode) == 0o2770, carpeta        # 0770 + setgid heredable
     assert archivo.parent.parent.parent.parent == workspace / "proyectos"
 
 
@@ -615,10 +711,71 @@ def test_carpeta_existente_no_se_toca(tmp_path):
     previa.mkdir(mode=0o750)
     os.chmod(previa, 0o750)
     u = str(uuid.uuid4())
-    almacen.preparar_carpeta(almacen.carpeta_entrada(tmp_path, u, "lote1"), tmp_path)
+    c1 = almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
     assert stat.S_IMODE(previa.stat().st_mode) == 0o750
-    assert stat.S_IMODE((previa / u / "entrada" / "lote1").stat().st_mode) == 0o770
-    almacen.preparar_carpeta(almacen.carpeta_entrada(tmp_path, u, "lote2"), tmp_path)    # idempotente
+    assert stat.S_IMODE((previa / u / "entrada" / "lote1").stat().st_mode) == 0o2770
+    c2 = almacen.abrir_carpeta_lote(tmp_path, u, "lote2")                 # idempotente sobre lo ya creado
+    assert sorted(x.name for x in (previa / u / "entrada").iterdir()) == ["lote1", "lote2"]
+    c1.cerrar()
+    c2.cerrar()
+
+
+# --------------------------------------------- enlaces simbolicos en el camino
+
+def _foto(raiz: Path) -> list[str]:
+    """Todo lo que cuelga de `raiz`, sin seguir enlaces (los enlaces cuentan como entradas)."""
+    visto = []
+    for base, carpetas, archivos in os.walk(raiz, followlinks=False):
+        for nombre in [*carpetas, *archivos]:
+            visto.append(os.path.relpath(os.path.join(base, nombre), raiz))
+    return sorted(visto)
+
+
+@pytest.mark.parametrize("destino", ["fuera", "hermano"])
+@pytest.mark.parametrize("nivel", ["proyectos", "uuid", "entrada", "lote"])
+def test_enlace_simbolico_en_el_camino_no_escribe_en_ningun_lado(ent, tmp_path, monkeypatch, nivel, destino):
+    """El camino de MAJOR-1: `proyectos/U/entrada -> proyectos/V/entrada` hacia un
+    hermano, o hacia fuera del workspace. Ningun nivel se sigue: respuesta con codigo
+    estable, sin la ruta interna, y ni el destino del enlace ni nada mas recibe escrituras."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setenv("JAX_WORKSPACE_DIR", str(ws))
+    monkeypatch.setattr("api.proyectos_documentos._nuevo_lote", lambda: "loteFijo")
+    p = ent.proyecto()
+    objetivo = (tmp_path / "fuera") if destino == "fuera" else (ws / "hermano")
+    objetivo.mkdir()
+    ruta = {"proyectos": ws / "proyectos", "uuid": ws / "proyectos" / p.uuid,
+            "entrada": ws / "proyectos" / p.uuid / "entrada",
+            "lote": ws / "proyectos" / p.uuid / "entrada" / "loteFijo"}
+    if nivel != "proyectos":                                         # los niveles de arriba, reales
+        ruta["proyectos"].mkdir()
+    if nivel in ("entrada", "lote"):
+        ruta["uuid"].mkdir()
+    if nivel == "lote":
+        ruta["entrada"].mkdir()
+    os.symlink(objetivo, ruta[nivel])
+    antes_ws, antes_fuera = _foto(ws), _foto(tmp_path / "fuera") if (tmp_path / "fuera").exists() else []
+
+    r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
+    assert r.status_code == 500 and r.json() == {"detail": {"code": "almacen_ruta_insegura"}}
+    assert str(tmp_path) not in r.text and p.uuid not in r.text
+    assert _foto(objetivo) == []                                      # ni en V ni afuera
+    assert _foto(ws) == antes_ws                                      # sin residuos: ni carpetas nuevas
+    assert (tmp_path / "fuera").exists() is (destino == "fuera") and _foto(tmp_path / "fuera") == antes_fuera
+    assert ruta[nivel].is_symlink()                                   # el enlace sigue intacto
+    assert ent.filas(p) == []
+
+
+def test_enlace_a_otro_proyecto_no_escribe_en_el_otro(ent, workspace):
+    """El escenario literal del revisor: `proyectos/U/entrada -> proyectos/V/entrada`."""
+    u, v = ent.proyecto(), ent.proyecto()
+    (workspace / "proyectos" / v.uuid / "entrada").mkdir(parents=True)
+    (workspace / "proyectos" / u.uuid).mkdir(parents=True)
+    os.symlink(workspace / "proyectos" / v.uuid / "entrada", workspace / "proyectos" / u.uuid / "entrada")
+    r = ent.subir(u, ent.dueno, [_parte("a.pdf", "a")])
+    assert r.status_code == 500 and _code(r) == "almacen_ruta_insegura"
+    assert _foto(workspace / "proyectos" / v.uuid) == ["entrada"]
+    assert ent.filas(u) == [] and ent.filas(v) == []
 
 
 # ------------------------------------------------------------------- freno
@@ -667,3 +824,110 @@ def test_ocultar_y_restaurar_en_proyecto_archivado_409(ent, workspace):
     # volver a ACTIVE los habilita de nuevo
     assert ent.client.post(f"{P}/{p.id}/estado", headers=ent.dueno, json={"estado": "ACTIVE"}).status_code == 200
     assert ent.client.post(f"{P}/{p.id}/documentos/{a}/ocultar", headers=ent.dueno).status_code == 204
+
+
+# ------------------------- lo que cambia mientras se recibe el cuerpo (MAJOR-2)
+
+def _despues_de_leer_el_cuerpo(monkeypatch, accion):
+    """Corre `accion` (sincrona, con el cliente de prueba) justo despues de que Starlette
+    termina de leer el multipart y antes de que la ruta toque el disco."""
+    from starlette.requests import Request
+
+    original = Request.form
+
+    def form(self, *args, **kwargs):
+        async def corre():
+            resultado = await original(self, *args, **kwargs)
+            await asyncio.to_thread(accion)
+            return resultado
+        return corre()
+
+    monkeypatch.setattr(Request, "form", form)
+
+
+def _nada(ent, p, workspace):
+    assert not (workspace / "proyectos").exists() and _en_disco(workspace) == []
+    assert ent.filas(p) == []
+
+
+def test_archivado_mientras_se_recibe_el_cuerpo_409_y_no_queda_nada(ent, workspace, monkeypatch):
+    p = ent.proyecto()
+    _despues_de_leer_el_cuerpo(monkeypatch, lambda: ent.client.post(
+        f"{P}/{p.id}/estado", headers=ent.dueno, json={"estado": "ARCHIVED"}))
+    r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
+    assert r.status_code == 409 and _code(r) == "proyecto_no_activo"
+    _nada(ent, p, workspace)
+
+
+def test_miembro_quitado_mientras_se_recibe_el_cuerpo_404_y_no_queda_nada(ent, workspace, monkeypatch):
+    p = ent.proyecto()
+    contrib = ent.miembro(p, "contrib", "CONTRIBUTOR")
+    _despues_de_leer_el_cuerpo(monkeypatch, lambda: ent.client.delete(
+        f"{P}/{p.id}/miembros/{ent._id('contrib')}", headers=ent.dueno))
+    r = ent.subir(p, contrib, [_parte("a.pdf", "a")])
+    assert r.status_code == 404 and _code(r) == "proyecto_no_encontrado"
+    _nada(ent, p, workspace)
+
+
+def test_freno_puesto_mientras_se_recibe_el_cuerpo_423_y_no_queda_nada(client, usuarios, ent, workspace, monkeypatch):
+    p = ent.proyecto()
+    admin_id, _ = usuarios(role="superadmin")
+    admin = auth(token_para(admin_id, role="superadmin"))
+    _despues_de_leer_el_cuerpo(monkeypatch, lambda: client.post("/api/admin/kill-switch/activar", headers=admin))
+    try:
+        r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
+    finally:
+        assert client.post("/api/admin/kill-switch/reanudar", headers=admin).status_code == 200
+    assert (r.status_code, r.json().get("detail")) == (423, "kill_switch_activo")
+    _nada(ent, p, workspace)
+
+
+def test_archivado_despues_de_escribir_el_insert_lo_rechaza_y_se_borra_el_archivo(ent, workspace, monkeypatch):
+    """La ventana que la re-comprobacion no cubre: el proyecto se archiva ENTRE la
+    escritura y el INSERT. Decide el propio INSERT (solo inserta si sigue ACTIVE)."""
+    p = ent.proyecto()
+    original = almacen.escribir_streaming
+
+    async def y_se_archiva(*args, **kwargs):
+        resultado = await original(*args, **kwargs)
+        r = await asyncio.to_thread(ent.client.post, f"{P}/{p.id}/estado", headers=ent.dueno,
+                                    json={"estado": "ARCHIVED"})
+        assert r.status_code == 200
+        return resultado
+
+    monkeypatch.setattr(almacen, "escribir_streaming", y_se_archiva)
+    r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a"), _parte("b.pdf", "b")])
+    assert r.status_code == 409 and _code(r) == "proyecto_no_activo"
+    assert r.json()["detail"]["aceptados"] == []
+    assert _en_disco(workspace) == [] and ent.filas(p) == []
+
+
+def test_puede_escribir_sale_de_la_capacidad_de_b9():
+    from api import proyectos_documentos as api_docs
+
+    assert [api_docs._puede_escribir(x) for x in ("VIEWER", "CONTRIBUTOR", "REVIEWER", "OWNER")] == [False, True, True, True]
+    assert not hasattr(api_docs, "_ESCRIBEN")                         # ninguna segunda tabla de papeles
+
+
+# --------------------------------------------- exceso de archivos del multipart
+
+def test_mas_archivos_que_el_tope_mas_uno_413_y_no_escribe(ent, workspace, ajustes_en_db):
+    ajustes_en_db.poner(**{ARCHIVOS_LOTE: "2"})
+    p = ent.proyecto()
+    r = ent.subir(p, ent.dueno, [_parte(f"d{i}.pdf", str(i)) for i in range(5)])
+    assert r.status_code == 413 and _code(r) == "lote_demasiado_grande"
+    assert r.json()["detail"]["aceptados"] == []
+    _nada(ent, p, workspace)
+
+
+# ---------------------------------------- duplicados descartados no ocupan lote
+
+def test_el_duplicado_descartado_no_cuenta_en_los_bytes_del_lote(ent, workspace, ajustes_en_db):
+    ajustes_en_db.poner(**{ARCHIVO: str(MIB), BYTES_LOTE: str(MIB)})
+    p = ent.proyecto()
+    trozo = lambda letra: b"%PDF" + letra * (300 * 1024)               # 300 KiB cada uno
+    r = ent.subir(p, ent.dueno, [_parte("a.pdf", trozo(b"a")), _parte("a2.pdf", trozo(b"a")),
+                                 _parte("c.pdf", trozo(b"c")), _parte("d.pdf", trozo(b"d"))])
+    assert r.status_code == 202, r.text                                # 900 KiB reales < 1 MiB
+    assert [a["nombre"] for a in r.json()["aceptados"]] == ["a.pdf", "c.pdf", "d.pdf"]
+    assert r.json()["ignorados"] == [{"nombre": "a2.pdf", "motivo": "duplicado"}]
