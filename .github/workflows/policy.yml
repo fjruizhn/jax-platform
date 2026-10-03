@@ -3437,7 +3437,10 @@ jobs:
           #   su cuenta real; el runner tiene la ultima palabra.
           # 3262 -> 3387: medido en el runner sobre 96ce1f8 (fusión con master #175), run 37120526359:
           #   colectados=3388, passed=3387, skipped=1 (MAX_SKIPS=1 concuerda).
-          PISO_PASSED = 3387
+          # 3387 -> 3401: medido en GitHub Actions sobre Platform 53f55832593346e20e4c7324ccfe6fdd2d8db324,
+          #   JAX 9ae6ed897dbcd9671d1bec51a4c08b32a29a163d, run 37135711463 / job 111239752199:
+          #   passed=3401, skipped=1. MAX_SKIPS remains 1.
+          PISO_PASSED = 3401
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4431,7 +4434,10 @@ jobs:
       # passed -> fusion 2065 passed (0 failed). El runner tiene la ultima palabra.
       # 1912 -> 2064: medido en el runner sobre 96ce1f8 (fusión con master #175), run 37120526359:
       # passed=2064, skipped=1324.
-      JAX_CI_MIN_PASSED: "2064"
+      # 2064 -> 2074: medido en GitHub Actions sobre Platform 53f55832593346e20e4c7324ccfe6fdd2d8db324,
+      # JAX 9ae6ed897dbcd9671d1bec51a4c08b32a29a163d, run 37135711463 / job 111239752039:
+      # passed=2074, skipped=1328.
+      JAX_CI_MIN_PASSED: "2074"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
