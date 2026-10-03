@@ -3470,9 +3470,9 @@ jobs:
           # 3541 -> 3551 (cupo propio de reprocesar): MEDIDO EXACTO CON DB (mariadb:12.3.3 descartable, jax
           #   2b0c163, mismo comando) sobre la rama: 3551 passed, con las 3 pruebas de test_base_por_sesion
           #   fuera (2 fallan y 1 deseleccionada: hablan con un MariaDB local con triggers; no son del runner,
-          #   asi que el piso queda por debajo de lo que contara el runner). Nuevas: 4 en test_ajustes /
-          #   test_migracion_ajustes (claves nuevas), 5 en test_proyectos_documentos_api (cupo propio, subida
-          #   concurrente, Retry-After) y 2 en repositorio/otros.
+          #   asi que el piso queda por debajo de lo que contara el runner). Nuevas: 4 en test_ajustes (claves
+          #   nuevas), 4 en test_proyectos_documentos_api (cupo global, subida concurrente, reprocesar sin 429 por
+          #   las subidas, Retry-After) y 3 puras en test_proyectos_documentos_cupo.py = 11.
           PISO_PASSED = 3551
           MAX_SKIPS = 1
 
