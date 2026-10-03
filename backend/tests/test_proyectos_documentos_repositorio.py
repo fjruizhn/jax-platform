@@ -56,7 +56,12 @@ class Entorno:
     def fila(self, doc_id):
         return self.client.portal.call(
             sql, "SELECT estado, job_id, carpeta_procesado, error, oculto_at, oculto_por "
-                 "FROM project_documents WHERE id=%s", (doc_id,), True)[0]
+            "FROM project_documents WHERE id=%s", (doc_id,), True)[0]
+
+    def owner(self, project_id):
+        tenant_id = self.client.portal.call(sql, "SELECT tenant_id FROM jax_project_scope WHERE project_id=%s",
+                                            (project_id,), True)[0][0]
+        return repo.PlatformProcessingOwnership(int(tenant_id), self.usuario, project_id)
 
 
 @pytest.fixture
@@ -181,8 +186,8 @@ def test_tomar_en_cola_ignora_proyectos_archivados(e):
     filas = [f for f in _pool_call(e.client, repo.tomar_en_cola, limite=100000)
              if f["project_id"] in (activo, archivado)]
     assert [f["id"] for f in filas] == [a]
-    assert filas[0]["subido_por_email"] and filas[0]["project_uuid"]
-    assert set(filas[0]) == {"id", "project_id", "project_uuid", "ruta_entrada", "subido_por_email"}
+    assert filas[0]["owner"] == e.owner(activo) and filas[0]["project_uuid"]
+    assert set(filas[0]) == {"id", "project_id", "project_uuid", "ruta_entrada", "owner"}
 
 
 def test_tomar_en_cola_usa_el_scope_y_no_el_reflejo_de_projects(e):
@@ -196,7 +201,7 @@ def test_tomar_en_cola_usa_el_scope_y_no_el_reflejo_de_projects(e):
 def test_tomar_en_cola_respeta_limite_orden_y_estado(e):
     p = e.proyecto()
     ids = [e.insertar(p, f"{i:064x}", f"{i}.pdf") for i in range(3)]
-    _pool_call(e.client, repo.marcar_despachadas, ids=[ids[0]], job_id="job-x")
+    _pool_call(e.client, repo.marcar_despachadas, ids=[ids[0]], job_id="job-x", owner=e.owner(p))
     propios = [f["id"] for f in _pool_call(e.client, repo.tomar_en_cola, limite=100000) if f["project_id"] == p]
     assert propios == [ids[1], ids[2]]
     # limite=1 trae solo la fila en cola mas antigua de TODA la tabla
@@ -215,37 +220,37 @@ def test_tomar_en_cola_incluye_filas_de_fuente(e):
 def test_despacho_resultado_y_trabajo_perdido(e):
     p = e.proyecto()
     a, b, c = (e.insertar(p, f"{i:064x}", f"{i}.pdf", ruta=f"entrada/l/{i}.pdf") for i in range(3))
-    _pool_call(e.client, repo.marcar_despachadas, ids=[a, b, c], job_id="job-1")
+    _pool_call(e.client, repo.marcar_despachadas, ids=[a, b, c], job_id="job-1", owner=e.owner(p))
     assert e.fila(a)[:2] == ("pendiente", "job-1")
-    assert "job-1" in _pool_call(e.client, repo.trabajos_abiertos)
+    assert {row["job_id"] for row in _pool_call(e.client, repo.trabajos_abiertos)} == {"job-1"}
 
     _pool_call(e.client, repo.aplicar_resultado, job_id="job-1", ruta_entrada="entrada/l/0.pdf",
-               estado="listo", carpeta_procesado="proc/0", error=None)
+               estado="listo", carpeta_procesado="proc/0", error=None, owner=e.owner(p))
     _pool_call(e.client, repo.aplicar_resultado, job_id="job-1", ruta_entrada="entrada/l/1.pdf",
-               estado="error", carpeta_procesado=None, error="ilegible")
+               estado="error", carpeta_procesado=None, error="ilegible", owner=e.owner(p))
     assert e.fila(a)[0] == "listo" and e.fila(a)[2] == "proc/0"
     assert e.fila(b)[0] == "error" and e.fila(b)[3] == "ilegible"
     # el tercero sigue abierto, asi que el trabajo sigue abierto
-    assert "job-1" in _pool_call(e.client, repo.trabajos_abiertos)
+    assert {row["job_id"] for row in _pool_call(e.client, repo.trabajos_abiertos)} == {"job-1"}
 
-    _pool_call(e.client, repo.marcar_job_perdido, job_id="job-1")
+    _pool_call(e.client, repo.marcar_job_perdido, job_id="job-1", owner=e.owner(p))
     assert e.fila(c)[0] == "error" and e.fila(c)[3] == "trabajo_perdido"
     # lo ya resuelto no se pisa
     assert e.fila(a)[0] == "listo" and e.fila(b)[3] == "ilegible"
-    assert "job-1" not in _pool_call(e.client, repo.trabajos_abiertos)
+    assert "job-1" not in {row["job_id"] for row in _pool_call(e.client, repo.trabajos_abiertos)}
 
 
 def test_marcar_despachadas_sin_ids_no_hace_nada(e):
-    assert _pool_call(e.client, repo.marcar_despachadas, ids=[], job_id="job-vacio") == []
+    assert _pool_call(e.client, repo.marcar_despachadas, ids=[], job_id="job-vacio", owner=e.owner(e.proyecto())) == []
 
 
 def test_marcar_despachadas_solo_toca_filas_en_cola(e):
     p = e.proyecto()
     d = e.insertar(p, "7" * 64)
     otro = e.insertar(p, "8" * 64)
-    assert _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-a") == [d]
+    assert _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-a", owner=e.owner(p)) == [d]
     # el segundo despachador pierde `d` y gana solo lo que seguia en cola
-    assert _pool_call(e.client, repo.marcar_despachadas, ids=[d, otro], job_id="job-b") == [otro]
+    assert _pool_call(e.client, repo.marcar_despachadas, ids=[d, otro], job_id="job-b", owner=e.owner(p)) == [otro]
     assert e.fila(d)[:2] == ("pendiente", "job-a")
     assert e.fila(otro)[:2] == ("pendiente", "job-b")
 
@@ -253,10 +258,10 @@ def test_marcar_despachadas_solo_toca_filas_en_cola(e):
 def test_resultado_tardio_no_pisa_un_estado_terminal(e):
     p = e.proyecto()
     d = e.insertar(p, "6" * 64, ruta="entrada/l/t.pdf")
-    _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-t")
-    _pool_call(e.client, repo.marcar_job_perdido, job_id="job-t")
+    _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-t", owner=e.owner(p))
+    _pool_call(e.client, repo.marcar_job_perdido, job_id="job-t", owner=e.owner(p))
     n = _pool_call(e.client, repo.aplicar_resultado, job_id="job-t", ruta_entrada="entrada/l/t.pdf",
-                   estado="listo", carpeta_procesado="proc/t", error=None)
+                   estado="listo", carpeta_procesado="proc/t", error=None, owner=e.owner(p))
     assert n == 0
     assert e.fila(d)[0] == "error" and e.fila(d)[3] == "trabajo_perdido" and e.fila(d)[2] is None
 
@@ -264,11 +269,11 @@ def test_resultado_tardio_no_pisa_un_estado_terminal(e):
 def test_aplicar_resultado_devuelve_filas_y_acepta_procesando(e):
     p = e.proyecto()
     d = e.insertar(p, "5" * 64, ruta="entrada/l/u.pdf")
-    _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-u")
+    _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-u", owner=e.owner(p))
     assert _pool_call(e.client, repo.aplicar_resultado, job_id="job-u", ruta_entrada="entrada/l/u.pdf",
-                      estado="procesando", carpeta_procesado=None, error=None) == 1
+                      estado="procesando", carpeta_procesado=None, error=None, owner=e.owner(p)) == 1
     assert _pool_call(e.client, repo.aplicar_resultado, job_id="job-u", ruta_entrada="entrada/l/u.pdf",
-                      estado="listo", carpeta_procesado="proc/u", error=None) == 1
+                      estado="listo", carpeta_procesado="proc/u", error=None, owner=e.owner(p)) == 1
     assert e.fila(d)[0] == "listo"
 
 
@@ -276,22 +281,44 @@ def test_dos_trabajos_con_la_misma_ruta_no_se_tocan(e):
     p = e.proyecto()
     a = e.insertar(p, "3" * 64, nombre="a.pdf", ruta="entrada/l/mismo.pdf")
     b = e.insertar(p, "4" * 64, nombre="b.pdf", ruta="entrada/l/mismo.pdf")
-    _pool_call(e.client, repo.marcar_despachadas, ids=[a], job_id="job-1")
-    _pool_call(e.client, repo.marcar_despachadas, ids=[b], job_id="job-2")
+    _pool_call(e.client, repo.marcar_despachadas, ids=[a], job_id="job-1", owner=e.owner(p))
+    _pool_call(e.client, repo.marcar_despachadas, ids=[b], job_id="job-2", owner=e.owner(p))
     assert _pool_call(e.client, repo.aplicar_resultado, job_id="job-1", ruta_entrada="entrada/l/mismo.pdf",
-                      estado="listo", carpeta_procesado="proc/a", error=None) == 1
+                      estado="listo", carpeta_procesado="proc/a", error=None, owner=e.owner(p)) == 1
     assert e.fila(a)[0] == "listo" and e.fila(b)[0] == "pendiente"
 
 
 def test_aplicar_resultado_con_estado_invalido_lanza_antes_de_tocar(e):
     p = e.proyecto()
     d = e.insertar(p, "2" * 64, ruta="entrada/l/v.pdf")
-    _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-v")
+    _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-v", owner=e.owner(p))
     for malo in ("en_cola", "pendiente", "inventado", ""):
         with pytest.raises(ValueError):
             _pool_call(e.client, repo.aplicar_resultado, job_id="job-v", ruta_entrada="entrada/l/v.pdf",
-                       estado=malo, carpeta_procesado=None, error=None)
+                       estado=malo, carpeta_procesado=None, error=None, owner=e.owner(p))
     assert e.fila(d)[0] == "pendiente"
+
+
+def test_owner_tuple_blocks_cross_project_tenant_and_user_mutations(e):
+    p = e.proyecto()
+    d = e.insertar(p, "a" * 64, ruta="entrada/l/owner.pdf")
+    owner = e.owner(p)
+    for forged in (
+        repo.PlatformProcessingOwnership(owner.tenant_id, owner.user_id, owner.project_id + 1),
+        repo.PlatformProcessingOwnership(owner.tenant_id + 1, owner.user_id, owner.project_id),
+        repo.PlatformProcessingOwnership(owner.tenant_id, owner.user_id + 1, owner.project_id),
+    ):
+        assert _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="cross", owner=forged) == []
+        assert e.fila(d)[:2] == ("en_cola", None)
+    assert _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="owned", owner=owner) == [d]
+
+
+def test_same_job_with_two_owner_contexts_is_quarantined(e):
+    p, q = e.proyecto(), e.proyecto()
+    a, b = e.insertar(p, "b" * 64), e.insertar(q, "c" * 64)
+    assert _pool_call(e.client, repo.marcar_despachadas, ids=[a], job_id="ambiguous", owner=e.owner(p)) == [a]
+    assert _pool_call(e.client, repo.marcar_despachadas, ids=[b], job_id="ambiguous", owner=e.owner(q)) == [b]
+    assert "ambiguous" not in {row["job_id"] for row in _pool_call(e.client, repo.trabajos_abiertos)}
 
 
 # ------------------------------------------------------------------ EXPLAIN (camino caliente)

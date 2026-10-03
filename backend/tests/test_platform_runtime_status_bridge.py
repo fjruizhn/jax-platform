@@ -13,6 +13,7 @@ from jax_engine.status_resolution import (
     FacetRuntimeStatusResolver,
     LasManosHealthStatusResolver,
     RuntimeStatusBridgeUnavailable,
+    _jax_runtime_status_bridge,
 )
 
 
@@ -47,6 +48,18 @@ def _core(monkeypatch):
         pytest.skip("requires the exact-pair F2-E runtime-status JAX bridge")
     resolution = importlib.import_module("policy.governance.resolution")
     return runtime_status, resolution
+
+
+def test_runtime_status_bridge_requires_only_current_api_version(monkeypatch):
+    root = Path(os.environ["JAX_REPO_PATH"]).resolve()
+    runtime_status = _jax_runtime_status_bridge()
+    assert runtime_status.RUNTIME_STATUS_API_VERSION == "f2-e.runtime-status.3"
+    assert Path(runtime_status.__file__).resolve().is_relative_to(root)
+    for incompatible_version in ("f2-e.runtime-status.2", "f2-e.runtime-status.4"):
+        with monkeypatch.context() as patched:
+            patched.setattr(runtime_status, "RUNTIME_STATUS_API_VERSION", incompatible_version)
+            with pytest.raises(RuntimeStatusBridgeUnavailable, match="unsupported"):
+                _jax_runtime_status_bridge()
 
 
 def test_facet_runtime_status_bridge_carries_only_registered_status_and_exact_scope(monkeypatch):

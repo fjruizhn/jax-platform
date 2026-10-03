@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 
 from config_entorno import EntornoInvalido
 
@@ -33,6 +34,29 @@ VARIABLE = "JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA"
 #: El mismo mínimo que exige LAS MANOS: secrets.token_urlsafe(32).
 LARGO_MINIMO = 43
 _ALFABETO = re.compile(r"^[A-Za-z0-9_\-]+$")
+VERSION_PROPIETARIO_PROCESAMIENTO = "processing-owner.1"
+
+
+@dataclass(frozen=True)
+class PlatformProcessingOwnership:
+    """Platform-authenticated, canonical database ownership for one processing job."""
+    tenant_id: int
+    user_id: int
+    project_id: int
+
+    def __post_init__(self) -> None:
+        for field in ("tenant_id", "user_id", "project_id"):
+            value = getattr(self, field)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{field} must be a positive canonical database integer")
+
+    def headers(self) -> dict[str, str]:
+        return {
+            "X-Jax-Processing-Owner-Version": VERSION_PROPIETARIO_PROCESAMIENTO,
+            "X-Jax-Processing-Tenant-Id": str(self.tenant_id),
+            "X-Jax-Processing-User-Id": str(self.user_id),
+            "X-Jax-Processing-Project-Id": str(self.project_id),
+        }
 
 
 def encabezados_las_manos() -> dict[str, str]:
@@ -46,3 +70,9 @@ def encabezados_las_manos() -> dict[str, str]:
             f"{VARIABLE} tiene que tener al menos {LARGO_MINIMO} caracteres [A-Za-z0-9_-]."
         )
     return {ENCABEZADO: valor}
+
+
+def encabezados_procesamiento(contexto: PlatformProcessingOwnership) -> dict[str, str]:
+    if not isinstance(contexto, PlatformProcessingOwnership):
+        raise TypeError("processing ownership must be PlatformProcessingOwnership")
+    return {**encabezados_las_manos(), **contexto.headers()}

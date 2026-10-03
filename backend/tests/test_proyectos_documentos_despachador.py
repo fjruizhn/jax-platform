@@ -165,7 +165,7 @@ def test_despacha_en_trozos_de_rutas_por_trabajo(e):
     e.ciclo()
     cuerpos = e.las_manos.posts
     assert [len(c["rutas"]) for c in cuerpos] == [50, 50, 20]
-    assert all(c["project_uuid"] == e.uuid and c["usuario"] == e.email for c in cuerpos)
+    assert all(c == {"project_uuid": e.uuid, "rutas": c["rutas"]} for c in cuerpos)
     assert [r for c in cuerpos for r in c["rutas"]] == [e.ruta("l1", f"{i}.pdf") for i in range(120)]
     filas = [e.fila(i) for i in ids]
     assert {f[0] for f in filas} == {"pendiente"}

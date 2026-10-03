@@ -12,10 +12,13 @@ tests/test_proyectos_documentos_repositorio.py):
 """
 from __future__ import annotations
 
+import logging
 import aiomysql
+from credencial_las_manos import PlatformProcessingOwnership
 
 _ESTADOS_ABIERTOS = ("pendiente", "procesando")
 _ERROR_DUPLICADO = 1062
+logger = logging.getLogger(__name__)
 
 _COLUMNAS_LISTA = (
     "d.id, d.nombre_original, d.bytes, d.tipo, d.estado, d.error, u.email, d.created_at, d.oculto_at"
@@ -38,13 +41,23 @@ SQL_LISTAR_OCULTOS = _BASE_LISTA.format(nulo="NOT NULL", indice=_INDICE_LISTA)
 # `id` ya ordenado: sin eso, MariaDB ordena aparte. Una fila en_cola nunca tiene
 # job_id (marcar_despachadas lo pone junto con el estado `pendiente`).
 SQL_TOMAR_EN_COLA = (
-    "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, u.email "
+    "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id "
     "FROM project_documents d "
     "JOIN projects p ON p.id = d.project_id "
     "JOIN jax_project_scope s ON s.project_id = d.project_id AND s.status = 'ACTIVE' "
-    "JOIN jax_users u ON u.user_id = d.subido_por "
+    "JOIN jax_users u ON u.user_id = d.subido_por AND u.tenant_id = s.tenant_id "
     "WHERE d.estado = 'en_cola' AND d.job_id IS NULL ORDER BY d.id LIMIT %s"
 )
+
+
+def _owner(tenant_id: int, user_id: int, project_id: int) -> PlatformProcessingOwnership:
+    return PlatformProcessingOwnership(tenant_id=tenant_id, user_id=user_id, project_id=project_id)
+
+
+def _owner_predicate(alias: str = "d") -> str:
+    return (f"{alias}.project_id = %s AND EXISTS (SELECT 1 FROM jax_project_scope s "
+            f"JOIN jax_users u ON u.user_id = {alias}.subido_por AND u.tenant_id = s.tenant_id "
+            f"WHERE s.project_id = {alias}.project_id AND s.tenant_id = %s AND u.user_id = %s)")
 
 
 class ProyectoNoActivo(Exception):
@@ -246,10 +259,11 @@ async def tomar_en_cola(pool, *, limite: int) -> list[dict]:
             await cur.execute(SQL_TOMAR_EN_COLA, (limite,))
             filas = await cur.fetchall()
     return [{"id": f[0], "project_id": f[1], "project_uuid": f[2], "ruta_entrada": f[3],
-             "subido_por_email": f[4]} for f in filas]
+             "owner": _owner(f[4], f[5], f[1])} for f in filas]
 
 
-async def marcar_despachadas(pool, *, ids: list[int], job_id: str) -> list[int]:
+async def marcar_despachadas(pool, *, ids: list[int], job_id: str,
+                             owner: PlatformProcessingOwnership) -> list[int]:
     """en_cola -> pendiente + job_id. Solo toca filas en_cola: una ya despachada no
     cambia de trabajo. Devuelve los ids que EFECTIVAMENTE pasaron a pendiente (los
     que este llamado gano), para que el despachador sepa si debe seguir con ellos."""
@@ -259,23 +273,41 @@ async def marcar_despachadas(pool, *, ids: list[int], job_id: str) -> list[int]:
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                f"UPDATE project_documents SET estado = 'pendiente', job_id = %s "
-                f"WHERE estado = 'en_cola' AND id IN ({marcadores})", (job_id, *ids))
+                f"UPDATE project_documents d SET estado = 'pendiente', job_id = %s "
+                f"WHERE estado = 'en_cola' AND id IN ({marcadores}) AND {_owner_predicate()}",
+                (job_id, *ids, owner.project_id, owner.tenant_id, owner.user_id))
             await cur.execute(
-                f"SELECT id FROM project_documents WHERE job_id = %s AND estado = 'pendiente' "
-                f"AND id IN ({marcadores}) ORDER BY id", (job_id, *ids))
+                f"SELECT d.id FROM project_documents d WHERE job_id = %s AND estado = 'pendiente' "
+                f"AND id IN ({marcadores}) AND {_owner_predicate()} ORDER BY id",
+                (job_id, *ids, owner.project_id, owner.tenant_id, owner.user_id))
             ganados = [f[0] for f in await cur.fetchall()]
         await conn.commit()
     return ganados
 
 
-async def trabajos_abiertos(pool) -> list[str]:
+async def trabajos_abiertos(pool) -> list[dict]:
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT DISTINCT job_id FROM project_documents "
-                "WHERE estado IN ('pendiente', 'procesando') AND job_id IS NOT NULL")
-            return [f[0] for f in await cur.fetchall()]
+                "SELECT d.job_id, d.project_id, s.tenant_id, u.user_id FROM project_documents d "
+                "LEFT JOIN jax_project_scope s ON s.project_id=d.project_id "
+                "LEFT JOIN jax_users u ON u.user_id=d.subido_por AND u.tenant_id=s.tenant_id "
+                "WHERE d.estado IN ('pendiente', 'procesando') AND d.job_id IS NOT NULL")
+            rows = await cur.fetchall()
+    grouped: dict[str, set[PlatformProcessingOwnership | None]] = {}
+    for job_id, project_id, tenant_id, user_id in rows:
+        owner = None
+        try:
+            owner = _owner(tenant_id, user_id, project_id)
+        except ValueError as exc:  # fail-soft: malformed owner quarantines this whole job; no status read or mutation occurs.
+            # An ownerless legacy/malformed row is part of this job.  It makes
+            # the whole job unavailable rather than letting a valid sibling row
+            # lend it an inferred owner.
+            logger.warning("processing job %s quarantined after %s", job_id, type(exc).__name__)
+        grouped.setdefault(job_id, set()).add(owner)
+    # Legacy/ownerless and multi-owner jobs are deliberately quarantined.
+    return [{"job_id": job_id, "owner": next(iter(owners))}
+            for job_id, owners in grouped.items() if len(owners) == 1 and None not in owners]
 
 
 LARGO_MAXIMO_DEL_ERROR = 1000
@@ -283,7 +315,8 @@ ESTADOS_DE_RESULTADO = frozenset({"procesando", "listo", "parcial", "error", "si
 
 
 async def aplicar_resultado(pool, *, job_id: str, ruta_entrada: str, estado: str,
-                            carpeta_procesado: str | None, error: str | None) -> int:
+                            carpeta_procesado: str | None, error: str | None,
+                            owner: PlatformProcessingOwnership) -> int:
     """Aplica el resultado de LAS MANOS a la fila de ese trabajo y esa ruta. Solo
     toca filas `pendiente`/`procesando`: un resultado tardio no pisa un estado
     terminal ni borra `trabajo_perdido`. Devuelve las filas cambiadas.
@@ -298,25 +331,28 @@ async def aplicar_resultado(pool, *, job_id: str, ruta_entrada: str, estado: str
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "UPDATE project_documents SET estado = %s, carpeta_procesado = %s, error = %s "
-                "WHERE job_id = %s AND ruta_entrada = %s AND estado IN ('pendiente', 'procesando')",
-                (estado, carpeta_procesado, error, job_id, ruta_entrada))
+                "UPDATE project_documents d SET estado = %s, carpeta_procesado = %s, error = %s "
+                f"WHERE job_id = %s AND ruta_entrada = %s AND estado IN ('pendiente', 'procesando') "
+                f"AND {_owner_predicate()}",
+                (estado, carpeta_procesado, error, job_id, ruta_entrada,
+                 owner.project_id, owner.tenant_id, owner.user_id))
             cambiadas = cur.rowcount
         await conn.commit()
     return cambiadas
 
 
-async def marcar_job_perdido(pool, *, job_id: str) -> None:
+async def marcar_job_perdido(pool, *, job_id: str, owner: PlatformProcessingOwnership) -> None:
     """Lo que seguia abierto en ese trabajo pasa a error; lo ya resuelto no se pisa."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "UPDATE project_documents SET estado = 'error', error = 'trabajo_perdido' "
-                "WHERE job_id = %s AND estado IN ('pendiente', 'procesando')", (job_id,))
+                "UPDATE project_documents d SET estado = 'error', error = 'trabajo_perdido' "
+                f"WHERE job_id = %s AND estado IN ('pendiente', 'procesando') AND {_owner_predicate()}",
+                (job_id, owner.project_id, owner.tenant_id, owner.user_id))
         await conn.commit()
 
 
-async def filas_abiertas_de_trabajo(pool, *, job_id: str) -> list[dict]:
+async def filas_abiertas_de_trabajo(pool, *, job_id: str, owner: PlatformProcessingOwnership) -> list[dict]:
     """Filas `pendiente`/`procesando` de un trabajo, con el uuid de su proyecto (el
     borrado de `entrada/` lo necesita)."""
     async with pool.acquire() as conn:
@@ -324,12 +360,14 @@ async def filas_abiertas_de_trabajo(pool, *, job_id: str) -> list[dict]:
             await cur.execute(
                 "SELECT d.id, d.ruta_entrada, p.project_uuid FROM project_documents d "
                 "JOIN projects p ON p.id = d.project_id "
-                "WHERE d.job_id = %s AND d.estado IN ('pendiente', 'procesando') ORDER BY d.id", (job_id,))
+                f"WHERE d.job_id = %s AND d.estado IN ('pendiente', 'procesando') AND {_owner_predicate()} ORDER BY d.id",
+                (job_id, owner.project_id, owner.tenant_id, owner.user_id))
             filas = await cur.fetchall()
     return [{"id": f[0], "ruta_entrada": f[1], "project_uuid": f[2]} for f in filas]
 
 
-async def marcar_error_en_cola(pool, *, ids: list[int], error: str) -> int:
+async def marcar_error_en_cola(pool, *, ids: list[int], error: str,
+                               owner: PlatformProcessingOwnership) -> int:
     """en_cola -> error con su causa (LAS MANOS rechazo el pedido de forma definitiva).
     Solo toca filas en_cola. Devuelve las filas cambiadas."""
     if not ids:
@@ -338,8 +376,10 @@ async def marcar_error_en_cola(pool, *, ids: list[int], error: str) -> int:
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                f"UPDATE project_documents SET estado = 'error', error = %s "
-                f"WHERE estado = 'en_cola' AND id IN ({marcadores})", (error[:LARGO_MAXIMO_DEL_ERROR], *ids))
+                f"UPDATE project_documents d SET estado = 'error', error = %s "
+                f"WHERE estado = 'en_cola' AND id IN ({marcadores}) AND {_owner_predicate()}",
+                (error[:LARGO_MAXIMO_DEL_ERROR], *ids,
+                 owner.project_id, owner.tenant_id, owner.user_id))
             cambiadas = cur.rowcount
         await conn.commit()
     return cambiadas
