@@ -3430,7 +3430,9 @@ jobs:
           #   3343). Fusion medida LOCAL: 3359 passed, 2 skipped, 0 failed. Baja respecto de 3363
           #   porque aquel salia del numero del runner (3322) y el 3073 de master esta por debajo de
           #   su cuenta real; el runner tiene la ultima palabra.
-          PISO_PASSED = 3262
+          # 3262 -> 3387: medido en el runner sobre 96ce1f8 (fusión con master #175), run 37120526359:
+          #   colectados=3388, passed=3387, skipped=1 (MAX_SKIPS=1 concuerda).
+          PISO_PASSED = 3387
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4422,7 +4424,9 @@ jobs:
       # 2040 -> 1912 (2026-10-03, fusion con master tras #175, a pedido del controlador): el piso de
       # master (1888) + las pruebas sin DB que agrega E2a, +24: sin DB con jax 1b54455, master 2041
       # passed -> fusion 2065 passed (0 failed). El runner tiene la ultima palabra.
-      JAX_CI_MIN_PASSED: "1912"
+      # 1912 -> 2064: medido en el runner sobre 96ce1f8 (fusión con master #175), run 37120526359:
+      # passed=2064, skipped=1324.
+      JAX_CI_MIN_PASSED: "2064"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
