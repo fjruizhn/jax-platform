@@ -953,3 +953,37 @@ def test_el_freno_de_incertidumbre_sigue_a_rutas_por_trabajo_y_las_vencidas_no_c
     otra = e.insertar(e.ruta("l1", "otra.pdf"), n=2, nombre="otra.pdf")
     e.ciclo()
     assert len(e.las_manos.posts) == 1 and e.fila(otra)[0] == "en_cola"
+
+
+# ------------------------------------------------------------------ causas de error: tablas y paridad
+
+RUTA_CAUSAS_JSON = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "src", "api", "causas_de_error.json")
+
+
+def test_las_tablas_del_contrato_estan_dentro_de_causas_de_error():
+    del_modulo = ({f"formato_{f}" for f in despachador._FORMATOS_NO_SOPORTADOS}
+                  | despachador._ERRORES_DEL_ARCHIVO | {"formato_no_soportado"})
+    assert del_modulo <= despachador.CAUSAS_DE_ERROR
+
+
+def test_un_formato_sumado_a_la_tabla_sin_sumarlo_a_las_causas_cae_al_generico(monkeypatch):
+    monkeypatch.setattr(despachador, "_FORMATOS_NO_SOPORTADOS",
+                        despachador._FORMATOS_NO_SOPORTADOS | {"bmp_32_bits"})
+    assert despachador.codigo_del_error_del_archivo("formato_no_soportado:bmp_32_bits") == "formato_no_soportado"
+    assert despachador.codigo_del_error_del_archivo("formato_no_soportado:gif_animado") == "formato_gif_animado"
+
+
+def test_un_codigo_generico_sumado_a_la_tabla_sin_sumarlo_a_las_causas_no_se_guarda(monkeypatch):
+    monkeypatch.setattr(despachador, "_ERRORES_DEL_ARCHIVO", despachador._ERRORES_DEL_ARCHIVO | {"ocr_nuevo"})
+    assert despachador.codigo_del_error_del_archivo("ocr_nuevo") is None
+    assert despachador.codigo_del_error_del_archivo("ocr_sin_memoria") == "ocr_sin_memoria"
+
+
+def test_causas_de_error_coincide_con_el_json_de_referencia_del_frontend():
+    """El frontend exige texto es/en para cada codigo de ese JSON: si CAUSAS_DE_ERROR cambia y el JSON
+    no, falla aqui (en los dos sentidos); para regenerarlo: ver el mensaje."""
+    with open(RUTA_CAUSAS_JSON, encoding="utf-8") as f:
+        referencia = json.load(f)
+    assert referencia == sorted(despachador.CAUSAS_DE_ERROR), (
+        "frontend/src/api/causas_de_error.json no coincide con CAUSAS_DE_ERROR: regeneralo con "
+        "json.dumps(sorted(despachador.CAUSAS_DE_ERROR), indent=2) y agrega el texto es/en de cada codigo nuevo")

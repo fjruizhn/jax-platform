@@ -262,12 +262,14 @@ def codigo_del_error_del_archivo(error: object) -> str | None:
     if not isinstance(error, str):
         return None
     if error in _ERRORES_DEL_ARCHIVO:
-        return error
+        return error if error in CAUSAS_DE_ERROR else None
     base, separador, sufijo = error.partition(":")
     if base != "formato_no_soportado":
         return None
     if separador and _SUFIJO_DE_FORMATO.fullmatch(sufijo) and sufijo in _FORMATOS_NO_SOPORTADOS:
-        return f"formato_{sufijo}"
+        codigo = f"formato_{sufijo}"
+        # Defensa: un formato sumado a la tabla sin sumarlo a CAUSAS_DE_ERROR cae al generico, nunca se guarda.
+        return codigo if codigo in CAUSAS_DE_ERROR else "formato_no_soportado"
     return "formato_no_soportado"
 
 
