@@ -58,6 +58,7 @@ import os
 import re
 import stat
 import time
+import unicodedata
 from pathlib import Path
 
 import httpx
@@ -67,7 +68,7 @@ from credencial_las_manos import encabezados_procesamiento
 from db.connection import get_pool
 from http_client import get_http_client
 from jax_engine.state import LAS_MANOS_URL
-from proyectos_documentos import almacen
+from proyectos_documentos import almacen, original, tipos
 from proyectos_documentos import repositorio as repo
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,8 @@ ERRORES_DE_DESENLACE_INCIERTO = (httpx.ReadTimeout, httpx.RemoteProtocolError, h
 # Cuanto no se vuelve a despachar un trozo de desenlace incierto.
 VENTANA_DE_INCERTIDUMBRE_SEGUNDOS = 5 * 60
 # Prefijo del 422 en texto con que LAS MANOS rechaza un pedido con mas rutas que su tope.
+# Codigo del 503 del freno de extractores de LAS MANOS (Jax#335): solo frena los lotes con el tipo afectado.
+CODIGO_EXTRACTORES_NO_DISPONIBLES = "extractores_no_disponibles"
 PREFIJO_DEMASIADAS_RUTAS = "demasiadas rutas"
 
 # Codigos estables que puede guardar `project_documents.error` (ronda final, menor 5). El
@@ -119,6 +122,8 @@ CAUSAS_DE_ERROR = frozenset({
     "trabajo_perdido",         # LAS MANOS ya no conoce el trabajo (reinicio)
     "http_4xx",                # LAS MANOS rechazo el pedido de forma definitiva
     "ruta_ajena",              # la ruta de la fila no es de su proyecto: no se mando
+    "ocr_sin_texto",           # el OCR no saco texto util (ficha.json -> detalle.razon)
+    "ocr_confianza_baja",      # el OCR reconocio palabras pero con confianza baja (ruido, desenfoque)
 })
 # Una ruta absoluta que no es del workspace: se deja solo su ultimo tramo.
 _RUTA_ABSOLUTA = re.compile(r"(?<![\w.~-])/(?:[^\s'\"/]+/)+([^\s'\"/]*)")
@@ -209,6 +214,50 @@ def _sin_rutas_absolutas(texto: object) -> str:
     return _RUTA_ABSOLUTA.sub(r".../\1", texto)[:500]
 
 
+def _normalizada(texto: str) -> str:
+    """Sin tildes, en minusculas y con los espacios repetidos en uno."""
+    sin_tildes = "".join(c for c in unicodedata.normalize("NFD", texto.casefold()) if not unicodedata.combining(c))
+    return " ".join(sin_tildes.split())
+
+
+# Las UNICAS razones de estado `error` que escribe el OCR real de jax (origin/master,
+# `procesamiento/extractores/ocr.py:287`, `:289` y `:360`), copiadas literal y normalizadas. Es una
+# tabla de frases EXACTAS, no una busqueda de palabras: `pdf.py:341` dice «sin capa de texto util;
+# corresponde OCR» y esa NO paso por OCR. Una razon nueva de jax es `procesamiento_fallido` hasta
+# que alguien la agregue aqui.
+_RAZONES_DEL_OCR = {
+    _normalizada("el OCR no devolvio texto util"): "ocr_sin_texto",
+    _normalizada("ninguna pagina del PDF dio texto util via OCR"): "ocr_sin_texto",
+    _normalizada("mas de la mitad de las palabras reconocidas tienen confianza baja "
+                 "(probable ruido o desenfoque) -- ver palabras_dudosas"): "ocr_confianza_baja",
+}
+
+
+def codigo_de_la_razon(razon: object) -> str:
+    """Codigo estable de CAUSAS_DE_ERROR para el texto libre de `ficha.json -> detalle.razon`
+    (funcion pura): la tabla `_RAZONES_DEL_OCR` por frase exacta normalizada; todo lo demas es el
+    generico `procesamiento_fallido`."""
+    if not isinstance(razon, str):
+        return "procesamiento_fallido"
+    return _RAZONES_DEL_OCR.get(_normalizada(razon), "procesamiento_fallido")
+
+
+async def _motivo_del_error(fila: dict, carpeta: str | None) -> str:
+    """El codigo del motivo de un `error` de LAS MANOS, leido de la ficha de su carpeta (solo si
+    es `proyectos/<uuid de la fila>/procesado/...`, como el borrado de entrada/). Nunca falla:
+    sin ficha o con cualquier problema es `procesamiento_fallido`, y el resultado se aplica igual."""
+    if not _original_a_salvo(fila["project_uuid"], carpeta):
+        return "procesamiento_fallido"
+    try:
+        ficha = await asyncio.to_thread(original.leer_ficha, almacen.cargar_workspace(), fila["project_uuid"], carpeta)
+    except Exception as exc:  # fail-soft: el motivo es un detalle; sin leerlo el resultado se aplica con el generico
+        logger.warning("proyectos_documentos: no se pudo leer la ficha del documento %s (%s)", fila["id"],
+                       type(exc).__name__)
+        return "procesamiento_fallido"
+    detalle = ficha.get("detalle") if ficha else None
+    return codigo_de_la_razon(detalle.get("razon") if isinstance(detalle, dict) else None)
+
+
 def _decidir(fila: dict, resultado: dict | None, trabajo: dict) -> tuple[str, str | None, str | None] | None:
     """(estado, carpeta_procesado, error) para una fila abierta, o None si no cambia. `error`
     es siempre un codigo de CAUSAS_DE_ERROR (o None)."""
@@ -263,6 +312,8 @@ async def _sincronizar_trabajo(pool, job_id: str, contexto) -> None:
             if decision is None:
                 continue
             estado, carpeta, error = decision
+            if estado == "error" and error == "procesamiento_fallido":
+                error = await _motivo_del_error(fila, carpeta)
             cambiadas = await repo.aplicar_resultado(
                 pool, job_id=job_id, ruta_entrada=fila["ruta_entrada"], estado=estado,
                 carpeta_procesado=carpeta, error=error, owner=contexto)
@@ -310,7 +361,7 @@ def _detalle_en_texto(respuesta) -> str:
 
 
 async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict]) -> str:
-    """'seguir' | 'saltar_proyecto' | 'cortar'. Las filas solo cambian de estado cuando la
+    """'seguir' | 'saltar_grupo' | 'saltar_proyecto' | 'cortar'. Las filas solo cambian de estado cuando la
     respuesta es definitiva (202 o un 4xx que no es de reintento)."""
     ids = [f["id"] for f in trozo]
     try:
@@ -354,6 +405,14 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
         logger.error("proyectos_documentos: rutas_por_trabajo mayor que el tope de LAS MANOS (proyecto %s, "
                      "%s ruta(s) en el trozo); las filas siguen en_cola", project_uuid, len(ids))
         return "cortar"
+    if estado == 503 and _codigo_de(respuesta) == CODIGO_EXTRACTORES_NO_DISPONIBLES:
+        # El freno de extractores de LAS MANOS (Jax#335) contesta SOLO por los lotes que traen el tipo
+        # afectado, y el grupo (proyecto, dueno, clase) es homogeneo: todo el resto del grupo recibiria el
+        # mismo 503, asi que se salta entero (un solo POST) y se sigue con los demas grupos. Cortar aqui
+        # congelaria el sistema entero porque falta una biblioteca de UN tipo.
+        logger.error("proyectos_documentos: LAS MANOS no tiene los extractores del trozo (proyecto %s, %s fila(s)); "
+                     "siguen en_cola, con el resto de su grupo, y se sigue con los demas grupos", project_uuid, len(ids))
+        return "saltar_grupo"
     if estado in SIN_CULPA_DEL_DOCUMENTO or estado >= 500 or not 400 <= estado < 500:
         # Un fallo de configuracion o de capacidad (credencial, cupo, caida) no es culpa del
         # documento: nunca lo convierte en `error`. Queda en_cola y el log dice que paso.
@@ -375,34 +434,70 @@ def _ruta_del_proyecto(project_uuid: str, ruta: str | None) -> bool:
 
 
 async def _despachar(pool) -> None:
-    por_grupo: dict[tuple[str, object], list[dict]] = {}
-    ajenas: list[tuple[int, object]] = []
+    """Una o varias PASADAS sobre la cola. Cada pasada pide `LIMITE_DE_FILAS_POR_CICLO` filas por `id` SIN las
+    clases ya frenadas en este ciclo y las despacha por grupos (proyecto, dueno, clase). Un 503
+    `extractores_no_disponibles` frena la CLASE entera (la falta de una biblioteca no es de un proyecto) hasta
+    el fin del ciclo: sus filas quedan en_cola y la pasada siguiente pide las que siguen, sin esa clase. Asi,
+    1.000 pdf atascados en los ids bajos no llenan la ventana y las imagenes que llegaron despues salen en el
+    mismo ciclo (MAJOR-N2). Se repite mientras una pasada frene una clase nueva: como mucho una pasada por clase."""
+    frenadas: set[str] = set()
+    por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
     ahora = _reloj()
     for i in [i for i, hasta in _en_incertidumbre.items() if hasta <= ahora]:
         del _en_incertidumbre[i]
-    for fila in await repo.tomar_en_cola(pool, limite=LIMITE_DE_FILAS_POR_CICLO):
-        if fila["id"] in _en_incertidumbre:
+    # FRENO: si LAS MANOS corta las conexiones despues de recibir el pedido, las filas en incertidumbre se acumulan
+    # (cada una, hasta VENTANA_DE_INCERTIDUMBRE_SEGUNDOS) y cada reintento puede duplicar el trabajo. Con
+    # `2 * rutas_por_trabajo` o mas, el ciclo NO despacha nada (falla cerrado) y la lista que se le pasa a la
+    # consulta (`NOT IN`) queda acotada.
+    if len(_en_incertidumbre) >= 2 * por_trabajo:
+        logger.warning("proyectos_documentos: %s fila(s) en incertidumbre (tope %s = 2 x rutas_por_trabajo): este "
+                       "ciclo no despacha nada hasta que venzan; revisar si LAS MANOS corta las conexiones",
+                       len(_en_incertidumbre), 2 * por_trabajo)
+        return
+    saltados: set[tuple[str, object]] = set()
+    for _pasada in range(len(tipos.CLASES) + 1):
+        antes = len(frenadas)
+        if await _pasada_de_despacho(pool, por_trabajo, frenadas, saltados) == "cortar":
+            return
+        if len(frenadas) == antes:
+            return
+
+
+async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltados: set) -> str | None:
+    """Una pasada. Devuelve 'cortar' si hay que dejar el ciclo; agrega a `frenadas` las clases que LAS MANOS frene."""
+    por_grupo: dict[tuple[str, object, str], list[dict]] = {}
+    ajenas: list[tuple[int, object]] = []
+    # Las filas con desenlace incierto no se piden: contarian contra el LIMIT y despues se saltarian, y con
+    # LIMITE o mas de ellas las sanas de atras nunca entrarian en la ventana. Viven en la memoria de este proceso
+    # (no en la base), asi que se pasan como ids; la condicion es temporal y ya se podo arriba por `_reloj`.
+    for fila in await repo.tomar_en_cola(pool, limite=LIMITE_DE_FILAS_POR_CICLO, excluir_clases=frozenset(frenadas),
+                                         excluir_ids=frozenset(_en_incertidumbre)):
+        if fila["id"] in _en_incertidumbre:      # respaldo: se agrego una entre la consulta y aqui
             continue
         if not _ruta_del_proyecto(fila["project_uuid"], fila["ruta_entrada"]):
             ajenas.append((fila["id"], fila["owner"]))
             continue
-        por_grupo.setdefault((fila["project_uuid"], fila["owner"]), []).append(fila)
+        por_grupo.setdefault((fila["project_uuid"], fila["owner"], tipos.clase_de(fila["ruta_entrada"])), []).append(fila)
     if ajenas:
         logger.error("proyectos_documentos: %s fila(s) con una ruta que no es de su proyecto pasan a error "
                      "ruta_ajena sin mandarse a LAS MANOS: %s", len(ajenas), ajenas[:20])
         for owner in {owner for _, owner in ajenas}:
             await repo.marcar_error_en_cola(pool, ids=[id_ for id_, current in ajenas if current == owner],
                                              error="ruta_ajena", owner=owner)
-    if not por_grupo:
-        return
-    por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
-    for (project_uuid, contexto), filas in por_grupo.items():
+    for (project_uuid, contexto, clase), filas in por_grupo.items():
+        if clase in frenadas or (project_uuid, contexto) in saltados:
+            continue
         for i in range(0, len(filas), por_trabajo):
             accion = await _despachar_trozo(pool, project_uuid, contexto, filas[i:i + por_trabajo])
             if accion == "cortar":
-                return
-            if accion == "saltar_proyecto":
+                return "cortar"
+            if accion == "saltar_grupo":
+                frenadas.add(clase)                         # la clase entera, en todos los proyectos, hasta el fin del ciclo
                 break
+            if accion == "saltar_proyecto":
+                saltados.add((project_uuid, contexto))      # el proyecto entero, tambien sus otras clases
+                break
+    return None
 
 
 # ---------------------------------------------------------------- ciclo y tarea de fondo

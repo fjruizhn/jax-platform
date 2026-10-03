@@ -195,6 +195,11 @@ describe('cliente de documentos', () => {
     await c.restaurarDocumento(4, 11)
     expect(api.post).toHaveBeenLastCalledWith('/proyectos/4/documentos/11/restaurar')
   })
+
+  it('reprocesarDocumento: POST a su ruta', async () => {
+    await c.reprocesarDocumento(4, 11)
+    expect(api.post).toHaveBeenLastCalledWith('/proyectos/4/documentos/11/reprocesar')
+  })
 })
 
 // Los códigos, estados y motivos SALEN DEL BACKEND: se leen del .py para que un código
@@ -300,8 +305,8 @@ describe('i18n proyectos.documentos', () => {
   })
 
   it('el extractor de causas ve la lista completa (la prueba no es vacía)', () => {
-    expect(causasDelBackend()).toEqual(['estado_desconocido', 'http_4xx', 'procesamiento_fallido', 'rechazado',
-      'ruta_ajena', 'sin_resultado', 'trabajo_fallido', 'trabajo_perdido'])
+    expect(causasDelBackend()).toEqual(['estado_desconocido', 'http_4xx', 'ocr_confianza_baja', 'ocr_sin_texto',
+      'procesamiento_fallido', 'rechazado', 'ruta_ajena', 'sin_resultado', 'trabajo_fallido', 'trabajo_perdido'])
   })
 
   it.each(secciones)('%s: toda causa de error del backend tiene texto, y hay un genérico', (_n, d) => {

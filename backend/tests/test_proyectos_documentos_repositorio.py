@@ -495,3 +495,254 @@ def test_reencolar_exige_las_mismas_condiciones_que_el_insert(e):
     with pytest.raises(repo.ProyectoNoActivo):                       # archivado: 409
         _pool_call(e.client, repo.reencolar_atascado, subido_por=e.usuario, roles_escritura=roles, **args)
     assert e.fila(doc)[0] == "error"                                 # nada cambio
+
+
+# ------------------------------------------------------------------ reprocesar
+ROLES = ("OWNER", "CONTRIBUTOR", "REVIEWER")
+FUENTE = "proyectos/u-1/fuente/x.pdf"
+
+
+def _a_estado(e, doc, estado, **cols):
+    sets = ", ".join(["estado=%s"] + [f"{c}=%s" for c in cols])
+    e.client.portal.call(sql, f"UPDATE project_documents SET {sets} WHERE id=%s", (estado, *cols.values(), doc))
+
+
+def _reprocesar_crudo(e, p, doc, ruta=FUENTE, usuario=None, roles=ROLES):
+    return _pool_call(e.client, repo.reprocesar, project_id=p, documento_id=doc, ruta_fuente=ruta,
+                      user_id=e.usuario if usuario is None else usuario, roles_escritura=roles)
+
+
+def _reprocesar(e, p, doc, **kw):
+    """True si la fila cambio (el repositorio devuelve el estado anterior, o None)."""
+    return _reprocesar_crudo(e, p, doc, **kw) is not None
+
+
+def _sin_extractor(e, p, sha="a" * 64, nombre="x.pdf"):
+    d = e.insertar(p, sha, nombre)
+    _a_estado(e, d, "sin_extractor", carpeta_procesado="proyectos/u-1/procesado/c", job_id="job-9",
+              error="algo")
+    return d
+
+
+def test_reprocesar_pasa_a_en_cola_con_la_ruta_de_fuente_y_limpia_job_y_error(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    assert _reprocesar(e, p, d) is True
+    estado, job_id, carpeta, error, oculto_at, _ = e.fila(d)
+    assert (estado, job_id, error) == ("en_cola", None, None)
+    assert e.client.portal.call(sql, "SELECT ruta_entrada FROM project_documents WHERE id=%s", (d,), True)[0][0] == FUENTE
+    assert carpeta == "proyectos/u-1/procesado/c"          # no se pierde donde quedo la ficha
+    # y el despachador la ve
+    assert d in [f["id"] for f in _pool_call(e.client, repo.tomar_en_cola, limite=100000)]
+    # ya no esta en sin_extractor: repetirlo no hace nada
+    assert _reprocesar(e, p, d) is False
+
+
+@pytest.mark.parametrize("estado", ["en_cola", "pendiente", "procesando", "listo", "parcial", "cancelado"])
+def test_reprocesar_solo_desde_sin_extractor_o_error(e, estado):
+    p = e.proyecto()
+    d = e.insertar(p, "b" * 64)
+    _a_estado(e, d, estado)
+    antes = e.client.portal.call(sql, "SELECT ruta_entrada, job_id, error FROM project_documents WHERE id=%s", (d,), True)
+    assert _reprocesar(e, p, d) is False
+    assert e.fila(d)[0] == estado
+    assert e.client.portal.call(sql, "SELECT ruta_entrada, job_id, error FROM project_documents WHERE id=%s",
+                                (d,), True) == antes
+
+
+@pytest.mark.parametrize("error", [None, "procesamiento_fallido", "ocr_sin_texto"])
+def test_reprocesar_tambien_desde_error_con_o_sin_motivo(e, error):
+    p = e.proyecto()
+    d = e.insertar(p, "c" * 64)
+    _a_estado(e, d, "error", error=error, job_id="job-7", carpeta_procesado="proyectos/u-1/procesado/c")
+    assert _reprocesar(e, p, d) is True
+    estado, job_id, _, err, _, _ = e.fila(d)
+    assert (estado, job_id, err) == ("en_cola", None, None)
+
+
+def test_reprocesar_desde_error_conserva_las_mismas_condiciones(e):
+    p1, p2 = e.proyecto(), e.proyecto()
+    tipo_malo = e.insertar(p1, "d" * 64, "x.txt")
+    otro = e.insertar(p2, "e" * 64)
+    ok = e.insertar(p1, "f" * 64)
+    for d in (tipo_malo, otro, ok):
+        _a_estado(e, d, "error", error="procesamiento_fallido")
+    assert _reprocesar(e, p1, tipo_malo) is False          # tipo sin extractor
+    assert _reprocesar(e, p1, otro) is False               # otro proyecto
+    ajeno = int(uid(e.client, f"{e.tenant}-ajeno", "operator", e.tenant))
+    assert _reprocesar(e, p1, ok, usuario=ajeno) is False  # sin escritura
+    e.archivar(p1)
+    assert _reprocesar(e, p1, ok) is False                 # proyecto archivado
+    assert {e.fila(d)[0] for d in (tipo_malo, otro, ok)} == {"error"}
+
+
+@pytest.mark.parametrize("nombre", ["x.txt", "x.zip", "informe", ".pdf", "informe.", "x.pdf ", "x.exe.bak"])
+def test_reprocesar_rechaza_un_tipo_sin_extractor(e, nombre):
+    p = e.proyecto()
+    d = _sin_extractor(e, p, nombre=nombre)
+    assert _reprocesar(e, p, d) is False
+    assert e.fila(d)[0] == "sin_extractor"
+
+
+@pytest.mark.parametrize("nombre", ["X.PDF", "informe.Docx", "carpeta/a.b.xlsx", "foto.JPEG"])
+def test_reprocesar_acepta_los_tipos_con_extractor_sin_distinguir_mayusculas(e, nombre):
+    p = e.proyecto()
+    d = _sin_extractor(e, p, nombre=nombre)
+    assert tipos.tipo_de(nombre) is not None
+    assert _reprocesar(e, p, d) is True and e.fila(d)[0] == "en_cola"
+
+
+def test_reprocesar_no_toca_un_documento_de_otro_proyecto(e):
+    p1, p2 = e.proyecto(), e.proyecto()
+    d = _sin_extractor(e, p2)
+    assert _reprocesar(e, p1, d) is False
+    assert e.fila(d)[0] == "sin_extractor"
+    assert _reprocesar(e, p1, 99999999) is False
+
+
+def test_reprocesar_exige_proyecto_activo(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    e.archivar(p)
+    assert _reprocesar(e, p, d) is False
+    assert e.fila(d)[0] == "sin_extractor"
+
+
+def test_reprocesar_exige_papel_de_escritura_y_membresia_activa(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    ajeno = int(uid(e.client, f"{e.tenant}-ajeno", "operator", e.tenant))
+    assert _reprocesar(e, p, d, usuario=ajeno) is False                 # nunca fue miembro
+    assert _reprocesar(e, p, d, roles=("VIEWER",)) is False             # su papel (OWNER) no esta en la lista
+    e.client.portal.call(sql, "UPDATE jax_project_membership SET project_role='VIEWER' "
+                              "WHERE project_id=%s AND user_id=%s", (p, e.usuario))
+    assert _reprocesar(e, p, d) is False                                # lector de verdad
+    e.client.portal.call(sql, "UPDATE jax_project_membership SET project_role='CONTRIBUTOR', status='REVOKED' "
+                              "WHERE project_id=%s AND user_id=%s", (p, e.usuario))
+    assert _reprocesar(e, p, d) is False                                # miembro dado de baja
+    assert e.fila(d)[0] == "sin_extractor"
+    e.client.portal.call(sql, "UPDATE jax_project_membership SET status='ACTIVE' "
+                              "WHERE project_id=%s AND user_id=%s", (p, e.usuario))
+    assert _reprocesar(e, p, d) is True
+
+
+def test_reprocesar_exige_usuario_activo_en_su_tenant(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    try:
+        e.client.portal.call(sql, "UPDATE jax_users SET status='inactive' WHERE user_id=%s", (e.usuario,))
+        assert _reprocesar(e, p, d) is False
+    finally:
+        e.client.portal.call(sql, "UPDATE jax_users SET status='active' WHERE user_id=%s", (e.usuario,))
+    assert e.fila(d)[0] == "sin_extractor"
+
+
+def test_reprocesar_sin_roles_de_escritura_levanta(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    with pytest.raises(ValueError):
+        _reprocesar(e, p, d, roles=())
+
+
+def test_documento_para_reprocesar_devuelve_lo_que_hace_falta_y_respeta_el_proyecto(e):
+    p1, p2 = e.proyecto(), e.proyecto()
+    d = _sin_extractor(e, p1, nombre="Informe.PDF")
+    fila = _pool_call(e.client, repo.documento_para_reprocesar, project_id=p1, documento_id=d)
+    assert fila == {"estado": "sin_extractor", "nombre_original": "Informe.PDF", "sha256": "a" * 64,
+                    "bytes": 1, "carpeta_procesado": "proyectos/u-1/procesado/c", "subido_por": e.usuario,
+                    "oculto": False, "ruta_entrada": "entrada/l/Informe.PDF"}
+    assert _pool_call(e.client, repo.documento_para_reprocesar, project_id=p2, documento_id=d) is None
+
+
+def test_reprocesar_reasigna_subido_por_a_quien_pide_y_devuelve_lo_anterior(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    otro = int(uid(e.client, f"{e.tenant}-otro", "operator", e.tenant))
+    e.client.portal.call(sql, "INSERT INTO jax_project_membership (membership_id, project_id, tenant_id, user_id, project_role, "
+                              "status, grant_origin, created_at, created_by, updated_at) SELECT UUID(), %s, tenant_id, %s, "
+                              "'CONTRIBUTOR', 'ACTIVE', 'EXPLICIT', NOW(6), %s, NOW(6) "
+                              "FROM jax_project_scope WHERE project_id=%s", (p, otro, e.usuario, p))
+    previo = _reprocesar_crudo(e, p, d, usuario=otro)
+    assert previo == {"ruta_anterior": "entrada/l/x.pdf", "subido_por_anterior": e.usuario}
+    assert e.client.portal.call(sql, "SELECT subido_por FROM project_documents WHERE id=%s", (d,), True)[0][0] == otro
+
+
+def test_reprocesar_no_toca_un_documento_oculto(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    e.client.portal.call(sql, "UPDATE project_documents SET oculto_at=NOW(6), oculto_por=%s WHERE id=%s",
+                         (e.usuario, d))
+    assert _reprocesar(e, p, d) is False
+    assert e.fila(d)[0] == "sin_extractor"
+    assert _pool_call(e.client, repo.documento_para_reprocesar, project_id=p, documento_id=d)["oculto"] is True
+
+
+# ------------------------------------------------------------------ tomar_en_cola sin las clases frenadas
+def _en_cola(e, p, nombres, desde):
+    return [e.insertar(p, f"{desde + i:064x}", n, ruta=f"proyectos/u/entrada/l/{n}") for i, n in enumerate(nombres)]
+
+
+def test_tomar_en_cola_excluye_las_clases_frenadas_y_el_limite_cuenta_solo_lo_que_queda(e):
+    p = e.proyecto()
+    pdfs = _en_cola(e, p, [f"{i}.pdf" for i in range(6)], 1)
+    otros = _en_cola(e, p, ["a.jpg", "b.PNG", "c.docx", "d.xlsx", "e.xlsm", "sin-extension", "f.pdf.bak"], 100)
+    propios = lambda r: [f["id"] for f in r if f["project_id"] == p]
+    sin_pdf = propios(_pool_call(e.client, repo.tomar_en_cola, limite=100000, excluir_clases=frozenset({"pdf"})))
+    assert sin_pdf == otros                                            # ni un pdf, y el orden por id se conserva
+    sin_nada = propios(_pool_call(e.client, repo.tomar_en_cola, limite=100000))
+    assert sin_nada == pdfs + otros                                    # sin exclusion: todo, como antes
+    sin_excel_ni_word = propios(_pool_call(e.client, repo.tomar_en_cola, limite=100000,
+                                           excluir_clases=frozenset({"excel", "word"})))
+    assert sin_excel_ni_word == [i for i, n in zip(pdfs + otros, [f"{i}.pdf" for i in range(6)] +
+                                                   ["a.jpg", "b.PNG", "c.docx", "d.xlsx", "e.xlsm", "sin-extension", "f.pdf.bak"])
+                                 if not n.endswith((".docx", ".xlsx", ".xlsm"))]
+    sin_otro = propios(_pool_call(e.client, repo.tomar_en_cola, limite=100000, excluir_clases=frozenset({"otro"})))
+    assert sin_otro == pdfs + [otros[2], otros[3], otros[4]]           # solo pdf, word y excel
+    # el limite cuenta lo que queda: pedir 3 sin pdf trae 3 que no son pdf aunque haya pdfs con ids menores
+    tres = _pool_call(e.client, repo.tomar_en_cola, limite=3, excluir_clases=frozenset({"pdf"}))
+    assert len(tres) == 3 and all(not f["ruta_entrada"].endswith(".pdf") for f in tres)
+
+
+def test_la_extension_se_compara_sin_espacios_de_relleno(e):
+    p = e.proyecto()
+    d = _en_cola(e, p, ["x.pdf "], 500)[0]                             # `tipos.tipo_de` no lo toma por pdf
+    sin_pdf = [f["id"] for f in _pool_call(e.client, repo.tomar_en_cola, limite=100000,
+                                           excluir_clases=frozenset({"pdf"}))]
+    assert d in sin_pdf
+
+
+def test_explain_de_tomar_en_cola_con_exclusion_sigue_usando_su_indice(e):
+    proyectos = [e.proyecto() for _ in range(10)]
+    for i, pid in enumerate(proyectos):
+        _sembrar(e.client, pid, e.usuario, 100, desde=2 * 10**9 + i * 1000)
+    plan = _plan(e.client, repo.sql_tomar_en_cola(frozenset({"pdf", "otro"})), (100,))
+    doc = next(f for f in plan if f["table"] == "d")
+    assert doc["key"] == "idx_project_documents_despacho", plan
+    for f in plan:
+        assert "filesort" not in (f["Extra"] or "") and "temporary" not in (f["Extra"] or ""), plan
+
+
+def test_tomar_en_cola_excluye_ids_y_el_limite_cuenta_solo_lo_que_queda(e):
+    p = e.proyecto()
+    ids = _en_cola(e, p, [f"{i}.pdf" for i in range(8)], 3000)
+    excluidas = ids[:6]
+    r = _pool_call(e.client, repo.tomar_en_cola, limite=2, excluir_ids=frozenset(excluidas))
+    assert [f["id"] for f in r if f["project_id"] == p] == ids[6:8] or [f["id"] for f in r] == ids[6:8]
+    r = _pool_call(e.client, repo.tomar_en_cola, limite=100000, excluir_ids=frozenset(excluidas),
+                   excluir_clases=frozenset({"otro"}))
+    propios = [f["id"] for f in r if f["project_id"] == p]
+    assert propios == ids[6:8] and not set(excluidas) & {f["id"] for f in r}
+    assert [f["id"] for f in _pool_call(e.client, repo.tomar_en_cola, limite=100000, excluir_ids=frozenset())
+            if f["project_id"] == p] == ids                     # sin exclusion, todas, como antes
+
+
+def test_explain_de_tomar_en_cola_con_ids_excluidos_sigue_usando_su_indice(e):
+    proyectos = [e.proyecto() for _ in range(10)]
+    for i, pid in enumerate(proyectos):
+        _sembrar(e.client, pid, e.usuario, 100, desde=3 * 10**9 + i * 1000)
+    ids = list(range(1, 2001))                                   # una lista grande de ids en incertidumbre
+    plan = _plan(e.client, repo.sql_tomar_en_cola(frozenset({"pdf"}), len(ids)), (*ids, 100))
+    doc = next(f for f in plan if f["table"] == "d")
+    assert doc["key"] == "idx_project_documents_despacho", plan
+    for f in plan:
+        assert "filesort" not in (f["Extra"] or "") and "temporary" not in (f["Extra"] or ""), plan

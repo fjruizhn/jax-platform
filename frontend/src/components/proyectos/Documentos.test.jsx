@@ -6,6 +6,7 @@ vi.mock('../../api/proyectos', () => ({
   listarDocumentos: vi.fn(),
   ocultarDocumento: vi.fn(),
   restaurarDocumento: vi.fn(),
+  reprocesarDocumento: vi.fn(),
   limitesDeDocumentos: vi.fn(),
   subirDocumentos: vi.fn(),
 }))
@@ -437,5 +438,193 @@ describe('Documentos: sin diálogos del navegador', () => {
     fireEvent.click(within(fila).getByRole('button', { name: T.ocultarDe('doc1.pdf') }))
     await waitFor(() => expect(api.ocultarDocumento).toHaveBeenCalled())
     espias.forEach((e) => expect(e).not.toHaveBeenCalled())
+  })
+})
+
+
+describe('Documentos: reprocesar', () => {
+  const EXT = ['pdf', 'docx', 'xlsx', 'jpeg']
+  const lista = (...docs) => api.listarDocumentos.mockResolvedValue({ documentos: docs, siguiente: null })
+  const limites = (extensiones = EXT) => api.limitesDeDocumentos.mockResolvedValue({
+    max_bytes_archivo: 1e8, max_archivos_lote: 250, max_bytes_lote: 1e9, extensiones,
+  })
+  const boton = (nombre) => screen.queryByRole('button', { name: T.reprocesarDe(nombre) })
+
+  it('aparece en las filas sin_extractor y error de un tipo con extractor, y en ninguna otra', async () => {
+    limites()
+    lista(doc(1, { estado: 'sin_extractor', tipo: 'pdf' }), doc(2, { estado: 'error', tipo: 'jpeg', error: null }),
+      doc(3, { estado: 'listo' }), doc(4, { estado: 'procesando' }), doc(5, { estado: 'en_cola' }),
+      doc(6, { estado: 'parcial' }), doc(7, { estado: 'cancelado' }), doc(8, { estado: 'pendiente' }))
+    montar()
+    expect(await screen.findByRole('button', { name: T.reprocesarDe('doc1.pdf') })).toBeInTheDocument()
+    expect(boton('doc2.pdf')).toBeInTheDocument()
+    for (const n of [3, 4, 5, 6, 7, 8]) expect(boton(`doc${n}.pdf`)).toBeNull()
+  })
+
+  it('no aparece si el tipo no tiene extractor', async () => {
+    limites()
+    lista(doc(1, { estado: 'sin_extractor', tipo: 'txt' }), doc(2, { estado: 'sin_extractor', tipo: 'pdf' }))
+    montar()
+    await screen.findByRole('button', { name: T.reprocesarDe('doc2.pdf') })
+    expect(boton('doc1.pdf')).toBeNull()
+  })
+
+  it('el tipo se compara sin distinguir mayúsculas', async () => {
+    limites()
+    lista(doc(1, { estado: 'sin_extractor', tipo: 'PDF' }))
+    montar()
+    expect(await screen.findByRole('button', { name: T.reprocesarDe('doc1.pdf') })).toBeInTheDocument()
+  })
+
+  it('no aparece para un VIEWER ni en un proyecto archivado, y ni siquiera pide los límites', async () => {
+    limites()
+    lista(doc(1, { estado: 'sin_extractor', tipo: 'pdf' }))
+    for (const proyecto of [{ ...PROY, papel: 'VIEWER' }, { ...PROY, estado: 'ARCHIVED' }]) {
+      const { unmount } = montar(proyecto)
+      await screen.findByText('doc1.pdf')
+      expect(boton('doc1.pdf')).toBeNull()
+      unmount()
+    }
+    expect(api.limitesDeDocumentos).not.toHaveBeenCalled()
+  })
+
+  it('sin poder saber los tipos (los límites fallan) no se ofrece', async () => {
+    api.limitesDeDocumentos.mockRejectedValue(error(500, 'x'))
+    lista(doc(1, { estado: 'sin_extractor', tipo: 'pdf' }))
+    montar()
+    await screen.findByText('doc1.pdf')
+    await waitFor(() => expect(api.limitesDeDocumentos).toHaveBeenCalled())
+    expect(boton('doc1.pdf')).toBeNull()
+  })
+
+  it('no aparece en la vista de ocultos', async () => {
+    limites()
+    api.listarDocumentos.mockImplementation(async (_id, { vista }) => ({
+      documentos: [doc(1, { estado: 'sin_extractor', tipo: 'pdf', oculto: vista === 'ocultos' })], siguiente: null }))
+    montar()
+    await screen.findByRole('button', { name: T.reprocesarDe('doc1.pdf') })
+    fireEvent.click(screen.getByRole('button', { name: T.verOcultos }))
+    await screen.findByRole('button', { name: T.restaurarDe('doc1.pdf') })
+    expect(boton('doc1.pdf')).toBeNull()
+  })
+
+  it('llama a la API (sin diálogo del navegador) y la fila vuelve a En espera y se sigue con el sondeo', async () => {
+    limites()
+    let reprocesado = false
+    api.listarDocumentos.mockImplementation(async () => ({
+      documentos: [doc(1, reprocesado ? { estado: 'en_cola' } : { estado: 'sin_extractor', tipo: 'pdf' })],
+      siguiente: null }))
+    api.reprocesarDocumento.mockImplementation(async () => { reprocesado = true; return { id: 1, estado: 'en_cola' } })
+    montar()
+    fireEvent.click(await screen.findByRole('button', { name: T.reprocesarDe('doc1.pdf') }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await waitFor(() => expect(api.reprocesarDocumento).toHaveBeenCalledWith(7, 1))
+    const fila = (await screen.findByText('doc1.pdf')).closest('li')
+    await waitFor(() => expect(within(fila).getByText(T.estados.en_cola)).toBeInTheDocument())
+    expect(boton('doc1.pdf')).toBeNull()
+    expect(espias.every((e) => e.mock.calls.length === 0)).toBe(true)
+  })
+
+  it.each(['no_reprocesable', 'original_no_encontrado', 'fuente_ilegible', 'proyecto_no_activo', 'kill_switch_activo'])(
+    'un 409/423 %s se muestra traducido y la fila sigue ahí', async (code) => {
+      limites()
+      lista(doc(1, { estado: 'sin_extractor', tipo: 'pdf' }))
+      api.reprocesarDocumento.mockRejectedValue(error(409, code))
+      montar()
+      fireEvent.click(await screen.findByRole('button', { name: T.reprocesarDe('doc1.pdf') }))
+      expect(await screen.findByText(T.errores[code])).toBeInTheDocument()
+      expect(screen.getByText('doc1.pdf')).toBeInTheDocument()
+    })
+
+  it('el botón queda deshabilitado mientras corre una acción (una mutación a la vez)', async () => {
+    limites()
+    lista(doc(1, { estado: 'sin_extractor', tipo: 'pdf' }))
+    let soltar
+    api.reprocesarDocumento.mockImplementation(() => new Promise((r) => { soltar = r }))
+    montar()
+    const b = await screen.findByRole('button', { name: T.reprocesarDe('doc1.pdf') })
+    fireEvent.click(b)
+    await waitFor(() => expect(b).toBeDisabled())
+    fireEvent.click(b)
+    expect(api.reprocesarDocumento).toHaveBeenCalledTimes(1)
+    soltar({})
+  })
+})
+
+describe('Documentos: reprocesar con el cupo lleno (429)', () => {
+  const error429 = () => Object.assign(new Error('x'), {
+    response: { status: 429, headers: { 'retry-after': '2' }, data: { detail: { code: 'reprocesos_simultaneos' } } } })
+
+  it('un 429 muestra su texto, no reintenta solo y deja el botón listo para que la persona lo pulse', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    api.limitesDeDocumentos.mockResolvedValue({ max_bytes_archivo: 1e8, max_archivos_lote: 250, max_bytes_lote: 1e9, extensiones: ['pdf'] })
+    api.listarDocumentos.mockResolvedValue({ documentos: [doc(1, { estado: 'sin_extractor', tipo: 'pdf' })], siguiente: null })
+    api.reprocesarDocumento.mockRejectedValue(error429())
+    montar()
+    const boton = await screen.findByRole('button', { name: T.reprocesarDe('doc1.pdf') })
+    fireEvent.click(boton)
+    expect(await screen.findByText(T.errores.reprocesos_simultaneos)).toBeInTheDocument()
+    expect(T.errores.reprocesos_simultaneos).toMatch(/reprocesamiento en curso/i)
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })        // mucho mas que el Retry-After
+    expect(api.reprocesarDocumento).toHaveBeenCalledTimes(1)                    // no reintento solo
+    expect(screen.getByRole('button', { name: T.reprocesarDe('doc1.pdf') })).not.toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: T.reprocesarDe('doc1.pdf') }))   // la persona si puede volver a pedirlo
+    await waitFor(() => expect(api.reprocesarDocumento).toHaveBeenCalledTimes(2))
+  })
+
+  it('mientras su propio pedido está en vuelo el botón queda deshabilitado y un segundo clic no lo repite', async () => {
+    api.limitesDeDocumentos.mockResolvedValue({ max_bytes_archivo: 1e8, max_archivos_lote: 250, max_bytes_lote: 1e9, extensiones: ['pdf'] })
+    api.listarDocumentos.mockResolvedValue({ documentos: [doc(1, { estado: 'sin_extractor', tipo: 'pdf' })], siguiente: null })
+    let soltar
+    api.reprocesarDocumento.mockImplementation(() => new Promise((r) => { soltar = r }))
+    montar()
+    const boton = await screen.findByRole('button', { name: T.reprocesarDe('doc1.pdf') })
+    fireEvent.click(boton)
+    await waitFor(() => expect(boton).toBeDisabled())
+    fireEvent.click(boton)
+    expect(api.reprocesarDocumento).toHaveBeenCalledTimes(1)
+    soltar({})
+  })
+})
+
+describe('Documentos: motivo del error', () => {
+  const sinMotivo = () => api.listarDocumentos.mockResolvedValue({
+    documentos: [doc(1, { estado: 'error', error: null })], siguiente: null })
+
+  it('un error sin motivo guardado, que se puede reprocesar, dice que se reprocese', async () => {
+    sinMotivo()
+    montar()
+    expect(await screen.findByText(T.sinMotivoReprocesable)).toBeInTheDocument()
+    expect(T.sinMotivoReprocesable).toBe('Motivo no registrado: reprocesalo para obtenerlo')
+    expect(T.sinMotivo).toBe('Motivo no registrado')
+    expect(screen.queryByText(T.sinMotivo)).toBeNull()
+  })
+
+  it('sin permiso de escritura solo dice que el motivo no está registrado', async () => {
+    sinMotivo()
+    montar({ ...PROY, papel: 'VIEWER' })
+    expect(await screen.findByText(T.sinMotivo)).toBeInTheDocument()
+    expect(screen.queryByText(T.sinMotivoReprocesable)).toBeNull()
+  })
+
+  it('en un proyecto archivado tampoco ofrece reprocesar', async () => {
+    sinMotivo()
+    montar({ ...PROY, estado: 'ARCHIVED' })
+    expect(await screen.findByText(T.sinMotivo)).toBeInTheDocument()
+    expect(screen.queryByText(T.sinMotivoReprocesable)).toBeNull()
+  })
+
+  it('con un tipo sin extractor solo dice que el motivo no está registrado', async () => {
+    api.listarDocumentos.mockResolvedValue({ documentos: [doc(1, { estado: 'error', error: null, tipo: 'txt' })], siguiente: null })
+    montar()
+    await waitFor(() => expect(api.limitesDeDocumentos).toHaveBeenCalled())
+    expect(await screen.findByText(T.sinMotivo)).toBeInTheDocument()
+    expect(screen.queryByText(T.sinMotivoReprocesable)).toBeNull()
+  })
+
+  it.each(['ocr_sin_texto', 'ocr_confianza_baja'])('el código %s se muestra traducido', async (codigo) => {
+    api.listarDocumentos.mockResolvedValue({ documentos: [doc(1, { estado: 'error', error: codigo })], siguiente: null })
+    montar()
+    expect(await screen.findByText(T.causa(T.causas[codigo]))).toBeInTheDocument()
   })
 })

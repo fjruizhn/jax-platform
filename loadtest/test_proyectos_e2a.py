@@ -233,3 +233,60 @@ def test_resultados_en_la_carpeta_que_diga_el_entorno(tmp_path):
     destino = tmp_path / "otra" / "carpeta"
     ruta = pe.ruta_de_resultados({pe.VARIABLE_RESULTADOS: str(destino)})
     assert ruta == destino / "_resultados_proyectos_e2a.json" and destino.is_dir()
+
+
+# --- Escenario «Reprocesar» (jax-platform#186) --------------------------------------------------
+def test_plan_de_fuente_reparte_todo_sin_repetir_y_con_niveles_profundos():
+    rutas = pe.plan_de_fuente(20_000, 2_000)
+    assert len(rutas) == 20_000 and len(set(rutas)) == 20_000
+    assert len({r.split("/")[0] for r in rutas}) == 2_000
+    assert any(r.count("/") >= 6 for r in rutas)                       # alguna carpeta cuelga de 5 niveles mas
+    assert not any(r.startswith("zzz/") for r in rutas)
+
+
+def test_plan_de_fuente_con_resto_y_validaciones():
+    rutas = pe.plan_de_fuente(10, 3)
+    assert len(rutas) == 10 and len(set(rutas)) == 10
+    for malo in ((0, 1), (5, 0), (3, 5)):
+        with pytest.raises(ValueError):
+            pe.plan_de_fuente(*malo)
+
+
+def test_el_objetivo_va_al_final_del_orden_y_hondo_con_un_nombre_que_no_se_parece():
+    r = pe.ruta_del_objetivo(7)
+    assert r == "zzz/n1/n2/n3/n4/n5/n6/n7/scan-07.pdf" and r.count("/") == 8
+    assert all(r > x for x in pe.plan_de_fuente(100, 10))
+    assert "Informe-7" not in r
+    with pytest.raises(ValueError):
+        pe.ruta_del_objetivo(1, 0)
+
+
+def test_escribir_fuente_escribe_del_tamano_pedido_con_bytes_distintos(tmp_path):
+    rutas = ["a/x.pdf", "a/y.pdf", "b/c/z.pdf"]
+    assert pe.escribir_fuente(tmp_path, rutas, 64) == 3
+    contenidos = [(tmp_path / r).read_bytes() for r in rutas]
+    assert all(len(c) == 64 for c in contenidos) and len(set(contenidos)) == 3
+
+
+def test_peticiones_por_segundo():
+    assert pe.peticiones_por_segundo(150, 60) == 2.5
+    assert pe.peticiones_por_segundo(5, 0) == 0.0
+
+
+def test_resumen_de_reprocesar_cuenta_codigos_y_separa_las_202():
+    muestras = [{"status": 202, "ms": 100.0}, {"status": 202, "ms": 300.0}, {"status": 429, "ms": 5.0},
+                {"status": 429, "ms": 6.0}, {"status": 503, "ms": 9.0}]
+    r = pe.resumen_de_reprocesar(muestras, 10.0)
+    assert r["codigos"] == {"202": 2, "429": 2, "503": 1}
+    assert (r["peticiones"], r["rps_total"], r["rps_202"]) == (5, 0.5, 0.2)
+    assert r["latencia_202_ms"]["n"] == 2 and r["latencia_202_ms"]["p50_ms"] == 100.0
+    assert r["latencia_todas_ms"]["n"] == 5
+    assert pe.resumen_de_reprocesar([], 10.0)["latencia_202_ms"]["n"] == 0
+
+
+def test_contar_descriptores_de_este_proceso_ve_uno_nuevo(tmp_path):
+    # Valor absoluto (un desfase constante no lo vería una comparación solo entre dos llamadas del propio helper):
+    assert pe.contar_descriptores(os.getpid()) == len(os.listdir("/proc/self/fd"))
+    antes = pe.contar_descriptores(os.getpid())
+    with open(tmp_path / "x", "w"):
+        assert pe.contar_descriptores(os.getpid()) == antes + 1

@@ -27,6 +27,7 @@ import hashlib
 import logging
 import os
 import re
+import stat
 import threading
 import unicodedata
 from pathlib import Path
@@ -39,14 +40,21 @@ ESPERA_AVISO_S = 30.0
 VARIABLE_WORKSPACE = "JAX_WORKSPACE_DIR"
 TAMANO_DE_BLOQUE = 1024 * 1024
 
-# Modos de `entrada/`. Bajo `proyectos/` hay ACL por defecto (g:fruiz, u:jaxsvc) y
-# setgid: un archivo creado 0600 deja la mascara de la ACL en `---` y anula el
-# acceso de fruiz (por eso LAS MANOS hace fchmod 0660 en tool_authority._write_file).
-# El modo se fija explicito con fchmod/chmod, nunca por el umask.
-# `S_ISGID` (el 2 inicial) se pone EXPLICITO: un chmod 0770 lo borraria y las carpetas
-# nuevas dejarian de heredar el grupo de `proyectos/`.
+# Modos. Bajo `proyectos/` hay ACL por defecto (g:fruiz, u:jaxsvc) y setgid: un archivo creado
+# 0600 deja la mascara de la ACL en `---` y anula el acceso de fruiz (por eso LAS MANOS hace fchmod
+# 0660 en tool_authority._write_file), asi que los ARCHIVOS se fijan con fchmod/chmod, nunca por el
+# umask; ahi el setgid no importa.
+#
+# Las CARPETAS NO se chmodean NUNCA. En produccion el proceso corre como jaxsvc, que no es miembro
+# del grupo de la carpeta (fruiz), y Linux BORRA `S_ISGID` en cualquier chmod/fchmod de quien no
+# pertenece al grupo del archivo y no tiene CAP_FSETID: un `fchmod(0o2770)` dejaba
+# `proyectos/<uuid>/entrada/` sin setgid (medido: `ops/permisos_proyectos.py --verificar` rc=1) y las
+# subcarpetas siguientes habrian heredado el grupo equivocado. `mkdir` hereda el grupo y el setgid
+# del padre y la ACL por defecto decide los permisos (sin umask); en lugar de forzarlo, se
+# VERIFICA (`_verificar_nivel`, contra el ancla `proyectos/`) y, si no se cumple, se falla cerrado.
 MODO_ARCHIVO = 0o660
-MODO_CARPETA = 0o2770
+# Solo el argumento de `mkdir` (lo recorta el umask si no hay ACL por defecto); nunca se vuelve a fijar.
+MODO_CARPETA = 0o770
 
 # Largos. 200 caracteres Y 200 bytes: un nombre de 200 emojis son 800 bytes y el
 # sistema de archivos corta en 255 bytes por componente (ENAMETOOLONG). El margen
@@ -85,6 +93,32 @@ def carpeta_entrada(workspace: Path, project_uuid: str, lote: str) -> Path:
         if not isinstance(valor, str) or not _COMPONENTE.match(valor):
             raise ValueError(f"{nombre} no es un componente de ruta valido")
     return workspace / "proyectos" / project_uuid / "entrada" / lote
+
+
+class HerenciaDeCarpetaRota(Exception):
+    """Una carpeta recien creada no heredo lo que el padre da por defecto (setgid, grupo, o tiene
+    bits para «otros» que el padre no tiene). Nunca se corrige con chmod: se deshace lo creado y la
+    subida falla con 500 `almacen_herencia_rota`."""
+
+
+def _verificar_nivel(ancla: os.stat_result | None, fd_padre: int, fd_hijo: int, nombre: str, creado: bool) -> os.stat_result:
+    """El invariante ABSOLUTO de cada nivel que se abre o se crea desde `proyectos/` (incluido el): setgid puesto y,
+    salvo en el propio ancla, el grupo de `proyectos/`. Vale para lo que ya existia -- un nivel que dejo un
+    `fchmod` viejo sin setgid -- y para lo recien creado: comparar solo contra el padre lo aceptaba. Para lo recien
+    creado ademas, nada para «otros» que el padre no tenga. Devuelve el `fstat` del nivel (el del ancla, la primera vez)."""
+    hijo = os.fstat(fd_hijo)
+    problemas = []
+    if not hijo.st_mode & stat.S_ISGID:
+        problemas.append("setgid")
+    if ancla is not None and hijo.st_gid != ancla.st_gid:
+        problemas.append("grupo")
+    if creado and (hijo.st_mode & 0o007) & ~(os.fstat(fd_padre).st_mode & 0o007):
+        problemas.append("otros")
+    if problemas:
+        raise HerenciaDeCarpetaRota(
+            f"{nombre!r} no cumple el invariante de permisos de proyectos/: {', '.join(problemas)} "
+            f"(modo {stat.S_IMODE(hijo.st_mode):o}, {'creado ahora' if creado else 'ya existia'})")
+    return hijo
 
 
 class RutaInsegura(Exception):
@@ -149,14 +183,16 @@ class CarpetaLote:
 def abrir_carpeta_lote(workspace: Path, project_uuid: str, lote: str) -> CarpetaLote:
     """Sincrona (to_thread). Abre `proyectos/<uuid>/entrada/<lote>` desde el workspace,
     un nivel a la vez con `openat(O_DIRECTORY|O_NOFOLLOW)`, creando con `mkdirat` lo que
-    falte (modo explicito 0o2770 por `fchmod`, sin depender del umask; solo en lo que se
-    crea aqui). RutaInsegura si algun nivel es un enlace; en ese caso (y en cualquier
+    falte SIN chmod (heredan grupo, setgid y ACL del padre). CADA nivel abierto o creado desde
+    `proyectos/` -- el propio `proyectos/` es el ANCLA -- cumple el invariante absoluto de `_verificar_nivel`
+    (setgid y el grupo del ancla): HerenciaDeCarpetaRota si no, sin escribir nada. RutaInsegura si algun nivel es un enlace; en ese caso (y en cualquier
     otro error) no queda nada creado ni nada abierto. ValueError si uuid o lote no son
     un componente simple."""
     ruta = carpeta_entrada(workspace, project_uuid, lote)
     niveles = ("proyectos", project_uuid, "entrada", lote)
     fds = [os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)]
     creados: list[tuple[int, str]] = []
+    ancla: os.stat_result | None = None
     try:
         for nombre in niveles:
             padre = fds[-1]
@@ -172,10 +208,12 @@ def abrir_carpeta_lote(workspace: Path, project_uuid: str, lote: str) -> Carpeta
                 if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                     raise RutaInsegura(f"{nombre!r} no es una carpeta real (enlace?) bajo {workspace}") from None
                 raise
+            fds.append(hijo)                # abierto: si algo falla, el except lo cierra
             if creado:
                 creados.append((padre, nombre))
-                os.fchmod(hijo, MODO_CARPETA)
-            fds.append(hijo)
+            nivel = _verificar_nivel(ancla, padre, hijo, nombre, creado)
+            if ancla is None:
+                ancla = nivel                # `proyectos/`: el grupo de todo lo de abajo
     except BaseException:
         CarpetaLote(ruta, fds, creados, "/".join(niveles)).deshacer()
         for fd in fds:

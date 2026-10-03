@@ -65,6 +65,10 @@ class LasManosFalsa:
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_WORKSPACE_DIR", str(tmp_path))
+    # El ANCLA de los permisos: `proyectos/` con setgid, como en produccion (almacen.py exige que cada nivel que
+    # abre o crea debajo tenga setgid y el grupo de esta carpeta). Un tmp_path pelado no lo trae.
+    (tmp_path / "proyectos").mkdir()
+    os.chmod(tmp_path / "proyectos", 0o2770)
     return tmp_path
 
 
@@ -617,3 +621,287 @@ def test_ruta_que_no_es_del_proyecto_no_se_manda_y_queda_ruta_ajena(e, caplog, r
     assert e.fila(propia)[0] == "pendiente"
     assert any(str(doc) in r.getMessage() and "ruta_ajena" in r.getMessage()
                for r in caplog.records if r.levelno == logging.ERROR)
+
+
+# ------------------------------------------------------------------ motivo del error (ficha.json)
+# Frases REALES de `detalle.razon` en las fichas de LACTOVI (13, 15 y 2 casos).
+RAZON_OCR_VACIO = "el OCR no devolvio texto util"
+RAZON_CONFIANZA = ("mas de la mitad de las palabras reconocidas tienen confianza baja "
+                   "(probable ruido o desenfoque) -- ver palabras_dudosas")
+RAZON_PDF = "ninguna pagina del PDF dio texto util via OCR"
+
+
+# TODAS las razones de estado `error` de jax (origin/master, `procesamiento/extractores/ocr.py` y
+# `pdf.py`), copiadas literal. Solo las tres primeras son del OCR real.
+RAZONES_DE_JAX_QUE_NO_SON_OCR = [
+    "sin capa de texto util; corresponde OCR",                                   # pdf.py:341 (no paso por OCR)
+    "modo_lectura no soportado: 'x'",                                            # pdf.py:253
+    "pdfplumber no esta instalado: No module named 'pdfplumber'",                # pdf.py:262
+    "no se pudo leer: ValueError: PDF roto",                                     # pdf.py:325
+    "no existe el archivo: fuente/a.pdf",                                        # ocr.py:422
+    "pdftoppm no esta instalado (poppler-utils); no se puede rasterizar el PDF para OCR",   # ocr.py:431
+    "no se pudo rasterizar el PDF con pdftoppm",                                 # ocr.py:457
+    "no se pudo correr tesseract sobre la imagen",                               # ocr.py:467
+    "fallo inesperado en OCR: OSError: disco lleno",                             # ocr.py:474
+    "tesseract no esta instalado",                                               # ocr.py:400 (sin_extractor)
+]
+
+
+@pytest.mark.parametrize("razon,codigo", [
+    (RAZON_OCR_VACIO, "ocr_sin_texto"),                                           # ocr.py:287
+    (RAZON_PDF, "ocr_sin_texto"),                                                 # ocr.py:360
+    (RAZON_CONFIANZA, "ocr_confianza_baja"),                                      # ocr.py:289
+    ("El OCR no devolvió texto útil", "ocr_sin_texto"),                           # tildes y mayusculas
+    ("el  OCR   no devolvio texto util ", "ocr_sin_texto"),                       # espacios repetidos
+    ("Mas de la mitad de las palabras reconocidas tienen confianza baja (probable ruido o "
+     "desenfoque) -- ver palabras_dudosas", "ocr_confianza_baja"),
+    *[(r, "procesamiento_fallido") for r in RAZONES_DE_JAX_QUE_NO_SON_OCR],
+    ("el OCR no devolvio texto util y ademas algo mas", "procesamiento_fallido"),  # exacta, no «contiene»
+    ("la hoja no dio texto util", "procesamiento_fallido"),
+    ("", "procesamiento_fallido"),
+    (None, "procesamiento_fallido"),
+    (7, "procesamiento_fallido"),
+    ({"x": 1}, "procesamiento_fallido"),
+])
+def test_codigo_de_la_razon_es_una_tabla_de_frases_exactas_de_jax(razon, codigo):
+    assert despachador.codigo_de_la_razon(razon) == codigo
+    assert codigo in despachador.CAUSAS_DE_ERROR
+
+
+def _con_ficha(e, ficha_texto, carpeta=None, nombre="doc"):
+    carpeta = carpeta or f"proyectos/{e.uuid}/procesado/{nombre}"
+    destino = e.workspace / carpeta
+    destino.mkdir(parents=True, exist_ok=True)
+    if ficha_texto is not None:
+        (destino / "ficha.json").write_text(ficha_texto)
+    return carpeta
+
+
+def _error_con_carpeta(e, carpeta, job="JM1", estado="error"):
+    r = e.ruta("l1", f"{job}.pdf")
+    doc = e.insertar(r, n=abs(hash(job)))
+    e.abrir(doc, job)
+    e.las_manos.estados[job] = _trabajo(job, "completed", [_resultado(r, estado, carpeta=carpeta, error="x")])
+    e.ciclo()
+    return doc
+
+
+@pytest.mark.parametrize("razon,codigo", [
+    (RAZON_OCR_VACIO, "ocr_sin_texto"), (RAZON_PDF, "ocr_sin_texto"), (RAZON_CONFIANZA, "ocr_confianza_baja"),
+    ("algo que no conocemos", "procesamiento_fallido")])
+def test_un_error_con_ficha_guarda_el_codigo_estable_del_motivo(e, razon, codigo):
+    carpeta = _con_ficha(e, json.dumps({"origen": "fuente/a.pdf", "detalle": {"razon": razon}}))
+    doc = _error_con_carpeta(e, carpeta)
+    assert e.fila(doc)[0] == "error" and e.fila(doc)[3] == codigo
+
+
+@pytest.mark.parametrize("ficha", [None, "{no es json", "[]", '{"detalle": 3}', '{"detalle": {"razon": null}}',
+                                   '{"detalle": {}}'])
+def test_ficha_ausente_o_ilegible_deja_el_generico_y_el_estado_se_aplica(e, ficha):
+    carpeta = _con_ficha(e, ficha)
+    doc = _error_con_carpeta(e, carpeta)
+    assert (e.fila(doc)[0], e.fila(doc)[3]) == ("error", "procesamiento_fallido")
+
+
+def test_ficha_gigante_no_se_lee(e):
+    carpeta = _con_ficha(e, json.dumps({"detalle": {"razon": RAZON_OCR_VACIO}}) + " " * (2 * 1024 * 1024))
+    doc = _error_con_carpeta(e, carpeta)
+    assert e.fila(doc)[3] == "procesamiento_fallido"
+
+
+def test_ficha_que_es_un_enlace_no_se_sigue(e, tmp_path_factory):
+    carpeta = _con_ficha(e, None)
+    fuera = tmp_path_factory.mktemp("fuera") / "ficha.json"
+    fuera.write_text(json.dumps({"detalle": {"razon": RAZON_OCR_VACIO}}))
+    (e.workspace / carpeta / "ficha.json").symlink_to(fuera)
+    doc = _error_con_carpeta(e, carpeta)
+    assert e.fila(doc)[3] == "procesamiento_fallido"
+
+
+def test_carpeta_de_otro_proyecto_no_se_lee(e):
+    ajena = f"proyectos/11111111-1111-4111-8111-111111111111/procesado/x"
+    _con_ficha(e, json.dumps({"detalle": {"razon": RAZON_OCR_VACIO}}), carpeta=ajena)
+    doc = _error_con_carpeta(e, ajena)
+    assert e.fila(doc)[3] == "procesamiento_fallido"
+
+
+def test_sin_carpeta_o_rechazado_no_se_consulta_la_ficha(e):
+    doc = _error_con_carpeta(e, None, job="JM2")
+    assert e.fila(doc)[3] == "procesamiento_fallido"
+    carpeta = _con_ficha(e, json.dumps({"detalle": {"razon": RAZON_OCR_VACIO}}), nombre="rech")
+    doc = _error_con_carpeta(e, carpeta, job="JM3", estado="rechazado")
+    assert e.fila(doc)[3] == "rechazado"                              # el rechazo no se reescribe
+
+
+def test_un_fallo_al_leer_la_ficha_no_impide_aplicar_el_resultado(e, monkeypatch):
+    from proyectos_documentos import original
+
+    def revienta(*a, **k):
+        raise RuntimeError("disco")
+    monkeypatch.setattr(original, "leer_ficha", revienta)
+    carpeta = _con_ficha(e, json.dumps({"detalle": {"razon": RAZON_OCR_VACIO}}))
+    doc = _error_con_carpeta(e, carpeta, job="JM4")
+    assert (e.fila(doc)[0], e.fila(doc)[3]) == ("error", "procesamiento_fallido")
+
+
+# ------------------------------------------------------------------ freno de extractores (Jax#335)
+EXTRACTORES = (503, {"detail": {"code": "extractores_no_disponibles"}})
+
+
+def _clase(ruta):
+    ext = ruta.rsplit(".", 1)[-1].lower()
+    return {"pdf": "pdf", "xlsx": "excel", "xlsm": "excel", "docx": "word"}.get(ext, "otro")
+
+
+def test_un_503_extractores_no_disponibles_salta_el_grupo_y_se_sigue_con_los_demas(e):
+    pdfs = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1, nombre=f"{i}.pdf") for i in range(3)]
+    jpgs = [e.insertar(e.ruta("l1", f"{i}.jpg"), n=100 + i, nombre=f"{i}.jpg") for i in range(3)]
+    e.las_manos.post_respuestas = [EXTRACTORES]
+    e.ciclo()
+    assert len(e.las_manos.posts) == 2                                   # el pdf (503) y luego el jpg
+    assert [e.fila(i)[0] for i in pdfs] == ["en_cola"] * 3               # quedan para el proximo ciclo
+    assert [e.fila(i)[0] for i in jpgs] == ["pendiente"] * 3
+
+
+def test_el_503_de_extractores_salta_el_resto_del_grupo_y_los_otros_grupos_salen(e):
+    pdfs = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1, nombre=f"{i}.pdf") for i in range(120)]   # 3 trozos
+    jpgs = [e.insertar(e.ruta("l1", f"{i}.jpg"), n=1000 + i, nombre=f"{i}.jpg") for i in range(3)]
+    e.las_manos.post_respuestas = [EXTRACTORES]
+    e.ciclo()
+    cuerpos = e.las_manos.posts
+    assert [len(c["rutas"]) for c in cuerpos] == [50, 3]               # un solo POST del grupo pdf, y el jpg
+    assert all(r.endswith(".pdf") for r in cuerpos[0]["rutas"]) and all(r.endswith(".jpg") for r in cuerpos[1]["rutas"])
+    assert [e.fila(i)[0] for i in pdfs] == ["en_cola"] * 120          # 0 despachados del grupo afectado
+    assert [e.fila(i)[0] for i in jpgs] == ["pendiente"] * 3
+
+
+def test_un_503_generico_sigue_cortando_el_ciclo_entero(e, caplog):
+    pdf = e.insertar(e.ruta("l1", "a.pdf"), n=1, nombre="a.pdf")
+    jpg = e.insertar(e.ruta("l1", "a.jpg"), n=2, nombre="a.jpg")
+    e.las_manos.post_respuestas = [(503, {"detail": {"code": "base_no_disponible"}})]
+    e.ciclo()
+    assert len(e.las_manos.posts) == 1
+    assert e.fila(pdf)[0] == "en_cola" and e.fila(jpg)[0] == "en_cola"
+    e.las_manos.post_respuestas = [(503, {"detail": "texto"})]
+    e.ciclo()
+    assert len(e.las_manos.posts) == 2 and e.fila(jpg)[0] == "en_cola"
+
+
+def test_el_503_de_extractores_con_otro_estado_no_se_confunde(e):
+    pdf = e.insertar(e.ruta("l1", "a.pdf"), n=1, nombre="a.pdf")
+    jpg = e.insertar(e.ruta("l1", "a.jpg"), n=2, nombre="a.jpg")
+    e.las_manos.post_respuestas = [(500, {"detail": {"code": "extractores_no_disponibles"}})]
+    e.ciclo()
+    assert len(e.las_manos.posts) == 1                                   # solo el 503 salta; un 500 corta
+
+
+def test_los_trozos_no_mezclan_clases_de_extension(e):
+    nombres = ["a.pdf", "b.jpg", "c.xlsx", "d.docx", "e.pdf", "f.png", "g.xlsm", "h.docx", "i.tif"]
+    for n, nombre in enumerate(nombres):
+        e.insertar(e.ruta("l1", nombre), n=n + 1, nombre=nombre)
+    e.ciclo()
+    clases = [{_clase(r) for r in c["rutas"]} for c in e.las_manos.posts]
+    assert all(len(c) == 1 for c in clases), clases
+    assert sorted(next(iter(c)) for c in clases) == ["excel", "otro", "pdf", "word"]
+    assert sorted(len(c["rutas"]) for c in e.las_manos.posts) == [2, 2, 2, 3]
+
+
+def _insertar_en_bloque(e, nombres, desde):
+    """Una sola sentencia: filas `en_cola` con sha unico y ruta `entrada/l1/<nombre>` (ids crecientes)."""
+    filas = ", ".join(
+        f"({e.project_id}, '{desde + i:064x}', '{n}', '{e.ruta('l1', n)}', 10, 'pdf', {e.usuario})"
+        for i, n in enumerate(nombres))
+    e.client.portal.call(sql, "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, "
+                              f"bytes, tipo, subido_por) VALUES {filas}")
+
+
+def test_mas_pdf_que_el_limite_con_extractores_caidos_no_dejan_sin_ventana_a_las_imagenes(e):
+    """MAJOR-N2: con 1.001 pdf en cola (ids bajos), el LIMIT 1000 de la cola se llena solo de pdf y las
+    imagenes con ids altos nunca entraban en la ventana mientras faltara pdfplumber."""
+    limite = despachador.LIMITE_DE_FILAS_POR_CICLO
+    pdfs = [f"p{i:04d}.pdf" for i in range(limite + 1)]
+    _insertar_en_bloque(e, pdfs, 10_000)
+    imagenes = [e.insertar(e.ruta("l1", f"i{i}.jpg"), n=50_000 + i, nombre=f"i{i}.jpg") for i in range(3)]
+    e.las_manos.post_respuestas = [EXTRACTORES]                          # el primer trozo (pdf) da 503
+    e.ciclo()
+    rutas = [r for c in e.las_manos.posts for r in c["rutas"]]
+    assert sum(r.endswith(".pdf") for r in rutas) == 50                  # un solo trozo de pdf se intento
+    assert sorted(r for r in rutas if r.endswith(".jpg")) == sorted(e.ruta("l1", f"i{i}.jpg") for i in range(3))
+    assert [e.fila(i)[0] for i in imagenes] == ["pendiente"] * 3         # las imagenes SI salen en ese mismo ciclo
+    n_pdf_en_cola = e.client.portal.call(
+        sql, "SELECT COUNT(*) FROM project_documents WHERE project_id=%s AND estado='en_cola'", (e.project_id,), True)[0][0]
+    assert n_pdf_en_cola == limite + 1                                   # ningun pdf se despacho
+
+
+def test_una_clase_frenada_se_salta_en_todos_los_grupos_del_ciclo_con_un_solo_post(e):
+    """Un segundo proyecto con pdf en la misma vuelta no vuelve a pegarle al 503 ya conocido."""
+    _insertar_en_bloque(e, [f"a{i}.pdf" for i in range(3)], 70_000)
+    otro_id, otro_uuid = e.proyecto()
+    e.client.portal.call(sql, "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, "
+                              "bytes, tipo, subido_por) VALUES (%s, %s, 'b.pdf', %s, 10, 'pdf', %s)",
+                         (otro_id, f"{80_000:064x}", f"proyectos/{otro_uuid}/entrada/l1/b.pdf", e.usuario))
+    img = e.insertar(e.ruta("l1", "z.jpg"), n=90_000, nombre="z.jpg")
+    e.las_manos.post_respuestas = [EXTRACTORES]
+    e.ciclo()
+    assert e.fila(img)[0] == "pendiente"
+    assert [len(c["rutas"]) for c in e.las_manos.posts] == [3, 1]       # 1 POST pdf (503) + 1 jpg; el de otro proyecto no
+
+
+def test_mas_filas_en_incertidumbre_que_el_limite_no_dejan_sin_ventana_a_las_sanas(e, monkeypatch):
+    """Las filas con desenlace incierto (ReadTimeout...) cuentan contra el LIMIT de la cola y despues el despachador
+    las salta: con mas de ellas que el limite, las sanas de atras nunca entraban en la ventana."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 5)
+    inciertas = [e.insertar(e.ruta("l1", f"u{i}.pdf"), n=100 + i, nombre=f"u{i}.pdf") for i in range(8)]
+    sanas = [e.insertar(e.ruta("l1", f"s{i}.pdf"), n=200 + i, nombre=f"s{i}.pdf") for i in range(3)]
+    hasta = despachador._reloj() + 1000
+    for i in inciertas:
+        despachador._en_incertidumbre[i] = hasta
+    e.ciclo()
+    rutas = [r for c in e.las_manos.posts for r in c["rutas"]]
+    assert sorted(rutas) == sorted(e.ruta("l1", f"s{i}.pdf") for i in range(3))          # solo las sanas salieron
+    assert [e.fila(i)[0] for i in sanas] == ["pendiente"] * 3
+    assert [e.fila(i)[0] for i in inciertas] == ["en_cola"] * 8                          # las inciertas esperan
+    # vencida la ventana, vuelven a entrar
+    despachador._en_incertidumbre.clear()
+    e.ciclo()
+    assert any(e.fila(i)[0] == "pendiente" for i in inciertas)
+
+
+def test_con_100_o_mas_filas_en_incertidumbre_el_ciclo_no_despacha_nada_y_avisa(e, caplog):
+    """MINOR-R1: si LAS MANOS corta las conexiones despues de recibir el pedido, la lista de filas en
+    incertidumbre crece y multiplica los trabajos duplicados. Con `2 * rutas_por_trabajo` (100) o mas, el ciclo falla
+    cerrado: ningun POST, y un warning con la cantidad."""
+    sana = e.insertar(e.ruta("l1", "sana.pdf"), n=1, nombre="sana.pdf")
+    hasta = despachador._reloj() + 1000
+    for i in range(100):
+        despachador._en_incertidumbre[10**12 + i] = hasta               # ids que no existen: solo cuentan
+    with caplog.at_level(logging.WARNING):
+        e.ciclo()
+    assert e.las_manos.posts == [] and e.fila(sana)[0] == "en_cola"
+    avisos = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "incertidumbre" in r.getMessage()]
+    assert avisos and "100" in avisos[0], caplog.text
+
+
+def test_con_menos_de_100_filas_en_incertidumbre_se_despacha_normal(e):
+    sana = e.insertar(e.ruta("l1", "sana.pdf"), n=1, nombre="sana.pdf")
+    hasta = despachador._reloj() + 1000
+    for i in range(99):
+        despachador._en_incertidumbre[10**12 + i] = hasta
+    e.ciclo()
+    assert len(e.las_manos.posts) == 1 and e.fila(sana)[0] == "pendiente"
+
+
+def test_el_freno_de_incertidumbre_sigue_a_rutas_por_trabajo_y_las_vencidas_no_cuentan(e, ajustes_en_db):
+    ajustes_en_db.poner(**{"proyectos.documentos.rutas_por_trabajo": "2"})        # el freno pasa a 4
+    sana = e.insertar(e.ruta("l1", "sana.pdf"), n=1, nombre="sana.pdf")
+    ahora = despachador._reloj()
+    for i in range(3):
+        despachador._en_incertidumbre[10**12 + i] = ahora + 1000
+    for i in range(5):
+        despachador._en_incertidumbre[10**13 + i] = ahora - 1                     # ya vencidas: se podan, no cuentan
+    e.ciclo()
+    assert len(e.las_manos.posts) == 1 and e.fila(sana)[0] == "pendiente"
+    despachador._en_incertidumbre[10**12 + 3] = ahora + 1000                      # 4 vigentes = 2 * 2: frena
+    otra = e.insertar(e.ruta("l1", "otra.pdf"), n=2, nombre="otra.pdf")
+    e.ciclo()
+    assert len(e.las_manos.posts) == 1 and e.fila(otra)[0] == "en_cola"

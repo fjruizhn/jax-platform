@@ -1080,8 +1080,21 @@ jobs:
             //   largo), api/proyectos.test.js +3 (causas del despachador y su texto es/en).
             // 1332 tras la fusion con master (#175): 1196 de master (#175 no toca el frontend) + 136 de
             //   E2a; medido LOCAL sobre la fusion: 1332/0/1332.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1332) {
-              console.error("PISO ROTO: se esperaban 1332 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1332 -> 1348 (2026-10-03, jax-14, «Reprocesar» + motivo del error): +16, medido LOCAL con
+            //   `npx vitest run` sobre origin/master 1e2888c = 1332/0/1332 y sobre esta rama 1348/0/1348:
+            //   Documentos.test.jsx +15 (botón según estado, tipo, permiso y vista; llama a la API sin
+            //   diálogo; errores traducidos; una acción a la vez; «Motivo no registrado»; dos causas OCR)
+            //   y api/proyectos.test.js +1 (POST a /reprocesar). El runner tiene la última palabra.
+            // 1348 -> 1352 (2026-10-03, ronda 1 de #186): +4 en Documentos.test.jsx («reprocesalo» solo con
+            //   permiso, proyecto activo y tipo aceptado; 4 casos) y los dos códigos de error nuevos
+            //   (fuente_ilegible, almacen_herencia_rota) dentro de pruebas existentes. Medido LOCAL
+            //   con `npx vitest run` sobre la rama: 1352/0/1352.
+            // 1352 -> 1354 (2026-10-03, cupo propio de reprocesar): +2 en Documentos.test.jsx (un 429
+            //   reprocesos_simultaneos muestra su texto, no reintenta solo y deja el boton listo; el boton
+            //   queda deshabilitado mientras su pedido esta en vuelo). Medido LOCAL con `npx vitest run`
+            //   sobre la rama: 1354/0/1354.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1354) {
+              console.error("PISO ROTO: se esperaban 1354 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3446,7 +3459,32 @@ jobs:
           #   toca la de produccion; el +1 sale de la medicion sin DB de abajo (el mismo test cuenta
           #   en los dos jobs) y el test con `client` ya existente solo gana una clave en su dict.
           #   El runner tiene la ultima palabra.
-          PISO_PASSED = 3402
+          # 3402 -> 3506 (2026-10-03, jax-14, «Reprocesar» + motivo del error): +104, MEDIDO CON DB
+          #   (mariadb:12.3.3 descartable, jax 2b0c163, mismo comando) sobre origin/master 1e2888c ->
+          #   3401 passed y sobre esta rama -> 3505 passed (en ambas, 2 pruebas de test_base_por_sesion
+          #   que hablan con un MariaDB local con triggers quedan fuera: no son del runner). Piso =
+          #   declarado (3402) + delta propio (104). El runner tiene la ultima palabra.
+          # 3506 -> 3541 (ronda 1 de #186): MEDIDO EXACTO CON DB (mariadb:12.3.3 descartable, jax 2b0c163,
+          #   mismo comando) sobre la rama: 3541 passed (master 1e2888c: 3401), con las mismas 2 pruebas
+          #   de test_base_por_sesion fuera (hablan con un MariaDB local con triggers; no son del runner).
+          # 3541 -> 3551 (cupo propio de reprocesar): MEDIDO EXACTO CON DB (mariadb:12.3.3 descartable, jax
+          #   2b0c163, mismo comando) sobre la rama: 3551 passed, con las 3 pruebas de test_base_por_sesion
+          #   fuera (2 fallan y 1 deseleccionada: hablan con un MariaDB local con triggers; no son del runner,
+          #   asi que el piso queda por debajo de lo que contara el runner). Nuevas: 4 en test_ajustes (claves
+          #   nuevas), 4 en test_proyectos_documentos_api (cupo global, subida concurrente, reprocesar sin 429 por
+          #   las subidas, Retry-After) y 3 puras en test_proyectos_documentos_cupo.py = 11.
+          # 3551 -> 3567 (ronda 2 de #186): MEDIDO EXACTO CON DB en local (mariadb:12.3.3 descartable, jax 2b0c163,
+          #   mismo comando): 3567 passed, con las mismas 3 pruebas de test_base_por_sesion fuera. El run
+          #   37149064120 conto passed=3553 con piso 3551 (medido 3551 local): +2 de las pruebas de
+          #   test_base_por_sesion que local no cuenta y -1 por el skip de entorno de arriba. Mismo desfase
+          #   esperado: el runner contara unas 2 por encima del piso.
+          # 3567 -> 3570 (filas en incertidumbre fuera de la ventana de la cola): +3 con DB, medido EXACTO en local
+          #   (mismo comando, mismas 3 de test_base_por_sesion fuera): 3570 passed. Una en el despachador y dos
+          #   en el repositorio. Sin DB no suman (piden `client`): 2150 / piso 2149 sin cambio.
+          # 3570 -> 3574 (ronda 3 de #186): +4 con DB (3 del freno de incertidumbre del despachador y 1 del log del
+          #   429 global de reprocesar), medido EXACTO en local (mismo comando, mismas 3 de test_base_por_sesion
+          #   fuera): 3574 passed. Sin DB no suman (piden `client`): 2150 / piso 2149 sin cambio.
+          PISO_PASSED = 3574
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4447,7 +4485,22 @@ jobs:
       # backend/tests/test_ejecutor_config_c5.py. MEDIDO con JAX_CI_NO_DB=1 sobre ese archivo:
       # antes 2 passed + 1 skipped, despues 3 passed + 1 skipped (el skipped es el `client`).
       # El resto de la suite no cambia; la base 2074 es el numero del runner de arriba.
-      JAX_CI_MIN_PASSED: "2075"
+      # 2075 -> 2118 (2026-10-03, jax-14, «Reprocesar» + motivo del error): +43 puros. MEDIDO con
+      # JAX_CI_NO_DB=1 sobre el MISMO comando (sin tests/test_carga_indice_pipelines_del_usuario.py):
+      # origin/master 1e2888c 2076 passed / 1327 skipped (el declarado es 2075: no se premia esa
+      # deriva) -> esta rama 2119 / 1388. Delta propio +43: test_proyectos_documentos_original.py
+      # (archivo nuevo, 32) + 11 casos puros de codigo_de_la_razon en el despachador. El resto de
+      # lo nuevo pide `client` (skips). El runner tiene la ultima palabra.
+      # 2118 -> 2140 (ronda 1 de #186): MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la rama:
+      # 2140 passed / 1403 skipped (master 1e2888c: 2076; el piso es el medido, sin margen por debajo).
+      # 2140 -> 2143 (cupo propio de reprocesar): +3 puros en test_proyectos_documentos_cupo.py. MEDIDO EXACTO
+      # con JAX_CI_NO_DB=1, mismo comando, sobre la rama: 2143 passed / 1411 skipped.
+      # 2143 -> 2149 (ronda 2 de #186). El run 37149064120 dio passed=2142 skipped=1412 con piso 2143 (medido
+      # en local: 2143 / 1411). Comparadas las listas `-rs` del runner y de local, la UNICA diferencia es
+      # tests/test_conftest_no_carga_secretos_no_necesarios.py:250, que el runner salta ("no hay /etc/jax/.env con
+      # estos secretos en esta maquina"): un skip LEGITIMO de entorno, la prueba no es de esta rama. Piso =
+      # lo medido en local ahora (2150 passed / 1420 skipped) menos ese 1: 2149, el numero que dara el runner.
+      JAX_CI_MIN_PASSED: "2149"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

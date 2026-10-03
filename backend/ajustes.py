@@ -81,9 +81,15 @@ DOC_RUTAS_POR_TRABAJO = "proyectos.documentos.rutas_por_trabajo"
 # servicio. Las usa proyectos_documentos/cupo_de_subidas.py; las siembra la misma migracion.
 DOC_SUBIDAS_POR_USUARIO = "proyectos.documentos.subidas_por_usuario"
 DOC_SUBIDAS_GLOBALES = "proyectos.documentos.subidas_globales"
+# Reprocesos de documentos SIMULTANEOS (jax-platform#186): cupo PROPIO, aparte del de subir, porque un
+# reprocesar sin ficha recorre y hashea todo `fuente/` (medido: ~16 s con 4 a la vez en un `fuente/` de
+# 20.000 archivos) y no puede dejar sin cupo a las subidas. Las usa proyectos_documentos/cupo_de_reprocesos.py;
+# las siembra db/migrations.py::_proyectos_documentos_topes_v1.
+DOC_REPROCESAR_POR_USUARIO = "proyectos.documentos.reprocesar_por_usuario"
+DOC_REPROCESAR_GLOBALES = "proyectos.documentos.reprocesar_globales"
 CLAVES = (SESION, MAX_PIPELINES, IDIOMA, NOMBRE, CONFIRMAR_USD, TOPE_DEVOLUCIONES,
           DOC_MAX_BYTES_ARCHIVO, DOC_MAX_ARCHIVOS_LOTE, DOC_MAX_BYTES_LOTE, DOC_RUTAS_POR_TRABAJO,
-          DOC_SUBIDAS_POR_USUARIO, DOC_SUBIDAS_GLOBALES)
+          DOC_SUBIDAS_POR_USUARIO, DOC_SUBIDAS_GLOBALES, DOC_REPROCESAR_POR_USUARIO, DOC_REPROCESAR_GLOBALES)
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
@@ -95,6 +101,9 @@ DOC_RUTAS_POR_TRABAJO_MAX = 50
 # (50 x 1 GiB con los topes de hoy). Mas que eso no es un tope sino apagarlo.
 DOC_SUBIDAS_POR_USUARIO_MAX = 10
 DOC_SUBIDAS_GLOBALES_MAX = 50
+# Techo de los reprocesos simultaneos: cada uno es un recorrido completo de `fuente/` (CPU y GIL),
+# asi que el techo es bajo; mas de 4 a la vez ya degradaba la lista de documentos (medido).
+DOC_REPROCESAR_MAX = 4
 
 # Baranda ELEGIDA EN ESTA RAMA (2026-09-20), no en el spec: el spec fija el
 # valor inicial en 2 y explica el porqué del tope --«sin tope, dos modelos
@@ -195,6 +204,8 @@ DEFINICIONES: dict[str, Definicion] = {
                                         {"min": 1, "max": DOC_SUBIDAS_POR_USUARIO_MAX}),
     DOC_SUBIDAS_GLOBALES: Definicion(_entero(1, DOC_SUBIDAS_GLOBALES_MAX),
                                      {"min": 1, "max": DOC_SUBIDAS_GLOBALES_MAX}),
+    DOC_REPROCESAR_POR_USUARIO: Definicion(_entero(1, DOC_REPROCESAR_MAX), {"min": 1, "max": DOC_REPROCESAR_MAX}),
+    DOC_REPROCESAR_GLOBALES: Definicion(_entero(1, DOC_REPROCESAR_MAX), {"min": 1, "max": DOC_REPROCESAR_MAX}),
 }
 
 

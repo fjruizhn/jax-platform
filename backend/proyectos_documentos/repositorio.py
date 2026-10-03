@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import aiomysql
+from proyectos_documentos import tipos
 from credencial_las_manos import PlatformProcessingOwnership
 
 _ESTADOS_ABIERTOS = ("pendiente", "procesando")
@@ -40,14 +41,44 @@ SQL_LISTAR_OCULTOS = _BASE_LISTA.format(nulo="NOT NULL", indice=_INDICE_LISTA)
 # `job_id IS NULL` fija el prefijo (estado, job_id) del indice de despacho y deja
 # `id` ya ordenado: sin eso, MariaDB ordena aparte. Una fila en_cola nunca tiene
 # job_id (marcar_despachadas lo pone junto con el estado `pendiente`).
-SQL_TOMAR_EN_COLA = (
-    "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id "
-    "FROM project_documents d "
-    "JOIN projects p ON p.id = d.project_id "
-    "JOIN jax_project_scope s ON s.project_id = d.project_id AND s.status = 'ACTIVE' "
-    "JOIN jax_users u ON u.user_id = d.subido_por AND u.tenant_id = s.tenant_id "
-    "WHERE d.estado = 'en_cola' AND d.job_id IS NULL ORDER BY d.id LIMIT %s"
-)
+# La extension de `ruta_entrada` en SQL (lo que viene tras el ultimo punto), comparada en `utf8mb4_nopad_bin`
+# como `tipos.clase_de` en Python: con la colacion de la tabla (PAD SPACE) `x.pdf ` seria `pdf`.
+_EXTENSION_SQL = "LOWER(SUBSTRING_INDEX(d.ruta_entrada, '.', -1)) COLLATE utf8mb4_nopad_bin"
+
+
+def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_excluidos: int = 0) -> str:
+    """La consulta de la cola, SIN las filas de las clases de extension `excluir_clases` (las que LAS MANOS
+    frena por falta de una biblioteca: sin esto un bloque de pdf atascados en los ids bajos llena la ventana de
+    `LIMIT` y las imagenes que llegan despues nunca entran). `otro` es todo lo que no es pdf, excel ni word. Las
+    extensiones son constantes de `tipos`, nunca texto del usuario. El `ORDER BY d.id` sigue en el indice de
+    despacho: el filtro por extension se aplica a las filas que ese indice ya entrega en orden.
+    `n_ids_excluidos`: cuantos `AND d.id NOT IN (%s, ...)` lleva (las filas con desenlace incierto del despachador,
+    que viven en la memoria del proceso y no en la base; el llamador pasa los ids antes del `LIMIT`)."""
+    desconocida = set(excluir_clases) - set(tipos.CLASES)
+    if desconocida:
+        raise ValueError(f"clases desconocidas: {sorted(desconocida)}")
+    condiciones = []
+    for clase in sorted(excluir_clases):
+        if clase == "otro":
+            conocidas = ", ".join(repr(e) for e in sorted(tipos.CLASE_POR_EXTENSION))
+            condiciones.append(f"{_EXTENSION_SQL} IN ({conocidas})")
+        else:
+            de_la_clase = ", ".join(repr(e) for e, c in sorted(tipos.CLASE_POR_EXTENSION.items()) if c == clase)
+            condiciones.append(f"{_EXTENSION_SQL} NOT IN ({de_la_clase})")
+    if n_ids_excluidos:
+        condiciones.append(f"d.id NOT IN ({', '.join(['%s'] * n_ids_excluidos)})")
+    extra = "".join(f"AND {c} " for c in condiciones)
+    return (
+        "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id "
+        "FROM project_documents d "
+        "JOIN projects p ON p.id = d.project_id "
+        "JOIN jax_project_scope s ON s.project_id = d.project_id AND s.status = 'ACTIVE' "
+        "JOIN jax_users u ON u.user_id = d.subido_por AND u.tenant_id = s.tenant_id "
+        f"WHERE d.estado = 'en_cola' AND d.job_id IS NULL {extra}ORDER BY d.id LIMIT %s"
+    )
+
+
+SQL_TOMAR_EN_COLA = sql_tomar_en_cola()
 
 
 def _owner(tenant_id: int, user_id: int, project_id: int) -> PlatformProcessingOwnership:
@@ -197,6 +228,81 @@ async def reencolar_atascado(pool, *, project_id: int, sha256: str, ruta_entrada
     return fila[0], fila[1]
 
 
+# Reprocesar: UN UPDATE con todas las condiciones (la fila es del proyecto, esta en
+# `sin_extractor`, su tipo TIENE extractor y quien lo pide puede escribir en un proyecto
+# ACTIVE). El tipo se decide aqui y no solo en la ruta porque entre la lectura de la ruta y
+# el UPDATE la fila pudo cambiar. La extension se compara en `utf8mb4_nopad_bin`: con la
+# colacion de la tabla (PAD SPACE, sin distinguir mayusculas) `x.pdf ` seria `pdf`, y
+# `tipos.tipo_de` lo rechaza. `LOCATE('.') > 1` es el «.pdf sin nombre» de `tipo_de`.
+_SQL_REPROCESAR = (
+    "UPDATE project_documents SET estado = 'en_cola', job_id = NULL, error = NULL, ruta_entrada = %s, "
+    "subido_por = %s "
+    "WHERE id = %s AND project_id = %s AND estado IN ('sin_extractor', 'error') AND oculto_at IS NULL "
+    "AND LOCATE('.', nombre_original) > 1 "
+    "AND LOWER(SUBSTRING_INDEX(nombre_original, '.', -1)) COLLATE utf8mb4_nopad_bin IN ({tipos}) "
+    "AND EXISTS (SELECT 1 FROM jax_project_scope s WHERE s.project_id = %s AND " + _PUEDE_ESCRIBIR + ")"
+)
+
+
+async def documento_para_reprocesar(pool, *, project_id: int, documento_id: int) -> dict | None:
+    """Lo que hace falta para decidir si un documento se reprocesa y donde esta su original
+    (None si no es de ese proyecto). `oculto` va aparte: un oculto existe pero no se reprocesa.
+    Es una lectura: la decision la toma `reprocesar`."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT estado, nombre_original, sha256, bytes, carpeta_procesado, subido_por, "
+                "oculto_at IS NOT NULL, ruta_entrada FROM project_documents WHERE id = %s AND project_id = %s",
+                (documento_id, project_id))
+            fila = await cur.fetchone()
+        await conn.commit()
+    if fila is None:
+        return None
+    return {"estado": fila[0], "nombre_original": fila[1], "sha256": fila[2], "bytes": int(fila[3]),
+            "carpeta_procesado": fila[4], "subido_por": fila[5], "oculto": bool(fila[6]),
+            "ruta_entrada": fila[7]}
+
+
+async def reprocesar(pool, *, project_id: int, documento_id: int, ruta_fuente: str, user_id: int,
+                     roles_escritura: tuple[str, ...]) -> dict | None:
+    """`sin_extractor` o `error` -> `en_cola` con `ruta_entrada = ruta_fuente` (el original ya esta en
+    `fuente/`: el despachador lo manda tal cual y NUNCA lo borra), `job_id` y `error` en NULL, y la
+    fila pasa a ser de quien pide (`subido_por = user_id`), como en `reencolar_atascado`: el
+    despachador manda a LAS MANOS la identidad de `subido_por`, y quien pide acaba de pasar
+    `_PUEDE_ESCRIBIR`, mientras que quien subio pudo darse de baja o cambiar de tenant.
+    Devuelve `{"ruta_anterior", "subido_por_anterior"}` (leidos con la fila bloqueada, en la misma
+    transaccion: la copia de `entrada/` que ya no se usa la borra quien llama) o None -- sin tocar
+    nada -- si no es del proyecto, esta oculta, no esta en `sin_extractor` ni `error`, su tipo no
+    tiene extractor o `user_id` no puede escribir (proyecto no ACTIVE, sin membresia activa con papel
+    de escritura, o inactivo en su tenant). Las mismas condiciones de autorizacion que `insertar` y
+    `reencolar_atascado` (`_PUEDE_ESCRIBIR`)."""
+    if not roles_escritura:
+        raise ValueError("roles_escritura vacio: nadie podria reprocesar")
+    extensiones = sorted(tipos.EXTENSIONES_ACEPTADAS)
+    consulta = _SQL_REPROCESAR.format(tipos=", ".join(["%s"] * len(extensiones)),
+                                      roles=", ".join(["%s"] * len(roles_escritura)))
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await conn.begin()
+            try:
+                await cur.execute("SELECT ruta_entrada, subido_por FROM project_documents "
+                                  "WHERE id = %s AND project_id = %s FOR UPDATE", (documento_id, project_id))
+                anterior = await cur.fetchone()
+                if anterior is None:
+                    await conn.rollback()
+                    return None
+                await cur.execute(consulta, (ruta_fuente, user_id, documento_id, project_id, *extensiones,
+                                             project_id, user_id, *roles_escritura, user_id))
+                if not cur.rowcount:
+                    await conn.rollback()
+                    return None
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+    return {"ruta_anterior": anterior[0], "subido_por_anterior": anterior[1]}
+
+
 async def existente_por_sha(pool, *, project_id: int, sha256: str) -> dict | None:
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -250,14 +356,18 @@ async def restaurar(pool, *, project_id: int, documento_id: int) -> bool:
         (), project_id, documento_id)
 
 
-async def tomar_en_cola(pool, *, limite: int) -> list[dict]:
+async def tomar_en_cola(pool, *, limite: int, excluir_clases: frozenset[str] = frozenset(),
+                        excluir_ids: frozenset[int] = frozenset()) -> list[dict]:
     """Filas `en_cola` de proyectos ACTIVE, por `id`. `jax_project_scope.status` es
     la fuente de verdad del ciclo de vida (B9); `projects.status` solo lo refleja.
     El uploader canonico produce el contexto tipado de ownership que el despachador
-    transmite a LAS MANOS en cabeceras cerradas."""
+    transmite a LAS MANOS en cabeceras cerradas. `excluir_clases`: clases de extension que no se piden
+    (ver `sql_tomar_en_cola`); `excluir_ids`: filas que no se piden (las del desenlace incierto, que si no
+    cuentan contra el `limite` y despues se saltan); el `limite` cuenta solo lo que queda."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(SQL_TOMAR_EN_COLA, (limite,))
+            ids = sorted(excluir_ids)
+            await cur.execute(sql_tomar_en_cola(frozenset(excluir_clases), len(ids)), (*ids, limite))
             filas = await cur.fetchall()
     return [{"id": f[0], "project_id": f[1], "project_uuid": f[2], "ruta_entrada": f[3],
              "owner": _owner(f[4], f[5], f[1])} for f in filas]

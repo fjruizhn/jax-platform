@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
-import { listarDocumentos, ocultarDocumento, restaurarDocumento } from '../../api/proyectos'
+import { listarDocumentos, ocultarDocumento, restaurarDocumento, reprocesarDocumento, limitesDeDocumentos } from '../../api/proyectos'
 import { codigoDe } from '../../api/errores'
 import { TAMANO_BOTON_44 } from '../../tema/botones'
 import SelectorDeDocumentos from './SelectorDeDocumentos'
@@ -27,6 +27,11 @@ import { puedeVerOcultos, puedeModificarDocumentos } from './permisos'
 // Accesibilidad: una región `role="status"` (oculta a la vista) anuncia solo las
 // TRANSICIONES de estado entre la lista anterior y la nueva; si nada cambió, calla.
 //
+// Reprocesar: botón en las filas sin_extractor o con error, solo de un tipo con extractor (las
+// extensiones las manda el servidor en los límites, nunca una lista copiada aquí; se piden una vez,
+// y solo cuando hay una fila reprocesable). Tampoco pide confirmación: no destruye nada, el
+// original sigue en el servidor. La fila vuelve a «En espera» y el sondeo de arriba la sigue.
+//
 // Ocultar NO pide confirmación: es reversible con un clic (Ver ocultos →
 // Restaurar) y no destruye nada. Pedirla en cada fila entorpecería ocultar
 // varios y no protege de ningún daño.
@@ -35,6 +40,8 @@ const PAGINA = 50
 const MAXIMO_BACKEND = 100
 const TOPE_SONDEO = 300
 const ACTIVOS = new Set(['en_cola', 'pendiente', 'procesando'])
+// Estados desde los que el servidor deja reprocesar (si el tipo tiene extractor).
+const REPROCESABLES = new Set(['sin_extractor', 'error'])
 // Texto de cada estado y color de token (solo tokens; nunca valores sueltos).
 const COLOR_ESTADO = {
   en_cola: 'text-texto-tenue', pendiente: 'text-texto-tenue', procesando: 'text-texto-suave',
@@ -65,6 +72,7 @@ export default function Documentos({ proyecto }) {
   const [ocupado, setOcupado] = useState(false)
   const [agregando, setAgregando] = useState(false)
   const [anuncio, setAnuncio] = useState('')
+  const [extensiones, setExtensiones] = useState(null) // tipos con extractor; null = sin saber (no se ofrece Reprocesar)
   const [latido, setLatido] = useState(0) // cuenta cada intento de refresco (rearma el sondeo)
   const pedidoRef = useRef(0)
   const ocupadoRef = useRef(false)
@@ -187,6 +195,18 @@ export default function Documentos({ proyecto }) {
   }
 
   const verOcultos = vistaEfectiva === 'ocultos'
+  const hayReprocesables = puedeModificar && !verOcultos && (filas ?? []).some((f) => REPROCESABLES.has(f.estado))
+  const limitesPedidosRef = useRef(false)
+  useEffect(() => {
+    if (!hayReprocesables || limitesPedidosRef.current) return
+    limitesPedidosRef.current = true
+    limitesDeDocumentos()
+      .then((l) => setExtensiones(Array.isArray(l?.extensiones) ? l.extensiones : null))
+      .catch(() => { limitesPedidosRef.current = false }) // sin límites no se ofrece; se reintenta en el siguiente refresco
+  }, [hayReprocesables, filas])
+  const sePuedeReprocesar = (f) =>
+    puedeModificar && !verOcultos && REPROCESABLES.has(f.estado) && !!extensiones
+    && extensiones.includes(String(f.tipo ?? '').toLowerCase())
   const vacio = filas !== null && filas.length === 0 && !error
 
   return (
@@ -237,10 +257,16 @@ export default function Documentos({ proyecto }) {
                   {fechaLegible(f.creado, locale) && <span className="shrink-0">{` · ${fechaLegible(f.creado, locale)}`}</span>}
                 </p>
                 {f.estado === 'error' && (
-                  <p className="text-xs text-peligro break-words">{f.error ? T.causa(Object.hasOwn(T.causas, f.error) ? T.causas[f.error] : T.causas.desconocida) : T.sinCausa}</p>
+                  <p className="text-xs text-peligro break-words">{f.error ? T.causa(Object.hasOwn(T.causas, f.error) ? T.causas[f.error] : T.causas.desconocida) : (sePuedeReprocesar(f) ? T.sinMotivoReprocesable : T.sinMotivo)}</p>
                 )}
               </div>
               <span className={`text-xs ${COLOR_ESTADO[f.estado] ?? 'text-texto-tenue'}`}>{T.estados[f.estado] ?? f.estado}</span>
+              {sePuedeReprocesar(f) && (
+                <button type="button" disabled={ocupado} className={BOTON} aria-label={T.reprocesarDe(f.nombre)}
+                  onClick={() => mutar(() => reprocesarDocumento(id, f.id))}>
+                  {T.reprocesar}
+                </button>
+              )}
               {puedeModificar && (
                 <button type="button" disabled={ocupado} className={BOTON}
                   aria-label={verOcultos ? T.restaurarDe(f.nombre) : T.ocultarDe(f.nombre)}

@@ -3628,6 +3628,10 @@ TOPES_DOCUMENTOS_INICIALES = (
     # simultaneas por usuario y 4 en todo el servicio.
     ("proyectos.documentos.subidas_por_usuario", "2"),
     ("proyectos.documentos.subidas_globales", "4"),
+    # jax-platform#186: reprocesos simultaneos, cupo PROPIO (aparte del de subir): UNO a la vez por
+    # usuario y en todo el servicio, porque cada uno recorre `fuente/` entero (medido: ~16 s con 4 a la vez).
+    ("proyectos.documentos.reprocesar_por_usuario", "1"),
+    ("proyectos.documentos.reprocesar_globales", "1"),
 )
 
 

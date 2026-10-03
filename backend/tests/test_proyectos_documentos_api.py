@@ -23,7 +23,7 @@ import httpx
 import pytest
 
 from adjuntos import cuota
-from proyectos_documentos import almacen, tipos
+from proyectos_documentos import almacen, original, tipos
 from proyectos_documentos import repositorio as repo
 import kill_switch
 from tests.identidades import auth, cabeceras, sql, token_para, uid
@@ -117,6 +117,10 @@ def _sin_despachador(monkeypatch):
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_WORKSPACE_DIR", str(tmp_path))
+    # El ANCLA de los permisos: `proyectos/` con setgid, como en produccion (almacen.py exige que cada nivel que
+    # abre o crea debajo tenga setgid y el grupo de esta carpeta). Un tmp_path pelado no lo trae.
+    (tmp_path / "proyectos").mkdir()
+    os.chmod(tmp_path / "proyectos", 0o2770)
     return tmp_path
 
 
@@ -128,6 +132,11 @@ def ent(client, workspace, ajustes_en_db):
     yield entorno
     for pid in entorno.proyectos:
         client.portal.call(sql, "DELETE FROM project_documents WHERE project_id=%s", (pid,))
+
+
+def _proyectos_vacio(workspace: Path) -> bool:
+    """Nada colgando del ancla `proyectos/` (que el fixture crea): la prueba de «no se escribio nada»."""
+    return not any((workspace / "proyectos").iterdir())
 
 
 def _en_disco(workspace: Path) -> list[Path]:
@@ -174,7 +183,7 @@ def test_viewer_no_sube_403_y_no_escribe(ent, workspace):
     h = ent.miembro(p, "lector", "VIEWER")
     r = ent.subir(p, h, [_parte("a.pdf", "a")])
     assert r.status_code == 403 and _code(r) == "papel_insuficiente"
-    assert _en_disco(workspace) == [] and not (workspace / "proyectos").exists()
+    assert _en_disco(workspace) == [] and _proyectos_vacio(workspace)
     assert ent.filas(p) == []
 
 
@@ -189,20 +198,20 @@ def test_no_miembro_404_igual_que_inexistente(ent, workspace):
         r = ent.subir(p, h, [_parte("a.pdf", "a")])
         assert r.status_code == 404
         assert r.json() == inexistente.json() == {"detail": {"code": "proyecto_no_encontrado"}}
-    assert not (workspace / "proyectos").exists() and ent.filas(p) == []
+    assert _proyectos_vacio(workspace) and ent.filas(p) == []
 
 
 def test_sin_sesion_401(ent, workspace):
     p = ent.proyecto()
     r = ent.client.post(f"{P}/{p.id}/documentos", files=[_parte("a.pdf", "a")])
-    assert r.status_code == 401 and not (workspace / "proyectos").exists()
+    assert r.status_code == 401 and _proyectos_vacio(workspace)
 
 
 def test_proyecto_archivado_409_y_no_escribe(ent, workspace):
     p = ent.proyecto(archivar=True)
     r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
     assert r.status_code == 409 and _code(r) == "proyecto_no_activo"
-    assert not (workspace / "proyectos").exists() and ent.filas(p) == []
+    assert _proyectos_vacio(workspace) and ent.filas(p) == []
 
 
 def test_proyecto_oculto_409_para_su_admin_y_404_para_el_resto(ent, workspace):
@@ -217,7 +226,7 @@ def test_proyecto_oculto_409_para_su_admin_y_404_para_el_resto(ent, workspace):
         assert r.status_code == 200 and r.json()["estado"] == estado, r.text
     r = ent.subir(p, admin, [_parte("a.pdf", "a")])
     assert r.status_code == 409 and _code(r) == "proyecto_no_activo"
-    assert not (workspace / "proyectos").exists() and ent.filas(p) == []
+    assert _proyectos_vacio(workspace) and ent.filas(p) == []
 
 
 def test_viewer_en_archivado_recibe_403_no_409(ent, workspace):
@@ -484,6 +493,7 @@ class _Subida:
 
 
 async def test_escribir_streaming_cuenta_lo_leido_y_borra_el_parcial(tmp_path):
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
     try:
         destino = carpeta.ruta / "ok.bin"
@@ -524,6 +534,7 @@ async def test_escribir_streaming_cuenta_lo_leido_y_borra_el_parcial(tmp_path):
 async def test_cancelacion_antes_de_abrir_no_deja_archivo_huerfano(tmp_path, monkeypatch):
     """La cancelacion llega mientras el hilo todavia no hizo `os.open`: cuando el hilo
     sigue, la bandera lo detiene y, de todos modos, el archivo no puede quedar."""
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
     try:
         entro, compuerta = threading.Event(), threading.Event()
@@ -548,6 +559,7 @@ async def test_cancelacion_antes_de_abrir_no_deja_archivo_huerfano(tmp_path, mon
 
 
 async def test_cancelacion_a_mitad_de_la_escritura_borra_el_parcial(tmp_path):
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
     try:
         leyendo, compuerta = threading.Event(), threading.Event()
@@ -700,38 +712,100 @@ def test_limites_con_ajuste_ilegible_falla_cerrado(ent, ajustes_en_db):
 
 # ------------------------------------------------------------------- modos
 
-def test_modos_explicitos_no_dependen_del_umask(ent, workspace):
-    """Bajo `proyectos/` hay ACL por defecto y setgid: un 0600 anula el acceso de
-    fruiz (mascara `---`). Archivo 0660 y carpetas 2770 (con S_ISGID) aunque el umask diga otra
-    cosa, en toda la cadena que crea la subida."""
+def test_los_archivos_se_fijan_a_0660_y_las_carpetas_heredan_sin_chmod(ent, workspace, monkeypatch):
+    """Bajo `proyectos/` hay ACL por defecto y setgid. El archivo es 0660 aunque el umask diga otra
+    cosa; las CARPETAS no se chmodean nunca (un chmod de jaxsvc, que no es del grupo, les borraria el
+    setgid) y heredan el setgid y el grupo del padre."""
     p = ent.proyecto()
+    chmods = []
+    real = os.fchmod
+    monkeypatch.setattr(almacen.os, "fchmod", lambda fd, modo: (chmods.append(stat.S_ISDIR(os.fstat(fd).st_mode)),
+                                                                  real(fd, modo))[1])
     anterior = os.umask(0o077)
     try:
         r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
     finally:
         os.umask(anterior)
     assert r.status_code == 202, r.text
+    assert chmods and not any(chmods)                             # solo se chmodeo archivos, ninguna carpeta
     archivo = _en_disco(workspace)[0]
     assert stat.S_IMODE(archivo.stat().st_mode) == 0o660
-    for carpeta in (archivo.parent, archivo.parent.parent, archivo.parent.parent.parent,
-                    archivo.parent.parent.parent.parent):
-        assert stat.S_IMODE(carpeta.stat().st_mode) == 0o2770, carpeta        # 0770 + setgid heredable
-    assert archivo.parent.parent.parent.parent == workspace / "proyectos"
+    padre = workspace / "proyectos"
+    for carpeta in (archivo.parent.parent.parent, archivo.parent.parent, archivo.parent):
+        assert carpeta.stat().st_mode & stat.S_ISGID, carpeta             # setgid heredado
+        assert carpeta.stat().st_gid == padre.stat().st_gid
+        assert carpeta.stat().st_mode & 0o007 == 0
+    assert archivo.parent.parent.parent.parent == padre
 
 
-def test_carpeta_existente_no_se_toca(tmp_path):
-    """Solo se fija el modo de lo que se crea: una carpeta previa conserva el suyo."""
+def test_carpeta_existente_no_se_toca_y_las_nuevas_no_se_chmodean(tmp_path, monkeypatch):
+    """Solo se crea lo que falta, sin chmod: una carpeta previa conserva el suyo."""
     previa = tmp_path / "proyectos"
-    previa.mkdir(mode=0o750)
-    os.chmod(previa, 0o750)
+    previa.mkdir(mode=0o2750)
+    os.chmod(previa, 0o2750)                                              # el ancla: setgid, otros sin nada
+    llamadas = []
+    monkeypatch.setattr(almacen.os, "fchmod", lambda *a: llamadas.append(a))
+    monkeypatch.setattr(almacen.os, "chmod", lambda *a, **k: llamadas.append(a))
     u = str(uuid.uuid4())
     c1 = almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
-    assert stat.S_IMODE(previa.stat().st_mode) == 0o750
-    assert stat.S_IMODE((previa / u / "entrada" / "lote1").stat().st_mode) == 0o2770
+    assert stat.S_IMODE(previa.stat().st_mode) == 0o2750
+    assert (previa / u / "entrada" / "lote1").is_dir()
     c2 = almacen.abrir_carpeta_lote(tmp_path, u, "lote2")                 # idempotente sobre lo ya creado
     assert sorted(x.name for x in (previa / u / "entrada").iterdir()) == ["lote1", "lote2"]
+    assert llamadas == []
     c1.cerrar()
     c2.cerrar()
+
+
+def _mkdir_que_pierde(que):
+    """Un `os.mkdir` que crea la carpeta y luego le quita lo heredado (lo que haria un chmod de jaxsvc)."""
+    real = os.mkdir
+
+    def mkdir(nombre, modo, dir_fd=None):
+        real(nombre, modo, dir_fd=dir_fd)
+        if nombre == "entrada":
+            que(nombre, dir_fd)
+    return mkdir
+
+
+def test_una_carpeta_sin_setgid_despues_de_crear_falla_cerrado_y_no_se_corrige(tmp_path, monkeypatch):
+    (tmp_path / "proyectos").mkdir()
+    os.chmod(tmp_path / "proyectos", 0o2770)
+    monkeypatch.setattr(almacen.os, "mkdir", _mkdir_que_pierde(
+        lambda n, fd: os.chmod(n, 0o770, dir_fd=fd)))                     # un chmod explicito borra el setgid
+    u = str(uuid.uuid4())
+    with pytest.raises(almacen.HerenciaDeCarpetaRota, match="setgid"):
+        almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
+    assert not (tmp_path / "proyectos" / u).exists() or not any((tmp_path / "proyectos" / u).iterdir())
+    assert not (tmp_path / "proyectos" / u / "entrada").exists()
+
+
+def test_una_carpeta_con_bits_para_otros_que_el_padre_no_tiene_falla_cerrado(tmp_path, monkeypatch):
+    (tmp_path / "proyectos").mkdir()
+    os.chmod(tmp_path / "proyectos", 0o2770)
+    monkeypatch.setattr(almacen.os, "mkdir", _mkdir_que_pierde(
+        lambda n, fd: os.chmod(n, 0o2775, dir_fd=fd)))
+    with pytest.raises(almacen.HerenciaDeCarpetaRota, match="otros"):
+        almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "lote1")
+
+
+def test_si_el_padre_ya_da_bits_a_otros_el_hijo_puede_tenerlos(tmp_path, monkeypatch):
+    (tmp_path / "proyectos").mkdir()
+    os.chmod(tmp_path / "proyectos", 0o2775)
+    anterior = os.umask(0)
+    try:
+        c = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "lote1")
+    finally:
+        os.umask(anterior)
+    c.cerrar()
+
+
+def test_subir_con_una_carpeta_sin_herencia_500_almacen_herencia_rota_y_no_queda_nada(ent, workspace, monkeypatch):
+    p = ent.proyecto()
+    monkeypatch.setattr(almacen.os, "mkdir", _mkdir_que_pierde(lambda n, fd: os.chmod(n, 0o770, dir_fd=fd)))
+    r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
+    assert r.status_code == 500 and _code(r) == "almacen_herencia_rota", r.text
+    assert ent.filas(p) == [] and _en_disco(workspace) == []
 
 
 # --------------------------------------------- enlaces simbolicos en el camino
@@ -761,12 +835,16 @@ def test_enlace_simbolico_en_el_camino_no_escribe_en_ningun_lado(ent, tmp_path, 
     ruta = {"proyectos": ws / "proyectos", "uuid": ws / "proyectos" / p.uuid,
             "entrada": ws / "proyectos" / p.uuid / "entrada",
             "lote": ws / "proyectos" / p.uuid / "entrada" / "loteFijo"}
-    if nivel != "proyectos":                                         # los niveles de arriba, reales
+    # Los niveles de arriba, reales y como en produccion (con setgid: almacen exige el invariante en cada uno).
+    if nivel != "proyectos":
         ruta["proyectos"].mkdir()
+        os.chmod(ruta["proyectos"], 0o2770)
     if nivel in ("entrada", "lote"):
         ruta["uuid"].mkdir()
+        os.chmod(ruta["uuid"], 0o2770)
     if nivel == "lote":
         ruta["entrada"].mkdir()
+        os.chmod(ruta["entrada"], 0o2770)
     os.symlink(objetivo, ruta[nivel])
     antes_ws, antes_fuera = _foto(ws), _foto(tmp_path / "fuera") if (tmp_path / "fuera").exists() else []
 
@@ -860,7 +938,7 @@ def _despues_de_leer_el_cuerpo(monkeypatch, accion):
 
 
 def _nada(ent, p, workspace):
-    assert not (workspace / "proyectos").exists() and _en_disco(workspace) == []
+    assert _proyectos_vacio(workspace) and _en_disco(workspace) == []
     assert ent.filas(p) == []
 
 
@@ -953,6 +1031,7 @@ async def test_cancelacion_despues_de_la_ultima_mirada_del_hilo_no_deja_huerfano
     """El caso del revisor: la cancelacion llega DESPUES de la ultima comprobacion de la
     bandera (`hexdigest` es lo ultimo que corre) y antes de que el resultado vuelva al
     loop. El hilo termina bien, y el archivo no puede quedar sin fila."""
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
     loop = asyncio.get_running_loop()
     caja = {}
@@ -980,6 +1059,7 @@ async def test_cancelacion_despues_de_la_ultima_mirada_del_hilo_no_deja_huerfano
 
 
 async def test_una_segunda_cancelacion_no_saca_de_la_espera_al_hilo(tmp_path):
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
     try:
         leyendo, compuerta = threading.Event(), threading.Event()
@@ -1113,6 +1193,7 @@ def test_usuario_inactivo_entre_la_escritura_y_el_insert_404_sin_fila_ni_archivo
 
 async def test_la_espera_blindada_deja_rastro_con_lote_y_nombre_sin_la_ruta(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(almacen, "ESPERA_AVISO_S", 0.1)
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "loteX")
     try:
         leyendo, compuerta = threading.Event(), threading.Event()
@@ -1149,6 +1230,7 @@ async def test_la_espera_blindada_deja_rastro_con_lote_y_nombre_sin_la_ruta(tmp_
 
 async def test_borrado_de_cancelacion_tardia_corre_fuera_del_hilo_del_loop(tmp_path, monkeypatch):
     """El `_borrar` de la rama de cancelacion tardia va por `to_thread`: no bloquea el loop."""
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
     loop = asyncio.get_running_loop()
     hilo_del_loop = threading.get_ident()
@@ -1505,3 +1587,548 @@ def test_reencolar_en_un_proyecto_archivado_entre_medio_responde_409_y_no_cambia
     assert r.status_code == 409 and _code(r) == "proyecto_no_activo", r.text
     assert _fila(ent, doc) == antes
     assert [x.name for x in _en_disco(workspace)] == ["a.pdf"]      # lo recien escrito se borro
+
+
+# ------------------------------------------------------------------ reprocesar
+
+def _ingerido(ent, p, workspace, headers, *, estado="sin_extractor", nombre="a.pdf", con_ficha=True,
+              error=None, mover=True, copiar=False):
+    """Un documento subido y luego «ingerido» como lo deja LAS MANOS: el original en
+    `fuente/`, `carpeta_procesado` con su ficha y la fila en `estado`."""
+    contenido = f"%PDF-1.4 {nombre}".encode()
+    r = ent.subir(p, headers, [("archivos", (nombre, contenido, "application/pdf"))])
+    doc = r.json()["aceptados"][0]["id"]
+    fila = [f for f in ent.filas(p) if f[0] == doc][0]
+    entrada = workspace / fila[2]
+    fuente = workspace / "proyectos" / p.uuid / "fuente" / "lactovi" / nombre
+    fuente.parent.mkdir(parents=True, exist_ok=True)
+    if copiar:
+        fuente.write_bytes(entrada.read_bytes())
+    elif mover:
+        entrada.rename(fuente)
+    procesado = f"proyectos/{p.uuid}/procesado/{doc}"
+    if con_ficha:
+        (workspace / procesado).mkdir(parents=True)
+        (workspace / procesado / "ficha.json").write_text(json.dumps({"origen": f"fuente/lactovi/{nombre}"}))
+    ent.client.portal.call(
+        sql, "UPDATE project_documents SET estado=%s, carpeta_procesado=%s, error=%s, job_id='job-viejo' WHERE id=%s",
+        (estado, procesado if con_ficha else None, error, doc))
+    return doc, fuente
+
+
+def _fila_rep(ent, doc):
+    return ent.client.portal.call(sql, "SELECT estado, ruta_entrada, job_id, error, subido_por "
+                                       "FROM project_documents WHERE id=%s", (doc,), True)[0]
+
+
+def test_reprocesar_202_deja_la_fila_en_cola_apuntando_a_fuente_y_no_toca_el_disco(ent, workspace, caplog):
+    p = ent.proyecto()
+    contrib = ent.miembro(p, "contrib", "CONTRIBUTOR")
+    doc, fuente = _ingerido(ent, p, workspace, contrib)
+    antes = _en_disco(workspace)
+    caplog.set_level(logging.INFO)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)    # otro miembro: el dueno
+    assert r.status_code == 202, r.text
+    assert r.json() == {"id": doc, "estado": "en_cola"}
+    estado, ruta, job, error, subido_por = _fila_rep(ent, doc)
+    assert (estado, ruta, job, error) == ("en_cola", f"proyectos/{p.uuid}/fuente/lactovi/a.pdf", None, None)
+    assert subido_por == ent._id("dueno")                         # la fila pasa a ser de quien reprocesa
+    assert _en_disco(workspace) == antes and fuente.is_file()
+    # quien reprocesa queda en el log (la tabla no tiene donde)
+    mensajes = [m for m in caplog.messages if "reprocesado" in m]
+    assert mensajes and str(ent._id("dueno")) in mensajes[0] and str(doc) in mensajes[0], caplog.messages
+    assert str(ent._id("contrib")) in mensajes[0]                  # el subido_por anterior tambien queda
+
+
+def test_reprocesar_desde_error_con_o_sin_motivo(ent, workspace):
+    p = ent.proyecto()
+    a, _ = _ingerido(ent, p, workspace, ent.dueno, estado="error", nombre="a.pdf", error=None)
+    b, _ = _ingerido(ent, p, workspace, ent.dueno, estado="error", nombre="b.pdf", error="procesamiento_fallido")
+    for doc in (a, b):
+        assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+        assert _fila_rep(ent, doc)[:4] == ("en_cola", f"proyectos/{p.uuid}/fuente/lactovi/{'a' if doc == a else 'b'}.pdf",
+                                       None, None)
+
+
+def test_reprocesar_por_sha_cuando_no_hay_ficha(ent, workspace):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno, con_ficha=False, estado="error", error="trabajo_perdido")
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    assert _fila_rep(ent, doc)[1] == f"proyectos/{p.uuid}/fuente/lactovi/a.pdf"
+
+
+@pytest.mark.parametrize("estado", ["en_cola", "pendiente", "procesando", "listo", "parcial", "cancelado"])
+def test_reprocesar_otro_estado_409_no_reprocesable(ent, workspace, estado):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno, estado=estado)
+    antes = _fila_rep(ent, doc)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "no_reprocesable"
+    assert _fila_rep(ent, doc) == antes
+
+
+def test_reprocesar_tipo_sin_extractor_409_no_reprocesable(ent, workspace):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    ent.client.portal.call(sql, "UPDATE project_documents SET nombre_original='a.txt' WHERE id=%s", (doc,))
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "no_reprocesable"
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_sin_original_409_original_no_encontrado_y_no_cambia_la_fila_rep(ent, workspace):
+    p = ent.proyecto()
+    doc, fuente = _ingerido(ent, p, workspace, ent.dueno)
+    fuente.unlink()
+    antes = _fila_rep(ent, doc)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "original_no_encontrado"
+    assert _fila_rep(ent, doc) == antes
+
+
+def test_reprocesar_con_el_original_cambiado_409_original_no_encontrado(ent, workspace):
+    p = ent.proyecto()
+    doc, fuente = _ingerido(ent, p, workspace, ent.dueno)
+    fuente.write_bytes(b"otro contenido distinto")
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "original_no_encontrado"
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_con_el_original_como_enlace_fuera_de_fuente_409(ent, workspace, tmp_path_factory):
+    p = ent.proyecto()
+    doc, fuente = _ingerido(ent, p, workspace, ent.dueno)
+    fuera = tmp_path_factory.mktemp("fuera") / "a.pdf"
+    fuera.write_bytes(fuente.read_bytes())
+    fuente.unlink()
+    fuente.symlink_to(fuera)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "original_no_encontrado"
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_404_documento_de_otro_proyecto_o_inexistente_o_proyecto_ajeno(ent, workspace):
+    p1, p2 = ent.proyecto(), ent.proyecto()
+    doc, _ = _ingerido(ent, p2, workspace, ent.dueno)
+    for d in (doc, 99999999):
+        r = ent.client.post(f"{P}/{p1.id}/documentos/{d}/reprocesar", headers=ent.dueno)
+        assert r.status_code == 404 and _code(r) == "documento_no_encontrado"
+    ajeno = ent.usuario("ajeno", tenant=f"otro-{uuid.uuid4().hex}")
+    r = ent.client.post(f"{P}/{p2.id}/documentos/{doc}/reprocesar", headers=ajeno)
+    assert r.status_code == 404 and _code(r) == "proyecto_no_encontrado"
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_lector_403_y_anonimo_401(ent, workspace):
+    p = ent.proyecto()
+    lector = ent.miembro(p, "lector", "VIEWER")
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=lector)
+    assert r.status_code == 403 and _code(r) == "papel_insuficiente"
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar").status_code == 401
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_en_proyecto_archivado_409(ent, workspace):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    assert ent.client.post(f"{P}/{p.id}/estado", headers=ent.dueno, json={"estado": "ARCHIVED"}).status_code == 200
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "proyecto_no_activo"
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_avisa_al_despachador(ent, workspace, monkeypatch):
+    from proyectos_documentos import despachador
+    avisos = []
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    monkeypatch.setattr(despachador, "despachar_ahora", lambda: avisos.append(1))   # despues de subir, que tambien avisa
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    assert avisos == [1]
+
+
+def test_reprocesar_con_el_freno_puesto_423_y_no_cambia_nada(client, usuarios, ent, workspace):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    admin_id, _ = usuarios(role="superadmin")
+    admin = auth(token_para(admin_id, role="superadmin"))
+    assert client.post("/api/admin/kill-switch/activar", headers=admin).status_code == 200
+    try:
+        r = client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+        assert (r.status_code, r.json().get("detail")) == (423, "kill_switch_activo")
+        assert _fila_rep(ent, doc)[0] == "sin_extractor"
+    finally:
+        assert client.post("/api/admin/kill-switch/reanudar", headers=admin).status_code == 200
+    assert client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+
+
+def test_reprocesar_reasigna_la_fila_a_quien_pide_y_el_despachador_manda_su_identidad(ent, workspace):
+    from tests.test_proyectos_documentos_repositorio import _pool_call
+    p = ent.proyecto()
+    a = ent.miembro(p, "a", "CONTRIBUTOR")
+    b = ent.miembro(p, "b", "CONTRIBUTOR")
+    doc, _ = _ingerido(ent, p, workspace, a)
+    assert _fila_rep(ent, doc)[4] == ent._id("a")
+    ent.client.portal.call(sql, "UPDATE jax_project_membership SET status='REVOKED' "
+                                "WHERE project_id=%s AND user_id=%s", (p.id, ent._id("a")))
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=b)
+    assert r.status_code == 202, r.text
+    assert _fila_rep(ent, doc)[4] == ent._id("b")
+    filas = _pool_call(ent.client, repo.tomar_en_cola, limite=100000)
+    owner = [f["owner"] for f in filas if f["id"] == doc][0]
+    assert owner.user_id == ent._id("b")
+
+
+def test_reprocesar_borra_la_copia_vieja_de_entrada_y_deja_el_original_de_fuente(ent, workspace, caplog):
+    p = ent.proyecto()
+    doc, fuente = _ingerido(ent, p, workspace, ent.dueno, copiar=True)
+    ruta_vieja = ent.client.portal.call(sql, "SELECT ruta_entrada FROM project_documents WHERE id=%s", (doc,), True)[0][0]
+    assert "/entrada/" in ruta_vieja and (workspace / ruta_vieja).is_file()
+    caplog.set_level(logging.INFO)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    assert not (workspace / ruta_vieja).exists() and not (workspace / ruta_vieja).parent.exists()
+    assert fuente.is_file()
+    assert any(ruta_vieja in m for m in caplog.messages if "reprocesado" in m)
+
+
+def test_reprocesar_con_ruta_que_ya_es_de_fuente_no_borra_nada(ent, workspace):
+    p = ent.proyecto()
+    doc, fuente = _ingerido(ent, p, workspace, ent.dueno)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    ent.client.portal.call(sql, "UPDATE project_documents SET estado='sin_extractor' WHERE id=%s", (doc,))
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    assert fuente.is_file() and _fila_rep(ent, doc)[1] == f"proyectos/{p.uuid}/fuente/lactovi/a.pdf"
+
+
+def test_reprocesar_un_documento_oculto_409_no_reprocesable(ent, workspace):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/ocultar", headers=ent.dueno).status_code == 204
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "no_reprocesable"
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_con_fuente_ilegible_503_y_la_fila_no_cambia(ent, workspace, monkeypatch):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    antes = _fila_rep(ent, doc)
+
+    def ilegible(*a, **k):
+        raise original.FuenteIlegible("EIO")
+    monkeypatch.setattr(original, "buscar_original", ilegible)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 503 and _code(r) == "fuente_ilegible"
+    assert _fila_rep(ent, doc) == antes
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignora los permisos")
+def test_reprocesar_con_una_carpeta_de_fuente_sin_permiso_503_y_no_409_falso(ent, workspace):
+    p = ent.proyecto()
+    doc, fuente = _ingerido(ent, p, workspace, ent.dueno, con_ficha=False)
+    fuente.write_bytes(b"otro")                                    # no coincide: hay que recorrer
+    cerrada = workspace / "proyectos" / p.uuid / "fuente" / "zzz"
+    cerrada.mkdir()
+    cerrada.chmod(0)
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    finally:
+        cerrada.chmod(0o700)
+    assert r.status_code == 503 and _code(r) == "fuente_ilegible"
+
+
+REP_POR_USUARIO = "proyectos.documentos.reprocesar_por_usuario"
+REP_GLOBALES = "proyectos.documentos.reprocesar_globales"
+
+
+def test_reprocesar_usa_su_propio_cupo_429_sin_recorrer_nada_y_lo_suelta_siempre(ent, workspace, ajustes_en_db,
+                                                                                  monkeypatch):
+    from proyectos_documentos import cupo_de_reprocesos, cupo_de_subidas
+    ajustes_en_db.poner(**{REP_POR_USUARIO: "1", REP_GLOBALES: "1"})
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    usuario = str(ent._id("dueno"))
+    antes, antes_subidas = cupo_de_reprocesos.en_uso(), cupo_de_subidas.en_uso()
+    recorridos = []
+    real = original.buscar_original
+    monkeypatch.setattr(original, "buscar_original", lambda *a, **k: (recorridos.append(1), real(*a, **k))[1])
+    assert cupo_de_reprocesos.tomar(usuario, por_usuario=1, globales=1)      # un reprocesar ya en curso
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+        assert r.status_code == 429 and _code(r) == "reprocesos_simultaneos", r.text
+        assert recorridos == []                                              # no recorrio nada
+        assert _fila_rep(ent, doc)[0] == "sin_extractor"
+    finally:
+        cupo_de_reprocesos.soltar(usuario)
+    assert cupo_de_reprocesos.en_uso() == antes
+    assert cupo_de_subidas.en_uso() == antes_subidas                         # nunca toco el cupo de subir
+    # exito: se suelta
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    assert cupo_de_reprocesos.en_uso() == antes
+    # error de negocio (409 original_no_encontrado) despues de tomarlo: se suelta
+    ent.client.portal.call(sql, "UPDATE project_documents SET estado='sin_extractor' WHERE id=%s", (doc,))
+    monkeypatch.setattr(original, "buscar_original", lambda *a, **k: None)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 409
+    assert cupo_de_reprocesos.en_uso() == antes
+
+    # 503 fuente_ilegible: se suelta
+    def ilegible(*a, **k):
+        raise original.FuenteIlegible("x")
+    monkeypatch.setattr(original, "buscar_original", ilegible)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 503
+    assert cupo_de_reprocesos.en_uso() == antes
+
+    # un error inesperado (500) tambien
+    def revienta(*a, **k):
+        raise RuntimeError("inesperado")
+    monkeypatch.setattr(original, "buscar_original", revienta)
+    with pytest.raises(RuntimeError):
+        ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert cupo_de_reprocesos.en_uso() == antes
+    assert cupo_de_subidas.en_uso() == antes_subidas
+
+
+def test_el_cupo_global_de_reprocesos_corta_a_otro_usuario(ent, workspace, ajustes_en_db):
+    from proyectos_documentos import cupo_de_reprocesos
+    ajustes_en_db.poner(**{REP_POR_USUARIO: "1", REP_GLOBALES: "1"})
+    p = ent.proyecto()
+    otro = ent.miembro(p, "otro", "CONTRIBUTOR")
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    assert cupo_de_reprocesos.tomar("ajeno-en-curso", por_usuario=1, globales=1)
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=otro)
+        assert r.status_code == 429 and _code(r) == "reprocesos_simultaneos"
+    finally:
+        cupo_de_reprocesos.soltar("ajeno-en-curso")
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=otro).status_code == 202
+
+
+def test_una_subida_concurrente_a_un_reprocesar_en_curso_no_recibe_429_por_su_culpa(ent, workspace, ajustes_en_db):
+    from proyectos_documentos import cupo_de_reprocesos
+    ajustes_en_db.poner(**{REP_POR_USUARIO: "1", REP_GLOBALES: "1", POR_USUARIO: "1", GLOBALES: "1"})
+    p = ent.proyecto()
+    usuario = str(ent._id("dueno"))
+    assert cupo_de_reprocesos.tomar(usuario, por_usuario=1, globales=1)      # reprocesar en curso, cupo lleno
+    try:
+        r = ent.subir(p, ent.dueno, [_parte("nueva.pdf", "nueva")])
+        assert r.status_code == 202, r.text                                   # la subida usa SU cupo (1/1, libre)
+    finally:
+        cupo_de_reprocesos.soltar(usuario)
+
+
+def test_un_reprocesar_no_recibe_429_porque_las_subidas_llenaron_su_cupo(ent, workspace, ajustes_en_db):
+    from proyectos_documentos import cupo_de_subidas
+    ajustes_en_db.poner(**{POR_USUARIO: "1", GLOBALES: "1"})
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    usuario = str(ent._id("dueno"))
+    assert cupo_de_subidas.tomar(usuario, por_usuario=1, globales=1)         # una subida en vuelo, cupo lleno
+    try:
+        assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    finally:
+        cupo_de_subidas.soltar(usuario)
+
+
+# --------------------------------------------------------- Retry-After en los 429
+
+def test_los_429_de_reprocesar_y_de_subir_llevan_retry_after(ent, workspace, ajustes_en_db):
+    from api import proyectos_documentos as api_docs
+    from proyectos_documentos import cupo_de_reprocesos, cupo_de_subidas
+    assert api_docs.REINTENTAR_DESPUES_S == 2
+    ajustes_en_db.poner(**{REP_POR_USUARIO: "1", REP_GLOBALES: "1", POR_USUARIO: "1", GLOBALES: "1"})
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    usuario = str(ent._id("dueno"))
+    assert cupo_de_reprocesos.tomar(usuario, por_usuario=1, globales=1)
+    assert cupo_de_subidas.tomar(usuario, por_usuario=1, globales=1)
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+        assert r.status_code == 429 and r.headers.get("retry-after") == "2", dict(r.headers)
+        r = ent.subir(p, ent.dueno, [_parte("x.pdf", "x")])
+        assert r.status_code == 429 and _code(r) == "subidas_simultaneas" and r.headers.get("retry-after") == "2", dict(r.headers)
+    finally:
+        cupo_de_reprocesos.soltar(usuario)
+        cupo_de_subidas.soltar(usuario)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 202 and "retry-after" not in r.headers
+
+
+# ----------------------------------------------- el invariante absoluto contra el ancla (`proyectos/`)
+
+def _ancla(tmp_path, modo=0o2770):
+    (tmp_path / "proyectos").mkdir(exist_ok=True)
+    os.chmod(tmp_path / "proyectos", modo)
+    return tmp_path / "proyectos"
+
+
+def test_un_nivel_existente_sin_setgid_falla_cerrado_sin_crear_nada(tmp_path):
+    """MINOR-N3: antes solo se comparaba contra el padre; un `proyectos/<uuid>/` ya creado sin setgid (como el que
+    dejaba el fchmod viejo) lo aceptaba y colgaba de el todo lo nuevo."""
+    ancla = _ancla(tmp_path)
+    u = str(uuid.uuid4())
+    (ancla / u).mkdir()
+    os.chmod(ancla / u, 0o770)                                            # existe, sin setgid
+    antes = _foto(tmp_path)
+    with pytest.raises(almacen.HerenciaDeCarpetaRota, match="setgid"):
+        almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
+    assert _foto(tmp_path) == antes                                       # ni entrada/ ni el lote
+
+
+def test_un_nivel_intermedio_existente_sin_setgid_tambien(tmp_path):
+    ancla = _ancla(tmp_path)
+    u = str(uuid.uuid4())
+    (ancla / u / "entrada").mkdir(parents=True)
+    os.chmod(ancla / u, 0o2770)
+    os.chmod(ancla / u / "entrada", 0o770)
+    with pytest.raises(almacen.HerenciaDeCarpetaRota):
+        almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
+    assert not (ancla / u / "entrada" / "lote1").exists()
+
+
+def test_el_ancla_misma_sin_setgid_falla_cerrado(tmp_path):
+    _ancla(tmp_path, 0o770)
+    with pytest.raises(almacen.HerenciaDeCarpetaRota, match="proyectos"):
+        almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "lote1")
+    assert list((tmp_path / "proyectos").iterdir()) == []
+
+
+def test_un_nivel_con_otro_grupo_que_el_ancla_falla_cerrado(tmp_path):
+    """El grupo se compara con el del ancla. Sin depender de que este usuario pertenezca a otro grupo (en un runner
+    puede no pasar): el ancla se simula con un gid distinto del real del nivel."""
+    from types import SimpleNamespace
+    d = tmp_path / "nivel"
+    d.mkdir()
+    os.chmod(d, 0o2770)
+    fd = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        ancla = SimpleNamespace(st_gid=d.stat().st_gid + 12345)
+        with pytest.raises(almacen.HerenciaDeCarpetaRota, match="grupo"):
+            almacen._verificar_nivel(ancla, fd, fd, "nivel", False)
+        assert almacen._verificar_nivel(SimpleNamespace(st_gid=d.stat().st_gid), fd, fd, "nivel", False).st_gid == d.stat().st_gid
+    finally:
+        os.close(fd)
+
+
+def test_todo_en_orden_abre_y_crea_con_setgid_y_el_grupo_del_ancla(tmp_path):
+    ancla = _ancla(tmp_path)
+    u = str(uuid.uuid4())
+    (ancla / u).mkdir()
+    os.chmod(ancla / u, 0o2770)                                           # existente y correcto: se acepta
+    c = almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
+    try:
+        for d in (ancla / u, ancla / u / "entrada", ancla / u / "entrada" / "lote1"):
+            assert d.stat().st_mode & stat.S_ISGID and d.stat().st_gid == ancla.stat().st_gid
+    finally:
+        c.cerrar()
+
+
+def test_subir_con_el_uuid_del_proyecto_sin_setgid_500_y_no_crea_nada(ent, workspace):
+    p = ent.proyecto()
+    (workspace / "proyectos" / p.uuid).mkdir()
+    os.chmod(workspace / "proyectos" / p.uuid, 0o770)
+    antes = _foto(workspace)
+    r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
+    assert r.status_code == 500 and _code(r) == "almacen_herencia_rota", r.text
+    assert ent.filas(p) == [] and _foto(workspace) == antes
+
+
+# ------------------------------------------- orden del cupo y rastro de los 409 (ronda 2, MINOR-N4)
+
+def test_el_429_por_usuario_no_toca_la_base_y_el_global_se_toma_justo_antes_del_recorrido(ent, workspace, ajustes_en_db,
+                                                                                         monkeypatch):
+    from api import proyectos_documentos as api_docs
+    from proyectos_documentos import cupo_de_reprocesos
+    ajustes_en_db.poner(**{REP_POR_USUARIO: "1", REP_GLOBALES: "1"})
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    usuario = str(ent._id("dueno"))
+    antes = cupo_de_reprocesos.en_uso()
+    lecturas = []
+    real_papel, real_doc = api_docs._con_papel, api_docs.repo.documento_para_reprocesar
+
+    async def papel(*a, **k):
+        lecturas.append("papel")
+        return await real_papel(*a, **k)
+
+    async def leer(*a, **k):
+        lecturas.append("documento")
+        return await real_doc(*a, **k)
+    monkeypatch.setattr(api_docs, "_con_papel", papel)
+    monkeypatch.setattr(api_docs.repo, "documento_para_reprocesar", leer)
+    # el cupo POR USUARIO lleno: 429 sin una sola lectura de la base del endpoint
+    assert cupo_de_reprocesos.tomar_usuario(usuario, por_usuario=1)
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+        assert r.status_code == 429 and _code(r) == "reprocesos_simultaneos" and lecturas == []
+    finally:
+        cupo_de_reprocesos.soltar_usuario(usuario)
+    # el cupo GLOBAL lleno (otro usuario recorriendo): se lee la base, y el 429 sale antes del recorrido
+    assert cupo_de_reprocesos.tomar("otro-recorriendo", por_usuario=1, globales=1)
+    recorridos = []
+    real = original.buscar_original
+    monkeypatch.setattr(original, "buscar_original", lambda *a, **k: (recorridos.append(1), real(*a, **k))[1])
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+        assert r.status_code == 429 and lecturas == ["papel", "documento"] and recorridos == []
+        assert cupo_de_reprocesos.en_uso() == (1, {"otro-recorriendo": 1})     # su lugar por usuario se solto
+    finally:
+        cupo_de_reprocesos.soltar("otro-recorriendo")
+    assert cupo_de_reprocesos.en_uso() == antes
+
+
+def test_el_lugar_por_usuario_se_suelta_tambien_en_404_403_y_409_previos(ent, workspace):
+    from proyectos_documentos import cupo_de_reprocesos
+    p = ent.proyecto()
+    lector = ent.miembro(p, "lector", "VIEWER")
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno, estado="listo")
+    antes = cupo_de_reprocesos.en_uso()
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=lector).status_code == 403
+    assert ent.client.post(f"{P}/{p.id}/documentos/99999999/reprocesar", headers=ent.dueno).status_code == 404
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 409
+    assert cupo_de_reprocesos.en_uso() == antes
+
+
+def test_los_409_de_reprocesar_dejan_rastro_con_usuario_proyecto_y_documento(ent, workspace, caplog, monkeypatch):
+    p = ent.proyecto()
+    a, _ = _ingerido(ent, p, workspace, ent.dueno, estado="listo", nombre="a.pdf")
+    b, fuente = _ingerido(ent, p, workspace, ent.dueno, nombre="b.pdf")
+    fuente.unlink()
+    caplog.set_level(logging.INFO)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{a}/reprocesar", headers=ent.dueno).status_code == 409
+    assert ent.client.post(f"{P}/{p.id}/documentos/{b}/reprocesar", headers=ent.dueno).status_code == 409
+    uid_ = str(ent._id("dueno"))
+    por_codigo = {c: [m for m in caplog.messages if c in m] for c in ("no_reprocesable", "original_no_encontrado")}
+    for codigo, doc in (("no_reprocesable", a), ("original_no_encontrado", b)):
+        assert por_codigo[codigo], (codigo, caplog.messages)
+        m = por_codigo[codigo][0]
+        assert f"usuario {uid_}" in m and f"proyecto {p.id}" in m and f"documento {doc}" in m, m
+    # y el 409 de «la fila cambio entre la lectura y el UPDATE»
+    c, _ = _ingerido(ent, p, workspace, ent.dueno, nombre="c.pdf")
+    caplog.clear()
+
+    async def nada(*a, **k):
+        return None
+    monkeypatch.setattr("api.proyectos_documentos.repo.reprocesar", nada)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{c}/reprocesar", headers=ent.dueno).status_code == 409
+    assert any("no_reprocesable" in m and f"documento {c}" in m and f"usuario {uid_}" in m for m in caplog.messages)
+
+
+def test_el_429_del_cupo_global_de_reprocesar_deja_log_con_quien_pidio(ent, workspace, ajustes_en_db, caplog):
+    """MINOR-R2: no se sabe ni se guarda quien tiene el lugar; solo el user_id que pidio y se quedo sin el."""
+    from proyectos_documentos import cupo_de_reprocesos
+    ajustes_en_db.poner(**{REP_POR_USUARIO: "1", REP_GLOBALES: "1"})
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    assert cupo_de_reprocesos.tomar("otro-recorriendo", por_usuario=1, globales=1)
+    caplog.set_level(logging.INFO)
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    finally:
+        cupo_de_reprocesos.soltar("otro-recorriendo")
+    assert r.status_code == 429
+    mensajes = [m for m in caplog.messages if "reprocesos_simultaneos" in m or "cupo global" in m]
+    assert mensajes, caplog.messages
+    m = mensajes[0]
+    assert f"usuario {ent._id('dueno')}" in m and f"proyecto {p.id}" in m and f"documento {doc}" in m, m
+    assert "otro-recorriendo" not in " ".join(caplog.messages)                    # quien tiene el lugar no se registra
