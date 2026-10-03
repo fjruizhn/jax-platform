@@ -38,6 +38,7 @@ PATRON_EMAIL = "carga-chat-f2d-%@example.invalid"
 PREFIJO_SUJETO_RELLENO = "carga-f2d-"
 TENANT_DE_CARGA = 1
 LOCK_DE_CORRIDA = "axioma:f2e-sr-load:jax_memory_test_f2esr"
+ERRORES_LIMPIEZA_REINTENTABLES = frozenset({1020, 1205, 1213})
 
 
 def exigir_base_de_prueba(db: str) -> None:
@@ -255,7 +256,8 @@ def limpiar(conn, health_id_base: int | None = None) -> dict:
         try:
             return _limpiar_una_vez(conn, health_id_base)
         except pymysql.err.OperationalError as exc:
-            if exc.args and exc.args[0] not in {1205, 1213} or intento == 3:
+            if (not exc.args or exc.args[0] not in ERRORES_LIMPIEZA_REINTENTABLES
+                    or intento == 3):
                 raise
             conn.rollback()
             time.sleep(0.2 * (2 ** intento))

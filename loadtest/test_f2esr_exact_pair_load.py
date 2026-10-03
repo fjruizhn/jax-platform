@@ -61,3 +61,23 @@ def test_pair_and_payload_contract_are_closed():
         "JAX_DB_PASSWORD": "p", "JAX_DB_NAME": "jax_memory_test_f2esr",
     }, Path("/tmp"), Path("/tmp"), respuesta_chars=8000)
     assert env["CARGA_RESPUESTA_CHARS"] == "8000"
+
+
+def test_cleanup_retries_mariadb_1020_without_a_database(monkeypatch):
+    mod = _module()
+    calls = []
+
+    class FakeConnection:
+        def rollback(self):
+            calls.append("rollback")
+
+    def transient_cleanup(_conn, _health_id_base):
+        calls.append("cleanup")
+        if calls.count("cleanup") == 1:
+            raise mod.siembra.pymysql.err.OperationalError(1020, "Record has changed since last read")
+        return {"governed_output_outbox": 0}
+
+    monkeypatch.setattr(mod.siembra, "_limpiar_una_vez", transient_cleanup)
+    monkeypatch.setattr(mod.siembra.time, "sleep", lambda _seconds: calls.append("sleep"))
+    assert mod.siembra.limpiar(FakeConnection()) == {"governed_output_outbox": 0}
+    assert calls == ["cleanup", "rollback", "sleep", "cleanup"]

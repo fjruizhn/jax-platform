@@ -7,7 +7,8 @@ gobernada de `api/governed_chat.py` + bandeja de salida durable de
 127.0.0.1:BACKEND_PORT -- la misma topologia que `jax-platform.service`), proveedor
 de modelo FALSO por HTTP real (`chat_f2d_fake_ollama.py`, apuntado con
 `JAX_OLLAMA_URL`; la faceta `jax_local` resuelve a transporte `ollama` en
-`facet_binding`), `httpx.AsyncClient` real de punta a punta, base `jax_memory_test`.
+`facet_binding`), `httpx.AsyncClient` real de punta a punta, base
+`jax_memory_test_f2esr`.
 
 ENDPOINT MEDIDO (el que usa el frontend: `api.post('/chat', ...)` con baseURL `/api`):
     POST /api/chat   {"message": ..., "facet": "jax_local"}
@@ -16,7 +17,7 @@ PEOR CASO RAZONABLE:
   - historial de conversacion LLENO: cada usuario virtual hace CALENTAMIENTO_TURNOS
     turnos reales antes de medir, hasta MAX_TURNS=20 (40 mensajes que viajan al
     proveedor en cada pedido, asistente de ~16 KB cada uno);
-  - respuesta del proveedor de CARGA_RESPUESTA_CHARS (16 000) caracteres, un contrato
+  - respuesta ASCII del proveedor de CARGA_RESPUESTA_CHARS (16 000 bytes de payload), un contrato
     sin claims => candidato no gobernado, que SI cruza F2-C y la bandeja F2-D completa
     (OUTPUT_PREPARED -> TRANSPORT_COMMITTING -> OUTPUT_COMMITTED_TO_TRANSPORT);
   - bandeja con N_RELLENO filas de relleno (miles) mas las propias de la corrida;
@@ -33,9 +34,10 @@ c=1 measurement while avoiding the full five-level duration.
 
 It never reads `/etc/jax/.env`, starts no production service, and never targets
 `jax_memory`, ports 7777/8080, or Ollama 11434.  A MariaDB named lock makes the
-destructive seed/cleanup cycle exclusive; each result file records rejection when
-p95 exceeds 500 ms, any request errors/degraded response occurs, or F2-D final
-outbox/lifecycle counts do not match the full request count.
+destructive seed/cleanup cycle exclusive; each result file records p95 above 500 ms
+as diagnostic latency degradation.  Rejection is reserved for request errors,
+degraded responses, or F2-D final outbox/lifecycle counts that do not match the
+full request count.
 """
 from __future__ import annotations
 
