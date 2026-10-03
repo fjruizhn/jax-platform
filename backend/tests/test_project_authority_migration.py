@@ -43,13 +43,16 @@ def test_jax_owned_003_hook_is_the_only_project_authority_ddl_source():
     # this cursor double as well.
     # 21 -> 23 (2026-10-02, Proyectos E1.1, Jax#321): la migracion 005i suma dos
     # sentencias, la comprobacion de existencia y el CREATE INDEX de
-    # idx_jax_users_tenant_email en jax_users.
-    assert len(cursor.statements) == 23
+    # idx_jax_users_tenant_email en jax_users.  23 -> 24 (2026-10-03,
+    # Proyectos E2a / JAX migration 006a): the JAX-owned hook appends its
+    # canonical project_documents DDL after those statements.
+    assert len(cursor.statements) == 24
     assert "CREATE TABLE IF NOT EXISTS jax_project_scope" in cursor.statements[0]
     assert "CREATE TABLE IF NOT EXISTS jax_project_membership" in cursor.statements[1]
     assert "CREATE TABLE IF NOT EXISTS jax_project_membership_event" in cursor.statements[2]
     assert "append-only" in cursor.statements[3]
     assert "append-only" in cursor.statements[4]
+    assert "CREATE TABLE IF NOT EXISTS project_documents" in cursor.statements[-1]
     assert "jax_project_scope" not in inspect.getsource(migrations.run_migrations)
 
 
