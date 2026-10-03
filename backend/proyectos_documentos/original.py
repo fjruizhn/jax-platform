@@ -78,9 +78,10 @@ def _sha256_de(fd_fuente: int, partes: list[str], *, bytes_: int | None) -> str 
         os.close(fd)
 
 
-def _origen_de_la_ficha(workspace_fd: int, project_uuid: str, carpeta_procesado: str | None) -> list[str] | None:
-    """Los componentes de `origen` (sin el `fuente/` inicial) si la ficha de esa carpeta lo
-    declara bien; None en cualquier otro caso. Una ficha ilegible no es un error: es que no hay ficha."""
+def _ficha_de(workspace_fd: int, project_uuid: str, carpeta_procesado: str | None) -> dict | None:
+    """El `ficha.json` de `carpeta_procesado` (que tiene que ser `proyectos/<uuid>/procesado/...`
+    de ESTE proyecto) como dict, o None: carpeta ajena, sin ficha, enlace, mayor que
+    `FICHA_MAX_BYTES`, o JSON que no es un objeto. Una ficha ilegible no es un error: es que no hay."""
     if not isinstance(carpeta_procesado, str):
         return None
     partes = carpeta_procesado.split("/")
@@ -98,11 +99,28 @@ def _origen_de_la_ficha(workspace_fd: int, project_uuid: str, carpeta_procesado:
         if len(crudo) > FICHA_MAX_BYTES:
             return None
         ficha = json.loads(crudo.decode("utf-8"))
-    except (ValueError, OSError):  # fail-soft: ficha corrupta o ilegible; sin ficha se busca por sha256
+    except (ValueError, OSError):  # fail-soft: ficha corrupta o ilegible; sin ficha se sigue sin ella
         return None
     finally:
         os.close(fd)
-    origen = ficha.get("origen") if isinstance(ficha, dict) else None
+    return ficha if isinstance(ficha, dict) else None
+
+
+def leer_ficha(workspace: Path, project_uuid: str, carpeta_procesado: str | None) -> dict | None:
+    """Sincrona (to_thread). Ver `_ficha_de`: la usa el despachador para el motivo de un error."""
+    if not _componente_valido(project_uuid):
+        return None
+    raiz = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        return _ficha_de(raiz, project_uuid, carpeta_procesado)
+    finally:
+        os.close(raiz)
+
+
+def _origen_de_la_ficha(workspace_fd: int, project_uuid: str, carpeta_procesado: str | None) -> list[str] | None:
+    """Los componentes de `origen` (sin el `fuente/` inicial) si la ficha lo declara bien."""
+    ficha = _ficha_de(workspace_fd, project_uuid, carpeta_procesado)
+    origen = ficha.get("origen") if ficha else None
     if not isinstance(origen, str):
         return None
     trozos = origen.split("/")

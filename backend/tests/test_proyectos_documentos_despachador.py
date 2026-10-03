@@ -617,3 +617,105 @@ def test_ruta_que_no_es_del_proyecto_no_se_manda_y_queda_ruta_ajena(e, caplog, r
     assert e.fila(propia)[0] == "pendiente"
     assert any(str(doc) in r.getMessage() and "ruta_ajena" in r.getMessage()
                for r in caplog.records if r.levelno == logging.ERROR)
+
+
+# ------------------------------------------------------------------ motivo del error (ficha.json)
+# Frases REALES de `detalle.razon` en las fichas de LACTOVI (13, 15 y 2 casos).
+RAZON_OCR_VACIO = "el OCR no devolvio texto util"
+RAZON_CONFIANZA = ("mas de la mitad de las palabras reconocidas tienen confianza baja "
+                   "(probable ruido o desenfoque) -- ver palabras_dudosas")
+RAZON_PDF = "ninguna pagina del PDF dio texto util via OCR"
+
+
+@pytest.mark.parametrize("razon,codigo", [
+    (RAZON_OCR_VACIO, "ocr_sin_texto"),
+    (RAZON_PDF, "ocr_sin_texto"),
+    (RAZON_CONFIANZA, "ocr_confianza_baja"),
+    ("El OCR no devolvió texto útil", "ocr_sin_texto"),             # con tildes y mayusculas
+    ("Confianza BAJA en el OCR", "ocr_confianza_baja"),
+    ("la hoja no dio texto util", "procesamiento_fallido"),            # sin OCR: no es esta causa
+    ("PDF corrupto", "procesamiento_fallido"),
+    ("", "procesamiento_fallido"),
+    (None, "procesamiento_fallido"),
+    (7, "procesamiento_fallido"),
+    ({"x": 1}, "procesamiento_fallido"),
+])
+def test_codigo_de_la_razon_es_una_funcion_pura_de_frases_conocidas(razon, codigo):
+    assert despachador.codigo_de_la_razon(razon) == codigo
+    assert codigo in despachador.CAUSAS_DE_ERROR
+
+
+def _con_ficha(e, ficha_texto, carpeta=None, nombre="doc"):
+    carpeta = carpeta or f"proyectos/{e.uuid}/procesado/{nombre}"
+    destino = e.workspace / carpeta
+    destino.mkdir(parents=True, exist_ok=True)
+    if ficha_texto is not None:
+        (destino / "ficha.json").write_text(ficha_texto)
+    return carpeta
+
+
+def _error_con_carpeta(e, carpeta, job="JM1", estado="error"):
+    r = e.ruta("l1", f"{job}.pdf")
+    doc = e.insertar(r, n=abs(hash(job)))
+    e.abrir(doc, job)
+    e.las_manos.estados[job] = _trabajo(job, "completed", [_resultado(r, estado, carpeta=carpeta, error="x")])
+    e.ciclo()
+    return doc
+
+
+@pytest.mark.parametrize("razon,codigo", [
+    (RAZON_OCR_VACIO, "ocr_sin_texto"), (RAZON_PDF, "ocr_sin_texto"), (RAZON_CONFIANZA, "ocr_confianza_baja"),
+    ("algo que no conocemos", "procesamiento_fallido")])
+def test_un_error_con_ficha_guarda_el_codigo_estable_del_motivo(e, razon, codigo):
+    carpeta = _con_ficha(e, json.dumps({"origen": "fuente/a.pdf", "detalle": {"razon": razon}}))
+    doc = _error_con_carpeta(e, carpeta)
+    assert e.fila(doc)[0] == "error" and e.fila(doc)[3] == codigo
+
+
+@pytest.mark.parametrize("ficha", [None, "{no es json", "[]", '{"detalle": 3}', '{"detalle": {"razon": null}}',
+                                   '{"detalle": {}}'])
+def test_ficha_ausente_o_ilegible_deja_el_generico_y_el_estado_se_aplica(e, ficha):
+    carpeta = _con_ficha(e, ficha)
+    doc = _error_con_carpeta(e, carpeta)
+    assert (e.fila(doc)[0], e.fila(doc)[3]) == ("error", "procesamiento_fallido")
+
+
+def test_ficha_gigante_no_se_lee(e):
+    carpeta = _con_ficha(e, json.dumps({"detalle": {"razon": RAZON_OCR_VACIO}}) + " " * (2 * 1024 * 1024))
+    doc = _error_con_carpeta(e, carpeta)
+    assert e.fila(doc)[3] == "procesamiento_fallido"
+
+
+def test_ficha_que_es_un_enlace_no_se_sigue(e, tmp_path_factory):
+    carpeta = _con_ficha(e, None)
+    fuera = tmp_path_factory.mktemp("fuera") / "ficha.json"
+    fuera.write_text(json.dumps({"detalle": {"razon": RAZON_OCR_VACIO}}))
+    (e.workspace / carpeta / "ficha.json").symlink_to(fuera)
+    doc = _error_con_carpeta(e, carpeta)
+    assert e.fila(doc)[3] == "procesamiento_fallido"
+
+
+def test_carpeta_de_otro_proyecto_no_se_lee(e):
+    ajena = f"proyectos/11111111-1111-4111-8111-111111111111/procesado/x"
+    _con_ficha(e, json.dumps({"detalle": {"razon": RAZON_OCR_VACIO}}), carpeta=ajena)
+    doc = _error_con_carpeta(e, ajena)
+    assert e.fila(doc)[3] == "procesamiento_fallido"
+
+
+def test_sin_carpeta_o_rechazado_no_se_consulta_la_ficha(e):
+    doc = _error_con_carpeta(e, None, job="JM2")
+    assert e.fila(doc)[3] == "procesamiento_fallido"
+    carpeta = _con_ficha(e, json.dumps({"detalle": {"razon": RAZON_OCR_VACIO}}), nombre="rech")
+    doc = _error_con_carpeta(e, carpeta, job="JM3", estado="rechazado")
+    assert e.fila(doc)[3] == "rechazado"                              # el rechazo no se reescribe
+
+
+def test_un_fallo_al_leer_la_ficha_no_impide_aplicar_el_resultado(e, monkeypatch):
+    from proyectos_documentos import original
+
+    def revienta(*a, **k):
+        raise RuntimeError("disco")
+    monkeypatch.setattr(original, "leer_ficha", revienta)
+    carpeta = _con_ficha(e, json.dumps({"detalle": {"razon": RAZON_OCR_VACIO}}))
+    doc = _error_con_carpeta(e, carpeta, job="JM4")
+    assert (e.fila(doc)[0], e.fila(doc)[3]) == ("error", "procesamiento_fallido")

@@ -58,6 +58,7 @@ import os
 import re
 import stat
 import time
+import unicodedata
 from pathlib import Path
 
 import httpx
@@ -67,7 +68,7 @@ from credencial_las_manos import encabezados_procesamiento
 from db.connection import get_pool
 from http_client import get_http_client
 from jax_engine.state import LAS_MANOS_URL
-from proyectos_documentos import almacen
+from proyectos_documentos import almacen, original
 from proyectos_documentos import repositorio as repo
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,8 @@ CAUSAS_DE_ERROR = frozenset({
     "trabajo_perdido",         # LAS MANOS ya no conoce el trabajo (reinicio)
     "http_4xx",                # LAS MANOS rechazo el pedido de forma definitiva
     "ruta_ajena",              # la ruta de la fila no es de su proyecto: no se mando
+    "ocr_sin_texto",           # el OCR no saco texto util (ficha.json -> detalle.razon)
+    "ocr_confianza_baja",      # el OCR reconocio palabras pero con confianza baja (ruido, desenfoque)
 })
 # Una ruta absoluta que no es del workspace: se deja solo su ultimo tramo.
 _RUTA_ABSOLUTA = re.compile(r"(?<![\w.~-])/(?:[^\s'\"/]+/)+([^\s'\"/]*)")
@@ -209,6 +212,38 @@ def _sin_rutas_absolutas(texto: object) -> str:
     return _RUTA_ABSOLUTA.sub(r".../\1", texto)[:500]
 
 
+def codigo_de_la_razon(razon: object) -> str:
+    """Codigo estable de CAUSAS_DE_ERROR para el texto libre de `ficha.json -> detalle.razon`
+    (funcion pura). Se comparan frases sin tildes ni mayusculas; lo que no se reconoce es el
+    generico `procesamiento_fallido`. Las frases son las que jax escribe en las fichas
+    (`el OCR no devolvio texto util`, `ninguna pagina del PDF dio texto util via OCR`, `mas de la
+    mitad de las palabras reconocidas tienen confianza baja ...`)."""
+    if not isinstance(razon, str):
+        return "procesamiento_fallido"
+    texto = "".join(c for c in unicodedata.normalize("NFD", razon.casefold()) if not unicodedata.combining(c))
+    if "ocr" in texto and "texto util" in texto:
+        return "ocr_sin_texto"
+    if "confianza baja" in texto and ("ocr" in texto or "palabras reconocidas" in texto):
+        return "ocr_confianza_baja"
+    return "procesamiento_fallido"
+
+
+async def _motivo_del_error(fila: dict, carpeta: str | None) -> str:
+    """El codigo del motivo de un `error` de LAS MANOS, leido de la ficha de su carpeta (solo si
+    es `proyectos/<uuid de la fila>/procesado/...`, como el borrado de entrada/). Nunca falla:
+    sin ficha o con cualquier problema es `procesamiento_fallido`, y el resultado se aplica igual."""
+    if not _original_a_salvo(fila["project_uuid"], carpeta):
+        return "procesamiento_fallido"
+    try:
+        ficha = await asyncio.to_thread(original.leer_ficha, almacen.cargar_workspace(), fila["project_uuid"], carpeta)
+    except Exception as exc:  # fail-soft: el motivo es un detalle; sin leerlo el resultado se aplica con el generico
+        logger.warning("proyectos_documentos: no se pudo leer la ficha del documento %s (%s)", fila["id"],
+                       type(exc).__name__)
+        return "procesamiento_fallido"
+    detalle = ficha.get("detalle") if ficha else None
+    return codigo_de_la_razon(detalle.get("razon") if isinstance(detalle, dict) else None)
+
+
 def _decidir(fila: dict, resultado: dict | None, trabajo: dict) -> tuple[str, str | None, str | None] | None:
     """(estado, carpeta_procesado, error) para una fila abierta, o None si no cambia. `error`
     es siempre un codigo de CAUSAS_DE_ERROR (o None)."""
@@ -263,6 +298,8 @@ async def _sincronizar_trabajo(pool, job_id: str, contexto) -> None:
             if decision is None:
                 continue
             estado, carpeta, error = decision
+            if estado == "error" and error == "procesamiento_fallido":
+                error = await _motivo_del_error(fila, carpeta)
             cambiadas = await repo.aplicar_resultado(
                 pool, job_id=job_id, ruta_entrada=fila["ruta_entrada"], estado=estado,
                 carpeta_procesado=carpeta, error=error, owner=contexto)
