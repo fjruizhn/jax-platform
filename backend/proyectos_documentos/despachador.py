@@ -124,6 +124,20 @@ CAUSAS_DE_ERROR = frozenset({
     "ruta_ajena",              # la ruta de la fila no es de su proyecto: no se mando
     "ocr_sin_texto",           # el OCR no saco texto util (ficha.json -> detalle.razon)
     "ocr_confianza_baja",      # el OCR reconocio palabras pero con confianza baja (ruido, desenfoque)
+    # Contrato de LAS MANOS (jax#338) en `ResultadoArchivo.error`: un formato de imagen que el OCR
+    # no procesa con fidelidad es un error visible que nombra el formato (`formato_<f>`).
+    "formato_no_soportado",    # formato no soportado sin nombre (sufijo ausente, invalido o desconocido)
+    "formato_gif_animado",     # GIF con mas de un cuadro
+    "formato_webp_animado",    # WebP con mas de un cuadro
+    "formato_gris_16_bits",    # escala de grises de 16 bits
+    "formato_coma_flotante",   # pixeles en coma flotante
+    "formato_entero_32_bits",  # pixeles enteros de 32 bits
+    "formato_bmp_16_bits",     # BMP de 16 bits
+    "archivo_ilegible",        # la imagen esta danada o no se puede abrir
+    "archivo_no_procesable",   # el OCR no pudo leerla: danada o en un formato no soportado
+    "imagen_demasiado_grande", # la imagen excede lo que el OCR procesa
+    "ocr_tiempo_excedido",     # el OCR tardo mas que su plazo
+    "ocr_sin_memoria",         # el OCR se quedo sin memoria
 })
 # Una ruta absoluta que no es del workspace: se deja solo su ultimo tramo.
 _RUTA_ABSOLUTA = re.compile(r"(?<![\w.~-])/(?:[^\s'\"/]+/)+([^\s'\"/]*)")
@@ -233,13 +247,41 @@ _RAZONES_DEL_OCR = {
 }
 
 
+# `ResultadoArchivo.error` de LAS MANOS (jax#338): `formato_no_soportado[:<formato>]` y cinco codigos
+# sin sufijo. El sufijo solo vale si cumple `[a-z0-9_]{1,40}` y esta en la lista conocida.
+_FORMATOS_NO_SOPORTADOS = frozenset({"gif_animado", "webp_animado", "gris_16_bits", "coma_flotante",
+                                     "entero_32_bits", "bmp_16_bits"})
+_ERRORES_DEL_ARCHIVO = frozenset({"archivo_ilegible", "archivo_no_procesable", "imagen_demasiado_grande",
+                                  "ocr_tiempo_excedido", "ocr_sin_memoria"})
+_SUFIJO_DE_FORMATO = re.compile(r"[a-z0-9_]{1,40}")
+
+
+def codigo_del_error_del_archivo(error: object) -> str | None:
+    """Codigo estable de CAUSAS_DE_ERROR para el `error` de un archivo de LAS MANOS (funcion pura), o
+    None si no es del contrato: entonces sigue el camino de la ficha. Nunca devuelve texto crudo."""
+    if not isinstance(error, str):
+        return None
+    if error in _ERRORES_DEL_ARCHIVO:
+        return error if error in CAUSAS_DE_ERROR else None
+    base, separador, sufijo = error.partition(":")
+    if base != "formato_no_soportado":
+        return None
+    if separador and _SUFIJO_DE_FORMATO.fullmatch(sufijo) and sufijo in _FORMATOS_NO_SOPORTADOS:
+        codigo = f"formato_{sufijo}"
+        # Defensa: un formato sumado a la tabla sin sumarlo a CAUSAS_DE_ERROR cae al generico, nunca se guarda.
+        return codigo if codigo in CAUSAS_DE_ERROR else "formato_no_soportado"
+    return "formato_no_soportado"
+
+
 def codigo_de_la_razon(razon: object) -> str:
     """Codigo estable de CAUSAS_DE_ERROR para el texto libre de `ficha.json -> detalle.razon`
     (funcion pura): la tabla `_RAZONES_DEL_OCR` por frase exacta normalizada; todo lo demas es el
     generico `procesamiento_fallido`."""
     if not isinstance(razon, str):
         return "procesamiento_fallido"
-    return _RAZONES_DEL_OCR.get(_normalizada(razon), "procesamiento_fallido")
+    codigo = _RAZONES_DEL_OCR.get(_normalizada(razon), "procesamiento_fallido")
+    # Defensa: una razon sumada a la tabla sin sumar su codigo a CAUSAS_DE_ERROR no se guarda.
+    return codigo if codigo in CAUSAS_DE_ERROR else "procesamiento_fallido"
 
 
 async def _motivo_del_error(fila: dict, carpeta: str | None) -> str:
@@ -268,7 +310,8 @@ def _decidir(fila: dict, resultado: dict | None, trabajo: dict) -> tuple[str, st
             return "error", None, "estado_desconocido"
         error = None
         if estado == "error":
-            error = "rechazado" if crudo == "rechazado" else "procesamiento_fallido"
+            error = (codigo_del_error_del_archivo(resultado.get("error"))
+                     or ("rechazado" if crudo == "rechazado" else "procesamiento_fallido"))
         return estado, resultado.get("carpeta_procesado"), error
     terminado = trabajo.get("estado")
     if terminado not in TRABAJO_TERMINADO:

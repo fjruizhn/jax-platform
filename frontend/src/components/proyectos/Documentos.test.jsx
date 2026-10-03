@@ -622,7 +622,11 @@ describe('Documentos: motivo del error', () => {
     expect(screen.queryByText(T.sinMotivoReprocesable)).toBeNull()
   })
 
-  it.each(['ocr_sin_texto', 'ocr_confianza_baja'])('el código %s se muestra traducido', async (codigo) => {
+  it.each([
+    'ocr_sin_texto', 'ocr_confianza_baja', 'formato_no_soportado', 'formato_gif_animado', 'formato_webp_animado',
+    'formato_gris_16_bits', 'formato_coma_flotante', 'formato_entero_32_bits', 'formato_bmp_16_bits',
+    'archivo_ilegible', 'archivo_no_procesable', 'imagen_demasiado_grande', 'ocr_tiempo_excedido', 'ocr_sin_memoria',
+  ])('el código %s se muestra traducido', async (codigo) => {
     api.listarDocumentos.mockResolvedValue({ documentos: [doc(1, { estado: 'error', error: codigo })], siguiente: null })
     montar()
     expect(await screen.findByText(T.causa(T.causas[codigo]))).toBeInTheDocument()

@@ -1093,8 +1093,15 @@ jobs:
             //   reprocesos_simultaneos muestra su texto, no reintenta solo y deja el boton listo; el boton
             //   queda deshabilitado mientras su pedido esta en vuelo). Medido LOCAL con `npx vitest run`
             //   sobre la rama: 1354/0/1354.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1354) {
-              console.error("PISO ROTO: se esperaban 1354 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1354 -> 1366 (2026-10-03, jax#338: la pantalla nombra el formato no soportado): +12 en
+            //   Documentos.test.jsx (cada codigo de error nuevo de LAS MANOS muestra su texto: 6 formatos, el
+            //   generico y 5 mas; 14 casos en el it.each, 2 ya existian). Los nuevos fallaban antes del i18n
+            //   (12 failed) y la paridad de causas es/en tambien. Medido con `npx vitest run` sobre la rama:
+            //   1366/0/1366, 112 archivos.
+            // Ronda 2 de #187: sin cambio (la prueba de paridad lee causas_de_error.json en vez del .py; una
+            //   prueba reemplazada por otra). Medido: 1366/0/1366.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1366) {
+              console.error("PISO ROTO: se esperaban 1366 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3484,7 +3491,21 @@ jobs:
           # 3570 -> 3574 (ronda 3 de #186): +4 con DB (3 del freno de incertidumbre del despachador y 1 del log del
           #   429 global de reprocesar), medido EXACTO en local (mismo comando, mismas 3 de test_base_por_sesion
           #   fuera): 3574 passed. Sin DB no suman (piden `client`): 2150 / piso 2149 sin cambio.
-          PISO_PASSED = 3574
+          # 3574 -> 3601 (jax#338, formato no soportado): +27 con DB (26 puras de `codigo_del_error_del_archivo` y
+          #   `_decidir` mas 1 con `client`: un error del contrato no lee la ficha), visto en rojo contra el
+          #   despachador viejo. MEDIDO CON DB en local (mariadb:12.3.3 descartable en 3399, jax 2b0c163, mismo
+          #   comando): 3604 passed, 0 failed, 0 skipped, con las 3 de test_base_por_sesion INCLUIDAS (esta vez
+          #   pasaron); 3604 - 3 = 3601, el mismo criterio de los pisos anteriores (esas 3 fuera).
+          # 3601 -> 3605 (ronda 2 de #187): +4 puras (tablas del contrato dentro de CAUSAS_DE_ERROR, dos defensas
+          #   vistas en rojo con monkeypatch contra el codigo sin defensa, y la paridad con
+          #   frontend/src/api/causas_de_error.json, vista en rojo quitandole un codigo). MEDIDO CON DB en local
+          #   (mariadb:12.3.3 descartable en 3399, jax 2b0c163, mismo comando): 3608 passed, 0 failed, 0 skipped,
+          #   con las 3 de test_base_por_sesion incluidas; 3608 - 3 = 3605, el mismo criterio de antes.
+          # 3605 -> 3606 (ronda 3 de #187): +1 pura (una razon del OCR con codigo fuera de CAUSAS_DE_ERROR cae a
+          #   procesamiento_fallido; vista en rojo contra el despachador sin defensa). MEDIDO CON DB en local
+          #   (mariadb:12.3.3 descartable en 3399, jax 2b0c163, mismo comando): 3609 passed, 0 failed, 0 skipped,
+          #   con las 3 de test_base_por_sesion incluidas; 3609 - 3 = 3606.
+          PISO_PASSED = 3606
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4500,7 +4521,15 @@ jobs:
       # tests/test_conftest_no_carga_secretos_no_necesarios.py:250, que el runner salta ("no hay /etc/jax/.env con
       # estos secretos en esta maquina"): un skip LEGITIMO de entorno, la prueba no es de esta rama. Piso =
       # lo medido en local ahora (2150 passed / 1420 skipped) menos ese 1: 2149, el numero que dara el runner.
-      JAX_CI_MIN_PASSED: "2149"
+      # 2149 -> 2175 (jax#338, formato no soportado): +26 puras (`codigo_del_error_del_archivo` y `_decidir`); la
+      # prueba con `client` salta sin DB. MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la rama: 2176 passed /
+      # 1428 skipped (master local 2150); menos el skip de entorno de test_conftest_no_carga_secretos...:250 que el
+      # runner salta, 2175.
+      # 2175 -> 2179 (ronda 2 de #187): +4 puras (ver el piso con DB). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo
+      # comando, sobre la rama: 2180 passed / 1428 skipped; menos el skip de entorno del runner, 2179.
+      # 2179 -> 2180 (ronda 3 de #187): +1 pura. MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la rama:
+      # 2181 passed / 1428 skipped; menos el skip de entorno del runner, 2180.
+      JAX_CI_MIN_PASSED: "2180"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

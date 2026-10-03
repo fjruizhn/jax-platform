@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import causasDeReferencia from './causas_de_error.json'
 
 // Cliente de /api/proyectos (E1, T6). `api` se simula como en client.test.js:
 // la prueba mira método, ruta, cuerpo, query y cabeceras, no la red.
@@ -258,12 +259,10 @@ function estadosDelBackend() {
   return unicos([...comillas(resultado), ...comillas(abiertos), 'en_cola'])
 }
 
-// Códigos estables de `project_documents.error` (ronda final, menor 5): la lista vive en el despachador.
-function causasDelBackend() {
-  const bloque = leer('proyectos_documentos/despachador.py').match(/^CAUSAS_DE_ERROR = frozenset\(\{([\s\S]*?)\}\)/m)
-  expect(bloque, `CAUSAS_DE_ERROR no está en despachador.py: ${ACTUALIZAR}`).not.toBeNull()
-  return unicos([...bloque[1].matchAll(/^\s*"(\w+)",/gm)].map((m) => m[1]))
-}
+// Códigos estables de `project_documents.error`: la referencia es `causas_de_error.json`, que una prueba
+// del backend (test_proyectos_documentos_despachador.py) exige igual a `sorted(CAUSAS_DE_ERROR)`. Aquí ya no
+// se lee el .py con una regex: no depende de cómo esté escrito.
+const causasDelBackend = () => causasDeReferencia
 
 function motivosDelBackend() {
   const docs = leer('api/proyectos_documentos.py')
@@ -304,9 +303,11 @@ describe('i18n proyectos.documentos', () => {
     for (const k of estadosDelBackend()) expect(typeof d.proyectos.documentos.estados[k], k).toBe('string')
   })
 
-  it('el extractor de causas ve la lista completa (la prueba no es vacía)', () => {
-    expect(causasDelBackend()).toEqual(['estado_desconocido', 'http_4xx', 'ocr_confianza_baja', 'ocr_sin_texto',
-      'procesamiento_fallido', 'rechazado', 'ruta_ajena', 'sin_resultado', 'trabajo_fallido', 'trabajo_perdido'])
+  it('la referencia de causas no está vacía, está ordenada y no repite códigos', () => {
+    expect(causasDeReferencia.length).toBeGreaterThan(10)
+    expect(causasDeReferencia).toEqual([...new Set(causasDeReferencia)].sort())
+    for (const k of ['procesamiento_fallido', 'ocr_sin_texto', 'formato_no_soportado', 'formato_gif_animado'])
+      expect(causasDeReferencia).toContain(k)
   })
 
   it.each(secciones)('%s: toda causa de error del backend tiene texto, y hay un genérico', (_n, d) => {
