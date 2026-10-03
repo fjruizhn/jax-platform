@@ -18,7 +18,9 @@ const ETIQUETA = 'block text-xs text-texto-suave mb-1'
 const BOTON_PRIMARIO = `${TAMANO_BOTON_44} rounded bg-superficie-2 text-texto-fuerte border border-borde-control hover:border-foco focus:outline-none focus-visible:ring-2 focus-visible:ring-foco disabled:opacity-50 transition-colors`
 const BOTON_SECUNDARIO = `${TAMANO_BOTON_44} rounded bg-superficie text-texto-suave hover:text-texto focus:outline-none focus-visible:ring-2 focus-visible:ring-foco transition-colors`
 
-export default function CrearProyectoModal({ onCerrar }) {
+// `onCreado(proyecto)`: quien abre el alta fuera de la pantalla de Proyectos (la barra del
+// chat) decide qué sigue; sin él, el alta navega al detalle del proyecto nuevo (E2a, T11).
+export default function CrearProyectoModal({ onCerrar, onCreado }) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const { base } = useBaseProyectos()
@@ -54,7 +56,8 @@ export default function CrearProyectoModal({ onCerrar }) {
       if (!vivoRef.current) return
       vivoRef.current = false
       onCerrar()
-      navigate(`${base}/${Number(creado.id)}`)
+      if (onCreado) onCreado(creado)
+      else navigate(`${base}/${Number(creado.id)}`)
     } catch (err) {
       if (!vivoRef.current) return
       setError(t.proyectos.errores[codigoDe(err)] ?? t.proyectos.errores.generico)

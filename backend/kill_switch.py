@@ -77,6 +77,12 @@ RUTAS_FRENADAS = frozenset({
     # frena. El 423 lo da antes el middleware adjuntos/limite_de_subidas.py (sin
     # leer el cuerpo) con `exigir_freno_suelto`; la dependencia queda igual.
     ("POST", "/api/chat/upload"),
+    # Ruling del controlador (2026-10-03, Proyectos E2a, T6): subir, ocultar y
+    # restaurar documentos de un proyecto tambien frenan. Rutas, no una familia:
+    # el listado y los limites son lecturas y siguen respondiendo.
+    ("POST", "/api/proyectos/{project_id}/documentos"),
+    ("POST", "/api/proyectos/{project_id}/documentos/{documento_id}/ocultar"),
+    ("POST", "/api/proyectos/{project_id}/documentos/{documento_id}/restaurar"),
 })
 
 SQL_REGISTRAR = "INSERT INTO kill_switch_audit (accion, user_id, at) VALUES (%s, %s, UTC_TIMESTAMP(6))"

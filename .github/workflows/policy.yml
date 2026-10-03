@@ -1043,8 +1043,45 @@ jobs:
           // 1135 -> 1160 (2026-10-02, Proyectos E1.1, PR #178): +25 medido en el runner 1160/0/1160: fila de modos, Miembros con lista marcable, lote atado a la sesión.
           // 1160 -> 1190 (2026-10-02, versión única y marca configurable, PR #179): +30 medido en el runner 1190/0/1190.
           // 1190 -> 1196 (2026-10-02, Proyectos dentro de Administración, PR #181): +6 medido en el runner 1196/0/1196.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1196) {
-              console.error("PISO ROTO: se esperaban 1196 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1196 -> 1213 (2026-10-03, Proyectos E2a T8): +17, medido LOCAL con `npx vitest run --reporter=json`
+            //   1213/0/1213 (número local que el runner confirma o corrige): +17 en api/proyectos.test.js
+            //   (cliente de documentos, y textos y códigos del backend contra es/en).
+            // 1213 -> 1242 (2026-10-03, Proyectos E2a T9): +29, medido LOCAL con `npx vitest run`
+            //   1242/0/1242 (número local que el runner confirma o corrige): +10 en
+            //   resumenDeLote.test.js y +19 en SelectorDeDocumentos.test.jsx (resumen, foco, Escape,
+            //   doble clic, barra de avance, errores del servidor, resultado).
+            // 1242 -> 1250 (2026-10-03, Proyectos E2a T9 ronda 1): +8, medido LOCAL con `npx vitest run`
+            //   1250/0/1250: tope de render de ignorados, reintento de límites, aviso de no-cierre,
+            //   motivo y nombre traducidos, onTerminado al desmontar (x2), tope ausente.
+            // 1250 -> 1252 (2026-10-03, Proyectos E2a T9 ronda 2): +2, medido LOCAL con `npx vitest run`
+            //   1252/0/1252: formatoPeso en español (punto decimal, es-HN) y sin `style:'unit'` (Intl que lanza).
+            // 1252 -> 1288 (2026-10-03, Proyectos E2a T10): +36, medido LOCAL con `npx vitest run`
+            //   1288/0/1288 (número local que el runner confirma o corrige): +33 en Documentos.test.jsx
+            //   (lista, papeles, ocultar y restaurar, errores, Selector, sondeo de 5 s) y +3 net en
+            //   ProyectoDetalle.test.jsx (tres pestañas por teclado, VIEWER, Documentos pide la lista, desmontar).
+            // 1288 -> 1295 (2026-10-03, Proyectos E2a T10 ronda 1): +7, medido LOCAL con `npx vitest run`
+            //   1295/0/1295: Cargar más con sondeo en vuelo, idioma sin reinicio, más de 100 filas,
+            //   tope de 300, anuncio de transiciones (x2) y REVIEWER con texto.
+            // 1295 -> 1312 (2026-10-03, Proyectos E2a T11): +17, medido LOCAL con `npx vitest run`
+            //   1312/0/1312 (número local que el runner confirma o corrige): +11 BotonDocumentos.test.jsx,
+            //   +4 BottomBar.proyecto.test.jsx, +2 tamano44Proyectos.test.jsx (barra a 24 px y ventana a 44 px);
+            //   BottomBar.modos.test.jsx cambia sin sumar (orden con el botón; el selector también en Pipeline).
+            // 1312 -> 1318 (2026-10-03, Proyectos E2a T11 ronda 1): +6, medido LOCAL con `npx vitest run`
+            //   1318/0/1318: papel y estado se vuelven a pedir al abrir y cerrar el selector (archivado,
+            //   papel perdido), 7->9->7 sin papel viejo ni respuesta tardía, error de acceso con texto
+            //   propio y «Cargar más» en la lista de Personal (x3).
+            // 1318 -> 1332 (2026-10-03, Proyectos E2a ronda final de la Parte B): base = el número DEL
+            //   RUNNER sobre 683344f (1318, leído por el controlador; el frontend no cambió hasta
+            //   185102c) + el delta local de la ronda final, +14, medido LOCAL con `npx vitest run`
+            //   1332/0/1332: BotonDocumentos.test.jsx +2 (destino en ventana, 7→9 cierra),
+            //   BotonDocumentos.flujo.test.jsx +4 (archivo nuevo, con #root real: Escape y foco, #root inert
+            //   y Cancelar, título, 7→9 sube a 9),
+            //   SelectorDeDocumentos.test.jsx +3, Documentos.test.jsx +2 (causa desconocida, correo
+            //   largo), api/proyectos.test.js +3 (causas del despachador y su texto es/en).
+            // 1332 tras la fusion con master (#175): 1196 de master (#175 no toca el frontend) + 136 de
+            //   E2a; medido LOCAL sobre la fusion: 1332/0/1332.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1332) {
+              console.error("PISO ROTO: se esperaban 1332 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1175,7 +1212,7 @@ jobs:
       # test_descartados_orquestar.py (Task 8, 2026-09-22, carga de
       # descartar-pipelines): mismo defecto que el resto de esta lista si no
       # se agrega acá -- existiría y no correría en NINGÚN job.
-      - run: python -m pytest loadtest/test_memoria_medir_fundir.py loadtest/test_memoria_levantar_entorno.py loadtest/test_historial_orquestar.py loadtest/test_descartados_orquestar.py loadtest/test_proyectos_e1.py -v
+      - run: python -m pytest loadtest/test_memoria_medir_fundir.py loadtest/test_memoria_levantar_entorno.py loadtest/test_historial_orquestar.py loadtest/test_descartados_orquestar.py loadtest/test_proyectos_e1.py loadtest/test_proyectos_e2a.py -v
 
   # --------------------------------------------------------------------------
   # Suite del backend, modo "CON base de datos" -- los 150 tests que el job de
@@ -3372,7 +3409,30 @@ jobs:
           #   test_ejecutor_tablas.py (el metodo esta en el contrato; la migracion amplia el
           #   ENUM sin perder filas, con DB). Delta medido por archivo con DB real (contenedor
           #   mariadb:12.3.3): 26 -> 28 passed. Vistos en rojo contra a22829f^ (el codigo viejo).
-          PISO_PASSED = 3073
+          # 3073 -> 3221 (2026-10-03, Hyde, Proyectos E2a T5-T7): +148 colectados, SIN medir con DB
+          #   real (la plantilla jax_memory_test local trae 5 triggers que el clonador de
+          #   base_de_test.py no copia y la suite con DB no arranca; pasa igual en el baseline
+          #   8759512, no es de esta rama): el job lo confirma o lo corrige (regla 5). Delta por
+          #   colección con JAX_CI_NO_DB=1, baseline 8759512 -> HEAD: test_proyectos_documentos_api
+          #   +66, _despachador +39, _repositorio +35, test_ajustes +8 (19 -> 27); sin skips nuevos.
+          # 3221 -> 3360 (2026-10-03, Hyde, Proyectos E2a ronda final de la Parte B): base = el numero
+          #   DEL RUNNER sobre 683344f (3322 passed, 1 skipped, leido por el controlador) + el delta
+          #   local de la ronda final, +38. Delta medido por coleccion, mismo jax-proyectos-e2a:
+          #   185102c 3326 colectados -> HEAD 3364 (+38, todos en test_proyectos_documentos_api +7,
+          #   _despachador +25, _repositorio +2, test_ajustes +4); suite con DB local en HEAD
+          #   (JAX_TEST_DB_SUFIJO propio): 3332 passed, 2 skipped, 0 failed. Sin skips nuevos.
+          # 3360 -> 3363 (seguimiento 2 de la ronda final): +3 con `client` (re-encolar registra a quien
+          #   sube de nuevo y su correo viaja a LAS MANOS; re-encolar en archivado entre medio da 409;
+          #   el re-encolado exige las condiciones del INSERT). Coleccion 3364 -> 3367. Sin DB no suman.
+          # 3363 -> 3262 (2026-10-03, fusion con master tras #175, a pedido del controlador): el piso de
+          #   master (3073; #175 no lo movio) + las pruebas que agrega E2a y master no tiene, +189 por
+          #   coleccion con DB y jax 1b54455: master 3199 -> fusion 3388 (= base 9a2c90c 3154 -> E2a
+          #   3343). Fusion medida LOCAL: 3359 passed, 2 skipped, 0 failed. Baja respecto de 3363
+          #   porque aquel salia del numero del runner (3322) y el 3073 de master esta por debajo de
+          #   su cuenta real; el runner tiene la ultima palabra.
+          # 3262 -> 3387: medido en el runner sobre 96ce1f8 (fusión con master #175), run 37120526359:
+          #   colectados=3388, passed=3387, skipped=1 (MAX_SKIPS=1 concuerda).
+          PISO_PASSED = 3387
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4353,7 +4413,20 @@ jobs:
       # = -28 (+4 de test_retiro_ajuste_retencion). Piso = declarado (1915) - 28 = 1887.
       # 1887 -> 1888 (2026-10-02, C2 snapshot_lv): +1 puro en test_ejecutor_tablas.py (el otro
       # nuevo pide `client`: +1 skip). Medido por archivo con JAX_CI_NO_DB=1: 6/20 -> 7/21.
-      JAX_CI_MIN_PASSED: "1888"
+      # 1888 -> 1912 (2026-10-03, Hyde, Proyectos E2a T5-T7): +24 puros, medido LOCAL sin DB,
+      # mismo comando y mismo jax-proyectos-e2a: baseline 8759512 2016 passed + 1 que el baseline
+      # falla solo por el jax mas nuevo (test_project_authority_migration) = 2017, HEAD 2041 / 0
+      # failed. Piso = declarado (1888) + 24. Los otros +124 colectados piden `client` (skips).
+      # 1912 -> 2040 (2026-10-03, Hyde, Proyectos E2a ronda final de la Parte B): base = el numero
+      # DEL RUNNER sobre 683344f (2040 passed, leido por el controlador) + el delta local de la ronda
+      # final, que es 0: medido sin DB (JAX_CI_NO_DB=1), mismo comando y mismo jax-proyectos-e2a,
+      # 185102c 2041 passed / 1282 skipped -> HEAD 2041 / 1320. Las 38 pruebas nuevas piden `client`.
+      # 2040 -> 1912 (2026-10-03, fusion con master tras #175, a pedido del controlador): el piso de
+      # master (1888) + las pruebas sin DB que agrega E2a, +24: sin DB con jax 1b54455, master 2041
+      # passed -> fusion 2065 passed (0 failed). El runner tiene la ultima palabra.
+      # 1912 -> 2064: medido en el runner sobre 96ce1f8 (fusión con master #175), run 37120526359:
+      # passed=2064, skipped=1324.
+      JAX_CI_MIN_PASSED: "2064"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

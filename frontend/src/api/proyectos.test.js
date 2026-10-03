@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // Cliente de /api/proyectos (E1, T6). `api` se simula como en client.test.js:
 // la prueba mira método, ruta, cuerpo, query y cabeceras, no la red.
@@ -122,11 +125,199 @@ describe('i18n proyectos', () => {
     }
   })
 
-  it('vistas, papeles y estados tienen sus tres claves', () => {
+  it('vistas, papeles (cuatro, con REVIEWER) y estados tienen sus claves', () => {
     for (const d of [es, en]) {
       expect(Object.keys(d.proyectos.vistas).sort()).toEqual(['activos', 'archivados', 'ocultos'])
-      expect(Object.keys(d.proyectos.papeles).sort()).toEqual(['CONTRIBUTOR', 'OWNER', 'VIEWER'])
+      expect(Object.keys(d.proyectos.papeles).sort()).toEqual(['CONTRIBUTOR', 'OWNER', 'REVIEWER', 'VIEWER'])
       expect(Object.keys(d.proyectos.estados).sort()).toEqual(['ACTIVE', 'ARCHIVED', 'HIDDEN'])
     }
+  })
+})
+
+// ---- Documentos del proyecto (E2a, T8) ----
+
+describe('cliente de documentos', () => {
+  it('limitesDeDocumentos: GET /proyectos/documentos/limites', async () => {
+    expect(await c.limitesDeDocumentos()).toBe('DATA')
+    expect(api.get).toHaveBeenCalledWith('/proyectos/documentos/limites')
+  })
+
+  it('subirDocumentos: POST con FormData, campo archivos repetido y nombre de carpeta', async () => {
+    const a = new File(['a'], 'a.pdf')
+    const b = new File(['b'], 'b.txt')
+    Object.defineProperty(b, 'webkitRelativePath', { value: 'carpeta/sub/b.txt' })
+    const r = await c.subirDocumentos(7, [a, b])
+    expect(r).toBe('DATA')
+    const [url, cuerpo, opts] = api.post.mock.calls[0]
+    expect(url).toBe('/proyectos/7/documentos')
+    expect(cuerpo).toBeInstanceOf(FormData)
+    const partes = cuerpo.getAll('archivos')
+    expect(partes).toHaveLength(2)
+    expect(partes.map((p) => p.name)).toEqual(['a.pdf', 'carpeta/sub/b.txt'])
+    // Sin Content-Type a mano: el navegador pone el boundary.
+    expect(opts.headers).toBeUndefined()
+  })
+
+  it('subirDocumentos: onProgreso recibe la fracción 0..1', async () => {
+    const vistos = []
+    api.post.mockImplementation(async (_u, _c, opts) => {
+      opts.onUploadProgress({ loaded: 50, total: 200 })
+      opts.onUploadProgress({ loaded: 200, total: 200 })
+      opts.onUploadProgress({ loaded: 10 }) // sin total: no se inventa una fracción
+      return { data: 'DATA' }
+    })
+    await c.subirDocumentos(7, [new File(['a'], 'a.pdf')], { onProgreso: (f) => vistos.push(f) })
+    expect(vistos).toEqual([0.25, 1])
+  })
+
+  it('subirDocumentos sin onProgreso no revienta al llegar progreso', async () => {
+    api.post.mockImplementation(async (_u, _c, opts) => {
+      opts.onUploadProgress({ loaded: 1, total: 2 })
+      return { data: 'DATA' }
+    })
+    await expect(c.subirDocumentos(7, [new File(['a'], 'a.pdf')])).resolves.toBe('DATA')
+  })
+
+  it('listarDocumentos: query con vista, antes_de y limite, y por defecto visibles/null/50', async () => {
+    await c.listarDocumentos(4, { vista: 'ocultos', antesDe: 9, limite: 20 })
+    expect(api.get).toHaveBeenCalledWith('/proyectos/4/documentos', {
+      params: { vista: 'ocultos', antes_de: 9, limite: 20 },
+    })
+    await c.listarDocumentos(4)
+    expect(api.get).toHaveBeenLastCalledWith('/proyectos/4/documentos', {
+      params: { vista: 'visibles', antes_de: null, limite: 50 },
+    })
+  })
+
+  it('ocultarDocumento y restaurarDocumento: POST a su ruta', async () => {
+    await c.ocultarDocumento(4, 11)
+    expect(api.post).toHaveBeenLastCalledWith('/proyectos/4/documentos/11/ocultar')
+    await c.restaurarDocumento(4, 11)
+    expect(api.post).toHaveBeenLastCalledWith('/proyectos/4/documentos/11/restaurar')
+  })
+})
+
+// Los códigos, estados y motivos SALEN DEL BACKEND: se leen del .py para que un código
+// nuevo sin texto rompa esta prueba (un código sin texto se vería como el genérico).
+const RAIZ_BACKEND = resolve(dirname(fileURLToPath(import.meta.url)), '../../../backend')
+const leer = (ruta) => readFileSync(resolve(RAIZ_BACKEND, ruta), 'utf8')
+const unicos = (xs) => [...new Set(xs)].sort()
+const comillas = (texto) => [...texto.matchAll(/["'](\w+)["']/g)].map((m) => m[1])
+
+// Argumentos de cada llamada `nombre(...)` del .py, con el paréntesis balanceado (sirve para
+// ternarios y llamadas partidas en dos líneas). Se salta la definición (`def nombre(`).
+function llamadas(texto, nombre) {
+  const sitios = []
+  for (const m of texto.matchAll(new RegExp(`(?<!def )\\b${nombre}\\(`, 'g'))) {
+    let nivel = 1
+    let k = m.index + m[0].length
+    for (; k < texto.length && nivel > 0; k++) nivel += texto[k] === '(' ? 1 : texto[k] === ')' ? -1 : 0
+    sitios.push(texto.slice(m.index + m[0].length, k - 1))
+  }
+  return sitios
+}
+const ACTUALIZAR = 'actualizar es/en y esta prueba'
+
+function codigosDelBackend() {
+  const docs = leer('api/proyectos_documentos.py')
+  const tabla = new Map([...leer('api/proyectos.py').matchAll(/\((\w+), \d+, "(\w+)"\)/g)].map((m) => [m[1], m[2]]))
+  const codigos = []
+  // Control de cuenta: cada llamada a `_error(` y a `_http(` tiene que dar al menos un código
+  // visible; si no (una constante, otra forma), falla en voz alta en vez de quedar sin texto.
+  const sitiosError = llamadas(docs, '_error')
+  expect(sitiosError.length, `sin llamadas a _error: el extractor ya no ve nada, ${ACTUALIZAR}`).toBeGreaterThan(0)
+  for (const a of sitiosError) {
+    const expr = a.match(/^\s*\d+,\s*([\s\S]*?)(?:,\s*\w+=|$)/)?.[1] ?? ''
+    const vistos = comillas(expr)
+    expect(vistos.length, `_error(${a.slice(0, 60)}...) no tiene un código literal: ${ACTUALIZAR}`).toBeGreaterThan(0)
+    codigos.push(...vistos)
+  }
+  const sitiosHttp = llamadas(docs, '_http')
+  expect(sitiosHttp.length, `sin llamadas a _http: ${ACTUALIZAR}`).toBeGreaterThan(0)
+  for (const a of sitiosHttp) {
+    const clases = [...a.matchAll(/\b([A-Z]\w+)\(/g)].map((m) => m[1])
+    expect(clases.length, `_http(${a.slice(0, 60)}...) sin clase de error visible: ${ACTUALIZAR}`).toBeGreaterThan(0)
+    for (const c of clases) {
+      expect(tabla.has(c), `${c} no está en _HTTP_DE_ERROR: ${ACTUALIZAR}`).toBe(true)
+      codigos.push(tabla.get(c))
+    }
+  }
+  const freno = leer('kill_switch.py').match(/^KILL_SWITCH_ACTIVO = "(\w+)"/m)[1]
+  return unicos([...codigos, freno])
+}
+
+function estadosDelBackend() {
+  const repo = leer('proyectos_documentos/repositorio.py')
+  const resultado = repo.match(/ESTADOS_DE_RESULTADO = frozenset\(\{([^}]*)\}\)/)[1]
+  const abiertos = repo.match(/_ESTADOS_ABIERTOS = \(([^)]*)\)/)[1]
+  return unicos([...comillas(resultado), ...comillas(abiertos), 'en_cola'])
+}
+
+// Códigos estables de `project_documents.error` (ronda final, menor 5): la lista vive en el despachador.
+function causasDelBackend() {
+  const bloque = leer('proyectos_documentos/despachador.py').match(/^CAUSAS_DE_ERROR = frozenset\(\{([\s\S]*?)\}\)/m)
+  expect(bloque, `CAUSAS_DE_ERROR no está en despachador.py: ${ACTUALIZAR}`).not.toBeNull()
+  return unicos([...bloque[1].matchAll(/^\s*"(\w+)",/gm)].map((m) => m[1]))
+}
+
+function motivosDelBackend() {
+  const docs = leer('api/proyectos_documentos.py')
+  return unicos([...docs.matchAll(/"motivo":\s*([^\n]*?)\}\)/g)].flatMap((m) => comillas(m[1])))
+}
+
+describe('i18n proyectos.documentos', () => {
+  const secciones = [['es', es], ['en', en]]
+
+  it('es y en tienen las mismas claves en profundidad', () => {
+    expect(forma(en.proyectos.documentos).sort()).toEqual(forma(es.proyectos.documentos).sort())
+  })
+
+  it('el extractor de códigos del backend encuentra lo esperado (la prueba no es vacía)', () => {
+    const codigos = codigosDelBackend()
+    for (const k of ['lote_demasiado_grande', 'sin_espacio', 'proyecto_no_activo', 'kill_switch_activo',
+      'papel_insuficiente', 'proyecto_no_encontrado', 'almacen_error_escritura', 'insercion_incierta'])
+      expect(codigos).toContain(k)
+    expect(estadosDelBackend()).toHaveLength(8)
+    expect(motivosDelBackend()).toEqual(
+      ['demasiado_grande', 'duplicado', 'duplicado_oculto', 'nombre_invalido', 'tipo_no_admitido'])
+  })
+
+  it('el extractor ve tantas llamadas como hay en el .py (un código invisible falla en voz alta)', () => {
+    const docs = leer('api/proyectos_documentos.py')
+    const cuenta = (n) => (docs.match(new RegExp(`(?<!def )\\b${n}\\(`, 'g')) || []).length
+    expect(llamadas(docs, '_error')).toHaveLength(cuenta('_error'))
+    expect(llamadas(docs, '_http')).toHaveLength(cuenta('_http'))
+    expect(cuenta('_error')).toBeGreaterThan(8)
+    expect(cuenta('_http')).toBe(2)
+  })
+
+  it.each(secciones)('%s: todo código de error del backend tiene texto', (_n, d) => {
+    for (const k of codigosDelBackend()) expect(typeof d.proyectos.documentos.errores[k], k).toBe('string')
+  })
+
+  it.each(secciones)('%s: todo estado del backend tiene texto', (_n, d) => {
+    for (const k of estadosDelBackend()) expect(typeof d.proyectos.documentos.estados[k], k).toBe('string')
+  })
+
+  it('el extractor de causas ve la lista completa (la prueba no es vacía)', () => {
+    expect(causasDelBackend()).toEqual(['estado_desconocido', 'http_4xx', 'procesamiento_fallido', 'rechazado',
+      'ruta_ajena', 'sin_resultado', 'trabajo_fallido', 'trabajo_perdido'])
+  })
+
+  it.each(secciones)('%s: toda causa de error del backend tiene texto, y hay un genérico', (_n, d) => {
+    for (const k of [...causasDelBackend(), 'desconocida']) expect(typeof d.proyectos.documentos.causas[k], k).toBe('string')
+  })
+
+  it.each(secciones)('%s: todo motivo de ignorado del backend tiene texto', (_n, d) => {
+    for (const k of motivosDelBackend()) expect(typeof d.proyectos.documentos.motivos[k], k).toBe('string')
+  })
+
+  it.each(secciones)('%s: las demás claves del brief existen', (_n, d) => {
+    const x = d.proyectos.documentos
+    for (const k of ['pestana', 'agregar', 'vacio', 'ocultar', 'restaurar', 'verOcultos', 'subiendo', 'sinPermiso', 'boton'])
+      expect(typeof x[k], k).toBe('string')
+    for (const k of ['titulo', 'archivos', 'peso', 'ignorados', 'confirmar', 'cancelar'])
+      expect(['string', 'function'], k).toContain(typeof x.resumen[k])
+    for (const k of ['titulo', 'texto', 'crear']) expect(typeof x.elegirProyecto[k], k).toBe('string')
   })
 })

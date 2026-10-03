@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import '@testing-library/jest-dom'
 
-// Detalle de proyecto (E1, T8): Miembros y Ajustes.
+// Detalle de proyecto (E1, T8; E2a, T10): Documentos, Miembros y Ajustes.
 vi.mock('../api/proyectos', () => ({
   verProyecto: vi.fn(),
   renombrarProyecto: vi.fn(),
@@ -13,6 +13,11 @@ vi.mock('../api/proyectos', () => ({
   cambiarPapel: vi.fn(),
   quitarMiembro: vi.fn(),
   buscarCandidatos: vi.fn(),
+  listarDocumentos: vi.fn(),
+  ocultarDocumento: vi.fn(),
+  restaurarDocumento: vi.fn(),
+  limitesDeDocumentos: vi.fn(),
+  subirDocumentos: vi.fn(),
 }))
 
 import * as api from '../api/proyectos'
@@ -26,6 +31,7 @@ const T = es.proyectos
 const INICIAL = useJaxStore.getState()
 
 const PROY = { id: 7, uuid: 'u7', nombre: 'Alfa', descripcion: 'desc', estado: 'ACTIVE', papel: 'OWNER' }
+const DOC = { id: 1, nombre: 'informe.pdf', bytes: 1024, tipo: 'pdf', estado: 'listo', error: null, subido_por_email: 'yo@x.com', creado: '2026-10-01T12:00:00', oculto: false }
 const M_YO = { user_id: 1, email: 'yo@x.com', papel: 'OWNER', origen: 'DIRECT' }
 const M_ADMIN = { user_id: 2, email: 'admin@x.com', papel: 'OWNER', origen: 'TENANT_ADMIN' }
 const M_LECTOR = { user_id: 3, email: 'lec@x.com', papel: 'VIEWER', origen: 'DIRECT' }
@@ -51,6 +57,12 @@ function configurar({ proyecto = PROY, miembros = [M_YO, M_ADMIN, M_LECTOR] } = 
   api.verProyecto.mockResolvedValue(proyecto)
   api.listarMiembros.mockResolvedValue({ miembros })
   api.buscarCandidatos.mockResolvedValue({ candidatos: [] })
+  api.listarDocumentos.mockResolvedValue({ documentos: [DOC], siguiente: null })
+}
+
+async function irAMiembros() {
+  await screen.findByRole('heading', { name: 'Alfa' })
+  fireEvent.click(screen.getByRole('tab', { name: T.miembros }))
 }
 
 let espias
@@ -128,28 +140,72 @@ describe('ProyectoDetalle: carga y 404', () => {
 })
 
 describe('ProyectoDetalle: pestañas', () => {
-  it('roles, aria-controls, aria-selected y flechas', async () => {
+  it('roles, aria-controls, aria-selected y flechas con tres pestañas', async () => {
     renderDetalle()
     await screen.findByRole('heading', { name: 'Alfa' })
     const lista = screen.getByRole('tablist')
     const tabs = within(lista).getAllByRole('tab')
-    expect(tabs.map((x) => x.textContent)).toEqual([T.miembros, T.ajustes])
+    expect(tabs.map((x) => x.textContent)).toEqual([T.documentos.pestana, T.miembros, T.ajustes])
     expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
-    expect(tabs[0]).toHaveAttribute('aria-controls', 'panel-miembros')
-    expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'panel-miembros')
+    expect(tabs[0]).toHaveAttribute('aria-controls', 'panel-documentos')
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'panel-documentos')
     expect(tabs[1]).toHaveAttribute('tabindex', '-1')
+    expect(tabs[2]).toHaveAttribute('tabindex', '-1')
 
     tabs[0].focus()
     fireEvent.keyDown(tabs[0], { key: 'ArrowRight' })
     expect(tabs[1]).toHaveAttribute('aria-selected', 'true')
     expect(tabs[1]).toHaveFocus()
-    expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'panel-ajustes')
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'panel-miembros')
     fireEvent.keyDown(tabs[1], { key: 'ArrowRight' })
+    expect(tabs[2]).toHaveAttribute('aria-selected', 'true')
+    expect(tabs[2]).toHaveFocus()
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'panel-ajustes')
+    fireEvent.keyDown(tabs[2], { key: 'ArrowRight' })
     expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
-    fireEvent.keyDown(tabs[0], { key: 'End' })
-    expect(tabs[1]).toHaveFocus()
-    fireEvent.keyDown(tabs[1], { key: 'Home' })
+    fireEvent.keyDown(tabs[0], { key: 'ArrowLeft' })
+    expect(tabs[2]).toHaveFocus()
+    fireEvent.keyDown(tabs[2], { key: 'Home' })
     expect(tabs[0]).toHaveFocus()
+    fireEvent.keyDown(tabs[0], { key: 'End' })
+    expect(tabs[2]).toHaveFocus()
+  })
+
+  it('un VIEWER ve Documentos y Miembros (sin Ajustes) y la lista de documentos, sin acciones', async () => {
+    configurar({ proyecto: { ...PROY, papel: 'VIEWER' } })
+    renderDetalle()
+    expect(await screen.findByText('informe.pdf')).toBeInTheDocument()
+    const tabs = within(screen.getByRole('tablist')).getAllByRole('tab')
+    expect(tabs.map((x) => x.textContent)).toEqual([T.documentos.pestana, T.miembros])
+    expect(screen.queryByRole('button', { name: T.documentos.agregar })).not.toBeInTheDocument()
+  })
+
+  it('un REVIEWER ve su papel con texto («Revisor»), no undefined', async () => {
+    configurar({ proyecto: { ...PROY, papel: 'REVIEWER' } })
+    renderDetalle()
+    await screen.findByText('informe.pdf')
+    expect(T.papeles.REVIEWER).toBe('Revisor')
+    expect(screen.getByText(new RegExp(`${T.tuPapel}: Revisor`))).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: T.documentos.agregar })).toBeInTheDocument()
+  })
+
+  it('la pestaña Documentos pide la lista del proyecto y un OWNER ve Agregar', async () => {
+    renderDetalle()
+    expect(await screen.findByText('informe.pdf')).toBeInTheDocument()
+    expect(api.listarDocumentos).toHaveBeenCalledWith(7, { vista: 'visibles', antesDe: null, limite: 50 })
+    expect(screen.getByRole('button', { name: T.documentos.agregar })).toBeInTheDocument()
+  })
+
+  it('cambiar de pestaña desmonta Documentos y deja de sondear', async () => {
+    api.listarDocumentos.mockResolvedValue({ documentos: [{ ...DOC, estado: 'procesando' }], siguiente: null })
+    renderDetalle()
+    await screen.findByText('informe.pdf')
+    fireEvent.click(screen.getByRole('tab', { name: T.miembros }))
+    expect(screen.queryByText('informe.pdf')).not.toBeInTheDocument()
+    vi.useFakeTimers()
+    const llamadas = api.listarDocumentos.mock.calls.length
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+    expect(api.listarDocumentos.mock.calls.length).toBe(llamadas)
   })
 
   it('los botones usan el tamaño de 44px sin la clase min-h-6 que lo anula', () => {
@@ -162,6 +218,7 @@ describe('Miembros', () => {
   it('un VIEWER no ve controles ni pestaña de ajustes', async () => {
     configurar({ proyecto: { ...PROY, papel: 'VIEWER' } })
     renderDetalle()
+    await irAMiembros()
     await screen.findByText('lec@x.com')
     expect(screen.queryByRole('button', { name: T.quitar })).not.toBeInTheDocument()
     expect(screen.queryByLabelText(T.buscarPorEmail)).not.toBeInTheDocument()
@@ -172,6 +229,7 @@ describe('Miembros', () => {
   it('un OWNER con el proyecto archivado no ve controles de miembros', async () => {
     configurar({ proyecto: { ...PROY, estado: 'ARCHIVED' } })
     renderDetalle()
+    await irAMiembros()
     await screen.findByText('lec@x.com')
     expect(screen.queryByRole('button', { name: T.quitar })).not.toBeInTheDocument()
     expect(screen.queryByLabelText(T.buscarPorEmail)).not.toBeInTheDocument()
@@ -179,6 +237,7 @@ describe('Miembros', () => {
 
   it('las filas TENANT_ADMIN no llevan controles; las demás sí', async () => {
     renderDetalle()
+    await irAMiembros()
     const fila = (await screen.findByText('admin@x.com')).closest('li')
     expect(within(fila).queryByRole('button')).not.toBeInTheDocument()
     expect(within(fila).queryByRole('combobox')).not.toBeInTheDocument()
@@ -191,6 +250,7 @@ describe('Miembros', () => {
   it('cambiar el papel del último dueño muestra el texto de ultimo_dueno y recarga', async () => {
     api.cambiarPapel.mockRejectedValue(error(409, 'ultimo_dueno'))
     renderDetalle()
+    await irAMiembros()
     const fila = (await screen.findByText('yo@x.com')).closest('li')
     const cargas = api.verProyecto.mock.calls.length
     fireEvent.change(within(fila).getByRole('combobox'), { target: { value: 'VIEWER' } })
@@ -202,6 +262,7 @@ describe('Miembros', () => {
 
   it('quitar pide confirmación en Dialogo y no llama a la API si se cancela', async () => {
     renderDetalle()
+    await irAMiembros()
     const fila = (await screen.findByText('lec@x.com')).closest('li')
     fireEvent.click(within(fila).getByRole('button', { name: T.quitar }))
     const dialogo = screen.getByRole('dialog')
@@ -214,6 +275,7 @@ describe('Miembros', () => {
   it('quitar confirmado llama a quitarMiembro y recarga', async () => {
     api.quitarMiembro.mockResolvedValue({})
     renderDetalle()
+    await irAMiembros()
     const fila = (await screen.findByText('lec@x.com')).closest('li')
     const cargas = api.listarMiembros.mock.calls.length
     fireEvent.click(within(fila).getByRole('button', { name: T.quitar }))
@@ -353,6 +415,7 @@ describe('sin diálogos del navegador', () => {
   it('ninguna acción llama a confirm, alert ni prompt', async () => {
     api.quitarMiembro.mockResolvedValue({})
     renderDetalle()
+    await irAMiembros()
     const fila = (await screen.findByText('lec@x.com')).closest('li')
     fireEvent.click(within(fila).getByRole('button', { name: T.quitar }))
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: T.quitar }))

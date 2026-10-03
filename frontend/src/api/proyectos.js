@@ -61,3 +61,43 @@ export async function buscarCandidatos(id, q) {
   const { data } = await api.get(`/proyectos/${id}/candidatos`, { params: { q } })
   return data
 }
+
+// ---- Documentos del proyecto (E2a, T8) ----
+// Los topes y las extensiones aceptadas NO viven aquí: los publica el backend.
+
+export async function limitesDeDocumentos() {
+  const { data } = await api.get('/proyectos/documentos/limites')
+  return data
+}
+
+// Una sola petición con el campo `archivos` repetido. Para una carpeta el nombre
+// es la ruta relativa (`webkitRelativePath`); sin ella, el nombre del archivo.
+// Sin Content-Type a mano: el navegador pone el boundary. `onProgreso` recibe
+// 0..1 y solo cuando axios conoce el total (sin total no se inventa una fracción).
+export async function subirDocumentos(id, archivos, { onProgreso } = {}) {
+  const cuerpo = new FormData()
+  for (const f of archivos) cuerpo.append('archivos', f, f.webkitRelativePath || f.name)
+  const { data } = await api.post(`/proyectos/${id}/documentos`, cuerpo, {
+    onUploadProgress: (e) => {
+      if (onProgreso && e.total) onProgreso(Math.min(1, e.loaded / e.total))
+    },
+  })
+  return data
+}
+
+export async function listarDocumentos(id, { vista = 'visibles', antesDe = null, limite = 50 } = {}) {
+  const { data } = await api.get(`/proyectos/${id}/documentos`, {
+    params: { vista, antes_de: antesDe, limite },
+  })
+  return data
+}
+
+export async function ocultarDocumento(id, doc) {
+  const { data } = await api.post(`/proyectos/${id}/documentos/${doc}/ocultar`)
+  return data
+}
+
+export async function restaurarDocumento(id, doc) {
+  const { data } = await api.post(`/proyectos/${id}/documentos/${doc}/restaurar`)
+  return data
+}

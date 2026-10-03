@@ -60,6 +60,7 @@ from app_version import leer_version
 import ajustes
 from adjuntos import limites as limites_de_adjuntos
 from adjuntos import almacen as almacen_de_adjuntos
+from proyectos_documentos import despachador as despachador_de_documentos
 from adjuntos import cuota as cuota_de_adjuntos
 from adjuntos import limite_de_subidas
 from adjuntos import pdf_pool
@@ -93,6 +94,7 @@ from api.events import router as events_router
 from api.chat import router as chat_router, _raiz_del_carril, _url_de_ollama
 from api.audit import router as audit_router
 from api.proyectos import router as proyectos_router
+from api.proyectos_documentos import router as proyectos_documentos_router
 from api.image import router as image_router
 from api.upload import router as upload_router
 from api.motors import router as motors_router
@@ -187,6 +189,8 @@ async def lifespan(app: FastAPI):
     engine_state.start_background_tasks()
     # RD2: vencidos y huérfanos de JAX_ADJUNTOS_DIR (ver almacen.INTERVALO_DE_LIMPIEZA).
     asyncio.create_task(almacen_de_adjuntos.start_limpieza_de_adjuntos())
+    # Proyectos E2a: reparte los documentos en_cola a LAS MANOS y sincroniza su estado.
+    asyncio.create_task(despachador_de_documentos.start_despachador())
     asyncio.create_task(start_facet_canary())
     # Drenaje del respaldo de uso (2026-09-15, Task 3): reinserta las filas
     # de axioma_usage que quedaron en disco cuando la base no respondió.
@@ -271,6 +275,7 @@ ROUTERS = (
     memoria_router,
     pipelines_ocultos_router,
     proyectos_router,
+    proyectos_documentos_router,
 )
 for _router in ROUTERS:
     app.include_router(_router)

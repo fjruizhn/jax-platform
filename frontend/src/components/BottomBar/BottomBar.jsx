@@ -5,6 +5,7 @@ import { useI18n } from '../../i18n/index.jsx'
 import KillSwitch from './KillSwitch'
 import PipelineModal from './PipelineModal'
 import SelectorDeProyecto from './SelectorDeProyecto'
+import BotonDocumentos from './BotonDocumentos'
 import AttachButton from '../chat/AttachButton'
 import FileAttachment from '../chat/FileAttachment'
 import api from '../../api/client'
@@ -343,8 +344,14 @@ function BottomBar() {
             >
               {label}
             </button>
-            {/* E1.1: el selector de proyecto, pegado a Chat y solo en modo chat */}
-            {m === 'chat' && mode === 'chat' && <SelectorDeProyecto />}
+            {/* E1.1: el selector de proyecto, pegado a Chat. E2a/T11 (decisión C): se ve en
+                Chat y en Pipeline, con el botón de documentos; no en Ejecutor ni en Imagen. */}
+            {m === 'chat' && (mode === 'chat' || mode === 'pipeline') && (
+              <>
+                <SelectorDeProyecto />
+                <BotonDocumentos />
+              </>
+            )}
             </Fragment>
           ))}
         </div>

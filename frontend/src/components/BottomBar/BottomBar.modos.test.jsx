@@ -23,22 +23,26 @@ function renderBar(rol = 'operator') {
 
 beforeEach(() => localStorage.clear())
 
+// E2a/T11: el botón de documentos va justo después del selector; se nombra por su aria-label.
+const nombreDe = (el) => (el.tagName === 'SELECT' ? 'SELECT'
+  : el.getAttribute('aria-label') === es.proyectos.documentos.boton ? 'DOCUMENTOS' : el.textContent)
+
 // E1.1 (Fernando, 2026-10-02): el selector de proyecto es una etiqueta chica
 // pegada a Chat, DENTRO de la fila de modos.
 describe('BottomBar -- fila de modos con el selector de proyecto', () => {
-  it('orden: Chat, selector, Ejecutor (superadmin), Pipeline, Imagen', () => {
+  it('orden: Chat, selector, documentos, Ejecutor (superadmin), Pipeline, Imagen', () => {
     renderBar('superadmin')
     const fila = screen.getByTestId('fila-modos')
     const items = Array.from(fila.querySelectorAll('button, select'))
-    const nombres = items.map((el) => (el.tagName === 'SELECT' ? 'SELECT' : el.textContent))
-    expect(nombres).toEqual([es.modeChat, 'SELECT', es.ejecutor.modo, es.modePipeline, es.modeImagen])
+    const nombres = items.map(nombreDe)
+    expect(nombres).toEqual([es.modeChat, 'SELECT', 'DOCUMENTOS', es.ejecutor.modo, es.modePipeline, es.modeImagen])
   })
 
   it('sin superadmin no hay Ejecutor', () => {
     renderBar('operator')
     const fila = screen.getByTestId('fila-modos')
-    const nombres = Array.from(fila.querySelectorAll('button, select')).map((el) => (el.tagName === 'SELECT' ? 'SELECT' : el.textContent))
-    expect(nombres).toEqual([es.modeChat, 'SELECT', es.modePipeline, es.modeImagen])
+    const nombres = Array.from(fila.querySelectorAll('button, select')).map(nombreDe)
+    expect(nombres).toEqual([es.modeChat, 'SELECT', 'DOCUMENTOS', es.modePipeline, es.modeImagen])
   })
 
   it('el selector vive dentro de la fila, con etiqueta i18n, y se ve como los botones vecinos', () => {
@@ -81,14 +85,15 @@ describe('BottomBar -- fila de modos con el selector de proyecto', () => {
     expect(icono.className).toMatch(/(^|\s)mr-\d/)
   })
 
-  it('solo se ve en modo Chat: desaparece al cambiar de modo y vuelve', () => {
+  it('se ve en Chat y en Pipeline; desaparece en Imagen y vuelve en Chat (E2a/T11)', () => {
     renderBar()
-    expect(screen.getByLabelText(es.proyectos.selectorChat.etiqueta)).toBeInTheDocument()
+    const etiqueta = es.proyectos.selectorChat.etiqueta
+    expect(screen.getByLabelText(etiqueta)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: es.modePipeline }))
-    expect(screen.queryByLabelText(es.proyectos.selectorChat.etiqueta)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(etiqueta)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: es.modeImagen }))
-    expect(screen.queryByLabelText(es.proyectos.selectorChat.etiqueta)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(etiqueta)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: es.modeChat }))
-    expect(screen.getByLabelText(es.proyectos.selectorChat.etiqueta)).toBeInTheDocument()
+    expect(screen.getByLabelText(etiqueta)).toBeInTheDocument()
   })
 })

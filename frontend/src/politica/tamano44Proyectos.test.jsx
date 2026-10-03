@@ -23,10 +23,14 @@ vi.mock('../api/proyectos', () => ({
   listarProyectos: vi.fn(), crearProyecto: vi.fn(), verProyecto: vi.fn(), renombrarProyecto: vi.fn(),
   cambiarEstado: vi.fn(), listarMiembros: vi.fn(), invitarMiembro: vi.fn(), cambiarPapel: vi.fn(),
   quitarMiembro: vi.fn(), buscarCandidatos: vi.fn(),
+  listarDocumentos: vi.fn(), ocultarDocumento: vi.fn(), restaurarDocumento: vi.fn(),
+  limitesDeDocumentos: vi.fn(), subirDocumentos: vi.fn(),
 }))
 
 import * as api from '../api/proyectos'
 import Proyectos from '../pages/Proyectos'
+import BotonDocumentos from '../components/BottomBar/BotonDocumentos'
+import SelectorDeProyecto from '../components/BottomBar/SelectorDeProyecto'
 import ProyectoDetalle from '../pages/ProyectoDetalle'
 import { I18nProvider } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
@@ -95,19 +99,49 @@ describe('Proyectos: todo control mide al menos 44px (CSS compilado)', () => {
     expect(container.querySelectorAll('button, a[href]').length).toBeGreaterThan(4)
   })
 
-  it('detalle: enlace volver, pestañas, miembros y ajustes', async () => {
+  it('detalle: enlace volver, pestañas, documentos, miembros y ajustes', async () => {
     api.verProyecto.mockResolvedValue({ id: 7, uuid: 'u7', nombre: 'Alfa', descripcion: 'd', estado: 'ACTIVE', papel: 'OWNER' })
     api.listarMiembros.mockResolvedValue({ miembros: [
       { user_id: 1, email: 'yo@x.com', papel: 'OWNER', origen: 'DIRECT' }, { user_id: 3, email: 'lec@x.com', papel: 'VIEWER', origen: 'DIRECT' }] })
+    api.listarDocumentos.mockResolvedValue({ documentos: [
+      { id: 1, nombre: 'informe.pdf', bytes: 1024, tipo: 'pdf', estado: 'listo', error: null, subido_por_email: 'yo@x.com', creado: '2026-10-01T12:00:00', oculto: false }], siguiente: 1 })
+    api.limitesDeDocumentos.mockResolvedValue({ max_bytes_archivo: 1e8, max_archivos_lote: 250, max_bytes_lote: 1e9, extensiones: ['pdf'] })
     render(
       <I18nProvider><MemoryRouter initialEntries={['/proyectos/7']}>
         <Routes><Route path="/proyectos/:id" element={<ProyectoDetalle />} /></Routes>
       </MemoryRouter></I18nProvider>)
     await screen.findByRole('heading', { name: 'Alfa' })
-    await waitFor(() => expect(screen.getByText('lec@x.com')).toBeInTheDocument())
+    // Pestaña Documentos (la de inicio): Agregar, Ver ocultos, Ocultar por fila y Cargar más.
+    await waitFor(() => expect(screen.getAllByText('informe.pdf').length).toBeGreaterThan(0))
     expect(await controlesBajoElPiso(document.body)).toEqual([])
     const pestanas = screen.getAllByRole('tab')
+    fireEvent.click(pestanas[1])
+    await waitFor(() => expect(screen.getByText('lec@x.com')).toBeInTheDocument())
+    expect(await controlesBajoElPiso(document.body)).toEqual([])
     fireEvent.click(pestanas[pestanas.length - 1])
     expect(await controlesBajoElPiso(document.body)).toEqual([])
+  })
+})
+
+// E2a T11: el botón de documentos y el selector viven en la barra del chat con la
+// regla de E1.1 (24 px, WCAG 2.5.8: es la fila de modos, no una pantalla de Proyectos);
+// la ventana «elegir proyecto» que abre el botón sí es de Proyectos y exige 44 px.
+describe('Barra del chat: selector y botón de documentos miden 24px; su ventana, 44px', () => {
+  it('selector y botón: min-h efectivo de 24px', async () => {
+    api.listarProyectos.mockResolvedValue({ proyectos: [] })
+    const { container } = render(<I18nProvider><SelectorDeProyecto /><BotonDocumentos /></I18nProvider>)
+    const controles = [container.querySelector('select'), container.querySelector('button')]
+    const orden = await reglasMinH(controles.map((c) => c.getAttribute('class')))
+    for (const c of controles) expect(efectivo(c.getAttribute('class'), orden)).toBe(24)
+  })
+
+  it('la ventana «elegir proyecto» con su lista y «Crear un proyecto»: todo a 44px', async () => {
+    api.listarProyectos.mockResolvedValue({ proyectos: [{ id: 1, nombre: 'Alfa', estado: 'ACTIVE', papel: 'OWNER' }] })
+    render(<I18nProvider><MemoryRouter><BotonDocumentos /></MemoryRouter></I18nProvider>)
+    fireEvent.click(screen.getByRole('button', { name: es.proyectos.documentos.boton }))
+    const dialogo = await screen.findByRole('dialog')
+    await screen.findByRole('button', { name: 'Alfa' })
+    expect(dialogo.querySelectorAll('button').length).toBe(3)
+    expect(await controlesBajoElPiso(dialogo)).toEqual([])
   })
 })

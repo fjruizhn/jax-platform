@@ -6,10 +6,11 @@ import { verProyecto, listarMiembros } from '../api/proyectos'
 import { codigoDe } from '../api/errores'
 import { TAMANO_BOTON_44 } from '../tema/botones'
 import { useBaseProyectos } from '../components/proyectos/contexto'
+import Documentos from '../components/proyectos/Documentos'
 import Miembros from '../components/proyectos/Miembros'
 import Ajustes from '../components/proyectos/Ajustes'
 
-// Detalle de proyecto (E1, T8): cabecera + pestañas Miembros / Ajustes.
+// Detalle de proyecto (E1, T8; E2a, T10): cabecera + pestañas Documentos / Miembros / Ajustes.
 // Un 404 llega igual para inexistente, oculto, deshabilitado y no miembro: la
 // pantalla no dice por qué. El id de la ruta se valida ANTES de llamar a la API.
 const FOCO = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
@@ -31,7 +32,7 @@ export default function ProyectoDetalle() {
   const [miembros, setMiembros] = useState([])
   const [estado, setEstado] = useState(id === null ? 'noEncontrado' : 'cargando') // cargando | ok | noEncontrado | error
   const [error, setError] = useState(null)
-  const [pestana, setPestana] = useState('miembros')
+  const [pestana, setPestana] = useState('documentos')
   const pedidoRef = useRef(0)
   const tabsRef = useRef({})
 
@@ -54,7 +55,7 @@ export default function ProyectoDetalle() {
   }, [id, T])
 
   useEffect(() => {
-    setProyecto(null); setMiembros([]); setPestana('miembros')
+    setProyecto(null); setMiembros([]); setPestana('documentos')
     setEstado(id === null ? 'noEncontrado' : 'cargando')
     cargar()
     return () => { pedidoRef.current += 1 }
@@ -72,8 +73,8 @@ export default function ProyectoDetalle() {
   }
 
   const puedeAjustes = proyecto && (proyecto.papel === 'OWNER' || esAdmin)
-  const pestanas = proyecto ? (puedeAjustes ? ['miembros', 'ajustes'] : ['miembros']) : []
-  const activa = pestanas.includes(pestana) ? pestana : 'miembros'
+  const pestanas = proyecto ? (puedeAjustes ? ['documentos', 'miembros', 'ajustes'] : ['documentos', 'miembros']) : []
+  const activa = pestanas.includes(pestana) ? pestana : 'documentos'
 
   function teclado(e, i) {
     const salto = { ArrowRight: 1, ArrowLeft: -1 }[e.key]
@@ -129,16 +130,16 @@ export default function ProyectoDetalle() {
                   ref={(el) => { tabsRef.current[p] = el }}
                   onClick={() => setPestana(p)} onKeyDown={(e) => teclado(e, i)}
                   className={`${TAMANO_BOTON_44} px-4 -mb-px border-b-2 ${FOCO} transition-colors ${activa === p ? 'border-foco text-texto-fuerte' : 'border-transparent text-texto-tenue hover:text-texto'}`}>
-                  {T[p]}
+                  {p === 'documentos' ? T.documentos.pestana : T[p]}
                 </button>
               ))}
             </div>
 
             {pestanas.map((p) => (
               <div key={p} role="tabpanel" id={`panel-${p}`} aria-labelledby={`tab-${p}`} hidden={activa !== p}>
-                {activa === p && (p === 'miembros'
-                  ? <Miembros proyecto={proyecto} miembros={miembros} onCambio={cargar} />
-                  : <Ajustes proyecto={proyecto} esAdmin={esAdmin} onCambio={cargar} />)}
+                {activa === p && p === 'documentos' && <Documentos proyecto={proyecto} />}
+                {activa === p && p === 'miembros' && <Miembros proyecto={proyecto} miembros={miembros} onCambio={cargar} />}
+                {activa === p && p === 'ajustes' && <Ajustes proyecto={proyecto} esAdmin={esAdmin} onCambio={cargar} />}
               </div>
             ))}
           </>
