@@ -668,6 +668,54 @@ def test_codigo_de_la_razon_es_una_tabla_de_frases_exactas_de_jax(razon, codigo)
     assert codigo in despachador.CAUSAS_DE_ERROR
 
 
+FORMATOS_NO_SOPORTADOS = ["gif_animado", "webp_animado", "gris_16_bits", "coma_flotante", "entero_32_bits",
+                          "bmp_16_bits"]
+GENERICOS_DEL_CONTRATO = ["archivo_ilegible", "archivo_no_procesable", "imagen_demasiado_grande",
+                          "ocr_tiempo_excedido", "ocr_sin_memoria"]
+
+
+@pytest.mark.parametrize("error,codigo", [
+    *[(f"formato_no_soportado:{f}", f"formato_{f}") for f in FORMATOS_NO_SOPORTADOS],   # jax#338
+    ("formato_no_soportado:jpeg_2000", "formato_no_soportado"),                          # formato nuevo de jax
+    ("formato_no_soportado", "formato_no_soportado"),                                    # sin sufijo
+    ("formato_no_soportado:", "formato_no_soportado"),
+    ("formato_no_soportado:GIF animado!", "formato_no_soportado"),                       # sufijo fuera de [a-z0-9_]
+    ("formato_no_soportado:" + "a" * 41, "formato_no_soportado"),
+    *[(g, g) for g in GENERICOS_DEL_CONTRATO],
+    ("Traceback: boom en /home/x/y.png", None),                                          # texto arbitrario: no se guarda
+    ("archivo_ilegible: detalle extra", None),                                           # exacto, no «empieza con»
+    ("", None), (None, None), (7, None), ({"x": 1}, None),
+])
+def test_codigo_del_error_del_archivo_mapea_el_contrato_de_las_manos(error, codigo):
+    assert despachador.codigo_del_error_del_archivo(error) == codigo
+    assert codigo is None or codigo in despachador.CAUSAS_DE_ERROR
+
+
+@pytest.mark.parametrize("error,codigo", [
+    ("formato_no_soportado:gif_animado", "formato_gif_animado"),
+    ("formato_no_soportado:que_no_conozco", "formato_no_soportado"),
+    ("ocr_sin_memoria", "ocr_sin_memoria"),
+    ("texto arbitrario con /ruta/absoluta", "procesamiento_fallido"),
+])
+def test_decidir_usa_el_error_del_archivo_antes_que_la_ficha(error, codigo):
+    fila = {"id": 1, "project_uuid": "u"}
+    resultado = _resultado("a.gif", "error", carpeta=None, error=error)
+    estado, _carpeta, causa = despachador._decidir(fila, resultado, {"estado": "completed"})
+    assert (estado, causa) == ("error", codigo)
+    assert causa in despachador.CAUSAS_DE_ERROR
+
+
+def test_un_error_con_codigo_del_contrato_no_lee_la_ficha(e):
+    carpeta = _con_ficha(e, json.dumps({"detalle": {"razon": RAZON_OCR_VACIO}}))
+    r = e.ruta("l1", "JF1.gif")
+    doc = e.insertar(r, n=abs(hash("JF1")))
+    e.abrir(doc, "JF1")
+    e.las_manos.estados["JF1"] = _trabajo("JF1", "completed", [
+        _resultado(r, "error", carpeta=carpeta, error="formato_no_soportado:gif_animado")])
+    e.ciclo()
+    assert e.fila(doc)[0] == "error" and e.fila(doc)[3] == "formato_gif_animado"
+
+
 def _con_ficha(e, ficha_texto, carpeta=None, nombre="doc"):
     carpeta = carpeta or f"proyectos/{e.uuid}/procesado/{nombre}"
     destino = e.workspace / carpeta
