@@ -962,7 +962,8 @@ RUTA_CAUSAS_JSON = os.path.join(os.path.dirname(__file__), "..", "..", "frontend
 
 def test_las_tablas_del_contrato_estan_dentro_de_causas_de_error():
     del_modulo = ({f"formato_{f}" for f in despachador._FORMATOS_NO_SOPORTADOS}
-                  | despachador._ERRORES_DEL_ARCHIVO | {"formato_no_soportado"})
+                  | despachador._ERRORES_DEL_ARCHIVO | {"formato_no_soportado"}
+                  | set(despachador._RAZONES_DEL_OCR.values()))
     assert del_modulo <= despachador.CAUSAS_DE_ERROR
 
 
@@ -987,3 +988,10 @@ def test_causas_de_error_coincide_con_el_json_de_referencia_del_frontend():
     assert referencia == sorted(despachador.CAUSAS_DE_ERROR), (
         "frontend/src/api/causas_de_error.json no coincide con CAUSAS_DE_ERROR: regeneralo con "
         "json.dumps(sorted(despachador.CAUSAS_DE_ERROR), indent=2) y agrega el texto es/en de cada codigo nuevo")
+
+
+def test_una_razon_del_ocr_con_codigo_fuera_de_las_causas_cae_al_generico(monkeypatch):
+    monkeypatch.setattr(despachador, "_RAZONES_DEL_OCR",
+                        {**despachador._RAZONES_DEL_OCR, despachador._normalizada("razon nueva"): "ocr_rotada"})
+    assert despachador.codigo_de_la_razon("razon nueva") == "procesamiento_fallido"
+    assert despachador.codigo_de_la_razon(RAZON_OCR_VACIO) == "ocr_sin_texto"

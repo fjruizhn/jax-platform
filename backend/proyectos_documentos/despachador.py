@@ -279,7 +279,9 @@ def codigo_de_la_razon(razon: object) -> str:
     generico `procesamiento_fallido`."""
     if not isinstance(razon, str):
         return "procesamiento_fallido"
-    return _RAZONES_DEL_OCR.get(_normalizada(razon), "procesamiento_fallido")
+    codigo = _RAZONES_DEL_OCR.get(_normalizada(razon), "procesamiento_fallido")
+    # Defensa: una razon sumada a la tabla sin sumar su codigo a CAUSAS_DE_ERROR no se guarda.
+    return codigo if codigo in CAUSAS_DE_ERROR else "procesamiento_fallido"
 
 
 async def _motivo_del_error(fila: dict, carpeta: str | None) -> str:
