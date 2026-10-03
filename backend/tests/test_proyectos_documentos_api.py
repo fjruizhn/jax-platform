@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import httpx
 import pytest
 
 from adjuntos import cuota
@@ -1197,3 +1198,137 @@ def test_fallo_al_consultar_el_duplicado_informa_el_lote(ent, workspace, monkeyp
     assert sorted(f[1] for f in ent.filas(p)) == ["nuevo.pdf", "viejo.pdf"]            # lo aceptado esta; z no se intento
     assert sorted(x.name for x in _en_disco(workspace)) == ["nuevo.pdf", "viejo.pdf"]  # la copia ya se habia borrado
     assert str(workspace) not in r.text
+
+
+# ------------------------- subidas simultaneas (ronda final, MAJOR-4)
+
+POR_USUARIO = "proyectos.documentos.subidas_por_usuario"
+GLOBALES = "proyectos.documentos.subidas_globales"
+
+
+class _CuerpoRetenido:
+    """Un multipart que se entrega en dos tramos: el segundo espera a `soltar`. `leido`
+    dice si la plataforma pidio el cuerpo; con `falla` el cliente se corta a mitad."""
+
+    def __init__(self, nombre, contenido):
+        pedido = httpx.Request("POST", "http://t/", files=[_parte(nombre, contenido)])
+        self.tipo = pedido.headers["content-type"]
+        self.cuerpo = pedido.read()
+        self.leido = False
+        self.falla = False
+        self.soltar = None
+
+    async def tramos(self):
+        self.leido = True
+        yield self.cuerpo[:10]
+        await self.soltar.wait()
+        if self.falla:
+            raise RuntimeError("el cliente corto la subida")
+        yield self.cuerpo[10:]
+
+
+def _escenario(client, guion):
+    """Corre `guion(http, subir)` en el loop de la app con un cliente ASGI real: los POST
+    corren de verdad en paralelo y el cuerpo llega cuando la prueba lo suelta."""
+    cuerpos = []
+
+    async def corre():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app), base_url="http://t") as http:
+            async def subir(p, headers, cuerpo):
+                cuerpo.soltar = cuerpo.soltar or asyncio.Event()
+                cuerpos.append(cuerpo)
+                # Tope de espera: sin cupo, un POST quedaria esperando un cuerpo que nunca llega.
+                return await asyncio.wait_for(http.post(f"{P}/{p.id}/documentos", content=cuerpo.tramos(),
+                                                        headers={**headers, "content-type": cuerpo.tipo}), 10)
+            try:
+                return await guion(subir)
+            finally:
+                for cuerpo in cuerpos:                  # nada queda colgado si la prueba falla
+                    cuerpo.soltar.set()
+                await asyncio.sleep(0.2)
+    return client.portal.call(corre)
+
+
+async def _hasta(condicion):
+    for _ in range(500):
+        if condicion():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("la condicion no se cumplio a tiempo")
+
+
+def test_tercera_subida_simultanea_del_mismo_usuario_429_sin_leer_el_cuerpo(ent, workspace, ajustes_en_db):
+    ajustes_en_db.poner(**{POR_USUARIO: "2", GLOBALES: "4"})
+    p = ent.proyecto()
+    a, b, c, d = (_CuerpoRetenido(f"{n}.pdf", n) for n in "abcd")
+
+    async def guion(subir):
+        primeras = [asyncio.create_task(subir(p, ent.dueno, x)) for x in (a, b)]
+        await _hasta(lambda: a.leido and b.leido)              # las dos ya tienen su cupo
+        tercera = await subir(p, ent.dueno, c)
+        a.soltar.set()                                         # termina una: se libera su cupo
+        primera = await primeras[0]
+        cuarta = asyncio.create_task(subir(p, ent.dueno, d))
+        await _hasta(lambda: d.leido)
+        d.soltar.set()
+        b.soltar.set()
+        return tercera, primera, await cuarta, await primeras[1]
+
+    tercera, primera, cuarta, segunda = _escenario(ent.client, guion)
+    assert tercera.status_code == 429 and _code(tercera) == "subidas_simultaneas", tercera.text
+    assert c.leido is False                                    # el 429 sale sin pedir el cuerpo
+    assert (primera.status_code, segunda.status_code, cuarta.status_code) == (202, 202, 202)
+    assert sorted(f[1] for f in ent.filas(p)) == ["a.pdf", "b.pdf", "d.pdf"]
+
+
+def test_el_cupo_es_por_usuario_y_tambien_global(ent, workspace, ajustes_en_db):
+    ajustes_en_db.poner(**{POR_USUARIO: "1", GLOBALES: "2"})
+    p = ent.proyecto()
+    otro = ent.miembro(p, "otro", "CONTRIBUTOR")
+    tercero = ent.miembro(p, "tercero", "CONTRIBUTOR")
+    a, b, c, d = (_CuerpoRetenido(f"{n}.pdf", n) for n in "abcd")
+
+    async def guion(subir):
+        en_vuelo = asyncio.create_task(subir(p, ent.dueno, a))
+        await _hasta(lambda: a.leido)
+        mismo_usuario = await subir(p, ent.dueno, b)            # 1 por usuario
+        del_otro = asyncio.create_task(subir(p, otro, c))
+        await _hasta(lambda: c.leido)                           # otro usuario si entra
+        global_lleno = await subir(p, tercero, d)               # 2 en todo el servicio
+        a.soltar.set(), c.soltar.set()
+        return mismo_usuario, global_lleno, await en_vuelo, await del_otro
+
+    mismo_usuario, global_lleno, primera, del_otro = _escenario(ent.client, guion)
+    assert (mismo_usuario.status_code, _code(mismo_usuario)) == (429, "subidas_simultaneas")
+    assert (global_lleno.status_code, _code(global_lleno)) == (429, "subidas_simultaneas")
+    assert not b.leido and not d.leido
+    assert (primera.status_code, del_otro.status_code) == (202, 202)
+
+
+def test_el_cupo_se_libera_si_la_subida_falla_o_se_cancela(ent, workspace, ajustes_en_db):
+    ajustes_en_db.poner(**{POR_USUARIO: "1", GLOBALES: "4"})
+    p = ent.proyecto()
+    cortada, cancelada, ultima = (_CuerpoRetenido(f"{n}.pdf", n) for n in ("x", "y", "z"))
+
+    async def guion(subir):
+        tarea = asyncio.create_task(subir(p, ent.dueno, cortada))
+        await _hasta(lambda: cortada.leido)
+        cortada.falla = True
+        cortada.soltar.set()
+        try:
+            await tarea
+        except Exception:  # fail-soft: la subida cortada puede fallar hacia el cliente; lo que se mira es el cupo
+            pass
+        tarea = asyncio.create_task(subir(p, ent.dueno, cancelada))
+        await _hasta(lambda: cancelada.leido)                  # entro: el cupo estaba libre
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+        ultima.soltar = asyncio.Event()
+        ultima.soltar.set()
+        return await subir(p, ent.dueno, ultima)
+
+    final = _escenario(ent.client, guion)
+    assert final.status_code == 202, final.text                 # ni el fallo ni la cancelacion se quedaron el cupo
+    from proyectos_documentos import cupo_de_subidas
+    assert cupo_de_subidas.en_uso() == (0, {})

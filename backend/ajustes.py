@@ -77,14 +77,24 @@ DOC_MAX_BYTES_ARCHIVO = "proyectos.documentos.max_bytes_archivo"
 DOC_MAX_ARCHIVOS_LOTE = "proyectos.documentos.max_archivos_lote"
 DOC_MAX_BYTES_LOTE = "proyectos.documentos.max_bytes_lote"
 DOC_RUTAS_POR_TRABAJO = "proyectos.documentos.rutas_por_trabajo"
+# Subidas de documentos SIMULTANEAS (E2a ronda final, MAJOR-4): por usuario y en todo el
+# servicio. Las usa proyectos_documentos/cupo_de_subidas.py; las siembra la misma migracion.
+DOC_SUBIDAS_POR_USUARIO = "proyectos.documentos.subidas_por_usuario"
+DOC_SUBIDAS_GLOBALES = "proyectos.documentos.subidas_globales"
 CLAVES = (SESION, MAX_PIPELINES, IDIOMA, NOMBRE, CONFIRMAR_USD, TOPE_DEVOLUCIONES,
-          DOC_MAX_BYTES_ARCHIVO, DOC_MAX_ARCHIVOS_LOTE, DOC_MAX_BYTES_LOTE, DOC_RUTAS_POR_TRABAJO)
+          DOC_MAX_BYTES_ARCHIVO, DOC_MAX_ARCHIVOS_LOTE, DOC_MAX_BYTES_LOTE, DOC_RUTAS_POR_TRABAJO,
+          DOC_SUBIDAS_POR_USUARIO, DOC_SUBIDAS_GLOBALES)
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
 # El techo de rutas por trabajo es el de LAS MANOS: un valor mayor lo rechazaría
 # ella con 422, así que acá sería una promesa que no se cumple.
 DOC_RUTAS_POR_TRABAJO_MAX = 50
+# Techos de las subidas simultaneas: cada subida en vuelo puede volcar hasta
+# max_bytes_lote a TMPDIR antes de cualquier tope, asi que el techo global acota ese disco
+# (50 x 1 GiB con los topes de hoy). Mas que eso no es un tope sino apagarlo.
+DOC_SUBIDAS_POR_USUARIO_MAX = 10
+DOC_SUBIDAS_GLOBALES_MAX = 50
 
 # Baranda ELEGIDA EN ESTA RAMA (2026-09-20), no en el spec: el spec fija el
 # valor inicial en 2 y explica el porqué del tope --«sin tope, dos modelos
@@ -181,6 +191,10 @@ DEFINICIONES: dict[str, Definicion] = {
     DOC_MAX_BYTES_LOTE: Definicion(_entero(MIB, 10 * GIB), {"min": MIB, "max": 10 * GIB}),
     DOC_RUTAS_POR_TRABAJO: Definicion(_entero(1, DOC_RUTAS_POR_TRABAJO_MAX),
                                       {"min": 1, "max": DOC_RUTAS_POR_TRABAJO_MAX}),
+    DOC_SUBIDAS_POR_USUARIO: Definicion(_entero(1, DOC_SUBIDAS_POR_USUARIO_MAX),
+                                        {"min": 1, "max": DOC_SUBIDAS_POR_USUARIO_MAX}),
+    DOC_SUBIDAS_GLOBALES: Definicion(_entero(1, DOC_SUBIDAS_GLOBALES_MAX),
+                                     {"min": 1, "max": DOC_SUBIDAS_GLOBALES_MAX}),
 }
 
 

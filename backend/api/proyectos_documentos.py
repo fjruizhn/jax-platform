@@ -12,7 +12,8 @@ aplican:
    `ocultos`, CONTRIBUTOR.
 2. Todo eso se decide ANTES de leer el cuerpo: el multipart se lee con
    `request.form()` recien despues, asi un lector o un ajeno no hace que la
-   plataforma reciba y vuelque a disco su cuerpo entero.
+   plataforma reciba y vuelque a disco su cuerpo entero. Tambien antes del cuerpo,
+   el cupo de subidas simultaneas (`cupo_de_subidas`, 429 `subidas_simultaneas`).
 3. `proyecto_no_activo` (409) lo decide la plataforma antes de escribir nada; vale
    para subir, ocultar y restaurar. Esas tres rutas estan en `RUTAS_FRENADAS`.
 4. Por archivo: tipo -> nombre seguro -> escritura en streaming con tope sobre lo
@@ -45,7 +46,7 @@ from db.connection import get_pool
 from jax.memory.project_authority import ProjectNotVisible, ProjectRoleInsufficient
 from jax.memory.scope_authority import MariaDBScopeAuthorityResolver, ProjectRole
 from kill_switch import exigir_freno_suelto, exigir_mesa_libre
-from proyectos_documentos import almacen, despachador, tipos
+from proyectos_documentos import almacen, cupo_de_subidas, despachador, tipos
 from proyectos_documentos import repositorio as repo
 
 logger = logging.getLogger(__name__)
@@ -104,7 +105,7 @@ def _lote_excedido(lote: str, aceptados: list, ignorados: list) -> HTTPException
 
 @router.post("/proyectos/{project_id}/documentos", status_code=202)
 async def subir(project_id: int, request: Request, user: AuthUser = Depends(exigir_mesa_libre)):
-    proyecto = await _con_papel(user, project_id, escribe=True, activo=True)
+    await _con_papel(user, project_id, escribe=True, activo=True)
 
     max_archivo = int(await ajustes.valor(ajustes.DOC_MAX_BYTES_ARCHIVO))
     max_archivos = int(await ajustes.valor(ajustes.DOC_MAX_ARCHIVOS_LOTE))
@@ -125,6 +126,21 @@ async def subir(project_id: int, request: Request, user: AuthUser = Depends(exig
     if declarado > max_lote + _HOLGURA_MULTIPART_BASE + _HOLGURA_MULTIPART_POR_ARCHIVO * max_archivos:
         raise _error(413, "lote_demasiado_grande", lote=None, aceptados=[], ignorados=[])
 
+    # Cupo de subidas simultaneas (por usuario y global), ANTES de leer el cuerpo: cada
+    # subida en vuelo vuelca su multipart a TMPDIR. Se suelta pase lo que pase.
+    usuario = str(user.user_id)
+    if not cupo_de_subidas.tomar(usuario, por_usuario=int(await ajustes.valor(ajustes.DOC_SUBIDAS_POR_USUARIO)),
+                                 globales=int(await ajustes.valor(ajustes.DOC_SUBIDAS_GLOBALES))):
+        raise _error(429, "subidas_simultaneas")
+    try:
+        return await _recibir_lote(request, project_id, user=user, workspace=workspace, max_archivo=max_archivo,
+                                   max_archivos=max_archivos, max_lote=max_lote)
+    finally:
+        cupo_de_subidas.soltar(usuario)
+
+
+async def _recibir_lote(request: Request, project_id: int, *, user: AuthUser, workspace: Path, max_archivo: int,
+                        max_archivos: int, max_lote: int) -> dict:
     try:
         formulario = await request.form(max_files=max_archivos + 1)
     except StarletteHTTPException as exc:

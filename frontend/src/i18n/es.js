@@ -1697,6 +1697,7 @@ export default {
         proyecto_no_encontrado: 'Este proyecto no existe o no tenés acceso.',
         papel_insuficiente: 'Tu papel en este proyecto no permite esta acción.',
         documento_no_encontrado: 'Ese documento ya no existe en el proyecto.',
+        subidas_simultaneas: 'Ya hay demasiadas subidas en curso. Esperá a que termine alguna y probá de nuevo.',
         datos_invalidos: 'Revisá los archivos: no se recibió ninguno válido.',
         generico: 'No se pudo completar la operación con los documentos.',
       },

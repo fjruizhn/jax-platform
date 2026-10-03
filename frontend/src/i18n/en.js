@@ -1601,6 +1601,7 @@ export default {
         proyecto_no_encontrado: 'This project does not exist or you do not have access.',
         papel_insuficiente: 'Your role in this project does not allow this action.',
         documento_no_encontrado: 'That document no longer exists in the project.',
+        subidas_simultaneas: 'Too many uploads are already in progress. Wait for one to finish and try again.',
         datos_invalidos: 'Check the files: no valid file was received.',
         generico: 'The documents operation could not be completed.',
       },

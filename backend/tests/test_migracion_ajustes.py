@@ -51,6 +51,9 @@ def test_primera_corrida_fija_lo_que_el_codigo_hacia_cumplir(client, sin_marca):
         "proyectos.documentos.max_archivos_lote": "250",
         "proyectos.documentos.max_bytes_lote": "1073741824",
         "proyectos.documentos.rutas_por_trabajo": "50",
+        # Subidas simultaneas (E2a ronda final, MAJOR-4): 2 por usuario, 4 en el servicio.
+        "proyectos.documentos.subidas_por_usuario": "2",
+        "proyectos.documentos.subidas_globales": "4",
     }
     assert client.portal.call(sql, "SELECT COUNT(*) FROM axioma_migracion_de_datos WHERE nombre = %s",
                               (MIGRACION_AJUSTES_V1,), True) == ((1,),)

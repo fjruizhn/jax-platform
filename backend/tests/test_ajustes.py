@@ -154,6 +154,10 @@ def test_limites_publicos_y_tope_espejado_de_jacobs():
         "proyectos.documentos.max_archivos_lote": {"min": 1, "max": 1000},
         "proyectos.documentos.max_bytes_lote": {"min": 1048576, "max": 10737418240},
         "proyectos.documentos.rutas_por_trabajo": {"min": 1, "max": 50},
+        # Subidas simultaneas de documentos (E2a ronda final, MAJOR-4): por usuario y en
+        # todo el servicio; el 429 sale antes de leer el cuerpo.
+        "proyectos.documentos.subidas_por_usuario": {"min": 1, "max": 10},
+        "proyectos.documentos.subidas_globales": {"min": 1, "max": 50},
     }
 
 
@@ -209,6 +213,8 @@ def test_lee_los_valores_tipados_de_la_tabla(client, ajustes_en_db):
         "proyectos.documentos.max_archivos_lote": 250,
         "proyectos.documentos.max_bytes_lote": 1073741824,
         "proyectos.documentos.rutas_por_trabajo": 50,
+        "proyectos.documentos.subidas_por_usuario": 2,
+        "proyectos.documentos.subidas_globales": 4,
     }
 
 
@@ -263,6 +269,8 @@ def test_avisar_claves_ilegibles_loguea_error_sin_el_valor(client, ajustes_en_db
     ("proyectos.documentos.max_archivos_lote", ["0", "1001", "2.5", ""]),
     ("proyectos.documentos.max_bytes_lote", ["1048575", "10737418241"]),
     ("proyectos.documentos.rutas_por_trabajo", ["0", "51"]),
+    ("proyectos.documentos.subidas_por_usuario", ["0", "11", "02"]),
+    ("proyectos.documentos.subidas_globales", ["0", "51"]),
 ])
 def test_topes_de_documentos_fuera_de_rango_son_ilegibles(client, ajustes_en_db, clave, malos):
     for malo in malos:
@@ -275,6 +283,8 @@ def test_topes_de_documentos_fuera_de_rango_son_ilegibles(client, ajustes_en_db,
     ("proyectos.documentos.max_archivos_lote", [1, 1000]),
     ("proyectos.documentos.max_bytes_lote", [1048576, 10737418240]),
     ("proyectos.documentos.rutas_por_trabajo", [1, 50]),
+    ("proyectos.documentos.subidas_por_usuario", [1, 10]),
+    ("proyectos.documentos.subidas_globales", [1, 50]),
 ])
 def test_topes_de_documentos_aceptan_sus_bordes(client, ajustes_en_db, clave, bordes):
     for borde in bordes:
