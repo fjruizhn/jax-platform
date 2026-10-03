@@ -28,11 +28,18 @@ def test_columnas_de_la_baja_y_ancho_del_correo(client):
 
 
 def test_indice_unico_de_email_se_conserva(client):
+    # 2026-10-02: Jax#321 agrego idx_jax_users_tenant_email (tenant_id, email), NO unico, que
+    # tambien menciona `email`. La consulta anterior (cualquier fila con COLUMN_NAME='email')
+    # lo contaba y fallaba. Se exige lo mismo de siempre: un indice UNICO (NON_UNIQUE=0) cuya
+    # UNICA columna es email; los indices no unicos o compuestos que incluyan email no cuentan.
     filas = client.portal.call(
         sql,
-        "SELECT NON_UNIQUE FROM information_schema.STATISTICS "
-        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'jax_users' "
-        "AND COLUMN_NAME = 'email'", (), True)
+        "SELECT s.NON_UNIQUE FROM information_schema.STATISTICS s "
+        "WHERE s.TABLE_SCHEMA = DATABASE() AND s.TABLE_NAME = 'jax_users' "
+        "AND s.COLUMN_NAME = 'email' AND s.NON_UNIQUE = 0 "
+        "AND (SELECT COUNT(*) FROM information_schema.STATISTICS t "
+        "     WHERE t.TABLE_SCHEMA = s.TABLE_SCHEMA AND t.TABLE_NAME = s.TABLE_NAME "
+        "     AND t.INDEX_NAME = s.INDEX_NAME) = 1", (), True)
     assert [tuple(f) for f in filas] == [(0,)]
 
 

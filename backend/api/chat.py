@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 import httpx
-import aiomysql
+from b9_pool import B9MappingPool
 from http_client import CuerpoJsonDeUnUso, LiteralJsonCrudo, cabeceras_gemini, get_http_client
 from facet_resolver import resolve_facet, FacetUnavailableError
 from adjuntos.contrato import (
@@ -244,48 +244,6 @@ class B9MemoryUnavailable(RuntimeError):
     """The B9 read boundary could not obtain a trustworthy memory result."""
 
 
-class _B9MappingAcquire:
-    """Adapt the platform pool's plain-cursor acquire contract for B9 reads."""
-    def __init__(self, acquire_context):
-        self._acquire_context = acquire_context
-
-    async def __aenter__(self):
-        self._connection = await self._acquire_context.__aenter__()
-        return _B9MappingConnection(self._connection)
-
-    async def __aexit__(self, exc_type, exc, traceback):
-        return await self._acquire_context.__aexit__(exc_type, exc, traceback)
-
-
-class _B9MappingConnection:
-    """Connection view which asks aiomysql for mapping rows on every cursor.
-
-    ``db.connection.get_pool`` deliberately uses aiomysql's default cursor for
-    the rest of the platform.  B9 readers consume named fields, so adapting at
-    this narrow integration boundary avoids treating tuple positions as an
-    authorization-sensitive schema contract.
-    """
-    def __init__(self, connection):
-        self._connection = connection
-
-    def cursor(self, *args, **kwargs):
-        if args or kwargs:
-            raise TypeError("B9 mapping adapter does not accept caller cursor overrides")
-        return self._connection.cursor(aiomysql.DictCursor)
-
-    def __getattr__(self, name):
-        return getattr(self._connection, name)
-
-
-class _B9MappingPool:
-    """Minimal pool adapter required by ``MariaDBB9Reader``."""
-    def __init__(self, pool):
-        self._pool = pool
-
-    def acquire(self):
-        return _B9MappingAcquire(self._pool.acquire())
-
-
 async def _prompt_memory_context(scope: ScopeContext) -> PromptMemoryContext:
     """Read B9 memory exclusively through its envelope boundary.
 
@@ -294,7 +252,7 @@ async def _prompt_memory_context(scope: ScopeContext) -> PromptMemoryContext:
     cursor-contract error indistinguishable from genuinely absent memory.
     """
     try:
-        pool = _B9MappingPool(await get_pool())
+        pool = B9MappingPool(await get_pool())
         # The reader owns a second, just-in-time DB-backed authorization
         # decision.  ``scope`` carries request identity and target only; its
         # earlier chat-boundary resolution is never treated as a bearer grant.

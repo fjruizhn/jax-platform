@@ -511,7 +511,15 @@ export default {
   },
 
   // Center panel
-  platformLabel: 'AXIOMA V0.2',
+  // Ni el número ni el nombre van fijos (Principio IV): la plantilla recibe el nombre
+  // del sistema (system_name, o brandName de respaldo) y la versión del archivo
+  // VERSION, y cada idioma decide cómo se dice. La pantalla de inicio lo pone en
+  // mayúsculas por CSS.
+  platformLabel: (nombre, v) => `${nombre} V${v}`,
+  // Título de la pestaña y meta description, armados en runtime (TituloDePagina).
+  tituloPagina: (nombre) => nombre,
+  metaDescripcion: (nombre) => `${nombre} — En memoria de Jairo Urbina`,
+  adminVersion: (nombre, v) => `${nombre} v${v}`,
   inMemoryOf: 'En memoria de Jairo Urbina.',
   inHonorOf: 'En honor al Prof. Raúl Jacobs.',
 
@@ -609,6 +617,7 @@ export default {
   adminSettings: 'Configuración',
   adminCosts: 'Costos',
   adminMemoria: 'Memoria',
+  adminProyectos: 'Proyectos',
   // Fix round 1 (MINOR-7): faltaba en AdminSidebar -- el superadmin entraba
   // por el enlace de BarraUsuario pero no podía volver sin salir de Admin.
   adminPipelinesOcultos: 'Pipelines descartados y ocultos',
@@ -1531,6 +1540,74 @@ export default {
       // (fundido, o corregido) -- código propio, distinto de
       // `hecho_ya_superado` (que usa /corregir sobre UN solo hecho).
       hecho_superado: 'Uno de estos hechos ya fue superado por otro: recargá la pantalla.',
+    },
+  },
+
+  // Proyectos (E1, T6). Todos los textos de las pantallas de las Tareas 7-9
+  // viven aquí: esas tareas no escriben literales visibles. Los códigos de
+  // `errores` son los `detail.code` de /api/proyectos.
+  proyectos: {
+    titulo: 'Proyectos',
+    nuevo: 'Nuevo proyecto',
+    vistas: { activos: 'Activos', archivados: 'Archivados', ocultos: 'Ocultos' },
+    papeles: { VIEWER: 'Lector', CONTRIBUTOR: 'Colaborador', OWNER: 'Dueño' },
+    estados: { ACTIVE: 'Activo', ARCHIVED: 'Archivado', HIDDEN: 'Oculto' },
+    cargando: 'Cargando…',
+    vacio: 'No hay proyectos en esta vista.',
+    reintentar: 'Reintentar',
+    cargarMas: 'Cargar más',
+    crear: 'Crear',
+    cancelar: 'Cancelar',
+    nombre: 'Nombre',
+    descripcion: 'Descripción',
+    descripcionOpcional: 'Descripción (opcional)',
+    miembros: 'Miembros',
+    ajustes: 'Ajustes',
+    agregarSeleccionados: (n) => `Agregar seleccionados (${n})`,
+    seleccionados: (n) => `${n} seleccionado${n === 1 ? '' : 's'}`,
+    seleccionadosOcultos: (n, m) => `${n} seleccionado${n === 1 ? '' : 's'} (${m} no visible${m === 1 ? '' : 's'})`,
+    noEnviados: (n) => `No se enviaron: ${n}.`,
+    limpiarSeleccion: 'Limpiar selección',
+    resumenAgregados: (n) => `${n} agregado${n === 1 ? '' : 's'}.`,
+    mostrandoPrimeros100: 'Se muestran hasta 100; escribí para filtrar.',
+    buscarPorEmail: 'Buscar por email',
+    sinCandidatos: 'No hay personas que coincidan.',
+    quitar: 'Quitar',
+    papel: 'Papel',
+    archivar: 'Archivar',
+    restaurar: 'Restaurar',
+    ocultar: 'Ocultar',
+    mostrar: 'Mostrar',
+    renombrar: 'Renombrar',
+    guardar: 'Guardar',
+    tuPapel: 'Tu papel',
+    papelDe: (email) => `Papel de ${email}`,
+    origenProtegido: 'Protegida (administración)',
+    candidatosEncontrados: 'Personas encontradas',
+    confirmaQuitar: (nombre) => `¿Quitar a ${nombre} del proyecto? Perderá el acceso.`,
+    confirmaArchivar: (nombre) => `¿Archivar «${nombre}»? Deja de aparecer entre los activos.`,
+    confirmaOcultar: (nombre) => `¿Ocultar «${nombre}»? Solo lo verás en la vista de ocultos.`,
+    noEncontrado: 'Este proyecto no existe o no tenés acceso.',
+    volverAProyectos: 'Volver a proyectos',
+    selectorChat: { personal: 'Personal', etiqueta: 'Proyecto' },
+    proyectoNoDisponible: 'El proyecto elegido ya no está disponible. Volviste a «Personal».',
+    errores: {
+      proyecto_no_encontrado: 'Este proyecto no existe o no tenés acceso.',
+      miembro_no_encontrado: 'Esa persona no es miembro del proyecto.',
+      papel_insuficiente: 'Tu papel en este proyecto no permite esta acción.',
+      estado_no_permite: 'El estado actual del proyecto no permite esta acción.',
+      ultimo_dueno: 'El proyecto necesita al menos un dueño.',
+      admin_protegido: 'Esa cuenta de administración está protegida y no se puede modificar.',
+      ya_es_miembro: 'Esa persona ya es miembro del proyecto.',
+      usuario_no_elegible: 'Esa persona no puede ser invitada a este proyecto.',
+      idempotencia_conflicto: 'Esta solicitud ya se usó con otros datos. Volvé a intentarlo.',
+      idempotencia_invalida: 'La solicitud no es válida. Volvé a intentarlo.',
+      reintentar: 'El servidor está ocupado. Probá de nuevo en unos segundos.',
+      datos_invalidos: 'Revisá los datos: algún campo no es válido.',
+      proyecto_id_reservado: 'Ese identificador de proyecto está reservado.',
+      proyectos_error: 'No se pudo completar la operación con proyectos.',
+      tenant_scope_required: 'Tu sesión no tiene una organización asociada.',
+      generico: 'Algo salió mal. Probá de nuevo.',
     },
   },
 }

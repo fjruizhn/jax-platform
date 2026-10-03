@@ -467,7 +467,15 @@ export default {
   },
 
   // Center panel
-  platformLabel: 'AXIOMA V0.2',
+  // Ni el número ni el nombre van fijos (Principio IV): la plantilla recibe el nombre
+  // del sistema (system_name, o brandName de respaldo) y la versión del archivo
+  // VERSION, y cada idioma decide cómo se dice. La pantalla de inicio lo pone en
+  // mayúsculas por CSS.
+  platformLabel: (nombre, v) => `${nombre} V${v}`,
+  // Título de la pestaña y meta description, armados en runtime (TituloDePagina).
+  tituloPagina: (nombre) => nombre,
+  metaDescripcion: (nombre) => `${nombre} — In memory of Jairo Urbina`,
+  adminVersion: (nombre, v) => `${nombre} v${v}`,
   inMemoryOf: 'In memory of Jairo Urbina.',
   inHonorOf: 'In honor of Prof. Raúl Jacobs.',
 
@@ -565,6 +573,7 @@ export default {
   adminSettings: 'Settings',
   adminCosts: 'Costs',
   adminMemoria: 'Memory',
+  adminProyectos: 'Projects',
   adminPipelinesOcultos: 'Discarded and hidden pipelines',
   adminBack: (nombre) => `Back to ${nombre}`,
 
@@ -1435,6 +1444,74 @@ export default {
       // (merged, or corrected) -- own code, distinct from `hecho_ya_superado`
       // (used by /corregir on a SINGLE fact).
       hecho_superado: 'One of these facts was already superseded by another: reload the screen.',
+    },
+  },
+
+  // Projects (E1, T6). Every text used by the Task 7-9 screens lives here:
+  // those tasks write no visible literals. The `errores` keys are the
+  // `detail.code` values of /api/proyectos.
+  proyectos: {
+    titulo: 'Projects',
+    nuevo: 'New project',
+    vistas: { activos: 'Active', archivados: 'Archived', ocultos: 'Hidden' },
+    papeles: { VIEWER: 'Viewer', CONTRIBUTOR: 'Contributor', OWNER: 'Owner' },
+    estados: { ACTIVE: 'Active', ARCHIVED: 'Archived', HIDDEN: 'Hidden' },
+    cargando: 'Loading…',
+    vacio: 'There are no projects in this view.',
+    reintentar: 'Retry',
+    cargarMas: 'Load more',
+    crear: 'Create',
+    cancelar: 'Cancel',
+    nombre: 'Name',
+    descripcion: 'Description',
+    descripcionOpcional: 'Description (optional)',
+    miembros: 'Members',
+    ajustes: 'Settings',
+    agregarSeleccionados: (n) => `Add selected (${n})`,
+    seleccionados: (n) => `${n} selected`,
+    seleccionadosOcultos: (n, m) => `${n} selected (${m} not visible)`,
+    noEnviados: (n) => `Not sent: ${n}.`,
+    limpiarSeleccion: 'Clear selection',
+    resumenAgregados: (n) => `${n} added.`,
+    mostrandoPrimeros100: 'Showing up to 100; type to filter.',
+    buscarPorEmail: 'Search by email',
+    sinCandidatos: 'No matching people.',
+    quitar: 'Remove',
+    papel: 'Role',
+    archivar: 'Archive',
+    restaurar: 'Restore',
+    ocultar: 'Hide',
+    mostrar: 'Show',
+    renombrar: 'Rename',
+    guardar: 'Save',
+    tuPapel: 'Your role',
+    papelDe: (email) => `Role of ${email}`,
+    origenProtegido: 'Protected (administration)',
+    candidatosEncontrados: 'People found',
+    confirmaQuitar: (nombre) => `Remove ${nombre} from the project? They will lose access.`,
+    confirmaArchivar: (nombre) => `Archive "${nombre}"? It will no longer appear among the active ones.`,
+    confirmaOcultar: (nombre) => `Hide "${nombre}"? You will only see it in the hidden view.`,
+    noEncontrado: 'This project does not exist or you do not have access.',
+    volverAProyectos: 'Back to projects',
+    selectorChat: { personal: 'Personal', etiqueta: 'Project' },
+    proyectoNoDisponible: 'The selected project is no longer available. Switched back to "Personal".',
+    errores: {
+      proyecto_no_encontrado: 'This project does not exist or you do not have access.',
+      miembro_no_encontrado: 'That person is not a member of the project.',
+      papel_insuficiente: 'Your role in this project does not allow this action.',
+      estado_no_permite: "The project's current state does not allow this action.",
+      ultimo_dueno: 'The project needs at least one owner.',
+      admin_protegido: 'That administration account is protected and cannot be changed.',
+      ya_es_miembro: 'That person is already a member of the project.',
+      usuario_no_elegible: 'That person cannot be invited to this project.',
+      idempotencia_conflicto: 'This request was already used with different data. Try again.',
+      idempotencia_invalida: 'The request is not valid. Try again.',
+      reintentar: 'The server is busy. Try again in a few seconds.',
+      datos_invalidos: 'Check the data: a field is not valid.',
+      proyecto_id_reservado: 'That project identifier is reserved.',
+      proyectos_error: 'The projects operation could not be completed.',
+      tenant_scope_required: 'Your session has no organization attached.',
+      generico: 'Something went wrong. Try again.',
     },
   },
 }

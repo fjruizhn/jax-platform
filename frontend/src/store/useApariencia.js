@@ -6,7 +6,7 @@ import { leer, escribir } from './almacenamiento'
 // GET /apariencia (apariencia/sincronizarApariencia.js). Sin import de
 // api/client a propósito: I18nProvider usa este store y lo renderizan casi
 // todos los tests. El último valor conocido se guarda en este navegador para
-// titular la pestaña antes de la respuesta; `leer`/`escribir` (fail-soft en
+// mostrar el nombre antes de la respuesta (el título de la pestaña lo escribe solo TituloDePagina); `leer`/`escribir` (fail-soft en
 // localStorage: Safari con cookies bloqueadas, iframe con sandbox) están en
 // almacenamiento.js, compartidas con useTema.js.
 export const CLAVE_NOMBRE = 'jax_system_name'
@@ -15,13 +15,8 @@ export function esNombre(valor) {
   return typeof valor === 'string' && valor.trim() !== ''
 }
 
-function titular(nombre) {
-  if (esNombre(nombre)) document.title = nombre
-}
-
 const nombreGuardado = leer(CLAVE_NOMBRE)
 const idiomaGuardado = leer(CLAVE_IDIOMA_PREDETERMINADO)
-titular(nombreGuardado)
 
 export const useApariencia = create((set) => ({
   systemName: esNombre(nombreGuardado) ? nombreGuardado : null,
@@ -32,7 +27,6 @@ export const useApariencia = create((set) => ({
     const cambios = {}
     if (esNombre(data?.system_name)) {
       escribir(CLAVE_NOMBRE, data.system_name)
-      titular(data.system_name)
       cambios.systemName = data.system_name
     }
     if (esIdioma(data?.lang_default)) {

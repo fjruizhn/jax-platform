@@ -1,30 +1,36 @@
 import { NavLink, Link } from 'react-router-dom'
 import { useI18n } from '../../i18n/index.jsx'
 import { useNombreDelSistema } from '../../store/useApariencia'
+import { useVersion } from '../../store/useVersion'
 
-// Orden pedido por Fernando (2026-09-20): Memoria es el 2º ítem, justo
-// después de Dashboard. Ruta relativa como las demás -- "memoria" ahora es
-// una sub-ruta más de Admin.jsx, no una ruta suelta de App.jsx (ver el
-// comentario de esa ruta y el de Admin.jsx).
+// Orden pedido por Fernando (2026-10-02, con captura): Dashboard, Facetas &
+// Modelos, Costos, Repositorio, Memoria, Proyectos, Usuarios, Pipelines
+// ocultos, Configuración, Correo. (El de 2026-09-20 ponía Memoria 2ª.)
+// Rutas relativas a /admin. Proyectos (E1.3) también vive dentro del caparazón.
+// Íconos: emoji con presentación de color POR DEFECTO (Emoji_Presentation), que
+// no dependen de un selector de variación; ⚙ y ✉ eran símbolos de texto y se
+// veían grises.
 const NAV_ITEMS = [
-  { path: 'dashboard', labelKey: 'adminDashboard', icon: '◈' },
-  { path: 'memoria',   labelKey: 'adminMemoria',   icon: '🧩' },
+  { path: 'dashboard', labelKey: 'adminDashboard', icon: '📊' },
   { path: 'keys',      labelKey: 'adminFacetsModels', icon: '🧠' },
-  { path: 'users',     labelKey: 'adminUsers',     icon: '👤' },
-  { path: 'repo',      labelKey: 'adminRepo',      icon: '📁' },
-  { path: 'settings',  labelKey: 'adminSettings',  icon: '⚙' },
-  { path: 'smtp',      labelKey: 'adminSmtp',      icon: '✉' },
   { path: 'costs',     labelKey: 'adminCosts',     icon: '💰' },
+  { path: 'repo',      labelKey: 'adminRepo',      icon: '📁' },
+  { path: 'memoria',   labelKey: 'adminMemoria',   icon: '🧩' },
+  { path: 'proyectos', labelKey: 'adminProyectos', icon: '📂' },
+  { path: 'users',     labelKey: 'adminUsers',     icon: '👤' },
   // Fix round 1 (MINOR-7, 2026-09-22): la ruta ya existía (Admin.jsx) y el
   // enlace de BarraUsuario ya llevaba acá, pero sin entrada en este menú el
   // superadmin no podía volver a "Pipelines ocultos" sin salir de
   // Administración y volver a hacer clic en el ícono de la barra.
   { path: 'pipelines-ocultos', labelKey: 'adminPipelinesOcultos', icon: '🙈' },
+  { path: 'settings',  labelKey: 'adminSettings',  icon: '🔧' },
+  { path: 'smtp',      labelKey: 'adminSmtp',      icon: '📧' },
 ]
 
 export default function AdminSidebar() {
   const { t } = useI18n()
   const nombre = useNombreDelSistema(t)
+  const version = useVersion()
 
   return (
     <aside className="w-52 flex-shrink-0 bg-fondo border-r border-borde flex flex-col">
@@ -32,9 +38,9 @@ export default function AdminSidebar() {
         <div className="text-xs font-bold text-acento-texto uppercase tracking-widest">
           {t.adminTitle}
         </div>
-        {/* Versión desde package.json (__APP_VERSION__, vite.config.js); el
+        {/* Versión pedida a /api/version (useVersion; sin número mientras carga); el
             nombre es system_name (frente C, 2026-09-16). */}
-        <div className="text-xs text-texto-tenue mt-0.5">{nombre} v{__APP_VERSION__}</div>
+        <div className="text-xs text-texto-tenue mt-0.5">{version ? t.adminVersion(nombre, version) : nombre}</div>
       </div>
 
       <nav className="flex-1 py-3">
