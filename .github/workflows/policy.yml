@@ -1070,8 +1070,15 @@ jobs:
             //   1318/0/1318: papel y estado se vuelven a pedir al abrir y cerrar el selector (archivado,
             //   papel perdido), 7->9->7 sin papel viejo ni respuesta tardía, error de acceso con texto
             //   propio y «Cargar más» en la lista de Personal (x3).
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1318) {
-              console.error("PISO ROTO: se esperaban 1318 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1318 -> 1332 (2026-10-03, Proyectos E2a ronda final de la Parte B): base = el número DEL
+            //   RUNNER sobre 683344f (1318, leído por el controlador; el frontend no cambió hasta
+            //   185102c) + el delta local de la ronda final, +14, medido LOCAL con `npx vitest run`
+            //   1332/0/1332: BotonDocumentos.test.jsx +3 (destino en ventana, 7→9 cierra, segundo clic),
+            //   BotonDocumentos.flujo.test.jsx +3 (archivo nuevo: Escape y foco, título, 7→9 sube a 9),
+            //   SelectorDeDocumentos.test.jsx +3, Documentos.test.jsx +2 (causa desconocida, correo
+            //   largo), api/proyectos.test.js +3 (causas del despachador y su texto es/en).
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1332) {
+              console.error("PISO ROTO: se esperaban 1332 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3404,7 +3411,13 @@ jobs:
           #   8759512, no es de esta rama): el job lo confirma o lo corrige (regla 5). Delta por
           #   colección con JAX_CI_NO_DB=1, baseline 8759512 -> HEAD: test_proyectos_documentos_api
           #   +66, _despachador +39, _repositorio +35, test_ajustes +8 (19 -> 27); sin skips nuevos.
-          PISO_PASSED = 3221
+          # 3221 -> 3360 (2026-10-03, Hyde, Proyectos E2a ronda final de la Parte B): base = el numero
+          #   DEL RUNNER sobre 683344f (3322 passed, 1 skipped, leido por el controlador) + el delta
+          #   local de la ronda final, +38. Delta medido por coleccion, mismo jax-proyectos-e2a:
+          #   185102c 3326 colectados -> HEAD 3364 (+38, todos en test_proyectos_documentos_api +7,
+          #   _despachador +25, _repositorio +2, test_ajustes +4); suite con DB local en HEAD
+          #   (JAX_TEST_DB_SUFIJO propio): 3332 passed, 2 skipped, 0 failed. Sin skips nuevos.
+          PISO_PASSED = 3360
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4389,7 +4402,11 @@ jobs:
       # mismo comando y mismo jax-proyectos-e2a: baseline 8759512 2016 passed + 1 que el baseline
       # falla solo por el jax mas nuevo (test_project_authority_migration) = 2017, HEAD 2041 / 0
       # failed. Piso = declarado (1888) + 24. Los otros +124 colectados piden `client` (skips).
-      JAX_CI_MIN_PASSED: "1912"
+      # 1912 -> 2040 (2026-10-03, Hyde, Proyectos E2a ronda final de la Parte B): base = el numero
+      # DEL RUNNER sobre 683344f (2040 passed, leido por el controlador) + el delta local de la ronda
+      # final, que es 0: medido sin DB (JAX_CI_NO_DB=1), mismo comando y mismo jax-proyectos-e2a,
+      # 185102c 2041 passed / 1282 skipped -> HEAD 2041 / 1320. Las 38 pruebas nuevas piden `client`.
+      JAX_CI_MIN_PASSED: "2040"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
