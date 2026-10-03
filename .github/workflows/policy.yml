@@ -3481,7 +3481,10 @@ jobs:
           # 3567 -> 3570 (filas en incertidumbre fuera de la ventana de la cola): +3 con DB, medido EXACTO en local
           #   (mismo comando, mismas 3 de test_base_por_sesion fuera): 3570 passed. Una en el despachador y dos
           #   en el repositorio. Sin DB no suman (piden `client`): 2150 / piso 2149 sin cambio.
-          PISO_PASSED = 3570
+          # 3570 -> 3574 (ronda 3 de #186): +4 con DB (3 del freno de incertidumbre del despachador y 1 del log del
+          #   429 global de reprocesar), medido EXACTO en local (mismo comando, mismas 3 de test_base_por_sesion
+          #   fuera): 3574 passed. Sin DB no suman (piden `client`): 2150 / piso 2149 sin cambio.
+          PISO_PASSED = 3574
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
