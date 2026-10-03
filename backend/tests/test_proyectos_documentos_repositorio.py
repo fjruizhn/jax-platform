@@ -507,9 +507,14 @@ def _a_estado(e, doc, estado, **cols):
     e.client.portal.call(sql, f"UPDATE project_documents SET {sets} WHERE id=%s", (estado, *cols.values(), doc))
 
 
-def _reprocesar(e, p, doc, ruta=FUENTE, usuario=None, roles=ROLES):
+def _reprocesar_crudo(e, p, doc, ruta=FUENTE, usuario=None, roles=ROLES):
     return _pool_call(e.client, repo.reprocesar, project_id=p, documento_id=doc, ruta_fuente=ruta,
                       user_id=e.usuario if usuario is None else usuario, roles_escritura=roles)
+
+
+def _reprocesar(e, p, doc, **kw):
+    """True si la fila cambio (el repositorio devuelve el estado anterior, o None)."""
+    return _reprocesar_crudo(e, p, doc, **kw) is not None
 
 
 def _sin_extractor(e, p, sha="a" * 64, nombre="x.pdf"):
@@ -644,5 +649,29 @@ def test_documento_para_reprocesar_devuelve_lo_que_hace_falta_y_respeta_el_proye
     d = _sin_extractor(e, p1, nombre="Informe.PDF")
     fila = _pool_call(e.client, repo.documento_para_reprocesar, project_id=p1, documento_id=d)
     assert fila == {"estado": "sin_extractor", "nombre_original": "Informe.PDF", "sha256": "a" * 64,
-                    "bytes": 1, "carpeta_procesado": "proyectos/u-1/procesado/c", "subido_por": e.usuario}
+                    "bytes": 1, "carpeta_procesado": "proyectos/u-1/procesado/c", "subido_por": e.usuario,
+                    "oculto": False, "ruta_entrada": "entrada/l/Informe.PDF"}
     assert _pool_call(e.client, repo.documento_para_reprocesar, project_id=p2, documento_id=d) is None
+
+
+def test_reprocesar_reasigna_subido_por_a_quien_pide_y_devuelve_lo_anterior(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    otro = int(uid(e.client, f"{e.tenant}-otro", "operator", e.tenant))
+    e.client.portal.call(sql, "INSERT INTO jax_project_membership (membership_id, project_id, tenant_id, user_id, project_role, "
+                              "status, grant_origin, created_at, created_by, updated_at) SELECT UUID(), %s, tenant_id, %s, "
+                              "'CONTRIBUTOR', 'ACTIVE', 'EXPLICIT', NOW(6), %s, NOW(6) "
+                              "FROM jax_project_scope WHERE project_id=%s", (p, otro, e.usuario, p))
+    previo = _reprocesar_crudo(e, p, d, usuario=otro)
+    assert previo == {"ruta_anterior": "entrada/l/x.pdf", "subido_por_anterior": e.usuario}
+    assert e.client.portal.call(sql, "SELECT subido_por FROM project_documents WHERE id=%s", (d,), True)[0][0] == otro
+
+
+def test_reprocesar_no_toca_un_documento_oculto(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    e.client.portal.call(sql, "UPDATE project_documents SET oculto_at=NOW(6), oculto_por=%s WHERE id=%s",
+                         (e.usuario, d))
+    assert _reprocesar(e, p, d) is False
+    assert e.fila(d)[0] == "sin_extractor"
+    assert _pool_call(e.client, repo.documento_para_reprocesar, project_id=p, documento_id=d)["oculto"] is True

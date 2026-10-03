@@ -205,8 +205,9 @@ async def reencolar_atascado(pool, *, project_id: int, sha256: str, ruta_entrada
 # colacion de la tabla (PAD SPACE, sin distinguir mayusculas) `x.pdf ` seria `pdf`, y
 # `tipos.tipo_de` lo rechaza. `LOCATE('.') > 1` es el «.pdf sin nombre» de `tipo_de`.
 _SQL_REPROCESAR = (
-    "UPDATE project_documents SET estado = 'en_cola', job_id = NULL, error = NULL, ruta_entrada = %s "
-    "WHERE id = %s AND project_id = %s AND estado IN ('sin_extractor', 'error') "
+    "UPDATE project_documents SET estado = 'en_cola', job_id = NULL, error = NULL, ruta_entrada = %s, "
+    "subido_por = %s "
+    "WHERE id = %s AND project_id = %s AND estado IN ('sin_extractor', 'error') AND oculto_at IS NULL "
     "AND LOCATE('.', nombre_original) > 1 "
     "AND LOWER(SUBSTRING_INDEX(nombre_original, '.', -1)) COLLATE utf8mb4_nopad_bin IN ({tipos}) "
     "AND EXISTS (SELECT 1 FROM jax_project_scope s WHERE s.project_id = %s AND " + _PUEDE_ESCRIBIR + ")"
@@ -215,30 +216,36 @@ _SQL_REPROCESAR = (
 
 async def documento_para_reprocesar(pool, *, project_id: int, documento_id: int) -> dict | None:
     """Lo que hace falta para decidir si un documento se reprocesa y donde esta su original
-    (None si no es de ese proyecto). Es una lectura: la decision la toma `reprocesar`."""
+    (None si no es de ese proyecto). `oculto` va aparte: un oculto existe pero no se reprocesa.
+    Es una lectura: la decision la toma `reprocesar`."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT estado, nombre_original, sha256, bytes, carpeta_procesado, subido_por "
-                "FROM project_documents WHERE id = %s AND project_id = %s", (documento_id, project_id))
+                "SELECT estado, nombre_original, sha256, bytes, carpeta_procesado, subido_por, "
+                "oculto_at IS NOT NULL, ruta_entrada FROM project_documents WHERE id = %s AND project_id = %s",
+                (documento_id, project_id))
             fila = await cur.fetchone()
         await conn.commit()
     if fila is None:
         return None
     return {"estado": fila[0], "nombre_original": fila[1], "sha256": fila[2], "bytes": int(fila[3]),
-            "carpeta_procesado": fila[4], "subido_por": fila[5]}
+            "carpeta_procesado": fila[4], "subido_por": fila[5], "oculto": bool(fila[6]),
+            "ruta_entrada": fila[7]}
 
 
 async def reprocesar(pool, *, project_id: int, documento_id: int, ruta_fuente: str, user_id: int,
-                     roles_escritura: tuple[str, ...]) -> bool:
+                     roles_escritura: tuple[str, ...]) -> dict | None:
     """`sin_extractor` o `error` -> `en_cola` con `ruta_entrada = ruta_fuente` (el original ya esta en
-    `fuente/`: el despachador lo manda tal cual y NUNCA lo borra), `job_id` y `error` en NULL.
-    True si la fila cambio; False -- sin tocar nada -- si no es del proyecto, no esta en
-    `sin_extractor` ni `error`, su tipo no tiene extractor o `user_id` no puede escribir (proyecto no
-    ACTIVE, sin membresia activa con papel de escritura, o inactivo en su tenant). Las mismas
-    condiciones de autorizacion que `insertar` y `reencolar_atascado` (`_PUEDE_ESCRIBIR`).
-    `subido_por` no cambia: la tabla no tiene donde guardar quien reproceso, y eso va al log
-    de quien llama (user_id y documento_id)."""
+    `fuente/`: el despachador lo manda tal cual y NUNCA lo borra), `job_id` y `error` en NULL, y la
+    fila pasa a ser de quien pide (`subido_por = user_id`), como en `reencolar_atascado`: el
+    despachador manda a LAS MANOS la identidad de `subido_por`, y quien pide acaba de pasar
+    `_PUEDE_ESCRIBIR`, mientras que quien subio pudo darse de baja o cambiar de tenant.
+    Devuelve `{"ruta_anterior", "subido_por_anterior"}` (leidos con la fila bloqueada, en la misma
+    transaccion: la copia de `entrada/` que ya no se usa la borra quien llama) o None -- sin tocar
+    nada -- si no es del proyecto, esta oculta, no esta en `sin_extractor` ni `error`, su tipo no
+    tiene extractor o `user_id` no puede escribir (proyecto no ACTIVE, sin membresia activa con papel
+    de escritura, o inactivo en su tenant). Las mismas condiciones de autorizacion que `insertar` y
+    `reencolar_atascado` (`_PUEDE_ESCRIBIR`)."""
     if not roles_escritura:
         raise ValueError("roles_escritura vacio: nadie podria reprocesar")
     extensiones = sorted(tipos.EXTENSIONES_ACEPTADAS)
@@ -246,11 +253,24 @@ async def reprocesar(pool, *, project_id: int, documento_id: int, ruta_fuente: s
                                       roles=", ".join(["%s"] * len(roles_escritura)))
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(consulta, (ruta_fuente, documento_id, project_id, *extensiones, project_id,
-                                         user_id, *roles_escritura, user_id))
-            cambiada = bool(cur.rowcount)
-        await conn.commit()
-    return cambiada
+            await conn.begin()
+            try:
+                await cur.execute("SELECT ruta_entrada, subido_por FROM project_documents "
+                                  "WHERE id = %s AND project_id = %s FOR UPDATE", (documento_id, project_id))
+                anterior = await cur.fetchone()
+                if anterior is None:
+                    await conn.rollback()
+                    return None
+                await cur.execute(consulta, (ruta_fuente, user_id, documento_id, project_id, *extensiones,
+                                             project_id, user_id, *roles_escritura, user_id))
+                if not cur.rowcount:
+                    await conn.rollback()
+                    return None
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+    return {"ruta_anterior": anterior[0], "subido_por_anterior": anterior[1]}
 
 
 async def existente_por_sha(pool, *, project_id: int, sha256: str) -> dict | None:
