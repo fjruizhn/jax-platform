@@ -1618,6 +1618,8 @@ export default {
       restaurar: 'Restaurar',
       verOcultos: 'Ver ocultos',
       subiendo: 'Subiendo…',
+      elegirArchivos: 'Archivos',
+      elegirCarpeta: 'Carpeta',
       sinPermiso: 'Tu papel en este proyecto no permite agregar documentos.',
       estados: {
         en_cola: 'En espera',
@@ -1644,6 +1646,17 @@ export default {
         ignorados: (n) => `${n} se ignorará${n === 1 ? '' : 'n'}`,
         confirmar: 'Subir',
         cancelar: 'Cancelar',
+        columnaTipo: 'Tipo',
+        columnaCantidad: 'Archivos',
+        excedeArchivos: (max) => `Elegiste más archivos de los permitidos por subida (máximo ${max}). Elegí menos.`,
+        excedeBytes: (peso) => `Los archivos juntos pesan más de lo permitido por subida (máximo ${peso}). Elegí menos.`,
+        progreso: 'Progreso de la subida',
+        nadaQueSubir: 'Ninguno de los archivos elegidos se puede subir.',
+      },
+      resultado: {
+        titulo: 'Subida terminada',
+        agregados: (n) => `${n} archivo${n === 1 ? '' : 's'} agregado${n === 1 ? '' : 's'}`,
+        cerrar: 'Cerrar',
       },
       elegirProyecto: {
         titulo: 'Elegí un proyecto',

@@ -1046,8 +1046,12 @@ jobs:
           // 1196 -> 1213 (2026-10-03, Proyectos E2a T8): +17, medido LOCAL con `npx vitest run --reporter=json`
           //   1213/0/1213 (número local que el runner confirma o corrige): +17 en api/proyectos.test.js
           //   (cliente de documentos, y textos y códigos del backend contra es/en).
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1213) {
-              console.error("PISO ROTO: se esperaban 1213 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1213 -> 1242 (2026-10-03, Proyectos E2a T9): +29, medido LOCAL con `npx vitest run`
+          //   1242/0/1242 (número local que el runner confirma o corrige): +10 en
+          //   resumenDeLote.test.js y +19 en SelectorDeDocumentos.test.jsx (resumen, foco, Escape,
+          //   doble clic, barra de avance, errores del servidor, resultado).
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1242) {
+              console.error("PISO ROTO: se esperaban 1242 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

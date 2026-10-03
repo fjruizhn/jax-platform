@@ -1522,6 +1522,8 @@ export default {
       restaurar: 'Restore',
       verOcultos: 'Show hidden',
       subiendo: 'Uploading…',
+      elegirArchivos: 'Files',
+      elegirCarpeta: 'Folder',
       sinPermiso: 'Your role in this project does not allow adding documents.',
       estados: {
         en_cola: 'Waiting',
@@ -1548,6 +1550,17 @@ export default {
         ignorados: (n) => `${n} will be skipped`,
         confirmar: 'Upload',
         cancelar: 'Cancel',
+        columnaTipo: 'Type',
+        columnaCantidad: 'Files',
+        excedeArchivos: (max) => `You chose more files than one upload allows (maximum ${max}). Choose fewer.`,
+        excedeBytes: (peso) => `The files together weigh more than one upload allows (maximum ${peso}). Choose fewer.`,
+        progreso: 'Upload progress',
+        nadaQueSubir: 'None of the chosen files can be uploaded.',
+      },
+      resultado: {
+        titulo: 'Upload finished',
+        agregados: (n) => `${n} file${n === 1 ? '' : 's'} added`,
+        cerrar: 'Close',
       },
       elegirProyecto: {
         titulo: 'Choose a project',
