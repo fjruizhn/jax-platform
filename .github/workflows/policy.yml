@@ -4532,7 +4532,7 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'phase2/f2-e-runtime-status-resolution-platform'
     runs-on: ubuntu-latest
     env:
-      JAX_RUNTIME_STATUS_EXPECTED_SHA: 327997d224c9572824ac996a126df4c1a6aaa851
+      JAX_RUNTIME_STATUS_EXPECTED_SHA: 9e13b0def684a2cea8ebc602960700c4df7a34c1
       JAX_REPO_PATH: ${{ github.workspace }}/jax
       JAX_CONFIG_PATH: ${{ github.workspace }}/jax/las_manos/config.toml
       JAX_CI_NO_DB: "1"
@@ -4546,7 +4546,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: fjruizhn/Jax
-          ref: 327997d224c9572824ac996a126df4c1a6aaa851
+          ref: 9e13b0def684a2cea8ebc602960700c4df7a34c1
           path: jax
       - name: Require and record exact F2-E status pair
         run: |
