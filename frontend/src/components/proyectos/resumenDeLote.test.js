@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import es from '../../i18n/es.js'
 import en from '../../i18n/en.js'
+import { localeFor } from '../../i18n/index.jsx'
 import { resumirLote, formatoPeso } from './resumenDeLote'
 
 const MB = 1024 * 1024
@@ -89,17 +90,20 @@ describe('formatoPeso', () => {
   const U_ES = es.proyectos.documentos.unidades
   const U_EN = en.proyectos.documentos.unidades
 
-  it('elige la unidad (base 1024) y no deja ceros de más', () => {
-    expect(formatoPeso(0, 'en', U_EN)).toBe('0 B')
-    expect(formatoPeso(512, 'en', U_EN)).toBe('512 B')
-    expect(formatoPeso(1536, 'en', U_EN)).toBe('1.5 KB')
-    expect(formatoPeso(5 * MB, 'en', U_EN)).toBe('5 MB')
-    expect(formatoPeso(1024 * MB, 'en', U_EN)).toBe('1 GB')
+  // Se prueba con el locale REAL de la app (localeFor), el mismo camino del componente.
+  it('elige la unidad (base 1024) y no deja ceros de más, en inglés', () => {
+    const L = localeFor('en')
+    expect(formatoPeso(0, L, U_EN)).toBe('0 B')
+    expect(formatoPeso(512, L, U_EN)).toBe('512 B')
+    expect(formatoPeso(1536, L, U_EN)).toBe('1.5 KB')
+    expect(formatoPeso(5 * MB, L, U_EN)).toBe('5 MB')
+    expect(formatoPeso(1024 * MB, L, U_EN)).toBe('1 GB')
   })
 
-  it('en español el decimal es coma y la unidad sale del i18n', () => {
-    expect(formatoPeso(512, 'es', U_ES)).toBe('512 B')
-    expect(formatoPeso(1536, 'es', U_ES)).toBe('1,5 KB')
+  it('en español (Honduras) el decimal es punto y la unidad sale del i18n', () => {
+    const L = localeFor('es')
+    expect(formatoPeso(512, L, U_ES)).toBe('512 B')
+    expect(formatoPeso(1536, L, U_ES)).toBe('1.5 KB')
   })
 
   it('no usa style:"unit" (RangeError en navegadores sin ese soporte): sigue funcionando si lo rechazan', () => {
@@ -108,6 +112,6 @@ describe('formatoPeso', () => {
       if (opciones?.style === 'unit') throw new RangeError('Value unit out of range for Intl.NumberFormat options property style')
       return new Real(loc, opciones)
     })
-    expect(formatoPeso(1536, 'en', U_EN)).toBe('1.5 KB')
+    expect(formatoPeso(1536, localeFor('en'), U_EN)).toBe('1.5 KB')
   })
 })
