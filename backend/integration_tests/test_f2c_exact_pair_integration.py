@@ -1,4 +1,4 @@
-"""Exact JAX #302 / platform #170 F2-C/F2-D integration proof.
+"""Exact paired-JAX F2-C/F2-D integration proof.
 
 This test intentionally composes a test-only F2-B authenticator and registry;
 it never reads or provisions a production receipt key. The F2-D success path
@@ -9,13 +9,22 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import os
 
+import pytest
+
 from api.chat import ChatResponse, _parse_contract_response
-from api.governed_chat import project_provider_contract, project_sealed_envelope
+from api.governed_chat import (
+    F2C_EXACT_PAIR_COMPATIBILITY,
+    GovernedChatUnavailable,
+    _core,
+    project_provider_contract,
+    project_sealed_envelope,
+)
 
 
 def _f2b_composition():
     import policy.governance.response as response
     import policy.governance.resolution as resolution
+    from policy.governance.governed_domain import GOVERNED_RENDERER_API_VERSION
     from policy.governance.governed_renderer import GovernedDomainRegistry, RenderContext
     from policy.governance.response import (
         ClaimDisposition, ClaimRecord, ContentBlock, ContentBlockKind,
@@ -62,7 +71,7 @@ def _f2b_composition():
         resolution_receipt_ref=ref.ref_id, disposition=ClaimDisposition.ASSERTABLE,
         template_contract=TemplateContract("capability", "1", "en"))
     governance_receipt = GovernanceReceipt("test-policy", "test-vocab",
-        registry.snapshot_digest, "test-validator", "f2-c.renderer.2")
+        registry.snapshot_digest, "test-validator", GOVERNED_RENDERER_API_VERSION)
     candidate = response.GovernedResponseCandidate("f2-c.1", "response-it",
         scope.request_id, scope.trace_id, scope, "web-chat", (),
         (ContentBlock(ContentBlockKind.CLAIM_REF_BLOCK, claim_refs=(claim.claim_id,)),),
@@ -96,6 +105,29 @@ def _f2b_composition():
         GovernedDomainRegistry(), validate_trusted_reference, lambda: now,
         receipt_reference_resolver=resolve_trusted_reference)
     return envelope, context, governance_receipt
+
+
+def test_f2c_exact_pair_accepts_current_contract_and_rejects_old_or_future(monkeypatch):
+    """Platform accepts only the reviewed JAX F2-C contract triple."""
+    monkeypatch.setenv("JAX_REPO_PATH", os.environ["JAX_REPO_PATH"])
+    import policy.governance.governed_domain as domain
+
+    assert _core()
+    assert F2C_EXACT_PAIR_COMPATIBILITY == (
+        "f2-c.renderer.3", "f2-c.domain.5", frozenset({"f2-c.1"})
+    )
+
+    for renderer_version, domain_version, envelope_versions in (
+        ("f2-c.renderer.2", "f2-c.domain.2", frozenset({"f2-c.1"})),
+        ("f2-c.renderer.4", "f2-c.domain.6", frozenset({"f2-c.1"})),
+        ("f2-c.renderer.3", "f2-c.domain.5", frozenset({"f2-c.2"})),
+    ):
+        with monkeypatch.context() as patched:
+            patched.setattr(domain, "GOVERNED_RENDERER_API_VERSION", renderer_version)
+            patched.setattr(domain, "GOVERNED_DOMAIN_SPEC_VERSION", domain_version)
+            patched.setattr(domain, "GOVERNED_ENVELOPE_SCHEMA_VERSIONS", envelope_versions)
+            with pytest.raises(GovernedChatUnavailable, match="compatibility is unsupported"):
+                _core()
 
 
 def test_exact_pair_bridge_blocks_narrative_and_renders_valid_supported_claim(monkeypatch):

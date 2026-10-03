@@ -4526,14 +4526,15 @@ jobs:
           name: f2d-exact-pair-evidence
           path: platform/f2d-exact-pair-evidence.json
 
-  # F2-E-SR-001 adds a JAX typed resolver API consumed by Platform's fixed
-  # FacetState and LAS MANOS health adapters. Test and record this exact pair.
+  # This exact pair exercises both F2-E-SR runtime observations and the F2-C/
+  # F2-D governed Web Chat lifecycle against the reviewed JAX contract.
   f2e-runtime-status-exact-pair:
     if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'phase2/f2-e-runtime-status-resolution-platform'
     runs-on: ubuntu-latest
     env:
       JAX_RUNTIME_STATUS_EXPECTED_SHA: 9e13b0def684a2cea8ebc602960700c4df7a34c1
       JAX_REPO_PATH: ${{ github.workspace }}/jax
+      JAX_REPO_BASE: ${{ github.workspace }}/jax
       JAX_CONFIG_PATH: ${{ github.workspace }}/jax/las_manos/config.toml
       JAX_CI_NO_DB: "1"
       JAX_JWT_SECRET: f2e-runtime-status-ci-only
@@ -4548,31 +4549,12 @@ jobs:
           repository: fjruizhn/Jax
           ref: 9e13b0def684a2cea8ebc602960700c4df7a34c1
           path: jax
-      - name: Require and record exact F2-E status pair
+      - name: Require exact JAX and platform pair
         run: |
           JAX_SHA=$(git -C jax rev-parse HEAD)
           PLATFORM_SHA=$(git rev-parse HEAD)
           test "$JAX_SHA" = "$JAX_RUNTIME_STATUS_EXPECTED_SHA"
           test "$PLATFORM_SHA" = "${{ github.event.pull_request.head.sha }}"
-          python - <<'PY'
-          import json, os, subprocess
-          evidence = {
-              "jax_repository": "fjruizhn/Jax",
-              "jax_pr": 313,
-              "jax_head": os.environ["JAX_RUNTIME_STATUS_EXPECTED_SHA"],
-              "platform_repository": "fjruizhn/jax-platform",
-              "platform_pr": int(os.environ["GITHUB_PR_NUMBER"]),
-              "platform_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-              "integration": "F2-E-SR-001 typed runtime-status resolver bridge",
-          }
-          with open("f2e-runtime-status-exact-pair-evidence.json", "w", encoding="utf-8") as f:
-              json.dump(evidence, f, sort_keys=True)
-              f.write("\n")
-          print(json.dumps(evidence, sort_keys=True))
-          PY
-          cat f2e-runtime-status-exact-pair-evidence.json >> "$GITHUB_STEP_SUMMARY"
-        env:
-          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -4580,11 +4562,55 @@ jobs:
       - name: Install backend test dependencies
         working-directory: backend
         run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
-      - name: Exercise fixed platform sources against exact JAX API
+      - name: Exercise runtime status and governed lifecycle against exact JAX API
         working-directory: backend
         env:
           PYTHONPATH: ${{ github.workspace }}/jax
-        run: python -m pytest -q -p no:warnings tests/test_runtime_status_sources.py tests/test_platform_runtime_status_bridge.py
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python -m pytest -q -p no:warnings \
+            tests/test_runtime_status_sources.py \
+            tests/test_platform_runtime_status_bridge.py \
+            tests/test_las_manos_health_broadcast.py \
+            integration_tests/test_f2c_exact_pair_integration.py \
+            tests/test_output_lifecycle_transport.py
+          python - <<'PY'
+          import json, os, subprocess
+          from policy.governance.governed_domain import (
+              GOVERNED_DOMAIN_SPEC_VERSION,
+              GOVERNED_ENVELOPE_SCHEMA_VERSIONS,
+              GOVERNED_RENDERER_API_VERSION,
+          )
+          evidence = {
+              "coverage": [
+                  "F2-E-SR runtime-status source and bridge observations",
+                  "F2-C/F2-D governed Web Chat lifecycle",
+              ],
+              "jax_head": os.environ["JAX_RUNTIME_STATUS_EXPECTED_SHA"],
+              "jax_pr": 313,
+              "jax_repository": "fjruizhn/Jax",
+              "platform_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "platform_pr": int(os.environ["GITHUB_PR_NUMBER"]),
+              "platform_repository": "fjruizhn/jax-platform",
+              "runtime_contract": {
+                  "domain": GOVERNED_DOMAIN_SPEC_VERSION,
+                  "envelopes": sorted(GOVERNED_ENVELOPE_SCHEMA_VERSIONS),
+                  "renderer": GOVERNED_RENDERER_API_VERSION,
+              },
+              "test_modules": [
+                  "tests/test_runtime_status_sources.py",
+                  "tests/test_platform_runtime_status_bridge.py",
+                  "tests/test_las_manos_health_broadcast.py",
+                  "integration_tests/test_f2c_exact_pair_integration.py",
+                  "tests/test_output_lifecycle_transport.py",
+              ],
+          }
+          with open("../f2e-runtime-status-exact-pair-evidence.json", "w", encoding="utf-8") as f:
+              json.dump(evidence, f, sort_keys=True)
+              f.write("\n")
+          print(json.dumps(evidence, sort_keys=True))
+          PY
+          cat ../f2e-runtime-status-exact-pair-evidence.json >> "$GITHUB_STEP_SUMMARY"
       - name: Upload exact-pair runtime-status evidence
         uses: actions/upload-artifact@v4
         with:
