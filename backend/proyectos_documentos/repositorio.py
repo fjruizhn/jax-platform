@@ -18,11 +18,14 @@ _COLUMNAS_LISTA = (
     "d.id, d.nombre_original, d.bytes, d.tipo, d.estado, d.error, u.email, d.created_at, d.oculto_at"
 )
 _BASE_LISTA = (
-    f"SELECT {_COLUMNAS_LISTA} FROM project_documents d JOIN jax_users u ON u.user_id = d.subido_por "
+    f"SELECT {_COLUMNAS_LISTA} FROM project_documents d {{indice}} JOIN jax_users u ON u.user_id = d.subido_por "
     "WHERE d.project_id = %s AND d.oculto_at IS {nulo} AND d.id < %s ORDER BY d.id DESC LIMIT %s"
 )
-SQL_LISTAR_VISIBLES = _BASE_LISTA.format(nulo="NULL")
-SQL_LISTAR_OCULTOS = _BASE_LISTA.format(nulo="NOT NULL")
+SQL_LISTAR_VISIBLES = _BASE_LISTA.format(nulo="NULL", indice="")
+# Con filas ocultas reales (medido: 200 de 1000), sin la pista el optimizador elige
+# uq_project_documents_sha (mismo prefijo project_id) y ordena todo el proyecto; con
+# FORCE INDEX recorre solo `oculto_at IS NOT NULL` en el indice de la lista.
+SQL_LISTAR_OCULTOS = _BASE_LISTA.format(nulo="NOT NULL", indice="FORCE INDEX (idx_project_documents_lista)")
 
 # `job_id IS NULL` fija el prefijo (estado, job_id) del indice de despacho y deja
 # `id` ya ordenado: sin eso, MariaDB ordena aparte. Una fila en_cola nunca tiene
@@ -121,17 +124,24 @@ async def tomar_en_cola(pool, *, limite: int) -> list[dict]:
              "subido_por_email": f[4]} for f in filas]
 
 
-async def marcar_despachadas(pool, *, ids: list[int], job_id: str) -> None:
-    """en_cola -> pendiente + job_id. Solo toca filas en_cola: una ya despachada no cambia de trabajo."""
+async def marcar_despachadas(pool, *, ids: list[int], job_id: str) -> list[int]:
+    """en_cola -> pendiente + job_id. Solo toca filas en_cola: una ya despachada no
+    cambia de trabajo. Devuelve los ids que EFECTIVAMENTE pasaron a pendiente (los
+    que este llamado gano), para que el despachador sepa si debe seguir con ellos."""
     if not ids:
-        return
+        return []
     marcadores = ", ".join(["%s"] * len(ids))
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 f"UPDATE project_documents SET estado = 'pendiente', job_id = %s "
                 f"WHERE estado = 'en_cola' AND id IN ({marcadores})", (job_id, *ids))
+            await cur.execute(
+                f"SELECT id FROM project_documents WHERE job_id = %s AND estado = 'pendiente' "
+                f"AND id IN ({marcadores}) ORDER BY id", (job_id, *ids))
+            ganados = [f[0] for f in await cur.fetchall()]
         await conn.commit()
+    return ganados
 
 
 async def trabajos_abiertos(pool) -> list[str]:
@@ -143,15 +153,29 @@ async def trabajos_abiertos(pool) -> list[str]:
             return [f[0] for f in await cur.fetchall()]
 
 
+ESTADOS_DE_RESULTADO = frozenset({"procesando", "listo", "parcial", "error", "sin_extractor", "cancelado"})
+
+
 async def aplicar_resultado(pool, *, job_id: str, ruta_entrada: str, estado: str,
-                            carpeta_procesado: str | None, error: str | None) -> None:
+                            carpeta_procesado: str | None, error: str | None) -> int:
+    """Aplica el resultado de LAS MANOS a la fila de ese trabajo y esa ruta. Solo
+    toca filas `pendiente`/`procesando`: un resultado tardio no pisa un estado
+    terminal ni borra `trabajo_perdido`. Devuelve las filas cambiadas.
+
+    Invariante de quien inserta: dentro de un mismo trabajo `ruta_entrada` es unica
+    (la API de subida da nombres unicos por lote); si dos filas del mismo trabajo la
+    compartieran, el resultado se aplicaria a las dos."""
+    if estado not in ESTADOS_DE_RESULTADO:
+        raise ValueError(f"estado de resultado invalido: {estado!r}")
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE project_documents SET estado = %s, carpeta_procesado = %s, error = %s "
-                "WHERE job_id = %s AND ruta_entrada = %s",
+                "WHERE job_id = %s AND ruta_entrada = %s AND estado IN ('pendiente', 'procesando')",
                 (estado, carpeta_procesado, error, job_id, ruta_entrada))
+            cambiadas = cur.rowcount
         await conn.commit()
+    return cambiadas
 
 
 async def marcar_job_perdido(pool, *, job_id: str) -> None:

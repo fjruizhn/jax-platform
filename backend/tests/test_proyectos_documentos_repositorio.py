@@ -4,7 +4,10 @@ La tabla la crea el gancho de jax (migracion 006a). Cada prueba arma su propio
 tenant y sus proyectos por la API (igual que test_proyectos_api.py), asi que
 ninguna ve lo que dejo otra. Las filas de documentos se borran al terminar.
 """
+import ast
+import os
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -62,16 +65,32 @@ def e(client):
 
 # ------------------------------------------------------------------ tipos
 
-def test_tipo_de_acepta_las_doce_extensiones_en_minusculas():
+def test_tipo_de_acepta_las_extensiones_del_extractor_en_minusculas():
     assert tipos.EXTENSIONES_ACEPTADAS == frozenset(
-        {"pdf", "xlsx", "xls", "docx", "png", "jpg", "jpeg", "tif", "tiff", "csv", "txt", "md"})
+        {"pdf", "xlsx", "xlsm", "docx", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"})
     assert tipos.tipo_de("Informe FINAL.PDF") == "pdf"
     assert tipos.tipo_de("a.b.tiff") == "tiff"
 
 
-@pytest.mark.parametrize("nombre", ["archivo.exe", "sin_extension", ".pdf", "termina.", "x.pdf.zip", ""])
+@pytest.mark.parametrize("nombre", ["archivo.exe", "viejo.xls", "datos.csv", "nota.txt", "leeme.md", "sin_extension", ".pdf", "termina.", "x.pdf.zip", ""])
 def test_tipo_de_rechaza_lo_demas(nombre):
     assert tipos.tipo_de(nombre) is None
+
+
+def test_extensiones_aceptadas_coinciden_con_la_compuerta_de_jax():
+    """Se lee `procesamiento/compuerta.py` por ruta (sin importar el paquete jax) y se
+    comparan los conjuntos: si el extractor cambia, esta prueba lo dice."""
+    raiz = os.environ.get("JAX_REPO_PATH", "").strip()
+    assert raiz, "JAX_REPO_PATH es requerido"
+    arbol = ast.parse((Path(raiz) / "procesamiento" / "compuerta.py").read_text(encoding="utf-8"))
+    constantes = {}
+    for nodo in arbol.body:
+        if isinstance(nodo, ast.Assign) and len(nodo.targets) == 1 and isinstance(nodo.targets[0], ast.Name):
+            if nodo.targets[0].id in ("IMAGENES", "EXCEL", "WORD"):
+                constantes[nodo.targets[0].id] = ast.literal_eval(nodo.value)
+    assert set(constantes) == {"IMAGENES", "EXCEL", "WORD"}
+    de_compuerta = {e.lstrip(".") for c in constantes.values() for e in c} | {"pdf"}
+    assert tipos.EXTENSIONES_ACEPTADAS == de_compuerta
 
 
 # ------------------------------------------------------------------ repositorio
@@ -175,6 +194,11 @@ def test_tomar_en_cola_respeta_limite_orden_y_estado(e):
     _pool_call(e.client, repo.marcar_despachadas, ids=[ids[0]], job_id="job-x")
     propios = [f["id"] for f in _pool_call(e.client, repo.tomar_en_cola, limite=100000) if f["project_id"] == p]
     assert propios == [ids[1], ids[2]]
+    # limite=1 trae solo la fila en cola mas antigua de TODA la tabla
+    una = _pool_call(e.client, repo.tomar_en_cola, limite=1)
+    assert len(una) == 1
+    todas = _pool_call(e.client, repo.tomar_en_cola, limite=100000)
+    assert una[0]["id"] == todas[0]["id"]
 
 
 def test_tomar_en_cola_incluye_filas_de_fuente(e):
@@ -207,15 +231,62 @@ def test_despacho_resultado_y_trabajo_perdido(e):
 
 
 def test_marcar_despachadas_sin_ids_no_hace_nada(e):
-    assert _pool_call(e.client, repo.marcar_despachadas, ids=[], job_id="job-vacio") is None
+    assert _pool_call(e.client, repo.marcar_despachadas, ids=[], job_id="job-vacio") == []
 
 
 def test_marcar_despachadas_solo_toca_filas_en_cola(e):
     p = e.proyecto()
     d = e.insertar(p, "7" * 64)
-    _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-a")
-    _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-b")
+    otro = e.insertar(p, "8" * 64)
+    assert _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-a") == [d]
+    # el segundo despachador pierde `d` y gana solo lo que seguia en cola
+    assert _pool_call(e.client, repo.marcar_despachadas, ids=[d, otro], job_id="job-b") == [otro]
     assert e.fila(d)[:2] == ("pendiente", "job-a")
+    assert e.fila(otro)[:2] == ("pendiente", "job-b")
+
+
+def test_resultado_tardio_no_pisa_un_estado_terminal(e):
+    p = e.proyecto()
+    d = e.insertar(p, "6" * 64, ruta="entrada/l/t.pdf")
+    _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-t")
+    _pool_call(e.client, repo.marcar_job_perdido, job_id="job-t")
+    n = _pool_call(e.client, repo.aplicar_resultado, job_id="job-t", ruta_entrada="entrada/l/t.pdf",
+                   estado="listo", carpeta_procesado="proc/t", error=None)
+    assert n == 0
+    assert e.fila(d)[0] == "error" and e.fila(d)[3] == "trabajo_perdido" and e.fila(d)[2] is None
+
+
+def test_aplicar_resultado_devuelve_filas_y_acepta_procesando(e):
+    p = e.proyecto()
+    d = e.insertar(p, "5" * 64, ruta="entrada/l/u.pdf")
+    _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-u")
+    assert _pool_call(e.client, repo.aplicar_resultado, job_id="job-u", ruta_entrada="entrada/l/u.pdf",
+                      estado="procesando", carpeta_procesado=None, error=None) == 1
+    assert _pool_call(e.client, repo.aplicar_resultado, job_id="job-u", ruta_entrada="entrada/l/u.pdf",
+                      estado="listo", carpeta_procesado="proc/u", error=None) == 1
+    assert e.fila(d)[0] == "listo"
+
+
+def test_dos_trabajos_con_la_misma_ruta_no_se_tocan(e):
+    p = e.proyecto()
+    a = e.insertar(p, "3" * 64, nombre="a.pdf", ruta="entrada/l/mismo.pdf")
+    b = e.insertar(p, "4" * 64, nombre="b.pdf", ruta="entrada/l/mismo.pdf")
+    _pool_call(e.client, repo.marcar_despachadas, ids=[a], job_id="job-1")
+    _pool_call(e.client, repo.marcar_despachadas, ids=[b], job_id="job-2")
+    assert _pool_call(e.client, repo.aplicar_resultado, job_id="job-1", ruta_entrada="entrada/l/mismo.pdf",
+                      estado="listo", carpeta_procesado="proc/a", error=None) == 1
+    assert e.fila(a)[0] == "listo" and e.fila(b)[0] == "pendiente"
+
+
+def test_aplicar_resultado_con_estado_invalido_lanza_antes_de_tocar(e):
+    p = e.proyecto()
+    d = e.insertar(p, "2" * 64, ruta="entrada/l/v.pdf")
+    _pool_call(e.client, repo.marcar_despachadas, ids=[d], job_id="job-v")
+    for malo in ("en_cola", "pendiente", "inventado", ""):
+        with pytest.raises(ValueError):
+            _pool_call(e.client, repo.aplicar_resultado, job_id="job-v", ruta_entrada="entrada/l/v.pdf",
+                       estado=malo, carpeta_procesado=None, error=None)
+    assert e.fila(d)[0] == "pendiente"
 
 
 # ------------------------------------------------------------------ EXPLAIN (camino caliente)
@@ -254,7 +325,12 @@ def test_explain_de_listar_y_tomar_en_cola_usan_su_indice(e):
     proyectos = [e.proyecto() for _ in range(10)]
     for i, pid in enumerate(proyectos):
         _sembrar(e.client, pid, e.usuario, 100, desde=10**9 + i * 1000)
-    p = proyectos[0]
+    # 200 de las 1000 filas, ocultas de verdad (los dos primeros proyectos enteros),
+    # para que el plan de ocultos no sea el de un rango vacio. Visibles: otro proyecto.
+    for pid in proyectos[:2]:
+        e.client.portal.call(sql, "UPDATE project_documents SET oculto_at = NOW(6), oculto_por = %s "
+                                  "WHERE project_id = %s", (e.usuario, pid))
+    p, con_ocultos = proyectos[5], proyectos[0]
     plan = _plan(e.client, repo.SQL_LISTAR_VISIBLES, (p, 2**62, 50))
     doc = next(f for f in plan if f["table"] == "d")
     assert doc["key"] == "idx_project_documents_lista", plan
@@ -263,7 +339,7 @@ def test_explain_de_listar_y_tomar_en_cola_usan_su_indice(e):
     # columna del indice), asi que sale ordenada por oculto_at y no por id: ahi el
     # filesort es inherente al indice de la migracion 006a, y solo ordena los ocultos
     # del proyecto (pocos, y es una vista de consulta ocasional). Se exige el indice.
-    plan = _plan(e.client, repo.SQL_LISTAR_OCULTOS, (p, 2**62, 50))
+    plan = _plan(e.client, repo.SQL_LISTAR_OCULTOS, (con_ocultos, 2**62, 50))
     doc = next(f for f in plan if f["table"] == "d")
     assert doc["key"] == "idx_project_documents_lista", plan
     assert "temporary" not in (doc["Extra"] or ""), plan
