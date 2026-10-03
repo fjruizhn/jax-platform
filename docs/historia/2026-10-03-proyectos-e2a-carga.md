@@ -208,3 +208,113 @@ Se aceptan con su cota; ninguno es un fallo abierto.)*
   resucita (`test_duplicado_y_duplicado_oculto`, `test_oculto_en_error_no_se_resucita`). Para procesarlo,
   primero se restaura y después se vuelve a subir. (La fila visible que sí se re-encola pasa a ser de
   quien la subió de nuevo: `subido_por` y `nombre_original` nuevos.)
+
+## Reprocesar
+
+Fecha: 2026-10-03 (13:03 a 13:12 CST). Quién midió: Claude Opus 5.5 (escalón 2, implementador), rama
+`feat/proyectos-reprocesar` de jax-platform (PR #186). Tipo de registro: HISTORIA. Es la prueba de
+carga de `POST /api/proyectos/{id}/documentos/{doc}/reprocesar` (regla 4 del rendimiento). Un número
+de carga caduca si cambia el esquema, el volumen de datos o la infraestructura: se vuelve a medir.
+
+### Qué se midió y con qué
+
+Subcomando nuevo `reprocesar` de `loadtest/proyectos_e2a.py` (mismo orquestador, mismo backend REAL en
+un uvicorn propio, LAS MANOS falso, workspace temporal y base propia que se elimina al terminar). La
+base propia NO está en la MariaDB de producción: se corrió contra un MariaDB 12.3.3 descartable en
+`127.0.0.1:3399` (contenedor propio, borrado después; `JAX_TEST_DB_ENV` apuntando a él), con el esquema
+de JAX en `2b0c163`, el mismo que usa el job con DB de CI.
+
+- PEOR CASO del `fuente/`: un solo proyecto (LACTOVI) con 20.000 archivos de 4.096 B en 2.000
+  subcarpetas (una de cada 250 cuelga de 5 niveles más) y un original por usuario a 8 niveles de
+  profundidad bajo `zzz/` (el último en el orden del recorrido). Los 20.000 rellenos pesan lo mismo que el
+  objetivo, así que el prefiltro por tamaño no ayuda: se leen y se hashean todos antes de llegar al
+  objetivo. La fila no tiene `carpeta_procesado` (la ficha NO sirve) y su `nombre_original`
+  (`Informe-<i>.pdf`) no se parece al archivo (`scan-<i>.pdf`): la preferencia por nombre tampoco acorta.
+- 10 usuarios (CONTRIBUTOR de LACTOVI), cada uno con su documento en `sin_extractor`, en bucle cerrado
+  durante 60 s: `POST .../reprocesar` y, si da 202, el arnés repone la fila a `sin_extractor`. Cupo por
+  defecto de `axioma_config`: 2 por usuario, 4 global (el mismo de subir). Los 429 son esperados.
+- En paralelo: 20 usuarios de chat (mismo turno que en E2a: `GET /api/proyectos/{id}` + `resolve_scope` +
+  `retrieve_authorized`) y 5 clientes de `GET /api/proyectos/{LACTOVI}/documentos?limite=50`, 20 s antes,
+  los 60 s de carga y 10 s después. El criterio de degradación es el de E2a (p95 con carga > 2x el de sin
+  carga, o cualquier error).
+- Descriptores abiertos del uvicorn: `/proc/<pid>/fd` cada 20 ms durante toda la corrida.
+- Dos variantes del cliente que recibe un 429: INSISTENTE (espera 0,01 s; el peor caso, un cliente que no
+  respeta el rechazo) y que RESPETA (espera 1 s).
+- Una petición SOLA (5 seguidas, sin chat, sin lista, sin otros usuarios) antes de cada corrida.
+
+Entorno: el de arriba (hall9000, Ryzen 9 9950X, Python 3.14); load average 1,8 al empezar y 5,7 al
+terminar la primera corrida (la máquina no estaba en reposo).
+
+Reproducir (con `JAX_TEST_DB_ENV` apuntando a una MariaDB descartable y `JAX_REPO_PATH`/`JAX_CONFIG_PATH`/
+`PYTHONPATH` del JAX pinneado):
+
+    E2A_PAUSA_429_S=1 python loadtest/proyectos_e2a.py reprocesar     # variante que respeta el 429
+    python loadtest/proyectos_e2a.py reprocesar                       # variante insistente
+
+### Resultados
+
+Endpoint (las latencias son las de las respuestas 202; un 429 sale en ~12 ms sin recorrer nada):
+
+| Corrida | Variante | 202 en 60 s | rps de 202 | p50 | p95 | p99 | 429 | rps total | Descriptores máx. |
+|---|---|---|---|---|---|---|---|---|---|
+| 13:03 | insistente | 16 | 0,25 | 16.012 ms | 17.039 ms | 17.263 ms | 15.579 | 244,6 | 101 |
+| 13:05 | insistente | 16 | 0,24 | 16.436 ms | 18.035 ms | 18.142 ms | 15.593 | 230,6 | 97 |
+| 13:07 | insistente | 16 | 0,24 | 16.664 ms | 18.549 ms | 18.591 ms | 14.697 | 217,6 | 92 |
+| 13:09 | respeta | 16 | 0,23 | 16.742 ms | 18.690 ms | 18.955 ms | 360 | 5,5 | 95 |
+| 13:11 | respeta | 16 | 0,23 | 17.170 ms | 19.261 ms | 19.401 ms | 360 | 5,4 | 89 |
+
+Una petición sola, sin otra carga: 227 a 262 ms (13:07), 234 a 253 ms (13:09), 280 a 293 ms (13:11), las
+cinco de cada serie con 202. Descriptores del uvicorn en reposo: 26 a 53; el máximo de toda la corrida
+fue 101 (de 1.024 que tiene `LimitNOFILE` en producción): el recorrido en profundidad no agota
+descriptores. Sin 5xx, sin `fuente_ilegible`, sin deadlocks (1213) ni lock timeouts (1205), 0
+tracebacks en el log del backend en las cinco corridas.
+
+Paralelo, p95 sin carga -> durante el reprocesar:
+
+| Corrida | Chat (turno completo) | Lista de documentos (GET) | Veredicto de la lista |
+|---|---|---|---|
+| 13:03 insistente | 37,4 -> 37,2 ms | 6,6 -> 14,2 ms (2,15x) | DEGRADA |
+| 13:05 insistente | 38,7 -> 38,1 ms | 6,7 -> 14,2 ms (2,12x) | DEGRADA |
+| 13:07 insistente | 39,6 -> 39,1 ms | 7,1 -> 17,2 ms (2,42x) | DEGRADA |
+| 13:09 respeta | 39,4 -> 40,9 ms | 7,3 -> 12,4 ms (1,70x) | no degrada |
+| 13:11 respeta | 39,2 -> 38,2 ms | 7,1 -> 9,7 ms (1,37x) | no degrada |
+
+Errores de chat y de la lista: 0 en todas.
+
+### Qué dicen los números, sin maquillar
+
+1. **El peor caso es lento: unos 16 a 19 s por reprocesar** con 4 a la vez (el cupo global) y el chat y la
+   lista corriendo, contra 0,23 a 0,29 s una sola. Con los 4 cupos globales ocupados, cada ronda dura ~16
+   s y salen 16 respuestas 202 por minuto. No hubo errores ni descriptores de más; es una cuestión de latencia.
+2. **Este endpoint comparte el cupo de SUBIR** (decisión tomada): en el peor caso, 4 reprocesados a la
+   vez dejan sin cupo global a todas las subidas durante ~16 s (responden 429 `subidas_simultaneas`).
+3. **Con un cliente insistente, la lista de documentos SÍ se degrada más de 2x** (2,1x a 2,4x) con el criterio
+   de E2a; con un cliente que espera 1 s tras un 429 no (1,4x a 1,7x). El chat no se degrada en ninguna.
+   La carga de 429 (14.000 a 15.600 en un minuto) es parte de lo que degrada la lista en la variante
+   insistente; cuánto, no se separó. Hay un máximo de 1,7x aun respetando el 429: está dentro del criterio,
+   pero no con mucho margen.
+4. **Por qué tarda, medido aparte** (fuera del servidor, en un solo proceso, sin chat ni lista, sobre un
+   árbol igual): `buscar_original` sola tarda 134 ms; con 2 hilos a la vez 339 ms cada uno; con 4 hilos a la
+   vez 1.270 ms cada uno (9,5x). Es el costo de recorrer y hashear 20.000 archivos pequeños con hilos que
+   se pelean el GIL. Los 16 s dentro del servidor son bastante más que esos 1,3 s: la diferencia es lo que
+   suman el chat, la lista y el despachador, que comparten proceso y GIL con esos hilos. Que ese sea el
+   mecanismo es una hipótesis (la medición aislada lo respalda en parte); no se probó con un proceso aparte
+   para el recorrido.
+5. Lo que SÍ está acotado: descriptores (máximo 101), memoria (no se midió el RSS en este escenario),
+   errores (0). Lo que NO se arregló en este PR: ni el cupo, ni el costo del recorrido (fuera de alcance;
+   queda como pendiente).
+
+### Límites de lo medido
+
+- Es el peor caso a propósito: los documentos reales de LACTOVI llevan `carpeta_procesado` con ficha y el
+  endpoint no recorre nada (un `open` y un hash). Esta cifra vale solo para una fila sin ficha en un
+  `fuente/` de ese tamaño.
+- Archivos de 4 KiB: con archivos de megas el costo se va a hashear, no a recorrer, y los hilos sueltan el
+  GIL durante más tiempo; no se midió.
+- LAS MANOS es falso y la fila vuelve a `sin_extractor` por obra del arnés: el despachador casi nunca
+  llegó a mandar el trabajo (`trabajos_recibidos` 0 en el falso), así que NO se midió el reprocesar con el
+  despacho real de fondo. La carga del despachador sobre estas filas está medida en el escenario de subida.
+- La base y el workspace son de una sola máquina y de un solo uvicorn; el ciclo del recorrido compite con
+  otras sesiones en hall9000 (load average de 2 a 6).
+- `/tmp` es tmpfs: el recorrido no toca disco. En el disco de producción (`/srv/jax-workspace`) puede ser
+  más lento la primera vez y igual de rápido con la caché de páginas caliente.

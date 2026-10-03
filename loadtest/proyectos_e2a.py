@@ -18,6 +18,11 @@ SUBCOMANDOS (desde la raíz del repo, con el venv del backend):
     medir      la corrida de carga de punta a punta (subida de LACTOVI con 20 chats, 10 subidas
                simultáneas, EXPLAIN sobre 10.000 filas). Escribe `_resultados_proyectos_e2a.json` en
                ~/.cache/jax-loadtest/ (o en $JAX_LOADTEST_RESULTADOS_DIR), fuera del repo
+    reprocesar el escenario de «Reprocesar» (jax-platform#186): un fuente/ de 20.000 archivos en 2.000
+               subcarpetas donde la ficha NO sirve y hay que buscar por sha256, 10 usuarios reprocesando
+               a la vez con el cupo por defecto (los 429 son lo esperado), 20 usuarios de chat y 5 de la
+               lista de documentos en paralelo. Escribe `_resultados_proyectos_e2a_reprocesar.json` junto
+               al de `medir`.
     visual     base propia + backend + LAS MANOS falso + vite, y espera (SIGTERM/Ctrl-C) para la
                revisión visual; al salir limpia
     limpiar SUFIJO   elimina la base propia de UNA corrida (el sufijo de 8 hex que imprime
@@ -111,6 +116,20 @@ FILAS_EXPLAIN = 10_000
 TOPE_RUTAS_POR_TRABAJO_MANOS = 50
 if os.environ.get("CARGA_RAPIDA"):   # solo para probar el arnés: números NO válidos
     SEGUNDOS_ANTES, SEGUNDOS_DESPUES, RONDAS_PEQUENAS, REPETICIONES_GRANDE, SEGUNDOS_ENTRE_REPETICIONES = 4, 3, 1, 2, 2
+
+# --- Escenario «Reprocesar» ------------------------------------------------------------------------
+ARCHIVOS_FUENTE = 20_000
+SUBCARPETAS_FUENTE = 2_000
+TAMANO_FUENTE = 4096            # todos los rellenos pesan LO MISMO que el objetivo: el prefiltro por tamano no ayuda
+PROFUNDIDAD_OBJETIVO = 8
+USUARIOS_REPROCESAR = 10
+CLIENTES_LISTA = 5
+SEGUNDOS_ANTES_R, SEGUNDOS_REPROCESAR, SEGUNDOS_DESPUES_R = 20, 60, 10
+# Pausa de quien recibe un 429 antes de volver a pedir. 0,01 s = el peor caso (un cliente que insiste sin descanso);
+# 1 s = un cliente que respeta el rechazo. `E2A_PAUSA_429_S` la cambia.
+PAUSA_TRAS_429_S = float(os.environ.get("E2A_PAUSA_429_S", "0.01"))
+if os.environ.get("CARGA_RAPIDA"):   # solo para probar el arnés: números NO válidos
+    ARCHIVOS_FUENTE, SUBCARPETAS_FUENTE, SEGUNDOS_ANTES_R, SEGUNDOS_REPROCESAR, SEGUNDOS_DESPUES_R = 600, 60, 3, 6, 3
 
 ESTADOS_TERMINALES = ("listo", "parcial", "error", "sin_extractor", "cancelado")
 
@@ -214,6 +233,61 @@ def verificar_workspace_propio(ruta: Path) -> None:
     r, real = Path(ruta).resolve(), WORKSPACE_REAL.resolve()
     if r == real or real in r.parents or r in real.parents:
         raise RuntimeError(f"{ruta} es o contiene el workspace real {real} -- ABORTANDO")
+
+
+def plan_de_fuente(total: int, subcarpetas: int) -> list[str]:
+    """`total` rutas relativas a `fuente/`, repartidas en `subcarpetas` carpetas de primer nivel (`d0000`...),
+    todas distintas. Cada 250 carpetas una cuelga de 5 niveles mas (`n1/n2/n3/n4/n5`): el recorrido
+    tiene que bajar. Determinista. Nada cae bajo `zzz/` (el objetivo va ahi, al final del orden)."""
+    if total < 1 or subcarpetas < 1 or subcarpetas > total:
+        raise ValueError(f"total={total} subcarpetas={subcarpetas}")
+    base, resto = divmod(total, subcarpetas)
+    rutas = []
+    for k in range(subcarpetas):
+        carpeta = f"d{k:04d}" + ("/n1/n2/n3/n4/n5" if k % 250 == 0 else "")
+        rutas += [f"{carpeta}/f{j:03d}.pdf" for j in range(base + (1 if k < resto else 0))]
+    return rutas
+
+
+def ruta_del_objetivo(i: int, profundidad: int = PROFUNDIDAD_OBJETIVO) -> str:
+    """Donde vive el original del documento `i`: bajo `zzz/` (el ultimo en el orden del recorrido, asi que
+    todos los rellenos se leen antes) y `profundidad` niveles adentro. Su nombre NO se parece a
+    `nombre_original` (`Informe-<i>.pdf`): la preferencia por nombre no acorta la busqueda."""
+    if profundidad < 1:
+        raise ValueError("profundidad")
+    return "zzz/" + "/".join(f"n{n}" for n in range(1, profundidad)) + f"/scan-{i:02d}.pdf"
+
+
+def escribir_fuente(carpeta: Path, rutas: list[str], tamano: int) -> int:
+    """Escribe cada ruta bajo `carpeta` con `tamano` bytes ALEATORIOS (cada sha256 distinto). Devuelve cuantos."""
+    creadas: set[Path] = set()
+    for r in rutas:
+        destino = carpeta / r
+        if destino.parent not in creadas:
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            creadas.add(destino.parent)
+        destino.write_bytes(os.urandom(tamano))
+    return len(rutas)
+
+
+def peticiones_por_segundo(n: int, segundos: float) -> float:
+    return 0.0 if segundos <= 0 else round(n / segundos, 2)
+
+
+def resumen_de_reprocesar(muestras: list[dict], segundos: float) -> dict:
+    """`muestras`: [{status, ms}]. Cuenta por codigo, rps (de todas y de las 202) y latencias de las 202 y de todas."""
+    codigos: dict[str, int] = {}
+    for m in muestras:
+        k = str(m["status"])
+        codigos[k] = codigos.get(k, 0) + 1
+    ok = [m["ms"] for m in muestras if m["status"] == 202]
+    return {"peticiones": len(muestras), "codigos": codigos, "rps_total": peticiones_por_segundo(len(muestras), segundos),
+            "rps_202": peticiones_por_segundo(len(ok), segundos),
+            "latencia_202_ms": _resumen_fase(ok), "latencia_todas_ms": _resumen_fase([m["ms"] for m in muestras])}
+
+
+def contar_descriptores(pid: int) -> int:
+    return len(os.listdir(f"/proc/{pid}/fd"))
 
 
 # ---------------------------------------------------------------------------
@@ -1082,6 +1156,245 @@ def visual() -> None:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class _MuestreoFd:
+    """Descriptores abiertos del uvicorn cada 20 ms en un hilo; guarda el maximo y las muestras."""
+
+    def __init__(self, pid: int):
+        self.pid = pid
+        self.maximo = 0
+        self.muestras = 0
+        self._parar = threading.Event()
+        self._hilo = threading.Thread(target=self._correr, daemon=True)
+
+    def _correr(self):
+        while not self._parar.is_set():
+            try:
+                self.maximo = max(self.maximo, contar_descriptores(self.pid))
+                self.muestras += 1
+            except OSError:   # fail-soft: el proceso ya no esta; se corta el muestreo
+                return
+            self._parar.wait(0.02)
+
+    def __enter__(self):
+        self._hilo.start()
+        return self
+
+    def __exit__(self, *_):
+        self._parar.set()
+        self._hilo.join(timeout=2)
+
+
+def _sembrar_reprocesar(semilla: dict, workspace: Path) -> list[dict]:
+    """Los 10 usuarios que reprocesan pasan a ser CONTRIBUTOR de LACTOVI; el `fuente/` de LACTOVI se llena
+    con `ARCHIVOS_FUENTE` rellenos y un objetivo por usuario (hondo, al final del orden), y por cada objetivo
+    hay una fila `sin_extractor` SIN `carpeta_procesado` (la ficha no sirve: se busca por sha256)."""
+    plan = plan_de_fuente(ARCHIVOS_FUENTE, SUBCARPETAS_FUENTE)
+    fuente = workspace / "proyectos" / semilla["u_lactovi"] / "fuente"
+    t0 = time.time()
+    escribir_fuente(fuente, plan, TAMANO_FUENTE)
+    conn = e1._conectar()
+    docs = []
+    try:
+        ahora = "2026-10-03 00:00:00.000000"
+        with conn.cursor() as cur:
+            for i, uid in enumerate(semilla["pequenos"][:USUARIOS_REPROCESAR]):
+                cur.execute("INSERT INTO jax_project_membership (membership_id, project_id, tenant_id, user_id, project_role, "
+                            "status, grant_origin, created_at, created_by, updated_at) "
+                            "VALUES (%s,%s,%s,%s,'CONTRIBUTOR','ACTIVE','EXPLICIT',%s,%s,%s)",
+                            (str(uuid.uuid4()), semilla["p_lactovi"], TENANT_ID, uid, ahora, f"user:{semilla['subidor']}", ahora))
+                ruta_obj = ruta_del_objetivo(i)
+                contenido = os.urandom(TAMANO_FUENTE)
+                (fuente / ruta_obj).parent.mkdir(parents=True, exist_ok=True)
+                (fuente / ruta_obj).write_bytes(contenido)
+                cur.execute("INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, bytes, tipo, "
+                            "estado, subido_por) VALUES (%s,%s,%s,%s,%s,'pdf','sin_extractor',%s)",
+                            (semilla["p_lactovi"], hashlib.sha256(contenido).hexdigest(), f"Informe-{i}.pdf",
+                             f"proyectos/{semilla['u_lactovi']}/fuente/{ruta_obj}", TAMANO_FUENTE, semilla["subidor"]))
+                docs.append({"usuario": uid, "documento": cur.lastrowid})
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"[fuente] {len(plan)} rellenos + {len(docs)} objetivos de {TAMANO_FUENTE} B en {time.time() - t0:.1f} s", file=sys.stderr)
+    return docs
+
+
+def _reponer(documento: int) -> None:
+    """Deja el documento otra vez `sin_extractor` (el despachador ya lo pudo mover): es el arnés, no el endpoint."""
+    conn = _conexion_de_lectura()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE project_documents SET estado='sin_extractor', job_id=NULL, error=NULL, "
+                        "carpeta_procesado=NULL WHERE id=%s", (documento,))
+    finally:
+        conn.close()
+
+
+async def _fase_reprocesar(env, semilla, tmp, docs, res) -> None:
+    import httpx
+    pid_backend = _pid_del_backend(env)
+    usuarios = [{"id": u, "autorizacion": e1._token(env, u)["Authorization"]} for u in semilla["chat"]]
+    parar_chat = tmp / "parar-chat"
+    config = {"url": BACKEND_URL, "proyecto": semilla["p_chat"], "usuarios": usuarios, "parar": str(parar_chat),
+              "salida": str(tmp / "chat-salida.json")}
+    chat = _lanzar_chat(config, tmp)
+    # Una sola peticion, sin nadie mas (ni chat ni lista ni otros usuarios): lo que cuesta buscar por sha256 solo.
+    solitaria = []
+    d0 = docs[0]
+    for _ in range(5):
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as una:
+            t0 = time.perf_counter()
+            r = await una.post(f"{BACKEND_URL}/api/proyectos/{semilla['p_lactovi']}/documentos/{d0['documento']}/reprocesar",
+                               headers=e1._token(env, d0["usuario"]))
+            solitaria.append({"status": r.status_code, "ms": (time.perf_counter() - t0) * 1000})
+        await asyncio.to_thread(_reponer, d0["documento"])
+    muestras: list[dict] = []          # {status, ms, t}
+    lista: list[tuple[float, float]] = []   # (inicio, ms) del GET de la lista de documentos
+    errores_lista: dict[str, int] = {}
+    parar = asyncio.Event()             # detiene a los que reprocesan
+    parar_lista = asyncio.Event()       # detiene a los lectores de la lista, al final de todo
+    limits = httpx.Limits(max_connections=USUARIOS_REPROCESAR + CLIENTES_LISTA + 5)
+    h_lista = e1._token(env, semilla["subidor"])
+
+    async with httpx.AsyncClient(limits=limits, timeout=httpx.Timeout(120.0, connect=10.0)) as cli:
+        async def reprocesador(doc: dict, cabecera: dict):
+            url = f"{BACKEND_URL}/api/proyectos/{semilla['p_lactovi']}/documentos/{doc['documento']}/reprocesar"
+            while not parar.is_set():
+                t0 = time.perf_counter()
+                inicio = time.time()
+                try:
+                    r = await cli.post(url, headers=cabecera)
+                    estado, ms = r.status_code, (time.perf_counter() - t0) * 1000
+                except Exception as exc:  # fail-soft: una peticion caida cuenta como error y no tumba la corrida
+                    estado, ms = f"excepcion:{type(exc).__name__}", (time.perf_counter() - t0) * 1000
+                muestras.append({"status": estado, "ms": ms, "t": inicio})
+                if estado == 202:
+                    await asyncio.to_thread(_reponer, doc["documento"])
+                elif estado == 429:
+                    await asyncio.sleep(PAUSA_TRAS_429_S)
+
+        async def listador():
+            while not parar_lista.is_set():
+                t0 = time.perf_counter()
+                inicio = time.time()
+                try:
+                    r = await cli.get(f"{BACKEND_URL}/api/proyectos/{semilla['p_lactovi']}/documentos?limite=50", headers=h_lista)
+                    if r.status_code != 200:
+                        errores_lista[str(r.status_code)] = errores_lista.get(str(r.status_code), 0) + 1
+                        continue
+                except Exception as exc:  # fail-soft: cuenta como error
+                    errores_lista[type(exc).__name__] = errores_lista.get(type(exc).__name__, 0) + 1
+                    continue
+                lista.append((inicio, (time.perf_counter() - t0) * 1000))
+
+        try:
+            with _MuestreoFd(pid_backend) as fds:
+                fds_antes = contar_descriptores(pid_backend)
+                lectores = [asyncio.create_task(listador()) for _ in range(CLIENTES_LISTA)]
+                await asyncio.sleep(SEGUNDOS_ANTES_R)
+                if chat.poll() is not None:
+                    raise RuntimeError(f"el hijo de chat murio:\n{chat.stderr.read()[-2000:]}")
+                fds_sin_carga = fds.maximo
+                t_ini = time.time()
+                trabajadores = [asyncio.create_task(reprocesador(d, e1._token(env, d["usuario"]))) for d in docs]
+                await asyncio.sleep(SEGUNDOS_REPROCESAR)
+                parar.set()
+                await asyncio.gather(*trabajadores)
+                t_fin = time.time()
+                await asyncio.sleep(SEGUNDOS_DESPUES_R)      # la lista y el chat siguen: es el «despues» sin carga
+                parar_lista.set()
+                await asyncio.gather(*lectores)
+                fds_final = contar_descriptores(pid_backend)
+            parar_chat.touch()
+            _out, err = chat.communicate(timeout=120)
+            if chat.returncode != 0:
+                raise RuntimeError(f"el hijo de chat fallo:\n{err[-3000:]}")
+            datos = json.loads(Path(config["salida"]).read_text())
+        finally:
+            parar.set()
+            parar_lista.set()
+            parar_chat.touch()
+            if chat.poll() is None:
+                chat.kill()
+
+    ventana = [(t_ini, t_fin)]
+    turnos = por_fase([(m[0], m[1]) for m in datos["muestras"]], subidas=ventana, procesos=[])
+    sin_carga = turnos["antes"] + turnos["reposo"]
+    lista_f = por_fase([(t, ms) for t, ms in lista], subidas=ventana, procesos=[])
+    lista_sin = lista_f["antes"] + lista_f["reposo"]
+    mias = [m for m in muestras]
+    seg = t_fin - t_ini
+    res["reprocesar"] = {
+        "fuente": {"archivos_rellenos": ARCHIVOS_FUENTE, "subcarpetas": SUBCARPETAS_FUENTE, "bytes_por_archivo": TAMANO_FUENTE,
+                   "profundidad_del_objetivo": PROFUNDIDAD_OBJETIVO, "ficha": "ninguna (busqueda por sha256)",
+                   "nombre_coincide": False},
+        "usuarios": len(docs), "segundos": round(seg, 2), "cupo": res.get("cupo"), "pausa_tras_429_s": PAUSA_TRAS_429_S,
+        "una_sola_peticion_sin_otra_carga": resumen_de_reprocesar(solitaria, 1.0)["latencia_todas_ms"] | {
+            "codigos": resumen_de_reprocesar(solitaria, 1.0)["codigos"], "ms": [round(m["ms"], 1) for m in solitaria]},
+        "endpoint": resumen_de_reprocesar(mias, seg),
+        "descriptores_del_uvicorn": {"antes": fds_antes, "maximo_sin_carga": fds_sin_carga, "maximo_de_toda_la_corrida": fds.maximo,
+                                     "final": fds_final, "muestras": fds.muestras, "LimitNOFILE_de_produccion": 1024},
+        "chat_en_paralelo": {"usuarios": len(usuarios), "errores": datos["errores"], "turnos": len(datos["muestras"]),
+                             "sin_carga_ms": _resumen_fase([m for m in sin_carga]),
+                             "durante_reprocesar_ms": _resumen_fase(turnos["subida"]),
+                             "veredicto": e1.veredicto_peor_caso(_resumen_fase(sin_carga), _resumen_fase(turnos["subida"]),
+                                                                 sum(datos["errores"].values()))},
+        "lista_en_paralelo": {"clientes": CLIENTES_LISTA, "errores": errores_lista, "peticiones": len(lista),
+                              "sin_carga_ms": _resumen_fase(lista_sin), "durante_reprocesar_ms": _resumen_fase(lista_f["subida"]),
+                              "veredicto": e1.veredicto_peor_caso(_resumen_fase(lista_sin), _resumen_fase(lista_f["subida"]),
+                                                                  sum(errores_lista.values()))}}
+
+
+async def medir_reprocesar() -> None:
+    tmp = Path(tempfile.mkdtemp(prefix="carga-reprocesar-e2a-"))
+    workspace = tmp / "workspace"
+    workspace.mkdir()
+    sufijo, base = _preparar_base()
+    proc = log = manos = None
+    creada = False
+    res: dict = {"fecha": time.strftime("%Y-%m-%d %H:%M:%S %Z"), "base": base,
+                 "workspace": "directorio temporal (borrado al terminar)"}
+    try:
+        e1._crear_base_vacia(base)
+        creada = True
+        e1._armar_esquema(base)
+        env = _env_del_backend(tmp, workspace)
+        manos = _levantar_manos(env)
+        proc, log = _levantar_backend(env, tmp)
+        print(f"[base] {sufijo} ({base}) backend pid={proc.pid} en {BACKEND_URL}", file=sys.stderr)
+        semilla = sembrar(sufijo)
+        docs = await asyncio.to_thread(_sembrar_reprocesar, semilla, workspace)
+        conn = _conexion_de_lectura()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT config_key, config_value FROM axioma_config WHERE config_key IN (%s, %s)",
+                            ("proyectos.documentos.subidas_por_usuario", "proyectos.documentos.subidas_globales"))
+                res["cupo"] = dict(cur.fetchall())
+        finally:
+            conn.close()
+        await _fase_reprocesar(env, semilla, tmp, docs, res)
+        res["manos_falso"] = {"trabajos_recibidos": manos.trabajos_recibidos, "rutas_recibidas": manos.rutas_recibidas}
+        texto = (tmp / "backend.log").read_text(errors="replace")
+        res["backend_log"] = {"lineas_error": len(re.findall(r"\bERROR\b", texto)), "tracebacks": len(re.findall(r"Traceback", texto)),
+                              "deadlock_1213": len(re.findall(r"\b1213\b|Deadlock", texto)),
+                              "lock_timeout_1205": len(re.findall(r"\b1205\b|Lock wait timeout", texto)),
+                              "fuente_ilegible": len(re.findall(r"fuente/ ilegible", texto))}
+        salida = ruta_de_resultados().with_name("_resultados_proyectos_e2a_reprocesar.json")
+        salida.write_text(json.dumps(res, indent=2, ensure_ascii=False, default=str))
+        print(f"[orquestador] {salida} escrito")
+    finally:
+        e1._matar(proc)
+        if log:
+            log.close()
+        if manos:
+            manos.parar()
+        try:
+            if creada:
+                e1._borrar_base(base)
+        finally:
+            os.environ.pop("PROYECTOS_E1_BASE", None)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _salir_en_sigterm(*_):
     sys.exit(143)   # que corran los `finally`: la limpieza es siempre
 
@@ -1091,6 +1404,9 @@ if __name__ == "__main__":
     if cmd == "medir":
         signal.signal(signal.SIGTERM, _salir_en_sigterm)
         asyncio.run(medir())
+    elif cmd == "reprocesar":
+        signal.signal(signal.SIGTERM, _salir_en_sigterm)
+        asyncio.run(medir_reprocesar())
     elif cmd == "visual":
         visual()
     elif cmd == "limpiar":
@@ -1102,4 +1418,4 @@ if __name__ == "__main__":
     elif cmd == "--explain":
         print(json.dumps(asyncio.run(_explain(json.loads(sys.argv[2])))))
     else:
-        raise SystemExit("uso: proyectos_e2a.py [medir|visual|limpiar SUFIJO]")
+        raise SystemExit("uso: proyectos_e2a.py [medir|reprocesar|visual|limpiar SUFIJO]")
