@@ -1,4 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import es from '../../i18n/es.js'
+import en from '../../i18n/en.js'
 import { resumirLote, formatoPeso } from './resumenDeLote'
 
 const MB = 1024 * 1024
@@ -83,11 +85,29 @@ describe('resumirLote', () => {
 })
 
 describe('formatoPeso', () => {
-  it('elige la unidad y no deja ceros de más', () => {
-    expect(formatoPeso(0, 'en')).toBe('0 byte')
-    expect(formatoPeso(512, 'en')).toBe('512 byte')
-    expect(formatoPeso(1536, 'en')).toBe('1.5 kB')
-    expect(formatoPeso(5 * MB, 'en')).toBe('5 MB')
-    expect(formatoPeso(1024 * MB, 'en')).toBe('1 GB')
+  afterEach(() => { vi.restoreAllMocks() })
+  const U_ES = es.proyectos.documentos.unidades
+  const U_EN = en.proyectos.documentos.unidades
+
+  it('elige la unidad (base 1024) y no deja ceros de más', () => {
+    expect(formatoPeso(0, 'en', U_EN)).toBe('0 B')
+    expect(formatoPeso(512, 'en', U_EN)).toBe('512 B')
+    expect(formatoPeso(1536, 'en', U_EN)).toBe('1.5 KB')
+    expect(formatoPeso(5 * MB, 'en', U_EN)).toBe('5 MB')
+    expect(formatoPeso(1024 * MB, 'en', U_EN)).toBe('1 GB')
+  })
+
+  it('en español el decimal es coma y la unidad sale del i18n', () => {
+    expect(formatoPeso(512, 'es', U_ES)).toBe('512 B')
+    expect(formatoPeso(1536, 'es', U_ES)).toBe('1,5 KB')
+  })
+
+  it('no usa style:"unit" (RangeError en navegadores sin ese soporte): sigue funcionando si lo rechazan', () => {
+    const Real = Intl.NumberFormat
+    vi.spyOn(Intl, 'NumberFormat').mockImplementation(function (loc, opciones) {
+      if (opciones?.style === 'unit') throw new RangeError('Value unit out of range for Intl.NumberFormat options property style')
+      return new Real(loc, opciones)
+    })
+    expect(formatoPeso(1536, 'en', U_EN)).toBe('1.5 KB')
   })
 })

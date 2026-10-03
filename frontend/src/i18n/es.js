@@ -1661,6 +1661,7 @@ export default {
         agregados: (n) => `${n} archivo${n === 1 ? '' : 's'} agregado${n === 1 ? '' : 's'}`,
         cerrar: 'Cerrar',
       },
+      unidades: { b: 'B', kb: 'KB', mb: 'MB', gb: 'GB' },
       limites: {
         error: 'No se pudieron cargar los límites de subida.',
         reintentar: 'Reintentar',

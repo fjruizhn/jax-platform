@@ -71,7 +71,7 @@ describe('SelectorDeDocumentos', () => {
     elegir(multiple, [archivo('a.pdf', 1024), archivo('b.pdf', 1024), archivo('c.xlsx', 1024), archivo('virus.exe')])
     const dialogo = await screen.findByRole('dialog', { name: T.resumen.titulo })
     expect(within(dialogo).getByText(T.resumen.archivos(3))).toBeInTheDocument()
-    expect(within(dialogo).getByText(T.resumen.peso(formatoPeso(3072, localeFor('es'))))).toBeInTheDocument()
+    expect(within(dialogo).getByText(T.resumen.peso(formatoPeso(3072, localeFor('es'), T.unidades)))).toBeInTheDocument()
     const fila = (ext) => within(dialogo).getByText(`.${ext}`).closest('tr')
     expect(within(fila('pdf')).getByText('2')).toBeInTheDocument()
     expect(within(fila('xlsx')).getByText('1')).toBeInTheDocument()

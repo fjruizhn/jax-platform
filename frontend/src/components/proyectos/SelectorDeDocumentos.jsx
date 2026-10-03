@@ -72,7 +72,7 @@ function Resumen({ resumen, limites, T, locale }) {
     <div className="space-y-3">
       <div className="flex items-baseline justify-between gap-4 text-sm">
         <span className="text-texto">{T.resumen.archivos(resumen.aceptados.length)}</span>
-        <span className="text-texto-suave tabular-nums">{T.resumen.peso(formatoPeso(resumen.totalBytes, locale))}</span>
+        <span className="text-texto-suave tabular-nums">{T.resumen.peso(formatoPeso(resumen.totalBytes, locale, T.unidades))}</span>
       </div>
       {tipos.length > 0 && (
         <table className="w-full text-xs">
@@ -97,7 +97,7 @@ function Resumen({ resumen, limites, T, locale }) {
         <p className="text-xs text-peligro">{T.resumen.excedeArchivos(limites.max_archivos_lote)}</p>
       )}
       {resumen.excedeLote === 'bytes' && (
-        <p className="text-xs text-peligro">{T.resumen.excedeBytes(formatoPeso(limites.max_bytes_lote, locale))}</p>
+        <p className="text-xs text-peligro">{T.resumen.excedeBytes(formatoPeso(limites.max_bytes_lote, locale, T.unidades))}</p>
       )}
       {resumen.excedeLote === null && resumen.aceptados.length === 0 && (
         <p className="text-xs text-peligro">{T.resumen.nadaQueSubir}</p>

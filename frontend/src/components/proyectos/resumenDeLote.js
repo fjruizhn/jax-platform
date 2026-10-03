@@ -60,14 +60,15 @@ export function resumirLote(files, limites) {
   return { aceptados, ignorados, totalBytes, porTipo, excedeLote }
 }
 
-const UNIDADES = ['byte', 'kilobyte', 'megabyte', 'gigabyte']
+const CLAVES = ['b', 'kb', 'mb', 'gb']
 
-// Unidad y separador según el idioma activo (Intl, no texto fijo).
-export function formatoPeso(bytes, locale) {
+// Base BINARIA (1024), como el sistema operativo. El número lo formatea Intl
+// decimal (sin `style:'unit'`, que lanza RangeError en navegadores sin ese
+// soporte) y la unidad viene del i18n (`proyectos.documentos.unidades`).
+export function formatoPeso(bytes, locale, unidades) {
   let valor = bytes
   let u = 0
-  while (valor >= 1024 && u < UNIDADES.length - 1) { valor /= 1024; u += 1 }
-  return new Intl.NumberFormat(locale, {
-    style: 'unit', unit: UNIDADES[u], unitDisplay: 'short', maximumFractionDigits: u === 0 ? 0 : 1,
-  }).format(valor)
+  while (valor >= 1024 && u < CLAVES.length - 1) { valor /= 1024; u += 1 }
+  const num = new Intl.NumberFormat(locale, { maximumFractionDigits: u === 0 ? 0 : 1 }).format(valor)
+  return `${num} ${unidades[CLAVES[u]]}`
 }

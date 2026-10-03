@@ -1565,6 +1565,7 @@ export default {
         agregados: (n) => `${n} file${n === 1 ? '' : 's'} added`,
         cerrar: 'Close',
       },
+      unidades: { b: 'B', kb: 'KB', mb: 'MB', gb: 'GB' },
       limites: {
         error: 'The upload limits could not be loaded.',
         reintentar: 'Retry',
