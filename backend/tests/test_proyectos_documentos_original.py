@@ -3,6 +3,7 @@
 Sin base de datos: solo disco (`tmp_path`). Lo que importa es que el archivo devuelto sea
 el de la fila (sha256 igual) y que nunca se siga un enlace simbolico.
 """
+import errno
 import hashlib
 import json
 import os
@@ -156,12 +157,92 @@ def test_prefiltro_por_tamano_no_deja_pasar_un_archivo_de_otro_tamano(ws):
     assert _buscar(ws, carpeta=None, bytes_=len(CONTENIDO) + 1) is None
 
 
-def test_el_tope_de_archivos_visitados_corta_la_busqueda(ws, monkeypatch):
+def test_el_tope_de_entradas_corta_con_error_explicito_y_no_con_no_encontrado(ws, monkeypatch):
     monkeypatch.setattr(original, "TOPE_ENTRADAS", 3)
     for i in range(5):
-        _fuente(ws, f"{i}.pdf", b"x" * (len(CONTENIDO) + 0))
+        _fuente(ws, f"{i}.pdf", b"x" * len(CONTENIDO))
     _fuente(ws, "z.pdf")
-    assert _buscar(ws, carpeta=None) is None
+    with pytest.raises(original.FuenteIlegible):
+        _buscar(ws, carpeta=None)
+
+
+def test_el_tope_de_profundidad_corta_con_error_explicito(ws, monkeypatch):
+    monkeypatch.setattr(original, "TOPE_PROFUNDIDAD", 5)
+    _fuente(ws, "/".join(["d"] * 7) + "/a.pdf")
+    with pytest.raises(original.FuenteIlegible):
+        _buscar(ws, carpeta=None)
+    _fuente(ws, "/".join(["d"] * 3) + "/a.pdf")                    # dentro del tope se encuentra
+    monkeypatch.setattr(original, "TOPE_PROFUNDIDAD", 8)
+    assert _buscar(ws, carpeta=None) is not None
+
+
+def _con_pocos_descriptores(extra):
+    """Baja el limite de descriptores a los que el proceso ya usa mas `extra`; devuelve como reponerlo."""
+    import resource
+    blando, duro = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (len(os.listdir("/proc/self/fd")) + extra, duro))
+    return lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (blando, duro))
+
+
+def test_dos_mil_subcarpetas_con_pocos_descriptores_no_agotan_ni_pierden_el_original(ws):
+    fuente = ws / "proyectos" / U / "fuente"
+    for i in range(2000):
+        (fuente / f"d{i:04d}").mkdir()
+    _fuente(ws, "d1999/final.pdf")                                  # en la ultima: hay que recorrerlas todas
+    reponer = _con_pocos_descriptores(40)
+    try:
+        assert _buscar(ws, carpeta=None) == f"proyectos/{U}/fuente/d1999/final.pdf"
+        assert len(os.listdir("/proc/self/fd")) < 40 + 30           # no quedo nada abierto de mas
+    finally:
+        reponer()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignora los permisos")
+def test_una_carpeta_sin_permiso_es_fuente_ilegible_y_no_no_encontrado(ws):
+    _fuente(ws, "a/ok.pdf", b"otro")
+    cerrada = ws / "proyectos" / U / "fuente" / "b"
+    cerrada.mkdir()
+    cerrada.chmod(0)
+    try:
+        with pytest.raises(original.FuenteIlegible):
+            _buscar(ws, carpeta=None)
+    finally:
+        cerrada.chmod(0o700)
+
+
+@pytest.mark.parametrize("codigo", [errno.EIO, errno.EMFILE, errno.EACCES])
+def test_un_error_de_lectura_del_recorrido_o_del_hash_es_fuente_ilegible(ws, monkeypatch, codigo):
+    _fuente(ws, "a.pdf")
+    real = os.scandir
+
+    def falla(*a, **k):
+        raise OSError(codigo, "x")
+    monkeypatch.setattr(original.os, "scandir", falla)
+    with pytest.raises(original.FuenteIlegible):
+        _buscar(ws, carpeta=None)
+    monkeypatch.setattr(original.os, "scandir", real)
+    real_open = os.open
+
+    def abre(path, flags, *a, **k):
+        if path == "a.pdf":
+            raise OSError(codigo, "x")
+        return real_open(path, flags, *a, **k)
+    monkeypatch.setattr(original.os, "open", abre)
+    with pytest.raises(original.FuenteIlegible):
+        _buscar(ws, carpeta=None)
+
+
+def test_lo_que_desaparece_a_mitad_del_recorrido_se_salta(ws, monkeypatch):
+    _fuente(ws, "a/x.pdf", b"otro")
+    _fuente(ws, "b/buena.pdf")
+    real_open = os.open
+
+    def abre(path, flags, *a, **k):
+        if path == "a" and "dir_fd" in k:
+            raise FileNotFoundError(errno.ENOENT, "se fue")
+        return real_open(path, flags, *a, **k)
+    monkeypatch.setattr(original.os, "open", abre)
+    assert _buscar(ws, carpeta=None) == f"proyectos/{U}/fuente/b/buena.pdf"
 
 
 def test_no_modifica_nada_en_disco(ws):

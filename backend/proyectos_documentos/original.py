@@ -29,11 +29,25 @@ TAMANO_DE_BLOQUE = 1024 * 1024
 FICHA_MAX_BYTES = 1024 * 1024
 # Entradas (archivos y carpetas) que el recorrido de `fuente/` mira como maximo.
 TOPE_ENTRADAS = 100_000
+# Niveles de carpetas bajo `fuente/` que el recorrido baja como maximo. Es tambien el maximo de
+# descriptores que el recorrido tiene abiertos a la vez (uno por nivel del camino actual).
+TOPE_PROFUNDIDAD = 64
 # Tope del largo de `project_documents.ruta_entrada` (VARCHAR(1024)).
 RUTA_MAX = 1024
 _ABRIR_CARPETA = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 # O_NONBLOCK: abrir un FIFO plantado en `fuente/` no se queda esperando; luego se exige archivo comun.
 _ABRIR_ARCHIVO = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+
+class FuenteIlegible(Exception):
+    """No se pudo mirar `fuente/` hasta el final: un error de E/S, de permisos o de descriptores, o
+    mas profundidad o mas entradas que el tope. NO es «no encontrado»: responder eso seria mentir
+    sobre un original que quiza esta ahi. La API lo responde 503 `fuente_ilegible`."""
+
+
+# Lo que significa «eso no esta (o es un enlace, que nunca se sigue)»; todo otro OSError es
+# `FuenteIlegible`. ELOOP/ENOTDIR: un enlace donde se esperaba una carpeta o un archivo.
+_AUSENTE = (errno.ENOENT, errno.ELOOP, errno.ENOTDIR, errno.ENXIO, errno.EISDIR)
 
 
 def _componente_valido(parte: str) -> bool:
@@ -51,7 +65,7 @@ def _abrir_ruta(raiz: int, partes: list[str], *, bandera_final: int) -> int | No
             abiertos.append(actual)
         return os.open(partes[-1], bandera_final, dir_fd=actual)
     except OSError as exc:
-        if exc.errno in (errno.ENOENT, errno.ELOOP, errno.ENOTDIR, errno.ENXIO, errno.EACCES, errno.EISDIR):
+        if exc.errno in _AUSENTE:
             return None
         raise
     finally:
@@ -130,51 +144,73 @@ def _origen_de_la_ficha(workspace_fd: int, project_uuid: str, carpeta_procesado:
 
 
 def _recorrer(fd_fuente: int) -> list[list[str]]:
-    """Rutas (como componentes, relativas a `fuente/`) de los archivos comunes, en orden de
-    nombre y sin seguir enlaces. Se corta en `TOPE_ENTRADAS` entradas vistas."""
+    """Rutas (como componentes, relativas a `fuente/`) de los archivos comunes, en orden de nombre y
+    sin seguir enlaces. En PROFUNDIDAD y con un solo descriptor abierto por nivel del camino actual:
+    se abre la carpeta, se listan sus nombres, se cierra y recien despues se baja a cada
+    subcarpeta, reabriendola desde su padre con `O_NOFOLLOW`. Lo que desaparece a mitad del
+    recorrido (ENOENT, ENOTDIR, ELOOP) se salta; cualquier otro OSError, pasar `TOPE_PROFUNDIDAD` o
+    `TOPE_ENTRADAS` es `FuenteIlegible`."""
     encontrados: list[list[str]] = []
     vistas = 0
-    pendientes: list[tuple[int, list[str], bool]] = [(fd_fuente, [], False)]
-    try:
-        while pendientes:
-            fd, prefijo, propio = pendientes.pop()
+
+    def listar(fd: int) -> tuple[list[str], list[str]]:
+        nonlocal vistas
+        archivos: list[str] = []
+        carpetas: list[str] = []
+        with os.scandir(fd) as it:
+            entradas = sorted(it, key=lambda x: x.name)
+        for entrada in entradas:
+            vistas += 1
+            if vistas > TOPE_ENTRADAS:
+                raise FuenteIlegible(f"mas de {TOPE_ENTRADAS} entradas en fuente/")
+            if not _componente_valido(entrada.name) or entrada.is_symlink():
+                continue
+            if entrada.is_file(follow_symlinks=False):
+                archivos.append(entrada.name)
+            elif entrada.is_dir(follow_symlinks=False):
+                carpetas.append(entrada.name)
+        return archivos, carpetas
+
+    def bajar(fd: int, prefijo: list[str]) -> None:
+        if len(prefijo) > TOPE_PROFUNDIDAD:
+            raise FuenteIlegible(f"mas de {TOPE_PROFUNDIDAD} niveles de carpetas en fuente/")
+        archivos, carpetas = listar(fd)
+        encontrados.extend([*prefijo, nombre] for nombre in archivos)
+        for nombre in carpetas:
             try:
-                with os.scandir(fd) as it:
-                    entradas = sorted(it, key=lambda x: x.name)
-                subcarpetas = []
-                for entrada in entradas:
-                    vistas += 1
-                    if vistas > TOPE_ENTRADAS:
-                        return encontrados
-                    if not _componente_valido(entrada.name) or entrada.is_symlink():
-                        continue
-                    if entrada.is_file(follow_symlinks=False):
-                        encontrados.append([*prefijo, entrada.name])
-                    elif entrada.is_dir(follow_symlinks=False):
-                        subcarpetas.append(entrada.name)
-                for nombre in reversed(subcarpetas):
-                    try:
-                        hijo = os.open(nombre, _ABRIR_CARPETA, dir_fd=fd)
-                    except OSError:  # fail-soft: cambio o es un enlace entre el listado y el open; no se sigue
-                        continue
-                    pendientes.append((hijo, [*prefijo, nombre], True))
+                hijo = os.open(nombre, _ABRIR_CARPETA, dir_fd=fd)
+            except OSError as exc:
+                if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+                    continue                    # desaparecio (o se volvio un enlace) a mitad del recorrido
+                raise
+            try:
+                bajar(hijo, [*prefijo, nombre])
             finally:
-                if propio:
-                    os.close(fd)
-    finally:
-        for fd, _, propio in pendientes:
-            if propio:
-                os.close(fd)
+                os.close(hijo)
+
+    try:
+        bajar(fd_fuente, [])
+    except OSError as exc:
+        raise FuenteIlegible(f"no se pudo recorrer fuente/ ({errno.errorcode.get(exc.errno, exc.errno)})") from None
     return encontrados
 
 
 def buscar_original(workspace: Path, project_uuid: str, *, sha256: str, nombre_original: str,
                     carpeta_procesado: str | None, bytes_: int | None = None) -> str | None:
     """`proyectos/<uuid>/fuente/<ruta>` del archivo con ese sha256, o None. Sincrona (to_thread).
+    `FuenteIlegible` si no se pudo mirar `fuente/` (E/S, permisos, descriptores, topes): no es None.
     `project_uuid` tiene que ser un componente simple (viene de `projects.project_uuid`).
     `bytes_` solo evita leer los archivos de otro tamano; la prueba es siempre el sha256."""
     if not _componente_valido(project_uuid):
         return None
+    try:
+        return _buscar(workspace, project_uuid, sha256, nombre_original, carpeta_procesado, bytes_)
+    except OSError as exc:
+        raise FuenteIlegible(f"no se pudo leer fuente/ ({errno.errorcode.get(exc.errno, exc.errno)})") from None
+
+
+def _buscar(workspace: Path, project_uuid: str, sha256: str, nombre_original: str,
+            carpeta_procesado: str | None, bytes_: int | None) -> str | None:
     raiz = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
     try:
         fuente = _abrir_ruta(raiz, ["proyectos", project_uuid, "fuente"], bandera_final=_ABRIR_CARPETA)
