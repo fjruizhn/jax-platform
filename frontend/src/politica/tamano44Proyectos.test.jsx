@@ -23,6 +23,8 @@ vi.mock('../api/proyectos', () => ({
   listarProyectos: vi.fn(), crearProyecto: vi.fn(), verProyecto: vi.fn(), renombrarProyecto: vi.fn(),
   cambiarEstado: vi.fn(), listarMiembros: vi.fn(), invitarMiembro: vi.fn(), cambiarPapel: vi.fn(),
   quitarMiembro: vi.fn(), buscarCandidatos: vi.fn(),
+  listarDocumentos: vi.fn(), ocultarDocumento: vi.fn(), restaurarDocumento: vi.fn(),
+  limitesDeDocumentos: vi.fn(), subirDocumentos: vi.fn(),
 }))
 
 import * as api from '../api/proyectos'
@@ -95,18 +97,25 @@ describe('Proyectos: todo control mide al menos 44px (CSS compilado)', () => {
     expect(container.querySelectorAll('button, a[href]').length).toBeGreaterThan(4)
   })
 
-  it('detalle: enlace volver, pestañas, miembros y ajustes', async () => {
+  it('detalle: enlace volver, pestañas, documentos, miembros y ajustes', async () => {
     api.verProyecto.mockResolvedValue({ id: 7, uuid: 'u7', nombre: 'Alfa', descripcion: 'd', estado: 'ACTIVE', papel: 'OWNER' })
     api.listarMiembros.mockResolvedValue({ miembros: [
       { user_id: 1, email: 'yo@x.com', papel: 'OWNER', origen: 'DIRECT' }, { user_id: 3, email: 'lec@x.com', papel: 'VIEWER', origen: 'DIRECT' }] })
+    api.listarDocumentos.mockResolvedValue({ documentos: [
+      { id: 1, nombre: 'informe.pdf', bytes: 1024, tipo: 'pdf', estado: 'listo', error: null, subido_por_email: 'yo@x.com', creado: '2026-10-01T12:00:00', oculto: false }], siguiente: 1 })
+    api.limitesDeDocumentos.mockResolvedValue({ max_bytes_archivo: 1e8, max_archivos_lote: 250, max_bytes_lote: 1e9, extensiones: ['pdf'] })
     render(
       <I18nProvider><MemoryRouter initialEntries={['/proyectos/7']}>
         <Routes><Route path="/proyectos/:id" element={<ProyectoDetalle />} /></Routes>
       </MemoryRouter></I18nProvider>)
     await screen.findByRole('heading', { name: 'Alfa' })
-    await waitFor(() => expect(screen.getByText('lec@x.com')).toBeInTheDocument())
+    // Pestaña Documentos (la de inicio): Agregar, Ver ocultos, Ocultar por fila y Cargar más.
+    await waitFor(() => expect(screen.getAllByText('informe.pdf').length).toBeGreaterThan(0))
     expect(await controlesBajoElPiso(document.body)).toEqual([])
     const pestanas = screen.getAllByRole('tab')
+    fireEvent.click(pestanas[1])
+    await waitFor(() => expect(screen.getByText('lec@x.com')).toBeInTheDocument())
+    expect(await controlesBajoElPiso(document.body)).toEqual([])
     fireEvent.click(pestanas[pestanas.length - 1])
     expect(await controlesBajoElPiso(document.body)).toEqual([])
   })
