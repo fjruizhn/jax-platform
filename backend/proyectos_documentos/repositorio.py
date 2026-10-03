@@ -4,7 +4,10 @@ se redefine aca.
 
 Indices (declarados en la migracion, verificados con EXPLAIN en
 tests/test_proyectos_documentos_repositorio.py):
-  - listar          -> idx_project_documents_lista (project_id, oculto_at, id)
+  - listar          -> idx_project_documents_lista (project_id, oculto_at, id), FORCE INDEX en
+                       las dos vistas: sin la pista el optimizador puede elegir otro indice
+                       (PRIMARY en un proyecto grande y antiguo, uq_project_documents_sha con
+                       ocultos) y leer miles de filas para devolver una pagina.
   - tomar_en_cola   -> idx_project_documents_despacho (estado, job_id, id)
 """
 from __future__ import annotations
@@ -21,11 +24,15 @@ _BASE_LISTA = (
     f"SELECT {_COLUMNAS_LISTA} FROM project_documents d {{indice}} JOIN jax_users u ON u.user_id = d.subido_por "
     "WHERE d.project_id = %s AND d.oculto_at IS {nulo} AND d.id < %s ORDER BY d.id DESC LIMIT %s"
 )
-SQL_LISTAR_VISIBLES = _BASE_LISTA.format(nulo="NULL", indice="")
+_INDICE_LISTA = "FORCE INDEX (idx_project_documents_lista)"
+# Un proyecto grande y ANTIGUO con muchas filas mas nuevas de otros proyectos: sin la pista
+# MariaDB recorre PRIMARY hacia atras (medido en T12: 3.839 filas leidas para devolver 51).
+# Es camino caliente: la pestana Documentos repite esta consulta cada 5 s.
+SQL_LISTAR_VISIBLES = _BASE_LISTA.format(nulo="NULL", indice=_INDICE_LISTA)
 # Con filas ocultas reales (medido: 200 de 1000), sin la pista el optimizador elige
 # uq_project_documents_sha (mismo prefijo project_id) y ordena todo el proyecto; con
 # FORCE INDEX recorre solo `oculto_at IS NOT NULL` en el indice de la lista.
-SQL_LISTAR_OCULTOS = _BASE_LISTA.format(nulo="NOT NULL", indice="FORCE INDEX (idx_project_documents_lista)")
+SQL_LISTAR_OCULTOS = _BASE_LISTA.format(nulo="NOT NULL", indice=_INDICE_LISTA)
 
 # `job_id IS NULL` fija el prefijo (estado, job_id) del indice de despacho y deja
 # `id` ya ordenado: sin eso, MariaDB ordena aparte. Una fila en_cola nunca tiene

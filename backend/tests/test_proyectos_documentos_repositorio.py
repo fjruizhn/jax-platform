@@ -413,3 +413,18 @@ def test_insertar_exige_usuario_activo_en_su_tenant(e):
                              (propio, e.usuario))
     filas = e.client.portal.call(sql, "SELECT sha256 FROM project_documents WHERE project_id=%s", (p,), True)
     assert [f[0] for f in filas] == ["5" * 64]
+
+
+def test_explain_de_listar_visibles_usa_su_indice_en_un_proyecto_viejo_y_grande(e):
+    # Ronda final, MAJOR-3 (medido en T12): con un proyecto grande y ANTIGUO y muchas filas
+    # mas nuevas de otros proyectos, sin la pista MariaDB recorria PRIMARY hacia atras
+    # (3.839 filas leidas para devolver 51). La lista visible es camino caliente: la
+    # pestana la repite cada 5 s.
+    viejo = e.proyecto()
+    _sembrar(e.client, viejo, e.usuario, 2000, desde=2 * 10**9)
+    for i in range(4):
+        _sembrar(e.client, e.proyecto(), e.usuario, 2000, desde=2 * 10**9 + (i + 1) * 10**5)
+    plan = _plan(e.client, repo.SQL_LISTAR_VISIBLES, (viejo, 2**62, 51))
+    doc = next(f for f in plan if f["table"] == "d")
+    assert doc["key"] == "idx_project_documents_lista", plan
+    assert "filesort" not in (doc["Extra"] or "") and "temporary" not in (doc["Extra"] or ""), plan
