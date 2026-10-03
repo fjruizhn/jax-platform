@@ -1632,6 +1632,7 @@ export default {
       elegirCarpeta: 'Carpeta',
       sinPermiso: 'Tu papel en este proyecto no permite agregar documentos.',
       proyectoArchivado: 'Este proyecto está archivado: no admite documentos nuevos.',
+      noSePudoComprobar: 'No se pudo comprobar tu acceso a este proyecto.',
       estados: {
         en_cola: 'En espera',
         pendiente: 'Pendiente',

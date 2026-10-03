@@ -1066,8 +1066,12 @@ jobs:
             //   1312/0/1312 (número local que el runner confirma o corrige): +11 BotonDocumentos.test.jsx,
             //   +4 BottomBar.proyecto.test.jsx, +2 tamano44Proyectos.test.jsx (barra a 24 px y ventana a 44 px);
             //   BottomBar.modos.test.jsx cambia sin sumar (orden con el botón; el selector también en Pipeline).
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1312) {
-              console.error("PISO ROTO: se esperaban 1312 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1312 -> 1318 (2026-10-03, Proyectos E2a T11 ronda 1): +6, medido LOCAL con `npx vitest run`
+            //   1318/0/1318: papel y estado se vuelven a pedir al abrir y cerrar el selector (archivado,
+            //   papel perdido), 7->9->7 sin papel viejo ni respuesta tardía, error de acceso con texto
+            //   propio y «Cargar más» en la lista de Personal (x3).
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1318) {
+              console.error("PISO ROTO: se esperaban 1318 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

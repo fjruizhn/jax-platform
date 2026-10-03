@@ -1536,6 +1536,7 @@ export default {
       elegirCarpeta: 'Folder',
       sinPermiso: 'Your role in this project does not allow adding documents.',
       proyectoArchivado: 'This project is archived: it does not accept new documents.',
+      noSePudoComprobar: 'Your access to this project could not be checked.',
       estados: {
         en_cola: 'Waiting',
         pendiente: 'Pending',
