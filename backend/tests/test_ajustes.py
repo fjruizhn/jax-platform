@@ -158,6 +158,9 @@ def test_limites_publicos_y_tope_espejado_de_jacobs():
         # todo el servicio; el 429 sale antes de leer el cuerpo.
         "proyectos.documentos.subidas_por_usuario": {"min": 1, "max": 10},
         "proyectos.documentos.subidas_globales": {"min": 1, "max": 50},
+        # Reprocesos simultaneos (jax-platform#186): cupo PROPIO, aparte del de subir.
+        "proyectos.documentos.reprocesar_por_usuario": {"min": 1, "max": 4},
+        "proyectos.documentos.reprocesar_globales": {"min": 1, "max": 4},
     }
 
 
@@ -215,6 +218,8 @@ def test_lee_los_valores_tipados_de_la_tabla(client, ajustes_en_db):
         "proyectos.documentos.rutas_por_trabajo": 50,
         "proyectos.documentos.subidas_por_usuario": 2,
         "proyectos.documentos.subidas_globales": 4,
+        "proyectos.documentos.reprocesar_por_usuario": 1,
+        "proyectos.documentos.reprocesar_globales": 1,
     }
 
 
@@ -271,6 +276,8 @@ def test_avisar_claves_ilegibles_loguea_error_sin_el_valor(client, ajustes_en_db
     ("proyectos.documentos.rutas_por_trabajo", ["0", "51"]),
     ("proyectos.documentos.subidas_por_usuario", ["0", "11", "02"]),
     ("proyectos.documentos.subidas_globales", ["0", "51"]),
+    ("proyectos.documentos.reprocesar_por_usuario", ["0", "5", "01"]),
+    ("proyectos.documentos.reprocesar_globales", ["0", "5"]),
 ])
 def test_topes_de_documentos_fuera_de_rango_son_ilegibles(client, ajustes_en_db, clave, malos):
     for malo in malos:
@@ -285,6 +292,8 @@ def test_topes_de_documentos_fuera_de_rango_son_ilegibles(client, ajustes_en_db,
     ("proyectos.documentos.rutas_por_trabajo", [1, 50]),
     ("proyectos.documentos.subidas_por_usuario", [1, 10]),
     ("proyectos.documentos.subidas_globales", [1, 50]),
+    ("proyectos.documentos.reprocesar_por_usuario", [1, 4]),
+    ("proyectos.documentos.reprocesar_globales", [1, 4]),
 ])
 def test_topes_de_documentos_aceptan_sus_bordes(client, ajustes_en_db, clave, bordes):
     for borde in bordes:
