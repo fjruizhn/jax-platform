@@ -3478,7 +3478,10 @@ jobs:
           #   37149064120 conto passed=3553 con piso 3551 (medido 3551 local): +2 de las pruebas de
           #   test_base_por_sesion que local no cuenta y -1 por el skip de entorno de arriba. Mismo desfase
           #   esperado: el runner contara unas 2 por encima del piso.
-          PISO_PASSED = 3567
+          # 3567 -> 3570 (filas en incertidumbre fuera de la ventana de la cola): +3 con DB, medido EXACTO en local
+          #   (mismo comando, mismas 3 de test_base_por_sesion fuera): 3570 passed. Una en el despachador y dos
+          #   en el repositorio. Sin DB no suman (piden `client`): 2150 / piso 2149 sin cambio.
+          PISO_PASSED = 3570
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
