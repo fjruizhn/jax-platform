@@ -212,20 +212,32 @@ def _sin_rutas_absolutas(texto: object) -> str:
     return _RUTA_ABSOLUTA.sub(r".../\1", texto)[:500]
 
 
+def _normalizada(texto: str) -> str:
+    """Sin tildes, en minusculas y con los espacios repetidos en uno."""
+    sin_tildes = "".join(c for c in unicodedata.normalize("NFD", texto.casefold()) if not unicodedata.combining(c))
+    return " ".join(sin_tildes.split())
+
+
+# Las UNICAS razones de estado `error` que escribe el OCR real de jax (origin/master,
+# `procesamiento/extractores/ocr.py:287`, `:289` y `:360`), copiadas literal y normalizadas. Es una
+# tabla de frases EXACTAS, no una busqueda de palabras: `pdf.py:341` dice «sin capa de texto util;
+# corresponde OCR» y esa NO paso por OCR. Una razon nueva de jax es `procesamiento_fallido` hasta
+# que alguien la agregue aqui.
+_RAZONES_DEL_OCR = {
+    _normalizada("el OCR no devolvio texto util"): "ocr_sin_texto",
+    _normalizada("ninguna pagina del PDF dio texto util via OCR"): "ocr_sin_texto",
+    _normalizada("mas de la mitad de las palabras reconocidas tienen confianza baja "
+                 "(probable ruido o desenfoque) -- ver palabras_dudosas"): "ocr_confianza_baja",
+}
+
+
 def codigo_de_la_razon(razon: object) -> str:
     """Codigo estable de CAUSAS_DE_ERROR para el texto libre de `ficha.json -> detalle.razon`
-    (funcion pura). Se comparan frases sin tildes ni mayusculas; lo que no se reconoce es el
-    generico `procesamiento_fallido`. Las frases son las que jax escribe en las fichas
-    (`el OCR no devolvio texto util`, `ninguna pagina del PDF dio texto util via OCR`, `mas de la
-    mitad de las palabras reconocidas tienen confianza baja ...`)."""
+    (funcion pura): la tabla `_RAZONES_DEL_OCR` por frase exacta normalizada; todo lo demas es el
+    generico `procesamiento_fallido`."""
     if not isinstance(razon, str):
         return "procesamiento_fallido"
-    texto = "".join(c for c in unicodedata.normalize("NFD", razon.casefold()) if not unicodedata.combining(c))
-    if "ocr" in texto and "texto util" in texto:
-        return "ocr_sin_texto"
-    if "confianza baja" in texto and ("ocr" in texto or "palabras reconocidas" in texto):
-        return "ocr_confianza_baja"
-    return "procesamiento_fallido"
+    return _RAZONES_DEL_OCR.get(_normalizada(razon), "procesamiento_fallido")
 
 
 async def _motivo_del_error(fila: dict, carpeta: str | None) -> str:

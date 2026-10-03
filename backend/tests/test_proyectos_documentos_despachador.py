@@ -627,20 +627,39 @@ RAZON_CONFIANZA = ("mas de la mitad de las palabras reconocidas tienen confianza
 RAZON_PDF = "ninguna pagina del PDF dio texto util via OCR"
 
 
+# TODAS las razones de estado `error` de jax (origin/master, `procesamiento/extractores/ocr.py` y
+# `pdf.py`), copiadas literal. Solo las tres primeras son del OCR real.
+RAZONES_DE_JAX_QUE_NO_SON_OCR = [
+    "sin capa de texto util; corresponde OCR",                                   # pdf.py:341 (no paso por OCR)
+    "modo_lectura no soportado: 'x'",                                            # pdf.py:253
+    "pdfplumber no esta instalado: No module named 'pdfplumber'",                # pdf.py:262
+    "no se pudo leer: ValueError: PDF roto",                                     # pdf.py:325
+    "no existe el archivo: fuente/a.pdf",                                        # ocr.py:422
+    "pdftoppm no esta instalado (poppler-utils); no se puede rasterizar el PDF para OCR",   # ocr.py:431
+    "no se pudo rasterizar el PDF con pdftoppm",                                 # ocr.py:457
+    "no se pudo correr tesseract sobre la imagen",                               # ocr.py:467
+    "fallo inesperado en OCR: OSError: disco lleno",                             # ocr.py:474
+    "tesseract no esta instalado",                                               # ocr.py:400 (sin_extractor)
+]
+
+
 @pytest.mark.parametrize("razon,codigo", [
-    (RAZON_OCR_VACIO, "ocr_sin_texto"),
-    (RAZON_PDF, "ocr_sin_texto"),
-    (RAZON_CONFIANZA, "ocr_confianza_baja"),
-    ("El OCR no devolvió texto útil", "ocr_sin_texto"),             # con tildes y mayusculas
-    ("Confianza BAJA en el OCR", "ocr_confianza_baja"),
-    ("la hoja no dio texto util", "procesamiento_fallido"),            # sin OCR: no es esta causa
-    ("PDF corrupto", "procesamiento_fallido"),
+    (RAZON_OCR_VACIO, "ocr_sin_texto"),                                           # ocr.py:287
+    (RAZON_PDF, "ocr_sin_texto"),                                                 # ocr.py:360
+    (RAZON_CONFIANZA, "ocr_confianza_baja"),                                      # ocr.py:289
+    ("El OCR no devolvió texto útil", "ocr_sin_texto"),                           # tildes y mayusculas
+    ("el  OCR   no devolvio texto util ", "ocr_sin_texto"),                       # espacios repetidos
+    ("Mas de la mitad de las palabras reconocidas tienen confianza baja (probable ruido o "
+     "desenfoque) -- ver palabras_dudosas", "ocr_confianza_baja"),
+    *[(r, "procesamiento_fallido") for r in RAZONES_DE_JAX_QUE_NO_SON_OCR],
+    ("el OCR no devolvio texto util y ademas algo mas", "procesamiento_fallido"),  # exacta, no «contiene»
+    ("la hoja no dio texto util", "procesamiento_fallido"),
     ("", "procesamiento_fallido"),
     (None, "procesamiento_fallido"),
     (7, "procesamiento_fallido"),
     ({"x": 1}, "procesamiento_fallido"),
 ])
-def test_codigo_de_la_razon_es_una_funcion_pura_de_frases_conocidas(razon, codigo):
+def test_codigo_de_la_razon_es_una_tabla_de_frases_exactas_de_jax(razon, codigo):
     assert despachador.codigo_de_la_razon(razon) == codigo
     assert codigo in despachador.CAUSAS_DE_ERROR
 
