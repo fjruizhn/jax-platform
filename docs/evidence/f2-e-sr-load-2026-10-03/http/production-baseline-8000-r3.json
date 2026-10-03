@@ -1,0 +1,482 @@
+{
+  "entorno": {
+    "fecha": "2026-10-03T07:12:21-06:00",
+    "host": "Hall9000",
+    "cpus": 32,
+    "python": "3.14.4",
+    "sha_harness": "e2f066007bafc4dc502fceeb7a849dc979d24ba7",
+    "sha_plataforma_esperado": "9a2c90c200c269688fee085301bf098b0a067c9e",
+    "sha_jax_esperado": "eca7db42d529fc54688e8d04a451eac1d0fa69e6",
+    "sha_jax_repo_path": "eca7db42d529fc54688e8d04a451eac1d0fa69e6",
+    "label": "production-baseline",
+    "repetition": 3,
+    "core": {
+      "renderer": "f2-c.renderer.2",
+      "domain": "f2-c.domain.2",
+      "lifecycle": "f2-d.lifecycle.2",
+      "origins": {
+        "governed_chat": "/home/fruiz/worktrees/load-production-baseline-platform/backend/api/governed_chat.py",
+        "governed_renderer": "/home/fruiz/worktrees/load-production-baseline-jax/policy/governance/governed_renderer.py",
+        "governed_domain": "/home/fruiz/worktrees/load-production-baseline-jax/policy/governance/governed_domain.py",
+        "output_lifecycle": "/home/fruiz/worktrees/load-production-baseline-jax/policy/governance/output_lifecycle.py"
+      },
+      "core_arity": 8
+    },
+    "mariadb": "12.3.3-MariaDB-ubu2404",
+    "mariadb_variables": {
+      "innodb_buffer_pool_size": "134217728",
+      "max_connections": "151"
+    },
+    "uvicorn_workers": 1,
+    "pool_db_maxsize": 10,
+    "respuesta_chars": 8000,
+    "max_turns": 20
+  },
+  "verificacion_previa": {
+    "bytes": 8407,
+    "contract_state": "VALID",
+    "chars_respuesta": 8000,
+    "bandeja": [
+      "OUTPUT_COMMITTED_TO_TRANSPORT",
+      3
+    ]
+  },
+  "calentamiento": {
+    "c": 50,
+    "n": 1000,
+    "ok": 1000,
+    "errores": 0,
+    "degradados": 0,
+    "segundos": 30.804,
+    "rps": 32.46,
+    "p50_ms": 1341.05,
+    "p95_ms": 3007.36,
+    "p99_ms": 3959.68,
+    "max_ms": 4936.05,
+    "codigos": {
+      "200": 1000
+    },
+    "cpu_backend_s": 26.41,
+    "cpu_ms_por_peticion": 26.41,
+    "bytes_respuesta_promedio": 8407,
+    "rss_backend_mb": 232.9,
+    "latency_degraded": true
+  },
+  "niveles": [
+    {
+      "c": 1,
+      "n": 100,
+      "ok": 100,
+      "errores": 0,
+      "degradados": 0,
+      "segundos": 5.115,
+      "rps": 19.55,
+      "p50_ms": 35.97,
+      "p95_ms": 103.34,
+      "p99_ms": 193.72,
+      "max_ms": 366.82,
+      "codigos": {
+        "200": 100
+      },
+      "cpu_backend_s": 2.88,
+      "cpu_ms_por_peticion": 28.8,
+      "bytes_respuesta_promedio": 8407,
+      "rss_backend_mb": 283.4,
+      "latency_degraded": false
+    },
+    {
+      "c": 5,
+      "n": 150,
+      "ok": 150,
+      "errores": 0,
+      "degradados": 0,
+      "segundos": 5.066,
+      "rps": 29.61,
+      "p50_ms": 155.59,
+      "p95_ms": 247.05,
+      "p99_ms": 507.99,
+      "max_ms": 608.56,
+      "codigos": {
+        "200": 150
+      },
+      "cpu_backend_s": 4.0,
+      "cpu_ms_por_peticion": 26.67,
+      "bytes_respuesta_promedio": 8407,
+      "rss_backend_mb": 190.9,
+      "latency_degraded": false
+    },
+    {
+      "c": 10,
+      "n": 200,
+      "ok": 200,
+      "errores": 0,
+      "degradados": 0,
+      "segundos": 6.461,
+      "rps": 30.96,
+      "p50_ms": 290.88,
+      "p95_ms": 537.06,
+      "p99_ms": 590.27,
+      "max_ms": 754.78,
+      "codigos": {
+        "200": 200
+      },
+      "cpu_backend_s": 5.21,
+      "cpu_ms_por_peticion": 26.05,
+      "bytes_respuesta_promedio": 8407,
+      "rss_backend_mb": 176.6,
+      "latency_degraded": true
+    },
+    {
+      "c": 25,
+      "n": 375,
+      "ok": 375,
+      "errores": 0,
+      "degradados": 0,
+      "segundos": 10.17,
+      "rps": 36.87,
+      "p50_ms": 332.05,
+      "p95_ms": 1865.05,
+      "p99_ms": 2648.63,
+      "max_ms": 2986.63,
+      "codigos": {
+        "200": 375
+      },
+      "cpu_backend_s": 10.3,
+      "cpu_ms_por_peticion": 27.47,
+      "bytes_respuesta_promedio": 8407,
+      "rss_backend_mb": 195.0,
+      "latency_degraded": true
+    },
+    {
+      "c": 50,
+      "n": 600,
+      "ok": 600,
+      "errores": 0,
+      "degradados": 0,
+      "segundos": 16.485,
+      "rps": 36.4,
+      "p50_ms": 942.98,
+      "p95_ms": 3094.18,
+      "p99_ms": 4417.08,
+      "max_ms": 8478.92,
+      "codigos": {
+        "200": 600
+      },
+      "cpu_backend_s": 16.81,
+      "cpu_ms_por_peticion": 28.02,
+      "bytes_respuesta_promedio": 8407,
+      "rss_backend_mb": 223.0,
+      "latency_degraded": true
+    }
+  ],
+  "proveedor_falso_stats": {
+    "chat": 2426,
+    "embed": 3474
+  },
+  "bandeja_al_final": {
+    "por_estado": [
+      {
+        "state": "OUTPUT_COMMITTED_TO_TRANSPORT",
+        "contract_state": "VALID",
+        "filas": 2426
+      }
+    ],
+    "filas_por_n_eventos": {
+      "3": 2426
+    },
+    "payload_promedio_bytes": 8407
+  },
+  "explain": [
+    {
+      "filas_bandeja": 7426,
+      "filas_eventos": 22278
+    },
+    {
+      "consulta": "transition: SELECT ... FOR UPDATE (x2 por turno)",
+      "camino": "caliente",
+      "sql": "SELECT state, row_version, lifecycle_version, record_schema_version, envelope_schema_version, transport_projection_version, renderer_api_version, domain_spec_version, transport_kind, contract_state, transport_payload_digest, effective_output_digest, effective_projection_digest, original_envelope_digest, response_payload, subject_id, response_id, request_id, idempotency_key, scope_digest, project_id, audience, trace_id, governance_reference_ids, claim_ids, contains_current_claim, current_not_after FROM governed_output_outbox WHERE outbox_id=%(outbox_id)s AND tenant_id=%(tenant_id)s AND scope_digest=%(scope_digest)s AND request_id=%(request_id)s AND response_id=%(response_id)s AND subject_id=%(subject_id)s AND attempt_id=%(attempt_id)s AND idempotency_key=%(idempotency_key)s FOR UPDATE",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "governed_output_outbox",
+          "type": "const",
+          "possible_keys": "PRIMARY,uq_go_output_attempt,uq_go_output_idempotency,uq_go_output_attempt_sequence,idx_go_output_scope_state,idx_go_output_response",
+          "key": "PRIMARY",
+          "key_len": "36",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ],
+      "analyze": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "governed_output_outbox",
+          "type": "const",
+          "possible_keys": "PRIMARY,uq_go_output_attempt,uq_go_output_idempotency,uq_go_output_attempt_sequence,idx_go_output_scope_state,idx_go_output_response",
+          "key": "PRIMARY",
+          "key_len": "36",
+          "ref": "const",
+          "rows": "1",
+          "r_rows": null,
+          "filtered": 100.0,
+          "r_filtered": null,
+          "Extra": ""
+        }
+      ],
+      "banderas": []
+    },
+    {
+      "consulta": "transition: UPDATE (x2 por turno)",
+      "camino": "caliente",
+      "sql": "UPDATE governed_output_outbox SET state='OUTPUT_COMMITTED_TO_TRANSPORT', row_version=row_version, committing_at=committing_at, committed_at=committed_at, acknowledged_at=acknowledged_at, failure_class=NULL WHERE outbox_id=%(outbox_id)s AND row_version=%(row_version)s AND state=%(state)s",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "governed_output_outbox",
+          "type": "range",
+          "possible_keys": "PRIMARY",
+          "key": "PRIMARY",
+          "key_len": "36",
+          "ref": null,
+          "rows": "1",
+          "Extra": "Using where"
+        }
+      ],
+      "analyze": null,
+      "banderas": []
+    },
+    {
+      "consulta": "_read_idempotent: SELECT ... FOR UPDATE (solo en conflicto de idempotencia)",
+      "camino": "frio",
+      "sql": "SELECT outbox_id, attempt_id, attempt_sequence, previous_attempt_id, project_id, subject_id, audience, scope_digest, request_id, trace_id, response_id, transport_kind, idempotency_key, lifecycle_version, record_schema_version, envelope_schema_version, transport_projection_version, renderer_api_version, domain_spec_version, contract_state, effective_output_digest, effective_projection_digest, original_envelope_digest, transport_payload_digest, governance_reference_ids, claim_ids, contains_current_claim, current_not_after, response_payload, state FROM governed_output_outbox WHERE tenant_id=%(tenant_id)s AND idempotency_key=%(idempotency_key)s FOR UPDATE",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "governed_output_outbox",
+          "type": "const",
+          "possible_keys": "uq_go_output_attempt,uq_go_output_idempotency,uq_go_output_attempt_sequence,idx_go_output_scope_state,idx_go_output_response",
+          "key": "uq_go_output_idempotency",
+          "key_len": "68",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ],
+      "analyze": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "governed_output_outbox",
+          "type": "const",
+          "possible_keys": "uq_go_output_attempt,uq_go_output_idempotency,uq_go_output_attempt_sequence,idx_go_output_scope_state,idx_go_output_response",
+          "key": "uq_go_output_idempotency",
+          "key_len": "68",
+          "ref": "const,const",
+          "rows": "1",
+          "r_rows": null,
+          "filtered": 100.0,
+          "r_filtered": null,
+          "Extra": ""
+        }
+      ],
+      "banderas": []
+    },
+    {
+      "consulta": "_next_retry_sequence / _validate_retry_parent: SELECT ... FOR UPDATE (solo reintento)",
+      "camino": "frio",
+      "sql": "SELECT attempt_sequence FROM governed_output_outbox WHERE tenant_id=%(tenant_id)s AND scope_digest=%(scope_digest)s AND request_id=%(request_id)s AND attempt_id=%(attempt_id)s FOR UPDATE",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "governed_output_outbox",
+          "type": "const",
+          "possible_keys": "uq_go_output_attempt,uq_go_output_idempotency,uq_go_output_attempt_sequence,idx_go_output_scope_state,idx_go_output_response",
+          "key": "uq_go_output_attempt",
+          "key_len": "213",
+          "ref": "const,const,const,const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ],
+      "analyze": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "governed_output_outbox",
+          "type": "const",
+          "possible_keys": "uq_go_output_attempt,uq_go_output_idempotency,uq_go_output_attempt_sequence,idx_go_output_scope_state,idx_go_output_response",
+          "key": "uq_go_output_attempt",
+          "key_len": "213",
+          "ref": "const,const,const,const",
+          "rows": "1",
+          "r_rows": null,
+          "filtered": 100.0,
+          "r_filtered": null,
+          "Extra": ""
+        }
+      ],
+      "banderas": []
+    },
+    {
+      "consulta": "record_secondary_event: SELECT ... FOR UPDATE (solo si falla la proyeccion post-commit)",
+      "camino": "frio",
+      "sql": "SELECT state, lifecycle_version FROM governed_output_outbox WHERE outbox_id=%(outbox_id)s AND tenant_id=%(tenant_id)s AND scope_digest=%(scope_digest)s AND request_id=%(request_id)s AND attempt_id=%(attempt_id)s FOR UPDATE",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "governed_output_outbox",
+          "type": "const",
+          "possible_keys": "PRIMARY,uq_go_output_attempt,uq_go_output_idempotency,uq_go_output_attempt_sequence,idx_go_output_scope_state,idx_go_output_response",
+          "key": "PRIMARY",
+          "key_len": "36",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ],
+      "analyze": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "governed_output_outbox",
+          "type": "const",
+          "possible_keys": "PRIMARY,uq_go_output_attempt,uq_go_output_idempotency,uq_go_output_attempt_sequence,idx_go_output_scope_state,idx_go_output_response",
+          "key": "PRIMARY",
+          "key_len": "36",
+          "ref": "const",
+          "rows": "1",
+          "r_rows": null,
+          "filtered": 100.0,
+          "r_filtered": null,
+          "Extra": ""
+        }
+      ],
+      "banderas": []
+    },
+    {
+      "consulta": "record_secondary_event: MAX(sequence_no) de eventos",
+      "camino": "frio",
+      "sql": "SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM governed_output_lifecycle_events WHERE outbox_id=%(outbox_id)s",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": null,
+          "type": null,
+          "possible_keys": null,
+          "key": null,
+          "key_len": null,
+          "ref": null,
+          "rows": null,
+          "Extra": "Select tables optimized away"
+        }
+      ],
+      "analyze": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": null,
+          "type": null,
+          "possible_keys": null,
+          "key": null,
+          "key_len": null,
+          "ref": null,
+          "rows": null,
+          "r_rows": null,
+          "filtered": null,
+          "r_filtered": null,
+          "Extra": "Select tables optimized away"
+        }
+      ],
+      "banderas": []
+    },
+    {
+      "consulta": "recovery_snapshot: GROUP BY state (una vez, al arrancar)",
+      "camino": "arranque",
+      "sql": "SELECT state, COUNT(*) FROM governed_output_outbox WHERE state IN ('OUTPUT_PREPARED','TRANSPORT_COMMITTING', 'OUTPUT_COMMITTED_TO_TRANSPORT') GROUP BY state",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "governed_output_outbox",
+          "type": "index",
+          "possible_keys": null,
+          "key": "idx_go_output_scope_state",
+          "key_len": "133",
+          "ref": null,
+          "rows": "6788",
+          "Extra": "Using where; Using index; Using temporary; Using filesort"
+        }
+      ],
+      "analyze": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "governed_output_outbox",
+          "type": "index",
+          "possible_keys": null,
+          "key": "idx_go_output_scope_state",
+          "key_len": "133",
+          "ref": null,
+          "rows": "6788",
+          "r_rows": "7426.00",
+          "filtered": 100.0,
+          "r_filtered": 100.0,
+          "Extra": "Using where; Using index; Using temporary; Using filesort"
+        }
+      ],
+      "banderas": [
+        "Using filesort",
+        "Using temporary"
+      ]
+    }
+  ],
+  "log_backend": {
+    "tracebacks": 64,
+    "deadlocks_1213": 64,
+    "otras_lineas_DB_error": 0,
+    "lineas_ERROR_de_logging": 0
+  },
+  "criterio": {
+    "p95_ms_maximo": 500,
+    "errores_requeridos": 0,
+    "degradados_requeridos": 0,
+    "outbox_filas_esperadas": 2426,
+    "resultado": "ACCEPTED",
+    "fallos": [],
+    "latency_degraded": [
+      {
+        "fase": "warmup",
+        "c": 50,
+        "p95_ms": 3007.36
+      },
+      {
+        "fase": "measurement",
+        "c": 10,
+        "p95_ms": 537.06
+      },
+      {
+        "fase": "measurement",
+        "c": 25,
+        "p95_ms": 1865.05
+      },
+      {
+        "fase": "measurement",
+        "c": 50,
+        "p95_ms": 3094.18
+      }
+    ],
+    "primer_umbral_degradado": {
+      "fase": "warmup",
+      "c": 50,
+      "p95_ms": 3007.36
+    }
+  }
+}

@@ -1,0 +1,1 @@
+{"post_measurement_exit": 1, "code": 1020, "measured_output": "2426 VALID COMMITTED, 3 events each, zero HTTP errors or fallback", "recovery": "fresh isolated connection under named exclusive lock; bounded retry; load rows removed; exact seed health marker then removed 2426 health events", "measurement_source_changed": false}
