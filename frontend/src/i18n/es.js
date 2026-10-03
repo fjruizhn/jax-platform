@@ -1717,6 +1717,7 @@ export default {
         proyecto_no_encontrado: 'Este proyecto no existe o no tenés acceso.',
         papel_insuficiente: 'Tu papel en este proyecto no permite esta acción.',
         no_reprocesable: 'Este documento no se puede reprocesar: ya no está en un estado o es de un tipo que lo permita.',
+        reprocesos_simultaneos: 'Ya hay un reprocesamiento en curso. Esperá unos segundos y volvé a intentarlo.',
         fuente_ilegible: 'El servidor no pudo leer la carpeta de originales. Avisá a un administrador.',
         original_no_encontrado: 'No se encontró el archivo original en el servidor, o ya no es el mismo. Avisá a un administrador.',
         documento_no_encontrado: 'Ese documento ya no existe en el proyecto.',

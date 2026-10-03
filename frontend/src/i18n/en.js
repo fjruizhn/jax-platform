@@ -1621,6 +1621,7 @@ export default {
         proyecto_no_encontrado: 'This project does not exist or you do not have access.',
         papel_insuficiente: 'Your role in this project does not allow this action.',
         no_reprocesable: 'This document cannot be reprocessed: it is not in a state or of a type that allows it.',
+        reprocesos_simultaneos: 'Another reprocessing is already running. Wait a few seconds and try again.',
         fuente_ilegible: 'The server could not read the originals folder. Contact an administrator.',
         original_no_encontrado: 'The original file was not found on the server, or it is no longer the same. Contact an administrator.',
         documento_no_encontrado: 'That document no longer exists in the project.',

@@ -551,6 +551,42 @@ describe('Documentos: reprocesar', () => {
   })
 })
 
+describe('Documentos: reprocesar con el cupo lleno (429)', () => {
+  const error429 = () => Object.assign(new Error('x'), {
+    response: { status: 429, headers: { 'retry-after': '2' }, data: { detail: { code: 'reprocesos_simultaneos' } } } })
+
+  it('un 429 muestra su texto, no reintenta solo y deja el botón listo para que la persona lo pulse', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    api.limitesDeDocumentos.mockResolvedValue({ max_bytes_archivo: 1e8, max_archivos_lote: 250, max_bytes_lote: 1e9, extensiones: ['pdf'] })
+    api.listarDocumentos.mockResolvedValue({ documentos: [doc(1, { estado: 'sin_extractor', tipo: 'pdf' })], siguiente: null })
+    api.reprocesarDocumento.mockRejectedValue(error429())
+    montar()
+    const boton = await screen.findByRole('button', { name: T.reprocesarDe('doc1.pdf') })
+    fireEvent.click(boton)
+    expect(await screen.findByText(T.errores.reprocesos_simultaneos)).toBeInTheDocument()
+    expect(T.errores.reprocesos_simultaneos).toMatch(/reprocesamiento en curso/i)
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })        // mucho mas que el Retry-After
+    expect(api.reprocesarDocumento).toHaveBeenCalledTimes(1)                    // no reintento solo
+    expect(screen.getByRole('button', { name: T.reprocesarDe('doc1.pdf') })).not.toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: T.reprocesarDe('doc1.pdf') }))   // la persona si puede volver a pedirlo
+    await waitFor(() => expect(api.reprocesarDocumento).toHaveBeenCalledTimes(2))
+  })
+
+  it('mientras su propio pedido está en vuelo el botón queda deshabilitado y un segundo clic no lo repite', async () => {
+    api.limitesDeDocumentos.mockResolvedValue({ max_bytes_archivo: 1e8, max_archivos_lote: 250, max_bytes_lote: 1e9, extensiones: ['pdf'] })
+    api.listarDocumentos.mockResolvedValue({ documentos: [doc(1, { estado: 'sin_extractor', tipo: 'pdf' })], siguiente: null })
+    let soltar
+    api.reprocesarDocumento.mockImplementation(() => new Promise((r) => { soltar = r }))
+    montar()
+    const boton = await screen.findByRole('button', { name: T.reprocesarDe('doc1.pdf') })
+    fireEvent.click(boton)
+    await waitFor(() => expect(boton).toBeDisabled())
+    fireEvent.click(boton)
+    expect(api.reprocesarDocumento).toHaveBeenCalledTimes(1)
+    soltar({})
+  })
+})
+
 describe('Documentos: motivo del error', () => {
   const sinMotivo = () => api.listarDocumentos.mockResolvedValue({
     documentos: [doc(1, { estado: 'error', error: null })], siguiente: null })
