@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from tiempo import utc_ahora
 import httpx
@@ -24,6 +25,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_FACETS = ["jax_local", "jekyll", "hyde", "hipatia", "thot", "kimi", "ada", "jacobs"]
 
 LAS_MANOS_URL = os.getenv("LAS_MANOS_URL", "http://127.0.0.1:7777")
+
+
+@dataclass(frozen=True)
+class LasManosHealthObservation:
+    """One completed LAS MANOS health probe owned by this server process."""
+
+    alive: bool
+    observed_at: datetime
 
 
 def las_manos_health_source_configuration() -> dict[str, object]:
@@ -98,6 +107,10 @@ class JAXEngineState:
     def __init__(self):
         self._state = EcosystemState()
         self._facet_status_lock = threading.RLock()
+        self._health_status_lock = threading.RLock()
+        # ``None`` means no completed health probe has occurred. The public
+        # compatibility fields in EcosystemState are never health evidence.
+        self._las_manos_health_observation: LasManosHealthObservation | None = None
         self._init_facets()
         self._poller_task: asyncio.Task | None = None
 
@@ -157,16 +170,44 @@ class JAXEngineState:
             return facet.status, observed_at
 
     def engine_health_status_snapshot(self, name: str) -> tuple[str, datetime] | None:
-        """Return the fixed LAS MANOS health probe, never a caller URL/source."""
+        """Return one complete fixed LAS MANOS health observation.
+
+        Freshness is the completed probe time, never resolver-read time.
+        """
         if name != "las_manos":
             return None
-        observed_at = self._parse_status_time(self._state.last_health_check)
-        if observed_at is None:
-            return None
-        status = "alive" if self._state.las_manos_alive is True else "down"
-        if not isinstance(self._state.las_manos_alive, bool):
-            return None
-        return status, observed_at
+        with self._health_status_lock:
+            observation = self._las_manos_health_observation
+            if observation is None:
+                return None
+            return ("alive" if observation.alive else "down"), observation.observed_at
+
+    def _commit_las_manos_health_observation(
+        self, alive: bool, observed_at: datetime
+    ) -> bool:
+        """Publish a completed health probe and compatibility fields together.
+
+        Returns whether this is a status transition. Same-status probes still
+        replace the observation to refresh its authoritative probe timestamp.
+        """
+        if not isinstance(alive, bool):
+            raise TypeError("LAS MANOS health state must be boolean")
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("LAS MANOS health observation time must be timezone-aware")
+        normalized_time = observed_at.astimezone(timezone.utc)
+        observation = LasManosHealthObservation(alive=alive, observed_at=normalized_time)
+        with self._health_status_lock:
+            previous = self._las_manos_health_observation
+            # Preserve the legacy initial event behavior: the default public
+            # state was down, so the first alive probe announces a change;
+            # the first down probe does not.
+            changed = alive if previous is None else previous.alive != alive
+            self._las_manos_health_observation = observation
+            # Legacy callers may still read these fields. Keep them coherent
+            # with the atomic observation, but never use them for governance.
+            self._state.las_manos_alive = alive
+            self._state.last_health_check = normalized_time.isoformat().replace("+00:00", "Z")
+            return changed
 
     def register_user(self, user_id: str, tenant_id: str, role: str):
         self._state.connected_users[user_id] = UserSession(
@@ -270,11 +311,10 @@ class JAXEngineState:
         except Exception:  # fail-soft: cualquier error de la sonda ES la señal 'caído' (alive=False) y se emite las_manos_health_changed
             alive = False
 
-        changed = alive != self._state.las_manos_alive
-        self._state.las_manos_alive = alive
-        # Freshness follows the completed health observation, not only a
-        # state transition. Event consumers still receive change events only.
-        self._state.last_health_check = utc_ahora().isoformat() + "Z"
+        # The network operation completed before the short critical section.
+        # The completed-probe timestamp and state become one observation.
+        observed_at = utc_ahora().replace(tzinfo=timezone.utc)
+        changed = self._commit_las_manos_health_observation(alive, observed_at)
         if changed:
             for user_id, session in list(self._state.connected_users.items()):
                 event = JAXEvent(

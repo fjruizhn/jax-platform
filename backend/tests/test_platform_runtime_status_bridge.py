@@ -105,8 +105,7 @@ def test_engine_health_bridge_is_fixed_to_las_manos_and_completed_probe(monkeypa
     assert resolver.evidence({"name": "las_manos", "status": "down"}, _scope(resolution)) is None
     assert resolver.evidence({"name": "other", "status": "alive"}, _scope(resolution)) is None
 
-    state._state.las_manos_alive = True
-    state._state.last_health_check = datetime.now(timezone.utc).isoformat()
+    state._commit_las_manos_health_observation(True, datetime.now(timezone.utc))
     evidence = resolver.evidence(
         {"name": "las_manos", "status": "alive"}, _scope(resolution)
     )
@@ -172,8 +171,7 @@ def test_engine_probe_configuration_is_bound_into_f2b_registry_and_receipt(monke
     core, resolution = _core(monkeypatch)
     from jax_engine import state as state_module
     state = JAXEngineState()
-    state._state.las_manos_alive = True
-    state._state.last_health_check = datetime.now(timezone.utc).isoformat()
+    state._commit_las_manos_health_observation(True, datetime.now(timezone.utc))
     monkeypatch.setattr(status_bridge, "engine_state", state)
     config = state_module.las_manos_health_source_configuration()
     digest = core.runtime_status_source_configuration_digest("ENGINE_STATUS", config)
@@ -197,6 +195,27 @@ def test_engine_probe_configuration_is_bound_into_f2b_registry_and_receipt(monke
     monkeypatch.setattr(state_module, "LAS_MANOS_URL", "http://different-server.invalid:7777")
     changed_config = state_module.las_manos_health_source_configuration()
     assert core.runtime_status_source_configuration_digest("ENGINE_STATUS", changed_config) != original_digest
+
+
+def test_engine_health_evidence_becomes_stale_without_another_completed_probe(monkeypatch):
+    core, resolution = _core(monkeypatch)
+    state = JAXEngineState()
+    observed_at = datetime(2026, 10, 3, 1, tzinfo=timezone.utc)
+    state._commit_las_manos_health_observation(True, observed_at)
+    monkeypatch.setattr(status_bridge, "engine_state", state)
+    evidence = LasManosHealthStatusResolver().evidence(
+        {"name": "las_manos", "status": "alive"}, _scope(resolution))
+    registry = core.build_runtime_status_registry(
+        _scope(resolution), authenticator=resolution.ReceiptAuthenticator.for_testing(b"s" * 32),
+        platform_source_configuration=_source_configuration(),
+    )
+
+    receipt = registry.resolve(
+        "ENGINE_STATUS", {"name": "las_manos", "status": "alive"}, _scope(resolution),
+        validation_time=observed_at.replace(minute=2), runtime_status_evidence=evidence,
+    )
+
+    assert receipt.status is resolution.ResolutionStatus.STALE
 
 
 def test_bridge_rejects_missing_or_wrong_jax_runtime_status_checkout(monkeypatch, tmp_path):
