@@ -1308,16 +1308,14 @@ jobs:
 
       - name: Traer el repo jax (fuente de verdad del esquema de Jacobs y B9)
         working-directory: .
-        # F2-D uses the JAX-owned lifecycle API from its exact paired PR head.
-        # 2026-10-02: pin subido a 2832cdd (merge de Jax#315, Proyectos E1 Parte A):
-        # 2026-10-02: 2832cdd -> 27590a6 (Jax#321, Proyectos E1.1: candidatos sin mínimo de letras).
-        # 2026-10-03: 27590a6 -> 2de1d1e (merge de E2a Parte A, Jax#325: migración 006a de project_documents).
-        # trae jax/memory/project_queries.py, que E1 importa. Desciende de 93900c2.
+        # The generic suite uses the reconciled F2-E-SR JAX integration head.
+        # It contains the F2-C/F2-D compatibility contract and the runtime
+        # status bridge API consumed by this Platform branch.
         run: |
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
-          git -C /tmp/jax fetch --depth=1 origin 2de1d1e6ae45e9f4203be9ac75576093dd74735d
+          git -C /tmp/jax fetch --depth=1 origin 1b54455aab8c5879f95c516aa2b6359f67c4381b
           git -C /tmp/jax checkout --detach FETCH_HEAD
-          test "$(git -C /tmp/jax rev-parse HEAD)" = 2de1d1e6ae45e9f4203be9ac75576093dd74735d
+          test "$(git -C /tmp/jax rev-parse HEAD)" = 1b54455aab8c5879f95c516aa2b6359f67c4381b
 
       - name: Crear el esquema de Jacobs con SU propio init_tables()
         working-directory: .
@@ -1385,6 +1383,9 @@ jobs:
         # de la corrida normal. Se ignoran, no se cuentan como skip -- el tope
         # de MAX_SKIPS se queda en 1, no se sube (ese tope sigue sirviendo
         # para detectar la DB caida).
+        # The reconciled JAX pin provides the runtime-status bridge API, so
+        # run that module here too. The PR exact-pair job remains the separate
+        # cross-repository contract gate.
         run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
 
       - name: Diagnóstico de pruebas fallidas (sin contenido de excepciones)
@@ -4427,17 +4428,14 @@ jobs:
 
       - name: Traer el repo JAX de integración (vocabulario y B9)
         working-directory: .
-        # The governed bridge requires the JAX F2-D lifecycle API. Pin this
-        # integration source to the exact paired JAX PR head.
-        # 2026-10-02: pin subido a 2832cdd (merge de Jax#315, Proyectos E1 Parte A):
-        # trae jax/memory/project_queries.py, que E1 importa. Desciende de 93900c2.
-        # 2026-10-02: 2832cdd -> 27590a6 (Jax#321, Proyectos E1.1: candidatos sin mínimo de letras).
-        # 2026-10-03: 27590a6 -> 2de1d1e (merge de E2a Parte A, Jax#325: migración 006a de project_documents).
+        # The generic suite uses the reconciled F2-E-SR JAX integration head.
+        # It contains the F2-C/F2-D compatibility contract and the runtime
+        # status bridge API consumed by this Platform branch.
         run: |
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
-          git -C /tmp/jax fetch --depth=1 origin 2de1d1e6ae45e9f4203be9ac75576093dd74735d
+          git -C /tmp/jax fetch --depth=1 origin 1b54455aab8c5879f95c516aa2b6359f67c4381b
           git -C /tmp/jax checkout --detach FETCH_HEAD
-          test "$(git -C /tmp/jax rev-parse HEAD)" = 2de1d1e6ae45e9f4203be9ac75576093dd74735d
+          test "$(git -C /tmp/jax rev-parse HEAD)" = 1b54455aab8c5879f95c516aa2b6359f67c4381b
 
       - name: Suite backend (sin DB) -- -rs lista cada skip con su motivo
         # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,
@@ -4580,3 +4578,94 @@ jobs:
         with:
           name: f2d-exact-pair-evidence
           path: platform/f2d-exact-pair-evidence.json
+
+  # This exact pair exercises both F2-E-SR runtime observations and the F2-C/
+  # F2-D governed Web Chat lifecycle against the reviewed JAX contract.
+  f2e-runtime-status-exact-pair:
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'phase2/f2-e-runtime-status-resolution-platform'
+    runs-on: ubuntu-latest
+    env:
+      JAX_RUNTIME_STATUS_EXPECTED_SHA: 1b54455aab8c5879f95c516aa2b6359f67c4381b
+      JAX_REPO_PATH: ${{ github.workspace }}/jax
+      JAX_REPO_BASE: ${{ github.workspace }}/jax
+      JAX_CONFIG_PATH: ${{ github.workspace }}/jax/las_manos/config.toml
+      JAX_CI_NO_DB: "1"
+      JAX_JWT_SECRET: f2e-runtime-status-ci-only
+    steps:
+      - name: Checkout exact platform pull request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Checkout exact JAX runtime-status API
+        uses: actions/checkout@v4
+        with:
+          repository: fjruizhn/Jax
+          ref: 1b54455aab8c5879f95c516aa2b6359f67c4381b
+          path: jax
+      - name: Require exact JAX and platform pair
+        run: |
+          JAX_SHA=$(git -C jax rev-parse HEAD)
+          PLATFORM_SHA=$(git rev-parse HEAD)
+          test "$JAX_SHA" = "$JAX_RUNTIME_STATUS_EXPECTED_SHA"
+          test "$PLATFORM_SHA" = "${{ github.event.pull_request.head.sha }}"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install backend test dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
+      - name: Exercise runtime status and governed lifecycle against exact JAX API
+        working-directory: backend
+        env:
+          PYTHONPATH: ${{ github.workspace }}/jax
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python -m pytest -q -p no:warnings \
+            tests/test_runtime_status_sources.py \
+            tests/test_platform_runtime_status_bridge.py \
+            tests/test_las_manos_health_broadcast.py \
+            integration_tests/test_f2c_exact_pair_integration.py \
+            tests/test_output_lifecycle_transport.py
+          python - <<'PY'
+          import json, os, subprocess
+          from policy.governance.governed_domain import (
+              GOVERNED_DOMAIN_SPEC_VERSION,
+              GOVERNED_ENVELOPE_SCHEMA_VERSIONS,
+              GOVERNED_RENDERER_API_VERSION,
+          )
+          evidence = {
+              "coverage": [
+                  "F2-E-SR runtime-status source and bridge observations",
+                  "F2-C/F2-D governed Web Chat lifecycle",
+              ],
+              "jax_head": os.environ["JAX_RUNTIME_STATUS_EXPECTED_SHA"],
+              "jax_pr": 313,
+              "jax_repository": "fjruizhn/Jax",
+              "platform_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "platform_pr": int(os.environ["GITHUB_PR_NUMBER"]),
+              "platform_repository": "fjruizhn/jax-platform",
+              "runtime_contract": {
+                  "domain": GOVERNED_DOMAIN_SPEC_VERSION,
+                  "envelopes": sorted(GOVERNED_ENVELOPE_SCHEMA_VERSIONS),
+                  "renderer": GOVERNED_RENDERER_API_VERSION,
+              },
+              "test_modules": [
+                  "tests/test_runtime_status_sources.py",
+                  "tests/test_platform_runtime_status_bridge.py",
+                  "tests/test_las_manos_health_broadcast.py",
+                  "integration_tests/test_f2c_exact_pair_integration.py",
+                  "tests/test_output_lifecycle_transport.py",
+              ],
+          }
+          with open("../f2e-runtime-status-exact-pair-evidence.json", "w", encoding="utf-8") as f:
+              json.dump(evidence, f, sort_keys=True)
+              f.write("\n")
+          print(json.dumps(evidence, sort_keys=True))
+          PY
+          cat ../f2e-runtime-status-exact-pair-evidence.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload exact-pair runtime-status evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: f2e-runtime-status-exact-pair-evidence
+          path: f2e-runtime-status-exact-pair-evidence.json
