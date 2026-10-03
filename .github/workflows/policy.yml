@@ -1089,8 +1089,12 @@ jobs:
             //   permiso, proyecto activo y tipo aceptado; 4 casos) y los dos códigos de error nuevos
             //   (fuente_ilegible, almacen_herencia_rota) dentro de pruebas existentes. Medido LOCAL
             //   con `npx vitest run` sobre la rama: 1352/0/1352.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1352) {
-              console.error("PISO ROTO: se esperaban 1352 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1352 -> 1354 (2026-10-03, cupo propio de reprocesar): +2 en Documentos.test.jsx (un 429
+            //   reprocesos_simultaneos muestra su texto, no reintenta solo y deja el boton listo; el boton
+            //   queda deshabilitado mientras su pedido esta en vuelo). Medido LOCAL con `npx vitest run`
+            //   sobre la rama: 1354/0/1354.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1354) {
+              console.error("PISO ROTO: se esperaban 1354 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3463,7 +3467,13 @@ jobs:
           # 3506 -> 3541 (ronda 1 de #186): MEDIDO EXACTO CON DB (mariadb:12.3.3 descartable, jax 2b0c163,
           #   mismo comando) sobre la rama: 3541 passed (master 1e2888c: 3401), con las mismas 2 pruebas
           #   de test_base_por_sesion fuera (hablan con un MariaDB local con triggers; no son del runner).
-          PISO_PASSED = 3541
+          # 3541 -> 3551 (cupo propio de reprocesar): MEDIDO EXACTO CON DB (mariadb:12.3.3 descartable, jax
+          #   2b0c163, mismo comando) sobre la rama: 3551 passed, con las 3 pruebas de test_base_por_sesion
+          #   fuera (2 fallan y 1 deseleccionada: hablan con un MariaDB local con triggers; no son del runner,
+          #   asi que el piso queda por debajo de lo que contara el runner). Nuevas: 4 en test_ajustes /
+          #   test_migracion_ajustes (claves nuevas), 5 en test_proyectos_documentos_api (cupo propio, subida
+          #   concurrente, Retry-After) y 2 en repositorio/otros.
+          PISO_PASSED = 3551
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4472,7 +4482,9 @@ jobs:
       # lo nuevo pide `client` (skips). El runner tiene la ultima palabra.
       # 2118 -> 2140 (ronda 1 de #186): MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la rama:
       # 2140 passed / 1403 skipped (master 1e2888c: 2076; el piso es el medido, sin margen por debajo).
-      JAX_CI_MIN_PASSED: "2140"
+      # 2140 -> 2143 (cupo propio de reprocesar): +3 puros en test_proyectos_documentos_cupo.py. MEDIDO EXACTO
+      # con JAX_CI_NO_DB=1, mismo comando, sobre la rama: 2143 passed / 1411 skipped.
+      JAX_CI_MIN_PASSED: "2143"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
