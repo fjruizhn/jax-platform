@@ -181,7 +181,9 @@ def _borrar_de_entrada(workspace: Path, project_uuid: str, ruta_entrada: str) ->
             os.close(fd)
 
 
-async def _borrar_copia(fila: dict) -> None:
+async def borrar_copia(fila: dict) -> None:
+    """Borra la copia de `entrada/` de una fila ({id, project_uuid, ruta_entrada}); solo bajo
+    `proyectos/<project_uuid>/entrada/`. Un fallo queda en el log y no se propaga."""
     def borrar() -> None:
         _borrar_de_entrada(almacen.cargar_workspace(), fila["project_uuid"], fila["ruta_entrada"] or "")
 
@@ -268,7 +270,7 @@ async def _sincronizar_trabajo(pool, job_id: str) -> None:
                 _registrar_detalle(fila, job_id, resultado, trabajo, estado)
             if (cambiadas and resultado is not None and estado in ESTADOS_FINALES
                     and _original_a_salvo(fila["project_uuid"], carpeta)):
-                await _borrar_copia(fila)
+                await borrar_copia(fila)
         except Exception:  # fail-soft: una fila que no se pudo aplicar no detiene a las demas del trabajo; la proxima vuelta la reintenta y queda en el log
             logger.warning("proyectos_documentos: no se pudo aplicar el resultado del documento %s (trabajo %s)",
                            fila["id"], job_id, exc_info=True)

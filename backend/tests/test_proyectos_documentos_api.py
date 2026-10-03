@@ -1332,3 +1332,69 @@ def test_el_cupo_se_libera_si_la_subida_falla_o_se_cancela(ent, workspace, ajust
     assert final.status_code == 202, final.text                 # ni el fallo ni la cancelacion se quedaron el cupo
     from proyectos_documentos import cupo_de_subidas
     assert cupo_de_subidas.en_uso() == (0, {})
+
+
+# ------------------------- re-encolar una fila atascada en error (ronda final, menor 8)
+
+def _atascar(ent, doc_id, carpeta=None, estado="error", ruta=None):
+    ent.client.portal.call(
+        sql, "UPDATE project_documents SET estado=%s, error='procesamiento_fallido', job_id='J-viejo', "
+             "carpeta_procesado=%s, ruta_entrada=COALESCE(%s, ruta_entrada) WHERE id=%s",
+        (estado, carpeta, ruta, doc_id))
+
+
+def _fila(ent, doc_id):
+    return ent.client.portal.call(
+        sql, "SELECT estado, job_id, error, ruta_entrada, carpeta_procesado FROM project_documents WHERE id=%s",
+        (doc_id,), True)[0]
+
+
+def test_subir_de_nuevo_un_documento_en_error_sin_procesar_lo_reencola(ent, workspace):
+    p = ent.proyecto()
+    r1 = ent.subir(p, ent.dueno, [_parte("a.pdf", "mismo")])
+    doc = r1.json()["aceptados"][0]["id"]
+    vieja = workspace / ent.filas(p)[0][2]
+    _atascar(ent, doc)
+    r2 = ent.subir(p, ent.dueno, [_parte("a_otra_vez.pdf", "mismo")])
+    assert r2.status_code == 202, r2.text
+    assert r2.json()["aceptados"] == [{"id": doc, "nombre": "a_otra_vez.pdf"}] and r2.json()["ignorados"] == []
+    estado, job, error, ruta, carpeta = _fila(ent, doc)
+    assert (estado, job, error, carpeta) == ("en_cola", None, None, None)
+    assert ruta == f"proyectos/{p.uuid}/entrada/{r2.json()['lote']}/a_otra_vez.pdf"
+    assert (workspace / ruta).read_bytes() == b"%PDF-1.4 mismo"
+    assert not vieja.exists()                                       # la copia vieja de entrada/ sobra
+    assert len(ent.filas(p)) == 1
+
+
+def test_en_error_con_carpeta_procesado_o_ya_listo_sigue_siendo_duplicado(ent, workspace):
+    p = ent.proyecto()
+    a = ent.subir(p, ent.dueno, [_parte("a.pdf", "uno")]).json()["aceptados"][0]["id"]
+    b = ent.subir(p, ent.dueno, [_parte("b.pdf", "dos")]).json()["aceptados"][0]["id"]
+    _atascar(ent, a, carpeta=f"proyectos/{p.uuid}/procesado/x")
+    _atascar(ent, b, estado="listo")
+    r = ent.subir(p, ent.dueno, [_parte("a2.pdf", "uno"), _parte("b2.pdf", "dos")])
+    assert r.json()["aceptados"] == []
+    assert [i["motivo"] for i in r.json()["ignorados"]] == ["duplicado", "duplicado"]
+    assert _fila(ent, a)[0] == "error" and _fila(ent, b)[0] == "listo"
+
+
+def test_reencolar_no_borra_una_ruta_vieja_bajo_fuente(ent, workspace):
+    p = ent.proyecto()
+    doc = ent.subir(p, ent.dueno, [_parte("a.pdf", "lactovi")]).json()["aceptados"][0]["id"]
+    original = workspace / "proyectos" / p.uuid / "fuente" / "a.pdf"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(b"%PDF-1.4 lactovi")
+    _atascar(ent, doc, ruta=f"proyectos/{p.uuid}/fuente/a.pdf")
+    r = ent.subir(p, ent.dueno, [_parte("a.pdf", "lactovi")])
+    assert [x["id"] for x in r.json()["aceptados"]] == [doc]
+    assert original.read_bytes() == b"%PDF-1.4 lactovi"             # fuente/ nunca se borra
+
+
+def test_oculto_en_error_no_se_resucita(ent, workspace):
+    p = ent.proyecto()
+    doc = ent.subir(p, ent.dueno, [_parte("a.pdf", "oculto")]).json()["aceptados"][0]["id"]
+    _atascar(ent, doc)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/ocultar", headers=ent.dueno).status_code == 204
+    r = ent.subir(p, ent.dueno, [_parte("a.pdf", "oculto")])
+    assert r.json()["ignorados"] == [{"nombre": "a.pdf", "motivo": "duplicado_oculto"}]
+    assert _fila(ent, doc)[0] == "error"

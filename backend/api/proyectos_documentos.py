@@ -19,7 +19,9 @@ aplican:
 4. Por archivo: tipo -> nombre seguro -> escritura en streaming con tope sobre lo
    leido -> `repositorio.insertar`; si la restriccion unica `(project_id, sha256)`
    lo rechaza, se borra lo escrito y `existente_por_sha` dice si el duplicado esta
-   visible u oculto. Quien decide el duplicado es la base, no un SELECT previo.
+   visible u oculto. Quien decide el duplicado es la base, no un SELECT previo. Excepcion
+   (ronda final): el duplicado de un documento visible en `error` sin `carpeta_procesado`
+   re-encola esa fila con la copia nueva y se responde como aceptado.
 5. Las filas quedan `en_cola`. Si el lote acepto al menos una, se avisa al despachador
    (`despachador.despachar_ahora()`, sin esperarlo); si falla, la subida igual responde bien:
    el despachador de fondo las toma en su siguiente vuelta.
@@ -256,6 +258,11 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 raise _error(500, "insercion_incierta", lote=lote, aceptados=aceptados,
                              ignorados=ignorados) from None
             if nuevo is None:
+                reencolada = await _reencolar_atascado(proyecto, sha256, carpeta.ruta_relativa(seguro), lote, seguro,
+                                                       aceptados, ignorados)
+                if reencolada is not None:
+                    aceptados.append({"id": reencolada, "nombre": nombre})
+                    continue
                 await asyncio.to_thread(carpeta.borrar, seguro)
                 usados.discard(seguro)
                 bytes_lote -= escritos          # el duplicado descartado no ocupa lugar en el lote
@@ -283,6 +290,31 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
         except Exception:  # fail-soft: el aviso es un adelanto; las filas ya estan en_cola y el despachador de fondo las toma en su vuelta
             logger.warning("proyectos_documentos: no se pudo avisar al despachador (lote %s)", lote, exc_info=True)
     return {"lote": lote, "aceptados": aceptados, "ignorados": ignorados}
+
+
+async def _reencolar_atascado(proyecto: dict, sha256: str, ruta: str, lote: str, seguro: str, aceptados: list,
+                              ignorados: list) -> int | None:
+    """El duplicado de un documento en `error` sin `carpeta_procesado` vuelve a la cola con la
+    copia recien subida (repositorio.reencolar_atascado); la copia anterior se borra si estaba
+    bajo `entrada/` de este proyecto (despachador.borrar_copia no toca `fuente/`). Id de la
+    fila re-encolada, o None si era un duplicado comun."""
+    try:
+        reencolada = await repo.reencolar_atascado(await get_pool(), project_id=proyecto["id"], sha256=sha256,
+                                                   ruta_entrada=ruta)
+    except BaseException as exc:
+        # Resultado INCIERTO, como el de un INSERT: la fila pudo quedar apuntando al archivo
+        # nuevo, asi que el disco no se toca y queda el rastro para conciliar.
+        logger.error("proyectos_documentos: re-encolado incierto, lote=%s archivo=%r sha256=%s "
+                     "(el archivo queda en disco; conciliar)", lote, seguro, sha256, exc_info=True)
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        raise _error(500, "insercion_incierta", lote=lote, aceptados=aceptados, ignorados=ignorados) from None
+    if reencolada is None:
+        return None
+    id_, anterior = reencolada
+    if anterior and anterior != ruta:
+        await despachador.borrar_copia({"id": id_, "project_uuid": proyecto["uuid"], "ruta_entrada": anterior})
+    return id_
 
 
 @router.get("/proyectos/{project_id}/documentos")

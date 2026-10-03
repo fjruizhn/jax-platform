@@ -125,6 +125,36 @@ async def insertar(pool, *, project_id: int, sha256: str, nombre_original: str, 
         return nuevo
 
 
+async def reencolar_atascado(pool, *, project_id: int, sha256: str, ruta_entrada: str) -> tuple[int, str | None] | None:
+    """Ronda final, menor 8: si el documento con ese sha256 quedo en `error` SIN
+    `carpeta_procesado` (LAS MANOS no llego a asegurarlo en fuente/) y esta visible, vuelve a
+    `en_cola` con la copia recien subida (`job_id` y `error` en NULL) en vez de ser un
+    «duplicado» para siempre. Devuelve (id, ruta_entrada anterior) o None si no habia nada
+    que re-encolar. Un oculto no se resucita (mismo contrato que el duplicado oculto).
+    SELECT ... FOR UPDATE y UPDATE en una transaccion: dos subidas iguales a la vez re-encolan
+    una sola vez."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await conn.begin()
+            try:
+                await cur.execute(
+                    "SELECT id, ruta_entrada FROM project_documents WHERE project_id = %s AND sha256 = %s "
+                    "AND estado = 'error' AND carpeta_procesado IS NULL AND oculto_at IS NULL FOR UPDATE",
+                    (project_id, sha256))
+                fila = await cur.fetchone()
+                if fila is None:
+                    await conn.rollback()
+                    return None
+                await cur.execute(
+                    "UPDATE project_documents SET estado = 'en_cola', job_id = NULL, error = NULL, ruta_entrada = %s "
+                    "WHERE id = %s", (ruta_entrada, fila[0]))
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+    return fila[0], fila[1]
+
+
 async def existente_por_sha(pool, *, project_id: int, sha256: str) -> dict | None:
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
