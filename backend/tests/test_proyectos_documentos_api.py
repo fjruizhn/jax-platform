@@ -2112,3 +2112,23 @@ def test_los_409_de_reprocesar_dejan_rastro_con_usuario_proyecto_y_documento(ent
     monkeypatch.setattr("api.proyectos_documentos.repo.reprocesar", nada)
     assert ent.client.post(f"{P}/{p.id}/documentos/{c}/reprocesar", headers=ent.dueno).status_code == 409
     assert any("no_reprocesable" in m and f"documento {c}" in m and f"usuario {uid_}" in m for m in caplog.messages)
+
+
+def test_el_429_del_cupo_global_de_reprocesar_deja_log_con_quien_pidio(ent, workspace, ajustes_en_db, caplog):
+    """MINOR-R2: no se sabe ni se guarda quien tiene el lugar; solo el user_id que pidio y se quedo sin el."""
+    from proyectos_documentos import cupo_de_reprocesos
+    ajustes_en_db.poner(**{REP_POR_USUARIO: "1", REP_GLOBALES: "1"})
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    assert cupo_de_reprocesos.tomar("otro-recorriendo", por_usuario=1, globales=1)
+    caplog.set_level(logging.INFO)
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    finally:
+        cupo_de_reprocesos.soltar("otro-recorriendo")
+    assert r.status_code == 429
+    mensajes = [m for m in caplog.messages if "reprocesos_simultaneos" in m or "cupo global" in m]
+    assert mensajes, caplog.messages
+    m = mensajes[0]
+    assert f"usuario {ent._id('dueno')}" in m and f"proyecto {p.id}" in m and f"documento {doc}" in m, m
+    assert "otro-recorriendo" not in " ".join(caplog.messages)                    # quien tiene el lugar no se registra

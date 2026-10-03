@@ -413,6 +413,9 @@ async def reprocesar(project_id: int, documento_id: int, user: AuthUser = Depend
             logger.error("proyectos_documentos: %s no esta bien configurado", almacen.VARIABLE_WORKSPACE, exc_info=True)
             raise _error(503, "almacen_no_configurado") from None
         if not cupo_de_reprocesos.tomar_global(globales=int(await ajustes.valor(ajustes.DOC_REPROCESAR_GLOBALES))):
+            # Solo quien PIDIO y se quedo sin lugar: de quien tiene el lugar no se sabe ni se guarda nada.
+            logger.warning("proyectos_documentos: reprocesos_simultaneos, cupo global lleno (usuario %s, proyecto %s, "
+                           "documento %s)", user.user_id, proyecto["id"], documento_id)
             raise _error(429, "reprocesos_simultaneos")
         try:
             try:
