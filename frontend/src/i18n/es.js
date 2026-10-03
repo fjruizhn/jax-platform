@@ -1631,6 +1631,7 @@ export default {
       elegirArchivos: 'Archivos',
       elegirCarpeta: 'Carpeta',
       sinPermiso: 'Tu papel en este proyecto no permite agregar documentos.',
+      proyectoArchivado: 'Este proyecto está archivado: no admite documentos nuevos.',
       estados: {
         en_cola: 'En espera',
         pendiente: 'Pendiente',
@@ -1680,6 +1681,7 @@ export default {
         titulo: 'Elegí un proyecto',
         texto: 'Para agregar documentos primero elegí el proyecto al que pertenecen.',
         crear: 'Crear un proyecto',
+        ninguno: 'No tenés ningún proyecto donde puedas agregar documentos. Podés crear uno.',
       },
       errores: {
         lote_demasiado_grande: 'Los archivos juntos superan el máximo de archivos o de tamaño. Subí menos archivos a la vez.',

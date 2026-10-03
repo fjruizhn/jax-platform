@@ -1535,6 +1535,7 @@ export default {
       elegirArchivos: 'Files',
       elegirCarpeta: 'Folder',
       sinPermiso: 'Your role in this project does not allow adding documents.',
+      proyectoArchivado: 'This project is archived: it does not accept new documents.',
       estados: {
         en_cola: 'Waiting',
         pendiente: 'Pending',
@@ -1584,6 +1585,7 @@ export default {
         titulo: 'Choose a project',
         texto: 'To add documents, first choose the project they belong to.',
         crear: 'Create a project',
+        ninguno: 'You have no project where you can add documents. You can create one.',
       },
       errores: {
         lote_demasiado_grande: 'The files together exceed the maximum number of files or size. Upload fewer files at a time.',
