@@ -117,6 +117,10 @@ def _sin_despachador(monkeypatch):
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_WORKSPACE_DIR", str(tmp_path))
+    # El ANCLA de los permisos: `proyectos/` con setgid, como en produccion (almacen.py exige que cada nivel que
+    # abre o crea debajo tenga setgid y el grupo de esta carpeta). Un tmp_path pelado no lo trae.
+    (tmp_path / "proyectos").mkdir()
+    os.chmod(tmp_path / "proyectos", 0o2770)
     return tmp_path
 
 
@@ -128,6 +132,11 @@ def ent(client, workspace, ajustes_en_db):
     yield entorno
     for pid in entorno.proyectos:
         client.portal.call(sql, "DELETE FROM project_documents WHERE project_id=%s", (pid,))
+
+
+def _proyectos_vacio(workspace: Path) -> bool:
+    """Nada colgando del ancla `proyectos/` (que el fixture crea): la prueba de «no se escribio nada»."""
+    return not any((workspace / "proyectos").iterdir())
 
 
 def _en_disco(workspace: Path) -> list[Path]:
@@ -174,7 +183,7 @@ def test_viewer_no_sube_403_y_no_escribe(ent, workspace):
     h = ent.miembro(p, "lector", "VIEWER")
     r = ent.subir(p, h, [_parte("a.pdf", "a")])
     assert r.status_code == 403 and _code(r) == "papel_insuficiente"
-    assert _en_disco(workspace) == [] and not (workspace / "proyectos").exists()
+    assert _en_disco(workspace) == [] and _proyectos_vacio(workspace)
     assert ent.filas(p) == []
 
 
@@ -189,20 +198,20 @@ def test_no_miembro_404_igual_que_inexistente(ent, workspace):
         r = ent.subir(p, h, [_parte("a.pdf", "a")])
         assert r.status_code == 404
         assert r.json() == inexistente.json() == {"detail": {"code": "proyecto_no_encontrado"}}
-    assert not (workspace / "proyectos").exists() and ent.filas(p) == []
+    assert _proyectos_vacio(workspace) and ent.filas(p) == []
 
 
 def test_sin_sesion_401(ent, workspace):
     p = ent.proyecto()
     r = ent.client.post(f"{P}/{p.id}/documentos", files=[_parte("a.pdf", "a")])
-    assert r.status_code == 401 and not (workspace / "proyectos").exists()
+    assert r.status_code == 401 and _proyectos_vacio(workspace)
 
 
 def test_proyecto_archivado_409_y_no_escribe(ent, workspace):
     p = ent.proyecto(archivar=True)
     r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
     assert r.status_code == 409 and _code(r) == "proyecto_no_activo"
-    assert not (workspace / "proyectos").exists() and ent.filas(p) == []
+    assert _proyectos_vacio(workspace) and ent.filas(p) == []
 
 
 def test_proyecto_oculto_409_para_su_admin_y_404_para_el_resto(ent, workspace):
@@ -217,7 +226,7 @@ def test_proyecto_oculto_409_para_su_admin_y_404_para_el_resto(ent, workspace):
         assert r.status_code == 200 and r.json()["estado"] == estado, r.text
     r = ent.subir(p, admin, [_parte("a.pdf", "a")])
     assert r.status_code == 409 and _code(r) == "proyecto_no_activo"
-    assert not (workspace / "proyectos").exists() and ent.filas(p) == []
+    assert _proyectos_vacio(workspace) and ent.filas(p) == []
 
 
 def test_viewer_en_archivado_recibe_403_no_409(ent, workspace):
@@ -484,6 +493,7 @@ class _Subida:
 
 
 async def test_escribir_streaming_cuenta_lo_leido_y_borra_el_parcial(tmp_path):
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
     try:
         destino = carpeta.ruta / "ok.bin"
@@ -524,6 +534,7 @@ async def test_escribir_streaming_cuenta_lo_leido_y_borra_el_parcial(tmp_path):
 async def test_cancelacion_antes_de_abrir_no_deja_archivo_huerfano(tmp_path, monkeypatch):
     """La cancelacion llega mientras el hilo todavia no hizo `os.open`: cuando el hilo
     sigue, la bandera lo detiene y, de todos modos, el archivo no puede quedar."""
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
     try:
         entro, compuerta = threading.Event(), threading.Event()
@@ -548,6 +559,7 @@ async def test_cancelacion_antes_de_abrir_no_deja_archivo_huerfano(tmp_path, mon
 
 
 async def test_cancelacion_a_mitad_de_la_escritura_borra_el_parcial(tmp_path):
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
     try:
         leyendo, compuerta = threading.Event(), threading.Event()
@@ -704,8 +716,6 @@ def test_los_archivos_se_fijan_a_0660_y_las_carpetas_heredan_sin_chmod(ent, work
     """Bajo `proyectos/` hay ACL por defecto y setgid. El archivo es 0660 aunque el umask diga otra
     cosa; las CARPETAS no se chmodean nunca (un chmod de jaxsvc, que no es del grupo, les borraria el
     setgid) y heredan el setgid y el grupo del padre."""
-    (workspace / "proyectos").mkdir()
-    os.chmod(workspace / "proyectos", 0o2770)                     # como en produccion: padre con setgid
     p = ent.proyecto()
     chmods = []
     real = os.fchmod
@@ -731,14 +741,14 @@ def test_los_archivos_se_fijan_a_0660_y_las_carpetas_heredan_sin_chmod(ent, work
 def test_carpeta_existente_no_se_toca_y_las_nuevas_no_se_chmodean(tmp_path, monkeypatch):
     """Solo se crea lo que falta, sin chmod: una carpeta previa conserva el suyo."""
     previa = tmp_path / "proyectos"
-    previa.mkdir(mode=0o750)
-    os.chmod(previa, 0o750)
+    previa.mkdir(mode=0o2750)
+    os.chmod(previa, 0o2750)                                              # el ancla: setgid, otros sin nada
     llamadas = []
     monkeypatch.setattr(almacen.os, "fchmod", lambda *a: llamadas.append(a))
     monkeypatch.setattr(almacen.os, "chmod", lambda *a, **k: llamadas.append(a))
     u = str(uuid.uuid4())
     c1 = almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
-    assert stat.S_IMODE(previa.stat().st_mode) == 0o750
+    assert stat.S_IMODE(previa.stat().st_mode) == 0o2750
     assert (previa / u / "entrada" / "lote1").is_dir()
     c2 = almacen.abrir_carpeta_lote(tmp_path, u, "lote2")                 # idempotente sobre lo ya creado
     assert sorted(x.name for x in (previa / u / "entrada").iterdir()) == ["lote1", "lote2"]
@@ -791,8 +801,6 @@ def test_si_el_padre_ya_da_bits_a_otros_el_hijo_puede_tenerlos(tmp_path, monkeyp
 
 
 def test_subir_con_una_carpeta_sin_herencia_500_almacen_herencia_rota_y_no_queda_nada(ent, workspace, monkeypatch):
-    (workspace / "proyectos").mkdir()
-    os.chmod(workspace / "proyectos", 0o2770)
     p = ent.proyecto()
     monkeypatch.setattr(almacen.os, "mkdir", _mkdir_que_pierde(lambda n, fd: os.chmod(n, 0o770, dir_fd=fd)))
     r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
@@ -827,12 +835,16 @@ def test_enlace_simbolico_en_el_camino_no_escribe_en_ningun_lado(ent, tmp_path, 
     ruta = {"proyectos": ws / "proyectos", "uuid": ws / "proyectos" / p.uuid,
             "entrada": ws / "proyectos" / p.uuid / "entrada",
             "lote": ws / "proyectos" / p.uuid / "entrada" / "loteFijo"}
-    if nivel != "proyectos":                                         # los niveles de arriba, reales
+    # Los niveles de arriba, reales y como en produccion (con setgid: almacen exige el invariante en cada uno).
+    if nivel != "proyectos":
         ruta["proyectos"].mkdir()
+        os.chmod(ruta["proyectos"], 0o2770)
     if nivel in ("entrada", "lote"):
         ruta["uuid"].mkdir()
+        os.chmod(ruta["uuid"], 0o2770)
     if nivel == "lote":
         ruta["entrada"].mkdir()
+        os.chmod(ruta["entrada"], 0o2770)
     os.symlink(objetivo, ruta[nivel])
     antes_ws, antes_fuera = _foto(ws), _foto(tmp_path / "fuera") if (tmp_path / "fuera").exists() else []
 
@@ -926,7 +938,7 @@ def _despues_de_leer_el_cuerpo(monkeypatch, accion):
 
 
 def _nada(ent, p, workspace):
-    assert not (workspace / "proyectos").exists() and _en_disco(workspace) == []
+    assert _proyectos_vacio(workspace) and _en_disco(workspace) == []
     assert ent.filas(p) == []
 
 
@@ -1019,6 +1031,7 @@ async def test_cancelacion_despues_de_la_ultima_mirada_del_hilo_no_deja_huerfano
     """El caso del revisor: la cancelacion llega DESPUES de la ultima comprobacion de la
     bandera (`hexdigest` es lo ultimo que corre) y antes de que el resultado vuelva al
     loop. El hilo termina bien, y el archivo no puede quedar sin fila."""
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
     loop = asyncio.get_running_loop()
     caja = {}
@@ -1046,6 +1059,7 @@ async def test_cancelacion_despues_de_la_ultima_mirada_del_hilo_no_deja_huerfano
 
 
 async def test_una_segunda_cancelacion_no_saca_de_la_espera_al_hilo(tmp_path):
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
     try:
         leyendo, compuerta = threading.Event(), threading.Event()
@@ -1179,6 +1193,7 @@ def test_usuario_inactivo_entre_la_escritura_y_el_insert_404_sin_fila_ni_archivo
 
 async def test_la_espera_blindada_deja_rastro_con_lote_y_nombre_sin_la_ruta(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(almacen, "ESPERA_AVISO_S", 0.1)
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "loteX")
     try:
         leyendo, compuerta = threading.Event(), threading.Event()
@@ -1215,6 +1230,7 @@ async def test_la_espera_blindada_deja_rastro_con_lote_y_nombre_sin_la_ruta(tmp_
 
 async def test_borrado_de_cancelacion_tardia_corre_fuera_del_hilo_del_loop(tmp_path, monkeypatch):
     """El `_borrar` de la rama de cancelacion tardia va por `to_thread`: no bloquea el loop."""
+    _ancla(tmp_path)
     carpeta = almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "l1")
     loop = asyncio.get_running_loop()
     hilo_del_loop = threading.get_ident()
@@ -1936,3 +1952,79 @@ def test_los_429_de_reprocesar_y_de_subir_llevan_retry_after(ent, workspace, aju
         cupo_de_subidas.soltar(usuario)
     r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
     assert r.status_code == 202 and "retry-after" not in r.headers
+
+
+# ----------------------------------------------- el invariante absoluto contra el ancla (`proyectos/`)
+
+def _ancla(tmp_path, modo=0o2770):
+    (tmp_path / "proyectos").mkdir(exist_ok=True)
+    os.chmod(tmp_path / "proyectos", modo)
+    return tmp_path / "proyectos"
+
+
+def test_un_nivel_existente_sin_setgid_falla_cerrado_sin_crear_nada(tmp_path):
+    """MINOR-N3: antes solo se comparaba contra el padre; un `proyectos/<uuid>/` ya creado sin setgid (como el que
+    dejaba el fchmod viejo) lo aceptaba y colgaba de el todo lo nuevo."""
+    ancla = _ancla(tmp_path)
+    u = str(uuid.uuid4())
+    (ancla / u).mkdir()
+    os.chmod(ancla / u, 0o770)                                            # existe, sin setgid
+    antes = _foto(tmp_path)
+    with pytest.raises(almacen.HerenciaDeCarpetaRota, match="setgid"):
+        almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
+    assert _foto(tmp_path) == antes                                       # ni entrada/ ni el lote
+
+
+def test_un_nivel_intermedio_existente_sin_setgid_tambien(tmp_path):
+    ancla = _ancla(tmp_path)
+    u = str(uuid.uuid4())
+    (ancla / u / "entrada").mkdir(parents=True)
+    os.chmod(ancla / u, 0o2770)
+    os.chmod(ancla / u / "entrada", 0o770)
+    with pytest.raises(almacen.HerenciaDeCarpetaRota):
+        almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
+    assert not (ancla / u / "entrada" / "lote1").exists()
+
+
+def test_el_ancla_misma_sin_setgid_falla_cerrado(tmp_path):
+    _ancla(tmp_path, 0o770)
+    with pytest.raises(almacen.HerenciaDeCarpetaRota, match="proyectos"):
+        almacen.abrir_carpeta_lote(tmp_path, str(uuid.uuid4()), "lote1")
+    assert list((tmp_path / "proyectos").iterdir()) == []
+
+
+def test_un_nivel_existente_con_otro_grupo_que_el_ancla_falla_cerrado(tmp_path):
+    ancla = _ancla(tmp_path)
+    otros = [g for g in os.getgroups() if g != ancla.stat().st_gid]
+    if not otros:
+        pytest.skip("este usuario no pertenece a otro grupo")
+    u = str(uuid.uuid4())
+    (ancla / u).mkdir()
+    os.chmod(ancla / u, 0o2770)
+    os.chown(ancla / u, -1, otros[0])
+    os.chmod(ancla / u, 0o2770)
+    with pytest.raises(almacen.HerenciaDeCarpetaRota, match="grupo"):
+        almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
+
+
+def test_todo_en_orden_abre_y_crea_con_setgid_y_el_grupo_del_ancla(tmp_path):
+    ancla = _ancla(tmp_path)
+    u = str(uuid.uuid4())
+    (ancla / u).mkdir()
+    os.chmod(ancla / u, 0o2770)                                           # existente y correcto: se acepta
+    c = almacen.abrir_carpeta_lote(tmp_path, u, "lote1")
+    try:
+        for d in (ancla / u, ancla / u / "entrada", ancla / u / "entrada" / "lote1"):
+            assert d.stat().st_mode & stat.S_ISGID and d.stat().st_gid == ancla.stat().st_gid
+    finally:
+        c.cerrar()
+
+
+def test_subir_con_el_uuid_del_proyecto_sin_setgid_500_y_no_crea_nada(ent, workspace):
+    p = ent.proyecto()
+    (workspace / "proyectos" / p.uuid).mkdir()
+    os.chmod(workspace / "proyectos" / p.uuid, 0o770)
+    antes = _foto(workspace)
+    r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
+    assert r.status_code == 500 and _code(r) == "almacen_herencia_rota", r.text
+    assert ent.filas(p) == [] and _foto(workspace) == antes

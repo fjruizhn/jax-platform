@@ -65,6 +65,10 @@ class LasManosFalsa:
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_WORKSPACE_DIR", str(tmp_path))
+    # El ANCLA de los permisos: `proyectos/` con setgid, como en produccion (almacen.py exige que cada nivel que
+    # abre o crea debajo tenga setgid y el grupo de esta carpeta). Un tmp_path pelado no lo trae.
+    (tmp_path / "proyectos").mkdir()
+    os.chmod(tmp_path / "proyectos", 0o2770)
     return tmp_path
 
 

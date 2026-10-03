@@ -51,7 +51,7 @@ TAMANO_DE_BLOQUE = 1024 * 1024
 # `proyectos/<uuid>/entrada/` sin setgid (medido: `ops/permisos_proyectos.py --verificar` rc=1) y las
 # subcarpetas siguientes habrian heredado el grupo equivocado. `mkdir` hereda el grupo y el setgid
 # del padre y la ACL por defecto decide los permisos (sin umask); en lugar de forzarlo, se
-# VERIFICA (`_verificar_herencia`) y, si no se cumple, se falla cerrado.
+# VERIFICA (`_verificar_nivel`, contra el ancla `proyectos/`) y, si no se cumple, se falla cerrado.
 MODO_ARCHIVO = 0o660
 # Solo el argumento de `mkdir` (lo recorta el umask si no hay ACL por defecto); nunca se vuelve a fijar.
 MODO_CARPETA = 0o770
@@ -101,21 +101,24 @@ class HerenciaDeCarpetaRota(Exception):
     subida falla con 500 `almacen_herencia_rota`."""
 
 
-def _verificar_herencia(fd_padre: int, fd_hijo: int, nombre: str) -> None:
-    """fstat del padre y del hijo recien creado: el setgid del hijo es el del padre; si el padre es
-    setgid, el grupo del hijo es el del padre; y el hijo no da a «otros» mas que el padre."""
-    padre, hijo = os.fstat(fd_padre), os.fstat(fd_hijo)
+def _verificar_nivel(ancla: os.stat_result | None, fd_padre: int, fd_hijo: int, nombre: str, creado: bool) -> os.stat_result:
+    """El invariante ABSOLUTO de cada nivel que se abre o se crea desde `proyectos/` (incluido el): setgid puesto y,
+    salvo en el propio ancla, el grupo de `proyectos/`. Vale para lo que ya existia -- un nivel que dejo un
+    `fchmod` viejo sin setgid -- y para lo recien creado: comparar solo contra el padre lo aceptaba. Para lo recien
+    creado ademas, nada para «otros» que el padre no tenga. Devuelve el `fstat` del nivel (el del ancla, la primera vez)."""
+    hijo = os.fstat(fd_hijo)
     problemas = []
-    if bool(hijo.st_mode & stat.S_ISGID) != bool(padre.st_mode & stat.S_ISGID):
+    if not hijo.st_mode & stat.S_ISGID:
         problemas.append("setgid")
-    if padre.st_mode & stat.S_ISGID and hijo.st_gid != padre.st_gid:
+    if ancla is not None and hijo.st_gid != ancla.st_gid:
         problemas.append("grupo")
-    if (hijo.st_mode & 0o007) & ~(padre.st_mode & 0o007):
+    if creado and (hijo.st_mode & 0o007) & ~(os.fstat(fd_padre).st_mode & 0o007):
         problemas.append("otros")
     if problemas:
         raise HerenciaDeCarpetaRota(
-            f"{nombre!r} no heredo del padre: {', '.join(problemas)} "
-            f"(modo {stat.S_IMODE(hijo.st_mode):o}, padre {stat.S_IMODE(padre.st_mode):o})")
+            f"{nombre!r} no cumple el invariante de permisos de proyectos/: {', '.join(problemas)} "
+            f"(modo {stat.S_IMODE(hijo.st_mode):o}, {'creado ahora' if creado else 'ya existia'})")
+    return hijo
 
 
 class RutaInsegura(Exception):
@@ -180,14 +183,16 @@ class CarpetaLote:
 def abrir_carpeta_lote(workspace: Path, project_uuid: str, lote: str) -> CarpetaLote:
     """Sincrona (to_thread). Abre `proyectos/<uuid>/entrada/<lote>` desde el workspace,
     un nivel a la vez con `openat(O_DIRECTORY|O_NOFOLLOW)`, creando con `mkdirat` lo que
-    falte SIN chmod (heredan grupo, setgid y ACL del padre; se verifican con
-    `_verificar_herencia`: HerenciaDeCarpetaRota si no). RutaInsegura si algun nivel es un enlace; en ese caso (y en cualquier
+    falte SIN chmod (heredan grupo, setgid y ACL del padre). CADA nivel abierto o creado desde
+    `proyectos/` -- el propio `proyectos/` es el ANCLA -- cumple el invariante absoluto de `_verificar_nivel`
+    (setgid y el grupo del ancla): HerenciaDeCarpetaRota si no, sin escribir nada. RutaInsegura si algun nivel es un enlace; en ese caso (y en cualquier
     otro error) no queda nada creado ni nada abierto. ValueError si uuid o lote no son
     un componente simple."""
     ruta = carpeta_entrada(workspace, project_uuid, lote)
     niveles = ("proyectos", project_uuid, "entrada", lote)
     fds = [os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)]
     creados: list[tuple[int, str]] = []
+    ancla: os.stat_result | None = None
     try:
         for nombre in niveles:
             padre = fds[-1]
@@ -206,7 +211,9 @@ def abrir_carpeta_lote(workspace: Path, project_uuid: str, lote: str) -> Carpeta
             fds.append(hijo)                # abierto: si algo falla, el except lo cierra
             if creado:
                 creados.append((padre, nombre))
-                _verificar_herencia(padre, hijo, nombre)
+            nivel = _verificar_nivel(ancla, padre, hijo, nombre, creado)
+            if ancla is None:
+                ancla = nivel                # `proyectos/`: el grupo de todo lo de abajo
     except BaseException:
         CarpetaLote(ruta, fds, creados, "/".join(niveles)).deshacer()
         for fd in fds:
