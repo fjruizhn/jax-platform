@@ -253,7 +253,8 @@ async def restaurar(pool, *, project_id: int, documento_id: int) -> bool:
 async def tomar_en_cola(pool, *, limite: int) -> list[dict]:
     """Filas `en_cola` de proyectos ACTIVE, por `id`. `jax_project_scope.status` es
     la fuente de verdad del ciclo de vida (B9); `projects.status` solo lo refleja.
-    El email viaja como `usuario` a LAS MANOS."""
+    El uploader canonico produce el contexto tipado de ownership que el despachador
+    transmite a LAS MANOS en cabeceras cerradas."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(SQL_TOMAR_EN_COLA, (limite,))

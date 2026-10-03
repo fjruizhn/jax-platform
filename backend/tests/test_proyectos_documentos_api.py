@@ -1403,24 +1403,33 @@ def test_oculto_en_error_no_se_resucita(ent, workspace):
 
 # ------------------------- re-encolar: quien sube de nuevo y las mismas condiciones del INSERT (seguimiento 2)
 
-def test_reencolar_registra_a_quien_subio_de_nuevo_y_el_despachador_manda_su_correo(ent, workspace, monkeypatch):
+def test_reencolar_usa_al_uploader_autenticado_para_propiedad_y_despacho(ent, workspace, monkeypatch):
     from proyectos_documentos import despachador
     p = ent.proyecto()
     b = ent.miembro(p, "bea", "CONTRIBUTOR")
     doc = ent.subir(p, ent.dueno, [_parte("de_a.pdf", "compartido")]).json()["aceptados"][0]["id"]
     _atascar(ent, doc)
-    r = ent.subir(p, b, [_parte("de_b.pdf", "compartido")])
+    # `usuario` no es parte del contrato multipart. Aunque un cliente lo inyecte con la
+    # identidad del primer uploader, la dependencia autenticada es la unica autoridad.
+    r = ent.client.post(f"{P}/{p.id}/documentos", headers=b, files=[_parte("de_b.pdf", "compartido")],
+                        data={"usuario": ent._email("dueno")})
+    assert r.status_code == 202, r.text
     assert r.json()["aceptados"] == [{"id": doc, "nombre": "de_b.pdf"}], r.text
-    subido_por, nombre = ent.client.portal.call(
-        sql, "SELECT subido_por, nombre_original FROM project_documents WHERE id=%s", (doc,), True)[0]
-    assert (subido_por, nombre) == (ent._id("bea"), "de_b.pdf")
+    tenant_id, subido_por, project_id, nombre, email = ent.client.portal.call(
+        sql,
+        "SELECT s.tenant_id, d.subido_por, d.project_id, d.nombre_original, u.email "
+        "FROM project_documents d JOIN jax_project_scope s ON s.project_id=d.project_id "
+        "JOIN jax_users u ON u.user_id=d.subido_por AND u.tenant_id=s.tenant_id WHERE d.id=%s",
+        (doc,), True)[0]
+    assert (subido_por, project_id, nombre, email) == (ent._id("bea"), p.id, "de_b.pdf", ent._email("bea"))
+    assert subido_por != ent._id("dueno")
 
     pedidos = []
 
     async def las_manos(request):
         cuerpo = json.loads(request.content) if request.method == "POST" else None
         if cuerpo and cuerpo["project_uuid"] == p.uuid:
-            pedidos.append(cuerpo)
+            pedidos.append((cuerpo, request.headers))
         if request.method == "POST":
             return httpx.Response(202, json={"job_id": f"j-{uuid.uuid4().hex}"})
         return httpx.Response(200, json={"estado": "running", "resultados": []})
@@ -1437,7 +1446,45 @@ def test_reencolar_registra_a_quien_subio_de_nuevo_y_el_despachador_manda_su_cor
         from db.connection import get_pool
         await despachador.ciclo(await get_pool())
     ent.client.portal.call(ciclo)
-    assert [x["usuario"] for x in pedidos] == [ent._email("bea")]
+    assert len(pedidos) == 1
+    cuerpo, encabezados = pedidos[0]
+    assert cuerpo == {"project_uuid": p.uuid, "rutas": [f"proyectos/{p.uuid}/entrada/{r.json()['lote']}/de_b.pdf"]}
+    assert "usuario" not in cuerpo
+    assert encabezados["X-Jax-Processing-Owner-Version"] == "processing-owner.1"
+    assert encabezados["X-Jax-Processing-Tenant-Id"] == str(tenant_id)
+    assert encabezados["X-Jax-Processing-User-Id"] == str(subido_por)
+    assert encabezados["X-Jax-Processing-Project-Id"] == str(project_id)
+
+
+def test_usuario_multipart_falsificado_no_otorga_insert_ni_reencolar_a_un_viewer(ent, workspace):
+    p = ent.proyecto()
+    bea = ent.miembro(p, "bea", "CONTRIBUTOR")
+    lector = ent.miembro(p, "lector", "VIEWER")
+
+    # El INSERT toma al uploader desde el JWT de Bea, aunque el multipart diga otra cosa.
+    insertado = ent.client.post(f"{P}/{p.id}/documentos", headers=bea,
+                                files=[_parte("de_bea.pdf", "contenido")],
+                                data={"usuario": ent._email("dueno")})
+    assert insertado.status_code == 202, insertado.text
+    doc = insertado.json()["aceptados"][0]["id"]
+    subido_por = ent.client.portal.call(sql, "SELECT subido_por FROM project_documents WHERE id=%s", (doc,), True)[0][0]
+    assert subido_por == ent._id("bea")
+    assert subido_por != ent._id("dueno")
+
+    # Un VIEWER no puede convertir el nombre del uploader en permiso de escritura: ni
+    # reencola el mismo hash ni inserta otro hash bajo la identidad multipart de Bea.
+    _atascar(ent, doc)
+    antes = ent.client.portal.call(sql, "SELECT estado, subido_por, nombre_original FROM project_documents WHERE id=%s",
+                                  (doc,), True)[0]
+    total_antes = ent.client.portal.call(sql, "SELECT COUNT(*) FROM project_documents WHERE project_id=%s", (p.id,), True)[0][0]
+    for nombre, contenido in (("forjado.pdf", "contenido"), ("nuevo-forjado.pdf", "nuevo-contenido")):
+        bloqueado = ent.client.post(f"{P}/{p.id}/documentos", headers=lector,
+                                    files=[_parte(nombre, contenido)], data={"usuario": ent._email("bea")})
+        assert bloqueado.status_code == 403 and _code(bloqueado) == "papel_insuficiente"
+        despues = ent.client.portal.call(sql, "SELECT estado, subido_por, nombre_original FROM project_documents WHERE id=%s",
+                                        (doc,), True)[0]
+        total_despues = ent.client.portal.call(sql, "SELECT COUNT(*) FROM project_documents WHERE project_id=%s", (p.id,), True)[0][0]
+        assert despues == antes and total_despues == total_antes
 
 
 def test_reencolar_en_un_proyecto_archivado_entre_medio_responde_409_y_no_cambia_la_fila(ent, workspace, monkeypatch):

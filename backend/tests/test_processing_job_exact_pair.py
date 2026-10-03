@@ -156,9 +156,20 @@ def test_processing_exact_pair_dispatches_real_queue_through_protected_jax_asgi(
     app.include_router(procesamiento_routes.router)
     proteger(app, {IDENTIDAD_PLATAFORMA: token.encode("ascii")})
     las_manos = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://las-manos.test")
+    dispatched_bodies = []
+
+    class RecordingLasManos:
+        async def post(self, *args, **kwargs):
+            dispatched_bodies.append(kwargs["json"])
+            return await las_manos.post(*args, **kwargs)
+
+        async def get(self, *args, **kwargs):
+            return await las_manos.get(*args, **kwargs)
+
+    recording_las_manos = RecordingLasManos()
 
     async def get_client():
-        return las_manos
+        return recording_las_manos
 
     monkeypatch.setattr(despachador, "get_http_client", get_client)
     route = f"proyectos/{project['uuid']}/entrada/lote/documento.pdf"
@@ -178,12 +189,29 @@ def test_processing_exact_pair_dispatches_real_queue_through_protected_jax_asgi(
     document_id, job_id = client.portal.call(dispatch)
     try:
         assert isinstance(job_id, str) and job_id
+        from procesamiento_routes import TrabajoRequest
+        assert TrabajoRequest.model_config["extra"] == "forbid"
+        assert dispatched_bodies == [{"project_uuid": project["uuid"], "rutas": [route]}]
+        assert TrabajoRequest.model_validate(dispatched_bodies[0]).model_dump() == dispatched_bodies[0]
+        snapshot = store.authoritative_snapshot(job_id)
+        assert snapshot is not None
+        assert snapshot.view.caller == f"user:{user_id}"
         first_event = json.loads((tmp_path / "processing-jobs.jsonl").read_text().splitlines()[0])
         assert first_event["job_id"] == job_id
         assert first_event["processing_ownership"] == {
             "version": "processing-owner.1", "tenant_id": "1", "user_id": str(user_id),
             "project_id": str(project["id"]),
         }
+        from credencial_las_manos import PlatformProcessingOwnership, encabezados_procesamiento
+        lines_before_rejection = (tmp_path / "processing-jobs.jsonl").read_text().splitlines()
+        async def reject_mismatched_owner():
+            return await las_manos.post("/procesamiento/trabajos", json=dispatched_bodies[0],
+                headers=encabezados_procesamiento(PlatformProcessingOwnership(
+                    tenant_id=1, user_id=user_id, project_id=project["id"] + 1)))
+        rejected = client.portal.call(reject_mismatched_owner)
+        assert rejected.status_code == 422
+        assert rejected.json()["detail"]["code"] == "proyecto_no_activo"
+        assert (tmp_path / "processing-jobs.jsonl").read_text().splitlines() == lines_before_rejection
         scope = _scope(response, subject_id=str(user_id), project_id=str(project["id"]),
             audience=f"user:{user_id}", request_id=f"processing-{job_id}")
         evidence = runtime_status.ProcessingJobStatusResolver().evidence(
