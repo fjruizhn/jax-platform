@@ -204,16 +204,46 @@ const leer = (ruta) => readFileSync(resolve(RAIZ_BACKEND, ruta), 'utf8')
 const unicos = (xs) => [...new Set(xs)].sort()
 const comillas = (texto) => [...texto.matchAll(/["'](\w+)["']/g)].map((m) => m[1])
 
+// Argumentos de cada llamada `nombre(...)` del .py, con el paréntesis balanceado (sirve para
+// ternarios y llamadas partidas en dos líneas). Se salta la definición (`def nombre(`).
+function llamadas(texto, nombre) {
+  const sitios = []
+  for (const m of texto.matchAll(new RegExp(`(?<!def )\\b${nombre}\\(`, 'g'))) {
+    let nivel = 1
+    let k = m.index + m[0].length
+    for (; k < texto.length && nivel > 0; k++) nivel += texto[k] === '(' ? 1 : texto[k] === ')' ? -1 : 0
+    sitios.push(texto.slice(m.index + m[0].length, k - 1))
+  }
+  return sitios
+}
+const ACTUALIZAR = 'actualizar es/en y esta prueba'
+
 function codigosDelBackend() {
   const docs = leer('api/proyectos_documentos.py')
-  const propios = [...docs.matchAll(/_error\(\s*\d+,\s*"(\w+)"/g)].map((m) => m[1])
-  // `_error(500, "a" if x else "b", ...)`: la segunda rama también es un código.
-  for (const m of docs.matchAll(/_error\(\s*\d+,\s*("[^\n]*?)(?:,\s*lote=|\)\s*from)/g)) propios.push(...comillas(m[1]))
-  // Lo que traduce `_http` (clase de error de B9 -> código) y los códigos globales.
   const tabla = new Map([...leer('api/proyectos.py').matchAll(/\((\w+), \d+, "(\w+)"\)/g)].map((m) => [m[1], m[2]]))
-  const traducidos = [...docs.matchAll(/_http\(\s*(\w+)\(/g)].map((m) => tabla.get(m[1]))
+  const codigos = []
+  // Control de cuenta: cada llamada a `_error(` y a `_http(` tiene que dar al menos un código
+  // visible; si no (una constante, otra forma), falla en voz alta en vez de quedar sin texto.
+  const sitiosError = llamadas(docs, '_error')
+  expect(sitiosError.length, `sin llamadas a _error: el extractor ya no ve nada, ${ACTUALIZAR}`).toBeGreaterThan(0)
+  for (const a of sitiosError) {
+    const expr = a.match(/^\s*\d+,\s*([\s\S]*?)(?:,\s*\w+=|$)/)?.[1] ?? ''
+    const vistos = comillas(expr)
+    expect(vistos.length, `_error(${a.slice(0, 60)}...) no tiene un código literal: ${ACTUALIZAR}`).toBeGreaterThan(0)
+    codigos.push(...vistos)
+  }
+  const sitiosHttp = llamadas(docs, '_http')
+  expect(sitiosHttp.length, `sin llamadas a _http: ${ACTUALIZAR}`).toBeGreaterThan(0)
+  for (const a of sitiosHttp) {
+    const clases = [...a.matchAll(/\b([A-Z]\w+)\(/g)].map((m) => m[1])
+    expect(clases.length, `_http(${a.slice(0, 60)}...) sin clase de error visible: ${ACTUALIZAR}`).toBeGreaterThan(0)
+    for (const c of clases) {
+      expect(tabla.has(c), `${c} no está en _HTTP_DE_ERROR: ${ACTUALIZAR}`).toBe(true)
+      codigos.push(tabla.get(c))
+    }
+  }
   const freno = leer('kill_switch.py').match(/^KILL_SWITCH_ACTIVO = "(\w+)"/m)[1]
-  return unicos([...propios, ...traducidos, freno])
+  return unicos([...codigos, freno])
 }
 
 function estadosDelBackend() {
@@ -243,6 +273,15 @@ describe('i18n proyectos.documentos', () => {
     expect(estadosDelBackend()).toHaveLength(8)
     expect(motivosDelBackend()).toEqual(
       ['demasiado_grande', 'duplicado', 'duplicado_oculto', 'nombre_invalido', 'tipo_no_admitido'])
+  })
+
+  it('el extractor ve tantas llamadas como hay en el .py (un código invisible falla en voz alta)', () => {
+    const docs = leer('api/proyectos_documentos.py')
+    const cuenta = (n) => (docs.match(new RegExp(`(?<!def )\\b${n}\\(`, 'g')) || []).length
+    expect(llamadas(docs, '_error')).toHaveLength(cuenta('_error'))
+    expect(llamadas(docs, '_http')).toHaveLength(cuenta('_http'))
+    expect(cuenta('_error')).toBeGreaterThan(8)
+    expect(cuenta('_http')).toBe(2)
   })
 
   it.each(secciones)('%s: todo código de error del backend tiene texto', (_n, d) => {

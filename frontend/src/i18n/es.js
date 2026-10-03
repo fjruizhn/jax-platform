@@ -1620,13 +1620,13 @@ export default {
       subiendo: 'Subiendo…',
       sinPermiso: 'Tu papel en este proyecto no permite agregar documentos.',
       estados: {
-        en_cola: 'En cola',
+        en_cola: 'En espera',
         pendiente: 'Pendiente',
         procesando: 'Procesando',
         listo: 'Listo',
         parcial: 'Parcial',
         error: 'Con error',
-        sin_extractor: 'Sin extractor para este tipo',
+        sin_extractor: 'No se puede leer este tipo de archivo',
         cancelado: 'Cancelado',
       },
       motivos: {
@@ -1639,7 +1639,7 @@ export default {
       resumen: {
         titulo: 'Resumen de la subida',
         archivos: (n) => `${n} archivo${n === 1 ? '' : 's'}`,
-        peso: (peso) => `Peso total: ${peso}`,
+        peso: (peso) => `Tamaño total: ${peso}`,
         tipos: (tipos) => `Tipos: ${tipos}`,
         ignorados: (n) => `${n} se ignorará${n === 1 ? '' : 'n'}`,
         confirmar: 'Subir',
@@ -1651,7 +1651,7 @@ export default {
         crear: 'Crear un proyecto',
       },
       errores: {
-        lote_demasiado_grande: 'El lote supera el máximo de archivos o de peso. Subí menos archivos a la vez.',
+        lote_demasiado_grande: 'Los archivos juntos superan el máximo de archivos o de tamaño. Subí menos archivos a la vez.',
         proyecto_no_activo: 'El proyecto no está activo: no admite cambios en sus documentos.',
         sin_espacio: 'No hay espacio suficiente en el servidor. Avisá a un administrador.',
         almacen_no_configurado: 'El almacén de documentos no está configurado. Avisá a un administrador.',

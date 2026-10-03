@@ -1524,13 +1524,13 @@ export default {
       subiendo: 'Uploading…',
       sinPermiso: 'Your role in this project does not allow adding documents.',
       estados: {
-        en_cola: 'Queued',
+        en_cola: 'Waiting',
         pendiente: 'Pending',
         procesando: 'Processing',
         listo: 'Ready',
         parcial: 'Partial',
         error: 'Failed',
-        sin_extractor: 'No extractor for this type',
+        sin_extractor: 'This file type cannot be read',
         cancelado: 'Cancelled',
       },
       motivos: {
@@ -1555,7 +1555,7 @@ export default {
         crear: 'Create a project',
       },
       errores: {
-        lote_demasiado_grande: 'The batch exceeds the maximum number of files or size. Upload fewer files at a time.',
+        lote_demasiado_grande: 'The files together exceed the maximum number of files or size. Upload fewer files at a time.',
         proyecto_no_activo: 'The project is not active: its documents cannot be changed.',
         sin_espacio: 'The server is out of space. Tell an administrator.',
         almacen_no_configurado: 'The document store is not configured. Tell an administrator.',

@@ -1043,8 +1043,11 @@ jobs:
           // 1135 -> 1160 (2026-10-02, Proyectos E1.1, PR #178): +25 medido en el runner 1160/0/1160: fila de modos, Miembros con lista marcable, lote atado a la sesión.
           // 1160 -> 1190 (2026-10-02, versión única y marca configurable, PR #179): +30 medido en el runner 1190/0/1190.
           // 1190 -> 1196 (2026-10-02, Proyectos dentro de Administración, PR #181): +6 medido en el runner 1196/0/1196.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1196) {
-              console.error("PISO ROTO: se esperaban 1196 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1196 -> 1213 (2026-10-03, Proyectos E2a T8): +17, medido LOCAL con `npx vitest run --reporter=json`
+          //   1213/0/1213 (número local que el runner confirma o corrige): +17 en api/proyectos.test.js
+          //   (cliente de documentos, y textos y códigos del backend contra es/en).
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1213) {
+              console.error("PISO ROTO: se esperaban 1213 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3370,7 +3373,13 @@ jobs:
           #   test_ejecutor_tablas.py (el metodo esta en el contrato; la migracion amplia el
           #   ENUM sin perder filas, con DB). Delta medido por archivo con DB real (contenedor
           #   mariadb:12.3.3): 26 -> 28 passed. Vistos en rojo contra a22829f^ (el codigo viejo).
-          PISO_PASSED = 3073
+          # 3073 -> 3221 (2026-10-03, Hyde, Proyectos E2a T5-T7): +148 colectados, SIN medir con DB
+          #   real (la plantilla jax_memory_test local trae 5 triggers que el clonador de
+          #   base_de_test.py no copia y la suite con DB no arranca; pasa igual en el baseline
+          #   8759512, no es de esta rama): el job lo confirma o lo corrige (regla 5). Delta por
+          #   colección con JAX_CI_NO_DB=1, baseline 8759512 -> HEAD: test_proyectos_documentos_api
+          #   +66, _despachador +39, _repositorio +35, test_ajustes +8 (19 -> 27); sin skips nuevos.
+          PISO_PASSED = 3221
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4351,7 +4360,11 @@ jobs:
       # = -28 (+4 de test_retiro_ajuste_retencion). Piso = declarado (1915) - 28 = 1887.
       # 1887 -> 1888 (2026-10-02, C2 snapshot_lv): +1 puro en test_ejecutor_tablas.py (el otro
       # nuevo pide `client`: +1 skip). Medido por archivo con JAX_CI_NO_DB=1: 6/20 -> 7/21.
-      JAX_CI_MIN_PASSED: "1888"
+      # 1888 -> 1912 (2026-10-03, Hyde, Proyectos E2a T5-T7): +24 puros, medido LOCAL sin DB,
+      # mismo comando y mismo jax-proyectos-e2a: baseline 8759512 2016 passed + 1 que el baseline
+      # falla solo por el jax mas nuevo (test_project_authority_migration) = 2017, HEAD 2041 / 0
+      # failed. Piso = declarado (1888) + 24. Los otros +124 colectados piden `client` (skips).
+      JAX_CI_MIN_PASSED: "1912"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
