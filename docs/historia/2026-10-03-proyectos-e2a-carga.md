@@ -175,3 +175,31 @@ lista), no un defecto de E2a.
 - 10.000 filas es poco para juzgar los dos hallazgos de EXPLAIN; el crecimiento no se midió.
 - Una sola máquina cargada por otras sesiones: la variación entre las dos corridas (p95 con 1-2 ms de
   diferencia) es el ruido medido.
+
+## Riesgos aceptados
+
+*(Ronda final de la Parte B, 2026-10-03; decisión del controlador tras la auditoría de escalón 3.
+Se aceptan con su cota; ninguno es un fallo abierto.)*
+
+- **`trabajos_abiertos` con `Using temporary`.** El `SELECT DISTINCT job_id` de los trabajos abiertos
+  arma una tabla temporal. Cota: a lo sumo 4 trabajos abiertos × 50 filas; medido 0,4 ms.
+- **`filas_abiertas_de_trabajo` con `filesort`.** Ordena las filas de UN trabajo por `id`. Cota: ≤ 50
+  filas por trabajo, que es el tope de rutas de LAS MANOS.
+- **Las filas `en_cola` de proyectos no activos se recorren en cada vuelta del despachador.** El JOIN
+  con `jax_project_scope` las descarta, pero se leen. Cota: el `LIMIT 1000` de `tomar_en_cola`.
+- **El extractor de la prueba de paridad (`frontend/src/api/proyectos.test.js`) toma cualquier cadena
+  entre comillas** de las llamadas que lee. Solo agranda la red (pide texto para algo que quizá no es un
+  código), nunca deja un código sin texto.
+- **Más de 300 filas cargadas en la pestaña Documentos: las que pasan de 300 quedan con el estado
+  congelado.** El sondeo de 5 s refresca solo las primeras 300 (`TOPE_SONDEO` de `Documentos.jsx`,
+  declarado en el código); las demás se actualizan al recargar la pestaña.
+- **Si falla la re-consulta del botón 📄 (papel y estado del proyecto), el botón se cierra.** Falla
+  cerrado: nunca se ofrece subir sin saber el papel.
+- **Desenlace incierto del POST a LAS MANOS: trabajo duplicado posible.** Un `ReadTimeout` o un corte
+  después de mandar el pedido no dice si LAS MANOS creó el trabajo. Mitigado con la ventana de 5 min
+  sin re-despachar esas filas; si aun así sale dos veces, el resultado del duplicado se ignora.
+- **Las capturas de la revisión visual se tomaron con `playwright-core` y no con el MCP de
+  playwright.** Mismo motor (Chromium); cambia solo el arnés.
+- **nginx responde 413 en HTML si un admin sube `max_bytes_lote` por encima de `client_max_body_size`.**
+  El cliente no recibe el JSON con el código y la persona ve el mensaje genérico. Se corrige alineando
+  los dos valores en el despliegue (Parte C), no en el código.
