@@ -556,7 +556,7 @@ describe('Documentos: motivo del error', () => {
     api.listarDocumentos.mockResolvedValue({ documentos: [doc(1, { estado: 'error', error: null })], siguiente: null })
     montar()
     expect(await screen.findByText(T.sinMotivo)).toBeInTheDocument()
-    expect(T.sinMotivo).toBe('Motivo no registrado: reprocésalo para obtenerlo')
+    expect(T.sinMotivo).toBe('Motivo no registrado: reprocesalo para obtenerlo')
   })
 
   it.each(['ocr_sin_texto', 'ocr_confianza_baja'])('el código %s se muestra traducido', async (codigo) => {
