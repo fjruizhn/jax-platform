@@ -738,3 +738,62 @@ def test_un_fallo_al_leer_la_ficha_no_impide_aplicar_el_resultado(e, monkeypatch
     carpeta = _con_ficha(e, json.dumps({"detalle": {"razon": RAZON_OCR_VACIO}}))
     doc = _error_con_carpeta(e, carpeta, job="JM4")
     assert (e.fila(doc)[0], e.fila(doc)[3]) == ("error", "procesamiento_fallido")
+
+
+# ------------------------------------------------------------------ freno de extractores (Jax#335)
+EXTRACTORES = (503, {"detail": {"code": "extractores_no_disponibles"}})
+
+
+def _clase(ruta):
+    ext = ruta.rsplit(".", 1)[-1].lower()
+    return {"pdf": "pdf", "xlsx": "excel", "xlsm": "excel", "docx": "word"}.get(ext, "otro")
+
+
+def test_un_503_extractores_no_disponibles_salta_el_trozo_y_se_sigue_con_los_demas(e):
+    pdfs = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1, nombre=f"{i}.pdf") for i in range(3)]
+    jpgs = [e.insertar(e.ruta("l1", f"{i}.jpg"), n=100 + i, nombre=f"{i}.jpg") for i in range(3)]
+    e.las_manos.post_respuestas = [EXTRACTORES]
+    e.ciclo()
+    assert len(e.las_manos.posts) == 2                                   # el pdf (503) y luego el jpg
+    assert [e.fila(i)[0] for i in pdfs] == ["en_cola"] * 3               # quedan para el proximo ciclo
+    assert [e.fila(i)[0] for i in jpgs] == ["pendiente"] * 3
+
+
+def test_el_503_de_extractores_salta_solo_ese_trozo_dentro_del_mismo_grupo(e):
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1, nombre=f"{i}.pdf") for i in range(120)]
+    e.las_manos.post_respuestas = [EXTRACTORES]
+    e.ciclo()
+    assert [len(c["rutas"]) for c in e.las_manos.posts] == [50, 50, 20]
+    estados = [e.fila(i)[0] for i in ids]
+    assert estados[:50] == ["en_cola"] * 50 and set(estados[50:]) == {"pendiente"}
+
+
+def test_un_503_generico_sigue_cortando_el_ciclo_entero(e, caplog):
+    pdf = e.insertar(e.ruta("l1", "a.pdf"), n=1, nombre="a.pdf")
+    jpg = e.insertar(e.ruta("l1", "a.jpg"), n=2, nombre="a.jpg")
+    e.las_manos.post_respuestas = [(503, {"detail": {"code": "base_no_disponible"}})]
+    e.ciclo()
+    assert len(e.las_manos.posts) == 1
+    assert e.fila(pdf)[0] == "en_cola" and e.fila(jpg)[0] == "en_cola"
+    e.las_manos.post_respuestas = [(503, {"detail": "texto"})]
+    e.ciclo()
+    assert len(e.las_manos.posts) == 2 and e.fila(jpg)[0] == "en_cola"
+
+
+def test_el_503_de_extractores_con_otro_estado_no_se_confunde(e):
+    pdf = e.insertar(e.ruta("l1", "a.pdf"), n=1, nombre="a.pdf")
+    jpg = e.insertar(e.ruta("l1", "a.jpg"), n=2, nombre="a.jpg")
+    e.las_manos.post_respuestas = [(500, {"detail": {"code": "extractores_no_disponibles"}})]
+    e.ciclo()
+    assert len(e.las_manos.posts) == 1                                   # solo el 503 salta; un 500 corta
+
+
+def test_los_trozos_no_mezclan_clases_de_extension(e):
+    nombres = ["a.pdf", "b.jpg", "c.xlsx", "d.docx", "e.pdf", "f.png", "g.xlsm", "h.docx", "i.tif"]
+    for n, nombre in enumerate(nombres):
+        e.insertar(e.ruta("l1", nombre), n=n + 1, nombre=nombre)
+    e.ciclo()
+    clases = [{_clase(r) for r in c["rutas"]} for c in e.las_manos.posts]
+    assert all(len(c) == 1 for c in clases), clases
+    assert sorted(next(iter(c)) for c in clases) == ["excel", "otro", "pdf", "word"]
+    assert sorted(len(c["rutas"]) for c in e.las_manos.posts) == [2, 2, 2, 3]

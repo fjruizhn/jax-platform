@@ -106,6 +106,8 @@ ERRORES_DE_DESENLACE_INCIERTO = (httpx.ReadTimeout, httpx.RemoteProtocolError, h
 # Cuanto no se vuelve a despachar un trozo de desenlace incierto.
 VENTANA_DE_INCERTIDUMBRE_SEGUNDOS = 5 * 60
 # Prefijo del 422 en texto con que LAS MANOS rechaza un pedido con mas rutas que su tope.
+# Codigo del 503 del freno de extractores de LAS MANOS (Jax#335): solo frena los lotes con el tipo afectado.
+CODIGO_EXTRACTORES_NO_DISPONIBLES = "extractores_no_disponibles"
 PREFIJO_DEMASIADAS_RUTAS = "demasiadas rutas"
 
 # Codigos estables que puede guardar `project_documents.error` (ronda final, menor 5). El
@@ -359,7 +361,7 @@ def _detalle_en_texto(respuesta) -> str:
 
 
 async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict]) -> str:
-    """'seguir' | 'saltar_proyecto' | 'cortar'. Las filas solo cambian de estado cuando la
+    """'seguir' | 'saltar_trozo' | 'saltar_proyecto' | 'cortar'. Las filas solo cambian de estado cuando la
     respuesta es definitiva (202 o un 4xx que no es de reintento)."""
     ids = [f["id"] for f in trozo]
     try:
@@ -403,6 +405,13 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
         logger.error("proyectos_documentos: rutas_por_trabajo mayor que el tope de LAS MANOS (proyecto %s, "
                      "%s ruta(s) en el trozo); las filas siguen en_cola", project_uuid, len(ids))
         return "cortar"
+    if estado == 503 and _codigo_de(respuesta) == CODIGO_EXTRACTORES_NO_DISPONIBLES:
+        # El freno de extractores de LAS MANOS (Jax#335) contesta SOLO por los lotes que traen el tipo
+        # afectado: las filas siguen en_cola y se sigue con los demas trozos. Cortar aqui congelaria
+        # el sistema entero porque falta una biblioteca de UN tipo.
+        logger.error("proyectos_documentos: LAS MANOS no tiene los extractores del trozo (proyecto %s, %s fila(s)); "
+                     "siguen en_cola y se sigue con los demas trozos", project_uuid, len(ids))
+        return "saltar_trozo"
     if estado in SIN_CULPA_DEL_DOCUMENTO or estado >= 500 or not 400 <= estado < 500:
         # Un fallo de configuracion o de capacidad (credencial, cupo, caida) no es culpa del
         # documento: nunca lo convierte en `error`. Queda en_cola y el log dice que paso.
@@ -423,8 +432,18 @@ def _ruta_del_proyecto(project_uuid: str, ruta: str | None) -> bool:
             and not any(p in ("", ".", "..") for p in partes))
 
 
+_CLASES_DE_EXTENSION = {"pdf": "pdf", "xlsx": "excel", "xlsm": "excel", "docx": "word"}
+
+
+def _clase_de_extension(ruta: str) -> str:
+    """pdf / excel / word / otro (las imagenes y lo demas), por la extension de la ruta: lo que
+    LAS MANOS frena es por tipo, asi que un trozo no mezcla clases."""
+    extension = ruta.rsplit(".", 1)[-1].lower() if "." in ruta.rsplit("/", 1)[-1] else ""
+    return _CLASES_DE_EXTENSION.get(extension, "otro")
+
+
 async def _despachar(pool) -> None:
-    por_grupo: dict[tuple[str, object], list[dict]] = {}
+    por_grupo: dict[tuple[str, object, str], list[dict]] = {}
     ajenas: list[tuple[int, object]] = []
     ahora = _reloj()
     for i in [i for i, hasta in _en_incertidumbre.items() if hasta <= ahora]:
@@ -435,7 +454,8 @@ async def _despachar(pool) -> None:
         if not _ruta_del_proyecto(fila["project_uuid"], fila["ruta_entrada"]):
             ajenas.append((fila["id"], fila["owner"]))
             continue
-        por_grupo.setdefault((fila["project_uuid"], fila["owner"]), []).append(fila)
+        clase = _clase_de_extension(fila["ruta_entrada"])
+        por_grupo.setdefault((fila["project_uuid"], fila["owner"], clase), []).append(fila)
     if ajenas:
         logger.error("proyectos_documentos: %s fila(s) con una ruta que no es de su proyecto pasan a error "
                      "ruta_ajena sin mandarse a LAS MANOS: %s", len(ajenas), ajenas[:20])
@@ -445,12 +465,16 @@ async def _despachar(pool) -> None:
     if not por_grupo:
         return
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
-    for (project_uuid, contexto), filas in por_grupo.items():
+    saltados: set[tuple[str, object]] = set()
+    for (project_uuid, contexto, _clase), filas in por_grupo.items():
+        if (project_uuid, contexto) in saltados:
+            continue
         for i in range(0, len(filas), por_trabajo):
             accion = await _despachar_trozo(pool, project_uuid, contexto, filas[i:i + por_trabajo])
             if accion == "cortar":
                 return
             if accion == "saltar_proyecto":
+                saltados.add((project_uuid, contexto))      # el proyecto entero, tambien sus otras clases
                 break
 
 
