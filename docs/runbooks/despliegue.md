@@ -609,6 +609,30 @@ puede perder datos o violar la FK. Si hiciera falta revertir el DDL, es un caso 
 mano, con Fernando, con el respaldo del paso 1 como red -- nunca una decisión
 unilateral de la sesión que despliega.
 
+## Proyectos y documentos (E2a): permisos de `proyectos/` ANTES de la primera subida
+
+*(2026-10-03, jax-platform#186.)* `proyectos/` -- la carpeta `proyectos/` dentro de `JAX_WORKSPACE_DIR`
+-- tiene que tener **setgid y el grupo `fruiz`**, aplicados con el guion de **jax**
+`ops/permisos_proyectos.py --aplicar`, **antes de la primera subida de documentos**. Hay que hacerlo en
+todo servidor nuevo o con un workspace nuevo (y la verificación, `--verificar`, después de cada despliegue
+que toque el almacén).
+
+    # desde el checkout de jax (el que tiene ops/permisos_proyectos.py; usa `sudo -n` y lee JAX_WORKSPACE_DIR
+    # de /etc/jax/.env; la regla de sudoers que lo permite NO la fija el repo)
+    python3 ops/permisos_proyectos.py --aplicar
+    python3 ops/permisos_proyectos.py --verificar          # debe dar rc=0
+
+**Por qué.** `almacen.abrir_carpeta_lote` ya no hace `chmod` a las carpetas (un chmod de `jaxsvc`, que no es del
+grupo `fruiz`, les borra el setgid): las crea con `mkdir` y hereda grupo, setgid y ACL del padre. Y exige, en
+**cada** nivel que abre o crea bajo `proyectos/` (incluido `proyectos/` mismo, que es el ancla), setgid puesto y
+el grupo de `proyectos/`.
+
+**Si falta, qué se ve.** Toda subida falla cerrada: `500 almacen_herencia_rota` (el detalle va al log del
+backend, "una carpeta del workspace no heredo los permisos del padre"), sin escribir nada ni dejar filas.
+Lo mismo si `proyectos/` no existe (se crea sin setgid) o si algún `proyectos/<uuid>/` ya existía sin setgid. No se
+arregla con un `chmod` a mano en la carpeta del proyecto: se corre el guion, que deja todo el árbol coherente.
+`reprocesar` no pasa por aquí: solo lee `fuente/` y borra, con `unlink`, copias de `entrada/`.
+
 ## Volver atrás
 
 1. **Sitio público:** copiar de vuelta `~/respaldos-sitio/axioma-<fecha>/` en
