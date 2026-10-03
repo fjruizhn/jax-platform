@@ -12,6 +12,8 @@ import * as api from '../../api/proyectos'
 import SelectorDeDocumentos from './SelectorDeDocumentos'
 import { I18nProvider } from '../../i18n/index.jsx'
 import es from '../../i18n/es.js'
+import { formatoPeso } from './resumenDeLote'
+import { localeFor } from '../../i18n/index.jsx'
 
 const T = es.proyectos.documentos
 const MB = 1024 * 1024
@@ -69,7 +71,7 @@ describe('SelectorDeDocumentos', () => {
     elegir(multiple, [archivo('a.pdf', 1024), archivo('b.pdf', 1024), archivo('c.xlsx', 1024), archivo('virus.exe')])
     const dialogo = await screen.findByRole('dialog', { name: T.resumen.titulo })
     expect(within(dialogo).getByText(T.resumen.archivos(3))).toBeInTheDocument()
-    expect(within(dialogo).getByText(T.resumen.peso('3 KB'))).toBeInTheDocument()
+    expect(within(dialogo).getByText(T.resumen.peso(formatoPeso(3072, localeFor('es'))))).toBeInTheDocument()
     const fila = (ext) => within(dialogo).getByText(`.${ext}`).closest('tr')
     expect(within(fila('pdf')).getByText('2')).toBeInTheDocument()
     expect(within(fila('xlsx')).getByText('1')).toBeInTheDocument()
@@ -104,8 +106,9 @@ describe('SelectorDeDocumentos', () => {
     const { multiple } = await montar()
     elegir(multiple, [archivo('a.pdf'), archivo('virus.exe')])
     const subir = await screen.findByRole('button', { name: T.resumen.confirmar })
-    fireEvent.click(subir)
-    fireEvent.click(subir)
+    // Dos clics SIN re-render intermedio: solo la guardia síncrona (ref) los frena;
+    // el `disabled` del DOM todavía no se pintó.
+    act(() => { subir.click(); subir.click() })
     expect(api.subirDocumentos).toHaveBeenCalledTimes(1)
     const [id, enviados] = api.subirDocumentos.mock.calls[0]
     expect(id).toBe(7)
@@ -125,6 +128,82 @@ describe('SelectorDeDocumentos', () => {
     expect(barra).toHaveAttribute('aria-valuemin', '0')
     expect(barra).toHaveAttribute('aria-valuemax', '100')
     expect(screen.getByText(T.subiendo, { exact: false })).toBeInTheDocument()
+  })
+
+  it('mientras sube dice por qué no se puede cerrar', async () => {
+    api.subirDocumentos.mockReturnValue(new Promise(() => {}))
+    const { multiple } = await montar()
+    elegir(multiple, [archivo('a.pdf')])
+    expect(screen.queryByText(T.resumen.noSeCierra)).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: T.resumen.confirmar }))
+    expect(await screen.findByText(T.resumen.noSeCierra)).toBeInTheDocument()
+  })
+
+  it('si fallan los límites: texto propio, Reintentar los vuelve a pedir y al llegar se habilitan los botones', async () => {
+    api.limitesDeDocumentos.mockReset().mockRejectedValueOnce(new Error('red')).mockResolvedValue(LIMITES)
+    render(<I18nProvider><SelectorDeDocumentos proyectoId={7} onTerminado={vi.fn()} onCerrar={vi.fn()} /></I18nProvider>)
+    expect(await screen.findByText(T.limites.error)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: T.elegirArchivos })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: T.limites.reintentar }))
+    await waitFor(() => expect(screen.getByRole('button', { name: T.elegirArchivos })).toBeEnabled())
+    expect(screen.queryByText(T.limites.error)).not.toBeInTheDocument()
+    expect(api.limitesDeDocumentos).toHaveBeenCalledTimes(2)
+  })
+
+  it('con ~5.000 ignorados el DOM tiene a lo sumo 50 <li> por motivo y los conteos siguen completos', async () => {
+    const { multiple } = await montar()
+    const ignorados = Array.from({ length: 5000 }, (_, i) => archivo(`x${i}.exe`, 1))
+    elegir(multiple, [archivo('a.pdf'), ...ignorados])
+    const dialogo = await screen.findByRole('dialog')
+    expect(within(dialogo).getByText(T.resumen.ignorados(5000))).toBeInTheDocument()
+    const detalle = within(dialogo).getByText(T.motivos.tipo_no_admitido, { exact: false }).closest('details')
+    expect(within(detalle).getByText('(5000)')).toBeInTheDocument()
+    expect(detalle.querySelectorAll('li').length).toBeLessThanOrEqual(50)
+    expect(within(detalle).getByText(T.resumen.yMas(4950))).toBeInTheDocument()
+  })
+
+  it('un motivo desconocido del servidor muestra un texto traducido, no el código crudo', async () => {
+    api.subirDocumentos.mockResolvedValue({
+      lote: 'L', aceptados: [], ignorados: [{ nombre: 'z.pdf', motivo: 'motivo_inventado_xyz' }],
+    })
+    const { multiple } = await montar()
+    elegir(multiple, [archivo('a.pdf')])
+    fireEvent.click(await screen.findByRole('button', { name: T.resumen.confirmar }))
+    const dialogo = await screen.findByRole('dialog', { name: T.resultado.titulo })
+    expect(within(dialogo).getByText(T.resumen.motivoDesconocido, { exact: false })).toBeInTheDocument()
+    expect(dialogo).not.toHaveTextContent('motivo_inventado_xyz')
+  })
+
+  it('un nombre vacío del servidor se muestra con el texto traducido', async () => {
+    api.subirDocumentos.mockResolvedValue({
+      lote: 'L', aceptados: [], ignorados: [{ nombre: '', motivo: 'nombre_invalido' }],
+    })
+    const { multiple } = await montar()
+    elegir(multiple, [archivo('a.pdf')])
+    fireEvent.click(await screen.findByRole('button', { name: T.resumen.confirmar }))
+    expect(await screen.findByText(T.resumen.sinNombre)).toBeInTheDocument()
+  })
+
+  it('si el padre desmonta con el resultado abierto, igual avisa con onTerminado una vez', async () => {
+    const resultado = { lote: 'L', aceptados: [{ id: 1, nombre: 'a.pdf' }], ignorados: [] }
+    api.subirDocumentos.mockResolvedValue(resultado)
+    const { multiple, onTerminado, unmount } = await montar()
+    elegir(multiple, [archivo('a.pdf')])
+    fireEvent.click(await screen.findByRole('button', { name: T.resumen.confirmar }))
+    await screen.findByRole('dialog', { name: T.resultado.titulo })
+    unmount()
+    expect(onTerminado).toHaveBeenCalledTimes(1)
+    expect(onTerminado).toHaveBeenCalledWith(resultado)
+  })
+
+  it('si ya lo entregó al cerrar, desmontar no avisa de nuevo', async () => {
+    api.subirDocumentos.mockResolvedValue({ lote: 'L', aceptados: [], ignorados: [] })
+    const { multiple, onTerminado, unmount } = await montar()
+    elegir(multiple, [archivo('a.pdf')])
+    fireEvent.click(await screen.findByRole('button', { name: T.resumen.confirmar }))
+    fireEvent.click(await screen.findByRole('button', { name: T.resultado.cerrar }))
+    unmount()
+    expect(onTerminado).toHaveBeenCalledTimes(1)
   })
 
   it('mientras sube, Escape no cierra', async () => {

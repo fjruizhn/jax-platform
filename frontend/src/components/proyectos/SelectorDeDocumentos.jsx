@@ -27,6 +27,8 @@ const BOTON_PRIMARIO = `${TAMANO_BOTON_44} rounded bg-superficie-2 text-texto-fu
 const BOTON_SECUNDARIO = `${TAMANO_BOTON_44} rounded bg-superficie text-texto-suave hover:text-texto ${FOCO} transition-colors`
 const CIFRA = 'text-right tabular-nums text-texto'
 const MAX_ABIERTO = 5
+// Tope de render por motivo: una carpeta enorme no puede crear miles de <li>.
+const MAX_NOMBRES = 50
 
 function agruparPorMotivo(ignorados) {
   const grupos = new Map()
@@ -48,13 +50,16 @@ function Ignorados({ ignorados, T }) {
         <details key={motivo} open={nombres.length <= MAX_ABIERTO}
           className="bg-hundido border border-borde rounded-lg px-3 py-1">
           <summary className={`cursor-pointer min-h-6 py-1 text-xs text-texto-suave ${FOCO}`}>
-            {T.motivos[motivo] ?? motivo} <span className="tabular-nums text-texto">({nombres.length})</span>
+            {T.motivos[motivo] ?? T.resumen.motivoDesconocido} <span className="tabular-nums text-texto">({nombres.length})</span>
           </summary>
           <ul className="max-h-32 overflow-y-auto pb-1 space-y-0.5">
-            {nombres.map((n, i) => (
-              <li key={`${n}-${i}`} className="text-xs text-texto-suave break-all">{n || '—'}</li>
+            {nombres.slice(0, MAX_NOMBRES).map((n, i) => (
+              <li key={`${n}-${i}`} className="text-xs text-texto-suave break-all">{n || T.resumen.sinNombre}</li>
             ))}
           </ul>
+          {nombres.length > MAX_NOMBRES && (
+            <p className="text-xs text-texto-tenue pb-1">{T.resumen.yMas(nombres.length - MAX_NOMBRES)}</p>
+          )}
         </details>
       ))}
     </div>
@@ -113,6 +118,7 @@ function Avance({ T, fraccion }) {
         <div className={`h-full bg-foco ${porcentaje === undefined ? 'w-1/3 animate-pulse' : ''}`}
           style={porcentaje === undefined ? undefined : { width: `${porcentaje}%` }} />
       </div>
+      <p className="text-xs text-texto-tenue">{T.resumen.noSeCierra}</p>
     </div>
   )
 }
@@ -130,18 +136,32 @@ export default function SelectorDeDocumentos({ proyectoId, onTerminado, onCerrar
   const [resultado, setResultado] = useState(null)
   const subiendoRef = useRef(false)
   const vivoRef = useRef(true)
+  // Resultado recibido y aún no entregado al padre; onTerminado siempre el último.
+  const sinEntregarRef = useRef(null)
+  const onTerminadoRef = useRef(onTerminado)
+  onTerminadoRef.current = onTerminado
   const entradaArchivos = useRef(null)
   const entradaCarpeta = useRef(null)
   const botonActivo = useRef(null)
   const botonSubir = useRef(null)
 
-  useEffect(() => {
-    vivoRef.current = true
+  function cargarLimites() {
+    setErrorLimites(false)
     limitesDeDocumentos()
       .then((l) => { if (vivoRef.current) setLimites(l) })
       .catch(() => { if (vivoRef.current) setErrorLimites(true) })
-    return () => { vivoRef.current = false }
-  }, [])
+  }
+
+  useEffect(() => {
+    vivoRef.current = true
+    cargarLimites()
+    return () => {
+      vivoRef.current = false
+      // Si el padre desmonta con el resultado abierto, igual se le avisa.
+      const r = sinEntregarRef.current
+      if (r) { sinEntregarRef.current = null; onTerminadoRef.current?.(r) }
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const resumen = useMemo(() => (elegidos && limites ? resumirLote(elegidos, limites) : null), [elegidos, limites])
   const puedeSubir = !!resumen && resumen.aceptados.length > 0 && resumen.excedeLote === null && !subiendo
@@ -177,6 +197,7 @@ export default function SelectorDeDocumentos({ proyectoId, onTerminado, onCerrar
 
   function cerrarResultado() {
     const r = resultado
+    sinEntregarRef.current = null
     setResultado(null)
     setElegidos(null)
     onTerminado?.(r)
@@ -192,7 +213,8 @@ export default function SelectorDeDocumentos({ proyectoId, onTerminado, onCerrar
       const r = await subirDocumentos(proyectoId, resumen.aceptados, {
         onProgreso: (f) => { if (vivoRef.current) setFraccion(f) },
       })
-      if (vivoRef.current) setResultado(r)
+      if (vivoRef.current) { sinEntregarRef.current = r; setResultado(r) }
+      else onTerminadoRef.current?.(r)
     } catch (err) {
       if (vivoRef.current) setError(T.errores[codigoDe(err)] ?? T.errores.generico)
     } finally {
@@ -214,7 +236,12 @@ export default function SelectorDeDocumentos({ proyectoId, onTerminado, onCerrar
         <button type="button" disabled={!listo} className={BOTON} onClick={(e) => abrir(entradaCarpeta, e)}>
           {T.elegirCarpeta}
         </button>
-        {errorLimites && <p role="alert" className="text-xs text-peligro">{T.errores.generico}</p>}
+        {errorLimites && (
+          <>
+            <p role="alert" className="text-xs text-peligro">{T.limites.error}</p>
+            <button type="button" className={BOTON} onClick={cargarLimites}>{T.limites.reintentar}</button>
+          </>
+        )}
       </div>
 
       {resumen && resultado && (

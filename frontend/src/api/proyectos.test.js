@@ -300,7 +300,7 @@ describe('i18n proyectos.documentos', () => {
     const x = d.proyectos.documentos
     for (const k of ['pestana', 'agregar', 'vacio', 'ocultar', 'restaurar', 'verOcultos', 'subiendo', 'sinPermiso', 'boton'])
       expect(typeof x[k], k).toBe('string')
-    for (const k of ['titulo', 'archivos', 'peso', 'tipos', 'ignorados', 'confirmar', 'cancelar'])
+    for (const k of ['titulo', 'archivos', 'peso', 'ignorados', 'confirmar', 'cancelar'])
       expect(['string', 'function'], k).toContain(typeof x.resumen[k])
     for (const k of ['titulo', 'texto', 'crear']) expect(typeof x.elegirProyecto[k], k).toBe('string')
   })

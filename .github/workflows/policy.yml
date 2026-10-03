@@ -1050,8 +1050,11 @@ jobs:
           //   1242/0/1242 (número local que el runner confirma o corrige): +10 en
           //   resumenDeLote.test.js y +19 en SelectorDeDocumentos.test.jsx (resumen, foco, Escape,
           //   doble clic, barra de avance, errores del servidor, resultado).
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1242) {
-              console.error("PISO ROTO: se esperaban 1242 tests de vitest CORRIDOS y 0 fallidos.");
+          // 1242 -> 1250 (2026-10-03, Proyectos E2a T9 ronda 1): +8, medido LOCAL con `npx vitest run`
+          //   1250/0/1250: tope de render de ignorados, reintento de límites, aviso de no-cierre,
+          //   motivo y nombre traducidos, onTerminado al desmontar (x2), tope ausente.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1250) {
+              console.error("PISO ROTO: se esperaban 1250 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

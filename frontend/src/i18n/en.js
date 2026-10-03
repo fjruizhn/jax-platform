@@ -1546,7 +1546,6 @@ export default {
         titulo: 'Upload summary',
         archivos: (n) => `${n} file${n === 1 ? '' : 's'}`,
         peso: (peso) => `Total size: ${peso}`,
-        tipos: (tipos) => `Types: ${tipos}`,
         ignorados: (n) => `${n} will be skipped`,
         confirmar: 'Upload',
         cancelar: 'Cancel',
@@ -1556,11 +1555,19 @@ export default {
         excedeBytes: (peso) => `The files together weigh more than one upload allows (maximum ${peso}). Choose fewer.`,
         progreso: 'Upload progress',
         nadaQueSubir: 'None of the chosen files can be uploaded.',
+        yMas: (n) => `and ${n} more`,
+        motivoDesconocido: 'Other reason',
+        sinNombre: 'No name',
+        noSeCierra: 'This cannot be closed while the files are uploading.',
       },
       resultado: {
         titulo: 'Upload finished',
         agregados: (n) => `${n} file${n === 1 ? '' : 's'} added`,
         cerrar: 'Close',
+      },
+      limites: {
+        error: 'The upload limits could not be loaded.',
+        reintentar: 'Retry',
       },
       elegirProyecto: {
         titulo: 'Choose a project',

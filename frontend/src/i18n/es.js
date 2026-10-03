@@ -1642,7 +1642,6 @@ export default {
         titulo: 'Resumen de la subida',
         archivos: (n) => `${n} archivo${n === 1 ? '' : 's'}`,
         peso: (peso) => `Tamaño total: ${peso}`,
-        tipos: (tipos) => `Tipos: ${tipos}`,
         ignorados: (n) => `${n} se ignorará${n === 1 ? '' : 'n'}`,
         confirmar: 'Subir',
         cancelar: 'Cancelar',
@@ -1652,11 +1651,19 @@ export default {
         excedeBytes: (peso) => `Los archivos juntos pesan más de lo permitido por subida (máximo ${peso}). Elegí menos.`,
         progreso: 'Progreso de la subida',
         nadaQueSubir: 'Ninguno de los archivos elegidos se puede subir.',
+        yMas: (n) => `y ${n} más`,
+        motivoDesconocido: 'Otro motivo',
+        sinNombre: 'Sin nombre',
+        noSeCierra: 'No se puede cerrar mientras se suben los archivos.',
       },
       resultado: {
         titulo: 'Subida terminada',
         agregados: (n) => `${n} archivo${n === 1 ? '' : 's'} agregado${n === 1 ? '' : 's'}`,
         cerrar: 'Cerrar',
+      },
+      limites: {
+        error: 'No se pudieron cargar los límites de subida.',
+        reintentar: 'Reintentar',
       },
       elegirProyecto: {
         titulo: 'Elegí un proyecto',

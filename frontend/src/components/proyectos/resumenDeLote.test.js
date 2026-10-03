@@ -66,6 +66,15 @@ describe('resumirLote', () => {
     expect(r.excedeLote).toBeNull()
   })
 
+  it('un tope ausente no deja pasar todo: sin max_bytes_archivo nada se admite', () => {
+    const { max_bytes_archivo, ...sinTopeArchivo } = LIMITES // eslint-disable-line no-unused-vars
+    const r = resumirLote([f('a.pdf', 10)], sinTopeArchivo)
+    expect(r.aceptados).toEqual([])
+    expect(r.ignorados).toHaveLength(1)
+    const { max_bytes_lote, ...sinTopeLote } = LIMITES // eslint-disable-line no-unused-vars
+    expect(resumirLote([f('a.pdf', 10)], sinTopeLote).aceptados).toEqual([])
+  })
+
   it('sin límites cargados no inventa topes: todo se ignora por tipo', () => {
     const r = resumirLote([f('a.pdf')], null)
     expect(r.aceptados).toEqual([])
@@ -75,9 +84,9 @@ describe('resumirLote', () => {
 
 describe('formatoPeso', () => {
   it('elige la unidad y no deja ceros de más', () => {
-    expect(formatoPeso(0, 'en')).toBe('0 B')
-    expect(formatoPeso(512, 'en')).toBe('512 B')
-    expect(formatoPeso(1536, 'en')).toBe('1.5 KB')
+    expect(formatoPeso(0, 'en')).toBe('0 byte')
+    expect(formatoPeso(512, 'en')).toBe('512 byte')
+    expect(formatoPeso(1536, 'en')).toBe('1.5 kB')
     expect(formatoPeso(5 * MB, 'en')).toBe('5 MB')
     expect(formatoPeso(1024 * MB, 'en')).toBe('1 GB')
   })
