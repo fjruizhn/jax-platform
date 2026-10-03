@@ -1085,8 +1085,12 @@ jobs:
             //   Documentos.test.jsx +15 (botón según estado, tipo, permiso y vista; llama a la API sin
             //   diálogo; errores traducidos; una acción a la vez; «Motivo no registrado»; dos causas OCR)
             //   y api/proyectos.test.js +1 (POST a /reprocesar). El runner tiene la última palabra.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1348) {
-              console.error("PISO ROTO: se esperaban 1348 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1348 -> 1352 (2026-10-03, ronda 1 de #186): +4 en Documentos.test.jsx («reprocesalo» solo con
+            //   permiso, proyecto activo y tipo aceptado; 4 casos) y los dos códigos de error nuevos
+            //   (fuente_ilegible, almacen_herencia_rota) dentro de pruebas existentes. Medido LOCAL
+            //   con `npx vitest run` sobre la rama: 1352/0/1352.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1352) {
+              console.error("PISO ROTO: se esperaban 1352 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3456,7 +3460,10 @@ jobs:
           #   3401 passed y sobre esta rama -> 3505 passed (en ambas, 2 pruebas de test_base_por_sesion
           #   que hablan con un MariaDB local con triggers quedan fuera: no son del runner). Piso =
           #   declarado (3402) + delta propio (104). El runner tiene la ultima palabra.
-          PISO_PASSED = 3506
+          # 3506 -> 3541 (ronda 1 de #186): MEDIDO EXACTO CON DB (mariadb:12.3.3 descartable, jax 2b0c163,
+          #   mismo comando) sobre la rama: 3541 passed (master 1e2888c: 3401), con las mismas 2 pruebas
+          #   de test_base_por_sesion fuera (hablan con un MariaDB local con triggers; no son del runner).
+          PISO_PASSED = 3541
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4463,7 +4470,9 @@ jobs:
       # deriva) -> esta rama 2119 / 1388. Delta propio +43: test_proyectos_documentos_original.py
       # (archivo nuevo, 32) + 11 casos puros de codigo_de_la_razon en el despachador. El resto de
       # lo nuevo pide `client` (skips). El runner tiene la ultima palabra.
-      JAX_CI_MIN_PASSED: "2118"
+      # 2118 -> 2140 (ronda 1 de #186): MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la rama:
+      # 2140 passed / 1403 skipped (master 1e2888c: 2076; el piso es el medido, sin margen por debajo).
+      JAX_CI_MIN_PASSED: "2140"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
