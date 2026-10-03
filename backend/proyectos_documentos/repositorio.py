@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import aiomysql
+from proyectos_documentos import tipos
 from credencial_las_manos import PlatformProcessingOwnership
 
 _ESTADOS_ABIERTOS = ("pendiente", "procesando")
@@ -195,6 +196,61 @@ async def reencolar_atascado(pool, *, project_id: int, sha256: str, ruta_entrada
                 await conn.rollback()
                 raise
     return fila[0], fila[1]
+
+
+# Reprocesar: UN UPDATE con todas las condiciones (la fila es del proyecto, esta en
+# `sin_extractor`, su tipo TIENE extractor y quien lo pide puede escribir en un proyecto
+# ACTIVE). El tipo se decide aqui y no solo en la ruta porque entre la lectura de la ruta y
+# el UPDATE la fila pudo cambiar. La extension se compara en `utf8mb4_nopad_bin`: con la
+# colacion de la tabla (PAD SPACE, sin distinguir mayusculas) `x.pdf ` seria `pdf`, y
+# `tipos.tipo_de` lo rechaza. `LOCATE('.') > 1` es el «.pdf sin nombre» de `tipo_de`.
+_SQL_REPROCESAR = (
+    "UPDATE project_documents SET estado = 'en_cola', job_id = NULL, error = NULL, ruta_entrada = %s "
+    "WHERE id = %s AND project_id = %s AND estado IN ('sin_extractor', 'error') "
+    "AND LOCATE('.', nombre_original) > 1 "
+    "AND LOWER(SUBSTRING_INDEX(nombre_original, '.', -1)) COLLATE utf8mb4_nopad_bin IN ({tipos}) "
+    "AND EXISTS (SELECT 1 FROM jax_project_scope s WHERE s.project_id = %s AND " + _PUEDE_ESCRIBIR + ")"
+)
+
+
+async def documento_para_reprocesar(pool, *, project_id: int, documento_id: int) -> dict | None:
+    """Lo que hace falta para decidir si un documento se reprocesa y donde esta su original
+    (None si no es de ese proyecto). Es una lectura: la decision la toma `reprocesar`."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT estado, nombre_original, sha256, bytes, carpeta_procesado, subido_por "
+                "FROM project_documents WHERE id = %s AND project_id = %s", (documento_id, project_id))
+            fila = await cur.fetchone()
+        await conn.commit()
+    if fila is None:
+        return None
+    return {"estado": fila[0], "nombre_original": fila[1], "sha256": fila[2], "bytes": int(fila[3]),
+            "carpeta_procesado": fila[4], "subido_por": fila[5]}
+
+
+async def reprocesar(pool, *, project_id: int, documento_id: int, ruta_fuente: str, user_id: int,
+                     roles_escritura: tuple[str, ...]) -> bool:
+    """`sin_extractor` o `error` -> `en_cola` con `ruta_entrada = ruta_fuente` (el original ya esta en
+    `fuente/`: el despachador lo manda tal cual y NUNCA lo borra), `job_id` y `error` en NULL.
+    True si la fila cambio; False -- sin tocar nada -- si no es del proyecto, no esta en
+    `sin_extractor` ni `error`, su tipo no tiene extractor o `user_id` no puede escribir (proyecto no
+    ACTIVE, sin membresia activa con papel de escritura, o inactivo en su tenant). Las mismas
+    condiciones de autorizacion que `insertar` y `reencolar_atascado` (`_PUEDE_ESCRIBIR`).
+    `subido_por` no cambia: la tabla no tiene donde guardar quien reproceso, y eso va al log
+    de quien llama (user_id y documento_id)."""
+    if not roles_escritura:
+        raise ValueError("roles_escritura vacio: nadie podria reprocesar")
+    extensiones = sorted(tipos.EXTENSIONES_ACEPTADAS)
+    consulta = _SQL_REPROCESAR.format(tipos=", ".join(["%s"] * len(extensiones)),
+                                      roles=", ".join(["%s"] * len(roles_escritura)))
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(consulta, (ruta_fuente, documento_id, project_id, *extensiones, project_id,
+                                         user_id, *roles_escritura, user_id))
+            cambiada = bool(cur.rowcount)
+        await conn.commit()
+    return cambiada
 
 
 async def existente_por_sha(pool, *, project_id: int, sha256: str) -> dict | None:

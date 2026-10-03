@@ -495,3 +495,154 @@ def test_reencolar_exige_las_mismas_condiciones_que_el_insert(e):
     with pytest.raises(repo.ProyectoNoActivo):                       # archivado: 409
         _pool_call(e.client, repo.reencolar_atascado, subido_por=e.usuario, roles_escritura=roles, **args)
     assert e.fila(doc)[0] == "error"                                 # nada cambio
+
+
+# ------------------------------------------------------------------ reprocesar
+ROLES = ("OWNER", "CONTRIBUTOR", "REVIEWER")
+FUENTE = "proyectos/u-1/fuente/x.pdf"
+
+
+def _a_estado(e, doc, estado, **cols):
+    sets = ", ".join(["estado=%s"] + [f"{c}=%s" for c in cols])
+    e.client.portal.call(sql, f"UPDATE project_documents SET {sets} WHERE id=%s", (estado, *cols.values(), doc))
+
+
+def _reprocesar(e, p, doc, ruta=FUENTE, usuario=None, roles=ROLES):
+    return _pool_call(e.client, repo.reprocesar, project_id=p, documento_id=doc, ruta_fuente=ruta,
+                      user_id=e.usuario if usuario is None else usuario, roles_escritura=roles)
+
+
+def _sin_extractor(e, p, sha="a" * 64, nombre="x.pdf"):
+    d = e.insertar(p, sha, nombre)
+    _a_estado(e, d, "sin_extractor", carpeta_procesado="proyectos/u-1/procesado/c", job_id="job-9",
+              error="algo")
+    return d
+
+
+def test_reprocesar_pasa_a_en_cola_con_la_ruta_de_fuente_y_limpia_job_y_error(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    assert _reprocesar(e, p, d) is True
+    estado, job_id, carpeta, error, oculto_at, _ = e.fila(d)
+    assert (estado, job_id, error) == ("en_cola", None, None)
+    assert e.client.portal.call(sql, "SELECT ruta_entrada FROM project_documents WHERE id=%s", (d,), True)[0][0] == FUENTE
+    assert carpeta == "proyectos/u-1/procesado/c"          # no se pierde donde quedo la ficha
+    # y el despachador la ve
+    assert d in [f["id"] for f in _pool_call(e.client, repo.tomar_en_cola, limite=100000)]
+    # ya no esta en sin_extractor: repetirlo no hace nada
+    assert _reprocesar(e, p, d) is False
+
+
+@pytest.mark.parametrize("estado", ["en_cola", "pendiente", "procesando", "listo", "parcial", "cancelado"])
+def test_reprocesar_solo_desde_sin_extractor_o_error(e, estado):
+    p = e.proyecto()
+    d = e.insertar(p, "b" * 64)
+    _a_estado(e, d, estado)
+    antes = e.client.portal.call(sql, "SELECT ruta_entrada, job_id, error FROM project_documents WHERE id=%s", (d,), True)
+    assert _reprocesar(e, p, d) is False
+    assert e.fila(d)[0] == estado
+    assert e.client.portal.call(sql, "SELECT ruta_entrada, job_id, error FROM project_documents WHERE id=%s",
+                                (d,), True) == antes
+
+
+@pytest.mark.parametrize("error", [None, "procesamiento_fallido", "ocr_sin_texto"])
+def test_reprocesar_tambien_desde_error_con_o_sin_motivo(e, error):
+    p = e.proyecto()
+    d = e.insertar(p, "c" * 64)
+    _a_estado(e, d, "error", error=error, job_id="job-7", carpeta_procesado="proyectos/u-1/procesado/c")
+    assert _reprocesar(e, p, d) is True
+    estado, job_id, _, err, _, _ = e.fila(d)
+    assert (estado, job_id, err) == ("en_cola", None, None)
+
+
+def test_reprocesar_desde_error_conserva_las_mismas_condiciones(e):
+    p1, p2 = e.proyecto(), e.proyecto()
+    tipo_malo = e.insertar(p1, "d" * 64, "x.txt")
+    otro = e.insertar(p2, "e" * 64)
+    ok = e.insertar(p1, "f" * 64)
+    for d in (tipo_malo, otro, ok):
+        _a_estado(e, d, "error", error="procesamiento_fallido")
+    assert _reprocesar(e, p1, tipo_malo) is False          # tipo sin extractor
+    assert _reprocesar(e, p1, otro) is False               # otro proyecto
+    ajeno = int(uid(e.client, f"{e.tenant}-ajeno", "operator", e.tenant))
+    assert _reprocesar(e, p1, ok, usuario=ajeno) is False  # sin escritura
+    e.archivar(p1)
+    assert _reprocesar(e, p1, ok) is False                 # proyecto archivado
+    assert {e.fila(d)[0] for d in (tipo_malo, otro, ok)} == {"error"}
+
+
+@pytest.mark.parametrize("nombre", ["x.txt", "x.zip", "informe", ".pdf", "informe.", "x.pdf ", "x.exe.bak"])
+def test_reprocesar_rechaza_un_tipo_sin_extractor(e, nombre):
+    p = e.proyecto()
+    d = _sin_extractor(e, p, nombre=nombre)
+    assert _reprocesar(e, p, d) is False
+    assert e.fila(d)[0] == "sin_extractor"
+
+
+@pytest.mark.parametrize("nombre", ["X.PDF", "informe.Docx", "carpeta/a.b.xlsx", "foto.JPEG"])
+def test_reprocesar_acepta_los_tipos_con_extractor_sin_distinguir_mayusculas(e, nombre):
+    p = e.proyecto()
+    d = _sin_extractor(e, p, nombre=nombre)
+    assert tipos.tipo_de(nombre) is not None
+    assert _reprocesar(e, p, d) is True and e.fila(d)[0] == "en_cola"
+
+
+def test_reprocesar_no_toca_un_documento_de_otro_proyecto(e):
+    p1, p2 = e.proyecto(), e.proyecto()
+    d = _sin_extractor(e, p2)
+    assert _reprocesar(e, p1, d) is False
+    assert e.fila(d)[0] == "sin_extractor"
+    assert _reprocesar(e, p1, 99999999) is False
+
+
+def test_reprocesar_exige_proyecto_activo(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    e.archivar(p)
+    assert _reprocesar(e, p, d) is False
+    assert e.fila(d)[0] == "sin_extractor"
+
+
+def test_reprocesar_exige_papel_de_escritura_y_membresia_activa(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    ajeno = int(uid(e.client, f"{e.tenant}-ajeno", "operator", e.tenant))
+    assert _reprocesar(e, p, d, usuario=ajeno) is False                 # nunca fue miembro
+    assert _reprocesar(e, p, d, roles=("VIEWER",)) is False             # su papel (OWNER) no esta en la lista
+    e.client.portal.call(sql, "UPDATE jax_project_membership SET project_role='VIEWER' "
+                              "WHERE project_id=%s AND user_id=%s", (p, e.usuario))
+    assert _reprocesar(e, p, d) is False                                # lector de verdad
+    e.client.portal.call(sql, "UPDATE jax_project_membership SET project_role='CONTRIBUTOR', status='REVOKED' "
+                              "WHERE project_id=%s AND user_id=%s", (p, e.usuario))
+    assert _reprocesar(e, p, d) is False                                # miembro dado de baja
+    assert e.fila(d)[0] == "sin_extractor"
+    e.client.portal.call(sql, "UPDATE jax_project_membership SET status='ACTIVE' "
+                              "WHERE project_id=%s AND user_id=%s", (p, e.usuario))
+    assert _reprocesar(e, p, d) is True
+
+
+def test_reprocesar_exige_usuario_activo_en_su_tenant(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    try:
+        e.client.portal.call(sql, "UPDATE jax_users SET status='inactive' WHERE user_id=%s", (e.usuario,))
+        assert _reprocesar(e, p, d) is False
+    finally:
+        e.client.portal.call(sql, "UPDATE jax_users SET status='active' WHERE user_id=%s", (e.usuario,))
+    assert e.fila(d)[0] == "sin_extractor"
+
+
+def test_reprocesar_sin_roles_de_escritura_levanta(e):
+    p = e.proyecto()
+    d = _sin_extractor(e, p)
+    with pytest.raises(ValueError):
+        _reprocesar(e, p, d, roles=())
+
+
+def test_documento_para_reprocesar_devuelve_lo_que_hace_falta_y_respeta_el_proyecto(e):
+    p1, p2 = e.proyecto(), e.proyecto()
+    d = _sin_extractor(e, p1, nombre="Informe.PDF")
+    fila = _pool_call(e.client, repo.documento_para_reprocesar, project_id=p1, documento_id=d)
+    assert fila == {"estado": "sin_extractor", "nombre_original": "Informe.PDF", "sha256": "a" * 64,
+                    "bytes": 1, "carpeta_procesado": "proyectos/u-1/procesado/c", "subido_por": e.usuario}
+    assert _pool_call(e.client, repo.documento_para_reprocesar, project_id=p2, documento_id=d) is None
