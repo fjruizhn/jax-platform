@@ -37,7 +37,7 @@ def _jax_runtime_status_bridge():
     loaded_path = Path(module.__file__).resolve()
     if not loaded_path.is_relative_to(root_path):
         raise RuntimeStatusBridgeUnavailable("loaded runtime-status bridge is outside configured JAX")
-    if getattr(module, "RUNTIME_STATUS_API_VERSION", None) != "f2-e.runtime-status.3":
+    if getattr(module, "RUNTIME_STATUS_API_VERSION", None) != "f2-e.runtime-status.4":
         raise RuntimeStatusBridgeUnavailable("unsupported JAX runtime-status bridge version")
     return module
 
@@ -123,5 +123,24 @@ class LasManosHealthStatusResolver:
         )
         try:
             return bridge.platform_runtime_status_evidence(typed_snapshot, arguments, scope)
+        except (TypeError, ValueError):
+            return None
+
+
+class JacobsStepStatusResolver:
+    """Use the configured JAX canonical step+owner resolver without aliases."""
+
+    async def evidence(self, arguments: Mapping[str, object], scope):
+        if (not isinstance(arguments, Mapping) or set(arguments) != {"step_id", "status"}
+                or not isinstance(arguments.get("step_id"), str)
+                or not arguments["step_id"]
+                or not isinstance(arguments.get("status"), str)
+                or not arguments["status"]):
+            return None
+        if getattr(scope, "project_id", None) is not None or getattr(scope, "subject_id", None) is None:
+            return None
+        bridge = _jax_runtime_status_bridge()
+        try:
+            return await bridge.JacobsStepStatusResolver().evidence(arguments, scope)
         except (TypeError, ValueError):
             return None
