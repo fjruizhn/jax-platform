@@ -285,6 +285,8 @@ def test_resumen_de_reprocesar_cuenta_codigos_y_separa_las_202():
 
 
 def test_contar_descriptores_de_este_proceso_ve_uno_nuevo(tmp_path):
+    # Valor absoluto (un desfase constante no lo vería una comparación solo entre dos llamadas del propio helper):
+    assert pe.contar_descriptores(os.getpid()) == len(os.listdir("/proc/self/fd"))
     antes = pe.contar_descriptores(os.getpid())
     with open(tmp_path / "x", "w"):
         assert pe.contar_descriptores(os.getpid()) == antes + 1
