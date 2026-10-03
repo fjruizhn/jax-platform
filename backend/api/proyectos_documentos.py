@@ -385,46 +385,63 @@ async def reprocesar(project_id: int, documento_id: int, user: AuthUser = Depend
     condiciones en la sentencia y reasigna la fila a quien pide. 404 documento ajeno, 409
     `no_reprocesable` (otro estado, oculto o tipo sin extractor), 409 `original_no_encontrado`, 503
     `fuente_ilegible` (no se pudo leer `fuente/`) y 429 `reprocesos_simultaneos` (cupo propio, con `Retry-After`)."""
-    proyecto = await _con_papel(user, project_id, escribe=True, activo=True)
-    pool = await get_pool()
-    doc = await repo.documento_para_reprocesar(pool, project_id=proyecto["id"], documento_id=documento_id)
-    if doc is None:
-        raise _error(404, "documento_no_encontrado")
-    if (doc["oculto"] or doc["estado"] not in ("sin_extractor", "error")
-            or tipos.tipo_de(doc["nombre_original"]) is None):
-        raise _error(409, "no_reprocesable")
-    try:
-        workspace = almacen.cargar_workspace()
-    except almacen.WorkspaceNoConfigurado:
-        logger.error("proyectos_documentos: %s no esta bien configurado", almacen.VARIABLE_WORKSPACE, exc_info=True)
-        raise _error(503, "almacen_no_configurado") from None
-    # Recorrer `fuente/` lee y hashea disco (medido: ~16 s con 4 a la vez): cupo PROPIO, aparte del de subir
-    # (un reprocesar lento no le quita lugar a las subidas), tomado ANTES del recorrido y soltado siempre.
+    # Cupo PROPIO (aparte del de subir: un reprocesar lento no le quita lugar a las subidas), en DOS tiempos: el
+    # de cada usuario ANTES de las lecturas de la base de este endpoint (un 429 por usuario no las hace), y el
+    # global justo antes del recorrido, que es lo caro (medido: ~16 s con 4 a la vez). Los dos se sueltan siempre.
+    # OJO con la cancelacion: si llega un CancelledError mientras corre `to_thread`, el cupo se suelta en el
+    # `finally` pero el HILO sigue vivo hasta terminar el recorrido, asi que ese trabajo ya no esta contado. Hoy no
+    # llega: no hay cancelacion por desconexion del cliente porque la app no usa BaseHTTPMiddleware. Si algun dia
+    # se agrega, hay que esperar al hilo antes de soltar (como `almacen.escribir_streaming`).
     usuario = str(user.user_id)
-    if not cupo_de_reprocesos.tomar(usuario,
-                                    por_usuario=int(await ajustes.valor(ajustes.DOC_REPROCESAR_POR_USUARIO)),
-                                    globales=int(await ajustes.valor(ajustes.DOC_REPROCESAR_GLOBALES))):
+    if not cupo_de_reprocesos.tomar_usuario(usuario, por_usuario=int(await ajustes.valor(ajustes.DOC_REPROCESAR_POR_USUARIO))):
         raise _error(429, "reprocesos_simultaneos")
     try:
-        try:
-            ruta = await asyncio.to_thread(
-                original.buscar_original, workspace, proyecto["uuid"], sha256=doc["sha256"],
-                nombre_original=doc["nombre_original"], carpeta_procesado=doc["carpeta_procesado"],
-                bytes_=doc["bytes"])
-        except original.FuenteIlegible as exc:
-            # No es «no encontrado»: no se pudo mirar. El detalle va al log, nunca al cuerpo.
-            logger.error("proyectos_documentos: fuente/ ilegible al reprocesar el documento %s del proyecto %s: %s",
-                         documento_id, proyecto["id"], exc)
-            raise _error(503, "fuente_ilegible") from None
-        if ruta is None:
-            raise _error(409, "original_no_encontrado")
-        previo = await repo.reprocesar(pool, project_id=proyecto["id"], documento_id=documento_id, ruta_fuente=ruta,
-                                       user_id=int(user.user_id), roles_escritura=_ROLES_DE_ESCRITURA)
-        if previo is None:
-            # La fila cambio entre la lectura y el UPDATE, o quien pide perdio el papel justo ahora.
+        proyecto = await _con_papel(user, project_id, escribe=True, activo=True)
+        pool = await get_pool()
+        doc = await repo.documento_para_reprocesar(pool, project_id=proyecto["id"], documento_id=documento_id)
+        if doc is None:
+            raise _error(404, "documento_no_encontrado")
+        if (doc["oculto"] or doc["estado"] not in ("sin_extractor", "error")
+                or tipos.tipo_de(doc["nombre_original"]) is None):
+            logger.warning("proyectos_documentos: reprocesar rechazado, no_reprocesable (usuario %s, proyecto %s, "
+                           "documento %s, estado %s, oculto %s)", user.user_id, proyecto["id"], documento_id,
+                           doc["estado"], doc["oculto"])
             raise _error(409, "no_reprocesable")
+        try:
+            workspace = almacen.cargar_workspace()
+        except almacen.WorkspaceNoConfigurado:
+            logger.error("proyectos_documentos: %s no esta bien configurado", almacen.VARIABLE_WORKSPACE, exc_info=True)
+            raise _error(503, "almacen_no_configurado") from None
+        if not cupo_de_reprocesos.tomar_global(globales=int(await ajustes.valor(ajustes.DOC_REPROCESAR_GLOBALES))):
+            raise _error(429, "reprocesos_simultaneos")
+        try:
+            try:
+                ruta = await asyncio.to_thread(
+                    original.buscar_original, workspace, proyecto["uuid"], sha256=doc["sha256"],
+                    nombre_original=doc["nombre_original"], carpeta_procesado=doc["carpeta_procesado"],
+                    bytes_=doc["bytes"])
+            except original.FuenteIlegible as exc:
+                # No es «no encontrado»: no se pudo mirar. El detalle va al log, nunca al cuerpo.
+                logger.error("proyectos_documentos: fuente/ ilegible al reprocesar (usuario %s, proyecto %s, "
+                             "documento %s): %s", user.user_id, proyecto["id"], documento_id, exc)
+                raise _error(503, "fuente_ilegible") from None
+            if ruta is None:
+                logger.warning("proyectos_documentos: reprocesar rechazado, original_no_encontrado (usuario %s, "
+                               "proyecto %s, documento %s, estado %s)", user.user_id, proyecto["id"], documento_id,
+                               doc["estado"])
+                raise _error(409, "original_no_encontrado")
+            previo = await repo.reprocesar(pool, project_id=proyecto["id"], documento_id=documento_id,
+                                           ruta_fuente=ruta, user_id=int(user.user_id),
+                                           roles_escritura=_ROLES_DE_ESCRITURA)
+            if previo is None:
+                # La fila cambio entre la lectura y el UPDATE, o quien pide perdio el papel justo ahora.
+                logger.warning("proyectos_documentos: reprocesar rechazado, no_reprocesable al actualizar (usuario %s, "
+                               "proyecto %s, documento %s)", user.user_id, proyecto["id"], documento_id)
+                raise _error(409, "no_reprocesable")
+        finally:
+            cupo_de_reprocesos.soltar_global()
     finally:
-        cupo_de_reprocesos.soltar(usuario)
+        cupo_de_reprocesos.soltar_usuario(usuario)
     logger.info("proyectos_documentos: documento %s del proyecto %s reprocesado por el usuario %s "
                 "(estado anterior %s, subido por %s -> %s, ruta anterior %r, original %s)", documento_id,
                 proyecto["id"], user.user_id, doc["estado"], previo["subido_por_anterior"], user.user_id,

@@ -33,6 +33,34 @@ class Cupo:
         else:
             del self._por_usuario[usuario]
 
+    # Las dos mitades por separado, para quien quiere tomar el cupo POR USUARIO antes de leer la base y el GLOBAL
+    # recien antes del trabajo caro (reprocesar). Cada una se suelta con su propio `soltar_*`.
+    def tomar_usuario(self, usuario: str, *, por_usuario: int) -> bool:
+        if self._por_usuario.get(usuario, 0) >= por_usuario:
+            return False
+        self._por_usuario[usuario] = self._por_usuario.get(usuario, 0) + 1
+        return True
+
+    def soltar_usuario(self, usuario: str) -> None:
+        restantes = self._por_usuario.get(usuario, 0) - 1
+        if restantes < 0:
+            raise RuntimeError(f"cupo: soltar_usuario sin tomar ({usuario!r})")
+        if restantes:
+            self._por_usuario[usuario] = restantes
+        else:
+            del self._por_usuario[usuario]
+
+    def tomar_global(self, *, globales: int) -> bool:
+        if self._total >= globales:
+            return False
+        self._total += 1
+        return True
+
+    def soltar_global(self) -> None:
+        if self._total < 1:
+            raise RuntimeError("cupo: soltar_global sin tomar")
+        self._total -= 1
+
     def en_uso(self) -> tuple[int, dict[str, int]]:
         """(total, por usuario) en vuelo, para las pruebas y el diagnostico."""
         return self._total, dict(self._por_usuario)

@@ -30,5 +30,21 @@ def soltar(usuario: str) -> None:
         raise RuntimeError(f"cupo de reprocesos: soltar sin tomar ({usuario!r})") from None
 
 
+def tomar_usuario(usuario: str, *, por_usuario: int) -> bool:
+    return _cupo.tomar_usuario(usuario, por_usuario=por_usuario)
+
+
+def soltar_usuario(usuario: str) -> None:
+    _cupo.soltar_usuario(usuario)
+
+
+def tomar_global(*, globales: int) -> bool:
+    return _cupo.tomar_global(globales=globales)
+
+
+def soltar_global() -> None:
+    _cupo.soltar_global()
+
+
 def en_uso() -> tuple[int, dict[str, int]]:
     return _cupo.en_uso()

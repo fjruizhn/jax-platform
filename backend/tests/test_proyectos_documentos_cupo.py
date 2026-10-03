@@ -35,3 +35,20 @@ def test_soltar_sin_tomar_nombra_el_cupo():
         cupo_de_reprocesos.soltar("nadie")
     with pytest.raises(RuntimeError, match="subidas"):
         cupo_de_subidas.soltar("nadie")
+
+
+def test_el_cupo_por_usuario_y_el_global_se_toman_y_se_sueltan_por_separado():
+    c = cupo.Cupo()
+    assert c.tomar_usuario("a", por_usuario=1)
+    assert not c.tomar_usuario("a", por_usuario=1)                  # tope del usuario, sin tocar el global
+    assert c.en_uso() == (0, {"a": 1})
+    assert c.tomar_global(globales=1)
+    assert not c.tomar_global(globales=1)                           # tope global
+    assert c.en_uso() == (1, {"a": 1})
+    c.soltar_global()
+    c.soltar_usuario("a")
+    assert c.en_uso() == (0, {})
+    with pytest.raises(RuntimeError):
+        c.soltar_global()
+    with pytest.raises(RuntimeError):
+        c.soltar_usuario("a")

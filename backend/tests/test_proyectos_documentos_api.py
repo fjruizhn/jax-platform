@@ -2028,3 +2028,84 @@ def test_subir_con_el_uuid_del_proyecto_sin_setgid_500_y_no_crea_nada(ent, works
     r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
     assert r.status_code == 500 and _code(r) == "almacen_herencia_rota", r.text
     assert ent.filas(p) == [] and _foto(workspace) == antes
+
+
+# ------------------------------------------- orden del cupo y rastro de los 409 (ronda 2, MINOR-N4)
+
+def test_el_429_por_usuario_no_toca_la_base_y_el_global_se_toma_justo_antes_del_recorrido(ent, workspace, ajustes_en_db,
+                                                                                         monkeypatch):
+    from api import proyectos_documentos as api_docs
+    from proyectos_documentos import cupo_de_reprocesos
+    ajustes_en_db.poner(**{REP_POR_USUARIO: "1", REP_GLOBALES: "1"})
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    usuario = str(ent._id("dueno"))
+    antes = cupo_de_reprocesos.en_uso()
+    lecturas = []
+    real_papel, real_doc = api_docs._con_papel, api_docs.repo.documento_para_reprocesar
+
+    async def papel(*a, **k):
+        lecturas.append("papel")
+        return await real_papel(*a, **k)
+
+    async def leer(*a, **k):
+        lecturas.append("documento")
+        return await real_doc(*a, **k)
+    monkeypatch.setattr(api_docs, "_con_papel", papel)
+    monkeypatch.setattr(api_docs.repo, "documento_para_reprocesar", leer)
+    # el cupo POR USUARIO lleno: 429 sin una sola lectura de la base del endpoint
+    assert cupo_de_reprocesos.tomar_usuario(usuario, por_usuario=1)
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+        assert r.status_code == 429 and _code(r) == "reprocesos_simultaneos" and lecturas == []
+    finally:
+        cupo_de_reprocesos.soltar_usuario(usuario)
+    # el cupo GLOBAL lleno (otro usuario recorriendo): se lee la base, y el 429 sale antes del recorrido
+    assert cupo_de_reprocesos.tomar("otro-recorriendo", por_usuario=1, globales=1)
+    recorridos = []
+    real = original.buscar_original
+    monkeypatch.setattr(original, "buscar_original", lambda *a, **k: (recorridos.append(1), real(*a, **k))[1])
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+        assert r.status_code == 429 and lecturas == ["papel", "documento"] and recorridos == []
+        assert cupo_de_reprocesos.en_uso() == (1, {"otro-recorriendo": 1})     # su lugar por usuario se solto
+    finally:
+        cupo_de_reprocesos.soltar("otro-recorriendo")
+    assert cupo_de_reprocesos.en_uso() == antes
+
+
+def test_el_lugar_por_usuario_se_suelta_tambien_en_404_403_y_409_previos(ent, workspace):
+    from proyectos_documentos import cupo_de_reprocesos
+    p = ent.proyecto()
+    lector = ent.miembro(p, "lector", "VIEWER")
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno, estado="listo")
+    antes = cupo_de_reprocesos.en_uso()
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=lector).status_code == 403
+    assert ent.client.post(f"{P}/{p.id}/documentos/99999999/reprocesar", headers=ent.dueno).status_code == 404
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 409
+    assert cupo_de_reprocesos.en_uso() == antes
+
+
+def test_los_409_de_reprocesar_dejan_rastro_con_usuario_proyecto_y_documento(ent, workspace, caplog, monkeypatch):
+    p = ent.proyecto()
+    a, _ = _ingerido(ent, p, workspace, ent.dueno, estado="listo", nombre="a.pdf")
+    b, fuente = _ingerido(ent, p, workspace, ent.dueno, nombre="b.pdf")
+    fuente.unlink()
+    caplog.set_level(logging.INFO)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{a}/reprocesar", headers=ent.dueno).status_code == 409
+    assert ent.client.post(f"{P}/{p.id}/documentos/{b}/reprocesar", headers=ent.dueno).status_code == 409
+    uid_ = str(ent._id("dueno"))
+    por_codigo = {c: [m for m in caplog.messages if c in m] for c in ("no_reprocesable", "original_no_encontrado")}
+    for codigo, doc in (("no_reprocesable", a), ("original_no_encontrado", b)):
+        assert por_codigo[codigo], (codigo, caplog.messages)
+        m = por_codigo[codigo][0]
+        assert f"usuario {uid_}" in m and f"proyecto {p.id}" in m and f"documento {doc}" in m, m
+    # y el 409 de «la fila cambio entre la lectura y el UPDATE»
+    c, _ = _ingerido(ent, p, workspace, ent.dueno, nombre="c.pdf")
+    caplog.clear()
+
+    async def nada(*a, **k):
+        return None
+    monkeypatch.setattr("api.proyectos_documentos.repo.reprocesar", nada)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{c}/reprocesar", headers=ent.dueno).status_code == 409
+    assert any("no_reprocesable" in m and f"documento {c}" in m and f"usuario {uid_}" in m for m in caplog.messages)
