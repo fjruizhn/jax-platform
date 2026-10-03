@@ -192,19 +192,31 @@ def test_las_manos_caida_no_pierde_filas(e):
     (422, {"code": "proyecto_no_activo"}),
     (422, {"code": "project_uuid_invalido"}),
     (500, "boom"),
+    (401, "credencial"),
+    (403, "credencial"),
+    (408, "lento"),
 ])
-def test_respuestas_que_dejan_las_filas_en_cola(e, estado, detail):
+def test_respuestas_que_dejan_las_filas_en_cola(e, estado, detail, caplog):
+    doc = e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    e.las_manos.post_respuestas = [(estado, {"detail": detail})]
+    with caplog.at_level(logging.WARNING):
+        e.ciclo()
+    assert e.fila(doc)[:2] == ("en_cola", None)
+    if estado in (401, 403, 408, 500, 503) and detail != {"code": "proyecto_no_activo"}:
+        errores = [r for r in caplog.records if r.levelno == logging.ERROR and str(estado) in r.getMessage()]
+        assert errores and e.uuid in errores[0].getMessage()
+        assert CREDENCIAL not in caplog.text
+
+
+@pytest.mark.parametrize("estado,detail,causa", [
+    (422, {"code": "ruta_invalida"}, "ruta_invalida"),
+    (400, "pedido malo", "http_400"),
+])
+def test_otro_4xx_pasa_las_filas_del_trozo_a_error_con_el_codigo(e, estado, detail, causa):
     doc = e.insertar(e.ruta("l1", "a.pdf"), n=1)
     e.las_manos.post_respuestas = [(estado, {"detail": detail})]
     e.ciclo()
-    assert e.fila(doc)[:2] == ("en_cola", None)
-
-
-def test_otro_4xx_pasa_las_filas_del_trozo_a_error_con_el_codigo(e):
-    doc = e.insertar(e.ruta("l1", "a.pdf"), n=1)
-    e.las_manos.post_respuestas = [(422, {"detail": {"code": "ruta_invalida"}})]
-    e.ciclo()
-    assert e.fila(doc) == ("error", None, None, "ruta_invalida")
+    assert e.fila(doc) == ("error", None, None, causa)
     e.ciclo()                                        # ya no es en_cola: no se reenvia
     assert len(e.las_manos.posts) == 1
 

@@ -14,18 +14,21 @@ vez aunque haya varios procesos o un aviso inmediato en medio):
 
 Que hacer con cada respuesta del POST:
   - 202                                -> `pendiente` con ese `job_id`.
-  - 429, 503, 5xx, red caida, timeout  -> las filas siguen `en_cola`; se corta la vuelta
-    (LAS MANOS no esta para atender) y se reintenta en la siguiente.
+  - 401, 403, 408, 429, 5xx, red caida, timeout -> las filas siguen `en_cola`; se corta la
+    vuelta y se reintenta en la siguiente. Un fallo de configuracion o de capacidad no
+    convierte documentos sanos en `error`; las respuestas HTTP dejan un `logger.error`.
   - 422 `proyecto_no_activo` o `project_uuid_invalido` -> siguen `en_cola`; se salta ESE
     proyecto (se archivo entre medio; al reactivarlo salen).
-  - cualquier otro 4xx                 -> las filas del trozo pasan a `error` con el codigo.
+  - los demas 4xx (400, un 422 con otro codigo...) -> rechazan el pedido mismo: las filas
+    del trozo pasan a `error` con el codigo.
 
 BORRADO de `entrada/`: cuando LAS MANOS devuelve el resultado de un archivo (ok o no) y la
 fila cambia a un estado final, se borra la copia de `proyectos/<uuid>/entrada/...` (el
 original queda en `fuente/`) y la carpeta del lote si quedo vacia. Una ruta bajo `fuente/`
--- los documentos que trajo LACTOVI -- NUNCA se borra: es el original. Sin resultado de
-LAS MANOS (trabajo perdido, fallido o sin ese archivo) el archivo se queda: no hay nada
-procesado que lo reemplace. El camino se recorre desde `JAX_WORKSPACE_DIR` con
+-- los documentos que trajo LACTOVI -- NUNCA se borra: es el original. REGLA (aceptada por el
+controlador): se borra SOLO si LAS MANOS devolvio resultado de ESE archivo. Sin resultado
+(trabajo perdido, fallido o sin ese archivo) el archivo se queda: no hay nada procesado que
+lo reemplace. El camino se recorre desde `JAX_WORKSPACE_DIR` con
 `openat(O_NOFOLLOW)` y `unlink(dir_fd=)`, como `almacen.abrir_carpeta_lote`: un enlace
 simbolico en cualquier nivel no se sigue, la fila queda y se deja el error en el log.
 """
@@ -69,6 +72,8 @@ ESTADOS_FINALES = frozenset({"listo", "parcial", "error", "sin_extractor", "canc
 # Estados de un TRABAJO que ya no cambian (`JobStatus` de LAS MANOS).
 TRABAJO_TERMINADO = frozenset({"completed", "failed", "cancelled", "rejected"})
 CODIGOS_QUE_DEJAN_EN_COLA = frozenset({"proyecto_no_activo", "project_uuid_invalido"})
+# 4xx que hablan del llamador o del cupo, no del documento: las filas siguen en_cola.
+SIN_CULPA_DEL_DOCUMENTO = frozenset({401, 403, 408, 429})
 
 _dormir = asyncio.sleep
 _avisos: set[asyncio.Task] = set()
@@ -227,8 +232,11 @@ async def _despachar_trozo(pool, project_uuid: str, usuario: str, trozo: list[di
         return "seguir"
     if estado == 422 and _codigo_de(respuesta) in CODIGOS_QUE_DEJAN_EN_COLA:
         return "saltar_proyecto"
-    if estado in (429, 503) or estado >= 500 or not 400 <= estado < 500:
-        logger.warning("proyectos_documentos: LAS MANOS respondio %s al despachar (se reintenta)", estado)
+    if estado in SIN_CULPA_DEL_DOCUMENTO or estado >= 500 or not 400 <= estado < 500:
+        # Un fallo de configuracion o de capacidad (credencial, cupo, caida) no es culpa del
+        # documento: nunca lo convierte en `error`. Queda en_cola y el log dice que paso.
+        logger.error("proyectos_documentos: LAS MANOS respondio %s (%s) al despachar %s fila(s) del proyecto %s; "
+                     "siguen en_cola y se reintenta", estado, _codigo_de(respuesta), len(ids), project_uuid)
         return "cortar"
     codigo = _codigo_de(respuesta)
     logger.error("proyectos_documentos: LAS MANOS rechazo el trabajo del proyecto %s (%s, %s)",
