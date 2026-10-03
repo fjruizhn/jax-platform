@@ -23,7 +23,7 @@ import httpx
 import pytest
 
 from adjuntos import cuota
-from proyectos_documentos import almacen, tipos
+from proyectos_documentos import almacen, original, tipos
 from proyectos_documentos import repositorio as repo
 import kill_switch
 from tests.identidades import auth, cabeceras, sql, token_para, uid
@@ -1510,7 +1510,7 @@ def test_reencolar_en_un_proyecto_archivado_entre_medio_responde_409_y_no_cambia
 # ------------------------------------------------------------------ reprocesar
 
 def _ingerido(ent, p, workspace, headers, *, estado="sin_extractor", nombre="a.pdf", con_ficha=True,
-              error=None, mover=True):
+              error=None, mover=True, copiar=False):
     """Un documento subido y luego «ingerido» como lo deja LAS MANOS: el original en
     `fuente/`, `carpeta_procesado` con su ficha y la fila en `estado`."""
     contenido = f"%PDF-1.4 {nombre}".encode()
@@ -1520,7 +1520,9 @@ def _ingerido(ent, p, workspace, headers, *, estado="sin_extractor", nombre="a.p
     entrada = workspace / fila[2]
     fuente = workspace / "proyectos" / p.uuid / "fuente" / "lactovi" / nombre
     fuente.parent.mkdir(parents=True, exist_ok=True)
-    if mover:
+    if copiar:
+        fuente.write_bytes(entrada.read_bytes())
+    elif mover:
         entrada.rename(fuente)
     procesado = f"proyectos/{p.uuid}/procesado/{doc}"
     if con_ficha:
@@ -1548,10 +1550,12 @@ def test_reprocesar_202_deja_la_fila_en_cola_apuntando_a_fuente_y_no_toca_el_dis
     assert r.json() == {"id": doc, "estado": "en_cola"}
     estado, ruta, job, error, subido_por = _fila_rep(ent, doc)
     assert (estado, ruta, job, error) == ("en_cola", f"proyectos/{p.uuid}/fuente/lactovi/a.pdf", None, None)
-    assert subido_por == ent._id("contrib")                       # la fila sigue siendo de quien la subio
+    assert subido_por == ent._id("dueno")                         # la fila pasa a ser de quien reprocesa
     assert _en_disco(workspace) == antes and fuente.is_file()
     # quien reprocesa queda en el log (la tabla no tiene donde)
-    assert any(str(ent._id("dueno")) in m and str(doc) in m for m in caplog.messages), caplog.messages
+    mensajes = [m for m in caplog.messages if "reprocesado" in m]
+    assert mensajes and str(ent._id("dueno")) in mensajes[0] and str(doc) in mensajes[0], caplog.messages
+    assert str(ent._id("contrib")) in mensajes[0]                  # el subido_por anterior tambien queda
 
 
 def test_reprocesar_desde_error_con_o_sin_motivo(ent, workspace):
@@ -1675,3 +1679,104 @@ def test_reprocesar_con_el_freno_puesto_423_y_no_cambia_nada(client, usuarios, e
     finally:
         assert client.post("/api/admin/kill-switch/reanudar", headers=admin).status_code == 200
     assert client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+
+
+def test_reprocesar_reasigna_la_fila_a_quien_pide_y_el_despachador_manda_su_identidad(ent, workspace):
+    from tests.test_proyectos_documentos_repositorio import _pool_call
+    p = ent.proyecto()
+    a = ent.miembro(p, "a", "CONTRIBUTOR")
+    b = ent.miembro(p, "b", "CONTRIBUTOR")
+    doc, _ = _ingerido(ent, p, workspace, a)
+    assert _fila_rep(ent, doc)[4] == ent._id("a")
+    ent.client.portal.call(sql, "UPDATE jax_project_membership SET status='REVOKED' "
+                                "WHERE project_id=%s AND user_id=%s", (p.id, ent._id("a")))
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=b)
+    assert r.status_code == 202, r.text
+    assert _fila_rep(ent, doc)[4] == ent._id("b")
+    filas = _pool_call(ent.client, repo.tomar_en_cola, limite=100000)
+    owner = [f["owner"] for f in filas if f["id"] == doc][0]
+    assert owner.user_id == ent._id("b")
+
+
+def test_reprocesar_borra_la_copia_vieja_de_entrada_y_deja_el_original_de_fuente(ent, workspace, caplog):
+    p = ent.proyecto()
+    doc, fuente = _ingerido(ent, p, workspace, ent.dueno, copiar=True)
+    ruta_vieja = ent.client.portal.call(sql, "SELECT ruta_entrada FROM project_documents WHERE id=%s", (doc,), True)[0][0]
+    assert "/entrada/" in ruta_vieja and (workspace / ruta_vieja).is_file()
+    caplog.set_level(logging.INFO)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    assert not (workspace / ruta_vieja).exists() and not (workspace / ruta_vieja).parent.exists()
+    assert fuente.is_file()
+    assert any(ruta_vieja in m for m in caplog.messages if "reprocesado" in m)
+
+
+def test_reprocesar_con_ruta_que_ya_es_de_fuente_no_borra_nada(ent, workspace):
+    p = ent.proyecto()
+    doc, fuente = _ingerido(ent, p, workspace, ent.dueno)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    ent.client.portal.call(sql, "UPDATE project_documents SET estado='sin_extractor' WHERE id=%s", (doc,))
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    assert fuente.is_file() and _fila_rep(ent, doc)[1] == f"proyectos/{p.uuid}/fuente/lactovi/a.pdf"
+
+
+def test_reprocesar_un_documento_oculto_409_no_reprocesable(ent, workspace):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/ocultar", headers=ent.dueno).status_code == 204
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 409 and _code(r) == "no_reprocesable"
+    assert _fila_rep(ent, doc)[0] == "sin_extractor"
+
+
+def test_reprocesar_con_fuente_ilegible_503_y_la_fila_no_cambia(ent, workspace, monkeypatch):
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    antes = _fila_rep(ent, doc)
+
+    def ilegible(*a, **k):
+        raise original.FuenteIlegible("EIO")
+    monkeypatch.setattr(original, "buscar_original", ilegible)
+    r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    assert r.status_code == 503 and _code(r) == "fuente_ilegible"
+    assert _fila_rep(ent, doc) == antes
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignora los permisos")
+def test_reprocesar_con_una_carpeta_de_fuente_sin_permiso_503_y_no_409_falso(ent, workspace):
+    p = ent.proyecto()
+    doc, fuente = _ingerido(ent, p, workspace, ent.dueno, con_ficha=False)
+    fuente.write_bytes(b"otro")                                    # no coincide: hay que recorrer
+    cerrada = workspace / "proyectos" / p.uuid / "fuente" / "zzz"
+    cerrada.mkdir()
+    cerrada.chmod(0)
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+    finally:
+        cerrada.chmod(0o700)
+    assert r.status_code == 503 and _code(r) == "fuente_ilegible"
+
+
+def test_reprocesar_usa_el_cupo_de_subidas_429_y_lo_suelta_siempre(ent, workspace, ajustes_en_db, monkeypatch):
+    from proyectos_documentos import cupo_de_subidas
+    ajustes_en_db.poner(**{POR_USUARIO: "1", GLOBALES: "4"})
+    p = ent.proyecto()
+    doc, _ = _ingerido(ent, p, workspace, ent.dueno)
+    usuario = str(ent._id("dueno"))
+    antes = cupo_de_subidas.en_uso()
+    assert cupo_de_subidas.tomar(usuario, por_usuario=1, globales=4)     # una subida en vuelo del mismo usuario
+    try:
+        r = ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno)
+        assert r.status_code == 429 and _code(r) == "subidas_simultaneas"
+        assert _fila_rep(ent, doc)[0] == "sin_extractor"
+    finally:
+        cupo_de_subidas.soltar(usuario)
+    assert cupo_de_subidas.en_uso() == antes
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 202
+    assert cupo_de_subidas.en_uso() == antes                              # exito: soltado
+    ent.client.portal.call(sql, "UPDATE project_documents SET estado='sin_extractor' WHERE id=%s", (doc,))
+
+    def revienta(*a, **k):
+        raise original.FuenteIlegible("x")
+    monkeypatch.setattr(original, "buscar_original", revienta)
+    assert ent.client.post(f"{P}/{p.id}/documentos/{doc}/reprocesar", headers=ent.dueno).status_code == 503
+    assert cupo_de_subidas.en_uso() == antes                              # fallo: soltado

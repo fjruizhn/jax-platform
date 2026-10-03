@@ -370,32 +370,58 @@ async def reprocesar(project_id: int, documento_id: int, user: AuthUser = Depend
     original ya esta en `proyectos/<uuid>/fuente/` y se manda tal cual, tras comprobar que su
     sha256 es el de la fila (`original.buscar_original`). Se autoriza igual que subir: papel de
     escritura y proyecto ACTIVE; la fila misma la protege `repo.reprocesar`, que repite las
-    condiciones en la sentencia. 404 documento ajeno, 409 `no_reprocesable` (otro estado o tipo
-    sin extractor) y 409 `original_no_encontrado`."""
+    condiciones en la sentencia y reasigna la fila a quien pide. 404 documento ajeno, 409
+    `no_reprocesable` (otro estado, oculto o tipo sin extractor), 409 `original_no_encontrado`, 503
+    `fuente_ilegible` (no se pudo leer `fuente/`) y 429 `subidas_simultaneas`."""
     proyecto = await _con_papel(user, project_id, escribe=True, activo=True)
     pool = await get_pool()
     doc = await repo.documento_para_reprocesar(pool, project_id=proyecto["id"], documento_id=documento_id)
     if doc is None:
         raise _error(404, "documento_no_encontrado")
-    if doc["estado"] not in ("sin_extractor", "error") or tipos.tipo_de(doc["nombre_original"]) is None:
+    if (doc["oculto"] or doc["estado"] not in ("sin_extractor", "error")
+            or tipos.tipo_de(doc["nombre_original"]) is None):
         raise _error(409, "no_reprocesable")
     try:
         workspace = almacen.cargar_workspace()
     except almacen.WorkspaceNoConfigurado:
         logger.error("proyectos_documentos: %s no esta bien configurado", almacen.VARIABLE_WORKSPACE, exc_info=True)
         raise _error(503, "almacen_no_configurado") from None
-    ruta = await asyncio.to_thread(
-        original.buscar_original, workspace, proyecto["uuid"], sha256=doc["sha256"],
-        nombre_original=doc["nombre_original"], carpeta_procesado=doc["carpeta_procesado"], bytes_=doc["bytes"])
-    if ruta is None:
-        raise _error(409, "original_no_encontrado")
-    if not await repo.reprocesar(pool, project_id=proyecto["id"], documento_id=documento_id, ruta_fuente=ruta,
-                                 user_id=int(user.user_id), roles_escritura=_ROLES_DE_ESCRITURA):
-        # La fila cambio entre la lectura y el UPDATE, o quien pide perdio el papel justo ahora.
-        raise _error(409, "no_reprocesable")
+    # Recorrer `fuente/` lee disco: el mismo cupo por usuario y global que subir, tomado ANTES del
+    # recorrido y soltado siempre.
+    usuario = str(user.user_id)
+    if not cupo_de_subidas.tomar(usuario, por_usuario=int(await ajustes.valor(ajustes.DOC_SUBIDAS_POR_USUARIO)),
+                                 globales=int(await ajustes.valor(ajustes.DOC_SUBIDAS_GLOBALES))):
+        raise _error(429, "subidas_simultaneas")
+    try:
+        try:
+            ruta = await asyncio.to_thread(
+                original.buscar_original, workspace, proyecto["uuid"], sha256=doc["sha256"],
+                nombre_original=doc["nombre_original"], carpeta_procesado=doc["carpeta_procesado"],
+                bytes_=doc["bytes"])
+        except original.FuenteIlegible as exc:
+            # No es «no encontrado»: no se pudo mirar. El detalle va al log, nunca al cuerpo.
+            logger.error("proyectos_documentos: fuente/ ilegible al reprocesar el documento %s del proyecto %s: %s",
+                         documento_id, proyecto["id"], exc)
+            raise _error(503, "fuente_ilegible") from None
+        if ruta is None:
+            raise _error(409, "original_no_encontrado")
+        previo = await repo.reprocesar(pool, project_id=proyecto["id"], documento_id=documento_id, ruta_fuente=ruta,
+                                       user_id=int(user.user_id), roles_escritura=_ROLES_DE_ESCRITURA)
+        if previo is None:
+            # La fila cambio entre la lectura y el UPDATE, o quien pide perdio el papel justo ahora.
+            raise _error(409, "no_reprocesable")
+    finally:
+        cupo_de_subidas.soltar(usuario)
     logger.info("proyectos_documentos: documento %s del proyecto %s reprocesado por el usuario %s "
-                "(estado anterior %s, subido por %s, original %s)", documento_id, proyecto["id"], user.user_id,
-                doc["estado"], doc["subido_por"], ruta)
+                "(estado anterior %s, subido por %s -> %s, ruta anterior %r, original %s)", documento_id,
+                proyecto["id"], user.user_id, doc["estado"], previo["subido_por_anterior"], user.user_id,
+                previo["ruta_anterior"], ruta)
+    anterior = previo["ruta_anterior"]
+    if anterior and anterior != ruta:
+        # La copia vieja de `entrada/` ya no la usa nadie; `borrar_copia` solo toca
+        # `proyectos/<uuid>/entrada/` de este proyecto y nunca `fuente/`.
+        await despachador.borrar_copia({"id": documento_id, "project_uuid": proyecto["uuid"],
+                                        "ruta_entrada": anterior})
     try:
         despachador.despachar_ahora()
     except Exception:  # fail-soft: el aviso es un adelanto; la fila ya esta en_cola y el despachador de fondo la toma en su vuelta
