@@ -63,11 +63,13 @@ CANARY_INTERVAL_SECONDS = int(os.getenv("CANARY_INTERVAL_SECONDS", "3600"))
 #    con un WARNING y el barrido SIGUE con las demas: una lenta ya no cancela a
 #    las que le siguen.
 #
-# 2. Tope del BARRIDO (CANARY_SWEEP_TIMEOUT_SECONDS = 1560). Conjunto actual:
+# 2. Tope del BARRIDO (CANARY_SWEEP_TIMEOUT_SECONDS = 1500). Conjunto actual:
 #    5 gobernadas (ada, hipatia, jekyll, kimi, thot) + 2 ollama (jax_local,
 #    el_juez). Peor caso legitimo: 5*(125+10) + 2*(360+10) + 10 (leer el
-#    conjunto) = 675 + 740 + 10 = 1425 s. 1560 deja ~9% de margen.
-#    Historia: 900 (2026-09-11) -> 1080 -> 1180 (2026-09-17, SP3) -> 1560.
+#    conjunto) = 675 + 740 + 10 = 1425 s. 1500 deja ~5% de margen sobre eso, y
+#    el techo que admite la cuenta del punto 4 es 1539.
+#    Historia: 900 (2026-09-11) -> 1080 -> 1180 (2026-09-17, SP3) -> 1560
+#    (ronda 2) -> 1500 (ronda 3: con 1560 la cota del punto 4 daba 7240).
 #
 # 3. Reintento de las diferidas (CANARY_DEFERRED_MAX_SECONDS = 1800, cada
 #    CANARY_RETRY_SECONDS = 60). Una sonda saltada por mision NO se descarta:
@@ -77,21 +79,30 @@ CANARY_INTERVAL_SECONDS = int(os.getenv("CANARY_INTERVAL_SECONDS", "3600"))
 # 4. La cuenta del hueco. El ciclo es: barrido (S) + reintentos (D) + dormir
 #    CANARY_INTERVAL_SECONDS (3600). Entre dos eventos consecutivos de una
 #    misma faceta (a = su posicion dentro del barrido, 0 <= a <= S):
-#        hueco = S_k + D_k + 3600 + a_(k+1) - a_k  <=  3600 + D + 2*S
+#        hueco = S_k + D_k + 3600 + a_(k+1) - a_k
+#    y a_(k+1) puede ser tan tarde como S_(k+1) + D_(k+1) (la propia faceta
+#    diferida), asi que la cota correcta suma LOS DOS ciclos:
+#        hueco <= 3600 + S_k + D_k + S_(k+1) + D_(k+1) = 3600 + 2*S + 2*D
 #    Mision de duracion normal (~200 s): el ultimo reintento cae a lo sumo
-#    60 s despues de que termina, o sea D <= 200 + 60 = 260. Con S = 1560 (el
+#    60 s despues de que termina, o sea D <= 200 + 60 = 260. Con S = 1500 (el
 #    tope duro, mas pesimista que el legitimo de 1425):
-#        hueco <= 3600 + 260 + 2*1560 = 6980 s  <  7200 s   (margen 220 s)
-#    Sin mision (D = 0): <= 3600 + 3120 = 6720 s. Con el S legitimo (1425) el
-#    peor caso con mision queda en 6710 s.
+#        hueco <= 3600 + 2*1500 + 2*260 = 7120 s  <  7200 s   (margen 80 s)
+#    (Con 1560 daba 7240 > 7200: error de la ronda 2, corregido en la 3.)
+#    Sin mision (D = 0): <= 3600 + 3000 = 6600 s.
 #    LO QUE ESTO NO CUBRE: una mision de mas de ~1800 s agota el tope diferido
 #    (WARNING) y el hueco puede pasar de 7200 s -- ahi el `unknown` del reaper
 #    es legitimo: lleva mas de dos horas sin medirse. Si cambia el intervalo,
 #    el conjunto de facetas, un timeout de _invoke_facet_dispatch o la ventana
-#    del lector, esta cuenta se rehace.
+#    del lector, esta cuenta se rehace. La deriva de las constantes, contra el
+#    HEALTH_WINDOW_SECONDS del lector real, tests/test_facet_canary_internas.py::
+#    test_los_presupuestos_cumplen_la_cuenta_del_hueco.
+#
+# 5. Una faceta cortada por su tope (punto 1) escribe una fila probe_error con
+#    detalle "tope de faceta" (la escritura tiene su propio tope de base): el
+#    reaper la ve `down` con causa, no `unknown`.
 # ---------------------------------------------------------------------------
 CANARY_FACET_TIMEOUT_SECONDS = 400
-CANARY_SWEEP_TIMEOUT_SECONDS = 1560
+CANARY_SWEEP_TIMEOUT_SECONDS = 1500
 CANARY_DEFERRED_MAX_SECONDS = 1800
 CANARY_RETRY_SECONDS = 60
 
@@ -169,9 +180,14 @@ _PUERTOS_POR_DEFECTO = {"http": 80, "https": 443}
 _ERRORES_DE_BASE = (TimeoutError, OSError, aiomysql.Error)
 
 
+_LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
 def _origen(url: str) -> tuple:
+    """(esquema, host, puerto). localhost, 127.0.0.1 y ::1 son el mismo host."""
     partes = urlsplit(url)
-    return (partes.scheme, (partes.hostname or "").lower(),
+    host = (partes.hostname or "").lower()
+    return (partes.scheme, "loopback" if host in _LOOPBACK else host,
             partes.port or _PUERTOS_POR_DEFECTO.get(partes.scheme))
 
 
@@ -319,8 +335,10 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
 
 async def _sondear_con_tope(facet: str, config: dict, source: str) -> str | None:
     """probe_facet con el tope por faceta. Si lo excede: WARNING y OUTCOME_PROBE_ERROR
-    como valor de retorno; NO se escribe fila (la cancelacion no pasa por el
-    `except Exception` de _invoke_facet) y el barrido sigue con las demas."""
+    como valor de retorno, y escribe UNA fila probe_error "tope de faceta" (la
+    cancelacion no pasa por el `except Exception` de _invoke_facet, asi que si
+    no la escribe esta funcion no la escribe nadie). El barrido sigue con las
+    demas."""
     try:
         async with asyncio.timeout(CANARY_FACET_TIMEOUT_SECONDS):
             return await probe_facet(facet, config, source)
@@ -329,6 +347,18 @@ async def _sondear_con_tope(facet: str, config: dict, source: str) -> str | None
             "facet_canary: la sonda de %s (%s) excedio su tope de %ss y se "
             "corto; el barrido sigue con las demas", facet, source,
             CANARY_FACET_TIMEOUT_SECONDS)
+        # La cancelacion no pasa por el `except Exception` de _invoke_facet, asi
+        # que nadie escribio: sin esta fila el reaper veria `unknown` (sin causa)
+        # y no `down`. Igual que probe_after_rebind. Con tope de base propio:
+        # una MariaDB colgada no puede colgar el barrido por la puerta de atras.
+        try:
+            async with asyncio.timeout(CANARY_DB_TIMEOUT_SECONDS):
+                await record_facet_health(
+                    facet, OUTCOME_PROBE_ERROR, source, "tope de faceta")
+        except TimeoutError:
+            logger.warning(
+                "facet_canary: no se pudo registrar el tope de faceta de %s "
+                "(la base no contesto en %ss)", facet, CANARY_DB_TIMEOUT_SECONDS)
         return OUTCOME_PROBE_ERROR
 
 

@@ -342,18 +342,22 @@ def test_el_reintento_respeta_su_tope_y_avisa(monkeypatch, espias, caplog):
 
 
 def test_el_tope_diferido_no_consume_el_del_barrido(monkeypatch, espias):
-    """Con el tope del barrido casi agotado, el reintento igual corre: son presupuestos aparte."""
-    estado = {"n": 0}
+    """La mision termina DESPUES de que vence el tope del barrido: si el reintento
+    viviera dentro de ese tope (mutacion M6) se cortaria con el barrido y las
+    diferidas nunca se sondearian."""
+    t0 = time.monotonic()
 
     async def mision():
-        estado["n"] += 1
-        return {"mision_id": "m-1", "n": 1} if estado["n"] <= 3 else None
+        return {"mision_id": "m-1", "n": 1} if time.monotonic() - t0 < 0.6 else None
     monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", mision)
     monkeypatch.setattr(facet_canary, "CANARY_SWEEP_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(facet_canary, "CANARY_RETRY_SECONDS", 0.2)
     monkeypatch.setattr(facet_canary, "CANARY_DEFERRED_MAX_SECONDS", 5)
 
     asyncio.run(facet_canary.probe_all(facet_canary.SOURCE_CANARY_PERIODIC))
-    assert len(espias["invoke"]) == 3
+
+    assert time.monotonic() - t0 > 0.6, "los reintentos no duraron mas que el tope del barrido: la prueba no prueba"
+    assert sorted(f for f, _ in espias["invoke"]) == ["ada", "jax_local", "thot"]
 
 
 # MAJOR 2: el rebind sondea siempre ------------------------------------------
@@ -399,16 +403,79 @@ def test_una_faceta_que_excede_su_tope_no_impide_sondear_las_siguientes(monkeypa
     assert any("ada" in r.getMessage() and "tope" in r.getMessage() for r in caplog.records)
 
 
+def test_una_faceta_cortada_por_su_tope_escribe_la_fila_probe_error(monkeypatch, espias):
+    """Sin la fila el reaper ve `unknown` (sin causa); con ella, `down` con causa."""
+    monkeypatch.setattr(facet_canary, "CANARY_FACET_TIMEOUT_SECONDS", 0.05)
+
+    async def invoke(facet, config, user_id, message, semantic_context=None, *, source="chat"):
+        await asyncio.sleep(10)
+    monkeypatch.setattr(facet_canary, "_invoke_facet", invoke)
+    escritos = []
+
+    async def record(facet, outcome, source, detail=None):
+        escritos.append((facet, outcome, source, detail))
+        return True
+    monkeypatch.setattr(facet_canary, "record_facet_health", record)
+
+    asyncio.run(facet_canary.probe_all(facet_canary.SOURCE_CANARY_PERIODIC))
+
+    periodic = facet_canary.SOURCE_CANARY_PERIODIC
+    assert escritos == [(f, "probe_error", periodic, "tope de faceta")
+                        for f in ("ada", "jax_local", "thot")]
+
+
+def test_la_escritura_del_tope_de_faceta_tiene_tope_de_base(monkeypatch, espias, caplog):
+    """Una base colgada no puede colgar el barrido por la puerta de atras."""
+    monkeypatch.setattr(facet_canary, "CANARY_FACET_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(facet_canary, "CANARY_DB_TIMEOUT_SECONDS", 0.05)
+
+    async def invoke(facet, config, user_id, message, semantic_context=None, *, source="chat"):
+        await asyncio.sleep(10)
+
+    async def record_colgado(*a, **k):
+        await asyncio.sleep(10)
+    monkeypatch.setattr(facet_canary, "_invoke_facet", invoke)
+    monkeypatch.setattr(facet_canary, "record_facet_health", record_colgado)
+
+    with caplog.at_level(logging.WARNING):
+        resultados = asyncio.run(asyncio.wait_for(
+            facet_canary.probe_all(facet_canary.SOURCE_CANARY_PERIODIC), timeout=5))
+
+    assert resultados == [facet_canary.OUTCOME_PROBE_ERROR] * 3
+    assert any("no se pudo registrar el tope de faceta" in r.getMessage() for r in caplog.records)
+
+
 def test_los_presupuestos_cumplen_la_cuenta_del_hueco():
-    """La cuenta escrita junto a las constantes, ejecutable: el hueco maximo entre
-    dos eventos de una faceta (intervalo + reintento de una mision normal + 2
-    barridos) tiene que quedar bajo la ventana del lector (7200 s)."""
-    hueco = (3600 + (200 + facet_canary.CANARY_RETRY_SECONDS)
-             + 2 * facet_canary.CANARY_SWEEP_TIMEOUT_SECONDS)
-    assert hueco < 7200
+    """La cuenta del comentario, DERIVADA de las constantes (no copiada): el hueco
+    maximo entre dos eventos de una faceta suma los DOS ciclos vecinos
+    (3600 + 2*S + 2*D) y tiene que quedar bajo la ventana REAL del lector. Falla
+    si alguien sube S por encima del techo."""
+    from jacobs.facet_health import HEALTH_WINDOW_SECONDS
+
+    mision_normal = 200
+    D = mision_normal + facet_canary.CANARY_RETRY_SECONDS      # el ultimo reintento cae <= 1 paso despues
+    S = facet_canary.CANARY_SWEEP_TIMEOUT_SECONDS
+    intervalo = 3600
+    assert 2 * intervalo == HEALTH_WINDOW_SECONDS, "la ventana del lector ya no es 2 x intervalo: rehacer la cuenta"
+    assert intervalo + 2 * S + 2 * D < HEALTH_WINDOW_SECONDS
+
+    techo = (HEALTH_WINDOW_SECONDS - intervalo - 2 * D - 1) // 2
     legitimo = 5 * (125 + 10) + 2 * (360 + 10) + 10
-    assert facet_canary.CANARY_SWEEP_TIMEOUT_SECONDS >= legitimo
+    assert legitimo <= S <= techo, f"S={S} fuera de [{legitimo}, {techo}]"
     assert facet_canary.CANARY_FACET_TIMEOUT_SECONDS >= 360 + 10
+
+
+def test_el_origen_trata_localhost_127_y_ipv6_como_el_mismo_host():
+    o = facet_canary._origen
+    assert o("http://localhost:11434/v1") == o("http://127.0.0.1:11434") == o("http://[::1]:11434")
+    assert o("http://localhost:11434") != o("http://localhost:11435")
+    assert o("http://localhost:11434") != o("http://otra-maquina:11434")
+
+
+def test_el_juez_en_localhost_entra_con_JAX_OLLAMA_URL_en_127(bindings, monkeypatch):
+    monkeypatch.setenv("JAX_OLLAMA_URL", "http://127.0.0.1:11434")
+    bindings([("el_juez", "primary", *APROBADO, "active", "ollama", "http://localhost:11434/v1")])
+    assert "el_juez" in asyncio.run(facet_canary.canary_facets(_config()))
 
 
 # MINOR 1: el _invoke_facet REAL despacha a una faceta fuera de personalities --
