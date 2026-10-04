@@ -155,6 +155,7 @@ def test_platform_step_bridge_rejects_preloaded_jacobs_from_other_checkout(monke
     reason="requires the isolated SR2 exact-pair MariaDB job")
 def test_exact_pair_reads_real_canonical_step_owner_join_and_index_plan(monkeypatch):
     import aiomysql
+    from db_connect_config import db_connect_timeout_seconds
     from jacobs import store as jacobs_store
 
     bridge, resolution = _core(monkeypatch)
@@ -167,7 +168,8 @@ def test_exact_pair_reads_real_canonical_step_owner_join_and_index_plan(monkeypa
     pipeline_id, step_id = "sr2-step-it-pipeline", "sr2-step-it-step"
 
     async def seed_and_explain():
-        conn = await aiomysql.connect(**connection_settings)
+        conn = await aiomysql.connect(**connection_settings,
+            connect_timeout=db_connect_timeout_seconds())
         try:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute("""CREATE TABLE IF NOT EXISTS jacobs_pipelines (
