@@ -23,9 +23,15 @@ if [[ -z "${_JAX_DB_ESPERAR_LIMPIO:-}" ]]; then
         JAX_DB_CONTENEDOR="${JAX_DB_CONTENEDOR:-}" JAX_DB_ESPERA_SEG="${JAX_DB_ESPERA_SEG:-}" \
         /bin/bash "$0" "$@"
 fi
+# Segunda capa: aunque la marca llegara puesta desde fuera, el entorno es este.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root DOCKER_CONFIG=/root/.docker
 cd / || exit 1
 CONTENEDOR="${JAX_DB_CONTENEDOR:-mariadb-12-3-jax}"  # vacía => por defecto (:-)
 LIMITE_SEG="${JAX_DB_ESPERA_SEG:-540}"
+# Validadas: (( )) evalúa expresiones (a[$(cmd)] correría como root) y un
+# nombre que empiece con «-» sería una opción de docker exec.
+[[ "$LIMITE_SEG" =~ ^[0-9]+$ ]] || { echo "JAX_DB_ESPERA_SEG inválido" >&2; exit 2; }
+[[ "$CONTENEDOR" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "JAX_DB_CONTENEDOR inválido" >&2; exit 2; }
 inicio=$(/usr/bin/date +%s)
 primer_error=""
 ultimo_error=""
