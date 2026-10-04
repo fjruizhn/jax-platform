@@ -40,7 +40,7 @@ def _sealed_processing_envelope(scope, registry, receipt, arguments):
     claim = ClaimRecord("processing-claim", "PROCESSING_JOB_STATUS", arguments, scope,
         SourceClass.CURRENT_SOURCE, EpistemicStatus.CURRENT_OBSERVATION,
         resolution_receipt_ref=reference.ref_id, disposition=ClaimDisposition.ASSERTABLE,
-        template_contract=TemplateContract("PROCESSING_JOB_STATUS", "f2-e.runtime-status.3", "es"))
+        template_contract=TemplateContract("PROCESSING_JOB_STATUS", "f2-e.runtime-status.4", "es"))
     candidate = GovernedResponseCandidate("f2-c.1", "processing-response", scope.request_id,
         scope.trace_id, scope, scope.component_id, (),
         (ContentBlock(ContentBlockKind.CLAIM_REF_BLOCK, claim_refs=(claim.claim_id,)),),
@@ -54,7 +54,7 @@ def _sealed_processing_envelope(scope, registry, receipt, arguments):
     def resolve(candidate_ref, candidate_scope):
         return known if candidate_ref == reference and candidate_scope == scope else None
     context = RenderContext(registry, {reference.ref_id: receipt},
-        {("PROCESSING_JOB_STATUS", "f2-e.runtime-status.3", "es"):
+        {("PROCESSING_JOB_STATUS", "f2-e.runtime-status.4", "es"):
             "Trabajo de procesamiento {processing_job_id} está {status}."}, {},
         GovernedDomainRegistry(), lambda ref, candidate_scope: resolve(ref, candidate_scope) is not None,
         lambda: datetime.now(timezone.utc), receipt_reference_resolver=resolve)
