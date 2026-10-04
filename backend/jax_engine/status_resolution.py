@@ -42,6 +42,25 @@ def _jax_runtime_status_bridge():
     return module
 
 
+def _jacobs_step_governance_modules():
+    """STEP_STATUS lee jacobs.store/models; ambos deben cargar del MISMO JAX
+    configurado. Un modulo precargado desde otro checkout (p.ej. un pin viejo
+    en sys.modules) queda rechazado: si se usara, el resolver del SHA nuevo
+    llamaria al store viejo y escaparia un AttributeError fuera del fail-closed."""
+    root = os.environ.get("JAX_REPO_PATH", "")
+    if not root or not os.path.isabs(root):
+        raise RuntimeStatusBridgeUnavailable("JAX_REPO_PATH is unavailable")
+    root_path = Path(root).resolve()
+    for module_name in ("jacobs", "jacobs.store", "jacobs.models"):
+        try:
+            module = importlib.import_module(module_name)
+        except (ImportError, AttributeError) as exc:
+            raise RuntimeStatusBridgeUnavailable("JAX jacobs step modules cannot load") from exc
+        module_file = getattr(module, "__file__", None)
+        if not module_file or not Path(module_file).resolve().is_relative_to(root_path):
+            raise RuntimeStatusBridgeUnavailable("loaded jacobs step module is outside configured JAX")
+
+
 def _arguments(arguments: Mapping[str, object] | object, *, expected_name: str | None = None):
     if not isinstance(arguments, Mapping) or set(arguments) != {"name", "status"}:
         return None
@@ -140,6 +159,7 @@ class JacobsStepStatusResolver:
         if getattr(scope, "project_id", None) is not None or getattr(scope, "subject_id", None) is None:
             return None
         bridge = _jax_runtime_status_bridge()
+        _jacobs_step_governance_modules()
         try:
             return await bridge.JacobsStepStatusResolver().evidence(arguments, scope)
         except (TypeError, ValueError):

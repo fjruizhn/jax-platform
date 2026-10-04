@@ -135,6 +135,22 @@ def test_platform_step_bridge_rejects_unexpected_runtime_api_version(monkeypatch
             status_resolution._jax_runtime_status_bridge()
 
 
+@pytest.mark.parametrize("module_name", ("jacobs.store", "jacobs.models"))
+def test_platform_step_bridge_rejects_preloaded_jacobs_from_other_checkout(monkeypatch, module_name):
+    """Mezcla de checkouts: un jacobs.store/models precargado desde OTRO JAX
+    (p.ej. el 2b0c163 de los jobs genericos queda en sys.modules) se rechaza
+    fail-closed; nunca se delega al store viejo."""
+    import sys
+    import types
+    bridge, _ = _core(monkeypatch)
+    fake = types.ModuleType(module_name)
+    fake.__file__ = "/opt/jax-2b0c163/jacobs/" + module_name.split(".", 1)[1] + ".py"
+    monkeypatch.setitem(sys.modules, module_name, fake)
+    with pytest.raises(RuntimeStatusBridgeUnavailable, match="outside configured JAX"):
+        asyncio.run(JacobsStepStatusResolver().evidence(
+            {"step_id": "step-1", "status": "running"}, _scope(bridge)))
+
+
 @pytest.mark.skipif(os.environ.get("SR2_STEP_STATUS_DB_TEST") != "1",
     reason="requires the isolated SR2 exact-pair MariaDB job")
 def test_exact_pair_reads_real_canonical_step_owner_join_and_index_plan(monkeypatch):
