@@ -11,14 +11,20 @@
 # como sano; --innodb_initialized, con el usuario de .my-healthcheck.cnf).
 set -uo pipefail
 # Corre como root con el entorno del servicio (ExecStartPre=+ no limpia
-# Environment=). Ese PATH incluye ~/.local/bin y ~/.nvm (de fruiz) y HOME es
-# /var/lib/jaxsvc (de jaxsvc): sin esto, un `docker` falso ahí o un
-# .docker/config.json de jaxsvc correría o mandaría como root (BLOCK de la
-# auditoría del PR #191). Entorno fijo y rutas absolutas.
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-export HOME=/root DOCKER_CONFIG=/root/.docker
-unset DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
-CONTENEDOR="${JAX_DB_CONTENEDOR:-mariadb-12-3-jax}"
+# Environment= ni WorkingDirectory=). Ese entorno apunta a directorios de
+# cuentas sin privilegios: PATH con ~/.local/bin y ~/.nvm (fruiz), HOME y
+# TMPDIR de jaxsvc, checkout de producción escribible por fruiz. Sin esto, un
+# `docker` falso o un .docker/config.json correrían o mandarían como root
+# (BLOCK de la auditoría del PR #191). Lista BLANCA: el guion se re-ejecuta con
+# un entorno vacío y solo pasan sus dos variables propias.
+if [[ -z "${_JAX_DB_ESPERAR_LIMPIO:-}" ]]; then
+    exec /usr/bin/env -i _JAX_DB_ESPERAR_LIMPIO=1 \
+        PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root DOCKER_CONFIG=/root/.docker \
+        JAX_DB_CONTENEDOR="${JAX_DB_CONTENEDOR:-}" JAX_DB_ESPERA_SEG="${JAX_DB_ESPERA_SEG:-}" \
+        /bin/bash "$0" "$@"
+fi
+cd / || exit 1
+CONTENEDOR="${JAX_DB_CONTENEDOR:-mariadb-12-3-jax}"  # vacía => por defecto (:-)
 LIMITE_SEG="${JAX_DB_ESPERA_SEG:-540}"
 inicio=$(/usr/bin/date +%s)
 primer_error=""
