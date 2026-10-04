@@ -4529,7 +4529,17 @@ jobs:
       # comando, sobre la rama: 2180 passed / 1428 skipped; menos el skip de entorno del runner, 2179.
       # 2179 -> 2180 (ronda 3 de #187): +1 pura. MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la rama:
       # 2181 passed / 1428 skipped; menos el skip de entorno del runner, 2180.
-      JAX_CI_MIN_PASSED: "2180"
+      # 2180 -> 2208 (ronda 2 de fix/sonda-facetas-internas): +28 puras (test_facet_canary_internas.py y
+      # los casos de la sonda; ninguna pide `client`). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la
+      # rama: 2207 passed / 1428 skipped; el runner suma los 2 de test_processing_job_exact_pair.py que aqui
+      # fallan por el pin local de jax (processing_job_store) y resta el skip de entorno: 2207 + 2 - 1 = 2208.
+      # El piso CON DB (PISO_PASSED) NO se midio aqui (la clonacion de la base de sesion falla por triggers):
+      # le tocan los mismos +28, o sea 3606 -> 3634 estimado; lo re-mide quien integre.
+      # 2208 -> 2212 (ronda 3 de fix/sonda-facetas-internas): +4 puras (fila al cortar por tope, tope de base de
+      # esa escritura, loopback en el origen, el_juez en localhost). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo
+      # comando, sobre la rama: 2211 passed / 1428 skipped; 2211 + 2 (los de processing_job_store) - 1 (skip de
+      # entorno) = 2212. El piso CON DB (PISO_PASSED) sigue sin medirse: 3634 -> 3638 estimado.
+      JAX_CI_MIN_PASSED: "2212"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
