@@ -3504,11 +3504,11 @@ jobs:
           #   procesamiento_fallido; vista en rojo contra el despachador sin defensa). MEDIDO CON DB en local
           #   (mariadb:12.3.3 descartable en 3399, jax 2b0c163, mismo comando): 3609 passed, 0 failed, 0 skipped,
           #   con las 3 de test_base_por_sesion incluidas; 3609 - 3 = 3606.
-          # Medido 2026-10-04 contra JAX 8405798 y el clon local MariaDB:
-          # 3618 passed / 2 skipped. La corrida señala dos fallos reales de
-          # integración (paridad de extensiones y extractores opcionales no
-          # instalados en este entorno); el piso no oculta esos fallos.
-          PISO_PASSED = 3618
+          # Medido 2026-10-04 sobre master 8624c84 + F2-E y JAX 8405798:
+          # 3644 passed / 2 skipped en MariaDB local. La corrida también dejó
+          # visibles dos fallos: paridad de extensiones y un lote dependiente
+          # de un ajuste persistido local; este piso solo cuenta passed.
+          PISO_PASSED = 3644
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4535,10 +4535,10 @@ jobs:
       # comando, sobre la rama: 2180 passed / 1428 skipped; menos el skip de entorno del runner, 2179.
       # 2179 -> 2180 (ronda 3 de #187): +1 pura. MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la rama:
       # 2181 passed / 1428 skipped; menos el skip de entorno del runner, 2180.
-      # Master actualizado: 2212 passed / 1428 skipped medidos con JAX_CI_NO_DB=1.
-      # Incluye las rondas 2 y 3 de la sonda de facets (#348); medir de nuevo
-      # el total combinado con las pruebas F2-E antes de fijar el piso final.
-      JAX_CI_MIN_PASSED: "2212"
+      # Medido 2026-10-04 sobre master 8624c84 + F2-E y JAX 8405798:
+      # 2219 passed / 1428 skipped con JAX_CI_NO_DB=1. El test de paridad
+      # E2a falla por cinco extensiones no admitidas en Platform; no se oculta.
+      JAX_CI_MIN_PASSED: "2219"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
