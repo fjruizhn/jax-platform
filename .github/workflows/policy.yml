@@ -1310,7 +1310,7 @@ jobs:
       # "ModuleNotFoundError: No module named 'claims'".
       JAX_REPO_PATH: /tmp/jax
       # SR3 processing imports validate the workspace during module import.
-      JAX_WORKSPACE_DIR: ${{ runner.temp }}/jax-workspace
+      JAX_WORKSPACE_DIR: /tmp/jax-workspace
       # Web Chat imports the JAX-owned B9 package as well as reading its
       # configuration.  Resolve it from this job's paired checkout, never an
       # unrelated preinstalled package named `jax`.
@@ -3608,7 +3608,7 @@ jobs:
       # mas abajo.
       JAX_REPO_PATH: /tmp/jax
       # SR3 processing imports validate the workspace during module import.
-      JAX_WORKSPACE_DIR: ${{ runner.temp }}/jax-workspace
+      JAX_WORKSPACE_DIR: /tmp/jax-workspace
       # The paired checkout owns `jax.memory.b9`; JAX_REPO_PATH is a data
       # location, not a Python import path.
       PYTHONPATH: /tmp/jax:/tmp/jax/las_manos
