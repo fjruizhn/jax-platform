@@ -10,17 +10,27 @@
 # @@skip_networking, así que el servidor temporal de MARIADB_AUTO_UPGRADE no pasa
 # como sano; --innodb_initialized, con el usuario de .my-healthcheck.cnf).
 set -uo pipefail
+# Corre como root con el entorno del servicio (ExecStartPre=+ no limpia
+# Environment=). Ese PATH incluye ~/.local/bin y ~/.nvm (de fruiz) y HOME es
+# /var/lib/jaxsvc (de jaxsvc): sin esto, un `docker` falso ahí o un
+# .docker/config.json de jaxsvc correría o mandaría como root (BLOCK de la
+# auditoría del PR #191). Entorno fijo y rutas absolutas.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/root DOCKER_CONFIG=/root/.docker
+unset DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
 CONTENEDOR="${JAX_DB_CONTENEDOR:-mariadb-12-3-jax}"
 LIMITE_SEG="${JAX_DB_ESPERA_SEG:-540}"
-inicio=$(date +%s)
+inicio=$(/usr/bin/date +%s)
 primer_error=""
 ultimo_error=""
 while :; do
-    # timeout: un dockerd colgado lo explica este guion, no el TimeoutStartSec de systemd.
-    salida=$(timeout 15 docker exec "$CONTENEDOR" healthcheck.sh --connect --innodb_initialized 2>&1)
+    # timeout de fuera: un dockerd colgado lo explica este guion, no el
+    # TimeoutStartSec de systemd. timeout de dentro: que el healthcheck no quede
+    # vivo en el contenedor cuando se corta el cliente.
+    salida=$(/usr/bin/timeout 15 /usr/bin/docker exec "$CONTENEDOR" timeout 10 healthcheck.sh --connect --innodb_initialized 2>&1)
     rc=$?
     if (( rc == 0 )); then
-        espera=$(( $(date +%s) - inicio ))
+        espera=$(( $(/usr/bin/date +%s) - inicio ))
         if (( espera > 0 )); then
             echo "MariaDB de JAX lista tras ${espera} s (primer error: ${primer_error:-ninguno})"
         fi
@@ -28,9 +38,9 @@ while :; do
     fi
     ultimo_error="rc=$rc ${salida//$'\n'/ | }"
     [[ -n "$primer_error" ]] || { primer_error="$ultimo_error"; echo "esperando a MariaDB de JAX ($CONTENEDOR): $primer_error"; }
-    if (( $(date +%s) - inicio >= LIMITE_SEG )); then
+    if (( $(/usr/bin/date +%s) - inicio >= LIMITE_SEG )); then
         echo "MariaDB de JAX ($CONTENEDOR) no respondió en ${LIMITE_SEG} s. Primer error: $primer_error. Último: $ultimo_error" >&2
         exit 1
     fi
-    sleep 2
+    /usr/bin/sleep 2
 done

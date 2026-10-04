@@ -20,7 +20,10 @@ corte, un `MARIADB_AUTO_UPGRADE`, un reinicio de dockerd— deja a JAX abajo en 
   usuario de `.my-healthcheck.cnf` que ya existe en el datadir.
 - Si la base no responde en 9 min, el arranque falla, avisa por `aviso-fallo@` (agrupa:
   uno cada 6 h por unidad) y `Restart=on-failure` lo vuelve a intentar.
-- Al recibir el aviso: arreglar la base y `sudo systemctl start jax-platform jax-las-manos`.
+- Al recibir el aviso: arreglar la base. JAX vuelve solo en el siguiente reintento (cada
+  ~9 min); `sudo systemctl start jax-platform jax-las-manos` solo lo adelanta.
+- El guion corre como root: fija su propio PATH/HOME/DOCKER_CONFIG y usa rutas absolutas,
+  porque el entorno del servicio apunta a directorios de cuentas sin privilegios.
 - El journal del servicio dice por qué esperó (primer y último error de `healthcheck.sh`).
 
 `jax-ejecutor-proxy` y `jax-ariadna-pm` no se conectan a la base al arrancar (salen a los
