@@ -1338,11 +1338,19 @@ jobs:
           # Platform's F2-C/F2-D baseline is the governed exact pair; keeping
           # the historical domain-.5 JAX pin after this contract upgrade would
           # make master import an incompatible renderer/lifecycle vocabulary.
-          PIN=2b0c16327997f6bacd0cafd61f50d92a6d5d7476
+          PIN=bdadf249f783c7d49f3570874d1431c89ae64c52
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
           test "$(git -C /tmp/jax rev-parse HEAD)" = "$PIN"
+
+      - name: Instalar extractores declarados por el JAX fijado
+        # JAX #335 cierra POST /procesamiento/trabajos con 503 si los
+        # extractores declarados en su requirements-archivos.txt no están
+        # disponibles. El test de integración debe ejercitar el camino verde
+        # instalando exactamente los paquetes del checkout fijado, no una
+        # copia de versiones mantenida en este workflow.
+        run: pip install -r /tmp/jax/requirements-archivos.txt
 
       - name: Crear el esquema de Jacobs con SU propio init_tables()
         working-directory: .
@@ -1486,6 +1494,26 @@ jobs:
           err = sum(int(s.get("errors", 0)) for s in suites)
           skip = sum(int(s.get("skipped", 0)) for s in suites)
           passed = total - fail - err - skip
+
+          # This exact test is intentionally skipped on GitHub: Actions has
+          # no production /etc/jax/.env to compare against. Do not let this
+          # environment-only skip mask a DB outage; all other skips remain
+          # subject to MAX_SKIPS below.
+          env_only_test = (
+              "tests.test_conftest_no_carga_secretos_no_necesarios",
+              "test_fernet_key_y_jwt_secret_se_fuerzan_aunque_ya_vengan_puestos_en_el_ambiente",
+              "no hay /etc/jax/.env con estos secretos en esta máquina -- nada que simular",
+          )
+          env_only_skips = 0
+          for case in root.iter("testcase"):
+              skipped = case.find("skipped")
+              if skipped is None:
+                  continue
+              if (case.get("classname"), case.get("name"), skipped.get("message")) == env_only_test:
+                  env_only_skips += 1
+          if env_only_skips > 1:
+              sys.exit(f"skip de entorno repetido inesperadamente: {env_only_skips}")
+          gated_skips = skip - env_only_skips
 
           # MEDIDO EN ESTE JOB, no en otro entorno: 309 colectados, 308 passed,
           # 1 skipped, 0 failed, 0 errors (corrida real del 2026-09-01).
@@ -3505,16 +3533,21 @@ jobs:
           #   procesamiento_fallido; vista en rojo contra el despachador sin defensa). MEDIDO CON DB en local
           #   (mariadb:12.3.3 descartable en 3399, jax 2b0c163, mismo comando): 3609 passed, 0 failed, 0 skipped,
           #   con las 3 de test_base_por_sesion incluidas; 3609 - 3 = 3606.
-          PISO_PASSED = 3606
+          # Remedido 2026-10-04 con este comando exacto, Python 3.14, MariaDB
+          # 12.3.3, plataforma e70e89b7 y JAX bdadf249: 3614 passed / 1 skipped / 0 failed.
+          # Actions omite exactamente un test que requiere comparar contra
+          # /etc/jax/.env ausente allí: runner medido = 3613 passed / 2 skipped.
+          PISO_PASSED = 3613
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
+                f"skip_entorno_esperado={env_only_skips} skips_gateados={gated_skips} "
                 f"failed={fail} errors={err}")
           if passed < PISO_PASSED:
               sys.exit(f"PISO ROTO: {passed} passed < {PISO_PASSED}.")
-          if skip > MAX_SKIPS:
+          if gated_skips > MAX_SKIPS:
               sys.exit(
-                  f"{skip} skips (max {MAX_SKIPS}). La DB no esta siendo usada: "
+                  f"{gated_skips} skips inesperados (max {MAX_SKIPS}). La DB no esta siendo usada: "
                   "los tests que la necesitan se estan salteando y este job "
                   "estaria verde sin haber probado nada de lo que vino a probar."
               )
@@ -4529,7 +4562,10 @@ jobs:
       # comando, sobre la rama: 2180 passed / 1428 skipped; menos el skip de entorno del runner, 2179.
       # 2179 -> 2180 (ronda 3 de #187): +1 pura. MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la rama:
       # 2181 passed / 1428 skipped; menos el skip de entorno del runner, 2180.
-      JAX_CI_MIN_PASSED: "2180"
+      # Remedido 2026-10-04 con este comando exacto, Python 3.14, plataforma
+      # e70e89b7 y JAX bdadf249: 2186 passed / 1429 skipped / 0 failed en
+      # hall9000; Actions omite el test dependiente de /etc/jax/.env: 2185.
+      JAX_CI_MIN_PASSED: "2185"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -4553,7 +4589,7 @@ jobs:
           # Platform's F2-C/F2-D baseline is the governed exact pair; keeping
           # the historical domain-.5 JAX pin after this contract upgrade would
           # make master import an incompatible renderer/lifecycle vocabulary.
-          PIN=2b0c16327997f6bacd0cafd61f50d92a6d5d7476
+          PIN=bdadf249f783c7d49f3570874d1431c89ae64c52
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
