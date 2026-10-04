@@ -25,6 +25,8 @@ import pytest
 
 import facet_health
 from jax_engine import facet_canary
+from api import chat as chat_mod
+from facet_resolver import ResolvedFacet
 
 # El lector vive en el repo `jax` (jacobs/facet_health.py); mismo mecanismo que
 # test_jacobs_status_mapeo_completo.py. Se APENDEA, no se antepone: `jacobs` solo
@@ -74,21 +76,34 @@ class _Pool:
 
 
 def _base(filas):
-    """facet_binding mínima en sqlite; `filas` = (facet_key, role, approved_by, approved_at)."""
+    """facet_binding + facet + provider minimas en sqlite.
+
+    `filas` = (facet_key, role, approved_by, approved_at[, status[, transport[, base_url]]]).
+    Los defectos (activa, http_openai_compat, sin base_url) son los de una faceta sana."""
     conn = sqlite3.connect(":memory:")
     conn.execute(
-        "CREATE TABLE facet_binding (facet_key TEXT, role TEXT, approved_by INTEGER, approved_at TEXT)")
-    conn.executemany("INSERT INTO facet_binding VALUES (?,?,?,?)", filas)
+        "CREATE TABLE facet_binding (facet_key TEXT, provider_id TEXT, role TEXT, approved_by INTEGER, approved_at TEXT)")
+    conn.execute("CREATE TABLE facet (`key` TEXT, status TEXT, transport TEXT)")
+    conn.execute("CREATE TABLE provider (id TEXT, base_url TEXT)")
+    for fila in filas:
+        key, role, ap_by, ap_at, *resto = fila
+        status, transport, base_url = (list(resto) + [None] * 3)[:3]
+        conn.execute("INSERT INTO facet_binding VALUES (?,?,?,?,?)", (key, "p_" + key, role, ap_by, ap_at))
+        conn.execute("INSERT INTO facet VALUES (?,?,?)", (key, status or "active", transport or "http_openai_compat"))
+        conn.execute("INSERT INTO provider VALUES (?,?)", ("p_" + key, base_url))
     return conn
 
 
 APROBADO = (1, "2026-09-23 10:00:00")
 SIN_APROBAR = (None, None)
+OLLAMA = "http://localhost:11434"
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def bindings(monkeypatch):
-    """Devuelve una función que siembra facet_binding y deja la sonda leyendo de ahí."""
+    """Autouse: NINGUN test de este archivo lee una base real (en CI-con-DB seria la
+    compartida; sin DB, un skip). Por defecto la sonda lee un facet_binding vacío;
+    devuelve la función que lo siembra.""" 
     # La fixture autouse del conftest ya parchea facet_health.get_pool; aquí se
     # parchea el de la sonda, que es el que lee facet_binding.
     def sembrar(filas):
@@ -98,6 +113,8 @@ def bindings(monkeypatch):
             return _Pool(conn)
 
         monkeypatch.setattr(facet_canary, "get_pool", get_pool)
+    monkeypatch.setenv("JAX_OLLAMA_URL", OLLAMA)
+    sembrar([])
     return sembrar
 
 
@@ -118,8 +135,11 @@ def espias(monkeypatch):
 
     monkeypatch.setattr(facet_canary, "_invoke_facet", invoke)
     monkeypatch.setattr(facet_canary, "record_facet_health", record)
-    monkeypatch.setattr(facet_canary.misiones, "_turno_en_curso", sin_mision)
+    monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", sin_mision)
     monkeypatch.setattr(facet_canary, "_load_config", _config)
+    # Los reintentos y topes de verdad son de minutos: aca, de milisegundos.
+    monkeypatch.setattr(facet_canary, "CANARY_RETRY_SECONDS", 0.005)
+    monkeypatch.setattr(facet_canary, "CANARY_DEFERRED_MAX_SECONDS", 0.2)
     return ll
 
 
@@ -178,7 +198,7 @@ def test_probe_all_sondea_a_el_juez_fuera_de_personalities(bindings, espias):
 def test_con_mision_en_curso_se_salta_sin_invocar_ni_escribir(monkeypatch, espias, caplog):
     async def hay_mision():
         return {"mision_id": "m-1", "n": 1}
-    monkeypatch.setattr(facet_canary.misiones, "_turno_en_curso", hay_mision)
+    monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", hay_mision)
 
     with caplog.at_level(logging.WARNING):
         out = asyncio.run(facet_canary.probe_facet(
@@ -200,16 +220,19 @@ def test_sin_mision_en_curso_si_sondea_a_el_juez(espias):
 
 def test_la_mision_se_mira_en_cada_faceta_y_una_que_arranca_corta_el_resto(
         bindings, monkeypatch, espias):
-    """Como el freno: una misión que arranca a mitad del barrido corta lo que falta."""
+    """Como el freno: una misión que arranca a mitad del barrido corta lo que falta
+    (lo cortado queda diferido: ver los tests de reintento)."""
     bindings([("el_juez", "primary", *APROBADO)])
+    monkeypatch.setattr(facet_canary, "CANARY_DEFERRED_MAX_SECONDS", 0.05)
     llamadas = []
 
     async def mision():
         llamadas.append(1)
         return {"mision_id": "m-1", "n": 1} if len(llamadas) > 2 else None
-    monkeypatch.setattr(facet_canary.misiones, "_turno_en_curso", mision)
+    monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", mision)
 
-    resultados = asyncio.run(facet_canary.probe_all(facet_canary.SOURCE_CANARY_PERIODIC))
+    resultados = asyncio.run(asyncio.wait_for(
+        facet_canary.probe_all(facet_canary.SOURCE_CANARY_PERIODIC), timeout=2))
 
     assert len(espias["invoke"]) == 2
     assert resultados[:2] == [None, None]
@@ -220,13 +243,208 @@ def test_la_mision_se_mira_en_cada_faceta_y_una_que_arranca_corta_el_resto(
 def test_si_no_se_puede_leer_la_mision_se_sondea_con_warning(monkeypatch, espias, caplog):
     async def roto():
         raise ConnectionError("base caida")
-    monkeypatch.setattr(facet_canary.misiones, "_turno_en_curso", roto)
+    monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", roto)
     with caplog.at_level(logging.WARNING):
         out = asyncio.run(facet_canary.probe_facet(
             "el_juez", _config(), facet_canary.SOURCE_CANARY_PERIODIC))
     assert out is None
     assert espias["invoke"] == [("el_juez", facet_canary.SOURCE_CANARY_PERIODIC)]
     assert any("mision" in r.getMessage() for r in caplog.records)
+
+
+# MAJOR 4: solo entran internas activas y que la sonda mide bien -------------
+
+def test_una_faceta_con_binding_aprobado_pero_disabled_no_entra(bindings):
+    bindings([("el_juez", "primary", *APROBADO, "disabled")])
+    assert "el_juez" not in asyncio.run(facet_canary.canary_facets(_config()))
+
+
+def test_una_interna_con_proveedor_ollama_de_otro_origen_no_entra_y_avisa(bindings, caplog):
+    """Caso real: auditor_local -> ollama_cpu en :11435. _call_ollama ignora el
+    base_url y va a JAX_OLLAMA_URL: se mediria otro servicio."""
+    bindings([("auditor_local", "primary", *APROBADO, "active", "ollama", "http://127.0.0.1:11435/v1"),
+              ("el_juez", "primary", *APROBADO, "active", "ollama", OLLAMA + "/v1")])
+    with caplog.at_level(logging.WARNING):
+        facets = asyncio.run(facet_canary.canary_facets(_config()))
+    assert "auditor_local" not in facets
+    assert "el_juez" in facets, "el mismo origen con /v1 (como esta en la base) SI entra"
+    assert any("auditor_local" in r.getMessage() for r in caplog.records), "el descarte no nombra a la faceta"
+
+
+def test_una_interna_ollama_sin_base_url_entra(bindings):
+    bindings([("el_juez", "primary", *APROBADO, "active", "ollama", None)])
+    assert "el_juez" in asyncio.run(facet_canary.canary_facets(_config()))
+
+
+def test_un_bug_nuestro_en_la_lectura_NO_se_traga(monkeypatch):
+    """Fail-open solo ante errores de base o de tiempo."""
+    async def get_pool():
+        raise AttributeError("bug nuestro")
+    monkeypatch.setattr(facet_canary, "get_pool", get_pool)
+    with pytest.raises(AttributeError):
+        asyncio.run(facet_canary.canary_facets(_config()))
+
+
+def test_un_bug_nuestro_al_leer_la_mision_NO_se_traga(monkeypatch):
+    async def roto():
+        raise TypeError("bug nuestro")
+    monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", roto)
+    with pytest.raises(TypeError):
+        asyncio.run(facet_canary._mision_en_curso())
+
+
+def test_misiones_exponeturno_en_curso_publica(monkeypatch):
+    from ejecutor import misiones
+
+    async def privada():
+        return {"mision_id": "m", "n": 1}
+    monkeypatch.setattr(misiones, "turno_en_curso", privada)
+    assert asyncio.run(misiones.turno_en_curso()) == {"mision_id": "m", "n": 1}
+
+
+# MAJOR 1: diferir y no descartar --------------------------------------------
+
+def test_un_salto_por_mision_se_reintenta_y_se_sondea_cuando_la_mision_termina(
+        monkeypatch, espias):
+    estado = {"checks": 0}
+
+    async def mision():
+        estado["checks"] += 1
+        # En curso en el barrido (1 chequeo por faceta: 3) y en el primer reintento; termina despues.
+        return {"mision_id": "m-1", "n": 1} if estado["checks"] <= 4 else None
+    monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", mision)
+
+    resultados = asyncio.run(facet_canary.probe_all(facet_canary.SOURCE_CANARY_PERIODIC))
+
+    sondeadas = sorted(f for f, _ in espias["invoke"])
+    assert sondeadas == ["ada", "jax_local", "thot"], "las diferidas no se sondearon al terminar la mision"
+    assert facet_canary.SALTADA_POR_MISION not in resultados
+    assert espias["record"] == [], "un salto no escribe fila de fallo"
+
+
+def test_el_reintento_respeta_su_tope_y_avisa(monkeypatch, espias, caplog):
+    async def siempre():
+        return {"mision_id": "m-1", "n": 1}
+    monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", siempre)
+
+    t0 = time.monotonic()
+    with caplog.at_level(logging.WARNING):
+        # wait_for: si el tope no existiera el reintento seria infinito y el test
+        # colgaria; asi falla legible.
+        resultados = asyncio.run(asyncio.wait_for(
+            facet_canary.probe_all(facet_canary.SOURCE_CANARY_PERIODIC), timeout=2))
+
+    assert time.monotonic() - t0 < 2, "el reintento no respeto su tope"
+    assert espias["invoke"] == [] and espias["record"] == []
+    assert resultados == [facet_canary.SALTADA_POR_MISION] * 3
+    assert any("sonda diferida agotada" in r.getMessage() and "mision en curso desde" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_el_tope_diferido_no_consume_el_del_barrido(monkeypatch, espias):
+    """Con el tope del barrido casi agotado, el reintento igual corre: son presupuestos aparte."""
+    estado = {"n": 0}
+
+    async def mision():
+        estado["n"] += 1
+        return {"mision_id": "m-1", "n": 1} if estado["n"] <= 3 else None
+    monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", mision)
+    monkeypatch.setattr(facet_canary, "CANARY_SWEEP_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(facet_canary, "CANARY_DEFERRED_MAX_SECONDS", 5)
+
+    asyncio.run(facet_canary.probe_all(facet_canary.SOURCE_CANARY_PERIODIC))
+    assert len(espias["invoke"]) == 3
+
+
+# MAJOR 2: el rebind sondea siempre ------------------------------------------
+
+def test_el_rebind_sondea_y_escribe_su_fila_con_mision_en_curso(monkeypatch, espias):
+    async def hay_mision():
+        return {"mision_id": "m-1", "n": 1}
+    monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", hay_mision)
+    monkeypatch.setattr(facet_canary, "invalidate_facet_cache", lambda k: True)
+    monkeypatch.setattr(facet_canary, "CANARY_INTERVAL_SECONDS", 3600)
+
+    # Un _invoke_facet fiel: el que de verdad escribe la fila es el envoltorio.
+    async def invoke(facet, config, user_id, message, semantic_context=None, *, source="chat"):
+        espias["invoke"].append((facet, source))
+        await facet_canary.record_facet_health(facet, "ok", source)
+        return "listo", None
+    monkeypatch.setattr(facet_canary, "_invoke_facet", invoke)
+
+    out = asyncio.run(facet_canary.probe_after_rebind("el_juez"))
+
+    assert out is None
+    assert espias["invoke"] == [("el_juez", facet_canary.SOURCE_CANARY_REBIND)]
+    assert espias["record"] == [("el_juez", "ok", facet_canary.SOURCE_CANARY_REBIND)]
+
+
+# MAJOR 3: tope por faceta ----------------------------------------------------
+
+def test_una_faceta_que_excede_su_tope_no_impide_sondear_las_siguientes(monkeypatch, espias, caplog):
+    monkeypatch.setattr(facet_canary, "CANARY_FACET_TIMEOUT_SECONDS", 0.05)
+
+    async def invoke(facet, config, user_id, message, semantic_context=None, *, source="chat"):
+        if facet == "ada":                      # la primera en orden alfabetico
+            await asyncio.sleep(10)
+        espias["invoke"].append((facet, source))
+        return "listo", None
+    monkeypatch.setattr(facet_canary, "_invoke_facet", invoke)
+
+    with caplog.at_level(logging.WARNING):
+        resultados = asyncio.run(facet_canary.probe_all(facet_canary.SOURCE_CANARY_PERIODIC))
+
+    assert [f for f, _ in espias["invoke"]] == ["jax_local", "thot"], "una lenta cancelo a las demas"
+    assert resultados[0] == facet_canary.OUTCOME_PROBE_ERROR
+    assert any("ada" in r.getMessage() and "tope" in r.getMessage() for r in caplog.records)
+
+
+def test_los_presupuestos_cumplen_la_cuenta_del_hueco():
+    """La cuenta escrita junto a las constantes, ejecutable: el hueco maximo entre
+    dos eventos de una faceta (intervalo + reintento de una mision normal + 2
+    barridos) tiene que quedar bajo la ventana del lector (7200 s)."""
+    hueco = (3600 + (200 + facet_canary.CANARY_RETRY_SECONDS)
+             + 2 * facet_canary.CANARY_SWEEP_TIMEOUT_SECONDS)
+    assert hueco < 7200
+    legitimo = 5 * (125 + 10) + 2 * (360 + 10) + 10
+    assert facet_canary.CANARY_SWEEP_TIMEOUT_SECONDS >= legitimo
+    assert facet_canary.CANARY_FACET_TIMEOUT_SECONDS >= 360 + 10
+
+
+# MINOR 1: el _invoke_facet REAL despacha a una faceta fuera de personalities --
+
+def test_el_invoke_facet_real_despacha_a_el_juez_fuera_de_personalities(monkeypatch):
+    escritos = []
+    llamadas = []
+
+    async def resolve(facet_key):
+        return ResolvedFacet(
+            key=facet_key, provider_id="ollama", base_url=OLLAMA + "/v1", model="qwen-juez",
+            credential="", transport="ollama", persona=None, params=None,
+            max_tokens_param=None, max_output_tokens=None)
+
+    async def call_ollama(system_prompt, history, message, config, model, *, imagenes=()):
+        llamadas.append(model)
+        return "listo", 3, 1
+
+    async def record(facet, outcome, source, detail=None):
+        escritos.append((facet, outcome, source))
+        return True
+
+    monkeypatch.setattr(facet_canary, "_invoke_facet", chat_mod._invoke_facet)  # el REAL, no el espia del conftest
+    monkeypatch.setattr(chat_mod, "resolve_facet", resolve)
+    monkeypatch.setattr(chat_mod, "_call_ollama", call_ollama)
+    monkeypatch.setattr(chat_mod, "record_facet_health", record)
+    async def sin_mision():
+        return None
+    monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", sin_mision)
+
+    out = asyncio.run(facet_canary.probe_facet(
+        "el_juez", _config(), facet_canary.SOURCE_CANARY_PERIODIC))
+
+    assert out is None
+    assert llamadas == ["qwen-juez"], "el_juez no se despacho al modelo de su binding"
+    assert escritos == [("el_juez", "ok", facet_canary.SOURCE_CANARY_PERIODIC)]
 
 
 # (4) tras una sonda ok, el lector deja de dar unknown -----------------------
@@ -279,7 +497,7 @@ def test_tras_una_sonda_ok_de_el_juez_el_lector_deja_de_dar_unknown(monkeypatch,
 
     monkeypatch.setattr(facet_health, "get_pool", get_pool)
     monkeypatch.setattr(facet_canary, "_invoke_facet", invoke_real_en_lo_que_importa)
-    monkeypatch.setattr(facet_canary.misiones, "_turno_en_curso", sin_mision)
+    monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", sin_mision)
     monkeypatch.setattr(facet_canary, "_load_config", _config)
 
     ahora = time.time()

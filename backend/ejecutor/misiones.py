@@ -199,6 +199,14 @@ async def _turno_en_curso() -> dict | None:
     return None if fila is None else {"mision_id": fila[0], "n": fila[1]}
 
 
+async def turno_en_curso() -> dict | None:
+    """Pública: ¿hay un turno del Ejecutor `en_curso`? Otros módulos (la sonda de
+    facets) la usan en vez de importar el nombre privado. Delega en
+    `_turno_en_curso` resolviéndola al llamar, para que quien parchee o cambie la
+    privada siga siendo obedecido."""
+    return await _turno_en_curso()
+
+
 async def estado() -> dict:
     ruta = _ruta_de_la_pausa()
     return {"pausa": await asyncio.to_thread(pausa.leer_pausa, ruta), "compuerta_datos_de_clientes": await _compuerta(),

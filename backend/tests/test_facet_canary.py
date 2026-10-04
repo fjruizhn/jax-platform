@@ -24,7 +24,7 @@ def _sin_lecturas_de_base(monkeypatch):
     prueban eso -- lo prueban test_facet_canary_internas.py -- y no dependen de
     lo que haya en ninguna base."""
     async def sin_bindings():
-        return set()
+        return []
 
     async def sin_mision():
         return False
