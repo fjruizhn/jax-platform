@@ -12,9 +12,11 @@ from pydantic import BaseModel
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from contrato_dispatch import (
+    binding_de,
     detalle_si_rompe_el_contrato,
     fila_de_rechazo,
     ip_de,
+    registrar_binding_aplicado,
     registrar_rechazo_de_binding,
 )
 from db.connection import get_pool
@@ -162,23 +164,40 @@ async def update_facet_binding(
                 await conn.commit()
                 raise HTTPException(status_code=409, detail=detalle)
 
+            # 2026-10-04: el cambio y su auditoria van en UNA transaccion. El
+            # pool es autocommit=True, asi que sin BEGIN explicito el INSERT de
+            # abajo se confirmaria solo y un fallo de la auditoria dejaria el
+            # binding cambiado sin rastro. Va DESPUES del guard: el camino del
+            # 409 (arriba) no cambia.
+            await conn.begin()
             try:
-                await cur.execute(
-                    "INSERT INTO facet_binding (facet_key, provider_id, model_id, model_ref, role, approved_by, approved_at) "
-                    "VALUES (%s, %s, "
-                    "  (SELECT model_id FROM model WHERE id=%s), "
-                    "  %s, %s, %s, NOW()) "
-                    "ON DUPLICATE KEY UPDATE provider_id=VALUES(provider_id), "
-                    "  model_id=VALUES(model_id), model_ref=VALUES(model_ref), "
-                    "  approved_by=VALUES(approved_by), approved_at=NOW()",
-                    (facet_key, req.provider_id, req.model_ref, req.model_ref, req.role, approved_by),
-                )
-            except aiomysql.IntegrityError as e:
+                # El binding que se va a pisar, leido con FOR UPDATE (por
+                # uk_facet_role) antes de escribir: es el "antes" de la auditoria.
+                antes = await binding_de(cur, facet_key, req.role, para_actualizar=True)
+                try:
+                    await cur.execute(
+                        "INSERT INTO facet_binding (facet_key, provider_id, model_id, model_ref, role, approved_by, approved_at) "
+                        "VALUES (%s, %s, "
+                        "  (SELECT model_id FROM model WHERE id=%s), "
+                        "  %s, %s, %s, NOW()) "
+                        "ON DUPLICATE KEY UPDATE provider_id=VALUES(provider_id), "
+                        "  model_id=VALUES(model_id), model_ref=VALUES(model_ref), "
+                        "  approved_by=VALUES(approved_by), approved_at=NOW()",
+                        (facet_key, req.provider_id, req.model_ref, req.model_ref, req.role, approved_by),
+                    )
+                except aiomysql.IntegrityError as e:
+                    await conn.rollback()
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"model_ref {req.model_ref} no existe en el catalogo (o provider_id invalido): {e}",
+                    )
+                despues = await binding_de(cur, facet_key, req.role)
+                await registrar_binding_aplicado(
+                    cur, facet_key, req.role, antes, despues, None,
+                    approved_by, user.email, ip_de(request))
+            except BaseException:
                 await conn.rollback()
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"model_ref {req.model_ref} no existe en el catalogo (o provider_id invalido): {e}",
-                )
+                raise
         await conn.commit()
 
     # DESPUES del commit a proposito: la sonda solo tiene sentido sobre un

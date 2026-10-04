@@ -25,10 +25,12 @@ from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from contrato_dispatch import (
     _MAX_TOKENS_PARAM_NAMES,
+    binding_de,
     detalle_si_rompe_el_contrato,
     errores_del_contrato,
     fila_de_rechazo,
     ip_de,
+    registrar_binding_aplicado,
     registrar_rechazo_de_binding,
 )
 from db.connection import get_pool
@@ -539,16 +541,36 @@ async def approve_proposal(
                 await conn.commit()
                 raise HTTPException(status_code=409, detail=detalle)
 
-            await cur.execute(
-                "UPDATE facet_binding SET model_ref=%s, approved_by=%s, approved_at=NOW() "
-                "WHERE facet_key=%s AND role='primary'",
-                (proposed_model_ref, decided_by, facet_key),
-            )
-            await cur.execute(
-                "UPDATE model_binding_proposal SET status='approved', decided_by=%s, decided_at=NOW() "
-                "WHERE id=%s",
-                (decided_by, proposal_id),
-            )
+            # 2026-10-04: el cambio, el estado de la propuesta y la auditoria
+            # van en UNA transaccion. El pool es autocommit=True: sin BEGIN
+            # explicito cada UPDATE se confirmaria solo y un fallo de la
+            # auditoria dejaria el binding cambiado sin rastro. Va DESPUES del
+            # guard: el camino del 409 (arriba) no cambia.
+            await conn.begin()
+            try:
+                # El binding que se va a pisar, leido con FOR UPDATE (por
+                # uk_facet_role) antes de escribir: es el "antes" de la auditoria.
+                antes = await binding_de(cur, facet_key, "primary", para_actualizar=True)
+                await cur.execute(
+                    "UPDATE facet_binding SET model_ref=%s, approved_by=%s, approved_at=NOW() "
+                    "WHERE facet_key=%s AND role='primary'",
+                    (proposed_model_ref, decided_by, facet_key),
+                )
+                # Sin fila 'primary' el UPDATE no aplica nada (preexistente):
+                # no hay cambio de binding que auditar.
+                if antes is not None:
+                    despues = await binding_de(cur, facet_key, "primary")
+                    await registrar_binding_aplicado(
+                        cur, facet_key, "primary", antes, despues, proposal_id,
+                        decided_by, user.email, ip_de(request))
+                await cur.execute(
+                    "UPDATE model_binding_proposal SET status='approved', decided_by=%s, decided_at=NOW() "
+                    "WHERE id=%s",
+                    (decided_by, proposal_id),
+                )
+            except BaseException:
+                await conn.rollback()
+                raise
         await conn.commit()
 
     # DESPUES del commit a proposito: la sonda solo tiene sentido sobre un

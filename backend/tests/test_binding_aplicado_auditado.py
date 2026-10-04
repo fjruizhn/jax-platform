@@ -64,6 +64,12 @@ async def _binding():
         "WHERE facet_key=%s AND role='primary'", (FACETA,)))[0]
 
 
+async def _legible(ref):
+    """provider_id/model_id de la fila de `model` a la que apunta un model_ref:
+    lo que la auditoria guarda como identificadores legibles."""
+    return (await _q("SELECT provider_id, model_id FROM model WHERE id=%s", (ref,)))[0]
+
+
 async def _restaurar(antes):
     provider_id, model_ref, model_id, approved_by, approved_at = antes
     await _q(
@@ -137,7 +143,8 @@ def _put(client, ref):
 def test_put_exitoso_escribe_exactamente_una_fila_binding_aplicado(client, modelo, monkeypatch):
     _sin_sonda(monkeypatch)
     ref, antes = modelo
-    p_antes, ref_antes, mid_antes, by_antes, at_antes = antes
+    _p, ref_antes, _m, by_antes, at_antes = antes
+    p_antes, mid_antes = client.portal.call(_legible, ref_antes)
 
     resp = _put(client, ref)
     assert resp.status_code == 200, resp.text
@@ -225,7 +232,8 @@ def test_put_con_auditoria_rota_no_cambia_el_binding(client, modelo, monkeypatch
 def test_approve_exitoso_escribe_binding_aplicado_con_proposal_id(client, modelo, monkeypatch):
     _sin_sonda(monkeypatch)
     ref, antes = modelo
-    p_antes, ref_antes, mid_antes, by_antes, at_antes = antes
+    _p, ref_antes, _m, by_antes, at_antes = antes
+    p_antes, mid_antes = client.portal.call(_legible, ref_antes)
     pid = client.portal.call(_propuesta, ref)
 
     resp = client.post(f"/api/admin/models/proposals/{pid}/approve", headers=_headers())
