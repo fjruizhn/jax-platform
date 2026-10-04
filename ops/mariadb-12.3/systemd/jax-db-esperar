@@ -1,0 +1,22 @@
+#!/bin/bash
+# Espera a que la MariaDB de JAX (contenedor mariadb-12-3-jax) acepte consultas.
+# POR QUÉ (2026-10-04, apagón de hall9000): al arrancar, docker-proxy ya acepta en
+# 127.0.0.1:3308 antes de que MariaDB esté lista; jax-platform y jax-las-manos
+# se conectaban, recibían «Lost connection to MySQL server during query» y caían.
+# Esperar al puerto no basta: se usa el healthcheck.sh oficial de la imagen
+# (conexión TCP real + InnoDB inicializado, usuario de .my-healthcheck.cnf).
+set -uo pipefail
+CONTENEDOR="${JAX_DB_CONTENEDOR:-mariadb-12-3-jax}"
+LIMITE_SEG="${JAX_DB_ESPERA_SEG:-540}"
+inicio=$(date +%s)
+while :; do
+    if docker exec "$CONTENEDOR" healthcheck.sh --connect --innodb_initialized >/dev/null 2>&1; then
+        echo "MariaDB de JAX lista tras $(( $(date +%s) - inicio )) s"
+        exit 0
+    fi
+    if (( $(date +%s) - inicio >= LIMITE_SEG )); then
+        echo "MariaDB de JAX ($CONTENEDOR) no respondió en ${LIMITE_SEG} s" >&2
+        exit 1
+    fi
+    sleep 2
+done
