@@ -1,21 +1,35 @@
 #!/bin/bash
 # Espera a que la MariaDB de JAX (contenedor mariadb-12-3-jax) acepte consultas.
-# POR QUÉ (2026-10-04, apagón de hall9000): al arrancar, docker-proxy ya acepta en
-# 127.0.0.1:3308 antes de que MariaDB esté lista; jax-platform y jax-las-manos
-# se conectaban, recibían «Lost connection to MySQL server during query» y caían.
-# Esperar al puerto no basta: se usa el healthcheck.sh oficial de la imagen
-# (conexión TCP real + InnoDB inicializado, usuario de .my-healthcheck.cnf).
+# Lo corren jax-platform y jax-las-manos como ExecStartPre=+ (root: jaxsvc no
+# tiene acceso a docker), así que espera en CADA arranque del servicio, no solo
+# en el de la máquina.
+# POR QUÉ (2026-10-04, apagón de hall9000): docker-proxy ya acepta en
+# 127.0.0.1:3308 antes de que MariaDB esté lista, y los dos servicios caían con
+# «Lost connection to MySQL server during query». Esperar al puerto no basta: se
+# usa el healthcheck.sh oficial de la imagen (--connect pregunta
+# @@skip_networking, así que el servidor temporal de MARIADB_AUTO_UPGRADE no pasa
+# como sano; --innodb_initialized, con el usuario de .my-healthcheck.cnf).
 set -uo pipefail
 CONTENEDOR="${JAX_DB_CONTENEDOR:-mariadb-12-3-jax}"
 LIMITE_SEG="${JAX_DB_ESPERA_SEG:-540}"
 inicio=$(date +%s)
+primer_error=""
+ultimo_error=""
 while :; do
-    if docker exec "$CONTENEDOR" healthcheck.sh --connect --innodb_initialized >/dev/null 2>&1; then
-        echo "MariaDB de JAX lista tras $(( $(date +%s) - inicio )) s"
+    # timeout: un dockerd colgado lo explica este guion, no el TimeoutStartSec de systemd.
+    salida=$(timeout 15 docker exec "$CONTENEDOR" healthcheck.sh --connect --innodb_initialized 2>&1)
+    rc=$?
+    if (( rc == 0 )); then
+        espera=$(( $(date +%s) - inicio ))
+        if (( espera > 0 )); then
+            echo "MariaDB de JAX lista tras ${espera} s (primer error: ${primer_error:-ninguno})"
+        fi
         exit 0
     fi
+    ultimo_error="rc=$rc ${salida//$'\n'/ | }"
+    [[ -n "$primer_error" ]] || { primer_error="$ultimo_error"; echo "esperando a MariaDB de JAX ($CONTENEDOR): $primer_error"; }
     if (( $(date +%s) - inicio >= LIMITE_SEG )); then
-        echo "MariaDB de JAX ($CONTENEDOR) no respondió en ${LIMITE_SEG} s" >&2
+        echo "MariaDB de JAX ($CONTENEDOR) no respondió en ${LIMITE_SEG} s. Primer error: $primer_error. Último: $ultimo_error" >&2
         exit 1
     fi
     sleep 2
