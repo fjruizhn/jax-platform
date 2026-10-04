@@ -1344,6 +1344,9 @@ jobs:
           test "$(git -C /tmp/jax rev-parse HEAD)" = "$PIN"
           mkdir -p /tmp/jax-workspace
 
+      - name: Install JAX extraction dependencies used by the SR3 dispatch regressions
+        run: pip install -r /tmp/jax/requirements-archivos.txt
+
       - name: Crear el esquema de Jacobs con SU propio init_tables()
         working-directory: .
         # pydantic ademas de aiomysql: jacobs.store importa jacobs.models.
@@ -4824,7 +4827,6 @@ jobs:
       JAX_DB_PASSWORD: ci
       JAX_DB_NAME: jax_memory_test
       JAX_JWT_SECRET: f2e-structured-projection-ci-only
-      F2E_TEST_JAX_REPO: ${{ github.workspace }}/jax
       PYTHONPATH: ${{ github.workspace }}/jax:${{ github.workspace }}/jax/las_manos
     steps:
       - name: Checkout exact Platform pull request head

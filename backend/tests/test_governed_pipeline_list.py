@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 
-JAX_REPO = Path(os.environ.get("F2E_TEST_JAX_REPO", "/home/fruiz/worktrees/f2e-structured-projection-jax"))
+JAX_REPO = Path(os.environ["JAX_REPO_PATH"])
 
 
 def _setup_pair(monkeypatch):
