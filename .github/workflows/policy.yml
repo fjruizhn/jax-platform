@@ -4535,9 +4535,10 @@ jobs:
       # comando, sobre la rama: 2180 passed / 1428 skipped; menos el skip de entorno del runner, 2179.
       # 2179 -> 2180 (ronda 3 de #187): +1 pura. MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la rama:
       # 2181 passed / 1428 skipped; menos el skip de entorno del runner, 2180.
-      # Medido 2026-10-04 contra el mismo pin JAX 8405798, JAX_CI_NO_DB=1:
-      # 2193 passed / 1428 skipped. Incluye la regresión de mutación E2a.
-      JAX_CI_MIN_PASSED: "2193"
+      # Master actualizado: 2212 passed / 1428 skipped medidos con JAX_CI_NO_DB=1.
+      # Incluye las rondas 2 y 3 de la sonda de facets (#348); medir de nuevo
+      # el total combinado con las pruebas F2-E antes de fijar el piso final.
+      JAX_CI_MIN_PASSED: "2212"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

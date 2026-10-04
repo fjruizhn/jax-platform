@@ -18,8 +18,23 @@ def _config():
         "hipatia": {}, "thot": {}, "ada": {}, "kimi": {}}}
 
 
+@pytest.fixture(autouse=True)
+def _sin_lecturas_de_base(monkeypatch):
+    """La sonda lee la base (facet_binding y mision en curso); estos tests no
+    prueban eso -- lo prueban test_facet_canary_internas.py -- y no dependen de
+    lo que haya en ninguna base."""
+    async def sin_bindings():
+        return []
+
+    async def sin_mision():
+        return False
+
+    monkeypatch.setattr(facet_canary, "_facetas_con_binding_aprobado", sin_bindings)
+    monkeypatch.setattr(facet_canary, "_mision_en_curso", sin_mision)
+
+
 def test_canary_facets_excluye_hyde_y_no_filtra_por_transporte():
-    facets = facet_canary.canary_facets(_config())
+    facets = asyncio.run(facet_canary.canary_facets(_config()))
     assert "hyde" not in facets          # chat() lo corta antes del dispatch
     assert "kimi" in facets              # DEBE sondearse: el conjunto no se
                                          # filtra por transporte (kimi estuvo
