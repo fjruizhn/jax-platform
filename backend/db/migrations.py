@@ -546,8 +546,8 @@ CREATE TABLE IF NOT EXISTS model_binding_proposal (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
-# PR-L (2026-09-14, Ruling 33) — auditoria del catalogo de modelos. Dos
-# eventos, los dos de un superadmin humano (performed_by/from_ip del JWT y del
+# PR-L (2026-09-14, Ruling 33) — auditoria del catalogo de modelos. Tres
+# eventos (el tercero, 'binding_aplicado', se sumo el 2026-10-04), los dos de un superadmin humano (performed_by/from_ip del JWT y del
 # Request: el log del servidor solo ve JAX_DB_USER, mismo motivo que
 # credential_audit):
 #   - 'contrato_declarado': PUT /api/admin/models/{id}/contrato-dispatch cambio
@@ -557,6 +557,19 @@ CREATE TABLE IF NOT EXISTS model_binding_proposal (
 #   - 'binding_rechazado': el guard de contrato_dispatch rechazo (409) aprobar
 #     una propuesta (proposal_id) o un PUT de binding (proposal_id NULL).
 #     valor_despues guarda el `detail` del 409 tal cual lo vio el admin.
+#   - 'binding_aplicado' (2026-10-04): un cambio de facet_binding que SE APLICO,
+#     por cualquiera de sus dos escritores: PUT /api/admin/facet-bindings/{key}
+#     (proposal_id NULL) o POST /api/admin/models/proposals/{id}/approve
+#     (proposal_id = la propuesta). Antes solo los rechazos dejaban fila: jax_local
+#     y el_juez pasaron a qwen3.8-mesa-131k el 2026-09-23 por el PUT y no quedo
+#     mas rastro que approved_by/approved_at, que se pisan en el siguiente cambio.
+#     model_ref/provider_id/model_id = el modelo NUEVO; valor_antes = el binding
+#     que se piso ({model_ref, provider_id, model_id, approved_by, approved_at},
+#     NULL si no existia); valor_despues = {model_ref, provider_id, model_id,
+#     role}. Se escribe en la MISMA transaccion que el cambio (fallo cerrado: si
+#     la auditoria falla, el binding no cambia). Una base con el ENUM viejo lo
+#     ensancha _ENUM_EXTENSIONS. Las lecturas de rechazos (pantalla de bindings
+#     y de propuestas) filtran por action='binding_rechazado': no la ven.
 # Por que no credential_audit: su action es un ENUM de credenciales y su
 # provider_id/credential_id no describen una fila de `model`. Por que no
 # columnas en model_binding_proposal: el rechazo tambien pasa en el PUT (sin
@@ -581,7 +594,7 @@ CREATE TABLE IF NOT EXISTS model_binding_proposal (
 CREATE_MODEL_CATALOG_AUDIT = """
 CREATE TABLE IF NOT EXISTS model_catalog_audit (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  action ENUM('contrato_declarado','binding_rechazado') NOT NULL,
+  action ENUM('contrato_declarado','binding_rechazado','binding_aplicado') NOT NULL,
   model_ref INT NOT NULL,
   provider_id VARCHAR(50) NULL,
   model_id VARCHAR(100) NULL,
@@ -2411,6 +2424,13 @@ _ENUM_EXTENSIONS = [
         "ALTER TABLE ejecutor_mision MODIFY COLUMN estado_entrega "
         "ENUM('abierto','rechazada_por_contrato','sin_informe_c5','fallo_entrega','sin_cambios',"
         "'sin_entregar','empujado_sin_pr') NULL",
+    ),
+    # 2026-10-04: los cambios de facet_binding que SE APLICAN dejan fila en la
+    # auditoria del catalogo (antes solo los rechazos). Lista COMPLETA de valores.
+    (
+        "model_catalog_audit", "action", "binding_aplicado",
+        "ALTER TABLE model_catalog_audit MODIFY COLUMN action "
+        "ENUM('contrato_declarado','binding_rechazado','binding_aplicado') NOT NULL",
     ),
 ]
 
