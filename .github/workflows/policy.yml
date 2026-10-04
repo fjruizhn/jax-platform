@@ -1305,6 +1305,9 @@ jobs:
       # que existe en hall9000 y no en un runner (30 tests caian con
       # FileNotFoundError). Apunta al clon que hace el paso de mas abajo.
       JAX_CONFIG_PATH: /tmp/jax/config/config.toml
+      # SR3 importa LAS MANOS en tres pruebas del backend genérico. El
+      # workspace temporal satisface su contrato sin tocar configuración real.
+      JAX_WORKSPACE_DIR: /tmp/jax-workspace
       # shadow_validation.py importa policy/governance/ del repo `jax` por
       # sys.path. Mismo caso que JAX_CONFIG_PATH: sin esto son 9 tests con
       # "ModuleNotFoundError: No module named 'claims'".
@@ -1331,18 +1334,15 @@ jobs:
 
       - name: Traer el repo jax (fuente de verdad del esquema de Jacobs y B9)
         working-directory: .
-        # The generic suite uses the reconciled F2-E-SR JAX integration head.
-        # It contains the F2-C/F2-D compatibility contract and the runtime
-        # status bridge API consumed by this Platform branch.
+        # The generic suite uses the exact JAX head that supplies the additive
+        # F2-C structured projection and F2-D canonical-byte transport APIs.
         run: |
-          # Platform's F2-C/F2-D baseline is the governed exact pair; keeping
-          # the historical domain-.5 JAX pin after this contract upgrade would
-          # make master import an incompatible renderer/lifecycle vocabulary.
-          PIN=2b0c16327997f6bacd0cafd61f50d92a6d5d7476
+          PIN=840579839d37821440b8018edb99fb074e540c66
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
           test "$(git -C /tmp/jax rev-parse HEAD)" = "$PIN"
+          mkdir -p /tmp/jax-workspace
 
       - name: Crear el esquema de Jacobs con SU propio init_tables()
         working-directory: .
@@ -1410,9 +1410,8 @@ jobs:
         # de la corrida normal. Se ignoran, no se cuentan como skip -- el tope
         # de MAX_SKIPS se queda en 1, no se sube (ese tope sigue sirviendo
         # para detectar la DB caida).
-        # The reconciled JAX pin provides the runtime-status bridge API, so
-        # run that module here too. The PR exact-pair job remains the separate
-        # cross-repository contract gate.
+        # The exact JAX pin provides runtime-status and structured projection
+        # APIs. The dedicated exact-pair job additionally records both heads.
         run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
 
       - name: Diagnóstico de pruebas fallidas (sin contenido de excepciones)
@@ -3505,7 +3504,11 @@ jobs:
           #   procesamiento_fallido; vista en rojo contra el despachador sin defensa). MEDIDO CON DB en local
           #   (mariadb:12.3.3 descartable en 3399, jax 2b0c163, mismo comando): 3609 passed, 0 failed, 0 skipped,
           #   con las 3 de test_base_por_sesion incluidas; 3609 - 3 = 3606.
-          PISO_PASSED = 3606
+          # Medido 2026-10-04 contra JAX 8405798 y el clon local MariaDB:
+          # 3618 passed / 2 skipped. La corrida señala dos fallos reales de
+          # integración (paridad de extensiones y extractores opcionales no
+          # instalados en este entorno); el piso no oculta esos fallos.
+          PISO_PASSED = 3618
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -3576,6 +3579,9 @@ jobs:
       # Obligatoria desde el 2026-09-16 (frente A, A-55): api/chat.py no se
       # importa sin ella. Apunta al clon del paso "Traer el repo jax".
       JAX_CONFIG_PATH: /tmp/jax/config/config.toml
+      # SR3 importa LAS MANOS en tres pruebas del backend genérico. El
+      # workspace temporal satisface su contrato sin tocar configuración real.
+      JAX_WORKSPACE_DIR: /tmp/jax-workspace
       JAX_OLLAMA_URL: http://127.0.0.1:11434
       # Piso de cobertura. Si baja de acá, el job falla (ver el paso final).
       # Subido de 85 a 93 en Task 4 (sonda activa de facets, 2026-08-27):
@@ -4529,7 +4535,9 @@ jobs:
       # comando, sobre la rama: 2180 passed / 1428 skipped; menos el skip de entorno del runner, 2179.
       # 2179 -> 2180 (ronda 3 de #187): +1 pura. MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la rama:
       # 2181 passed / 1428 skipped; menos el skip de entorno del runner, 2180.
-      JAX_CI_MIN_PASSED: "2180"
+      # Medido 2026-10-04 contra el mismo pin JAX 8405798, JAX_CI_NO_DB=1:
+      # 2193 passed / 1428 skipped. Incluye la regresión de mutación E2a.
+      JAX_CI_MIN_PASSED: "2193"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -4546,18 +4554,15 @@ jobs:
 
       - name: Traer el repo JAX de integración (vocabulario y B9)
         working-directory: .
-        # The generic suite uses the reconciled F2-E-SR JAX integration head.
-        # It contains the F2-C/F2-D compatibility contract and the runtime
-        # status bridge API consumed by this Platform branch.
+        # Keep the no-DB suite on the same exact structured-output API consumed
+        # by the platform integration.
         run: |
-          # Platform's F2-C/F2-D baseline is the governed exact pair; keeping
-          # the historical domain-.5 JAX pin after this contract upgrade would
-          # make master import an incompatible renderer/lifecycle vocabulary.
-          PIN=2b0c16327997f6bacd0cafd61f50d92a6d5d7476
+          PIN=840579839d37821440b8018edb99fb074e540c66
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
           test "$(git -C /tmp/jax rev-parse HEAD)" = "$PIN"
+          mkdir -p /tmp/jax-workspace
 
       - name: Suite backend (sin DB) -- -rs lista cada skip con su motivo
         # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,
@@ -4791,6 +4796,129 @@ jobs:
         with:
           name: f2e-runtime-status-exact-pair-evidence
           path: f2e-runtime-status-exact-pair-evidence.json
+
+  # Exact structured-output pair: authenticated pipeline producer -> F2-B ->
+  # F2-C JSON projection -> F2-D exact-byte transport against one frozen JAX SHA.
+  f2e-structured-projection-exact-pair:
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'phase2/f2e-structured-projection-platform-20261004'
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:12.3.3
+        env:
+          MARIADB_ROOT_PASSWORD: ci
+          MARIADB_DATABASE: jax_memory_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      JAX_F2E_STRUCTURED_EXPECTED_SHA: 840579839d37821440b8018edb99fb074e540c66
+      JAX_REPO_PATH: ${{ github.workspace }}/jax
+      JAX_REPO_BASE: ${{ github.workspace }}/jax
+      JAX_CONFIG_PATH: ${{ github.workspace }}/jax/config/config.toml
+      JAX_DB_HOST: 127.0.0.1
+      JAX_DB_PORT: "3306"
+      JAX_DB_USER: root
+      JAX_DB_PASSWORD: ci
+      JAX_DB_NAME: jax_memory_test
+      JAX_JWT_SECRET: f2e-structured-projection-ci-only
+      F2E_TEST_JAX_REPO: ${{ github.workspace }}/jax
+      PYTHONPATH: ${{ github.workspace }}/jax:${{ github.workspace }}/jax/las_manos
+    steps:
+      - name: Checkout exact Platform pull request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Checkout exact JAX structured-projection PR head
+        uses: actions/checkout@v4
+        with:
+          repository: fjruizhn/Jax
+          ref: 840579839d37821440b8018edb99fb074e540c66
+          path: jax
+      - name: Require exact F2-E pair
+        env:
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          JAX_SHA=$(git -C jax rev-parse HEAD)
+          PLATFORM_SHA=$(git rev-parse HEAD)
+          test "$JAX_SHA" = "$JAX_F2E_STRUCTURED_EXPECTED_SHA"
+          test "$PLATFORM_SHA" = "${{ github.event.pull_request.head.sha }}"
+          python - <<'PY'
+          import json, os, subprocess
+          evidence = {
+              "coverage": [
+                  "authenticated GET /api/pipelines producer",
+                  "F2-B canonical PIPELINE_STATUS resolution and claim binding",
+                  "F2-C versioned immutable JSON projection",
+                  "F2-D canonical bytes and ASGI transport lifecycle",
+                  "MariaDB schema-clone trigger preservation",
+              ],
+              "jax_head": os.environ["JAX_F2E_STRUCTURED_EXPECTED_SHA"],
+              "jax_pr": 351,
+              "jax_repository": "fjruizhn/Jax",
+              "platform_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "platform_pr": int(os.environ["GITHUB_PR_NUMBER"]),
+              "platform_repository": "fjruizhn/jax-platform",
+              "f2c_contract": {
+                  "renderer": "f2-c.renderer.3",
+                  "domain": "f2-c.domain.6",
+                  "envelopes": ["f2-c.1"],
+                  "structured_projection": "f2-c.structured-projection.1",
+              },
+              "f2d_contract": "f2-d.structured-bytes.1",
+          }
+          with open("f2e-structured-projection-exact-pair-evidence.json", "w", encoding="utf-8") as f:
+              json.dump(evidence, f, sort_keys=True)
+              f.write("\n")
+          print(json.dumps(evidence, sort_keys=True))
+          PY
+          cat f2e-structured-projection-exact-pair-evidence.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
+      - name: Bootstrap exact JAX schema on ephemeral MariaDB
+        run: |
+          pip install -c backend/constraints.txt aiomysql pydantic
+          PYTHONPATH=./jax:./jax/las_manos python -c "import asyncio; from jacobs import store; asyncio.run(store.init_tables())"
+          sed -e '/^CREATE DATABASE IF NOT EXISTS jax_memory$/,/;$/d' \
+              -e "s/^USE jax_memory;$/USE \`$JAX_DB_NAME\`; /" \
+              jax/jax_memory_schema.sql \
+            | mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" "$JAX_DB_NAME"
+      - name: Apply Platform DB migrations
+        working-directory: backend
+        run: python -m pytest -q tests/test_project_authority_migration.py
+      - name: Exercise exact authenticated producer, F2-C/F2-D and trigger-clone contracts
+        working-directory: backend
+        run: |
+          set -o pipefail
+          export PISO_PASSED=46
+          python -m pytest -q -p no:warnings \
+            tests/test_governed_pipeline_list.py \
+            tests/test_historial_pipelines.py \
+            integration_tests/test_f2c_exact_pair_integration.py \
+            tests/test_output_lifecycle_transport.py \
+            tests/test_base_por_sesion.py::test_clonar_triggers_preserva_cuerpo_y_contexto_sin_reusar_esquema_origen \
+            tests/test_base_por_sesion.py::test_clonar_esquema_preserva_columnas_generadas_y_triggers 2>&1 | tee /tmp/f2e-structured-exact-pair
+          python - <<'PY'
+          import os, re
+          from pathlib import Path
+          output = Path("/tmp/f2e-structured-exact-pair").read_text(encoding="utf-8")
+          match = re.search(r"^(\d+) passed(?:, (\d+) skipped)? in ", output, re.MULTILINE)
+          piso_passed = int(os.environ["PISO_PASSED"])
+          if match is None or int(match.group(1)) < piso_passed or int(match.group(2) or 0) != 0:
+              raise SystemExit(f"F2-E exact-pair floor failed: expected >={piso_passed} passed and 0 skipped")
+          print(f"F2-E exact-pair measured: {match.group(1)} passed, {match.group(2) or 0} skipped")
+          PY
+      - name: Upload exact-pair evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: f2e-structured-projection-exact-pair-evidence
+          path: f2e-structured-projection-exact-pair-evidence.json
 
   f2e-sr3-processing-exact-pair:
     if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'phase2/f2-e-sr3-processing-job-status-platform'

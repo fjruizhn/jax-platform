@@ -426,8 +426,48 @@ def test_columnas_copiables_excluye_solo_las_generadas():
 import base_de_test as _base_de_test_modulo  # noqa: E402
 
 
+def test_clonar_triggers_preserva_cuerpo_y_contexto_sin_reusar_esquema_origen():
+    class Cursor:
+        def __init__(self):
+            self.statements = []
+            self._rows = []
+            self._one = None
+
+        async def execute(self, statement, parameters=None):
+            self.statements.append((statement, parameters))
+            if "FROM information_schema.TRIGGERS" in statement:
+                self._rows = [(
+                    "no_update_memory_events", "memory_events", "BEFORE", "UPDATE",
+                    "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='immutable'",
+                    "STRICT_TRANS_TABLES", "utf8mb4", "utf8mb4_unicode_ci",
+                )]
+            elif statement.startswith("SELECT @@SESSION.sql_mode"):
+                self._one = ("", "utf8mb4", "utf8mb4_general_ci")
+
+        async def fetchall(self):
+            return self._rows
+
+        async def fetchone(self):
+            return self._one
+
+    cursor = Cursor()
+    copied = asyncio.run(_base_de_test_modulo._copiar_triggers(
+        cursor, "jax_memory_test", "jax_memory_test_session"))
+    ddls = [statement for statement, _params in cursor.statements
+            if statement.startswith("CREATE TRIGGER")]
+    assert copied == 1
+    assert ddls == [
+        "CREATE TRIGGER `jax_memory_test_session`.`no_update_memory_events` "
+        "BEFORE UPDATE ON `jax_memory_test_session`.`memory_events` FOR EACH ROW "
+        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='immutable'"
+    ]
+    assert "SET SESSION sql_mode=%s" in [s for s, _p in cursor.statements]
+    assert any(s == "SET NAMES utf8mb4 COLLATE utf8mb4_general_ci"
+        for s, _p in cursor.statements)
+
+
 @pytest.mark.skipif(not os.environ.get("JAX_DB_HOST"), reason="necesita la MariaDB real")
-def test_clonar_esquema_no_revienta_con_1906_si_la_plantilla_tiene_columna_generada(monkeypatch):
+def test_clonar_esquema_preserva_columnas_generadas_y_triggers(monkeypatch):
     plantilla = f"{BASE_COMPARTIDA}_plantilla_diag_{_uuid.uuid4().hex[:8]}"
     destino = f"{BASE_COMPARTIDA}_clondiag_{_uuid.uuid4().hex[:8]}"
     tabla = f"_diag_clon_{_uuid.uuid4().hex[:8]}"
@@ -454,6 +494,11 @@ def test_clonar_esquema_no_revienta_con_1906_si_la_plantilla_tiene_columna_gener
                         "visible TINYINT(1) GENERATED ALWAYS AS "
                         "(status NOT IN ('discarded','hidden')) VIRTUAL)"
                     )
+                    await cur.execute(
+                        f"CREATE TRIGGER `{plantilla}`.`{tabla}_guard` "
+                        f"BEFORE DELETE ON `{plantilla}`.`{tabla}` FOR EACH ROW "
+                        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='immutable row'"
+                    )
                     await cur.executemany(
                         f"INSERT INTO `{plantilla}`.`{tabla}` (id, status) VALUES (%s,%s)",
                         [(1, "completed"), (2, "discarded")],
@@ -468,18 +513,29 @@ def test_clonar_esquema_no_revienta_con_1906_si_la_plantilla_tiene_columna_gener
                         f"SELECT id, status, visible FROM `{destino}`.`{tabla}` ORDER BY id"
                     )
                     filas = await cur.fetchall()
+                    await cur.execute(
+                        "SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE, ACTION_STATEMENT "
+                        "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=%s",
+                        (destino,),
+                    )
+                    triggers = await cur.fetchall()
         finally:
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(f"DROP DATABASE IF EXISTS `{plantilla}`")
                     await cur.execute(f"DROP DATABASE IF EXISTS `{destino}`")
                 await conn.commit()
-        return copiadas, filas
+        return copiadas, filas, triggers
 
-    copiadas, filas = asyncio.run(_cuerpo())
+    copiadas, filas, triggers = asyncio.run(_cuerpo())
     assert copiadas == 1, "no copió la única tabla de la plantilla propia"
     assert list(filas) == [(1, "completed", 1), (2, "discarded", 0)], (
         "las filas no llegaron a la base clonada, o `visible` no se "
         "recalculó igual -- _clonar_esquema() no está usando "
         "_copiar_filas() en su call site real"
+    )
+    assert list(triggers) == [(
+        f"{tabla}_guard", tabla,
+        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='immutable row'")], (
+        "el clon debe conservar el trigger en la tabla destino"
     )

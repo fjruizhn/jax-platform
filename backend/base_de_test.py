@@ -408,6 +408,67 @@ async def _copiar_filas(cur, esquema_origen: str, esquema_destino: str, tabla: s
     )
 
 
+async def _copiar_triggers(cur, esquema_origen: str, esquema_destino: str) -> int:
+    """Clone trigger behavior onto the destination's copied tables.
+
+    The trigger body and per-trigger SQL mode come from information_schema.
+    The source DEFINER is intentionally not copied: isolated test databases
+    must execute as the configured test principal, not depend on a production
+    account existing in the test server.
+    """
+    await cur.execute(
+        "SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE, ACTION_TIMING, "
+        "EVENT_MANIPULATION, ACTION_STATEMENT, SQL_MODE, "
+        "CHARACTER_SET_CLIENT, COLLATION_CONNECTION "
+        "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=%s "
+        "ORDER BY EVENT_OBJECT_TABLE, EVENT_MANIPULATION, ACTION_TIMING, ACTION_ORDER",
+        (esquema_origen,),
+    )
+    triggers = await cur.fetchall()
+    if not triggers:
+        return 0
+
+    await cur.execute(
+        "SELECT @@SESSION.sql_mode, @@SESSION.character_set_client, "
+        "@@SESSION.collation_connection")
+    original_sql_mode, original_charset, original_collation = await cur.fetchone()
+    copied = 0
+    try:
+        for (trigger_name, table_name, timing, event, statement, sql_mode,
+             character_set, collation) in triggers:
+            identifiers = (trigger_name, table_name)
+            if any(not isinstance(value, str) or not value or len(value) > 64
+                   or "`" in value for value in identifiers):
+                raise BaseDeTestInvalida("la plantilla tiene identificadores de trigger inválidos")
+            if timing not in {"BEFORE", "AFTER"} or event not in {"INSERT", "UPDATE", "DELETE"}:
+                raise BaseDeTestInvalida("la plantilla tiene un tipo de trigger no soportado")
+            if not isinstance(statement, str) or not statement.strip():
+                raise BaseDeTestInvalida("la plantilla tiene un trigger sin cuerpo")
+            if not isinstance(character_set, str) or not re.fullmatch(r"[A-Za-z0-9_]+", character_set):
+                raise BaseDeTestInvalida("la plantilla tiene un charset de trigger inválido")
+            if not isinstance(collation, str) or not re.fullmatch(r"[A-Za-z0-9_]+", collation):
+                raise BaseDeTestInvalida("la plantilla tiene una collation de trigger inválida")
+            if not isinstance(sql_mode, str):
+                raise BaseDeTestInvalida("la plantilla tiene un SQL mode de trigger inválido")
+            await cur.execute("SET SESSION sql_mode=%s", (sql_mode,))
+            await cur.execute(f"SET NAMES {character_set} COLLATE {collation}")
+            # Trigger names and table names are metadata identifiers validated
+            # above; the destination is validated by es_base_de_test().
+            ddl = (
+                f"CREATE TRIGGER `{esquema_destino}`.`{trigger_name}` {timing} {event} "
+                f"ON `{esquema_destino}`.`{table_name}` FOR EACH ROW {statement}"
+            )
+            await cur.execute(ddl)
+            copied += 1
+    finally:
+        await cur.execute("SET SESSION sql_mode=%s", (original_sql_mode,))
+        if (isinstance(original_charset, str) and re.fullmatch(r"[A-Za-z0-9_]+", original_charset)
+                and isinstance(original_collation, str)
+                and re.fullmatch(r"[A-Za-z0-9_]+", original_collation)):
+            await cur.execute(f"SET NAMES {original_charset} COLLATE {original_collation}")
+    return copied
+
+
 async def _clonar_esquema(nombre: str) -> int:
     """Crea `nombre` y le copia el ESQUEMA (no los datos) de la plantilla.
     Devuelve cuántas tablas copió. Idempotente: si la base ya existe, no
@@ -476,12 +537,12 @@ async def _clonar_esquema(nombre: str) -> int:
                 copiadas += 1
             await cur.execute("SET FOREIGN_KEY_CHECKS=1")
 
-            # Lo que este clonador NO copia tiene que GRITAR, no faltar en
-            # silencio: un trigger o un procedimiento nuevo en la plantilla
-            # daría una base de sesión sutilmente distinta, y el rojo que
-            # provoque va a parecer del código.
+            # Los triggers forman parte del esquema ejecutable: copiar sus
+            # cuerpos y SQL_MODE preserva las mismas restricciones en cada
+            # base de sesión. Rutinas y eventos todavía no tienen una ruta de
+            # clonación segura y, por eso, siguen fallando en voz alta.
+            await _copiar_triggers(cur, BASE_PLANTILLA, nombre)
             for tipo, tabla_is, columna in (
-                ("triggers", "TRIGGERS", "TRIGGER_SCHEMA"),
                 ("rutinas", "ROUTINES", "ROUTINE_SCHEMA"),
                 ("eventos", "EVENTS", "EVENT_SCHEMA"),
             ):

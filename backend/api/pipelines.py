@@ -26,6 +26,7 @@ from api.paginacion_descartados import (
     CURSOR_MAX, ORDEN as ORDEN_DESCARTADOS, consulta_y_parametros, cursor_siguiente,
     exigir_cursor_sin_offset,
 )
+from api.governed_pipeline_list import govern_pipeline_list
 
 router = APIRouter(prefix="/api/pipelines")
 
@@ -1033,7 +1034,7 @@ async def list_pipelines(
                     for pid, suma in await cur.fetchall():
                         if suma is not None:
                             costos_d[pid] = round(float(suma), 6)
-                return {
+                return await govern_pipeline_list({
                     "pipelines": [
                         {
                             "pipeline_id": pid, "name": name, "status": st,
@@ -1044,7 +1045,7 @@ async def list_pipelines(
                     ],
                     "has_more": hay_mas_d,
                     "cursor_siguiente": cursor_siguiente(filas_d, hay_mas_d, idx_fecha=5),
-                }
+                }, user)
             # Se pide una fila de más (limite+1) para saber si hay una página
             # siguiente sin un segundo COUNT(*) -- LAS CUATRO/cache: no se
             # recalcula lo que ya se puede leer de la misma consulta.
@@ -1079,7 +1080,7 @@ async def list_pipelines(
                 for pid, suma in await cur.fetchall():
                     if suma is not None:
                         costos[pid] = round(float(suma), 6)
-    return {
+    return await govern_pipeline_list({
         "pipelines": [
             {
                 "pipeline_id": pid, "name": name, "status": st, "created_at": c, "updated_at": u,
@@ -1090,7 +1091,7 @@ async def list_pipelines(
             for pid, name, st, c, u in filas
         ],
         "has_more": hay_mas,
-    }
+    }, user)
 
 
 @router.post("/preflight")
