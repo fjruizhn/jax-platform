@@ -207,6 +207,10 @@ class _FakeConn:
     def cursor(self):
         return _FakeCursor(self.sink, self._fetchone_results)
 
+    async def begin(self):
+        # 2026-10-04: los escritores abren BEGIN explicito (pool autocommit).
+        self.sink.append(("BEGIN", None))
+
     async def commit(self):
         self.sink.append(("COMMIT", None))
 
@@ -237,20 +241,42 @@ class _FakeBackgroundTasks:
         self.tasks.append((func, args, kwargs))
 
 
+def _con_auditoria_de_binding_falsa(monkeypatch, modulo):
+    """2026-10-04: los dos escritores leen el binding anterior y escriben la
+    fila 'binding_aplicado'. Estos tests miran el ENCOLADO de la sonda, no la
+    auditoria (esa la cubre test_binding_aplicado_auditado.py contra la DB): se
+    reemplazan las dos funciones y se devuelven las llamadas para afirmar que
+    el escritor SI audita."""
+    llamadas = []
+
+    async def binding_de_falso(cur, facet_key, role, para_actualizar=False):
+        return {"model_ref": 42, "provider_id": "deepseek", "model_id": "m",
+                "approved_by": None, "approved_at": None}
+
+    async def registrar_falso(cur, *a, **k):
+        llamadas.append(a)
+
+    monkeypatch.setattr(modulo, "binding_de", binding_de_falso)
+    monkeypatch.setattr(modulo, "registrar_binding_aplicado", registrar_falso)
+    return llamadas
+
+
 def test_approve_proposal_encola_probe_after_rebind(monkeypatch):
+    llamadas = _con_auditoria_de_binding_falsa(monkeypatch, models_mod)
     sink = []
     async def fake_get_pool():
         return _FakePool(sink, [("thot", 42, "pending")])
     monkeypatch.setattr(models_mod, "get_pool", fake_get_pool)
 
     bg = _FakeBackgroundTasks()
-    user = SimpleNamespace(user_id="1")
+    user = SimpleNamespace(user_id="1", email="admin@example.test")
 
     # request (PR-L): solo se lee en el 409 del guard, para performed_from_ip.
     request = SimpleNamespace(client=SimpleNamespace(host="testclient"))
 
     asyncio.run(models_mod.approve_proposal(1, background_tasks=bg, request=request, user=user))
 
+    assert len(llamadas) == 1, "approve no auditó el cambio aplicado"
     assert len(bg.tasks) == 1
     func, args, kwargs = bg.tasks[0]
     # Desde 2026-09-01 lo encolado es el envoltorio de
@@ -262,19 +288,21 @@ def test_approve_proposal_encola_probe_after_rebind(monkeypatch):
 
 
 def test_update_facet_binding_encola_probe_after_rebind(monkeypatch):
+    llamadas = _con_auditoria_de_binding_falsa(monkeypatch, fb_mod)
     sink = []
     async def fake_get_pool():
         return _FakePool(sink, [("thot",)])
     monkeypatch.setattr(fb_mod, "get_pool", fake_get_pool)
 
     bg = _FakeBackgroundTasks()
-    user = SimpleNamespace(user_id="1")
+    user = SimpleNamespace(user_id="1", email="admin@example.test")
     req = fb_mod.UpdateBindingRequest(provider_id="deepseek", model_ref=42)
 
     request = SimpleNamespace(client=SimpleNamespace(host="testclient"))  # PR-L, ver arriba
 
     asyncio.run(fb_mod.update_facet_binding("thot", req=req, background_tasks=bg, request=request, user=user))
 
+    assert len(llamadas) == 1, "el PUT no auditó el cambio aplicado"
     assert len(bg.tasks) == 1
     func, args, kwargs = bg.tasks[0]
     # Desde 2026-09-01 lo encolado es el envoltorio de
