@@ -1340,7 +1340,7 @@ jobs:
         # The generic suite uses the exact JAX head that supplies the additive
         # F2-C structured projection and F2-D canonical-byte transport APIs.
         run: |
-          PIN=840579839d37821440b8018edb99fb074e540c66
+          PIN=c2c0aa4d58128ef62333972ce72ce41257b8a1de
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -4615,7 +4615,7 @@ jobs:
         # Keep the no-DB suite on the same exact structured-output API consumed
         # by the platform integration.
         run: |
-          PIN=840579839d37821440b8018edb99fb074e540c66
+          PIN=c2c0aa4d58128ef62333972ce72ce41257b8a1de
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -4871,7 +4871,7 @@ jobs:
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=5s --health-timeout=5s --health-retries=20
     env:
-      JAX_F2E_STRUCTURED_EXPECTED_SHA: 840579839d37821440b8018edb99fb074e540c66
+      JAX_F2E_STRUCTURED_EXPECTED_SHA: c2c0aa4d58128ef62333972ce72ce41257b8a1de
       JAX_REPO_PATH: ${{ github.workspace }}/jax
       JAX_REPO_BASE: ${{ github.workspace }}/jax
       JAX_CONFIG_PATH: ${{ github.workspace }}/jax/config/config.toml
@@ -4891,7 +4891,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: fjruizhn/Jax
-          ref: 840579839d37821440b8018edb99fb074e540c66
+          ref: c2c0aa4d58128ef62333972ce72ce41257b8a1de
           path: jax
       - name: Require exact F2-E pair
         env:
