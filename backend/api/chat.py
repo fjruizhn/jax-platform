@@ -1433,8 +1433,9 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     # exact JSON bytes durably before FastAPI/ASGI can emit them. History and
     # B9 receive display_text only after the ASGI body send and durable commit.
     if governed.transport_unit is None:
-        return JSONResponse(status_code=503,
-                            content={"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}})
+        return _lifecycle_unavailable_response(
+            facet=facet, request_id=governance_request_id,
+            motivo="transport_unit ausente (F2-C/F2-D fallo cerrado en governed_chat)")
 
     async def project_after_transport_commit():
         _update_history(history_key, mensaje_para_historial(req.message, validados), display_text)
@@ -1470,6 +1471,18 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     return prepared_response
 
 
+def _lifecycle_unavailable_response(*, facet: str, request_id: str | None, motivo: str):
+    """503 fijo de F2-D, pero con rastro en el journal.
+
+    El cuerpo no cambia (codigo estable, sin datos). 2026-10-05: sin este log un par
+    plataforma/jax roto devolvia 503 a todos los chats y el journal quedaba vacio.
+    """
+    logger.error("OUTPUT_LIFECYCLE_UNAVAILABLE facet=%s request_id=%s motivo=%s",
+                 facet, request_id, motivo)
+    return JSONResponse(status_code=503,
+                        content={"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}})
+
+
 async def _runtime_notice_response(*, aviso: AvisoDeChat, facet: str, timestamp: str,
                                    request: ChatRequest, user: AuthUser,
                                    memory_scope: ScopeContext, history_key: str,
@@ -1483,9 +1496,10 @@ async def _runtime_notice_response(*, aviso: AvisoDeChat, facet: str, timestamp:
     from api.governed_chat import project_provider_contract
     from webchat_f2d.transport import prepare_governed_chat_response
 
+    notice_request_id = str(uuid.uuid4())
     governed = project_provider_contract(
         None, memory_scope=memory_scope, user_id=str(user.user_id),
-        request_id=str(uuid.uuid4()),
+        request_id=notice_request_id,
     )
     response = ChatResponse(
         facet=facet, response=governed.text, timestamp=timestamp,
@@ -1504,8 +1518,9 @@ async def _runtime_notice_response(*, aviso: AvisoDeChat, facet: str, timestamp:
         await _fire_completed(facet, user.tenant_id, user.user_id)
 
     if governed.transport_unit is None:
-        return JSONResponse(status_code=503,
-                            content={"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}})
+        return _lifecycle_unavailable_response(
+            facet=facet, request_id=notice_request_id,
+            motivo="transport_unit ausente en aviso de runtime (F2-C/F2-D fallo cerrado)")
     try:
         prepared = await prepare_governed_chat_response(
             response=response, transport_unit=governed.transport_unit, user=user,
