@@ -151,10 +151,10 @@ describe('Message texto gobernado legible', () => {
   })
 
   it('el Markdown decodificado no se interpreta: **x** no produce <strong>', () => {
-    const { container } = renderMessage({ facet: 'governed_response', content: '**x** &amp; # t', governed_plain: true })
+    const { container } = renderMessage({ facet: 'governed_response', content: '**x** &amp;\n# t', governed_plain: true })
     expect(container.querySelector('strong')).toBeNull()
     expect(container.querySelector('h1')).toBeNull()
-    expect(screen.getByTestId('governed-plain').textContent).toBe('**x** & # t')
+    expect(screen.getByTestId('governed-plain').textContent).toBe('**x** &\n# t')
   })
 
   it('el aviso degradado muestra el texto i18n y no el del servidor', () => {
