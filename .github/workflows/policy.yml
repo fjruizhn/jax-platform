@@ -3604,7 +3604,8 @@ jobs:
           # master 5ed7fa5 y en la rama: 2270 -> 2300 passed / 1454 / 1454 skipped (las mismas 2
           # fallas locales del pin de jax en ambos). Absoluto MEDIDO en el runner: run 37380333908
           # sobre 3ec63f7, backend-tests-con-db colectados=3756 passed=3754 skipped=2.
-          PISO_PASSED = 3754
+          # 3754 -> 3757 (2026-10-05, fix/par-jax-visible): +3 puras (test_el_nivel_va_en_el_handler_..., sin DB).
+          PISO_PASSED = 3757
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4675,7 +4676,8 @@ jobs:
       # MEDIDO EXACTO el delta con JAX_CI_NO_DB=1, mismo comando, en master 5ed7fa5 y en la rama:
       # 2270 -> 2300 passed / 1454 / 1454 skipped. Absoluto MEDIDO en el runner: run 37380333908
       # sobre 3ec63f7, backend-tests-no-db colectados=3756 passed=2302 skipped=1454.
-      JAX_CI_MIN_PASSED: "2302"
+      # 2302 -> 2305 (2026-10-05, fix/par-jax-visible): +3 puras (test_el_nivel_va_en_el_handler_..., sin DB).
+      JAX_CI_MIN_PASSED: "2305"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

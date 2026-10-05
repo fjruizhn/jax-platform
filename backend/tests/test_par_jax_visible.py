@@ -332,6 +332,19 @@ def test_loggers_del_par_tienen_handler_y_nivel_visibles(nombre):
     assert all(h.level <= logging.ERROR for h in lg.handlers)
 
 
+@pytest.mark.parametrize("nombre", ["api.governed_chat", "api.chat", "api.governed_pipeline_list"])
+def test_el_nivel_va_en_el_handler_y_caplog_en_debug_sigue_viendo_info(nombre, caplog):
+    # Si el logger llevara el nivel (WARNING), un caplog en DEBUG sobre la raiz dejaria de ver
+    # sus INFO y las pruebas de privacidad (test_adjuntos_chat_endpoint.py) quedarian ciegas.
+    import main  # noqa: F401
+
+    lg = logging.getLogger(nombre)
+    assert lg.level == logging.NOTSET
+    caplog.set_level(logging.DEBUG)
+    lg.info("SONDA-INFO-%s", nombre)
+    assert f"SONDA-INFO-{nombre}" in caplog.text
+
+
 # --- MINOR 7: el texto del proveedor no llega al log ---------------------------------------------
 
 SECRETO = "TEXTO-SECRETO-DEL-PROVEEDOR-7"
