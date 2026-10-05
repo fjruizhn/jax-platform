@@ -56,6 +56,25 @@ _cred_handler.setFormatter(logging.Formatter("%(levelname)s credential_resolver:
 _cred_logger.addHandler(_cred_handler)
 _cred_logger.propagate = False
 
+
+# El par plataforma/jax roto (2026-10-05) dejo 100 % de los chats caidos con el journal
+# vacio: estos loggers fallan cerrado y NUNCA se veian. Mismo mecanismo que credential_resolver
+# (uvicorn --log-level warning no deja handler en la raiz), con una diferencia: aqui se
+# MANTIENE propagate=True. La raiz no tiene handler en produccion (no se duplica la linea) y
+# los tests de caplog, que cuelgan de la raiz, siguen viendo estos registros.
+for _nombre, _nivel in (
+    ("api.governed_chat", logging.WARNING),
+    ("api.chat", logging.WARNING),
+    ("api.governed_pipeline_list", logging.WARNING),
+    ("par_jax", logging.INFO),
+):
+    _lg = logging.getLogger(_nombre)
+    _lg.setLevel(_nivel)
+    _h = logging.StreamHandler()
+    _h.setLevel(_nivel)
+    _h.setFormatter(logging.Formatter(f"%(levelname)s {_nombre}: %(message)s"))
+    _lg.addHandler(_h)
+
 from app_version import leer_version
 import ajustes
 from adjuntos import limites as limites_de_adjuntos
