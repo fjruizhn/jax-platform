@@ -713,3 +713,27 @@ def test_run_migrations_aplica_las_extensiones_de_enum_por_el_camino_acotado():
 
     from db import migrations as m
     assert "_aplicar_extension_de_enum" in inspect.getsource(m.run_migrations)
+
+
+def test_put_que_pisa_un_binding_creado_en_la_carrera_es_409_y_no_audita_antes_null(client, modelo, monkeypatch):
+    """MINOR-7 de la segunda auditoría del PR 192: con READ COMMITTED, el FOR UPDATE
+    sobre una (faceta, rol) sin fila no toma candado; si otro PUT la crea y confirma
+    entre la lectura y el INSERT, el INSERT ... ODKU de este pedido la PISA
+    (rowcount 2) y la auditoría diría valor_antes=NULL, que es falso. Se reproduce
+    haciendo que la lectura bloqueada no vea la fila que sí existe."""
+    _sin_sonda(monkeypatch)
+    ref, antes = modelo
+    import api.admin.facet_bindings as fb
+    original = fb.binding_de
+
+    async def lectura_que_llega_tarde(cur, facet_key, role, para_actualizar=False):
+        if para_actualizar:
+            return None  # lo que ve la transacción si la fila se confirmó después de leer
+        return await original(cur, facet_key, role, para_actualizar=para_actualizar)
+
+    monkeypatch.setattr(fb, "binding_de", lectura_que_llega_tarde)
+    resp = _put(client, ref)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "binding_conflicto_concurrente", resp.text
+    assert client.portal.call(_binding) == antes  # el binding no cambió
+    assert not client.portal.call(_filas_de_auditoria, ref)  # y no hay auditoría falsa

@@ -209,6 +209,16 @@ async def update_facet_binding(
                         status_code=400,
                         detail=f"model_ref {req.model_ref} no existe en el catalogo (o provider_id invalido): {e}",
                     )
+                # MINOR-7 (segunda auditoria del PR 192): con READ COMMITTED el
+                # FOR UPDATE sobre una (faceta, rol) sin fila no toma candado. Si
+                # otro PUT la creo y confirmo entre esa lectura y este INSERT, el
+                # ODKU la PISO (rowcount 2 sin CLIENT.FOUND_ROWS, 0 si era igual) y
+                # la auditoria diria valor_antes=NULL, que es falso. Sin fila antes,
+                # el INSERT tiene que haber insertado: si no, es el mismo choque
+                # concurrente de siempre.
+                if antes is None and cur.rowcount != 1:
+                    await conn.rollback()
+                    raise HTTPException(status_code=409, detail=DETALLE_CONFLICTO_CONCURRENTE)
                 despues = await binding_de(cur, facet_key, req.role)
                 await registrar_binding_aplicado(
                     cur, facet_key, req.role, antes, despues, None,

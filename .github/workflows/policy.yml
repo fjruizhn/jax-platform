@@ -1100,8 +1100,11 @@ jobs:
             //   1366/0/1366, 112 archivos.
             // Ronda 2 de #187: sin cambio (la prueba de paridad lee causas_de_error.json en vez del .py; una
             //   prueba reemplazada por otra). Medido: 1366/0/1366.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1366) {
-              console.error("PISO ROTO: se esperaban 1366 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1366 -> 1368 (2026-10-04, PR 192): +2 en api/errores.test.js (los 409
+            //   binding_conflicto_concurrente y faceta_sin_binding_primary se traducen en es/en; rojo
+            //   antes del i18n). Medido con `npx vitest run` sobre la rama: 1368/0/1368, 112 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1368) {
+              console.error("PISO ROTO: se esperaban 1368 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3526,7 +3529,9 @@ jobs:
           #   guard dentro de la transaccion +2, approve sin primary +1, ALTER de ENUM acotado +2.
           #   MEDIDO en local con DB de sesion, mismo comando: 3646 passed / 6 failed / 5 skipped (70f011b) ->
           #   3657 passed / 6 failed / 5 skipped (+11; los mismos 6 de entorno). El runner tiene la ultima palabra.
-          PISO_PASSED = 3630
+          # 3630 -> 3631 (2026-10-04, segunda auditoria del PR #192, MINOR-7): +1 con DB, el PUT que pisa un
+          #   binding creado en la carrera (READ COMMITTED) es 409 y no audita valor_antes=NULL. Sumado.
+          PISO_PASSED = 3631
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
