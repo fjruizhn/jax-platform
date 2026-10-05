@@ -151,6 +151,9 @@ export default {
     faceta_desconocida: (d) => `La faceta «${d.facet}» no existe.`,
     proveedor_error_http: () => 'El proveedor no pudo completar la solicitud.',
     faceta_error: () => 'El servicio de chat no pudo responder.',
+    // 2026-10-05: el servidor respondió 503; no es un problema de conexión del usuario.
+    OUTPUT_LIFECYCLE_UNAVAILABLE: () => 'El servidor no pudo preparar la respuesta de forma segura y la retuvo. Reintenta en unos minutos; si persiste, avisa al administrador.',
+    MEMORY_UNAVAILABLE: () => 'La memoria del sistema no está disponible en este momento, así que no se pudo responder. Reintenta en unos minutos; si persiste, avisa al administrador.',
     credencial_no_disponible: (d) => `No hay una credencial válida configurada para ${d.provider}.`,
     imagen_error_http: (d) => `El servicio de imágenes respondió con error ${d.status}.`,
     imagen_error: () => 'No se pudo generar la imagen.',
