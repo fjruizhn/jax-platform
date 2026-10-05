@@ -15,6 +15,10 @@ from pathlib import Path
 from fastapi import Response
 
 from auth.models import AuthUser
+# Un solo dueño de estas versiones: el puente F2-C del chat y el adaptador de runtime-status.
+# Dos copias ya divergieron una vez (2026-10-05: el par roto se vio solo en uno de los dos).
+from api.governed_chat import F2C_EXACT_PAIR_COMPATIBILITY
+from jax_engine.status_resolution import RUNTIME_STATUS_API_VERSION_ESPERADA
 
 
 class GovernedPipelineListUnavailable(RuntimeError):
@@ -22,8 +26,6 @@ class GovernedPipelineListUnavailable(RuntimeError):
 
 
 _SAFE_FALLBACK = b'{"detail":{"code":"governed_output_unavailable"}}'
-_F2C_TUPLE = ("f2-c.renderer.3", "f2-c.domain.7", frozenset({"f2-c.1"}))
-_RUNTIME_STATUS_VERSION = "f2-e.runtime-status.4"
 _STRUCTURED_PROJECTION_VERSION = "f2-c.structured-projection.1"
 _STRUCTURED_BYTES_VERSION = "f2-d.structured-bytes.1"
 logger = logging.getLogger(__name__)
@@ -64,16 +66,21 @@ def _paired_core():
         modules = (domain, renderer, response, resolution, runtime, projection, lifecycle)
         if any(not Path(module.__file__).resolve().is_relative_to(root_path) for module in modules):
             raise GovernedPipelineListUnavailable("loaded governance modules are outside configured JAX checkout")
-        if (domain.GOVERNED_RENDERER_API_VERSION,
-                domain.GOVERNED_DOMAIN_SPEC_VERSION,
-                domain.GOVERNED_ENVELOPE_SCHEMA_VERSIONS) != _F2C_TUPLE:
-            raise GovernedPipelineListUnavailable("paired JAX F2-C compatibility tuple is unsupported")
-        if runtime.RUNTIME_STATUS_API_VERSION != _RUNTIME_STATUS_VERSION:
-            raise GovernedPipelineListUnavailable("paired JAX runtime-status API is unsupported")
-        if projection.STRUCTURED_PROJECTION_API_VERSION != _STRUCTURED_PROJECTION_VERSION:
-            raise GovernedPipelineListUnavailable("paired JAX structured projection API is unsupported")
-        if lifecycle.STRUCTURED_BYTES_LIFECYCLE_API_VERSION != _STRUCTURED_BYTES_VERSION:
-            raise GovernedPipelineListUnavailable("paired JAX structured lifecycle API is unsupported")
+        f2c = (domain.GOVERNED_RENDERER_API_VERSION, domain.GOVERNED_DOMAIN_SPEC_VERSION,
+               domain.GOVERNED_ENVELOPE_SCHEMA_VERSIONS)
+        for nombre, esperada, encontrada in (
+            ("F2-C compatibility tuple", F2C_EXACT_PAIR_COMPATIBILITY, f2c),
+            ("runtime-status API", RUNTIME_STATUS_API_VERSION_ESPERADA,
+             runtime.RUNTIME_STATUS_API_VERSION),
+            ("structured projection API", _STRUCTURED_PROJECTION_VERSION,
+             projection.STRUCTURED_PROJECTION_API_VERSION),
+            ("structured lifecycle API", _STRUCTURED_BYTES_VERSION,
+             lifecycle.STRUCTURED_BYTES_LIFECYCLE_API_VERSION),
+        ):
+            if encontrada != esperada:
+                raise GovernedPipelineListUnavailable(
+                    f"paired JAX {nombre} is unsupported: platform expects {esperada!r}, "
+                    f"JAX at {root_path} exposes {encontrada!r}")
     except (ImportError, AttributeError, OSError) as exc:
         raise GovernedPipelineListUnavailable("paired JAX governance API is unavailable") from exc
     return domain, renderer, response, resolution, runtime, projection, lifecycle, root_path
@@ -102,18 +109,23 @@ def _platform_status_source_configuration():
 
 async def govern_pipeline_list(payload: dict, user: AuthUser) -> "GovernedPipelineListResponse":
     """Return exact F2-C canonical bytes or a static server-owned fallback."""
+    # Id de correlacion propio del fallo: el request_id del F2-C aun no existe si el par no carga.
+    correlation_id = str(uuid.uuid4())
     try:
         core = _paired_core()
     except GovernedPipelineListUnavailable as exc:
-        logger.warning("governed pipeline-list unavailable (%s)", type(exc).__name__)
+        # Mensaje propio (versiones y ruta, nunca valores del DTO): se vuelca completo.
+        logger.error("governed pipeline-list unavailable correlation_id=%s: %s",
+                     correlation_id, exc, exc_info=exc)
         return GovernedPipelineListResponse(_SAFE_FALLBACK, status_code=503)
     try:
         return await _govern_pipeline_list(payload, user, core)
     except (GovernedPipelineListUnavailable, core[2].GovernanceContractError,
             TypeError, ValueError, KeyError, ImportError,
             AttributeError, OSError, RuntimeError, OverflowError) as exc:
-        # Fail closed: exception details and candidate DTO values never leave.
-        logger.warning("governed pipeline-list unavailable (%s)", type(exc).__name__)
+        # Fail closed: exception details and candidate DTO values never leave (ni al log).
+        logger.error("governed pipeline-list unavailable correlation_id=%s (%s)",
+                     correlation_id, type(exc).__name__)
         return GovernedPipelineListResponse(_SAFE_FALLBACK, status_code=503)
 
 
@@ -185,7 +197,7 @@ async def _govern_pipeline_list(payload: dict, user: AuthUser, core=None) -> "Go
             resolution_receipt_ref=receipt_ref_id,
             disposition=response.ClaimDisposition.ASSERTABLE,
             template_contract=response.TemplateContract("PIPELINE_STATUS",
-                "f2-e.runtime-status.4", "es"),
+                RUNTIME_STATUS_API_VERSION_ESPERADA, "es"),
         )
         reference = response.ReferenceRef(
             receipt_ref_id, response.ReferenceType.RESOLUTION_RECEIPT,
