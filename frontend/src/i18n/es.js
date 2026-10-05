@@ -571,7 +571,7 @@ export default {
   // Message
   userLabel: 'Usuario',
   contractDegradedNote: 'La respuesta no cumplió el formato esperado.',
-  respuestaNoVerificable: 'No pude verificar esta respuesta y no la muestro. Intenta reformular la pregunta.',
+  respuestaNoVerificable: 'No pude mostrar esta respuesta de forma verificada.',
   // I-1 (revisión final PR 3, 2026-09-14): alt de <img> hardcodeado en
   // español, sin pasar por i18n (se veía en la interfaz en inglés).
   altGeneratedImage: 'imagen generada',

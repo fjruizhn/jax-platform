@@ -134,9 +134,27 @@ describe('Message texto gobernado legible', () => {
     expect(nodo.querySelector('b')).toBeNull()
   })
 
-  it('no interpreta Markdown tras decodificar', () => {
-    renderMessage({ facet: 'governed_response', content: '&lt;img src=x onerror=1&gt;', governed_plain: true })
-    expect(screen.getByTestId('governed-plain').querySelector('img')).toBeNull()
+  it('contenido CRUDO sin escapar se pinta literal, nunca como HTML', () => {
+    const { container } = renderMessage({
+      facet: 'governed_response',
+      content: '<img src=x onerror=alert(1)>',
+      governed_plain: true,
+    })
+    expect(container.querySelector('img')).toBeNull()
+    expect(screen.getByTestId('governed-plain').textContent).toBe('<img src=x onerror=alert(1)>')
+  })
+
+  it('un entity-escape que decodifica a markup tampoco produce elementos', () => {
+    const { container } = renderMessage({ facet: 'governed_response', content: '&lt;img src=x onerror=1&gt;', governed_plain: true })
+    expect(container.querySelector('img')).toBeNull()
+    expect(screen.getByTestId('governed-plain').textContent).toBe('<img src=x onerror=1>')
+  })
+
+  it('el Markdown decodificado no se interpreta: **x** no produce <strong>', () => {
+    const { container } = renderMessage({ facet: 'governed_response', content: '**x** &amp; # t', governed_plain: true })
+    expect(container.querySelector('strong')).toBeNull()
+    expect(container.querySelector('h1')).toBeNull()
+    expect(screen.getByTestId('governed-plain').textContent).toBe('**x** & # t')
   })
 
   it('el aviso degradado muestra el texto i18n y no el del servidor', () => {

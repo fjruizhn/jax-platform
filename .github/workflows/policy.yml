@@ -1108,8 +1108,11 @@ jobs:
             //   +4 en Message.test.jsx (texto gobernado legible, sin HTML ni Markdown; aviso degradado en i18n)
             //   y +2 en BottomBar.errores.test.jsx (aviso_code). Vistos en rojo antes de verde.
             //   Medido con `npx vitest run` sobre la rama: 1381/0/1381, 113 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1381) {
-              console.error("PISO ROTO: se esperaban 1381 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1381 -> 1383 (ronda 2 de la auditoria): el caso "no interpreta Markdown" se reemplaza por 3
+            //   reales (contenido CRUDO sin escapar, markup decodificado, **x** sin <strong>); la mutacion
+            //   dangerouslySetInnerHTML ahora falla. Medido: 1383/0/1383, 113 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1383) {
+              console.error("PISO ROTO: se esperaban 1383 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

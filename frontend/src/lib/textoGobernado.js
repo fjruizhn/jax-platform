@@ -27,6 +27,12 @@ export const AVISO_RESPUESTA_NO_VERIFICABLE = 'respuesta_no_verificable'
 // El aviso degradado fijo del servidor se reconoce por el estado de contrato
 // (DEGRADED_STRUCTURED, o UNAVAILABLE si el renderer falló), nunca por su
 // texto: el texto del servidor puede cambiar sin tocar el contrato de bytes.
+//
+// Acoplamiento con el contrato de Jax: en F2-C un DEGRADED_STRUCTURED puede
+// llevar bloques ATTRIBUTED_QUOTE, es decir texto distinto del aviso fijo.
+// Hoy ningún productor del chat web lo hace (project_provider_contract sella
+// solo el aviso "degraded" con ese estado), por eso estado == aviso. Si algún
+// día lo hace, este reconocimiento debe cambiar a la vez que el productor.
 const ESTADOS_AVISO_DEGRADADO = new Set(['DEGRADED_STRUCTURED', 'UNAVAILABLE'])
 
 export function avisoGobernadoDe(data) {
