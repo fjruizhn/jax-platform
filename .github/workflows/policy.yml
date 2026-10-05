@@ -3573,7 +3573,10 @@ jobs:
           #   ultimo medido en el runner (3669), no medido: la corrida local con DB de sesion no sirve de
           #   referencia aqui (6 fallos de entorno y otra base). Sin DB, +2 exacto medido por la auditoria
           #   (pin 2b0c163: 2218 -> 2220 passed). El runner tiene la ultima palabra (regla 5).
-          PISO_PASSED = 3671
+          # 3671 -> 3676 (2026-10-05, reconciliacion SR2 exact-pair): medicion publicada del runner,
+          # corrida 37279310975: colectados=3678 passed=3676 skipped=2 failed=0. Un skip es exclusivo del
+          # entorno; el otro sigue gateado por MAX_SKIPS=1, por lo que no se modifica la barrera de skips.
+          PISO_PASSED = 3676
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4625,7 +4628,9 @@ jobs:
       # 2217 -> 2219 (2026-10-05, fix/conftest-sello-antes-de-migrar): +2 netos puros (1 prueba reemplazada por 3,
       # ninguna pide `client`). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, en master (0e582da) y en la rama:
       # 2215 -> 2217 passed / 1455 / 1455 skipped / 3 failed por el pin local; 2217 + 3 - 1 = 2219.
-      JAX_CI_MIN_PASSED: "2219"
+      # 2219 -> 2224 (2026-10-05, reconciliacion SR2 exact-pair): medicion publicada del runner,
+      # corrida 37279310975: 2224 passed, 1454 skipped. Los controles de skips permanecen sin cambios.
+      JAX_CI_MIN_PASSED: "2224"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

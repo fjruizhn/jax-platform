@@ -27,6 +27,10 @@ job `f2e-sr2-step-status-exact-pair` con sus comprobaciones de ambos SHA.
 
 ## Verificación
 
+- Fuente de pisos: la corrida publicada del runner `37279310975` midió con DB
+  `3676 passed / 2 skipped` de `3678` colectados (un skip exclusivo del entorno)
+  y sin DB `2224 passed / 1454 skipped`; los pisos del workflow se reconciliaron
+  a esos conteos exactos sin alterar los controles de skips.
 - Contrato de estado, bridge y STEP_STATUS sin MariaDB:
   `17 passed, 1 deselected`.
 - Paridad de extensiones: `2 passed` después de un ciclo rojo que mostró los
