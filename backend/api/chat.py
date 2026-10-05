@@ -1452,10 +1452,10 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
                               "contract_degraded": contract_degraded},
             on_commit=project_after_transport_commit,
         )
-    except Exception as exc:  # fail-soft: do not send governed output; return fixed protocol error
-        logger.warning("F2-D preparation failed closed (%s)", type(exc).__name__)
-        return JSONResponse(status_code=503,
-                            content={"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}})
+    except Exception:  # fail-soft: do not send governed output; return fixed protocol error
+        return _lifecycle_unavailable_response(
+            facet=facet, request_id=governance_request_id,
+            motivo="preparacion F2-D fallo cerrado", con_traza=True)
 
     # Shadow validation remains observational and runs only after a successful
     # transport commitment. It cannot authorize, restore, or alter output.
@@ -1471,14 +1471,16 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
     return prepared_response
 
 
-def _lifecycle_unavailable_response(*, facet: str, request_id: str | None, motivo: str):
+def _lifecycle_unavailable_response(*, facet: str, request_id: str | None, motivo: str,
+                                    con_traza: bool = False):
     """503 fijo de F2-D, pero con rastro en el journal.
 
     El cuerpo no cambia (codigo estable, sin datos). 2026-10-05: sin este log un par
     plataforma/jax roto devolvia 503 a todos los chats y el journal quedaba vacio.
     """
+    # con_traza=True solo dentro de un `except`: adjunta la excepcion de F2-D (codigo propio).
     logger.error("OUTPUT_LIFECYCLE_UNAVAILABLE facet=%s request_id=%s motivo=%s",
-                 facet, request_id, motivo)
+                 facet, request_id, motivo, exc_info=con_traza)
     return JSONResponse(status_code=503,
                         content={"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}})
 
@@ -1529,10 +1531,10 @@ async def _runtime_notice_response(*, aviso: AvisoDeChat, facet: str, timestamp:
                               "contract_degraded": governed.contract_degraded},
             on_commit=project_after_commit,
         )
-    except Exception as exc:  # fail-soft: do not emit a runtime notice when preparation fails
-        logger.warning("F2-D runtime-notice preparation failed closed (%s)", type(exc).__name__)
-        return JSONResponse(status_code=503,
-                            content={"detail": {"code": "OUTPUT_LIFECYCLE_UNAVAILABLE"}})
+    except Exception:  # fail-soft: do not emit a runtime notice when preparation fails
+        return _lifecycle_unavailable_response(
+            facet=facet, request_id=notice_request_id,
+            motivo="preparacion F2-D del aviso de runtime fallo cerrado", con_traza=True)
     return prepared
 
 
