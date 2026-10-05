@@ -71,6 +71,19 @@ igualdad y el mutante que rechaza una adición unilateral siguen vigentes.
   contra esa cabeza con `53 passed, 0 skipped`, por lo que su piso subió de
   `46` a `53`. Los pisos genéricos permanecen en `3678` con DB y `2226` sin
   DB, y se conserva `MAX_SKIPS = 1`.
+- Se corrigió el caso de una página autenticada vacía: Platform conserva la
+  proyección F2-C y los bytes F2-D, pero no solicita evidencia canónica cuando
+  no hay filas, porque el contrato batch de JAX admite de uno a cincuenta IDs.
+  Las dos formas válidas (activa y descartada) producen `200` sin claims,
+  recibos ni lecturas de estado. También se cierran antes del resolvedor una
+  clave superior desconocida, `pipelines` ausente, o `pipelines` que no es una
+  lista.
+- El commit de Platform bloquea la reentrada de transporte: sólo
+  `OUTPUT_PREPARED` puede pasar a `TRANSPORT_COMMITTING`; un resultado
+  `OUTPUT_COMMITTED_TO_TRANSPORT` o `TRANSPORT_OUTCOME_UNKNOWN` es terminal y
+  no vuelve a enviar bytes. Los cuatro pines exactos avanzaron a JAX publicado
+  `e5919f152361d4e91144ae1a55bd47cab28e8150`. Los pisos medidos se mantienen
+  hasta una nueva corrida CI.
 - La vista `estado=discarded` termina las consultas y cálculos de costo dentro
   de `pool.acquire()`, libera la conexión, y sólo después espera el límite de
   gobernanza F2-B/F2-C/F2-D. La regresión usa un pool espía y prueba tanto la

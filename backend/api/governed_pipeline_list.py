@@ -121,6 +121,11 @@ async def _govern_pipeline_list(payload: dict, user: AuthUser, core=None) -> "Go
     domain, renderer, response, resolution, runtime, structured, f2d, root_path = core or _paired_core()
     if not isinstance(payload, dict) or not isinstance(user, AuthUser):
         raise GovernedPipelineListUnavailable("authenticated producer payload is invalid")
+    active_top_level = {"pipelines", "has_more"}
+    discarded_top_level = active_top_level | {"cursor_siguiente"}
+    if (set(payload) not in (active_top_level, discarded_top_level)
+            or not isinstance(payload.get("pipelines"), list)):
+        raise GovernedPipelineListUnavailable("producer emitted invalid pipeline-list shape")
     request_id, trace_id, response_id = (str(uuid.uuid4()) for _ in range(3))
     scope = response.ResponseScope(
         environment=_environment(),
@@ -150,7 +155,8 @@ async def _govern_pipeline_list(payload: dict, user: AuthUser, core=None) -> "Go
         source_rows.append(row)
         arguments_seq.append({"pipeline_id": pipeline_id, "status": status})
 
-    evidences = await resolver.evidence_many(tuple(arguments_seq), scope)
+    evidences = (() if not arguments_seq
+                 else await resolver.evidence_many(tuple(arguments_seq), scope))
     if not isinstance(evidences, tuple) or len(evidences) != len(arguments_seq):
         raise GovernedPipelineListUnavailable("canonical pipeline status batch cardinality is invalid")
     for arguments, evidence in zip(arguments_seq, evidences, strict=True):
@@ -253,13 +259,15 @@ class GovernedPipelineListResponse(Response):
             await super().__call__(scope, receive, send)
             return
         state = self._f2d.OutputLifecycleState
+        if self.lifecycle_state is not state.OUTPUT_PREPARED:
+            raise GovernedPipelineListUnavailable("structured transport lifecycle is terminal")
         try:
             exact_bytes = self._f2d.revalidate_structured_for_transport(
                 self._transport_unit, datetime.now(timezone.utc))
             if exact_bytes is not self._transport_unit.canonical_bytes:
                 raise GovernedPipelineListUnavailable("transport altered canonical bytes")
             self._f2d.validate_structured_lifecycle_transition(
-                state.OUTPUT_PREPARED, state.TRANSPORT_COMMITTING)
+                self.lifecycle_state, state.TRANSPORT_COMMITTING)
             self.lifecycle_state = state.TRANSPORT_COMMITTING
             await send({"type": "http.response.start", "status": self.status_code,
                 "headers": self.raw_headers})
@@ -269,5 +277,5 @@ class GovernedPipelineListResponse(Response):
                 self.lifecycle_state = state.TRANSPORT_OUTCOME_UNKNOWN
             raise
         self._f2d.validate_structured_lifecycle_transition(
-            state.TRANSPORT_COMMITTING, state.OUTPUT_COMMITTED_TO_TRANSPORT)
+            self.lifecycle_state, state.OUTPUT_COMMITTED_TO_TRANSPORT)
         self.lifecycle_state = state.OUTPUT_COMMITTED_TO_TRANSPORT

@@ -138,6 +138,11 @@ def test_authenticated_pipeline_list_crosses_real_producer_f2b_f2c_f2d_and_sends
     assert sent[1]["body"] is response._transport_unit.canonical_bytes
     assert response.lifecycle_state.value == "OUTPUT_COMMITTED_TO_TRANSPORT"
 
+    resent = []
+    with pytest.raises(boundary.GovernedPipelineListUnavailable):
+        asyncio.run(response({}, None, resent.append))
+    assert resent == []
+
 
 def test_pipeline_list_wrong_canonical_owner_fails_closed_without_candidate_leak(monkeypatch):
     models, store, boundary = _setup_pair(monkeypatch)
@@ -185,6 +190,56 @@ def test_pipeline_list_uses_one_ordered_evidence_batch_and_keeps_individual_clai
     decoded = json.loads(response.body)
     assert [row["status"] for row in decoded["pipelines"]] == ["running", "completed"]
     assert len(response._transport_unit.projection.claim_ids) == 2
+
+
+@pytest.mark.parametrize("payload", [
+    {"pipelines": [], "has_more": False},
+    {"pipelines": [], "has_more": False, "cursor_siguiente": None},
+])
+def test_empty_pipeline_page_is_canonical_without_a_status_query(monkeypatch, payload):
+    _, _, boundary = _setup_pair(monkeypatch)
+    core = boundary._paired_core()
+    calls = 0
+
+    class BatchResolver:
+        async def evidence_many(self, _arguments_seq, _scope):
+            nonlocal calls
+            calls += 1
+            raise AssertionError("empty pages must not query canonical pipeline status")
+
+    monkeypatch.setattr(core[4], "JacobsPipelineStatusResolver", BatchResolver)
+    monkeypatch.setattr(boundary, "_paired_core", lambda: core)
+    response = asyncio.run(boundary.govern_pipeline_list(payload, _user()))
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == payload
+    assert calls == 0
+    assert not response._transport_unit.projection.claim_ids
+
+
+@pytest.mark.parametrize("payload", [
+    {"has_more": False},
+    {"pipelines": {}, "has_more": False},
+    {"pipelines": [], "has_more": False, "unexpected": True},
+])
+def test_pipeline_list_rejects_invalid_top_level_before_status_query(monkeypatch, payload):
+    _, _, boundary = _setup_pair(monkeypatch)
+    core = boundary._paired_core()
+    calls = 0
+
+    class BatchResolver:
+        async def evidence_many(self, _arguments_seq, _scope):
+            nonlocal calls
+            calls += 1
+            return ()
+
+    monkeypatch.setattr(core[4], "JacobsPipelineStatusResolver", BatchResolver)
+    monkeypatch.setattr(boundary, "_paired_core", lambda: core)
+    response = asyncio.run(boundary.govern_pipeline_list(payload, _user()))
+
+    assert response.status_code == 503
+    assert response.body == b'{"detail":{"code":"governed_output_unavailable"}}'
+    assert calls == 0
 
 
 @pytest.mark.parametrize("batch", [
@@ -312,6 +367,12 @@ def test_pipeline_list_transport_failure_records_unknown_without_ack(monkeypatch
 
     with pytest.raises(OSError):
         asyncio.run(response({}, None, failed_send))
+    assert response.lifecycle_state.value == "TRANSPORT_OUTCOME_UNKNOWN"
+
+    retried = []
+    with pytest.raises(boundary.GovernedPipelineListUnavailable):
+        asyncio.run(response({}, None, retried.append))
+    assert retried == []
     assert response.lifecycle_state.value == "TRANSPORT_OUTCOME_UNKNOWN"
 
 
