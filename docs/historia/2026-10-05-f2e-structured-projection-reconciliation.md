@@ -96,6 +96,12 @@ igualdad y el mutante que rechaza una adición unilateral siguen vigentes.
   `e5919f152361d4e91144ae1a55bd47cab28e8150`; su piso se elevó de `53` a
   `58` por las cinco regresiones no omitidas del cierre C. Los pisos genéricos
   y `MAX_SKIPS` no cambiaron.
+- JAX corrigió la proyección de `descartado_at=NULL` real en páginas posteriores
+  de descartados. Platform no cambió la paginación pública: avanzó sus cuatro
+  pines a `d9bf5ce947826e53e2b6f0088cc580eef2d307aa` y añadió
+  `test_pipelines_descartados_cursor.py` al par exacto. La medición conjunta
+  dio `89 passed, 0 skipped`, por lo que el piso exacto subió de `58` a `89`;
+  los pisos genéricos continúan `3678`/`2226` hasta CI verde.
 - La vista `estado=discarded` termina las consultas y cálculos de costo dentro
   de `pool.acquire()`, libera la conexión, y sólo después espera el límite de
   gobernanza F2-B/F2-C/F2-D. La regresión usa un pool espía y prueba tanto la
