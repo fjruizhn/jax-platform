@@ -995,3 +995,49 @@ def test_una_razon_del_ocr_con_codigo_fuera_de_las_causas_cae_al_generico(monkey
                         {**despachador._RAZONES_DEL_OCR, despachador._normalizada("razon nueva"): "ocr_rotada"})
     assert despachador.codigo_de_la_razon("razon nueva") == "procesamiento_fallido"
     assert despachador.codigo_de_la_razon(RAZON_OCR_VACIO) == "ocr_sin_texto"
+
+
+# --- el loop de fondo no corre bajo pytest (2026-10-04) ---------------------
+# Hasta hoy start_despachador arrancaba con el lifespan del fixture `client` de
+# sesión y repartía documentos de fondo mientras corrían los tests: dos fallos
+# intermitentes de CI en el PR #192 (test_mapa_de_estados[parcial-parcial] quedaba
+# 'pendiente' porque el ciclo de fondo se adelantaba, y el sync de Gemini contaba
+# una 3a llamada porque el ciclo usaba el http_client global ya reemplazado).
+# Mismo contrato que start_reintento_de_uso y start_facet_canary.
+
+async def test_start_despachador_no_arranca_bajo_pytest(monkeypatch, caplog):
+    ciclos = []
+
+    async def falso(pool):
+        ciclos.append(pool)
+
+    monkeypatch.setattr(despachador, "ciclo", falso)
+    with caplog.at_level(logging.WARNING, logger=despachador.logger.name):
+        await despachador.start_despachador()
+    assert ciclos == []
+    assert "pytest" in caplog.text
+
+
+async def test_start_despachador_forzado_corre_un_ciclo_y_se_cancela_limpio(monkeypatch):
+    ciclos = []
+
+    async def falso(pool):
+        ciclos.append(pool)
+
+    async def pool_falso():
+        return "pool"
+
+    async def dormir_largo(_segundos):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(despachador, "ciclo", falso)
+    monkeypatch.setattr(despachador, "get_pool", pool_falso)
+    monkeypatch.setattr(despachador, "_dormir", dormir_largo)
+    tarea = asyncio.create_task(despachador.start_despachador(forzado=True))
+    await asyncio.sleep(0.05)
+    try:
+        assert ciclos == ["pool"]
+    finally:
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea

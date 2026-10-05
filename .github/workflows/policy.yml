@@ -4539,7 +4539,11 @@ jobs:
       # esa escritura, loopback en el origen, el_juez en localhost). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo
       # comando, sobre la rama: 2211 passed / 1428 skipped; 2211 + 2 (los de processing_job_store) - 1 (skip de
       # entorno) = 2212. El piso CON DB (PISO_PASSED) sigue sin medirse: 3634 -> 3638 estimado.
-      JAX_CI_MIN_PASSED: "2212"
+      # 2212 -> 2214 (2026-10-04, fix/despachador-no-corre-bajo-pytest): +2 puras (el despachador no arranca
+      # bajo pytest; forzado corre un ciclo y se cancela limpio). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando,
+      # sobre la rama: 2212 passed / 1431 skipped / 3 failed por el pin local de jax; 2212 + 3 - 1 = 2214.
+      # PISO_PASSED (con DB) no cambia: es un minimo y la suite con DB dio 3635 passed sobre la rama.
+      JAX_CI_MIN_PASSED: "2214"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

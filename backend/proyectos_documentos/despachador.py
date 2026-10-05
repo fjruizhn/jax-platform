@@ -585,9 +585,24 @@ async def _ciclo_inmediato() -> None:
         logger.warning("proyectos_documentos: el ciclo inmediato fallo", exc_info=True)
 
 
-async def start_despachador():
+def _corriendo_bajo_pytest() -> bool:
+    import sys
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
+async def start_despachador(forzado: bool = False):
     """Tarea de fondo del lifespan (corre al arrancar, despues duerme; nunca muere por un
-    fallo). Intervalo: INTERVALO_SEGUNDOS."""
+    fallo). Intervalo: INTERVALO_SEGUNDOS.
+
+    No arranca bajo pytest, igual que `start_reintento_de_uso` y `start_facet_canary`:
+    el fixture `client` levanta el lifespan entero y un despacho de fondo durante los
+    tests es ruido no determinista (2026-10-04: dos fallos intermitentes de CI en el
+    PR #192, uno porque el ciclo de fondo se adelantaba al del test y otro porque
+    usaba el http_client global que un test habia reemplazado). `forzado=True` es
+    solo para el test que ejercita el loop."""
+    if not forzado and _corriendo_bajo_pytest():
+        logger.warning("proyectos_documentos: el despachador no arranca bajo pytest")
+        return
     while True:
         try:
             await ciclo(await get_pool())
