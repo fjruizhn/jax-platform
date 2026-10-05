@@ -76,9 +76,11 @@ def e(client):
 
 def test_tipo_de_acepta_las_extensiones_del_extractor_en_minusculas():
     assert tipos.EXTENSIONES_ACEPTADAS == frozenset(
-        {"pdf", "xlsx", "xlsm", "docx", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"})
+        {"pdf", "xlsx", "xlsm", "docx", "png", "apng", "jpg", "jpeg", "jpe", "jfif", "mpo",
+         "tif", "tiff", "bmp", "gif", "webp"})
     assert tipos.tipo_de("Informe FINAL.PDF") == "pdf"
     assert tipos.tipo_de("a.b.tiff") == "tiff"
+    assert tipos.tipo_de("Foto.GIF") == "gif"
 
 
 @pytest.mark.parametrize("nombre", ["archivo.exe", "viejo.xls", "datos.csv", "nota.txt", "leeme.md", "sin_extension", ".pdf", "termina.", "x.pdf.zip", ""])

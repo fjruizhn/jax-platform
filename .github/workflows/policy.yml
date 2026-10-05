@@ -1100,8 +1100,11 @@ jobs:
             //   1366/0/1366, 112 archivos.
             // Ronda 2 de #187: sin cambio (la prueba de paridad lee causas_de_error.json en vez del .py; una
             //   prueba reemplazada por otra). Medido: 1366/0/1366.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1366) {
-              console.error("PISO ROTO: se esperaban 1366 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1366 -> 1368 (2026-10-04, PR 192): +2 en api/errores.test.js (los 409
+            //   binding_conflicto_concurrente y faceta_sin_binding_primary se traducen en es/en; rojo
+            //   antes del i18n). Medido con `npx vitest run` sobre la rama: 1368/0/1368, 112 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1368) {
+              console.error("PISO ROTO: se esperaban 1368 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1342,7 +1345,7 @@ jobs:
           # Platform's F2-C/F2-D baseline is the governed exact pair; keeping
           # the historical domain-.5 JAX pin after this contract upgrade would
           # make master import an incompatible renderer/lifecycle vocabulary.
-          PIN=44990ce9f25d6efb1d4c1b1520bd3100d0045dc6
+          PIN=ad930fa5a9650afce83707217c8e301b49ef9782
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -3537,11 +3540,40 @@ jobs:
           #   procesamiento_fallido; vista en rojo contra el despachador sin defensa). MEDIDO CON DB en local
           #   (mariadb:12.3.3 descartable en 3399, jax 2b0c163, mismo comando): 3609 passed, 0 failed, 0 skipped,
           #   con las 3 de test_base_por_sesion incluidas; 3609 - 3 = 3606.
-          # Remedido 2026-10-04 con este comando exacto, Python 3.14, MariaDB
-          # 12.3.3, plataforma e70e89b7 y JAX bdadf249: 3614 passed / 1 skipped / 0 failed.
-          # Actions omite exactamente un test que requiere comparar contra
-          # /etc/jax/.env ausente allí: runner medido = 3613 passed / 2 skipped.
-          PISO_PASSED = 3613
+          # 3606 -> 3617 (2026-10-04, binding_aplicado en model_catalog_audit): +11 con DB, todas con `client`
+          #   (tests/test_binding_aplicado_auditado.py: PUT y approve auditados, los dos 409 sin fila nueva,
+          #   auditoria rota -> rollback en los dos, lecturas de rechazos, EXPLAIN por uk_facet_role, migracion
+          #   del ENUM). Vistas en rojo contra el codigo viejo (9 de 11; las 2 de 409 guardan regresion).
+          #   MEDIDO en local con DB de sesion, mismo comando: master 58b60ee 3633 passed / 6 failed / 5 skipped
+          #   -> rama 3644 passed / 6 failed / 5 skipped (+11; los mismos 6 fallan en ambos por el entorno local:
+          #   2 de test_base_por_sesion, 3 de test_processing_job_exact_pair y 1 de test_proyectos_documentos_
+          #   repositorio, pin de jax). Piso = declarado (3606) + delta propio (11). Sin DB no suman: 2212 igual.
+          #   El runner tiene la ultima palabra.
+          # 3617 -> 3619 (2026-10-04, carrera de approve_proposal): +2 con DB, con `client`
+          #   (dos approves concurrentes de la misma propuesta -> un 200, un 409 y UNA fila binding_aplicado;
+          #   EXPLAIN de la relectura FOR UPDATE por PRIMARY). Vistas en rojo contra el approve anterior
+          #   (dos 200 y dos filas; AttributeError del SQL). MEDIDO en local con DB de sesion, mismo comando:
+          #   3644 passed / 6 failed / 5 skipped -> 3646 passed / 6 failed / 5 skipped (+2; los mismos 6 de
+          #   entorno). Sin DB no suman: 2212 igual. El runner tiene la ultima palabra.
+          # 3619 -> 3630 (2026-10-04, auditoria del PR #192, MINOR-1 a 6): +11 con DB; 10 piden `client` y 1 es
+          #   pura (inspeccion de run_migrations: suma tambien en el job sin DB, +1 alli). Deadlock por gap lock (1213 reproducido 3 de
+          #   3 contra el codigo anterior) +1, 1213/1205 en los dos escritores +4, otro OperationalError +1,
+          #   guard dentro de la transaccion +2, approve sin primary +1, ALTER de ENUM acotado +2.
+          #   MEDIDO en local con DB de sesion, mismo comando: 3646 passed / 6 failed / 5 skipped (70f011b) ->
+          #   3657 passed / 6 failed / 5 skipped (+11; los mismos 6 de entorno). El runner tiene la ultima palabra.
+          # 3630 -> 3631 (2026-10-04, segunda auditoria del PR #192, MINOR-7): +1 con DB, el PUT que pisa un
+          #   binding creado en la carrera (READ COMMITTED) es 409 y no audita valor_antes=NULL. Sumado.
+          # 3631 -> 3665 (2026-10-04, regla 5 al integrar el PR #192): re-medido en el runner, job
+          #   backend-tests-con-db de la corrida 37249817008: colectados=3666 passed=3665 skipped=1 failed=0.
+          # 3665 -> 3669 (2026-10-04, #192 sobre master con #193, regla 5): +4 del #193, MEDIDO en el runner,
+          #   corridas 37253795873 y 37253800483: colectados=3670 passed=3669 skipped=1.
+          # 3669 -> 3671 (2026-10-05, fix/conftest-sello-antes-de-migrar): +2 netos con DB (se reemplaza
+          #   test_el_valor_por_defecto_del_modulo_tampoco por 3 pruebas: valor del modulo ya importado, orden
+          #   del conftest y el conftest sin import duro de facet_resolver; ninguna pide `client`). SUMADO al
+          #   ultimo medido en el runner (3669), no medido: la corrida local con DB de sesion no sirve de
+          #   referencia aqui (6 fallos de entorno y otra base). Sin DB, +2 exacto medido por la auditoria
+          #   (pin 2b0c163: 2218 -> 2220 passed). El runner tiene la ultima palabra (regla 5).
+          PISO_PASSED = 3671
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4568,10 +4600,32 @@ jobs:
       # comando, sobre la rama: 2180 passed / 1428 skipped; menos el skip de entorno del runner, 2179.
       # 2179 -> 2180 (ronda 3 de #187): +1 pura. MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la rama:
       # 2181 passed / 1428 skipped; menos el skip de entorno del runner, 2180.
-      # Remedido 2026-10-04 con este comando exacto, Python 3.14, plataforma
-      # e70e89b7 y JAX bdadf249: 2186 passed / 1429 skipped / 0 failed en
-      # hall9000; Actions omite el test dependiente de /etc/jax/.env: 2185.
-      JAX_CI_MIN_PASSED: "2185"
+      # 2180 -> 2208 (ronda 2 de fix/sonda-facetas-internas): +28 puras (test_facet_canary_internas.py y
+      # los casos de la sonda; ninguna pide `client`). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, sobre la
+      # rama: 2207 passed / 1428 skipped; el runner suma los 2 de test_processing_job_exact_pair.py que aqui
+      # fallan por el pin local de jax (processing_job_store) y resta el skip de entorno: 2207 + 2 - 1 = 2208.
+      # El piso CON DB (PISO_PASSED) NO se midio aqui (la clonacion de la base de sesion falla por triggers):
+      # le tocan los mismos +28, o sea 3606 -> 3634 estimado; lo re-mide quien integre.
+      # 2208 -> 2212 (ronda 3 de fix/sonda-facetas-internas): +4 puras (fila al cortar por tope, tope de base de
+      # esa escritura, loopback en el origen, el_juez en localhost). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo
+      # comando, sobre la rama: 2211 passed / 1428 skipped; 2211 + 2 (los de processing_job_store) - 1 (skip de
+      # entorno) = 2212. El piso CON DB (PISO_PASSED) sigue sin medirse: 3634 -> 3638 estimado.
+      # 2212 -> 2214 (2026-10-04, fix/despachador-no-corre-bajo-pytest): +2 puras (el despachador no arranca
+      # bajo pytest; forzado corre un ciclo y se cancela limpio). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando,
+      # sobre la rama: 2212 passed / 1431 skipped / 3 failed por el pin local de jax; 2212 + 3 - 1 = 2214.
+      # PISO_PASSED (con DB) no cambia: es un minimo y la suite con DB dio 3635 passed sobre la rama.
+      # 2214 -> 2216 (misma rama, ronda de auditoria): +2 puras de test_state_tareas_de_fondo_bajo_pytest.py
+      # (las tareas de fondo del motor no arrancan bajo pytest; forzado arranca las dos). MEDIDO EXACTO con
+      # JAX_CI_NO_DB=1 sobre la rama: 2214 passed / 1431 skipped / 3 failed por el pin local; 2214 + 3 - 1 = 2216.
+      # 2212 -> 2213 (auditoria del PR #192): +1 pura, test_run_migrations_aplica_las_extensiones_de_enum_por_
+      # el_camino_acotado (los otros 10 de test_binding_aplicado_auditado.py piden `client` y se saltan).
+      # MEDIDO con JAX_CI_NO_DB=1 sobre ese archivo: 1 passed / 23 skipped. NO re-medido el total del job.
+      # 2216 -> 2217 (2026-10-04, PR #192 integrado sobre master con #193, regla 5): MEDIDO EXACTO con
+      # JAX_CI_NO_DB=1 sobre el arbol mezclado: 2215 passed / 1455 skipped / 3 failed por el pin local; 2215 + 3 - 1 = 2217.
+      # 2217 -> 2219 (2026-10-05, fix/conftest-sello-antes-de-migrar): +2 netos puros (1 prueba reemplazada por 3,
+      # ninguna pide `client`). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, en master (0e582da) y en la rama:
+      # 2215 -> 2217 passed / 1455 / 1455 skipped / 3 failed por el pin local; 2217 + 3 - 1 = 2219.
+      JAX_CI_MIN_PASSED: "2219"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -4597,7 +4651,7 @@ jobs:
           # Platform's F2-C/F2-D baseline is the governed exact pair; keeping
           # the historical domain-.5 JAX pin after this contract upgrade would
           # make master import an incompatible renderer/lifecycle vocabulary.
-          PIN=44990ce9f25d6efb1d4c1b1520bd3100d0045dc6
+          PIN=ad930fa5a9650afce83707217c8e301b49ef9782
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -4855,7 +4909,7 @@ jobs:
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=5s --health-timeout=5s --health-retries=20
     env:
-      JAX_SR2_EXPECTED_SHA: 44990ce9f25d6efb1d4c1b1520bd3100d0045dc6
+      JAX_SR2_EXPECTED_SHA: ad930fa5a9650afce83707217c8e301b49ef9782
       JAX_REPO_PATH: ${{ github.workspace }}/jax
       JAX_REPO_BASE: ${{ github.workspace }}/jax
       JAX_CONFIG_PATH: ${{ github.workspace }}/jax/las_manos/config.toml
@@ -4875,7 +4929,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: fjruizhn/Jax
-          ref: 44990ce9f25d6efb1d4c1b1520bd3100d0045dc6
+          ref: ad930fa5a9650afce83707217c8e301b49ef9782
           path: jax
       - name: Resolve the test suite's MariaDB hostname on the runner
         run: echo "127.0.0.1 mariadb.test" | sudo tee -a /etc/hosts

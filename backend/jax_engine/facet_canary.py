@@ -13,8 +13,15 @@ import asyncio
 import logging
 import os
 import sys
+from datetime import datetime, timezone
+from urllib.parse import urlsplit
+
+import aiomysql
 
 from api.chat import _invoke_facet, _load_config
+from config_entorno import url_requerida
+from db.connection import get_pool
+from ejecutor import misiones
 from facet_health import (
     record_facet_health,
     OUTCOME_PROBE_ERROR,
@@ -34,42 +41,82 @@ logger = logging.getLogger(__name__)
 CANARY_INTERVAL_SECONDS = int(os.getenv("CANARY_INTERVAL_SECONDS", "3600"))
 
 # Hallazgo 2 de la misma ronda: resolve_facet() -> aiomysql.connect() no
-# tiene connect_timeout, y el cur.execute() tampoco tiene timeout propio.
-# Los timeouts HTTP de _invoke_facet_dispatch SI existen (gate 5s, ollama
-# 180s, openai_compat/gemini 120s) -- el agujero es solo la DB. Sin un
-# timeout ACA, una MariaDB que acepta la conexion y no contesta cuelga
-# probe_all() para siempre: el `while True` nunca llega al sleep, y la
-# sonda muere sin log, sin fila y sin evento.
+# tiene connect_timeout, y el cur.execute() tampoco tiene timeout propio. Los
+# timeouts HTTP de _invoke_facet_dispatch SI existen (gate 5s, ollama 180s,
+# openai_compat/gemini 120s) -- el agujero es solo la DB. Sin un timeout ACA,
+# una MariaDB que acepta la conexion y no contesta cuelga el barrido para
+# siempre: el `while True` nunca llega al sleep y la sonda muere sin log.
 #
-# N=1080 (18 min), elegido con este calculo: el peor caso LEGITIMO de un
-# barrido completo (canary_facets ordena alfabetico: ada, hipatia,
-# jax_local, jekyll, kimi, thot) es 5 facets gobernados (ada/hipatia/
-# jekyll/kimi/thot, cada uno gate 5s + hasta 120s de proveedor = 125s) +
-# 180s de jax_local (ollama, no gobernado, timeout mas alto del repo) =
-# 5*125 + 180 = 805s. 1080s deja ~34% de margen sobre ese peor caso
-# legitimo y sigue por debajo de un tercio del intervalo por defecto
-# (3600s), asi que un barrido colgado no se come el proximo ciclo.
+# ---------------------------------------------------------------------------
+# PRESUPUESTOS DE TIEMPO (recalculados el 2026-10-04, ronda 2 del arreglo de
+# el_juez). Todo cuelga de UNA invariante: el lector (jacobs/facet_health.py,
+# repo jax) da `unknown` si el ultimo evento de una faceta tiene mas de
+# HEALTH_WINDOW_SECONDS = 7200 s = 2 x intervalo, SIN margen. Lo que importa no
+# es que el barrido quepa en un tercio del intervalo (criterio viejo) sino que
+# el HUECO entre dos eventos consecutivos de una faceta quede < 7200 s.
 #
-# Era 900 hasta 2026-09-11, calculado cuando kimi (motor_registry) volvia
-# en el acto con unsupported_transport, sin red: 4*125 + 180 = 680s. Al
-# pasar kimi a http_openai_compat entra al gate y al proveedor como las
-# otras cuatro, y con 900 el margen caia de ~32% a ~11% sin que nadie lo
-# decidiera. Si cambia el conjunto de facets o un timeout de
-# _invoke_facet_dispatch, este numero se recalcula.
+# 1. Tope POR FACETA (CANARY_FACET_TIMEOUT_SECONDS = 400). Peor caso legitimo de
+#    UNA faceta: ollama = esperar el carril de la Mesa (hasta 180, un turno de
+#    chat de jax_local) + la llamada (180) = 360; gobernadas = gate 5 + proveedor
+#    120 = 125. A eso, 10 de la lectura de "mision en curso" (que vive dentro de
+#    probe_facet) = 370, y 30 de margen = 400. Una faceta que lo excede se corta
+#    con un WARNING y el barrido SIGUE con las demas: una lenta ya no cancela a
+#    las que le siguen.
 #
-# 1080 -> 1180 el 2026-09-17 (SP3 del Ejecutor): la sonda de jax_local entra
-# por _call_ollama, que ahora toma el carril de la Mesa, y ese carril puede
-# estar tomado por un turno de chat de jax_local (hasta su timeout de 180s).
-# Peor caso legitimo: 5*125 + 180 (esperar el carril) + 180 = 985s. Con 1080
-# el margen caia a ~10%. 1180 deja ~20% y sigue por debajo de un tercio del
-# intervalo (1200s).
-CANARY_SWEEP_TIMEOUT_SECONDS = 1180
+# 2. Tope del BARRIDO (CANARY_SWEEP_TIMEOUT_SECONDS = 1500). Conjunto actual:
+#    5 gobernadas (ada, hipatia, jekyll, kimi, thot) + 2 ollama (jax_local,
+#    el_juez). Peor caso legitimo: 5*(125+10) + 2*(360+10) + 10 (leer el
+#    conjunto) = 675 + 740 + 10 = 1425 s. 1500 deja ~5% de margen sobre eso, y
+#    el techo que admite la cuenta del punto 4 es 1539.
+#    Historia: 900 (2026-09-11) -> 1080 -> 1180 (2026-09-17, SP3) -> 1560
+#    (ronda 2) -> 1500 (ronda 3: con 1560 la cota del punto 4 daba 7240).
+#
+# 3. Reintento de las diferidas (CANARY_DEFERRED_MAX_SECONDS = 1800, cada
+#    CANARY_RETRY_SECONDS = 60). Una sonda saltada por mision NO se descarta:
+#    se reintenta cada 60 s mientras siga la mision, con un tope PROPIO que no
+#    consume el del barrido (asyncio.timeout separado).
+#
+# 4. La cuenta del hueco. El ciclo es: barrido (S) + reintentos (D) + dormir
+#    CANARY_INTERVAL_SECONDS (3600). Entre dos eventos consecutivos de una
+#    misma faceta (a = su posicion dentro del barrido, 0 <= a <= S):
+#        hueco = S_k + D_k + 3600 + a_(k+1) - a_k
+#    y a_(k+1) puede ser tan tarde como S_(k+1) + D_(k+1) (la propia faceta
+#    diferida), asi que la cota correcta suma LOS DOS ciclos:
+#        hueco <= 3600 + S_k + D_k + S_(k+1) + D_(k+1) = 3600 + 2*S + 2*D
+#    Mision de duracion normal (~200 s): el ultimo reintento cae a lo sumo
+#    60 s despues de que termina, o sea D <= 200 + 60 = 260. Con S = 1500 (el
+#    tope duro, mas pesimista que el legitimo de 1425):
+#        hueco <= 3600 + 2*1500 + 2*260 = 7120 s  <  7200 s   (margen 80 s)
+#    (Con 1560 daba 7240 > 7200: error de la ronda 2, corregido en la 3.)
+#    Sin mision (D = 0): <= 3600 + 3000 = 6600 s.
+#    LO QUE ESTO NO CUBRE: una mision de mas de ~1800 s agota el tope diferido
+#    (WARNING) y el hueco puede pasar de 7200 s -- ahi el `unknown` del reaper
+#    es legitimo: lleva mas de dos horas sin medirse. Si cambia el intervalo,
+#    el conjunto de facetas, un timeout de _invoke_facet_dispatch o la ventana
+#    del lector, esta cuenta se rehace. La deriva de las constantes, contra el
+#    HEALTH_WINDOW_SECONDS del lector real, tests/test_facet_canary_internas.py::
+#    test_los_presupuestos_cumplen_la_cuenta_del_hueco.
+#
+# 5. Una faceta cortada por su tope (punto 1) escribe una fila probe_error con
+#    detalle "tope de faceta" (la escritura tiene su propio tope de base): el
+#    reaper la ve `down` con causa, no `unknown`.
+# ---------------------------------------------------------------------------
+CANARY_FACET_TIMEOUT_SECONDS = 400
+CANARY_SWEEP_TIMEOUT_SECONDS = 1500
+CANARY_DEFERRED_MAX_SECONDS = 1800
+CANARY_RETRY_SECONDS = 60
 
 CANARY_USER_ID = "__canary__"
 # NO puede parecer una pregunta de identidad de modelo: _is_model_identity_question()
 # cortocircuitea antes del dispatch y devolveria una respuesta enlatada, o
 # sea `ok` sin haber tocado al proveedor. Hay un test que lo verifica.
 CANARY_MESSAGE = "Respondé únicamente con la palabra: listo."
+
+# Tope de las dos lecturas de la base que hace la sonda (el conjunto de facetas
+# y la misión en curso). Mismo agujero que el Hallazgo 2: aiomysql no tiene
+# timeout propio de consulta, y sin este tope una MariaDB que no contesta se
+# come el barrido entero antes de sondear nada.
+CANARY_DB_TIMEOUT_SECONDS = 10
 
 # hyde no se sondea: chat() lo corta antes del dispatch con una respuesta
 # enlatada, no hay nada que medir.
@@ -85,22 +132,140 @@ _NOT_DISPATCHED = frozenset({"hyde"})
 # mitad de un barrido corta el resto.
 SALTADA_POR_FRENO = "saltada_por_freno"
 
+# Con una misión del Ejecutor en curso la sonda tampoco sale (2026-10-04): una
+# sonda es una invocación al modelo y, en las facetas locales (ollama), toma el
+# carril de la Mesa y compite por la GPU con el turno de la misión. Mismo
+# criterio que el freno: se devuelve este valor, NO se escribe ninguna fila (un
+# salto no es una caída: una fila de error haría alertar a facetas sanas) y el
+# rastro queda en el log. La fuente de verdad es la que usa el propio Ejecutor,
+# `misiones.turno_en_curso()` (ejecutor_turno.estado = 'en_curso'). Se mira en
+# CADA facet, igual que el freno: una misión que arranca a mitad de un barrido
+# corta el resto.
+#
+# Solo salta la sonda PERIODICA. La de rebinding (SOURCE_CANARY_REBIND) la
+# dispara un admin a proposito: sondea siempre. Y lo saltado NO se pierde: ver
+# _reintentar_diferidas (el lector da `unknown` a las 2 h sin eventos).
+#
+# CARRERA RESIDUAL, conocida y aceptada: una mision que arranca justo DESPUES
+# del chequeo no se ve. Esa sonda puede tener tomado el carril de la Mesa hasta
+# ~180 s (timeout de ollama) mientras el proxy del Ejecutor espera el carril con
+# tope_s=90 (dato del escalon 3, no verificado en este repo): el turno de la
+# mision puede agotar su espera. Cerrarla del todo exigiria que la sonda y el
+# Ejecutor compartan un candado, y eso es una decision de diseno aparte.
+SALTADA_POR_MISION = "saltada_por_mision"
+
+# Facetas con un binding primary APROBADO (las dos marcas no nulas: un binding
+# propuesto y sin aprobar no es de produccion) y la faceta activa (mismo filtro
+# que resolve_facet(): una `disabled` no se despacha, sondearla seria medir un
+# fallo que el chat nunca tiene). Es la fuente viva: una faceta nueva entra sola.
+# Trae el transporte y el base_url del proveedor para el filtro de Python.
+SQL_FACETAS_CON_BINDING_APROBADO = (
+    "SELECT DISTINCT b.facet_key, f.transport, p.base_url "
+    "FROM facet_binding b "
+    "JOIN facet f ON f.`key` = b.facet_key "
+    "JOIN provider p ON p.id = b.provider_id "
+    "WHERE b.role = 'primary' AND b.approved_at IS NOT NULL "
+    "AND b.approved_by IS NOT NULL AND f.status = 'active'"
+)
+
 
 def _running_under_pytest() -> bool:
     return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
 
 
-def canary_facets(config: dict) -> list[str]:
-    """El MISMO conjunto contra el que chat() valida req.facet
-    (api/chat.py:902), o sea exactamente lo que un usuario puede elegir.
+_PUERTOS_POR_DEFECTO = {"http": 80, "https": 443}
+
+# Errores de la base o del tiempo: lo UNICO ante lo que las lecturas de la sonda
+# son fail-open. Un AttributeError/TypeError es un bug nuestro y tiene que verse.
+_ERRORES_DE_BASE = (TimeoutError, OSError, aiomysql.Error)
+
+
+_LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _origen(url: str) -> tuple:
+    """(esquema, host, puerto). localhost, 127.0.0.1 y ::1 son el mismo host."""
+    partes = urlsplit(url)
+    host = (partes.hostname or "").lower()
+    return (partes.scheme, "loopback" if host in _LOOPBACK else host,
+            partes.port or _PUERTOS_POR_DEFECTO.get(partes.scheme))
+
+
+async def _facetas_con_binding_aprobado() -> list[tuple]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(SQL_FACETAS_CON_BINDING_APROBADO)
+            return list(await cur.fetchall())
+
+
+async def canary_facets(config: dict) -> list[str]:
+    """personalities (lo que un usuario puede elegir en chat(), api/chat.py)
+    MAS las facetas "internas" con binding primary aprobado y activas en la
+    base, menos hyde.
+
+    La union existe porque personalities no es todo lo que JAX invoca: el_juez
+    (auditor C5, no auto-seleccionable) tiene binding aprobado y no esta en
+    personalities, asi que ninguna sonda lo miraba y el reaper lo reportaba
+    `unknown` cada 6 h. `_invoke_facet` resuelve el modelo por resolve_facet()
+    (el binding), no por personalities: para una faceta fuera de personalities
+    solo toma el system_prompt de jax_local, que la sonda no mide.
+
+    SOLO entran las internas que la sonda mide BIEN. `_call_ollama` ignora el
+    base_url del proveedor y siempre va a JAX_OLLAMA_URL: una interna con
+    transporte ollama cuyo proveedor apunta a OTRO origen (caso real:
+    auditor_local -> ollama_cpu en :11435) se sondearia contra el Ollama
+    equivocado y su salud seria la de otro servicio. Se excluye con un WARNING
+    que la nombra. Arreglar _call_ollama para que use el base_url resuelto es
+    otro cambio. Se compara el ORIGEN (esquema, host, puerto), no la URL
+    entera: el proveedor guarda `.../v1` y JAX_OLLAMA_URL no lleva path. Un
+    base_url NULL coincide (el despacho va a JAX_OLLAMA_URL igual).
 
     NO se filtra por transporte a proposito: si se filtrara a "transportes
     despachables", un facet con un transporte que el chat no despacha
     quedaria fuera y su caida seria invisible por diseno -- que es justo la
     clase de falla que esta feature existe para detectar. Caso real: kimi
     tuvo transport=motor_registry hasta 2026-09-11 y fue esta sonda la que
-    la mantuvo en `unsupported_transport` a la vista durante un mes."""
-    return sorted(set(config["personalities"]) - _NOT_DISPATCHED)
+    la mantuvo en `unsupported_transport` a la vista durante un mes.
+
+    Si la base no contesta, se sondea igual lo de personalities y queda un
+    WARNING: una lectura caida no puede apagar la sonda entera."""
+    facetas = set(config["personalities"])
+    try:
+        async with asyncio.timeout(CANARY_DB_TIMEOUT_SECONDS):
+            filas = await _facetas_con_binding_aprobado()
+    except _ERRORES_DE_BASE:  # fail-soft: la sonda es un detector, no puede quedar muda porque falle UNA lectura de la base; se sondea el subconjunto de personalities y el WARNING deja el rastro. Solo errores de base/tiempo: un bug nuestro (AttributeError, TypeError) sube.
+        logger.warning(
+            "facet_canary: no se pudo leer facet_binding; se sondean solo "
+            "las facetas de personalities", exc_info=True)
+        return sorted(facetas - _NOT_DISPATCHED)
+
+    origen_ollama = _origen(url_requerida("JAX_OLLAMA_URL"))
+    for facet_key, transport, base_url in filas:
+        if facet_key in facetas:
+            continue
+        if transport == "ollama" and base_url and _origen(base_url) != origen_ollama:
+            logger.warning(
+                "facet_canary: la faceta %s queda fuera de la sonda: su proveedor "
+                "Ollama apunta a %s y _call_ollama siempre va a JAX_OLLAMA_URL; "
+                "sondearla mediria otro servicio", facet_key, base_url)
+            continue
+        facetas.add(facet_key)
+    return sorted(facetas - _NOT_DISPATCHED)
+
+
+async def _mision_en_curso() -> bool:
+    """True si el Ejecutor tiene un turno en curso. Si la base no contesta,
+    False (con WARNING): no saber no puede apagar el detector; el peor caso es
+    una sonda mas durante una mision, no una faceta sin vigilar."""
+    try:
+        async with asyncio.timeout(CANARY_DB_TIMEOUT_SECONDS):
+            return await misiones.turno_en_curso() is not None
+    except _ERRORES_DE_BASE:  # fail-soft: ver docstring -- ante la duda se sondea. Solo errores de base/tiempo; un AttributeError/TypeError sube.
+        logger.warning(
+            "facet_canary: no se pudo leer si hay mision en curso; se sondea",
+            exc_info=True)
+        return False
 
 
 async def probe_facet(facet: str, config: dict, source: str) -> str | None:
@@ -124,12 +289,19 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
     la DB.
 
     Con el freno puesto no invoca ni escribe: devuelve SALTADA_POR_FRENO y
-    lo deja en el log."""
+    lo deja en el log. Con una mision del Ejecutor en curso, igual, pero SOLO
+    la sonda periodica: devuelve SALTADA_POR_MISION (el rebind, que es una
+    accion explicita de un admin, sondea siempre)."""
     if kill_switch.activo():
         logger.warning(
             "facet_canary: sonda de %s (%s) saltada: el freno esta puesto, "
             "JAX no invoca proveedores", facet, source)
         return SALTADA_POR_FRENO
+    if source == SOURCE_CANARY_PERIODIC and await _mision_en_curso():
+        logger.warning(
+            "facet_canary: sonda de %s (%s) saltada: hay una mision del "
+            "Ejecutor en curso", facet, source)
+        return SALTADA_POR_MISION
     try:
         await _invoke_facet(facet, config, CANARY_USER_ID, CANARY_MESSAGE,
                             source=source)
@@ -161,9 +333,75 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
         return OUTCOME_PROBE_ERROR
 
 
+async def _sondear_con_tope(facet: str, config: dict, source: str) -> str | None:
+    """probe_facet con el tope por faceta. Si lo excede: WARNING y OUTCOME_PROBE_ERROR
+    como valor de retorno, y escribe UNA fila probe_error "tope de faceta" (la
+    cancelacion no pasa por el `except Exception` de _invoke_facet, asi que si
+    no la escribe esta funcion no la escribe nadie). El barrido sigue con las
+    demas."""
+    try:
+        async with asyncio.timeout(CANARY_FACET_TIMEOUT_SECONDS):
+            return await probe_facet(facet, config, source)
+    except TimeoutError:
+        logger.warning(
+            "facet_canary: la sonda de %s (%s) excedio su tope de %ss y se "
+            "corto; el barrido sigue con las demas", facet, source,
+            CANARY_FACET_TIMEOUT_SECONDS)
+        # La cancelacion no pasa por el `except Exception` de _invoke_facet, asi
+        # que nadie escribio: sin esta fila el reaper veria `unknown` (sin causa)
+        # y no `down`. Igual que probe_after_rebind. Con tope de base propio:
+        # una MariaDB colgada no puede colgar el barrido por la puerta de atras.
+        try:
+            async with asyncio.timeout(CANARY_DB_TIMEOUT_SECONDS):
+                await record_facet_health(
+                    facet, OUTCOME_PROBE_ERROR, source, "tope de faceta")
+        except TimeoutError:
+            logger.warning(
+                "facet_canary: no se pudo registrar el tope de faceta de %s "
+                "(la base no contesto en %ss)", facet, CANARY_DB_TIMEOUT_SECONDS)
+        return OUTCOME_PROBE_ERROR
+
+
+async def _reintentar_diferidas(config: dict, facets: list[str],
+                                resultados: list, source: str) -> None:
+    """Reintenta, cada CANARY_RETRY_SECONDS y mientras siga la mision, las
+    facetas que el barrido saltó por mision en curso. Actualiza `resultados`.
+
+    Diferir y no descartar: el lector da `unknown` a las 2 h sin eventos y no
+    hay margen; una sonda saltada que no se recupera deja un unknown falso (la
+    cuenta del hueco esta junto a las constantes). Tope propio
+    CANARY_DEFERRED_MAX_SECONDS, separado del del barrido. Si se agota con la
+    mision aun en curso: WARNING y para."""
+    pendientes = [i for i, r in enumerate(resultados) if r == SALTADA_POR_MISION]
+    if source != SOURCE_CANARY_PERIODIC or not pendientes:
+        return
+    desde = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        async with asyncio.timeout(CANARY_DEFERRED_MAX_SECONDS):
+            while pendientes:
+                await asyncio.sleep(CANARY_RETRY_SECONDS)
+                if await _mision_en_curso():
+                    continue
+                for i in list(pendientes):
+                    resultados[i] = await _sondear_con_tope(facets[i], config, source)
+                    if resultados[i] != SALTADA_POR_MISION:
+                        pendientes.remove(i)
+    except TimeoutError:
+        logger.warning(
+            "facet_canary: sonda diferida agotada: mision en curso desde %s; "
+            "sin sondear tras %ss: %s", desde, CANARY_DEFERRED_MAX_SECONDS,
+            ", ".join(facets[i] for i in pendientes))
+
+
 async def probe_all(source: str = SOURCE_CANARY_PERIODIC) -> list[str | None]:
     config = _load_config()
-    return [await probe_facet(f, config, source) for f in canary_facets(config)]
+    async with asyncio.timeout(CANARY_SWEEP_TIMEOUT_SECONDS):
+        facets = await canary_facets(config)
+        resultados = []
+        for f in facets:
+            resultados.append(await _sondear_con_tope(f, config, source))
+    await _reintentar_diferidas(config, facets, resultados, source)
+    return resultados
 
 
 async def probe_after_rebind(facet_key: str) -> str | None:
@@ -248,13 +486,10 @@ async def start_facet_canary() -> None:
         return
     while True:
         try:
-            # Hallazgo 2: sin este timeout, un colgado en resolve_facet()
-            # (aiomysql sin connect_timeout) mata el barrido en silencio --
-            # el while True nunca llega al sleep, y thot (ultimo en el orden
-            # alfabetico de canary_facets) es el mas expuesto a quedar sin
-            # sondear si algo anterior en la lista cuelga.
-            async with asyncio.timeout(CANARY_SWEEP_TIMEOUT_SECONDS):
-                await probe_all(SOURCE_CANARY_PERIODIC)
-        except Exception:  # fail-soft: loop en background, mismo patron que los demas loops de fondo -- nunca debe tumbar el proceso, el proximo ciclo reintenta. Incluye TimeoutError del asyncio.timeout de arriba.
+            # Hallazgo 2: los topes (por faceta y del barrido) viven en
+            # probe_all: un colgado en resolve_facet() (aiomysql sin
+            # connect_timeout) ya no mata el barrido en silencio.
+            await probe_all(SOURCE_CANARY_PERIODIC)
+        except Exception:  # fail-soft: loop en background, mismo patron que los demas loops de fondo -- nunca debe tumbar el proceso, el proximo ciclo reintenta. Incluye el TimeoutError del tope del barrido.
             logger.warning("facet_canary: barrido fallo", exc_info=True)
         await asyncio.sleep(CANARY_INTERVAL_SECONDS)

@@ -9,7 +9,8 @@ plataforma: la API la valida y el frontend la recibe por
 from __future__ import annotations
 
 EXTENSIONES_ACEPTADAS: frozenset[str] = frozenset(
-    {"pdf", "xlsx", "xlsm", "docx", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"})
+    {"pdf", "xlsx", "xlsm", "docx", "png", "apng", "jpg", "jpeg", "jpe", "jfif", "mpo",
+     "tif", "tiff", "bmp", "gif", "webp"})
 
 
 def tipo_de(nombre: str) -> str | None:

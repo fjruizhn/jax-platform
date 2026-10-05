@@ -29,6 +29,21 @@ def _poner_freno():
         f.write("test\n")
 
 
+@pytest.fixture(autouse=True)
+def _sin_lecturas_de_base(monkeypatch):
+    """La sonda lee la base (facet_binding y mision en curso); estos tests no
+    prueban eso -- lo prueban test_facet_canary_internas.py -- y no dependen de
+    lo que haya en ninguna base."""
+    async def sin_bindings():
+        return []
+
+    async def sin_mision():
+        return False
+
+    monkeypatch.setattr(facet_canary, "_facetas_con_binding_aprobado", sin_bindings)
+    monkeypatch.setattr(facet_canary, "_mision_en_curso", sin_mision)
+
+
 @pytest.fixture
 def espias(monkeypatch):
     llamadas = {"invoke": [], "record": [], "invalidate": []}
@@ -72,7 +87,7 @@ def test_probe_all_con_el_freno_puesto_no_invoca_ninguna_faceta(espias):
 
     assert espias["invoke"] == []
     assert espias["record"] == []
-    assert resultados == [_saltada()] * len(facet_canary.canary_facets(_config()))
+    assert resultados == [_saltada()] * len(asyncio.run(facet_canary.canary_facets(_config())))
 
 
 def test_probe_after_rebind_con_el_freno_puesto_invalida_pero_no_sondea(espias):
