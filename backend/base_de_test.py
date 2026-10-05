@@ -188,11 +188,14 @@ def _borrar_al_salir(nombre: str) -> None:
     este repo. jax no tiene modo "CI sin base" -- cada job suyo que toca la
     base levanta su propio contenedor MariaDB efímero (`services: mariadb:` en
     su policy.yml), así que allá `JAX_DB_HOST` ausente ya distingue bien los
-    dos casos. Acá no alcanzaba: `tests/conftest.py` recarga `/etc/jax/.env` en
-    cada import y REPONE `JAX_DB_HOST`, así que el modo sin base quedaba
-    "configurado y caído" y esta función intentaba conectar de verdad --
-    con el puerto real habría creado un clon en la MariaDB compartida, que es
-    justo lo que ese modo promete que no pasa (jax-platform#142, 2026-09-21)."""
+    dos casos. Acá no alcanzaba: bajo `JAX_CI_NO_DB=1` `tests/conftest.py` fija un
+    `JAX_DB_HOST`/`JAX_DB_PORT` de relleno (127.0.0.1:3308, para simular una
+    base "configurada y caída"), así que `JAX_DB_HOST` queda puesto igual y esta
+    función intentaba conectar de verdad -- con el puerto real habría creado un
+    clon en la MariaDB compartida, que es justo lo que ese modo promete que no
+    pasa (jax-platform#142, 2026-09-21). Desde #195 ese modo ya no lee
+    `/etc/jax/.env`; fuera de él, el conftest sí lo carga en cada import y
+    repone `JAX_DB_HOST` con el valor real."""
     if _en_ci_sin_db() or not os.environ.get("JAX_DB_HOST"):
         return
     import asyncio
