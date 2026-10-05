@@ -3601,8 +3601,9 @@ jobs:
           # absoluto de CI NO se midio aca (faltan extractores y el pin de jax): piso = base + delta.
           # 3724 -> 3754 (2026-10-06, fix/par-jax-visible, Rule 5): +30 puras (test_par_jax_visible.py,
           # ninguna pide `client`). MEDIDO EXACTO el delta con JAX_CI_NO_DB=1, mismo comando, en
-          # master 5ed7fa5 y en la rama: 2270 -> 2300 passed / 1457 / 1457 skipped (las mismas 2
-          # fallas locales del pin de jax en ambos). El absoluto con DB NO se midio aca: piso = base + delta.
+          # master 5ed7fa5 y en la rama: 2270 -> 2300 passed / 1454 / 1454 skipped (las mismas 2
+          # fallas locales del pin de jax en ambos). Absoluto MEDIDO en el runner: run 37380333908
+          # sobre 3ec63f7, backend-tests-con-db colectados=3756 passed=3754 skipped=2.
           PISO_PASSED = 3754
           MAX_SKIPS = 1
 
@@ -4672,7 +4673,8 @@ jobs:
       # 1511 / 1511 skipped. El absoluto de CI NO se midio aca: piso = base + delta.
       # 2272 -> 2302 (2026-10-06, fix/par-jax-visible, Rule 5): +30 puras (test_par_jax_visible.py).
       # MEDIDO EXACTO el delta con JAX_CI_NO_DB=1, mismo comando, en master 5ed7fa5 y en la rama:
-      # 2270 -> 2300 passed / 1457 / 1457 skipped. El absoluto de CI NO se midio aca: piso = base + delta.
+      # 2270 -> 2300 passed / 1454 / 1454 skipped. Absoluto MEDIDO en el runner: run 37380333908
+      # sobre 3ec63f7, backend-tests-no-db colectados=3756 passed=2302 skipped=1454.
       JAX_CI_MIN_PASSED: "2302"
     steps:
       - uses: actions/checkout@v4

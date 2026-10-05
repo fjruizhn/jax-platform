@@ -68,8 +68,12 @@ for _nombre, _nivel in (
     ("api.governed_pipeline_list", logging.WARNING),
     ("par_jax", logging.INFO),
 ):
+    # El nivel va SOLO en el handler (el logger queda NOTSET): asi el journal ve WARNING+ y los
+    # tests de privacidad con caplog en DEBUG (test_adjuntos_chat_endpoint.py) siguen viendo
+    # todo lo que el modulo registra, tambien INFO/DEBUG.
     _lg = logging.getLogger(_nombre)
-    _lg.setLevel(_nivel)
+    if _nombre == "par_jax":
+        _lg.setLevel(logging.INFO)  # «par compatible» al arrancar: sin texto de usuario
     _h = logging.StreamHandler()
     _h.setLevel(_nivel)
     _h.setFormatter(logging.Formatter(f"%(levelname)s {_nombre}: %(message)s"))
