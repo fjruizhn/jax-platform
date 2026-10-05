@@ -65,6 +65,12 @@ igualdad y el mutante que rechaza una adición unilateral siguen vigentes.
 - Verificación focal posterior: `backend/tests/test_governed_pipeline_list.py`
   pasó `11`; `backend/tests/test_historial_pipelines.py` pasó `15`, ambos con
   el checkout JAX que contiene la API batch y el esquema cerrado compatible.
+- Los cuatro pines exactos de JAX en `policy.yml` avanzaron desde
+  `c2c0aa4d58128ef62333972ce72ce41257b8a1de` a la cabeza final publicada
+  `0c925e63ee28e62bbc96975cbf807773d209b147`. El job exacto F2-E se midió
+  contra esa cabeza con `53 passed, 0 skipped`, por lo que su piso subió de
+  `46` a `53`. Los pisos genéricos permanecen en `3678` con DB y `2226` sin
+  DB, y se conserva `MAX_SKIPS = 1`.
 - La vista `estado=discarded` termina las consultas y cálculos de costo dentro
   de `pool.acquire()`, libera la conexión, y sólo después espera el límite de
   gobernanza F2-B/F2-C/F2-D. La regresión usa un pool espía y prueba tanto la
