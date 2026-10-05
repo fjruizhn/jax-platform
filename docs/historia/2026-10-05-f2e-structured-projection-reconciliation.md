@@ -45,6 +45,27 @@ igualdad y el mutante que rechaza una adición unilateral siguen vigentes.
 - Requiere auditoría independiente de escalón 3 sobre el SHA final antes de cualquier
   integración.
 
+## Carga de descartados — evidencia operacional
+
+**Fecha:** 2026-10-05. **Fuente:** `loadtest/_descartados_resultados.json` y
+la limpieza informada por el orquestador. El proceso medido arrancó con JAX
+`e5919f152361d4e91144ae1a55bd47cab28e8150` y Platform
+`23253ece9b4a5a204918d09dc8cf0d2387838d67`. Los cambios posteriores de
+validación nullable, workflow y pisos no estuvieron en el camino caliente de
+esta carga; estos resultados no se atribuyen al par exacto posterior.
+
+- Siembra: escala `5,000` pipelines, extremo `5,003`, `5,000` eventos y
+  `2,020` eventos de ruido. La limpieza final borró `15,005` pipelines y tres
+  usuarios; quedaron cero residuales.
+- Camino gobernado escala, `GET /api/pipelines`: c=1 `11.63 rps`, p95
+  `101.67 ms`; c=50 `12.23 rps`, p95 `4331.45 ms`, sin errores. La primera
+  degradación fue c=100: `1996/2000` respuestas correctas, p95 `11023.84 ms`;
+  c=200 terminó `1538/2000`.
+- Camino descartados: la primera degradación fue c=100, con `1981/2000`
+  respuestas correctas. Los listados administrativos y la auditoría no
+  tuvieron errores hasta c=200: admin `282.18 rps`, p95 `3628.02 ms`; auditoría
+  `256.79 rps`, p95 `3601.10 ms`.
+
 ## Decisiones y alternativas
 
 - El consumidor Platform ahora prepara todos los argumentos cerrados
