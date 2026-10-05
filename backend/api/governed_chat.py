@@ -12,6 +12,7 @@ import sys
 import uuid
 import importlib
 import hashlib
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -20,6 +21,8 @@ if TYPE_CHECKING:  # keep the platform importable until the paired JAX core is d
     from api.chat import ContractResult
     from jax.memory.b9 import ScopeContext
 
+
+logger = logging.getLogger(__name__)
 
 _UNAVAILABLE_NOTICE = "I could not verify the current state."
 _DEGRADED_NOTICE = "The response could not be verified safely."
@@ -33,6 +36,10 @@ F2C_EXACT_PAIR_COMPATIBILITY = (
     "f2-c.domain.7",
     frozenset({"f2-c.1"}),
 )
+
+
+# F2-D lifecycle API que este puente revisó (ver _lifecycle_core).
+F2D_LIFECYCLE_API_VERSION = "f2-d.lifecycle.2"
 
 
 class GovernedChatUnavailable(RuntimeError):
@@ -83,9 +90,14 @@ def _core():
                    importlib.import_module("policy.governance.response"))
         if any(Path(module.__file__).resolve().is_relative_to(root_path) is False for module in modules):
             raise GovernedChatUnavailable("loaded F2-C modules are outside configured JAX repository")
-        if (GOVERNED_RENDERER_API_VERSION, GOVERNED_DOMAIN_SPEC_VERSION,
-                GOVERNED_ENVELOPE_SCHEMA_VERSIONS) != F2C_EXACT_PAIR_COMPATIBILITY:
-            raise GovernedChatUnavailable("configured JAX F2-C compatibility is unsupported")
+        encontrado = (GOVERNED_RENDERER_API_VERSION, GOVERNED_DOMAIN_SPEC_VERSION,
+                      GOVERNED_ENVELOPE_SCHEMA_VERSIONS)
+        if encontrado != F2C_EXACT_PAIR_COMPATIBILITY:
+            # 2026-10-05: el mensaje dice las dos versiones; un par roto en
+            # produccion se diagnostico a ciegas porque no decia ninguna.
+            raise GovernedChatUnavailable(
+                "configured JAX F2-C compatibility is unsupported: platform expects "
+                f"{F2C_EXACT_PAIR_COMPATIBILITY!r}, JAX at {root_path} exposes {encontrado!r}")
     except (ImportError, AttributeError) as exc:
         raise GovernedChatUnavailable("F2-C core renderer is unavailable") from exc
     return (GovernedDomainRegistry, GovernedRenderer, RenderContext,
@@ -133,6 +145,10 @@ def project_sealed_envelope(envelope, render_context) -> GovernedChatProjection:
             contract_degraded=degraded, governed_plain=True, transport_unit=unit,
         )
     except Exception:  # fail-soft: never expose an envelope or text if the renderer fails
+        # Sin exc_info el fallo era invisible (2026-10-05: 100 % de los chats caidos, journal
+        # vacio). No se vuelca el envelope ni texto del proveedor: solo la excepcion.
+        logger.error("F2-C project_sealed_envelope failed closed (response withheld)",
+                     exc_info=True)
         return GovernedChatProjection(
             text=_DEGRADED_NOTICE, response_id=None, envelope_digest=None,
             source_envelope_digest=None,
@@ -218,6 +234,10 @@ def project_provider_contract(
             governed_plain=True, transport_unit=unit,
         )
     except Exception:  # fail-soft: renderer/core failure emits only static non-current text, never provider prose
+        # Visible: un par plataforma/jax incompatible llega hasta aca en cada turno y el
+        # cliente solo ve un 503 generico. Solo request_id/trace_id, nunca el contrato ni el texto.
+        logger.error("F2-C project_provider_contract failed closed (request_id=%s trace_id=%s)",
+                     request_id, trace_id, exc_info=True)
         # This is the only F2-C bridge failure fallback.  It is static,
         # server-owned and contains no provider candidate text.
         return GovernedChatProjection(
@@ -244,8 +264,11 @@ def _lifecycle_core():
         if not Path(module.__file__).resolve().is_relative_to(root_path):
             raise GovernedChatUnavailable("loaded F2-D API is outside configured JAX repository")
         module.validate_lifecycle_version(module.OUTPUT_LIFECYCLE_API_VERSION)
-        if module.OUTPUT_LIFECYCLE_API_VERSION != "f2-d.lifecycle.2":
-            raise GovernedChatUnavailable("configured JAX F2-D lifecycle API is unsupported")
+        if module.OUTPUT_LIFECYCLE_API_VERSION != F2D_LIFECYCLE_API_VERSION:
+            raise GovernedChatUnavailable(
+                "configured JAX F2-D lifecycle API is unsupported: platform expects "
+                f"{F2D_LIFECYCLE_API_VERSION!r}, JAX at {root_path} exposes "
+                f"{module.OUTPUT_LIFECYCLE_API_VERSION!r}")
         return module
     except (ImportError, AttributeError) as exc:
         raise GovernedChatUnavailable("F2-D lifecycle API is unavailable") from exc
