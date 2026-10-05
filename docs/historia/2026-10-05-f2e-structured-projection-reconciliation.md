@@ -102,6 +102,12 @@ igualdad y el mutante que rechaza una adición unilateral siguen vigentes.
   `test_pipelines_descartados_cursor.py` al par exacto. La medición conjunta
   dio `89 passed, 0 skipped`, por lo que el piso exacto subió de `58` a `89`;
   los pisos genéricos continúan `3678`/`2226` hasta CI verde.
+- La corrida CI verde `37291824110`, sobre
+  `1157f71aa172fad07581c68c27706ce5a9e275a0`, aplicó Rule 5 y reemplazó los
+  pisos genéricos ya obsoletos: con DB `colectados=3691, passed=3690,
+  skipped=1` y sin DB `colectados=3691, passed=2238, skipped=1453`, ambos sin
+  fallos ni errores. `policy.yml` eleva los mínimos a `3690` y `2238`; conserva
+  `MAX_SKIPS=1` y los cuatro pines JAX `d9bf5ce947826e53e2b6f0088cc580eef2d307aa`.
 - La vista `estado=discarded` termina las consultas y cálculos de costo dentro
   de `pool.acquire()`, libera la conexión, y sólo después espera el límite de
   gobernanza F2-B/F2-C/F2-D. La regresión usa un pool espía y prueba tanto la
