@@ -344,7 +344,8 @@ def test_flujo_approve_409_declarar_contrato_approve_200(client, monkeypatch):
         assert despues[1] == ref
         assert encoladas == [("probe_after_rebind", ("jekyll",))]
         acciones = [fila[0] for fila in client.portal.call(_auditoria, ref)]
-        assert acciones == ["binding_rechazado", "contrato_declarado"]
+        # 2026-10-04: el approve que SI se aplica deja ademas 'binding_aplicado'.
+        assert acciones == ["binding_rechazado", "contrato_declarado", "binding_aplicado"]
     finally:
         client.portal.call(_restaurar, "jekyll", antes)
         client.portal.call(_borrar_fila, ref)

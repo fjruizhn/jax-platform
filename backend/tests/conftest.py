@@ -54,6 +54,83 @@ for _k, _v in cargar(ENV_PATH).items():
     if _k in VARIABLES_NECESARIAS_DE_PRODUCCION:
         os.environ.setdefault(_k, _v)
 
+# ---------------------------------------------------------------------------
+# RUTAS DE PRODUCCION AISLADAS -- ANTES de fijar_base_de_test() (2026-10-04).
+# Con JAX_DB_HOST, `asegurar_base_de_test()` corre run_migrations() en ESTE
+# proceso, y run_migrations importa facet_resolver (que lee JAX_FACET_SEAL_PATH
+# UNA vez, al importarse). Cuando estas asignaciones iban despues, el modulo
+# quedaba fijo en /srv/jax-data/facet-cache-seal para toda la sesion y una
+# corrida con DB en hall9000 intentaba estampar el sello de PRODUCCION (hoy solo
+# falla por permisos; incidente 2026-09-12). Todo lo que apunte a /srv, /etc o
+# /var de produccion y se lea al importar la app va aca, antes de cualquier
+# import de la app. Control: tests/test_sello_aislado_en_sesion.py.
+# ---------------------------------------------------------------------------
+# Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
+# aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture
+# `client` es de sesión y arranca la app -- y con ella run_migrations, que
+# estampa el sello -- ANTES que cualquier fixture por función: sin esto, correr
+# la suite en hall9000 estampó /srv/jax-data/facet-cache-seal (14:37:46), el
+# archivo que vigilan Jacobs, el REPL y LAS MANOS. facet_resolver lee la ruta
+# al importarse, así que tiene que quedar fijada acá, antes de cualquier import.
+import tempfile  # noqa: E402
+
+os.environ["JAX_FACET_SEAL_PATH"] = os.path.join(
+    tempfile.mkdtemp(prefix="jax-test-sello-"), "facet-cache-seal")
+
+# Respaldo de uso aislado para TODA la sesión (2026-09-15, cola durable,
+# Task 2), por la misma razón que el sello de arriba: el default de
+# `uso/cola.py` es /srv/jax-data/usage-spool, el directorio REAL del que drena
+# la plataforma en producción y donde depositan Jacobs y LAS MANOS. Un test que
+# ejercite el `except` de record_usage encolaría ahí una fila de mentira, y el
+# reintento se la cobraría a un tenant de verdad. Se fija acá, antes de
+# cualquier import: cola.py lee la variable en cada llamada, así que un test
+# que quiera su propio directorio igual puede hacer monkeypatch.setenv.
+os.environ["JAX_USAGE_SPOOL_DIR"] = tempfile.mkdtemp(prefix="jax-test-respaldo-uso-")
+
+# Carril de la Mesa aislado para TODA la sesión (2026-09-17, SP3 del Ejecutor),
+# por la misma razón que el sello y el respaldo: /etc/jax/.env define
+# JAX_PROXY_CARRIL_RAIZ=/var/lib/jax-carril, el directorio REAL que sondea el
+# proxy del Ejecutor. Un test que llame a _call_ollama tomaría ese mesa.lock y
+# frenaría al Ejecutor de producción mientras dura. Asignación, no setdefault.
+# Control: tests/test_carril_mesa.py::test_los_tests_no_usan_el_carril_de_produccion.
+RAIZ_DEL_CARRIL_DE_PRUEBA = tempfile.mkdtemp(prefix="jax-test-carril-")
+os.environ["JAX_PROXY_CARRIL_RAIZ"] = RAIZ_DEL_CARRIL_DE_PRUEBA
+
+# Kill switch aislado para TODA la sesión (2026-09-16, frente B), por la misma
+# razón que el sello y el respaldo: /etc/jax/.env define JAX_KILL_SWITCH_PATH
+# y el setdefault de arriba la cargaría. Un test que active el freno contra
+# esa ruta detendría LAS MANOS, Jacobs y el REPL de producción. Asignación,
+# no setdefault. main.py exige la variable al importarse.
+RUTA_DEL_FRENO_DE_PRUEBA = os.path.join(
+    tempfile.mkdtemp(prefix="jax-test-interruptor-"), "PAUSE")
+os.environ["JAX_KILL_SWITCH_PATH"] = RUTA_DEL_FRENO_DE_PRUEBA
+FRENO_DE_PRODUCCION = "/etc/jax/interruptor"
+
+# Pausa del Ejecutor y su runner aislados para TODA la sesión (2026-09-17, SP2 del
+# Ejecutor), por la misma razón que el kill switch: /etc/jax/.env define
+# JAX_EJECUTOR_PAUSA junto al interruptor de producción, y un test que la pusiera
+# frenaría al Ejecutor real (el proxy de C3 respondería 423). JAX_EJECUTOR_PYTHON se
+# fija a un intérprete que NO existe: con el de producción, un test que olvide
+# reemplazar el runner lanzaría una misión real (cuenta axioma, VM, proxy) con el
+# entorno de producción. Asignación, no setdefault. Control:
+# tests/test_ejecutor_pausa.py::test_la_suite_no_usa_la_pausa_de_produccion y
+# tests/test_ejecutor_misiones.py::test_la_suite_no_puede_lanzar_el_runner_real.
+RUTA_DE_LA_PAUSA_DEL_EJECUTOR_DE_PRUEBA = os.path.join(
+    tempfile.mkdtemp(prefix="jax-test-pausa-ejecutor-"), "PAUSA")
+os.environ["JAX_EJECUTOR_PAUSA"] = RUTA_DE_LA_PAUSA_DEL_EJECUTOR_DE_PRUEBA
+os.environ["JAX_EJECUTOR_PYTHON"] = os.path.join(
+    tempfile.mkdtemp(prefix="jax-test-runner-"), "no-existe", "python")
+# Rutas de datos aisladas (2026-09-16, frente A, A-55), por la misma razón
+# que el sello y el respaldo de uso: api/audit.py y
+# api/admin/repository.py las leen AL IMPORTARSE. Antes eran ~/jax/... REALES
+# y test_command_path_traversal escribía en ~/jax/missions de producción.
+# Forzadas (no setdefault): un /etc/jax/.env con las rutas reales no puede
+# ganarles. JAX_REPO_PATH y JAX_CONFIG_PATH NO se fijan acá: apuntan al repo
+# `jax` de verdad (vocabulario, config) y las pone el job de CI o quien corre.
+_RUTAS_DE_PRUEBA = tempfile.mkdtemp(prefix="jax-test-rutas-")
+os.environ["JAX_REPO_BASE"] = os.path.join(_RUTAS_DE_PRUEBA, "repo")
+os.environ["JAX_AUDIT_LOG_PATH"] = os.path.join(_RUTAS_DE_PRUEBA, "audit.jsonl")
+
 # Base de tests por sesión (2026-09-20, port de `base_de_test.py` de `jax`,
 # family `base_de_test` en `scripts/check_mirror_sync.py`). Antes esta línea
 # era `os.environ["JAX_DB_NAME"] = "jax_memory_test"` a secas: SIN ningún
@@ -214,61 +291,6 @@ os.environ["JAX_ADJUNTOS_SUBIDAS_POR_MINUTO"] = "600"
 # `_dormir` y fijan el valor con monkeypatch.setenv.
 os.environ["JAX_ADJUNTOS_RECHAZO_ESPERA_MS"] = "0"
 
-# Sello de facet_resolver aislado para TODA la sesión (2026-09-12), además del
-# aislamiento por función de `_sello_de_facets_aislado` más abajo. El fixture
-# `client` es de sesión y arranca la app -- y con ella run_migrations, que
-# estampa el sello -- ANTES que cualquier fixture por función: sin esto, correr
-# la suite en hall9000 estampó /srv/jax-data/facet-cache-seal (14:37:46), el
-# archivo que vigilan Jacobs, el REPL y LAS MANOS. facet_resolver lee la ruta
-# al importarse, así que tiene que quedar fijada acá, antes de cualquier import.
-import tempfile  # noqa: E402
-
-os.environ["JAX_FACET_SEAL_PATH"] = os.path.join(
-    tempfile.mkdtemp(prefix="jax-test-sello-"), "facet-cache-seal")
-
-# Respaldo de uso aislado para TODA la sesión (2026-09-15, cola durable,
-# Task 2), por la misma razón que el sello de arriba: el default de
-# `uso/cola.py` es /srv/jax-data/usage-spool, el directorio REAL del que drena
-# la plataforma en producción y donde depositan Jacobs y LAS MANOS. Un test que
-# ejercite el `except` de record_usage encolaría ahí una fila de mentira, y el
-# reintento se la cobraría a un tenant de verdad. Se fija acá, antes de
-# cualquier import: cola.py lee la variable en cada llamada, así que un test
-# que quiera su propio directorio igual puede hacer monkeypatch.setenv.
-os.environ["JAX_USAGE_SPOOL_DIR"] = tempfile.mkdtemp(prefix="jax-test-respaldo-uso-")
-
-# Carril de la Mesa aislado para TODA la sesión (2026-09-17, SP3 del Ejecutor),
-# por la misma razón que el sello y el respaldo: /etc/jax/.env define
-# JAX_PROXY_CARRIL_RAIZ=/var/lib/jax-carril, el directorio REAL que sondea el
-# proxy del Ejecutor. Un test que llame a _call_ollama tomaría ese mesa.lock y
-# frenaría al Ejecutor de producción mientras dura. Asignación, no setdefault.
-# Control: tests/test_carril_mesa.py::test_los_tests_no_usan_el_carril_de_produccion.
-RAIZ_DEL_CARRIL_DE_PRUEBA = tempfile.mkdtemp(prefix="jax-test-carril-")
-os.environ["JAX_PROXY_CARRIL_RAIZ"] = RAIZ_DEL_CARRIL_DE_PRUEBA
-
-# Kill switch aislado para TODA la sesión (2026-09-16, frente B), por la misma
-# razón que el sello y el respaldo: /etc/jax/.env define JAX_KILL_SWITCH_PATH
-# y el setdefault de arriba la cargaría. Un test que active el freno contra
-# esa ruta detendría LAS MANOS, Jacobs y el REPL de producción. Asignación,
-# no setdefault. main.py exige la variable al importarse.
-RUTA_DEL_FRENO_DE_PRUEBA = os.path.join(
-    tempfile.mkdtemp(prefix="jax-test-interruptor-"), "PAUSE")
-os.environ["JAX_KILL_SWITCH_PATH"] = RUTA_DEL_FRENO_DE_PRUEBA
-FRENO_DE_PRODUCCION = "/etc/jax/interruptor"
-
-# Pausa del Ejecutor y su runner aislados para TODA la sesión (2026-09-17, SP2 del
-# Ejecutor), por la misma razón que el kill switch: /etc/jax/.env define
-# JAX_EJECUTOR_PAUSA junto al interruptor de producción, y un test que la pusiera
-# frenaría al Ejecutor real (el proxy de C3 respondería 423). JAX_EJECUTOR_PYTHON se
-# fija a un intérprete que NO existe: con el de producción, un test que olvide
-# reemplazar el runner lanzaría una misión real (cuenta axioma, VM, proxy) con el
-# entorno de producción. Asignación, no setdefault. Control:
-# tests/test_ejecutor_pausa.py::test_la_suite_no_usa_la_pausa_de_produccion y
-# tests/test_ejecutor_misiones.py::test_la_suite_no_puede_lanzar_el_runner_real.
-RUTA_DE_LA_PAUSA_DEL_EJECUTOR_DE_PRUEBA = os.path.join(
-    tempfile.mkdtemp(prefix="jax-test-pausa-ejecutor-"), "PAUSA")
-os.environ["JAX_EJECUTOR_PAUSA"] = RUTA_DE_LA_PAUSA_DEL_EJECUTOR_DE_PRUEBA
-os.environ["JAX_EJECUTOR_PYTHON"] = os.path.join(
-    tempfile.mkdtemp(prefix="jax-test-runner-"), "no-existe", "python")
 import time as _time  # noqa: E402
 INICIO_DE_SESION = _time.time()
 # La ruta heredada del freno (Task H), tomada del módulo ANTES de que el
@@ -278,16 +300,20 @@ import interruptor as _interruptor  # noqa: E402
 HEREDADA_DE_PRODUCCION = str(_interruptor.RUTA_HEREDADA)
 HEREDADA_EXISTIA_AL_INICIO = os.path.lexists(HEREDADA_DE_PRODUCCION)
 
-# Rutas de datos aisladas (2026-09-16, frente A, A-55), por la misma razón
-# que el sello y el respaldo de uso: api/audit.py y
-# api/admin/repository.py las leen AL IMPORTARSE. Antes eran ~/jax/... REALES
-# y test_command_path_traversal escribía en ~/jax/missions de producción.
-# Forzadas (no setdefault): un /etc/jax/.env con las rutas reales no puede
-# ganarles. JAX_REPO_PATH y JAX_CONFIG_PATH NO se fijan acá: apuntan al repo
-# `jax` de verdad (vocabulario, config) y las pone el job de CI o quien corre.
-_RUTAS_DE_PRUEBA = tempfile.mkdtemp(prefix="jax-test-rutas-")
-os.environ["JAX_REPO_BASE"] = os.path.join(_RUTAS_DE_PRUEBA, "repo")
-os.environ["JAX_AUDIT_LOG_PATH"] = os.path.join(_RUTAS_DE_PRUEBA, "audit.jsonl")
+# La ruta del sello que `facet_resolver` tiene FIJADA si ya fue importado en
+# esta sesion (se lee una sola vez, al importar), o None si todavia no. NO se
+# importa aca: facet_resolver importa aiomysql y los jobs `no-fail-open-except`
+# e `invoke-facet-envoltorio` instalan solo pytest ("ImportError while loading
+# conftest"). Con DB de sesion local, run_migrations ya lo importo; en CI con
+# BASE_COMPARTIDA no. El fixture por funcion `_sello_de_facets_aislado` la
+# desvia en cada test, asi que un test no puede verla ya: se anota aca.
+# Control: tests/test_sello_aislado_en_sesion.py.
+import sys as _sys  # noqa: E402
+_facet_resolver_ya_importado = _sys.modules.get("facet_resolver")
+SELLO_DEL_MODULO_AL_IMPORTARSE = (
+    _facet_resolver_ya_importado.FACET_SEAL_PATH
+    if _facet_resolver_ya_importado is not None else None)
+
 # Semilla (A-54): en una base vacía (CI) hay que sembrar user_id=1. Valores de
 # prueba salvo que el .env traiga los reales.
 os.environ.setdefault("JAX_SEED_SUPERADMIN_EMAIL", "superadmin-semilla@example.invalid")

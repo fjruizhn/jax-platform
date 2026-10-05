@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { textoDeErrorDeMesa, textoDeDetalleDeMesa, textoDeAviso, textoDeViolacion, textoDeMotivoDeCosto, textoDeCausa, clasificarRechazo } from './errores'
+import { textoDeErrorDeMesa, textoDeDetalleDeMesa, textoDeAviso, textoDeViolacion, textoDeMotivoDeCosto, textoDeCausa, clasificarRechazo, textoDeDetalleDeBinding } from './errores'
 import es from '../i18n/es.js'
 import en from '../i18n/en.js'
 
@@ -447,5 +447,22 @@ describe('clasificarRechazo', () => {
     expect(clasificarRechazo(es, rechazo(409, { code: 'costo_supera_lo_aceptado' }), null, 'G'))
       .toEqual({ tipo: 'error', texto: es.erroresMesa.costo_supera_lo_aceptado({}) })
     expect(clasificarRechazo(es, new Error('network'), null, 'G')).toEqual({ tipo: 'error', texto: 'G' })
+  })
+})
+
+// PR 192 (2026-10-04): los dos 409 nuevos de los escritores de facet_binding
+// llegan como código estable y se traducen; nunca el texto del backend.
+describe('textoDeDetalleDeBinding — conflictos del PR 192', () => {
+  it('binding_conflicto_concurrente pide reintentar, en español y en inglés', () => {
+    const d = { code: 'binding_conflicto_concurrente', message: 'texto del backend' }
+    expect(textoDeDetalleDeBinding(es, d)).toBe(es.binding_conflicto_concurrente)
+    expect(textoDeDetalleDeBinding(en, d)).toBe(en.binding_conflicto_concurrente)
+    expect(textoDeDetalleDeBinding(es, d)).not.toContain('texto del backend')
+  })
+  it('faceta_sin_binding_primary nombra la faceta, en español y en inglés', () => {
+    const d = { code: 'faceta_sin_binding_primary', facet_key: 'kimi' }
+    expect(textoDeDetalleDeBinding(es, d)).toContain('kimi')
+    expect(textoDeDetalleDeBinding(en, d)).toContain('kimi')
+    expect(textoDeDetalleDeBinding(es, d)).not.toBe(textoDeDetalleDeBinding(en, d))
   })
 })
