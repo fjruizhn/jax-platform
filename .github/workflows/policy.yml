@@ -3533,7 +3533,9 @@ jobs:
           #   binding creado en la carrera (READ COMMITTED) es 409 y no audita valor_antes=NULL. Sumado.
           # 3631 -> 3665 (2026-10-04, regla 5 al integrar el PR #192): re-medido en el runner, job
           #   backend-tests-con-db de la corrida 37249817008: colectados=3666 passed=3665 skipped=1 failed=0.
-          PISO_PASSED = 3665
+          # 3665 -> 3667 (2026-10-04, #192 sobre master con #193, regla 5): +2 puras del #193 que tambien corren
+          #   en este job. A confirmar contra el runner en la CI de este commit.
+          PISO_PASSED = 3667
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4567,10 +4569,19 @@ jobs:
       # esa escritura, loopback en el origen, el_juez en localhost). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo
       # comando, sobre la rama: 2211 passed / 1428 skipped; 2211 + 2 (los de processing_job_store) - 1 (skip de
       # entorno) = 2212. El piso CON DB (PISO_PASSED) sigue sin medirse: 3634 -> 3638 estimado.
+      # 2212 -> 2214 (2026-10-04, fix/despachador-no-corre-bajo-pytest): +2 puras (el despachador no arranca
+      # bajo pytest; forzado corre un ciclo y se cancela limpio). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando,
+      # sobre la rama: 2212 passed / 1431 skipped / 3 failed por el pin local de jax; 2212 + 3 - 1 = 2214.
+      # PISO_PASSED (con DB) no cambia: es un minimo y la suite con DB dio 3635 passed sobre la rama.
+      # 2214 -> 2216 (misma rama, ronda de auditoria): +2 puras de test_state_tareas_de_fondo_bajo_pytest.py
+      # (las tareas de fondo del motor no arrancan bajo pytest; forzado arranca las dos). MEDIDO EXACTO con
+      # JAX_CI_NO_DB=1 sobre la rama: 2214 passed / 1431 skipped / 3 failed por el pin local; 2214 + 3 - 1 = 2216.
       # 2212 -> 2213 (auditoria del PR #192): +1 pura, test_run_migrations_aplica_las_extensiones_de_enum_por_
       # el_camino_acotado (los otros 10 de test_binding_aplicado_auditado.py piden `client` y se saltan).
       # MEDIDO con JAX_CI_NO_DB=1 sobre ese archivo: 1 passed / 23 skipped. NO re-medido el total del job.
-      JAX_CI_MIN_PASSED: "2213"
+      # 2216 -> 2217 (2026-10-04, PR #192 integrado sobre master con #193, regla 5): MEDIDO EXACTO con
+      # JAX_CI_NO_DB=1 sobre el arbol mezclado: 2215 passed / 1455 skipped / 3 failed por el pin local; 2215 + 3 - 1 = 2217.
+      JAX_CI_MIN_PASSED: "2217"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
