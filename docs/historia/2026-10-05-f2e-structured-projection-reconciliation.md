@@ -92,6 +92,10 @@ igualdad y el mutante que rechaza una adición unilateral siguen vigentes.
   por `/srv/jax-prod/jax`, causando `governed_output_unavailable`; la carga no
   se ejecuta si falta, no es absoluto, no existe o no tiene la forma de un
   checkout JAX.
+- La suite exacta F2-E pasó `58` sin skips contra
+  `e5919f152361d4e91144ae1a55bd47cab28e8150`; su piso se elevó de `53` a
+  `58` por las cinco regresiones no omitidas del cierre C. Los pisos genéricos
+  y `MAX_SKIPS` no cambiaron.
 - La vista `estado=discarded` termina las consultas y cálculos de costo dentro
   de `pool.acquire()`, libera la conexión, y sólo después espera el límite de
   gobernanza F2-B/F2-C/F2-D. La regresión usa un pool espía y prueba tanto la

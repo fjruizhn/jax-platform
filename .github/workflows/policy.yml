@@ -4965,7 +4965,11 @@ jobs:
           # scope e IDs duplicados, además de la adaptación de snapshots).
           # Medido contra JAX 0c925e63ee28e62bbc96975cbf807773d209b147:
           # 53 passed, 0 skipped.
-          export PISO_PASSED=53
+          # 53 -> 58 (2026-10-05, cierre C): cinco regresiones exactas para
+          # página vacía activa/descartada, forma superior inválida y estados
+          # terminales de transporte. Medido contra JAX
+          # e5919f152361d4e91144ae1a55bd47cab28e8150: 58 passed, 0 skipped.
+          export PISO_PASSED=58
           python -m pytest -q -p no:warnings \
             tests/test_governed_pipeline_list.py \
             tests/test_historial_pipelines.py \
