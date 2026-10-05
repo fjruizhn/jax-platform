@@ -3533,9 +3533,9 @@ jobs:
           #   binding creado en la carrera (READ COMMITTED) es 409 y no audita valor_antes=NULL. Sumado.
           # 3631 -> 3665 (2026-10-04, regla 5 al integrar el PR #192): re-medido en el runner, job
           #   backend-tests-con-db de la corrida 37249817008: colectados=3666 passed=3665 skipped=1 failed=0.
-          # 3665 -> 3667 (2026-10-04, #192 sobre master con #193, regla 5): +2 puras del #193 que tambien corren
-          #   en este job. A confirmar contra el runner en la CI de este commit.
-          PISO_PASSED = 3667
+          # 3665 -> 3669 (2026-10-04, #192 sobre master con #193, regla 5): +4 del #193, MEDIDO en el runner,
+          #   corridas 37253795873 y 37253800483: colectados=3670 passed=3669 skipped=1.
+          PISO_PASSED = 3669
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
