@@ -735,6 +735,12 @@ export default {
   // the model's, and the facet would send the model to the wrong service.
   modelo_de_otro_proveedor: (modelo, proveedorModelo, proveedorBinding) =>
     `Model ${modelo} belongs to ${proveedorModelo}, but this facet would be configured with ${proveedorBinding}, so it could not use it. Pick a ${proveedorBinding} model. Nothing was changed.`,
+  // PR 192 (2026-10-04): two writers of the same binding collided (deadlock
+  // or lock wait); the whole transaction was rolled back.
+  binding_conflicto_concurrente: 'Another change to this facet collided with yours and nothing was applied. Please try again.',
+  // PR 192: approving a proposal for a facet with no primary binding.
+  faceta_sin_binding_primary: (faceta) =>
+    `Facet ${faceta} has no primary model to replace, so the proposal was not approved. Assign one from Bindings.`,
   // PR-L (2026-09-14): declare a catalog row's dispatch contract from the
   // admin (it used to be a hand-written UPDATE).
   adminContratoTitulo: (modelo) => `Dispatch contract for ${modelo}`,

@@ -209,9 +209,15 @@ def errores_del_contrato(
 
 async def detalle_si_rompe_el_contrato(
     cur, facet_key: str, model_ref: int, provider_id: str | None = None,
+    bloquear_modelo: bool = False,
 ) -> dict | None:
     """Lo que chequean los dos escritores de facet_binding ANTES de escribir:
     ¿el dispatch de `facet_key` aceptaría la fila `model_ref`?
+
+    `bloquear_modelo`: la segunda pasada, DENTRO de la transaccion del escritor
+    (2026-10-04): lee la fila de `model` con LOCK IN SHARE MODE, asi nadie le
+    cambia el contrato entre este chequeo y el commit. El chequeo de antes del
+    BEGIN sigue igual (sin bloqueo) para que el 409 temprano no cambie.
 
     `provider_id`: el que quedará en facet_binding.provider_id. El PUT lo
     manda en el request; approve no lo toca (solo cambia model_ref), así que
@@ -260,7 +266,8 @@ async def detalle_si_rompe_el_contrato(
     await cur.execute("SELECT transport FROM facet WHERE `key`=%s", (facet_key,))
     facet_row = await cur.fetchone()
     await cur.execute(
-        "SELECT provider_id, model_id, max_tokens_param, max_output_tokens FROM model WHERE id=%s",
+        "SELECT provider_id, model_id, max_tokens_param, max_output_tokens FROM model WHERE id=%s"
+        + (" LOCK IN SHARE MODE" if bloquear_modelo else ""),
         (model_ref,),
     )
     model_row = await cur.fetchone()
@@ -350,6 +357,90 @@ async def registrar_rechazo_de_binding(
         "VALUES ('binding_rechazado', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (detalle["model_ref"], detalle["provider_modelo"], detalle["model_id"], detalle["facet_key"],
          proposal_id, detalle["code"], json.dumps(detalle, ensure_ascii=False),
+         performed_by, performed_by_email, performed_from_ip),
+    )
+
+
+# Un deadlock (1213) o un lock wait timeout (1205) en medio de la transaccion de
+# un escritor de facet_binding no es un fallo del servidor: es un choque con otro
+# escritor. Rollback y 409 "reintente" en vez de un 500.
+_ER_DEADLOCK = 1213
+_ER_LOCK_WAIT_TIMEOUT = 1205
+DETALLE_CONFLICTO_CONCURRENTE = {
+    "code": "binding_conflicto_concurrente",
+    "message": "Otro cambio concurrente sobre este binding chocó con el tuyo y no se aplicó nada. Reintente.",
+}
+
+
+def es_conflicto_de_lock(error: BaseException) -> bool:
+    return bool(error.args) and error.args[0] in (_ER_DEADLOCK, _ER_LOCK_WAIT_TIMEOUT)
+
+
+# Binding de una (faceta, rol), por el UNIQUE uk_facet_role (facet_key, role):
+# una fila, sin recorrido (EXPLAIN verificado en tests/test_binding_aplicado_auditado.py).
+_SQL_BINDING = (
+    "SELECT model_ref, provider_id, model_id, approved_by, approved_at "
+    "FROM facet_binding WHERE facet_key=%s AND role=%s"
+)
+SQL_BINDING_PARA_ACTUALIZAR = _SQL_BINDING + " FOR UPDATE"
+
+
+async def binding_de(cur, facet_key: str, role: str, para_actualizar: bool = False) -> dict | None:
+    """El binding de (facet_key, role) como lo guarda `binding_aplicado` en
+    valor_antes, o None si no existe (provider_id/model_id: los del modelo al que
+    apunta model_ref, ver abajo). `para_actualizar=True` lo lee con
+    FOR UPDATE: el que escribe lo lee ANTES de escribir y dentro de su
+    transaccion, asi el "antes" que queda en la auditoria es el que de verdad
+    piso, aunque otro escritor corra a la vez."""
+    await cur.execute(SQL_BINDING_PARA_ACTUALIZAR if para_actualizar else _SQL_BINDING, (facet_key, role))
+    fila = await cur.fetchone()
+    if fila is None:
+        return None
+    model_ref, provider_id, model_id, approved_by, approved_at = fila
+    # Los identificadores legibles son los de la fila de `model` a la que apunta
+    # model_ref (por PK): es la fuente de verdad de la faceta -- approve_proposal
+    # solo mueve model_ref y deja facet_binding.model_id/provider_id como estaban
+    # (medido en tests/test_binding_aplicado_auditado.py). Una lectura aparte, no
+    # un JOIN, para que el FOR UPDATE bloquee solo la fila del binding. Si la fila
+    # de `model` ya no existe, quedan las columnas del propio binding.
+    if model_ref is not None:
+        await cur.execute("SELECT provider_id, model_id FROM model WHERE id=%s", (model_ref,))
+        legible = await cur.fetchone()
+        if legible is not None:
+            provider_id, model_id = legible
+    return {
+        "model_ref": model_ref, "provider_id": provider_id, "model_id": model_id,
+        "approved_by": approved_by, "approved_at": str(approved_at) if approved_at else None,
+    }
+
+
+async def registrar_binding_aplicado(
+    cur, facet_key: str, role: str, antes: dict | None, despues: dict, proposal_id: int | None,
+    performed_by: int, performed_by_email: str | None, performed_from_ip: str,
+) -> None:
+    """Deja en model_catalog_audit el cambio de binding que SE APLICO (2026-10-04).
+    Hasta hoy solo los rechazos (409) dejaban fila: un cambio aplicado -- jax_local
+    y el_juez a qwen3.8-mesa-131k el 2026-09-23, por el PUT -- no dejaba mas rastro
+    que approved_by/approved_at, que se pisan en el siguiente cambio.
+
+    El que llama lo corre DENTRO de la misma transaccion que escribe facet_binding
+    y ANTES del commit: si este INSERT falla, el cambio no se aplica (fallo cerrado).
+    `antes`: lo que devolvio `binding_de` antes de escribir (None si no habia fila);
+    `despues`: lo que devuelve `binding_de` tras escribir. proposal_id None = PUT.
+    provider_id/model_id son los del modelo NUEVO, legibles (la tabla no tiene FK)."""
+    if despues is None or despues.get("model_ref") is None:
+        raise ValueError("binding_aplicado: el binding nuevo no tiene model_ref")
+    valor_despues = {
+        "model_ref": despues["model_ref"], "provider_id": despues["provider_id"],
+        "model_id": despues["model_id"], "role": role,
+    }
+    await cur.execute(
+        "INSERT INTO model_catalog_audit (action, model_ref, provider_id, model_id, facet_key, "
+        "proposal_id, valor_antes, valor_despues, performed_by, performed_by_email, performed_from_ip) "
+        "VALUES ('binding_aplicado', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (despues["model_ref"], despues["provider_id"], despues["model_id"], facet_key, proposal_id,
+         json.dumps(antes, ensure_ascii=False) if antes is not None else None,
+         json.dumps(valor_despues, ensure_ascii=False),
          performed_by, performed_by_email, performed_from_ip),
     )
 

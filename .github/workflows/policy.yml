@@ -1100,8 +1100,11 @@ jobs:
             //   1366/0/1366, 112 archivos.
             // Ronda 2 de #187: sin cambio (la prueba de paridad lee causas_de_error.json en vez del .py; una
             //   prueba reemplazada por otra). Medido: 1366/0/1366.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1366) {
-              console.error("PISO ROTO: se esperaban 1366 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1366 -> 1368 (2026-10-04, PR 192): +2 en api/errores.test.js (los 409
+            //   binding_conflicto_concurrente y faceta_sin_binding_primary se traducen en es/en; rojo
+            //   antes del i18n). Medido con `npx vitest run` sobre la rama: 1368/0/1368, 112 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1368) {
+              console.error("PISO ROTO: se esperaban 1368 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3505,7 +3508,34 @@ jobs:
           #   procesamiento_fallido; vista en rojo contra el despachador sin defensa). MEDIDO CON DB en local
           #   (mariadb:12.3.3 descartable en 3399, jax 2b0c163, mismo comando): 3609 passed, 0 failed, 0 skipped,
           #   con las 3 de test_base_por_sesion incluidas; 3609 - 3 = 3606.
-          PISO_PASSED = 3606
+          # 3606 -> 3617 (2026-10-04, binding_aplicado en model_catalog_audit): +11 con DB, todas con `client`
+          #   (tests/test_binding_aplicado_auditado.py: PUT y approve auditados, los dos 409 sin fila nueva,
+          #   auditoria rota -> rollback en los dos, lecturas de rechazos, EXPLAIN por uk_facet_role, migracion
+          #   del ENUM). Vistas en rojo contra el codigo viejo (9 de 11; las 2 de 409 guardan regresion).
+          #   MEDIDO en local con DB de sesion, mismo comando: master 58b60ee 3633 passed / 6 failed / 5 skipped
+          #   -> rama 3644 passed / 6 failed / 5 skipped (+11; los mismos 6 fallan en ambos por el entorno local:
+          #   2 de test_base_por_sesion, 3 de test_processing_job_exact_pair y 1 de test_proyectos_documentos_
+          #   repositorio, pin de jax). Piso = declarado (3606) + delta propio (11). Sin DB no suman: 2212 igual.
+          #   El runner tiene la ultima palabra.
+          # 3617 -> 3619 (2026-10-04, carrera de approve_proposal): +2 con DB, con `client`
+          #   (dos approves concurrentes de la misma propuesta -> un 200, un 409 y UNA fila binding_aplicado;
+          #   EXPLAIN de la relectura FOR UPDATE por PRIMARY). Vistas en rojo contra el approve anterior
+          #   (dos 200 y dos filas; AttributeError del SQL). MEDIDO en local con DB de sesion, mismo comando:
+          #   3644 passed / 6 failed / 5 skipped -> 3646 passed / 6 failed / 5 skipped (+2; los mismos 6 de
+          #   entorno). Sin DB no suman: 2212 igual. El runner tiene la ultima palabra.
+          # 3619 -> 3630 (2026-10-04, auditoria del PR #192, MINOR-1 a 6): +11 con DB; 10 piden `client` y 1 es
+          #   pura (inspeccion de run_migrations: suma tambien en el job sin DB, +1 alli). Deadlock por gap lock (1213 reproducido 3 de
+          #   3 contra el codigo anterior) +1, 1213/1205 en los dos escritores +4, otro OperationalError +1,
+          #   guard dentro de la transaccion +2, approve sin primary +1, ALTER de ENUM acotado +2.
+          #   MEDIDO en local con DB de sesion, mismo comando: 3646 passed / 6 failed / 5 skipped (70f011b) ->
+          #   3657 passed / 6 failed / 5 skipped (+11; los mismos 6 de entorno). El runner tiene la ultima palabra.
+          # 3630 -> 3631 (2026-10-04, segunda auditoria del PR #192, MINOR-7): +1 con DB, el PUT que pisa un
+          #   binding creado en la carrera (READ COMMITTED) es 409 y no audita valor_antes=NULL. Sumado.
+          # 3631 -> 3665 (2026-10-04, regla 5 al integrar el PR #192): re-medido en el runner, job
+          #   backend-tests-con-db de la corrida 37249817008: colectados=3666 passed=3665 skipped=1 failed=0.
+          # 3665 -> 3669 (2026-10-04, #192 sobre master con #193, regla 5): +4 del #193, MEDIDO en el runner,
+          #   corridas 37253795873 y 37253800483: colectados=3670 passed=3669 skipped=1.
+          PISO_PASSED = 3669
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4546,7 +4576,12 @@ jobs:
       # 2214 -> 2216 (misma rama, ronda de auditoria): +2 puras de test_state_tareas_de_fondo_bajo_pytest.py
       # (las tareas de fondo del motor no arrancan bajo pytest; forzado arranca las dos). MEDIDO EXACTO con
       # JAX_CI_NO_DB=1 sobre la rama: 2214 passed / 1431 skipped / 3 failed por el pin local; 2214 + 3 - 1 = 2216.
-      JAX_CI_MIN_PASSED: "2216"
+      # 2212 -> 2213 (auditoria del PR #192): +1 pura, test_run_migrations_aplica_las_extensiones_de_enum_por_
+      # el_camino_acotado (los otros 10 de test_binding_aplicado_auditado.py piden `client` y se saltan).
+      # MEDIDO con JAX_CI_NO_DB=1 sobre ese archivo: 1 passed / 23 skipped. NO re-medido el total del job.
+      # 2216 -> 2217 (2026-10-04, PR #192 integrado sobre master con #193, regla 5): MEDIDO EXACTO con
+      # JAX_CI_NO_DB=1 sobre el arbol mezclado: 2215 passed / 1455 skipped / 3 failed por el pin local; 2215 + 3 - 1 = 2217.
+      JAX_CI_MIN_PASSED: "2217"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

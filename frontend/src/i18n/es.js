@@ -781,6 +781,12 @@ export default {
   // no es el del modelo, y la faceta mandaría el modelo al servicio equivocado.
   modelo_de_otro_proveedor: (modelo, proveedorModelo, proveedorBinding) =>
     `El modelo ${modelo} es de ${proveedorModelo}, pero esta faceta quedaría configurada con ${proveedorBinding}: no podría usarlo. Elegí un modelo de ${proveedorBinding}. No se cambió nada.`,
+  // PR 192 (2026-10-04): dos escritores del mismo binding chocaron (deadlock
+  // o espera de candado); la transacción se deshizo entera.
+  binding_conflicto_concurrente: 'Otro cambio sobre esta faceta se cruzó con el tuyo y no se aplicó nada. Volvé a intentarlo.',
+  // PR 192: aprobar una propuesta de una faceta que no tiene binding principal.
+  faceta_sin_binding_primary: (faceta) =>
+    `La faceta ${faceta} no tiene un modelo principal que reemplazar: la propuesta no se aprobó. Asignale un modelo desde Bindings.`,
   // PR-L (2026-09-14): declarar el contrato de dispatch de una fila del
   // catálogo desde el admin (antes era un UPDATE a mano).
   adminContratoTitulo: (modelo) => `Contrato de dispatch de ${modelo}`,

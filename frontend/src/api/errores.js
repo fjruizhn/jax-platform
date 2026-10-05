@@ -29,6 +29,9 @@ export function textoDeDetalleDeBinding(t, detail) {
   if (detail?.code === 'modelo_de_otro_proveedor') {
     return t.modelo_de_otro_proveedor(detail.model_id, detail.provider_modelo, detail.provider_binding)
   }
+  // PR 192 (2026-10-04): choque entre escritores y aprobación sin binding principal.
+  if (detail?.code === 'binding_conflicto_concurrente') return t.binding_conflicto_concurrente
+  if (detail?.code === 'faceta_sin_binding_primary') return t.faceta_sin_binding_primary(detail.facet_key)
   return null
 }
 
