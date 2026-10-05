@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
 import { FACET_TOKENS } from '../../store/useJaxStore'
 import { colorToken } from '../../tema/tokens'
+import { decodificarTextoGobernado, AVISO_RESPUESTA_NO_VERIFICABLE } from '../../lib/textoGobernado'
 
 // dalle/user no son facetas (ver useJaxStore.js): extensión local para el chat.
 const TOKEN_DE = { ...FACET_TOKENS, dalle: 'faceta-imagen', user: 'texto-suave' }
@@ -22,6 +23,7 @@ function Message({ message }) {
   const isGovernedResponse = message.governed_plain && !isUser
   const token = isGovernedResponse ? 'texto-suave' : (TOKEN_DE[message.facet] || 'texto-suave')
   const isRunning = message.status === 'running'
+  const avisoDegradado = isGovernedResponse && message.aviso_code === AVISO_RESPUESTA_NO_VERIFICABLE
   const speaker = isUser ? t.userLabel : (isGovernedResponse ? t.governedResponseLabel : (message.facet || t.userLabel))
 
   return (
@@ -76,14 +78,14 @@ function Message({ message }) {
             // projection.  Rendering it as Markdown would let untrusted
             // provider payload imitate headings, links, badges or citations.
             <div className="whitespace-pre-wrap break-words" data-testid="governed-plain">
-              {message.content}
+              {avisoDegradado ? t.respuestaNoVerificable : decodificarTextoGobernado(message.content)}
             </div>
           ) : (
             // User-authored messages retain the existing Markdown UX.  The
             // governed flag is server-owned and never supplied by message text.
             <ReactMarkdown>{message.content}</ReactMarkdown>
           )}
-          {message.contract_degraded && (
+          {message.contract_degraded && !avisoDegradado && (
             <div className="text-xs text-texto-suave mt-2 italic">
               {t.contractDegradedNote}
             </div>

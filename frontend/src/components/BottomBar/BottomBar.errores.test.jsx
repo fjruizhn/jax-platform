@@ -56,6 +56,26 @@ describe('BottomBar -- errores y avisos con código', () => {
     expect(respuesta.content).not.toContain('thot')
   })
 
+  it('el aviso degradado gobernado llega con código estable para que el chat lo muestre en i18n', async () => {
+    api.post.mockResolvedValue({ data: {
+      facet: 'thot', response: 'The response could not be verified safely.', timestamp: 't',
+      aviso: null, governed_plain: true, contract_state: 'DEGRADED_STRUCTURED', contract_degraded: true,
+    } })
+    enviarChat('hola')
+    await waitFor(() => expect(useJaxStore.getState().messages).toHaveLength(2))
+    expect(useJaxStore.getState().messages[1].aviso_code).toBe('respuesta_no_verificable')
+  })
+
+  it('una respuesta gobernada valida no lleva código de aviso', async () => {
+    api.post.mockResolvedValue({ data: {
+      facet: 'thot', response: 'It&#x27;s fine', timestamp: 't',
+      aviso: null, governed_plain: true, contract_state: 'VALID', contract_degraded: false,
+    } })
+    enviarChat('hola')
+    await waitFor(() => expect(useJaxStore.getState().messages).toHaveLength(2))
+    expect(useJaxStore.getState().messages[1].aviso_code).toBeNull()
+  })
+
   // Frente B, Task 9 (2026-09-17, Ruling R4): con el freno puesto la Mesa
   // responde 423 kill_switch_activo; el chat lo dice traducido, nunca el código.
   it('un 423 del kill switch se muestra traducido, no el código', async () => {

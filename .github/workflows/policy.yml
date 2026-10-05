@@ -1103,8 +1103,13 @@ jobs:
             // 1366 -> 1368 (2026-10-04, PR 192): +2 en api/errores.test.js (los 409
             //   binding_conflicto_concurrente y faceta_sin_binding_primary se traducen en es/en; rojo
             //   antes del i18n). Medido con `npx vitest run` sobre la rama: 1368/0/1368, 112 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1368) {
-              console.error("PISO ROTO: se esperaban 1368 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1368 -> 1381 (2026-10-05, fix/texto-gobernado-legible): +13 -- 7 en lib/textoGobernado.test.js
+            //   (nuevo: decodifica solo las 5 entidades de html.escape, una pasada; aviso por contract_state),
+            //   +4 en Message.test.jsx (texto gobernado legible, sin HTML ni Markdown; aviso degradado en i18n)
+            //   y +2 en BottomBar.errores.test.jsx (aviso_code). Vistos en rojo antes de verde.
+            //   Medido con `npx vitest run` sobre la rama: 1381/0/1381, 113 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1381) {
+              console.error("PISO ROTO: se esperaban 1381 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

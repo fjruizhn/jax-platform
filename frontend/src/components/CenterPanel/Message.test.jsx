@@ -119,3 +119,43 @@ describe('Message -- hora sigue el idioma activo, no es-HN fijo (I-2)', () => {
     expect(screen.getByText(new Date(timestamp).toLocaleTimeString('es-HN'))).toBeInTheDocument()
   })
 })
+
+describe('Message texto gobernado legible', () => {
+  it('decodifica las entidades de html.escape y las muestra como texto', () => {
+    renderMessage({
+      facet: 'governed_response',
+      content: 'It&#x27;s &quot;fine&quot; &amp; &lt;b&gt;no&lt;/b&gt;',
+      governed_plain: true,
+    })
+    const nodo = screen.getByTestId('governed-plain')
+    expect(nodo).toHaveTextContent('It\'s "fine" & <b>no</b>')
+    expect(nodo.textContent).not.toMatch(/&#x27;|&amp;|&quot;|&lt;/)
+    // el markup decodificado sigue siendo texto: no hay elementos
+    expect(nodo.querySelector('b')).toBeNull()
+  })
+
+  it('no interpreta Markdown tras decodificar', () => {
+    renderMessage({ facet: 'governed_response', content: '&lt;img src=x onerror=1&gt;', governed_plain: true })
+    expect(screen.getByTestId('governed-plain').querySelector('img')).toBeNull()
+  })
+
+  it('el aviso degradado muestra el texto i18n y no el del servidor', () => {
+    renderMessage({
+      facet: 'governed_response',
+      content: 'The response could not be verified safely.',
+      governed_plain: true,
+      contract_degraded: true,
+      aviso_code: 'respuesta_no_verificable',
+    })
+    expect(screen.getByTestId('governed-plain')).toHaveTextContent(es.respuestaNoVerificable)
+    expect(screen.queryByText(/could not be verified safely/i)).not.toBeInTheDocument()
+    // sin la nota duplicada de formato: el aviso ya lo dice todo
+    expect(screen.queryByText(es.contractDegradedNote)).not.toBeInTheDocument()
+  })
+
+  it('las claves es/en del aviso existen y difieren', () => {
+    expect(es.respuestaNoVerificable).toBeTruthy()
+    expect(en.respuestaNoVerificable).toBeTruthy()
+    expect(es.respuestaNoVerificable).not.toBe(en.respuestaNoVerificable)
+  })
+})

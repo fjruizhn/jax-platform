@@ -527,6 +527,7 @@ export default {
   // Message
   userLabel: 'User',
   contractDegradedNote: 'The response did not meet the expected format.',
+  respuestaNoVerificable: "I couldn't verify this response, so I'm not showing it. Try rephrasing your question.",
   // I-1 (final review PR 3, 2026-09-14): <img> alt text was hardcoded in
   // Spanish, not going through i18n (it showed up in Spanish in English UI).
   altGeneratedImage: 'generated image',

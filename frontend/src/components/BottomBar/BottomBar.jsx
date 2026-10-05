@@ -15,6 +15,7 @@ import { alturaInput } from './alturaInput'
 import { colorToken } from '../../tema/tokens'
 import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 import { nombreDeFaceta } from '../../lib/nombreDeFaceta'
+import { avisoGobernadoDe } from '../../lib/textoGobernado'
 
 // Solo orden de despliegue — label viene de /api/state (display_name de la tabla
 // `facet`, Bloque C) y el token de color del store; no se duplican aca.
@@ -242,6 +243,7 @@ function BottomBar() {
         timestamp: governed ? null : data.timestamp,
         contract_degraded: data.contract_degraded ?? false,
         governed_plain: governed,
+        aviso_code: avisoGobernadoDe(data),
       })
       // El mensaje del usuario ya se armó con vistaDeAdjunto() más arriba,
       // que le dio su PROPIO object URL (adjuntos.js) -- el del compositor
