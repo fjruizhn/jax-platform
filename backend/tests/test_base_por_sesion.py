@@ -578,6 +578,7 @@ def conector(monkeypatch):
     monkeypatch.setenv("JAX_DB_USER", "jax_test")
     monkeypatch.setenv("JAX_DB_PASSWORD", "x")
     monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     monkeypatch.delenv("JAX_CI_NO_DB", raising=False)
     monkeypatch.delenv(VARIABLE_PERMISO, raising=False)
     return c
@@ -690,9 +691,31 @@ def test_en_ci_los_puertos_de_produccion_siguen_permitidos(conector, monkeypatch
     """Los jobs de CI corren su propio contenedor en 3306: la guarda no los toca."""
     from base_de_test import exigir_conexion_permitida
     monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
     for puerto in ("3306", "3308"):
         monkeypatch.setenv("JAX_DB_PORT", puerto)
         exigir_conexion_permitida("jax_memory_test_sesion1")
+
+
+@pytest.mark.parametrize("entorno", [
+    {"CI": "true"},                                  # `CI` suelto: ya no alcanza
+    {"CI": "1"},
+    {"GITHUB_ACTIONS": "true"},                      # tampoco la otra sola
+    {"CI": "true", "GITHUB_ACTIONS": "false"},
+    {"CI": "true", "GITHUB_ACTIONS": ""},
+])
+@pytest.mark.parametrize("puerto", ["3306", "3308"])
+def test_ci_solo_cuenta_con_ci_y_github_actions_true(conector, monkeypatch, entorno, puerto):
+    """El runner de GitHub Actions (tambien el de hall9000) exporta `CI` y `GITHUB_ACTIONS=true`.
+    Una de las dos sola, o `GITHUB_ACTIONS` distinto de `true`, sigue exigiendo el permiso explicito."""
+    from base_de_test import exigir_conexion_permitida
+    for clave, valor in entorno.items():
+        monkeypatch.setenv(clave, valor)
+    monkeypatch.setenv("JAX_DB_PORT", puerto)
+    with pytest.raises(BaseDeTestInvalida, match=VARIABLE_PERMISO):
+        exigir_conexion_permitida("jax_memory_test_sesion1")
+    monkeypatch.setenv(VARIABLE_PERMISO, "1")        # y el permiso explicito sigue abriendo la puerta
+    exigir_conexion_permitida("jax_memory_test_sesion1")
 
 
 def test_un_puerto_ajeno_fuera_de_ci_se_permite_sin_variable(conector, monkeypatch):
@@ -759,3 +782,24 @@ def test_el_cliente_mysql_del_bootstrap_ignora_los_archivos_de_opciones_y_va_por
     argv = capturado["argv"]
     assert argv[:3] == ["mysql", "--no-defaults", "--protocol=TCP"], argv
     assert argv[argv.index("--port") + 1] == "3399"
+
+
+def test_un_nombre_que_pasa_el_verificador_pero_no_es_base_de_test_se_niega(conector, monkeypatch):
+    """Auditoria Jax#355, MINOR 1. `jax_memory_test_A-B` tiene el prefijo (pasa
+    `_verificar_que_no_es_produccion`) pero no es un sufijo valido (`es_base_de_test` da False).
+    Sin la rama `elif not es_base_de_test(base)` de `exigir_conexion_permitida`, nada lo frenaria
+    antes de abrir la conexion: este control cae si se la quita."""
+    from base_de_test import _clonar_esquema, _verificar_que_no_es_produccion
+    nombre = "jax_memory_test_A-B"
+    assert _verificar_que_no_es_produccion(nombre) == nombre
+    assert not es_base_de_test(nombre)
+    monkeypatch.setenv("JAX_DB_PORT", "3399")
+    for permiso in (False, True):
+        if permiso:
+            monkeypatch.setenv(VARIABLE_PERMISO, "1")
+        with pytest.raises(BaseDeTestInvalida, match="no es una base de tests"):
+            asegurar_base_de_test(nombre)
+        with pytest.raises(BaseDeTestInvalida, match="no es una base de tests"):
+            asyncio.run(_clonar_esquema(nombre))
+    asyncio.run(_dropear_base_de_sesion(nombre))   # el borrado ya la ignoraba (es_base_de_test): sigue sin conectar
+    assert conector.intentos == []

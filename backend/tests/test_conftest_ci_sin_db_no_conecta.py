@@ -23,7 +23,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 
 def _entorno_hijo() -> dict:
     env = dict(os.environ)
-    for k in ("JAX_DB_HOST", "JAX_DB_NAME", "JAX_TEST_DB_SUFIJO", "CI"):
+    for k in ("JAX_DB_HOST", "JAX_DB_NAME", "JAX_TEST_DB_SUFIJO", "CI", "GITHUB_ACTIONS"):
         env.pop(k, None)
     env.update({"JAX_CI_NO_DB": "1", "JAX_DB_HOST": "127.0.0.1", "JAX_DB_PORT": "1",
                 "JAX_DB_USER": "nadie", "JAX_DB_PASSWORD": "nada"})
