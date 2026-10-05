@@ -34,12 +34,14 @@ igualdad y el mutante que rechaza una adición unilateral siguen vigentes.
   autenticado, F2-B, proyección F2-C, bytes/lifecycle F2-D y clones de esquema/triggers.
 - Se verificó estáticamente que `policy.yml` contiene los cuatro pines nuevos y ningún
   pin anterior `840579839d37821440b8018edb99fb074e540c66`.
+- GitHub Actions, corrida `37283413689` sobre
+  `23fd7915b86c5cb9dcad8672a7f306dabe3574c8`, confirmó los dos suites genéricos:
+  con DB `colectados=3679 passed=3678 skipped=1 failed=0 errors=0`; sin DB
+  `colectados=3679 passed=2226 skipped=1453 failed=0 errors=0`. Los pisos se
+  elevaron a `3678` y `2226`; el gate con DB conserva `MAX_SKIPS = 1`.
 
 ## Pendiente
 
-- El runner de CI debe medir los pisos finales de la rama reconciliada. El intento local
-  de la suite backend completa sin DB fue cortado por el límite interactivo antes de
-  producir un resultado final; no se registra como pasada.
 - Requiere auditoría independiente de escalón 3 sobre el SHA final antes de cualquier
   integración.
 
