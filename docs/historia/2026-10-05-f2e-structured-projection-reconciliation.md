@@ -39,8 +39,8 @@
   el contrato de plantilla `PIPELINE_STATUS` a esas versiones exactas. La
   incompatibilidad previa fallaba cerrado con 503; no se aceptó un rango de
   versiones.
-- Se conservaron los máximos ya medidos: con DB `PISO_PASSED = 3690` y
-  `MAX_SKIPS = 1`; sin DB `JAX_CI_MIN_PASSED = 2238`; y el piso F2-E exacto
+- Se conservaron los máximos ya medidos: con DB `PISO_PASSED = 3694` y
+  `MAX_SKIPS = 2`; sin DB `JAX_CI_MIN_PASSED = 2242`; y el piso F2-E exacto
   `89`. Se conservaron también el manifiesto B9 de migraciones 007--013 y su
   evidencia histórica incorporada desde `master`.
 - El `TRASPASO.md` entrante describía el par SR2 anterior (JAX
@@ -57,6 +57,15 @@
 - Par F2-E completo contra JAX #351: `89 passed, 0 skipped`.
 - Par SR2 sin la única prueba MariaDB marcada para CI: `55 passed, 1 deselected`.
 - Paridad de extensiones y manifiesto B9: `87 passed`.
+- Rule 5 posterior: CI `37311446373` midió el backend con DB (job
+  `111767582760`) en `3696` colectados, `3694` passed, `2` skipped, sin
+  fallos ni errores. Los skips son el guard ambiental de secretos y
+  `test_step_status_exact_pair.py:154`; este último permanece cubierto por el
+  gate SR2 exact-pair aislado. El mínimo sube a `3694` y el límite explícito
+  de skips a `2`, sin ignorar archivos ni debilitar el par exacto.
+- La misma corrida, backend sin DB (job `111767583207`), midió `3696`
+  colectados, `2242` passed, `1454` skipped, sin fallos ni errores; el mínimo
+  sin DB sube a `2242`.
 
 ## Por qué
 

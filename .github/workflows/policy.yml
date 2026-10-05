@@ -3549,8 +3549,13 @@ jobs:
           # 3678 -> 3690 (2026-10-05, Rule 5): CI 37291824110 sobre
           # 1157f71aa172fad07581c68c27706ce5a9e275a0 midió
           # colectados=3691 passed=3690 skipped=1 failed=0 errors=0.
-          PISO_PASSED = 3690
-          MAX_SKIPS = 1
+          # 3690 -> 3694 (2026-10-05, Rule 5): CI 37311446373 / job
+          # 111767582760 midió colectados=3696 passed=3694 skipped=2, sin
+          # fallos ni errores. El segundo skip es
+          # test_step_status_exact_pair.py:154, cubierto por el job SR2
+          # exact-pair aislado; el otro es el guard ambiental de secretos.
+          PISO_PASSED = 3694
+          MAX_SKIPS = 2
 
           print(f"colectados={total} passed={passed} skipped={skip} "
                 f"failed={fail} errors={err}")
@@ -4607,7 +4612,10 @@ jobs:
       # 2226 -> 2238 (2026-10-05, Rule 5): CI 37291824110 sobre
       # 1157f71aa172fad07581c68c27706ce5a9e275a0 midió
       # colectados=3691 passed=2238 skipped=1453 failed=0 errors=0.
-      JAX_CI_MIN_PASSED: "2238"
+      # 2238 -> 2242 (2026-10-05, Rule 5): CI 37311446373 / job
+      # 111767583207 midió colectados=3696 passed=2242 skipped=1454, sin
+      # fallos ni errores.
+      JAX_CI_MIN_PASSED: "2242"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
