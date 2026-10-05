@@ -30,12 +30,14 @@ tiempo ni por ningún otro heurístico. La prueba de que NO se arma un cruce
 heurístico por casualidad (mismo tenant/época, sin `pipeline_id`) se
 conserva tal cual -- ver `test_costo_usd_no_se_inventa_ni_con_un_registro_de_uso_parecido`.
 """
+import asyncio
 import time
 import uuid
 
 import pytest
 
 from api import pipelines as mod
+from auth.models import AuthUser
 from tests.identidades import cabeceras, sql, uid
 
 
@@ -78,6 +80,77 @@ async def _borrar_uso(tenant_id):
 
 
 TENANT = "701"
+
+
+def test_listado_descartado_libera_la_conexion_antes_de_gobernar(monkeypatch):
+    """La gobernanza puede esperar F2-B/F2-C/F2-D; no retiene una conexión
+    de Platform mientras lo hace. El camino principal ya salía del pool antes
+    de gobernar y el de descartados debe conservar esa misma propiedad."""
+    class Cursor:
+        def __init__(self):
+            self.llamadas = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def execute(self, *_args):
+            self.llamadas += 1
+
+        async def fetchall(self):
+            if self.llamadas == 1:
+                return [("discarded-1", "Descartado", "discarded", 1.0, 2.0, 3.0)]
+            return [("discarded-1", 0.25)]
+
+    class Connection:
+        def __init__(self):
+            self.released = False
+            self.cursor_falso = Cursor()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            self.released = True
+            return False
+
+        def cursor(self):
+            return self.cursor_falso
+
+    class Pool:
+        def __init__(self):
+            self.connection = Connection()
+
+        def acquire(self):
+            return self.connection
+
+    pool = Pool()
+
+    async def get_pool():
+        return pool
+
+    async def govern(payload, user):
+        assert pool.connection.released
+        assert payload == {
+            "pipelines": [{
+                "pipeline_id": "discarded-1", "name": "Descartado", "status": "discarded",
+                "created_at": 1.0, "updated_at": 2.0, "descartado_at": 3.0,
+                "duracion_s": None, "costo_usd": 0.25, "causa": None,
+            }],
+            "has_more": False,
+            "cursor_siguiente": None,
+        }
+        return "governed"
+
+    monkeypatch.setattr(mod, "get_pool", get_pool)
+    monkeypatch.setattr(mod, "govern_pipeline_list", govern)
+
+    assert asyncio.run(mod.list_pipelines(
+        user=AuthUser(user_id="owner", tenant_id="tenant", role="operator"),
+        limite=mod.LISTA_PIPELINES_MAX, offset=0, estado="discarded", cursor=None,
+    )) == "governed"
 
 
 def test_el_listado_trae_duracion_costo_y_pagina(client):

@@ -999,10 +999,10 @@ async def list_pipelines(
         consulta_d, params_d = consulta_y_parametros(
             SQL_DESCARTADOS_DEL_USUARIO_BASE, (user.user_id, user.tenant_id),
             limite, offset, cursor)
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            if estado == "discarded":
+    if estado == "discarded":
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
                 await cur.execute(consulta_d, params_d)
                 filas_d = await cur.fetchall()
                 hay_mas_d = len(filas_d) > limite
@@ -1034,18 +1034,22 @@ async def list_pipelines(
                     for pid, suma in await cur.fetchall():
                         if suma is not None:
                             costos_d[pid] = round(float(suma), 6)
-                return await govern_pipeline_list({
-                    "pipelines": [
-                        {
-                            "pipeline_id": pid, "name": name, "status": st,
-                            "created_at": c, "updated_at": u, "descartado_at": d,
-                            "duracion_s": None, "costo_usd": costos_d.get(pid), "causa": None,
-                        }
-                        for pid, name, st, c, u, d in filas_d
-                    ],
-                    "has_more": hay_mas_d,
-                    "cursor_siguiente": cursor_siguiente(filas_d, hay_mas_d, idx_fecha=5),
-                }, user)
+        return await govern_pipeline_list({
+            "pipelines": [
+                {
+                    "pipeline_id": pid, "name": name, "status": st,
+                    "created_at": c, "updated_at": u, "descartado_at": d,
+                    "duracion_s": None, "costo_usd": costos_d.get(pid), "causa": None,
+                }
+                for pid, name, st, c, u, d in filas_d
+            ],
+            "has_more": hay_mas_d,
+            "cursor_siguiente": cursor_siguiente(filas_d, hay_mas_d, idx_fecha=5),
+        }, user)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
             # Se pide una fila de más (limite+1) para saber si hay una página
             # siguiente sin un segundo COUNT(*) -- LAS CUATRO/cache: no se
             # recalcula lo que ya se puede leer de la misma consulta.

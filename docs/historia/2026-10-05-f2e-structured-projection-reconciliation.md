@@ -47,6 +47,11 @@ igualdad y el mutante que rechaza una adición unilateral siguen vigentes.
 
 ## Decisiones y alternativas
 
+- La vista `estado=discarded` termina las consultas y cálculos de costo dentro
+  de `pool.acquire()`, libera la conexión, y sólo después espera el límite de
+  gobernanza F2-B/F2-C/F2-D. La regresión usa un pool espía y prueba tanto la
+  liberación previa como la forma completa del DTO; no modifica el lote F2-B,
+  cuya decisión arquitectónica sigue separada.
 - Se mantuvieron los pisos más altos de `master`; no se conservaron los valores de la
   rama (`3646` y `2218`) porque bajar un mínimo medido ocultaría regresiones.
 - No se debilitó el gate de paridad ni se alteró el flujo F2-E. Cambiar o excluir el test
