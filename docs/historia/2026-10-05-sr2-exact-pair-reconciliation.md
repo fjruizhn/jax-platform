@@ -7,8 +7,9 @@ Autor: Codex
 
 Platform PR #189 se reconcilió con `origin/master` en
 `64b6d1ff706d4d200e757460531c102676b8105a`. Los cuatro pins del par SR2 se
-actualizaron al head publicado de JAX PR #341:
-`ad930fa5a9650afce83707217c8e301b49ef9782`.
+actualizaron al head publicado de JAX PR #341. Tras integrar JAX #344 y
+reconciliar #341 contra ese nuevo `master`, los cuatro pins se actualizaron de
+nuevo al head exacto `200f03c7a17cbe1a488d7dab6921d841a8cd3a46`.
 
 El conflicto de `.github/workflows/policy.yml` se resolvió conservando los
 pisos de pruebas medidos por `master`, sin rebajar ninguno, y manteniendo el
@@ -47,3 +48,12 @@ La prueba MariaDB exact-pair no pudo ejecutarse en esta máquina: antes de
 colectar, el clonador de bases detiene la sesión porque `jax_memory_test` tiene
 cinco triggers que todavía no puede copiar. El control evita que la prueba se
 ejecute contra un esquema distinto de la plantilla.
+
+## Traspaso post-#344
+
+La actualización posterior a la integración de JAX #344 no requirió un merge
+adicional de Platform: `64b6d1ff706d4d200e757460531c102676b8105a` ya es
+ancestro de esta rama. Conserva los pisos `3676` con DB y `2224` sin DB, y los
+cuatro pins SR2 apuntan al mismo SHA de JAX. La CI publicada del PR debe ser la
+evidencia final del nuevo par exacto; no reutilizar el veredicto emitido para el
+SHA anterior.

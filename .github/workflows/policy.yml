@@ -1345,7 +1345,7 @@ jobs:
           # Platform's F2-C/F2-D baseline is the governed exact pair; keeping
           # the historical domain-.5 JAX pin after this contract upgrade would
           # make master import an incompatible renderer/lifecycle vocabulary.
-          PIN=ad930fa5a9650afce83707217c8e301b49ef9782
+          PIN=200f03c7a17cbe1a488d7dab6921d841a8cd3a46
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -4656,7 +4656,7 @@ jobs:
           # Platform's F2-C/F2-D baseline is the governed exact pair; keeping
           # the historical domain-.5 JAX pin after this contract upgrade would
           # make master import an incompatible renderer/lifecycle vocabulary.
-          PIN=ad930fa5a9650afce83707217c8e301b49ef9782
+          PIN=200f03c7a17cbe1a488d7dab6921d841a8cd3a46
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -4914,7 +4914,7 @@ jobs:
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=5s --health-timeout=5s --health-retries=20
     env:
-      JAX_SR2_EXPECTED_SHA: ad930fa5a9650afce83707217c8e301b49ef9782
+      JAX_SR2_EXPECTED_SHA: 200f03c7a17cbe1a488d7dab6921d841a8cd3a46
       JAX_REPO_PATH: ${{ github.workspace }}/jax
       JAX_REPO_BASE: ${{ github.workspace }}/jax
       JAX_CONFIG_PATH: ${{ github.workspace }}/jax/las_manos/config.toml
@@ -4934,7 +4934,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: fjruizhn/Jax
-          ref: ad930fa5a9650afce83707217c8e301b49ef9782
+          ref: 200f03c7a17cbe1a488d7dab6921d841a8cd3a46
           path: jax
       - name: Resolve the test suite's MariaDB hostname on the runner
         run: echo "127.0.0.1 mariadb.test" | sudo tee -a /etc/hosts
