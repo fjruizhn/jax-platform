@@ -3514,7 +3514,13 @@ jobs:
           #   2 de test_base_por_sesion, 3 de test_processing_job_exact_pair y 1 de test_proyectos_documentos_
           #   repositorio, pin de jax). Piso = declarado (3606) + delta propio (11). Sin DB no suman: 2212 igual.
           #   El runner tiene la ultima palabra.
-          PISO_PASSED = 3617
+          # 3617 -> 3619 (2026-10-04, carrera de approve_proposal): +2 con DB, con `client`
+          #   (dos approves concurrentes de la misma propuesta -> un 200, un 409 y UNA fila binding_aplicado;
+          #   EXPLAIN de la relectura FOR UPDATE por PRIMARY). Vistas en rojo contra el approve anterior
+          #   (dos 200 y dos filas; AttributeError del SQL). MEDIDO en local con DB de sesion, mismo comando:
+          #   3644 passed / 6 failed / 5 skipped -> 3646 passed / 6 failed / 5 skipped (+2; los mismos 6 de
+          #   entorno). Sin DB no suman: 2212 igual. El runner tiene la ultima palabra.
+          PISO_PASSED = 3619
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

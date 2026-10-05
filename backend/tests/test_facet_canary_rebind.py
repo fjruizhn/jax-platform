@@ -263,9 +263,14 @@ def _con_auditoria_de_binding_falsa(monkeypatch, modulo):
 
 def test_approve_proposal_encola_probe_after_rebind(monkeypatch):
     llamadas = _con_auditoria_de_binding_falsa(monkeypatch, models_mod)
+    # El guard de contrato no es lo que se prueba y consumiria el fetchone
+    # encolado para la relectura 'pending' de la transaccion.
+    async def guard_sin_rechazo(*_a, **_k):
+        return None
+    monkeypatch.setattr(models_mod, "detalle_si_rompe_el_contrato", guard_sin_rechazo)
     sink = []
     async def fake_get_pool():
-        return _FakePool(sink, [("thot", 42, "pending")])
+        return _FakePool(sink, [("thot", 42, "pending"), ("pending",)])
     monkeypatch.setattr(models_mod, "get_pool", fake_get_pool)
 
     bg = _FakeBackgroundTasks()

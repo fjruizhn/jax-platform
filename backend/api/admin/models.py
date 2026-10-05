@@ -482,6 +482,14 @@ async def _ultimos_rechazos(cur, proposal_ids: list[int]) -> dict:
     return ultimos
 
 
+# Relectura de la propuesta DENTRO de la transaccion de approve, con FOR UPDATE
+# por PRIMARY: el 'pending' que se leyo antes de abrirla pudo cambiar (dos
+# approves simultaneos pasaban los dos y escribian dos binding_aplicado).
+_SQL_PROPUESTA_PARA_ACTUALIZAR = (
+    "SELECT status FROM model_binding_proposal WHERE id=%s FOR UPDATE"
+)
+
+
 async def _fetch_proposal(cur, proposal_id: int):
     await cur.execute(
         "SELECT facet_key, proposed_model_ref, status FROM model_binding_proposal WHERE id=%s",
@@ -548,6 +556,15 @@ async def approve_proposal(
             # guard: el camino del 409 (arriba) no cambia.
             await conn.begin()
             try:
+                # Carrera entre approves: se relee la propuesta bloqueandola. El
+                # que llega segundo espera al primero y ve 'approved' -> el mismo
+                # 409 que ya daba una propuesta no pendiente.
+                await cur.execute(_SQL_PROPUESTA_PARA_ACTUALIZAR, (proposal_id,))
+                relectura = await cur.fetchone()
+                if relectura is None:
+                    raise HTTPException(status_code=404, detail="Proposal no encontrada")
+                if relectura[0] != "pending":
+                    raise HTTPException(status_code=409, detail=f"Proposal ya esta '{relectura[0]}'")
                 # El binding que se va a pisar, leido con FOR UPDATE (por
                 # uk_facet_role) antes de escribir: es el "antes" de la auditoria.
                 antes = await binding_de(cur, facet_key, "primary", para_actualizar=True)
