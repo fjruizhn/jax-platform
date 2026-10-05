@@ -417,7 +417,17 @@ class JAXEngineState:
         except Exception:  # fail-soft: cubre fetch/parse HTTP de UNA pipeline en _poll_one_pipeline; un fallo transitorio no debe tumbar el polling de las demás pipelines activas en este ciclo — la liberación de cupo de arriba es en memoria y no lanza (resource_manager.py), y ahora corre ANTES del aviso (bloqueante 2, 2026-09-18)
             pass
 
-    def start_background_tasks(self):
+    def start_background_tasks(self, forzado: bool = False):
+        """_poll_las_manos y _poll_pipelines. No arrancan bajo pytest (2026-10-04,
+        auditoria del PR #193): el fixture `client` levanta el lifespan entero y
+        _poll_las_manos pedia /health con el http_client GLOBAL cada 30 s; un test
+        que reemplaza ese cliente contaba esa llamada de forma intermitente. Mismo
+        contrato que start_reintento_de_uso y start_facet_canary; `forzado=True`
+        solo para el test que ejercita el arranque."""
+        import sys
+        if not forzado and ("PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules):
+            logger.warning("engine_state: las tareas de fondo no arrancan bajo pytest")
+            return
         loop = asyncio.get_event_loop()
         loop.create_task(self._poll_las_manos())
         loop.create_task(self._poll_pipelines())
