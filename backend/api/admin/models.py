@@ -582,7 +582,7 @@ async def approve_proposal(
                     # sigue 'pending'.
                     raise HTTPException(
                         status_code=409,
-                        detail=f"La faceta '{facet_key}' no tiene binding 'primary' que reemplazar",
+                        detail={"code": "faceta_sin_binding_primary", "facet_key": facet_key},
                     )
                 # El guard otra vez, DENTRO de la transaccion y con la fila de
                 # `model` bloqueada (y el binding ya bloqueado: el proveedor que

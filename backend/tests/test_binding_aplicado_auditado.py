@@ -579,7 +579,8 @@ def test_approve_sin_binding_primary_es_409_y_deja_la_propuesta_pendiente(client
     try:
         resp = client.post(f"/api/admin/models/proposals/{pid}/approve", headers=_headers())
         assert resp.status_code == 409, resp.text
-        assert "primary" in resp.json()["detail"]
+        # Código estable para i18n (PR #192): nunca un texto del backend en la UI.
+        assert resp.json()["detail"] == {"code": "faceta_sin_binding_primary", "facet_key": FACETA}, resp.text
         assert client.portal.call(_estado_propuesta, pid) == "pending"
         assert client.portal.call(_filas_de_auditoria, ref) == ()
     finally:
