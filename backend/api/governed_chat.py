@@ -13,6 +13,7 @@ import uuid
 import importlib
 import hashlib
 import logging
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -44,6 +45,21 @@ F2D_LIFECYCLE_API_VERSION = "f2-d.lifecycle.2"
 
 class GovernedChatUnavailable(RuntimeError):
     """The JAX F2-C core is unavailable; raw candidate text must not escape."""
+
+
+def _registrar_fallo_cerrado(mensaje: str, *args, exc: BaseException) -> None:
+    """logger.error de un fail-soft, sin dejar que el texto del proveedor llegue al log.
+
+    GovernedChatUnavailable la escribe este modulo (versiones, rutas): se vuelca completa,
+    con traza. Cualquier otra excepcion salio de codigo que pudo recibir el candidato del
+    proveedor (seal/render/mint) y su mensaje podria contenerlo: solo se registran su tipo y
+    los marcos de la traza, nunca ``str(exc)`` ni sus argumentos.
+    """
+    if isinstance(exc, GovernedChatUnavailable):
+        logger.error(mensaje, *args, exc_info=exc)
+        return
+    marcos = "".join(traceback.format_tb(exc.__traceback__))
+    logger.error(mensaje + " [%s, mensaje omitido]\n%s", *args, type(exc).__name__, marcos)
 
 
 @dataclass(frozen=True)
@@ -144,11 +160,11 @@ def project_sealed_envelope(envelope, render_context) -> GovernedChatProjection:
             contract_state=rendered.contract_state.value,
             contract_degraded=degraded, governed_plain=True, transport_unit=unit,
         )
-    except Exception:  # fail-soft: never expose an envelope or text if the renderer fails
+    except Exception as exc:  # fail-soft: never expose an envelope or text if the renderer fails
         # Sin exc_info el fallo era invisible (2026-10-05: 100 % de los chats caidos, journal
         # vacio). No se vuelca el envelope ni texto del proveedor: solo la excepcion.
-        logger.error("F2-C project_sealed_envelope failed closed (response withheld)",
-                     exc_info=True)
+        _registrar_fallo_cerrado("F2-C project_sealed_envelope failed closed (response withheld)",
+                                 exc=exc)
         return GovernedChatProjection(
             text=_DEGRADED_NOTICE, response_id=None, envelope_digest=None,
             source_envelope_digest=None,
@@ -233,11 +249,12 @@ def project_provider_contract(
             contract_degraded=rendered.contract_state.value != "VALID" or degraded,
             governed_plain=True, transport_unit=unit,
         )
-    except Exception:  # fail-soft: renderer/core failure emits only static non-current text, never provider prose
+    except Exception as exc:  # fail-soft: renderer/core failure emits only static non-current text, never provider prose
         # Visible: un par plataforma/jax incompatible llega hasta aca en cada turno y el
         # cliente solo ve un 503 generico. Solo request_id/trace_id, nunca el contrato ni el texto.
-        logger.error("F2-C project_provider_contract failed closed (request_id=%s trace_id=%s)",
-                     request_id, trace_id, exc_info=True)
+        _registrar_fallo_cerrado(
+            "F2-C project_provider_contract failed closed (request_id=%s trace_id=%s)",
+            request_id, trace_id, exc=exc)
         # This is the only F2-C bridge failure fallback.  It is static,
         # server-owned and contains no provider candidate text.
         return GovernedChatProjection(
