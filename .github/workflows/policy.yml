@@ -3505,7 +3505,16 @@ jobs:
           #   procesamiento_fallido; vista en rojo contra el despachador sin defensa). MEDIDO CON DB en local
           #   (mariadb:12.3.3 descartable en 3399, jax 2b0c163, mismo comando): 3609 passed, 0 failed, 0 skipped,
           #   con las 3 de test_base_por_sesion incluidas; 3609 - 3 = 3606.
-          PISO_PASSED = 3606
+          # 3606 -> 3617 (2026-10-04, binding_aplicado en model_catalog_audit): +11 con DB, todas con `client`
+          #   (tests/test_binding_aplicado_auditado.py: PUT y approve auditados, los dos 409 sin fila nueva,
+          #   auditoria rota -> rollback en los dos, lecturas de rechazos, EXPLAIN por uk_facet_role, migracion
+          #   del ENUM). Vistas en rojo contra el codigo viejo (9 de 11; las 2 de 409 guardan regresion).
+          #   MEDIDO en local con DB de sesion, mismo comando: master 58b60ee 3633 passed / 6 failed / 5 skipped
+          #   -> rama 3644 passed / 6 failed / 5 skipped (+11; los mismos 6 fallan en ambos por el entorno local:
+          #   2 de test_base_por_sesion, 3 de test_processing_job_exact_pair y 1 de test_proyectos_documentos_
+          #   repositorio, pin de jax). Piso = declarado (3606) + delta propio (11). Sin DB no suman: 2212 igual.
+          #   El runner tiene la ultima palabra.
+          PISO_PASSED = 3617
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
