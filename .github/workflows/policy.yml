@@ -1492,6 +1492,43 @@ jobs:
           skip = sum(int(s.get("skipped", 0)) for s in suites)
           passed = total - fail - err - skip
 
+          # The secrets test skips only when GitHub Actions lacks the production
+          # /etc/jax/.env needed to exercise its comparison.  It is accredited
+          # by its full junit identity so another environmental skip cannot
+          # silently replace it.  The sole gated skip is the MariaDB SR2 test;
+          # its exact identity is exercised by f2e-sr2-step-status-exact-pair.
+          env_only_test = (
+              "tests.test_conftest_no_carga_secretos_no_necesarios",
+              "test_fernet_key_y_jwt_secret_se_fuerzan_aunque_ya_vengan_puestos_en_el_ambiente",
+              "no hay /etc/jax/.env con estos secretos en esta máquina -- nada que simular",
+          )
+          sr2_gated_test = (
+              "tests.test_step_status_exact_pair",
+              "test_exact_pair_reads_real_canonical_step_owner_join_and_index_plan",
+              "requires the isolated SR2 exact-pair MariaDB job",
+          )
+          env_only_skips = 0
+          sr2_gated_skips = 0
+          for case in root.iter("testcase"):
+              skipped = case.find("skipped")
+              if skipped is None:
+                  continue
+              identity = (case.get("classname"), case.get("name"), skipped.get("message"))
+              if identity == env_only_test:
+                  env_only_skips += 1
+              elif identity == sr2_gated_test:
+                  sr2_gated_skips += 1
+          if env_only_skips > 1:
+              sys.exit(f"skip de entorno repetido inesperadamente: {env_only_skips}")
+          if sr2_gated_skips > 1:
+              sys.exit(f"skip SR2 repetido inesperadamente: {sr2_gated_skips}")
+          gated_skips = skip - env_only_skips
+          if gated_skips != sr2_gated_skips:
+              sys.exit(
+                  "skip no acreditado: sólo el skip SR2 exacto puede consumir "
+                  f"el gate (gateados={gated_skips}, sr2={sr2_gated_skips})"
+              )
+
           # MEDIDO EN ESTE JOB, no en otro entorno: 309 colectados, 308 passed,
           # 1 skipped, 0 failed, 0 errors (corrida real del 2026-09-01).
           #
@@ -3551,19 +3588,21 @@ jobs:
           # colectados=3691 passed=3690 skipped=1 failed=0 errors=0.
           # 3690 -> 3694 (2026-10-05, Rule 5): CI 37311446373 / job
           # 111767582760 midió colectados=3696 passed=3694 skipped=2, sin
-          # fallos ni errores. El segundo skip es
-          # test_step_status_exact_pair.py:154, cubierto por el job SR2
-          # exact-pair aislado; el otro es el guard ambiental de secretos.
+          # fallos ni errores. El skip ambiental se acredita por identidad y
+          # el único skip gateado es test_step_status_exact_pair.py:154,
+          # cubierto por el job SR2 exact-pair aislado.
           PISO_PASSED = 3694
-          MAX_SKIPS = 2
+          MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
-                f"failed={fail} errors={err}")
+                f"skip_entorno_esperado={env_only_skips} "
+                f"skip_sr2_gateado={sr2_gated_skips} "
+                f"skips_gateados={gated_skips} failed={fail} errors={err}")
           if passed < PISO_PASSED:
               sys.exit(f"PISO ROTO: {passed} passed < {PISO_PASSED}.")
-          if skip > MAX_SKIPS:
+          if gated_skips > MAX_SKIPS:
               sys.exit(
-                  f"{skip} skips (max {MAX_SKIPS}). La DB no esta siendo usada: "
+                  f"{gated_skips} skips gateados (max {MAX_SKIPS}). La DB no esta siendo usada: "
                   "los tests que la necesitan se estan salteando y este job "
                   "estaria verde sin haber probado nada de lo que vino a probar."
               )

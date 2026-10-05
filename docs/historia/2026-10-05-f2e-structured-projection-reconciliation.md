@@ -40,7 +40,7 @@
   incompatibilidad previa fallaba cerrado con 503; no se aceptó un rango de
   versiones.
 - Se conservaron los máximos ya medidos: con DB `PISO_PASSED = 3694` y
-  `MAX_SKIPS = 2`; sin DB `JAX_CI_MIN_PASSED = 2242`; y el piso F2-E exacto
+  `MAX_SKIPS = 1` sobre skips gateados; sin DB `JAX_CI_MIN_PASSED = 2242`; y el piso F2-E exacto
   `89`. Se conservaron también el manifiesto B9 de migraciones 007--013 y su
   evidencia histórica incorporada desde `master`.
 - El `TRASPASO.md` entrante describía el par SR2 anterior (JAX
@@ -61,8 +61,9 @@
   `111767582760`) en `3696` colectados, `3694` passed, `2` skipped, sin
   fallos ni errores. Los skips son el guard ambiental de secretos y
   `test_step_status_exact_pair.py:154`; este último permanece cubierto por el
-  gate SR2 exact-pair aislado. El mínimo sube a `3694` y el límite explícito
-  de skips a `2`, sin ignorar archivos ni debilitar el par exacto.
+  gate SR2 exact-pair aislado. El mínimo sube a `3694`; el skip ambiental se
+  acredita por classname, prueba y mensaje exactos, y el límite se conserva
+  en `1` para el único skip gateado SR2, también identificado exactamente.
 - La misma corrida, backend sin DB (job `111767583207`), midió `3696`
   colectados, `2242` passed, `1454` skipped, sin fallos ni errores; el mínimo
   sin DB sube a `2242`.
