@@ -117,6 +117,13 @@ def test_solo_la_lista_blanca_llega_del_entorno_de_produccion():
     # base de test, JAX_TEST_DB_SUFIJO, etc.) SÍ se hereda -- si no, la
     # sonda ni podría conectar a la base de la sesión.
     entorno_limpio = {k: v for k, v in os.environ.items() if k not in VALORES_FABRICADOS}
+    if os.environ.get("JAX_CI_NO_DB") == "1":
+        # Bajo JAX_CI_NO_DB=1 el conftest NO lee el entorno de produccion (ver
+        # test_conftest_ci_sin_db_no_conecta.py): para que la sonda ejercite el filtro de la
+        # lista blanca hay que sacarla de ese modo, y con ella el host/puerto de relleno que el
+        # modo fija (si no, el hijo intentaria clonar el esquema contra un placeholder).
+        for k in ("JAX_CI_NO_DB", "JAX_DB_HOST", "JAX_DB_PORT"):
+            entorno_limpio.pop(k, None)
     salida = subprocess.run(
         [sys.executable, "-c", _SONDA_LISTA_BLANCA], cwd=BACKEND, env=entorno_limpio,
         capture_output=True, text=True, timeout=120,
@@ -169,7 +176,8 @@ def test_fernet_key_y_jwt_secret_generados_nunca_coinciden_con_produccion():
     contra qué comparar, y eso no es un defecto de este control."""
     from tests import entorno_de_produccion
 
-    valores_reales = entorno_de_produccion.cargar()
+    # Bajo JAX_CI_NO_DB=1 ni el conftest ni este control leen el archivo real.
+    valores_reales = {} if os.environ.get("JAX_CI_NO_DB") == "1" else entorno_de_produccion.cargar()
 
     # Sólo se quitan los dos generados: todo lo demás (credenciales de la
     # base de test, JAX_REPO_PATH, etc.) se hereda igual que en la suite
@@ -207,7 +215,8 @@ def test_fernet_key_y_jwt_secret_del_propio_proceso_de_pytest_no_son_los_de_prod
     llaves reales AHORA MISMO."""
     from tests import entorno_de_produccion
 
-    valores_reales = entorno_de_produccion.cargar()
+    # Bajo JAX_CI_NO_DB=1 ni el conftest ni este control leen el archivo real.
+    valores_reales = {} if os.environ.get("JAX_CI_NO_DB") == "1" else entorno_de_produccion.cargar()
     for nombre in NOMBRES_EXCLUIDOS_CON_GENERACION:
         valor_de_esta_sesion = os.environ.get(nombre)
         assert valor_de_esta_sesion, f"{nombre} no está puesto en esta sesión de pytest"
@@ -244,7 +253,8 @@ def test_fernet_key_y_jwt_secret_se_fuerzan_aunque_ya_vengan_puestos_en_el_ambie
     -- y se verifica que el conftest los REEMPLAZA de todas formas (fuerza,
     no `setdefault`)."""
     from tests import entorno_de_produccion
-    valores_reales = entorno_de_produccion.cargar()
+    # Bajo JAX_CI_NO_DB=1 ni el conftest ni este control leen el archivo real.
+    valores_reales = {} if os.environ.get("JAX_CI_NO_DB") == "1" else entorno_de_produccion.cargar()
 
     if not any(valores_reales.get(nombre) for nombre in NOMBRES_EXCLUIDOS_CON_GENERACION):
         pytest.skip("no hay /etc/jax/.env con estos secretos en esta máquina -- nada que simular")

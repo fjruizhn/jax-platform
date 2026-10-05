@@ -602,8 +602,8 @@ def test_fuera_de_ci_sin_puerto_explicito_el_default_tambien_se_niega(conector, 
 
 
 def test_los_puntos_de_conexion_se_niegan_por_si_solos(conector, monkeypatch):
-    """No basta con la guarda de `asegurar_base_de_test`: los tests y `limpiar_bases_de_test`
-    llaman a estas funciones directamente."""
+    """No basta con la guarda de `asegurar_base_de_test`: los tests llaman a
+    estas funciones directamente."""
     from base_de_test import _clonar_esquema, _tabla_existe_en_base
     monkeypatch.setenv("JAX_DB_PORT", "3308")
     for funcion in (_clonar_esquema, _dropear_base_de_sesion):

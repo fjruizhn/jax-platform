@@ -59,4 +59,4 @@ def test_bajo_ci_sin_db_aiomysql_connect_directo_queda_interceptado():
          "tests/_sonda_conexiones_sin_db.py"],
         cwd=BACKEND, env=_entorno_hijo(), capture_output=True, text=True, timeout=300)
     assert r.returncode == 0, r.stdout[-2500:] + r.stderr[-1000:]
-    assert " 2 passed" in r.stdout, r.stdout[-800:]
+    assert "2 passed" in r.stdout, r.stdout[-800:]

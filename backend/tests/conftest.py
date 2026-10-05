@@ -50,9 +50,14 @@ VARIABLES_NECESARIAS_DE_PRODUCCION = frozenset({
     "JAX_CONFIG_PATH",
 })
 
-for _k, _v in cargar(ENV_PATH).items():
-    if _k in VARIABLES_NECESARIAS_DE_PRODUCCION:
-        os.environ.setdefault(_k, _v)
+# Bajo JAX_CI_NO_DB=1 NO se lee `/etc/jax/.env` (auditoria jax-platform #195, MINOR 3): ese modo
+# promete "este runner no tiene MariaDB", y cargar las credenciales reales de produccion en una
+# maquina que si tiene el archivo (hall9000) dejaba a la suite con usuario y clave de la 3308.
+# Control: tests/test_conftest_ci_sin_db_no_conecta.py.
+if os.environ.get("JAX_CI_NO_DB") != "1":
+    for _k, _v in cargar(ENV_PATH).items():
+        if _k in VARIABLES_NECESARIAS_DE_PRODUCCION:
+            os.environ.setdefault(_k, _v)
 
 # ---------------------------------------------------------------------------
 # RUTAS DE PRODUCCION AISLADAS -- ANTES de fijar_base_de_test() (2026-10-04).
@@ -602,6 +607,18 @@ def _skip_on_db_access(monkeypatch):
         pytest.skip(_NO_DB_REASON + " [aiomysql.create_pool]")
 
     monkeypatch.setattr(aiomysql, "create_pool", _skip)
+
+    # `facet_resolver._db_conn` y `credential_resolver._db_conn` llaman a `aiomysql.connect`
+    # DIRECTO, sin pasar por `create_pool`: sin esto, bajo este modo, abrian una conexion de
+    # verdad al placeholder 127.0.0.1:3308 (en hall9000, la instancia de produccion).
+    # Se levanta una excepcion NORMAL y no un skip, a proposito: un skip es BaseException y
+    # esquivaria el `except Exception` fail-soft de esos llamadores (ver
+    # `_stub_facet_health_writer_sin_db`), y asi se comporta igual que en un runner sin DB, donde
+    # el puerto rechaza la conexion. Conserva el conteo de skips del job.
+    async def _sin_db(*args, **kwargs):
+        raise ConnectionRefusedError(_NO_DB_REASON + " [aiomysql.connect]")
+
+    monkeypatch.setattr(aiomysql, "connect", _sin_db)
 
 
 @pytest.fixture(autouse=True)
