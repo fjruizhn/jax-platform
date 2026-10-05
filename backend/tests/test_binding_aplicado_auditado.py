@@ -17,6 +17,7 @@ finally. Nada de pytest.raises dentro de client.portal.call.
 """
 import json
 
+import aiomysql
 import pytest
 
 from auth.jwt import create_access_token
@@ -220,9 +221,10 @@ def test_put_con_auditoria_rota_no_cambia_el_binding(client, modelo, monkeypatch
             "VALUES ('no_es_una_accion', 1, 1, 'x')")
 
     monkeypatch.setattr(fb, "registrar_binding_aplicado", _auditoria_rota)
-    with pytest.raises(Exception):
+    with pytest.raises(aiomysql.DataError) as error_del_servidor:
         _put(client, ref)
 
+    assert error_del_servidor.value.args[0] == 1265  # Data truncated: action fuera del ENUM
     assert client.portal.call(_binding) == antes, "el binding cambió aunque la auditoría falló"
     assert client.portal.call(_filas_de_auditoria, ref) == ()
 
@@ -283,9 +285,10 @@ def test_approve_con_auditoria_rota_no_cambia_el_binding_ni_la_propuesta(client,
             "VALUES ('no_es_una_accion', 1, 1, 'x')")
 
     monkeypatch.setattr(modelos, "registrar_binding_aplicado", _auditoria_rota)
-    with pytest.raises(Exception):
+    with pytest.raises(aiomysql.DataError) as error_del_servidor:
         client.post(f"/api/admin/models/proposals/{pid}/approve", headers=_headers())
 
+    assert error_del_servidor.value.args[0] == 1265  # Data truncated: action fuera del ENUM
     assert client.portal.call(_binding) == antes, "el binding cambió aunque la auditoría falló"
     assert client.portal.call(_estado_propuesta, pid) == "pending"
     assert client.portal.call(_filas_de_auditoria, ref) == ()
@@ -336,13 +339,18 @@ def test_dos_approves_concurrentes_de_la_misma_propuesta_aplican_uno_solo(client
     pid = client.portal.call(_propuesta, ref)
     guard_real = modelos.detalle_si_rompe_el_contrato
     llegaron = []
+    agotaron_la_espera = []
 
     async def guard_con_cita(*a, **k):
+        if k.get("bloquear_modelo"):  # el chequeo DENTRO de la transaccion no es la cita
+            return await guard_real(*a, **k)
         llegaron.append(1)
-        for _ in range(500):  # hasta 5 s: si la otra no llega, sigue (no cuelga el test)
+        for _ in range(500):  # hasta 5 s
             if len(llegaron) >= 2:
                 break
             await asyncio.sleep(0.01)
+        else:
+            agotaron_la_espera.append(1)
         return await guard_real(*a, **k)
 
     monkeypatch.setattr(modelos, "detalle_si_rompe_el_contrato", guard_con_cita)
@@ -353,6 +361,8 @@ def test_dos_approves_concurrentes_de_la_misma_propuesta_aplican_uno_solo(client
     with ThreadPoolExecutor(max_workers=2) as pool:
         respuestas = [f.result() for f in [pool.submit(approve), pool.submit(approve)]]
 
+    # La carrera OCURRIO: las dos llegaron a la cita y ninguna salio por el tope.
+    assert len(llegaron) == 2 and not agotaron_la_espera, (llegaron, agotaron_la_espera)
     codigos = sorted(r.status_code for r in respuestas)
     assert codigos == [200, 409], [(r.status_code, r.text) for r in respuestas]
     perdedora = next(r for r in respuestas if r.status_code == 409)
@@ -369,6 +379,213 @@ def test_la_relectura_de_la_propuesta_va_por_primary(client):
     plan = client.portal.call(_q, "EXPLAIN " + modelos._SQL_PROPUESTA_PARA_ACTUALIZAR, (1,))
     assert plan[0][5] == "PRIMARY", plan
     assert plan[0][3] in ("const", "ref"), plan
+
+
+# ------------------------------------------- MINOR-1: deadlock por gap lock ---
+
+_ROLES_NUEVOS = ("fallback_1", "fallback_2")
+
+
+async def _crear_faceta_de_prueba(clave):
+    await _q("INSERT INTO facet (`key`, display_name, transport) VALUES (%s, 'prueba binding', "
+             "'http_openai_compat')", (clave,), commit=True)
+
+
+async def _borrar_faceta_de_prueba(clave):
+    await _q("DELETE FROM facet_binding WHERE facet_key=%s", (clave,), commit=True)
+    await _q("DELETE FROM model_catalog_audit WHERE facet_key=%s", (clave,), commit=True)
+    await _q("DELETE FROM facet WHERE `key`=%s", (clave,), commit=True)
+
+
+def test_dos_put_a_roles_nuevos_del_mismo_hueco_no_se_trancan(client, monkeypatch):
+    """Una faceta SIN bindings: fallback_1 y fallback_2 no existen, y el SELECT
+    ... FOR UPDATE por uk_facet_role sobre una clave ausente toma un gap lock en
+    REPEATABLE READ; los dos INSERT siguientes se esperan entre si (ERROR 1213 ->
+    500). La cita retiene a cada request DESPUES de su lectura y ANTES de
+    escribir, que es el momento del choque. La transaccion en READ COMMITTED no
+    toma huecos. Faceta propia y nueva por corrida: una fila borrada por otro test
+    deja un registro marcado en el indice hasta que InnoDB la purga, y eso cambia
+    la forma del hueco (visto: el mismo test pasaba o fallaba segun el orden)."""
+    import asyncio
+    import uuid
+    from concurrent.futures import ThreadPoolExecutor
+
+    import api.admin.facet_bindings as fb
+
+    _sin_sonda(monkeypatch)
+    faceta = f"test-hueco-{uuid.uuid4().hex[:12]}"
+    ref = client.portal.call(_crear_modelo, MODELO_OK)
+    client.portal.call(_crear_faceta_de_prueba, faceta)
+    real = fb.binding_de
+    llegaron, agotaron = [], []
+
+    async def binding_con_cita(cur, facet_key, role, para_actualizar=False):
+        resultado = await real(cur, facet_key, role, para_actualizar)
+        if para_actualizar:
+            llegaron.append(role)
+            for _ in range(500):
+                if len(llegaron) >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                agotaron.append(role)
+        return resultado
+
+    monkeypatch.setattr(fb, "binding_de", binding_con_cita)
+
+    def poner(rol):
+        return client.put(
+            f"/api/admin/facet-bindings/{faceta}",
+            json={"provider_id": PROVEEDOR, "model_ref": ref, "role": rol}, headers=_headers())
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futuros = [pool.submit(poner, rol) for rol in _ROLES_NUEVOS]
+            resultados = []
+            for f in futuros:
+                try:
+                    resultados.append(f.result().status_code)
+                except Exception as e:  # el 500 sin atrapar sube como excepcion del TestClient
+                    resultados.append(repr(e))
+        assert len(llegaron) == 2 and not agotaron, (llegaron, agotaron)  # la carrera ocurrio
+        assert resultados == [200, 200], resultados
+        roles = client.portal.call(
+            _q, "SELECT role FROM facet_binding WHERE facet_key=%s ORDER BY role", (faceta,))
+        assert roles == (("fallback_1",), ("fallback_2",))
+        acciones = [f[0] for f in client.portal.call(_filas_de_auditoria, ref)]
+        assert acciones == ["binding_aplicado", "binding_aplicado"], acciones
+    finally:
+        client.portal.call(_borrar_faceta_de_prueba, faceta)
+        client.portal.call(_limpiar, ref)
+
+
+@pytest.mark.parametrize("codigo", [1213, 1205])
+@pytest.mark.parametrize("escritor", ["put", "approve"])
+def test_un_deadlock_o_timeout_de_lock_es_409_y_no_cambia_nada(client, modelo, monkeypatch, codigo, escritor):
+    """Si aun asi el servidor devuelve 1213 (deadlock) o 1205 (lock wait
+    timeout) en medio de la transaccion: rollback, 409 'reintente' y ni binding
+    ni propuesta ni auditoria cambian. Cualquier otro OperationalError sigue
+    subiendo (no es un conflicto de concurrencia)."""
+    import api.admin.facet_bindings as fb
+    import api.admin.models as modelos
+
+    _sin_sonda(monkeypatch)
+    ref, antes = modelo
+
+    async def choque(cur, *_a, **_k):
+        raise aiomysql.OperationalError(codigo, "Deadlock found when trying to get lock")
+
+    monkeypatch.setattr(fb if escritor == "put" else modelos, "registrar_binding_aplicado", choque)
+    pid = None
+    if escritor == "put":
+        resp = _put(client, ref)
+    else:
+        pid = client.portal.call(_propuesta, ref)
+        resp = client.post(f"/api/admin/models/proposals/{pid}/approve", headers=_headers())
+
+    assert resp.status_code == 409, resp.text
+    detalle = resp.json()["detail"]
+    assert detalle["code"] == "binding_conflicto_concurrente"
+    assert "reintente" in detalle["message"].lower()
+    assert client.portal.call(_binding) == antes
+    assert client.portal.call(_filas_de_auditoria, ref) == ()
+    if pid is not None:
+        assert client.portal.call(_estado_propuesta, pid) == "pending"
+
+
+def test_otro_operational_error_no_se_disfraza_de_conflicto(client, modelo, monkeypatch):
+    import api.admin.facet_bindings as fb
+    _sin_sonda(monkeypatch)
+    ref, antes = modelo
+
+    async def caido(cur, *_a, **_k):
+        raise aiomysql.OperationalError(2013, "Lost connection to MySQL server")
+
+    monkeypatch.setattr(fb, "registrar_binding_aplicado", caido)
+    with pytest.raises(aiomysql.OperationalError):
+        _put(client, ref)
+    assert client.portal.call(_binding) == antes
+
+
+# ------------------------- MINOR-2: el guard se repite DENTRO de la transaccion ---
+
+def _cambiar_contrato_entre_guard_y_escritura(monkeypatch, modulo, ref):
+    """Envuelve el guard del modulo: tras la PRIMERA llamada (la de antes del
+    BEGIN, que da el visto bueno) otro actor quita el contrato del modelo. La
+    SEGUNDA (dentro de la transaccion) tiene que verlo."""
+    real = modulo.detalle_si_rompe_el_contrato
+    llamadas = []
+
+    async def guard(cur, *a, **k):
+        resultado = await real(cur, *a, **k)
+        llamadas.append(k.get("bloquear_modelo", False))
+        if len(llamadas) == 1:
+            assert resultado is None
+            await _q("UPDATE model SET max_tokens_param=NULL, max_output_tokens=NULL WHERE id=%s",
+                     (ref,), commit=True)
+        return resultado
+
+    monkeypatch.setattr(modulo, "detalle_si_rompe_el_contrato", guard)
+    return llamadas
+
+
+def test_put_con_el_contrato_quitado_entre_el_guard_y_la_escritura_es_409(client, modelo, monkeypatch):
+    import api.admin.facet_bindings as fb
+    _sin_sonda(monkeypatch)
+    ref, antes = modelo
+    llamadas = _cambiar_contrato_entre_guard_y_escritura(monkeypatch, fb, ref)
+
+    resp = _put(client, ref)
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "modelo_sin_contrato_de_dispatch"
+    assert llamadas == [False, True]  # antes del BEGIN, y dentro con el modelo bloqueado
+    assert client.portal.call(_binding) == antes
+    acciones = [f[0] for f in client.portal.call(_filas_de_auditoria, ref)]
+    assert acciones == ["binding_rechazado"], acciones
+
+
+def test_approve_con_el_contrato_quitado_entre_el_guard_y_la_escritura_es_409(client, modelo, monkeypatch):
+    import api.admin.models as modelos
+    _sin_sonda(monkeypatch)
+    ref, antes = modelo
+    pid = client.portal.call(_propuesta, ref)
+    llamadas = _cambiar_contrato_entre_guard_y_escritura(monkeypatch, modelos, ref)
+
+    resp = client.post(f"/api/admin/models/proposals/{pid}/approve", headers=_headers())
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "modelo_sin_contrato_de_dispatch"
+    assert llamadas == [False, True]
+    assert client.portal.call(_binding) == antes
+    assert client.portal.call(_estado_propuesta, pid) == "pending"
+    filas = client.portal.call(_filas_de_auditoria, ref)
+    assert [(f[0], f[5]) for f in filas] == [("binding_rechazado", pid)], filas
+
+
+# ------------------------------ MINOR-5: approve sin binding 'primary' previo ---
+
+def test_approve_sin_binding_primary_es_409_y_deja_la_propuesta_pendiente(client, modelo, monkeypatch):
+    """Antes marcaba la propuesta 'approved' (200) sin aplicar nada ni auditar.
+    409 y no 422: el pedido es valido, es el ESTADO el que no lo admite (como el
+    409 de una propuesta que ya no esta pendiente)."""
+    _sin_sonda(monkeypatch)
+    ref, antes = modelo
+    pid = client.portal.call(_propuesta, ref)
+    fila = client.portal.call(_q, "SELECT facet_key, provider_id, model_id, model_ref, role, approved_by, "
+                                  "approved_at FROM facet_binding WHERE facet_key=%s AND role='primary'",
+                              (FACETA,))[0]
+    client.portal.call(_q, "DELETE FROM facet_binding WHERE facet_key=%s AND role='primary'", (FACETA,), True)
+    try:
+        resp = client.post(f"/api/admin/models/proposals/{pid}/approve", headers=_headers())
+        assert resp.status_code == 409, resp.text
+        assert "primary" in resp.json()["detail"]
+        assert client.portal.call(_estado_propuesta, pid) == "pending"
+        assert client.portal.call(_filas_de_auditoria, ref) == ()
+    finally:
+        client.portal.call(
+            _q, "INSERT INTO facet_binding (facet_key, provider_id, model_id, model_ref, role, approved_by, "
+                "approved_at) VALUES (%s, %s, %s, %s, %s, %s, %s)", fila, True)
 
 
 # ----------------------------------------------------------------- índice ---
@@ -438,3 +655,60 @@ def test_run_migrations_dos_veces_deja_el_enum_completo(client):
     client.portal.call(run_migrations)
     tipo = client.portal.call(_enum_de, "model_catalog_audit")
     assert tipo == "enum('contrato_declarado','binding_rechazado','binding_aplicado')", tipo
+
+
+# ---------------------------- MINOR-6: el ALTER del ENUM no espera un dia ---
+
+_TABLA_MDL = "model_catalog_audit_prueba_mdl"
+
+
+def test_el_alter_de_un_enum_con_la_tabla_tomada_falla_claro_y_no_cuelga(client, monkeypatch):
+    """Una transaccion abierta sobre la tabla tiene su metadata lock: el ALTER
+    esperaria lock_wait_timeout (86400 s por defecto) y el arranque colgaria un
+    dia. Con la espera acotada, vence y dice cual tabla/columna fue; liberada
+    la tabla, el mismo ALTER corre."""
+    from db import migrations as m
+
+    ddl = (f"ALTER TABLE {_TABLA_MDL} MODIFY COLUMN action "
+           "ENUM('contrato_declarado','binding_rechazado','binding_aplicado') NOT NULL")
+
+    async def escenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        monkeypatch.setattr(m, "_LOCK_WAIT_DDL_SEGUNDOS", 1)
+        await _q(f"DROP TABLE IF EXISTS {_TABLA_MDL}", commit=True)
+        await _q(f"CREATE TABLE {_TABLA_MDL} (id INT AUTO_INCREMENT PRIMARY KEY, "
+                 "action ENUM('contrato_declarado','binding_rechazado') NOT NULL)", commit=True)
+        try:
+            async with pool.acquire() as retiene, pool.acquire() as migra:
+                async with retiene.cursor() as c1, migra.cursor() as c2:
+                    await retiene.begin()
+                    await c1.execute(f"SELECT * FROM {_TABLA_MDL}")  # toma el MDL compartido
+                    await c2.execute("SELECT @@SESSION.lock_wait_timeout")
+                    (previo,) = await c2.fetchone()
+                    error = None
+                    try:
+                        await m._aplicar_extension_de_enum(
+                            c2, _TABLA_MDL, "action", "binding_aplicado", ddl)
+                    except RuntimeError as e:
+                        error = e
+                    await c2.execute("SELECT @@SESSION.lock_wait_timeout")
+                    (despues,) = await c2.fetchone()
+                    await retiene.rollback()
+                    await m._aplicar_extension_de_enum(c2, _TABLA_MDL, "action", "binding_aplicado", ddl)
+                    return error, previo, despues, await _enum_de(_TABLA_MDL)
+        finally:
+            await _q(f"DROP TABLE IF EXISTS {_TABLA_MDL}", commit=True)
+
+    error, previo, despues, tipo = client.portal.call(escenario)
+    assert error is not None, "el ALTER no fallo con la tabla tomada"
+    assert _TABLA_MDL in str(error) and "action" in str(error)
+    assert despues == previo, "la espera acotada no se restauro en la sesion"
+    assert "binding_aplicado" in tipo
+
+
+def test_run_migrations_aplica_las_extensiones_de_enum_por_el_camino_acotado():
+    import inspect
+
+    from db import migrations as m
+    assert "_aplicar_extension_de_enum" in inspect.getsource(m.run_migrations)
