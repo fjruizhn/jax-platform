@@ -627,11 +627,22 @@ def test_el_bootstrap_del_esquema_de_jax_se_niega_antes_de_lanzar_el_cliente(con
         _bootstrap_jax_schema_para_base_de_test("jax_memory_test_sesion1")
 
 
-def test_las_migraciones_b9_de_test_se_niegan_antes_de_pedir_el_pool(conector, monkeypatch):
+def test_las_migraciones_b9_de_test_se_niegan_antes_de_pedir_el_pool(conector, monkeypatch, tmp_path):
     """Las migraciones B9 escriben por el pool de `db.connection`, no por `aiomysql.connect`
-    de este modulo: la guarda tiene que estar antes de `get_pool()`."""
+    de este modulo: la guarda tiene que estar antes de `get_pool()`. Autocontenido: una
+    migracion pendiente y declarada en un manifiesto de mentira, para llegar hasta el pool
+    sin depender del checkout de jax. La guarda va DESPUES de la validacion del manifiesto
+    (que no conecta a nada): `test_b9_migraciones_restantes.py` exige ese error primero."""
+    import base_de_test
     import db.connection
+    import db.migrations
     from base_de_test import aplicar_migraciones_b9_restantes
+
+    migracion = tmp_path / "007_prueba.sql"
+    migracion.write_text("SELECT 1;\n", encoding="utf-8")
+    monkeypatch.setattr(db.migrations, "_jax_b9_migration_root", lambda: tmp_path)
+    monkeypatch.setattr(base_de_test, "_manifiesto_b9_de_produccion",
+                        lambda: {migracion.name: {"sha256": base_de_test._sha256_de_archivo(migracion)}})
 
     async def _pool_prohibido():
         raise AssertionError("pidio el pool contra un puerto de produccion")
@@ -697,3 +708,54 @@ def test_un_puerto_ilegible_falla_cerrado(conector, monkeypatch, puerto):
     monkeypatch.setenv("JAX_DB_PORT", puerto)
     with pytest.raises(BaseDeTestInvalida, match="JAX_DB_PORT"):
         exigir_conexion_permitida("jax_memory_test_sesion1")
+
+
+def test_la_guarda_de_asegurar_corta_antes_de_tocar_el_entorno_y_antes_de_clonar(conector, monkeypatch):
+    """La guarda de `asegurar_base_de_test` corre ANTES de escribir `JAX_DB_NAME` y antes de
+    clonar nada: `_clonar_esquema` de mentira falla si se la llama, y `JAX_DB_NAME` conserva
+    el valor que tenia. Con la guarda movida despues de la asignacion, el nombre de la base
+    de sesion quedaria en el entorno de un proceso que ni siquiera pudo conectarse."""
+    import base_de_test
+    llamadas = []
+
+    async def _clonar_prohibido(nombre):
+        llamadas.append(nombre)
+        raise AssertionError("clono un esquema pese a la guarda")
+
+    monkeypatch.setattr(base_de_test, "_clonar_esquema", _clonar_prohibido)
+    monkeypatch.setenv("JAX_DB_NAME", "valor-previo-sin-tocar")
+    monkeypatch.setenv("JAX_DB_PORT", "3308")
+    with pytest.raises(BaseDeTestInvalida, match=VARIABLE_PERMISO):
+        asegurar_base_de_test("jax_memory_test_sesion1")
+    assert llamadas == []
+    assert os.environ["JAX_DB_NAME"] == "valor-previo-sin-tocar"
+    monkeypatch.delenv("JAX_DB_NAME")
+    with pytest.raises(BaseDeTestInvalida, match=VARIABLE_PERMISO):
+        asegurar_base_de_test("jax_memory_test_sesion1")
+    assert "JAX_DB_NAME" not in os.environ
+
+
+def test_el_cliente_mysql_del_bootstrap_ignora_los_archivos_de_opciones_y_va_por_tcp(conector, monkeypatch, tmp_path):
+    """`mysql` lee `~/.my.cnf` y `/etc/mysql/*`: un `host`, `socket` o `port` ahi lo desviaria
+    de `JAX_DB_HOST`/`JAX_DB_PORT` sin que el guard lo vea. `--no-defaults` va PRIMERO (es
+    la unica posicion en que el cliente lo acepta) y `--protocol=TCP` fuerza el host/puerto."""
+    import base_de_test
+    from base_de_test import _bootstrap_jax_schema_para_base_de_test
+
+    (tmp_path / "jax_memory_schema.sql").write_text(
+        "CREATE DATABASE IF NOT EXISTS jax_memory CHARACTER SET utf8mb4;\n"
+        "USE jax_memory;\n"
+        "CREATE TABLE `projects` (id INT PRIMARY KEY);\n", encoding="utf-8")
+    capturado = {}
+
+    def _run_falso(argv, **kwargs):
+        capturado["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(base_de_test.subprocess, "run", _run_falso)
+    monkeypatch.setenv("JAX_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("JAX_DB_PORT", "3399")
+    _bootstrap_jax_schema_para_base_de_test("jax_memory_test_sesion1")
+    argv = capturado["argv"]
+    assert argv[:3] == ["mysql", "--no-defaults", "--protocol=TCP"], argv
+    assert argv[argv.index("--port") + 1] == "3399"
