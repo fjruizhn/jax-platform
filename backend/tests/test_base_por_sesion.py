@@ -539,3 +539,161 @@ def test_clonar_esquema_preserva_columnas_generadas_y_triggers(monkeypatch):
         "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='immutable row'")], (
         "el clon debe conservar el trigger en la tabla destino"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fuera de CI, la suite no se conecta a la instancia de produccion sin una
+# variable explicita (port de jax PR #355, 2026-10-05).
+#
+# Antes: `asegurar_base_de_test()` abria, fuera de CI y sin pedir nada, conexiones
+# de ESCRITURA (CREATE/DROP DATABASE) en 127.0.0.1:3308 -- la MariaDB que tambien
+# tiene `jax_memory` -- y `_parametros_de_conexion()` apunta por defecto a 3306. En
+# jax el mismo gancho tenia ademas una lectura de `jax_memory` (la semilla de
+# gobernanza); este repo NO tiene esa conexion, asi que el contrato de lectura
+# (`lectura_de_produccion=True`) se ejercita sobre la funcion y no sobre un punto
+# de conexion (ver los dos controles marcados). El conector de aiomysql es de
+# mentira: cualquier conexion abierta falla el test.
+# ---------------------------------------------------------------------------
+
+VARIABLE_PERMISO = "JAX_TEST_DB_PERMITIR_INSTANCIA_DE_PRODUCCION"
+
+
+class _ConectorProhibido:
+    """Reemplaza `aiomysql.connect`: registra el intento y falla."""
+
+    def __init__(self):
+        self.intentos: list[dict] = []
+
+    async def __call__(self, **kwargs):
+        self.intentos.append(kwargs)
+        raise AssertionError(f"se abrio una conexion prohibida: db={kwargs.get('db')!r} port={kwargs.get('port')!r}")
+
+
+@pytest.fixture
+def conector(monkeypatch):
+    import aiomysql
+    c = _ConectorProhibido()
+    monkeypatch.setattr(aiomysql, "connect", c)
+    monkeypatch.setenv("JAX_DB_HOST", "127.0.0.1")
+    monkeypatch.setenv("JAX_DB_USER", "jax_test")
+    monkeypatch.setenv("JAX_DB_PASSWORD", "x")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("JAX_CI_NO_DB", raising=False)
+    monkeypatch.delenv(VARIABLE_PERMISO, raising=False)
+    return c
+
+
+@pytest.mark.parametrize("puerto", ["3306", "3308"])
+def test_fuera_de_ci_asegurar_se_niega_en_los_puertos_de_produccion(conector, monkeypatch, puerto):
+    monkeypatch.setenv("JAX_DB_PORT", puerto)
+    with pytest.raises(BaseDeTestInvalida, match=VARIABLE_PERMISO):
+        asegurar_base_de_test("jax_memory_test_sesion1")
+    assert conector.intentos == []
+
+
+def test_fuera_de_ci_sin_puerto_explicito_el_default_tambien_se_niega(conector, monkeypatch):
+    """`_parametros_de_conexion()` usa 3306 si falta `JAX_DB_PORT`: un default que cae en
+    un puerto de produccion no puede ser la puerta de entrada."""
+    monkeypatch.delenv("JAX_DB_PORT", raising=False)
+    with pytest.raises(BaseDeTestInvalida, match=VARIABLE_PERMISO):
+        asegurar_base_de_test("jax_memory_test_sesion1")
+    assert conector.intentos == []
+
+
+def test_los_puntos_de_conexion_se_niegan_por_si_solos(conector, monkeypatch):
+    """No basta con la guarda de `asegurar_base_de_test`: los tests y `limpiar_bases_de_test`
+    llaman a estas funciones directamente."""
+    from base_de_test import _clonar_esquema, _tabla_existe_en_base
+    monkeypatch.setenv("JAX_DB_PORT", "3308")
+    for funcion in (_clonar_esquema, _dropear_base_de_sesion):
+        with pytest.raises(BaseDeTestInvalida, match=VARIABLE_PERMISO):
+            asyncio.run(funcion("jax_memory_test_sesion1"))
+    with pytest.raises(BaseDeTestInvalida, match=VARIABLE_PERMISO):
+        asyncio.run(_tabla_existe_en_base("jax_memory_test_sesion1", "projects"))
+    assert conector.intentos == []
+
+
+def test_el_bootstrap_del_esquema_de_jax_se_niega_antes_de_lanzar_el_cliente(conector, monkeypatch):
+    """Este repo tiene una conexion que jax no tiene: el cliente `mysql` por subprocess."""
+    import base_de_test
+    from base_de_test import _bootstrap_jax_schema_para_base_de_test
+
+    def _subprocess_prohibido(*a, **k):
+        raise AssertionError("lanzo el cliente mysql contra un puerto de produccion")
+
+    monkeypatch.setattr(base_de_test.subprocess, "run", _subprocess_prohibido)
+    monkeypatch.setenv("JAX_DB_PORT", "3308")
+    with pytest.raises(BaseDeTestInvalida, match=VARIABLE_PERMISO):
+        _bootstrap_jax_schema_para_base_de_test("jax_memory_test_sesion1")
+
+
+def test_las_migraciones_b9_de_test_se_niegan_antes_de_pedir_el_pool(conector, monkeypatch):
+    """Las migraciones B9 escriben por el pool de `db.connection`, no por `aiomysql.connect`
+    de este modulo: la guarda tiene que estar antes de `get_pool()`."""
+    import db.connection
+    from base_de_test import aplicar_migraciones_b9_restantes
+
+    async def _pool_prohibido():
+        raise AssertionError("pidio el pool contra un puerto de produccion")
+
+    monkeypatch.setattr(db.connection, "get_pool", _pool_prohibido)
+    monkeypatch.setenv("JAX_DB_NAME", "jax_memory_test_sesion1")
+    monkeypatch.setenv("JAX_DB_PORT", "3308")
+    with pytest.raises(BaseDeTestInvalida, match=VARIABLE_PERMISO):
+        asyncio.run(aplicar_migraciones_b9_restantes())
+
+
+def test_la_lectura_de_produccion_exige_la_variable_aun_en_un_puerto_ajeno(conector, monkeypatch):
+    """Contrato de la funcion (este repo no abre hoy esa conexion): la lectura de `jax_memory`
+    no se permite sin permiso explicito, aunque el puerto sea el de un contenedor desechable."""
+    from base_de_test import exigir_conexion_permitida
+    monkeypatch.setenv("JAX_DB_PORT", "3399")
+    with pytest.raises(BaseDeTestInvalida, match=VARIABLE_PERMISO):
+        exigir_conexion_permitida(BASE_DE_PRODUCCION, lectura_de_produccion=True)
+
+
+def test_con_la_variable_la_lectura_de_produccion_es_solo_de_jax_memory(conector, monkeypatch):
+    """Con el permiso, `lectura_de_produccion=True` deja pasar `jax_memory` y nada mas."""
+    from base_de_test import exigir_conexion_permitida
+    monkeypatch.setenv("JAX_DB_PORT", "3399")
+    monkeypatch.setenv(VARIABLE_PERMISO, "1")
+    exigir_conexion_permitida(BASE_DE_PRODUCCION, lectura_de_produccion=True)
+    for otra in ("otra_base", "jax_memory_test_sesion1"):
+        with pytest.raises(BaseDeTestInvalida, match="solo de"):
+            exigir_conexion_permitida(otra, lectura_de_produccion=True)
+
+
+def test_ni_con_la_variable_se_escribe_en_una_base_sin_sufijo_de_test(conector, monkeypatch):
+    from base_de_test import _clonar_esquema
+    monkeypatch.setenv("JAX_DB_PORT", "3399")
+    monkeypatch.setenv(VARIABLE_PERMISO, "1")
+    for nombre in ("jax_memory", "otra_base", "jax_memory_testing"):
+        with pytest.raises(BaseDeTestInvalida):
+            asegurar_base_de_test(nombre)
+        with pytest.raises(BaseDeTestInvalida):
+            asyncio.run(_clonar_esquema(nombre))
+    assert conector.intentos == []
+
+
+def test_en_ci_los_puertos_de_produccion_siguen_permitidos(conector, monkeypatch):
+    """Los jobs de CI corren su propio contenedor en 3306: la guarda no los toca."""
+    from base_de_test import exigir_conexion_permitida
+    monkeypatch.setenv("CI", "true")
+    for puerto in ("3306", "3308"):
+        monkeypatch.setenv("JAX_DB_PORT", puerto)
+        exigir_conexion_permitida("jax_memory_test_sesion1")
+
+
+def test_un_puerto_ajeno_fuera_de_ci_se_permite_sin_variable(conector, monkeypatch):
+    from base_de_test import exigir_conexion_permitida
+    monkeypatch.setenv("JAX_DB_PORT", "3399")
+    exigir_conexion_permitida("jax_memory_test_sesion1")
+    exigir_conexion_permitida("jax_memory_test")
+
+
+@pytest.mark.parametrize("puerto", ["", "abc", "-1", "70000"])
+def test_un_puerto_ilegible_falla_cerrado(conector, monkeypatch, puerto):
+    from base_de_test import exigir_conexion_permitida
+    monkeypatch.setenv("JAX_DB_PORT", puerto)
+    with pytest.raises(BaseDeTestInvalida, match="JAX_DB_PORT"):
+        exigir_conexion_permitida("jax_memory_test_sesion1")
