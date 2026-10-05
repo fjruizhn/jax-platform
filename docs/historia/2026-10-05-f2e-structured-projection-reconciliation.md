@@ -65,6 +65,16 @@ esta carga; estos resultados no se atribuyen al par exacto posterior.
   respuestas correctas. Los listados administrativos y la auditoría no
   tuvieron errores hasta c=200: admin `282.18 rps`, p95 `3628.02 ms`; auditoría
   `256.79 rps`, p95 `3601.10 ms`.
+- **Smoke posterior del par exacto:** tras el registro anterior se ejecutó
+  `CARGA_RAPIDA=1` con JAX
+  `d9bf5ce947826e53e2b6f0088cc580eef2d307aa` y Platform
+  `29ec83c278f01dec3f5068941a8aa37188a06824`. El arnés aislado completó c=1
+  sin errores ni respuestas no 200 en los siete caminos: escala activo
+  `200/200` (p95 `86.74 ms`), escala descartados `200/200` (p95 `91.22 ms`),
+  extremo activo `200/200` (p95 `11.83 ms`), extremo descartados `200/200`
+  (p95 `94.02 ms`), admin, auditoría y auditoría con ruido. Es una confirmación
+  funcional del par exacto, no una sustitución ni reinterpretación de la carga
+  completa anterior.
 
 ## Decisiones y alternativas
 
