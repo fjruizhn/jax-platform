@@ -119,6 +119,8 @@ from api.admin import (
     pipelines_ocultos_router,
 )
 
+from par_jax import verificar_par_jax
+
 logger = logging.getLogger(__name__)
 
 
@@ -132,6 +134,10 @@ async def lifespan(app: FastAPI):
     # SP3 del Ejecutor (2026-09-17): sin directorio del carril la Mesa no puede tomar su
     # prioridad sobre el Ejecutor. Mismo criterio que JAX_OLLAMA_URL: no arranca.
     _raiz_del_carril()
+    # 2026-10-05: el par plataforma/jax es un limite exacto. Si el jax configurado no es el
+    # que esta plataforma reviso, el servicio no arranca (systemd: failed) en vez de dejar
+    # caer cada chat con un 503 generico. Antes de adjuntos y base: es config, no I/O.
+    verificar_par_jax()
     # Frente D (2026-09-16): sin límites de adjuntos configurados no se
     # arranca. Antes que la base: es config, no depende de nada. Por atributo
     # del módulo (no `from ... import`) para que el test lo pueda sustituir.
