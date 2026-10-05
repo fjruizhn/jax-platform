@@ -57,3 +57,16 @@ ancestro de esta rama. Conserva los pisos `3676` con DB y `2224` sin DB, y los
 cuatro pins SR2 apuntan al mismo SHA de JAX. La CI publicada del PR debe ser la
 evidencia final del nuevo par exacto; no reutilizar el veredicto emitido para el
 SHA anterior.
+
+## Manifiesto B9 posterior a #354
+
+La CI del par SR2 expuso que el checkout JAX ya contiene 007--013, pero el
+manifiesto de Platform todavía declaraba sólo 004 y 006. Se registró la evidencia
+reportada por Hyde bajo GO de Fernando en persona: aplicación el 2026-10-05 en el
+orden `007→009→008→010→011→012→013`, respaldo con restauración probada y `rc=0`.
+
+La procedencia queda separada: los siete SHA-256 se verificaron contra el commit
+JAX `6977927d`; la aplicación, los códigos de salida y el resultado de
+`information_schema` son evidencia reportada por Hyde. El manifiesto registra las
+dos tablas nuevas, los tres índices presentes y los dos índices redundantes
+ausentes, y una prueba sin DB fija tanto esos hashes como la evidencia requerida.

@@ -9,6 +9,9 @@ Fecha: 2026-10-05
   reconciliado después de la integración de #344).
 - Los cuatro pins de `.github/workflows/policy.yml` deben conservar ese mismo
   SHA. Los pisos publicados se conservan: con DB `3676`, sin DB `2224`.
-- Pendiente: esperar la CI del nuevo SHA Platform y pedir auditoría Tier 3 del
-  par JAX/Platform exacto antes de integrar. No mezclar este par con F2-E
-  tramo 2.
+- Tras el merge JAX #354, el manifiesto B9 declara también 007--013. Sus hashes
+  se verificaron contra JAX `6977927d`; aplicación, rc e `information_schema`
+  provienen de la evidencia reportada por Hyde bajo GO presencial de Fernando.
+- Pendiente: volver a correr CI con el manifiesto actualizado y pedir auditoría
+  Tier 3 del par JAX/Platform exacto antes de integrar. No mezclar este par con
+  F2-E tramo 2.
