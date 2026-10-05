@@ -181,24 +181,27 @@ def _borrar_al_salir(nombre: str) -> None:
     nada que borrar -- mismo criterio que `asegurar_base_de_test()`.
     Cualquier error (red caída, timeout) queda silenciado a propósito: es un
     best-effort de limpieza al cerrar, no una condición de salida del
-    proceso; lo que esto no llegue a borrar lo barre después
-    `scripts/limpiar_bases_de_test.py`.
+    proceso; lo que esto no llegue a borrar queda huérfano: este repo NO tiene
+    un barredor (`scripts/limpiar_bases_de_test.py` es de `jax`).
 
     DIVERGENCIA DELIBERADA con jax: el guard de `_en_ci_sin_db()` es propio de
     este repo. jax no tiene modo "CI sin base" -- cada job suyo que toca la
     base levanta su propio contenedor MariaDB efímero (`services: mariadb:` en
     su policy.yml), así que allá `JAX_DB_HOST` ausente ya distingue bien los
-    dos casos. Acá no alcanzaba: `tests/conftest.py` recarga `/etc/jax/.env` en
-    cada import y REPONE `JAX_DB_HOST`, así que el modo sin base quedaba
-    "configurado y caído" y esta función intentaba conectar de verdad --
-    con el puerto real habría creado un clon en la MariaDB compartida, que es
-    justo lo que ese modo promete que no pasa (jax-platform#142, 2026-09-21)."""
+    dos casos. Acá no alcanzaba: bajo `JAX_CI_NO_DB=1` `tests/conftest.py` fija un
+    `JAX_DB_HOST`/`JAX_DB_PORT` de relleno (127.0.0.1:3308, para simular una
+    base "configurada y caída"), así que `JAX_DB_HOST` queda puesto igual y esta
+    función intentaba conectar de verdad -- con el puerto real habría creado un
+    clon en la MariaDB compartida, que es justo lo que ese modo promete que no
+    pasa (jax-platform#142, 2026-09-21). Desde #195 ese modo ya no lee
+    `/etc/jax/.env`; fuera de él, el conftest sí lo carga en cada import y
+    repone `JAX_DB_HOST` con el valor real."""
     if _en_ci_sin_db() or not os.environ.get("JAX_DB_HOST"):
         return
     import asyncio
     try:
         asyncio.run(_dropear_base_de_sesion(nombre))
-    except Exception:  # fail-soft: best-effort al salir del proceso, no una condición de salida; scripts/limpiar_bases_de_test.py barre lo que quede
+    except Exception:  # fail-soft: best-effort al salir del proceso, no una condición de salida; lo que quede huérfano no lo barre ningún script en este repo
         pass
 
 
@@ -210,6 +213,7 @@ async def _dropear_base_de_sesion(nombre: str) -> None:
     `jax_memory` y `jax_memory_test` de verdad."""
     if nombre == BASE_COMPARTIDA or not es_base_de_test(nombre):
         return
+    exigir_conexion_permitida(nombre)
     import aiomysql
 
     # DIVERGENCIA DELIBERADA con jax: allá este import es
@@ -347,6 +351,81 @@ BASE_PLANTILLA = BASE_COMPARTIDA
 FILAS_MAXIMAS_A_COPIAR = int(os.environ.get("JAX_TEST_DB_FILAS_MAXIMAS", "2000"))
 
 
+#: Puertos donde vive la MariaDB de PRODUCCION (3308 en hall9000; 3306 es el
+#: default de `_parametros_de_conexion()` y el puerto que usa CI en su propio
+#: contenedor). Fuera de CI, conectarse a uno de ellos es conectarse al servidor
+#: que tambien tiene `jax_memory`: la suite CREA y BORRA bases ahi, y la semilla de
+#: gobernanza lee produccion. Un contenedor desechable usa otro puerto.
+PUERTOS_DE_PRODUCCION = frozenset({3306, 3308})
+
+#: El permiso explicito, para quien de verdad quiere correr la suite contra la
+#: instancia de produccion (hall9000: la base de test vive en la misma MariaDB).
+#: Habilita dos cosas, y solo dos: usar un puerto de `PUERTOS_DE_PRODUCCION` fuera
+#: de CI, y la conexion de SOLO LECTURA a `jax_memory` de la semilla de gobernanza.
+#: Nunca habilita escribir en una base sin sufijo de test.
+VARIABLE_PERMISO_INSTANCIA_DE_PRODUCCION = "JAX_TEST_DB_PERMITIR_INSTANCIA_DE_PRODUCCION"
+
+
+def _permiso_instancia_de_produccion() -> bool:
+    return os.environ.get(VARIABLE_PERMISO_INSTANCIA_DE_PRODUCCION, "").strip().lower() in ("1", "true", "yes")
+
+
+# LIMITE DE ESTA GUARDA (auditoria Jax#355, MINOR 2). El puerto es una HEURISTICA, no una frontera:
+# - Se trata la corrida como CI solo si `CI` Y `GITHUB_ACTIONS=true` (el runner de GitHub Actions,
+#   tambien el de hall9000, exporta las dos). Un `CI=1` suelto ya no abre la puerta. Pero las dos
+#   las exporta el entorno de quien corre: `CI=1 GITHUB_ACTIONS=true` a mano en un puesto de trabajo
+#   la abre igual, y lo mismo vale para `JAX_DB_PORT`. No hay una forma robusta de distinguir
+#   «runner de CI» de «sesion que dice serlo» desde dentro de este proceso: quien controla el
+#   entorno controla tambien esa senal y la variable de permiso.
+# - Un contenedor o una base de produccion en un puerto que NO sea 3306/3308 tampoco se detecta.
+# Lo que SI cubre: el error por descuido (la sesion que exporta /etc/jax/.env, el default 3306 de
+# `_parametros_de_conexion`), que es el que ocurrio. La frontera real son las credenciales: `jax_test`
+# solo tiene permisos sobre bases `jax_memory_test*`. Cambiar esta funcion la cambia en los dos
+# repos a la vez: lo vigila `check_mirror_sync.py` (identica byte a byte, y las tres funciones de
+# conexion tienen que llamarla antes de abrir nada).
+# Esto va como comentario y no en el docstring a proposito: el espejo se compara por el codigo de la
+# funcion, y asi esta nota no obliga a tocar jax-platform.
+def exigir_conexion_permitida(base: str, *, lectura_de_produccion: bool = False) -> None:
+    """El control previo a CADA conexion de este modulo. Falla CERRADO, con el
+    motivo y la variable que lo levanta, antes de abrir nada.
+
+    1. La base: toda conexion de este modulo va a una base de tests
+       (`es_base_de_test`). La unica excepcion es `lectura_de_produccion=True`,
+       la lectura de `jax_memory` de la semilla de gobernanza, y solo con
+       `VARIABLE_PERMISO_INSTANCIA_DE_PRODUCCION`: sin ella, ni leer.
+    2. El puerto (el de `_parametros_de_conexion()`, con su mismo default 3306):
+       ilegible o fuera de 1..65535 es un error; uno de `PUERTOS_DE_PRODUCCION`
+       fuera de CI exige la misma variable. En CI (`CI` Y `GITHUB_ACTIONS=true`)
+       cada job trae su propio contenedor (ver `_en_ci`), asi que ahi no aplica.
+    """
+    permiso = _permiso_instancia_de_produccion()
+    if lectura_de_produccion:
+        if base != BASE_DE_PRODUCCION:
+            raise BaseDeTestInvalida(f"la lectura de produccion es solo de {BASE_DE_PRODUCCION!r}, no de {base!r}")
+        if not permiso:
+            raise BaseDeTestInvalida(
+                f"la suite iba a abrir una conexion a {BASE_DE_PRODUCCION!r}, la base de PRODUCCION. "
+                f"No se hace sin permiso explicito: exporta {VARIABLE_PERMISO_INSTANCIA_DE_PRODUCCION}=1 "
+                f"si de verdad quieres que la semilla de gobernanza lea produccion (solo lectura).")
+    elif not es_base_de_test(base):
+        raise BaseDeTestInvalida(
+            f"{base!r} no es una base de tests ({BASE_COMPARTIDA!r} o {BASE_COMPARTIDA + '_<sufijo>'!r}): "
+            f"esta suite no abre conexiones a otra base, y esto no lo levanta ninguna variable.")
+    crudo = os.environ.get("JAX_DB_PORT", "3306")
+    try:
+        puerto = int(crudo)
+    except ValueError:
+        puerto = 0
+    if not 1 <= puerto <= 65535:
+        raise BaseDeTestInvalida(f"JAX_DB_PORT={crudo!r} no es un puerto valido (1..65535): no se conecta a ciegas.")
+    en_ci = _en_ci() and os.environ.get("GITHUB_ACTIONS", "").strip().lower() == "true"
+    if puerto in PUERTOS_DE_PRODUCCION and not en_ci and not permiso:
+        raise BaseDeTestInvalida(
+            f"JAX_DB_PORT={puerto} es la MariaDB de PRODUCCION (3306 y 3308) y esto no es CI (CI y GITHUB_ACTIONS=true): la suite "
+            f"crea y borra bases ahi. Usa un contenedor desechable en otro puerto, o exporta "
+            f"{VARIABLE_PERMISO_INSTANCIA_DE_PRODUCCION}=1 si de verdad quieres correr contra esa instancia.")
+
+
 def _parametros_de_conexion() -> dict:
     """Host, puerto y credenciales de la MariaDB, del entorno (/etc/jax/.env).
     El NOMBRE de la base no sale de acá: lo elige quien llama.
@@ -478,6 +557,7 @@ async def _clonar_esquema(nombre: str) -> int:
     _verificar_que_no_es_produccion(nombre)
     if nombre == BASE_COMPARTIDA:
         return -1
+    exigir_conexion_permitida(nombre)
 
     # DIVERGENCIA DELIBERADA con jax: ver la nota en _dropear_base_de_sesion.
     from db_connect_config import db_connect_timeout_seconds
@@ -571,6 +651,7 @@ def _bootstrap_jax_schema_para_base_de_test(nombre: str) -> None:
     cloning a legacy template that predates ``projects``.
     """
     _verificar_que_no_es_produccion(nombre)
+    exigir_conexion_permitida(nombre)
     configured_root = os.environ.get("JAX_REPO_PATH", "").strip()
     root = Path(configured_root)
     if not configured_root or not root.is_absolute():
@@ -618,6 +699,11 @@ def _bootstrap_jax_schema_para_base_de_test(nombre: str) -> None:
     result = subprocess.run(
         [
             "mysql",
+            # Primero: `--no-defaults` solo se acepta como primera opcion. Sin el, el cliente
+            # lee ~/.my.cnf y /etc/mysql/* y un `host`/`socket` ahi lo desviaria de
+            # JAX_DB_HOST/JAX_DB_PORT, que es lo que `exigir_conexion_permitida` valido.
+            "--no-defaults",
+            "--protocol=TCP",
             "--host", os.environ["JAX_DB_HOST"],
             "--port", os.environ["JAX_DB_PORT"],
             "--user", os.environ.get("JAX_DB_USER", ""),
@@ -828,6 +914,11 @@ async def aplicar_migraciones_b9_restantes() -> None:
             )
         hashes_verificados[archivo] = real
 
+    # Antes de pedir el pool: estas migraciones ESCRIBEN por la conexion de `db.connection`, que
+    # usa el mismo `JAX_DB_PORT`. Va despues de la validacion del manifiesto (que no conecta a
+    # nada) para que un archivo no declarado siga fallando con SU error, como exige
+    # `test_b9_migraciones_restantes.py`, tambien fuera de CI.
+    exigir_conexion_permitida(nombre)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -902,6 +993,7 @@ async def aplicar_migraciones_b9_restantes() -> None:
 
 
 async def _tabla_existe_en_base(nombre: str, tabla: str) -> bool:
+    exigir_conexion_permitida(nombre)
     import aiomysql
     from db_connect_config import db_connect_timeout_seconds
 
@@ -933,6 +1025,7 @@ def asegurar_base_de_test(nombre: str | None = None) -> str:
     _verificar_que_no_es_produccion(nombre)
     if nombre == BASE_COMPARTIDA or _en_ci_sin_db() or not os.environ.get("JAX_DB_HOST"):
         return nombre
+    exigir_conexion_permitida(nombre)  # antes de tocar el entorno o abrir nada
 
     anterior = os.environ.get(VARIABLE_DE_LA_BASE)
     os.environ[VARIABLE_DE_LA_BASE] = nombre

@@ -3591,7 +3591,12 @@ jobs:
           # fallos ni errores. El skip ambiental se acredita por identidad y
           # el único skip gateado es test_step_status_exact_pair.py:154,
           # cubierto por el job SR2 exact-pair aislado.
-          PISO_PASSED = 3694
+          # 3694 -> 3724 (2026-10-06, PR #195, Rule 5): +30 pruebas puras nuevas (guarda de
+          # conexion a produccion de base_de_test y su conftest). MEDIDO EXACTO el delta, mismo
+          # comando y mismo entorno (CI=true GITHUB_ACTIONS=true, MariaDB desechable, env -i), en
+          # master 1f2d966 y en la rama 1113ec1: 3635 -> 3665 passed / 59 / 59 skipped. El
+          # absoluto de CI NO se midio aca (faltan extractores y el pin de jax): piso = base + delta.
+          PISO_PASSED = 3724
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4654,7 +4659,11 @@ jobs:
       # 2238 -> 2242 (2026-10-05, Rule 5): CI 37311446373 / job
       # 111767583207 midió colectados=3696 passed=2242 skipped=1454, sin
       # fallos ni errores.
-      JAX_CI_MIN_PASSED: "2242"
+      # 2242 -> 2272 (2026-10-06, PR #195, Rule 5): +30 puras (guarda de conexion a produccion de
+      # base_de_test y conftest sin DB). MEDIDO EXACTO el delta con JAX_CI_NO_DB=1 CI=true
+      # GITHUB_ACTIONS=true, env -i, en master 1f2d966 y en la rama 1113ec1: 2184 -> 2214 passed /
+      # 1511 / 1511 skipped. El absoluto de CI NO se midio aca: piso = base + delta.
+      JAX_CI_MIN_PASSED: "2272"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
