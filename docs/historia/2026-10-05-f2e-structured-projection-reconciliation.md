@@ -84,6 +84,14 @@ igualdad y el mutante que rechaza una adición unilateral siguen vigentes.
   no vuelve a enviar bytes. Los cuatro pines exactos avanzaron a JAX publicado
   `e5919f152361d4e91144ae1a55bd47cab28e8150`. Los pisos medidos se mantienen
   hasta una nueva corrida CI.
+- El arnés de carga de descartados conserva ahora el `JAX_REPO_PATH` explícito
+  del operador después de leer `/etc/jax/.env`: exige un checkout JAX absoluto
+  existente y verifica en `/proc/<pid>/environ` que el backend real recibió la
+  misma ruta, además de la base de prueba y el Jacobs falso. El hallazgo fue
+  que el import del entorno de producción reemplazaba el checkout de la rama
+  por `/srv/jax-prod/jax`, causando `governed_output_unavailable`; la carga no
+  se ejecuta si falta, no es absoluto, no existe o no tiene la forma de un
+  checkout JAX.
 - La vista `estado=discarded` termina las consultas y cálculos de costo dentro
   de `pool.acquire()`, libera la conexión, y sólo después espera el límite de
   gobernanza F2-B/F2-C/F2-D. La regresión usa un pool espía y prueba tanto la

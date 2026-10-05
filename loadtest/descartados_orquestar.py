@@ -87,6 +87,22 @@ def _cargar_env_produccion() -> dict:
     return env
 
 
+def _checkout_jax_solicitado() -> str:
+    """Ruta explícita y local del checkout JAX que debe usar la carga."""
+    requested = os.environ.get("JAX_REPO_PATH")
+    if not requested:
+        raise RuntimeError("JAX_REPO_PATH es obligatorio para la carga de descartados")
+    path = Path(requested)
+    if not path.is_absolute() or not path.is_dir():
+        raise RuntimeError("JAX_REPO_PATH debe ser un checkout absoluto existente")
+    resolved = path.resolve()
+    if not ((resolved / ".git").exists()
+            and (resolved / "jacobs").is_dir()
+            and (resolved / "policy" / "governance").is_dir()):
+        raise RuntimeError("JAX_REPO_PATH debe apuntar a un checkout JAX válido")
+    return str(resolved)
+
+
 def _abortar_si_el_secreto_de_carga_coincide_con_produccion(
         jwt_secret_de_carga: str, jwt_secret_de_produccion: str | None) -> None:
     """Idéntica a historial_orquestar.py::_abortar_si_el_secreto_de_carga_coincide_con_produccion
@@ -122,6 +138,10 @@ def _verificar_no_apunta_a_produccion(env: dict) -> None:
 def construir_env(tmp: Path) -> dict:
     env = dict(os.environ)
     env.update(_cargar_env_produccion())
+    # La carga recibe este checkout de forma explícita.  El entorno de
+    # producción puede declarar el suyo para el servicio real, pero nunca
+    # puede reemplazar el checkout aislado después de importar sus variables.
+    env["JAX_REPO_PATH"] = _checkout_jax_solicitado()
     env["JAX_DB_NAME"] = BASE_DE_PRUEBA
     # SEGURIDAD (jax-platform#146, ronda 7) -- ver la nota de
     # historial_orquestar.py::construir_env, mismo motivo exacto: llave
@@ -295,12 +315,15 @@ async def main_async() -> None:
         pares = dict(p.split(b"=", 1) for p in environ.split(b"\x00") if b"=" in p)
         db_name = pares.get(b"JAX_DB_NAME", b"").decode()
         jacobs_url = pares.get(b"JACOBS_URL", b"").decode()
+        jax_repo_path = pares.get(b"JAX_REPO_PATH", b"").decode()
         if db_name != BASE_DE_PRUEBA:
             raise RuntimeError(f"proceso real con JAX_DB_NAME={db_name!r} -- ABORTANDO")
         if jacobs_url != f"{FAKE_JACOBS_URL}/jacobs":
             raise RuntimeError(f"proceso real con JACOBS_URL={jacobs_url!r} -- ABORTANDO")
+        if jax_repo_path != env["JAX_REPO_PATH"]:
+            raise RuntimeError(f"proceso real con JAX_REPO_PATH={jax_repo_path!r} -- ABORTANDO")
         print(f"[orquestador] VERIFICADO /proc/{proc_backend.pid}/environ: "
-              f"JAX_DB_NAME={db_name} JACOBS_URL={jacobs_url}")
+              f"JAX_DB_NAME={db_name} JACOBS_URL={jacobs_url} JAX_REPO_PATH={jax_repo_path}")
 
         # SEGURIDAD (jax-platform#146, ronda 7): el secreto de FIRMA se lee
         # del proceso YA LEVANTADO, nunca del `env` en memoria de este
