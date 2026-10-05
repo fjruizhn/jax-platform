@@ -23,7 +23,17 @@ sys.path.insert(0, str(Path(__file__).parent))
 import descartados_orquestar as do  # noqa: E402
 
 
+def _checkout_jax(tmp_path, monkeypatch):
+    checkout = tmp_path / "jax-checkout"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / "jacobs").mkdir()
+    (checkout / "policy" / "governance").mkdir(parents=True)
+    monkeypatch.setenv("JAX_REPO_PATH", str(checkout))
+    return checkout.resolve()
+
+
 def test_construir_env_genera_su_propia_llave_distinta_de_produccion(tmp_path, monkeypatch):
+    requested = _checkout_jax(tmp_path, monkeypatch)
     monkeypatch.setattr(
         do, "_cargar_env_produccion",
         lambda: {"JAX_JWT_SECRET": "secreto-de-produccion-fijo-de-prueba",
@@ -36,9 +46,11 @@ def test_construir_env_genera_su_propia_llave_distinta_de_produccion(tmp_path, m
         "el backend de carga podria firmar tokens validos tambien contra "
         "produccion")
     assert len(env["JAX_JWT_SECRET"]) >= 32, "la llave generada es sospechosamente corta"
+    assert env["JAX_REPO_PATH"] == str(requested)
 
 
 def test_construir_env_genera_una_llave_distinta_en_cada_llamada(tmp_path, monkeypatch):
+    _checkout_jax(tmp_path, monkeypatch)
     monkeypatch.setattr(do, "_cargar_env_produccion", lambda: {"JAX_JWT_SECRET": "produccion"})
     env1 = do.construir_env(tmp_path)
     env2 = do.construir_env(tmp_path)
@@ -46,9 +58,33 @@ def test_construir_env_genera_una_llave_distinta_en_cada_llamada(tmp_path, monke
 
 
 def test_construir_env_fija_jax_db_name_a_la_base_de_test(tmp_path, monkeypatch):
+    _checkout_jax(tmp_path, monkeypatch)
     monkeypatch.setattr(do, "_cargar_env_produccion", lambda: {"JAX_DB_NAME": "jax_memory"})
     env = do.construir_env(tmp_path)
     assert env["JAX_DB_NAME"] == do.BASE_DE_PRUEBA == "jax_memory_test"
+
+
+def test_construir_env_restaura_el_checkout_explicito_tras_importar_produccion(tmp_path, monkeypatch):
+    requested = _checkout_jax(tmp_path, monkeypatch)
+    monkeypatch.setattr(do, "_cargar_env_produccion", lambda: {
+        "JAX_REPO_PATH": "/srv/jax-prod/jax", "JAX_DB_NAME": "jax_memory"})
+
+    env = do.construir_env(tmp_path)
+
+    assert env["JAX_REPO_PATH"] == str(requested)
+    assert env["JAX_REPO_PATH"] != "/srv/jax-prod/jax"
+
+
+@pytest.mark.parametrize("requested", [None, "relativo", "/no/existe"])
+def test_construir_env_rechaza_checkout_jax_ausente_no_absoluto_o_inexistente(tmp_path, monkeypatch, requested):
+    if requested is None:
+        monkeypatch.delenv("JAX_REPO_PATH", raising=False)
+    else:
+        monkeypatch.setenv("JAX_REPO_PATH", requested)
+    monkeypatch.setattr(do, "_cargar_env_produccion", lambda: {})
+
+    with pytest.raises(RuntimeError, match="JAX_REPO_PATH"):
+        do.construir_env(tmp_path)
 
 
 def test_abortar_si_coincide_con_produccion_no_lanza_si_son_distintos():

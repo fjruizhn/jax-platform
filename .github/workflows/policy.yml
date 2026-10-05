@@ -1308,12 +1308,13 @@ jobs:
       # que existe en hall9000 y no en un runner (30 tests caian con
       # FileNotFoundError). Apunta al clon que hace el paso de mas abajo.
       JAX_CONFIG_PATH: /tmp/jax/config/config.toml
+      # SR3 importa LAS MANOS en tres pruebas del backend genérico. El
+      # workspace temporal satisface su contrato sin tocar configuración real.
+      JAX_WORKSPACE_DIR: /tmp/jax-workspace
       # shadow_validation.py importa policy/governance/ del repo `jax` por
       # sys.path. Mismo caso que JAX_CONFIG_PATH: sin esto son 9 tests con
       # "ModuleNotFoundError: No module named 'claims'".
       JAX_REPO_PATH: /tmp/jax
-      # SR3 processing imports validate the workspace during module import.
-      JAX_WORKSPACE_DIR: /tmp/jax-workspace
       # Web Chat imports the JAX-owned B9 package as well as reading its
       # configuration.  Resolve it from this job's paired checkout, never an
       # unrelated preinstalled package named `jax`.
@@ -1331,32 +1332,22 @@ jobs:
         with:
           # 3.14 = la version real de backend/.venv, la que corre en produccion.
           python-version: "3.14"
-      - name: Crear workspace temporal para imports de JAX
-        run: mkdir -p "$JAX_WORKSPACE_DIR"
       - name: Instalar dependencias
         run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
 
       - name: Traer el repo jax (fuente de verdad del esquema de Jacobs y B9)
         working-directory: .
-        # The generic suite uses the reconciled F2-E-SR JAX integration head.
-        # It contains the F2-C/F2-D compatibility contract and the runtime
-        # status bridge API consumed by this Platform branch.
+        # The generic suite uses the exact JAX head that supplies the additive
+        # F2-C structured projection and F2-D canonical-byte transport APIs.
         run: |
-          # Platform's F2-C/F2-D baseline is the governed exact pair; keeping
-          # the historical domain-.5 JAX pin after this contract upgrade would
-          # make master import an incompatible renderer/lifecycle vocabulary.
-          PIN=200f03c7a17cbe1a488d7dab6921d841a8cd3a46
+          PIN=0604754384adc95adc0a766e44cced8b20df825c
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
           test "$(git -C /tmp/jax rev-parse HEAD)" = "$PIN"
+          mkdir -p /tmp/jax-workspace
 
-      - name: Instalar extractores declarados por el JAX fijado
-        # JAX #335 cierra POST /procesamiento/trabajos con 503 si los
-        # extractores declarados en su requirements-archivos.txt no están
-        # disponibles. El test de integración debe ejercitar el camino verde
-        # instalando exactamente los paquetes del checkout fijado, no una
-        # copia de versiones mantenida en este workflow.
+      - name: Install JAX extraction dependencies used by the SR3 dispatch regressions
         run: pip install -r /tmp/jax/requirements-archivos.txt
 
       - name: Crear el esquema de Jacobs con SU propio init_tables()
@@ -1425,9 +1416,8 @@ jobs:
         # de la corrida normal. Se ignoran, no se cuentan como skip -- el tope
         # de MAX_SKIPS se queda en 1, no se sube (ese tope sigue sirviendo
         # para detectar la DB caida).
-        # The reconciled JAX pin provides the runtime-status bridge API, so
-        # run that module here too. The PR exact-pair job remains the separate
-        # cross-repository contract gate.
+        # The exact JAX pin provides runtime-status and structured projection
+        # APIs. The dedicated exact-pair job additionally records both heads.
         run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
 
       - name: Diagnóstico de pruebas fallidas (sin contenido de excepciones)
@@ -1502,25 +1492,42 @@ jobs:
           skip = sum(int(s.get("skipped", 0)) for s in suites)
           passed = total - fail - err - skip
 
-          # This exact test is intentionally skipped on GitHub: Actions has
-          # no production /etc/jax/.env to compare against. Do not let this
-          # environment-only skip mask a DB outage; all other skips remain
-          # subject to MAX_SKIPS below.
+          # The secrets test skips only when GitHub Actions lacks the production
+          # /etc/jax/.env needed to exercise its comparison.  It is accredited
+          # by its full junit identity so another environmental skip cannot
+          # silently replace it.  The sole gated skip is the MariaDB SR2 test;
+          # its exact identity is exercised by f2e-sr2-step-status-exact-pair.
           env_only_test = (
               "tests.test_conftest_no_carga_secretos_no_necesarios",
               "test_fernet_key_y_jwt_secret_se_fuerzan_aunque_ya_vengan_puestos_en_el_ambiente",
               "no hay /etc/jax/.env con estos secretos en esta máquina -- nada que simular",
           )
+          sr2_gated_test = (
+              "tests.test_step_status_exact_pair",
+              "test_exact_pair_reads_real_canonical_step_owner_join_and_index_plan",
+              "requires the isolated SR2 exact-pair MariaDB job",
+          )
           env_only_skips = 0
+          sr2_gated_skips = 0
           for case in root.iter("testcase"):
               skipped = case.find("skipped")
               if skipped is None:
                   continue
-              if (case.get("classname"), case.get("name"), skipped.get("message")) == env_only_test:
+              identity = (case.get("classname"), case.get("name"), skipped.get("message"))
+              if identity == env_only_test:
                   env_only_skips += 1
+              elif identity == sr2_gated_test:
+                  sr2_gated_skips += 1
           if env_only_skips > 1:
               sys.exit(f"skip de entorno repetido inesperadamente: {env_only_skips}")
+          if sr2_gated_skips > 1:
+              sys.exit(f"skip SR2 repetido inesperadamente: {sr2_gated_skips}")
           gated_skips = skip - env_only_skips
+          if gated_skips != sr2_gated_skips:
+              sys.exit(
+                  "skip no acreditado: sólo el skip SR2 exacto puede consumir "
+                  f"el gate (gateados={gated_skips}, sr2={sr2_gated_skips})"
+              )
 
           # MEDIDO EN ESTE JOB, no en otro entorno: 309 colectados, 308 passed,
           # 1 skipped, 0 failed, 0 errors (corrida real del 2026-09-01).
@@ -3573,20 +3580,29 @@ jobs:
           #   ultimo medido en el runner (3669), no medido: la corrida local con DB de sesion no sirve de
           #   referencia aqui (6 fallos de entorno y otra base). Sin DB, +2 exacto medido por la auditoria
           #   (pin 2b0c163: 2218 -> 2220 passed). El runner tiene la ultima palabra (regla 5).
-          # 3671 -> 3676 (2026-10-05, reconciliacion SR2 exact-pair): medicion publicada del runner,
-          # corrida 37279310975: colectados=3678 passed=3676 skipped=2 failed=0. Un skip es exclusivo del
-          # entorno; el otro sigue gateado por MAX_SKIPS=1, por lo que no se modifica la barrera de skips.
-          PISO_PASSED = 3676
+          # 3671 -> 3678 (2026-10-05, reconciliación F2-E): medido por el runner en
+          # 37283413689 sobre 23fd7915b86c5cb9dcad8672a7f306dabe3574c8:
+          # colectados=3679 passed=3678 skipped=1 failed=0 errors=0. MAX_SKIPS queda en 1.
+          # 3678 -> 3690 (2026-10-05, Rule 5): CI 37291824110 sobre
+          # 1157f71aa172fad07581c68c27706ce5a9e275a0 midió
+          # colectados=3691 passed=3690 skipped=1 failed=0 errors=0.
+          # 3690 -> 3694 (2026-10-05, Rule 5): CI 37311446373 / job
+          # 111767582760 midió colectados=3696 passed=3694 skipped=2, sin
+          # fallos ni errores. El skip ambiental se acredita por identidad y
+          # el único skip gateado es test_step_status_exact_pair.py:154,
+          # cubierto por el job SR2 exact-pair aislado.
+          PISO_PASSED = 3694
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
-                f"skip_entorno_esperado={env_only_skips} skips_gateados={gated_skips} "
-                f"failed={fail} errors={err}")
+                f"skip_entorno_esperado={env_only_skips} "
+                f"skip_sr2_gateado={sr2_gated_skips} "
+                f"skips_gateados={gated_skips} failed={fail} errors={err}")
           if passed < PISO_PASSED:
               sys.exit(f"PISO ROTO: {passed} passed < {PISO_PASSED}.")
           if gated_skips > MAX_SKIPS:
               sys.exit(
-                  f"{gated_skips} skips inesperados (max {MAX_SKIPS}). La DB no esta siendo usada: "
+                  f"{gated_skips} skips gateados (max {MAX_SKIPS}). La DB no esta siendo usada: "
                   "los tests que la necesitan se estan salteando y este job "
                   "estaria verde sin haber probado nada de lo que vino a probar."
               )
@@ -3642,14 +3658,15 @@ jobs:
       # Este job no clonaba `jax` -- el de DB si. Apunta al clon del paso de
       # mas abajo.
       JAX_REPO_PATH: /tmp/jax
-      # SR3 processing imports validate the workspace during module import.
-      JAX_WORKSPACE_DIR: /tmp/jax-workspace
       # The paired checkout owns `jax.memory.b9`; JAX_REPO_PATH is a data
       # location, not a Python import path.
       PYTHONPATH: /tmp/jax:/tmp/jax/las_manos
       # Obligatoria desde el 2026-09-16 (frente A, A-55): api/chat.py no se
       # importa sin ella. Apunta al clon del paso "Traer el repo jax".
       JAX_CONFIG_PATH: /tmp/jax/config/config.toml
+      # SR3 importa LAS MANOS en tres pruebas del backend genérico. El
+      # workspace temporal satisface su contrato sin tocar configuración real.
+      JAX_WORKSPACE_DIR: /tmp/jax-workspace
       JAX_OLLAMA_URL: http://127.0.0.1:11434
       # Piso de cobertura. Si baja de acá, el job falla (ver el paso final).
       # Subido de 85 a 93 en Task 4 (sonda activa de facets, 2026-08-27):
@@ -4628,9 +4645,16 @@ jobs:
       # 2217 -> 2219 (2026-10-05, fix/conftest-sello-antes-de-migrar): +2 netos puros (1 prueba reemplazada por 3,
       # ninguna pide `client`). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, en master (0e582da) y en la rama:
       # 2215 -> 2217 passed / 1455 / 1455 skipped / 3 failed por el pin local; 2217 + 3 - 1 = 2219.
-      # 2219 -> 2224 (2026-10-05, reconciliacion SR2 exact-pair): medicion publicada del runner,
-      # corrida 37279310975: 2224 passed, 1454 skipped. Los controles de skips permanecen sin cambios.
-      JAX_CI_MIN_PASSED: "2224"
+      # 2219 -> 2226 (2026-10-05, reconciliación F2-E): medido por el runner en
+      # 37283413689 sobre 23fd7915b86c5cb9dcad8672a7f306dabe3574c8:
+      # colectados=3679 passed=2226 skipped=1453 failed=0 errors=0.
+      # 2226 -> 2238 (2026-10-05, Rule 5): CI 37291824110 sobre
+      # 1157f71aa172fad07581c68c27706ce5a9e275a0 midió
+      # colectados=3691 passed=2238 skipped=1453 failed=0 errors=0.
+      # 2238 -> 2242 (2026-10-05, Rule 5): CI 37311446373 / job
+      # 111767583207 midió colectados=3696 passed=2242 skipped=1454, sin
+      # fallos ni errores.
+      JAX_CI_MIN_PASSED: "2242"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -4639,8 +4663,6 @@ jobs:
           # producción (systemd jax-platform arranca backend/.venv/bin/uvicorn).
           # Es también la única sobre la que se verificó esta suite.
           python-version: "3.14"
-      - name: Crear workspace temporal para imports de JAX
-        run: mkdir -p "$JAX_WORKSPACE_DIR"
       - name: Instalar dependencias
         # pytest-asyncio NO está en requirements.txt aunque pytest.ini lo
         # necesita (asyncio_mode = auto). Se instala explícito acá; declararlo
@@ -4649,18 +4671,15 @@ jobs:
 
       - name: Traer el repo JAX de integración (vocabulario y B9)
         working-directory: .
-        # The generic suite uses the reconciled F2-E-SR JAX integration head.
-        # It contains the F2-C/F2-D compatibility contract and the runtime
-        # status bridge API consumed by this Platform branch.
+        # Keep the no-DB suite on the same exact structured-output API consumed
+        # by the platform integration.
         run: |
-          # Platform's F2-C/F2-D baseline is the governed exact pair; keeping
-          # the historical domain-.5 JAX pin after this contract upgrade would
-          # make master import an incompatible renderer/lifecycle vocabulary.
-          PIN=200f03c7a17cbe1a488d7dab6921d841a8cd3a46
+          PIN=0604754384adc95adc0a766e44cced8b20df825c
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
           test "$(git -C /tmp/jax rev-parse HEAD)" = "$PIN"
+          mkdir -p /tmp/jax-workspace
 
       - name: Suite backend (sin DB) -- -rs lista cada skip con su motivo
         # --ignore de test_carga_indice_pipelines_del_usuario.py (2026-09-22,
@@ -4895,11 +4914,148 @@ jobs:
           name: f2e-runtime-status-exact-pair-evidence
           path: f2e-runtime-status-exact-pair-evidence.json
 
-  # STEP_STATUS se habilita solo después de comprobar juntos el checkout
-  # exacto de JAX #341 y este head de la plataforma. El source/enum tripwire
-  # de JAX corre además en el job governance de #341.
+  # Exact structured-output pair: authenticated pipeline producer -> F2-B ->
+  # F2-C JSON projection -> F2-D exact-byte transport against one frozen JAX SHA.
+  f2e-structured-projection-exact-pair:
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'phase2/f2e-structured-projection-platform-20261004'
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:12.3.3
+        env:
+          MARIADB_ROOT_PASSWORD: ci
+          MARIADB_DATABASE: jax_memory_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      JAX_F2E_STRUCTURED_EXPECTED_SHA: 0604754384adc95adc0a766e44cced8b20df825c
+      JAX_REPO_PATH: ${{ github.workspace }}/jax
+      JAX_REPO_BASE: ${{ github.workspace }}/jax
+      JAX_CONFIG_PATH: ${{ github.workspace }}/jax/config/config.toml
+      JAX_DB_HOST: 127.0.0.1
+      JAX_DB_PORT: "3306"
+      JAX_DB_USER: root
+      JAX_DB_PASSWORD: ci
+      JAX_DB_NAME: jax_memory_test
+      JAX_JWT_SECRET: f2e-structured-projection-ci-only
+      PYTHONPATH: ${{ github.workspace }}/jax:${{ github.workspace }}/jax/las_manos
+    steps:
+      - name: Checkout exact Platform pull request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Checkout exact JAX structured-projection PR head
+        uses: actions/checkout@v4
+        with:
+          repository: fjruizhn/Jax
+          ref: 0604754384adc95adc0a766e44cced8b20df825c
+          path: jax
+      - name: Require exact F2-E pair
+        env:
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          JAX_SHA=$(git -C jax rev-parse HEAD)
+          PLATFORM_SHA=$(git rev-parse HEAD)
+          test "$JAX_SHA" = "$JAX_F2E_STRUCTURED_EXPECTED_SHA"
+          test "$PLATFORM_SHA" = "${{ github.event.pull_request.head.sha }}"
+          python - <<'PY'
+          import json, os, subprocess
+          evidence = {
+              "coverage": [
+                  "authenticated GET /api/pipelines producer",
+                  "F2-B canonical PIPELINE_STATUS resolution and claim binding",
+                  "F2-C versioned immutable JSON projection",
+                  "F2-D canonical bytes and ASGI transport lifecycle",
+                  "MariaDB schema-clone trigger preservation",
+              ],
+              "jax_head": os.environ["JAX_F2E_STRUCTURED_EXPECTED_SHA"],
+              "jax_pr": 351,
+              "jax_repository": "fjruizhn/Jax",
+              "platform_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "platform_pr": int(os.environ["GITHUB_PR_NUMBER"]),
+              "platform_repository": "fjruizhn/jax-platform",
+              "f2c_contract": {
+                  "renderer": "f2-c.renderer.3",
+                  "domain": "f2-c.domain.7",
+                  "envelopes": ["f2-c.1"],
+                  "structured_projection": "f2-c.structured-projection.1",
+              },
+              "f2d_contract": "f2-d.structured-bytes.1",
+          }
+          with open("f2e-structured-projection-exact-pair-evidence.json", "w", encoding="utf-8") as f:
+              json.dump(evidence, f, sort_keys=True)
+              f.write("\n")
+          print(json.dumps(evidence, sort_keys=True))
+          PY
+          cat f2e-structured-projection-exact-pair-evidence.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
+      - name: Bootstrap exact JAX schema on ephemeral MariaDB
+        run: |
+          pip install -c backend/constraints.txt aiomysql pydantic
+          PYTHONPATH=./jax:./jax/las_manos python -c "import asyncio; from jacobs import store; asyncio.run(store.init_tables())"
+          sed -e '/^CREATE DATABASE IF NOT EXISTS jax_memory$/,/;$/d' \
+              -e "s/^USE jax_memory;$/USE \`$JAX_DB_NAME\`; /" \
+              jax/jax_memory_schema.sql \
+            | mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" "$JAX_DB_NAME"
+      - name: Apply Platform DB migrations
+        working-directory: backend
+        run: python -m pytest -q tests/test_project_authority_migration.py
+      - name: Exercise exact authenticated producer, F2-C/F2-D and trigger-clone contracts
+        working-directory: backend
+        run: |
+          set -o pipefail
+          # 46 -> 53 (2026-10-05, reconciliación F2-E): la API batch
+          # `evidence_many` de JAX y las regresiones de Platform agregan siete
+          # contratos al par exacto (lectura batch única, cardinalidad, orden,
+          # scope e IDs duplicados, además de la adaptación de snapshots).
+          # Medido contra JAX 0c925e63ee28e62bbc96975cbf807773d209b147:
+          # 53 passed, 0 skipped.
+          # 53 -> 58 (2026-10-05, cierre C): cinco regresiones exactas para
+          # página vacía activa/descartada, forma superior inválida y estados
+          # terminales de transporte. Medido contra JAX
+          # e5919f152361d4e91144ae1a55bd47cab28e8150: 58 passed, 0 skipped.
+          # 58 -> 89 (2026-10-05, cursor descartados nullable): el par exacto
+          # ahora incluye test_pipelines_descartados_cursor.py y cubre páginas
+          # posteriores cuyo descartado_at real es NULL. Medido contra JAX
+          # d9bf5ce947826e53e2b6f0088cc580eef2d307aa: 89 passed, 0 skipped.
+          export PISO_PASSED=89
+          python -m pytest -q -p no:warnings \
+            tests/test_governed_pipeline_list.py \
+            tests/test_historial_pipelines.py \
+            tests/test_pipelines_descartados_cursor.py \
+            integration_tests/test_f2c_exact_pair_integration.py \
+            tests/test_output_lifecycle_transport.py \
+            tests/test_base_por_sesion.py::test_clonar_triggers_preserva_cuerpo_y_contexto_sin_reusar_esquema_origen \
+            tests/test_base_por_sesion.py::test_clonar_esquema_preserva_columnas_generadas_y_triggers 2>&1 | tee /tmp/f2e-structured-exact-pair
+          python - <<'PY'
+          import os, re
+          from pathlib import Path
+          output = Path("/tmp/f2e-structured-exact-pair").read_text(encoding="utf-8")
+          match = re.search(r"^(\d+) passed(?:, (\d+) skipped)? in ", output, re.MULTILINE)
+          piso_passed = int(os.environ["PISO_PASSED"])
+          if match is None or int(match.group(1)) < piso_passed or int(match.group(2) or 0) != 0:
+              raise SystemExit(f"F2-E exact-pair floor failed: expected >={piso_passed} passed and 0 skipped")
+          print(f"F2-E exact-pair measured: {match.group(1)} passed, {match.group(2) or 0} skipped")
+          PY
+      - name: Upload exact-pair evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: f2e-structured-projection-exact-pair-evidence
+          path: f2e-structured-projection-exact-pair-evidence.json
+
+  # STEP_STATUS shares the reconciled JAX #351 checkout with the structured
+  # projection pair.  It remains a separate gate because its source and enum
+  # assertions cover the SR2 runtime-status bridge.
   f2e-sr2-step-status-exact-pair:
-    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'k3/sr2-step-status-exact-pair'
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'phase2/f2e-structured-projection-platform-20261004'
     runs-on: ubuntu-latest
     services:
       mariadb:
@@ -4914,7 +5070,7 @@ jobs:
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=5s --health-timeout=5s --health-retries=20
     env:
-      JAX_SR2_EXPECTED_SHA: 200f03c7a17cbe1a488d7dab6921d841a8cd3a46
+      JAX_SR2_EXPECTED_SHA: 0604754384adc95adc0a766e44cced8b20df825c
       JAX_REPO_PATH: ${{ github.workspace }}/jax
       JAX_REPO_BASE: ${{ github.workspace }}/jax
       JAX_CONFIG_PATH: ${{ github.workspace }}/jax/las_manos/config.toml
@@ -4930,11 +5086,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-      - name: Checkout exact JAX #341 head
+      - name: Checkout exact JAX #351 head
         uses: actions/checkout@v4
         with:
           repository: fjruizhn/Jax
-          ref: 200f03c7a17cbe1a488d7dab6921d841a8cd3a46
+          ref: 0604754384adc95adc0a766e44cced8b20df825c
           path: jax
       - name: Resolve the test suite's MariaDB hostname on the runner
         run: echo "127.0.0.1 mariadb.test" | sudo tee -a /etc/hosts
@@ -4961,7 +5117,7 @@ jobs:
             tests/test_step_status_exact_pair.py::test_exact_pair_reads_real_canonical_step_owner_join_and_index_plan \
             2>&1 | tee /tmp/sr2-step-status-mariadb
           grep -qE '^1 passed in [0-9]+(\.[0-9]+)?s$' /tmp/sr2-step-status-mariadb || {
-            echo "FAIL-CLOSED: la prueba del resolver canónico STEP_STATUS no pasó con MariaDB real."; exit 1; }
+            echo "FAIL-CLOSED: la prueba del resolvedor canónico STEP_STATUS no pasó con MariaDB real."; exit 1; }
           python -m pytest -q -p no:warnings \
             tests/test_runtime_status_sources.py \
             tests/test_platform_runtime_status_bridge.py \
@@ -4977,8 +5133,7 @@ jobs:
               GOVERNED_RENDERER_API_VERSION,
           )
           evidence = {
-              "jax_repository": "fjruizhn/Jax",
-              "jax_pr": 341,
+              "jax_repository": "fjruizhn/Jax", "jax_pr": 351,
               "jax_head": os.environ["JAX_SR2_EXPECTED_SHA"],
               "platform_repository": "fjruizhn/jax-platform",
               "platform_pr": int(os.environ["GITHUB_PR_NUMBER"]),
@@ -4994,18 +5149,10 @@ jobs:
                   "domain": GOVERNED_DOMAIN_SPEC_VERSION,
                   "envelopes": sorted(GOVERNED_ENVELOPE_SCHEMA_VERSIONS),
               },
-              "test_modules": [
-                  "tests/test_runtime_status_sources.py",
-                  "tests/test_platform_runtime_status_bridge.py",
-                  "tests/test_step_status_exact_pair.py",
-                  "integration_tests/test_f2c_exact_pair_integration.py",
-                  "tests/test_output_lifecycle_transport.py",
-              ],
           }
           with open("../f2e-sr2-step-status-exact-pair-evidence.json", "w", encoding="utf-8") as f:
               json.dump(evidence, f, sort_keys=True)
               f.write("\n")
-          print(json.dumps(evidence, sort_keys=True))
           PY
           cat ../f2e-sr2-step-status-exact-pair-evidence.json >> "$GITHUB_STEP_SUMMARY"
       - name: Upload SR2 exact-pair evidence
