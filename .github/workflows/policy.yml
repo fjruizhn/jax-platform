@@ -4543,7 +4543,10 @@ jobs:
       # bajo pytest; forzado corre un ciclo y se cancela limpio). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando,
       # sobre la rama: 2212 passed / 1431 skipped / 3 failed por el pin local de jax; 2212 + 3 - 1 = 2214.
       # PISO_PASSED (con DB) no cambia: es un minimo y la suite con DB dio 3635 passed sobre la rama.
-      JAX_CI_MIN_PASSED: "2214"
+      # 2214 -> 2216 (misma rama, ronda de auditoria): +2 puras de test_state_tareas_de_fondo_bajo_pytest.py
+      # (las tareas de fondo del motor no arrancan bajo pytest; forzado arranca las dos). MEDIDO EXACTO con
+      # JAX_CI_NO_DB=1 sobre la rama: 2214 passed / 1431 skipped / 3 failed por el pin local; 2214 + 3 - 1 = 2216.
+      JAX_CI_MIN_PASSED: "2216"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

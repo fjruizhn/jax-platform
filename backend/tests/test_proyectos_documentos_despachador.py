@@ -999,10 +999,11 @@ def test_una_razon_del_ocr_con_codigo_fuera_de_las_causas_cae_al_generico(monkey
 
 # --- el loop de fondo no corre bajo pytest (2026-10-04) ---------------------
 # Hasta hoy start_despachador arrancaba con el lifespan del fixture `client` de
-# sesión y repartía documentos de fondo mientras corrían los tests: dos fallos
-# intermitentes de CI en el PR #192 (test_mapa_de_estados[parcial-parcial] quedaba
-# 'pendiente' porque el ciclo de fondo se adelantaba, y el sync de Gemini contaba
-# una 3a llamada porque el ciclo usaba el http_client global ya reemplazado).
+# sesión y repartía documentos mientras corrían los tests: en el PR #192,
+# test_mapa_de_estados[parcial-parcial] quedaba 'pendiente' porque el ciclo de
+# fondo tenía el GET_LOCK del despacho y el ciclo del test volvía sin hacer nada.
+# (El otro intermitente de esa CI, el sync de Gemini, venía de _poll_las_manos:
+# ver tests/test_state_tareas_de_fondo_bajo_pytest.py.)
 # Mismo contrato que start_reintento_de_uso y start_facet_canary.
 
 async def test_start_despachador_no_arranca_bajo_pytest(monkeypatch, caplog):

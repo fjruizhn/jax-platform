@@ -596,10 +596,10 @@ async def start_despachador(forzado: bool = False):
 
     No arranca bajo pytest, igual que `start_reintento_de_uso` y `start_facet_canary`:
     el fixture `client` levanta el lifespan entero y un despacho de fondo durante los
-    tests es ruido no determinista (2026-10-04: dos fallos intermitentes de CI en el
-    PR #192, uno porque el ciclo de fondo se adelantaba al del test y otro porque
-    usaba el http_client global que un test habia reemplazado). `forzado=True` es
-    solo para el test que ejercita el loop."""
+    tests es ruido no determinista (2026-10-04, fallo intermitente de CI en el PR #192:
+    test_mapa_de_estados[parcial-parcial] quedaba 'pendiente' porque el ciclo de fondo
+    tomaba el GET_LOCK del despacho y el ciclo del test volvia sin hacer nada).
+    `forzado=True` es solo para el test que ejercita el loop."""
     if not forzado and _corriendo_bajo_pytest():
         logger.warning("proyectos_documentos: el despachador no arranca bajo pytest")
         return
