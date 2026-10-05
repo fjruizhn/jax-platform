@@ -53,9 +53,9 @@ def _core(monkeypatch):
 def test_runtime_status_bridge_requires_only_current_api_version(monkeypatch):
     root = Path(os.environ["JAX_REPO_PATH"]).resolve()
     runtime_status = _jax_runtime_status_bridge()
-    assert runtime_status.RUNTIME_STATUS_API_VERSION == "f2-e.runtime-status.3"
+    assert runtime_status.RUNTIME_STATUS_API_VERSION == "f2-e.runtime-status.4"
     assert Path(runtime_status.__file__).resolve().is_relative_to(root)
-    for incompatible_version in ("f2-e.runtime-status.2", "f2-e.runtime-status.4"):
+    for incompatible_version in ("f2-e.runtime-status.2", "f2-e.runtime-status.3", "f2-e.runtime-status.5"):
         with monkeypatch.context() as patched:
             patched.setattr(runtime_status, "RUNTIME_STATUS_API_VERSION", incompatible_version)
             with pytest.raises(RuntimeStatusBridgeUnavailable, match="unsupported"):

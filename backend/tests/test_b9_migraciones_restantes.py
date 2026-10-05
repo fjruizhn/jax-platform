@@ -448,23 +448,52 @@ def test_un_hash_guardado_distinto_deja_la_base_invalida_para_ese_archivo(
     asyncio.run(_ejercicio_hash_sintetico(archivo, sha_correcto))
 
 
-def test_el_manifiesto_committeado_declara_exactamente_004_y_006():
-    """El manifiesto real del repo (no uno de prueba): hoy declara 004 y 006, ni de
-    más ni de menos, porque eso es exactamente lo que `run_migrations()` no cubre y
-    lo que `jax_memory` de producción ya tiene aplicado (ver el informe de esta
-    rama). Un cambio a este archivo que agregue o saque una clave sin que nadie lo
-    note es justo el tipo de deriva silenciosa que este test atrapa. El `sha256`
-    declarado tiene que coincidir con el archivo REAL del checkout de JAX que usa
-    esta sesión (`JAX_REPO_PATH`) -- si no coincide, es la prueba de integración
-    (`test_memory_revisions_y_legacy_bindings_espejan_la_cadena_completa`, que pide
-    `client`) la que revienta, no ésta, que es intencionalmente sin DB."""
+_HASHES_B9_APLICADOS_EN_PRODUCCION = {
+    "004_tenant_legacy_binding.sql": "2ca7c8da5ce0bdd239b8ff3d643dd9b244a3171f125f9da5f644befb9a30a7d9",
+    "006_memory_jobs.sql": "29795dd6fcaeb2b8cdb80fb6e08c54b0097fd0410ab40f6a56c80057219d1333",
+    "007_extraction_job_events.sql": "aa3aa6369e516107f688ba44583661b9338ba0984345f01276d798f5d6fe4d84",
+    "008_embedding_generation_unique.sql": "a5209ad2bde69972c3f4ed8e12b7844508316cf720499869f1e7035c7a18a480",
+    "009_embedding_generation_attempts.sql": "017559b27e3a2eac93103d723de57429cd2d0b0731cb0abba87fe8694b803aee",
+    "010_embedding_generation_drop_redundant_index.sql": "0a949d9bfd8e827863c1461ade89e37ef84ca47f679ece1a28c1775fb4bbf632",
+    "011_messages_conversation_turn_index.sql": "9d92b68720886645f6f4a0ad0902b7496a4a44176aac25e7483ba9d400a0d414",
+    "012_conversations_open_index.sql": "161d88f2a60659d2d32c1e25492d0790cdb0e1b3129d7f9f97eaded807e72215",
+    "013_messages_drop_redundant_conversation_index.sql": "76aeea983e33c28f6a4fd751248cbbbac40a0740ee7743ed6810e601b8225604",
+}
+
+
+def test_el_manifiesto_committeado_declara_las_migraciones_aplicadas_y_sus_hashes():
+    """El manifiesto real declara exactamente las migraciones B9 que producción
+    ya tiene. Para 007--013 conserva además la evidencia de aplicación entregada
+    bajo GO presencial: orden efectivo, respaldo restaurable, rc=0 y forma final
+    de information_schema. Los hashes se comparan contra el checkout JAX de la
+    sesión, de modo que una edición posterior del SQL falla antes de aplicarse a la
+    base de prueba."""
     manifiesto = modulo_base_de_test._manifiesto_b9_de_produccion()
-    assert set(manifiesto) == {"004_tenant_legacy_binding.sql", "006_memory_jobs.sql"}
-    for archivo, datos in manifiesto.items():
+    assert set(manifiesto) == set(_HASHES_B9_APLICADOS_EN_PRODUCCION)
+    directorio = _jax_b9_migration_root()
+    for archivo, sha256_esperado in _HASHES_B9_APLICADOS_EN_PRODUCCION.items():
+        datos = manifiesto[archivo]
         assert datos["aplicada_en_produccion"], archivo
         assert datos["por"], archivo
         assert datos["verificado"], archivo
         assert datos["sha256_origen"], archivo
-        sha256 = datos["sha256"]
-        assert isinstance(sha256, str) and len(sha256) == 64, archivo
-        assert all(c in "0123456789abcdef" for c in sha256), archivo
+        assert datos["sha256"] == sha256_esperado, archivo
+        assert modulo_base_de_test._sha256_de_archivo(directorio / archivo) == sha256_esperado
+
+    for archivo in _HASHES_B9_APLICADOS_EN_PRODUCCION:
+        if archivo[:3] in {"007", "008", "009", "010", "011", "012", "013"}:
+            datos = manifiesto[archivo]
+            assert datos["aplicada_en_produccion"] == "2026-10-05"
+            assert datos["por"] == "Hyde, GO de Fernando en persona"
+            assert datos["orden_de_aplicacion"] == "007→009→008→010→011→012→013"
+            assert datos["respaldo"] == "respaldo previo con restauración probada"
+            assert datos["rc"] == 0
+            assert "memory_extraction_job_events" in datos["verificado"]
+            assert "embedding_generation_attempts" in datos["verificado"]
+            assert "uq_embedding_generation_revision_space" in datos["verificado"]
+            assert "idx_messages_conversation_turn" in datos["verificado"]
+            assert "idx_conversations_open" in datos["verificado"]
+            assert (
+                "no existen idx_embedding_generation_revision ni idx_conversation"
+                in datos["verificado"]
+            )

@@ -30,7 +30,7 @@ _DEGRADED_NOTICE = "The response could not be verified safely."
 # envelope with semantics it has not been reviewed to preserve.
 F2C_EXACT_PAIR_COMPATIBILITY = (
     "f2-c.renderer.3",
-    "f2-c.domain.6",
+    "f2-c.domain.7",
     frozenset({"f2-c.1"}),
 )
 

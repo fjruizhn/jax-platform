@@ -13,5 +13,75 @@
     "verificado": "SELECT desde information_schema contra jax_memory: memory_extraction_jobs, memory_extraction_results, memory_synthesis_jobs y memory_synthesis_job_items existen; memory_revisions.tenant_id es NOT NULL; fk_memory_revision_tenant existe; el trigger memory_revision_tenant_compat existe",
     "sha256": "29795dd6fcaeb2b8cdb80fb6e08c54b0097fd0410ab40f6a56c80057219d1333",
     "sha256_origen": "sha256sum sobre jax/memory/b9_migrations/006_memory_jobs.sql en un clon de lectura de jax en el commit 4642613 (rama master, 'Merge pull request #279: repair B9 memory workers and legacy adoption') -- el mismo SHA desplegado en /srv/jax-prod/jax, verificado por la sesión principal. NO se leyó de /home/fruiz/jax (checkout de otra sesión)."
+  },
+  "007_extraction_job_events.sql": {
+    "aplicada_en_produccion": "2026-10-05",
+    "por": "Hyde, GO de Fernando en persona",
+    "orden_de_aplicacion": "007→009→008→010→011→012→013",
+    "respaldo": "respaldo previo con restauración probada",
+    "rc": 0,
+    "verificado": "information_schema en jax_memory: existen memory_extraction_job_events y embedding_generation_attempts; existen uq_embedding_generation_revision_space, idx_messages_conversation_turn e idx_conversations_open; no existen idx_embedding_generation_revision ni idx_conversation",
+    "sha256": "aa3aa6369e516107f688ba44583661b9338ba0984345f01276d798f5d6fe4d84",
+    "sha256_origen": "sha256sum sobre jax/memory/b9_migrations/007_extraction_job_events.sql en JAX commit 6977927d: hash verificado independientemente contra ese commit; aplicación, rc e information_schema respaldados por evidencia reportada por Hyde bajo GO de Fernando en persona."
+  },
+  "008_embedding_generation_unique.sql": {
+    "aplicada_en_produccion": "2026-10-05",
+    "por": "Hyde, GO de Fernando en persona",
+    "orden_de_aplicacion": "007→009→008→010→011→012→013",
+    "respaldo": "respaldo previo con restauración probada",
+    "rc": 0,
+    "verificado": "information_schema en jax_memory: existen memory_extraction_job_events y embedding_generation_attempts; existen uq_embedding_generation_revision_space, idx_messages_conversation_turn e idx_conversations_open; no existen idx_embedding_generation_revision ni idx_conversation",
+    "sha256": "a5209ad2bde69972c3f4ed8e12b7844508316cf720499869f1e7035c7a18a480",
+    "sha256_origen": "sha256sum sobre jax/memory/b9_migrations/008_embedding_generation_unique.sql en JAX commit 6977927d: hash verificado independientemente contra ese commit; aplicación, rc e information_schema respaldados por evidencia reportada por Hyde bajo GO de Fernando en persona."
+  },
+  "009_embedding_generation_attempts.sql": {
+    "aplicada_en_produccion": "2026-10-05",
+    "por": "Hyde, GO de Fernando en persona",
+    "orden_de_aplicacion": "007→009→008→010→011→012→013",
+    "respaldo": "respaldo previo con restauración probada",
+    "rc": 0,
+    "verificado": "information_schema en jax_memory: existen memory_extraction_job_events y embedding_generation_attempts; existen uq_embedding_generation_revision_space, idx_messages_conversation_turn e idx_conversations_open; no existen idx_embedding_generation_revision ni idx_conversation",
+    "sha256": "017559b27e3a2eac93103d723de57429cd2d0b0731cb0abba87fe8694b803aee",
+    "sha256_origen": "sha256sum sobre jax/memory/b9_migrations/009_embedding_generation_attempts.sql en JAX commit 6977927d: hash verificado independientemente contra ese commit; aplicación, rc e information_schema respaldados por evidencia reportada por Hyde bajo GO de Fernando en persona."
+  },
+  "010_embedding_generation_drop_redundant_index.sql": {
+    "aplicada_en_produccion": "2026-10-05",
+    "por": "Hyde, GO de Fernando en persona",
+    "orden_de_aplicacion": "007→009→008→010→011→012→013",
+    "respaldo": "respaldo previo con restauración probada",
+    "rc": 0,
+    "verificado": "information_schema en jax_memory: existen memory_extraction_job_events y embedding_generation_attempts; existen uq_embedding_generation_revision_space, idx_messages_conversation_turn e idx_conversations_open; no existen idx_embedding_generation_revision ni idx_conversation",
+    "sha256": "0a949d9bfd8e827863c1461ade89e37ef84ca47f679ece1a28c1775fb4bbf632",
+    "sha256_origen": "sha256sum sobre jax/memory/b9_migrations/010_embedding_generation_drop_redundant_index.sql en JAX commit 6977927d: hash verificado independientemente contra ese commit; aplicación, rc e information_schema respaldados por evidencia reportada por Hyde bajo GO de Fernando en persona."
+  },
+  "011_messages_conversation_turn_index.sql": {
+    "aplicada_en_produccion": "2026-10-05",
+    "por": "Hyde, GO de Fernando en persona",
+    "orden_de_aplicacion": "007→009→008→010→011→012→013",
+    "respaldo": "respaldo previo con restauración probada",
+    "rc": 0,
+    "verificado": "information_schema en jax_memory: existen memory_extraction_job_events y embedding_generation_attempts; existen uq_embedding_generation_revision_space, idx_messages_conversation_turn e idx_conversations_open; no existen idx_embedding_generation_revision ni idx_conversation",
+    "sha256": "9d92b68720886645f6f4a0ad0902b7496a4a44176aac25e7483ba9d400a0d414",
+    "sha256_origen": "sha256sum sobre jax/memory/b9_migrations/011_messages_conversation_turn_index.sql en JAX commit 6977927d: hash verificado independientemente contra ese commit; aplicación, rc e information_schema respaldados por evidencia reportada por Hyde bajo GO de Fernando en persona."
+  },
+  "012_conversations_open_index.sql": {
+    "aplicada_en_produccion": "2026-10-05",
+    "por": "Hyde, GO de Fernando en persona",
+    "orden_de_aplicacion": "007→009→008→010→011→012→013",
+    "respaldo": "respaldo previo con restauración probada",
+    "rc": 0,
+    "verificado": "information_schema en jax_memory: existen memory_extraction_job_events y embedding_generation_attempts; existen uq_embedding_generation_revision_space, idx_messages_conversation_turn e idx_conversations_open; no existen idx_embedding_generation_revision ni idx_conversation",
+    "sha256": "161d88f2a60659d2d32c1e25492d0790cdb0e1b3129d7f9f97eaded807e72215",
+    "sha256_origen": "sha256sum sobre jax/memory/b9_migrations/012_conversations_open_index.sql en JAX commit 6977927d: hash verificado independientemente contra ese commit; aplicación, rc e information_schema respaldados por evidencia reportada por Hyde bajo GO de Fernando en persona."
+  },
+  "013_messages_drop_redundant_conversation_index.sql": {
+    "aplicada_en_produccion": "2026-10-05",
+    "por": "Hyde, GO de Fernando en persona",
+    "orden_de_aplicacion": "007→009→008→010→011→012→013",
+    "respaldo": "respaldo previo con restauración probada",
+    "rc": 0,
+    "verificado": "information_schema en jax_memory: existen memory_extraction_job_events y embedding_generation_attempts; existen uq_embedding_generation_revision_space, idx_messages_conversation_turn e idx_conversations_open; no existen idx_embedding_generation_revision ni idx_conversation",
+    "sha256": "76aeea983e33c28f6a4fd751248cbbbac40a0740ee7743ed6810e601b8225604",
+    "sha256_origen": "sha256sum sobre jax/memory/b9_migrations/013_messages_drop_redundant_conversation_index.sql en JAX commit 6977927d: hash verificado independientemente contra ese commit; aplicación, rc e information_schema respaldados por evidencia reportada por Hyde bajo GO de Fernando en persona."
   }
 }

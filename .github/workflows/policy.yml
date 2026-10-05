@@ -1312,6 +1312,8 @@ jobs:
       # sys.path. Mismo caso que JAX_CONFIG_PATH: sin esto son 9 tests con
       # "ModuleNotFoundError: No module named 'claims'".
       JAX_REPO_PATH: /tmp/jax
+      # SR3 processing imports validate the workspace during module import.
+      JAX_WORKSPACE_DIR: /tmp/jax-workspace
       # Web Chat imports the JAX-owned B9 package as well as reading its
       # configuration.  Resolve it from this job's paired checkout, never an
       # unrelated preinstalled package named `jax`.
@@ -1329,6 +1331,8 @@ jobs:
         with:
           # 3.14 = la version real de backend/.venv, la que corre en produccion.
           python-version: "3.14"
+      - name: Crear workspace temporal para imports de JAX
+        run: mkdir -p "$JAX_WORKSPACE_DIR"
       - name: Instalar dependencias
         run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
 
@@ -1341,11 +1345,19 @@ jobs:
           # Platform's F2-C/F2-D baseline is the governed exact pair; keeping
           # the historical domain-.5 JAX pin after this contract upgrade would
           # make master import an incompatible renderer/lifecycle vocabulary.
-          PIN=2b0c16327997f6bacd0cafd61f50d92a6d5d7476
+          PIN=200f03c7a17cbe1a488d7dab6921d841a8cd3a46
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
           test "$(git -C /tmp/jax rev-parse HEAD)" = "$PIN"
+
+      - name: Instalar extractores declarados por el JAX fijado
+        # JAX #335 cierra POST /procesamiento/trabajos con 503 si los
+        # extractores declarados en su requirements-archivos.txt no están
+        # disponibles. El test de integración debe ejercitar el camino verde
+        # instalando exactamente los paquetes del checkout fijado, no una
+        # copia de versiones mantenida en este workflow.
+        run: pip install -r /tmp/jax/requirements-archivos.txt
 
       - name: Crear el esquema de Jacobs con SU propio init_tables()
         working-directory: .
@@ -1489,6 +1501,26 @@ jobs:
           err = sum(int(s.get("errors", 0)) for s in suites)
           skip = sum(int(s.get("skipped", 0)) for s in suites)
           passed = total - fail - err - skip
+
+          # This exact test is intentionally skipped on GitHub: Actions has
+          # no production /etc/jax/.env to compare against. Do not let this
+          # environment-only skip mask a DB outage; all other skips remain
+          # subject to MAX_SKIPS below.
+          env_only_test = (
+              "tests.test_conftest_no_carga_secretos_no_necesarios",
+              "test_fernet_key_y_jwt_secret_se_fuerzan_aunque_ya_vengan_puestos_en_el_ambiente",
+              "no hay /etc/jax/.env con estos secretos en esta máquina -- nada que simular",
+          )
+          env_only_skips = 0
+          for case in root.iter("testcase"):
+              skipped = case.find("skipped")
+              if skipped is None:
+                  continue
+              if (case.get("classname"), case.get("name"), skipped.get("message")) == env_only_test:
+                  env_only_skips += 1
+          if env_only_skips > 1:
+              sys.exit(f"skip de entorno repetido inesperadamente: {env_only_skips}")
+          gated_skips = skip - env_only_skips
 
           # MEDIDO EN ESTE JOB, no en otro entorno: 309 colectados, 308 passed,
           # 1 skipped, 0 failed, 0 errors (corrida real del 2026-09-01).
@@ -3541,16 +3573,20 @@ jobs:
           #   ultimo medido en el runner (3669), no medido: la corrida local con DB de sesion no sirve de
           #   referencia aqui (6 fallos de entorno y otra base). Sin DB, +2 exacto medido por la auditoria
           #   (pin 2b0c163: 2218 -> 2220 passed). El runner tiene la ultima palabra (regla 5).
-          PISO_PASSED = 3671
+          # 3671 -> 3676 (2026-10-05, reconciliacion SR2 exact-pair): medicion publicada del runner,
+          # corrida 37279310975: colectados=3678 passed=3676 skipped=2 failed=0. Un skip es exclusivo del
+          # entorno; el otro sigue gateado por MAX_SKIPS=1, por lo que no se modifica la barrera de skips.
+          PISO_PASSED = 3676
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
+                f"skip_entorno_esperado={env_only_skips} skips_gateados={gated_skips} "
                 f"failed={fail} errors={err}")
           if passed < PISO_PASSED:
               sys.exit(f"PISO ROTO: {passed} passed < {PISO_PASSED}.")
-          if skip > MAX_SKIPS:
+          if gated_skips > MAX_SKIPS:
               sys.exit(
-                  f"{skip} skips (max {MAX_SKIPS}). La DB no esta siendo usada: "
+                  f"{gated_skips} skips inesperados (max {MAX_SKIPS}). La DB no esta siendo usada: "
                   "los tests que la necesitan se estan salteando y este job "
                   "estaria verde sin haber probado nada de lo que vino a probar."
               )
@@ -3606,6 +3642,8 @@ jobs:
       # Este job no clonaba `jax` -- el de DB si. Apunta al clon del paso de
       # mas abajo.
       JAX_REPO_PATH: /tmp/jax
+      # SR3 processing imports validate the workspace during module import.
+      JAX_WORKSPACE_DIR: /tmp/jax-workspace
       # The paired checkout owns `jax.memory.b9`; JAX_REPO_PATH is a data
       # location, not a Python import path.
       PYTHONPATH: /tmp/jax:/tmp/jax/las_manos
@@ -4590,7 +4628,9 @@ jobs:
       # 2217 -> 2219 (2026-10-05, fix/conftest-sello-antes-de-migrar): +2 netos puros (1 prueba reemplazada por 3,
       # ninguna pide `client`). MEDIDO EXACTO con JAX_CI_NO_DB=1, mismo comando, en master (0e582da) y en la rama:
       # 2215 -> 2217 passed / 1455 / 1455 skipped / 3 failed por el pin local; 2217 + 3 - 1 = 2219.
-      JAX_CI_MIN_PASSED: "2219"
+      # 2219 -> 2224 (2026-10-05, reconciliacion SR2 exact-pair): medicion publicada del runner,
+      # corrida 37279310975: 2224 passed, 1454 skipped. Los controles de skips permanecen sin cambios.
+      JAX_CI_MIN_PASSED: "2224"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -4599,6 +4639,8 @@ jobs:
           # producción (systemd jax-platform arranca backend/.venv/bin/uvicorn).
           # Es también la única sobre la que se verificó esta suite.
           python-version: "3.14"
+      - name: Crear workspace temporal para imports de JAX
+        run: mkdir -p "$JAX_WORKSPACE_DIR"
       - name: Instalar dependencias
         # pytest-asyncio NO está en requirements.txt aunque pytest.ini lo
         # necesita (asyncio_mode = auto). Se instala explícito acá; declararlo
@@ -4614,7 +4656,7 @@ jobs:
           # Platform's F2-C/F2-D baseline is the governed exact pair; keeping
           # the historical domain-.5 JAX pin after this contract upgrade would
           # make master import an incompatible renderer/lifecycle vocabulary.
-          PIN=2b0c16327997f6bacd0cafd61f50d92a6d5d7476
+          PIN=200f03c7a17cbe1a488d7dab6921d841a8cd3a46
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -4852,6 +4894,125 @@ jobs:
         with:
           name: f2e-runtime-status-exact-pair-evidence
           path: f2e-runtime-status-exact-pair-evidence.json
+
+  # STEP_STATUS se habilita solo después de comprobar juntos el checkout
+  # exacto de JAX #341 y este head de la plataforma. El source/enum tripwire
+  # de JAX corre además en el job governance de #341.
+  f2e-sr2-step-status-exact-pair:
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'k3/sr2-step-status-exact-pair'
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:12.3.3
+        env:
+          MARIADB_ROOT_PASSWORD: ci
+          MARIADB_DATABASE: jax_memory_test
+          MARIADB_USER: jax_test
+          MARIADB_PASSWORD: ci
+        ports: ["3308:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      JAX_SR2_EXPECTED_SHA: 200f03c7a17cbe1a488d7dab6921d841a8cd3a46
+      JAX_REPO_PATH: ${{ github.workspace }}/jax
+      JAX_REPO_BASE: ${{ github.workspace }}/jax
+      JAX_CONFIG_PATH: ${{ github.workspace }}/jax/las_manos/config.toml
+      JAX_DB_HOST: 127.0.0.1
+      JAX_DB_PORT: "3306"
+      JAX_DB_USER: jax_test
+      JAX_DB_PASSWORD: ci
+      JAX_DB_NAME: jax_memory_test
+      SR2_STEP_STATUS_DB_TEST: "1"
+      JAX_JWT_SECRET: sr2-step-status-ci-only
+    steps:
+      - name: Checkout exact Platform pull request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Checkout exact JAX #341 head
+        uses: actions/checkout@v4
+        with:
+          repository: fjruizhn/Jax
+          ref: 200f03c7a17cbe1a488d7dab6921d841a8cd3a46
+          path: jax
+      - name: Resolve the test suite's MariaDB hostname on the runner
+        run: echo "127.0.0.1 mariadb.test" | sudo tee -a /etc/hosts
+      - name: Require exact JAX and Platform PR pair
+        env:
+          EXPECTED_PLATFORM_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git -C jax rev-parse HEAD)" = "$JAX_SR2_EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_PLATFORM_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install backend test dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
+      - name: Exercise exact SR2 pair through source, F2-B, F2-C and F2-D
+        working-directory: backend
+        env:
+          PYTHONPATH: ${{ github.workspace }}/jax:${{ github.workspace }}/jax/las_manos
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:warnings \
+            tests/test_step_status_exact_pair.py::test_exact_pair_reads_real_canonical_step_owner_join_and_index_plan \
+            2>&1 | tee /tmp/sr2-step-status-mariadb
+          grep -qE '^1 passed in [0-9]+(\.[0-9]+)?s$' /tmp/sr2-step-status-mariadb || {
+            echo "FAIL-CLOSED: la prueba del resolver canónico STEP_STATUS no pasó con MariaDB real."; exit 1; }
+          python -m pytest -q -p no:warnings \
+            tests/test_runtime_status_sources.py \
+            tests/test_platform_runtime_status_bridge.py \
+            tests/test_step_status_exact_pair.py \
+            integration_tests/test_f2c_exact_pair_integration.py \
+            tests/test_output_lifecycle_transport.py \
+            -k 'not test_exact_pair_reads_real_canonical_step_owner_join_and_index_plan'
+          python - <<'PY'
+          import json, os, subprocess
+          from policy.governance.governed_domain import (
+              GOVERNED_DOMAIN_SPEC_VERSION,
+              GOVERNED_ENVELOPE_SCHEMA_VERSIONS,
+              GOVERNED_RENDERER_API_VERSION,
+          )
+          evidence = {
+              "jax_repository": "fjruizhn/Jax",
+              "jax_pr": 341,
+              "jax_head": os.environ["JAX_SR2_EXPECTED_SHA"],
+              "platform_repository": "fjruizhn/jax-platform",
+              "platform_pr": int(os.environ["GITHUB_PR_NUMBER"]),
+              "platform_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "coverage": [
+                  "canonical Jacobs step and owner snapshot with MariaDB",
+                  "F2-B STEP_STATUS receipt and exact response scope",
+                  "F2-C exact renderer/domain/envelope tuple",
+                  "F2-D effective output and transport lifecycle",
+              ],
+              "f2c_contract": {
+                  "renderer": GOVERNED_RENDERER_API_VERSION,
+                  "domain": GOVERNED_DOMAIN_SPEC_VERSION,
+                  "envelopes": sorted(GOVERNED_ENVELOPE_SCHEMA_VERSIONS),
+              },
+              "test_modules": [
+                  "tests/test_runtime_status_sources.py",
+                  "tests/test_platform_runtime_status_bridge.py",
+                  "tests/test_step_status_exact_pair.py",
+                  "integration_tests/test_f2c_exact_pair_integration.py",
+                  "tests/test_output_lifecycle_transport.py",
+              ],
+          }
+          with open("../f2e-sr2-step-status-exact-pair-evidence.json", "w", encoding="utf-8") as f:
+              json.dump(evidence, f, sort_keys=True)
+              f.write("\n")
+          print(json.dumps(evidence, sort_keys=True))
+          PY
+          cat ../f2e-sr2-step-status-exact-pair-evidence.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload SR2 exact-pair evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: f2e-sr2-step-status-exact-pair-evidence
+          path: f2e-sr2-step-status-exact-pair-evidence.json
 
   f2e-sr3-processing-exact-pair:
     if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'phase2/f2-e-sr3-processing-job-status-platform'

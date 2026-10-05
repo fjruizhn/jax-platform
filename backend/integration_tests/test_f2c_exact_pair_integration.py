@@ -114,14 +114,14 @@ def test_f2c_exact_pair_accepts_current_contract_and_rejects_old_or_future(monke
 
     assert _core()
     assert F2C_EXACT_PAIR_COMPATIBILITY == (
-        "f2-c.renderer.3", "f2-c.domain.6", frozenset({"f2-c.1"})
+        "f2-c.renderer.3", "f2-c.domain.7", frozenset({"f2-c.1"})
     )
 
     for renderer_version, domain_version, envelope_versions in (
-        ("f2-c.renderer.2", "f2-c.domain.6", frozenset({"f2-c.1"})),
-        ("f2-c.renderer.3", "f2-c.domain.5", frozenset({"f2-c.1"})),
-        ("f2-c.renderer.4", "f2-c.domain.7", frozenset({"f2-c.1"})),
-        ("f2-c.renderer.3", "f2-c.domain.6", frozenset({"f2-c.2"})),
+        ("f2-c.renderer.2", "f2-c.domain.7", frozenset({"f2-c.1"})),
+        ("f2-c.renderer.3", "f2-c.domain.6", frozenset({"f2-c.1"})),
+        ("f2-c.renderer.4", "f2-c.domain.8", frozenset({"f2-c.1"})),
+        ("f2-c.renderer.3", "f2-c.domain.7", frozenset({"f2-c.2"})),
     ):
         with monkeypatch.context() as patched:
             patched.setattr(domain, "GOVERNED_RENDERER_API_VERSION", renderer_version)
